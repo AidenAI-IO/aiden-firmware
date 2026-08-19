@@ -722,8 +722,23 @@ type ModelConfig struct {
 	APIKey   string `toml:"api_key,omitempty"`
 	// APIMode selects the wire protocol for OpenAI-compatible providers. Empty
 	// and "chat_completions" preserve the historical default; "responses"
-	// sends the locally maintained context as Responses input items.
+	// sends the locally maintained context as Responses input items;
+	// "responses_stateful" chains provider-stored responses with
+	// previous_response_id.
 	APIMode string `toml:"api_mode,omitempty"`
+	// ResponsesContextManagement selects provider-side context management for
+	// Responses requests. "compaction" enables the official Responses API
+	// compaction entry; empty disables it.
+	ResponsesContextManagement string `toml:"responses_context_management,omitempty"`
+	ResponsesCompactThreshold  int    `toml:"responses_compact_threshold,omitempty"`
+	// ResponsesTruncation controls the official Responses truncation policy.
+	// Empty preserves the API default (disabled); "auto" delegates truncation
+	// to the provider when supported.
+	ResponsesTruncation string `toml:"responses_truncation,omitempty"`
+	// ResponsesInclude lists official Responses include values such as
+	// reasoning.encrypted_content. It is intentionally provider-configurable
+	// because compatible gateways do not all implement the same include set.
+	ResponsesInclude []string `toml:"responses_include,omitempty"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
 	// (see applyModelTemperatureDefault); an explicit value, including 0, is
@@ -736,6 +751,12 @@ type ModelConfig struct {
 	ContextWindow        int      `toml:"context_window,omitempty"`
 	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`
 	Responses            []string `toml:"responses,omitempty"`
+}
+
+func (m ModelConfig) ResponsesProviderCompactionEnabled() bool {
+	apiMode := normalizeModelAPIMode(m.APIMode)
+	return (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) &&
+		normalizeResponsesContextManagement(m.ResponsesContextManagement) == responsesContextManagementCompaction
 }
 
 // AgentConfig is used internally by the runtime prompt builder.
@@ -1263,6 +1284,24 @@ func (c Config) Validate() error {
 	if (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) && !c.modelProviderSupportsResponses() {
 		return fmt.Errorf("model.api_mode=%s requires a provider transport with an OpenAI-compatible /responses endpoint", apiMode)
 	}
+	if apiMode == modelAPIModeResponsesStateful && !c.modelProviderSupportsResponsesStateful() {
+		return fmt.Errorf("model.api_mode=responses_stateful requires a provider that supports stored Responses and previous_response_id; use responses for stateless-compatible endpoints")
+	}
+	contextManagement := strings.ToLower(strings.TrimSpace(c.Model.ResponsesContextManagement))
+	switch contextManagement {
+	case "", "none", "disabled", responsesContextManagementCompaction:
+	default:
+		return fmt.Errorf("invalid model.responses_context_management: %s (expected empty, compaction, or disabled)", c.Model.ResponsesContextManagement)
+	}
+	if c.Model.ResponsesCompactThreshold < 0 {
+		return fmt.Errorf("model.responses_compact_threshold must be >= 0, got %d", c.Model.ResponsesCompactThreshold)
+	}
+	truncation := strings.ToLower(strings.TrimSpace(c.Model.ResponsesTruncation))
+	switch truncation {
+	case "", responsesTruncationDisabled, responsesTruncationAuto:
+	default:
+		return fmt.Errorf("invalid model.responses_truncation: %s (expected empty, auto, or disabled)", c.Model.ResponsesTruncation)
+	}
 	backend := c.Device.BackendOrDefault()
 	switch backend {
 	case "hdmi":
@@ -1433,6 +1472,15 @@ func (c Config) modelProviderSupportsResponses() bool {
 	}
 	definition, ok := lookupModelProviderDefinition(providerType)
 	return ok && definition.supportsResponses
+}
+
+func (c Config) modelProviderSupportsResponsesStateful() bool {
+	providerType := strings.TrimSpace(c.Model.Provider)
+	if provider, ok := c.ModelProviders[providerType]; ok {
+		providerType = strings.TrimSpace(provider.Type)
+	}
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsResponsesStateful
 }
 
 // isKnownProviderType reports whether the value names a built-in model

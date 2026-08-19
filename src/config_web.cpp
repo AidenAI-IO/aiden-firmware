@@ -2906,6 +2906,20 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     if (!config.model.api_mode.empty()) {
         cJSON_AddStringToObject(model, "api_mode", config.model.api_mode.c_str());
     }
+    if (!config.model.responses_context_management.empty()) {
+        cJSON_AddStringToObject(model, "responses_context_management", config.model.responses_context_management.c_str());
+    }
+    cJSON_AddNumberToObject(model, "responses_compact_threshold", config.model.responses_compact_threshold);
+    if (!config.model.responses_truncation.empty()) {
+        cJSON_AddStringToObject(model, "responses_truncation", config.model.responses_truncation.c_str());
+    }
+    if (!config.model.responses_include.empty()) {
+        cJSON* responses_include = cJSON_CreateArray();
+        for (const auto& value : config.model.responses_include) {
+            cJSON_AddItemToArray(responses_include, cJSON_CreateString(value.c_str()));
+        }
+        cJSON_AddItemToObject(model, "responses_include", responses_include);
+    }
     cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
     if (config.model.has_temperature) {
         cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
@@ -3267,6 +3281,10 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     m->base_url.clear();
     set_json_str(&m->api_key, obj, "api_key");
     set_json_str(&m->api_mode, obj, "api_mode");
+    set_json_str(&m->responses_context_management, obj, "responses_context_management");
+    set_json_int(&m->responses_compact_threshold, obj, "responses_compact_threshold");
+    set_json_str(&m->responses_truncation, obj, "responses_truncation");
+    set_json_string_vector(&m->responses_include, obj, "responses_include");
     set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
     // Temperature is nullable: presence of the key sets has_temperature, and
     // its absence clears it. This function applies JSON as a patch onto an

@@ -355,6 +355,31 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 	})
 }
 
+func TestConfigWire_ResponsesSettingsRoundTrip(t *testing.T) {
+	cfg := agent.Config{Model: agent.ModelConfig{
+		Provider:                   "openai",
+		Model:                      "gpt-test",
+		APIMode:                    "responses_stateful",
+		ResponsesContextManagement: "compaction",
+		ResponsesCompactThreshold:  32000,
+		ResponsesTruncation:        "auto",
+		ResponsesInclude:           []string{"reasoning.encrypted_content"},
+	}}
+	dto := webConfigDTOFromAgentConfig(cfg)
+	back := dto.toAgentConfig()
+	if back.Model.APIMode != cfg.Model.APIMode ||
+		back.Model.ResponsesContextManagement != cfg.Model.ResponsesContextManagement ||
+		back.Model.ResponsesCompactThreshold != cfg.Model.ResponsesCompactThreshold ||
+		back.Model.ResponsesTruncation != cfg.Model.ResponsesTruncation ||
+		!reflect.DeepEqual(back.Model.ResponsesInclude, cfg.Model.ResponsesInclude) {
+		t.Fatalf("Responses settings round trip = %#v", back.Model)
+	}
+	testRequest := dto.Model.providerTestRequest()
+	if testRequest.ResponsesContextManagement != "compaction" || testRequest.ResponsesCompactThreshold != 32000 || testRequest.ResponsesTruncation != "auto" || !reflect.DeepEqual(testRequest.ResponsesInclude, []string{"reasoning.encrypted_content"}) {
+		t.Fatalf("provider test request = %#v", testRequest)
+	}
+}
+
 func TestConfigWire_ModelProviderCanonicalJSON(t *testing.T) {
 	t.Run("canonical payload uses model_providers and type", func(t *testing.T) {
 		payload := `{

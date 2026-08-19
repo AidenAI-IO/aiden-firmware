@@ -336,6 +336,10 @@ void apply_kv(AgentToml& cfg,
         else if (key == "model") assign_string(&m.model, raw, &sub_err);
         else if (key == "api_key") assign_string(&m.api_key, raw, &sub_err);
         else if (key == "api_mode") assign_string(&m.api_mode, raw, &sub_err);
+        else if (key == "responses_context_management") assign_string(&m.responses_context_management, raw, &sub_err);
+        else if (key == "responses_compact_threshold") assign_non_negative_int(&m.responses_compact_threshold, raw, &sub_err);
+        else if (key == "responses_truncation") assign_string(&m.responses_truncation, raw, &sub_err);
+        else if (key == "responses_include") assign_string_array(&m.responses_include, raw, &sub_err);
         else if (key == "reasoning_effort") assign_string(&m.reasoning_effort, raw, &sub_err);
         else if (key == "temperature") {
             assign_double(&m.temperature, raw, &sub_err);
@@ -716,6 +720,10 @@ void emit_model(std::ostringstream& out, const char* section, const ModelToml& m
     emit_string(out, "model", m.model);
     if (!m.api_key.empty()) emit_string(out, "api_key", m.api_key);
     if (!m.api_mode.empty()) emit_string(out, "api_mode", m.api_mode);
+    if (!m.responses_context_management.empty()) emit_string(out, "responses_context_management", m.responses_context_management);
+    if (m.responses_compact_threshold != 0) emit_int(out, "responses_compact_threshold", m.responses_compact_threshold);
+    if (!m.responses_truncation.empty()) emit_string(out, "responses_truncation", m.responses_truncation);
+    if (!m.responses_include.empty()) emit_string_array(out, "responses_include", m.responses_include);
     // Always emit reasoning_effort, even if empty (empty = "auto" default)
     emit_string(out, "reasoning_effort", m.reasoning_effort);
     if (m.has_temperature) emit_double(out, "temperature", m.temperature);

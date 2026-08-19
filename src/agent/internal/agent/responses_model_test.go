@@ -92,6 +92,59 @@ func TestResponsesModelSendsStoreFalse(t *testing.T) {
 	}
 }
 
+func TestResponsesModelSendsContextControls(t *testing.T) {
+	var captured struct {
+		ContextManagement []responsesContextManagement `json:"context_management"`
+		Include           []string                     `json:"include"`
+		Truncation        string                       `json:"truncation"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp_1","status":"completed","output":[]}`))
+	}))
+	defer server.Close()
+
+	model := newResponsesModel(server.URL, "test-model", "", server.Client(), responsesModelOptions{
+		contextManagement: "compaction",
+		compactThreshold:  32000,
+		truncation:        "auto",
+		include:           []string{"reasoning.encrypted_content"},
+	})
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}}}); err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if len(captured.ContextManagement) != 1 || captured.ContextManagement[0].Type != "compaction" || captured.ContextManagement[0].CompactThreshold != 32000 {
+		t.Fatalf("context_management = %#v", captured.ContextManagement)
+	}
+	if captured.Truncation != "auto" || len(captured.Include) != 1 || captured.Include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("truncation=%q include=%#v", captured.Truncation, captured.Include)
+	}
+}
+
+func TestAddResponsesOutputItemsDeduplicatesByItemID(t *testing.T) {
+	info := make(map[string]any)
+	var first responsesOutputItem
+	if err := json.Unmarshal([]byte(`{"id":"msg_1","type":"message","role":"assistant","status":"in_progress"}`), &first); err != nil {
+		t.Fatalf("unmarshal first item: %v", err)
+	}
+	var completed responsesOutputItem
+	if err := json.Unmarshal([]byte(`{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done"}]}`), &completed); err != nil {
+		t.Fatalf("unmarshal completed item: %v", err)
+	}
+	addResponsesOutputItems(info, []responsesOutputItem{first, completed})
+	items, ok := info["responses_output_items"].([]json.RawMessage)
+	if !ok || len(items) != 1 {
+		t.Fatalf("output items = %#v, want one item", info["responses_output_items"])
+	}
+	if !strings.Contains(string(items[0]), `"status":"completed"`) || !strings.Contains(string(items[0]), `"text":"done"`) {
+		t.Fatalf("output item = %s, want latest completed representation", items[0])
+	}
+}
+
 func TestResponsesStatefulModeChainsOnlyNewItems(t *testing.T) {
 	var requests []struct {
 		Instructions       string               `json:"instructions"`
@@ -149,6 +202,85 @@ func TestResponsesStatefulModeChainsOnlyNewItems(t *testing.T) {
 	}
 }
 
+func TestResponsesStatefulModeRetriesExpiredAnchorWithFullLocalContext(t *testing.T) {
+	var requests []struct {
+		Instructions       string            `json:"instructions"`
+		PreviousResponseID string            `json:"previous_response_id"`
+		Input              []json.RawMessage `json:"input"`
+		Store              bool              `json:"store"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Instructions       string            `json:"instructions"`
+			PreviousResponseID string            `json:"previous_response_id"`
+			Input              []json.RawMessage `json:"input"`
+			Store              bool              `json:"store"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, request)
+		if request.PreviousResponseID != "" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"previous_response_not_found","message":"previous_response_id expired"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp_recovered","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`))
+	}))
+	defer server.Close()
+
+	model := newResponsesModel(server.URL, "test-model", "", server.Client(), responsesModelOptions{providerManagedContext: true}).(*responsesModel)
+	contextMessages := []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system guidance"},
+		{Role: messages.MessageRoleUser, Content: "first"},
+		{
+			Role:                messages.MessageRoleAssistant,
+			Content:             "answer",
+			ResponsesResponseID: "resp_expired",
+			ResponsesOutputItems: []json.RawMessage{
+				json.RawMessage(`{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"answer"}]}`),
+			},
+		},
+		{Role: messages.MessageRoleUser, Content: "second"},
+	}
+	if _, err := model.GenerateContentFromMessageList(context.Background(), contextMessages); err != nil {
+		t.Fatalf("GenerateContentFromMessageList: %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if requests[0].PreviousResponseID != "resp_expired" || len(requests[0].Input) != 1 {
+		t.Fatalf("incremental request = %#v", requests[0])
+	}
+	if requests[1].PreviousResponseID != "" || !requests[1].Store || requests[1].Instructions != "system guidance" || len(requests[1].Input) != 3 {
+		t.Fatalf("fallback request = %#v", requests[1])
+	}
+	if !strings.Contains(string(requests[1].Input[1]), `"phase":"final_answer"`) {
+		t.Fatalf("fallback assistant item = %s", requests[1].Input[1])
+	}
+}
+
+func TestResponsesStatefulModeDoesNotRetryUnrelatedError(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"invalid_request_error","message":"invalid tool schema"}}`))
+	}))
+	defer server.Close()
+
+	model := newResponsesModel(server.URL, "test-model", "", server.Client(), responsesModelOptions{providerManagedContext: true}).(*responsesModel)
+	_, err := model.GenerateContentFromMessageList(context.Background(), []messages.Message{
+		{Role: messages.MessageRoleAssistant, Content: "answer", ResponsesResponseID: "resp_1"},
+		{Role: messages.MessageRoleUser, Content: "second"},
+	})
+	if err == nil || requestCount != 1 {
+		t.Fatalf("error=%v requestCount=%d, want one failed request", err, requestCount)
+	}
+}
+
 func TestProviderManagedContextInputUsesLatestResponseAnchor(t *testing.T) {
 	instructions, previousID, input := providerManagedContextInput([]messages.Message{
 		{Role: messages.MessageRoleSystem, Content: "one"},
@@ -188,6 +320,8 @@ func TestResponsesModelStreamsTextAndFunctionArguments(t *testing.T) {
 			"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"x\\\":\"}\n",
 			"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"10}\"}\n",
 			"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}}\n",
+			"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}}\n",
+			"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"tap\",\"arguments\":\"{\\\"x\\\":10}\"}}\n",
 			"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":5}}}\n",
 			"\n",
 		}, "")))
@@ -215,6 +349,13 @@ func TestResponsesModelStreamsTextAndFunctionArguments(t *testing.T) {
 	if !ok || len(reasoningItems) != 1 || !strings.Contains(string(reasoningItems[0]), `"encrypted_content":"opaque"`) {
 		t.Fatalf("streaming reasoning items = %#v", resp.Choices[0].GenerationInfo["responses_reasoning_items"])
 	}
+	outputItems, ok := resp.Choices[0].GenerationInfo["responses_output_items"].([]json.RawMessage)
+	if !ok || len(outputItems) != 3 {
+		t.Fatalf("streaming output items = %#v", resp.Choices[0].GenerationInfo["responses_output_items"])
+	}
+	if got := resp.Choices[0].GenerationInfo["responses_assistant_phase"]; got != "final_answer" {
+		t.Fatalf("assistant phase = %#v", got)
+	}
 }
 
 func TestModelAPIModeValidation(t *testing.T) {
@@ -240,6 +381,30 @@ func TestModelAPIModeValidation(t *testing.T) {
 	}
 	if err := (Config{Model: ModelConfig{Provider: "anthropic", Model: "claude-test", APIMode: "responses"}}).Validate(); err == nil || !strings.Contains(err.Error(), "OpenAI-compatible /responses endpoint") {
 		t.Fatalf("Validate() error = %v, want native transport compatibility error", err)
+	}
+	if err := (Config{Model: ModelConfig{Provider: "openrouter", Model: "openai/gpt-test", APIMode: "responses_stateful"}}).Validate(); err == nil || !strings.Contains(err.Error(), "supports stored Responses") {
+		t.Fatalf("OpenRouter stateful Validate() error = %v", err)
+	}
+	for _, tt := range []struct {
+		name  string
+		model ModelConfig
+		field string
+	}{
+		{name: "context management", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesContextManagement: "invalid"}, field: "responses_context_management"},
+		{name: "compact threshold", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesCompactThreshold: -1}, field: "responses_compact_threshold"},
+		{name: "truncation", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesTruncation: "invalid"}, field: "responses_truncation"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := (Config{Model: tt.model}).Validate(); err == nil || !strings.Contains(err.Error(), tt.field) {
+				t.Fatalf("Validate() error = %v, want %s", err, tt.field)
+			}
+		})
+	}
+	if !(ModelConfig{APIMode: "responses_stateful", ResponsesContextManagement: "compaction"}).ResponsesProviderCompactionEnabled() {
+		t.Fatal("provider compaction should be enabled for stateful Responses mode")
+	}
+	if (ModelConfig{APIMode: "chat_completions", ResponsesContextManagement: "compaction"}).ResponsesProviderCompactionEnabled() {
+		t.Fatal("provider compaction should not affect Chat Completions mode")
 	}
 }
 
@@ -374,7 +539,7 @@ func TestResponsesModelReplaysOpaqueReasoningFromLocalContext(t *testing.T) {
 			secondInput = request.Input
 		}
 		requestCount++
-		_, _ = w.Write([]byte(`{"id":"resp_1","status":"completed","output":[{"type":"reasoning","id":"rs_1","encrypted_content":"opaque"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`))
+		_, _ = w.Write([]byte(`{"id":"resp_1","status":"completed","output":[{"type":"reasoning","id":"rs_1","encrypted_content":"opaque"},{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"done"}]}]}`))
 	}))
 	defer server.Close()
 
@@ -387,10 +552,32 @@ func TestResponsesModelReplaysOpaqueReasoningFromLocalContext(t *testing.T) {
 	if len(contextMessage.ResponsesReasoningItems) != 1 {
 		t.Fatalf("stored reasoning items = %#v", contextMessage.ResponsesReasoningItems)
 	}
+	if len(contextMessage.ResponsesOutputItems) != 2 || contextMessage.ResponsesAssistantPhase != "final_answer" {
+		t.Fatalf("stored output metadata = %#v phase=%q", contextMessage.ResponsesOutputItems, contextMessage.ResponsesAssistantPhase)
+	}
 	if _, err := model.GenerateContentFromMessageList(context.Background(), []messages.Message{contextMessage}); err != nil {
 		t.Fatalf("second GenerateContent: %v", err)
 	}
-	if len(secondInput) == 0 || !strings.Contains(string(secondInput[0]), `"type":"reasoning"`) || !strings.Contains(string(secondInput[0]), `"encrypted_content":"opaque"`) {
-		t.Fatalf("second input = %s, want opaque reasoning item", secondInput)
+	if len(secondInput) != 2 || !strings.Contains(string(secondInput[0]), `"type":"reasoning"`) || !strings.Contains(string(secondInput[0]), `"encrypted_content":"opaque"`) || !strings.Contains(string(secondInput[1]), `"phase":"final_answer"`) {
+		t.Fatalf("second input = %s, want complete raw output", secondInput)
+	}
+}
+
+func TestConvertResponsesContextInputReconstructsMissingRawOutputItems(t *testing.T) {
+	input, err := convertResponsesContextInput([]messages.Message{{
+		Role:    messages.MessageRoleToolCall,
+		Content: "I will tap.",
+		ToolCalls: []messages.ToolCall{{
+			ID:        "call_1",
+			Name:      "tap",
+			Arguments: `{"x":10}`,
+		}},
+		ResponsesOutputItems: []json.RawMessage{json.RawMessage(`{"type":"reasoning","id":"rs_1","encrypted_content":"opaque"}`)},
+	}})
+	if err != nil {
+		t.Fatalf("convertResponsesContextInput: %v", err)
+	}
+	if len(input) != 3 || len(input[0].raw) == 0 || input[1].Role != "assistant" || input[2].Type != "function_call" || input[2].CallID != "call_1" {
+		t.Fatalf("input = %#v, want raw reasoning plus reconstructed message and call", input)
 	}
 }

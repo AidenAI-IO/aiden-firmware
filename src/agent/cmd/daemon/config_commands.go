@@ -85,25 +85,33 @@ func (d *webConfigDTO) UnmarshalJSON(data []byte) error {
 }
 
 type modelDTO struct {
-	Provider             string   `json:"provider"`
-	APIKey               string   `json:"api_key"`
-	Model                string   `json:"model"`
-	APIMode              string   `json:"api_mode,omitempty"`
-	ReasoningEffort      string   `json:"reasoning_effort"`
-	Temperature          *float64 `json:"temperature,omitempty"`
-	MaxResponseTokens    int      `json:"max_response_tokens"`
-	ContextWindow        int      `json:"context_window"`
-	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
+	Provider                   string   `json:"provider"`
+	APIKey                     string   `json:"api_key"`
+	Model                      string   `json:"model"`
+	APIMode                    string   `json:"api_mode,omitempty"`
+	ResponsesContextManagement string   `json:"responses_context_management,omitempty"`
+	ResponsesCompactThreshold  int      `json:"responses_compact_threshold,omitempty"`
+	ResponsesTruncation        string   `json:"responses_truncation,omitempty"`
+	ResponsesInclude           []string `json:"responses_include,omitempty"`
+	ReasoningEffort            string   `json:"reasoning_effort"`
+	Temperature                *float64 `json:"temperature,omitempty"`
+	MaxResponseTokens          int      `json:"max_response_tokens"`
+	ContextWindow              int      `json:"context_window"`
+	ModelMaxOutputTokens       int      `json:"model_max_output_tokens"`
 }
 
 func (d modelDTO) providerTestRequest() agent.ModelProviderTestRequest {
 	return agent.ModelProviderTestRequest{
-		Provider:        d.Provider,
-		APIKey:          d.APIKey,
-		Model:           d.Model,
-		APIMode:         d.APIMode,
-		Temperature:     d.Temperature,
-		ReasoningEffort: d.ReasoningEffort,
+		Provider:                   d.Provider,
+		APIKey:                     d.APIKey,
+		Model:                      d.Model,
+		APIMode:                    d.APIMode,
+		ResponsesContextManagement: d.ResponsesContextManagement,
+		ResponsesCompactThreshold:  d.ResponsesCompactThreshold,
+		ResponsesTruncation:        d.ResponsesTruncation,
+		ResponsesInclude:           append([]string(nil), d.ResponsesInclude...),
+		Temperature:                d.Temperature,
+		ReasoningEffort:            d.ReasoningEffort,
 	}
 }
 
@@ -414,14 +422,18 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		TTSProviders:   d.ttsProvidersToAgentConfig(),
 		STTProviders:   d.sttProvidersToAgentConfig(),
 		Model: agent.ModelConfig{
-			Provider:             d.Model.Provider,
-			APIKey:               d.Model.APIKey,
-			Model:                d.Model.Model,
-			APIMode:              d.Model.APIMode,
-			Temperature:          d.Model.Temperature,
-			MaxResponseTokens:    d.Model.MaxResponseTokens,
-			ContextWindow:        d.Model.ContextWindow,
-			ModelMaxOutputTokens: d.Model.ModelMaxOutputTokens,
+			Provider:                   d.Model.Provider,
+			APIKey:                     d.Model.APIKey,
+			Model:                      d.Model.Model,
+			APIMode:                    d.Model.APIMode,
+			ResponsesContextManagement: d.Model.ResponsesContextManagement,
+			ResponsesCompactThreshold:  d.Model.ResponsesCompactThreshold,
+			ResponsesTruncation:        d.Model.ResponsesTruncation,
+			ResponsesInclude:           append([]string(nil), d.Model.ResponsesInclude...),
+			Temperature:                d.Model.Temperature,
+			MaxResponseTokens:          d.Model.MaxResponseTokens,
+			ContextWindow:              d.Model.ContextWindow,
+			ModelMaxOutputTokens:       d.Model.ModelMaxOutputTokens,
 		},
 		TTS: agent.TTSConfig{
 			Provider:    d.TTS.Provider,
@@ -659,15 +671,19 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		TTSProviders:   ttsProviderDTOsFromConfig(cfg.TTSProviders),
 		STTProviders:   sttProviderDTOsFromConfig(cfg.STTProviders),
 		Model: modelDTO{
-			Provider:             cfg.Model.Provider,
-			APIKey:               cfg.Model.APIKey,
-			Model:                cfg.Model.Model,
-			APIMode:              cfg.Model.APIMode,
-			ReasoningEffort:      cfg.Model.ReasoningEffort,
-			Temperature:          cfg.Model.Temperature,
-			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
-			ContextWindow:        cfg.Model.ContextWindow,
-			ModelMaxOutputTokens: cfg.Model.ModelMaxOutputTokens,
+			Provider:                   cfg.Model.Provider,
+			APIKey:                     cfg.Model.APIKey,
+			Model:                      cfg.Model.Model,
+			APIMode:                    cfg.Model.APIMode,
+			ResponsesContextManagement: cfg.Model.ResponsesContextManagement,
+			ResponsesCompactThreshold:  cfg.Model.ResponsesCompactThreshold,
+			ResponsesTruncation:        cfg.Model.ResponsesTruncation,
+			ResponsesInclude:           append([]string(nil), cfg.Model.ResponsesInclude...),
+			ReasoningEffort:            cfg.Model.ReasoningEffort,
+			Temperature:                cfg.Model.Temperature,
+			MaxResponseTokens:          cfg.Model.MaxResponseTokens,
+			ContextWindow:              cfg.Model.ContextWindow,
+			ModelMaxOutputTokens:       cfg.Model.ModelMaxOutputTokens,
 		},
 		TTS: ttsDTO{
 			Provider:    cfg.TTS.Provider,
@@ -1162,6 +1178,12 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "model.provider"
 	} else if strings.Contains(errMsg, "model.api_mode") {
 		field = "model.api_mode"
+	} else if strings.Contains(errMsg, "model.responses_context_management") {
+		field = "model.responses_context_management"
+	} else if strings.Contains(errMsg, "model.responses_compact_threshold") {
+		field = "model.responses_compact_threshold"
+	} else if strings.Contains(errMsg, "model.responses_truncation") {
+		field = "model.responses_truncation"
 	} else if strings.Contains(errMsg, "model.max_response_tokens") {
 		field = "model.max_response_tokens"
 	} else if strings.Contains(errMsg, "model.context_window") {

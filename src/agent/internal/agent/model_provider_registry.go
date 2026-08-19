@@ -21,11 +21,12 @@ type ModelBuildContext struct {
 type ModelProviderBuilder func(ModelBuildContext, ModelConfig) (llms.Model, error)
 
 type modelProviderDefinition struct {
-	providerType        string
-	allowsCustomBaseURL bool
-	supportsResponses   bool
-	hiddenFromConfigUI  bool
-	build               ModelProviderBuilder
+	providerType              string
+	allowsCustomBaseURL       bool
+	supportsResponses         bool
+	supportsResponsesStateful bool
+	hiddenFromConfigUI        bool
+	build                     ModelProviderBuilder
 }
 
 var modelProviderDefinitions = []modelProviderDefinition{
@@ -35,9 +36,10 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		build:             buildOpenRouterModel,
 	},
 	{
-		providerType:        "openai",
-		allowsCustomBaseURL: true,
-		supportsResponses:   true,
+		providerType:              "openai",
+		allowsCustomBaseURL:       true,
+		supportsResponses:         true,
+		supportsResponsesStateful: true,
 		build: func(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
 			return buildOpenAICompatibleModel(ctx, cfg, "https://api.openai.com/v1"), nil
 		},
@@ -74,9 +76,10 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		build:               buildOllamaModel,
 	},
 	{
-		providerType:       "fake",
-		supportsResponses:  true,
-		hiddenFromConfigUI: true,
+		providerType:              "fake",
+		supportsResponses:         true,
+		supportsResponsesStateful: true,
+		hiddenFromConfigUI:        true,
 		build: func(_ ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
 			return fakellm.NewFakeLLM(cfg.Responses), nil
 		},
@@ -96,6 +99,10 @@ func buildOpenAICompatibleModel(ctx ModelBuildContext, cfg ModelConfig, defaultB
 			reasoningEffort:        cfg.ReasoningEffort,
 			temperature:            cfg.Temperature,
 			providerManagedContext: apiMode == modelAPIModeResponsesStateful,
+			contextManagement:      cfg.ResponsesContextManagement,
+			compactThreshold:       cfg.ResponsesCompactThreshold,
+			truncation:             cfg.ResponsesTruncation,
+			include:                cfg.ResponsesInclude,
 		})
 	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, openAICompatibleOptions(ctx, cfg)...)
@@ -129,6 +136,10 @@ func buildOpenRouterModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, e
 			temperature:            cfg.Temperature,
 			routerMetadata:         true,
 			providerManagedContext: apiMode == modelAPIModeResponsesStateful,
+			contextManagement:      cfg.ResponsesContextManagement,
+			compactThreshold:       cfg.ResponsesCompactThreshold,
+			truncation:             cfg.ResponsesTruncation,
+			include:                cfg.ResponsesInclude,
 		}), nil
 	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, token, ctx.HTTPClient, opts...), nil

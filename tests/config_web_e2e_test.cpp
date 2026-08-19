@@ -1173,6 +1173,29 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config writes Responses context settings") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"gpt-test\","
+        "\"api_key\":\"k\",\"api_mode\":\"responses_stateful\","
+        "\"responses_context_management\":\"compaction\","
+        "\"responses_compact_threshold\":32000,\"responses_truncation\":\"auto\","
+        "\"responses_include\":[\"reasoning.encrypted_content\"]},"
+        "\"device\":{\"device_type\":\"iOS\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    REQUIRE(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("api_mode = \"responses_stateful\"") != std::string::npos);
+    CHECK(saved.find("responses_context_management = \"compaction\"") != std::string::npos);
+    CHECK(saved.find("responses_compact_threshold = 32000") != std::string::npos);
+    CHECK(saved.find("responses_truncation = \"auto\"") != std::string::npos);
+    CHECK(saved.find("responses_include = [\"reasoning.encrypted_content\"]") != std::string::npos);
+}
+
 TEST_CASE("config_web: POST /api/config ignores model base_url for every provider") {
     const char* providers[] = {
         "openai", "anthropic", "ollama", "openrouter", "kimi", "kimi-cn",

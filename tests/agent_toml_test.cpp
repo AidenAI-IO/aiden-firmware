@@ -73,6 +73,10 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.model.model = "openai/gpt-4o-mini";
     cfg.model.api_key = "sk-or-test";
     cfg.model.api_mode = "responses";
+    cfg.model.responses_context_management = "compaction";
+    cfg.model.responses_compact_threshold = 32000;
+    cfg.model.responses_truncation = "auto";
+    cfg.model.responses_include = {"reasoning.encrypted_content"};
     cfg.model.temperature = 0.2;
     cfg.model.has_temperature = true;
     cfg.model.max_response_tokens = 1000;
@@ -185,6 +189,11 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.model.model == "openai/gpt-4o-mini");
     CHECK(loaded.model.api_key == "sk-or-test");
     CHECK(loaded.model.api_mode == "responses");
+    CHECK(loaded.model.responses_context_management == "compaction");
+    CHECK(loaded.model.responses_compact_threshold == 32000);
+    CHECK(loaded.model.responses_truncation == "auto");
+    REQUIRE(loaded.model.responses_include.size() == 1);
+    CHECK(loaded.model.responses_include[0] == "reasoning.encrypted_content");
     CHECK(loaded.model.temperature == doctest::Approx(0.2));
     CHECK(loaded.model.max_response_tokens == 1000);
     CHECK(loaded.model.context_window == 64000);

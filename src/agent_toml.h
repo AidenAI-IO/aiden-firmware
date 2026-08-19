@@ -12,6 +12,10 @@ struct ModelToml {
     std::string base_url;
     std::string api_key;
     std::string api_mode;
+    std::string responses_context_management;
+    int responses_compact_threshold = 0;
+    std::string responses_truncation;
+    std::vector<std::string> responses_include;
     std::string reasoning_effort;
     double temperature = 0.0;
     bool has_temperature = false;

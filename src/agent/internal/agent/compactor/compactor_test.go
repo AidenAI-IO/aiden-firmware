@@ -145,6 +145,13 @@ func TestCompactSummarizesHistoricalToolResults(t *testing.T) {
 		{
 			Role:                messages.MessageRoleToolCall,
 			ResponsesResponseID: "resp_old_tool",
+			ResponsesReasoningItems: []json.RawMessage{
+				json.RawMessage(`{"type":"reasoning","id":"rs_old"}`),
+			},
+			ResponsesOutputItems: []json.RawMessage{
+				json.RawMessage(`{"type":"function_call","call_id":"old_call","name":"shell","arguments":"{}"}`),
+			},
+			ResponsesAssistantPhase: "commentary",
 			ToolCalls: []messages.ToolCall{{
 				ID:        "old_call",
 				Name:      "shell",
@@ -210,8 +217,8 @@ func TestCompactSummarizesHistoricalToolResults(t *testing.T) {
 		t.Fatalf("current tool result = %q, want unchanged", got)
 	}
 	for _, message := range compactedMessages {
-		if message.ResponsesResponseID != "" {
-			t.Fatalf("compacted message retained provider response ID: %#v", message)
+		if message.ResponsesResponseID != "" || len(message.ResponsesReasoningItems) != 0 || len(message.ResponsesOutputItems) != 0 || message.ResponsesAssistantPhase != "" {
+			t.Fatalf("compacted message retained provider metadata: %#v", message)
 		}
 	}
 }

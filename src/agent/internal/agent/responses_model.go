@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,34 @@ const (
 	modelAPIModeResponses         = "responses"
 	modelAPIModeResponsesStateful = "responses_stateful"
 )
+
+const (
+	responsesContextManagementCompaction = "compaction"
+	responsesTruncationAuto              = "auto"
+	responsesTruncationDisabled          = "disabled"
+)
+
+func normalizeResponsesContextManagement(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "none", "disabled":
+		return ""
+	case responsesContextManagementCompaction:
+		return responsesContextManagementCompaction
+	default:
+		return ""
+	}
+}
+
+func normalizeResponsesTruncation(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", responsesTruncationDisabled:
+		return ""
+	case responsesTruncationAuto:
+		return responsesTruncationAuto
+	default:
+		return ""
+	}
+}
 
 func normalizeModelAPIMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
@@ -51,6 +80,10 @@ type responsesModel struct {
 	temperature            *float64
 	routerMetadata         bool
 	providerManagedContext bool
+	contextManagement      string
+	compactThreshold       int
+	truncation             string
+	include                []string
 }
 
 type responsesModelOptions struct {
@@ -60,6 +93,10 @@ type responsesModelOptions struct {
 	temperature            *float64
 	routerMetadata         bool
 	providerManagedContext bool
+	contextManagement      string
+	compactThreshold       int
+	truncation             string
+	include                []string
 }
 
 func newResponsesModel(baseURL, model, token string, httpClient *http.Client, opts responsesModelOptions) llms.Model {
@@ -77,6 +114,10 @@ func newResponsesModel(baseURL, model, token string, httpClient *http.Client, op
 		temperature:            opts.temperature,
 		routerMetadata:         opts.routerMetadata,
 		providerManagedContext: opts.providerManagedContext,
+		contextManagement:      normalizeResponsesContextManagement(opts.contextManagement),
+		compactThreshold:       opts.compactThreshold,
+		truncation:             normalizeResponsesTruncation(opts.truncation),
+		include:                append([]string(nil), opts.include...),
 	}
 }
 
@@ -85,24 +126,33 @@ func (m *responsesModel) Call(ctx context.Context, prompt string, options ...llm
 }
 
 type responsesRequest struct {
-	Model              string               `json:"model"`
-	Instructions       string               `json:"instructions,omitempty"`
-	PreviousResponseID string               `json:"previous_response_id,omitempty"`
-	Input              []responsesInputItem `json:"input"`
-	Tools              []responsesTool      `json:"tools,omitempty"`
-	ToolChoice         any                  `json:"tool_choice,omitempty"`
-	ParallelToolCalls  bool                 `json:"parallel_tool_calls"`
-	Store              bool                 `json:"store"`
-	Stream             bool                 `json:"stream,omitempty"`
-	MaxOutputTokens    int                  `json:"max_output_tokens,omitempty"`
-	Temperature        *float64             `json:"temperature,omitempty"`
-	Reasoning          *responsesReasoning  `json:"reasoning,omitempty"`
-	Text               *responsesTextConfig `json:"text,omitempty"`
+	Model              string                       `json:"model"`
+	Instructions       string                       `json:"instructions,omitempty"`
+	PreviousResponseID string                       `json:"previous_response_id,omitempty"`
+	Input              []responsesInputItem         `json:"input"`
+	Tools              []responsesTool              `json:"tools,omitempty"`
+	ToolChoice         any                          `json:"tool_choice,omitempty"`
+	ParallelToolCalls  bool                         `json:"parallel_tool_calls"`
+	Store              bool                         `json:"store"`
+	Stream             bool                         `json:"stream,omitempty"`
+	MaxOutputTokens    int                          `json:"max_output_tokens,omitempty"`
+	Temperature        *float64                     `json:"temperature,omitempty"`
+	Reasoning          *responsesReasoning          `json:"reasoning,omitempty"`
+	Text               *responsesTextConfig         `json:"text,omitempty"`
+	ContextManagement  []responsesContextManagement `json:"context_management,omitempty"`
+	Include            []string                     `json:"include,omitempty"`
+	Truncation         string                       `json:"truncation,omitempty"`
+}
+
+type responsesContextManagement struct {
+	Type             string `json:"type"`
+	CompactThreshold int    `json:"compact_threshold,omitempty"`
 }
 
 type responsesInputItem struct {
 	Type      string `json:"type,omitempty"`
 	Role      string `json:"role,omitempty"`
+	Phase     string `json:"phase,omitempty"`
 	Content   any    `json:"content,omitempty"`
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
@@ -161,6 +211,7 @@ type responsesOutputItem struct {
 	ID        string                   `json:"id,omitempty"`
 	Type      string                   `json:"type,omitempty"`
 	Role      string                   `json:"role,omitempty"`
+	Phase     string                   `json:"phase,omitempty"`
 	Status    string                   `json:"status,omitempty"`
 	Content   []responsesOutputContent `json:"content,omitempty"`
 	CallID    string                   `json:"call_id,omitempty"`
@@ -225,32 +276,65 @@ func (m *responsesModel) GenerateContent(ctx context.Context, messages []llms.Me
 func (m *responsesModel) GenerateContentFromMessageList(ctx context.Context, contextMessages []messages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	if m.providerManagedContext {
 		instructions, previousResponseID, incrementalMessages := providerManagedContextInput(contextMessages)
-		standardMessages := messages.ConvertMessageList(incrementalMessages)
-		return m.generateContent(ctx, standardMessages, nil, instructions, previousResponseID, options...)
-	}
-	standardMessages := messages.ConvertMessageList(contextMessages)
-	reasoningItems := make([][]json.RawMessage, len(contextMessages))
-	for i := range contextMessages {
-		for _, item := range contextMessages[i].ResponsesReasoningItems {
-			if len(item) != 0 {
-				reasoningItems[i] = append(reasoningItems[i], append(json.RawMessage(nil), item...))
+		input, err := convertResponsesContextInput(incrementalMessages)
+		if err != nil {
+			return nil, err
+		}
+		response, err := m.generateContentWithInput(ctx, input, instructions, previousResponseID, options...)
+		if err == nil || previousResponseID == "" || !shouldRetryResponsesWithoutPreviousID(err) {
+			return response, err
+		}
+		fallbackMessages := make([]messages.Message, 0, len(contextMessages))
+		for _, message := range contextMessages {
+			if message.Role != messages.MessageRoleSystem {
+				fallbackMessages = append(fallbackMessages, message)
 			}
 		}
+		fallbackInput, fallbackErr := convertResponsesContextInput(fallbackMessages)
+		if fallbackErr != nil {
+			return nil, fallbackErr
+		}
+		return m.generateContentWithInput(ctx, fallbackInput, instructions, "", options...)
 	}
-	return m.generateContent(ctx, standardMessages, reasoningItems, "", "", options...)
+	input, err := convertResponsesContextInput(contextMessages)
+	if err != nil {
+		return nil, err
+	}
+	return m.generateContentWithInput(ctx, input, "", "", options...)
+}
+
+func shouldRetryResponsesWithoutPreviousID(err error) bool {
+	var providerErr *ProviderHTTPError
+	if !errors.As(err, &providerErr) {
+		return false
+	}
+	switch providerErr.StatusCode {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusGone:
+	default:
+		return false
+	}
+	text := strings.ToLower(providerErr.ProviderCode + " " + providerErr.Message + " " + providerErr.Body)
+	return strings.Contains(text, "previous_response_id") ||
+		strings.Contains(text, "previous response") ||
+		strings.Contains(text, "response not found") ||
+		strings.Contains(text, "response expired")
 }
 
 func (m *responsesModel) generateContent(ctx context.Context, messages []llms.MessageContent, reasoningItems [][]json.RawMessage, instructions, previousResponseID string, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	input, err := convertResponsesInput(messages, reasoningItems)
+	if err != nil {
+		return nil, err
+	}
+	return m.generateContentWithInput(ctx, input, instructions, previousResponseID, options...)
+}
+
+func (m *responsesModel) generateContentWithInput(ctx context.Context, input []responsesInputItem, instructions, previousResponseID string, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	callStarted := time.Now()
 	callOpts := llms.CallOptions{}
 	for _, option := range options {
 		option(&callOpts)
 	}
 
-	input, err := convertResponsesInput(messages, reasoningItems)
-	if err != nil {
-		return nil, err
-	}
 	requestModel := firstNonEmpty(callOpts.Model, m.model)
 	payload := responsesRequest{
 		Model:              requestModel,
@@ -271,6 +355,16 @@ func (m *responsesModel) generateContent(ctx context.Context, messages []llms.Me
 		Stream:          callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil,
 		MaxOutputTokens: callOpts.MaxTokens,
 		Temperature:     m.temperature,
+		Truncation:      m.truncation,
+	}
+	if m.contextManagement == responsesContextManagementCompaction {
+		payload.ContextManagement = []responsesContextManagement{{
+			Type:             responsesContextManagementCompaction,
+			CompactThreshold: m.compactThreshold,
+		}}
+	}
+	if len(m.include) > 0 {
+		payload.Include = append([]string(nil), m.include...)
 	}
 	if payload.Temperature == nil && callOpts.Temperature != 0 {
 		payload.Temperature = &callOpts.Temperature
@@ -393,13 +487,63 @@ func (m *responsesModel) logRawHTTP(ctx context.Context, modelName, kind string,
 }
 
 func convertResponsesInput(messages []llms.MessageContent, reasoningItems ...[][]json.RawMessage) ([]responsesInputItem, error) {
-	items := make([]responsesInputItem, 0, len(messages))
 	var perMessageReasoning [][]json.RawMessage
 	if len(reasoningItems) > 0 {
 		perMessageReasoning = reasoningItems[0]
 	}
+	return convertResponsesInputWithMetadata(messages, perMessageReasoning, nil, nil)
+}
+
+func convertResponsesContextInput(contextMessages []messages.Message) ([]responsesInputItem, error) {
+	standardMessages := messages.ConvertMessageList(contextMessages)
+	reasoningItems := make([][]json.RawMessage, len(contextMessages))
+	outputItems := make([][]json.RawMessage, len(contextMessages))
+	phases := make([]string, len(contextMessages))
+	for i := range contextMessages {
+		for _, item := range contextMessages[i].ResponsesReasoningItems {
+			if len(item) != 0 {
+				reasoningItems[i] = append(reasoningItems[i], append(json.RawMessage(nil), item...))
+			}
+		}
+		for _, item := range contextMessages[i].ResponsesOutputItems {
+			if len(item) != 0 {
+				outputItems[i] = append(outputItems[i], append(json.RawMessage(nil), item...))
+			}
+		}
+		phases[i] = contextMessages[i].ResponsesAssistantPhase
+	}
+	return convertResponsesInputWithMetadata(standardMessages, reasoningItems, outputItems, phases)
+}
+
+func convertResponsesInputWithMetadata(messages []llms.MessageContent, perMessageReasoning, perMessageOutputItems [][]json.RawMessage, phases []string) ([]responsesInputItem, error) {
+	items := make([]responsesInputItem, 0, len(messages))
 	for messageIndex, message := range messages {
-		if messageIndex < len(perMessageReasoning) {
+		hasRawOutput := messageIndex < len(perMessageOutputItems) && len(perMessageOutputItems[messageIndex]) > 0
+		rawHasAssistantMessage := false
+		rawFunctionCallIDs := make(map[string]struct{})
+		if hasRawOutput {
+			for _, item := range perMessageOutputItems[messageIndex] {
+				if len(item) != 0 {
+					items = append(items, responsesInputItem{raw: append(json.RawMessage(nil), item...)})
+					var metadata struct {
+						Type   string `json:"type"`
+						Role   string `json:"role"`
+						CallID string `json:"call_id"`
+					}
+					if json.Unmarshal(item, &metadata) == nil {
+						switch metadata.Type {
+						case "message":
+							rawHasAssistantMessage = metadata.Role == "" || metadata.Role == "assistant"
+						case "function_call":
+							if callID := strings.TrimSpace(metadata.CallID); callID != "" {
+								rawFunctionCallIDs[callID] = struct{}{}
+							}
+						}
+					}
+				}
+			}
+		}
+		if !hasRawOutput && messageIndex < len(perMessageReasoning) {
 			for _, item := range perMessageReasoning[messageIndex] {
 				if isResponsesReasoningItem(item) {
 					items = append(items, responsesInputItem{raw: append(json.RawMessage(nil), item...)})
@@ -428,10 +572,18 @@ func convertResponsesInput(messages []llms.MessageContent, reasoningItems ...[][
 		flushContent := func() {
 			if hasRichContent {
 				if len(contentParts) > 0 {
-					items = append(items, responsesInputItem{Role: role, Content: contentParts})
+					item := responsesInputItem{Role: role, Content: contentParts}
+					if messageIndex < len(phases) && role == "assistant" {
+						item.Phase = strings.TrimSpace(phases[messageIndex])
+					}
+					items = append(items, item)
 				}
 			} else if len(textParts) > 0 {
-				items = append(items, responsesInputItem{Role: role, Content: strings.Join(textParts, "\n\n")})
+				item := responsesInputItem{Role: role, Content: strings.Join(textParts, "\n\n")}
+				if messageIndex < len(phases) && role == "assistant" {
+					item.Phase = strings.TrimSpace(phases[messageIndex])
+				}
+				items = append(items, item)
 			}
 			textParts = nil
 			contentParts = nil
@@ -450,14 +602,23 @@ func convertResponsesInput(messages []llms.MessageContent, reasoningItems ...[][
 		for partIndex, part := range message.Parts {
 			switch typed := part.(type) {
 			case llms.TextContent:
+				if rawHasAssistantMessage && role == "assistant" {
+					continue
+				}
 				if hasRichContent {
 					contentParts = append(contentParts, responsesInputContent{Type: responsesInputTextType(role), Text: typed.Text})
 				} else {
 					textParts = append(textParts, typed.Text)
 				}
 			case llms.ImageURLContent:
+				if rawHasAssistantMessage && role == "assistant" {
+					continue
+				}
 				appendRichContent(responsesInputContent{Type: "input_image", ImageURL: typed.URL, Detail: typed.Detail})
 			case llms.BinaryContent:
+				if rawHasAssistantMessage && role == "assistant" {
+					continue
+				}
 				switch {
 				case strings.HasPrefix(strings.ToLower(typed.MIMEType), "image/"):
 					appendRichContent(responsesInputContent{Type: "input_image", ImageURL: "data:" + typed.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(typed.Data)})
@@ -473,6 +634,9 @@ func convertResponsesInput(messages []llms.MessageContent, reasoningItems ...[][
 				callID := strings.TrimSpace(typed.ID)
 				if callID == "" {
 					callID = fmt.Sprintf("ctx_tool_call_%d_%d", messageIndex, partIndex)
+				}
+				if _, exists := rawFunctionCallIDs[callID]; exists {
+					continue
 				}
 				flushContent()
 				items = append(items, responsesInputItem{Type: "function_call", CallID: callID, Name: typed.FunctionCall.Name, Arguments: normalizeCompatibleToolArguments(typed.FunctionCall.Arguments)})
@@ -562,6 +726,10 @@ func responsesContentResponse(decoded responsesResponse, callStarted time.Time, 
 		}
 	}
 	addResponsesReasoningItems(generationInfo, decoded.Output)
+	addResponsesOutputItems(generationInfo, decoded.Output)
+	if phase := responsesAssistantPhase(decoded.Output); phase != "" {
+		generationInfo["responses_assistant_phase"] = phase
+	}
 	if decoded.ID != "" {
 		generationInfo["llm_response_id"] = decoded.ID
 	}
@@ -576,6 +744,64 @@ func responsesContentResponse(decoded responsesResponse, callStarted time.Time, 
 	}
 	choice.GenerationInfo = finalizeLLMGenerationInfo(mergeGenerationInfo(decoded.Usage.generationInfo(), generationInfo), callStarted)
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}, nil
+}
+
+func addResponsesOutputItems(generationInfo map[string]any, output []responsesOutputItem) {
+	if generationInfo == nil {
+		return
+	}
+	items, _ := generationInfo["responses_output_items"].([]json.RawMessage)
+	for _, item := range output {
+		if len(item.raw) == 0 {
+			continue
+		}
+		identity := responsesOutputItemIdentity(item)
+		duplicate := false
+		for index, existing := range items {
+			if bytes.Equal(existing, item.raw) {
+				duplicate = true
+				break
+			}
+			if identity != "" && responsesRawOutputItemIdentity(existing) == identity {
+				items[index] = append(json.RawMessage(nil), item.raw...)
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			items = append(items, append(json.RawMessage(nil), item.raw...))
+		}
+	}
+	if len(items) != 0 {
+		generationInfo["responses_output_items"] = items
+	}
+}
+
+func responsesOutputItemIdentity(item responsesOutputItem) string {
+	if id := strings.TrimSpace(item.ID); id != "" {
+		return item.Type + ":id:" + id
+	}
+	if callID := strings.TrimSpace(item.CallID); callID != "" {
+		return item.Type + ":call_id:" + callID
+	}
+	return ""
+}
+
+func responsesRawOutputItemIdentity(raw json.RawMessage) string {
+	var item responsesOutputItem
+	if json.Unmarshal(raw, &item) != nil {
+		return ""
+	}
+	return responsesOutputItemIdentity(item)
+}
+
+func responsesAssistantPhase(output []responsesOutputItem) string {
+	for _, item := range output {
+		if item.Type == "message" && item.Role == "assistant" && strings.TrimSpace(item.Phase) != "" {
+			return strings.TrimSpace(item.Phase)
+		}
+	}
+	return ""
 }
 
 func addResponsesReasoningItems(generationInfo map[string]any, output []responsesOutputItem) {
@@ -707,8 +933,14 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 					call.Arguments.WriteString(event.Arguments)
 				}
 			case "response.output_item.added", "response.output_item.done":
-				if event.Item != nil && event.Item.Type == "reasoning" && event.Type == "response.output_item.done" {
-					addResponsesReasoningItems(generationInfo, []responsesOutputItem{*event.Item})
+				if event.Item != nil && event.Type == "response.output_item.done" {
+					addResponsesOutputItems(generationInfo, []responsesOutputItem{*event.Item})
+					if event.Item.Type == "reasoning" {
+						addResponsesReasoningItems(generationInfo, []responsesOutputItem{*event.Item})
+					}
+					if phase := responsesAssistantPhase([]responsesOutputItem{*event.Item}); phase != "" {
+						generationInfo["responses_assistant_phase"] = phase
+					}
 				}
 				if event.Item != nil && event.Item.Type == "function_call" {
 					callID := firstNonEmpty(event.Item.CallID, event.Item.ID, event.ItemID, fmt.Sprintf("responses_call_%d", event.OutputIndex))
@@ -779,6 +1011,10 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 			generationInfo = mergeGenerationInfo(completed.Usage.generationInfo(), generationInfo)
 		}
 		addResponsesReasoningItems(generationInfo, completed.Output)
+		addResponsesOutputItems(generationInfo, completed.Output)
+		if phase := responsesAssistantPhase(completed.Output); phase != "" {
+			generationInfo["responses_assistant_phase"] = phase
+		}
 	}
 	toolKeys := make([]string, 0, len(tools))
 	for key := range tools {

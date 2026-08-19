@@ -76,6 +76,10 @@ model = "gpt-5.5"
 # "responses_stateful" lets the provider retain and chain context.
 # api_mode = "responses"
 # api_mode = "responses_stateful"
+# responses_context_management = "compaction"
+# responses_compact_threshold = 0
+# responses_truncation = "auto"
+# responses_include = ["reasoning.encrypted_content"]
 # Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
 # context_window = 128000
 # model_max_output_tokens = 8192
