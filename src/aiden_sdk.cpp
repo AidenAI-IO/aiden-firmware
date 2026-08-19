@@ -30,6 +30,7 @@ namespace aiden {
 
 static std::mutex sys_init_mutex;
 static int sys_init_count = 0;
+static const char* kAudioVqeConfigPath = "/oem/usr/share/aiden/audio/config_aivqe.json";
 
 static void ensure_sys_init() {
     std::lock_guard<std::mutex> lock(sys_init_mutex);
@@ -691,27 +692,17 @@ bool AudioCapture::init(const AudioConfig& config) {
         return false;
     }
 
-    AI_VQE_MOD_ENABLE_S vqeModules;
-    memset(&vqeModules, 0, sizeof(vqeModules));
-    vqeModules.bAec = RK_TRUE;
-    vqeModules.bFastAec = RK_TRUE;
-    vqeModules.bAes = RK_TRUE;
-    vqeModules.bAgc = RK_TRUE;
-    vqeModules.bAnr = RK_TRUE;
-    vqeModules.bDereverb = RK_TRUE;
-    vqeModules.bDtd = RK_TRUE;
-    ret = RK_MPI_AI_SetVqeModuleEnable(impl_->dev_id, impl_->chn_id, &vqeModules);
-    if (ret != RK_SUCCESS) {
-        AIDEN_LOG_ERROR("recording", "vqe_modules_config_failed", "ret=%#x", ret);
+    AI_VQE_CONFIG_S vqeConfig;
+    memset(&vqeConfig, 0, sizeof(vqeConfig));
+    if (access(kAudioVqeConfigPath, R_OK) != 0) {
+        AIDEN_LOG_ERROR("recording", "vqe_config_missing", "path=%s", kAudioVqeConfigPath);
         RK_MPI_AI_Disable(impl_->dev_id);
         RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Disabled");
         maybe_sys_deinit();
         return false;
     }
-
-    AI_VQE_CONFIG_S vqeConfig;
-    memset(&vqeConfig, 0, sizeof(vqeConfig));
-    vqeConfig.enCfgMode = AIO_VQE_CONFIG_NONE;
+    vqeConfig.enCfgMode = AIO_VQE_CONFIG_LOAD_FILE;
+    snprintf(vqeConfig.aCfgFile, sizeof(vqeConfig.aCfgFile), "%s", kAudioVqeConfigPath);
     vqeConfig.s32WorkSampleRate = config.sample_rate;
     vqeConfig.s32FrameSample = config.sample_rate * 16 / 1000;
     vqeConfig.s64RecChannelType = 0x1;
