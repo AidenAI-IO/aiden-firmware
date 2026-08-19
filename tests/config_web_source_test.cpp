@@ -1443,15 +1443,17 @@ TEST_CASE("config web waits for an IPv4 lease before confirming a connection") {
     // A dedicated helper polls for the DHCP-assigned IPv4 address; `dhcpcd -n`
     // returns immediately so the lease is not present when it exits.
     CHECK(source.find("bool wait_for_ip(const Options& options") != std::string::npos);
-    // The helper must consult both wpa_cli status and ifconfig for the address.
+    // The helper consults wpa_cli first, then the shared iproute2/ifconfig
+    // address reader so both Debian and Buildroot backends are covered.
     CHECK(source.find("find_key_value_line(status.output, \"ip_address\")") != std::string::npos);
-    CHECK(source.find("extract_ifconfig_ipv4(status.output)") != std::string::npos);
+    CHECK(source.find("query_interface_ipv4(options, NULL)") != std::string::npos);
+    CHECK(source.find("ip -o -4 addr show dev ") != std::string::npos);
     // DHCP success must depend on actually obtaining an address, not just the
     // dhcpcd exit code.
     CHECK(source.find("dhcp.exit_code == 0 && wait_for_ip(options, log, 15)") != std::string::npos);
 }
 
-TEST_CASE("config web wifi status falls back to ifconfig for the IPv4 address") {
+TEST_CASE("config web wifi status falls back to the interface IPv4 address") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -1461,13 +1463,28 @@ TEST_CASE("config web wifi status falls back to ifconfig for the IPv4 address") 
     const std::string source = source_buffer.str();
 
     // wpa_cli status never reports ip_address= on this device (DHCP is run by
-    // dhcpcd, not wpa_supplicant), so query_wifi_status must back-fill the IPv4
-    // address from ifconfig; otherwise the connect-confirmation gate rolls back
-    // a working connection because status.ip_address is always empty.
-    CHECK(source.find("extract_ifconfig_ipv4(ifc.output)") != std::string::npos);
-    // The fallback is gated on a missing wpa_cli ip_address and an associated
-    // (COMPLETED) link, so a stale ifconfig inet cannot falsely confirm.
-    CHECK(source.find("if (status.ip_address.empty() && status.connected && command_exists(\"ifconfig\"))") !=
+    // dhcpcd/networkd, not wpa_supplicant, owns DHCP, so query_wifi_status must
+    // back-fill the IPv4 address from the interface state.
+    CHECK(source.find("status.ip_address = query_interface_ipv4(options, NULL)") !=
+          std::string::npos);
+    CHECK(source.find("if (status.ip_address.empty() && status.connected)") !=
+          std::string::npos);
+}
+
+TEST_CASE("config web has a systemd-networkd Wi-Fi backend") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("--wifi-backend=legacy|systemd-networkd") != std::string::npos);
+    CHECK(source.find("systemctl restart \" + shell_quote(unit)") != std::string::npos);
+    CHECK(source.find("networkctl reconfigure \" + shell_quote(options.wifi_interface)") !=
+          std::string::npos);
+    CHECK(source.find("candidate_replaces_live_config = uses_systemd_networkd(options)") !=
           std::string::npos);
 }
 

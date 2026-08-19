@@ -523,7 +523,7 @@ def test_invoke_enter_text_rejects_removed_or_missing_arguments(bridge_server):
 
     for tool_input in (
         {"text": "hello"},
-        {"text": "hello", "focus": {"x": 500, "y": 80}, "platform": "ios"},
+        {"text": "hello", "focus": {"x": 500, "y": 80}, "max_attempts": 3},
         {"text": "hello", "focus": {"x": 500, "y": 80, "extra": True}},
     ):
         request_body = json.dumps({"input": tool_input}).encode()

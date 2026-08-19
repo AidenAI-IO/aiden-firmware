@@ -29,6 +29,8 @@ BOOT_TIMELINE_ARCHIVE_STATE=${BOOT_TIMELINE_ARCHIVE_STATE:-/run/aiden_boot_timel
 BOOT_TIMELINE_LOCK_FILE=${BOOT_TIMELINE_LOCK_FILE:-/run/aiden_boot_timeline.lock}
 BOOT_TIMELINE_FLOCK_BIN=${BOOT_TIMELINE_FLOCK_BIN:-flock}
 BOOT_TIMELINE_LOCK_WAIT_TICKS=${BOOT_TIMELINE_LOCK_WAIT_TICKS:-100}
+BOOT_TIMELINE_SYSTEMCTL_BIN=${BOOT_TIMELINE_SYSTEMCTL_BIN:-systemctl}
+BOOT_TIMELINE_SYSTEMD_UNITS=${BOOT_TIMELINE_SYSTEMD_UNITS:-"systemd-networkd.service systemd-resolved.service systemd-timesyncd.service wpa_supplicant@wlan0.service ssh.service dbus.service bluetooth.service userdata.mount userdata-ota.mount oem.mount aiden-slot-resolve.service aiden-rootfs-grow.service aiden-userdata-migrate.service aiden-machine-id.service aiden-root-home.service aiden-ssh-identity.service aiden-oem-ldconfig.service aiden-environment.service aiden-zram.service aiden-swap.service aiden-media-modules.service aiden-wifi-driver.service aiden-bluetooth-state.service aiden-bluetooth-attach.service aiden-rtc.service aiden-usb-gadget.service aiden-usb-dnsmasq.service aiden-usb-ecm-watchdog.service aiden-frame.service aiden-audio.service aiden-ble.service aiden-agent.service aiden-config-web.service aiden-ota-health-marker.service aiden-ota-health.service aiden-adb-host.service aiden-wlan-guard.service aiden.target"}
 
 # Centiseconds since boot. Prints an integer, or 0 when /proc/uptime is
 # unreadable, so callers never have to guard the result.
@@ -271,6 +273,105 @@ _boot_timeline_archive_locked() {
     return 0
 }
 
+# Capture systemd's monotonic timestamps without depending on its formatted
+# human-readable output. This runs after aiden.target and rewrites only unit:*
+# rows, so a manual rerun is idempotent and preserves concurrent Go milestones.
+boot_timeline_capture_systemd() {
+    [ -f "$BOOT_TIMELINE_LOG" ] || return 0
+    command -v "$BOOT_TIMELINE_SYSTEMCTL_BIN" >/dev/null 2>&1 || return 0
+
+    _bt_units_tmp="${BOOT_TIMELINE_LOG}.systemd.$$"
+    _bt_base_tmp="${BOOT_TIMELINE_LOG}.base.$$"
+    _bt_sorted_tmp="${BOOT_TIMELINE_LOG}.sorted.$$"
+    : > "$_bt_units_tmp" 2>/dev/null || return 0
+
+    for _bt_unit in $BOOT_TIMELINE_SYSTEMD_UNITS; do
+        _bt_start_us=0
+        _bt_active_us=0
+        _bt_exec_start_us=0
+        _bt_exec_exit_us=0
+        _bt_active_state=unknown
+        _bt_sub_state=unknown
+        _bt_result=unknown
+        _bt_show="$(
+            "$BOOT_TIMELINE_SYSTEMCTL_BIN" show "$_bt_unit" \
+                --property=InactiveExitTimestampMonotonic \
+                --property=ActiveEnterTimestampMonotonic \
+                --property=ExecMainStartTimestampMonotonic \
+                --property=ExecMainExitTimestampMonotonic \
+                --property=ActiveState \
+                --property=SubState \
+                --property=Result 2>/dev/null
+        )" || continue
+        while IFS='=' read -r _bt_key _bt_value; do
+            case "$_bt_key" in
+                InactiveExitTimestampMonotonic) _bt_start_us="$_bt_value" ;;
+                ActiveEnterTimestampMonotonic) _bt_active_us="$_bt_value" ;;
+                ExecMainStartTimestampMonotonic) _bt_exec_start_us="$_bt_value" ;;
+                ExecMainExitTimestampMonotonic) _bt_exec_exit_us="$_bt_value" ;;
+                ActiveState) _bt_active_state="${_bt_value:-unknown}" ;;
+                SubState) _bt_sub_state="${_bt_value:-unknown}" ;;
+                Result) _bt_result="${_bt_value:-unknown}" ;;
+            esac
+        done <<EOF
+$_bt_show
+EOF
+        for _bt_numeric_name in _bt_start_us _bt_active_us _bt_exec_start_us _bt_exec_exit_us; do
+            eval "_bt_numeric_value=\${$_bt_numeric_name}"
+            case "$_bt_numeric_value" in
+                ''|*[!0-9]*) _bt_numeric_value=0 ;;
+            esac
+            eval "$_bt_numeric_name=\$_bt_numeric_value"
+        done
+
+        if [ "$_bt_active_us" -gt 0 ]; then
+            _bt_event_us="$_bt_active_us"
+            _bt_begin_us="$_bt_start_us"
+        elif [ "$_bt_exec_exit_us" -gt 0 ]; then
+            _bt_event_us="$_bt_exec_exit_us"
+            _bt_begin_us="$_bt_exec_start_us"
+        elif [ "$_bt_exec_start_us" -gt 0 ]; then
+            _bt_event_us="$_bt_exec_start_us"
+            _bt_begin_us="$_bt_exec_start_us"
+        else
+            continue
+        fi
+        if [ "$_bt_begin_us" -le 0 ] || [ "$_bt_begin_us" -gt "$_bt_event_us" ]; then
+            _bt_begin_us="$_bt_event_us"
+        fi
+        _bt_event_cs=$((_bt_event_us / 10000))
+        _bt_delta_cs=$(((_bt_event_us - _bt_begin_us) / 10000))
+        printf '%s %s unit:%s %s sub=%s result=%s\n' \
+            "$(boot_timeline_fmt_cs "$_bt_event_cs")" \
+            "$(boot_timeline_fmt_cs "$_bt_delta_cs")" \
+            "$_bt_active_state" "$_bt_unit" "$_bt_sub_state" "$_bt_result" \
+            >> "$_bt_units_tmp" 2>/dev/null || true
+    done
+
+    if boot_timeline_lock_acquire; then
+        if awk '$3 !~ /^unit:/' "$BOOT_TIMELINE_LOG" > "$_bt_base_tmp" 2>/dev/null \
+            && cat "$_bt_units_tmp" >> "$_bt_base_tmp" 2>/dev/null \
+            && LC_ALL=C sort -s -n -k1,1 "$_bt_base_tmp" > "$_bt_sorted_tmp" 2>/dev/null; then
+            mv "$_bt_sorted_tmp" "$BOOT_TIMELINE_LOG" 2>/dev/null || true
+            _boot_timeline_refresh_archive_locked
+        fi
+        boot_timeline_lock_release
+    fi
+    rm -f "$_bt_units_tmp" "$_bt_base_tmp" "$_bt_sorted_tmp" 2>/dev/null || true
+    return 0
+}
+
+boot_timeline_init_systemd() {
+    boot_timeline_init
+    boot_timeline_record systemd:begin
+}
+
+boot_timeline_finalize_systemd() {
+    boot_timeline_mark systemd:aiden-target
+    boot_timeline_capture_systemd
+    boot_timeline_archive
+}
+
 # Human-readable summary: full sequence plus the slowest scripts.
 boot_timeline_report() {
     _bt_src="${1:-$BOOT_TIMELINE_LOG}"
@@ -289,6 +390,11 @@ boot_timeline_report() {
     awk '$3 == "script:end" { printf "%8s  %s\n", $2, $4 }' "$_bt_src" | sort -rn | head -15
 
     echo
+    echo "=== slowest systemd units ==="
+    printf '%8s  %s\n' "secs" "unit"
+    awk '$3 ~ /^unit:/ { printf "%8s  %s\n", $2, $4 }' "$_bt_src" | sort -rn | head -15
+
+    echo
     echo "=== milestones ==="
     awk '$3 == "mark" { ev = $4; for (i = 5; i <= NF; i++) ev = ev " " $i; printf "%10s  %s\n", $1, ev }' "$_bt_src"
     return 0
@@ -299,7 +405,7 @@ boot_timeline_report() {
 # an init script sourcing us while invoked as "S49usbhid start" must not be read
 # as the subcommand "start".
 case "${0##*/}" in
-    aiden_boot_timeline.sh) ;;
+    aiden_boot_timeline.sh|aiden-boot-timeline) ;;
     *) return 0 2>/dev/null || exit 0 ;;
 esac
 
@@ -315,8 +421,17 @@ case "${1:-}" in
     archive)
         boot_timeline_archive
         ;;
+    init-systemd)
+        boot_timeline_init_systemd
+        ;;
+    capture-systemd)
+        boot_timeline_capture_systemd
+        ;;
+    finalize-systemd)
+        boot_timeline_finalize_systemd
+        ;;
     *)
-        echo "Usage: $0 {mark LABEL|report [FILE]|archive}" >&2
+        echo "Usage: $0 {mark LABEL|report [FILE]|archive|init-systemd|capture-systemd|finalize-systemd}" >&2
         exit 1
         ;;
 esac

@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+action=${1:-start}
+swap_file=${SWAP_FILE:-/userdata/swapfile}
+size_mb=${SWAP_SIZE_MB:-256}
+swappiness=${SWAP_SWAPPINESS:-15}
+case "${size_mb}:${swappiness}" in *[!0-9:]*) exit 1 ;; esac
+[ "${size_mb}" -gt 0 ] && [ "${swappiness}" -le 200 ] || exit 1
+
+is_active() {
+    swapon --noheadings --raw --output NAME 2>/dev/null | grep -qx "${swap_file}"
+}
+if [ "${action}" = stop ]; then
+    is_active && swapoff "${swap_file}" || true
+    exit 0
+fi
+[ "${action}" = start ] || exit 2
+findmnt -nr --target /userdata >/dev/null
+echo "${swappiness}" >/proc/sys/vm/swappiness
+is_active && exit 0
+
+expected_bytes=$((size_mb * 1024 * 1024))
+actual_bytes=$(stat -c %s "${swap_file}" 2>/dev/null || echo 0)
+if [ "${actual_bytes}" != "${expected_bytes}" ] || \
+    ! file "${swap_file}" 2>/dev/null | grep -q 'swap file'; then
+    tmp=${swap_file}.tmp.$$
+    rm -f "${tmp}"
+    ionice -c 3 dd if=/dev/zero of="${tmp}" bs=1M count="${size_mb}" status=none
+    chmod 0600 "${tmp}"
+    mkswap "${tmp}" >/dev/null
+    mv "${tmp}" "${swap_file}"
+fi
+chmod 0600 "${swap_file}"
+swapon -p 10 "${swap_file}"

@@ -1,0 +1,20 @@
+[Unit]
+Description=Aiden diagnostic browser terminal
+Requires=aiden-environment.service aiden-usb-gadget.service
+After=aiden-environment.service aiden-usb-gadget.service
+ConditionPathExists=/usr/bin/wetty
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/aiden_boot.conf
+EnvironmentFile=/run/aiden/system.env
+ExecCondition=/usr/lib/aiden/aiden-feature-enabled ENABLE_WETTY
+ExecStart=/usr/bin/wetty --host 192.168.42.1 --port 3000 --base /wetty/ --title "Aiden Shell" --command /bin/login
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target

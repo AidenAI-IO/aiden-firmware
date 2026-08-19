@@ -136,6 +136,93 @@ func WriteHealthMarkerIfPending(pendingPath string, markerPath string) (bool, er
 	return writeHealthMarkerIfPending(pendingPath, markerPath, currentSlotFromProcCmdline, currentRootSlotFromProcCmdline, currentBootID)
 }
 
+// MarkHealthIfPending is the transaction-bound marker entry point used by the
+// independent Debian local-health aggregator. It validates public OTA state,
+// the running boot/rootfs slot, the current boot ID, and Debian identity
+// personalization before allowing the marker to be written.
+func (u *Updater) MarkHealthIfPending() (bool, error) {
+	if err := u.ensureStorageReady(); err != nil {
+		return false, err
+	}
+	unlock, err := u.acquireUpdateLock()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+
+	data, err := os.ReadFile(u.pendingPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var pending PendingBoot
+	if err := json.Unmarshal(data, &pending); err != nil {
+		return false, err
+	}
+	state, err := u.loadState()
+	if err != nil {
+		return false, err
+	}
+	if state.Phase != "pending-reboot" {
+		return false, fmt.Errorf("public OTA state phase %q, want pending-reboot", state.Phase)
+	}
+	if state.PendingBootNonce != pending.Nonce {
+		return false, fmt.Errorf("public OTA transaction %q does not match pending nonce %q", state.PendingBootNonce, pending.Nonce)
+	}
+	if state.TargetVersion != pending.TargetVersion || state.TargetBuildTime != pending.TargetBuildTime {
+		return false, fmt.Errorf("public OTA target version/build does not match pending boot")
+	}
+	targetSlot, err := parseSlotName(pending.TargetSlot)
+	if err != nil {
+		return false, err
+	}
+	if state.TargetSlot != targetSlot {
+		return false, fmt.Errorf("public OTA target slot %s does not match pending target %s", slotLogName(state.TargetSlot), pending.TargetSlot)
+	}
+	if u.config.DebianMode {
+		if err := u.validateDebianPendingIdentity(pending); err != nil {
+			return false, err
+		}
+	}
+	return writeHealthMarkerIfPending(
+		u.pendingPath(),
+		u.healthPath(),
+		u.currentSlot,
+		u.currentRootSlot,
+		u.bootID,
+	)
+}
+
+func (u *Updater) validateDebianPendingIdentity(pending PendingBoot) error {
+	persistentMachineID, err := readPersistentMachineID(u.config.MachineIDPath)
+	if err != nil {
+		return fmt.Errorf("validate persistent machine-id: %w", err)
+	}
+	runtimeMachineID, err := readPersistentMachineID(u.config.RuntimeMachineIDPath)
+	if err != nil {
+		return fmt.Errorf("validate runtime machine-id: %w", err)
+	}
+	if runtimeMachineID != persistentMachineID {
+		return fmt.Errorf("runtime machine-id does not match persistent machine-id")
+	}
+	sidecar, err := LoadPersonalizationSidecar(u.config.PersonalizationPath)
+	if err != nil {
+		return fmt.Errorf("validate personalization sidecar: %w", err)
+	}
+	if sidecar.TransactionID != pending.Nonce {
+		return fmt.Errorf("personalization transaction %q does not match pending nonce %q", sidecar.TransactionID, pending.Nonce)
+	}
+	if sidecar.TargetVersion != pending.TargetVersion || sidecar.TargetBuildTime != pending.TargetBuildTime {
+		return fmt.Errorf("personalization target version/build does not match pending boot")
+	}
+	if _, ok := sidecar.Slots[pending.TargetSlot]; !ok {
+		return fmt.Errorf("personalization sidecar has no target slot %s record", pending.TargetSlot)
+	}
+	return nil
+}
+
 func writeHealthMarkerIfPending(pendingPath string, markerPath string, currentSlot func() (Slot, bool, error), currentRootSlot func() (Slot, bool, error), bootID func() string) (bool, error) {
 	data, err := os.ReadFile(pendingPath)
 	if err != nil {

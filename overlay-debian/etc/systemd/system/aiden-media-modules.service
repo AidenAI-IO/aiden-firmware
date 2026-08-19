@@ -1,0 +1,14 @@
+[Unit]
+Description=Load Luckfox media, audio, RGA and RKNN modules
+Requires=oem.mount
+After=oem.mount systemd-udevd.service
+Before=aiden-frame.service aiden-audio.service aiden-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/aiden/aiden-media-modules
+RemainAfterExit=yes
+TimeoutStartSec=30s
+
+[Install]
+WantedBy=multi-user.target

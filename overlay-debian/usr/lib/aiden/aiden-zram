@@ -1,0 +1,48 @@
+#!/bin/sh
+set -eu
+
+action=${1:-start}
+size_mb=${ZRAM_SIZE_MB:-64}
+swappiness=${ZRAM_SWAPPINESS:-100}
+algorithm=${ZRAM_COMP_ALGORITHM:-lzo}
+
+case "${size_mb}:${swappiness}" in *[!0-9:]*) exit 1 ;; esac
+[ "${size_mb}" -gt 0 ] && [ "${swappiness}" -le 200 ] || exit 1
+
+is_active() {
+    swapon --noheadings --raw --output NAME 2>/dev/null | grep -qx /dev/zram0
+}
+
+if [ "${action}" = stop ]; then
+    is_active && swapoff /dev/zram0 || true
+    [ ! -w /sys/block/zram0/reset ] || echo 1 >/sys/block/zram0/reset
+    exit 0
+fi
+[ "${action}" = start ] || exit 2
+
+if ! [ -b /dev/zram0 ]; then
+    modprobe -q zram num_devices=1 2>/dev/null || true
+fi
+count=0
+while [ ! -b /dev/zram0 ] && [ "${count}" -lt 50 ]; do
+    [ ! -r /sys/class/zram-control/hot_add ] || \
+        cat /sys/class/zram-control/hot_add >/dev/null 2>&1 || true
+    sleep 0.1
+    count=$((count + 1))
+done
+[ -b /dev/zram0 ] || { echo "zram0 did not appear" >&2; exit 1; }
+if is_active; then
+    echo "${swappiness}" >/proc/sys/vm/swappiness
+    echo 0 >/proc/sys/vm/page-cluster
+    exit 0
+fi
+echo 1 >/sys/block/zram0/reset 2>/dev/null || true
+if [ -w /sys/block/zram0/comp_algorithm ] && \
+    tr '[]' '  ' </sys/block/zram0/comp_algorithm | grep -qw "${algorithm}"; then
+    echo "${algorithm}" >/sys/block/zram0/comp_algorithm
+fi
+echo $((size_mb * 1024 * 1024)) >/sys/block/zram0/disksize
+mkswap /dev/zram0 >/dev/null
+swapon -p 100 /dev/zram0
+echo "${swappiness}" >/proc/sys/vm/swappiness
+echo 0 >/proc/sys/vm/page-cluster

@@ -1,0 +1,17 @@
+diff --git a/modules/highgui/src/jpeg_encoder_rk_mpp.cpp b/modules/highgui/src/jpeg_encoder_rk_mpp.cpp
+index da062ea..d72e684 100644
+--- a/modules/highgui/src/jpeg_encoder_rk_mpp.cpp
++++ b/modules/highgui/src/jpeg_encoder_rk_mpp.cpp
+@@ -250,6 +250,12 @@ static int load_rkmpp_library()
+     {
+         librockchip_mpp = dlopen("/oem/usr/lib/librockchip_mpp.so", RTLD_LOCAL | RTLD_NOW);
+     }
++    if (!librockchip_mpp)
++    {
++        // Debian RV1106 links the vendor's glibc MPP archive into the service.
++        // Resolve that single in-process runtime instead of loading a second copy.
++        librockchip_mpp = dlopen(NULL, RTLD_LOCAL | RTLD_NOW);
++    }
+     if (!librockchip_mpp)
+     {
+         return -1;

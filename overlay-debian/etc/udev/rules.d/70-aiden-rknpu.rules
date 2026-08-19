@@ -1,0 +1,3 @@
+SUBSYSTEM=="misc", KERNEL=="rknpu", GROUP="video", MODE="0660"
+SUBSYSTEM=="mpi", GROUP="video", MODE="0660"
+SUBSYSTEM=="rk_dma_heap", KERNEL=="rk-dma-heap-cma", GROUP="video", MODE="0660", SYMLINK+="dma_heap/system"

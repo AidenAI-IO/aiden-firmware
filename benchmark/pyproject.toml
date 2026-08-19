@@ -13,6 +13,7 @@ dependencies = [
     "tenacity>=8.2.3",
     "pillow>=10.2.0",
     "python-dotenv>=1.0.1",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [dependency-groups]

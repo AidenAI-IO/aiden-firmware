@@ -46,6 +46,7 @@ struct Options {
     std::string agent_config_path = "/userdata/agent/agent.toml";
     std::string wifi_config_path = "/userdata/wpa_supplicant.conf";
     std::string wifi_interface = "wlan0";
+    std::string wifi_backend = "legacy";
     std::string ota_state_path = "/userdata/ota/state.json";
     std::string cmdline_path = "/proc/cmdline";
     std::string system_env_path = "/userdata/system/env";
@@ -1176,6 +1177,63 @@ std::string extract_ifconfig_ipv4(const std::string& text) {
         if (!value.empty()) {
             return value;
         }
+    }
+    return "";
+}
+
+std::string extract_ip_addr_ipv4(const std::string& text) {
+    std::istringstream input(text);
+    std::string token;
+    while (input >> token) {
+        if (token != "inet") {
+            continue;
+        }
+        if (!(input >> token)) {
+            return "";
+        }
+        size_t slash = token.find('/');
+        if (slash != std::string::npos) {
+            token.resize(slash);
+        }
+        return token;
+    }
+    return "";
+}
+
+bool uses_systemd_networkd(const Options& options) {
+    return options.wifi_backend == "systemd-networkd";
+}
+
+CommandResult bring_wifi_link_up(const Options& options) {
+    if (uses_systemd_networkd(options)) {
+        return run_shell_command("ip link set dev " +
+                                 shell_quote(options.wifi_interface) + " up 2>&1");
+    }
+    return run_shell_command("ifconfig " + shell_quote(options.wifi_interface) +
+                             " up 2>&1");
+}
+
+std::string query_interface_ipv4(const Options& options, std::ostringstream* log) {
+    if (command_exists("ip")) {
+        CommandResult status = run_shell_command(
+            "ip -o -4 addr show dev " + shell_quote(options.wifi_interface) +
+            " scope global 2>&1");
+        std::string address = extract_ip_addr_ipv4(status.output);
+        if (log) {
+            *log << "$ ip -o -4 addr show dev " << options.wifi_interface
+                 << " scope global\n" << status.output;
+        }
+        if (!address.empty()) {
+            return address;
+        }
+    }
+    if (!uses_systemd_networkd(options) && command_exists("ifconfig")) {
+        CommandResult status = run_shell_command(
+            "ifconfig " + shell_quote(options.wifi_interface) + " 2>&1");
+        if (log) {
+            *log << "$ ifconfig " << options.wifi_interface << "\n" << status.output;
+        }
+        return extract_ifconfig_ipv4(status.output);
     }
     return "";
 }
@@ -2325,10 +2383,12 @@ CommandResult scan_wifi(const Options& options) {
     CommandResult result;
     std::ostringstream log;
 
-    if (command_exists("ifconfig")) {
-        CommandResult up = run_shell_command("ifconfig " + shell_quote(options.wifi_interface) + " up 2>&1");
+    if ((uses_systemd_networkd(options) && command_exists("ip")) ||
+        (!uses_systemd_networkd(options) && command_exists("ifconfig"))) {
+        CommandResult up = bring_wifi_link_up(options);
         if (!trim_trailing_newlines(up.output).empty()) {
-            log << "$ ifconfig " << options.wifi_interface << " up\n" << up.output << "\n";
+            log << (uses_systemd_networkd(options) ? "$ ip link set dev " : "$ ifconfig ")
+                << options.wifi_interface << " up\n" << up.output << "\n";
         }
     }
 
@@ -2388,15 +2448,11 @@ bool wait_for_ip(const Options& options, std::ostringstream& log, int max_second
                 }
             }
         }
-        if (command_exists("ifconfig")) {
-            CommandResult status = run_shell_command(
-                "ifconfig " + shell_quote(options.wifi_interface) + " 2>&1");
-            std::string ip = extract_ifconfig_ipv4(status.output);
-            if (!ip.empty()) {
-                log << "$ ifconfig " << options.wifi_interface << " -> inet " << ip
-                    << " after " << (i + 1) << "s\n";
-                return true;
-            }
+        std::string ip = query_interface_ipv4(options, NULL);
+        if (!ip.empty()) {
+            log << "$ interface " << options.wifi_interface << " -> inet " << ip
+                << " after " << (i + 1) << "s\n";
+            return true;
         }
         sleep(1);
     }
@@ -2405,6 +2461,13 @@ bool wait_for_ip(const Options& options, std::ostringstream& log, int max_second
 }
 
 void restart_wpa_supplicant(const Options& options, std::ostringstream& log) {
+    if (uses_systemd_networkd(options)) {
+        const std::string unit = "wpa_supplicant@" + options.wifi_interface + ".service";
+        CommandResult restart = run_shell_command(
+            "systemctl restart " + shell_quote(unit) + " 2>&1");
+        log << "$ systemctl restart " << unit << "\n" << restart.output;
+        return;
+    }
     CommandResult killed = run_shell_command("killall wpa_supplicant 2>&1");
     log << "$ killall wpa_supplicant\n" << killed.output;
     sleep(1);
@@ -2804,9 +2867,11 @@ CommandResult apply_wifi_config(const Options& options, bool force_restart = fal
     result.exit_code = 0;
     std::ostringstream log;
 
-    if (command_exists("ifconfig")) {
-        CommandResult up = run_shell_command("ifconfig " + shell_quote(options.wifi_interface) + " up 2>&1");
-        log << "$ ifconfig " << options.wifi_interface << " up\n" << up.output;
+    if ((uses_systemd_networkd(options) && command_exists("ip")) ||
+        (!uses_systemd_networkd(options) && command_exists("ifconfig"))) {
+        CommandResult up = bring_wifi_link_up(options);
+        log << (uses_systemd_networkd(options) ? "$ ip link set dev " : "$ ifconfig ")
+            << options.wifi_interface << " up\n" << up.output;
         if (up.exit_code != 0) {
             result.exit_code = up.exit_code;
         }
@@ -2830,7 +2895,7 @@ CommandResult apply_wifi_config(const Options& options, bool force_restart = fal
         }
     }
 
-    if (!associated && command_exists("wpa_supplicant")) {
+    if (!associated && (uses_systemd_networkd(options) || command_exists("wpa_supplicant"))) {
         restart_wpa_supplicant(options, log);
         supplicant_ready = true;
         associated = wait_for_wpa_completed(options, log, 10);
@@ -2838,7 +2903,16 @@ CommandResult apply_wifi_config(const Options& options, bool force_restart = fal
 
     bool dhcp_ok = false;
     if (associated) {
-        if (command_exists("dhcpcd")) {
+        if (uses_systemd_networkd(options)) {
+            CommandResult reconfigure = run_shell_command(
+                "networkctl reconfigure " + shell_quote(options.wifi_interface) + " 2>&1");
+            log << "$ networkctl reconfigure " << options.wifi_interface << "\n"
+                << reconfigure.output;
+            dhcp_ok = reconfigure.exit_code == 0 && wait_for_ip(options, log, 20);
+            if (!dhcp_ok) {
+                result.exit_code = reconfigure.exit_code != 0 ? reconfigure.exit_code : 1;
+            }
+        } else if (command_exists("dhcpcd")) {
             CommandResult dhcp = run_shell_command("dhcpcd -n " + shell_quote(options.wifi_interface) + " 2>&1");
             log << "$ dhcpcd -n " << options.wifi_interface << "\n" << dhcp.output;
             // `dhcpcd -n` only signals the running daemon and returns
@@ -2868,10 +2942,7 @@ CommandResult apply_wifi_config(const Options& options, bool force_restart = fal
         }
     }
 
-    if (command_exists("ifconfig")) {
-        CommandResult status = run_shell_command("ifconfig " + shell_quote(options.wifi_interface) + " 2>&1");
-        log << "$ ifconfig " << options.wifi_interface << "\n" << status.output;
-    }
+    query_interface_ipv4(options, &log);
 
     if (associated && dhcp_ok) {
         result.exit_code = 0;
@@ -2891,15 +2962,11 @@ WifiRuntimeStatus query_wifi_status(const Options& options) {
             status.ssid = find_key_value_line(result.output, "ssid");
             status.ip_address = find_key_value_line(result.output, "ip_address");
             status.connected = status.state == "COMPLETED" && !status.ssid.empty();
-            // wpa_supplicant is not wired to DHCP on this device (dhcpcd runs
-            // separately), so `wpa_cli status` usually omits ip_address=. When
-            // it does, fall back to ifconfig for the IPv4 lease so the
-            // connect-confirmation gate and the UI status see the same address
-            // wait_for_ip() trusts.
-            if (status.ip_address.empty() && status.connected && command_exists("ifconfig")) {
-                CommandResult ifc = run_shell_command(
-                    "ifconfig " + shell_quote(options.wifi_interface) + " 2>&1");
-                status.ip_address = extract_ifconfig_ipv4(ifc.output);
+            // DHCP may be handled separately, so wpa_cli can omit ip_address.
+            // Query the interface through the active network backend so the
+            // connect-confirmation gate and UI use the same address source.
+            if (status.ip_address.empty() && status.connected) {
+                status.ip_address = query_interface_ipv4(options, NULL);
             }
             if (!status.state.empty() || !status.ssid.empty()) {
                 return status;
@@ -5165,7 +5232,10 @@ ApiResponse handle_wifi_connect(const Options& options, const std::string& body)
 
     std::string save_error;
     Options attempt_options = options;
-    attempt_options.wifi_config_path = options.wifi_config_path + ".candidate";
+    const bool candidate_replaces_live_config = uses_systemd_networkd(options);
+    if (!candidate_replaces_live_config) {
+        attempt_options.wifi_config_path = options.wifi_config_path + ".candidate";
+    }
     if (!aiden::save_wifi_config(attempt_options.wifi_config_path.c_str(), attempt, &save_error)) {
         return make_json_error(500, save_error);
     }
@@ -5238,6 +5308,23 @@ ApiResponse handle_wifi_connect(const Options& options, const std::string& body)
             response_wifi = attempt;
         }
     } else {
+        if (candidate_replaces_live_config) {
+            if (had_original_config) {
+                if (!atomic_write_file(options.wifi_config_path,
+                                       original_wifi_config_text,
+                                       0600,
+                                       &save_error)) {
+                    return make_json_error(500,
+                                           "failed to restore previous wifi config: " +
+                                               save_error);
+                }
+            } else if (unlink(options.wifi_config_path.c_str()) != 0 && errno != ENOENT) {
+                return make_json_error(
+                    500,
+                    std::string("failed to remove wifi config during restore: ") +
+                        strerror(errno));
+            }
+        }
         CommandResult restore_apply;
         if (had_original_config && (!original.networks.empty() || !original.ssid.empty())) {
             restore_apply = apply_wifi_config(options, true);
@@ -5258,7 +5345,9 @@ ApiResponse handle_wifi_connect(const Options& options, const std::string& body)
         response_wifi = original;
         wifi_status = query_wifi_status(options);
     }
-    unlink(attempt_options.wifi_config_path.c_str());
+    if (!candidate_replaces_live_config) {
+        unlink(attempt_options.wifi_config_path.c_str());
+    }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", connected_to_target ? 1 : 0);
@@ -6049,6 +6138,7 @@ bool parse_int(const char* text, int min_value, int max_value, int* value) {
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0 << " [--bind=IP] [--port=PORT]"
               << " [--config=PATH] [--wifi-config=PATH] [--wifi-iface=NAME]"
+              << " [--wifi-backend=legacy|systemd-networkd]"
               << " [--ota-state=PATH] [--cmdline=PATH] [--system-env=PATH]"
               << " [--storage-state=PATH] [--web-root=PATH]" << std::endl;
 }
@@ -6069,6 +6159,11 @@ bool parse_args(int argc, char** argv, Options* options) {
         } else if (consume_prefix(arg, "--config=", &options->agent_config_path)) {
         } else if (consume_prefix(arg, "--wifi-config=", &options->wifi_config_path)) {
         } else if (consume_prefix(arg, "--wifi-iface=", &options->wifi_interface)) {
+        } else if (consume_prefix(arg, "--wifi-backend=", &options->wifi_backend)) {
+            if (options->wifi_backend != "legacy" &&
+                options->wifi_backend != "systemd-networkd") {
+                return false;
+            }
         } else if (consume_prefix(arg, "--ota-state=", &options->ota_state_path)) {
         } else if (consume_prefix(arg, "--cmdline=", &options->cmdline_path)) {
         } else if (consume_prefix(arg, "--system-env=", &options->system_env_path)) {
