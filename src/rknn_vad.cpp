@@ -1,5 +1,9 @@
 #include "aiden_log.h"
+#if defined(AIDEN_RKNN_FULL_RUNTIME)
+#include <rknn_api.h>
+#else
 #include "rknn_api_minimal.h"
+#endif
 #include "vad_common.h"
 
 #include <algorithm>

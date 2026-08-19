@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 1 ] || exit 2
+interface=$1
+elapsed=0
+while [ "${elapsed}" -lt 20 ]; do
+    if ip -4 -o address show dev "${interface}" scope global | grep -q .; then
+        exit 0
+    fi
+    networkctl reconfigure "${interface}" >/dev/null 2>&1 || true
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+echo "${interface} has no IPv4 address" >&2
+exit 1

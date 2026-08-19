@@ -622,7 +622,10 @@ class ToolsAPIHandler:
         episode_id: str,
     ) -> dict[str, Any]:
         """Execute enter_text through MobileGym's TYPE action."""
-        unknown = sorted(set(tool_input) - {"text", "focus"})
+        # Accept Agent proxy text-entry hints for API compatibility, but do
+        # not advertise or forward them because MobileGym's TYPE action only
+        # needs the final text and focus point.
+        unknown = sorted(set(tool_input) - {"text", "focus", "platform", "mode", "segments"})
         if unknown:
             output = {"ok": False, "suggestion": f"Remove unsupported enter_text arguments: {unknown!r}."}
             return {"output": json.dumps(output), "is_error": False}

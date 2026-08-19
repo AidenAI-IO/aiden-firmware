@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(AIDEN_TESTS "Build host-native unit tests only (skips Pico targets)" OFF)
+option(AIDEN_ENABLE_LINK_MAPS "Write a linker map for each target executable" OFF)
 
 if(AIDEN_TESTS)
     enable_testing()
@@ -14,14 +15,44 @@ if(AIDEN_TESTS)
     return()
 endif()
 
-add_link_options(-Wl,-rpath,/oem/usr/lib)
+set(AIDEN_TARGET_PLATFORM "rv1106-buildroot-uclibc" CACHE STRING
+    "Target userspace platform")
+set_property(CACHE AIDEN_TARGET_PLATFORM PROPERTY STRINGS
+    rv1106-buildroot-uclibc
+    rv1106-debian-glibc
+)
+
+set(SDK_PATH "${CMAKE_SOURCE_DIR}/pico-sdk" CACHE PATH "Luckfox Pico SDK path")
+set(_aiden_platform_file
+    "${CMAKE_SOURCE_DIR}/cmake/platforms/${AIDEN_TARGET_PLATFORM}.cmake")
+if(NOT EXISTS "${_aiden_platform_file}")
+    message(FATAL_ERROR "Unsupported AIDEN_TARGET_PLATFORM: ${AIDEN_TARGET_PLATFORM}")
+endif()
+include("${_aiden_platform_file}")
+
+# Packaged executables live in /oem/usr/bin and vendor shared libraries in
+# /oem/usr/lib on both supported userspaces.
+set(CMAKE_BUILD_RPATH "\$ORIGIN/../lib")
+set(CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
+set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-set(OpenCV_DIR "${CMAKE_SOURCE_DIR}/third_party/opencv-mobile/lib/cmake/opencv4")
+if(NOT OpenCV_DIR)
+    set(OpenCV_DIR "${AIDEN_OPENCV_DIR}" CACHE PATH "OpenCV CMake package path" FORCE)
+endif()
 find_package(OpenCV REQUIRED)
+
+if(TARGET opencv_imgcodecs)
+    set(AIDEN_OPENCV_CODEC_TARGET opencv_imgcodecs)
+elseif(TARGET opencv_highgui)
+    set(AIDEN_OPENCV_CODEC_TARGET opencv_highgui)
+else()
+    message(FATAL_ERROR "OpenCV must provide imgcodecs or the opencv-mobile highgui shim")
+endif()
 
 # opencv-mobile import sets $<LINK_ONLY:rt>; macOS has no librt.
 if(APPLE)
@@ -51,19 +82,13 @@ target_link_libraries(aiden_image PUBLIC opencv_imgproc)
 add_executable(image_process src/image_process_cli.cpp)
 target_link_libraries(image_process PRIVATE aiden_image)
 
-set(SDK_PATH ${CMAKE_SOURCE_DIR}/pico-sdk)
-set(ROCKIT_PATH ${SDK_PATH}/media/rockit/rockit)
-set(MPP_PATH ${SDK_PATH}/media/mpp/release_mpp_rv1106_arm-rockchip830-linux-uclibcgnueabihf)
-set(RGA_PATH ${SDK_PATH}/media/rga/release_rga_rv1106_arm-rockchip830-linux-uclibcgnueabihf)
-set(IVE_PATH ${SDK_PATH}/media/ive/ive)
-set(RKNNMRT_PATH ${SDK_PATH}/media/iva/iva/librockiva/rockiva-rv1106-Linux)
-set(RKNNMRT_LINK_DIR ${RKNNMRT_PATH}/lib)
-if(EXISTS "${CMAKE_SOURCE_DIR}/overlay/oem/usr/lib/librknnmrt.so")
-    set(RKNNMRT_LINK_DIR ${CMAKE_SOURCE_DIR}/overlay/oem/usr/lib)
-endif()
-
 add_library(cjson STATIC src/cJSON/cJSON.c)
 target_include_directories(cjson PUBLIC ${CMAKE_SOURCE_DIR}/src)
+
+if(AIDEN_PLATFORM_COMPAT_SOURCES)
+    add_library(aiden_platform_compat STATIC ${AIDEN_PLATFORM_COMPAT_SOURCES})
+    set(AIDEN_PLATFORM_COMPAT_TARGET aiden_platform_compat)
+endif()
 
 add_library(aiden STATIC
     src/aiden_log.cpp
@@ -93,16 +118,8 @@ add_library(aiden STATIC
 target_include_directories(aiden
     PUBLIC
         ${CMAKE_SOURCE_DIR}/src
-        ${ROCKIT_PATH}/mpi/sdk/include
+        ${AIDEN_ROCKIT_INCLUDE_DIR}
         ${OpenCV_INCLUDE_DIRS}
-)
-
-target_link_directories(aiden
-    PUBLIC
-        ${ROCKIT_PATH}/lib/lib32
-        ${MPP_PATH}/lib
-        ${RGA_PATH}/lib
-        ${IVE_PATH}/lib
 )
 
 target_link_libraries(aiden
@@ -110,15 +127,18 @@ target_link_libraries(aiden
         cjson
         aiden_image
     PUBLIC
-        rockit
-        rockchip_mpp
-        rga
-        rve
+        Rockchip::Rockit
+        Rockchip::MPP
+        Rockchip::RGA
+        ${AIDEN_OPTIONAL_MEDIA_TARGETS}
+        ${AIDEN_PLATFORM_COMPAT_TARGET}
         pthread
+        dl
+        rt
         m
         opencv_core
         opencv_imgproc
-        opencv_highgui
+        ${AIDEN_OPENCV_CODEC_TARGET}
 )
 
 add_executable(hello src/hello.c)
@@ -143,6 +163,9 @@ target_link_libraries(example_usb_hid PRIVATE aiden aiden_image)
 add_executable(frame_service src/frame_service_main.cpp)
 target_include_directories(frame_service PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(frame_service PRIVATE aiden pthread)
+if(AIDEN_FRAME_SERVICE_LINK_OPTIONS)
+    target_link_options(frame_service PRIVATE ${AIDEN_FRAME_SERVICE_LINK_OPTIONS})
+endif()
 
 add_executable(frame_service_cli src/frame_service_cli.cpp)
 target_include_directories(frame_service_cli PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -160,9 +183,12 @@ add_executable(audio_stream src/audio_stream.cpp)
 target_link_libraries(audio_stream PRIVATE aiden)
 
 add_executable(rknn_vad src/rknn_vad.cpp src/aiden_log.cpp)
-target_include_directories(rknn_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_directories(rknn_vad PRIVATE ${RKNNMRT_LINK_DIR})
-target_link_libraries(rknn_vad PRIVATE rknnmrt pthread m)
+target_include_directories(rknn_vad PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${AIDEN_RKNN_INCLUDE_DIR}
+)
+target_compile_definitions(rknn_vad PRIVATE ${AIDEN_RKNN_COMPILE_DEFINITIONS})
+target_link_libraries(rknn_vad PRIVATE ${AIDEN_RKNN_TARGET} pthread dl m)
 
 add_executable(cpu_vad src/cpu_vad.cpp src/aiden_log.cpp)
 target_include_directories(cpu_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -191,3 +217,36 @@ add_executable(config_web
     src/wifi_config.cpp
 )
 target_link_libraries(config_web PRIVATE cjson pthread)
+
+add_executable(aiden_environment
+    src/system_env_generator_main.cpp
+    src/system_env_generator.cpp
+    src/system_env_parser.cpp
+)
+target_include_directories(aiden_environment PRIVATE ${CMAKE_SOURCE_DIR}/src)
+set_target_properties(aiden_environment PROPERTIES OUTPUT_NAME aiden-environment)
+
+if(AIDEN_ENABLE_LINK_MAPS)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/maps")
+    foreach(_aiden_executable
+            hello
+            trigger
+            image_process
+            example_wakeup
+            example_audio_capture
+            example_audio_play
+            example_camera_capture
+            example_usb_hid
+            frame_service
+            frame_service_cli
+            audio_service
+            audio_service_cli
+            audio_stream
+            rknn_vad
+            cpu_vad
+            config_web
+            aiden_environment)
+        target_link_options(${_aiden_executable} PRIVATE
+            "LINKER:-Map,${CMAKE_BINARY_DIR}/maps/${_aiden_executable}.map")
+    endforeach()
+endif()

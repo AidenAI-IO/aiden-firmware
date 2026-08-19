@@ -1,0 +1,33 @@
+script	classification	systemd_target	acceptance	migration_note
+S20oemslot	migrate	oem.mount,aiden-slot-resolve.service	G2-slot-mount	Resolve the active slot through PARTLABEL and mount the matching OEM partition.
+S21root_home	migrate	aiden-root-home.service	G2-root-home	Bind the persistent root home only after userdata migration completes.
+S21zram	migrate	aiden-zram.service	G2-zram	Preserve the bounded compressed swap policy with systemd lifecycle management.
+S22opt	retire	none	G2-no-opt-bind	Keep Buildroot data isolated under userdata without mounting it on Debian /opt.
+S30dbus	replaced-by-debian	dbus.service	G2-dbus	Use the Debian D-Bus unit and socket activation.
+S35wifidrv	migrate	aiden-wifi-driver.service	G2-wifi-driver	Load the combo-radio driver and firmware before Wi-Fi and Bluetooth consumers.
+S39hciinit	migrate	aiden-bluetooth-attach.service	G2-bluetooth-hci	Attach the AIC8800 UART transport after the Wi-Fi driver is ready.
+S40bluetoothd	replaced-by-debian	bluetooth.service	G2-bluetooth-bluez	Use Debian BlueZ after the board-specific HCI attach service.
+S40network	replaced-by-debian	systemd-networkd.service,wpa_supplicant@wlan0.service	G2-network-control-plane	Use wpa_supplicant for association and networkd as the only DHCP client.
+S41ble_service	migrate	aiden-ble.service	G2-ble-service	Run the BLE service after hci0 and bluetooth.service are ready.
+S41dhcpcd	replaced-by-debian	systemd-networkd.service	G2-single-dhcp-client	Do not install or start dhcpcd in the production Debian image.
+S43wlan_guard	migrate	aiden-wlan-guard.service	G2-wlan-recovery	Retain bounded Wi-Fi recovery without taking DHCP ownership from networkd.
+S49ntp	replaced-by-debian	systemd-timesyncd.service	G2-time-sync	Use timesyncd retry and synchronization state.
+S49usbhid	migrate	aiden-usb-gadget.service	G2-usb-gadget	Create the HID and ECM configfs gadget with deterministic teardown.
+S50ntp_watchdog	replaced-by-debian	systemd-timesyncd.service	G2-time-sync-retry	Rely on timesyncd retries and product health reporting instead of a second NTP daemon.
+S50sshd	replaced-by-debian	ssh.service,sshd-keygen.service	G2-ssh	Use Debian host-key generation and SSH service ordering.
+S50telnet	retire	none	G2-no-telnet	Exclude the unauthenticated diagnostic service from production images.
+S50usbdevice	no-op	aiden-usb-gadget.service	G2-usb-gadget-single-owner	The Debian image has no SDK fallback gadget script to mask.
+S51swap	migrate	aiden-swap.service	G2-persistent-swap	Validate and activate the userdata swapfile after migration.
+S52frame_service	migrate	aiden-frame.service	G2-frame-service	Run the foreground frame service after video devices and OEM libraries are ready.
+S53adb_server	migrate	aiden-adb-host.service	G2-adb-host	Start the local adb host server with bounded retry and normalized environment.
+S53agent	migrate	aiden-agent.service	G2-agent	Start local agent functions without blocking on network or precise time.
+S53audio_service	migrate	aiden-audio.service	G2-audio-service	Run the foreground audio service after ALSA devices and OEM libraries are ready.
+S54ota	migrate	aiden-ota-health-marker.service,aiden-ota-health.service	G2-ota-health	Aggregate required local health, write a transaction-bound marker, then process pending A/B state.
+S55aiden_usb_dhcp	migrate	aiden-usb-dnsmasq.service	G2-usb-dhcp	Serve DHCP only on the configured usb0 gadget interface.
+S56config_web	migrate	aiden-config-web.service	G2-config-web	Keep the local recovery portal available while using the Debian network backend.
+S57wetty	migrate	aiden-wetty.service	G2-diagnostic-image	Install the browser terminal only in explicitly enabled diagnostic images.
+S60usb_ecm_watchdog	migrate	aiden-usb-ecm-watchdog.service	G2-usb-ecm-recovery	Use ip-based state checks and bounded gadget recovery.
+S91smb	retire	none	G2-no-smb	Exclude Samba from production images unless a separate security review approves it.
+S99rtcinit	migrate	aiden-rtc.service	G2-rtc	Restore a bounded fallback clock without blocking offline local startup.
+S99usb0config	no-op	aiden-usb-gadget.service	G2-usb-address-single-owner	Configure the usb0 address only through the Debian gadget service.
+rcS	replaced-by-debian	systemd	G2-systemd-pid1	Use systemd dependency ordering instead of lexical SysV dispatch.

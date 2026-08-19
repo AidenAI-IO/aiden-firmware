@@ -114,10 +114,10 @@ func TestUpdaterDownloadsTarGzAssetsAndWritesExtractedImages(t *testing.T) {
 	assertFileContent(t, filepath.Join(env.blockDir, "boot_b"), string(bootImage))
 	assertFileContent(t, filepath.Join(env.blockDir, "oem_b"), string(oemImage))
 	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), string(rootfsImage))
-	if got, err := os.ReadFile(filepath.Join(env.downloadDir, "rootfs.img.tar.gz")); err != nil {
-		t.Fatalf("ReadFile(downloaded archive) error = %v", err)
-	} else if !bytes.Equal(got, rootfsArchive) {
-		t.Fatalf("downloaded archive was modified before verification")
+	for _, name := range []string{"boot_b.img.tar.gz", "oem_b.img.tar.gz", "rootfs.img.tar.gz"} {
+		if _, err := os.Stat(filepath.Join(env.downloadDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("verified archive cache %s was not deleted: %v", name, err)
+		}
 	}
 	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
 	if err != nil {
@@ -953,6 +953,16 @@ func TestUpdaterInvalidatesTargetSlotMetadataBeforePartialWriteFailure(t *testin
 	_, err := env.updater().CheckOnce(context.Background())
 	if err == nil {
 		t.Fatalf("CheckOnce() error = nil, want write failure")
+	}
+	ab, err := readMiscFile(env.miscPath)
+	if err != nil {
+		t.Fatalf("readMiscFile() error = %v", err)
+	}
+	if got := ab.Slots[SlotB]; got != (SlotData{Priority: 0, TriesRemaining: 0, SuccessfulBoot: false}) {
+		t.Fatalf("misc target slot after interrupted write = %+v, want unbootable", got)
+	}
+	if ab.Bootable(SlotB) {
+		t.Fatalf("misc target slot is bootable after interrupted write: %+v", ab.Slots[SlotB])
 	}
 	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
 	if err != nil {

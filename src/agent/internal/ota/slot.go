@@ -172,6 +172,17 @@ func (d *ABData) SetActive(slot Slot, tries uint8, successful bool) error {
 	return nil
 }
 
+// MarkUnbootable prevents the bootloader from selecting slot while an update
+// is in progress. It intentionally preserves the existing 32-byte metadata
+// layout and relies on Marshal to refresh the compatible CRC.
+func (d *ABData) MarkUnbootable(slot Slot) error {
+	if slot != SlotA && slot != SlotB {
+		return fmt.Errorf("invalid slot %d", slot)
+	}
+	d.Slots[slot] = SlotData{}
+	return nil
+}
+
 func (d *ABData) MarkSuccessful(slot Slot) error {
 	if slot != SlotA && slot != SlotB {
 		return fmt.Errorf("invalid slot %d", slot)
