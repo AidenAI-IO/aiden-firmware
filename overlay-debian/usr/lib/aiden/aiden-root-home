@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+source_home=/userdata/userhome
+target_home=/root
+
+findmnt -nr --target /userdata >/dev/null
+mkdir -p "${source_home}" "${target_home}" "${source_home}/.ssh"
+chmod 0700 "${source_home}" "${source_home}/.ssh"
+chown root:root "${source_home}" "${source_home}/.ssh"
+
+if ! findmnt -nr --target "${target_home}" | awk -v target="${target_home}" '$2 == target {found=1} END {exit !found}'; then
+    mount --bind "${source_home}" "${target_home}"
+fi

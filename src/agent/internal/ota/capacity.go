@@ -32,7 +32,7 @@ func (u *Updater) buildDownloadPlan(assets map[string]ManifestAsset, state State
 		planned := plannedDownloadAsset{
 			asset:         asset,
 			path:          filepath.Join(u.config.DownloadDir, asset.Name),
-			targetMatches: targetPartitionHashMatches(state, target, partName, asset),
+			targetMatches: targetPartitionHashMatches(state, target, partName, asset) && !(u.config.DebianMode && partName == "rootfs"),
 		}
 		if planned.targetMatches {
 			plan.assets[partName] = planned
@@ -66,10 +66,11 @@ func (u *Updater) ensureStorageReady() error {
 		return fmt.Errorf("dedicated OTA storage mount point is not configured")
 	}
 	mountPoint := filepath.Clean(u.config.StorageMountPoint)
+	storageDevicePath := u.storageDevicePathForAccess()
 	mounted, err := mountPointIsActive(
 		u.config.MountInfoPath,
 		mountPoint,
-		u.config.StorageDevicePath,
+		storageDevicePath,
 		u.config.StorageFilesystem,
 	)
 	if err != nil {
@@ -78,7 +79,7 @@ func (u *Updater) ensureStorageReady() error {
 	if !mounted {
 		return fmt.Errorf(
 			"dedicated OTA storage is not mounted from %s as %s at %s",
-			u.config.StorageDevicePath,
+			storageDevicePath,
 			u.config.StorageFilesystem,
 			mountPoint,
 		)
@@ -187,7 +188,7 @@ func (u *Updater) ensureDownloadCapacity(plan downloadPlan) error {
 		)
 	}
 	u.logf(
-		"ota space: available=%s remaining_downloads=%s safety_margin=%s",
+		"ota space: available=%s largest_remaining_download=%s safety_margin=%s",
 		formatBytes(available),
 		formatBytes(remaining),
 		formatBytes(u.config.DownloadSafetyMarginBytes),
@@ -196,14 +197,13 @@ func (u *Updater) ensureDownloadCapacity(plan downloadPlan) error {
 }
 
 func (u *Updater) remainingDownloadBytes(plan downloadPlan) (int64, error) {
-	var total int64
+	var largest int64
 	for _, asset := range plan.assets {
-		if total > maxInt64-asset.remainingBytes {
-			return 0, fmt.Errorf("OTA download size overflow")
+		if asset.remainingBytes > largest {
+			largest = asset.remainingBytes
 		}
-		total += asset.remainingBytes
 	}
-	return total, nil
+	return largest, nil
 }
 
 func filesystemAvailableBytes(path string) (int64, error) {

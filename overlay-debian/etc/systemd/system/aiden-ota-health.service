@@ -1,0 +1,19 @@
+[Unit]
+Description=Process pending Aiden A/B OTA health state
+Requires=oem.mount aiden-userdata-migrate.service aiden-environment.service userdata-ota.mount
+Requires=aiden-ota-health-marker.service
+After=oem.mount aiden-userdata-migrate.service aiden-environment.service userdata-ota.mount
+After=aiden-ota-health-marker.service
+ConditionPathExists=/oem/usr/bin/ota
+
+[Service]
+Type=oneshot
+EnvironmentFile=/run/aiden/system.env
+LogsDirectory=ota
+ExecStart=/oem/usr/bin/ota --config /userdata/debian/ota/config.json health
+TimeoutStartSec=60s
+StandardOutput=append:/var/log/ota/ota.log
+StandardError=append:/var/log/ota/ota.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+persistent_dir=/userdata/system/ssh
+etc_dir=/etc/ssh
+mkdir -p "${persistent_dir}" "${etc_dir}"
+chmod 0700 "${persistent_dir}"
+
+for type in rsa ecdsa ed25519; do
+    name=ssh_host_${type}_key
+    key=${persistent_dir}/${name}
+    if [ ! -s "${key}" ]; then
+        rm -f "${key}" "${key}.pub" "${key}-cert.pub"
+        case "${type}" in
+            rsa) ssh-keygen -q -t rsa -b 3072 -N '' -f "${key}" ;;
+            ecdsa) ssh-keygen -q -t ecdsa -N '' -f "${key}" ;;
+            ed25519) ssh-keygen -q -t ed25519 -N '' -f "${key}" ;;
+        esac
+    fi
+    [ -s "${key}" ] || { echo "Missing persistent SSH key ${key}" >&2; exit 1; }
+    chmod 0600 "${key}"
+    [ ! -e "${key}.pub" ] || chmod 0644 "${key}.pub"
+    rm -f "${etc_dir}/${name}" "${etc_dir}/${name}.pub" \
+        "${etc_dir}/${name}-cert.pub"
+    ln -s "${key}" "${etc_dir}/${name}"
+    [ ! -s "${key}.pub" ] || ln -s "${key}.pub" "${etc_dir}/${name}.pub"
+    [ ! -s "${key}-cert.pub" ] || \
+        ln -s "${key}-cert.pub" "${etc_dir}/${name}-cert.pub"
+done
+chown -R root:root "${persistent_dir}"
+/usr/sbin/sshd -t

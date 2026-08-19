@@ -24,7 +24,8 @@ import (
 const (
 	absMouseMaxPos = 32767
 
-	defaultHIDRefreshStatePath = "/run/aiden_usb_ecm_watchdog.state"
+	defaultHIDRefreshStatePath        = "/run/aiden_usb_ecm_watchdog.state"
+	defaultUSBCompositeRefreshCommand = "/etc/init.d/S60usb_ecm_watchdog"
 
 	// defaultTapHoldMs is the dwell between a touch press and release so iOS
 	// registers a tap rather than dropping the sub-millisecond event or
@@ -634,6 +635,13 @@ func (d *HIDDevice) reopenStaleFileLocked() error {
 	return nil
 }
 
+func usbCompositeRefreshCommand() string {
+	if command := strings.TrimSpace(os.Getenv("AIDEN_USB_COMPOSITE_REFRESH_COMMAND")); command != "" {
+		return command
+	}
+	return defaultUSBCompositeRefreshCommand
+}
+
 func triggerUSBCompositeRefresh(_ string) error {
 	// Trigger the USB watchdog's refresh command to rebind the USB composite gadget.
 	// This is needed when the USB host suspends the connection or the gadget
@@ -642,7 +650,7 @@ func triggerUSBCompositeRefresh(_ string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "/etc/init.d/S60usb_ecm_watchdog", "refresh")
+	cmd := exec.CommandContext(ctx, usbCompositeRefreshCommand(), "refresh")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {

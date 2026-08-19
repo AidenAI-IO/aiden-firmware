@@ -15,6 +15,7 @@
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 extern "C" {
 #include "rk_debug.h"
@@ -300,22 +301,29 @@ static int write_edid_hex_file(const char* path, const uint8_t* data, size_t siz
     return ret;
 }
 
+static void normalize_edid_checksums(uint8_t* data, uint32_t blocks) {
+    for (uint32_t block = 0; block < blocks; ++block) {
+        const size_t offset = static_cast<size_t>(block) * 128;
+        uint8_t checksum = 0;
+        for (size_t i = 0; i < 127; ++i) {
+            checksum = static_cast<uint8_t>(checksum + data[offset + i]);
+        }
+        data[offset + 127] = static_cast<uint8_t>(0 - checksum);
+    }
+}
+
 static int push_edid_with_v4l2ctl(const CameraConfig& config,
                                   const uint8_t* data,
                                   uint32_t blocks) {
     char temp_path[64];
     snprintf(temp_path, sizeof(temp_path), "/tmp/libaiden_edid_%d.hex", getpid());
 
-    const char* edid_path = config.edid_path;
-    if (!edid_path) {
-        if (write_edid_hex_file(temp_path, data, static_cast<size_t>(blocks) * 128) < 0) {
-            return -1;
-        }
-        edid_path = temp_path;
+    if (write_edid_hex_file(temp_path, data, static_cast<size_t>(blocks) * 128) < 0) {
+        return -1;
     }
 
     const char* subdev = config.subdev_device ? config.subdev_device : "/dev/v4l-subdev2";
-    std::string edid_arg = std::string("pad=0,file=") + edid_path;
+    std::string edid_arg = std::string("pad=0,file=") + temp_path;
     pid_t child = fork();
     int status = -1;
     int wait_ret = -1;
@@ -327,7 +335,6 @@ static int push_edid_with_v4l2ctl(const CameraConfig& config,
                subdev,
                "--set-edid",
                edid_arg.c_str(),
-               "--fix-edid-checksums",
                static_cast<char*>(nullptr));
         _exit(127);
     }
@@ -338,9 +345,7 @@ static int push_edid_with_v4l2ctl(const CameraConfig& config,
         } while (wait_ret < 0 && errno == EINTR);
     }
 
-    if (!config.edid_path) {
-        unlink(temp_path);
-    }
+    unlink(temp_path);
 
     if (child < 0 || wait_ret < 0) {
         AIDEN_LOG_ERROR("hdmi", "edid_fallback_exec_failed", "error=%s", strerror(errno));
@@ -370,13 +375,17 @@ static int push_edid(int subdev_fd, const CameraConfig& config) {
         data = heap_edid;
     }
 
+    std::vector<uint8_t> normalized_data(
+        data, data + static_cast<size_t>(blocks) * 128);
+    normalize_edid_checksums(normalized_data.data(), blocks);
+
     memset(&edid, 0, sizeof(edid));
     edid.pad = 0;
     edid.start_block = 0;
     edid.blocks = blocks;
-    edid.edid = const_cast<uint8_t*>(data);
+    edid.edid = normalized_data.data();
 
-    if (push_edid_with_v4l2ctl(config, data, blocks) < 0 &&
+    if (push_edid_with_v4l2ctl(config, normalized_data.data(), blocks) < 0 &&
         xioctl(subdev_fd, VIDIOC_SUBDEV_S_EDID, &edid) < 0) {
         free(heap_edid);
         return -1;

@@ -100,6 +100,49 @@ func (w PartitionWriter) WritePartWithProgress(part string, targetSlot Slot, ima
 	return nil
 }
 
+// VerifyPart reads the bytes written to the target partition back through the
+// block-device path and compares them with the signed image digest. The read
+// is bounded to the uncompressed image size because production partitions are
+// normally larger than their filesystem images.
+func (w PartitionWriter) VerifyPart(part string, targetSlot Slot, imagePath string, expectedSHA256 string) error {
+	blockName, err := w.ResolveBlockName(part, targetSlot)
+	if err != nil {
+		return err
+	}
+	if targetSlot == w.ActiveSlot {
+		targetSlotName, _ := slotName(targetSlot)
+		return fmt.Errorf("refusing to verify active slot %s", targetSlotName)
+	}
+
+	image, imageSize, err := openPartitionImage(imagePath)
+	if err != nil {
+		return err
+	}
+	if err := image.Close(); err != nil {
+		return err
+	}
+
+	dstPath := filepath.Join(w.BlockDir, blockName)
+	dst, err := os.Open(dstPath)
+	if err != nil {
+		return fmt.Errorf("open target partition %s for readback: %w", dstPath, err)
+	}
+	h := sha256.New()
+	read, copyErr := io.CopyN(h, dst, imageSize)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		return fmt.Errorf("read back target partition %s: read %d of %d bytes: %w", dstPath, read, imageSize, copyErr)
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if got != expectedSHA256 {
+		return fmt.Errorf("target partition %s readback sha256 %s, want %s", blockName, got, expectedSHA256)
+	}
+	return nil
+}
+
 func openPartitionImage(path string) (io.ReadCloser, int64, error) {
 	if isTarGzImagePath(path) {
 		return openTarGzPartitionImage(path)
@@ -114,6 +157,17 @@ func openPartitionImage(path string) (io.ReadCloser, int64, error) {
 		return nil, 0, err
 	}
 	return src, info.Size(), nil
+}
+
+func partitionImageSize(path string) (int64, error) {
+	image, size, err := openPartitionImage(path)
+	if err != nil {
+		return 0, err
+	}
+	if err := image.Close(); err != nil {
+		return 0, err
+	}
+	return size, nil
 }
 
 func isTarGzImagePath(path string) bool {

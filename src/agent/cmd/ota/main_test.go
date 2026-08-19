@@ -85,9 +85,33 @@ func TestSplitCommandAndFlagsSupportsHealthCommand(t *testing.T) {
 	}
 }
 
+func TestSplitCommandAndFlagsSupportsMarkHealthCommand(t *testing.T) {
+	command, rest := splitCommandAndFlags([]string{"--config", "debian.json", "mark-health"})
+	if command != "mark-health" {
+		t.Fatalf("command = %q, want mark-health", command)
+	}
+	want := []string{"--config", "debian.json"}
+	if len(rest) != len(want) || rest[0] != want[0] || rest[1] != want[1] {
+		t.Fatalf("rest = %#v, want %#v", rest, want)
+	}
+}
+
+func TestSplitCommandAndFlagsSupportsProvisionIdentityCommand(t *testing.T) {
+	command, rest := splitCommandAndFlags([]string{"--config", ota.DefaultDebianOTAConfigPath, "provision-identity"})
+	if command != "provision-identity" {
+		t.Fatalf("command = %q, want provision-identity", command)
+	}
+	want := []string{"--config", ota.DefaultDebianOTAConfigPath}
+	if len(rest) != len(want) || rest[0] != want[0] || rest[1] != want[1] {
+		t.Fatalf("rest = %#v, want %#v", rest, want)
+	}
+}
+
 func TestRunRejectsExtraPositionalsForNonManifestCommands(t *testing.T) {
 	for _, args := range [][]string{
 		{"health", "extra"},
+		{"mark-health", "extra"},
+		{"provision-identity", "extra"},
 		{"update", "extra", "--dry-run"},
 		{"check-now", "extra", "--dry-run"},
 		{"status", "extra"},

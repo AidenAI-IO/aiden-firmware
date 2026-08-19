@@ -60,13 +60,31 @@ read_pointer_mode() {
 	esac
 }
 
+configure_usb0() {
+	if command -v ip >/dev/null 2>&1; then
+		ip link set dev usb0 up || return 1
+		ip address replace "$USB0_ADDR/24" dev usb0 || return 1
+		command -v networkctl >/dev/null 2>&1 && \
+			networkctl reconfigure usb0 >/dev/null 2>&1 || true
+		return 0
+	fi
+	return 1
+}
+
+disable_usb0() {
+	if command -v ip >/dev/null 2>&1; then
+		ip link set dev usb0 down 2>/dev/null || true
+	fi
+	return 0
+}
+
 start() {
 	echo "Setting up Aiden USB composite gadget (HID + ECM)..."
 
 	USB_MODE=$(cat "$USB_MODE_PATH" 2>/dev/null)
 	if [ "$USB_MODE" != "peripheral" ]; then
 		echo "USB not in peripheral mode ($USB_MODE), skip"
-		return
+		return 1
 	fi
 
 	mark usbhid:udc-wait-begin
@@ -78,7 +96,7 @@ start() {
 	if [ -z "$UDC" ]; then
 		mark usbhid:udc-wait-timeout
 		echo "No UDC found"
-		return
+		return 1
 	fi
 	mark usbhid:udc-ready
 
@@ -184,15 +202,17 @@ start() {
 		sleep 1
 	done
 	if [ -d /sys/class/net/usb0 ]; then
-		if ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up; then
+		if configure_usb0; then
 			mark usbhid:usb0-up
 			echo "usb0 up at $USB0_ADDR/$USB0_NETMASK"
 		else
-			echo "usb0 ifconfig failed"
+			echo "usb0 address configuration failed"
+			return 1
 		fi
 	else
 		mark usbhid:usb0-missing
 		echo "usb0 did not appear; ECM may not be bound"
+		return 1
 	fi
 
 	if [ "$POINTER_MODE" = "touchscreen" ]; then
@@ -207,7 +227,7 @@ stop() {
 		echo "" > "$GADGET_DIR/UDC" 2>/dev/null
 	fi
 	if [ -d /sys/class/net/usb0 ]; then
-		ifconfig usb0 down 2>/dev/null || true
+		disable_usb0
 	fi
 }
 

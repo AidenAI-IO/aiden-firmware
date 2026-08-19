@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+slot_env=${AIDEN_SLOT_ENV:-/run/aiden/slot.env}
+marker=${AIDEN_ROOTFS_GROW_MARKER:-/var/lib/aiden/rootfs-grown}
+[ -r "${slot_env}" ] || { echo "Missing ${slot_env}" >&2; exit 1; }
+. "${slot_env}"
+case "${AIDEN_SLOT_SUFFIX:-}" in _a|_b) ;; *) exit 1 ;; esac
+
+root_major_minor=$(findmnt -nr -o MAJ:MIN --target / | tr -d '[:space:]')
+case "${root_major_minor}" in *[!0-9:]*|*:*:*|:*|*:|'') exit 1 ;; esac
+root_device=/dev/$(basename "$(readlink -f "/sys/dev/block/${root_major_minor}")")
+expected_root=$(readlink -f "/dev/disk/by-partlabel/rootfs${AIDEN_SLOT_SUFFIX}")
+[ "$(readlink -f "${root_device}")" = "${expected_root}" ] || {
+    echo "Active root ${root_device} does not match rootfs${AIDEN_SLOT_SUFFIX}" >&2
+    exit 1
+}
+
+# The Rockchip boot arguments omit an explicit `rw`, and this image has no
+# fstab entry for systemd-remount-fs to consume. Make the generic rootfs
+# writable before resizing it or provisioning runtime state under /etc and /var.
+mount -o remount,rw /
+
+if [ ! -e "${marker}" ]; then
+    resize2fs "${root_device}"
+    resize2fs "/dev/disk/by-partlabel/oem${AIDEN_SLOT_SUFFIX}"
+    resize2fs /dev/disk/by-partlabel/userdata
+    resize2fs /dev/disk/by-partlabel/ota
+    mkdir -p "$(dirname "${marker}")"
+    tmp=${marker}.tmp.$$
+    printf 'slot=%s\nroot=%s\n' "${AIDEN_SLOT_SUFFIX}" "${root_device}" >"${tmp}"
+    mv "${tmp}" "${marker}"
+fi

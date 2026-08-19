@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+case "${1:-}" in
+    restart|reload)
+        systemctl restart aiden-environment.service
+        systemctl restart aiden-agent.service
+        ;;
+    start|stop)
+        systemctl "$1" aiden-agent.service
+        ;;
+    status)
+        if systemctl is-active --quiet aiden-agent.service; then
+            echo "agent=running"
+            exit 0
+        fi
+        echo "agent=stopped"
+        exit 1
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|reload|status}" >&2
+        exit 2
+        ;;
+esac

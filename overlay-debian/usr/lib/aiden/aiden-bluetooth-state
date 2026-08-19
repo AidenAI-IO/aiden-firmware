@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+source_dir=/userdata/ble_service/bluetooth
+target_dir=/var/lib/bluetooth
+mkdir -p "${source_dir}" "${target_dir}"
+chmod 0700 "${source_dir}"
+if ! findmnt -nr --target "${target_dir}" | awk -v target="${target_dir}" '$2 == target {found=1} END {exit !found}'; then
+    mount --bind "${source_dir}" "${target_dir}"
+fi

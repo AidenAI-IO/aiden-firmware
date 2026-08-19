@@ -1,0 +1,33 @@
+diff --git a/project/build.sh b/project/build.sh
+index 219703a31..b8c206f5a 100755
+--- a/project/build.sh
++++ b/project/build.sh
+@@ -2553,6 +2553,20 @@ function build_ab_boot_imgs() {
+ 	rm -f $RK_PROJECT_OUTPUT_IMAGE/boot.img
+ }
+ 
++function build_ab_images() {
++	check_config RK_PARTITION_CMD_IN_ENV || return 1
++	if ! is_ab_layout; then
++		msg_error "A/B boot image generation requires an A/B partition layout"
++		return 1
++	fi
++
++	# Build only the slot-specific FITs and factory A/B metadata. Debian
++	# rootfs, OEM, userdata and OTA filesystems are assembled separately.
++	build_ab_misc_img
++	build_ab_boot_imgs
++	finish_build
++}
++
+ function __RUN_POST_CLEAN_FILES() {
+ 	echo "================================================================================"
+ 	IFS=$RECORD_IFS
+@@ -3012,6 +3026,7 @@ while [ $# -ne 0 ]; do
+ 	sysdrv) option=build_sysdrv ;;
+ 	uboot) option=build_uboot ;;
+ 	kernel) option=build_kernel ;;
++	abimages) option=build_ab_images ;;
+ 	rootfs) option=build_rootfs ;;
+ 	media) option=build_media ;;
+ 	app) option=build_app ;;

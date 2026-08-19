@@ -1,0 +1,16 @@
+[Unit]
+Description=Aiden OTA workspace
+DefaultDependencies=no
+Requires=userdata.mount aiden-slot-resolve.service
+After=userdata.mount aiden-rootfs-grow.service
+Before=local-fs.target
+
+[Mount]
+What=/dev/mmcblk0p12
+Where=/userdata/ota
+Type=ext4
+Options=noatime,nosuid,nodev
+TimeoutSec=20s
+
+[Install]
+WantedBy=local-fs.target
