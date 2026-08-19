@@ -29,13 +29,15 @@ set_target_properties(Rockchip::RGA PROPERTIES
 set(AIDEN_OPTIONAL_MEDIA_TARGETS "")
 set(AIDEN_PLATFORM_COMPAT_SOURCES
     "${CMAKE_SOURCE_DIR}/src/rockchip_glibc_compat.c")
+set(AIDEN_RKNN_COMPAT_SOURCES
+    "${CMAKE_SOURCE_DIR}/src/rknn_glibc_compat.c")
 
-add_library(Rockchip::RKNNFull SHARED IMPORTED GLOBAL)
-set_target_properties(Rockchip::RKNNFull PROPERTIES
-    IMPORTED_LOCATION "${AIDEN_RKNPU2_ROOT}/lib/librknnrt.so")
-set(AIDEN_RKNN_TARGET Rockchip::RKNNFull)
-set(AIDEN_RKNN_INCLUDE_DIR "${AIDEN_RKNPU2_ROOT}/include")
-set(AIDEN_RKNN_COMPILE_DEFINITIONS AIDEN_RKNN_FULL_RUNTIME=1)
+add_library(Rockchip::RKNNMicroStatic STATIC IMPORTED GLOBAL)
+set_target_properties(Rockchip::RKNNMicroStatic PROPERTIES
+    IMPORTED_LOCATION "${AIDEN_RKNPU2_ROOT}/lib/librknnmrt.a")
+set(AIDEN_RKNN_TARGET Rockchip::RKNNMicroStatic)
+set(AIDEN_RKNN_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/src")
+set(AIDEN_RKNN_COMPILE_DEFINITIONS AIDEN_RKNN_MICRO_RUNTIME=1)
 
 # The glibc SDK ships MPP only as a static archive. OpenCV-Mobile's Rockchip
 # JPEG path resolves MPP through dlsym(), so export the exact symbols it needs

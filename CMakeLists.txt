@@ -182,13 +182,20 @@ target_link_libraries(audio_service_cli PRIVATE aiden)
 add_executable(audio_stream src/audio_stream.cpp)
 target_link_libraries(audio_stream PRIVATE aiden)
 
-add_executable(rknn_vad src/rknn_vad.cpp src/aiden_log.cpp)
+add_executable(rknn_vad
+    src/rknn_vad.cpp
+    src/aiden_log.cpp
+    ${AIDEN_RKNN_COMPAT_SOURCES}
+)
 target_include_directories(rknn_vad PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${AIDEN_RKNN_INCLUDE_DIR}
 )
 target_compile_definitions(rknn_vad PRIVATE ${AIDEN_RKNN_COMPILE_DEFINITIONS})
 target_link_libraries(rknn_vad PRIVATE ${AIDEN_RKNN_TARGET} pthread dl m)
+if(AIDEN_RKNN_COMPAT_SOURCES)
+    target_compile_definitions(rknn_vad PRIVATE AIDEN_RKNN_GLIBC_COMPAT=1)
+endif()
 
 add_executable(cpu_vad src/cpu_vad.cpp src/aiden_log.cpp)
 target_include_directories(cpu_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)

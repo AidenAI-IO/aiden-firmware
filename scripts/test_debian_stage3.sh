@@ -83,6 +83,16 @@ grep -Fq 'aiden-usb-gadget' "${STAGE3_DIR}/container-build-rootfs.sh"
 grep -Fq 'aiden-boot-timeline' "${STAGE3_DIR}/container-build-rootfs.sh"
 grep -Fq 'aiden-boot-timeline.service' "${STAGE3_DIR}/container-build-rootfs.sh"
 grep -Fq 'aiden-machine-id.service' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'useradd --uid 1000 --gid aiden --create-home' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'audio,video,dialout,plugdev,netdev aiden' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'mgLNEH35w8GS9UrV1Yi4BXg1g.CYyVIAnUAXIXmato37U4M5obgDhGY2YhpIwHd7sNCtBq/uB.5oEk8jHPNYZ.' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -qx 'PasswordAuthentication yes' \
+    "${REPO_ROOT}/overlay-debian/etc/ssh/sshd_config.d/20-aiden.conf"
+grep -qx 'PermitRootLogin prohibit-password' \
+    "${REPO_ROOT}/overlay-debian/etc/ssh/sshd_config.d/20-aiden.conf"
 grep -Fq 'systemctl --root="${ROOTFS_DIR}" preset-all' \
     "${STAGE3_DIR}/container-build-rootfs.sh"
 grep -Fq 'ssh.socket rsync.service' "${STAGE3_DIR}/container-build-rootfs.sh"
