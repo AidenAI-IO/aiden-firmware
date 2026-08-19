@@ -35,26 +35,39 @@ type screenshotResult struct {
 type screenshotFrameClient = screenprovider.Provider
 
 func captureScreenshotJPEG(client screenshotFrameClient, screenState *screen.ScreenState, cropBlack bool) (*frameMetadata, []byte, screenCaptureInfo, error) {
-	minimalWidth := 0
+	hint := screenprovider.CropHint{}
 	if cropBlack {
-		minimalWidth = screenshotMinimalWidth(screenState)
+		hint = screenshotCropHint(screenState)
 	}
-	return client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, cropBlack, minimalWidth)
+	return client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, cropBlack, hint)
 }
 
-func screenshotMinimalWidth(screenState *screen.ScreenState) int {
+func screenshotCropHint(screenState *screen.ScreenState) screenprovider.CropHint {
 	if screenState == nil {
-		return 0
+		return screenprovider.CropHint{}
 	}
 	phoneScreen := screenState.PhoneScreenInfo()
 	width, height, ok := currentPhoneScreenDimensions(phoneScreen)
 	if !ok {
 		width, height, ok = nativePhoneScreenDimensions(phoneScreen)
 		if !ok {
-			return 0
+			return screenprovider.CropHint{}
 		}
 	}
-	minimalWidth := int(math.Round(1080 * width / height))
+	return screenprovider.CropHint{
+		ScreenWidth:  int(math.Round(width)),
+		ScreenHeight: int(math.Round(height)),
+	}
+}
+
+// screenshotMinimalWidth is retained for callers that still need the legacy
+// horizontal-only hint.
+func screenshotMinimalWidth(screenState *screen.ScreenState) int {
+	hint := screenshotCropHint(screenState)
+	if hint.ScreenWidth <= 0 || hint.ScreenHeight <= 0 {
+		return 0
+	}
+	minimalWidth := int(math.Round(1080 * float64(hint.ScreenWidth) / float64(hint.ScreenHeight)))
 	if minimalWidth < 1 {
 		return 0
 	}
@@ -276,10 +289,6 @@ func deriveActiveAreaFromPhoneScreen(frameWidth, frameHeight int, phoneScreen sc
 	if len(candidates) > 1 && !approx.Valid {
 		return screen.ScreenActiveArea{}, false
 	}
-	if approx.Valid && (approx.Y != 0 || approx.Height != frameHeight) {
-		return screen.ScreenActiveArea{}, false
-	}
-
 	best := screen.ScreenActiveArea{}
 	bestScore := math.MaxFloat64
 	for _, aspectRatio := range candidates {
@@ -354,15 +363,22 @@ func projectAspectRatioToFrame(frameWidth, frameHeight int, aspectRatio float64)
 	if frameWidth <= 0 || frameHeight <= 0 || aspectRatio <= 0 || math.IsNaN(aspectRatio) || math.IsInf(aspectRatio, 0) {
 		return screen.ScreenActiveArea{}, false
 	}
-	activeWidth := int(math.Round(float64(frameHeight) * aspectRatio))
-	if activeWidth < 1 || activeWidth > frameWidth {
+	frameAspectRatio := float64(frameWidth) / float64(frameHeight)
+	activeWidth := frameWidth
+	activeHeight := frameHeight
+	if aspectRatio <= frameAspectRatio {
+		activeWidth = int(math.Round(float64(frameHeight) * aspectRatio))
+	} else {
+		activeHeight = int(math.Round(float64(frameWidth) / aspectRatio))
+	}
+	if activeWidth < 1 || activeWidth > frameWidth || activeHeight < 1 || activeHeight > frameHeight {
 		return screen.ScreenActiveArea{}, false
 	}
 	return screen.ScreenActiveArea{
 		X:      (frameWidth - activeWidth) / 2,
-		Y:      0,
+		Y:      (frameHeight - activeHeight) / 2,
 		Width:  activeWidth,
-		Height: frameHeight,
+		Height: activeHeight,
 		Valid:  true,
 	}, true
 }
@@ -390,25 +406,66 @@ func detectImageActiveArea(img image.Image, expectedWidth, expectedHeight int) s
 	}
 
 	threshold := 10.0
-	left := 0
-	for left < width && imageColumnDark(img, bounds.Min.X+left, bounds.Min.Y, height, threshold) {
-		left++
+	left, right, horizontal := detectImageAxisBounds(width, func(position int) bool {
+		return imageColumnDark(img, bounds.Min.X+position, bounds.Min.Y, height, threshold)
+	})
+	top, bottom, vertical := detectImageAxisBounds(height, func(position int) bool {
+		return imageRowDark(img, bounds.Min.Y+position, bounds.Min.X, width, threshold)
+	})
+	if horizontal && vertical {
+		horizontalRemoved := 1 - float64(right-left+1)/float64(width)
+		verticalRemoved := 1 - float64(bottom-top+1)/float64(height)
+		horizontal = horizontalRemoved > verticalRemoved
+		vertical = !horizontal
 	}
-	right := width - 1
-	for right >= left && imageColumnDark(img, bounds.Min.X+right, bounds.Min.Y, height, threshold) {
-		right--
+	if horizontal {
+		return screen.ScreenActiveArea{X: left, Y: 0, Width: right - left + 1, Height: height, Valid: true}
 	}
-	activeWidth := right - left + 1
-	if activeWidth <= 0 {
-		return screen.ScreenActiveArea{}
+	if vertical {
+		return screen.ScreenActiveArea{X: 0, Y: top, Width: width, Height: bottom - top + 1, Valid: true}
 	}
-	if activeWidth > width*95/100 {
-		return screen.ScreenActiveArea{}
+	return screen.ScreenActiveArea{}
+}
+
+func detectImageAxisBounds(length int, dark func(int) bool) (int, int, bool) {
+	if length <= 1 || !dark(0) || !dark(length-1) {
+		return 0, length - 1, false
 	}
-	if activeWidth < width/5 {
-		return screen.ScreenActiveArea{}
+	activeSeed := -1
+	for _, position := range []int{length / 2, length / 4, length * 3 / 4, length / 8, length * 3 / 8, length * 5 / 8, length * 7 / 8} {
+		if !dark(position) {
+			activeSeed = position
+			break
+		}
 	}
-	return screen.ScreenActiveArea{X: left, Y: 0, Width: activeWidth, Height: height, Valid: true}
+	if activeSeed < 0 {
+		return 0, length - 1, false
+	}
+	border, active := 0, activeSeed
+	for active-border > 1 {
+		middle := border + (active-border)/2
+		if dark(middle) {
+			border = middle
+		} else {
+			active = middle
+		}
+	}
+	first := active
+	active, border = activeSeed, length-1
+	for border-active > 1 {
+		middle := active + (border-active)/2
+		if dark(middle) {
+			border = middle
+		} else {
+			active = middle
+		}
+	}
+	last := active
+	activeLength := last - first + 1
+	tolerance := max(4, length/100)
+	valid := activeLength >= length/5 && activeLength <= length*95/100 &&
+		cropAbsInt(first-(length-1-last)) <= tolerance
+	return first, last, valid
 }
 
 func imageColumnDark(img image.Image, x, minY, height int, threshold float64) bool {
@@ -430,6 +487,31 @@ func imageColumnDark(img image.Image, x, minY, height int, threshold float64) bo
 		}
 	}
 	return bright <= samples/20
+}
+
+func imageRowDark(img image.Image, y, minX, width int, threshold float64) bool {
+	samples := min(64, width)
+	if samples <= 0 {
+		return true
+	}
+	bright := 0
+	for i := 0; i < samples; i++ {
+		x := minX
+		if samples > 1 {
+			x += int(math.Round(float64(i) * float64(width-1) / float64(samples-1)))
+		}
+		if pixelBrightness(img.At(x, y)) > threshold {
+			bright++
+		}
+	}
+	return bright <= samples/20
+}
+
+func cropAbsInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func pixelBrightness(c color.Color) float64 {

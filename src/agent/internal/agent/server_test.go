@@ -31,6 +31,7 @@ import (
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/screenprovider"
 	speechtext "aiden-agent/internal/agent/speech"
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
@@ -1275,7 +1276,7 @@ func TestFrameServiceClientSendsRawCropBlackOption(t *testing.T) {
 	})
 
 	client := NewFrameServiceClient(frameSocket)
-	meta, data, err := client.LatestFrameWithFormat("raw", 0, true, 608)
+	meta, data, err := client.LatestFrameWithFormat("raw", 0, true, screenprovider.CropHint{MinimalWidth: 608})
 	if err != nil {
 		t.Fatalf("LatestFrameWithFormat() error = %v", err)
 	}

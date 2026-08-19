@@ -3,6 +3,7 @@
 #include "frame_processing.h"
 #include "cJSON/cJSON.h"
 #include "uds_message.h"
+#include <algorithm>
 #include <chrono>
 #include <stdio.h>
 #include <stdlib.h>
@@ -124,6 +125,26 @@ static uint64_t json_u64(cJSON* object, const char* key) {
 
 static uint32_t json_u32(cJSON* object, const char* key) {
     return static_cast<uint32_t>(json_u64(object, key));
+}
+
+static void centered_aspect_crop_size(uint32_t frame_width, uint32_t frame_height,
+                                      uint32_t screen_width, uint32_t screen_height,
+                                      uint32_t* crop_width, uint32_t* crop_height) {
+    *crop_width = frame_width;
+    *crop_height = frame_height;
+    if (frame_width == 0 || frame_height == 0 || screen_width == 0 || screen_height == 0) {
+        return;
+    }
+    if (static_cast<uint64_t>(screen_width) * frame_height <=
+        static_cast<uint64_t>(screen_height) * frame_width) {
+        const uint64_t numerator = static_cast<uint64_t>(frame_height) * screen_width;
+        *crop_width = static_cast<uint32_t>(
+            std::max<uint64_t>(1, (numerator + screen_height / 2U) / screen_height));
+    } else {
+        const uint64_t numerator = static_cast<uint64_t>(frame_width) * screen_height;
+        *crop_height = static_cast<uint32_t>(
+            std::max<uint64_t>(1, (numerator + screen_width / 2U) / screen_width));
+    }
 }
 
 static std::string json_string(cJSON* object, const char* key) {
@@ -367,6 +388,8 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         std::string format = json_string(root, "format");
         int quality = static_cast<int>(json_u32(root, "quality"));
         uint64_t requested_minimal_width = json_u64(root, "minimal_width");
+        uint64_t requested_screen_width = json_u64(root, "screen_width");
+        uint64_t requested_screen_height = json_u64(root, "screen_height");
         if (quality <= 0) {
             quality = 80;
         }
@@ -431,21 +454,55 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             const uint32_t minimal_width = requested_minimal_width > metadata.width
                                                ? metadata.width
                                                : static_cast<uint32_t>(requested_minimal_width);
-            const bool crop_by_aspect = crop_black && minimal_width > 0;
+            const uint32_t screen_width = requested_screen_width > UINT32_MAX
+                                              ? 0
+                                              : static_cast<uint32_t>(requested_screen_width);
+            const uint32_t screen_height = requested_screen_height > UINT32_MAX
+                                               ? 0
+                                               : static_cast<uint32_t>(requested_screen_height);
 
             std::vector<uint8_t> transformed_payload;
             const std::vector<uint8_t>* payload = &frame->data;
+            FrameMetadata transformed_metadata = metadata;
+            std::vector<uint8_t> cropped_raw_payload;
+            if (crop_black && (format == "jpeg" || format == "raw")) {
+                bool cropped = false;
+                if (screen_width > 0 && screen_height > 0) {
+                    uint32_t crop_width = metadata.width;
+                    uint32_t crop_height = metadata.height;
+                    centered_aspect_crop_size(metadata.width, metadata.height,
+                                              screen_width, screen_height,
+                                              &crop_width, &crop_height);
+                    cropped = crop_frame_center(metadata, frame->data, crop_width, crop_height,
+                                                &transformed_metadata, &cropped_raw_payload);
+                } else if (minimal_width > 0) {
+                    cropped = crop_frame_horizontal_center(metadata, frame->data, minimal_width,
+                                                           &transformed_metadata,
+                                                           &cropped_raw_payload);
+                } else {
+                    cropped = crop_frame_black_bars(metadata, frame->data,
+                                                    &transformed_metadata,
+                                                    &cropped_raw_payload);
+                }
+                if (!cropped) {
+                    write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
+                    cJSON_Delete(root);
+                    return;
+                }
+                payload = &cropped_raw_payload;
+            }
             if (format == "jpeg") {
-                // Encode to JPEG, optionally cropping horizontal black bars.
+                // Crop raw YUV before conversion, then encode the active region.
                 uint32_t source_width = metadata.width;
                 uint32_t source_height = metadata.height;
                 uint32_t encoded_width = 0, encoded_height = 0;
                 uint32_t crop_x = 0, crop_y = 0;
-                if (!encode_yuv_to_jpeg_hw(frame->data, metadata.width, metadata.height,
-                                           metadata.pixel_format, quality, &transformed_payload,
+                if (!encode_yuv_to_jpeg_hw(*payload, transformed_metadata.width,
+                                           transformed_metadata.height,
+                                           transformed_metadata.pixel_format, quality,
+                                           &transformed_payload,
                                            &encoded_width, &encoded_height,
-                                           &crop_x, &crop_y, minimal_width, crop_black,
-                                           crop_by_aspect)) {
+                                           &crop_x, &crop_y, 0, false, false)) {
                     write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
                     cJSON_Delete(root);
                     return;
@@ -453,8 +510,8 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                 payload = &transformed_payload;
                 metadata.source_width = source_width;
                 metadata.source_height = source_height;
-                metadata.crop_x = crop_x;
-                metadata.crop_y = crop_y;
+                metadata.crop_x = transformed_metadata.crop_x + crop_x;
+                metadata.crop_y = transformed_metadata.crop_y + crop_y;
                 metadata.crop_width = encoded_width;
                 metadata.crop_height = encoded_height;
                 metadata.width = encoded_width;
@@ -464,16 +521,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                 metadata.pixel_format = "jpeg";
                 metadata.bytes = payload->size();
             } else if (format == "raw" && crop_black) {
-                FrameMetadata cropped_metadata;
-                if (!crop_frame_horizontal_black_bars(metadata, frame->data, minimal_width,
-                                                      &cropped_metadata, &transformed_payload,
-                                                      crop_by_aspect)) {
-                    write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
-                    cJSON_Delete(root);
-                    return;
-                }
-                metadata = cropped_metadata;
-                payload = &transformed_payload;
+                metadata = transformed_metadata;
             }
 
             std::string header = "{\"type\":\"response\",\"method\":\"latest_frame\",\"status\":\"OK\",\"frame\":" +

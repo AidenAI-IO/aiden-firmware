@@ -254,11 +254,11 @@ func (t *WaitStableScreenTool) captureWaitFrame() (*frameMetadata, []byte, scree
 	if t == nil || t.client == nil {
 		return nil, nil, screenCaptureInfo{}, fmt.Errorf("screen capture client not configured")
 	}
-	minimalWidth := 0
+	hint := screenprovider.CropHint{}
 	if t.cropBlack() {
-		minimalWidth = screenshotMinimalWidth(t.screen)
+		hint = screenshotCropHint(t.screen)
 	}
-	return t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, t.cropBlack(), minimalWidth)
+	return t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, t.cropBlack(), hint)
 }
 
 func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStableScreenResult, error) {

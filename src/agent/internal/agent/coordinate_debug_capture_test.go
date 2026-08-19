@@ -6,13 +6,14 @@ import (
 	"testing"
 
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/screenprovider"
 )
 
 type fakeScreenCaptureSource struct {
 	latestFrameCalls           int
 	latestFrameWithFormatCalls int
 	latestFrameFn              func() (*frameMetadata, []byte, error)
-	latestFrameWithFormatFn    func(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error)
+	latestFrameWithFormatFn    func(format string, quality int, cropBlack bool, hint screenprovider.CropHint) (*frameMetadata, []byte, error)
 	lastCaptureInfo            screenCaptureInfo
 }
 
@@ -24,12 +25,12 @@ func (f *fakeScreenCaptureSource) LatestFrame() (*frameMetadata, []byte, error) 
 	return f.latestFrameFn()
 }
 
-func (f *fakeScreenCaptureSource) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error) {
+func (f *fakeScreenCaptureSource) LatestFrameWithFormat(format string, quality int, cropBlack bool, hint screenprovider.CropHint) (*frameMetadata, []byte, error) {
 	f.latestFrameWithFormatCalls++
 	if f.latestFrameWithFormatFn == nil {
 		return nil, nil, errors.New("LatestFrameWithFormat not configured")
 	}
-	return f.latestFrameWithFormatFn(format, quality, cropBlack, minimalWidth)
+	return f.latestFrameWithFormatFn(format, quality, cropBlack, hint)
 }
 
 func (f *fakeScreenCaptureSource) LastCaptureInfo() screenCaptureInfo {
@@ -38,12 +39,12 @@ func (f *fakeScreenCaptureSource) LastCaptureInfo() screenCaptureInfo {
 
 func TestCoordinateDebugScreenshotReusesSharedScreenCaptureClientFallbackState(t *testing.T) {
 	primary := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, hint screenprovider.CropHint) (*frameMetadata, []byte, error) {
 			return nil, nil, errors.New("frame service: SERVICE_RECOVERING")
 		},
 	}
 	fallback := &fakeScreenCaptureSource{
-		latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, error) {
+		latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, hint screenprovider.CropHint) (*frameMetadata, []byte, error) {
 			return &frameMetadata{
 				Seq:          1,
 				Width:        2,
@@ -109,8 +110,8 @@ func TestProviderScreenshotUsesReportedPhoneWidthWhenRequestOmitsHint(t *testing
 	if rec.Code != 200 {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
-	if provider.minimalWidth != 497 {
-		t.Fatalf("minimal_width = %d, want 497 from reported 1200x2608 screen", provider.minimalWidth)
+	if provider.cropHint.ScreenWidth != 1200 || provider.cropHint.ScreenHeight != 2608 {
+		t.Fatalf("crop hint = %+v, want reported 1200x2608 screen", provider.cropHint)
 	}
 }
 

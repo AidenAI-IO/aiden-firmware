@@ -46,9 +46,9 @@ func (c *Fallback) LatestFrame() (*FrameMetadata, []byte, CaptureInfo, error) {
 	})
 }
 
-func (c *Fallback) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*FrameMetadata, []byte, CaptureInfo, error) {
+func (c *Fallback) LatestFrameWithFormat(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, CaptureInfo, error) {
 	return c.captureWithFallback(func(source Source) (*FrameMetadata, []byte, error) {
-		return source.LatestFrameWithFormat(format, quality, cropBlack, minimalWidth)
+		return source.LatestFrameWithFormat(format, quality, cropBlack, hint)
 	})
 }
 

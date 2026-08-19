@@ -12,14 +12,23 @@ const (
 
 // Provider captures the latest screen frame in a requested encoding.
 type Provider interface {
-	LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*FrameMetadata, []byte, CaptureInfo, error)
+	LatestFrameWithFormat(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, CaptureInfo, error)
 }
 
 // Source is a raw capture backend used by Fallback (frame_service or adb).
 // LatestFrameWithFormat does not attach CaptureInfo; Fallback adds it.
 type Source interface {
 	LatestFrame() (*FrameMetadata, []byte, error)
-	LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*FrameMetadata, []byte, error)
+	LatestFrameWithFormat(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, error)
+}
+
+// CropHint carries optional geometry for black-bar cropping. ScreenWidth and
+// ScreenHeight describe the current phone orientation; MinimalWidth preserves
+// compatibility with callers that only know a horizontal crop width.
+type CropHint struct {
+	MinimalWidth int `json:"minimal_width,omitempty"`
+	ScreenWidth  int `json:"screen_width,omitempty"`
+	ScreenHeight int `json:"screen_height,omitempty"`
 }
 
 type FrameMetadata struct {

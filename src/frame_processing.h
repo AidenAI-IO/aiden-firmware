@@ -10,14 +10,30 @@ bool convert_frame_to_rgb(const FrameMetadata& metadata,
                           const std::vector<uint8_t>& frame,
                           std::vector<uint8_t>* rgb);
 
-// Crop a supported raw frame to a centered width derived from known screen
-// geometry. The crop is aligned to complete chroma pairs.
+// Crop a supported raw frame to a centered rectangle derived from known screen
+// geometry. The crop is aligned to complete chroma samples.
+bool crop_frame_center(const FrameMetadata& metadata,
+                       const std::vector<uint8_t>& frame,
+                       uint32_t target_width,
+                       uint32_t target_height,
+                       FrameMetadata* cropped_metadata,
+                       std::vector<uint8_t>* cropped_frame);
+
+// Backward-compatible horizontal-only wrapper.
 bool crop_frame_horizontal_center(const FrameMetadata& metadata,
                                    const std::vector<uint8_t>& frame,
                                    uint32_t target_width,
                                    FrameMetadata* cropped_metadata,
                                    std::vector<uint8_t>* cropped_frame);
 
+// Detect centered black bars on either the horizontal or vertical axis and
+// crop them while keeping the other source dimension intact.
+bool crop_frame_black_bars(const FrameMetadata& metadata,
+                           const std::vector<uint8_t>& frame,
+                           FrameMetadata* cropped_metadata,
+                           std::vector<uint8_t>* cropped_frame);
+
+// Backward-compatible wrapper retaining the legacy minimal-width behavior.
 bool crop_frame_horizontal_black_bars(const FrameMetadata& metadata,
                                       const std::vector<uint8_t>& frame,
                                       uint32_t minimal_width,

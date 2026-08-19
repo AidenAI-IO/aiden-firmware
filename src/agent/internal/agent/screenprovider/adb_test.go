@@ -67,7 +67,7 @@ func TestADBScreenClientCapturesPNGAndJPEG(t *testing.T) {
 		t.Fatal("raw adb frame does not match source png")
 	}
 
-	pngMeta, pngFrame, err := client.LatestFrameWithFormat("png", DefaultJPEGQuality, false, 0)
+	pngMeta, pngFrame, err := client.LatestFrameWithFormat("png", DefaultJPEGQuality, false, CropHint{})
 	if err != nil {
 		t.Fatalf("LatestFrameWithFormat(png) error = %v", err)
 	}
@@ -78,7 +78,7 @@ func TestADBScreenClientCapturesPNGAndJPEG(t *testing.T) {
 		t.Fatal("png adb frame does not match source png")
 	}
 
-	jpegMeta, jpegFrame, err := client.LatestFrameWithFormat("jpeg", DefaultJPEGQuality, true, 0)
+	jpegMeta, jpegFrame, err := client.LatestFrameWithFormat("jpeg", DefaultJPEGQuality, true, CropHint{})
 	if err != nil {
 		t.Fatalf("LatestFrameWithFormat() error = %v", err)
 	}

@@ -29,11 +29,11 @@ type phoneScreenHintProvider struct {
 	screen   *screen.ScreenState
 }
 
-func (p *phoneScreenHintProvider) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error) {
-	if cropBlack && minimalWidth <= 0 {
-		minimalWidth = screenshotMinimalWidth(p.screen)
+func (p *phoneScreenHintProvider) LatestFrameWithFormat(format string, quality int, cropBlack bool, hint screenprovider.CropHint) (*frameMetadata, []byte, screenCaptureInfo, error) {
+	if cropBlack && hint.MinimalWidth <= 0 && (hint.ScreenWidth <= 0 || hint.ScreenHeight <= 0) {
+		hint = screenshotCropHint(p.screen)
 	}
-	return p.provider.LatestFrameWithFormat(format, quality, cropBlack, minimalWidth)
+	return p.provider.LatestFrameWithFormat(format, quality, cropBlack, hint)
 }
 
 func (s *Server) coordinateDebugScreen() *screen.ScreenState {

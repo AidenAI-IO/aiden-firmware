@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/screenprovider"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -348,7 +349,7 @@ type fakeWaitStableFrameClient struct {
 	jpegMeta  frameMetadata
 }
 
-func (c *fakeWaitStableFrameClient) LatestFrameWithFormat(format string, quality int, _ bool, _ int) (*frameMetadata, []byte, screenCaptureInfo, error) {
+func (c *fakeWaitStableFrameClient) LatestFrameWithFormat(format string, quality int, _ bool, _ screenprovider.CropHint) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if format != "jpeg" {
 		return nil, nil, screenCaptureInfo{}, fmt.Errorf("unexpected format %q", format)
 	}

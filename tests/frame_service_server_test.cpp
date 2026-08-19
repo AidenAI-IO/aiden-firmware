@@ -381,6 +381,44 @@ TEST_CASE("FrameServiceServer uses centered raw aspect crop for known screen wid
     server.stop();
 }
 
+TEST_CASE("FrameServiceServer uses centered vertical crop for wide known screen") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+    std::vector<uint8_t> data;
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            data.push_back(128);
+            data.push_back(static_cast<uint8_t>(40 + y));
+            data.push_back(128);
+            data.push_back(static_cast<uint8_t>(40 + y));
+        }
+    }
+    uint64_t seq = 0;
+    REQUIRE(server.append_frame(metadata(8, 8, "uyvy", 99), data.data(), data.size(), &seq) == FrameServiceStatus::OK);
+
+    int fd = connect_raw_client(socket_path.path);
+    REQUIRE(aiden::write_frame_message(
+                fd,
+                "{\"type\":\"request\",\"method\":\"latest_frame\",\"since_seq\":\"0\",\"timeout_ms\":0,\"format\":\"raw\",\"crop_black\":true,\"screen_width\":2,\"screen_height\":1}",
+                std::vector<uint8_t>()) == FrameServiceStatus::OK);
+    std::vector<uint8_t> cropped;
+    const std::string header = read_response(fd, &cropped);
+
+    CHECK(header.find("\"width\":8") != std::string::npos);
+    CHECK(header.find("\"height\":4") != std::string::npos);
+    CHECK(header.find("\"source_height\":8") != std::string::npos);
+    CHECK(header.find("\"crop_x\":0") != std::string::npos);
+    CHECK(header.find("\"crop_y\":2") != std::string::npos);
+    CHECK(header.find("\"crop_width\":8") != std::string::npos);
+    CHECK(header.find("\"crop_height\":4") != std::string::npos);
+    REQUIRE(cropped.size() == 64);
+    CHECK(cropped.front() == data[32]);
+
+    ::close(fd);
+    server.stop();
+}
+
 TEST_CASE("FrameServiceServer returns NO_NEW_FRAME for nonblocking latest request") {
     TempSocketPath socket_path;
     FrameServiceServer server(socket_path.path.c_str(), 4);
