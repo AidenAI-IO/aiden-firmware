@@ -413,6 +413,25 @@ secondRequest.resolve({config: {
 await voiceSave;
 assert.equal(maxActiveRequests, 1);
 assert.equal(latestDetails, '');
+assert.deepEqual(
+  requestBodies[1].config.tts_providers,
+  {voice: {type: 'fish-audio', reference_id: 'ref-1'}},
+  'provider patches retain changed optional values',
+);
+
+let clearedProviderBody = null;
+TtsProvidersManager.load({voice: {type: 'fish-audio', reference_id: 'ref-1'}});
+TtsProvidersManager.records = {voice: {type: 'fish-audio'}};
+requestImpl = async (_url, options) => {
+  clearedProviderBody = JSON.parse(options.body);
+  return {config: {tts_providers: {voice: {type: 'fish-audio'}}}};
+};
+assert.equal(await TtsProvidersManager.save(), true);
+assert.deepEqual(
+  clearedProviderBody.config.tts_providers,
+  {voice: {type: 'fish-audio', reference_id: null}},
+  'clearing an optional provider value must produce a JSON Merge Patch deletion',
+);
 
 const providerSelect = new Element();
 providerSelect.value = 'active';

@@ -40,6 +40,8 @@ type configUpdateResult struct {
 	Error          string       `json:"error,omitempty"`
 }
 
+type providerRenames map[string]map[string]string
+
 type ConfigTestResult struct {
 	OK         bool              `json:"ok"`
 	Results    []ConfigTestCheck `json:"results"`
@@ -1011,12 +1013,22 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 	if err := json.Unmarshal(patchJSON, &patch); err != nil {
 		return configUpdateResult{}, fmt.Errorf("invalid JSON merge patch: %w", err)
 	}
+	if patch == nil {
+		return configUpdateResult{}, fmt.Errorf("config patch must be an object")
+	}
 	if nested, ok := patch["config"]; ok {
 		var configPatch map[string]json.RawMessage
 		if err := json.Unmarshal(nested, &configPatch); err != nil {
 			return configUpdateResult{}, fmt.Errorf("config patch must be an object: %w", err)
 		}
+		if configPatch == nil {
+			return configUpdateResult{}, fmt.Errorf("config patch must be an object")
+		}
 		patch = configPatch
+	}
+	renames, err := takeProviderRenames(patch)
+	if err != nil {
+		return configUpdateResult{}, err
 	}
 	resolvedPath, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -1029,6 +1041,12 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 	current, err := agent.LoadResolvedConfig(resolvedPath)
 	if err != nil {
 		return configUpdateResult{}, fmt.Errorf("load config: %w", err)
+	}
+	if err := restoreRenamedProviderCredentials(patch, renames, current); err != nil {
+		return configUpdateResult{}, err
+	}
+	if err := preserveProviderCredentials(patch, current); err != nil {
+		return configUpdateResult{}, err
 	}
 	patch, err = filterNoopWebConfigPatch(patch, webConfigDTOFromAgentConfig(current))
 	if err != nil {
@@ -1058,18 +1076,23 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 		return configUpdateResult{}, fmt.Errorf("create temporary config: %w", err)
 	}
 	tmpPath := tmp.Name()
+	defer tmp.Close()
 	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(info.Mode().Perm()); err == nil {
-		_, err = tmp.Write(updated)
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		return configUpdateResult{}, fmt.Errorf("set temporary config mode: %w", err)
 	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
+	n, err := tmp.Write(updated)
 	if err != nil {
 		return configUpdateResult{}, fmt.Errorf("write temporary config: %w", err)
+	}
+	if n != len(updated) {
+		return configUpdateResult{}, fmt.Errorf("write temporary config: %w", io.ErrShortWrite)
+	}
+	if err := tmp.Sync(); err != nil {
+		return configUpdateResult{}, fmt.Errorf("sync temporary config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return configUpdateResult{}, fmt.Errorf("close temporary config: %w", err)
 	}
 	candidate, err := agent.LoadResolvedConfig(tmpPath)
 	if err != nil {
@@ -1095,6 +1118,185 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 		ChangedPaths:   changed,
 		RebootRequired: requiresConfigReboot(changed),
 	}, nil
+}
+
+func takeProviderRenames(patch map[string]json.RawMessage) (providerRenames, error) {
+	raw, exists := patch["_provider_renames"]
+	if !exists {
+		return nil, nil
+	}
+	delete(patch, "_provider_renames")
+	var sections map[string]map[string]string
+	if err := json.Unmarshal(raw, &sections); err != nil {
+		return nil, fmt.Errorf("_provider_renames must be an object: %w", err)
+	}
+	if sections == nil {
+		return nil, fmt.Errorf("_provider_renames must be an object")
+	}
+	for section, renames := range sections {
+		if section != "model_providers" && section != "tts_providers" && section != "stt_providers" {
+			return nil, fmt.Errorf("_provider_renames has unsupported section %s", section)
+		}
+		if renames == nil {
+			return nil, fmt.Errorf("_provider_renames.%s must be an object", section)
+		}
+		for newName, oldName := range renames {
+			if strings.TrimSpace(newName) == "" || strings.TrimSpace(oldName) == "" || newName == oldName {
+				return nil, fmt.Errorf("invalid provider rename in %s", section)
+			}
+		}
+	}
+	return sections, nil
+}
+
+func restoreRenamedProviderCredentials(patch map[string]json.RawMessage, renames providerRenames, current agent.Config) error {
+	for section, sectionRenames := range renames {
+		rawSection, ok := patch[section]
+		if !ok {
+			return fmt.Errorf("provider rename in %s requires a provider patch", section)
+		}
+		var records map[string]json.RawMessage
+		if err := json.Unmarshal(rawSection, &records); err != nil {
+			return fmt.Errorf("%s provider patch must be an object: %w", section, err)
+		}
+		for newName, oldName := range sectionRenames {
+			if !providerRecordExists(current, section, oldName) {
+				return fmt.Errorf("provider rename source %s.%s does not exist", section, oldName)
+			}
+			oldRaw, oldDeleted := records[oldName]
+			if !oldDeleted || !bytes.Equal(bytes.TrimSpace(oldRaw), []byte("null")) {
+				return fmt.Errorf("provider rename in %s must delete %s", section, oldName)
+			}
+			newRaw, newExists := records[newName]
+			if !newExists || bytes.Equal(bytes.TrimSpace(newRaw), []byte("null")) {
+				return fmt.Errorf("provider rename in %s must create %s", section, newName)
+			}
+			var record map[string]json.RawMessage
+			if err := json.Unmarshal(newRaw, &record); err != nil {
+				return fmt.Errorf("provider rename target %s.%s must be an object: %w", section, newName, err)
+			}
+			for key, value := range providerCredentialValues(current, section, oldName) {
+				if value == "" {
+					continue
+				}
+				if submitted, ok := record[key]; ok && !credentialNeedsPreservation(submitted, value) {
+					continue
+				}
+				encoded, err := json.Marshal(value)
+				if err != nil {
+					return err
+				}
+				record[key] = encoded
+			}
+			encoded, err := json.Marshal(record)
+			if err != nil {
+				return err
+			}
+			records[newName] = encoded
+		}
+		encoded, err := json.Marshal(records)
+		if err != nil {
+			return err
+		}
+		patch[section] = encoded
+	}
+	return nil
+}
+
+func providerRecordExists(config agent.Config, section, name string) bool {
+	switch section {
+	case "model_providers":
+		_, ok := config.ModelProviders[name]
+		return ok
+	case "tts_providers":
+		_, ok := config.TTSProviders[name]
+		return ok
+	case "stt_providers":
+		_, ok := config.STTProviders[name]
+		return ok
+	default:
+		return false
+	}
+}
+
+func preserveProviderCredentials(patch map[string]json.RawMessage, current agent.Config) error {
+	for _, section := range []string{"model_providers", "tts_providers", "stt_providers"} {
+		rawSection, ok := patch[section]
+		if !ok {
+			continue
+		}
+		var records map[string]json.RawMessage
+		if err := json.Unmarshal(rawSection, &records); err != nil {
+			return fmt.Errorf("%s provider patch must be an object: %w", section, err)
+		}
+		for name, rawRecord := range records {
+			if bytes.Equal(bytes.TrimSpace(rawRecord), []byte("null")) {
+				continue
+			}
+			var record map[string]json.RawMessage
+			if err := json.Unmarshal(rawRecord, &record); err != nil {
+				continue
+			}
+			for key, previous := range providerCredentialValues(current, section, name) {
+				if previous == "" {
+					continue
+				}
+				submitted, exists := record[key]
+				if !exists || !credentialNeedsPreservation(submitted, previous) {
+					continue
+				}
+				encoded, err := json.Marshal(previous)
+				if err != nil {
+					return err
+				}
+				record[key] = encoded
+			}
+			encoded, err := json.Marshal(record)
+			if err != nil {
+				return err
+			}
+			records[name] = encoded
+		}
+		encoded, err := json.Marshal(records)
+		if err != nil {
+			return err
+		}
+		patch[section] = encoded
+	}
+	return nil
+}
+
+func credentialNeedsPreservation(raw json.RawMessage, previous string) bool {
+	var submitted string
+	if json.Unmarshal(raw, &submitted) != nil {
+		return false
+	}
+	return strings.TrimSpace(submitted) == "" || submitted == maskCredential(previous)
+}
+
+func maskCredential(value string) string {
+	if len(value) <= 8 {
+		return "***"
+	}
+	return value[:4] + "***" + value[len(value)-4:]
+}
+
+func providerCredentialValues(config agent.Config, section, name string) map[string]string {
+	switch section {
+	case "model_providers":
+		return map[string]string{"api_key": config.ModelProviders[name].APIKey}
+	case "tts_providers":
+		return map[string]string{"api_key": config.TTSProviders[name].APIKey}
+	case "stt_providers":
+		provider := config.STTProviders[name]
+		return map[string]string{
+			"api_key":    provider.APIKey,
+			"secret_id":  provider.SecretID,
+			"secret_key": provider.SecretKey,
+		}
+	default:
+		return nil
+	}
 }
 
 func filterNoopWebConfigPatch(patch map[string]json.RawMessage, current webConfigDTO) (map[string]json.RawMessage, error) {
@@ -1204,6 +1406,10 @@ func validateWebConfigPatch(patch map[string]json.RawMessage) error {
 
 func validatePatchObject(typ reflect.Type, patch map[string]json.RawMessage, path []string) error {
 	if typ.Kind() == reflect.Map {
+		elementType := typ.Elem()
+		for elementType.Kind() == reflect.Pointer {
+			elementType = elementType.Elem()
+		}
 		for key, raw := range patch {
 			if strings.HasPrefix(key, "has_") {
 				return fmt.Errorf("%s is a read-only status field", strings.Join(append(path, key), "."))
@@ -1211,17 +1417,23 @@ func validatePatchObject(typ reflect.Type, patch map[string]json.RawMessage, pat
 			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 				continue
 			}
+			if elementType.Kind() != reflect.Struct && elementType.Kind() != reflect.Map {
+				continue
+			}
 			var child map[string]json.RawMessage
 			if err := json.Unmarshal(raw, &child); err != nil {
 				return fmt.Errorf("%s must be an object", strings.Join(append(path, key), "."))
 			}
-			if err := validatePatchObject(typ.Elem(), child, append(path, key)); err != nil {
+			if err := validatePatchObject(elementType, child, append(path, key)); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 	for key, raw := range patch {
+		if len(path) == 0 && key == "providers" {
+			return fmt.Errorf("agent config field providers is unsupported; use model_providers")
+		}
 		if strings.HasPrefix(key, "has_") {
 			return fmt.Errorf("%s is a read-only status field", strings.Join(append(path, key), "."))
 		}

@@ -1460,7 +1460,8 @@ TEST_CASE("config_web: POST /api/config renames a provider with its model refere
 
     const std::string rename =
         "{\"config\":{\"model_providers\":{"
-        "\"openai-work\":{\"type\":\"openai\",\"api_key\":\"sk-plain-secret-1234\"}},"
+        "\"openai\":null,\"openai-work\":{\"type\":\"openai\"}},"
+        "\"_provider_renames\":{\"model_providers\":{\"openai-work\":\"openai\"}},"
         "\"model\":{\"provider\":\"openai-work\",\"model\":\"x\"}},\"apply_wifi\":false}";
     CHECK(http_request(handle->port, "POST", "/api/config", rename).status == 200);
 
@@ -1793,13 +1794,12 @@ TEST_CASE("config_web: provider renames preserve every omitted secret") {
     const std::string tmp = make_temp_dir();
     write_file(tmp + "/config.json",
                "{\"model_providers\":{\"model-old\":{\"type\":\"openai\","
-               "\"api_key\":\"sk-model-secret-1234\"}},"
+               "\"has_api_key\":true}},"
                "\"tts_providers\":{\"tts-old\":{\"type\":\"fish-audio\","
-               "\"api_key\":\"sk-tts-secret-1234\"}},"
+               "\"has_api_key\":true}},"
                "\"stt_providers\":{\"stt-old\":{\"type\":\"tencent-asr\","
-               "\"api_key\":\"sk-stt-secret-1234\",\"app_id\":\"1234\","
-               "\"secret_id\":\"AKID-secret-1234\","
-               "\"secret_key\":\"secret-key-1234\",\"region\":\"ap-shanghai\"}},"
+               "\"has_api_key\":true,\"app_id\":\"1234\","
+               "\"has_secret_id\":true,\"has_secret_key\":true,\"region\":\"ap-shanghai\"}},"
                "\"model\":{\"provider\":\"model-old\",\"model\":\"gpt-4o\"},"
                "\"tts\":{\"provider\":\"tts-old\",\"speed\":1},"
                "\"stt\":{\"provider\":\"stt-old\",\"language\":\"zh\"},"
@@ -1807,6 +1807,12 @@ TEST_CASE("config_web: provider renames preserve every omitted secret") {
                "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[model_providers.model-old]\ntype = \"openai\"\napi_key = \"sk-model-secret-1234\"\n\n"
+               "[tts_providers.tts-old]\ntype = \"fish-audio\"\napi_key = \"sk-tts-secret-1234\"\n\n"
+               "[stt_providers.stt-old]\ntype = \"tencent-asr\"\napi_key = \"sk-stt-secret-1234\"\n"
+               "app_id = \"1234\"\nsecret_id = \"AKID-secret-1234\"\nsecret_key = \"secret-key-1234\"\nregion = \"ap-shanghai\"\n\n"
+               "[model]\nprovider = \"model-old\"\nmodel = \"gpt-4o\"\n\n[tts]\nprovider = \"tts-old\"\n\n[stt]\nprovider = \"stt-old\"\n");
 
     HttpResponse get_resp = http_request(handle->port, "GET", "/api/config", "");
     REQUIRE(get_resp.status == 200);
@@ -1838,9 +1844,9 @@ TEST_CASE("config_web: provider renames preserve every omitted secret") {
 
     const std::string body =
         "{\"config\":{"
-        "\"model_providers\":{\"model-new\":{\"type\":\"openai\"}},"
-        "\"tts_providers\":{\"tts-new\":{\"type\":\"fish-audio\"}},"
-        "\"stt_providers\":{\"stt-new\":{\"type\":\"tencent-asr\","
+        "\"model_providers\":{\"model-old\":null,\"model-new\":{\"type\":\"openai\"}},"
+        "\"tts_providers\":{\"tts-old\":null,\"tts-new\":{\"type\":\"fish-audio\"}},"
+        "\"stt_providers\":{\"stt-old\":null,\"stt-new\":{\"type\":\"tencent-asr\","
         "\"app_id\":\"1234\",\"region\":\"ap-shanghai\"}},"
         "\"_provider_renames\":{"
         "\"model_providers\":{\"model-new\":\"model-old\"},"
@@ -2043,7 +2049,7 @@ TEST_CASE("config_web: POST /api/config omitting temperature clears a saved valu
 
     // Now save again without the temperature key: it must be cleared.
     const std::string without_temp =
-        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "{\"config\":{\"model\":{\"temperature\":null},"
         "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse second = http_request(handle->port, "POST", "/api/config", without_temp);

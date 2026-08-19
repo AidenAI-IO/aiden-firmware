@@ -2,6 +2,7 @@ package configdoc
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -107,6 +108,22 @@ func TestApplyAppendsMinimalNewTable(t *testing.T) {
 	}
 }
 
+func TestApplyInsertsMissingTopLevelKeyBeforeFirstTable(t *testing.T) {
+	source := []byte("# existing config\nfuture = true\n\n[device]\nbackend = \"hdmi\"\n")
+	want := []byte("# existing config\nfuture = true\n\nlocale = \"en-US\"\n[device]\nbackend = \"hdmi\"\n")
+
+	got, changed, err := Apply(source, []Operation{{Path: []string{"locale"}, Value: "en-US"}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "locale" {
+		t.Fatalf("changed = %v", changed)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestApplyDeletesProviderRecordWithoutTouchingOthers(t *testing.T) {
 	source := []byte("[tts_providers.old]\ntype = \"fish-audio\"\nunknown = true\n\n# keep next provider\n[tts_providers.keep]\ntype = \"minimax\"\n")
 	want := []byte("# keep next provider\n[tts_providers.keep]\ntype = \"minimax\"\n")
@@ -120,6 +137,40 @@ func TestApplyDeletesProviderRecordWithoutTouchingOthers(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestApplyDeleteTablePreservesInterleavedUnrelatedTables(t *testing.T) {
+	source := []byte(`[model_providers.old]
+type = "openai"
+
+[telemetry]
+enabled = true
+
+[model_providers.old.options]
+future = "remove with provider"
+
+[model]
+provider = "new"
+`)
+	updated, changed, err := Apply(source, []Operation{{
+		Path:        []string{"model_providers", "old"},
+		DeleteTable: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 1 || changed[0] != "model_providers.old" {
+		t.Fatalf("changed = %v", changed)
+	}
+	text := string(updated)
+	if strings.Contains(text, "[model_providers.old]") || strings.Contains(text, "[model_providers.old.options]") {
+		t.Fatalf("provider table was not fully deleted:\n%s", text)
+	}
+	for _, want := range []string{"[telemetry]", "enabled = true", "[model]", `provider = "new"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("unrelated content %q was deleted:\n%s", want, text)
+		}
 	}
 }
 

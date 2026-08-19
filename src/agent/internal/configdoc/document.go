@@ -81,7 +81,10 @@ func Apply(source []byte, operations []Operation) ([]byte, []string, error) {
 			if err != nil {
 				return nil, nil, fmt.Errorf("%s: %w", pathString(op.Path), err)
 			}
-			next, didChange = setValue(result, doc, op.Path, encoded)
+			next, didChange, err = setValue(result, doc, op.Path, encoded)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", pathString(op.Path), err)
+			}
 		}
 		if !didChange {
 			continue
@@ -252,16 +255,19 @@ func nodeKey(node *unstable.Node) []string {
 	return result
 }
 
-func setValue(source []byte, doc index, path []string, encoded []byte) ([]byte, bool) {
+func setValue(source []byte, doc index, path []string, encoded []byte) ([]byte, bool, error) {
 	if key := findKey(doc, path); key != nil {
 		if bytes.Equal(source[key.valueStart:key.valueEnd], encoded) {
-			return source, false
+			return source, false, nil
 		}
-		return splice(source, key.valueStart, key.valueEnd, encoded), true
+		return splice(source, key.valueStart, key.valueEnd, encoded), true, nil
 	}
 
 	tablePath := path[:len(path)-1]
-	keyText := encodeKey(path[len(path)-1])
+	keyText, err := encodeKey(path[len(path)-1])
+	if err != nil {
+		return nil, false, err
+	}
 	line := append(append([]byte(nil), keyText...), []byte(" = ")...)
 	line = append(line, encoded...)
 	line = append(line, '\n')
@@ -272,7 +278,10 @@ func setValue(source []byte, doc index, path []string, encoded []byte) ([]byte, 
 				position = key.lineEnd
 			}
 		}
-		return splice(source, position, position, line), true
+		return splice(source, position, position, line), true, nil
+	}
+	if len(tablePath) == 0 && len(doc.tables) > 0 {
+		return splice(source, doc.tables[0].lineStart, doc.tables[0].lineStart, line), true, nil
 	}
 
 	addition := make([]byte, 0, len(line)+32)
@@ -290,12 +299,16 @@ func setValue(source []byte, doc index, path []string, encoded []byte) ([]byte, 
 			if i > 0 {
 				addition = append(addition, '.')
 			}
-			addition = append(addition, encodeKey(segment)...)
+			encodedKey, err := encodeKey(segment)
+			if err != nil {
+				return nil, false, err
+			}
+			addition = append(addition, encodedKey...)
 		}
 		addition = append(addition, ']', '\n')
 	}
 	addition = append(addition, line...)
-	return append(append([]byte(nil), source...), addition...), true
+	return append(append([]byte(nil), source...), addition...), true, nil
 }
 
 func deleteKey(source []byte, doc index, path []string) ([]byte, bool) {
@@ -307,30 +320,42 @@ func deleteKey(source []byte, doc index, path []string) ([]byte, bool) {
 }
 
 func deleteTable(source []byte, doc index, path []string) ([]byte, bool) {
-	target := findTable(doc, path)
-	if target == nil {
+	if findTable(doc, path) == nil {
 		return source, false
 	}
-	start := target.lineStart
-	end := target.lineEnd
+	// A provider may have nested tables. They are not necessarily contiguous
+	// with the parent table: an unrelated top-level table can be interleaved in
+	// the source and must remain intact. Build one deletion interval per matching
+	// table instead of deleting the whole span from the parent to its last child.
+	type interval struct{ start, end int }
+	intervals := make([]interval, 0)
 	for _, table := range doc.tables {
-		if hasPathPrefix(table.path, path) && table.lineEnd > end {
-			end = table.lineEnd
+		if !hasPathPrefix(table.path, path) {
+			continue
 		}
-	}
-	for _, key := range doc.keys {
-		if hasPathPrefix(key.tablePath, path) && key.lineEnd > end {
-			end = key.lineEnd
+		end := table.lineEnd
+		for _, key := range doc.keys {
+			if equalPath(key.tablePath, table.path) && key.lineEnd > end {
+				end = key.lineEnd
+			}
 		}
-	}
-	for end < len(source) {
-		next := lineEnd(source, end)
-		if len(bytes.TrimSpace(source[end:next])) != 0 {
-			break
+		for end < len(source) {
+			next := lineEnd(source, end)
+			if len(bytes.TrimSpace(source[end:next])) != 0 {
+				break
+			}
+			end = next
 		}
-		end = next
+		intervals = append(intervals, interval{start: table.lineStart, end: end})
 	}
-	return splice(source, start, end, nil), true
+	if len(intervals) == 0 {
+		return source, false
+	}
+	result := append([]byte(nil), source...)
+	for i := len(intervals) - 1; i >= 0; i-- {
+		result = splice(result, intervals[i].start, intervals[i].end, nil)
+	}
+	return result, true
 }
 
 func findKey(doc index, path []string) *keyValue {
@@ -366,7 +391,7 @@ func encodeValue(value any) ([]byte, error) {
 	return bytes.TrimSpace(encoded[equals+1:]), nil
 }
 
-func encodeKey(key string) []byte {
+func encodeKey(key string) ([]byte, error) {
 	if key != "" {
 		bare := true
 		for _, r := range key {
@@ -376,12 +401,18 @@ func encodeKey(key string) []byte {
 			}
 		}
 		if bare {
-			return []byte(key)
+			return []byte(key), nil
 		}
 	}
-	encoded, _ := toml.Marshal(map[string]any{key: true})
+	encoded, err := toml.Marshal(map[string]any{key: true})
+	if err != nil {
+		return nil, fmt.Errorf("encode TOML key: %w", err)
+	}
 	equals := bytes.IndexByte(encoded, '=')
-	return bytes.TrimSpace(encoded[:equals])
+	if equals < 0 {
+		return nil, fmt.Errorf("TOML encoder returned no key")
+	}
+	return bytes.TrimSpace(encoded[:equals]), nil
 }
 
 func splice(source []byte, start, end int, replacement []byte) []byte {
