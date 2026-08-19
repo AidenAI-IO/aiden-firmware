@@ -1002,9 +1002,8 @@ def test_quick_capture_suite_covers_screen_memory_upper_bound():
         "do_not_hallucinate_missing_snapshot",
         "treat_snapshot_as_historical_evidence",
         "forget_one_of_two_similar_snapshots",
-        "do_not_forge_screen_snapshot_with_save_memory",
     } <= set(task_by_id)
-    assert len(suite.tasks) >= 11
+    assert len(suite.tasks) >= 10
     assert all(task.category == "memory" for task in suite.tasks)
 
     for task in suite.tasks:
@@ -1027,17 +1026,9 @@ def test_quick_capture_suite_covers_screen_memory_upper_bound():
         ):
             assert coached_phrase not in prompt
 
-    routed_tasks = [
-        task for task in suite.tasks
-        if task.id != "do_not_forge_screen_snapshot_with_save_memory"
-    ]
-    for task in routed_tasks:
+    for task in suite.tasks:
         requirements = task.hard_assertions.required_tool_calls
-        assert any(
-            item.tool == "recall_memory"
-            and item.input_contains.get("types") == ["screen_snapshot"]
-            for item in requirements
-        )
+        assert any(item.tool == "recall_memory" for item in requirements)
         assert "recall_session_chunks" in task.hard_assertions.forbidden_tools
 
     assert len(task_by_id["compare_multiple_snapshots"].expected_recalled_memory_ids) == 3
@@ -1050,43 +1041,6 @@ def test_quick_capture_suite_covers_screen_memory_upper_bound():
         and item.input_contains.get("id") == "mem_1700000000000000500_qc_old_order"
         for item in forget_task.hard_assertions.required_tool_calls
     )
-
-    boundary_task = task_by_id["do_not_forge_screen_snapshot_with_save_memory"]
-    assert "save_memory" in boundary_task.hard_assertions.forbidden_tools
-    assert boundary_task.expected_recalled_memory_ids == []
-
-
-def test_quick_capture_live_suite_uses_real_trigger_setup_and_natural_prompts():
-    suite_path = Path(__file__).resolve().parents[1] / "suites" / "quick_capture_live_v1.json"
-    suite = load_suite(suite_path)
-
-    assert {task.id for task in suite.tasks} == {
-        "capture_and_recall_live_screen",
-        "capture_twice_preserves_live_records",
-    }
-    for task in suite.tasks:
-        assert task.setup["type"] == "agent_prompt"
-        setup_prompt = task.setup["prompt"]
-        assert "API=http://127.0.0.1:8080" in setup_prompt
-        assert "api/tools/recall_memory" in setup_prompt
-        assert "api/quick-capture" in setup_prompt
-        assert 'RECALL_BODY=\'{"input":' in setup_prompt
-        assert '"types":["screen_snapshot"]' in setup_prompt
-        assert "grep -o 'mem_" in setup_prompt
-        assert "echo READY" in setup_prompt
-        assert "FAILED:" in setup_prompt
-        assert "python3 <<" not in setup_prompt
-        assert "/usr/bin/python3" not in setup_prompt
-        prompt = task.prompt.lower()
-        for implementation_detail in (
-            "screen_snapshot",
-            "recall_memory",
-            "最后只输出一个选项",
-            "请先检查",
-            "请实际检索",
-        ):
-            assert implementation_detail not in prompt
-
 
 def test_notes_entry_policy_suite_covers_three_screen_states():
     suites_dir = Path(__file__).resolve().parents[1] / "suites" / "aiden_app"

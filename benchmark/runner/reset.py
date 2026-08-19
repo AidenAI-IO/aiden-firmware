@@ -148,11 +148,20 @@ def _per_task_setup_agent_prompt(client: AgentClient, setup: dict[str, Any], *, 
     except (ValueError, TypeError) as e:
         raise ResetError(f"invalid timeout_sec: {setup.get('timeout_sec')!r}") from e
     try:
-        client.chat(prompt, timeout_sec=timeout)
+        result = client.chat(prompt, timeout_sec=timeout)
     except AgentTimeoutError as e:
         raise ResetError(f"setup agent_prompt timed out: {e}") from e
     except AgentRequestError as e:
         raise ResetError(f"setup agent_prompt failed: {e}") from e
+    expected_response = setup.get("expected_response")
+    if expected_response is not None:
+        if not isinstance(expected_response, str) or not expected_response:
+            raise ResetError(f"expected_response must be a non-empty string: {expected_response!r}")
+        actual_response = str(getattr(result, "response", "") or "").strip()
+        if actual_response != expected_response:
+            raise ResetError(
+                f"setup agent_prompt response mismatch: expected {expected_response!r}, got {actual_response!r}"
+            )
     clear_history_after = setup.get("clear_history_after", True)
     if not isinstance(clear_history_after, bool):
         raise ResetError(f"clear_history_after must be boolean: {clear_history_after!r}")

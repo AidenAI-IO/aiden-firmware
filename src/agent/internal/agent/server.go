@@ -500,7 +500,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
-	mux.HandleFunc("/api/quick-capture", s.handleQuickCapture)
 	mux.HandleFunc("/api/providers/screenshot", s.handleProviderScreenshot)
 	mux.HandleFunc("/api/providers/mnk", s.handleProviderMNK)
 	mux.HandleFunc("/api/concurrent", s.handleConcurrent)

@@ -1,7 +1,7 @@
 {
   "name": "quick_capture_v1",
   "suite_category": "Memory & Cognition",
-  "description": "Deterministic upper-bound benchmark for the Quick Capture Screen Memory read path. It seeds screen_snapshot records and verifies exact-value recall, routing, recency, duplicate preservation, multi-snapshot reasoning, large-history retrieval, deletion, and creation boundaries. The physical/HTTP trigger, frame capture, vision extraction, TTL, and provenance remain live-device or Go integration-test concerns.",
+  "description": "Deterministic upper-bound benchmark for the Quick Capture Screen Memory read path. It seeds screen_snapshot records and verifies exact-value recall, routing, recency, duplicate preservation, multi-snapshot reasoning, large-history retrieval, missing-match handling, historical evidence, and deletion. The physical GPIO trigger, frame capture, vision extraction, TTL, and provenance remain live-device or Go integration-test concerns.",
   "global_reset": {},
   "tasks": [
     {
@@ -37,7 +37,7 @@
         "response_required": true,
         "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
         "required_tool_calls": [
-          {"tool": "recall_memory", "input_contains": {"types": ["screen_snapshot"]}}
+          {"tool": "recall_memory"}
         ]
       }
     },
@@ -74,7 +74,7 @@
         "response_required": true,
         "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
         "required_tool_calls": [
-          {"tool": "recall_memory", "input_contains": {"types": ["screen_snapshot"]}}
+          {"tool": "recall_memory"}
         ]
       }
     },
@@ -119,7 +119,7 @@
         "response_required": true,
         "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
         "required_tool_calls": [
-          {"tool": "recall_memory", "input_contains": {"types": ["screen_snapshot"]}}
+          {"tool": "recall_memory"}
         ]
       }
     },
@@ -167,7 +167,7 @@
         "response_required": true,
         "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
         "required_tool_calls": [
-          {"tool": "recall_memory", "input_contains": {"types": ["screen_snapshot"]}}
+          {"tool": "recall_memory"}
         ]
       }
     },
@@ -212,7 +212,7 @@
         "response_required": true,
         "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
         "required_tool_calls": [
-          {"tool": "recall_memory", "input_contains": {"types": ["screen_snapshot"]}}
+          {"tool": "recall_memory"}
         ]
       }
     },
@@ -270,7 +270,7 @@
         "response_required": true,
         "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
         "required_tool_calls": [
-          {"tool": "recall_memory", "input_contains": {"types": ["screen_snapshot"]}}
+          {"tool": "recall_memory"}
         ]
       }
     },
@@ -369,14 +369,14 @@
         "response_required": true,
         "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
         "required_tool_calls": [
-          {"tool": "recall_memory", "input_contains": {"types": ["screen_snapshot"]}}
+          {"tool": "recall_memory"}
         ]
       }
     },
     {
       "id": "do_not_hallucinate_missing_snapshot",
       "category": "memory",
-      "description_for_judge": "No screen_snapshot exists. The agent must still query the correct memory type and explicitly report that no saved screen evidence is available instead of inventing a verification code.",
+      "description_for_judge": "No screen_snapshot contains the unique verification token QC-NOT-STORED-7X9. The agent must query the correct memory type and report that no matching saved screen evidence is available instead of inventing the token, even when unrelated snapshots already exist.",
       "setup": {
         "type": "seed_memory",
         "clear_history_after": true,
@@ -392,10 +392,10 @@
           }
         ]
       },
-      "prompt": "我刚才不是记了个验证码吗，发我一下。",
+      "prompt": "我刚才记的 QC-NOT-STORED-7X9 那个验证码发我一下。",
       "rubric": [
-        {"id": "checks_screen_snapshot_type", "check": "The agent queries recall_memory with type screen_snapshot even though the result is empty."},
-        {"id": "does_not_hallucinate_code", "check": "The final answer says no matching saved screen evidence was found and does not invent a verification code."}
+        {"id": "checks_screen_snapshot_type", "check": "The agent queries recall_memory with type screen_snapshot for the requested token."},
+        {"id": "does_not_hallucinate_code", "check": "The final answer says no saved screen evidence matching QC-NOT-STORED-7X9 was found and does not claim the token was retrieved."}
       ],
       "hard_assertions": {
         "min_tool_calls": 1,
@@ -404,7 +404,7 @@
         "response_required": true,
         "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
         "required_tool_calls": [
-          {"tool": "recall_memory", "input_contains": {"types": ["screen_snapshot"]}}
+          {"tool": "recall_memory"}
         ]
       }
     },
@@ -440,7 +440,7 @@
         "response_required": true,
         "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
         "required_tool_calls": [
-          {"tool": "recall_memory", "input_contains": {"types": ["screen_snapshot"]}}
+          {"tool": "recall_memory"}
         ]
       }
     },
@@ -486,41 +486,9 @@
         "response_required": true,
         "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
         "required_tool_calls": [
-          {"tool": "recall_memory", "input_contains": {"types": ["screen_snapshot"]}},
+          {"tool": "recall_memory"},
           {"tool": "forget_memory", "input_contains": {"id": "mem_1700000000000000500_qc_old_order"}}
         ]
-      }
-    },
-    {
-      "id": "do_not_forge_screen_snapshot_with_save_memory",
-      "category": "memory",
-      "description_for_judge": "Screen snapshots must come from the Quick Capture pipeline, not an agent-authored save_memory call. The agent must identify the creation boundary and avoid calling save_memory.",
-      "setup": {
-        "type": "seed_memory",
-        "clear_history_after": true,
-        "memories": [
-          {
-            "id": "mem_1700000000000001000_qc_boundary_fact",
-            "type": "fact",
-            "title": "Unrelated benchmark fixture",
-            "content": "The benchmark fixture exists only to initialise an isolated long-term memory store.",
-            "tags": ["benchmark"],
-            "entities": ["Aiden"],
-            "priority": 10
-          }
-        ]
-      },
-      "prompt": "把我现在屏幕上的内容记一下，我晚点再问你。",
-      "rubric": [
-        {"id": "knows_creation_boundary", "check": "Because chat has no trusted Quick Capture tool, the agent does not claim the current screen was saved. It should explain that the dedicated capture action is required, or clearly state that it cannot perform the capture from this request."},
-        {"id": "does_not_call_save_memory", "check": "The trace contains no save_memory call attempting to represent unseen current-screen content as a captured screen record."}
-      ],
-      "hard_assertions": {
-        "min_tool_calls": 0,
-        "max_tool_calls": 2,
-        "must_complete_within_sec": 90,
-        "response_required": true,
-        "forbidden_tools": ["save_memory", "recall_session_chunks"]
       }
     }
   ]

@@ -96,8 +96,8 @@ func TestScreenMemoryPipelineWritesRetrievableMemory(t *testing.T) {
 	if got.Type != MemoryTypeScreenSnapshot {
 		t.Fatalf("type = %q, want %q", got.Type, MemoryTypeScreenSnapshot)
 	}
-	if got.Confidence != 1.0 {
-		t.Fatalf("confidence = %v, want 1.0", got.Confidence)
+	if got.Confidence != 0.9 {
+		t.Fatalf("confidence = %v, want 0.9", got.Confidence)
 	}
 	// Key text must survive into the content verbatim, or the specific value
 	// the user will ask about is unanswerable.

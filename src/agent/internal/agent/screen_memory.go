@@ -164,8 +164,8 @@ func (p *ScreenMemoryPipeline) writeMemory(ctx context.Context, extraction *scre
 		title = keyText[0]
 	}
 
-	// Evidence is the extraction itself: it is read off the screen rather than
-	// inferred, which is also why confidence is 1.0.
+	// This is a deliberate user capture, but the vision extraction is still
+	// probabilistic, so it should not enter recall at absolute confidence.
 	excerpts := keyText
 	if len(excerpts) == 0 {
 		excerpts = []string{summary}
@@ -177,7 +177,7 @@ func (p *ScreenMemoryPipeline) writeMemory(ctx context.Context, extraction *scre
 		Content:          content.String(),
 		Tags:             nonEmptyStrings(extraction.Tags),
 		Entities:         nonEmptyStrings(extraction.Entities),
-		Confidence:       1.0,
+		Confidence:       0.9,
 		TimeScope:        "long_term",
 		TTL:              p.options.TTL,
 		EvidenceExcerpts: excerpts,

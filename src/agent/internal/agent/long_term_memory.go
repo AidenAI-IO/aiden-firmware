@@ -72,13 +72,7 @@ const MemoryTypeScreenSnapshot = "screen_snapshot"
 // MemorySourceTypeScreenCapture marks a Screen Memory's provenance.
 const MemorySourceTypeScreenCapture = "screen_capture"
 
-// isRecencyOrderedMemoryType reports whether equally-scoring memories of this
-// type should be ordered newest-first rather than by ascending ID.
-//
-// This only decides ordering. Confidence outranks it in the sort, which is why
-// a Screen Memory's confidence is pinned: if it ever drifted, an older
-// frequently-recalled entry would outrank a just-saved one.
-func isRecencyOrderedMemoryType(memoryType string) bool {
+func isScreenMemoryType(memoryType string) bool {
 	return memoryType == MemoryTypeScreenSnapshot
 }
 
@@ -276,7 +270,7 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 		// win. Memory IDs begin with a fixed-width nanosecond timestamp, so
 		// descending ID order is chronological. Scoped to this type; every
 		// other type keeps its existing ascending order.
-		if isRecencyOrderedMemoryType(matches[i].Result.Type) && isRecencyOrderedMemoryType(matches[j].Result.Type) {
+		if isScreenMemoryType(matches[i].Result.Type) && isScreenMemoryType(matches[j].Result.Type) {
 			return matches[i].Result.ID > matches[j].Result.ID
 		}
 		return matches[i].Result.ID < matches[j].Result.ID

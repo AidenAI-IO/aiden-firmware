@@ -2,183 +2,108 @@ package agent
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sync"
 	"testing"
 )
 
-type recordingToneenPlayer struct {
-	mu    sync.Mutex
-	kinds []promptSoundKind
-	err   error
+type stubQuickCapturer struct {
+	mu      sync.Mutex
+	calls   int
+	id      string
+	err     error
+	started chan struct{}
+	release chan struct{}
 }
 
-func (p *recordingToneenPlayer) play(ctx context.Context, kind promptSoundKind) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.kinds = append(p.kinds, kind)
-	return p.err
-}
-
-func (p *recordingToneenPlayer) played() []promptSoundKind {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return append([]promptSoundKind(nil), p.kinds...)
-}
-
-type stubCapturer struct {
-	mu    sync.Mutex
-	id    string
-	err   error
-	calls int
-}
-
-func (c *stubCapturer) Capture(ctx context.Context) (string, error) {
+func (c *stubQuickCapturer) Capture(context.Context) (string, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.calls++
+	c.mu.Unlock()
+	if c.started != nil {
+		close(c.started)
+	}
+	if c.release != nil {
+		<-c.release
+	}
 	return c.id, c.err
 }
 
-func (c *stubCapturer) callCount() int {
+func (c *stubQuickCapturer) callCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls
 }
 
-// newTestController runs captures synchronously so assertions are deterministic.
-func newTestController(capturer quickCapturer, tones *recordingToneenPlayer) *QuickCaptureController {
-	c := NewQuickCaptureController(capturer, tones.play, nil)
-	c.spawn = func(f func()) { f() }
-	return c
-}
+func TestQuickCaptureControllerRunsCapture(t *testing.T) {
+	capturer := &stubQuickCapturer{id: "mem_1"}
+	controller := NewQuickCaptureController(capturer, nil)
+	controller.spawn = func(run func()) { run() }
 
-func TestQuickCaptureControllerPlaysThresholdThenSuccess(t *testing.T) {
-	tones := &recordingToneenPlayer{}
-	capturer := &stubCapturer{id: "mem_1"}
-	c := newTestController(capturer, tones)
-
-	c.HandleGesture(ButtonGestureLongPress)
-
+	if err := controller.Trigger(); err != nil {
+		t.Fatalf("Trigger() error = %v", err)
+	}
 	if capturer.callCount() != 1 {
 		t.Fatalf("capture calls = %d, want 1", capturer.callCount())
 	}
-	got := tones.played()
-	want := []promptSoundKind{promptSoundQuickCaptureThreshold, promptSoundQuickCaptureSuccess}
-	if len(got) != len(want) {
-		t.Fatalf("tones = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("tone[%d] = %d, want %d (all: %v)", i, got[i], want[i], got)
-		}
-	}
 }
 
-func TestQuickCaptureControllerPlaysFailureToneOnError(t *testing.T) {
-	tones := &recordingToneenPlayer{}
-	capturer := &stubCapturer{err: fmt.Errorf("network unreachable")}
-	c := newTestController(capturer, tones)
-
-	c.HandleGesture(ButtonGestureLongPress)
-
-	got := tones.played()
-	if len(got) != 2 || got[1] != promptSoundQuickCaptureFailed {
-		t.Fatalf("tones = %v, want threshold then failure", got)
+func TestQuickCaptureControllerRejectsConcurrentTrigger(t *testing.T) {
+	capturer := &stubQuickCapturer{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
 	}
-}
+	controller := NewQuickCaptureController(capturer, nil)
+	runDone := make(chan struct{})
+	controller.spawn = func(run func()) {
+		go func() {
+			run()
+			close(runDone)
+		}()
+	}
 
-func TestQuickCaptureControllerThresholdToneComesBeforeCapture(t *testing.T) {
-	// The threshold tone tells the user they can let go. It must not wait for
-	// the vision call, which takes seconds.
-	tones := &recordingToneenPlayer{}
-	var toneBeforeCapture bool
-	capturer := &captureObserver{onCapture: func() {
-		toneBeforeCapture = len(tones.played()) > 0
-	}}
-	c := newTestController(capturer, tones)
+	if err := controller.Trigger(); err != nil {
+		t.Fatalf("first Trigger() error = %v", err)
+	}
+	<-capturer.started
+	if err := controller.Trigger(); !errors.Is(err, ErrQuickCaptureBusy) {
+		t.Fatalf("second Trigger() error = %v, want ErrQuickCaptureBusy", err)
+	}
+	close(capturer.release)
+	<-runDone
 
-	c.HandleGesture(ButtonGestureLongPress)
-
-	if !toneBeforeCapture {
-		t.Fatal("capture started before the threshold tone; the user would not know when to release")
+	controller.mu.Lock()
+	running := controller.running
+	controller.mu.Unlock()
+	if running {
+		t.Fatal("controller still marked running after capture completed")
 	}
 }
 
-func TestQuickCaptureControllerIgnoresShortPress(t *testing.T) {
-	// A short press is Wakeup and is handled elsewhere; the controller must not
-	// capture or make a sound.
-	tones := &recordingToneenPlayer{}
-	capturer := &stubCapturer{id: "mem_1"}
-	c := newTestController(capturer, tones)
+func TestQuickCaptureControllerReleasesSingleFlightAfterFailure(t *testing.T) {
+	capturer := &stubQuickCapturer{err: errors.New("vision failed")}
+	controller := NewQuickCaptureController(capturer, nil)
+	controller.spawn = func(run func()) { run() }
 
-	c.HandleGesture(ButtonGestureShortPress)
-
-	if capturer.callCount() != 0 {
-		t.Fatalf("short press triggered %d captures, want 0", capturer.callCount())
+	if err := controller.Trigger(); err != nil {
+		t.Fatalf("first Trigger() error = %v", err)
 	}
-	if len(tones.played()) != 0 {
-		t.Fatalf("short press played tones %v, want none", tones.played())
+	if err := controller.Trigger(); err != nil {
+		t.Fatalf("second Trigger() error = %v", err)
 	}
-}
-
-func TestQuickCaptureControllerToneFailureDoesNotBlockCapture(t *testing.T) {
-	// Playback is exclusive on device, so a tone is refused while the agent is
-	// speaking. That must not stop the capture from being saved.
-	tones := &recordingToneenPlayer{err: fmt.Errorf("SERVICE_RECOVERING")}
-	capturer := &stubCapturer{id: "mem_1"}
-	c := newTestController(capturer, tones)
-
-	c.HandleGesture(ButtonGestureLongPress)
-
-	if capturer.callCount() != 1 {
-		t.Fatalf("capture calls = %d, want 1 despite tone failure", capturer.callCount())
+	if capturer.callCount() != 2 {
+		t.Fatalf("capture calls = %d, want 2", capturer.callCount())
 	}
 }
 
-func TestQuickCaptureControllerNilCapturerIsSafe(t *testing.T) {
-	// Quick Capture disabled or not wired: pressing the button must not panic.
-	tones := &recordingToneenPlayer{}
-	c := NewQuickCaptureController(nil, tones.play, nil)
-	c.spawn = func(f func()) { f() }
-
-	c.HandleGesture(ButtonGestureLongPress)
-
-	if len(tones.played()) != 0 {
-		t.Fatalf("tones played with no capturer: %v", tones.played())
+func TestQuickCaptureControllerUnavailable(t *testing.T) {
+	controller := NewQuickCaptureController(nil, nil)
+	if err := controller.Trigger(); !errors.Is(err, ErrQuickCaptureUnavailable) {
+		t.Fatalf("Trigger() error = %v, want ErrQuickCaptureUnavailable", err)
 	}
-}
 
-func TestQuickCaptureControllerNilReceiverIsSafe(t *testing.T) {
-	var c *QuickCaptureController
-	c.HandleGesture(ButtonGestureLongPress)
-}
-
-func TestQuickCaptureControllerRunsCaptureOffTheEdgeThread(t *testing.T) {
-	// With the real spawn, HandleGesture must return without waiting for the
-	// vision call, or the GPIO watch loop would stall and miss the next edge.
-	tones := &recordingToneenPlayer{}
-	release := make(chan struct{})
-	done := make(chan struct{})
-	capturer := &captureObserver{onCapture: func() {
-		<-release
-		close(done)
-	}}
-	c := NewQuickCaptureController(capturer, tones.play, nil)
-
-	c.HandleGesture(ButtonGestureLongPress)
-	// If HandleGesture blocked, this line would not be reached until release.
-	close(release)
-	<-done
-}
-
-type captureObserver struct {
-	onCapture func()
-}
-
-func (c *captureObserver) Capture(ctx context.Context) (string, error) {
-	if c.onCapture != nil {
-		c.onCapture()
+	var nilController *QuickCaptureController
+	if err := nilController.Trigger(); !errors.Is(err, ErrQuickCaptureUnavailable) {
+		t.Fatalf("nil Trigger() error = %v, want ErrQuickCaptureUnavailable", err)
 	}
-	return "mem_1", nil
 }

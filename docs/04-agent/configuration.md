@@ -210,6 +210,14 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
 | `input_mode`                | `text` / `stt`              | Input mode                                                                                                                                                                                                |
 
+### Quick Capture
+
+| Field                           | Default                                                     | Description                                                                                                                                                                            |
+| ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `quick_capture.enabled`         | `true`                                                       | Enables GPIO-triggered Screen Memory capture; legacy GPIO32/GPIO33 wakeup remains independent                                                                                           |
+| `quick_capture.gpio_pin`        | `0`                                                         | Falling-edge GPIO for Quick Capture; `0` disables it, GPIO32/GPIO33 are reserved, and the Luckfox overlay uses GPIO3 (physical pin 38)                                                |
+| `quick_capture.screen_memory_ttl` | `90d`                                                    | Retention period for captured Screen Memory entries, or `forever`                                                                                                                       |
+
 ### Voice & VAD
 
 These fields apply to the `stt` input mode.

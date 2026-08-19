@@ -151,6 +151,13 @@ func main() {
 	// during voice (audio/stt) interactions.
 	server := agent.NewServer(runtime, *addr)
 	defer server.Close()
+	quickCaptureWatcher, err := startQuickCaptureGPIOWatcher(cfg, server, newGPIOWatcher)
+	if err != nil {
+		log.Printf("[quick_capture] GPIO trigger disabled: %v", err)
+	} else if quickCaptureWatcher != nil {
+		defer quickCaptureWatcher.Stop()
+		log.Printf("[quick_capture] listening on GPIO %d", cfg.QuickCapture.GPIOPin)
+	}
 
 	_ = logging.LogEvent(logging.Info, "agent", "startup", "daemon_starting",
 		logging.Field{Key: "addr", Value: *addr},
@@ -350,6 +357,36 @@ type wakeupWatcherFactory func(pin int, callback func()) (wakeupWatcher, error)
 
 func newGPIOWatcher(pin int, callback func()) (wakeupWatcher, error) {
 	return agent.NewGPIOWatcher(pin, callback)
+}
+
+type quickCaptureTrigger interface {
+	TriggerQuickCapture() error
+}
+
+func startQuickCaptureGPIOWatcher(cfg agent.Config, trigger quickCaptureTrigger, newWatcher wakeupWatcherFactory) (wakeupWatcher, error) {
+	pin := cfg.QuickCapture.GPIOPin
+	if !cfg.QuickCapture.EnabledOrDefault() || pin == 0 {
+		return nil, nil
+	}
+	watcher, err := newWatcher(pin, func() {
+		err := trigger.TriggerQuickCapture()
+		switch {
+		case err == nil:
+			log.Printf("[quick_capture] GPIO %d triggered capture", pin)
+		case errors.Is(err, agent.ErrQuickCaptureBusy):
+			log.Printf("[quick_capture] GPIO %d ignored: capture already in progress", pin)
+		default:
+			log.Printf("[quick_capture] GPIO %d trigger failed: %v", pin, err)
+		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create GPIO %d watcher: %w", pin, err)
+	}
+	if err := watcher.Start(); err != nil {
+		watcher.Stop()
+		return nil, fmt.Errorf("start GPIO %d watcher: %w", pin, err)
+	}
+	return watcher, nil
 }
 
 func wakeupGPIOPinsLabel() string {

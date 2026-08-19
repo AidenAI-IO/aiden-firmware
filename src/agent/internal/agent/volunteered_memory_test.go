@@ -133,12 +133,12 @@ func TestScreenSnapshotIsNotPenalized(t *testing.T) {
 	}
 }
 
-func TestVolunteeredMemoryTypeClassification(t *testing.T) {
-	if !isVolunteeredMemoryType(MemoryTypeScreenSnapshot) {
+func TestScreenMemoryTypeClassification(t *testing.T) {
+	if !isScreenMemoryType(MemoryTypeScreenSnapshot) {
 		t.Fatal("screen_snapshot should be classified as volunteered")
 	}
 	for _, derived := range []string{"procedure", "fact", "rule", "preference", "profile", "calibration", "failure"} {
-		if isVolunteeredMemoryType(derived) {
+		if isScreenMemoryType(derived) {
 			t.Fatalf("%q should be classified as derived, not volunteered", derived)
 		}
 	}

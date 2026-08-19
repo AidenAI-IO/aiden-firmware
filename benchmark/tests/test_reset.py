@@ -1,6 +1,6 @@
 import pytest
 
-from runner.agent_client import AgentRequestError, AgentTimeoutError
+from runner.agent_client import AgentRequestError, AgentTimeoutError, ChatResponse
 from runner.reset import (
     ResetError,
     call_environment_release,
@@ -34,6 +34,7 @@ class RecordingSetupClient:
 
     def chat(self, message, timeout_sec=None):
         self.calls.append(("chat", message, timeout_sec))
+        return ChatResponse(response="READY", history=[])
 
     def clear_history(self):
         self.calls.append(("clear_history",))
@@ -97,6 +98,37 @@ def test_agent_prompt_setup_includes_prompt_prefix():
     )
 
     assert client.calls[0] == ("chat", "ADB benchmark rules\n\nprepare editor", 5)
+
+
+def test_agent_prompt_setup_validates_expected_response():
+    client = RecordingSetupClient()
+
+    per_task_setup(
+        client,
+        {
+            "type": "agent_prompt",
+            "prompt": "prepare editor",
+            "expected_response": "READY",
+            "clear_history_after": False,
+        },
+    )
+
+
+def test_agent_prompt_setup_rejects_unexpected_response():
+    class FailedSetupClient(RecordingSetupClient):
+        def chat(self, message, timeout_sec=None):
+            return ChatResponse(response="FAILED: capture failed", history=[])
+
+    with pytest.raises(ResetError, match="response mismatch"):
+        per_task_setup(
+            FailedSetupClient(),
+            {
+                "type": "agent_prompt",
+                "prompt": "prepare editor",
+                "expected_response": "READY",
+                "clear_history_after": False,
+            },
+        )
 
 
 def test_call_environment_setup_posts_to_api_setup(monkeypatch):

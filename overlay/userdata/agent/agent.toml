@@ -44,6 +44,13 @@ trigger_mode = "wakeup"
 # voice_progress_speech_enabled = true
 # voice_max_response_tokens = 300
 
+# Quick Capture uses the verified spare falling-edge input on the 40Pin header:
+# Luckfox Pico Zero physical pin 38 (GPIO3). GPIO32/GPIO33 remain legacy wakeup.
+[quick_capture]
+enabled = true
+gpio_pin = 3
+screen_memory_ttl = "90d"
+
 # Target device configuration.
 # Android derives HID pointer_mode = "touchscreen"; iOS, macOS, windows, and linux derive "absolute".
 # Accepted device_type values: "iOS", "Android", "macOS", "windows", or "linux".
