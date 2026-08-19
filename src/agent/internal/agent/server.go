@@ -477,7 +477,6 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// API endpoints
-	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/api/chat/cancel", s.handleChatCancel)
 	mux.HandleFunc("/api/chat/steer", s.handleChatSteer)
@@ -490,7 +489,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/context-dump", s.handleContextDump)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/setup", s.handleSetup)
-	mux.HandleFunc("/api/release", s.handleRelease)
 	if s.benchmarkToken() != "" {
 		mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
 		mux.HandleFunc("/api/benchmark/seed_episode", s.handleBenchmarkSeedEpisode)
@@ -2657,54 +2655,6 @@ func (s *Server) handleProviderMNK(w http.ResponseWriter, r *http.Request) {
 	}
 	mnk.NewHTTPHandler(provider).ServeHTTP(w, r)
 }
-
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	deviceType := defaultDeviceType
-	if s != nil && s.runtime != nil {
-		deviceType = s.runtime.deviceTypeFromState()
-	}
-	platform := deviceTypePlatform(deviceType)
-	if platform == "macos" {
-		platform = "mac"
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"ok": true,
-		"data": map[string]any{
-			"status":      "ok",
-			"bridge_type": "go-agent",
-			"platform":    platform,
-			"device_type": deviceType,
-			"concurrent":  1,
-			"interfaces": []string{
-				"/api/tools",
-				"/api/providers/screenshot",
-				"/api/setup",
-				"/api/release",
-				"/api/concurrent",
-			},
-		},
-	})
-}
-
-func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"ok": true,
-		"data": map[string]any{
-			"released": true,
-		},
-	})
-}
-
 func (s *Server) handleConcurrent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
