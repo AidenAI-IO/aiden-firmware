@@ -1,0 +1,87 @@
+{
+  "name": "factory_screen_v1",
+  "suite_category": "Factory Acceptance",
+  "description": "Display panel validation — resolution, brightness range, and full-screen color uniformity check for dead pixels.",
+  "prompt_prefix": "你正在对一台 Android 设备做出厂验收中的屏幕显示测试。请用 shell 工具查询显示参数，用截图验证显示效果。每一步获得结果后判定 PASS 或 FAIL。",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "回到主屏幕。",
+    "timeout_sec": 30,
+    "clear_history_after": true
+  },
+  "tasks": [
+    {
+      "id": "factory_screen_brightness_range",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check the current and max brightness via adb shell settings get system screen_brightness and confirm the range is valid.",
+      "prompt": "用 shell 运行 adb shell settings get system screen_brightness，查看当前亮度值。再用 adb shell settings get system screen_brightness_mode 检查是否自动亮度。告诉我当前亮度值。如果亮度值在 0–255 之间，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_brightness", "check": "The trace contains a shell command that queries screen brightness."},
+        {"id": "reported_brightness", "check": "The final answer reports a brightness value in 0–255 range."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_screen_resolution_verify",
+      "category": "device_operation",
+      "description_for_judge": "Agent must take a screenshot and verify its dimensions match the expected resolution reported by wm size.",
+      "prompt": "先截一张图，然后告诉我这张截图的分辨率（宽 × 高，像素）。如果截图分辨率与之前 factory_basic 里查询到的物理分辨率一致，回答 PASS；如果分辨率不一致，回答 FAIL。",
+      "rubric": [
+        {"id": "took_screenshot", "check": "The trace contains a screenshot call."},
+        {"id": "reported_screenshot_resolution", "check": "The final answer reports the screenshot width and height in pixels."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["screenshot"]
+      }
+    },
+    {
+      "id": "factory_screen_color_uniformity",
+      "category": "device_operation",
+      "description_for_judge": "Agent must take a screenshot of a uniform-colored area (e.g. Settings page background) and note whether any obvious color patches, dead pixels, or banding artifacts are visible.",
+      "prompt": "打开系统设置，截一张图，观察整个画面是否有明显的坏点、色斑、横纹或亮度不均。如果画面看起来均匀正常，没有明显瑕疵，回答 PASS；如果发现异常，回答 FAIL 并描述具体位置和表现。",
+      "rubric": [
+        {"id": "opened_settings", "check": "The trace shows agent opened system Settings."},
+        {"id": "took_screenshot", "check": "The trace contains a screenshot call after opening Settings."},
+        {"id": "inspected_visual", "check": "The final answer describes the visual inspection result (uniform or not)."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 6,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "required_tools": ["screenshot"]
+      }
+    },
+    {
+      "id": "factory_screen_orientation",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check the current screen orientation via adb shell dumpsys input and report it.",
+      "prompt": "用 shell 运行 adb shell dumpsys input，查看当前屏幕方向（rotation 字段）。告诉我当前方向是 0（竖屏）还是 1（横屏）或其他值。如果方向值有效，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_orientation", "check": "The trace contains a shell command that queries screen orientation."},
+        {"id": "reported_orientation", "check": "The final answer reports the rotation value (0, 1, 2, or 3)."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    }
+  ]
+}

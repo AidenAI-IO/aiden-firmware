@@ -1,0 +1,104 @@
+{
+  "name": "factory_connect_v1",
+  "suite_category": "Factory Acceptance",
+  "description": "Wireless connectivity validation — WiFi, Bluetooth, cellular radio, and NFC presence.",
+  "prompt_prefix": "你正在对一台 Android 设备做出厂验收中的连接性测试。请用 shell 工具查询无线电状态，不要手动操作 SIM 卡或修改网络。每一步获得结果后判定 PASS 或 FAIL。",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "回到主屏幕。",
+    "timeout_sec": 30,
+    "clear_history_after": true
+  },
+  "tasks": [
+    {
+      "id": "factory_wifi_radio",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check WiFi radio state via adb shell cmd wifi status or adb shell dumpsys wifi, and confirm the WiFi chip is present and not in an error state.",
+      "prompt": "用 shell 运行 adb shell cmd wifi status 或 adb shell dumpsys wifi，检查 WiFi 模块是否被系统识别（不是 null/unknown）。如果 WiFi 模块存在且状态正常，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_wifi", "check": "The trace contains a shell command that queries WiFi state."},
+        {"id": "wifi_radio_present", "check": "The final answer confirms WiFi radio is present and recognized by the system."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_bluetooth_radio",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check Bluetooth radio state via adb shell cmd bluetooth_manager or adb shell dumpsys bluetooth_manager, and confirm the BT chip is present.",
+      "prompt": "用 shell 运行 adb shell dumpsys bluetooth_manager，检查蓝牙模块是否被系统识别。如果蓝牙模块存在，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_bluetooth", "check": "The trace contains a shell command that queries Bluetooth state."},
+        {"id": "bt_radio_present", "check": "The final answer confirms Bluetooth radio is present."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_cellular_radio",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check cellular radio state via adb shell dumpsys telephony.registry or adb shell getprop gsm.operator.alpha, and confirm the radio is present (even if no SIM inserted).",
+      "prompt": "用 shell 运行 adb shell dumpsys telephony.registry，检查蜂窝基带模块是否被系统识别。如果基带模块存在（即使没有插 SIM 卡），回答 PASS；如果设备没有蜂窝模块，回答 SKIP。",
+      "rubric": [
+        {"id": "used_shell_telephony", "check": "The trace contains a shell command that queries telephony state."},
+        {"id": "cellular_radio_present", "check": "The final answer confirms cellular radio is present or the device has no cellular module."},
+        {"id": "declared_pass_or_skip", "check": "The final answer explicitly states PASS or SKIP."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_nfc_presence",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check NFC presence via adb shell dumpsys nfc or adb shell pm list features | grep nfc, and report whether NFC hardware exists.",
+      "prompt": "用 shell 运行 adb shell dumpsys nfc 或 adb shell pm list features，检查 NFC 模块是否存在。如果 NFC 硬件存在，回答 PASS；如果设备没有 NFC，回答 SKIP。",
+      "rubric": [
+        {"id": "used_shell_nfc", "check": "The trace contains a shell command that queries NFC state."},
+        {"id": "nfc_present", "check": "The final answer reports whether NFC hardware is present."},
+        {"id": "declared_pass_or_skip", "check": "The final answer explicitly states PASS or SKIP."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_mac_address",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to read the WiFi MAC address via adb shell cat /sys/class/net/wlan0/address and report it.",
+      "prompt": "用 shell 运行 adb shell cat /sys/class/net/wlan0/address，读取 WiFi MAC 地址，告诉我这个地址。如果文件不存在，尝试其他网络接口。如果成功读取到 MAC 地址，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_mac", "check": "The trace contains a shell command that reads a MAC address."},
+        {"id": "reported_mac", "check": "The final answer contains a valid MAC address format (xx:xx:xx:xx:xx:xx)."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    }
+  ]
+}

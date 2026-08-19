@@ -1,0 +1,156 @@
+{
+  "name": "factory_basic_v1",
+  "suite_category": "Factory Acceptance",
+  "description": "Screen, touch, and display sanity checks for factory line acceptance — each device must pass every item before shipment.",
+  "prompt_prefix": "你正在对一台 Android 设备做出厂验收。请用 shell 工具执行系统命令获取硬件信息，用 touch_gesture 和 screenshot 验证触控与显示。每一步获得结果后直接判定 PASS 或 FAIL，并给出具体数值作为证据。",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "回到主屏幕，用 shell 执行 adb shell wm size 获取屏幕分辨率，然后告诉我分辨率数值。",
+    "timeout_sec": 30,
+    "clear_history_after": false
+  },
+  "tasks": [
+    {
+      "id": "factory_screen_resolution",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell wm size, parse the output, and report the exact resolution (e.g. 1080x2400). The answer must contain both width and height in pixels.",
+      "prompt": "用 shell 运行 adb shell wm size，获取这台设备的物理分辨率，告诉我宽度 × 高度（像素）。",
+      "rubric": [
+        {"id": "used_shell_wm_size", "check": "The trace contains a shell command that runs adb shell wm size or equivalent."},
+        {"id": "reported_resolution", "check": "The final answer contains a resolution in the form WIDTHxHEIGHT or WIDTH x HEIGHT (e.g. 1080x2400)."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_screen_density",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell wm density and report the screen density value (dpi).",
+      "prompt": "用 shell 运行 adb shell wm density，获取屏幕像素密度（dpi），告诉我数值。",
+      "rubric": [
+        {"id": "used_shell_wm_density", "check": "The trace contains a shell command that runs adb shell wm density."},
+        {"id": "reported_density", "check": "The final answer contains a numeric dpi value (e.g. 440 or 480)."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_touch_corners",
+      "category": "device_operation",
+      "description_for_judge": "Agent must tap the four corners of the screen (top-left, top-right, bottom-left, bottom-right) using normalized coordinates 0–1000, and confirm each tap registered via screenshot or tool result.",
+      "prompt": "测试这台设备的触控四角响应。请依次点击屏幕左上角、右上角、左下角、右下角各一次（用 normalized 0-1000 坐标，左上角约 (80,80)，右上角约 (920,80)，左下角约 (80,920)，右下角约 (920,920)）。每次点击后截图确认画面有变化或工具返回 ok=true。如果四个角都正常响应，回答 PASS；否则报告 FAIL 并指出哪个角有问题。",
+      "rubric": [
+        {"id": "tapped_four_corners", "check": "The trace contains at least 4 touch_gesture calls with type=tap, each targeting a different corner quadrant."},
+        {"id": "all_corners_ok", "check": "All four taps returned ok=true or showed visible screen change in the post-screenshot."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL for the touch-corners test."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 4,
+        "max_tool_calls": 12,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["touch_gesture", "screenshot"]
+      }
+    },
+    {
+      "id": "factory_touch_dead_zone_scan",
+      "category": "device_operation",
+      "description_for_judge": "Agent must perform a 3×3 grid tap scan across the screen (normalized 0–1000, step 300) and report any dead zones where the tap did not register.",
+      "prompt": "做一个快速触控死区扫描。在 normalized 0-1000 坐标空间里，按 3×3 网格（x 取 200, 500, 800；y 取 200, 500, 800）逐个点击，共计 9 个点。每点点击后检查工具是否返回 ok=true。全部通过则回答 PASS；如果某个点没有响应，回答 FAIL 并列出该点坐标。",
+      "rubric": [
+        {"id": "scanned_9_points", "check": "The trace contains at least 9 touch_gesture calls with type=tap covering the 3×3 grid."},
+        {"id": "all_points_ok", "check": "All nine taps returned ok=true, or the agent correctly identified and reported failing points."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL for the dead-zone scan."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 9,
+        "max_tool_calls": 20,
+        "must_complete_within_sec": 180,
+        "response_required": true,
+        "required_tools": ["touch_gesture"]
+      }
+    },
+    {
+      "id": "factory_swipe_horizontal",
+      "category": "device_operation",
+      "description_for_judge": "Agent must perform a horizontal swipe from right to left on the home screen and confirm the page changed.",
+      "prompt": "测试水平滑动。在桌面从右向左滑一次（normalized 坐标从 (800,500) 到 (200,500)），然后截图确认桌面页面发生了变化。如果页面确实变了，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "performed_swipe", "check": "The trace contains a touch_gesture call with type=swipe or equivalent horizontal swipe gesture."},
+        {"id": "page_changed", "check": "Post-screenshot shows a different home screen page than the pre-screenshot."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL for the swipe test."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 6,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["touch_gesture", "screenshot"]
+      }
+    },
+    {
+      "id": "factory_swipe_vertical",
+      "category": "device_operation",
+      "description_for_judge": "Agent must open Settings, perform a vertical swipe downward, and confirm the page scrolled.",
+      "prompt": "测试垂直滑动。先打开系统设置，在设置列表里从下往上滑一次（normalized 坐标从 (500,700) 到 (500,300)），截图确认列表内容发生了滚动。如果页面确实滚动了，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "opened_settings", "check": "The trace shows the agent navigated to system Settings."},
+        {"id": "performed_vertical_swipe", "check": "The trace contains a vertical swipe touch_gesture call."},
+        {"id": "page_scrolled", "check": "Post-screenshot shows different content from the same list compared to pre-screenshot."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL for the vertical swipe test."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "required_tools": ["touch_gesture", "screenshot"]
+      }
+    },
+    {
+      "id": "factory_device_model_and_serial",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell getprop ro.product.model and adb shell getprop ro.serialno, then report both values.",
+      "prompt": "用 shell 依次运行以下命令，获取设备型号和序列号：\n1. adb shell getprop ro.product.model\n2. adb shell getprop ro.serialno\n分别告诉我这两个值。",
+      "rubric": [
+        {"id": "used_shell_getprop_model", "check": "The trace contains a shell command that runs adb shell getprop ro.product.model."},
+        {"id": "used_shell_getprop_serial", "check": "The trace contains a shell command that runs adb shell getprop ro.serialno."},
+        {"id": "reported_both_values", "check": "The final answer contains both the model name and the serial number."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_android_version",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell getprop ro.build.version.release and report the Android version.",
+      "prompt": "用 shell 运行 adb shell getprop ro.build.version.release，告诉我这台设备的 Android 版本号（例如 14 或 15）。",
+      "rubric": [
+        {"id": "used_shell_getprop_version", "check": "The trace contains a shell command that runs adb shell getprop ro.build.version.release."},
+        {"id": "reported_version", "check": "The final answer contains a numeric Android version (e.g. 14, 15, 35 for API level)."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    }
+  ]
+}

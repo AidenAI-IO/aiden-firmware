@@ -1,0 +1,104 @@
+{
+  "name": "factory_camera_v1",
+  "suite_category": "Factory Acceptance",
+  "description": "Camera hardware validation — front/rear lens switch, photo capture, and flash synchronization.",
+  "prompt_prefix": "你正在对一台 Android 设备做出厂验收中的摄像头测试。请用 shell 工具查询摄像头信息，用 touch_gesture 和 screenshot 操作相机应用。每一步获得结果后判定 PASS 或 FAIL。",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "回到主屏幕。",
+    "timeout_sec": 30,
+    "clear_history_after": true
+  },
+  "tasks": [
+    {
+      "id": "factory_camera_list",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell dumpsys media.camera and report the number of rear and front cameras detected.",
+      "prompt": "用 shell 运行 adb shell dumpsys media.camera，查看摄像头信息，告诉我这台设备有几个后置摄像头和几个前置摄像头。",
+      "rubric": [
+        {"id": "used_shell_media_camera", "check": "The trace contains a shell command that queries camera info."},
+        {"id": "reported_camera_count", "check": "The final answer reports the number of rear and front cameras (e.g. '1 rear, 1 front')."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_camera_open",
+      "category": "device_operation",
+      "description_for_judge": "Agent must open the camera app and confirm the viewfinder is active (live preview visible).",
+      "prompt": "打开相机应用，确认取景画面正常显示（不是黑屏或报错）。如果预览正常，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "opened_camera", "check": "The trace shows agent opened the camera app."},
+        {"id": "viewfinder_active", "check": "Post-screenshot shows a live camera preview, not a black screen or error dialog."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "required_tools": ["screenshot"]
+      }
+    },
+    {
+      "id": "factory_camera_take_photo",
+      "category": "device_operation",
+      "description_for_judge": "Agent must take a photo with the rear camera, then verify the photo was saved to gallery.",
+      "prompt": "用后置摄像头拍一张照片，然后进入相册确认刚才拍的照片已保存。如果照片出现在相册中，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "took_photo", "check": "The trace shows agent tapped the shutter button."},
+        {"id": "photo_saved", "check": "Post-screenshot shows the gallery with a recent photo."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 12,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["touch_gesture", "screenshot"]
+      }
+    },
+    {
+      "id": "factory_camera_switch_lens",
+      "category": "device_operation",
+      "description_for_judge": "Agent must switch from rear to front camera (lens switch button), confirm the viewfinder changes to front-facing, and take a selfie.",
+      "prompt": "在相机应用中切换到前置摄像头，确认画面切换到自拍视角，然后拍一张自拍。拍完后确认照片保存成功。如果镜头切换正常且照片保存，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "switched_to_front", "check": "The trace shows agent tapped the lens-switch button."},
+        {"id": "front_camera_active", "check": "Post-screenshot after switch shows front-facing camera view."},
+        {"id": "took_selfie", "check": "The trace shows agent tapped the shutter button after switching."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 4,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 150,
+        "response_required": true,
+        "required_tools": ["touch_gesture", "screenshot"]
+      }
+    },
+    {
+      "id": "factory_camera_flash",
+      "category": "device_operation",
+      "description_for_judge": "Agent must enable flash, take a photo, and confirm the flash fired (screen brightens or photo metadata indicates flash).",
+      "prompt": "在相机应用中把闪光灯设置为强制开启，拍一张照片，确认闪光灯有触发（可以通过拍照瞬间画面亮度变化或照片亮度来判断）。如果闪光灯工作正常，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "enabled_flash", "check": "The trace shows agent set flash to on/forced."},
+        {"id": "flash_fired", "check": "The post-screenshot or tool trace shows flash was active (brightened photo or ok=true)."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 12,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["touch_gesture", "screenshot"]
+      }
+    }
+  ]
+}

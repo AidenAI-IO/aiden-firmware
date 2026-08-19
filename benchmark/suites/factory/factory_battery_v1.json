@@ -1,0 +1,104 @@
+{
+  "name": "factory_battery_v1",
+  "suite_category": "Factory Acceptance",
+  "description": "Battery and power hardware validation — battery health, charge state, USB port, and temperature.",
+  "prompt_prefix": "你正在对一台 Android 设备做出厂验收中的电池与电源测试。请用 shell 工具查询电池状态。每一步获得结果后判定 PASS 或 FAIL。",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "回到主屏幕。",
+    "timeout_sec": 30,
+    "clear_history_after": true
+  },
+  "tasks": [
+    {
+      "id": "factory_battery_health",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell dumpsys battery and report the battery health status (should be 2 = Good).",
+      "prompt": "用 shell 运行 adb shell dumpsys battery，查看电池健康状态（health 字段）。如果 health 值为 2（Good），回答 PASS；如果 health 为其他值，报告具体数值并回答 FAIL。",
+      "rubric": [
+        {"id": "used_shell_battery_health", "check": "The trace contains a shell command that queries battery health."},
+        {"id": "reported_health_status", "check": "The final answer reports the battery health value (e.g. 'health=2' or 'Good')."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_battery_level",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell dumpsys battery and report the current battery level percentage.",
+      "prompt": "用 shell 运行 adb shell dumpsys battery，查看当前电量百分比（level 字段）。告诉我当前电量是多少。如果 level 值在 0–100 之间，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_battery_level", "check": "The trace contains a shell command that queries battery level."},
+        {"id": "reported_level", "check": "The final answer reports a numeric battery level between 0 and 100."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_battery_temperature",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell dumpsys battery and report the battery temperature. If temperature is within normal range (0-60°C), PASS.",
+      "prompt": "用 shell 运行 adb shell dumpsys battery，查看电池温度（temperature 字段，单位是 0.1°C）。换算成摄氏度后告诉我温度值。如果温度在 0–60°C 之间，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_battery_temp", "check": "The trace contains a shell command that queries battery temperature."},
+        {"id": "reported_temperature", "check": "The final answer reports a temperature in °C."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_usb_connected",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check if the device is connected via USB (adb shell dumpsys battery shows USB powered or plugged).",
+      "prompt": "用 shell 运行 adb shell dumpsys battery，查看 USB 连接状态（plugged 字段，值为 2 表示 USB 已连接）。如果 USB 已连接，回答 PASS；如果未连接，回答 FAIL。",
+      "rubric": [
+        {"id": "used_shell_usb", "check": "The trace contains a shell command that queries USB plugged state."},
+        {"id": "usb_plugged", "check": "The final answer reports whether USB is connected."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_battery_charging",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check charging status (status field in dumpsys battery). Value 2 = Charging, 3 = Discharging, 5 = Full.",
+      "prompt": "用 shell 运行 adb shell dumpsys battery，查看充电状态（status 字段：2=充电中，3=放电中，5=已充满）。如果设备正在充电或已充满，回答 PASS；如果正在放电且 USB 连接正常，回答 FAIL。",
+      "rubric": [
+        {"id": "used_shell_charging", "check": "The trace contains a shell command that queries charging status."},
+        {"id": "reported_charging_state", "check": "The final answer reports the charging status (charging/discharging/full)."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    }
+  ]
+}

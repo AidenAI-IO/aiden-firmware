@@ -1,0 +1,103 @@
+{
+  "name": "factory_sensors_v1",
+  "suite_category": "Factory Acceptance",
+  "description": "Sensor hardware validation — accelerometer, gyroscope, proximity sensor, ambient light sensor, and magnetometer.",
+  "prompt_prefix": "你正在对一台 Android 设备做出厂验收中的传感器测试。请用 shell 工具查询传感器列表和实时数据。每一步获得结果后判定 PASS 或 FAIL。",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "回到主屏幕。",
+    "timeout_sec": 30,
+    "clear_history_after": true
+  },
+  "tasks": [
+    {
+      "id": "factory_sensor_list",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell dumpsys sensorservice and list all available sensors by name.",
+      "prompt": "用 shell 运行 adb shell dumpsys sensorservice，列出这台设备上所有可用的传感器名称。告诉我有哪些传感器。",
+      "rubric": [
+        {"id": "used_shell_sensorservice", "check": "The trace contains a shell command that queries sensorservice."},
+        {"id": "reported_sensor_list", "check": "The final answer lists at least 3 sensor names (e.g. accelerometer, gyroscope, proximity)."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_accelerometer",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to read accelerometer data via adb shell dumpsys sensorservice or adb shell cat /sys/... and confirm the sensor reports non-zero values.",
+      "prompt": "用 shell 运行 adb shell dumpsys sensorservice，查看加速度计（accelerometer）的当前读数。如果传感器有数据输出（x/y/z 值不全为 0），回答 PASS；如果传感器不存在或读数全为 0，回答 FAIL。",
+      "rubric": [
+        {"id": "used_shell_accel", "check": "The trace contains a shell command that queries accelerometer data."},
+        {"id": "accel_has_data", "check": "The final answer confirms accelerometer reports non-zero values or identifies the sensor as absent."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_gyroscope",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check gyroscope data via adb shell dumpsys sensorservice and confirm the sensor is present and reporting.",
+      "prompt": "用 shell 运行 adb shell dumpsys sensorservice，查看陀螺仪（gyroscope）的当前读数。如果传感器有数据输出，回答 PASS；如果不存在，回答 SKIP（部分设备没有陀螺仪）。",
+      "rubric": [
+        {"id": "used_shell_gyro", "check": "The trace contains a shell command that queries gyroscope data."},
+        {"id": "gyro_has_data", "check": "The final answer confirms gyroscope reports data or is absent."},
+        {"id": "declared_pass_or_skip", "check": "The final answer explicitly states PASS or SKIP."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_proximity_sensor",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check proximity sensor via adb shell dumpsys sensorservice and confirm it reports near/far values.",
+      "prompt": "用 shell 运行 adb shell dumpsys sensorservice，查看距离传感器（proximity）的当前读数。如果传感器存在且能报告近/远状态，回答 PASS；如果不存在，回答 SKIP。",
+      "rubric": [
+        {"id": "used_shell_proximity", "check": "The trace contains a shell command that queries proximity sensor."},
+        {"id": "proximity_present", "check": "The final answer reports proximity sensor status."},
+        {"id": "declared_pass_or_skip", "check": "The final answer explicitly states PASS or SKIP."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_light_sensor",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check ambient light sensor via adb shell dumpsys sensorservice and confirm it reports lux values.",
+      "prompt": "用 shell 运行 adb shell dumpsys sensorservice，查看环境光传感器（light / ambient light）的当前读数。如果传感器能报告光照值（lux），回答 PASS；如果不存在，回答 SKIP。",
+      "rubric": [
+        {"id": "used_shell_light", "check": "The trace contains a shell command that queries light sensor."},
+        {"id": "light_present", "check": "The final answer reports light sensor status."},
+        {"id": "declared_pass_or_skip", "check": "The final answer explicitly states PASS or SKIP."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    }
+  ]
+}

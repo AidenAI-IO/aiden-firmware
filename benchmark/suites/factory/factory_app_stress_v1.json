@@ -1,0 +1,122 @@
+{
+  "name": "factory_app_stress_v1",
+  "suite_category": "Factory Acceptance",
+  "description": "CPU, memory, and storage stress tests — rapid app install/uninstall, continuous screenshot, and multitasking endurance.",
+  "prompt_prefix": "你正在对一台 Android 设备做出厂验收中的系统压力测试。请用 shell 工具查询 CPU、内存和存储信息，并执行压力操作。每一步获得结果后判定 PASS 或 FAIL。",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "回到主屏幕。",
+    "timeout_sec": 30,
+    "clear_history_after": true
+  },
+  "tasks": [
+    {
+      "id": "factory_cpu_info",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell cat /proc/cpuinfo and report the number of CPU cores and processor name.",
+      "prompt": "用 shell 运行 adb shell cat /proc/cpuinfo，查看 CPU 信息。告诉我处理器型号和核心数。如果核心数大于 0，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_cpuinfo", "check": "The trace contains a shell command that reads /proc/cpuinfo."},
+        {"id": "reported_cpu_details", "check": "The final answer reports processor name and core count."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_memory_total",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell cat /proc/meminfo and report total RAM in MB.",
+      "prompt": "用 shell 运行 adb shell cat /proc/meminfo，查看 MemTotal 字段。告诉我总内存是多少 MB（把 KB 换算成 MB）。如果总内存大于 0，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_meminfo", "check": "The trace contains a shell command that reads /proc/meminfo."},
+        {"id": "reported_memory_total", "check": "The final answer reports total RAM in MB."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_storage_total",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell df -h /data and report total storage size.",
+      "prompt": "用 shell 运行 adb shell df -h /data，查看 /data 分区的总存储空间。如果总存储大于 0，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_df", "check": "The trace contains a shell command that checks storage."},
+        {"id": "reported_storage", "check": "The final answer reports total storage size."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_uptime",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to run adb shell cat /proc/uptime and report the system uptime in seconds.",
+      "prompt": "用 shell 运行 adb shell cat /proc/uptime，查看系统开机运行时间。如果 uptime 大于 0（设备已启动），回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_uptime", "check": "The trace contains a shell command that reads /proc/uptime."},
+        {"id": "reported_uptime", "check": "The final answer reports system uptime."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_screenshot_rapid",
+      "category": "device_operation",
+      "description_for_judge": "Agent must take 5 screenshots in rapid succession (within 30 seconds) and confirm all 5 were captured successfully.",
+      "prompt": "连续截 5 张图，间隔尽量短（每张之间不超过 2 秒）。全部截图成功后告诉我截图工具 5 次都返回 ok=true。如果 5 次全部成功，回答 PASS；如果任何一次失败，回答 FAIL。",
+      "rubric": [
+        {"id": "took_5_screenshots", "check": "The trace contains at least 5 screenshot calls."},
+        {"id": "all_screenshots_ok", "check": "All 5 screenshot calls returned ok=true or equivalent success."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 5,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["screenshot"]
+      }
+    },
+    {
+      "id": "factory_app_launch_cycle",
+      "category": "device_operation",
+      "description_for_judge": "Agent must open and close Settings app 3 times in a row to verify app launch stability.",
+      "prompt": "连续打开和关闭系统设置 3 次（打开设置 → 回到桌面 → 打开设置 → 回到桌面 → 打开设置 → 回到桌面）。每次打开设置时确认设置页面正常显示。如果 3 次都正常，回答 PASS；如果任何一次打开失败或闪退，回答 FAIL。",
+      "rubric": [
+        {"id": "opened_settings_3_times", "check": "The trace shows agent navigated to Settings and back to home screen 3 times."},
+        {"id": "all_launches_ok", "check": "Each Settings launch showed the main Settings page without crash or error."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 6,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["touch_gesture", "screenshot"]
+      }
+    }
+  ]
+}

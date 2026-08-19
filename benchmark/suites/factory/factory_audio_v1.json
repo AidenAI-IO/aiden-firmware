@@ -1,0 +1,103 @@
+{
+  "name": "factory_audio_v1",
+  "suite_category": "Factory Acceptance",
+  "description": "Audio hardware validation — speaker output, microphone input, headphone jack detection, and volume range.",
+  "prompt_prefix": "你正在对一台 Android 设备做出厂验收中的音频测试。请用 shell 工具查询音频硬件信息，用 touch_gesture 操作音频设置。每一步获得结果后判定 PASS 或 FAIL。",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "回到主屏幕。",
+    "timeout_sec": 30,
+    "clear_history_after": true
+  },
+  "tasks": [
+    {
+      "id": "factory_audio_speaker_check",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check if the speaker is present and not muted. Use adb shell dumpsys audio to verify audio output devices.",
+      "prompt": "用 shell 运行 adb shell dumpsys audio，查看音频输出设备列表，确认扬声器（speaker）处于可用状态。如果扬声器可用，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_audio", "check": "The trace contains a shell command that queries audio state."},
+        {"id": "speaker_available", "check": "The final answer confirms speaker is available or not."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_audio_volume_range",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to query the current media volume and max volume via adb shell media volume --get, then verify the max is within a reasonable range.",
+      "prompt": "用 shell 运行 adb shell media volume --get，查看当前媒体音量和最大音量。告诉我当前音量和最大音量分别是多少。如果最大音量大于 0，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_volume", "check": "The trace contains a shell command that queries media volume."},
+        {"id": "reported_volume_values", "check": "The final answer contains current and max volume values."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_audio_microphone_check",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check microphone availability via adb shell dumpsys audio and confirm at least one microphone input device is present.",
+      "prompt": "用 shell 运行 adb shell dumpsys audio，查看音频输入设备列表，确认至少有一个麦克风（microphone）处于可用状态。如果麦克风可用，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "used_shell_audio_input", "check": "The trace contains a shell command that queries audio input devices."},
+        {"id": "mic_available", "check": "The final answer confirms at least one microphone is available."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_audio_headphone_jack",
+      "category": "device_operation",
+      "description_for_judge": "Agent must use shell to check headphone jack state via adb shell dumpsys audio or adb shell cat /sys/class/switch/h2w/state, and report whether a headphone jack is present.",
+      "prompt": "用 shell 检查这台设备是否有耳机插孔。运行 adb shell dumpsys audio 查看是否有 wired headphone 输出设备，或者读取 /sys/class/switch/h2w/state。告诉我耳机插孔是否检测到硬件存在。如果设备有耳机插孔硬件，回答 PASS；如果设备没有耳机插孔（比如只有 USB-C 音频），也要如实报告并回答 SKIP。",
+      "rubric": [
+        {"id": "used_shell_headphone", "check": "The trace contains a shell command that queries headphone jack state."},
+        {"id": "reported_presence", "check": "The final answer clearly states whether a headphone jack exists."},
+        {"id": "declared_pass_or_skip", "check": "The final answer explicitly states PASS or SKIP."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"]
+      }
+    },
+    {
+      "id": "factory_audio_ringtone_playback",
+      "category": "device_operation",
+      "description_for_judge": "Agent must play a test ringtone via shell (adb shell cmd media play ...) or open Settings → Sound and play a ringtone preview, and confirm playback started.",
+      "prompt": "用 shell 运行 adb shell cmd media play 或者打开系统设置 → 声音，播放一个铃声预览，确认声音能正常播放。如果播放成功，回答 PASS；否则 FAIL。",
+      "rubric": [
+        {"id": "played_ringtone", "check": "The trace shows agent played a ringtone or sound preview."},
+        {"id": "playback_success", "check": "The tool result shows ok=true or the sound settings UI confirms playback."},
+        {"id": "declared_pass_or_fail", "check": "The final answer explicitly states PASS or FAIL."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 6,
+        "must_complete_within_sec": 90,
+        "response_required": true
+      }
+    }
+  ]
+}
