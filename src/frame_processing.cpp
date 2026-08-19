@@ -298,6 +298,19 @@ static bool crop_frame_rect(const FrameMetadata& metadata,
     return true;
 }
 
+static uint32_t even_crop_extent(uint32_t extent, uint32_t limit) {
+    extent = std::min(extent, limit);
+    if ((extent & 1U) == 0) {
+        return extent;
+    }
+    // Prefer retaining one more pixel/row. If an odd source edge cannot be
+    // expanded, drop one when possible; a one-pixel source is left intact.
+    if (extent < limit) {
+        return extent + 1U;
+    }
+    return extent > 1U ? extent - 1U : extent;
+}
+
 bool crop_frame_center(const FrameMetadata& metadata,
                        const std::vector<uint8_t>& frame,
                        uint32_t target_width,
@@ -309,13 +322,10 @@ bool crop_frame_center(const FrameMetadata& metadata,
         return false;
     }
 
-    uint32_t crop_width = std::min(target_width, metadata.width);
-    uint32_t crop_height = std::min(target_height, metadata.height);
-    if ((crop_width & 1U) != 0) {
-        ++crop_width;
-    }
-    if (metadata.pixel_format == "nv12" && (crop_height & 1U) != 0) {
-        ++crop_height;
+    const uint32_t crop_width = even_crop_extent(target_width, metadata.width);
+    const uint32_t crop_height = even_crop_extent(target_height, metadata.height);
+    if (crop_width == 0 || crop_height == 0) {
+        return false;
     }
     const uint32_t crop_x = ((metadata.width - crop_width) / 2U) & ~1U;
     uint32_t crop_y = (metadata.height - crop_height) / 2U;
@@ -324,6 +334,130 @@ bool crop_frame_center(const FrameMetadata& metadata,
     }
     return crop_frame_rect(metadata, frame, crop_x, crop_y, crop_width, crop_height,
                            cropped_metadata, cropped_frame);
+}
+
+static void centered_aspect_crop_size(uint32_t frame_width, uint32_t frame_height,
+                                      uint32_t screen_width, uint32_t screen_height,
+                                      uint32_t* crop_width, uint32_t* crop_height) {
+    *crop_width = frame_width;
+    *crop_height = frame_height;
+    if (frame_width == 0 || frame_height == 0 || screen_width == 0 || screen_height == 0) {
+        return;
+    }
+    if (static_cast<uint64_t>(screen_width) * frame_height <=
+        static_cast<uint64_t>(screen_height) * frame_width) {
+        const uint64_t numerator = static_cast<uint64_t>(frame_height) * screen_width;
+        *crop_width = static_cast<uint32_t>(
+            std::max<uint64_t>(1, (numerator + screen_height / 2U) / screen_height));
+    } else {
+        const uint64_t numerator = static_cast<uint64_t>(frame_width) * screen_height;
+        *crop_height = static_cast<uint32_t>(
+            std::max<uint64_t>(1, (numerator + screen_width / 2U) / screen_width));
+    }
+    *crop_width = even_crop_extent(*crop_width, frame_width);
+    *crop_height = even_crop_extent(*crop_height, frame_height);
+}
+
+struct BorderScore {
+    uint32_t black;
+    uint32_t total;
+};
+
+static void score_black_border_band(const FrameMetadata& metadata,
+                                    const std::vector<uint8_t>& frame,
+                                    bool vertical,
+                                    uint32_t begin,
+                                    uint32_t end,
+                                    BorderScore* score) {
+    if (!score || begin >= end) {
+        return;
+    }
+    const uint32_t length = end - begin;
+    const uint32_t samples = std::min<uint32_t>(5, length);
+    for (uint32_t i = 0; i < samples; ++i) {
+        const uint32_t offset = samples == 1
+                                    ? 0
+                                    : static_cast<uint32_t>(
+                                          static_cast<uint64_t>(length - 1) * i /
+                                          (samples - 1));
+        if (is_black_luma_line(metadata, frame, vertical, begin + offset)) {
+            ++score->black;
+        }
+        ++score->total;
+    }
+}
+
+static BorderScore centered_crop_border_score(const FrameMetadata& metadata,
+                                               const std::vector<uint8_t>& frame,
+                                               uint32_t crop_width,
+                                               uint32_t crop_height) {
+    BorderScore score = {0, 0};
+    const uint32_t crop_x = (metadata.width - crop_width) / 2U;
+    const uint32_t crop_y = (metadata.height - crop_height) / 2U;
+    score_black_border_band(metadata, frame, true, 0, crop_x, &score);
+    score_black_border_band(metadata, frame, true, crop_x + crop_width,
+                            metadata.width, &score);
+    score_black_border_band(metadata, frame, false, 0, crop_y, &score);
+    score_black_border_band(metadata, frame, false, crop_y + crop_height,
+                            metadata.height, &score);
+    return score;
+}
+
+bool crop_frame_center_aspect_auto(const FrameMetadata& metadata,
+                                   const std::vector<uint8_t>& frame,
+                                   uint32_t screen_width,
+                                   uint32_t screen_height,
+                                   FrameMetadata* cropped_metadata,
+                                   std::vector<uint8_t>* cropped_frame) {
+    if (!cropped_metadata || !cropped_frame || !valid_crop_frame(metadata, frame) ||
+        screen_width == 0 || screen_height == 0) {
+        return false;
+    }
+
+    const uint32_t short_side = std::min(screen_width, screen_height);
+    const uint32_t long_side = std::max(screen_width, screen_height);
+    uint32_t portrait_width = metadata.width;
+    uint32_t portrait_height = metadata.height;
+    uint32_t landscape_width = metadata.width;
+    uint32_t landscape_height = metadata.height;
+    centered_aspect_crop_size(metadata.width, metadata.height, short_side, long_side,
+                              &portrait_width, &portrait_height);
+    centered_aspect_crop_size(metadata.width, metadata.height, long_side, short_side,
+                              &landscape_width, &landscape_height);
+
+    if (portrait_width == landscape_width && portrait_height == landscape_height) {
+        return crop_frame_center(metadata, frame, portrait_width, portrait_height,
+                                 cropped_metadata, cropped_frame);
+    }
+    if (portrait_width == metadata.width && portrait_height == metadata.height) {
+        return crop_frame_center(metadata, frame, portrait_width, portrait_height,
+                                 cropped_metadata, cropped_frame);
+    }
+    if (landscape_width == metadata.width && landscape_height == metadata.height) {
+        return crop_frame_center(metadata, frame, landscape_width, landscape_height,
+                                 cropped_metadata, cropped_frame);
+    }
+
+    const BorderScore portrait = centered_crop_border_score(
+        metadata, frame, portrait_width, portrait_height);
+    const BorderScore landscape = centered_crop_border_score(
+        metadata, frame, landscape_width, landscape_height);
+    bool use_landscape;
+    const uint64_t portrait_weighted = static_cast<uint64_t>(portrait.black) * landscape.total;
+    const uint64_t landscape_weighted = static_cast<uint64_t>(landscape.black) * portrait.total;
+    if (landscape_weighted != portrait_weighted) {
+        use_landscape = landscape_weighted > portrait_weighted;
+    } else {
+        // When the pixels are ambiguous, derive orientation from this frame's
+        // geometry rather than from the cached width/height ordering.
+        use_landscape = metadata.width >= metadata.height;
+    }
+
+    return use_landscape
+               ? crop_frame_center(metadata, frame, landscape_width, landscape_height,
+                                   cropped_metadata, cropped_frame)
+               : crop_frame_center(metadata, frame, portrait_width, portrait_height,
+                                   cropped_metadata, cropped_frame);
 }
 
 bool crop_frame_horizontal_center(const FrameMetadata& metadata,

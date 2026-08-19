@@ -19,6 +19,16 @@ bool crop_frame_center(const FrameMetadata& metadata,
                        FrameMetadata* cropped_metadata,
                        std::vector<uint8_t>* cropped_frame);
 
+// Crop to a known screen aspect ratio while deriving the current orientation
+// from black bars in this frame. screen_width/screen_height provide only the
+// aspect ratio; their ordering is not treated as a cached orientation.
+bool crop_frame_center_aspect_auto(const FrameMetadata& metadata,
+                                   const std::vector<uint8_t>& frame,
+                                   uint32_t screen_width,
+                                   uint32_t screen_height,
+                                   FrameMetadata* cropped_metadata,
+                                   std::vector<uint8_t>* cropped_frame);
+
 // Backward-compatible horizontal-only wrapper.
 bool crop_frame_horizontal_center(const FrameMetadata& metadata,
                                    const std::vector<uint8_t>& frame,

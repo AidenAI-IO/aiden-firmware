@@ -65,7 +65,7 @@ void crop_black_bars_bgr(const cv::Mat& bgr, cv::Mat& dst,
         return;
     }
     if (!crop_black) {
-        bgr.copyTo(dst);
+        dst = bgr;
         if (out_crop_x) *out_crop_x = 0;
         if (out_crop_y) *out_crop_y = 0;
         return;

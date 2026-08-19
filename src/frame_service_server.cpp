@@ -3,7 +3,6 @@
 #include "frame_processing.h"
 #include "cJSON/cJSON.h"
 #include "uds_message.h"
-#include <algorithm>
 #include <chrono>
 #include <stdio.h>
 #include <stdlib.h>
@@ -125,26 +124,6 @@ static uint64_t json_u64(cJSON* object, const char* key) {
 
 static uint32_t json_u32(cJSON* object, const char* key) {
     return static_cast<uint32_t>(json_u64(object, key));
-}
-
-static void centered_aspect_crop_size(uint32_t frame_width, uint32_t frame_height,
-                                      uint32_t screen_width, uint32_t screen_height,
-                                      uint32_t* crop_width, uint32_t* crop_height) {
-    *crop_width = frame_width;
-    *crop_height = frame_height;
-    if (frame_width == 0 || frame_height == 0 || screen_width == 0 || screen_height == 0) {
-        return;
-    }
-    if (static_cast<uint64_t>(screen_width) * frame_height <=
-        static_cast<uint64_t>(screen_height) * frame_width) {
-        const uint64_t numerator = static_cast<uint64_t>(frame_height) * screen_width;
-        *crop_width = static_cast<uint32_t>(
-            std::max<uint64_t>(1, (numerator + screen_height / 2U) / screen_height));
-    } else {
-        const uint64_t numerator = static_cast<uint64_t>(frame_width) * screen_height;
-        *crop_height = static_cast<uint32_t>(
-            std::max<uint64_t>(1, (numerator + screen_width / 2U) / screen_width));
-    }
 }
 
 static std::string json_string(cJSON* object, const char* key) {
@@ -468,13 +447,9 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             if (crop_black && (format == "jpeg" || format == "raw")) {
                 bool cropped = false;
                 if (screen_width > 0 && screen_height > 0) {
-                    uint32_t crop_width = metadata.width;
-                    uint32_t crop_height = metadata.height;
-                    centered_aspect_crop_size(metadata.width, metadata.height,
-                                              screen_width, screen_height,
-                                              &crop_width, &crop_height);
-                    cropped = crop_frame_center(metadata, frame->data, crop_width, crop_height,
-                                                &transformed_metadata, &cropped_raw_payload);
+                    cropped = crop_frame_center_aspect_auto(
+                        metadata, frame->data, screen_width, screen_height,
+                        &transformed_metadata, &cropped_raw_payload);
                 } else if (minimal_width > 0) {
                     cropped = crop_frame_horizontal_center(metadata, frame->data, minimal_width,
                                                            &transformed_metadata,

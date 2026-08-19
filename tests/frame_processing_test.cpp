@@ -8,6 +8,7 @@ using aiden::FrameMetadata;
 using aiden::convert_frame_to_rgb;
 using aiden::crop_frame_black_bars;
 using aiden::crop_frame_center;
+using aiden::crop_frame_center_aspect_auto;
 using aiden::crop_frame_horizontal_center;
 using aiden::crop_frame_horizontal_black_bars;
 using aiden::encode_frame_to_bmp;
@@ -40,6 +41,21 @@ FrameMetadata frame_meta(uint32_t width, uint32_t height, const char* format) {
     metadata.stride = width * 2;
     metadata.bytes = metadata.stride * height;
     return metadata;
+}
+
+std::vector<uint8_t> uyvy_from_luma(uint32_t width, uint32_t height,
+                                    const std::vector<uint8_t>& luma) {
+    std::vector<uint8_t> uyvy;
+    uyvy.reserve(static_cast<size_t>(width) * height * 2U);
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; x += 2) {
+            uyvy.push_back(128);
+            uyvy.push_back(luma[static_cast<size_t>(y) * width + x]);
+            uyvy.push_back(128);
+            uyvy.push_back(luma[static_cast<size_t>(y) * width + x + 1]);
+        }
+    }
+    return uyvy;
 }
 
 }
@@ -187,6 +203,90 @@ TEST_CASE("crop raw UYVY frame detects top and bottom black bars") {
     CHECK(cropped_metadata.crop_width == 4);
     CHECK(cropped_metadata.crop_height == 2);
     CHECK(cropped.size() == 16);
+}
+
+TEST_CASE("known screen ratio derives landscape orientation from current frame") {
+    FrameMetadata metadata = frame_meta(12, 8, "uyvy");
+    std::vector<uint8_t> luma(96, 16);
+    for (uint32_t y = 1; y < 7; ++y) {
+        for (uint32_t x = 0; x < 12; ++x) {
+            luma[static_cast<size_t>(y) * 12 + x] =
+                static_cast<uint8_t>((x + y) % 2 == 0 ? 35 : 20);
+        }
+    }
+    const std::vector<uint8_t> uyvy = uyvy_from_luma(12, 8, luma);
+    FrameMetadata cropped_metadata;
+    std::vector<uint8_t> cropped;
+
+    REQUIRE(crop_frame_center_aspect_auto(metadata, uyvy, 2, 4,
+                                          &cropped_metadata, &cropped));
+    CHECK(cropped_metadata.width == 12);
+    CHECK(cropped_metadata.height == 6);
+    CHECK(cropped_metadata.crop_x == 0);
+    CHECK(cropped_metadata.crop_y == 1);
+}
+
+TEST_CASE("known screen ratio retains one row to make landscape crop even") {
+    FrameMetadata metadata = frame_meta(16, 12, "uyvy");
+    std::vector<uint8_t> luma(192, 16);
+    for (uint32_t y = 1; y < 11; ++y) {
+        for (uint32_t x = 0; x < 16; ++x) {
+            luma[static_cast<size_t>(y) * 16 + x] =
+                static_cast<uint8_t>((x + y) % 2 == 0 ? 235 : 180);
+        }
+    }
+    const std::vector<uint8_t> uyvy = uyvy_from_luma(16, 12, luma);
+    FrameMetadata cropped_metadata;
+    std::vector<uint8_t> cropped;
+
+    REQUIRE(crop_frame_center_aspect_auto(metadata, uyvy, 4, 7,
+                                          &cropped_metadata, &cropped));
+    CHECK(cropped_metadata.width == 16);
+    CHECK(cropped_metadata.height == 10);
+    CHECK(cropped_metadata.crop_x == 0);
+    CHECK(cropped_metadata.crop_y == 1);
+}
+
+TEST_CASE("known screen ratio derives portrait orientation from current frame") {
+    FrameMetadata metadata = frame_meta(12, 8, "uyvy");
+    std::vector<uint8_t> luma(96, 16);
+    for (uint32_t y = 0; y < 8; ++y) {
+        for (uint32_t x = 4; x < 8; ++x) {
+            luma[static_cast<size_t>(y) * 12 + x] =
+                static_cast<uint8_t>((x + y) % 2 == 0 ? 235 : 180);
+        }
+    }
+    const std::vector<uint8_t> uyvy = uyvy_from_luma(12, 8, luma);
+    FrameMetadata cropped_metadata;
+    std::vector<uint8_t> cropped;
+
+    REQUIRE(crop_frame_center_aspect_auto(metadata, uyvy, 4, 2,
+                                          &cropped_metadata, &cropped));
+    CHECK(cropped_metadata.width == 4);
+    CHECK(cropped_metadata.height == 8);
+    CHECK(cropped_metadata.crop_x == 4);
+    CHECK(cropped_metadata.crop_y == 0);
+}
+
+TEST_CASE("known screen ratio retains one column to make portrait crop even") {
+    FrameMetadata metadata = frame_meta(16, 12, "uyvy");
+    std::vector<uint8_t> luma(192, 16);
+    for (uint32_t y = 0; y < 12; ++y) {
+        for (uint32_t x = 4; x < 12; ++x) {
+            luma[static_cast<size_t>(y) * 16 + x] =
+                static_cast<uint8_t>((x + y) % 2 == 0 ? 235 : 180);
+        }
+    }
+    const std::vector<uint8_t> uyvy = uyvy_from_luma(16, 12, luma);
+    FrameMetadata cropped_metadata;
+    std::vector<uint8_t> cropped;
+
+    REQUIRE(crop_frame_center_aspect_auto(metadata, uyvy, 4, 7,
+                                          &cropped_metadata, &cropped));
+    CHECK(cropped_metadata.width == 8);
+    CHECK(cropped_metadata.height == 12);
+    CHECK(cropped_metadata.crop_x == 4);
+    CHECK(cropped_metadata.crop_y == 0);
 }
 
 TEST_CASE("crop raw NV12 frame rebuilds plane metadata") {
