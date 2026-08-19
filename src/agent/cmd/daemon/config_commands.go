@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,10 +10,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/configdoc"
 )
 
 // ValidationError represents a single validation error with field path and message
@@ -27,6 +32,14 @@ type ValidationResult struct {
 	Errors []ValidationError `json:"errors"`
 }
 
+type configUpdateResult struct {
+	OK             bool         `json:"ok"`
+	Config         webConfigDTO `json:"config"`
+	ChangedPaths   []string     `json:"changed_paths"`
+	RebootRequired bool         `json:"reboot_required"`
+	Error          string       `json:"error,omitempty"`
+}
+
 type ConfigTestResult struct {
 	OK         bool              `json:"ok"`
 	Results    []ConfigTestCheck `json:"results"`
@@ -39,12 +52,11 @@ type ConfigTestCheck struct {
 	Detail string `json:"detail"`
 }
 
-// webConfigDTO mirrors the JSON produced by config_web.cpp's config_to_json().
-// It is the single definition of the config_web <-> agent wire contract: keys
+// webConfigDTO is the single definition of the config_web <-> agent wire contract: keys
 // are snake_case, agent-level settings live under "agent", and write-only
 // credentials report only configured-state flags rather than echoing values.
 //
-// Keep this struct in lockstep with config_to_json(); the round-trip is covered
+// Keep this struct in lockstep with the config web API; the round-trip is covered
 // by TestConfigCheck_WireFormatContract.
 type webConfigDTO struct {
 	ModelProviders     map[string]modelProviderDTO   `json:"model_providers,omitempty"`
@@ -958,6 +970,337 @@ func runConfig(args []string) int {
 	}
 
 	return 0
+}
+
+func runConfigUpdate(args []string) int {
+	fs := flag.NewFlagSet("config-update", flag.ContinueOnError)
+	formatFlag := fs.String("format", "json", "output format (only json supported)")
+	stdinFlag := fs.Bool("stdin", false, "read JSON merge patch from stdin")
+	configFlag := fs.String("config", "", "path to a TOML config file")
+	if err := fs.Parse(args); err != nil {
+		writeConfigUpdateError(err)
+		return 1
+	}
+	if *formatFlag != "json" || !*stdinFlag || strings.TrimSpace(*configFlag) == "" {
+		writeConfigUpdateError(fmt.Errorf("--config, --stdin and --format=json are required"))
+		return 1
+	}
+	patch, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		writeConfigUpdateError(err)
+		return 1
+	}
+	result, err := updateConfigFile(strings.TrimSpace(*configFlag), patch)
+	if err != nil {
+		writeConfigUpdateError(err)
+		return 1
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintf(os.Stderr, "encode config-update result: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func writeConfigUpdateError(err error) {
+	_ = json.NewEncoder(os.Stdout).Encode(configUpdateResult{OK: false, Error: err.Error()})
+}
+
+func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error) {
+	var patch map[string]json.RawMessage
+	if err := json.Unmarshal(patchJSON, &patch); err != nil {
+		return configUpdateResult{}, fmt.Errorf("invalid JSON merge patch: %w", err)
+	}
+	if nested, ok := patch["config"]; ok {
+		var configPatch map[string]json.RawMessage
+		if err := json.Unmarshal(nested, &configPatch); err != nil {
+			return configUpdateResult{}, fmt.Errorf("config patch must be an object: %w", err)
+		}
+		patch = configPatch
+	}
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return configUpdateResult{}, fmt.Errorf("resolve config path: %w", err)
+	}
+	original, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return configUpdateResult{}, fmt.Errorf("read config: %w", err)
+	}
+	current, err := agent.LoadResolvedConfig(resolvedPath)
+	if err != nil {
+		return configUpdateResult{}, fmt.Errorf("load config: %w", err)
+	}
+	patch, err = filterNoopWebConfigPatch(patch, webConfigDTOFromAgentConfig(current))
+	if err != nil {
+		return configUpdateResult{}, err
+	}
+	operations, err := configPatchOperations(patch)
+	if err != nil {
+		return configUpdateResult{}, err
+	}
+	updated, changed, err := configdoc.Apply(original, operations)
+	if err != nil {
+		return configUpdateResult{}, err
+	}
+	if len(changed) == 0 {
+		cfg, err := agent.LoadResolvedConfig(resolvedPath)
+		if err != nil {
+			return configUpdateResult{}, err
+		}
+		return configUpdateResult{OK: true, Config: webConfigDTOFromAgentConfig(cfg), ChangedPaths: []string{}, RebootRequired: false}, nil
+	}
+	info, err := os.Stat(resolvedPath)
+	if err != nil {
+		return configUpdateResult{}, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(resolvedPath), ".agent.toml.config-update-*.toml")
+	if err != nil {
+		return configUpdateResult{}, fmt.Errorf("create temporary config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(info.Mode().Perm()); err == nil {
+		_, err = tmp.Write(updated)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return configUpdateResult{}, fmt.Errorf("write temporary config: %w", err)
+	}
+	candidate, err := agent.LoadResolvedConfig(tmpPath)
+	if err != nil {
+		return configUpdateResult{}, fmt.Errorf("validate config: %w", err)
+	}
+	if err := candidate.ValidateVoiceProviders(); err != nil {
+		return configUpdateResult{}, fmt.Errorf("validate voice providers: %w", err)
+	}
+	if err := os.Rename(tmpPath, resolvedPath); err != nil {
+		return configUpdateResult{}, fmt.Errorf("replace config: %w", err)
+	}
+	directory, err := os.Open(filepath.Dir(resolvedPath))
+	if err != nil {
+		return configUpdateResult{}, fmt.Errorf("open config directory: %w", err)
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return configUpdateResult{}, fmt.Errorf("sync config directory: %w", err)
+	}
+	return configUpdateResult{
+		OK:             true,
+		Config:         webConfigDTOFromAgentConfig(candidate),
+		ChangedPaths:   changed,
+		RebootRequired: requiresConfigReboot(changed),
+	}, nil
+}
+
+func filterNoopWebConfigPatch(patch map[string]json.RawMessage, current webConfigDTO) (map[string]json.RawMessage, error) {
+	encoded, err := json.Marshal(current)
+	if err != nil {
+		return nil, err
+	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &values); err != nil {
+		return nil, err
+	}
+	return filterNoopObject(patch, values), nil
+}
+
+func filterNoopObject(patch, current map[string]json.RawMessage) map[string]json.RawMessage {
+	result := make(map[string]json.RawMessage)
+	for key, raw := range patch {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			result[key] = raw
+			continue
+		}
+		var child map[string]json.RawMessage
+		if len(raw) > 0 && raw[0] == '{' && json.Unmarshal(raw, &child) == nil {
+			var currentChild map[string]json.RawMessage
+			if currentRaw, ok := current[key]; ok && json.Unmarshal(currentRaw, &currentChild) == nil {
+				filtered := filterNoopObject(child, currentChild)
+				if len(filtered) == 0 {
+					continue
+				}
+				encoded, _ := json.Marshal(filtered)
+				result[key] = encoded
+				continue
+			}
+		}
+		if existing, ok := current[key]; ok && jsonValuesEqual(raw, existing) {
+			continue
+		}
+		result[key] = raw
+	}
+	return result
+}
+
+func jsonValuesEqual(left, right json.RawMessage) bool {
+	var a, b any
+	return json.Unmarshal(left, &a) == nil && json.Unmarshal(right, &b) == nil && reflect.DeepEqual(a, b)
+}
+
+func configPatchOperations(patch map[string]json.RawMessage) ([]configdoc.Operation, error) {
+	if err := validateWebConfigPatch(patch); err != nil {
+		return nil, err
+	}
+	var operations []configdoc.Operation
+	sections := make([]string, 0, len(patch))
+	for key := range patch {
+		sections = append(sections, key)
+	}
+	sort.Strings(sections)
+	for _, section := range sections {
+		if err := flattenConfigPatch([]string{section}, patch[section], &operations); err != nil {
+			return nil, err
+		}
+	}
+	return operations, nil
+}
+
+func flattenConfigPatch(path []string, raw json.RawMessage, operations *[]configdoc.Operation) error {
+	path = tomlPathForWebPath(path)
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		if len(path) >= 2 && strings.HasSuffix(path[0], "_providers") && len(path) == 2 {
+			*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), path...), DeleteTable: true})
+		} else {
+			*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), path...), Delete: true})
+		}
+		return nil
+	}
+	var object map[string]json.RawMessage
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return err
+		}
+		keys := make([]string, 0, len(object))
+		for key := range object {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if err := flattenConfigPatch(append(append([]string(nil), path...), key), object[key], operations); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return fmt.Errorf("invalid patch at %s: %w", strings.Join(path, "."), err)
+	}
+	*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), path...), Value: normalizeJSONNumber(value)})
+	return nil
+}
+
+func validateWebConfigPatch(patch map[string]json.RawMessage) error {
+	return validatePatchObject(reflect.TypeOf(webConfigDTO{}), patch, nil)
+}
+
+func validatePatchObject(typ reflect.Type, patch map[string]json.RawMessage, path []string) error {
+	if typ.Kind() == reflect.Map {
+		for key, raw := range patch {
+			if strings.HasPrefix(key, "has_") {
+				return fmt.Errorf("%s is a read-only status field", strings.Join(append(path, key), "."))
+			}
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				continue
+			}
+			var child map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &child); err != nil {
+				return fmt.Errorf("%s must be an object", strings.Join(append(path, key), "."))
+			}
+			if err := validatePatchObject(typ.Elem(), child, append(path, key)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for key, raw := range patch {
+		if strings.HasPrefix(key, "has_") {
+			return fmt.Errorf("%s is a read-only status field", strings.Join(append(path, key), "."))
+		}
+		fieldType, found := jsonFieldType(typ, key)
+		if !found {
+			return fmt.Errorf("unknown config field %s", strings.Join(append(path, key), "."))
+		}
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			continue
+		}
+		base := fieldType
+		for base.Kind() == reflect.Pointer {
+			base = base.Elem()
+		}
+		if base.Kind() == reflect.Struct || base.Kind() == reflect.Map {
+			var child map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &child); err != nil {
+				return fmt.Errorf("%s must be an object", strings.Join(append(path, key), "."))
+			}
+			if err := validatePatchObject(base, child, append(path, key)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func jsonFieldType(typ reflect.Type, name string) (reflect.Type, bool) {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if typ.Kind() != reflect.Struct {
+		return nil, false
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		tag := strings.Split(field.Tag.Get("json"), ",")[0]
+		if tag == name {
+			return field.Type, true
+		}
+	}
+	return nil, false
+}
+
+func tomlPathForWebPath(path []string) []string {
+	if len(path) < 2 || path[0] != "agent" {
+		return path
+	}
+	mapped := map[string]string{
+		"custom_instruction": "custom_instruction",
+		"additional_prompt":  "additional_prompt",
+	}
+	key := path[1]
+	if replacement, ok := mapped[key]; ok {
+		key = replacement
+	}
+	return append([]string{key}, path[2:]...)
+}
+
+func normalizeJSONNumber(value any) any {
+	number, ok := value.(json.Number)
+	if !ok {
+		return value
+	}
+	if strings.ContainsAny(string(number), ".eE") {
+		f, _ := number.Float64()
+		return f
+	}
+	i, _ := number.Int64()
+	return i
+}
+
+func requiresConfigReboot(paths []string) bool {
+	for _, path := range paths {
+		if path == "device.device_type" || path == "hid.keyboard_layout" {
+			return true
+		}
+	}
+	return false
 }
 
 type configTestInput struct {

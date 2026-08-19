@@ -1399,25 +1399,9 @@ TEST_CASE("config web exposes live activity settings section") {
 
     const std::string html = read_config_web_asset_bundle();
 
-    const std::string toml_header_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.h";
-    std::ifstream toml_header_in(toml_header_path.c_str());
-    REQUIRE(toml_header_in.good());
-
-    std::ostringstream toml_header_buffer;
-    toml_header_buffer << toml_header_in.rdbuf();
-    const std::string toml_header = toml_header_buffer.str();
-
-    const std::string toml_source_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.cpp";
-    std::ifstream toml_source_in(toml_source_path.c_str());
-    REQUIRE(toml_source_in.good());
-
-    std::ostringstream toml_source_buffer;
-    toml_source_buffer << toml_source_in.rdbuf();
-    const std::string toml_source = toml_source_buffer.str();
-
     CHECK(source.find("\"live_activity\"") != std::string::npos);
     CHECK(source.find("cJSON* live_activity = add_object(root, \"live_activity\")") != std::string::npos);
-    CHECK(source.find("preserve_redacted_agent_secrets") != std::string::npos);
+    CHECK(source.find("config-update --config=") != std::string::npos);
     CHECK(source.find("config.live_activity.relay_url") == std::string::npos);
     CHECK(source.find("has_relay_api_key") == std::string::npos);
     CHECK(source.find("has_private_key_pem") == std::string::npos);
@@ -1435,11 +1419,6 @@ TEST_CASE("config web exposes live activity settings section") {
     CHECK(html.find("save-live_activity") != std::string::npos);
     CHECK(html.find("data-action=\"enter-edit-section\" data-section-target=\"live_activity\"") != std::string::npos);
 
-    CHECK(toml_header.find("struct LiveActivityToml") != std::string::npos);
-    CHECK(toml_header.find("LiveActivityToml live_activity") != std::string::npos);
-    CHECK(toml_source.find("section == \"live_activity\"") != std::string::npos);
-    CHECK(toml_source.find("\"relay_api_key\"") == std::string::npos);
-    CHECK(toml_source.find("[live_activity]") != std::string::npos);
 }
 
 TEST_CASE("config web does not restart ota for system env changes") {
@@ -1591,29 +1570,7 @@ TEST_CASE("config web requires reboot for USB HID configuration changes") {
 
     const std::string html = read_config_web_asset_bundle();
 
-    const std::string toml_header_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.h";
-    std::ifstream toml_header_in(toml_header_path.c_str());
-    REQUIRE(toml_header_in.good());
-
-    std::ostringstream toml_header_buffer;
-    toml_header_buffer << toml_header_in.rdbuf();
-    const std::string toml_header = toml_header_buffer.str();
-
-    const std::string toml_source_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.cpp";
-    std::ifstream toml_source_in(toml_source_path.c_str());
-    REQUIRE(toml_source_in.good());
-
-    std::ostringstream toml_source_buffer;
-    toml_source_buffer << toml_source_in.rdbuf();
-    const std::string toml_source = toml_source_buffer.str();
-
-    CHECK(toml_header.find("device_type") != std::string::npos);
-    CHECK(toml_source.find("\"device_type\"") != std::string::npos);
     CHECK(source.find("\"device_type\"") != std::string::npos);
-    CHECK(toml_header.find("pointer_mode") != std::string::npos);
-    CHECK(toml_source.find("\"pointer_mode\"") != std::string::npos);
-    CHECK(toml_header.find("keyboard_layout") != std::string::npos);
-    CHECK(toml_source.find("\"keyboard_layout\"") != std::string::npos);
     CHECK(source.find("\"keyboard_layout\"") != std::string::npos);
     CHECK(source.find("kUsbHidInitScript = \"/etc/init.d/S49usbhid\"") == std::string::npos);
     CHECK(source.find("schedule_usbhid_restart") == std::string::npos);
@@ -1840,7 +1797,7 @@ TEST_CASE("config web html uses canonical provider map and type field names") {
 
     CHECK(html.find("appState.config.model_providers") != std::string::npos);
     CHECK(html.find("configKey:'model_providers'") != std::string::npos);
-    CHECK(html.find("body[self.spec.configKey]=snapshot") != std::string::npos);
+    CHECK(html.find("body[self.spec.configKey]=recordsPatch") != std::string::npos);
     CHECK(html.find("payload.config&&payload.config[self.spec.configKey]") != std::string::npos);
     CHECK(html.find("ModelProvidersManager.records[providerRef].type") != std::string::npos);
     CHECK(html.find("hydrateSelectField(section,'type'") != std::string::npos);

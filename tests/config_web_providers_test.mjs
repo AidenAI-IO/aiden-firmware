@@ -444,7 +444,7 @@ requestImpl = async (_url, options) => {
 };
 assert.equal(await ModelProvidersManager.deleteRecord('active'), true);
 assert.equal(deleteBody.config.model.provider, 'backup');
-assert.deepEqual(Object.keys(deleteBody.config.model_providers), ['backup']);
+assert.deepEqual(deleteBody.config.model_providers, {active: null});
 await ModelSelector.onProviderChange('backup');
 assert.equal(
   modelInput.value,

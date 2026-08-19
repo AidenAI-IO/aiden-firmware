@@ -11,7 +11,6 @@ target_include_directories(doctest INTERFACE
 )
 
 set(AIDEN_TEST_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/agent_toml.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_playback_session.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_record_session.cpp
     ${CMAKE_SOURCE_DIR}/src/wifi_config.cpp
@@ -98,8 +97,6 @@ list(APPEND AIDEN_IMAGE_TEST_SOURCES aiden_sdk_audio_stub.cpp)
 add_executable(aiden_tests
     test_main.cpp
     aiden_log_test.cpp
-    agent_toml_test.cpp
-    agent_toml_voice_providers_test.cpp
     wifi_config_test.cpp
     frame_service_protocol_test.cpp
     frame_service_defaults_test.cpp
@@ -139,7 +136,6 @@ add_executable(config_web_for_tests
     ${CMAKE_SOURCE_DIR}/src/aiden_log.cpp
     ${CMAKE_SOURCE_DIR}/src/config_web.cpp
     ${CMAKE_SOURCE_DIR}/src/config_web_static_assets.cpp
-    ${CMAKE_SOURCE_DIR}/src/agent_toml.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/service_status.cpp
     ${CMAKE_SOURCE_DIR}/src/uds_client.cpp

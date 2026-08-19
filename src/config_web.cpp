@@ -1,4 +1,3 @@
-#include "agent_toml.h"
 #include "aiden_log.h"
 #include "config_web_static_assets.h"
 #include "system_env_parser.h"
@@ -249,7 +248,6 @@ bool is_llm_log_import_request(const std::string& method, const std::string& pat
 void cleanup_request_temp_file(HttpRequest* request);
 void close_response_stream(ApiResponse* response);
 CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
-void update_config_from_json(cJSON* root, aiden::AgentToml* config);
 bool atomic_write_file(const std::string& path, const std::string& content, mode_t mode, std::string* error);
 std::string cjson_to_string(cJSON* json);
 ApiResponse make_json_error(int status_code, const std::string& message);
@@ -286,7 +284,6 @@ ApiResponse proxy_agent_get_request(const Options& options,
                                      const std::string& agent_path_with_query);
 ApiResponse handle_api_models(const Options& options, const std::string& query_string);
 ApiResponse handle_usb_reenumerate(const Options& options);
-void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config);
 long long monotonic_millis();
 bool reap_agent_restart_process(bool wait, std::string* error);
 void start_deferred_agent_restart_if_idle();
@@ -328,10 +325,6 @@ struct ValidationResult {
         return r;
     }
 };
-
-ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path);
-ValidationResult validate_agent_config_path_via_cli(const std::string& config_path,
-                                                     const char* agent_bin_path);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -423,14 +416,6 @@ std::string normalize_device_type(const std::string& value) {
 
 std::string pointer_mode_for_device_type(const std::string& device_type) {
     return normalize_device_type(device_type) == "Android" ? "touchscreen" : "absolute";
-}
-
-std::string effective_device_type(const aiden::AgentToml& config) {
-    std::string configured = trim_copy(config.device.device_type);
-    if (!configured.empty()) {
-        return normalize_device_type(configured);
-    }
-    return "iOS";
 }
 
 std::string normalize_input_backend(const std::string& value) {
@@ -1891,6 +1876,7 @@ void send_response(int client_fd, const ApiResponse& response) {
     write_all(client_fd, response.body.data(), response.body.size());
 }
 
+#if 0  // Replaced by agent config-update --stdin.
 bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
     if (!json_is_object(root)) {
         return config_schema_error(error, "root", "object", root);
@@ -2123,6 +2109,8 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
         if (item.second.secret_key.empty()) item.second.secret_key = previous->second.secret_key;
     }
 }
+
+#endif
 
 bool json_bool_value(cJSON* obj, const char* key) {
     cJSON* item = cJSON_GetObjectItem(obj, key);
@@ -2774,6 +2762,7 @@ void load_current_wifi_config(const Options& options,
     }
 }
 
+#if 0  // Replaced by the Go webConfigDTO response.
 cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = false) {
     cJSON* root = cJSON_CreateObject();
 
@@ -3028,6 +3017,8 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     return root;
 }
 
+#endif
+
 cJSON* wifi_to_json(const aiden::WifiNetworkConfig& wifi) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "ssid", wifi.ssid.c_str());
@@ -3242,6 +3233,7 @@ void update_write_only_secret(cJSON* record, const char* field,
         : submitted_value;
 }
 
+#if 0  // Replaced by the Go config patch mapper.
 void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     if (!json_is_object(obj) || !m) return;
     set_json_str(&m->provider, obj, "provider");
@@ -3581,6 +3573,9 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     }
 }
 
+#endif
+
+#if 0  // Replaced by config-update's in-process Go validation.
 ValidationResult parse_agent_config_validation_result(const CommandResult& result) {
     if (result.timed_out) {
         return ValidationResult::unavailable("config validation timed out");
@@ -3680,6 +3675,8 @@ ValidationResult validate_agent_config_for_save(const aiden::AgentToml& config) 
     }
     return validate_agent_config_via_cli(config, agent_bin);
 }
+
+#endif
 
 void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
     if (!root || !wifi) {
@@ -4704,6 +4701,7 @@ void update_toml_multiline_string_state(const std::string& line,
     }
 }
 
+#if 0  // Replaced by locale's config-update patch.
 std::string update_top_level_locale(const std::string& content, const std::string& locale) {
     size_t first_section_offset = std::string::npos;
     size_t line_start = 0;
@@ -4805,6 +4803,8 @@ ValidationResult validate_agent_toml_content_for_save(const std::string& content
     rmdir(temp_dir.c_str());
     return result;
 }
+
+#endif
 
 bool copy_regular_file_tail(const std::string& source,
                             const std::string& destination,
@@ -5522,18 +5522,30 @@ cJSON* firmware_info_to_json(const Options& options) {
 }
 
 ApiResponse handle_get_config(const Options& options) {
-    aiden::AgentToml config;
+	const char* agent_bin = agent_bin_path();
+	if (!file_exists(agent_bin)) {
+		return make_json_error(503, "agent config unavailable: agent binary not found");
+	}
+	std::string cmd = shell_quote(agent_bin) + " config --config=" +
+	                  shell_quote(options.agent_config_path) + " --format=json";
+	CommandResult agent_result = run_command_with_stdin(cmd, "", 5000);
+	if (agent_result.timed_out || agent_result.exit_code != 0) {
+		return make_json_error(503, agent_result.timed_out ? "agent config timed out" : "agent config unavailable");
+	}
+	cJSON* config_json = cJSON_Parse(agent_result.output.c_str());
+	if (!config_json || !json_is_object(config_json)) {
+		if (config_json) cJSON_Delete(config_json);
+		return make_json_error(503, "agent config returned invalid JSON");
+	}
     aiden::WifiNetworkConfig wifi;
     WifiRuntimeStatus wifi_status = query_wifi_status(options);
     AgentRuntimeStatus agent_status = query_agent_status(options);
-    std::string config_error;
     std::string wifi_error;
-    load_current_agent_config(options, &config, &config_error);
     load_current_wifi_config(options, &wifi, &wifi_error);
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
-    cJSON_AddItemToObject(root, "config", config_to_json(config));
+    cJSON_AddItemToObject(root, "config", config_json);
     cJSON_AddItemToObject(root, "wifi", wifi_to_json(wifi));
     cJSON_AddItemToObject(root, "wifi_status", wifi_status_to_json(wifi_status));
     cJSON_AddItemToObject(root, "agent_status", agent_status_to_json(agent_status));
@@ -5547,14 +5559,118 @@ ApiResponse handle_get_config(const Options& options) {
     cJSON_AddStringToObject(paths, "wifi_interface", options.wifi_interface.c_str());
     cJSON_AddStringToObject(paths, "system_env", options.system_env_path.c_str());
 
-    if (!config_error.empty()) {
-        cJSON_AddStringToObject(root, "config_error", config_error.c_str());
-    }
     if (!wifi_error.empty()) {
         cJSON_AddStringToObject(root, "wifi_error", wifi_error.c_str());
     }
 
     return make_json_ok(root);
+}
+
+static bool update_agent_config_via_cli(const Options& options,
+                                        const std::string& body,
+                                        cJSON** result,
+                                        int* status_code,
+                                        std::string* error) {
+    if (result) *result = NULL;
+    if (status_code) *status_code = 503;
+    const char* agent_bin = agent_bin_path();
+    if (!file_exists(agent_bin)) {
+        if (error) *error = "agent config unavailable: agent binary not found";
+        return false;
+    }
+    std::string cmd = shell_quote(agent_bin) + " config-update --config=" +
+                      shell_quote(options.agent_config_path) + " --stdin --format=json";
+    CommandResult command = run_command_with_stdin(cmd, body, 10000);
+    if (command.timed_out) {
+        if (error) *error = "agent config update timed out";
+        return false;
+    }
+    cJSON* parsed = cJSON_Parse(command.output.c_str());
+	if (!parsed || !json_is_object(parsed)) {
+        if (parsed) cJSON_Delete(parsed);
+        if (error) *error = "agent config update returned invalid JSON";
+        return false;
+    }
+    cJSON* ok = cJSON_GetObjectItem(parsed, "ok");
+	if (command.exit_code != 0 || !json_is_type(ok, cJSON_True)) {
+        cJSON* error_item = cJSON_GetObjectItem(parsed, "error");
+        if (status_code) *status_code = command.exit_code == 127 ? 503 : 400;
+		if (error) *error = json_is_string(error_item) ? error_item->valuestring : "agent config update rejected";
+        cJSON_Delete(parsed);
+        return false;
+    }
+    if (result) *result = parsed;
+    else cJSON_Delete(parsed);
+    if (status_code) *status_code = 200;
+    return true;
+}
+
+ApiResponse handle_post_config_via_cli(const Options& options, const std::string& body) {
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) return make_json_error(400, "invalid JSON body");
+    cJSON* cli_root = cJSON_CreateObject();
+    cJSON* submitted_config = cJSON_GetObjectItem(root, "config");
+    if (submitted_config && !json_is_object(submitted_config)) {
+        cJSON_Delete(cli_root);
+        cJSON_Delete(root);
+        return make_json_error(400, "config patch must be an object");
+    }
+    cJSON_AddItemToObject(cli_root, "config",
+                          submitted_config ? cJSON_Duplicate(submitted_config, 1) : cJSON_CreateObject());
+    char* cli_body = cJSON_PrintUnformatted(cli_root);
+    cJSON_Delete(cli_root);
+    if (!cli_body) {
+        cJSON_Delete(root);
+        return make_json_error(500, "failed to encode config patch");
+    }
+    cJSON* update = NULL;
+    int status = 503;
+    std::string error;
+    bool config_updated = update_agent_config_via_cli(options, cli_body, &update, &status, &error);
+    free(cli_body);
+    if (!config_updated) {
+        cJSON_Delete(root);
+        return make_json_error(status, error);
+    }
+
+    aiden::WifiNetworkConfig wifi;
+    std::string wifi_error;
+    load_current_wifi_config(options, &wifi, &wifi_error);
+    cJSON* wifi_json = cJSON_GetObjectItem(root, "wifi");
+    if (json_is_object(wifi_json)) update_wifi_from_json(wifi_json, &wifi);
+    bool apply_wifi = false;
+    cJSON* apply_wifi_json = cJSON_GetObjectItem(root, "apply_wifi");
+    if (json_is_bool(apply_wifi_json)) apply_wifi = json_is_type(apply_wifi_json, cJSON_True);
+    cJSON_Delete(root);
+
+    bool should_save_wifi = !wifi.ssid.empty() || !wifi.networks.empty() || file_exists(options.wifi_config_path.c_str());
+    std::string save_error;
+    if (should_save_wifi && !aiden::save_wifi_config(options.wifi_config_path.c_str(), wifi, &save_error)) {
+        cJSON_Delete(update);
+        return make_json_error(500, save_error);
+    }
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON* config = cJSON_DetachItemFromObject(update, "config");
+    if (config) cJSON_AddItemToObject(response, "config", config);
+    cJSON* changed = cJSON_DetachItemFromObject(update, "changed_paths");
+    if (changed) cJSON_AddItemToObject(response, "changed_paths", changed);
+    cJSON* reboot = cJSON_DetachItemFromObject(update, "reboot_required");
+	bool reboot_required = json_is_type(reboot, cJSON_True);
+    if (reboot) cJSON_AddItemToObject(response, "reboot_required", reboot);
+    cJSON_AddBoolToObject(response, "usbhid_restart_required", reboot_required ? 1 : 0);
+    cJSON_AddBoolToObject(response, "agent_restart_scheduled", reboot_required ? 0 : 1);
+    cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
+    if (!reboot_required) schedule_agent_restart();
+    if (apply_wifi && should_save_wifi) {
+        CommandResult wifi_apply = apply_wifi_config(options);
+        cJSON* apply = add_object(response, "wifi_apply");
+        cJSON_AddBoolToObject(apply, "ok", wifi_apply.exit_code == 0);
+        cJSON_AddNumberToObject(apply, "exit_code", wifi_apply.exit_code);
+        cJSON_AddStringToObject(apply, "output", trim_trailing_newlines(wifi_apply.output).c_str());
+    }
+    cJSON_Delete(update);
+    return make_json_ok(response);
 }
 
 // handle_get_config_meta serves the config field metadata produced by the agent
@@ -6258,6 +6374,7 @@ ApiResponse handle_post_system_env(const Options& options, const std::string& bo
     return make_json_ok(response);
 }
 
+#if 0  // Replaced by handle_post_config_via_cli.
 ApiResponse handle_post_config(const Options& options, const std::string& body) {
     cJSON* root = cJSON_Parse(body.c_str());
     if (!root) {
@@ -6386,6 +6503,8 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     return make_json_ok(response);
 }
 
+#endif
+
 ApiResponse handle_put_config_locale(const Options& options, const std::string& body) {
     cJSON* root = cJSON_Parse(body.c_str());
     if (!root) {
@@ -6404,43 +6523,27 @@ ApiResponse handle_put_config_locale(const Options& options, const std::string& 
         return make_json_error(400, "unsupported locale; expected zh-CN or en-US");
     }
 
-    std::string original_content;
-    mode_t config_mode = 0600;
-    if (file_exists(options.agent_config_path.c_str())) {
-        std::string read_error;
-        if (!read_file_contents_checked(options.agent_config_path.c_str(),
-                                        kMaxAgentConfigSize,
-                                        &original_content,
-                                        &read_error)) {
-            return make_json_error(500, read_error.empty() ? "failed to read agent config" : read_error);
-        }
-        struct stat st;
-        if (stat(options.agent_config_path.c_str(), &st) == 0) {
-            config_mode = st.st_mode & 0777;
-        }
-    }
-    const std::string updated_content = update_top_level_locale(original_content, locale);
-
-    ValidationResult validation = validate_agent_toml_content_for_save(
-            updated_content, options.agent_config_path);
-    if (validation.outcome != ValidationOutcome::OK) {
-        const int status = validation.outcome == ValidationOutcome::UNAVAILABLE ? 503 : 400;
-        return make_json_error(status, validation.message);
-    }
-
-    std::string save_error;
-    if (!atomic_write_file(options.agent_config_path, updated_content, config_mode, &save_error)) {
-        return make_json_error(500, save_error);
-    }
-
+    cJSON* patch_root = cJSON_CreateObject();
+    cJSON* patch_config = add_object(patch_root, "config");
+    cJSON* patch_agent = add_object(patch_config, "agent");
+    cJSON_AddStringToObject(patch_agent, "locale", locale.c_str());
+    char* patch_text = cJSON_PrintUnformatted(patch_root);
+    cJSON_Delete(patch_root);
+    if (!patch_text) return make_json_error(500, "failed to encode locale patch");
+    cJSON* update = NULL;
+    int status = 503;
+    std::string update_error;
+    bool updated = update_agent_config_via_cli(options, patch_text, &update, &status, &update_error);
+    free(patch_text);
+    if (!updated) return make_json_error(status, update_error);
+    cJSON_Delete(update);
     schedule_agent_restart();
-
-    cJSON* response = cJSON_CreateObject();
-    cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "locale", locale.c_str());
-    cJSON_AddStringToObject(response, "message", "locale saved; agent restarting");
-    cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
-    return make_json_ok(response);
+    cJSON* cli_response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(cli_response, "ok", 1);
+    cJSON_AddStringToObject(cli_response, "locale", locale.c_str());
+    cJSON_AddStringToObject(cli_response, "message", "locale saved; agent restarting");
+    cJSON_AddBoolToObject(cli_response, "agent_restart_scheduled", 1);
+    return make_json_ok(cli_response);
 }
 
 ApiResponse handle_post_reboot() {
@@ -7350,7 +7453,7 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     }
 
     if (request.method == "POST" && request.path == "/api/config") {
-        return handle_post_config(options, request.body);
+        return handle_post_config_via_cli(options, request.body);
     }
 
     if (request.method == "PUT" && request.path == "/api/config/locale") {
