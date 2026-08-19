@@ -78,7 +78,7 @@ EOF
     chroot "${ROOTFS_DIR}" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 \
         dpkg --configure -a
-    for group in audio video dialout plugdev netdev; do
+    for group in sudo audio video dialout plugdev netdev; do
         chroot "${ROOTFS_DIR}" getent group "${group}" >/dev/null \
             || chroot "${ROOTFS_DIR}" groupadd --system "${group}"
     done
@@ -86,7 +86,7 @@ EOF
         || chroot "${ROOTFS_DIR}" groupadd --gid 1000 aiden
     chroot "${ROOTFS_DIR}" getent passwd aiden >/dev/null \
         || chroot "${ROOTFS_DIR}" useradd --uid 1000 --gid aiden --create-home \
-            --shell /bin/bash --groups audio,video,dialout,plugdev,netdev aiden
+            --shell /bin/bash --groups sudo,audio,video,dialout,plugdev,netdev aiden
     # A fixed SHA-512 crypt hash keeps the factory rootfs reproducible. Root
     # remains key-only even though ordinary-user password SSH is enabled.
     chroot "${ROOTFS_DIR}" usermod -p \
