@@ -986,6 +986,103 @@ def test_episode_memory_suite_guards_against_setup_context_leakage():
     )
 
 
+def test_quick_capture_suite_covers_screen_memory_upper_bound():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "quick_capture_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert {
+        "recall_exact_key_text",
+        "recall_dense_multilingual_values",
+        "prefer_latest_snapshot",
+        "preserve_duplicate_snapshots",
+        "route_screen_memory_away_from_session",
+        "compare_multiple_snapshots",
+        "find_old_snapshot_in_large_history",
+        "do_not_hallucinate_missing_snapshot",
+        "treat_snapshot_as_historical_evidence",
+        "forget_one_of_two_similar_snapshots",
+        "do_not_forge_screen_snapshot_with_save_memory",
+    } <= set(task_by_id)
+    assert len(suite.tasks) >= 11
+    assert all(task.category == "memory" for task in suite.tasks)
+
+    for task in suite.tasks:
+        assert task.setup is not None
+        assert task.setup["type"] == "seed_memory"
+        assert task.setup["clear_history_after"] is True
+        assert task.hard_assertions.must_complete_within_sec <= 120
+        assert task.expected_answer is None
+        prompt = task.prompt.lower()
+        for coached_phrase in (
+            "recall_memory",
+            "screen_snapshot",
+            "长期记忆",
+            "请实际检索",
+            "请先检查",
+            "最后只输出一个选项",
+            "设备按键",
+            "屏幕快照",
+            "\n(a)",
+        ):
+            assert coached_phrase not in prompt
+
+    routed_tasks = [
+        task for task in suite.tasks
+        if task.id != "do_not_forge_screen_snapshot_with_save_memory"
+    ]
+    for task in routed_tasks:
+        requirements = task.hard_assertions.required_tool_calls
+        assert any(
+            item.tool == "recall_memory"
+            and item.input_contains.get("types") == ["screen_snapshot"]
+            for item in requirements
+        )
+        assert "recall_session_chunks" in task.hard_assertions.forbidden_tools
+
+    assert len(task_by_id["compare_multiple_snapshots"].expected_recalled_memory_ids) == 3
+    assert len(task_by_id["find_old_snapshot_in_large_history"].setup["memories"]) >= 8
+    assert len(task_by_id["preserve_duplicate_snapshots"].expected_recalled_memory_ids) == 2
+
+    forget_task = task_by_id["forget_one_of_two_similar_snapshots"]
+    assert any(
+        item.tool == "forget_memory"
+        and item.input_contains.get("id") == "mem_1700000000000000500_qc_old_order"
+        for item in forget_task.hard_assertions.required_tool_calls
+    )
+
+    boundary_task = task_by_id["do_not_forge_screen_snapshot_with_save_memory"]
+    assert "save_memory" in boundary_task.hard_assertions.forbidden_tools
+    assert boundary_task.expected_recalled_memory_ids == []
+
+
+def test_quick_capture_live_suite_uses_real_trigger_setup_and_natural_prompts():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "quick_capture_live_v1.json"
+    suite = load_suite(suite_path)
+
+    assert {task.id for task in suite.tasks} == {
+        "capture_and_recall_live_screen",
+        "capture_twice_preserves_live_records",
+    }
+    for task in suite.tasks:
+        assert task.setup["type"] == "agent_prompt"
+        assert "127.0.0.1:8080/api/quick-capture" in task.setup["prompt"]
+        assert "screen_snapshot" in task.setup["prompt"]
+        assert "增加" in task.setup["prompt"]
+        assert task.setup["prompt"].index(
+            "api/tools/recall_memory"
+        ) < task.setup["prompt"].index("api/quick-capture")
+        prompt = task.prompt.lower()
+        for implementation_detail in (
+            "screen_snapshot",
+            "recall_memory",
+            "最后只输出一个选项",
+            "请先检查",
+            "请实际检索",
+        ):
+            assert implementation_detail not in prompt
+
+
 def test_notes_entry_policy_suite_covers_three_screen_states():
     suites_dir = Path(__file__).resolve().parents[1] / "suites" / "aiden_app"
     suite = load_suite(suites_dir / "notes_entry_policy_v1.json")
