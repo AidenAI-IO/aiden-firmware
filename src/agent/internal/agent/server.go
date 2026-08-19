@@ -2504,7 +2504,7 @@ func (s *Server) authorizeBenchmarkRequest(r *http.Request) bool {
 }
 
 func (s *Server) handleProviderScreenshot(w http.ResponseWriter, r *http.Request) {
-	screenprovider.HandleHTTP(w, r, s.coordinateDebugCaptureClient())
+	screenprovider.HandleHTTP(w, r, s.providerScreenshotClient())
 }
 
 func (s *Server) handleProviderMNK(w http.ResponseWriter, r *http.Request) {

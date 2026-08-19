@@ -208,6 +208,8 @@ func (pb *PhoneBridge) noteHTTPPollState(platform, phoneID, appState, pipBridgeE
 	now := time.Now()
 
 	pb.mu.Lock()
+	pb.refreshHIDConnectionLocked()
+	pb.updateHIDConnectionPhoneLocked(phoneID)
 	if platform != "" {
 		pb.platform = platform
 	}

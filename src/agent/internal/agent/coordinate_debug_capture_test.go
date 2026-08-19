@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"aiden-agent/internal/agent/screen"
 )
 
 type fakeScreenCaptureSource struct {
@@ -80,6 +82,35 @@ func TestCoordinateDebugScreenshotReusesSharedScreenCaptureClientFallbackState(t
 	}
 	if fallback.latestFrameWithFormatCalls != 2 {
 		t.Fatalf("fallback calls = %d, want 2", fallback.latestFrameWithFormatCalls)
+	}
+}
+
+func TestProviderScreenshotUsesReportedPhoneWidthWhenRequestOmitsHint(t *testing.T) {
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{
+		WidthPixels:  intPtr(1200),
+		HeightPixels: intPtr(2608),
+	})
+
+	provider := &fakeScreenshotFrameClient{
+		meta: frameMetadata{
+			Width:       498,
+			Height:      1080,
+			PixelFormat: "jpeg",
+		},
+		data: []byte("jpeg"),
+	}
+	server := &Server{
+		runtime:             &Runtime{tools: &ToolSet{screen: screenState}},
+		screenCaptureClient: provider,
+	}
+
+	rec := postProviderScreenshot(t, server, `{"format":"jpeg","quality":80,"crop_black":true,"minimal_width":0}`)
+	if rec.Code != 200 {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if provider.minimalWidth != 497 {
+		t.Fatalf("minimal_width = %d, want 497 from reported 1200x2608 screen", provider.minimalWidth)
 	}
 }
 

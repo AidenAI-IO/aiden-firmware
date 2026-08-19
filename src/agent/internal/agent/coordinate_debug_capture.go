@@ -24,6 +24,18 @@ type coordinateDebugScreenshotResult struct {
 	OriginalScreenHeightPixels *int                     `json:"original_screen_height_pixels,omitempty"`
 }
 
+type phoneScreenHintProvider struct {
+	provider screenprovider.Provider
+	screen   *screen.ScreenState
+}
+
+func (p *phoneScreenHintProvider) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error) {
+	if cropBlack && minimalWidth <= 0 {
+		minimalWidth = screenshotMinimalWidth(p.screen)
+	}
+	return p.provider.LatestFrameWithFormat(format, quality, cropBlack, minimalWidth)
+}
+
 func (s *Server) coordinateDebugScreen() *screen.ScreenState {
 	if s == nil || s.runtime == nil || s.runtime.tools == nil {
 		return nil
@@ -132,6 +144,17 @@ func (s *Server) coordinateDebugCaptureClient() screenprovider.Provider {
 		s.screenCaptureClient = screenProviderFromRuntime(s.runtime)
 	}
 	return s.screenCaptureClient
+}
+
+func (s *Server) providerScreenshotClient() screenprovider.Provider {
+	provider := s.coordinateDebugCaptureClient()
+	if provider == nil {
+		return nil
+	}
+	return &phoneScreenHintProvider{
+		provider: provider,
+		screen:   s.coordinateDebugScreen(),
+	}
 }
 
 func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreenshotOptions) (*coordinateDebugScreenshotResult, []byte, error) {

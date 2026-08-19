@@ -389,6 +389,9 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 		return
 	}
 	s.phoneBridge = bridge
+	if s.screen != nil {
+		s.screen.SetPhoneScreenScopeFunc(bridge.ScreenCacheScopeID)
+	}
 	bridge.SetEnvironmentObserver(s.UpdateDeviceEnvironment)
 	if s.phoneBridgeRestorer != nil {
 		s.phoneBridgeRestorer.SetBridge(bridge)

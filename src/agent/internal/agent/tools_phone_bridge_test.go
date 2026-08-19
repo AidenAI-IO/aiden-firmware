@@ -76,6 +76,68 @@ func TestPhoneBridgeScreenCacheFollowsPhoneIDAcrossHTTPFallback(t *testing.T) {
 	}
 }
 
+func TestPhoneBridgeScreenCacheFollowsPhysicalHIDConnection(t *testing.T) {
+	bridge := newTestPhoneBridge(t)
+	hidConnected := true
+	bridge.hidConnectionState = func() (bool, bool) { return hidConnected, true }
+	bridge.hidMonitorEnabled = false
+	screenState := &screen.ScreenState{}
+	tools := &ToolSet{
+		screen: screenState,
+		tools:  make(map[string]langtools.Tool),
+	}
+	tools.RegisterPhoneBridge(bridge)
+
+	if err := bridge.ApplyBenchmarkStatus(PhoneBridgeStatus{
+		Connected: true,
+		Platform:  "android",
+		PhoneID:   "android-phone-a",
+		Environment: &PhoneEnvironment{Screen: screen.PhoneScreenInfo{
+			WidthPixels: intPtr(1200), HeightPixels: intPtr(2608),
+		}},
+	}); err != nil {
+		t.Fatalf("ApplyBenchmarkStatus() error = %v", err)
+	}
+	firstConnectionID := bridge.getStatus().HIDConnectionID
+	if firstConnectionID == "" {
+		t.Fatal("physical HID connection did not receive an ID")
+	}
+	if got := screenshotMinimalWidth(screenState); got != 497 {
+		t.Fatalf("live screenshot minimal width = %d, want 497", got)
+	}
+
+	bridge.mu.Lock()
+	bridge.connected = false
+	bridge.phoneID = ""
+	bridge.environment = nil
+	bridge.environmentAt = time.Time{}
+	bridge.mu.Unlock()
+	bridge.notifyEnvironmentObserver()
+	if got := bridge.getStatus().HIDConnectionID; got != firstConnectionID {
+		t.Fatalf("WebSocket disconnect changed HID connection ID: got %q want %q", got, firstConnectionID)
+	}
+	if got := screenshotMinimalWidth(screenState); got != 497 {
+		t.Fatalf("same-HID cached screenshot minimal width = %d, want 497", got)
+	}
+
+	hidConnected = false
+	bridge.notifyEnvironmentObserver()
+	if got := bridge.getStatus().HIDConnectionID; got != "" {
+		t.Fatalf("disconnected HID connection ID = %q, want empty", got)
+	}
+	if got := screenshotMinimalWidth(screenState); got != 0 {
+		t.Fatalf("disconnected HID screenshot minimal width = %d, want 0", got)
+	}
+
+	hidConnected = true
+	if got := bridge.getStatus().HIDConnectionID; got == "" || got == firstConnectionID {
+		t.Fatalf("new HID connection ID = %q, want a new non-empty ID", got)
+	}
+	if got := screenshotMinimalWidth(screenState); got != 0 {
+		t.Fatalf("new HID session reused old screen width = %d, want 0", got)
+	}
+}
+
 type iosIsolationPointerTestTool struct {
 	controller *iosKeyboardIsolationController
 	events     *[]string

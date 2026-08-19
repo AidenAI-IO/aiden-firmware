@@ -149,7 +149,10 @@ Example:
 The board writes the latest complete environment to the `environment` field of
 `GET /api/phone-bridge/status`, and keeps `app_state`, `return_entry`,
 `return_entry_available`, `pip_bridge_enabled`, and `fgs_bridge_enabled` for
-Agent runtime context and internal routing. Runtime context carries compact
+Agent runtime context and internal routing. The status also reports
+`hid_connection_id`, a board-generated identifier for the current physical USB
+HID session. It is stable across WebSocket and HTTP transport changes and is
+cleared when the UDC reports that the USB host detached. Runtime context carries compact
 state facts such as connection status, app foreground/background state,
 return-entry visibility, PiP/Dynamic Island visibility state, Android FGS
 Bridge state, system type/version, language/region/timezone, screen dimensions,
@@ -157,9 +160,11 @@ and confirmed openable third-party candidate apps. Before each conversational
 run, the Agent separately filters App-only tools and actions from live Phone
 Bridge and BLE capabilities. `open_app` remains available because it can fall
 back to visible system search; iOS BLE Wake omits clipboard read/write and
-contacts update. Environment is cleared on disconnection to avoid using stale
-information, but the latest app foreground/background state can be retained
-for Dynamic Island recovery.
+contacts update. Non-screen environment data is cleared on WebSocket
+disconnection. Screen dimensions may be retained for the same
+`hid_connection_id`, and are invalidated when that physical USB session ends;
+the latest app foreground/background state can also be retained for Dynamic
+Island recovery.
 
 `phone_app_state` example:
 
