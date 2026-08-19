@@ -588,6 +588,27 @@ bool validate_non_negative_json_integer(cJSON* item,
     return true;
 }
 
+bool validate_non_empty_json_string_array(cJSON* item,
+                                          const std::string& path,
+                                          std::string* error) {
+    if (!item) return true;
+    if (!json_is_array(item)) {
+        return config_schema_error(error, path, "array", item);
+    }
+    const int count = cJSON_GetArraySize(item);
+    for (int i = 0; i < count; ++i) {
+        cJSON* child = cJSON_GetArrayItem(item, i);
+        if (!json_is_string(child) || trim_copy(child->valuestring).empty()) {
+            if (error) {
+                *error = "agent config invalid field " + path + "["
+                       + std::to_string(i) + "]: expected non-empty string";
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 std::string config_field_path(const char* section, const char* key) {
     return std::string(section) + "." + key;
 }
@@ -1989,6 +2010,13 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
         !validate_non_negative_json_integer(
             cJSON_GetObjectItem(model_section, "responses_compact_threshold"),
             "model.responses_compact_threshold",
+            error)) {
+        return false;
+    }
+    if (json_is_object(model_section) &&
+        !validate_non_empty_json_string_array(
+            cJSON_GetObjectItem(model_section, "responses_include"),
+            "model.responses_include",
             error)) {
         return false;
     }
