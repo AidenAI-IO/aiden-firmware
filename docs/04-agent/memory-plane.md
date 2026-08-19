@@ -19,16 +19,16 @@ Automatic Episode learning writes only Device Memory. It does not create user pr
 
 ## Runtime Flow
 
-Device memory is not injected into every prompt. Before execution, runtime performs a lightweight relevance check. When that router returns matching active Device Memory IDs, `AgentLoop` forces `recall_device_memory` as the initial tool call with those IDs before normal model-directed execution continues.
+Device memory is not injected into every prompt. The model decides whether to call `recall_device_memory` during execution when the task materially depends on saved device or UI knowledge. Runtime does not perform a pre-run relevance route and does not force a first tool call.
 
 ```text
 Run starts
   |
   v
-route relevant active Device Memory IDs
+build the normal model-controlled run
   |
   v
-AgentLoop forces recall_device_memory when routed IDs exist
+Agent calls recall_device_memory only when needed
   |
   v
 Agent executes tools and records an Episode
@@ -78,7 +78,7 @@ Normal `recall_device_memory` results have the following limits:
 - expired or device-inapplicable records are excluded;
 - `pending`, `disputed`, and legacy `conflicted` records are consolidation-only context.
 
-The relevance router does not expose Memory content. It only determines whether recall is useful and which active IDs should constrain the tool call.
+The recall tool searches active, applicable Device Memory using the query supplied by the model. It records the IDs actually returned on the Episode; no runtime-side candidate list is injected or used to rewrite the model's query.
 
 ## Episode Recording
 

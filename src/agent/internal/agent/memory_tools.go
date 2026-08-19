@@ -291,7 +291,7 @@ func (t *RecallDeviceMemoryTool) Name() string { return "recall_device_memory" }
 func (t *RecallDeviceMemoryTool) Description() string {
 	return strings.Join([]string{
 		"Recall device and UI memory by terms, tags, entities, types, or device id.",
-		"Call before planning or answering when a task concerns a specific device, app, page, or UI workflow and could benefit from saved device or app profiles, procedures, failure-prevention lessons, or calibration notes.",
+		"Use on demand when a task materially depends on saved device or app profiles, procedures, navigation, failure-prevention lessons, calibration notes, or facts; do not call merely because a device or app is mentioned.",
 		`Input JSON: {"terms":["微信"],"tags":["登录"],"entities":["微信App"],"types":["procedure","failure"],"device_id":"default","limit":5}`,
 	}, " ")
 }

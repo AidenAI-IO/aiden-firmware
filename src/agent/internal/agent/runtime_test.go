@@ -164,7 +164,7 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
-func TestRuntimeForcesRelevantDeviceMemoryRecallThroughAgentToolCall(t *testing.T) {
+func TestRuntimeRecordsOnDemandDeviceMemoryRecallThroughAgentToolCall(t *testing.T) {
 	ctx := context.Background()
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	memoryDir := filepath.Join(configDir, "memory")
@@ -200,7 +200,7 @@ func TestRuntimeForcesRelevantDeviceMemoryRecallThroughAgentToolCall(t *testing.
 
 	model := &scriptedModel{responses: roleDefaultToolResponses(
 		"recall_device_memory",
-		`{"types":["procedure"]}`,
+		`{"terms":["QA Notes","Save"],"types":["failure"],"device_id":"default","limit":5}`,
 		"Verify the new title before saving.",
 	)}
 	runtime := NewRuntimeWithDeps(
@@ -222,19 +222,12 @@ func TestRuntimeForcesRelevantDeviceMemoryRecallThroughAgentToolCall(t *testing.
 		t.Fatalf("Run() error = %v", err)
 	}
 	if len(model.toolChoices) < 2 {
-		t.Fatalf("tool choices = %#v, want first forced recall and later automatic choice", model.toolChoices)
+		t.Fatalf("tool choices = %#v, want recall turn and answer turn", model.toolChoices)
 	}
-	wantChoice := llms.ToolChoice{
-		Type: "function",
-		Function: &llms.FunctionReference{
-			Name: "recall_device_memory",
-		},
-	}
-	if !reflect.DeepEqual(model.toolChoices[0], wantChoice) {
-		t.Fatalf("first tool choice = %#v, want %#v", model.toolChoices[0], wantChoice)
-	}
-	if model.toolChoices[1] != nil {
-		t.Fatalf("second tool choice = %#v, want automatic choice", model.toolChoices[1])
+	for i, choice := range model.toolChoices[:2] {
+		if choice != nil {
+			t.Fatalf("tool choice %d = %#v, want model-controlled tool selection", i, choice)
+		}
 	}
 	if len(model.messages) < 2 {
 		t.Fatalf("model messages = %#v, want post-recall turn", model.messages)
@@ -249,8 +242,8 @@ func TestRuntimeForcesRelevantDeviceMemoryRecallThroughAgentToolCall(t *testing.
 			contextArgs = call.FunctionCall.Arguments
 		}
 	}
-	if !strings.Contains(contextArgs, "devmem_qa_notes_guard") || strings.Contains(contextArgs, `"types":["procedure"]`) {
-		t.Fatalf("post-recall context arguments = %q, want executed routed input", contextArgs)
+	if !strings.Contains(contextArgs, `"types":["failure"]`) || !strings.Contains(contextArgs, "QA Notes") || strings.Contains(contextArgs, "devmem_qa_notes_guard") {
+		t.Fatalf("post-recall context arguments = %q, want the model-provided query unchanged", contextArgs)
 	}
 
 	episode, err := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes")).Get(ctx, result.EpisodeID)
@@ -264,8 +257,8 @@ func TestRuntimeForcesRelevantDeviceMemoryRecallThroughAgentToolCall(t *testing.
 	for _, event := range episode.Events {
 		if event.Type == runEventToolCall && event.ToolName == "recall_device_memory" {
 			foundRecall = true
-			if !strings.Contains(event.ToolInput, "devmem_qa_notes_guard") || strings.Contains(event.ToolInput, `"types":["procedure"]`) {
-				t.Fatalf("recall_device_memory tool input = %q, want relevant routed memory id", event.ToolInput)
+			if !strings.Contains(event.ToolInput, `"types":["failure"]`) || !strings.Contains(event.ToolInput, "QA Notes") || strings.Contains(event.ToolInput, "devmem_qa_notes_guard") {
+				t.Fatalf("recall_device_memory tool input = %q, want the model-provided query unchanged", event.ToolInput)
 			}
 			break
 		}
@@ -275,7 +268,7 @@ func TestRuntimeForcesRelevantDeviceMemoryRecallThroughAgentToolCall(t *testing.
 	}
 }
 
-func TestRuntimeDoesNotForceDeviceMemoryRecallForUnrelatedQuestion(t *testing.T) {
+func TestRuntimeDoesNotForceDeviceMemoryRecallForRelevantQuestion(t *testing.T) {
 	ctx := context.Background()
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	memoryDir := filepath.Join(configDir, "memory")
@@ -295,7 +288,7 @@ func TestRuntimeDoesNotForceDeviceMemoryRecallForUnrelatedQuestion(t *testing.T)
 		t.Fatalf("Upsert() error = %v", err)
 	}
 
-	model := &scriptedModel{responses: roleDirectResponses("4")}
+	model := &scriptedModel{responses: roleDirectResponses("Use Preview before returning to Edit and saving.")}
 	runtime := NewRuntimeWithDeps(
 		Config{
 			ConfigDir:     configDir,
@@ -310,11 +303,11 @@ func TestRuntimeDoesNotForceDeviceMemoryRecallForUnrelatedQuestion(t *testing.T)
 	)
 	t.Cleanup(func() { _ = runtime.Close() })
 
-	if _, err := runtime.Run(ctx, RunRequest{Input: "2 + 2 等于多少？"}); err != nil {
+	if _, err := runtime.Run(ctx, RunRequest{Input: "在 QA Notes 点击 Save 前，如何避免保存旧标题？"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if len(model.toolChoices) != 1 || model.toolChoices[0] != nil {
-		t.Fatalf("tool choices = %#v, want unrelated question to remain automatic", model.toolChoices)
+		t.Fatalf("tool choices = %#v, want relevant question to remain model-controlled", model.toolChoices)
 	}
 }
 

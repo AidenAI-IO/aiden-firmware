@@ -69,7 +69,7 @@ The per-call user message is built from the current loop state, including the or
 
 The active session summary and synthesized long-term profile can enter the Agent system prompt. Device Memory content is not injected into every run.
 
-Before execution, runtime performs a lightweight relevance check. When the router returns matching active Device Memory IDs, `AgentLoop` forces `recall_device_memory` as the initial tool call with those IDs. Normal model-directed execution resumes after the recall result.
+Device Memory content is not injected before execution. The model may call `recall_device_memory` on demand when the task materially depends on saved device or UI knowledge. Runtime does not run a pre-execution relevance router, force a first tool call, or rewrite the model's query; the tool records the IDs it actually returns on the Episode.
 
 Normal Device Memory recall returns only active and applicable records. It is capped at five results and approximately 4,800 output characters. Disputed and legacy conflicted records remain available only to background consolidation.
 
@@ -88,9 +88,6 @@ resolve model, context window, tools, and memory handle
   |
   v
 begin session: detect/rotate boundary and append current user input
-  |
-  v
-route relevant Device Memory IDs
   |
   v
 start EpisodeRecorder

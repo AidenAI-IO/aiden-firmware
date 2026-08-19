@@ -62,42 +62,6 @@ func TestPersistentEpisodeRecorderWritesIncrementalEventsAndMarksInterrupted(t *
 	}
 }
 
-func TestRouteDeviceMemoryRecallDoesNotUseCurrentAppAsSoleRelevanceSignal(t *testing.T) {
-	ctx := context.Background()
-	memoryDir := filepath.Join(t.TempDir(), "memory")
-	device := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
-	if _, err := device.Upsert(ctx, DeviceMemoryItem{
-		ID:         "devmem_qa_notes_guard",
-		Type:       "failure",
-		Status:     "active",
-		Title:      "Verify edited title before Save",
-		Content:    "Before clicking Save in QA Notes, verify that the title field shows the new value.",
-		DeviceID:   defaultMemoryDeviceID,
-		Tags:       []string{legacyReflectionFailureTag, "save-action"},
-		Entities:   []string{"QA Notes", "Save button"},
-		AppName:    "QA Notes",
-		Confidence: 0.8,
-		Priority:   80,
-	}); err != nil {
-		t.Fatalf("Upsert() error = %v", err)
-	}
-
-	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
-	route, err := plane.RouteDeviceMemoryRecall(ctx, MemoryRetrieveRequest{
-		Input:    "2 + 2 等于多少？",
-		DeviceID: defaultMemoryDeviceID,
-		CurrentHints: CurrentEnvironmentHints{
-			AppName: "QA Notes",
-		},
-	})
-	if err != nil {
-		t.Fatalf("RouteDeviceMemoryRecall() error = %v", err)
-	}
-	if len(route.MemoryIDs) != 0 {
-		t.Fatalf("MemoryIDs = %#v, want no recall for unrelated input despite current app hint", route.MemoryIDs)
-	}
-}
-
 func TestTaskEpisodeIndexSummaryOmitsScreenshotBase64(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")
