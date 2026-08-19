@@ -39,7 +39,7 @@ grep -q '^Check-Valid-Until: no$' "${STAGE3_DIR}/debian.sources"
 grep -q '^FROM debian:trixie-slim@sha256:' "${STAGE3_DIR}/Dockerfile"
 
 for package in \
-    systemd-sysv udev dbus kmod openssh-server adb iproute2 iputils-arping \
+    systemd-sysv udev dbus kmod openssh-server sudo adb iproute2 iputils-arping \
     wpasupplicant bluez systemd-resolved systemd-timesyncd dnsmasq-base \
     e2fsprogs v4l-utils libdrm2; do
     grep -qx "${package}" "${STAGE3_DIR}/packages.list" \
@@ -85,7 +85,7 @@ grep -Fq 'aiden-boot-timeline.service' "${STAGE3_DIR}/container-build-rootfs.sh"
 grep -Fq 'aiden-machine-id.service' "${STAGE3_DIR}/container-build-rootfs.sh"
 grep -Fq 'useradd --uid 1000 --gid aiden --create-home' \
     "${STAGE3_DIR}/container-build-rootfs.sh"
-grep -Fq 'audio,video,dialout,plugdev,netdev aiden' \
+grep -Fq 'sudo,audio,video,dialout,plugdev,netdev aiden' \
     "${STAGE3_DIR}/container-build-rootfs.sh"
 grep -Fq 'mgLNEH35w8GS9UrV1Yi4BXg1g.CYyVIAnUAXIXmato37U4M5obgDhGY2YhpIwHd7sNCtBq/uB.5oEk8jHPNYZ.' \
     "${STAGE3_DIR}/container-build-rootfs.sh"
@@ -155,6 +155,12 @@ grep -Fq 'boot timeline helper was not installed' "${STAGE3_DIR}/container-audit
 grep -Fq 'aiden-boot-timeline.service is not enabled' "${STAGE3_DIR}/container-audit-images.sh"
 grep -Fq 'rootfs import attribute audit did not pass' "${STAGE3_DIR}/container-audit-images.sh"
 grep -Fq 'rootfs ownership or mode is invalid' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'sudo executable ownership or mode is invalid' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'sudo group does not require password-authenticated administrator access' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'passwordless sudo policy is present' \
+    "${STAGE3_DIR}/container-audit-images.sh"
 grep -Fq 'nondeterministic APT package cache leaked' "${STAGE3_DIR}/container-audit-images.sh"
 grep -Fq 'nondeterministic APT source cache leaked' "${STAGE3_DIR}/container-audit-images.sh"
 grep -Fq 'nondeterministic ldconfig cache leaked' "${STAGE3_DIR}/container-audit-images.sh"

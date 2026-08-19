@@ -5,6 +5,7 @@ udev
 dbus
 kmod
 openssh-server
+sudo
 ca-certificates
 curl
 adb
