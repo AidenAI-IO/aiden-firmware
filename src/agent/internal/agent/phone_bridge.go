@@ -128,6 +128,13 @@ type PhoneBridge struct {
 	fgsBridgeAt        time.Time
 	environment        *PhoneEnvironment
 	environmentAt      time.Time
+
+	screenCache         screen.PhoneScreenInfo
+	screenCachePhoneID  string
+	screenCacheAt       time.Time
+	environmentObserver func(*PhoneEnvironment)
+	environmentNotifyMu sync.Mutex
+
 	clipboardText      string
 	clipboardAt        time.Time
 	pendingCmds        map[string]chan BridgeCommandResponse
@@ -149,6 +156,18 @@ func NewPhoneBridge(logger *Logger) *PhoneBridge {
 		bleWake:     defaultBLEWake,
 		bleStatus:   defaultBLEStatus,
 	}
+}
+
+// SetEnvironmentObserver keeps consumers such as screenshot cropping in sync
+// with either the live phone environment or a same-phone screen-size fallback.
+func (pb *PhoneBridge) SetEnvironmentObserver(observer func(*PhoneEnvironment)) {
+	if pb == nil {
+		return
+	}
+	pb.mu.Lock()
+	pb.environmentObserver = observer
+	pb.mu.Unlock()
+	pb.notifyEnvironmentObserver()
 }
 
 // SetConfiguredPlatform supplies the device_type-derived platform used before
@@ -264,6 +283,7 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	pb.done = make(chan struct{})
 	done := pb.done
 	pb.mu.Unlock()
+	pb.notifyEnvironmentObserver()
 
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: client connected (platform=%s phone_id=%s)", platform, phoneID)
@@ -302,6 +322,7 @@ func (pb *PhoneBridge) monitorHeartbeat(conn *websocket.Conn, done chan struct{}
 
 func (pb *PhoneBridge) readLoop(conn *websocket.Conn, done chan struct{}) {
 	defer func() {
+		cleared := false
 		pb.mu.Lock()
 		if pb.conn == conn {
 			pb.conn = nil
@@ -309,12 +330,16 @@ func (pb *PhoneBridge) readLoop(conn *websocket.Conn, done chan struct{}) {
 			pb.phoneID = ""
 			pb.environment = nil
 			pb.environmentAt = time.Time{}
+			cleared = true
 			for id, ch := range pb.pendingCmds {
 				close(ch)
 				delete(pb.pendingCmds, id)
 			}
 		}
 		pb.mu.Unlock()
+		if cleared {
+			pb.notifyEnvironmentObserver()
+		}
 		close(done)
 		conn.Close(websocket.StatusNormalClosure, "")
 		if pb.logger != nil {
@@ -409,7 +434,13 @@ func (pb *PhoneBridge) handleEnvironmentEvent(resp BridgeCommandResponse) bool {
 	pb.environment = &env
 	pb.environmentAt = time.Now()
 	pb.lastHeartbeatAt = pb.environmentAt
+	if pb.phoneID != "" && hasPhoneScreenDimensions(env.Screen) {
+		pb.screenCache = env.Screen
+		pb.screenCachePhoneID = pb.phoneID
+		pb.screenCacheAt = pb.environmentAt
+	}
 	pb.mu.Unlock()
+	pb.notifyEnvironmentObserver()
 
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: environment updated (platform=%s)", env.Platform)
@@ -756,15 +787,83 @@ func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
 			status.FgsBridgeUpdatedAt = &t
 		}
 	}
-	if pb.connected && pb.environment != nil {
-		env := clonePhoneEnvironment(*pb.environment)
-		status.Environment = &env
-		if !pb.environmentAt.IsZero() {
-			t := pb.environmentAt
+	if env, updatedAt := pb.environmentForStatusLocked(); env != nil {
+		status.Environment = env
+		if !updatedAt.IsZero() {
+			t := updatedAt
 			status.EnvironmentUpdatedAt = &t
 		}
 	}
 	return status
+}
+
+func (pb *PhoneBridge) environmentForStatusLocked() (*PhoneEnvironment, time.Time) {
+	if pb.connected && pb.environment != nil {
+		env := clonePhoneEnvironment(*pb.environment)
+		if !hasPhoneScreenDimensions(env.Screen) && pb.hasMatchingScreenCacheLocked() {
+			env.Screen = pb.screenCache
+			env.Source = "phone-bridge-screen-cache"
+		}
+		return &env, pb.environmentAt
+	}
+	if !pb.hasMatchingScreenCacheLocked() {
+		return nil, time.Time{}
+	}
+	platform := pb.platform
+	if strings.TrimSpace(platform) == "" {
+		platform = pb.configuredPlatform
+	}
+	env := PhoneEnvironment{
+		Source:   "phone-bridge-screen-cache",
+		Platform: platform,
+		Screen:   pb.screenCache,
+	}
+	return &env, pb.screenCacheAt
+}
+
+func (pb *PhoneBridge) hasMatchingScreenCacheLocked() bool {
+	return pb.phoneID != "" &&
+		pb.phoneID == pb.screenCachePhoneID &&
+		hasPhoneScreenDimensions(pb.screenCache)
+}
+
+func hasPhoneScreenDimensions(info screen.PhoneScreenInfo) bool {
+	switch {
+	case info.WidthPixels != nil && info.HeightPixels != nil && *info.WidthPixels > 0 && *info.HeightPixels > 0:
+		return true
+	case info.NativeWidthPixels != nil && info.NativeHeightPixels != nil && *info.NativeWidthPixels > 0 && *info.NativeHeightPixels > 0:
+		return true
+	case info.Width != nil && info.Height != nil && *info.Width > 0 && *info.Height > 0:
+		return true
+	default:
+		return false
+	}
+}
+
+func notifyPhoneEnvironmentObserver(observer func(*PhoneEnvironment), env *PhoneEnvironment) {
+	if observer == nil {
+		return
+	}
+	if env == nil || !hasPhoneScreenDimensions(env.Screen) {
+		observer(nil)
+		return
+	}
+	copyEnv := clonePhoneEnvironment(*env)
+	observer(&copyEnv)
+}
+
+func (pb *PhoneBridge) notifyEnvironmentObserver() {
+	if pb == nil {
+		return
+	}
+	pb.environmentNotifyMu.Lock()
+	defer pb.environmentNotifyMu.Unlock()
+
+	pb.mu.Lock()
+	observer := pb.environmentObserver
+	env, _ := pb.environmentForStatusLocked()
+	pb.mu.Unlock()
+	notifyPhoneEnvironmentObserver(observer, env)
 }
 
 func clonePhoneEnvironment(env PhoneEnvironment) PhoneEnvironment {
@@ -845,11 +944,17 @@ func (pb *PhoneBridge) ApplyBenchmarkStatus(status PhoneBridgeStatus) error {
 		}
 		pb.environment = &env
 		pb.environmentAt = now
+		if pb.phoneID != "" && hasPhoneScreenDimensions(env.Screen) {
+			pb.screenCache = env.Screen
+			pb.screenCachePhoneID = pb.phoneID
+			pb.screenCacheAt = now
+		}
 	} else {
 		pb.environment = nil
 		pb.environmentAt = time.Time{}
 	}
 	pb.mu.Unlock()
+	pb.notifyEnvironmentObserver()
 
 	return nil
 }

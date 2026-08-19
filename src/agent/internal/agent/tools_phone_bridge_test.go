@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/ble"
 	"context"
 	"encoding/json"
@@ -15,6 +16,65 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 	"nhooyr.io/websocket"
 )
+
+func TestPhoneBridgeScreenCacheFollowsPhoneIDAcrossHTTPFallback(t *testing.T) {
+	bridge := newTestPhoneBridge(t)
+	screenState := &screen.ScreenState{}
+	tools := &ToolSet{
+		screen: screenState,
+		tools:  make(map[string]langtools.Tool),
+	}
+	tools.RegisterPhoneBridge(bridge)
+
+	if err := bridge.ApplyBenchmarkStatus(PhoneBridgeStatus{
+		Connected: true,
+		Platform:  "android",
+		PhoneID:   "android-phone-a",
+		Environment: &PhoneEnvironment{
+			Screen: screen.PhoneScreenInfo{
+				WidthPixels:  intPtr(1200),
+				HeightPixels: intPtr(2608),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyBenchmarkStatus() error = %v", err)
+	}
+	if got := screenshotMinimalWidth(screenState); got != 497 {
+		t.Fatalf("live screenshot minimal width = %d, want 497", got)
+	}
+
+	if err := bridge.ApplyBenchmarkStatus(PhoneBridgeStatus{Platform: "android"}); err != nil {
+		t.Fatalf("clear ApplyBenchmarkStatus() error = %v", err)
+	}
+	if got := screenshotMinimalWidth(screenState); got != 0 {
+		t.Fatalf("disconnected screenshot minimal width = %d, want 0", got)
+	}
+
+	bridge.noteHTTPPollState("android", "android-phone-a", "background", "", "true")
+	status := bridge.getStatus()
+	if status.Environment == nil {
+		t.Fatal("same-phone HTTP poll did not restore cached screen environment")
+	}
+	if status.Environment.Source != "phone-bridge-screen-cache" {
+		t.Fatalf("environment source = %q, want phone-bridge-screen-cache", status.Environment.Source)
+	}
+	if got := screenshotMinimalWidth(screenState); got != 497 {
+		t.Fatalf("same-phone cached screenshot minimal width = %d, want 497", got)
+	}
+
+	bridge.noteHTTPPollState("android", "android-phone-b", "background", "", "true")
+	if status := bridge.getStatus(); status.Environment != nil {
+		t.Fatalf("different-phone environment = %+v, want nil", status.Environment)
+	}
+	if got := screenshotMinimalWidth(screenState); got != 0 {
+		t.Fatalf("different-phone screenshot minimal width = %d, want 0", got)
+	}
+
+	bridge.noteHTTPPollState("android", "", "background", "", "true")
+	if status := bridge.getStatus(); status.Environment != nil {
+		t.Fatalf("missing-phone-id environment = %+v, want nil", status.Environment)
+	}
+}
 
 type iosIsolationPointerTestTool struct {
 	controller *iosKeyboardIsolationController

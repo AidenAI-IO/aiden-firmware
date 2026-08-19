@@ -389,10 +389,7 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 		return
 	}
 	s.phoneBridge = bridge
-	if status := bridge.getStatus(); status.Environment != nil {
-		env := clonePhoneEnvironment(*status.Environment)
-		s.UpdateDeviceEnvironment(&env)
-	}
+	bridge.SetEnvironmentObserver(s.UpdateDeviceEnvironment)
 	if s.phoneBridgeRestorer != nil {
 		s.phoneBridgeRestorer.SetBridge(bridge)
 	}
