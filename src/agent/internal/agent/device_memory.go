@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -153,10 +152,10 @@ func (s *DeviceMemoryStore) Search(ctx context.Context, query DeviceMemoryQuery)
 		if !matchesAny(query.Types, []string{item.Type}) {
 			continue
 		}
-		if len(query.Tags) > 0 && !matchesAnyRelaxedName(query.Tags, item.Tags) {
+		if len(query.Tags) > 0 && !matchesAny(query.Tags, item.Tags) {
 			continue
 		}
-		if len(query.Entities) > 0 && !matchesAnyRelaxedName(query.Entities, deviceMemoryEntityCandidates(item)) {
+		if len(query.Entities) > 0 && !matchesAnyMemoryName(query.Entities, deviceMemoryEntityCandidates(item)) {
 			continue
 		}
 		if len(terms) > 0 && scoreDeviceMemory(item, terms) == 0 {
@@ -192,62 +191,25 @@ func deviceMemoryEntityCandidates(item DeviceMemoryItem) []string {
 	return append(candidates, item.AppID, item.AppName, item.PageName)
 }
 
-// genericNameTokens carry no identifying weight on their own, so a shared
-// generic token must not by itself make two names match.
-var genericNameTokens = map[string]bool{
-	"app": true, "application": true, "page": true, "screen": true,
-	"view": true, "the": true, "a": true, "an": true, "of": true, "in": true,
-	"on": true, "for": true, "and": true,
-}
-
-// meaningfulNameTokens lowercases a name, splits it on non-alphanumeric
-// boundaries, and drops generic tokens.
-func meaningfulNameTokens(value string) []string {
-	fields := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	tokens := make([]string, 0, len(fields))
-	for _, field := range fields {
-		if !genericNameTokens[field] {
-			tokens = append(tokens, field)
-		}
-	}
-	return tokens
-}
-
-// matchesAnyRelaxedName reports whether any query value names the same thing as
-// any candidate. Exact case-insensitive equality always matches; beyond that a
-// query matches when it shares at least one meaningful token with a candidate,
-// so "Notes" and "Notes app" still reach a memory recorded as "QA Notes".
-// LLM callers routinely shorten or re-word app names, and the exact-equality
-// filter silently dropped every result when they did.
-//
-// Types deliberately keeps exact matching via matchesAny: it is a closed
-// vocabulary where token overlap would let unrelated categories through.
-func matchesAnyRelaxedName(queryValues []string, candidateValues []string) bool {
+// matchesAnyMemoryName uses the same normalized exact-or-contained comparison
+// as long-term memory recall. Aliases carry known rewordings; arbitrary token
+// overlap is intentionally not treated as a name match.
+func matchesAnyMemoryName(queryValues []string, candidateValues []string) bool {
 	if len(queryValues) == 0 {
 		return true
 	}
-	if matchesAny(queryValues, candidateValues) {
-		return true
-	}
 	for _, queryValue := range queryValues {
-		queryTokens := meaningfulNameTokens(queryValue)
-		if len(queryTokens) == 0 {
+		queryTerm := normalizeMemorySearchTerm(queryValue)
+		if queryTerm == "" {
 			continue
 		}
 		for _, candidateValue := range candidateValues {
-			if strings.TrimSpace(candidateValue) == "" {
+			candidateTerm := normalizeMemorySearchTerm(candidateValue)
+			if candidateTerm == "" {
 				continue
 			}
-			candidateTokens := make(map[string]bool)
-			for _, token := range meaningfulNameTokens(candidateValue) {
-				candidateTokens[token] = true
-			}
-			for _, token := range queryTokens {
-				if candidateTokens[token] {
-					return true
-				}
+			if queryTerm == candidateTerm || memorySearchTermContains(queryTerm, candidateTerm) {
+				return true
 			}
 		}
 	}
