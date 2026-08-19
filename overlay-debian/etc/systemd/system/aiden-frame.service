@@ -2,8 +2,9 @@
 Description=Aiden frame capture service
 Requires=oem.mount aiden-environment.service aiden-media-modules.service
 After=oem.mount aiden-environment.service aiden-media-modules.service
-StartLimitIntervalSec=60s
-StartLimitBurst=5
+# HDMI input may appear well after boot. Match the Buildroot watchdog by
+# retrying indefinitely, with RestartSec providing the retry backoff.
+StartLimitIntervalSec=0
 ConditionPathExists=/oem/usr/bin/frame_service
 
 [Service]
