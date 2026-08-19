@@ -431,6 +431,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             const uint32_t minimal_width = requested_minimal_width > metadata.width
                                                ? metadata.width
                                                : static_cast<uint32_t>(requested_minimal_width);
+            const bool crop_by_aspect = crop_black && minimal_width > 0;
 
             std::vector<uint8_t> transformed_payload;
             const std::vector<uint8_t>* payload = &frame->data;
@@ -443,7 +444,8 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                 if (!encode_yuv_to_jpeg_hw(frame->data, metadata.width, metadata.height,
                                            metadata.pixel_format, quality, &transformed_payload,
                                            &encoded_width, &encoded_height,
-                                           &crop_x, &crop_y, minimal_width, crop_black)) {
+                                           &crop_x, &crop_y, minimal_width, crop_black,
+                                           crop_by_aspect)) {
                     write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
                     cJSON_Delete(root);
                     return;
@@ -464,7 +466,8 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             } else if (format == "raw" && crop_black) {
                 FrameMetadata cropped_metadata;
                 if (!crop_frame_horizontal_black_bars(metadata, frame->data, minimal_width,
-                                                      &cropped_metadata, &transformed_payload)) {
+                                                      &cropped_metadata, &transformed_payload,
+                                                      crop_by_aspect)) {
                     write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
                     cJSON_Delete(root);
                     return;
