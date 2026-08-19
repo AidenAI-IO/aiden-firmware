@@ -93,6 +93,23 @@ audit_rootfs() {
         || fail "rootfs ownership or mode is invalid"
     test -x "${ROOTFS_MOUNT}/lib/systemd/systemd" || fail "systemd PID 1 is missing"
     test -x "${ROOTFS_MOUNT}/usr/sbin/sshd" || fail "sshd is missing"
+    grep -qx 'aiden:x:1000:1000::/home/aiden:/bin/bash' \
+        "${ROOTFS_MOUNT}/etc/passwd" || fail "aiden login user is missing"
+    grep -qx 'aiden:x:1000:' "${ROOTFS_MOUNT}/etc/group" \
+        || fail "aiden primary group is missing"
+    for group in audio video dialout plugdev netdev; do
+        grep -Eq "^${group}:[^:]*:[^:]*:([^,]*,)*aiden(,|$)" \
+            "${ROOTFS_MOUNT}/etc/group" \
+            >/dev/null || fail "aiden is missing required ${group} group"
+    done
+    test "$(stat -c '%u:%g:%a' "${ROOTFS_MOUNT}/home/aiden")" = 1000:1000:700 \
+        || fail "aiden home ownership or mode is invalid"
+    grep -qx 'PasswordAuthentication yes' \
+        "${ROOTFS_MOUNT}/etc/ssh/sshd_config.d/20-aiden.conf" \
+        || fail "ordinary-user SSH password authentication is disabled"
+    grep -qx 'PermitRootLogin prohibit-password' \
+        "${ROOTFS_MOUNT}/etc/ssh/sshd_config.d/20-aiden.conf" \
+        || fail "root SSH password authentication is not prohibited"
     test -x "${ROOTFS_MOUNT}/usr/bin/adb" || fail "Debian adb is missing"
     test -x "${ROOTFS_MOUNT}/usr/bin/hciattach" || fail "hciattach is missing"
     test -x "${ROOTFS_MOUNT}/usr/sbin/dnsmasq" || fail "dnsmasq-base is missing"
@@ -193,7 +210,8 @@ audit_oem_files() {
     test -L "${OEM_MOUNT}/usr/lib/librga.so.2" || fail "librga.so.2 symlink is missing"
     test "$(readlink "${OEM_MOUNT}/usr/lib/librga.so.2")" = librga.so.2.1.0 \
         || fail "librga.so.2 symlink is invalid"
-    test -s "${OEM_MOUNT}/usr/lib/librknnrt.so" || fail "librknnrt.so is missing"
+    test ! -e "${OEM_MOUNT}/usr/lib/librknnrt.so" \
+        || fail "obsolete dynamic librknnrt.so leaked into OEM"
     test -s "${OEM_MOUNT}/etc/ota_pubkey.pem" || fail "OTA public key is missing"
     test -s "${OEM_MOUNT}/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn" \
         || fail "VAD model is missing"
