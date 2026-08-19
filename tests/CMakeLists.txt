@@ -167,6 +167,8 @@ add_custom_target(agent_for_tests DEPENDS ${AIDEN_AGENT_FOR_TESTS})
 
 add_executable(agent_stub agent_stub_main.cpp)
 add_dependencies(agent_stub agent_for_tests)
+target_include_directories(agent_stub PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_sources(agent_stub PRIVATE ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c)
 target_compile_definitions(agent_stub PRIVATE
     AIDEN_REAL_AGENT_BIN="${AIDEN_AGENT_FOR_TESTS}"
 )

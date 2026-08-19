@@ -46,6 +46,8 @@
 
 #include <unistd.h>
 
+#include "cJSON/cJSON.h"
+
 #ifndef AIDEN_REAL_AGENT_BIN
 #error "AIDEN_REAL_AGENT_BIN must be set by the build system"
 #endif
@@ -119,13 +121,43 @@ const char* kDefaultConfigTest =
 const char* kDefaultConfigUpdate =
     "{\"ok\":true,\"config\":{},\"changed_paths\":[],\"reboot_required\":false}\n";
 
-std::string json_string_field(const std::string& json, const std::string& field) {
-    const std::string marker = "\"" + field + "\":\"";
-    const size_t start = json.find(marker);
-    if (start == std::string::npos) return "";
-    const size_t value_start = start + marker.size();
-    const size_t value_end = json.find('"', value_start);
-    return value_end == std::string::npos ? "" : json.substr(value_start, value_end - value_start);
+bool config_check_rejected(const std::string& validation) {
+    cJSON* root = cJSON_Parse(validation.c_str());
+    if (!root) return false;
+    cJSON* valid = cJSON_GetObjectItem(root, "valid");
+    const bool rejected = valid && (valid->type & 0xff) == cJSON_False;
+    cJSON_Delete(root);
+    return rejected;
+}
+
+std::string config_check_error(const std::string& validation) {
+    cJSON* root = cJSON_Parse(validation.c_str());
+    if (!root) return "stub-rejected";
+    cJSON* errors = cJSON_GetObjectItem(root, "errors");
+    cJSON* first = errors && (errors->type & 0xff) == cJSON_Array
+        ? cJSON_GetArrayItem(errors, 0)
+        : nullptr;
+    cJSON* message = first && (first->type & 0xff) == cJSON_Object
+        ? cJSON_GetObjectItem(first, "message")
+        : nullptr;
+    const std::string result = message && (message->type & 0xff) == cJSON_String && message->valuestring
+        ? message->valuestring
+        : "stub-rejected";
+    cJSON_Delete(root);
+    return result;
+}
+
+void write_config_update_error(const std::string& message) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 0);
+    cJSON_AddStringToObject(root, "error", message.c_str());
+    char* encoded = cJSON_PrintUnformatted(root);
+    if (encoded) {
+        std::fputs(encoded, stdout);
+        std::fputc('\n', stdout);
+        std::free(encoded);
+    }
+    cJSON_Delete(root);
 }
 
 void maybe_sleep() {
@@ -227,27 +259,6 @@ int main(int argc, char** argv) {
     }
 
     if (sub == "config-update") {
-        const char* check_file = std::getenv("AIDEN_AGENT_STUB_CHECK_FILE");
-        if (check_file && check_file[0] != '\0') {
-            char buf[4096];
-            while (std::fread(buf, 1, sizeof(buf), stdin) > 0) {
-            }
-            maybe_sleep();
-            std::ifstream check(check_file);
-            std::ostringstream check_body;
-            check_body << check.rdbuf();
-            const std::string validation = check_body.str();
-            if (validation.find("\"valid\":false") != std::string::npos || env_int("AIDEN_AGENT_STUB_CHECK_EXIT", 0) != 0) {
-                const std::string message = json_string_field(validation, "message");
-                std::fprintf(stdout, "{\"ok\":false,\"error\":\"%s\"}\n",
-                             message.empty() ? "stub-rejected" : message.c_str());
-                return 1;
-            }
-            if (validation.find("valid") == std::string::npos) {
-                std::fputs(validation.c_str(), stdout);
-                return 0;
-            }
-        }
         const char* update_file = std::getenv("AIDEN_AGENT_STUB_UPDATE_FILE");
         if ((update_file && update_file[0] != '\0') || std::getenv("AIDEN_AGENT_STUB_UPDATE_EXIT")) {
             char buf[4096];
@@ -259,6 +270,21 @@ int main(int argc, char** argv) {
             }
             std::fflush(stdout);
             return env_int("AIDEN_AGENT_STUB_UPDATE_EXIT", 0);
+        }
+        const char* check_file = std::getenv("AIDEN_AGENT_STUB_CHECK_FILE");
+        if (check_file && check_file[0] != '\0') {
+            std::ifstream check(check_file);
+            std::ostringstream check_body;
+            check_body << check.rdbuf();
+            const std::string validation = check_body.str();
+            if (config_check_rejected(validation) || env_int("AIDEN_AGENT_STUB_CHECK_EXIT", 0) != 0) {
+                char buf[4096];
+                while (std::fread(buf, 1, sizeof(buf), stdin) > 0) {
+                }
+                maybe_sleep();
+                write_config_update_error(config_check_error(validation));
+                return 1;
+            }
         }
         std::vector<char*> delegated;
         delegated.reserve(static_cast<size_t>(argc) + 1);

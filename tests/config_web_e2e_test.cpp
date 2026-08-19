@@ -3499,7 +3499,8 @@ TEST_CASE("config_web: POST /api/config returns 400 when stub config-check rejec
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
     write_file(tmp + "/check.json",
-               "{\"valid\":false,\"errors\":[{\"field\":\"x\",\"message\":\"stub-rejected\"}]}\n");
+               "{\"valid\":false,\"errors\":[{\"field\":\"x\","
+               "\"message\":\"stub \\\"rejected\\\" at C:\\\\config\\nline\"}]}\n");
     StubEnv env;
     env.set("AIDEN_AGENT_STUB_CHECK_FILE", tmp + "/check.json");
     env.set("AIDEN_AGENT_STUB_CHECK_EXIT", "1");
@@ -3509,7 +3510,13 @@ TEST_CASE("config_web: POST /api/config returns 400 when stub config-check rejec
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 400);
-    CHECK(resp.body.find("stub-rejected") != std::string::npos);
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* error = cJSON_GetObjectItem(parsed, "error");
+    REQUIRE(error != nullptr);
+    REQUIRE(error->valuestring != nullptr);
+    CHECK(std::string(error->valuestring) == "stub \"rejected\" at C:\\config\nline");
+    cJSON_Delete(parsed);
 }
 
 TEST_CASE("config_web: POST /api/config returns 503 when stub config-check returns invalid JSON") {
@@ -3524,15 +3531,15 @@ TEST_CASE("config_web: POST /api/config returns 503 when stub config-check retur
     );
     write_file(tmp + "/check.txt", "not json at all\n");
     StubEnv env;
-    env.set("AIDEN_AGENT_STUB_CHECK_FILE", tmp + "/check.txt");
-    env.set("AIDEN_AGENT_STUB_CHECK_EXIT", "1");
+    env.set("AIDEN_AGENT_STUB_UPDATE_FILE", tmp + "/check.txt");
+    env.set("AIDEN_AGENT_STUB_UPDATE_EXIT", "1");
     auto handle = start_server(env);
     const std::string body =
         "{\"config\":{\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 503);
-    CHECK(resp.body.find("unexpected response") != std::string::npos);
+    CHECK(resp.body.find("invalid JSON") != std::string::npos);
 }
 
 TEST_CASE("config_web: both endpoints fail closed with 503 when AIDEN_AGENT_BIN points nowhere") {

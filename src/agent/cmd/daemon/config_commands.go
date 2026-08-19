@@ -1482,15 +1482,7 @@ func tomlPathForWebPath(path []string) []string {
 	if len(path) < 2 || path[0] != "agent" {
 		return path
 	}
-	mapped := map[string]string{
-		"custom_instruction": "custom_instruction",
-		"additional_prompt":  "additional_prompt",
-	}
-	key := path[1]
-	if replacement, ok := mapped[key]; ok {
-		key = replacement
-	}
-	return append([]string{key}, path[2:]...)
+	return append([]string{path[1]}, path[2:]...)
 }
 
 func normalizeJSONNumber(value any) any {
