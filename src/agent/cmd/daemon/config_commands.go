@@ -1366,8 +1366,11 @@ func normalizeLegacyWebConfigPatch(patch map[string]json.RawMessage, current age
 func addLegacyModelProviderCredential(patch map[string]json.RawMessage, current agent.Config, provider, apiKey string) error {
 	var records map[string]json.RawMessage
 	if raw, ok := patch["model_providers"]; ok {
-		if err := json.Unmarshal(raw, &records); err != nil || records == nil {
-			return nil
+		if err := json.Unmarshal(raw, &records); err != nil {
+			return fmt.Errorf("model_providers patch must be an object: %w", err)
+		}
+		if records == nil {
+			return fmt.Errorf("model_providers patch must be an object")
 		}
 	}
 	if records == nil {

@@ -442,6 +442,29 @@ func TestUpdateConfigFileMigratesLegacyModelCredential(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigFileRejectsNonObjectModelProvidersDuringLegacyCredentialMigration(t *testing.T) {
+	source := []byte("[model]\nprovider = \"openai\"\napi_key = \"legacy-secret\"\nmodel = \"gpt-5.5\"\n")
+	for _, modelProviders := range []string{"null", `[]`} {
+		t.Run(modelProviders, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent.toml")
+			if err := os.WriteFile(path, source, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			patch := []byte(`{"config":{"model":{"api_key":"legacy-secret"},"model_providers":` + modelProviders + `}}`)
+			if _, err := updateConfigFile(path, patch); err == nil || !strings.Contains(err.Error(), "model_providers patch must be an object") {
+				t.Fatalf("updateConfigFile() error = %v", err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != string(source) {
+				t.Fatalf("config changed after rejected patch:\n%s", got)
+			}
+		})
+	}
+}
+
 func TestUpdateConfigFileAcceptsLegacyProviderTypeAlias(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	if err := os.WriteFile(path, nil, 0o640); err != nil {
