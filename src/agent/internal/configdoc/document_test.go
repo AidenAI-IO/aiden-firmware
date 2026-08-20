@@ -95,6 +95,67 @@ func TestApplyInsertsIntoOnlyTargetTable(t *testing.T) {
 	}
 }
 
+func TestApplyInsertsIntoExistingInlineTable(t *testing.T) {
+	source := []byte("hid = { keyboard_layout = \"qwerty\" } # keep this\n")
+	want := []byte("hid = { keyboard_layout = \"qwerty\", keyboard_device = \"/dev/hidg9\" } # keep this\n")
+
+	got, changed, err := Apply(source, []Operation{{Path: []string{"hid", "keyboard_device"}, Value: "/dev/hidg9"}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "hid.keyboard_device" {
+		t.Fatalf("changed = %v", changed)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestApplyReplacesExistingInlineTableValue(t *testing.T) {
+	source := []byte("hid = { keyboard_layout = \"qwerty\", keyboard_device = \"/dev/hidg0\" }\n")
+	want := []byte("hid = { keyboard_layout = \"qwerty\", keyboard_device = \"/dev/hidg9\" }\n")
+
+	got, _, err := Apply(source, []Operation{{Path: []string{"hid", "keyboard_device"}, Value: "/dev/hidg9"}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestApplyDeletesExistingInlineTableValue(t *testing.T) {
+	source := []byte("hid = { keyboard_layout = \"qwerty\", keyboard_device = \"/dev/hidg0\" } # keep\n")
+	want := []byte("hid = { keyboard_layout = \"qwerty\" } # keep\n")
+
+	got, changed, err := Apply(source, []Operation{{Path: []string{"hid", "keyboard_device"}, Delete: true}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "hid.keyboard_device" {
+		t.Fatalf("changed = %v", changed)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestApplyDeletesInlineProviderRecord(t *testing.T) {
+	source := []byte("model_providers = { old = { type = \"openai\" }, keep = { type = \"ollama\" } }\n")
+	want := []byte("model_providers = { keep = { type = \"ollama\" } }\n")
+
+	got, changed, err := Apply(source, []Operation{{Path: []string{"model_providers", "old"}, DeleteTable: true}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "model_providers.old" {
+		t.Fatalf("changed = %v", changed)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestApplyAppendsMinimalNewTable(t *testing.T) {
 	source := []byte("locale = \"en-US\"\n")
 	want := []byte("locale = \"en-US\"\n\n[hid]\nkeyboard_layout = \"azerty\"\n")

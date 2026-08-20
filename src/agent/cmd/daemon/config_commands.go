@@ -9,10 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1716,7 +1718,11 @@ func flattenConfigPatch(path []string, raw json.RawMessage, operations *[]config
 	if err := decoder.Decode(&value); err != nil {
 		return fmt.Errorf("invalid patch at %s: %w", strings.Join(path, "."), err)
 	}
-	*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), path...), Value: normalizeJSONValue(value)})
+	normalized, err := normalizeJSONValue(value)
+	if err != nil {
+		return fmt.Errorf("invalid patch at %s: %w", strings.Join(path, "."), err)
+	}
+	*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), path...), Value: normalized})
 	return nil
 }
 
@@ -1809,7 +1815,6 @@ func validateJSONScalarType(raw json.RawMessage, typ reflect.Type, path []string
 		if !ok || err != nil || integer < 0 {
 			return fmt.Errorf("%s: expected non-negative integer", strings.Join(path, "."))
 		}
-		return nil
 	}
 	expected := "value"
 	valid := false
@@ -1823,16 +1828,48 @@ func validateJSONScalarType(raw json.RawMessage, typ reflect.Type, path []string
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		expected = "number"
-		_, valid = value.(json.Number)
+		number, ok := value.(json.Number)
+		if !ok {
+			break
+		}
+		if err := validateIntegerNumber(number, typ); err != nil {
+			return fmt.Errorf("%s: %w", strings.Join(path, "."), err)
+		}
+		valid = true
 	case reflect.Float32, reflect.Float64:
 		expected = "number"
-		_, valid = value.(json.Number)
+		number, ok := value.(json.Number)
+		if !ok {
+			break
+		}
+		parsed, err := strconv.ParseFloat(string(number), typ.Bits())
+		if err != nil || math.IsInf(parsed, 0) || math.IsNaN(parsed) {
+			return fmt.Errorf("%s: number is out of range", strings.Join(path, "."))
+		}
+		valid = true
 	case reflect.Slice, reflect.Array:
 		expected = "array"
 		_, valid = value.([]any)
 	}
 	if !valid {
 		return fmt.Errorf("%s: expected %s, got %s", strings.Join(path, "."), expected, jsonValueType(value))
+	}
+	return nil
+}
+
+func validateIntegerNumber(number json.Number, typ reflect.Type) error {
+	text := string(number)
+	if strings.ContainsAny(text, ".eE") {
+		return fmt.Errorf("expected integer")
+	}
+	if typ.Kind() >= reflect.Uint && typ.Kind() <= reflect.Uint64 {
+		if _, err := strconv.ParseUint(text, 10, typ.Bits()); err != nil {
+			return fmt.Errorf("integer is out of range")
+		}
+		return nil
+	}
+	if _, err := strconv.ParseInt(text, 10, typ.Bits()); err != nil {
+		return fmt.Errorf("integer is out of range")
 	}
 	return nil
 }
@@ -1913,29 +1950,45 @@ func tomlPathForWebPath(path []string) []string {
 	return append([]string{path[1]}, path[2:]...)
 }
 
-func normalizeJSONValue(value any) any {
+func normalizeJSONValue(value any) (any, error) {
 	switch typed := value.(type) {
 	case json.Number:
 		if strings.ContainsAny(string(typed), ".eE") {
-			f, _ := typed.Float64()
-			return f
+			f, err := typed.Float64()
+			if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
+				return nil, fmt.Errorf("number is out of range")
+			}
+			return f, nil
 		}
-		i, _ := typed.Int64()
-		return i
+		if i, err := typed.Int64(); err == nil {
+			return i, nil
+		}
+		if u, err := strconv.ParseUint(string(typed), 10, 64); err == nil {
+			return u, nil
+		}
+		return nil, fmt.Errorf("integer is out of range")
 	case []any:
 		result := make([]any, len(typed))
 		for i, item := range typed {
-			result[i] = normalizeJSONValue(item)
+			normalized, err := normalizeJSONValue(item)
+			if err != nil {
+				return nil, err
+			}
+			result[i] = normalized
 		}
-		return result
+		return result, nil
 	case map[string]any:
 		result := make(map[string]any, len(typed))
 		for key, item := range typed {
-			result[key] = normalizeJSONValue(item)
+			normalized, err := normalizeJSONValue(item)
+			if err != nil {
+				return nil, err
+			}
+			result[key] = normalized
 		}
-		return result
+		return result, nil
 	default:
-		return value
+		return value, nil
 	}
 }
 

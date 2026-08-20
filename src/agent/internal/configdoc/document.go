@@ -36,9 +36,26 @@ type table struct {
 	lineEnd   int
 }
 
+type inlineField struct {
+	path       []string
+	itemStart  int
+	valueStart int
+	valueEnd   int
+	tableStart int
+	tableEnd   int
+}
+
+type inlineTable struct {
+	path       []string
+	valueStart int
+	valueEnd   int
+}
+
 type index struct {
-	keys   []keyValue
-	tables []table
+	keys         []keyValue
+	tables       []table
+	inlineFields []inlineField
+	inlineTables []inlineTable
 }
 
 // Apply returns a new document containing only the requested source edits.
@@ -149,12 +166,62 @@ func parse(source []byte) (index, error) {
 				lineStart:  start,
 				lineEnd:    lineEnd(source, valueEnd),
 			})
+			if value.Kind == unstable.InlineTable {
+				if err := indexInlineTable(source, &result, path, value, valueStart, valueEnd); err != nil {
+					return index{}, err
+				}
+			}
 		}
 	}
 	if err := parser.Error(); err != nil {
 		return index{}, fmt.Errorf("parse TOML: %w", err)
 	}
 	return result, nil
+}
+
+func indexInlineTable(source []byte, result *index, path []string, node *unstable.Node, start, end int) error {
+	result.inlineTables = append(result.inlineTables, inlineTable{
+		path:       append([]string(nil), path...),
+		valueStart: start,
+		valueEnd:   end,
+	})
+	for child := node.Child(); child != nil; child = child.Next() {
+		if child.Kind != unstable.KeyValue {
+			return fmt.Errorf("inline TOML table contains unexpected %s node", child.Kind)
+		}
+		value := child.Value()
+		childPath := append(append([]string(nil), path...), nodeKey(child)...)
+		key := value.Next()
+		if key == nil {
+			return fmt.Errorf("inline TOML key/value has no key")
+		}
+		lastKey := key
+		for lastKey.Next() != nil {
+			lastKey = lastKey.Next()
+		}
+		valueStart, err := valueStartAfterKey(source, int(lastKey.Raw.Offset+lastKey.Raw.Length))
+		if err != nil {
+			return err
+		}
+		valueEnd, err := valueEnd(source, valueStart, value)
+		if err != nil {
+			return err
+		}
+		result.inlineFields = append(result.inlineFields, inlineField{
+			path:       childPath,
+			itemStart:  int(key.Raw.Offset),
+			valueStart: valueStart,
+			valueEnd:   valueEnd,
+			tableStart: start,
+			tableEnd:   end,
+		})
+		if value.Kind == unstable.InlineTable {
+			if err := indexInlineTable(source, result, childPath, value, valueStart, valueEnd); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func valueStartAfterKey(source []byte, offset int) (int, error) {
@@ -262,6 +329,12 @@ func setValue(source []byte, doc index, path []string, encoded []byte) ([]byte, 
 		}
 		return splice(source, key.valueStart, key.valueEnd, encoded), true, nil
 	}
+	if field := findInlineField(doc, path); field != nil {
+		if bytes.Equal(source[field.valueStart:field.valueEnd], encoded) {
+			return source, false, nil
+		}
+		return splice(source, field.valueStart, field.valueEnd, encoded), true, nil
+	}
 
 	tablePath := path[:len(path)-1]
 	keyText, err := encodeKey(path[len(path)-1])
@@ -271,6 +344,9 @@ func setValue(source []byte, doc index, path []string, encoded []byte) ([]byte, 
 	line := append(append([]byte(nil), keyText...), []byte(" = ")...)
 	line = append(line, encoded...)
 	line = append(line, '\n')
+	if target := findInlineTable(doc, tablePath); target != nil {
+		return insertInlineTableValue(source, *target, keyText, encoded)
+	}
 	if target := findTable(doc, tablePath); target != nil {
 		position := target.lineEnd
 		for _, key := range doc.keys {
@@ -311,15 +387,71 @@ func setValue(source []byte, doc index, path []string, encoded []byte) ([]byte, 
 	return append(append([]byte(nil), source...), addition...), true, nil
 }
 
+func insertInlineTableValue(source []byte, table inlineTable, key, value []byte) ([]byte, bool, error) {
+	if table.valueStart >= table.valueEnd || table.valueEnd > len(source) ||
+		source[table.valueStart] != '{' || source[table.valueEnd-1] != '}' {
+		return nil, false, fmt.Errorf("invalid inline TOML table range")
+	}
+	innerStart := table.valueStart + 1
+	innerEnd := table.valueEnd - 1
+	contentEnd := innerEnd
+	for contentEnd > innerStart && (source[contentEnd-1] == ' ' || source[contentEnd-1] == '\t') {
+		contentEnd--
+	}
+	assignment := append(append(append([]byte(nil), key...), []byte(" = ")...), value...)
+	if len(bytes.TrimSpace(source[innerStart:innerEnd])) == 0 {
+		replacement := append([]byte{' '}, assignment...)
+		replacement = append(replacement, ' ')
+		return splice(source, innerStart, innerEnd, replacement), true, nil
+	}
+	insertion := append([]byte(", "), assignment...)
+	return splice(source, contentEnd, contentEnd, insertion), true, nil
+}
+
 func deleteKey(source []byte, doc index, path []string) ([]byte, bool) {
 	key := findKey(doc, path)
-	if key == nil {
+	if key != nil {
+		return splice(source, key.lineStart, key.lineEnd, nil), true
+	}
+	field := findInlineField(doc, path)
+	if field == nil {
 		return source, false
 	}
-	return splice(source, key.lineStart, key.lineEnd, nil), true
+	return deleteInlineTableValue(source, *field), true
+}
+
+func deleteInlineTableValue(source []byte, field inlineField) []byte {
+	innerStart := field.tableStart + 1
+	innerEnd := field.tableEnd - 1
+	start := field.itemStart
+	for start > innerStart && (source[start-1] == ' ' || source[start-1] == '\t') {
+		start--
+	}
+	if start > innerStart && source[start-1] == ',' {
+		start--
+		return splice(source, start, field.valueEnd, nil)
+	}
+
+	end := field.valueEnd
+	for end < innerEnd && (source[end] == ' ' || source[end] == '\t') {
+		end++
+	}
+	if end < innerEnd && source[end] == ',' {
+		end++
+		for end < innerEnd && (source[end] == ' ' || source[end] == '\t') {
+			end++
+		}
+		return splice(source, field.itemStart, end, nil)
+	}
+	return splice(source, innerStart, innerEnd, []byte(" "))
 }
 
 func deleteTable(source []byte, doc index, path []string) ([]byte, bool) {
+	if findInlineTable(doc, path) != nil {
+		if field := findInlineField(doc, path); field != nil {
+			return deleteInlineTableValue(source, *field), true
+		}
+	}
 	if findTable(doc, path) == nil {
 		return source, false
 	}
@@ -371,6 +503,24 @@ func findTable(doc index, path []string) *table {
 	for i := range doc.tables {
 		if equalPath(doc.tables[i].path, path) {
 			return &doc.tables[i]
+		}
+	}
+	return nil
+}
+
+func findInlineField(doc index, path []string) *inlineField {
+	for i := range doc.inlineFields {
+		if equalPath(doc.inlineFields[i].path, path) {
+			return &doc.inlineFields[i]
+		}
+	}
+	return nil
+}
+
+func findInlineTable(doc index, path []string) *inlineTable {
+	for i := range doc.inlineTables {
+		if equalPath(doc.inlineTables[i].path, path) {
+			return &doc.inlineTables[i]
 		}
 	}
 	return nil

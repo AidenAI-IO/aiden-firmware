@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -479,6 +480,58 @@ func TestValidateWebConfigPatchReportsScalarTypeErrors(t *testing.T) {
 		if err := validateWebConfigPatch(tt.patch); err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Fatalf("validateWebConfigPatch() error = %v, want %q", err, tt.want)
 		}
+	}
+}
+
+func TestUpdateConfigFileRejectsOutOfRangeNumbersWithoutChangingFile(t *testing.T) {
+	source := []byte("[model]\nprovider = \"openai\"\nmodel = \"gpt-5.5\"\n\n[audio_archive]\nmax_files = 5\n\n[tts]\nspeed = 1\n")
+	tests := []struct {
+		name  string
+		patch string
+	}{
+		{name: "integer overflow", patch: `{"config":{"audio_archive":{"max_files":999999999999999999999}}}`},
+		{name: "float overflow", patch: `{"config":{"tts":{"speed":1e999}}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent.toml")
+			if err := os.WriteFile(path, source, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := updateConfigFile(path, []byte(tt.patch)); err == nil {
+				t.Fatal("updateConfigFile() error = nil")
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, source) {
+				t.Fatalf("rejected numeric patch changed config:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestUpdateConfigFileUpdatesInlineTable(t *testing.T) {
+	source := []byte("hid = { keyboard_layout = \"qwerty\" } # keep\n\n[model]\nprovider = \"openai\"\nmodel = \"gpt-5.5\"\n")
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, source, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	result, err := updateConfigFile(path, []byte(`{"config":{"hid":{"keyboard_device":"/dev/hidg9"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.ChangedPaths, ",") != "hid.keyboard_device" {
+		t.Fatalf("changed paths = %v", result.ChangedPaths)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "hid = { keyboard_layout = \"qwerty\", keyboard_device = \"/dev/hidg9\" } # keep\n"
+	if !strings.Contains(string(got), want) || strings.Contains(string(got), "\n[hid]\n") {
+		t.Fatalf("inline table was not updated in place:\n%s", got)
 	}
 }
 
