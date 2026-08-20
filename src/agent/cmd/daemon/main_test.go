@@ -561,6 +561,59 @@ func TestStartWakeupWatchersDebouncesImmediateGPIOBurst(t *testing.T) {
 	}
 }
 
+type fakeQuickCaptureTrigger struct {
+	calls int
+	err   error
+}
+
+func (t *fakeQuickCaptureTrigger) TriggerQuickCapture() error {
+	t.calls++
+	return t.err
+}
+
+func TestStartQuickCaptureGPIOWatcherUsesConfiguredSparePin(t *testing.T) {
+	trigger := &fakeQuickCaptureTrigger{}
+	var configuredPin int
+	var watcher *fakeWakeupWatcher
+
+	got, err := startQuickCaptureGPIOWatcher(agent.Config{
+		QuickCapture: agent.QuickCaptureConfig{GPIOPin: 3},
+	}, trigger, func(pin int, callback func()) (wakeupWatcher, error) {
+		configuredPin = pin
+		watcher = &fakeWakeupWatcher{callback: callback}
+		return watcher, nil
+	})
+	if err != nil {
+		t.Fatalf("startQuickCaptureGPIOWatcher() error = %v", err)
+	}
+	defer got.Stop()
+
+	if configuredPin != 3 || watcher == nil || !watcher.started {
+		t.Fatalf("watcher pin=%d watcher=%+v, want started GPIO 3", configuredPin, watcher)
+	}
+	watcher.callback()
+	if trigger.calls != 1 {
+		t.Fatalf("trigger calls = %d, want 1", trigger.calls)
+	}
+	if got == nil {
+		t.Fatal("watcher = nil, want configured watcher")
+	}
+}
+
+func TestStartQuickCaptureGPIOWatcherDisabledByDefault(t *testing.T) {
+	called := false
+	watcher, err := startQuickCaptureGPIOWatcher(agent.Config{}, &fakeQuickCaptureTrigger{}, func(pin int, callback func()) (wakeupWatcher, error) {
+		called = true
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("startQuickCaptureGPIOWatcher() error = %v", err)
+	}
+	if watcher != nil || called {
+		t.Fatalf("watcher=%v factory_called=%v, want disabled", watcher, called)
+	}
+}
+
 func TestProcessAudioUntilUtteranceUsesConfiguredFrameSizeAndCarriesOddPCMByte(t *testing.T) {
 	dialog := &fakeAudioDialog{
 		frameSamples: 2,

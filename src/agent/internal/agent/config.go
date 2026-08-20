@@ -274,6 +274,7 @@ type Config struct {
 	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
 	Storage                    StorageConfig            `toml:"storage,omitempty"`
 	VoiceNotifications         VoiceNotificationsConfig `toml:"voice_notifications,omitempty"`
+	QuickCapture               QuickCaptureConfig       `toml:"quick_capture,omitempty"`
 	Log                        LogConfig                `toml:"log,omitempty"`
 	OTA                        OTAConfig                `toml:"ota,omitempty"`
 	Search                     SearchConfig             `toml:"search,omitempty"`
@@ -1305,6 +1306,9 @@ func (c Config) Validate() error {
 	}
 	if c.VoiceMaxResponseTokens < 0 {
 		return fmt.Errorf("voice_max_response_tokens must be >= 0, got %d", c.VoiceMaxResponseTokens)
+	}
+	if err := c.QuickCapture.Validate(); err != nil {
+		return err
 	}
 	if c.VoiceNotifications.MaxPending < 0 {
 		return fmt.Errorf("voice_notifications.max_pending must be >= 0, got %d", c.VoiceNotifications.MaxPending)

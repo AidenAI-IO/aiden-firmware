@@ -379,6 +379,20 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
+				Name: "quick_capture",
+				Fields: []FieldMeta{
+					{Key: "enabled", Label: "Enabled", Widget: WidgetBoolean,
+						Default: defaults.QuickCapture.EnabledOrDefault(),
+						Help:    "Enable GPIO-triggered Screen Memory capture. Legacy GPIO32/GPIO33 wakeup remains independent."},
+					{Key: "gpio_pin", Label: "GPIO Pin", Widget: WidgetNumber,
+						Default: defaults.QuickCapture.GPIOPin,
+						Help:    "Falling-edge trigger pin. Supported values are 0 (disabled) and GPIO3 (physical pin 38 on Luckfox Pico Zero). GPIO32 and GPIO33 remain reserved for legacy wakeup."},
+					{Key: "screen_memory_ttl", Label: "Screen Memory TTL", Widget: WidgetText,
+						Default: defaults.QuickCapture.ScreenMemoryTTLOrDefault(),
+						Help:    "Retention period for captured Screen Memory entries, such as 90d, or forever."},
+				},
+			},
+			{
 				Name: "storage",
 				Fields: []FieldMeta{
 					{Key: "monitor_enabled", Widget: WidgetBoolean, Default: defaults.Storage.MonitorEnabled},

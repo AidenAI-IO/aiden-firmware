@@ -70,6 +70,7 @@ type Server struct {
 	ttsPlaybackBackend      tts.AudioServiceBackend
 	screenCaptureMu         sync.Mutex
 	screenCaptureClient     screenprovider.Provider
+	quickCapture            *QuickCaptureController
 	recordMu                sync.Mutex
 	webRecording            *webAudioRecording
 	sttConfigTestSession    *sttConfigTestLiveSession
@@ -430,6 +431,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		})
 	}
 	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
+	s.quickCapture = newServerQuickCapture(runtime, s.screenCaptureClient)
 	runtime.tools.RegisterPhoneBridge(s.bridge)
 	s.loadHistoryFromDisk()
 

@@ -623,6 +623,39 @@ def test_load_suite_rejects_unknown_setup_keys(tmp_path: Path):
         load_suite(p)
 
 
+def test_load_suite_accepts_quick_capture_setup_keys(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "setup": {
+                    "type": "seed_memory",
+                    "memories": [{"id": "mem-screen", "content": "saved screen"}],
+                    "clear_history_after": True,
+                },
+            },
+            {
+                **FIXTURE["tasks"][0],
+                "id": "capture_setup",
+                "setup": {
+                    "type": "agent_prompt",
+                    "prompt": "prepare capture",
+                    "expected_response": "READY",
+                    "clear_history_after": False,
+                },
+            },
+        ],
+    }
+    p = tmp_path / "quick-capture-setup-keys.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.tasks[0].setup["clear_history_after"] is True
+    assert suite.tasks[1].setup["expected_response"] == "READY"
+
+
 @pytest.mark.parametrize("setup_type", [["seed_episode"], {"name": "seed_episode"}, 1, None])
 def test_load_suite_rejects_non_string_setup_type(tmp_path: Path, setup_type):
     fixture = {
@@ -1084,6 +1117,59 @@ def test_episode_memory_conditions_share_natural_and_iphone_tasks():
     assert after.tasks[1].setup["consolidate"] is True
     assert before.tasks[1].setup["episode"] == after.tasks[1].setup["episode"]
 
+
+def test_quick_capture_suite_covers_screen_memory_upper_bound():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "quick_capture_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert {
+        "recall_exact_key_text",
+        "recall_dense_multilingual_values",
+        "prefer_latest_snapshot",
+        "preserve_duplicate_snapshots",
+        "route_screen_memory_away_from_session",
+        "compare_multiple_snapshots",
+        "find_old_snapshot_in_large_history",
+        "do_not_hallucinate_missing_snapshot",
+        "treat_snapshot_as_historical_evidence",
+        "forget_one_of_two_similar_snapshots",
+    } <= set(task_by_id)
+    assert len(suite.tasks) >= 10
+    assert all(task.category == "memory" for task in suite.tasks)
+
+    for task in suite.tasks:
+        assert task.setup is not None
+        assert task.setup["type"] == "seed_memory"
+        assert task.setup["clear_history_after"] is True
+        assert task.hard_assertions.must_complete_within_sec <= 120
+        assert task.expected_answer is None
+
+    for task in suite.tasks:
+        requirements = task.hard_assertions.required_tool_calls
+        assert any(item.tool == "recall_memory" for item in requirements)
+        assert "recall_session_chunks" in task.hard_assertions.forbidden_tools
+
+    assert len(task_by_id["compare_multiple_snapshots"].expected_recalled_memory_ids) == 3
+    assert len(task_by_id["find_old_snapshot_in_large_history"].setup["memories"]) >= 8
+    assert len(task_by_id["preserve_duplicate_snapshots"].expected_recalled_memory_ids) == 2
+
+    # Routing is validated by observed evidence and answer grounding, not by
+    # forcing one exact recall query shape on the agent.
+    route_task = task_by_id["route_screen_memory_away_from_session"]
+    assert route_task.expected_recalled_memory_ids == [
+        "mem_1700000000000000500_qc_approval_screen"
+    ]
+    route_memories = {item["id"]: item for item in route_task.setup["memories"]}
+    assert route_memories["mem_1700000000000000500_qc_approval_screen"]["type"] == "screen_snapshot"
+    assert route_memories["mem_1700000000000000501_qc_approval_fact"]["type"] == "fact"
+
+    forget_task = task_by_id["forget_one_of_two_similar_snapshots"]
+    assert any(
+        item.tool == "forget_memory"
+        and item.input_contains.get("id") == "mem_1700000000000001100_qc_old_order"
+        for item in forget_task.hard_assertions.required_tool_calls
+    )
 
 def test_notes_entry_policy_suite_covers_three_screen_states():
     suites_dir = Path(__file__).resolve().parents[1] / "suites" / "aiden_app"

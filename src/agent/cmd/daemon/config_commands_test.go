@@ -308,6 +308,9 @@ llm_http_retention_days = 14
 	if !dto.AudioArchive.Enabled || dto.AudioArchive.StoragePath != agent.DefaultConfig().AudioArchive.StoragePath {
 		t.Fatalf("audio_archive defaults = %+v, want enabled default storage", dto.AudioArchive)
 	}
+	if !dto.QuickCapture.Enabled || dto.QuickCapture.GPIOPin != 0 || dto.QuickCapture.ScreenMemoryTTL != agent.DefaultScreenMemoryTTL {
+		t.Fatalf("quick_capture defaults = %+v", dto.QuickCapture)
+	}
 }
 
 func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
@@ -478,6 +481,23 @@ func TestWebConfigDTOMapsAudioPlaybackBackend(t *testing.T) {
 	})
 	if autoRoundTrip.Audio.PlaybackBackend != agent.AudioPlaybackBackendAuto {
 		t.Fatalf("auto round-trip audio.playback_backend = %q, want auto", autoRoundTrip.Audio.PlaybackBackend)
+	}
+}
+
+func TestWebConfigDTOMapsQuickCapture(t *testing.T) {
+	dto := webConfigDTO{QuickCapture: quickCaptureDTO{
+		Enabled:         false,
+		GPIOPin:         3,
+		ScreenMemoryTTL: "14d",
+	}}
+	cfg := dto.toAgentConfig()
+	if cfg.QuickCapture.EnabledOrDefault() || cfg.QuickCapture.GPIOPin != 3 || cfg.QuickCapture.ScreenMemoryTTL != "14d" {
+		t.Fatalf("QuickCapture = %+v, want DTO values", cfg.QuickCapture)
+	}
+
+	roundTrip := webConfigDTOFromAgentConfig(agent.Config{QuickCapture: cfg.QuickCapture})
+	if roundTrip.QuickCapture != dto.QuickCapture {
+		t.Fatalf("round-trip QuickCapture = %+v, want %+v", roundTrip.QuickCapture, dto.QuickCapture)
 	}
 }
 

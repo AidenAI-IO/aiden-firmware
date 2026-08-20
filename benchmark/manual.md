@@ -315,7 +315,7 @@ Common fields:
 | --- | --- |
 | `prompt_prefix` | Prefix for every task prompt; constrains device type, tool usage, etc. |
 | `global_reset` | Suite-level reset configuration |
-| `setup` | Task-level pre-steps; currently supports `{"type": "agent_prompt", ...}` |
+| `setup` | Task-level pre-steps; supports `agent_prompt` and benchmark-token-protected `seed_memory` |
 | `app_ids` | Optional MobileGym app IDs to preload during environment setup; omitted tasks skip eager app data loading |
 | `rubric` | The judge model's scoring items |
 | `hard_assertions` | Deterministic checks, e.g. tool-call counts, timeout, required/forbidden tools |
@@ -325,6 +325,10 @@ Common fields:
 | `expected_answer` | Direct answer for multiple-choice/fixed-answer tasks |
 | `trace_observations` | Checks on specific behaviors in the trace, e.g. whether a given skill was read |
 | `mock_environment` | Suite-level default or task-level scripted Phone Bridge state, tool responses, and mock screen |
+
+For `agent_prompt`, set `expected_response` when setup success has a precise
+completion marker. The runner compares the trimmed response exactly and fails
+the task setup on any other output.
 
 A unit suite is a different format with `kind` set to `unit`; it tests a tool's
 input/output directly without going through agent chat.

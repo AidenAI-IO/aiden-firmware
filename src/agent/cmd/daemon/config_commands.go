@@ -55,6 +55,7 @@ type webConfigDTO struct {
 	STT                sttDTO                        `json:"stt"`
 	Audio              audioDTO                      `json:"audio"`
 	AudioArchive       audioArchiveDTO               `json:"audio_archive"`
+	QuickCapture       quickCaptureDTO               `json:"quick_capture"`
 	VoiceNotifications voiceNotificationsDTO         `json:"voice_notifications"`
 	Device             deviceDTO                     `json:"device"`
 	Log                logDTO                        `json:"log"`
@@ -299,6 +300,12 @@ type audioArchiveDTO struct {
 	StoragePath string `json:"storage_path"`
 }
 
+type quickCaptureDTO struct {
+	Enabled         bool   `json:"enabled"`
+	GPIOPin         int    `json:"gpio_pin"`
+	ScreenMemoryTTL string `json:"screen_memory_ttl"`
+}
+
 type deviceDTO struct {
 	Backend    string `json:"backend,omitempty"`
 	DeviceType string `json:"device_type"`
@@ -454,6 +461,11 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			MaxFiles:    d.AudioArchive.MaxFiles,
 			MaxSizeMB:   d.AudioArchive.MaxSizeMB,
 			StoragePath: d.AudioArchive.StoragePath,
+		},
+		QuickCapture: agent.QuickCaptureConfig{
+			Enabled:         boolPtr(d.QuickCapture.Enabled),
+			GPIOPin:         d.QuickCapture.GPIOPin,
+			ScreenMemoryTTL: d.QuickCapture.ScreenMemoryTTL,
 		},
 		VoiceNotifications: agent.VoiceNotificationsConfig{
 			Enabled:    d.VoiceNotifications.Enabled,
@@ -695,6 +707,11 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			MaxFiles:    audioArchive.MaxFilesOrDefault(),
 			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
 			StoragePath: audioArchive.StoragePathOrDefault(),
+		},
+		QuickCapture: quickCaptureDTO{
+			Enabled:         cfg.QuickCapture.EnabledOrDefault(),
+			GPIOPin:         cfg.QuickCapture.GPIOPin,
+			ScreenMemoryTTL: cfg.QuickCapture.ScreenMemoryTTLOrDefault(),
 		},
 		Device: deviceDTO{
 			Backend:    cfg.Device.BackendOrDefault(),

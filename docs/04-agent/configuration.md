@@ -22,6 +22,7 @@ under `[device]` below.
 - [`[model]`](#model)
 - [`[log]`](#log)
 - [`[audio]`](#audio)
+- [Quick Capture](#quick-capture)
 - [`[voice_notifications]`](#voice_notifications)
 - [`[hid]`](#hid)
 - [`[stt]` and `[tts]`](#stt-and-tts)
@@ -69,6 +70,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, playback_backend
+- `quick_capture`: enabled, GPIO trigger pin, Screen Memory retention period
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
 - `log`: LLM HTTP log retention
 - `device`: device_type
@@ -208,6 +210,14 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
 | `input_mode`                | `text` / `stt`              | Input mode                                                                                                                                                                                                |
+
+### Quick Capture
+
+| Field                           | Default                                                     | Description                                                                                                                                                                            |
+| ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `quick_capture.enabled`         | `true`                                                       | Enables GPIO-triggered Screen Memory capture; legacy GPIO32/GPIO33 wakeup remains independent                                                                                           |
+| `quick_capture.gpio_pin`        | `0`                                                         | Falling-edge GPIO for Quick Capture; supported values are `0` (disabled) and GPIO3 (physical pin 38), while GPIO32/GPIO33 remain reserved for legacy wakeup                          |
+| `quick_capture.screen_memory_ttl` | `90d`                                                    | Retention period for captured Screen Memory entries, or `forever`                                                                                                                       |
 
 ### Voice & VAD
 
