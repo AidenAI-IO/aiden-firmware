@@ -229,7 +229,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"stt\":{\"provider\":\"openai-whisper\",\"api_key\":\"\",\"model\":\"whisper-1\",\"base_url\":\"\","
         "\"app_id\":\"\",\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"
         "\"audio\":{\"socket\":\"/run/audio_service/audio_service.sock\",\"sample_rate\":16000,"
-        "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"},"
+        "\"channels\":1,\"bit_width\":16,\"backend\":\"audio_service\"},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
         "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
@@ -2730,7 +2730,7 @@ TEST_CASE("config_web: stt live test proxies start and stop to agent") {
         "\"sample_rate\":16000,"
         "\"channels\":1,"
         "\"bit_width\":16,"
-        "\"playback_backend\":\"audio_service\""
+        "\"backend\":\"audio_service\""
         "}}";
 
     HttpResponse start_resp = http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
@@ -2902,7 +2902,7 @@ TEST_CASE("config_web: stt live test leaves provider resolution to the running a
     const std::string start_body =
         "{\"stt_values\":{\"provider\":\"env-whisper\",\"language\":\"zh\"},"
         "\"audio_values\":{\"socket\":\"/tmp/live-audio.sock\",\"sample_rate\":16000,"
-        "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"}}";
+        "\"channels\":1,\"bit_width\":16,\"backend\":\"audio_service\"}}";
     HttpResponse start_resp =
         http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
     REQUIRE(start_resp.status == 200);
@@ -2955,7 +2955,7 @@ TEST_CASE("config_web: stt live test rejects malformed provider fields before fl
     const std::string start_body =
         "{\"stt_values\":{\"provider\":\"env-whisper\",\"api_key\":false},"
         "\"audio_values\":{\"socket\":\"/tmp/live-audio.sock\",\"sample_rate\":16000,"
-        "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"}}";
+        "\"channels\":1,\"bit_width\":16,\"backend\":\"audio_service\"}}";
     HttpResponse start_resp =
         http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
 
@@ -2974,7 +2974,7 @@ TEST_CASE("config_web: stt live test does not load provider config in config web
     const std::string start_body =
         "{\"stt_values\":{\"provider\":\"env-whisper\",\"language\":\"en\"},"
         "\"audio_values\":{\"socket\":\"/tmp/live-audio.sock\",\"sample_rate\":16000,"
-        "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"}}";
+        "\"channels\":1,\"bit_width\":16,\"backend\":\"audio_service\"}}";
     HttpResponse start_resp =
         http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
 
@@ -2997,7 +2997,7 @@ TEST_CASE("config_web: stt live test keeps bare providers independent of config 
         "\"model\":\"whisper-1\",\"base_url\":\"https://stt.example.test/v1\","
         "\"language\":\"en\"},"
         "\"audio_values\":{\"socket\":\"/tmp/live-audio.sock\",\"sample_rate\":16000,"
-        "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"}}";
+        "\"channels\":1,\"bit_width\":16,\"backend\":\"audio_service\"}}";
     HttpResponse start_resp =
         http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
 

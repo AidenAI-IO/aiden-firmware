@@ -50,7 +50,7 @@ model = "gpt-5.5"
 
 [audio]
 # socket = "/run/audio_service/audio_service.sock"
-# playback_backend = "auto"
+# backend = "auto"
 
 [hid]
 # keyboard_device = "/dev/hidg0"

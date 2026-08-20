@@ -83,7 +83,7 @@ struct AudioToml {
     int sample_rate = 0;
     int channels = 0;
     int bit_width = 0;
-    std::string playback_backend;
+    std::string backend;
 };
 
 struct AudioArchiveToml {

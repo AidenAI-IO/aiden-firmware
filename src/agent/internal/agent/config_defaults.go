@@ -96,11 +96,11 @@ func DefaultConfig() Config {
 			Language: defaultSTTLanguage,
 		},
 		Audio: AudioConfig{
-			Socket:          defaultAudioSocket,
-			SampleRate:      defaultAudioSampleRate,
-			Channels:        defaultAudioChannels,
-			BitWidth:        defaultAudioBitWidth,
-			PlaybackBackend: AudioPlaybackBackendAuto,
+			Socket:     defaultAudioSocket,
+			SampleRate: defaultAudioSampleRate,
+			Channels:   defaultAudioChannels,
+			BitWidth:   defaultAudioBitWidth,
+			Backend:    AudioBackendAuto,
 		},
 		VoiceModel: VoiceModelConfig{
 			Model:             "qwen-audio-3.0-realtime-plus",

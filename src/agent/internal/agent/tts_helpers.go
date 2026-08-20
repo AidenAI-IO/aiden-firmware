@@ -162,8 +162,8 @@ func ttsPlaybackTargetFormat(cfg Config, source tts.AudioFormat) tts.AudioFormat
 }
 
 func newTTSPlaybackBackendFromConfig(cfg Config, audio *AudioServiceClient, logger *Logger) tts.AudioServiceBackend {
-	switch cfg.AudioPlaybackBackendOrDefault() {
-	case AudioPlaybackBackendLocal:
+	switch cfg.AudioBackendOrDefault() {
+	case AudioBackendLocal:
 		return newLocalAudioPlaybackBackend(logger)
 	default:
 		if audio == nil {

@@ -67,6 +67,7 @@ type Server struct {
 	sttClient               STTClient
 	ttsManager              *tts.ProviderManager // Borrowed from Runtime.
 	audioClient             *AudioServiceClient
+	recordBackend           audioRecordingBackend
 	ttsPlaybackBackend      tts.AudioServiceBackend
 	screenCaptureMu         sync.Mutex
 	screenCaptureClient     screenprovider.Provider
@@ -465,6 +466,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	// Initialize speech clients if configured.
 	cfg := runtime.config
 	s.audioClient = NewAudioServiceClient(cfg.Audio.SocketOrDefault())
+	s.recordBackend = newAudioRecordingBackendFromConfig(cfg, s.audioClient, s.logger)
 	s.ttsPlaybackBackend = newTTSPlaybackBackendFromConfig(cfg, s.audioClient, s.logger)
 
 	sttClient, err := NewSTTClientFromConfig(cfg)
@@ -1117,8 +1119,10 @@ func (s *Server) abortWebRecording() {
 	}
 
 	// Stop the audio recording session.
-	if err := s.audioClient.StopRecording(recording.sessionID); err != nil && s.logger != nil {
-		s.logger.Warn("[preempt] StopRecording failed: %v", err)
+	if backend := recordingBackendOrService(s.recordBackend, s.audioClient); backend != nil {
+		if err := backend.StopRecording(recording.sessionID); err != nil && s.logger != nil {
+			s.logger.Warn("[preempt] StopRecording failed: %v", err)
+		}
 	}
 }
 
@@ -2276,7 +2280,7 @@ func (s *Server) speakTextObservedMode(ctx context.Context, requestID, text stri
 	if ttsErr == nil || !allowFallback {
 		return false, ttsErr
 	}
-	return attemptTTSUnavailableFallback(speakCtx, s.audioClient, cfg, speechStarted, ttsErr)
+	return attemptTTSUnavailableFallback(speakCtx, s.currentTTSPlaybackBackend(), cfg, speechStarted, ttsErr)
 }
 
 func (s *Server) speakText(ctx context.Context, text string, timeoutAfterLock time.Duration) error {
@@ -2309,7 +2313,7 @@ func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {
 		return
 	}
 	go func() {
-		if err := playPromptSound(context.Background(), s.audioClient, kind, false); err != nil && s.logger != nil {
+		if err := playPromptSound(context.Background(), s.currentTTSPlaybackBackend(), kind, false); err != nil && s.logger != nil {
 			s.logger.Error("%s prompt sound failed: %v", label, err)
 		}
 	}()
@@ -2714,11 +2718,11 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 	}
 
 	sampleRate := s.runtime.config.Audio.SampleRateOrDefault()
-	result, err := s.audioClient.StartRecording(AudioFormat{
+	result, err := startRecordingWithRetry(recordingBackendOrService(s.recordBackend, s.audioClient), AudioFormat{
 		SampleRate: uint32(sampleRate),
 		Channels:   1,
 		BitWidth:   16,
-	})
+	}, recordingStartRetryTimeout, recordingStartRetryInterval)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Error("Web audio recording start failed: %v", err)
@@ -2727,7 +2731,7 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	go func() {
-		if err := playPromptSound(context.Background(), s.audioClient, promptSoundRecordingStart, true); err != nil && s.logger != nil {
+		if err := playPromptSound(context.Background(), s.currentTTSPlaybackBackend(), promptSoundRecordingStart, true); err != nil && s.logger != nil {
 			s.logger.Error("Recording prompt sound failed: %v", err)
 		}
 	}()
@@ -2862,7 +2866,7 @@ func (s *Server) endWebRecordingWithTimeout(recording *webAudioRecording, timeou
 		return nil
 	}
 	recording.setStopping()
-	stopErr := s.audioClient.StopRecording(recording.sessionID)
+	stopErr := recordingBackendOrService(s.recordBackend, s.audioClient).StopRecording(recording.sessionID)
 	drained := false
 	select {
 	case <-recording.done:
@@ -2895,7 +2899,7 @@ func (s *Server) readWebAudioRecording(recording *webAudioRecording) {
 	defer close(recording.done)
 
 	for {
-		chunk, err := s.audioClient.ReadRecordChunk(recording.sessionID, 1000)
+		chunk, err := recordingBackendOrService(s.recordBackend, s.audioClient).ReadRecordChunk(recording.sessionID, 1000)
 		if err != nil {
 			if !recording.isStopping() {
 				recording.setError(err)

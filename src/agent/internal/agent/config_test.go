@@ -1246,29 +1246,59 @@ func TestDeviceConfigBackendDefaultsToHDMI(t *testing.T) {
 	}
 }
 
-func TestAudioPlaybackBackendDefaultsByAgentMode(t *testing.T) {
-	if got := (Config{Model: ModelConfig{Provider: "fake"}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendAudioService {
+func TestAudioBackendDefaultsByAgentMode(t *testing.T) {
+	if got := (Config{Model: ModelConfig{Provider: "fake"}}).AudioBackendOrDefault(); got != AudioBackendAudioService {
 		t.Fatalf("default playback backend = %q, want audio_service", got)
 	}
-	if got := (Config{Model: ModelConfig{Provider: "fake"}, HID: HIDConfig{InputBackend: "adb"}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendLocal {
+	if got := (Config{Model: ModelConfig{Provider: "fake"}, HID: HIDConfig{InputBackend: "adb"}}).AudioBackendOrDefault(); got != AudioBackendLocal {
 		t.Fatalf("adb playback backend = %q, want local", got)
 	}
-	if got := (Config{Model: ModelConfig{Provider: "fake"}, EnvironmentBridge: EnvironmentBridgeConfig{Enabled: true}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendLocal {
+	if got := (Config{Model: ModelConfig{Provider: "fake"}, EnvironmentBridge: EnvironmentBridgeConfig{Enabled: true}}).AudioBackendOrDefault(); got != AudioBackendLocal {
 		t.Fatalf("environment bridge playback backend = %q, want local", got)
 	}
-	if got := (Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{PlaybackBackend: "audio-service"}, HID: HIDConfig{InputBackend: "adb"}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendAudioService {
+	if got := (Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{Backend: "audio-service"}, HID: HIDConfig{InputBackend: "adb"}}).AudioBackendOrDefault(); got != AudioBackendAudioService {
 		t.Fatalf("explicit audio-service backend = %q, want audio_service", got)
 	}
 }
 
-func TestConfigValidateRejectsUnknownAudioPlaybackBackend(t *testing.T) {
+func TestConfigValidateRejectsUnknownAudioBackend(t *testing.T) {
 	cfg := Config{
 		Model: ModelConfig{Provider: "fake"},
-		Audio: AudioConfig{PlaybackBackend: "bogus"},
+		Audio: AudioConfig{Backend: "bogus"},
 	}
 	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "invalid audio.playback_backend") {
-		t.Fatalf("Validate() error = %v, want invalid audio.playback_backend", err)
+	if err == nil || !strings.Contains(err.Error(), "invalid audio.backend") {
+		t.Fatalf("Validate() error = %v, want invalid audio.backend", err)
+	}
+}
+
+func TestLoadConfigMigratesLegacyAudioPlaybackBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte("[model]\nprovider = \"fake\"\n\n[audio]\nplayback_backend = \"local\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Audio.Backend != AudioBackendLocal {
+		t.Fatalf("Audio.Backend = %q, want local", cfg.Audio.Backend)
+	}
+}
+
+func TestLoadConfigPrefersNewAudioBackendOverLegacy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte("[model]\nprovider = \"fake\"\n\n[audio]\nbackend = \"audio_service\"\nplayback_backend = \"local\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Audio.Backend != AudioBackendAudioService {
+		t.Fatalf("Audio.Backend = %q, want audio_service", cfg.Audio.Backend)
 	}
 }
 

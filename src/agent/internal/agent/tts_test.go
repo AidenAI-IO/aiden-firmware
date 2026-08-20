@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"aiden-agent/internal/agent/tts"
 )
 
 func TestStopPlaybackIgnoringEndedIgnoresMissingSession(t *testing.T) {
@@ -55,7 +57,7 @@ func TestPlayPromptSoundRetriesBusyStartPlayback(t *testing.T) {
 	audioServer.startPlaybackStatuses = []string{"SERVICE_RECOVERING", "OK"}
 	audioServer.healthPlaybackSessions = []uint32{0}
 
-	if err := playPromptSound(context.Background(), NewAudioServiceClient(audioServer.socketPath), promptSoundRecordingStart, true); err != nil {
+	if err := playPromptSound(context.Background(), newAudioBackend(NewAudioServiceClient(audioServer.socketPath)), promptSoundRecordingStart, true); err != nil {
 		t.Fatalf("playPromptSound() error = %v", err)
 	}
 	if got := audioServer.countOp("start_playback"); got != 2 {
@@ -138,7 +140,7 @@ func TestPlayPromptSoundDoesNotRetryNonRetryableStartPlaybackFailure(t *testing.
 	audioServer := newTestAudioService(t)
 	audioServer.startPlaybackStatuses = []string{"INTERNAL_ERROR", "OK"}
 
-	if err := playPromptSound(context.Background(), NewAudioServiceClient(audioServer.socketPath), promptSoundRecordingStart, true); err == nil {
+	if err := playPromptSound(context.Background(), newAudioBackend(NewAudioServiceClient(audioServer.socketPath)), promptSoundRecordingStart, true); err == nil {
 		t.Fatal("playPromptSound() error = nil, want start playback failure")
 	}
 	if got := audioServer.countOp("start_playback"); got != 1 {
@@ -164,13 +166,91 @@ func TestPlayPromptSoundReturnsContextErrorWhenCanceledBeforeRetry(t *testing.T)
 		cancel()
 	}()
 
-	err := playPromptSound(ctx, NewAudioServiceClient(audioServer.socketPath), promptSoundRecordingStart, true)
+	err := playPromptSound(ctx, newAudioBackend(NewAudioServiceClient(audioServer.socketPath)), promptSoundRecordingStart, true)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("playPromptSound() error = %v, want context.Canceled", err)
 	}
 	if got := audioServer.countOp("start_playback"); got != 1 {
 		t.Fatalf("start_playback count = %d, want no retry after cancellation", got)
 	}
+}
+
+func TestPlayPromptSoundStopsPlaybackWhenCanceledDuringChunkWrite(t *testing.T) {
+	backend := &blockingPromptAudioBackend{
+		writeStarted: make(chan struct{}),
+		releaseWrite: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- playPromptSound(ctx, backend, promptSoundAgentSend, false)
+	}()
+
+	waitForTestSignal(t, backend.writeStarted, "first prompt chunk write")
+	cancel()
+	close(backend.releaseWrite)
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("playPromptSound() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("playPromptSound() did not return after cancellation")
+	}
+
+	backend.mu.Lock()
+	writes := backend.writes
+	finalWrites := backend.finalWrites
+	stopCalls := backend.stopCalls
+	backend.mu.Unlock()
+	if writes != 1 {
+		t.Fatalf("non-final writes = %d, want 1", writes)
+	}
+	if finalWrites != 0 {
+		t.Fatalf("final writes = %d, want 0", finalWrites)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("StopPlayback calls = %d, want 1", stopCalls)
+	}
+}
+
+type blockingPromptAudioBackend struct {
+	mu           sync.Mutex
+	writeOnce    sync.Once
+	writeStarted chan struct{}
+	releaseWrite chan struct{}
+	writes       int
+	finalWrites  int
+	stopCalls    int
+}
+
+func (b *blockingPromptAudioBackend) StartPlayback(tts.AudioFormat) (uint64, error) {
+	return 1, nil
+}
+
+func (b *blockingPromptAudioBackend) WritePlayChunk(_ uint64, _ []byte, isFinal bool) error {
+	if isFinal {
+		b.mu.Lock()
+		b.finalWrites++
+		b.mu.Unlock()
+		return nil
+	}
+	b.mu.Lock()
+	b.writes++
+	b.mu.Unlock()
+	b.writeOnce.Do(func() {
+		close(b.writeStarted)
+		<-b.releaseWrite
+	})
+	return nil
+}
+
+func (b *blockingPromptAudioBackend) StopPlayback(uint64) error {
+	b.mu.Lock()
+	b.stopCalls++
+	b.mu.Unlock()
+	return nil
 }
 
 func TestAudioDialogInterruptOutputStopsAgentSendPromptSound(t *testing.T) {

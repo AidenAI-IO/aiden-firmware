@@ -285,11 +285,19 @@ func (d sttDTO) transcriptionTestRequest(wavData []byte) agent.STTTranscriptionT
 }
 
 type audioDTO struct {
-	Socket          string `json:"socket"`
-	SampleRate      int    `json:"sample_rate"`
-	Channels        int    `json:"channels"`
-	BitWidth        int    `json:"bit_width"`
-	PlaybackBackend string `json:"playback_backend"`
+	Socket                string `json:"socket"`
+	SampleRate            int    `json:"sample_rate"`
+	Channels              int    `json:"channels"`
+	BitWidth              int    `json:"bit_width"`
+	Backend               string `json:"backend"`
+	LegacyPlaybackBackend string `json:"playback_backend,omitempty"`
+}
+
+func (d audioDTO) backend() string {
+	if strings.TrimSpace(d.Backend) != "" {
+		return d.Backend
+	}
+	return d.LegacyPlaybackBackend
 }
 
 type audioArchiveDTO struct {
@@ -445,11 +453,11 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			EngineModelType: d.STT.EngineModelType,
 		},
 		Audio: agent.AudioConfig{
-			Socket:          d.Audio.Socket,
-			SampleRate:      d.Audio.SampleRate,
-			Channels:        d.Audio.Channels,
-			BitWidth:        d.Audio.BitWidth,
-			PlaybackBackend: d.Audio.PlaybackBackend,
+			Socket:     d.Audio.Socket,
+			SampleRate: d.Audio.SampleRate,
+			Channels:   d.Audio.Channels,
+			BitWidth:   d.Audio.BitWidth,
+			Backend:    d.Audio.backend(),
 		},
 		AudioArchive: agent.AudioArchiveConfig{
 			Enabled:     d.AudioArchive.Enabled,
@@ -687,11 +695,11 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			EngineModelType: cfg.STT.EngineModelType,
 		},
 		Audio: audioDTO{
-			Socket:          cfg.Audio.SocketOrDefault(),
-			SampleRate:      cfg.Audio.SampleRateOrDefault(),
-			Channels:        cfg.Audio.ChannelsOrDefault(),
-			BitWidth:        cfg.Audio.BitWidthOrDefault(),
-			PlaybackBackend: cfg.Audio.PlaybackBackendOrDefault(),
+			Socket:     cfg.Audio.SocketOrDefault(),
+			SampleRate: cfg.Audio.SampleRateOrDefault(),
+			Channels:   cfg.Audio.ChannelsOrDefault(),
+			BitWidth:   cfg.Audio.BitWidthOrDefault(),
+			Backend:    cfg.Audio.BackendOrDefault(),
 		},
 		AudioArchive: audioArchiveDTO{
 			Enabled:     audioArchive.Enabled,
@@ -1212,8 +1220,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "audio.channels"
 	} else if strings.Contains(errMsg, "audio.bit_width") {
 		field = "audio.bit_width"
-	} else if strings.Contains(errMsg, "audio.playback_backend") {
-		field = "audio.playback_backend"
+	} else if strings.Contains(errMsg, "audio.backend") {
+		field = "audio.backend"
 	} else if strings.Contains(errMsg, "telemetry.base_url") {
 		field = "telemetry.base_url"
 	} else if strings.Contains(errMsg, "telemetry.public_key") {

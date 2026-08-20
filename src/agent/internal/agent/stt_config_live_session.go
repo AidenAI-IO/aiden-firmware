@@ -73,6 +73,7 @@ type sttConfigTestSTTValues struct {
 }
 
 type sttConfigTestAudioValues struct {
+	Backend    string `json:"backend"`
 	Socket     string `json:"socket"`
 	SampleRate int    `json:"sample_rate"`
 	Channels   int    `json:"channels"`
@@ -98,12 +99,13 @@ type sttConfigTestLiveStopResponse struct {
 }
 
 type sttConfigTestLiveSession struct {
-	provider    string
-	audioClient *AudioServiceClient
-	sttClient   STTClient
-	sessionID   uint64
-	sampleRate  int
-	done        chan struct{}
+	provider      string
+	audioClient   *AudioServiceClient
+	recordBackend audioRecordingBackend
+	sttClient     STTClient
+	sessionID     uint64
+	sampleRate    int
+	done          chan struct{}
 
 	mu         sync.Mutex
 	samples    []int16
@@ -144,6 +146,9 @@ func (v sttConfigTestAudioValues) applyTo(cfg *Config) {
 	}
 	if strings.TrimSpace(v.Socket) != "" {
 		cfg.Audio.Socket = strings.TrimSpace(v.Socket)
+	}
+	if strings.TrimSpace(v.Backend) != "" {
+		cfg.Audio.Backend = strings.TrimSpace(v.Backend)
 	}
 	if v.SampleRate > 0 {
 		cfg.Audio.SampleRate = v.SampleRate
@@ -339,10 +344,11 @@ func (s *Server) newSTTConfigTestLiveSession(req sttConfigTestLiveStartRequest) 
 	}
 
 	audioClient := NewAudioServiceClient(cfg.Audio.SocketOrDefault())
+	recordBackend := newAudioRecordingBackendFromConfig(cfg, audioClient, s.logger)
 	sampleRate := cfg.Audio.SampleRateOrDefault()
 	channels := cfg.Audio.ChannelsOrDefault()
 	bitWidth := cfg.Audio.BitWidthOrDefault()
-	result, err := startRecordingWithRetry(audioClient, AudioFormat{
+	result, err := startRecordingWithRetry(recordBackend, AudioFormat{
 		SampleRate: uint32(sampleRate),
 		Channels:   uint32(channels),
 		BitWidth:   uint32(bitWidth),
@@ -352,13 +358,14 @@ func (s *Server) newSTTConfigTestLiveSession(req sttConfigTestLiveStartRequest) 
 	}
 
 	session := &sttConfigTestLiveSession{
-		provider:    strings.TrimSpace(cfg.STT.Provider),
-		audioClient: audioClient,
-		sttClient:   sttClient,
-		sessionID:   result.SessionID,
-		sampleRate:  sampleRate,
-		done:        make(chan struct{}),
-		samples:     make([]int16, 0, sampleRate),
+		provider:      strings.TrimSpace(cfg.STT.Provider),
+		audioClient:   audioClient,
+		recordBackend: recordBackend,
+		sttClient:     sttClient,
+		sessionID:     result.SessionID,
+		sampleRate:    sampleRate,
+		done:          make(chan struct{}),
+		samples:       make([]int16, 0, sampleRate),
 	}
 
 	streamingSTT, err := beginStreamingSTTSession(context.Background(), sttClient, STTStreamConfig{
@@ -395,7 +402,7 @@ func (s *Server) endSTTConfigTestLiveSessionWithTimeout(session *sttConfigTestLi
 	}
 
 	session.setStopping()
-	stopErr := session.audioClient.StopRecording(session.sessionID)
+	stopErr := recordingBackendOrService(session.recordBackend, session.audioClient).StopRecording(session.sessionID)
 	drained := false
 	select {
 	case <-session.done:
@@ -453,7 +460,7 @@ func (s *Server) readSTTConfigTestLiveSession(session *sttConfigTestLiveSession)
 	defer close(session.done)
 
 	for {
-		chunk, err := session.audioClient.ReadRecordChunk(session.sessionID, 1000)
+		chunk, err := recordingBackendOrService(session.recordBackend, session.audioClient).ReadRecordChunk(session.sessionID, 1000)
 		if err != nil {
 			if !session.isStopping() {
 				session.setError(err)

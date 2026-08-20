@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"aiden-agent/internal/agent/tts"
 )
 
 type promptSoundKind int
@@ -24,7 +26,7 @@ const (
 	promptSoundRetryDelay   = 150 * time.Millisecond
 )
 
-func playPromptSound(ctx context.Context, audio *AudioServiceClient, kind promptSoundKind, wait bool) error {
+func playPromptSound(ctx context.Context, audio tts.AudioServiceBackend, kind promptSoundKind, wait bool) error {
 	if audio == nil {
 		return nil
 	}
@@ -41,7 +43,12 @@ func playPromptSound(ctx context.Context, audio *AudioServiceClient, kind prompt
 		Channels:   promptSoundChannels,
 		BitWidth:   promptSoundBitWidth,
 	}
-	playback, err := audio.startPlaybackOnce(format)
+	playbackFormat := tts.AudioFormat{
+		SampleRate: int(format.SampleRate),
+		Channels:   int(format.Channels),
+		BitWidth:   int(format.BitWidth),
+	}
+	playbackID, err := startPromptPlayback(audio, playbackFormat, true)
 	if err != nil && ctx.Err() == nil && retryablePromptStartPlaybackError(err) {
 		timer := time.NewTimer(promptSoundRetryDelay)
 		select {
@@ -49,7 +56,7 @@ func playPromptSound(ctx context.Context, audio *AudioServiceClient, kind prompt
 			timer.Stop()
 			return ctx.Err()
 		case <-timer.C:
-			playback, err = audio.StartPlayback(format)
+			playbackID, err = startPromptPlayback(audio, playbackFormat, false)
 		}
 	}
 	if err != nil {
@@ -62,14 +69,26 @@ func playPromptSound(ctx context.Context, audio *AudioServiceClient, kind prompt
 	stopPlayback := true
 	defer func() {
 		if stopPlayback {
-			_ = stopPlaybackIgnoringEnded(audio, playback.SessionID)
+			_ = audio.StopPlayback(playbackID)
 		}
 	}()
 
-	if err := writePlaybackPCMContext(ctx, audio, playback.SessionID, pcm); err != nil {
-		return fmt.Errorf("write prompt playback: %w", err)
+	for off := 0; off < len(pcm); off += playbackChunkBytes {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		end := off + playbackChunkBytes
+		if end > len(pcm) {
+			end = len(pcm)
+		}
+		if err := audio.WritePlayChunk(playbackID, pcm[off:end], false); err != nil {
+			return fmt.Errorf("write prompt playback: %w", err)
+		}
 	}
-	if err := audio.WritePlayChunk(playback.SessionID, nil, true); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := audio.WritePlayChunk(playbackID, nil, true); err != nil {
 		return fmt.Errorf("finish prompt playback: %w", err)
 	}
 
@@ -78,14 +97,43 @@ func playPromptSound(ctx context.Context, audio *AudioServiceClient, kind prompt
 			return err
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	stopPlayback = false
 	return nil
 }
-func waitPromptPlayback(ctx context.Context, audio *AudioServiceClient) error {
-	waitCtx, cancel := context.WithTimeout(ctx, promptSoundDrainTimeout)
-	defer cancel()
-	if err := waitForPlaybackDrain(waitCtx, audio, promptSoundDrainTimeout); err != nil {
-		return err
+
+func startPromptPlayback(audio tts.AudioServiceBackend, format tts.AudioFormat, once bool) (uint64, error) {
+	if service, ok := audio.(*audioBackend); ok && service.c != nil {
+		serviceFormat := AudioFormat{
+			SampleRate: uint32(format.SampleRate),
+			Channels:   uint32(format.Channels),
+			BitWidth:   uint32(format.BitWidth),
+		}
+		if once {
+			result, err := service.c.startPlaybackOnce(serviceFormat)
+			if err != nil {
+				return 0, err
+			}
+			return result.SessionID, nil
+		}
+		result, err := service.c.StartPlayback(serviceFormat)
+		if err != nil {
+			return 0, err
+		}
+		return result.SessionID, nil
+	}
+	return audio.StartPlayback(format)
+}
+
+func waitPromptPlayback(ctx context.Context, audio tts.AudioServiceBackend) error {
+	if service, ok := audio.(*audioBackend); ok && service.c != nil {
+		waitCtx, cancel := context.WithTimeout(ctx, promptSoundDrainTimeout)
+		defer cancel()
+		if err := waitForPlaybackDrain(waitCtx, service.c, promptSoundDrainTimeout); err != nil {
+			return err
+		}
 	}
 
 	timer := time.NewTimer(promptSoundSettleDelay)

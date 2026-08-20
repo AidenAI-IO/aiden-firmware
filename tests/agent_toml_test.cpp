@@ -93,7 +93,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.audio.sample_rate = 16000;
     cfg.audio.channels = 1;
     cfg.audio.bit_width = 16;
-    cfg.audio.playback_backend = "local";
+    cfg.audio.backend = "local";
 
     cfg.audio_archive.enabled = false;
     cfg.audio_archive.max_files = 42;
@@ -210,7 +210,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.audio.sample_rate == 16000);
     CHECK(loaded.audio.channels == 1);
     CHECK(loaded.audio.bit_width == 16);
-    CHECK(loaded.audio.playback_backend == "local");
+    CHECK(loaded.audio.backend == "local");
 
     CHECK(loaded.audio_archive.enabled == false);
     CHECK(loaded.audio_archive.max_files == 42);
@@ -244,6 +244,28 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.live_activity.enabled == true);
 
     std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml migrates legacy audio playback backend") {
+    std::string path = make_temp_path("legacy_audio_backend.toml");
+    {
+        std::ofstream out(path);
+        out << "[audio]\nplayback_backend = \"local\"\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    CHECK(cfg.audio.backend == "local");
+
+    std::string saved_path = make_temp_path("legacy_audio_backend_saved.toml");
+    REQUIRE(aiden::save_agent_toml(saved_path.c_str(), cfg, &err));
+    const std::string saved = read_text(saved_path);
+    CHECK(saved.find("backend = \"local\"") != std::string::npos);
+    CHECK(saved.find("playback_backend") == std::string::npos);
+
+    std::remove(path.c_str());
+    std::remove(saved_path.c_str());
 }
 
 TEST_CASE("agent_toml defaults missing android keyboard device for old configs") {

@@ -375,11 +375,11 @@ type STTConfig struct {
 }
 
 type AudioConfig struct {
-	Socket          string `toml:"socket,omitempty"`
-	SampleRate      int    `toml:"sample_rate,omitempty"`
-	Channels        int    `toml:"channels,omitempty"`
-	BitWidth        int    `toml:"bit_width,omitempty"`
-	PlaybackBackend string `toml:"playback_backend,omitempty"`
+	Socket     string `toml:"socket,omitempty"`
+	SampleRate int    `toml:"sample_rate,omitempty"`
+	Channels   int    `toml:"channels,omitempty"`
+	BitWidth   int    `toml:"bit_width,omitempty"`
+	Backend    string `toml:"backend,omitempty"`
 }
 
 // VoiceModelConfig configures the realtime audio model used by the wakeup
@@ -511,44 +511,44 @@ func (a AudioConfig) BitWidthOrDefault() int {
 }
 
 const (
-	AudioPlaybackBackendAuto         = "auto"
-	AudioPlaybackBackendAudioService = "audio_service"
-	AudioPlaybackBackendLocal        = "local"
+	AudioBackendAuto         = "auto"
+	AudioBackendAudioService = "audio_service"
+	AudioBackendLocal        = "local"
 )
 
-func normalizeAudioPlaybackBackend(value string) (string, error) {
+func normalizeAudioBackend(value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", AudioPlaybackBackendAuto:
-		return AudioPlaybackBackendAuto, nil
-	case AudioPlaybackBackendAudioService, "audio-service", "audioservice":
-		return AudioPlaybackBackendAudioService, nil
-	case AudioPlaybackBackendLocal, "pc", "desktop":
-		return AudioPlaybackBackendLocal, nil
+	case "", AudioBackendAuto:
+		return AudioBackendAuto, nil
+	case AudioBackendAudioService, "audio-service", "audioservice":
+		return AudioBackendAudioService, nil
+	case AudioBackendLocal, "pc", "desktop":
+		return AudioBackendLocal, nil
 	default:
-		return "", fmt.Errorf("invalid audio.playback_backend: %s (expected auto, audio_service, or local)", value)
+		return "", fmt.Errorf("invalid audio.backend: %s (expected auto, audio_service, or local)", value)
 	}
 }
 
-func (a AudioConfig) PlaybackBackendOrDefault() string {
-	backend, err := normalizeAudioPlaybackBackend(a.PlaybackBackend)
+func (a AudioConfig) BackendOrDefault() string {
+	backend, err := normalizeAudioBackend(a.Backend)
 	if err != nil {
-		return strings.ToLower(strings.TrimSpace(a.PlaybackBackend))
+		return strings.ToLower(strings.TrimSpace(a.Backend))
 	}
 	return backend
 }
 
-func (c Config) AudioPlaybackBackendOrDefault() string {
-	backend, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend)
+func (c Config) AudioBackendOrDefault() string {
+	backend, err := normalizeAudioBackend(c.Audio.Backend)
 	if err != nil {
-		return strings.ToLower(strings.TrimSpace(c.Audio.PlaybackBackend))
+		return strings.ToLower(strings.TrimSpace(c.Audio.Backend))
 	}
-	if backend != AudioPlaybackBackendAuto {
+	if backend != AudioBackendAuto {
 		return backend
 	}
 	if c.HID.InputBackendADB() || c.EnvironmentBridge.Enabled {
-		return AudioPlaybackBackendLocal
+		return AudioBackendLocal
 	}
-	return AudioPlaybackBackendAudioService
+	return AudioBackendAudioService
 }
 
 type HIDConfig struct {
@@ -1211,7 +1211,27 @@ func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 	if err := applyLegacyModelMaxTokens(path, metadata, cfg); err != nil {
 		return toml.MetaData{}, err
 	}
+	if err := applyLegacyAudioBackend(path, metadata, cfg); err != nil {
+		return toml.MetaData{}, err
+	}
 	return metadata, nil
+}
+
+func applyLegacyAudioBackend(path string, metadata toml.MetaData, cfg *Config) error {
+	if cfg == nil || metadata.IsDefined("audio", "backend") || !metadata.IsDefined("audio", "playback_backend") {
+		return nil
+	}
+
+	var raw struct {
+		Audio struct {
+			PlaybackBackend string `toml:"playback_backend"`
+		} `toml:"audio"`
+	}
+	if _, err := toml.DecodeFile(path, &raw); err != nil {
+		return fmt.Errorf("decode legacy audio backend: %w", err)
+	}
+	cfg.Audio.Backend = raw.Audio.PlaybackBackend
+	return nil
 }
 
 func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {
@@ -1312,7 +1332,7 @@ func (c Config) Validate() error {
 	if _, ok := normalizeDeviceType(c.Device.DeviceType); !ok {
 		return fmt.Errorf("invalid device.device_type: %s (expected iOS, Android, macOS, windows, or linux)", c.Device.DeviceType)
 	}
-	if _, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend); err != nil {
+	if _, err := normalizeAudioBackend(c.Audio.Backend); err != nil {
 		return err
 	}
 	if err := c.VoiceModel.Validate(); err != nil {

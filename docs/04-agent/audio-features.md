@@ -90,7 +90,7 @@ socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
 bit_width = 16
-playback_backend = "auto"
+backend = "auto"
 
 [stt_providers.openai-main]
 type = "openai-whisper"
@@ -174,8 +174,9 @@ speed = 1.0
 
 ## Dependencies
 
-- `audio_service` must be running for board-side recording/playback;
-- TTS adapter outputs PCM and writes to the configured playback backend. `audio.playback_backend = "auto"` uses `audio_service` on board and the local OS player in desktop/PC Agent mode through ADB input backend or environment bridge;
+- `audio.backend` selects both recording and playback. `auto` uses `audio_service` on the board and the local backend in desktop/PC Agent mode through the ADB input backend or environment bridge;
+- `audio_service` must be running when `audio.backend = "audio_service"`;
+- the local recording backend uses SoX `rec` or `ffmpeg` (AVFoundation) on macOS and `pw-record`, `parec`, `arecord`, SoX `rec`, or `ffmpeg` (PulseAudio) on Linux. Playback uses `afplay`/`ffplay` on macOS, `pw-play`/`paplay`/`aplay`/`ffplay` on Linux, and PowerShell on Windows. The first available command is selected. Local recording is not currently available on Windows;
 - `rknn_vad` / `cpu_vad` helper must be executable; when `vad_backend="rknn"`, `vad_model_path` points to a converted encoder RKNN; when `vad_backend="cpu"`, helper defaults to `/oem/usr/bin/cpu_vad`;
 - STT/TTS require external API keys;
 - `wakeup` mode requires GPIO 33 or GPIO 32 hardware trigger condition.

@@ -138,7 +138,7 @@ model = "gpt-5.5"
 # sample_rate = 16000
 # channels = 1
 # bit_width = 16
-# playback_backend = "auto" # "auto" uses audio_service on board, local player in PC/ADB agent mode; "audio_service" and "local" force a backend
+# backend = "auto" # Selects recording and playback together: audio_service on board, local recorder/player in PC/ADB agent mode
 
 # Audio archive configuration (optional)
 # When enabled, saves audio recordings to disk for playback in web UI.

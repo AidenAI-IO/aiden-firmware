@@ -114,8 +114,8 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 			name: "invalid audio playback backend",
 			payload: `{"model":{"provider":"openai","model":"gpt-4"},
 				"search":{"provider":"duckduckgo"},
-				"audio":{"playback_backend":"speaker"},"agent":{}}`,
-			wantInField: "audio.playback_backend",
+				"audio":{"backend":"speaker"},"agent":{}}`,
+			wantInField: "audio.backend",
 		},
 	}
 
