@@ -4679,6 +4679,23 @@ func TestHandleBenchmarkSeedMemoryRejectsMissingFields(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkSeedMemoryRejectsUnknownFields(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/benchmark/seed_memory",
+		bytes.NewBufferString(`{"id":"seed","content":"content","evidnce":["typo"]}`),
+	)
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedMemory(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unknown field") {
+		t.Fatalf("expected strict 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleBenchmarkSeedMemoryRejectsNonPost(t *testing.T) {
 	server, _ := newBenchmarkSeedMemoryServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/benchmark/seed_memory", nil)

@@ -1200,7 +1200,6 @@ func buildEpisodeMemoryPrompt(payload string, existing []DeviceMemoryItem) strin
     "type": "procedure | navigation | calibration | failure | fact",
     "action": "create | update",
     "memory_id": "required only for update",
-    "memory_revision": 1,
     "unresolved_conflict": false,
     "conflict_reason": "required only when unresolved_conflict is true",
     "situation": "when this lesson applies",

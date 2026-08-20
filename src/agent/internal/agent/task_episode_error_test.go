@@ -164,3 +164,22 @@ func TestReadEpisodeEventsRejectsNULBeforeNonzeroData(t *testing.T) {
 		t.Fatalf("readEpisodeEvents() error = %v, want invalid NUL byte", err)
 	}
 }
+
+func TestReadEpisodeEventsRejectsNULLineBeforeLaterRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	data := []byte("{\"event_id\":\"one\",\"type\":\"tool_call\"}\n\x00\x00\n{\"event_id\":\"two\",\"type\":\"tool_result\"}\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write events: %v", err)
+	}
+
+	if _, err := readEpisodeEvents(path); err == nil || !strings.Contains(err.Error(), "invalid data after truncated episode event tail") {
+		t.Fatalf("readEpisodeEvents() error = %v, want invalid trailing data", err)
+	}
+	unchanged, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read events after rejection: %v", err)
+	}
+	if string(unchanged) != string(data) {
+		t.Fatalf("events were rewritten after rejected repair: %q", unchanged)
+	}
+}

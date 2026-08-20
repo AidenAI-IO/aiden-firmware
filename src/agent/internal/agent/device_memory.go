@@ -637,11 +637,13 @@ func deviceMemoryToHit(item DeviceMemoryItem) MemoryHit {
 		Confidence:    item.Confidence,
 		Tags:          append([]string(nil), item.Tags...),
 		Entities:      append([]string(nil), item.Entities...),
+		Aliases:       append([]string(nil), item.Aliases...),
 		Source:        "device",
 		Applicability: cloneStringMap(item.Applicability),
 		EvidenceRefs:  append([]MemorySourceRef(nil), item.EvidenceRefs...),
 		Steps:         append([]ProcedureStep(nil), item.Steps...),
 		AppName:       item.AppName,
+		AppID:         item.AppID,
 		PageName:      item.PageName,
 	}
 }
@@ -662,6 +664,8 @@ func scoreMemoryHit(hit MemoryHit, terms []string) int {
 		hit.Content,
 		strings.Join(hit.Tags, " "),
 		strings.Join(hit.Entities, " "),
+		strings.Join(hit.Aliases, " "),
+		hit.AppID,
 		hit.AppName,
 		hit.PageName,
 		renderMemoryScopeForSearch(hit.Applicability),

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -170,12 +171,18 @@ func (w *episodeMemoryWorker) startBatchLocked(parent context.Context) (context.
 	return batchCtx, batchCancel
 }
 
-func (w *episodeMemoryWorker) executeBatch(ctx context.Context, cancel context.CancelFunc) (episodeMemoryBatchResult, error) {
-	result, err := w.processor.ProcessBatch(ctx, episodeMemoryBatchLimit, w.shouldStopBatch)
-	cancel()
+func (w *episodeMemoryWorker) executeBatch(ctx context.Context, cancel context.CancelFunc) (result episodeMemoryBatchResult, err error) {
+	defer w.wg.Done()
+	defer cancel()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			w.finishBatch(result, fmt.Errorf("episode memory batch panic: %v", recovered))
+			panic(recovered)
+		}
+	}()
+	result, err = w.processor.ProcessBatch(ctx, episodeMemoryBatchLimit, w.shouldStopBatch)
 	w.processor.logBatchError(err)
 	w.finishBatch(result, err)
-	w.wg.Done()
 	return result, err
 }
 

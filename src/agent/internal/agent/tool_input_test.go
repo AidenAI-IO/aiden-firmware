@@ -87,6 +87,29 @@ func TestFlexStringSlice(t *testing.T) {
 	}
 }
 
+func TestDecodeSaveMemoryRequestPreservesScalarCommas(t *testing.T) {
+	request, err := decodeSaveMemoryRequest(`{
+		"type":"fact",
+		"title":"Company",
+		"content":"Remember the exact company name.",
+		"tags":"ACME, Inc.",
+		"entities":"Research, Development",
+		"evidence":"Observed in QA, build 7"
+	}`)
+	if err != nil {
+		t.Fatalf("decodeSaveMemoryRequest() error = %v", err)
+	}
+	if !reflect.DeepEqual(request.Tags, []string{"ACME, Inc."}) {
+		t.Fatalf("Tags = %#v", request.Tags)
+	}
+	if !reflect.DeepEqual(request.Entities, []string{"Research, Development"}) {
+		t.Fatalf("Entities = %#v", request.Entities)
+	}
+	if !reflect.DeepEqual(request.Evidence, []string{"Observed in QA, build 7"}) {
+		t.Fatalf("Evidence = %#v", request.Evidence)
+	}
+}
+
 func TestFlexInt(t *testing.T) {
 	tests := []struct {
 		name  string

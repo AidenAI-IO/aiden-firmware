@@ -22,7 +22,7 @@
         },
         {
           "id": "does_not_require_upfront_retrieval",
-          "check": "The task does not depend on automatic upfront retrieval; any historical-memory lookup is selected by the model only when useful."
+          "check": "The final response answers directly from prior task experience and does not state that a memory lookup is required first."
         },
         {
           "id": "answer_is_memory_based",

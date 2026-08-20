@@ -601,6 +601,27 @@ def test_load_suite_allows_mixed_mock_and_real_environment_tasks(
     assert suite.tasks[0].mock_environment.platform == "ios"
     assert suite.tasks[1].mock_environment is None
 
+
+def test_load_suite_rejects_unknown_setup_keys(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "setup": {
+                    "type": "seed_episode",
+                    "episode": {"id": "ep-1", "user_goal": "verify a procedure"},
+                    "consolodate": True,
+                },
+            }
+        ],
+    }
+    p = tmp_path / "unknown-setup-key.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="unsupported seed_episode setup keys: consolodate"):
+        load_suite(p)
+
 def test_load_suite_rejects_invalid_expected_option_answer(tmp_path: Path):
     fixture = {
         **FIXTURE,

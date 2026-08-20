@@ -549,6 +549,8 @@ Common parameters:
 | `--suite PATH` | Required, path to the suite JSON |
 | `--agent-url URL` | Agent daemon address; default `http://localhost:8080` or `AIDEN_AGENT_URL` |
 | `--environment-url URL` | Optional, environment bridge address; used for `/api/setup`, `/api/providers/screenshot`, `/api/release` |
+| `--target-platform PLATFORM` | Target device platform (`auto`, `ios`, or `android`); validated against the environment or agent |
+| `--benchmark-token-file PATH` | File containing the benchmark control token used for protected agent endpoints |
 | `--auto-agent-setup` | Ignore `--agent-url`; auto-start isolated agent daemons concurrently per `/api/concurrent` |
 | `--daemon-image IMAGE` | Agent daemon image used by `--auto-agent-setup` |
 | `--base-config-dir DIR` | Agent config template directory used by `--auto-agent-setup` |

@@ -150,6 +150,34 @@ def test_seed_episode_setup_rejects_consolidation_without_memory():
         )
 
 
+def test_seed_episode_setup_reports_ignored_status():
+    class IgnoredClient(RecordingSetupClient):
+        def process_episode_memory(self, episode_id, timeout=90):
+            return {"episode_id": episode_id, "status": "ignored", "memory_ids": []}
+
+    with pytest.raises(ResetError, match="was ignored by the worker"):
+        per_task_setup(
+            IgnoredClient(),
+            {
+                "type": "seed_episode",
+                "episode": {"id": "ep-1", "user_goal": "verify a device procedure"},
+                "consolidate": True,
+            },
+        )
+
+
+def test_per_task_setup_rejects_unknown_keys():
+    with pytest.raises(ResetError, match="unsupported seed_episode setup keys: consolodate"):
+        per_task_setup(
+            RecordingSetupClient(),
+            {
+                "type": "seed_episode",
+                "episode": {"id": "ep-1", "user_goal": "verify a device procedure"},
+                "consolodate": True,
+            },
+        )
+
+
 def test_call_environment_setup_posts_to_api_setup(monkeypatch):
     seen = {}
 

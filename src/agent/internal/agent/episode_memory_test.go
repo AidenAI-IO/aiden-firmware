@@ -4,11 +4,158 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+type panickingEpisodeMemoryBatchProcessor struct{}
+
+func (panickingEpisodeMemoryBatchProcessor) Initialize() error { return nil }
+func (panickingEpisodeMemoryBatchProcessor) NextRunAt(context.Context) (time.Time, error) {
+	return time.Time{}, nil
+}
+func (panickingEpisodeMemoryBatchProcessor) ProcessBatch(context.Context, int, func() bool) (episodeMemoryBatchResult, error) {
+	panic("batch failed")
+}
+func (panickingEpisodeMemoryBatchProcessor) logBatchError(error) {}
+
+func TestEpisodeMemoryWorkerCleansUpPanickingBatch(t *testing.T) {
+	worker := newEpisodeMemoryWorker(panickingEpisodeMemoryBatchProcessor{})
+	worker.mu.Lock()
+	batchCtx, cancel := worker.startBatchLocked(context.Background())
+	worker.mu.Unlock()
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("executeBatch() did not propagate panic")
+			}
+		}()
+		_, _ = worker.executeBatch(batchCtx, cancel)
+	}()
+
+	if batchCtx.Err() != context.Canceled {
+		t.Fatalf("batch context error = %v, want canceled", batchCtx.Err())
+	}
+	done := make(chan struct{})
+	go func() {
+		worker.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("worker wait group leaked after panic")
+	}
+	worker.mu.Lock()
+	running := worker.running
+	worker.mu.Unlock()
+	if running {
+		t.Fatal("worker remained busy after panic")
+	}
+}
+
+func TestProcessEpisodeMemoryNowContinuesAcrossBoundedBatches(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	response := `{
+	  "episode_assessment":{"goal_result":"achieved","reason":"The app opened.","evidence_refs":["result"]},
+	  "candidates":[]
+	}`
+	responses := make([]string, episodeMemoryBatchLimit+1)
+	for index := range responses {
+		responses[index] = response
+	}
+	model := &episodeMemoryScriptedModel{responses: responses}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	for index := 0; index < episodeMemoryBatchLimit+1; index++ {
+		episodeID := fmt.Sprintf("ep_batch_%02d", index)
+		endedAt := time.Date(2026, 8, 14, 0, 0, index+1, 0, time.UTC)
+		if _, err := plane.episodes.AddEpisode(ctx, TaskEpisode{
+			ID: episodeID, Status: "active",
+			StartedAt: endedAt.Add(-time.Second).Format(time.RFC3339Nano),
+			EndedAt:   endedAt.Format(time.RFC3339Nano),
+			UserGoal:  "Open Settings",
+			Events: []TaskEpisodeEvent{
+				{EventID: "call", Type: runEventToolCall, ToolName: "open_app"},
+				{EventID: "result", Type: "tool_result", ToolName: "open_app", Observation: "Settings opened"},
+			},
+		}); err != nil {
+			t.Fatalf("AddEpisode(%s) error = %v", episodeID, err)
+		}
+	}
+	worker := newEpisodeMemoryWorker(processor)
+	plane.episodeMemory = worker
+	status, _, err := plane.ProcessEpisodeMemoryNow(ctx, fmt.Sprintf("ep_batch_%02d", episodeMemoryBatchLimit))
+	if err != nil {
+		t.Fatalf("ProcessEpisodeMemoryNow() error = %v", err)
+	}
+	if status.Status != episodeMemoryStatusDone {
+		t.Fatalf("status = %q, want done", status.Status)
+	}
+	if got := model.callCount(); got != episodeMemoryBatchLimit+1 {
+		t.Fatalf("model calls = %d, want %d", got, episodeMemoryBatchLimit+1)
+	}
+}
+
+func TestProcessEpisodeMemoryNowWaitsForBusyWorker(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	inner := &episodeMemoryScriptedModel{responses: []string{`{
+	  "episode_assessment":{"goal_result":"achieved","reason":"The app opened.","evidence_refs":["result"]},
+	  "candidates":[]
+	}`}}
+	model := &episodeMemoryBlockingModel{inner: inner, started: make(chan struct{}), release: make(chan struct{})}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	episodeID := "ep_busy_process_now"
+	if _, err := plane.episodes.AddEpisode(ctx, TaskEpisode{
+		ID: episodeID, Status: "active", StartedAt: "2026-08-14T00:00:00Z", EndedAt: "2026-08-14T00:00:01Z",
+		UserGoal: "Open Settings",
+		Events: []TaskEpisodeEvent{
+			{EventID: "call", Type: runEventToolCall, ToolName: "open_app"},
+			{EventID: "result", Type: "tool_result", ToolName: "open_app", Observation: "Settings opened"},
+		},
+	}); err != nil {
+		t.Fatalf("AddEpisode() error = %v", err)
+	}
+	worker := newEpisodeMemoryWorker(processor)
+	plane.episodeMemory = worker
+	backgroundDone := make(chan error, 1)
+	go func() {
+		_, err := worker.ProcessNow(ctx)
+		backgroundDone <- err
+	}()
+	select {
+	case <-model.started:
+	case <-time.After(time.Second):
+		t.Fatal("background batch did not start")
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(model.release)
+	}()
+	status, _, err := plane.ProcessEpisodeMemoryNow(ctx, episodeID)
+	if err != nil {
+		t.Fatalf("ProcessEpisodeMemoryNow() error = %v", err)
+	}
+	if status.Status != episodeMemoryStatusDone {
+		t.Fatalf("status = %q, want done", status.Status)
+	}
+	if err := <-backgroundDone; err != nil {
+		t.Fatalf("background ProcessNow() error = %v", err)
+	}
+}
 
 func TestEpisodeMemoryProcessorPrefiltersNoiseAndProcessesSuccessfulDeviceEpisode(t *testing.T) {
 	ctx := context.Background()
@@ -490,6 +637,9 @@ func TestEpisodeMemoryModelInputUsesDirectEvidenceWithoutVerifierState(t *testin
 	}
 	if !strings.Contains(prompt, "For action=create, omit memory_id and memory_revision.") {
 		t.Fatal("Episode Memory model input does not distinguish create fields from update fields")
+	}
+	if strings.Contains(prompt, `"memory_revision": 1`) {
+		t.Fatal("Episode Memory create schema still presents memory_revision as a required field")
 	}
 	if !strings.Contains(prompt, "must emit at least one candidate") {
 		t.Fatal("Episode Memory model input does not require retention of directly verified reusable lessons")

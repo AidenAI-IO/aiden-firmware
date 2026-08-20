@@ -5,6 +5,7 @@ import urllib.request
 from typing import Any
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
 from runner.environment_endpoint import EnvironmentEndpoint
+from runner.suite import SETUP_KEYS
 
 
 class ResetError(RuntimeError):
@@ -127,6 +128,12 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_
     if setup is None:
         return
     setup_type = setup.get("type")
+    allowed_keys = SETUP_KEYS.get(setup_type)
+    if allowed_keys is None:
+        raise ResetError(f"unsupported setup form: {setup!r}")
+    unknown_keys = sorted(set(setup) - allowed_keys)
+    if unknown_keys:
+        raise ResetError(f"unsupported {setup_type} setup keys: {', '.join(unknown_keys)}")
     if setup_type == "agent_prompt":
         _per_task_setup_agent_prompt(client, setup, prompt_prefix=prompt_prefix)
         return
@@ -226,10 +233,14 @@ def _per_task_setup_seed_episode(client: AgentClient, setup: dict[str, Any]) -> 
     except AgentRequestError as e:
         raise ResetError(f"episode memory consolidation failed for {episode_id!r}: {e}") from e
     status = str(result.get("status") or "").strip().lower()
-    if status not in {"done", "ignored"}:
+    if status == "ignored":
+        raise ResetError(
+            f"episode memory consolidation for {episode_id!r} was ignored by the worker"
+        )
+    if status != "done":
         raise ResetError(
             f"episode memory consolidation for {episode_id!r} did not reach a terminal status: {status or 'missing'}"
         )
     memory_ids = result.get("memory_ids")
-    if status != "done" or not isinstance(memory_ids, list) or not memory_ids:
+    if not isinstance(memory_ids, list) or not memory_ids:
         raise ResetError(f"episode memory consolidation for {episode_id!r} produced no device memory")

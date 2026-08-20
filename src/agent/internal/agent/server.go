@@ -2495,14 +2495,15 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+	var req benchmarkSeedMemoryRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	var req benchmarkSeedMemoryRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		http.Error(w, "decode body: expected exactly one JSON object", http.StatusBadRequest)
 		return
 	}
 	if strings.TrimSpace(req.ID) == "" {
@@ -2534,7 +2535,10 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 	if len(evidence) == 0 {
 		evidence = []string{req.Content}
 	}
-	var id string
+	var (
+		id  string
+		err error
+	)
 	if storeName == "device" {
 		if plane.device == nil {
 			http.Error(w, "device memory not configured", http.StatusServiceUnavailable)

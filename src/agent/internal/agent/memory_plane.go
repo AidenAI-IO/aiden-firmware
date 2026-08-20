@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -76,6 +77,7 @@ type MemoryHit struct {
 	Confidence    float64           `json:"confidence,omitempty"`
 	Tags          []string          `json:"tags,omitempty"`
 	Entities      []string          `json:"entities,omitempty"`
+	Aliases       []string          `json:"-"`
 	Source        string            `json:"source,omitempty"`
 	FilePath      string            `json:"file_path,omitempty"`
 	Applicability map[string]string `json:"applicability,omitempty"`
@@ -83,8 +85,14 @@ type MemoryHit struct {
 	// 新增 procedure/导航相关结构化字段，用于 Planner 渲染
 	Steps    []ProcedureStep `json:"steps,omitempty"`
 	AppName  string          `json:"app_name,omitempty"`
+	AppID    string          `json:"-"`
 	PageName string          `json:"page_name,omitempty"`
 }
+
+const (
+	episodeMemoryProcessNowMaxAttempts = 2048
+	episodeMemoryProcessNowBusyDelay   = 50 * time.Millisecond
+)
 
 const defaultMemoryDeviceID = "default"
 
@@ -197,19 +205,48 @@ func (p *FilesystemMemoryPlane) ProcessEpisodeMemoryNow(ctx context.Context, epi
 	if worker == nil {
 		return episodeMemoryEpisodeStatus{}, nil, fmt.Errorf("episode memory worker is not configured")
 	}
-	if _, err := worker.ProcessNow(ctx); err != nil {
-		return episodeMemoryEpisodeStatus{}, nil, err
-	}
 	processor, ok := worker.processor.(*episodeMemoryProcessor)
 	if !ok || processor == nil || processor.state == nil {
 		return episodeMemoryEpisodeStatus{}, nil, fmt.Errorf("episode memory processor is not configured")
 	}
-	state, err := processor.state.Snapshot()
-	if err != nil {
-		return episodeMemoryEpisodeStatus{}, nil, err
+	stateKey := episodeMemoryStateKey(episodeID, episodeMemoryExtractorVersion)
+	var status episodeMemoryEpisodeStatus
+	found := false
+	for attempt := 0; attempt < episodeMemoryProcessNowMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return episodeMemoryEpisodeStatus{}, nil, err
+		}
+		state, err := processor.state.Snapshot()
+		if err != nil {
+			return episodeMemoryEpisodeStatus{}, nil, err
+		}
+		if status, found = state.Episodes[stateKey]; found && episodeMemoryProcessNowTerminal(status) {
+			break
+		}
+		result, err := worker.ProcessNow(ctx)
+		if errors.Is(err, errEpisodeMemoryWorkerBusy) {
+			select {
+			case <-ctx.Done():
+				return episodeMemoryEpisodeStatus{}, nil, ctx.Err()
+			case <-time.After(episodeMemoryProcessNowBusyDelay):
+			}
+			continue
+		}
+		if err != nil {
+			return episodeMemoryEpisodeStatus{}, nil, err
+		}
+		state, err = processor.state.Snapshot()
+		if err != nil {
+			return episodeMemoryEpisodeStatus{}, nil, err
+		}
+		if status, found = state.Episodes[stateKey]; found && episodeMemoryProcessNowTerminal(status) {
+			break
+		}
+		if !result.HasPending {
+			break
+		}
 	}
-	status, found := state.Episodes[episodeMemoryStateKey(episodeID, episodeMemoryExtractorVersion)]
-	if !found {
+	if !found || !episodeMemoryProcessNowTerminal(status) {
 		return episodeMemoryEpisodeStatus{}, nil, fmt.Errorf("episode %q was not processed", episodeID)
 	}
 	items, err := p.device.readAll()
@@ -223,6 +260,10 @@ func (p *FilesystemMemoryPlane) ProcessEpisodeMemoryNow(ctx context.Context, epi
 		}
 	}
 	return status, memoryIDs, nil
+}
+
+func episodeMemoryProcessNowTerminal(status episodeMemoryEpisodeStatus) bool {
+	return status.Status == episodeMemoryStatusDone || status.Status == episodeMemoryStatusIgnored
 }
 
 func (p *FilesystemMemoryPlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {

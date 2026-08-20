@@ -14,7 +14,7 @@
         "tools": {}
       },
       "description_for_judge": "The agent should select the title-save sequence recorded by the legacy direct Episode-to-Memory procedure fixture.",
-      "prompt": "A note title has already been edited in QA Notes build 7. Based on this device's previously verified behavior, which sequence makes the changed title persist? Do not operate the phone; answer directly. End with exactly one line in the form <final_answer>(a)</final_answer>.\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
+      "prompt": "A note title has already been edited in QA Notes build 7. Based on this device's previously verified behavior, which sequence makes the changed title persist? Do not operate the phone; answer directly. End with exactly one line in the form <final_answer>(x)</final_answer>.\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
       "expected_answer": "(b)",
       "answer_format": "option_letter",
       "repeats": 10,
@@ -59,9 +59,6 @@
               "Preview",
               "Edit",
               "Save"
-            ],
-            "evidence": [
-              "Direct Save reverted after reopening; Preview, then Edit, then Save persisted the changed title."
             ]
           }
         ]
@@ -99,8 +96,7 @@
             "title": "Verified procedure",
             "content": "Goal: reach the active Aiden USB wired interface's IPv4 details without changing settings. Verified path: open Settings, use the dedicated Ethernet entry rather than Wi-Fi, open Aiden HID+ECM, and stop on the interface detail page where the IPv4 Address section shows IP Address, Subnet Mask, and Router. Verify the final visible page with a screenshot. Do not modify, renew, or save network settings.",
             "tags": ["ios", "settings", "ethernet", "ipv4", "aiden-hid-ecm", "usb-network", "navigation"],
-            "entities": ["iPhone", "Settings", "Ethernet", "Aiden HID+ECM", "IPv4 Address", "IP Address", "Subnet Mask", "Router"],
-            "evidence": ["The completed episode verified Settings > Ethernet > Aiden HID+ECM and the final IPv4 field labels without changing configuration."]
+            "entities": ["iPhone", "Settings", "Ethernet", "Aiden HID+ECM", "IPv4 Address", "IP Address", "Subnet Mask", "Router"]
           }
         ]
       }

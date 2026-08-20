@@ -81,6 +81,49 @@ func (f *flexStringSlice) UnmarshalJSON(data []byte) error {
 	}
 }
 
+// flexLiteralStringSlice accepts the same recoverable array shapes as
+// flexStringSlice, but preserves a bare scalar exactly. Save operations use it
+// so persisted values such as "ACME, Inc." are not silently split.
+type flexLiteralStringSlice []string
+
+func (f *flexLiteralStringSlice) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*f = nil
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var arr []string
+		if err := json.Unmarshal(trimmed, &arr); err != nil {
+			return err
+		}
+		*f = arr
+		return nil
+	}
+	if trimmed[0] != '"' {
+		return fmt.Errorf("cannot decode %s into string slice", trimmed)
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err != nil {
+		return err
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		*f = nil
+		return nil
+	}
+	if s[0] == '[' {
+		var arr []string
+		if err := json.Unmarshal([]byte(s), &arr); err != nil {
+			return fmt.Errorf("decode string-wrapped array %q: %w", s, err)
+		}
+		*f = arr
+		return nil
+	}
+	*f = []string{s}
+	return nil
+}
+
 // splitDelimitedArgValues splits a bare string argument on ASCII and fullwidth
 // commas, so "procedure, fact" and "procedure，fact" both yield two values. A
 // string with no delimiter returns a single-element slice unchanged.
@@ -232,13 +275,13 @@ type SaveMemoryRequest struct {
 // decodeSaveMemoryRequest tolerantly decodes a save_memory argument.
 func decodeSaveMemoryRequest(input string) (SaveMemoryRequest, error) {
 	var flex struct {
-		Type     string          `json:"type"`
-		Title    string          `json:"title"`
-		Content  string          `json:"content"`
-		Tags     flexStringSlice `json:"tags"`
-		Entities flexStringSlice `json:"entities"`
-		Evidence flexStringSlice `json:"evidence"`
-		Priority flexInt         `json:"priority"`
+		Type     string                 `json:"type"`
+		Title    string                 `json:"title"`
+		Content  string                 `json:"content"`
+		Tags     flexLiteralStringSlice `json:"tags"`
+		Entities flexLiteralStringSlice `json:"entities"`
+		Evidence flexLiteralStringSlice `json:"evidence"`
+		Priority flexInt                `json:"priority"`
 	}
 	if err := json.Unmarshal([]byte(input), &flex); err != nil {
 		return SaveMemoryRequest{}, err
