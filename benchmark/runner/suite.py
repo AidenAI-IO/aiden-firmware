@@ -14,8 +14,8 @@ from runner.platform import (
 
 VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory", "perception", "device_operation"}
 SETUP_KEYS = {
-    "agent_prompt": {"type", "prompt", "timeout_sec", "clear_history_after"},
-    "seed_memory": {"type", "memories", "timeout_sec"},
+    "agent_prompt": {"type", "prompt", "timeout_sec", "clear_history_after", "expected_response"},
+    "seed_memory": {"type", "memories", "timeout_sec", "clear_history_after"},
     "seed_episode": {"type", "episode", "consolidate", "timeout_sec"},
 }
 

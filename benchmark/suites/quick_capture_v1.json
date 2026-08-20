@@ -1,0 +1,495 @@
+{
+  "name": "quick_capture_v1",
+  "suite_category": "Memory & Cognition",
+  "description": "Deterministic upper-bound benchmark for the Quick Capture Screen Memory read path. It seeds screen_snapshot records and verifies exact-value recall, routing, recency, duplicate preservation, multi-snapshot reasoning, large-history retrieval, missing-match handling, historical evidence, and deletion. The physical GPIO trigger, frame capture, vision extraction, TTL, and provenance remain live-device or Go integration-test concerns.",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "recall_exact_key_text",
+      "category": "memory",
+      "description_for_judge": "The agent must recall the exact tracking number from a stored screen_snapshot. The answer must preserve every letter, digit, and hyphen; near-match options are intentionally present.",
+      "setup": {
+        "type": "seed_memory",
+        "clear_history_after": true,
+        "memories": [
+          {
+            "id": "mem_1700000000000000100_qc_shipping",
+            "type": "screen_snapshot",
+            "title": "微信物流详情",
+            "content": "微信物流详情页显示顺丰包裹。\n\n- SF-93A7-0019-ZX\n- 预计 8 月 21 日 18:30 前送达\n- 收件地址：杭州市余杭区文一西路 998 号",
+            "tags": ["快递", "物流", "包裹"],
+            "entities": ["微信", "顺丰"],
+            "evidence": ["SF-93A7-0019-ZX", "预计 8 月 21 日 18:30 前送达"],
+            "priority": 80
+          }
+        ]
+      },
+      "prompt": "刚刚那个顺丰单号发我一下，别漏字符。",
+      "expected_recalled_memory_ids": ["mem_1700000000000000100_qc_shipping"],
+      "rubric": [
+        {"id": "uses_screen_snapshot", "check": "The trace recalls the seeded screen_snapshot rather than relying on conversation history."},
+        {"id": "preserves_exact_tracking_number", "check": "The final answer contains the exact string SF-93A7-0019-ZX, including all hyphens, and does not substitute a near match."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 6,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
+        "required_tool_calls": [
+          {"tool": "recall_memory"}
+        ]
+      }
+    },
+    {
+      "id": "recall_dense_multilingual_values",
+      "category": "memory",
+      "description_for_judge": "The agent must preserve a dense set of multilingual and punctuation-sensitive values from one screen_snapshot: amount, timestamp, account token, and Chinese address.",
+      "setup": {
+        "type": "seed_memory",
+        "clear_history_after": true,
+        "memories": [
+          {
+            "id": "mem_1700000000000000200_qc_dense_payment",
+            "type": "screen_snapshot",
+            "title": "支付宝企业付款确认页",
+            "content": "支付宝企业付款确认页。\n\n- 金额：￥12,480.60\n- 时间：2026/08/19 09:07\n- 账户：AIDEN-cn_HZ.7F-02\n- 地址：荔信三街 18 号 B 座 1206",
+            "tags": ["付款", "金额", "账户", "地址"],
+            "entities": ["支付宝", "杭州智联科技"],
+            "evidence": ["￥12,480.60", "2026/08/19 09:07", "AIDEN-cn_HZ.7F-02", "荔信三街 18 号 B 座 1206"],
+            "priority": 85
+          }
+        ]
+      },
+      "prompt": "报销单要填，刚才付款页上的金额、时间、账户和地址都给我原样抄一下。",
+      "expected_recalled_memory_ids": ["mem_1700000000000000200_qc_dense_payment"],
+      "rubric": [
+        {"id": "recalls_dense_snapshot", "check": "The trace recalls the dense payment screen_snapshot."},
+        {"id": "keeps_all_exact_values", "check": "The final answer contains all four exact values: ￥12,480.60, 2026/08/19 09:07, AIDEN-cn_HZ.7F-02, and 荔信三街 18 号 B 座 1206. It must preserve punctuation and case."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 6,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
+        "required_tool_calls": [
+          {"tool": "recall_memory"}
+        ]
+      }
+    },
+    {
+      "id": "prefer_latest_snapshot",
+      "category": "memory",
+      "description_for_judge": "Two snapshots have the same topic and entity but different values. For 'the one I just saved', the newest screen_snapshot must win rather than the older frequently matching record.",
+      "setup": {
+        "type": "seed_memory",
+        "clear_history_after": true,
+        "memories": [
+          {
+            "id": "mem_1700000000000000300_qc_tesla_old",
+            "type": "screen_snapshot",
+            "title": "Tesla 车辆状态",
+            "content": "Tesla 车辆状态页。\n\n- 剩余续航：245 km\n- 位置：荔信三街",
+            "tags": ["车辆", "续航", "位置"],
+            "entities": ["Tesla"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000301_qc_tesla_new",
+            "type": "screen_snapshot",
+            "title": "Tesla 车辆状态",
+            "content": "Tesla 车辆状态页。\n\n- 剩余续航：231 km\n- 位置：荔信三街",
+            "tags": ["车辆", "续航", "位置"],
+            "entities": ["Tesla"],
+            "priority": 80
+          }
+        ]
+      },
+      "prompt": "车还剩多少续航？按我最后记下来的那个算。",
+      "expected_recalled_memory_ids": ["mem_1700000000000000301_qc_tesla_new"],
+      "rubric": [
+        {"id": "recalls_latest_snapshot", "check": "The recalled results include the newer Tesla snapshot."},
+        {"id": "uses_latest_value", "check": "The final answer says 231 km and does not answer with the older 245 km value."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 6,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
+        "required_tool_calls": [
+          {"tool": "recall_memory"}
+        ]
+      }
+    },
+    {
+      "id": "preserve_duplicate_snapshots",
+      "category": "memory",
+      "description_for_judge": "Two deliberate captures of the same screen must remain two independent screen_snapshot records. The agent must retrieve both IDs rather than treating the newer one as a replacement.",
+      "setup": {
+        "type": "seed_memory",
+        "clear_history_after": true,
+        "memories": [
+          {
+            "id": "mem_1700000000000000400_qc_duplicate_a",
+            "type": "screen_snapshot",
+            "title": "登机牌二维码页面",
+            "content": "登机牌二维码页面。\n\n- 航班：CA1735\n- 座位：18A\n- 登机口：B12",
+            "tags": ["航班", "登机牌"],
+            "entities": ["中国国际航空", "CA1735"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000401_qc_duplicate_b",
+            "type": "screen_snapshot",
+            "title": "登机牌二维码页面",
+            "content": "登机牌二维码页面。\n\n- 航班：CA1735\n- 座位：18A\n- 登机口：B12",
+            "tags": ["航班", "登机牌"],
+            "entities": ["中国国际航空", "CA1735"],
+            "priority": 80
+          }
+        ]
+      },
+      "prompt": "CA1735 那张登机牌我好像手滑记了两遍，你看下两份是不是都还在。顺便把座位和登机口告诉我。",
+      "expected_recalled_memory_ids": [
+        "mem_1700000000000000400_qc_duplicate_a",
+        "mem_1700000000000000401_qc_duplicate_b"
+      ],
+      "rubric": [
+        {"id": "retrieves_both_duplicates", "check": "The recall evidence contains both independently seeded snapshot IDs."},
+        {"id": "does_not_claim_supersession", "check": "The final answer says two matching records remain, does not claim one replaced the other, and reports seat 18A and gate B12."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 6,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
+        "required_tool_calls": [
+          {"tool": "recall_memory"}
+        ]
+      }
+    },
+    {
+      "id": "route_screen_memory_away_from_session",
+      "category": "memory",
+      "description_for_judge": "A screen_snapshot and a normal long-term fact contain competing approval codes. Recall evidence must include the expected screen record, and the answer must use that record rather than session history or the competing fact. The exact recall query shape is not prescribed.",
+      "setup": {
+        "type": "seed_memory",
+        "clear_history_after": true,
+        "memories": [
+          {
+            "id": "mem_1700000000000000500_qc_approval_screen",
+            "type": "screen_snapshot",
+            "title": "OA 审批结果页",
+            "content": "OA 审批结果页显示审批已通过。\n\n- 审批码：OA-SC-8821",
+            "tags": ["OA", "审批", "审批码"],
+            "entities": ["飞书", "OA"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000501_qc_approval_fact",
+            "type": "fact",
+            "title": "旧审批码备注",
+            "content": "普通长期事实里记录的旧审批码是 OA-SC-1140。",
+            "tags": ["OA", "审批", "审批码"],
+            "entities": ["飞书", "OA"],
+            "priority": 90
+          }
+        ]
+      },
+      "prompt": "刚才 OA 通过那个码是多少来着？",
+      "expected_recalled_memory_ids": ["mem_1700000000000000500_qc_approval_screen"],
+      "rubric": [
+        {"id": "routes_to_screen_snapshot", "check": "The recall_memory evidence includes mem_1700000000000000500_qc_approval_screen and the answer is grounded in that screen record."},
+        {"id": "ignores_competing_fact", "check": "The final answer gives OA-SC-8821 from the captured screen record rather than the competing normal fact OA-SC-1140."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 6,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
+        "required_tool_calls": [
+          {"tool": "recall_memory"}
+        ]
+      }
+    },
+    {
+      "id": "compare_multiple_snapshots",
+      "category": "memory",
+      "description_for_judge": "The agent must retrieve and jointly reason over three snapshots of the same entity, preserve chronological order, and calculate the total range decrease.",
+      "setup": {
+        "type": "seed_memory",
+        "clear_history_after": true,
+        "memories": [
+          {
+            "id": "mem_1700000000000000600_qc_tesla_morning",
+            "type": "screen_snapshot",
+            "title": "Tesla 08:00 状态",
+            "content": "08:00 Tesla 车辆状态。\n\n- 剩余续航：310 km",
+            "tags": ["Tesla", "续航", "08:00"],
+            "entities": ["Tesla"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000601_qc_tesla_noon",
+            "type": "screen_snapshot",
+            "title": "Tesla 12:30 状态",
+            "content": "12:30 Tesla 车辆状态。\n\n- 剩余续航：284 km",
+            "tags": ["Tesla", "续航", "12:30"],
+            "entities": ["Tesla"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000602_qc_tesla_evening",
+            "type": "screen_snapshot",
+            "title": "Tesla 19:10 状态",
+            "content": "19:10 Tesla 车辆状态。\n\n- 剩余续航：259 km",
+            "tags": ["Tesla", "续航", "19:10"],
+            "entities": ["Tesla"],
+            "priority": 80
+          }
+        ]
+      },
+      "prompt": "我今天早中晚看了三次车，续航怎么变的？从第一次到最后一次一共掉了多少公里？",
+      "expected_recalled_memory_ids": [
+        "mem_1700000000000000600_qc_tesla_morning",
+        "mem_1700000000000000601_qc_tesla_noon",
+        "mem_1700000000000000602_qc_tesla_evening"
+      ],
+      "rubric": [
+        {"id": "recalls_all_three_snapshots", "check": "The recall evidence contains the morning, noon, and evening snapshots."},
+        {"id": "orders_and_computes", "check": "The final answer gives 08:00 310 km, 12:30 284 km, and 19:10 259 km in chronological order, and computes a total decrease of 51 km."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
+        "required_tool_calls": [
+          {"tool": "recall_memory"}
+        ]
+      }
+    },
+    {
+      "id": "find_old_snapshot_in_large_history",
+      "category": "memory",
+      "description_for_judge": "The target is the oldest of eight screen snapshots. Strong topical matching must surface it despite seven newer distractors and the default recency preference.",
+      "setup": {
+        "type": "seed_memory",
+        "clear_history_after": true,
+        "memories": [
+          {
+            "id": "mem_1700000000000000700_qc_oldest_policy",
+            "type": "screen_snapshot",
+            "title": "太平洋保险电子保单",
+            "content": "太平洋保险电子保单详情。\n\n- 保单号：ARCHIVE-OLDEST-7Q4M\n- 被保险人：林澈",
+            "tags": ["保险", "电子保单", "保单号"],
+            "entities": ["太平洋保险", "林澈"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000701_qc_weather",
+            "type": "screen_snapshot",
+            "title": "杭州天气",
+            "content": "杭州天气：多云，31°C。",
+            "tags": ["天气", "杭州"],
+            "entities": ["杭州"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000702_qc_calendar",
+            "type": "screen_snapshot",
+            "title": "日历会议",
+            "content": "日历显示 14:00 产品评审会，会议室 C302。",
+            "tags": ["日历", "会议"],
+            "entities": ["产品评审会"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000703_qc_music",
+            "type": "screen_snapshot",
+            "title": "音乐播放页",
+            "content": "正在播放 Northbound，艺术家 Seek Lab。",
+            "tags": ["音乐", "播放"],
+            "entities": ["Northbound", "Seek Lab"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000704_qc_map",
+            "type": "screen_snapshot",
+            "title": "地图导航",
+            "content": "地图导航到杭州东站，剩余 12.4 km。",
+            "tags": ["地图", "导航"],
+            "entities": ["杭州东站"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000705_qc_stock",
+            "type": "screen_snapshot",
+            "title": "股票自选",
+            "content": "自选列表显示 AAPL 231.42，TSLA 336.18。",
+            "tags": ["股票", "行情"],
+            "entities": ["AAPL", "TSLA"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000706_qc_fitness",
+            "type": "screen_snapshot",
+            "title": "健身记录",
+            "content": "今日步数 8,421，活动能量 516 千卡。",
+            "tags": ["健身", "步数"],
+            "entities": ["健康"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000000707_qc_mail",
+            "type": "screen_snapshot",
+            "title": "邮件收件箱",
+            "content": "邮件主题：August hardware review，发件人：Mina。",
+            "tags": ["邮件", "收件箱"],
+            "entities": ["Mina"],
+            "priority": 80
+          }
+        ]
+      },
+      "prompt": "之前那张太保的电子保单，保单号给我一下。",
+      "expected_recalled_memory_ids": ["mem_1700000000000000700_qc_oldest_policy"],
+      "rubric": [
+        {"id": "finds_oldest_target", "check": "The target policy snapshot is retrieved despite seven newer screen snapshots."},
+        {"id": "returns_exact_policy_number", "check": "The final answer contains the exact policy number ARCHIVE-OLDEST-7Q4M and does not substitute a near match."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
+        "required_tool_calls": [
+          {"tool": "recall_memory"}
+        ]
+      }
+    },
+    {
+      "id": "do_not_hallucinate_missing_snapshot",
+      "category": "memory",
+      "description_for_judge": "No screen_snapshot contains the unique verification token QC-NOT-STORED-7X9. The agent must query the correct memory type and report that no matching saved screen evidence is available instead of inventing the token, even when unrelated snapshots already exist.",
+      "setup": {
+        "type": "seed_memory",
+        "clear_history_after": true,
+        "memories": [
+          {
+            "id": "mem_1700000000000000800_qc_unrelated_fact",
+            "type": "fact",
+            "title": "办公城市",
+            "content": "用户的办公城市是杭州。",
+            "tags": ["办公", "城市"],
+            "entities": ["杭州"],
+            "priority": 80
+          }
+        ]
+      },
+      "prompt": "我刚才记的 QC-NOT-STORED-7X9 那个验证码发我一下。",
+      "rubric": [
+        {"id": "checks_screen_snapshot_type", "check": "The agent queries recall_memory with type screen_snapshot for the requested token."},
+        {"id": "does_not_hallucinate_code", "check": "The final answer says no saved screen evidence matching QC-NOT-STORED-7X9 was found and does not claim the token was retrieved."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 6,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
+        "required_tool_calls": [
+          {"tool": "recall_memory"}
+        ]
+      }
+    },
+    {
+      "id": "treat_snapshot_as_historical_evidence",
+      "category": "memory",
+      "description_for_judge": "A saved screen is a historical observation, not live state. The agent must use the stored order status without claiming it proves the order's current status.",
+      "setup": {
+        "type": "seed_memory",
+        "clear_history_after": true,
+        "memories": [
+          {
+            "id": "mem_1700000000000000900_qc_order_history",
+            "type": "screen_snapshot",
+            "title": "订单 ORD-20260819 状态",
+            "content": "2026/08/19 10:20 保存的订单详情。\n\n- 订单号：ORD-20260819\n- 当时状态：已发货\n- 物流公司：顺丰",
+            "tags": ["订单", "物流", "已发货"],
+            "entities": ["ORD-20260819", "顺丰"],
+            "priority": 80
+          }
+        ]
+      },
+      "prompt": "ORD-20260819 现在签收了没？我记得之前留过它的状态。",
+      "expected_recalled_memory_ids": ["mem_1700000000000000900_qc_order_history"],
+      "rubric": [
+        {"id": "uses_saved_order_snapshot", "check": "The seeded order screen_snapshot is recalled."},
+        {"id": "respects_snapshot_time_scope", "check": "The final answer says the saved evidence only proves the order was 已发货 at 2026/08/19 10:20, and that current delivery status requires a fresh check."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 6,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
+        "required_tool_calls": [
+          {"tool": "recall_memory"}
+        ]
+      }
+    },
+    {
+      "id": "forget_one_of_two_similar_snapshots",
+      "category": "memory",
+      "description_for_judge": "The agent must disambiguate two similar order snapshots, forget only the older requested record, and preserve the newer one. The forget_memory input is checked deterministically by ID.",
+      "setup": {
+        "type": "seed_memory",
+        "clear_history_after": true,
+        "memories": [
+          {
+            "id": "mem_1700000000000001100_qc_old_order",
+            "type": "screen_snapshot",
+            "title": "旧订单详情",
+            "content": "订单详情。\n\n- 订单号：ORD-OLD-771\n- 金额：￥88.00",
+            "tags": ["订单", "旧订单"],
+            "entities": ["ORD-OLD-771"],
+            "priority": 80
+          },
+          {
+            "id": "mem_1700000000000001101_qc_new_order",
+            "type": "screen_snapshot",
+            "title": "新订单详情",
+            "content": "订单详情。\n\n- 订单号：ORD-NEW-992\n- 金额：￥188.00",
+            "tags": ["订单", "新订单"],
+            "entities": ["ORD-NEW-992"],
+            "priority": 80
+          }
+        ]
+      },
+      "prompt": "ORD-OLD-771 那张别记了，新的 ORD-NEW-992 留着。",
+      "expected_recalled_memory_ids": ["mem_1700000000000001100_qc_old_order"],
+      "rubric": [
+        {"id": "finds_requested_old_snapshot", "check": "The agent recalls the old ORD-OLD-771 screen_snapshot before deletion."},
+        {"id": "forgets_only_old_snapshot", "check": "forget_memory is called with mem_1700000000000001100_qc_old_order and not with the newer snapshot ID."},
+        {"id": "confirms_preserved_new_snapshot", "check": "The final response says the old snapshot was removed while ORD-NEW-992 was preserved."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "forbidden_tools": ["recall_session_chunks", "recall_device_memory", "inspect_episode"],
+        "required_tool_calls": [
+          {"tool": "recall_memory"},
+          {"tool": "forget_memory", "input_contains": {"id": "mem_1700000000000001100_qc_old_order"}}
+        ]
+      }
+    }
+  ]
+}
