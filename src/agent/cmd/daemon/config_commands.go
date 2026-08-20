@@ -972,10 +972,10 @@ func checkConfigPath(path string) ValidationResult {
 // JSON. Splitting this out of runConfigCheck keeps the full
 // decode -> map -> validate pipeline testable without driving os.Stdin/Stdout.
 func checkConfig(r io.Reader) (ValidationResult, error) {
-	// The payload is the wire format produced by config_web.cpp's
-	// config_to_json(): snake_case keys, agent-level settings nested under an
-	// "agent" object, and search exposing only a "has_api_key" boolean instead
-	// of the raw key. agent.Config carries only TOML tags, so decoding straight
+	// The payload is the config_web wire format defined by webConfigDTO:
+	// snake_case keys, agent-level settings nested under an "agent" object, and
+	// search exposing only a "has_api_key" boolean instead of the raw key.
+	// agent.Config carries only TOML tags, so decoding straight
 	// into it silently drops every snake_case / nested field and validates a
 	// near-empty config. Decode into a DTO that mirrors the wire format, then
 	// map it onto agent.Config before validating.

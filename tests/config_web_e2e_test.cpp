@@ -677,9 +677,10 @@ HttpResponse http_request(int port, const std::string& method, const std::string
     return resp;
 }
 
-// Spawns config_web with the agent stub injected and the chosen STUB env vars
-// already exported. Returns the child pid; caller is responsible for SIGTERM
-// + waitpid via terminate_server().
+// Owns a config_web child process spawned with the agent stub injected and the
+// chosen STUB env vars already exported (see start_server). The destructor
+// performs the SIGTERM + waitpid teardown, escalating to SIGKILL if the child
+// does not exit within one second.
 struct ServerHandle {
     pid_t pid = -1;
     int port = 0;
@@ -1590,13 +1591,12 @@ TEST_CASE("config_web: POST /api/config does not use injected metadata as a save
 }
 
 TEST_CASE("config_web: GET /api/config returns providers from the resolved config") {
-    // Read path regression: config_to_json() serializes providers from the
-    // AgentToml struct, but that struct is populated from `agent config
-    // --format=json`. The Go webConfigDTO originally had no top-level
-    // "providers" field, so the resolved JSON omitted it entirely and the UI
-    // always rendered "No providers configured yet" no matter what agent.toml
-    // held. This exercises the read path only -- it must not depend on a
-    // preceding POST.
+    // Read path regression: GET /api/config passes through whatever `agent
+    // config --format=json` emits. The Go webConfigDTO originally had no
+    // top-level "providers" field, so the resolved JSON omitted it entirely and
+    // the UI always rendered "No providers configured yet" no matter what
+    // agent.toml held. This exercises the read path only -- it must not depend
+    // on a preceding POST.
     StubEnv env;
     auto handle = start_server(env);
     write_file(handle->tmp_dir + "/agent.toml", model_provider_fixture_toml());
@@ -1633,9 +1633,10 @@ TEST_CASE("config_web: GET /api/config returns providers from the resolved confi
 }
 
 TEST_CASE("config_web: POST /api/config preserves providers when saving another section") {
-    // Regression test: handle_post_config() pre-loads the current config via
-    // the agent CLI and applies the request body as a patch onto it. When the
-    // resolved JSON omitted providers, every save of an unrelated section
+    // Regression test: the request body is applied as a patch onto the config
+    // already in agent.toml, so a section absent from the patch must survive
+    // untouched. Back when the whole config was rewritten from the resolved
+    // JSON and that JSON omitted providers, every save of an unrelated section
     // started from an empty provider map and silently erased all of them,
     // leaving model.provider pointing at a provider that no longer existed.
     StubEnv env;
@@ -1996,10 +1997,11 @@ TEST_CASE("config_web: POST /api/config same-pointer-mode device type change req
     CHECK(saved.find("pointer_mode =") == std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config omitting temperature clears a saved value") {
-    // Regression test: update_model_from_json() applies JSON as a patch onto the
-    // config pre-loaded from disk. Omitting the temperature key must clear the
-    // previously-saved value (has_temperature=false), letting the UI unset it.
+TEST_CASE("config_web: POST /api/config null temperature clears a saved value") {
+    // Regression test: the patch is applied onto the config already on disk, so
+    // an explicit null is the only way to clear a key. Sending
+    // temperature=null must remove the previously-saved value, letting the UI
+    // unset it; merely omitting the key would preserve it.
     StubEnv env;
     auto handle = start_server(env);
 
@@ -2019,12 +2021,12 @@ TEST_CASE("config_web: POST /api/config omitting temperature clears a saved valu
         CHECK(buf.str().find("temperature = 0.7") != std::string::npos);
     }
 
-    // Now save again without the temperature key: it must be cleared.
-    const std::string without_temp =
+    // Now save again with an explicit null temperature: it must be cleared.
+    const std::string null_temp =
         "{\"config\":{\"model\":{\"temperature\":null},"
         "\"device\":{\"device_type\":\"iOS\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
-    HttpResponse second = http_request(handle->port, "POST", "/api/config", without_temp);
+    HttpResponse second = http_request(handle->port, "POST", "/api/config", null_temp);
     CHECK(second.status == 200);
 
     std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
@@ -2100,9 +2102,10 @@ TEST_CASE("config_web: POST /api/config rejects invalid voice notification integ
 }
 
 TEST_CASE("config_web: POST /api/config writes ota section") {
-    // Regression test: update_config_from_json() must handle the ota section.
-    // It was added to AgentToml, TOML read/write, and validation, but was
-    // missed here, so a saved github_proxy_url silently failed to persist.
+    // Regression test: the POST path must carry the ota section all the way
+    // into agent.toml. The section reached the wire DTO and validation but was
+    // missed on the write path, so a saved github_proxy_url silently failed to
+    // persist.
     StubEnv env;
     auto handle = start_server(env);
 
@@ -2124,10 +2127,10 @@ TEST_CASE("config_web: POST /api/config writes ota section") {
 }
 
 TEST_CASE("config_web: GET /api/config returns ota and voice notification sections from resolved config") {
-    // Regression test: config_to_json() must serialize the ota section from
-    // the agent's resolved config. It was added to AgentToml and TOML
-    // read/write, but was missed here, so github_proxy_url never came back
-    // on GET even though it was correctly persisted to agent.toml.
+    // Regression test: the resolved config must carry the ota section back out
+    // on GET. The section reached the write path but was missing from the
+    // resolved payload, so github_proxy_url never came back on GET even though
+    // it was correctly persisted to agent.toml.
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),
@@ -4052,8 +4055,9 @@ TEST_CASE("config_web: POST /api/config rejects an invalid voice provider name")
     StubEnv env;
     auto handle = start_server(env);
 
-    // A name save_agent_toml could not write back must fail the schema check
-    // rather than producing a config that loads but never saves again.
+    // A name the TOML writer could not encode as a bare key must fail the
+    // schema check rather than producing a config that loads but never saves
+    // again.
     const std::string body =
         "{\"config\":{"
         "\"tts_providers\":{\"bad name\":{\"provider\":\"minimax\"}},"

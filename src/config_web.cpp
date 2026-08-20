@@ -2756,9 +2756,10 @@ WifiRuntimeStatus query_wifi_status(const Options& options) {
             status.ip_address = find_key_value_line(result.output, "ip_address");
             status.connected = status.state == "COMPLETED" && !status.ssid.empty();
             // wpa_supplicant is not wired to DHCP on this device (dhcpcd runs
-            // separately), so `wpa_cli status` never reports ip_address=. Fall
-            // back to ifconfig for the IPv4 lease so the connect-confirmation
-            // gate and the UI status see the same address wait_for_ip() trusts.
+            // separately), so `wpa_cli status` usually omits ip_address=. When
+            // it does, fall back to ifconfig for the IPv4 lease so the
+            // connect-confirmation gate and the UI status see the same address
+            // wait_for_ip() trusts.
             if (status.ip_address.empty() && status.connected && command_exists("ifconfig")) {
                 CommandResult ifc = run_shell_command(
                     "ifconfig " + shell_quote(options.wifi_interface) + " 2>&1");

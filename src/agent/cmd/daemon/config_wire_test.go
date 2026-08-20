@@ -13,12 +13,12 @@ import (
 )
 
 // These tests exercise the real config_web <-> agent wire contract: the JSON
-// shape produced by config_web.cpp's config_to_json() (snake_case keys, agent
-// settings nested under "agent", search reporting only has_api_key). The
-// PascalCase fixtures in config_commands_test.go validate Config.Validate()
-// directly and never touch this decode path, so a contract drift between the
-// C++ serializer and the Go decoder would pass there while silently accepting
-// every invalid config in production. checkConfig() is the guard against that.
+// shape defined by webConfigDTO (snake_case keys, agent settings nested under
+// "agent", search reporting only has_api_key). The PascalCase fixtures in
+// config_commands_test.go validate Config.Validate() directly and never touch
+// this decode path, so a contract drift between the config page and the Go
+// decoder would pass there while silently accepting every invalid config in
+// production. checkConfig() is the guard against that.
 
 func checkWire(t *testing.T, payload string) ValidationResult {
 	t.Helper()
@@ -260,8 +260,8 @@ func TestConfigCheckPath_RejectsInvalidTOML(t *testing.T) {
 
 // TestConfigWire_ProvidersRoundTrip guards the sync point that broke the
 // provider feature end to end: webConfigDTO had no top-level "model_providers" field,
-// so `agent config --format=json` never emitted the section. config_web.cpp
-// builds its AgentToml from that output, which made GET /api/config report zero
+// so `agent config --format=json` never emitted the section. config_web serves
+// GET /api/config straight from that output, which made the page report zero
 // providers and made every save of an unrelated section erase them from
 // agent.toml. Validation was skipped for the same reason.
 func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
@@ -474,8 +474,8 @@ func TestConfigWire_ModelProviderCanonicalJSON(t *testing.T) {
 // TestWebConfigDTOTopLevelSectionsAreCovered pins the set of top-level sections
 // that `agent config --format=json` emits.
 //
-// config_web.cpp builds its AgentToml from this payload, so a section the Go DTO
-// does not emit does not exist as far as the C++ read path is concerned. That is
+// config_web serves this payload to the page verbatim, so a section the Go DTO
+// does not emit does not exist as far as the config UI is concerned. That is
 // exactly how the `providers` bug worked: the field was missing here, so the
 // config page always showed zero providers AND every save of an unrelated
 // section started from an empty map and erased them from agent.toml.
@@ -529,8 +529,8 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 
 // TestWebConfigDTOProvidersOmittedWhenEmpty documents that `model_providers` carries
 // omitempty, so a config with no providers omits the key entirely rather than
-// emitting {}. The C++ read path must treat a missing key as "no providers"
-// rather than as an error.
+// emitting {}. Consumers of the resolved config must treat a missing key as
+// "no providers" rather than as an error.
 func TestWebConfigDTOProvidersOmittedWhenEmpty(t *testing.T) {
 	cfg := agent.Config{
 		Model: agent.ModelConfig{Provider: "openai", Model: "gpt-4o", APIKey: "sk-x"},

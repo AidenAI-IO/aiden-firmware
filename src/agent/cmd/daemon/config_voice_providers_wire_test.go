@@ -132,8 +132,8 @@ func TestConfigWire_CanonicalNullVoiceTypesDoNotUseLegacyAliases(t *testing.T) {
 }
 
 // omitempty on both maps, matching providers: a config with no records omits the
-// key rather than emitting {}, and the C++ read path treats a missing key as
-// "no records" rather than an error.
+// key rather than emitting {}, and consumers of the resolved config treat a
+// missing key as "no records" rather than an error.
 func TestConfigWire_VoiceProvidersOmittedWhenEmpty(t *testing.T) {
 	cfg := agent.Config{Model: agent.ModelConfig{Provider: "openai", Model: "gpt-4o", APIKey: "sk-x"}}
 	payload, err := json.Marshal(webConfigDTOFromAgentConfig(cfg))
