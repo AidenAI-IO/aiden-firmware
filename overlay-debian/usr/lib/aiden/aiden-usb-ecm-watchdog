@@ -120,7 +120,6 @@ reset_composite() (
     if [ -d "${usb_net_class}" ]; then
         ip link set dev usb0 up || true
         ip address replace 192.168.42.1/24 dev usb0 || true
-        networkctl reconfigure usb0 >/dev/null 2>&1 || true
     fi
     write_refresh_state "${reason}" ok "${started_at}" "reset complete"
 )
