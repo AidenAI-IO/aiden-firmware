@@ -34,7 +34,6 @@ type AudioVADConfig struct {
 	SampleRate      int
 	SilenceMs       int
 	MinSpeechMs     int
-	AlwaysBuffer    bool
 	Backend         string
 	ModelPath       string
 	HelperPath      string
@@ -50,7 +49,6 @@ type VADScorer interface {
 // AudioVAD segments utterances using Silero VAD probabilities produced by the helper.
 type AudioVAD struct {
 	scorer          VADScorer
-	alwaysBuffer    bool
 	silenceCount    int
 	speechFrames    int
 	speaking        bool
@@ -162,7 +160,6 @@ func newAudioVAD(cfg AudioVADConfig, scorer VADScorer) (*AudioVAD, error) {
 
 	return &AudioVAD{
 		scorer:          scorer,
-		alwaysBuffer:    cfg.AlwaysBuffer,
 		frameSamples:    sileroVADFrameSamples,
 		silenceLimit:    silenceLimit,
 		minSpeechFrames: minSpeechFrames,
@@ -229,24 +226,6 @@ func (v *AudioVAD) Process(samples []int16) ([]int16, error) {
 	v.lastErr = nil
 	v.lastProbability = probability
 	isSpeech := probability > v.threshold
-
-	if v.alwaysBuffer {
-		v.speechBuf = append(v.speechBuf, samples...)
-		if isSpeech {
-			v.speechFrames++
-			v.speaking = true
-			v.silenceCount = 0
-		} else if v.speaking {
-			v.silenceCount++
-			if v.silenceCount >= v.silenceLimit {
-				if v.speechFrames >= v.minSpeechFrames {
-					return v.finishUtterance(), nil
-				}
-				v.resetBuffers()
-			}
-		}
-		return nil, nil
-	}
 
 	if isSpeech {
 		v.speechBuf = append(v.speechBuf, samples...)

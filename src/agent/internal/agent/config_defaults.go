@@ -52,7 +52,6 @@ const (
 	defaultDeviceType                 = "iOS"
 	defaultInputBackend               = "hid"
 	defaultInputMode                  = "text"
-	defaultTriggerMode                = "manual"
 	defaultSilenceMs                  = 550
 	defaultMinSpeechMs                = 300
 	defaultVoiceFollowupTimeoutMs     = 5000
@@ -180,7 +179,6 @@ func DefaultConfig() Config {
 		Locale:                     defaultLocale,
 		Instruction:                defaultInstruction,
 		InputMode:                  defaultInputMode,
-		TriggerMode:                defaultTriggerMode,
 		VADBackend:                 defaultVADBackend,
 		VADModelPath:               defaultVADModelPath,
 		VADHelperPath:              defaultVADHelperPath,
