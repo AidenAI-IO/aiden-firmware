@@ -368,7 +368,6 @@ type agentDTO struct {
 	CustomInstruction          string  `json:"custom_instruction"`
 	AdditionalPrompt           string  `json:"additional_prompt"`
 	InputMode                  string  `json:"input_mode"`
-	TriggerMode                string  `json:"trigger_mode"`
 	VADBackend                 string  `json:"vad_backend"`
 	VADModelPath               string  `json:"vad_model_path"`
 	VADHelperPath              string  `json:"vad_helper_path"`
@@ -512,7 +511,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		Instruction:                d.Agent.CustomInstruction,
 		AdditionalPrompt:           d.Agent.AdditionalPrompt,
 		InputMode:                  d.Agent.InputMode,
-		TriggerMode:                d.Agent.TriggerMode,
 		VADBackend:                 d.Agent.VADBackend,
 		VADModelPath:               d.Agent.VADModelPath,
 		VADHelperPath:              d.Agent.VADHelperPath,
@@ -755,7 +753,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			CustomInstruction:          customInstructionValue(cfg.Instruction),
 			AdditionalPrompt:           cfg.AdditionalPrompt,
 			InputMode:                  cfg.InputModeOrDefault(),
-			TriggerMode:                cfg.TriggerModeOrDefault(),
 			VADBackend:                 cfg.VADBackendOrDefault(),
 			VADModelPath:               cfg.VADModelPath,
 			VADHelperPath:              cfg.VADHelperPath,
@@ -1176,8 +1173,6 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "tts.provider"
 	} else if strings.Contains(errMsg, "input_mode") {
 		field = "input_mode"
-	} else if strings.Contains(errMsg, "trigger_mode") {
-		field = "trigger_mode"
 	} else if strings.Contains(errMsg, "hid.keyboard_layout") || strings.Contains(errMsg, "keyboard_layout") {
 		field = "hid.keyboard_layout"
 	} else if strings.Contains(errMsg, "hid.pointer_mode") || strings.Contains(errMsg, "pointer_mode") {

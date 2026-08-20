@@ -46,14 +46,13 @@ func waitForAudioDialogRecordSTT(t *testing.T, dialog *AudioDialog) {
 	}
 }
 
-func TestAudioDialogFinishManualUtterancePreservesTail(t *testing.T) {
+func TestAudioDialogFinishPendingUtterancePreservesTail(t *testing.T) {
 	vad, err := NewAudioVADWithScorer(AudioVADConfig{
 		SampleRate:      16000,
 		SilenceMs:       650,
 		MinSpeechMs:     300,
-		AlwaysBuffer:    true,
 		SpeechThreshold: 0.5,
-	}, &sequenceScorer{probabilities: []float64{0.1}})
+	}, &sequenceScorer{probabilities: []float64{0.9}})
 	if err != nil {
 		t.Fatalf("NewAudioVADWithScorer() error = %v", err)
 	}
@@ -67,12 +66,12 @@ func TestAudioDialogFinishManualUtterancePreservesTail(t *testing.T) {
 		t.Fatalf("ProcessVADFrame() error = %v", err)
 	}
 
-	got := dialog.FinishManualUtterance([]int16{7, 8, 9})
+	got := dialog.FinishPendingUtterance([]int16{7, 8, 9})
 	if len(got) != len(frame)+3 {
-		t.Fatalf("FinishManualUtterance() len = %d, want %d", len(got), len(frame)+3)
+		t.Fatalf("FinishPendingUtterance() len = %d, want %d", len(got), len(frame)+3)
 	}
 	if got[len(got)-3] != 7 || got[len(got)-2] != 8 || got[len(got)-1] != 9 {
-		t.Fatalf("FinishManualUtterance() tail = %#v, want [7 8 9]", got[len(got)-3:])
+		t.Fatalf("FinishPendingUtterance() tail = %#v, want [7 8 9]", got[len(got)-3:])
 	}
 }
 
@@ -177,7 +176,6 @@ func TestAudioDialogStartRecordingRollsBackOnVADResetFailure(t *testing.T) {
 		SampleRate:      16000,
 		SilenceMs:       650,
 		MinSpeechMs:     300,
-		AlwaysBuffer:    true,
 		SpeechThreshold: 0.5,
 	}, scorer)
 	if err != nil {
@@ -397,12 +395,11 @@ func TestAudioDialogSTTUploadErrorIgnoresStaleSession(t *testing.T) {
 
 func TestNewAudioDialogSTTWakeupCreatesSTTClient(t *testing.T) {
 	dialog, err := NewAudioDialog(&Runtime{config: Config{
-		Model:       ModelConfig{Provider: "fake"},
-		TTS:         TTSConfig{Provider: "minimax-cn", APIKey: "test-key"},
-		STT:         STTConfig{Provider: "openai-whisper"},
-		Audio:       AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
-		InputMode:   "stt",
-		TriggerMode: "wakeup",
+		Model:     ModelConfig{Provider: "fake"},
+		TTS:       TTSConfig{Provider: "minimax-cn", APIKey: "test-key"},
+		STT:       STTConfig{Provider: "openai-whisper"},
+		Audio:     AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
+		InputMode: "stt",
 	}})
 	if err != nil {
 		t.Fatalf("NewAudioDialog() error = %v", err)
@@ -413,9 +410,6 @@ func TestNewAudioDialogSTTWakeupCreatesSTTClient(t *testing.T) {
 	}
 	if dialog.audioClient.socketPath != "/tmp/audio.sock" {
 		t.Fatalf("audio socket = %q, want /tmp/audio.sock", dialog.audioClient.socketPath)
-	}
-	if dialog.vad.alwaysBuffer {
-		t.Fatal("wakeup trigger mode should use normal VAD buffering")
 	}
 	if got := dialog.VADFrameSamples(); got != 512 {
 		t.Fatalf("VADFrameSamples() = %d, want 512 for Silero RKNN VAD", got)
