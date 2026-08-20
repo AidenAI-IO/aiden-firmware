@@ -29,6 +29,14 @@ bool FrameCameraCaptureSource::open() {
     return opened;
 }
 
+bool FrameCameraCaptureSource::pause() {
+    return camera_.pause();
+}
+
+bool FrameCameraCaptureSource::resume() {
+    return camera_.resume();
+}
+
 bool FrameCameraCaptureSource::capture(CapturedFrame* frame) {
     if (!frame) {
         return false;

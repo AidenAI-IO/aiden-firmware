@@ -124,6 +124,27 @@ camera.start([](const aiden::VideoFrame& frame) {
 camera.stop();
 ```
 
+Pause and resume streaming while retaining the open device and MMAP buffers:
+
+```cpp
+aiden::CameraCapture camera;
+camera.init(config);
+camera.pause();  // VIDIOC_STREAMOFF; device and mappings remain owned
+
+// Later, when a frame is needed:
+camera.resume(); // requeue buffers and VIDIOC_STREAMON
+aiden::VideoFrame frame;
+std::vector<uint8_t> bytes;
+camera.capture_frame(frame, bytes);
+camera.pause();
+```
+
+`frame_service` uses this lifecycle for request-driven screenshots. Resume
+resets `skip_frames`, then the service performs additional zero-copy warm-up
+dequeues before the response frame is copied. The deployed default is 12
+warm-up frames because RK628D can briefly return uniform frames after every
+stream restart.
+
 One-shot capture and copy to caller-owned buffer:
 
 ```cpp
