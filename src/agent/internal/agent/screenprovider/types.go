@@ -51,6 +51,7 @@ type CaptureInfo struct {
 
 type HealthResult struct {
 	State                   string  `json:"state"`
+	CaptureMode             string  `json:"capture_mode"`
 	LatestSeq               uint64  `json:"latest_seq"`
 	FrameAgeMs              uint64  `json:"frame_age_ms"`
 	RingBufferSize          uint32  `json:"ring_buffer_size"`

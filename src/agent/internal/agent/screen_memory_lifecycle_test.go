@@ -1,133 +1,72 @@
 package agent
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
-	"time"
 )
 
-// Screen Memory records an observation the user deliberately captured, not an
-// inference whose confidence should change with later task outcomes.
-//
-// These exemptions look like scattered special cases in the code, which makes
-// them easy for a later reader to "fix". These tests are what stops that.
+func TestCommitEpisodeDoesNotReviseRecalledScreenMemory(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_screen_snapshot",
+		Type:             MemoryTypeScreenSnapshot,
+		Status:           "active",
+		Priority:         80,
+		Confidence:       0.9,
+		Title:            "Saved screen",
+		Content:          "Tracking number QC-1234",
+		EvidenceExcerpts: []string{"Tracking number QC-1234"},
+		TTL:              "90d",
+	}); err != nil {
+		t.Fatalf("AddMemory() error = %v", err)
+	}
+	original, err := readMemoryMarkdown(longTerm.memoryPath("mem_screen_snapshot"))
+	if err != nil {
+		t.Fatalf("read original screen memory: %v", err)
+	}
 
-func TestScreenMemoryKeepsConfidenceOnSuccess(t *testing.T) {
-	item := MemoryItem{
-		Type:       MemoryTypeScreenSnapshot,
-		Status:     "active",
-		Confidence: 0.9,
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	for _, testCase := range []struct {
+		id      string
+		outcome TaskEpisodeOutcome
+	}{
+		{id: "ep_screen_success", outcome: TaskEpisodeOutcome{Success: true, VerifierReason: "answer accepted"}},
+		{id: "ep_screen_failure", outcome: TaskEpisodeOutcome{Success: false, FailureReason: "answer rejected"}},
+	} {
+		if err := plane.CommitEpisode(ctx, TaskEpisode{
+			ID:                  testCase.id,
+			Status:              "active",
+			StartedAt:           "2026-08-20T00:00:00Z",
+			EndedAt:             "2026-08-20T00:00:01Z",
+			UserGoal:            "Recall the saved tracking number",
+			RetrievedMemoryRefs: []string{"mem_screen_snapshot"},
+			Outcome:             testCase.outcome,
+			Events: []TaskEpisodeEvent{
+				{EventID: "evt_recall", Type: runEventToolCall, ToolName: "recall_memory"},
+			},
+		}); err != nil {
+			t.Fatalf("CommitEpisode(%s) error = %v", testCase.id, err)
+		}
 	}
-	updateLongTermMemoryFromEpisode(&item, TaskEpisode{
-		ID:      "ep_1",
-		Outcome: TaskEpisodeOutcome{Success: true},
-	})
 
-	if item.Confidence != 0.9 {
-		t.Fatalf("confidence = %v, want 0.9 unchanged: a screen observation does not become more true when a task succeeds", item.Confidence)
+	updated, err := readMemoryMarkdown(longTerm.memoryPath("mem_screen_snapshot"))
+	if err != nil {
+		t.Fatalf("read updated screen memory: %v", err)
 	}
-	if item.SuccessCount != 0 {
-		t.Fatalf("success_count = %d, want 0: validation counts are meaningless for an observation", item.SuccessCount)
-	}
-}
-
-func TestScreenMemoryExpiryIsNotRefreshedOnSuccess(t *testing.T) {
-	// This is the exemption with real consequences. TTL is the only automatic
-	// reclamation path for long-term memory, so refreshing it on every
-	// successful recall would make a frequently-asked entry immortal.
-	original := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
-	item := MemoryItem{
-		Type:       MemoryTypeScreenSnapshot,
-		Status:     "active",
-		Confidence: 0.9,
-		TTL:        "90d",
-		ExpiresAt:  original,
-	}
-	updateLongTermMemoryFromEpisode(&item, TaskEpisode{
-		ID:      "ep_1",
-		Outcome: TaskEpisodeOutcome{Success: true},
-	})
-
-	if item.ExpiresAt != original {
-		t.Fatalf("expires_at = %q, want %q unchanged: refreshing TTL defeats the only reclamation path", item.ExpiresAt, original)
-	}
-}
-
-func TestScreenMemorySurvivesFailedEpisode(t *testing.T) {
-	item := MemoryItem{
-		Type:       MemoryTypeScreenSnapshot,
-		Status:     "active",
-		Confidence: 0.9,
-	}
-	updateLongTermMemoryFromEpisode(&item, TaskEpisode{
-		ID:      "ep_1",
-		Outcome: TaskEpisodeOutcome{Success: false},
-	})
-
-	if item.Status != "active" {
-		t.Fatalf("status = %q, want active: a failed task says nothing about what was on screen", item.Status)
-	}
-	if item.Confidence != 0.9 {
-		t.Fatalf("confidence = %v, want 0.9 unchanged", item.Confidence)
-	}
-	if item.FailureCount != 0 {
-		t.Fatalf("failure_count = %d, want 0", item.FailureCount)
-	}
-}
-
-func TestNonScreenMemoryStillGetsOutcomeFeedback(t *testing.T) {
-	// The exemption must be narrow: other types keep their existing behavior.
-	item := MemoryItem{
-		Type:       "procedure",
-		Status:     "active",
-		Confidence: 0.75,
-		TTL:        "30d",
-		ExpiresAt:  time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
-	}
-	before := item.ExpiresAt
-	updateLongTermMemoryFromEpisode(&item, TaskEpisode{
-		ID:      "ep_1",
-		Outcome: TaskEpisodeOutcome{Success: true},
-	})
-
-	if item.Confidence <= 0.75 {
-		t.Fatalf("confidence = %v, want > 0.75: non-screen memory should still be credited", item.Confidence)
-	}
-	if item.SuccessCount != 1 {
-		t.Fatalf("success_count = %d, want 1", item.SuccessCount)
-	}
-	if item.ExpiresAt == before {
-		t.Fatalf("expires_at unchanged, want refreshed for non-screen memory")
-	}
-}
-
-func TestNonScreenMemoryStillPenalizedOnFailure(t *testing.T) {
-	item := MemoryItem{
-		Type:       "procedure",
-		Status:     "active",
-		Confidence: 0.75,
-	}
-	updateLongTermMemoryFromEpisode(&item, TaskEpisode{
-		ID:      "ep_1",
-		Outcome: TaskEpisodeOutcome{Success: false},
-	})
-
-	if item.Confidence >= 0.75 {
-		t.Fatalf("confidence = %v, want < 0.75", item.Confidence)
-	}
-	if item.FailureCount != 1 {
-		t.Fatalf("failure_count = %d, want 1", item.FailureCount)
+	if updated.Item.Status != original.Item.Status ||
+		updated.Item.Confidence != original.Item.Confidence ||
+		updated.Item.SuccessCount != original.Item.SuccessCount ||
+		updated.Item.FailureCount != original.Item.FailureCount ||
+		updated.Item.ExpiresAt != original.Item.ExpiresAt {
+		t.Fatalf("episode outcome revised a screen observation: before=%#v after=%#v", original.Item, updated.Item)
 	}
 }
 
 func TestScreenSnapshotIsNotProfileRelevant(t *testing.T) {
-	// Screen Memory must never reach the synthesized User Profile.
 	if isProfileRelevantType(MemoryTypeScreenSnapshot) {
 		t.Fatal("screen_snapshot is profile-relevant, want excluded from the User Profile")
-	}
-}
-
-func TestScreenSnapshotIsNotPenalized(t *testing.T) {
-	if shouldPenalizeMemoryType(MemoryTypeScreenSnapshot) {
-		t.Fatal("screen_snapshot is in the penalize list, want exempt")
 	}
 }

@@ -102,7 +102,10 @@ func (c *Fallback) captureFromSource(source Source, call func(Source) (*FrameMet
 		if healthErr != nil {
 			return nil, nil, CaptureInfo{}, fmt.Errorf("frame service health: %w", healthErr)
 		}
-		if health == nil || health.State != "RUNNING" || health.FrameAgeMs > frameServiceFreshFrameMaxAgeMs {
+		staleBufferedFrame := health != nil &&
+			health.CaptureMode != "on_demand" &&
+			health.FrameAgeMs > frameServiceFreshFrameMaxAgeMs
+		if health == nil || health.State != "RUNNING" || staleBufferedFrame {
 			state := "UNKNOWN"
 			var age uint64
 			if health != nil {
@@ -136,8 +139,13 @@ func (c *Fallback) shouldPreferFallback() bool {
 
 func (c *Fallback) markFallbackPreferred() {
 	c.mu.Lock()
-	c.preferFallbackUntil = time.Now().Add(adbFallbackStickyDuration)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	if now.Before(c.preferFallbackUntil) {
+		return
+	}
+	c.preferFallbackUntil = now.Add(adbFallbackStickyDuration)
 }
 
 func (c *Fallback) clearFallbackPreference() {

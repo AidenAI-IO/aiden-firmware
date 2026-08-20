@@ -15,6 +15,10 @@ namespace aiden {
 
 class FrameServiceServer {
 public:
+    typedef std::function<FrameServiceStatus(uint32_t timeout_ms,
+                                             FrameMetadata* metadata,
+                                             std::vector<uint8_t>* data)> CaptureHandler;
+
     FrameServiceServer(const char* socket_path, size_t ring_capacity);
     ~FrameServiceServer();
 
@@ -27,6 +31,7 @@ public:
                                     uint64_t* seq_out);
 
     void set_state(const std::string& state);
+    void set_capture_handler(const CaptureHandler& handler);
     void set_restart_handler(const std::function<void()>& handler);
     void record_recovery(const std::string& error, bool count_failure);
 
@@ -50,7 +55,10 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable frame_cv_;
     std::condition_variable payload_cv_;
+    CaptureHandler capture_handler_;
     std::function<void()> restart_handler_;
+    uint64_t on_demand_latest_seq_;
+    uint64_t on_demand_capture_ts_ns_;
     double avg_frame_serve_latency_ms_;
     uint32_t serve_latency_samples_;
     double avg_capture_copy_latency_ms_;

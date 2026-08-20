@@ -142,6 +142,7 @@ FrameServiceStatus FrameServiceClient::health(HealthResult* out) {
     }
     if (status == FrameServiceStatus::OK) {
         out->state = json_string(root, "state");
+        out->capture_mode = json_string(root, "capture_mode");
         out->latest_seq = json_u64(root, "latest_seq");
         out->frame_age_ms = json_u64(root, "frame_age_ms");
         out->ring_buffer_size = json_u32(root, "ring_buffer_size");

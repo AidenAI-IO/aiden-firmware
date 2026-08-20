@@ -52,8 +52,9 @@ int main(int argc, char** argv) {
             fprintf(stderr, "health failed: %s\n", aiden::frame_service_status_to_string(status));
             return 1;
         }
-        printf("state=%s latest_seq=%llu frame_age_ms=%llu ring=%u/%u consecutive_failures=%u last_error=%s last_recovery_ts=%llu avg_frame_serve_latency_ms=%.3f avg_capture_copy_latency_ms=%.3f\n",
+        printf("state=%s capture_mode=%s latest_seq=%llu frame_age_ms=%llu ring=%u/%u consecutive_failures=%u last_error=%s last_recovery_ts=%llu avg_frame_serve_latency_ms=%.3f avg_capture_copy_latency_ms=%.3f\n",
                health.state.c_str(),
+               health.capture_mode.empty() ? "-" : health.capture_mode.c_str(),
                static_cast<unsigned long long>(health.latest_seq),
                static_cast<unsigned long long>(health.frame_age_ms),
                health.ring_buffer_used,
