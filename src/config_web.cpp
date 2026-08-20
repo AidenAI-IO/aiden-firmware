@@ -4040,7 +4040,17 @@ static bool update_agent_config_via_cli(const Options& options,
     cJSON* ok = cJSON_GetObjectItem(parsed, "ok");
 	if (command.exit_code != 0 || !json_is_type(ok, cJSON_True)) {
         cJSON* error_item = cJSON_GetObjectItem(parsed, "error");
-        if (status_code) *status_code = command.exit_code == 127 ? 503 : 400;
+		cJSON* error_kind = cJSON_GetObjectItem(parsed, "error_kind");
+		if (status_code) {
+			if (command.exit_code == 127) {
+				*status_code = 503;
+			} else if (json_is_string(error_kind) &&
+			           std::string(error_kind->valuestring) == "internal") {
+				*status_code = 500;
+			} else {
+				*status_code = 400;
+			}
+		}
 		if (error) *error = json_is_string(error_item) ? error_item->valuestring : "agent config update rejected";
         cJSON_Delete(parsed);
         return false;

@@ -3611,6 +3611,27 @@ TEST_CASE("config_web: POST /api/config returns 503 when stub config-check retur
     CHECK(resp.body.find("invalid JSON") != std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config returns 500 when config-update reports an internal error") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/update.json",
+               "{\"ok\":false,\"error\":\"replace config: read-only file system\","
+               "\"error_kind\":\"internal\"}\n");
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_UPDATE_FILE", tmp + "/update.json");
+    env.set("AIDEN_AGENT_STUB_UPDATE_EXIT", "1");
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"device\":{\"device_type\":\"iOS\"}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 500);
+    CHECK(resp.body.find("read-only file system") != std::string::npos);
+}
+
 TEST_CASE("config_web: both endpoints fail closed with 503 when AIDEN_AGENT_BIN points nowhere") {
     StubEnv env;
     // Override the stub injection: start_server will skip its default when

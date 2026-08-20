@@ -348,6 +348,13 @@ func setValue(source []byte, doc index, path []string, encoded []byte) ([]byte, 
 	if target := findInlineTable(doc, tablePath); target != nil {
 		return insertInlineTableValue(source, *target, keyText, encoded)
 	}
+	if ancestorPath, target := findInlineTableAncestor(doc, tablePath); target != nil {
+		key, value, err := nestedInlineTableValue(tablePath[len(ancestorPath):], keyText, encoded)
+		if err != nil {
+			return nil, false, err
+		}
+		return insertInlineTableValue(source, *target, key, value)
+	}
 	if target := findTable(doc, tablePath); target != nil {
 		position := target.lineEnd
 		for _, key := range doc.keys {
@@ -396,6 +403,38 @@ func setValue(source []byte, doc index, path []string, encoded []byte) ([]byte, 
 	}
 	addition = append(addition, line...)
 	return append(append([]byte(nil), source...), addition...), true, nil
+}
+
+func findInlineTableAncestor(doc index, path []string) ([]string, *inlineTable) {
+	for length := len(path) - 1; length > 0; length-- {
+		prefix := path[:length]
+		if table := findInlineTable(doc, prefix); table != nil {
+			return prefix, table
+		}
+	}
+	return nil, nil
+}
+
+func nestedInlineTableValue(path []string, leafKey, leafValue []byte) ([]byte, []byte, error) {
+	if len(path) == 0 {
+		return leafKey, leafValue, nil
+	}
+	content := append(append(append([]byte(nil), leafKey...), []byte(" = ")...), leafValue...)
+	for i := len(path) - 1; i > 0; i-- {
+		key, err := encodeKey(path[i])
+		if err != nil {
+			return nil, nil, err
+		}
+		wrapped := append(append(append([]byte(nil), key...), []byte(" = { ")...), content...)
+		content = append(wrapped, []byte(" }")...)
+	}
+	key, err := encodeKey(path[0])
+	if err != nil {
+		return nil, nil, err
+	}
+	value := append([]byte("{ "), content...)
+	value = append(value, []byte(" }")...)
+	return key, value, nil
 }
 
 func insertInlineTableValue(source []byte, table inlineTable, key, value []byte) ([]byte, bool, error) {

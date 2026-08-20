@@ -40,6 +40,36 @@ type configUpdateResult struct {
 	ChangedPaths   []string     `json:"changed_paths"`
 	RebootRequired bool         `json:"reboot_required"`
 	Error          string       `json:"error,omitempty"`
+	ErrorKind      string       `json:"error_kind,omitempty"`
+}
+
+const (
+	configUpdateErrorInvalid  = "invalid_request"
+	configUpdateErrorInternal = "internal"
+)
+
+type configUpdateError struct {
+	kind string
+	err  error
+}
+
+func (e *configUpdateError) Error() string { return e.err.Error() }
+func (e *configUpdateError) Unwrap() error { return e.err }
+
+func invalidConfigUpdate(err error) error {
+	return &configUpdateError{kind: configUpdateErrorInvalid, err: err}
+}
+
+func internalConfigUpdate(err error) error {
+	return &configUpdateError{kind: configUpdateErrorInternal, err: err}
+}
+
+func configUpdateErrorKind(err error) string {
+	var updateErr *configUpdateError
+	if errors.As(err, &updateErr) {
+		return updateErr.kind
+	}
+	return configUpdateErrorInternal
 }
 
 type providerRenames map[string]map[string]string
@@ -110,6 +140,7 @@ type modelDTO struct {
 	ReasoningEffort      string   `json:"reasoning_effort"`
 	Temperature          *float64 `json:"temperature,omitempty"`
 	MaxResponseTokens    int      `json:"max_response_tokens"`
+	LogRawHTTP           bool     `json:"log_raw_http"`
 	ContextWindow        int      `json:"context_window"`
 	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
 }
@@ -500,6 +531,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			APIMode:              d.Model.APIMode,
 			Temperature:          d.Model.Temperature,
 			MaxResponseTokens:    d.Model.MaxResponseTokens,
+			LogRawHTTP:           d.Model.LogRawHTTP,
 			ContextWindow:        d.Model.ContextWindow,
 			ModelMaxOutputTokens: d.Model.ModelMaxOutputTokens,
 		},
@@ -768,6 +800,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			ReasoningEffort:      cfg.Model.ReasoningEffort,
 			Temperature:          cfg.Model.Temperature,
 			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
+			LogRawHTTP:           cfg.Model.LogRawHTTP,
 			ContextWindow:        cfg.Model.ContextWindow,
 			ModelMaxOutputTokens: cfg.Model.ModelMaxOutputTokens,
 		},
@@ -1100,16 +1133,16 @@ func runConfigUpdate(args []string) int {
 	stdinFlag := fs.Bool("stdin", false, "read JSON merge patch from stdin")
 	configFlag := fs.String("config", "", "path to a TOML config file")
 	if err := fs.Parse(args); err != nil {
-		writeConfigUpdateError(err)
+		writeConfigUpdateError(invalidConfigUpdate(err))
 		return 1
 	}
 	if *formatFlag != "json" || !*stdinFlag || strings.TrimSpace(*configFlag) == "" {
-		writeConfigUpdateError(fmt.Errorf("--config, --stdin and --format=json are required"))
+		writeConfigUpdateError(invalidConfigUpdate(fmt.Errorf("--config, --stdin and --format=json are required")))
 		return 1
 	}
 	patch, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		writeConfigUpdateError(err)
+		writeConfigUpdateError(internalConfigUpdate(err))
 		return 1
 	}
 	result, err := updateConfigFile(strings.TrimSpace(*configFlag), patch)
@@ -1125,111 +1158,115 @@ func runConfigUpdate(args []string) int {
 }
 
 func writeConfigUpdateError(err error) {
-	_ = json.NewEncoder(os.Stdout).Encode(configUpdateResult{OK: false, Error: err.Error()})
+	_ = json.NewEncoder(os.Stdout).Encode(configUpdateResult{
+		OK:        false,
+		Error:     err.Error(),
+		ErrorKind: configUpdateErrorKind(err),
+	})
 }
 
 func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error) {
 	var patch map[string]json.RawMessage
 	if err := json.Unmarshal(patchJSON, &patch); err != nil {
-		return configUpdateResult{}, fmt.Errorf("invalid JSON merge patch: %w", err)
+		return configUpdateResult{}, invalidConfigUpdate(fmt.Errorf("invalid JSON merge patch: %w", err))
 	}
 	if patch == nil {
-		return configUpdateResult{}, fmt.Errorf("config patch must be an object")
+		return configUpdateResult{}, invalidConfigUpdate(fmt.Errorf("config patch must be an object"))
 	}
 	if nested, ok := patch["config"]; ok {
 		var configPatch map[string]json.RawMessage
 		if err := json.Unmarshal(nested, &configPatch); err != nil {
-			return configUpdateResult{}, fmt.Errorf("config patch must be an object: %w", err)
+			return configUpdateResult{}, invalidConfigUpdate(fmt.Errorf("config patch must be an object: %w", err))
 		}
 		if configPatch == nil {
-			return configUpdateResult{}, fmt.Errorf("config patch must be an object")
+			return configUpdateResult{}, invalidConfigUpdate(fmt.Errorf("config patch must be an object"))
 		}
 		patch = configPatch
 	}
 	renames, err := takeProviderRenames(patch)
 	if err != nil {
-		return configUpdateResult{}, err
+		return configUpdateResult{}, invalidConfigUpdate(err)
 	}
 	resolvedPath, original, fileMode, err := prepareConfigUpdateFile(path)
 	if err != nil {
-		return configUpdateResult{}, err
+		return configUpdateResult{}, internalConfigUpdate(err)
 	}
 	current, err := agent.LoadResolvedConfig(resolvedPath)
 	if err != nil {
-		return configUpdateResult{}, fmt.Errorf("load config: %w", err)
+		return configUpdateResult{}, internalConfigUpdate(fmt.Errorf("load config: %w", err))
 	}
 	currentDTO := webConfigDTOFromAgentConfig(current)
 	if err := normalizeLegacyWebConfigPatch(patch, current); err != nil {
-		return configUpdateResult{}, err
+		return configUpdateResult{}, invalidConfigUpdate(err)
 	}
 	if err := stripReadOnlyStatusFields(patch, currentDTO); err != nil {
-		return configUpdateResult{}, err
+		return configUpdateResult{}, internalConfigUpdate(err)
 	}
 	if err := restoreRenamedProviderCredentials(patch, renames, current); err != nil {
-		return configUpdateResult{}, err
+		return configUpdateResult{}, invalidConfigUpdate(err)
 	}
 	if err := preserveProviderCredentials(patch, current); err != nil {
-		return configUpdateResult{}, err
+		return configUpdateResult{}, invalidConfigUpdate(err)
 	}
 	patch, err = filterNoopWebConfigPatch(patch, currentDTO)
 	if err != nil {
-		return configUpdateResult{}, err
+		return configUpdateResult{}, internalConfigUpdate(err)
 	}
 	operations, err := configPatchOperations(patch)
 	if err != nil {
-		return configUpdateResult{}, err
+		return configUpdateResult{}, invalidConfigUpdate(err)
 	}
 	updated, changed, err := configdoc.Apply(original, operations)
 	if err != nil {
-		return configUpdateResult{}, err
+		return configUpdateResult{}, internalConfigUpdate(err)
 	}
 	if len(changed) == 0 {
 		cfg, err := agent.LoadResolvedConfig(resolvedPath)
 		if err != nil {
-			return configUpdateResult{}, err
+			return configUpdateResult{}, internalConfigUpdate(err)
 		}
 		return configUpdateResult{OK: true, Config: webConfigDTOFromAgentConfig(cfg), ChangedPaths: []string{}, RebootRequired: false}, nil
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(resolvedPath), ".agent.toml.config-update-*.toml")
 	if err != nil {
-		return configUpdateResult{}, fmt.Errorf("create temporary config: %w", err)
+		return configUpdateResult{}, internalConfigUpdate(fmt.Errorf("create temporary config: %w", err))
 	}
 	tmpPath := tmp.Name()
 	defer tmp.Close()
 	defer os.Remove(tmpPath)
 	if err := tmp.Chmod(fileMode); err != nil {
-		return configUpdateResult{}, fmt.Errorf("set temporary config mode: %w", err)
+		return configUpdateResult{}, internalConfigUpdate(fmt.Errorf("set temporary config mode: %w", err))
 	}
 	n, err := tmp.Write(updated)
 	if err != nil {
-		return configUpdateResult{}, fmt.Errorf("write temporary config: %w", err)
+		return configUpdateResult{}, internalConfigUpdate(fmt.Errorf("write temporary config: %w", err))
 	}
 	if n != len(updated) {
-		return configUpdateResult{}, fmt.Errorf("write temporary config: %w", io.ErrShortWrite)
+		return configUpdateResult{}, internalConfigUpdate(fmt.Errorf("write temporary config: %w", io.ErrShortWrite))
 	}
 	if err := tmp.Sync(); err != nil {
-		return configUpdateResult{}, fmt.Errorf("sync temporary config: %w", err)
+		return configUpdateResult{}, internalConfigUpdate(fmt.Errorf("sync temporary config: %w", err))
 	}
 	if err := tmp.Close(); err != nil {
-		return configUpdateResult{}, fmt.Errorf("close temporary config: %w", err)
+		return configUpdateResult{}, internalConfigUpdate(fmt.Errorf("close temporary config: %w", err))
 	}
 	candidate, err := agent.LoadResolvedConfig(tmpPath)
 	if err != nil {
-		return configUpdateResult{}, fmt.Errorf("validate config: %w", err)
+		return configUpdateResult{}, invalidConfigUpdate(fmt.Errorf("validate config: %w", err))
 	}
 	if err := candidate.ValidateVoiceProviders(); err != nil {
-		return configUpdateResult{}, fmt.Errorf("validate voice providers: %w", err)
+		return configUpdateResult{}, invalidConfigUpdate(fmt.Errorf("validate voice providers: %w", err))
 	}
 	if err := os.Rename(tmpPath, resolvedPath); err != nil {
-		return configUpdateResult{}, fmt.Errorf("replace config: %w", err)
+		return configUpdateResult{}, internalConfigUpdate(fmt.Errorf("replace config: %w", err))
 	}
 	directory, err := os.Open(filepath.Dir(resolvedPath))
 	if err != nil {
-		return configUpdateResult{}, fmt.Errorf("open config directory: %w", err)
+		return configUpdateResult{}, internalConfigUpdate(fmt.Errorf("open config directory: %w", err))
 	}
 	defer directory.Close()
 	if err := directory.Sync(); err != nil {
-		return configUpdateResult{}, fmt.Errorf("sync config directory: %w", err)
+		return configUpdateResult{}, internalConfigUpdate(fmt.Errorf("sync config directory: %w", err))
 	}
 	return configUpdateResult{
 		OK:             true,

@@ -53,6 +53,78 @@ future_key = "preserve me"
 	}
 }
 
+func TestUpdateConfigFileWritesModelLogRawHTTP(t *testing.T) {
+	source := `[model]
+provider = "openai"
+model = "gpt-5.5"
+log_raw_http = false
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := updateConfigFile(path, []byte(`{"config":{"model":{"log_raw_http":true}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Config.Model.LogRawHTTP {
+		t.Fatal("resolved model.log_raw_http = false, want true")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "log_raw_http = true") {
+		t.Fatalf("model.log_raw_http was not updated:\n%s", got)
+	}
+}
+
+func TestUpdateConfigFileAddsProviderToInlineTable(t *testing.T) {
+	source := `model_providers = { old = { type = "openai" } }
+
+[model]
+provider = "old"
+model = "gpt-5.5"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := updateConfigFile(path, []byte(`{"config":{"model_providers":{"new":{"type":"ollama"}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.ChangedPaths, ",") != "model_providers.new.type" {
+		t.Fatalf("changed paths = %v", result.ChangedPaths)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `new = { type = "ollama" }`) ||
+		strings.Contains(string(got), "[model_providers.new]") {
+		t.Fatalf("provider was not added inside the inline table:\n%s", got)
+	}
+}
+
+func TestConfigUpdateErrorsExposeStableKinds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if _, err := updateConfigFile(path, []byte("not json")); err == nil {
+		t.Fatal("invalid patch error = nil")
+	} else if got := configUpdateErrorKind(err); got != configUpdateErrorInvalid {
+		t.Fatalf("invalid error kind = %q", got)
+	}
+
+	missingParent := filepath.Join(t.TempDir(), "missing", "agent.toml")
+	if _, err := updateConfigFile(missingParent, []byte(`{"config":{}}`)); err == nil {
+		t.Fatal("missing parent error = nil")
+	} else if got := configUpdateErrorKind(err); got != configUpdateErrorInternal {
+		t.Fatalf("internal error kind = %q", got)
+	}
+}
+
 func TestUpdateConfigFileEmptyPatchDoesNotRewrite(t *testing.T) {
 	source := []byte("locale = \"en-US\"\n[hid]\nkeyboard_layout = \"qwerty\"\n")
 	path := filepath.Join(t.TempDir(), "agent.toml")

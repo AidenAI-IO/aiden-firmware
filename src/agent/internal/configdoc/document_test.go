@@ -111,6 +111,51 @@ func TestApplyInsertsIntoExistingInlineTable(t *testing.T) {
 	}
 }
 
+func TestApplyCreatesNestedRecordInsideInlineTable(t *testing.T) {
+	source := []byte("model_providers = { old = { type = \"openai\" } } # keep this\n")
+	want := []byte("model_providers = { old = { type = \"openai\" }, new = { type = \"ollama\" } } # keep this\n")
+
+	got, changed, err := Apply(source, []Operation{{
+		Path:  []string{"model_providers", "new", "type"},
+		Value: "ollama",
+	}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "model_providers.new.type" {
+		t.Fatalf("changed = %v", changed)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestApplyAddsMultipleFieldsToNewInlineTableRecord(t *testing.T) {
+	source := []byte("model_providers = { old = { type = \"openai\" } }\n")
+	got, changed, err := Apply(source, []Operation{
+		{Path: []string{"model_providers", "new", "type"}, Value: "openai"},
+		{Path: []string{"model_providers", "new", "base_url"}, Value: "https://example.test"},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(changed) != 2 {
+		t.Fatalf("changed = %v", changed)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`new = { base_url = "https://example.test", type = "openai" }`,
+		`old = { type = "openai" }`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("inline provider missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "[model_providers.new]") {
+		t.Fatalf("new provider escaped the inline table:\n%s", text)
+	}
+}
+
 func TestApplyReplacesExistingInlineTableValue(t *testing.T) {
 	source := []byte("hid = { keyboard_layout = \"qwerty\", keyboard_device = \"/dev/hidg0\" }\n")
 	want := []byte("hid = { keyboard_layout = \"qwerty\", keyboard_device = \"/dev/hidg9\" }\n")
