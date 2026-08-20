@@ -1260,6 +1260,35 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config does not restart the agent for an empty change set") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string restart_script = tmp + "/restart-agent.sh";
+    const std::string restart_log = tmp + "/restart.log";
+    write_file(restart_script,
+               "#!/bin/sh\n"
+               "echo restarted >> \"$AIDEN_AGENT_RESTART_TEST_LOG\"\n");
+    REQUIRE(::chmod(restart_script.c_str(), 0755) == 0);
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_INIT_SCRIPT", restart_script);
+    env.set("AIDEN_AGENT_RESTART_TEST_LOG", restart_log);
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(
+        handle->port, "POST", "/api/config",
+        "{\"config\":{},\"apply_wifi\":false}");
+    REQUIRE(resp.status == 200);
+    CHECK(resp.body.find("\"changed_paths\":[]") != std::string::npos);
+    CHECK(resp.body.find("\"agent_restart_scheduled\":false") != std::string::npos);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK(::access(restart_log.c_str(), F_OK) != 0);
+}
+
 TEST_CASE("config_web: POST /api/config writes and preserves quick_capture section") {
     const std::string tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
@@ -1488,7 +1517,7 @@ TEST_CASE("config_web: redacted agent CLI provider credentials survive reads and
     CHECK(saved.find("secret_key = \"stored-key\"") != std::string::npos);
 }
 
-TEST_CASE("config_web: lossless updates preserve legacy flat voice credentials without leaking") {
+TEST_CASE("config_web: lossless updates migrate legacy flat voice credentials into records") {
     StubEnv env;
     auto handle = start_server(env);
     write_file(handle->tmp_dir + "/agent.toml",
@@ -1551,25 +1580,22 @@ TEST_CASE("config_web: lossless updates preserve legacy flat voice credentials w
     cJSON_Delete(post_root);
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("api_key = \"flat-tts-key\"") != std::string::npos);
-    CHECK(saved.find("api_key = \"flat-stt-key\"") != std::string::npos);
-    CHECK(saved.find("secret_id = \"record-secret-id\"") != std::string::npos);
-    CHECK(saved.find("secret_key = \"flat-secret-key\"") != std::string::npos);
-    CHECK(saved.find("record-tts-key") != std::string::npos);
-    CHECK(saved.find("record-stt-key") != std::string::npos);
-    CHECK(saved.find("record-secret-key") != std::string::npos);
+    const std::string tts_record = toml_section_text(saved, "tts_providers.voice");
+    const std::string stt_record = toml_section_text(saved, "stt_providers.speech");
+    CHECK(tts_record.find("api_key = \"flat-tts-key\"") != std::string::npos);
+    CHECK(stt_record.find("api_key = \"flat-stt-key\"") != std::string::npos);
+    CHECK(stt_record.find("secret_id = \"record-secret-id\"") != std::string::npos);
+    CHECK(stt_record.find("secret_key = \"flat-secret-key\"") != std::string::npos);
+    CHECK(saved.find("record-tts-key") == std::string::npos);
+    CHECK(saved.find("record-stt-key") == std::string::npos);
+    CHECK(saved.find("record-secret-key") == std::string::npos);
 
-    const size_t tts_at = saved.find("[tts]\n");
-    REQUIRE(tts_at != std::string::npos);
-    const size_t tts_end = saved.find("\n[", tts_at + 1);
-    CHECK(saved.substr(tts_at, tts_end - tts_at).find("api_key = \"flat-tts-key\"") != std::string::npos);
-    const size_t stt_at = saved.find("[stt]\n");
-    REQUIRE(stt_at != std::string::npos);
-    const size_t stt_end = saved.find("\n[", stt_at + 1);
-    const std::string stt_section = saved.substr(stt_at, stt_end - stt_at);
-    CHECK(stt_section.find("api_key = \"flat-stt-key\"") != std::string::npos);
-    CHECK(stt_section.find("secret_id = \"\"") != std::string::npos);
-    CHECK(stt_section.find("secret_key = \"flat-secret-key\"") != std::string::npos);
+    const std::string tts_section = toml_section_text(saved, "tts");
+    const std::string stt_section = toml_section_text(saved, "stt");
+    CHECK(tts_section.find("api_key") == std::string::npos);
+    CHECK(stt_section.find("api_key") == std::string::npos);
+    CHECK(stt_section.find("secret_id") == std::string::npos);
+    CHECK(stt_section.find("secret_key") == std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config renames a provider with its model reference") {
@@ -1788,15 +1814,14 @@ TEST_CASE("config_web: POST /api/config preserves providers when saving another 
     CHECK(model_section.find("api_key") == std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config migrates a legacy model api_key to a provider record") {
+TEST_CASE("config_web: POST /api/config migrates a legacy model api_key without reposting it") {
     StubEnv env;
     auto handle = start_server(env);
     write_file(handle->tmp_dir + "/agent.toml",
                "[model]\nprovider = \"openai\"\napi_key = \"sk-legacy-secret\"\nmodel = \"gpt-4o\"\n");
 
     const std::string body =
-        "{\"config\":{\"model\":{\"api_key\":\"sk-legacy-secret\"},"
-        "\"hid\":{\"keyboard_layout\":\"azerty\","
+        "{\"config\":{\"hid\":{\"keyboard_layout\":\"azerty\","
         "\"pointer_mode\":\"absolute\"}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     REQUIRE(resp.status == 200);

@@ -716,6 +716,227 @@ func TestUpdateConfigFileMigratesLegacyModelCredential(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigFileProviderEditsRemoveLegacyFlatOverrides(t *testing.T) {
+	source := `[model_providers.primary]
+type = "openai"
+api_key = "record-model-key"
+
+[tts_providers.voice]
+type = "fish-audio"
+api_key = "record-tts-key"
+voice_id = "record-voice"
+
+[stt_providers.speech]
+type = "tencent-asr"
+api_key = "record-stt-key"
+secret_key = "record-stt-secret"
+
+[model]
+provider = "primary"
+model = "gpt-5.5"
+api_key = "legacy-model-key"
+
+[tts]
+provider = "voice"
+api_key = "legacy-tts-key"
+voice_id = "legacy-voice"
+
+[stt]
+provider = "speech"
+api_key = "legacy-stt-key"
+secret_key = "legacy-stt-secret"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	patch := []byte(`{"config":{"model_providers":{"primary":{"type":"openai","api_key":"new-model-key"}},"tts_providers":{"voice":{"type":"fish-audio","api_key":"new-tts-key","voice_id":"new-voice"}},"stt_providers":{"speech":{"type":"tencent-asr","api_key":"new-stt-key","secret_key":"new-stt-secret"}}}}`)
+	result, err := updateConfigFile(path, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ChangedPaths) == 0 {
+		t.Fatal("provider edit reported no changed paths")
+	}
+
+	runtime, err := agent.LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Model.APIKey != "new-model-key" {
+		t.Errorf("runtime model api_key = %q, want new provider key", runtime.Model.APIKey)
+	}
+	if runtime.TTS.APIKey != "new-tts-key" || runtime.TTS.VoiceID != "new-voice" {
+		t.Errorf("runtime tts fields = %+v, want new provider values", runtime.TTS)
+	}
+	if runtime.STT.APIKey != "new-stt-key" || runtime.STT.SecretKey != "new-stt-secret" {
+		t.Errorf("runtime stt fields = %+v, want new provider values", runtime.STT)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, section := range []string{"model", "tts", "stt"} {
+		sectionText := tomlTestSection(string(got), section)
+		if strings.Contains(sectionText, "api_key") || strings.Contains(sectionText, "voice_id") ||
+			strings.Contains(sectionText, "secret_key") {
+			t.Errorf("legacy fields remain in [%s]:\n%s", section, sectionText)
+		}
+	}
+}
+
+func TestUpdateConfigFileProviderSwitchesIgnoreLegacyFlatCredentials(t *testing.T) {
+	source := `[model_providers.old-model]
+type = "openai"
+api_key = "old-model-record"
+
+[model_providers.new-model]
+type = "openai"
+api_key = "new-model-key"
+
+[tts_providers.old-voice]
+type = "fish-audio"
+api_key = "old-tts-record"
+
+[tts_providers.new-voice]
+type = "fish-audio"
+api_key = "new-tts-key"
+
+[stt_providers.old-speech]
+type = "openai-whisper"
+api_key = "old-stt-record"
+
+[stt_providers.new-speech]
+type = "openai-whisper"
+api_key = "new-stt-key"
+
+[model]
+provider = "old-model"
+model = "gpt-5.5"
+api_key = "legacy-model-key"
+
+[tts]
+provider = "old-voice"
+api_key = "legacy-tts-key"
+
+[stt]
+provider = "old-speech"
+api_key = "legacy-stt-key"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	patch := []byte(`{"config":{"model":{"provider":"new-model"},"tts":{"provider":"new-voice"},"stt":{"provider":"new-speech"}}}`)
+	if _, err := updateConfigFile(path, patch); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := agent.LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Model.APIKey != "new-model-key" || runtime.TTS.APIKey != "new-tts-key" ||
+		runtime.STT.APIKey != "new-stt-key" {
+		t.Fatalf("switched runtime kept a legacy key: model=%q tts=%q stt=%q",
+			runtime.Model.APIKey, runtime.TTS.APIKey, runtime.STT.APIKey)
+	}
+	if runtime.ModelProviders["old-model"].APIKey != "legacy-model-key" ||
+		runtime.TTSProviders["old-voice"].APIKey != "legacy-tts-key" ||
+		runtime.STTProviders["old-speech"].APIKey != "legacy-stt-key" {
+		t.Fatal("legacy credentials were not preserved on their original provider records")
+	}
+}
+
+func TestUpdateConfigFileChangedSavePersistsLegacyCredentialsOnlyInRecords(t *testing.T) {
+	source := `[model]
+provider = "openai"
+model = "gpt-5.5"
+api_key = "legacy-model-key"
+
+[tts]
+provider = "fish-audio"
+api_key = "legacy-tts-key"
+reference_id = "legacy-reference"
+
+[stt]
+provider = "openai-whisper"
+api_key = "legacy-stt-key"
+model = "whisper-1"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := updateConfigFile(path, []byte(`{"config":{"agent":{"max_iterations":7}}}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		"[model_providers.openai]", `api_key = "legacy-model-key"`,
+		"[tts_providers.fish-audio]", `api_key = "legacy-tts-key"`, `reference_id = "legacy-reference"`,
+		"[stt_providers.openai-whisper]", `api_key = "legacy-stt-key"`, `model = "whisper-1"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("migrated config missing %q:\n%s", want, text)
+		}
+	}
+	for _, section := range []string{"model", "tts", "stt"} {
+		sectionText := tomlTestSection(text, section)
+		if strings.Contains(sectionText, "api_key") || strings.Contains(sectionText, "reference_id") {
+			t.Errorf("legacy fields remain in [%s]:\n%s", section, sectionText)
+		}
+	}
+}
+
+func TestUpdateConfigFileNoopDoesNotPersistLegacyProviderMigration(t *testing.T) {
+	source := []byte(`[model]
+provider = "openai"
+model = "gpt-5.5"
+api_key = "legacy-model-key"
+
+[tts]
+provider = "fish-audio"
+api_key = "legacy-tts-key"
+`)
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, source, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	result, err := updateConfigFile(path, []byte(`{"config":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ChangedPaths) != 0 {
+		t.Fatalf("changed paths = %v", result.ChangedPaths)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, source) {
+		t.Fatalf("no-op save persisted a legacy migration:\n%s", got)
+	}
+}
+
+func tomlTestSection(text, name string) string {
+	start := strings.Index(text, "["+name+"]\n")
+	if start < 0 {
+		return ""
+	}
+	rest := text[start+1:]
+	if end := strings.Index(rest, "\n["); end >= 0 {
+		return text[start : start+1+end]
+	}
+	return text[start:]
+}
+
 func TestUpdateConfigFileRejectsNonObjectModelProvidersDuringLegacyCredentialMigration(t *testing.T) {
 	source := []byte("[model]\nprovider = \"openai\"\napi_key = \"legacy-secret\"\nmodel = \"gpt-5.5\"\n")
 	for _, modelProviders := range []string{"null", `[]`} {

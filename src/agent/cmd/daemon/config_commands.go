@@ -20,6 +20,7 @@ import (
 
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/configdoc"
+	"github.com/BurntSushi/toml"
 )
 
 // ValidationError represents a single validation error with field path and message
@@ -1199,6 +1200,7 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 	if err := normalizeLegacyWebConfigPatch(patch, current); err != nil {
 		return configUpdateResult{}, invalidConfigUpdate(err)
 	}
+	explicitCredentials := explicitProviderCredentialEdits(patch, renames, current)
 	if err := stripReadOnlyStatusFields(patch, currentDTO); err != nil {
 		return configUpdateResult{}, internalConfigUpdate(err)
 	}
@@ -1211,6 +1213,11 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 	patch, err = filterNoopWebConfigPatch(patch, currentDTO)
 	if err != nil {
 		return configUpdateResult{}, internalConfigUpdate(err)
+	}
+	if len(patch) > 0 {
+		if err := persistLegacyProviderFields(patch, current, original, renames, explicitCredentials); err != nil {
+			return configUpdateResult{}, internalConfigUpdate(err)
+		}
 	}
 	operations, err := configPatchOperations(patch)
 	if err != nil {
@@ -1483,6 +1490,223 @@ func addLegacyModelProviderCredential(patch map[string]json.RawMessage, current 
 	}
 	patch["model_providers"] = encodedRecords
 	return nil
+}
+
+type providerFieldEdits map[string]map[string]map[string]bool
+
+func explicitProviderCredentialEdits(patch map[string]json.RawMessage, renames providerRenames, current agent.Config) providerFieldEdits {
+	edits := make(providerFieldEdits)
+	for _, section := range []string{"model_providers", "tts_providers", "stt_providers"} {
+		var records map[string]json.RawMessage
+		if raw, ok := patch[section]; !ok || json.Unmarshal(raw, &records) != nil {
+			continue
+		}
+		for name, rawRecord := range records {
+			var record map[string]json.RawMessage
+			if json.Unmarshal(rawRecord, &record) != nil {
+				continue
+			}
+			sourceName := name
+			if oldName, ok := renames[section][name]; ok {
+				sourceName = oldName
+			}
+			previous := providerCredentialValues(current, section, sourceName)
+			for key := range previous {
+				raw, ok := record[key]
+				if !ok || !isExplicitCredentialEdit(raw, previous[key]) {
+					continue
+				}
+				if edits[section] == nil {
+					edits[section] = make(map[string]map[string]bool)
+				}
+				if edits[section][name] == nil {
+					edits[section][name] = make(map[string]bool)
+				}
+				edits[section][name][key] = true
+			}
+		}
+	}
+	return edits
+}
+
+func isExplicitCredentialEdit(raw json.RawMessage, previous string) bool {
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return true
+	}
+	if strings.TrimSpace(value) == "" {
+		return false
+	}
+	return previous == "" || (value != previous && value != maskCredential(previous))
+}
+
+// persistLegacyProviderFields joins a real save with the on-disk migration.
+// The record receives the legacy effective value unless this request supplied
+// a new credential, then the flat field is deleted in the same atomic update.
+func persistLegacyProviderFields(
+	patch map[string]json.RawMessage,
+	current agent.Config,
+	original []byte,
+	renames providerRenames,
+	explicitCredentials providerFieldEdits,
+) error {
+	var rawConfig map[string]any
+	metadata, err := toml.Decode(string(original), &rawConfig)
+	if err != nil {
+		return fmt.Errorf("decode legacy provider fields: %w", err)
+	}
+
+	if metadata.IsDefined("model", "api_key") && strings.TrimSpace(current.Model.Provider) != "" {
+		provider := current.Model.Provider
+		providerType := provider
+		if record, ok := current.ModelProviders[provider]; ok {
+			providerType = record.Type
+		}
+		if err := persistLegacyProviderRecord(patch, metadata, renames, explicitCredentials,
+			"model_providers", provider, providerType, map[string]string{"api_key": current.Model.APIKey},
+			map[string]bool{"api_key": true}); err != nil {
+			return err
+		}
+		if err := addLegacyFieldDeletes(patch, "model", []string{"api_key"}); err != nil {
+			return err
+		}
+	}
+
+	if provider := current.TTS.Provider; strings.TrimSpace(provider) != "" {
+		if record, ok := current.TTSProviders[provider]; ok {
+			values := definedLegacyValues(metadata, "tts", map[string]string{
+				"api_key": record.APIKey, "model": record.Model, "voice_id": record.VoiceID,
+				"emotion": record.Emotion, "reference_id": record.ReferenceID,
+			})
+			if len(values) > 0 {
+				if err := persistLegacyProviderRecord(patch, metadata, renames, explicitCredentials,
+					"tts_providers", provider, record.Type, values, map[string]bool{"api_key": true}); err != nil {
+					return err
+				}
+				if err := addLegacyFieldDeletes(patch, "tts", mapKeys(values)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if provider := current.STT.Provider; strings.TrimSpace(provider) != "" {
+		if record, ok := current.STTProviders[provider]; ok {
+			values := definedLegacyValues(metadata, "stt", map[string]string{
+				"api_key": record.APIKey, "model": record.Model, "base_url": record.BaseURL,
+				"app_id": record.AppID, "secret_id": record.SecretID, "secret_key": record.SecretKey,
+				"region": record.Region, "engine_model_type": record.EngineModelType,
+			})
+			if len(values) > 0 {
+				if err := persistLegacyProviderRecord(patch, metadata, renames, explicitCredentials,
+					"stt_providers", provider, record.Type, values,
+					map[string]bool{"api_key": true, "secret_id": true, "secret_key": true}); err != nil {
+					return err
+				}
+				if err := addLegacyFieldDeletes(patch, "stt", mapKeys(values)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func definedLegacyValues(metadata toml.MetaData, section string, values map[string]string) map[string]string {
+	result := make(map[string]string)
+	for key, value := range values {
+		if metadata.IsDefined(section, key) {
+			result[key] = value
+		}
+	}
+	return result
+}
+
+func persistLegacyProviderRecord(
+	patch map[string]json.RawMessage,
+	metadata toml.MetaData,
+	renames providerRenames,
+	explicitCredentials providerFieldEdits,
+	section, sourceName, providerType string,
+	values map[string]string,
+	credentialFields map[string]bool,
+) error {
+	targetName := sourceName
+	for newName, oldName := range renames[section] {
+		if oldName == sourceName {
+			targetName = newName
+			break
+		}
+	}
+
+	records := make(map[string]json.RawMessage)
+	if raw, ok := patch[section]; ok {
+		if err := json.Unmarshal(raw, &records); err != nil || records == nil {
+			return fmt.Errorf("%s patch must be an object", section)
+		}
+	}
+	if raw, ok := records[targetName]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
+	}
+	record := make(map[string]json.RawMessage)
+	if raw, ok := records[targetName]; ok {
+		if err := json.Unmarshal(raw, &record); err != nil || record == nil {
+			return fmt.Errorf("%s.%s patch must be an object", section, targetName)
+		}
+	}
+	if !metadata.IsDefined(section, sourceName) {
+		if _, exists := record["type"]; !exists {
+			record["type"], _ = json.Marshal(providerType)
+		}
+	}
+	for key, value := range values {
+		if credentialFields[key] && explicitCredentials[section][targetName][key] {
+			continue
+		}
+		if !credentialFields[key] {
+			if _, exists := record[key]; exists {
+				continue
+			}
+		}
+		record[key], _ = json.Marshal(value)
+	}
+	encodedRecord, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	records[targetName] = encodedRecord
+	encodedRecords, err := json.Marshal(records)
+	if err != nil {
+		return err
+	}
+	patch[section] = encodedRecords
+	return nil
+}
+
+func addLegacyFieldDeletes(patch map[string]json.RawMessage, section string, fields []string) error {
+	values := make(map[string]json.RawMessage)
+	if raw, ok := patch[section]; ok {
+		if err := json.Unmarshal(raw, &values); err != nil || values == nil {
+			return fmt.Errorf("%s patch must be an object", section)
+		}
+	}
+	for _, field := range fields {
+		values[field] = json.RawMessage("null")
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	patch[section] = encoded
+	return nil
+}
+
+func mapKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func takeProviderRenames(patch map[string]json.RawMessage) (providerRenames, error) {

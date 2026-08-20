@@ -4110,19 +4110,20 @@ ApiResponse handle_post_config_via_cli(const Options& options, const std::string
     cJSON* config = cJSON_DetachItemFromObject(update, "config");
     if (config) cJSON_AddItemToObject(response, "config", config);
     cJSON* changed = cJSON_DetachItemFromObject(update, "changed_paths");
+    const bool config_changed = json_is_array(changed) && cJSON_GetArraySize(changed) > 0;
     if (changed) cJSON_AddItemToObject(response, "changed_paths", changed);
     cJSON* reboot = cJSON_DetachItemFromObject(update, "reboot_required");
 	bool reboot_required = json_is_type(reboot, cJSON_True);
     if (reboot) cJSON_AddItemToObject(response, "reboot_required", reboot);
     cJSON_AddBoolToObject(response, "usbhid_restart_required", reboot_required ? 1 : 0);
-    cJSON_AddBoolToObject(response, "agent_restart_scheduled", reboot_required ? 0 : 1);
+    cJSON_AddBoolToObject(response, "agent_restart_scheduled", config_changed && !reboot_required ? 1 : 0);
     cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
     cJSON_AddBoolToObject(response, "usb_reenumeration_scheduled", 0);
     cJSON_AddStringToObject(response, "message",
                             reboot_required
                                 ? "config saved; USB HID configuration changed; reboot required"
                                 : "config saved");
-    if (!reboot_required) schedule_agent_restart();
+    if (config_changed && !reboot_required) schedule_agent_restart();
     if (apply_wifi && should_save_wifi) {
         CommandResult wifi_apply = apply_wifi_config(options);
         cJSON* apply = add_object(response, "wifi_apply");
