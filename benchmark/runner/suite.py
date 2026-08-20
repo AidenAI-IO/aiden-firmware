@@ -13,6 +13,11 @@ from runner.platform import (
 )
 
 VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory", "perception", "device_operation"}
+SETUP_KEYS = {
+    "agent_prompt": {"type", "prompt", "timeout_sec", "clear_history_after"},
+    "seed_memory": {"type", "memories", "timeout_sec"},
+    "seed_episode": {"type", "episode", "consolidate", "timeout_sec"},
+}
 
 class SuiteValidationError(ValueError):
     pass
@@ -223,12 +228,27 @@ def load_suite(path: Path) -> Suite:
             raw.get("mock_environment"),
             path=f"task {tid}.mock_environment",
         )
+        setup = raw.get("setup")
+        if setup is not None:
+            if not isinstance(setup, dict):
+                raise SuiteValidationError(f"task {tid}: setup must be an object")
+            setup_type = setup.get("type")
+            if not isinstance(setup_type, str):
+                raise SuiteValidationError(f"task {tid}: setup type must be a string")
+            allowed_setup_keys = SETUP_KEYS.get(setup_type)
+            if allowed_setup_keys is None:
+                raise SuiteValidationError(f"task {tid}: unsupported setup type {setup_type!r}")
+            unknown_setup_keys = sorted(set(setup) - allowed_setup_keys)
+            if unknown_setup_keys:
+                raise SuiteValidationError(
+                    f"task {tid}: unsupported {setup_type} setup keys: {', '.join(unknown_setup_keys)}"
+                )
         tasks.append(TaskSpec(
             id=tid, category=cat,
             description_for_judge=raw["description_for_judge"],
             prompt=raw["prompt"],
             rubric=rubric, hard_assertions=hard,
-            setup=raw.get("setup"),
+            setup=setup,
             mock_environment=task_mock_environment,
             repeats=repeats,
             input_screenshot=raw.get("input_screenshot"),
@@ -276,15 +296,6 @@ def load_suite(path: Path) -> Suite:
         )
 
     mock_environment = _parse_mock_environment(data.get("mock_environment"))
-    if mock_environment is None and any(task.mock_environment is not None for task in tasks):
-        missing_task_ids = [task.id for task in tasks if task.mock_environment is None]
-        if missing_task_ids:
-            raise SuiteValidationError(
-                "a suite using task-level mock_environment must define it for every task "
-                "or provide a suite-level mock_environment default; missing: "
-                + ", ".join(missing_task_ids)
-            )
-
     return Suite(
         name=data.get("name", Path(path).stem),
         global_reset=data.get("global_reset") or {},

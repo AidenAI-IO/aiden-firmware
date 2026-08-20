@@ -107,3 +107,39 @@ func TestDeviceMemorySearchTreatsLegacyMissingStatusAsActive(t *testing.T) {
 		t.Fatalf("legacy memory with omitted status was hidden: %#v", hits)
 	}
 }
+
+func TestDeviceMemorySearchRetainsAliasOnlyEntityMatch(t *testing.T) {
+	ctx := context.Background()
+	store := NewDeviceMemoryStore(filepath.Join(t.TempDir(), "device"))
+	if _, err := store.Upsert(ctx, DeviceMemoryItem{
+		ID: "alias_only", Type: "procedure", Status: deviceMemoryStatusActive,
+		Title: "Verified route", Aliases: []string{"QA Notes"},
+	}); err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+	hits, err := store.Search(ctx, DeviceMemoryQuery{Entities: []string{"QA Notes"}, Limit: 5})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != "alias_only" {
+		t.Fatalf("alias-only Search() hits = %#v", hits)
+	}
+}
+
+func TestDeviceMemorySearchRetainsAppIDOnlyEntityMatch(t *testing.T) {
+	ctx := context.Background()
+	store := NewDeviceMemoryStore(filepath.Join(t.TempDir(), "device"))
+	if _, err := store.Upsert(ctx, DeviceMemoryItem{
+		ID: "app_id_only", Type: "app_profile", Status: deviceMemoryStatusActive,
+		AppID: "com.example.qa-notes",
+	}); err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+	hits, err := store.Search(ctx, DeviceMemoryQuery{Entities: []string{"com.example.qa-notes"}, Limit: 5})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != "app_id_only" {
+		t.Fatalf("AppID-only Search() hits = %#v", hits)
+	}
+}

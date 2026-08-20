@@ -155,7 +155,7 @@ func (s *DeviceMemoryStore) Search(ctx context.Context, query DeviceMemoryQuery)
 		if len(query.Tags) > 0 && !matchesAny(query.Tags, item.Tags) {
 			continue
 		}
-		if len(query.Entities) > 0 && !matchesAny(query.Entities, append(append([]string(nil), item.Entities...), item.AppID)) {
+		if len(query.Entities) > 0 && !matchesAnyMemoryName(query.Entities, deviceMemoryEntityCandidates(item)) {
 			continue
 		}
 		if len(terms) > 0 && scoreDeviceMemory(item, terms) == 0 {
@@ -179,6 +179,41 @@ func (s *DeviceMemoryStore) Search(ctx context.Context, query DeviceMemoryQuery)
 		hits = hits[:limit]
 	}
 	return hits, nil
+}
+
+// deviceMemoryEntityCandidates lists every recorded name an entity filter may
+// legitimately refer to. AppName, PageName, and Aliases are all names a caller
+// could name the memory by, so excluding them dropped otherwise valid matches.
+func deviceMemoryEntityCandidates(item DeviceMemoryItem) []string {
+	candidates := make([]string, 0, len(item.Entities)+len(item.Aliases)+4)
+	candidates = append(candidates, item.Entities...)
+	candidates = append(candidates, item.Aliases...)
+	return append(candidates, item.AppID, item.AppName, item.PageName)
+}
+
+// matchesAnyMemoryName uses the same normalized exact-or-contained comparison
+// as long-term memory recall. Aliases carry known rewordings; arbitrary token
+// overlap is intentionally not treated as a name match.
+func matchesAnyMemoryName(queryValues []string, candidateValues []string) bool {
+	if len(queryValues) == 0 {
+		return true
+	}
+	for _, queryValue := range queryValues {
+		queryTerm := normalizeMemorySearchTerm(queryValue)
+		if queryTerm == "" {
+			continue
+		}
+		for _, candidateValue := range candidateValues {
+			candidateTerm := normalizeMemorySearchTerm(candidateValue)
+			if candidateTerm == "" {
+				continue
+			}
+			if queryTerm == candidateTerm || memorySearchTermContains(queryTerm, candidateTerm) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *DeviceMemoryStore) Upsert(ctx context.Context, item DeviceMemoryItem) (string, error) {
@@ -602,11 +637,13 @@ func deviceMemoryToHit(item DeviceMemoryItem) MemoryHit {
 		Confidence:    item.Confidence,
 		Tags:          append([]string(nil), item.Tags...),
 		Entities:      append([]string(nil), item.Entities...),
+		Aliases:       append([]string(nil), item.Aliases...),
 		Source:        "device",
 		Applicability: cloneStringMap(item.Applicability),
 		EvidenceRefs:  append([]MemorySourceRef(nil), item.EvidenceRefs...),
 		Steps:         append([]ProcedureStep(nil), item.Steps...),
 		AppName:       item.AppName,
+		AppID:         item.AppID,
 		PageName:      item.PageName,
 	}
 }
@@ -627,6 +664,8 @@ func scoreMemoryHit(hit MemoryHit, terms []string) int {
 		hit.Content,
 		strings.Join(hit.Tags, " "),
 		strings.Join(hit.Entities, " "),
+		strings.Join(hit.Aliases, " "),
+		hit.AppID,
 		hit.AppName,
 		hit.PageName,
 		renderMemoryScopeForSearch(hit.Applicability),
