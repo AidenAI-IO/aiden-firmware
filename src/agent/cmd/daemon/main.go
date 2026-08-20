@@ -48,6 +48,8 @@ func main() {
 			os.Exit(runConfigMeta(os.Args[2:]))
 		case "config":
 			os.Exit(runConfig(os.Args[2:]))
+		case "config-update":
+			os.Exit(runConfigUpdate(os.Args[2:]))
 		case "config-test":
 			os.Exit(runConfigTest(os.Args[2:]))
 		}

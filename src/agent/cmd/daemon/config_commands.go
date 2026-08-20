@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -13,7 +12,37 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/configupdate"
 )
+
+type webConfigDTO = configupdate.Config
+type modelDTO = configupdate.Model
+type modelProviderDTO = configupdate.ModelProvider
+type ttsProviderDTO = configupdate.TTSProvider
+type sttProviderDTO = configupdate.STTProvider
+type ttsDTO = configupdate.TTS
+type sttDTO = configupdate.STT
+type audioDTO = configupdate.Audio
+type audioArchiveDTO = configupdate.AudioArchive
+type quickCaptureDTO = configupdate.QuickCapture
+type storageDTO = configupdate.Storage
+type storageDegradedModeDTO = configupdate.StorageDegradedMode
+type storageCleanupDTO = configupdate.StorageCleanup
+type deviceDTO = configupdate.Device
+type voiceNotificationsDTO = configupdate.VoiceNotifications
+type voiceNotificationResponseTailDTO = configupdate.VoiceNotificationResponseTail
+type voiceNotificationExpirationDTO = configupdate.VoiceNotificationExpiration
+type logDTO = configupdate.Log
+type otaDTO = configupdate.OTA
+type hidDTO = configupdate.HID
+type searchDTO = configupdate.Search
+type telemetryDTO = configupdate.Telemetry
+type liveActivityDTO = configupdate.LiveActivity
+type agentDTO = configupdate.Agent
+
+func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
+	return configupdate.FromAgentConfig(cfg)
+}
 
 // ValidationError represents a single validation error with field path and message
 type ValidationError struct {
@@ -37,770 +66,6 @@ type ConfigTestCheck struct {
 	Check  string `json:"check"`
 	Passed bool   `json:"passed"`
 	Detail string `json:"detail"`
-}
-
-// webConfigDTO mirrors the JSON produced by config_web.cpp's config_to_json().
-// It is the single definition of the config_web <-> agent wire contract: keys
-// are snake_case, agent-level settings live under "agent", and write-only
-// credentials report only configured-state flags rather than echoing values.
-//
-// Keep this struct in lockstep with config_to_json(); the round-trip is covered
-// by TestConfigCheck_WireFormatContract.
-type webConfigDTO struct {
-	ModelProviders     map[string]modelProviderDTO   `json:"model_providers,omitempty"`
-	TTSProviders       map[string]ttsProviderDTO     `json:"tts_providers,omitempty"`
-	STTProviders       map[string]sttProviderDTO     `json:"stt_providers,omitempty"`
-	Model              modelDTO                      `json:"model"`
-	TTS                ttsDTO                        `json:"tts"`
-	STT                sttDTO                        `json:"stt"`
-	Audio              audioDTO                      `json:"audio"`
-	AudioArchive       audioArchiveDTO               `json:"audio_archive"`
-	QuickCapture       quickCaptureDTO               `json:"quick_capture"`
-	VoiceNotifications voiceNotificationsDTO         `json:"voice_notifications"`
-	Device             deviceDTO                     `json:"device"`
-	Log                logDTO                        `json:"log"`
-	OTA                otaDTO                        `json:"ota"`
-	HID                hidDTO                        `json:"hid"`
-	Search             searchDTO                     `json:"search"`
-	Telemetry          telemetryDTO                  `json:"telemetry"`
-	LiveActivity       liveActivityDTO               `json:"live_activity"`
-	TerminationPolicy  agent.TerminationPolicyConfig `json:"termination_policy"`
-	Agent              agentDTO                      `json:"agent"`
-}
-
-// UnmarshalJSON rejects the former top-level providers key so callers do not
-// get a successful response for a payload whose provider records were ignored.
-func (d *webConfigDTO) UnmarshalJSON(data []byte) error {
-	type canonicalDTO webConfigDTO
-	if err := json.Unmarshal(data, (*canonicalDTO)(d)); err != nil {
-		return err
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
-	if _, exists := fields["providers"]; exists {
-		return errors.New(`"providers" is unsupported; use "model_providers"`)
-	}
-	return nil
-}
-
-type modelDTO struct {
-	Provider             string   `json:"provider"`
-	APIKey               string   `json:"api_key"`
-	Model                string   `json:"model"`
-	APIMode              string   `json:"api_mode,omitempty"`
-	ReasoningEffort      string   `json:"reasoning_effort"`
-	Temperature          *float64 `json:"temperature,omitempty"`
-	MaxResponseTokens    int      `json:"max_response_tokens"`
-	ContextWindow        int      `json:"context_window"`
-	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
-}
-
-func (d modelDTO) providerTestRequest() agent.ModelProviderTestRequest {
-	return agent.ModelProviderTestRequest{
-		Provider:        d.Provider,
-		APIKey:          d.APIKey,
-		Model:           d.Model,
-		APIMode:         d.APIMode,
-		Temperature:     d.Temperature,
-		ReasoningEffort: d.ReasoningEffort,
-	}
-}
-
-// modelProviderDTO mirrors a single [model_providers.<name>] section. Named providers hold
-// the credentials; a model section references one by putting the provider name
-// in its own "provider" field.
-type modelProviderDTO struct {
-	Type      string `json:"type"`
-	APIKey    string `json:"api_key,omitempty"`
-	HasAPIKey bool   `json:"has_api_key,omitempty"`
-	BaseURL   string `json:"base_url,omitempty"`
-}
-
-func (d *modelProviderDTO) UnmarshalJSON(data []byte) error {
-	type canonical modelProviderDTO
-	var fields struct {
-		canonical
-		Type           *string `json:"type"`
-		LegacyProvider string  `json:"provider"`
-	}
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
-	typePresent, err := jsonFieldPresent(data, "type")
-	if err != nil {
-		return err
-	}
-	*d = modelProviderDTO(fields.canonical)
-	if typePresent {
-		if fields.Type != nil {
-			d.Type = *fields.Type
-		}
-		return nil
-	}
-	d.Type = fields.LegacyProvider
-	return nil
-}
-
-// ttsProviderDTO mirrors a single [tts_providers.<name>] section. [tts]
-// references one by putting the record name in its own "provider" field. speed
-// is absent on purpose: it is a listening preference that stays global on [tts]
-// so switching voice never changes playback speed.
-type ttsProviderDTO struct {
-	Type        string `json:"type"`
-	APIKey      string `json:"api_key,omitempty"`
-	HasAPIKey   bool   `json:"has_api_key,omitempty"`
-	Model       string `json:"model,omitempty"`
-	VoiceID     string `json:"voice_id,omitempty"`
-	Emotion     string `json:"emotion,omitempty"`
-	ReferenceID string `json:"reference_id,omitempty"`
-}
-
-func (d *ttsProviderDTO) UnmarshalJSON(data []byte) error {
-	type canonical ttsProviderDTO
-	var fields struct {
-		canonical
-		Type           *string `json:"type"`
-		LegacyProvider string  `json:"provider"`
-	}
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
-	typePresent, err := jsonFieldPresent(data, "type")
-	if err != nil {
-		return err
-	}
-	*d = ttsProviderDTO(fields.canonical)
-	if typePresent {
-		if fields.Type != nil {
-			d.Type = *fields.Type
-		}
-		return nil
-	}
-	d.Type = fields.LegacyProvider
-	return nil
-}
-
-// sttProviderDTO mirrors a single [stt_providers.<name>] section. language stays
-// on [stt]: it holds regardless of which provider transcribes.
-type sttProviderDTO struct {
-	Type            string `json:"type"`
-	APIKey          string `json:"api_key,omitempty"`
-	HasAPIKey       bool   `json:"has_api_key,omitempty"`
-	Model           string `json:"model,omitempty"`
-	BaseURL         string `json:"base_url,omitempty"`
-	AppID           string `json:"app_id,omitempty"`
-	SecretID        string `json:"secret_id,omitempty"`
-	HasSecretID     bool   `json:"has_secret_id,omitempty"`
-	SecretKey       string `json:"secret_key,omitempty"`
-	HasSecretKey    bool   `json:"has_secret_key,omitempty"`
-	Region          string `json:"region,omitempty"`
-	EngineModelType string `json:"engine_model_type,omitempty"`
-}
-
-func (d *sttProviderDTO) UnmarshalJSON(data []byte) error {
-	type canonical sttProviderDTO
-	var fields struct {
-		canonical
-		Type           *string `json:"type"`
-		LegacyProvider string  `json:"provider"`
-	}
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
-	typePresent, err := jsonFieldPresent(data, "type")
-	if err != nil {
-		return err
-	}
-	*d = sttProviderDTO(fields.canonical)
-	if typePresent {
-		if fields.Type != nil {
-			d.Type = *fields.Type
-		}
-		return nil
-	}
-	d.Type = fields.LegacyProvider
-	return nil
-}
-
-func jsonFieldPresent(data []byte, key string) (bool, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return false, err
-	}
-	_, exists := fields[key]
-	return exists, nil
-}
-
-type ttsDTO struct {
-	Provider    string  `json:"provider"`
-	APIKey      string  `json:"api_key,omitempty"`
-	Model       string  `json:"model"`
-	VoiceID     string  `json:"voice_id"`
-	ReferenceID string  `json:"reference_id"`
-	Emotion     string  `json:"emotion"`
-	Speed       float64 `json:"speed"`
-}
-
-func (d ttsDTO) playbackTestRequest(text string) agent.TTSPlaybackTestRequest {
-	return agent.TTSPlaybackTestRequest{
-		Provider:    d.Provider,
-		APIKey:      d.APIKey,
-		Model:       d.Model,
-		VoiceID:     d.VoiceID,
-		ReferenceID: d.ReferenceID,
-		Emotion:     d.Emotion,
-		Speed:       d.Speed,
-		Text:        text,
-	}
-}
-
-type sttDTO struct {
-	Provider        string `json:"provider"`
-	Language        string `json:"language"`
-	APIKey          string `json:"api_key,omitempty"`
-	Model           string `json:"model"`
-	BaseURL         string `json:"base_url"`
-	AppID           string `json:"app_id"`
-	SecretID        string `json:"secret_id,omitempty"`
-	SecretKey       string `json:"secret_key,omitempty"`
-	Region          string `json:"region"`
-	EngineModelType string `json:"engine_model_type"`
-}
-
-func (d sttDTO) transcriptionTestRequest(wavData []byte) agent.STTTranscriptionTestRequest {
-	return agent.STTTranscriptionTestRequest{
-		Provider:        d.Provider,
-		Language:        d.Language,
-		APIKey:          d.APIKey,
-		Model:           d.Model,
-		BaseURL:         d.BaseURL,
-		AppID:           d.AppID,
-		SecretID:        d.SecretID,
-		SecretKey:       d.SecretKey,
-		Region:          d.Region,
-		EngineModelType: d.EngineModelType,
-		WAVData:         wavData,
-	}
-}
-
-type audioDTO struct {
-	Socket          string `json:"socket"`
-	SampleRate      int    `json:"sample_rate"`
-	Channels        int    `json:"channels"`
-	BitWidth        int    `json:"bit_width"`
-	PlaybackBackend string `json:"playback_backend"`
-}
-
-type audioArchiveDTO struct {
-	Enabled     bool   `json:"enabled"`
-	MaxFiles    int    `json:"max_files"`
-	MaxSizeMB   int    `json:"max_size_mb"`
-	StoragePath string `json:"storage_path"`
-}
-
-type quickCaptureDTO struct {
-	Enabled         bool   `json:"enabled"`
-	GPIOPin         int    `json:"gpio_pin"`
-	ScreenMemoryTTL string `json:"screen_memory_ttl"`
-}
-
-type deviceDTO struct {
-	Backend    string `json:"backend,omitempty"`
-	DeviceType string `json:"device_type"`
-}
-
-type voiceNotificationsDTO struct {
-	Enabled      *bool                            `json:"enabled"`
-	MaxPending   int                              `json:"max_pending"`
-	ResponseTail voiceNotificationResponseTailDTO `json:"response_tail"`
-	Expiration   voiceNotificationExpirationDTO   `json:"expiration"`
-}
-
-type voiceNotificationResponseTailDTO struct {
-	Enabled      *bool `json:"enabled"`
-	MaxItems     int   `json:"max_items"`
-	MaxTextChars int   `json:"max_text_chars"`
-}
-
-type voiceNotificationExpirationDTO struct {
-	DefaultTTLSeconds int            `json:"default_ttl_seconds"`
-	CodeTTLSeconds    map[string]int `json:"code_ttl_seconds"`
-}
-
-type logDTO struct {
-	LLMHTTPRetentionDays int `json:"llm_http_retention_days"`
-}
-
-type otaDTO struct {
-	GitHubProxyURL string `json:"github_proxy_url"`
-}
-
-type hidDTO struct {
-	KeyboardDevice        string `json:"keyboard_device"`
-	KeyboardLayout        string `json:"keyboard_layout"`
-	MouseDevice           string `json:"mouse_device"`
-	AndroidKeyboardDevice string `json:"android_keyboard_device"`
-	FrameSocket           string `json:"frame_socket"`
-	PointerMode           string `json:"pointer_mode"`
-	InputBackend          string `json:"input_backend"`
-}
-
-type searchDTO struct {
-	APIKey    string `json:"api_key,omitempty"`
-	Provider  string `json:"provider"`
-	HasAPIKey bool   `json:"has_api_key"`
-}
-
-type telemetryDTO struct {
-	Enabled           bool     `json:"enabled"`
-	Provider          string   `json:"provider"`
-	BaseURL           string   `json:"base_url"`
-	PublicKey         string   `json:"public_key"`
-	SecretKey         string   `json:"secret_key"`
-	UploadScreenshots bool     `json:"upload_screenshots"`
-	UploadTimeoutSec  int      `json:"upload_timeout_sec"`
-	MaxRetry          int      `json:"max_retry"`
-	Tags              []string `json:"tags"`
-	Environment       string   `json:"environment"`
-}
-
-type liveActivityDTO struct {
-	Enabled *bool `json:"enabled"`
-}
-
-type agentDTO struct {
-	Locale                     string  `json:"locale"`
-	CustomInstruction          string  `json:"custom_instruction"`
-	AdditionalPrompt           string  `json:"additional_prompt"`
-	InputMode                  string  `json:"input_mode"`
-	VADBackend                 string  `json:"vad_backend"`
-	VADModelPath               string  `json:"vad_model_path"`
-	VADHelperPath              string  `json:"vad_helper_path"`
-	VADSpeechThreshold         float64 `json:"vad_speech_threshold"`
-	SilenceMs                  int     `json:"silence_ms"`
-	MinSpeechMs                int     `json:"min_speech_ms"`
-	VoiceFollowupEnabled       bool    `json:"voice_followup_enabled"`
-	VoiceFollowupTimeoutMs     int     `json:"voice_followup_timeout_ms"`
-	VoiceFirstTurnTimeoutMs    int     `json:"voice_first_turn_timeout_ms"`
-	VoiceMaxTurns              int     `json:"voice_max_turns"`
-	VoiceInterruptOnWakeup     bool    `json:"voice_interrupt_on_wakeup"`
-	VoiceStreamingTTSEnabled   bool    `json:"voice_streaming_tts_enabled"`
-	VoiceToolCallSpeech        bool    `json:"voice_tool_call_speech"`
-	VoiceProgressSpeechEnabled bool    `json:"voice_progress_speech_enabled"`
-	VoiceMaxResponseTokens     int     `json:"voice_max_response_tokens"`
-	LoadAllTools               bool    `json:"load_all_tools"`
-	MaxIterations              int     `json:"max_iterations"`
-	ScreenshotKeepN            int     `json:"screenshot_keep_n"`
-	ScreenshotPruneInterval    int     `json:"screenshot_prune_interval"`
-	ScreenStableTimeoutMs      int     `json:"screen_stable_timeout_ms"`
-	ScreenStableMs             int     `json:"screen_stable_ms"`
-	ScreenStableDiffThreshold  float64 `json:"screen_stable_diff_threshold"`
-}
-
-// hasAPIKeyPlaceholder is substituted for a real key when the wire payload
-// reports has_api_key=true. config_web never echoes the stored secret, so this
-// lets Validate()'s "key is required" checks pass when a key is in fact saved,
-// without the validator ever seeing the secret value.
-const hasAPIKeyPlaceholder = "***"
-
-// toAgentConfig maps the wire DTO onto agent.Config so the canonical
-// Config.Validate() can run against it.
-func (d webConfigDTO) toAgentConfig() agent.Config {
-	searchKey := ""
-	if strings.TrimSpace(d.Search.APIKey) != "" {
-		searchKey = d.Search.APIKey
-	} else if d.Search.HasAPIKey {
-		searchKey = hasAPIKeyPlaceholder
-	}
-	return agent.Config{
-		ModelProviders: d.modelProvidersToAgentConfig(),
-		TTSProviders:   d.ttsProvidersToAgentConfig(),
-		STTProviders:   d.sttProvidersToAgentConfig(),
-		Model: agent.ModelConfig{
-			Provider:             d.Model.Provider,
-			APIKey:               d.Model.APIKey,
-			Model:                d.Model.Model,
-			APIMode:              d.Model.APIMode,
-			Temperature:          d.Model.Temperature,
-			MaxResponseTokens:    d.Model.MaxResponseTokens,
-			ContextWindow:        d.Model.ContextWindow,
-			ModelMaxOutputTokens: d.Model.ModelMaxOutputTokens,
-		},
-		TTS: agent.TTSConfig{
-			Provider:    d.TTS.Provider,
-			APIKey:      d.TTS.APIKey,
-			Model:       d.TTS.Model,
-			VoiceID:     d.TTS.VoiceID,
-			ReferenceID: d.TTS.ReferenceID,
-			Emotion:     d.TTS.Emotion,
-			Speed:       d.TTS.Speed,
-		},
-		STT: agent.STTConfig{
-			Provider:        d.STT.Provider,
-			Language:        d.STT.Language,
-			APIKey:          d.STT.APIKey,
-			Model:           d.STT.Model,
-			BaseURL:         d.STT.BaseURL,
-			AppID:           d.STT.AppID,
-			SecretID:        d.STT.SecretID,
-			SecretKey:       d.STT.SecretKey,
-			Region:          d.STT.Region,
-			EngineModelType: d.STT.EngineModelType,
-		},
-		Audio: agent.AudioConfig{
-			Socket:          d.Audio.Socket,
-			SampleRate:      d.Audio.SampleRate,
-			Channels:        d.Audio.Channels,
-			BitWidth:        d.Audio.BitWidth,
-			PlaybackBackend: d.Audio.PlaybackBackend,
-		},
-		AudioArchive: agent.AudioArchiveConfig{
-			Enabled:     d.AudioArchive.Enabled,
-			MaxFiles:    d.AudioArchive.MaxFiles,
-			MaxSizeMB:   d.AudioArchive.MaxSizeMB,
-			StoragePath: d.AudioArchive.StoragePath,
-		},
-		QuickCapture: agent.QuickCaptureConfig{
-			Enabled:         boolPtr(d.QuickCapture.Enabled),
-			GPIOPin:         d.QuickCapture.GPIOPin,
-			ScreenMemoryTTL: d.QuickCapture.ScreenMemoryTTL,
-		},
-		VoiceNotifications: agent.VoiceNotificationsConfig{
-			Enabled:    d.VoiceNotifications.Enabled,
-			MaxPending: d.VoiceNotifications.MaxPending,
-			ResponseTail: agent.VoiceNotificationResponseTailConfig{
-				Enabled:      d.VoiceNotifications.ResponseTail.Enabled,
-				MaxItems:     d.VoiceNotifications.ResponseTail.MaxItems,
-				MaxTextChars: d.VoiceNotifications.ResponseTail.MaxTextChars,
-			},
-			Expiration: agent.VoiceNotificationExpirationConfig{
-				DefaultTTLSeconds: d.VoiceNotifications.Expiration.DefaultTTLSeconds,
-				CodeTTLSeconds:    d.VoiceNotifications.Expiration.CodeTTLSeconds,
-			},
-		},
-		Log: agent.LogConfig{
-			LLMHTTPRetentionDays: d.Log.LLMHTTPRetentionDays,
-		},
-		OTA: agent.OTAConfig{
-			GitHubProxyURL: d.OTA.GitHubProxyURL,
-		},
-		HID: agent.HIDConfig{
-			KeyboardDevice:        d.HID.KeyboardDevice,
-			KeyboardLayout:        d.HID.KeyboardLayout,
-			MouseDevice:           d.HID.MouseDevice,
-			AndroidKeyboardDevice: d.HID.AndroidKeyboardDevice,
-			FrameSocket:           d.HID.FrameSocket,
-			PointerMode:           d.HID.PointerMode,
-			InputBackend:          d.HID.InputBackend,
-		},
-		Device: agent.DeviceConfig{
-			Backend:    d.Device.Backend,
-			DeviceType: d.Device.DeviceType,
-		},
-		Search: agent.SearchConfig{
-			Provider: d.Search.Provider,
-			APIKey:   searchKey,
-		},
-		Telemetry: agent.TelemetryConfig{
-			Enabled:           boolPtr(d.Telemetry.Enabled),
-			Provider:          d.Telemetry.Provider,
-			BaseURL:           d.Telemetry.BaseURL,
-			PublicKey:         d.Telemetry.PublicKey,
-			SecretKey:         d.Telemetry.SecretKey,
-			UploadScreenshots: boolPtr(d.Telemetry.UploadScreenshots),
-			UploadTimeoutSec:  d.Telemetry.UploadTimeoutSec,
-			MaxRetry:          d.Telemetry.MaxRetry,
-			Tags:              d.Telemetry.Tags,
-			Environment:       d.Telemetry.Environment,
-		},
-		LiveActivity: agent.LiveActivityConfig{
-			Enabled: d.LiveActivity.Enabled,
-		},
-		TerminationPolicy:          d.TerminationPolicy,
-		Locale:                     d.Agent.Locale,
-		Instruction:                d.Agent.CustomInstruction,
-		AdditionalPrompt:           d.Agent.AdditionalPrompt,
-		InputMode:                  d.Agent.InputMode,
-		VADBackend:                 d.Agent.VADBackend,
-		VADModelPath:               d.Agent.VADModelPath,
-		VADHelperPath:              d.Agent.VADHelperPath,
-		VADSpeechThreshold:         d.Agent.VADSpeechThreshold,
-		SilenceMs:                  d.Agent.SilenceMs,
-		MinSpeechMs:                d.Agent.MinSpeechMs,
-		VoiceFollowupEnabled:       boolPtr(d.Agent.VoiceFollowupEnabled),
-		VoiceFollowupTimeoutMs:     d.Agent.VoiceFollowupTimeoutMs,
-		VoiceFirstTurnTimeoutMs:    d.Agent.VoiceFirstTurnTimeoutMs,
-		VoiceMaxTurns:              d.Agent.VoiceMaxTurns,
-		VoiceInterruptOnWakeup:     boolPtr(d.Agent.VoiceInterruptOnWakeup),
-		VoiceStreamingTTSEnabled:   boolPtr(d.Agent.VoiceStreamingTTSEnabled),
-		VoiceToolCallSpeech:        boolPtr(d.Agent.VoiceToolCallSpeech),
-		VoiceProgressSpeechEnabled: boolPtr(d.Agent.VoiceProgressSpeechEnabled),
-		VoiceMaxResponseTokens:     d.Agent.VoiceMaxResponseTokens,
-		LoadAllTools:               d.Agent.LoadAllTools,
-		MaxIterations:              d.Agent.MaxIterations,
-		ScreenshotKeepN:            d.Agent.ScreenshotKeepN,
-		ScreenshotPruneInterval:    d.Agent.ScreenshotPruneInterval,
-		ScreenStableTimeoutMs:      d.Agent.ScreenStableTimeoutMs,
-		ScreenStableMs:             d.Agent.ScreenStableMs,
-		ScreenStableDiffThreshold:  d.Agent.ScreenStableDiffThreshold,
-	}
-}
-
-func boolPtr(b bool) *bool {
-	return &b
-}
-
-func modelProviderDTOsFromConfig(providers map[string]agent.ModelProvider) map[string]modelProviderDTO {
-	if len(providers) == 0 {
-		return nil
-	}
-	result := make(map[string]modelProviderDTO, len(providers))
-	for name, provider := range providers {
-		result[name] = modelProviderDTO{
-			Type:      provider.Type,
-			HasAPIKey: strings.TrimSpace(provider.APIKey) != "",
-			BaseURL:   provider.BaseURL,
-		}
-	}
-	return result
-}
-
-func (d webConfigDTO) modelProvidersToAgentConfig() map[string]agent.ModelProvider {
-	if len(d.ModelProviders) == 0 {
-		return nil
-	}
-	result := make(map[string]agent.ModelProvider, len(d.ModelProviders))
-	for name, provider := range d.ModelProviders {
-		result[name] = agent.ModelProvider{
-			Type:    provider.Type,
-			APIKey:  provider.APIKey,
-			BaseURL: provider.BaseURL,
-		}
-	}
-	return result
-}
-
-func ttsProviderDTOsFromConfig(providers map[string]agent.TTSProvider) map[string]ttsProviderDTO {
-	if len(providers) == 0 {
-		return nil
-	}
-	result := make(map[string]ttsProviderDTO, len(providers))
-	for name, provider := range providers {
-		result[name] = ttsProviderDTO{
-			Type:        provider.Type,
-			HasAPIKey:   strings.TrimSpace(provider.APIKey) != "",
-			Model:       provider.Model,
-			VoiceID:     provider.VoiceID,
-			Emotion:     provider.Emotion,
-			ReferenceID: provider.ReferenceID,
-		}
-	}
-	return result
-}
-
-func (d webConfigDTO) ttsProvidersToAgentConfig() map[string]agent.TTSProvider {
-	if len(d.TTSProviders) == 0 {
-		return nil
-	}
-	result := make(map[string]agent.TTSProvider, len(d.TTSProviders))
-	for name, provider := range d.TTSProviders {
-		result[name] = agent.TTSProvider{
-			Type:        provider.Type,
-			APIKey:      provider.APIKey,
-			Model:       provider.Model,
-			VoiceID:     provider.VoiceID,
-			Emotion:     provider.Emotion,
-			ReferenceID: provider.ReferenceID,
-		}
-	}
-	return result
-}
-
-func sttProviderDTOsFromConfig(providers map[string]agent.STTProvider) map[string]sttProviderDTO {
-	if len(providers) == 0 {
-		return nil
-	}
-	result := make(map[string]sttProviderDTO, len(providers))
-	for name, provider := range providers {
-		result[name] = sttProviderDTO{
-			Type:            provider.Type,
-			HasAPIKey:       strings.TrimSpace(provider.APIKey) != "",
-			Model:           provider.Model,
-			BaseURL:         provider.BaseURL,
-			AppID:           provider.AppID,
-			HasSecretID:     strings.TrimSpace(provider.SecretID) != "",
-			HasSecretKey:    strings.TrimSpace(provider.SecretKey) != "",
-			Region:          provider.Region,
-			EngineModelType: provider.EngineModelType,
-		}
-	}
-	return result
-}
-
-func (d webConfigDTO) sttProvidersToAgentConfig() map[string]agent.STTProvider {
-	if len(d.STTProviders) == 0 {
-		return nil
-	}
-	result := make(map[string]agent.STTProvider, len(d.STTProviders))
-	for name, provider := range d.STTProviders {
-		result[name] = agent.STTProvider{
-			Type:            provider.Type,
-			APIKey:          provider.APIKey,
-			Model:           provider.Model,
-			BaseURL:         provider.BaseURL,
-			AppID:           provider.AppID,
-			SecretID:        provider.SecretID,
-			SecretKey:       provider.SecretKey,
-			Region:          provider.Region,
-			EngineModelType: provider.EngineModelType,
-		}
-	}
-	return result
-}
-
-func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
-	audioArchive := cfg.AudioArchive
-
-	return webConfigDTO{
-		ModelProviders: modelProviderDTOsFromConfig(cfg.ModelProviders),
-		TTSProviders:   ttsProviderDTOsFromConfig(cfg.TTSProviders),
-		STTProviders:   sttProviderDTOsFromConfig(cfg.STTProviders),
-		Model: modelDTO{
-			Provider:             cfg.Model.Provider,
-			APIKey:               cfg.Model.APIKey,
-			Model:                cfg.Model.Model,
-			APIMode:              cfg.Model.APIMode,
-			ReasoningEffort:      cfg.Model.ReasoningEffort,
-			Temperature:          cfg.Model.Temperature,
-			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
-			ContextWindow:        cfg.Model.ContextWindow,
-			ModelMaxOutputTokens: cfg.Model.ModelMaxOutputTokens,
-		},
-		TTS: ttsDTO{
-			Provider:    cfg.TTS.Provider,
-			Model:       cfg.TTS.Model,
-			VoiceID:     cfg.TTS.VoiceID,
-			ReferenceID: cfg.TTS.ReferenceID,
-			Emotion:     cfg.TTS.Emotion,
-			Speed:       cfg.TTS.Speed,
-		},
-		STT: sttDTO{
-			Provider:        cfg.STT.Provider,
-			Language:        cfg.STT.Language,
-			Model:           cfg.STT.Model,
-			BaseURL:         cfg.STT.BaseURL,
-			AppID:           cfg.STT.AppID,
-			Region:          cfg.STT.Region,
-			EngineModelType: cfg.STT.EngineModelType,
-		},
-		Audio: audioDTO{
-			Socket:          cfg.Audio.SocketOrDefault(),
-			SampleRate:      cfg.Audio.SampleRateOrDefault(),
-			Channels:        cfg.Audio.ChannelsOrDefault(),
-			BitWidth:        cfg.Audio.BitWidthOrDefault(),
-			PlaybackBackend: cfg.Audio.PlaybackBackendOrDefault(),
-		},
-		AudioArchive: audioArchiveDTO{
-			Enabled:     audioArchive.Enabled,
-			MaxFiles:    audioArchive.MaxFilesOrDefault(),
-			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
-			StoragePath: audioArchive.StoragePathOrDefault(),
-		},
-		QuickCapture: quickCaptureDTO{
-			Enabled:         cfg.QuickCapture.EnabledOrDefault(),
-			GPIOPin:         cfg.QuickCapture.GPIOPin,
-			ScreenMemoryTTL: cfg.QuickCapture.ScreenMemoryTTLOrDefault(),
-		},
-		Device: deviceDTO{
-			Backend:    cfg.Device.BackendOrDefault(),
-			DeviceType: cfg.DeviceTypeOrDefault(),
-		},
-		VoiceNotifications: voiceNotificationsDTO{
-			Enabled:    cfg.VoiceNotifications.Enabled,
-			MaxPending: cfg.VoiceNotifications.MaxPendingOrDefault(),
-			ResponseTail: voiceNotificationResponseTailDTO{
-				Enabled:      cfg.VoiceNotifications.ResponseTail.Enabled,
-				MaxItems:     cfg.VoiceNotifications.ResponseTail.MaxItems,
-				MaxTextChars: cfg.VoiceNotifications.ResponseTail.MaxTextCharsOrDefault(),
-			},
-			Expiration: voiceNotificationExpirationDTO{
-				DefaultTTLSeconds: cfg.VoiceNotifications.Expiration.DefaultTTLSeconds,
-				CodeTTLSeconds:    cfg.VoiceNotifications.Expiration.CodeTTLSeconds,
-			},
-		},
-		Log: logDTO{
-			LLMHTTPRetentionDays: cfg.Log.LLMHTTPRetentionDaysOrDefault(),
-		},
-		OTA: otaDTO{
-			GitHubProxyURL: cfg.OTA.GitHubProxyURLOrDefault(),
-		},
-		HID: hidDTO{
-			KeyboardDevice:        cfg.HID.KeyboardDeviceOrDefault(),
-			KeyboardLayout:        cfg.HID.KeyboardLayoutOrDefault(),
-			MouseDevice:           cfg.HID.MouseDeviceOrDefault(),
-			AndroidKeyboardDevice: cfg.HID.AndroidKeyboardDeviceOrDefault(),
-			FrameSocket:           cfg.HID.FrameSocketOrDefault(),
-			PointerMode:           cfg.PointerModeOrDefault(),
-			InputBackend:          cfg.HID.InputBackendOrDefault(),
-		},
-		Search: searchDTO{
-			Provider:  cfg.Search.ProviderOrDefault(),
-			HasAPIKey: strings.TrimSpace(cfg.Search.APIKey) != "",
-		},
-		Telemetry: telemetryDTO{
-			Enabled:           cfg.Telemetry.EnabledOrDefault(),
-			Provider:          cfg.Telemetry.ProviderOrDefault(),
-			BaseURL:           cfg.Telemetry.BaseURL,
-			PublicKey:         cfg.Telemetry.PublicKey,
-			SecretKey:         cfg.Telemetry.SecretKey,
-			UploadScreenshots: cfg.Telemetry.UploadScreenshotsOrDefault(),
-			UploadTimeoutSec:  int(cfg.Telemetry.UploadTimeoutOrDefault().Seconds()),
-			MaxRetry:          cfg.Telemetry.MaxRetryOrDefault(),
-			Tags:              cfg.Telemetry.Tags,
-			Environment:       cfg.Telemetry.EnvironmentOrDefault(),
-		},
-		LiveActivity: liveActivityDTO{
-			Enabled: boolPtr(cfg.LiveActivity.EnabledOrDefault()),
-		},
-		TerminationPolicy: cfg.TerminationPolicyOrDefault(),
-		Agent: agentDTO{
-			Locale:                     cfg.LocaleOrDefault(),
-			CustomInstruction:          customInstructionValue(cfg.Instruction),
-			AdditionalPrompt:           cfg.AdditionalPrompt,
-			InputMode:                  cfg.InputModeOrDefault(),
-			VADBackend:                 cfg.VADBackendOrDefault(),
-			VADModelPath:               cfg.VADModelPath,
-			VADHelperPath:              cfg.VADHelperPath,
-			VADSpeechThreshold:         cfg.VADSpeechThreshold,
-			SilenceMs:                  cfg.SilenceMs,
-			MinSpeechMs:                cfg.MinSpeechMs,
-			VoiceFollowupEnabled:       cfg.VoiceFollowupEnabledOrDefault(),
-			VoiceFollowupTimeoutMs:     int(cfg.VoiceFollowupTimeoutOrDefault().Milliseconds()),
-			VoiceFirstTurnTimeoutMs:    int(cfg.VoiceFirstTurnTimeoutOrDefault().Milliseconds()),
-			VoiceMaxTurns:              cfg.VoiceMaxTurns,
-			VoiceInterruptOnWakeup:     cfg.VoiceInterruptOnWakeupOrDefault(),
-			VoiceStreamingTTSEnabled:   cfg.VoiceStreamingTTSEnabledOrDefault(),
-			VoiceToolCallSpeech:        cfg.VoiceToolCallSpeechOrDefault(),
-			VoiceProgressSpeechEnabled: cfg.VoiceProgressSpeechEnabledOrDefault(),
-			VoiceMaxResponseTokens:     cfg.VoiceMaxResponseTokensOrDefault(),
-			LoadAllTools:               cfg.LoadAllTools,
-			MaxIterations:              cfg.MaxIterations,
-			ScreenshotKeepN:            cfg.ScreenshotKeepN,
-			ScreenshotPruneInterval:    cfg.ScreenshotPruneInterval,
-			ScreenStableTimeoutMs:      cfg.ScreenStableTimeoutMs,
-			ScreenStableMs:             cfg.ScreenStableMs,
-			ScreenStableDiffThreshold:  cfg.ScreenStableDiffThreshold,
-		},
-	}
-}
-
-func customInstructionValue(instruction string) string {
-	if strings.TrimSpace(instruction) == agent.DefaultConfig().Instruction {
-		return ""
-	}
-	return instruction
 }
 
 // runConfigCheck implements the `agent config-check` subcommand
@@ -866,10 +131,10 @@ func checkConfigPath(path string) ValidationResult {
 // JSON. Splitting this out of runConfigCheck keeps the full
 // decode -> map -> validate pipeline testable without driving os.Stdin/Stdout.
 func checkConfig(r io.Reader) (ValidationResult, error) {
-	// The payload is the wire format produced by config_web.cpp's
-	// config_to_json(): snake_case keys, agent-level settings nested under an
-	// "agent" object, and search exposing only a "has_api_key" boolean instead
-	// of the raw key. agent.Config carries only TOML tags, so decoding straight
+	// The payload is the config_web wire format defined by webConfigDTO:
+	// snake_case keys, agent-level settings nested under an "agent" object, and
+	// search exposing only a "has_api_key" boolean instead of the raw key.
+	// agent.Config carries only TOML tags, so decoding straight
 	// into it silently drops every snake_case / nested field and validates a
 	// near-empty config. Decode into a DTO that mirrors the wire format, then
 	// map it onto agent.Config before validating.
@@ -877,7 +142,7 @@ func checkConfig(r io.Reader) (ValidationResult, error) {
 	if err := json.NewDecoder(r).Decode(&dto); err != nil {
 		return ValidationResult{}, err
 	}
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 
 	result := ValidationResult{
 		Valid:  true,
@@ -932,7 +197,7 @@ func resolvedWebConfigDTO(configPath string) (webConfigDTO, error) {
 	if err != nil {
 		return webConfigDTO{}, err
 	}
-	return webConfigDTOFromAgentConfig(cfg), nil
+	return configupdate.FromAgentConfig(cfg), nil
 }
 
 // runConfig implements the `agent config` subcommand. It reads the current
@@ -972,6 +237,49 @@ func runConfig(args []string) int {
 	}
 
 	return 0
+}
+
+func runConfigUpdate(args []string) int {
+	return runConfigUpdateIO(args, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func runConfigUpdateIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("config-update", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	formatFlag := fs.String("format", "json", "output format (only json supported)")
+	stdinFlag := fs.Bool("stdin", false, "read JSON merge patch from stdin")
+	configFlag := fs.String("config", "", "path to a TOML config file")
+	if err := fs.Parse(args); err != nil {
+		writeConfigUpdateError(stdout, err, configupdate.ErrorKindInvalidRequest)
+		return 1
+	}
+	if *formatFlag != "json" || !*stdinFlag || strings.TrimSpace(*configFlag) == "" {
+		writeConfigUpdateError(stdout, fmt.Errorf("--config, --stdin and --format=json are required"), configupdate.ErrorKindInvalidRequest)
+		return 1
+	}
+	patch, err := io.ReadAll(stdin)
+	if err != nil {
+		writeConfigUpdateError(stdout, err, configupdate.ErrorKindInternal)
+		return 1
+	}
+	result, err := configupdate.NewService().Update(strings.TrimSpace(*configFlag), patch)
+	if err != nil {
+		writeConfigUpdateError(stdout, err, configupdate.ErrorKind(err))
+		return 1
+	}
+	if err := json.NewEncoder(stdout).Encode(result); err != nil {
+		fmt.Fprintf(stderr, "encode config-update result: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func writeConfigUpdateError(w io.Writer, err error, kind string) {
+	_ = json.NewEncoder(w).Encode(configupdate.Result{
+		OK:        false,
+		Error:     err.Error(),
+		ErrorKind: kind,
+	})
 }
 
 type configTestInput struct {
@@ -1050,7 +358,7 @@ func executeConfigTest(ctx context.Context, cfg agent.Config, input configTestIn
 			return configTestFailure("request", "invalid model values: "+err.Error())
 		}
 
-		result, err := agent.RunModelProviderTest(ctx, cfg, modelValues.providerTestRequest())
+		result, err := agent.RunModelProviderTest(ctx, cfg, modelValues.ProviderTestRequest())
 		if err != nil {
 			detail := err.Error()
 			if result.Provider != "" {
@@ -1074,7 +382,7 @@ func executeConfigTest(ctx context.Context, cfg agent.Config, input configTestIn
 			return configTestFailure("request", "invalid tts values: "+err.Error())
 		}
 
-		playback, err := agent.RunTTSPlaybackTest(ctx, cfg, ttsValues.playbackTestRequest(input.Text))
+		playback, err := agent.RunTTSPlaybackTest(ctx, cfg, ttsValues.PlaybackTestRequest(input.Text))
 		if err != nil {
 			detail := err.Error()
 			if ttsValues.Provider != "" {
@@ -1100,7 +408,7 @@ func executeConfigTest(ctx context.Context, cfg agent.Config, input configTestIn
 		return configTestFailure("request", "invalid stt values: "+err.Error())
 	}
 	if strings.TrimSpace(input.AudioBase64) == "" {
-		result, err := agent.RunSTTProviderTest(ctx, cfg, sttValues.transcriptionTestRequest(nil))
+		result, err := agent.RunSTTProviderTest(ctx, cfg, sttValues.TranscriptionTestRequest(nil))
 		if err != nil {
 			return configTestFailure("provider_config", err.Error())
 		}
@@ -1117,7 +425,7 @@ func executeConfigTest(ctx context.Context, cfg agent.Config, input configTestIn
 	if err != nil {
 		return configTestFailure("request", "invalid audio_base64: "+err.Error())
 	}
-	transcription, err := agent.RunSTTTranscriptionTest(ctx, cfg, sttValues.transcriptionTestRequest(wavData))
+	transcription, err := agent.RunSTTTranscriptionTest(ctx, cfg, sttValues.TranscriptionTestRequest(wavData))
 	if err != nil {
 		return configTestFailure("stt_transcription", err.Error())
 	}
