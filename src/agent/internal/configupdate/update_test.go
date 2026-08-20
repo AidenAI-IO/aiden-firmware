@@ -3,6 +3,7 @@ package configupdate
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,6 +107,99 @@ model = "gpt-5.5"
 	if !strings.Contains(string(got), `new = { type = "ollama" }`) ||
 		strings.Contains(string(got), "[model_providers.new]") {
 		t.Fatalf("provider was not added inside the inline table:\n%s", got)
+	}
+}
+
+func TestUpdateConfigFileSupportsQuotedProviderNamesAcrossOperations(t *testing.T) {
+	source := `[model_providers."open.router"]
+type = "openai"
+api_key = "model-secret"
+base_url = "https://old.example"
+
+[model]
+provider = "open.router"
+model = "gpt-5.5"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	patches := []string{
+		`{"config":{"model_providers":{"open.router":{"base_url":"https://new.example"}}}}`,
+		`{"config":{"model_providers":{"new.provider":{"type":"ollama"}}}}`,
+		`{"config":{"model_providers":{"open.router":null,"renamed.provider":{"type":"openai","base_url":"https://new.example"}},"_provider_renames":{"model_providers":{"renamed.provider":"open.router"}},"model":{"provider":"renamed.provider"}}}`,
+		`{"config":{"model_providers":{"new.provider":null}}}`,
+	}
+	for _, patch := range patches {
+		if _, err := NewService().Update(path, []byte(patch)); err != nil {
+			t.Fatalf("Update(%s) error = %v", patch, err)
+		}
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`api_key = "model-secret"`,
+		`base_url = "https://new.example"`,
+		`provider = "renamed.provider"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("quoted provider operation lost %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "open.router") || strings.Contains(text, "new.provider") {
+		t.Fatalf("deleted or renamed quoted provider remains:\n%s", text)
+	}
+	loaded, err := agent.LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatalf("load updated quoted provider config: %v", err)
+	}
+	provider, ok := loaded.ModelProviders["renamed.provider"]
+	if !ok || provider.APIKey != "model-secret" || provider.BaseURL != "https://new.example" {
+		t.Fatalf("resolved quoted provider = %+v, exists = %v", provider, ok)
+	}
+}
+
+func TestUpdateConfigFileRebootUsesEffectiveHIDConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		deviceType    string
+		wantCanonical string
+		wantReboot    bool
+	}{
+		{name: "canonical spelling only", deviceType: "ios", wantCanonical: "iOS", wantReboot: false},
+		{name: "same pointer mode", deviceType: "macOS", wantCanonical: "macOS", wantReboot: false},
+		{name: "different pointer mode", deviceType: "Android", wantCanonical: "Android", wantReboot: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent.toml")
+			if err := os.WriteFile(path, []byte("[device]\ndevice_type = \"iOS\"\n"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			patch := []byte(fmt.Sprintf(`{"config":{"device":{"device_type":%q}}}`, tt.deviceType))
+			result, err := NewService().Update(path, patch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.RebootRequired != tt.wantReboot {
+				t.Fatalf("reboot required = %v, want %v", result.RebootRequired, tt.wantReboot)
+			}
+			if result.Config.Device.DeviceType != tt.wantCanonical {
+				t.Fatalf("resolved device type = %q, want %q", result.Config.Device.DeviceType, tt.wantCanonical)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(got), fmt.Sprintf("device_type = %q", tt.deviceType)) {
+				t.Fatalf("save did not preserve submitted spelling:\n%s", got)
+			}
+		})
 	}
 }
 

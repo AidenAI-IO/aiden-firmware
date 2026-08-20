@@ -4064,6 +4064,18 @@ static bool update_agent_config_via_cli(const Options& options,
 ApiResponse handle_post_config_via_cli(const Options& options, const std::string& body) {
     cJSON* root = cJSON_Parse(body.c_str());
     if (!root) return make_json_error(400, "invalid JSON body");
+    if (!json_is_object(root)) {
+        cJSON_Delete(root);
+        return make_json_error(400, "request body must be an object");
+    }
+    cJSON* wifi_json = cJSON_GetObjectItem(root, "wifi");
+    cJSON* apply_wifi_json = cJSON_GetObjectItem(root, "apply_wifi");
+    if (wifi_json || (apply_wifi_json && !json_is_type(apply_wifi_json, cJSON_False))) {
+        cJSON_Delete(root);
+        return make_json_error(
+            400,
+            "wifi updates are not supported by /api/config; use /api/wifi/connect or /api/wifi/forget");
+    }
     cJSON* cli_root = cJSON_CreateObject();
     cJSON* submitted_config = cJSON_GetObjectItem(root, "config");
     if (submitted_config && !json_is_object(submitted_config)) {
@@ -4075,8 +4087,8 @@ ApiResponse handle_post_config_via_cli(const Options& options, const std::string
                           submitted_config ? cJSON_Duplicate(submitted_config, 1) : cJSON_CreateObject());
     char* cli_body = cJSON_PrintUnformatted(cli_root);
     cJSON_Delete(cli_root);
+    cJSON_Delete(root);
     if (!cli_body) {
-        cJSON_Delete(root);
         return make_json_error(500, "failed to encode config patch");
     }
     cJSON* update = NULL;
@@ -4085,25 +4097,7 @@ ApiResponse handle_post_config_via_cli(const Options& options, const std::string
     bool config_updated = update_agent_config_via_cli(options, cli_body, &update, &status, &error);
     free(cli_body);
     if (!config_updated) {
-        cJSON_Delete(root);
         return make_json_error(status, error);
-    }
-
-    aiden::WifiNetworkConfig wifi;
-    std::string wifi_error;
-    load_current_wifi_config(options, &wifi, &wifi_error);
-    cJSON* wifi_json = cJSON_GetObjectItem(root, "wifi");
-    if (json_is_object(wifi_json)) update_wifi_from_json(wifi_json, &wifi);
-    bool apply_wifi = false;
-    cJSON* apply_wifi_json = cJSON_GetObjectItem(root, "apply_wifi");
-    if (json_is_bool(apply_wifi_json)) apply_wifi = json_is_type(apply_wifi_json, cJSON_True);
-    cJSON_Delete(root);
-
-    bool should_save_wifi = !wifi.ssid.empty() || !wifi.networks.empty() || file_exists(options.wifi_config_path.c_str());
-    std::string save_error;
-    if (should_save_wifi && !aiden::save_wifi_config(options.wifi_config_path.c_str(), wifi, &save_error)) {
-        cJSON_Delete(update);
-        return make_json_error(500, save_error);
     }
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
@@ -4124,13 +4118,6 @@ ApiResponse handle_post_config_via_cli(const Options& options, const std::string
                                 ? "config saved; USB HID configuration changed; reboot required"
                                 : "config saved");
     if (config_changed && !reboot_required) schedule_agent_restart();
-    if (apply_wifi && should_save_wifi) {
-        CommandResult wifi_apply = apply_wifi_config(options);
-        cJSON* apply = add_object(response, "wifi_apply");
-        cJSON_AddBoolToObject(apply, "ok", wifi_apply.exit_code == 0);
-        cJSON_AddNumberToObject(apply, "exit_code", wifi_apply.exit_code);
-        cJSON_AddStringToObject(apply, "output", trim_trailing_newlines(wifi_apply.output).c_str());
-    }
     cJSON_Delete(update);
     return make_json_ok(response);
 }

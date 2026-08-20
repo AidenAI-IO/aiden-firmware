@@ -182,7 +182,7 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 		OK:             true,
 		Config:         FromAgentConfig(candidate),
 		ChangedPaths:   changed,
-		RebootRequired: requiresConfigReboot(changed),
+		RebootRequired: requiresConfigReboot(current, candidate),
 	}, nil
 }
 
@@ -915,9 +915,6 @@ func validatePatchObject(typ reflect.Type, patch map[string]json.RawMessage, pat
 		}
 		for key, raw := range patch {
 			entryPath := append(path, key)
-			if isProviderMapPath(path) && !isBareTOMLKey(key) {
-				return fmt.Errorf("invalid %s name %q: expected bare TOML key", strings.Join(path, "."), key)
-			}
 			if isCodeTTLMapPath(path) && !isBareTOMLKey(key) {
 				return fmt.Errorf("%s: expected bare TOML key", strings.Join(entryPath, "."))
 			}
@@ -1085,10 +1082,6 @@ func jsonValueType(value any) string {
 	}
 }
 
-func isProviderMapPath(path []string) bool {
-	return len(path) == 1 && (path[0] == "model_providers" || path[0] == "tts_providers" || path[0] == "stt_providers")
-}
-
 func isCodeTTLMapPath(path []string) bool {
 	return len(path) == 3 && path[0] == "voice_notifications" && path[1] == "expiration" && path[2] == "code_ttl_seconds"
 }
@@ -1172,11 +1165,9 @@ func normalizeJSONValue(value any) (any, error) {
 	}
 }
 
-func requiresConfigReboot(paths []string) bool {
-	for _, path := range paths {
-		if path == "device.device_type" || path == "hid.keyboard_layout" {
-			return true
-		}
-	}
-	return false
+// Source spelling remains lossless; reboot decisions use the resolved runtime
+// values so aliases do not masquerade as USB/HID behavior changes.
+func requiresConfigReboot(current, candidate agent.Config) bool {
+	return current.PointerModeOrDefault() != candidate.PointerModeOrDefault() ||
+		current.HID.KeyboardLayoutOrDefault() != candidate.HID.KeyboardLayoutOrDefault()
 }

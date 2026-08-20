@@ -363,6 +363,32 @@ assert.equal(ModelProvidersManager.sanitizeName('__proto__'), '');
 assert.equal(ModelProvidersManager.sanitizeName('constructor'), '');
 assert.equal(TtsProvidersManager.sanitizeName('prototype'), '');
 assert.equal(ModelProvidersManager.sanitizeName('work-openai'), 'work-openai');
+assert.equal(ModelProvidersManager.sanitizeName(' open.router '), 'open.router');
+assert.equal(TtsProvidersManager.sanitizeName('custom provider'), 'custom provider');
+
+let quotedProviderBody = null;
+ModelProvidersManager.load({'open.router': {type: 'openai'}});
+appState.config = {
+  model: {provider: 'open.router', model: 'gpt-5.5'},
+  model_providers: {'open.router': {type: 'openai'}},
+};
+providerSelectForModels.value = 'open.router';
+providerTypeInput.value = 'openai';
+providerBaseURLInput.value = 'https://updated.example/v1';
+providerAPIKeyInput.value = '';
+providerNameInput.value = 'open.router';
+requestImpl = async (_url, options) => {
+  quotedProviderBody = JSON.parse(options.body);
+  return {config: appState.config};
+};
+assert.equal(await ModelProvidersManager.saveDialog('open.router'), true);
+assert.deepEqual(
+  quotedProviderBody.config.model_providers,
+  {'open.router': {type: 'openai', base_url: 'https://updated.example/v1'}},
+  'editing a quoted provider name must address the existing record without renaming it',
+);
+assert.equal(Object.prototype.hasOwnProperty.call(quotedProviderBody.config, '_provider_renames'), false);
+assert.equal(Object.prototype.hasOwnProperty.call(quotedProviderBody, 'apply_wifi'), false);
 
 ModelProvidersManager.load({initial: {type: 'openai'}});
 ModelProvidersManager.records = {next: {type: 'openai'}};

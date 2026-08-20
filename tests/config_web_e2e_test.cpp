@@ -2048,7 +2048,7 @@ TEST_CASE("config_web: POST /api/config rejects an empty model provider") {
     CHECK(read_file(handle->tmp_dir + "/agent.toml") == before);
 }
 
-TEST_CASE("config_web: POST /api/config rejects a malformed model_providers section") {
+TEST_CASE("config_web: POST /api/config rejects malformed provider values and accepts quoted names") {
     StubEnv env;
     auto handle = start_server(env);
 
@@ -2059,7 +2059,6 @@ TEST_CASE("config_web: POST /api/config rejects a malformed model_providers sect
     const Case cases[] = {
         {"\"not-an-object\"", "model_providers"},
         {"{\"x\":\"not-an-object\"}", "model_providers.x"},
-        {"{\"bad name!\":{\"type\":\"openai\"}}", "bad name!"},
     };
 
     for (const Case& c : cases) {
@@ -2071,13 +2070,15 @@ TEST_CASE("config_web: POST /api/config rejects a malformed model_providers sect
         CHECK_MESSAGE(resp.body.find(c.expected_fragment) != std::string::npos, c.providers);
     }
 
-    const std::string canonical_body =
-        "{\"config\":{\"model_providers\":{\"bad.name\":{\"type\":\"openai\"}}},"
+    const std::string quoted_name_body =
+        "{\"config\":{\"model_providers\":{\"custom.openai\":{\"type\":\"openai\"}}},"
         "\"apply_wifi\":false}";
-    HttpResponse canonical_resp =
-        http_request(handle->port, "POST", "/api/config", canonical_body);
-    CHECK(canonical_resp.status == 400);
-    CHECK(canonical_resp.body.find("model_providers") != std::string::npos);
+    HttpResponse quoted_name_resp =
+        http_request(handle->port, "POST", "/api/config", quoted_name_body);
+    CHECK(quoted_name_resp.status == 200);
+    const std::string quoted_saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK((quoted_saved.find("[model_providers.\"custom.openai\"]") != std::string::npos ||
+           quoted_saved.find("[model_providers.'custom.openai']") != std::string::npos));
 }
 
 TEST_CASE("config_web: POST /api/config writes keyboard layout and requires reboot") {
@@ -2128,7 +2129,7 @@ TEST_CASE("config_web: POST /api/config ignores the removed default_platform fie
     CHECK(get_resp.body.find("default_platform") == std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config same-pointer-mode device type change requires reboot") {
+TEST_CASE("config_web: POST /api/config same-pointer-mode device type change does not require reboot") {
     StubEnv env;
     auto handle = start_server(env);
 
@@ -2138,10 +2139,10 @@ TEST_CASE("config_web: POST /api/config same-pointer-mode device type change req
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
-    CHECK(resp.body.find("\"message\":\"config saved; USB HID configuration changed; reboot required\"") != std::string::npos);
-    CHECK(resp.body.find("\"agent_restart_scheduled\":false") != std::string::npos);
-    CHECK(resp.body.find("\"usbhid_restart_required\":true") != std::string::npos);
-    CHECK(resp.body.find("\"reboot_required\":true") != std::string::npos);
+    CHECK(resp.body.find("\"message\":\"config saved\"") != std::string::npos);
+    CHECK(resp.body.find("\"agent_restart_scheduled\":true") != std::string::npos);
+    CHECK(resp.body.find("\"usbhid_restart_required\":false") != std::string::npos);
+    CHECK(resp.body.find("\"reboot_required\":false") != std::string::npos);
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
     CHECK(saved.find("device_type = \"macOS\"") != std::string::npos);
@@ -3546,7 +3547,7 @@ TEST_CASE("config_web: POST /api/config rejects non-object device section") {
     CHECK(resp.body.find("device must be an object") != std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config legacy wifi fields update saved networks") {
+TEST_CASE("config_web: POST /api/config rejects legacy wifi fields without changing files") {
     StubEnv env;  // defaults: check returns valid:true
     auto handle = start_server(env);
     write_file(handle->tmp_dir + "/wifi.conf",
@@ -3567,6 +3568,8 @@ TEST_CASE("config_web: POST /api/config legacy wifi fields update saved networks
         "    priority=2\n"
         "    scan_ssid=1\n"
         "}\n");
+    const std::string agent_before = read_file(handle->tmp_dir + "/agent.toml");
+    const std::string wifi_before = read_file(handle->tmp_dir + "/wifi.conf");
 
     const std::string body =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
@@ -3575,16 +3578,26 @@ TEST_CASE("config_web: POST /api/config legacy wifi fields update saved networks
         "\"wifi\":{\"ssid\":\"zzz\",\"psk\":\"zzz-password\",\"country\":\"CN\"},"
         "\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
-    CHECK(resp.status == 200);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("/api/wifi/connect") != std::string::npos);
+    CHECK(read_file(handle->tmp_dir + "/agent.toml") == agent_before);
+    CHECK(read_file(handle->tmp_dir + "/wifi.conf") == wifi_before);
+}
 
-    const std::string saved = read_file(handle->tmp_dir + "/wifi.conf");
-    CHECK(saved.find("ssid=787878") != std::string::npos);
-    CHECK(saved.find("psk=\"xxx-password\"") != std::string::npos);
-    CHECK(saved.find("ssid=797979") != std::string::npos);
-    CHECK(saved.find("psk=\"yyy-password\"") != std::string::npos);
-    CHECK(saved.find("ssid=7a7a7a") != std::string::npos);
-    CHECK(saved.find("psk=\"zzz-password\"") != std::string::npos);
-    CHECK(saved.find("ssid=7a7a7a\n    psk=\"zzz-password\"\n    scan_ssid=1\n    priority=3") != std::string::npos);
+TEST_CASE("config_web: POST /api/config rejects mixed wifi writes before updating agent config") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string agent_before = read_file(handle->tmp_dir + "/agent.toml");
+    const std::string wifi_before = read_file(handle->tmp_dir + "/wifi.conf");
+
+    const std::string body =
+        "{\"config\":{\"agent\":{\"locale\":\"en-US\"}},"
+        "\"apply_wifi\":true}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("/api/wifi/connect") != std::string::npos);
+    CHECK(read_file(handle->tmp_dir + "/agent.toml") == agent_before);
+    CHECK(read_file(handle->tmp_dir + "/wifi.conf") == wifi_before);
 }
 
 TEST_CASE("config_web: POST /api/config returns 400 when stub config-check rejects with reasons") {
@@ -4193,13 +4206,10 @@ TEST_CASE("config_web: POST /api/config preserves an omitted voice provider api_
     CHECK(saved.find("api_key = \"sk-fish-secret-1234\"") != std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config rejects an invalid voice provider name") {
+TEST_CASE("config_web: POST /api/config accepts quoted voice provider names") {
     StubEnv env;
     auto handle = start_server(env);
 
-    // A name the TOML writer could not encode as a bare key must fail the
-    // schema check rather than producing a config that loads but never saves
-    // again.
     const std::string body =
         "{\"config\":{"
         "\"tts_providers\":{\"bad name\":{\"provider\":\"minimax\"}},"
@@ -4207,8 +4217,10 @@ TEST_CASE("config_web: POST /api/config rejects an invalid voice provider name")
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
-    CHECK(resp.status == 400);
-    CHECK(resp.body.find("tts_providers") != std::string::npos);
+    CHECK(resp.status == 200);
+    const std::string tts_saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK((tts_saved.find("[tts_providers.\"bad name\"]") != std::string::npos ||
+           tts_saved.find("[tts_providers.'bad name']") != std::string::npos));
 
     const std::string stt_body =
         "{\"config\":{"
@@ -4217,8 +4229,10 @@ TEST_CASE("config_web: POST /api/config rejects an invalid voice provider name")
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse stt_resp = http_request(handle->port, "POST", "/api/config", stt_body);
-    CHECK(stt_resp.status == 400);
-    CHECK(stt_resp.body.find("stt_providers") != std::string::npos);
+    CHECK(stt_resp.status == 200);
+    const std::string stt_saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK((stt_saved.find("[stt_providers.\"bad.name\"]") != std::string::npos ||
+           stt_saved.find("[stt_providers.'bad.name']") != std::string::npos));
 }
 
 TEST_CASE("config_web: POST /api/config rejects a non-object voice provider entry") {
