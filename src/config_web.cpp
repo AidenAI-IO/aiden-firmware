@@ -1910,7 +1910,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model_providers", "tts_providers", "stt_providers", "model",
-        "tts", "stt", "audio", "audio_archive", "storage",
+        "tts", "stt", "audio", "audio_archive", "quick_capture", "storage",
         "voice_notifications", "log", "ota", "device", "hid", "search", "telemetry",
         "termination_policy", "live_activity", "agent", NULL,
     };
@@ -1966,6 +1966,15 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
     cJSON* model_section = cJSON_GetObjectItem(root, "model");
     if (json_is_object(model_section) && cJSON_GetObjectItem(model_section, "provider")
         && !validate_required_string(model_section, "model", "provider", false, error)) {
+        return false;
+    }
+
+    cJSON* quick_capture = cJSON_GetObjectItem(root, "quick_capture");
+    if (json_is_object(quick_capture) &&
+        !validate_non_negative_json_integer(
+            cJSON_GetObjectItem(quick_capture, "gpio_pin"),
+            "quick_capture.gpio_pin",
+            error)) {
         return false;
     }
 
@@ -2937,6 +2946,11 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(audio_archive, "max_files", config.audio_archive.max_files);
     cJSON_AddNumberToObject(audio_archive, "max_size_mb", config.audio_archive.max_size_mb);
 
+    cJSON* quick_capture = add_object(root, "quick_capture");
+    cJSON_AddBoolToObject(quick_capture, "enabled", config.quick_capture.enabled ? 1 : 0);
+    cJSON_AddNumberToObject(quick_capture, "gpio_pin", config.quick_capture.gpio_pin);
+    cJSON_AddStringToObject(quick_capture, "screen_memory_ttl", config.quick_capture.screen_memory_ttl.c_str());
+
     cJSON* voice_notifications = add_object(root, "voice_notifications");
     cJSON_AddBoolToObject(voice_notifications, "enabled", config.voice_notifications.enabled ? 1 : 0);
     cJSON_AddNumberToObject(voice_notifications, "max_pending", config.voice_notifications.max_pending);
@@ -3001,7 +3015,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(agent, "custom_instruction", config.custom_instruction.c_str());
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
     cJSON_AddStringToObject(agent, "input_mode", config.input_mode.c_str());
-    cJSON_AddStringToObject(agent, "trigger_mode", config.trigger_mode.c_str());
     cJSON_AddStringToObject(agent, "vad_backend", config.vad_backend.c_str());
     cJSON_AddStringToObject(agent, "vad_model_path", config.vad_model_path.c_str());
     cJSON_AddStringToObject(agent, "vad_helper_path", config.vad_helper_path.c_str());
@@ -3453,6 +3466,13 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->audio_archive.max_size_mb, audio_archive, "max_size_mb");
     }
 
+    cJSON* quick_capture = cJSON_GetObjectItem(root, "quick_capture");
+    if (json_is_object(quick_capture)) {
+        set_json_bool(&config->quick_capture.enabled, quick_capture, "enabled");
+        set_json_int(&config->quick_capture.gpio_pin, quick_capture, "gpio_pin");
+        set_json_str(&config->quick_capture.screen_memory_ttl, quick_capture, "screen_memory_ttl");
+    }
+
     cJSON* voice_notifications = cJSON_GetObjectItem(root, "voice_notifications");
     if (json_is_object(voice_notifications)) {
         set_json_bool(&config->voice_notifications.enabled, voice_notifications, "enabled");
@@ -3555,7 +3575,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->custom_instruction, agent, "custom_instruction");
         set_json_str(&config->additional_prompt, agent, "additional_prompt");
         set_json_str(&config->input_mode, agent, "input_mode");
-        set_json_str(&config->trigger_mode, agent, "trigger_mode");
         set_json_str(&config->vad_backend, agent, "vad_backend");
         set_json_str(&config->vad_model_path, agent, "vad_model_path");
         set_json_str(&config->vad_helper_path, agent, "vad_helper_path");
@@ -6969,7 +6988,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         };
         Check enums[] = {
             {"input_mode", {"text", "stt", NULL}},
-            {"trigger_mode", {"manual", "wakeup", NULL, NULL}},
         };
         for (size_t i = 0; i < sizeof(enums) / sizeof(enums[0]); ++i) {
             cJSON* item = cJSON_GetObjectItem(values, enums[i].key);
@@ -6992,18 +7010,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
                 std::string msg = "invalid input_mode: " + val + " (audio mode has been removed; use stt instead)";
                 cJSON_AddStringToObject(r, "detail", msg.c_str());
                 all_passed = false;
-            } else if (ok && std::string(enums[i].key) == "trigger_mode" && val == "wakeup") {
-                cJSON* input_item = cJSON_GetObjectItem(values, "input_mode");
-                std::string input_mode = json_is_string(input_item) ? trim_copy(input_item->valuestring) : "";
-                if (input_mode == "stt") {
-                    cJSON_AddBoolToObject(r, "passed", 1);
-                    cJSON_AddStringToObject(r, "detail", val.c_str());
-                } else {
-                    cJSON_AddBoolToObject(r, "passed", 0);
-                    std::string msg = "wakeup requires input_mode stt, got '" + input_mode + "'";
-                    cJSON_AddStringToObject(r, "detail", msg.c_str());
-                    all_passed = false;
-                }
             } else if (ok) {
                 cJSON_AddBoolToObject(r, "passed", 1);
                 cJSON_AddStringToObject(r, "detail", val.c_str());

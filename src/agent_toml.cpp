@@ -278,8 +278,6 @@ void apply_kv(AgentToml& cfg,
             if (!assign_string(&cfg.additional_prompt, raw, &sub_err)) fail(sub_err);
         } else if (key == "input_mode") {
             if (!assign_string(&cfg.input_mode, raw, &sub_err)) fail(sub_err);
-        } else if (key == "trigger_mode") {
-            if (!assign_string(&cfg.trigger_mode, raw, &sub_err)) fail(sub_err);
         } else if (key == "vad_backend") {
             if (!assign_string(&cfg.vad_backend, raw, &sub_err)) fail(sub_err);
         } else if (key == "vad_model_path") {
@@ -383,6 +381,11 @@ void apply_kv(AgentToml& cfg,
         else if (key == "max_files") assign_int(&cfg.audio_archive.max_files, raw, &sub_err);
         else if (key == "max_size_mb") assign_int(&cfg.audio_archive.max_size_mb, raw, &sub_err);
         else if (key == "storage_path") assign_string(&cfg.audio_archive.storage_path, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "quick_capture") {
+        if (key == "enabled") assign_bool(&cfg.quick_capture.enabled, raw, &sub_err);
+        else if (key == "gpio_pin") assign_non_negative_int(&cfg.quick_capture.gpio_pin, raw, &sub_err);
+        else if (key == "screen_memory_ttl") assign_string(&cfg.quick_capture.screen_memory_ttl, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "voice_notifications") {
         if (key == "enabled") assign_bool(&cfg.voice_notifications.enabled, raw, &sub_err);
@@ -907,7 +910,6 @@ bool save_agent_toml(const char* path, const AgentToml& input, std::string* erro
     if (!cfg.custom_instruction.empty()) emit_string(out, "custom_instruction", cfg.custom_instruction);
     if (!cfg.additional_prompt.empty()) emit_string(out, "additional_prompt", cfg.additional_prompt);
     if (!cfg.input_mode.empty()) emit_string(out, "input_mode", cfg.input_mode);
-    if (!cfg.trigger_mode.empty()) emit_string(out, "trigger_mode", cfg.trigger_mode);
     if (!cfg.vad_backend.empty()) emit_string(out, "vad_backend", cfg.vad_backend);
     if (!cfg.vad_model_path.empty()) emit_string(out, "vad_model_path", cfg.vad_model_path);
     if (!cfg.vad_helper_path.empty()) emit_string(out, "vad_helper_path", cfg.vad_helper_path);
@@ -1044,6 +1046,12 @@ bool save_agent_toml(const char* path, const AgentToml& input, std::string* erro
     if (cfg.audio_archive.max_files != 0) emit_int(out, "max_files", cfg.audio_archive.max_files);
     if (cfg.audio_archive.max_size_mb != 0) emit_int(out, "max_size_mb", cfg.audio_archive.max_size_mb);
     emit_string(out, "storage_path", cfg.audio_archive.storage_path);
+    out << "\n";
+
+    out << "[quick_capture]\n";
+    emit_bool(out, "enabled", cfg.quick_capture.enabled);
+    if (cfg.quick_capture.gpio_pin != 0) emit_int(out, "gpio_pin", cfg.quick_capture.gpio_pin);
+    if (!cfg.quick_capture.screen_memory_ttl.empty()) emit_string(out, "screen_memory_ttl", cfg.quick_capture.screen_memory_ttl);
     out << "\n";
 
     out << "[voice_notifications]\n";

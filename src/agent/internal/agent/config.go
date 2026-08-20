@@ -274,6 +274,7 @@ type Config struct {
 	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
 	Storage                    StorageConfig            `toml:"storage,omitempty"`
 	VoiceNotifications         VoiceNotificationsConfig `toml:"voice_notifications,omitempty"`
+	QuickCapture               QuickCaptureConfig       `toml:"quick_capture,omitempty"`
 	Log                        LogConfig                `toml:"log,omitempty"`
 	OTA                        OTAConfig                `toml:"ota,omitempty"`
 	Search                     SearchConfig             `toml:"search,omitempty"`
@@ -283,9 +284,8 @@ type Config struct {
 	Locale                     string                   `toml:"locale,omitempty"`
 	Instruction                string                   `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string                   `toml:"additional_prompt,omitempty"`
-	InputMode                  string                   `toml:"input_mode,omitempty"`   // "text" or "stt"
-	TriggerMode                string                   `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
-	VADBackend                 string                   `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
+	InputMode                  string                   `toml:"input_mode,omitempty"`  // "text" or "stt"
+	VADBackend                 string                   `toml:"vad_backend,omitempty"` // "rknn", "cpu"
 	VADModelPath               string                   `toml:"vad_model_path,omitempty"`
 	VADHelperPath              string                   `toml:"vad_helper_path,omitempty"`
 	VADSpeechThreshold         float64                  `toml:"vad_speech_threshold,omitempty"`
@@ -1288,16 +1288,6 @@ func (c Config) Validate() error {
 		}
 	}
 
-	if strings.TrimSpace(c.TriggerMode) != "" {
-		triggerMode := strings.ToLower(strings.TrimSpace(c.TriggerMode))
-		if triggerMode != "manual" && triggerMode != "wakeup" {
-			return fmt.Errorf("invalid trigger_mode: %s (expected manual or wakeup)", c.TriggerMode)
-		}
-		if triggerMode == "wakeup" && c.InputModeOrDefault() != "stt" {
-			return fmt.Errorf("incompatible trigger_mode %q with input_mode %q: wakeup requires input_mode stt", c.TriggerMode, c.InputMode)
-		}
-	}
-
 	if _, err := normalizeVADBackend(c.VADBackend); err != nil {
 		return err
 	}
@@ -1316,6 +1306,9 @@ func (c Config) Validate() error {
 	}
 	if c.VoiceMaxResponseTokens < 0 {
 		return fmt.Errorf("voice_max_response_tokens must be >= 0, got %d", c.VoiceMaxResponseTokens)
+	}
+	if err := c.QuickCapture.Validate(); err != nil {
+		return err
 	}
 	if c.VoiceNotifications.MaxPending < 0 {
 		return fmt.Errorf("voice_notifications.max_pending must be >= 0, got %d", c.VoiceNotifications.MaxPending)
@@ -1552,15 +1545,6 @@ func (c Config) InputModeOrDefault() string {
 	mode := strings.TrimSpace(c.InputMode)
 	if mode == "" {
 		return defaultInputMode
-	}
-	return strings.ToLower(mode)
-}
-
-// TriggerModeOrDefault returns the trigger mode or "manual" as default
-func (c Config) TriggerModeOrDefault() string {
-	mode := strings.TrimSpace(c.TriggerMode)
-	if mode == "" {
-		return defaultTriggerMode
 	}
 	return strings.ToLower(mode)
 }

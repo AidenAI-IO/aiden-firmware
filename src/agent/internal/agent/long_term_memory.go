@@ -60,6 +60,22 @@ func withParsedCacheCapacity(capacity int) LongTermMemoryOption {
 	return func(s *LongTermMemoryStore) { s.parsedCache.init(capacity) }
 }
 
+// MemoryTypeScreenSnapshot is the long-term memory type for a Screen Memory:
+// what was on the controlled device's screen at one moment, recorded by a
+// deliberate button press.
+//
+// It is its own type rather than a fact so that it can be retrieved as a group,
+// is excluded from the User Profile by isProfileRelevantType, and is exempt
+// from the outcome feedback that applies to inferred memories.
+const MemoryTypeScreenSnapshot = "screen_snapshot"
+
+// MemorySourceTypeScreenCapture marks a Screen Memory's provenance.
+const MemorySourceTypeScreenCapture = "screen_capture"
+
+func isScreenMemoryType(memoryType string) bool {
+	return memoryType == MemoryTypeScreenSnapshot
+}
+
 type MemorySourceRef struct {
 	Type     string   `yaml:"type" json:"type"`
 	ID       string   `yaml:"id" json:"id"`
@@ -254,6 +270,16 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 		}
 		if matches[i].Result.Confidence != matches[j].Result.Confidence {
 			return matches[i].Result.Confidence > matches[j].Result.Confidence
+		}
+		iScreen := isScreenMemoryType(matches[i].Result.Type)
+		jScreen := isScreenMemoryType(matches[j].Result.Type)
+		if iScreen != jScreen {
+			return iScreen
+		}
+		// Screen Memory answers "the one I just saved", so tied snapshots sort
+		// newest-first. Other memory types preserve their existing ID order.
+		if iScreen {
+			return matches[i].Result.ID > matches[j].Result.ID
 		}
 		return matches[i].Result.ID < matches[j].Result.ID
 	})

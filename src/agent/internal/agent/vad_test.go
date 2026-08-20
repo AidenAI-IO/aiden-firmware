@@ -31,7 +31,7 @@ func TestLogVADHelperStderrPreservesStructuredLines(t *testing.T) {
 }
 
 func TestAudioVADEndsUtteranceFromRKNNProbabilities(t *testing.T) {
-	vad := newTestAudioVAD(t, false, []float64{0.9, 0.8, 0.1, 0.1, 0.1})
+	vad := newTestAudioVAD(t, []float64{0.9, 0.8, 0.1, 0.1, 0.1})
 
 	speech := constantFrame(vad.FrameSamples(), 1000)
 	silence := constantFrame(vad.FrameSamples(), 0)
@@ -57,7 +57,7 @@ func TestAudioVADEndsUtteranceFromRKNNProbabilities(t *testing.T) {
 }
 
 func TestAudioVADDoesNotUsePCMEnergyAsSpeech(t *testing.T) {
-	vad := newTestAudioVAD(t, false, []float64{0.1, 0.1, 0.1, 0.1})
+	vad := newTestAudioVAD(t, []float64{0.1, 0.1, 0.1, 0.1})
 	loudFrame := alternatingFrame(vad.FrameSamples(), 0, 30000)
 
 	for i := 0; i < 4; i++ {
@@ -80,7 +80,7 @@ func TestAudioVADRequiresSileroFrameShape(t *testing.T) {
 		t.Fatal("NewAudioVADWithScorer() error = nil, want sample-rate validation error")
 	}
 
-	vad := newTestAudioVAD(t, false, []float64{0.9})
+	vad := newTestAudioVAD(t, []float64{0.9})
 	if _, err := vad.Process(make([]int16, vad.FrameSamples()-1)); err == nil {
 		t.Fatal("Process() error = nil, want frame-size validation error")
 	}
@@ -161,13 +161,12 @@ func TestHelperVADScorerStopsAfterMalformedScoreResponse(t *testing.T) {
 	}
 }
 
-func newTestAudioVAD(t *testing.T, alwaysBuffer bool, probabilities []float64) *AudioVAD {
+func newTestAudioVAD(t *testing.T, probabilities []float64) *AudioVAD {
 	t.Helper()
 	vad, err := NewAudioVADWithScorer(AudioVADConfig{
 		SampleRate:      16000,
 		SilenceMs:       90,
 		MinSpeechMs:     60,
-		AlwaysBuffer:    alwaysBuffer,
 		SpeechThreshold: 0.5,
 	}, &sequenceScorer{probabilities: probabilities})
 	if err != nil {

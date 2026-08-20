@@ -35,7 +35,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.locale = "en-US";
     cfg.custom_instruction = "Hello \"world\"";
     cfg.input_mode = "stt";
-    cfg.trigger_mode = "manual";
     cfg.vad_backend = "cpu";
     cfg.vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
     cfg.vad_helper_path = "/oem/usr/bin/rknn_vad";
@@ -100,6 +99,10 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.audio_archive.max_size_mb = 17;
     cfg.audio_archive.storage_path = "/tmp/audio-archive";
 
+    cfg.quick_capture.enabled = false;
+    cfg.quick_capture.gpio_pin = 3;
+    cfg.quick_capture.screen_memory_ttl = "14d";
+
     cfg.hid.keyboard_device = "/dev/hidg0";
     cfg.hid.keyboard_layout = "azerty";
     cfg.hid.mouse_device = "/dev/hidg1";
@@ -148,7 +151,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.locale == "en-US");
     CHECK(loaded.custom_instruction == "Hello \"world\"");
     CHECK(loaded.input_mode == "stt");
-    CHECK(loaded.trigger_mode == "manual");
     CHECK(loaded.vad_backend == "cpu");
     CHECK(loaded.vad_model_path == "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn");
     CHECK(loaded.vad_helper_path == "/oem/usr/bin/rknn_vad");
@@ -216,6 +218,9 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.audio_archive.max_files == 42);
     CHECK(loaded.audio_archive.max_size_mb == 17);
     CHECK(loaded.audio_archive.storage_path == "/tmp/audio-archive");
+    CHECK(loaded.quick_capture.enabled == false);
+    CHECK(loaded.quick_capture.gpio_pin == 3);
+    CHECK(loaded.quick_capture.screen_memory_ttl == "14d");
     CHECK(loaded.locale == "en-US");
 
     CHECK(loaded.hid.keyboard_device == "/dev/hidg0");

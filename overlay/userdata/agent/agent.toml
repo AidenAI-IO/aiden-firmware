@@ -19,10 +19,6 @@ locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification
 # - stt: also run device audio -> STT -> LLM -> TTS
 input_mode = "stt"
 
-# Trigger mode: "manual" (push-to-talk) or "wakeup" (GPIO trigger)
-# Only used when input_mode is "stt"
-trigger_mode = "wakeup"
-
 # RKNN Silero VAD parameters
 # Only used when input_mode is "stt"
 # vad_backend = "rknn" # "rknn" (NPU encoder + CPU LSTM/decoder) or "cpu"
@@ -33,7 +29,7 @@ trigger_mode = "wakeup"
 # min_speech_ms = 300       # Minimum speech duration to accept (ms)
 
 # Wakeup voice session parameters
-# Only used when input_mode = "stt" and trigger_mode = "wakeup"
+# Only used when input_mode = "stt"
 # voice_followup_enabled = false
 # voice_followup_timeout_ms = 5000
 # voice_first_turn_timeout_ms = 10000
@@ -43,6 +39,13 @@ trigger_mode = "wakeup"
 # voice_tool_call_speech = true
 # voice_progress_speech_enabled = true
 # voice_max_response_tokens = 300
+
+# Quick Capture uses the verified spare falling-edge input on the 40Pin header:
+# Luckfox Pico Zero physical pin 38 (GPIO3). GPIO32/GPIO33 remain legacy wakeup.
+[quick_capture]
+enabled = true
+gpio_pin = 3
+screen_memory_ttl = "90d"
 
 # Target device configuration.
 # Android derives HID pointer_mode = "touchscreen"; iOS, macOS, windows, and linux derive "absolute".

@@ -54,6 +54,11 @@ const char* kDefaultMeta =
     "{\"key\":\"base_url\",\"widget\":\"text\",\"visibleWhen\":{\"all\":["
     "{\"field\":\"model_providers.type\",\"op\":\"in\","
     "\"values\":[\"openai\",\"anthropic\",\"ollama\"]}]}}"
+    "]},"
+    "{\"name\":\"quick_capture\",\"fields\":["
+    "{\"key\":\"enabled\",\"widget\":\"boolean\"},"
+    "{\"key\":\"gpio_pin\",\"widget\":\"number\"},"
+    "{\"key\":\"screen_memory_ttl\",\"widget\":\"text\"}"
     "]}"
     "]}\n";
 
@@ -76,6 +81,7 @@ const char* kDefaultConfig =
     "\"channels\":1,\"bit_width\":16},"
     "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
     "\"storage_path\":\"/userdata/audio\"},"
+    "\"quick_capture\":{\"enabled\":true,\"gpio_pin\":3,\"screen_memory_ttl\":\"90d\"},"
     "\"voice_notifications\":{\"enabled\":true,\"max_pending\":8,"
     "\"response_tail\":{\"enabled\":true,\"max_items\":1,\"max_text_chars\":40},"
     "\"expiration\":{\"default_ttl_seconds\":0,\"code_ttl_seconds\":{\"storage\":900}}},"
@@ -88,7 +94,7 @@ const char* kDefaultConfig =
     "\"public_key\":\"\",\"secret_key\":\"\",\"upload_screenshots\":true,"
     "\"upload_timeout_sec\":30,\"max_retry\":2,\"tags\":[],\"environment\":\"default\"},"
     "\"agent\":{\"custom_instruction\":\"stub custom instruction\",\"additional_prompt\":\"\","
-    "\"input_mode\":\"text\",\"trigger_mode\":\"manual\",\"vad_backend\":\"rknn\","
+    "\"input_mode\":\"text\",\"vad_backend\":\"rknn\","
     "\"vad_model_path\":\"/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn\","
     "\"vad_helper_path\":\"/oem/usr/bin/rknn_vad\",\"vad_speech_threshold\":0.5,"
     "\"silence_ms\":650,\"min_speech_ms\":300,\"voice_followup_enabled\":false,"

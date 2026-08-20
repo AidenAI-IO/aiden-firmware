@@ -55,6 +55,7 @@ type webConfigDTO struct {
 	STT                sttDTO                        `json:"stt"`
 	Audio              audioDTO                      `json:"audio"`
 	AudioArchive       audioArchiveDTO               `json:"audio_archive"`
+	QuickCapture       quickCaptureDTO               `json:"quick_capture"`
 	VoiceNotifications voiceNotificationsDTO         `json:"voice_notifications"`
 	Device             deviceDTO                     `json:"device"`
 	Log                logDTO                        `json:"log"`
@@ -299,6 +300,12 @@ type audioArchiveDTO struct {
 	StoragePath string `json:"storage_path"`
 }
 
+type quickCaptureDTO struct {
+	Enabled         bool   `json:"enabled"`
+	GPIOPin         int    `json:"gpio_pin"`
+	ScreenMemoryTTL string `json:"screen_memory_ttl"`
+}
+
 type deviceDTO struct {
 	Backend    string `json:"backend,omitempty"`
 	DeviceType string `json:"device_type"`
@@ -368,7 +375,6 @@ type agentDTO struct {
 	CustomInstruction          string  `json:"custom_instruction"`
 	AdditionalPrompt           string  `json:"additional_prompt"`
 	InputMode                  string  `json:"input_mode"`
-	TriggerMode                string  `json:"trigger_mode"`
 	VADBackend                 string  `json:"vad_backend"`
 	VADModelPath               string  `json:"vad_model_path"`
 	VADHelperPath              string  `json:"vad_helper_path"`
@@ -456,6 +462,11 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			MaxSizeMB:   d.AudioArchive.MaxSizeMB,
 			StoragePath: d.AudioArchive.StoragePath,
 		},
+		QuickCapture: agent.QuickCaptureConfig{
+			Enabled:         boolPtr(d.QuickCapture.Enabled),
+			GPIOPin:         d.QuickCapture.GPIOPin,
+			ScreenMemoryTTL: d.QuickCapture.ScreenMemoryTTL,
+		},
 		VoiceNotifications: agent.VoiceNotificationsConfig{
 			Enabled:    d.VoiceNotifications.Enabled,
 			MaxPending: d.VoiceNotifications.MaxPending,
@@ -512,7 +523,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		Instruction:                d.Agent.CustomInstruction,
 		AdditionalPrompt:           d.Agent.AdditionalPrompt,
 		InputMode:                  d.Agent.InputMode,
-		TriggerMode:                d.Agent.TriggerMode,
 		VADBackend:                 d.Agent.VADBackend,
 		VADModelPath:               d.Agent.VADModelPath,
 		VADHelperPath:              d.Agent.VADHelperPath,
@@ -698,6 +708,11 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
 			StoragePath: audioArchive.StoragePathOrDefault(),
 		},
+		QuickCapture: quickCaptureDTO{
+			Enabled:         cfg.QuickCapture.EnabledOrDefault(),
+			GPIOPin:         cfg.QuickCapture.GPIOPin,
+			ScreenMemoryTTL: cfg.QuickCapture.ScreenMemoryTTLOrDefault(),
+		},
 		Device: deviceDTO{
 			Backend:    cfg.Device.BackendOrDefault(),
 			DeviceType: cfg.DeviceTypeOrDefault(),
@@ -755,7 +770,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			CustomInstruction:          customInstructionValue(cfg.Instruction),
 			AdditionalPrompt:           cfg.AdditionalPrompt,
 			InputMode:                  cfg.InputModeOrDefault(),
-			TriggerMode:                cfg.TriggerModeOrDefault(),
 			VADBackend:                 cfg.VADBackendOrDefault(),
 			VADModelPath:               cfg.VADModelPath,
 			VADHelperPath:              cfg.VADHelperPath,
@@ -1176,8 +1190,6 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "tts.provider"
 	} else if strings.Contains(errMsg, "input_mode") {
 		field = "input_mode"
-	} else if strings.Contains(errMsg, "trigger_mode") {
-		field = "trigger_mode"
 	} else if strings.Contains(errMsg, "hid.keyboard_layout") || strings.Contains(errMsg, "keyboard_layout") {
 		field = "hid.keyboard_layout"
 	} else if strings.Contains(errMsg, "hid.pointer_mode") || strings.Contains(errMsg, "pointer_mode") {
