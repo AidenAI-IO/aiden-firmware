@@ -33,7 +33,7 @@ Phone relay app -> ws://192.168.42.1:8080/api/phone-bridge
 
 The board is the WebSocket server, so it does not need to discover the phone's DHCP address and the app does not need to expose a local server. The Agent HTTP APIs use the same port, `8080`.
 
-The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native JS, WebSocket, and polling timers in the iOS background must not be treated as a general tool execution path. On iOS, Phone Bridge is normally a foreground fast path: if the Aiden app is backgrounded and the app has reported `return_entry=dynamic_island`, Agent restores the Aiden app through Dynamic Island, waits for foreground WebSocket bridge reconnection, then executes the requested tool command. Lock-screen Live Activity entries require visual confirmation rather than fixed-coordinate tapping.
+The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native JS, WebSocket, and polling timers in the iOS background must not be treated as a general tool execution path. On iOS, Phone Bridge is normally a foreground fast path: if the Aiden App is backgrounded and the app has reported `return_entry=dynamic_island`, Agent restores the Aiden App through Dynamic Island, waits for foreground WebSocket bridge reconnection, then executes the requested tool command. Lock-screen Live Activity entries require visual confirmation rather than fixed-coordinate tapping.
 
 PiP Bridge is a narrow exception. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. The HTTP/Tool Lab catalog remains complete for direct diagnostics, while the conversational Agent catalog is filtered from live runtime capabilities before each run. `open_app` remains exposed because it can fall back to SearchLaunchApp; only executable background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) are exposed through the HTTP queue, and unavailable App actions are omitted.
 
@@ -97,13 +97,13 @@ Android: Intent launch package name
 
 ## Key Boundaries
 
-On iOS, the relay app is not a background-resident system agent. It's more like a foreground fast-path executor; Dynamic Island can be used as the automatic entry point back to the Aiden app, while lock-screen Live Activity cards need visual confirmation:
+On iOS, the relay app is not a background-resident system agent. It's more like a foreground fast-path executor; Dynamic Island can be used as the automatic entry point back to the Aiden App, while lock-screen Live Activity cards need visual confirmation:
 
 ```text
-Aiden app foreground
+Aiden App foreground
 -> Receives board command
 -> openURL opens WeChat
--> Aiden app enters background
+-> Aiden App enters background
 -> Subsequent operations continue via hardware HDMI observation + HID operation
 ```
 
@@ -175,7 +175,7 @@ WebSocket's core value:
 
 When `app_state=background|inactive`, `return_entry=dynamic_island`,
 `return_entry_available=true`, and PiP Bridge mode is not enabled, `open_url`
-and bridge data tools can click the Aiden app Dynamic Island entry, wait for Phone
+and bridge data tools can click the Aiden App Dynamic Island entry, wait for Phone
 Bridge recovery, then send their commands. `open_app` instead selects
 SearchLaunchApp whenever foreground Bridge app launch is unavailable.
 Lock-screen Live Activity entries are not blind-tapped because their screen
@@ -560,7 +560,7 @@ Use the phone environment timezone when it is available. The Agent can use `shel
 1. `open_app` reads live companion-app state. When foreground Phone Bridge is
    ready it uses BridgeOpenApp; otherwise it uses SearchLaunchApp through the
    visible system UI.
-2. `open_url` and bridge data tools may restore a backgrounded iOS Aiden app
+2. `open_url` and bridge data tools may restore a backgrounded iOS Aiden App
    through a confirmed Dynamic Island entry before sending their command.
 3. PiP/FGS background routes allow clipboard, calendar, contacts, and local
    notification commands through the HTTP queue. BLE Wake uses only calendar
