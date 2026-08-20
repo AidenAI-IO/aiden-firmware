@@ -237,7 +237,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"skill_manage": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"action":"list"}`,
+		ExampleInput: skillManageInputExample,
 		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	toolOpenApp: {
