@@ -1969,6 +1969,15 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
         return false;
     }
 
+    cJSON* quick_capture = cJSON_GetObjectItem(root, "quick_capture");
+    if (json_is_object(quick_capture) &&
+        !validate_non_negative_json_integer(
+            cJSON_GetObjectItem(quick_capture, "gpio_pin"),
+            "quick_capture.gpio_pin",
+            error)) {
+        return false;
+    }
+
     return validate_config_field_types_from_metadata(root, *metadata, error);
 }
 

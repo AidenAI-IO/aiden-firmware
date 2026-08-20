@@ -22,6 +22,7 @@ under `[device]` below.
 - [`[model]`](#model)
 - [`[log]`](#log)
 - [`[audio]`](#audio)
+- [Quick Capture](#quick-capture)
 - [`[voice_notifications]`](#voice_notifications)
 - [`[hid]`](#hid)
 - [`[stt]` and `[tts]`](#stt-and-tts)
@@ -216,7 +217,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | Field                           | Default                                                     | Description                                                                                                                                                                            |
 | ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `quick_capture.enabled`         | `true`                                                       | Enables GPIO-triggered Screen Memory capture; legacy GPIO32/GPIO33 wakeup remains independent                                                                                           |
-| `quick_capture.gpio_pin`        | `0`                                                         | Falling-edge GPIO for Quick Capture; `0` disables it, GPIO32/GPIO33 are reserved, and the Luckfox overlay uses GPIO3 (physical pin 38)                                                |
+| `quick_capture.gpio_pin`        | `0`                                                         | Falling-edge GPIO for Quick Capture; supported values are `0` (disabled) and GPIO3 (physical pin 38), while GPIO32/GPIO33 remain reserved for legacy wakeup                          |
 | `quick_capture.screen_memory_ttl` | `90d`                                                    | Retention period for captured Screen Memory entries, or `forever`                                                                                                                       |
 
 ### Voice & VAD

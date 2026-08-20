@@ -213,6 +213,16 @@ std::string replace_all(std::string text, const std::string& needle, const std::
     return text;
 }
 
+std::string toml_section_text(const std::string& toml, const std::string& section) {
+    const std::string header = "[" + section + "]";
+    const size_t begin = toml.find(header);
+    if (begin == std::string::npos) {
+        return "";
+    }
+    const size_t end = toml.find("\n[", begin + header.size());
+    return toml.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+}
+
 std::string resolved_config_json(const std::string& search_provider, bool search_has_api_key) {
     return std::string(
         "{"
@@ -1204,20 +1214,40 @@ TEST_CASE("config_web: POST /api/config writes and preserves quick_capture secti
     REQUIRE(resp.status == 200);
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("[quick_capture]") != std::string::npos);
-    CHECK(saved.find("enabled = false") != std::string::npos);
-    CHECK(saved.find("gpio_pin = 3") != std::string::npos);
-    CHECK(saved.find("screen_memory_ttl = \"14d\"") != std::string::npos);
+    const std::string quick_capture = toml_section_text(saved, "quick_capture");
+    REQUIRE_FALSE(quick_capture.empty());
+    CHECK(quick_capture.find("enabled = false") != std::string::npos);
+    CHECK(quick_capture.find("gpio_pin = 3") != std::string::npos);
+    CHECK(quick_capture.find("screen_memory_ttl = \"14d\"") != std::string::npos);
 
     HttpResponse unrelated = http_request(
         handle->port, "POST", "/api/config",
         "{\"config\":{\"agent\":{\"max_iterations\":4}},\"apply_wifi\":false}");
     REQUIRE(unrelated.status == 200);
     const std::string saved_again = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved_again.find("[quick_capture]") != std::string::npos);
-    CHECK(saved_again.find("enabled = false") != std::string::npos);
-    CHECK(saved_again.find("gpio_pin = 3") != std::string::npos);
-    CHECK(saved_again.find("screen_memory_ttl = \"14d\"") != std::string::npos);
+    const std::string quick_capture_again = toml_section_text(saved_again, "quick_capture");
+    REQUIRE_FALSE(quick_capture_again.empty());
+    CHECK(quick_capture_again.find("enabled = false") != std::string::npos);
+    CHECK(quick_capture_again.find("gpio_pin = 3") != std::string::npos);
+    CHECK(quick_capture_again.find("screen_memory_ttl = \"14d\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config rejects invalid quick_capture gpio_pin numbers") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const char* invalid_values[] = {"3.5", "2147483648"};
+    for (const char* value : invalid_values) {
+        const std::string body =
+            std::string("{\"config\":{\"quick_capture\":{\"gpio_pin\":") + value +
+            "}},\"apply_wifi\":false}";
+        const HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK_MESSAGE(resp.status == 400, "gpio_pin=" << value << ": status=" << resp.status);
+        CHECK_MESSAGE(resp.body.find("quick_capture.gpio_pin") != std::string::npos,
+                      "gpio_pin=" << value << ": body=" << resp.body);
+        CHECK_MESSAGE(resp.body.find("non-negative integer") != std::string::npos,
+                      "gpio_pin=" << value << ": body=" << resp.body);
+    }
 }
 
 TEST_CASE("config_web: POST /api/config ignores model base_url for every provider") {

@@ -47,6 +47,9 @@ func (c QuickCaptureConfig) Validate() error {
 	if c.GPIOPin == 32 || c.GPIOPin == 33 {
 		return fmt.Errorf("quick_capture.gpio_pin %d is reserved for legacy wakeup", c.GPIOPin)
 	}
+	if c.GPIOPin != 0 && c.GPIOPin != 3 {
+		return fmt.Errorf("quick_capture.gpio_pin must be 0 (disabled) or 3 (Luckfox Pico Zero physical pin 38), got %d", c.GPIOPin)
+	}
 	if ttl := strings.TrimSpace(c.ScreenMemoryTTL); ttl != "" && !strings.EqualFold(ttl, "forever") {
 		if _, ok := parseRetentionDuration(ttl); !ok {
 			return fmt.Errorf("invalid quick_capture.screen_memory_ttl: %q (expected a duration such as 90d, or forever)", c.ScreenMemoryTTL)
