@@ -817,9 +817,9 @@ func TestSkillManageActionsDocumentedInSchema(t *testing.T) {
 			t.Fatalf("skill_manage schema missing field %q: %v", field, props)
 		}
 	}
-	actionDesc, _ := props["action"].(map[string]any)["description"].(string)
+	actionEnum, _ := props["action"].(map[string]any)["enum"].([]string)
 	for _, want := range []string{"write_file", "remove_file", "archive", "restore_archive"} {
-		if enum, _ := props["action"].(map[string]any)["enum"].([]string); !containsStr(enum, want) && !strings.Contains(actionDesc, want) {
+		if !containsStr(actionEnum, want) {
 			t.Fatalf("skill_manage action schema missing %q: %v", want, props["action"])
 		}
 	}

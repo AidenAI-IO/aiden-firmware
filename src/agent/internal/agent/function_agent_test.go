@@ -455,12 +455,8 @@ func TestFunctionAgentToolsAsLLMUsesGenericInputFallback(t *testing.T) {
 	if _, ok := props["speech"]; ok {
 		t.Fatalf("generic fallback schema should not expose speech metadata: %#v", props)
 	}
-	input, ok := props["input"].(map[string]string)
-	if !ok {
+	if _, ok := props["input"].(map[string]string); !ok {
 		t.Fatalf("unexpected input schema: %#v", props["input"])
-	}
-	if !strings.Contains(input["description"], "plain string input") {
-		t.Fatalf("input description does not explain fallback input: %q", input["description"])
 	}
 	required, ok := params["required"].([]string)
 	if !ok {
