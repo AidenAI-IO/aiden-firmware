@@ -98,7 +98,7 @@ Notes:
   start an environment bridge automatically; if you need an environment bridge you
   must start the daemon yourself and pass the relevant daemon parameters.
 
-#### Mock Aiden App environments
+#### Mock companion app environments
 
 Phone Bridge strategy tests usually do not need a physical phone or emulator. A
 suite can declare a default `mock_environment`, and each task can override it, to

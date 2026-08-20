@@ -43,9 +43,9 @@ snapshot, so skipped intermediate Wake notifications do not lose final state.
 
 - `ready` / `connected`: Aiden is available. The app creates this standby Live
   Activity before or while entering background so Dynamic Island remains an
-  entry point back to Aiden.
+  entry point back to the companion app.
 - `running`: shows task title, current step, phase, progress, and stop state.
-- `needs_app`: asks the user to return to Aiden when an operation needs the
+- `needs_app`: asks the user to return to the companion app when an operation needs the
   foreground companion app.
 - `waiting_user` with `current_action=request_user_input`: keeps the handoff
   instruction visible after `request_human_handoff` so the user can take over
