@@ -116,8 +116,6 @@ restore_usb0() {
 		if command -v ip >/dev/null 2>&1; then
 			ip link set dev usb0 up >/dev/null 2>&1 || true
 			ip address replace "$DYNAMIC_KEYBOARD_USB0_ADDR/24" dev usb0 >/dev/null 2>&1 || true
-			command -v networkctl >/dev/null 2>&1 && \
-				networkctl reconfigure usb0 >/dev/null 2>&1 || true
 		else
 			ifconfig usb0 "$DYNAMIC_KEYBOARD_USB0_ADDR" netmask "$DYNAMIC_KEYBOARD_USB0_NETMASK" up >/dev/null 2>&1 || true
 		fi

@@ -12,6 +12,39 @@ fail() {
 
 sh -n "$INIT_SCRIPT" || fail "S49usbhid has invalid shell syntax"
 
+python3 - "$INIT_SCRIPT" <<'PY'
+import re
+import subprocess
+import sys
+
+source = open(sys.argv[1], encoding="utf-8").read()
+if re.search(r"printf\s+'(?:\\x[0-9a-fA-F]{2})+?'", source):
+    raise SystemExit("HID descriptors must not use non-POSIX \\xNN printf escapes")
+
+formats = re.findall(r"printf\s+'((?:\\[0-7]{3})+)'", source)
+expected = [
+    "05010906a101050719e029e71500250175019508810295017508810195067508150025650507190029658100c0",
+    "050d0904a1010922a102050d09420932150025017501950281027506950181030951750895011500250f810205010930093116000026ff7f751095028102c0c0",
+    "05010902a1010901a1000509190129081500250195087501810205010930093116000026ff7f75109502810209381581257f750895018106c0c0",
+    "050c0901a101150026ff031a00002aff03751095018100c0",
+    "050c0901a1011500250109e209e909ea09cd09b709b509b609b409b30965096f09707501950c8102750195048103c0",
+]
+if len(formats) != len(expected):
+    raise SystemExit(f"expected {len(expected)} HID descriptors, found {len(formats)}")
+
+for index, (fmt, expected_hex) in enumerate(zip(formats, expected), start=1):
+    output = subprocess.run(
+        ["/bin/sh", "-c", "printf '" + fmt + "'"],
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    if output.hex() != expected_hex:
+        raise SystemExit(
+            f"HID descriptor {index} differs after /bin/sh printf: "
+            f"expected {expected_hex}, got {output.hex()}"
+        )
+PY
+
 grep -Fq 'echo 1 > "$GADGET_DIR/functions/hid.usb0/protocol"' "$INIT_SCRIPT" ||
     fail "S49usbhid must keep keyboard HID boot protocol=1 for host compatibility"
 
