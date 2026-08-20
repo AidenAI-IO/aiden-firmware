@@ -315,12 +315,35 @@ type audioArchiveDTO struct {
 }
 
 type storageDTO struct {
-	MonitorEnabled      bool   `json:"monitor_enabled"`
-	MountPoint          string `json:"mount_point"`
-	Device              string `json:"device"`
-	MinCardFreeMB       int    `json:"min_card_free_mb"`
-	MigrateStartFreePct int    `json:"migrate_start_free_pct"`
-	MigrateStopFreePct  int    `json:"migrate_stop_free_pct"`
+	MonitorEnabled       bool                   `json:"monitor_enabled"`
+	MountPoint           string                 `json:"mount_point"`
+	Device               string                 `json:"device"`
+	MinCardFreeMB        int                    `json:"min_card_free_mb"`
+	MigrateStartFreePct  int                    `json:"migrate_start_free_pct"`
+	MigrateStopFreePct   int                    `json:"migrate_stop_free_pct"`
+	RootPath             string                 `json:"root_path"`
+	CheckIntervalSeconds int                    `json:"check_interval_seconds"`
+	WarningThresholdMB   uint64                 `json:"warning_threshold_mb"`
+	CriticalThresholdMB  uint64                 `json:"critical_threshold_mb"`
+	EmergencyThresholdMB uint64                 `json:"emergency_threshold_mb"`
+	RecoveryHysteresisMB uint64                 `json:"recovery_hysteresis_mb"`
+	DegradedMode         storageDegradedModeDTO `json:"degraded_mode"`
+	Cleanup              storageCleanupDTO      `json:"cleanup"`
+}
+
+type storageDegradedModeDTO struct {
+	DisableLLMHTTPLog     bool `json:"disable_llm_http_log"`
+	DisableAudioArchive   bool `json:"disable_audio_archive"`
+	DisableSessionArchive bool `json:"disable_session_archive"`
+	MaxAgentLogMB         int  `json:"max_agent_log_mb"`
+}
+
+type storageCleanupDTO struct {
+	Enabled                     bool  `json:"enabled"`
+	LLMHTTPLogRetentionDays     []int `json:"llm_http_log_retention_days"`
+	AudioArchiveRetentionDays   []int `json:"audio_archive_retention_days"`
+	SessionArchiveRetentionDays []int `json:"session_archive_retention_days"`
+	CleanupRetryIntervalSeconds int   `json:"cleanup_retry_interval_seconds"`
 }
 
 type deviceDTO struct {
@@ -439,6 +462,25 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 	storage.MinCardFreeMB = d.Storage.MinCardFreeMB
 	storage.MigrateStartFreePct = d.Storage.MigrateStartFreePct
 	storage.MigrateStopFreePct = d.Storage.MigrateStopFreePct
+	storage.RootPath = d.Storage.RootPath
+	storage.CheckIntervalSeconds = d.Storage.CheckIntervalSeconds
+	storage.WarningThresholdMB = d.Storage.WarningThresholdMB
+	storage.CriticalThresholdMB = d.Storage.CriticalThresholdMB
+	storage.EmergencyThresholdMB = d.Storage.EmergencyThresholdMB
+	storage.RecoveryHysteresisMB = d.Storage.RecoveryHysteresisMB
+	storage.DegradedMode = agent.StorageDegradedModeConfig{
+		DisableLLMHTTPLog:     d.Storage.DegradedMode.DisableLLMHTTPLog,
+		DisableAudioArchive:   d.Storage.DegradedMode.DisableAudioArchive,
+		DisableSessionArchive: d.Storage.DegradedMode.DisableSessionArchive,
+		MaxAgentLogMB:         d.Storage.DegradedMode.MaxAgentLogMB,
+	}
+	storage.Cleanup = agent.StorageCleanupConfig{
+		Enabled:                     d.Storage.Cleanup.Enabled,
+		LLMHTTPLogRetentionDays:     d.Storage.Cleanup.LLMHTTPLogRetentionDays,
+		AudioArchiveRetentionDays:   d.Storage.Cleanup.AudioArchiveRetentionDays,
+		SessionArchiveRetentionDays: d.Storage.Cleanup.SessionArchiveRetentionDays,
+		CleanupRetryIntervalSeconds: d.Storage.Cleanup.CleanupRetryIntervalSeconds,
+	}
 	return agent.Config{
 		ModelProviders: d.modelProvidersToAgentConfig(),
 		TTSProviders:   d.ttsProvidersToAgentConfig(),
@@ -600,6 +642,9 @@ func (d webConfigDTO) modelProvidersToAgentConfig() map[string]agent.ModelProvid
 			APIKey:  provider.APIKey,
 			BaseURL: provider.BaseURL,
 		}
+		if result[name].APIKey == "" && provider.HasAPIKey {
+			result[name] = agent.ModelProvider{Type: provider.Type, APIKey: hasAPIKeyPlaceholder, BaseURL: provider.BaseURL}
+		}
 	}
 	return result
 }
@@ -628,7 +673,7 @@ func (d webConfigDTO) ttsProvidersToAgentConfig() map[string]agent.TTSProvider {
 	}
 	result := make(map[string]agent.TTSProvider, len(d.TTSProviders))
 	for name, provider := range d.TTSProviders {
-		result[name] = agent.TTSProvider{
+		mapped := agent.TTSProvider{
 			Type:        provider.Type,
 			APIKey:      provider.APIKey,
 			Model:       provider.Model,
@@ -636,6 +681,10 @@ func (d webConfigDTO) ttsProvidersToAgentConfig() map[string]agent.TTSProvider {
 			Emotion:     provider.Emotion,
 			ReferenceID: provider.ReferenceID,
 		}
+		if mapped.APIKey == "" && provider.HasAPIKey {
+			mapped.APIKey = hasAPIKeyPlaceholder
+		}
+		result[name] = mapped
 	}
 	return result
 }
@@ -667,7 +716,7 @@ func (d webConfigDTO) sttProvidersToAgentConfig() map[string]agent.STTProvider {
 	}
 	result := make(map[string]agent.STTProvider, len(d.STTProviders))
 	for name, provider := range d.STTProviders {
-		result[name] = agent.STTProvider{
+		mapped := agent.STTProvider{
 			Type:            provider.Type,
 			APIKey:          provider.APIKey,
 			Model:           provider.Model,
@@ -678,6 +727,16 @@ func (d webConfigDTO) sttProvidersToAgentConfig() map[string]agent.STTProvider {
 			Region:          provider.Region,
 			EngineModelType: provider.EngineModelType,
 		}
+		if mapped.APIKey == "" && provider.HasAPIKey {
+			mapped.APIKey = hasAPIKeyPlaceholder
+		}
+		if mapped.SecretID == "" && provider.HasSecretID {
+			mapped.SecretID = hasAPIKeyPlaceholder
+		}
+		if mapped.SecretKey == "" && provider.HasSecretKey {
+			mapped.SecretKey = hasAPIKeyPlaceholder
+		}
+		result[name] = mapped
 	}
 	return result
 }
@@ -731,12 +790,31 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			StoragePath: audioArchive.StoragePathOrDefault(),
 		},
 		Storage: storageDTO{
-			MonitorEnabled:      cfg.Storage.MonitorEnabled,
-			MountPoint:          cfg.Storage.MountPointOrDefault(),
-			Device:              cfg.Storage.DeviceOrDefault(),
-			MinCardFreeMB:       cfg.Storage.MinCardFreeMBOrDefault(),
-			MigrateStartFreePct: migrateStartFreePct,
-			MigrateStopFreePct:  migrateStopFreePct,
+			MonitorEnabled:       cfg.Storage.MonitorEnabled,
+			MountPoint:           cfg.Storage.MountPointOrDefault(),
+			Device:               cfg.Storage.DeviceOrDefault(),
+			MinCardFreeMB:        cfg.Storage.MinCardFreeMBOrDefault(),
+			MigrateStartFreePct:  migrateStartFreePct,
+			MigrateStopFreePct:   migrateStopFreePct,
+			RootPath:             cfg.Storage.RootPath,
+			CheckIntervalSeconds: cfg.Storage.CheckIntervalSeconds,
+			WarningThresholdMB:   cfg.Storage.WarningThresholdMB,
+			CriticalThresholdMB:  cfg.Storage.CriticalThresholdMB,
+			EmergencyThresholdMB: cfg.Storage.EmergencyThresholdMB,
+			RecoveryHysteresisMB: cfg.Storage.RecoveryHysteresisMB,
+			DegradedMode: storageDegradedModeDTO{
+				DisableLLMHTTPLog:     cfg.Storage.DegradedMode.DisableLLMHTTPLog,
+				DisableAudioArchive:   cfg.Storage.DegradedMode.DisableAudioArchive,
+				DisableSessionArchive: cfg.Storage.DegradedMode.DisableSessionArchive,
+				MaxAgentLogMB:         cfg.Storage.DegradedMode.MaxAgentLogMB,
+			},
+			Cleanup: storageCleanupDTO{
+				Enabled:                     cfg.Storage.Cleanup.Enabled,
+				LLMHTTPLogRetentionDays:     cfg.Storage.Cleanup.LLMHTTPLogRetentionDays,
+				AudioArchiveRetentionDays:   cfg.Storage.Cleanup.AudioArchiveRetentionDays,
+				SessionArchiveRetentionDays: cfg.Storage.Cleanup.SessionArchiveRetentionDays,
+				CleanupRetryIntervalSeconds: cfg.Storage.Cleanup.CleanupRetryIntervalSeconds,
+			},
 		},
 		Device: deviceDTO{
 			Backend:    cfg.Device.BackendOrDefault(),
@@ -1068,7 +1146,11 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 	if err != nil {
 		return configUpdateResult{}, fmt.Errorf("load config: %w", err)
 	}
+	currentDTO := webConfigDTOFromAgentConfig(current)
 	if err := normalizeLegacyWebConfigPatch(patch, current); err != nil {
+		return configUpdateResult{}, err
+	}
+	if err := stripReadOnlyStatusFields(patch, currentDTO); err != nil {
 		return configUpdateResult{}, err
 	}
 	if err := restoreRenamedProviderCredentials(patch, renames, current); err != nil {
@@ -1077,7 +1159,7 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 	if err := preserveProviderCredentials(patch, current); err != nil {
 		return configUpdateResult{}, err
 	}
-	patch, err = filterNoopWebConfigPatch(patch, webConfigDTOFromAgentConfig(current))
+	patch, err = filterNoopWebConfigPatch(patch, currentDTO)
 	if err != nil {
 		return configUpdateResult{}, err
 	}
@@ -1147,6 +1229,49 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 		ChangedPaths:   changed,
 		RebootRequired: requiresConfigReboot(changed),
 	}, nil
+}
+
+// stripReadOnlyStatusFields removes unchanged has_* markers emitted by GET
+// /api/config. They describe write-only credentials and are not writable TOML
+// fields, but a complete GET response must still be safe to submit as a patch.
+// Changed or malformed markers remain in the patch and are rejected normally.
+func stripReadOnlyStatusFields(values map[string]json.RawMessage, current webConfigDTO) error {
+	encoded, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	var currentValues map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &currentValues); err != nil {
+		return err
+	}
+	stripMatchingReadOnlyStatusFields(values, currentValues)
+	return nil
+}
+
+func stripMatchingReadOnlyStatusFields(values, current map[string]json.RawMessage) {
+	for key, raw := range values {
+		if strings.HasPrefix(key, "has_") {
+			if existing, ok := current[key]; ok && jsonValuesEqual(raw, existing) {
+				delete(values, key)
+			}
+			continue
+		}
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 || trimmed[0] != '{' {
+			continue
+		}
+		var child, currentChild map[string]json.RawMessage
+		if json.Unmarshal(raw, &child) != nil {
+			continue
+		}
+		if currentRaw, ok := current[key]; !ok || json.Unmarshal(currentRaw, &currentChild) != nil {
+			continue
+		}
+		stripMatchingReadOnlyStatusFields(child, currentChild)
+		if encoded, err := json.Marshal(child); err == nil {
+			values[key] = encoded
+		}
+	}
 }
 
 func normalizeLegacyWebConfigPatch(patch map[string]json.RawMessage, current agent.Config) error {
@@ -1553,7 +1678,7 @@ func flattenConfigPatch(path []string, raw json.RawMessage, operations *[]config
 	if err := decoder.Decode(&value); err != nil {
 		return fmt.Errorf("invalid patch at %s: %w", strings.Join(path, "."), err)
 	}
-	*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), path...), Value: normalizeJSONNumber(value)})
+	*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), path...), Value: normalizeJSONValue(value)})
 	return nil
 }
 
@@ -1747,17 +1872,30 @@ func tomlPathForWebPath(path []string) []string {
 	return append([]string{path[1]}, path[2:]...)
 }
 
-func normalizeJSONNumber(value any) any {
-	number, ok := value.(json.Number)
-	if !ok {
+func normalizeJSONValue(value any) any {
+	switch typed := value.(type) {
+	case json.Number:
+		if strings.ContainsAny(string(typed), ".eE") {
+			f, _ := typed.Float64()
+			return f
+		}
+		i, _ := typed.Int64()
+		return i
+	case []any:
+		result := make([]any, len(typed))
+		for i, item := range typed {
+			result[i] = normalizeJSONValue(item)
+		}
+		return result
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, item := range typed {
+			result[key] = normalizeJSONValue(item)
+		}
+		return result
+	default:
 		return value
 	}
-	if strings.ContainsAny(string(number), ".eE") {
-		f, _ := number.Float64()
-		return f
-	}
-	i, _ := number.Int64()
-	return i
 }
 
 func requiresConfigReboot(paths []string) bool {

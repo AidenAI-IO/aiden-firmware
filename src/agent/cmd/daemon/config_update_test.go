@@ -183,6 +183,147 @@ model = "gpt-5.5"
 	}
 }
 
+func TestUpdateConfigFileAcceptsRedactedResolvedConfigPayload(t *testing.T) {
+	source := `[model_providers.openai]
+type = "openai"
+api_key = "model-secret"
+
+[tts_providers.voice]
+type = "fish-audio"
+api_key = "tts-secret"
+
+[stt_providers.tencent]
+type = "tencent-asr"
+api_key = "stt-secret"
+secret_id = "secret-id"
+secret_key = "secret-key"
+
+[model]
+provider = "openai"
+model = "gpt-5.5"
+
+[tts]
+provider = "voice"
+
+[stt]
+provider = "tencent"
+language = "zh"
+
+[storage]
+monitor_enabled = true
+root_path = "/custom/root"
+check_interval_seconds = 123
+warning_threshold_mb = 81
+critical_threshold_mb = 21
+emergency_threshold_mb = 9
+recovery_hysteresis_mb = 4
+
+[storage.degraded_mode]
+disable_llm_http_log = false
+disable_audio_archive = true
+disable_session_archive = false
+max_agent_log_mb = 3
+
+[storage.cleanup]
+enabled = false
+llm_http_log_retention_days = [8, 4]
+audio_archive_retention_days = [20, 2]
+session_archive_retention_days = [14]
+cleanup_retry_interval_seconds = 42
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := agent.LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{"config": webConfigDTOFromAgentConfig(cfg)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := updateConfigFile(path, payload)
+	if err != nil {
+		t.Fatalf("redacted resolved config was rejected: %v", err)
+	}
+	if len(result.ChangedPaths) != 0 {
+		t.Fatalf("unchanged resolved config reported changes: %v", result.ChangedPaths)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != source {
+		t.Fatalf("unchanged resolved config rewrote TOML:\n%s", got)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`api_key = "model-secret"`,
+		`api_key = "tts-secret"`,
+		`api_key = "stt-secret"`,
+		`secret_id = "secret-id"`,
+		`secret_key = "secret-key"`,
+		`root_path = "/custom/root"`,
+		`max_agent_log_mb = 3`,
+		`cleanup_retry_interval_seconds = 42`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("resolved config update lost %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestUpdateConfigFileRejectsChangedReadOnlyCredentialStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte("[search]\nprovider = \"duckduckgo\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	_, err := updateConfigFile(path, []byte(`{"config":{"search":{"has_api_key":true}}}`))
+	if err == nil || !strings.Contains(err.Error(), "read-only status field") {
+		t.Fatalf("changed read-only status error = %v", err)
+	}
+}
+
+func TestUpdateConfigFileUpdatesNestedStorageConfig(t *testing.T) {
+	source := `[storage]
+monitor_enabled = true
+root_path = "/userdata"
+check_interval_seconds = 300
+warning_threshold_mb = 50
+critical_threshold_mb = 10
+emergency_threshold_mb = 5
+recovery_hysteresis_mb = 5
+
+[storage.degraded_mode]
+max_agent_log_mb = 1 # keep comment
+
+[storage.cleanup]
+enabled = true
+llm_http_log_retention_days = [7, 3, 1, 0]
+cleanup_retry_interval_seconds = 60
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	result, err := updateConfigFile(path, []byte(`{"config":{"storage":{"degraded_mode":{"max_agent_log_mb":4},"cleanup":{"llm_http_log_retention_days":[5,1]}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.ChangedPaths, ",") != "storage.cleanup.llm_http_log_retention_days,storage.degraded_mode.max_agent_log_mb" {
+		t.Fatalf("changed paths = %v", result.ChangedPaths)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "max_agent_log_mb = 4 # keep comment") ||
+		!strings.Contains(string(got), "llm_http_log_retention_days = [5, 1]") {
+		t.Fatalf("nested storage fields were not updated losslessly:\n%s", got)
+	}
+}
+
 func TestUpdateConfigFileRejectsMissingProviderRenameSource(t *testing.T) {
 	source := `[model_providers.current]
 type = "openai"

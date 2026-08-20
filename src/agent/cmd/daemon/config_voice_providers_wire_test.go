@@ -46,11 +46,11 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	}
 
 	back := dto.toAgentConfig()
-	if got := back.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" || got.APIKey != "" {
+	if got := back.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" || got.APIKey != hasAPIKeyPlaceholder {
 		t.Errorf("redacted tts_providers conversion = %#v", back.TTSProviders)
 	}
 	if got := back.STTProviders["tencent"]; got.Type != "tencent-asr" || got.AppID != "123" ||
-		got.SecretID != "" || got.SecretKey != "" {
+		got.SecretID != hasAPIKeyPlaceholder || got.SecretKey != hasAPIKeyPlaceholder {
 		t.Errorf("redacted stt_providers conversion = %#v", back.STTProviders)
 	}
 	// The reference itself must not be resolved on the wire: the config page

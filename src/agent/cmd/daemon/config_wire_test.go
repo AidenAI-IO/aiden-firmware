@@ -287,7 +287,7 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 		}
 
 		back := dto.toAgentConfig()
-		if got := back.ModelProviders["my-openai"]; got.Type != "openai" || got.APIKey != "" {
+		if got := back.ModelProviders["my-openai"]; got.Type != "openai" || got.APIKey != hasAPIKeyPlaceholder {
 			t.Errorf("redacted model_providers conversion = %#v", back.ModelProviders)
 		}
 	})
@@ -353,6 +353,43 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 			t.Fatalf("expected valid=true, got errors: %+v", result.Errors)
 		}
 	})
+}
+
+func TestWebConfigDTOStorageRoundTrip(t *testing.T) {
+	cfg := agent.Config{
+		Storage: agent.StorageConfig{
+			MonitorEnabled:       true,
+			MountPoint:           "/custom/mount",
+			Device:               "mmcblk9",
+			MinCardFreeMB:        77,
+			MigrateStartFreePct:  11,
+			MigrateStopFreePct:   61,
+			RootPath:             "/custom/root",
+			CheckIntervalSeconds: 123,
+			WarningThresholdMB:   81,
+			CriticalThresholdMB:  21,
+			EmergencyThresholdMB: 9,
+			RecoveryHysteresisMB: 4,
+			DegradedMode: agent.StorageDegradedModeConfig{
+				DisableLLMHTTPLog:     false,
+				DisableAudioArchive:   true,
+				DisableSessionArchive: false,
+				MaxAgentLogMB:         3,
+			},
+			Cleanup: agent.StorageCleanupConfig{
+				Enabled:                     false,
+				LLMHTTPLogRetentionDays:     []int{8, 4},
+				AudioArchiveRetentionDays:   []int{20, 2},
+				SessionArchiveRetentionDays: []int{14},
+				CleanupRetryIntervalSeconds: 42,
+			},
+		},
+	}
+	dto := webConfigDTOFromAgentConfig(cfg)
+	back := dto.toAgentConfig()
+	if !reflect.DeepEqual(back.Storage, cfg.Storage) {
+		t.Fatalf("storage round-trip changed config:\n got:  %+v\n want: %+v", back.Storage, cfg.Storage)
+	}
 }
 
 func TestConfigWire_ModelProviderCanonicalJSON(t *testing.T) {
