@@ -6,11 +6,15 @@ import (
 	"time"
 )
 
-type audioRecordingBackend interface {
+// AudioRecordingBackend is the common recording interface used by device and
+// host-local audio implementations.
+type AudioRecordingBackend interface {
 	StartRecording(format AudioFormat) (*RecordStartResult, error)
 	ReadRecordChunk(sessionID uint64, timeoutMs uint32) (*AudioChunkResult, error)
 	StopRecording(sessionID uint64) error
 }
+
+type audioRecordingBackend = AudioRecordingBackend
 
 func recordingBackendOrService(backend audioRecordingBackend, service *AudioServiceClient) audioRecordingBackend {
 	if backend != nil {
@@ -26,6 +30,13 @@ func newAudioRecordingBackendFromConfig(cfg Config, service *AudioServiceClient,
 	default:
 		return service
 	}
+}
+
+// NewConfiguredAudioRecordingBackend selects the recording backend resolved
+// from cfg. Callers should pass the shared audio_service client so board mode
+// continues to reuse the configured Unix socket.
+func NewConfiguredAudioRecordingBackend(cfg Config, service *AudioServiceClient, logger *Logger) AudioRecordingBackend {
+	return newAudioRecordingBackendFromConfig(cfg, service, logger)
 }
 
 func startRecordingWithRetry(audio audioRecordingBackend, format AudioFormat, retryTimeout, retryInterval time.Duration) (*RecordStartResult, error) {

@@ -12,6 +12,13 @@ state transitions, queueing, cancellation, and terminal notifications without
 depending on `internal/agent`. The daemon supplies a narrow runner adapter that
 maps `Run(ctx, prompt)` to the legacy `agent.Runtime`.
 
+The foreground realtime session can be activated by either the physical GPIO
+wakeup signal or a text request to `/api/chat`. A text request submitted while
+no realtime session is connected stays queued while the daemon connects, then
+becomes the first user message in that session. GPIO initialization failure does
+not disable `/api/chat` activation, which keeps the same foreground path usable
+on PC and other hosts without board GPIO.
+
 ## Foreground tools
 
 The realtime model receives this focused catalog:

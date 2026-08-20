@@ -90,6 +90,31 @@ func TestRealtimePlaybackStaysOpenAcrossResponsesAndInterrupts(t *testing.T) {
 	}
 }
 
+func TestRealtimeLocalPlaybackFinalizesEachResponse(t *testing.T) {
+	audio := &fakeRealtimePlaybackAudio{}
+	playback := realtimePlaybackState{finalizeResponses: true}
+	format := agent.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}
+
+	if err := playback.open(audio, format); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.append(audio, format, []byte{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.finishResponse(audio); err != nil {
+		t.Fatal(err)
+	}
+	if len(audio.writes) != 2 || !audio.writes[1].final {
+		t.Fatalf("writes = %#v, want PCM followed by a final write", audio.writes)
+	}
+	if err := playback.beginResponse(audio, format); err != nil {
+		t.Fatal(err)
+	}
+	if len(audio.stops) != 1 || audio.starts != 2 {
+		t.Fatalf("after next response: starts=%d stops=%v, want starts=2 stops=[1]", audio.starts, audio.stops)
+	}
+}
+
 func TestRealtimePlaybackOutputFormatUsesConfiguredDeviceFormat(t *testing.T) {
 	format := realtimePlaybackOutputFormat(agent.Config{Audio: agent.AudioConfig{
 		SampleRate: 16000,
@@ -137,11 +162,43 @@ func TestWaitForRealtimeEventTimesOut(t *testing.T) {
 	}
 }
 
-func TestRealtimeChatBridgeQueuesOnlyWhenSessionActive(t *testing.T) {
-	bridge := newRealtimeChatBridge()
-	if _, err := bridge.Handle(context.Background(), agent.RealtimeChatRequest{Message: "hello"}); err == nil {
-		t.Fatal("expected inactive bridge to reject request")
+func TestRealtimeChatBridgeInactiveRequestQueuesAndWakesSession(t *testing.T) {
+	wakeup := make(chan struct{}, 1)
+	bridge := newRealtimeChatBridge(func() { wakeup <- struct{}{} })
+	events, err := bridge.Handle(context.Background(), agent.RealtimeChatRequest{RequestID: "req-1", Message: "hello"})
+	if err != nil {
+		t.Fatal(err)
 	}
+	select {
+	case <-wakeup:
+	case <-time.After(time.Second):
+		t.Fatal("inactive request did not activate realtime session")
+	}
+	select {
+	case command := <-bridge.commands:
+		if command.request.Message != "hello" || command.request.RequestID != "req-1" {
+			t.Fatalf("queued request = %+v", command.request)
+		}
+		if !sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventDone, Response: "hi"}) {
+			t.Fatal("failed to deliver bridge response")
+		}
+		close(command.events)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for queued request")
+	}
+	select {
+	case event := <-events:
+		if event.Type != agent.RealtimeChatEventDone || event.Response != "hi" {
+			t.Fatalf("event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for bridge response")
+	}
+}
+
+func TestRealtimeChatBridgeActiveRequestDoesNotWakeSessionAgain(t *testing.T) {
+	wakeups := 0
+	bridge := newRealtimeChatBridge(func() { wakeups++ })
 
 	bridge.activate()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -171,4 +228,7 @@ func TestRealtimeChatBridgeQueuesOnlyWhenSessionActive(t *testing.T) {
 		t.Fatal("timed out waiting for bridge response")
 	}
 	bridge.deactivate()
+	if wakeups != 0 {
+		t.Fatalf("active request triggered %d extra wakeups", wakeups)
+	}
 }

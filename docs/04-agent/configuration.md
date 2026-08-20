@@ -417,10 +417,13 @@ API key and base URL do not carry over to it.
 
 ## `[voice_model]`
 
-This optional section selects the realtime voice model used after a GPIO
-wakeup. It is active only when `input_mode = "stt"`, `trigger_mode = "wakeup"`,
-and `api_key` is non-empty. The daemon then streams 16 kHz PCM microphone data
-to `rtclient` continuously and plays the model's 24 kHz PCM response stream.
+This optional section selects the realtime voice model used after a GPIO wakeup
+or an `/api/chat` request. It is active only when `input_mode = "stt"`,
+`trigger_mode = "wakeup"`, and `api_key` is non-empty. The daemon then streams
+16 kHz PCM microphone data to `rtclient` continuously and plays the model's
+24 kHz PCM response stream. When no session is active, `/api/chat` queues its
+text input, connects the realtime session, and sends that text as the first user
+message. This API activation remains available when host GPIO is unavailable.
 Without an API key, the existing VAD/STT/LLM/TTS wakeup loop remains active.
 This section is currently TOML-only and is not rendered by Config Web.
 

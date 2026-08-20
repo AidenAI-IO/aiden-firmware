@@ -173,6 +173,12 @@ func newTTSPlaybackBackendFromConfig(cfg Config, audio *AudioServiceClient, logg
 	}
 }
 
+// NewConfiguredAudioPlaybackBackend selects the playback backend resolved from
+// cfg for callers that manage their own audio stream lifecycle.
+func NewConfiguredAudioPlaybackBackend(cfg Config, audio *AudioServiceClient, logger *Logger) tts.AudioServiceBackend {
+	return newTTSPlaybackBackendFromConfig(cfg, audio, logger)
+}
+
 func containsInt(values []int, target int) bool {
 	for _, value := range values {
 		if value == target {
