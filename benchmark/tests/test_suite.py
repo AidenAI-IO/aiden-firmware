@@ -622,6 +622,20 @@ def test_load_suite_rejects_unknown_setup_keys(tmp_path: Path):
     with pytest.raises(SuiteValidationError, match="unsupported seed_episode setup keys: consolodate"):
         load_suite(p)
 
+
+@pytest.mark.parametrize("setup_type", [["seed_episode"], {"name": "seed_episode"}, 1, None])
+def test_load_suite_rejects_non_string_setup_type(tmp_path: Path, setup_type):
+    fixture = {
+        **FIXTURE,
+        "tasks": [{**FIXTURE["tasks"][0], "setup": {"type": setup_type}}],
+    }
+    p = tmp_path / "invalid-setup-type.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="setup type must be a string"):
+        load_suite(p)
+
+
 def test_load_suite_rejects_invalid_expected_option_answer(tmp_path: Path):
     fixture = {
         **FIXTURE,
@@ -1039,8 +1053,7 @@ def test_episode_memory_conditions_share_natural_and_iphone_tasks():
 
     for suite in (before, after, legacy):
         assert len(suite.tasks) == 2
-        assert suite.tasks[0].mock_environment is not None
-        assert suite.tasks[1].mock_environment is None
+        assert all(task.mock_environment is None for task in suite.tasks)
         assert suite.tasks[1].platforms == ["ios"]
         assert suite.tasks[1].setup["type"] in {"seed_episode", "seed_memory"}
 

@@ -233,6 +233,8 @@ def load_suite(path: Path) -> Suite:
             if not isinstance(setup, dict):
                 raise SuiteValidationError(f"task {tid}: setup must be an object")
             setup_type = setup.get("type")
+            if not isinstance(setup_type, str):
+                raise SuiteValidationError(f"task {tid}: setup type must be a string")
             allowed_setup_keys = SETUP_KEYS.get(setup_type)
             if allowed_setup_keys is None:
                 raise SuiteValidationError(f"task {tid}: unsupported setup type {setup_type!r}")

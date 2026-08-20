@@ -716,30 +716,34 @@ on-demand recall, or use of recalled Memory. The primary comparison is `before`
 versus `after`; the secondary comparison is `after` versus `legacy`. The legacy
 fixture does not execute or benchmark the removed extractor itself.
 
-Select the natural recall task and use `--auto-agent-setup` for its scripted mock
-environment.
-It creates a fresh daemon and data directory for every attempt, preventing
-Memory, Episode, session, and context-cache leakage between conditions.
+The natural recall task uses the same real-environment suite type as the
+physical-iPhone task, but its prompt and hard assertions prohibit device
+operation. Run it against a freshly started agent daemon and isolated data
+directory so Memory, Episode, session, and context-cache state cannot leak
+between conditions.
 
 ```bash
 uv run python -m runner run \
   --suite suites/episode_memory_before_v1.json \
   --task-id qa_notes_title_save_procedure \
-  --auto-agent-setup \
+  --agent-url http://<agent-host>:8080 \
+  --benchmark-token-file /path/to/control_token \
   --no-judge \
   --run-id episode-memory-before
 
 uv run python -m runner run \
   --suite suites/episode_memory_after_v1.json \
   --task-id qa_notes_title_save_procedure \
-  --auto-agent-setup \
+  --agent-url http://<agent-host>:8080 \
+  --benchmark-token-file /path/to/control_token \
   --no-judge \
   --run-id episode-memory-after
 
 uv run python -m runner run \
   --suite suites/episode_memory_legacy_v1.json \
   --task-id qa_notes_title_save_procedure \
-  --auto-agent-setup \
+  --agent-url http://<agent-host>:8080 \
+  --benchmark-token-file /path/to/control_token \
   --no-judge \
   --run-id episode-memory-legacy
 
@@ -805,6 +809,10 @@ uv run python -m runner compare \
 uv run python -m runner compare \
   --runs runs/episode-memory-iphone-after runs/episode-memory-iphone-legacy
 ```
+
+Omit `--task-id` from these commands to run each complete suite. Both tasks then
+share the same physical-device environment type; the natural recall task still
+does not operate the phone.
 
 Use the same iPhone, model configuration, prompt, and environment reset for all
 three runs. Use an isolated agent data directory for every attempt so Episodes,

@@ -178,6 +178,12 @@ def test_per_task_setup_rejects_unknown_keys():
         )
 
 
+@pytest.mark.parametrize("setup_type", [["seed_episode"], {"name": "seed_episode"}, 1, None])
+def test_per_task_setup_rejects_non_string_setup_type(setup_type):
+    with pytest.raises(ResetError, match="setup type must be a string"):
+        per_task_setup(RecordingSetupClient(), {"type": setup_type})
+
+
 def test_call_environment_setup_posts_to_api_setup(monkeypatch):
     seen = {}
 

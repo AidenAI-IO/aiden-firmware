@@ -7,12 +7,6 @@
     {
       "id": "qa_notes_title_save_procedure",
       "category": "memory",
-      "mock_environment": {
-        "platform": "ios",
-        "phone_bridge": {},
-        "screen_text": "Static Episode Memory benchmark environment. No device operation is required.",
-        "tools": {}
-      },
       "description_for_judge": "The agent should select the title-save sequence that was verified in the seeded QA Notes build 7 episode.",
       "prompt": "A note title has already been edited in QA Notes build 7. Based on this device's previously verified behavior, which sequence makes the changed title persist? Do not operate the phone; answer directly. End with exactly one line in the form <final_answer>(x)</final_answer>.\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
       "expected_answer": "(b)",

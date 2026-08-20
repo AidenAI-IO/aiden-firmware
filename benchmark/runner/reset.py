@@ -128,6 +128,8 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_
     if setup is None:
         return
     setup_type = setup.get("type")
+    if not isinstance(setup_type, str):
+        raise ResetError(f"setup type must be a string: {setup!r}")
     allowed_keys = SETUP_KEYS.get(setup_type)
     if allowed_keys is None:
         raise ResetError(f"unsupported setup form: {setup!r}")
