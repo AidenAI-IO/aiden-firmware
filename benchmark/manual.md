@@ -730,6 +730,7 @@ uv run python -m runner run \
   --environment-url http://<real-environment-host>:<port> \
   --target-platform ios \
   --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
   --no-judge \
   --run-id episode-memory-before
 
@@ -740,6 +741,7 @@ uv run python -m runner run \
   --environment-url http://<real-environment-host>:<port> \
   --target-platform ios \
   --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
   --no-judge \
   --run-id episode-memory-after
 
@@ -750,6 +752,7 @@ uv run python -m runner run \
   --environment-url http://<real-environment-host>:<port> \
   --target-platform ios \
   --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
   --no-judge \
   --run-id episode-memory-legacy
 
@@ -761,7 +764,9 @@ uv run python -m runner compare \
 ```
 
 The comparison reports pass-count, median tool-call, and median wall-time
-deltas. The prompt does not name or force a particular memory tool.
+deltas. The prompt does not name or force a particular memory tool. After the
+five-repeat comparison is stable, rerun the same commands with `--repeats 10`
+and distinct run IDs.
 
 #### Episode Memory physical-iPhone execution comparison
 
@@ -789,6 +794,7 @@ uv run python -m runner run \
   --environment-url http://<physical-device-environment-host>:<port> \
   --target-platform ios \
   --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
   --run-id episode-memory-iphone-before
 
 uv run python -m runner run \
@@ -798,6 +804,7 @@ uv run python -m runner run \
   --environment-url http://<physical-device-environment-host>:<port> \
   --target-platform ios \
   --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
   --run-id episode-memory-iphone-after
 
 uv run python -m runner run \
@@ -807,6 +814,7 @@ uv run python -m runner run \
   --environment-url http://<physical-device-environment-host>:<port> \
   --target-platform ios \
   --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
   --run-id episode-memory-iphone-legacy
 
 uv run python -m runner compare \
@@ -822,8 +830,9 @@ does not operate the phone.
 
 Use the same iPhone, model configuration, prompt, and environment reset for all
 three runs. Use an isolated agent data directory for every attempt so Episodes,
-Memory, sessions, and context caches cannot leak across conditions. Start with
-five attempts per suite; repeat with ten after the device path is stable.
+Memory, sessions, and context caches cannot leak across conditions. After the
+five-repeat comparison is stable, rerun the same commands with `--repeats 10`
+and distinct run IDs.
 MobileGym can validate runner and setup plumbing, but the USB Ethernet execution
 result must be validated on the physical iPhone. The primary conclusion comes
 from `before` versus `after`; `after` versus `legacy` is a compatibility
