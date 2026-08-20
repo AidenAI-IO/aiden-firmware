@@ -24,6 +24,16 @@ grep -qx 'RuntimeDirectory=sshd' \
     "${UNIT_DIR}/aiden-ssh-identity.service"
 grep -qx 'RuntimeDirectoryMode=0755' \
     "${UNIT_DIR}/aiden-ssh-identity.service"
+grep -qx 'TimeoutStartSec=180s' \
+    "${UNIT_DIR}/aiden-ssh-identity.service"
+grep -qx 'for type in ed25519 ecdsa rsa; do' \
+    "${OVERLAY}/usr/lib/aiden/aiden-ssh-identity"
+grep -q 'runtime_dir=/run/sshd' \
+    "${OVERLAY}/usr/lib/aiden/aiden-ssh-identity"
+grep -q 'mkdir -p .*"${runtime_dir}"' \
+    "${OVERLAY}/usr/lib/aiden/aiden-ssh-identity"
+grep -q 'chmod 0755 "${runtime_dir}"' \
+    "${OVERLAY}/usr/lib/aiden/aiden-ssh-identity"
 grep -qx 'ConditionPathExists=/dev/rtc0' \
     "${UNIT_DIR}/aiden-rtc.service"
 if grep -Eq '^(Wants|Requires|After)=.*dev-rtc0\.device' \
