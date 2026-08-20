@@ -1065,7 +1065,7 @@ def test_start_job_uses_mock_environment_without_device_endpoint(
     job = app.start_job({"suites": ["mock.json"], "no_judge": True})
 
     assert job["environment_type"] == "mock"
-    assert job["environment_name"] == "Mock companion app environment"
+    assert job["environment_name"] == "Mock Aiden app environment"
     assert job["endpoint"] == ""
     assert job["environment_endpoint"] == ""
     assert job["agent_url"] == ""
@@ -2476,7 +2476,7 @@ def test_run_mock_suite_uses_auto_agent_setup_and_updates_task_records(
         docker_endpoint="",
         suites=["aiden_app/notes_entry_policy_v1.json"],
         environment_type="mock",
-        environment_name="Mock companion app environment",
+        environment_name="Mock Aiden app environment",
         config_dir=str(config_dir),
         raw_runs_dir=str(raw_runs_dir),
         state_file=str(job_dir / "state.json"),
@@ -2557,7 +2557,7 @@ def test_run_job_mock_mode_uses_runner_platform_summary(
         docker_endpoint="",
         suites=suites,
         environment_type="mock",
-        environment_name="Mock companion app environment",
+        environment_name="Mock Aiden app environment",
         config_dir=str(job_dir / "config"),
         raw_runs_dir=str(job_dir / "raw"),
         state_file=str(job_dir / "state.json"),
@@ -2605,7 +2605,7 @@ def test_run_job_mock_mode_uses_runner_platform_summary(
 
 
 def test_webui_html_exposes_mock_environment_run_mode():
-    assert "Mock companion app environment" in webui.INDEX_HTML
+    assert "Mock Aiden app environment" in webui.INDEX_HTML
     assert "selectedSuiteEnvironmentMode" in webui.INDEX_HTML
     assert "Mock suites and external device suites must run in separate jobs" in webui.INDEX_HTML
 

@@ -140,7 +140,7 @@ Selecting an app:
 
 After successfully opening the switcher via a non-obvious method, call `save_memory` with the configured `[device].device_type`, method, gesture coordinates, and tags `["app-switch", "device"]`.
 
-On iOS, if Phone Bridge context says the companion app is backgrounded/inactive and `return_entry=dynamic_island`, treat Dynamic Island as the fastest way back to the companion app. Do not blind-tap lock-screen Live Activity cards; use screenshot/HID fallback or visual confirmation for those cases. Opening the companion app restores the companion app shortcut channel.
+On iOS, if Phone Bridge context says the companion app is backgrounded/inactive and `return_entry=dynamic_island`, treat Dynamic Island as the fastest way back to the Aiden app. Do not blind-tap lock-screen Live Activity cards; use screenshot/HID fallback or visual confirmation for those cases. Opening the Aiden app restores the companion app shortcut channel.
 
 ## Scrolling and Picker Controls
 

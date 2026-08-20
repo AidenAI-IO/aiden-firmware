@@ -524,7 +524,7 @@ class BenchmarkWebApp:
         parallel_tasks = parse_positive_int(payload.get("parallel_tasks"), default=1, field="parallel_tasks")
         if environment_type == "mock":
             environment_id = "mock-aiden-app"
-            environment_name = "Mock companion app environment"
+            environment_name = "Mock Aiden app environment"
             environment_endpoint = ""
             environment_web_url = ""
             parallel_tasks = 1
@@ -4705,7 +4705,7 @@ INDEX_HTML = r"""<!doctype html>
     function mockEnvironment(){
       return {
         id: 'mock-aiden-app',
-        name: 'Mock companion app environment',
+        name: 'Mock Aiden app environment',
         endpoint: '',
         type: 'mock',
         status: 'running'
@@ -4718,7 +4718,7 @@ INDEX_HTML = r"""<!doctype html>
       const mode = selectedSuiteEnvironmentMode();
       document.getElementById('selectedSuitesLabel').textContent = `${selectedSuites.size} suites`;
       const environmentLabel = mode === 'mock'
-        ? 'Mock companion app environment'
+        ? 'Mock Aiden app environment'
         : mode === 'mixed'
           ? 'Mixed environments - run separately'
           : env ? env.name : 'No environment';
@@ -4899,7 +4899,7 @@ INDEX_HTML = r"""<!doctype html>
     function renderActiveJob(job){
       const activeLabel = document.getElementById('activeJobLabel');
       const runtimeLabel = job.environment_type === 'mock'
-        ? (job.environment_name || 'Mock companion app environment')
+        ? (job.environment_name || 'Mock Aiden app environment')
         : job.agent_url;
       activeLabel.textContent = `${job.id} - ${runtimeLabel}`;
       const st = document.getElementById('activeJobStatus');
