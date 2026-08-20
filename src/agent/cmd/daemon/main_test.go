@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/agenttask"
 )
 
 func TestDaemonDeviceTypeFlag(t *testing.T) {
@@ -54,8 +56,14 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 	if got.EnableSpeechEmotion == nil || *got.EnableSpeechEmotion {
 		t.Fatalf("enable_speech_emotion = %#v, want false", got.EnableSpeechEmotion)
 	}
-	if len(got.Tools) != 2 || got.Tools[0].Function.Name != "get_current_time" || got.Tools[1].Function.Name != "recall_memory" {
-		t.Fatalf("realtime tools = %#v, want only get_current_time and recall_memory", got.Tools)
+	wantTools := []string{"get_current_time", "recall_memory", "create_agent_task", "cancel_agent_task", "query_agent_task"}
+	if len(got.Tools) != len(wantTools) {
+		t.Fatalf("realtime tools = %#v, want %v", got.Tools, wantTools)
+	}
+	for i, want := range wantTools {
+		if got.Tools[i].Function.Name != want {
+			t.Fatalf("realtime tool[%d] = %q, want %q", i, got.Tools[i].Function.Name, want)
+		}
 	}
 }
 
@@ -96,6 +104,72 @@ func TestRealtimeRecallToolDelegatesToRuntimeTool(t *testing.T) {
 	}
 	if recall.input != input {
 		t.Fatalf("recall input = %q, want %q", recall.input, input)
+	}
+}
+
+func TestRealtimeAgentTaskToolsAreNonBlocking(t *testing.T) {
+	runner := &fakeBackgroundTaskRunner{
+		started: make(chan string, 1),
+		release: make(chan struct{}),
+	}
+	manager := agenttask.NewManager(runner)
+	defer manager.Close()
+	executor := realtimeVoiceToolExecutor{tasks: manager, now: time.Now}
+
+	startedAt := time.Now()
+	output := executor.call(context.Background(), realtimeCreateTaskTool, `{"task":"open settings"}`)
+	if time.Since(startedAt) > 100*time.Millisecond {
+		t.Fatal("create_agent_task blocked on background execution")
+	}
+	var created agenttask.Task
+	if err := json.Unmarshal([]byte(output), &created); err != nil {
+		t.Fatalf("decode created task: %v", err)
+	}
+	if created.Status != agenttask.StatusQueued || created.ID == "" {
+		t.Fatalf("created task = %+v", created)
+	}
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("background task did not start")
+	}
+	query := executor.call(context.Background(), realtimeQueryTaskTool, fmt.Sprintf(`{"task_id":%q}`, created.ID))
+	var running agenttask.Task
+	if err := json.Unmarshal([]byte(query), &running); err != nil || running.Status != agenttask.StatusRunning {
+		t.Fatalf("query output = %s, error = %v", query, err)
+	}
+	cancelled := executor.call(context.Background(), realtimeCancelTaskTool, fmt.Sprintf(`{"task_id":%q}`, created.ID))
+	var cancelling agenttask.Task
+	if err := json.Unmarshal([]byte(cancelled), &cancelling); err != nil || cancelling.Status != agenttask.StatusCancelling {
+		t.Fatalf("cancel output = %s, error = %v", cancelled, err)
+	}
+}
+
+func TestFormatRealtimeTaskUpdatesAggregatesResults(t *testing.T) {
+	message := formatRealtimeTaskUpdates([]agenttask.Task{
+		{ID: "task_1", Prompt: "first", Status: agenttask.StatusCompleted, Result: "done"},
+		{ID: "task_2", Prompt: "second", Status: agenttask.StatusFailed, Error: "boom"},
+	})
+	for _, value := range []string{"task_1", "task_2", "done", "boom"} {
+		if !strings.Contains(message, value) {
+			t.Fatalf("aggregated message missing %q: %s", value, message)
+		}
+	}
+}
+
+type fakeBackgroundTaskRunner struct {
+	started chan string
+	release chan struct{}
+}
+
+func (r *fakeBackgroundTaskRunner) Run(ctx context.Context, prompt string) (string, error) {
+	r.started <- prompt
+	select {
+	case <-r.release:
+		return "done", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
 }
 

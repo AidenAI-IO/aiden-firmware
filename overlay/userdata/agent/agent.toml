@@ -47,7 +47,9 @@ trigger_mode = "wakeup"
 # Realtime voice model (optional). When api_key is set together with
 # input_mode = "stt" and trigger_mode = "wakeup", GPIO wakeup opens a
 # continuous PCM duplex session with rtclient. The legacy STT/LLM/TTS loop is
-# used when this section has no api_key.
+# used when this section has no api_key. In realtime mode, the voice model is
+# the non-blocking foreground agent; device and multi-step work is queued to
+# the legacy agent loop through create_agent_task.
 # [voice_model]
 # api_key = "$DASHSCOPE_API_KEY"
 # model = "qwen-audio-3.0-realtime-plus"

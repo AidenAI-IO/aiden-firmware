@@ -1,0 +1,66 @@
+# Foreground and Background Agents
+
+Realtime voice mode uses two cooperating agents:
+
+- The realtime voice model is the foreground agent. It owns the live
+  conversation and must not wait for device operations or long-running work.
+- The legacy agent loop is the background agent. It executes queued tasks one
+  at a time with the existing runtime tools, memory, and episode recording.
+
+The orchestration layer lives in `internal/agenttask`. It owns task data,
+state transitions, queueing, cancellation, and terminal notifications without
+depending on `internal/agent`. The daemon supplies a narrow runner adapter that
+maps `Run(ctx, prompt)` to the legacy `agent.Runtime`.
+
+## Foreground tools
+
+The realtime model receives this focused catalog:
+
+| Tool | Purpose |
+| --- | --- |
+| `get_current_time` | Return controller-local date, time, timezone, and UTC offset. |
+| `recall_memory` | Recall long-term user preferences, facts, rules, and procedures. |
+| `create_agent_task` | Queue background work and return immediately with a task ID. |
+| `cancel_agent_task` | Cancel queued work or request cancellation of running work. |
+| `query_agent_task` | Read the latest task state and terminal result. |
+
+`create_agent_task` only enqueues work. The foreground response never waits for
+the background agent to start or finish.
+
+## Task lifecycle
+
+Tasks use the following states:
+
+```text
+created -> queued -> running -> completed
+                            -> failed
+                            -> cancelling -> cancelled
+                 -> cancelled
+```
+
+Queued cancellation is immediate. Running cancellation first publishes
+`cancelling`; it becomes `cancelled` after the legacy runtime returns from
+context cancellation.
+
+## Result delivery
+
+Completed, failed, and cancelled tasks are delivered to the foreground model as
+user messages. Delivery follows two rules:
+
+1. A terminal update starts a 500 ms sliding debounce window. Every additional
+   update resets that window, so results finishing close together are included
+   in one message and one foreground response.
+2. An update is injected only while the foreground session is idle. It never
+   interrupts live user speech, an active response, or a text request forwarded
+   through the realtime chat bridge.
+
+Undelivered updates are returned to the pending queue if the realtime session
+ends. The next session can then deliver them.
+
+## User action handoff
+
+The first implementation intentionally does not add blocking
+`request_user_action` / `response_user_action` task coordination. The existing
+legacy human-handoff behavior remains available to ordinary agent runs, but a
+background task is not held indefinitely waiting for a foreground response.
+This boundary can be revisited after observing real background task behavior.

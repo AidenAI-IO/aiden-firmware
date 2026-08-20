@@ -14,6 +14,7 @@ import (
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/agent/rtclient"
 	"aiden-agent/internal/agent/tts"
+	"aiden-agent/internal/agenttask"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -24,6 +25,7 @@ const (
 	realtimeEventTimeout       = 10 * time.Second
 	realtimeUpdateTimeout      = 5 * time.Second
 	realtimePlaybackKeepAlive  = 10 * time.Second
+	realtimeTaskResultDebounce = 500 * time.Millisecond
 )
 
 // runRealtimeWakeupMode owns the realtime voice path. The legacy wakeup
@@ -121,10 +123,10 @@ func chatCommandDone(command *realtimeChatCommand) <-chan struct{} {
 }
 
 func runRealtimeWakeupMode(cfg agent.Config, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
-	runRealtimeWakeupModeWithServer(cfg, sigChan, nil, nil, newWatcher)
+	runRealtimeWakeupModeWithServer(cfg, sigChan, nil, nil, nil, newWatcher)
 }
 
-func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, server *agent.Server, runtime *agent.Runtime, newWatcher wakeupWatcherFactory) {
+func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, server *agent.Server, runtime *agent.Runtime, tasks *agenttask.Manager, newWatcher wakeupWatcherFactory) {
 	bridge := newRealtimeChatBridge()
 	if server != nil {
 		server.SetRealtimeChatHandler(bridge.Handle)
@@ -149,7 +151,7 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 			return
 		case <-events:
 			log.Println("\n[wakeup] GPIO wakeup triggered, connecting realtime voice model...")
-			if err := runRealtimeSession(cfg, sigChan, runtime, bridge); err != nil {
+			if err := runRealtimeSession(cfg, sigChan, runtime, tasks, bridge); err != nil {
 				log.Printf("[realtime] session ended: %v", err)
 			}
 			drainRealtimeWakeups(events)
@@ -213,6 +215,9 @@ func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
 const (
 	realtimeCurrentTimeTool = "get_current_time"
 	realtimeRecallTool      = "recall_memory"
+	realtimeCreateTaskTool  = "create_agent_task"
+	realtimeCancelTaskTool  = "cancel_agent_task"
+	realtimeQueryTaskTool   = "query_agent_task"
 )
 
 func realtimeVoiceToolDefinitions() []rtclient.Tool {
@@ -233,6 +238,39 @@ func realtimeVoiceToolDefinitions() []rtclient.Tool {
 					"types":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 					"limit":    map[string]any{"type": "integer", "minimum": 1},
 				},
+			},
+		),
+		realtimeVoiceToolDefinition(
+			realtimeCreateTaskTool,
+			"Create a non-blocking background agent task for device operations, external actions, or longer multi-step work.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"task": map[string]any{"type": "string", "description": "A self-contained description of the work for the background agent."},
+				},
+				"required": []string{"task"},
+			},
+		),
+		realtimeVoiceToolDefinition(
+			realtimeCancelTaskTool,
+			"Cancel a queued or running background agent task.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"task_id": map[string]any{"type": "string"},
+				},
+				"required": []string{"task_id"},
+			},
+		),
+		realtimeVoiceToolDefinition(
+			realtimeQueryTaskTool,
+			"Query the current status and result of a background agent task.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"task_id": map[string]any{"type": "string"},
+				},
+				"required": []string{"task_id"},
 			},
 		),
 	}
@@ -256,10 +294,11 @@ func realtimeVoiceToolDefinition(name, description string, parameters map[string
 type realtimeVoiceToolExecutor struct {
 	recall langtools.Tool
 	now    func() time.Time
+	tasks  *agenttask.Manager
 }
 
-func newRealtimeVoiceToolExecutor(runtime *agent.Runtime) realtimeVoiceToolExecutor {
-	executor := realtimeVoiceToolExecutor{now: time.Now}
+func newRealtimeVoiceToolExecutor(runtime *agent.Runtime, tasks *agenttask.Manager) realtimeVoiceToolExecutor {
+	executor := realtimeVoiceToolExecutor{now: time.Now, tasks: tasks}
 	if runtime != nil {
 		executor.recall, _ = runtime.Tool(realtimeRecallTool)
 	}
@@ -285,6 +324,43 @@ func (e realtimeVoiceToolExecutor) call(ctx context.Context, name, arguments str
 			return realtimeToolJSON(map[string]any{"error": err.Error()})
 		}
 		return output
+	case realtimeCreateTaskTool:
+		var input struct {
+			Task string `json:"task"`
+		}
+		if err := json.Unmarshal([]byte(arguments), &input); err != nil {
+			return realtimeToolJSON(map[string]any{"error": "invalid task arguments"})
+		}
+		if e.tasks == nil {
+			return realtimeToolJSON(map[string]any{"error": "background agent is unavailable"})
+		}
+		task, err := e.tasks.Create(input.Task)
+		if err != nil {
+			return realtimeToolJSON(map[string]any{"error": err.Error()})
+		}
+		return realtimeToolJSON(task)
+	case realtimeCancelTaskTool, realtimeQueryTaskTool:
+		var input struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := json.Unmarshal([]byte(arguments), &input); err != nil {
+			return realtimeToolJSON(map[string]any{"error": "invalid task arguments"})
+		}
+		if e.tasks == nil {
+			return realtimeToolJSON(map[string]any{"error": "background agent is unavailable"})
+		}
+		if name == realtimeCancelTaskTool {
+			task, err := e.tasks.Cancel(input.TaskID)
+			if err != nil {
+				return realtimeToolJSON(map[string]any{"error": err.Error()})
+			}
+			return realtimeToolJSON(task)
+		}
+		task, ok := e.tasks.Query(input.TaskID)
+		if !ok {
+			return realtimeToolJSON(map[string]any{"error": "agent task not found"})
+		}
+		return realtimeToolJSON(task)
 	default:
 		return realtimeToolJSON(map[string]any{"error": fmt.Sprintf("unsupported realtime tool %q", name)})
 	}
@@ -306,7 +382,7 @@ func realtimePlaybackOutputFormat(cfg agent.Config) agent.AudioFormat {
 	}
 }
 
-func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent.Runtime, chatBridges ...*realtimeChatBridge) error {
+func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent.Runtime, tasks *agenttask.Manager, chatBridges ...*realtimeChatBridge) error {
 	var chatBridge *realtimeChatBridge
 	if len(chatBridges) > 0 {
 		chatBridge = chatBridges[0]
@@ -417,8 +493,36 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	var chatTranscript strings.Builder
 	responseActive := false
 	inputSpeechActive := false
-	toolExecutor := newRealtimeVoiceToolExecutor(runtime)
+	toolExecutor := newRealtimeVoiceToolExecutor(runtime, tasks)
 	toolResponsesPending := make(map[string]bool)
+	var pendingTaskUpdates []agenttask.Task
+	var taskDebounceTimer *time.Timer
+	var taskDebounce <-chan time.Time
+	taskUpdatesReady := false
+	defer func() {
+		if taskDebounceTimer != nil {
+			taskDebounceTimer.Stop()
+		}
+		if tasks != nil && len(pendingTaskUpdates) > 0 {
+			tasks.RestoreTerminalTasks(pendingTaskUpdates)
+		}
+	}()
+	tryInjectTaskUpdates := func() error {
+		if !taskUpdatesReady || len(pendingTaskUpdates) == 0 || responseActive || inputSpeechActive || activeChat != nil || chatBridgeHasPending(chatBridge) {
+			return nil
+		}
+		message := formatRealtimeTaskUpdates(pendingTaskUpdates)
+		if err := session.SendText(ctx, message, ""); err != nil {
+			return fmt.Errorf("inject background task update: %w", err)
+		}
+		if err := session.CreateResponse(ctx, nil); err != nil {
+			return fmt.Errorf("respond to background task update: %w", err)
+		}
+		pendingTaskUpdates = nil
+		taskUpdatesReady = false
+		responseActive = true
+		return nil
+	}
 	defer func() {
 		if activeChat != nil {
 			sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "realtime voice session ended"})
@@ -457,6 +561,27 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			// without adding audible silence to the playback queue.
 			if err := playback.keepAlive(audio, outputFormat); err != nil {
 				return fmt.Errorf("keep realtime playback alive: %w", err)
+			}
+		case <-agentTaskNotifications(tasks):
+			pendingTaskUpdates = append(pendingTaskUpdates, tasks.DrainTerminalTasks()...)
+			taskUpdatesReady = false
+			if taskDebounceTimer == nil {
+				taskDebounceTimer = time.NewTimer(realtimeTaskResultDebounce)
+			} else {
+				if !taskDebounceTimer.Stop() {
+					select {
+					case <-taskDebounceTimer.C:
+					default:
+					}
+				}
+				taskDebounceTimer.Reset(realtimeTaskResultDebounce)
+			}
+			taskDebounce = taskDebounceTimer.C
+		case <-taskDebounce:
+			taskDebounce = nil
+			taskUpdatesReady = true
+			if err := tryInjectTaskUpdates(); err != nil {
+				return err
 			}
 		case command := <-chatBridgeCommands(chatBridge):
 			if activeChat != nil || responseActive || inputSpeechActive {
@@ -595,6 +720,9 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 					close(activeChat.events)
 					activeChat = nil
 				}
+				if err := tryInjectTaskUpdates(); err != nil {
+					return err
+				}
 			case "error":
 				var serverErr rtclient.ErrorEvent
 				if err := event.Decode(&serverErr); err != nil {
@@ -604,6 +732,41 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			}
 		}
 	}
+}
+
+func agentTaskNotifications(tasks *agenttask.Manager) <-chan struct{} {
+	if tasks == nil {
+		return nil
+	}
+	return tasks.TerminalNotifications()
+}
+
+func chatBridgeHasPending(bridge *realtimeChatBridge) bool {
+	return bridge != nil && len(bridge.commands) > 0
+}
+
+func formatRealtimeTaskUpdates(tasks []agenttask.Task) string {
+	var output strings.Builder
+	output.WriteString("Background agent task updates. Tell the user the outcomes naturally and concisely:\n")
+	for _, task := range tasks {
+		fmt.Fprintf(&output, "- task_id=%s status=%s task=%q", task.ID, task.Status, limitRealtimeTaskField(task.Prompt, 300))
+		if task.Result != "" {
+			fmt.Fprintf(&output, " result=%q", limitRealtimeTaskField(task.Result, 2000))
+		}
+		if task.Error != "" {
+			fmt.Fprintf(&output, " error=%q", limitRealtimeTaskField(task.Error, 500))
+		}
+		output.WriteByte('\n')
+	}
+	return strings.TrimSpace(output.String())
+}
+
+func limitRealtimeTaskField(value string, maxRunes int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= maxRunes {
+		return string(runes)
+	}
+	return string(runes[:maxRunes]) + "…"
 }
 
 type realtimeEventSource interface {

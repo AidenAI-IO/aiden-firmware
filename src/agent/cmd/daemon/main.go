@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/agenttask"
 	"aiden-agent/internal/logging"
 	"aiden-agent/internal/ota"
 )
@@ -251,7 +252,9 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 	if cfg.TriggerModeOrDefault() == "wakeup" && cfg.VoiceModel.Enabled() {
-		runRealtimeWakeupModeWithServer(cfg, sigChan, server, runtime, newGPIOWatcher)
+		tasks := agenttask.NewManager(runtimeAgentTaskRunner{runtime: runtime})
+		defer tasks.Close()
+		runRealtimeWakeupModeWithServer(cfg, sigChan, server, runtime, tasks, newGPIOWatcher)
 		return
 	}
 	dialog, err := agent.NewAudioDialog(runtime)

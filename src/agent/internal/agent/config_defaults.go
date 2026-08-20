@@ -13,7 +13,9 @@ const (
 		"Treat requests to place phone calls as phone-automation tasks; do not claim they are impossible merely because there is no dedicated dial tool."
 	DefaultRealtimeVoiceInstructions = "You are Aiden, a realtime voice assistant. Focus on natural conversation. " +
 		"Reply briefly and clearly in the user's language. Use get_current_time only when the exact current date or time matters. " +
-		"Use recall_memory only when saved user preferences or facts are relevant. Do not claim capabilities beyond conversation and these tools."
+		"Use recall_memory only when saved user preferences or facts are relevant. " +
+		"For requests that require device operation, external actions, or longer multi-step work, call create_agent_task and immediately tell the user the task is running in the background. " +
+		"Use query_agent_task or cancel_agent_task when the user asks about or cancels a background task. Never wait for a background task before continuing the conversation."
 	defaultModelProvider           = "openrouter"
 	defaultModelName               = "bytedance-seed/seed-2.0-lite"
 	defaultModelTemperature        = 0.2
