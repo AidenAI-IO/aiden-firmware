@@ -718,15 +718,17 @@ fixture does not execute or benchmark the removed extractor itself.
 
 The natural recall task uses the same real-environment suite type as the
 physical-iPhone task, but its prompt and hard assertions prohibit device
-operation. Run it against a freshly started agent daemon and isolated data
-directory so Memory, Episode, session, and context-cache state cannot leak
-between conditions.
+operation. Use `--auto-agent-setup` with a real environment bridge so every
+attempt gets a fresh agent daemon and isolated data directory, preventing
+Memory, Episode, session, and context-cache leakage between conditions.
 
 ```bash
 uv run python -m runner run \
   --suite suites/episode_memory_before_v1.json \
   --task-id qa_notes_title_save_procedure \
-  --agent-url http://<agent-host>:8080 \
+  --auto-agent-setup \
+  --environment-url http://<real-environment-host>:<port> \
+  --target-platform ios \
   --benchmark-token-file /path/to/control_token \
   --no-judge \
   --run-id episode-memory-before
@@ -734,7 +736,9 @@ uv run python -m runner run \
 uv run python -m runner run \
   --suite suites/episode_memory_after_v1.json \
   --task-id qa_notes_title_save_procedure \
-  --agent-url http://<agent-host>:8080 \
+  --auto-agent-setup \
+  --environment-url http://<real-environment-host>:<port> \
+  --target-platform ios \
   --benchmark-token-file /path/to/control_token \
   --no-judge \
   --run-id episode-memory-after
@@ -742,7 +746,9 @@ uv run python -m runner run \
 uv run python -m runner run \
   --suite suites/episode_memory_legacy_v1.json \
   --task-id qa_notes_title_save_procedure \
-  --agent-url http://<agent-host>:8080 \
+  --auto-agent-setup \
+  --environment-url http://<real-environment-host>:<port> \
+  --target-platform ios \
   --benchmark-token-file /path/to/control_token \
   --no-judge \
   --run-id episode-memory-legacy
@@ -779,7 +785,7 @@ agent state:
 uv run python -m runner run \
   --suite suites/episode_memory_before_v1.json \
   --task-id settings_ethernet_ipv4_from_episode \
-  --agent-url http://<agent-host>:8080 \
+  --auto-agent-setup \
   --environment-url http://<physical-device-environment-host>:<port> \
   --target-platform ios \
   --benchmark-token-file /path/to/control_token \
@@ -788,7 +794,7 @@ uv run python -m runner run \
 uv run python -m runner run \
   --suite suites/episode_memory_after_v1.json \
   --task-id settings_ethernet_ipv4_from_episode \
-  --agent-url http://<agent-host>:8080 \
+  --auto-agent-setup \
   --environment-url http://<physical-device-environment-host>:<port> \
   --target-platform ios \
   --benchmark-token-file /path/to/control_token \
@@ -797,7 +803,7 @@ uv run python -m runner run \
 uv run python -m runner run \
   --suite suites/episode_memory_legacy_v1.json \
   --task-id settings_ethernet_ipv4_from_episode \
-  --agent-url http://<agent-host>:8080 \
+  --auto-agent-setup \
   --environment-url http://<physical-device-environment-host>:<port> \
   --target-platform ios \
   --benchmark-token-file /path/to/control_token \
