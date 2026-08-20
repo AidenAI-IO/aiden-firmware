@@ -184,12 +184,37 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"device.device_type": {
 			help: "Android uses HID touchscreen mode. iOS, macOS, windows, and linux use absolute pointer mode.",
 		},
-		"agent.vad_model_path":          {layout: "wide"},
-		"agent.vad_helper_path":         {layout: "wide"},
-		"agent.custom_instruction":      {layout: "wide"},
-		"agent.additional_prompt":       {layout: "wide"},
-		"model.provider":                {layout: "wide"},
-		"model.model":                   {layout: "wide"},
+		"agent.vad_model_path":     {layout: "wide"},
+		"agent.vad_helper_path":    {layout: "wide"},
+		"agent.custom_instruction": {layout: "wide"},
+		"agent.additional_prompt":  {layout: "wide"},
+		"model.provider":           {layout: "wide"},
+		"model.model":              {layout: "wide"},
+		"model.api_mode": {
+			layout: "wide",
+			label:  "Conversation API",
+			help:   "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
+		},
+		"model.responses_context_management": {
+			layout: "wide",
+			label:  "Provider compaction",
+			help:   "Ask a compatible provider to compact context at the threshold. This does not change who manages the conversation context.",
+		},
+		"model.responses_compact_threshold": {
+			label:       "Compaction threshold (tokens)",
+			placeholder: "0 = provider default",
+			help:        "Token count that triggers provider compaction. 0 lets the provider choose.",
+		},
+		"model.responses_truncation": {
+			label: "Over-limit input",
+			help:  "Fail when input is too long, or let a compatible provider discard the oldest input and continue.",
+		},
+		"model.responses_include": {
+			label:       "Extra response fields",
+			placeholder: "reasoning.encrypted_content",
+			layout:      "wide",
+			help:        "Usually leave empty. Add provider-supported include values only when needed, one per line.",
+		},
 		"model.reasoning_effort":        {help: "Empty = auto. For no-tool requests, Anthropic maps low/medium/high to adaptive thinking; tool requests use Claude's default reasoning because thinking signatures are not persisted. Minimal is OpenRouter and Volcengine Ark only; none is not supported by Anthropic or Ark."},
 		"model.context_window":          {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
 		"model.model_max_output_tokens": {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
@@ -608,6 +633,34 @@ func TestConfigMeta_ResponsesStatefulProviderScoping(t *testing.T) {
 		return
 	}
 	t.Fatal("model.api_mode enum missing responses_stateful")
+}
+
+func TestConfigMeta_ResponsesOptionsUsePlainLanguage(t *testing.T) {
+	idx := fieldIndex(t)
+	wantLabels := map[string]string{
+		"model.api_mode":                     "Conversation API",
+		"model.responses_context_management": "Provider compaction",
+		"model.responses_compact_threshold":  "Compaction threshold (tokens)",
+		"model.responses_truncation":         "Over-limit input",
+		"model.responses_include":            "Extra response fields",
+	}
+	for path, want := range wantLabels {
+		if got := idx[path].Label; got != want {
+			t.Errorf("%s label = %q, want %q", path, got, want)
+		}
+	}
+
+	apiMode := idx["model.api_mode"]
+	wantOptions := map[string]string{
+		"":                   "Chat Completions (compatible)",
+		"responses":          "Responses (local context)",
+		"responses_stateful": "Responses (provider context)",
+	}
+	for _, option := range apiMode.Enum {
+		if want, ok := wantOptions[option.Value]; ok && option.Label != want {
+			t.Errorf("model.api_mode option %q label = %q, want %q", option.Value, option.Label, want)
+		}
+	}
 }
 
 func TestConfigMeta_STTTencentASRProviderMetadata(t *testing.T) {

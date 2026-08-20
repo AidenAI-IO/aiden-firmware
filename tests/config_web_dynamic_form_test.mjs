@@ -65,6 +65,14 @@ class Element {
     this.attributes.set('class', this.classList.toString());
   }
 
+  get options() {
+    return this.tagName === 'SELECT' ? this.children : [];
+  }
+
+  set innerHTML(value) {
+    if (value === '') this.replaceChildren();
+  }
+
   get className() {
     return this.classList.toString();
   }
@@ -238,10 +246,11 @@ async function loadModule(filePath) {
 
 const stateModule = await loadModule(path.join(webRoot, 'assets/js/config/state.js'));
 await stateModule.evaluate();
-stateModule.namespace.runtime.t = (key, params = {}) => String(params.defaultValue ?? key).replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (_match, name) => params[name] ?? '');
+let translatedOptions = {};
+stateModule.namespace.runtime.t = (key, params = {}) => String(translatedOptions[key] ?? params.defaultValue ?? key).replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (_match, name) => params[name] ?? '');
 const configMetaModule = await loadModule(path.join(webRoot, 'assets/js/config/config-meta.js'));
 await configMetaModule.evaluate();
-const {buildConfigMeta} = configMetaModule.namespace;
+const {buildConfigMeta, hydrateSelectField} = configMetaModule.namespace;
 
 buildConfigMeta({sections: [
   {name: 'agent', fields: [
@@ -255,6 +264,10 @@ buildConfigMeta({sections: [
   {name: 'model', fields: [
     {key: 'provider', label: 'provider', widget: 'select', layout: 'wide'},
     {key: 'model', label: 'model', widget: 'text', layout: 'wide'},
+    {key: 'api_mode', label: 'Conversation API', widget: 'select', enum: [
+      {value: '', label: 'Chat Completions (compatible)'},
+      {value: 'responses', label: 'Responses (local context)'},
+    ]},
     {key: 'temperature', label: 'temperature', widget: 'number'},
   ]},
 ]});
@@ -276,6 +289,16 @@ assert.equal(document.getElementById('agent_notes').classList.contains('prompt-c
 assert.equal(document.getElementById('model_provider').closest('.field'), modelProviderField, 'model provider manager DOM is preserved');
 assert.equal(document.getElementById('model_model').closest('.field'), modelNameField, 'model selector DOM is preserved');
 assert.equal(document.getElementById('model_temperature').type, 'number');
+translatedOptions = {
+  'config.fields.model.api_mode.options.default': 'Chat Completions（兼容模式）',
+  'config.fields.model.api_mode.options.responses': 'Responses（本地上下文）',
+};
+hydrateSelectField('model', 'api_mode', 'responses', true);
+assert.deepEqual(document.getElementById('model_api_mode').options.map((option) => option.textContent), [
+  'Chat Completions（兼容模式）',
+  'Responses（本地上下文）',
+]);
+assert.equal(document.getElementById('model_api_mode').value, 'responses');
 assert.deepEqual(agentTarget.children.map((field) => field.getAttribute('data-config-field')), [
   'agent.input_mode',
   'agent.new_field',
