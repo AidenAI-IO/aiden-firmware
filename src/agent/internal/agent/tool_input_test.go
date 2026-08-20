@@ -38,6 +38,31 @@ func TestFlexStringSlice(t *testing.T) {
 			want:  []string{"foo"},
 		},
 		{
+			name:  "comma-delimited string (common LLM mistake)",
+			input: `"procedure, fact"`,
+			want:  []string{"procedure", "fact"},
+		},
+		{
+			name:  "comma-delimited string without spaces",
+			input: `"procedure,fact,failure"`,
+			want:  []string{"procedure", "fact", "failure"},
+		},
+		{
+			name:  "fullwidth comma-delimited string",
+			input: `"验证码，登录"`,
+			want:  []string{"验证码", "登录"},
+		},
+		{
+			name:  "comma-delimited string with empty segments",
+			input: `"procedure, , fact,"`,
+			want:  []string{"procedure", "fact"},
+		},
+		{
+			name:  "single value containing no delimiter keeps inner spaces",
+			input: `"QA Notes"`,
+			want:  []string{"QA Notes"},
+		},
+		{
 			name:  "null",
 			input: `null`,
 			want:  nil,
@@ -59,6 +84,29 @@ func TestFlexStringSlice(t *testing.T) {
 				t.Errorf("Unmarshal(%q) = %#v, want %#v", tt.input, []string(got), tt.want)
 			}
 		})
+	}
+}
+
+func TestDecodeSaveMemoryRequestPreservesScalarCommas(t *testing.T) {
+	request, err := decodeSaveMemoryRequest(`{
+		"type":"fact",
+		"title":"Company",
+		"content":"Remember the exact company name.",
+		"tags":"ACME, Inc.",
+		"entities":"Research, Development",
+		"evidence":"Observed in QA, build 7"
+	}`)
+	if err != nil {
+		t.Fatalf("decodeSaveMemoryRequest() error = %v", err)
+	}
+	if !reflect.DeepEqual(request.Tags, []string{"ACME, Inc."}) {
+		t.Fatalf("Tags = %#v", request.Tags)
+	}
+	if !reflect.DeepEqual(request.Entities, []string{"Research, Development"}) {
+		t.Fatalf("Entities = %#v", request.Entities)
+	}
+	if !reflect.DeepEqual(request.Evidence, []string{"Observed in QA, build 7"}) {
+		t.Fatalf("Evidence = %#v", request.Evidence)
 	}
 }
 

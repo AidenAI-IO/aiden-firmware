@@ -1101,15 +1101,43 @@ func readEpisodeEvents(path string) ([]TaskEpisodeEvent, error) {
 	repairedTruncatedTail := false
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0), 1<<20)
+	validateRepairTail := func() error {
+		for scanner.Scan() {
+			tail := strings.TrimSpace(strings.TrimRight(scanner.Text(), "\x00"))
+			if tail != "" {
+				return fmt.Errorf("invalid data after truncated episode event tail")
+			}
+		}
+		return scanner.Err()
+	}
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		rawLine := scanner.Text()
+		if nulIndex := strings.IndexByte(rawLine, 0); nulIndex >= 0 {
+			for index := nulIndex; index < len(rawLine); index++ {
+				if rawLine[index] != 0 {
+					return nil, fmt.Errorf("invalid NUL byte in episode event data")
+				}
+			}
+			rawLine = rawLine[:nulIndex]
+			repairedTruncatedTail = true
+		}
+		line := strings.TrimSpace(rawLine)
 		if line == "" {
+			if repairedTruncatedTail {
+				if err := validateRepairTail(); err != nil {
+					return nil, err
+				}
+				break
+			}
 			continue
 		}
 		var event TaskEpisodeEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			if isTruncatedJSONLineError(err) {
 				repairedTruncatedTail = true
+				if tailErr := validateRepairTail(); tailErr != nil {
+					return nil, tailErr
+				}
 				break
 			}
 			return nil, err
@@ -1117,6 +1145,12 @@ func readEpisodeEvents(path string) ([]TaskEpisodeEvent, error) {
 		validData = append(validData, line...)
 		validData = append(validData, '\n')
 		events = append(events, event)
+		if repairedTruncatedTail {
+			if err := validateRepairTail(); err != nil {
+				return nil, err
+			}
+			break
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err

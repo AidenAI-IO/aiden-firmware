@@ -1,0 +1,99 @@
+{
+  "name": "episode_memory_legacy_v1",
+  "suite_category": "Memory & Cognition",
+  "description": "Legacy direct-memory control across natural recall and physical-iPhone execution. Deterministic Device Memory fixtures represent the removed synchronous Episode-to-Memory output before evaluation.",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "qa_notes_title_save_procedure",
+      "category": "memory",
+      "description_for_judge": "The agent should select the title-save sequence recorded by the legacy direct Episode-to-Memory procedure fixture.",
+      "prompt": "A note title has already been edited in QA Notes build 7. Based on this device's previously verified behavior, which sequence makes the changed title persist? Do not operate the phone; answer directly. End with exactly one line in the form <final_answer>(x)</final_answer>.\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "repeats": 10,
+      "rubric": [
+        {
+          "id": "uses_verified_title_save_procedure",
+          "check": "The final answer selects the Preview, then Edit, then Save round trip as the verified QA Notes build 7 title-save sequence."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 0,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "forbidden_tools": [
+          "screenshot",
+          "open_app",
+          "touch_gesture",
+          "inspect_episode"
+        ]
+      },
+      "setup": {
+        "type": "seed_memory",
+        "timeout_sec": 30,
+        "memories": [
+          {
+            "store": "device",
+            "id": "legacy_qa_notes_title_save_procedure",
+            "type": "procedure",
+            "priority": 70,
+            "title": "Verified task path",
+            "content": "User goal: persist an edited QA Notes build 7 title. Verified procedure: switch from Edit to Preview, return from Preview to Edit, then tap Save. Direct Save immediately after editing did not persist the title. Reopening the note after the Preview-to-Edit round trip and Save verified that the changed title remained visible.",
+            "tags": [
+              "qa-notes",
+              "title",
+              "save",
+              "verification"
+            ],
+            "entities": [
+              "QA Notes",
+              "Note editor",
+              "Preview",
+              "Edit",
+              "Save"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "settings_ethernet_ipv4_from_episode",
+      "category": "memory",
+      "platforms": ["ios"],
+      "description_for_judge": "The agent must use the real iPhone UI to reach the active Ethernet interface's IPv4 details without modifying network configuration. The final screenshot, rather than the final response, is the source of truth.",
+      "prompt": "On this iPhone, open Settings and find the IPv4 details page for the active Aiden USB wired Ethernet connection. Do not modify, renew, or save any network settings. Finish on a page where IP Address, Subnet Mask, and Router are simultaneously visible, and explicitly call screenshot once before responding.",
+      "repeats": 5,
+      "rubric": [
+        {"id": "reached_ethernet_ipv4_details", "check": "The post-screenshot shows the active Ethernet interface detail page and its IPv4 Address section."},
+        {"id": "shows_all_ipv4_fields", "check": "The post-screenshot simultaneously shows the IP Address, Subnet Mask, and Router field labels, in either Chinese or English."},
+        {"id": "did_not_modify_network_settings", "check": "The trace and post-screenshot show no network-setting modification, renewal, save confirmation, or Configure IP editing screen."}
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 25,
+        "must_complete_within_sec": 240,
+        "response_required": true,
+        "required_tools": ["screenshot"],
+        "forbidden_tools": ["inspect_episode", "recall_session_chunks", "recall_memory"]
+      },
+      "setup": {
+        "type": "seed_memory",
+        "timeout_sec": 30,
+        "memories": [
+          {
+            "store": "device",
+            "id": "legacy_iphone_aiden_hid_ecm_ipv4_procedure",
+            "type": "procedure",
+            "priority": 70,
+            "title": "Verified procedure",
+            "content": "Goal: reach the active Aiden USB wired interface's IPv4 details without changing settings. Verified path: open Settings, use the dedicated Ethernet entry rather than Wi-Fi, open Aiden HID+ECM, and stop on the interface detail page where the IPv4 Address section shows IP Address, Subnet Mask, and Router. Verify the final visible page with a screenshot. Do not modify, renew, or save network settings.",
+            "tags": ["ios", "settings", "ethernet", "ipv4", "aiden-hid-ecm", "usb-network", "navigation"],
+            "entities": ["iPhone", "Settings", "Ethernet", "Aiden HID+ECM", "IPv4 Address", "IP Address", "Subnet Mask", "Router"]
+          }
+        ]
+      }
+    }
+  ]
+}

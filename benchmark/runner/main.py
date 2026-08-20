@@ -822,6 +822,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
             return 2
         suite.tasks = [by_id[task_id] for task_id in selected_task_ids]
 
+    if _suite_has_mixed_mock_and_real_tasks(suite):
+        print(
+            "Error: a single run cannot mix mock_environment tasks with real-environment tasks; "
+            "select one task type with --task-id",
+            file=sys.stderr,
+        )
+        return 2
+
     run_id = str(args.run_id or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
     if not _valid_run_id(run_id):
         print(f"Error: invalid --run-id: {run_id!r}", file=sys.stderr)
@@ -1147,6 +1155,14 @@ def _suite_has_mock_environment(suite: Suite) -> bool:
     return suite.mock_environment is not None or any(
         task.mock_environment is not None for task in suite.tasks
     )
+
+
+def _suite_has_mixed_mock_and_real_tasks(suite: Suite) -> bool:
+    if suite.mock_environment is not None:
+        return False
+    has_mock = any(task.mock_environment is not None for task in suite.tasks)
+    has_real = any(task.mock_environment is None for task in suite.tasks)
+    return has_mock and has_real
 
 
 def _read_optional_token(path: str | Path | None) -> str:
