@@ -1360,6 +1360,41 @@ def test_auto_agent_setup_filters_mock_tasks_by_target_platform(tmp_path, capsys
     assert manifest["totals"]["skipped"] == 1
 
 
+def test_run_rejects_unfiltered_mixed_mock_and_real_tasks(tmp_path, capsys):
+    suite_path = tmp_path / "mixed-mock-real.json"
+    base_task = {
+        "category": "diagnostic",
+        "prompt": "test",
+        "description_for_judge": "test",
+        "rubric": [{"id": "done", "check": "done"}],
+    }
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mixed_mock_real",
+                "tasks": [
+                    {
+                        **base_task,
+                        "id": "mocked",
+                        "mock_environment": {
+                            "platform": "ios",
+                            "phone_bridge": {},
+                            "tools": {},
+                        },
+                    },
+                    {**base_task, "id": "real"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = main.cli(["run", "--suite", str(suite_path), "--auto-agent-setup", "--no-judge"])
+
+    assert rc == 2
+    assert "cannot mix mock_environment tasks with real-environment tasks" in capsys.readouterr().err
+
+
 def test_auto_agent_setup_resolves_mock_platform_per_task(monkeypatch, tmp_path):
     suite_path = tmp_path / "mock-suite.json"
     suite_path.write_text(

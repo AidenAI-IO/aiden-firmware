@@ -5,6 +5,7 @@ import urllib.request
 from typing import Any
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
 from runner.environment_endpoint import EnvironmentEndpoint
+from runner.suite import SETUP_KEYS
 
 
 class ResetError(RuntimeError):
@@ -127,11 +128,22 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_
     if setup is None:
         return
     setup_type = setup.get("type")
+    if not isinstance(setup_type, str):
+        raise ResetError(f"setup type must be a string: {setup!r}")
+    allowed_keys = SETUP_KEYS.get(setup_type)
+    if allowed_keys is None:
+        raise ResetError(f"unsupported setup form: {setup!r}")
+    unknown_keys = sorted(set(setup) - allowed_keys)
+    if unknown_keys:
+        raise ResetError(f"unsupported {setup_type} setup keys: {', '.join(unknown_keys)}")
     if setup_type == "agent_prompt":
         _per_task_setup_agent_prompt(client, setup, prompt_prefix=prompt_prefix)
         return
     if setup_type == "seed_memory":
         _per_task_setup_seed_memory(client, setup)
+        return
+    if setup_type == "seed_episode":
+        _per_task_setup_seed_episode(client, setup)
         return
     raise ResetError(f"unsupported setup form: {setup!r}")
 
@@ -199,3 +211,47 @@ def _per_task_setup_seed_memory(client: AgentClient, setup: dict[str, Any]) -> N
             client.clear_history()
         except AgentRequestError as e:
             raise ResetError(f"seed_memory clear_history failed: {e}") from e
+
+
+def _per_task_setup_seed_episode(client: AgentClient, setup: dict[str, Any]) -> None:
+    episode = setup.get("episode")
+    if not isinstance(episode, dict):
+        raise ResetError(f"seed_episode setup requires an 'episode' object: {setup!r}")
+    episode_id = episode.get("id")
+    if not isinstance(episode_id, str) or not episode_id.strip():
+        raise ResetError("seed_episode episode missing required 'id'")
+    if not isinstance(episode.get("user_goal"), str) or not episode["user_goal"].strip():
+        raise ResetError(f"seed_episode episode {episode_id!r} missing required 'user_goal'")
+    consolidate = setup.get("consolidate", False)
+    if not isinstance(consolidate, bool):
+        raise ResetError(f"seed_episode consolidate must be boolean: {consolidate!r}")
+    try:
+        timeout = int(setup.get("timeout_sec", 90 if consolidate else 30))
+    except (ValueError, TypeError) as e:
+        raise ResetError(f"invalid timeout_sec: {setup.get('timeout_sec')!r}") from e
+    try:
+        client.seed_episode(episode, timeout=timeout)
+    except AgentTimeoutError as e:
+        raise ResetError(f"seed_episode timed out for {episode_id!r}: {e}") from e
+    except AgentRequestError as e:
+        raise ResetError(f"seed_episode failed for {episode_id!r}: {e}") from e
+    if not consolidate:
+        return
+    try:
+        result = client.process_episode_memory(episode_id, timeout=timeout)
+    except AgentTimeoutError as e:
+        raise ResetError(f"episode memory consolidation timed out for {episode_id!r}: {e}") from e
+    except AgentRequestError as e:
+        raise ResetError(f"episode memory consolidation failed for {episode_id!r}: {e}") from e
+    status = str(result.get("status") or "").strip().lower()
+    if status == "ignored":
+        raise ResetError(
+            f"episode memory consolidation for {episode_id!r} was ignored by the worker"
+        )
+    if status != "done":
+        raise ResetError(
+            f"episode memory consolidation for {episode_id!r} did not reach a terminal status: {status or 'missing'}"
+        )
+    memory_ids = result.get("memory_ids")
+    if not isinstance(memory_ids, list) or not memory_ids:
+        raise ResetError(f"episode memory consolidation for {episode_id!r} produced no device memory")
