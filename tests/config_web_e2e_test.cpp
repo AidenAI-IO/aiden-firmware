@@ -723,6 +723,32 @@ struct StubEnv {
     }
 };
 
+class ScopedProcessEnv {
+public:
+    ScopedProcessEnv(const std::string& key, const std::string& value)
+        : key_(key), had_value_(false) {
+        const char* current = std::getenv(key.c_str());
+        if (current) {
+            had_value_ = true;
+            old_value_ = current;
+        }
+        REQUIRE(::setenv(key.c_str(), value.c_str(), 1) == 0);
+    }
+
+    ~ScopedProcessEnv() {
+        if (had_value_) {
+            (void)::setenv(key_.c_str(), old_value_.c_str(), 1);
+        } else {
+            (void)::unsetenv(key_.c_str());
+        }
+    }
+
+private:
+    std::string key_;
+    std::string old_value_;
+    bool had_value_;
+};
+
 std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env,
                                            bool include_index = true,
                                            bool include_llm_logs = true) {
@@ -774,20 +800,30 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env,
             ::dup2(devnull, STDERR_FILENO);
             if (devnull > 2) ::close(devnull);
         }
-        // Build env: inherit current env, then overlay AIDEN_AGENT_BIN +
-        // STUB knobs. If the scenario already provides AIDEN_AGENT_BIN
-        // (e.g. to point at a non-existent path), we skip the default
-        // injection -- getenv() returns the first match, so a default that
-        // appeared earlier would shadow the test's override.
+        // Build env: inherit current env, then replace matching entries with
+        // AIDEN_AGENT_BIN and scenario-specific STUB knobs.
         std::vector<std::string> env_storage;
         for (char** e = environ; *e; ++e) {
             env_storage.push_back(std::string(*e));
         }
+        auto replace_env = [&env_storage](const std::string& assignment) {
+            const size_t equals = assignment.find('=');
+            const std::string prefix = assignment.substr(0, equals + 1);
+            env_storage.erase(
+                std::remove_if(
+                    env_storage.begin(),
+                    env_storage.end(),
+                    [&prefix](const std::string& existing) {
+                        return existing.compare(0, prefix.size(), prefix) == 0;
+                    }),
+                env_storage.end());
+            env_storage.push_back(assignment);
+        };
         if (!stub_env.has_agent_bin) {
-            env_storage.push_back(std::string("AIDEN_AGENT_BIN=") + AIDEN_AGENT_STUB_BIN);
+            replace_env(std::string("AIDEN_AGENT_BIN=") + AIDEN_AGENT_STUB_BIN);
         }
         for (const auto& kv : stub_env.entries) {
-            env_storage.push_back(kv);
+            replace_env(kv);
         }
         std::vector<char*> envp;
         envp.reserve(env_storage.size() + 1);
@@ -910,6 +946,17 @@ TEST_CASE("config_web: GET /api/config/meta returns 200 + parseable JSON when st
     REQUIRE(sections != nullptr);
     CHECK((sections->type & 0xff) == cJSON_Array);
     cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: explicit child environment overrides inherited values") {
+    ScopedProcessEnv inherited_agent_bin(
+        "AIDEN_AGENT_BIN",
+        "/definitely/missing/inherited-aiden-agent");
+
+    StubEnv env;
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config/meta");
+    CHECK(resp.status == 200);
 }
 
 TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
@@ -1952,11 +1999,10 @@ TEST_CASE("config_web: POST /api/config writes keyboard layout and requires rebo
     CHECK(saved_buffer.str().find("keyboard_layout = \"azerty\"") != std::string::npos);
 }
 
-// default_platform was removed in favor of [device].device_type. The C++
-// config parser silently ignores unknown top-level keys for forward
-// compatibility, so old config files with default_platform still load.
-// This test verifies that submitting it through the API has no effect and
-// it does not get written back.
+// default_platform was removed in favor of [device].device_type. The Go patch
+// compatibility layer drops this legacy web field before validation and TOML
+// editing, so submitting it through the API has no effect and does not write it
+// back.
 TEST_CASE("config_web: POST /api/config ignores the removed default_platform field") {
     StubEnv env;
     auto handle = start_server(env);

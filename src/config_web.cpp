@@ -244,6 +244,12 @@ bool create_temp_dir_in_dir(const std::string& dir,
                             const std::string& prefix,
                             std::string* path,
                             std::string* error);
+bool copy_regular_fd_tail(int in,
+                          const std::string& source_label,
+                          const std::string& destination,
+                          size_t max_bytes,
+                          mode_t mode,
+                          std::string* error);
 bool is_llm_log_import_request(const std::string& method, const std::string& path);
 void cleanup_request_temp_file(HttpRequest* request);
 void close_response_stream(ApiResponse* response);
@@ -3241,26 +3247,43 @@ bool copy_regular_file_tail(const std::string& source,
                             size_t max_bytes,
                             mode_t mode,
                             std::string* error) {
-    if (max_bytes == 0) {
-        if (error) *error = "max copy size is zero";
-        return false;
-    }
-
     int in = open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (in < 0) {
         if (error) *error = "open " + source + ": " + strerror(errno);
         return false;
     }
 
+    bool ok = copy_regular_fd_tail(in, source, destination, max_bytes, mode, error);
+    if (close(in) != 0 && ok) {
+        if (error) *error = "close " + source + ": " + strerror(errno);
+        unlink(destination.c_str());
+        ok = false;
+    }
+    return ok;
+}
+
+bool copy_regular_fd_tail(int in,
+                          const std::string& source_label,
+                          const std::string& destination,
+                          size_t max_bytes,
+                          mode_t mode,
+                          std::string* error) {
+    if (max_bytes == 0) {
+        if (error) *error = "max copy size is zero";
+        return false;
+    }
+    if (in < 0) {
+        if (error) *error = "source file is not open";
+        return false;
+    }
+
     struct stat st;
     if (fstat(in, &st) != 0) {
-        if (error) *error = "stat " + source + ": " + strerror(errno);
-        close(in);
+        if (error) *error = "stat " + source_label + ": " + strerror(errno);
         return false;
     }
     if (!S_ISREG(st.st_mode)) {
-        if (error) *error = source + " is not a regular file";
-        close(in);
+        if (error) *error = source_label + " is not a regular file";
         return false;
     }
 
@@ -3271,19 +3294,16 @@ bool copy_regular_file_tail(const std::string& source,
         start_offset = st.st_size - static_cast<off_t>(max_bytes);
     }
     if (lseek(in, start_offset, SEEK_SET) == static_cast<off_t>(-1)) {
-        if (error) *error = "seek " + source + ": " + strerror(errno);
-        close(in);
+        if (error) *error = "seek " + source_label + ": " + strerror(errno);
         return false;
     }
 
     if (!mkdir_p(parent_dir(destination), error)) {
-        close(in);
         return false;
     }
     int out = open(destination.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
     if (out < 0) {
         if (error) *error = "open " + destination + ": " + strerror(errno);
-        close(in);
         return false;
     }
 
@@ -3292,7 +3312,7 @@ bool copy_regular_file_tail(const std::string& source,
     if (truncated) {
         std::string header = "# truncated: copied latest " + std::to_string(max_bytes) +
             " of " + std::to_string(static_cast<unsigned long long>(st.st_size)) +
-            " bytes from " + source + "\n";
+            " bytes from " + source_label + "\n";
         if (!write_all(out, header.data(), header.size())) {
             if (error) *error = "write " + destination + ": " + strerror(errno);
             ok = false;
@@ -3307,7 +3327,7 @@ bool copy_regular_file_tail(const std::string& source,
             if (errno == EINTR) {
                 continue;
             }
-            if (error) *error = "read " + source + ": " + strerror(errno);
+            if (error) *error = "read " + source_label + ": " + strerror(errno);
             ok = false;
             break;
         }
@@ -3322,10 +3342,6 @@ bool copy_regular_file_tail(const std::string& source,
         bytes_left -= static_cast<size_t>(n);
     }
 
-    if (close(in) != 0 && ok) {
-        if (error) *error = "close " + source + ": " + strerror(errno);
-        ok = false;
-    }
     if (close(out) != 0 && ok) {
         if (error) *error = "close " + destination + ": " + strerror(errno);
         ok = false;
@@ -4499,41 +4515,76 @@ std::string episode_dir(const Options& options) {
     return memory_dir(options) + "/episodes";
 }
 
-std::string latest_llm_log_name(const Options& options) {
+bool open_latest_llm_log(const Options& options,
+                         int* fd,
+                         std::string* name,
+                         std::string* error) {
+    if (fd) *fd = -1;
+    if (name) name->clear();
+    if (error) error->clear();
+
     const std::string dir_path = llm_log_dir(options);
     DIR* dir = opendir(dir_path.c_str());
     if (!dir) {
-        return "";
+        if (errno == ENOENT) return true;
+        if (error) *error = "open " + dir_path + ": " + strerror(errno);
+        return false;
     }
 
+    int selected_fd = -1;
     bool found = false;
     time_t best_mtime = 0;
     std::string best_name;
+    const int directory_fd = dirfd(dir);
+    if (directory_fd < 0) {
+        const int dirfd_errno = errno;
+        closedir(dir);
+        if (error) *error = "get fd for " + dir_path + ": " + strerror(dirfd_errno);
+        return false;
+    }
     struct dirent* entry = NULL;
     while ((entry = readdir(dir)) != NULL) {
-        std::string name = entry->d_name;
-        if (!is_llm_log_name(name)) {
+        const std::string candidate_name = entry->d_name;
+        if (!is_llm_log_name(candidate_name)) {
             continue;
         }
-        const std::string full = dir_path + "/" + name;
+        int candidate_fd = openat(
+            directory_fd,
+            candidate_name.c_str(),
+            O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (candidate_fd < 0) {
+            continue;
+        }
         struct stat st;
-        if (lstat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+        if (fstat(candidate_fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+            close(candidate_fd);
             continue;
         }
         if (!found || st.st_mtime > best_mtime ||
-            (st.st_mtime == best_mtime && name > best_name)) {
+            (st.st_mtime == best_mtime && candidate_name > best_name)) {
+            if (selected_fd >= 0) close(selected_fd);
+            selected_fd = candidate_fd;
             found = true;
             best_mtime = st.st_mtime;
-            best_name = name;
+            best_name = candidate_name;
+        } else {
+            close(candidate_fd);
         }
     }
-    closedir(dir);
-    return best_name;
-}
-
-std::string latest_llm_log_path(const Options& options) {
-    std::string name = latest_llm_log_name(options);
-    return name.empty() ? "" : llm_log_path(options, name);
+    const int close_result = closedir(dir);
+    if (close_result != 0 && selected_fd < 0) {
+        if (error) *error = "close " + dir_path + ": " + strerror(errno);
+        return false;
+    }
+    if (fd) {
+        *fd = selected_fd;
+    } else if (selected_fd >= 0) {
+        close(selected_fd);
+    }
+    if (name && selected_fd >= 0) {
+        *name = best_name;
+    }
+    return true;
 }
 
 std::string latest_episode_yaml_path(const Options& options) {
@@ -4647,23 +4698,47 @@ ApiResponse handle_export_support_logs(const Options& options) {
         kSupportLogAgentMaxBytes,
         &error);
 
-    // Keep the original LLM log filename instead of renaming to http.log
-    // Capture both name and path atomically to avoid race conditions during log rotation
-    std::string llm_log_original_name = latest_llm_log_name(options);
-    std::string llm_log_source_path;
-    if (llm_log_original_name.empty()) {
+    // Keep the selected log descriptor open from directory scan through copy,
+    // so rotation after selection cannot change which file bytes are archived.
+    int llm_log_fd = -1;
+    std::string llm_log_original_name;
+    std::string llm_log_open_error;
+    if (!open_latest_llm_log(
+            options, &llm_log_fd, &llm_log_original_name, &llm_log_open_error)) {
+        staged = false;
+        error = llm_log_open_error;
+    } else if (llm_log_fd < 0) {
         llm_log_original_name = kSupportLogHttpName;
-        llm_log_source_path = "";  // Will trigger placeholder
+        staged = staged && write_placeholder_file(
+            stage_dir + "/" + llm_log_original_name,
+            "HTTP log unavailable",
+            "No llm-http-*.log files found under " + llm_log_dir(options) + ".\n",
+            &error);
     } else {
-        llm_log_source_path = llm_log_path(options, llm_log_original_name);
+        const std::string source_label = llm_log_path(options, llm_log_original_name);
+        std::string copy_error;
+        bool copied = copy_regular_fd_tail(
+            llm_log_fd,
+            source_label,
+            stage_dir + "/" + llm_log_original_name,
+            kSupportLogHttpMaxBytes,
+            0644,
+            &copy_error);
+        if (close(llm_log_fd) != 0 && copied) {
+            copy_error = "close " + source_label + ": " + strerror(errno);
+            copied = false;
+        }
+        if (!copied) {
+            std::ostringstream detail;
+            detail << "source: " << source_label << "\n";
+            detail << "copy_error: " << copy_error << "\n";
+            staged = staged && write_placeholder_file(
+                stage_dir + "/" + llm_log_original_name,
+                "HTTP log unavailable",
+                detail.str(),
+                &error);
+        }
     }
-    staged = staged && stage_file_or_placeholder(
-        llm_log_source_path,
-        stage_dir + "/" + llm_log_original_name,
-        "HTTP log",
-        "No llm-http-*.log files found under " + llm_log_dir(options) + ".\n",
-        kSupportLogHttpMaxBytes,
-        &error);
     if (!staged) {
         remove_tree_best_effort(stage_dir);
         return make_json_error(500, error.empty() ? "failed to stage support logs" : error);

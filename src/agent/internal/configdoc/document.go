@@ -1,5 +1,6 @@
 // Package configdoc applies narrowly scoped edits to TOML source while
-// preserving all bytes outside the requested key or table.
+// preserving unrelated values and comments. Whitespace adjoining a deleted
+// key or table may be removed with that source region.
 package configdoc
 
 import (
@@ -58,7 +59,7 @@ type index struct {
 	inlineTables []inlineTable
 }
 
-// Apply returns a new document containing only the requested source edits.
+// Apply returns a new document containing only the requested semantic edits.
 // Operations are applied in path order so output is deterministic.
 func Apply(source []byte, operations []Operation) ([]byte, []string, error) {
 	if _, err := parse(source); err != nil {

@@ -318,8 +318,9 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(source.find("handle_export_support_logs") != std::string::npos);
     CHECK(source.find("read_agent_log_snapshot") != std::string::npos);
     CHECK(source.find("latest_episode_yaml_path") != std::string::npos);
-    CHECK(source.find("latest_llm_log_path") != std::string::npos);
     CHECK(source.find("copy_regular_file_tail") != std::string::npos);
+    CHECK(source.find("open_latest_llm_log") != std::string::npos);
+    CHECK(source.find("copy_regular_fd_tail") != std::string::npos);
     CHECK(source.find("kSupportLogHttpMaxBytes") != std::string::npos);
     CHECK(source.find("fallback_tar_path") != std::string::npos);
     CHECK(source.find("archive is not gzip") != std::string::npos);
