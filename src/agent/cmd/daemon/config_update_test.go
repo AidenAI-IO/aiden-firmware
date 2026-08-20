@@ -349,6 +349,74 @@ model = "gpt-5.5"
 	}
 }
 
+func TestUpdateConfigFileRejectsExistingProviderRenameTarget(t *testing.T) {
+	source := `[model_providers.old]
+type = "openai"
+api_key = "old-secret"
+
+[model_providers.existing]
+type = "ollama"
+base_url = "http://target"
+api_key = "target-secret"
+
+[model]
+provider = "old"
+model = "gpt-5.5"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	patch := []byte(`{"config":{"model_providers":{"old":null,"existing":{"type":"openai"}},"_provider_renames":{"model_providers":{"existing":"old"}},"model":{"provider":"existing"}}}`)
+	if _, err := updateConfigFile(path, patch); err == nil || !strings.Contains(err.Error(), "target model_providers.existing already exists") {
+		t.Fatalf("updateConfigFile() error = %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != source {
+		t.Fatalf("rejected rename changed config:\n%s", got)
+	}
+}
+
+func TestUpdateConfigFileCreatesMissingConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	result, err := updateConfigFile(path, []byte(`{"config":{"agent":{"locale":"en-US"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || strings.Join(result.ChangedPaths, ",") != "locale" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `locale = "en-US"`) {
+		t.Fatalf("missing config was not created:\n%s", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("created config mode = %o, want 640", info.Mode().Perm())
+	}
+}
+
+func TestConfigPatchOperationsRejectsSectionNull(t *testing.T) {
+	for _, section := range []string{"hid", "agent", "model_providers"} {
+		t.Run(section, func(t *testing.T) {
+			_, err := configPatchOperations(map[string]json.RawMessage{section: json.RawMessage("null")})
+			if err == nil || !strings.Contains(err.Error(), section+" must be an object") {
+				t.Fatalf("configPatchOperations() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestUpdateConfigFileAcceptsScalarMapEntries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	if err := os.WriteFile(path, nil, 0o640); err != nil {
@@ -385,7 +453,11 @@ func TestUpdateConfigFileRejectsMalformedProviderRenames(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	for _, renames := range []string{"null", `{"model_providers":null}`} {
+	for _, renames := range []string{
+		"null",
+		`{"model_providers":null}`,
+		`{"model_providers":{"one":"old","two":"old"}}`,
+	} {
 		patch := `{"config":{"_provider_renames":` + renames + `}}`
 		if _, err := updateConfigFile(path, []byte(patch)); err == nil {
 			t.Fatalf("updateConfigFile(%s) error = nil", patch)

@@ -1134,13 +1134,9 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 	if err != nil {
 		return configUpdateResult{}, err
 	}
-	resolvedPath, err := filepath.EvalSymlinks(path)
+	resolvedPath, original, fileMode, err := prepareConfigUpdateFile(path)
 	if err != nil {
-		return configUpdateResult{}, fmt.Errorf("resolve config path: %w", err)
-	}
-	original, err := os.ReadFile(resolvedPath)
-	if err != nil {
-		return configUpdateResult{}, fmt.Errorf("read config: %w", err)
+		return configUpdateResult{}, err
 	}
 	current, err := agent.LoadResolvedConfig(resolvedPath)
 	if err != nil {
@@ -1178,10 +1174,6 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 		}
 		return configUpdateResult{OK: true, Config: webConfigDTOFromAgentConfig(cfg), ChangedPaths: []string{}, RebootRequired: false}, nil
 	}
-	info, err := os.Stat(resolvedPath)
-	if err != nil {
-		return configUpdateResult{}, err
-	}
 	tmp, err := os.CreateTemp(filepath.Dir(resolvedPath), ".agent.toml.config-update-*.toml")
 	if err != nil {
 		return configUpdateResult{}, fmt.Errorf("create temporary config: %w", err)
@@ -1189,7 +1181,7 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 	tmpPath := tmp.Name()
 	defer tmp.Close()
 	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+	if err := tmp.Chmod(fileMode); err != nil {
 		return configUpdateResult{}, fmt.Errorf("set temporary config mode: %w", err)
 	}
 	n, err := tmp.Write(updated)
@@ -1229,6 +1221,41 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 		ChangedPaths:   changed,
 		RebootRequired: requiresConfigReboot(changed),
 	}, nil
+}
+
+func prepareConfigUpdateFile(path string) (string, []byte, os.FileMode, error) {
+	_, err := os.Lstat(path)
+	if err == nil {
+		resolvedPath, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", nil, 0, fmt.Errorf("resolve config path: %w", err)
+		}
+		original, err := os.ReadFile(resolvedPath)
+		if err != nil {
+			return "", nil, 0, fmt.Errorf("read config: %w", err)
+		}
+		resolvedInfo, err := os.Stat(resolvedPath)
+		if err != nil {
+			return "", nil, 0, fmt.Errorf("stat config: %w", err)
+		}
+		return resolvedPath, original, resolvedInfo.Mode().Perm(), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", nil, 0, fmt.Errorf("read config path: %w", err)
+	}
+
+	resolvedDir, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("resolve config directory: %w", err)
+	}
+	dirInfo, err := os.Stat(resolvedDir)
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("stat config directory: %w", err)
+	}
+	if !dirInfo.IsDir() {
+		return "", nil, 0, fmt.Errorf("config parent must be a directory: %s", resolvedDir)
+	}
+	return filepath.Join(resolvedDir, filepath.Base(path)), nil, 0o640, nil
 }
 
 // stripReadOnlyStatusFields removes unchanged has_* markers emitted by GET
@@ -1425,10 +1452,15 @@ func takeProviderRenames(patch map[string]json.RawMessage) (providerRenames, err
 		if renames == nil {
 			return nil, fmt.Errorf("_provider_renames.%s must be an object", section)
 		}
+		oldNames := make(map[string]struct{}, len(renames))
 		for newName, oldName := range renames {
 			if strings.TrimSpace(newName) == "" || strings.TrimSpace(oldName) == "" || newName == oldName {
 				return nil, fmt.Errorf("invalid provider rename in %s", section)
 			}
+			if _, exists := oldNames[oldName]; exists {
+				return nil, fmt.Errorf("provider rename source %s.%s is used more than once", section, oldName)
+			}
+			oldNames[oldName] = struct{}{}
 		}
 	}
 	return sections, nil
@@ -1447,6 +1479,9 @@ func restoreRenamedProviderCredentials(patch map[string]json.RawMessage, renames
 		for newName, oldName := range sectionRenames {
 			if !providerRecordExists(current, section, oldName) {
 				return fmt.Errorf("provider rename source %s.%s does not exist", section, oldName)
+			}
+			if providerRecordExists(current, section, newName) {
+				return fmt.Errorf("provider rename target %s.%s already exists", section, newName)
 			}
 			oldRaw, oldDeleted := records[oldName]
 			if !oldDeleted || !bytes.Equal(bytes.TrimSpace(oldRaw), []byte("null")) {
@@ -1736,12 +1771,15 @@ func validatePatchObject(typ reflect.Type, patch map[string]json.RawMessage, pat
 		if !found {
 			return fmt.Errorf("unknown config field %s", strings.Join(append(path, key), "."))
 		}
-		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-			continue
-		}
 		base := fieldType
 		for base.Kind() == reflect.Pointer {
 			base = base.Elem()
+		}
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			if base.Kind() == reflect.Struct || base.Kind() == reflect.Map {
+				return fmt.Errorf("%s must be an object", strings.Join(append(path, key), "."))
+			}
+			continue
 		}
 		if base.Kind() == reflect.Struct || base.Kind() == reflect.Map {
 			var child map[string]json.RawMessage
