@@ -618,21 +618,56 @@ func TestConfigMeta_ModelReasoningEffortProviderScoping(t *testing.T) {
 	}
 }
 
-func TestConfigMeta_ResponsesStatefulProviderScoping(t *testing.T) {
-	field, ok := fieldIndex(t)["model.api_mode"]
+func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
+	idx := fieldIndex(t)
+	field, ok := idx["model.api_mode"]
 	if !ok {
 		t.Fatal("missing model.api_mode metadata")
 	}
+	wantProviders := map[string][]string{
+		"responses":          {"openai", "openrouter", "volcengine"},
+		"responses_stateful": {"openai", "volcengine"},
+	}
 	for _, option := range field.Enum {
-		if option.Value != "responses_stateful" {
+		want, tracked := wantProviders[option.Value]
+		if !tracked {
 			continue
 		}
-		if !reflect.DeepEqual(option.Providers, []string{"openai"}) {
-			t.Fatalf("responses_stateful providers = %#v, want [openai]", option.Providers)
+		if !reflect.DeepEqual(option.Providers, want) {
+			t.Errorf("%s providers = %#v, want %#v", option.Value, option.Providers, want)
 		}
-		return
+		delete(wantProviders, option.Value)
 	}
-	t.Fatal("model.api_mode enum missing responses_stateful")
+	if len(wantProviders) != 0 {
+		t.Fatalf("model.api_mode enum missing scoped options: %#v", wantProviders)
+	}
+
+	for _, tt := range []struct {
+		field     string
+		value     string
+		providers []string
+	}{
+		{field: "model.responses_context_management", value: "compaction", providers: []string{"openai"}},
+		{field: "model.responses_truncation", value: "auto", providers: []string{"openai", "openrouter"}},
+	} {
+		meta, ok := idx[tt.field]
+		if !ok {
+			t.Fatalf("missing %s metadata", tt.field)
+		}
+		found := false
+		for _, option := range meta.Enum {
+			if option.Value != tt.value {
+				continue
+			}
+			found = true
+			if !reflect.DeepEqual(option.Providers, tt.providers) {
+				t.Errorf("%s=%s providers = %#v, want %#v", tt.field, tt.value, option.Providers, tt.providers)
+			}
+		}
+		if !found {
+			t.Errorf("%s enum missing %s", tt.field, tt.value)
+		}
+	}
 }
 
 func TestConfigMeta_ResponsesOptionsUsePlainLanguage(t *testing.T) {

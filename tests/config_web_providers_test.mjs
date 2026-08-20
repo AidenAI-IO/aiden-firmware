@@ -377,6 +377,14 @@ assert.deepEqual(JSON.parse(JSON.stringify(ModelProvidersManager.records)), {
   initial: {type: 'openai'},
 });
 
+ModelProvidersManager.load({doubao: {type: 'openai', base_url: 'https://ark.cn-beijing.volces.com/api/v3'}});
+ModelProvidersManager.records = {doubao: {type: 'volcengine'}};
+requestImpl = async () => ({config: {model_providers: {doubao: {type: 'openai'}}}});
+assert.equal(await ModelProvidersManager.save(), false, 'provider save must reject a response that did not persist the new type');
+assert.deepEqual(JSON.parse(JSON.stringify(ModelProvidersManager.records)), {
+  doubao: {type: 'openai', base_url: 'https://ark.cn-beijing.volces.com/api/v3'},
+});
+
 const firstRequest = deferred();
 const secondRequest = deferred();
 let activeRequests = 0;

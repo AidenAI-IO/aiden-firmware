@@ -173,15 +173,15 @@ func ConfigMeta() ConfigMetadata {
 						Help: "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
 						Enum: []EnumOption{
 							{Value: "", Label: "Chat Completions (compatible)"},
-							{Value: "responses", Label: "Responses (local context)"},
-							{Value: "responses_stateful", Label: "Responses (provider context)", Providers: []string{"openai"}},
+							{Value: "responses", Label: "Responses (local context)", Providers: []string{"openai", "openrouter", "volcengine"}},
+							{Value: "responses_stateful", Label: "Responses (provider context)", Providers: []string{"openai", "volcengine"}},
 						},
 						Default: defaults.Model.APIMode, Layout: "wide"},
 					{Key: "responses_context_management", Label: "Provider compaction", Widget: WidgetSelect,
 						Help: "Ask a compatible provider to compact context at the threshold. This does not change who manages the conversation context.",
 						Enum: []EnumOption{
 							{Value: "", Label: "Off (recommended)"},
-							{Value: "compaction", Label: "Compact at threshold"},
+							{Value: "compaction", Label: "Compact at threshold", Providers: []string{"openai"}},
 						},
 						VisibleWhen: all(in("model.api_mode", "responses", "responses_stateful")),
 						Default:     defaults.Model.ResponsesContextManagement,
@@ -194,7 +194,7 @@ func ConfigMeta() ConfigMetadata {
 						Help: "Fail when input is too long, or let a compatible provider discard the oldest input and continue.",
 						Enum: []EnumOption{
 							{Value: "", Label: "Fail with an error (default)"},
-							{Value: "auto", Label: "Discard oldest input automatically"},
+							{Value: "auto", Label: "Discard oldest input automatically", Providers: []string{"openai", "openrouter"}},
 						},
 						VisibleWhen: all(in("model.api_mode", "responses", "responses_stateful")),
 						Default:     defaults.Model.ResponsesTruncation},

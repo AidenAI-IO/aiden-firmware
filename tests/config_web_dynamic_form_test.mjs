@@ -266,8 +266,8 @@ buildConfigMeta({sections: [
     {key: 'model', label: 'model', widget: 'text', layout: 'wide'},
     {key: 'api_mode', label: 'Conversation API', widget: 'select', enum: [
       {value: '', label: 'Chat Completions (compatible)'},
-      {value: 'responses', label: 'Responses (local context)'},
-      {value: 'responses_stateful', label: 'Responses (provider context)', providers: ['openai']},
+      {value: 'responses', label: 'Responses (local context)', providers: ['openai', 'openrouter', 'volcengine']},
+      {value: 'responses_stateful', label: 'Responses (provider context)', providers: ['openai', 'volcengine']},
     ]},
     {key: 'temperature', label: 'temperature', widget: 'number'},
   ]},
@@ -294,6 +294,7 @@ translatedOptions = {
   'config.fields.model.api_mode.options.default': 'Chat Completions（兼容模式）',
   'config.fields.model.api_mode.options.responses': 'Responses（本地上下文）',
 };
+document.getElementById('model_provider').value = 'openrouter';
 hydrateSelectField('model', 'api_mode', 'responses', true);
 assert.deepEqual(document.getElementById('model_api_mode').options.map((option) => option.textContent), [
   'Chat Completions（兼容模式）',
@@ -304,11 +305,28 @@ const {modelProvidersByName, appState} = stateModule.namespace;
 document.getElementById('model_provider').value = 'openrouter';
 modelProvidersByName.openrouter = {type: 'openai', base_url: 'https://openrouter.ai/api/v1'};
 assert.equal(resolveModelProviderType('openrouter'), 'openrouter');
+modelProvidersByName.doubao = {type: 'openai', base_url: 'https://ark.cn-beijing.volces.com/api/v3'};
+assert.equal(resolveModelProviderType('doubao'), 'volcengine');
 hydrateSelectField('model', 'api_mode', 'responses_stateful', true);
 assert.deepEqual(document.getElementById('model_api_mode').options.map((option) => option.value), [
   '',
   'responses',
 ], 'OpenRouter records saved as OpenAI-compatible must hide stored Responses');
+document.getElementById('model_provider').value = 'doubao';
+hydrateSelectField('model', 'api_mode', 'responses_stateful', true);
+assert.deepEqual(document.getElementById('model_api_mode').options.map((option) => option.value), [
+  '',
+  'responses',
+  'responses_stateful',
+], 'Ark records saved as OpenAI-compatible must expose stored Responses');
+document.getElementById('model_provider').value = 'kimi';
+modelProvidersByName.kimi = {type: 'kimi'};
+hydrateSelectField('model', 'api_mode', 'responses', true);
+assert.deepEqual(document.getElementById('model_api_mode').options.map((option) => option.value), [
+  '',
+], 'Kimi must expose only Chat Completions because its official endpoint has no /responses API');
+document.getElementById('model_provider').value = 'openrouter';
+hydrateSelectField('model', 'api_mode', 'responses', true);
 document.getElementById('model_api_mode').value = 'responses';
 assert.deepEqual(agentTarget.children.map((field) => field.getAttribute('data-config-field')), [
   'agent.input_mode',

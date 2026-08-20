@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
 	"bytes"
 	"context"
@@ -127,6 +128,23 @@ func (m *ModelManager) GenerateContent(ctx context.Context, messages []llms.Mess
 	return model.GenerateContent(ctx, messages, options...)
 }
 
+// GenerateContentFromMessageList preserves provider-specific transcript
+// metadata through the runtime's ModelManager wrapper. Responses models need
+// this path for opaque stateless output replay and previous_response_id
+// chaining; ordinary models fall back to the common LangChain message shape.
+func (m *ModelManager) GenerateContentFromMessageList(ctx context.Context, messageList []messages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	model, err := m.get()
+	if err != nil {
+		return nil, err
+	}
+	if contextModel, ok := model.(interface {
+		GenerateContentFromMessageList(context.Context, []messages.Message, ...llms.CallOption) (*llms.ContentResponse, error)
+	}); ok {
+		return contextModel.GenerateContentFromMessageList(ctx, messageList, options...)
+	}
+	return model.GenerateContent(ctx, messages.ConvertMessageList(messageList), options...)
+}
+
 func (m *ModelManager) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
 	model, err := m.get()
 	if err != nil {
@@ -178,7 +196,8 @@ func (m *ModelManager) Spec() model.ModelSpec {
 }
 
 func (m *ModelManager) build() (llms.Model, error) {
-	definition, ok := lookupModelProviderDefinition(m.config.Provider)
+	providerType := effectiveModelProviderType(m.config.Provider, m.config.BaseURL)
+	definition, ok := lookupModelProviderDefinition(providerType)
 	if !ok {
 		return nil, fmt.Errorf("unsupported provider %q", m.config.Provider)
 	}

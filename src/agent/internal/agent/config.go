@@ -726,12 +726,13 @@ type ModelConfig struct {
 	// "responses_stateful" chains provider-stored responses with
 	// previous_response_id.
 	APIMode string `toml:"api_mode,omitempty"`
-	// ResponsesContextManagement selects provider-side context management for
-	// Responses requests. "compaction" enables the official Responses API
-	// compaction entry; empty disables it.
+	// ResponsesContextManagement selects OpenAI provider-side context management
+	// for Responses requests. "compaction" enables OpenAI's compaction entry;
+	// empty disables it. Ark has a different context_management schema.
 	ResponsesContextManagement string `toml:"responses_context_management,omitempty"`
 	ResponsesCompactThreshold  int    `toml:"responses_compact_threshold,omitempty"`
-	// ResponsesTruncation controls the official Responses truncation policy.
+	// ResponsesTruncation controls the OpenAI-compatible truncation policy used
+	// by OpenAI and OpenRouter. Ark does not use this request field.
 	// Empty preserves the API default (disabled); "auto" delegates truncation
 	// to the provider when supported.
 	ResponsesTruncation string `toml:"responses_truncation,omitempty"`
@@ -756,6 +757,7 @@ type ModelConfig struct {
 func (m ModelConfig) ResponsesProviderCompactionEnabled() bool {
 	apiMode := normalizeModelAPIMode(m.APIMode)
 	return (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) &&
+		effectiveModelProviderType(m.Provider, m.BaseURL) == "openai" &&
 		normalizeResponsesContextManagement(m.ResponsesContextManagement) == responsesContextManagementCompaction
 }
 
@@ -1497,7 +1499,8 @@ func (c Config) modelProviderSupportsResponsesStateful() bool {
 // effectiveModelProviderType recognizes well-known endpoints that were saved
 // as generic OpenAI-compatible transports by older config pages. This keeps
 // provider capability checks and runtime request behavior aligned: OpenRouter
-// implements /responses, but it rejects stored Responses (store=true).
+// implements only stateless /responses, while Volcengine Ark supports stored
+// response chaining with a different set of request fields.
 func effectiveModelProviderType(providerType, baseURL string) string {
 	providerType = strings.ToLower(strings.TrimSpace(providerType))
 	if providerType != "openai" {
@@ -1510,6 +1513,9 @@ func effectiveModelProviderType(providerType, baseURL string) string {
 	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
 	if host == "openrouter.ai" || strings.HasSuffix(host, ".openrouter.ai") {
 		return "openrouter"
+	}
+	if host == "ark.cn-beijing.volces.com" || strings.HasSuffix(host, ".ark.cn-beijing.volces.com") {
+		return "volcengine"
 	}
 	return providerType
 }

@@ -99,6 +99,8 @@ model = "gpt-5.5"
 # For Moonshot Kimi K3, use the "kimi" (global) or "kimi-cn" (mainland China)
 # provider. Each uses its built-in Moonshot endpoint, so only model + api_key
 # are needed. Custom base_url values are not supported for Kimi providers.
+# Moonshot's official endpoint supports Chat Completions, not /responses, so
+# keep api_mode unset (or set it to "chat_completions").
 # [model_providers.kimi-main]
 # type = "kimi"           # global: https://api.moonshot.ai/v1
 # type = "kimi-cn"        # mainland China: https://api.moonshot.cn/v1
@@ -109,6 +111,9 @@ model = "gpt-5.5"
 # For Volcengine Ark (Doubao), use the "volcengine" provider. It uses its
 # built-in OpenAI-compatible endpoint, so only model + api_key are needed.
 # Custom base_url values are not supported for Volcengine providers.
+# Ark supports api_mode = "responses_stateful" with store + previous_response_id,
+# without requiring caching. Aiden does not send its OpenAI-specific compaction
+# array or truncation setting to Ark; Ark's own context_management schema differs.
 # [model_providers.ark-main]
 # type = "volcengine"      # https://ark.cn-beijing.volces.com/api/v3
 # api_key = "$ARK_API_KEY"

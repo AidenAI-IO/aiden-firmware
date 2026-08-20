@@ -31,6 +31,14 @@ const (
 	responsesTruncationDisabled          = "disabled"
 )
 
+type responsesDialect string
+
+const (
+	responsesDialectOpenAI     responsesDialect = "openai"
+	responsesDialectOpenRouter responsesDialect = "openrouter"
+	responsesDialectVolcengine responsesDialect = "volcengine"
+)
+
 func normalizeResponsesContextManagement(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "none", "disabled":
@@ -84,6 +92,7 @@ type responsesModel struct {
 	compactThreshold       int
 	truncation             string
 	include                []string
+	dialect                responsesDialect
 }
 
 type responsesModelOptions struct {
@@ -97,11 +106,16 @@ type responsesModelOptions struct {
 	compactThreshold       int
 	truncation             string
 	include                []string
+	dialect                responsesDialect
 }
 
 func newResponsesModel(baseURL, model, token string, httpClient *http.Client, opts responsesModelOptions) llms.Model {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
+	}
+	dialect := opts.dialect
+	if dialect == "" {
+		dialect = responsesDialectOpenAI
 	}
 	return &responsesModel{
 		baseURL:                strings.TrimRight(baseURL, "/"),
@@ -118,6 +132,7 @@ func newResponsesModel(baseURL, model, token string, httpClient *http.Client, op
 		compactThreshold:       opts.compactThreshold,
 		truncation:             normalizeResponsesTruncation(opts.truncation),
 		include:                append([]string(nil), opts.include...),
+		dialect:                dialect,
 	}
 }
 
@@ -133,7 +148,7 @@ type responsesRequest struct {
 	Tools              []responsesTool              `json:"tools,omitempty"`
 	ToolChoice         any                          `json:"tool_choice,omitempty"`
 	ParallelToolCalls  bool                         `json:"parallel_tool_calls"`
-	Store              bool                         `json:"store"`
+	Store              *bool                        `json:"store,omitempty"`
 	Stream             bool                         `json:"stream,omitempty"`
 	MaxOutputTokens    int                          `json:"max_output_tokens,omitempty"`
 	Temperature        *float64                     `json:"temperature,omitempty"`
@@ -201,10 +216,25 @@ type responsesTextConfig struct {
 }
 
 type responsesResponse struct {
-	ID     string                `json:"id,omitempty"`
-	Status string                `json:"status,omitempty"`
-	Output []responsesOutputItem `json:"output,omitempty"`
-	Usage  *responsesUsage       `json:"usage,omitempty"`
+	ID                string                     `json:"id,omitempty"`
+	Status            string                     `json:"status,omitempty"`
+	Output            []responsesOutputItem      `json:"output,omitempty"`
+	Usage             *responsesUsage            `json:"usage,omitempty"`
+	Error             *responsesError            `json:"error,omitempty"`
+	ErrorType         string                     `json:"error_type,omitempty"`
+	IncompleteDetails *responsesIncompleteDetail `json:"incomplete_details,omitempty"`
+}
+
+type responsesError struct {
+	Code         json.RawMessage `json:"code,omitempty"`
+	Type         string          `json:"type,omitempty"`
+	Message      string          `json:"message,omitempty"`
+	Param        any             `json:"param,omitempty"`
+	TopLevelType string          `json:"-"`
+}
+
+type responsesIncompleteDetail struct {
+	Reason string `json:"reason,omitempty"`
 }
 
 type responsesOutputItem struct {
@@ -352,15 +382,28 @@ func (m *responsesModel) generateContentWithInput(ctx context.Context, input []r
 		// function_call_output item, which the Responses API rejects on the next
 		// turn, so disabling them is required rather than merely conservative.
 		ParallelToolCalls: false,
-		// Send store explicitly: manual mode opts out of provider retention while
-		// provider-managed mode needs retention for previous_response_id chaining.
-		Store:           m.providerManagedContext,
-		Stream:          callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil,
-		MaxOutputTokens: callOpts.MaxTokens,
-		Temperature:     m.temperature,
-		Truncation:      m.truncation,
+		Stream:            callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil,
+		MaxOutputTokens:   callOpts.MaxTokens,
+		Temperature:       m.temperature,
 	}
-	if m.contextManagement == responsesContextManagementCompaction {
+	// OpenRouter's Responses endpoint is stateless. Its public schema allows
+	// store=false, but omitting both state fields avoids providers/models that
+	// reject the parameter outright. OpenAI and Ark use store consistently for
+	// local versus provider-managed context.
+	if m.dialect != responsesDialectOpenRouter {
+		store := m.providerManagedContext
+		payload.Store = &store
+	} else {
+		payload.PreviousResponseID = ""
+	}
+	// Ark supports its own object-shaped context_management edits, while
+	// OpenRouter is stateless. Neither uses the OpenAI compaction array
+	// represented by this configuration. OpenRouter does support the standard
+	// truncation field; Ark does not use this OpenAI request shape.
+	if m.dialect != responsesDialectVolcengine {
+		payload.Truncation = m.truncation
+	}
+	if m.dialect == responsesDialectOpenAI && m.contextManagement == responsesContextManagementCompaction {
 		payload.ContextManagement = []responsesContextManagement{{
 			Type:             responsesContextManagementCompaction,
 			CompactThreshold: m.compactThreshold,
@@ -718,6 +761,9 @@ func normalizeResponsesToolChoice(choice any, behavior llms.FunctionCallBehavior
 }
 
 func responsesContentResponse(decoded responsesResponse, callStarted time.Time, generationInfo map[string]any) (*llms.ContentResponse, error) {
+	if strings.EqualFold(strings.TrimSpace(decoded.Status), "failed") {
+		return nil, newResponsesProviderError(responsesResponseError(&decoded), "response failed")
+	}
 	content := ""
 	toolCalls := make([]llms.ToolCall, 0)
 	for _, item := range decoded.Output {
@@ -852,6 +898,11 @@ type responsesStreamEvent struct {
 	Arguments   string               `json:"arguments,omitempty"`
 	Item        *responsesOutputItem `json:"item,omitempty"`
 	Response    *responsesResponse   `json:"response,omitempty"`
+	Error       *responsesError      `json:"error,omitempty"`
+	ErrorType   string               `json:"error_type,omitempty"`
+	Code        json.RawMessage      `json:"code,omitempty"`
+	Message     string               `json:"message,omitempty"`
+	Param       any                  `json:"param,omitempty"`
 }
 
 type responsesStreamToolCall struct {
@@ -911,7 +962,7 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 				event.Type = eventName
 			}
 			switch event.Type {
-			case "response.output_text.delta":
+			case "response.output_text.delta", "response.content_part.delta":
 				hadTextDelta = true
 				content.WriteString(event.Delta)
 				if stream != nil && event.Delta != "" {
@@ -919,7 +970,7 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 						return nil, err
 					}
 				}
-			case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			case "response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.reasoning.delta":
 				reasoning.WriteString(event.Delta)
 				if reasoningStream != nil && event.Delta != "" {
 					if err := reasoningStream(ctx, []byte(event.Delta), nil); err != nil {
@@ -944,6 +995,15 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 					if phase := responsesAssistantPhase([]responsesOutputItem{*event.Item}); phase != "" {
 						generationInfo["responses_assistant_phase"] = phase
 					}
+					if event.Item.Type == "message" && !hadTextDelta {
+						fallbackText := responsesOutputText(event.Item.Content)
+						content.WriteString(fallbackText)
+						if stream != nil && fallbackText != "" {
+							if err := stream(ctx, []byte(fallbackText)); err != nil {
+								return nil, err
+							}
+						}
+					}
 				}
 				if event.Item != nil && event.Item.Type == "function_call" {
 					callID := firstNonEmpty(event.Item.CallID, event.Item.ID, event.ItemID, fmt.Sprintf("responses_call_%d", event.OutputIndex))
@@ -961,8 +1021,19 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 						call.Arguments.WriteString(event.Item.Arguments)
 					}
 				}
-			case "response.completed", "response.done":
+			case "response.completed", "response.done", "response.incomplete":
 				completed = event.Response
+			case "response.failed":
+				if event.Response != nil {
+					return nil, newResponsesProviderError(responsesResponseError(event.Response), "response failed")
+				}
+				return nil, newResponsesProviderError(responsesEventError(event), "response failed")
+			case "error":
+				apiErr := responsesEventError(event)
+				if apiErr == nil {
+					apiErr = &responsesError{Code: event.Code, Message: event.Message, Param: event.Param}
+				}
+				return nil, newResponsesProviderError(apiErr, "responses stream error")
 			}
 		}
 		if readErr == io.EOF {
@@ -1040,6 +1111,73 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 	generationInfo["llm_tool_call_count"] = len(toolCalls)
 	choice.GenerationInfo = finalizeLLMGenerationInfo(generationInfo, callStarted)
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}, nil
+}
+
+func responsesResponseError(response *responsesResponse) *responsesError {
+	if response == nil {
+		return nil
+	}
+	apiErr := response.Error
+	if strings.TrimSpace(response.ErrorType) == "" {
+		return apiErr
+	}
+	if apiErr == nil {
+		return &responsesError{TopLevelType: response.ErrorType}
+	}
+	cloned := *apiErr
+	cloned.TopLevelType = response.ErrorType
+	return &cloned
+}
+
+func responsesEventError(event responsesStreamEvent) *responsesError {
+	apiErr := event.Error
+	if apiErr == nil || strings.TrimSpace(event.ErrorType) == "" {
+		return apiErr
+	}
+	cloned := *apiErr
+	cloned.TopLevelType = event.ErrorType
+	return &cloned
+}
+
+func newResponsesProviderError(apiErr *responsesError, fallbackMessage string) *ProviderHTTPError {
+	if apiErr == nil {
+		apiErr = &responsesError{Message: fallbackMessage}
+	} else if strings.TrimSpace(apiErr.Message) == "" {
+		cloned := *apiErr
+		cloned.Message = fallbackMessage
+		apiErr = &cloned
+	}
+	body, err := json.Marshal(struct {
+		Error     *responsesError `json:"error"`
+		ErrorType string          `json:"error_type,omitempty"`
+	}{Error: apiErr, ErrorType: apiErr.TopLevelType})
+	if err != nil {
+		body = []byte(`{"error":{"message":"responses request failed"}}`)
+	}
+	return newProviderHTTPError(responsesErrorHTTPStatus(apiErr), body)
+}
+
+func responsesErrorHTTPStatus(apiErr *responsesError) int {
+	if apiErr == nil {
+		return http.StatusInternalServerError
+	}
+	code := strings.ToLower(strings.TrimSpace(normalizeProviderErrorCode(apiErr.Code)))
+	errorType := strings.ToLower(strings.TrimSpace(firstNonEmpty(apiErr.TopLevelType, apiErr.Type)))
+	markers := code + " " + errorType
+	switch {
+	case strings.Contains(markers, "rate_limit"):
+		return http.StatusTooManyRequests
+	case strings.Contains(markers, "authentication"), strings.Contains(markers, "invalid_api_key"):
+		return http.StatusUnauthorized
+	case strings.Contains(markers, "permission"):
+		return http.StatusForbidden
+	case strings.Contains(markers, "not_found"):
+		return http.StatusNotFound
+	case strings.Contains(markers, "invalid_request"), strings.Contains(markers, "invalid_prompt"), strings.Contains(markers, "context_length"), strings.Contains(markers, "content_policy"):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 func responsesStreamToolCallForEvent(tools map[string]*responsesStreamToolCall, itemCallIDs map[string]string, event responsesStreamEvent) *responsesStreamToolCall {

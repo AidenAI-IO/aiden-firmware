@@ -161,6 +161,24 @@ func TestBuildKimiProvidersResolveBaseURL(t *testing.T) {
 	}
 }
 
+func TestBuildKimiProvidersRejectResponsesMode(t *testing.T) {
+	for _, provider := range []string{"kimi", "kimi-cn"} {
+		t.Run(provider, func(t *testing.T) {
+			mgr := NewModelManager(ModelConfig{
+				Provider: provider,
+				Model:    "kimi-k3",
+				APIKey:   "test-key",
+				APIMode:  "responses",
+			}, ProxyConfig{})
+
+			_, err := mgr.build()
+			if err == nil || !strings.Contains(err.Error(), "Chat Completions, not /responses") {
+				t.Fatalf("build error = %v, want Kimi Responses compatibility error", err)
+			}
+		})
+	}
+}
+
 func TestBuildVolcengineProviderResolvesBaseURL(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -255,6 +273,40 @@ func TestBuildOpenAICompatibleResponsesStatefulMode(t *testing.T) {
 	}
 }
 
+func TestBuildOpenRouterResponsesModes(t *testing.T) {
+	t.Run("stateless", func(t *testing.T) {
+		mgr := NewModelManager(ModelConfig{
+			Provider: "openrouter",
+			Model:    "openai/gpt-5.5",
+			APIKey:   "test-key",
+			APIMode:  "responses",
+		}, ProxyConfig{})
+
+		model, err := mgr.build()
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		responses, ok := model.(*responsesModel)
+		if !ok || responses.providerManagedContext || responses.dialect != responsesDialectOpenRouter {
+			t.Fatalf("model = %#v, want stateless OpenRouter Responses model", model)
+		}
+	})
+
+	t.Run("stateful", func(t *testing.T) {
+		mgr := NewModelManager(ModelConfig{
+			Provider: "openrouter",
+			Model:    "openai/gpt-5.5",
+			APIKey:   "test-key",
+			APIMode:  "responses_stateful",
+		}, ProxyConfig{})
+
+		_, err := mgr.build()
+		if err == nil || !strings.Contains(err.Error(), "stateless") {
+			t.Fatalf("build error = %v, want stateless-only error", err)
+		}
+	})
+}
+
 func TestBuildResponsesModeUsesCustomOpenAICompatibleEndpoint(t *testing.T) {
 	for _, provider := range []string{"openai", "volcengine"} {
 		t.Run(provider, func(t *testing.T) {
@@ -278,6 +330,51 @@ func TestBuildResponsesModeUsesCustomOpenAICompatibleEndpoint(t *testing.T) {
 				t.Fatalf("base URL = %q", responses.baseURL)
 			}
 		})
+	}
+}
+
+func TestBuildOpenAIResponsesRecognizesKnownCompatibleHosts(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		baseURL string
+		want    responsesDialect
+	}{
+		{name: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", want: responsesDialectOpenRouter},
+		{name: "Volcengine Ark", baseURL: "https://ark.cn-beijing.volces.com/api/v3", want: responsesDialectVolcengine},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := NewModelManager(ModelConfig{
+				Provider: "openai",
+				Model:    "test-model",
+				APIKey:   "test-key",
+				BaseURL:  tt.baseURL,
+				APIMode:  "responses",
+			}, ProxyConfig{})
+
+			model, err := mgr.build()
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			responses, ok := model.(*responsesModel)
+			if !ok || responses.dialect != tt.want {
+				t.Fatalf("model = %#v, want dialect %q", model, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildOpenAIStatefulResponsesRejectsOpenRouterHost(t *testing.T) {
+	mgr := NewModelManager(ModelConfig{
+		Provider: "openai",
+		Model:    "openai/gpt-5.5",
+		APIKey:   "test-key",
+		BaseURL:  "https://openrouter.ai/api/v1",
+		APIMode:  "responses_stateful",
+	}, ProxyConfig{})
+
+	_, err := mgr.build()
+	if err == nil || !strings.Contains(err.Error(), "stateless") {
+		t.Fatalf("build error = %v, want stateless-only error", err)
 	}
 }
 
