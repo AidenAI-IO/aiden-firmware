@@ -338,9 +338,8 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	if defaults.Log.LLMHTTPRetentionDays != agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault() {
 		t.Fatalf("log defaults were not populated: %+v", defaults.Log)
 	}
-	if defaults.Agent.InputMode != "text" || defaults.Agent.TriggerMode != "manual" {
-		t.Fatalf("agent mode defaults = input %q trigger %q, want text/manual",
-			defaults.Agent.InputMode, defaults.Agent.TriggerMode)
+	if defaults.Agent.InputMode != "text" {
+		t.Fatalf("agent input mode default = %q, want text", defaults.Agent.InputMode)
 	}
 	if defaults.Agent.VoiceFollowupTimeoutMs == 0 ||
 		defaults.Agent.VoiceFirstTurnTimeoutMs == 0 ||

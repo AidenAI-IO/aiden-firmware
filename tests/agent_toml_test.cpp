@@ -35,7 +35,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.locale = "en-US";
     cfg.custom_instruction = "Hello \"world\"";
     cfg.input_mode = "stt";
-    cfg.trigger_mode = "manual";
     cfg.vad_backend = "cpu";
     cfg.vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
     cfg.vad_helper_path = "/oem/usr/bin/rknn_vad";
@@ -152,7 +151,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.locale == "en-US");
     CHECK(loaded.custom_instruction == "Hello \"world\"");
     CHECK(loaded.input_mode == "stt");
-    CHECK(loaded.trigger_mode == "manual");
     CHECK(loaded.vad_backend == "cpu");
     CHECK(loaded.vad_model_path == "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn");
     CHECK(loaded.vad_helper_path == "/oem/usr/bin/rknn_vad");

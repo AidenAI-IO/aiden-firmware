@@ -3015,7 +3015,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(agent, "custom_instruction", config.custom_instruction.c_str());
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
     cJSON_AddStringToObject(agent, "input_mode", config.input_mode.c_str());
-    cJSON_AddStringToObject(agent, "trigger_mode", config.trigger_mode.c_str());
     cJSON_AddStringToObject(agent, "vad_backend", config.vad_backend.c_str());
     cJSON_AddStringToObject(agent, "vad_model_path", config.vad_model_path.c_str());
     cJSON_AddStringToObject(agent, "vad_helper_path", config.vad_helper_path.c_str());
@@ -3576,7 +3575,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->custom_instruction, agent, "custom_instruction");
         set_json_str(&config->additional_prompt, agent, "additional_prompt");
         set_json_str(&config->input_mode, agent, "input_mode");
-        set_json_str(&config->trigger_mode, agent, "trigger_mode");
         set_json_str(&config->vad_backend, agent, "vad_backend");
         set_json_str(&config->vad_model_path, agent, "vad_model_path");
         set_json_str(&config->vad_helper_path, agent, "vad_helper_path");
@@ -6990,7 +6988,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         };
         Check enums[] = {
             {"input_mode", {"text", "stt", NULL}},
-            {"trigger_mode", {"manual", "wakeup", NULL, NULL}},
         };
         for (size_t i = 0; i < sizeof(enums) / sizeof(enums[0]); ++i) {
             cJSON* item = cJSON_GetObjectItem(values, enums[i].key);
@@ -7013,18 +7010,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
                 std::string msg = "invalid input_mode: " + val + " (audio mode has been removed; use stt instead)";
                 cJSON_AddStringToObject(r, "detail", msg.c_str());
                 all_passed = false;
-            } else if (ok && std::string(enums[i].key) == "trigger_mode" && val == "wakeup") {
-                cJSON* input_item = cJSON_GetObjectItem(values, "input_mode");
-                std::string input_mode = json_is_string(input_item) ? trim_copy(input_item->valuestring) : "";
-                if (input_mode == "stt") {
-                    cJSON_AddBoolToObject(r, "passed", 1);
-                    cJSON_AddStringToObject(r, "detail", val.c_str());
-                } else {
-                    cJSON_AddBoolToObject(r, "passed", 0);
-                    std::string msg = "wakeup requires input_mode stt, got '" + input_mode + "'";
-                    cJSON_AddStringToObject(r, "detail", msg.c_str());
-                    all_passed = false;
-                }
             } else if (ok) {
                 cJSON_AddBoolToObject(r, "passed", 1);
                 cJSON_AddStringToObject(r, "detail", val.c_str());

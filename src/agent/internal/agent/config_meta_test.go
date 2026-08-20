@@ -413,7 +413,6 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"search.provider", defaults.Search.ProviderOrDefault()},
 		{"agent.input_mode", defaults.InputMode},
 		{"agent.locale", defaults.LocaleOrDefault()},
-		{"agent.trigger_mode", defaults.TriggerMode},
 		{"agent.vad_backend", defaults.VADBackend},
 		{"agent.vad_model_path", defaults.VADModelPath},
 		{"agent.vad_helper_path", defaults.VADHelperPath},

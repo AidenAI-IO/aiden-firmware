@@ -1,6 +1,5 @@
 locale = "en-US"
 input_mode = "text"
-trigger_mode = "manual"
 
 [device]
 device_type = "iOS"
