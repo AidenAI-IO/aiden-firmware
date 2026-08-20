@@ -10,7 +10,7 @@ RuntimeDirectory=sshd
 RuntimeDirectoryMode=0755
 ExecStart=/usr/lib/aiden/aiden-ssh-identity
 RemainAfterExit=yes
-TimeoutStartSec=30s
+TimeoutStartSec=180s
 
 [Install]
 WantedBy=multi-user.target
