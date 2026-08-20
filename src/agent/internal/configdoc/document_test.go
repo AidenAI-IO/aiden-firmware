@@ -156,6 +156,57 @@ func TestApplyDeletesInlineProviderRecord(t *testing.T) {
 	}
 }
 
+func TestApplyDeletesDottedKeyProviderRecord(t *testing.T) {
+	source := []byte("model_providers.old.type = \"openai\"\nmodel_providers.old.api_key = \"secret\" # remove\nmodel_providers.keep.type = \"ollama\"\n")
+	want := []byte("model_providers.keep.type = \"ollama\"\n")
+
+	got, changed, err := Apply(source, []Operation{{Path: []string{"model_providers", "old"}, DeleteTable: true}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "model_providers.old" {
+		t.Fatalf("changed = %v", changed)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestApplyInsertsAlongsideDottedKeys(t *testing.T) {
+	source := []byte("model_providers.foo.type = \"openai\" # keep\nmodel_providers.keep.type = \"ollama\"\n")
+	want := []byte("model_providers.foo.type = \"openai\" # keep\nmodel_providers.foo.base_url = \"https://example.test\"\nmodel_providers.keep.type = \"ollama\"\n")
+
+	got, changed, err := Apply(source, []Operation{{
+		Path:  []string{"model_providers", "foo", "base_url"},
+		Value: "https://example.test",
+	}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "model_providers.foo.base_url" {
+		t.Fatalf("changed = %v", changed)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestApplyHandlesDottedProviderUnderExplicitParentTable(t *testing.T) {
+	source := []byte("[model_providers]\nold.type = \"openai\"\nold.api_key = \"secret\"\nkeep.type = \"ollama\"\n")
+	want := []byte("[model_providers]\nkeep.type = \"ollama\"\n")
+
+	got, changed, err := Apply(source, []Operation{{Path: []string{"model_providers", "old"}, DeleteTable: true}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "model_providers.old" {
+		t.Fatalf("changed = %v", changed)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestApplyAppendsMinimalNewTable(t *testing.T) {
 	source := []byte("locale = \"en-US\"\n")
 	want := []byte("locale = \"en-US\"\n\n[hid]\nkeyboard_layout = \"azerty\"\n")

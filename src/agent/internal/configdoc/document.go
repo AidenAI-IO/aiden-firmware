@@ -357,6 +357,16 @@ func setValue(source []byte, doc index, path []string, encoded []byte) ([]byte, 
 		}
 		return splice(source, position, position, line), true, nil
 	}
+	if context, position, ok := findDottedTableContext(doc, tablePath); ok {
+		dottedKey, err := encodeKeyPath(path[len(context):])
+		if err != nil {
+			return nil, false, err
+		}
+		dottedLine := append(append([]byte(nil), dottedKey...), []byte(" = ")...)
+		dottedLine = append(dottedLine, encoded...)
+		dottedLine = append(dottedLine, '\n')
+		return splice(source, position, position, dottedLine), true, nil
+	}
 	if len(tablePath) == 0 && len(doc.tables) > 0 {
 		return splice(source, doc.tables[0].lineStart, doc.tables[0].lineStart, line), true, nil
 	}
@@ -453,13 +463,11 @@ func deleteTable(source []byte, doc index, path []string) ([]byte, bool) {
 			return deleteInlineTableValue(source, *field), true
 		}
 	}
-	if findTable(doc, path) == nil {
-		return source, false
-	}
 	// A provider may have nested tables. They are not necessarily contiguous
 	// with the parent table: an unrelated top-level table can be interleaved in
 	// the source and must remain intact. Build one deletion interval per matching
-	// table instead of deleting the whole span from the parent to its last child.
+	// table and dotted key instead of deleting the whole span from the parent to
+	// its last child.
 	type interval struct{ start, end int }
 	intervals := make([]interval, 0)
 	for _, table := range doc.tables {
@@ -481,14 +489,59 @@ func deleteTable(source []byte, doc index, path []string) ([]byte, bool) {
 		}
 		intervals = append(intervals, interval{start: table.lineStart, end: end})
 	}
+	for _, key := range doc.keys {
+		if hasPathPrefix(key.path, path) {
+			intervals = append(intervals, interval{start: key.lineStart, end: key.lineEnd})
+		}
+	}
 	if len(intervals) == 0 {
 		return source, false
 	}
+	sort.Slice(intervals, func(i, j int) bool {
+		if intervals[i].start == intervals[j].start {
+			return intervals[i].end < intervals[j].end
+		}
+		return intervals[i].start < intervals[j].start
+	})
+	merged := intervals[:0]
+	for _, current := range intervals {
+		if len(merged) == 0 || current.start > merged[len(merged)-1].end {
+			merged = append(merged, current)
+			continue
+		}
+		if current.end > merged[len(merged)-1].end {
+			merged[len(merged)-1].end = current.end
+		}
+	}
 	result := append([]byte(nil), source...)
-	for i := len(intervals) - 1; i >= 0; i-- {
-		result = splice(result, intervals[i].start, intervals[i].end, nil)
+	for i := len(merged) - 1; i >= 0; i-- {
+		result = splice(result, merged[i].start, merged[i].end, nil)
 	}
 	return result, true
+}
+
+// findDottedTableContext locates an implicit table represented by dotted keys.
+// It returns the explicit parent table path that owns those keys and the source
+// position immediately after the last member, so new fields can preserve the
+// existing dotted-key style.
+func findDottedTableContext(doc index, path []string) ([]string, int, bool) {
+	var context []string
+	position := 0
+	found := false
+	for _, key := range doc.keys {
+		if !hasPathPrefix(key.path, path) || len(key.path) <= len(path) ||
+			len(key.tablePath) >= len(path) || !hasPathPrefix(path, key.tablePath) {
+			continue
+		}
+		if !found {
+			context = append([]string(nil), key.tablePath...)
+			found = true
+		}
+		if equalPath(key.tablePath, context) && key.lineEnd > position {
+			position = key.lineEnd
+		}
+	}
+	return context, position, found
 }
 
 func findKey(doc index, path []string) *keyValue {
@@ -564,6 +617,21 @@ func encodeKey(key string) ([]byte, error) {
 		return nil, fmt.Errorf("TOML encoder returned no key")
 	}
 	return bytes.TrimSpace(encoded[:equals]), nil
+}
+
+func encodeKeyPath(path []string) ([]byte, error) {
+	var result []byte
+	for i, segment := range path {
+		encoded, err := encodeKey(segment)
+		if err != nil {
+			return nil, err
+		}
+		if i > 0 {
+			result = append(result, '.')
+		}
+		result = append(result, encoded...)
+	}
+	return result, nil
 }
 
 func splice(source []byte, start, end int, replacement []byte) []byte {

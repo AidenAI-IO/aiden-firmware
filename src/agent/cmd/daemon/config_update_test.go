@@ -158,6 +158,33 @@ provider = "old"
 	}
 }
 
+func TestUpdateConfigFileRenamesDottedKeyProviderWithoutLeavingSource(t *testing.T) {
+	source := `model_providers.old.type = "openai"
+model_providers.old.api_key = "model-secret"
+model.provider = "old"
+model.model = "gpt-5.5"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	patch := []byte(`{"config":{"model_providers":{"old":null,"new":{"type":"openai"}},"_provider_renames":{"model_providers":{"new":"old"}},"model":{"provider":"new"}}}`)
+	if _, err := updateConfigFile(path, patch); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "model_providers.old.") {
+		t.Fatalf("old dotted-key provider was not removed:\n%s", text)
+	}
+	if !strings.Contains(text, `api_key = "model-secret"`) {
+		t.Fatalf("renamed provider lost credential:\n%s", text)
+	}
+}
+
 func TestUpdateConfigFilePreservesMaskedProviderCredential(t *testing.T) {
 	source := `[model_providers.openai]
 type = "openai"
