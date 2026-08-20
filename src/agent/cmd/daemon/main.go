@@ -251,7 +251,7 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 	if cfg.TriggerModeOrDefault() == "wakeup" && cfg.VoiceModel.Enabled() {
-		runRealtimeWakeupModeWithServer(cfg, sigChan, server, newGPIOWatcher)
+		runRealtimeWakeupModeWithServer(cfg, sigChan, server, runtime, newGPIOWatcher)
 		return
 	}
 	dialog, err := agent.NewAudioDialog(runtime)

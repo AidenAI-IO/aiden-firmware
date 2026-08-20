@@ -1528,6 +1528,16 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	return r.filterPhoneBridgeAgentTools(tools)
 }
 
+// Tool returns a registered runtime tool by name. Realtime voice uses this to
+// reuse the same recall_memory implementation and long-term store as the
+// legacy agent while exposing its own smaller model-facing tool catalog.
+func (r *Runtime) Tool(name string) (langtools.Tool, bool) {
+	if r == nil || r.tools == nil {
+		return nil, false
+	}
+	return r.tools.Get(name)
+}
+
 func (r *Runtime) filterPhoneBridgeAgentTools(tools []langtools.Tool) []langtools.Tool {
 	if r == nil || r.tools == nil || r.tools.phoneBridge == nil {
 		return tools

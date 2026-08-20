@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"flag"
 	"log"
@@ -53,6 +54,61 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 	if got.EnableSpeechEmotion == nil || *got.EnableSpeechEmotion {
 		t.Fatalf("enable_speech_emotion = %#v, want false", got.EnableSpeechEmotion)
 	}
+	if len(got.Tools) != 2 || got.Tools[0].Function.Name != "get_current_time" || got.Tools[1].Function.Name != "recall_memory" {
+		t.Fatalf("realtime tools = %#v, want only get_current_time and recall_memory", got.Tools)
+	}
+}
+
+func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
+	cfg := agent.Config{Instruction: "legacy phone automation prompt"}
+	got := realtimeSessionConfig(cfg)
+	if got.Instructions != agent.DefaultRealtimeVoiceInstructions {
+		t.Fatalf("instructions = %q, want realtime default", got.Instructions)
+	}
+	if got.Instructions == cfg.Instruction {
+		t.Fatal("realtime session reused the legacy agent instruction")
+	}
+}
+
+func TestRealtimeCurrentTimeTool(t *testing.T) {
+	want := time.Date(2026, time.August, 20, 14, 30, 0, 0, time.FixedZone("CST", 8*60*60))
+	executor := realtimeVoiceToolExecutor{now: func() time.Time { return want }}
+	output := executor.call(context.Background(), realtimeCurrentTimeTool, `{}`)
+	var got struct {
+		Datetime         string `json:"datetime"`
+		Timezone         string `json:"timezone"`
+		UTCOffsetSeconds int    `json:"utc_offset_seconds"`
+	}
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if got.Datetime != "2026-08-20T14:30:00+08:00" || got.Timezone != "CST" || got.UTCOffsetSeconds != 8*60*60 {
+		t.Fatalf("current time output = %+v", got)
+	}
+}
+
+func TestRealtimeRecallToolDelegatesToRuntimeTool(t *testing.T) {
+	recall := &fakeRealtimeTool{output: `{"results":[{"content":"likes concise replies"}]}`}
+	executor := realtimeVoiceToolExecutor{recall: recall, now: time.Now}
+	input := `{"tags":["preference"],"limit":3}`
+	if got := executor.call(context.Background(), realtimeRecallTool, input); got != recall.output {
+		t.Fatalf("recall output = %q, want %q", got, recall.output)
+	}
+	if recall.input != input {
+		t.Fatalf("recall input = %q, want %q", recall.input, input)
+	}
+}
+
+type fakeRealtimeTool struct {
+	input  string
+	output string
+}
+
+func (t *fakeRealtimeTool) Name() string        { return realtimeRecallTool }
+func (t *fakeRealtimeTool) Description() string { return "fake recall" }
+func (t *fakeRealtimeTool) Call(_ context.Context, input string) (string, error) {
+	t.input = input
+	return t.output, nil
 }
 
 func floatPtr(value float64) *float64 { return &value }

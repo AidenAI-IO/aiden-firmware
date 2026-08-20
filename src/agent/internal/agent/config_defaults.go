@@ -11,6 +11,9 @@ const (
 		"After every visual observation or input-tool result, inspect the latest screen to verify the previous action, focus, and navigation state before continuing; do not blindly repeat the same click, gesture, or key. " +
 		"When opening apps or finding contacts, settings, products, or page content on the phone, prefer system search, in-app search, or visible search fields instead of relying on repeated scrolling. " +
 		"Treat requests to place phone calls as phone-automation tasks; do not claim they are impossible merely because there is no dedicated dial tool."
+	DefaultRealtimeVoiceInstructions = "You are Aiden, a realtime voice assistant. Focus on natural conversation. " +
+		"Reply briefly and clearly in the user's language. Use get_current_time only when the exact current date or time matters. " +
+		"Use recall_memory only when saved user preferences or facts are relevant. Do not claim capabilities beyond conversation and these tools."
 	defaultModelProvider           = "openrouter"
 	defaultModelName               = "bytedance-seed/seed-2.0-lite"
 	defaultModelTemperature        = 0.2
@@ -105,6 +108,7 @@ func DefaultConfig() Config {
 		VoiceModel: VoiceModelConfig{
 			Model:             "qwen-audio-3.0-realtime-plus",
 			Voice:             "longanqian",
+			Instructions:      DefaultRealtimeVoiceInstructions,
 			InputAudioFormat:  "pcm",
 			OutputAudioFormat: "pcm",
 			TurnDetection:     "server_vad",

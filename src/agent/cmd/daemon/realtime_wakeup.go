@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +14,8 @@ import (
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/agent/rtclient"
 	"aiden-agent/internal/agent/tts"
+
+	langtools "github.com/tmc/langchaingo/tools"
 )
 
 const (
@@ -118,10 +121,10 @@ func chatCommandDone(command *realtimeChatCommand) <-chan struct{} {
 }
 
 func runRealtimeWakeupMode(cfg agent.Config, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
-	runRealtimeWakeupModeWithServer(cfg, sigChan, nil, newWatcher)
+	runRealtimeWakeupModeWithServer(cfg, sigChan, nil, nil, newWatcher)
 }
 
-func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, server *agent.Server, newWatcher wakeupWatcherFactory) {
+func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, server *agent.Server, runtime *agent.Runtime, newWatcher wakeupWatcherFactory) {
 	bridge := newRealtimeChatBridge()
 	if server != nil {
 		server.SetRealtimeChatHandler(bridge.Handle)
@@ -146,7 +149,7 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 			return
 		case <-events:
 			log.Println("\n[wakeup] GPIO wakeup triggered, connecting realtime voice model...")
-			if err := runRealtimeSession(cfg, sigChan, bridge); err != nil {
+			if err := runRealtimeSession(cfg, sigChan, runtime, bridge); err != nil {
 				log.Printf("[realtime] session ended: %v", err)
 			}
 			drainRealtimeWakeups(events)
@@ -186,9 +189,9 @@ func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
 	if cfg.VoiceModel.TurnDetectionSilenceMs > 0 {
 		turn.SilenceDurationMS = cfg.VoiceModel.TurnDetectionSilenceMs
 	}
-	instructions := cfg.VoiceModel.Instructions
+	instructions := strings.TrimSpace(cfg.VoiceModel.Instructions)
 	if instructions == "" {
-		instructions = cfg.Instruction
+		instructions = agent.DefaultRealtimeVoiceInstructions
 	}
 	enableEmotion := cfg.VoiceModel.EnableSpeechEmotion
 	if enableEmotion == nil {
@@ -202,8 +205,97 @@ func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
 		Instructions:        instructions,
 		InputAudioFormat:    inputFormat,
 		OutputAudioFormat:   outputFormat,
+		Tools:               realtimeVoiceToolDefinitions(),
 		TurnDetection:       turn,
 	}
+}
+
+const (
+	realtimeCurrentTimeTool = "get_current_time"
+	realtimeRecallTool      = "recall_memory"
+)
+
+func realtimeVoiceToolDefinitions() []rtclient.Tool {
+	return []rtclient.Tool{
+		realtimeVoiceToolDefinition(
+			realtimeCurrentTimeTool,
+			"Get the current local date, time, timezone, and UTC offset.",
+			map[string]any{"type": "object", "properties": map[string]any{}},
+		),
+		realtimeVoiceToolDefinition(
+			realtimeRecallTool,
+			"Recall saved long-term user preferences, rules, facts, procedures, or profile information.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"tags":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"entities": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"types":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"limit":    map[string]any{"type": "integer", "minimum": 1},
+				},
+			},
+		),
+	}
+}
+
+func realtimeVoiceToolDefinition(name, description string, parameters map[string]any) rtclient.Tool {
+	encoded, err := json.Marshal(parameters)
+	if err != nil {
+		encoded = json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	return rtclient.Tool{
+		Type: "function",
+		Function: rtclient.FunctionDefinition{
+			Name:        name,
+			Description: description,
+			Parameters:  encoded,
+		},
+	}
+}
+
+type realtimeVoiceToolExecutor struct {
+	recall langtools.Tool
+	now    func() time.Time
+}
+
+func newRealtimeVoiceToolExecutor(runtime *agent.Runtime) realtimeVoiceToolExecutor {
+	executor := realtimeVoiceToolExecutor{now: time.Now}
+	if runtime != nil {
+		executor.recall, _ = runtime.Tool(realtimeRecallTool)
+	}
+	return executor
+}
+
+func (e realtimeVoiceToolExecutor) call(ctx context.Context, name, arguments string) string {
+	switch name {
+	case realtimeCurrentTimeTool:
+		now := e.now()
+		zone, offsetSeconds := now.Zone()
+		return realtimeToolJSON(map[string]any{
+			"datetime":           now.Format(time.RFC3339),
+			"timezone":           zone,
+			"utc_offset_seconds": offsetSeconds,
+		})
+	case realtimeRecallTool:
+		if e.recall == nil {
+			return realtimeToolJSON(map[string]any{"error": "recall_memory is unavailable"})
+		}
+		output, err := e.recall.Call(ctx, arguments)
+		if err != nil {
+			return realtimeToolJSON(map[string]any{"error": err.Error()})
+		}
+		return output
+	default:
+		return realtimeToolJSON(map[string]any{"error": fmt.Sprintf("unsupported realtime tool %q", name)})
+	}
+}
+
+func realtimeToolJSON(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return `{"error":"failed to encode tool result"}`
+	}
+	return string(encoded)
 }
 
 func realtimePlaybackOutputFormat(cfg agent.Config) agent.AudioFormat {
@@ -214,7 +306,7 @@ func realtimePlaybackOutputFormat(cfg agent.Config) agent.AudioFormat {
 	}
 }
 
-func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, chatBridges ...*realtimeChatBridge) error {
+func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent.Runtime, chatBridges ...*realtimeChatBridge) error {
 	var chatBridge *realtimeChatBridge
 	if len(chatBridges) > 0 {
 		chatBridge = chatBridges[0]
@@ -325,6 +417,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, chatBridges ..
 	var chatTranscript strings.Builder
 	responseActive := false
 	inputSpeechActive := false
+	toolExecutor := newRealtimeVoiceToolExecutor(runtime)
+	toolResponsesPending := make(map[string]bool)
 	defer func() {
 		if activeChat != nil {
 			sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "realtime voice session ended"})
@@ -467,7 +561,30 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, chatBridges ..
 						chatTranscript.WriteString(done.Transcript)
 					}
 				}
+			case "response.function_call_arguments.done":
+				var call rtclient.FunctionCallEvent
+				if err := event.Decode(&call); err != nil {
+					return err
+				}
+				log.Printf("[realtime] Tool call: %s", call.Name)
+				output := toolExecutor.call(ctx, call.Name, call.Arguments)
+				if err := session.SendFunctionOutput(ctx, call.CallID, output); err != nil {
+					return fmt.Errorf("send realtime tool result: %w", err)
+				}
+				toolResponsesPending[call.ResponseID] = true
 			case "response.done":
+				var done rtclient.ResponseEvent
+				if err := event.Decode(&done); err != nil {
+					return err
+				}
+				if toolResponsesPending[done.Response.ID] {
+					delete(toolResponsesPending, done.Response.ID)
+					responseActive = true
+					if err := session.CreateResponse(ctx, nil); err != nil {
+						return fmt.Errorf("continue realtime response after tool call: %w", err)
+					}
+					continue
+				}
 				responseActive = false
 				if activeChat != nil {
 					content := chatText.String()
