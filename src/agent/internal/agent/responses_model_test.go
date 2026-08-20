@@ -415,6 +415,7 @@ func TestModelAPIModeValidation(t *testing.T) {
 	}{
 		{name: "context management", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesContextManagement: "invalid"}, field: "responses_context_management"},
 		{name: "compact threshold", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesCompactThreshold: -1}, field: "responses_compact_threshold"},
+		{name: "blank include", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesInclude: []string{"reasoning.encrypted_content", " "}}, field: "responses_include"},
 		{name: "truncation", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesTruncation: "invalid"}, field: "responses_truncation"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

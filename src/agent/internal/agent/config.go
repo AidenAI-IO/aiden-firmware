@@ -1296,6 +1296,11 @@ func (c Config) Validate() error {
 	if c.Model.ResponsesCompactThreshold < 0 {
 		return fmt.Errorf("model.responses_compact_threshold must be >= 0, got %d", c.Model.ResponsesCompactThreshold)
 	}
+	for _, include := range c.Model.ResponsesInclude {
+		if strings.TrimSpace(include) == "" {
+			return errors.New("model.responses_include entries must be non-empty")
+		}
+	}
 	truncation := strings.ToLower(strings.TrimSpace(c.Model.ResponsesTruncation))
 	switch truncation {
 	case "", responsesTruncationDisabled, responsesTruncationAuto:
