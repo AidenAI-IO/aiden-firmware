@@ -76,6 +76,29 @@ func TestAndroidADBStatusMatchesCurrentPhoneUSBIP(t *testing.T) {
 	}
 }
 
+func TestAndroidADBStatusTreatsIdleOnDemandCaptureAsAvailable(t *testing.T) {
+	manager := &androidADBManager{
+		frameHealth: func(context.Context) (*FrameHealthResult, error) {
+			return &FrameHealthResult{State: "RUNNING", CaptureMode: "on_demand"}, nil
+		},
+		runADB: func(_ context.Context, args ...string) (string, error) {
+			if strings.Join(args, " ") == "devices" {
+				return "List of devices attached\n", nil
+			}
+			t.Fatalf("unexpected adb command: %q", strings.Join(args, " "))
+			return "", nil
+		},
+	}
+
+	status := manager.Status(context.Background(), "")
+	if !status.Frame.Available {
+		t.Fatalf("Frame.Available = false, want true: %#v", status.Frame)
+	}
+	if status.PairRequired {
+		t.Fatalf("PairRequired = true, want false: %#v", status)
+	}
+}
+
 func TestExtractUSBIPv4sUsesOnlyInetAddresses(t *testing.T) {
 	output := strings.Join([]string{
 		"2: rndis0    inet 192.168.42.123/24 brd 192.168.42.255 scope global rndis0",

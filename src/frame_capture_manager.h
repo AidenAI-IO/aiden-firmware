@@ -18,10 +18,12 @@ class FrameCaptureSource {
 public:
     virtual ~FrameCaptureSource() {}
     virtual bool open() = 0;
+    // Pause capture DMA while keeping the device and its mapped buffers open.
+    virtual bool pause() { return true; }
+    // Resume capture DMA before an on-demand frame request.
+    virtual bool resume() { return true; }
     virtual bool capture(CapturedFrame* frame) = 0;
-    // Drain one frame without publishing it. Implementations can override this
-    // to avoid copying payload bytes for frames that are only used to keep the
-    // underlying capture queue fresh.
+    // Dequeue and release a warm-up frame without copying its payload.
     virtual bool discard() {
         CapturedFrame frame;
         return capture(&frame);
@@ -32,7 +34,8 @@ public:
 struct FrameCaptureManagerOptions {
     int recovery_initial_backoff_ms = 1000;
     int recovery_max_backoff_ms = 30000;
-    int capture_interval_ms = 0;
+    int request_timeout_ms = 4000;
+    int warmup_frames = 0;
 };
 
 class FrameCaptureManager {
@@ -45,6 +48,7 @@ public:
     bool start();
     void stop();
     void request_restart();
+    FrameServiceStatus capture(uint32_t timeout_ms, CapturedFrame* frame);
     bool is_running() const;
 
 private:
@@ -57,8 +61,14 @@ private:
     std::atomic<bool> running_;
     std::atomic<bool> restart_requested_;
     std::thread thread_;
+    std::mutex request_mutex_;
     std::mutex mutex_;
-    std::condition_variable stop_cv_;
+    std::condition_variable work_cv_;
+    std::condition_variable capture_cv_;
+    uint64_t requested_generation_;
+    uint64_t completed_generation_;
+    FrameServiceStatus completed_status_;
+    CapturedFrame completed_frame_;
 };
 
 }  // namespace aiden

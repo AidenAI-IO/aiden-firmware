@@ -115,6 +115,7 @@ type frameResponse struct {
 type frameHealthResponse struct {
 	Status                  string  `json:"status"`
 	State                   string  `json:"state"`
+	CaptureMode             string  `json:"capture_mode"`
 	LatestSeq               uint64  `json:"latest_seq"`
 	FrameAgeMs              uint64  `json:"frame_age_ms"`
 	RingBufferSize          uint32  `json:"ring_buffer_size"`
@@ -130,6 +131,7 @@ func (r *frameHealthResponse) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		Status                  string          `json:"status"`
 		State                   string          `json:"state"`
+		CaptureMode             string          `json:"capture_mode"`
 		LatestSeq               json.RawMessage `json:"latest_seq"`
 		FrameAgeMs              json.RawMessage `json:"frame_age_ms"`
 		RingBufferSize          uint32          `json:"ring_buffer_size"`
@@ -158,6 +160,7 @@ func (r *frameHealthResponse) UnmarshalJSON(data []byte) error {
 	*r = frameHealthResponse{
 		Status:                  raw.Status,
 		State:                   raw.State,
+		CaptureMode:             raw.CaptureMode,
 		LatestSeq:               latestSeq,
 		FrameAgeMs:              frameAgeMs,
 		RingBufferSize:          raw.RingBufferSize,
@@ -233,6 +236,7 @@ func (c *FrameService) Health() (*HealthResult, error) {
 
 	return &HealthResult{
 		State:                   resp.State,
+		CaptureMode:             resp.CaptureMode,
 		LatestSeq:               resp.LatestSeq,
 		FrameAgeMs:              resp.FrameAgeMs,
 		RingBufferSize:          resp.RingBufferSize,

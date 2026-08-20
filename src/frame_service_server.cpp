@@ -17,6 +17,8 @@ FrameServiceServer::FrameServiceServer(const char* socket_path, size_t ring_capa
       ring_(ring_capacity),
       state_("RUNNING"),
       running_(false),
+      on_demand_latest_seq_(0),
+      on_demand_capture_ts_ns_(0),
       avg_frame_serve_latency_ms_(0.0),
       serve_latency_samples_(0),
       avg_capture_copy_latency_ms_(0.0),
@@ -193,6 +195,11 @@ void FrameServiceServer::set_state(const std::string& state) {
     frame_cv_.notify_all();
 }
 
+void FrameServiceServer::set_capture_handler(const CaptureHandler& handler) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    capture_handler_ = handler;
+}
+
 void FrameServiceServer::set_restart_handler(const std::function<void()>& handler) {
     std::lock_guard<std::mutex> lock(mutex_);
     restart_handler_ = handler;
@@ -217,6 +224,23 @@ bool FrameServiceServer::is_recovering() const {
 }
 
 uint64_t FrameServiceServer::frame_age_ms() const {
+    uint64_t on_demand_capture_ts_ns = 0;
+    bool on_demand = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        on_demand = static_cast<bool>(capture_handler_);
+        on_demand_capture_ts_ns = on_demand_capture_ts_ns_;
+    }
+    if (on_demand) {
+        if (on_demand_capture_ts_ns == 0) {
+            return 0;
+        }
+        const uint64_t now = monotonic_ns();
+        return now > on_demand_capture_ts_ns
+            ? (now - on_demand_capture_ts_ns) / 1000000ULL
+            : 0;
+    }
+
     std::shared_ptr<const FrameBufferFrame> frame;
     if (ring_.latest_frame_ref(0, &frame) != FrameServiceStatus::OK || frame->metadata.capture_ts_ns == 0) {
         return 0;
@@ -310,6 +334,8 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         uint32_t consecutive_failures = 0;
         std::string last_error;
         uint64_t last_recovery_ts = 0;
+        uint64_t latest_seq = 0;
+        bool on_demand = false;
         double avg_capture_copy_latency_ms = 0.0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -317,14 +343,17 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             consecutive_failures = consecutive_failures_;
             last_error = last_error_;
             last_recovery_ts = last_recovery_ts_;
+            on_demand = static_cast<bool>(capture_handler_);
+            latest_seq = on_demand ? on_demand_latest_seq_ : ring_.latest_seq();
             avg_capture_copy_latency_ms = avg_capture_copy_latency_ms_;
         }
         std::string header = "{\"type\":\"response\",\"method\":\"health\",\"status\":\"OK\"";
         header += ",\"state\":\"" + escape_json(state) + "\"";
-        header += ",\"latest_seq\":" + std::to_string(ring_.latest_seq());
+        header += ",\"capture_mode\":\"" + std::string(on_demand ? "on_demand" : "buffered") + "\"";
+        header += ",\"latest_seq\":" + std::to_string(latest_seq);
         header += ",\"frame_age_ms\":" + std::to_string(frame_age_ms());
-        header += ",\"ring_buffer_size\":" + std::to_string(ring_.capacity());
-        header += ",\"ring_buffer_used\":" + std::to_string(ring_.size());
+        header += ",\"ring_buffer_size\":" + std::to_string(on_demand ? 0 : ring_.capacity());
+        header += ",\"ring_buffer_used\":" + std::to_string(on_demand ? 0 : ring_.size());
         header += ",\"consecutive_failures\":" + std::to_string(consecutive_failures);
         header += ",\"last_error\":\"" + escape_json(last_error) + "\"";
         header += ",\"last_recovery_ts\":" + u64_json(last_recovery_ts);
@@ -347,22 +376,50 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         const bool crop_black = json_bool(root, "crop_black");
 
         std::shared_ptr<const FrameBufferFrame> frame;
-        bool recovering = is_recovering();
-        FrameServiceStatus status = recovering ? ring_.latest_frame_ref(0, &frame)
-                                               : ring_.latest_frame_ref(since_seq, &frame);
-        if (recovering && status == FrameServiceStatus::NO_NEW_FRAME) {
-            status = FrameServiceStatus::SERVICE_RECOVERING;
+        bool recovering = false;
+        CaptureHandler capture_handler;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            capture_handler = capture_handler_;
         }
-        if (status == FrameServiceStatus::NO_NEW_FRAME && timeout_ms > 0) {
-            std::unique_lock<std::mutex> lock(mutex_);
-            frame_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&]() {
-                return !running_ || state_ == "RECOVERING" || ring_.latest_seq() > since_seq;
-            });
-            recovering = state_ == "RECOVERING";
+        FrameServiceStatus status = FrameServiceStatus::NO_NEW_FRAME;
+        if (capture_handler) {
+            FrameMetadata metadata;
+            std::vector<uint8_t> data;
+            const uint64_t capture_started_ns = monotonic_ns();
+            status = capture_handler(timeout_ms, &metadata, &data);
+            if (status == FrameServiceStatus::OK) {
+                record_capture_copy_latency(capture_started_ns);
+                std::shared_ptr<FrameBufferFrame> captured(new FrameBufferFrame());
+                captured->metadata = metadata;
+                captured->metadata.bytes = data.size();
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    captured->metadata.seq = ++on_demand_latest_seq_;
+                    on_demand_capture_ts_ns_ = captured->metadata.capture_ts_ns;
+                    consecutive_failures_ = 0;
+                }
+                captured->data.swap(data);
+                frame = captured;
+            }
+        } else {
+            recovering = is_recovering();
             status = recovering ? ring_.latest_frame_ref(0, &frame)
                                 : ring_.latest_frame_ref(since_seq, &frame);
-            if (status == FrameServiceStatus::NO_NEW_FRAME) {
-                status = FrameServiceStatus::TIMEOUT;
+            if (recovering && status == FrameServiceStatus::NO_NEW_FRAME) {
+                status = FrameServiceStatus::SERVICE_RECOVERING;
+            }
+            if (status == FrameServiceStatus::NO_NEW_FRAME && timeout_ms > 0) {
+                std::unique_lock<std::mutex> lock(mutex_);
+                frame_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&]() {
+                    return !running_ || state_ == "RECOVERING" || ring_.latest_seq() > since_seq;
+                });
+                recovering = state_ == "RECOVERING";
+                status = recovering ? ring_.latest_frame_ref(0, &frame)
+                                    : ring_.latest_frame_ref(since_seq, &frame);
+                if (status == FrameServiceStatus::NO_NEW_FRAME) {
+                    status = FrameServiceStatus::TIMEOUT;
+                }
             }
         }
         if (status == FrameServiceStatus::OK) {
@@ -374,6 +431,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             const uint32_t minimal_width = requested_minimal_width > metadata.width
                                                ? metadata.width
                                                : static_cast<uint32_t>(requested_minimal_width);
+            const bool crop_by_aspect = crop_black && minimal_width > 0;
 
             std::vector<uint8_t> transformed_payload;
             const std::vector<uint8_t>* payload = &frame->data;
@@ -386,7 +444,8 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                 if (!encode_yuv_to_jpeg_hw(frame->data, metadata.width, metadata.height,
                                            metadata.pixel_format, quality, &transformed_payload,
                                            &encoded_width, &encoded_height,
-                                           &crop_x, &crop_y, minimal_width, crop_black)) {
+                                           &crop_x, &crop_y, minimal_width, crop_black,
+                                           crop_by_aspect)) {
                     write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
                     cJSON_Delete(root);
                     return;
@@ -407,7 +466,8 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             } else if (format == "raw" && crop_black) {
                 FrameMetadata cropped_metadata;
                 if (!crop_frame_horizontal_black_bars(metadata, frame->data, minimal_width,
-                                                      &cropped_metadata, &transformed_payload)) {
+                                                      &cropped_metadata, &transformed_payload,
+                                                      crop_by_aspect)) {
                     write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
                     cJSON_Delete(root);
                     return;
@@ -427,7 +487,14 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
     } else if (method == "get_frame") {
         uint64_t seq = json_u64(root, "seq");
         std::shared_ptr<const FrameBufferFrame> frame;
-        FrameServiceStatus status = ring_.get_frame_ref(seq, &frame);
+        bool on_demand = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            on_demand = static_cast<bool>(capture_handler_);
+        }
+        FrameServiceStatus status = on_demand
+            ? FrameServiceStatus::FRAME_NOT_FOUND
+            : ring_.get_frame_ref(seq, &frame);
         if (status == FrameServiceStatus::OK) {
             uint64_t started_ns = monotonic_ns();
             std::string header = "{\"type\":\"response\",\"method\":\"get_frame\",\"status\":\"OK\",\"frame\":" +
@@ -440,7 +507,14 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         }
     } else if (method == "list_frames") {
         uint32_t count = json_u32(root, "count");
-        std::vector<FrameMetadata> frames = ring_.list_frames(count);
+        bool on_demand = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            on_demand = static_cast<bool>(capture_handler_);
+        }
+        std::vector<FrameMetadata> frames = on_demand
+            ? std::vector<FrameMetadata>()
+            : ring_.list_frames(count);
         std::string header = "{\"type\":\"response\",\"method\":\"list_frames\",\"status\":\"OK\",\"frames\":[";
         for (size_t i = 0; i < frames.size(); ++i) {
             if (i > 0) header += ",";

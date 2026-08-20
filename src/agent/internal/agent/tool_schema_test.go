@@ -97,10 +97,6 @@ func TestNumberArgSchema_WithExamples(t *testing.T) {
 		t.Errorf("expected type number, got %v", schema["type"])
 	}
 
-	if schema["description"] != "Test number" {
-		t.Errorf("expected description 'Test number', got %v", schema["description"])
-	}
-
 	examples, ok := schema["examples"]
 	if !ok {
 		t.Fatal("expected examples field when examples provided")

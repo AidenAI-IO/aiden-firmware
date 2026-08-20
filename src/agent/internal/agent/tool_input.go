@@ -70,12 +70,80 @@ func (f *flexStringSlice) UnmarshalJSON(data []byte) error {
 			*f = arr
 			return nil
 		}
-		// A bare single value, e.g. "foo".
-		*f = []string{s}
+		// A bare value, e.g. "foo". LLMs also emit multi-value fields as one
+		// delimited string ("procedure, fact") instead of an array; keeping that
+		// as a single element makes exact-match filters such as matchesAny fail
+		// against every candidate, silently dropping all results.
+		*f = splitDelimitedArgValues(s)
 		return nil
 	default:
 		return fmt.Errorf("cannot decode %s into string slice", trimmed)
 	}
+}
+
+// flexLiteralStringSlice accepts the same recoverable array shapes as
+// flexStringSlice, but preserves a bare scalar exactly. Save operations use it
+// so persisted values such as "ACME, Inc." are not silently split.
+type flexLiteralStringSlice []string
+
+func (f *flexLiteralStringSlice) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*f = nil
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var arr []string
+		if err := json.Unmarshal(trimmed, &arr); err != nil {
+			return err
+		}
+		*f = arr
+		return nil
+	}
+	if trimmed[0] != '"' {
+		return fmt.Errorf("cannot decode %s into string slice", trimmed)
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err != nil {
+		return err
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		*f = nil
+		return nil
+	}
+	if s[0] == '[' {
+		var arr []string
+		if err := json.Unmarshal([]byte(s), &arr); err != nil {
+			return fmt.Errorf("decode string-wrapped array %q: %w", s, err)
+		}
+		*f = arr
+		return nil
+	}
+	*f = []string{s}
+	return nil
+}
+
+// splitDelimitedArgValues splits a bare string argument on ASCII and fullwidth
+// commas, so "procedure, fact" and "procedure，fact" both yield two values. A
+// string with no delimiter returns a single-element slice unchanged.
+func splitDelimitedArgValues(s string) []string {
+	if !strings.ContainsAny(s, ",，") {
+		return []string{s}
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == '，'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // flexInt decodes a JSON number, but also tolerates a numeric string ("3"),
@@ -207,13 +275,13 @@ type SaveMemoryRequest struct {
 // decodeSaveMemoryRequest tolerantly decodes a save_memory argument.
 func decodeSaveMemoryRequest(input string) (SaveMemoryRequest, error) {
 	var flex struct {
-		Type     string          `json:"type"`
-		Title    string          `json:"title"`
-		Content  string          `json:"content"`
-		Tags     flexStringSlice `json:"tags"`
-		Entities flexStringSlice `json:"entities"`
-		Evidence flexStringSlice `json:"evidence"`
-		Priority flexInt         `json:"priority"`
+		Type     string                 `json:"type"`
+		Title    string                 `json:"title"`
+		Content  string                 `json:"content"`
+		Tags     flexLiteralStringSlice `json:"tags"`
+		Entities flexLiteralStringSlice `json:"entities"`
+		Evidence flexLiteralStringSlice `json:"evidence"`
+		Priority flexInt                `json:"priority"`
 	}
 	if err := json.Unmarshal([]byte(input), &flex); err != nil {
 		return SaveMemoryRequest{}, err

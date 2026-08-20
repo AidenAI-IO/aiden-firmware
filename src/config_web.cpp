@@ -5452,7 +5452,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         };
         Check enums[] = {
             {"input_mode", {"text", "stt", NULL}},
-            {"trigger_mode", {"manual", "wakeup", NULL, NULL}},
         };
         for (size_t i = 0; i < sizeof(enums) / sizeof(enums[0]); ++i) {
             cJSON* item = cJSON_GetObjectItem(values, enums[i].key);
@@ -5475,18 +5474,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
                 std::string msg = "invalid input_mode: " + val + " (audio mode has been removed; use stt instead)";
                 cJSON_AddStringToObject(r, "detail", msg.c_str());
                 all_passed = false;
-            } else if (ok && std::string(enums[i].key) == "trigger_mode" && val == "wakeup") {
-                cJSON* input_item = cJSON_GetObjectItem(values, "input_mode");
-                std::string input_mode = json_is_string(input_item) ? trim_copy(input_item->valuestring) : "";
-                if (input_mode == "stt") {
-                    cJSON_AddBoolToObject(r, "passed", 1);
-                    cJSON_AddStringToObject(r, "detail", val.c_str());
-                } else {
-                    cJSON_AddBoolToObject(r, "passed", 0);
-                    std::string msg = "wakeup requires input_mode stt, got '" + input_mode + "'";
-                    cJSON_AddStringToObject(r, "detail", msg.c_str());
-                    all_passed = false;
-                }
             } else if (ok) {
                 cJSON_AddBoolToObject(r, "passed", 1);
                 cJSON_AddStringToObject(r, "detail", val.c_str());

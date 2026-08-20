@@ -53,38 +53,39 @@ const (
 )
 
 type Runtime struct {
-	config             Config
-	models             model.Model
-	memories           *MemoryManager
-	tools              *ToolSet
-	skills             *SkillManager
-	skillsLoaded       bool
-	skillsReloadMu     sync.Mutex
-	skillsDirty        bool
-	runGateInit        sync.Once
-	mergeWorker        *MergeWorker
-	logger             *Logger
-	profileDebouncer   *ProfileDebouncer
-	waitForWakeup      *WaitForWakeupController
-	voiceNotifications *VoiceNotificationManager
-	memoryPlane        MemoryPlane
-	sessionManager     SessionManager
-	contextManager     *contextmanager.ContextManager
-	stateManager       *statemanager.StateManager
-	runtimeID          string
-	telemetrySessionID string
-	runGate            chan struct{}
-	preemptMu          sync.Mutex
-	activeCancel       context.CancelFunc
-	preemptHooks       []func()
-	lastPreemptTime    time.Time
-	storage            *StorageManager
-	screenState        *screen.ScreenState
-	phoneBridge        *PhoneBridge
-	storageMonitor     *StorageMonitor
-	ttsManager         *tts.ProviderManager
-	ttsManagerOnce     sync.Once
-	episodeMaintenance asyncEpisodeMaintenance
+	config               Config
+	models               model.Model
+	memories             *MemoryManager
+	tools                *ToolSet
+	skills               *SkillManager
+	skillsLoaded         bool
+	skillsReloadMu       sync.Mutex
+	skillsDirty          bool
+	runGateInit          sync.Once
+	mergeWorker          *MergeWorker
+	logger               *Logger
+	profileDebouncer     *ProfileDebouncer
+	waitForWakeup        *WaitForWakeupController
+	voiceNotifications   *VoiceNotificationManager
+	memoryPlane          MemoryPlane
+	sessionManager       SessionManager
+	contextManager       *contextmanager.ContextManager
+	stateManager         *statemanager.StateManager
+	runtimeID            string
+	telemetrySessionID   string
+	runGate              chan struct{}
+	preemptMu            sync.Mutex
+	activeCancel         context.CancelFunc
+	preemptHooks         []func()
+	lastPreemptTime      time.Time
+	storage              *StorageManager
+	screenState          *screen.ScreenState
+	phoneBridge          *PhoneBridge
+	storageMonitor       *StorageMonitor
+	ttsManager           *tts.ProviderManager
+	ttsManagerOnce       sync.Once
+	episodeMaintenance   asyncEpisodeMaintenance
+	episodeMemoryInitErr error
 }
 
 type asyncEpisodeMaintenance struct {
@@ -493,8 +494,13 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		rt.mergeWorker = worker
 	}
 
-	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger, WithMemoryPlaneLongTermStore(longTermStore))
-	rt.markInterruptedEpisodesBestEffort()
+	if plane, ok := rt.memoryPlane.(*FilesystemMemoryPlane); ok && plane != nil {
+		plane.logger = logger
+	} else {
+		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger, WithMemoryPlaneLongTermStore(longTermStore))
+		rt.markInterruptedEpisodesBestEffort()
+	}
+	rt.startEpisodeMemory(logger)
 
 	// Start the SD/eMMC storage manager on every device. Missing or unusable
 	// card hardware degrades to eMMC-only operation.
@@ -620,6 +626,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, LoadMemoryExtractionConfig(cfg.ConfigDir), nil, WithMemoryPlaneLongTermStore(longTermStore))
 		rt.markInterruptedEpisodesBestEffort()
+		rt.startEpisodeMemory(nil)
 	}
 	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
 	skillManager.SetDeviceTypeFunc(rt.deviceTypeFromState)
@@ -629,6 +636,39 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	})
 	rt.initRunGate()
 	return rt
+}
+
+func (r *Runtime) startEpisodeMemory(runtimeLogger *Logger) {
+	if r == nil {
+		return
+	}
+	plane, ok := r.memoryPlane.(*FilesystemMemoryPlane)
+	if !ok || plane == nil {
+		r.episodeMemoryInitErr = nil
+		return
+	}
+	if runtimeLogger != nil {
+		plane.logger = runtimeLogger
+	}
+	err := plane.StartEpisodeMemory(r.models)
+	r.episodeMemoryInitErr = err
+	if err == nil {
+		return
+	}
+	if runtimeLogger != nil {
+		runtimeLogger.Warn("[episode-memory] worker disabled: %v", err)
+		return
+	}
+	log.Printf("[episode-memory] worker disabled: %v", err)
+}
+
+// EpisodeMemoryInitializationError reports why the background consolidation
+// worker could not start. A nil error means it is running or not configured.
+func (r *Runtime) EpisodeMemoryInitializationError() error {
+	if r == nil {
+		return nil
+	}
+	return r.episodeMemoryInitErr
 }
 
 func (r *Runtime) initRunGate() {
@@ -808,6 +848,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}()
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if plane, ok := r.memoryPlane.(*FilesystemMemoryPlane); ok {
+		plane.EpisodeMemoryTaskStarted()
+		defer plane.EpisodeMemoryTaskFinished()
 	}
 
 	// Preempt any currently active run and its resources.
@@ -1012,8 +1056,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	// Memories are no longer retrieved up front. The agent pulls what it needs
 	// on demand through the recall tools, which record the referenced IDs on the
-	// episode recorder so outcome-based confidence updates only touch memories
-	// the agent actually saw.
+	// episode recorder so Episode Memory consolidation checks those records first
+	// for updates and conflicts.
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
 		if episodeRecorder != nil {
@@ -1051,6 +1095,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			runtimeID:    r.runtimeID,
 			requestID:    req.RequestID,
 			runID:        runID,
+			episode:      episodeRecorder,
 		}
 		if persistRuntimeSessionEvents {
 			streamCallbackHandler.sessionEventAppender = func(ctx context.Context, event SessionEvent) error {
@@ -1868,6 +1913,7 @@ type runtimeCallbackHandler struct {
 	runtimeID            string
 	requestID            string
 	runID                string
+	episode              *EpisodeRecorder
 	sessionEventAppender func(context.Context, SessionEvent) error
 	mu                   sync.Mutex
 	pendingActions       []schema.AgentAction
@@ -2165,6 +2211,14 @@ func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, con
 func (h *runtimeCallbackHandler) HandleSteerMessage(ctx context.Context, steer RunSteerMessage) {
 	if steer.Timestamp.IsZero() {
 		steer.Timestamp = time.Now()
+	}
+	if h.episode != nil {
+		h.episode.RecordEvent(TaskEpisodeEvent{
+			Type:    "steer",
+			Role:    "user",
+			Content: steer.Content,
+			Ts:      steer.Timestamp.UTC().Format(time.RFC3339Nano),
+		})
 	}
 	h.emitRunEvent(RunEvent{
 		Type:      "steer",
@@ -2570,6 +2624,9 @@ func (r *Runtime) Close() error {
 		r.logger.Error("episode maintenance drain on close: %v", err)
 	}
 	maintenanceCancel()
+	if plane, ok := r.memoryPlane.(*FilesystemMemoryPlane); ok {
+		plane.StopEpisodeMemory()
+	}
 	if r.storageMonitor != nil {
 		r.storageMonitor.Stop()
 	}

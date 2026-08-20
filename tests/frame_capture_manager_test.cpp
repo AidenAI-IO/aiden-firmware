@@ -53,13 +53,38 @@ public:
     bool repeat_last = false;
     int open_count = 0;
     int close_count = 0;
+    int pause_count = 0;
+    int resume_count = 0;
+    int discard_count = 0;
     int capture_delay_ms = 0;
+    bool pause_failure = false;
+    bool resume_failure = false;
 
     bool open() override {
         std::lock_guard<std::mutex> lock(mutex_);
         ++open_count;
         if (open_failures_remaining > 0) {
             --open_failures_remaining;
+            return false;
+        }
+        return true;
+    }
+
+    bool pause() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++pause_count;
+        if (pause_failure) {
+            pause_failure = false;
+            return false;
+        }
+        return true;
+    }
+
+    bool resume() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++resume_count;
+        if (resume_failure) {
+            resume_failure = false;
             return false;
         }
         return true;
@@ -90,6 +115,12 @@ public:
         return true;
     }
 
+    bool discard() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++discard_count;
+        return true;
+    }
+
     void close() override {
         std::lock_guard<std::mutex> lock(mutex_);
         ++close_count;
@@ -98,6 +129,26 @@ public:
     int capture_count() {
         std::lock_guard<std::mutex> lock(mutex_);
         return captures_;
+    }
+
+    int opened_count() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return open_count;
+    }
+
+    int paused_count() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return pause_count;
+    }
+
+    int resumed_count() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return resume_count;
+    }
+
+    int discarded_count() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return discard_count;
     }
 
 private:
@@ -115,6 +166,29 @@ bool wait_for_latest(FrameServiceClient* client, uint64_t since_seq, FrameResult
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     return false;
+}
+
+bool wait_for_source_ready(FakeCaptureSource* source) {
+    for (int i = 0; i < 50; ++i) {
+        if (source->opened_count() > 0 && source->paused_count() > 0) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+}
+
+void connect_on_demand_capture(FrameServiceServer* server, FrameCaptureManager* manager) {
+    server->set_capture_handler(
+        [manager](uint32_t timeout_ms, FrameMetadata* meta, std::vector<uint8_t>* data) {
+            CapturedFrame frame;
+            FrameServiceStatus status = manager->capture(timeout_ms, &frame);
+            if (status == FrameServiceStatus::OK) {
+                *meta = frame.metadata;
+                *data = std::move(frame.data);
+            }
+            return status;
+        });
 }
 
 bool wait_for_latest_ts(FrameServiceClient* client, uint64_t capture_ts_ns, FrameResult* out) {
@@ -140,25 +214,46 @@ bool wait_for_health_failure(FrameServiceClient* client, HealthResult* out) {
 
 }
 
-TEST_CASE("FrameCaptureManager captures frames into frame service server") {
+TEST_CASE("FrameCaptureManager stays paused while idle and captures once per request") {
     TempSocketPath socket_path;
     FrameServiceServer server(socket_path.path.c_str(), 4);
     REQUIRE(server.start() == FrameServiceStatus::OK);
 
     FakeCaptureSource source;
+    source.repeat_last = true;
     source.frames.push_back(CapturedFrame{metadata(10), std::vector<uint8_t>{1, 2}});
-    source.frames.push_back(CapturedFrame{metadata(20), std::vector<uint8_t>{3, 4}});
     FrameCaptureManagerOptions options;
     options.recovery_initial_backoff_ms = 1;
     options.recovery_max_backoff_ms = 1;
+    options.warmup_frames = 3;
     FrameCaptureManager manager(&source, &server, options);
+    connect_on_demand_capture(&server, &manager);
     REQUIRE(manager.start());
+    REQUIRE(wait_for_source_ready(&source));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    CHECK(source.capture_count() == 0);
+    CHECK(source.resumed_count() == 0);
 
     FrameServiceClient client(socket_path.path.c_str());
     FrameResult frame;
-    REQUIRE(wait_for_latest_ts(&client, 20, &frame));
-    CHECK(frame.metadata.capture_ts_ns == 20);
-    CHECK(frame.data == std::vector<uint8_t>{3, 4});
+    REQUIRE(client.latest_frame(0, 0, &frame) == FrameServiceStatus::OK);
+    CHECK(frame.metadata.capture_ts_ns == 10);
+    CHECK(frame.data == std::vector<uint8_t>{1, 2});
+    const uint64_t first_seq = frame.metadata.seq;
+
+    REQUIRE(client.latest_frame(first_seq, 0, &frame) == FrameServiceStatus::OK);
+    CHECK(frame.metadata.seq > first_seq);
+    CHECK(source.capture_count() == 2);
+    CHECK(source.resumed_count() == 2);
+    CHECK(source.discarded_count() == 6);
+    CHECK(source.paused_count() >= 3);
+
+    HealthResult health;
+    REQUIRE(client.health(&health) == FrameServiceStatus::OK);
+    CHECK(health.latest_seq == frame.metadata.seq);
+    CHECK(health.ring_buffer_size == 0);
+    CHECK(health.ring_buffer_used == 0);
 
     manager.stop();
     server.stop();
@@ -170,20 +265,21 @@ TEST_CASE("FrameCaptureManager reopens source after capture failure") {
     REQUIRE(server.start() == FrameServiceStatus::OK);
 
     FakeCaptureSource source;
-    source.frames.push_back(CapturedFrame{metadata(10), std::vector<uint8_t>{1, 2}});
     source.frames.push_back(CapturedFrame{metadata(30), std::vector<uint8_t>{5, 6}});
-    source.fail_after = 1;
+    source.fail_after = 0;
     FrameCaptureManagerOptions options;
     options.recovery_initial_backoff_ms = 1;
     options.recovery_max_backoff_ms = 1;
     FrameCaptureManager manager(&source, &server, options);
+    connect_on_demand_capture(&server, &manager);
     REQUIRE(manager.start());
 
     FrameServiceClient client(socket_path.path.c_str());
     FrameResult frame;
+    CHECK(client.latest_frame(0, 0, &frame) == FrameServiceStatus::SERVICE_RECOVERING);
     REQUIRE(wait_for_latest_ts(&client, 30, &frame));
     CHECK(frame.metadata.capture_ts_ns == 30);
-    CHECK(source.open_count >= 2);
+    CHECK(source.opened_count() >= 2);
     CHECK(source.close_count >= 1);
 
     manager.stop();
@@ -196,7 +292,7 @@ TEST_CASE("FrameCaptureManager stop interrupts recovery backoff promptly") {
     REQUIRE(server.start() == FrameServiceStatus::OK);
 
     FakeCaptureSource source;
-    source.fail_after = 0;
+    source.open_failures_remaining = 100;
     FrameCaptureManagerOptions options;
     options.recovery_initial_backoff_ms = 1000;
     options.recovery_max_backoff_ms = 1000;
@@ -226,6 +322,7 @@ TEST_CASE("FrameCaptureManager publishes failure and copy latency health metrics
     options.recovery_initial_backoff_ms = 100;
     options.recovery_max_backoff_ms = 100;
     FrameCaptureManager manager(&source, &server, options);
+    connect_on_demand_capture(&server, &manager);
     REQUIRE(manager.start());
 
     FrameServiceClient client(socket_path.path.c_str());
@@ -242,36 +339,35 @@ TEST_CASE("FrameCaptureManager publishes failure and copy latency health metrics
     CHECK(health.consecutive_failures == 0);
     CHECK(health.last_error == "open failed");
     CHECK(health.last_recovery_ts > 0);
-    CHECK(health.avg_capture_copy_latency_ms > 0.0);
+    CHECK(health.ring_buffer_used == 0);
 
     server.stop();
 }
 
-TEST_CASE("FrameCaptureManager drains captures while limiting publish cadence") {
+TEST_CASE("FrameCaptureManager honors a bounded on-demand request timeout") {
     TempSocketPath socket_path;
-    FrameServiceServer server(socket_path.path.c_str(), 8);
+    FrameServiceServer server(socket_path.path.c_str(), 4);
     REQUIRE(server.start() == FrameServiceStatus::OK);
 
     FakeCaptureSource source;
     source.repeat_last = true;
-    source.capture_delay_ms = 10;
+    source.capture_delay_ms = 150;
     source.frames.push_back(CapturedFrame{metadata(50), std::vector<uint8_t>{1, 2}});
     FrameCaptureManagerOptions options;
     options.recovery_initial_backoff_ms = 1;
     options.recovery_max_backoff_ms = 1;
-    options.capture_interval_ms = 100;
+    options.request_timeout_ms = 1000;
     FrameCaptureManager manager(&source, &server, options);
+    connect_on_demand_capture(&server, &manager);
     REQUIRE(manager.start());
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(260));
-    manager.stop();
+    REQUIRE(wait_for_source_ready(&source));
 
     FrameServiceClient client(socket_path.path.c_str());
-    HealthResult health;
-    REQUIRE(client.health(&health) == FrameServiceStatus::OK);
-    CHECK(source.capture_count() >= 10);
-    CHECK(health.latest_seq >= 2);
-    CHECK(health.latest_seq <= 4);
-    CHECK(health.ring_buffer_used == health.latest_seq);
+    FrameResult frame;
+    CHECK(client.latest_frame(0, 50, &frame) == FrameServiceStatus::TIMEOUT);
+    REQUIRE(client.latest_frame(0, 1000, &frame) == FrameServiceStatus::OK);
+    CHECK(frame.metadata.capture_ts_ns == 50);
+
+    manager.stop();
     server.stop();
 }

@@ -178,12 +178,10 @@ func NewAudioDialog(runtime *Runtime) (*AudioDialog, error) {
 		minSpeechMs = defaultMinSpeechMs
 	}
 
-	alwaysBuffer := cfg.TriggerModeOrDefault() == "manual"
 	vad, err := NewAudioVAD(AudioVADConfig{
 		SampleRate:      cfg.Audio.SampleRateOrDefault(),
 		SilenceMs:       silenceMs,
 		MinSpeechMs:     minSpeechMs,
-		AlwaysBuffer:    alwaysBuffer,
 		Backend:         cfg.VADBackend,
 		ModelPath:       cfg.VADModelPath,
 		HelperPath:      cfg.VADHelperPath,
@@ -533,14 +531,14 @@ func (d *AudioDialog) FlushVAD() []int16 {
 	return d.vad.Flush()
 }
 
-// FinishManualUtterance flushes VAD state and appends any tail samples that were
-// not yet aligned to a full Silero frame (legacy C++ agent_main behavior).
-func (d *AudioDialog) FinishManualUtterance(pending []int16) []int16 {
+// FinishPendingUtterance flushes VAD state and appends samples that were not
+// yet aligned to a full VAD frame when a wakeup press stops recording.
+func (d *AudioDialog) FinishPendingUtterance(pending []int16) []int16 {
 	frameSamples := d.VADFrameSamples()
 	consumed := 0
 	for consumed+frameSamples <= len(pending) {
 		if _, err := d.ProcessVADFrame(pending[consumed : consumed+frameSamples]); err != nil {
-			log.Printf("[vad] finish manual utterance failed: %v\n", err)
+			log.Printf("[vad] finish pending utterance failed: %v\n", err)
 			break
 		}
 		consumed += frameSamples
