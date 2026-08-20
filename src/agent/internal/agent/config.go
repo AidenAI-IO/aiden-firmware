@@ -275,6 +275,7 @@ type Config struct {
 	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
 	Storage                    StorageConfig            `toml:"storage,omitempty"`
 	VoiceNotifications         VoiceNotificationsConfig `toml:"voice_notifications,omitempty"`
+	QuickCapture               QuickCaptureConfig       `toml:"quick_capture,omitempty"`
 	Log                        LogConfig                `toml:"log,omitempty"`
 	OTA                        OTAConfig                `toml:"ota,omitempty"`
 	Search                     SearchConfig             `toml:"search,omitempty"`
@@ -284,9 +285,8 @@ type Config struct {
 	Locale                     string                   `toml:"locale,omitempty"`
 	Instruction                string                   `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string                   `toml:"additional_prompt,omitempty"`
-	InputMode                  string                   `toml:"input_mode,omitempty"`   // "text" or "stt"
-	TriggerMode                string                   `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
-	VADBackend                 string                   `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
+	InputMode                  string                   `toml:"input_mode,omitempty"`  // "text" or "stt"
+	VADBackend                 string                   `toml:"vad_backend,omitempty"` // "rknn", "cpu"
 	VADModelPath               string                   `toml:"vad_model_path,omitempty"`
 	VADHelperPath              string                   `toml:"vad_helper_path,omitempty"`
 	VADSpeechThreshold         float64                  `toml:"vad_speech_threshold,omitempty"`
@@ -310,7 +310,6 @@ type Config struct {
 	ScreenStableTimeoutMs      int                      `toml:"screen_stable_timeout_ms,omitempty"`
 	ScreenStableMs             int                      `toml:"screen_stable_ms,omitempty"`
 	ScreenStableDiffThreshold  float64                  `toml:"screen_stable_diff_threshold,omitempty"`
-	DefaultPlatform            string                   `toml:"default_platform,omitempty"` // "ios", "android", "mac"
 	SkillsDirs                 []string                 `toml:"skills_dirs"`
 	BundledSkillsDir           string                   `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel            SkillMergeModel          `toml:"-"`
@@ -632,38 +631,11 @@ func deviceTypePlatform(deviceType string) string {
 	}
 }
 
-func deviceTypeFromPlatform(platform string) string {
-	switch strings.ToLower(strings.TrimSpace(platform)) {
-	case "ios", "iphone", "ipad", "ipados":
-		return "iOS"
-	case "android":
-		return "Android"
-	case "mac", "macos", "darwin":
-		return "macOS"
-	case "windows", "win":
-		return "windows"
-	case "linux":
-		return "linux"
-	default:
-		return ""
-	}
-}
-
-func inferredDeviceTypeFromLegacyConfig(hid HIDConfig, defaultPlatform string) string {
-	if deviceType := deviceTypeFromPlatform(defaultPlatform); deviceType != "" {
-		return deviceType
-	}
-	if strings.ToLower(strings.TrimSpace(hid.PointerMode)) == "touchscreen" {
-		return "Android"
-	}
-	return defaultDeviceType
-}
-
 func (c Config) DeviceTypeOrDefault() string {
 	if strings.TrimSpace(c.Device.DeviceType) != "" {
 		return c.Device.DeviceTypeOrDefault()
 	}
-	return inferredDeviceTypeFromLegacyConfig(c.HID, c.DefaultPlatform)
+	return defaultDeviceType
 }
 
 func (c Config) DevicePlatformOrDefault() string {
@@ -921,7 +893,7 @@ func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
 	}
 	deviceTypeConfigured := metadata.IsDefined("device", "device_type") && strings.TrimSpace(cfg.Device.DeviceType) != ""
 	if !deviceTypeConfigured {
-		cfg.Device.DeviceType = inferredDeviceTypeFromLegacyConfig(cfg.HID, cfg.DefaultPlatform)
+		cfg.Device.DeviceType = defaultDeviceType
 	} else if deviceType, ok := normalizeDeviceType(cfg.Device.DeviceType); ok {
 		cfg.Device.DeviceType = deviceType
 	}
@@ -1380,16 +1352,6 @@ func (c Config) Validate() error {
 		}
 	}
 
-	if strings.TrimSpace(c.TriggerMode) != "" {
-		triggerMode := strings.ToLower(strings.TrimSpace(c.TriggerMode))
-		if triggerMode != "manual" && triggerMode != "wakeup" {
-			return fmt.Errorf("invalid trigger_mode: %s (expected manual or wakeup)", c.TriggerMode)
-		}
-		if triggerMode == "wakeup" && c.InputModeOrDefault() != "stt" {
-			return fmt.Errorf("incompatible trigger_mode %q with input_mode %q: wakeup requires input_mode stt", c.TriggerMode, c.InputMode)
-		}
-	}
-
 	if _, err := normalizeVADBackend(c.VADBackend); err != nil {
 		return err
 	}
@@ -1408,6 +1370,9 @@ func (c Config) Validate() error {
 	}
 	if c.VoiceMaxResponseTokens < 0 {
 		return fmt.Errorf("voice_max_response_tokens must be >= 0, got %d", c.VoiceMaxResponseTokens)
+	}
+	if err := c.QuickCapture.Validate(); err != nil {
+		return err
 	}
 	if c.VoiceNotifications.MaxPending < 0 {
 		return fmt.Errorf("voice_notifications.max_pending must be >= 0, got %d", c.VoiceNotifications.MaxPending)
@@ -1644,15 +1609,6 @@ func (c Config) InputModeOrDefault() string {
 	mode := strings.TrimSpace(c.InputMode)
 	if mode == "" {
 		return defaultInputMode
-	}
-	return strings.ToLower(mode)
-}
-
-// TriggerModeOrDefault returns the trigger mode or "manual" as default
-func (c Config) TriggerModeOrDefault() string {
-	mode := strings.TrimSpace(c.TriggerMode)
-	if mode == "" {
-		return defaultTriggerMode
 	}
 	return strings.ToLower(mode)
 }

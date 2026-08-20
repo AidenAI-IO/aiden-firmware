@@ -6,6 +6,7 @@
 
 using aiden::FrameMetadata;
 using aiden::convert_frame_to_rgb;
+using aiden::crop_frame_horizontal_center;
 using aiden::crop_frame_horizontal_black_bars;
 using aiden::encode_frame_to_bmp;
 using aiden::encode_frame_to_png;
@@ -78,6 +79,20 @@ TEST_CASE("crop raw UYVY frame removes only horizontal black pixel pairs") {
     CHECK(cropped == std::vector<uint8_t>{128, 235, 128, 235, 128, 235, 128, 235});
 }
 
+TEST_CASE("crop raw UYVY frame keeps an all-black frame intact") {
+    FrameMetadata metadata = frame_meta(8, 1, "uyvy");
+    std::vector<uint8_t> uyvy(16, 128);
+    FrameMetadata cropped_metadata;
+    std::vector<uint8_t> cropped;
+
+    REQUIRE(crop_frame_horizontal_black_bars(metadata, uyvy, 0,
+                                              &cropped_metadata, &cropped));
+    CHECK(cropped_metadata.width == 8);
+    CHECK(cropped_metadata.crop_x == 0);
+    CHECK(cropped_metadata.crop_width == 8);
+    CHECK(cropped == uyvy);
+}
+
 TEST_CASE("crop raw UYVY frame honors centered minimal width") {
     FrameMetadata metadata = frame_meta(8, 1, "uyvy");
     std::vector<uint8_t> uyvy = {
@@ -93,6 +108,32 @@ TEST_CASE("crop raw UYVY frame honors centered minimal width") {
     CHECK(cropped_metadata.crop_x == 2);
     CHECK(cropped_metadata.crop_width == 4);
     CHECK(cropped.size() == 8);
+}
+
+TEST_CASE("crop raw UYVY frame uses centered width without scanning") {
+    FrameMetadata metadata = frame_meta(10, 2, "uyvy");
+    std::vector<uint8_t> uyvy(40);
+    for (size_t i = 0; i < uyvy.size(); ++i) {
+        uyvy[i] = static_cast<uint8_t>(i);
+    }
+    FrameMetadata cropped_metadata;
+    std::vector<uint8_t> cropped;
+
+    REQUIRE(crop_frame_horizontal_center(metadata, uyvy, 5,
+                                          &cropped_metadata, &cropped));
+    CHECK(cropped_metadata.width == 6);
+    CHECK(cropped_metadata.height == 2);
+    CHECK(cropped_metadata.source_width == 10);
+    CHECK(cropped_metadata.source_height == 2);
+    CHECK(cropped_metadata.crop_x == 2);
+    CHECK(cropped_metadata.crop_width == 6);
+    CHECK(cropped_metadata.crop_height == 2);
+    CHECK(cropped_metadata.stride == 12);
+    CHECK(cropped_metadata.bytes == 24);
+    CHECK(cropped == std::vector<uint8_t>{
+        4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+        24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+    });
 }
 
 TEST_CASE("crop raw NV12 frame rebuilds plane metadata") {

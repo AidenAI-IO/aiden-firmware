@@ -55,13 +55,7 @@ Runs the device-side audio loop alongside the HTTP server and Web UI:
 
 Before final non-streaming TTS, the runtime passes the spoken reply through the shared [Voice Notification manager](voice-notifications.md). A successful turn may receive one short persistent tail. A final LLM failure may use a fixed replacement. These changes affect spoken text only, not assistant history or UI response text.
 
-## Trigger Modes
-
-### `trigger_mode = "manual"`
-
-Press Enter to start recording, press Enter again to stop, or let VAD determine silence end.
-
-### `trigger_mode = "wakeup"`
+## Wakeup Trigger
 
 Waits for GPIO 33 or GPIO 32 falling edge trigger to start recording; both trigger paths enter the same wakeup flow. When `input_mode = "stt"` and `voice_followup_enabled = true`, wakeup opens a continuous voice session: the first turn still requires GPIO, but after the Agent replies it will continue listening for follow-up questions within the `voice_followup_timeout_ms` window. `voice_first_turn_timeout_ms` controls the first-turn waiting window, and `voice_max_turns` controls the maximum number of turns per session. Repeated wakeup triggers during listening or recording are merged or ignored and will not restart recording or discard already-recorded audio; whether triggering wakeup again during thinking cancels the current LLM request is controlled by `voice_interrupt_on_wakeup`; the microphone is not open by default during TTS playback, and recording continues only after playback ends; triggering wakeup again during playback will interrupt the current turn and immediately start recording. Requires Linux GPIO sysfs to be available and hardware wiring to be completed.
 
@@ -69,7 +63,6 @@ Waits for GPIO 33 or GPIO 32 falling edge trigger to start recording; both trigg
 
 ```toml
 input_mode = "stt"
-trigger_mode = "wakeup"
 vad_backend = "rknn"
 vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 vad_helper_path = "/oem/usr/bin/rknn_vad"
@@ -179,7 +172,7 @@ speed = 1.0
 - the local recording backend uses SoX `rec` or `ffmpeg` (AVFoundation) on macOS and `pw-record`, `parec`, `arecord`, SoX `rec`, or `ffmpeg` (PulseAudio) on Linux. Playback uses `afplay`/`ffplay` on macOS, `pw-play`/`paplay`/`aplay`/`ffplay` on Linux, and PowerShell on Windows. The first available command is selected. Local recording is not currently available on Windows;
 - `rknn_vad` / `cpu_vad` helper must be executable; when `vad_backend="rknn"`, `vad_model_path` points to a converted encoder RKNN; when `vad_backend="cpu"`, helper defaults to `/oem/usr/bin/cpu_vad`;
 - STT/TTS require external API keys;
-- `wakeup` mode requires GPIO 33 or GPIO 32 hardware trigger condition.
+- STT mode requires a GPIO 33 or GPIO 32 hardware wakeup trigger condition.
 
 VAD helper can be verified directly on the board:
 

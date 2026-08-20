@@ -42,6 +42,88 @@ func captureScreenshotJPEG(client screenshotFrameClient, screenState *screen.Scr
 	return client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, cropBlack, minimalWidth)
 }
 
+// capturedFrame is a JPEG frame cropped to the Active Area, the region holding
+// the mirrored device screen.
+type capturedFrame struct {
+	Meta           *frameMetadata
+	Data           []byte
+	Width          int
+	Height         int
+	SourceWidth    int
+	SourceHeight   int
+	ActiveArea     screen.ScreenActiveArea
+	AlreadyCropped bool
+	CaptureInfo    screenCaptureInfo
+}
+
+// captureActiveAreaFrame grabs the latest frame and optionally crops it to the
+// Active Area.
+//
+// screenState is read to help resolve the Active Area but is never written:
+// callers decide whether this capture should update the shared coordinate
+// mapping. Quick Capture deliberately does not, so that saving a screen cannot
+// perturb an agent task already in flight.
+func captureActiveAreaFrame(client screenshotFrameClient, screenState *screen.ScreenState, cropBlack bool) (capturedFrame, error) {
+	if client == nil {
+		return capturedFrame{}, fmt.Errorf("screen capture client not configured")
+	}
+	// Request an Active Area-aware JPEG through the shared provider API. The
+	// provider may already crop and report the source area in metadata.
+	meta, jpegData, captureInfo, err := captureScreenshotJPEG(client, screenState, cropBlack)
+	if err != nil {
+		return capturedFrame{}, err
+	}
+	if meta == nil {
+		return capturedFrame{}, fmt.Errorf("frame service returned no metadata")
+	}
+	if meta.Stale {
+		return capturedFrame{}, fmt.Errorf("frame service: STALE_FRAME")
+	}
+	if meta.PixelFormat != "jpeg" {
+		return capturedFrame{}, fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
+	}
+
+	active := screen.ScreenActiveArea{}
+	sourceWidth := int(meta.Width)
+	sourceHeight := int(meta.Height)
+	alreadyCropped := false
+	if fullWidth, fullHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
+		sourceWidth = fullWidth
+		sourceHeight = fullHeight
+		active = sourceActive
+		alreadyCropped = true
+	} else if cropBlack {
+		active = detectScreenshotActiveAreaForScreen(screenState, jpegData, int(meta.Width), int(meta.Height))
+	} else {
+		active = screen.ScreenActiveArea{X: 0, Y: 0, Width: sourceWidth, Height: sourceHeight, Valid: true}
+	}
+
+	displayWidth := int(meta.Width)
+	displayHeight := int(meta.Height)
+	displayData := jpegData
+	if cropBlack && !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
+		croppedData, croppedWidth, croppedHeight, cropErr := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
+		if cropErr != nil {
+			return capturedFrame{}, fmt.Errorf("crop screenshot to active area: %w", cropErr)
+		}
+		displayWidth = croppedWidth
+		displayHeight = croppedHeight
+		displayData = croppedData
+	}
+
+	return capturedFrame{
+		Meta:           meta,
+		Data:           displayData,
+		Width:          displayWidth,
+		Height:         displayHeight,
+		SourceWidth:    sourceWidth,
+		SourceHeight:   sourceHeight,
+		ActiveArea:     active,
+		AlreadyCropped: alreadyCropped,
+		CaptureInfo:    captureInfo,
+	}, nil
+}
+
 func screenshotMinimalWidth(screenState *screen.ScreenState) int {
 	if screenState == nil {
 		return 0
@@ -149,35 +231,19 @@ func (t *ScreenshotTool) ArgsSchema() map[string]any {
 }
 
 func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
-	// Request JPEG format directly from frame_service (hardware-encoded)
-	cropBlack := t.cropBlack()
-	meta, jpegData, captureInfo, err := captureScreenshotJPEG(t.client, t.screen, cropBlack)
+	frame, err := captureActiveAreaFrame(t.client, t.screen, t.cropBlack())
 	if err != nil {
 		return "", err
 	}
-	if meta.Stale {
-		return "", fmt.Errorf("frame service: STALE_FRAME")
-	}
-	if meta.PixelFormat != "jpeg" {
-		return "", fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
-	}
+	meta := frame.Meta
+	captureInfo := frame.CaptureInfo
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf("screenshot frame meta=%s capture_backend=%q mapping_before={%s}", formatTouchscreenRCAMetadata(meta), captureInfo.Backend, t.screen.Format())
 	}
-	active := screen.ScreenActiveArea{}
-	sourceWidth := int(meta.Width)
-	sourceHeight := int(meta.Height)
-	alreadyCropped := false
-	if fullWidth, fullHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
-		sourceWidth = fullWidth
-		sourceHeight = fullHeight
-		active = sourceActive
-		alreadyCropped = true
-	} else if cropBlack {
-		active = detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
-	} else {
-		active = screen.ScreenActiveArea{X: 0, Y: 0, Width: sourceWidth, Height: sourceHeight, Valid: true}
-	}
+	active := frame.ActiveArea
+	sourceWidth := frame.SourceWidth
+	sourceHeight := frame.SourceHeight
+	alreadyCropped := frame.AlreadyCropped
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf(
 			"screenshot resolved active_area source=%dx%d active=%s already_cropped=%v jpeg_dimensions=%dx%d mapping_before_update={%s}",
@@ -194,19 +260,11 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		t.screen.UpdateActiveArea(sourceWidth, sourceHeight, active)
 	}
 
-	// Crop to active_area so LLM sees only the mirrored phone touch region.
-	displayWidth := int(meta.Width)
-	displayHeight := int(meta.Height)
-	displayData := jpegData
-	if cropBlack && !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
-		croppedData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
-		if err != nil {
-			return "", fmt.Errorf("crop screenshot to active area: %w", err)
-		}
-		displayWidth = croppedWidth
-		displayHeight = croppedHeight
-		displayData = croppedData
-	}
+	// Already cropped to active_area so the LLM sees only the mirrored phone
+	// touch region.
+	displayWidth := frame.Width
+	displayHeight := frame.Height
+	displayData := frame.Data
 	if t.screen != nil {
 		t.screen.UpdateScreenshot(displayData, displayWidth, displayHeight)
 	}

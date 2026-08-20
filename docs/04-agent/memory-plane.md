@@ -4,135 +4,231 @@ sidebar_position: 9
 
 # Memory Plane
 
-The memory plane records task execution, stores reusable experience, and keeps different kinds of memory separate. It complements [Session Memory Compaction](session-memory.md), which manages the active conversation window.
+This document describes the current filesystem-backed memory architecture used by the Aiden Agent. Session memory is documented separately in [Session Memory Compaction](session-memory.md).
 
-## Memory Layers
+## Responsibilities
 
-| Layer | Purpose | Default path |
-| --- | --- | --- |
-| Session memory | Recent conversation events, summaries, and compressed chunks | `/userdata/agent/memory/session/` |
-| Session archive | Closed-session logs available through session recall | `/userdata/agent/memory/session_archive/` |
-| Long-term memory | User profile, preferences, rules, facts, and reusable procedures | `/userdata/agent/memory/long_term/` |
-| Device memory | Device, app, navigation, procedure, calibration, and failure experience | `/userdata/agent/memory/device/` |
-| Task episodes | Per-task metadata, event traces, and captured artifacts | `/userdata/agent/memory/episodes/` |
+The memory plane separates four kinds of persisted state:
 
-The runtime does not place every stored memory into every prompt. Long-term and device memories are recalled on demand so unrelated or stale records do not consume the normal conversation context.
+- session memory keeps the active conversation and compressed history;
+- long-term memory keeps information explicitly saved for the user;
+- device memory keeps reusable device, application, navigation, procedure, calibration, failure, and fact knowledge;
+- task episodes keep immutable execution evidence for audit and background consolidation.
+
+Automatic Episode learning writes only Device Memory. It does not create user profile, preference, or rule entries in Long-Term Memory.
 
 ## Runtime Flow
 
-For each Agent run, the runtime:
-
-1. Continues or rotates the active session according to the session-boundary rules.
-2. Starts a task episode and appends runtime events as the task proceeds.
-3. Lets the Agent recall session, long-term, or device memory when it needs prior context.
-4. Records the final outcome and closes the episode.
-5. Extracts reusable procedures, app knowledge, navigation facts, calibration notes, or failure patterns from tasks that contain an execution trace.
-6. Updates confidence only for memories that were actually returned by a recall tool during that run.
-
-Episode persistence is best effort for Agent execution: a maintenance or extraction failure is logged without replacing the result of the user task.
-
-## Recall and Management Tools
-
-| Tool | Use |
-| --- | --- |
-| `recall_session_chunks` | Search compressed history from the active session and archived sessions. |
-| `recall_memory` | Search long-term preferences, rules, procedures, facts, and profile information. |
-| `save_memory` | Store durable user-provided or observed long-term information. |
-| `forget_memory` | Delete a long-term memory by ID. |
-| `recall_device_memory` | Inspect device profiles, app profiles, procedures, navigation, calibration, failures, and conflicts. |
-| `inspect_episode` | Inspect one stored task episode and its compact event trace. |
-
-Recall results include stable IDs. When a recalled memory influences a task, the episode records that ID so later success or failure can update the correct record.
-
-## Task Episodes
-
-An episode captures:
-
-- the user goal and device scope;
-- start and end timestamps;
-- tool calls, results, observations, and screenshots;
-- the final answer and verifier outcome;
-- failure causes and referenced memory IDs;
-- tags and entities used for later search.
-
-The on-disk layout is:
+Device memory is not injected into every prompt. The model decides whether to call `recall_device_memory` during execution when the task materially depends on saved device or UI knowledge. Runtime does not perform a pre-run relevance route and does not force a first tool call.
 
 ```text
-memory/episodes/
-├── index.yaml
-└── <year>/
-    └── <episode_id>/
-        ├── episode.yaml
-        ├── events.jsonl
-        └── artifacts/
+Run starts
+  |
+  v
+build the normal model-controlled run
+  |
+  v
+Agent calls recall_device_memory only when needed
+  |
+  v
+Agent executes tools and records an Episode
+  |
+  v
+persist the completed Episode
+  |
+  +--> update deterministic device/app profiles
+  |
+  `--> notify the background Episode Memory Worker
 ```
 
-Episodes begin with `running` status. A completed run is indexed for search; unfinished runs found during recovery are marked as interrupted. Sensitive tool results are omitted from persisted event content where the runtime identifies them as sensitive.
+Recall tools record the IDs actually shown to the Agent. The background worker checks those records first when deciding whether a new lesson should update an existing Memory.
 
-## Automatically Extracted Experience
+## Storage Layout
 
-After a task with an execution trace completes, the memory plane derives records from observed evidence.
+Memory is stored under `<config_dir>/memory/`.
 
-### Successful tasks
+```text
+memory/
+├── session/                     # active conversation memory
+├── session_archive/             # closed session logs
+├── long_term/                   # explicit user memory
+├── episodes/                    # immutable task Episodes
+├── device/
+│   ├── profile.yaml             # deterministic device profile
+│   ├── apps/                    # deterministic app profiles
+│   ├── procedures/
+│   ├── navigation/
+│   ├── calibration/
+│   ├── failures/
+│   └── memories/                # facts and uncategorized Device Memory
+└── lifecycle/
+    ├── reflection.yaml          # Episode Memory processing ledger
+    └── reflection.lock          # cross-runtime batch lock
+```
 
-- A long-term procedure summarizing the verified tool path.
-- A device profile when screenshot dimensions were observed.
-- App profiles containing observed pages and tools used.
-- A structured procedure with tool parameters and observed page transitions.
-- Navigation records for app/page transitions.
-- A calibration note when normalized coordinates were used successfully.
+The `reflection.yaml` and `reflection.lock` names are retained for upgrade compatibility. Their owner is now the Episode Memory pipeline, not the removed failure-only Reflection implementation.
 
-### Failed tasks
+## Device Memory Recall
 
-- A long-term failure pattern with the verifier or runtime failure reason.
-- A device failure record tied to the task and its evidence.
-- Known issues added to any observed app profiles.
+Normal `recall_device_memory` results have the following limits:
 
-Automatic extraction requires an actual task trace. Plain text conversations without tool execution do not generate device procedures.
+- only `active` records are returned;
+- at most five records are returned;
+- output is limited to approximately 4,800 characters;
+- expired or device-inapplicable records are excluded;
+- `pending`, `disputed`, and legacy `conflicted` records are consolidation-only context.
 
-## Device Memory Types
+The recall tool searches active, applicable Device Memory using the query supplied by the model. It records the IDs actually returned on the Episode; no runtime-side candidate list is injected or used to rewrite the model's query.
 
-| Type | Contents |
-| --- | --- |
-| `device_profile` | Observed device properties such as screenshot resolution. |
-| `app_profile` | Pages seen, tools used, procedure references, and known issues for an app. |
-| `procedure` | A verified sequence of tool calls and observations for a goal. |
-| `navigation` | An observed transition between apps or pages, including the action that caused it. |
-| `calibration` | Device-control guidance supported by successful evidence. |
-| `failure` | A failed task pattern that should be treated as a caution. |
-| `conflict` | A record whose later outcomes contradict its previous guidance. |
+## Episode Recording
 
-Device memory files carry confidence, priority, timestamps, applicability fields, evidence references, success/failure counts, and an optional TTL.
+Every completed run with a user goal persists a task Episode before background learning starts. Success, failure, and interruption are recording states, not learning admission rules.
 
-## Confidence and Conflict Handling
+An Episode can contain:
 
-When a recalled memory is followed by a successful task, the runtime increases its success count and confidence and refreshes its expiry. When the task fails, eligible memory types lose confidence and gain a failure count.
+- the original user goal and normalized scope;
+- tool calls, inputs, results, and structured errors;
+- user steer or correction events;
+- screenshot and post-action screenshot references;
+- recalled Memory IDs;
+- the recorded runtime outcome and final answer.
 
-A record becomes conflicted when failures dominate its successful evidence. A successful task that contradicts a recalled failure record also marks that failure record as conflicted. Normal device-memory search excludes expired and inactive records; conflicted records are returned only as the `conflict` type so callers cannot mistake them for an active procedure.
+Screenshot binary data is stored as an Episode artifact. Event records contain relative references rather than embedding large base64 payloads.
 
-Current automatically generated TTLs are intentionally finite:
+The recorded `outcome.success` value is not treated as verified truth. It is input evidence for later assessment.
 
-| Record | TTL |
-| --- | --- |
-| Device profile | 90 days |
-| App profile and failure memory | 60 days |
-| Verified procedure | 45 days |
-| Navigation and calibration | 30 days |
+## Episode Memory Consolidation
 
-These values keep observations from being treated as permanent facts after apps, layouts, or device configuration change.
+The background pipeline is:
 
-## Search Behavior
+```text
+completed Episode
+  |
+  v
+deterministic prefilter
+  |
+  v
+one background LLM assessment and extraction
+  |
+  v
+code-level evidence and type validation
+  |
+  v
+create or update Device Memory
+```
 
-Memory search uses terms, tags, entities, type filters, and device scope. Results are ranked by textual relevance, priority, and confidence. This is filesystem-backed indexed search, not vector retrieval.
+### Admission
 
-Use specific app names, page names, or task concepts when recalling device experience. Use `recall_memory` rather than `recall_device_memory` for user preferences and rules, and use `recall_session_chunks` for details from earlier conversation turns.
+An Episode is eligible for the model call when it contains either:
 
-## Current Boundaries
+- a paired device tool call and result; or
+- a non-canceled structured error.
 
-- Device memories are recalled explicitly; they are not automatically injected into every planning prompt.
-- Search is based on normalized text, tags, and entities rather than embeddings.
-- Device records represent observed evidence, not guaranteed future UI state. A fresh screenshot remains the source of truth before acting.
-- The filesystem layout is the persistence contract; no external database is required.
+Greetings, ordinary conversation, Memory-only traces, successful Web-only traces, and cancellation before a meaningful device action are ignored without calling the model.
+
+An interrupted Episode remains eligible when it contains useful device evidence before the interruption.
+
+### Model Input
+
+The model receives a bounded view of the Episode:
+
+- up to the latest 60 events;
+- tool inputs, results, errors, and user corrections;
+- up to three persisted screenshots;
+- up to eight related Device Memories within an approximate 12,000-character budget.
+
+Related Memory selection prioritizes records recalled during the Episode, active records with the same scope, disputed records with the same scope, and then other text matches.
+
+PEV fields such as `verifier_decision`, `ObservedState`, and `VerifierReason` are excluded from this pipeline.
+
+### Episode Assessment
+
+The model independently assigns:
+
+```text
+goal_result = achieved | not_achieved | unknown
+```
+
+`achieved` and `not_achieved` must cite a direct Episode event such as a tool result, screenshot, structured error, or user correction. When final proof is missing, the result must be `unknown`.
+
+A recorded successful outcome can therefore become `not_achieved`. This corrects the learned Memory, but it does not retroactively change the foreground Run result.
+
+### Candidate Types
+
+One Episode can produce zero to three independent candidates.
+
+| Type | Intended use | Minimum evidence shape |
+| --- | --- | --- |
+| `procedure` | reusable multi-step path | multiple device calls and results plus an observation |
+| `navigation` | reusable page entry or transition | action, result, and before/after observations |
+| `calibration` | coordinate or screen relationship | coordinate input and post-action evidence |
+| `failure` | guard, stop condition, or recovery | direct problem or not-achieved evidence |
+| `fact` | stable device, app, or page observation | observed tool result |
+
+An Episode-level failure does not automatically create Failure Memory. A Failure candidate must contain reusable guidance for a future task.
+
+When `goal_result=not_achieved`, a candidate cannot claim that the full goal path succeeded. A locally proven Procedure is allowed only when its scope explicitly marks it as partial.
+
+## Create, Update, And Conflict
+
+The model proposes `create` or `update`, but code owns admission, storage paths, and final status.
+
+Create checks active and disputed Device Memory for an existing record with the same type and normalized scope. A mistaken create proposal cannot produce a second active record for that scope.
+
+Update requires the exact Memory revision observed during extraction. It preserves prior evidence and existing Procedure steps. Material body changes append the previous value to bounded revision history.
+
+If evidence can be reconciled by adding a version, page, account state, or other precondition, the Memory remains active with a conditioned rule.
+
+If the same scope still has incompatible conclusions, the Memory becomes `disputed`. Disputed records are excluded from normal recall but remain available to later consolidation.
+
+## Idempotency And Recovery
+
+The processing ledger uses `episode_id@extractor_version` keys and the following states:
+
+```text
+processing -> proposed -> done
+                    `--> retry
+processing/proposed -> ignored
+```
+
+The proposal is persisted before Device Memory writes. Recovery can therefore apply an existing proposal without repeating the model call.
+
+Model generation errors, empty responses, and invalid JSON are terminal `ignored` results. A process crash after entering `processing` but before persisting a proposal is also ignored after its lease expires.
+
+If a target Memory revision changes before update, the stale proposal is discarded and the Episode is re-extracted against the latest revision. This is the only normal case that permits another model call for the same extractor version.
+
+## Latency Isolation
+
+Episode consolidation does not add a synchronous LLM call, screenshot, OCR pass, or verifier to the foreground Agent loop.
+
+The worker:
+
+- starts after an idle delay;
+- processes at most five Episodes per batch, sequentially;
+- has only one in-flight background model call;
+- cancels that call when a foreground task starts;
+- resumes scheduling after the foreground task finishes.
+
+Episode trace persistence happens before background maintenance is scheduled. A maintenance failure is logged and does not replace the user-facing task result.
+
+## Compatibility
+
+Legacy `reflection:v1` Failure Memory remains readable. Older Device Memory files with an omitted status retain their previous meaning and are treated as active.
+
+The old failure-only Reflection processor, synchronous Procedure/Navigation/Calibration extraction, automatic verified-task-path Long-Term Memory, and outcome-based confidence updates are no longer active.
+
+## Verification
+
+The core regression suite covers prefiltering, false success, screenshot attachment, type-specific evidence validation, interrupted Episodes, deduplication, conflict quarantine, revision recovery, recall budgets, and foreground preemption.
+
+Run the focused checks from `src/agent`:
+
+```bash
+go test ./internal/agent -count=1
+go vet ./...
+```
+
+Real-device validation is still required to measure multimodal assessment quality and foreground p50/p95 latency under a real model provider.
 
 ## Related Documentation
 

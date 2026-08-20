@@ -13,13 +13,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-func TestConfigValidateAcceptsSTTWakeup(t *testing.T) {
+func TestConfigValidateAcceptsSTT(t *testing.T) {
 	cfg := Config{
-		Model:       ModelConfig{Provider: "fake"},
-		TTS:         TTSConfig{Provider: "minimax-cn"},
-		STT:         STTConfig{Provider: "openai-whisper"},
-		InputMode:   " stt ",
-		TriggerMode: " wakeup ",
+		Model:     ModelConfig{Provider: "fake"},
+		TTS:       TTSConfig{Provider: "minimax-cn"},
+		STT:       STTConfig{Provider: "openai-whisper"},
+		InputMode: " stt ",
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -27,9 +26,6 @@ func TestConfigValidateAcceptsSTTWakeup(t *testing.T) {
 	}
 	if got := cfg.InputModeOrDefault(); got != "stt" {
 		t.Fatalf("InputModeOrDefault() = %q, want stt", got)
-	}
-	if got := cfg.TriggerModeOrDefault(); got != "wakeup" {
-		t.Fatalf("TriggerModeOrDefault() = %q, want wakeup", got)
 	}
 }
 
@@ -1185,24 +1181,6 @@ func TestProxyConfigFromEnvironmentPreservesRawWhitespace(t *testing.T) {
 	}
 }
 
-func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
-	cfg := Config{
-		Model:       ModelConfig{Provider: "fake"},
-		TTS:         TTSConfig{Provider: "minimax-cn"},
-		STT:         STTConfig{Provider: "openai-whisper"},
-		InputMode:   "stt",
-		TriggerMode: "gpio",
-	}
-
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected invalid trigger_mode error")
-	}
-	if !strings.Contains(err.Error(), "invalid trigger_mode") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestConfigVADBackendDefaultsAndValidation(t *testing.T) {
 	cfg := Config{Model: ModelConfig{Provider: "fake"}}
 	if err := cfg.Validate(); err != nil {
@@ -1340,41 +1318,12 @@ func TestConfigValidateRejectsInvalidVADSpeechThreshold(t *testing.T) {
 	}
 }
 
-func TestConfigValidateRejectsWakeupForTextInput(t *testing.T) {
-	tests := []struct {
-		name      string
-		inputMode string
-	}{
-		{name: "default text", inputMode: ""},
-		{name: "explicit text", inputMode: " text "},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := Config{
-				Model:       ModelConfig{Provider: "fake"},
-				InputMode:   tt.inputMode,
-				TriggerMode: " wakeup ",
-			}
-
-			err := cfg.Validate()
-			if err == nil {
-				t.Fatal("expected incompatible trigger_mode/input_mode error")
-			}
-			if !strings.Contains(err.Error(), "incompatible trigger_mode") {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
-	}
-}
-
-func TestConfigValidateRequiresTTSForSTTWakeup(t *testing.T) {
+func TestConfigValidateRequiresTTSForSTT(t *testing.T) {
 	cfg := Config{
-		Model:       ModelConfig{Provider: "fake"},
-		STT:         STTConfig{Provider: "openai-whisper"},
-		TTS:         TTSConfig{Provider: "   "},
-		InputMode:   "stt",
-		TriggerMode: "wakeup",
+		Model:     ModelConfig{Provider: "fake"},
+		STT:       STTConfig{Provider: "openai-whisper"},
+		TTS:       TTSConfig{Provider: "   "},
+		InputMode: "stt",
 	}
 
 	err := cfg.Validate()
@@ -1412,12 +1361,11 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Config{
-				Model:       ModelConfig{Provider: "fake"},
-				TTS:         TTSConfig{Provider: "minimax-cn"},
-				STT:         STTConfig{Provider: "openai-whisper"},
-				Audio:       tt.audio,
-				InputMode:   "stt",
-				TriggerMode: "wakeup",
+				Model:     ModelConfig{Provider: "fake"},
+				TTS:       TTSConfig{Provider: "minimax-cn"},
+				STT:       STTConfig{Provider: "openai-whisper"},
+				Audio:     tt.audio,
+				InputMode: "stt",
 			}
 
 			err := cfg.Validate()

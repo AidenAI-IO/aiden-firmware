@@ -583,6 +583,9 @@ func TestMemoryExtractionConfigCompressThresholds(t *testing.T) {
 	if cfg.CompressAtPercent != 50 {
 		t.Fatalf("expected default CompressAtPercent=50, got %d", cfg.CompressAtPercent)
 	}
+	if got := cfg.EpisodeMemoryIdleDelayOrDefault(); got != 5*time.Minute {
+		t.Fatalf("expected default Episode Memory idle delay=5m, got %s", got)
+	}
 }
 
 func TestMemoryExtractionConfigFromYAML(t *testing.T) {
@@ -595,6 +598,7 @@ tag_candidates:
 entity_suffixes:
   - "System"
 hot_window_events: 30
+episode_memory_idle_delay_seconds: 7
 `), 0o644)
 
 	cfg := LoadMemoryExtractionConfig(dir)
@@ -609,6 +613,9 @@ hot_window_events: 30
 	}
 	if cfg.CountCompressAfterEvents != 60 {
 		t.Fatalf("expected default count_compress_after_events to follow hot_window_events*2, got %d", cfg.CountCompressAfterEvents)
+	}
+	if got := cfg.EpisodeMemoryIdleDelayOrDefault(); got != 7*time.Second {
+		t.Fatalf("expected episode_memory_idle_delay_seconds=7, got %s", got)
 	}
 }
 

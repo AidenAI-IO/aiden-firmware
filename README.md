@@ -1,5 +1,7 @@
 # Aiden Firmware
 
+Docs: [aidenai.io/docs](https://aidenai.io/docs) | Community: [Join the Discord](https://discord.gg/tFrQsgFGTy)
+
 Aiden Firmware is the firmware and device-side agent runtime for the
 current Aiden development board. The board observes a target device through
 HDMI capture and controls it through USB HID, so the agent can operate normal

@@ -460,6 +460,7 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 		"model",
 		"model_providers",
 		"ota",
+		"quick_capture",
 		"search",
 		"stt",
 		"stt_providers",

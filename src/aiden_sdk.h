@@ -169,6 +169,12 @@ public:
     // Stop capturing
     void stop();
 
+    // Stop V4L2 streaming while keeping the device and MMAP buffers open.
+    bool pause();
+
+    // Queue the mapped buffers and restart V4L2 streaming.
+    bool resume();
+
     // Get a single frame (blocking)
     bool get_frame(VideoFrame& frame);
 

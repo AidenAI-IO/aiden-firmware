@@ -121,6 +121,23 @@ func TestRecallDeviceMemoryToolToleratesMalformedLLMInput(t *testing.T) {
 	if !strings.Contains(out, `"results"`) {
 		t.Errorf("Call(%q) returned %q; expected valid results JSON", malformedInput, out)
 	}
+
+	// A multi-value filter emitted as one comma-delimited string must still match.
+	// Keeping it unsplit makes the exact-match type/tag filters reject every
+	// candidate, so recall silently returns no results.
+	for _, input := range []string{
+		`{"terms":"test","types":"procedure, fact"}`,
+		`{"terms":"test","types":"procedure,fact,failure"}`,
+		`{"terms":"test","tags":"test, unrelated"}`,
+	} {
+		out, err := tool.Call(ctx, input)
+		if err != nil {
+			t.Fatalf("Call(%q) error = %v", input, err)
+		}
+		if !strings.Contains(out, `"dev_test"`) {
+			t.Errorf("Call(%q) returned %q; expected the seeded procedure to match", input, out)
+		}
+	}
 }
 
 func TestSaveMemoryToolToleratesMalformedLLMInput(t *testing.T) {

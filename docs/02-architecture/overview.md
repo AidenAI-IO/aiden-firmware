@@ -61,7 +61,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
 ### Screenshot / Visual Observation
 
 ```text
-RK628D or TC358743 → /dev/video0 → frame_service ring buffer → Go screenshot tool → LLM image input
+Go screenshot request → frame_service STREAMON + one fresh /dev/video0 frame → STREAMOFF → LLM image input
 ```
 
 ### Device Control

@@ -237,7 +237,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"skill_manage": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"action":"list"}`,
+		ExampleInput: skillManageInputExample,
 		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	toolOpenApp: {
@@ -320,9 +320,6 @@ func normalizeAgentToolPlatform(platform string) string {
 	platform = strings.TrimSpace(platform)
 	if platform == "" {
 		return ""
-	}
-	if deviceType := deviceTypeFromPlatform(platform); deviceType != "" {
-		return deviceTypePlatform(deviceType)
 	}
 	if deviceType, ok := normalizeDeviceType(platform); ok {
 		return deviceTypePlatform(deviceType)

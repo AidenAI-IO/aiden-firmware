@@ -644,6 +644,22 @@ TEST_CASE("config web exposes audio archive switch") {
     CHECK(html.find("save STT voice recording WAV") != std::string::npos);
 }
 
+TEST_CASE("config web exposes quick capture settings") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+    const std::string html = read_config_web_asset_bundle();
+
+    CHECK(source.find("\"quick_capture\"") != std::string::npos);
+    CHECK(html.find("section-quick_capture") != std::string::npos);
+    CHECK(html.find("Name: \"quick_capture\"") != std::string::npos);
+    CHECK(html.find("screen_memory_ttl") != std::string::npos);
+    CHECK(html.find("GPIO32/GPIO33 wakeup remains independent") != std::string::npos);
+}
+
 TEST_CASE("config web docs list the model fields") {
     const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/04-agent/configuration.md";
     std::ifstream doc_in(doc_path.c_str());

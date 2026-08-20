@@ -380,7 +380,6 @@ func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr erro
 	}
 	episode.Outcome.FinalState = inferEpisodeFinalState(episode.Events)
 	episode.DeviceScope = mergeEpisodeDeviceScope(episode.DeviceScope, episode.Events)
-	episode.ReusableLessons = inferReusableLessons(episode)
 	return episode
 }
 
@@ -422,15 +421,15 @@ func (r *EpisodeRecorder) baseEpisodeLocked(status string, endedAt time.Time) Ta
 }
 
 // referencedMemoryIDsLocked returns memory IDs the agent actually recalled at
-// runtime via recall tools. The caller must hold r.mu. These IDs drive
-// confidence/outcome feedback in updateReferencedMemoryOutcomes.
+// runtime via recall tools. The caller must hold r.mu. Episode Memory
+// consolidation prioritizes these records when checking updates and conflicts.
 func (r *EpisodeRecorder) referencedMemoryIDsLocked() []string {
 	return uniqueNonEmpty(r.recalledRefs)
 }
 
 // RecordMemoryRecall records long-term or device memory IDs that a recall tool
-// surfaced to the agent during this run. The IDs feed outcome-based confidence
-// updates once the episode completes.
+// surfaced to the agent during this run. The IDs become consolidation context
+// after the Episode completes.
 func (r *EpisodeRecorder) RecordMemoryRecall(memoryIDs []string) {
 	if r == nil || len(memoryIDs) == 0 {
 		return
@@ -1102,15 +1101,43 @@ func readEpisodeEvents(path string) ([]TaskEpisodeEvent, error) {
 	repairedTruncatedTail := false
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0), 1<<20)
+	validateRepairTail := func() error {
+		for scanner.Scan() {
+			tail := strings.TrimSpace(strings.TrimRight(scanner.Text(), "\x00"))
+			if tail != "" {
+				return fmt.Errorf("invalid data after truncated episode event tail")
+			}
+		}
+		return scanner.Err()
+	}
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		rawLine := scanner.Text()
+		if nulIndex := strings.IndexByte(rawLine, 0); nulIndex >= 0 {
+			for index := nulIndex; index < len(rawLine); index++ {
+				if rawLine[index] != 0 {
+					return nil, fmt.Errorf("invalid NUL byte in episode event data")
+				}
+			}
+			rawLine = rawLine[:nulIndex]
+			repairedTruncatedTail = true
+		}
+		line := strings.TrimSpace(rawLine)
 		if line == "" {
+			if repairedTruncatedTail {
+				if err := validateRepairTail(); err != nil {
+					return nil, err
+				}
+				break
+			}
 			continue
 		}
 		var event TaskEpisodeEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			if isTruncatedJSONLineError(err) {
 				repairedTruncatedTail = true
+				if tailErr := validateRepairTail(); tailErr != nil {
+					return nil, tailErr
+				}
 				break
 			}
 			return nil, err
@@ -1118,6 +1145,12 @@ func readEpisodeEvents(path string) ([]TaskEpisodeEvent, error) {
 		validData = append(validData, line...)
 		validData = append(validData, '\n')
 		events = append(events, event)
+		if repairedTruncatedTail {
+			if err := validateRepairTail(); err != nil {
+				return nil, err
+			}
+			break
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
@@ -1218,22 +1251,6 @@ func compactEpisodeObservation(observation string) string {
 		return string(data)
 	}
 	return compactToolObservation(observation)
-}
-
-func inferReusableLessons(episode TaskEpisode) []string {
-	if !episode.Outcome.Success {
-		return nil
-	}
-	var tools []string
-	for _, evt := range episode.Events {
-		if evt.Type == runEventToolCall && strings.TrimSpace(evt.ToolName) != "" {
-			tools = append(tools, evt.ToolName)
-		}
-	}
-	if len(tools) == 0 {
-		return nil
-	}
-	return []string{fmt.Sprintf("For goal %q, verified tool path: %s.", truncateForLog(episode.UserGoal, 80), strings.Join(tools, " -> "))}
 }
 
 func episodeToolSequence(events []TaskEpisodeEvent) []string {

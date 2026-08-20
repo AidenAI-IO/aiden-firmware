@@ -279,11 +279,11 @@ llm_http_retention_days = 14
 	if dto.Model.Provider != "openai" || dto.Model.Model != "gpt-4o-mini" {
 		t.Fatalf("model overlay = provider %q model %q", dto.Model.Provider, dto.Model.Model)
 	}
-	if dto.Device.DeviceType != "Android" {
-		t.Fatalf("device.device_type = %q, want Android inferred from legacy hid.pointer_mode", dto.Device.DeviceType)
+	if dto.Device.DeviceType != "iOS" {
+		t.Fatalf("device.device_type = %q, want iOS (default when unset)", dto.Device.DeviceType)
 	}
-	if dto.HID.PointerMode != "touchscreen" {
-		t.Fatalf("derived hid.pointer_mode = %q, want touchscreen", dto.HID.PointerMode)
+	if dto.HID.PointerMode != "absolute" {
+		t.Fatalf("hid.pointer_mode = %q, want absolute (derived from iOS device_type)", dto.HID.PointerMode)
 	}
 	if dto.HID.KeyboardLayout != "azerty" {
 		t.Fatalf("hid.keyboard_layout = %q, want azerty", dto.HID.KeyboardLayout)
@@ -307,6 +307,9 @@ llm_http_retention_days = 14
 	}
 	if !dto.AudioArchive.Enabled || dto.AudioArchive.StoragePath != agent.DefaultConfig().AudioArchive.StoragePath {
 		t.Fatalf("audio_archive defaults = %+v, want enabled default storage", dto.AudioArchive)
+	}
+	if !dto.QuickCapture.Enabled || dto.QuickCapture.GPIOPin != 0 || dto.QuickCapture.ScreenMemoryTTL != agent.DefaultScreenMemoryTTL {
+		t.Fatalf("quick_capture defaults = %+v", dto.QuickCapture)
 	}
 }
 
@@ -335,9 +338,8 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	if defaults.Log.LLMHTTPRetentionDays != agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault() {
 		t.Fatalf("log defaults were not populated: %+v", defaults.Log)
 	}
-	if defaults.Agent.InputMode != "text" || defaults.Agent.TriggerMode != "manual" {
-		t.Fatalf("agent mode defaults = input %q trigger %q, want text/manual",
-			defaults.Agent.InputMode, defaults.Agent.TriggerMode)
+	if defaults.Agent.InputMode != "text" {
+		t.Fatalf("agent input mode default = %q, want text", defaults.Agent.InputMode)
 	}
 	if defaults.Agent.VoiceFollowupTimeoutMs == 0 ||
 		defaults.Agent.VoiceFirstTurnTimeoutMs == 0 ||
@@ -490,6 +492,23 @@ func TestWebConfigDTOAcceptsLegacyAudioPlaybackBackend(t *testing.T) {
 	dto.Audio.Backend = agent.AudioBackendAudioService
 	if got := dto.toAgentConfig().Audio.Backend; got != agent.AudioBackendAudioService {
 		t.Fatalf("Audio.Backend = %q, want audio_service", got)
+	}
+}
+
+func TestWebConfigDTOMapsQuickCapture(t *testing.T) {
+	dto := webConfigDTO{QuickCapture: quickCaptureDTO{
+		Enabled:         false,
+		GPIOPin:         3,
+		ScreenMemoryTTL: "14d",
+	}}
+	cfg := dto.toAgentConfig()
+	if cfg.QuickCapture.EnabledOrDefault() || cfg.QuickCapture.GPIOPin != 3 || cfg.QuickCapture.ScreenMemoryTTL != "14d" {
+		t.Fatalf("QuickCapture = %+v, want DTO values", cfg.QuickCapture)
+	}
+
+	roundTrip := webConfigDTOFromAgentConfig(agent.Config{QuickCapture: cfg.QuickCapture})
+	if roundTrip.QuickCapture != dto.QuickCapture {
+		t.Fatalf("round-trip QuickCapture = %+v, want %+v", roundTrip.QuickCapture, dto.QuickCapture)
 	}
 }
 

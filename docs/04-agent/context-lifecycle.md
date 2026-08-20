@@ -17,7 +17,8 @@ Each run is assembled from several layers. Some layers are persisted memory, whi
 | Skills | skill index plus active `SKILL.md` content | Agent | skill files and skill state |
 | Runtime context | `RunRequest.RuntimeContext`, for example phone bridge state | Agent | not persisted |
 | Tool catalog | resolved built-in tools plus skill tools | Agent can call | not persisted in memory |
-| Retrieved memory context | `MemoryPlane.Retrieve` output | Agent | filesystem memory |
+| Session summary and user profile | session and long-term profile files | Agent system prompt | filesystem memory |
+| Recalled device memory | `recall_device_memory` tool results | Agent tool context | filesystem memory |
 | Conversation history | hot-window memory, optional compressed-history markers | Agent | filesystem memory |
 | Input attachments | `RunRequest.Attachments` | Agent user messages | current run only |
 
@@ -60,24 +61,17 @@ For the current execution loop, `Runtime.Run` builds a `RoleProfile` before exec
 6. request-local runtime context, if provided;
 7. role rules;
 8. available tool information;
-9. rendered memory context, if any.
+9. session summary and long-term profile, if available.
 
 The per-call user message is built from the current loop state, including the original request, conversation history, world state, and any previous tool results.
 
-## Retrieved Memory Context
+## Memory Recall
 
-`MemoryPlane.Retrieve` builds a `MemoryContext` that is rendered into the Agent's memory context. It currently includes:
+The active session summary and synthesized long-term profile can enter the Agent system prompt. Device Memory content is not injected into every run.
 
-- `session/summary.md`, the compressed session summary;
-- `long_term/profile.md`, the synthesized user profile;
-- device profile;
-- app profiles;
-- verified procedures and navigation memory;
-- similar successful episodes;
-- calibration notes;
-- failure memories and conflicting memories as cautions.
+Device Memory content is not injected before execution. The model may call `recall_device_memory` on demand when the task materially depends on saved device or UI knowledge. Runtime does not run a pre-execution relevance router, force a first tool call, or rewrite the model's query; the tool records the IDs it actually returns on the Episode.
 
-Each hit is filtered by applicability, ranked by the store search logic, routed by memory type, and trimmed per category before rendering.
+Normal Device Memory recall returns only active and applicable records. It is capped at five results and approximately 4,800 output characters. Disputed and legacy conflicted records remain available only to background consolidation.
 
 ## Run Lifecycle
 
@@ -96,9 +90,6 @@ resolve model, context window, tools, and memory handle
 begin session: detect/rotate boundary and append current user input
   |
   v
-MemoryPlane.Retrieve(input, attachments, skills, tools, current hints)
-  |
-  v
 start EpisodeRecorder
   |
   v
@@ -114,7 +105,7 @@ commit session: append assistant output and save snapshot
 request session-memory maintenance
   |
   v
-commit task episode and extract reusable memory
+commit task Episode and notify background consolidation
 ```
 
 `CurrentEnvironmentHints` are lightweight facts already known to runtime, such as screenshot size, language, and last observed app name. They must not perform device actions. If fresh screen evidence is needed, the Agent must use tools.
@@ -211,13 +202,13 @@ Long-term memory stores user preferences, rules, facts, procedures, and manually
 memory/long_term/
 ```
 
-The `save_memory`, `forget_memory`, and episode extraction paths update this store. `profile.md` is rebuilt through the long-term memory profile pipeline, with debouncing to avoid repeated rebuilds during bursts of writes.
+The `save_memory` and `forget_memory` tools update this store. `profile.md` is rebuilt through the long-term memory profile pipeline, with debouncing to avoid repeated rebuilds during bursts of writes.
 
 Within one runtime, memory tools, `MemoryPlane`, and profile rebuilding share a single `LongTermMemoryStore`. Its parsed-Markdown cache has a fixed admission bound so full scans cannot grow memory without limit or continually replace the useful working set. Long-term index version 2 carries `expires_at`, allowing search and profile generation to reject expired entries before reading their Markdown files.
 
 ### Device And Episode Memory
 
-The episode recorder captures tool calls, tool results, observed world state, and outcome data during the run. `MemoryPlane.CommitEpisode` writes the task episode, extracts reusable lessons, updates device memory, and updates outcomes on referenced memories.
+The episode recorder captures tool calls, tool results, screenshots, user corrections, and recorded outcome data during the run. `MemoryPlane.CommitEpisode` persists the trace and notifies the background Episode Memory Worker.
 
 Common episode event types:
 
@@ -233,7 +224,9 @@ memory/episodes/
 memory/lifecycle/
 ```
 
-Successful episodes can create or update procedures, navigation memory, app profiles, calibration notes, and task summaries. Failed episodes can create failure memories that are retrieved as cautions on future similar tasks.
+Success and failure do not gate learning. The worker independently assesses goal completion, then can create or update procedure, navigation, calibration, failure, or fact Device Memory when direct evidence supports it.
+
+Deterministic device and app profiles remain separate from LLM-generated lessons. Automatic Episode learning does not write user profile, preference, or rule entries to Long-Term Memory.
 
 ### Persisted Chat History
 

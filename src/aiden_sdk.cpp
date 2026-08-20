@@ -1046,6 +1046,57 @@ public:
         buffers.clear();
     }
 
+    bool queue_buffer(uint32_t index) {
+        struct v4l2_buffer buf;
+        struct v4l2_plane planes[VIDEO_MAX_PLANES];
+        memset(&buf, 0, sizeof(buf));
+        memset(planes, 0, sizeof(planes));
+
+        buf.type = buf_type;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = index;
+        if (is_mplane) {
+            buf.m.planes = planes;
+            buf.length = VIDEO_MAX_PLANES;
+        }
+        return xioctl(video_fd, VIDIOC_QBUF, &buf) == 0;
+    }
+
+    bool start_streaming() {
+        if (streaming) {
+            return true;
+        }
+        for (uint32_t i = 0; i < buffers.size(); ++i) {
+            if (!queue_buffer(i)) {
+                AIDEN_LOG_ERROR("camera", "buffer_requeue_failed",
+                                "buffer_index=%u error=%s", i, strerror(errno));
+                return false;
+            }
+        }
+        if (xioctl(video_fd, VIDIOC_STREAMON, &buf_type) < 0) {
+            AIDEN_LOG_ERROR("camera", "stream_start_failed", "error=%s",
+                            strerror(errno));
+            return false;
+        }
+        skip_frames_remaining = config.skip_frames;
+        streaming = true;
+        return true;
+    }
+
+    bool stop_streaming() {
+        if (!streaming) {
+            return true;
+        }
+        if (xioctl(video_fd, VIDIOC_STREAMOFF, &buf_type) < 0) {
+            AIDEN_LOG_ERROR("camera", "stream_stop_failed", "error=%s",
+                            strerror(errno));
+            return false;
+        }
+        streaming = false;
+        skip_frames_remaining = config.skip_frames;
+        return true;
+    }
+
     void cleanup_device() {
         if (frame_held) {
             if (xioctl(video_fd, VIDIOC_QBUF, &held_buffer) < 0) {
@@ -1056,13 +1107,7 @@ public:
             held_bytes_used = 0;
         }
 
-        if (streaming) {
-            if (xioctl(video_fd, VIDIOC_STREAMOFF, &buf_type) < 0) {
-                AIDEN_LOG_ERROR("camera", "stream_stop_failed", "error=%s",
-                                strerror(errno));
-            }
-            streaming = false;
-        }
+        stop_streaming();
 
         cleanup_buffers();
 
@@ -1109,6 +1154,10 @@ public:
     }
 
     bool acquire_frame(VideoFrame* frame_info, int timeout_ms) {
+        if (!streaming) {
+            errno = EPIPE;
+            return false;
+        }
         while (true) {
             if (!wait_for_ready(timeout_ms)) {
                 return false;
@@ -1365,21 +1414,14 @@ bool CameraCapture::init(const CameraConfig& config) {
         impl_->buffers[i].start = start;
         impl_->buffers[i].length = length;
 
-        if (xioctl(impl_->video_fd, VIDIOC_QBUF, &buf) < 0) {
-            AIDEN_LOG_ERROR("camera", "buffer_queue_failed",
-                            "device=%s buffer_index=%u error=%s", device, i,
-                            strerror(errno));
-            return fail();
-        }
     }
 
-    if (xioctl(impl_->video_fd, VIDIOC_STREAMON, &impl_->buf_type) < 0) {
-        AIDEN_LOG_ERROR("camera", "stream_start_failed", "device=%s error=%s", device,
-                        strerror(errno));
+    if (!impl_->start_streaming()) {
+        AIDEN_LOG_ERROR("camera", "stream_start_failed", "device=%s error=%s",
+                        device, strerror(errno));
         return fail();
     }
 
-    impl_->streaming = true;
     impl_->initialized = true;
     return true;
 }
@@ -1403,6 +1445,20 @@ void CameraCapture::stop() {
 
     impl_->cleanup_device();
     impl_->initialized = false;
+}
+
+bool CameraCapture::pause() {
+    if (!impl_->initialized || impl_->running || impl_->frame_held) {
+        return false;
+    }
+    return impl_->stop_streaming();
+}
+
+bool CameraCapture::resume() {
+    if (!impl_->initialized || impl_->running || impl_->frame_held) {
+        return false;
+    }
+    return impl_->start_streaming();
 }
 
 bool CameraCapture::get_frame(VideoFrame& frame) {

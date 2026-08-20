@@ -202,6 +202,7 @@ function appendSpecialField(document, target, pathName, controlId, tagName = 'se
 const document = new Document();
 const agentTarget = appendTarget(document, 'agent');
 const modelTarget = appendTarget(document, 'model');
+const quickCaptureTarget = appendTarget(document, 'quick_capture');
 const modelProviderField = appendSpecialField(document, modelTarget, 'model.provider', 'model_provider');
 const modelNameField = appendSpecialField(document, modelTarget, 'model.model', 'model_model', 'input');
 document.getElementById('model_provider').setAttribute('data-section', 'model');
@@ -257,6 +258,11 @@ buildConfigMeta({sections: [
     {key: 'model', label: 'model', widget: 'text', layout: 'wide'},
     {key: 'temperature', label: 'temperature', widget: 'number'},
   ]},
+  {name: 'quick_capture', fields: [
+    {key: 'enabled', label: 'Enabled', widget: 'boolean', default: true},
+    {key: 'gpio_pin', label: 'GPIO Pin', widget: 'number', default: 0},
+    {key: 'screen_memory_ttl', label: 'Screen Memory TTL', widget: 'text', default: '90d'},
+  ]},
 ]});
 
 assert.equal(document.getElementById('agent_locale'), null, 'agent.locale remains rendered by the page-level locale control');
@@ -276,6 +282,14 @@ assert.equal(document.getElementById('agent_notes').classList.contains('prompt-c
 assert.equal(document.getElementById('model_provider').closest('.field'), modelProviderField, 'model provider manager DOM is preserved');
 assert.equal(document.getElementById('model_model').closest('.field'), modelNameField, 'model selector DOM is preserved');
 assert.equal(document.getElementById('model_temperature').type, 'number');
+assert.equal(document.getElementById('quick_capture_enabled').type, 'checkbox');
+assert.equal(document.getElementById('quick_capture_gpio_pin').type, 'number');
+assert.equal(document.getElementById('quick_capture_screen_memory_ttl').dataset.configDefaultPlaceholder, '90d');
+assert.deepEqual(quickCaptureTarget.children.map((field) => field.getAttribute('data-config-field')), [
+  'quick_capture.enabled',
+  'quick_capture.gpio_pin',
+  'quick_capture.screen_memory_ttl',
+]);
 assert.deepEqual(agentTarget.children.map((field) => field.getAttribute('data-config-field')), [
   'agent.input_mode',
   'agent.new_field',
@@ -299,6 +313,7 @@ assert.equal(modelSelectorDetails.inert, false, 'editing a section enables compo
 
 const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
 assert.match(indexHtml, /data-config-section="agent"/);
+assert.match(indexHtml, /data-config-section="quick_capture"/);
 assert.match(indexHtml, /data-config-field="model\.provider"/);
 assert.doesNotMatch(indexHtml, /id="agent_input_mode"/, 'ordinary controls must not be hand-maintained in index.html');
 assert.match(indexHtml, /data-action="enter-edit-section" data-section-target="model"/);

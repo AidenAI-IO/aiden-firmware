@@ -466,23 +466,6 @@ func TestRuntimeToolDescriptorsUseDeviceTypeSpecificSchemas(t *testing.T) {
 			t.Fatalf("Windows touch_gesture schema exposed %q: %v", notWant, windowsGestureTypes)
 		}
 	}
-	keyboardTap, ok := windowsRuntime.ToolDescriptorByName("keyboard_tap")
-	if !ok {
-		t.Fatal("Windows runtime missing keyboard_tap descriptor")
-	}
-	props := keyboardTap.ArgsSchema["properties"].(map[string]any)
-	keys := props["keys"].(map[string]any)
-	keysDescription, _ := keys["description"].(string)
-	for _, want := range []string{"KEYCODE_SCREENSHOT", "KEYCODE_VOLUME_UP", "KEYCODE_MEDIA_PLAY_PAUSE"} {
-		if !strings.Contains(keysDescription, want) {
-			t.Fatalf("Windows keyboard_tap schema missing absolute extension key %q: %s", want, keysDescription)
-		}
-	}
-	for _, notWant := range []string{"KEYCODE_HOME", "KEYCODE_BACK", "KEYCODE_APP_SWITCH"} {
-		if strings.Contains(keysDescription, notWant) {
-			t.Fatalf("Windows keyboard_tap schema exposed Android-only key %q: %s", notWant, keysDescription)
-		}
-	}
 }
 
 func TestRuntimeLoadAllToolsIncludesScriptAuthoringTools(t *testing.T) {
