@@ -212,15 +212,14 @@ static AxisCrop detect_axis_crop(int length, IsBorder is_border) {
     return result;
 }
 
-static bool crop_frame_rect(const FrameMetadata& metadata,
-                            const std::vector<uint8_t>& frame,
-                            uint32_t crop_x,
-                            uint32_t crop_y,
-                            uint32_t crop_width,
-                            uint32_t crop_height,
-                            FrameMetadata* cropped_metadata,
-                            std::vector<uint8_t>* cropped_frame) {
-    if (!cropped_metadata || !cropped_frame || !valid_crop_frame(metadata, frame) ||
+static bool resolve_crop_metadata(const FrameMetadata& metadata,
+                                  const std::vector<uint8_t>& frame,
+                                  uint32_t crop_x,
+                                  uint32_t crop_y,
+                                  uint32_t crop_width,
+                                  uint32_t crop_height,
+                                  FrameMetadata* cropped_metadata) {
+    if (!cropped_metadata || !valid_crop_frame(metadata, frame) ||
         crop_width == 0 || crop_height == 0 || crop_x + crop_width > metadata.width ||
         crop_y + crop_height > metadata.height || (crop_x & 1U) != 0 ||
         (crop_width & 1U) != 0) {
@@ -243,6 +242,46 @@ static bool crop_frame_rect(const FrameMetadata& metadata,
     result.planes.clear();
 
     if (metadata.pixel_format == "uyvy" || metadata.pixel_format == "yuyv") {
+        result.stride = crop_width * 2U;
+        result.bytes = static_cast<uint64_t>(crop_width) * crop_height * 2U;
+    } else {
+        const uint32_t cropped_uv_rows = metadata.pixel_format == "nv12"
+                                             ? crop_height / 2U
+                                             : crop_height;
+        FramePlaneMetadata y_plane;
+        y_plane.offset = 0;
+        y_plane.stride = crop_width;
+        y_plane.bytes = crop_width * crop_height;
+        result.planes.push_back(y_plane);
+        FramePlaneMetadata uv_plane;
+        uv_plane.offset = y_plane.bytes;
+        uv_plane.stride = crop_width;
+        uv_plane.bytes = crop_width * cropped_uv_rows;
+        result.planes.push_back(uv_plane);
+        result.stride = metadata.pixel_format == "nv16" ? crop_width * 2U : crop_width;
+        result.bytes = static_cast<uint64_t>(crop_width) *
+                       (crop_height + cropped_uv_rows);
+    }
+
+    *cropped_metadata = result;
+    return true;
+}
+
+static bool crop_frame_rect(const FrameMetadata& metadata,
+                            const std::vector<uint8_t>& frame,
+                            uint32_t crop_x,
+                            uint32_t crop_y,
+                            uint32_t crop_width,
+                            uint32_t crop_height,
+                            FrameMetadata* cropped_metadata,
+                            std::vector<uint8_t>* cropped_frame) {
+    if (!cropped_metadata || !cropped_frame ||
+        !resolve_crop_metadata(metadata, frame, crop_x, crop_y, crop_width, crop_height,
+                               cropped_metadata)) {
+        return false;
+    }
+
+    if (metadata.pixel_format == "uyvy" || metadata.pixel_format == "yuyv") {
         const size_t source_row_bytes = static_cast<size_t>(metadata.width) * 2U;
         const size_t cropped_row_bytes = static_cast<size_t>(crop_width) * 2U;
         cropped_frame->resize(cropped_row_bytes * crop_height);
@@ -254,7 +293,6 @@ static bool crop_frame_rect(const FrameMetadata& metadata,
                    frame.data() + source_offset,
                    cropped_row_bytes);
         }
-        result.stride = crop_width * 2U;
     } else {
         const size_t source_y_bytes = static_cast<size_t>(metadata.width) * metadata.height;
         const uint32_t source_uv_y = metadata.pixel_format == "nv12" ? crop_y / 2U : crop_y;
@@ -280,21 +318,9 @@ static bool crop_frame_rect(const FrameMetadata& metadata,
                    frame.data() + source_offset,
                    crop_width);
         }
-        FramePlaneMetadata y_plane;
-        y_plane.offset = 0;
-        y_plane.stride = crop_width;
-        y_plane.bytes = crop_width * crop_height;
-        result.planes.push_back(y_plane);
-        FramePlaneMetadata uv_plane;
-        uv_plane.offset = y_plane.bytes;
-        uv_plane.stride = crop_width;
-        uv_plane.bytes = crop_width * cropped_uv_rows;
-        result.planes.push_back(uv_plane);
-        result.stride = metadata.pixel_format == "nv16" ? crop_width * 2U : crop_width;
     }
 
-    result.bytes = cropped_frame->size();
-    *cropped_metadata = result;
+    cropped_metadata->bytes = cropped_frame->size();
     return true;
 }
 
@@ -334,6 +360,29 @@ bool crop_frame_center(const FrameMetadata& metadata,
     }
     return crop_frame_rect(metadata, frame, crop_x, crop_y, crop_width, crop_height,
                            cropped_metadata, cropped_frame);
+}
+
+bool resolve_frame_center_crop(const FrameMetadata& metadata,
+                               const std::vector<uint8_t>& frame,
+                               uint32_t target_width,
+                               uint32_t target_height,
+                               FrameMetadata* cropped_metadata) {
+    if (!cropped_metadata || !valid_crop_frame(metadata, frame) ||
+        target_width == 0 || target_height == 0) {
+        return false;
+    }
+    const uint32_t crop_width = even_crop_extent(target_width, metadata.width);
+    const uint32_t crop_height = even_crop_extent(target_height, metadata.height);
+    if (crop_width == 0 || crop_height == 0) {
+        return false;
+    }
+    const uint32_t crop_x = ((metadata.width - crop_width) / 2U) & ~1U;
+    uint32_t crop_y = (metadata.height - crop_height) / 2U;
+    if (metadata.pixel_format == "nv12") {
+        crop_y &= ~1U;
+    }
+    return resolve_crop_metadata(metadata, frame, crop_x, crop_y, crop_width, crop_height,
+                                 cropped_metadata);
 }
 
 static void centered_aspect_crop_size(uint32_t frame_width, uint32_t frame_height,
@@ -403,13 +452,12 @@ static BorderScore centered_crop_border_score(const FrameMetadata& metadata,
     return score;
 }
 
-bool crop_frame_center_aspect_auto(const FrameMetadata& metadata,
-                                   const std::vector<uint8_t>& frame,
-                                   uint32_t screen_width,
-                                   uint32_t screen_height,
-                                   FrameMetadata* cropped_metadata,
-                                   std::vector<uint8_t>* cropped_frame) {
-    if (!cropped_metadata || !cropped_frame || !valid_crop_frame(metadata, frame) ||
+bool resolve_frame_center_aspect_auto_crop(const FrameMetadata& metadata,
+                                           const std::vector<uint8_t>& frame,
+                                           uint32_t screen_width,
+                                           uint32_t screen_height,
+                                           FrameMetadata* cropped_metadata) {
+    if (!cropped_metadata || !valid_crop_frame(metadata, frame) ||
         screen_width == 0 || screen_height == 0) {
         return false;
     }
@@ -426,16 +474,16 @@ bool crop_frame_center_aspect_auto(const FrameMetadata& metadata,
                               &landscape_width, &landscape_height);
 
     if (portrait_width == landscape_width && portrait_height == landscape_height) {
-        return crop_frame_center(metadata, frame, portrait_width, portrait_height,
-                                 cropped_metadata, cropped_frame);
+        return resolve_frame_center_crop(metadata, frame, portrait_width, portrait_height,
+                                         cropped_metadata);
     }
     if (portrait_width == metadata.width && portrait_height == metadata.height) {
-        return crop_frame_center(metadata, frame, portrait_width, portrait_height,
-                                 cropped_metadata, cropped_frame);
+        return resolve_frame_center_crop(metadata, frame, portrait_width, portrait_height,
+                                         cropped_metadata);
     }
     if (landscape_width == metadata.width && landscape_height == metadata.height) {
-        return crop_frame_center(metadata, frame, landscape_width, landscape_height,
-                                 cropped_metadata, cropped_frame);
+        return resolve_frame_center_crop(metadata, frame, landscape_width, landscape_height,
+                                         cropped_metadata);
     }
 
     const BorderScore portrait = centered_crop_border_score(
@@ -454,10 +502,27 @@ bool crop_frame_center_aspect_auto(const FrameMetadata& metadata,
     }
 
     return use_landscape
-               ? crop_frame_center(metadata, frame, landscape_width, landscape_height,
-                                   cropped_metadata, cropped_frame)
-               : crop_frame_center(metadata, frame, portrait_width, portrait_height,
-                                   cropped_metadata, cropped_frame);
+               ? resolve_frame_center_crop(metadata, frame, landscape_width, landscape_height,
+                                           cropped_metadata)
+               : resolve_frame_center_crop(metadata, frame, portrait_width, portrait_height,
+                                           cropped_metadata);
+}
+
+bool crop_frame_center_aspect_auto(const FrameMetadata& metadata,
+                                   const std::vector<uint8_t>& frame,
+                                   uint32_t screen_width,
+                                   uint32_t screen_height,
+                                   FrameMetadata* cropped_metadata,
+                                   std::vector<uint8_t>* cropped_frame) {
+    FrameMetadata resolved;
+    if (!cropped_metadata || !cropped_frame ||
+        !resolve_frame_center_aspect_auto_crop(metadata, frame, screen_width, screen_height,
+                                               &resolved)) {
+        return false;
+    }
+    return crop_frame_rect(metadata, frame, resolved.crop_x, resolved.crop_y,
+                           resolved.crop_width, resolved.crop_height,
+                           cropped_metadata, cropped_frame);
 }
 
 bool crop_frame_horizontal_center(const FrameMetadata& metadata,
@@ -469,11 +534,10 @@ bool crop_frame_horizontal_center(const FrameMetadata& metadata,
                              cropped_metadata, cropped_frame);
 }
 
-bool crop_frame_black_bars(const FrameMetadata& metadata,
-                           const std::vector<uint8_t>& frame,
-                           FrameMetadata* cropped_metadata,
-                           std::vector<uint8_t>* cropped_frame) {
-    if (!cropped_metadata || !cropped_frame || !valid_crop_frame(metadata, frame)) {
+bool resolve_frame_black_bars_crop(const FrameMetadata& metadata,
+                                   const std::vector<uint8_t>& frame,
+                                   FrameMetadata* cropped_metadata) {
+    if (!cropped_metadata || !valid_crop_frame(metadata, frame)) {
         return false;
     }
 
@@ -516,7 +580,21 @@ bool crop_frame_black_bars(const FrameMetadata& metadata,
             crop_height = bottom - crop_y + 1U;
         }
     }
-    return crop_frame_rect(metadata, frame, crop_x, crop_y, crop_width, crop_height,
+    return resolve_crop_metadata(metadata, frame, crop_x, crop_y, crop_width, crop_height,
+                                 cropped_metadata);
+}
+
+bool crop_frame_black_bars(const FrameMetadata& metadata,
+                           const std::vector<uint8_t>& frame,
+                           FrameMetadata* cropped_metadata,
+                           std::vector<uint8_t>* cropped_frame) {
+    FrameMetadata resolved;
+    if (!cropped_metadata || !cropped_frame ||
+        !resolve_frame_black_bars_crop(metadata, frame, &resolved)) {
+        return false;
+    }
+    return crop_frame_rect(metadata, frame, resolved.crop_x, resolved.crop_y,
+                           resolved.crop_width, resolved.crop_height,
                            cropped_metadata, cropped_frame);
 }
 

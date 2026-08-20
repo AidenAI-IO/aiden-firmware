@@ -419,6 +419,40 @@ TEST_CASE("FrameServiceServer uses centered vertical crop for wide known screen"
     server.stop();
 }
 
+TEST_CASE("FrameServiceServer applies known-screen crop in packed YUV JPEG encoder") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+    std::vector<uint8_t> data(8U * 8U * 2U, 128);
+    for (size_t i = 1; i < data.size(); i += 2) {
+        data[i] = 80;
+    }
+    uint64_t seq = 0;
+    REQUIRE(server.append_frame(metadata(8, 8, "uyvy", 99), data.data(), data.size(), &seq) == FrameServiceStatus::OK);
+
+    int fd = connect_raw_client(socket_path.path);
+    REQUIRE(aiden::write_frame_message(
+                fd,
+                "{\"type\":\"request\",\"method\":\"latest_frame\",\"since_seq\":\"0\",\"timeout_ms\":0,\"format\":\"jpeg\",\"quality\":80,\"crop_black\":true,\"screen_width\":2,\"screen_height\":1}",
+                std::vector<uint8_t>()) == FrameServiceStatus::OK);
+    std::vector<uint8_t> jpeg;
+    const std::string header = read_response(fd, &jpeg);
+
+    CHECK(header.find("\"status\":\"OK\"") != std::string::npos);
+    CHECK(header.find("\"width\":8") != std::string::npos);
+    CHECK(header.find("\"height\":4") != std::string::npos);
+    CHECK(header.find("\"source_width\":8") != std::string::npos);
+    CHECK(header.find("\"source_height\":8") != std::string::npos);
+    CHECK(header.find("\"crop_x\":0") != std::string::npos);
+    CHECK(header.find("\"crop_y\":2") != std::string::npos);
+    CHECK(header.find("\"crop_width\":8") != std::string::npos);
+    CHECK(header.find("\"crop_height\":4") != std::string::npos);
+    CHECK(jpeg == std::vector<uint8_t>{0xff, 0xd8, 0xff, 0xd9});
+
+    ::close(fd);
+    server.stop();
+}
+
 TEST_CASE("FrameServiceServer returns NO_NEW_FRAME for nonblocking latest request") {
     TempSocketPath socket_path;
     FrameServiceServer server(socket_path.path.c_str(), 4);

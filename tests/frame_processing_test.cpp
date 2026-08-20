@@ -15,6 +15,9 @@ using aiden::encode_frame_to_bmp;
 using aiden::encode_frame_to_png;
 using aiden::encode_rgb_to_png;
 using aiden::encode_rgb_to_bmp;
+using aiden::resolve_frame_black_bars_crop;
+using aiden::resolve_frame_center_aspect_auto_crop;
+using aiden::resolve_frame_center_crop;
 using aiden::scale_rgb_nearest;
 
 namespace {
@@ -56,6 +59,27 @@ std::vector<uint8_t> uyvy_from_luma(uint32_t width, uint32_t height,
         }
     }
     return uyvy;
+}
+
+void check_crop_metadata_matches(const FrameMetadata& resolved,
+                                 const FrameMetadata& materialized) {
+    CHECK(resolved.width == materialized.width);
+    CHECK(resolved.height == materialized.height);
+    CHECK(resolved.source_width == materialized.source_width);
+    CHECK(resolved.source_height == materialized.source_height);
+    CHECK(resolved.crop_x == materialized.crop_x);
+    CHECK(resolved.crop_y == materialized.crop_y);
+    CHECK(resolved.crop_width == materialized.crop_width);
+    CHECK(resolved.crop_height == materialized.crop_height);
+    CHECK(resolved.pixel_format == materialized.pixel_format);
+    CHECK(resolved.stride == materialized.stride);
+    CHECK(resolved.bytes == materialized.bytes);
+    REQUIRE(resolved.planes.size() == materialized.planes.size());
+    for (size_t i = 0; i < resolved.planes.size(); ++i) {
+        CHECK(resolved.planes[i].offset == materialized.planes[i].offset);
+        CHECK(resolved.planes[i].stride == materialized.planes[i].stride);
+        CHECK(resolved.planes[i].bytes == materialized.planes[i].bytes);
+    }
 }
 
 }
@@ -161,10 +185,13 @@ TEST_CASE("crop raw UYVY frame uses centered height without scanning") {
         uyvy[i] = static_cast<uint8_t>(i);
     }
     FrameMetadata cropped_metadata;
+    FrameMetadata resolved_metadata;
     std::vector<uint8_t> cropped;
 
+    REQUIRE(resolve_frame_center_crop(metadata, uyvy, 4, 2, &resolved_metadata));
     REQUIRE(crop_frame_center(metadata, uyvy, 4, 2,
                               &cropped_metadata, &cropped));
+    check_crop_metadata_matches(resolved_metadata, cropped_metadata);
     CHECK(cropped_metadata.width == 4);
     CHECK(cropped_metadata.height == 2);
     CHECK(cropped_metadata.source_width == 4);
@@ -193,9 +220,12 @@ TEST_CASE("crop raw UYVY frame detects top and bottom black bars") {
         }
     }
     FrameMetadata cropped_metadata;
+    FrameMetadata resolved_metadata;
     std::vector<uint8_t> cropped;
 
+    REQUIRE(resolve_frame_black_bars_crop(metadata, uyvy, &resolved_metadata));
     REQUIRE(crop_frame_black_bars(metadata, uyvy, &cropped_metadata, &cropped));
+    check_crop_metadata_matches(resolved_metadata, cropped_metadata);
     CHECK(cropped_metadata.width == 4);
     CHECK(cropped_metadata.height == 2);
     CHECK(cropped_metadata.crop_x == 0);
@@ -216,10 +246,14 @@ TEST_CASE("known screen ratio derives landscape orientation from current frame")
     }
     const std::vector<uint8_t> uyvy = uyvy_from_luma(12, 8, luma);
     FrameMetadata cropped_metadata;
+    FrameMetadata resolved_metadata;
     std::vector<uint8_t> cropped;
 
+    REQUIRE(resolve_frame_center_aspect_auto_crop(metadata, uyvy, 2, 4,
+                                                  &resolved_metadata));
     REQUIRE(crop_frame_center_aspect_auto(metadata, uyvy, 2, 4,
                                           &cropped_metadata, &cropped));
+    check_crop_metadata_matches(resolved_metadata, cropped_metadata);
     CHECK(cropped_metadata.width == 12);
     CHECK(cropped_metadata.height == 6);
     CHECK(cropped_metadata.crop_x == 0);
@@ -258,10 +292,14 @@ TEST_CASE("known screen ratio derives portrait orientation from current frame") 
     }
     const std::vector<uint8_t> uyvy = uyvy_from_luma(12, 8, luma);
     FrameMetadata cropped_metadata;
+    FrameMetadata resolved_metadata;
     std::vector<uint8_t> cropped;
 
+    REQUIRE(resolve_frame_center_aspect_auto_crop(metadata, uyvy, 4, 2,
+                                                  &resolved_metadata));
     REQUIRE(crop_frame_center_aspect_auto(metadata, uyvy, 4, 2,
                                           &cropped_metadata, &cropped));
+    check_crop_metadata_matches(resolved_metadata, cropped_metadata);
     CHECK(cropped_metadata.width == 4);
     CHECK(cropped_metadata.height == 8);
     CHECK(cropped_metadata.crop_x == 4);
