@@ -398,6 +398,10 @@ func TestModelAPIModeValidation(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() rejected stateful named OpenAI-compatible endpoint: %v", err)
 	}
+	cfg.ModelProviders["gateway"] = ModelProvider{Type: "openai", BaseURL: "https://openrouter.ai/api/v1"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "supports stored Responses") {
+		t.Fatalf("OpenRouter URL saved as openai Validate() error = %v", err)
+	}
 	if err := (Config{Model: ModelConfig{Provider: "anthropic", Model: "claude-test", APIMode: "responses"}}).Validate(); err == nil || !strings.Contains(err.Error(), "OpenAI-compatible /responses endpoint") {
 		t.Fatalf("Validate() error = %v, want native transport compatibility error", err)
 	}
@@ -425,8 +429,8 @@ func TestModelAPIModeValidation(t *testing.T) {
 	if (ModelConfig{APIMode: "chat_completions", ResponsesContextManagement: "compaction"}).ResponsesProviderCompactionEnabled() {
 		t.Fatal("provider compaction should not affect Chat Completions mode")
 	}
-	if (ModelConfig{APIMode: "responses", ResponsesContextManagement: "compaction"}).ResponsesProviderCompactionEnabled() {
-		t.Fatal("stateless Responses mode must retain proactive local compaction")
+	if !(ModelConfig{APIMode: "responses", ResponsesContextManagement: "compaction"}).ResponsesProviderCompactionEnabled() {
+		t.Fatal("stateless Responses compaction must suppress duplicate local compaction")
 	}
 }
 

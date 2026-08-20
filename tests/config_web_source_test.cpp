@@ -1842,7 +1842,7 @@ TEST_CASE("config web html uses canonical provider map and type field names") {
     CHECK(html.find("configKey:'model_providers'") != std::string::npos);
     CHECK(html.find("body[self.spec.configKey]=snapshot") != std::string::npos);
     CHECK(html.find("payload.config&&payload.config[self.spec.configKey]") != std::string::npos);
-    CHECK(html.find("ModelProvidersManager.records[providerRef].type") != std::string::npos);
+    CHECK(html.find("resolveModelProviderType(providerRef)") != std::string::npos);
     CHECK(html.find("hydrateSelectField(section,'type'") != std::string::npos);
 }
 
@@ -1913,7 +1913,9 @@ TEST_CASE("config web html keeps the remembered provider in sync with the select
 TEST_CASE("config web html resolves named providers when filtering option scopes") {
     const std::string js = read_config_web_config_scripts();
 
-    CHECK(js.find("function resolveProviderType(value)") != std::string::npos);
+    CHECK(js.find("function resolveModelProviderType(value)") != std::string::npos);
+    CHECK(js.find("host==='openrouter.ai'||host.endsWith('.openrouter.ai')") !=
+          std::string::npos);
     const size_t filter_at = js.find("function providerFilterValue(section)");
     REQUIRE(filter_at != std::string::npos);
     const std::string filter_body = js.substr(filter_at, 700);

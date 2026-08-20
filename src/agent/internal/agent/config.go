@@ -755,7 +755,7 @@ type ModelConfig struct {
 
 func (m ModelConfig) ResponsesProviderCompactionEnabled() bool {
 	apiMode := normalizeModelAPIMode(m.APIMode)
-	return apiMode == modelAPIModeResponsesStateful &&
+	return (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) &&
 		normalizeResponsesContextManagement(m.ResponsesContextManagement) == responsesContextManagementCompaction
 }
 
@@ -1000,7 +1000,7 @@ func resolveModelProvider(cfg *Config, m *ModelConfig) error {
 
 // applyProviderToModel applies a provider configuration to a model config.
 func applyProviderToModel(provider ModelProvider, originalRef string, m *ModelConfig) error {
-	providerType := strings.TrimSpace(provider.Type)
+	providerType := effectiveModelProviderType(provider.Type, provider.BaseURL)
 	if providerType == "" {
 		return fmt.Errorf("provider %q has no provider type specified", originalRef)
 	}
@@ -1467,20 +1467,46 @@ func (c Config) Validate() error {
 // are rejected before a configuration is persisted or used at startup.
 func (c Config) modelProviderSupportsResponses() bool {
 	providerType := strings.TrimSpace(c.Model.Provider)
+	baseURL := c.Model.BaseURL
 	if provider, ok := c.ModelProviders[providerType]; ok {
-		providerType = strings.TrimSpace(provider.Type)
+		providerType = provider.Type
+		baseURL = provider.BaseURL
 	}
+	providerType = effectiveModelProviderType(providerType, baseURL)
 	definition, ok := lookupModelProviderDefinition(providerType)
 	return ok && definition.supportsResponses
 }
 
 func (c Config) modelProviderSupportsResponsesStateful() bool {
 	providerType := strings.TrimSpace(c.Model.Provider)
+	baseURL := c.Model.BaseURL
 	if provider, ok := c.ModelProviders[providerType]; ok {
-		providerType = strings.TrimSpace(provider.Type)
+		providerType = provider.Type
+		baseURL = provider.BaseURL
 	}
+	providerType = effectiveModelProviderType(providerType, baseURL)
 	definition, ok := lookupModelProviderDefinition(providerType)
 	return ok && definition.supportsResponsesStateful
+}
+
+// effectiveModelProviderType recognizes well-known endpoints that were saved
+// as generic OpenAI-compatible transports by older config pages. This keeps
+// provider capability checks and runtime request behavior aligned: OpenRouter
+// implements /responses, but it rejects stored Responses (store=true).
+func effectiveModelProviderType(providerType, baseURL string) string {
+	providerType = strings.ToLower(strings.TrimSpace(providerType))
+	if providerType != "openai" {
+		return providerType
+	}
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return providerType
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "openrouter.ai" || strings.HasSuffix(host, ".openrouter.ai") {
+		return "openrouter"
+	}
+	return providerType
 }
 
 // isKnownProviderType reports whether the value names a built-in model

@@ -250,7 +250,7 @@ let translatedOptions = {};
 stateModule.namespace.runtime.t = (key, params = {}) => String(translatedOptions[key] ?? params.defaultValue ?? key).replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (_match, name) => params[name] ?? '');
 const configMetaModule = await loadModule(path.join(webRoot, 'assets/js/config/config-meta.js'));
 await configMetaModule.evaluate();
-const {buildConfigMeta, hydrateSelectField} = configMetaModule.namespace;
+const {buildConfigMeta, hydrateSelectField, resolveModelProviderType} = configMetaModule.namespace;
 
 buildConfigMeta({sections: [
   {name: 'agent', fields: [
@@ -267,6 +267,7 @@ buildConfigMeta({sections: [
     {key: 'api_mode', label: 'Conversation API', widget: 'select', enum: [
       {value: '', label: 'Chat Completions (compatible)'},
       {value: 'responses', label: 'Responses (local context)'},
+      {value: 'responses_stateful', label: 'Responses (provider context)', providers: ['openai']},
     ]},
     {key: 'temperature', label: 'temperature', widget: 'number'},
   ]},
@@ -299,6 +300,16 @@ assert.deepEqual(document.getElementById('model_api_mode').options.map((option) 
   'Responses（本地上下文）',
 ]);
 assert.equal(document.getElementById('model_api_mode').value, 'responses');
+const {modelProvidersByName, appState} = stateModule.namespace;
+document.getElementById('model_provider').value = 'openrouter';
+modelProvidersByName.openrouter = {type: 'openai', base_url: 'https://openrouter.ai/api/v1'};
+assert.equal(resolveModelProviderType('openrouter'), 'openrouter');
+hydrateSelectField('model', 'api_mode', 'responses_stateful', true);
+assert.deepEqual(document.getElementById('model_api_mode').options.map((option) => option.value), [
+  '',
+  'responses',
+], 'OpenRouter records saved as OpenAI-compatible must hide stored Responses');
+document.getElementById('model_api_mode').value = 'responses';
 assert.deepEqual(agentTarget.children.map((field) => field.getAttribute('data-config-field')), [
   'agent.input_mode',
   'agent.new_field',
@@ -309,6 +320,8 @@ assert.deepEqual(agentTarget.children.map((field) => field.getAttribute('data-co
 
 const configFormModule = await loadModule(path.join(webRoot, 'assets/js/config/config-form.js'));
 await configFormModule.evaluate();
+appState.config = {model: {provider: 'openrouter', api_mode: 'responses_stateful'}};
+assert.equal(configFormModule.namespace.readSection('model').api_mode, 'responses', 'the visible Responses selection is included in the save payload');
 configFormModule.namespace.setSectionLocked('model', true);
 assert.equal(document.getElementById('model_provider').disabled, true, 'locking a section disables its fields');
 assert.equal(modelSaveButton.disabled, true, 'locking a section disables its save button');

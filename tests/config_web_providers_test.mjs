@@ -145,6 +145,11 @@ registerRuntime({
   isSectionEditing: (section) => section === 'model' && modelSectionEditing,
   optionValue: (option) => option.value,
   request: (...args) => requestImpl(...args),
+  resolveModelProviderType: (providerRef) => {
+    const manager = stateModule.namespace.runtime.ModelProvidersManager;
+    const record = manager && manager.records ? manager.records[providerRef] : null;
+    return record ? record.type : providerRef;
+  },
   setBanner() {},
   setDetails: (message) => { latestDetails = message; },
   t: (key) => key,
