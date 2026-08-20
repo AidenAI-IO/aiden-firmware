@@ -107,7 +107,7 @@ so they do not cover the BLE Wake-specific allowlist or runtime tool filtering.
 
 For iOS background without PiP, a reachable Dynamic Island return entry keeps the
 data tools visible. The Agent calls the requested `bridge_*` tool directly; the
-tool restores Aiden internally before executing, so the Agent must not click the
+tool restores the Aiden App internally before executing, so the Agent must not click the
 Dynamic Island or call `bridge_open_app`. With iOS PiP or Android FGS enabled,
 background-safe data tools execute directly through the background queue.
 `bridge_open_app` remains excluded because PiP/FGS do not provide background app

@@ -10,7 +10,7 @@ const phoneBridgeBackgroundStateMaxAge = 15 * time.Second
 
 const (
 	phoneBridgeDisconnectedRecoveryGuidance = "If Phone Bridge recovery is unavailable, do not stop the task: call screenshot first to inspect the current phone state, then use visible app search or suitable HID/touch tools. Call request_human_handoff only after observation or input fallback is also unavailable, or the next step truly requires user action."
-	phoneBridgeIOSOpenAppRecoveryGuidance   = "If a Dynamic Island entry is visible, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry. " + phoneBridgeDisconnectedRecoveryGuidance
+	phoneBridgeIOSOpenAppRecoveryGuidance   = "If a Dynamic Island entry is visible, tap it to reopen the Aiden App, wait for Phone Bridge to reconnect, then retry. " + phoneBridgeDisconnectedRecoveryGuidance
 )
 
 const (
@@ -251,7 +251,7 @@ func phoneBridgeHasReturnEntry(status PhoneBridgeStatus) bool {
 
 func phoneBridgeRecoveryGuidance(status PhoneBridgeStatus) string {
 	if phoneBridgeCanRestoreFromReturnEntry(status) {
-		return "Retry the companion app tool; it can reopen Aiden through the Dynamic Island entry, wait for Phone Bridge to reconnect, then send the command. Use home-screen search or HID fallback only if restore fails."
+		return "Retry the companion app tool; it can reopen the Aiden App through the Dynamic Island entry, wait for Phone Bridge to reconnect, then send the command. Use home-screen search or HID fallback only if restore fails."
 	}
 	if phoneBridgeIsAndroid(status) {
 		return "Use screenshot plus HID/touch fallback; Android FGS Bridge mode only supports background-safe data tools."
@@ -293,7 +293,7 @@ func phoneBridgeRestoreUnavailableError(status PhoneBridgeStatus) error {
 			return fmt.Errorf("phone bridge is connected but not ready for foreground command")
 		}
 		if phoneBridgeIsAndroid(status) {
-			return fmt.Errorf("phone bridge app is %s; Android bridge commands require a connected foreground Aiden app", state)
+			return fmt.Errorf("phone bridge app is %s; Android bridge commands require a connected foreground Aiden App", state)
 		}
 		if !phoneBridgeIsIOS(status) {
 			return fmt.Errorf("phone bridge app is %s and no supported foreground return entry is available", state)
