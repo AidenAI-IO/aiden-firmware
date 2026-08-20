@@ -278,8 +278,6 @@ void apply_kv(AgentToml& cfg,
             if (!assign_string(&cfg.additional_prompt, raw, &sub_err)) fail(sub_err);
         } else if (key == "input_mode") {
             if (!assign_string(&cfg.input_mode, raw, &sub_err)) fail(sub_err);
-        } else if (key == "trigger_mode") {
-            if (!assign_string(&cfg.trigger_mode, raw, &sub_err)) fail(sub_err);
         } else if (key == "vad_backend") {
             if (!assign_string(&cfg.vad_backend, raw, &sub_err)) fail(sub_err);
         } else if (key == "vad_model_path") {
@@ -907,7 +905,6 @@ bool save_agent_toml(const char* path, const AgentToml& input, std::string* erro
     if (!cfg.custom_instruction.empty()) emit_string(out, "custom_instruction", cfg.custom_instruction);
     if (!cfg.additional_prompt.empty()) emit_string(out, "additional_prompt", cfg.additional_prompt);
     if (!cfg.input_mode.empty()) emit_string(out, "input_mode", cfg.input_mode);
-    if (!cfg.trigger_mode.empty()) emit_string(out, "trigger_mode", cfg.trigger_mode);
     if (!cfg.vad_backend.empty()) emit_string(out, "vad_backend", cfg.vad_backend);
     if (!cfg.vad_model_path.empty()) emit_string(out, "vad_model_path", cfg.vad_model_path);
     if (!cfg.vad_helper_path.empty()) emit_string(out, "vad_helper_path", cfg.vad_helper_path);

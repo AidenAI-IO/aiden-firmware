@@ -142,6 +142,35 @@ class AgentClient:
         body = json.loads(body_bytes)
         return body if isinstance(body, dict) else {}
 
+    def seed_episode(self, episode: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
+        headers = {}
+        if self._benchmark_token:
+            headers["Authorization"] = f"Bearer {self._benchmark_token}"
+        status, body_bytes = self._post(
+            "/api/benchmark/seed_episode", episode, timeout=timeout, headers=headers
+        )
+        if status != 200:
+            raise AgentRequestError(f"seed_episode returned {status}")
+        body = _parse_json_response(body_bytes, "seed_episode")
+        return body if isinstance(body, dict) else {}
+
+    def process_episode_memory(
+        self, episode_id: str, timeout: int = 90
+    ) -> dict[str, Any]:
+        headers = {}
+        if self._benchmark_token:
+            headers["Authorization"] = f"Bearer {self._benchmark_token}"
+        status, body_bytes = self._post(
+            "/api/benchmark/episode-memory/process",
+            {"episode_id": episode_id},
+            timeout=timeout,
+            headers=headers,
+        )
+        if status != 200:
+            raise AgentRequestError(f"episode-memory process returned {status}")
+        body = _parse_json_response(body_bytes, "episode-memory process")
+        return body if isinstance(body, dict) else {}
+
     def set_phone_bridge_state(
         self, state: dict[str, Any], timeout: int = 30
     ) -> dict[str, Any]:

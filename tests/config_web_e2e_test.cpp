@@ -246,7 +246,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"public_key\":\"\",\"secret_key\":\"\",\"upload_screenshots\":true,"
         "\"upload_timeout_sec\":30,\"max_retry\":2,\"tags\":[],\"environment\":\"default\"},"
         "\"agent\":{\"locale\":\"zh-CN\",\"custom_instruction\":\"stub custom instruction\",\"additional_prompt\":\"\","
-        "\"input_mode\":\"text\",\"trigger_mode\":\"manual\",\"vad_backend\":\"rknn\","
+        "\"input_mode\":\"text\",\"vad_backend\":\"rknn\","
         "\"vad_model_path\":\"/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn\","
         "\"vad_helper_path\":\"/oem/usr/bin/rknn_vad\",\"vad_speech_threshold\":0.5,"
         "\"silence_ms\":650,\"min_speech_ms\":300,\"voice_followup_enabled\":false,"
@@ -2575,36 +2575,6 @@ TEST_CASE("config_web: hid config test requires extension keyboard device") {
     CHECK((not_found_android_passed->type & 0xff) == cJSON_False);
     CHECK(required_json_string(not_found_android, "detail") == "/dev/definitely-missing-hidg9 not found");
     cJSON_Delete(not_found_json);
-}
-
-TEST_CASE("config_web: config test rejects wakeup trigger for text input") {
-    StubEnv env;
-    auto handle = start_server(env);
-
-    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config");
-    REQUIRE(get_resp.status == 200);
-    cJSON* parsed = cJSON_Parse(get_resp.body.c_str());
-    REQUIRE(parsed != nullptr);
-    cJSON* config = cJSON_GetObjectItem(parsed, "config");
-    REQUIRE(config != nullptr);
-    cJSON* agent = cJSON_GetObjectItem(config, "agent");
-    REQUIRE(agent != nullptr);
-    cJSON_DeleteItemFromObject(agent, "input_mode");
-    cJSON_AddStringToObject(agent, "input_mode", "text");
-    cJSON_DeleteItemFromObject(agent, "trigger_mode");
-    cJSON_AddStringToObject(agent, "trigger_mode", "wakeup");
-
-    char* agent_text = cJSON_PrintUnformatted(agent);
-    REQUIRE(agent_text != nullptr);
-    std::string test_body = std::string("{\"section\":\"agent\",\"values\":") + agent_text + "}";
-    free(agent_text);
-    cJSON_Delete(parsed);
-
-    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
-    CHECK(test_resp.status == 200);
-    CHECK(test_resp.body.find("\"ok\":false") != std::string::npos);
-    CHECK(test_resp.body.find("\"check\":\"trigger_mode\"") != std::string::npos);
-    CHECK(test_resp.body.find("wakeup requires input_mode stt") != std::string::npos);
 }
 
 TEST_CASE("config_web: config test reports removed audio input mode hint") {
