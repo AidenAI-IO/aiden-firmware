@@ -100,6 +100,15 @@ grep -q 'mkdir -p /userdata/agent/log' \
 
 grep -qx 'DHCP=yes' "${OVERLAY}/etc/systemd/network/20-wlan0.network"
 grep -qx 'Address=192.168.42.1/24' "${OVERLAY}/etc/systemd/network/30-usb0.network"
+grep -qx 'ConfigureWithoutCarrier=yes' "${OVERLAY}/etc/systemd/network/30-usb0.network"
+grep -qx 'RequiredForOnline=no' "${OVERLAY}/etc/systemd/network/30-usb0.network"
+if rg -n 'networkctl reconfigure (usb0|"?\$\{?interface\}?")' \
+    "${REPO_ROOT}/overlay/etc/init.d/S49usbhid" \
+    "${OVERLAY}/usr/lib/aiden/aiden-usb-ecm-watchdog" \
+    "${OVERLAY}/usr/lib/aiden/aiden-wait-interface-ip" \
+    "${REPO_ROOT}/overlay/oem/usr/bin/aiden-dynamic-keyboard"; then
+    fail "USB helpers must not ask networkd to replace an address they just configured"
+fi
 grep -q '/userdata/debian/wifi/wpa_supplicant-wlan0.conf' \
     "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
 grep -q -- '--wifi-backend=systemd-networkd' \

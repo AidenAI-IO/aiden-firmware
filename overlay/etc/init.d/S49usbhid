@@ -64,8 +64,6 @@ configure_usb0() {
 	if command -v ip >/dev/null 2>&1; then
 		ip link set dev usb0 up || return 1
 		ip address replace "$USB0_ADDR/24" dev usb0 || return 1
-		command -v networkctl >/dev/null 2>&1 && \
-			networkctl reconfigure usb0 >/dev/null 2>&1 || true
 		return 0
 	fi
 	return 1
@@ -152,7 +150,9 @@ start() {
 	echo 1 > "$GADGET_DIR/functions/hid.usb0/protocol"
 	echo 1 > "$GADGET_DIR/functions/hid.usb0/subclass"
 	echo 8 > "$GADGET_DIR/functions/hid.usb0/report_length"
-	printf '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x01\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' \
+	# POSIX printf supports octal escapes. Debian's dash does not interpret the
+	# hexadecimal \xNN form accepted by the Buildroot BusyBox shell.
+	printf '\005\001\011\006\241\001\005\007\031\340\051\347\025\000\045\001\165\001\225\010\201\002\225\001\165\010\201\001\225\006\165\010\025\000\045\145\005\007\031\000\051\145\201\000\300' \
 		> "$GADGET_DIR/functions/hid.usb0/report_desc"
 
 	# Touch / mouse HID function (report format follows [device].device_type)
@@ -162,11 +162,11 @@ start() {
 	read_pointer_mode
 	if [ "$POINTER_MODE" = "touchscreen" ]; then
 		echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
-		printf '\x05\x0d\x09\x04\xa1\x01\x09\x22\xa1\x02\x05\x0d\x09\x42\x09\x32\x15\x00\x25\x01\x75\x01\x95\x02\x81\x02\x75\x06\x95\x01\x81\x03\x09\x51\x75\x08\x95\x01\x15\x00\x25\x0f\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\xc0\xc0' \
+		printf '\005\015\011\004\241\001\011\042\241\002\005\015\011\102\011\062\025\000\045\001\165\001\225\002\201\002\165\006\225\001\201\003\011\121\165\010\225\001\025\000\045\017\201\002\005\001\011\060\011\061\026\000\000\046\377\177\165\020\225\002\201\002\300\300' \
 			> "$GADGET_DIR/functions/hid.usb1/report_desc"
 	else
 		echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
-		printf '\x05\x01\x09\x02\xa1\x01\x09\x01\xa1\x00\x05\x09\x19\x01\x29\x08\x15\x00\x25\x01\x95\x08\x75\x01\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\x09\x38\x15\x81\x25\x7f\x75\x08\x95\x01\x81\x06\xc0\xc0' \
+		printf '\005\001\011\002\241\001\011\001\241\000\005\011\031\001\051\010\025\000\045\001\225\010\165\001\201\002\005\001\011\060\011\061\026\000\000\046\377\177\165\020\225\002\201\002\011\070\025\201\045\177\165\010\225\001\201\006\300\300' \
 			> "$GADGET_DIR/functions/hid.usb1/report_desc"
 	fi
 
@@ -175,10 +175,10 @@ start() {
 	echo 0 > "$GADGET_DIR/functions/hid.usb2/subclass"
 	echo 2 > "$GADGET_DIR/functions/hid.usb2/report_length"
 	if [ "$POINTER_MODE" = "touchscreen" ]; then
-		printf '\x05\x0c\x09\x01\xa1\x01\x15\x00\x26\xff\x03\x1a\x00\x00\x2a\xff\x03\x75\x10\x95\x01\x81\x00\xc0' \
+		printf '\005\014\011\001\241\001\025\000\046\377\003\032\000\000\052\377\003\165\020\225\001\201\000\300' \
 			> "$GADGET_DIR/functions/hid.usb2/report_desc"
 	else
-		printf '\x05\x0c\x09\x01\xa1\x01\x15\x00\x25\x01\x09\xe2\x09\xe9\x09\xea\x09\xcd\x09\xb7\x09\xb5\x09\xb6\x09\xb4\x09\xb3\x09\x65\x09\x6f\x09\x70\x75\x01\x95\x0c\x81\x02\x75\x01\x95\x04\x81\x03\xc0' \
+		printf '\005\014\011\001\241\001\025\000\045\001\011\342\011\351\011\352\011\315\011\267\011\265\011\266\011\264\011\263\011\145\011\157\011\160\165\001\225\014\201\002\165\001\225\004\201\003\300' \
 			> "$GADGET_DIR/functions/hid.usb2/report_desc"
 	fi
 
