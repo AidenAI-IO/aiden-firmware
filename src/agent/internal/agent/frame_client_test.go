@@ -162,7 +162,7 @@ func TestDeriveActiveAreaFromReportedPhoneScreenCanCropRows(t *testing.T) {
 	}
 }
 
-func TestDetectImageActiveAreaChoosesLargerBlackBarAxis(t *testing.T) {
+func TestDetectImageActiveAreaChoosesAxisWithLargerRemovedFraction(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 10, 8))
 	for y := 2; y < 6; y++ {
 		for x := 2; x < 8; x++ {
@@ -171,7 +171,22 @@ func TestDetectImageActiveAreaChoosesLargerBlackBarAxis(t *testing.T) {
 	}
 
 	active := detectImageActiveArea(img, 10, 8)
-	want := screen.ScreenActiveArea{X: 2, Y: 0, Width: 6, Height: 8, Valid: true}
+	want := screen.ScreenActiveArea{X: 0, Y: 2, Width: 10, Height: 4, Valid: true}
+	if active != want {
+		t.Fatalf("active area = %+v, want %+v", active, want)
+	}
+}
+
+func TestDetectImageActiveAreaChoosesHorizontalWhenMoreColumnsAreRemoved(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 10, 8))
+	for y := 1; y < 7; y++ {
+		for x := 3; x < 7; x++ {
+			img.Set(x, y, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		}
+	}
+
+	active := detectImageActiveArea(img, 10, 8)
+	want := screen.ScreenActiveArea{X: 3, Y: 0, Width: 4, Height: 8, Valid: true}
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
