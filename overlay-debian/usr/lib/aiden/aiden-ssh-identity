@@ -3,10 +3,12 @@ set -eu
 
 persistent_dir=/userdata/system/ssh
 etc_dir=/etc/ssh
-mkdir -p "${persistent_dir}" "${etc_dir}"
+runtime_dir=/run/sshd
+mkdir -p "${persistent_dir}" "${etc_dir}" "${runtime_dir}"
 chmod 0700 "${persistent_dir}"
+chmod 0755 "${runtime_dir}"
 
-for type in rsa ecdsa ed25519; do
+for type in ed25519 ecdsa rsa; do
     name=ssh_host_${type}_key
     key=${persistent_dir}/${name}
     if [ ! -s "${key}" ]; then
