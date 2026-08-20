@@ -69,6 +69,7 @@ type webConfigDTO struct {
 	STT                sttDTO                        `json:"stt"`
 	Audio              audioDTO                      `json:"audio"`
 	AudioArchive       audioArchiveDTO               `json:"audio_archive"`
+	Storage            storageDTO                    `json:"storage"`
 	VoiceNotifications voiceNotificationsDTO         `json:"voice_notifications"`
 	Device             deviceDTO                     `json:"device"`
 	Log                logDTO                        `json:"log"`
@@ -100,7 +101,7 @@ func (d *webConfigDTO) UnmarshalJSON(data []byte) error {
 
 type modelDTO struct {
 	Provider             string   `json:"provider"`
-	APIKey               string   `json:"api_key"`
+	APIKey               string   `json:"api_key,omitempty"`
 	Model                string   `json:"model"`
 	APIMode              string   `json:"api_mode,omitempty"`
 	ReasoningEffort      string   `json:"reasoning_effort"`
@@ -313,6 +314,15 @@ type audioArchiveDTO struct {
 	StoragePath string `json:"storage_path"`
 }
 
+type storageDTO struct {
+	MonitorEnabled      bool   `json:"monitor_enabled"`
+	MountPoint          string `json:"mount_point"`
+	Device              string `json:"device"`
+	MinCardFreeMB       int    `json:"min_card_free_mb"`
+	MigrateStartFreePct int    `json:"migrate_start_free_pct"`
+	MigrateStopFreePct  int    `json:"migrate_stop_free_pct"`
+}
+
 type deviceDTO struct {
 	Backend    string `json:"backend,omitempty"`
 	DeviceType string `json:"device_type"`
@@ -422,6 +432,13 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 	} else if d.Search.HasAPIKey {
 		searchKey = hasAPIKeyPlaceholder
 	}
+	storage := agent.DefaultConfig().Storage
+	storage.MonitorEnabled = d.Storage.MonitorEnabled
+	storage.MountPoint = d.Storage.MountPoint
+	storage.Device = d.Storage.Device
+	storage.MinCardFreeMB = d.Storage.MinCardFreeMB
+	storage.MigrateStartFreePct = d.Storage.MigrateStartFreePct
+	storage.MigrateStopFreePct = d.Storage.MigrateStopFreePct
 	return agent.Config{
 		ModelProviders: d.modelProvidersToAgentConfig(),
 		TTSProviders:   d.ttsProvidersToAgentConfig(),
@@ -470,6 +487,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			MaxSizeMB:   d.AudioArchive.MaxSizeMB,
 			StoragePath: d.AudioArchive.StoragePath,
 		},
+		Storage: storage,
 		VoiceNotifications: agent.VoiceNotificationsConfig{
 			Enabled:    d.VoiceNotifications.Enabled,
 			MaxPending: d.VoiceNotifications.MaxPending,
@@ -666,6 +684,7 @@ func (d webConfigDTO) sttProvidersToAgentConfig() map[string]agent.STTProvider {
 
 func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 	audioArchive := cfg.AudioArchive
+	migrateStartFreePct, migrateStopFreePct := cfg.Storage.MigrateWatermarksOrDefault()
 
 	return webConfigDTO{
 		ModelProviders: modelProviderDTOsFromConfig(cfg.ModelProviders),
@@ -673,7 +692,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		STTProviders:   sttProviderDTOsFromConfig(cfg.STTProviders),
 		Model: modelDTO{
 			Provider:             cfg.Model.Provider,
-			APIKey:               cfg.Model.APIKey,
 			Model:                cfg.Model.Model,
 			APIMode:              cfg.Model.APIMode,
 			ReasoningEffort:      cfg.Model.ReasoningEffort,
@@ -711,6 +729,14 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			MaxFiles:    audioArchive.MaxFilesOrDefault(),
 			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
 			StoragePath: audioArchive.StoragePathOrDefault(),
+		},
+		Storage: storageDTO{
+			MonitorEnabled:      cfg.Storage.MonitorEnabled,
+			MountPoint:          cfg.Storage.MountPointOrDefault(),
+			Device:              cfg.Storage.DeviceOrDefault(),
+			MinCardFreeMB:       cfg.Storage.MinCardFreeMBOrDefault(),
+			MigrateStartFreePct: migrateStartFreePct,
+			MigrateStopFreePct:  migrateStopFreePct,
 		},
 		Device: deviceDTO{
 			Backend:    cfg.Device.BackendOrDefault(),
@@ -1042,6 +1068,9 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 	if err != nil {
 		return configUpdateResult{}, fmt.Errorf("load config: %w", err)
 	}
+	if err := normalizeLegacyWebConfigPatch(patch, current); err != nil {
+		return configUpdateResult{}, err
+	}
 	if err := restoreRenamedProviderCredentials(patch, renames, current); err != nil {
 		return configUpdateResult{}, err
 	}
@@ -1118,6 +1147,134 @@ func updateConfigFile(path string, patchJSON []byte) (configUpdateResult, error)
 		ChangedPaths:   changed,
 		RebootRequired: requiresConfigReboot(changed),
 	}, nil
+}
+
+func normalizeLegacyWebConfigPatch(patch map[string]json.RawMessage, current agent.Config) error {
+	for _, section := range []string{"model_providers", "tts_providers", "stt_providers"} {
+		raw, ok := patch[section]
+		if !ok {
+			continue
+		}
+		var records map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &records); err != nil || records == nil {
+			continue
+		}
+		for name, rawRecord := range records {
+			if bytes.Equal(bytes.TrimSpace(rawRecord), []byte("null")) {
+				continue
+			}
+			var record map[string]json.RawMessage
+			if err := json.Unmarshal(rawRecord, &record); err != nil || record == nil {
+				continue
+			}
+			if _, hasType := record["type"]; !hasType {
+				if legacyType, hasLegacyType := record["provider"]; hasLegacyType {
+					record["type"] = legacyType
+				}
+			}
+			delete(record, "provider")
+			encoded, err := json.Marshal(record)
+			if err != nil {
+				return err
+			}
+			records[name] = encoded
+		}
+		encoded, err := json.Marshal(records)
+		if err != nil {
+			return err
+		}
+		patch[section] = encoded
+	}
+
+	if rawAgent, ok := patch["agent"]; ok {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(rawAgent, &fields) == nil && fields != nil {
+			delete(fields, "default_platform")
+			delete(fields, "instruction")
+			if len(fields) == 0 {
+				delete(patch, "agent")
+			} else if encoded, err := json.Marshal(fields); err == nil {
+				patch["agent"] = encoded
+			}
+		}
+	}
+
+	rawModel, ok := patch["model"]
+	if !ok {
+		return nil
+	}
+	var model map[string]json.RawMessage
+	if err := json.Unmarshal(rawModel, &model); err != nil || model == nil {
+		return nil
+	}
+	delete(model, "base_url")
+	rawKey, hasKey := model["api_key"]
+	if hasKey {
+		var apiKey string
+		if err := json.Unmarshal(rawKey, &apiKey); err == nil {
+			model["api_key"] = json.RawMessage("null")
+		}
+		if strings.TrimSpace(apiKey) != "" {
+			provider := current.Model.Provider
+			if rawProvider, ok := model["provider"]; ok {
+				_ = json.Unmarshal(rawProvider, &provider)
+			}
+			if strings.TrimSpace(provider) != "" {
+				if err := addLegacyModelProviderCredential(patch, current, provider, apiKey); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if len(model) == 0 {
+		delete(patch, "model")
+	} else {
+		encoded, err := json.Marshal(model)
+		if err != nil {
+			return err
+		}
+		patch["model"] = encoded
+	}
+	return nil
+}
+
+func addLegacyModelProviderCredential(patch map[string]json.RawMessage, current agent.Config, provider, apiKey string) error {
+	var records map[string]json.RawMessage
+	if raw, ok := patch["model_providers"]; ok {
+		if err := json.Unmarshal(raw, &records); err != nil || records == nil {
+			return nil
+		}
+	}
+	if records == nil {
+		records = make(map[string]json.RawMessage)
+	}
+	var record map[string]json.RawMessage
+	if raw, ok := records[provider]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		_ = json.Unmarshal(raw, &record)
+	}
+	if record == nil {
+		record = make(map[string]json.RawMessage)
+		if existing, ok := current.ModelProviders[provider]; ok {
+			typeJSON, _ := json.Marshal(existing.Type)
+			record["type"] = typeJSON
+		} else {
+			typeJSON, _ := json.Marshal(provider)
+			record["type"] = typeJSON
+		}
+	}
+	keyJSON, _ := json.Marshal(apiKey)
+	record["api_key"] = keyJSON
+	encodedRecord, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	records[provider] = encodedRecord
+	encodedRecords, err := json.Marshal(records)
+	if err != nil {
+		return err
+	}
+	patch["model_providers"] = encodedRecords
+	return nil
 }
 
 func takeProviderRenames(patch map[string]json.RawMessage) (providerRenames, error) {
@@ -1411,13 +1568,23 @@ func validatePatchObject(typ reflect.Type, patch map[string]json.RawMessage, pat
 			elementType = elementType.Elem()
 		}
 		for key, raw := range patch {
+			entryPath := append(path, key)
+			if isProviderMapPath(path) && !isBareTOMLKey(key) {
+				return fmt.Errorf("invalid %s name %q: expected bare TOML key", strings.Join(path, "."), key)
+			}
+			if isCodeTTLMapPath(path) && !isBareTOMLKey(key) {
+				return fmt.Errorf("%s: expected bare TOML key", strings.Join(entryPath, "."))
+			}
 			if strings.HasPrefix(key, "has_") {
-				return fmt.Errorf("%s is a read-only status field", strings.Join(append(path, key), "."))
+				return fmt.Errorf("%s is a read-only status field", strings.Join(entryPath, "."))
 			}
 			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 				continue
 			}
 			if elementType.Kind() != reflect.Struct && elementType.Kind() != reflect.Map {
+				if err := validateJSONScalarType(raw, elementType, entryPath); err != nil {
+					return err
+				}
 				continue
 			}
 			var child map[string]json.RawMessage
@@ -1456,9 +1623,104 @@ func validatePatchObject(typ reflect.Type, patch map[string]json.RawMessage, pat
 			if err := validatePatchObject(base, child, append(path, key)); err != nil {
 				return err
 			}
+		} else if err := validateJSONScalarType(raw, base, append(path, key)); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func validateJSONScalarType(raw json.RawMessage, typ reflect.Type, path []string) error {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return fmt.Errorf("%s: invalid JSON value", strings.Join(path, "."))
+	}
+	if isNonNegativeIntegerPath(path) {
+		number, ok := value.(json.Number)
+		integer, err := number.Int64()
+		if !ok || err != nil || integer < 0 {
+			return fmt.Errorf("%s: expected non-negative integer", strings.Join(path, "."))
+		}
+		return nil
+	}
+	expected := "value"
+	valid := false
+	switch typ.Kind() {
+	case reflect.String:
+		expected = "string"
+		_, valid = value.(string)
+	case reflect.Bool:
+		expected = "bool"
+		_, valid = value.(bool)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		expected = "number"
+		_, valid = value.(json.Number)
+	case reflect.Float32, reflect.Float64:
+		expected = "number"
+		_, valid = value.(json.Number)
+	case reflect.Slice, reflect.Array:
+		expected = "array"
+		_, valid = value.([]any)
+	}
+	if !valid {
+		return fmt.Errorf("%s: expected %s, got %s", strings.Join(path, "."), expected, jsonValueType(value))
+	}
+	return nil
+}
+
+func isNonNegativeIntegerPath(path []string) bool {
+	joined := strings.Join(path, ".")
+	if joined == "voice_notifications.max_pending" ||
+		joined == "voice_notifications.response_tail.max_items" ||
+		joined == "voice_notifications.response_tail.max_text_chars" ||
+		joined == "voice_notifications.expiration.default_ttl_seconds" {
+		return true
+	}
+	return len(path) == 4 && path[0] == "voice_notifications" &&
+		path[1] == "expiration" && path[2] == "code_ttl_seconds"
+}
+
+func jsonValueType(value any) string {
+	switch value.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case json.Number:
+		return "number"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	case nil:
+		return "null"
+	default:
+		return "value"
+	}
+}
+
+func isProviderMapPath(path []string) bool {
+	return len(path) == 1 && (path[0] == "model_providers" || path[0] == "tts_providers" || path[0] == "stt_providers")
+}
+
+func isCodeTTLMapPath(path []string) bool {
+	return len(path) == 3 && path[0] == "voice_notifications" && path[1] == "expiration" && path[2] == "code_ttl_seconds"
+}
+
+func isBareTOMLKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, r := range key {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func jsonFieldType(typ reflect.Type, name string) (reflect.Type, bool) {

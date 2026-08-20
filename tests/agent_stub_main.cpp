@@ -17,7 +17,7 @@
 //                                (default 0).
 //   AIDEN_AGENT_STUB_CONFIG_FILE   path to a file whose contents are written
 //                                  verbatim to stdout for `config`.
-//                                  If unset, prints a minimal resolved config.
+//                                  If unset, delegates to the real test agent.
 //   AIDEN_AGENT_STUB_CONFIG_EXIT   integer exit code for `config` (default 0).
 //   AIDEN_AGENT_STUB_UPDATE_FILE   path to stdout payload for `config-update`.
 //                                  If unset, delegates to the real test agent.
@@ -171,6 +171,17 @@ void maybe_sleep() {
     }
 }
 
+int delegate_to_real_agent(int argc, char** argv) {
+    std::vector<char*> delegated;
+    delegated.reserve(static_cast<size_t>(argc) + 1);
+    delegated.push_back(const_cast<char*>(AIDEN_REAL_AGENT_BIN));
+    for (int i = 1; i < argc; ++i) delegated.push_back(argv[i]);
+    delegated.push_back(nullptr);
+    ::execv(AIDEN_REAL_AGENT_BIN, delegated.data());
+    std::perror("stub: exec real agent");
+    return 127;
+}
+
 bool write_file_contents(const char* env_var, const char* default_text) {
     const char* path = std::getenv(env_var);
     if (!path || path[0] == '\0') {
@@ -250,6 +261,10 @@ int main(int argc, char** argv) {
     }
 
     if (sub == "config") {
+        if (!std::getenv("AIDEN_AGENT_STUB_CONFIG_FILE") &&
+            !std::getenv("AIDEN_AGENT_STUB_CONFIG_EXIT")) {
+            return delegate_to_real_agent(argc, argv);
+        }
         maybe_sleep();
         if (!write_file_contents("AIDEN_AGENT_STUB_CONFIG_FILE", kDefaultConfig)) {
             return 1;
@@ -286,14 +301,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        std::vector<char*> delegated;
-        delegated.reserve(static_cast<size_t>(argc) + 1);
-        delegated.push_back(const_cast<char*>(AIDEN_REAL_AGENT_BIN));
-        for (int i = 1; i < argc; ++i) delegated.push_back(argv[i]);
-        delegated.push_back(nullptr);
-        ::execv(AIDEN_REAL_AGENT_BIN, delegated.data());
-        std::perror("stub: exec config-update agent");
-        return 127;
+        return delegate_to_real_agent(argc, argv);
     }
 
     if (sub == "config-test") {

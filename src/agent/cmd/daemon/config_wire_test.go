@@ -443,11 +443,10 @@ func TestConfigWire_ModelProviderCanonicalJSON(t *testing.T) {
 // config page always showed zero providers AND every save of an unrelated
 // section started from an empty map and erased them from agent.toml.
 //
-// The C++ fixtures (tests/agent_stub_main.cpp and the resolved_config_json()
-// helper in tests/config_web_e2e_test.cpp) are hand-maintained copies of this
-// payload, so they cannot catch drift on the Go side. This test can: when a
-// section is added to webConfigDTO, this list must be updated, which is the
-// prompt to update the C++ fixtures and the AgentToml struct in the same change.
+// The E2E override fixtures are hand-maintained copies of this payload, so they
+// cannot catch drift on the Go side. This test can: when a section is added to
+// webConfigDTO, this list must be updated, which is the prompt to update those
+// fixtures in the same change.
 func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 	want := []string{
 		"agent",
@@ -461,6 +460,7 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 		"model_providers",
 		"ota",
 		"search",
+		"storage",
 		"stt",
 		"stt_providers",
 		"telemetry",
@@ -485,9 +485,8 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 	sort.Strings(got)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("webConfigDTO top-level sections drifted.\n got: %v\nwant: %v\n"+
-			"If this is intentional, update this list AND the C++ fixtures in "+
-			"tests/agent_stub_main.cpp and tests/config_web_e2e_test.cpp, plus "+
-			"AgentToml in src/agent_toml.h.", got, want)
+			"If this is intentional, update this list and the E2E override fixtures in "+
+			"tests/agent_stub_main.cpp and tests/config_web_e2e_test.cpp.", got, want)
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"aiden-agent/internal/agent"
 )
 
 func TestUpdateConfigFilePreservesCommentsAndUnknownFields(t *testing.T) {
@@ -247,5 +249,84 @@ func TestUpdateConfigFileRejectsMalformedProviderRenames(t *testing.T) {
 		if _, err := updateConfigFile(path, []byte(patch)); err == nil {
 			t.Fatalf("updateConfigFile(%s) error = nil", patch)
 		}
+	}
+}
+
+func TestValidateWebConfigPatchReportsScalarTypeErrors(t *testing.T) {
+	tests := []struct {
+		patch map[string]json.RawMessage
+		want  string
+	}{
+		{map[string]json.RawMessage{"device": json.RawMessage(`{"backend":7}`)}, "device.backend: expected string"},
+		{map[string]json.RawMessage{"live_activity": json.RawMessage(`{"enabled":"yes"}`)}, "live_activity.enabled: expected bool"},
+		{map[string]json.RawMessage{"telemetry": json.RawMessage(`{"tags":"alpha"}`)}, "telemetry.tags: expected array"},
+		{map[string]json.RawMessage{"tts": json.RawMessage(`{"speed":"fast"}`)}, "tts.speed: expected number"},
+	}
+	for _, tt := range tests {
+		if err := validateWebConfigPatch(tt.patch); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Fatalf("validateWebConfigPatch() error = %v, want %q", err, tt.want)
+		}
+	}
+}
+
+func TestUpdateConfigFileMigratesLegacyModelCredential(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte("[model]\nprovider = \"openai\"\napi_key = \"legacy-secret\"\nmodel = \"gpt-5.5\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	patch := []byte(`{"config":{"model":{"provider":"openai","api_key":"legacy-secret","base_url":"https://ignored.example"}}}`)
+	if _, err := updateConfigFile(path, patch); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if !strings.Contains(text, "[model_providers.openai]") ||
+		!strings.Contains(text, `api_key = "legacy-secret"`) {
+		t.Fatalf("legacy credential was not migrated:\n%s", text)
+	}
+	modelAt := strings.Index(text, "[model]\n")
+	if modelAt < 0 {
+		t.Fatalf("model section missing:\n%s", text)
+	}
+	modelEnd := strings.Index(text[modelAt+1:], "\n[")
+	modelSection := text[modelAt:]
+	if modelEnd >= 0 {
+		modelSection = text[modelAt : modelAt+1+modelEnd]
+	}
+	if strings.Contains(modelSection, "api_key") || strings.Contains(text, "ignored.example") {
+		t.Fatalf("legacy model-only fields leaked into TOML:\n%s", text)
+	}
+}
+
+func TestUpdateConfigFileAcceptsLegacyProviderTypeAlias(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	patch := []byte(`{"config":{"tts_providers":{"voice":{"provider":"fish-audio","api_key":"secret"}},"tts":{"provider":"voice"}}}`)
+	if _, err := updateConfigFile(path, patch); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `type = "fish-audio"`) || strings.Contains(string(got), "provider = \"fish-audio\"") {
+		t.Fatalf("provider alias was not canonicalized:\n%s", got)
+	}
+}
+
+func TestResolvedWebConfigOmitsLegacyModelCredential(t *testing.T) {
+	cfg := agent.DefaultConfig()
+	cfg.Model.APIKey = "top-secret"
+	encoded, err := json.Marshal(webConfigDTOFromAgentConfig(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "top-secret") || strings.Contains(string(encoded), `"api_key"`) {
+		t.Fatalf("resolved web config exposed legacy model credential: %s", encoded)
 	}
 }

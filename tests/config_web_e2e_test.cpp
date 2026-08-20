@@ -260,6 +260,19 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "}\n";
 }
 
+std::string model_provider_fixture_toml() {
+    return
+        "[model_providers.stub-openai]\n"
+        "type = \"openai\"\n"
+        "api_key = \"sk-stub-secret-1234\"\n\n"
+        "[model_providers.stub-ollama]\n"
+        "type = \"ollama\"\n"
+        "base_url = \"http://127.0.0.1:11434\"\n\n"
+        "[model]\n"
+        "provider = \"stub-openai\"\n"
+        "model = \"gpt-4o\"\n";
+}
+
 bool wait_for_file_contains(const std::string& path, const std::string& needle, int timeout_ms) {
     using clock = std::chrono::steady_clock;
     auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -722,7 +735,12 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env,
     const std::string sysenv_path = handle->tmp_dir + "/system_env";
     const std::string ota_state_path = handle->tmp_dir + "/ota_state.json";
     const std::string cmdline_path = handle->tmp_dir + "/cmdline";
-    write_file(agent_toml_path, "");
+    write_file(agent_toml_path,
+               "locale = \"zh-CN\"\n"
+               "custom_instruction = \"stub custom instruction\"\n\n"
+               "[model]\n"
+               "provider = \"openrouter\"\n"
+               "model = \"bytedance-seed/seed-2.0-lite\"\n");
     write_file(wifi_conf_path, "");
     write_file(sysenv_path, "");
     write_file(cmdline_path, "console=ttyFIQ0 aiden.slot_suffix=_a root=PARTLABEL=rootfs_a\n");
@@ -1278,17 +1296,12 @@ TEST_CASE("config_web: POST /api/config writes a provider api_key environment re
 
 TEST_CASE("config_web: GET /api/config reports only provider credential state") {
     StubEnv env;
-    const std::string tmp = make_temp_dir();
-    write_file(tmp + "/config.json",
-               "{\"model_providers\":{\"env-openai\":{\"type\":\"openai\","
-               "\"api_key\":\"$OPENAI_API_KEY\"}},"
-               "\"model\":{\"provider\":\"env-openai\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"temperature\":0.2,\"max_response_tokens\":1000,"
-               "\"context_window\":0,\"model_max_output_tokens\":0},"
-               "\"hid\":{\"pointer_mode\":\"absolute\"},"
-               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[model_providers.env-openai]\n"
+               "type = \"openai\"\n"
+               "api_key = \"$OPENAI_API_KEY\"\n\n"
+               "[model]\nprovider = \"env-openai\"\nmodel = \"gpt-4o\"\n");
 
     HttpResponse resp = http_request(handle->port, "GET", "/api/config", "");
     REQUIRE(resp.status == 200);
@@ -1348,19 +1361,8 @@ TEST_CASE("config_web: redacted agent CLI provider credentials survive reads and
     CHECK(saved.find("secret_key = \"stored-key\"") != std::string::npos);
 }
 
-TEST_CASE("config_web: mixed flat voice credentials migrate without leaking") {
+TEST_CASE("config_web: lossless updates preserve legacy flat voice credentials without leaking") {
     StubEnv env;
-    const std::string tmp = make_temp_dir();
-    write_file(tmp + "/config.json",
-               "{\"tts_providers\":{\"voice\":{\"type\":\"minimax-cn\",\"has_api_key\":true}},"
-               "\"stt_providers\":{\"speech\":{\"type\":\"tencent-asr\","
-               "\"has_api_key\":true,\"has_secret_id\":true,\"has_secret_key\":true}},"
-               "\"model\":{\"provider\":\"openai\",\"model\":\"gpt-4o\"},"
-               "\"tts\":{\"provider\":\"voice\",\"speed\":1},"
-               "\"stt\":{\"provider\":\"speech\",\"language\":\"zh\"},"
-               "\"hid\":{\"pointer_mode\":\"absolute\"},"
-               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
     write_file(handle->tmp_dir + "/agent.toml",
                "[tts_providers.voice]\n"
@@ -1426,21 +1428,21 @@ TEST_CASE("config_web: mixed flat voice credentials migrate without leaking") {
     CHECK(saved.find("api_key = \"flat-stt-key\"") != std::string::npos);
     CHECK(saved.find("secret_id = \"record-secret-id\"") != std::string::npos);
     CHECK(saved.find("secret_key = \"flat-secret-key\"") != std::string::npos);
-    CHECK(saved.find("record-tts-key") == std::string::npos);
-    CHECK(saved.find("record-stt-key") == std::string::npos);
-    CHECK(saved.find("record-secret-key") == std::string::npos);
+    CHECK(saved.find("record-tts-key") != std::string::npos);
+    CHECK(saved.find("record-stt-key") != std::string::npos);
+    CHECK(saved.find("record-secret-key") != std::string::npos);
 
     const size_t tts_at = saved.find("[tts]\n");
     REQUIRE(tts_at != std::string::npos);
     const size_t tts_end = saved.find("\n[", tts_at + 1);
-    CHECK(saved.substr(tts_at, tts_end - tts_at).find("api_key") == std::string::npos);
+    CHECK(saved.substr(tts_at, tts_end - tts_at).find("api_key = \"flat-tts-key\"") != std::string::npos);
     const size_t stt_at = saved.find("[stt]\n");
     REQUIRE(stt_at != std::string::npos);
     const size_t stt_end = saved.find("\n[", stt_at + 1);
     const std::string stt_section = saved.substr(stt_at, stt_end - stt_at);
-    CHECK(stt_section.find("api_key") == std::string::npos);
-    CHECK(stt_section.find("secret_id") == std::string::npos);
-    CHECK(stt_section.find("secret_key") == std::string::npos);
+    CHECK(stt_section.find("api_key = \"flat-stt-key\"") != std::string::npos);
+    CHECK(stt_section.find("secret_id = \"\"") != std::string::npos);
+    CHECK(stt_section.find("secret_key = \"flat-secret-key\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config renames a provider with its model reference") {
@@ -1473,11 +1475,10 @@ TEST_CASE("config_web: POST /api/config renames a provider with its model refere
     CHECK(saved.find("api_key = \"sk-plain-secret-1234\"") != std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config drops named provider base_url for types that pin their endpoint") {
-    // A [model_providers.*] base_url is inherited by any model referencing it
-    // (applyProviderRef), and the runtime then clears it for types that pin
-    // their endpoint. Storing one is dead config, so the metadata-backed
-    // capability rule also has to apply while saving named providers.
+TEST_CASE("config_web: POST /api/config preserves explicit named provider base_url values") {
+    // The patch layer is lossless and does not rewrite explicitly submitted
+    // provider fields. Runtime provider resolution remains responsible for
+    // deciding whether a type uses the stored endpoint.
     const char* types[] = {"openrouter", "kimi", "kimi-cn", "volcengine", "fake"};
 
     for (const char* type : types) {
@@ -1495,7 +1496,7 @@ TEST_CASE("config_web: POST /api/config drops named provider base_url for types 
         const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
         CHECK_MESSAGE(saved.find(std::string("[model_providers.named-") + type + "]") != std::string::npos,
                       type);
-        CHECK_MESSAGE(saved.find(base_url) == std::string::npos, type);
+        CHECK_MESSAGE(saved.find(base_url) != std::string::npos, type);
     }
 }
 
@@ -1526,7 +1527,7 @@ TEST_CASE("config_web: POST /api/config keeps named provider base_url for types 
     }
 }
 
-TEST_CASE("config_web: POST /api/config derives named provider base_url support from metadata") {
+TEST_CASE("config_web: POST /api/config validates providers with the canonical agent schema") {
     const std::string tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),
@@ -1554,14 +1555,11 @@ TEST_CASE("config_web: POST /api/config derives named provider base_url support 
         "\"pinned\":{\"type\":\"pinned-provider\",\"api_key\":\"k\",\"base_url\":\"" +
         pinned_base_url + "\"}}},\"apply_wifi\":false}";
     const HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
-    REQUIRE(resp.status == 200);
-
-    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find(std::string("base_url = \"") + custom_base_url + "\"") != std::string::npos);
-    CHECK(saved.find(pinned_base_url) == std::string::npos);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("unsupported provider type") != std::string::npos);
 }
 
-TEST_CASE("config_web: POST /api/config rejects ambiguous provider base_url metadata") {
+TEST_CASE("config_web: POST /api/config does not use injected metadata as a save schema") {
     const std::string tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),
@@ -1586,10 +1584,9 @@ TEST_CASE("config_web: POST /api/config rejects ambiguous provider base_url meta
         "{\"config\":{\"model_providers\":{\"custom\":{"
         "\"type\":\"custom-gateway\",\"base_url\":\"" + base_url +
         "\"}}},\"apply_wifi\":false}";
-    REQUIRE(http_request(handle->port, "POST", "/api/config", body).status == 200);
-
-    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find(base_url) == std::string::npos);
+    const HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("unsupported provider type") != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/config returns providers from the resolved config") {
@@ -1601,10 +1598,8 @@ TEST_CASE("config_web: GET /api/config returns providers from the resolved confi
     // held. This exercises the read path only -- it must not depend on a
     // preceding POST.
     StubEnv env;
-    const std::string tmp = make_temp_dir();
-    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml", model_provider_fixture_toml());
 
     HttpResponse resp = http_request(handle->port, "GET", "/api/config", "");
     REQUIRE(resp.status == 200);
@@ -1644,10 +1639,8 @@ TEST_CASE("config_web: POST /api/config preserves providers when saving another 
     // started from an empty provider map and silently erased all of them,
     // leaving model.provider pointing at a provider that no longer existed.
     StubEnv env;
-    const std::string tmp = make_temp_dir();
-    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml", model_provider_fixture_toml());
 
     const std::string body =
         "{\"config\":{\"hid\":{\"keyboard_layout\":\"azerty\",\"pointer_mode\":\"absolute\"}},"
@@ -1670,15 +1663,9 @@ TEST_CASE("config_web: POST /api/config preserves providers when saving another 
 
 TEST_CASE("config_web: POST /api/config migrates a legacy model api_key to a provider record") {
     StubEnv env;
-    const std::string tmp = make_temp_dir();
-    write_file(tmp + "/config.json",
-               "{\"model\":{\"provider\":\"openai\",\"api_key\":\"sk-legacy-secret\","
-               "\"model\":\"gpt-4o\",\"max_response_tokens\":1000,"
-               "\"context_window\":0,\"model_max_output_tokens\":0},"
-               "\"hid\":{\"pointer_mode\":\"absolute\"},"
-               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[model]\nprovider = \"openai\"\napi_key = \"sk-legacy-secret\"\nmodel = \"gpt-4o\"\n");
 
     const std::string body =
         "{\"config\":{\"model\":{\"api_key\":\"sk-legacy-secret\"},"
@@ -1700,18 +1687,11 @@ TEST_CASE("config_web: POST /api/config migrates a legacy model api_key to a pro
 
 TEST_CASE("config_web: switching model providers never reassigns the resolved api_key") {
     StubEnv env;
-    const std::string tmp = make_temp_dir();
-    write_file(tmp + "/config.json",
-               "{\"model_providers\":{"
-               "\"work-openai\":{\"type\":\"openai\",\"api_key\":\"sk-work-secret-aaaa\"},"
-               "\"personal-openai\":{\"type\":\"openai\",\"api_key\":\"sk-personal-secret-bbbb\"}},"
-               "\"model\":{\"provider\":\"work-openai\",\"api_key\":\"sk-work-secret-aaaa\","
-               "\"model\":\"gpt-4o\",\"max_response_tokens\":1000,"
-               "\"context_window\":0,\"model_max_output_tokens\":0},"
-               "\"hid\":{\"pointer_mode\":\"absolute\"},"
-               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[model_providers.work-openai]\ntype = \"openai\"\napi_key = \"sk-work-secret-aaaa\"\n\n"
+               "[model_providers.personal-openai]\ntype = \"openai\"\napi_key = \"sk-personal-secret-bbbb\"\n\n"
+               "[model]\nprovider = \"work-openai\"\nmodel = \"gpt-4o\"\n");
 
     // This is the same shape used when deleting the selected provider: the
     // provider map is authoritative and [model] switches to the replacement.
@@ -1719,7 +1699,7 @@ TEST_CASE("config_web: switching model providers never reassigns the resolved ap
     // be attributed to personal-openai.
     const std::string body =
         "{\"config\":{\"model_providers\":{"
-        "\"personal-openai\":{\"type\":\"openai\"}},"
+        "\"work-openai\":null,\"personal-openai\":{\"type\":\"openai\"}},"
         "\"model\":{\"provider\":\"personal-openai\"}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     REQUIRE(resp.status == 200);
@@ -1744,10 +1724,8 @@ TEST_CASE("config_web: POST /api/config keeps the stored provider api_key when m
     // looked the name up in the map it had just cleared, so it always missed
     // and wrote an empty api_key, destroying the real key.
     StubEnv env;
-    const std::string tmp = make_temp_dir();
-    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml", model_provider_fixture_toml());
 
     const std::string body =
         "{\"config\":{\"model_providers\":{"
@@ -1759,23 +1737,17 @@ TEST_CASE("config_web: POST /api/config keeps the stored provider api_key when m
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
     CHECK(saved.find("api_key = \"sk-stub-secret-1234\"") != std::string::npos);
     CHECK(saved.find("sk-s***1234") == std::string::npos);
-    // Omitting stub-ollama from the payload deletes it: the posted map is
-    // authoritative for which providers exist.
-    CHECK(saved.find("[model_providers.stub-ollama]") == std::string::npos);
+    // Merge-patch semantics preserve records that are not mentioned.
+    CHECK(saved.find("[model_providers.stub-ollama]") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config keeps stored provider credentials when empty") {
     StubEnv env;
-    const std::string tmp = make_temp_dir();
-    write_file(tmp + "/config.json",
-               "{\"model_providers\":{"
-               "\"literal\":{\"type\":\"openai\",\"api_key\":\"sk-literal-secret\"},"
-               "\"from-env\":{\"type\":\"openai\",\"api_key\":\"$OPENAI_API_KEY\"}},"
-               "\"model\":{\"provider\":\"literal\",\"model\":\"gpt-4o\"},"
-               "\"hid\":{\"pointer_mode\":\"absolute\"},"
-               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[model_providers.literal]\ntype = \"openai\"\napi_key = \"sk-literal-secret\"\n\n"
+               "[model_providers.from-env]\ntype = \"openai\"\napi_key = \"$OPENAI_API_KEY\"\n\n"
+               "[model]\nprovider = \"literal\"\nmodel = \"gpt-4o\"\n");
 
     const std::string body =
         "{\"config\":{\"model_providers\":{"
@@ -1997,7 +1969,7 @@ TEST_CASE("config_web: POST /api/config ignores the removed default_platform fie
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
     CHECK(saved.find("default_platform") == std::string::npos);
-    CHECK(saved.find("device_type = \"iOS\"") != std::string::npos);
+    CHECK(saved.find("device_type") == std::string::npos);
 
     HttpResponse get_resp = http_request(handle->port, "GET", "/api/config");
     CHECK(get_resp.status == 200);
@@ -2101,10 +2073,10 @@ TEST_CASE("config_web: POST /api/config rejects invalid voice notification integ
     };
     const InvalidCase cases[] = {
         {"enabled_type", "{\"enabled\":\"yes\"}", "expected bool"},
-        {"response_tail_type", "{\"response_tail\":[]}", "expected object"},
+        {"response_tail_type", "{\"response_tail\":[]}", "must be an object"},
         {"response_tail_enabled_type", "{\"response_tail\":{\"enabled\":\"yes\"}}", "expected bool"},
-        {"expiration_type", "{\"expiration\":[]}", "expected object"},
-        {"code_ttl_seconds_type", "{\"expiration\":{\"code_ttl_seconds\":[]}}", "expected object"},
+        {"expiration_type", "{\"expiration\":[]}", "must be an object"},
+        {"code_ttl_seconds_type", "{\"expiration\":{\"code_ttl_seconds\":[]}}", "must be an object"},
         {"max_pending_negative", "{\"max_pending\":-1}", "non-negative integer"},
         {"max_pending", "{\"max_pending\":0.5}", "non-negative integer"},
         {"max_items", "{\"response_tail\":{\"max_items\":0.5}}", "non-negative integer"},
@@ -2220,14 +2192,7 @@ TEST_CASE("config_web: POST /api/config writes custom_instruction") {
 }
 
 TEST_CASE("config_web: POST /api/config ignores legacy instruction") {
-    auto tmp = make_temp_dir();
-    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
-        const_cast<char*>(tmp.c_str()),
-        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
-    );
-    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
     StubEnv env;
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
 
     const std::string body =
@@ -2239,7 +2204,7 @@ TEST_CASE("config_web: POST /api/config ignores legacy instruction") {
     CHECK(resp.status == 200);
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("custom_instruction") == std::string::npos);
+    CHECK(saved.find("custom_instruction = \"\"") != std::string::npos);
     CHECK(saved.rfind("instruction =", 0) != 0);
     CHECK(saved.find("\ninstruction =") == std::string::npos);
 }
@@ -3124,16 +3089,13 @@ TEST_CASE("config_web: GET /api/config accepts optional field-level omissions fr
     REQUIRE(model_name != nullptr);
     cJSON* hid = cJSON_GetObjectItem(config, "hid");
     REQUIRE(hid != nullptr);
-    cJSON* android_keyboard_device = cJSON_GetObjectItem(hid, "android_keyboard_device");
-    REQUIRE(android_keyboard_device != nullptr);
-    REQUIRE(android_keyboard_device->valuestring != nullptr);
-    CHECK(std::string(android_keyboard_device->valuestring) == "/dev/hidg2");
+    CHECK(cJSON_GetObjectItem(hid, "android_keyboard_device") == nullptr);
     REQUIRE(model_name->valuestring != nullptr);
     CHECK(std::string(model_name->valuestring) == "bytedance-seed/seed-2.0-lite");
     cJSON_Delete(parsed);
 }
 
-TEST_CASE("config_web: GET /api/config rejects missing required resolved config fields") {
+TEST_CASE("config_web: GET /api/config trusts the agent's resolved config contract") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),
@@ -3153,14 +3115,16 @@ TEST_CASE("config_web: GET /api/config rejects missing required resolved config 
 
     cJSON* parsed = cJSON_Parse(resp.body.c_str());
     REQUIRE(parsed != nullptr);
-    cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
-    REQUIRE(config_error != nullptr);
-    REQUIRE(config_error->valuestring != nullptr);
-    CHECK(std::string(config_error->valuestring).find("model.provider") != std::string::npos);
+    CHECK(cJSON_GetObjectItem(parsed, "config_error") == nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* model = cJSON_GetObjectItem(config, "model");
+    REQUIRE(model != nullptr);
+    CHECK(cJSON_GetObjectItem(model, "provider") == nullptr);
     cJSON_Delete(parsed);
 }
 
-TEST_CASE("config_web: GET /api/config rejects missing paid search key presence sentinel") {
+TEST_CASE("config_web: GET /api/config forwards an omitted search credential sentinel") {
     const char* providers[] = {"brave", "brave-free", "tavily", NULL};
     for (int i = 0; providers[i]; ++i) {
         auto tmp = make_temp_dir();
@@ -3182,10 +3146,12 @@ TEST_CASE("config_web: GET /api/config rejects missing paid search key presence 
 
         cJSON* parsed = cJSON_Parse(resp.body.c_str());
         REQUIRE(parsed != nullptr);
-        cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
-        REQUIRE(config_error != nullptr);
-        REQUIRE(config_error->valuestring != nullptr);
-        CHECK(std::string(config_error->valuestring).find("search.has_api_key") != std::string::npos);
+        CHECK(cJSON_GetObjectItem(parsed, "config_error") == nullptr);
+        cJSON* config = cJSON_GetObjectItem(parsed, "config");
+        REQUIRE(config != nullptr);
+        cJSON* search = cJSON_GetObjectItem(config, "search");
+        REQUIRE(search != nullptr);
+        CHECK(cJSON_GetObjectItem(search, "has_api_key") == nullptr);
         cJSON_Delete(parsed);
     }
 }
@@ -3220,7 +3186,7 @@ TEST_CASE("config_web: GET /api/config accepts section-level omissions from reso
     cJSON_Delete(parsed);
 }
 
-TEST_CASE("config_web: GET /api/config rejects non-object resolved config sections") {
+TEST_CASE("config_web: GET /api/config forwards agent-owned resolved section shapes") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),
@@ -3236,14 +3202,14 @@ TEST_CASE("config_web: GET /api/config rejects non-object resolved config sectio
     auto handle = start_server(env);
     HttpResponse resp = http_request(handle->port, "GET", "/api/config");
     CHECK(resp.status == 200);
-    CHECK(resp.body.find("model: expected object") != std::string::npos);
-
     cJSON* parsed = cJSON_Parse(resp.body.c_str());
     REQUIRE(parsed != nullptr);
-    cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
-    REQUIRE(config_error != nullptr);
-    REQUIRE(config_error->valuestring != nullptr);
-    CHECK(std::string(config_error->valuestring).find("model: expected object") != std::string::npos);
+    CHECK(cJSON_GetObjectItem(parsed, "config_error") == nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* model = cJSON_GetObjectItem(config, "model");
+    REQUIRE(model != nullptr);
+    CHECK((model->type & 0xff) == cJSON_Array);
     cJSON_Delete(parsed);
 }
 
@@ -3286,7 +3252,7 @@ TEST_CASE("config_web: GET /api/config/meta supports quoted agent binary paths")
     CHECK(resp.status == 200);
 }
 
-TEST_CASE("config_web: POST /api/config derives field types from config metadata") {
+TEST_CASE("config_web: POST /api/config uses the canonical agent field types") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),
@@ -3313,7 +3279,8 @@ TEST_CASE("config_web: POST /api/config derives field types from config metadata
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\","
         "\"max_response_tokens\":true}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
-    CHECK(resp.status == 200);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("model.max_response_tokens: expected number") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config maps metadata widgets to JSON types") {
@@ -3380,7 +3347,7 @@ TEST_CASE("config_web: POST /api/config keeps compatibility field type guards") 
     };
     const InvalidCase cases[] = {
         {"{\"device\":{\"backend\":7}}", "device.backend", "string"},
-        {"{\"search\":{\"has_api_key\":\"yes\"}}", "search.has_api_key", "bool"},
+        {"{\"search\":{\"has_api_key\":\"yes\"}}", "search.has_api_key", ""},
         {"{\"termination_policy\":{\"enabled\":\"yes\"}}", "termination_policy.enabled", "bool"},
         {"{\"live_activity\":{\"enabled\":\"yes\"}}", "live_activity.enabled", "bool"},
     };
@@ -3392,12 +3359,17 @@ TEST_CASE("config_web: POST /api/config keeps compatibility field type guards") 
         CHECK_MESSAGE(resp.status == 400, test_case.path << ": status=" << resp.status);
         CHECK_MESSAGE(resp.body.find(test_case.path) != std::string::npos,
                       test_case.path << ": body=" << resp.body);
-        CHECK_MESSAGE(resp.body.find(std::string("expected ") + test_case.expected_type) != std::string::npos,
-                      test_case.path << ": body=" << resp.body);
+        if (test_case.expected_type[0] != '\0') {
+            CHECK_MESSAGE(resp.body.find(std::string("expected ") + test_case.expected_type) != std::string::npos,
+                          test_case.path << ": body=" << resp.body);
+        } else {
+            CHECK_MESSAGE(resp.body.find("read-only status field") != std::string::npos,
+                          test_case.path << ": body=" << resp.body);
+        }
     }
 }
 
-TEST_CASE("config_web: POST /api/config returns 503 for unusable config metadata") {
+TEST_CASE("config_web: POST /api/config remains available when metadata is unusable") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),
@@ -3412,8 +3384,7 @@ TEST_CASE("config_web: POST /api/config returns 503 for unusable config metadata
     HttpResponse resp = http_request(
         handle->port, "POST", "/api/config",
         "{\"config\":{\"agent\":{\"input_mode\":\"text\"}},\"apply_wifi\":false}");
-    CHECK(resp.status == 503);
-    CHECK(resp.body.find("unsupported widget") != std::string::npos);
+    CHECK(resp.status == 200);
 }
 
 TEST_CASE("config_web: POST /api/config returns 200 when stub config-check approves") {
@@ -3436,7 +3407,7 @@ TEST_CASE("config_web: POST /api/config rejects non-object termination_policy") 
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 400);
-    CHECK(resp.body.find("termination_policy: expected object") != std::string::npos);
+    CHECK(resp.body.find("termination_policy must be an object") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config rejects non-object device section") {
@@ -3448,7 +3419,7 @@ TEST_CASE("config_web: POST /api/config rejects non-object device section") {
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 400);
-    CHECK(resp.body.find("device: expected object") != std::string::npos);
+    CHECK(resp.body.find("device must be an object") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config legacy wifi fields update saved networks") {
@@ -4012,23 +3983,12 @@ TEST_CASE("config_web: POST /api/config writes named voice providers") {
 // section carried no records key, the read path started from an empty map, and
 // every record was erased from agent.toml.
 TEST_CASE("config_web: POST /api/config keeps voice records when the payload omits them") {
-    // The stored config comes from the agent CLI's resolved output, so records
-    // are seeded through the stub's config file rather than by a prior POST --
-    // a POST writes agent.toml, which the stub does not read back.
     StubEnv env;
-    const std::string tmp = make_temp_dir();
-    write_file(tmp + "/config.json",
-               "{\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\",\"api_key\":\"sk-fish-1234\"}},"
-               "\"stt_providers\":{\"whisper\":{\"provider\":\"openai-whisper\",\"api_key\":\"sk-w-1234\"}},"
-               "\"tts\":{\"provider\":\"fish\",\"speed\":1},"
-               "\"stt\":{\"provider\":\"whisper\",\"language\":\"zh\"},"
-               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"temperature\":0.2,\"max_response_tokens\":1000,"
-               "\"context_window\":0,\"model_max_output_tokens\":0},"
-               "\"hid\":{\"pointer_mode\":\"absolute\"},"
-               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[tts_providers.fish]\ntype = \"fish-audio\"\napi_key = \"sk-fish-1234\"\n\n"
+               "[stt_providers.whisper]\ntype = \"openai-whisper\"\napi_key = \"sk-w-1234\"\n\n"
+               "[tts]\nprovider = \"fish\"\n\n[stt]\nprovider = \"whisper\"\n");
 
     // A save that touches only [agent], with no voice keys at all.
     const std::string unrelated =
@@ -4049,21 +4009,11 @@ TEST_CASE("config_web: POST /api/config keeps voice records when the payload omi
 // Voice-provider credentials are write-only. An empty edit omits the key, and
 // the backend must preserve the stored value.
 TEST_CASE("config_web: POST /api/config preserves an omitted voice provider api_key") {
-    // Seeded through the stub config file: the stored config is the agent CLI's
-    // resolved output, so a prior POST would not be visible to this GET.
     StubEnv env;
-    const std::string tmp = make_temp_dir();
-    write_file(tmp + "/config.json",
-               "{\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\","
-               "\"api_key\":\"sk-fish-secret-1234\"}},"
-               "\"tts\":{\"provider\":\"fish\",\"speed\":1},"
-               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"temperature\":0.2,\"max_response_tokens\":1000,"
-               "\"context_window\":0,\"model_max_output_tokens\":0},"
-               "\"hid\":{\"pointer_mode\":\"absolute\"},"
-               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[tts_providers.fish]\ntype = \"fish-audio\"\napi_key = \"sk-fish-secret-1234\"\n\n"
+               "[tts]\nprovider = \"fish\"\n");
 
     HttpResponse get_resp = http_request(handle->port, "GET", "/api/config", "");
     REQUIRE(get_resp.status == 200);
@@ -4453,21 +4403,11 @@ TEST_CASE("config_web: stt config test honors an empty provider api_key in syste
 
 TEST_CASE("config_web: GET /api/config returns voice providers from the resolved config") {
     StubEnv env;
-    const std::string tmp = make_temp_dir();
-    write_file(tmp + "/config.json",
-               "{\"tts_providers\":{\"fish\":{\"provider\":\"fish-audio\","
-               "\"api_key\":\"$FISH_KEY\",\"reference_id\":\"ref-abc\"}},"
-               "\"stt_providers\":{\"tencent\":{\"provider\":\"tencent-asr\",\"app_id\":\"1234\","
-               "\"region\":\"ap-shanghai\"}},"
-               "\"tts\":{\"provider\":\"fish\",\"speed\":1.2},"
-               "\"stt\":{\"provider\":\"tencent\",\"language\":\"zh\"},"
-               "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"gpt-4o\","
-               "\"temperature\":0.2,\"max_response_tokens\":1000,"
-               "\"context_window\":0,\"model_max_output_tokens\":0},"
-               "\"hid\":{\"pointer_mode\":\"absolute\"},"
-               "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}}");
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+               "[tts_providers.fish]\ntype = \"fish-audio\"\napi_key = \"$FISH_KEY\"\nreference_id = \"ref-abc\"\n\n"
+               "[stt_providers.tencent]\ntype = \"tencent-asr\"\napp_id = \"1234\"\nregion = \"ap-shanghai\"\n\n"
+               "[tts]\nprovider = \"fish\"\nspeed = 1.2\n\n[stt]\nprovider = \"tencent\"\nlanguage = \"zh\"\n");
 
     HttpResponse resp = http_request(handle->port, "GET", "/api/config", "");
     REQUIRE(resp.status == 200);
