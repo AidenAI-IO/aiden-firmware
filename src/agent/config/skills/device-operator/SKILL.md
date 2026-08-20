@@ -193,10 +193,16 @@ Immediately pause all UI actions (tapping, typing, swiping, navigation) before e
 Recovery sequence:
 
 1. Retry `screenshot` once if the error suggests transient recovery.
-2. If it fails again, diagnose frame service:
+2. If it fails again, diagnose frame service with the service manager used by
+   the device:
 
 ```bash
+# Debian
+systemctl status --no-pager aiden-frame.service
+
+# Buildroot
 /etc/init.d/S52frame_service status
+
 frame_service_cli --socket /run/frame_service/frame_service.sock health
 ls -l /run/frame_service/frame_service.sock
 ```
@@ -208,9 +214,14 @@ frame_service_cli --socket /run/frame_service/frame_service.sock restart
 ```
 
 4. Verify recovery with health, then call `screenshot` again.
-5. If CLI restart fails, socket is missing, or service is not running, restart the init service:
+5. If CLI restart fails, the socket is missing, or the service is not running,
+   restart it with the matching service manager:
 
 ```bash
+# Debian
+systemctl restart aiden-frame.service
+
+# Buildroot
 /etc/init.d/S52frame_service restart
 ```
 
