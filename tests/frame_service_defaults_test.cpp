@@ -14,4 +14,6 @@ TEST_CASE("frame_service library defaults avoid unconditional EDID retriggering"
     CHECK(aiden::kDefaultFrameServiceRingSize == 3);
     CHECK(aiden::kDefaultFrameServiceFps == 3.0);
     CHECK(aiden::kDefaultScreenshotMaxEdge == 960);
+    CHECK(aiden::default_frame_service_warmup_frames(false) == 0);
+    CHECK(aiden::default_frame_service_warmup_frames(true) == 6);
 }

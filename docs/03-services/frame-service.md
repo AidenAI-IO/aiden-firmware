@@ -24,7 +24,7 @@ Allowing multiple processes to directly open `/dev/video0` can lead to resource 
 | Socket (firmware service) | `/run/frame_service/frame_service.sock` | Default value in init configuration |
 | EDID | Bridge-aware | RK628D keeps its driver-provided 1080p60 EDID; TC358743 loads `/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex` |
 | Capture mode | `on_demand` | One fresh capture for each `latest_frame` / screenshot request |
-| Warm-up frames | `12` | Dequeued without copying after each stream restart before the response frame |
+| Warm-up frames | Mode-aware | `6` with persistent STREAMON; `0` when streaming restarts per request |
 | Production ring usage | `0` | Health reports `ring_buffer_size=0`, `ring_buffer_used=0` |
 | Screenshot max edge | `960` | Related to Go screenshot tool default compression strategy |
 
@@ -71,7 +71,7 @@ frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
 | `--force-trigger` / `--no-force-trigger` | Enable or disable one-shot startup EDID/HPD renegotiation. The init script defaults to bridge-aware `auto`: disabled for RK628D and enabled for TC358743. Before starting capture on TC358743, the init script also holds HPD low for 2 seconds and allows 5 seconds for the HDMI source to settle on 1080p30 |
 | `--ring-size N` | Deprecated compatibility option; ignored by production on-demand capture |
 | `--fps N` | Deprecated compatibility option; ignored by production on-demand capture |
-| `--warmup-frames N` | Frames to dequeue/release after `STREAMON` before copying the response; defaults to `12` |
+| `--warmup-frames N` | Override frames dequeued/released before copying the response. Without an override, defaults to `6` with `--keep-streamon` and `0` with `--pause-between-captures` |
 | `--keep-streamon` / `--pause-between-captures` | Keep capture STREAMON between requests, or restore the default per-request STREAMON/STREAMOFF lifecycle |
 | `--allow-uniform-frames` | Accept black or single-colour frames after warm-up; this is the default because they are valid screenshots |
 | `--reject-uniform-frames` | Reject all-same packed UYVY/YUYV frames after warm-up for diagnostics |
@@ -103,7 +103,7 @@ At service startup:
 For each `latest_frame` request:
 
 1. The mapped buffers are queued and capture restarts with `VIDIOC_STREAMON`.
-2. The configured warm-up frames are dequeued and immediately released without copying. This lets RK628D/TC358743 output stabilize after every stream restart.
+2. The camera layer discards its initial transitional frame. No additional frames are discarded in the default pause-between-captures mode.
 3. One frame is copied, optionally cropped/encoded, and sent to the requester. Uniform content is accepted by default, so a black screen or single-colour page is not reported as a capture failure.
 4. The service calls `VIDIOC_STREAMOFF` again.
 
@@ -120,9 +120,11 @@ keep_streamon = false
 ```
 
 When set to `true`, the stream remains active after initialization and requests
-skip the STREAMOFF/STREAMON pair. Warm-up frames are still dequeued before each
-response so queued stale frames are not returned. Saving a changed value in
-Config Web restarts Frame Service so the new policy takes effect immediately.
+skip the STREAMOFF/STREAMON pair. Each request dequeues six frames before the
+response: four clear the completed V4L2 MMAP queue observed on RK628D, with two
+additional frames of margin. Saving a changed value in Config Web restarts
+Frame Service so the new policy takes effect immediately. An explicit
+`--warmup-frames` value overrides this mode-aware default for diagnostics.
 
 ## Resource and Power Boundary
 
@@ -132,7 +134,7 @@ buffers allocated so HDMI does not need full EDID/timing reinitialization on
 every screenshot. The HDMI bridge itself also remains configured. Therefore:
 
 - userspace ring-buffer memory and continuous memory bandwidth should drop;
-- screenshot latency increases by stream restart plus the configured warm-up period (12 frames by default) and any requested crop/encode work;
+- screenshot latency increases by stream restart, the mode-aware warm-up policy, and requested crop/encode work;
 - `keep_streamon = true` removes the per-request stream restart latency but keeps capture hardware active while idle;
 - total board power savings depend on whether the active RK628D/TC358743 and VI drivers gate clocks after `VIDIOC_STREAMOFF` and must be measured on hardware.
 

@@ -27,12 +27,12 @@ struct Options {
     Options() : socket_path("/tmp/frame_service.sock"),
                 ring_size(aiden::kDefaultFrameServiceRingSize),
                 fps(aiden::kDefaultFrameServiceFps),
-                warmup_frames(12),
+                warmup_frames(-1),
                 keep_streamon(false) {
         aiden_demo::set_default_camera_config(&camera);
         // A uniformly black or single-colour phone screen is a valid
-        // screenshot. On-demand capture relies on warm-up frames, rather than
-        // content, to discard transitional output after STREAMON.
+        // screenshot. The camera layer's initial frame skip handles
+        // transitional output after STREAMON without rejecting valid content.
         camera.reject_uniform_frames = false;
         device_name = camera.device_name;
         pixel_format = camera.pixel_format;
@@ -68,7 +68,9 @@ void usage(const char* program) {
             "[--keep-streamon|--pause-between-captures] "
             "[--allow-uniform-frames|--reject-uniform-frames] "
             "[--require-exact-resolution|--allow-resolution-mismatch]\n"
-            "  --ring-size and --fps are accepted for compatibility but ignored in on-demand mode.\n",
+            "  --ring-size and --fps are accepted for compatibility but ignored in on-demand mode.\n"
+            "  --warmup-frames defaults to 6 with --keep-streamon and 0 with "
+            "--pause-between-captures.\n",
             program);
 }
 
@@ -145,6 +147,10 @@ bool parse_options(int argc, char** argv, Options* options) {
         } else {
             return false;
         }
+    }
+    if (options->warmup_frames < 0) {
+        options->warmup_frames =
+            aiden::default_frame_service_warmup_frames(options->keep_streamon);
     }
     options->sync();
     return true;
