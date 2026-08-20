@@ -8,8 +8,7 @@ import (
 	"testing"
 )
 
-// TestDeviceMemoryProcedureStepsExtraction 验证改进 1：procedure 记录动作详情
-func TestDeviceMemoryProcedureStepsExtraction(t *testing.T) {
+func TestCommitEpisodeDoesNotSynchronouslyExtractProcedure(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")
 	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
@@ -85,36 +84,12 @@ func TestDeviceMemoryProcedureStepsExtraction(t *testing.T) {
 	}
 
 	procedureFiles, err := filepath.Glob(filepath.Join(memoryDir, "device", "procedures", "*.yaml"))
-	if err != nil || len(procedureFiles) == 0 {
-		t.Fatalf("expected procedure file, got paths=%#v err=%v", procedureFiles, err)
-	}
-
-	data, err := os.ReadFile(procedureFiles[0])
-	if err != nil {
-		t.Fatalf("read procedure: %v", err)
-	}
-
-	content := string(data)
-	// 验证有 Steps 结构
-	if !strings.Contains(content, "steps:") {
-		t.Errorf("procedure should contain 'steps:' field\n%s", content)
-	}
-	// 验证坐标被提取
-	if !strings.Contains(content, "x=500") || !strings.Contains(content, "y=850") {
-		t.Errorf("procedure steps should contain extracted coordinates\n%s", content)
-	}
-	// 验证 description 被保留
-	if !strings.Contains(content, "点击购物车按钮") {
-		t.Errorf("procedure steps should contain tool content\n%s", content)
-	}
-	// 验证 page_name 被记录
-	if !strings.Contains(content, "page_name: 购物车") || !strings.Contains(content, "page_name: 首页") {
-		t.Errorf("procedure steps should contain page_name from verifier\n%s", content)
+	if err != nil || len(procedureFiles) != 0 {
+		t.Fatalf("synchronous procedure files = %#v error=%v, want none before Episode Memory Worker runs", procedureFiles, err)
 	}
 }
 
-// TestDeviceMemoryPageIndexing 验证改进 2：按 page_name 索引
-func TestDeviceMemoryPageIndexing(t *testing.T) {
+func TestCommitEpisodeDoesNotUseVerifierStateForProcedureIndexing(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")
 	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
@@ -149,26 +124,12 @@ func TestDeviceMemoryPageIndexing(t *testing.T) {
 	}
 
 	procedureFiles, err := filepath.Glob(filepath.Join(memoryDir, "device", "procedures", "*.yaml"))
-	if err != nil || len(procedureFiles) == 0 {
-		t.Fatalf("expected procedure, got paths=%#v err=%v", procedureFiles, err)
-	}
-
-	data, err := os.ReadFile(procedureFiles[0])
-	if err != nil {
-		t.Fatalf("read procedure: %v", err)
-	}
-
-	content := string(data)
-	if !strings.Contains(content, "page_name: 设置页") {
-		t.Errorf("procedure should have page_name field:\n%s", content)
-	}
-	if !strings.Contains(content, "entities:") || !strings.Contains(content, "设置页") {
-		t.Errorf("procedure should include page_name in entities for search:\n%s", content)
+	if err != nil || len(procedureFiles) != 0 {
+		t.Fatalf("synchronous procedure files = %#v error=%v, want none", procedureFiles, err)
 	}
 }
 
-// TestDeviceMemoryNavigationFacts 验证改进 3：导航知识抽取
-func TestDeviceMemoryNavigationFacts(t *testing.T) {
+func TestCommitEpisodeDoesNotSynchronouslyExtractNavigation(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")
 	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
@@ -215,24 +176,8 @@ func TestDeviceMemoryNavigationFacts(t *testing.T) {
 	}
 
 	navFiles, err := filepath.Glob(filepath.Join(memoryDir, "device", "navigation", "*.yaml"))
-	if err != nil || len(navFiles) == 0 {
-		t.Fatalf("expected navigation file, got paths=%#v err=%v", navFiles, err)
-	}
-
-	data, err := os.ReadFile(navFiles[0])
-	if err != nil {
-		t.Fatalf("read navigation: %v", err)
-	}
-
-	content := string(data)
-	if !strings.Contains(content, "美团/首页") || !strings.Contains(content, "美团/购物车") {
-		t.Errorf("navigation should record from→to transition:\n%s", content)
-	}
-	if !strings.Contains(content, "touch_gesture") {
-		t.Errorf("navigation should record tool used:\n%s", content)
-	}
-	if !strings.Contains(content, "x=800") || !strings.Contains(content, "y=900") {
-		t.Errorf("navigation should record coordinates:\n%s", content)
+	if err != nil || len(navFiles) != 0 {
+		t.Fatalf("synchronous navigation files = %#v error=%v, want none before Episode Memory Worker runs", navFiles, err)
 	}
 }
 
@@ -325,9 +270,8 @@ func TestDeviceMemoryAppProfileAccumulation(t *testing.T) {
 	if !strings.Contains(content, "launch_app") || !strings.Contains(content, "touch_gesture") {
 		t.Errorf("app_profile should accumulate tools:\n%s", content)
 	}
-	// 验证 success_count 递增
-	if !strings.Contains(content, "success_count: 2") {
-		t.Errorf("app_profile should track success_count:\n%s", content)
+	if strings.Contains(content, "success_count:") {
+		t.Errorf("deterministic app_profile should not infer success from Episode outcome:\n%s", content)
 	}
 	// 验证 content 渲染为人类可读
 	if !strings.Contains(content, "Pages observed:") || !strings.Contains(content, "Tools used:") {
@@ -335,8 +279,7 @@ func TestDeviceMemoryAppProfileAccumulation(t *testing.T) {
 	}
 }
 
-// TestDeviceMemoryAppProfileFailureTracking 验证改进 5：失败时记录已知问题
-func TestDeviceMemoryAppProfileFailureTracking(t *testing.T) {
+func TestDeviceMemoryAppProfileDoesNotTurnOutcomeIntoKnownIssue(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")
 	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
@@ -387,8 +330,7 @@ func TestDeviceMemoryAppProfileFailureTracking(t *testing.T) {
 	if !strings.Contains(content, "加载页") {
 		t.Errorf("app_profile should record pages even on failure:\n%s", content)
 	}
-	// 记录 known_issues
-	if !strings.Contains(content, "known_issues:") || !strings.Contains(content, "网络超时") {
-		t.Errorf("app_profile should record known_issues on failure:\n%s", content)
+	if strings.Contains(content, "known_issues:") || strings.Contains(content, "网络超时") {
+		t.Errorf("deterministic app_profile should not infer a known issue from Episode outcome:\n%s", content)
 	}
 }

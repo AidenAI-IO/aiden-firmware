@@ -78,9 +78,9 @@ func firstToolCallEventContent(events []TaskEpisodeEvent) string {
 	return ""
 }
 
-// TestDeviceMemoryConflictTypeFiltering ensures conflicted records are matched
-// by their effective "conflict" type rather than their stored type.
-func TestDeviceMemoryConflictTypeFiltering(t *testing.T) {
+// TestDeviceMemoryRecallOnlyReturnsActiveRecords ensures quarantined records
+// remain available to consolidation but never enter normal Agent recall.
+func TestDeviceMemoryRecallOnlyReturnsActiveRecords(t *testing.T) {
 	ctx := context.Background()
 	store := NewDeviceMemoryStore(t.TempDir())
 	if _, err := store.Upsert(ctx, DeviceMemoryItem{
@@ -93,7 +93,6 @@ func TestDeviceMemoryConflictTypeFiltering(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	// Querying by the stored type must NOT return a conflicted record.
 	procHits, err := store.Search(ctx, DeviceMemoryQuery{Types: []string{"procedure"}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search(procedure): %v", err)
@@ -104,13 +103,12 @@ func TestDeviceMemoryConflictTypeFiltering(t *testing.T) {
 		}
 	}
 
-	// Querying by "conflict" must return it, with Type remapped to "conflict".
 	conflictHits, err := store.Search(ctx, DeviceMemoryQuery{Types: []string{"conflict"}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search(conflict): %v", err)
 	}
-	if len(conflictHits) != 1 || conflictHits[0].ID != "proc_conflicted" || conflictHits[0].Type != "conflict" {
-		t.Fatalf("Types=[conflict] should return remapped conflicted record, got %#v", conflictHits)
+	if len(conflictHits) != 0 {
+		t.Fatalf("normal recall returned conflicted records: %#v", conflictHits)
 	}
 }
 
@@ -131,6 +129,7 @@ func TestDeviceMemoryUpdateRemovesStaleTypeFile(t *testing.T) {
 
 	if err := store.Update(ctx, "mem_retype", func(item *DeviceMemoryItem) {
 		item.Type = "failure"
+		item.Tags = append(item.Tags, legacyReflectionFailureTag)
 	}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}

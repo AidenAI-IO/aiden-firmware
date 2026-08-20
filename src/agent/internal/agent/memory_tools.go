@@ -142,8 +142,8 @@ func (t *RecallMemoryTool) Call(ctx context.Context, input string) (string, erro
 }
 
 // recordRecalledMemoryIDs reports the IDs of memories surfaced by a recall tool
-// to the active episode recorder, so outcome-based confidence updates only
-// touch memories the agent actually saw.
+// to the active episode recorder. Episode Memory consolidation prioritizes
+// those records when checking for updates and conflicts.
 func recordRecalledMemoryIDs[T any](ctx context.Context, results []T, id func(T) string) {
 	recorder := EpisodeRecorderFromContext(ctx)
 	if recorder == nil || len(results) == 0 {
@@ -290,8 +290,8 @@ func (t *RecallDeviceMemoryTool) Name() string { return "recall_device_memory" }
 
 func (t *RecallDeviceMemoryTool) Description() string {
 	return strings.Join([]string{
-		"Debug recall for device memory: device profiles, app profiles, procedures, calibration notes, failures, and conflicts.",
-		"The runtime automatically retrieves relevant device memory before planning; use this tool only when inspecting memory state is explicitly useful.",
+		"Recall device and UI memory by terms, tags, entities, types, or device id.",
+		"Use on demand when a task materially depends on saved device or app profiles, procedures, navigation, failure-prevention lessons, calibration notes, or facts; do not call merely because a device or app is mentioned.",
 		`Input JSON: {"terms":["微信"],"tags":["登录"],"entities":["微信App"],"types":["procedure","failure"],"device_id":"default","limit":5}`,
 	}, " ")
 }
@@ -301,7 +301,7 @@ func (t *RecallDeviceMemoryTool) ArgsSchema() map[string]any {
 		"terms":     stringArrayArgSchema("Free-text search terms."),
 		"tags":      stringArrayArgSchema("Topic tags to match."),
 		"entities":  stringArrayArgSchema("Named apps, devices, accounts, or UI concepts to match."),
-		"types":     stringArrayArgSchema("Device memory categories such as procedure, failure, calibration, or conflict."),
+		"types":     stringArrayArgSchema("Device memory categories such as procedure, navigation, failure, calibration, or fact."),
 		"device_id": stringArgSchema("Device id to filter by; omit for default search."),
 		"limit":     minIntegerArgSchema("Maximum number of device memories to return.", 1),
 	})
@@ -315,12 +315,53 @@ func (t *RecallDeviceMemoryTool) Call(ctx context.Context, input string) (string
 	if err != nil {
 		return "", fmt.Errorf("decode recall_device_memory input: %w", err)
 	}
+	if query.Limit <= 0 || query.Limit > 5 {
+		query.Limit = 5
+	}
 	results, err := t.store.Search(ctx, query)
 	if err != nil {
 		return "", err
 	}
+	results = limitDeviceMemoryRecall(results, 4800)
 	recordRecalledMemoryIDs(ctx, results, func(h MemoryHit) string { return h.ID })
 	return encodeToolJSON(map[string]any{"results": results})
+}
+
+func limitDeviceMemoryRecall(results []MemoryHit, charBudget int) []MemoryHit {
+	if charBudget <= 0 || len(results) == 0 {
+		return nil
+	}
+	limited := make([]MemoryHit, 0, len(results))
+	used := len(`{"results":[]}`)
+nextHit:
+	for _, hit := range results {
+		candidate := hit
+		candidate.EvidenceRefs = nil
+		candidate.FilePath = ""
+		for {
+			encoded, err := json.Marshal(candidate)
+			if err != nil {
+				break
+			}
+			cost := len(encoded) + 1
+			if used+cost <= charBudget {
+				limited = append(limited, candidate)
+				used += cost
+				break
+			}
+			switch {
+			case len(candidate.Content) > 320:
+				candidate.Content = truncateForLog(candidate.Content, len(candidate.Content)/2)
+			case len(candidate.Summary) > 160:
+				candidate.Summary = truncateForLog(candidate.Summary, len(candidate.Summary)/2)
+			case len(candidate.Steps) > 1:
+				candidate.Steps = candidate.Steps[:len(candidate.Steps)-1]
+			default:
+				continue nextHit
+			}
+		}
+	}
+	return limited
 }
 
 func NewInspectEpisodeTool(store *TaskEpisodeStore) *InspectEpisodeTool {

@@ -9,7 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"aiden-agent/internal/agent/model"
 )
 
 type MemoryPlane interface {
@@ -18,12 +21,15 @@ type MemoryPlane interface {
 }
 
 type FilesystemMemoryPlane struct {
-	memoryDir  string
-	extraction MemoryExtractionConfig
-	episodes   *TaskEpisodeStore
-	device     *DeviceMemoryStore
-	longTerm   *LongTermMemoryStore
-	logger     *Logger
+	memoryDir        string
+	extraction       MemoryExtractionConfig
+	episodes         *TaskEpisodeStore
+	device           *DeviceMemoryStore
+	longTerm         *LongTermMemoryStore
+	logger           *Logger
+	episodeMemoryMu  sync.RWMutex
+	episodeMemory    *episodeMemoryWorker
+	episodeIdleDelay time.Duration
 }
 
 type MemoryRetrieveRequest struct {
@@ -101,12 +107,14 @@ func NewFilesystemMemoryPlane(memoryDir string, extraction MemoryExtractionConfi
 	if strings.TrimSpace(memoryDir) == "" {
 		return nil
 	}
+	idleDelay := extraction.EpisodeMemoryIdleDelayOrDefault()
 	p := &FilesystemMemoryPlane{
-		memoryDir:  memoryDir,
-		extraction: extraction,
-		episodes:   NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes")),
-		device:     NewDeviceMemoryStore(filepath.Join(memoryDir, "device")),
-		logger:     logger,
+		memoryDir:        memoryDir,
+		extraction:       extraction,
+		episodes:         NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes")),
+		device:           NewDeviceMemoryStore(filepath.Join(memoryDir, "device")),
+		logger:           logger,
+		episodeIdleDelay: idleDelay,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -122,6 +130,61 @@ func (p *FilesystemMemoryPlane) LongTerm() *LongTermMemoryStore {
 		return nil
 	}
 	return p.longTerm
+}
+
+func (p *FilesystemMemoryPlane) StartEpisodeMemory(models model.Model) error {
+	if p == nil || strings.TrimSpace(p.memoryDir) == "" || models == nil {
+		return nil
+	}
+	p.episodeMemoryMu.Lock()
+	defer p.episodeMemoryMu.Unlock()
+	if p.episodeMemory != nil {
+		return nil
+	}
+	worker := newEpisodeMemoryWorker(newEpisodeMemoryProcessor(p, models))
+	worker.idleDelay = p.episodeIdleDelay
+	if err := worker.Start(); err != nil {
+		return err
+	}
+	p.episodeMemory = worker
+	return nil
+}
+
+func (p *FilesystemMemoryPlane) StopEpisodeMemory() {
+	if p == nil {
+		return
+	}
+	p.episodeMemoryMu.Lock()
+	worker := p.episodeMemory
+	p.episodeMemory = nil
+	p.episodeMemoryMu.Unlock()
+	if worker != nil {
+		worker.Stop()
+	}
+}
+
+func (p *FilesystemMemoryPlane) EpisodeMemoryTaskStarted() {
+	if p == nil {
+		return
+	}
+	p.episodeMemoryMu.RLock()
+	worker := p.episodeMemory
+	p.episodeMemoryMu.RUnlock()
+	if worker != nil {
+		worker.TaskStarted()
+	}
+}
+
+func (p *FilesystemMemoryPlane) EpisodeMemoryTaskFinished() {
+	if p == nil {
+		return
+	}
+	p.episodeMemoryMu.RLock()
+	worker := p.episodeMemory
+	p.episodeMemoryMu.RUnlock()
+	if worker != nil {
+		worker.TaskFinished()
+	}
 }
 
 func (p *FilesystemMemoryPlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
@@ -153,84 +216,15 @@ func (p *FilesystemMemoryPlane) commitEpisodeMaintenance(ctx context.Context, ep
 	if p == nil || p.memoryDir == "" || strings.TrimSpace(episode.UserGoal) == "" {
 		return
 	}
-	if err := p.extractLongTermLessons(ctx, episode); err != nil && p.logger != nil {
-		p.logger.Warn("[memory] episode lesson extraction failed: %v", err)
-	}
 	if err := p.extractDeviceLessons(ctx, episode); err != nil && p.logger != nil {
-		p.logger.Warn("[memory] device lesson extraction failed: %v", err)
+		p.logger.Warn("[memory] deterministic device profile extraction failed: %v", err)
 	}
-	if err := p.updateReferencedMemoryOutcomes(ctx, episode); err != nil && p.logger != nil {
-		p.logger.Warn("[memory] referenced memory update failed: %v", err)
+	p.episodeMemoryMu.RLock()
+	worker := p.episodeMemory
+	p.episodeMemoryMu.RUnlock()
+	if worker != nil {
+		worker.NotifyEpisode()
 	}
-}
-
-func (p *FilesystemMemoryPlane) extractLongTermLessons(ctx context.Context, episode TaskEpisode) error {
-	if p.longTerm == nil || !episodeHasTaskTrace(episode) {
-		return nil
-	}
-	var item MemoryItem
-	if episode.Outcome.Success {
-		tools := episodeToolSequence(episode.Events)
-		if len(tools) == 0 {
-			return nil
-		}
-		content := fmt.Sprintf("User goal: %s\nVerified tool path: %s\nVerifier reason: %s",
-			episode.UserGoal,
-			strings.Join(tools, " -> "),
-			episode.Outcome.VerifierReason,
-		)
-		item = MemoryItem{
-			Type:             "procedure",
-			Priority:         70,
-			Confidence:       0.75,
-			Tags:             episode.Tags,
-			Entities:         episode.Entities,
-			Title:            "Verified task path",
-			Content:          content,
-			EvidenceExcerpts: []string{content},
-			SourceRefs:       []MemorySourceRef{{Type: "episode", ID: episode.ID}},
-			TTL:              "45d",
-			SuccessCount:     1,
-		}
-	} else {
-		reason := episode.Outcome.FailureReason
-		if reason == "" {
-			reason = firstNonEmptyString(episode.FailureCauses)
-		}
-		if strings.TrimSpace(reason) == "" {
-			reason = "task did not complete"
-		}
-		content := fmt.Sprintf("User goal: %s\nFailure reason: %s\nAvoid approving completion without fresh observation evidence.",
-			episode.UserGoal,
-			reason,
-		)
-		item = MemoryItem{
-			Type:             "failure",
-			Priority:         80,
-			Confidence:       0.8,
-			Tags:             episode.Tags,
-			Entities:         episode.Entities,
-			Title:            "Failed task pattern",
-			Content:          content,
-			EvidenceExcerpts: []string{content},
-			SourceRefs:       []MemorySourceRef{{Type: "episode", ID: episode.ID}},
-			TTL:              "60d",
-			FailureCount:     1,
-		}
-	}
-	action, existingID, err := p.longTerm.DecideAction(ctx, item)
-	if err != nil {
-		return err
-	}
-	switch action {
-	case "ignore":
-		return nil
-	case "supersede":
-		_, err = p.longTerm.SupersedeMemory(ctx, existingID, item)
-	default:
-		_, err = p.longTerm.AddMemory(ctx, item)
-	}
-	return err
 }
 
 func (p *FilesystemMemoryPlane) extractDeviceLessons(ctx context.Context, episode TaskEpisode) error {
@@ -247,16 +241,6 @@ func (p *FilesystemMemoryPlane) extractDeviceLessons(ctx context.Context, episod
 		return err
 	}
 
-	if !episode.Outcome.Success {
-		return p.recordDeviceFailure(ctx, episode, deviceID, now)
-	}
-
-	if err := p.recordVerifiedProcedure(ctx, episode, deviceID, now); err != nil {
-		return err
-	}
-	if err := p.recordNavigationFacts(ctx, episode, deviceID, now); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -314,16 +298,17 @@ func (p *FilesystemMemoryPlane) recordAppProfiles(ctx context.Context, episode T
 		}
 		if !found {
 			existing = DeviceMemoryItem{
-				ID:       appID,
-				Type:     "app_profile",
-				Status:   "active",
-				Title:    "App profile: " + app,
-				DeviceID: deviceID,
-				AppID:    app,
-				AppName:  app,
-				Entities: []string{app},
-				Aliases:  []string{app},
-				TTL:      "60d",
+				ID:         appID,
+				Type:       "app_profile",
+				Status:     "active",
+				Title:      "App profile: " + app,
+				DeviceID:   deviceID,
+				AppID:      app,
+				AppName:    app,
+				Entities:   []string{app},
+				Aliases:    []string{app},
+				Confidence: 0.65,
+				TTL:        "60d",
 			}
 		}
 		existing.PagesSeen = mergeUniqueStrings(existing.PagesSeen, pagesByApp[app])
@@ -351,233 +336,11 @@ func (p *FilesystemMemoryPlane) recordAppProfiles(ctx context.Context, episode T
 			existing.Content = "App was referenced in task goal or extracted entities: " + app
 		}
 
-		if episode.Outcome.Success {
-			existing.SuccessCount++
-		} else {
-			failureNote := firstNonEmptyString([]string{episode.Outcome.FailureReason, "task did not complete"})
-			existing.KnownIssues = appendUniqueString(existing.KnownIssues, failureNote)
-		}
-
 		if _, err := p.device.Upsert(ctx, existing); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func (p *FilesystemMemoryPlane) recordVerifiedProcedure(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
-	steps := episodeProcedureSteps(episode.Events)
-	if len(steps) == 0 {
-		return nil
-	}
-	toolNames := make([]string, len(steps))
-	for i, step := range steps {
-		toolNames[i] = step.Tool
-	}
-	primaryApp, primaryPage := "", ""
-	for _, step := range steps {
-		if step.AppName != "" {
-			primaryApp = step.AppName
-		}
-		if step.PageName != "" {
-			primaryPage = step.PageName
-		}
-		if primaryApp != "" && primaryPage != "" {
-			break
-		}
-	}
-	tags := append([]string(nil), episode.Tags...)
-	entities := append([]string(nil), episode.Entities...)
-	if primaryPage != "" {
-		tags = appendUniqueString(tags, "page:"+primaryPage)
-		entities = appendUniqueString(entities, primaryPage)
-	}
-	procID := "proc_" + stableMemoryID(primaryApp, primaryPage, episode.UserGoal)
-	content := fmt.Sprintf("Goal: %q\nVerified tool path: %s\n\nSteps:\n%s",
-		truncateForLog(episode.UserGoal, 120),
-		strings.Join(toolNames, " → "),
-		summarizeProcedureSteps(steps, 8),
-	)
-	_, err := p.device.Upsert(ctx, DeviceMemoryItem{
-		ID:           procID,
-		Type:         "procedure",
-		Status:       "active",
-		Title:        "Verified procedure",
-		Content:      content,
-		DeviceID:     deviceID,
-		AppName:      primaryApp,
-		PageName:     primaryPage,
-		Tags:         tags,
-		Entities:     entities,
-		Steps:        steps,
-		Confidence:   0.75,
-		Priority:     70,
-		TTL:          "45d",
-		UpdatedAt:    now,
-		EvidenceRefs: []MemorySourceRef{{Type: "episode", ID: episode.ID}},
-	})
-	return err
-}
-
-func (p *FilesystemMemoryPlane) recordDeviceFailure(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
-	reason := firstNonEmptyString([]string{episode.Outcome.FailureReason, firstNonEmptyString(episode.FailureCauses), "task did not complete"})
-	content := fmt.Sprintf("Goal %q failed: %s. Verifier should require fresh evidence before approving similar tasks.", episode.UserGoal, reason)
-	_, err := p.device.Upsert(ctx, DeviceMemoryItem{
-		ID:           "fail_" + stableMemoryID(episode.UserGoal, reason),
-		Type:         "failure",
-		Status:       "active",
-		Title:        "Observed task failure",
-		Content:      content,
-		DeviceID:     deviceID,
-		Tags:         append([]string(nil), episode.Tags...),
-		Entities:     append([]string(nil), episode.Entities...),
-		Confidence:   0.8,
-		Priority:     80,
-		TTL:          "60d",
-		UpdatedAt:    now,
-		EvidenceRefs: []MemorySourceRef{{Type: "episode", ID: episode.ID}},
-	})
-	return err
-}
-
-func (p *FilesystemMemoryPlane) recordNavigationFacts(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
-	transitions := pageTransitions(episode.Events)
-	for _, trans := range transitions {
-		fromLabel := trans.FromApp
-		if trans.FromPage != "" {
-			fromLabel = trans.FromApp + "/" + trans.FromPage
-		}
-		toLabel := trans.ToApp
-		if trans.ToPage != "" {
-			toLabel = trans.ToApp + "/" + trans.ToPage
-		}
-		navID := "nav_" + stableMemoryID(trans.FromApp, trans.FromPage, trans.ToApp, trans.ToPage)
-		var contentParts []string
-		contentParts = append(contentParts, fmt.Sprintf("%s → %s", fromLabel, toLabel))
-		contentParts = append(contentParts, "Tool: "+trans.Tool)
-		if trans.Description != "" {
-			contentParts = append(contentParts, "Action: "+trans.Description)
-		}
-		if trans.Coords != "" {
-			contentParts = append(contentParts, "Coords: "+trans.Coords)
-		}
-		if trans.Text != "" {
-			contentParts = append(contentParts, "Text: "+truncateForLog(trans.Text, 40))
-		}
-		content := strings.Join(contentParts, "\n")
-		tags := []string{"navigation"}
-		if trans.FromApp != "" {
-			tags = appendUniqueString(tags, trans.FromApp)
-		}
-		if trans.ToApp != "" && trans.ToApp != trans.FromApp {
-			tags = appendUniqueString(tags, trans.ToApp)
-		}
-		entities := []string{}
-		if trans.FromPage != "" {
-			entities = appendUniqueString(entities, trans.FromPage)
-		}
-		if trans.ToPage != "" && trans.ToPage != trans.FromPage {
-			entities = appendUniqueString(entities, trans.ToPage)
-		}
-		if _, err := p.device.Upsert(ctx, DeviceMemoryItem{
-			ID:           navID,
-			Type:         "navigation",
-			Status:       "active",
-			Title:        fmt.Sprintf("%s → %s", fromLabel, toLabel),
-			Content:      content,
-			DeviceID:     deviceID,
-			AppName:      trans.ToApp,
-			PageName:     trans.ToPage,
-			Tags:         tags,
-			Entities:     entities,
-			Confidence:   0.7,
-			Priority:     65,
-			TTL:          "30d",
-			UpdatedAt:    now,
-			EvidenceRefs: []MemorySourceRef{{Type: "episode", ID: episode.ID}},
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (p *FilesystemMemoryPlane) updateReferencedMemoryOutcomes(ctx context.Context, episode TaskEpisode) error {
-	refs := uniqueNonEmpty(episode.RetrievedMemoryRefs)
-	if len(refs) == 0 {
-		return nil
-	}
-	if p.longTerm != nil {
-		if err := p.longTerm.UpdateMemories(ctx, refs, func(item *MemoryItem) {
-			updateLongTermMemoryFromEpisode(item, episode)
-		}); err != nil {
-			return err
-		}
-	}
-	if p.device != nil {
-		if err := p.device.UpdateMany(ctx, refs, func(item *DeviceMemoryItem) {
-			updateDeviceMemoryFromEpisode(item, episode)
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func updateLongTermMemoryFromEpisode(item *MemoryItem, episode TaskEpisode) {
-	if item == nil || item.Status != "active" {
-		return
-	}
-	now := time.Now().UTC()
-	if episode.Outcome.Success {
-		if item.Type == "failure" {
-			item.Status = "conflicted"
-			item.ConflictsWith = appendUniqueString(item.ConflictsWith, episode.ID)
-			item.Confidence = clampConfidence(item.Confidence - 0.25)
-			return
-		}
-		item.SuccessCount++
-		item.LastValidatedAt = now.Format(time.RFC3339Nano)
-		item.Confidence = clampConfidence(item.Confidence + 0.05)
-		refreshMemoryExpiry(&item.ExpiresAt, item.TTL, now)
-		return
-	}
-	if shouldPenalizeMemoryType(item.Type) {
-		item.FailureCount++
-		item.Confidence = clampConfidence(item.Confidence - 0.15)
-		if memoryFailureDominates(item.SuccessCount, item.FailureCount) {
-			item.Status = "conflicted"
-			item.ConflictsWith = appendUniqueString(item.ConflictsWith, episode.ID)
-		}
-	}
-}
-
-func updateDeviceMemoryFromEpisode(item *DeviceMemoryItem, episode TaskEpisode) {
-	if item == nil || item.Status != "active" {
-		return
-	}
-	now := time.Now().UTC()
-	if episode.Outcome.Success {
-		if item.Type == "failure" {
-			item.Status = "conflicted"
-			item.ConflictsWith = appendUniqueString(item.ConflictsWith, episode.ID)
-			item.Confidence = clampConfidence(item.Confidence - 0.25)
-			return
-		}
-		item.SuccessCount++
-		item.LastValidatedAt = now.Format(time.RFC3339Nano)
-		item.Confidence = clampConfidence(item.Confidence + 0.05)
-		refreshMemoryExpiry(&item.ExpiresAt, item.TTL, now)
-		return
-	}
-	if shouldPenalizeMemoryType(item.Type) {
-		item.FailureCount++
-		item.Confidence = clampConfidence(item.Confidence - 0.15)
-		if memoryFailureDominates(item.SuccessCount, item.FailureCount) {
-			item.Status = "conflicted"
-			item.ConflictsWith = appendUniqueString(item.ConflictsWith, episode.ID)
-		}
-	}
 }
 
 func renderMemoryHitLine(hit MemoryHit) string {
@@ -810,19 +573,6 @@ func inferEpisodeApps(episode TaskEpisode) []string {
 	return apps
 }
 
-func shouldPenalizeMemoryType(memoryType string) bool {
-	switch memoryType {
-	case "procedure", "calibration", "app_profile", "device_profile", "task_episode_summary", "fact", "rule":
-		return true
-	default:
-		return false
-	}
-}
-
-func memoryFailureDominates(successCount int, failureCount int) bool {
-	return failureCount >= 2 && failureCount > successCount
-}
-
 func clampConfidence(value float64) float64 {
 	if value <= 0 {
 		return 0
@@ -831,15 +581,6 @@ func clampConfidence(value float64) float64 {
 		return 1
 	}
 	return value
-}
-
-func refreshMemoryExpiry(expiresAt *string, ttl string, now time.Time) {
-	if expiresAt == nil {
-		return
-	}
-	if refreshed := ttlExpiresAt(now, ttl); refreshed != "" {
-		*expiresAt = refreshed
-	}
 }
 
 func appendUniqueString(values []string, value string) []string {
