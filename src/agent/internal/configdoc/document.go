@@ -513,20 +513,15 @@ func deleteTable(source []byte, doc index, path []string) ([]byte, bool) {
 		if !hasPathPrefix(table.path, path) {
 			continue
 		}
-		end := table.lineEnd
-		for _, key := range doc.keys {
-			if equalPath(key.tablePath, table.path) && key.lineEnd > end {
-				end = key.lineEnd
+		start := tableOwnedLeadingCommentStart(source, table.lineStart)
+		end := len(source)
+		for _, nextTable := range doc.tables {
+			if nextTable.lineStart <= table.lineStart || nextTable.lineStart >= end {
+				continue
 			}
+			end = tableOwnedLeadingCommentStart(source, nextTable.lineStart)
 		}
-		for end < len(source) {
-			next := lineEnd(source, end)
-			if len(bytes.TrimSpace(source[end:next])) != 0 {
-				break
-			}
-			end = next
-		}
-		intervals = append(intervals, interval{start: table.lineStart, end: end})
+		intervals = append(intervals, interval{start: start, end: end})
 	}
 	for _, key := range doc.keys {
 		if hasPathPrefix(key.path, path) {
@@ -557,6 +552,31 @@ func deleteTable(source []byte, doc index, path []string) ([]byte, bool) {
 		result = splice(result, merged[i].start, merged[i].end, nil)
 	}
 	return result, true
+}
+
+// tableOwnedLeadingCommentStart includes a comment block immediately above a
+// table when a blank line separates it from the preceding document content.
+// A comment block at byte zero is kept as a possible file header.
+func tableOwnedLeadingCommentStart(source []byte, tableStart int) int {
+	start := tableStart
+	for start > 0 {
+		previousEnd := start - 1
+		previousStart := lineStart(source, previousEnd)
+		line := bytes.TrimSpace(source[previousStart:previousEnd])
+		if len(line) == 0 || line[0] != '#' {
+			break
+		}
+		start = previousStart
+	}
+	if start == tableStart || start == 0 {
+		return tableStart
+	}
+	previousEnd := start - 1
+	previousStart := lineStart(source, previousEnd)
+	if len(bytes.TrimSpace(source[previousStart:previousEnd])) == 0 {
+		return start
+	}
+	return tableStart
 }
 
 // findDottedTableContext locates an implicit table represented by dotted keys.

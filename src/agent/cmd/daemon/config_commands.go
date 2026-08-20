@@ -1618,11 +1618,10 @@ func preserveProviderCredentials(patch map[string]json.RawMessage, current agent
 				if !exists || !credentialNeedsPreservation(submitted, previous) {
 					continue
 				}
-				encoded, err := json.Marshal(previous)
-				if err != nil {
-					return err
-				}
-				record[key] = encoded
+				// Omitting a preserved credential leaves its original TOML token
+				// untouched. Re-inserting the decoded value would unnecessarily
+				// normalize literal strings and report a false change.
+				delete(record, key)
 			}
 			encoded, err := json.Marshal(record)
 			if err != nil {
@@ -1644,7 +1643,7 @@ func credentialNeedsPreservation(raw json.RawMessage, previous string) bool {
 	if json.Unmarshal(raw, &submitted) != nil {
 		return false
 	}
-	return strings.TrimSpace(submitted) == "" || submitted == maskCredential(previous)
+	return strings.TrimSpace(submitted) == "" || submitted == previous || submitted == maskCredential(previous)
 }
 
 func maskCredential(value string) string {
@@ -1823,6 +1822,9 @@ func validatePatchObject(typ reflect.Type, patch map[string]json.RawMessage, pat
 		}
 		if strings.HasPrefix(key, "has_") {
 			return fmt.Errorf("%s is a read-only status field", strings.Join(append(path, key), "."))
+		}
+		if len(path) == 1 && path[0] == "hid" && key == "pointer_mode" {
+			return fmt.Errorf("hid.pointer_mode is a read-only derived field")
 		}
 		fieldType, found := jsonFieldType(typ, key)
 		if !found {

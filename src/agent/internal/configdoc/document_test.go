@@ -297,6 +297,38 @@ func TestApplyDeletesProviderRecordWithoutTouchingOthers(t *testing.T) {
 	}
 }
 
+func TestApplyDeleteTableRemovesLeadingCommentOwnedByTable(t *testing.T) {
+	source := []byte("[model]\nprovider = \"keep\"\n\n# work account, remove with provider\n[model_providers.old]\ntype = \"openai\"\n\n[model_providers.keep]\ntype = \"openai\"\n")
+	want := []byte("[model]\nprovider = \"keep\"\n\n[model_providers.keep]\ntype = \"openai\"\n")
+
+	got, changed, err := Apply(source, []Operation{{Path: []string{"model_providers", "old"}, DeleteTable: true}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "model_providers.old" {
+		t.Fatalf("changed = %v", changed)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestApplyDeleteLastTableRemovesTrailingComments(t *testing.T) {
+	source := []byte("[model_providers.keep]\ntype = \"openai\"\n\n[model_providers.old]\ntype = \"openai\"\n# remove with old provider\n")
+	want := []byte("[model_providers.keep]\ntype = \"openai\"\n\n")
+
+	got, changed, err := Apply(source, []Operation{{Path: []string{"model_providers", "old"}, DeleteTable: true}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "model_providers.old" {
+		t.Fatalf("changed = %v", changed)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestApplyDeleteTablePreservesInterleavedUnrelatedTables(t *testing.T) {
 	source := []byte(`[model_providers.old]
 type = "openai"

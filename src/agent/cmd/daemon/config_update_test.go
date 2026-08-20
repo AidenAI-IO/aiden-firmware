@@ -283,6 +283,37 @@ model = "gpt-5.5"
 	}
 }
 
+func TestUpdateConfigFilePreservesLiteralProviderCredentialSyntaxWhenEmpty(t *testing.T) {
+	source := `[model_providers.openai]
+type = 'openai'
+api_key = 'sk-secret-value-1234'
+
+[model]
+provider = "openai"
+model = "gpt-5.5"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	result, err := updateConfigFile(path, []byte(`{"config":{"model_providers":{"openai":{"type":"openai","api_key":"","base_url":"https://x.test"}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.ChangedPaths, ",") != "model_providers.openai.base_url" {
+		t.Fatalf("changed paths = %v", result.ChangedPaths)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if !strings.Contains(text, "api_key = 'sk-secret-value-1234'") ||
+		!strings.Contains(text, `base_url = "https://x.test"`) {
+		t.Fatalf("provider credential syntax was not preserved:\n%s", text)
+	}
+}
+
 func TestUpdateConfigFileAcceptsRedactedResolvedConfigPayload(t *testing.T) {
 	source := `[model_providers.openai]
 type = "openai"
@@ -382,6 +413,25 @@ func TestUpdateConfigFileRejectsChangedReadOnlyCredentialStatus(t *testing.T) {
 	_, err := updateConfigFile(path, []byte(`{"config":{"search":{"has_api_key":true}}}`))
 	if err == nil || !strings.Contains(err.Error(), "read-only status field") {
 		t.Fatalf("changed read-only status error = %v", err)
+	}
+}
+
+func TestUpdateConfigFileRejectsChangedDerivedPointerMode(t *testing.T) {
+	source := "[device]\ndevice_type = \"iOS\"\n"
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	_, err := updateConfigFile(path, []byte(`{"config":{"hid":{"pointer_mode":"touchscreen"}}}`))
+	if err == nil || !strings.Contains(err.Error(), "hid.pointer_mode is a read-only derived field") {
+		t.Fatalf("changed derived field error = %v", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != source {
+		t.Fatalf("rejected derived field changed config:\n%s", got)
 	}
 }
 
