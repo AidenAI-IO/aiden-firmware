@@ -12,7 +12,48 @@ import (
 	"testing"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/configupdate"
 )
+
+func TestRunConfigUpdateIODelegatesToService(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte("[hid]\nkeyboard_layout = \"qwerty\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := runConfigUpdateIO(
+		[]string{"--config", path, "--stdin", "--format=json"},
+		strings.NewReader(`{"config":{"hid":{"keyboard_layout":"azerty"}}}`),
+		&stdout,
+		&stderr,
+	)
+	if exitCode != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+	var result configupdate.Result
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if !result.OK || !result.RebootRequired || strings.Join(result.ChangedPaths, ",") != "hid.keyboard_layout" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestRunConfigUpdateIOEncodesInvalidArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exitCode := runConfigUpdateIO(nil, strings.NewReader("{}"), &stdout, &stderr)
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", exitCode)
+	}
+	var result configupdate.Result
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result.OK || result.ErrorKind != configupdate.ErrorKindInvalidRequest {
+		t.Fatalf("result = %+v", result)
+	}
+}
 
 func TestExecuteConfigTestUsesModelRuntime(t *testing.T) {
 	values, err := json.Marshal(modelDTO{Provider: "fake"})
@@ -66,7 +107,7 @@ func TestModelDTOProviderTestRequestPreservesSamplingPresenceFromJSON(t *testing
 			if err := json.Unmarshal([]byte(tt.payload), &dto); err != nil {
 				t.Fatalf("unmarshal model values: %v", err)
 			}
-			req := dto.providerTestRequest()
+			req := dto.ProviderTestRequest()
 			if tt.wantTemperature == nil {
 				if req.Temperature != nil {
 					t.Fatalf("temperature request = %v, want unset", req.Temperature)
@@ -358,7 +399,7 @@ func TestWebConfigDTOFromAgentConfigDoesNotInferAudioArchiveEnabled(t *testing.T
 func TestWebConfigDTOMapsTTSReferenceID(t *testing.T) {
 	const referenceID = "fish-reference-id"
 	dto := webConfigDTO{TTS: ttsDTO{Provider: "fish-audio", ReferenceID: referenceID}}
-	if got := dto.toAgentConfig().TTS.ReferenceID; got != referenceID {
+	if got := dto.ToAgentConfig().TTS.ReferenceID; got != referenceID {
 		t.Fatalf("TTS.ReferenceID = %q, want %q", got, referenceID)
 	}
 	if got := webConfigDTOFromAgentConfig(agent.Config{TTS: agent.TTSConfig{Provider: "fish-audio", ReferenceID: referenceID}}).TTS.ReferenceID; got != referenceID {
@@ -428,7 +469,7 @@ func TestWebConfigDTOMapsAudioArchive(t *testing.T) {
 			StoragePath: "/tmp/audio-archive",
 		},
 	}
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.AudioArchive.Enabled {
 		t.Fatal("AudioArchive.Enabled = true, want false")
 	}
@@ -453,7 +494,7 @@ func TestWebConfigDTOMapsAudioPlaybackBackend(t *testing.T) {
 			PlaybackBackend: agent.AudioPlaybackBackendLocal,
 		},
 	}
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.Audio.PlaybackBackend != agent.AudioPlaybackBackendLocal {
 		t.Fatalf("Audio.PlaybackBackend = %q, want local", cfg.Audio.PlaybackBackend)
 	}
@@ -471,7 +512,7 @@ func TestWebConfigDTOMapsAudioPlaybackBackend(t *testing.T) {
 			PlaybackBackend: agent.AudioPlaybackBackendAuto,
 		},
 	}
-	autoCfg := autoDTO.toAgentConfig()
+	autoCfg := autoDTO.ToAgentConfig()
 	if autoCfg.Audio.PlaybackBackend != agent.AudioPlaybackBackendAuto {
 		t.Fatalf("auto Audio.PlaybackBackend = %q, want auto", autoCfg.Audio.PlaybackBackend)
 	}
@@ -490,7 +531,7 @@ func TestWebConfigDTOMapsQuickCapture(t *testing.T) {
 		GPIOPin:         3,
 		ScreenMemoryTTL: "14d",
 	}}
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.QuickCapture.EnabledOrDefault() || cfg.QuickCapture.GPIOPin != 3 || cfg.QuickCapture.ScreenMemoryTTL != "14d" {
 		t.Fatalf("QuickCapture = %+v, want DTO values", cfg.QuickCapture)
 	}
@@ -521,7 +562,7 @@ func TestWebConfigDTOMapsVoiceNotifications(t *testing.T) {
 	}
 
 	dto := webConfigDTOFromAgentConfig(agent.Config{VoiceNotifications: voiceNotifications})
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if !reflect.DeepEqual(cfg.VoiceNotifications, voiceNotifications) {
 		t.Fatalf("VoiceNotifications = %#v, want %#v", cfg.VoiceNotifications, voiceNotifications)
 	}
@@ -533,7 +574,7 @@ func TestWebConfigDTOMapsLog(t *testing.T) {
 		Log:   logDTO{LLMHTTPRetentionDays: 21},
 	}
 
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.Log.LLMHTTPRetentionDays != 21 {
 		t.Fatalf("Log.LLMHTTPRetentionDays = %d, want 21", cfg.Log.LLMHTTPRetentionDays)
 	}
@@ -558,7 +599,7 @@ func TestWebConfigDTOMapsTerminationPolicy(t *testing.T) {
 		ParseFailureLimit:       13,
 	}
 	dto := webConfigDTO{TerminationPolicy: policy}
-	if got := dto.toAgentConfig().TerminationPolicy; !reflect.DeepEqual(got, policy) {
+	if got := dto.ToAgentConfig().TerminationPolicy; !reflect.DeepEqual(got, policy) {
 		t.Fatalf("TerminationPolicy = %#v, want %#v", got, policy)
 	}
 	if got := webConfigDTOFromAgentConfig(agent.Config{TerminationPolicy: policy}).TerminationPolicy; !reflect.DeepEqual(got, policy) {
@@ -575,7 +616,7 @@ func TestWebConfigDTOMapsSTTLanguage(t *testing.T) {
 		},
 	}
 
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.STT.Language != "en" {
 		t.Fatalf("STT.Language = %q, want en", cfg.STT.Language)
 	}

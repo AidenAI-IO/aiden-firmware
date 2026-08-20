@@ -165,7 +165,7 @@ func TestConfigCheck_WireCustomInstructionMapsToAgentConfig(t *testing.T) {
 		Search: searchDTO{Provider: "duckduckgo"},
 		Agent:  agentDTO{CustomInstruction: "Use custom behavior."},
 	}
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.Instruction != "Use custom behavior." {
 		t.Fatalf("Instruction = %q, want custom instruction", cfg.Instruction)
 	}
@@ -177,7 +177,7 @@ func TestConfigCheck_WireLocaleMapsToAgentConfig(t *testing.T) {
 		Search: searchDTO{Provider: "duckduckgo"},
 		Agent:  agentDTO{Locale: "en-US"},
 	}
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.Locale != "en-US" {
 		t.Fatalf("Locale = %q, want en-US", cfg.Locale)
 	}
@@ -286,7 +286,7 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 			t.Errorf("dto.ModelProviders[my-ollama].BaseURL = %q", got)
 		}
 
-		back := dto.toAgentConfig()
+		back := dto.ToAgentConfig()
 		if got := back.ModelProviders["my-openai"]; got.Type != "openai" || got.APIKey != hasAPIKeyPlaceholder {
 			t.Errorf("redacted model_providers conversion = %#v", back.ModelProviders)
 		}
@@ -386,7 +386,7 @@ func TestWebConfigDTOStorageRoundTrip(t *testing.T) {
 		},
 	}
 	dto := webConfigDTOFromAgentConfig(cfg)
-	back := dto.toAgentConfig()
+	back := dto.ToAgentConfig()
 	if !reflect.DeepEqual(back.Storage, cfg.Storage) {
 		t.Fatalf("storage round-trip changed config:\n got:  %+v\n want: %+v", back.Storage, cfg.Storage)
 	}

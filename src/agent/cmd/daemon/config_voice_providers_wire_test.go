@@ -45,7 +45,7 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 		t.Errorf("dto.STTProviders[tencent] = %#v", got)
 	}
 
-	back := dto.toAgentConfig()
+	back := dto.ToAgentConfig()
 	if got := back.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" || got.APIKey != hasAPIKeyPlaceholder {
 		t.Errorf("redacted tts_providers conversion = %#v", back.TTSProviders)
 	}

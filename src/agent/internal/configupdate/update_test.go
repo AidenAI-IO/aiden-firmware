@@ -1,4 +1,4 @@
-package main
+package configupdate
 
 import (
 	"bytes"
@@ -35,7 +35,7 @@ future_key = "preserve me"
 	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	result, err := updateConfigFile(path, []byte(`{"config":{"hid":{"keyboard_layout":"azerty"}}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{"hid":{"keyboard_layout":"azerty"}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ log_raw_http = false
 		t.Fatal(err)
 	}
 
-	result, err := updateConfigFile(path, []byte(`{"config":{"model":{"log_raw_http":true}}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{"model":{"log_raw_http":true}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ model = "gpt-5.5"
 		t.Fatal(err)
 	}
 
-	result, err := updateConfigFile(path, []byte(`{"config":{"model_providers":{"new":{"type":"ollama"}}}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{"model_providers":{"new":{"type":"ollama"}}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,16 +111,16 @@ model = "gpt-5.5"
 
 func TestConfigUpdateErrorsExposeStableKinds(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	if _, err := updateConfigFile(path, []byte("not json")); err == nil {
+	if _, err := NewService().Update(path, []byte("not json")); err == nil {
 		t.Fatal("invalid patch error = nil")
-	} else if got := configUpdateErrorKind(err); got != configUpdateErrorInvalid {
+	} else if got := ErrorKind(err); got != ErrorKindInvalidRequest {
 		t.Fatalf("invalid error kind = %q", got)
 	}
 
 	missingParent := filepath.Join(t.TempDir(), "missing", "agent.toml")
-	if _, err := updateConfigFile(missingParent, []byte(`{"config":{}}`)); err == nil {
+	if _, err := NewService().Update(missingParent, []byte(`{"config":{}}`)); err == nil {
 		t.Fatal("missing parent error = nil")
-	} else if got := configUpdateErrorKind(err); got != configUpdateErrorInternal {
+	} else if got := ErrorKind(err); got != ErrorKindInternal {
 		t.Fatalf("internal error kind = %q", got)
 	}
 }
@@ -131,7 +131,7 @@ func TestUpdateConfigFileEmptyPatchDoesNotRewrite(t *testing.T) {
 	if err := os.WriteFile(path, source, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	result, err := updateConfigFile(path, []byte(`{"config":{}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ provider = "old"
 		t.Fatal(err)
 	}
 	patch := []byte(`{"config":{"model_providers":{"old":null,"new":{"type":"openai"}},"tts_providers":{"old":null,"new":{"type":"fish-audio"}},"stt_providers":{"old":null,"new":{"type":"tencent-asr"}},"_provider_renames":{"model_providers":{"new":"old"},"tts_providers":{"new":"old"},"stt_providers":{"new":"old"}},"model":{"provider":"new"},"tts":{"provider":"new"},"stt":{"provider":"new"}}}`)
-	if _, err := updateConfigFile(path, patch); err != nil {
+	if _, err := NewService().Update(path, patch); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -241,7 +241,7 @@ model.model = "gpt-5.5"
 		t.Fatal(err)
 	}
 	patch := []byte(`{"config":{"model_providers":{"old":null,"new":{"type":"openai"}},"_provider_renames":{"model_providers":{"new":"old"}},"model":{"provider":"new"}}}`)
-	if _, err := updateConfigFile(path, patch); err != nil {
+	if _, err := NewService().Update(path, patch); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -271,7 +271,7 @@ model = "gpt-5.5"
 		t.Fatal(err)
 	}
 	patch := []byte(`{"config":{"model_providers":{"openai":{"type":"openai","api_key":"mode***cret"}}}}`)
-	if _, err := updateConfigFile(path, patch); err != nil {
+	if _, err := NewService().Update(path, patch); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -296,7 +296,7 @@ model = "gpt-5.5"
 	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	result, err := updateConfigFile(path, []byte(`{"config":{"model_providers":{"openai":{"type":"openai","api_key":"","base_url":"https://x.test"}}}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{"model_providers":{"openai":{"type":"openai","api_key":"","base_url":"https://x.test"}}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,11 +370,11 @@ cleanup_retry_interval_seconds = 42
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := json.Marshal(map[string]any{"config": webConfigDTOFromAgentConfig(cfg)})
+	payload, err := json.Marshal(map[string]any{"config": FromAgentConfig(cfg)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := updateConfigFile(path, payload)
+	result, err := NewService().Update(path, payload)
 	if err != nil {
 		t.Fatalf("redacted resolved config was rejected: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestUpdateConfigFileRejectsChangedReadOnlyCredentialStatus(t *testing.T) {
 	if err := os.WriteFile(path, []byte("[search]\nprovider = \"duckduckgo\"\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	_, err := updateConfigFile(path, []byte(`{"config":{"search":{"has_api_key":true}}}`))
+	_, err := NewService().Update(path, []byte(`{"config":{"search":{"has_api_key":true}}}`))
 	if err == nil || !strings.Contains(err.Error(), "read-only status field") {
 		t.Fatalf("changed read-only status error = %v", err)
 	}
@@ -422,7 +422,7 @@ func TestUpdateConfigFileRejectsChangedDerivedPointerMode(t *testing.T) {
 	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	_, err := updateConfigFile(path, []byte(`{"config":{"hid":{"pointer_mode":"touchscreen"}}}`))
+	_, err := NewService().Update(path, []byte(`{"config":{"hid":{"pointer_mode":"touchscreen"}}}`))
 	if err == nil || !strings.Contains(err.Error(), "hid.pointer_mode is a read-only derived field") {
 		t.Fatalf("changed derived field error = %v", err)
 	}
@@ -457,7 +457,7 @@ cleanup_retry_interval_seconds = 60
 	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	result, err := updateConfigFile(path, []byte(`{"config":{"storage":{"degraded_mode":{"max_agent_log_mb":4},"cleanup":{"llm_http_log_retention_days":[5,1]}}}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{"storage":{"degraded_mode":{"max_agent_log_mb":4},"cleanup":{"llm_http_log_retention_days":[5,1]}}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,8 +487,8 @@ model = "gpt-5.5"
 		t.Fatal(err)
 	}
 	patch := []byte(`{"config":{"model_providers":{"missing":null,"new":{"type":"openai"}},"_provider_renames":{"model_providers":{"new":"missing"}}}}`)
-	if _, err := updateConfigFile(path, patch); err == nil || !strings.Contains(err.Error(), "does not exist") {
-		t.Fatalf("updateConfigFile() error = %v", err)
+	if _, err := NewService().Update(path, patch); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("NewService().Update() error = %v", err)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
@@ -518,8 +518,8 @@ model = "gpt-5.5"
 		t.Fatal(err)
 	}
 	patch := []byte(`{"config":{"model_providers":{"old":null,"existing":{"type":"openai"}},"_provider_renames":{"model_providers":{"existing":"old"}},"model":{"provider":"existing"}}}`)
-	if _, err := updateConfigFile(path, patch); err == nil || !strings.Contains(err.Error(), "target model_providers.existing already exists") {
-		t.Fatalf("updateConfigFile() error = %v", err)
+	if _, err := NewService().Update(path, patch); err == nil || !strings.Contains(err.Error(), "target model_providers.existing already exists") {
+		t.Fatalf("NewService().Update() error = %v", err)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
@@ -533,7 +533,7 @@ model = "gpt-5.5"
 func TestUpdateConfigFileCreatesMissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
-	result, err := updateConfigFile(path, []byte(`{"config":{"agent":{"locale":"en-US"}}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"locale":"en-US"}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +573,7 @@ func TestUpdateConfigFileAcceptsScalarMapEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	patch := []byte(`{"config":{"voice_notifications":{"expiration":{"code_ttl_seconds":{"network":123}}}}}`)
-	if _, err := updateConfigFile(path, patch); err != nil {
+	if _, err := NewService().Update(path, patch); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -592,8 +592,8 @@ func TestUpdateConfigFileRejectsNonObjectPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, patch := range []string{"null", `[]`, `{"config":null}`} {
-		if _, err := updateConfigFile(path, []byte(patch)); err == nil {
-			t.Fatalf("updateConfigFile(%s) error = nil", patch)
+		if _, err := NewService().Update(path, []byte(patch)); err == nil {
+			t.Fatalf("NewService().Update(%s) error = nil", patch)
 		}
 	}
 }
@@ -609,8 +609,8 @@ func TestUpdateConfigFileRejectsMalformedProviderRenames(t *testing.T) {
 		`{"model_providers":{"one":"old","two":"old"}}`,
 	} {
 		patch := `{"config":{"_provider_renames":` + renames + `}}`
-		if _, err := updateConfigFile(path, []byte(patch)); err == nil {
-			t.Fatalf("updateConfigFile(%s) error = nil", patch)
+		if _, err := NewService().Update(path, []byte(patch)); err == nil {
+			t.Fatalf("NewService().Update(%s) error = nil", patch)
 		}
 	}
 }
@@ -647,8 +647,8 @@ func TestUpdateConfigFileRejectsOutOfRangeNumbersWithoutChangingFile(t *testing.
 			if err := os.WriteFile(path, source, 0o640); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := updateConfigFile(path, []byte(tt.patch)); err == nil {
-				t.Fatal("updateConfigFile() error = nil")
+			if _, err := NewService().Update(path, []byte(tt.patch)); err == nil {
+				t.Fatal("NewService().Update() error = nil")
 			}
 			got, err := os.ReadFile(path)
 			if err != nil {
@@ -667,7 +667,7 @@ func TestUpdateConfigFileUpdatesInlineTable(t *testing.T) {
 	if err := os.WriteFile(path, source, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	result, err := updateConfigFile(path, []byte(`{"config":{"hid":{"keyboard_device":"/dev/hidg9"}}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{"hid":{"keyboard_device":"/dev/hidg9"}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,7 +690,7 @@ func TestUpdateConfigFileMigratesLegacyModelCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	patch := []byte(`{"config":{"model":{"provider":"openai","api_key":"legacy-secret","base_url":"https://ignored.example"}}}`)
-	if _, err := updateConfigFile(path, patch); err != nil {
+	if _, err := NewService().Update(path, patch); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -751,7 +751,7 @@ secret_key = "legacy-stt-secret"
 		t.Fatal(err)
 	}
 	patch := []byte(`{"config":{"model_providers":{"primary":{"type":"openai","api_key":"new-model-key"}},"tts_providers":{"voice":{"type":"fish-audio","api_key":"new-tts-key","voice_id":"new-voice"}},"stt_providers":{"speech":{"type":"tencent-asr","api_key":"new-stt-key","secret_key":"new-stt-secret"}}}}`)
-	result, err := updateConfigFile(path, patch)
+	result, err := NewService().Update(path, patch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -829,7 +829,7 @@ api_key = "legacy-stt-key"
 		t.Fatal(err)
 	}
 	patch := []byte(`{"config":{"model":{"provider":"new-model"},"tts":{"provider":"new-voice"},"stt":{"provider":"new-speech"}}}`)
-	if _, err := updateConfigFile(path, patch); err != nil {
+	if _, err := NewService().Update(path, patch); err != nil {
 		t.Fatal(err)
 	}
 
@@ -869,7 +869,7 @@ model = "whisper-1"
 	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := updateConfigFile(path, []byte(`{"config":{"agent":{"max_iterations":7}}}`)); err != nil {
+	if _, err := NewService().Update(path, []byte(`{"config":{"agent":{"max_iterations":7}}}`)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -909,7 +909,7 @@ api_key = "legacy-tts-key"
 	if err := os.WriteFile(path, source, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	result, err := updateConfigFile(path, []byte(`{"config":{}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -946,8 +946,8 @@ func TestUpdateConfigFileRejectsNonObjectModelProvidersDuringLegacyCredentialMig
 				t.Fatal(err)
 			}
 			patch := []byte(`{"config":{"model":{"api_key":"legacy-secret"},"model_providers":` + modelProviders + `}}`)
-			if _, err := updateConfigFile(path, patch); err == nil || !strings.Contains(err.Error(), "model_providers patch must be an object") {
-				t.Fatalf("updateConfigFile() error = %v", err)
+			if _, err := NewService().Update(path, patch); err == nil || !strings.Contains(err.Error(), "model_providers patch must be an object") {
+				t.Fatalf("NewService().Update() error = %v", err)
 			}
 			got, err := os.ReadFile(path)
 			if err != nil {
@@ -966,7 +966,7 @@ func TestUpdateConfigFileAcceptsLegacyProviderTypeAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	patch := []byte(`{"config":{"tts_providers":{"voice":{"provider":"fish-audio","api_key":"secret"}},"tts":{"provider":"voice"}}}`)
-	if _, err := updateConfigFile(path, patch); err != nil {
+	if _, err := NewService().Update(path, patch); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -981,7 +981,7 @@ func TestUpdateConfigFileAcceptsLegacyProviderTypeAlias(t *testing.T) {
 func TestResolvedWebConfigOmitsLegacyModelCredential(t *testing.T) {
 	cfg := agent.DefaultConfig()
 	cfg.Model.APIKey = "top-secret"
-	encoded, err := json.Marshal(webConfigDTOFromAgentConfig(cfg))
+	encoded, err := json.Marshal(FromAgentConfig(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
