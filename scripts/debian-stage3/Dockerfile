@@ -17,7 +17,9 @@ RUN apt-get update \
         e2fsprogs \
         file \
         git \
+        jq \
         libcap2-bin \
+        openssl \
         python3-minimal \
         qemu-user-static \
         ripgrep \
