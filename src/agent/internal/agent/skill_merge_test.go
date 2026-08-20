@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -818,20 +819,14 @@ func TestSkillManageActionsDocumentedInSchema(t *testing.T) {
 		}
 	}
 	actionEnum, _ := props["action"].(map[string]any)["enum"].([]string)
-	for _, want := range []string{"write_file", "remove_file", "archive", "restore_archive"} {
-		if !containsStr(actionEnum, want) {
-			t.Fatalf("skill_manage action schema missing %q: %v", want, props["action"])
-		}
+	wantActions := []string{
+		"create", "edit", "patch", "delete",
+		"write_file", "remove_file", "mark_stale",
+		"archive", "restore_archive",
 	}
-}
-
-func containsStr(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
+	if !slices.Equal(actionEnum, wantActions) {
+		t.Fatalf("skill_manage action enum = %v, want %v", actionEnum, wantActions)
 	}
-	return false
 }
 
 func TestSkillManageToolEmptyInputExplainsJSONContract(t *testing.T) {
