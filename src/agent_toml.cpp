@@ -384,6 +384,9 @@ void apply_kv(AgentToml& cfg,
         else if (key == "max_size_mb") assign_int(&cfg.audio_archive.max_size_mb, raw, &sub_err);
         else if (key == "storage_path") assign_string(&cfg.audio_archive.storage_path, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "frame_service") {
+        if (key == "keep_streamon") assign_bool(&cfg.frame_service.keep_streamon, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     } else if (section == "voice_notifications") {
         if (key == "enabled") assign_bool(&cfg.voice_notifications.enabled, raw, &sub_err);
         else if (key == "max_pending") assign_non_negative_int(&cfg.voice_notifications.max_pending, raw, &sub_err);
@@ -1044,6 +1047,10 @@ bool save_agent_toml(const char* path, const AgentToml& input, std::string* erro
     if (cfg.audio_archive.max_files != 0) emit_int(out, "max_files", cfg.audio_archive.max_files);
     if (cfg.audio_archive.max_size_mb != 0) emit_int(out, "max_size_mb", cfg.audio_archive.max_size_mb);
     emit_string(out, "storage_path", cfg.audio_archive.storage_path);
+    out << "\n";
+
+    out << "[frame_service]\n";
+    emit_bool(out, "keep_streamon", cfg.frame_service.keep_streamon);
     out << "\n";
 
     out << "[voice_notifications]\n";

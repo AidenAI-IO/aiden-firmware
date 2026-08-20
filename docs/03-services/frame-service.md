@@ -4,7 +4,7 @@ sidebar_position: 4
 
 # Frame Service: HDMI Frame Capture Service
 
-`frame_service` is a long-running C++ service that exclusively owns `/dev/video0` and provides fresh screenshots through a Unix domain socket. It keeps the device and V4L2 MMAP buffers open, but pauses streaming between requests instead of continuously dequeuing frames.
+`frame_service` is a long-running C++ service that exclusively owns `/dev/video0` and provides fresh screenshots through a Unix domain socket. It keeps the device and V4L2 MMAP buffers open. By default it pauses streaming between requests instead of continuously dequeuing frames; an `agent.toml` setting can keep STREAMON active for latency and power measurements.
 
 ## Why Frame Service is Needed
 
@@ -55,6 +55,7 @@ frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
               [--ring-size N] [--fps N] [--no-hdmi-sync]
               [--force-trigger|--no-force-trigger]
               [--warmup-frames N]
+              [--keep-streamon|--pause-between-captures]
               [--allow-uniform-frames|--reject-uniform-frames]
               [--require-exact-resolution|--allow-resolution-mismatch]
 ```
@@ -71,6 +72,7 @@ frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
 | `--ring-size N` | Deprecated compatibility option; ignored by production on-demand capture |
 | `--fps N` | Deprecated compatibility option; ignored by production on-demand capture |
 | `--warmup-frames N` | Frames to dequeue/release after `STREAMON` before copying the response; defaults to `12` |
+| `--keep-streamon` / `--pause-between-captures` | Keep capture STREAMON between requests, or restore the default per-request STREAMON/STREAMOFF lifecycle |
 | `--allow-uniform-frames` | Accept black or single-colour frames after warm-up; this is the default because they are valid screenshots |
 | `--reject-uniform-frames` | Reject all-same packed UYVY/YUYV frames after warm-up for diagnostics |
 | `--no-hdmi-sync` | Skip HDMI sync helper flow |
@@ -89,6 +91,9 @@ discovery is not suitable.
 
 ## On-Demand Capture Lifecycle
 
+With the default `keep_streamon = false`, service startup and each request use
+the following lifecycle.
+
 At service startup:
 
 1. HDMI timing/EDID synchronization runs as before.
@@ -106,6 +111,19 @@ This avoids old completed buffers after a long idle interval and removes the
 continuous VI/DDR traffic caused by the previous drain loop. Requests are
 serialized, so multiple clients do not race the V4L2 queue.
 
+The firmware init script reads the persistent setting from
+`/userdata/agent/agent.toml`:
+
+```toml
+[frame_service]
+keep_streamon = false
+```
+
+When set to `true`, the stream remains active after initialization and requests
+skip the STREAMOFF/STREAMON pair. Warm-up frames are still dequeued before each
+response so queued stale frames are not returned. Saving a changed value in
+Config Web restarts Frame Service so the new policy takes effect immediately.
+
 ## Resource and Power Boundary
 
 On-demand mode removes retained production frame copies and continuous frame
@@ -115,6 +133,7 @@ every screenshot. The HDMI bridge itself also remains configured. Therefore:
 
 - userspace ring-buffer memory and continuous memory bandwidth should drop;
 - screenshot latency increases by stream restart plus the configured warm-up period (12 frames by default) and any requested crop/encode work;
+- `keep_streamon = true` removes the per-request stream restart latency but keeps capture hardware active while idle;
 - total board power savings depend on whether the active RK628D/TC358743 and VI drivers gate clocks after `VIDIOC_STREAMOFF` and must be measured on hardware.
 
 ## CLI
@@ -144,6 +163,9 @@ The Go Agent's `screenshot` tool accesses `frame_service` through `FrameServiceC
 ```toml
 [hid]
 frame_socket = "/run/frame_service/frame_service.sock"
+
+[frame_service]
+keep_streamon = false
 ```
 
 When health reports `capture_mode=on_demand`, the Agent treats an old

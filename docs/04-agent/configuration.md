@@ -22,6 +22,7 @@ under `[device]` below.
 - [`[model]`](#model)
 - [`[log]`](#log)
 - [`[audio]`](#audio)
+- [`[frame_service]`](#frame_service)
 - [`[voice_notifications]`](#voice_notifications)
 - [`[hid]`](#hid)
 - [`[stt]` and `[tts]`](#stt-and-tts)
@@ -69,6 +70,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, playback_backend
+- `frame_service`: whether Frame Service keeps capture STREAMON between screenshots
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
 - `log`: LLM HTTP log retention
 - `device`: device_type
@@ -413,6 +415,17 @@ API key and base URL do not carry over to it.
 | `channels`         | `1`                                     | Number of channels                                                                                                                                                                                                            |
 | `bit_width`        | `16`                                    | Bit width                                                                                                                                                                                                                     |
 | `playback_backend` | `auto`                                  | TTS playback backend. `auto` uses `audio_service` on board and the local OS player when the Agent is running in desktop/PC mode through ADB input backend or environment bridge. Use `audio_service` or `local` to force one. |
+
+## `[frame_service]`
+
+```toml
+[frame_service]
+keep_streamon = false
+```
+
+| Field           | Default | Description |
+| --------------- | ------- | ----------- |
+| `keep_streamon` | `false` | Keep RK628 CSI capture STREAMON between screenshots. This reduces per-request capture latency but increases idle power consumption. Config Web persists the value in `/userdata/agent/agent.toml` and restarts Frame Service when it changes. |
 
 ## `[voice_notifications]`
 

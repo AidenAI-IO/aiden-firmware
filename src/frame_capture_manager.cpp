@@ -120,7 +120,7 @@ void FrameCaptureManager::run() {
             recover(&backoff_ms, "open failed", true);
             continue;
         }
-        if (!source_->pause()) {
+        if (!options_.keep_streamon && !source_->pause()) {
             recover(&backoff_ms, "initial pause failed", true);
             continue;
         }
@@ -149,13 +149,13 @@ void FrameCaptureManager::run() {
             }
 
             CapturedFrame frame;
-            const bool resumed = source_->resume();
+            const bool resumed = options_.keep_streamon || source_->resume();
             bool warmed_up = resumed;
             for (int i = 0; warmed_up && i < options_.warmup_frames; ++i) {
                 warmed_up = source_->discard();
             }
             const bool captured = warmed_up && source_->capture(&frame);
-            const bool paused = source_->pause();
+            const bool paused = options_.keep_streamon || source_->pause();
             const bool ok = resumed && warmed_up && captured && paused;
 
             {

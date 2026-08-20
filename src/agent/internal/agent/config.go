@@ -78,6 +78,13 @@ type AudioArchiveConfig struct {
 	StoragePath string `toml:"storage_path,omitempty"`
 }
 
+// FrameServiceConfig controls the board-side HDMI capture service lifecycle.
+// The Agent preserves this section so the setup portal can own the setting,
+// while frame_service itself reads the persisted TOML at service startup.
+type FrameServiceConfig struct {
+	KeepStreamOn bool `toml:"keep_streamon"`
+}
+
 // MaxFilesOrDefault returns MaxFiles if positive, else 500.
 func (c AudioArchiveConfig) MaxFilesOrDefault() int {
 	if c.MaxFiles <= 0 {
@@ -272,6 +279,7 @@ type Config struct {
 	Device                     DeviceConfig             `toml:"device,omitempty"`
 	Audio                      AudioConfig              `toml:"audio,omitempty"`
 	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
+	FrameService               FrameServiceConfig       `toml:"frame_service,omitempty"`
 	Storage                    StorageConfig            `toml:"storage,omitempty"`
 	VoiceNotifications         VoiceNotificationsConfig `toml:"voice_notifications,omitempty"`
 	Log                        LogConfig                `toml:"log,omitempty"`

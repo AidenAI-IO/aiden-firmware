@@ -108,6 +108,9 @@ func DefaultConfig() Config {
 			MaxSizeMB:   defaultAudioArchiveMaxSizeMB,
 			StoragePath: defaultAudioArchiveStoragePath,
 		},
+		FrameService: FrameServiceConfig{
+			KeepStreamOn: false,
+		},
 		VoiceNotifications: VoiceNotificationsConfig{
 			Enabled:    defaultBoolPtr(true),
 			MaxPending: 8,

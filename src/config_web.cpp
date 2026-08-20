@@ -147,6 +147,7 @@ const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
+const char* kFrameServiceInitScript = "/etc/init.d/S52frame_service";
 const char* kLocaleSimplifiedChinese = "zh-CN";
 const char* kLocaleEnglishUS = "en-US";
 // Default path to the agent binary on device. Tests override this via the
@@ -178,6 +179,17 @@ const char* agent_init_script_path() {
             return override_path;
         }
         return kAgentInitScript;
+    }();
+    return cached;
+}
+
+const char* frame_service_init_script_path() {
+    static const char* cached = []() -> const char* {
+        const char* override_path = std::getenv("AIDEN_FRAME_SERVICE_INIT_SCRIPT");
+        if (override_path && override_path[0] != '\0') {
+            return override_path;
+        }
+        return kFrameServiceInitScript;
     }();
     return cached;
 }
@@ -290,6 +302,7 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
 long long monotonic_millis();
 bool reap_agent_restart_process(bool wait, std::string* error);
 void start_deferred_agent_restart_if_idle();
+bool schedule_frame_service_restart(std::string* error);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
@@ -2937,6 +2950,10 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(audio_archive, "max_files", config.audio_archive.max_files);
     cJSON_AddNumberToObject(audio_archive, "max_size_mb", config.audio_archive.max_size_mb);
 
+    cJSON* frame_service = add_object(root, "frame_service");
+    cJSON_AddBoolToObject(frame_service, "keep_streamon",
+                          config.frame_service.keep_streamon ? 1 : 0);
+
     cJSON* voice_notifications = add_object(root, "voice_notifications");
     cJSON_AddBoolToObject(voice_notifications, "enabled", config.voice_notifications.enabled ? 1 : 0);
     cJSON_AddNumberToObject(voice_notifications, "max_pending", config.voice_notifications.max_pending);
@@ -3451,6 +3468,11 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->audio_archive.storage_path, audio_archive, "storage_path");
         set_json_int(&config->audio_archive.max_files, audio_archive, "max_files");
         set_json_int(&config->audio_archive.max_size_mb, audio_archive, "max_size_mb");
+    }
+
+    cJSON* frame_service = cJSON_GetObjectItem(root, "frame_service");
+    if (json_is_object(frame_service)) {
+        set_json_bool(&config->frame_service.keep_streamon, frame_service, "keep_streamon");
     }
 
     cJSON* voice_notifications = cJSON_GetObjectItem(root, "voice_notifications");
@@ -3968,6 +3990,56 @@ void schedule_agent_restart() {
         AIDEN_LOG_ERROR("agent_restart", "launch_failed", "error=%s",
                         ignored_error.c_str());
     }
+}
+
+bool schedule_frame_service_restart(std::string* error) {
+    if (error) error->clear();
+    const char* init_script = frame_service_init_script_path();
+    if (!init_script || init_script[0] == '\0') {
+        if (error) *error = "frame service init script path is empty";
+        return false;
+    }
+
+    pid_t launcher_pid = fork();
+    if (launcher_pid < 0) {
+        if (error) *error = std::string("fork frame service restart: ") + strerror(errno);
+        return false;
+    }
+    if (launcher_pid == 0) {
+        pid_t supervisor_pid = fork();
+        if (supervisor_pid < 0) {
+            _exit(127);
+        }
+        if (supervisor_pid > 0) {
+            _exit(0);
+        }
+        setsid();
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) close(devnull);
+        }
+        execl(init_script, init_script, "restart", static_cast<char*>(NULL));
+        execl("/bin/sh", "sh", init_script, "restart", static_cast<char*>(NULL));
+        _exit(127);
+    }
+
+    int status = 0;
+    while (waitpid(launcher_pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            if (error) *error = std::string("wait frame service restart launcher: ") +
+                                strerror(errno);
+            return false;
+        }
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        if (error) *error = "failed to start frame service restart";
+        return false;
+    }
+
+    return true;
 }
 
 int acquire_ota_update_launch_lock(std::string* error) {
@@ -6271,6 +6343,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     load_current_wifi_config(options, &wifi, &ignore_error);
     std::string original_device_type = effective_device_type(config);
     std::string original_keyboard_layout = config.hid.keyboard_layout;
+    bool original_keep_streamon = config.frame_service.keep_streamon;
 
     bool submitted_model_api_key = false;
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
@@ -6335,6 +6408,8 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     // pointer state, so either configuration change requires a clean restart.
     bool device_type_changed = original_device_type != config.device.device_type;
     bool keyboard_layout_changed = original_keyboard_layout != config.hid.keyboard_layout;
+    bool frame_service_changed =
+        original_keep_streamon != config.frame_service.keep_streamon;
     bool usb_hid_reboot_required = device_type_changed || keyboard_layout_changed;
 
     std::string save_error;
@@ -6352,6 +6427,16 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         schedule_agent_restart();
     }
 
+    bool frame_service_restart_scheduled = false;
+    if (frame_service_changed) {
+        std::string restart_error;
+        if (!schedule_frame_service_restart(&restart_error)) {
+            return make_json_error(500, restart_error.empty()
+                ? "failed to restart frame service" : restart_error);
+        }
+        frame_service_restart_scheduled = true;
+    }
+
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
     cJSON_AddStringToObject(response, "message",
@@ -6364,6 +6449,8 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON_AddBoolToObject(response, "usbhid_restart_required", usb_hid_reboot_required ? 1 : 0);
     cJSON_AddBoolToObject(response, "reboot_required", usb_hid_reboot_required ? 1 : 0);
     cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
+    cJSON_AddBoolToObject(response, "frame_service_restart_scheduled",
+                          frame_service_restart_scheduled ? 1 : 0);
     cJSON_AddItemToObject(response, "config", config_to_json(config));
 
     cJSON* paths = add_object(response, "paths");

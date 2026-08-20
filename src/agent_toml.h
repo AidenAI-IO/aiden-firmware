@@ -93,6 +93,10 @@ struct AudioArchiveToml {
     std::string storage_path = "/userdata/audio";
 };
 
+struct FrameServiceToml {
+    bool keep_streamon = false;
+};
+
 struct VoiceNotificationResponseTailToml {
     bool enabled = true;
     int max_items = 1;
@@ -178,6 +182,7 @@ struct AgentToml {
     STTToml stt;
     AudioToml audio;
     AudioArchiveToml audio_archive;
+    FrameServiceToml frame_service;
     VoiceNotificationsToml voice_notifications;
     LogToml log;
     OTAToml ota;

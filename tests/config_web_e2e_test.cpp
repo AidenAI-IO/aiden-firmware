@@ -232,6 +232,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
+        "\"frame_service\":{\"keep_streamon\":false},"
         "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
         "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
         "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"storage\":900}}},"
@@ -927,6 +928,12 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     REQUIRE(enabled != nullptr);
     CHECK((enabled->type & 0xff) == cJSON_True);
 
+    cJSON* frame_service = cJSON_GetObjectItem(config, "frame_service");
+    REQUIRE(frame_service != nullptr);
+    cJSON* keep_streamon = cJSON_GetObjectItem(frame_service, "keep_streamon");
+    REQUIRE(keep_streamon != nullptr);
+    CHECK((keep_streamon->type & 0xff) == cJSON_False);
+
     cJSON* voice_notifications = cJSON_GetObjectItem(config, "voice_notifications");
     REQUIRE(voice_notifications != nullptr);
     CHECK(cJSON_GetObjectItem(voice_notifications, "default_locale") == nullptr);
@@ -1171,6 +1178,48 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("max_files = 123") != std::string::npos);
     CHECK(saved.find("max_size_mb = 45") != std::string::npos);
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config persists STREAMON policy and restarts frame service on change") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string restart_script = tmp + "/restart-frame-service.sh";
+    const std::string restart_log = tmp + "/restart.log";
+    write_file(restart_script,
+               "#!/bin/sh\n"
+               "echo \"$1\" >> \"$AIDEN_FRAME_SERVICE_RESTART_TEST_LOG\"\n");
+    REQUIRE(::chmod(restart_script.c_str(), 0755) == 0);
+
+    StubEnv env;
+    env.set("AIDEN_FRAME_SERVICE_INIT_SCRIPT", restart_script);
+    env.set("AIDEN_FRAME_SERVICE_RESTART_TEST_LOG", restart_log);
+    auto handle = start_server(env);
+
+    const std::string unchanged_body =
+        "{\"config\":{\"frame_service\":{\"keep_streamon\":false}},\"apply_wifi\":false}";
+    HttpResponse unchanged =
+        http_request(handle->port, "POST", "/api/config", unchanged_body);
+    REQUIRE(unchanged.status == 200);
+    CHECK(unchanged.body.find("\"frame_service_restart_scheduled\":false") !=
+          std::string::npos);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK(::access(restart_log.c_str(), F_OK) != 0);
+
+    const std::string changed_body =
+        "{\"config\":{\"frame_service\":{\"keep_streamon\":true}},\"apply_wifi\":false}";
+    HttpResponse changed =
+        http_request(handle->port, "POST", "/api/config", changed_body);
+    REQUIRE(changed.status == 200);
+    CHECK(changed.body.find("\"frame_service_restart_scheduled\":true") !=
+          std::string::npos);
+    REQUIRE(wait_for_file_contains(restart_log, "restart", 1000));
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[frame_service]") != std::string::npos);
+    CHECK(saved.find("keep_streamon = true") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config ignores model base_url for every provider") {

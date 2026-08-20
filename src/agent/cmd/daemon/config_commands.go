@@ -55,6 +55,7 @@ type webConfigDTO struct {
 	STT                sttDTO                        `json:"stt"`
 	Audio              audioDTO                      `json:"audio"`
 	AudioArchive       audioArchiveDTO               `json:"audio_archive"`
+	FrameService       frameServiceDTO               `json:"frame_service"`
 	VoiceNotifications voiceNotificationsDTO         `json:"voice_notifications"`
 	Device             deviceDTO                     `json:"device"`
 	Log                logDTO                        `json:"log"`
@@ -299,6 +300,10 @@ type audioArchiveDTO struct {
 	StoragePath string `json:"storage_path"`
 }
 
+type frameServiceDTO struct {
+	KeepStreamOn bool `json:"keep_streamon"`
+}
+
 type deviceDTO struct {
 	Backend    string `json:"backend,omitempty"`
 	DeviceType string `json:"device_type"`
@@ -455,6 +460,9 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			MaxFiles:    d.AudioArchive.MaxFiles,
 			MaxSizeMB:   d.AudioArchive.MaxSizeMB,
 			StoragePath: d.AudioArchive.StoragePath,
+		},
+		FrameService: agent.FrameServiceConfig{
+			KeepStreamOn: d.FrameService.KeepStreamOn,
 		},
 		VoiceNotifications: agent.VoiceNotificationsConfig{
 			Enabled:    d.VoiceNotifications.Enabled,
@@ -697,6 +705,9 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			MaxFiles:    audioArchive.MaxFilesOrDefault(),
 			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
 			StoragePath: audioArchive.StoragePathOrDefault(),
+		},
+		FrameService: frameServiceDTO{
+			KeepStreamOn: cfg.FrameService.KeepStreamOn,
 		},
 		Device: deviceDTO{
 			Backend:    cfg.Device.BackendOrDefault(),

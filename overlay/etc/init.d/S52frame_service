@@ -4,6 +4,7 @@
 # application bundle is deployed. Configure paths in /etc/aiden_frame_service.conf.
 
 CONFIG_FILE=/etc/aiden_frame_service.conf
+AGENT_CONFIG=${AGENT_CONFIG:-/userdata/agent/agent.toml}
 BOOT_CONF=/etc/aiden_boot.conf
 AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
 [ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
@@ -157,6 +158,22 @@ resolve_edid() {
     esac
 }
 
+configured_keep_streamon() {
+    [ -r "$AGENT_CONFIG" ] || {
+        echo 0
+        return
+    }
+    value="$(awk '
+        /^\[frame_service\][[:space:]]*$/ { in_section = 1; next }
+        /^\[/ { in_section = 0 }
+        in_section && $1 == "keep_streamon" && $2 == "=" { print $3; exit }
+    ' "$AGENT_CONFIG")"
+    case "$value" in
+        true|1) echo 1 ;;
+        *) echo 0 ;;
+    esac
+}
+
 prepare_tc358743_edid() {
     subdev="$1"
     edid="$2"
@@ -227,6 +244,11 @@ start() {
             fi
             if [ -n "$FRAME_SERVICE_WARMUP_FRAMES" ]; then
                 set -- "$@" --warmup-frames "$FRAME_SERVICE_WARMUP_FRAMES"
+            fi
+            if [ "$(configured_keep_streamon)" = "1" ]; then
+                set -- "$@" --keep-streamon
+            else
+                set -- "$@" --pause-between-captures
             fi
             if [ "$FRAME_SERVICE_ALLOW_UNIFORM_FRAMES" = "1" ]; then
                 set -- "$@" --allow-uniform-frames

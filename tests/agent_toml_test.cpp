@@ -99,6 +99,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.audio_archive.max_files = 42;
     cfg.audio_archive.max_size_mb = 17;
     cfg.audio_archive.storage_path = "/tmp/audio-archive";
+    cfg.frame_service.keep_streamon = true;
 
     cfg.hid.keyboard_device = "/dev/hidg0";
     cfg.hid.keyboard_layout = "azerty";
@@ -216,6 +217,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.audio_archive.max_files == 42);
     CHECK(loaded.audio_archive.max_size_mb == 17);
     CHECK(loaded.audio_archive.storage_path == "/tmp/audio-archive");
+    CHECK(loaded.frame_service.keep_streamon == true);
     CHECK(loaded.locale == "en-US");
 
     CHECK(loaded.hid.keyboard_device == "/dev/hidg0");

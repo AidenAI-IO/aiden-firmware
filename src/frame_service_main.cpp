@@ -27,7 +27,8 @@ struct Options {
     Options() : socket_path("/tmp/frame_service.sock"),
                 ring_size(aiden::kDefaultFrameServiceRingSize),
                 fps(aiden::kDefaultFrameServiceFps),
-                warmup_frames(12) {
+                warmup_frames(12),
+                keep_streamon(false) {
         aiden_demo::set_default_camera_config(&camera);
         // A uniformly black or single-colour phone screen is a valid
         // screenshot. On-demand capture relies on warm-up frames, rather than
@@ -54,6 +55,7 @@ struct Options {
     size_t ring_size;
     double fps;
     int warmup_frames;
+    bool keep_streamon;
     aiden::CameraConfig camera;
 };
 
@@ -63,6 +65,7 @@ void usage(const char* program) {
             "[--pixel-format FMT] [--subdev PATH] [--edid PATH] [--ring-size N] "
             "[--fps N] [--no-hdmi-sync] [--force-trigger|--no-force-trigger] "
             "[--warmup-frames N] "
+            "[--keep-streamon|--pause-between-captures] "
             "[--allow-uniform-frames|--reject-uniform-frames] "
             "[--require-exact-resolution|--allow-resolution-mismatch]\n"
             "  --ring-size and --fps are accepted for compatibility but ignored in on-demand mode.\n",
@@ -118,6 +121,10 @@ bool parse_options(int argc, char** argv, Options* options) {
         } else if (arg == "--warmup-frames" && i + 1 < argc) {
             if (!parse_int_arg(argv[++i], &options->warmup_frames) ||
                 options->warmup_frames < 0) return false;
+        } else if (arg == "--keep-streamon") {
+            options->keep_streamon = true;
+        } else if (arg == "--pause-between-captures") {
+            options->keep_streamon = false;
         } else if (arg == "--allow-uniform-frames") {
             options->camera.reject_uniform_frames = false;
         } else if (arg == "--reject-uniform-frames") {
@@ -189,6 +196,7 @@ int main(int argc, char** argv) {
     aiden::FrameCameraCaptureSource source(options.camera);
     aiden::FrameCaptureManagerOptions manager_options;
     manager_options.warmup_frames = options.warmup_frames;
+    manager_options.keep_streamon = options.keep_streamon;
     aiden::FrameCaptureManager manager(&source, &server, manager_options);
     server.set_capture_handler(
         [&manager](uint32_t timeout_ms,
@@ -215,8 +223,9 @@ int main(int argc, char** argv) {
     }
 
     AIDEN_LOG_INFO("server", "listening",
-                   "socket_path=%s capture_mode=on_demand warmup_frames=%d reject_uniform_frames=%d deprecated_fps=%.3f",
+                   "socket_path=%s capture_mode=on_demand warmup_frames=%d keep_streamon=%d reject_uniform_frames=%d deprecated_fps=%.3f",
                    options.socket_path.c_str(), options.warmup_frames,
+                   options.keep_streamon ? 1 : 0,
                    options.camera.reject_uniform_frames ? 1 : 0, options.fps);
     while (!g_quit) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));

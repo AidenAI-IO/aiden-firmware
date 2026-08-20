@@ -50,6 +50,11 @@ trigger_mode = "wakeup"
 [device]
 device_type = "iOS"
 
+# Keep the RK628 CSI capture stream enabled between screenshots. Enabling this
+# reduces screenshot latency but increases idle power consumption.
+[frame_service]
+keep_streamon = false
+
 # Tiered loop guard and termination policy. Zero-valued numeric fields use defaults.
 [termination_policy]
 # enabled = true

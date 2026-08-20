@@ -198,6 +198,9 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"audio.socket":                  {layout: "wide"},
 		"audio_archive.enabled":         {help: "After enabling, save STT voice recording WAV for Web UI playback; Automatically delete old files when exceeding quantity or capacity limit."},
 		"audio_archive.storage_path":    {layout: "wide"},
+		"frame_service.keep_streamon": {
+			help: "Keep the RK628 CSI capture stream enabled between screenshots. This reduces screenshot latency but increases idle power consumption.",
+		},
 		"ota.github_proxy_url": {
 			label:       "GitHub Proxy URL",
 			help:        "Optional proxy to accelerate GitHub downloads (e.g., https://gh-proxy.com/ or https://ghfast.top/)",
@@ -399,6 +402,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
 		{"audio_archive.storage_path", defaults.AudioArchive.StoragePathOrDefault()},
+		{"frame_service.keep_streamon", defaults.FrameService.KeepStreamOn},
 		{"device.device_type", defaults.Device.DeviceTypeOrDefault()},
 		{"log.llm_http_retention_days", defaults.Log.LLMHTTPRetentionDaysOrDefault()},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
@@ -706,6 +710,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"stt", reflect.TypeOf(STTConfig{}), nil},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
 		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},
+		{"frame_service", reflect.TypeOf(FrameServiceConfig{}), nil},
 		{"device", reflect.TypeOf(DeviceConfig{}), map[string]bool{"backend": true}},
 		{"hid", reflect.TypeOf(HIDConfig{}), map[string]bool{"pointer_mode": true}},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},

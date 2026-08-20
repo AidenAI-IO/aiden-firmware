@@ -644,6 +644,27 @@ TEST_CASE("config web exposes audio archive switch") {
     CHECK(html.find("save STT voice recording WAV") != std::string::npos);
 }
 
+TEST_CASE("config web exposes persistent frame STREAMON switch") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html = read_config_web_asset_bundle();
+
+    CHECK(source.find("\"frame_service\"") != std::string::npos);
+    CHECK(source.find("config.frame_service.keep_streamon") != std::string::npos);
+    CHECK(source.find("AIDEN_FRAME_SERVICE_INIT_SCRIPT") != std::string::npos);
+    CHECK(source.find("frame_service_restart_scheduled") != std::string::npos);
+    CHECK(html.find("section-frame_service") != std::string::npos);
+    CHECK(html.find("save-frame_service") != std::string::npos);
+    CHECK(html.find("Name: \"frame_service\"") != std::string::npos);
+    CHECK(html.find("frame_service.keep_streamon") != std::string::npos);
+}
+
 TEST_CASE("config web docs list the model fields") {
     const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/04-agent/configuration.md";
     std::ifstream doc_in(doc_path.c_str());

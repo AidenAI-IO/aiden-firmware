@@ -54,6 +54,9 @@ const char* kDefaultMeta =
     "{\"key\":\"base_url\",\"widget\":\"text\",\"visibleWhen\":{\"all\":["
     "{\"field\":\"model_providers.type\",\"op\":\"in\","
     "\"values\":[\"openai\",\"anthropic\",\"ollama\"]}]}}"
+    "]},"
+    "{\"name\":\"frame_service\",\"fields\":["
+    "{\"key\":\"keep_streamon\",\"widget\":\"boolean\",\"default\":false}"
     "]}"
     "]}\n";
 
@@ -76,6 +79,7 @@ const char* kDefaultConfig =
     "\"channels\":1,\"bit_width\":16},"
     "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
     "\"storage_path\":\"/userdata/audio\"},"
+    "\"frame_service\":{\"keep_streamon\":false},"
     "\"voice_notifications\":{\"enabled\":true,\"max_pending\":8,"
     "\"response_tail\":{\"enabled\":true,\"max_items\":1,\"max_text_chars\":40},"
     "\"expiration\":{\"default_ttl_seconds\":0,\"code_ttl_seconds\":{\"storage\":900}}},"
