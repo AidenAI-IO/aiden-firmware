@@ -97,6 +97,17 @@ Screenshot binary data is stored as an Episode artifact. Event records contain r
 
 The recorded `outcome.success` value is not treated as verified truth. It is input evidence for later assessment.
 
+### Episode Storage Retention
+
+The current Episode implementation does not register a retention cleaner for
+`memory/episodes/`. Episode metadata, events, and artifacts remain on disk until
+the whole memory plane is explicitly cleared.
+
+The consolidation ledger is bounded separately. It retains the latest 64
+`done` or `ignored` terminal statuses while preserving processing and retry
+state. Device Memory TTL also affects recall only: expired records are excluded
+from search, but StorageMonitor does not routinely delete their YAML files.
+
 ## Episode Memory Consolidation
 
 The background pipeline is:
@@ -210,6 +221,45 @@ The worker:
 - resumes scheduling after the foreground task finishes.
 
 Episode trace persistence happens before background maintenance is scheduled. A maintenance failure is logged and does not replace the user-facing task result.
+
+## Notification Memory Proposal
+
+The notification design extends the memory plane without routing notification
+consumption through `ble_service`. The service remains an event producer; an
+Agent-side `NotificationContext` consumes, deduplicates, sanitizes, and persists
+the events.
+
+The proposed storage layout adds two roots:
+
+```text
+memory/
+├── notifications/              # raw notification evidence and cursors
+├── temporary/                  # time-bounded recallable conclusions
+│   ├── index.yaml
+│   └── memories/
+└── long_term/                  # durable user memory
+```
+
+Temporary Memory uses the Long-Term Memory record and index schema, requires an
+`expires_at`, and is searched by the existing `recall_memory` tool. Relevant
+unexpired Temporary Memory ranks ahead of a Long-Term Memory baseline for the
+same subject without replacing it.
+
+The existing `episodeMemoryWorker` scheduling behavior should be extracted into
+a generic `MemoryWorker` with a scenario-specific `MemoryProcessor` interface.
+Episode and Notification then use separate Worker instances with independent
+timers, cursors, retry state, cancellation contexts, and persisted processing
+state. They share only the model client and a process-local gate that serializes
+background Memory model calls.
+
+| Worker instance | Trigger | Batch | Output |
+| --- | --- | --- | --- |
+| Episode | Agent idle for 5 minutes | 5 Episodes | Device Memory |
+| Notification | 30 seconds after persistence | 20 events | Temporary or Long-Term Memory |
+
+See [Notification Persistence and Automatic Memory](notification-context-memory.md)
+for the complete proposal, including deduplication, promotion, TTL, and cleanup
+rules.
 
 ## Compatibility
 
