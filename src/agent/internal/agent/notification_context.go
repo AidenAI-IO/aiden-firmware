@@ -422,6 +422,17 @@ func (c *NotificationContext) readPendingLocked(ctx context.Context, cursor uint
 			break
 		}
 	}
+	sort.SliceStable(result, func(i, j int) bool {
+		left, lok := parseNotificationCursor(result[i].ContextID)
+		right, rok := parseNotificationCursor(result[j].ContextID)
+		if lok && rok && left != right {
+			return left < right
+		}
+		return result[i].ReceivedAt < result[j].ReceivedAt
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
 	return result, nil
 }
 
