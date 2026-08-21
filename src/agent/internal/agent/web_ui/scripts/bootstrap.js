@@ -1,5 +1,6 @@
 // Initialize only after every feature script has been evaluated.
 loadHistory();
+setInterval(loadHistory, 2000);
 refreshCurrentLiveActivity();
 setInterval(refreshCurrentLiveActivity, 2000);
 loadToolCatalog();

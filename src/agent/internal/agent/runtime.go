@@ -1573,6 +1573,18 @@ func (r *Runtime) UserContextDump() contextmanager.MessageListDump {
 	return manager.MessageListDump()
 }
 
+// WebContextDump returns the context that the Web UI should display for the
+// active input mode.
+func (r *Runtime) WebContextDump() contextmanager.MessageListDump {
+	if r == nil {
+		return contextmanager.MessageListDump{}
+	}
+	if r.config.InputModeOrDefault() == "realtime" {
+		return r.UserContextDump()
+	}
+	return r.ContextDump()
+}
+
 // ReadContextAttachment reads an attachment registered in the user or backend
 // context. It never accepts an arbitrary filesystem path.
 func (r *Runtime) ReadContextAttachment(role, attachmentID string) ([]byte, string, error) {

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/mnk"
 	"aiden-agent/internal/agent/screenprovider"
 	"aiden-agent/internal/agent/speech"
@@ -140,6 +142,7 @@ type MessageAttachment struct {
 	Size       int    `json:"size,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
 	Transcript string `json:"transcript,omitempty"`
+	PreviewURL string `json:"preview_url,omitempty"`
 }
 
 // Message represents a public chat history message or tool call.
@@ -1567,11 +1570,10 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 		var historySnapshot []Message
 		response := ""
 		if done {
-			historySnapshot = make([]Message, len(pending.history))
-			copy(historySnapshot, pending.history)
-			for i := len(pending.history) - 1; i >= 0; i-- {
-				if pending.history[i].Type == "assistant" {
-					response = pending.history[i].Content
+			historySnapshot = s.webHistorySnapshot()
+			for i := len(historySnapshot) - 1; i >= 0; i-- {
+				if historySnapshot[i].Type == "assistant" {
+					response = historySnapshot[i].Content
 					break
 				}
 			}
@@ -1835,7 +1837,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if s.logger != nil {
 				s.logger.Info("Agent run canceled: request_id=%s", req.RequestID)
 			}
-			stream.Write(ChatStreamEvent{Type: "error", Error: "request canceled", History: s.historySnapshot()})
+			stream.Write(ChatStreamEvent{Type: "error", Error: "request canceled", History: s.webHistorySnapshot()})
 			return
 		}
 		errorMessage := Message{
@@ -1857,11 +1859,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			prepared := s.runtime.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: result.TurnFailure})
 			s.speakFinalText(ctx, req.RequestID, prepared)
 		}
-		stream.Write(ChatStreamEvent{Type: "error", Error: err.Error(), History: s.historySnapshot()})
+		stream.Write(ChatStreamEvent{Type: "error", Error: err.Error(), History: s.webHistorySnapshot()})
 		return
 	}
 
-	historySnapshot := s.historySnapshot()
+	historySnapshot := s.webHistorySnapshot()
 	if s.liveActivity != nil {
 		s.liveActivity.CompleteTask(req.RequestID, result.Output)
 	}
@@ -2332,7 +2334,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	historySnapshot := s.historySnapshot()
+	historySnapshot := s.webHistorySnapshot()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(historySnapshot)
@@ -3487,6 +3489,78 @@ func (s *Server) historySnapshot() []Message {
 	historySnapshot := make([]Message, len(s.history))
 	copy(historySnapshot, s.history)
 	return historySnapshot
+}
+
+func (s *Server) webHistorySnapshot() []Message {
+	if s == nil || s.runtime == nil {
+		return nil
+	}
+	dump := s.runtime.WebContextDump()
+	result := make([]Message, 0, len(dump.Messages))
+	role := "backend"
+	if s.runtime.config.InputModeOrDefault() == "realtime" {
+		role = "user"
+	}
+	for i, item := range dump.Messages {
+		message, ok := webMessageFromContextMessage(item, role)
+		if ok {
+			message.RequestID = fmt.Sprintf("context-%s-%d", role, i)
+			result = append(result, message)
+		}
+	}
+	return result
+}
+
+func webMessageFromContextMessage(item messages.Message, contextRole string) (Message, bool) {
+	message := Message{Content: item.Content}
+	switch item.Role {
+	case messages.MessageRoleSystem:
+		return Message{}, false
+	case messages.MessageRoleUser:
+		message.Type = "user"
+	case messages.MessageRoleAssistant:
+		message.Type = "assistant"
+	case messages.MessageRoleToolCall:
+		message.Type = "tool_call"
+		if len(item.ToolCalls) > 0 {
+			message.ToolName = item.ToolCalls[0].Name
+			message.ToolInput = item.ToolCalls[0].Arguments
+		}
+	case messages.MessageRoleToolResult:
+		message.Type = "tool_result"
+		if len(item.ToolResults) > 0 {
+			message.ToolName = item.ToolResults[0].Name
+			message.Content = item.ToolResults[0].Content
+		}
+	default:
+		message.Type = "assistant"
+	}
+	message.Role = string(item.Role)
+	for _, attachment := range item.Attachments {
+		name := filepath.Base(attachment.FilePath)
+		if name == "." || name == string(filepath.Separator) || name == "" {
+			continue
+		}
+		message.Attachments = append(message.Attachments, MessageAttachment{
+			Kind:       attachmentKindFromMIME(attachment.MIMEType),
+			Name:       name,
+			MIMEType:   attachment.MIMEType,
+			Size:       int(attachment.FileSize),
+			Path:       attachment.FilePath,
+			PreviewURL: "/api/context/attachment?role=" + url.QueryEscape(contextRole) + "&attachment=" + url.QueryEscape(name),
+		})
+	}
+	return message, true
+}
+
+func attachmentKindFromMIME(mimeType string) string {
+	if isImageMIMEType(mimeType) {
+		return AttachmentKindImage
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "audio/") {
+		return AttachmentKindAudio
+	}
+	return "file"
 }
 
 func (s *Server) loadHistoryFromDisk() {

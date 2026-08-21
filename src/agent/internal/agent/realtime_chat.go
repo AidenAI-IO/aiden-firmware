@@ -147,23 +147,23 @@ func (s *Server) handleRealtimeChatStream(w http.ResponseWriter, r *http.Request
 
 	handler := s.realtimeChatHandlerSnapshot()
 	if handler == nil {
-		stream.Write(ChatStreamEvent{Type: RealtimeChatEventError, RequestID: req.RequestID, EpisodeID: episodeID, Error: "realtime voice session is unavailable", History: s.historySnapshot()})
+		stream.Write(ChatStreamEvent{Type: RealtimeChatEventError, RequestID: req.RequestID, EpisodeID: episodeID, Error: "realtime voice session is unavailable", History: s.webHistorySnapshot()})
 		return
 	}
 	events, err := handler(runCtx, RealtimeChatRequest{RequestID: req.RequestID, Message: input.InputText})
 	if err != nil {
-		stream.Write(ChatStreamEvent{Type: RealtimeChatEventError, RequestID: req.RequestID, EpisodeID: episodeID, Error: err.Error(), History: s.historySnapshot()})
+		stream.Write(ChatStreamEvent{Type: RealtimeChatEventError, RequestID: req.RequestID, EpisodeID: episodeID, Error: err.Error(), History: s.webHistorySnapshot()})
 		return
 	}
 	var response strings.Builder
 	for {
 		select {
 		case <-runCtx.Done():
-			stream.Write(ChatStreamEvent{Type: RealtimeChatEventError, RequestID: req.RequestID, EpisodeID: episodeID, Error: "request canceled", History: s.historySnapshot()})
+			stream.Write(ChatStreamEvent{Type: RealtimeChatEventError, RequestID: req.RequestID, EpisodeID: episodeID, Error: "request canceled", History: s.webHistorySnapshot()})
 			return
 		case event, ok := <-events:
 			if !ok {
-				stream.Write(ChatStreamEvent{Type: RealtimeChatEventError, RequestID: req.RequestID, EpisodeID: episodeID, Error: "realtime chat ended without a response", History: s.historySnapshot()})
+				stream.Write(ChatStreamEvent{Type: RealtimeChatEventError, RequestID: req.RequestID, EpisodeID: episodeID, Error: "realtime chat ended without a response", History: s.webHistorySnapshot()})
 				return
 			}
 			switch event.Type {
@@ -177,17 +177,17 @@ func (s *Server) handleRealtimeChatStream(w http.ResponseWriter, r *http.Request
 				}
 				assistant := Message{Type: "assistant", EpisodeID: episodeID, RequestID: req.RequestID, Content: response.String(), Timestamp: time.Now()}
 				if normalized, ok := s.appendHistory(assistant); ok {
-					history := s.historySnapshot()
+					history := s.webHistorySnapshot()
 					if s.liveActivity != nil {
 						s.liveActivity.CompleteTask(req.RequestID, normalized.Content)
 					}
 					stream.Write(ChatStreamEvent{Type: "done", RequestID: req.RequestID, EpisodeID: episodeID, Response: normalized.Content, History: history})
 				} else {
-					stream.Write(ChatStreamEvent{Type: "done", RequestID: req.RequestID, EpisodeID: episodeID, Response: response.String(), History: s.historySnapshot()})
+					stream.Write(ChatStreamEvent{Type: "done", RequestID: req.RequestID, EpisodeID: episodeID, Response: response.String(), History: s.webHistorySnapshot()})
 				}
 				return
 			case RealtimeChatEventError:
-				stream.Write(ChatStreamEvent{Type: RealtimeChatEventError, RequestID: req.RequestID, EpisodeID: episodeID, Error: event.Error, History: s.historySnapshot()})
+				stream.Write(ChatStreamEvent{Type: RealtimeChatEventError, RequestID: req.RequestID, EpisodeID: episodeID, Error: event.Error, History: s.webHistorySnapshot()})
 				return
 			}
 		}
