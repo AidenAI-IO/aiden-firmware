@@ -21,7 +21,7 @@ func TestNotificationMemoryProcessorFiltersNoiseAndWritesTemporaryMemory(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	processor := NewNotificationMemoryProcessor(ctxStore, root)
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil)
 	processor.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
 	_, err = processor.ProcessBatch(context.Background(), 20, nil)
 	if err != nil {
@@ -47,7 +47,7 @@ func TestNotificationMemoryProcessorImplementsWorkerIsolationSeam(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	processor := NewNotificationMemoryProcessor(ctxStore, filepath.Join(root, "memory"))
+	processor := NewNotificationMemoryProcessor(ctxStore, filepath.Join(root, "memory"), nil)
 	var _ MemoryProcessor = processor
 	worker := newNotificationMemoryWorker(processor)
 	if worker == nil || worker.MemoryWorker == nil {

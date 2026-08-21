@@ -29,11 +29,7 @@ type NotificationMemoryProcessor struct {
 
 var _ MemoryProcessor = (*NotificationMemoryProcessor)(nil)
 
-func NewNotificationMemoryProcessor(notificationContext *NotificationContext, memoryDir string, longTerm ...*LongTermMemoryStore) *NotificationMemoryProcessor {
-	longTermStore := (*LongTermMemoryStore)(nil)
-	if len(longTerm) > 0 {
-		longTermStore = longTerm[0]
-	}
+func NewNotificationMemoryProcessor(notificationContext *NotificationContext, memoryDir string, longTermStore *LongTermMemoryStore) *NotificationMemoryProcessor {
 	if longTermStore == nil {
 		longTermStore = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
 	}
@@ -112,6 +108,7 @@ func (p *NotificationMemoryProcessor) persistTemporary(ctx context.Context, reco
 	item := MemoryItem{
 		ID:         "tmp_notification_" + record.ContextID,
 		Type:       "fact",
+		TimeScope:  "temporary",
 		Priority:   40,
 		Confidence: 0.7,
 		Title:      title,

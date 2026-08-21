@@ -189,9 +189,11 @@ func (p *FilesystemMemoryPlane) StartNotificationMemory() error {
 	}
 	processor := NewNotificationMemoryProcessor(ctx, p.memoryDir, p.longTerm)
 	worker := newNotificationMemoryWorker(processor)
+	worker.idleDelay = 0
 	if err := worker.Start(); err != nil {
 		return err
 	}
+	worker.idleDelay = defaultNotificationMemoryIdleDelay
 	p.notificationContext = ctx
 	p.notificationMemory = worker
 	return nil
