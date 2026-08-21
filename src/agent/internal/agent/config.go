@@ -1270,8 +1270,8 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid model.responses_context_management: %s (expected empty, compaction, ark_context_edit, or disabled)", c.Model.ResponsesContextManagement)
 	}
-	if c.Model.ResponsesCompactThreshold < 0 {
-		return fmt.Errorf("model.responses_compact_threshold must be >= 0, got %d", c.Model.ResponsesCompactThreshold)
+	if threshold := c.Model.ResponsesCompactThreshold; threshold != 0 && threshold < 1000 {
+		return fmt.Errorf("model.responses_compact_threshold must be 0 or >= 1000, got %d", threshold)
 	}
 	if c.Model.ResponsesContextEditTrigger < 0 {
 		return fmt.Errorf("model.responses_context_edit_trigger must be >= 0, got %d", c.Model.ResponsesContextEditTrigger)

@@ -664,7 +664,8 @@ func TestModelAPIModeValidation(t *testing.T) {
 		field string
 	}{
 		{name: "context management", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesContextManagement: "invalid"}, field: "responses_context_management"},
-		{name: "compact threshold", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesCompactThreshold: -1}, field: "responses_compact_threshold"},
+		{name: "compact threshold negative", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesCompactThreshold: -1}, field: "responses_compact_threshold"},
+		{name: "compact threshold below provider minimum", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesCompactThreshold: 999}, field: "responses_compact_threshold"},
 		{name: "ark trigger", model: ModelConfig{Provider: "volcengine", Model: "test", APIMode: "responses", ResponsesContextEditTrigger: -1}, field: "responses_context_edit_trigger"},
 		{name: "ark keep", model: ModelConfig{Provider: "volcengine", Model: "test", APIMode: "responses", ResponsesContextEditKeep: -1}, field: "responses_context_edit_keep"},
 		{name: "blank include", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesInclude: []string{"reasoning.encrypted_content", " "}}, field: "responses_include"},
@@ -675,6 +676,17 @@ func TestModelAPIModeValidation(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want %s", err, tt.field)
 			}
 		})
+	}
+	for _, threshold := range []int{0, 1000, 4096} {
+		cfg := Config{Model: ModelConfig{
+			Provider:                  "openai",
+			Model:                     "test",
+			APIMode:                   "responses",
+			ResponsesCompactThreshold: threshold,
+		}}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("ResponsesCompactThreshold=%d: Validate() error = %v", threshold, err)
+		}
 	}
 	if !(ModelConfig{Provider: "openai", APIMode: "responses_stateful", ResponsesContextManagement: "compaction"}).ResponsesProviderCompactionEnabled() {
 		t.Fatal("provider compaction should be enabled for stateful Responses mode")
