@@ -2397,8 +2397,14 @@ func (s *Server) handleBenchmarkSeedEpisode(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var episode TaskEpisode
-	if err := json.NewDecoder(r.Body).Decode(&episode); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&episode); err != nil {
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		http.Error(w, "decode body: expected exactly one JSON object", http.StatusBadRequest)
 		return
 	}
 	if strings.TrimSpace(episode.ID) == "" {

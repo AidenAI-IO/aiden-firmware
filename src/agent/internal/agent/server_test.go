@@ -4456,6 +4456,28 @@ func TestBenchmarkSeedEpisodeRequiresBenchmarkToken(t *testing.T) {
 	}
 }
 
+func TestBenchmarkSeedEpisodeRejectsUnknownAndTrailingJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "unknown field", body: `{"id":"ep_unknown","user_goal":"test","unknown":true}`},
+		{name: "trailing object", body: `{"id":"ep_trailing","user_goal":"test"}{}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := newBenchmarkSeedMemoryServer(t)
+			req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_episode", bytes.NewBufferString(tc.body))
+			req.Header.Set("Authorization", "Bearer test-benchmark-token")
+			rec := httptest.NewRecorder()
+			server.handleBenchmarkSeedEpisode(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestBenchmarkProcessEpisodeMemoryConsolidatesSeededEpisode(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	streamingDisabled := false

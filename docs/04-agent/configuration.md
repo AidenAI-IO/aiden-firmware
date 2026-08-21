@@ -424,6 +424,12 @@ API key and base URL do not carry over to it.
 | `bit_width`        | `16`                                    | Bit width                                                                                                                                                                                                                     |
 | `playback_backend` | `auto`                                  | TTS playback backend. `auto` uses `audio_service` on board and the local OS player when the Agent is running in desktop/PC mode through ADB input backend or environment bridge. Use `audio_service` or `local` to force one. |
 
+## `[frame_service]`
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `keep_streamon` | `false` | When `true`, Frame Service keeps capture STREAMON between screenshots and discards 6 warm-up frames for each request. When `false`, it pauses between screenshots and uses 0 warm-up frames. |
+
 ## `[voice_notifications]`
 
 Voice notifications attach system reminders to a normal spoken reply or replace a final failed LLM turn with a fixed error message. They never start an independent background announcement. See [Voice Notifications](voice-notifications.md) for the lifecycle and delivery contract.

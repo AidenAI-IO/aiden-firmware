@@ -455,6 +455,7 @@ func (d Config) ToAgentConfig() agent.Config {
 			APIKey:               d.Model.APIKey,
 			Model:                d.Model.Model,
 			APIMode:              d.Model.APIMode,
+			ReasoningEffort:      d.Model.ReasoningEffort,
 			Temperature:          d.Model.Temperature,
 			MaxResponseTokens:    d.Model.MaxResponseTokens,
 			LogRawHTTP:           d.Model.LogRawHTTP,

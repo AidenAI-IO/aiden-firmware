@@ -186,6 +186,22 @@ func TestConfigCheck_WireLocaleMapsToAgentConfig(t *testing.T) {
 	}
 }
 
+func TestConfigCheck_WireModelReasoningEffortRoundTrip(t *testing.T) {
+	cfg := agent.Config{Model: agent.ModelConfig{
+		Provider:        "openai",
+		Model:           "gpt-4",
+		ReasoningEffort: "high",
+	}}
+	dto := webConfigDTOFromAgentConfig(cfg)
+	if dto.Model.ReasoningEffort != "high" {
+		t.Fatalf("DTO reasoning_effort = %q, want high", dto.Model.ReasoningEffort)
+	}
+	back := dto.ToAgentConfig()
+	if back.Model.ReasoningEffort != "high" {
+		t.Fatalf("round-trip reasoning_effort = %q, want high", back.Model.ReasoningEffort)
+	}
+}
+
 // TestConfigCheck_WireTelemetryNested verifies telemetry validation runs
 // against the nested "telemetry" wire object.
 func TestConfigCheck_WireTelemetryNested(t *testing.T) {

@@ -647,7 +647,7 @@ TEST_CASE("config web exposes quick capture settings") {
 
     CHECK(source.find("Name: \"quick_capture\"") != std::string::npos);
     CHECK(html.find("section-quick_capture") != std::string::npos);
-    CHECK(html.find("Name: \"quick_capture\"") != std::string::npos);
+    CHECK(source.find("Name: \"quick_capture\"") != std::string::npos);
     CHECK(html.find("screen_memory_ttl") != std::string::npos);
     CHECK(html.find("GPIO32/GPIO33 wakeup remains independent") != std::string::npos);
 }

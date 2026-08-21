@@ -517,26 +517,17 @@ func detectImageAxisBounds(length int, dark func(int) bool) (int, int, bool) {
 	if activeSeed < 0 {
 		return 0, length - 1, false
 	}
-	border, active := 0, activeSeed
-	for active-border > 1 {
-		middle := border + (active-border)/2
-		if dark(middle) {
-			border = middle
-		} else {
-			active = middle
-		}
+	first := 0
+	for first < activeSeed && dark(first) {
+		first++
 	}
-	first := active
-	active, border = activeSeed, length-1
-	for border-active > 1 {
-		middle := active + (border-active)/2
-		if dark(middle) {
-			border = middle
-		} else {
-			active = middle
-		}
+	last := length - 1
+	for last > activeSeed && dark(last) {
+		last--
 	}
-	last := active
+	if first > last {
+		return 0, length - 1, false
+	}
 	activeLength := last - first + 1
 	tolerance := max(4, length/100)
 	valid := activeLength >= length/5 && activeLength <= length*95/100 &&
@@ -545,38 +536,34 @@ func detectImageAxisBounds(length int, dark func(int) bool) (int, int, bool) {
 }
 
 func imageColumnDark(img image.Image, x, minY, height int, threshold float64) bool {
-	samples := 64
-	if height < samples {
-		samples = height
-	}
+	return imageAxisDark(img, x, minY, height, threshold, false)
+}
+
+func imageRowDark(img image.Image, y, minX, width int, threshold float64) bool {
+	return imageAxisDark(img, y, minX, width, threshold, true)
+}
+
+func imageAxisDark(img image.Image, fixed, varyingStart, varyingLength int, threshold float64, varyingX bool) bool {
+	samples := min(64, varyingLength)
 	if samples <= 0 {
 		return true
 	}
 	if samples == 1 {
-		return pixelBrightness(img.At(x, minY)) <= threshold
+		if varyingX {
+			return pixelBrightness(img.At(varyingStart, fixed)) <= threshold
+		}
+		return pixelBrightness(img.At(fixed, varyingStart)) <= threshold
 	}
 	bright := 0
 	for i := 0; i < samples; i++ {
-		y := minY + int(math.Round(float64(i)*float64(height-1)/float64(samples-1)))
-		if pixelBrightness(img.At(x, y)) > threshold {
-			bright++
+		position := varyingStart + int(math.Round(float64(i)*float64(varyingLength-1)/float64(samples-1)))
+		var c color.Color
+		if varyingX {
+			c = img.At(position, fixed)
+		} else {
+			c = img.At(fixed, position)
 		}
-	}
-	return bright <= samples/20
-}
-
-func imageRowDark(img image.Image, y, minX, width int, threshold float64) bool {
-	samples := min(64, width)
-	if samples <= 0 {
-		return true
-	}
-	bright := 0
-	for i := 0; i < samples; i++ {
-		x := minX
-		if samples > 1 {
-			x += int(math.Round(float64(i) * float64(width-1) / float64(samples-1)))
-		}
-		if pixelBrightness(img.At(x, y)) > threshold {
+		if pixelBrightness(c) > threshold {
 			bright++
 		}
 	}

@@ -20,6 +20,15 @@ type fakeScreenshotFrameClient struct {
 	captureInfo screenCaptureInfo
 }
 
+func TestDetectImageAxisBoundsIgnoresInteriorDarkRun(t *testing.T) {
+	left, right, valid := detectImageAxisBounds(40, func(position int) bool {
+		return position < 2 || position >= 38 || position == 34
+	})
+	if left != 2 || right != 37 || !valid {
+		t.Fatalf("bounds = (%d, %d), valid=%v, want (2, 37), true", left, right, valid)
+	}
+}
+
 func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality int, cropBlack bool, hint screenprovider.CropHint) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if format != "jpeg" {
 		return nil, nil, screenCaptureInfo{}, fmt.Errorf("unexpected format %q", format)

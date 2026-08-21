@@ -414,7 +414,7 @@ TEST_CASE("crop raw NV16 frame preserves each chroma row") {
     metadata.width = 8;
     metadata.height = 4;
     metadata.pixel_format = "nv16";
-    metadata.stride = 16;
+    metadata.stride = 8;
     metadata.bytes = 64;
     std::vector<uint8_t> frame(64);
     for (size_t i = 0; i < 32; ++i) frame[i] = static_cast<uint8_t>(i);
