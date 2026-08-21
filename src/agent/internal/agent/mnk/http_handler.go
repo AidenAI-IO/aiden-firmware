@@ -69,6 +69,8 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		execErr = h.handleMove(reqCtx, req.Move)
 	case "scroll":
 		execErr = h.handleScroll(reqCtx, req.Scroll)
+	case "touch_actions":
+		execErr = h.handleTouchActions(reqCtx, req.TouchActions)
 	default:
 		h.writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown operation: %q", req.Operation))
 		return
@@ -87,6 +89,17 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Write success response
 	h.writeSuccess(w)
+}
+
+func (h *HTTPHandler) handleTouchActions(ctx context.Context, actions []TouchAction) error {
+	if len(actions) == 0 {
+		return InvalidArguments("touch_actions must contain at least one action")
+	}
+	atomic, ok := h.provider.(TouchActionProvider)
+	if !ok {
+		return ModuleUnavailable("atomic touch actions are not supported by this provider")
+	}
+	return atomic.TouchActions(ctx, actions)
 }
 
 func (h *HTTPHandler) handleClick(ctx context.Context, params *ClickParams) error {

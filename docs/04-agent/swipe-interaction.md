@@ -21,14 +21,37 @@ JPEG noise, animation frames, and repeated content make exact pixel displacement
 
 ### `touch_gesture`
 
-Use `touch_gesture` for ordinary lists, carousels, maps, and other free-scrolling surfaces:
+`touch_gesture` accepts an atomic action program. Actions execute in order in one HID session, so a contact remains down across waits and moves:
 
 ```json
 {
-  "type": "swipe",
-  "start": {"x": 500, "y": 650},
-  "end": {"x": 500, "y": 350},
-  "speed": 2500
+  "actions": [
+    {"action": "touch_down", "point": {"x": 500, "y": 700}},
+    {"action": "wait", "ms": 80},
+    {"action": "move_to", "point": {"x": 500, "y": 300}},
+    {"action": "touch_up"}
+  ]
+}
+```
+
+The action vocabulary is deliberately small:
+
+- `touch_down`: starts a contact and requires `point`.
+- `move_to`: moves to `point`, preserving the current contact state.
+- `wait`: waits for `ms` milliseconds without changing contact state.
+- `touch_up`: releases the current contact; `point` is optional.
+
+Coordinates use the normalized `0..1000` range. A program must contain at least one action and must end with `touch_up`; waits are bounded to 30 seconds and programs to 128 actions. The legacy one-object `type` form remains accepted for existing scripts, but new integrations should use the atomic form. ADB input backends reject atomic programs because they cannot preserve an independent contact between commands.
+
+Use the atomic form for ordinary lists, carousels, maps, and other free-scrolling surfaces:
+
+```json
+{
+  "actions": [
+    {"action": "touch_down", "point": {"x": 500, "y": 650}},
+    {"action": "move_to", "point": {"x": 500, "y": 350}},
+    {"action": "touch_up"}
+  ]
 }
 ```
 

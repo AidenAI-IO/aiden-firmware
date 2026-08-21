@@ -175,6 +175,172 @@ func (p *HIDProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, b
 	})
 }
 
+// TouchActions executes a sequence of low-level pointer primitives without
+// releasing the contact between actions. This is the primitive path used by
+// the atomic touch_gesture syntax; callers control movement and dwell timing
+// explicitly with touch_down, move_to, wait, and touch_up actions.
+func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) error {
+	return runPointerGate(p.gate, ctx, func() error {
+		if len(actions) == 0 {
+			return InvalidArguments("touch actions must not be empty")
+		}
+		if len(actions) > 128 {
+			return InvalidArguments("touch actions must contain at most 128 atomic actions")
+		}
+
+		active := false
+		activeButton := ButtonLeft
+		totalWaitMs := 0
+		currentX, currentY := p.getCurrentPosition()
+		releaseOnError := func(err error) error {
+			if active {
+				_ = p.releasePointerRepeated(currentX, currentY)
+				active = false
+			}
+			return err
+		}
+
+		for index, action := range actions {
+			if err := ctx.Err(); err != nil {
+				return releaseOnError(err)
+			}
+			actionType := strings.ToLower(strings.TrimSpace(action.Type))
+			button := action.Button
+			if button == "" {
+				button = activeButton
+			}
+
+			switch actionType {
+			case "wait":
+				if action.DurationMs < 0 || action.DurationMs > 30000 {
+					return releaseOnError(InvalidArgumentsf("touch action %d wait duration must be between 0 and 30000 ms", index))
+				}
+				totalWaitMs += action.DurationMs
+				if totalWaitMs > 60000 {
+					return releaseOnError(InvalidArguments("total wait time in touch actions must not exceed 60000 ms"))
+				}
+				if err := waitForContext(ctx, time.Duration(action.DurationMs)*time.Millisecond); err != nil {
+					return releaseOnError(err)
+				}
+
+			case "move_to":
+				if action.Point == nil {
+					return releaseOnError(InvalidArgumentsf("touch action %d move_to requires point", index))
+				}
+				absX, absY, err := p.normalizedToAbsolute(action.Point.X, action.Point.Y)
+				if err != nil {
+					return releaseOnError(InvalidArgumentsf("touch action %d: %v", index, err))
+				}
+				buttons := uint8(0)
+				if active {
+					buttons = p.mouseButtonByte(activeButton)
+				}
+				if err := p.moveAtomicPointer(ctx, currentX, currentY, absX, absY, buttons, action.DurationMs); err != nil {
+					return releaseOnError(err)
+				}
+				currentX, currentY = absX, absY
+
+			case "touch_down":
+				if active {
+					return releaseOnError(InvalidArgumentsf("touch action %d touch_down while a contact is already active", index))
+				}
+				absX, absY := currentX, currentY
+				if action.Point != nil {
+					var err error
+					absX, absY, err = p.normalizedToAbsolute(action.Point.X, action.Point.Y)
+					if err != nil {
+						return releaseOnError(InvalidArgumentsf("touch action %d: %v", index, err))
+					}
+				}
+				if !p.touchscreen {
+					if err := p.settlePointer(absX, absY); err != nil {
+						return releaseOnError(err)
+					}
+				}
+				if err := p.pressPointer(absX, absY, p.mouseButtonByte(button)); err != nil {
+					return releaseOnError(err)
+				}
+				currentX, currentY = absX, absY
+				activeButton = button
+				active = true
+
+			case "touch_up":
+				if !active {
+					return releaseOnError(InvalidArgumentsf("touch action %d touch_up without an active contact", index))
+				}
+				if action.Point != nil {
+					absX, absY, err := p.normalizedToAbsolute(action.Point.X, action.Point.Y)
+					if err != nil {
+						return releaseOnError(InvalidArgumentsf("touch action %d: %v", index, err))
+					}
+					if err := p.movePointer(absX, absY, p.mouseButtonByte(activeButton)); err != nil {
+						return releaseOnError(err)
+					}
+					currentX, currentY = absX, absY
+				}
+				if err := p.releasePointerRepeated(currentX, currentY); err != nil {
+					return releaseOnError(err)
+				}
+				active = false
+
+			default:
+				return releaseOnError(InvalidArgumentsf("touch action %d has unsupported action %q", index, action.Type))
+			}
+		}
+
+		if active {
+			return releaseOnError(InvalidArguments("touch action sequence ended with an active contact; add touch_up"))
+		}
+		return nil
+	})
+}
+
+func (p *HIDProvider) moveAtomicPointer(ctx context.Context, fromX, fromY, toX, toY int, buttons uint8, durationMs int) error {
+	if durationMs <= 0 || (fromX == toX && fromY == toY) {
+		return p.movePointer(toX, toY, buttons)
+	}
+	steps := p.swipeSteps
+	if steps < 1 {
+		steps = 1
+	}
+	distance := math.Sqrt(float64((toX-fromX)*(toX-fromX) + (toY-fromY)*(toY-fromY)))
+	if distance < float64(steps) {
+		steps = int(math.Max(1, math.Round(distance)))
+	}
+	stepDelay := time.Duration(durationMs) * time.Millisecond / time.Duration(steps)
+	for step := 1; step <= steps; step++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		progress := float64(step) / float64(steps)
+		x := int(math.Round(float64(fromX) + float64(toX-fromX)*progress))
+		y := int(math.Round(float64(fromY) + float64(toY-fromY)*progress))
+		if err := p.movePointer(x, y, buttons); err != nil {
+			return err
+		}
+		if step < steps {
+			if err := waitForContext(ctx, stepDelay); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func waitForContext(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func (p *HIDProvider) dragLockedWithTiming(path [][2]float64, button string, durationMs, holdBeforeMs int) error {
 	return p.dragLockedWithSwipeOptions(path, button, SwipeOptions{
 		DurationMs:   durationMs,

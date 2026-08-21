@@ -95,10 +95,29 @@ type Provider interface {
 	Scroll(ctx context.Context, scrollX, scrollY int) error
 }
 
+// TouchAction is one low-level pointer/touch primitive. Coordinates use the
+// same normalized 0-1000 space as Provider. A point is optional for
+// touch_up (the current contact position is used) and required for the other
+// coordinate-bearing actions by the tool parser.
+type TouchAction struct {
+	Type       string `json:"action"`
+	Point      *Point `json:"point,omitempty"`
+	DurationMs int    `json:"ms,omitempty"`
+	Button     string `json:"button,omitempty"`
+}
+
+// TouchActionProvider executes a validated sequence of atomic touch actions
+// while keeping the pointer profile and contact state alive for the whole
+// sequence. Providers that cannot represent an independent touch contact
+// (such as ADB input) should return ModuleUnavailable.
+type TouchActionProvider interface {
+	TouchActions(ctx context.Context, actions []TouchAction) error
+}
+
 // Point represents a normalized coordinate point.
 type Point struct {
-	X float64 // Normalized X coordinate (0-1000)
-	Y float64 // Normalized Y coordinate (0-1000)
+	X float64 `json:"x"` // Normalized X coordinate (0-1000)
+	Y float64 `json:"y"` // Normalized Y coordinate (0-1000)
 }
 
 // Button constants for click/drag operations.

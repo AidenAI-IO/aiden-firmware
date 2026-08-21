@@ -258,6 +258,50 @@ func TestTouchGestureToolAdapterRejectsInvalidSwipeTimingOptions(t *testing.T) {
 	}
 }
 
+func TestTouchGestureToolAdapterAtomicActions(t *testing.T) {
+	provider := NewMockProvider()
+	adapter := NewTouchGestureToolAdapter(provider)
+	result, err := adapter.Call(context.Background(), `{"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"wait","ms":25},{"action":"move_to","x":500,"y":300},{"action":"touch_up"}]}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if result != "ok" {
+		t.Fatalf("Call() result = %q, want ok", result)
+	}
+	actions := provider.TouchActionCalls()
+	if len(actions) != 4 {
+		t.Fatalf("recorded %d actions, want 4", len(actions))
+	}
+	if actions[0].Type != "touch_down" || actions[0].Point == nil || actions[0].Point.X != 500 || actions[0].Point.Y != 700 {
+		t.Fatalf("first action = %#v", actions[0])
+	}
+	if actions[1].Type != "wait" || actions[1].DurationMs != 25 {
+		t.Fatalf("wait action = %#v", actions[2])
+	}
+	if actions[3].Type != "touch_up" {
+		t.Fatalf("last action = %#v", actions[3])
+	}
+}
+
+func TestTouchGestureToolAdapterAtomicActionsValidation(t *testing.T) {
+	provider := NewMockProvider()
+	adapter := NewTouchGestureToolAdapter(provider)
+	for _, input := range []string{
+		`{"actions":[]}`,
+		`{"actions":[{"action":"move_to"}]}`,
+		`{"actions":[{"action":"wait"}]}`,
+		`{"actions":[{"action":"pause","ms":10}]}`,
+		`{"actions":[{"action":"wait","ms":30001}]}`,
+	} {
+		if _, err := adapter.Call(context.Background(), input); AsError(err) == nil || AsError(err).Kind != ErrInvalidArguments {
+			t.Fatalf("Call(%s) error = %v, want invalid arguments", input, err)
+		}
+	}
+	if got := len(provider.TouchActionCalls()); got != 0 {
+		t.Fatalf("provider recorded %d actions after invalid calls, want 0", got)
+	}
+}
+
 // TestKeyboardTapToolAdapter 测试 keyboard_tap 工具适配器
 func TestKeyboardTapToolAdapter(t *testing.T) {
 	mock := NewMockProvider()

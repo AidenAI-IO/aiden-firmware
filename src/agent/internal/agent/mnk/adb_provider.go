@@ -189,6 +189,16 @@ func waitContext(ctx context.Context, durationMs int) error {
 	}
 }
 
+// TouchActions cannot be represented faithfully by adb input: adb exposes
+// gestures as complete press/move/release commands rather than an independent
+// contact stream. Refuse the atomic syntax instead of silently collapsing it
+// into a gesture with different timing semantics.
+func (p *ADBProvider) TouchActions(ctx context.Context, actions []TouchAction) error {
+	_ = ctx
+	_ = actions
+	return ModuleUnavailable("atomic touch actions require a HID pointer provider; adb input does not expose touch_down/touch_up primitives")
+}
+
 func (p *ADBProvider) dragWithDuration(ctx context.Context, path [][2]float64, button string, totalDurationMs int) error {
 	if len(path) < 2 {
 		return fmt.Errorf("drag path must contain at least 2 points, got %d", len(path))

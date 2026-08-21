@@ -2983,6 +2983,34 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 	}
 }
 
+func TestTouchGestureSchemaExposesAtomicActions(t *testing.T) {
+	schema := (&TouchGestureTool{}).ArgsSchema()
+	anyOf, ok := schema["anyOf"].([]map[string]any)
+	if !ok || len(anyOf) != 2 {
+		t.Fatalf("schema anyOf = %#v, want actions-or-type requirement", schema["anyOf"])
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %#v", schema["properties"])
+	}
+	actions, ok := properties["actions"].(map[string]any)
+	if !ok || actions["type"] != "array" || actions["minItems"] != 1 || actions["maxItems"] != 128 {
+		t.Fatalf("actions schema = %#v", properties["actions"])
+	}
+	items, ok := actions["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("actions items schema = %#v", actions["items"])
+	}
+	itemProperties, ok := items["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("atomic item properties = %#v", items["properties"])
+	}
+	action, ok := itemProperties["action"].(map[string]any)
+	if !ok || !slices.Contains(action["enum"].([]string), "touch_down") || !slices.Contains(action["enum"].([]string), "touch_up") {
+		t.Fatalf("atomic action enum = %#v", itemProperties["action"])
+	}
+}
+
 func TestTouchGestureSchemaUsesUnifiedTypesOnEveryPlatform(t *testing.T) {
 	for _, deviceType := range []string{"windows", "Android", "iOS"} {
 		tool := &TouchGestureTool{}

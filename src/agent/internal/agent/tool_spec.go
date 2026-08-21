@@ -527,6 +527,7 @@ func (spec ToolSpec) ValidateInput(input string) error {
 		if spec.Name == "touch_gesture" {
 			return fmt.Errorf(`touch_gesture arguments are invalid JSON, so no touch action was executed.
 Retry touch_gesture now with strict JSON.
+For atomic touch programs, use {"actions":[{"action":"touch_down","point":{"x":500,"y":500}},{"action":"touch_up"}]}.
 point/start/end must be JSON objects containing both named keys "x" and "y".
 Invalid: {"type":"tap","point":{"x":500,500}}
 Correct: {"type":"tap","point":{"x":500,"y":500}}

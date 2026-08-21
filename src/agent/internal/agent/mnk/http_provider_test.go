@@ -236,6 +236,23 @@ func TestHTTPProvider(t *testing.T) {
 			t.Errorf("expected (0, -3), got (%d, %d)", scroll.ScrollX, scroll.ScrollY)
 		}
 	})
+
+	t.Run("touch_actions", func(t *testing.T) {
+		mockProvider.Reset()
+		actions := []TouchAction{
+			{Type: "touch_down", Point: &Point{X: 500, Y: 700}},
+			{Type: "wait", DurationMs: 25},
+			{Type: "move_to", Point: &Point{X: 500, Y: 300}},
+			{Type: "touch_up"},
+		}
+		if err := httpProvider.TouchActions(context.Background(), actions); err != nil {
+			t.Fatalf("TouchActions failed: %v", err)
+		}
+		got := mockProvider.TouchActionCalls()
+		if len(got) != len(actions) || got[0].Type != "touch_down" || got[1].DurationMs != 25 || got[3].Type != "touch_up" {
+			t.Fatalf("touch actions = %#v, want %#v", got, actions)
+		}
+	})
 }
 
 // TestHTTPHandlerErrors tests error handling in HTTP handler

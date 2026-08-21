@@ -144,6 +144,18 @@ func (p *HTTPProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 	return p.sendRequest(ctx, req)
 }
 
+// TouchActions forwards one atomic touch program so the remote provider can
+// preserve contact state and execute all waits in a single request.
+func (p *HTTPProvider) TouchActions(ctx context.Context, actions []TouchAction) error {
+	if len(actions) == 0 {
+		return InvalidArguments("touch actions must not be empty")
+	}
+	return p.sendRequest(ctx, MNKRequest{
+		Operation:    "touch_actions",
+		TouchActions: actions,
+	})
+}
+
 // sendRequest sends an MNK request to the HTTP server
 func (p *HTTPProvider) sendRequest(ctx context.Context, req MNKRequest) error {
 	// Marshal request to JSON
@@ -206,14 +218,15 @@ func (p *HTTPProvider) sendRequest(ctx context.Context, req MNKRequest) error {
 
 // MNKRequest represents an MNK operation request
 type MNKRequest struct {
-	Operation   string             `json:"operation"`
-	Click       *ClickParams       `json:"click,omitempty"`
-	DoubleClick *DoubleClickParams `json:"double_click,omitempty"`
-	Swipe       *DragParams        `json:"swipe,omitempty"`
-	Drag        *DragParams        `json:"drag,omitempty"`
-	Keypress    *KeypressParams    `json:"keypress,omitempty"`
-	Move        *MoveParams        `json:"move,omitempty"`
-	Scroll      *ScrollParams      `json:"scroll,omitempty"`
+	Operation    string             `json:"operation"`
+	Click        *ClickParams       `json:"click,omitempty"`
+	DoubleClick  *DoubleClickParams `json:"double_click,omitempty"`
+	Swipe        *DragParams        `json:"swipe,omitempty"`
+	Drag         *DragParams        `json:"drag,omitempty"`
+	Keypress     *KeypressParams    `json:"keypress,omitempty"`
+	Move         *MoveParams        `json:"move,omitempty"`
+	Scroll       *ScrollParams      `json:"scroll,omitempty"`
+	TouchActions []TouchAction      `json:"touch_actions,omitempty"`
 }
 
 // ClickParams parameters for click operation

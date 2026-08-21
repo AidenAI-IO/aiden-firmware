@@ -48,6 +48,20 @@ func NewTouchGestureToolAdapter(provider Provider) *TouchGestureToolAdapter {
 // 参数/配置类失败返回 *Error（InvalidArguments / ModuleUnavailable）；
 // Provider 执行失败返回 ExecutionFailed。调用方应映射为 structured ToolError 并返回 (msg, nil)。
 func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (string, error) {
+	// The preferred form is an explicit atomic program. Keeping the dispatch
+	// here (before the legacy gesture decoder) lets existing scripts continue
+	// to work while new callers get exact touch contact/timing control.
+	var envelope struct {
+		Actions json.RawMessage `json:"actions"`
+	}
+	if err := json.Unmarshal([]byte(input), &envelope); err == nil && envelope.Actions != nil {
+		var rawActions []json.RawMessage
+		if err := json.Unmarshal(envelope.Actions, &rawActions); err != nil {
+			return "", InvalidArgumentsf("actions must be an array of atomic action objects: %v", err)
+		}
+		return t.callAtomic(ctx, rawActions)
+	}
+
 	var args struct {
 		Type         string        `json:"type"`
 		Point        *pointerPoint `json:"point"`
@@ -147,6 +161,117 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 	default:
 		return "", InvalidArgumentsf("unsupported gesture type: %q", args.Type)
 	}
+}
+
+type atomicTouchActionInput struct {
+	Action     string        `json:"action"`
+	Type       string        `json:"type"`
+	Point      *pointerPoint `json:"point"`
+	X          *float64      `json:"x"`
+	Y          *float64      `json:"y"`
+	Ms         *int          `json:"ms"`
+	DurationMs *int          `json:"duration_ms"`
+	Button     string        `json:"button"`
+}
+
+func (t *TouchGestureToolAdapter) callAtomic(ctx context.Context, rawActions []json.RawMessage) (string, error) {
+	if len(rawActions) == 0 {
+		return "", InvalidArguments("actions must contain at least one atomic action")
+	}
+	if len(rawActions) > 128 {
+		return "", InvalidArguments("actions must contain at most 128 atomic actions")
+	}
+	if t == nil || t.provider == nil {
+		return "", ModuleUnavailable("atomic touch actions are not configured")
+	}
+	atomic, ok := t.provider.(TouchActionProvider)
+	if !ok || atomic == nil {
+		return "", ModuleUnavailable("atomic touch actions are not supported by this input provider")
+	}
+
+	actions := make([]TouchAction, 0, len(rawActions))
+	contactActive := false
+	totalWaitMs := 0
+	for index, raw := range rawActions {
+		var parsed atomicTouchActionInput
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			return "", InvalidArgumentsf("actions[%d] must be an object: %v", index, err)
+		}
+		actionType := strings.ToLower(strings.TrimSpace(parsed.Action))
+		if actionType == "" {
+			actionType = strings.ToLower(strings.TrimSpace(parsed.Type))
+		}
+		if actionType == "" {
+			return "", InvalidArgumentsf("actions[%d] action is required", index)
+		}
+		if parsed.Button == "" {
+			parsed.Button = ButtonLeft
+		}
+		action := TouchAction{Type: actionType, Button: parsed.Button}
+		duration := parsed.Ms
+		if duration == nil {
+			duration = parsed.DurationMs
+		}
+		if duration != nil {
+			if *duration < 0 || *duration > 30000 {
+				return "", InvalidArgumentsf("actions[%d] wait duration must be between 0 and 30000 ms", index)
+			}
+			if strings.EqualFold(actionType, "wait") {
+				totalWaitMs += *duration
+				if totalWaitMs > 60000 {
+					return "", InvalidArguments("total wait time in actions must not exceed 60000 ms")
+				}
+			}
+			action.DurationMs = *duration
+		}
+
+		point := parsed.Point
+		if point == nil && (parsed.X != nil || parsed.Y != nil) {
+			if parsed.X == nil || parsed.Y == nil {
+				return "", InvalidArgumentsf("actions[%d] x and y must be provided together", index)
+			}
+			point = &pointerPoint{X: pointerCoordinate(*parsed.X), Y: pointerCoordinate(*parsed.Y)}
+		}
+		if point != nil {
+			converted := Point{X: point.X.Float64(), Y: point.Y.Float64()}
+			action.Point = &converted
+		}
+		switch actionType {
+		case "touch_down":
+			if action.Point == nil {
+				return "", InvalidArgumentsf("actions[%d] touch_down requires point (x/y)", index)
+			}
+			if contactActive {
+				return "", InvalidArgumentsf("actions[%d] touch_down requires touch_up before starting another contact", index)
+			}
+			contactActive = true
+		case "move_to":
+			if action.Point == nil {
+				return "", InvalidArgumentsf("actions[%d] %s requires point (x/y)", index, actionType)
+			}
+		case "touch_up":
+			// point is optional: release at the current contact location.
+			if !contactActive {
+				return "", InvalidArgumentsf("actions[%d] touch_up requires an active contact", index)
+			}
+			contactActive = false
+		case "wait":
+			if duration == nil {
+				return "", InvalidArgumentsf("actions[%d] wait requires ms", index)
+			}
+		default:
+			return "", InvalidArgumentsf("actions[%d] has unsupported action %q; use touch_down, move_to, wait, or touch_up", index, actionType)
+		}
+		actions = append(actions, action)
+	}
+	if contactActive {
+		return "", InvalidArguments("actions must end with touch_up")
+	}
+
+	if err := atomic.TouchActions(ctx, actions); err != nil {
+		return "", WrapExecutionFailed(err)
+	}
+	return "ok", nil
 }
 
 func (t *TouchGestureToolAdapter) requireProvider() error {

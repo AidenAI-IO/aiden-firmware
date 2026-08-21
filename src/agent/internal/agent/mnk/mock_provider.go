@@ -11,6 +11,7 @@ type MockProvider struct {
 	keypresses   []MockKeypress
 	moves        []MockMove
 	scrolls      []MockScroll
+	touchActions []TouchAction
 }
 
 type MockClick struct {
@@ -112,6 +113,19 @@ func (m *MockProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 	return nil
 }
 
+func (m *MockProvider) TouchActions(ctx context.Context, actions []TouchAction) error {
+	_ = ctx
+	m.touchActions = append(m.touchActions, cloneTouchActions(actions)...)
+	return nil
+}
+
+func (m *MockProvider) TouchActionCalls() []TouchAction {
+	if m == nil {
+		return nil
+	}
+	return cloneTouchActions(m.touchActions)
+}
+
 func (m *MockProvider) Reset() {
 	m.clicks = nil
 	m.doubleClicks = nil
@@ -120,6 +134,22 @@ func (m *MockProvider) Reset() {
 	m.keypresses = nil
 	m.moves = nil
 	m.scrolls = nil
+	m.touchActions = nil
+}
+
+func cloneTouchActions(actions []TouchAction) []TouchAction {
+	if actions == nil {
+		return nil
+	}
+	copyActions := make([]TouchAction, len(actions))
+	copy(copyActions, actions)
+	for i := range copyActions {
+		if actions[i].Point != nil {
+			point := *actions[i].Point
+			copyActions[i].Point = &point
+		}
+	}
+	return copyActions
 }
 
 func (m *MockProvider) KeypressCalls() []MockKeypress {

@@ -115,6 +115,18 @@ Built-in Agent tools:
 - `mouse_scroll`
 - `touch_gesture`
 
+`touch_gesture` supports an atomic `actions` program for contact-sensitive
+input. The program uses normalized `0..1000` points and the actions
+`touch_down`, `move_to`, `wait`, and `touch_up`; it executes in one HID pointer
+session and must release every contact before returning. Example:
+
+```json
+{"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"wait","ms":80},{"action":"move_to","point":{"x":500,"y":300}},{"action":"touch_up"}]}
+```
+
+The former one-object gesture syntax remains accepted for compatibility with
+existing quick actions and scripts.
+
 It is recommended to use normalized coordinates (`0..1000`, with center at `500,500`) to avoid click position shifts due to display resolution changes.
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
 `keyboard_layout` must match how the phone interprets the external USB HID keyboard. Supported values are `qwerty` (default), `azerty`, and `qwertz`. The visible soft-keyboard layout is not authoritative: a phone can display an AZERTY soft keyboard while still interpreting Aiden's USB HID reports as QWERTY. Both `keyboard_text` and standard text-like keys in `keyboard_tap` use this mapping. The mapping itself is loaded by the Agent and does not change USB descriptors, but Config Web requires a board restart after saving so the host starts a clean USB session.
