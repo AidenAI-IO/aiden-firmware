@@ -104,11 +104,24 @@ def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool
     tools_used = [tc.tool for tc in trace.tool_calls]
     unique_tools = _unique_preserve_order(tools_used)
     prohibited_action_offenders = _prohibited_action_offenders(trace, spec.prohibited_actions)
-    missing_tool_calls = [
-        requirement
-        for requirement in spec.required_tool_calls
-        if not _trace_has_tool_call(trace, requirement.tool, requirement.input_contains)
-    ]
+    missing_tool_calls: list[Any] = []
+    search_start = 0
+    # Match required tool calls as an ordered subsequence so suites can express
+    # step-by-step interaction sequences without banning unrelated intervening
+    # calls.
+    for req_index, requirement in enumerate(spec.required_tool_calls):
+        matched_index = None
+        for trace_index in range(search_start, len(trace.tool_calls)):
+            tc = trace.tool_calls[trace_index]
+            if tc.tool != requirement.tool:
+                continue
+            if dict_contains(tc.input if isinstance(tc.input, dict) else {}, requirement.input_contains):
+                matched_index = trace_index
+                break
+        if matched_index is None:
+            missing_tool_calls = list(spec.required_tool_calls[req_index:])
+            break
+        search_start = matched_index + 1
     results = HardAssertionResults(
         min_tool_calls=trace.total_tool_calls >= spec.min_tool_calls,
         max_tool_calls=trace.total_tool_calls <= spec.max_tool_calls,
@@ -204,7 +217,7 @@ def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool
             HardAssertionFailure(
                 id="required_tool_calls",
                 label="Required Tool Calls",
-                requirement=f"Trace must contain: {_format_list(expected)}.",
+                requirement=f"Trace must contain in order: {_format_list(expected)}.",
                 actual=f"Used: {_format_list(unique_tools)}.",
             )
         )
