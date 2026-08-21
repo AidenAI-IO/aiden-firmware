@@ -3,7 +3,8 @@
 本文总结 `Falcom/debian` 分支将 Aiden Luckfox Pico Zero 固件从 Buildroot/uClibc
 迁移到 Debian 13 armhf/glibc 的实施过程、关键改动、问题处理、验证结果和遗留事项。
 
-本文以当前提交 `fe773f61` 为准。早期 Stage 2、Stage 3 验收文档记录的是
+本文以当前提交 `fe773f61` 以及 2026-08-21 完成的 USB HID/ECM 回归修复为准。
+该 USB 修复当前仍在工作区，需重新构建并刷写后才会永久进入固件。早期 Stage 2、Stage 3 验收文档记录的是
 2026-08-17 的中间状态；此后又完成了 RKNN mini runtime、无 HDMI 重试、`sudo`、
 SSH 身份初始化和本地完整固件产物等修复。因此，本文的“当前状态”优先于旧验收文档
 中的历史阻塞结论。
@@ -191,6 +192,10 @@ ELF/ABI 审计规则：
 - Wi-Fi 配置写入失败时恢复旧配置。
 - USB ECM 使用 networkd 配置地址，并由 dnsmasq 只在 `usb0` 上提供 DHCP。
 - USB ECM watchdog 支持检查和重建 composite gadget。
+- Debian 的 USB gadget 使用 POSIX shell 可移植的八进制 HID report descriptor，避免
+  Buildroot BusyBox 支持而 Debian `dash` 不支持的 `printf '\\xNN'` 差异。
+- `usb0` 的 networkd 配置允许在无 carrier 时继续配置静态地址；gadget、watchdog、
+  动态键盘和等待 helper 不再通过重复 `networkctl reconfigure` 删除刚设置的地址。
 
 Agent 原先在 HID 恢复时直接调用 Buildroot 路径
 `/etc/init.d/S60usb_ecm_watchdog`。现在通过
@@ -480,6 +485,80 @@ OTA 配置。没有生产身份时，最终镜像步骤会在安全门禁处停�
 
 这解决的是开发构建问题，不替代生产密钥托管、发布身份、审批和轮换机制。
 
+### 5.13 Debian USB HID 描述符和 ECM 地址回归
+
+**表现**
+
+某次新 Debian 固件启动后，主机曾无法稳定看到 `Aiden HID+ECM`，浏览器也无法访问
+`192.168.42.1`。更换 USB 线缆和主机端口后问题仍可复现；主机日志包含：
+
+```text
+unknown main item tag
+item fetching failed
+hid-generic probe failed with error -22
+```
+
+在更早的失败阶段还出现过 USB 控制传输错误：
+
+```text
+Device not responding to setup address
+device not accepting address ..., error -71
+unable to enumerate USB device
+```
+
+**原因**
+
+该问题不是最近提交修改了 DWC3、设备树或 USB peripheral 模式。回归审计确认，
+Debian 迁移提交 `03dffcf4` 将原 Buildroot 的 `S49usbhid` 直接安装为 Debian
+helper，并将 `ifconfig` 替换为 `ip`/`networkctl`：
+
+1. `S49usbhid` 使用 `printf '\\x05\\x01...'` 生成 HID report descriptor。Buildroot
+   BusyBox 支持 `\\xNN`，但 Debian `/bin/sh` 是 `dash`，会把它写成 ASCII 文本。
+   板端实测描述符长度为 `180/232/188` 字节，而正确长度应为 `45/58/47` 字节。
+2. `usb0` 先由脚本设置 `192.168.42.1/24`，随后 helper 调用
+   `networkctl reconfigure`。USB 尚未完成枚举时接口没有 carrier，networkd 可能移除
+   该静态地址，进而导致 dnsmasq 等待地址失败，浏览器无法访问配置页面。
+
+**解决**
+
+- 将 5 份 HID descriptor 改为 POSIX 八进制转义，保持 descriptor 内容不变，只修复
+  shell 解释差异。
+- 在 `overlay-debian/etc/systemd/network/30-usb0.network` 中加入：
+
+  ```ini
+  [Link]
+  RequiredForOnline=no
+
+  [Network]
+  ConfigureWithoutCarrier=yes
+  ```
+
+- 删除 gadget 启动、ECM watchdog、动态键盘和等待 IP helper 中会撤销刚设置地址的
+  重复 `networkctl reconfigure` 调用。
+- 增加测试，使用 `/bin/sh` 实际解释 descriptor 并校验 5 份二进制内容和长度；同时
+  检查 networkd 配置和相关 helper 不再进行重复重配置。
+
+**板端回归结果**
+
+修复文件临时部署到开发板并冷重启后，结果如下：
+
+```text
+lsusb: 1d6b:0104 Linux Foundation Multifunction Composite Gadget
+hid.usb0/report_desc: 45 bytes，识别为 Keyboard
+hid.usb1/report_desc: 58 bytes，识别为 Mouse
+hid.usb2/report_desc: 47 bytes，识别为 Consumer Control Device
+UDC: configured
+usb0: 192.168.42.1/24
+主机 ECM: 192.168.42.152/24
+http://192.168.42.1/: HTTP 200
+```
+
+随后执行 UDC 解绑、无 carrier 状态下 networkd 重配、重新绑定测试，静态地址仍然
+保留，主机再次完成 HID+ECM 枚举。修复后主机未再出现 `unknown main item tag`、
+`item fetching failed` 或 HID `-22`。这次验证证明软件回归已解决；早期 `error -71`
+属于更底层的 USB 控制传输失败，仍应在出现时结合线缆、供电、接口和 UART/内核日志
+单独排查，不能仅由 HID descriptor 修复解释。
+
 ## 6. 验证与测试结果
 
 ### 6.1 已确认通过
@@ -500,6 +579,7 @@ OTA 配置。没有生产身份时，最终镜像步骤会在安全门禁处停�
 | 普通用户设备权限 | 通过修复 | `/dev/rknpu` 和 `/dev/mpi/*` 使用 `root:video` 0660 |
 | 音频采集与播放 | 通过 | 10 秒采集和播放测试成功 |
 | USB HID/ECM 恢复路径 | 通过代码和测试闭环 | Debian helper 替换 Buildroot 固定路径 |
+| USB HID+ECM 冷启动和重新枚举 | 通过临时部署验证 | `1d6b:0104`、3 个 HID 接口、ECM、`192.168.42.1` 和 HTTP 200 均通过；正式镜像需重新构建后再刷写 |
 | 本地完整固件构建 | 通过 | 能生成并审计 `update.img` 和 OTA 产物 |
 
 ### 6.2 已实现但仍需补充板端闭环
@@ -510,6 +590,7 @@ OTA 配置。没有生产身份时，最终镜像步骤会在安全门禁处停�
 | SSH 身份可靠性 | `/run/sshd`、生成顺序和超时已修复 | 用最新镜像重新确认首次启动和密码登录时延 |
 | frame.service 无 HDMI 行为 | 已改为持续重试 | 接入 HDMI bridge 后确认自动恢复 |
 | Wi-Fi 自动配置 | networkd 后端已实现，手动连接可工作 | 配置网页写入、回滚和重连完整测试 |
+| USB HID/ECM 修复进入正式镜像 | 源码修复和板端临时部署已验证 | 重新运行 `./debian_build.sh`，刷写新 `update.img` 后做一次冷启动验收 |
 | A/B OTA | 写入、个性化、健康标记和状态代码已实现 | 真机升级、失败回滚和断电矩阵 |
 
 ### 6.3 尚未完成的发布门禁
@@ -589,6 +670,9 @@ output/debian/image/update.img
 刷写后应至少检查 UART 启动日志、systemd failed units、USB 网络、SSH、存储挂载、
 媒体模块、音频和 NPU。未接 HDMI 时可以暂时忽略 frame service 的失败重试。
 
+USB 回归修复在重新刷写前也可以仅通过临时替换 helper 做诊断，但正式验证必须使用
+重新构建后的 `output/debian/image/update.img`，否则修复不会保留在下一次启动中。
+
 ## 8. 关键提交索引
 
 | 提交 | 内容 |
@@ -601,6 +685,7 @@ output/debian/image/update.img
 | `d2a05d66` | 更新设备操作 skill 文档，与固件迁移主体关联较弱 |
 | `cd3be07e` | 修复 SSH runtime 目录、host key 生成顺序和身份初始化超时 |
 | `fe773f61` | 新增 `debian_build.sh` 和本地完整固件/OTA 发布产物 |
+| 工作区修复（2026-08-21，尚未提交） | 修复 Debian `dash` 下 HID descriptor 生成错误、usb0 无 carrier 地址丢失，并增加 USB 回归测试 |
 
 相对 `origin/main`，当前迁移分支共涉及约 218 个文件，新增约 14,601 行、删除
 211 行，改动主要集中在 `scripts/`、`overlay-debian/` 和 `src/`。
@@ -615,16 +700,19 @@ output/debian/image/update.img
 - A/B 分区、OTA 状态、设备身份和 userdata 迁移已纳入 Debian 设计。
 - 可以本地生成、审计和刷写完整 `update.img`。
 - 音频、网络、蓝牙、USB、媒体模块和基础 NPU 设备访问已经取得实机证据。
+- USB HID+ECM 已完成 Debian descriptor、networkd 无 carrier 和冷启动/解绑重绑回归验证；
+  修复代码尚未进入新的正式镜像。
 
 因此，该分支已经达到“可继续进行 Debian 固件开发和集成测试”的状态。
 
 但若目标是“生产发布”，当前仍应视为条件通过而不是最终通过。最重要的剩余工作是：
 
 1. 使用静态 mini runtime 在板端重新执行两份 VAD 模型的加载和推理回归。
-2. 接入 HDMI bridge 后完成摄像头和 frame service 验收。
-3. 完成 RKNN、摄像头、音频并发及 72 小时稳定性测试。
-4. 完成 A/B OTA 回滚和断电矩阵。
-5. 替换开发默认密码和本地签名身份，完成生产安全与发布治理。
+2. 重新构建并刷写包含 USB 回归修复的新镜像，完成一次正式冷启动验收。
+3. 接入 HDMI bridge 后完成摄像头和 frame service 验收。
+4. 完成 RKNN、摄像头、音频并发及 72 小时稳定性测试。
+5. 完成 A/B OTA 回滚和断电矩阵。
+6. 替换开发默认密码和本地签名身份，完成生产安全与发布治理。
 
 ## 10. 资料来源
 
