@@ -18,6 +18,7 @@ public:
     void close() override;
 
 private:
+    static std::string detect_hdmi_subdev(std::string* name);
     void sync_config_strings();
 
     CameraConfig config_;
@@ -25,7 +26,13 @@ private:
     std::string pixel_format_;
     std::string subdev_device_;
     std::string edid_path_;
+    bool auto_subdev_;
+    bool auto_edid_;
+    bool auto_force_trigger_pending_;
+    bool periodic_force_enabled_;
+    unsigned int tc_open_attempts_;
     bool force_trigger_pending_;
+    int lock_fd_;
     CameraCapture camera_;
 };
 

@@ -371,6 +371,7 @@ TEST_CASE("FrameCaptureManager publishes failure and copy latency health metrics
     FrameServiceClient client(socket_path.path.c_str());
     HealthResult health;
     REQUIRE(wait_for_health_failure(&client, &health));
+    CHECK(health.state == "RECOVERING");
     CHECK(health.consecutive_failures == 1);
     CHECK(health.last_error == "open failed");
     CHECK(health.last_recovery_ts > 0);

@@ -124,7 +124,6 @@ void FrameCaptureManager::run() {
             recover(&backoff_ms, "initial pause failed", true);
             continue;
         }
-        server_->set_state("RUNNING");
         backoff_ms = options_.recovery_initial_backoff_ms > 0 ? options_.recovery_initial_backoff_ms : 1;
 
         while (running_) {

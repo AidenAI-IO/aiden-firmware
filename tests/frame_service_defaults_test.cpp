@@ -10,6 +10,7 @@ TEST_CASE("frame_service library defaults avoid unconditional EDID retriggering"
     CHECK(camera.height == 1080);
     CHECK(camera.edid_path == nullptr);
     CHECK(camera.force_trigger == false);
+    CHECK(camera.allow_edid_fallback == true);
     CHECK(camera.require_exact_resolution == true);
     CHECK(aiden::kDefaultFrameServiceRingSize == 3);
     CHECK(aiden::kDefaultFrameServiceFps == 3.0);
