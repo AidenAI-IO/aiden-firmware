@@ -171,8 +171,6 @@ function resetComposerHint() {
 }
 
 async function toggleRecording() {
-    if (recordBtn.disabled && !recorderState.isRecording) return;
-
     try {
         if (recorderState.isRecording) {
             await stopRecording();
@@ -183,7 +181,6 @@ async function toggleRecording() {
         console.error('Audio recording error:', err);
         alert('Audio recording failed: ' + err.message);
         await teardownRecorder();
-        updateRecordButton();
     }
 }
 
@@ -204,7 +201,6 @@ async function startRecording() {
             chunks: [],
             sampleRate: targetAudioSampleRate
         };
-        updateRecordButton();
         return;
     }
 
@@ -244,7 +240,6 @@ async function startRecording() {
         sampleRate: context.sampleRate
     };
 
-    updateRecordButton();
 }
 
 async function stopRecording() {
@@ -379,16 +374,6 @@ async function teardownRecorder(options) {
     recorderState = createRecorderState();
     if (wasServerMode && opts.forceServerStop !== false) {
         await forceStopServerRecording();
-    }
-}
-
-function updateRecordButton() {
-    const active = recorderState.isRecording;
-    recordBtn.classList.toggle('recording', active);
-    if (recorderState.isStopping) {
-        recordBtn.textContent = 'Processing recording...';
-    } else {
-        recordBtn.textContent = active ? 'Stop recording' : 'Record audio';
     }
 }
 

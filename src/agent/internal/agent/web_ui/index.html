@@ -10,17 +10,28 @@
     <div class="app-shell">
         <main class="main-panel">
             <header class="topbar">
-                <h1>Aiden Agent</h1>
+                <div class="topbar-title">
+                    <span class="brand-dot" aria-hidden="true"></span>
+                    <div>
+                        <h1>Aiden Agent</h1>
+                        <span class="topbar-subtitle">WORKSPACE</span>
+                    </div>
+                </div>
                 <div class="topbar-actions">
-                    <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 Coordinate Debug</a>
-                    <a href="/user_files" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📁 User files</a>
-                    <a href="/web-ui/context.html" target="_blank" rel="noopener" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📋 Context</a>
-                    <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
-                    <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
+                    <nav class="workspace-links" aria-label="Workspace tools">
+                        <a href="/coordinate-debug" class="new-chat-btn">Coordinate Debug</a>
+                        <a href="/user_files" class="new-chat-btn">User Files</a>
+                        <a href="/web-ui/context.html" target="_blank" rel="noopener" class="new-chat-btn">Context</a>
+                    </nav>
+                    <div class="session-actions">
+                        <button type="button" class="new-chat-btn" onclick="clearHistory()">New Chat</button>
+                        <button type="button" class="new-chat-btn danger-btn" onclick="resetAllMemory()">Reset Memory</button>
+                    </div>
                 </div>
             </header>
 
-            <section class="conversation" id="conversation">
+            <div class="workspace-content">
+              <section class="conversation" id="conversation">
                 <div class="conversation-inner">
                     <div class="empty-state" id="emptyState">
                         <h3>Aiden Agent</h3>
@@ -28,7 +39,7 @@
                     </div>
                     <div class="message-list" id="messages"></div>
                 </div>
-            </section>
+              </section>
 
             <div class="loading" id="loading">
                 <span class="spinner" aria-hidden="true"></span>
@@ -44,7 +55,7 @@
                 <button type="button" class="stop-run-btn" id="cancelSteerBtn" onclick="cancelPendingSteer()">Cancel</button>
             </div>
 
-            <form class="composer" onsubmit="event.preventDefault(); sendMessage();">
+              <form class="composer" onsubmit="event.preventDefault(); sendMessage();">
                 <div class="composer-shell">
                     <input type="file" id="imageInput" class="hidden-input" accept="image/*" multiple />
                     <div class="draft-attachments" id="draftAttachments"></div>
@@ -57,7 +68,6 @@
                     <div class="composer-footer">
                         <div class="composer-toolbar">
                             <button type="button" class="composer-btn" id="imageBtn" onclick="openImagePicker()">Add image</button>
-                            <button type="button" class="composer-btn" id="recordBtn" onclick="toggleRecording()">Record audio</button>
                             <div class="composer-hint" id="composerHint" aria-live="polite">Enter to send, Shift+Enter for newline</div>
                         </div>
                         <div class="composer-actions">
@@ -65,10 +75,15 @@
                         </div>
                     </div>
                 </div>
-            </form>
+              </form>
+            </div>
         </main>
 
         <aside class="inspector">
+            <div class="inspector-header">
+                <span class="sidebar-kicker">Inspector</span>
+                <span class="inspector-hint">TOOLS &amp; STORAGE</span>
+            </div>
             <div class="sidebar-card tool-lab">
                 <div class="sidebar-kicker">Tool Lab</div>
                 <strong>Manual tool test</strong>
@@ -96,27 +111,6 @@
                     </div>
                     <pre class="tool-block" id="toolResultOutput"></pre>
                 </div>
-            </div>
-
-            <div class="sidebar-card skill-export">
-                <div class="sidebar-kicker">Skill Export</div>
-                <strong>HTTP skill bundle</strong>
-                <label class="tool-lab-label" for="skillSelect">Skill bundle</label>
-                <select id="skillSelect" class="tool-lab-select">
-                    <option value="">Loading skills...</option>
-                </select>
-                <textarea
-                    id="skillMarkdown"
-                    class="tool-lab-input"
-                    rows="12"
-                    readonly
-                    spellcheck="false"
-                    placeholder="Generated skill markdown will appear here."
-                ></textarea>
-                <div class="tool-lab-row">
-                    <button type="button" class="composer-btn tool-secondary-btn" id="copySkillBtn" onclick="copySelectedSkill()">Copy skill</button>
-                </div>
-                <div class="tool-lab-status" id="skillStatus"></div>
             </div>
 
             <div class="sidebar-card storage-panel">
