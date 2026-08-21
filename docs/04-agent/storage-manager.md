@@ -401,7 +401,7 @@ the current runtime yet.
 | Data | Proposed stage | Minimum level | Protection |
 | --- | --- | --- | --- |
 | Temporary Memory | Per-record `expires_at` | Normal | Deletes only expired records and rebuilds its index |
-| Notification Context | 14 days | Normal | Deletes only Memory-processed events and enforces a 16 MiB local quota |
+| Notification Context | 14 days | Normal | Deletes only Memory-processed date shards |
 | Notification Context | 7 days | Warning | Deletes only Memory-processed events |
 | Notification Context | 1 day | Critical | Deletes only Memory-processed events |
 | Notification Context | 0 days | Emergency | Records an explicit gap before removing any unprocessed range |

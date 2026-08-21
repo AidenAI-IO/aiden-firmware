@@ -117,19 +117,22 @@ memory cursor。默认输出 JSON；`--format jsonl` 适合 shell 管道和 `jq`
 | 配置 | 默认值 |
 | --- | --- |
 | 通知 Context retention | 14 天 |
-| Context 总容量 | 16 MiB |
-| 单文件滚动阈值 | 1 MiB |
+| 事件分片 | 按 `ReceivedAt` 的 UTC 日期，每天一个 JSONL 文件 |
 | 单条正文上限 | 4 KiB |
 | 单次上游消费 | 100 条 |
 | Android 单批事件 | 8 条 |
 | Worker 单批处理 | 20 条 |
 | 首次 debounce | 30 秒 |
 
-持久化采用 append + sync。写入成功后才推进 source cursor；重复 `source_event_id` 直接确认，不重复追加。掉电恢复时修复最后一条不完整 JSON 行。
+持久化采用 append + sync，按 `ReceivedAt` 的 UTC 日期写入
+`events/YYYY-MM-DD.jsonl`。写入成功后才推进 source cursor；重复
+`source_event_id` 直接确认，不重复追加。掉电恢复时修复最后一条不完整 JSON 行。
 
 ### StorageMonitor
 
-StorageMonitor 负责全局水位，NotificationContext 负责原始通知的本地配额和 cursor-aware 清理。清理必须调用 `Cleanup(policy)`，不能由监控器直接删除 JSONL。
+StorageMonitor 负责全局水位，NotificationContext 负责原始通知的日期分片和
+cursor-aware 清理。清理必须调用 `Cleanup(policy)`，不能由监控器直接删除
+JSONL。
 
 | 水位 | 行为 |
 | --- | --- |
