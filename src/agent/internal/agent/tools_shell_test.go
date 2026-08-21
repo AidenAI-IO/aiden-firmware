@@ -13,6 +13,15 @@ import (
 	"aiden-agent/internal/agent/contextmanager"
 )
 
+func TestShellToolDescriptionMentionsNotificationHistory(t *testing.T) {
+	description := (&ShellTool{}).Description()
+	for _, want := range []string{"agent notifications list", "--since", "--date", "--format jsonl", "without advancing memory cursors"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("shell description missing %q: %s", want, description)
+		}
+	}
+}
+
 func skipOnWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
