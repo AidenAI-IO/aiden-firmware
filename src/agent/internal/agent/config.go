@@ -285,7 +285,7 @@ type Config struct {
 	Locale                     string                   `toml:"locale,omitempty"`
 	Instruction                string                   `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string                   `toml:"additional_prompt,omitempty"`
-	InputMode                  string                   `toml:"input_mode,omitempty"`  // "text" or "stt"
+	InputMode                  string                   `toml:"input_mode,omitempty"`  // "text", "stt", or "realtime"
 	VADBackend                 string                   `toml:"vad_backend,omitempty"` // "rknn", "cpu"
 	VADModelPath               string                   `toml:"vad_model_path,omitempty"`
 	VADHelperPath              string                   `toml:"vad_helper_path,omitempty"`
@@ -381,8 +381,8 @@ type AudioConfig struct {
 	Backend    string `toml:"backend,omitempty"`
 }
 
-// VoiceModelConfig configures the realtime audio model used by the wakeup
-// voice path. An empty API key keeps the legacy voice loop active.
+// VoiceModelConfig configures the realtime audio model used by the realtime
+// voice path. The path is selected by agent.input_mode, not by API key presence.
 type VoiceModelConfig struct {
 	APIKey                 string   `toml:"api_key,omitempty"`
 	Model                  string   `toml:"model,omitempty"`
@@ -1328,18 +1328,19 @@ func (c Config) Validate() error {
 			if strings.TrimSpace(c.STT.Provider) == "" {
 				return errors.New("stt.provider is required when input_mode=stt")
 			}
+		case "realtime":
 		case "audio":
 			return fmt.Errorf("invalid input_mode: %s (audio mode has been removed; use stt instead)", c.InputMode)
 		default:
-			return fmt.Errorf("invalid input_mode: %s (expected text or stt)", c.InputMode)
+			return fmt.Errorf("invalid input_mode: %s (expected text, stt, or realtime)", c.InputMode)
 		}
 
-		// Validate TTS config if not in text mode
+		// Validate TTS/STT config only for the legacy STT audio path.
 		if mode == "stt" && strings.TrimSpace(c.TTS.Provider) == "" {
 			return errors.New("tts.provider is required when input_mode=stt")
 		}
 
-		if mode == "stt" {
+		if mode == "stt" || mode == "realtime" {
 			if c.Audio.SampleRate != 0 && c.Audio.SampleRate < 8000 {
 				return fmt.Errorf("audio.sample_rate must be at least 8000 when set, got %d", c.Audio.SampleRate)
 			}

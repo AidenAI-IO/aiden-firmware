@@ -484,7 +484,7 @@ func ConfigMeta() ConfigMetadata {
 						Enum:    enumOptions(localeSimplifiedChinese, localeEnglishUS),
 						Default: defaults.LocaleOrDefault()},
 					{Key: "input_mode", Widget: WidgetSelect,
-						Enum:    enumOptions("text", "stt"),
+						Enum:    enumOptions("text", "stt", "realtime"),
 						Default: defaults.InputMode},
 					{Key: "vad_backend", Widget: WidgetSelect,
 						Enum:        enumOptions(defaultVADBackend, "cpu"),

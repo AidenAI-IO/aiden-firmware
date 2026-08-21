@@ -29,6 +29,19 @@ func TestConfigValidateAcceptsSTT(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAcceptsRealtimeWithoutSTTProvider(t *testing.T) {
+	cfg := Config{
+		Model:     ModelConfig{Provider: "fake"},
+		InputMode: " realtime ",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if got := cfg.InputModeOrDefault(); got != "realtime" {
+		t.Fatalf("InputModeOrDefault() = %q, want realtime", got)
+	}
+}
+
 func TestConfigValidateRejectsRemovedAudioMode(t *testing.T) {
 	cfg := Config{
 		Model:     ModelConfig{Provider: "fake"},

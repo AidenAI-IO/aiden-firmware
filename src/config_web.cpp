@@ -6991,7 +6991,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             const char* allowed[4];
         };
         Check enums[] = {
-            {"input_mode", {"text", "stt", NULL}},
+            {"input_mode", {"text", "stt", "realtime", NULL}},
         };
         for (size_t i = 0; i < sizeof(enums) / sizeof(enums[0]); ++i) {
             cJSON* item = cJSON_GetObjectItem(values, enums[i].key);

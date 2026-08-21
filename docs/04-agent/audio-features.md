@@ -14,7 +14,8 @@ The Go Agent supports device-side voice interaction, primarily consisting of `in
 └──────┬──────┘
        ├─────────────────────────► HTTP Server / Web UI (all input modes)
        │
-       └─ input_mode=stt ────────► Audio Dialog Loop
+       ├─ input_mode=stt ────────► Legacy Audio Dialog Loop
+       └─ input_mode=realtime ───► Realtime Voice Session
                                    │
                                    ├─ AudioServiceClient
                                    ├─ VAD
@@ -54,6 +55,13 @@ Runs the device-side audio loop alongside the HTTP server and Web UI:
 5. TTS synthesizes the reply and plays it through the configured playback backend.
 
 Before final non-streaming TTS, the runtime passes the spoken reply through the shared [Voice Notification manager](voice-notifications.md). A successful turn may receive one short persistent tail. A final LLM failure may use a fixed replacement. These changes affect spoken text only, not assistant history or UI response text.
+
+### `input_mode = "realtime"`
+
+Runs the configured `[voice_model]` realtime voice session directly. Realtime
+activation is selected explicitly by `input_mode = "realtime"`; it is not
+controlled by whether `voice_model.api_key` is empty. The realtime session also
+supports `/api/chat` activation when GPIO is unavailable.
 
 ## Wakeup Trigger
 

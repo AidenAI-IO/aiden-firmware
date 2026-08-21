@@ -210,7 +210,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
-| `input_mode`                | `text` / `stt`              | Input mode                                                                                                                                                                                                |
+| `input_mode`                | `text` / `stt` / `realtime` | Input mode: HTTP/Web UI only, legacy STT/TTS voice loop, or direct realtime voice model                                                                                                                                 |
 
 ### Quick Capture
 
@@ -425,14 +425,15 @@ API key and base URL do not carry over to it.
 
 ## `[voice_model]`
 
-This optional section selects the realtime voice model used after a GPIO wakeup
-or an `/api/chat` request. It is active only when `input_mode = "stt"`,
-and `api_key` is non-empty. The daemon then streams 16 kHz PCM microphone data
+This section selects the realtime voice model used after a GPIO wakeup or an
+`/api/chat` request. It is active when `input_mode = "realtime"`; the mode,
+not API key presence, controls whether the daemon starts the realtime path. The
+daemon then streams 16 kHz PCM microphone data
 to `rtclient` continuously and plays the model's 24 kHz PCM response stream.
 When no session is active, `/api/chat` queues its text input, connects the
 realtime session, and sends that text as the first user message. This API
 activation remains available when host GPIO is unavailable.
-Without an API key, the existing VAD/STT/LLM/TTS wakeup loop remains active.
+Use `input_mode = "stt"` to select the existing VAD/STT/LLM/TTS wakeup loop.
 This section is currently TOML-only and is not rendered by Config Web.
 
 | Field | Default | Description |

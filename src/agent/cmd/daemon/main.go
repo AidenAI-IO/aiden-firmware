@@ -195,7 +195,7 @@ func main() {
 		serverErr <- server.Start()
 	}()
 
-	if inputMode == "stt" {
+	if inputMode == "stt" || inputMode == "realtime" {
 		go func() {
 			if err := <-serverErr; err != nil {
 				log.Printf("[server] HTTP server stopped: %v", err)
@@ -230,7 +230,7 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
-	if cfg.VoiceModel.Enabled() {
+	if cfg.InputModeOrDefault() == "realtime" {
 		tasks := agenttask.NewManager(runtimeAgentTaskRunner{runtime: runtime})
 		defer tasks.Close()
 		runRealtimeWakeupModeWithServer(cfg, sigChan, server, runtime, tasks, newGPIOWatcher)

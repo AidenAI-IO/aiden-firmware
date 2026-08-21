@@ -3571,6 +3571,8 @@ func (s *Server) webAudioInputMode() string {
 	switch s.runtime.config.InputModeOrDefault() {
 	case "stt":
 		return "stt"
+	case "realtime":
+		return "text"
 	default:
 		if s.sttClient != nil {
 			return "stt"

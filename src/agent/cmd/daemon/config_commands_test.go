@@ -713,7 +713,7 @@ func TestConfigCheck_InvalidInputMode(t *testing.T) {
 		Search: agent.SearchConfig{
 			Provider: "duckduckgo",
 		},
-		InputMode: "invalid_mode", // Invalid: must be text/audio/stt
+		InputMode: "invalid_mode", // Invalid: must be text/stt/realtime
 	}
 
 	err := invalidConfig.Validate()

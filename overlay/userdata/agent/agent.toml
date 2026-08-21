@@ -17,6 +17,8 @@ locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification
 # Input mode controls the device-side audio loop:
 # - text: HTTP server and Web UI only
 # - stt: also run device audio -> STT -> LLM -> TTS
+# - realtime: run the realtime voice model directly; [voice_model] is selected
+#   by this mode rather than by whether voice_model.api_key is present
 input_mode = "stt"
 
 # RKNN Silero VAD parameters
@@ -40,10 +42,9 @@ input_mode = "stt"
 # voice_progress_speech_enabled = true
 # voice_max_response_tokens = 300
 
-# Realtime voice model (optional). When api_key is set together with
-# input_mode = "stt", GPIO wakeup opens a
+# Realtime voice model. When input_mode = "realtime", GPIO wakeup opens a
 # continuous PCM duplex session with rtclient. The legacy STT/LLM/TTS loop is
-# used when this section has no api_key. In realtime mode, the voice model is
+# used when input_mode = "stt". In realtime mode, the voice model is
 # the non-blocking foreground agent; device and multi-step work is queued to
 # the legacy agent loop through create_agent_task.
 # [voice_model]
