@@ -761,6 +761,7 @@ func TestEnterTextToolFallsBackToLocalAfterBridgeFailure(t *testing.T) {
 func TestEnterTextToolFallsBackToLocalAfterDynamicIslandRestoreFailure(t *testing.T) {
 	pb := newTestPhoneBridge(t)
 	pb.platform = "ios"
+	pb.connected = true
 	pb.appState = "background"
 	pb.returnEntry = "dynamic_island"
 	pb.returnEntrySeen = true
@@ -775,8 +776,10 @@ func TestEnterTextToolFallsBackToLocalAfterDynamicIslandRestoreFailure(t *testin
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}
+	restoreAttempts := 0
 	restorer := NewPhoneBridgeRestorer(pb, nil)
 	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		restoreAttempts++
 		return context.DeadlineExceeded
 	}
 	tool := &EnterTextTool{
@@ -800,6 +803,9 @@ func TestEnterTextToolFallsBackToLocalAfterDynamicIslandRestoreFailure(t *testin
 	}
 	if len(keyboardText.calls) == 0 {
 		t.Fatal("keyboard_text was not called after Dynamic Island restore failure")
+	}
+	if restoreAttempts == 0 {
+		t.Fatal("Dynamic Island restore route was not attempted")
 	}
 }
 
