@@ -39,6 +39,19 @@ Common causes:
 - HDMI input is not synced;
 - RK628D or TC358743 HDMI subdevice status is abnormal.
 
+On the Debian firmware, the first two cases are distinguishable with:
+
+```bash
+systemctl status aiden-frame.service --no-pager
+frame_service_cli --socket /run/frame_service/frame_service.sock health
+```
+
+The service is intentionally socket-ready even when no HDMI source is present.
+In that state `health` returns `state=RECOVERING` (or `STARTING`) and a
+screenshot is unavailable until a frame arrives; a missing socket indicates a
+real service/startup failure. Connecting HDMI later causes the capture manager
+to retry automatically and transition to `RUNNING`.
+
 ## Frame Service keeps restarting
 
 View logs:

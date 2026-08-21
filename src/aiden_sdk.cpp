@@ -445,6 +445,18 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
             AIDEN_LOG_WARN("hdmi", "timing_apply_failed", "device=%s error=%s",
                            subdev_device, strerror(errno));
         }
+
+        if (!config.allow_edid_fallback) {
+            // A normal recovery probe can be read-only with respect to the
+            // HDMI bridge.  In particular, do not fall through to EDID/HPD
+            // writes when there is no source or the bridge has transient I2C
+            // errors.  The auto-subdevice capture source schedules bounded
+            // force-trigger attempts separately.
+            AIDEN_LOG_WARN("hdmi", "timing_probe_pending", "device=%s error=%s",
+                           subdev_device, strerror(errno));
+            close(subdev_fd);
+            return false;
+        }
     }
 
     for (int attempt = 0; attempt <= trigger_attempts; ++attempt) {

@@ -40,6 +40,10 @@ struct CameraConfig {
     int capture_retries = 2;            // Full init/capture recovery retries
     bool enable_hdmi_sync = true;
     bool force_trigger = false;
+    // When false, a failed timing probe is reported to the caller instead of
+    // falling back to an EDID write.  Recovery-oriented services use this to
+    // keep no-signal probes read-only.
+    bool allow_edid_fallback = true;
     bool require_exact_resolution = false;
     bool reject_uniform_frames = true;  // Reject known-bad all-same HDMI frames
 };
