@@ -15,10 +15,10 @@ def value_matches(actual: Any, expected: Any) -> bool:
     if isinstance(expected, dict):
         if set(expected) == {"$contains"}:
             needle = expected["$contains"]
-            return (
-                isinstance(actual, str)
-                and isinstance(needle, str)
-                and needle in actual
-            )
+            if isinstance(actual, str) and isinstance(needle, str):
+                return needle in actual
+            if isinstance(actual, list):
+                return any(value_matches(item, needle) for item in actual)
+            return False
         return isinstance(actual, dict) and dict_contains(actual, expected)
     return actual == expected

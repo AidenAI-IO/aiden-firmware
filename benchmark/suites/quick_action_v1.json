@@ -2,7 +2,7 @@
   "name": "quick_action_v1",
   "suite_category": "Perception & Control",
   "description": "Tests for quick_action navigation shortcuts — verifies the agent correctly uses predefined platform shortcuts.",
-  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机。可以使用 quick_action、screenshot、touch_gesture、keyboard_text、keyboard_tap 等工具。每次工具返回截图后，先判断页面是否变化再继续下一步。涉及文本输入时，先从最新截图确认键盘/输入法状态；如果要输入英文或 ASCII（如 hello、Aiden、benchmark），但键盘仍是中文输入法（空格键显示“拼音”或出现候选/预编辑），必须先点地球/输入法键切到英文/Latin 键盘，再输入；不要通过中文 IME 候选词提交英文。",
+  "prompt_prefix": "Use the named quick_action calls for navigation shortcuts when available.",
   "global_reset": {},
   "tasks": [
     {
@@ -11,11 +11,11 @@
       "description_for_judge": "Agent must open Settings first, then use quick_action home to return to the home screen.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开系统设置，确保当前停留在设置页面内，不在主屏幕。",
+        "prompt": "请打开系统设置，保持在设置页面里。",
         "timeout_sec": 60,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 回到主屏幕。",
+      "prompt": "回到主屏幕。",
       "rubric": [
         {
           "id": "used_quick_action_home",
@@ -38,11 +38,11 @@
       "description_for_judge": "Agent must open the app switcher via quick_action app_switch, then close/clear the Settings app from recents.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开系统设置，在设置中随意浏览一下确保它在后台任务列表中，然后停留在设置页面。",
+        "prompt": "请打开系统设置浏览一下，然后停在设置页面。",
         "timeout_sec": 60,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 打开多任务管理器，然后把设置应用从后台清除。",
+      "prompt": "打开多任务管理器，把设置应用从后台清除。",
       "rubric": [
         {
           "id": "used_quick_action_app_switch",
@@ -66,15 +66,17 @@
     {
       "id": "quick_action_switch_left",
       "category": "single_step",
-      "platforms": ["ios"],
+      "platforms": [
+        "ios"
+      ],
       "description_for_judge": "Agent must use quick_app_switch_left from the home screen to switch to the previous app.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请先打开系统设置浏览一下，然后回到主屏幕，确保当前停留在桌面。",
+        "prompt": "请先打开系统设置浏览一下，然后回到桌面。",
         "timeout_sec": 60,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 向左快速切换到上一个应用。",
+      "prompt": "向左快速切换到上一个应用。",
       "rubric": [
         {
           "id": "used_quick_action_switch_left",
@@ -94,7 +96,9 @@
     {
       "id": "quick_action_switch_right",
       "category": "single_step",
-      "platforms": ["ios"],
+      "platforms": [
+        "ios"
+      ],
       "description_for_judge": "Agent must use quick_app_switch_right from the home screen to switch to the next app.",
       "setup": {
         "type": "agent_prompt",
@@ -102,7 +106,7 @@
         "timeout_sec": 60,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 向右快速切换到下一个应用。",
+      "prompt": "向右快速切换到下一个应用。",
       "rubric": [
         {
           "id": "used_quick_action_switch_right",
@@ -122,15 +126,17 @@
     {
       "id": "quick_action_home_screen_left",
       "category": "single_step",
-      "platforms": ["ios"],
+      "platforms": [
+        "ios"
+      ],
       "description_for_judge": "Agent must use quick_action home_screen_left to switch to the previous home screen page.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "prompt": "回到桌面。",
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 将桌面向左翻页。",
+      "prompt": "把桌面向左翻一页。",
       "rubric": [
         {
           "id": "used_quick_action_home_screen_left",
@@ -150,15 +156,17 @@
     {
       "id": "quick_action_home_screen_right",
       "category": "single_step",
-      "platforms": ["ios"],
+      "platforms": [
+        "ios"
+      ],
       "description_for_judge": "Agent must use quick_action home_screen_right to switch to the next home screen page.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "prompt": "回到桌面。",
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 将桌面向右翻页。",
+      "prompt": "把桌面向右翻一页。",
       "rubric": [
         {
           "id": "used_quick_action_home_screen_right",
@@ -178,15 +186,17 @@
     {
       "id": "quick_action_control_center",
       "category": "single_step",
-      "platforms": ["ios"],
+      "platforms": [
+        "ios"
+      ],
       "description_for_judge": "Agent must use quick_action control_center to open the Control Center panel.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "prompt": "回到桌面。",
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 打开控制中心。",
+      "prompt": "打开控制中心。",
       "rubric": [
         {
           "id": "used_quick_action_control_center",
@@ -206,15 +216,18 @@
     {
       "id": "quick_action_spotlight_search",
       "category": "multi_step",
-      "platforms": ["ios", "mac"],
+      "platforms": [
+        "ios",
+        "mac"
+      ],
       "description_for_judge": "Agent must use quick_action spotlight_search to open global search, then type 设置 and open the Settings app from results.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "prompt": "回到桌面。",
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 打开全局搜索，搜索「设置」并打开设置应用。",
+      "prompt": "用全局搜索找到「设置」并打开设置应用。",
       "rubric": [
         {
           "id": "used_quick_action_spotlight",
@@ -238,15 +251,18 @@
     {
       "id": "quick_action_spotlight_search_via_input",
       "category": "multi_step",
-      "platforms": ["ios", "mac"],
+      "platforms": [
+        "ios",
+        "mac"
+      ],
       "description_for_judge": "Agent must use quick_action spotlight_search to open global search, then use the visible input field to type 设置 and open Settings from results.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "prompt": "回到桌面。",
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 打开全局搜索，然后在搜索输入框中输入「设置」并打开设置应用。",
+      "prompt": "用全局搜索找到「设置」并打开设置应用。先从搜索框输入「设置」。",
       "rubric": [
         {
           "id": "used_quick_action_spotlight",
@@ -270,7 +286,10 @@
     {
       "id": "quick_action_open_editor_and_type",
       "category": "multi_step",
-      "platforms": ["ios", "mac"],
+      "platforms": [
+        "ios",
+        "mac"
+      ],
       "description_for_judge": "Agent must open any editable text surface (Notes/memo/document editor, SMS/message compose box, or similar; do not send messages) and type 你好Aiden into the text field.",
       "setup": {
         "type": "agent_prompt",
@@ -278,7 +297,7 @@
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，然后在输入框中输入「你好Aiden」。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
+      "prompt": "打开短信输入、备忘录或任何可以打字的地方，输入「你好Aiden」。如果用短信，只输入不要发送。",
       "rubric": [
         {
           "id": "opened_text_app",
@@ -298,15 +317,18 @@
     {
       "id": "quick_action_undo",
       "category": "single_step",
-      "platforms": ["ios", "mac"],
+      "platforms": [
+        "ios",
+        "mac"
+      ],
       "description_for_judge": "Agent must use quick_action undo to revert the previously typed text in an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，进入一个空白或可清空的输入框，然后输入「你好Aiden」，确保文字已显示在输入框中。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
+        "prompt": "打开备忘录或任何能打字的地方，输入「你好Aiden」，保持文字可见。如果用短信，只输入不要发送。",
         "timeout_sec": 90,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 撤销刚才的输入。",
+      "prompt": "撤销刚才的输入。",
       "rubric": [
         {
           "id": "used_quick_action_undo",
@@ -326,15 +348,18 @@
     {
       "id": "quick_action_select_all",
       "category": "single_step",
-      "platforms": ["ios", "mac"],
+      "platforms": [
+        "ios",
+        "mac"
+      ],
       "description_for_judge": "Agent must use quick_action select_all to select all text in an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，进入一个空白或可清空的输入框，输入「你好Aiden」，确保文字已显示在输入框中。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
+        "prompt": "打开备忘录或任何能打字的地方，输入「你好Aiden」，保持文字可见。如果用短信，只输入不要发送。",
         "timeout_sec": 90,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 全选输入框中的所有文字。",
+      "prompt": "全选输入框里的所有文字。",
       "rubric": [
         {
           "id": "used_quick_action_select_all",
@@ -354,15 +379,18 @@
     {
       "id": "quick_action_copy",
       "category": "single_step",
-      "platforms": ["ios", "mac"],
+      "platforms": [
+        "ios",
+        "mac"
+      ],
       "description_for_judge": "Agent must use quick_action copy to copy selected text in an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，进入一个空白或可清空的输入框，输入「你好Aiden」，然后全选文字（确保文字处于选中状态）。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
+        "prompt": "打开备忘录或任何能打字的地方，输入「你好Aiden」并全选。如果用短信，只输入不要发送。",
         "timeout_sec": 90,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 复制当前选中的文字。",
+      "prompt": "复制当前选中的文字。",
       "rubric": [
         {
           "id": "used_quick_action_copy",
@@ -382,15 +410,18 @@
     {
       "id": "quick_action_cut",
       "category": "single_step",
-      "platforms": ["ios", "mac"],
+      "platforms": [
+        "ios",
+        "mac"
+      ],
       "description_for_judge": "Agent must use quick_action cut to cut selected text from an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，进入一个空白或可清空的输入框，输入「你好Aiden」，然后全选文字（确保文字处于选中状态）。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
+        "prompt": "打开备忘录或任何能打字的地方，输入「你好Aiden」并全选。如果用短信，只输入不要发送。",
         "timeout_sec": 90,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 剪切当前选中的文字。",
+      "prompt": "剪切当前选中的文字。",
       "rubric": [
         {
           "id": "used_quick_action_cut",
@@ -410,15 +441,18 @@
     {
       "id": "quick_action_paste",
       "category": "single_step",
-      "platforms": ["ios", "mac"],
+      "platforms": [
+        "ios",
+        "mac"
+      ],
       "description_for_judge": "Agent must use quick_action paste to paste previously copied text into an editable text field, including SMS/message compose boxes.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开短信输入、备忘录或任何可以编辑文本的界面，进入一个空白或可清空的输入框，输入「你好Aiden」，全选并复制文字，然后清空输入框，确保输入框当前为空但剪贴板中有内容。如果使用短信/消息应用，只进入编辑框测试输入行为，不要发送消息。",
+        "prompt": "打开备忘录或任何能打字的地方，输入「你好Aiden」，全选并复制，然后清空输入框。如果用短信，只输入不要发送。",
         "timeout_sec": 120,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 粘贴剪贴板中的内容。",
+      "prompt": "粘贴剪贴板里的内容。",
       "rubric": [
         {
           "id": "used_quick_action_paste",
@@ -438,15 +472,18 @@
     {
       "id": "quick_action_browser_new_tab",
       "category": "multi_step",
-      "platforms": ["ios", "mac"],
+      "platforms": [
+        "ios",
+        "mac"
+      ],
       "description_for_judge": "Agent must open a browser and use quick_action browser_new_tab to create a new tab.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开浏览器，确保当前停留在浏览器页面中。",
+        "prompt": "打开浏览器。",
         "timeout_sec": 60,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 新建一个标签页。",
+      "prompt": "新建一个标签页。",
       "rubric": [
         {
           "id": "used_quick_action_new_tab",
@@ -466,15 +503,18 @@
     {
       "id": "quick_action_browser_close_tab",
       "category": "multi_step",
-      "platforms": ["ios", "mac"],
+      "platforms": [
+        "ios",
+        "mac"
+      ],
       "description_for_judge": "Agent must close the newly created tab using quick_action browser_close_tab.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开浏览器，新建一个标签页，确保当前有至少两个标签页，并停留在新建的标签页上。",
+        "prompt": "打开浏览器，新建一个标签页，让当前至少有两个标签页。",
         "timeout_sec": 90,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 关闭当前标签页。",
+      "prompt": "关闭当前标签页。",
       "rubric": [
         {
           "id": "used_quick_action_close_tab",
@@ -494,15 +534,18 @@
     {
       "id": "quick_action_browser_address_and_refresh",
       "category": "multi_step",
-      "platforms": ["ios", "mac"],
+      "platforms": [
+        "ios",
+        "mac"
+      ],
       "description_for_judge": "Agent must focus the browser address bar via quick_action, navigate to a URL, and then refresh the page via quick_action browser_refresh.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开浏览器，确保当前停留在浏览器页面中。",
+        "prompt": "打开浏览器。",
         "timeout_sec": 60,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 聚焦地址栏，输入 example.com 并访问，页面加载后再使用 quick_action 刷新页面。",
+      "prompt": "在地址栏输入 example.com 并访问，页面加载后再刷新一次。",
       "rubric": [
         {
           "id": "used_quick_action_address_bar",
@@ -533,11 +576,11 @@
       "description_for_judge": "Agent must open the app switcher via quick_action, browse through all recent apps, and clear/close all of them.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请打开系统设置浏览一下，再打开时钟应用浏览一下，然后回到主屏幕，确保后台有多个应用。",
+        "prompt": "打开系统设置浏览一下，再打开时钟应用浏览一下，然后回到主屏幕。",
         "timeout_sec": 90,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 打开多任务管理器，左右滑动查看所有后台应用，然后把所有后台应用全部清除。",
+      "prompt": "打开多任务管理器，把所有后台应用全部清除。",
       "rubric": [
         {
           "id": "used_quick_action_app_switch",
@@ -561,15 +604,17 @@
     {
       "id": "quick_action_control_center_dismiss",
       "category": "multi_step",
-      "platforms": ["ios"],
+      "platforms": [
+        "ios"
+      ],
       "description_for_judge": "Agent must open the Control Center via quick_action, then dismiss it using quick_action dismiss_panel.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "prompt": "回到桌面。",
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 打开控制中心，确认控制中心已打开后，再使用 quick_action 关闭控制中心。",
+      "prompt": "打开控制中心，确认打开了之后再把它关掉。",
       "rubric": [
         {
           "id": "used_quick_action_control_center",
@@ -600,11 +645,11 @@
       "description_for_judge": "Agent must open the Notification Center via quick_action, identify what notifications are present, then dismiss the panel.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "prompt": "回到桌面。",
         "timeout_sec": 30,
         "clear_history_after": true
       },
-      "prompt": "请使用 quick_action 打开通知中心，告诉我当前有哪些通知内容，然后关闭通知中心。",
+      "prompt": "打开通知中心，看看有什么通知，然后关掉通知中心。",
       "rubric": [
         {
           "id": "used_quick_action_notification_center",
