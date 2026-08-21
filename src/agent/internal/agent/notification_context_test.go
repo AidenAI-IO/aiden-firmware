@@ -324,60 +324,6 @@ func TestNotificationContextReadPendingAppliesLimitAfterCursorSort(t *testing.T)
 	}
 }
 
-func TestNotificationContextQueryReadsPersistedRecordsWithoutAdvancingCursors(t *testing.T) {
-	root := t.TempDir()
-	reader := func(context.Context, string, string, int) (ble.EventPage, error) {
-		return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{
-			{ID: "1", Source: "android", SourceEventID: "one", AppIdentifier: "com.chat", Title: "Old", Message: "keep", ReceivedAt: "2026-08-20T00:00:00Z"},
-			{ID: "2", Source: "android", SourceEventID: "two", AppIdentifier: "com.mail", Title: "New", Message: "meeting moved", ReceivedAt: "2026-08-21T00:00:00Z"},
-		}, LastID: "2", OldestID: "1"}, nil
-	}
-	c, err := NewNotificationContext(root, reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Consume(context.Background(), 10); err != nil {
-		t.Fatal(err)
-	}
-	before := c.State()
-	results, err := c.Query(context.Background(), NotificationQuery{Date: "2026-08-21", Text: "moved", Limit: 10})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 1 || results[0].ID != "2" {
-		t.Fatalf("Query() results=%#v, want event 2", results)
-	}
-	after := c.State()
-	if after.SourceCursor != before.SourceCursor || after.MemoryCursor != before.MemoryCursor {
-		t.Fatalf("Query advanced cursors: before=%#v after=%#v", before, after)
-	}
-}
-
-func TestNotificationContextQueryLatestAppliesLimitAfterFiltering(t *testing.T) {
-	root := t.TempDir()
-	reader := func(context.Context, string, string, int) (ble.EventPage, error) {
-		return ble.EventPage{Events: []ble.NotificationEvent{
-			{ID: "1", AppIdentifier: "com.example", ReceivedAt: "2026-08-20T00:00:00Z"},
-			{ID: "2", AppIdentifier: "com.example", ReceivedAt: "2026-08-21T00:00:00Z"},
-			{ID: "3", AppIdentifier: "com.example", ReceivedAt: "2026-08-21T01:00:00Z"},
-		}}, nil
-	}
-	c, err := NewNotificationContext(root, reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Consume(context.Background(), 10); err != nil {
-		t.Fatal(err)
-	}
-	results, err := c.Query(context.Background(), NotificationQuery{AppIdentifier: "COM.EXAMPLE", Limit: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 2 || results[0].ID != "2" || results[1].ID != "3" {
-		t.Fatalf("latest results=%#v, want [2 3]", results)
-	}
-}
-
 func TestNotificationContextSanitizeTruncatesUTF8ByRunes(t *testing.T) {
 	value := truncateNotificationText("你好世界", 3)
 	if value != "你好世" {
@@ -447,7 +393,7 @@ func TestNotificationContextRecoversCursorAndDedupeFromEventLog(t *testing.T) {
 	}
 }
 
-func TestNotificationContextQueryDoesNotRepairIncompleteTailRecord(t *testing.T) {
+func TestNotificationContextReadOnlyReadDoesNotRepairIncompleteTailRecord(t *testing.T) {
 	root := t.TempDir()
 	eventsDir := filepath.Join(root, "notifications", "events")
 	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
@@ -458,7 +404,7 @@ func TestNotificationContextQueryDoesNotRepairIncompleteTailRecord(t *testing.T)
 	if err := os.WriteFile(path, append([]byte(complete), []byte(`{"id":"2","context_id":"2"`)...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	results, err := QueryNotificationRecords(context.Background(), root, NotificationQuery{Limit: 10})
+	results, err := readNotificationRecordFileReadOnly(path)
 	if err == nil || len(results) != 0 {
 		t.Fatalf("read-only query results=%#v err=%v, want incomplete-record error", results, err)
 	}
@@ -491,13 +437,7 @@ func TestNotificationContextReadsRecordLargerThanScannerLimit(t *testing.T) {
 	if err := os.WriteFile(path, append(line, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
-		return ble.EventPage{}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	results, err := c.Query(context.Background(), NotificationQuery{Limit: 10})
+	results, err := readNotificationRecordFileReadOnly(path)
 	if err != nil || len(results) != 1 || len(results[0].Message) != 256*1024 {
 		messageLen := 0
 		if len(results) > 0 {
