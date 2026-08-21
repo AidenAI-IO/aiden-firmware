@@ -29,6 +29,7 @@ const (
 	realtimeUpdateTimeout      = 5 * time.Second
 	realtimePlaybackKeepAlive  = 10 * time.Second
 	realtimeTaskResultDebounce = 500 * time.Millisecond
+	realtimeContextReplayTurns = 10
 )
 
 // runRealtimeWakeupMode owns the realtime voice path. The legacy wakeup
@@ -227,6 +228,7 @@ func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
 		Instructions:        instructions,
 		InputAudioFormat:    inputFormat,
 		OutputAudioFormat:   outputFormat,
+		MaxHistoryTurns:     realtimeContextReplayTurns,
 		Tools:               realtimeVoiceToolDefinitions(),
 		TurnDetection:       turn,
 	}
@@ -952,7 +954,7 @@ func replayRealtimeContext(ctx context.Context, session *rtclient.Session, manag
 		return nil
 	}
 	var previousID string
-	for _, message := range manager.MessageListDump().Messages {
+	for _, message := range recentRealtimeContextMessages(manager.MessageListDump().Messages, realtimeContextReplayTurns) {
 		content := strings.TrimSpace(message.Content)
 		if message.Role == messages.MessageRoleSystem {
 			continue
@@ -1004,6 +1006,39 @@ func replayRealtimeContext(ctx context.Context, session *rtclient.Session, manag
 		}
 	}
 	return nil
+}
+
+func recentRealtimeContextMessages(all []messages.Message, maxTurns int) []messages.Message {
+	// A turn starts at a user message and owns every following assistant,
+	// tool-call, and tool-result message until the next user message. Slice only
+	// at these boundaries so a tool call can never be replayed without its
+	// matching result (or vice versa).
+	if len(all) == 0 || maxTurns <= 0 {
+		return nil
+	}
+	userCount := 0
+	for _, message := range all {
+		if message.Role == messages.MessageRoleUser {
+			userCount++
+		}
+	}
+	if userCount <= maxTurns {
+		return all
+	}
+	cutoff := userCount - maxTurns
+	seen := 0
+	start := len(all)
+	for i, message := range all {
+		if message.Role != messages.MessageRoleUser {
+			continue
+		}
+		if seen == cutoff {
+			start = i
+			break
+		}
+		seen++
+	}
+	return all[start:]
 }
 
 func limitRealtimeTaskField(value string, maxRunes int) string {

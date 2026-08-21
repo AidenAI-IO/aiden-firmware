@@ -19,6 +19,9 @@ The user context also persists the realtime foreground's own tool calls and
 tool results, so they can be restored when a new realtime websocket session is
 opened. Backend tool traces remain isolated in `sessions/backend`; only their
 aggregated task updates are injected into the foreground as user messages.
+To keep realtime context bounded, a new websocket session replays only the
+latest 10 user turns, including the assistant/tool messages belonging to those
+turns. The full user history remains on disk.
 
 The foreground realtime session can be activated by either the physical GPIO
 wakeup signal or a text request to `/api/chat`. A text request submitted while

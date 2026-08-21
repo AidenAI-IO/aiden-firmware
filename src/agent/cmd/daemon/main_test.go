@@ -191,6 +191,31 @@ func TestRealtimeToolCallAndResultPersistInUserContext(t *testing.T) {
 	}
 }
 
+func TestRecentRealtimeContextMessagesKeepsLatestTenUserTurns(t *testing.T) {
+	var all []messages.Message
+	for i := 1; i <= 12; i++ {
+		all = append(all,
+			messages.Message{Role: messages.MessageRoleUser, Content: fmt.Sprintf("user-%d", i)},
+			messages.Message{Role: messages.MessageRoleToolCall, ToolCalls: []messages.ToolCall{{ID: fmt.Sprintf("call-%d", i)}}},
+			messages.Message{Role: messages.MessageRoleToolResult, ToolResults: []messages.ToolResult{{ToolCallID: fmt.Sprintf("call-%d", i)}}},
+			messages.Message{Role: messages.MessageRoleAssistant, Content: fmt.Sprintf("assistant-%d", i)},
+		)
+	}
+	got := recentRealtimeContextMessages(all, 10)
+	if len(got) != 40 || got[0].Content != "user-3" || got[len(got)-1].Content != "assistant-12" {
+		t.Fatalf("recent messages = %+v", got)
+	}
+	for i := 0; i < len(got); i++ {
+		if got[i].Role != messages.MessageRoleToolCall {
+			continue
+		}
+		if i+1 >= len(got) || got[i+1].Role != messages.MessageRoleToolResult ||
+			got[i].ToolCalls[0].ID != got[i+1].ToolResults[0].ToolCallID {
+			t.Fatalf("tool exchange was split: %+v", got[i:])
+		}
+	}
+}
+
 type fakeBackgroundTaskRunner struct {
 	started chan string
 	release chan struct{}
