@@ -152,6 +152,85 @@ def test_required_tool_calls_support_string_contains_matcher():
     assert out.results.required_tool_calls is True
 
 
+def test_required_tool_calls_support_list_contains_matcher():
+    trace = Trace(
+        tool_calls=[
+            ToolCall(
+                step=1,
+                tool="recall_memory",
+                input={"tags": ["办公城市", "杭州"], "types": ["fact"]},
+            )
+        ],
+        final_response="ok",
+        total_tool_calls=1,
+        total_duration_ms=0,
+    )
+    spec = HardAssertions(
+        required_tool_calls=[
+            RequiredToolCallSpec(
+                tool="recall_memory",
+                input_contains={"tags": {"$contains": "办公城市"}},
+            )
+        ]
+    )
+
+    out = evaluate_hard_assertions(trace, spec, timed_out=False)
+
+    assert out.all_passed is True
+    assert out.results.required_tool_calls is True
+
+
+def test_required_tool_calls_respect_order():
+    trace = Trace(
+        tool_calls=[
+            ToolCall(step=1, tool="save_memory", input={"content": "我的办公城市是杭州"}),
+            ToolCall(step=2, tool="save_memory", input={"content": "我的办公城市是深圳"}),
+            ToolCall(step=3, tool="save_memory", input={"content": "我的办公城市是成都"}),
+            ToolCall(step=4, tool="recall_memory", input={"tags": ["办公城市"]}),
+        ],
+        final_response="ok",
+        total_tool_calls=4,
+        total_duration_ms=0,
+    )
+    spec = HardAssertions(
+        required_tool_calls=[
+            RequiredToolCallSpec(tool="save_memory", input_contains={"content": {"$contains": "杭州"}}),
+            RequiredToolCallSpec(tool="save_memory", input_contains={"content": {"$contains": "深圳"}}),
+            RequiredToolCallSpec(tool="save_memory", input_contains={"content": {"$contains": "成都"}}),
+            RequiredToolCallSpec(tool="recall_memory", input_contains={"tags": {"$contains": "办公城市"}}),
+        ]
+    )
+
+    out = evaluate_hard_assertions(trace, spec, timed_out=False)
+
+    assert out.all_passed is True
+    assert out.results.required_tool_calls is True
+
+
+def test_required_tool_calls_fail_when_out_of_order():
+    trace = Trace(
+        tool_calls=[
+            ToolCall(step=1, tool="recall_memory", input={"tags": ["办公城市"]}),
+            ToolCall(step=2, tool="save_memory", input={"content": "我的办公城市是杭州"}),
+        ],
+        final_response="ok",
+        total_tool_calls=2,
+        total_duration_ms=0,
+    )
+    spec = HardAssertions(
+        required_tool_calls=[
+            RequiredToolCallSpec(tool="save_memory", input_contains={"content": {"$contains": "杭州"}}),
+            RequiredToolCallSpec(tool="recall_memory", input_contains={"tags": {"$contains": "办公城市"}}),
+        ]
+    )
+
+    out = evaluate_hard_assertions(trace, spec, timed_out=False)
+
+    assert out.all_passed is False
+    assert out.results.required_tool_calls is False
+    assert out.failures[0].id == "required_tool_calls"
+
+
 def test_required_tool_calls_report_missing_input_match():
     trace = Trace(
         tool_calls=[ToolCall(step=1, tool="bridge_contacts", input={"action": "query", "query": "Alice"})],
