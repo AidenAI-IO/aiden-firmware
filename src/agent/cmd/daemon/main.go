@@ -52,8 +52,6 @@ func main() {
 			os.Exit(runConfigUpdate(os.Args[2:]))
 		case "config-test":
 			os.Exit(runConfigTest(os.Args[2:]))
-		case "notifications":
-			os.Exit(runNotifications(os.Args[2:]))
 		}
 	}
 	logging.InstallStandard("agent", os.Stderr)

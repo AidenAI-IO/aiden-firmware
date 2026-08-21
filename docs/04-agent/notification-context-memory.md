@@ -36,7 +36,7 @@ Episode 和 Notification 的 proposal schema、证据门槛、冲突处理、Mem
 | 模块 | 职责 |
 | --- | --- |
 | `ble_service` | 接收 iOS/Android 通知、规范化、分配事件 ID、维护短期 event ring |
-| `NotificationContext` | 消费事件、去重、JSONL 落盘、source/memory cursor、查询和清理 |
+| `NotificationContext` | 消费事件、去重、JSONL 落盘、source/memory cursor 和清理 |
 | `MemoryWorker` | 统一闲时窗口、前台取消、串行执行 Processor、重试和停止 |
 | `episodeMemoryProcessor` | 读取 Episode、按 Episode 规则提炼并写入 Device Memory |
 | `NotificationMemoryProcessor` | 读取通知、过滤、调用提炼、校验 proposal 并写入 Temporary/Long-Term Memory |
@@ -68,12 +68,17 @@ Consume(limit)               从 events_since 拉取并可靠落盘
 ReadPending(limit)           读取 memory cursor 之后的记录
 CommitProcessed(batch)       Memory 写入成功后推进 memory cursor
 CleanupProcessedBefore(...)  只清理已处理的日期分片
-Query(query)                 只读查询原始通知，不访问 BLE、不改游标
 ```
 
 落盘记录保留 BLE 原始字段，并增加 Agent 本地单调递增的 `context_id`。Memory cursor 使用 `context_id`，不依赖 BLE generation。落盘采用按 UTC 日期分片的 JSONL；写入成功后才推进 source cursor。断电恢复时保留已完整写入的记录，并修复最后一条不完整 JSON 行。
 
 `CommitProcessed` 要求传入从当前 cursor 开始的连续批次。清理器必须调用 `NotificationContext` 的清理方法，不能绕过 Context 直接删除 JSONL，以避免和 append/commit 并发。
+
+原始通知不再额外包装查询接口或 `agent notifications list` 子命令。Agent 的
+`shell` 工具直接只读访问 `/userdata/agent/memory/notifications/events/`；目录下
+按 UTC 日期保存为 `YYYY-MM-DD.jsonl`，每行一条原始通知记录。日期、应用、正文
+和条数筛选使用系统已有的只读 shell 工具完成，不复制一套查询实现。Agent 不得
+通过 shell 修改这些文件。
 
 ## NotificationProcessor
 
