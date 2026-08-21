@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -461,23 +461,39 @@ func (c *NotificationContext) appendEventLocked(event NotificationRecord) error 
 }
 
 func readNotificationRecordFile(path string) ([]NotificationRecord, error) {
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 4096), 128*1024)
-	result := make([]NotificationRecord, 0)
-	for scanner.Scan() {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	if !bytes.HasSuffix(data, []byte{'\n'}) {
+		lastNewline := bytes.LastIndexByte(data, '\n')
+		tail := data[lastNewline+1:]
 		var record NotificationRecord
-		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+		if err := json.Unmarshal(tail, &record); err != nil {
+			// A crash can leave only the final JSONL record incomplete. Keep
+			// complete records and repair the file before retrying reads.
+			if err := os.WriteFile(path, data[:lastNewline+1], 0o644); err != nil {
+				return nil, fmt.Errorf("repair incomplete notification record %s: %w", path, err)
+			}
+			data = data[:lastNewline+1]
+		} else {
+			return []NotificationRecord{record}, nil
+		}
+	}
+	lines := bytes.Split(data, []byte{'\n'})
+	result := make([]NotificationRecord, 0)
+	for _, line := range lines {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var record NotificationRecord
+		if err := json.Unmarshal(line, &record); err != nil {
 			return nil, fmt.Errorf("decode notification record %s: %w", path, err)
 		}
 		result = append(result, record)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
 	}
 	return result, nil
 }

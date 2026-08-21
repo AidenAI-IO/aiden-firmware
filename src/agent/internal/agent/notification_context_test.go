@@ -235,3 +235,27 @@ func TestNotificationContextSanitizeTruncatesUTF8ByRunes(t *testing.T) {
 		t.Fatalf("truncateNotificationText()=%q, want 你好世", value)
 	}
 }
+
+func TestNotificationContextQueryRepairsIncompleteTailRecord(t *testing.T) {
+	root := t.TempDir()
+	eventsDir := filepath.Join(root, "notifications", "events")
+	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(eventsDir, "2026-08-21.jsonl")
+	complete := `{"id":"1","context_id":"1","received_at":"2026-08-21T00:00:00Z"}` + "\n"
+	if err := os.WriteFile(path, append([]byte(complete), []byte(`{"id":"2","context_id":"2"`)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	results, err := QueryNotificationRecords(context.Background(), root, NotificationQuery{Limit: 10})
+	if err != nil || len(results) != 1 || results[0].ContextID != "1" {
+		t.Fatalf("query after repair results=%#v err=%v", results, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != complete {
+		t.Fatalf("repaired file=%q, want complete record only", string(data))
+	}
+}
