@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,6 +29,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
 
+	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/screen"
@@ -2839,23 +2841,52 @@ func TestServerContextDumpEndpointReturnsPlannerMessages(t *testing.T) {
 	}
 	server.runtime.contextManager = manager
 
-	req := httptest.NewRequest(http.MethodGet, "/api/context-dump", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/context", nil)
 	rec := httptest.NewRecorder()
-	server.handleContextDump(rec, req)
+	server.handleContext(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	var dump contextmanager.MessageListDump
+	var dump ContextResponse
 	if err := json.NewDecoder(rec.Body).Decode(&dump); err != nil {
 		t.Fatalf("decode context dump: %v", err)
 	}
-	if dump.SessionID == "" {
-		t.Fatal("expected session_id in context dump")
+	if dump.Backend.SessionID == "" {
+		t.Fatal("expected backend session_id in context dump")
 	}
-	if len(dump.Messages) != 1 || dump.Messages[0].Content != "hello planner" {
-		t.Fatalf("unexpected context dump payload: %#v", dump)
+	if len(dump.Backend.Messages) != 1 || dump.Backend.Messages[0].Content != "hello planner" {
+		t.Fatalf("unexpected context dump payload: %#v", dump.Backend)
+	}
+}
+
+func TestServerContextAttachmentEndpointServesRegisteredAttachment(t *testing.T) {
+	config := Config{Model: ModelConfig{Provider: "fake"}}
+	server := &Server{logger: newTestLogger(), runtime: NewRuntimeWithDeps(
+		withTestConfigDir(t, config),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)}
+	folder := agentpath.UserContextManagerSessionFolder(server.runtime.config.ConfigDir)
+	manager, err := contextmanager.NewContextManager(folder, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachment, err := manager.StoreAttachment("image/png", []byte("png-data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Attachments: []messages.Attachment{attachment}}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/context/attachment?role=user&attachment="+url.QueryEscape(filepath.Base(attachment.FilePath)), nil)
+	rec := httptest.NewRecorder()
+	server.handleContextAttachment(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "image/png" || rec.Body.String() != "png-data" {
+		t.Fatalf("attachment response: status=%d type=%q body=%q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
 	}
 }
 

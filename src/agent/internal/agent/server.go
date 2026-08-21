@@ -23,6 +23,7 @@ import (
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 
+	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/mnk"
 	"aiden-agent/internal/agent/screenprovider"
 	"aiden-agent/internal/agent/speech"
@@ -539,7 +540,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/live-activity/current", s.handleLiveActivityCurrent)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
-	mux.HandleFunc("/api/context-dump", s.handleContextDump)
+	mux.HandleFunc("/api/context", s.handleContext)
+	mux.HandleFunc("/api/context/attachment", s.handleContextAttachment)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/setup", s.handleSetup)
 	if s.benchmarkToken() != "" {
@@ -2336,14 +2338,40 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(historySnapshot)
 }
 
-func (s *Server) handleContextDump(w http.ResponseWriter, r *http.Request) {
+type ContextResponse struct {
+	User    contextmanager.MessageListDump `json:"user"`
+	Backend contextmanager.MessageListDump `json:"backend"`
+}
+
+func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s.runtime.ContextDump())
+	json.NewEncoder(w).Encode(ContextResponse{
+		User:    s.runtime.UserContextDump(),
+		Backend: s.runtime.ContextDump(),
+	})
+}
+
+func (s *Server) handleContextAttachment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	role := r.URL.Query().Get("role")
+	attachmentID := r.URL.Query().Get("attachment")
+	data, mimeType, err := s.runtime.ReadContextAttachment(role, attachmentID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {

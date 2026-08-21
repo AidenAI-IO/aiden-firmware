@@ -1561,6 +1561,53 @@ func (r *Runtime) ContextDump() contextmanager.MessageListDump {
 	return contextManager.MessageListDump()
 }
 
+// UserContextDump returns the persisted realtime foreground context.
+func (r *Runtime) UserContextDump() contextmanager.MessageListDump {
+	if r == nil {
+		return contextmanager.MessageListDump{}
+	}
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir))
+	if err != nil || manager == nil {
+		return contextmanager.MessageListDump{}
+	}
+	return manager.MessageListDump()
+}
+
+// ReadContextAttachment reads an attachment registered in the user or backend
+// context. It never accepts an arbitrary filesystem path.
+func (r *Runtime) ReadContextAttachment(role, attachmentID string) ([]byte, string, error) {
+	if r == nil {
+		return nil, "", fmt.Errorf("runtime is unavailable")
+	}
+	var folder string
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "user":
+		folder = agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
+	case "backend":
+		folder = agentpath.ContextManagerSessionFolder(r.config.ConfigDir)
+	default:
+		return nil, "", fmt.Errorf("invalid context role")
+	}
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(folder)
+	if err != nil {
+		return nil, "", err
+	}
+	mimeType := "application/octet-stream"
+	for _, message := range manager.MessageListDump().Messages {
+		for _, attachment := range message.Attachments {
+			if filepath.Base(attachment.FilePath) == filepath.Base(attachmentID) {
+				mimeType = attachment.MIMEType
+				break
+			}
+		}
+	}
+	data, err := manager.ReadAttachment(attachmentID)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, mimeType, nil
+}
+
 func (r *Runtime) rotateContext() {
 	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), r.getSystemPrompt())
 	if err != nil {
