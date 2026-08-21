@@ -13,7 +13,8 @@ type RecallSessionChunksTool struct {
 }
 
 type RecallMemoryTool struct {
-	store *LongTermMemoryStore
+	store     *LongTermMemoryStore
+	temporary *LongTermMemoryStore
 }
 
 type SaveMemoryTool struct {
@@ -106,11 +107,16 @@ func NewRecallMemoryTool(store *LongTermMemoryStore) *RecallMemoryTool {
 	return &RecallMemoryTool{store: store}
 }
 
+func NewRecallMemoryToolWithTemporary(store, temporary *LongTermMemoryStore) *RecallMemoryTool {
+	return &RecallMemoryTool{store: store, temporary: temporary}
+}
+
 func (t *RecallMemoryTool) Name() string { return "recall_memory" }
 
 func (t *RecallMemoryTool) Description() string {
 	return strings.Join([]string{
-		"Recall long-term memories by tags, entities, or types. Leave arrays empty to match all.",
+		"Recall temporary and long-term memories by tags, entities, or types. Leave arrays empty to match all.",
+		"Temporary memories are short-lived notification-derived conclusions and are returned with memory_scope=temporary; long-term memories are returned with memory_scope=long_term.",
 		"Use for remembered preferences, rules, procedures, facts, profile info, or screen content the user saved earlier with the device button.",
 		"Screen content the user saved belongs here even when they phrase it as something recent (\"the tracking number I just saved\"); use types [\"screen_snapshot\"] for those. Only use recall_session_chunks for what was actually said in conversation.",
 		"Returns matching memories with id, type, title, content, summary.",
@@ -134,9 +140,27 @@ func (t *RecallMemoryTool) Call(ctx context.Context, input string) (string, erro
 	if err != nil {
 		return "", fmt.Errorf("decode recall_memory input: %w", err)
 	}
-	results, err := t.store.Search(ctx, query)
+	results := make([]MemoryResult, 0)
+	if t.temporary != nil {
+		temporary, err := t.temporary.Search(ctx, query)
+		if err != nil {
+			return "", err
+		}
+		for i := range temporary {
+			temporary[i].MemoryScope = "temporary"
+		}
+		results = append(results, temporary...)
+	}
+	longTerm, err := t.store.Search(ctx, query)
 	if err != nil {
 		return "", err
+	}
+	for i := range longTerm {
+		longTerm[i].MemoryScope = "long_term"
+	}
+	results = append(results, longTerm...)
+	if query.Limit > 0 && len(results) > query.Limit {
+		results = results[:query.Limit]
 	}
 	recordRecalledMemoryIDs(ctx, results, func(r MemoryResult) string { return r.ID })
 	return encodeToolJSON(map[string]any{"results": results})

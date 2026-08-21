@@ -129,6 +129,8 @@ type MemoryResult struct {
 	Tags          []string          `json:"tags,omitempty"`
 	Entities      []string          `json:"entities,omitempty"`
 	FilePath      string            `json:"file_path"`
+	MemoryScope   string            `json:"memory_scope,omitempty"`
+	ExpiresAt     string            `json:"expires_at,omitempty"`
 	Applicability map[string]string `json:"applicability,omitempty"`
 	SourceRefs    []MemorySourceRef `json:"source_refs,omitempty"`
 	EvidenceRefs  []MemorySourceRef `json:"evidence_refs,omitempty"`
@@ -253,6 +255,7 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 			Tags:          append([]string(nil), entry.Tags...),
 			Entities:      append([]string(nil), entry.Entities...),
 			FilePath:      path,
+			ExpiresAt:     firstNonEmpty(parsed.Item.ExpiresAt, entry.ExpiresAt),
 			Applicability: cloneStringMap(parsed.Item.Applicability),
 			SourceRefs:    append([]MemorySourceRef(nil), parsed.Item.SourceRefs...),
 			EvidenceRefs:  append([]MemorySourceRef(nil), parsed.Item.EvidenceRefs...),
