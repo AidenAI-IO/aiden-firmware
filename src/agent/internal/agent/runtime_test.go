@@ -164,6 +164,153 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRecordsOnDemandDeviceMemoryRecallThroughAgentToolCall(t *testing.T) {
+	ctx := context.Background()
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	memoryDir := filepath.Join(configDir, "memory")
+	deviceStore := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
+	if _, err := deviceStore.Upsert(ctx, DeviceMemoryItem{
+		ID:         "devmem_qa_notes_guard",
+		Type:       "failure",
+		Status:     "active",
+		Title:      "Verify edited title before Save",
+		Content:    "Before clicking Save in QA Notes, verify that the title field shows the new value.",
+		Summary:    "Verify the new QA Notes title before Save.",
+		DeviceID:   defaultMemoryDeviceID,
+		Tags:       []string{legacyReflectionFailureTag, "save-action"},
+		Entities:   []string{"QA Notes", "Save button"},
+		Confidence: 0.8,
+		Priority:   80,
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	if _, err := deviceStore.Upsert(ctx, DeviceMemoryItem{
+		ID:         "devmem_unrelated_procedure",
+		Type:       "procedure",
+		Status:     "active",
+		Title:      "Unrelated controller procedure",
+		Content:    "Use shell to inspect the controller clock before answering a time question.",
+		DeviceID:   defaultMemoryDeviceID,
+		Confidence: 0.8,
+		Priority:   70,
+		Steps:      []ProcedureStep{{Tool: "shell"}},
+	}); err != nil {
+		t.Fatalf("Upsert unrelated procedure error = %v", err)
+	}
+
+	model := &scriptedModel{responses: roleDefaultToolResponses(
+		"recall_device_memory",
+		`{"terms":["QA Notes","Save"],"types":["failure"],"device_id":"default","limit":5}`,
+		"Verify the new title before saving.",
+	)}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 3,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(memoryDir),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	result, err := runtime.Run(ctx, RunRequest{Input: "在 QA Notes 点击 Save 前，如何避免保存旧标题？"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.toolChoices) < 2 {
+		t.Fatalf("tool choices = %#v, want recall turn and answer turn", model.toolChoices)
+	}
+	for i, choice := range model.toolChoices[:2] {
+		if choice != nil {
+			t.Fatalf("tool choice %d = %#v, want model-controlled tool selection", i, choice)
+		}
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("model messages = %#v, want post-recall turn", model.messages)
+	}
+	contextArgs := ""
+	for _, message := range model.messages[1] {
+		for _, part := range message.Parts {
+			call, ok := part.(llms.ToolCall)
+			if !ok || call.FunctionCall == nil || call.FunctionCall.Name != "recall_device_memory" {
+				continue
+			}
+			contextArgs = call.FunctionCall.Arguments
+		}
+	}
+	if !strings.Contains(contextArgs, `"types":["failure"]`) || !strings.Contains(contextArgs, "QA Notes") || strings.Contains(contextArgs, "devmem_qa_notes_guard") {
+		t.Fatalf("post-recall context arguments = %q, want the model-provided query unchanged", contextArgs)
+	}
+
+	episode, err := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes")).Get(ctx, result.EpisodeID)
+	if err != nil {
+		t.Fatalf("Get episode: %v", err)
+	}
+	if !slices.Equal(episode.RetrievedMemoryRefs, []string{"devmem_qa_notes_guard"}) {
+		t.Fatalf("retrieved_memory_refs = %#v, want only relevant device memory", episode.RetrievedMemoryRefs)
+	}
+	foundRecall := false
+	for _, event := range episode.Events {
+		if event.Type == runEventToolCall && event.ToolName == "recall_device_memory" {
+			foundRecall = true
+			if !strings.Contains(event.ToolInput, `"types":["failure"]`) || !strings.Contains(event.ToolInput, "QA Notes") || strings.Contains(event.ToolInput, "devmem_qa_notes_guard") {
+				t.Fatalf("recall_device_memory tool input = %q, want the model-provided query unchanged", event.ToolInput)
+			}
+			break
+		}
+	}
+	if !foundRecall {
+		t.Fatalf("episode missing recall_device_memory tool call: %#v", episode.Events)
+	}
+}
+
+func TestRuntimeDoesNotForceDeviceMemoryRecallForRelevantQuestion(t *testing.T) {
+	ctx := context.Background()
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	memoryDir := filepath.Join(configDir, "memory")
+	deviceStore := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
+	if _, err := deviceStore.Upsert(ctx, DeviceMemoryItem{
+		ID:         "devmem_qa_notes_guard",
+		Type:       "failure",
+		Status:     "active",
+		Title:      "Verify edited title before Save",
+		Content:    "Before clicking Save in QA Notes, verify that the title field shows the new value.",
+		DeviceID:   defaultMemoryDeviceID,
+		Tags:       []string{legacyReflectionFailureTag, "save-action"},
+		Entities:   []string{"QA Notes", "Save button"},
+		Confidence: 0.8,
+		Priority:   80,
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	model := &scriptedModel{responses: roleDirectResponses("Use Preview before returning to Edit and saving.")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(memoryDir),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "在 QA Notes 点击 Save 前，如何避免保存旧标题？"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.toolChoices) != 1 || model.toolChoices[0] != nil {
+		t.Fatalf("tool choices = %#v, want relevant question to remain model-controlled", model.toolChoices)
+	}
+}
+
 func TestRuntimeIOSKeyboardIsolationCoalescesModifierActionsForWholeRun(t *testing.T) {
 	events := []string{}
 	controller := newTestIOSKeyboardIsolationController(&events)
@@ -410,10 +557,9 @@ func TestRuntimeRunInjectsDeviceTypeStateIntoTools(t *testing.T) {
 	}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{
-			Model:           ModelConfig{Provider: "fake"},
-			Instruction:     "Use tools.",
-			DefaultPlatform: "ios",
-			Device:          DeviceConfig{DeviceType: "Android"},
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+			Device:      DeviceConfig{DeviceType: "Android"},
 		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
@@ -2405,6 +2551,7 @@ type scriptedModel struct {
 	sawStreaming      []bool
 	messages          [][]llms.MessageContent
 	tools             [][]llms.Tool
+	toolChoices       []any
 	rawHTTPLogEnabled []bool
 }
 
@@ -2487,6 +2634,7 @@ func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.Mes
 	m.sawStreaming = append(m.sawStreaming, callOptions.StreamingFunc != nil)
 	m.messages = append(m.messages, messages)
 	m.tools = append(m.tools, callOptions.Tools)
+	m.toolChoices = append(m.toolChoices, callOptions.ToolChoice)
 	m.rawHTTPLogEnabled = append(m.rawHTTPLogEnabled, rawHTTPLogEnabled(ctx))
 
 	if callOptions.StreamingFunc != nil && m.callCount < len(m.responses) {

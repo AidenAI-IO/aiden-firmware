@@ -1,6 +1,6 @@
 import pytest
 
-from runner.agent_client import AgentRequestError, AgentTimeoutError
+from runner.agent_client import AgentRequestError, AgentTimeoutError, ChatResponse
 from runner.reset import (
     ResetError,
     call_environment_release,
@@ -34,9 +34,18 @@ class RecordingSetupClient:
 
     def chat(self, message, timeout_sec=None):
         self.calls.append(("chat", message, timeout_sec))
+        return ChatResponse(response="READY", history=[])
 
     def clear_history(self):
         self.calls.append(("clear_history",))
+
+    def seed_episode(self, episode, timeout=30):
+        self.calls.append(("seed_episode", episode, timeout))
+        return {"status": "seeded", "id": episode["id"]}
+
+    def process_episode_memory(self, episode_id, timeout=90):
+        self.calls.append(("process_episode_memory", episode_id, timeout))
+        return {"episode_id": episode_id, "status": "done", "memory_ids": ["devmem-1"]}
 
 
 def test_agent_prompt_setup_wraps_chat_errors_as_reset_error():
@@ -97,6 +106,114 @@ def test_agent_prompt_setup_includes_prompt_prefix():
     )
 
     assert client.calls[0] == ("chat", "ADB benchmark rules\n\nprepare editor", 5)
+
+
+def test_agent_prompt_setup_validates_expected_response():
+    client = RecordingSetupClient()
+
+    per_task_setup(
+        client,
+        {
+            "type": "agent_prompt",
+            "prompt": "prepare editor",
+            "expected_response": "READY",
+            "clear_history_after": False,
+        },
+    )
+
+
+def test_agent_prompt_setup_rejects_unexpected_response():
+    class FailedSetupClient(RecordingSetupClient):
+        def chat(self, message, timeout_sec=None):
+            return ChatResponse(response="FAILED: capture failed", history=[])
+
+    with pytest.raises(ResetError, match="response mismatch"):
+        per_task_setup(
+            FailedSetupClient(),
+            {
+                "type": "agent_prompt",
+                "prompt": "prepare editor",
+                "expected_response": "READY",
+                "clear_history_after": False,
+            },
+        )
+
+
+def test_seed_episode_setup_can_leave_episode_unconsolidated():
+    client = RecordingSetupClient()
+    episode = {"id": "ep-1", "user_goal": "verify a device procedure"}
+
+    per_task_setup(
+        client,
+        {"type": "seed_episode", "episode": episode, "consolidate": False, "timeout_sec": 45},
+    )
+
+    assert client.calls == [("seed_episode", episode, 45)]
+
+
+def test_seed_episode_setup_consolidates_and_requires_memory():
+    client = RecordingSetupClient()
+    episode = {"id": "ep-1", "user_goal": "verify a device procedure"}
+
+    per_task_setup(
+        client,
+        {"type": "seed_episode", "episode": episode, "consolidate": True, "timeout_sec": 45},
+    )
+
+    assert client.calls == [
+        ("seed_episode", episode, 45),
+        ("process_episode_memory", "ep-1", 45),
+    ]
+
+
+def test_seed_episode_setup_rejects_consolidation_without_memory():
+    class NoMemoryClient(RecordingSetupClient):
+        def process_episode_memory(self, episode_id, timeout=90):
+            return {"episode_id": episode_id, "status": "done", "memory_ids": []}
+
+    with pytest.raises(ResetError, match="produced no device memory"):
+        per_task_setup(
+            NoMemoryClient(),
+            {
+                "type": "seed_episode",
+                "episode": {"id": "ep-1", "user_goal": "verify a device procedure"},
+                "consolidate": True,
+            },
+        )
+
+
+def test_seed_episode_setup_reports_ignored_status():
+    class IgnoredClient(RecordingSetupClient):
+        def process_episode_memory(self, episode_id, timeout=90):
+            return {"episode_id": episode_id, "status": "ignored", "memory_ids": []}
+
+    with pytest.raises(ResetError, match="was ignored by the worker"):
+        per_task_setup(
+            IgnoredClient(),
+            {
+                "type": "seed_episode",
+                "episode": {"id": "ep-1", "user_goal": "verify a device procedure"},
+                "consolidate": True,
+            },
+        )
+
+
+def test_per_task_setup_rejects_unknown_keys():
+    with pytest.raises(ResetError, match="unsupported seed_episode setup keys: consolodate"):
+        per_task_setup(
+            RecordingSetupClient(),
+            {
+                "type": "seed_episode",
+                "episode": {"id": "ep-1", "user_goal": "verify a device procedure"},
+                "consolodate": True,
+            },
+        )
+
+
+@pytest.mark.parametrize("setup_type", [["seed_episode"], {"name": "seed_episode"}, 1, None])
+def test_per_task_setup_rejects_non_string_setup_type(setup_type):
+    with pytest.raises(ResetError, match="setup type must be a string"):
+        per_task_setup(RecordingSetupClient(), {"type": setup_type})
 
 
 def test_call_environment_setup_posts_to_api_setup(monkeypatch):

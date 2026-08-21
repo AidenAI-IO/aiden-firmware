@@ -19,13 +19,16 @@ namespace aiden {
  * @param minimal_width Minimum output width after cropping. Values larger than
  *        the source width are clamped to the source width.
  * @param crop_black Whether to crop uniformly dark columns at the edges.
+ * @param crop_by_aspect Whether minimal_width is an exact centered crop width
+ *        derived from known screen geometry. This skips black-bar scanning.
  * @return true on success
  */
 bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t height,
                               int quality, std::vector<uint8_t>* output,
                               uint32_t* out_width = nullptr, uint32_t* out_height = nullptr,
                               uint32_t* out_crop_x = nullptr, uint32_t* out_crop_y = nullptr,
-                              uint32_t minimal_width = 0, bool crop_black = true);
+                              uint32_t minimal_width = 0, bool crop_black = true,
+                              bool crop_by_aspect = false);
 
 /**
  * Convert YUV frame to RGB and encode to JPEG using hardware encoder.
@@ -41,6 +44,9 @@ bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t h
  * @param minimal_width Minimum output width after cropping. Values larger than
  *        the source width are clamped to the source width.
  * @param crop_black Whether to crop uniformly dark columns at the edges.
+ * @param crop_by_aspect Whether minimal_width is an exact centered crop width
+ *        derived from known screen geometry. Packed 4:2:2 data is cropped
+ *        before color conversion when enabled.
  * @return true on success
  */
 bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width, uint32_t height,
@@ -48,6 +54,7 @@ bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width,
                             std::vector<uint8_t>* output,
                             uint32_t* out_width = nullptr, uint32_t* out_height = nullptr,
                             uint32_t* out_crop_x = nullptr, uint32_t* out_crop_y = nullptr,
-                            uint32_t minimal_width = 0, bool crop_black = true);
+                            uint32_t minimal_width = 0, bool crop_black = true,
+                            bool crop_by_aspect = false);
 
 }  // namespace aiden

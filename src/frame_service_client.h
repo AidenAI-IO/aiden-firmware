@@ -8,6 +8,7 @@ namespace aiden {
 
 struct HealthResult {
     std::string state;
+    std::string capture_mode;
     uint64_t latest_seq = 0;
     uint64_t frame_age_ms = 0;
     uint32_t ring_buffer_size = 0;

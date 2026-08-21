@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -49,6 +48,8 @@ func main() {
 			os.Exit(runConfigMeta(os.Args[2:]))
 		case "config":
 			os.Exit(runConfig(os.Args[2:]))
+		case "config-update":
+			os.Exit(runConfigUpdate(os.Args[2:]))
 		case "config-test":
 			os.Exit(runConfigTest(os.Args[2:]))
 		}
@@ -60,9 +61,8 @@ func main() {
 		dataDir                   = flag.String("dir", "", "path to the agent data directory holding agent.toml, skills, memory, cache and logs (required)")
 		addr                      = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
 		deviceType                = registerDeviceTypeFlag(flag.CommandLine)
-		environmentBridgeMode     = flag.Bool("environment-bridge-mode", false, "Enable environment bridge mode (forward selected tool calls to an environment bridge; see --environment-bridge-tools)")
+		environmentBridgeMode     = flag.Bool("environment-bridge-mode", false, "Enable environment bridge screen and input providers")
 		environmentBridgeEndpoint = flag.String("environment-bridge-endpoint", "", "Environment bridge endpoint (e.g., http://192.168.50.123:8080)")
-		environmentBridgeTools    = flag.String("environment-bridge-tools", "", "Comma-separated tool names or glob patterns to forward when environment-bridge-mode is on, e.g. \"keyboard_*,mouse_*\" or \"*\". screenshot is never forwarded; it is captured through POST /api/providers/screenshot. Required with --environment-bridge-mode.")
 		benchmarkTaskID           = flag.String("benchmark-task-id", "", "Benchmark task id to include on environment bridge requests for task routing")
 		benchmarkTokenFile        = flag.String("benchmark-token-file", "", "Path to benchmark API bearer token file. Enables benchmark-only mutation endpoints.")
 	)
@@ -98,11 +98,6 @@ func main() {
 		}
 		if cfg.EnvironmentBridge.Endpoint == "" {
 			_ = logging.LogEvent(logging.Error, "agent", "startup", "environment_bridge_endpoint_missing")
-			os.Exit(1)
-		}
-		cfg.EnvironmentBridge.Tools = parseCommaSeparated(*environmentBridgeTools)
-		if len(cfg.EnvironmentBridge.Tools) == 0 {
-			_ = logging.LogEvent(logging.Error, "agent", "startup", "environment_bridge_tools_missing")
 			os.Exit(1)
 		}
 		cfg.EnvironmentBridge.BenchmarkTaskID = strings.TrimSpace(*benchmarkTaskID)
@@ -157,6 +152,13 @@ func main() {
 	// during voice (audio/stt) interactions.
 	server := agent.NewServer(runtime, *addr)
 	defer server.Close()
+	quickCaptureWatcher, err := startQuickCaptureGPIOWatcher(cfg, server, newGPIOWatcher)
+	if err != nil {
+		log.Printf("[quick_capture] GPIO trigger disabled: %v", err)
+	} else if quickCaptureWatcher != nil {
+		defer quickCaptureWatcher.Stop()
+		log.Printf("[quick_capture] listening on GPIO %d", cfg.QuickCapture.GPIOPin)
+	}
 
 	_ = logging.LogEvent(logging.Info, "agent", "startup", "daemon_starting",
 		logging.Field{Key: "addr", Value: *addr},
@@ -165,7 +167,6 @@ func main() {
 	if cfg.EnvironmentBridge.Enabled {
 		fields := []logging.Field{
 			{Key: "endpoint", Value: cfg.EnvironmentBridge.Endpoint},
-			{Key: "tools", Value: cfg.EnvironmentBridge.Tools},
 		}
 		if cfg.EnvironmentBridge.BenchmarkTaskID != "" {
 			fields = append(fields, logging.Field{Key: "benchmark_task_id", Value: cfg.EnvironmentBridge.BenchmarkTaskID})
@@ -196,22 +197,12 @@ func main() {
 	}()
 
 	if inputMode == "stt" {
-		if shouldRunConsoleAudioLoop(cfg, stdinIsInteractive()) {
-			go func() {
-				if err := <-serverErr; err != nil {
-					log.Printf("[server] HTTP server stopped: %v", err)
-				}
-			}()
-			runAudioMode(cfg, runtime, server)
-			return
-		}
-		log.Printf("[manual] stdin is not interactive; console audio loop disabled, HTTP audio controls remain available")
-		if err := <-serverErr; err != nil {
-			_ = logging.LogEvent(logging.Error, "agent", "http", "server_failed",
-				logging.Field{Key: "error", Value: err},
-			)
-			os.Exit(1)
-		}
+		go func() {
+			if err := <-serverErr; err != nil {
+				log.Printf("[server] HTTP server stopped: %v", err)
+			}
+		}()
+		runAudioMode(cfg, runtime, server)
 		return
 	}
 
@@ -233,22 +224,6 @@ func applyDeviceTypeOverride(cfg *agent.Config, value string) error {
 		return nil
 	}
 	return cfg.OverrideDeviceType(value)
-}
-
-func stdinIsInteractive() bool {
-	info, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return (info.Mode() & os.ModeCharDevice) != 0
-}
-
-func shouldRunConsoleAudioLoop(cfg agent.Config, stdinInteractive bool) bool {
-	inputMode := cfg.InputModeOrDefault()
-	if inputMode != "stt" {
-		return false
-	}
-	return cfg.TriggerModeOrDefault() != "manual" || stdinInteractive
 }
 
 func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server) {
@@ -277,10 +252,8 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 	})
 
 	inputMode := cfg.InputModeOrDefault()
-	triggerMode := cfg.TriggerModeOrDefault()
-
-	log.Printf("[init] Config loaded: model=%s, input_mode=%s, trigger_mode=%s\n",
-		cfg.Model.Model, inputMode, triggerMode)
+	log.Printf("[init] Config loaded: model=%s, input_mode=%s\n",
+		cfg.Model.Model, inputMode)
 	vadBackend := cfg.VADBackendOrDefault()
 	log.Printf("[init] VAD: backend=%s, rknn_model=%s, helper=%s, speech_threshold=%.2f, silence=%dms, min_speech=%dms\n",
 		vadBackend,
@@ -294,14 +267,7 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	if triggerMode == "manual" {
-		runManualMode(cfg, dialog, runtime, sigChan)
-	} else if triggerMode == "wakeup" {
-		runWakeupMode(cfg, dialog, runtime, sigChan, newGPIOWatcher)
-	} else {
-		log.Printf("[error] Unsupported trigger mode: %s\n", triggerMode)
-		os.Exit(1)
-	}
+	runWakeupMode(cfg, dialog, runtime, sigChan, newGPIOWatcher)
 }
 
 type audioDialogRunner interface {
@@ -324,14 +290,9 @@ type audioDialogRunner interface {
 	Speak(ctx context.Context, text string, interrupt <-chan struct{}) error
 	SpeakFinal(ctx context.Context, text string, interrupt <-chan struct{}) error
 	FlushVAD() []int16
-	FinishManualUtterance(pending []int16) []int16
+	FinishPendingUtterance(pending []int16) []int16
 	ResetVAD()
 	VADFrameSamples() int
-}
-
-type manualStopResult struct {
-	utterance  []int16
-	vadHandled bool
 }
 
 type wakeupWatcher interface {
@@ -353,24 +314,40 @@ func floatOrDefault(value, fallback float64) float64 {
 	return fallback
 }
 
-func parseCommaSeparated(input string) []string {
-	if strings.TrimSpace(input) == "" {
-		return nil
-	}
-	parts := strings.Split(input, ",")
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
-}
-
 type wakeupWatcherFactory func(pin int, callback func()) (wakeupWatcher, error)
 
 func newGPIOWatcher(pin int, callback func()) (wakeupWatcher, error) {
 	return agent.NewGPIOWatcher(pin, callback)
+}
+
+type quickCaptureTrigger interface {
+	TriggerQuickCapture() error
+}
+
+func startQuickCaptureGPIOWatcher(cfg agent.Config, trigger quickCaptureTrigger, newWatcher wakeupWatcherFactory) (wakeupWatcher, error) {
+	pin := cfg.QuickCapture.GPIOPin
+	if !cfg.QuickCapture.EnabledOrDefault() || pin == 0 {
+		return nil, nil
+	}
+	watcher, err := newWatcher(pin, func() {
+		err := trigger.TriggerQuickCapture()
+		switch {
+		case err == nil:
+			log.Printf("[quick_capture] GPIO %d triggered capture", pin)
+		case errors.Is(err, agent.ErrQuickCaptureBusy):
+			log.Printf("[quick_capture] GPIO %d ignored: capture already in progress", pin)
+		default:
+			log.Printf("[quick_capture] GPIO %d trigger failed: %v", pin, err)
+		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create GPIO %d watcher: %w", pin, err)
+	}
+	if err := watcher.Start(); err != nil {
+		watcher.Stop()
+		return nil, fmt.Errorf("start GPIO %d watcher: %w", pin, err)
+	}
+	return watcher, nil
 }
 
 func wakeupGPIOPinsLabel() string {
@@ -485,99 +462,6 @@ type voiceTurnResult struct {
 	exit                   bool
 	nextTurn               *pendingVoiceTurn
 	followUpContext        agent.VoiceTurnContext
-}
-
-func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal) {
-	log.Println("\n[ready] Press Enter to start recording, press Enter again to stop")
-
-	scanner := bufio.NewScanner(os.Stdin)
-	recording := false
-	var manualStop chan manualStopResult
-	var cancelRecording context.CancelFunc
-	ctx := context.Background()
-
-	for {
-		select {
-		case <-sigChan:
-			if recording {
-				if cancelRecording != nil {
-					cancelRecording()
-				}
-				dialog.StopRecording()
-			}
-			log.Println("\n[exit] Stopped.")
-			return
-		default:
-		}
-
-		if !recording {
-			log.Println("\n[manual] Press Enter to start...")
-			if !scanner.Scan() {
-				break
-			}
-
-			log.Println("[manual] Recording started, press Enter to stop...")
-			if err := dialog.StartRecording(); err != nil {
-				log.Printf("[error] Failed to start recording: %v\n", err)
-				continue
-			}
-			recording = true
-
-			manualStop = make(chan manualStopResult, 1)
-			cancelRecording = startManualAudioLoop(ctx, dialog, runtime, manualStop)
-		} else {
-			if !scanner.Scan() {
-				break
-			}
-
-			log.Println("[manual] Stop triggered by user")
-			if cancelRecording != nil {
-				cancelRecording()
-				cancelRecording = nil
-			}
-
-			// Wait for the capture loop to flush tail PCM, then close capture
-			// before TTS so playback is never fed back into the mic session.
-			result := <-manualStop
-			recording = false
-			if result.vadHandled {
-				log.Println("\n[ready] Waiting for next trigger...")
-				continue
-			}
-			if err := dialog.StopRecording(); err != nil {
-				log.Printf("[listen] stop recording before manual utterance processing: %v\n", err)
-			}
-			if len(result.utterance) > 0 {
-				log.Println("[manual] Sending buffered audio without waiting for VAD")
-				if err := dialog.ProcessUtterance(ctx, result.utterance, runtime); err != nil {
-					log.Printf("[error] %v\n", err)
-				}
-			} else {
-				log.Println("[manual] No buffered audio to send")
-			}
-
-			log.Println("\n[ready] Waiting for next trigger...")
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		log.Printf("[error] %v\n", err)
-	}
-	if recording {
-		if cancelRecording != nil {
-			cancelRecording()
-			cancelRecording = nil
-		}
-		dialog.StopRecording()
-	}
-
-	log.Println("\n[exit] Stopped.")
-}
-
-func startManualAudioLoop(ctx context.Context, dialog audioDialogRunner, runtime *agent.Runtime, manualStop chan<- manualStopResult) context.CancelFunc {
-	loopCtx, cancel := context.WithCancel(ctx)
-	go processAudioLoop(dialog, runtime, loopCtx, manualStop)
-	return cancel
 }
 
 func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
@@ -1195,8 +1079,8 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 			return nil, true
 		case <-events:
 			if speechDetected && len(captured) > 0 {
-				log.Println("[listen] manual stop: wakeup pressed during recording, returning captured audio")
-				utterance := dialog.FinishManualUtterance(vadPending)
+				log.Println("[listen] wakeup pressed during recording, returning captured audio")
+				utterance := dialog.FinishPendingUtterance(vadPending)
 				if len(utterance) > 0 {
 					return utterance, false
 				}
@@ -1230,8 +1114,8 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 			return nil, true
 		case <-events:
 			if speechDetected && len(captured) > 0 {
-				log.Println("[listen] manual stop: wakeup pressed during recording, returning captured audio")
-				utterance := dialog.FinishManualUtterance(vadPending)
+				log.Println("[listen] wakeup pressed during recording, returning captured audio")
+				utterance := dialog.FinishPendingUtterance(vadPending)
 				if len(utterance) > 0 {
 					return utterance, false
 				}
@@ -1482,91 +1366,4 @@ func waitForLegacyUtteranceCancel(resultCh <-chan error) {
 	case <-time.After(voiceTurnCancelWaitTimeout):
 		log.Println("[interrupt] legacy turn did not finish after cancellation; continuing")
 	}
-}
-
-func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, ctx context.Context, manualStop chan<- manualStopResult) {
-	frameSamples := dialog.VADFrameSamples()
-	if frameSamples <= 0 {
-		log.Printf("[listen] invalid VAD frame size: %d\n", frameSamples)
-		if manualStop != nil {
-			manualStop <- manualStopResult{}
-		}
-		return
-	}
-
-	vadPending := make([]int16, 0, frameSamples*10)
-	var hasPendingByte bool
-	var pendingByte byte
-	vadHandled := false
-
-	for {
-		select {
-		case <-ctx.Done():
-			goto stopped
-		default:
-		}
-
-		// Read audio chunk
-		chunk, err := dialog.ReadRecordChunk(200)
-		if err != nil {
-			log.Printf("[listen] read_record_chunk error: %v\n", err)
-			break
-		}
-
-		if chunk == nil {
-			continue
-		}
-
-		if chunk.EndOfStream {
-			log.Println("[listen] record session closed by service")
-			break
-		}
-
-		if len(chunk.PCM) == 0 {
-			continue
-		}
-
-		// Convert PCM bytes to int16 samples
-		agent.AppendPCM16Samples(chunk.PCM, &vadPending, &hasPendingByte, &pendingByte)
-
-		// Feed VAD in 32ms Silero frames.
-		consumed := 0
-		for consumed+frameSamples <= len(vadPending) {
-			utterance, err := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
-			consumed += frameSamples
-			if err != nil {
-				log.Printf("[vad] processing failed: %v\n", err)
-				if stopErr := dialog.StopRecording(); stopErr != nil {
-					log.Printf("[listen] stop recording after VAD failure: %v\n", stopErr)
-				}
-				goto stopped
-			}
-			if utterance != nil {
-				log.Println("[utterance] VAD detected end of speech")
-				vadHandled = true
-				if err := dialog.StopRecording(); err != nil {
-					log.Printf("[listen] stop recording before utterance processing: %v\n", err)
-				}
-				if err := dialog.ProcessUtterance(ctx, utterance, runtime); err != nil {
-					log.Printf("[error] %v\n", err)
-				}
-				log.Println("\n[ready] Waiting for next trigger...")
-				goto stopped
-			}
-		}
-
-		if consumed > 0 {
-			vadPending = vadPending[consumed:]
-		}
-	}
-
-stopped:
-	if manualStop == nil {
-		return
-	}
-	if vadHandled {
-		manualStop <- manualStopResult{vadHandled: true}
-		return
-	}
-	manualStop <- manualStopResult{utterance: dialog.FinishManualUtterance(vadPending)}
 }

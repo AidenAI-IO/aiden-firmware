@@ -65,14 +65,6 @@ class Element {
     this.attributes.set('class', this.classList.toString());
   }
 
-  get options() {
-    return this.tagName === 'SELECT' ? this.children : [];
-  }
-
-  set innerHTML(value) {
-    if (value === '') this.replaceChildren();
-  }
-
   get className() {
     return this.classList.toString();
   }
@@ -210,6 +202,7 @@ function appendSpecialField(document, target, pathName, controlId, tagName = 'se
 const document = new Document();
 const agentTarget = appendTarget(document, 'agent');
 const modelTarget = appendTarget(document, 'model');
+const quickCaptureTarget = appendTarget(document, 'quick_capture');
 const modelProviderField = appendSpecialField(document, modelTarget, 'model.provider', 'model_provider');
 const modelNameField = appendSpecialField(document, modelTarget, 'model.model', 'model_model', 'input');
 document.getElementById('model_provider').setAttribute('data-section', 'model');
@@ -246,11 +239,10 @@ async function loadModule(filePath) {
 
 const stateModule = await loadModule(path.join(webRoot, 'assets/js/config/state.js'));
 await stateModule.evaluate();
-let translatedOptions = {};
-stateModule.namespace.runtime.t = (key, params = {}) => String(translatedOptions[key] ?? params.defaultValue ?? key).replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (_match, name) => params[name] ?? '');
+stateModule.namespace.runtime.t = (key, params = {}) => String(params.defaultValue ?? key).replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (_match, name) => params[name] ?? '');
 const configMetaModule = await loadModule(path.join(webRoot, 'assets/js/config/config-meta.js'));
 await configMetaModule.evaluate();
-const {buildConfigMeta, hydrateSelectField, resolveModelProviderType} = configMetaModule.namespace;
+const {buildConfigMeta} = configMetaModule.namespace;
 
 buildConfigMeta({sections: [
   {name: 'agent', fields: [
@@ -264,12 +256,12 @@ buildConfigMeta({sections: [
   {name: 'model', fields: [
     {key: 'provider', label: 'provider', widget: 'select', layout: 'wide'},
     {key: 'model', label: 'model', widget: 'text', layout: 'wide'},
-    {key: 'api_mode', label: 'Conversation API', widget: 'select', enum: [
-      {value: '', label: 'Chat Completions (compatible)'},
-      {value: 'responses', label: 'Responses (local context)', providers: ['openai', 'openrouter', 'volcengine']},
-      {value: 'responses_stateful', label: 'Responses (provider context)', providers: ['openai', 'volcengine']},
-    ]},
     {key: 'temperature', label: 'temperature', widget: 'number'},
+  ]},
+  {name: 'quick_capture', fields: [
+    {key: 'enabled', label: 'Enabled', widget: 'boolean', default: true},
+    {key: 'gpio_pin', label: 'GPIO Pin', widget: 'number', default: 0},
+    {key: 'screen_memory_ttl', label: 'Screen Memory TTL', widget: 'text', default: '90d'},
   ]},
 ]});
 
@@ -290,44 +282,14 @@ assert.equal(document.getElementById('agent_notes').classList.contains('prompt-c
 assert.equal(document.getElementById('model_provider').closest('.field'), modelProviderField, 'model provider manager DOM is preserved');
 assert.equal(document.getElementById('model_model').closest('.field'), modelNameField, 'model selector DOM is preserved');
 assert.equal(document.getElementById('model_temperature').type, 'number');
-translatedOptions = {
-  'config.fields.model.api_mode.options.default': 'Chat Completions（兼容模式）',
-  'config.fields.model.api_mode.options.responses': 'Responses（本地上下文）',
-};
-document.getElementById('model_provider').value = 'openrouter';
-hydrateSelectField('model', 'api_mode', 'responses', true);
-assert.deepEqual(document.getElementById('model_api_mode').options.map((option) => option.textContent), [
-  'Chat Completions（兼容模式）',
-  'Responses（本地上下文）',
+assert.equal(document.getElementById('quick_capture_enabled').type, 'checkbox');
+assert.equal(document.getElementById('quick_capture_gpio_pin').type, 'number');
+assert.equal(document.getElementById('quick_capture_screen_memory_ttl').dataset.configDefaultPlaceholder, '90d');
+assert.deepEqual(quickCaptureTarget.children.map((field) => field.getAttribute('data-config-field')), [
+  'quick_capture.enabled',
+  'quick_capture.gpio_pin',
+  'quick_capture.screen_memory_ttl',
 ]);
-assert.equal(document.getElementById('model_api_mode').value, 'responses');
-const {modelProvidersByName, appState} = stateModule.namespace;
-document.getElementById('model_provider').value = 'openrouter';
-modelProvidersByName.openrouter = {type: 'openai', base_url: 'https://openrouter.ai/api/v1'};
-assert.equal(resolveModelProviderType('openrouter'), 'openrouter');
-modelProvidersByName.doubao = {type: 'openai', base_url: 'https://ark.cn-beijing.volces.com/api/v3'};
-assert.equal(resolveModelProviderType('doubao'), 'volcengine');
-hydrateSelectField('model', 'api_mode', 'responses_stateful', true);
-assert.deepEqual(document.getElementById('model_api_mode').options.map((option) => option.value), [
-  '',
-  'responses',
-], 'OpenRouter records saved as OpenAI-compatible must hide stored Responses');
-document.getElementById('model_provider').value = 'doubao';
-hydrateSelectField('model', 'api_mode', 'responses_stateful', true);
-assert.deepEqual(document.getElementById('model_api_mode').options.map((option) => option.value), [
-  '',
-  'responses',
-  'responses_stateful',
-], 'Ark records saved as OpenAI-compatible must expose stored Responses');
-document.getElementById('model_provider').value = 'kimi';
-modelProvidersByName.kimi = {type: 'kimi'};
-hydrateSelectField('model', 'api_mode', 'responses', true);
-assert.deepEqual(document.getElementById('model_api_mode').options.map((option) => option.value), [
-  '',
-], 'Kimi must expose only Chat Completions because its official endpoint has no /responses API');
-document.getElementById('model_provider').value = 'openrouter';
-hydrateSelectField('model', 'api_mode', 'responses', true);
-document.getElementById('model_api_mode').value = 'responses';
 assert.deepEqual(agentTarget.children.map((field) => field.getAttribute('data-config-field')), [
   'agent.input_mode',
   'agent.new_field',
@@ -338,8 +300,6 @@ assert.deepEqual(agentTarget.children.map((field) => field.getAttribute('data-co
 
 const configFormModule = await loadModule(path.join(webRoot, 'assets/js/config/config-form.js'));
 await configFormModule.evaluate();
-appState.config = {model: {provider: 'openrouter', api_mode: 'responses_stateful'}};
-assert.equal(configFormModule.namespace.readSection('model').api_mode, 'responses', 'the visible Responses selection is included in the save payload');
 configFormModule.namespace.setSectionLocked('model', true);
 assert.equal(document.getElementById('model_provider').disabled, true, 'locking a section disables its fields');
 assert.equal(modelSaveButton.disabled, true, 'locking a section disables its save button');
@@ -353,6 +313,7 @@ assert.equal(modelSelectorDetails.inert, false, 'editing a section enables compo
 
 const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
 assert.match(indexHtml, /data-config-section="agent"/);
+assert.match(indexHtml, /data-config-section="quick_capture"/);
 assert.match(indexHtml, /data-config-field="model\.provider"/);
 assert.doesNotMatch(indexHtml, /id="agent_input_mode"/, 'ordinary controls must not be hand-maintained in index.html');
 assert.match(indexHtml, /data-action="enter-edit-section" data-section-target="model"/);

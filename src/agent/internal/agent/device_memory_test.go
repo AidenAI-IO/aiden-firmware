@@ -87,3 +87,59 @@ func TestDeviceMemorySearchReflectsUpsertAfterCache(t *testing.T) {
 		t.Fatalf("Search() returned stale hits: %#v", hits)
 	}
 }
+
+func TestDeviceMemorySearchTreatsLegacyMissingStatusAsActive(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "device")
+	path := filepath.Join(root, "procedures", "legacy.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(): %v", err)
+	}
+	if err := os.WriteFile(path, []byte("id: legacy\ntype: procedure\ntitle: Legacy path\ncontent: open legacy settings\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(): %v", err)
+	}
+
+	hits, err := NewDeviceMemoryStore(root).Search(ctx, DeviceMemoryQuery{Terms: []string{"legacy"}, Limit: 5})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != "legacy" {
+		t.Fatalf("legacy memory with omitted status was hidden: %#v", hits)
+	}
+}
+
+func TestDeviceMemorySearchRetainsAliasOnlyEntityMatch(t *testing.T) {
+	ctx := context.Background()
+	store := NewDeviceMemoryStore(filepath.Join(t.TempDir(), "device"))
+	if _, err := store.Upsert(ctx, DeviceMemoryItem{
+		ID: "alias_only", Type: "procedure", Status: deviceMemoryStatusActive,
+		Title: "Verified route", Aliases: []string{"QA Notes"},
+	}); err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+	hits, err := store.Search(ctx, DeviceMemoryQuery{Entities: []string{"QA Notes"}, Limit: 5})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != "alias_only" {
+		t.Fatalf("alias-only Search() hits = %#v", hits)
+	}
+}
+
+func TestDeviceMemorySearchRetainsAppIDOnlyEntityMatch(t *testing.T) {
+	ctx := context.Background()
+	store := NewDeviceMemoryStore(filepath.Join(t.TempDir(), "device"))
+	if _, err := store.Upsert(ctx, DeviceMemoryItem{
+		ID: "app_id_only", Type: "app_profile", Status: deviceMemoryStatusActive,
+		AppID: "com.example.qa-notes",
+	}); err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+	hits, err := store.Search(ctx, DeviceMemoryQuery{Entities: []string{"com.example.qa-notes"}, Limit: 5})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != "app_id_only" {
+		t.Fatalf("AppID-only Search() hits = %#v", hits)
+	}
+}

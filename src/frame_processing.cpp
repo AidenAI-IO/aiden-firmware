@@ -109,11 +109,104 @@ static bool is_black_rgb_column(const std::vector<uint8_t>& rgb,
     return mean <= threshold && std::sqrt(variance) <= stddev_limit;
 }
 
+bool crop_frame_horizontal_center(const FrameMetadata& metadata,
+                                   const std::vector<uint8_t>& frame,
+                                   uint32_t target_width,
+                                   FrameMetadata* cropped_metadata,
+                                   std::vector<uint8_t>* cropped_frame) {
+    if (!cropped_metadata || !cropped_frame || target_width == 0 ||
+        metadata.width == 0 || metadata.height == 0 || (metadata.width & 1U) != 0 ||
+        (metadata.pixel_format != "uyvy" && metadata.pixel_format != "yuyv" &&
+         metadata.pixel_format != "nv12" && metadata.pixel_format != "nv16")) {
+        return false;
+    }
+    if (metadata.pixel_format == "nv12" && (metadata.height & 1U) != 0) {
+        return false;
+    }
+
+    const uint32_t source_width = metadata.width;
+    uint32_t cropped_width = std::min(target_width, source_width);
+    if (cropped_width < source_width && (cropped_width & 1U) != 0) {
+        ++cropped_width;
+    }
+    const uint32_t left = ((source_width - cropped_width) / 2U) & ~1U;
+
+    FrameMetadata result = metadata;
+    result.source_width = source_width;
+    result.source_height = metadata.height;
+    result.crop_x = left;
+    result.crop_y = 0;
+    result.crop_width = cropped_width;
+    result.crop_height = metadata.height;
+    result.width = cropped_width;
+    result.height = metadata.height;
+    result.planes.clear();
+
+    if (metadata.pixel_format == "uyvy" || metadata.pixel_format == "yuyv") {
+        const size_t source_row_bytes = static_cast<size_t>(source_width) * 2U;
+        const size_t cropped_row_bytes = static_cast<size_t>(cropped_width) * 2U;
+        if (frame.size() < source_row_bytes * metadata.height) {
+            return false;
+        }
+        cropped_frame->resize(cropped_row_bytes * metadata.height);
+        for (uint32_t y = 0; y < metadata.height; ++y) {
+            const size_t source_offset = static_cast<size_t>(y) * source_row_bytes + left * 2U;
+            const size_t cropped_offset = static_cast<size_t>(y) * cropped_row_bytes;
+            memcpy(cropped_frame->data() + cropped_offset,
+                   frame.data() + source_offset,
+                   cropped_row_bytes);
+        }
+        result.stride = cropped_width * 2U;
+    } else {
+        const size_t source_y_bytes = static_cast<size_t>(source_width) * metadata.height;
+        const uint32_t uv_rows = metadata.pixel_format == "nv12"
+                                      ? metadata.height / 2U
+                                      : metadata.height;
+        const size_t source_uv_bytes = static_cast<size_t>(source_width) * uv_rows;
+        if (frame.size() < source_y_bytes + source_uv_bytes) {
+            return false;
+        }
+        const size_t cropped_row_bytes = cropped_width;
+        cropped_frame->resize(cropped_row_bytes * (metadata.height + uv_rows));
+        for (uint32_t y = 0; y < metadata.height; ++y) {
+            const size_t source_offset = static_cast<size_t>(y) * source_width + left;
+            const size_t cropped_offset = static_cast<size_t>(y) * cropped_row_bytes;
+            memcpy(cropped_frame->data() + cropped_offset,
+                   frame.data() + source_offset,
+                   cropped_row_bytes);
+        }
+        for (uint32_t y = 0; y < uv_rows; ++y) {
+            const size_t source_offset = source_y_bytes + static_cast<size_t>(y) * source_width + left;
+            const size_t cropped_offset = cropped_row_bytes * metadata.height +
+                                          static_cast<size_t>(y) * cropped_row_bytes;
+            memcpy(cropped_frame->data() + cropped_offset,
+                   frame.data() + source_offset,
+                   cropped_row_bytes);
+        }
+        FramePlaneMetadata y_plane;
+        y_plane.offset = 0;
+        y_plane.stride = cropped_width;
+        y_plane.bytes = cropped_width * metadata.height;
+        result.planes.push_back(y_plane);
+        FramePlaneMetadata uv_plane;
+        uv_plane.offset = y_plane.bytes;
+        uv_plane.stride = cropped_width;
+        uv_plane.bytes = cropped_width * uv_rows;
+        result.planes.push_back(uv_plane);
+        result.stride = metadata.pixel_format == "nv16" ? cropped_width * 2U : cropped_width;
+    }
+
+    result.bytes = cropped_frame->size();
+    *cropped_metadata = result;
+    return true;
+}
+
 bool crop_frame_horizontal_black_bars(const FrameMetadata& metadata,
                                       const std::vector<uint8_t>& frame,
                                       uint32_t minimal_width,
                                       FrameMetadata* cropped_metadata,
-                                      std::vector<uint8_t>* cropped_frame) {
+                                      std::vector<uint8_t>* cropped_frame,
+                                      bool crop_by_aspect) {
     if (!cropped_metadata || !cropped_frame || metadata.width == 0 || metadata.height == 0 ||
         (metadata.width & 1U) != 0) {
         return false;
@@ -122,24 +215,80 @@ bool crop_frame_horizontal_black_bars(const FrameMetadata& metadata,
         return false;
     }
 
+    if (crop_by_aspect && minimal_width > 0) {
+        return crop_frame_horizontal_center(metadata, frame, minimal_width,
+                                            cropped_metadata, cropped_frame);
+    }
+
     std::vector<uint8_t> rgb;
     if (!convert_frame_to_rgb(metadata, frame, &rgb)) {
         return false;
     }
 
+    const int last_column = static_cast<int>(metadata.width) - 1;
+    const auto is_border = [&](int column) {
+        return is_black_rgb_column(rgb, metadata.width, metadata.height,
+                                   static_cast<uint32_t>(column), 15.0, 6.0);
+    };
+
+    // Black bars are assumed to be contiguous from each edge; locate each
+    // transition with logarithmic probes after finding an active seed.
     int left = 0;
-    int right = static_cast<int>(metadata.width) - 1;
-    while (left <= right && is_black_rgb_column(rgb, metadata.width, metadata.height,
-                                                 static_cast<uint32_t>(left), 15.0, 6.0)) {
-        ++left;
+    int right = last_column;
+    const bool first_is_border = is_border(0);
+    const bool last_is_border = is_border(last_column);
+    int active_seed = -1;
+    if (!first_is_border) {
+        active_seed = 0;
+    } else if (!last_is_border) {
+        active_seed = last_column;
+    } else {
+        const int probe_positions[] = {
+            static_cast<int>(metadata.width / 2U),
+            static_cast<int>(metadata.width / 4U),
+            static_cast<int>((metadata.width * 3U) / 4U),
+            static_cast<int>(metadata.width / 8U),
+            static_cast<int>((metadata.width * 3U) / 8U),
+            static_cast<int>((metadata.width * 5U) / 8U),
+            static_cast<int>((metadata.width * 7U) / 8U),
+        };
+        for (size_t i = 0; i < sizeof(probe_positions) / sizeof(probe_positions[0]); ++i) {
+            const int probe = std::min(last_column, std::max(0, probe_positions[i]));
+            if (!is_border(probe)) {
+                active_seed = probe;
+                break;
+            }
+        }
     }
-    while (right >= left && is_black_rgb_column(rgb, metadata.width, metadata.height,
-                                                 static_cast<uint32_t>(right), 15.0, 6.0)) {
-        --right;
-    }
-    if (right < left) {
+
+    if (active_seed < 0) {
         left = 0;
-        right = static_cast<int>(metadata.width) - 1;
+        right = last_column;
+    } else if (first_is_border) {
+        int border = 0;
+        int active = active_seed;
+        while (active - border > 1) {
+            const int middle = border + (active - border) / 2;
+            if (is_border(middle)) {
+                border = middle;
+            } else {
+                active = middle;
+            }
+        }
+        left = active;
+    }
+    if (active_seed >= 0 && last_is_border) {
+        int active = active_seed;
+        int border = last_column;
+        while (border - active > 1) {
+            const int middle = active + (border - active) / 2;
+            if (is_border(middle)) {
+                border = middle;
+            } else {
+                active = middle;
+            }
+        }
+        right = active;
     }
 
     include_centered_minimal_width(static_cast<int>(metadata.width), minimal_width, &left, &right);

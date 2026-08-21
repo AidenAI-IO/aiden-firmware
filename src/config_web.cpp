@@ -1,4 +1,3 @@
-#include "agent_toml.h"
 #include "aiden_log.h"
 #include "config_web_static_assets.h"
 #include "system_env_parser.h"
@@ -245,11 +244,16 @@ bool create_temp_dir_in_dir(const std::string& dir,
                             const std::string& prefix,
                             std::string* path,
                             std::string* error);
+bool copy_regular_fd_tail(int in,
+                          const std::string& source_label,
+                          const std::string& destination,
+                          size_t max_bytes,
+                          mode_t mode,
+                          std::string* error);
 bool is_llm_log_import_request(const std::string& method, const std::string& path);
 void cleanup_request_temp_file(HttpRequest* request);
 void close_response_stream(ApiResponse* response);
 CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
-void update_config_from_json(cJSON* root, aiden::AgentToml* config);
 bool atomic_write_file(const std::string& path, const std::string& content, mode_t mode, std::string* error);
 std::string cjson_to_string(cJSON* json);
 ApiResponse make_json_error(int status_code, const std::string& message);
@@ -286,52 +290,11 @@ ApiResponse proxy_agent_get_request(const Options& options,
                                      const std::string& agent_path_with_query);
 ApiResponse handle_api_models(const Options& options, const std::string& query_string);
 ApiResponse handle_usb_reenumerate(const Options& options);
-void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config);
 long long monotonic_millis();
 bool reap_agent_restart_process(bool wait, std::string* error);
 void start_deferred_agent_restart_if_idle();
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
-
-// ValidationOutcome distinguishes "the user submitted something invalid" (the
-// CLI ran and rejected it -> 400) from "we could not run validation at all"
-// (CLI binary missing, timed out, or returned junk -> 503). Collapsing both
-// into a single string error masked a real bug: a missing agent binary made
-// /api/config/meta correctly return 503 while POST /api/config returned 400
-// for the same root cause, leading the UI to mislabel a server-side
-// dependency outage as a user request error.
-enum class ValidationOutcome {
-    OK,
-    INVALID,
-    UNAVAILABLE,
-};
-
-struct ValidationResult {
-    ValidationOutcome outcome = ValidationOutcome::OK;
-    std::string message;
-
-    static ValidationResult ok() {
-        ValidationResult r;
-        r.outcome = ValidationOutcome::OK;
-        return r;
-    }
-    static ValidationResult invalid(const std::string& msg) {
-        ValidationResult r;
-        r.outcome = ValidationOutcome::INVALID;
-        r.message = msg;
-        return r;
-    }
-    static ValidationResult unavailable(const std::string& msg) {
-        ValidationResult r;
-        r.outcome = ValidationOutcome::UNAVAILABLE;
-        r.message = msg;
-        return r;
-    }
-};
-
-ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path);
-ValidationResult validate_agent_config_path_via_cli(const std::string& config_path,
-                                                     const char* agent_bin_path);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -423,31 +386,6 @@ std::string normalize_device_type(const std::string& value) {
 
 std::string pointer_mode_for_device_type(const std::string& device_type) {
     return normalize_device_type(device_type) == "Android" ? "touchscreen" : "absolute";
-}
-
-std::string device_type_from_platform(const std::string& value) {
-    std::string platform = trim_copy(value);
-    for (size_t i = 0; i < platform.size(); ++i) {
-        platform[i] = static_cast<char>(tolower(static_cast<unsigned char>(platform[i])));
-    }
-    if (platform == "ios" || platform == "iphone" || platform == "ipad" || platform == "ipados") return "iOS";
-    if (platform == "android") return "Android";
-    if (platform == "macos" || platform == "mac" || platform == "darwin") return "macOS";
-    if (platform == "windows" || platform == "win") return "windows";
-    if (platform == "linux") return "linux";
-    return "";
-}
-
-std::string effective_device_type(const aiden::AgentToml& config) {
-    std::string configured = trim_copy(config.device.device_type);
-    if (!configured.empty()) {
-        return normalize_device_type(configured);
-    }
-    std::string platform_device_type = device_type_from_platform(config.default_platform);
-    if (!platform_device_type.empty()) {
-        return platform_device_type;
-    }
-    return normalize_pointer_mode(config.hid.pointer_mode) == "touchscreen" ? "Android" : "iOS";
 }
 
 std::string normalize_input_backend(const std::string& value) {
@@ -559,54 +497,6 @@ bool config_schema_error(std::string* error,
                + ", got " + json_type_name(item);
     }
     return false;
-}
-
-bool is_valid_bare_toml_key(const std::string& key) {
-    if (key.empty()) return false;
-    for (char c : key) {
-        bool valid = (c >= 'a' && c <= 'z') ||
-                     (c >= 'A' && c <= 'Z') ||
-                     (c >= '0' && c <= '9') ||
-                     c == '_' || c == '-';
-        if (!valid) return false;
-    }
-    return true;
-}
-
-bool validate_non_negative_json_integer(cJSON* item,
-                                        const std::string& path,
-                                        std::string* error) {
-    if (!item) return true;
-    double value = item->valuedouble;
-    if (!json_is_number(item) || !std::isfinite(value) || value < 0.0 ||
-        std::floor(value) != value || value > std::numeric_limits<int>::max()) {
-        if (error) {
-            *error = "agent config invalid field " + path + ": expected non-negative integer";
-        }
-        return false;
-    }
-    return true;
-}
-
-bool validate_non_empty_json_string_array(cJSON* item,
-                                          const std::string& path,
-                                          std::string* error) {
-    if (!item) return true;
-    if (!json_is_array(item)) {
-        return config_schema_error(error, path, "array", item);
-    }
-    const int count = cJSON_GetArraySize(item);
-    for (int i = 0; i < count; ++i) {
-        cJSON* child = cJSON_GetArrayItem(item, i);
-        if (!json_is_string(child) || trim_copy(child->valuestring).empty()) {
-            if (error) {
-                *error = "agent config invalid field " + path + "["
-                       + std::to_string(i) + "]: expected non-empty string";
-            }
-            return false;
-        }
-    }
-    return true;
 }
 
 std::string config_field_path(const char* section, const char* key) {
@@ -860,331 +750,9 @@ bool validate_config_field_type(cJSON* obj,
     return validate_config_value_type(item, config_field_path(section, key), kind, error);
 }
 
-bool validate_required_string(cJSON* obj,
-                              const char* section,
-                              const char* key,
-                              bool allow_empty,
-                              std::string* error) {
-    cJSON* item = obj ? cJSON_GetObjectItem(obj, key) : NULL;
-    const std::string path = config_field_path(section, key);
-    if (!json_is_string(item)) {
-        return config_schema_error(error, path, allow_empty ? "string" : "non-empty string", item);
-    }
-    if (!allow_empty && trim_copy(item->valuestring).empty()) {
-        if (error) {
-            *error = "agent config invalid field " + path + ": expected non-empty string, got empty string";
-        }
-        return false;
-    }
-    return true;
-}
-
-bool validate_model_section(cJSON* root, std::string* error) {
-    cJSON* model = cJSON_GetObjectItem(root, "model");
-    if (!json_is_object(model)) {
-        return config_schema_error(error, "model", "object", model);
-    }
-
-    if (!validate_required_string(model, "model", "provider", false, error)) {
-        return false;
-    }
-    cJSON* provider_item = cJSON_GetObjectItem(model, "provider");
-    const std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
-    if (provider != "fake" && !validate_required_string(model, "model", "model", false, error)) {
-        return false;
-    }
-    return true;
-}
-
-bool validate_search_secret_presence(cJSON* root, std::string* error) {
-    cJSON* search = cJSON_GetObjectItem(root, "search");
-    if (!search) {
-        return true;
-    }
-    if (!json_is_object(search)) {
-        return config_schema_error(error, "search", "object", search);
-    }
-    cJSON* provider_item = cJSON_GetObjectItem(search, "provider");
-    const std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
-    if (provider != "brave" && provider != "brave-free" && provider != "tavily") {
-        return true;
-    }
-
-    cJSON* key_item = cJSON_GetObjectItem(search, "api_key");
-    if (json_is_string(key_item) && !trim_copy(key_item->valuestring).empty()) {
-        return true;
-    }
-    cJSON* has_key_item = cJSON_GetObjectItem(search, "has_api_key");
-    if (!has_key_item) {
-        return config_schema_error(error, "search.has_api_key", "bool", has_key_item);
-    }
-    return true;
-}
-
-bool validate_ota_github_proxy_url(cJSON* root, std::string* error) {
-    cJSON* ota = cJSON_GetObjectItem(root, "ota");
-    if (!ota) {
-        return true;
-    }
-    if (!json_is_object(ota)) {
-        return config_schema_error(error, "ota", "object", ota);
-    }
-
-    cJSON* proxy_url_item = cJSON_GetObjectItem(ota, "github_proxy_url");
-    if (!proxy_url_item || !json_is_string(proxy_url_item)) {
-        return true;
-    }
-
-    std::string url = trim_copy(proxy_url_item->valuestring);
-    if (url.empty()) {
-        return true; // Empty is valid (no proxy)
-    }
-
-    // Check for https:// prefix (case-insensitive)
-    std::string lower_url = lowercase_copy(url);
-    if (lower_url.find("https://") != 0) {
-        if (error) {
-            *error = "ota.github_proxy_url: must use https (got: " + url + ")";
-        }
-        return false;
-    }
-
-    // Check that there's content after https://
-    if (url.length() <= 8) { // "https://" is 8 chars
-        if (error) {
-            *error = "ota.github_proxy_url: missing host";
-        }
-        return false;
-    }
-
-    return true;
-}
-
 bool is_provider_record_section(const std::string& section) {
     return section == "model_providers" || section == "tts_providers" ||
            section == "stt_providers";
-}
-
-bool validate_metadata_field_types(cJSON* root,
-                                   const ConfigMetadataSchema& metadata,
-                                   std::string* error) {
-    for (std::map<std::string, std::map<std::string, ConfigFieldKind> >::const_iterator
-             section_it = metadata.field_types.begin();
-         section_it != metadata.field_types.end(); ++section_it) {
-        cJSON* section = cJSON_GetObjectItem(root, section_it->first.c_str());
-        if (!section) continue;
-        if (!json_is_object(section)) {
-            return config_schema_error(error, section_it->first, "object", section);
-        }
-
-        if (is_provider_record_section(section_it->first)) {
-            for (cJSON* record = section->child; record; record = record->next) {
-                if (!json_is_object(record)) continue;
-                const std::string record_name = record->string ? record->string : "";
-                for (std::map<std::string, ConfigFieldKind>::const_iterator
-                         field_it = section_it->second.begin();
-                     field_it != section_it->second.end(); ++field_it) {
-                    if (!validate_config_value_type(
-                            cJSON_GetObjectItem(record, field_it->first.c_str()),
-                            section_it->first + "." + record_name + "." + field_it->first,
-                            field_it->second,
-                            error)) {
-                        return false;
-                    }
-                }
-
-                // Older clients used "provider" for the record type. Keep the
-                // alias, but derive its type from the canonical metadata field.
-                std::map<std::string, ConfigFieldKind>::const_iterator type_it =
-                    section_it->second.find("type");
-                if (type_it != section_it->second.end() &&
-                    !validate_config_value_type(
-                        cJSON_GetObjectItem(record, "provider"),
-                        section_it->first + "." + record_name + ".provider",
-                        type_it->second,
-                        error)) {
-                    return false;
-                }
-            }
-            continue;
-        }
-
-        for (std::map<std::string, ConfigFieldKind>::const_iterator
-                 field_it = section_it->second.begin();
-             field_it != section_it->second.end(); ++field_it) {
-            if (!validate_config_value_type(
-                    cJSON_GetObjectItem(section, field_it->first.c_str()),
-                    section_it->first + "." + field_it->first,
-                    field_it->second,
-                    error)) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-bool validate_flat_provider_compatibility_fields(
-        cJSON* root,
-        const ConfigMetadataSchema& metadata,
-        const char* flat_section,
-        const char* record_section,
-        const char* const* fields,
-        std::string* error) {
-    cJSON* flat = cJSON_GetObjectItem(root, flat_section);
-    if (!json_is_object(flat)) return true;
-    std::map<std::string, std::map<std::string, ConfigFieldKind> >::const_iterator record_it =
-        metadata.field_types.find(record_section);
-    if (record_it == metadata.field_types.end()) return true;
-
-    for (int i = 0; fields[i]; ++i) {
-        std::map<std::string, ConfigFieldKind>::const_iterator field_it =
-            record_it->second.find(fields[i]);
-        if (field_it == record_it->second.end()) continue;
-        if (!validate_config_value_type(
-                cJSON_GetObjectItem(flat, fields[i]),
-                std::string(flat_section) + "." + fields[i],
-                field_it->second,
-                error)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool validate_compatibility_config_field_types(cJSON* root, std::string* error) {
-    struct FieldSpec {
-        const char* section;
-        const char* key;
-        ConfigFieldKind kind;
-    };
-    // These fields remain part of the config-web compatibility contract but
-    // are intentionally absent from the UI metadata. Keep this list small;
-    // ordinary fields belong in ConfigMeta.
-    const FieldSpec fields[] = {
-        {"device", "backend", CONFIG_FIELD_STRING},
-        {"search", "has_api_key", CONFIG_FIELD_BOOL},
-        {"termination_policy", "enabled", CONFIG_FIELD_BOOL},
-        {"termination_policy", "max_seconds", CONFIG_FIELD_NUMBER},
-        {"termination_policy", "repeat_action_limit", CONFIG_FIELD_NUMBER},
-        {"termination_policy", "same_result_limit", CONFIG_FIELD_NUMBER},
-        {"termination_policy", "screen_unchanged_limit", CONFIG_FIELD_NUMBER},
-        {"termination_policy", "soft_notice_stall_score", CONFIG_FIELD_NUMBER},
-        {"termination_policy", "restrict_tools_stall_score", CONFIG_FIELD_NUMBER},
-        {"termination_policy", "terminate_stall_score", CONFIG_FIELD_NUMBER},
-        {"termination_policy", "parse_failure_limit", CONFIG_FIELD_NUMBER},
-        {"live_activity", "enabled", CONFIG_FIELD_BOOL},
-        {NULL, NULL, CONFIG_FIELD_STRING},
-    };
-
-    for (int i = 0; fields[i].section; ++i) {
-        cJSON* section = cJSON_GetObjectItem(root, fields[i].section);
-        if (!validate_config_field_type(section, fields[i].section, fields[i].key,
-                                        fields[i].kind, error)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool validate_voice_notification_config(cJSON* root, std::string* error) {
-    cJSON* voice_notifications = cJSON_GetObjectItem(root, "voice_notifications");
-    if (json_is_object(voice_notifications)) {
-        if (!validate_config_field_type(voice_notifications, "voice_notifications", "enabled", CONFIG_FIELD_BOOL, error) ||
-            !validate_config_field_type(voice_notifications, "voice_notifications", "max_pending", CONFIG_FIELD_NUMBER, error) ||
-            !validate_config_field_type(voice_notifications, "voice_notifications", "response_tail", CONFIG_FIELD_OBJECT, error) ||
-            !validate_config_field_type(voice_notifications, "voice_notifications", "expiration", CONFIG_FIELD_OBJECT, error)) {
-            return false;
-        }
-        if (!validate_non_negative_json_integer(
-                cJSON_GetObjectItem(voice_notifications, "max_pending"),
-                "voice_notifications.max_pending",
-                error)) {
-            return false;
-        }
-        cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
-        if (json_is_object(response_tail)) {
-            if (!validate_config_field_type(response_tail, "voice_notifications.response_tail", "enabled", CONFIG_FIELD_BOOL, error) ||
-                !validate_config_field_type(response_tail, "voice_notifications.response_tail", "max_items", CONFIG_FIELD_NUMBER, error) ||
-                !validate_config_field_type(response_tail, "voice_notifications.response_tail", "max_text_chars", CONFIG_FIELD_NUMBER, error)) {
-                return false;
-            }
-            if (!validate_non_negative_json_integer(
-                    cJSON_GetObjectItem(response_tail, "max_items"),
-                    "voice_notifications.response_tail.max_items",
-                    error) ||
-                !validate_non_negative_json_integer(
-                    cJSON_GetObjectItem(response_tail, "max_text_chars"),
-                    "voice_notifications.response_tail.max_text_chars",
-                    error)) {
-                return false;
-            }
-        }
-
-        cJSON* expiration = cJSON_GetObjectItem(voice_notifications, "expiration");
-        if (json_is_object(expiration)) {
-            if (!validate_config_field_type(expiration, "voice_notifications.expiration", "default_ttl_seconds", CONFIG_FIELD_NUMBER, error) ||
-                !validate_config_field_type(expiration, "voice_notifications.expiration", "code_ttl_seconds", CONFIG_FIELD_OBJECT, error)) {
-                return false;
-            }
-            if (!validate_non_negative_json_integer(
-                    cJSON_GetObjectItem(expiration, "default_ttl_seconds"),
-                    "voice_notifications.expiration.default_ttl_seconds",
-                    error)) {
-                return false;
-            }
-            cJSON* code_ttl_seconds = cJSON_GetObjectItem(expiration, "code_ttl_seconds");
-            if (json_is_object(code_ttl_seconds)) {
-                for (cJSON* item = code_ttl_seconds->child; item; item = item->next) {
-                    const std::string code = item->string ? item->string : "";
-                    if (!is_valid_bare_toml_key(code)) {
-                        if (error) {
-                            *error = "agent config invalid field voice_notifications.expiration.code_ttl_seconds."
-                                   + code + ": expected bare TOML key";
-                        }
-                        return false;
-                    }
-                    if (!json_is_number(item)) {
-                        return config_schema_error(
-                            error,
-                            std::string("voice_notifications.expiration.code_ttl_seconds.") + code,
-                            "number",
-                            item);
-                    }
-                    if (!validate_non_negative_json_integer(
-                            item,
-                            std::string("voice_notifications.expiration.code_ttl_seconds.") + code,
-                            error)) {
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-    return true;
-}
-
-bool validate_config_field_types_from_metadata(cJSON* root,
-                                               const ConfigMetadataSchema& metadata,
-                                               std::string* error) {
-    static const char* const model_compat[] = {"api_key", NULL};
-    static const char* const tts_compat[] = {
-        "api_key", "model", "voice_id", "reference_id", "emotion", NULL,
-    };
-    static const char* const stt_compat[] = {
-        "api_key", "model", "base_url", "app_id", "secret_id", "secret_key",
-        "region", "engine_model_type", NULL,
-    };
-
-    return validate_metadata_field_types(root, metadata, error) &&
-           validate_flat_provider_compatibility_fields(
-               root, metadata, "model", "model_providers", model_compat, error) &&
-           validate_flat_provider_compatibility_fields(
-               root, metadata, "tts", "tts_providers", tts_compat, error) &&
-           validate_flat_provider_compatibility_fields(
-               root, metadata, "stt", "stt_providers", stt_compat, error) &&
-           validate_compatibility_config_field_types(root, error) &&
-           validate_voice_notification_config(root, error);
 }
 
 cJSON* add_object(cJSON* parent, const char* key) {
@@ -1197,13 +765,6 @@ cJSON* add_array(cJSON* parent, const char* key) {
     cJSON* child = cJSON_CreateArray();
     cJSON_AddItemToObject(parent, key, child);
     return child;
-}
-
-void add_string_array_to_object(cJSON* parent, const char* key, const std::vector<std::string>& values) {
-    cJSON* array = add_array(parent, key);
-    for (size_t i = 0; i < values.size(); ++i) {
-        cJSON_AddItemToArray(array, cJSON_CreateString(values[i].c_str()));
-    }
 }
 
 std::string shell_quote(const std::string& text) {
@@ -1506,17 +1067,6 @@ std::string trim_trailing_newlines(const std::string& text) {
         --end;
     }
     return text.substr(0, end);
-}
-
-std::string mask_secret(const std::string& secret) {
-    if (secret.empty()) {
-        return "";
-    }
-    if (secret.length() <= 8) {
-        return "***";
-    }
-    // Show first 4 and last 4 characters, mask the middle
-    return secret.substr(0, 4) + "***" + secret.substr(secret.length() - 4);
 }
 
 std::vector<std::string> split_lines(const std::string& text) {
@@ -1929,266 +1479,6 @@ void send_response(int client_fd, const ApiResponse& response) {
     write_all(client_fd, response.body.data(), response.body.size());
 }
 
-bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
-    if (!json_is_object(root)) {
-        return config_schema_error(error, "root", "object", root);
-    }
-
-    if (cJSON_GetObjectItem(root, "providers")) {
-        if (error) {
-            *error = "agent config field providers is unsupported; use model_providers";
-        }
-        return false;
-    }
-
-    const ConfigMetadataSchema* metadata = NULL;
-    if (!load_agent_config_metadata(&metadata, error)) {
-        return false;
-    }
-
-    const char* sections[] = {
-        "model_providers", "tts_providers", "stt_providers", "model",
-        "tts", "stt", "audio", "audio_archive", "storage",
-        "voice_notifications", "log", "ota", "device", "hid", "search", "telemetry",
-        "termination_policy", "live_activity", "agent", NULL,
-    };
-    for (int i = 0; sections[i]; ++i) {
-        cJSON* section = cJSON_GetObjectItem(root, sections[i]);
-        if (section && !json_is_object(section)) {
-            return config_schema_error(error, sections[i], "object", section);
-        }
-    }
-    for (std::map<std::string, std::map<std::string, ConfigFieldKind> >::const_iterator
-             section_it = metadata->field_types.begin();
-         section_it != metadata->field_types.end(); ++section_it) {
-        cJSON* section = cJSON_GetObjectItem(root, section_it->first.c_str());
-        if (section && !json_is_object(section)) {
-            return config_schema_error(error, section_it->first, "object", section);
-        }
-    }
-
-    // The three provider sections are maps of name -> object rather than flat
-    // sections, so their entries need their own type check: a non-object entry
-    // would otherwise be skipped silently and the record dropped on save. The
-    // name check mirrors save_agent_toml, which refuses to write a name that is
-    // not a bare TOML key -- accepting one here would produce a config that
-    // loads cleanly but fails every later save.
-    const char* provider_maps[] = {
-        "model_providers", "tts_providers", "stt_providers", NULL,
-    };
-    for (int i = 0; provider_maps[i]; ++i) {
-        cJSON* records = cJSON_GetObjectItem(root, provider_maps[i]);
-        if (!json_is_object(records)) continue;
-        for (cJSON* item = records->child; item; item = item->next) {
-            const std::string name = item->string ? item->string : "";
-            if (!json_is_object(item)) {
-                return config_schema_error(error, std::string(provider_maps[i]) + "." + name,
-                                          "object", item);
-            }
-            if (!is_valid_bare_toml_key(name)) {
-                if (error) {
-                    *error = std::string("agent config invalid ") + provider_maps[i]
-                           + " name \"" + name
-                           + "\": expected letters, digits, '-' or '_'";
-                }
-                return false;
-            }
-        }
-    }
-
-    // A patch may omit any field, but it may not blank model.provider: the agent
-    // requires it (Config.Validate: "model.provider is required"), so accepting
-    // an empty value writes an agent.toml that loads here but refuses to start.
-    // The provider select leads with an empty placeholder, which is how a save
-    // can carry one.
-    cJSON* model_section = cJSON_GetObjectItem(root, "model");
-    if (json_is_object(model_section) && cJSON_GetObjectItem(model_section, "provider")
-        && !validate_required_string(model_section, "model", "provider", false, error)) {
-        return false;
-    }
-    if (json_is_object(model_section) &&
-        !validate_non_negative_json_integer(
-            cJSON_GetObjectItem(model_section, "responses_compact_threshold"),
-            "model.responses_compact_threshold",
-            error)) {
-        return false;
-    }
-    if (json_is_object(model_section) &&
-        !validate_non_negative_json_integer(
-            cJSON_GetObjectItem(model_section, "responses_context_edit_trigger"),
-            "model.responses_context_edit_trigger",
-            error)) {
-        return false;
-    }
-    if (json_is_object(model_section) &&
-        !validate_non_negative_json_integer(
-            cJSON_GetObjectItem(model_section, "responses_context_edit_keep"),
-            "model.responses_context_edit_keep",
-            error)) {
-        return false;
-    }
-    if (json_is_object(model_section) &&
-        !validate_non_empty_json_string_array(
-            cJSON_GetObjectItem(model_section, "responses_include"),
-            "model.responses_include",
-            error)) {
-        return false;
-    }
-
-    return validate_config_field_types_from_metadata(root, *metadata, error);
-}
-
-bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
-    if (!validate_agent_config_patch_json(root, error)) {
-        return false;
-    }
-    if (!validate_model_section(root, error) ||
-        !validate_search_secret_presence(root, error) ||
-        !validate_ota_github_proxy_url(root, error)) {
-        return false;
-    }
-    return true;
-}
-
-bool load_agent_config_via_cli(const Options& options,
-                               aiden::AgentToml* config,
-                               std::string* error) {
-    if (error) {
-        error->clear();
-    }
-    if (!config) {
-        return true;
-    }
-
-    const char* agent_bin = agent_bin_path();
-    if (!file_exists(agent_bin)) {
-        if (error) {
-            *error = std::string("agent config unavailable: agent binary not found at ") + agent_bin;
-        }
-        AIDEN_LOG_ERROR("agent_config", "binary_not_found", "path=%s operation=load",
-                        agent_bin);
-        return false;
-    }
-
-    std::string cmd = shell_quote(agent_bin) + " config --config="
-                    + shell_quote(options.agent_config_path) + " --format=json";
-    CommandResult result = run_command_with_stdin(cmd, "", 2000);
-    if (result.timed_out) {
-        if (error) {
-            *error = "agent config timed out";
-        }
-        return false;
-    }
-    if (result.exit_code != 0) {
-        if (error) {
-            *error = "agent config load failed";
-        }
-        AIDEN_LOG_ERROR("agent_config", "load_failed", "exit_code=%d output=%s",
-                        result.exit_code, result.output.c_str());
-        return false;
-    }
-
-    cJSON* resolved = cJSON_Parse(result.output.c_str());
-    if (!resolved) {
-        if (error) {
-            *error = "agent config returned an unexpected response";
-        }
-        AIDEN_LOG_ERROR("agent_config", "invalid_json", "operation=load output=%s",
-                        result.output.c_str());
-        return false;
-    }
-
-    std::string schema_error;
-    if (!validate_agent_config_json(resolved, &schema_error)) {
-        if (error) {
-            *error = schema_error.empty() ? "agent config invalid schema" : schema_error;
-        }
-        AIDEN_LOG_ERROR("agent_config", "invalid_schema", "error=%s output=%s",
-                        schema_error.empty() ? "unknown_schema_error" : schema_error.c_str(),
-                        result.output.c_str());
-        cJSON_Delete(resolved);
-        return false;
-    }
-
-    *config = aiden::AgentToml();
-    update_config_from_json(resolved, config);
-    cJSON_Delete(resolved);
-    return true;
-}
-
-void load_current_agent_config(const Options& options,
-                               aiden::AgentToml* config,
-                               std::string* load_error) {
-    if (load_error) {
-        load_error->clear();
-    }
-    if (!config) {
-        return;
-    }
-
-    std::string config_error;
-    if (!load_agent_config_via_cli(options, config, &config_error)) {
-        if (load_error) {
-            *load_error = config_error;
-        }
-        *config = aiden::AgentToml();
-        return;
-    }
-    preserve_redacted_agent_secrets(options, config);
-}
-
-void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config) {
-    if (!config) {
-        return;
-    }
-    bool need_search_api_key = config->search.api_key.empty() && config->search.has_api_key;
-    bool need_provider_secrets = false;
-    for (const auto& item : config->model_providers) {
-        need_provider_secrets = need_provider_secrets || item.second.api_key.empty();
-    }
-    for (const auto& item : config->tts_providers) {
-        need_provider_secrets = need_provider_secrets || item.second.api_key.empty();
-    }
-    for (const auto& item : config->stt_providers) {
-        need_provider_secrets = need_provider_secrets || item.second.api_key.empty() ||
-            item.second.secret_id.empty() || item.second.secret_key.empty();
-    }
-    if (!need_search_api_key && !need_provider_secrets) {
-        return;
-    }
-
-    aiden::AgentToml stored;
-    std::string load_error;
-    if (!aiden::load_agent_toml(options.agent_config_path.c_str(), stored, &load_error)) {
-        return;
-    }
-    if (need_search_api_key && !stored.search.api_key.empty()) {
-        config->search.api_key = stored.search.api_key;
-        config->search.has_api_key = true;
-    }
-    for (auto& item : config->model_providers) {
-        std::map<std::string, aiden::ModelProviderToml>::const_iterator previous =
-            stored.model_providers.find(item.first);
-        if (previous != stored.model_providers.end() && item.second.api_key.empty()) {
-            item.second.api_key = previous->second.api_key;
-        }
-    }
-    for (auto& item : config->tts_providers) {
-        std::map<std::string, aiden::TTSProviderToml>::const_iterator previous =
-            stored.tts_providers.find(item.first);
-        if (previous != stored.tts_providers.end() && item.second.api_key.empty()) {
-            item.second.api_key = previous->second.api_key;
-        }
-    }
-    for (auto& item : config->stt_providers) {
-        std::map<std::string, aiden::STTProviderToml>::const_iterator previous =
-            stored.stt_providers.find(item.first);
-        if (previous == stored.stt_providers.end()) continue;
-        if (item.second.api_key.empty()) item.second.api_key = previous->second.api_key;
-        if (item.second.secret_id.empty()) item.second.secret_id = previous->second.secret_id;
-        if (item.second.secret_key.empty()) item.second.secret_key = previous->second.secret_key;
-    }
-}
 
 bool json_bool_value(cJSON* obj, const char* key) {
     cJSON* item = cJSON_GetObjectItem(obj, key);
@@ -2840,277 +2130,6 @@ void load_current_wifi_config(const Options& options,
     }
 }
 
-cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = false) {
-    cJSON* root = cJSON_CreateObject();
-
-    // Add model_providers
-    cJSON* model_providers = cJSON_CreateObject();
-    for (const auto& item : config.model_providers) {
-        const std::string& provider_name = item.first;
-        const aiden::ModelProviderToml& provider = item.second;
-
-        cJSON* provider_obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(provider_obj, "type", provider.type.c_str());
-
-        if (include_secrets) {
-            cJSON_AddStringToObject(provider_obj, "api_key", provider.api_key.c_str());
-        } else {
-            cJSON_AddBoolToObject(provider_obj, "has_api_key", provider.api_key.empty() ? 0 : 1);
-        }
-        if (!provider.base_url.empty()) {
-            cJSON_AddStringToObject(provider_obj, "base_url", provider.base_url.c_str());
-        }
-
-        cJSON_AddItemToObject(model_providers, provider_name.c_str(), provider_obj);
-    }
-    cJSON_AddItemToObject(root, "model_providers", model_providers);
-
-    // Provider credentials are write-only. Browser responses expose only
-    // configured-state flags; the save path preserves omitted values.
-    cJSON* tts_providers = cJSON_CreateObject();
-    for (const auto& item : config.tts_providers) {
-        const aiden::TTSProviderToml& record = item.second;
-        cJSON* record_obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(record_obj, "type", record.type.c_str());
-        if (include_secrets) {
-            cJSON_AddStringToObject(record_obj, "api_key", record.api_key.c_str());
-        } else {
-            cJSON_AddBoolToObject(record_obj, "has_api_key", record.api_key.empty() ? 0 : 1);
-        }
-        if (!record.model.empty()) {
-            cJSON_AddStringToObject(record_obj, "model", record.model.c_str());
-        }
-        if (!record.voice_id.empty()) {
-            cJSON_AddStringToObject(record_obj, "voice_id", record.voice_id.c_str());
-        }
-        if (!record.emotion.empty()) {
-            cJSON_AddStringToObject(record_obj, "emotion", record.emotion.c_str());
-        }
-        if (!record.reference_id.empty()) {
-            cJSON_AddStringToObject(record_obj, "reference_id", record.reference_id.c_str());
-        }
-        cJSON_AddItemToObject(tts_providers, item.first.c_str(), record_obj);
-    }
-    cJSON_AddItemToObject(root, "tts_providers", tts_providers);
-
-    // STT credentials follow the same write-only contract.
-    cJSON* stt_providers = cJSON_CreateObject();
-    for (const auto& item : config.stt_providers) {
-        const aiden::STTProviderToml& record = item.second;
-        cJSON* record_obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(record_obj, "type", record.type.c_str());
-        if (include_secrets) {
-            cJSON_AddStringToObject(record_obj, "api_key", record.api_key.c_str());
-        } else {
-            cJSON_AddBoolToObject(record_obj, "has_api_key", record.api_key.empty() ? 0 : 1);
-        }
-        if (!record.model.empty()) {
-            cJSON_AddStringToObject(record_obj, "model", record.model.c_str());
-        }
-        if (!record.base_url.empty()) {
-            cJSON_AddStringToObject(record_obj, "base_url", record.base_url.c_str());
-        }
-        if (!record.app_id.empty()) {
-            cJSON_AddStringToObject(record_obj, "app_id", record.app_id.c_str());
-        }
-        if (!record.secret_id.empty()) {
-            if (include_secrets) {
-                cJSON_AddStringToObject(record_obj, "secret_id", record.secret_id.c_str());
-            }
-        }
-        if (!include_secrets) {
-            cJSON_AddBoolToObject(record_obj, "has_secret_id", record.secret_id.empty() ? 0 : 1);
-        }
-        if (!record.secret_key.empty()) {
-            if (include_secrets) {
-                cJSON_AddStringToObject(record_obj, "secret_key", record.secret_key.c_str());
-            }
-        }
-        if (!include_secrets) {
-            cJSON_AddBoolToObject(record_obj, "has_secret_key", record.secret_key.empty() ? 0 : 1);
-        }
-        if (!record.region.empty()) {
-            cJSON_AddStringToObject(record_obj, "region", record.region.c_str());
-        }
-        if (!record.engine_model_type.empty()) {
-            cJSON_AddStringToObject(record_obj, "engine_model_type", record.engine_model_type.c_str());
-        }
-        cJSON_AddItemToObject(stt_providers, item.first.c_str(), record_obj);
-    }
-    cJSON_AddItemToObject(root, "stt_providers", stt_providers);
-
-    cJSON* device = add_object(root, "device");
-    cJSON_AddStringToObject(device, "backend", config.device.backend.c_str());
-    cJSON_AddStringToObject(device, "device_type", effective_device_type(config).c_str());
-
-    cJSON* model = add_object(root, "model");
-    cJSON_AddStringToObject(model, "provider", config.model.provider.c_str());
-    // model.api_key is accepted only as a legacy/internal validation field.
-    // The config web contract exposes credentials through model_providers so
-    // the flat model section cannot become a second source of truth.
-    if (include_secrets) {
-        cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
-    }
-    cJSON_AddStringToObject(model, "model", config.model.model.c_str());
-    if (!config.model.api_mode.empty()) {
-        cJSON_AddStringToObject(model, "api_mode", config.model.api_mode.c_str());
-    }
-    if (!config.model.responses_context_management.empty()) {
-        cJSON_AddStringToObject(model, "responses_context_management", config.model.responses_context_management.c_str());
-    }
-    cJSON_AddNumberToObject(model, "responses_compact_threshold", config.model.responses_compact_threshold);
-    cJSON_AddNumberToObject(model, "responses_context_edit_trigger", config.model.responses_context_edit_trigger);
-    cJSON_AddNumberToObject(model, "responses_context_edit_keep", config.model.responses_context_edit_keep);
-    cJSON_AddBoolToObject(model, "responses_context_edit_clear_thinking", config.model.responses_context_edit_clear_thinking);
-    if (!config.model.responses_truncation.empty()) {
-        cJSON_AddStringToObject(model, "responses_truncation", config.model.responses_truncation.c_str());
-    }
-    if (!config.model.responses_include.empty()) {
-        cJSON* responses_include = cJSON_CreateArray();
-        for (const auto& value : config.model.responses_include) {
-            cJSON_AddItemToArray(responses_include, cJSON_CreateString(value.c_str()));
-        }
-        cJSON_AddItemToObject(model, "responses_include", responses_include);
-    }
-    cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
-    if (config.model.has_temperature) {
-        cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
-    }
-    cJSON_AddNumberToObject(model, "max_response_tokens", config.model.max_response_tokens);
-    cJSON_AddNumberToObject(model, "context_window", config.model.context_window);
-    cJSON_AddNumberToObject(model, "model_max_output_tokens", config.model.model_max_output_tokens);
-
-    cJSON* tts = add_object(root, "tts");
-    cJSON_AddStringToObject(tts, "provider", config.tts.provider.c_str());
-    if (include_secrets) {
-        cJSON_AddStringToObject(tts, "api_key", config.tts.api_key.c_str());
-    }
-    cJSON_AddStringToObject(tts, "model", config.tts.model.c_str());
-    cJSON_AddStringToObject(tts, "voice_id", config.tts.voice_id.c_str());
-    cJSON_AddStringToObject(tts, "reference_id", config.tts.reference_id.c_str());
-    cJSON_AddStringToObject(tts, "emotion", config.tts.emotion.c_str());
-    cJSON_AddNumberToObject(tts, "speed", config.tts.speed);
-
-    cJSON* stt = add_object(root, "stt");
-    cJSON_AddStringToObject(stt, "provider", config.stt.provider.c_str());
-    cJSON_AddStringToObject(stt, "language", config.stt.language.c_str());
-    if (include_secrets) {
-        cJSON_AddStringToObject(stt, "api_key", config.stt.api_key.c_str());
-    }
-    cJSON_AddStringToObject(stt, "model", config.stt.model.c_str());
-    cJSON_AddStringToObject(stt, "base_url", config.stt.base_url.c_str());
-    cJSON_AddStringToObject(stt, "app_id", config.stt.app_id.c_str());
-    if (include_secrets) {
-        cJSON_AddStringToObject(stt, "secret_id", config.stt.secret_id.c_str());
-        cJSON_AddStringToObject(stt, "secret_key", config.stt.secret_key.c_str());
-    }
-    cJSON_AddStringToObject(stt, "region", config.stt.region.c_str());
-    cJSON_AddStringToObject(stt, "engine_model_type", config.stt.engine_model_type.c_str());
-
-    cJSON* audio = add_object(root, "audio");
-    cJSON_AddStringToObject(audio, "socket", config.audio.socket.c_str());
-    cJSON_AddNumberToObject(audio, "sample_rate", config.audio.sample_rate);
-    cJSON_AddNumberToObject(audio, "channels", config.audio.channels);
-    cJSON_AddNumberToObject(audio, "bit_width", config.audio.bit_width);
-    cJSON_AddStringToObject(audio, "playback_backend", config.audio.playback_backend.c_str());
-
-    cJSON* audio_archive = add_object(root, "audio_archive");
-    cJSON_AddBoolToObject(audio_archive, "enabled", config.audio_archive.enabled ? 1 : 0);
-    cJSON_AddStringToObject(audio_archive, "storage_path", config.audio_archive.storage_path.c_str());
-    cJSON_AddNumberToObject(audio_archive, "max_files", config.audio_archive.max_files);
-    cJSON_AddNumberToObject(audio_archive, "max_size_mb", config.audio_archive.max_size_mb);
-
-    cJSON* voice_notifications = add_object(root, "voice_notifications");
-    cJSON_AddBoolToObject(voice_notifications, "enabled", config.voice_notifications.enabled ? 1 : 0);
-    cJSON_AddNumberToObject(voice_notifications, "max_pending", config.voice_notifications.max_pending);
-    cJSON* response_tail = add_object(voice_notifications, "response_tail");
-    cJSON_AddBoolToObject(response_tail, "enabled", config.voice_notifications.response_tail.enabled ? 1 : 0);
-    cJSON_AddNumberToObject(response_tail, "max_items", config.voice_notifications.response_tail.max_items);
-    cJSON_AddNumberToObject(response_tail, "max_text_chars", config.voice_notifications.response_tail.max_text_chars);
-    cJSON* expiration = add_object(voice_notifications, "expiration");
-    cJSON_AddNumberToObject(expiration, "default_ttl_seconds", config.voice_notifications.expiration.default_ttl_seconds);
-    cJSON* code_ttl_seconds = add_object(expiration, "code_ttl_seconds");
-    for (const auto& item : config.voice_notifications.expiration.code_ttl_seconds) {
-        cJSON_AddNumberToObject(code_ttl_seconds, item.first.c_str(), item.second);
-    }
-
-    cJSON* log_config = add_object(root, "log");
-    cJSON_AddNumberToObject(log_config, "llm_http_retention_days", config.log.llm_http_retention_days);
-
-    cJSON* ota = add_object(root, "ota");
-    cJSON_AddStringToObject(ota, "github_proxy_url", config.ota.github_proxy_url.c_str());
-
-    cJSON* hid = add_object(root, "hid");
-    cJSON_AddStringToObject(hid, "keyboard_device", config.hid.keyboard_device.c_str());
-    cJSON_AddStringToObject(hid, "keyboard_layout", config.hid.keyboard_layout.c_str());
-    cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
-    cJSON_AddStringToObject(hid, "android_keyboard_device", config.hid.android_keyboard_device.c_str());
-    cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
-    cJSON_AddStringToObject(hid, "input_backend", normalize_input_backend(config.hid.input_backend).c_str());
-
-    cJSON* search = add_object(root, "search");
-    cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
-    cJSON_AddBoolToObject(search, "has_api_key",
-                          (config.search.has_api_key || !config.search.api_key.empty()) ? 1 : 0);
-
-    cJSON* telemetry = add_object(root, "telemetry");
-    cJSON_AddBoolToObject(telemetry, "enabled", config.telemetry.enabled ? 1 : 0);
-    cJSON_AddStringToObject(telemetry, "provider", config.telemetry.provider.c_str());
-    cJSON_AddStringToObject(telemetry, "base_url", config.telemetry.base_url.c_str());
-    cJSON_AddStringToObject(telemetry, "public_key", config.telemetry.public_key.c_str());
-    cJSON_AddStringToObject(telemetry, "secret_key", config.telemetry.secret_key.c_str());
-    cJSON_AddBoolToObject(telemetry, "upload_screenshots", config.telemetry.upload_screenshots ? 1 : 0);
-    cJSON_AddNumberToObject(telemetry, "upload_timeout_sec", config.telemetry.upload_timeout_sec);
-    cJSON_AddNumberToObject(telemetry, "max_retry", config.telemetry.max_retry);
-    add_string_array_to_object(telemetry, "tags", config.telemetry.tags);
-    cJSON_AddStringToObject(telemetry, "environment", config.telemetry.environment.c_str());
-
-    cJSON* termination_policy = add_object(root, "termination_policy");
-    cJSON_AddBoolToObject(termination_policy, "enabled", config.termination_policy.enabled ? 1 : 0);
-    cJSON_AddNumberToObject(termination_policy, "max_seconds", config.termination_policy.max_seconds);
-    cJSON_AddNumberToObject(termination_policy, "repeat_action_limit", config.termination_policy.repeat_action_limit);
-    cJSON_AddNumberToObject(termination_policy, "same_result_limit", config.termination_policy.same_result_limit);
-    cJSON_AddNumberToObject(termination_policy, "screen_unchanged_limit", config.termination_policy.screen_unchanged_limit);
-    cJSON_AddNumberToObject(termination_policy, "soft_notice_stall_score", config.termination_policy.soft_notice_stall_score);
-    cJSON_AddNumberToObject(termination_policy, "restrict_tools_stall_score", config.termination_policy.restrict_tools_stall_score);
-    cJSON_AddNumberToObject(termination_policy, "terminate_stall_score", config.termination_policy.terminate_stall_score);
-    cJSON_AddNumberToObject(termination_policy, "parse_failure_limit", config.termination_policy.parse_failure_limit);
-
-    cJSON* live_activity = add_object(root, "live_activity");
-    cJSON_AddBoolToObject(live_activity, "enabled", config.live_activity.enabled ? 1 : 0);
-
-    cJSON* agent = add_object(root, "agent");
-    cJSON_AddStringToObject(agent, "locale", config.locale.c_str());
-    cJSON_AddStringToObject(agent, "custom_instruction", config.custom_instruction.c_str());
-    cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
-    cJSON_AddStringToObject(agent, "input_mode", config.input_mode.c_str());
-    cJSON_AddStringToObject(agent, "trigger_mode", config.trigger_mode.c_str());
-    cJSON_AddStringToObject(agent, "vad_backend", config.vad_backend.c_str());
-    cJSON_AddStringToObject(agent, "vad_model_path", config.vad_model_path.c_str());
-    cJSON_AddStringToObject(agent, "vad_helper_path", config.vad_helper_path.c_str());
-    cJSON_AddNumberToObject(agent, "vad_speech_threshold", config.vad_speech_threshold);
-    cJSON_AddNumberToObject(agent, "silence_ms", config.silence_ms);
-    cJSON_AddNumberToObject(agent, "min_speech_ms", config.min_speech_ms);
-    cJSON_AddBoolToObject(agent, "voice_followup_enabled", config.voice_followup_enabled ? 1 : 0);
-    cJSON_AddNumberToObject(agent, "voice_followup_timeout_ms", config.voice_followup_timeout_ms);
-    cJSON_AddNumberToObject(agent, "voice_first_turn_timeout_ms", config.voice_first_turn_timeout_ms);
-    cJSON_AddNumberToObject(agent, "voice_max_turns", config.voice_max_turns);
-    cJSON_AddBoolToObject(agent, "voice_interrupt_on_wakeup", config.voice_interrupt_on_wakeup ? 1 : 0);
-    cJSON_AddBoolToObject(agent, "voice_streaming_tts_enabled", config.voice_streaming_tts_enabled ? 1 : 0);
-    cJSON_AddBoolToObject(agent, "voice_tool_call_speech", config.voice_tool_call_speech ? 1 : 0);
-    cJSON_AddBoolToObject(agent, "voice_progress_speech_enabled", config.voice_progress_speech_enabled ? 1 : 0);
-    cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
-    cJSON_AddBoolToObject(agent, "load_all_tools", config.load_all_tools ? 1 : 0);
-    cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
-    cJSON_AddNumberToObject(agent, "screenshot_keep_n", config.screenshot_keep_n);
-    cJSON_AddNumberToObject(agent, "screenshot_prune_interval", config.screenshot_prune_interval);
-    cJSON_AddNumberToObject(agent, "screen_stable_timeout_ms", config.screen_stable_timeout_ms);
-    cJSON_AddNumberToObject(agent, "screen_stable_ms", config.screen_stable_ms);
-    cJSON_AddNumberToObject(agent, "screen_stable_diff_threshold", config.screen_stable_diff_threshold);
-    cJSON_AddStringToObject(agent, "default_platform", config.default_platform.c_str());
-
-    return root;
-}
 
 cJSON* wifi_to_json(const aiden::WifiNetworkConfig& wifi) {
     cJSON* root = cJSON_CreateObject();
@@ -3184,31 +2203,10 @@ void set_json_str(std::string* dst, cJSON* obj, const char* key) {
     }
 }
 
-void set_json_str_alias(std::string* dst,
-                        cJSON* obj,
-                        const char* canonical_key,
-                        const char* legacy_key) {
-    cJSON* canonical = cJSON_GetObjectItem(obj, canonical_key);
-    if (canonical) {
-        if (dst && json_is_string(canonical)) {
-            *dst = canonical->valuestring;
-        }
-        return;
-    }
-    set_json_str(dst, obj, legacy_key);
-}
-
 void set_json_int(int* dst, cJSON* obj, const char* key) {
     cJSON* item = cJSON_GetObjectItem(obj, key);
     if (dst && json_is_number(item)) {
         *dst = item->valueint;
-    }
-}
-
-void set_json_double(double* dst, cJSON* obj, const char* key) {
-    cJSON* item = cJSON_GetObjectItem(obj, key);
-    if (dst && json_is_number(item)) {
-        *dst = item->valuedouble;
     }
 }
 
@@ -3217,560 +2215,6 @@ void set_json_bool(bool* dst, cJSON* obj, const char* key) {
     if (dst && json_is_bool(item)) {
         *dst = json_is_type(item, cJSON_True);
     }
-}
-
-void set_json_string_vector(std::vector<std::string>* dst, cJSON* obj, const char* key) {
-    cJSON* item = cJSON_GetObjectItem(obj, key);
-    if (!dst) {
-        return;
-    }
-    if (json_is_array(item)) {
-        std::vector<std::string> values;
-        int count = cJSON_GetArraySize(item);
-        for (int i = 0; i < count; ++i) {
-            cJSON* child = cJSON_GetArrayItem(item, i);
-            if (json_is_string(child)) {
-                std::string value = trim_copy(child->valuestring);
-                if (!value.empty()) {
-                    values.push_back(value);
-                }
-            }
-        }
-        *dst = values;
-        return;
-    }
-    if (json_is_string(item)) {
-        std::vector<std::string> values;
-        std::string text = item->valuestring;
-        size_t start = 0;
-        while (start <= text.size()) {
-            size_t comma = text.find(',', start);
-            std::string part = trim_copy(text.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
-            if (!part.empty()) {
-                values.push_back(part);
-            }
-            if (comma == std::string::npos) {
-                break;
-            }
-            start = comma + 1;
-        }
-        *dst = values;
-    }
-}
-
-bool config_metadata_string_in_rule_matches(
-        const ConfigMetadataSchema& metadata,
-        const std::string& section,
-        const std::string& field,
-        const std::string& dependency,
-        const std::string& value) {
-    std::map<std::string, std::map<std::string, ConfigMetadataSchema::StringInRule> >::const_iterator
-        section_rules = metadata.string_in_rules.find(section);
-    if (section_rules == metadata.string_in_rules.end()) return false;
-    std::map<std::string, ConfigMetadataSchema::StringInRule>::const_iterator rule_it =
-        section_rules->second.find(field);
-    if (rule_it == section_rules->second.end()) return false;
-    const ConfigMetadataSchema::StringInRule& rule = rule_it->second;
-    return rule.field == dependency &&
-        std::find(rule.values.begin(), rule.values.end(), value) != rule.values.end();
-}
-
-bool model_provider_base_url_allowed(const std::string& provider) {
-    const ConfigMetadataSchema* metadata = NULL;
-    if (!load_agent_config_metadata(&metadata, NULL) || !metadata) return false;
-    return config_metadata_string_in_rule_matches(
-        *metadata, "model_providers", "base_url", "model_providers.type",
-        lowercase_copy(trim_copy(provider)));
-}
-
-std::string provider_secret_source_name(cJSON* root, const char* section,
-                                        const std::string& submitted_name) {
-    cJSON* renames = cJSON_GetObjectItem(root, "_provider_renames");
-    if (!json_is_object(renames)) return submitted_name;
-    cJSON* section_renames = cJSON_GetObjectItem(renames, section);
-    if (!json_is_object(section_renames)) return submitted_name;
-    cJSON* old_name = cJSON_GetObjectItem(section_renames, submitted_name.c_str());
-    if (!json_is_string(old_name) || !old_name->valuestring || !old_name->valuestring[0]) {
-        return submitted_name;
-    }
-    return old_name->valuestring;
-}
-
-void update_write_only_api_key(cJSON* record, const std::string& previous_api_key,
-                               std::string* api_key) {
-    if (!record || !api_key) return;
-
-    cJSON* submitted_api_key = cJSON_GetObjectItem(record, "api_key");
-    if (json_is_string(submitted_api_key) && submitted_api_key->valuestring[0]) {
-        const std::string value = submitted_api_key->valuestring;
-        *api_key = !previous_api_key.empty() && value == mask_secret(previous_api_key)
-            ? previous_api_key
-            : value;
-        return;
-    }
-
-    *api_key = previous_api_key;
-}
-
-void update_write_only_secret(cJSON* record, const char* field,
-                              const std::string& previous, std::string* value) {
-    if (!record || !field || !value) return;
-    cJSON* submitted = cJSON_GetObjectItem(record, field);
-    if (!json_is_string(submitted) || !submitted->valuestring[0]) {
-        *value = previous;
-        return;
-    }
-    const std::string submitted_value = submitted->valuestring;
-    *value = !previous.empty() && submitted_value == mask_secret(previous)
-        ? previous
-        : submitted_value;
-}
-
-void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
-    if (!json_is_object(obj) || !m) return;
-    set_json_str(&m->provider, obj, "provider");
-    set_json_str(&m->model, obj, "model");
-    m->base_url.clear();
-    set_json_str(&m->api_key, obj, "api_key");
-    set_json_str(&m->api_mode, obj, "api_mode");
-    set_json_str(&m->responses_context_management, obj, "responses_context_management");
-    set_json_int(&m->responses_compact_threshold, obj, "responses_compact_threshold");
-    set_json_int(&m->responses_context_edit_trigger, obj, "responses_context_edit_trigger");
-    set_json_int(&m->responses_context_edit_keep, obj, "responses_context_edit_keep");
-    set_json_bool(&m->responses_context_edit_clear_thinking, obj, "responses_context_edit_clear_thinking");
-    set_json_str(&m->responses_truncation, obj, "responses_truncation");
-    set_json_string_vector(&m->responses_include, obj, "responses_include");
-    set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
-    // Temperature is nullable: presence of the key sets has_temperature, and
-    // its absence clears it. This function applies JSON as a patch onto an
-    // existing config (see handle_post_config), so an omitted key must unset the
-    // value rather than leave a stale one, letting the UI clear temperature by
-    // omitting it.
-    cJSON* temp_item = cJSON_GetObjectItem(obj, "temperature");
-    if (temp_item && json_is_number(temp_item)) {
-        m->temperature = temp_item->valuedouble;
-        m->has_temperature = true;
-    } else {
-        m->has_temperature = false;
-    }
-    set_json_int(&m->max_response_tokens, obj, "max_response_tokens");
-    set_json_int(&m->context_window, obj, "context_window");
-    set_json_int(&m->model_max_output_tokens, obj, "model_max_output_tokens");
-
-    // base_url belongs to [model_providers.*], not the flat [model] section.
-}
-
-void move_model_api_key_to_provider(aiden::AgentToml* config, bool submitted_api_key) {
-    if (!config) return;
-    if (!submitted_api_key) {
-        // load_current_agent_config returns the runtime-resolved credential on
-        // model.api_key. It belongs to the previously resolved provider and
-        // must never be persisted or assigned after a provider switch.
-        config->model.api_key.clear();
-        return;
-    }
-    if (config->model.api_key.empty()) return;
-
-    const std::string provider_name = trim_copy(config->model.provider);
-    if (provider_name.empty()) return;
-
-    aiden::ModelProviderToml& provider = config->model_providers[provider_name];
-    if (provider.type.empty()) {
-        provider.type = provider_name;
-    }
-    provider.api_key = config->model.api_key;
-    config->model.api_key.clear();
-}
-
-void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
-    if (!root || !config) {
-        return;
-    }
-
-    // Provider maps are authoritative for record membership. Credentials are
-    // write-only: omitted or empty values preserve the stored record, including
-    // across a rename identified by _provider_renames.
-    cJSON* model_providers = cJSON_GetObjectItem(root, "model_providers");
-    if (json_is_object(model_providers)) {
-        const std::map<std::string, aiden::ModelProviderToml> previous_providers =
-            config->model_providers;
-        config->model_providers.clear();
-
-        for (cJSON* item = model_providers->child; item; item = item->next) {
-            if (!item->string) continue;
-
-            std::string provider_name = item->string;
-            if (!json_is_object(item)) continue;
-
-            aiden::ModelProviderToml provider;
-            set_json_str_alias(&provider.type, item, "type", "provider");
-            const std::string secret_source = provider_secret_source_name(
-                root, "model_providers", provider_name);
-            std::map<std::string, aiden::ModelProviderToml>::const_iterator previous =
-                previous_providers.find(secret_source);
-            update_write_only_api_key(
-                item,
-                previous == previous_providers.end() ? std::string() : previous->second.api_key,
-                &provider.api_key);
-
-            cJSON* base_url = cJSON_GetObjectItem(item, "base_url");
-            // A named provider's base_url is inherited by every model that
-            // references it (applyProviderRef), where the runtime then drops it
-            // for types that pin their endpoint. Applying the metadata-backed
-            // capability rule here keeps agent.toml free of dead config.
-            if (json_is_string(base_url) && model_provider_base_url_allowed(provider.type)) {
-                provider.base_url = base_url->valuestring;
-            }
-
-            config->model_providers[provider_name] = provider;
-        }
-    }
-
-    // Update tts_providers. Same contract as providers above: the payload is
-    // authoritative, so a record absent from it was deleted in the UI -- but an
-    // ABSENT KEY means "not edited" and must leave the stored records alone.
-    // Clearing unconditionally is exactly the bug that erased every [model_providers.*]
-    // whenever an unrelated section was saved.
-    cJSON* tts_providers = cJSON_GetObjectItem(root, "tts_providers");
-    if (json_is_object(tts_providers)) {
-        const std::map<std::string, aiden::TTSProviderToml> previous = config->tts_providers;
-        config->tts_providers.clear();
-
-        for (cJSON* item = tts_providers->child; item; item = item->next) {
-            if (!item->string) continue;
-            if (!json_is_object(item)) continue;
-            const std::string record_name = item->string;
-
-            aiden::TTSProviderToml record;
-            set_json_str_alias(&record.type, item, "type", "provider");
-            set_json_str(&record.model, item, "model");
-            set_json_str(&record.voice_id, item, "voice_id");
-            set_json_str(&record.emotion, item, "emotion");
-            set_json_str(&record.reference_id, item, "reference_id");
-
-            const std::string secret_source = provider_secret_source_name(
-                root, "tts_providers", record_name);
-            std::map<std::string, aiden::TTSProviderToml>::const_iterator stored =
-                previous.find(secret_source);
-            update_write_only_api_key(
-                item,
-                stored == previous.end() ? std::string() : stored->second.api_key,
-                &record.api_key);
-
-            config->tts_providers[record_name] = record;
-        }
-    }
-
-    cJSON* stt_providers = cJSON_GetObjectItem(root, "stt_providers");
-    if (json_is_object(stt_providers)) {
-        const std::map<std::string, aiden::STTProviderToml> previous = config->stt_providers;
-        config->stt_providers.clear();
-
-        for (cJSON* item = stt_providers->child; item; item = item->next) {
-            if (!item->string) continue;
-            if (!json_is_object(item)) continue;
-            const std::string record_name = item->string;
-            const std::string secret_source = provider_secret_source_name(
-                root, "stt_providers", record_name);
-
-            aiden::STTProviderToml record;
-            set_json_str_alias(&record.type, item, "type", "provider");
-            set_json_str(&record.model, item, "model");
-            set_json_str(&record.base_url, item, "base_url");
-            set_json_str(&record.app_id, item, "app_id");
-            set_json_str(&record.region, item, "region");
-            set_json_str(&record.engine_model_type, item, "engine_model_type");
-
-            std::map<std::string, aiden::STTProviderToml>::const_iterator stored =
-                previous.find(secret_source);
-            const aiden::STTProviderToml* stored_record =
-                stored == previous.end() ? NULL : &stored->second;
-            update_write_only_api_key(
-                item,
-                stored_record ? stored_record->api_key : std::string(),
-                &record.api_key);
-            update_write_only_secret(item, "secret_id",
-                                     stored_record ? stored_record->secret_id : std::string(),
-                                     &record.secret_id);
-            update_write_only_secret(item, "secret_key",
-                                     stored_record ? stored_record->secret_key : std::string(),
-                                     &record.secret_key);
-
-            config->stt_providers[record_name] = record;
-        }
-    }
-
-    update_model_from_json(cJSON_GetObjectItem(root, "model"), &config->model);
-
-    cJSON* tts = cJSON_GetObjectItem(root, "tts");
-    if (json_is_object(tts)) {
-        set_json_str(&config->tts.provider, tts, "provider");
-        set_json_str(&config->tts.api_key, tts, "api_key");
-        set_json_str(&config->tts.model, tts, "model");
-        set_json_str(&config->tts.voice_id, tts, "voice_id");
-        set_json_str(&config->tts.reference_id, tts, "reference_id");
-        set_json_str(&config->tts.emotion, tts, "emotion");
-        set_json_double(&config->tts.speed, tts, "speed");
-    }
-
-    cJSON* stt = cJSON_GetObjectItem(root, "stt");
-    if (json_is_object(stt)) {
-        set_json_str(&config->stt.provider, stt, "provider");
-        set_json_str(&config->stt.language, stt, "language");
-        set_json_str(&config->stt.api_key, stt, "api_key");
-        set_json_str(&config->stt.model, stt, "model");
-        set_json_str(&config->stt.base_url, stt, "base_url");
-        set_json_str(&config->stt.app_id, stt, "app_id");
-        set_json_str(&config->stt.secret_id, stt, "secret_id");
-        set_json_str(&config->stt.secret_key, stt, "secret_key");
-        set_json_str(&config->stt.region, stt, "region");
-        set_json_str(&config->stt.engine_model_type, stt, "engine_model_type");
-    }
-
-    cJSON* audio = cJSON_GetObjectItem(root, "audio");
-    if (json_is_object(audio)) {
-        set_json_str(&config->audio.socket, audio, "socket");
-        set_json_int(&config->audio.sample_rate, audio, "sample_rate");
-        set_json_int(&config->audio.channels, audio, "channels");
-        set_json_int(&config->audio.bit_width, audio, "bit_width");
-        set_json_str(&config->audio.playback_backend, audio, "playback_backend");
-    }
-
-    cJSON* audio_archive = cJSON_GetObjectItem(root, "audio_archive");
-    if (json_is_object(audio_archive)) {
-        set_json_bool(&config->audio_archive.enabled, audio_archive, "enabled");
-        set_json_str(&config->audio_archive.storage_path, audio_archive, "storage_path");
-        set_json_int(&config->audio_archive.max_files, audio_archive, "max_files");
-        set_json_int(&config->audio_archive.max_size_mb, audio_archive, "max_size_mb");
-    }
-
-    cJSON* voice_notifications = cJSON_GetObjectItem(root, "voice_notifications");
-    if (json_is_object(voice_notifications)) {
-        set_json_bool(&config->voice_notifications.enabled, voice_notifications, "enabled");
-        set_json_int(&config->voice_notifications.max_pending, voice_notifications, "max_pending");
-
-        cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
-        if (json_is_object(response_tail)) {
-            set_json_bool(&config->voice_notifications.response_tail.enabled, response_tail, "enabled");
-            set_json_int(&config->voice_notifications.response_tail.max_items, response_tail, "max_items");
-            set_json_int(&config->voice_notifications.response_tail.max_text_chars, response_tail, "max_text_chars");
-        }
-
-        cJSON* expiration = cJSON_GetObjectItem(voice_notifications, "expiration");
-        if (json_is_object(expiration)) {
-            set_json_int(&config->voice_notifications.expiration.default_ttl_seconds, expiration, "default_ttl_seconds");
-            cJSON* code_ttl_seconds = cJSON_GetObjectItem(expiration, "code_ttl_seconds");
-            if (json_is_object(code_ttl_seconds)) {
-                config->voice_notifications.expiration.code_ttl_seconds.clear();
-                for (cJSON* item = code_ttl_seconds->child; item; item = item->next) {
-                    if (json_is_number(item) && item->string) {
-                        config->voice_notifications.expiration.code_ttl_seconds[item->string] = item->valueint;
-                    }
-                }
-            }
-        }
-    }
-
-    cJSON* log_config = cJSON_GetObjectItem(root, "log");
-    if (json_is_object(log_config)) {
-        set_json_int(&config->log.llm_http_retention_days, log_config, "llm_http_retention_days");
-    }
-
-    cJSON* ota = cJSON_GetObjectItem(root, "ota");
-    if (json_is_object(ota)) {
-        set_json_str(&config->ota.github_proxy_url, ota, "github_proxy_url");
-    }
-
-    cJSON* device = cJSON_GetObjectItem(root, "device");
-    if (json_is_object(device)) {
-        set_json_str(&config->device.backend, device, "backend");
-        set_json_str(&config->device.device_type, device, "device_type");
-    }
-
-    cJSON* hid = cJSON_GetObjectItem(root, "hid");
-    if (json_is_object(hid)) {
-        set_json_str(&config->hid.keyboard_device, hid, "keyboard_device");
-        set_json_str(&config->hid.keyboard_layout, hid, "keyboard_layout");
-        set_json_str(&config->hid.mouse_device, hid, "mouse_device");
-        set_json_str(&config->hid.android_keyboard_device, hid, "android_keyboard_device");
-        set_json_str(&config->hid.frame_socket, hid, "frame_socket");
-        set_json_str(&config->hid.input_backend, hid, "input_backend");
-    }
-
-    cJSON* search = cJSON_GetObjectItem(root, "search");
-    if (json_is_object(search)) {
-        set_json_str(&config->search.provider, search, "provider");
-        set_json_bool(&config->search.has_api_key, search, "has_api_key");
-        cJSON* key_item = cJSON_GetObjectItem(search, "api_key");
-        if (json_is_string(key_item) && strlen(key_item->valuestring) > 0) {
-            config->search.api_key = key_item->valuestring;
-            config->search.has_api_key = true;
-        }
-    }
-
-    cJSON* telemetry = cJSON_GetObjectItem(root, "telemetry");
-    if (json_is_object(telemetry)) {
-        set_json_bool(&config->telemetry.enabled, telemetry, "enabled");
-        set_json_str(&config->telemetry.provider, telemetry, "provider");
-        set_json_str(&config->telemetry.base_url, telemetry, "base_url");
-        set_json_str(&config->telemetry.public_key, telemetry, "public_key");
-        set_json_str(&config->telemetry.secret_key, telemetry, "secret_key");
-        set_json_bool(&config->telemetry.upload_screenshots, telemetry, "upload_screenshots");
-        set_json_int(&config->telemetry.upload_timeout_sec, telemetry, "upload_timeout_sec");
-        set_json_int(&config->telemetry.max_retry, telemetry, "max_retry");
-        set_json_string_vector(&config->telemetry.tags, telemetry, "tags");
-        set_json_str(&config->telemetry.environment, telemetry, "environment");
-    }
-
-    cJSON* termination_policy = cJSON_GetObjectItem(root, "termination_policy");
-    if (json_is_object(termination_policy)) {
-        set_json_bool(&config->termination_policy.enabled, termination_policy, "enabled");
-        set_json_double(&config->termination_policy.max_seconds, termination_policy, "max_seconds");
-        set_json_int(&config->termination_policy.repeat_action_limit, termination_policy, "repeat_action_limit");
-        set_json_int(&config->termination_policy.same_result_limit, termination_policy, "same_result_limit");
-        set_json_int(&config->termination_policy.screen_unchanged_limit, termination_policy, "screen_unchanged_limit");
-        set_json_int(&config->termination_policy.soft_notice_stall_score, termination_policy, "soft_notice_stall_score");
-        set_json_int(&config->termination_policy.restrict_tools_stall_score, termination_policy, "restrict_tools_stall_score");
-        set_json_int(&config->termination_policy.terminate_stall_score, termination_policy, "terminate_stall_score");
-        set_json_int(&config->termination_policy.parse_failure_limit, termination_policy, "parse_failure_limit");
-    }
-
-    cJSON* live_activity = cJSON_GetObjectItem(root, "live_activity");
-    if (json_is_object(live_activity)) {
-        set_json_bool(&config->live_activity.enabled, live_activity, "enabled");
-    }
-
-    cJSON* agent = cJSON_GetObjectItem(root, "agent");
-    if (json_is_object(agent)) {
-        set_json_str(&config->locale, agent, "locale");
-        set_json_str(&config->custom_instruction, agent, "custom_instruction");
-        set_json_str(&config->additional_prompt, agent, "additional_prompt");
-        set_json_str(&config->input_mode, agent, "input_mode");
-        set_json_str(&config->trigger_mode, agent, "trigger_mode");
-        set_json_str(&config->vad_backend, agent, "vad_backend");
-        set_json_str(&config->vad_model_path, agent, "vad_model_path");
-        set_json_str(&config->vad_helper_path, agent, "vad_helper_path");
-        set_json_double(&config->vad_speech_threshold, agent, "vad_speech_threshold");
-        set_json_int(&config->silence_ms, agent, "silence_ms");
-        set_json_int(&config->min_speech_ms, agent, "min_speech_ms");
-        set_json_bool(&config->voice_followup_enabled, agent, "voice_followup_enabled");
-        set_json_int(&config->voice_followup_timeout_ms, agent, "voice_followup_timeout_ms");
-        set_json_int(&config->voice_first_turn_timeout_ms, agent, "voice_first_turn_timeout_ms");
-        set_json_int(&config->voice_max_turns, agent, "voice_max_turns");
-        set_json_bool(&config->voice_interrupt_on_wakeup, agent, "voice_interrupt_on_wakeup");
-        set_json_bool(&config->voice_streaming_tts_enabled, agent, "voice_streaming_tts_enabled");
-        set_json_bool(&config->voice_tool_call_speech, agent, "voice_tool_call_speech");
-        set_json_bool(&config->voice_progress_speech_enabled, agent, "voice_progress_speech_enabled");
-        set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
-        set_json_bool(&config->load_all_tools, agent, "load_all_tools");
-        set_json_int(&config->max_iterations, agent, "max_iterations");
-        set_json_int(&config->screenshot_keep_n, agent, "screenshot_keep_n");
-        set_json_int(&config->screenshot_prune_interval, agent, "screenshot_prune_interval");
-        set_json_int(&config->screen_stable_timeout_ms, agent, "screen_stable_timeout_ms");
-        set_json_int(&config->screen_stable_ms, agent, "screen_stable_ms");
-        set_json_double(&config->screen_stable_diff_threshold, agent, "screen_stable_diff_threshold");
-        set_json_str(&config->default_platform, agent, "default_platform");
-    }
-}
-
-ValidationResult parse_agent_config_validation_result(const CommandResult& result) {
-    if (result.timed_out) {
-        return ValidationResult::unavailable("config validation timed out");
-    }
-
-    cJSON* response = cJSON_Parse(result.output.c_str());
-    if (!response) {
-        // CLI produced unparseable output. We cannot tell if the config is
-        // valid; fail closed but as UNAVAILABLE so the UI distinguishes a
-        // broken validator from a rejected user input.
-        AIDEN_LOG_ERROR("agent_config", "config_check_invalid_json", "output=%s",
-                        result.output.c_str());
-        return ValidationResult::unavailable(
-                "config validation failed: validator returned an unexpected response");
-    }
-
-    cJSON* valid = cJSON_GetObjectItem(response, "valid");
-    if (json_is_bool(valid) && json_is_type(valid, cJSON_True)) {
-        cJSON_Delete(response);
-        return ValidationResult::ok();
-    }
-
-    // Extract error messages
-    std::string error_msg;
-    cJSON* errors = cJSON_GetObjectItem(response, "errors");
-    if (json_is_type(errors, cJSON_Array)) {
-        int error_count = cJSON_GetArraySize(errors);
-        for (int i = 0; i < error_count; ++i) {
-            cJSON* error = cJSON_GetArrayItem(errors, i);
-            cJSON* message = cJSON_GetObjectItem(error, "message");
-            if (json_is_string(message)) {
-                if (!error_msg.empty()) {
-                    error_msg += "; ";
-                }
-                error_msg += message->valuestring;
-            }
-        }
-    }
-
-    bool has_valid_field = json_is_bool(valid);
-    cJSON_Delete(response);
-
-    if (!has_valid_field) {
-        // Response parsed but did not include the required `valid` field. We
-        // cannot trust this validator's verdict; treat as unavailable.
-        return ValidationResult::unavailable(
-                "config validation failed: validator returned an unexpected response");
-    }
-
-    if (error_msg.empty()) {
-        // CLI said valid:false with no errors array — distinct from the well
-        // formed "rejected with reasons" path. Treat as unavailable rather
-        // than fabricate a user-facing reason.
-        return ValidationResult::unavailable("config validation failed without details");
-    }
-
-    return ValidationResult::invalid(error_msg);
-}
-
-ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path) {
-    // Convert config to JSON
-    cJSON* config_json = config_to_json(config, true);
-    char* json_str = cJSON_PrintUnformatted(config_json);
-    cJSON_Delete(config_json);
-
-    if (!json_str) {
-        // Server-side serialization failure: not the user's fault, treat as
-        // unavailable so the UI surfaces it as a server problem.
-        return ValidationResult::unavailable("failed to serialize config to JSON");
-    }
-
-    std::string input(json_str);
-    free(json_str);
-
-    // Call agent config-check CLI
-    std::string cmd = shell_quote(agent_bin_path) + " config-check --stdin --format=json";
-    return parse_agent_config_validation_result(run_command_with_stdin(cmd, input, 2000));
-}
-
-ValidationResult validate_agent_config_path_via_cli(const std::string& config_path,
-                                                     const char* agent_bin_path) {
-    std::string cmd = shell_quote(agent_bin_path) + " config-check --config="
-                    + shell_quote(config_path) + " --format=json";
-    return parse_agent_config_validation_result(run_command_with_stdin(cmd, "", 2000));
-}
-
-ValidationResult validate_agent_config_for_save(const aiden::AgentToml& config) {
-    // The agent CLI's `config-check` is the single source of truth for config
-    // validation. If the binary is unavailable, fail closed: reject the save
-    // rather than persist a config we cannot validate.
-    const char* agent_bin = agent_bin_path();
-    if (!file_exists(agent_bin)) {
-        AIDEN_LOG_ERROR("agent_config", "binary_not_found",
-                        "path=%s operation=validate_json_save", agent_bin);
-        return ValidationResult::unavailable(
-                "config validation unavailable: agent binary not found");
-    }
-    return validate_agent_config_via_cli(config, agent_bin);
 }
 
 void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
@@ -4318,9 +2762,10 @@ WifiRuntimeStatus query_wifi_status(const Options& options) {
             status.ip_address = find_key_value_line(result.output, "ip_address");
             status.connected = status.state == "COMPLETED" && !status.ssid.empty();
             // wpa_supplicant is not wired to DHCP on this device (dhcpcd runs
-            // separately), so `wpa_cli status` never reports ip_address=. Fall
-            // back to ifconfig for the IPv4 lease so the connect-confirmation
-            // gate and the UI status see the same address wait_for_ip() trusts.
+            // separately), so `wpa_cli status` usually omits ip_address=. When
+            // it does, fall back to ifconfig for the IPv4 lease so the
+            // connect-confirmation gate and the UI status see the same address
+            // wait_for_ip() trusts.
             if (status.ip_address.empty() && status.connected && command_exists("ifconfig")) {
                 CommandResult ifc = run_shell_command(
                     "ifconfig " + shell_quote(options.wifi_interface) + " 2>&1");
@@ -4796,133 +3241,49 @@ void update_toml_multiline_string_state(const std::string& line,
     }
 }
 
-std::string update_top_level_locale(const std::string& content, const std::string& locale) {
-    size_t first_section_offset = std::string::npos;
-    size_t line_start = 0;
-    bool in_multiline_basic = false;
-    bool in_multiline_literal = false;
-    while (line_start < content.size()) {
-        size_t line_end = content.find('\n', line_start);
-        if (line_end == std::string::npos) {
-            line_end = content.size();
-        }
-        size_t logical_end = line_end;
-        if (logical_end > line_start && content[logical_end - 1] == '\r') {
-            --logical_end;
-        }
-        const std::string line = content.substr(line_start, logical_end - line_start);
-
-        const bool line_starts_inside_multiline = in_multiline_basic || in_multiline_literal;
-        update_toml_multiline_string_state(line, &in_multiline_basic, &in_multiline_literal);
-        if (line_starts_inside_multiline) {
-            if (line_end == content.size()) {
-                break;
-            }
-            line_start = line_end + 1;
-            continue;
-        }
-
-        size_t first_non_space = 0;
-        while (first_non_space < line.size() &&
-               (line[first_non_space] == ' ' || line[first_non_space] == '\t')) {
-            ++first_non_space;
-        }
-        if (first_non_space < line.size() && line[first_non_space] == '[') {
-            first_section_offset = line_start;
-            break;
-        }
-
-        size_t equals_offset = 0;
-        if (find_top_level_locale_assignment(line, &equals_offset)) {
-            size_t value_start = equals_offset + 1;
-            while (value_start < line.size() &&
-                   (line[value_start] == ' ' || line[value_start] == '\t')) {
-                ++value_start;
-            }
-            size_t comment_offset = find_toml_line_comment(line, value_start);
-            size_t value_end = comment_offset == std::string::npos ? line.size() : comment_offset;
-            while (value_end > value_start &&
-                   (line[value_end - 1] == ' ' || line[value_end - 1] == '\t')) {
-                --value_end;
-            }
-            const size_t absolute_value_start = line_start + value_start;
-            const size_t absolute_value_end = line_start + value_end;
-            return content.substr(0, absolute_value_start) + "\"" + locale + "\""
-                 + content.substr(absolute_value_end);
-        }
-
-        if (line_end == content.size()) {
-            break;
-        }
-        line_start = line_end + 1;
-    }
-
-    const size_t insert_offset = first_section_offset == std::string::npos
-        ? content.size() : first_section_offset;
-    std::string insertion;
-    if (insert_offset > 0 && content[insert_offset - 1] != '\n') {
-        insertion += "\n";
-    }
-    insertion += "locale = \"" + locale + "\"\n";
-    return content.substr(0, insert_offset) + insertion + content.substr(insert_offset);
-}
-
-ValidationResult validate_agent_toml_content_for_save(const std::string& content,
-                                                       const std::string& config_path) {
-    const char* agent_bin = agent_bin_path();
-    if (!file_exists(agent_bin)) {
-        AIDEN_LOG_ERROR("agent_config", "binary_not_found",
-                        "path=%s operation=validate_toml_save", agent_bin);
-        return ValidationResult::unavailable(
-                "config validation unavailable: agent binary not found");
-    }
-
-    std::string temp_dir;
-    std::string error;
-    std::string validation_dir = parent_dir(config_path);
-    if (validation_dir.empty()) {
-        validation_dir = ".";
-    }
-    if (!create_temp_dir_in_dir(validation_dir, "agent-locale-check-", &temp_dir, &error)) {
-        return ValidationResult::unavailable("config validation unavailable: " + error);
-    }
-    const std::string temp_path = temp_dir + "/agent.toml";
-    if (!atomic_write_file(temp_path, content, 0600, &error)) {
-        rmdir(temp_dir.c_str());
-        return ValidationResult::unavailable("config validation unavailable: " + error);
-    }
-
-    ValidationResult result = validate_agent_config_path_via_cli(temp_path, agent_bin);
-    unlink(temp_path.c_str());
-    rmdir(temp_dir.c_str());
-    return result;
-}
 
 bool copy_regular_file_tail(const std::string& source,
                             const std::string& destination,
                             size_t max_bytes,
                             mode_t mode,
                             std::string* error) {
-    if (max_bytes == 0) {
-        if (error) *error = "max copy size is zero";
-        return false;
-    }
-
     int in = open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (in < 0) {
         if (error) *error = "open " + source + ": " + strerror(errno);
         return false;
     }
 
+    bool ok = copy_regular_fd_tail(in, source, destination, max_bytes, mode, error);
+    if (close(in) != 0 && ok) {
+        if (error) *error = "close " + source + ": " + strerror(errno);
+        unlink(destination.c_str());
+        ok = false;
+    }
+    return ok;
+}
+
+bool copy_regular_fd_tail(int in,
+                          const std::string& source_label,
+                          const std::string& destination,
+                          size_t max_bytes,
+                          mode_t mode,
+                          std::string* error) {
+    if (max_bytes == 0) {
+        if (error) *error = "max copy size is zero";
+        return false;
+    }
+    if (in < 0) {
+        if (error) *error = "source file is not open";
+        return false;
+    }
+
     struct stat st;
     if (fstat(in, &st) != 0) {
-        if (error) *error = "stat " + source + ": " + strerror(errno);
-        close(in);
+        if (error) *error = "stat " + source_label + ": " + strerror(errno);
         return false;
     }
     if (!S_ISREG(st.st_mode)) {
-        if (error) *error = source + " is not a regular file";
-        close(in);
+        if (error) *error = source_label + " is not a regular file";
         return false;
     }
 
@@ -4933,19 +3294,16 @@ bool copy_regular_file_tail(const std::string& source,
         start_offset = st.st_size - static_cast<off_t>(max_bytes);
     }
     if (lseek(in, start_offset, SEEK_SET) == static_cast<off_t>(-1)) {
-        if (error) *error = "seek " + source + ": " + strerror(errno);
-        close(in);
+        if (error) *error = "seek " + source_label + ": " + strerror(errno);
         return false;
     }
 
     if (!mkdir_p(parent_dir(destination), error)) {
-        close(in);
         return false;
     }
     int out = open(destination.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
     if (out < 0) {
         if (error) *error = "open " + destination + ": " + strerror(errno);
-        close(in);
         return false;
     }
 
@@ -4954,7 +3312,7 @@ bool copy_regular_file_tail(const std::string& source,
     if (truncated) {
         std::string header = "# truncated: copied latest " + std::to_string(max_bytes) +
             " of " + std::to_string(static_cast<unsigned long long>(st.st_size)) +
-            " bytes from " + source + "\n";
+            " bytes from " + source_label + "\n";
         if (!write_all(out, header.data(), header.size())) {
             if (error) *error = "write " + destination + ": " + strerror(errno);
             ok = false;
@@ -4969,7 +3327,7 @@ bool copy_regular_file_tail(const std::string& source,
             if (errno == EINTR) {
                 continue;
             }
-            if (error) *error = "read " + source + ": " + strerror(errno);
+            if (error) *error = "read " + source_label + ": " + strerror(errno);
             ok = false;
             break;
         }
@@ -4984,10 +3342,6 @@ bool copy_regular_file_tail(const std::string& source,
         bytes_left -= static_cast<size_t>(n);
     }
 
-    if (close(in) != 0 && ok) {
-        if (error) *error = "close " + source + ": " + strerror(errno);
-        ok = false;
-    }
     if (close(out) != 0 && ok) {
         if (error) *error = "close " + destination + ": " + strerror(errno);
         ok = false;
@@ -5614,18 +3968,30 @@ cJSON* firmware_info_to_json(const Options& options) {
 }
 
 ApiResponse handle_get_config(const Options& options) {
-    aiden::AgentToml config;
+	const char* agent_bin = agent_bin_path();
+	if (!file_exists(agent_bin)) {
+		return make_json_error(503, "agent config unavailable: agent binary not found");
+	}
+	std::string cmd = shell_quote(agent_bin) + " config --config=" +
+	                  shell_quote(options.agent_config_path) + " --format=json";
+	CommandResult agent_result = run_command_with_stdin(cmd, "", 5000);
+	if (agent_result.timed_out || agent_result.exit_code != 0) {
+		return make_json_error(503, agent_result.timed_out ? "agent config timed out" : "agent config unavailable");
+	}
+	cJSON* config_json = cJSON_Parse(agent_result.output.c_str());
+	if (!config_json || !json_is_object(config_json)) {
+		if (config_json) cJSON_Delete(config_json);
+		return make_json_error(503, "agent config returned invalid JSON");
+	}
     aiden::WifiNetworkConfig wifi;
     WifiRuntimeStatus wifi_status = query_wifi_status(options);
     AgentRuntimeStatus agent_status = query_agent_status(options);
-    std::string config_error;
     std::string wifi_error;
-    load_current_agent_config(options, &config, &config_error);
     load_current_wifi_config(options, &wifi, &wifi_error);
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
-    cJSON_AddItemToObject(root, "config", config_to_json(config));
+    cJSON_AddItemToObject(root, "config", config_json);
     cJSON_AddItemToObject(root, "wifi", wifi_to_json(wifi));
     cJSON_AddItemToObject(root, "wifi_status", wifi_status_to_json(wifi_status));
     cJSON_AddItemToObject(root, "agent_status", agent_status_to_json(agent_status));
@@ -5639,14 +4005,121 @@ ApiResponse handle_get_config(const Options& options) {
     cJSON_AddStringToObject(paths, "wifi_interface", options.wifi_interface.c_str());
     cJSON_AddStringToObject(paths, "system_env", options.system_env_path.c_str());
 
-    if (!config_error.empty()) {
-        cJSON_AddStringToObject(root, "config_error", config_error.c_str());
-    }
     if (!wifi_error.empty()) {
         cJSON_AddStringToObject(root, "wifi_error", wifi_error.c_str());
     }
 
     return make_json_ok(root);
+}
+
+static bool update_agent_config_via_cli(const Options& options,
+                                        const std::string& body,
+                                        cJSON** result,
+                                        int* status_code,
+                                        std::string* error) {
+    if (result) *result = NULL;
+    if (status_code) *status_code = 503;
+    const char* agent_bin = agent_bin_path();
+    if (!file_exists(agent_bin)) {
+        if (error) *error = "agent config unavailable: agent binary not found";
+        return false;
+    }
+    std::string cmd = shell_quote(agent_bin) + " config-update --config=" +
+                      shell_quote(options.agent_config_path) + " --stdin --format=json";
+    CommandResult command = run_command_with_stdin(cmd, body, 10000);
+    if (command.timed_out) {
+        if (error) *error = "agent config update timed out";
+        return false;
+    }
+    cJSON* parsed = cJSON_Parse(command.output.c_str());
+	if (!parsed || !json_is_object(parsed)) {
+        if (parsed) cJSON_Delete(parsed);
+        if (error) *error = "agent config update returned invalid JSON";
+        return false;
+    }
+    cJSON* ok = cJSON_GetObjectItem(parsed, "ok");
+	if (command.exit_code != 0 || !json_is_type(ok, cJSON_True)) {
+        cJSON* error_item = cJSON_GetObjectItem(parsed, "error");
+		cJSON* error_kind = cJSON_GetObjectItem(parsed, "error_kind");
+		if (status_code) {
+			if (command.exit_code == 127) {
+				*status_code = 503;
+			} else if (json_is_string(error_kind) &&
+			           std::string(error_kind->valuestring) == "internal") {
+				*status_code = 500;
+			} else {
+				*status_code = 400;
+			}
+		}
+		if (error) *error = json_is_string(error_item) ? error_item->valuestring : "agent config update rejected";
+        cJSON_Delete(parsed);
+        return false;
+    }
+    if (result) *result = parsed;
+    else cJSON_Delete(parsed);
+    if (status_code) *status_code = 200;
+    return true;
+}
+
+ApiResponse handle_post_config_via_cli(const Options& options, const std::string& body) {
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) return make_json_error(400, "invalid JSON body");
+    if (!json_is_object(root)) {
+        cJSON_Delete(root);
+        return make_json_error(400, "request body must be an object");
+    }
+    cJSON* wifi_json = cJSON_GetObjectItem(root, "wifi");
+    cJSON* apply_wifi_json = cJSON_GetObjectItem(root, "apply_wifi");
+    if (wifi_json || (apply_wifi_json && !json_is_type(apply_wifi_json, cJSON_False))) {
+        cJSON_Delete(root);
+        return make_json_error(
+            400,
+            "wifi updates are not supported by /api/config; use /api/wifi/connect or /api/wifi/forget");
+    }
+    cJSON* cli_root = cJSON_CreateObject();
+    cJSON* submitted_config = cJSON_GetObjectItem(root, "config");
+    if (submitted_config && !json_is_object(submitted_config)) {
+        cJSON_Delete(cli_root);
+        cJSON_Delete(root);
+        return make_json_error(400, "config patch must be an object");
+    }
+    cJSON_AddItemToObject(cli_root, "config",
+                          submitted_config ? cJSON_Duplicate(submitted_config, 1) : cJSON_CreateObject());
+    char* cli_body = cJSON_PrintUnformatted(cli_root);
+    cJSON_Delete(cli_root);
+    cJSON_Delete(root);
+    if (!cli_body) {
+        return make_json_error(500, "failed to encode config patch");
+    }
+    cJSON* update = NULL;
+    int status = 503;
+    std::string error;
+    bool config_updated = update_agent_config_via_cli(options, cli_body, &update, &status, &error);
+    free(cli_body);
+    if (!config_updated) {
+        return make_json_error(status, error);
+    }
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON* config = cJSON_DetachItemFromObject(update, "config");
+    if (config) cJSON_AddItemToObject(response, "config", config);
+    cJSON* changed = cJSON_DetachItemFromObject(update, "changed_paths");
+    const bool config_changed = json_is_array(changed) && cJSON_GetArraySize(changed) > 0;
+    if (changed) cJSON_AddItemToObject(response, "changed_paths", changed);
+    cJSON* reboot = cJSON_DetachItemFromObject(update, "reboot_required");
+	bool reboot_required = json_is_type(reboot, cJSON_True);
+    if (reboot) cJSON_AddItemToObject(response, "reboot_required", reboot);
+    cJSON_AddBoolToObject(response, "usbhid_restart_required", reboot_required ? 1 : 0);
+    cJSON_AddBoolToObject(response, "agent_restart_scheduled", config_changed && !reboot_required ? 1 : 0);
+    cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
+    cJSON_AddBoolToObject(response, "usb_reenumeration_scheduled", 0);
+    cJSON_AddStringToObject(response, "message",
+                            reboot_required
+                                ? "config saved; USB HID configuration changed; reboot required"
+                                : "config saved");
+    if (config_changed && !reboot_required) schedule_agent_restart();
+    cJSON_Delete(update);
+    return make_json_ok(response);
 }
 
 // handle_get_config_meta serves the config field metadata produced by the agent
@@ -6040,41 +4513,76 @@ std::string episode_dir(const Options& options) {
     return memory_dir(options) + "/episodes";
 }
 
-std::string latest_llm_log_name(const Options& options) {
+bool open_latest_llm_log(const Options& options,
+                         int* fd,
+                         std::string* name,
+                         std::string* error) {
+    if (fd) *fd = -1;
+    if (name) name->clear();
+    if (error) error->clear();
+
     const std::string dir_path = llm_log_dir(options);
     DIR* dir = opendir(dir_path.c_str());
     if (!dir) {
-        return "";
+        if (errno == ENOENT) return true;
+        if (error) *error = "open " + dir_path + ": " + strerror(errno);
+        return false;
     }
 
+    int selected_fd = -1;
     bool found = false;
     time_t best_mtime = 0;
     std::string best_name;
+    const int directory_fd = dirfd(dir);
+    if (directory_fd < 0) {
+        const int dirfd_errno = errno;
+        closedir(dir);
+        if (error) *error = "get fd for " + dir_path + ": " + strerror(dirfd_errno);
+        return false;
+    }
     struct dirent* entry = NULL;
     while ((entry = readdir(dir)) != NULL) {
-        std::string name = entry->d_name;
-        if (!is_llm_log_name(name)) {
+        const std::string candidate_name = entry->d_name;
+        if (!is_llm_log_name(candidate_name)) {
             continue;
         }
-        const std::string full = dir_path + "/" + name;
+        int candidate_fd = openat(
+            directory_fd,
+            candidate_name.c_str(),
+            O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (candidate_fd < 0) {
+            continue;
+        }
         struct stat st;
-        if (lstat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+        if (fstat(candidate_fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+            close(candidate_fd);
             continue;
         }
         if (!found || st.st_mtime > best_mtime ||
-            (st.st_mtime == best_mtime && name > best_name)) {
+            (st.st_mtime == best_mtime && candidate_name > best_name)) {
+            if (selected_fd >= 0) close(selected_fd);
+            selected_fd = candidate_fd;
             found = true;
             best_mtime = st.st_mtime;
-            best_name = name;
+            best_name = candidate_name;
+        } else {
+            close(candidate_fd);
         }
     }
-    closedir(dir);
-    return best_name;
-}
-
-std::string latest_llm_log_path(const Options& options) {
-    std::string name = latest_llm_log_name(options);
-    return name.empty() ? "" : llm_log_path(options, name);
+    const int close_result = closedir(dir);
+    if (close_result != 0 && selected_fd < 0) {
+        if (error) *error = "close " + dir_path + ": " + strerror(errno);
+        return false;
+    }
+    if (fd) {
+        *fd = selected_fd;
+    } else if (selected_fd >= 0) {
+        close(selected_fd);
+    }
+    if (name && selected_fd >= 0) {
+        *name = best_name;
+    }
+    return true;
 }
 
 std::string latest_episode_yaml_path(const Options& options) {
@@ -6188,23 +4696,47 @@ ApiResponse handle_export_support_logs(const Options& options) {
         kSupportLogAgentMaxBytes,
         &error);
 
-    // Keep the original LLM log filename instead of renaming to http.log
-    // Capture both name and path atomically to avoid race conditions during log rotation
-    std::string llm_log_original_name = latest_llm_log_name(options);
-    std::string llm_log_source_path;
-    if (llm_log_original_name.empty()) {
+    // Keep the selected log descriptor open from directory scan through copy,
+    // so rotation after selection cannot change which file bytes are archived.
+    int llm_log_fd = -1;
+    std::string llm_log_original_name;
+    std::string llm_log_open_error;
+    if (!open_latest_llm_log(
+            options, &llm_log_fd, &llm_log_original_name, &llm_log_open_error)) {
+        staged = false;
+        error = llm_log_open_error;
+    } else if (llm_log_fd < 0) {
         llm_log_original_name = kSupportLogHttpName;
-        llm_log_source_path = "";  // Will trigger placeholder
+        staged = staged && write_placeholder_file(
+            stage_dir + "/" + llm_log_original_name,
+            "HTTP log unavailable",
+            "No llm-http-*.log files found under " + llm_log_dir(options) + ".\n",
+            &error);
     } else {
-        llm_log_source_path = llm_log_path(options, llm_log_original_name);
+        const std::string source_label = llm_log_path(options, llm_log_original_name);
+        std::string copy_error;
+        bool copied = copy_regular_fd_tail(
+            llm_log_fd,
+            source_label,
+            stage_dir + "/" + llm_log_original_name,
+            kSupportLogHttpMaxBytes,
+            0644,
+            &copy_error);
+        if (close(llm_log_fd) != 0 && copied) {
+            copy_error = "close " + source_label + ": " + strerror(errno);
+            copied = false;
+        }
+        if (!copied) {
+            std::ostringstream detail;
+            detail << "source: " << source_label << "\n";
+            detail << "copy_error: " << copy_error << "\n";
+            staged = staged && write_placeholder_file(
+                stage_dir + "/" + llm_log_original_name,
+                "HTTP log unavailable",
+                detail.str(),
+                &error);
+        }
     }
-    staged = staged && stage_file_or_placeholder(
-        llm_log_source_path,
-        stage_dir + "/" + llm_log_original_name,
-        "HTTP log",
-        "No llm-http-*.log files found under " + llm_log_dir(options) + ".\n",
-        kSupportLogHttpMaxBytes,
-        &error);
     if (!staged) {
         remove_tree_best_effort(stage_dir);
         return make_json_error(500, error.empty() ? "failed to stage support logs" : error);
@@ -6350,133 +4882,6 @@ ApiResponse handle_post_system_env(const Options& options, const std::string& bo
     return make_json_ok(response);
 }
 
-ApiResponse handle_post_config(const Options& options, const std::string& body) {
-    cJSON* root = cJSON_Parse(body.c_str());
-    if (!root) {
-        return make_json_error(400, "invalid JSON body");
-    }
-
-    aiden::AgentToml config;
-    aiden::WifiNetworkConfig wifi;
-    std::string ignore_error;
-    load_current_agent_config(options, &config, &ignore_error);
-    load_current_wifi_config(options, &wifi, &ignore_error);
-    std::string original_device_type = effective_device_type(config);
-    std::string original_keyboard_layout = config.hid.keyboard_layout;
-
-    bool submitted_model_api_key = false;
-    cJSON* config_json = cJSON_GetObjectItem(root, "config");
-    if (config_json) {
-        std::string metadata_error;
-        if (!load_agent_config_metadata(NULL, &metadata_error)) {
-            cJSON_Delete(root);
-            return make_json_error(
-                503,
-                metadata_error.empty() ? "config metadata unavailable" : metadata_error);
-        }
-        std::string schema_error;
-        if (!validate_agent_config_patch_json(config_json, &schema_error)) {
-            cJSON_Delete(root);
-            return make_json_error(400, schema_error.empty() ? "invalid config schema" : schema_error);
-        }
-        cJSON* model_patch = cJSON_GetObjectItem(config_json, "model");
-        submitted_model_api_key =
-            json_is_object(model_patch) &&
-            json_is_string(cJSON_GetObjectItem(model_patch, "api_key"));
-        update_config_from_json(config_json, &config);
-        preserve_redacted_agent_secrets(options, &config);
-    }
-    aiden::migrate_flat_voice_provider_fields(config);
-    // Only an explicitly submitted legacy model.api_key can be migrated. The
-    // value loaded from the runtime config is already resolved from a provider
-    // record and may belong to a different provider than the request selects.
-    move_model_api_key_to_provider(&config, submitted_model_api_key);
-
-    cJSON* wifi_json = cJSON_GetObjectItem(root, "wifi");
-    if (json_is_object(wifi_json)) {
-        update_wifi_from_json(wifi_json, &wifi);
-    }
-
-    bool apply_wifi = false;
-    cJSON* apply_wifi_json = cJSON_GetObjectItem(root, "apply_wifi");
-    if (json_is_bool(apply_wifi_json)) {
-        apply_wifi = json_is_type(apply_wifi_json, cJSON_True);
-    }
-
-    ValidationResult validation = validate_agent_config_for_save(config);
-    if (validation.outcome != ValidationOutcome::OK) {
-        AIDEN_LOG_WARN("agent_config", "save_rejected", "outcome=%s error=%s",
-                       validation.outcome == ValidationOutcome::UNAVAILABLE ? "unavailable" : "invalid",
-                       validation.message.c_str());
-        cJSON_Delete(root);
-        // 503 when the validator itself is missing/broken: a server-side
-        // dependency outage, not a user input error. 400 only when the
-        // validator ran and rejected the user's config.
-        int status = validation.outcome == ValidationOutcome::UNAVAILABLE ? 503 : 400;
-        return make_json_error(status, validation.message);
-    }
-
-    cJSON_Delete(root);
-    config.device.device_type = effective_device_type(config);
-    config.hid.pointer_mode = pointer_mode_for_device_type(config.device.device_type);
-    config.hid.input_backend = normalize_input_backend(config.hid.input_backend);
-    // device_type is the user-visible source of truth for the USB HID profile;
-    // pointer_mode is derived from it. keyboard_layout changes the Agent's key
-    // mapping, but iOS also pins its hardware layout at USB enumeration. A
-    // same-identity UDC bounce can leave iOS with inconsistent keyboard and
-    // pointer state, so either configuration change requires a clean restart.
-    bool device_type_changed = original_device_type != config.device.device_type;
-    bool keyboard_layout_changed = original_keyboard_layout != config.hid.keyboard_layout;
-    bool usb_hid_reboot_required = device_type_changed || keyboard_layout_changed;
-
-    std::string save_error;
-    if (!aiden::save_agent_toml(options.agent_config_path.c_str(), config, &save_error)) {
-        return make_json_error(500, save_error);
-    }
-
-    bool should_save_wifi = !wifi.ssid.empty() || !wifi.networks.empty() || file_exists(options.wifi_config_path.c_str());
-    if (should_save_wifi && !aiden::save_wifi_config(options.wifi_config_path.c_str(), wifi, &save_error)) {
-        return make_json_error(500, save_error);
-    }
-
-    bool agent_restart_scheduled = !usb_hid_reboot_required;
-    if (agent_restart_scheduled) {
-        schedule_agent_restart();
-    }
-
-    cJSON* response = cJSON_CreateObject();
-    cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "message",
-                            usb_hid_reboot_required
-                                ? "config saved; USB HID configuration changed; reboot required"
-                                : "config saved; agent restarting");
-    cJSON_AddBoolToObject(response, "agent_restart_scheduled", agent_restart_scheduled ? 1 : 0);
-    cJSON_AddBoolToObject(response, "usb_reenumeration_scheduled", 0);
-    cJSON_AddBoolToObject(response, "usbhid_restart_scheduled", 0);
-    cJSON_AddBoolToObject(response, "usbhid_restart_required", usb_hid_reboot_required ? 1 : 0);
-    cJSON_AddBoolToObject(response, "reboot_required", usb_hid_reboot_required ? 1 : 0);
-    cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
-    cJSON_AddItemToObject(response, "config", config_to_json(config));
-
-    cJSON* paths = add_object(response, "paths");
-    cJSON_AddStringToObject(paths, "agent_config", options.agent_config_path.c_str());
-    cJSON_AddStringToObject(paths, "wifi_config", options.wifi_config_path.c_str());
-    cJSON_AddStringToObject(paths, "system_env", options.system_env_path.c_str());
-
-    if (apply_wifi && should_save_wifi) {
-        CommandResult wifi_apply = apply_wifi_config(options);
-        cJSON* apply = add_object(response, "wifi_apply");
-        cJSON_AddBoolToObject(apply, "ok", wifi_apply.exit_code == 0);
-        cJSON_AddNumberToObject(apply, "exit_code", wifi_apply.exit_code);
-        cJSON_AddStringToObject(apply, "output", trim_trailing_newlines(wifi_apply.output).c_str());
-        if (wifi_apply.exit_code != 0) {
-            cJSON_AddStringToObject(apply, "error", "failed to apply wifi config");
-        }
-        cJSON_AddItemToObject(response, "wifi_status", wifi_status_to_json(query_wifi_status(options)));
-    }
-
-    return make_json_ok(response);
-}
 
 ApiResponse handle_put_config_locale(const Options& options, const std::string& body) {
     cJSON* root = cJSON_Parse(body.c_str());
@@ -6496,43 +4901,27 @@ ApiResponse handle_put_config_locale(const Options& options, const std::string& 
         return make_json_error(400, "unsupported locale; expected zh-CN or en-US");
     }
 
-    std::string original_content;
-    mode_t config_mode = 0600;
-    if (file_exists(options.agent_config_path.c_str())) {
-        std::string read_error;
-        if (!read_file_contents_checked(options.agent_config_path.c_str(),
-                                        kMaxAgentConfigSize,
-                                        &original_content,
-                                        &read_error)) {
-            return make_json_error(500, read_error.empty() ? "failed to read agent config" : read_error);
-        }
-        struct stat st;
-        if (stat(options.agent_config_path.c_str(), &st) == 0) {
-            config_mode = st.st_mode & 0777;
-        }
-    }
-    const std::string updated_content = update_top_level_locale(original_content, locale);
-
-    ValidationResult validation = validate_agent_toml_content_for_save(
-            updated_content, options.agent_config_path);
-    if (validation.outcome != ValidationOutcome::OK) {
-        const int status = validation.outcome == ValidationOutcome::UNAVAILABLE ? 503 : 400;
-        return make_json_error(status, validation.message);
-    }
-
-    std::string save_error;
-    if (!atomic_write_file(options.agent_config_path, updated_content, config_mode, &save_error)) {
-        return make_json_error(500, save_error);
-    }
-
+    cJSON* patch_root = cJSON_CreateObject();
+    cJSON* patch_config = add_object(patch_root, "config");
+    cJSON* patch_agent = add_object(patch_config, "agent");
+    cJSON_AddStringToObject(patch_agent, "locale", locale.c_str());
+    char* patch_text = cJSON_PrintUnformatted(patch_root);
+    cJSON_Delete(patch_root);
+    if (!patch_text) return make_json_error(500, "failed to encode locale patch");
+    cJSON* update = NULL;
+    int status = 503;
+    std::string update_error;
+    bool updated = update_agent_config_via_cli(options, patch_text, &update, &status, &update_error);
+    free(patch_text);
+    if (!updated) return make_json_error(status, update_error);
+    cJSON_Delete(update);
     schedule_agent_restart();
-
-    cJSON* response = cJSON_CreateObject();
-    cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "locale", locale.c_str());
-    cJSON_AddStringToObject(response, "message", "locale saved; agent restarting");
-    cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
-    return make_json_ok(response);
+    cJSON* cli_response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(cli_response, "ok", 1);
+    cJSON_AddStringToObject(cli_response, "locale", locale.c_str());
+    cJSON_AddStringToObject(cli_response, "message", "locale saved; agent restarting");
+    cJSON_AddBoolToObject(cli_response, "agent_restart_scheduled", 1);
+    return make_json_ok(cli_response);
 }
 
 ApiResponse handle_post_reboot() {
@@ -7061,7 +5450,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         };
         Check enums[] = {
             {"input_mode", {"text", "stt", NULL}},
-            {"trigger_mode", {"manual", "wakeup", NULL, NULL}},
         };
         for (size_t i = 0; i < sizeof(enums) / sizeof(enums[0]); ++i) {
             cJSON* item = cJSON_GetObjectItem(values, enums[i].key);
@@ -7084,18 +5472,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
                 std::string msg = "invalid input_mode: " + val + " (audio mode has been removed; use stt instead)";
                 cJSON_AddStringToObject(r, "detail", msg.c_str());
                 all_passed = false;
-            } else if (ok && std::string(enums[i].key) == "trigger_mode" && val == "wakeup") {
-                cJSON* input_item = cJSON_GetObjectItem(values, "input_mode");
-                std::string input_mode = json_is_string(input_item) ? trim_copy(input_item->valuestring) : "";
-                if (input_mode == "stt") {
-                    cJSON_AddBoolToObject(r, "passed", 1);
-                    cJSON_AddStringToObject(r, "detail", val.c_str());
-                } else {
-                    cJSON_AddBoolToObject(r, "passed", 0);
-                    std::string msg = "wakeup requires input_mode stt, got '" + input_mode + "'";
-                    cJSON_AddStringToObject(r, "detail", msg.c_str());
-                    all_passed = false;
-                }
             } else if (ok) {
                 cJSON_AddBoolToObject(r, "passed", 1);
                 cJSON_AddStringToObject(r, "detail", val.c_str());
@@ -7442,7 +5818,7 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     }
 
     if (request.method == "POST" && request.path == "/api/config") {
-        return handle_post_config(options, request.body);
+        return handle_post_config_via_cli(options, request.body);
     }
 
     if (request.method == "PUT" && request.path == "/api/config/locale") {

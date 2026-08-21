@@ -73,30 +73,19 @@ after. It does not consume every intermediate screenshot.
 
 The environment bridge is the unified HTTP protocol the benchmark uses to connect
 to a real device, a simulator, or another environment. Both the Go agent and the
-MobileGym bridge implement this interface set; the Go agent daemon can also enable
-environment bridge mode to forward some of its local tool calls to another bridge.
+MobileGym bridge implement this interface set; environment bridge mode wires the
+agent's screen and MNK providers to the selected bridge.
 
 Typical scenario:
 
 - The WebUI starts an isolated Docker agent daemon per job/task worker.
-- That daemon uses `--environment-bridge-mode` to forward device-related tools to
-  the selected environment bridge.
-- From the agent's perspective it is still calling ordinary tools such as
-  `screenshot`, `touch_gesture`, `keyboard_text`.
-- From the environment's perspective it actually receives HTTP `/api/tools/<tool>`
-  requests.
-
-The tools the default WebUI Docker daemon forwards include:
-
-```text
-touch_gesture,keyboard_text,keyboard_tap,enter_text,
-search_launch_app,mouse_move,mouse_scroll,
-quick_action,bridge_open_app,bridge_clipboard,bridge_calendar,
-bridge_contacts,bridge_notification
-```
-
-`screenshot` is not forwarded. The agent captures it locally through
-`POST /api/providers/screenshot`.
+- That daemon uses `--environment-bridge-mode` to wire its screen and MNK
+  providers to the selected environment bridge.
+- From the agent's perspective it still calls ordinary tools such as
+  `screenshot`, `touch_gesture`, and `keyboard_tap`; those tools use the injected
+  providers.
+- The bridge receives `POST /api/providers/screenshot` and
+  `POST /api/providers/mnk` requests.
 
 Notes:
 
@@ -234,8 +223,8 @@ the expected value. The same matcher works in mock responses and
    the field and tap the visible Paste/粘贴 menu action.
 
 The clipboard/paste sub-path does not fall back to typing the target text itself.
-The top-level `enter_text` tool owns the HID/IME typing fallback. Because mock suites forward
-`enter_text` to the scripted environment, they validate the Agent's
+The top-level `enter_text` tool owns the HID/IME typing fallback. Because mock suites route
+`enter_text` through the scripted environment, they validate the Agent's
 tool selection but not this internal fallback implementation. The Go unit tests
 cover those branches; a real-phone smoke test is still needed for platform paste
 behavior.
@@ -261,8 +250,9 @@ Standard environment bridge interface:
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Health check |
-| `GET /api/tools` | Tool catalog, used by the agent health check and the environment bridge |
-| `POST /api/tools/<tool>` | Execute a forwarded tool, e.g. touch/keyboard |
+| `GET /api/tools` | Legacy tool catalog for bridge clients and debugging |
+| `POST /api/tools/<tool>` | Legacy bridge tool invocation |
+| `POST /api/providers/mnk` | MNK provider operation used by the Go agent |
 | `POST /api/setup` | Reset/claim the env for a benchmark task |
 | `POST /api/release` | Release the env held by a benchmark task |
 | `GET /api/concurrent` | Return how many concurrent tasks this bridge supports |
@@ -274,8 +264,7 @@ Concurrent MobileGym is routed by `benchmark-task-id`:
   task worker.
 - The runner sends this header when calling `/api/setup`, `/api/release`,
   `/api/providers/screenshot`.
-- The agent daemon's environment bridge tool requests carry the same benchmark
-  task id.
+- The agent daemon's provider requests carry the same benchmark task id.
 - The bridge routes requests to the same env based on this id.
 
 If a MobileGym environment's env pool capacity is `N` and the suite has more than
@@ -326,7 +315,7 @@ Common fields:
 | --- | --- |
 | `prompt_prefix` | Prefix for every task prompt; constrains device type, tool usage, etc. |
 | `global_reset` | Suite-level reset configuration |
-| `setup` | Task-level pre-steps; currently supports `{"type": "agent_prompt", ...}` |
+| `setup` | Task-level pre-steps; supports `agent_prompt` and benchmark-token-protected `seed_memory` |
 | `app_ids` | Optional MobileGym app IDs to preload during environment setup; omitted tasks skip eager app data loading |
 | `rubric` | The judge model's scoring items |
 | `hard_assertions` | Deterministic checks, e.g. tool-call counts, timeout, required/forbidden tools |
@@ -336,6 +325,10 @@ Common fields:
 | `expected_answer` | Direct answer for multiple-choice/fixed-answer tasks |
 | `trace_observations` | Checks on specific behaviors in the trace, e.g. whether a given skill was read |
 | `mock_environment` | Suite-level default or task-level scripted Phone Bridge state, tool responses, and mock screen |
+
+For `agent_prompt`, set `expected_response` when setup success has a precise
+completion marker. The runner compares the trimmed response exactly and fails
+the task setup on any other output.
 
 A unit suite is a different format with `kind` set to `unit`; it tests a tool's
 input/output directly without going through agent chat.
@@ -416,7 +409,8 @@ A device environment is for an existing device/tool endpoint. Fill in:
 When the WebUI starts a job it will:
 
 1. Start an isolated Docker agent daemon for the job.
-2. Forward that daemon's device tools to this endpoint via the environment bridge.
+2. Connect that daemon's screen and MNK providers to this endpoint via the
+   environment bridge.
 3. Run the benchmark using the isolated daemon's `/api/chat`.
 
 This is suitable for a real device or external tool environment that needs
@@ -559,6 +553,8 @@ Common parameters:
 | `--suite PATH` | Required, path to the suite JSON |
 | `--agent-url URL` | Agent daemon address; default `http://localhost:8080` or `AIDEN_AGENT_URL` |
 | `--environment-url URL` | Optional, environment bridge address; used for `/api/setup`, `/api/providers/screenshot`, `/api/release` |
+| `--target-platform PLATFORM` | Target device platform (`auto`, `ios`, or `android`); validated against the environment or agent |
+| `--benchmark-token-file PATH` | File containing the benchmark control token used for protected agent endpoints |
 | `--auto-agent-setup` | Ignore `--agent-url`; auto-start isolated agent daemons concurrently per `/api/concurrent` |
 | `--daemon-image IMAGE` | Agent daemon image used by `--auto-agent-setup` |
 | `--base-config-dir DIR` | Agent config template directory used by `--auto-agent-setup` |
@@ -610,7 +606,7 @@ Notes:
 
 - `--agent-url` is the agent daemon.
 - `--environment-url` is the environment bridge endpoint that implements
-  `/api/setup`, `/api/providers/screenshot`, `/api/release`.
+  `/api/setup`, `/api/providers/screenshot`, `/api/providers/mnk`, and `/api/release`.
 - Without `--environment-url`, the runner can still run agent chat but will not
   save live pre/post screenshots; judge results that rely on visual screenshots
   will be weaker.
@@ -708,6 +704,143 @@ uv run python -m runner compare \
 
 Use it to see task status changes and performance changes; good for regression
 checks.
+
+#### Episode Memory consolidation diagnostic
+
+Each of the three suites contains both a natural recall task and a physical-iPhone
+execution task. The conditions are:
+
+1. `before`: the Episode exists but has not produced Memory;
+2. `after`: the Episode Memory Worker processes the same Episode into Device Memory;
+3. `legacy`: a fixed legacy direct-extraction Memory fixture is present.
+
+This is a fast retrieval-and-decision diagnostic, not evidence of improved UI
+execution. Use it to determine whether failures come from consolidation,
+on-demand recall, or use of recalled Memory. The primary comparison is `before`
+versus `after`; the secondary comparison is `after` versus `legacy`. The legacy
+fixture does not execute or benchmark the removed extractor itself.
+
+The natural recall task uses the same real-environment suite type as the
+physical-iPhone task, but its prompt and hard assertions prohibit device
+operation. Use `--auto-agent-setup` with a real environment bridge so every
+attempt gets a fresh agent daemon and isolated data directory, preventing
+Memory, Episode, session, and context-cache leakage between conditions.
+
+```bash
+uv run python -m runner run \
+  --suite suites/episode_memory_before_v1.json \
+  --task-id qa_notes_title_save_procedure \
+  --auto-agent-setup \
+  --environment-url http://<real-environment-host>:<port> \
+  --target-platform ios \
+  --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
+  --no-judge \
+  --run-id episode-memory-before
+
+uv run python -m runner run \
+  --suite suites/episode_memory_after_v1.json \
+  --task-id qa_notes_title_save_procedure \
+  --auto-agent-setup \
+  --environment-url http://<real-environment-host>:<port> \
+  --target-platform ios \
+  --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
+  --no-judge \
+  --run-id episode-memory-after
+
+uv run python -m runner run \
+  --suite suites/episode_memory_legacy_v1.json \
+  --task-id qa_notes_title_save_procedure \
+  --auto-agent-setup \
+  --environment-url http://<real-environment-host>:<port> \
+  --target-platform ios \
+  --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
+  --no-judge \
+  --run-id episode-memory-legacy
+
+uv run python -m runner compare \
+  --runs runs/episode-memory-before runs/episode-memory-after
+
+uv run python -m runner compare \
+  --runs runs/episode-memory-legacy runs/episode-memory-after
+```
+
+The comparison reports pass-count, median tool-call, and median wall-time
+deltas. The prompt does not name or force a particular memory tool. After the
+five-repeat comparison is stable, rerun the same commands with `--repeats 10`
+and distinct run IDs.
+
+#### Episode Memory physical-iPhone execution comparison
+
+The physical-iPhone benchmark has the same three conditions as the diagnostic:
+
+1. `before`: the completed Settings Episode exists but is not consolidated;
+2. `after`: the Episode Memory Worker processes that Episode into Device Memory;
+3. `legacy`: a fixed Device Memory fixture represents the removed synchronous
+   Episode-to-Memory procedure output.
+
+Every condition asks the agent to reach the active Ethernet interface's IPv4
+details. All suites require a final screenshot, and the judge checks the visible
+Ethernet page rather than trusting the final response. Task pass rate is the
+primary metric. Tool calls and wall time are secondary efficiency metrics, and
+the recall observation is diagnostic only.
+
+Run the physical-iPhone task from each of the same three suites with isolated
+agent state:
+
+```bash
+uv run python -m runner run \
+  --suite suites/episode_memory_before_v1.json \
+  --task-id settings_ethernet_ipv4_from_episode \
+  --auto-agent-setup \
+  --environment-url http://<physical-device-environment-host>:<port> \
+  --target-platform ios \
+  --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
+  --run-id episode-memory-iphone-before
+
+uv run python -m runner run \
+  --suite suites/episode_memory_after_v1.json \
+  --task-id settings_ethernet_ipv4_from_episode \
+  --auto-agent-setup \
+  --environment-url http://<physical-device-environment-host>:<port> \
+  --target-platform ios \
+  --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
+  --run-id episode-memory-iphone-after
+
+uv run python -m runner run \
+  --suite suites/episode_memory_legacy_v1.json \
+  --task-id settings_ethernet_ipv4_from_episode \
+  --auto-agent-setup \
+  --environment-url http://<physical-device-environment-host>:<port> \
+  --target-platform ios \
+  --benchmark-token-file /path/to/control_token \
+  --repeats 5 \
+  --run-id episode-memory-iphone-legacy
+
+uv run python -m runner compare \
+  --runs runs/episode-memory-iphone-before runs/episode-memory-iphone-after
+
+uv run python -m runner compare \
+  --runs runs/episode-memory-iphone-after runs/episode-memory-iphone-legacy
+```
+
+Omit `--task-id` from these commands to run each complete suite. Both tasks then
+share the same physical-device environment type; the natural recall task still
+does not operate the phone.
+
+Use the same iPhone, model configuration, prompt, and environment reset for all
+three runs. Use an isolated agent data directory for every attempt so Episodes,
+Memory, sessions, and context caches cannot leak across conditions. After the
+five-repeat comparison is stable, rerun the same commands with `--repeats 10`
+and distinct run IDs.
+MobileGym can validate runner and setup plumbing, but the USB Ethernet execution
+result must be validated on the physical iPhone. The primary conclusion comes
+from `before` versus `after`; `after` versus `legacy` is a compatibility
+comparison and does not benchmark the removed legacy extractor itself.
 
 ### 3.6 webui: start the WebUI from the CLI
 
@@ -829,7 +962,7 @@ uv run python -m runner run \
 ```
 
 Note: if there are multiple envs behind the MobileGym bridge, `/api/setup`,
-`/api/providers/screenshot`, `/api/tools/*`, and `/api/release` must all use the same
+`/api/providers/screenshot`, `/api/providers/mnk`, and `/api/release` must all use the same
 `benchmark-task-id`. When manually starting a long-lived agent daemon from the CLI,
 use a fixed route id such as `cli-task`; when you need to run multiple tasks
 concurrently, prefer the WebUI so each task worker gets its own daemon and its own

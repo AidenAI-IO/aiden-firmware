@@ -319,6 +319,16 @@ await systemEnvModule.evaluate();
 await configFormModule.evaluate();
 registerRuntime({getSectionFields: () => ({agent: []}), readSection: () => ({})});
 
+assert.deepEqual(
+  JSON.parse(JSON.stringify(configFormModule.namespace.sectionPatch(
+    'model',
+    {model: 'gpt-5.5', temperature: 0.2},
+    {model: 'gpt-5.5'},
+  ))),
+  {temperature: null},
+  'clearing an optional section value must produce a JSON Merge Patch deletion',
+);
+
 applyLocale('zh-CN', false);
 sttModule.namespace.setSTTTestButtonState(true, false);
 assert.equal(testButton.textContent, '结束录音');

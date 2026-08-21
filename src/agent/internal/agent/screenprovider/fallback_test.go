@@ -3,6 +3,7 @@ package screenprovider
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 type fakeScreenCaptureSource struct {
@@ -132,6 +133,42 @@ func TestScreenCaptureClientTreatsOldRunningPrimaryFrameAsStale(t *testing.T) {
 	}
 }
 
+func TestScreenCaptureClientRequestsFreshOnDemandFrameAfterLongIdle(t *testing.T) {
+	primary := &fakeHealthyScreenCaptureSource{
+		fakeScreenCaptureSource: &fakeScreenCaptureSource{
+			latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, minimalWidth int) (*FrameMetadata, []byte, error) {
+				return &FrameMetadata{Seq: 3049, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("fresh"), nil
+			},
+		},
+		health: &HealthResult{
+			State:       "RUNNING",
+			CaptureMode: "on_demand",
+			LatestSeq:   3048,
+			FrameAgeMs:  10_000,
+		},
+	}
+	fallback := &fakeScreenCaptureSource{
+		latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, minimalWidth int) (*FrameMetadata, []byte, error) {
+			return &FrameMetadata{Seq: 1, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("fallback"), nil
+		},
+	}
+
+	client := NewFallbackFromSources(primary, fallback)
+	meta, frame, info, err := client.LatestFrameWithFormat("jpeg", DefaultJPEGQuality, true, 0)
+	if err != nil {
+		t.Fatalf("LatestFrameWithFormat() error = %v", err)
+	}
+	if meta.Seq != 3049 || string(frame) != "fresh" || info.Backend != "" {
+		t.Fatalf("capture = seq %d payload %q backend %q, want fresh primary", meta.Seq, string(frame), info.Backend)
+	}
+	if primary.latestFrameWithFormatCalls != 1 {
+		t.Fatalf("primary calls = %d, want 1", primary.latestFrameWithFormatCalls)
+	}
+	if fallback.latestFrameWithFormatCalls != 0 {
+		t.Fatalf("fallback calls = %d, want 0", fallback.latestFrameWithFormatCalls)
+	}
+}
+
 func TestScreenCaptureClientTreatsFrameOlderThanPreCaptureHealthAsStale(t *testing.T) {
 	primary := &fakeHealthyScreenCaptureSource{
 		fakeScreenCaptureSource: &fakeScreenCaptureSource{
@@ -182,6 +219,58 @@ func TestScreenCaptureClientKeepsUsingFallbackBrieflyAfterSuccess(t *testing.T) 
 	}
 	if fallback.latestFrameCalls != 2 {
 		t.Fatalf("fallback calls = %d, want 2", fallback.latestFrameCalls)
+	}
+}
+
+func TestScreenCaptureClientRetriesPrimaryAfterFallbackStickyDurationExpires(t *testing.T) {
+	primaryAvailable := false
+	primary := &fakeScreenCaptureSource{
+		latestFrameFn: func() (*FrameMetadata, []byte, error) {
+			if !primaryAvailable {
+				return nil, nil, errors.New("frame service: TIMEOUT")
+			}
+			return &FrameMetadata{Seq: 2, Width: 1, Height: 1, PixelFormat: "png"}, []byte("primary"), nil
+		},
+	}
+	fallback := &fakeScreenCaptureSource{
+		latestFrameFn: func() (*FrameMetadata, []byte, error) {
+			return &FrameMetadata{Seq: 1, Width: 1, Height: 1, PixelFormat: "png"}, []byte("fallback"), nil
+		},
+	}
+
+	client := NewFallbackFromSources(primary, fallback)
+	if _, _, _, err := client.LatestFrame(); err != nil {
+		t.Fatalf("first LatestFrame() error = %v", err)
+	}
+
+	client.mu.Lock()
+	stickyDeadline := client.preferFallbackUntil
+	client.mu.Unlock()
+	if stickyDeadline.IsZero() {
+		t.Fatal("expected fallback sticky deadline")
+	}
+
+	if _, _, _, err := client.LatestFrame(); err != nil {
+		t.Fatalf("second LatestFrame() error = %v", err)
+	}
+	client.mu.Lock()
+	deadlineAfterFallback := client.preferFallbackUntil
+	client.preferFallbackUntil = time.Now().Add(-time.Nanosecond)
+	client.mu.Unlock()
+	if !deadlineAfterFallback.Equal(stickyDeadline) {
+		t.Fatalf("sticky deadline extended from %v to %v", stickyDeadline, deadlineAfterFallback)
+	}
+
+	primaryAvailable = true
+	_, frame, _, err := client.LatestFrame()
+	if err != nil {
+		t.Fatalf("LatestFrame() after sticky expiry error = %v", err)
+	}
+	if string(frame) != "primary" {
+		t.Fatalf("capture = %q, want primary after sticky expiry", string(frame))
+	}
+	if primary.latestFrameCalls != 2 {
+		t.Fatalf("primary calls = %d, want retry after sticky expiry", primary.latestFrameCalls)
 	}
 }
 

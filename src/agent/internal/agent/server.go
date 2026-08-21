@@ -23,6 +23,7 @@ import (
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 
+	"aiden-agent/internal/agent/mnk"
 	"aiden-agent/internal/agent/screenprovider"
 	"aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/tts"
@@ -69,6 +70,7 @@ type Server struct {
 	ttsPlaybackBackend      tts.AudioServiceBackend
 	screenCaptureMu         sync.Mutex
 	screenCaptureClient     screenprovider.Provider
+	quickCapture            *QuickCaptureController
 	recordMu                sync.Mutex
 	webRecording            *webAudioRecording
 	sttConfigTestSession    *sttConfigTestLiveSession
@@ -429,6 +431,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		})
 	}
 	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
+	s.quickCapture = newServerQuickCapture(runtime, s.screenCaptureClient)
 	runtime.tools.RegisterPhoneBridge(s.bridge)
 	s.loadHistoryFromDisk()
 
@@ -490,6 +493,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/setup", s.handleSetup)
 	if s.benchmarkToken() != "" {
 		mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
+		mux.HandleFunc("/api/benchmark/seed_episode", s.handleBenchmarkSeedEpisode)
+		mux.HandleFunc("/api/benchmark/episode-memory/process", s.handleBenchmarkProcessEpisodeMemory)
 		mux.HandleFunc("/api/benchmark/phone_bridge_state", s.handleBenchmarkPhoneBridgeState)
 	}
 	mux.HandleFunc("/api/clear", s.handleClear)
@@ -498,6 +503,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
 	mux.HandleFunc("/api/providers/screenshot", s.handleProviderScreenshot)
+	mux.HandleFunc("/api/providers/mnk", s.handleProviderMNK)
 	mux.HandleFunc("/api/concurrent", s.handleConcurrent)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
@@ -2370,6 +2376,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 type benchmarkSeedMemoryRequest struct {
+	Store    string   `json:"store"`
 	ID       string   `json:"id"`
 	Type     string   `json:"type"`
 	Title    string   `json:"title"`
@@ -2378,6 +2385,107 @@ type benchmarkSeedMemoryRequest struct {
 	Entities []string `json:"entities"`
 	Evidence []string `json:"evidence"`
 	Priority int      `json:"priority"`
+}
+
+func (s *Server) handleBenchmarkSeedEpisode(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var episode TaskEpisode
+	if err := json.NewDecoder(r.Body).Decode(&episode); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(episode.ID) == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(episode.UserGoal) == "" {
+		http.Error(w, "user_goal is required", http.StatusBadRequest)
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(episode.Status), "running") {
+		http.Error(w, "episode must be completed", http.StatusBadRequest)
+		return
+	}
+	store := s.episodeStore
+	if store == nil {
+		if plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane); ok && plane != nil {
+			store = plane.episodes
+		}
+	}
+	if store == nil {
+		http.Error(w, "episode store is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	id, err := store.AddEpisode(r.Context(), episode)
+	if err != nil {
+		http.Error(w, "seed episode: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "seeded",
+		"id":     id,
+	})
+}
+
+type benchmarkProcessEpisodeMemoryRequest struct {
+	EpisodeID string `json:"episode_id"`
+}
+
+type benchmarkProcessEpisodeMemoryResponse struct {
+	EpisodeID  string                   `json:"episode_id"`
+	Status     string                   `json:"status"`
+	Assessment *episodeMemoryAssessment `json:"assessment,omitempty"`
+	MemoryIDs  []string                 `json:"memory_ids"`
+}
+
+func (s *Server) handleBenchmarkProcessEpisodeMemory(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req benchmarkProcessEpisodeMemoryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.EpisodeID = strings.TrimSpace(req.EpisodeID)
+	if req.EpisodeID == "" {
+		http.Error(w, "episode_id is required", http.StatusBadRequest)
+		return
+	}
+	plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane)
+	if !ok || plane == nil {
+		http.Error(w, "episode memory is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	status, memoryIDs, err := plane.ProcessEpisodeMemoryNow(r.Context(), req.EpisodeID)
+	if err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, errEpisodeMemoryWorkerBusy) {
+			code = http.StatusConflict
+		}
+		http.Error(w, "process episode memory: "+err.Error(), code)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(benchmarkProcessEpisodeMemoryResponse{
+		EpisodeID:  req.EpisodeID,
+		Status:     string(status.Status),
+		Assessment: status.Assessment,
+		MemoryIDs:  memoryIDs,
+	})
 }
 
 func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Request) {
@@ -2389,14 +2497,15 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+	var req benchmarkSeedMemoryRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	var req benchmarkSeedMemoryRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		http.Error(w, "decode body: expected exactly one JSON object", http.StatusBadRequest)
 		return
 	}
 	if strings.TrimSpace(req.ID) == "" {
@@ -2408,8 +2517,16 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane)
-	if !ok || plane == nil || plane.LongTerm() == nil {
-		http.Error(w, "long-term memory not configured", http.StatusServiceUnavailable)
+	if !ok || plane == nil {
+		http.Error(w, "filesystem memory plane not configured", http.StatusServiceUnavailable)
+		return
+	}
+	storeName := strings.ToLower(strings.TrimSpace(req.Store))
+	if storeName == "" {
+		storeName = "long_term"
+	}
+	if storeName != "long_term" && storeName != "device" {
+		http.Error(w, "store must be long_term or device", http.StatusBadRequest)
 		return
 	}
 	priority := req.Priority
@@ -2420,18 +2537,46 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 	if len(evidence) == 0 {
 		evidence = []string{req.Content}
 	}
-	item := MemoryItem{
-		ID:               req.ID,
-		Type:             req.Type,
-		Priority:         priority,
-		Confidence:       0.9,
-		Title:            req.Title,
-		Content:          req.Content,
-		Tags:             req.Tags,
-		Entities:         req.Entities,
-		EvidenceExcerpts: evidence,
+	var (
+		id  string
+		err error
+	)
+	if storeName == "device" {
+		if plane.device == nil {
+			http.Error(w, "device memory not configured", http.StatusServiceUnavailable)
+			return
+		}
+		id, err = plane.device.Upsert(r.Context(), DeviceMemoryItem{
+			ID:         req.ID,
+			Type:       req.Type,
+			Status:     deviceMemoryStatusActive,
+			Priority:   priority,
+			Confidence: 0.9,
+			Title:      req.Title,
+			Summary:    req.Title,
+			Content:    req.Content,
+			DeviceID:   defaultMemoryDeviceID,
+			Tags:       req.Tags,
+			Entities:   req.Entities,
+		})
+	} else {
+		if plane.LongTerm() == nil {
+			http.Error(w, "long-term memory not configured", http.StatusServiceUnavailable)
+			return
+		}
+		item := MemoryItem{
+			ID:               req.ID,
+			Type:             req.Type,
+			Priority:         priority,
+			Confidence:       0.9,
+			Title:            req.Title,
+			Content:          req.Content,
+			Tags:             req.Tags,
+			Entities:         req.Entities,
+			EvidenceExcerpts: evidence,
+		}
+		id, err = plane.LongTerm().AddMemory(r.Context(), item)
 	}
-	id, err := plane.LongTerm().AddMemory(r.Context(), item)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Error("seed_memory AddMemory failed: %v", err)
@@ -2443,6 +2588,7 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "seeded",
 		"id":     id,
+		"store":  storeName,
 	})
 }
 
@@ -2505,6 +2651,16 @@ func (s *Server) handleProviderScreenshot(w http.ResponseWriter, r *http.Request
 	screenprovider.HandleHTTP(w, r, s.coordinateDebugCaptureClient())
 }
 
+func (s *Server) handleProviderMNK(w http.ResponseWriter, r *http.Request) {
+	provider := mnkProviderFromRuntime(s.runtime)
+	if provider == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(mnk.MNKErrorResponse{Error: "mnk provider not configured"})
+		return
+	}
+	mnk.NewHTTPHandler(provider).ServeHTTP(w, r)
+}
 func (s *Server) handleConcurrent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

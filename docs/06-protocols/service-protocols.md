@@ -17,10 +17,10 @@ Default socket:
 
 | op / command | Description |
 | --- | --- |
-| `health` | Returns service health status, latest frame sequence number, ring usage, error messages, average latency, etc. |
-| `latest_frame` | Returns latest frame metadata + raw payload |
-| `get_frame` | Gets specific frame by sequence number |
-| `list_frames` | Lists frame metadata in ring buffer |
+| `health` | Returns service health status, capture mode, latest request sequence number, error messages, average latency, etc. |
+| `latest_frame` | Starts capture, returns one fresh frame, then pauses capture again |
+| `get_frame` | Compatibility operation; returns `FRAME_NOT_FOUND` because on-demand frames are not retained |
+| `list_frames` | Compatibility operation; returns an empty list because there is no production frame history |
 | `restart` | Requests service to restart capture manager |
 
 `latest_frame` accepts `format: "jpeg"` or `format: "raw"`, an optional
@@ -32,6 +32,12 @@ source pixel format and align horizontal bounds to complete chroma pairs. When
 `crop_black` is omitted or false, no cropping is performed. The response includes
 `source_width`, `source_height`, and the `crop_*` rectangle for coordinate
 mapping.
+
+The production service reports `capture_mode: "on_demand"` and
+`ring_buffer_size: 0`, `ring_buffer_used: 0` in `health`. `since_seq` remains
+accepted for protocol compatibility, but every successful `latest_frame`
+request receives a newly assigned sequence number and triggers a fresh capture.
+Concurrent capture requests are serialized.
 
 ### FrameMetadata
 

@@ -114,16 +114,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dnsmasq-base
           sh scripts/test_usb0_dhcp_options.sh
-      - name: Run C++ unit tests
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake libopencv-dev
-          make test
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: src/agent/go.mod
           cache-dependency-path: src/agent/go.sum
+      - name: Run C++ unit tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libopencv-dev
+          make test
       - name: Run Go unit tests
         working-directory: src/agent
         run: go test ./...

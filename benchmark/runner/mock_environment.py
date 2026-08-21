@@ -12,6 +12,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
+from mnk_provider import execute_mnk_request
 from runner.matching import dict_contains
 from runner.suite import MockEnvironmentSpec, MockToolResponseSpec
 
@@ -279,6 +280,21 @@ def _handler_for(server: MockEnvironmentServer):
                         },
                     },
                 )
+                return
+            if path == "/api/providers/mnk":
+                payload = self._read_json()
+                if payload is None:
+                    return
+                def invoke(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+                    result = server.invoke(tool_name, tool_input)
+                    return {
+                        "output": result.output,
+                        "is_error": result.is_error,
+                        "error": result.error,
+                    }
+
+                status, response = execute_mnk_request(payload, invoke)
+                self._json(status, response)
                 return
             if path.startswith("/api/tools/"):
                 tool_name = path.removeprefix("/api/tools/").strip()

@@ -25,6 +25,7 @@ type androidADBController interface {
 type AndroidADBFrameStatus struct {
 	Available            bool    `json:"available"`
 	State                string  `json:"state,omitempty"`
+	CaptureMode          string  `json:"capture_mode,omitempty"`
 	LatestSeq            uint64  `json:"latest_seq,omitempty"`
 	FrameAgeMs           uint64  `json:"frame_age_ms,omitempty"`
 	RingBufferSize       uint32  `json:"ring_buffer_size,omitempty"`
@@ -177,6 +178,7 @@ func (m *androidADBManager) frameStatus(ctx context.Context) AndroidADBFrameStat
 	}
 	status := AndroidADBFrameStatus{
 		State:                health.State,
+		CaptureMode:          health.CaptureMode,
 		LatestSeq:            health.LatestSeq,
 		FrameAgeMs:           health.FrameAgeMs,
 		RingBufferSize:       health.RingBufferSize,
@@ -197,6 +199,9 @@ func frameCaptureAvailable(health *FrameHealthResult) bool {
 	}
 	if !strings.EqualFold(strings.TrimSpace(health.State), "RUNNING") {
 		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(health.CaptureMode), "on_demand") {
+		return true
 	}
 	return health.LatestSeq > 0
 }

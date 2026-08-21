@@ -100,7 +100,7 @@
             {
               "status": "active",
               "tool": "keyboard_tap",
-              "input": { "keys": ["meta", "tab"], "hold_ms": 120 },
+              "input": { "keys": ["meta", "tab"] },
               "note": "external keyboard fallback"
             }
           ]
@@ -108,7 +108,7 @@
         "mac": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "tab"], "hold_ms": 120 },
+          "input": { "keys": ["meta", "tab"] },
           "note": "opens App Switcher overlay; cannot cycle apps without held Cmd (HID tap limitation)"
         }
       }
@@ -601,7 +601,7 @@
         "mac": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "w"], "hold_ms": 120 },
+          "input": { "keys": ["meta", "w"] },
           "note": "close tab or window (Cmd+W); use quit_app (Cmd+Q) to fully quit app"
         }
       }
@@ -656,19 +656,19 @@
         "ios": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "q"], "hold_ms": 120 },
+          "input": { "keys": ["meta", "q"] },
           "note": "external keyboard: Cmd+Q exit app (HID meta=0x08, q=0x14); for Home Screen prefer home (Cmd+H)"
         },
         "android": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "h"], "hold_ms": 120 },
+          "input": { "keys": ["meta", "h"] },
           "note": "verified: Meta+H exit current app"
         },
         "mac": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "q"], "hold_ms": 150 },
+          "input": { "keys": ["meta", "q"] },
           "note": "fully quit app (Cmd+Q), not close tab"
         }
       }
@@ -792,7 +792,7 @@
         "ios": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "left"], "hold_ms": 120 },
+          "input": { "keys": ["meta", "left"] },
           "note": "external keyboard: Cmd+Left switch to previous Home Screen page (HID meta=0x08, left=0x50)"
         },
         "android": {
@@ -813,7 +813,7 @@
         "ios": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "right"], "hold_ms": 120 },
+          "input": { "keys": ["meta", "right"] },
           "note": "external keyboard: Cmd+Right switch to next Home Screen page (HID meta=0x08, right=0x4f)"
         },
         "android": {
@@ -861,7 +861,7 @@
         "mac": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "grave"], "hold_ms": 120 },
+          "input": { "keys": ["meta", "grave"] },
           "note": "cycle windows of front app (Cmd+`); US keyboard grave/backtick key"
         }
       }
@@ -922,7 +922,7 @@
         "mac": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "w"], "hold_ms": 120 },
+          "input": { "keys": ["meta", "w"] },
           "note": "close front window (Cmd+W)"
         }
       }
@@ -1139,7 +1139,7 @@
         "mac": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["ctrl", "tab"], "hold_ms": 120 },
+          "input": { "keys": ["ctrl", "tab"] },
           "note": "next tab in browser (Ctrl+Tab)"
         }
       }
@@ -1154,7 +1154,7 @@
         "mac": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["ctrl", "shift", "tab"], "hold_ms": 120 },
+          "input": { "keys": ["ctrl", "shift", "tab"] },
           "note": "previous tab in browser (Ctrl+Shift+Tab)"
         }
       }
@@ -1229,7 +1229,7 @@
         "mac": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "left"], "hold_ms": 120 },
+          "input": { "keys": ["meta", "left"] },
           "note": "move cursor to line/start of document (Cmd+Left)"
         }
       }
@@ -1244,7 +1244,7 @@
         "mac": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "right"], "hold_ms": 120 },
+          "input": { "keys": ["meta", "right"] },
           "note": "move cursor to line/end of document (Cmd+Right)"
         }
       }

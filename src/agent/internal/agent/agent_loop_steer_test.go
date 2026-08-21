@@ -3,7 +3,6 @@ package agent
 import (
 	"aiden-agent/internal/agent/executor"
 	"context"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -290,52 +289,6 @@ func TestAgentLoopRetriesAfterCanceledSteerInterruptDuringToolWithoutReplacement
 	}
 	if model.callCount != 2 {
 		t.Fatalf("model call count = %d, want 2", model.callCount)
-	}
-}
-
-func TestAgentLoopDoesNotRestartBudgetForToolCancellationWithoutSteer(t *testing.T) {
-	t.Parallel()
-
-	model := &scriptedModel{responses: []*llms.ContentResponse{
-		toolCallResponse("call-1", "slow", `{"__arg1":"original action"}`),
-		contentResponse("unexpected second model turn"),
-	}}
-	tool := &stubTool{name: "slow", description: "Slow tool."}
-	bridge := NewEnvironmentBridgeClient("http://bridge.local")
-	bridge.httpClient = &http.Client{Transport: bridgeCancelRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, context.Canceled
-	})}
-	manager, err := freshNewContextManager("system", "task", nil, t.TempDir())
-	if err != nil {
-		t.Fatalf("freshNewContextManager() error = %v", err)
-	}
-	interrupt := make(chan struct{})
-
-	loop := NewAgentLoop(
-		model,
-		RoleProfile{Tools: []langtools.Tool{tool}},
-		nil,
-		1,
-		nil,
-		nil,
-		executor.ScreenshotPruningConfig{}.WithDefaults(),
-		manager,
-	)
-	loop.EnvironmentBridge = bridge
-	loop.EnvironmentBridgeTools = []string{"slow"}
-	loop.SteerInterrupt = func() <-chan struct{} {
-		return interrupt
-	}
-
-	output, err := loop.Run(context.Background(), "task")
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if model.callCount != 1 {
-		t.Fatalf("model call count = %d, want 1 without a steer restart", model.callCount)
-	}
-	if output == "unexpected second model turn" {
-		t.Fatal("tool-local cancellation incorrectly restarted the iteration budget")
 	}
 }
 

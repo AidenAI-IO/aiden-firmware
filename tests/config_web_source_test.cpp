@@ -318,8 +318,9 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(source.find("handle_export_support_logs") != std::string::npos);
     CHECK(source.find("read_agent_log_snapshot") != std::string::npos);
     CHECK(source.find("latest_episode_yaml_path") != std::string::npos);
-    CHECK(source.find("latest_llm_log_path") != std::string::npos);
     CHECK(source.find("copy_regular_file_tail") != std::string::npos);
+    CHECK(source.find("open_latest_llm_log") != std::string::npos);
+    CHECK(source.find("copy_regular_fd_tail") != std::string::npos);
     CHECK(source.find("kSupportLogHttpMaxBytes") != std::string::npos);
     CHECK(source.find("fallback_tar_path") != std::string::npos);
     CHECK(source.find("archive is not gzip") != std::string::npos);
@@ -621,18 +622,8 @@ TEST_CASE("config web LLM diff mirror rejects missing messages") {
 }
 
 TEST_CASE("config web exposes audio archive switch") {
-    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
-    std::ifstream source_in(source_path.c_str());
-    REQUIRE(source_in.good());
-
-    std::ostringstream source_buffer;
-    source_buffer << source_in.rdbuf();
-    const std::string source = source_buffer.str();
-
     const std::string html = read_config_web_asset_bundle();
 
-    CHECK(source.find("\"audio_archive\"") != std::string::npos);
-    CHECK(source.find("audio_archive.enabled") != std::string::npos);
     CHECK(html.find("section-audio_archive") != std::string::npos);
     CHECK(html.find("Name: \"audio_archive\"") != std::string::npos);
     CHECK(html.find("{Key: \"enabled\", Widget: WidgetBoolean") != std::string::npos);
@@ -642,6 +633,23 @@ TEST_CASE("config web exposes audio archive switch") {
     CHECK(html.find("testSection('audio_archive')") == std::string::npos);
     CHECK(html.find("[audio_archive]") != std::string::npos);
     CHECK(html.find("save STT voice recording WAV") != std::string::npos);
+}
+
+TEST_CASE("config web exposes quick capture settings") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) +
+                                    "/src/agent/internal/agent/config_meta.go";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+    const std::string html = read_config_web_asset_bundle();
+
+    CHECK(source.find("Name: \"quick_capture\"") != std::string::npos);
+    CHECK(html.find("section-quick_capture") != std::string::npos);
+    CHECK(html.find("Name: \"quick_capture\"") != std::string::npos);
+    CHECK(html.find("screen_memory_ttl") != std::string::npos);
+    CHECK(html.find("GPIO32/GPIO33 wakeup remains independent") != std::string::npos);
 }
 
 TEST_CASE("config web docs list the model fields") {
@@ -821,28 +829,7 @@ TEST_CASE("ota documentation index references current docs paths") {
 }
 
 TEST_CASE("config web exposes screenshot pruning config fields") {
-    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
-    std::ifstream source_in(source_path.c_str());
-    REQUIRE(source_in.good());
-
-    std::ostringstream source_buffer;
-    source_buffer << source_in.rdbuf();
-    const std::string source = source_buffer.str();
-
     const std::string html = read_config_web_asset_bundle();
-
-    CHECK(source.find("\"screenshot_keep_n\"") != std::string::npos);
-    CHECK(source.find("\"screenshot_prune_interval\"") != std::string::npos);
-    CHECK(source.find("\"screen_stable_timeout_ms\"") != std::string::npos);
-    CHECK(source.find("\"screen_stable_ms\"") != std::string::npos);
-    CHECK(source.find("\"screen_stable_diff_threshold\"") != std::string::npos);
-    CHECK(source.find("\"load_all_tools\"") != std::string::npos);
-    CHECK(source.find("config.screenshot_keep_n") != std::string::npos);
-    CHECK(source.find("config.screenshot_prune_interval") != std::string::npos);
-    CHECK(source.find("config.screen_stable_timeout_ms") != std::string::npos);
-    CHECK(source.find("config.screen_stable_ms") != std::string::npos);
-    CHECK(source.find("config.screen_stable_diff_threshold") != std::string::npos);
-    CHECK(source.find("config.load_all_tools") != std::string::npos);
 
     CHECK(html.find("{Key: \"screenshot_keep_n\"") != std::string::npos);
     CHECK(html.find("{Key: \"screenshot_prune_interval\"") != std::string::npos);
@@ -853,22 +840,7 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
 }
 
 TEST_CASE("config web exposes model spec override fields") {
-    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
-    std::ifstream source_in(source_path.c_str());
-    REQUIRE(source_in.good());
-
-    std::ostringstream source_buffer;
-    source_buffer << source_in.rdbuf();
-    const std::string source = source_buffer.str();
-
     const std::string html = read_config_web_asset_bundle();
-
-    CHECK(source.find("\"context_window\"") != std::string::npos);
-    CHECK(source.find("\"max_response_tokens\"") != std::string::npos);
-    CHECK(source.find("\"model_max_output_tokens\"") != std::string::npos);
-    CHECK(source.find("config.model.context_window") != std::string::npos);
-    CHECK(source.find("config.model.max_response_tokens") != std::string::npos);
-    CHECK(source.find("config.model.model_max_output_tokens") != std::string::npos);
 
     CHECK(html.find("{Key: \"max_response_tokens\"") != std::string::npos);
     CHECK(html.find("{Key: \"context_window\"") != std::string::npos);
@@ -1308,9 +1280,6 @@ TEST_CASE("config web exposes telemetry settings section") {
 
     const std::string html = read_config_web_asset_bundle();
 
-    CHECK(source.find("config.telemetry.enabled") != std::string::npos);
-    CHECK(source.find("add_string_array_to_object(telemetry, \"tags\", config.telemetry.tags)") != std::string::npos);
-    CHECK(source.find("set_json_string_vector(&config->telemetry.tags, telemetry, \"tags\")") != std::string::npos);
     CHECK(source.find("std::string provider_original = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : \"\";") != std::string::npos);
     CHECK(source.find("std::string provider = lowercase_copy(provider_original);") != std::string::npos);
     CHECK(source.find("public_key_env") == std::string::npos);
@@ -1366,20 +1335,7 @@ TEST_CASE("config web does not expose benchmark settings section") {
 }
 
 TEST_CASE("config web exposes log settings section") {
-    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
-    std::ifstream source_in(source_path.c_str());
-    REQUIRE(source_in.good());
-
-    std::ostringstream source_buffer;
-    source_buffer << source_in.rdbuf();
-    const std::string source = source_buffer.str();
-
     const std::string html = read_config_web_asset_bundle();
-
-    CHECK(source.find("cJSON* log_config = add_object(root, \"log\")") != std::string::npos);
-    CHECK(source.find("config.log.llm_http_retention_days") != std::string::npos);
-    CHECK(source.find("cJSON* log_config = cJSON_GetObjectItem(root, \"log\")") != std::string::npos);
-    CHECK(source.find("set_json_int(&config->log.llm_http_retention_days, log_config, \"llm_http_retention_days\")") != std::string::npos);
 
     CHECK(html.find("section-log") != std::string::npos);
     CHECK(html.find("<h3>[log]</h3>") != std::string::npos);
@@ -1399,25 +1355,7 @@ TEST_CASE("config web exposes live activity settings section") {
 
     const std::string html = read_config_web_asset_bundle();
 
-    const std::string toml_header_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.h";
-    std::ifstream toml_header_in(toml_header_path.c_str());
-    REQUIRE(toml_header_in.good());
-
-    std::ostringstream toml_header_buffer;
-    toml_header_buffer << toml_header_in.rdbuf();
-    const std::string toml_header = toml_header_buffer.str();
-
-    const std::string toml_source_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.cpp";
-    std::ifstream toml_source_in(toml_source_path.c_str());
-    REQUIRE(toml_source_in.good());
-
-    std::ostringstream toml_source_buffer;
-    toml_source_buffer << toml_source_in.rdbuf();
-    const std::string toml_source = toml_source_buffer.str();
-
-    CHECK(source.find("\"live_activity\"") != std::string::npos);
-    CHECK(source.find("cJSON* live_activity = add_object(root, \"live_activity\")") != std::string::npos);
-    CHECK(source.find("preserve_redacted_agent_secrets") != std::string::npos);
+    CHECK(source.find("config-update --config=") != std::string::npos);
     CHECK(source.find("config.live_activity.relay_url") == std::string::npos);
     CHECK(source.find("has_relay_api_key") == std::string::npos);
     CHECK(source.find("has_private_key_pem") == std::string::npos);
@@ -1435,11 +1373,6 @@ TEST_CASE("config web exposes live activity settings section") {
     CHECK(html.find("save-live_activity") != std::string::npos);
     CHECK(html.find("data-action=\"enter-edit-section\" data-section-target=\"live_activity\"") != std::string::npos);
 
-    CHECK(toml_header.find("struct LiveActivityToml") != std::string::npos);
-    CHECK(toml_header.find("LiveActivityToml live_activity") != std::string::npos);
-    CHECK(toml_source.find("section == \"live_activity\"") != std::string::npos);
-    CHECK(toml_source.find("\"relay_api_key\"") == std::string::npos);
-    CHECK(toml_source.find("[live_activity]") != std::string::npos);
 }
 
 TEST_CASE("config web does not restart ota for system env changes") {
@@ -1458,7 +1391,6 @@ TEST_CASE("config web does not restart ota for system env changes") {
     CHECK(source.find("bool system_env_changed = original_system_env != updated_system_env;") == std::string::npos);
     CHECK(source.find("system env saved; services restarting") == std::string::npos);
     CHECK(source.find("system env saved; agent restarting") != std::string::npos);
-    CHECK(source.find("config saved; agent restarting") != std::string::npos);
     CHECK(source.find("config saved; agent and ota restarting") == std::string::npos);
 }
 
@@ -1591,30 +1523,7 @@ TEST_CASE("config web requires reboot for USB HID configuration changes") {
 
     const std::string html = read_config_web_asset_bundle();
 
-    const std::string toml_header_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.h";
-    std::ifstream toml_header_in(toml_header_path.c_str());
-    REQUIRE(toml_header_in.good());
-
-    std::ostringstream toml_header_buffer;
-    toml_header_buffer << toml_header_in.rdbuf();
-    const std::string toml_header = toml_header_buffer.str();
-
-    const std::string toml_source_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.cpp";
-    std::ifstream toml_source_in(toml_source_path.c_str());
-    REQUIRE(toml_source_in.good());
-
-    std::ostringstream toml_source_buffer;
-    toml_source_buffer << toml_source_in.rdbuf();
-    const std::string toml_source = toml_source_buffer.str();
-
-    CHECK(toml_header.find("device_type") != std::string::npos);
-    CHECK(toml_source.find("\"device_type\"") != std::string::npos);
     CHECK(source.find("\"device_type\"") != std::string::npos);
-    CHECK(toml_header.find("pointer_mode") != std::string::npos);
-    CHECK(toml_source.find("\"pointer_mode\"") != std::string::npos);
-    CHECK(toml_header.find("keyboard_layout") != std::string::npos);
-    CHECK(toml_source.find("\"keyboard_layout\"") != std::string::npos);
-    CHECK(source.find("\"keyboard_layout\"") != std::string::npos);
     CHECK(source.find("kUsbHidInitScript = \"/etc/init.d/S49usbhid\"") == std::string::npos);
     CHECK(source.find("schedule_usbhid_restart") == std::string::npos);
     CHECK(source.find("usbhid_restart_required") != std::string::npos);
@@ -1624,8 +1533,7 @@ TEST_CASE("config web requires reboot for USB HID configuration changes") {
     CHECK(source.find("command -v reboot") != std::string::npos);
     CHECK(source.find("make_json_error(503, error.empty() ? \"failed to schedule reboot\" : error)") != std::string::npos);
     CHECK(source.find("\"/api/reboot\"") != std::string::npos);
-    CHECK(source.find("config-check --stdin --format=json") != std::string::npos);
-    CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);
+    CHECK(source.find("config-update --config=") != std::string::npos);
     // config metadata endpoint: agent CLI is the single source of field metadata.
     CHECK(source.find("config-meta --format=json") != std::string::npos);
     CHECK(source.find(" config --config=") != std::string::npos);
@@ -1862,7 +1770,6 @@ TEST_CASE("config web html uses canonical provider map and type field names") {
 
     CHECK(html.find("appState.config.model_providers") != std::string::npos);
     CHECK(html.find("configKey:'model_providers'") != std::string::npos);
-    CHECK(html.find("body[self.spec.configKey]=snapshot") != std::string::npos);
     CHECK(html.find("payload.config&&payload.config[self.spec.configKey]") != std::string::npos);
     CHECK(html.find("resolveModelProviderType(providerRef)") != std::string::npos);
     CHECK(html.find("hydrateSelectField(section,'type'") != std::string::npos);

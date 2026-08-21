@@ -274,6 +274,33 @@ def test_seed_memory_sends_benchmark_token_header():
     assert result == {"status": "seeded", "id": "mem-1"}
 
 
+def test_seed_episode_sends_benchmark_token_header():
+    seen = {}
+    client = AgentClient(base_url="http://test", benchmark_token="episode-token")
+    episode = {"id": "ep-1", "user_goal": "verify a device procedure"}
+    with patch("urllib.request.urlopen", _captured(seen, body={"status": "seeded", "id": "ep-1"})):
+        result = client.seed_episode(episode)
+
+    assert seen["url"].endswith("/api/benchmark/seed_episode")
+    assert seen["headers"]["authorization"] == "Bearer episode-token"
+    assert json.loads(seen["body"]) == episode
+    assert result == {"status": "seeded", "id": "ep-1"}
+
+
+def test_process_episode_memory_sends_benchmark_token_header():
+    seen = {}
+    client = AgentClient(base_url="http://test", benchmark_token="episode-token")
+    response = {"episode_id": "ep-1", "status": "done", "memory_ids": ["devmem-1"]}
+    with patch("urllib.request.urlopen", _captured(seen, body=response)):
+        result = client.process_episode_memory("ep-1", timeout=90)
+
+    assert seen["url"].endswith("/api/benchmark/episode-memory/process")
+    assert seen["headers"]["authorization"] == "Bearer episode-token"
+    assert json.loads(seen["body"]) == {"episode_id": "ep-1"}
+    assert seen["timeout"] == 90
+    assert result == response
+
+
 def test_set_phone_bridge_state_sends_benchmark_token_header():
     seen = {}
     client = AgentClient(base_url="http://test", benchmark_token="state-token")

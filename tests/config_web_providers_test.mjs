@@ -368,6 +368,32 @@ assert.equal(ModelProvidersManager.sanitizeName('__proto__'), '');
 assert.equal(ModelProvidersManager.sanitizeName('constructor'), '');
 assert.equal(TtsProvidersManager.sanitizeName('prototype'), '');
 assert.equal(ModelProvidersManager.sanitizeName('work-openai'), 'work-openai');
+assert.equal(ModelProvidersManager.sanitizeName(' open.router '), 'open.router');
+assert.equal(TtsProvidersManager.sanitizeName('custom provider'), 'custom provider');
+
+let quotedProviderBody = null;
+ModelProvidersManager.load({'open.router': {type: 'openai'}});
+appState.config = {
+  model: {provider: 'open.router', model: 'gpt-5.5'},
+  model_providers: {'open.router': {type: 'openai'}},
+};
+providerSelectForModels.value = 'open.router';
+providerTypeInput.value = 'openai';
+providerBaseURLInput.value = 'https://updated.example/v1';
+providerAPIKeyInput.value = '';
+providerNameInput.value = 'open.router';
+requestImpl = async (_url, options) => {
+  quotedProviderBody = JSON.parse(options.body);
+  return {config: appState.config};
+};
+assert.equal(await ModelProvidersManager.saveDialog('open.router'), true);
+assert.deepEqual(
+  quotedProviderBody.config.model_providers,
+  {'open.router': {type: 'openai', base_url: 'https://updated.example/v1'}},
+  'editing a quoted provider name must address the existing record without renaming it',
+);
+assert.equal(Object.prototype.hasOwnProperty.call(quotedProviderBody.config, '_provider_renames'), false);
+assert.equal(Object.prototype.hasOwnProperty.call(quotedProviderBody, 'apply_wifi'), false);
 
 ModelProvidersManager.load({initial: {type: 'openai'}});
 ModelProvidersManager.records = {next: {type: 'openai'}};
@@ -426,6 +452,25 @@ secondRequest.resolve({config: {
 await voiceSave;
 assert.equal(maxActiveRequests, 1);
 assert.equal(latestDetails, '');
+assert.deepEqual(
+  requestBodies[1].config.tts_providers,
+  {voice: {type: 'fish-audio', reference_id: 'ref-1'}},
+  'provider patches retain changed optional values',
+);
+
+let clearedProviderBody = null;
+TtsProvidersManager.load({voice: {type: 'fish-audio', reference_id: 'ref-1'}});
+TtsProvidersManager.records = {voice: {type: 'fish-audio'}};
+requestImpl = async (_url, options) => {
+  clearedProviderBody = JSON.parse(options.body);
+  return {config: {tts_providers: {voice: {type: 'fish-audio'}}}};
+};
+assert.equal(await TtsProvidersManager.save(), true);
+assert.deepEqual(
+  clearedProviderBody.config.tts_providers,
+  {voice: {type: 'fish-audio', reference_id: null}},
+  'clearing an optional provider value must produce a JSON Merge Patch deletion',
+);
 
 const providerSelect = new Element();
 providerSelect.value = 'active';
@@ -457,7 +502,7 @@ requestImpl = async (_url, options) => {
 };
 assert.equal(await ModelProvidersManager.deleteRecord('active'), true);
 assert.equal(deleteBody.config.model.provider, 'backup');
-assert.deepEqual(Object.keys(deleteBody.config.model_providers), ['backup']);
+assert.deepEqual(deleteBody.config.model_providers, {active: null});
 await ModelSelector.onProviderChange('backup');
 assert.equal(
   modelInput.value,

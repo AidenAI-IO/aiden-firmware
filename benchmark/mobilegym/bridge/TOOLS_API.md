@@ -8,15 +8,16 @@ device bridge.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/tools` | List tools exposed by the environment. |
-| `POST /api/tools/{tool_name}` | Invoke an environment tool. |
+| `GET /api/tools` | List legacy tools exposed by the environment. |
+| `POST /api/tools/{tool_name}` | Invoke a legacy environment tool. |
 | `POST /api/providers/screenshot` | Return the current screen frame for pre/post capture and the agent screenshot tool. |
+| `POST /api/providers/mnk` | Execute a Go `mnk.Provider` operation for agent input. |
 | `POST /api/setup` | Initialize or reset a task route. |
 | `POST /api/release` | Release a task route. |
 | `GET /api/concurrent` | Return bridge concurrency capacity. |
 
 MobileGym routes concurrent tasks by the `benchmark-task-id` header. The same id
-must be sent to `/api/setup`, `/api/tools/*`, `/api/providers/screenshot`, and `/api/release`
+must be sent to `/api/setup`, `/api/providers/screenshot`, `/api/providers/mnk`, and `/api/release`
 for a task worker.
 
 ## Tool Catalog
@@ -69,6 +70,19 @@ curl -X POST http://localhost:8888/api/providers/screenshot \
 ```
 
 The benchmark runner uses this endpoint to save `pre.jpg` and `post.jpg`.
+
+## MNK Provider
+
+The Go agent sends normalized 0-1000 click, double-click, swipe, drag, keypress,
+move, and vertical scroll operations to this endpoint. A successful request
+returns `{"success": true}`.
+
+```bash
+curl -X POST http://localhost:8888/api/providers/mnk \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: suite.json:task-1" \
+  -d '{"operation":"click","click":{"x":500,"y":800,"button":"left","hold_ms":0}}'
+```
 
 ## Setup And Release
 
