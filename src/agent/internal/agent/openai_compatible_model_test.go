@@ -1861,6 +1861,9 @@ func TestOpenAICompatibleModelLiveUsageParsing(t *testing.T) {
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Reply with the single word: ok")}},
 	}, llms.WithMaxTokens(16), llms.WithTemperature(0))
 	if err != nil {
+		if strings.Contains(err.Error(), "403") || strings.Contains(err.Error(), "region") {
+			t.Skipf("model %s unavailable for this account/region: %v", model, err)
+		}
 		t.Fatalf("live GenerateContent() error = %v", err)
 	}
 
@@ -1909,6 +1912,9 @@ func TestOpenAICompatibleModelLiveConsecutiveUserMessages(t *testing.T) {
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Now calculate 3+3.")}},
 	}, llms.WithMaxTokens(32), llms.WithTemperature(0))
 	if err != nil {
+		if strings.Contains(err.Error(), "403") || strings.Contains(err.Error(), "region") {
+			t.Skipf("model %s unavailable for this account/region: %v", model, err)
+		}
 		t.Fatalf("GenerateContent() with consecutive user messages failed: %v\n"+
 			"This would have failed WITHOUT message merging on strict providers (Gemini/Claude).", err)
 	}

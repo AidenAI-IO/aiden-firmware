@@ -2,7 +2,7 @@
   "name": "quick_action_v1",
   "suite_category": "Perception & Control",
   "description": "Tests for quick_action navigation shortcuts — verifies the agent correctly uses predefined platform shortcuts.",
-  "prompt_prefix": "Use quick_action for navigation shortcuts when available.",
+  "prompt_prefix": "Use the named quick_action calls for navigation shortcuts when available.",
   "global_reset": {},
   "tasks": [
     {

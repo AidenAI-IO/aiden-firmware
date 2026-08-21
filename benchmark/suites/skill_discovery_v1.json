@@ -8,7 +8,7 @@
       "skill_name": "device-operator"
     }
   ],
-  "prompt_prefix": "",
+  "prompt_prefix": "处理可见手机 UI 任务时，请自行加载相关的 device-operation skill。",
   "global_reset": {},
   "tasks": [
     {

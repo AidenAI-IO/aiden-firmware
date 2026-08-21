@@ -77,6 +77,7 @@ def test_perception_v1_describes_single_frame_environment_without_coaching():
 
     prompt_prefix = suite.prompt_prefix.strip().lower()
     assert "静态" in prompt_prefix or "static" in prompt_prefix
+    assert "找到" in prompt_prefix or "locate" in prompt_prefix
     assert "点击" in prompt_prefix or "click" in prompt_prefix
     for leaked_instruction in (
         "screenshot",
@@ -110,6 +111,18 @@ def test_mobilegym_basic_suite_loads_device_operation_tasks():
     assert suite.name == "mobilegym_basic"
     assert {task.category for task in suite.tasks} == {"device_operation"}
     assert all(task.rubric and task.rubric[0].check for task in suite.tasks)
+
+
+def test_vphone_ios_basic_warmup_requires_screenshot():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "vphone_ios_basic.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    warmup = task_by_id["warmup"]
+    assert suite.prompt_prefix == ""
+    assert warmup.prompt == "看一眼当前屏幕。"
+    assert warmup.hard_assertions.min_tool_calls == 1
+    assert warmup.hard_assertions.required_tools == ["screenshot"]
 
 
 def test_adb_android_basic_suite_loads_device_operation_tasks():
@@ -156,6 +169,7 @@ def test_quick_action_suite_marks_non_android_action_tasks():
     suite = load_suite(suite_path)
     task_by_id = {task.id: task for task in suite.tasks}
 
+    assert "quick_action" in suite.prompt_prefix
     for task_id in (
         "quick_action_switch_left",
         "quick_action_switch_right",
@@ -845,6 +859,7 @@ def test_skill_discovery_suite_does_not_prompt_for_skill_read():
     suite = load_suite(suite_path)
 
     assert suite.name == "skill_discovery_v1"
+    assert "device-operation skill" in suite.prompt_prefix
     assert "skill_read" not in suite.prompt_prefix
     assert "device-operator" not in suite.prompt_prefix
     assert [obs.skill_name for obs in suite.trace_observations] == ["device-operator"]
@@ -860,6 +875,7 @@ def test_skill_discovery_suite_does_not_prompt_for_skill_read():
     for task in suite.tasks:
         assert "skill_read" not in task.prompt
         assert "device-operator" not in task.prompt
+        assert "device-operation skill" in task.description_for_judge
         assert task.hard_assertions.required_tools == []
         assert "shell" in task.hard_assertions.forbidden_tools
 
@@ -998,6 +1014,7 @@ def test_memory_suite_covers_representative_memory_behaviors():
         "avoid_saving_ephemeral_fact",
         "no_save_for_ephemeral_chat",
         "no_recall_when_in_context",
+        "multi_turn_overwrite_and_verify_last_value",
     }
     assert expected_tasks <= set(task_by_id)
     assert len(suite.tasks) >= 17
@@ -1007,6 +1024,24 @@ def test_memory_suite_covers_representative_memory_behaviors():
         "recall_session_chunks" in item.check
         for item in task_by_id["recall_session_chunk_details"].rubric
     )
+
+    overwrite_task = task_by_id["multi_turn_overwrite_and_verify_last_value"]
+    assert overwrite_task.hard_assertions.min_tool_calls == 4
+    assert overwrite_task.hard_assertions.max_tool_calls == 4
+    assert [item.tool for item in overwrite_task.hard_assertions.required_tool_calls] == [
+        "save_memory",
+        "save_memory",
+        "save_memory",
+        "recall_memory",
+    ]
+    assert [item.input_contains["content"]["$contains"] for item in overwrite_task.hard_assertions.required_tool_calls[:3]] == [
+        "杭州",
+        "深圳",
+        "成都",
+    ]
+    assert overwrite_task.hard_assertions.required_tool_calls[3].input_contains == {
+        "tags": {"$contains": "办公城市"}
+    }
 
 
 def test_personamem_lt_recall_suite_uses_deterministic_answers():
@@ -1093,6 +1128,7 @@ def test_episode_memory_conditions_share_natural_and_iphone_tasks():
     for before_task, after_task in zip(before.tasks, after.tasks, strict=True):
         assert before_task.id == after_task.id
         assert before_task.prompt == after_task.prompt
+        assert before_task.description_for_judge == after_task.description_for_judge
         assert before_task.rubric == after_task.rubric
         assert before_task.hard_assertions == after_task.hard_assertions
 

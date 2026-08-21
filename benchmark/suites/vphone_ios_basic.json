@@ -24,7 +24,10 @@
       ],
       "hard_assertions": {
         "must_complete_within_sec": 120,
-        "required_tools": []
+        "min_tool_calls": 1,
+        "required_tools": [
+          "screenshot"
+        ]
       },
       "repeats": 1
     },
