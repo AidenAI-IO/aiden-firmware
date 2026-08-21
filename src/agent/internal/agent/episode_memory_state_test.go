@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -16,9 +17,11 @@ import (
 )
 
 type episodeMemoryScriptedModel struct {
-	mu        sync.Mutex
-	responses []string
-	calls     [][]llms.MessageContent
+	mu             sync.Mutex
+	responses      []string
+	auditResponses []string
+	lastResponse   string
+	calls          [][]llms.MessageContent
 }
 
 type episodeMemoryBlockingModel struct {
@@ -60,12 +63,80 @@ func (m *episodeMemoryScriptedModel) GenerateContent(_ context.Context, messages
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, messages)
+	if episodeMemoryMessagesContain(messages, "mandatory retention gate") {
+		if len(m.auditResponses) > 0 {
+			response := m.auditResponses[0]
+			m.auditResponses = m.auditResponses[1:]
+			m.lastResponse = response
+			return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: response}}}, nil
+		}
+		if response := defaultEpisodeMemoryRetentionAudit(messages); response != "" {
+			m.lastResponse = response
+			return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: response}}}, nil
+		}
+	}
 	if len(m.responses) == 0 {
 		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: `{}`}}}, nil
 	}
 	response := m.responses[0]
 	m.responses = m.responses[1:]
+	m.lastResponse = response
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: response}}}, nil
+}
+
+func defaultEpisodeMemoryRetentionAudit(messages []llms.MessageContent) string {
+	const marker = "Untrusted candidates:\n"
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			textPart, ok := part.(llms.TextContent)
+			if !ok {
+				continue
+			}
+			index := strings.LastIndex(textPart.Text, marker)
+			if index < 0 {
+				continue
+			}
+			var candidates []episodeMemoryCandidate
+			if err := json.Unmarshal([]byte(strings.TrimSpace(textPart.Text[index+len(marker):])), &candidates); err != nil {
+				return ""
+			}
+			reviews := episodeMemoryRetentionAudit{Reviews: make([]episodeMemoryRetentionReview, 0, len(candidates))}
+			for _, candidate := range candidates {
+				review := episodeMemoryRetentionReview{
+					LessonKey: candidate.LessonKey,
+					Reason:    "the scripted test candidate is reusable and safe for its declared scope",
+				}
+				if candidate.Retention == episodeMemoryRetentionDurable {
+					review.Decision = episodeMemoryRetentionDecisionRetain
+					review.Rewrite = &episodeMemoryRetentionRewrite{
+						Situation: candidate.Situation, Guidance: candidate.Guidance, ExpectedEffect: candidate.ExpectedEffect,
+						Scope: cloneStringMap(candidate.Scope), Tags: append([]string(nil), candidate.Tags...), EvidenceRefs: append([]string(nil), candidate.EvidenceRefs...),
+					}
+				} else {
+					review.Decision = episodeMemoryRetentionDecisionDiscard
+					review.Reason = "the scripted test candidate is not durable"
+				}
+				reviews.Reviews = append(reviews.Reviews, review)
+			}
+			encoded, err := json.Marshal(reviews)
+			if err != nil {
+				return ""
+			}
+			return string(encoded)
+		}
+	}
+	return ""
+}
+
+func episodeMemoryMessagesContain(messages []llms.MessageContent, needle string) bool {
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if textPart, ok := part.(llms.TextContent); ok && strings.Contains(textPart.Text, needle) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (m *episodeMemoryScriptedModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
@@ -119,6 +190,14 @@ func (m *episodeMemoryScriptedModel) firstCallText() string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func reviewedEpisodeMemoryResponses(responses ...string) []string {
+	reviewed := make([]string, 0, len(responses)*2)
+	for _, response := range responses {
+		reviewed = append(reviewed, response, response)
+	}
+	return reviewed
 }
 
 func TestEpisodeMemoryEpisodeDueHonorsLeaseAndRetry(t *testing.T) {

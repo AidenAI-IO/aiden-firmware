@@ -226,6 +226,7 @@ func TestEpisodeMemoryProcessorCreatesMultipleTypedMemoriesWithOneModelCall(t *t
       "lesson_key":"open_display_settings",
       "type":"procedure",
       "action":"create",
+	  "retention":"durable",
       "memory_revision":1,
       "unresolved_conflict":false,
       "situation":"When the user wants the display settings on this device",
@@ -239,6 +240,7 @@ func TestEpisodeMemoryProcessorCreatesMultipleTypedMemoriesWithOneModelCall(t *t
       "lesson_key":"settings_display_location",
       "type":"fact",
       "action":"create",
+	  "retention":"durable",
       "unresolved_conflict":false,
       "situation":"In the Settings app on this device",
       "guidance":"Use the Display entry to reach display controls",
@@ -271,8 +273,8 @@ func TestEpisodeMemoryProcessorCreatesMultipleTypedMemoriesWithOneModelCall(t *t
 	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
-	if got := model.callCount(); got != 1 {
-		t.Fatalf("model calls = %d, want 1", got)
+	if got := model.callCount(); got != 2 {
+		t.Fatalf("model calls = %d, want extraction and retention audit", got)
 	}
 	items, err := plane.device.readAll()
 	if err != nil {
@@ -314,7 +316,7 @@ func TestEpisodeMemoryProcessorUpdatesRevisionAndQuarantinesUnresolvedConflict(t
 		`{
   "episode_assessment":{"goal_result":"achieved","reason":"The Display entry opened the controls.","evidence_refs":["ep_update_result"]},
   "candidates":[{
-    "lesson_key":"settings_display_location_update","type":"fact","action":"update","memory_id":"devmem_settings_fact","memory_revision":1,
+    "lesson_key":"settings_display_location_update","type":"fact","action":"update","retention":"durable","memory_id":"devmem_settings_fact","memory_revision":1,
     "unresolved_conflict":false,"situation":"In Settings on device A","guidance":"Open the Display entry from the main list","expected_effect":"Display controls are visible",
     "scope":{"device_id":"device_a","app_name":"Settings","page_name":"main"},"tags":["settings","display"],
     "evidence_refs":["ep_update_result"]
@@ -323,7 +325,7 @@ func TestEpisodeMemoryProcessorUpdatesRevisionAndQuarantinesUnresolvedConflict(t
 		`{
   "episode_assessment":{"goal_result":"unknown","reason":"The same scope now shows a different location and there is not enough evidence to condition it.","evidence_refs":["ep_conflict_result"]},
   "candidates":[{
-    "lesson_key":"settings_display_location_conflict","type":"fact","action":"update","memory_id":"devmem_settings_fact","memory_revision":2,
+    "lesson_key":"settings_display_location_conflict","type":"fact","action":"update","retention":"durable","memory_id":"devmem_settings_fact","memory_revision":2,
     "unresolved_conflict":true,"conflict_reason":"The same Settings scope showed an incompatible location without a distinguishing precondition.",
     "situation":"In Settings on device A","guidance":"Do not rely on one fixed Display location until the differing UI states can be distinguished","expected_effect":"The agent avoids following an unsafe location rule",
     "scope":{"device_id":"device_a","app_name":"Settings"},"tags":["settings","display"],
@@ -361,8 +363,8 @@ func TestEpisodeMemoryProcessorUpdatesRevisionAndQuarantinesUnresolvedConflict(t
 	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
-	if got := model.callCount(); got != 2 {
-		t.Fatalf("model calls = %d, want one per Episode", got)
+	if got := model.callCount(); got != 4 {
+		t.Fatalf("model calls = %d, want extraction and retention audit per Episode", got)
 	}
 	updated, found, err := plane.device.Get(ctx, "devmem_settings_fact")
 	if err != nil || !found {
@@ -406,7 +408,7 @@ func TestEpisodeMemoryProcessorResumesPersistedProposalWithoutCallingModelAgain(
 	proposal := episodeMemoryProposal{
 		EpisodeAssessment: episodeMemoryAssessment{GoalResult: "achieved", Reason: "The screenshot result reports the dimensions.", EvidenceRefs: []string{"ep_resume_result"}},
 		Candidates: []episodeMemoryCandidate{{
-			LessonKey: "screen_dimensions", Type: "fact", Action: "create",
+			LessonKey: "screen_dimensions", Type: "fact", Action: "create", Retention: episodeMemoryRetentionDurable,
 			Situation: "When operating device A", Guidance: "Use a 1080x1920 screen model", ExpectedEffect: "Coordinates are interpreted against the observed screen size",
 			Scope: map[string]string{"device_id": "device_a", "screen": "1080x1920"}, Tags: []string{"screen", "dimensions"}, EvidenceRefs: []string{"ep_resume_result"},
 		}},
@@ -472,7 +474,7 @@ func TestEpisodeMemoryProcessorDoesNotCarryErrorIntoNextPersistedProposal(t *tes
 	proposal := episodeMemoryProposal{
 		EpisodeAssessment: episodeMemoryAssessment{GoalResult: "achieved", Reason: "The screenshot reports the dimensions.", EvidenceRefs: []string{"ep_resume_after_error_result"}},
 		Candidates: []episodeMemoryCandidate{{
-			LessonKey: "screen_dimensions_after_error", Type: "fact", Action: "create",
+			LessonKey: "screen_dimensions_after_error", Type: "fact", Action: "create", Retention: episodeMemoryRetentionDurable,
 			Situation: "When operating device A", Guidance: "Use a 1080x1920 screen model", ExpectedEffect: "Coordinates use the observed dimensions",
 			Scope: map[string]string{"device_id": "device_a", "screen": "1080x1920"}, Tags: []string{"screen", "dimensions"}, EvidenceRefs: []string{"ep_resume_after_error_result"},
 		}},
@@ -515,13 +517,13 @@ func TestEpisodeMemoryProcessorUsesGoalResultToRejectFalseSuccessProcedure(t *te
   "episode_assessment":{"goal_result":"not_achieved","reason":"The user said the requested message was not sent.","evidence_refs":["ep_false_success_steer"]},
   "candidates":[
     {
-      "lesson_key":"send_message_path","type":"procedure","action":"create","unresolved_conflict":false,
+      "lesson_key":"send_message_path","type":"procedure","action":"create","retention":"durable","unresolved_conflict":false,
       "situation":"When sending a message","guidance":"Tap Send after entering text","expected_effect":"The requested message is sent",
       "scope":{"device_id":"device_a","app_name":"Messages","goal_pattern":"send message"},"tags":["messages"],
       "evidence_refs":["ep_false_success_call","ep_false_success_result"]
     },
     {
-      "lesson_key":"verify_message_sent","type":"failure","action":"create","unresolved_conflict":false,
+      "lesson_key":"verify_message_sent","type":"failure","action":"create","retention":"durable","unresolved_conflict":false,
       "situation":"After attempting to send a message","guidance":"Verify the requested message appears as sent before reporting completion","expected_effect":"The agent does not claim success when the message was not sent",
       "scope":{"device_id":"device_a","app_name":"Messages"},"tags":["messages","verify-before-finish"],
       "evidence_refs":["ep_false_success_result","ep_false_success_steer"]
@@ -719,7 +721,7 @@ func TestEpisodeMemoryProcessorRequeuesProposalWhenMemoryRevisionChanged(t *test
 	model := &episodeMemoryScriptedModel{responses: []string{`{
   "episode_assessment":{"goal_result":"achieved","reason":"The tool result confirms the current location.","evidence_refs":["ep_revision_result"]},
   "candidates":[{
-    "lesson_key":"refresh_revision","type":"fact","action":"update","memory_id":"devmem_revision","memory_revision":2,
+    "lesson_key":"refresh_revision","type":"fact","action":"update","retention":"durable","memory_id":"devmem_revision","memory_revision":2,
     "unresolved_conflict":false,"situation":"In Settings on device A","guidance":"Open Display from the main list","expected_effect":"Display controls become visible",
     "scope":{"device_id":"device_a","app_name":"Settings"},"tags":["settings"],"evidence_refs":["ep_revision_result"]
   }]
@@ -744,7 +746,7 @@ func TestEpisodeMemoryProcessorRequeuesProposalWhenMemoryRevisionChanged(t *test
 		EpisodeAssessment: episodeMemoryAssessment{GoalResult: "achieved", Reason: "stale proposal", EvidenceRefs: []string{"ep_revision_result"}},
 		ExistingRevisions: map[string]int{"devmem_revision": 1},
 		Candidates: []episodeMemoryCandidate{{
-			LessonKey: "stale_revision", Type: "fact", Action: "update", MemoryID: "devmem_revision", MemoryRevision: 1,
+			LessonKey: "stale_revision", Type: "fact", Action: "update", Retention: episodeMemoryRetentionDurable, MemoryID: "devmem_revision", MemoryRevision: 1,
 			Situation: "In Settings", Guidance: "Open Display", ExpectedEffect: "Display opens",
 			Scope: map[string]string{"device_id": "device_a", "app_name": "Settings"}, EvidenceRefs: []string{"ep_revision_result"},
 		}},
@@ -770,8 +772,8 @@ func TestEpisodeMemoryProcessorRequeuesProposalWhenMemoryRevisionChanged(t *test
 	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
 		t.Fatalf("ProcessBatch(requeued) error = %v", err)
 	}
-	if got := model.callCount(); got != 1 {
-		t.Fatalf("model calls after requeue = %d, want 1 fresh extraction", got)
+	if got := model.callCount(); got != 2 {
+		t.Fatalf("model calls after requeue = %d, want extraction and retention audit", got)
 	}
 	updated, found, err := plane.device.Get(ctx, "devmem_revision")
 	if err != nil || !found || updated.Revision != 3 {
@@ -836,6 +838,57 @@ func TestEpisodeMemoryAssessmentRejectsIndirectEvidence(t *testing.T) {
 	}
 }
 
+func TestEpisodeMemoryAssessmentDowngradesUnsupportedFailureToUnknown(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "episode_assessment":{"goal_result":"not_achieved","reason":"The final page was not verified.","evidence_refs":["open_result"]},
+  "candidates":[]
+}`}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{
+		ID: "ep_missing_verification", Status: "completed", UserGoal: "Open and verify the requested page",
+		Outcome: TaskEpisodeOutcome{Success: true, FinalAnswer: "Done."},
+		Events: []TaskEpisodeEvent{
+			{EventID: "open_call", Type: runEventToolCall, ToolName: "open_app"},
+			{EventID: "open_result", Type: "tool_result", ToolName: "open_app", Observation: "The app opened, but the requested page was not verified."},
+		},
+	}
+
+	proposal, err := processor.proposeEpisode(ctx, episode)
+	if err != nil {
+		t.Fatalf("proposeEpisode() error = %v", err)
+	}
+	if proposal.EpisodeAssessment.GoalResult != episodeGoalUnknown {
+		t.Fatalf("goal_result = %q, want unknown without structured failure evidence", proposal.EpisodeAssessment.GoalResult)
+	}
+	if len(proposal.Candidates) != 0 {
+		t.Fatalf("candidates = %#v, want none after unsupported failure downgrade", proposal.Candidates)
+	}
+}
+
+func TestHasDirectEpisodeFailureEvidenceUsesStructuredSignals(t *testing.T) {
+	tests := []struct {
+		name    string
+		episode TaskEpisode
+		refs    []string
+		want    bool
+	}{
+		{name: "missing verification only", episode: TaskEpisode{Status: "completed", Events: []TaskEpisodeEvent{{EventID: "result", Type: "tool_result"}}}, refs: []string{"result"}, want: false},
+		{name: "structured error", episode: TaskEpisode{Status: "completed", Events: []TaskEpisodeEvent{{EventID: "result", Type: "tool_result", IsError: true}}}, refs: []string{"result"}, want: true},
+		{name: "user correction", episode: TaskEpisode{Status: "completed", Events: []TaskEpisodeEvent{{EventID: "steer", Type: "steer"}}}, refs: []string{"steer"}, want: true},
+		{name: "explicit interruption", episode: TaskEpisode{Status: "interrupted"}, want: true},
+		{name: "failure reason", episode: TaskEpisode{Status: "completed", Outcome: TaskEpisodeOutcome{FailureReason: "runtime stopped"}}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := hasDirectEpisodeFailureEvidence(test.episode, test.refs); got != test.want {
+				t.Fatalf("hasDirectEpisodeFailureEvidence() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestFailureCandidateMustReferenceNotAchievedEvidence(t *testing.T) {
 	episode := TaskEpisode{Events: []TaskEpisodeEvent{
 		{EventID: "call", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{"app":"Settings"}`},
@@ -850,6 +903,7 @@ func TestFailureCandidateMustReferenceNotAchievedEvidence(t *testing.T) {
 		LessonKey:      "check_page_opened",
 		Type:           episodeMemoryTypeFailure,
 		Action:         episodeMemoryActionCreate,
+		Retention:      episodeMemoryRetentionDurable,
 		Situation:      "After launching Settings",
 		Guidance:       "Check that the requested page is visible before continuing",
 		ExpectedEffect: "The agent stops when the requested page did not open",
@@ -866,6 +920,525 @@ func TestFailureCandidateMustReferenceNotAchievedEvidence(t *testing.T) {
 	}
 }
 
+func TestEpisodeMemoryCandidateRequiresDurableRetention(t *testing.T) {
+	episode := TaskEpisode{Events: []TaskEpisodeEvent{
+		{EventID: "call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
+		{EventID: "result", Type: "tool_result", ToolName: "read_screen", Observation: "The requested value is visible."},
+	}}
+	assessment := episodeMemoryAssessment{
+		GoalResult:   episodeGoalAchieved,
+		Reason:       "The result directly shows the requested value.",
+		EvidenceRefs: []string{"result"},
+	}
+	base := episodeMemoryCandidate{
+		LessonKey:      "observed_value",
+		Type:           episodeMemoryTypeFact,
+		Action:         episodeMemoryActionCreate,
+		Situation:      "When inspecting this device configuration",
+		Guidance:       "Use the observed IP address as the configured endpoint",
+		ExpectedEffect: "The device endpoint can be selected correctly",
+		Scope:          map[string]string{"device_id": "device_a"},
+		EvidenceRefs:   []string{"result"},
+	}
+
+	tests := []struct {
+		name      string
+		retention episodeMemoryRetention
+		want      bool
+	}{
+		{name: "durable", retention: episodeMemoryRetentionDurable, want: true},
+		{name: "transient", retention: episodeMemoryRetentionTransient, want: false},
+		{name: "sensitive", retention: episodeMemoryRetentionSensitive, want: false},
+		{name: "missing", retention: "", want: false},
+		{name: "unknown", retention: "session_only", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := base
+			candidate.Retention = test.retention
+			_, got := validateEpisodeMemoryCandidate(episode, assessment, candidate, map[string]bool{})
+			if got != test.want {
+				t.Fatalf("candidate accepted = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestEpisodeMemoryCandidatePreservesEpisodeScopeBoundaries(t *testing.T) {
+	episode := TaskEpisode{
+		DeviceScope: map[string]string{"device_id": "device_a", "app_name": "Example", "app_version": "7"},
+		Events:      []TaskEpisodeEvent{{EventID: "result", Type: "tool_result", ToolName: "read_screen", Observation: "The page is visible."}},
+	}
+	base := episodeMemoryCandidate{
+		LessonKey: "versioned_fact", Type: episodeMemoryTypeFact, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "On the page", Guidance: "Use the visible label",
+		ExpectedEffect: "The page can be identified", Scope: map[string]string{"app_name": "Example"}, EvidenceRefs: []string{"result"},
+	}
+
+	validated, ok := validateEpisodeMemoryCandidate(
+		episode,
+		episodeMemoryAssessment{GoalResult: episodeGoalAchieved},
+		base,
+		map[string]bool{},
+	)
+	if !ok || validated.Scope["app_version"] != "7" || validated.Scope["device_id"] != "device_a" {
+		t.Fatalf("validated candidate = %#v ok=%v, want Episode scope boundaries preserved", validated, ok)
+	}
+
+	base.Scope["app_version"] = "8"
+	if _, ok := validateEpisodeMemoryCandidate(
+		episode,
+		episodeMemoryAssessment{GoalResult: episodeGoalAchieved},
+		base,
+		map[string]bool{},
+	); ok {
+		t.Fatal("candidate with scope conflicting with the Episode was accepted")
+	}
+}
+
+func TestEpisodeMemoryRetentionAuditRejectsSensitiveProcedure(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	firstPass := `{
+  "episode_assessment":{"goal_result":"achieved","reason":"The destination page confirms completion.","evidence_refs":["verify_result"]},
+  "candidates":[{
+    "lesson_key":"authentication_flow","type":"procedure","action":"create","retention":"durable","unresolved_conflict":false,
+    "situation":"During authentication","guidance":"Enter verification value 913204, then verify the destination page","expected_effect":"Authentication succeeds",
+    "scope":{"device_id":"device_a","app_name":"Auth"},"tags":["authentication"],"evidence_refs":["value_call","value_result","verify_call","verify_result"]
+  }]
+}`
+	audited := `{
+  "reviews":[{
+    "lesson_key":"authentication_flow","decision":"discard",
+    "reason":"The proposed guidance embeds run-bound authentication material that must not persist."
+  }]
+}`
+	model := &episodeMemoryScriptedModel{
+		responses:      []string{firstPass},
+		auditResponses: []string{audited},
+	}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{
+		ID: "ep_sensitive_fact", DeviceScope: map[string]string{"device_id": "device_a"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "value_call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
+			{EventID: "value_result", Type: "tool_result", ToolName: "read_screen", Observation: "Verification value 913204 was accepted."},
+			{EventID: "verify_call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
+			{EventID: "verify_result", Type: "tool_result", ToolName: "read_screen", Observation: "The destination page is visible."},
+		},
+	}
+
+	proposal, err := processor.proposeEpisode(ctx, episode)
+	if err != nil {
+		t.Fatalf("proposeEpisode() error = %v", err)
+	}
+	if got := model.callCount(); got != 2 {
+		t.Fatalf("model calls = %d, want extraction and retention audit", got)
+	}
+	if err := processor.applyProposal(ctx, episode, proposal); err != nil {
+		t.Fatalf("applyProposal() error = %v", err)
+	}
+	items, err := plane.device.readAll()
+	if err != nil {
+		t.Fatalf("readAll() error = %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("device memories = %#v, want sensitive procedure discarded", items)
+	}
+}
+
+func TestEpisodeMemoryRetentionAuditGeneralizesRunBoundValue(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	firstPass := `{
+  "episode_assessment":{"goal_result":"achieved","reason":"The destination page confirms completion.","evidence_refs":["verify_result"]},
+  "candidates":[{
+    "lesson_key":"complete_challenge","type":"procedure","action":"create","retention":"durable","unresolved_conflict":false,
+    "situation":"When this service presents an interactive challenge","guidance":"Enter the observed response river-glass-amber, then verify the destination page","expected_effect":"The challenge completes",
+    "scope":{"device_id":"device_a","app_name":"Service"},"tags":["challenge"],"evidence_refs":["value_call","value_result","verify_call","verify_result"]
+  }]
+}`
+	audited := `{
+  "reviews":[{
+    "lesson_key":"complete_challenge","decision":"retain",
+    "reason":"The verified sequence is reusable after removing the response that was valid only for this run.",
+	    "rewrite":{
+	      "situation":"When this service presents an interactive challenge","guidance":"Use the response provided for the current challenge, then verify the destination page before reporting completion","expected_effect":"The challenge completes without reusing an earlier response",
+	      "scope":{"device_id":"device_a","app_name":"Service"},"tags":["challenge","verify-completion"],"evidence_refs":["value_call","value_result","verify_call","verify_result"]
+	    }
+  }]
+}`
+	model := &episodeMemoryScriptedModel{
+		responses:      []string{firstPass},
+		auditResponses: []string{audited},
+	}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{
+		ID: "ep_generalized_value", DeviceScope: map[string]string{"device_id": "device_a"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "value_call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
+			{EventID: "value_result", Type: "tool_result", ToolName: "read_screen", Observation: "The current response river-glass-amber was accepted."},
+			{EventID: "verify_call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
+			{EventID: "verify_result", Type: "tool_result", ToolName: "read_screen", Observation: "The destination page is visible."},
+		},
+	}
+
+	proposal, err := processor.proposeEpisode(ctx, episode)
+	if err != nil {
+		t.Fatalf("proposeEpisode() error = %v", err)
+	}
+	if len(proposal.Candidates) != 1 {
+		t.Fatalf("audited candidates = %#v, want one generalized candidate", proposal.Candidates)
+	}
+	if strings.Contains(proposal.Candidates[0].Guidance, "river-glass-amber") {
+		t.Fatalf("audited guidance retained run-bound value: %q", proposal.Candidates[0].Guidance)
+	}
+	if err := processor.applyProposal(ctx, episode, proposal); err != nil {
+		t.Fatalf("applyProposal() error = %v", err)
+	}
+	items, err := plane.device.readAll()
+	if err != nil {
+		t.Fatalf("readAll() error = %v", err)
+	}
+	if len(items) != 1 || strings.Contains(items[0].Content, "river-glass-amber") {
+		t.Fatalf("device memories = %#v, want one generalized memory without the run-bound value", items)
+	}
+}
+
+func TestEpisodeMemoryRetentionAuditFailureIsReported(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{
+		responses: []string{`{
+  "episode_assessment":{"goal_result":"achieved","reason":"The observed page confirms the inspection completed.","evidence_refs":["result"]},
+  "candidates":[{
+    "lesson_key":"observed_page_fact","type":"fact","action":"create","retention":"durable","unresolved_conflict":false,
+    "situation":"On the inspected page","guidance":"Use the observed page label","expected_effect":"The page can be identified",
+    "scope":{"device_id":"device_a","app_name":"Example"},"tags":["page"],"evidence_refs":["result"]
+  }]
+}`},
+		auditResponses: []string{`not-json`},
+	}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{
+		ID: "ep_audit_failure", DeviceScope: map[string]string{"device_id": "device_a"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
+			{EventID: "result", Type: "tool_result", ToolName: "read_screen", Observation: "The inspected page is visible."},
+		},
+	}
+
+	_, err := processor.proposeEpisode(ctx, episode)
+	if err == nil || !strings.Contains(err.Error(), "parse episode memory retention audit") {
+		t.Fatalf("proposeEpisode() error = %v, want retention audit parse failure", err)
+	}
+	if got := model.callCount(); got != 2 {
+		t.Fatalf("model calls = %d, want extraction and failed retention audit", got)
+	}
+}
+
+func TestRetainedEpisodeMemoryCandidatesFailsClosedOnAmbiguousAudit(t *testing.T) {
+	base := episodeMemoryCandidate{
+		LessonKey: "stable_route", Type: episodeMemoryTypeNavigation, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "On the target page", Guidance: "Open the details entry",
+		ExpectedEffect: "The details page is visible", Scope: map[string]string{"device_id": "device_a"}, EvidenceRefs: []string{"result"},
+	}
+	validReview := episodeMemoryRetentionReview{
+		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Reason: "durable and scoped",
+		Rewrite: &episodeMemoryRetentionRewrite{
+			Situation: base.Situation, Guidance: base.Guidance, ExpectedEffect: base.ExpectedEffect,
+			Scope: base.Scope, Tags: base.Tags, EvidenceRefs: base.EvidenceRefs,
+		},
+	}
+
+	tests := []struct {
+		name  string
+		audit episodeMemoryRetentionAudit
+	}{
+		{name: "missing review", audit: episodeMemoryRetentionAudit{}},
+		{name: "duplicate review", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{validReview, validReview}}},
+		{name: "missing rewrite", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
+			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Reason: "rewrite omitted",
+		}}}},
+		{name: "missing reason", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
+			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Rewrite: validReview.Rewrite,
+		}}}},
+		{name: "discard decision", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
+			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionDiscard, Reason: "not safe to retain",
+		}}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := retainedEpisodeMemoryCandidates([]episodeMemoryCandidate{base}, test.audit); len(got) != 0 {
+				t.Fatalf("retained candidates = %#v, want ambiguous audit to discard candidate", got)
+			}
+		})
+	}
+}
+
+func TestRetainedEpisodeMemoryCandidatesPreservesExtractedScopeBoundary(t *testing.T) {
+	base := episodeMemoryCandidate{
+		LessonKey: "versioned_route", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "In build 7", Guidance: "Run the verified flow",
+		ExpectedEffect: "The value persists", Scope: map[string]string{"app_name": "Example", "app_version": "7"},
+		Tags: []string{"save"}, EvidenceRefs: []string{"result"},
+	}
+	audit := episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
+		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Reason: "the procedure remains reusable",
+		Rewrite: &episodeMemoryRetentionRewrite{
+			Situation: "In the app", Guidance: base.Guidance, ExpectedEffect: base.ExpectedEffect,
+			Scope: map[string]string{"app_name": "Example"}, Tags: base.Tags, EvidenceRefs: base.EvidenceRefs,
+		},
+	}}}
+
+	got := retainedEpisodeMemoryCandidates([]episodeMemoryCandidate{base}, audit)
+	if len(got) != 1 || got[0].Scope["app_version"] != "7" {
+		t.Fatalf("retained candidates = %#v, want extracted version boundary preserved", got)
+	}
+}
+
+func TestRetainedEpisodeMemoryCandidatesRejectsChangedEvidenceRefs(t *testing.T) {
+	base := episodeMemoryCandidate{
+		LessonKey: "verified_route", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "In the app", Guidance: "Run the verified flow",
+		ExpectedEffect: "The value persists", Scope: map[string]string{"app_name": "Example"},
+		EvidenceRefs: []string{"call", "result"},
+	}
+	audit := episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
+		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Reason: "reusable",
+		Rewrite: &episodeMemoryRetentionRewrite{
+			Situation: base.Situation, Guidance: base.Guidance, ExpectedEffect: base.ExpectedEffect,
+			Scope: base.Scope, EvidenceRefs: []string{"result", "invented"},
+		},
+	}}}
+
+	if got := retainedEpisodeMemoryCandidates([]episodeMemoryCandidate{base}, audit); len(got) != 0 {
+		t.Fatalf("retained candidates = %#v, want audit with changed evidence refs discarded", got)
+	}
+}
+
+func TestCompactEpisodeMemoryCandidatesMergesDuplicateEvidence(t *testing.T) {
+	first := episodeMemoryCandidate{
+		LessonKey: "same_lesson", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "In the scoped app", Guidance: "Run the verified flow",
+		ExpectedEffect: "The value persists", Scope: map[string]string{"app_version": "7"},
+		Tags: []string{"save"}, EvidenceRefs: []string{"first_result"},
+	}
+	second := first
+	second.Tags = []string{"verify"}
+	second.EvidenceRefs = []string{"second_result"}
+
+	got := compactEpisodeMemoryCandidates([]episodeMemoryCandidate{first, second})
+	if len(got) != 1 {
+		t.Fatalf("compacted candidates = %#v, want one candidate", got)
+	}
+	if len(got[0].Tags) != 2 || len(got[0].EvidenceRefs) != 2 {
+		t.Fatalf("compacted candidate = %#v, want merged tags and evidence", got[0])
+	}
+}
+
+func TestCompactEpisodeMemoryCandidatesRejectsConflictingIdentity(t *testing.T) {
+	first := episodeMemoryCandidate{
+		LessonKey: "same_lesson", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "In the scoped app", Guidance: "Run the verified flow",
+		ExpectedEffect: "The value persists", Scope: map[string]string{"app_version": "7"}, EvidenceRefs: []string{"first_result"},
+	}
+	second := first
+	second.Type = episodeMemoryTypeFailure
+	second.EvidenceRefs = []string{"second_result"}
+
+	if got := compactEpisodeMemoryCandidates([]episodeMemoryCandidate{first, second}); len(got) != 0 {
+		t.Fatalf("compacted candidates = %#v, want ambiguous lesson identity discarded", got)
+	}
+}
+
+func TestEpisodeMemoryReviewsEmptyMultiStepProposalOnce(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{
+		`{
+  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the requested page opened.","evidence_refs":["result_2"]},
+  "candidates":[]
+}`,
+		`{
+  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the requested page opened.","evidence_refs":["result_2"]},
+  "candidates":[{
+    "lesson_key":"open_target_page","type":"procedure","action":"create","retention":"durable","unresolved_conflict":false,
+    "situation":"When opening the target page on this device","guidance":"Open Settings, then select the target page","expected_effect":"The target page is visible",
+    "scope":{"device_id":"device_a","app_name":"Settings"},"tags":["settings"],
+    "evidence_refs":["call_1","result_1","call_2","result_2"]
+  }]
+}`,
+	}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{
+		ID: "ep_review", DeviceScope: map[string]string{"device_id": "device_a"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "call_1", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{"app":"Settings"}`},
+			{EventID: "result_1", Type: "tool_result", ToolName: "launch_app", Observation: "Settings is visible."},
+			{EventID: "call_2", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: `{"type":"tap","target":"Target"}`},
+			{EventID: "result_2", Type: "tool_result", ToolName: "touch_gesture", Observation: "The target page is visible."},
+		},
+	}
+
+	proposal, err := processor.proposeEpisode(ctx, episode)
+	if err != nil {
+		t.Fatalf("proposeEpisode() error = %v", err)
+	}
+	if got := model.callCount(); got != 3 {
+		t.Fatalf("model calls = %d, want extraction, omission review, and retention audit", got)
+	}
+	if len(proposal.Candidates) != 1 || proposal.Candidates[0].Retention != episodeMemoryRetentionDurable {
+		t.Fatalf("reviewed proposal = %#v, want one durable candidate", proposal)
+	}
+	if err := processor.applyProposal(ctx, episode, proposal); err != nil {
+		t.Fatalf("applyProposal() error = %v", err)
+	}
+	items, err := plane.device.readAll()
+	if err != nil {
+		t.Fatalf("readAll() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("device memories = %#v, want one reviewed memory", items)
+	}
+}
+
+func TestEpisodeMemoryReviewCanRemainEmpty(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	empty := `{
+  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the requested page opened.","evidence_refs":["result_2"]},
+  "candidates":[]
+}`
+	model := &episodeMemoryScriptedModel{responses: []string{empty, empty}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{Events: []TaskEpisodeEvent{
+		{EventID: "call_1", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{}`},
+		{EventID: "result_1", Type: "tool_result", ToolName: "launch_app", Observation: "Settings is visible."},
+		{EventID: "call_2", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
+		{EventID: "result_2", Type: "tool_result", ToolName: "read_screen", Observation: "The requested page is visible."},
+	}}
+
+	proposal, err := processor.proposeEpisode(ctx, episode)
+	if err != nil {
+		t.Fatalf("proposeEpisode() error = %v", err)
+	}
+	if got := model.callCount(); got != 2 {
+		t.Fatalf("model calls = %d, want one extraction and one review", got)
+	}
+	if len(proposal.Candidates) != 0 {
+		t.Fatalf("reviewed candidates = %#v, want empty", proposal.Candidates)
+	}
+}
+
+func TestEpisodeMemoryOmissionReviewFailureIsRetried(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{
+		`{
+  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the page opened.","evidence_refs":["result_2"]},
+  "candidates":[]
+}`,
+		`not-json`,
+	}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	episode := TaskEpisode{
+		ID: "ep_review_retry", Status: "active", StartedAt: "2026-08-14T10:25:00Z", EndedAt: "2026-08-14T10:25:01Z",
+		UserGoal: "Open the target page", DeviceScope: map[string]string{"device_id": "device_a"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "call_1", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{}`},
+			{EventID: "result_1", Type: "tool_result", ToolName: "launch_app", Observation: "The app is visible."},
+			{EventID: "call_2", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: `{}`},
+			{EventID: "result_2", Type: "tool_result", ToolName: "touch_gesture", Observation: "The target page is visible."},
+		},
+	}
+	if _, err := plane.episodes.AddEpisode(ctx, episode); err != nil {
+		t.Fatalf("AddEpisode() error = %v", err)
+	}
+	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+		t.Fatalf("ProcessBatch() error = %v", err)
+	}
+	state, err := processor.state.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	status := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)]
+	if status.Status != episodeMemoryStatusRetry || status.AttemptCount != 1 || !strings.Contains(status.LastError, "omission review") {
+		t.Fatalf("state = %#v, want retry after omission-review failure", status)
+	}
+}
+
+func TestEpisodeMemoryDoesNotReviewUnknownAssessment(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "episode_assessment":{"goal_result":"unknown","reason":"The final state was not observed.","evidence_refs":[]},
+  "candidates":[]
+}`}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{Events: []TaskEpisodeEvent{
+		{EventID: "call_1", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{}`},
+		{EventID: "result_1", Type: "tool_result", ToolName: "launch_app", Observation: "Settings is visible."},
+		{EventID: "call_2", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: `{}`},
+		{EventID: "result_2", Type: "tool_result", ToolName: "touch_gesture", Observation: "The action completed without final proof."},
+	}}
+
+	if _, err := processor.proposeEpisode(ctx, episode); err != nil {
+		t.Fatalf("proposeEpisode() error = %v", err)
+	}
+	if got := model.callCount(); got != 1 {
+		t.Fatalf("model calls = %d, want no review for unknown assessment", got)
+	}
+}
+
+func TestEpisodeMemoryDiscardsTransientReviewCandidate(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{
+		`{
+  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the inspection completed.","evidence_refs":["result_2"]},
+  "candidates":[]
+}`,
+		`{
+  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the inspection completed.","evidence_refs":["result_2"]},
+  "candidates":[{
+    "lesson_key":"current_observation","type":"fact","action":"create","retention":"transient","unresolved_conflict":false,
+    "situation":"During the current inspection","guidance":"Reuse the value currently shown on screen","expected_effect":"The current value is available",
+    "scope":{"device_id":"device_a"},"tags":["inspection"],"evidence_refs":["result_2"]
+  }]
+}`,
+	}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{
+		ID: "ep_transient_review", DeviceScope: map[string]string{"device_id": "device_a"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "call_1", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{}`},
+			{EventID: "result_1", Type: "tool_result", ToolName: "launch_app", Observation: "The details page is visible."},
+			{EventID: "call_2", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
+			{EventID: "result_2", Type: "tool_result", ToolName: "read_screen", Observation: "The requested current value is visible."},
+		},
+	}
+
+	proposal, err := processor.proposeEpisode(ctx, episode)
+	if err != nil {
+		t.Fatalf("proposeEpisode() error = %v", err)
+	}
+	if err := processor.applyProposal(ctx, episode, proposal); err != nil {
+		t.Fatalf("applyProposal() error = %v", err)
+	}
+	items, err := plane.device.readAll()
+	if err != nil {
+		t.Fatalf("readAll() error = %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("device memories = %#v, want transient review candidate discarded", items)
+	}
+}
+
 func TestNavigationCandidateLinksResultEvidenceToToolCalls(t *testing.T) {
 	episode := TaskEpisode{Events: []TaskEpisodeEvent{
 		{EventID: "ethernet_call", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: `{"type":"tap","target":"Ethernet"}`},
@@ -877,6 +1450,7 @@ func TestNavigationCandidateLinksResultEvidenceToToolCalls(t *testing.T) {
 		LessonKey:      "ios_aiden_ethernet_path",
 		Type:           episodeMemoryTypeNavigation,
 		Action:         episodeMemoryActionCreate,
+		Retention:      episodeMemoryRetentionDurable,
 		MemoryRevision: 1,
 		Situation:      "When opening the Aiden USB Ethernet details on iOS",
 		Guidance:       "Open Ethernet, then Aiden HID+ECM",
@@ -983,6 +1557,49 @@ func TestEpisodeMemoryExtractionFailureIsNotRetried(t *testing.T) {
 	}
 }
 
+func TestEpisodeMemoryRetentionAuditFailureIsRetried(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{
+		responses: []string{`{
+  "episode_assessment":{"goal_result":"achieved","reason":"The final page was observed.","evidence_refs":["result"]},
+  "candidates":[{
+    "lesson_key":"observed_page_fact","type":"fact","action":"create","retention":"durable","unresolved_conflict":false,
+    "situation":"On the inspected page","guidance":"Use the observed page label","expected_effect":"The page can be identified",
+    "scope":{"device_id":"device_a","app_name":"Example"},"tags":["page"],"evidence_refs":["result"]
+  }]
+}`},
+		auditResponses: []string{`not-json`},
+	}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	episode := TaskEpisode{
+		ID: "ep_audit_retry", Status: "active", StartedAt: "2026-08-14T10:30:00Z", EndedAt: "2026-08-14T10:30:01Z",
+		UserGoal: "Inspect the example page", DeviceScope: map[string]string{"device_id": "device_a"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
+			{EventID: "result", Type: "tool_result", ToolName: "read_screen", Observation: "The final page is visible."},
+		},
+	}
+	if _, err := plane.episodes.AddEpisode(ctx, episode); err != nil {
+		t.Fatalf("AddEpisode() error = %v", err)
+	}
+	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+		t.Fatalf("ProcessBatch() error = %v", err)
+	}
+	state, err := processor.state.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	status := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)]
+	if status.Status != episodeMemoryStatusRetry || status.AttemptCount != 1 || !strings.Contains(status.LastError, "retention audit") {
+		t.Fatalf("state = %#v, want retry after retention audit failure", status)
+	}
+}
+
 func TestEpisodeMemoryProcedureUpdatePreservesExistingSteps(t *testing.T) {
 	ctx := context.Background()
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
@@ -997,7 +1614,7 @@ func TestEpisodeMemoryProcedureUpdatePreservesExistingSteps(t *testing.T) {
 	model := &episodeMemoryScriptedModel{responses: []string{`{
   "episode_assessment":{"goal_result":"achieved","reason":"The final tool result shows the Display controls.","evidence_refs":["ep_proc_result_2"]},
   "candidates":[{
-    "lesson_key":"merge_display_path","type":"procedure","action":"update","memory_id":"devmem_procedure","memory_revision":1,
+    "lesson_key":"merge_display_path","type":"procedure","action":"update","retention":"durable","memory_id":"devmem_procedure","memory_revision":1,
     "unresolved_conflict":false,"situation":"When opening display settings","guidance":"Open Settings and select Display","expected_effect":"Display controls are visible",
     "scope":{"device_id":"device_a","app_name":"Settings"},"tags":["display"],
     "evidence_refs":["ep_proc_call_1","ep_proc_result_1","ep_proc_call_2","ep_proc_result_2"]
@@ -1082,7 +1699,7 @@ func TestEpisodeMemoryCreateDoesNotDuplicateExistingScope(t *testing.T) {
 	processor := newEpisodeMemoryProcessor(plane, &episodeMemoryScriptedModel{})
 	episode := TaskEpisode{ID: "ep_collision", DeviceScope: map[string]string{"device_id": "device_a"}}
 	candidate := episodeMemoryCandidate{
-		LessonKey: "different_wording", Type: episodeMemoryTypeFact, Action: episodeMemoryActionCreate,
+		LessonKey: "different_wording", Type: episodeMemoryTypeFact, Action: episodeMemoryActionCreate, Retention: episodeMemoryRetentionDurable,
 		Situation: "Different conclusion", Guidance: "Use a different rule", ExpectedEffect: "Different effect",
 		Scope: map[string]string{"device_id": "device_a", "app_name": "Settings"}, EvidenceRefs: []string{"evt"},
 	}

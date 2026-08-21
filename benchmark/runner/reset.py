@@ -261,19 +261,32 @@ def _per_task_setup_seed_episode(
         raise ResetError(f"episode memory consolidation timed out for {episode_id!r}: {e}") from e
     except AgentRequestError as e:
         raise ResetError(f"episode memory consolidation failed for {episode_id!r}: {e}") from e
+    expectation = setup.get("consolidation_expectation")
+    if consolidation_expectation is not None:
+        expectation = vars(consolidation_expectation)
     status = str(result.get("status") or "").strip().lower()
-    if status == "ignored":
+    expected_status = (expectation or {}).get("expected_status") if isinstance(expectation, dict) else None
+    if expected_status is not None and status != expected_status:
+        raise ResetError(
+            f"episode memory consolidation for {episode_id!r} status mismatch: expected {expected_status!r}, got {status or 'missing'!r}"
+        )
+    if status == "ignored" and expected_status != "ignored":
         raise ResetError(
             f"episode memory consolidation for {episode_id!r} was ignored by the worker"
         )
+    if status == "ignored":
+        return {
+            "type": "seed_episode",
+            "episode_id": episode_id,
+            "consolidated": True,
+            "consolidation": result,
+        }
     if status != "done":
         raise ResetError(
             f"episode memory consolidation for {episode_id!r} did not reach a terminal status: {status or 'missing'}"
         )
-    expectation = setup.get("consolidation_expectation")
-    if consolidation_expectation is not None:
-        expectation = vars(consolidation_expectation)
     _validate_consolidation_result(episode_id, result, expectation)
+    _validate_consolidated_memory_content(client, episode_id, result, expectation, timeout)
     return {
         "type": "seed_episode",
         "episode_id": episode_id,
@@ -334,7 +347,110 @@ def _validate_consolidation_result(
         fail(
             f"episode memory consolidation for {episode_id!r} produced {memory_count} device memories, expected at most {max_memory_ids}"
         )
-    if not expectation.get("allow_empty_memory", False) and memory_count == 0:
+    has_positive_memory_contract = any(
+        expectation.get(field)
+        for field in (
+            "required_memory_substrings",
+            "required_memory_types",
+            "required_memory_scope",
+        )
+    )
+    if memory_count == 0 and (
+        has_positive_memory_contract or not expectation.get("allow_empty_memory", False)
+    ):
         fail(
             f"episode memory consolidation for {episode_id!r} produced no device memory"
+        )
+
+
+def _validate_consolidated_memory_content(
+    client: AgentClient,
+    episode_id: str,
+    result: dict[str, Any],
+    expectation: dict[str, Any] | None,
+    timeout: int,
+) -> None:
+    if not isinstance(expectation, dict):
+        return
+    forbidden = expectation.get("forbidden_memory_substrings", [])
+    required_substrings = expectation.get("required_memory_substrings", [])
+    required_types = expectation.get("required_memory_types", [])
+    required_scope = expectation.get("required_memory_scope", {})
+    if not any((forbidden, required_substrings, required_types, required_scope)):
+        return
+    memory_ids = result.get("memory_ids")
+    if not isinstance(memory_ids, list) or not memory_ids:
+        if any((required_substrings, required_types, required_scope)):
+            error = ResetError(
+                f"episode memory consolidation for {episode_id!r} produced no device memory for the required content/type/scope contract"
+            )
+            setattr(error, "consolidation", result)
+            raise error
+        return
+
+    def fail(message: str) -> None:
+        error = ResetError(message)
+        setattr(error, "consolidation", result)
+        raise error
+
+    generated_memories: list[dict[str, Any]] = []
+    for memory_id in memory_ids:
+        try:
+            recalled = client.invoke_tool(
+                "recall_device_memory",
+                {"terms": [memory_id], "limit": 5},
+                timeout=timeout,
+            )
+        except (AgentTimeoutError, AgentRequestError) as exc:
+            fail(
+                f"episode memory consolidation for {episode_id!r} could not inspect memory {memory_id!r}: {exc}"
+            )
+        if recalled.is_error:
+            fail(
+                f"episode memory consolidation for {episode_id!r} could not inspect memory {memory_id!r}"
+            )
+        try:
+            payload = json.loads(recalled.output)
+        except (TypeError, json.JSONDecodeError) as exc:
+            fail(
+                f"episode memory consolidation for {episode_id!r} returned invalid recall output for memory {memory_id!r}: {exc}"
+            )
+        matches = payload.get("results") if isinstance(payload, dict) else None
+        exact = next(
+            (item for item in matches or [] if isinstance(item, dict) and item.get("id") == memory_id),
+            None,
+        )
+        if exact is None:
+            fail(
+                f"episode memory consolidation for {episode_id!r} could not recall generated memory {memory_id!r}"
+            )
+        generated_memories.append(exact)
+
+    serialized = json.dumps(generated_memories, ensure_ascii=False).casefold()
+    leaked = [value for value in forbidden if value.casefold() in serialized]
+    if leaked:
+        fail(
+            f"episode memory consolidation for {episode_id!r} persisted forbidden value(s): {', '.join(leaked)}"
+        )
+    required_type_set = {value.strip().casefold() for value in required_types}
+
+    def matches_required_memory(item: dict[str, Any]) -> bool:
+        item_serialized = json.dumps(item, ensure_ascii=False).casefold()
+        if required_type_set and str(item.get("type") or "").strip().casefold() not in required_type_set:
+            return False
+        if any(value.casefold() not in item_serialized for value in required_substrings):
+            return False
+        applicability = item.get("applicability")
+        if required_scope and (
+            not isinstance(applicability, dict)
+            or any(str(applicability.get(key) or "") != value for key, value in required_scope.items())
+        ):
+            return False
+        return True
+
+    if any((required_substrings, required_types, required_scope)) and not any(
+        matches_required_memory(item) for item in generated_memories
+    ):
+        fail(
+            f"episode memory consolidation for {episode_id!r} produced no single memory matching required type/content/scope"
         )

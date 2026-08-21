@@ -267,6 +267,14 @@ def test_expected_option_answer_fails_for_wrong_answer():
     assert result.passed is False
     assert result.predicted_answer == "(b)"
 
+def test_expected_option_answer_ignores_bare_article_after_parenthesized_choice():
+    result = assertions.evaluate_expected_answer(
+        "**(b) not achieved with a guard**", "(b)", "option_letter"
+    )
+
+    assert result.passed is True
+    assert result.predicted_answer == "(b)"
+
 def test_expected_option_answer_rejects_invalid_expected_answer():
     result = assertions.evaluate_expected_answer("No option selected.", "z", "option_letter")
 

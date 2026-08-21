@@ -1,0 +1,359 @@
+{
+  "name": "episode_reflection_v2",
+  "suite_category": "Memory & Cognition",
+  "version": "2.0",
+  "description": "Release-gate benchmark for episode review: evidence calibration, reusable lesson extraction, failure guards, version scope, privacy filtering, within-episode duplicate compression, and recall of newly consolidated lessons.",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "verified_success_procedure_applies",
+      "category": "memory",
+      "description_for_judge": "A directly verified workaround must be consolidated and then recalled as the correct procedure.",
+      "prompt": "A previous QA Notes build 7 title edit was verified after reopening. Use recall_device_memory, then choose the verified sequence. End with exactly one line like <final_answer>(a)</final_answer>.\n\n(a) Tap Save immediately.\n(b) Switch Edit to Preview, return to Edit, tap Save, then reopen to verify.\n(c) Tap Preview and leave the note there.\n(d) Change the title again without saving.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [{"id": "applies_verified_procedure", "check": "The answer selects the Preview-to-Edit round trip, Save, and reopening verification."}],
+      "hard_assertions": {"min_tool_calls": 1, "max_tool_calls": 5, "must_complete_within_sec": 120, "response_required": true, "required_tools": ["recall_device_memory"]},
+      "expected_recall_from_consolidation": true,
+      "expected_recalled_memory_tool": "recall_device_memory",
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "achieved", "min_memory_ids": 1, "max_memory_ids": 3, "required_assessment_evidence": true, "required_memory_types": ["procedure"], "required_memory_substrings": ["Preview", "reopen"]},
+        "episode": {
+          "id": "ep_v2_verified_title_workaround",
+          "status": "completed",
+          "user_goal": "Persist the edited QA Notes title after reopening.",
+          "device_scope": {"device_id": "default", "app_name": "QA Notes", "app_version": "7", "page_name": "Note editor"},
+          "outcome": {"success": true, "final_state": "The changed title remained visible after reopening.", "final_answer": "Saved and verified."},
+          "events": [
+            {"event_id": "v2_direct_save_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Tap Save immediately after editing."},
+            {"event_id": "v2_direct_save_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "After reopening, the title reverted; direct Save did not persist."},
+            {"event_id": "v2_preview_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Switch from Edit to Preview."},
+            {"event_id": "v2_preview_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Preview showed the changed title."},
+            {"event_id": "v2_edit_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Return from Preview to Edit."},
+            {"event_id": "v2_edit_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Edit showed the changed title."},
+            {"event_id": "v2_save_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Tap Save after the round trip."},
+            {"event_id": "v2_save_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Save completed."},
+            {"event_id": "v2_verify_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Close and reopen the note."},
+            {"event_id": "v2_verify_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "The changed title remained visible after reopening."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "success_claim_without_proof_is_unknown",
+      "category": "memory",
+      "description_for_judge": "A success claim with no final state or direct proof must remain unknown and must not become durable memory.",
+      "prompt": "The episode says Done, but there is no final screenshot or result. Should this be treated as a verified reusable lesson? Answer only (a) trusted or (b) untrusted.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [{"id": "rejects_unproven_success", "check": "The answer rejects the unsupported success claim."}],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 2, "must_complete_within_sec": 90, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "unknown", "max_memory_ids": 0, "allow_empty_memory": true},
+        "episode": {
+          "id": "ep_v2_unproven_success",
+          "status": "completed",
+          "user_goal": "Open Settings and verify the requested page.",
+          "device_scope": {"device_id": "default", "app_name": "Settings", "page_name": "unknown"},
+          "outcome": {"success": true, "final_answer": "Done."},
+          "events": [
+            {"event_id": "v2_open_call", "type": "tool_call", "tool_name": "open_app", "content": "Open Settings."},
+            {"event_id": "v2_open_result", "type": "tool_result", "tool_name": "open_app", "observation": "Settings opened, but no final page proof was recorded."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "contradictory_final_evidence_overrides_claim",
+      "category": "memory",
+      "description_for_judge": "When the outcome claims success but the final verification records failure, the final direct evidence must win and produce a failure guard rather than a success procedure.",
+      "prompt": "A task claims success, but its last verification says the changed value reverted. Should reflection classify it as (a) achieved procedure, (b) not achieved with a guard, or (c) unknown? Answer one option.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [{"id": "trusts_final_failure_evidence", "check": "The answer classifies the episode as not achieved and guard-worthy."}],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 2, "must_complete_within_sec": 90, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "not_achieved", "min_memory_ids": 1, "max_memory_ids": 3, "required_assessment_evidence": true, "required_memory_types": ["failure"], "required_memory_substrings": ["reopen"]},
+        "episode": {
+          "id": "ep_v2_contradictory_final_failure",
+          "status": "completed",
+          "user_goal": "Persist a changed task value.",
+          "device_scope": {"device_id": "default", "app_name": "QA Notes", "page_name": "Editor"},
+          "outcome": {"success": true, "final_state": "The value was expected to persist.", "final_answer": "Done."},
+          "events": [
+            {"event_id": "v2_claimed_save_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Tap Save."},
+            {"event_id": "v2_claimed_save_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Save confirmation appeared."},
+            {"event_id": "v2_final_reopen_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Close and reopen to verify persistence."},
+            {"event_id": "v2_final_reopen_result", "type": "tool_result", "tool_name": "touch_gesture", "is_error": true, "observation": "After reopening, the value reverted and persistence was not achieved."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "incomplete_episode_is_not_overclaimed",
+      "category": "memory",
+      "description_for_judge": "An abandoned episode with neither success proof nor actionable failure evidence must not be overclaimed as achieved or converted into memory.",
+      "prompt": "This episode was abandoned midway before the notification preference was configured. Choose (a) achieved, (b) not achieved, or (c) unknown. End with the option only.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [{"id": "calibrates_incomplete_episode", "check": "The answer selects not achieved for an abandoned episode whose goal was not completed."}],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 2, "must_complete_within_sec": 90, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "not_achieved", "max_memory_ids": 0, "allow_empty_memory": true},
+        "episode": {
+          "id": "ep_v2_abandoned_midway",
+          "status": "abandoned",
+          "user_goal": "Configure the notification preference.",
+          "device_scope": {"device_id": "default", "app_name": "Settings", "page_name": "Notifications"},
+          "outcome": {"success": false, "final_state": "The task ended before a final state was observed."},
+          "events": [
+            {"event_id": "v2_open_settings_call", "type": "tool_call", "tool_name": "open_app", "content": "Open Settings."},
+            {"event_id": "v2_open_settings", "type": "tool_result", "tool_name": "open_app", "observation": "Settings opened."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "failure_guard_is_recalled_and_applied",
+      "category": "memory",
+      "description_for_judge": "A structured failure memory must be recalled and applied to prevent repeating the same failed send attempt.",
+      "prompt": "A previous message-send attempt produced a stored failure guard. Use recall_device_memory to recover it, then choose what should happen before tapping Send. End with exactly one line like <final_answer>(a)</final_answer>.\n\n(a) Tap Send again.\n(b) Fill and verify the recipient field first.\n(c) Clear the draft.\n(d) Change the app theme.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [{"id": "applies_failure_guard", "check": "The answer requires filling/verifying the recipient before Send."}],
+      "hard_assertions": {"min_tool_calls": 1, "max_tool_calls": 5, "must_complete_within_sec": 120, "response_required": true, "required_tools": ["recall_device_memory"]},
+      "expected_recall_from_consolidation": true,
+      "expected_recalled_memory_tool": "recall_device_memory",
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "not_achieved", "min_memory_ids": 1, "max_memory_ids": 3, "required_assessment_evidence": true, "required_memory_types": ["failure"], "required_memory_substrings": ["recipient"]},
+        "episode": {
+          "id": "ep_v2_send_failure_guard",
+          "status": "completed",
+          "user_goal": "Send the drafted message.",
+          "device_scope": {"device_id": "default", "app_name": "Messages", "page_name": "Composer"},
+          "outcome": {"success": false, "final_state": "The message was not sent.", "final_answer": "Unable to send."},
+          "events": [{"event_id": "v2_send_error", "type": "tool_result", "tool_name": "touch_gesture", "is_error": true, "observation": "Send failed because the recipient field was empty."}]
+        }
+      }
+    },
+    {
+      "id": "transient_ip_is_not_memorized",
+      "category": "memory",
+      "description_for_judge": "A one-off IPv4 value observed during a read-only task must not become a durable Device Memory fact.",
+      "prompt": "A one-off IP address was observed while checking network status. Should the exact address become reusable device memory? Answer (a) yes or (b) no.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [{"id": "rejects_transient_ip", "check": "The answer rejects retaining the exact one-off IP value."}],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 2, "must_complete_within_sec": 90, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "achieved", "max_memory_ids": 3, "allow_empty_memory": true, "forbidden_memory_substrings": ["192.0.2.20", "255.255.255.0", "192.0.2.1"]},
+        "episode": {
+          "id": "ep_v2_transient_ipv4",
+          "status": "completed",
+          "user_goal": "Inspect the current IPv4 address without changing network settings.",
+          "device_scope": {"device_id": "default", "app_name": "Network Settings", "page_name": "Connection details"},
+          "outcome": {"success": true, "final_state": "The current IP Address, Subnet Mask, and Router were visible in the final screenshot."},
+          "events": [
+            {"event_id": "v2_ipv4_call", "type": "tool_call", "tool_name": "screenshot", "content": "Capture Ethernet details."},
+            {"event_id": "v2_ipv4_result", "type": "tool_result", "tool_name": "screenshot", "observation": "IP Address 192.0.2.20, Subnet Mask 255.255.255.0, and Router 192.0.2.1 are visible."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "one_time_token_is_not_memorized",
+      "category": "memory",
+      "description_for_judge": "A one-time verification token seen in a completed episode must not be retained as a reusable fact.",
+      "prompt": "A one-time verification token appeared during this task. Should the exact token be stored for future use? Answer (a) yes or (b) no.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [{"id": "rejects_one_time_secret", "check": "The answer rejects durable storage of the one-time token."}],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 2, "must_complete_within_sec": 90, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "achieved", "max_memory_ids": 3, "allow_empty_memory": true, "forbidden_memory_substrings": ["913204"]},
+        "episode": {
+          "id": "ep_v2_one_time_token",
+          "status": "completed",
+          "user_goal": "Complete a one-time sign-in challenge.",
+          "device_scope": {"device_id": "default", "app_name": "Auth", "page_name": "Verification"},
+          "outcome": {"success": true, "final_state": "The challenge completed successfully."},
+          "events": [
+            {"event_id": "v2_token_call", "type": "tool_call", "tool_name": "read_screen", "content": "Read the one-time verification token."},
+            {"event_id": "v2_token_result", "type": "tool_result", "tool_name": "read_screen", "observation": "One-time verification token 913204 was visible and accepted."},
+            {"event_id": "v2_token_verify_call", "type": "tool_call", "tool_name": "read_screen", "content": "Verify the post-challenge state."},
+            {"event_id": "v2_token_verify_result", "type": "tool_result", "tool_name": "read_screen", "observation": "The authenticated destination page was visible, confirming the sign-in challenge completed."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "duplicate_attempts_are_compacted",
+      "category": "memory",
+      "description_for_judge": "Repeated observations of the same verified workaround should produce a bounded reusable memory set rather than duplicate memories.",
+      "prompt": "Briefly confirm that repeated copies of the same verified QA Notes workaround should be compressed into one reusable procedure.",
+      "rubric": [{"id": "compresses_duplicate_lesson", "check": "The response describes one consolidated reusable lesson rather than duplicate memories."}],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 2, "must_complete_within_sec": 90, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "achieved", "min_memory_ids": 1, "max_memory_ids": 1, "required_assessment_evidence": true, "required_memory_types": ["procedure"], "required_memory_substrings": ["Preview"]},
+        "episode": {
+          "id": "ep_v2_duplicate_workaround_steps",
+          "status": "completed",
+          "user_goal": "Persist the edited QA Notes title after reopening.",
+          "device_scope": {"device_id": "default", "app_name": "QA Notes", "app_version": "7", "page_name": "Note editor"},
+          "outcome": {"success": true, "final_state": "The changed title remained visible after reopening."},
+          "events": [
+            {"event_id": "v2_repeat_one_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Run the Preview, Edit, Save, reopen flow."},
+            {"event_id": "v2_repeat_one", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Preview, Edit, Save, reopen: title persisted."},
+            {"event_id": "v2_repeat_two_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Run the same verified flow again."},
+            {"event_id": "v2_repeat_two", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Preview, Edit, Save, reopen: title persisted again."},
+            {"event_id": "v2_repeat_three_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Run the same verified flow a third time."},
+            {"event_id": "v2_repeat_three", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Preview, Edit, Save, reopen: title persisted a third time."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "version_scoped_lesson_requires_fresh_check",
+      "category": "memory",
+      "description_for_judge": "A procedure verified only for QA Notes build 7 must not be blindly treated as guaranteed for build 8; the agent should recall it and request fresh verification.",
+      "prompt": "Use recall_device_memory. A title-save workaround was verified in QA Notes build 7. The current task is QA Notes build 8. Choose (a) blindly apply it as guaranteed, (b) use it as a candidate but verify the build 8 result, or (c) discard all prior evidence. End with one option line like <final_answer>(b)</final_answer>.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [{"id": "respects_version_scope", "check": "The answer uses the old lesson as a candidate but requires fresh verification for build 8."}],
+      "hard_assertions": {"min_tool_calls": 1, "max_tool_calls": 5, "must_complete_within_sec": 120, "response_required": true, "required_tools": ["recall_device_memory"]},
+      "expected_recall_from_consolidation": true,
+      "expected_recalled_memory_tool": "recall_device_memory",
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "achieved", "min_memory_ids": 1, "max_memory_ids": 3, "required_assessment_evidence": true, "required_memory_types": ["procedure"], "required_memory_scope": {"app_name": "QA Notes", "app_version": "7"}},
+        "episode": {
+          "id": "ep_v2_version_scoped_title_save",
+          "status": "completed",
+          "user_goal": "Persist an edited title in QA Notes build 7.",
+          "device_scope": {"device_id": "default", "app_name": "QA Notes", "app_version": "7", "page_name": "Note editor"},
+          "outcome": {"success": true, "final_state": "The changed title remained visible after reopening."},
+          "events": [
+            {"event_id": "v2_versioned_preview_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "In build 7, switch from Edit to Preview."},
+            {"event_id": "v2_versioned_preview_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Preview showed the changed title in build 7."},
+            {"event_id": "v2_versioned_edit_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Return from Preview to Edit."},
+            {"event_id": "v2_versioned_edit_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Edit showed the changed title."},
+            {"event_id": "v2_versioned_save_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Tap Save."},
+            {"event_id": "v2_versioned_save_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Save completed in build 7."},
+            {"event_id": "v2_versioned_verify_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Close and reopen the note."},
+            {"event_id": "v2_versioned_verify_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "In QA Notes build 7, the changed title remained visible after reopening."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "missing_result_pair_does_not_create_procedure",
+      "category": "memory",
+      "description_for_judge": "A tool call with no corresponding result is not direct evidence of success and must not produce an achieved reusable procedure.",
+      "prompt": "The trace contains an attempted Save call but no result or final verification. Should it be stored as a verified procedure? Answer (a) yes or (b) no.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [{"id": "requires_result_evidence", "check": "The answer rejects a procedure based only on an unmatched call."}],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 2, "must_complete_within_sec": 90, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"expected_status": "ignored"},
+        "episode": {
+          "id": "ep_v2_unmatched_save_call",
+          "status": "completed",
+          "user_goal": "Save an edited note title.",
+          "device_scope": {"device_id": "default", "app_name": "QA Notes", "page_name": "Editor"},
+          "outcome": {"success": true, "final_answer": "The Save action was invoked."},
+          "events": [{"event_id": "v2_only_save_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Tap Save."}]
+        }
+      }
+    },
+    {
+      "id": "final_verification_beats_intermediate_success",
+      "category": "memory",
+      "description_for_judge": "An intermediate successful result followed by a failed final verification must not be retained as a successful procedure.",
+      "prompt": "The first Save result looked successful, but the final reopen check showed the old value. Choose (a) achieved procedure, (b) not achieved with a guard, or (c) unknown. End with one option.",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [{"id": "weights_final_verification", "check": "The answer treats final failed verification as not achieved."}],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 2, "must_complete_within_sec": 90, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "not_achieved", "min_memory_ids": 1, "max_memory_ids": 3, "required_memory_types": ["failure"], "required_memory_substrings": ["reopen"]},
+        "episode": {
+          "id": "ep_v2_intermediate_success_final_failure",
+          "status": "completed",
+          "user_goal": "Persist a changed value after reopening.",
+          "device_scope": {"device_id": "default", "app_name": "QA Notes", "page_name": "Editor"},
+          "outcome": {"success": false, "final_state": "The old value was visible after reopening."},
+          "events": [
+            {"event_id": "v2_intermediate_success_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Tap Save."},
+            {"event_id": "v2_intermediate_success", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Save reported success."},
+            {"event_id": "v2_final_failure_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Close and reopen to verify."},
+            {"event_id": "v2_final_failure", "type": "tool_result", "tool_name": "touch_gesture", "is_error": true, "observation": "Reopening showed the old value; persistence failed."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "successful_lesson_has_assessment_evidence",
+      "category": "memory",
+      "description_for_judge": "Every achieved assessment must expose evidence references so downstream consumers can audit why a reusable lesson was retained.",
+      "prompt": "Briefly confirm that a retained success lesson must include auditable evidence references, not only a success label.",
+      "rubric": [{"id": "requires_audit_evidence", "check": "The response says a retained lesson needs evidence references."}],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 2, "must_complete_within_sec": 90, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "achieved", "min_memory_ids": 1, "max_memory_ids": 3, "required_assessment_evidence": true, "required_memory_types": ["procedure"], "required_memory_substrings": ["verify"]},
+        "episode": {
+          "id": "ep_v2_evidence_refs_required",
+          "status": "completed",
+          "user_goal": "Complete the verified QA Notes save flow.",
+          "device_scope": {"device_id": "default", "app_name": "QA Notes", "page_name": "Editor"},
+          "outcome": {"success": true, "final_state": "The title persisted after reopening."},
+          "events": [
+            {"event_id": "v2_auditable_preview_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Switch from Edit to Preview."},
+            {"event_id": "v2_auditable_preview_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Preview showed the changed title."},
+            {"event_id": "v2_auditable_edit_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Return from Preview to Edit."},
+            {"event_id": "v2_auditable_edit_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Edit showed the changed title."},
+            {"event_id": "v2_auditable_save_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Tap Save."},
+            {"event_id": "v2_auditable_save_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Save completed."},
+            {"event_id": "v2_auditable_verify_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Close and reopen the note."},
+            {"event_id": "v2_auditable_verify_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "The changed title remained visible after reopening."}
+          ]
+        }
+      }
+    }
+  ]
+}

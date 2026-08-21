@@ -133,6 +133,7 @@ def evaluate_task_history(
             history,
             task.expected_recalled_memory_ids,
             episode=episode,
+            recall_tool=task.expected_recalled_memory_tool,
         )
         base.metrics.update({
             "expected_recalled_memory_ids": recall_outcome.expected_memory_ids,
@@ -304,6 +305,16 @@ def run_one_task(
             )
         base.finished_at = now_iso()
         return base
+    effective_task = task
+    if task.expected_recall_from_consolidation:
+        consolidation = setup_result.get("consolidation") if isinstance(setup_result, dict) else None
+        memory_ids = consolidation.get("memory_ids") if isinstance(consolidation, dict) else None
+        if not isinstance(memory_ids, list) or not memory_ids:
+            base.status = "failed"
+            base.metrics = {"error": "expected_recall_from_consolidation requires non-empty consolidation memory_ids"}
+            base.finished_at = now_iso()
+            return base
+        effective_task = dc.replace(task, expected_recalled_memory_ids=[str(item) for item in memory_ids])
     if setup_result is not None:
         if setup_result.get("consolidation") is not None:
             (artifact_dir / "consolidation.json").write_text(
@@ -390,9 +401,9 @@ def run_one_task(
     chat_completed = False
     episode = None
     try:
-        prompt = task.prompt
+        prompt = effective_task.prompt
         if suite.prompt_prefix:
-            prompt = f"{suite.prompt_prefix.rstrip()}\n\n{task.prompt}"
+            prompt = f"{suite.prompt_prefix.rstrip()}\n\n{effective_task.prompt}"
         chat_kwargs: dict[str, Any] = {
             "timeout_sec": task.hard_assertions.must_complete_within_sec,
             "attachments": attachments,
@@ -410,10 +421,11 @@ def run_one_task(
     except Exception as e:
         history = client_history_or_empty(client)
         base.metrics["agent_error"] = str(e)[:300]
-    if chat_completed and task.expected_recalled_memory_ids:
+    if chat_completed and effective_task.expected_recalled_memory_ids:
         inline_recall_outcome = evaluate_expected_recalled_memory_ids(
             history,
-            task.expected_recalled_memory_ids,
+            effective_task.expected_recalled_memory_ids,
+            recall_tool=effective_task.expected_recalled_memory_tool,
         )
     else:
         inline_recall_outcome = None
@@ -452,7 +464,7 @@ def run_one_task(
         post_path = None
     return evaluate_task_history(
         suite=suite,
-        task=task,
+        task=effective_task,
         history=history,
         attempt=attempt,
         artifact_dir=artifact_dir,

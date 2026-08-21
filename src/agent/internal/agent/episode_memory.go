@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	episodeMemoryExtractorVersion = 1
+	episodeMemoryExtractorVersion = 2
 	episodeMemoryTag              = "episode-memory:v1"
 
 	deviceMemoryStatusActive     deviceMemoryStatus = "active"
@@ -25,7 +25,11 @@ const (
 	deviceMemoryStatusConflicted deviceMemoryStatus = "conflicted"
 )
 
-var errEpisodeMemoryRevisionChanged = errors.New("episode memory revision changed")
+var (
+	errEpisodeMemoryRevisionChanged = errors.New("episode memory revision changed")
+	errEpisodeMemoryOmissionReview  = errors.New("episode memory omission review failed")
+	errEpisodeMemoryRetentionAudit  = errors.New("episode memory retention audit failed")
+)
 
 type episodeGoalResult string
 
@@ -52,6 +56,14 @@ const (
 	episodeMemoryActionUpdate episodeMemoryAction = "update"
 )
 
+type episodeMemoryRetention string
+
+const (
+	episodeMemoryRetentionDurable   episodeMemoryRetention = "durable"
+	episodeMemoryRetentionTransient episodeMemoryRetention = "transient"
+	episodeMemoryRetentionSensitive episodeMemoryRetention = "sensitive"
+)
+
 type episodeMemoryAssessment struct {
 	GoalResult   episodeGoalResult `json:"goal_result" yaml:"goal_result"`
 	Reason       string            `json:"reason" yaml:"reason"`
@@ -59,25 +71,59 @@ type episodeMemoryAssessment struct {
 }
 
 type episodeMemoryCandidate struct {
-	LessonKey          string              `json:"lesson_key" yaml:"lesson_key"`
-	Type               episodeMemoryType   `json:"type" yaml:"type"`
-	Action             episodeMemoryAction `json:"action" yaml:"action"`
-	MemoryID           string              `json:"memory_id,omitempty" yaml:"memory_id,omitempty"`
-	MemoryRevision     int                 `json:"memory_revision,omitempty" yaml:"memory_revision,omitempty"`
-	UnresolvedConflict bool                `json:"unresolved_conflict" yaml:"unresolved_conflict"`
-	ConflictReason     string              `json:"conflict_reason,omitempty" yaml:"conflict_reason,omitempty"`
-	Situation          string              `json:"situation" yaml:"situation"`
-	Guidance           string              `json:"guidance" yaml:"guidance"`
-	ExpectedEffect     string              `json:"expected_effect" yaml:"expected_effect"`
-	Scope              map[string]string   `json:"scope" yaml:"scope"`
-	Tags               []string            `json:"tags" yaml:"tags"`
-	EvidenceRefs       []string            `json:"evidence_refs" yaml:"evidence_refs"`
+	LessonKey          string                 `json:"lesson_key" yaml:"lesson_key"`
+	Type               episodeMemoryType      `json:"type" yaml:"type"`
+	Action             episodeMemoryAction    `json:"action" yaml:"action"`
+	Retention          episodeMemoryRetention `json:"retention" yaml:"retention"`
+	MemoryID           string                 `json:"memory_id,omitempty" yaml:"memory_id,omitempty"`
+	MemoryRevision     int                    `json:"memory_revision,omitempty" yaml:"memory_revision,omitempty"`
+	UnresolvedConflict bool                   `json:"unresolved_conflict" yaml:"unresolved_conflict"`
+	ConflictReason     string                 `json:"conflict_reason,omitempty" yaml:"conflict_reason,omitempty"`
+	Situation          string                 `json:"situation" yaml:"situation"`
+	Guidance           string                 `json:"guidance" yaml:"guidance"`
+	ExpectedEffect     string                 `json:"expected_effect" yaml:"expected_effect"`
+	Scope              map[string]string      `json:"scope" yaml:"scope"`
+	Tags               []string               `json:"tags" yaml:"tags"`
+	EvidenceRefs       []string               `json:"evidence_refs" yaml:"evidence_refs"`
 }
 
 type episodeMemoryProposal struct {
 	EpisodeAssessment episodeMemoryAssessment  `json:"episode_assessment" yaml:"episode_assessment"`
 	Candidates        []episodeMemoryCandidate `json:"candidates" yaml:"candidates"`
 	ExistingRevisions map[string]int           `json:"-" yaml:"existing_revisions,omitempty"`
+}
+
+type episodeMemoryRetentionDecision string
+
+const (
+	episodeMemoryRetentionDecisionRetain  episodeMemoryRetentionDecision = "retain"
+	episodeMemoryRetentionDecisionDiscard episodeMemoryRetentionDecision = "discard"
+)
+
+type episodeMemoryRetentionReview struct {
+	LessonKey string                         `json:"lesson_key"`
+	Decision  episodeMemoryRetentionDecision `json:"decision"`
+	Reason    string                         `json:"reason"`
+	Rewrite   *episodeMemoryRetentionRewrite `json:"rewrite,omitempty"`
+}
+
+type episodeMemoryRetentionRewrite struct {
+	Situation      string            `json:"situation"`
+	Guidance       string            `json:"guidance"`
+	ExpectedEffect string            `json:"expected_effect"`
+	Scope          map[string]string `json:"scope"`
+	Tags           []string          `json:"tags"`
+	EvidenceRefs   []string          `json:"evidence_refs"`
+}
+
+type episodeMemoryRetentionAudit struct {
+	Reviews []episodeMemoryRetentionReview `json:"reviews"`
+}
+
+type episodeMemoryRetentionAuditStats struct {
+	RetainDecisions int
+	Rewrites        int
+	MatchingKeys    int
 }
 
 func cloneEpisodeMemoryProposal(proposal episodeMemoryProposal) episodeMemoryProposal {
@@ -239,7 +285,7 @@ func (p *episodeMemoryProcessor) processBatchLocked(ctx context.Context, limit i
 				return result, err
 			}
 			proposal, err = p.proposeEpisode(ctx, episode)
-			extractionFailed = err != nil
+			extractionFailed = err != nil && !errors.Is(err, errEpisodeMemoryOmissionReview) && !errors.Is(err, errEpisodeMemoryRetentionAudit)
 			if err == nil {
 				persisted := cloneEpisodeMemoryProposal(proposal)
 				status = episodeMemoryEpisodeStatus{
@@ -407,6 +453,196 @@ func (p *episodeMemoryProcessor) proposeEpisode(ctx context.Context, episode Tas
 		parts = append(parts, llms.TextPart("Attached screenshot evidence for Episode event id: "+screenshot.EventID))
 		parts = append(parts, llms.BinaryContent{MIMEType: screenshot.MIMEType, Data: screenshot.Data})
 	}
+	proposal, err := p.generateEpisodeMemoryProposal(ctx, episode, existing, parts)
+	if err != nil {
+		return episodeMemoryProposal{}, err
+	}
+	if shouldReviewEpisodeMemoryProposal(episode, proposal) {
+		reviewParts := append([]llms.ContentPart(nil), parts...)
+		assessmentJSON, _ := json.Marshal(proposal.EpisodeAssessment)
+		reviewParts = append(reviewParts, llms.TextPart(
+			"Review this first-pass assessment once: "+string(assessmentJSON)+". It returned no candidates despite the Episode containing multiple evidence-bearing steps. Re-check whether a reusable durable lesson, guard, route, or stable fact was omitted. Return the same JSON schema; keep candidates empty if the evidence does not support a durable memory. Do not invent facts or promote run-specific observations.",
+		))
+		reviewed, reviewErr := p.generateEpisodeMemoryProposal(ctx, episode, existing, reviewParts)
+		if reviewErr != nil {
+			return episodeMemoryProposal{}, fmt.Errorf("%w: %v", errEpisodeMemoryOmissionReview, reviewErr)
+		}
+		proposal = reviewed
+	}
+	if episodeMemoryProposalNeedsRetentionAudit(proposal) {
+		proposal.Candidates = compactEpisodeMemoryCandidates(proposal.Candidates)
+		p.logEpisodeMemoryRetentionAudit("started", len(proposal.Candidates), 0, 0)
+		auditParts := []llms.ContentPart{llms.TextPart(buildEpisodeMemoryRetentionAuditPrompt(string(payload), proposal.Candidates))}
+		auditParts = append(auditParts, parts[1:]...)
+		audit, auditErr := p.generateEpisodeMemoryRetentionAudit(ctx, auditParts)
+		if auditErr != nil {
+			p.logEpisodeMemoryRetentionAudit("failed", len(proposal.Candidates), 0, 0)
+			return episodeMemoryProposal{}, fmt.Errorf("%w: %v", errEpisodeMemoryRetentionAudit, auditErr)
+		} else {
+			originalCount := len(proposal.Candidates)
+			stats := summarizeEpisodeMemoryRetentionAudit(proposal.Candidates, audit)
+			proposal.Candidates = retainedEpisodeMemoryCandidates(proposal.Candidates, audit)
+			p.logEpisodeMemoryRetentionAudit("completed", originalCount, len(audit.Reviews), len(proposal.Candidates), stats)
+		}
+	}
+	return proposal, nil
+}
+
+func (p *episodeMemoryProcessor) logEpisodeMemoryRetentionAudit(status string, candidateCount, reviewCount, retainedCount int, auditStats ...episodeMemoryRetentionAuditStats) {
+	if p == nil || p.plane == nil || p.plane.logger == nil {
+		return
+	}
+	stats := episodeMemoryRetentionAuditStats{}
+	if len(auditStats) > 0 {
+		stats = auditStats[0]
+	}
+	p.plane.logger.Info(
+		"[episode-memory] retention audit %s: candidates=%d reviews=%d retain_decisions=%d rewrites=%d matching_keys=%d retained=%d",
+		status, candidateCount, reviewCount, stats.RetainDecisions, stats.Rewrites, stats.MatchingKeys, retainedCount,
+	)
+}
+
+func summarizeEpisodeMemoryRetentionAudit(candidates []episodeMemoryCandidate, audit episodeMemoryRetentionAudit) episodeMemoryRetentionAuditStats {
+	keys := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		keys[strings.TrimSpace(candidate.LessonKey)] = true
+	}
+	stats := episodeMemoryRetentionAuditStats{}
+	for _, review := range audit.Reviews {
+		if episodeMemoryRetentionDecision(strings.ToLower(strings.TrimSpace(string(review.Decision)))) == episodeMemoryRetentionDecisionRetain {
+			stats.RetainDecisions++
+		}
+		if review.Rewrite != nil {
+			stats.Rewrites++
+		}
+		if keys[strings.TrimSpace(review.LessonKey)] {
+			stats.MatchingKeys++
+		}
+	}
+	return stats
+}
+
+func compactEpisodeMemoryCandidates(candidates []episodeMemoryCandidate) []episodeMemoryCandidate {
+	compacted := make([]episodeMemoryCandidate, 0, len(candidates))
+	indexByKey := make(map[string]int, len(candidates))
+	conflictingKeys := make(map[string]bool)
+	for _, candidate := range candidates {
+		key := strings.TrimSpace(candidate.LessonKey)
+		if key == "" || conflictingKeys[key] {
+			continue
+		}
+		index, exists := indexByKey[key]
+		if !exists {
+			indexByKey[key] = len(compacted)
+			compacted = append(compacted, candidate)
+			continue
+		}
+		base := &compacted[index]
+		if !sameEpisodeMemoryCandidateIdentity(*base, candidate) {
+			conflictingKeys[key] = true
+			continue
+		}
+		base.Tags = uniqueNonEmpty(append(base.Tags, candidate.Tags...))
+		base.EvidenceRefs = uniqueNonEmpty(append(base.EvidenceRefs, candidate.EvidenceRefs...))
+	}
+	if len(conflictingKeys) == 0 {
+		return compacted
+	}
+	filtered := compacted[:0]
+	for _, candidate := range compacted {
+		if !conflictingKeys[strings.TrimSpace(candidate.LessonKey)] {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
+}
+
+func episodeMemoryProposalNeedsRetentionAudit(proposal episodeMemoryProposal) bool {
+	return len(proposal.Candidates) > 0
+}
+
+func (p *episodeMemoryProcessor) generateEpisodeMemoryRetentionAudit(ctx context.Context, parts []llms.ContentPart) (episodeMemoryRetentionAudit, error) {
+	messages := []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, "You are the mandatory retention gate for proposed device memories. Treat every proposed candidate as untrusted. Output JSON only."),
+		{Role: llms.ChatMessageTypeHuman, Parts: parts},
+	}
+	callCtx, cancel := context.WithTimeout(ctx, episodeMemoryModelCallTimeout)
+	defer cancel()
+	response, err := p.model.GenerateContent(callCtx, messages, llms.WithJSONMode(), llms.WithMaxTokens(2200))
+	if err != nil {
+		return episodeMemoryRetentionAudit{}, fmt.Errorf("audit episode memory retention: %w", err)
+	}
+	if response == nil || len(response.Choices) == 0 {
+		return episodeMemoryRetentionAudit{}, fmt.Errorf("audit episode memory retention: empty response")
+	}
+	var audit episodeMemoryRetentionAudit
+	if err := json.Unmarshal([]byte(stripJSONFences(response.Choices[0].Content)), &audit); err != nil {
+		return episodeMemoryRetentionAudit{}, fmt.Errorf("parse episode memory retention audit: %w", err)
+	}
+	return audit, nil
+}
+
+func retainedEpisodeMemoryCandidates(original []episodeMemoryCandidate, audit episodeMemoryRetentionAudit) []episodeMemoryCandidate {
+	reviewCounts := make(map[string]int, len(audit.Reviews))
+	for _, review := range audit.Reviews {
+		reviewCounts[strings.TrimSpace(review.LessonKey)]++
+	}
+	reviewByKey := make(map[string]episodeMemoryRetentionReview, len(audit.Reviews))
+	for _, review := range audit.Reviews {
+		key := strings.TrimSpace(review.LessonKey)
+		if reviewCounts[key] == 1 {
+			reviewByKey[key] = review
+		}
+	}
+	retained := make([]episodeMemoryCandidate, 0, len(original))
+	for _, base := range original {
+		key := strings.TrimSpace(base.LessonKey)
+		review, found := reviewByKey[key]
+		decision := episodeMemoryRetentionDecision(strings.ToLower(strings.TrimSpace(string(review.Decision))))
+		if !found || decision != episodeMemoryRetentionDecisionRetain || strings.TrimSpace(review.Reason) == "" || review.Rewrite == nil || !sameEpisodeMemoryEvidenceRefs(base.EvidenceRefs, review.Rewrite.EvidenceRefs) {
+			continue
+		}
+		base.Retention = episodeMemoryRetentionDurable
+		base.Situation = review.Rewrite.Situation
+		base.Guidance = review.Rewrite.Guidance
+		base.ExpectedEffect = review.Rewrite.ExpectedEffect
+		// Scope is an applicability boundary established by the extraction pass.
+		// The audit may generalize prose but must not broaden or otherwise replace
+		// that boundary based on a second model judgment.
+		base.Scope = cloneStringMap(base.Scope)
+		base.Tags = append([]string(nil), review.Rewrite.Tags...)
+		base.EvidenceRefs = append([]string(nil), base.EvidenceRefs...)
+		retained = append(retained, base)
+	}
+	return retained
+}
+
+func sameEpisodeMemoryEvidenceRefs(left, right []string) bool {
+	left = uniqueNonEmpty(left)
+	right = uniqueNonEmpty(right)
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[string]bool, len(left))
+	for _, ref := range left {
+		seen[ref] = true
+	}
+	for _, ref := range right {
+		if !seen[ref] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameEpisodeMemoryCandidateIdentity(left, right episodeMemoryCandidate) bool {
+	return strings.EqualFold(strings.TrimSpace(string(left.Type)), strings.TrimSpace(string(right.Type))) &&
+		strings.EqualFold(strings.TrimSpace(string(left.Action)), strings.TrimSpace(string(right.Action))) &&
+		strings.TrimSpace(left.MemoryID) == strings.TrimSpace(right.MemoryID) &&
+		left.MemoryRevision == right.MemoryRevision
+}
+
+func (p *episodeMemoryProcessor) generateEpisodeMemoryProposal(ctx context.Context, episode TaskEpisode, existing []DeviceMemoryItem, parts []llms.ContentPart) (episodeMemoryProposal, error) {
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You assess completed device task episodes and extract reusable device memories. Output JSON only."),
 		{Role: llms.ChatMessageTypeHuman, Parts: parts},
@@ -432,6 +668,11 @@ func (p *episodeMemoryProcessor) proposeEpisode(ctx context.Context, episode Tas
 		return episodeMemoryProposal{}, fmt.Errorf("invalid episode goal_result %q", proposal.EpisodeAssessment.GoalResult)
 	}
 	proposal.EpisodeAssessment.EvidenceRefs = validEpisodeMemoryEventIDs(episode, proposal.EpisodeAssessment.EvidenceRefs)
+	if proposal.EpisodeAssessment.GoalResult == episodeGoalNotAchieved && !hasDirectEpisodeFailureEvidence(episode, proposal.EpisodeAssessment.EvidenceRefs) {
+		proposal.EpisodeAssessment.GoalResult = episodeGoalUnknown
+		proposal.EpisodeAssessment.Reason = "Final completion was not directly established, and the cited evidence does not record a structured failure or explicit termination."
+		proposal.Candidates = nil
+	}
 	if proposal.EpisodeAssessment.Reason == "" {
 		return episodeMemoryProposal{}, fmt.Errorf("episode assessment requires a reason")
 	}
@@ -446,6 +687,57 @@ func (p *episodeMemoryProcessor) proposeEpisode(ctx context.Context, episode Tas
 		proposal.ExistingRevisions[item.ID] = effectiveDeviceMemoryRevision(item)
 	}
 	return proposal, nil
+}
+
+func hasDirectEpisodeFailureEvidence(episode TaskEpisode, refs []string) bool {
+	switch strings.ToLower(strings.TrimSpace(episode.Status)) {
+	case "abandoned", "interrupted", "cancelled", "canceled":
+		return true
+	}
+	if strings.TrimSpace(episode.Outcome.FailureReason) != "" {
+		return true
+	}
+	allowed := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		allowed[ref] = true
+	}
+	for _, event := range episode.Events {
+		if !allowed[event.EventID] {
+			continue
+		}
+		if event.Type == "steer" || event.IsError || (event.ToolError != nil && event.ToolError.Code != CodeCanceled) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldReviewEpisodeMemoryProposal(episode TaskEpisode, proposal episodeMemoryProposal) bool {
+	if len(proposal.Candidates) != 0 || proposal.EpisodeAssessment.GoalResult == episodeGoalUnknown {
+		return false
+	}
+	if !hasDirectEpisodeAssessmentEvidence(episode, proposal.EpisodeAssessment.EvidenceRefs) {
+		return false
+	}
+	deviceCalls, deviceResults, hasProblem := 0, 0, false
+	for _, event := range episode.Events {
+		if event.IsError || (event.ToolError != nil && event.ToolError.Code != CodeCanceled) || event.Type == "steer" {
+			hasProblem = true
+		}
+		if !isEpisodeMemoryDeviceTool(event.ToolName) {
+			continue
+		}
+		switch event.Type {
+		case runEventToolCall:
+			deviceCalls++
+		case "tool_result":
+			deviceResults++
+		}
+	}
+	// A multi-step evidence chain is the generic signal that a reusable lesson
+	// may have been omitted. A single failed action/result is only reviewable
+	// when it also carries explicit correction or error evidence.
+	return (deviceCalls >= 2 && deviceResults >= 2) || (hasProblem && deviceCalls >= 1 && deviceResults >= 1)
 }
 
 func hasDirectEpisodeAssessmentEvidence(episode TaskEpisode, refs []string) bool {
@@ -563,12 +855,19 @@ func validateEpisodeMemoryCandidate(episode TaskEpisode, assessment episodeMemor
 	candidate.LessonKey = strings.TrimSpace(candidate.LessonKey)
 	candidate.Type = episodeMemoryType(strings.ToLower(strings.TrimSpace(string(candidate.Type))))
 	candidate.Action = episodeMemoryAction(strings.ToLower(strings.TrimSpace(string(candidate.Action))))
+	candidate.Retention = episodeMemoryRetention(strings.ToLower(strings.TrimSpace(string(candidate.Retention))))
 	candidate.MemoryID = strings.TrimSpace(candidate.MemoryID)
 	candidate.Situation = strings.TrimSpace(candidate.Situation)
 	candidate.Guidance = strings.TrimSpace(candidate.Guidance)
 	candidate.ExpectedEffect = strings.TrimSpace(candidate.ExpectedEffect)
 	candidate.ConflictReason = strings.TrimSpace(candidate.ConflictReason)
 	candidate.Scope = normalizeEpisodeMemoryScope(candidate.Scope)
+	for key, value := range normalizeEpisodeMemoryScope(episode.DeviceScope) {
+		if scopedValue := candidate.Scope[key]; scopedValue != "" && scopedValue != value {
+			return episodeMemoryCandidate{}, false
+		}
+		candidate.Scope[key] = value
+	}
 	if candidate.LessonKey == "" || seen[candidate.LessonKey] {
 		return episodeMemoryCandidate{}, false
 	}
@@ -578,6 +877,9 @@ func validateEpisodeMemoryCandidate(episode TaskEpisode, assessment episodeMemor
 		return episodeMemoryCandidate{}, false
 	}
 	if candidate.Action != episodeMemoryActionCreate && candidate.Action != episodeMemoryActionUpdate {
+		return episodeMemoryCandidate{}, false
+	}
+	if candidate.Retention != episodeMemoryRetentionDurable {
 		return episodeMemoryCandidate{}, false
 	}
 	if candidate.Action == episodeMemoryActionUpdate && candidate.MemoryID == "" {
@@ -608,9 +910,6 @@ func validateEpisodeMemoryCandidate(episode TaskEpisode, assessment episodeMemor
 		return episodeMemoryCandidate{}, false
 	}
 	if candidate.Type == episodeMemoryTypeProcedure && assessment.GoalResult == episodeGoalNotAchieved && !isPartialProcedureScope(candidate.Scope) {
-		return episodeMemoryCandidate{}, false
-	}
-	if containsTemporaryEpisodeValue(candidate) {
 		return episodeMemoryCandidate{}, false
 	}
 	candidate.Tags = normalizeEpisodeMemoryTags(candidate.Tags)
@@ -708,16 +1007,6 @@ func episodeMemoryRefsOverlap(left, right []string) bool {
 
 func isPartialProcedureScope(scope map[string]string) bool {
 	return strings.EqualFold(strings.TrimSpace(scope["partial"]), "true") || strings.EqualFold(strings.TrimSpace(scope["goal_scope"]), "partial")
-}
-
-func containsTemporaryEpisodeValue(candidate episodeMemoryCandidate) bool {
-	text := strings.ToLower(strings.Join([]string{candidate.Situation, candidate.Guidance, candidate.ExpectedEffect}, " "))
-	for _, marker := range []string{"one-time password", "temporary verification code", "一次性验证码", "临时验证码"} {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 func normalizeEpisodeMemoryTags(tags []string) []string {
@@ -1195,10 +1484,11 @@ func buildEpisodeMemoryPrompt(payload string, existing []DeviceMemoryItem) strin
     "reason": "evidence-based explanation",
     "evidence_refs": ["real Episode event ids"]
   },
-  "candidates": [{
+	"candidates": [{
     "lesson_key": "unique stable key within this Episode",
     "type": "procedure | navigation | calibration | failure | fact",
     "action": "create | update",
+	"retention": "durable | transient | sensitive",
     "memory_id": "required only for update",
     "unresolved_conflict": false,
     "conflict_reason": "required only when unresolved_conflict is true",
@@ -1211,10 +1501,10 @@ func buildEpisodeMemoryPrompt(payload string, existing []DeviceMemoryItem) strin
   }]
 }
 
-Return at most 3 independent candidates; an empty candidates array is correct when nothing is worth retaining. Every candidate must be reusable in future similar tasks, change future behavior or decisions, have explicit scope, add new knowledge or evidence, and be safer to recall than to omit. Do not retain greetings, task-specific prose, temporary values, OTPs, transient page contents, or information already explicitly saved through a Memory-management tool.
+Return at most 3 independent candidates; an empty candidates array is correct when nothing is worth retaining. Every proposed candidate must declare its retention class. Use durable only when the underlying lesson is expected to remain useful across future similar tasks. Use transient for observations whose truth or usefulness is limited to this Episode or its surrounding runtime state. Use sensitive for information that should not be persisted. Only durable candidates are eligible for Device Memory, and every non-empty proposal is independently audited before persistence. Separate a reusable rule from the Episode-specific observations that support it: generalize away values that do not remain valid and safe in the candidate's stated future scope. Every durable candidate must be reusable, change future behavior or decisions, have explicit scope, add new knowledge or evidence, and be safer to recall than to omit. Do not retain information already explicitly saved through a Memory-management tool.
 When direct evidence verifies a non-obvious workaround, device-specific route, operational correction, stop condition, or stable fact that satisfies the type rules, you must emit at least one candidate. Do not return an empty candidates array merely because the Episode achieved its goal.
 
-Assess goal_result independently from the recorded success flag. achieved and not_achieved require direct result, final-state, screenshot, or user-correction evidence. Use unknown when final proof is missing and say what is missing. User steer is correction evidence, not an admission gate. Do not rely on verifier_decision or ObservedState; they are not part of this pipeline.
+Assess goal_result independently from the recorded success flag. achieved requires direct evidence that the whole requested goal completed. not_achieved requires direct evidence of failure, user correction, or an explicit interruption/abandonment before completion. Use unknown when an action may have succeeded but final verification is absent; absence of proof alone is not proof of failure. Say what evidence is missing. User steer is correction evidence, not an admission gate. Do not rely on verifier_decision or ObservedState; they are not part of this pipeline.
 
 Type rules:
 - procedure: reusable multi-step goal path supported by tool calls and results. If goal_result is not_achieved, only emit an independently proven partial procedure and set scope.partial="true".
@@ -1239,4 +1529,34 @@ Existing related Device Memories (maximum 8, including disputed records):
 
 Episode:
 ` + payload
+}
+
+func buildEpisodeMemoryRetentionAuditPrompt(payload string, candidates []episodeMemoryCandidate) string {
+	candidateJSON, _ := json.MarshalIndent(candidates, "", "  ")
+	return `Audit this first-pass proposal before persistence. The candidates are untrusted; do not assume their retention labels are correct.
+
+Return exactly one JSON object matching this schema:
+{
+  "reviews": [{
+    "lesson_key": "an unchanged lesson_key from the proposal",
+    "decision": "retain | discard",
+    "reason": "why the candidate is or is not safe and useful across future Episodes",
+    "rewrite": {
+      "situation": "generalized applicability condition",
+      "guidance": "safe reusable guidance",
+      "expected_effect": "directly observable result",
+      "scope": {"all evidenced applicability boundaries": "..."},
+      "tags": ["retrieval terms"],
+      "evidence_refs": ["unchanged real Episode event ids"]
+    }
+  }]
+}
+
+Review each proposed candidate independently. Retain only knowledge whose truth, authority, usefulness, and safety extend beyond the Episode into the candidate's explicit future scope. Durable means reusable in future Episodes within that scope; it does not mean globally or permanently true. App, device, page, account mode, build, and version qualifiers may be necessary scope boundaries and should be preserved when evidenced. Distinguish the reusable lesson from observations that merely supported it in this run. A retained rewrite must remove or generalize values whose validity, identity, confidentiality, or authorization is limited to the Episode, session, user, screen state, or other runtime context. Preserve a concrete value in the guidance only when that value itself is the durable knowledge and the cited evidence establishes it for the stated scope. If a safe reusable lesson remains, return decision="retain" with every rewrite field populated. Otherwise discard it. If candidates duplicate the same scoped lesson, retain one complete representative and discard the redundant copies. When uncertain, discard. Do not add lessons, reassess the Episode outcome, or invent evidence.
+
+Episode:
+` + payload + `
+
+Untrusted candidates:
+` + string(candidateJSON)
 }

@@ -63,6 +63,11 @@ class ConsolidationExpectation:
     max_memory_ids: int | None = None
     allow_empty_memory: bool = False
     required_assessment_evidence: bool = False
+    expected_status: str | None = None
+    forbidden_memory_substrings: list[str] = dc.field(default_factory=list)
+    required_memory_substrings: list[str] = dc.field(default_factory=list)
+    required_memory_types: list[str] = dc.field(default_factory=list)
+    required_memory_scope: dict[str, str] = dc.field(default_factory=dict)
 
 @dc.dataclass
 class MockToolResponseSpec:
@@ -99,6 +104,8 @@ class TaskSpec:
     answer_format: str | None = None
     platforms: list[str] = dc.field(default_factory=list)
     expected_recalled_memory_ids: list[str] = dc.field(default_factory=list)
+    expected_recalled_memory_tool: str = "recall_memory"
+    expected_recall_from_consolidation: bool = False
     app_ids: list[str] = dc.field(default_factory=list)
     consolidation_expectation: ConsolidationExpectation | None = None
 
@@ -232,6 +239,16 @@ def load_suite(path: Path) -> Suite:
             isinstance(item, str) and item.strip() for item in expected_recalled_memory_ids
         ):
             raise SuiteValidationError(f"task {tid}: expected_recalled_memory_ids must be a list of non-empty strings")
+        expected_recalled_memory_tool = raw.get("expected_recalled_memory_tool", "recall_memory")
+        if expected_recalled_memory_tool not in {"recall_memory", "recall_device_memory"}:
+            raise SuiteValidationError(
+                f"task {tid}: expected_recalled_memory_tool must be recall_memory or recall_device_memory"
+            )
+        expected_recall_from_consolidation = raw.get("expected_recall_from_consolidation", False)
+        if not isinstance(expected_recall_from_consolidation, bool):
+            raise SuiteValidationError(
+                f"task {tid}: expected_recall_from_consolidation must be boolean"
+            )
         raw_app_ids = raw.get("app_ids", [])
         if not isinstance(raw_app_ids, list) or not all(
             isinstance(item, str) and item.strip() for item in raw_app_ids
@@ -265,6 +282,9 @@ def load_suite(path: Path) -> Suite:
                 raise SuiteValidationError(
                     f"task {tid}: consolidation_expectation requires consolidate=true"
                 )
+            if consolidation_expectation is not None:
+                setup = dict(setup)
+                setup.pop("consolidation_expectation", None)
         else:
             consolidation_expectation = None
         tasks.append(TaskSpec(
@@ -280,6 +300,8 @@ def load_suite(path: Path) -> Suite:
             answer_format=answer_format,
             platforms=platforms,
             expected_recalled_memory_ids=expected_recalled_memory_ids,
+            expected_recalled_memory_tool=expected_recalled_memory_tool,
+            expected_recall_from_consolidation=expected_recall_from_consolidation,
             app_ids=app_ids,
             consolidation_expectation=consolidation_expectation,
         ))
@@ -368,6 +390,11 @@ def _parse_consolidation_expectation(
         "max_memory_ids",
         "allow_empty_memory",
         "required_assessment_evidence",
+        "expected_status",
+        "forbidden_memory_substrings",
+        "required_memory_substrings",
+        "required_memory_types",
+        "required_memory_scope",
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:
@@ -404,9 +431,45 @@ def _parse_consolidation_expectation(
         )
     allow_empty_memory = raw.get("allow_empty_memory", False)
     required_evidence = raw.get("required_assessment_evidence", False)
+    forbidden_memory_substrings = raw.get("forbidden_memory_substrings", [])
+    required_memory_substrings = raw.get("required_memory_substrings", [])
+    required_memory_types = raw.get("required_memory_types", [])
+    required_memory_scope = raw.get("required_memory_scope", {})
+    expected_status = raw.get("expected_status")
+    if expected_status is not None and expected_status not in {"done", "ignored"}:
+        raise SuiteValidationError(
+            f"task {task_id}: consolidation_expectation.expected_status must be done or ignored"
+        )
     if not isinstance(allow_empty_memory, bool) or not isinstance(required_evidence, bool):
         raise SuiteValidationError(
             f"task {task_id}: consolidation_expectation boolean fields must be bool"
+        )
+    for field, values in {
+        "forbidden_memory_substrings": forbidden_memory_substrings,
+        "required_memory_substrings": required_memory_substrings,
+        "required_memory_types": required_memory_types,
+    }.items():
+        if not isinstance(values, list) or not all(isinstance(item, str) and item for item in values):
+            raise SuiteValidationError(
+                f"task {task_id}: consolidation_expectation.{field} must be a list of non-empty strings"
+            )
+    if not isinstance(required_memory_scope, dict) or not all(
+        isinstance(key, str) and key and isinstance(value, str) and value
+        for key, value in required_memory_scope.items()
+    ):
+        raise SuiteValidationError(
+            f"task {task_id}: consolidation_expectation.required_memory_scope must be an object of non-empty strings"
+        )
+    has_positive_memory_contract = bool(
+        required_memory_substrings or required_memory_types or required_memory_scope
+    )
+    if has_positive_memory_contract and allow_empty_memory:
+        raise SuiteValidationError(
+            f"task {task_id}: consolidation_expectation.allow_empty_memory cannot be true when required memory content, type, or scope is declared"
+        )
+    if has_positive_memory_contract and max_memory_ids == 0:
+        raise SuiteValidationError(
+            f"task {task_id}: consolidation_expectation.max_memory_ids cannot be 0 when required memory content, type, or scope is declared"
         )
     return ConsolidationExpectation(
         goal_result=goal_result,
@@ -414,6 +477,11 @@ def _parse_consolidation_expectation(
         max_memory_ids=max_memory_ids,
         allow_empty_memory=allow_empty_memory,
         required_assessment_evidence=required_evidence,
+        expected_status=expected_status,
+        forbidden_memory_substrings=list(forbidden_memory_substrings),
+        required_memory_substrings=list(required_memory_substrings),
+        required_memory_types=list(required_memory_types),
+        required_memory_scope=dict(required_memory_scope),
     )
 
 def _platform_list(raw: Any, task_id: str) -> list[str]:

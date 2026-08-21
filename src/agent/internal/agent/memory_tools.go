@@ -323,6 +323,19 @@ func (t *RecallDeviceMemoryTool) Call(ctx context.Context, input string) (string
 	if err != nil {
 		return "", err
 	}
+	if len(results) == 0 && len(query.Tags) > 0 && len(query.Terms) > 0 {
+		// LLMs often emit a useful free-text query together with an overly
+		// specific tag filter. Retry with tags as ranking terms while preserving
+		// hard entity, type, and device constraints. Entities can identify an app,
+		// account, or device boundary, so relaxing them risks cross-scope recall.
+		fallback := query
+		fallback.Terms = append(append([]string(nil), query.Terms...), query.Tags...)
+		fallback.Tags = nil
+		results, err = t.store.Search(ctx, fallback)
+		if err != nil {
+			return "", err
+		}
+	}
 	results = limitDeviceMemoryRecall(results, 4800)
 	recordRecalledMemoryIDs(ctx, results, func(h MemoryHit) string { return h.ID })
 	return encodeToolJSON(map[string]any{"results": results})
