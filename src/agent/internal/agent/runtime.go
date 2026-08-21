@@ -652,6 +652,13 @@ func (r *Runtime) startEpisodeMemory(runtimeLogger *Logger) {
 	}
 	err := plane.StartEpisodeMemory(r.models)
 	r.episodeMemoryInitErr = err
+	if notificationErr := plane.StartNotificationMemory(); notificationErr != nil {
+		if runtimeLogger != nil {
+			runtimeLogger.Warn("[notification-memory] worker disabled: %v", notificationErr)
+		} else {
+			log.Printf("[notification-memory] worker disabled: %v", notificationErr)
+		}
+	}
 	if err == nil {
 		return
 	}
@@ -852,6 +859,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if plane, ok := r.memoryPlane.(*FilesystemMemoryPlane); ok {
 		plane.EpisodeMemoryTaskStarted()
 		defer plane.EpisodeMemoryTaskFinished()
+		plane.NotificationMemoryTaskStarted()
+		defer plane.NotificationMemoryTaskFinished()
 	}
 
 	// Preempt any currently active run and its resources.
@@ -2626,6 +2635,7 @@ func (r *Runtime) Close() error {
 	maintenanceCancel()
 	if plane, ok := r.memoryPlane.(*FilesystemMemoryPlane); ok {
 		plane.StopEpisodeMemory()
+		plane.StopNotificationMemory()
 	}
 	if r.storageMonitor != nil {
 		r.storageMonitor.Stop()

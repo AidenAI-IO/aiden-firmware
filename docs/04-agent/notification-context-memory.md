@@ -314,6 +314,11 @@ NotificationMemoryProcessor 负责场景语义：
 - `temporary` 写入 Temporary Memory；`long_term` 执行 add、reinforce、supersede、hold；
 - 只有 resolve 成功后才调用 `CommitProcessed`。
 
+当前 MVP Processor 先使用确定性策略：验证码、OTP、营销/促销和 `removed`
+事件直接忽略；其余有标题或正文的通知写入 `temporary/`，默认 TTL 7 天，
+并以 `context_id` 作为来源引用。后续接入模型提炼时只替换 Processor 的
+policy，不改变 MemoryWorker、NotificationContext 或 `recall_memory` 接口。
+
 运行时序：
 
 ```text

@@ -22,15 +22,18 @@ type MemoryPlane interface {
 }
 
 type FilesystemMemoryPlane struct {
-	memoryDir        string
-	extraction       MemoryExtractionConfig
-	episodes         *TaskEpisodeStore
-	device           *DeviceMemoryStore
-	longTerm         *LongTermMemoryStore
-	logger           *Logger
-	episodeMemoryMu  sync.RWMutex
-	episodeMemory    *episodeMemoryWorker
-	episodeIdleDelay time.Duration
+	memoryDir            string
+	extraction           MemoryExtractionConfig
+	episodes             *TaskEpisodeStore
+	device               *DeviceMemoryStore
+	longTerm             *LongTermMemoryStore
+	logger               *Logger
+	episodeMemoryMu      sync.RWMutex
+	episodeMemory        *episodeMemoryWorker
+	episodeIdleDelay     time.Duration
+	notificationMemoryMu sync.RWMutex
+	notificationContext  *NotificationContext
+	notificationMemory   *notificationMemoryWorker
 }
 
 type MemoryRetrieveRequest struct {
@@ -168,6 +171,67 @@ func (p *FilesystemMemoryPlane) StopEpisodeMemory() {
 	p.episodeMemoryMu.Unlock()
 	if worker != nil {
 		worker.Stop()
+	}
+}
+
+func (p *FilesystemMemoryPlane) StartNotificationMemory() error {
+	if p == nil || strings.TrimSpace(p.memoryDir) == "" {
+		return nil
+	}
+	p.notificationMemoryMu.Lock()
+	defer p.notificationMemoryMu.Unlock()
+	if p.notificationMemory != nil {
+		return nil
+	}
+	ctx, err := NewNotificationContext(p.memoryDir, nil)
+	if err != nil {
+		return err
+	}
+	processor := NewNotificationMemoryProcessor(ctx, p.memoryDir, p.longTerm)
+	worker := newNotificationMemoryWorker(processor)
+	if err := worker.Start(); err != nil {
+		return err
+	}
+	p.notificationContext = ctx
+	p.notificationMemory = worker
+	return nil
+}
+
+func (p *FilesystemMemoryPlane) StopNotificationMemory() {
+	if p == nil {
+		return
+	}
+	p.notificationMemoryMu.Lock()
+	worker := p.notificationMemory
+	p.notificationMemory = nil
+	p.notificationContext = nil
+	p.notificationMemoryMu.Unlock()
+	if worker != nil {
+		worker.Stop()
+	}
+}
+
+func (p *FilesystemMemoryPlane) NotificationMemoryTaskStarted() {
+	if p == nil {
+		return
+	}
+	p.notificationMemoryMu.RLock()
+	worker := p.notificationMemory
+	p.notificationMemoryMu.RUnlock()
+	if worker != nil {
+		worker.TaskStarted()
+	}
+}
+
+func (p *FilesystemMemoryPlane) NotificationMemoryTaskFinished() {
+	if p == nil {
+		return
+	}
+	p.notificationMemoryMu.RLock()
+	worker := p.notificationMemory
+	p.notificationMemoryMu.RUnlock()
+	if worker != nil {
+		worker.TaskFinished()
 	}
 }
 
