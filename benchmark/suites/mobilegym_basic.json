@@ -3,10 +3,10 @@
   "suite_category": "MobileGym",
   "version": "1.0",
   "description": "Basic MobileGym device control tests using simulator-only approach",
-  "prompt_prefix": "你正在控制一台 Android 模拟器。使用 screenshot 工具查看屏幕，使用 touch_gesture 工具执行 tap、swipe 等操作。",
+  "prompt_prefix": "",
   "global_reset": {
     "type": "agent_prompt",
-    "prompt": "请返回主屏幕（如果不在主屏幕，点击 home 按钮）。",
+    "prompt": "回到主屏幕（不在主屏幕就点首页键）。",
     "timeout_sec": 30,
     "clear_history_after": true
   },
@@ -15,7 +15,7 @@
     {
       "id": "clock_count_alarms",
       "category": "device_operation",
-      "prompt": "打开时钟应用，告诉我当前有多少个闹钟。",
+      "prompt": "打开时钟应用，告诉我现在有几个闹钟。",
       "description_for_judge": "Agent 应该：1) 打开时钟应用 2) 查看闹钟列表 3) 正确报告闹钟数量",
       "rubric": [
         {
@@ -34,14 +34,17 @@
       "hard_assertions": {
         "must_complete_within_sec": 120,
         "min_tool_calls": 2,
-        "required_tools": ["screenshot", "touch_gesture"]
+        "required_tools": [
+          "screenshot",
+          "touch_gesture"
+        ]
       },
       "repeats": 1
     },
     {
       "id": "settings_check_wifi",
       "category": "device_operation",
-      "prompt": "打开设置应用，检查 WiFi 是否已启用，并告诉我当前状态。",
+      "prompt": "打开设置，看看 WiFi 现在开着没，告诉我状态。",
       "description_for_judge": "Agent 应该：1) 打开设置应用 2) 找到 WiFi 设置 3) 报告 WiFi 是否启用",
       "rubric": [
         {
@@ -60,14 +63,17 @@
       "hard_assertions": {
         "must_complete_within_sec": 120,
         "min_tool_calls": 3,
-        "required_tools": ["screenshot", "touch_gesture"]
+        "required_tools": [
+          "screenshot",
+          "touch_gesture"
+        ]
       },
       "repeats": 1
     },
     {
       "id": "swipe_navigation",
       "category": "device_operation",
-      "prompt": "在主屏幕上向上滑动打开应用抽屉，然后截图给我看。",
+      "prompt": "在主屏幕向上滑打开应用抽屉，然后给我看看。",
       "description_for_judge": "Agent 应该：1) 识别当前在主屏幕 2) 执行向上滑动手势 3) 打开应用抽屉并截图",
       "rubric": [
         {
@@ -86,7 +92,10 @@
       "hard_assertions": {
         "must_complete_within_sec": 60,
         "min_tool_calls": 2,
-        "required_tools": ["screenshot", "touch_gesture"]
+        "required_tools": [
+          "screenshot",
+          "touch_gesture"
+        ]
       },
       "repeats": 1
     }

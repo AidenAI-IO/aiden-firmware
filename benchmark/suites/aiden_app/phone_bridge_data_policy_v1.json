@@ -7,7 +7,7 @@
     {
       "id": "ios_dynamic_island_contacts_query",
       "category": "single_step",
-      "description_for_judge": "With iOS backgrounded, PiP disabled, and Dynamic Island reachable, the Agent should call bridge_contacts directly and let the tool restore the Aiden App internally.",
+      "description_for_judge": "With the Aiden App in the background, PiP disabled, and Dynamic Island reachable, the Agent should call bridge_contacts directly and let the tool restore the Aiden App internally.",
       "prompt": "测试环境状态：iOS，Aiden App 在后台，PiP Bridge 未开启，灵动岛返回入口可达。请查询通讯录里 Biden 的手机号并告诉我。",
       "mock_environment": {
         "platform": "ios",
