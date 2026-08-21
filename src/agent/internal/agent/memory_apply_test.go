@@ -59,6 +59,19 @@ func TestApplyMemoryIntentUpdatesAndReinforcesByID(t *testing.T) {
 	}
 }
 
+func TestLongTermMemoryStoresShareWriteLockByRoot(t *testing.T) {
+	root := t.TempDir()
+	first := NewLongTermMemoryStore(root)
+	second := NewLongTermMemoryStore(root)
+	other := NewLongTermMemoryStore(filepath.Join(root, "other"))
+	if first.writeMu != second.writeMu {
+		t.Fatal("stores for the same root do not share a write lock")
+	}
+	if first.writeMu == other.writeMu {
+		t.Fatal("stores for different roots unexpectedly share a write lock")
+	}
+}
+
 func TestApplyMemoryIntentRemovesByID(t *testing.T) {
 	store := NewLongTermMemoryStore(t.TempDir())
 	ctx := context.Background()

@@ -103,13 +103,16 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 	if cfg.ConfigDir != "" {
 		temporaryCleaner := NewTemporaryMemoryCleaner(filepath.Join(cfg.ConfigDir, "memory", "temporary"), priority)
 		priority++
-		cleaners = append(cleaners, withMinimumStorageLevel(temporaryCleaner, StorageLevelWarning))
+		cleaners = append(cleaners, withMinimumStorageLevel(temporaryCleaner, StorageLevelNormal))
 
 		for index, retentionDays := range regularNotifications {
 			cleaner := NewNotificationContextCleaner(filepath.Join(cfg.ConfigDir, "memory"), retentionDays, priority)
 			priority++
-			minimumLevel := StorageLevelWarning
-			if index > 0 {
+			minimumLevel := StorageLevelNormal
+			switch index {
+			case 1:
+				minimumLevel = StorageLevelWarning
+			case 2:
 				minimumLevel = StorageLevelCritical
 			}
 			cleaners = append(cleaners, withMinimumStorageLevel(cleaner, minimumLevel))

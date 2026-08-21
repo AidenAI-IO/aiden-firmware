@@ -21,7 +21,6 @@ const (
 	MemoryOperationSupersede MemoryOperation = "supersede"
 	MemoryOperationRemove    MemoryOperation = "remove"
 	MemoryOperationIgnore    MemoryOperation = "ignore"
-	MemoryOperationHold      MemoryOperation = "hold"
 )
 
 // MemoryIntent is the small seam between a scenario Processor and the
@@ -48,6 +47,12 @@ func (s *LongTermMemoryStore) ApplyMemoryIntent(ctx context.Context, intent Memo
 	if s == nil {
 		return MemoryApplyResult{}, errors.New("memory store is not configured")
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.applyMemoryIntentLocked(ctx, intent)
+}
+
+func (s *LongTermMemoryStore) applyMemoryIntentLocked(ctx context.Context, intent MemoryIntent) (MemoryApplyResult, error) {
 	if intent.Remove {
 		id := strings.TrimSpace(intent.Item.ID)
 		if id == "" {
@@ -67,7 +72,7 @@ func (s *LongTermMemoryStore) ApplyMemoryIntent(ctx context.Context, intent Memo
 		if parsed.Item.Status == "deleted" {
 			return MemoryApplyResult{Operation: MemoryOperationIgnore, ID: id}, nil
 		}
-		if err := s.Forget(ctx, id, "memory intent removed"); err != nil {
+		if err := s.forgetLocked(ctx, id, "memory intent removed"); err != nil {
 			return MemoryApplyResult{}, err
 		}
 		return MemoryApplyResult{Operation: MemoryOperationRemove, ID: id}, nil
@@ -92,7 +97,7 @@ func (s *LongTermMemoryStore) ApplyMemoryIntent(ctx context.Context, intent Memo
 				return MemoryApplyResult{}, err
 			}
 			s.invalidateParsedMemoryCache(path)
-			if err := s.RebuildIndex(ctx); err != nil {
+			if err := s.rebuildIndexLocked(ctx); err != nil {
 				return MemoryApplyResult{}, err
 			}
 			operation := MemoryOperationUpdate
@@ -105,7 +110,7 @@ func (s *LongTermMemoryStore) ApplyMemoryIntent(ctx context.Context, intent Memo
 		}
 	}
 
-	action, existingID, err := s.DecideAction(ctx, item)
+	action, existingID, err := s.decideActionLocked(ctx, item)
 	if err != nil {
 		return MemoryApplyResult{}, err
 	}
@@ -113,10 +118,10 @@ func (s *LongTermMemoryStore) ApplyMemoryIntent(ctx context.Context, intent Memo
 	case "ignore":
 		return MemoryApplyResult{Operation: MemoryOperationIgnore, ID: existingID}, nil
 	case "supersede":
-		id, err := s.SupersedeMemory(ctx, existingID, item)
+		id, err := s.supersedeMemoryLocked(ctx, existingID, item)
 		return MemoryApplyResult{Operation: MemoryOperationSupersede, ID: id}, err
 	default:
-		id, err := s.AddMemory(ctx, item)
+		id, err := s.addMemoryLocked(ctx, item)
 		return MemoryApplyResult{Operation: MemoryOperationAdd, ID: id}, err
 	}
 }

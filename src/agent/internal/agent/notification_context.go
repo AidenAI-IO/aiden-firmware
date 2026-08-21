@@ -22,6 +22,8 @@ import (
 const (
 	defaultNotificationConsumeLimit = 100
 	defaultNotificationPendingLimit = 20
+	maxNotificationFingerprints     = 4096
+	trimNotificationFingerprintsTo  = 3072
 	maxNotificationStoredText       = 4096
 	maxNotificationStoredApp        = 255
 )
@@ -79,14 +81,23 @@ type notificationFingerprintFile struct {
 }
 
 type NotificationContext struct {
-	mu           sync.Mutex
+	mu           *sync.Mutex
 	rootDir      string
 	eventsDir    string
 	statePath    string
 	fingerPath   string
 	reader       NotificationEventReader
+	storageGate  StorageWriteGate
 	state        NotificationContextState
 	fingerprints map[string]string
+}
+
+var notificationContextMutexes sync.Map
+
+func notificationContextMutex(rootDir string) *sync.Mutex {
+	key := filepath.Clean(rootDir)
+	mutex, _ := notificationContextMutexes.LoadOrStore(key, &sync.Mutex{})
+	return mutex.(*sync.Mutex)
 }
 
 func NewNotificationContext(memoryDir string, reader NotificationEventReader) (*NotificationContext, error) {
@@ -100,6 +111,7 @@ func NewNotificationContext(memoryDir string, reader NotificationEventReader) (*
 	}
 	root := filepath.Join(memoryDir, "notifications")
 	c := &NotificationContext{
+		mu:           notificationContextMutex(root),
 		rootDir:      root,
 		eventsDir:    filepath.Join(root, "events"),
 		statePath:    filepath.Join(root, "state.json"),
@@ -123,6 +135,15 @@ func (c *NotificationContext) State() NotificationContextState {
 	return cloneNotificationContextState(c.state)
 }
 
+func (c *NotificationContext) SetStorageWriteGate(gate StorageWriteGate) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.storageGate = gate
+	c.mu.Unlock()
+}
+
 // Consume fetches a page from ble_service, appends accepted events durably,
 // and advances SourceCursor only after each event is synced to disk.
 func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]NotificationRecord, error) {
@@ -138,6 +159,9 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.storageGate != nil && !c.storageGate.AllowWrite(StorageCapabilityNotificationContext) {
+		return nil, nil
+	}
 	if err := c.ensureLoadedLocked(); err != nil {
 		return nil, err
 	}
@@ -170,6 +194,7 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 		if err := ctx.Err(); err != nil {
 			return accepted, err
 		}
+		event = sanitizeNotificationEvent(event)
 		fingerprint := notificationEventFingerprint(event)
 		if _, exists := c.fingerprints[fingerprint]; exists {
 			if cursor, ok := parseNotificationCursor(event.ID); ok && cursor > parseCursorOrZero(c.state.SourceCursor) {
@@ -184,9 +209,11 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 			Generation:        c.state.Generation,
 		}
 		if err := c.appendEventLocked(record); err != nil {
+			c.handleWriteErrorLocked(err)
 			return accepted, err
 		}
 		c.fingerprints[fingerprint] = record.ContextID
+		pruneNotificationFingerprints(c.fingerprints)
 		accepted = append(accepted, record)
 		c.state.StoredCursor = record.ContextID
 		if cursor, ok := parseNotificationCursor(event.ID); ok {
@@ -206,6 +233,12 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 		return accepted, err
 	}
 	return accepted, nil
+}
+
+func (c *NotificationContext) handleWriteErrorLocked(err error) {
+	if c.storageGate != nil {
+		c.storageGate.HandleWriteError(err)
+	}
 }
 
 // Query returns persisted notification records. It is intentionally separate
@@ -537,12 +570,6 @@ func (c *NotificationContext) readPendingLocked(ctx context.Context, cursor uint
 				continue
 			}
 			result = append(result, event)
-			if len(result) >= limit {
-				break
-			}
-		}
-		if len(result) >= limit {
-			break
 		}
 	}
 	sort.SliceStable(result, func(i, j int) bool {
@@ -614,7 +641,10 @@ func readNotificationRecordFileMode(path string, repair bool) ([]NotificationRec
 			}
 			data = data[:lastNewline+1]
 		} else {
-			return []NotificationRecord{record}, nil
+			// The final record is complete even without a newline. Keep the
+			// preceding records and normalize the in-memory input so the whole
+			// file is decoded below.
+			data = append(data, '\n')
 		}
 	}
 	lines := bytes.Split(data, []byte{'\n'})
@@ -635,7 +665,14 @@ func readNotificationRecordFileMode(path string, repair bool) ([]NotificationRec
 func (c *NotificationContext) load() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.ensureLoadedLocked()
+	if err := c.ensureLoadedLocked(); err != nil {
+		return err
+	}
+	changed, err := c.recoverFromEventLogLocked()
+	if err != nil || !changed {
+		return err
+	}
+	return c.persistLocked()
 }
 
 func (c *NotificationContext) ensureLoadedLocked() error {
@@ -671,7 +708,57 @@ func (c *NotificationContext) ensureLoadedLocked() error {
 	return nil
 }
 
-func (c *NotificationContext) persistLocked() error {
+func (c *NotificationContext) recoverFromEventLogLocked() (bool, error) {
+	entries, err := os.ReadDir(c.eventsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	fingerprintCount := len(c.fingerprints)
+	storedCursor := parseCursorOrZero(c.state.StoredCursor)
+	latestCursor := storedCursor
+	var latest NotificationRecord
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		records, err := readNotificationRecordFile(filepath.Join(c.eventsDir, entry.Name()))
+		if err != nil {
+			return false, err
+		}
+		for _, record := range records {
+			cursor, ok := parseNotificationCursor(record.ContextID)
+			if !ok {
+				continue
+			}
+			c.fingerprints[notificationEventFingerprint(record.NotificationEvent)] = record.ContextID
+			if cursor > latestCursor {
+				latestCursor = cursor
+				latest = record
+			}
+		}
+	}
+	pruneNotificationFingerprints(c.fingerprints)
+	if latestCursor == storedCursor {
+		return len(c.fingerprints) != fingerprintCount, nil
+	}
+	c.state.StoredCursor = strconv.FormatUint(latestCursor, 10)
+	c.state.SourceCursor = normalizeCursor(latest.ID)
+	if latest.Generation != "" {
+		c.state.Generation = latest.Generation
+	}
+	c.state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	return true, nil
+}
+
+func (c *NotificationContext) persistLocked() (err error) {
+	defer func() {
+		if err != nil {
+			c.handleWriteErrorLocked(err)
+		}
+	}()
 	if err := os.MkdirAll(c.rootDir, 0o755); err != nil {
 		return err
 	}
@@ -708,19 +795,19 @@ func (c *NotificationContext) recordGapLocked(reason, generation, fromID, toID s
 
 func sanitizeNotificationEvent(event ble.NotificationEvent) ble.NotificationEvent {
 	event.ID = strings.TrimSpace(event.ID)
-	event.Source = truncateNotificationText(strings.TrimSpace(event.Source), maxNotificationStoredText)
-	event.SourceID = truncateNotificationText(strings.TrimSpace(event.SourceID), maxNotificationStoredText)
-	event.SourceEventID = truncateNotificationText(strings.TrimSpace(event.SourceEventID), maxNotificationStoredText)
-	event.DeviceID = truncateNotificationText(strings.TrimSpace(event.DeviceID), maxNotificationStoredText)
-	event.AppIdentifier = truncateNotificationText(strings.TrimSpace(event.AppIdentifier), maxNotificationStoredApp)
-	event.Title = truncateNotificationText(strings.TrimSpace(event.Title), maxNotificationStoredText)
-	event.Subtitle = truncateNotificationText(strings.TrimSpace(event.Subtitle), maxNotificationStoredText)
-	event.Message = truncateNotificationText(strings.TrimSpace(event.Message), maxNotificationStoredText)
-	event.Category = truncateNotificationText(strings.TrimSpace(event.Category), maxNotificationStoredText)
-	event.Date = truncateNotificationText(strings.TrimSpace(event.Date), maxNotificationStoredText)
-	event.MetadataError = truncateNotificationText(strings.TrimSpace(event.MetadataError), maxNotificationStoredText)
+	event.Source = truncateNotificationText(event.Source, maxNotificationStoredText)
+	event.SourceID = truncateNotificationText(event.SourceID, maxNotificationStoredText)
+	event.SourceEventID = truncateNotificationText(event.SourceEventID, maxNotificationStoredText)
+	event.DeviceID = truncateNotificationText(event.DeviceID, maxNotificationStoredText)
+	event.AppIdentifier = truncateNotificationText(event.AppIdentifier, maxNotificationStoredApp)
+	event.Title = truncateNotificationText(event.Title, maxNotificationStoredText)
+	event.Subtitle = truncateNotificationText(event.Subtitle, maxNotificationStoredText)
+	event.Message = truncateNotificationText(event.Message, maxNotificationStoredText)
+	event.Category = truncateNotificationText(event.Category, maxNotificationStoredText)
+	event.Date = truncateNotificationText(event.Date, maxNotificationStoredText)
+	event.MetadataError = truncateNotificationText(event.MetadataError, maxNotificationStoredText)
 	for i := range event.Flags {
-		event.Flags[i] = truncateNotificationText(strings.TrimSpace(event.Flags[i]), 128)
+		event.Flags[i] = truncateNotificationText(event.Flags[i], 128)
 	}
 	return event
 }
@@ -731,6 +818,25 @@ func truncateNotificationText(value string, limit int) string {
 	}
 	runes := []rune(value)
 	return string(runes[:limit])
+}
+
+func pruneNotificationFingerprints(fingerprints map[string]string) {
+	if len(fingerprints) <= maxNotificationFingerprints {
+		return
+	}
+	type fingerprintCursor struct {
+		fingerprint string
+		cursor      uint64
+	}
+	ordered := make([]fingerprintCursor, 0, len(fingerprints))
+	for fingerprint, contextID := range fingerprints {
+		ordered = append(ordered, fingerprintCursor{fingerprint: fingerprint, cursor: parseCursorOrZero(contextID)})
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].cursor < ordered[j].cursor })
+	removeCount := len(ordered) - trimNotificationFingerprintsTo
+	for _, item := range ordered[:removeCount] {
+		delete(fingerprints, item.fingerprint)
+	}
 }
 
 func notificationEventFingerprint(event ble.NotificationEvent) string {

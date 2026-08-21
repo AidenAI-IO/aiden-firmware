@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +27,7 @@ func TestNotificationMemoryProcessorFiltersNoiseAndWritesTemporaryMemory(t *test
 	}
 	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, nil)
 	processor.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
-	_, err = processor.ProcessBatch(context.Background(), 20, nil)
+	_, err = processor.ProcessBatch(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,8 +53,8 @@ func TestNotificationMemoryProcessorImplementsWorkerIsolationSeam(t *testing.T) 
 	}
 	processor := NewNotificationMemoryProcessor(ctxStore, filepath.Join(root, "memory"), nil, nil)
 	var _ MemoryProcessor = processor
-	worker := newNotificationMemoryWorker(processor)
-	if worker == nil || worker.MemoryWorker == nil {
+	worker := newMemoryWorker(processor, defaultMemoryWorkerIdleDelay)
+	if worker == nil {
 		t.Fatal("notification worker was not created")
 	}
 	worker.Stop()
@@ -68,7 +71,7 @@ func TestNotificationMemoryProcessorUsesMergeEngineForAdd(t *testing.T) {
 	llm := &episodeMemoryScriptedModel{responses: []string{`{"actions":[{"action":"add","scope":"temporary","type":"fact","title":"包裹更新","content":"包裹明天送达","expires_at":"2026-08-28T00:00:00Z","tags":["notification","com.delivery"]}]}`}}
 	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, llm)
 	processor.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
-	if _, err := processor.ProcessBatch(context.Background(), 20, nil); err != nil {
+	if _, err := processor.ProcessBatch(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	results, err := processor.temporary.Search(context.Background(), MemoryQuery{Tags: []string{"com.delivery"}, Limit: 5})
@@ -83,6 +86,86 @@ func TestNotificationMemoryProcessorUsesMergeEngineForAdd(t *testing.T) {
 	}
 }
 
+func TestNotificationMemoryProcessorBatchesUsefulNotificationsIntoOneModelCall(t *testing.T) {
+	root := t.TempDir()
+	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{
+			{ID: "1", Source: "android", SourceID: "n1", NotificationUID: 1, SourceEventID: "evt-1", AppIdentifier: "com.calendar", Title: "会议", Message: "明天十点开会", Event: "added", ReceivedAt: "2026-08-21T00:00:00Z"},
+			{ID: "2", Source: "android", SourceID: "n2", NotificationUID: 2, SourceEventID: "evt-2", AppIdentifier: "com.delivery", Title: "包裹", Message: "明天送达", Event: "added", ReceivedAt: "2026-08-21T00:01:00Z"},
+		}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "results":[
+    {"context_id":"1","proposal":{"actions":[{"action":"ignore"}]}},
+    {"context_id":"2","proposal":{"actions":[{"action":"ignore"}]}}
+  ]
+}`}}
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
+	if _, err := processor.ProcessBatch(context.Background(), nil); err != nil {
+		t.Fatalf("ProcessBatch() error = %v", err)
+	}
+	if got := model.callCount(); got != 1 {
+		t.Fatalf("model calls = %d, want one call for the notification batch", got)
+	}
+	if got := ctxStore.State().MemoryCursor; got != "2" {
+		t.Fatalf("MemoryCursor=%q, want 2", got)
+	}
+}
+
+func TestNotificationMemoryProcessorUsesTenRecordBatches(t *testing.T) {
+	root := t.TempDir()
+	events := make([]ble.NotificationEvent, 0, 11)
+	for index := 1; index <= 11; index++ {
+		id := strconv.Itoa(index)
+		events = append(events, ble.NotificationEvent{
+			ID: id, Source: "android", SourceID: "n" + id, NotificationUID: uint32(index), SourceEventID: "evt-" + id,
+			AppIdentifier: "com.calendar", Title: "会议", Message: "待处理日程", Event: "added", ReceivedAt: "2026-08-21T00:00:00Z",
+		})
+	}
+	ctxStore, err := NewNotificationContext(root, func(_ context.Context, since, _ string, limit int) (ble.EventPage, error) {
+		start, _ := strconv.Atoi(since)
+		if start >= len(events) {
+			return ble.EventPage{Generation: "g", LastID: strconv.Itoa(len(events))}, nil
+		}
+		end := min(start+limit, len(events))
+		return ble.EventPage{Generation: "g", Events: events[start:end], LastID: strconv.Itoa(end)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := func(first, last int) string {
+		results := make([]notificationMemoryBatchResult, 0, last-first+1)
+		for index := first; index <= last; index++ {
+			results = append(results, notificationMemoryBatchResult{
+				ContextID: strconv.Itoa(index),
+				Proposal:  notificationMemoryProposal{Actions: []notificationMemoryAction{{Action: "ignore"}}},
+			})
+		}
+		data, _ := json.Marshal(notificationMemoryBatchResponse{Results: results})
+		return string(data)
+	}
+	model := &episodeMemoryScriptedModel{responses: []string{response(1, 10), response(11, 11)}}
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
+
+	result, err := processor.ProcessBatch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ProcessBatch(first) error = %v", err)
+	}
+	if !result.HasPending || ctxStore.State().MemoryCursor != "10" || model.callCount() != 1 {
+		t.Fatalf("first batch result=%#v cursor=%q calls=%d, want pending cursor 10 and one call", result, ctxStore.State().MemoryCursor, model.callCount())
+	}
+	result, err = processor.ProcessBatch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ProcessBatch(second) error = %v", err)
+	}
+	if result.HasPending || ctxStore.State().MemoryCursor != "11" || model.callCount() != 2 {
+		t.Fatalf("second batch result=%#v cursor=%q calls=%d, want drained cursor 11 and two calls", result, ctxStore.State().MemoryCursor, model.callCount())
+	}
+}
+
 func TestNotificationMemoryProcessorRejectsInvalidProposalWithoutAdvancingCursor(t *testing.T) {
 	root := t.TempDir()
 	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
@@ -92,11 +175,192 @@ func TestNotificationMemoryProcessorRejectsInvalidProposalWithoutAdvancingCursor
 		t.Fatal(err)
 	}
 	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, &episodeMemoryScriptedModel{responses: []string{`{"actions":[{"action":"not-a-real-action","scope":"temporary"}]}`}})
-	if _, err := processor.ProcessBatch(context.Background(), 20, nil); err == nil || !strings.Contains(err.Error(), "unsupported action") {
+	if _, err := processor.ProcessBatch(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "unsupported action") {
 		t.Fatalf("ProcessBatch() error=%v, want unsupported action", err)
 	}
 	if got := ctxStore.State().MemoryCursor; got != "" {
 		t.Fatalf("MemoryCursor=%q advanced after invalid proposal", got)
+	}
+}
+
+func TestNotificationMemoryProcessorRetriesConsumeFailureAfterDrainingDurablePending(t *testing.T) {
+	root := t.TempDir()
+	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{{
+			ID: "1", Source: "android", SourceEventID: "evt-1", AppIdentifier: "com.calendar",
+			Title: "会议", Message: "明天十点", Event: "added", ReceivedAt: "2026-08-21T00:00:00Z",
+		}}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ctxStore.Consume(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	consumeErr := errors.New("ble unavailable")
+	ctxStore.reader = func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{}, consumeErr
+	}
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, nil)
+	result, err := processor.ProcessBatch(context.Background(), nil)
+	if !errors.Is(err, consumeErr) || !result.HasPending {
+		t.Fatalf("ProcessBatch() result=%#v err=%v, want pending consume error", result, err)
+	}
+	if got := ctxStore.State().MemoryCursor; got != "1" {
+		t.Fatalf("MemoryCursor=%q, want durable backlog committed before retry", got)
+	}
+}
+
+func TestNotificationMemoryProcessorValidatesWholeBatchBeforeApplying(t *testing.T) {
+	root := t.TempDir()
+	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{
+			{ID: "1", Source: "android", SourceID: "n1", NotificationUID: 1, SourceEventID: "evt-1", AppIdentifier: "com.calendar", Title: "会议", Message: "明天十点开会", Event: "added", ReceivedAt: "2026-08-21T00:00:00Z"},
+			{ID: "2", Source: "android", SourceID: "n2", NotificationUID: 2, SourceEventID: "evt-2", AppIdentifier: "com.delivery", Title: "包裹", Message: "明天送达", Event: "added", ReceivedAt: "2026-08-21T00:01:00Z"},
+		}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "results":[
+    {"context_id":"1","proposal":{"actions":[{"action":"add","scope":"temporary","type":"fact","content":"明天十点开会"}]}},
+    {"context_id":"2","proposal":{"actions":[{"action":"invalid","scope":"temporary"}]}}
+  ]
+}`}}
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
+	if _, err := processor.ProcessBatch(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "unsupported action") {
+		t.Fatalf("ProcessBatch() error=%v, want unsupported action", err)
+	}
+	if got := ctxStore.State().MemoryCursor; got != "" {
+		t.Fatalf("MemoryCursor=%q advanced after invalid batch", got)
+	}
+	memories, err := processor.temporary.Search(context.Background(), MemoryQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(memories) != 0 {
+		t.Fatalf("valid prefix was applied before the whole batch validated: %#v", memories)
+	}
+}
+
+func TestNotificationMemoryProcessorKeepsLatestActionForRepeatedBatchTarget(t *testing.T) {
+	root := t.TempDir()
+	temporary := NewLongTermMemoryStore(filepath.Join(root, "temporary"))
+	if _, err := temporary.AddMemory(context.Background(), MemoryItem{
+		ID:               "tmp_shared",
+		Type:             "fact",
+		TimeScope:        "temporary",
+		Title:            "共享日程",
+		Content:          "原始内容",
+		Tags:             []string{"notification", "com.calendar"},
+		EvidenceExcerpts: []string{"原始通知"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{
+			{ID: "1", Source: "android", SourceID: "n1", NotificationUID: 1, SourceEventID: "evt-1", AppIdentifier: "com.calendar", Title: "会议", Message: "改到十点", Event: "modified", ReceivedAt: "2026-08-21T00:00:00Z"},
+			{ID: "2", Source: "android", SourceID: "n2", NotificationUID: 2, SourceEventID: "evt-2", AppIdentifier: "com.calendar", Title: "会议", Message: "改到十一点", Event: "modified", ReceivedAt: "2026-08-21T00:01:00Z"},
+		}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "results":[
+    {"context_id":"1","proposal":{"actions":[{"action":"update","scope":"temporary","memory_id":"tmp_shared","memory_revision":1,"type":"fact","content":"改到十点"}]}},
+    {"context_id":"2","proposal":{"actions":[{"action":"update","scope":"temporary","memory_id":"tmp_shared","memory_revision":1,"type":"fact","content":"改到十一点"}]}}
+  ]
+}`}}
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
+
+	if _, err := processor.ProcessBatch(context.Background(), nil); err != nil {
+		t.Fatalf("ProcessBatch() error=%v", err)
+	}
+	if got := ctxStore.State().MemoryCursor; got != "2" {
+		t.Fatalf("MemoryCursor=%q, want 2", got)
+	}
+	memories, err := temporary.Search(context.Background(), MemoryQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(memories) != 1 || memories[0].Revision != 2 || memories[0].Content != "改到十一点" {
+		t.Fatalf("memory did not keep the latest batch action: %#v", memories)
+	}
+}
+
+func TestNotificationMemoryProcessorCoalescesBeforeValidatingStaleEarlierAction(t *testing.T) {
+	root := t.TempDir()
+	temporary := NewLongTermMemoryStore(filepath.Join(root, "temporary"))
+	if _, err := temporary.AddMemory(context.Background(), MemoryItem{
+		ID: "tmp_shared", Type: "fact", TimeScope: "temporary", Title: "共享日程", Content: "原始内容",
+		Tags: []string{"notification", "com.calendar"}, EvidenceExcerpts: []string{"原始通知"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{
+			{ID: "1", Source: "android", SourceID: "n1", NotificationUID: 1, SourceEventID: "evt-1", AppIdentifier: "com.calendar", Title: "会议", Message: "旧修改", Event: "modified", ReceivedAt: "2026-08-21T00:00:00Z"},
+			{ID: "2", Source: "android", SourceID: "n2", NotificationUID: 2, SourceEventID: "evt-2", AppIdentifier: "com.calendar", Title: "会议", Message: "新修改", Event: "modified", ReceivedAt: "2026-08-21T00:01:00Z"},
+		}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "results":[
+    {"context_id":"1","proposal":{"actions":[{"action":"update","scope":"temporary","memory_id":"tmp_shared","memory_revision":99,"type":"fact","content":"旧修改"}]}},
+    {"context_id":"2","proposal":{"actions":[{"action":"UPDATE","scope":" TEMPORARY ","memory_id":"tmp_shared","memory_revision":1,"type":"fact","content":"新修改"}]}}
+  ]
+}`}}
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
+	if _, err := processor.ProcessBatch(context.Background(), nil); err != nil {
+		t.Fatalf("ProcessBatch() error=%v", err)
+	}
+	memories, err := temporary.Search(context.Background(), MemoryQuery{Limit: 10})
+	if err != nil || len(memories) != 1 || memories[0].Content != "新修改" || memories[0].Revision != 2 {
+		t.Fatalf("memories=%#v err=%v, want latest action applied", memories, err)
+	}
+}
+
+func TestNotificationMemoryProcessorRejectsMultipleActionsBeforeCoalescing(t *testing.T) {
+	root := t.TempDir()
+	temporary := NewLongTermMemoryStore(filepath.Join(root, "temporary"))
+	if _, err := temporary.AddMemory(context.Background(), MemoryItem{
+		ID: "tmp_shared", Type: "fact", TimeScope: "temporary", Title: "共享日程", Content: "原始内容",
+		Tags: []string{"notification", "com.calendar"}, EvidenceExcerpts: []string{"原始通知"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{
+			{ID: "1", Source: "android", SourceID: "n1", NotificationUID: 1, SourceEventID: "evt-1", AppIdentifier: "com.calendar", Title: "会议", Message: "旧修改", Event: "modified", ReceivedAt: "2026-08-21T00:00:00Z"},
+			{ID: "2", Source: "android", SourceID: "n2", NotificationUID: 2, SourceEventID: "evt-2", AppIdentifier: "com.calendar", Title: "会议", Message: "新修改", Event: "modified", ReceivedAt: "2026-08-21T00:01:00Z"},
+		}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "results":[
+    {"context_id":"1","proposal":{"actions":[
+      {"action":"update","scope":"temporary","memory_id":"tmp_shared","memory_revision":99,"type":"fact","content":"旧修改"},
+      {"action":"add","scope":"temporary","type":"fact","content":"不应写入"}
+    ]}},
+    {"context_id":"2","proposal":{"actions":[{"action":"update","scope":"temporary","memory_id":"tmp_shared","memory_revision":1,"type":"fact","content":"新修改"}]}}
+  ]
+}`}}
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
+	if _, err := processor.ProcessBatch(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "maximum is 1") {
+		t.Fatalf("ProcessBatch() error=%v, want multiple-action rejection", err)
+	}
+	if got := ctxStore.State().MemoryCursor; got != "" {
+		t.Fatalf("MemoryCursor=%q advanced after invalid batch", got)
+	}
+	memories, err := temporary.Search(context.Background(), MemoryQuery{Limit: 10})
+	if err != nil || len(memories) != 1 || memories[0].Content != "原始内容" || memories[0].Revision != 1 {
+		t.Fatalf("memories=%#v err=%v, want original memory unchanged", memories, err)
 	}
 }
 
@@ -115,7 +379,7 @@ func TestNotificationMemoryProcessorUpdatesWithRevisionAndCanPromote(t *testing.
 	}
 	responses := []string{`{"actions":[{"action":"update","scope":"temporary","memory_id":"tmp_existing","memory_revision":1,"type":"fact","title":"包裹","content":"包裹改为明天送达","expires_at":"2026-08-28T00:00:00Z"}]}`}
 	processor := NewNotificationMemoryProcessor(ctxStore, root, longTerm, &episodeMemoryScriptedModel{responses: responses})
-	if _, err := processor.ProcessBatch(context.Background(), 20, nil); err != nil {
+	if _, err := processor.ProcessBatch(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := temporary.Search(context.Background(), MemoryQuery{Tags: []string{"com.delivery"}, Limit: 5})
@@ -134,7 +398,7 @@ func TestNotificationMemoryProcessorUpdatesWithRevisionAndCanPromote(t *testing.
 		t.Fatal(err)
 	}
 	processor2 := NewNotificationMemoryProcessor(ctxStore2, root, longTerm, &episodeMemoryScriptedModel{responses: []string{`{"actions":[{"action":"promote","scope":"long_term","memory_id":"tmp_notification_1","memory_revision":1}]}`}})
-	if _, err := processor2.ProcessBatch(context.Background(), 20, nil); err != nil {
+	if _, err := processor2.ProcessBatch(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if promoted, err := longTerm.Search(context.Background(), MemoryQuery{Tags: []string{"com.delivery"}, Limit: 5}); err != nil || len(promoted) == 0 || !strings.Contains(promoted[0].Content, "公司") {

@@ -208,7 +208,7 @@ Within one runtime, memory tools, `MemoryPlane`, and profile rebuilding share a 
 
 ### Device And Episode Memory
 
-The episode recorder captures tool calls, tool results, screenshots, user corrections, and recorded outcome data during the run. `MemoryPlane.CommitEpisode` persists the trace and notifies the background Episode Memory Worker.
+The episode recorder captures tool calls, tool results, screenshots, user corrections, and recorded outcome data during the run. `MemoryPlane.CommitEpisode` persists the trace and notifies the shared background `MemoryWorker`; the worker later invokes `EpisodeProcessor` during the common idle window.
 
 Common episode event types:
 

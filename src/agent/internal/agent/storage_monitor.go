@@ -40,11 +40,12 @@ const (
 type StorageCapability string
 
 const (
-	StorageCapabilityLLMHTTPLog         StorageCapability = "llm_http_log"
-	StorageCapabilityAudioArchive       StorageCapability = "audio_archive"
-	StorageCapabilitySessionArchive     StorageCapability = "session_archive"
-	StorageCapabilitySessionPersistence StorageCapability = "session_persistence"
-	StorageCapabilityAgentLog           StorageCapability = "agent_log"
+	StorageCapabilityLLMHTTPLog          StorageCapability = "llm_http_log"
+	StorageCapabilityAudioArchive        StorageCapability = "audio_archive"
+	StorageCapabilitySessionArchive      StorageCapability = "session_archive"
+	StorageCapabilitySessionPersistence  StorageCapability = "session_persistence"
+	StorageCapabilityAgentLog            StorageCapability = "agent_log"
+	StorageCapabilityNotificationContext StorageCapability = "notification_context"
 )
 
 // StorageSample is a point-in-time filesystem sample.
@@ -532,7 +533,7 @@ func (m *StorageMonitor) ValidateCleanupTargets(targets []string) error {
 
 func isStorageCleanupCategory(target string) bool {
 	switch StorageCapability(target) {
-	case StorageCapabilityLLMHTTPLog, StorageCapabilityAudioArchive, StorageCapabilitySessionArchive:
+	case StorageCapabilityLLMHTTPLog, StorageCapabilityAudioArchive, StorageCapabilitySessionArchive, StorageCapabilityNotificationContext:
 		return true
 	default:
 		return false
@@ -615,7 +616,7 @@ func (m *StorageMonitor) unavailableCapabilities(level StorageLevel) []StorageCa
 	if level != StorageLevelCritical && level != StorageLevelEmergency {
 		return nil
 	}
-	capabilities := make([]StorageCapability, 0, 4)
+	capabilities := make([]StorageCapability, 0, 5)
 	if m.config.DegradedMode.DisableLLMHTTPLog {
 		capabilities = append(capabilities, StorageCapabilityLLMHTTPLog)
 	}
@@ -626,6 +627,7 @@ func (m *StorageMonitor) unavailableCapabilities(level StorageLevel) []StorageCa
 		capabilities = append(capabilities, StorageCapabilitySessionArchive)
 	}
 	capabilities = append(capabilities, StorageCapabilitySessionPersistence)
+	capabilities = append(capabilities, StorageCapabilityNotificationContext)
 	return capabilities
 }
 

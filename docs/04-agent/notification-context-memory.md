@@ -4,467 +4,150 @@ sidebar_position: 12
 
 # 通知持久化与自动记忆
 
-**状态：** 提案
+**状态：** 当前实现说明
 
-**日期：** 2026-08-20
+## 设计结论
 
-## 决策
+`ble_service` 只生产规范化通知事件。Agent 侧的 `NotificationContext` 负责消费、去重、落盘、游标和清理。
 
-`ble_service` 只生产规范化通知事件。Agent 侧用一个 `NotificationContext` 模块统一完成消费、脱敏、去重、落盘和增量读取。
+Memory 维护只有一个共享 `MemoryWorker`：
 
-通知 Memory 使用独立的 `MemoryWorker` 实例。Worker 内部接入 `NotificationMemoryProcessor`，把短期结论写入 Temporary Memory，把稳定结论写入 Long-Term Memory。两个 Store 由 `recall_memory` 统一检索。
+```text
+MemoryWorker（Agent 闲时调度，串行执行）
+├── EpisodeProcessor
+└── NotificationProcessor
+```
+
+Worker 只负责前台取消、默认 5 分钟闲时窗口、按注册顺序串行调用 Processor、pending 和停止生命周期。Worker 不理解 Episode、Notification、Memory 类型或 Store 语义，也不建立跨场景优先级队列。每个 Processor 自己决定读取方式、批大小、提炼规则、proposal 校验和落盘方式。
+
+启动时会先一次性注册 EpisodeProcessor 和 NotificationProcessor，再启动
+Worker，确保首个闲时批次也是 Episode -> Notification 的固定顺序。
+
+`MemoryMergeEngine` 只抽取两类场景都需要的机械步骤：
+
+```text
+场景原始输入 + 相关 Memory -> 构造场景消息 -> 调用 LLM -> 返回原始 proposal
+```
+
+Episode 和 Notification 的 proposal schema、证据门槛、冲突处理、Memory 新增/更新/晋升逻辑分别留在各自 Processor 中，不强行统一。
 
 ## 组件职责
 
 | 模块 | 职责 |
 | --- | --- |
 | `ble_service` | 接收 iOS/Android 通知、规范化、分配事件 ID、维护短期 event ring |
-| `NotificationContext` | 消费 `events_since`、脱敏去重、JSONL 落盘、source cursor、memory cursor、查询和清理 |
-| `MemoryWorker` | 通用的 timer、唤醒、批处理、取消、重试和前台任务避让 |
-| `NotificationMemoryProcessor` | 消费通知并提供场景输入、过滤约束和 proposal 校验，不直接调用模型或写 Store |
-| `TemporaryMemoryStore` | 保存有明确过期时间的短期结论，供 `recall_memory` 检索 |
-
-所有场景共用同一个 `MemoryMergeEngine`。Processor 只提供原始数据、检索约束
-和场景校验器；Engine 统一完成“原始数据 + 相关 Memory top-k -> LLM proposal ->
-校验 -> Memory Apply”。Temporary、Long-Term 和 Device Memory 的 Store Adapter
-只负责最终的 add、update、reinforce、supersede、remove、ignore 和 revision。
-不同场景不再各自维护“召回 + LLM 合并 + 落盘”状态机；Temporary 仍然写入
-`memory/temporary/`，只是由统一 Engine/Store 链路负责写入和更新。
-
-`NotificationMemoryProcessor` 是 Worker 的场景处理器，不是独立进程。Episode Memory 使用另一个 Worker 实例和另一个 Processor；两者在同一 Agent 进程内做逻辑隔离，状态、队列、timer、cursor、retry 和取消上下文彼此独立。
-
-两个 Worker 只共享模型客户端、全局存储监控，以及本方案新增的 `MemoryRunGate`。`MemoryRunGate` 只包围后台模型调用，使 Episode 和 Notification 的后台 LLM 调用串行执行；它不合并两个 Worker 的 timer、cursor 或 retry。一个场景失败时只进入自己的退避重试，不会改变另一个场景的处理状态。进程级故障由各自的持久化状态恢复；需要故障域完全分离时，再拆成独立 daemon。
+| `NotificationContext` | 消费事件、去重、JSONL 落盘、source/memory cursor、查询和清理 |
+| `MemoryWorker` | 统一闲时窗口、前台取消、串行执行 Processor、重试和停止 |
+| `episodeMemoryProcessor` | 读取 Episode、按 Episode 规则提炼并写入 Device Memory |
+| `NotificationMemoryProcessor` | 读取通知、过滤、调用提炼、校验 proposal 并写入 Temporary/Long-Term Memory |
+| `MemoryMergeEngine` | 召回相关 Memory、构造消息、调用 LLM、返回 raw proposal |
 
 ## 生命周期
 
-通知本身不是 Memory。Processor 必须先判断价值和有效期，再互斥地写入 Temporary Memory 或 Long-Term Memory。
-
-| 结果 | 保存位置 | 默认生命周期 |
-| --- | --- | --- |
-| `ignore`：营销、验证码、敏感通知 | 仅作短暂处理，随后删除 | 不进入 Memory |
-| `temporary`：一次性提醒、物流状态、临时改期 | `/userdata/agent/memory/temporary/` | 按事件有效期，默认 7 天 |
-| `long_term`：稳定偏好、规则、重复事实 | `/userdata/agent/memory/long_term/` | 自动推断默认 90 天 |
-| 用户明确要求记住的偏好或规则 | `/userdata/agent/memory/long_term/` | 不设 TTL，直到更新或删除 |
-
-`NotificationContext` 只保存原始通知证据。Temporary Memory 与 `long_term/` 同级，保存已经提炼的短期结论；Worker 只在当前批次中持有内存对象。
-
-自动推断的 Long-Term Memory 在新证据 reinforce 时刷新 TTL。通知原文过期不会自动删除已经提炼的 Memory；Temporary 和 Long-Term Memory 都只保留事件 ID 等最小来源信息。
-
-## 主流程
+通知先进入 `ble_service` 的 event ring；Agent 进入闲时后，NotificationProcessor
+才消费 ring、把原始记录持久化到 NotificationContext，并继续完成提炼：
 
 ```text
-手机通知源
-  -> ble_service
-  -> NotificationContext
-       consume -> sanitize/dedupe -> append JSONL
-  -> MemoryWorker + NotificationMemoryProcessor
-       read pending -> debounce -> extract -> resolve
-       -> Temporary Memory（短期结论）
-       -> Long-Term Memory（稳定结论）
+通知源 -> ble_service event ring
+Agent 前台任务结束 -> 等待 5 分钟闲时
+                    -> EpisodeProcessor（最多 5 个 Episode）
+                    -> NotificationProcessor
+                         -> Consume / NotificationContext.append
+                         -> 提炼最多 10 条通知
+                    -> 仍有 pending 时在当前闲时窗口继续下一批
 ```
 
-`ble_service` 不调用 LLM，也不感知通知 retention、查询方式或 Memory policy。
+通知没有独立的 30 秒 timer，也没有单独的 Notification Worker。通知发布成功后只唤醒共享 Worker 的闲时计时器，不会立即触发 LLM；Processor 在共享 Worker 被调度时先 `Consume` BLE ring，再读取自己的 pending 数据。没有 pending 时返回空结果，Worker 不会持续轮询。
 
 ## NotificationContext
 
-### 对外接口
-
-NotificationContext 对 runtime 暴露四个动作：
+`NotificationContext` 对 runtime 提供：
 
 ```text
-Consume(limit)              从 events_since 拉取并可靠落盘
-ReadPending(limit)          读取尚未完成 Memory 处理的通知
-CommitProcessed(batch)      Memory 写入成功后推进 memory cursor
-Cleanup(policy)             按 cursor 和存储水位清理已结算数据
-Query(query)                只读查询已落盘的原始通知，不访问 BLE、不改 cursor
+Consume(limit)               从 events_since 拉取并可靠落盘
+ReadPending(limit)           读取 memory cursor 之后的记录
+CommitProcessed(batch)       Memory 写入成功后推进 memory cursor
+CleanupProcessedBefore(...)  只清理已处理的日期分片
+Query(query)                 只读查询原始通知，不访问 BLE、不改游标
 ```
 
-`source cursor` 和 `memory cursor` 都由 NotificationContext 持久化。调用方不需要理解 JSONL 分片、generation 或文件清理细节。
+落盘记录保留 BLE 原始字段，并增加 Agent 本地单调递增的 `context_id`。Memory cursor 使用 `context_id`，不依赖 BLE generation。落盘采用按 UTC 日期分片的 JSONL；写入成功后才推进 source cursor。断电恢复时保留已完整写入的记录，并修复最后一条不完整 JSON 行。
 
-落盘记录在 BLE 事件外包一层 `context_id`。BLE 的 `id` 只在当前
-`ble_service` generation 内单调；`context_id` 则由 Agent 本地持久化并跨
-generation 单调递增，Memory cursor 和 shell 的 `--since` 都使用
-`context_id`。原始 BLE `id`、generation 和全部通知字段仍原样保留，便于排障；
-脱敏、过滤和摘要只发生在 Processor 内，不改写原始 JSONL。
+`CommitProcessed` 要求传入从当前 cursor 开始的连续批次。清理器必须调用 `NotificationContext` 的清理方法，不能绕过 Context 直接删除 JSONL，以避免和 append/commit 并发。
 
-### Shell 查询
+## NotificationProcessor
 
-Agent 二进制提供只读子命令，直接查询 JSONL 原始记录：
+Processor 自己拥有通知场景的完整业务流程：
 
-```bash
-agent notifications list --dir /userdata/agent --limit 20
-agent notifications list --dir /userdata/agent --since 42 --format jsonl
-agent notifications list --dir /userdata/agent --date 2026-08-21 --app com.example
-agent notifications list --dir /userdata/agent --text meeting
-```
+1. `Consume` 当前 BLE ring，随后 `ReadPending` 取本批数据；
+2. 合并同一通知的 added/modified/removed 变化；
+3. 确定性过滤 OTP、验证码、营销、秘密等明显噪声；
+4. 为本批每条通知检索相关 Memory，并合并成一次 `MemoryMergeEngine.Extract` 调用；
+5. 按 `context_id` 拆分、解析并校验通知专用 proposal；每条通知最多产生一个 action；
+6. 按 action 在 Temporary 或 Long-Term Store 中新增、更新、删除、reinforce 或 promote；
+7. 所有相关 Memory 写入成功后才 `CommitProcessed`；仍有积压时，在同一次闲时窗口继续下一批，不重新等待 5 分钟。
 
-命令不会连接 `ble_service`，也不会创建或更新 `state.json`、source cursor、
-memory cursor。默认输出 JSON；`--format jsonl` 适合 shell 管道和 `jq`。
+没有模型时，测试和离线场景可以使用确定性的 Temporary Memory fallback。Processor 不把通知业务规则放入 Worker，也不要求 Episode 和 Notification 使用同一套 action 或状态机。
 
-### 存储
+通知 proposal 的 action 包括 `ignore`、`add`、`update`、`reinforce`、`remove` 和 `promote`。更新已有记录必须带准确的 `memory_id` 和 `memory_revision`；无效 proposal 不推进 memory cursor。通知变化会作为新的 Context 记录进入后续批次，因此不保留会阻塞 cursor 的 `hold` 状态。
+
+## EpisodeProcessor
+
+EpisodeProcessor 保留已有 Episode 语义：
+
+- 只接收已结束且有设备证据的 Episode；
+- 每批最多处理 5 个 Episode，并将整批 Episode 和相关 Device Memory 合并为一次 LLM 调用；
+- LLM 返回带 `episode_id` 的结果，Processor 再按 Episode 逐项校验和落盘；
+- 自己校验 `goal_result`、candidate 类型、证据引用和 revision；
+- 自己执行 Device Memory 的新增、更新和冲突处理；
+- 用 Episode processing ledger 保存 `processing -> proposed -> done/retry/ignored`，支持崩溃恢复。
+
+## Memory 与 Recall
 
 ```text
-/userdata/agent/memory/notifications/
-├── events/2026-08-20.jsonl
-├── state.json
-└── fingerprints.json
+memory/
+├── notifications/   # 原始通知和游标
+├── temporary/       # 有 expires_at 的短期结论
+├── long_term/       # 稳定偏好、规则和事实
+├── device/          # Episode 产生的设备知识
+└── episodes/        # 不可变 Episode 轨迹
 ```
 
-`events/` 是通知事实来源。`state.json` 保存上游 generation、source cursor、memory cursor、最早保留事件和 gap 状态。`fingerprints.json` 只用于重放去重，可重建。
+Temporary 和 Long-Term 使用相同的可检索记录格式。`recall_memory` 同时搜索两个 Store，过滤过期 Temporary；Device Memory 由 EpisodeProcessor 单独维护。
 
-### 默认值
+默认值：单条通知正文最多 4 KiB；单次 BLE consume 最多 100 条；Notification 单批最多 10 条；通知重放去重窗口最多保留 4096 个 fingerprint；Temporary 默认 7 天；自动生成的 Long-Term 默认 90 天。Episode 闲时延迟由 `episode_memory_idle_delay_seconds` 配置，默认 300 秒；该值也是共享 Worker 的闲时窗口。
 
-| 配置 | 默认值 |
-| --- | --- |
-| 通知 Context retention | 14 天 |
-| 事件分片 | 按 `ReceivedAt` 的 UTC 日期，每天一个 JSONL 文件 |
-| 单条正文上限 | 4 KiB |
-| 单次上游消费 | 100 条 |
-| Android 单批事件 | 8 条 |
-| Worker 单批处理 | 20 条 |
-| 首次 debounce | 30 秒 |
+## 存储水位与隐私
 
-持久化采用 append + sync，按 `ReceivedAt` 的 UTC 日期写入
-`events/YYYY-MM-DD.jsonl`。写入成功后才推进 source cursor；重复
-`source_event_id` 直接确认，不重复追加。掉电恢复时修复最后一条不完整 JSON 行。
+`StorageMonitor` 统一管理水位和 Cleaner。Normal/Warning/Critical 分别启用 14/7/1 天的 Notification Context 清理，Emergency 清理全部已处理分片；任何水位都不删除未处理记录。Critical 和 Emergency 会关闭 `notification_context` 写能力，因此 Processor 不再从 BLE consume 新通知，待水位恢复后再从原 source cursor 继续。Temporary Memory Cleaner 在 Normal 起即可清理已过期或 deleted 记录。
 
-### StorageMonitor
+通知正文会作为提炼输入发送给当前配置的 LLM provider；只有配置本地模型时，
+该内容才会完全留在设备内。日志只记录 event ID、App ID、处理结果和 gap，
+不记录正文。
 
-StorageMonitor 负责全局水位，NotificationContext 负责原始通知的日期分片和
-cursor-aware 清理。清理必须调用 `Cleanup(policy)`，不能由监控器直接删除
-JSONL。
+## 失败与恢复
 
-| 水位 | 行为 |
-| --- | --- |
-| Normal | 清理超过 14 天且已完成处理的数据，允许落盘 |
-| Warning | 清理超过 7 天且已完成处理的数据，允许落盘和提炼 |
-| Critical | 清理超过 1 天且已完成处理的数据，暂停新通知落盘 |
-| Emergency | 先记录 `storage_emergency` gap，再清理；不删除已生成的 Long-Term Memory |
+- BLE consume 失败：不推进 source cursor，保留 pending，下一次闲时重试；
+- LLM、proposal 校验或 Memory 写入失败：不推进 memory cursor；
+- 单个 Processor 失败：记录该场景错误并保留其 pending，按闲时延迟退避，避免 BLE/LLM/磁盘持续错误形成热循环；其他已注册场景仍可在同一轮串行执行，不共享业务事务；
+- 前台任务开始：共享 Worker 取消在途模型调用；Processor 保留自己的持久化状态，下一次闲时继续；
+- Worker 重启：Episode 从 processing ledger 恢复，Notification 从 source/memory cursor 恢复；
+- Notification 当前不单独持久化 proposal ledger；若进程在 Memory 写入成功、cursor 提交前崩溃，下一次会重新提炼该记录，因此 Notification 的 add/update 逻辑必须保持幂等；
+- 一个 Notification 批次内的 Store action 依次执行，不提供跨 Temporary/Long-Term Store 事务；发生中途 I/O 失败时不推进 cursor，并依靠固定 ID、revision 校验和重试收敛；
+- 任何 gap 都写入 `NotificationContextState.Gaps`，不得静默吞掉。
 
-未完成处理的数据不能静默删除。写入失败时保持 source cursor，StorageMonitor 恢复后继续重试。
+## 验收重点
 
-这部分不能直接复用当前 Episode Storage 清理，因为 Episode 目前没有为
-`memory/episodes/` 注册常规 retention cleaner：原始 `episode.yaml`、
-`events.jsonl` 和 artifacts 会一直保留，直到显式清空整套 Memory。Episode
-现有可复用的只有两种机制：处理账本只保留最近 64 条 `done/ignored` 终态，
-以及提炼后的 Device Memory 在召回时按 `expires_at` 过滤；后者当前也不会
-物理删除过期文件。
-
-Notification 复用这些基础机制，但清理职责分开：
-
-- Worker 状态复用 Episode 的 cursor 和终态账本裁剪模式；
-- Temporary Memory 复用 Memory Store 的 `expires_at` 判断，并由
-  `TemporaryMemoryCleaner` 物理删除过期记录、重建索引；
-- 原始通知由 `NotificationContext.Cleanup(policy)` 清理，只有 memory cursor
-  已结算的数据才能按保留期删除；StorageMonitor 只负责触发该接口。
-
-原始通知的数量、隐私敏感度和写入频率都高于 Episode，因此不能沿用 Episode
-当前“不做常规清理”的行为。
-
-## 事件模型与消费
-
-```json
-{
-  "id": "42",
-  "source": "ios_ancs",
-  "device_id": "phone-a",
-  "source_event_id": "ancs:123456:added",
-  "notification_uid": 123456,
-  "event": "added",
-  "app_identifier": "com.example.calendar",
-  "title": "Weekly review",
-  "message": "Moved to Wednesday 14:00",
-  "received_at": "2026-08-19T06:00:00Z",
-  "metadata_complete": true
-}
-```
-
-`id` 是开发板本地游标 ID，`source_event_id` 是跨重试的幂等键。`removed` 事件也必须落盘，因为它可能使临时结论失效。
-
-NotificationContext 直接调用：
-
-```json
-{
-  "op": "events_since",
-  "since": "42",
-  "generation": "<generation>",
-  "limit": 100
-}
-```
-
-generation 变化或 ring 已截断时，Context 记录 gap 并从当前 oldest ID 继续。MVP 不承诺生产者长期离线时零丢失，但所有缺口都必须可观测。
-
-## Temporary Memory 与统一 Recall
-
-```text
-/userdata/agent/memory/
-├── notifications/     # 原始通知、消费状态和 gap
-├── temporary/         # 已提炼的短期 Memory
-│   ├── index.yaml
-│   └── memories/
-│       └── tmp_<id>.md
-└── long_term/         # 已提炼的长期 Memory
-    ├── index.yaml
-    └── memories/
-        └── mem_<id>.md
-```
-
-`temporary/` 复用 `long_term/` 的存储格式：根目录下一个 `index.yaml`，记忆正文保存为带 YAML frontmatter 的 Markdown 文件。它不复用 Episode 的 `episode.yaml + events.jsonl + artifacts/` 布局，因为 Temporary Memory 是可检索结论，不是任务轨迹。
-
-Temporary 和 Long-Term Store 使用相同的 index schema，现有索引字段中的 `expires_at` 可直接用于过期过滤。Temporary Memory 必须包含 `time_scope=temporary`、`expires_at` 和通知 `SourceRefs`；没有明确失效时间时默认 TTL 为 7 天。Temporary ID 使用 `tmp_` 前缀，与 Long-Term Memory 的 `mem_` ID 保持全局不冲突。
-
-Agent 不需要选择 Store，也不新增 recall tool。现有 `recall_memory` 同时搜索两个目录，过滤掉已过期的 Temporary Memory，再合并排序。结果增加 `memory_scope=temporary|long_term` 和 `expires_at`，让 Agent 能区分临时例外和长期基线。
-
-同一主题同时命中时，仍有效的 Temporary Memory 排在 Long-Term Memory 前面，但两个结果都返回。例如“周会通常周二”和“本周改到周三”同时存在时，本周优先使用临时结论，临时记录过期后自动回到长期结论。
-
-Temporary Memory 到期后不再被召回，并由 `TemporaryMemoryCleaner` 删除。若后续证据证明结论已经稳定，Processor 先成功写入或更新 Long-Term Memory，再删除或标记对应 Temporary Memory 为 promoted。
-
-## MemoryWorker 与 Processor
-
-### Episode Memory 的现有实现
-
-Episode Memory consolidation 已合入当前 main，核心类型是 `episodeMemoryWorker`、`episodeMemoryBatchProcessor` interface 和 `episodeMemoryProcessor`。当前流程为：
-
-```text
-Episode 完成并落盘
-  -> NotifyEpisode
-  -> Agent 空闲 5 分钟
-  -> 代码硬预筛
-  -> MemoryMergeEngine 查询相关 Device Memory top-k
-  -> MemoryMergeEngine 调用 LLM 提炼 0～3 个 Candidate
-  -> 代码硬校验
-  -> MemoryMergeEngine 生成 create / update / disputed Intent
-  -> Device Memory Store Adapter 落盘
-```
-
-现有 Worker 已负责：
-
-- 一个可重置 timer，单实例不并行处理多个 batch；
-- Episode 完成后的非阻塞唤醒；
-- 前台 Agent task 开始时停止 timer 并取消在途后台模型调用；
-- batch pending、`NextRunAt`、退避重试、停止和等待退出；
-- 默认空闲等待 5 分钟，单批最多处理 5 个 Episode。
-
-现有 Episode Processor 负责：
-
-- 只接收已结束、具有设备动作或非取消结构化错误的 Episode；
-- 持久化 `processing -> proposed -> done/ignored/retry` 处理状态；
-- 提炼 `procedure`、`navigation`、`calibration`、`failure` 或 `fact`；
-- 校验真实 event evidence、Scope 和各类型证据门槛；
-- 使用 `episode_id + lesson_key` 保证创建幂等，使用 Memory revision 保护更新；
-- 只写 Device Memory，不写 Temporary 或 Long-Term Memory。
-
-### 抽取通用 Worker
-
-本方案不再并列实现第二套 timer 和取消逻辑，而是把现有 `episodeMemoryWorker` 的调度部分抽成通用 `MemoryWorker`。现有 interface 可以直接收敛为：
-
-```go
-type MemoryProcessor interface {
-    Initialize() error
-    NextRunAt(context.Context) (time.Time, error)
-    ProcessBatch(context.Context, int, func() bool) (MemoryBatchResult, error)
-    LogBatchError(error)
-}
-```
-
-名称映射：
-
-```text
-episodeMemoryWorker          -> MemoryWorker
-episodeMemoryBatchProcessor  -> MemoryProcessor
-episodeMemoryBatchResult     -> MemoryBatchResult
-NotifyEpisode                -> Notify
-```
-
-抽取后创建两个独立实例：
-
-| 实例 | Processor | 触发时机 | Batch | 持久化状态 | 写入目标 |
-| --- | --- | --- | --- | --- | --- |
-| Episode Worker | `EpisodeMemoryProcessor` | Agent 空闲 5 分钟 | 5 个 Episode | Episode consolidation state | Device Memory |
-| Notification Worker | `NotificationMemoryProcessor` | 通知落盘后 debounce 30 秒 | 20 条通知 | NotificationContext cursor 和处理状态 | Temporary 或 Long-Term Memory |
-
-通用 Worker 不理解 Episode、Notification、Candidate 或 Store。它只通过 `MemoryProcessor` interface 调用场景实现，因此删除通用 Worker 后，timer、取消、pending 和重试复杂度会重新散落到两个调用方；这个 seam 具有实际复用价值。
-
-### MemoryMergeEngine 与场景 Processor
-
-`MemoryMergeEngine` 是所有 Memory 场景共用的深模块，固定编排以下流程：
-
-```text
-MemoryMergeInput
-  -> Engine 调用 Processor 提供的检索策略，查找允许 scope 内的 active Memory top-k
-  -> 构造统一 LLM 请求（原始数据 + top-k Memory + 场景规则）
-  -> 获取严格 JSON proposal
-  -> 校验 action、scope、source refs、memory_id 和 revision
-  -> 转换为 MemoryIntent
-  -> 调用对应 Store Adapter 原子 Apply
-```
-
-Processor 不负责 LLM 调用或直接写 Temporary/Long-Term/Device Store；它只通过受控的
-检索策略向 Engine 提供 top-k 候选。Processor 只负责读取自己的输入、确定性预过滤、提供场景 Prompt/Schema 约束，
-以及校验 proposal 中与场景有关的证据门槛。Episode 和 Notification 可以使用
-不同 Prompt 和字段校验，但必须经过同一个 Engine 编排和同一个 Apply seam。
-
-Notification 的目标流程是：
-
-```text
-原始 Notification + Temporary/Long-Term top-k
-  -> MemoryMergeEngine LLM proposal
-  -> ignore / add / update / reinforce / remove / hold / promote
-  -> 统一 Memory Apply
-```
-
-### 不复用的业务逻辑
-
-Notification 不调用 Episode Processor，也不复用以下规则：
-
-- Episode Prompt、`goal_result` 和设备任务证据门槛；
-- `procedure/navigation/calibration/failure` 类型体系；
-- Device Memory 的 Scope、revision 合并和 disputed 规则；
-- Episode 的 state file、cursor 和 5 分钟空闲策略。
-
-Episode 和 Notification 的 Prompt、Candidate schema、policy、状态文件和输入读取仍然分别保留在各自 Processor 内；但 top-k 召回、LLM 调用、proposal 编排和最终 Apply 都经过同一个 `MemoryMergeEngine`。
-
-### 后台模型调用协调
-
-两个 Worker 共用一个进程内 `MemoryRunGate`，规则如下：
-
-- 同一时间最多运行一个后台 Memory 模型调用；
-- 前台 Agent task 开始时取消正在执行或等待中的后台调用；
-- gate 只保护 LLM 调用，不保护本地预筛、索引查询、JSONL 读取或 Store 写入；
-- Worker 获取 gate 失败或被取消时保持自己的 pending 状态，之后按自己的 timer 重试；
-- Episode 和 Notification 不共享 cursor、proposal、attempt count 或错误状态。
-
-这避免两个后台 Worker 同时占用模型，又不把两个场景合并成一个调度队列。
-
-### Notification Processor
-
-MemoryWorker 只负责通用调度：
-
-- 启停、唤醒、单实例批次串行化和退避；
-- 前台 Agent task 运行时取消在途模型调用；
-- 通过新增的 `MemoryRunGate` 与其他后台 Worker 串行使用模型；
-- 记录场景级错误，不修改 Processor 的业务状态。
-
-NotificationMemoryProcessor 负责场景输入和语义约束：
-
-- 从 `ReadPending` 读取通知并合并同一通知的 added/modified/removed 变化；
-- 先执行敏感类别、App policy 和确定性过滤；
-- 提供通知原始记录、检索 query、允许的 scope 和 proposal 校验规则；
-- 由 `MemoryMergeEngine` 调用 LLM 并统一提交；
-- 只有 Engine resolve 成功后才调用 `CommitProcessed`。
-
-确定性规则只用于低成本安全预过滤：验证码、OTP、营销/促销等高风险噪声不进入
-LLM；其余通知交给 `MemoryMergeEngine`，由原始通知和 Temporary/Long-Term top-k
-共同决定是否创建、更新、删除、保留或晋升。LLM 不直接修改文件，所有结果都经过
-Engine 的 proposal 校验和 Store Adapter 落盘。
-
-运行时序：
-
-```text
-落盘成功 -> Notify Worker
-         -> 等待 30 秒合并窗口
-         -> 最多处理 20 条
-         -> resolve 成功
-         -> CommitProcessed
-```
-
-Agent 启动时若发现未结算数据，立即恢复处理。没有 pending 数据时只做轻量检查，不调用模型。
-
-## Candidate 与晋升策略
-
-LLM 只返回严格 JSON：
-
-```json
-{
-  "action": "ignore|add|update|reinforce|remove|hold|promote",
-  "scope": "temporary|long_term",
-  "memory_id": "existing-memory-id",
-  "memory_revision": 2,
-  "type": "preference|rule|fact|profile",
-  "title": "Weekly review day",
-  "content": "Weekly review is on Wednesday.",
-  "expires_at": "2026-08-28T00:00:00Z",
-  "source_event_ids": ["42"]
-}
-```
-
-自动进入 Long-Term Memory 的通知结论必须同时满足：
-
-- 类型为 preference、rule、fact 或 profile；
-- 时间范围为长期或 recurring；
-- 不是敏感内容，也未被确定性过滤或 App policy 禁止；
-- 单条结论有明确语义；长期结论由 Processor 的场景校验决定，不能仅凭模型自由改写。
-
-以下内容不自动晋升：OTP、密码、支付授权、银行和安全告警、健康和法律信息、私人聊天、营销、物流状态、一次性提醒和一次性日程变更。
-
-分流结果互斥：适合创建、reinforce 或 supersede Long-Term Memory 的 Candidate 不再写入 Temporary Memory；只有仍有短期价值、但不应改变长期结论的 Candidate 才写入 `temporary/`。
-
-## 已有 Memory 的更新
-
-```text
-同一结论 + 新来源       -> reinforce，刷新证据和 TTL
-同一主题 + 长期变化     -> supersede，保留旧版本
-一次性变化              -> temporary，不修改长期事实
-含义不明确的冲突        -> hold，等待更多证据
-```
-
-示例：
-
-| 已有 Memory | 新通知 | 结果 |
-| --- | --- | --- |
-| 周会是周二 | 本周改到周三 | temporary |
-| 周会是周二 | 以后统一改到周三 | supersede |
-| 用户偏好中文回复 | 一条英文通知 | 不更新 |
-| 用户偏好中文回复 | 多次明确表达英文偏好 | supersede |
-
-Temporary 和 Long-Term Memory 都通过 `SourceRefs`、`EvidenceRefs` 和 `Traceability` 标记通知来源，不复制通知正文。
-
-## 配置
-
-当前最小实现固定使用 30 秒 debounce、每批 20 条、Temporary 默认 TTL 7 天；自动生成的通知 Long-Term Memory 默认 TTL 90 天，reinforce/update 会刷新 TTL。
-原始通知清理由已有 StorageMonitor 配置管理：
-
-```toml
-[storage.cleanup]
-notification_context_retention_days = [14, 7, 1, 0]
-```
-
-清理器只删除已越过 `memory_cursor` 的完整日期分片；未处理记录在普通、紧急和手动强制清理中都受保护。后续确有运行时调参需求时，再增加独立的 `notification_memory` 配置段。
-
-## 隐私、失败与重试
-
-- 通知正文只保留在手机到设备的本地链路，不上传托管服务。
-- 日志只记录 event ID、App ID、policy 结果和 gap，不记录正文。
-- 用户可以暂停自动记忆，也可以分别删除通知 Context、Temporary Memory 和 Long-Term Memory。
-- BLE 或传输失败由手机侧重试；Agent 不因 BLE 断开而退出。
-- 落盘失败不推进 source cursor；提炼或 Memory 写入失败不推进 memory cursor。
-- Worker 在写入后崩溃时，使用 source reference 和 content fingerprint 保证幂等。
-
-## 实施顺序
-
-1. 增加统一事件模型和 `NotificationContext`，完成消费、落盘、游标、去重和 retention。
-2. 以当前 main 的 `episodeMemoryWorker` 和 `episodeMemoryBatchProcessor` 为基础抽出通用 `MemoryWorker`/`MemoryProcessor`，保持 Episode 行为不变。
-3. 增加 Temporary Memory Store，并让 `recall_memory` 合并检索 Temporary 和 Long-Term Memory。
-4. 增加 `MemoryMergeEngine` 和 `MemoryRunGate`，统一 Episode 的 raw + top-k + LLM + Apply 链路，并验证前台任务可取消两者。
-5. 接入 Notification 的 top-k + LLM + Apply 链路，再开启低风险 Memory 的自动创建与更新。
-6. 根据运行数据调整 TTL、debounce、置信度阈值和模型预算。
-
-## 验收标准
-
-- iOS 和 Android 事件进入同一事件模型，并可通过 `events_since` 消费。
-- NotificationContext 重启后能从 source cursor 继续落盘。
-- MemoryWorker 重启后能从 memory cursor 继续处理，且不重复写入 Memory。
-- Episode 与 Notification 使用独立 Worker 状态；一个场景 retry 不改变另一个场景的 timer、cursor 或 attempt count。
-- 同一时间最多有一个后台 Memory LLM 调用，前台 Agent task 可以取消它。
-- 临时通知写入 Temporary Memory，不覆盖长期事实；稳定结论只写入 Long-Term Memory。
-- `recall_memory` 一次查询能返回未过期的 Temporary Memory 和 Long-Term Memory。
-- 自动推断 Memory 默认有 TTL，reinforce 会刷新 TTL，用户明确记住的规则不设 TTL。
-- 敏感通知不会自动晋升。
-- ring 截断、存储不足和处理失败都会留下可查询状态。
+- Episode 和 Notification 由同一个 `MemoryWorker` 按注册顺序串行调度；每个 Processor 每批只调用一次 LLM，返回结果在本地逐项校验和落盘；
+- Agent 前台任务不会被后台 Memory 提炼阻塞，且能取消在途模型调用；
+- 两个 Processor 可独立决定批大小、proposal 结构和 Apply 逻辑；
+- `MemoryMergeEngine` 不拥有跨场景 Apply 或统一 `MemoryIntent` 语义；
+- 通知无 pending 时不启动持续 polling，也不存在固定 30 秒处理 timer；
+- cursor 只在对应 Memory 写入成功后推进。
 
 ## 相关文档
 
-- [BLE Service](../03-services/ble-service.md)
 - [Memory Plane](memory-plane.md)
 - [Agent Context Lifecycle](context-lifecycle.md)
 - [Storage Manager](storage-manager.md)
+- [BLE Service](../03-services/ble-service.md)

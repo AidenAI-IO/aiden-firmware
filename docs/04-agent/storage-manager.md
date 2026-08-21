@@ -393,22 +393,25 @@ The runtime builds cleanup stages from the configured retention arrays.
 
 A retention value of 0 creates an emergency cleanup stage. The default session_archive_retention_days value is [30], so an all-session-archives emergency stage is not enabled unless 0 is explicitly added.
 
-#### Proposed Notification Memory Stages
+#### Notification Memory Stages
 
-The notification-memory proposal adds two cleaners; these are not registered by
-the current runtime yet.
+The runtime registers Temporary Memory and Notification Context cleaners when
+the Agent config directory is available.
 
-| Data | Proposed stage | Minimum level | Protection |
+| Data | Stage | Minimum level | Protection |
 | --- | --- | --- | --- |
 | Temporary Memory | Per-record `expires_at` | Normal | Deletes only expired records and rebuilds its index |
 | Notification Context | 14 days | Normal | Deletes only Memory-processed date shards |
 | Notification Context | 7 days | Warning | Deletes only Memory-processed events |
 | Notification Context | 1 day | Critical | Deletes only Memory-processed events |
-| Notification Context | 0 days | Emergency | Records an explicit gap before removing any unprocessed range |
+| Notification Context | 0 days | Emergency | Deletes all fully processed shards; unprocessed records remain protected |
 
 Notification cleanup is cursor-aware. StorageMonitor invokes the registered
-cleaner, while `NotificationContext.Cleanup(policy)` owns file selection and
-cursor updates; StorageMonitor never deletes notification JSONL directly.
+cleaner, while `NotificationContext.CleanupProcessedBefore(...)` owns file
+selection; StorageMonitor never deletes notification JSONL directly.
+At Critical and Emergency levels the monitor also marks
+`notification_context` unavailable, so Agent pauses new BLE consumption until
+the storage level recovers. Existing unprocessed JSONL remains protected.
 
 This is not a reuse of an existing Episode cleaner. The current Episode pipeline
 has no retention cleaner for `memory/episodes/`; its bounded processing ledger
@@ -416,7 +419,7 @@ only removes old terminal statuses. Device Memory TTL is likewise a recall
 filter rather than physical storage reclamation.
 
 See [Notification Persistence and Automatic Memory](notification-context-memory.md)
-for the complete proposal.
+for the processing architecture and retention contract.
 
 #### Python Package Cleanup
 

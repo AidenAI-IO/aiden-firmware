@@ -38,6 +38,9 @@ func (c *TemporaryMemoryCleaner) EstimateReclaimable(ctx context.Context) (uint6
 }
 
 func (c *TemporaryMemoryCleaner) Clean(ctx context.Context) (uint64, error) {
+	store := NewLongTermMemoryStore(c.rootDir)
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
 	candidates, err := c.collect(ctx)
 	if err != nil {
 		return 0, err
@@ -53,8 +56,7 @@ func (c *TemporaryMemoryCleaner) Clean(ctx context.Context) (uint64, error) {
 		freed += uint64(candidate.size)
 	}
 	if len(candidates) > 0 {
-		store := NewLongTermMemoryStore(c.rootDir)
-		if err := store.RebuildIndex(ctx); err != nil {
+		if err := store.rebuildIndexLocked(ctx); err != nil {
 			return freed, err
 		}
 	}
