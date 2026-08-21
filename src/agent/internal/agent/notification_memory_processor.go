@@ -93,17 +93,18 @@ func (p *NotificationMemoryProcessor) ProcessBatch(ctx context.Context, limit in
 
 func (p *NotificationMemoryProcessor) persistTemporary(ctx context.Context, record NotificationRecord) error {
 	event := record.NotificationEvent
-	content := strings.TrimSpace(strings.Join([]string{strings.TrimSpace(event.Title), strings.TrimSpace(event.Message)}, "\n"))
-	if content == "" {
+	app := strings.TrimSpace(event.AppIdentifier)
+	if app == "" && strings.TrimSpace(event.Title) == "" && strings.TrimSpace(event.Message) == "" {
 		return nil
 	}
 	title := strings.TrimSpace(event.Title)
 	if title == "" {
-		title = strings.TrimSpace(event.AppIdentifier)
+		title = app
 	}
 	if title == "" {
 		title = "通知"
 	}
+	content := fmt.Sprintf("收到来自 %s 的通知（原始记录 context_id=%s）", app, record.ContextID)
 	now := p.now()
 	item := MemoryItem{
 		ID:         "tmp_notification_" + record.ContextID,
