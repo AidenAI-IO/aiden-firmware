@@ -887,10 +887,6 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 		},
 		screen: currentScreen,
 	}
-	toolSet.screen.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{
-		NativeWidthPixels:  intPtr(1179),
-		NativeHeightPixels: intPtr(2556),
-	})
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
@@ -900,7 +896,22 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 		toolSet,
 		NewSkillIndex(),
 	)
+	bridge := newTestPhoneBridge(t)
+	bridge.hidConnectionState = func() (bool, bool) { return false, false }
+	bridge.hidMonitorEnabled = false
+	runtime.phoneBridge = bridge
 	server := newServerForTest(runtime)
+	if err := bridge.ApplyBenchmarkStatus(PhoneBridgeStatus{
+		Connected: true,
+		Platform:  "ios",
+		PhoneID:   "coordinate-debug-phone",
+		Environment: &PhoneEnvironment{Screen: screen.PhoneScreenInfo{
+			NativeWidthPixels:  intPtr(1179),
+			NativeHeightPixels: intPtr(2556),
+		}},
+	}); err != nil {
+		t.Fatalf("ApplyBenchmarkStatus() error = %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"double_tap"}`))
 	req.Header.Set("Content-Type", "application/json")
