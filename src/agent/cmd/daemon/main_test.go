@@ -17,6 +17,9 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/agent/rtclient"
 	"aiden-agent/internal/agenttask"
 )
 
@@ -164,6 +167,27 @@ func TestFormatRealtimeTaskUpdatesAggregatesResults(t *testing.T) {
 		if !strings.Contains(message, value) {
 			t.Fatalf("aggregated message missing %q: %s", value, message)
 		}
+	}
+}
+
+func TestRealtimeToolCallAndResultPersistInUserContext(t *testing.T) {
+	manager, err := contextmanager.NewContextManager(t.TempDir(), "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := rtclient.FunctionCallEvent{CallID: "call_1", Name: realtimeCreateTaskTool, Arguments: `{"task":"打开微信"}`}
+	if err := appendRealtimeToolCall(manager, call); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendRealtimeToolResult(manager, call, `{"id":"task_1","status":"queued"}`); err != nil {
+		t.Fatal(err)
+	}
+	got := manager.MessageListDump().Messages
+	if len(got) != 3 || got[1].Role != messages.MessageRoleToolCall || got[2].Role != messages.MessageRoleToolResult {
+		t.Fatalf("messages = %+v", got)
+	}
+	if got[1].ToolCalls[0].Name != realtimeCreateTaskTool || got[2].ToolResults[0].ToolCallID != "call_1" {
+		t.Fatalf("tool messages = %+v", got[1:])
 	}
 }
 

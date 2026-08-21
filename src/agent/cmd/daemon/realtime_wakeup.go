@@ -801,9 +801,15 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 					return err
 				}
 				log.Printf("[realtime] Tool call: %s", call.Name)
+				if err := appendRealtimeToolCall(userContext, call); err != nil {
+					return fmt.Errorf("persist realtime tool call: %w", err)
+				}
 				output := toolExecutor.call(ctx, call.Name, call.Arguments)
 				if err := session.SendFunctionOutput(ctx, call.CallID, output); err != nil {
 					return fmt.Errorf("send realtime tool result: %w", err)
+				}
+				if err := appendRealtimeToolResult(userContext, call, output); err != nil {
+					return fmt.Errorf("persist realtime tool result: %w", err)
 				}
 				toolResponsesPending[call.ResponseID] = true
 			case "response.done":
@@ -913,6 +919,34 @@ func appendRealtimeAssistantMessage(manager *contextmanager.ContextManager, cont
 	return manager.AppendMessage(messages.Message{Role: messages.MessageRoleAssistant, Content: content})
 }
 
+func appendRealtimeToolCall(manager *contextmanager.ContextManager, call rtclient.FunctionCallEvent) error {
+	if manager == nil {
+		return nil
+	}
+	return manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleToolCall,
+		ToolCalls: []messages.ToolCall{{
+			ID:        strings.TrimSpace(call.CallID),
+			Name:      strings.TrimSpace(call.Name),
+			Arguments: strings.TrimSpace(call.Arguments),
+		}},
+	})
+}
+
+func appendRealtimeToolResult(manager *contextmanager.ContextManager, call rtclient.FunctionCallEvent, output string) error {
+	if manager == nil {
+		return nil
+	}
+	return manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleToolResult,
+		ToolResults: []messages.ToolResult{{
+			ToolCallID: strings.TrimSpace(call.CallID),
+			Name:       strings.TrimSpace(call.Name),
+			Content:    output,
+		}},
+	})
+}
+
 func replayRealtimeContext(ctx context.Context, session *rtclient.Session, manager *contextmanager.ContextManager) error {
 	if session == nil || manager == nil {
 		return nil
@@ -920,7 +954,35 @@ func replayRealtimeContext(ctx context.Context, session *rtclient.Session, manag
 	var previousID string
 	for _, message := range manager.MessageListDump().Messages {
 		content := strings.TrimSpace(message.Content)
-		if content == "" || message.Role == messages.MessageRoleSystem {
+		if message.Role == messages.MessageRoleSystem {
+			continue
+		}
+		if message.Role == messages.MessageRoleToolCall {
+			for _, call := range message.ToolCalls {
+				if err := session.CreateItem(ctx, rtclient.ConversationItem{
+					Type:      "function_call",
+					CallID:    call.ID,
+					Name:      call.Name,
+					Arguments: call.Arguments,
+				}, previousID); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if message.Role == messages.MessageRoleToolResult {
+			for _, result := range message.ToolResults {
+				if err := session.CreateItem(ctx, rtclient.ConversationItem{
+					Type:   "function_call_output",
+					CallID: result.ToolCallID,
+					Output: result.Content,
+				}, previousID); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if content == "" {
 			continue
 		}
 		role := "user"
