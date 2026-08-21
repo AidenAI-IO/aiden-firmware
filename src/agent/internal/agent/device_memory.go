@@ -30,6 +30,8 @@ type deviceMemoryReadCache struct {
 
 type deviceMemoryStatus string
 
+const deviceMemoryStatusDeleted deviceMemoryStatus = "deleted"
+
 type DeviceMemoryQuery struct {
 	Terms    []string `json:"terms,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
@@ -228,6 +230,163 @@ func (s *DeviceMemoryStore) Upsert(ctx context.Context, item DeviceMemoryItem) (
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.upsertLocked(item)
+}
+
+// ApplyMemoryIntent is the Device Memory adapter for the shared memory merge
+// seam. Episode processors provide a complete candidate; this adapter owns
+// identity-preserving updates, revision checks, evidence/tag union, and
+// tombstoning.
+func (s *DeviceMemoryStore) ApplyMemoryIntent(ctx context.Context, intent MemoryIntent) (MemoryApplyResult, error) {
+	select {
+	case <-ctx.Done():
+		return MemoryApplyResult{}, ctx.Err()
+	default:
+	}
+	if s == nil || s.rootDir == "" || intent.DeviceItem == nil {
+		return MemoryApplyResult{}, nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	items, err := s.readAll()
+	if err != nil {
+		return MemoryApplyResult{}, err
+	}
+	candidate := cloneDeviceMemoryItem(*intent.DeviceItem)
+	for index := range items {
+		if items[index].ID != candidate.ID {
+			continue
+		}
+		if intent.ExpectedRevision > 0 && effectiveDeviceMemoryRevision(items[index]) != intent.ExpectedRevision {
+			return MemoryApplyResult{}, errEpisodeMemoryRevisionChanged
+		}
+		if intent.Remove {
+			items[index].Status = deviceMemoryStatusDeleted
+			if _, err := s.upsertLocked(items[index]); err != nil {
+				return MemoryApplyResult{}, err
+			}
+			s.invalidateReadAllCache()
+			return MemoryApplyResult{Operation: MemoryOperationRemove, ID: candidate.ID}, nil
+		}
+		if hasSameDeviceMemoryEvidence(items[index].EvidenceRefs, candidate.EvidenceRefs) {
+			return MemoryApplyResult{Operation: MemoryOperationIgnore, ID: candidate.ID}, nil
+		}
+		same := normalizeMemorySearchTerm(items[index].Content) == normalizeMemorySearchTerm(candidate.Content) &&
+			normalizeMemorySearchTerm(items[index].Summary) == normalizeMemorySearchTerm(candidate.Summary)
+		if deviceMemoryBodyChanged(items[index], candidate) {
+			prior := DeviceMemoryRevision{
+				Revision:      effectiveDeviceMemoryRevision(items[index]),
+				Status:        items[index].Status,
+				Title:         items[index].Title,
+				Summary:       items[index].Summary,
+				Content:       items[index].Content,
+				Tags:          append([]string(nil), items[index].Tags...),
+				Applicability: cloneStringMap(items[index].Applicability),
+				Steps:         append([]ProcedureStep(nil), items[index].Steps...),
+				UpdatedAt:     items[index].UpdatedAt,
+			}
+			items[index].RevisionHistory = append(items[index].RevisionHistory, prior)
+			if len(items[index].RevisionHistory) > 20 {
+				items[index].RevisionHistory = append([]DeviceMemoryRevision(nil), items[index].RevisionHistory[len(items[index].RevisionHistory)-20:]...)
+			}
+		}
+		mergeDeviceMemoryItem(&items[index], candidate)
+		if _, err := s.upsertLocked(items[index]); err != nil {
+			return MemoryApplyResult{}, err
+		}
+		s.invalidateReadAllCache()
+		if same {
+			return MemoryApplyResult{Operation: MemoryOperationReinforce, ID: candidate.ID}, nil
+		}
+		return MemoryApplyResult{Operation: MemoryOperationUpdate, ID: candidate.ID}, nil
+	}
+	if intent.Remove {
+		return MemoryApplyResult{Operation: MemoryOperationIgnore, ID: candidate.ID}, nil
+	}
+	if candidate.Revision <= 0 {
+		candidate.Revision = 1
+	}
+	if _, err := s.upsertLocked(candidate); err != nil {
+		return MemoryApplyResult{}, err
+	}
+	s.invalidateReadAllCache()
+	return MemoryApplyResult{Operation: MemoryOperationAdd, ID: candidate.ID}, nil
+}
+
+func hasSameDeviceMemoryEvidence(existing, candidate []MemorySourceRef) bool {
+	for _, ref := range candidate {
+		for _, current := range existing {
+			if ref.Type == current.Type && ref.ID == current.ID && len(ref.EventIDs) > 0 {
+				for _, eventID := range ref.EventIDs {
+					for _, currentID := range current.EventIDs {
+						if eventID == currentID {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func deviceMemoryBodyChanged(existing, candidate DeviceMemoryItem) bool {
+	return existing.Status != candidate.Status || existing.Title != candidate.Title || existing.Summary != candidate.Summary ||
+		existing.Content != candidate.Content || existing.DeviceID != candidate.DeviceID || existing.AppName != candidate.AppName ||
+		existing.PageName != candidate.PageName || !equalEpisodeMemoryScope(existing.Applicability, candidate.Applicability) ||
+		!equalEpisodeMemorySteps(existing.Steps, candidate.Steps)
+}
+
+func mergeDeviceMemoryItem(existing *DeviceMemoryItem, candidate DeviceMemoryItem) {
+	if candidate.Title != "" {
+		existing.Title = candidate.Title
+	}
+	if candidate.Summary != "" {
+		existing.Summary = candidate.Summary
+	}
+	if candidate.Content != "" {
+		existing.Content = candidate.Content
+	}
+	if candidate.Type != "" {
+		existing.Type = candidate.Type
+	}
+	if candidate.LessonKey != "" {
+		existing.LessonKey = candidate.LessonKey
+	}
+	if candidate.ExtractorVersion > 0 {
+		existing.ExtractorVersion = candidate.ExtractorVersion
+	}
+	if candidate.Status != "" {
+		existing.Status = candidate.Status
+	}
+	if candidate.ExpiresAt != "" {
+		existing.ExpiresAt = candidate.ExpiresAt
+	}
+	if candidate.Priority > existing.Priority {
+		existing.Priority = candidate.Priority
+	}
+	if candidate.Confidence > existing.Confidence {
+		existing.Confidence = candidate.Confidence
+	}
+	existing.Tags = mergeUniqueStrings(existing.Tags, candidate.Tags)
+	existing.Entities = mergeUniqueStrings(existing.Entities, candidate.Entities)
+	existing.Aliases = mergeUniqueStrings(existing.Aliases, candidate.Aliases)
+	existing.EvidenceRefs = mergeMemorySourceRefs(existing.EvidenceRefs, candidate.EvidenceRefs)
+	existing.ConflictsWith = mergeUniqueStrings(existing.ConflictsWith, candidate.ConflictsWith)
+	existing.Steps = mergeEpisodeMemorySteps(existing.Steps, candidate.Steps)
+	if candidate.Applicability != nil {
+		existing.Applicability = cloneStringMap(candidate.Applicability)
+	}
+	if candidate.DeviceID != "" {
+		existing.DeviceID = candidate.DeviceID
+	}
+	if candidate.AppName != "" {
+		existing.AppName = candidate.AppName
+	}
+	if candidate.PageName != "" {
+		existing.PageName = candidate.PageName
+	}
+	existing.Revision = effectiveDeviceMemoryRevision(*existing) + 1
+	existing.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 }
 
 func (s *DeviceMemoryStore) upsertLocked(item DeviceMemoryItem) (string, error) {

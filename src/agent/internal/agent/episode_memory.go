@@ -99,10 +99,19 @@ func cloneEpisodeMemoryProposal(proposal episodeMemoryProposal) episodeMemoryPro
 
 type episodeMemoryProcessor struct {
 	plane *FilesystemMemoryPlane
-	model model.Model
+	merge *MemoryMergeEngine
 	state *episodeMemoryStateStore
 	now   func() time.Time
 	lock  string
+}
+
+type episodeMemoryWork struct {
+	episode        TaskEpisode
+	originalStatus episodeMemoryEpisodeStatus
+	status         episodeMemoryEpisodeStatus
+	proposal       episodeMemoryProposal
+	needsModel     bool
+	skip           bool
 }
 
 var _ MemoryProcessor = (*episodeMemoryProcessor)(nil)
@@ -111,7 +120,7 @@ func newEpisodeMemoryProcessor(plane *FilesystemMemoryPlane, models model.Model)
 	bootstrapAt := time.Now().UTC()
 	return &episodeMemoryProcessor{
 		plane: plane,
-		model: models,
+		merge: NewMemoryMergeEngine(models),
 		state: newEpisodeMemoryStateStore(filepath.Join(plane.memoryDir, "lifecycle", "reflection.yaml"), bootstrapAt),
 		now:   func() time.Time { return time.Now().UTC() },
 		lock:  filepath.Join(plane.memoryDir, "lifecycle", "reflection.lock"),
@@ -151,13 +160,14 @@ func (p *episodeMemoryProcessor) NextRunAt(ctx context.Context) (time.Time, erro
 	return next, nil
 }
 
-func (p *episodeMemoryProcessor) ProcessBatch(ctx context.Context, limit int, shouldStop func() bool) (episodeMemoryBatchResult, error) {
+func (p *episodeMemoryProcessor) ProcessBatch(ctx context.Context, shouldStop func() bool) (MemoryBatchResult, error) {
+	limit := episodeMemoryBatchLimit
 	if p == nil {
-		return episodeMemoryBatchResult{}, nil
+		return MemoryBatchResult{}, nil
 	}
 	lock := &FileLock{path: p.lock}
 	if err := lock.Lock(episodeMemoryBatchLockTimeout); err != nil {
-		return episodeMemoryBatchResult{}, fmt.Errorf("acquire episode memory batch lock: %w", err)
+		return MemoryBatchResult{}, fmt.Errorf("acquire episode memory batch lock: %w", err)
 	}
 	result, err := p.processBatchLocked(ctx, limit, shouldStop)
 	if unlockErr := lock.Unlock(); err == nil && unlockErr != nil {
@@ -166,16 +176,34 @@ func (p *episodeMemoryProcessor) ProcessBatch(ctx context.Context, limit int, sh
 	return result, err
 }
 
-func (p *episodeMemoryProcessor) processBatchLocked(ctx context.Context, limit int, shouldStop func() bool) (episodeMemoryBatchResult, error) {
+func (p *episodeMemoryProcessor) processBatchLocked(ctx context.Context, limit int, shouldStop func() bool) (MemoryBatchResult, error) {
 	if limit <= 0 {
 		limit = episodeMemoryBatchLimit
 	}
 	state, episodes, loadErr := p.loadWork(ctx)
 	if loadErr != nil {
-		return episodeMemoryBatchResult{}, loadErr
+		return MemoryBatchResult{}, loadErr
 	}
-	processed := 0
-	result := episodeMemoryBatchResult{}
+	works, result, err := p.collectEpisodeMemoryWork(&state, episodes, limit, shouldStop)
+	if err != nil || len(works) == 0 {
+		return result, err
+	}
+	stopped, err := p.extractEpisodeMemoryWork(ctx, &state, works, &result)
+	if err != nil || stopped {
+		return result, err
+	}
+	for index := range works {
+		stopped, err = p.applyEpisodeMemoryWork(ctx, &state, &works[index], &result)
+		if err != nil || stopped {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+func (p *episodeMemoryProcessor) collectEpisodeMemoryWork(state *episodeMemoryStateFile, episodes []TaskEpisode, limit int, shouldStop func() bool) ([]episodeMemoryWork, MemoryBatchResult, error) {
+	works := make([]episodeMemoryWork, 0, limit)
+	result := MemoryBatchResult{}
 	for _, episode := range episodes {
 		if shouldStop != nil && shouldStop() {
 			result.HasPending = true
@@ -183,7 +211,6 @@ func (p *episodeMemoryProcessor) processBatchLocked(ctx context.Context, limit i
 		}
 		stateKey := episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)
 		status := state.Episodes[stateKey]
-		restoreStatus := status
 		eligible, due := episodeMemoryEpisodeDue(status, p.now())
 		if !eligible {
 			if !due.IsZero() && (result.NextRunAt.IsZero() || due.Before(result.NextRunAt)) {
@@ -194,7 +221,7 @@ func (p *episodeMemoryProcessor) processBatchLocked(ctx context.Context, limit i
 		if status.Status == episodeMemoryStatusProcessing {
 			endedAt, endErr := episodeMemoryEpisodeEndedAt(episode)
 			if endErr != nil {
-				return result, endErr
+				return nil, result, endErr
 			}
 			ignored := episodeMemoryEpisodeStatus{
 				Status:           episodeMemoryStatusIgnored,
@@ -203,7 +230,7 @@ func (p *episodeMemoryProcessor) processBatchLocked(ctx context.Context, limit i
 				AttemptCount:     max(status.AttemptCount, 1),
 			}
 			if completeErr := p.state.CompleteEpisode(episode.ID, endedAt, ignored); completeErr != nil {
-				return result, completeErr
+				return nil, result, completeErr
 			}
 			state.Episodes[stateKey] = ignored
 			continue
@@ -211,159 +238,173 @@ func (p *episodeMemoryProcessor) processBatchLocked(ctx context.Context, limit i
 		if reason := invalidEpisodeMemoryReason(episode); reason != "" {
 			endedAt, endErr := episodeMemoryEpisodeEndedAt(episode)
 			if endErr != nil {
-				return result, endErr
+				return nil, result, endErr
 			}
 			ignored := episodeMemoryEpisodeStatus{Status: episodeMemoryStatusIgnored, ExtractorVersion: episodeMemoryExtractorVersion, LastError: reason}
 			if err := p.state.CompleteEpisode(episode.ID, endedAt, ignored); err != nil {
-				return result, err
+				return nil, result, err
 			}
 			state.Episodes[stateKey] = ignored
 			continue
 		}
-		if processed >= limit {
+		if len(works) >= limit {
 			result.HasPending = true
 			break
 		}
-
-		var proposal episodeMemoryProposal
-		extractionFailed := false
-		var err error
+		work := episodeMemoryWork{episode: episode, originalStatus: status, status: status}
 		if status.Proposal != nil {
-			proposal = cloneEpisodeMemoryProposal(*status.Proposal)
+			work.proposal = cloneEpisodeMemoryProposal(*status.Proposal)
 		} else {
-			processing := episodeMemoryEpisodeStatus{
+			work.needsModel = true
+			work.status = episodeMemoryEpisodeStatus{
 				Status:              episodeMemoryStatusProcessing,
 				ExtractorVersion:    episodeMemoryExtractorVersion,
 				ProcessingStartedAt: p.now().Format(time.RFC3339Nano),
 				AttemptCount:        status.AttemptCount,
 			}
-			if err := p.state.SetEpisode(episode.ID, processing); err != nil {
-				return result, err
-			}
-			proposal, err = p.proposeEpisode(ctx, episode)
-			extractionFailed = err != nil
-			if err == nil {
-				persisted := cloneEpisodeMemoryProposal(proposal)
-				status = episodeMemoryEpisodeStatus{
-					Status:           episodeMemoryStatusProposed,
-					ExtractorVersion: episodeMemoryExtractorVersion,
-					AttemptCount:     status.AttemptCount,
-					Proposal:         &persisted,
-				}
-				err = p.state.SetEpisode(episode.ID, status)
-				if err == nil {
-					restoreStatus = status
-				}
+			if err := p.state.SetEpisode(episode.ID, work.status); err != nil {
+				return nil, result, err
 			}
 		}
-		if err == nil {
-			err = p.applyProposal(ctx, episode, proposal)
+		works = append(works, work)
+	}
+	return works, result, nil
+}
+
+func (p *episodeMemoryProcessor) extractEpisodeMemoryWork(ctx context.Context, state *episodeMemoryStateFile, works []episodeMemoryWork, result *MemoryBatchResult) (bool, error) {
+	indexes := make([]int, 0, len(works))
+	episodes := make([]TaskEpisode, 0, len(works))
+	for index := range works {
+		if works[index].needsModel {
+			indexes = append(indexes, index)
+			episodes = append(episodes, works[index].episode)
 		}
-		processed++
-		if err != nil {
-			if ctx.Err() != nil {
-				if restoreErr := p.state.SetEpisode(episode.ID, restoreStatus); restoreErr != nil {
-					return result, restoreErr
+	}
+	if len(episodes) == 0 {
+		return false, nil
+	}
+	proposals, proposalErrors, err := p.proposeEpisodeBatch(ctx, episodes)
+	if err != nil {
+		if ctx.Err() != nil {
+			for _, index := range indexes {
+				work := &works[index]
+				if restoreErr := p.state.SetEpisode(work.episode.ID, work.originalStatus); restoreErr != nil {
+					return false, restoreErr
 				}
-				result.HasPending = true
-				return result, nil
 			}
-			if extractionFailed {
-				endedAt, endErr := episodeMemoryEpisodeEndedAt(episode)
-				if endErr != nil {
-					return result, endErr
-				}
-				ignored := episodeMemoryEpisodeStatus{
-					Status:           episodeMemoryStatusIgnored,
-					ExtractorVersion: episodeMemoryExtractorVersion,
-					LastError:        truncateForLog(err.Error(), 500),
-					AttemptCount:     max(status.AttemptCount, 0) + 1,
-				}
-				if completeErr := p.state.CompleteEpisode(episode.ID, endedAt, ignored); completeErr != nil {
-					return result, completeErr
-				}
-				state.Episodes[stateKey] = ignored
-				continue
+			result.HasPending = true
+			return true, nil
+		}
+		for _, index := range indexes {
+			work := &works[index]
+			if finishErr := p.ignoreEpisodeMemoryWork(state, work, err); finishErr != nil {
+				return false, finishErr
 			}
-			if errors.Is(err, errEpisodeMemoryRevisionChanged) {
-				retryAt := p.now()
-				retry := episodeMemoryEpisodeStatus{
-					Status:           episodeMemoryStatusRetry,
-					ExtractorVersion: episodeMemoryExtractorVersion,
-					RetryAt:          retryAt.Format(time.RFC3339Nano),
-					LastError:        truncateForLog(err.Error(), 500),
-					AttemptCount:     status.AttemptCount,
-				}
-				if setErr := p.state.SetEpisode(episode.ID, retry); setErr != nil {
-					return result, setErr
-				}
-				state.Episodes[stateKey] = retry
-				result.HasPending = true
-				if result.NextRunAt.IsZero() || retryAt.Before(result.NextRunAt) {
-					result.NextRunAt = retryAt
-				}
-				continue
+			work.needsModel = false
+			work.skip = true
+		}
+		return false, nil
+	}
+	for _, index := range indexes {
+		work := &works[index]
+		if proposalErr := proposalErrors[work.episode.ID]; proposalErr != nil {
+			if err := p.ignoreEpisodeMemoryWork(state, work, proposalErr); err != nil {
+				return false, err
 			}
-			attemptCount := status.AttemptCount + 1
-			if attemptCount >= episodeMemoryMaxAttempts {
-				endedAt, endErr := episodeMemoryEpisodeEndedAt(episode)
-				if endErr != nil {
-					return result, endErr
-				}
-				ignored := episodeMemoryEpisodeStatus{
-					Status:           episodeMemoryStatusIgnored,
-					ExtractorVersion: episodeMemoryExtractorVersion,
-					LastError:        truncateForLog(err.Error(), 500),
-					AttemptCount:     attemptCount,
-				}
-				if completeErr := p.state.CompleteEpisode(episode.ID, endedAt, ignored); completeErr != nil {
-					return result, completeErr
-				}
-				state.Episodes[stateKey] = ignored
-				continue
-			}
-			retryAt := p.now().Add(episodeMemoryRetryDelay)
-			retry := episodeMemoryEpisodeStatus{
-				Status:           episodeMemoryStatusRetry,
-				ExtractorVersion: episodeMemoryExtractorVersion,
-				RetryAt:          retryAt.Format(time.RFC3339Nano),
-				LastError:        truncateForLog(err.Error(), 500),
-				AttemptCount:     attemptCount,
-			}
-			if status.Proposal != nil {
-				persisted := cloneEpisodeMemoryProposal(*status.Proposal)
-				retry.Proposal = &persisted
-			}
-			if setErr := p.state.SetEpisode(episode.ID, retry); setErr != nil {
-				return result, setErr
-			}
-			state.Episodes[stateKey] = retry
-			if result.NextRunAt.IsZero() || retryAt.Before(result.NextRunAt) {
-				result.NextRunAt = retryAt
-			}
+			work.needsModel = false
+			work.skip = true
 			continue
 		}
-		endedAt, endErr := episodeMemoryEpisodeEndedAt(episode)
-		if endErr != nil {
-			return result, endErr
+		proposal, ok := proposals[work.episode.ID]
+		if !ok {
+			return false, fmt.Errorf("episode memory batch omitted episode %q", work.episode.ID)
 		}
-		assessment := proposal.EpisodeAssessment
-		assessment.EvidenceRefs = append([]string(nil), proposal.EpisodeAssessment.EvidenceRefs...)
-		completed := episodeMemoryEpisodeStatus{
-			Status:           episodeMemoryStatusDone,
-			ExtractorVersion: episodeMemoryExtractorVersion,
-			Assessment:       &assessment,
+		persisted := cloneEpisodeMemoryProposal(proposal)
+		work.proposal = proposal
+		work.status = episodeMemoryEpisodeStatus{Status: episodeMemoryStatusProposed, ExtractorVersion: episodeMemoryExtractorVersion, AttemptCount: work.originalStatus.AttemptCount, Proposal: &persisted}
+		work.needsModel = false
+		if err := p.state.SetEpisode(work.episode.ID, work.status); err != nil {
+			return false, err
 		}
-		if err := p.state.CompleteEpisode(episode.ID, endedAt, completed); err != nil {
-			return result, err
-		}
-		state.Episodes[stateKey] = completed
 	}
-	return result, nil
+	return false, nil
+}
+
+func (p *episodeMemoryProcessor) applyEpisodeMemoryWork(ctx context.Context, state *episodeMemoryStateFile, work *episodeMemoryWork, result *MemoryBatchResult) (bool, error) {
+	if work.needsModel || work.skip {
+		return false, nil
+	}
+	err := p.applyProposal(ctx, work.episode, work.proposal)
+	if err == nil {
+		endedAt, endErr := episodeMemoryEpisodeEndedAt(work.episode)
+		if endErr != nil {
+			return false, endErr
+		}
+		assessment := work.proposal.EpisodeAssessment
+		assessment.EvidenceRefs = append([]string(nil), assessment.EvidenceRefs...)
+		completed := episodeMemoryEpisodeStatus{Status: episodeMemoryStatusDone, ExtractorVersion: episodeMemoryExtractorVersion, Assessment: &assessment}
+		if err := p.state.CompleteEpisode(work.episode.ID, endedAt, completed); err != nil {
+			return false, err
+		}
+		state.Episodes[episodeMemoryStateKey(work.episode.ID, episodeMemoryExtractorVersion)] = completed
+		return false, nil
+	}
+	if ctx.Err() != nil {
+		if restoreErr := p.state.SetEpisode(work.episode.ID, work.status); restoreErr != nil {
+			return false, restoreErr
+		}
+		result.HasPending = true
+		return true, nil
+	}
+	stateKey := episodeMemoryStateKey(work.episode.ID, episodeMemoryExtractorVersion)
+	if errors.Is(err, errEpisodeMemoryRevisionChanged) {
+		retryAt := p.now()
+		retry := episodeMemoryEpisodeStatus{Status: episodeMemoryStatusRetry, ExtractorVersion: episodeMemoryExtractorVersion, RetryAt: retryAt.Format(time.RFC3339Nano), LastError: truncateForLog(err.Error(), 500), AttemptCount: work.status.AttemptCount}
+		if setErr := p.state.SetEpisode(work.episode.ID, retry); setErr != nil {
+			return false, setErr
+		}
+		state.Episodes[stateKey] = retry
+		result.HasPending = true
+		result.NextRunAt = earlierTime(result.NextRunAt, retryAt)
+		return false, nil
+	}
+	attemptCount := work.status.AttemptCount + 1
+	if attemptCount >= episodeMemoryMaxAttempts {
+		return false, p.ignoreEpisodeMemoryWork(state, work, err)
+	}
+	retryAt := p.now().Add(episodeMemoryRetryDelay)
+	persisted := cloneEpisodeMemoryProposal(work.proposal)
+	retry := episodeMemoryEpisodeStatus{Status: episodeMemoryStatusRetry, ExtractorVersion: episodeMemoryExtractorVersion, RetryAt: retryAt.Format(time.RFC3339Nano), LastError: truncateForLog(err.Error(), 500), AttemptCount: attemptCount, Proposal: &persisted}
+	if setErr := p.state.SetEpisode(work.episode.ID, retry); setErr != nil {
+		return false, setErr
+	}
+	state.Episodes[stateKey] = retry
+	result.NextRunAt = earlierTime(result.NextRunAt, retryAt)
+	return false, nil
+}
+
+func (p *episodeMemoryProcessor) ignoreEpisodeMemoryWork(state *episodeMemoryStateFile, work *episodeMemoryWork, cause error) error {
+	endedAt, err := episodeMemoryEpisodeEndedAt(work.episode)
+	if err != nil {
+		return err
+	}
+	ignored := episodeMemoryEpisodeStatus{Status: episodeMemoryStatusIgnored, ExtractorVersion: episodeMemoryExtractorVersion, LastError: truncateForLog(cause.Error(), 500), AttemptCount: max(work.status.AttemptCount, work.originalStatus.AttemptCount) + 1}
+	if err := p.state.CompleteEpisode(work.episode.ID, endedAt, ignored); err != nil {
+		return err
+	}
+	state.Episodes[episodeMemoryStateKey(work.episode.ID, episodeMemoryExtractorVersion)] = ignored
+	return nil
+}
+
+func earlierTime(current, candidate time.Time) time.Time {
+	if current.IsZero() || candidate.Before(current) {
+		return candidate
+	}
+	return current
 }
 
 func (p *episodeMemoryProcessor) loadWork(ctx context.Context) (episodeMemoryStateFile, []TaskEpisode, error) {
-	if p == nil || p.plane == nil || p.plane.episodes == nil || p.plane.device == nil || p.model == nil {
+	if p == nil || p.plane == nil || p.plane.episodes == nil || p.plane.device == nil || p.merge == nil {
 		return episodeMemoryStateFile{}, nil, nil
 	}
 	state, err := p.state.Snapshot()
@@ -389,43 +430,124 @@ func (p *episodeMemoryProcessor) loadWork(ctx context.Context) (episodeMemorySta
 }
 
 func (p *episodeMemoryProcessor) proposeEpisode(ctx context.Context, episode TaskEpisode) (episodeMemoryProposal, error) {
-	payload, err := json.MarshalIndent(episodeMemoryPayload(episode), "", "  ")
+	proposals, proposalErrors, err := p.proposeEpisodeBatch(ctx, []TaskEpisode{episode})
 	if err != nil {
 		return episodeMemoryProposal{}, err
 	}
-	existing, err := p.plane.device.SearchEpisodeMemoryCandidates(ctx, EpisodeMemoryCandidateQuery{
-		Terms:        episodeMemorySearchTerms(episode),
-		PreferredIDs: episode.RetrievedMemoryRefs,
-		DeviceID:     firstNonEmptyString([]string{episode.DeviceScope["device_id"], defaultMemoryDeviceID}),
-		Scope:        episodeMemoryRetrievalScope(episode),
-		Limit:        8,
-		CharBudget:   12000,
+	if err := proposalErrors[episode.ID]; err != nil {
+		return episodeMemoryProposal{}, err
+	}
+	proposal, ok := proposals[episode.ID]
+	if !ok {
+		return episodeMemoryProposal{}, fmt.Errorf("episode memory batch omitted episode %q", episode.ID)
+	}
+	return proposal, nil
+}
+
+type episodeMemoryBatchInput struct {
+	Episode  TaskEpisode
+	Payload  any
+	Existing []DeviceMemoryItem
+}
+
+type episodeMemoryBatchResult struct {
+	EpisodeID string                `json:"episode_id"`
+	Proposal  episodeMemoryProposal `json:"proposal"`
+}
+
+type episodeMemoryBatchResponse struct {
+	Results []episodeMemoryBatchResult `json:"results"`
+}
+
+func (p *episodeMemoryProcessor) proposeEpisodeBatch(ctx context.Context, episodes []TaskEpisode) (map[string]episodeMemoryProposal, map[string]error, error) {
+	if len(episodes) == 0 {
+		return map[string]episodeMemoryProposal{}, map[string]error{}, nil
+	}
+	inputs := make([]episodeMemoryBatchInput, len(episodes))
+	references := make([]MemoryMergeReference, 0, len(episodes)*8)
+	_, raw, err := p.merge.Extract(ctx, MemoryMergeRequest{
+		Search: func(ctx context.Context) ([]MemoryMergeReference, error) {
+			for index, episode := range episodes {
+				existing, err := p.plane.device.SearchEpisodeMemoryCandidates(ctx, EpisodeMemoryCandidateQuery{
+					Terms:        episodeMemorySearchTerms(episode),
+					PreferredIDs: episode.RetrievedMemoryRefs,
+					DeviceID:     firstNonEmptyString([]string{episode.DeviceScope["device_id"], defaultMemoryDeviceID}),
+					Scope:        episodeMemoryRetrievalScope(episode),
+					Limit:        8,
+					CharBudget:   12000,
+				})
+				if err != nil {
+					return nil, err
+				}
+				inputs[index] = episodeMemoryBatchInput{Episode: episode, Payload: episodeMemoryPayload(episode), Existing: existing}
+				for _, item := range existing {
+					references = append(references, MemoryMergeReference{Scope: "device", ID: item.ID, Type: item.Type, Status: string(item.Status), Title: item.Title, Summary: item.Summary, Content: item.Content, Tags: item.Tags, Entities: item.Entities, Revision: effectiveDeviceMemoryRevision(item)})
+				}
+			}
+			return references, nil
+		},
+		BuildMessages: func(_ []MemoryMergeReference) ([]llms.MessageContent, error) {
+			parts := []llms.ContentPart{llms.TextPart(buildEpisodeMemoryBatchPrompt(inputs))}
+			for _, input := range inputs {
+				for _, screenshot := range loadEpisodeMemoryScreenshots(p.plane.episodes.rootDir, input.Episode) {
+					parts = append(parts, llms.TextPart("Attached screenshot evidence for Episode "+input.Episode.ID+", event id: "+screenshot.EventID))
+					parts = append(parts, llms.BinaryContent{MIMEType: screenshot.MIMEType, Data: screenshot.Data})
+				}
+			}
+			return []llms.MessageContent{
+				llms.TextParts(llms.ChatMessageTypeSystem, "You assess batches of completed device task episodes and extract reusable device memories. Output JSON only."),
+				{Role: llms.ChatMessageTypeHuman, Parts: parts},
+			}, nil
+		},
+		MaxTokens: min(2200*len(episodes), episodeMemoryBatchMaxTokens),
+		Timeout:   episodeMemoryModelCallTimeout,
 	})
 	if err != nil {
-		return episodeMemoryProposal{}, err
+		return nil, nil, fmt.Errorf("extract episode memory batch: %w", err)
 	}
-	parts := []llms.ContentPart{llms.TextPart(buildEpisodeMemoryPrompt(string(payload), existing))}
-	for _, screenshot := range loadEpisodeMemoryScreenshots(p.plane.episodes.rootDir, episode) {
-		parts = append(parts, llms.TextPart("Attached screenshot evidence for Episode event id: "+screenshot.EventID))
-		parts = append(parts, llms.BinaryContent{MIMEType: screenshot.MIMEType, Data: screenshot.Data})
+	var response episodeMemoryBatchResponse
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		return nil, nil, fmt.Errorf("parse episode memory batch proposal: %w", err)
 	}
-	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, "You assess completed device task episodes and extract reusable device memories. Output JSON only."),
-		{Role: llms.ChatMessageTypeHuman, Parts: parts},
+	if len(response.Results) == 0 && len(episodes) == 1 {
+		var legacy episodeMemoryProposal
+		if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+			return nil, nil, fmt.Errorf("parse episode memory proposal: %w", err)
+		}
+		response.Results = []episodeMemoryBatchResult{{EpisodeID: episodes[0].ID, Proposal: legacy}}
 	}
-	callCtx, cancel := context.WithTimeout(ctx, episodeMemoryModelCallTimeout)
-	defer cancel()
-	response, err := p.model.GenerateContent(callCtx, messages, llms.WithJSONMode(), llms.WithMaxTokens(2200))
-	if err != nil {
-		return episodeMemoryProposal{}, fmt.Errorf("extract episode memory: %w", err)
+	if len(response.Results) != len(episodes) {
+		return nil, nil, fmt.Errorf("episode memory batch returned %d results for %d episodes", len(response.Results), len(episodes))
 	}
-	if response == nil || len(response.Choices) == 0 {
-		return episodeMemoryProposal{}, fmt.Errorf("extract episode memory: empty response")
+	byID := make(map[string]TaskEpisode, len(episodes))
+	existingByID := make(map[string][]DeviceMemoryItem, len(episodes))
+	for _, input := range inputs {
+		byID[input.Episode.ID] = input.Episode
+		existingByID[input.Episode.ID] = input.Existing
 	}
-	var proposal episodeMemoryProposal
-	if err := json.Unmarshal([]byte(stripJSONFences(response.Choices[0].Content)), &proposal); err != nil {
-		return episodeMemoryProposal{}, fmt.Errorf("parse episode memory proposal: %w", err)
+	proposals := make(map[string]episodeMemoryProposal, len(response.Results))
+	proposalErrors := make(map[string]error)
+	seen := make(map[string]bool, len(response.Results))
+	for _, result := range response.Results {
+		episode, ok := byID[strings.TrimSpace(result.EpisodeID)]
+		if !ok {
+			return nil, nil, fmt.Errorf("episode memory batch returned unknown episode %q", result.EpisodeID)
+		}
+		if seen[episode.ID] {
+			return nil, nil, fmt.Errorf("episode memory batch returned duplicate episode %q", episode.ID)
+		}
+		seen[episode.ID] = true
+		proposal, err := validateEpisodeMemoryProposal(episode, result.Proposal, existingByID[episode.ID])
+		if err != nil {
+			proposalErrors[episode.ID] = fmt.Errorf("episode %s: %w", episode.ID, err)
+			continue
+		}
+		proposals[episode.ID] = proposal
 	}
+	return proposals, proposalErrors, nil
+}
+
+func validateEpisodeMemoryProposal(episode TaskEpisode, proposal episodeMemoryProposal, existing []DeviceMemoryItem) (episodeMemoryProposal, error) {
 	proposal.EpisodeAssessment.GoalResult = episodeGoalResult(strings.ToLower(strings.TrimSpace(string(proposal.EpisodeAssessment.GoalResult))))
 	proposal.EpisodeAssessment.Reason = strings.TrimSpace(proposal.EpisodeAssessment.Reason)
 	switch proposal.EpisodeAssessment.GoalResult {
@@ -448,6 +570,24 @@ func (p *episodeMemoryProcessor) proposeEpisode(ctx context.Context, episode Tas
 		proposal.ExistingRevisions[item.ID] = effectiveDeviceMemoryRevision(item)
 	}
 	return proposal, nil
+}
+
+func buildEpisodeMemoryBatchPrompt(inputs []episodeMemoryBatchInput) string {
+	var builder strings.Builder
+	builder.WriteString("Process each independent Episode below. Return exactly one JSON object with this schema:\n")
+	builder.WriteString(`{"results":[{"episode_id":"the exact Episode id","proposal":<the proposal object described below>}]}`)
+	builder.WriteString("\nReturn one result for every Episode, using the exact Episode id. Do not combine evidence across Episodes.\n\n")
+	builder.WriteString(episodeMemoryProposalInstructions)
+	builder.WriteString("\n\n")
+	for _, input := range inputs {
+		payload, _ := json.MarshalIndent(input.Payload, "", "  ")
+		builder.WriteString("===== Episode ")
+		builder.WriteString(input.Episode.ID)
+		builder.WriteString(" =====\n")
+		builder.WriteString(buildEpisodeMemoryEvidencePrompt(string(payload), input.Existing))
+		builder.WriteString("\n\n")
+	}
+	return builder.String()
 }
 
 func hasDirectEpisodeAssessmentEvidence(episode TaskEpisode, refs []string) bool {
@@ -544,7 +684,7 @@ func (p *episodeMemoryProcessor) applyProposal(ctx context.Context, episode Task
 			}
 		case episodeMemoryActionUpdate:
 			if revision, ok := proposal.ExistingRevisions[candidate.MemoryID]; !ok || candidate.MemoryRevision != revision {
-				continue
+				return fmt.Errorf("%w: proposal for %s expected revision %d", errEpisodeMemoryRevisionChanged, candidate.MemoryID, candidate.MemoryRevision)
 			}
 			current, found, err := p.plane.device.Get(ctx, candidate.MemoryID)
 			if err != nil {
@@ -756,24 +896,18 @@ func (p *episodeMemoryProcessor) createMemory(ctx context.Context, episode TaskE
 		return existing.ID, nil
 	}
 	deviceID := firstNonEmptyString([]string{candidate.Scope["device_id"], episode.DeviceScope["device_id"], defaultMemoryDeviceID})
+	existingID := ""
 	if scoped, equivalent, found, err := p.findMemoryInScope(ctx, candidate, deviceID); err != nil {
 		return "", err
 	} else if found {
 		if !equivalent {
 			return scoped.ID, nil
 		}
-		err := p.plane.device.Update(ctx, scoped.ID, func(item *DeviceMemoryItem) {
-			if item == nil || hasEpisodeEvidence(item.EvidenceRefs, episode.ID) {
-				return
-			}
-			item.Tags = mergeUniqueStrings(normalizeEpisodeMemoryTags(item.Tags), candidate.Tags)
-			item.EvidenceRefs = append(item.EvidenceRefs, episodeMemoryEvidenceRef(episode, candidate.EvidenceRefs))
-		})
-		return scoped.ID, err
+		existingID = scoped.ID
 	}
 	priority, confidence, ttl := episodeMemoryDefaults(candidate.Type)
 	item := DeviceMemoryItem{
-		ID:               "devmem_" + stableMemoryID(episode.ID, candidate.LessonKey),
+		ID:               firstNonEmptyString([]string{existingID, "devmem_" + stableMemoryID(episode.ID, candidate.LessonKey)}),
 		Type:             string(candidate.Type),
 		Status:           deviceMemoryStatusActive,
 		Revision:         1,
@@ -796,7 +930,8 @@ func (p *episodeMemoryProcessor) createMemory(ctx context.Context, episode TaskE
 	if candidate.Type == episodeMemoryTypeProcedure {
 		item.Steps = episodeMemoryProcedureSteps(episode, candidate.EvidenceRefs)
 	}
-	return p.plane.device.Upsert(ctx, item)
+	result, err := p.plane.device.ApplyMemoryIntent(ctx, MemoryIntent{DeviceItem: &item})
+	return result.ID, err
 }
 
 func (p *episodeMemoryProcessor) findMemoryInScope(ctx context.Context, candidate episodeMemoryCandidate, deviceID string) (DeviceMemoryItem, bool, bool, error) {
@@ -871,63 +1006,20 @@ func (p *episodeMemoryProcessor) updateMemory(ctx context.Context, episode TaskE
 	if candidate.Type == episodeMemoryTypeProcedure {
 		newSteps = mergeEpisodeMemorySteps(existing.Steps, episodeMemoryProcedureSteps(episode, candidate.EvidenceRefs))
 	}
-	applied := false
-	err = p.plane.device.Update(ctx, candidate.MemoryID, func(item *DeviceMemoryItem) {
-		if item == nil || item.Type != string(candidate.Type) || effectiveDeviceMemoryRevision(*item) != candidate.MemoryRevision {
-			return
-		}
-		applied = true
-		if hasEpisodeEvidence(item.EvidenceRefs, episode.ID) {
-			return
-		}
-		bodyChanged := item.Status != newStatus || item.Title != newTitle || item.Summary != newSummary || item.Content != newContent ||
-			item.DeviceID != deviceID || item.AppName != candidate.Scope["app_name"] || item.PageName != candidate.Scope["page_name"] ||
-			!equalEpisodeMemoryScope(item.Applicability, newScope) || !equalEpisodeMemorySteps(item.Steps, newSteps)
-		if bodyChanged {
-			prior := DeviceMemoryRevision{
-				Revision:      effectiveDeviceMemoryRevision(*item),
-				Status:        item.Status,
-				Title:         item.Title,
-				Summary:       item.Summary,
-				Content:       item.Content,
-				Tags:          append([]string(nil), item.Tags...),
-				Applicability: cloneStringMap(item.Applicability),
-				Steps:         append([]ProcedureStep(nil), item.Steps...),
-				UpdatedAt:     item.UpdatedAt,
-			}
-			item.RevisionHistory = append(item.RevisionHistory, prior)
-			if len(item.RevisionHistory) > 20 {
-				item.RevisionHistory = append([]DeviceMemoryRevision(nil), item.RevisionHistory[len(item.RevisionHistory)-20:]...)
-			}
-			item.Revision = prior.Revision + 1
-		} else if item.Revision == 0 {
-			item.Revision = 1
-		}
-		item.ExtractorVersion = episodeMemoryExtractorVersion
-		item.Status = newStatus
-		if candidate.UnresolvedConflict {
-			item.ConflictsWith = appendUniqueString(item.ConflictsWith, episode.ID)
-		}
-		item.Title = newTitle
-		item.Summary = newSummary
-		item.Content = newContent
-		item.DeviceID = deviceID
-		item.AppName = candidate.Scope["app_name"]
-		item.PageName = candidate.Scope["page_name"]
-		item.Tags = mergeUniqueStrings(normalizeEpisodeMemoryTags(item.Tags), candidate.Tags)
-		item.Applicability = newScope
-		item.EvidenceRefs = append(item.EvidenceRefs, episodeMemoryEvidenceRef(episode, candidate.EvidenceRefs))
-		if candidate.Type == episodeMemoryTypeProcedure {
-			item.Steps = newSteps
-		}
-	})
-	if err != nil {
-		return err
+	item := DeviceMemoryItem{
+		ID: candidate.MemoryID, Type: string(candidate.Type), Status: newStatus,
+		Revision: candidate.MemoryRevision, ExtractorVersion: episodeMemoryExtractorVersion,
+		Title: newTitle, Summary: newSummary, Content: newContent, DeviceID: deviceID,
+		AppName: candidate.Scope["app_name"], PageName: candidate.Scope["page_name"],
+		Tags: normalizeEpisodeMemoryTags(candidate.Tags), Applicability: newScope,
+		EvidenceRefs: []MemorySourceRef{episodeMemoryEvidenceRef(episode, candidate.EvidenceRefs)},
+		Steps:        newSteps,
 	}
-	if !applied {
-		return fmt.Errorf("%w: device memory %s changed before update", errEpisodeMemoryRevisionChanged, candidate.MemoryID)
+	if candidate.UnresolvedConflict {
+		item.ConflictsWith = []string{episode.ID}
 	}
-	return nil
+	_, err = p.plane.device.ApplyMemoryIntent(ctx, MemoryIntent{DeviceItem: &item, ExpectedRevision: candidate.MemoryRevision})
+	return err
 }
 
 func equalEpisodeMemorySteps(left, right []ProcedureStep) bool {
@@ -1170,6 +1262,10 @@ func (s *TaskEpisodeStore) listCompletedEpisodesSince(ctx context.Context, since
 }
 
 func buildEpisodeMemoryPrompt(payload string, existing []DeviceMemoryItem) string {
+	return episodeMemoryProposalInstructions + "\n\n" + buildEpisodeMemoryEvidencePrompt(payload, existing)
+}
+
+func buildEpisodeMemoryEvidencePrompt(payload string, existing []DeviceMemoryItem) string {
 	type memoryView struct {
 		ID            string            `json:"id"`
 		Type          string            `json:"type"`
@@ -1190,7 +1286,14 @@ func buildEpisodeMemoryPrompt(payload string, existing []DeviceMemoryItem) strin
 		})
 	}
 	memoryJSON, _ := json.MarshalIndent(views, "", "  ")
-	return `Assess this completed Episode and return exactly one JSON object matching this schema:
+	return `Existing related Device Memories (maximum 8, including disputed records):
+` + string(memoryJSON) + `
+
+Episode:
+` + payload
+}
+
+const episodeMemoryProposalInstructions = `For each Episode, return a proposal object matching this schema:
 {
   "episode_assessment": {
     "goal_result": "achieved | not_achieved | unknown",
@@ -1234,11 +1337,4 @@ Deduplication and conflict rules:
 - Set unresolved_conflict=true only when the same scope still has incompatible conclusions and no safe condition can distinguish them. The memory will be quarantined as disputed.
 - An achieved Episode is not automatically a procedure, and an Episode-level failure is not automatically a failure memory.
 
-Evidence rules: cite only real event ids. Prefer tool results, structured errors, attached screenshots, final visible state, and user correction over Agent commentary. A cited tool result is deterministically linked to its paired tool call before type validation. Screenshots support only what is visibly shown. Preserve uncertainty and never invent causal ownership, UI state, app/page names, or unsupported recovery tools.
-
-Existing related Device Memories (maximum 8, including disputed records):
-` + string(memoryJSON) + `
-
-Episode:
-` + payload
-}
+Evidence rules: cite only real event ids. Prefer tool results, structured errors, attached screenshots, final visible state, and user correction over Agent commentary. A cited tool result is deterministically linked to its paired tool call before type validation. Screenshots support only what is visibly shown. Preserve uncertainty and never invent causal ownership, UI state, app/page names, or unsupported recovery tools.`

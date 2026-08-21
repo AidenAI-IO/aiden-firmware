@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRecallSessionChunksToolReturnsMatchingEvidence(t *testing.T) {
@@ -129,6 +130,38 @@ func TestRecallMemoryToolReturnsMatchingLongTermMemory(t *testing.T) {
 	}
 	if decoded.Results[0].ID != "mem_login" || !strings.Contains(decoded.Results[0].Content, "重新获取验证码") {
 		t.Fatalf("unexpected memory recall result: %#v", decoded.Results[0])
+	}
+}
+
+func TestRecallMemoryToolMergesTemporaryBeforeLongTerm(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	longTerm := NewLongTermMemoryStore(filepath.Join(root, "long_term"))
+	temporary := NewLongTermMemoryStore(filepath.Join(root, "temporary"))
+	for _, entry := range []struct {
+		store *LongTermMemoryStore
+		item  MemoryItem
+	}{
+		{longTerm, MemoryItem{ID: "mem_baseline", Type: "fact", Priority: 90, Confidence: 0.9, Tags: []string{"delivery"}, Title: "通常时效", Content: "通常两天送达。", EvidenceExcerpts: []string{"历史记录"}}},
+		{temporary, MemoryItem{ID: "tmp_exception", Type: "fact", Priority: 1, Confidence: 0.9, Tags: []string{"delivery"}, Title: "本次延迟", Content: "本次改为周五送达。", ExpiresAt: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), EvidenceExcerpts: []string{"通知"}}},
+	} {
+		if _, err := entry.store.AddMemory(ctx, entry.item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tool := NewRecallMemoryToolWithTemporary(longTerm, temporary)
+	out, err := tool.Call(ctx, `{"tags":["delivery"],"limit":2}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Results []MemoryResult `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Results) != 2 || decoded.Results[0].ID != "tmp_exception" || decoded.Results[0].MemoryScope != "temporary" || decoded.Results[1].MemoryScope != "long_term" {
+		t.Fatalf("merged results=%#v", decoded.Results)
 	}
 }
 

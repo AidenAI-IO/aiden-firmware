@@ -131,6 +131,35 @@ func (lm *LifecycleManager) Verify(ctx context.Context) (VerifyReport, error) {
 		report.OrphanedEpisodes = episodeReport.OrphanedEpisodes
 	}
 
+	memoryReport, err := lm.verifyLongTermMemoryFiles(ctx, store)
+	if err != nil {
+		return report, err
+	}
+	report.ExpiredMemories = memoryReport.ExpiredMemories
+	report.StaleTraceability = memoryReport.StaleTraceability
+	report.IndexRebuilt = report.IndexRebuilt || memoryReport.IndexRebuilt
+
+	pruned, err := lm.pruneEpisodeTraces(ctx, store, episodeStore)
+	if err != nil {
+		return report, err
+	}
+	report.PrunedEpisodeTraces = pruned
+
+	profilePath := filepath.Join(longTermDir, "profile.md")
+	if _, err := os.Stat(profilePath); os.IsNotExist(err) {
+		if err := store.RegenerateProfileMD(ctx); err == nil {
+			report.ProfileFixups++
+		}
+	}
+
+	return report, nil
+}
+
+func (lm *LifecycleManager) verifyLongTermMemoryFiles(ctx context.Context, store *LongTermMemoryStore) (VerifyReport, error) {
+	var report VerifyReport
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
+
 	entries, err := os.ReadDir(store.memoriesDir())
 	if err != nil && !os.IsNotExist(err) {
 		return report, err
@@ -151,6 +180,7 @@ func (lm *LifecycleManager) Verify(ctx context.Context) (VerifyReport, error) {
 			parsed.Item.Status = "expired"
 			parsed.Item.UpdatedAt = now.Format(time.RFC3339Nano)
 			if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err == nil {
+				store.invalidateParsedMemoryCache(path)
 				report.ExpiredMemories++
 				memoriesChanged = true
 			}
@@ -168,6 +198,7 @@ func (lm *LifecycleManager) Verify(ctx context.Context) (VerifyReport, error) {
 				parsed.Item.Traceability = "excerpt_only"
 				parsed.Item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 				if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err == nil {
+					store.invalidateParsedMemoryCache(path)
 					report.StaleTraceability++
 					memoriesChanged = true
 				}
@@ -176,25 +207,11 @@ func (lm *LifecycleManager) Verify(ctx context.Context) (VerifyReport, error) {
 		}
 	}
 	if memoriesChanged {
-		if err := store.RebuildIndex(ctx); err != nil {
+		if err := store.rebuildIndexLocked(ctx); err != nil {
 			return report, err
 		}
 		report.IndexRebuilt = true
 	}
-
-	pruned, err := lm.pruneEpisodeTraces(ctx, store, episodeStore)
-	if err != nil {
-		return report, err
-	}
-	report.PrunedEpisodeTraces = pruned
-
-	profilePath := filepath.Join(longTermDir, "profile.md")
-	if _, err := os.Stat(profilePath); os.IsNotExist(err) {
-		if err := store.RegenerateProfileMD(ctx); err == nil {
-			report.ProfileFixups++
-		}
-	}
-
 	return report, nil
 }
 
@@ -323,6 +340,8 @@ func (lm *LifecycleManager) pruneEpisodeTraces(ctx context.Context, longTerm *Lo
 func activeEpisodeRefs(store *LongTermMemoryStore, device *DeviceMemoryStore, now time.Time) (map[string]bool, error) {
 	refs := map[string]bool{}
 	if store != nil {
+		store.writeMu.Lock()
+		defer store.writeMu.Unlock()
 		entries, err := os.ReadDir(store.memoriesDir())
 		if err != nil {
 			if !os.IsNotExist(err) {

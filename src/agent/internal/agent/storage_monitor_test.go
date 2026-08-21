@@ -432,7 +432,7 @@ func TestStorageMonitorAllowWriteTracksDegradedCapabilities(t *testing.T) {
 	if critical.Level != StorageLevelCritical {
 		t.Fatalf("critical level = %q, want critical", critical.Level)
 	}
-	for _, capability := range []StorageCapability{StorageCapabilityLLMHTTPLog, StorageCapabilityAudioArchive, StorageCapabilitySessionArchive, StorageCapabilitySessionPersistence} {
+	for _, capability := range []StorageCapability{StorageCapabilityLLMHTTPLog, StorageCapabilityAudioArchive, StorageCapabilitySessionArchive, StorageCapabilitySessionPersistence, StorageCapabilityNotificationContext} {
 		if monitor.AllowWrite(capability) {
 			t.Errorf("AllowWrite(%q) = true at critical, want false", capability)
 		}
@@ -452,7 +452,7 @@ func TestStorageMonitorAllowWriteTracksDegradedCapabilities(t *testing.T) {
 	if recovered.Level != StorageLevelNormal {
 		t.Fatalf("recovered level = %q, want normal", recovered.Level)
 	}
-	for _, capability := range []StorageCapability{StorageCapabilityLLMHTTPLog, StorageCapabilityAudioArchive, StorageCapabilitySessionArchive, StorageCapabilitySessionPersistence} {
+	for _, capability := range []StorageCapability{StorageCapabilityLLMHTTPLog, StorageCapabilityAudioArchive, StorageCapabilitySessionArchive, StorageCapabilitySessionPersistence, StorageCapabilityNotificationContext} {
 		if !monitor.AllowWrite(capability) {
 			t.Errorf("AllowWrite(%q) = false after recovery, want true", capability)
 		}
@@ -640,8 +640,13 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 		"audio_archive_30d",
 		"audio_archive_7d",
 		"session_archive_30d",
+		"temporary_memory_expired",
+		"notification_context_14d",
+		"notification_context_7d",
+		"notification_context_1d",
 		"llm_http_log_0d",
 		"audio_archive_keep_0",
+		"notification_context_processed",
 	}
 	wantLevels := []StorageLevel{
 		StorageLevelNormal,
@@ -652,6 +657,11 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 		StorageLevelWarning,
 		StorageLevelCritical,
 		StorageLevelWarning,
+		StorageLevelNormal,
+		StorageLevelNormal,
+		StorageLevelWarning,
+		StorageLevelCritical,
+		StorageLevelEmergency,
 		StorageLevelEmergency,
 		StorageLevelEmergency,
 	}
