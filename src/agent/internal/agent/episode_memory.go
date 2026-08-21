@@ -105,6 +105,8 @@ type episodeMemoryProcessor struct {
 	lock  string
 }
 
+var _ MemoryProcessor = (*episodeMemoryProcessor)(nil)
+
 func newEpisodeMemoryProcessor(plane *FilesystemMemoryPlane, models model.Model) *episodeMemoryProcessor {
 	bootstrapAt := time.Now().UTC()
 	return &episodeMemoryProcessor{
