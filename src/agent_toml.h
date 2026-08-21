@@ -14,6 +14,9 @@ struct ModelToml {
     std::string api_mode;
     std::string responses_context_management;
     int responses_compact_threshold = 0;
+    int responses_context_edit_trigger = 0;
+    int responses_context_edit_keep = 0;
+    bool responses_context_edit_clear_thinking = false;
     std::string responses_truncation;
     std::vector<std::string> responses_include;
     std::string reasoning_effort;

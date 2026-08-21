@@ -27,6 +27,7 @@ const (
 
 const (
 	responsesContextManagementCompaction = "compaction"
+	responsesContextManagementArkEdits   = "ark_context_edit"
 	responsesTruncationAuto              = "auto"
 	responsesTruncationDisabled          = "disabled"
 )
@@ -45,6 +46,8 @@ func normalizeResponsesContextManagement(value string) string {
 		return ""
 	case responsesContextManagementCompaction:
 		return responsesContextManagementCompaction
+	case responsesContextManagementArkEdits, "ark", "volcengine", "ark-edits":
+		return responsesContextManagementArkEdits
 	default:
 		return ""
 	}
@@ -78,35 +81,41 @@ func normalizeModelAPIMode(mode string) string {
 // APIs have different item and streaming protocols even though their auth and
 // base URL conventions are compatible.
 type responsesModel struct {
-	baseURL                string
-	model                  string
-	token                  string
-	httpClient             *http.Client
-	rawLogger              RawHTTPLogger
-	sessionIDProvider      func() string
-	reasoningEffort        string
-	temperature            *float64
-	routerMetadata         bool
-	providerManagedContext bool
-	contextManagement      string
-	compactThreshold       int
-	truncation             string
-	include                []string
-	dialect                responsesDialect
+	baseURL                  string
+	model                    string
+	token                    string
+	httpClient               *http.Client
+	rawLogger                RawHTTPLogger
+	sessionIDProvider        func() string
+	reasoningEffort          string
+	temperature              *float64
+	routerMetadata           bool
+	providerManagedContext   bool
+	contextManagement        string
+	compactThreshold         int
+	contextEditTrigger       int
+	contextEditKeep          int
+	contextEditClearThinking bool
+	truncation               string
+	include                  []string
+	dialect                  responsesDialect
 }
 
 type responsesModelOptions struct {
-	rawLogger              RawHTTPLogger
-	sessionIDProvider      func() string
-	reasoningEffort        string
-	temperature            *float64
-	routerMetadata         bool
-	providerManagedContext bool
-	contextManagement      string
-	compactThreshold       int
-	truncation             string
-	include                []string
-	dialect                responsesDialect
+	rawLogger                RawHTTPLogger
+	sessionIDProvider        func() string
+	reasoningEffort          string
+	temperature              *float64
+	routerMetadata           bool
+	providerManagedContext   bool
+	contextManagement        string
+	compactThreshold         int
+	contextEditTrigger       int
+	contextEditKeep          int
+	contextEditClearThinking bool
+	truncation               string
+	include                  []string
+	dialect                  responsesDialect
 }
 
 func newResponsesModel(baseURL, model, token string, httpClient *http.Client, opts responsesModelOptions) llms.Model {
@@ -118,21 +127,24 @@ func newResponsesModel(baseURL, model, token string, httpClient *http.Client, op
 		dialect = responsesDialectOpenAI
 	}
 	return &responsesModel{
-		baseURL:                strings.TrimRight(baseURL, "/"),
-		model:                  model,
-		token:                  token,
-		httpClient:             httpClient,
-		rawLogger:              opts.rawLogger,
-		sessionIDProvider:      opts.sessionIDProvider,
-		reasoningEffort:        strings.TrimSpace(opts.reasoningEffort),
-		temperature:            opts.temperature,
-		routerMetadata:         opts.routerMetadata,
-		providerManagedContext: opts.providerManagedContext,
-		contextManagement:      normalizeResponsesContextManagement(opts.contextManagement),
-		compactThreshold:       opts.compactThreshold,
-		truncation:             normalizeResponsesTruncation(opts.truncation),
-		include:                append([]string(nil), opts.include...),
-		dialect:                dialect,
+		baseURL:                  strings.TrimRight(baseURL, "/"),
+		model:                    model,
+		token:                    token,
+		httpClient:               httpClient,
+		rawLogger:                opts.rawLogger,
+		sessionIDProvider:        opts.sessionIDProvider,
+		reasoningEffort:          strings.TrimSpace(opts.reasoningEffort),
+		temperature:              opts.temperature,
+		routerMetadata:           opts.routerMetadata,
+		providerManagedContext:   opts.providerManagedContext,
+		contextManagement:        normalizeResponsesContextManagement(opts.contextManagement),
+		compactThreshold:         opts.compactThreshold,
+		contextEditTrigger:       opts.contextEditTrigger,
+		contextEditKeep:          opts.contextEditKeep,
+		contextEditClearThinking: opts.contextEditClearThinking,
+		truncation:               normalizeResponsesTruncation(opts.truncation),
+		include:                  append([]string(nil), opts.include...),
+		dialect:                  dialect,
 	}
 }
 
@@ -141,27 +153,42 @@ func (m *responsesModel) Call(ctx context.Context, prompt string, options ...llm
 }
 
 type responsesRequest struct {
-	Model              string                       `json:"model"`
-	Instructions       string                       `json:"instructions,omitempty"`
-	PreviousResponseID string                       `json:"previous_response_id,omitempty"`
-	Input              []responsesInputItem         `json:"input"`
-	Tools              []responsesTool              `json:"tools,omitempty"`
-	ToolChoice         any                          `json:"tool_choice,omitempty"`
-	ParallelToolCalls  bool                         `json:"parallel_tool_calls"`
-	Store              *bool                        `json:"store,omitempty"`
-	Stream             bool                         `json:"stream,omitempty"`
-	MaxOutputTokens    int                          `json:"max_output_tokens,omitempty"`
-	Temperature        *float64                     `json:"temperature,omitempty"`
-	Reasoning          *responsesReasoning          `json:"reasoning,omitempty"`
-	Text               *responsesTextConfig         `json:"text,omitempty"`
-	ContextManagement  []responsesContextManagement `json:"context_management,omitempty"`
-	Include            []string                     `json:"include,omitempty"`
-	Truncation         string                       `json:"truncation,omitempty"`
+	Model              string               `json:"model"`
+	Instructions       string               `json:"instructions,omitempty"`
+	PreviousResponseID string               `json:"previous_response_id,omitempty"`
+	Input              []responsesInputItem `json:"input"`
+	Tools              []responsesTool      `json:"tools,omitempty"`
+	ToolChoice         any                  `json:"tool_choice,omitempty"`
+	ParallelToolCalls  bool                 `json:"parallel_tool_calls"`
+	Store              *bool                `json:"store,omitempty"`
+	Stream             bool                 `json:"stream,omitempty"`
+	MaxOutputTokens    int                  `json:"max_output_tokens,omitempty"`
+	Temperature        *float64             `json:"temperature,omitempty"`
+	Reasoning          *responsesReasoning  `json:"reasoning,omitempty"`
+	Text               *responsesTextConfig `json:"text,omitempty"`
+	ContextManagement  any                  `json:"context_management,omitempty"`
+	Include            []string             `json:"include,omitempty"`
+	Truncation         string               `json:"truncation,omitempty"`
 }
 
 type responsesContextManagement struct {
 	Type             string `json:"type"`
 	CompactThreshold int    `json:"compact_threshold,omitempty"`
+}
+
+type responsesArkContextManagement struct {
+	Edits []responsesArkContextEdit `json:"edits"`
+}
+
+type responsesArkContextEdit struct {
+	Type    string                   `json:"type"`
+	Keep    *responsesArkContextKeep `json:"keep,omitempty"`
+	Trigger *responsesArkContextKeep `json:"trigger,omitempty"`
+}
+
+type responsesArkContextKeep struct {
+	Type  string `json:"type,omitempty"`
+	Value int    `json:"value,omitempty"`
 }
 
 type responsesInputItem struct {
@@ -408,6 +435,28 @@ func (m *responsesModel) generateContentWithInput(ctx context.Context, input []r
 			Type:             responsesContextManagementCompaction,
 			CompactThreshold: m.compactThreshold,
 		}}
+	}
+	if m.dialect == responsesDialectVolcengine && m.contextManagement == responsesContextManagementArkEdits {
+		trigger := m.contextEditTrigger
+		if trigger <= 0 {
+			trigger = 10
+		}
+		keep := m.contextEditKeep
+		if keep <= 0 {
+			keep = 3
+		}
+		edits := []responsesArkContextEdit{{
+			Type:    "clear_tool_uses",
+			Keep:    &responsesArkContextKeep{Type: "tool_uses", Value: keep},
+			Trigger: &responsesArkContextKeep{Type: "tool_uses", Value: trigger},
+		}}
+		if m.contextEditClearThinking {
+			edits = append(edits, responsesArkContextEdit{
+				Type: "clear_thinking",
+				Keep: &responsesArkContextKeep{Type: "thinking_turns", Value: 2},
+			})
+		}
+		payload.ContextManagement = responsesArkContextManagement{Edits: edits}
 	}
 	if len(m.include) > 0 {
 		payload.Include = append([]string(nil), m.include...)

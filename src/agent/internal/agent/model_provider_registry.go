@@ -93,16 +93,19 @@ func buildOpenAICompatibleModel(ctx ModelBuildContext, cfg ModelConfig, defaultB
 	apiMode := normalizeModelAPIMode(cfg.APIMode)
 	if apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
 		return newResponsesModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, responsesModelOptions{
-			rawLogger:              ctx.RawHTTPLogger,
-			sessionIDProvider:      ctx.SessionIDProvider,
-			reasoningEffort:        cfg.ReasoningEffort,
-			temperature:            cfg.Temperature,
-			providerManagedContext: apiMode == modelAPIModeResponsesStateful,
-			contextManagement:      cfg.ResponsesContextManagement,
-			compactThreshold:       cfg.ResponsesCompactThreshold,
-			truncation:             cfg.ResponsesTruncation,
-			include:                cfg.ResponsesInclude,
-			dialect:                dialect,
+			rawLogger:                ctx.RawHTTPLogger,
+			sessionIDProvider:        ctx.SessionIDProvider,
+			reasoningEffort:          cfg.ReasoningEffort,
+			temperature:              cfg.Temperature,
+			providerManagedContext:   apiMode == modelAPIModeResponsesStateful,
+			contextManagement:        cfg.ResponsesContextManagement,
+			compactThreshold:         cfg.ResponsesCompactThreshold,
+			contextEditTrigger:       cfg.ResponsesContextEditTrigger,
+			contextEditKeep:          cfg.ResponsesContextEditKeep,
+			contextEditClearThinking: cfg.ResponsesContextEditClearThinking,
+			truncation:               cfg.ResponsesTruncation,
+			include:                  cfg.ResponsesInclude,
+			dialect:                  dialect,
 		})
 	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, openAICompatibleOptions(ctx, cfg)...)
@@ -141,17 +144,20 @@ func buildOpenRouterModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, e
 	}
 	if apiMode == modelAPIModeResponses {
 		return newResponsesModel(baseURL, cfg.Model, token, ctx.HTTPClient, responsesModelOptions{
-			rawLogger:              ctx.RawHTTPLogger,
-			sessionIDProvider:      ctx.SessionIDProvider,
-			reasoningEffort:        cfg.ReasoningEffort,
-			temperature:            cfg.Temperature,
-			routerMetadata:         true,
-			providerManagedContext: false,
-			contextManagement:      cfg.ResponsesContextManagement,
-			compactThreshold:       cfg.ResponsesCompactThreshold,
-			truncation:             cfg.ResponsesTruncation,
-			include:                cfg.ResponsesInclude,
-			dialect:                responsesDialectOpenRouter,
+			rawLogger:                ctx.RawHTTPLogger,
+			sessionIDProvider:        ctx.SessionIDProvider,
+			reasoningEffort:          cfg.ReasoningEffort,
+			temperature:              cfg.Temperature,
+			routerMetadata:           true,
+			providerManagedContext:   false,
+			contextManagement:        cfg.ResponsesContextManagement,
+			compactThreshold:         cfg.ResponsesCompactThreshold,
+			contextEditTrigger:       cfg.ResponsesContextEditTrigger,
+			contextEditKeep:          cfg.ResponsesContextEditKeep,
+			contextEditClearThinking: cfg.ResponsesContextEditClearThinking,
+			truncation:               cfg.ResponsesTruncation,
+			include:                  cfg.ResponsesInclude,
+			dialect:                  responsesDialectOpenRouter,
 		}), nil
 	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, token, ctx.HTTPClient, opts...), nil

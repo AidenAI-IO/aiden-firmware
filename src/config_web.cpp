@@ -2014,6 +2014,20 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
         return false;
     }
     if (json_is_object(model_section) &&
+        !validate_non_negative_json_integer(
+            cJSON_GetObjectItem(model_section, "responses_context_edit_trigger"),
+            "model.responses_context_edit_trigger",
+            error)) {
+        return false;
+    }
+    if (json_is_object(model_section) &&
+        !validate_non_negative_json_integer(
+            cJSON_GetObjectItem(model_section, "responses_context_edit_keep"),
+            "model.responses_context_edit_keep",
+            error)) {
+        return false;
+    }
+    if (json_is_object(model_section) &&
         !validate_non_empty_json_string_array(
             cJSON_GetObjectItem(model_section, "responses_include"),
             "model.responses_include",
@@ -2945,6 +2959,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON_AddStringToObject(model, "responses_context_management", config.model.responses_context_management.c_str());
     }
     cJSON_AddNumberToObject(model, "responses_compact_threshold", config.model.responses_compact_threshold);
+    cJSON_AddNumberToObject(model, "responses_context_edit_trigger", config.model.responses_context_edit_trigger);
+    cJSON_AddNumberToObject(model, "responses_context_edit_keep", config.model.responses_context_edit_keep);
+    cJSON_AddBoolToObject(model, "responses_context_edit_clear_thinking", config.model.responses_context_edit_clear_thinking);
     if (!config.model.responses_truncation.empty()) {
         cJSON_AddStringToObject(model, "responses_truncation", config.model.responses_truncation.c_str());
     }
@@ -3318,6 +3335,9 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_str(&m->api_mode, obj, "api_mode");
     set_json_str(&m->responses_context_management, obj, "responses_context_management");
     set_json_int(&m->responses_compact_threshold, obj, "responses_compact_threshold");
+    set_json_int(&m->responses_context_edit_trigger, obj, "responses_context_edit_trigger");
+    set_json_int(&m->responses_context_edit_keep, obj, "responses_context_edit_keep");
+    set_json_bool(&m->responses_context_edit_clear_thinking, obj, "responses_context_edit_clear_thinking");
     set_json_str(&m->responses_truncation, obj, "responses_truncation");
     set_json_string_vector(&m->responses_include, obj, "responses_include");
     set_json_str(&m->reasoning_effort, obj, "reasoning_effort");

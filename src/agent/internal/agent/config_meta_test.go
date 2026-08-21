@@ -198,7 +198,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"model.responses_context_management": {
 			layout: "wide",
 			label:  "Provider compaction",
-			help:   "Ask a compatible provider to compact context at the threshold. This does not change who manages the conversation context.",
+			help:   "Choose provider-side context cleanup. OpenAI uses token compaction; Volcengine Ark uses tool-call and thinking edits.",
 		},
 		"model.responses_compact_threshold": {
 			label:       "Compaction threshold (tokens)",
@@ -215,14 +215,17 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 			layout:      "wide",
 			help:        "Usually leave empty. Add provider-supported include values only when needed, one per line.",
 		},
-		"model.reasoning_effort":        {help: "Empty = auto. For no-tool requests, Anthropic maps low/medium/high to adaptive thinking; tool requests use Claude's default reasoning because thinking signatures are not persisted. Minimal is OpenRouter and Volcengine Ark only; none is not supported by Anthropic or Ark."},
-		"model.context_window":          {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
-		"model.model_max_output_tokens": {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
-		"tts.provider":                  {layout: "wide"},
-		"stt.provider":                  {layout: "wide"},
-		"audio.socket":                  {layout: "wide"},
-		"audio_archive.enabled":         {help: "After enabling, save STT voice recording WAV for Web UI playback; Automatically delete old files when exceeding quantity or capacity limit."},
-		"audio_archive.storage_path":    {layout: "wide"},
+		"model.responses_context_edit_trigger":        {label: "Ark tool-call trigger", placeholder: "10 = recommended", help: "After this many tool calls, Ark clears old tool inputs. 0 uses the recommended value 10."},
+		"model.responses_context_edit_keep":           {label: "Ark tool calls to keep", placeholder: "3 = recommended", help: "Number of recent tool calls Ark keeps after cleanup. 0 uses the recommended value 3."},
+		"model.responses_context_edit_clear_thinking": {label: "Clear old thinking", help: "Ask Ark to remove previous thinking turns when it applies the context edit."},
+		"model.reasoning_effort":                      {help: "Empty = auto. For no-tool requests, Anthropic maps low/medium/high to adaptive thinking; tool requests use Claude's default reasoning because thinking signatures are not persisted. Minimal is OpenRouter and Volcengine Ark only; none is not supported by Anthropic or Ark."},
+		"model.context_window":                        {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
+		"model.model_max_output_tokens":               {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
+		"tts.provider":                                {layout: "wide"},
+		"stt.provider":                                {layout: "wide"},
+		"audio.socket":                                {layout: "wide"},
+		"audio_archive.enabled":                       {help: "After enabling, save STT voice recording WAV for Web UI playback; Automatically delete old files when exceeding quantity or capacity limit."},
+		"audio_archive.storage_path":                  {layout: "wide"},
 		"ota.github_proxy_url": {
 			label:       "GitHub Proxy URL",
 			help:        "Optional proxy to accelerate GitHub downloads (e.g., https://gh-proxy.com/ or https://ghfast.top/)",
@@ -648,6 +651,7 @@ func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
 		providers []string
 	}{
 		{field: "model.responses_context_management", value: "compaction", providers: []string{"openai"}},
+		{field: "model.responses_context_management", value: "ark_context_edit", providers: []string{"volcengine"}},
 		{field: "model.responses_truncation", value: "auto", providers: []string{"openai", "openrouter"}},
 	} {
 		meta, ok := idx[tt.field]
@@ -673,11 +677,14 @@ func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
 func TestConfigMeta_ResponsesOptionsUsePlainLanguage(t *testing.T) {
 	idx := fieldIndex(t)
 	wantLabels := map[string]string{
-		"model.api_mode":                     "Conversation API",
-		"model.responses_context_management": "Provider compaction",
-		"model.responses_compact_threshold":  "Compaction threshold (tokens)",
-		"model.responses_truncation":         "Over-limit input",
-		"model.responses_include":            "Extra response fields",
+		"model.api_mode":                              "Conversation API",
+		"model.responses_context_management":          "Provider compaction",
+		"model.responses_compact_threshold":           "Compaction threshold (tokens)",
+		"model.responses_truncation":                  "Over-limit input",
+		"model.responses_include":                     "Extra response fields",
+		"model.responses_context_edit_trigger":        "Ark tool-call trigger",
+		"model.responses_context_edit_keep":           "Ark tool calls to keep",
+		"model.responses_context_edit_clear_thinking": "Clear old thinking",
 	}
 	for path, want := range wantLabels {
 		if got := idx[path].Label; got != want {

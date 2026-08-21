@@ -341,6 +341,9 @@ void apply_kv(AgentToml& cfg,
         else if (key == "api_mode") assign_string(&m.api_mode, raw, &sub_err);
         else if (key == "responses_context_management") assign_string(&m.responses_context_management, raw, &sub_err);
         else if (key == "responses_compact_threshold") assign_non_negative_int(&m.responses_compact_threshold, raw, &sub_err);
+        else if (key == "responses_context_edit_trigger") assign_non_negative_int(&m.responses_context_edit_trigger, raw, &sub_err);
+        else if (key == "responses_context_edit_keep") assign_non_negative_int(&m.responses_context_edit_keep, raw, &sub_err);
+        else if (key == "responses_context_edit_clear_thinking") assign_bool(&m.responses_context_edit_clear_thinking, raw, &sub_err);
         else if (key == "responses_truncation") assign_string(&m.responses_truncation, raw, &sub_err);
         else if (key == "responses_include") assign_string_array(&m.responses_include, raw, &sub_err);
         else if (key == "reasoning_effort") assign_string(&m.reasoning_effort, raw, &sub_err);
@@ -725,6 +728,9 @@ void emit_model(std::ostringstream& out, const char* section, const ModelToml& m
     if (!m.api_mode.empty()) emit_string(out, "api_mode", m.api_mode);
     if (!m.responses_context_management.empty()) emit_string(out, "responses_context_management", m.responses_context_management);
     if (m.responses_compact_threshold != 0) emit_int(out, "responses_compact_threshold", m.responses_compact_threshold);
+    if (m.responses_context_edit_trigger != 0) emit_int(out, "responses_context_edit_trigger", m.responses_context_edit_trigger);
+    if (m.responses_context_edit_keep != 0) emit_int(out, "responses_context_edit_keep", m.responses_context_edit_keep);
+    if (m.responses_context_edit_clear_thinking) emit_bool(out, "responses_context_edit_clear_thinking", m.responses_context_edit_clear_thinking);
     if (!m.responses_truncation.empty()) emit_string(out, "responses_truncation", m.responses_truncation);
     if (!m.responses_include.empty()) emit_string_array(out, "responses_include", m.responses_include);
     // Always emit reasoning_effort, even if empty (empty = "auto" default)

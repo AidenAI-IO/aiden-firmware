@@ -85,33 +85,39 @@ func (d *webConfigDTO) UnmarshalJSON(data []byte) error {
 }
 
 type modelDTO struct {
-	Provider                   string   `json:"provider"`
-	APIKey                     string   `json:"api_key"`
-	Model                      string   `json:"model"`
-	APIMode                    string   `json:"api_mode,omitempty"`
-	ResponsesContextManagement string   `json:"responses_context_management,omitempty"`
-	ResponsesCompactThreshold  int      `json:"responses_compact_threshold,omitempty"`
-	ResponsesTruncation        string   `json:"responses_truncation,omitempty"`
-	ResponsesInclude           []string `json:"responses_include,omitempty"`
-	ReasoningEffort            string   `json:"reasoning_effort"`
-	Temperature                *float64 `json:"temperature,omitempty"`
-	MaxResponseTokens          int      `json:"max_response_tokens"`
-	ContextWindow              int      `json:"context_window"`
-	ModelMaxOutputTokens       int      `json:"model_max_output_tokens"`
+	Provider                          string   `json:"provider"`
+	APIKey                            string   `json:"api_key"`
+	Model                             string   `json:"model"`
+	APIMode                           string   `json:"api_mode,omitempty"`
+	ResponsesContextManagement        string   `json:"responses_context_management,omitempty"`
+	ResponsesCompactThreshold         int      `json:"responses_compact_threshold,omitempty"`
+	ResponsesContextEditTrigger       int      `json:"responses_context_edit_trigger,omitempty"`
+	ResponsesContextEditKeep          int      `json:"responses_context_edit_keep,omitempty"`
+	ResponsesContextEditClearThinking bool     `json:"responses_context_edit_clear_thinking,omitempty"`
+	ResponsesTruncation               string   `json:"responses_truncation,omitempty"`
+	ResponsesInclude                  []string `json:"responses_include,omitempty"`
+	ReasoningEffort                   string   `json:"reasoning_effort"`
+	Temperature                       *float64 `json:"temperature,omitempty"`
+	MaxResponseTokens                 int      `json:"max_response_tokens"`
+	ContextWindow                     int      `json:"context_window"`
+	ModelMaxOutputTokens              int      `json:"model_max_output_tokens"`
 }
 
 func (d modelDTO) providerTestRequest() agent.ModelProviderTestRequest {
 	return agent.ModelProviderTestRequest{
-		Provider:                   d.Provider,
-		APIKey:                     d.APIKey,
-		Model:                      d.Model,
-		APIMode:                    d.APIMode,
-		ResponsesContextManagement: d.ResponsesContextManagement,
-		ResponsesCompactThreshold:  d.ResponsesCompactThreshold,
-		ResponsesTruncation:        d.ResponsesTruncation,
-		ResponsesInclude:           append([]string(nil), d.ResponsesInclude...),
-		Temperature:                d.Temperature,
-		ReasoningEffort:            d.ReasoningEffort,
+		Provider:                          d.Provider,
+		APIKey:                            d.APIKey,
+		Model:                             d.Model,
+		APIMode:                           d.APIMode,
+		ResponsesContextManagement:        d.ResponsesContextManagement,
+		ResponsesCompactThreshold:         d.ResponsesCompactThreshold,
+		ResponsesContextEditTrigger:       d.ResponsesContextEditTrigger,
+		ResponsesContextEditKeep:          d.ResponsesContextEditKeep,
+		ResponsesContextEditClearThinking: d.ResponsesContextEditClearThinking,
+		ResponsesTruncation:               d.ResponsesTruncation,
+		ResponsesInclude:                  append([]string(nil), d.ResponsesInclude...),
+		Temperature:                       d.Temperature,
+		ReasoningEffort:                   d.ReasoningEffort,
 	}
 }
 
@@ -1183,6 +1189,10 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "model.responses_context_management"
 	} else if strings.Contains(errMsg, "model.responses_compact_threshold") {
 		field = "model.responses_compact_threshold"
+	} else if strings.Contains(errMsg, "model.responses_context_edit_trigger") {
+		field = "model.responses_context_edit_trigger"
+	} else if strings.Contains(errMsg, "model.responses_context_edit_keep") {
+		field = "model.responses_context_edit_keep"
 	} else if strings.Contains(errMsg, "model.responses_truncation") {
 		field = "model.responses_truncation"
 	} else if strings.Contains(errMsg, "model.max_response_tokens") {

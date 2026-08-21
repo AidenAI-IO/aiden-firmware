@@ -9,16 +9,19 @@ import (
 )
 
 type ModelProviderTestRequest struct {
-	Provider                   string
-	APIKey                     string
-	Model                      string
-	APIMode                    string
-	ResponsesContextManagement string
-	ResponsesCompactThreshold  int
-	ResponsesTruncation        string
-	ResponsesInclude           []string
-	Temperature                *float64
-	ReasoningEffort            string
+	Provider                          string
+	APIKey                            string
+	Model                             string
+	APIMode                           string
+	ResponsesContextManagement        string
+	ResponsesCompactThreshold         int
+	ResponsesContextEditTrigger       int
+	ResponsesContextEditKeep          int
+	ResponsesContextEditClearThinking bool
+	ResponsesTruncation               string
+	ResponsesInclude                  []string
+	Temperature                       *float64
+	ReasoningEffort                   string
 }
 
 type ModelProviderTestResult struct {
@@ -68,6 +71,9 @@ func applyModelProviderTestRequest(cfg *Config, req ModelProviderTestRequest) er
 	cfg.Model.APIMode = req.APIMode
 	cfg.Model.ResponsesContextManagement = req.ResponsesContextManagement
 	cfg.Model.ResponsesCompactThreshold = req.ResponsesCompactThreshold
+	cfg.Model.ResponsesContextEditTrigger = req.ResponsesContextEditTrigger
+	cfg.Model.ResponsesContextEditKeep = req.ResponsesContextEditKeep
+	cfg.Model.ResponsesContextEditClearThinking = req.ResponsesContextEditClearThinking
 	cfg.Model.ResponsesTruncation = req.ResponsesTruncation
 	cfg.Model.ResponsesInclude = append([]string(nil), req.ResponsesInclude...)
 	cfg.Model.BaseURL = ""

@@ -726,11 +726,14 @@ type ModelConfig struct {
 	// "responses_stateful" chains provider-stored responses with
 	// previous_response_id.
 	APIMode string `toml:"api_mode,omitempty"`
-	// ResponsesContextManagement selects OpenAI provider-side context management
-	// for Responses requests. "compaction" enables OpenAI's compaction entry;
-	// empty disables it. Ark has a different context_management schema.
-	ResponsesContextManagement string `toml:"responses_context_management,omitempty"`
-	ResponsesCompactThreshold  int    `toml:"responses_compact_threshold,omitempty"`
+	// ResponsesContextManagement selects provider-side context management for
+	// Responses requests. "compaction" is OpenAI's token-based policy and
+	// "ark_context_edit" is Volcengine Ark's tool/thinking edit policy.
+	ResponsesContextManagement        string `toml:"responses_context_management,omitempty"`
+	ResponsesCompactThreshold         int    `toml:"responses_compact_threshold,omitempty"`
+	ResponsesContextEditTrigger       int    `toml:"responses_context_edit_trigger,omitempty"`
+	ResponsesContextEditKeep          int    `toml:"responses_context_edit_keep,omitempty"`
+	ResponsesContextEditClearThinking bool   `toml:"responses_context_edit_clear_thinking,omitempty"`
 	// ResponsesTruncation controls the OpenAI-compatible truncation policy used
 	// by OpenAI and OpenRouter. Ark does not use this request field.
 	// Empty preserves the API default (disabled); "auto" delegates truncation
@@ -1292,11 +1295,18 @@ func (c Config) Validate() error {
 	contextManagement := strings.ToLower(strings.TrimSpace(c.Model.ResponsesContextManagement))
 	switch contextManagement {
 	case "", "none", "disabled", responsesContextManagementCompaction:
+	case responsesContextManagementArkEdits, "ark", "volcengine", "ark-edits":
 	default:
-		return fmt.Errorf("invalid model.responses_context_management: %s (expected empty, compaction, or disabled)", c.Model.ResponsesContextManagement)
+		return fmt.Errorf("invalid model.responses_context_management: %s (expected empty, compaction, ark_context_edit, or disabled)", c.Model.ResponsesContextManagement)
 	}
 	if c.Model.ResponsesCompactThreshold < 0 {
 		return fmt.Errorf("model.responses_compact_threshold must be >= 0, got %d", c.Model.ResponsesCompactThreshold)
+	}
+	if c.Model.ResponsesContextEditTrigger < 0 {
+		return fmt.Errorf("model.responses_context_edit_trigger must be >= 0, got %d", c.Model.ResponsesContextEditTrigger)
+	}
+	if c.Model.ResponsesContextEditKeep < 0 {
+		return fmt.Errorf("model.responses_context_edit_keep must be >= 0, got %d", c.Model.ResponsesContextEditKeep)
 	}
 	for _, include := range c.Model.ResponsesInclude {
 		if strings.TrimSpace(include) == "" {

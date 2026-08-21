@@ -169,6 +169,47 @@ func TestResponsesModelUsesVolcengineContextShape(t *testing.T) {
 	}
 }
 
+func TestResponsesModelSendsVolcengineContextEdits(t *testing.T) {
+	var raw map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp_ark","status":"completed","output":[]}`))
+	}))
+	defer server.Close()
+
+	model := newResponsesModel(server.URL, "doubao-test", "", server.Client(), responsesModelOptions{
+		dialect:                  responsesDialectVolcengine,
+		contextManagement:        responsesContextManagementArkEdits,
+		contextEditTrigger:       12,
+		contextEditKeep:          4,
+		contextEditClearThinking: true,
+	})
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}}}); err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	management, ok := raw["context_management"].(map[string]any)
+	if !ok {
+		t.Fatalf("context_management = %#v, want object", raw["context_management"])
+	}
+	edits, ok := management["edits"].([]any)
+	if !ok || len(edits) != 2 {
+		t.Fatalf("context_management.edits = %#v, want two edits", management["edits"])
+	}
+	first := edits[0].(map[string]any)
+	if first["type"] != "clear_tool_uses" ||
+		first["keep"].(map[string]any)["value"] != float64(4) || first["trigger"].(map[string]any)["value"] != float64(12) {
+		t.Fatalf("clear_tool_uses edit = %#v", first)
+	}
+	second := edits[1].(map[string]any)
+	if second["type"] != "clear_thinking" || second["keep"].(map[string]any)["type"] != "thinking_turns" || second["keep"].(map[string]any)["value"] != float64(2) {
+		t.Fatalf("clear_thinking edit = %#v", second)
+	}
+}
+
 func TestResponsesModelUsesOpenRouterContextShape(t *testing.T) {
 	var raw map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -624,6 +665,8 @@ func TestModelAPIModeValidation(t *testing.T) {
 	}{
 		{name: "context management", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesContextManagement: "invalid"}, field: "responses_context_management"},
 		{name: "compact threshold", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesCompactThreshold: -1}, field: "responses_compact_threshold"},
+		{name: "ark trigger", model: ModelConfig{Provider: "volcengine", Model: "test", APIMode: "responses", ResponsesContextEditTrigger: -1}, field: "responses_context_edit_trigger"},
+		{name: "ark keep", model: ModelConfig{Provider: "volcengine", Model: "test", APIMode: "responses", ResponsesContextEditKeep: -1}, field: "responses_context_edit_keep"},
 		{name: "blank include", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesInclude: []string{"reasoning.encrypted_content", " "}}, field: "responses_include"},
 		{name: "truncation", model: ModelConfig{Provider: "openai", Model: "test", APIMode: "responses", ResponsesTruncation: "invalid"}, field: "responses_truncation"},
 	} {
@@ -650,6 +693,9 @@ func TestModelAPIModeValidation(t *testing.T) {
 	}
 	if (ModelConfig{Provider: "openai", BaseURL: "https://ark.cn-beijing.volces.com/api/v3", APIMode: "responses", ResponsesContextManagement: "compaction"}).ResponsesProviderCompactionEnabled() {
 		t.Fatal("Ark URL saved as openai must not suppress local compaction")
+	}
+	if (ModelConfig{Provider: "volcengine", APIMode: "responses_stateful", ResponsesContextManagement: "ark_context_edit"}).ResponsesProviderCompactionEnabled() {
+		t.Fatal("Ark context edits must not suppress local token compaction")
 	}
 }
 

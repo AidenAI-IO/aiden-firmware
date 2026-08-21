@@ -111,6 +111,11 @@ max_response_tokens = 1000
 # OpenAI-only provider compaction:
 # responses_context_management = "compaction" # empty/disabled or compaction
 # responses_compact_threshold = 0               # 0 = provider default
+# Volcengine Ark context edits (object-shaped, not OpenAI's array):
+# responses_context_management = "ark_context_edit"
+# responses_context_edit_trigger = 10            # tool-call trigger; 0 = 10
+# responses_context_edit_keep = 3                 # recent tool calls to keep; 0 = 3
+# responses_context_edit_clear_thinking = true    # clear previous thinking turns
 # OpenAI and OpenRouter support the standard truncation policy:
 # responses_truncation = "auto"                # empty/disabled or auto
 # Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
@@ -339,8 +344,11 @@ built. When a section is named exactly like a provider type, the section wins.
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
 | `api_mode`                | Wire protocol. Omit it (or use `chat_completions`) for the existing Chat Completions path; `responses` sends full local context to OpenAI, OpenRouter, or Volcengine Ark. OpenAI and Ark receive `store=false`; OpenRouter omits both `store` and `previous_response_id` because its Responses endpoint is stateless. `responses_stateful` sends `store=true`, resends top-level `instructions`, and chains follow-up requests with `previous_response_id` while submitting only newly appended items. The local transcript remains authoritative for audit, compaction, session rotation, and recovery. Stateful mode is enabled for OpenAI and Volcengine Ark. Moonshot Kimi exposes Chat Completions rather than `/responses`; native Anthropic and Ollama transports also do not implement this protocol. Custom compatible gateways can use provider type `openai`. |
-| `responses_context_management` | OpenAI Responses context policy. `compaction` sends OpenAI's compaction array; empty/`disabled` omits it. Ark has a different object-shaped `context_management` edit schema, which this setting does not represent, so the runtime ignores a stale value for Volcengine requests. |
+| `responses_context_management` | Provider-side Responses context policy. `compaction` sends OpenAI's token-based compaction array; `ark_context_edit` sends Volcengine Ark's object-shaped `context_management.edits` policy; empty/`disabled` omits provider context management. |
 | `responses_compact_threshold` | Optional token threshold sent with provider compaction. `0` lets the provider choose. |
+| `responses_context_edit_trigger` | Ark tool-call count that triggers `clear_tool_uses`; `0` uses the recommended value `10`. |
+| `responses_context_edit_keep` | Ark recent tool-call count to retain after cleanup; `0` uses the recommended value `3`. |
+| `responses_context_edit_clear_thinking` | When true, adds Ark's `clear_thinking` edit and removes previous thinking turns. |
 | `responses_truncation` | OpenAI-compatible Responses truncation policy. Empty/`disabled` preserves the API default; `auto` lets OpenAI or OpenRouter discard the oldest input. This field is not sent to Ark. |
 | `responses_include` | Optional array of provider-supported Responses include values. In stateless reasoning mode, use `reasoning.encrypted_content` when supported so Aiden can replay the complete opaque reasoning item. Aiden uses `previous_response_id` for provider-managed chaining and intentionally does not expose the separate `conversation` resource ID: the local session transcript remains authoritative and must not be shared across sessions accidentally. |
 | `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
@@ -390,8 +398,10 @@ Ark supports `responses_stateful` with `store=true` and
 and is not required for stored response chaining. Ark's request schema is not
 identical to OpenAI's: Aiden keeps supported `instructions`, `include`, and
 `reasoning` fields, but does not send OpenAI's compaction array or `truncation`
-field to Ark. Ark now has a separate object-shaped `context_management` edit
-schema, which Aiden's OpenAI-specific compaction setting does not configure.
+field to Ark. Set `responses_context_management = "ark_context_edit"` to send
+Ark's object-shaped `context_management` edit schema. The default edit clears
+all old tool inputs after 10 tool calls while retaining the latest 3; the
+optional `clear_thinking` edit removes previous thinking turns as well.
 An older provider record saved as `type = "openai"` with the standard Ark host
 is recognized automatically and uses the same compatibility profile.
 
