@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/rtclient"
 	"aiden-agent/internal/agent/tts"
 	"aiden-agent/internal/agenttask"
@@ -428,6 +431,14 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	userContext, err := agent.InitializeContextManager(
+		realtimeSessionConfig(cfg).Instructions,
+		agentpath.UserContextManagerSessionFolder(cfg.ConfigDir),
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("initialize realtime user context: %w", err)
+	}
 
 	client, err := rtclient.New(rtclient.Config{
 		APIKey:      cfg.VoiceModel.APIKey,
@@ -465,6 +476,9 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	}
 	if err := waitForRealtimeEvent(ctx, session, sigChan, "session.updated", realtimeEventTimeout); err != nil {
 		return fmt.Errorf("apply realtime session config: %w", err)
+	}
+	if err := replayRealtimeContext(ctx, session, userContext); err != nil {
+		return fmt.Errorf("restore realtime user context: %w", err)
 	}
 	log.Println("[realtime] session.updated received, opening microphone...")
 	if chatBridge != nil {
@@ -534,6 +548,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	var chatMode string
 	var chatText strings.Builder
 	var chatTranscript strings.Builder
+	var responseText strings.Builder
+	var responseTranscript strings.Builder
 	responseActive := false
 	inputSpeechActive := false
 	toolExecutor := newRealtimeVoiceToolExecutor(runtime, tasks)
@@ -567,6 +583,9 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			return nil
 		}
 		message := formatRealtimeTaskUpdates(pendingTaskUpdates)
+		if err := appendRealtimeUserMessage(userContext, message); err != nil {
+			return fmt.Errorf("persist task update in realtime context: %w", err)
+		}
 		if err := session.SendText(ctx, message, ""); err != nil {
 			return fmt.Errorf("inject background task update: %w", err)
 		}
@@ -665,6 +684,12 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				activeChat = nil
 				continue
 			}
+			if err := appendRealtimeUserMessage(userContext, command.request.Message); err != nil {
+				sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: err.Error()})
+				close(command.events)
+				activeChat = nil
+				continue
+			}
 			responseActive = true
 			if err := session.CreateResponse(command.ctx, nil); err != nil {
 				responseActive = false
@@ -695,9 +720,19 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				if err := tryInjectTaskUpdates(); err != nil {
 					return err
 				}
+			case "conversation.item.input_audio_transcription.completed":
+				var transcript rtclient.TranscriptEvent
+				if err := event.Decode(&transcript); err != nil {
+					return err
+				}
+				if err := appendRealtimeUserMessage(userContext, transcript.Transcript); err != nil {
+					return fmt.Errorf("persist realtime user transcript: %w", err)
+				}
 			case "response.created":
 				log.Println("[realtime] Response created")
 				responseActive = true
+				responseText.Reset()
+				responseTranscript.Reset()
 				if realtimeOutputFormat.SampleRate != outputFormat.SampleRate &&
 					realtimeOutputFormat.Channels == outputFormat.Channels &&
 					realtimeOutputFormat.BitWidth == outputFormat.BitWidth {
@@ -710,11 +745,12 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 					return fmt.Errorf("begin realtime playback response: %w", err)
 				}
 			case "response.text.delta":
+				var delta rtclient.ResponseDeltaEvent
+				if err := event.Decode(&delta); err != nil {
+					return err
+				}
+				responseText.WriteString(delta.Delta)
 				if activeChat != nil {
-					var delta rtclient.ResponseDeltaEvent
-					if err := event.Decode(&delta); err != nil {
-						return err
-					}
 					if chatMode == "" {
 						chatMode = "text"
 					}
@@ -724,11 +760,12 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 					}
 				}
 			case "response.audio_transcript.delta":
+				var delta rtclient.ResponseDeltaEvent
+				if err := event.Decode(&delta); err != nil {
+					return err
+				}
+				responseTranscript.WriteString(delta.Delta)
 				if activeChat != nil {
-					var delta rtclient.ResponseDeltaEvent
-					if err := event.Decode(&delta); err != nil {
-						return err
-					}
 					if chatMode == "" {
 						chatMode = "transcript"
 					}
@@ -749,8 +786,11 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 					return err
 				}
 			case "response.audio_transcript.done":
+				var done rtclient.TranscriptEvent
+				if err := event.Decode(&done); err == nil && responseTranscript.Len() == 0 {
+					responseTranscript.WriteString(done.Transcript)
+				}
 				if activeChat != nil && chatTranscript.Len() == 0 {
-					var done rtclient.TranscriptEvent
 					if err := event.Decode(&done); err == nil && done.Transcript != "" {
 						chatTranscript.WriteString(done.Transcript)
 					}
@@ -781,6 +821,17 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 						return fmt.Errorf("continue realtime response after tool call: %w", err)
 					}
 					continue
+				}
+				if done.Response.Status == "" || done.Response.Status == "completed" {
+					assistantText := strings.TrimSpace(responseText.String())
+					if assistantText == "" {
+						assistantText = strings.TrimSpace(responseTranscript.String())
+					}
+					if assistantText != "" {
+						if err := appendRealtimeAssistantMessage(userContext, assistantText); err != nil {
+							return fmt.Errorf("persist realtime assistant response: %w", err)
+						}
+					}
 				}
 				responseActive = false
 				if activeChat != nil {
@@ -844,6 +895,53 @@ func formatRealtimeTaskUpdates(tasks []agenttask.Task) string {
 		output.WriteByte('\n')
 	}
 	return strings.TrimSpace(output.String())
+}
+
+func appendRealtimeUserMessage(manager *contextmanager.ContextManager, content string) error {
+	content = strings.TrimSpace(content)
+	if manager == nil || content == "" {
+		return nil
+	}
+	return manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: content})
+}
+
+func appendRealtimeAssistantMessage(manager *contextmanager.ContextManager, content string) error {
+	content = strings.TrimSpace(content)
+	if manager == nil || content == "" {
+		return nil
+	}
+	return manager.AppendMessage(messages.Message{Role: messages.MessageRoleAssistant, Content: content})
+}
+
+func replayRealtimeContext(ctx context.Context, session *rtclient.Session, manager *contextmanager.ContextManager) error {
+	if session == nil || manager == nil {
+		return nil
+	}
+	var previousID string
+	for _, message := range manager.MessageListDump().Messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" || message.Role == messages.MessageRoleSystem {
+			continue
+		}
+		role := "user"
+		contentType := "input_text"
+		if message.Role == messages.MessageRoleAssistant {
+			role = "assistant"
+			contentType = "output_text"
+		}
+		item := rtclient.ConversationItem{
+			Type: "message",
+			Role: role,
+			Content: []rtclient.ContentPart{{
+				Type: contentType,
+				Text: content,
+			}},
+		}
+		if err := session.CreateItem(ctx, item, previousID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func limitRealtimeTaskField(value string, maxRunes int) string {

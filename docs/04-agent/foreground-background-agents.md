@@ -12,6 +12,10 @@ state transitions, queueing, cancellation, and terminal notifications without
 depending on `internal/agent`. The daemon supplies a narrow runner adapter that
 maps `Run(ctx, prompt)` to the legacy `agent.Runtime`.
 
+The two conversation contexts are persisted separately under the configured
+session root: `sessions/user` contains the realtime foreground conversation,
+while `sessions/backend` contains the legacy device-operation context.
+
 The foreground realtime session can be activated by either the physical GPIO
 wakeup signal or a text request to `/api/chat`. A text request submitted while
 no realtime session is connected stays queued while the daemon connects, then

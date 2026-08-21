@@ -220,6 +220,7 @@ func (s *Session) CreateItem(ctx context.Context, item ConversationItem, previou
 func (s *Session) SendText(ctx context.Context, text, previousID string) error {
 	return s.CreateItem(ctx, ConversationItem{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: text}}}, previousID)
 }
+
 func (s *Session) SendFunctionOutput(ctx context.Context, callID, output string) error {
 	return s.CreateItem(ctx, ConversationItem{Type: "function_call_output", CallID: callID, Output: output}, "")
 }
