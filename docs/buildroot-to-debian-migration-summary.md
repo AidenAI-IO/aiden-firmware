@@ -358,7 +358,7 @@ Rockchip boot args 没有明确提供 `rw`，rootfs 也没有对应的 fstab 项
 rootfs 扩容、挂载和运行时目录初始化；systemd 单元保证它发生在 OEM、userdata、
 ldconfig 和 timesyncd 之前。
 
-### 5.5 未连接 HDMI 时 frame.service 失败
+### 5.5 未连接 HDMI 时 frame.service 的历史恢复行为（已由 2026-08-21 修复替代）
 
 **表现**
 
@@ -372,7 +372,28 @@ frame service 找不到可用 bridge 后退出，早期 systemd 配置达到启�
 - 设置 `StartLimitIntervalSec=0`，使其在无 HDMI 时持续有界重试。
 - 插入并 probe HDMI bridge 后，服务无需重启系统即可恢复。
 
-无 HDMI 时该服务处于失败重试状态属于当前设计预期，不代表 Debian 系统或其他功能失败。
+这套逻辑是早期迁移版本的行为；它会让 systemd 反复重启服务，并且在失败期间没有
+可用的 IPC socket。2026-08-21 的稳定常驻修复已替代该行为，详见下节。
+
+#### 2026-08-21 稳定常驻修复
+
+此前 Debian 启动 helper 在 TC358743 的 EDID/HPD 操作失败，或启动后暂时找不到
+HDMI bridge 时，会直接退出，导致 systemd 反复重启服务且 socket 不存在。现已调整为：
+
+- `frame_service` 先创建 `/run/frame_service/frame_service.sock`，再启动捕获线程；
+- HDMI bridge、`/dev/video0`、I2C、EDID、DV timings 或视频流暂时不可用时，捕获管理器
+  保持 `RECOVERING` 并以 1--5 秒有界退避重试；
+- `--auto-subdev` 每次恢复时重新发现 `rk628-csi`/`tc358743`，不依赖固定的
+  `v4l-subdevX` 编号；
+- TC358743 的 shell 侧 EDID/HPD 预处理失败只记录警告，不再阻止 IPC 服务启动；
+- 设备锁从进程入口移到可恢复的捕获源，视频节点暂时不存在或被占用时不会终止
+  `frame_service`；
+- 没有 HDMI 时 health socket 仍可用并返回 `STARTING`/`RECOVERING`，接入 HDMI 后无需
+  重启 systemd 服务即可自动切换到 `RUNNING`。
+
+因此，今后应将“socket 不存在”视为服务启动故障；将 `state=RECOVERING` 视为服务正常
+常驻但当前没有可用视频帧。截图在后者状态下应等待 HDMI 信号恢复，而不是反复重启
+`aiden-frame.service`。
 
 ### 5.6 EDID 工具版本和设备类型不兼容
 
@@ -730,3 +751,112 @@ USB 回归修复在重新刷写前也可以仅通过临时替换 helper 做诊�
 - `output/debian-stage2/apps-audit/summary.txt`
 - `output/debian-stage3-local/audit-report.txt`
 - `Falcom/debian` 相对 `origin/main` 的提交历史和代码差异
+
+## 11. Buildroot 残留审计与后续清理建议（2026-08-21）
+
+本次审计确认，仓库中仍保留 Buildroot 相关文件和代码，但它们不是单一意义上的
+“误残留”。当前分支仍是 Buildroot 回退链与 Debian 新链并存的双平台结构。审计期间
+没有删除任何文件或代码。
+
+### 11.1 仍在使用的旧构建链
+
+以下文件仍构成旧 Buildroot 固件的构建入口或平台配置，不能在保持旧构建能力的前提下
+直接删除：
+
+```text
+build.sh
+build_image.sh
+_build.sh
+_build_image.sh
+cmake/toolchain-arm-rockchip830.cmake
+cmake/platforms/rv1106-buildroot-uclibc.cmake
+```
+
+`CMakeLists.txt` 当前默认平台仍为 `rv1106-buildroot-uclibc`，同时提供
+`rv1106-debian-glibc`。GitHub Actions、发布脚本和回归测试仍调用
+`build_image.sh`/`_build_image.sh`，并检查 SDK 中的 Buildroot 可重复构建配置。
+删除这些入口会同时影响旧固件构建、CI 和现有对比验证。
+
+### 11.2 `overlay/` 是共享资产，不应整体删除
+
+`overlay/` 原本是 Buildroot overlay，但 Debian stage2/stage3 仍有意复用其中的部分
+文件，包括：
+
+```text
+overlay/etc/init.d/S49usbhid
+overlay/etc/aiden_boot_timeline.sh
+overlay/oem/usr/bin/aiden-dynamic-keyboard
+overlay/oem/usr/lib/aiden-log.sh
+overlay/oem/usr/model/*.rknn
+overlay/oem/usr/model/*.bin
+overlay/oem/usr/share/aiden/audio/
+overlay/oem/usr/share/aiden/edid/
+```
+
+因此不能简单删除整个 `overlay/`。如果以后决定 Debian-only，应先将仍需使用的内容
+迁移到职责明确的目录（例如 `assets/oem/`、`assets/models/`、`assets/audio/`、
+`assets/edid/` 和 `assets/usb/`），再修改 Debian 构建脚本、审计脚本和测试。
+
+### 11.3 可作为 Debian-only 阶段的清理候选
+
+在完成迁移和引用审查后，以下内容可以考虑清理：
+
+```text
+cmake/platforms/rv1106-buildroot-uclibc.cmake
+cmake/toolchain-arm-rockchip830.cmake
+overlay/oem/usr/lib/librknnmrt.so
+```
+
+`librknnmrt.so` 是旧 uClibc mini runtime；当前 Debian RKNN 方案使用
+`third_party/rknpu2/v2.3.2/lib/librknnmrt.a` 静态库和 glibc 兼容层。不过该 `.so`
+仍被旧 Buildroot CMake/镜像流程引用，所以当前不能直接删除。
+
+`overlay/etc/init.d/` 中部分脚本（例如 `S30dbus`、`S35wifidrv`、`S40network`、
+`S50telnet`、`S50usbdevice`、`S57wetty`、`S91smb` 和 `S99usb0config`）不会进入
+当前 Debian rootfs，但仍属于旧 Buildroot overlay。删除它们前必须先移除或重写
+旧镜像流程、相关测试和发布策略。
+
+### 11.4 双平台兼容代码和 SDK 子模块
+
+Agent 的 USB HID 恢复逻辑保留 Buildroot 默认命令
+`/etc/init.d/S60usb_ecm_watchdog`，Debian 通过环境变量切换到
+`/usr/lib/aiden/aiden-usb-ecm-watchdog`。这是有意的双平台兼容设计，不应当作无效代码
+直接删除。
+
+`pico-sdk` 子模块内部仍包含 Buildroot defconfig、构建规则和 uClibc 工具链。Debian
+stage3 仍使用该 SDK 构建 U-Boot、驱动、环境和 A/B 镜像，当前测试也会读取 SDK 的
+Buildroot 配置。因此不能直接修改或删除子模块内部的 Buildroot 文件；若以后切换到
+Debian-only，应维护独立的裁剪 SDK fork。
+
+### 11.5 当前可安全处理的对象
+
+目前仅建议按需清理生成物，而不是源码：
+
+```text
+build/
+build-host/
+build-debian-g0/
+output/
+.cache/
+.toolchains/
+benchmark/.venv/
+pico-sdk/output/
+```
+
+这些目录通常被 `.gitignore` 忽略，但 `output/` 可能包含固件、审计报告和刷写证据，
+清理前应确认不再需要。当前本次审计没有执行清理。
+
+### 11.6 若未来选择 Debian-only 的建议顺序
+
+Debian-only 清理应作为一次架构变更执行，而不是逐个删除文件：
+
+1. 迁移 Debian 仍使用的 overlay 共享资产。
+2. 修改 Debian stage1/stage2/stage3 脚本及所有相关审计和回归测试。
+3. 将 CMake 默认平台切换为 Debian，并移除 Buildroot 平台选择。
+4. 移除 Buildroot 构建入口、旧 overlay 和旧 runtime。
+5. 重写 GitHub Actions、发布脚本和 Buildroot 可重复构建测试。
+6. 使用裁剪后的独立 SDK fork 完成 BSP、镜像、USB、RKNN、音频、摄像头、OTA 和
+   回滚回归。
+
+在上述工作完成前，保留 Buildroot 文件是为了支持旧固件回退、问题对比和现有 CI，
+不表示 Debian 迁移未完成。

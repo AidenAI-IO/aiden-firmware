@@ -51,7 +51,7 @@ The firmware service uses the same on-demand capture lifecycle.
 
 ```text
 frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
-              [--pixel-format FMT] [--subdev PATH] [--edid PATH]
+              [--pixel-format FMT] [--subdev PATH|--auto-subdev] [--edid PATH]
               [--ring-size N] [--fps N] [--no-hdmi-sync]
               [--force-trigger|--no-force-trigger]
               [--warmup-frames N]
@@ -66,7 +66,8 @@ frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
 | `--device PATH` | V4L2 capture device, defaults to `/dev/video0` |
 | `--width N` / `--height N` | Required HDMI resolution, defaults to 1920x1080 |
 | `--pixel-format FMT` | `nv12`, `nv16`, `uyvy`, `yuyv`, defaults to `uyvy` |
-| `--subdev PATH` | HDMI bridge subdev; the binary defaults to `/dev/v4l-subdev2` |
+| `--subdev PATH` | Explicit HDMI bridge subdev. The firmware normally uses `--auto-subdev` so the bridge can appear after boot and its `/dev/v4l-subdevX` index can change. |
+| `--auto-subdev` | Rediscover `rk628-csi` or `tc358743` on every capture recovery. This is the firmware service mode and keeps the IPC endpoint alive while HDMI is absent. |
 | `--edid PATH` | Custom EDID hex. The firmware init script automatically selects the 1080p30 CTA EDID for TC358743 and leaves RK628D on its 1080p60 driver EDID; an explicit path overrides this policy |
 | `--force-trigger` / `--no-force-trigger` | Enable or disable one-shot startup EDID/HPD renegotiation. The init script defaults to bridge-aware `auto`: disabled for RK628D and enabled for TC358743. Before starting capture on TC358743, the init script also holds HPD low for 2 seconds and allows 5 seconds for the HDMI source to settle on 1080p30 |
 | `--ring-size N` | Deprecated compatibility option; ignored by production on-demand capture |
@@ -86,8 +87,14 @@ export FRAME_SERVICE_SOCKET=/tmp/frame_service.sock
 
 The firmware init script leaves `FRAME_SERVICE_SUBDEV` empty by default and
 discovers a subdevice whose sysfs name contains `rk628-csi` or `tc358743`.
-Set an explicit path in `/etc/aiden_frame_service.conf` only when automatic
-discovery is not suitable.
+The service creates its Unix socket before capture initialization. If the
+bridge, video node, HDMI signal, EDID, or DV timings are unavailable, the
+capture manager remains in `RECOVERING` and retries with a bounded backoff;
+the socket and health endpoint remain available. Once a source is connected,
+the manager transitions to `RUNNING` without a systemd restart. Set an
+explicit path in `/etc/aiden_frame_service.conf` only when automatic discovery
+is not suitable.
+
 
 ## On-Demand Capture Lifecycle
 

@@ -5,13 +5,11 @@
 #include "frame_service_defaults.h"
 #include "frame_service_server.h"
 #include <errno.h>
-#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
-#include <sys/file.h>
 #include <thread>
 #include <unistd.h>
 
@@ -28,7 +26,8 @@ struct Options {
                 ring_size(aiden::kDefaultFrameServiceRingSize),
                 fps(aiden::kDefaultFrameServiceFps),
                 warmup_frames(-1),
-                keep_streamon(false) {
+                keep_streamon(false),
+                auto_subdev(false) {
         aiden_demo::set_default_camera_config(&camera);
         // A uniformly black or single-colour phone screen is a valid
         // screenshot. The camera layer's initial frame skip handles
@@ -43,7 +42,7 @@ struct Options {
     void sync() {
         camera.device_name = device_name.c_str();
         camera.pixel_format = pixel_format.c_str();
-        camera.subdev_device = subdev_device.c_str();
+        camera.subdev_device = auto_subdev ? nullptr : subdev_device.c_str();
         camera.edid_path = edid_path.empty() ? nullptr : edid_path.c_str();
     }
 
@@ -56,13 +55,14 @@ struct Options {
     double fps;
     int warmup_frames;
     bool keep_streamon;
+    bool auto_subdev;
     aiden::CameraConfig camera;
 };
 
 void usage(const char* program) {
     fprintf(stderr,
             "Usage: %s [--socket PATH] [--device PATH] [--width N] [--height N] "
-            "[--pixel-format FMT] [--subdev PATH] [--edid PATH] [--ring-size N] "
+            "[--pixel-format FMT] [--subdev PATH|--auto-subdev] [--edid PATH] [--ring-size N] "
             "[--fps N] [--no-hdmi-sync] [--force-trigger|--no-force-trigger] "
             "[--warmup-frames N] "
             "[--keep-streamon|--pause-between-captures] "
@@ -112,6 +112,10 @@ bool parse_options(int argc, char** argv, Options* options) {
             options->pixel_format = argv[++i];
         } else if (arg == "--subdev" && i + 1 < argc) {
             options->subdev_device = argv[++i];
+            options->auto_subdev = false;
+        } else if (arg == "--auto-subdev") {
+            options->subdev_device.clear();
+            options->auto_subdev = true;
         } else if (arg == "--edid" && i + 1 < argc) {
             options->edid_path = argv[++i];
         } else if (arg == "--ring-size" && i + 1 < argc) {
@@ -156,22 +160,6 @@ bool parse_options(int argc, char** argv, Options* options) {
     return true;
 }
 
-int lock_video_device(const char* device) {
-    int fd = open(device, O_RDONLY);
-    if (fd < 0) {
-        AIDEN_LOG_ERROR("camera", "device_lock_open_failed",
-                        "device=%s error=%s", device, strerror(errno));
-        return -1;
-    }
-    if (flock(fd, LOCK_EX | LOCK_NB) < 0) {
-        AIDEN_LOG_ERROR("camera", "device_lock_failed",
-                        "device=%s error=%s", device, strerror(errno));
-        close(fd);
-        return -1;
-    }
-    return fd;
-}
-
 }
 
 int main(int argc, char** argv) {
@@ -186,16 +174,10 @@ int main(int argc, char** argv) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    int lock_fd = lock_video_device(options.camera.device_name);
-    if (lock_fd < 0) {
-        return 1;
-    }
-
     aiden::FrameServiceServer server(options.socket_path.c_str(), options.ring_size);
     if (server.start() != aiden::FrameServiceStatus::OK) {
         AIDEN_LOG_ERROR("server", "socket_start_failed",
                         "socket_path=%s", options.socket_path.c_str());
-        close(lock_fd);
         return 1;
     }
 
@@ -203,6 +185,10 @@ int main(int argc, char** argv) {
     aiden::FrameCaptureManagerOptions manager_options;
     manager_options.warmup_frames = options.warmup_frames;
     manager_options.keep_streamon = options.keep_streamon;
+    // Keep hot-plug recovery responsive while bounding retries and log volume
+    // when a board boots without an HDMI source.
+    manager_options.recovery_initial_backoff_ms = 1000;
+    manager_options.recovery_max_backoff_ms = 5000;
     aiden::FrameCaptureManager manager(&source, &server, manager_options);
     server.set_capture_handler(
         [&manager](uint32_t timeout_ms,
@@ -224,7 +210,6 @@ int main(int argc, char** argv) {
         AIDEN_LOG_ERROR("capture", "manager_start_failed", "device=%s",
                         options.camera.device_name);
         server.stop();
-        close(lock_fd);
         return 1;
     }
 
@@ -239,7 +224,6 @@ int main(int argc, char** argv) {
 
     manager.stop();
     server.stop();
-    close(lock_fd);
     AIDEN_LOG_INFO("server", "stopped", "socket_path=%s", options.socket_path.c_str());
     return 0;
 }
