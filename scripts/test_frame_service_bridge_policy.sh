@@ -6,6 +6,8 @@ config="$repo_root/overlay/etc/aiden_frame_service.conf"
 init_script="$repo_root/overlay/etc/init.d/S52frame_service"
 debian_start="$repo_root/overlay-debian/usr/lib/aiden/aiden-frame-start"
 sdk_source="$repo_root/src/aiden_sdk.cpp"
+frame_main="$repo_root/src/frame_service_main.cpp"
+frame_source="$repo_root/src/frame_camera_capture_source.cpp"
 tc_edid="$repo_root/overlay/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex"
 
 grep -q '^FRAME_SERVICE_FORCE_TRIGGER=auto$' "$config"
@@ -32,6 +34,49 @@ grep -q -- "v4l2-ctl --help-edid 2>&1 | grep -q -- '--fix-edid-checksums'" "$ini
 grep -q -- '--set-edid="pad=0,file=$edid" ${fix_checksums:+"$fix_checksums"}' "$init_script"
 grep -q -- "v4l2-ctl --help-edid 2>&1 | grep -q -- '--fix-edid-checksums'" "$debian_start"
 grep -q -- '--set-edid="pad=0,file=${edid}" ${fix_checksums:+"${fix_checksums}"}' "$debian_start"
+grep -q -- '--auto-subdev' "$debian_start"
+grep -q -- '--auto-subdev' "$frame_main"
+grep -q 'detect_hdmi_subdev' "$frame_source"
+grep -q 'device_lock_open_pending' "$frame_source"
+grep -q 'allow_edid_fallback' "$frame_source"
+grep -q 'if (!config.allow_edid_fallback)' "$sdk_source"
+grep -q 'starting frame_service in recovery mode' "$debian_start"
+grep -q 'continuing in recovery mode' "$debian_start"
+if grep -q 'HDMI bridge subdevice did not appear.*exit 1' "$debian_start"; then
+    echo "FAIL: frame_service startup must not exit when HDMI is absent" >&2
+    exit 1
+fi
+
+# Exercise the no-HDMI path with a fake service binary.  The helper must reach
+# exec successfully, keep the socket owner alive, and delegate bridge discovery
+# to the C++ capture source instead of failing during shell preflight.
+mock_root=$(mktemp -d)
+trap 'rm -rf "$mock_root"' EXIT
+cat >"$mock_root/frame_service" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >"${FRAME_SERVICE_TEST_ARGS}"
+exit 0
+EOF
+chmod 0755 "$mock_root/frame_service"
+FRAME_SERVICE_BIN="$mock_root/frame_service" \
+FRAME_SERVICE_TEST_ARGS="$mock_root/args" \
+SOCKET_PATH="$mock_root/frame.sock" \
+FRAME_SERVICE_SUBDEV= \
+FRAME_SERVICE_FORCE_TRIGGER=auto \
+FRAME_SERVICE_EDID=auto \
+    "$debian_start"
+grep -q -- '--auto-subdev' "$mock_root/args"
+grep -q -- '--no-force-trigger' "$mock_root/args"
+# The explicit `auto` sentinel must behave identically to an empty subdevice.
+FRAME_SERVICE_BIN="$mock_root/frame_service" \
+FRAME_SERVICE_TEST_ARGS="$mock_root/args-auto" \
+SOCKET_PATH="$mock_root/frame-auto.sock" \
+FRAME_SERVICE_SUBDEV=auto \
+FRAME_SERVICE_FORCE_TRIGGER=auto \
+FRAME_SERVICE_EDID=auto \
+    "$debian_start"
+grep -q -- '--auto-subdev' "$mock_root/args-auto"
+grep -q -- '--no-force-trigger' "$mock_root/args-auto"
 grep -q 'normalize_edid_checksums' "$sdk_source"
 if grep -q -- '"--fix-edid-checksums"' "$sdk_source"; then
     echo "FAIL: SDK binary still requires a version-specific v4l2-ctl checksum option" >&2

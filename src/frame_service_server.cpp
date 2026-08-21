@@ -15,7 +15,10 @@ FrameServiceServer::FrameServiceServer(const char* socket_path, size_t ring_capa
                                     handle_request(request, fd);
                                 })),
       ring_(ring_capacity),
-      state_("RUNNING"),
+      // The IPC endpoint is ready before the capture source has a frame.  A
+      // caller must not mistake that short (or long, when HDMI is absent)
+      // period for a healthy capture stream.
+      state_("STARTING"),
       running_(false),
       on_demand_latest_seq_(0),
       on_demand_capture_ts_ns_(0),
@@ -180,6 +183,7 @@ FrameServiceStatus FrameServiceServer::append_frame(const FrameMetadata& metadat
         record_capture_copy_latency(started_ns);
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            state_ = "RUNNING";
             consecutive_failures_ = 0;
         }
         frame_cv_.notify_all();
