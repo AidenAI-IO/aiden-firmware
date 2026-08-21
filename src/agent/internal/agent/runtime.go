@@ -126,6 +126,7 @@ type RunRequest struct {
 	// AsyncEpisodeMaintenance keeps the episode trace write synchronous but moves
 	// lesson extraction and referenced-memory maintenance off the response path.
 	AsyncEpisodeMaintenance bool
+	UserActionHandler       UserActionHandler
 }
 
 type RunResult struct {
@@ -865,6 +866,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	// Register this run's cancel so future callers can preempt us.
 	runCtx, runCancel := context.WithCancel(ctx)
+	if req.UserActionHandler != nil {
+		runCtx = WithUserActionHandler(runCtx, req.UserActionHandler)
+	}
 	r.preemptMu.Lock()
 	r.activeCancel = runCancel
 	r.preemptMu.Unlock()

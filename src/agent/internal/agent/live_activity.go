@@ -223,7 +223,7 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 	case "tool_result":
 		hasError := liveActivityEventHasError(event)
 		state.LastToolName = strings.TrimSpace(event.ToolName)
-		if !hasError && strings.EqualFold(strings.TrimSpace(event.ToolName), toolHumanHandoffStep) {
+		if !hasError && strings.EqualFold(strings.TrimSpace(event.ToolName), toolUserActionStep) {
 			state.Status = LiveActivityStatusNeedsApp
 			state.Phase = LiveActivityPhaseWaitingUser
 			state.CurrentAction = "request_user_input"
@@ -298,7 +298,7 @@ func (m *LiveActivityManager) pauseForHumanHandoff(requestID, output string) *Li
 	requestID = strings.TrimSpace(requestID)
 	m.mu.Lock()
 	state, ok := m.states[requestID]
-	if !ok || (state.Phase != LiveActivityPhaseWaitingUser && !strings.EqualFold(state.LastToolName, toolHumanHandoffStep)) {
+	if !ok || (state.Phase != LiveActivityPhaseWaitingUser && !strings.EqualFold(state.LastToolName, toolUserActionStep)) {
 		m.mu.Unlock()
 		return nil
 	}
@@ -575,7 +575,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 			status.requiresApp = true
 			status.step = "Sending notification"
 		}
-	case "request_human_handoff":
+	case "request_user_action":
 		status.status = LiveActivityStatusNeedsApp
 		status.phase = LiveActivityPhaseWaitingUser
 		status.action = "request_user_input"
@@ -610,7 +610,7 @@ func liveActivityToolResultPhase(tool string) string {
 		return LiveActivityPhaseVerifying
 	case toolOpenURL, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
 		return LiveActivityPhasePhoneBridge
-	case "request_human_handoff":
+	case "request_user_action":
 		return LiveActivityPhaseWaitingUser
 	default:
 		return LiveActivityPhaseVerifying
@@ -955,7 +955,7 @@ func liveActivityToolCallStep(tool string) string {
 		return "Updating memory"
 	case "skill_list", "skill_read", "skill_manage", "skill_mark_used":
 		return "Using skills"
-	case "request_human_handoff":
+	case "request_user_action":
 		return "Waiting for user input"
 	default:
 		return ""
@@ -974,7 +974,7 @@ func liveActivityToolResultStep(tool string) string {
 		return "Link opened"
 	case "touch_gesture", "quick_action", "mouse_move", "mouse_scroll", "keyboard_tap", "keyboard_text", "enter_text":
 		return "Action sent; checking result"
-	case "request_human_handoff":
+	case "request_user_action":
 		return "Waiting for user input"
 	default:
 		if step := liveActivityToolCallStep(tool); step != "" {

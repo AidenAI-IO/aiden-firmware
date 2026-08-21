@@ -56,7 +56,7 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 	if got.EnableSpeechEmotion == nil || *got.EnableSpeechEmotion {
 		t.Fatalf("enable_speech_emotion = %#v, want false", got.EnableSpeechEmotion)
 	}
-	wantTools := []string{"get_current_time", "recall_memory", "create_agent_task", "cancel_agent_task", "query_agent_task"}
+	wantTools := []string{"get_current_time", "recall_memory", "create_agent_task", "cancel_agent_task", "query_agent_task", "response_user_action"}
 	if len(got.Tools) != len(wantTools) {
 		t.Fatalf("realtime tools = %#v, want %v", got.Tools, wantTools)
 	}
@@ -75,6 +75,15 @@ func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
 	}
 	if got.Instructions == cfg.Instruction {
 		t.Fatal("realtime session reused the legacy agent instruction")
+	}
+}
+
+func TestRealtimeInstructionsRouteVisualRequestsToDeviceWork(t *testing.T) {
+	instructions := agent.DefaultRealtimeVoiceInstructions
+	for _, phrase := range []string{"currently on the screen", "visual content", "cannot see the screen"} {
+		if !strings.Contains(instructions, phrase) {
+			t.Fatalf("realtime instructions missing visual-routing guidance %q: %s", phrase, instructions)
+		}
 	}
 }
 

@@ -28,15 +28,36 @@ const (
 )
 
 type Task struct {
-	ID          string     `json:"id"`
-	Prompt      string     `json:"prompt"`
-	Status      Status     `json:"status"`
-	Result      string     `json:"result,omitempty"`
-	Error       string     `json:"error,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	ID                string      `json:"id"`
+	Prompt            string      `json:"prompt"`
+	Status            Status      `json:"status"`
+	Result            string      `json:"result,omitempty"`
+	Error             string      `json:"error,omitempty"`
+	CreatedAt         time.Time   `json:"created_at"`
+	UpdatedAt         time.Time   `json:"updated_at"`
+	StartedAt         *time.Time  `json:"started_at,omitempty"`
+	CompletedAt       *time.Time  `json:"completed_at,omitempty"`
+	PendingUserAction *UserAction `json:"pending_user_action,omitempty"`
+}
+
+type UserAction struct {
+	Reason          string `json:"reason"`
+	Details         string `json:"details"`
+	SuggestedAction string `json:"suggested_action,omitempty"`
+}
+
+type userActionHandlerContextKey struct{}
+
+func WithUserActionHandler(ctx context.Context, handler func(UserAction)) context.Context {
+	return context.WithValue(ctx, userActionHandlerContextKey{}, handler)
+}
+
+func UserActionHandlerFromContext(ctx context.Context) func(UserAction) {
+	if ctx == nil {
+		return nil
+	}
+	h, _ := ctx.Value(userActionHandlerContextKey{}).(func(UserAction))
+	return h
 }
 
 // Runner is the narrow boundary between task orchestration and an agent
@@ -46,8 +67,11 @@ type Runner interface {
 }
 
 type entry struct {
-	task   Task
-	cancel context.CancelFunc
+	task           Task
+	cancel         context.CancelFunc
+	nextPrompt     string
+	actionNotified bool
+	resumeQueued   bool
 }
 
 // Manager serializes background work and keeps create, cancel, and query
@@ -65,6 +89,7 @@ type Manager struct {
 	tasks           map[string]*entry
 	terminal        []Task
 	terminalChanged chan struct{}
+	actionChanged   chan struct{}
 	closed          bool
 }
 
@@ -88,6 +113,7 @@ func newManager(runner Runner, queueSize int, now func() time.Time) *Manager {
 		queue:           make(chan string, queueSize),
 		tasks:           make(map[string]*entry),
 		terminalChanged: make(chan struct{}, 1),
+		actionChanged:   make(chan struct{}, 1),
 	}
 	m.wg.Add(1)
 	go m.worker()
@@ -158,6 +184,10 @@ func (m *Manager) Cancel(taskID string) (Task, error) {
 	case StatusCreated, StatusQueued:
 		m.finishLocked(item, StatusCancelled, "", "")
 	case StatusRunning:
+		if item.task.PendingUserAction != nil {
+			m.finishLocked(item, StatusCancelled, "", "")
+			break
+		}
 		item.task.Status = StatusCancelling
 		item.task.UpdatedAt = m.now().UTC()
 		cancel = item.cancel
@@ -172,11 +202,113 @@ func (m *Manager) Cancel(taskID string) (Task, error) {
 	return task, nil
 }
 
+func (m *Manager) Continue(taskID, userMessage string) (Task, error) {
+	if m == nil {
+		return Task{}, errors.New("agent task manager is unavailable")
+	}
+	taskID, userMessage = strings.TrimSpace(taskID), strings.TrimSpace(userMessage)
+	if userMessage == "" {
+		return Task{}, errors.New("user_message is required")
+	}
+	m.mu.Lock()
+	item, ok := m.tasks[taskID]
+	if !ok {
+		m.mu.Unlock()
+		return Task{}, errors.New("agent task not found")
+	}
+	if item.task.Status != StatusRunning || item.task.PendingUserAction == nil {
+		m.mu.Unlock()
+		return Task{}, errors.New("agent task is not waiting for user action")
+	}
+	select {
+	case m.queue <- taskID:
+		item.task.PendingUserAction = nil
+		item.actionNotified = false
+		item.nextPrompt = userMessage
+		item.resumeQueued = true
+		item.task.UpdatedAt = m.now().UTC()
+		task := item.task
+		m.mu.Unlock()
+		return task, nil
+	default:
+		m.mu.Unlock()
+		return Task{}, errors.New("agent task queue is full")
+	}
+}
+
 func (m *Manager) TerminalNotifications() <-chan struct{} {
 	if m == nil {
 		return nil
 	}
 	return m.terminalChanged
+}
+
+func (m *Manager) UserActionNotifications() <-chan struct{} {
+	if m == nil {
+		return nil
+	}
+	return m.actionChanged
+}
+
+func (m *Manager) DrainUserActionTasks() []Task {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []Task
+	for _, item := range m.tasks {
+		if item.task.Status == StatusRunning && item.task.PendingUserAction != nil && !item.actionNotified {
+			item.actionNotified = true
+			result = append(result, item.task)
+		}
+	}
+	return result
+}
+
+// RestoreUserActionTasks makes user-action notifications eligible for delivery
+// again when a foreground session ends before it could tell the user.
+func (m *Manager) RestoreUserActionTasks(tasks []Task) {
+	if m == nil || len(tasks) == 0 {
+		return
+	}
+	ids := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		ids[task.ID] = struct{}{}
+	}
+	m.mu.Lock()
+	changed := false
+	for id := range ids {
+		if item, ok := m.tasks[id]; ok && item.task.Status == StatusRunning && item.task.PendingUserAction != nil {
+			item.actionNotified = false
+			changed = true
+		}
+	}
+	if changed {
+		select {
+		case m.actionChanged <- struct{}{}:
+		default:
+		}
+	}
+	m.mu.Unlock()
+}
+
+// PendingUserActionTasks returns all running tasks waiting for user action and
+// makes them eligible for notification in a future foreground session.
+func (m *Manager) PendingUserActionTasks() []Task {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []Task
+	for _, item := range m.tasks {
+		if item.task.Status == StatusRunning && item.task.PendingUserAction != nil {
+			item.actionNotified = false
+			result = append(result, item.task)
+		}
+	}
+	return result
 }
 
 func (m *Manager) DrainTerminalTasks() []Task {
@@ -217,6 +349,10 @@ func (m *Manager) Close() {
 		case StatusCreated, StatusQueued:
 			m.finishLocked(item, StatusCancelled, "", "")
 		case StatusRunning:
+			if item.task.PendingUserAction != nil {
+				m.finishLocked(item, StatusCancelled, "", "")
+				continue
+			}
 			item.task.Status = StatusCancelling
 			item.task.UpdatedAt = m.now().UTC()
 			if item.cancel != nil {
@@ -244,7 +380,7 @@ func (m *Manager) worker() {
 func (m *Manager) runTask(taskID string) {
 	m.mu.Lock()
 	item, ok := m.tasks[taskID]
-	if !ok || item.task.Status != StatusQueued {
+	if !ok || (item.task.Status != StatusQueued && (item.task.Status != StatusRunning || item.task.PendingUserAction != nil)) {
 		m.mu.Unlock()
 		return
 	}
@@ -256,13 +392,30 @@ func (m *Manager) runTask(taskID string) {
 	taskCtx, cancel := context.WithCancel(m.ctx)
 	startedAt := m.now().UTC()
 	item.cancel = cancel
+	item.resumeQueued = false
 	item.task.Status = StatusRunning
 	item.task.StartedAt = &startedAt
 	item.task.UpdatedAt = startedAt
-	prompt := item.task.Prompt
+	prompt := item.nextPrompt
+	if prompt == "" {
+		prompt = item.task.Prompt
+	}
+	item.nextPrompt = ""
 	m.mu.Unlock()
 
-	result, err := m.runner.Run(taskCtx, prompt)
+	result, err := m.runner.Run(WithUserActionHandler(taskCtx, func(action UserAction) {
+		m.mu.Lock()
+		if current, exists := m.tasks[taskID]; exists && current.task.Status == StatusRunning {
+			current.task.PendingUserAction = &action
+			current.actionNotified = false
+			current.task.UpdatedAt = m.now().UTC()
+			select {
+			case m.actionChanged <- struct{}{}:
+			default:
+			}
+		}
+		m.mu.Unlock()
+	}), prompt)
 	cancel()
 
 	m.mu.Lock()
@@ -272,6 +425,15 @@ func (m *Manager) runTask(taskID string) {
 		return
 	}
 	item.cancel = nil
+	if item.task.Status == StatusCancelled || item.task.Status == StatusFailed || item.task.Status == StatusCompleted {
+		return
+	}
+	if item.resumeQueued {
+		return
+	}
+	if item.task.PendingUserAction != nil {
+		return
+	}
 	if item.task.Status == StatusCancelling || errors.Is(err, context.Canceled) {
 		m.finishLocked(item, StatusCancelled, "", "")
 		return

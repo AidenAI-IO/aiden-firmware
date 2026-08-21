@@ -146,6 +146,99 @@ func TestManagerRestoresUndeliveredTerminalTasks(t *testing.T) {
 	}
 }
 
+type userActionRunner struct {
+	started chan string
+}
+
+func (r *userActionRunner) Run(ctx context.Context, prompt string) (string, error) {
+	r.started <- prompt
+	if prompt == "open the app" {
+		handler := UserActionHandlerFromContext(ctx)
+		if handler == nil {
+			return "", errors.New("user action handler missing")
+		}
+		handler(UserAction{Reason: "authentication", Details: "Login is required", SuggestedAction: "Sign in on the device"})
+	}
+	return "done", nil
+}
+
+func TestManagerPausesAndContinuesAfterUserAction(t *testing.T) {
+	runner := &userActionRunner{started: make(chan string, 2)}
+	manager := newManager(runner, 4, time.Now)
+	defer manager.Close()
+
+	task, err := manager.Create("open the app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case prompt := <-runner.started:
+		if prompt != task.Prompt {
+			t.Fatalf("first prompt = %q, want %q", prompt, task.Prompt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("task did not start")
+	}
+
+	var paused Task
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		paused, _ = manager.Query(task.ID)
+		if paused.Status == StatusRunning && paused.PendingUserAction != nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if paused.Status != StatusRunning || paused.PendingUserAction == nil {
+		t.Fatalf("paused task = %+v", paused)
+	}
+	if _, err := manager.Continue(task.ID, "用户已完成登录并回到首页"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case prompt := <-runner.started:
+		if prompt != "用户已完成登录并回到首页" {
+			t.Fatalf("continuation prompt = %q", prompt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("task did not resume")
+	}
+	completed := waitForStatus(t, manager, task.ID, StatusCompleted)
+	if completed.Result != "done" || completed.PendingUserAction != nil {
+		t.Fatalf("completed task = %+v", completed)
+	}
+}
+
+func TestManagerCancelsPausedUserActionTask(t *testing.T) {
+	runner := &userActionRunner{started: make(chan string, 1)}
+	manager := newManager(runner, 4, time.Now)
+	defer manager.Close()
+	task, err := manager.Create("open the app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	waitForPendingUserAction(t, manager, task.ID)
+	if _, err := manager.Cancel(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, manager, task.ID, StatusCancelled)
+}
+
+func waitForPendingUserAction(t *testing.T, manager *Manager, taskID string) Task {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if task, ok := manager.Query(taskID); ok && task.PendingUserAction != nil {
+			return task
+		}
+		time.Sleep(time.Millisecond)
+	}
+	task, _ := manager.Query(taskID)
+	t.Fatalf("task did not pause for user action: %+v", task)
+	return Task{}
+}
+
 func waitForStatus(t *testing.T, manager *Manager, taskID string, want Status) Task {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

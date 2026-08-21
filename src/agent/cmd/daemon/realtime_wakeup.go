@@ -230,11 +230,12 @@ func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
 }
 
 const (
-	realtimeCurrentTimeTool = "get_current_time"
-	realtimeRecallTool      = "recall_memory"
-	realtimeCreateTaskTool  = "create_agent_task"
-	realtimeCancelTaskTool  = "cancel_agent_task"
-	realtimeQueryTaskTool   = "query_agent_task"
+	realtimeCurrentTimeTool        = "get_current_time"
+	realtimeRecallTool             = "recall_memory"
+	realtimeCreateTaskTool         = "create_agent_task"
+	realtimeCancelTaskTool         = "cancel_agent_task"
+	realtimeQueryTaskTool          = "query_agent_task"
+	realtimeResponseUserActionTool = "response_user_action"
 )
 
 func realtimeVoiceToolDefinitions() []rtclient.Tool {
@@ -259,18 +260,18 @@ func realtimeVoiceToolDefinitions() []rtclient.Tool {
 		),
 		realtimeVoiceToolDefinition(
 			realtimeCreateTaskTool,
-			"Create a non-blocking background agent task for device operations, external actions, or longer multi-step work.",
+			"Start handling device operations, visual inspection, external actions, or longer multi-step work without blocking the conversation. Use this for requests about the current screen, apps, pages, images, or other device-visible content. Present the work to the user as your own responsibility.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"task": map[string]any{"type": "string", "description": "A self-contained description of the work for the background agent."},
+					"task": map[string]any{"type": "string", "description": "A self-contained description of the work you will handle."},
 				},
 				"required": []string{"task"},
 			},
 		),
 		realtimeVoiceToolDefinition(
 			realtimeCancelTaskTool,
-			"Cancel a queued or running background agent task.",
+			"Cancel work that you previously started when the user asks you to stop it.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -281,7 +282,7 @@ func realtimeVoiceToolDefinitions() []rtclient.Tool {
 		),
 		realtimeVoiceToolDefinition(
 			realtimeQueryTaskTool,
-			"Query the current status and result of a background agent task.",
+			"Check the current status and result of work you are handling.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -289,6 +290,11 @@ func realtimeVoiceToolDefinitions() []rtclient.Tool {
 				},
 				"required": []string{"task_id"},
 			},
+		),
+		realtimeVoiceToolDefinition(
+			realtimeResponseUserActionTool,
+			"Continue work after the user completed a requested device action. Use the internal task reference and pass a concise description of what the user did; never expose the internal reference to the user.",
+			map[string]any{"type": "object", "properties": map[string]any{"task_id": map[string]any{"type": "string"}, "user_message": map[string]any{"type": "string"}}, "required": []string{"task_id", "user_message"}},
 		),
 	}
 }
@@ -376,6 +382,22 @@ func (e realtimeVoiceToolExecutor) call(ctx context.Context, name, arguments str
 		task, ok := e.tasks.Query(input.TaskID)
 		if !ok {
 			return realtimeToolJSON(map[string]any{"error": "agent task not found"})
+		}
+		return realtimeToolJSON(task)
+	case realtimeResponseUserActionTool:
+		var input struct {
+			TaskID      string `json:"task_id"`
+			UserMessage string `json:"user_message"`
+		}
+		if err := json.Unmarshal([]byte(arguments), &input); err != nil {
+			return realtimeToolJSON(map[string]any{"error": "invalid task arguments"})
+		}
+		if e.tasks == nil {
+			return realtimeToolJSON(map[string]any{"error": "background agent is unavailable"})
+		}
+		task, err := e.tasks.Continue(input.TaskID, input.UserMessage)
+		if err != nil {
+			return realtimeToolJSON(map[string]any{"error": err.Error()})
 		}
 		return realtimeToolJSON(task)
 	default:
@@ -525,7 +547,19 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			taskDebounceTimer.Stop()
 		}
 		if tasks != nil && len(pendingTaskUpdates) > 0 {
-			tasks.RestoreTerminalTasks(pendingTaskUpdates)
+			var terminal, actions []agenttask.Task
+			for _, task := range pendingTaskUpdates {
+				if task.PendingUserAction != nil {
+					actions = append(actions, task)
+				} else {
+					terminal = append(terminal, task)
+				}
+			}
+			tasks.RestoreTerminalTasks(terminal)
+			tasks.RestoreUserActionTasks(actions)
+		}
+		if tasks != nil {
+			tasks.RestoreUserActionTasks(tasks.PendingUserActionTasks())
 		}
 	}()
 	tryInjectTaskUpdates := func() error {
@@ -598,6 +632,17 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				taskDebounceTimer.Reset(realtimeTaskResultDebounce)
 			}
 			taskDebounce = taskDebounceTimer.C
+		case <-agentTaskUserActionNotifications(tasks):
+			for _, task := range tasks.DrainUserActionTasks() {
+				pendingTaskUpdates = append(pendingTaskUpdates, task)
+			}
+			// User-action requests should be announced as soon as the
+			// foreground is idle. The normal guards in tryInjectTaskUpdates
+			// defer delivery while speech or a response is active.
+			taskUpdatesReady = true
+			if err := tryInjectTaskUpdates(); err != nil {
+				return err
+			}
 		case <-taskDebounce:
 			taskDebounce = nil
 			taskUpdatesReady = true
@@ -647,6 +692,9 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				}
 			case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
 				inputSpeechActive = false
+				if err := tryInjectTaskUpdates(); err != nil {
+					return err
+				}
 			case "response.created":
 				log.Println("[realtime] Response created")
 				responseActive = true
@@ -765,13 +813,20 @@ func agentTaskNotifications(tasks *agenttask.Manager) <-chan struct{} {
 	return tasks.TerminalNotifications()
 }
 
+func agentTaskUserActionNotifications(tasks *agenttask.Manager) <-chan struct{} {
+	if tasks == nil {
+		return nil
+	}
+	return tasks.UserActionNotifications()
+}
+
 func chatBridgeHasPending(bridge *realtimeChatBridge) bool {
 	return bridge != nil && len(bridge.commands) > 0
 }
 
 func formatRealtimeTaskUpdates(tasks []agenttask.Task) string {
 	var output strings.Builder
-	output.WriteString("Background agent task updates. Tell the user the outcomes naturally and concisely:\n")
+	output.WriteString("Private work-status update for the assistant. Present these outcomes naturally as your own work; never mention agents, background execution, queues, orchestration, tools, or task IDs. For pending_user_action, explain what the user must do on the device, ask them to say when it is complete, and then continue using the internal response action:\n")
 	for _, task := range tasks {
 		fmt.Fprintf(&output, "- task_id=%s status=%s task=%q", task.ID, task.Status, limitRealtimeTaskField(task.Prompt, 300))
 		if task.Result != "" {
@@ -779,6 +834,12 @@ func formatRealtimeTaskUpdates(tasks []agenttask.Task) string {
 		}
 		if task.Error != "" {
 			fmt.Fprintf(&output, " error=%q", limitRealtimeTaskField(task.Error, 500))
+		}
+		if task.PendingUserAction != nil {
+			fmt.Fprintf(&output, " pending_user_action={reason:%q details:%q suggested_action:%q}",
+				task.PendingUserAction.Reason,
+				task.PendingUserAction.Details,
+				task.PendingUserAction.SuggestedAction)
 		}
 		output.WriteByte('\n')
 	}

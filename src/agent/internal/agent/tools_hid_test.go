@@ -91,7 +91,7 @@ func TestBuiltinToolSetRegistersExpectedTools(t *testing.T) {
 		"mouse_scroll",
 		"quick_action",
 		"read_script",
-		"request_human_handoff",
+		"request_user_action",
 		"run_script",
 		"screenshot",
 		"shell",

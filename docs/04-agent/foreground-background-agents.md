@@ -30,6 +30,7 @@ The realtime model receives this focused catalog:
 | `create_agent_task` | Queue background work and return immediately with a task ID. |
 | `cancel_agent_task` | Cancel queued work or request cancellation of running work. |
 | `query_agent_task` | Read the latest task state and terminal result. |
+| `response_user_action` | Resume a background task after the user completes the requested device action. |
 
 `create_agent_task` only enqueues work. The foreground response never waits for
 the background agent to start or finish.
@@ -42,6 +43,7 @@ Tasks use the following states:
 created -> queued -> running -> completed
                             -> failed
                             -> cancelling -> cancelled
+                            -> running (waiting for user action)
                  -> cancelled
 ```
 
@@ -66,8 +68,20 @@ ends. The next session can then deliver them.
 
 ## User action handoff
 
-The first implementation intentionally does not add blocking
-`request_user_action` / `response_user_action` task coordination. The existing
-legacy human-handoff behavior remains available to ordinary agent runs, but a
-background task is not held indefinitely waiting for a foreground response.
-This boundary can be revisited after observing real background task behavior.
+`request_user_action` is mode-aware:
+
+- In an ordinary legacy run, it preserves the existing human-handoff response
+  (`HUMAN_HANDOFF_REQUESTED`).
+- In a background task run, it publishes a pending action while leaving the
+  task in `running`. The background agent loop returns at that point, but the
+  task is not terminal and its pending action remains queryable.
+
+The foreground agent receives the request when it is idle and tells the user
+what to do on the device, including that they should say when it is complete.
+After the user confirms completion, the foreground calls
+`response_user_action` with the task ID and a concise `user_message`. The
+manager clears the pending action and starts another loop on the same backend
+runtime/session. The `user_message` is appended as the next user message on
+the existing context, so the background agent can verify the new state and
+continue its original task. If the realtime session ends before delivery, the
+pending action is retained for the next foreground session.
