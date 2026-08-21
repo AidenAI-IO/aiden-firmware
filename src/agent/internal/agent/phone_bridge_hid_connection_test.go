@@ -3,7 +3,7 @@ package agent
 import "testing"
 
 func TestHIDUDCStateConnected(t *testing.T) {
-	for _, state := range []string{"attached", "powered", "default", "addressed", "configured", "suspended"} {
+	for _, state := range []string{"attached", "powered", "reconnecting", "unauthenticated", "default", "addressed", "configured", "suspended", " configured\n"} {
 		connected, known := hidUDCStateConnected(state)
 		if !known || !connected {
 			t.Errorf("state %q = connected:%t known:%t, want true,true", state, connected, known)

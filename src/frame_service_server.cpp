@@ -375,7 +375,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         if (format.empty()) {
             format = "raw";
         }
-        const bool crop_black = json_bool(root, "crop_black");
+        bool crop_black = json_bool(root, "crop_black");
 
         std::shared_ptr<const FrameBufferFrame> frame;
         bool recovering = false;
@@ -444,13 +444,19 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             const std::vector<uint8_t>* payload = &frame->data;
             FrameMetadata transformed_metadata = metadata;
             std::vector<uint8_t> cropped_raw_payload;
+            enum class RequestedCropMode { kAspect, kCentered, kBlackBars };
+            const RequestedCropMode crop_mode =
+                screen_width > 0 && screen_height > 0
+                    ? RequestedCropMode::kAspect
+                    : minimal_width > 0 ? RequestedCropMode::kCentered
+                                         : RequestedCropMode::kBlackBars;
             const auto resolve_requested_crop = [&]() -> bool {
-                if (screen_width > 0 && screen_height > 0) {
+                if (crop_mode == RequestedCropMode::kAspect) {
                     return resolve_frame_center_aspect_auto_crop(
                         metadata, frame->data, screen_width, screen_height,
                         &transformed_metadata);
                 }
-                if (minimal_width > 0) {
+                if (crop_mode == RequestedCropMode::kCentered) {
                     return resolve_frame_center_crop(metadata, frame->data, minimal_width,
                                                      metadata.height, &transformed_metadata);
                 }
@@ -458,12 +464,12 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                                                      &transformed_metadata);
             };
             const auto materialize_requested_crop = [&]() -> bool {
-                if (screen_width > 0 && screen_height > 0) {
+                if (crop_mode == RequestedCropMode::kAspect) {
                     return crop_frame_center_aspect_auto(
                         metadata, frame->data, screen_width, screen_height,
                         &transformed_metadata, &cropped_raw_payload);
                 }
-                if (minimal_width > 0) {
+                if (crop_mode == RequestedCropMode::kCentered) {
                     return crop_frame_horizontal_center(metadata, frame->data, minimal_width,
                                                         &transformed_metadata,
                                                         &cropped_raw_payload);
@@ -475,17 +481,16 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
 
             if (crop_black && format == "jpeg") {
                 if (!resolve_requested_crop()) {
-                    write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
-                    cJSON_Delete(root);
-                    return;
+                    crop_black = false;
+                    transformed_metadata = metadata;
                 }
             } else if (crop_black && format == "raw") {
                 if (!materialize_requested_crop()) {
-                    write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
-                    cJSON_Delete(root);
-                    return;
+                    crop_black = false;
+                    transformed_metadata = metadata;
+                } else {
+                    payload = &cropped_raw_payload;
                 }
-                payload = &cropped_raw_payload;
             }
             if (format == "jpeg") {
                 const uint32_t source_width = metadata.width;
@@ -515,11 +520,12 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                 } else {
                     if (crop_black) {
                         if (!materialize_requested_crop()) {
-                            write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
-                            cJSON_Delete(root);
-                            return;
+                            crop_black = false;
+                            transformed_metadata = metadata;
+                            payload = &frame->data;
+                        } else {
+                            payload = &cropped_raw_payload;
                         }
-                        payload = &cropped_raw_payload;
                     }
                     uint32_t encoder_crop_x = 0, encoder_crop_y = 0;
                     if (!encode_yuv_to_jpeg_hw(*payload, transformed_metadata.width,

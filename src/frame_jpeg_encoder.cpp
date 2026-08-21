@@ -39,7 +39,13 @@ public:
           crop_y_(0),
           crop_width_(0),
           crop_height_(0),
-          crop_configured_(false) {}
+          crop_configured_(false),
+          permanently_unavailable_(false) {}
+
+    void clear_permanent_failure() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        permanently_unavailable_ = false;
+    }
 
     ~PersistentPacked422JpegEncoder() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -56,6 +62,9 @@ public:
                 uint32_t crop_width, uint32_t crop_height,
                 std::vector<uint8_t>* output) {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (permanently_unavailable_) {
+            return false;
+        }
         if (!output || width == 0 || height == 0 || (width & 1U) != 0 ||
             crop_width == 0 || crop_height == 0 || crop_x + crop_width > width ||
             crop_y + crop_height > height || (crop_x & 1U) != 0 ||
@@ -151,6 +160,9 @@ private:
         }
         const RK_S32 ret = RK_MPI_SYS_Init();
         if (ret != RK_SUCCESS) {
+            if (ret == RK_ERR_SYS_NOT_SUPPORT) {
+                permanently_unavailable_ = true;
+            }
             AIDEN_LOG_WARN("jpeg", "mpi_sys_init_failed", "ret=%#x", ret);
             return false;
         }
@@ -210,6 +222,9 @@ private:
 
         RK_S32 ret = RK_MPI_VENC_CreateChn(channel_, &attr);
         if (ret != RK_SUCCESS) {
+            if (ret == RK_ERR_VENC_NOT_SUPPORT) {
+                permanently_unavailable_ = true;
+            }
             AIDEN_LOG_WARN("jpeg", "venc_channel_create_failed", "ret=%#x", ret);
             reset_resources();
             return false;
@@ -351,7 +366,14 @@ private:
     uint32_t crop_width_;
     uint32_t crop_height_;
     bool crop_configured_;
+    bool permanently_unavailable_;
 };
+
+PersistentPacked422JpegEncoder* persistent_encoder() {
+    static PersistentPacked422JpegEncoder* encoder =
+        new PersistentPacked422JpegEncoder();
+    return encoder;
+}
 }
 
 bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t height,
@@ -630,10 +652,15 @@ bool encode_yuv_to_jpeg_hw_with_crop(const std::vector<uint8_t>& yuv_data,
     // Keep the channel and DMA input buffer alive for the process lifetime.
     // This also avoids static destruction ordering with the camera's separate
     // RK_MPI_SYS lifetime management during service shutdown.
-    static PersistentPacked422JpegEncoder* encoder =
-        new PersistentPacked422JpegEncoder();
-    return encoder->encode(yuv_data, width, height, rk_pixel_format, quality,
+    return persistent_encoder()->encode(yuv_data, width, height, rk_pixel_format, quality,
                            crop_x, crop_y, crop_width, crop_height, output);
+}
+
+void clear_yuv_jpeg_hw_unavailable() {
+    // The persistent encoder is intentionally process-lifetime state. A
+    // caller that performs a periodic RK VENC recovery attempt can clear its
+    // sticky permanent-failure result before retrying.
+    persistent_encoder()->clear_permanent_failure();
 }
 
 }  // namespace aiden

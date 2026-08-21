@@ -59,13 +59,17 @@ bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width,
 
 // Encode a full packed UYVY/YUYV frame while applying the crop rectangle in
 // a persistent hardware JPEG channel. Returns false when RK VENC is unavailable
-// so the caller can use the existing OpenCV path. The crop rectangle must be
-// even-aligned for packed 4:2:2.
+// so the caller can use the existing OpenCV path. For packed 4:2:2, width,
+// crop_x, crop_width, and crop_height must be even; crop_y may be odd.
 bool encode_yuv_to_jpeg_hw_with_crop(const std::vector<uint8_t>& yuv_data,
                                      uint32_t width, uint32_t height,
                                      const std::string& pixel_format, int quality,
                                      uint32_t crop_x, uint32_t crop_y,
                                      uint32_t crop_width, uint32_t crop_height,
                                      std::vector<uint8_t>* output);
+
+// Clear a sticky permanent RK VENC-unavailable result before a deliberate
+// periodic recovery attempt.
+void clear_yuv_jpeg_hw_unavailable();
 
 }  // namespace aiden

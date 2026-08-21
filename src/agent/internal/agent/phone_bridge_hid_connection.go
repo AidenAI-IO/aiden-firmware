@@ -47,29 +47,56 @@ func (pb *PhoneBridge) ensureHIDConnectionMonitor() {
 	if pb == nil || !pb.hidMonitorEnabled {
 		return
 	}
-	pb.hidMonitorOnce.Do(func() {
-		pb.mu.Lock()
-		pb.refreshHIDConnectionLocked()
-		known := pb.hidConnectionKnown
-		pb.mu.Unlock()
-		if !known {
-			return
-		}
+	pb.hidMonitorMu.Lock()
+	if pb.hidMonitorRunning {
+		pb.hidMonitorMu.Unlock()
+		return
+	}
+	stop := pb.hidMonitorStop
+	if stop == nil {
+		stop = make(chan struct{})
+		pb.hidMonitorStop = stop
+	}
+	select {
+	case <-stop:
+		pb.hidMonitorMu.Unlock()
+		return
+	default:
+	}
+	pb.refreshHIDConnectionNow()
+	pb.mu.Lock()
+	known := pb.hidConnectionKnown
+	pb.mu.Unlock()
+	if !known {
+		pb.hidMonitorMu.Unlock()
+		return
+	}
+	pb.hidMonitorRunning = true
+	pb.hidMonitorMu.Unlock()
 
-		go func() {
-			ticker := time.NewTicker(phoneBridgeHIDConnectionPollInterval)
-			defer ticker.Stop()
-			for range ticker.C {
+	go func(stop <-chan struct{}) {
+		ticker := time.NewTicker(phoneBridgeHIDConnectionPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				pb.hidMonitorMu.Lock()
+				pb.hidMonitorRunning = false
+				pb.hidMonitorMu.Unlock()
+				return
+			case <-ticker.C:
 				pb.mu.Lock()
 				beforeID := pb.hidConnectionID
 				beforeConnected := pb.hidConnected
-				pb.refreshHIDConnectionLocked()
+				pb.mu.Unlock()
+				pb.refreshHIDConnectionNow()
+				pb.mu.Lock()
 				changed := beforeID != pb.hidConnectionID || beforeConnected != pb.hidConnected
 				pb.mu.Unlock()
 				if changed {
 					pb.notifyEnvironmentObserver()
 				}
 			}
-		}()
-	})
+		}
+	}(stop)
 }

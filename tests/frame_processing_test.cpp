@@ -375,6 +375,71 @@ TEST_CASE("crop raw NV12 frame rejects odd height before conversion") {
     CHECK_FALSE(crop_frame_horizontal_black_bars(metadata, nv12, 0, &cropped_metadata, &cropped));
 }
 
+TEST_CASE("crop raw NV12 frame preserves resolved chroma plane contents") {
+    FrameMetadata metadata;
+    metadata.width = 8;
+    metadata.height = 4;
+    metadata.pixel_format = "nv12";
+    metadata.stride = 8;
+    metadata.bytes = 48;
+    std::vector<uint8_t> frame(48);
+    for (size_t i = 0; i < 32; ++i) frame[i] = static_cast<uint8_t>(i);
+    for (size_t row = 0; row < 2; ++row) {
+        for (size_t x = 0; x < 8; ++x) {
+            frame[32 + row * 8 + x] = static_cast<uint8_t>(10 + row * 10 + x);
+        }
+    }
+    FrameMetadata resolved;
+    FrameMetadata materialized;
+    std::vector<uint8_t> cropped;
+    REQUIRE(resolve_frame_center_crop(metadata, frame, 4, 2, &resolved));
+    REQUIRE(crop_frame_center(metadata, frame, 4, 2, &materialized, &cropped));
+    check_crop_metadata_matches(resolved, materialized);
+    CHECK(materialized.crop_x == 2);
+    CHECK(materialized.crop_y == 0);
+    CHECK(materialized.planes[0].offset == 0);
+    CHECK(materialized.planes[0].stride == 4);
+    CHECK(materialized.planes[0].bytes == 8);
+    CHECK(materialized.planes[1].offset == 8);
+    CHECK(materialized.planes[1].stride == 4);
+    CHECK(materialized.planes[1].bytes == 4);
+    CHECK(materialized.bytes == 12);
+    CHECK(cropped.size() == materialized.bytes);
+    CHECK(std::vector<uint8_t>(cropped.begin() + 8, cropped.end()) ==
+          std::vector<uint8_t>{12, 13, 14, 15});
+}
+
+TEST_CASE("crop raw NV16 frame preserves each chroma row") {
+    FrameMetadata metadata;
+    metadata.width = 8;
+    metadata.height = 4;
+    metadata.pixel_format = "nv16";
+    metadata.stride = 16;
+    metadata.bytes = 64;
+    std::vector<uint8_t> frame(64);
+    for (size_t i = 0; i < 32; ++i) frame[i] = static_cast<uint8_t>(i);
+    for (size_t row = 0; row < 4; ++row) {
+        for (size_t x = 0; x < 8; ++x) frame[32 + row * 8 + x] = static_cast<uint8_t>(50 + row * 10 + x);
+    }
+    FrameMetadata resolved;
+    FrameMetadata materialized;
+    std::vector<uint8_t> cropped;
+    REQUIRE(resolve_frame_center_crop(metadata, frame, 4, 2, &resolved));
+    REQUIRE(crop_frame_center(metadata, frame, 4, 2, &materialized, &cropped));
+    check_crop_metadata_matches(resolved, materialized);
+    CHECK(materialized.crop_x == 2);
+    CHECK(materialized.crop_y == 1);
+    CHECK(materialized.planes[0].offset == 0);
+    CHECK(materialized.planes[0].stride == 4);
+    CHECK(materialized.planes[0].bytes == 8);
+    CHECK(materialized.planes[1].offset == 8);
+    CHECK(materialized.planes[1].stride == 4);
+    CHECK(materialized.planes[1].bytes == 8);
+    CHECK(materialized.bytes == 16);
+    CHECK(std::vector<uint8_t>(cropped.begin() + 8, cropped.end()) ==
+          std::vector<uint8_t>{62, 63, 64, 65, 72, 73, 74, 75});
+}
+
 TEST_CASE("encode_rgb_to_bmp writes top-down 24-bit BMP") {
     std::vector<uint8_t> rgb = {255, 0, 0, 0, 255, 0};
     std::vector<uint8_t> bmp;

@@ -3,29 +3,29 @@
 # Keeps HDMI frame capture available over /run/frame_service/frame_service.sock when the
 # application bundle is deployed. Configure paths in /etc/aiden_frame_service.conf.
 
-CONFIG_FILE=/etc/aiden_frame_service.conf
+CONFIG_FILE=${CONFIG_FILE:-/etc/aiden_frame_service.conf}
 AGENT_CONFIG=${AGENT_CONFIG:-/userdata/agent/agent.toml}
 BOOT_CONF=/etc/aiden_boot.conf
 AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
 [ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
 . "$AIDEN_LOG_HELPER"
 
-FRAME_SERVICE_BIN=/oem/usr/bin/frame_service
+FRAME_SERVICE_BIN=${FRAME_SERVICE_BIN:-/oem/usr/bin/frame_service}
 ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
-SOCKET_PATH=/run/frame_service/frame_service.sock
+SOCKET_PATH=${SOCKET_PATH:-/run/frame_service/frame_service.sock}
 FRAME_SERVICE_WIDTH=1920
 FRAME_SERVICE_HEIGHT=1080
 FRAME_SERVICE_WARMUP_FRAMES=
 FRAME_SERVICE_ALLOW_UNIFORM_FRAMES=1
 FRAME_SERVICE_FORCE_TRIGGER=auto
-FRAME_SERVICE_SUBDEV=
+FRAME_SERVICE_SUBDEV=${FRAME_SERVICE_SUBDEV:-}
 FRAME_SERVICE_EDID=auto
 FRAME_SERVICE_TC358743_EDID=/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex
 FRAME_SERVICE_TC358743_HPD_LOW_SECONDS=2
 FRAME_SERVICE_TC358743_SETTLE_SECONDS=5
-LOG_PATH=/var/log/frame_service/frame_service.log
-PID_FILE=/run/frame_service/frame_service.pid
-WATCHDOG_PID_FILE=/run/frame_service/frame_service_watchdog.pid
+LOG_PATH=${LOG_PATH:-/var/log/frame_service/frame_service.log}
+PID_FILE=${PID_FILE:-/run/frame_service/frame_service.pid}
+WATCHDOG_PID_FILE=${WATCHDOG_PID_FILE:-/run/frame_service/frame_service_watchdog.pid}
 
 if [ -f "$CONFIG_FILE" ]; then
     . "$CONFIG_FILE"

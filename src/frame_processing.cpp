@@ -337,6 +337,33 @@ static uint32_t even_crop_extent(uint32_t extent, uint32_t limit) {
     return extent > 1U ? extent - 1U : extent;
 }
 
+struct CenterCropRect {
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+};
+
+static bool centered_crop_rect(const FrameMetadata& metadata,
+                               uint32_t target_width, uint32_t target_height,
+                               CenterCropRect* rect) {
+    if (!rect || target_width == 0 || target_height == 0) {
+        return false;
+    }
+    rect->width = even_crop_extent(target_width, metadata.width);
+    rect->height = even_crop_extent(target_height, metadata.height);
+    if (rect->width == 0 || rect->height == 0) {
+        return false;
+    }
+    rect->x = ((metadata.width - rect->width) / 2U) & ~1U;
+    rect->y = (metadata.height - rect->height) / 2U;
+    if (metadata.pixel_format == "nv12") {
+        rect->y &= ~1U;
+    }
+    return rect->x + rect->width <= metadata.width &&
+           rect->y + rect->height <= metadata.height;
+}
+
 bool crop_frame_center(const FrameMetadata& metadata,
                        const std::vector<uint8_t>& frame,
                        uint32_t target_width,
@@ -348,17 +375,11 @@ bool crop_frame_center(const FrameMetadata& metadata,
         return false;
     }
 
-    const uint32_t crop_width = even_crop_extent(target_width, metadata.width);
-    const uint32_t crop_height = even_crop_extent(target_height, metadata.height);
-    if (crop_width == 0 || crop_height == 0) {
+    CenterCropRect rect;
+    if (!centered_crop_rect(metadata, target_width, target_height, &rect)) {
         return false;
     }
-    const uint32_t crop_x = ((metadata.width - crop_width) / 2U) & ~1U;
-    uint32_t crop_y = (metadata.height - crop_height) / 2U;
-    if (metadata.pixel_format == "nv12") {
-        crop_y &= ~1U;
-    }
-    return crop_frame_rect(metadata, frame, crop_x, crop_y, crop_width, crop_height,
+    return crop_frame_rect(metadata, frame, rect.x, rect.y, rect.width, rect.height,
                            cropped_metadata, cropped_frame);
 }
 
@@ -371,17 +392,11 @@ bool resolve_frame_center_crop(const FrameMetadata& metadata,
         target_width == 0 || target_height == 0) {
         return false;
     }
-    const uint32_t crop_width = even_crop_extent(target_width, metadata.width);
-    const uint32_t crop_height = even_crop_extent(target_height, metadata.height);
-    if (crop_width == 0 || crop_height == 0) {
+    CenterCropRect rect;
+    if (!centered_crop_rect(metadata, target_width, target_height, &rect)) {
         return false;
     }
-    const uint32_t crop_x = ((metadata.width - crop_width) / 2U) & ~1U;
-    uint32_t crop_y = (metadata.height - crop_height) / 2U;
-    if (metadata.pixel_format == "nv12") {
-        crop_y &= ~1U;
-    }
-    return resolve_crop_metadata(metadata, frame, crop_x, crop_y, crop_width, crop_height,
+    return resolve_crop_metadata(metadata, frame, rect.x, rect.y, rect.width, rect.height,
                                  cropped_metadata);
 }
 

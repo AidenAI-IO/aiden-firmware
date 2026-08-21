@@ -19,6 +19,8 @@ import (
 
 func TestPhoneBridgeScreenCacheFollowsPhoneIDAcrossHTTPFallback(t *testing.T) {
 	bridge := newTestPhoneBridge(t)
+	bridge.hidConnectionState = func() (bool, bool) { return false, false }
+	bridge.hidMonitorEnabled = false
 	screenState := &screen.ScreenState{}
 	tools := &ToolSet{
 		screen: screenState,
@@ -130,6 +132,7 @@ func TestPhoneBridgeScreenCacheFollowsPhysicalHIDConnection(t *testing.T) {
 	}
 
 	hidConnected = true
+	bridge.refreshHIDConnectionNow()
 	if got := bridge.getStatus().HIDConnectionID; got == "" || got == firstConnectionID {
 		t.Fatalf("new HID connection ID = %q, want a new non-empty ID", got)
 	}

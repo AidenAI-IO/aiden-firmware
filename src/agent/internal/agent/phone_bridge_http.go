@@ -207,8 +207,8 @@ func (pb *PhoneBridge) noteHTTPPollState(platform, phoneID, appState, pipBridgeE
 	fgsEnabled, fgsEnabledOK := parseOptionalBoolQuery(fgsBridgeEnabled)
 	now := time.Now()
 
+	pb.refreshHIDConnectionNow()
 	pb.mu.Lock()
-	pb.refreshHIDConnectionLocked()
 	pb.updateHIDConnectionPhoneLocked(phoneID)
 	if platform != "" {
 		pb.platform = platform

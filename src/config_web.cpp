@@ -331,7 +331,7 @@ void on_signal(int) {
     g_should_stop = 1;
 }
 
-bool schedule_frame_service_restart(std::string* error);
+bool schedule_frame_service_restart(const std::string& agent_config_path, std::string* error);
 
 bool file_exists(const char* path) {
     return path && access(path, F_OK) == 0;
@@ -2522,21 +2522,40 @@ void schedule_agent_restart() {
     }
 }
 
-bool schedule_frame_service_restart(std::string* error) {
+bool schedule_frame_service_restart(const std::string& agent_config_path, std::string* error) {
     if (error) error->clear();
     const char* init_script = frame_service_init_script_path();
     if (!init_script || init_script[0] == '\0') {
         if (error) *error = "frame service init script path is empty";
         return false;
     }
+    int status_pipe[2] = {-1, -1};
+    if (pipe(status_pipe) != 0) {
+        if (error) *error = std::string("pipe frame service restart: ") + strerror(errno);
+        return false;
+    }
+    std::string cloexec_error;
+    if (!set_fd_cloexec(status_pipe[1], &cloexec_error)) {
+        close(status_pipe[0]);
+        close(status_pipe[1]);
+        if (error) *error = cloexec_error;
+        return false;
+    }
     pid_t launcher_pid = fork();
     if (launcher_pid < 0) {
+        close(status_pipe[0]);
+        close(status_pipe[1]);
         if (error) *error = std::string("fork frame service restart: ") + strerror(errno);
         return false;
     }
     if (launcher_pid == 0) {
+        close(status_pipe[0]);
         pid_t supervisor_pid = fork();
-        if (supervisor_pid < 0) _exit(127);
+        if (supervisor_pid < 0) {
+            const int launch_errno = errno;
+            (void)write(status_pipe[1], &launch_errno, sizeof(launch_errno));
+            _exit(127);
+        }
         if (supervisor_pid > 0) _exit(0);
         setsid();
         int devnull = open("/dev/null", O_RDWR);
@@ -2546,9 +2565,41 @@ bool schedule_frame_service_restart(std::string* error) {
             dup2(devnull, STDERR_FILENO);
             if (devnull > STDERR_FILENO) close(devnull);
         }
+        if (setenv("AGENT_CONFIG", agent_config_path.c_str(), 1) != 0) {
+            const int launch_errno = errno;
+            (void)write(status_pipe[1], &launch_errno, sizeof(launch_errno));
+            _exit(127);
+        }
         execl(init_script, init_script, "restart", static_cast<char*>(NULL));
         execl("/bin/sh", "sh", init_script, "restart", static_cast<char*>(NULL));
+        const int launch_errno = errno;
+        (void)write(status_pipe[1], &launch_errno, sizeof(launch_errno));
         _exit(127);
+    }
+    close(status_pipe[1]);
+    int launch_errno = 0;
+    ssize_t received = 0;
+    while (received < static_cast<ssize_t>(sizeof(launch_errno))) {
+        ssize_t n = read(status_pipe[0], reinterpret_cast<char*>(&launch_errno) + received,
+                         sizeof(launch_errno) - static_cast<size_t>(received));
+        if (n > 0) {
+            received += n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) {
+            if (error) *error = std::string("read frame service restart status: ") + strerror(errno);
+            close(status_pipe[0]);
+            (void)waitpid(launcher_pid, NULL, 0);
+            return false;
+        }
+        break;
+    }
+    close(status_pipe[0]);
+    (void)waitpid(launcher_pid, NULL, 0);
+    if (received != 0) {
+        if (error) *error = std::string("launch frame service restart: ") + strerror(launch_errno);
+        return false;
     }
     return true;
 }
@@ -4174,7 +4225,7 @@ ApiResponse handle_post_config_via_cli(const Options& options, const std::string
     bool frame_service_restart_scheduled = false;
     if (frame_service_changed) {
         std::string restart_error;
-        if (!schedule_frame_service_restart(&restart_error)) {
+        if (!schedule_frame_service_restart(options.agent_config_path, &restart_error)) {
             cJSON_Delete(response);
             cJSON_Delete(update);
             return make_json_error(500, restart_error.empty()
