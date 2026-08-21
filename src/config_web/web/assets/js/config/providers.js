@@ -12,6 +12,7 @@ const setDetails=runtimeFunction('setDetails');
 const t=runtimeFunction('t');
 const getActiveLocale=runtimeFunction('getActiveLocale');
 const isSectionEditing=runtimeFunction('isSectionEditing');
+const resolveModelProviderType=runtimeFunction('resolveModelProviderType');
 
 let lastModelProviderValue='';
 const lastModelByProvider={};
@@ -98,7 +99,7 @@ const ModelSelector = {
   availableModels:[],currentProvider:null,selectedModel:null,requestId:0,
   init:function(){this.setupEventListeners();},
   onProviderChange:async function(providerRef){this.currentProvider=providerRef;if(!providerRef){this.requestId++;setCurrentModelValue('');this.clearModelSelector();return;}const providerType=this.resolveProviderType(providerRef);if(!providerType){this.requestId++;setCurrentModelValue('');this.clearModelSelector();return;}await this.loadModels(providerType);},
-  resolveProviderType:function(providerRef){if(ModelProvidersManager.records[providerRef])return ModelProvidersManager.records[providerRef].type;return providerRef;},
+  resolveProviderType:function(providerRef){return resolveModelProviderType(providerRef);},
   loadModels:async function(providerType){const requestId=++this.requestId;const container=byId('modelSelectorContainer');if(!container)return;container.innerHTML='<div class="model-selector-loading">'+this.escapeHtml(t('provider.loading_models'))+'</div>';try{const locale=getActiveLocale()||'zh-CN';const response=await fetch(`/api/models?provider=${encodeURIComponent(providerType)}&locale=${encodeURIComponent(locale)}`);if(requestId!==this.requestId)return;if(response.status===503){this.availableModels=[];this.renderModelSelector(true);return;}if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();if(requestId!==this.requestId)return;this.availableModels=data.models||[];this.renderModelSelector();}catch(err){if(requestId!==this.requestId)return;this.availableModels=[];this.applyProviderModelChoice(true);container.innerHTML=`<div class="model-selector-error">${t('provider.load_models_failed')}: ${this.escapeHtml(err.message)}</div>`;}},
   defaultModelId:function(){const models=this.availableModels||[];const model=models.find(function(item){return item&&(item.default||item.is_default||item.recommended);})||models[0];return model&&model.id?String(model.id):'';},
   providerModelChoice:function(providerRef,agentOffline){const remembered=lastModelByProvider[String(providerRef||'')]||'';if(remembered)return remembered;return agentOffline?'':this.defaultModelId();},
