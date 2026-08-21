@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -160,11 +161,58 @@ func (t *RecallMemoryTool) Call(ctx context.Context, input string) (string, erro
 		longTerm[i].MemoryScope = "long_term"
 	}
 	results = append(results, longTerm...)
+	sort.SliceStable(results, func(i, j int) bool {
+		si := recallMemoryResultScore(query, results[i])
+		sj := recallMemoryResultScore(query, results[j])
+		if si != sj {
+			return si > sj
+		}
+		if results[i].MemoryScope != results[j].MemoryScope {
+			return results[i].MemoryScope == "temporary"
+		}
+		if results[i].Priority != results[j].Priority {
+			return results[i].Priority > results[j].Priority
+		}
+		return results[i].ID < results[j].ID
+	})
 	if query.Limit > 0 && len(results) > query.Limit {
 		results = results[:query.Limit]
 	}
 	recordRecalledMemoryIDs(ctx, results, func(r MemoryResult) string { return r.ID })
 	return encodeToolJSON(map[string]any{"results": results})
+}
+
+func recallMemoryResultScore(query MemoryQuery, result MemoryResult) int {
+	if len(query.Tags) == 0 && len(query.Entities) == 0 && len(query.Types) == 0 {
+		if result.MemoryScope == "temporary" {
+			return 1
+		}
+		return 0
+	}
+	score := 0
+	for _, want := range query.Tags {
+		for _, got := range result.Tags {
+			if strings.EqualFold(strings.TrimSpace(want), strings.TrimSpace(got)) {
+				score += 4
+			}
+		}
+	}
+	for _, want := range query.Entities {
+		for _, got := range result.Entities {
+			if strings.EqualFold(strings.TrimSpace(want), strings.TrimSpace(got)) {
+				score += 5
+			}
+		}
+	}
+	for _, want := range query.Types {
+		if strings.EqualFold(strings.TrimSpace(want), result.Type) {
+			score += 3
+		}
+	}
+	if score > 0 && result.MemoryScope == "temporary" {
+		score++
+	}
+	return score
 }
 
 // recordRecalledMemoryIDs reports the IDs of memories surfaced by a recall tool
