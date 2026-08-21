@@ -260,7 +260,7 @@ func realtimeVoiceToolDefinitions() []rtclient.Tool {
 		),
 		realtimeVoiceToolDefinition(
 			realtimeCreateTaskTool,
-			"Start handling device operations, visual inspection, external actions, or longer multi-step work without blocking the conversation. Use this for requests about the current screen, apps, pages, images, or other device-visible content. Present the work to the user as your own responsibility.",
+			"Handle any request you cannot directly and reliably answer or complete with the realtime conversation tools, including device state, visual inspection, external actions, lookups, or longer multi-step work. Present the work to the user as your own responsibility.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{

@@ -80,7 +80,7 @@ func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
 
 func TestRealtimeInstructionsRouteVisualRequestsToDeviceWork(t *testing.T) {
 	instructions := agent.DefaultRealtimeVoiceInstructions
-	for _, phrase := range []string{"currently on the screen", "visual content", "cannot see the screen"} {
+	for _, phrase := range []string{"cannot directly and reliably answer", "screen or page content", "Never refuse merely because"} {
 		if !strings.Contains(instructions, phrase) {
 			t.Fatalf("realtime instructions missing visual-routing guidance %q: %s", phrase, instructions)
 		}
