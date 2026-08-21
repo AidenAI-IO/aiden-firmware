@@ -69,9 +69,29 @@ Consume(limit)              从 events_since 拉取并可靠落盘
 ReadPending(limit)          读取尚未完成 Memory 处理的通知
 CommitProcessed(batch)      Memory 写入成功后推进 memory cursor
 Cleanup(policy)             按 cursor 和存储水位清理已结算数据
+Query(query)                只读查询已落盘的原始通知，不访问 BLE、不改 cursor
 ```
 
 `source cursor` 和 `memory cursor` 都由 NotificationContext 持久化。调用方不需要理解 JSONL 分片、generation 或文件清理细节。
+
+落盘记录在 BLE 事件外包一层 `context_id`。BLE 的 `id` 只在当前
+`ble_service` generation 内单调；`context_id` 则由 Agent 本地持久化并跨
+generation 单调递增，Memory cursor 和 shell 的 `--since` 都使用
+`context_id`。原始 BLE `id`、generation 和全部通知字段仍原样保留，便于排障。
+
+### Shell 查询
+
+Agent 二进制提供只读子命令，直接查询 JSONL 原始记录：
+
+```bash
+agent notifications list --dir /userdata/agent --limit 20
+agent notifications list --dir /userdata/agent --since 42 --format jsonl
+agent notifications list --dir /userdata/agent --date 2026-08-21 --app com.example
+agent notifications list --dir /userdata/agent --text meeting
+```
+
+命令不会连接 `ble_service`，也不会创建或更新 `state.json`、source cursor、
+memory cursor。默认输出 JSON；`--format jsonl` 适合 shell 管道和 `jq`。
 
 ### 存储
 
