@@ -652,7 +652,7 @@ func (r *Runtime) startEpisodeMemory(runtimeLogger *Logger) {
 	}
 	err := plane.StartEpisodeMemory(r.models)
 	r.episodeMemoryInitErr = err
-	if notificationErr := plane.StartNotificationMemory(); notificationErr != nil {
+	if notificationErr := plane.StartNotificationMemory(r.models); notificationErr != nil {
 		if runtimeLogger != nil {
 			runtimeLogger.Warn("[notification-memory] worker disabled: %v", notificationErr)
 		} else {

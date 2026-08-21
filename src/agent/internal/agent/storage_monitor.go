@@ -134,11 +134,12 @@ type StorageDegradedModeConfig struct {
 }
 
 type StorageCleanupConfig struct {
-	Enabled                     bool  `toml:"enabled"`
-	LLMHTTPLogRetentionDays     []int `toml:"llm_http_log_retention_days,omitempty"`
-	AudioArchiveRetentionDays   []int `toml:"audio_archive_retention_days,omitempty"`
-	SessionArchiveRetentionDays []int `toml:"session_archive_retention_days,omitempty"`
-	CleanupRetryIntervalSeconds int   `toml:"cleanup_retry_interval_seconds,omitempty"`
+	Enabled                          bool  `toml:"enabled"`
+	LLMHTTPLogRetentionDays          []int `toml:"llm_http_log_retention_days,omitempty"`
+	AudioArchiveRetentionDays        []int `toml:"audio_archive_retention_days,omitempty"`
+	SessionArchiveRetentionDays      []int `toml:"session_archive_retention_days,omitempty"`
+	NotificationContextRetentionDays []int `toml:"notification_context_retention_days,omitempty"`
+	CleanupRetryIntervalSeconds      int   `toml:"cleanup_retry_interval_seconds,omitempty"`
 }
 
 // StorageMonitorConfig controls persistent storage monitoring and remediation.
@@ -170,11 +171,12 @@ func DefaultStorageConfig() StorageMonitorConfig {
 			MaxAgentLogMB:         1,
 		},
 		Cleanup: StorageCleanupConfig{
-			Enabled:                     true,
-			LLMHTTPLogRetentionDays:     []int{7, 3, 1, 0},
-			AudioArchiveRetentionDays:   []int{30, 7, 0},
-			SessionArchiveRetentionDays: []int{30},
-			CleanupRetryIntervalSeconds: 60,
+			Enabled:                          true,
+			LLMHTTPLogRetentionDays:          []int{7, 3, 1, 0},
+			AudioArchiveRetentionDays:        []int{30, 7, 0},
+			SessionArchiveRetentionDays:      []int{30},
+			NotificationContextRetentionDays: []int{14, 7, 1, 0},
+			CleanupRetryIntervalSeconds:      60,
 		},
 	}
 }
@@ -205,6 +207,7 @@ func (c StorageMonitorConfig) Validate() error {
 		{name: "llm_http_log_retention_days", values: c.Cleanup.LLMHTTPLogRetentionDays},
 		{name: "audio_archive_retention_days", values: c.Cleanup.AudioArchiveRetentionDays},
 		{name: "session_archive_retention_days", values: c.Cleanup.SessionArchiveRetentionDays},
+		{name: "notification_context_retention_days", values: c.Cleanup.NotificationContextRetentionDays},
 	}
 	for _, field := range retentionFields {
 		for _, value := range field.values {

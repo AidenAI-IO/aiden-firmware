@@ -21,8 +21,15 @@ sidebar_position: 12
 | `ble_service` | 接收 iOS/Android 通知、规范化、分配事件 ID、维护短期 event ring |
 | `NotificationContext` | 消费 `events_since`、脱敏去重、JSONL 落盘、source cursor、memory cursor、查询和清理 |
 | `MemoryWorker` | 通用的 timer、唤醒、批处理、取消、重试和前台任务避让 |
-| `NotificationMemoryProcessor` | 判断通知是否值得记忆，提炼 Candidate，执行 policy 和 Memory resolve |
+| `NotificationMemoryProcessor` | 消费通知并提供场景输入、过滤约束和 proposal 校验，不直接调用模型或写 Store |
 | `TemporaryMemoryStore` | 保存有明确过期时间的短期结论，供 `recall_memory` 检索 |
+
+所有场景共用同一个 `MemoryMergeEngine`。Processor 只提供原始数据、检索约束
+和场景校验器；Engine 统一完成“原始数据 + 相关 Memory top-k -> LLM proposal ->
+校验 -> Memory Apply”。Temporary、Long-Term 和 Device Memory 的 Store Adapter
+只负责最终的 add、update、reinforce、supersede、remove、ignore 和 revision。
+不同场景不再各自维护“召回 + LLM 合并 + 落盘”状态机；Temporary 仍然写入
+`memory/temporary/`，只是由统一 Engine/Store 链路负责写入和更新。
 
 `NotificationMemoryProcessor` 是 Worker 的场景处理器，不是独立进程。Episode Memory 使用另一个 Worker 实例和另一个 Processor；两者在同一 Agent 进程内做逻辑隔离，状态、队列、timer、cursor、retry 和取消上下文彼此独立。
 
@@ -220,11 +227,11 @@ Episode 完成并落盘
   -> NotifyEpisode
   -> Agent 空闲 5 分钟
   -> 代码硬预筛
-  -> 查询相关 Device Memory
-  -> 一次后台 LLM 提炼 0～3 个 Candidate
+  -> MemoryMergeEngine 查询相关 Device Memory top-k
+  -> MemoryMergeEngine 调用 LLM 提炼 0～3 个 Candidate
   -> 代码硬校验
-  -> create / update / disputed
-  -> 写入 Device Memory
+  -> MemoryMergeEngine 生成 create / update / disputed Intent
+  -> Device Memory Store Adapter 落盘
 ```
 
 现有 Worker 已负责：
@@ -275,6 +282,34 @@ NotifyEpisode                -> Notify
 
 通用 Worker 不理解 Episode、Notification、Candidate 或 Store。它只通过 `MemoryProcessor` interface 调用场景实现，因此删除通用 Worker 后，timer、取消、pending 和重试复杂度会重新散落到两个调用方；这个 seam 具有实际复用价值。
 
+### MemoryMergeEngine 与场景 Processor
+
+`MemoryMergeEngine` 是所有 Memory 场景共用的深模块，固定编排以下流程：
+
+```text
+MemoryMergeInput
+  -> Engine 调用 Processor 提供的检索策略，查找允许 scope 内的 active Memory top-k
+  -> 构造统一 LLM 请求（原始数据 + top-k Memory + 场景规则）
+  -> 获取严格 JSON proposal
+  -> 校验 action、scope、source refs、memory_id 和 revision
+  -> 转换为 MemoryIntent
+  -> 调用对应 Store Adapter 原子 Apply
+```
+
+Processor 不负责 LLM 调用或直接写 Temporary/Long-Term/Device Store；它只通过受控的
+检索策略向 Engine 提供 top-k 候选。Processor 只负责读取自己的输入、确定性预过滤、提供场景 Prompt/Schema 约束，
+以及校验 proposal 中与场景有关的证据门槛。Episode 和 Notification 可以使用
+不同 Prompt 和字段校验，但必须经过同一个 Engine 编排和同一个 Apply seam。
+
+Notification 的目标流程是：
+
+```text
+原始 Notification + Temporary/Long-Term top-k
+  -> MemoryMergeEngine LLM proposal
+  -> ignore / add / update / reinforce / remove / hold / promote
+  -> 统一 Memory Apply
+```
+
 ### 不复用的业务逻辑
 
 Notification 不调用 Episode Processor，也不复用以下规则：
@@ -284,11 +319,11 @@ Notification 不调用 Episode Processor，也不复用以下规则：
 - Device Memory 的 Scope、revision 合并和 disputed 规则；
 - Episode 的 state file、cursor 和 5 分钟空闲策略。
 
-Episode Processor 会主动过滤 OTP 和临时值，而 Notification 的必要能力之一正是把有短期价值的通知写入 Temporary Memory。因此 Prompt、Candidate、policy、状态文件和 Store 写入必须分别保留在各自 Processor 内。
+Episode 和 Notification 的 Prompt、Candidate schema、policy、状态文件和输入读取仍然分别保留在各自 Processor 内；但 top-k 召回、LLM 调用、proposal 编排和最终 Apply 都经过同一个 `MemoryMergeEngine`。
 
 ### 后台模型调用协调
 
-当前 Episode Processor 直接调用模型，并没有 `MemoryRunGate`。引入 Notification Worker 后新增一个进程内 `MemoryRunGate`，规则如下：
+两个 Worker 共用一个进程内 `MemoryRunGate`，规则如下：
 
 - 同一时间最多运行一个后台 Memory 模型调用；
 - 前台 Agent task 开始时取消正在执行或等待中的后台调用；
@@ -307,18 +342,18 @@ MemoryWorker 只负责通用调度：
 - 通过新增的 `MemoryRunGate` 与其他后台 Worker 串行使用模型；
 - 记录场景级错误，不修改 Processor 的业务状态。
 
-NotificationMemoryProcessor 负责场景语义：
+NotificationMemoryProcessor 负责场景输入和语义约束：
 
 - 从 `ReadPending` 读取通知并合并同一通知的 added/modified/removed 变化；
-- 先执行敏感类别、App policy 和确定性过滤，再调用 LLM；
-- 根据 `ignore`、`temporary`、`long_term` 三种结果提交；
-- `temporary` 写入 Temporary Memory；`long_term` 执行 add、reinforce、supersede、hold；
-- 只有 resolve 成功后才调用 `CommitProcessed`。
+- 先执行敏感类别、App policy 和确定性过滤；
+- 提供通知原始记录、检索 query、允许的 scope 和 proposal 校验规则；
+- 由 `MemoryMergeEngine` 调用 LLM 并统一提交；
+- 只有 Engine resolve 成功后才调用 `CommitProcessed`。
 
-当前 MVP Processor 先使用确定性策略：验证码、OTP、营销/促销和 `removed`
-事件直接忽略；其余有标题或正文的通知写入 `temporary/`，默认 TTL 7 天，
-并以 `context_id` 作为来源引用。后续接入模型提炼时只替换 Processor 的
-policy，不改变 MemoryWorker、NotificationContext 或 `recall_memory` 接口。
+确定性规则只用于低成本安全预过滤：验证码、OTP、营销/促销等高风险噪声不进入
+LLM；其余通知交给 `MemoryMergeEngine`，由原始通知和 Temporary/Long-Term top-k
+共同决定是否创建、更新、删除、保留或晋升。LLM 不直接修改文件，所有结果都经过
+Engine 的 proposal 校验和 Store Adapter 落盘。
 
 运行时序：
 
@@ -338,24 +373,24 @@ LLM 只返回严格 JSON：
 
 ```json
 {
-  "action": "ignore|temporary|long_term",
+  "action": "ignore|add|update|reinforce|remove|hold|promote",
+  "scope": "temporary|long_term",
+  "memory_id": "existing-memory-id",
+  "memory_revision": 2,
   "type": "preference|rule|fact|profile",
   "title": "Weekly review day",
   "content": "Weekly review is on Wednesday.",
-  "time_scope": "recurring",
-  "confidence": 0.93,
-  "sensitivity": "normal",
+  "expires_at": "2026-08-28T00:00:00Z",
   "source_event_ids": ["42"]
 }
 ```
 
-自动进入 Long-Term Memory 必须同时满足：
+自动进入 Long-Term Memory 的通知结论必须同时满足：
 
 - 类型为 preference、rule、fact 或 profile；
 - 时间范围为长期或 recurring；
-- 置信度至少 0.90；
-- 不是敏感内容，也未被 App policy 禁止；
-- 单条结论有明确语义，或七天内有至少三次独立证据。
+- 不是敏感内容，也未被确定性过滤或 App policy 禁止；
+- 单条结论有明确语义；长期结论由 Processor 的场景校验决定，不能仅凭模型自由改写。
 
 以下内容不自动晋升：OTP、密码、支付授权、银行和安全告警、健康和法律信息、私人聊天、营销、物流状态、一次性提醒和一次性日程变更。
 
@@ -383,25 +418,15 @@ Temporary 和 Long-Term Memory 都通过 `SourceRefs`、`EvidenceRefs` 和 `Trac
 
 ## 配置
 
-```toml
-[notification_memory]
-enabled = true
-auto_create = true
-auto_update = true
-retention_days = 14
-temporary_default_ttl_days = 7
-context_max_mb = 16
-debounce_seconds = 30
-max_batch_events = 20
-min_confidence = 0.90
-allowed_apps = []
-blocked_apps = []
+当前最小实现固定使用 30 秒 debounce、每批 20 条、Temporary 默认 TTL 7 天；自动生成的通知 Long-Term Memory 默认 TTL 90 天，reinforce/update 会刷新 TTL。
+原始通知清理由已有 StorageMonitor 配置管理：
 
+```toml
 [storage.cleanup]
 notification_context_retention_days = [14, 7, 1, 0]
 ```
 
-空的 `allowed_apps` 使用内置安全默认值，不表示允许所有 App。敏感类别规则优先级高于 allowlist。
+清理器只删除已越过 `memory_cursor` 的完整日期分片；未处理记录在普通、紧急和手动强制清理中都受保护。后续确有运行时调参需求时，再增加独立的 `notification_memory` 配置段。
 
 ## 隐私、失败与重试
 
@@ -417,8 +442,8 @@ notification_context_retention_days = [14, 7, 1, 0]
 1. 增加统一事件模型和 `NotificationContext`，完成消费、落盘、游标、去重和 retention。
 2. 以当前 main 的 `episodeMemoryWorker` 和 `episodeMemoryBatchProcessor` 为基础抽出通用 `MemoryWorker`/`MemoryProcessor`，保持 Episode 行为不变。
 3. 增加 Temporary Memory Store，并让 `recall_memory` 合并检索 Temporary 和 Long-Term Memory。
-4. 增加 `MemoryRunGate`，串行化 Episode 与 Notification 的后台模型调用，并验证前台任务可取消两者。
-5. 接入 `NotificationMemoryProcessor`，先记录 Candidate 和 policy 结果，再开启低风险 Memory 的自动创建与更新。
+4. 增加 `MemoryMergeEngine` 和 `MemoryRunGate`，统一 Episode 的 raw + top-k + LLM + Apply 链路，并验证前台任务可取消两者。
+5. 接入 Notification 的 top-k + LLM + Apply 链路，再开启低风险 Memory 的自动创建与更新。
 6. 根据运行数据调整 TTL、debounce、置信度阈值和模型预算。
 
 ## 验收标准

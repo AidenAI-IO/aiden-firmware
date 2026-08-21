@@ -236,7 +236,7 @@ func TestNotificationContextSanitizeTruncatesUTF8ByRunes(t *testing.T) {
 	}
 }
 
-func TestNotificationContextQueryRepairsIncompleteTailRecord(t *testing.T) {
+func TestNotificationContextQueryDoesNotRepairIncompleteTailRecord(t *testing.T) {
 	root := t.TempDir()
 	eventsDir := filepath.Join(root, "notifications", "events")
 	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
@@ -248,14 +248,15 @@ func TestNotificationContextQueryRepairsIncompleteTailRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	results, err := QueryNotificationRecords(context.Background(), root, NotificationQuery{Limit: 10})
-	if err != nil || len(results) != 1 || results[0].ContextID != "1" {
-		t.Fatalf("query after repair results=%#v err=%v", results, err)
+	if err == nil || len(results) != 0 {
+		t.Fatalf("read-only query results=%#v err=%v, want incomplete-record error", results, err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != complete {
-		t.Fatalf("repaired file=%q, want complete record only", string(data))
+	want := complete + `{"id":"2","context_id":"2"`
+	if string(data) != want {
+		t.Fatalf("query modified file=%q, want %q", string(data), want)
 	}
 }

@@ -86,6 +86,7 @@ type MemoryItem struct {
 	ID               string            `yaml:"id"`
 	Type             string            `yaml:"type"`
 	Status           string            `yaml:"status"`
+	Revision         int               `yaml:"revision,omitempty"`
 	Priority         int               `yaml:"priority"`
 	Confidence       float64           `yaml:"confidence"`
 	Tags             []string          `yaml:"tags,omitempty"`
@@ -121,6 +122,7 @@ type MemoryResult struct {
 	ID            string            `json:"id"`
 	Type          string            `json:"type"`
 	Status        string            `json:"status"`
+	Revision      int               `json:"revision,omitempty"`
 	Title         string            `json:"title"`
 	Summary       string            `json:"summary"`
 	Content       string            `json:"content"`
@@ -247,6 +249,7 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 			ID:            entry.ID,
 			Type:          entry.Type,
 			Status:        entry.Status,
+			Revision:      parsed.Item.Revision,
 			Title:         parsed.Title,
 			Summary:       entry.Summary,
 			Content:       parsed.Content,
@@ -873,6 +876,9 @@ func normalizeMemoryItem(item MemoryItem, now time.Time) MemoryItem {
 	}
 	if item.Status == "" {
 		item.Status = "active"
+	}
+	if item.Revision <= 0 {
+		item.Revision = 1
 	}
 	if item.TimeScope == "" {
 		item.TimeScope = "long_term"

@@ -270,7 +270,7 @@ func queryNotificationEvents(ctx context.Context, eventsDir string, query Notifi
 	sort.Strings(files)
 	all := make([]NotificationRecord, 0)
 	for _, name := range files {
-		records, err := readNotificationRecordFile(filepath.Join(eventsDir, name))
+		records, err := readNotificationRecordFileReadOnly(filepath.Join(eventsDir, name))
 		if err != nil {
 			return nil, err
 		}
@@ -383,6 +383,130 @@ func (c *NotificationContext) CommitProcessed(ctx context.Context, events []Noti
 	return c.persistLocked()
 }
 
+// CleanupProcessedBefore removes only complete date shards whose records are
+// all at or before MemoryCursor. It owns the context lock so StorageMonitor
+// cannot race an append or cursor commit. A zero retention age means all
+// processed shards are eligible (used by emergency cleanup).
+func (c *NotificationContext) CleanupProcessedBefore(ctx context.Context, retentionAge time.Duration, now time.Time) (uint64, error) {
+	if c == nil {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ensureLoadedLocked(); err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(c.eventsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	cutoff := now.UTC().Add(-retentionAge)
+	memoryCursor := parseCursorOrZero(c.state.MemoryCursor)
+	var freed uint64
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return freed, err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if retentionAge > 0 && !notificationShardBeforeCutoff(entry.Name(), info.ModTime(), cutoff) {
+			continue
+		}
+		path := filepath.Join(c.eventsDir, entry.Name())
+		records, err := readNotificationRecordFile(path)
+		if err != nil {
+			return freed, err
+		}
+		processed := true
+		for _, record := range records {
+			cursor, ok := parseNotificationCursor(record.ContextID)
+			if !ok || cursor > memoryCursor {
+				processed = false
+				break
+			}
+		}
+		if !processed {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return freed, err
+		}
+		freed += uint64(info.Size())
+	}
+	return freed, nil
+}
+
+func (c *NotificationContext) EstimateCleanupProcessedBefore(ctx context.Context, retentionAge time.Duration, now time.Time) (uint64, error) {
+	if c == nil {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ensureLoadedLocked(); err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(c.eventsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	cutoff := now.UTC().Add(-retentionAge)
+	memoryCursor := parseCursorOrZero(c.state.MemoryCursor)
+	var total uint64
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || (retentionAge > 0 && !notificationShardBeforeCutoff(entry.Name(), info.ModTime(), cutoff)) {
+			continue
+		}
+		records, err := readNotificationRecordFileReadOnly(filepath.Join(c.eventsDir, entry.Name()))
+		if err != nil {
+			return total, err
+		}
+		processed := true
+		for _, record := range records {
+			cursor, ok := parseNotificationCursor(record.ContextID)
+			if !ok || cursor > memoryCursor {
+				processed = false
+				break
+			}
+		}
+		if processed {
+			total += uint64(info.Size())
+		}
+	}
+	return total, nil
+}
+
+func notificationShardBeforeCutoff(name string, modTime, cutoff time.Time) bool {
+	date := strings.TrimSuffix(name, ".jsonl")
+	if parsed, err := time.Parse("2006-01-02", date); err == nil {
+		return parsed.Before(time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, time.UTC))
+	}
+	return modTime.Before(cutoff)
+}
+
 func (c *NotificationContext) readPendingLocked(ctx context.Context, cursor uint64, limit int) ([]NotificationRecord, error) {
 	entries, err := os.ReadDir(c.eventsDir)
 	if err != nil {
@@ -460,6 +584,14 @@ func (c *NotificationContext) appendEventLocked(event NotificationRecord) error 
 }
 
 func readNotificationRecordFile(path string) ([]NotificationRecord, error) {
+	return readNotificationRecordFileMode(path, true)
+}
+
+func readNotificationRecordFileReadOnly(path string) ([]NotificationRecord, error) {
+	return readNotificationRecordFileMode(path, false)
+}
+
+func readNotificationRecordFileMode(path string, repair bool) ([]NotificationRecord, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -474,6 +606,9 @@ func readNotificationRecordFile(path string) ([]NotificationRecord, error) {
 		if err := json.Unmarshal(tail, &record); err != nil {
 			// A crash can leave only the final JSONL record incomplete. Keep
 			// complete records and repair the file before retrying reads.
+			if !repair {
+				return nil, fmt.Errorf("incomplete notification record %s", path)
+			}
 			if err := os.WriteFile(path, data[:lastNewline+1], 0o644); err != nil {
 				return nil, fmt.Errorf("repair incomplete notification record %s: %w", path, err)
 			}
@@ -605,6 +740,17 @@ func notificationEventFingerprint(event ble.NotificationEvent) string {
 	}
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:])
+}
+
+func notificationEventStableIdentityIDs(event ble.NotificationEvent) []string {
+	var ids []string
+	if value := strings.TrimSpace(event.SourceID); value != "" {
+		ids = append(ids, strings.Join([]string{"source_id", event.DeviceID, event.Source, value}, ":"))
+	}
+	if event.NotificationUID != 0 {
+		ids = append(ids, strings.Join([]string{"uid", event.DeviceID, event.Source, strconv.FormatUint(uint64(event.NotificationUID), 10)}, ":"))
+	}
+	return ids
 }
 
 func notificationEventFileName(event ble.NotificationEvent) string {

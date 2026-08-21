@@ -607,6 +607,7 @@ enabled = true
 llm_http_log_retention_days = [7, 3, 1, 0]
 audio_archive_retention_days = [30, 7, 0]
 session_archive_retention_days = [30]
+notification_context_retention_days = [14, 7, 1, 0]
 cleanup_retry_interval_seconds = 60
 ~~~
 
@@ -617,7 +618,7 @@ Validation rules:
 - Thresholds must satisfy emergency < critical < warning.
 - max_agent_log_mb must be greater than zero.
 - cleanup_retry_interval_seconds cannot be negative.
-- Retention values cannot be negative.
+- Retention values cannot be negative. Notification Context cleanup deletes only fully processed date shards; records newer than `memory_cursor` remain protected even for forced cleanup.
 
 ### Optional Event Output
 

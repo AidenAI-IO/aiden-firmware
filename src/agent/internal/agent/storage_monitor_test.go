@@ -640,8 +640,13 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 		"audio_archive_30d",
 		"audio_archive_7d",
 		"session_archive_30d",
+		"temporary_memory_expired",
+		"notification_context_14d",
+		"notification_context_7d",
+		"notification_context_1d",
 		"llm_http_log_0d",
 		"audio_archive_keep_0",
+		"notification_context_processed",
 	}
 	wantLevels := []StorageLevel{
 		StorageLevelNormal,
@@ -652,6 +657,11 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 		StorageLevelWarning,
 		StorageLevelCritical,
 		StorageLevelWarning,
+		StorageLevelWarning,
+		StorageLevelWarning,
+		StorageLevelCritical,
+		StorageLevelCritical,
+		StorageLevelEmergency,
 		StorageLevelEmergency,
 		StorageLevelEmergency,
 	}

@@ -99,7 +99,7 @@ func cloneEpisodeMemoryProposal(proposal episodeMemoryProposal) episodeMemoryPro
 
 type episodeMemoryProcessor struct {
 	plane *FilesystemMemoryPlane
-	model model.Model
+	merge *MemoryMergeEngine
 	state *episodeMemoryStateStore
 	now   func() time.Time
 	lock  string
@@ -108,10 +108,14 @@ type episodeMemoryProcessor struct {
 var _ MemoryProcessor = (*episodeMemoryProcessor)(nil)
 
 func newEpisodeMemoryProcessor(plane *FilesystemMemoryPlane, models model.Model) *episodeMemoryProcessor {
+	return newEpisodeMemoryProcessorWithGate(plane, models, nil)
+}
+
+func newEpisodeMemoryProcessorWithGate(plane *FilesystemMemoryPlane, models model.Model, gate *MemoryRunGate) *episodeMemoryProcessor {
 	bootstrapAt := time.Now().UTC()
 	return &episodeMemoryProcessor{
 		plane: plane,
-		model: models,
+		merge: NewMemoryMergeEngineWithGate(models, gate),
 		state: newEpisodeMemoryStateStore(filepath.Join(plane.memoryDir, "lifecycle", "reflection.yaml"), bootstrapAt),
 		now:   func() time.Time { return time.Now().UTC() },
 		lock:  filepath.Join(plane.memoryDir, "lifecycle", "reflection.lock"),
@@ -363,7 +367,7 @@ func (p *episodeMemoryProcessor) processBatchLocked(ctx context.Context, limit i
 }
 
 func (p *episodeMemoryProcessor) loadWork(ctx context.Context) (episodeMemoryStateFile, []TaskEpisode, error) {
-	if p == nil || p.plane == nil || p.plane.episodes == nil || p.plane.device == nil || p.model == nil {
+	if p == nil || p.plane == nil || p.plane.episodes == nil || p.plane.device == nil || p.merge == nil {
 		return episodeMemoryStateFile{}, nil, nil
 	}
 	state, err := p.state.Snapshot()
@@ -393,37 +397,46 @@ func (p *episodeMemoryProcessor) proposeEpisode(ctx context.Context, episode Tas
 	if err != nil {
 		return episodeMemoryProposal{}, err
 	}
-	existing, err := p.plane.device.SearchEpisodeMemoryCandidates(ctx, EpisodeMemoryCandidateQuery{
-		Terms:        episodeMemorySearchTerms(episode),
-		PreferredIDs: episode.RetrievedMemoryRefs,
-		DeviceID:     firstNonEmptyString([]string{episode.DeviceScope["device_id"], defaultMemoryDeviceID}),
-		Scope:        episodeMemoryRetrievalScope(episode),
-		Limit:        8,
-		CharBudget:   12000,
+	var existing []DeviceMemoryItem
+	_, raw, err := p.merge.Extract(ctx, MemoryMergeRequest{
+		Search: func(ctx context.Context) ([]MemoryMergeReference, error) {
+			var err error
+			existing, err = p.plane.device.SearchEpisodeMemoryCandidates(ctx, EpisodeMemoryCandidateQuery{
+				Terms:        episodeMemorySearchTerms(episode),
+				PreferredIDs: episode.RetrievedMemoryRefs,
+				DeviceID:     firstNonEmptyString([]string{episode.DeviceScope["device_id"], defaultMemoryDeviceID}),
+				Scope:        episodeMemoryRetrievalScope(episode),
+				Limit:        8,
+				CharBudget:   12000,
+			})
+			if err != nil {
+				return nil, err
+			}
+			refs := make([]MemoryMergeReference, 0, len(existing))
+			for _, item := range existing {
+				refs = append(refs, MemoryMergeReference{Scope: "device", ID: item.ID, Type: item.Type, Status: string(item.Status), Title: item.Title, Summary: item.Summary, Content: item.Content, Tags: item.Tags, Entities: item.Entities, Revision: effectiveDeviceMemoryRevision(item)})
+			}
+			return refs, nil
+		},
+		BuildMessages: func(_ []MemoryMergeReference) ([]llms.MessageContent, error) {
+			parts := []llms.ContentPart{llms.TextPart(buildEpisodeMemoryPrompt(string(payload), existing))}
+			for _, screenshot := range loadEpisodeMemoryScreenshots(p.plane.episodes.rootDir, episode) {
+				parts = append(parts, llms.TextPart("Attached screenshot evidence for Episode event id: "+screenshot.EventID))
+				parts = append(parts, llms.BinaryContent{MIMEType: screenshot.MIMEType, Data: screenshot.Data})
+			}
+			return []llms.MessageContent{
+				llms.TextParts(llms.ChatMessageTypeSystem, "You assess completed device task episodes and extract reusable device memories. Output JSON only."),
+				{Role: llms.ChatMessageTypeHuman, Parts: parts},
+			}, nil
+		},
+		MaxTokens: 2200,
+		Timeout:   episodeMemoryModelCallTimeout,
 	})
-	if err != nil {
-		return episodeMemoryProposal{}, err
-	}
-	parts := []llms.ContentPart{llms.TextPart(buildEpisodeMemoryPrompt(string(payload), existing))}
-	for _, screenshot := range loadEpisodeMemoryScreenshots(p.plane.episodes.rootDir, episode) {
-		parts = append(parts, llms.TextPart("Attached screenshot evidence for Episode event id: "+screenshot.EventID))
-		parts = append(parts, llms.BinaryContent{MIMEType: screenshot.MIMEType, Data: screenshot.Data})
-	}
-	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, "You assess completed device task episodes and extract reusable device memories. Output JSON only."),
-		{Role: llms.ChatMessageTypeHuman, Parts: parts},
-	}
-	callCtx, cancel := context.WithTimeout(ctx, episodeMemoryModelCallTimeout)
-	defer cancel()
-	response, err := p.model.GenerateContent(callCtx, messages, llms.WithJSONMode(), llms.WithMaxTokens(2200))
 	if err != nil {
 		return episodeMemoryProposal{}, fmt.Errorf("extract episode memory: %w", err)
 	}
-	if response == nil || len(response.Choices) == 0 {
-		return episodeMemoryProposal{}, fmt.Errorf("extract episode memory: empty response")
-	}
 	var proposal episodeMemoryProposal
-	if err := json.Unmarshal([]byte(stripJSONFences(response.Choices[0].Content)), &proposal); err != nil {
+	if err := json.Unmarshal([]byte(raw), &proposal); err != nil {
 		return episodeMemoryProposal{}, fmt.Errorf("parse episode memory proposal: %w", err)
 	}
 	proposal.EpisodeAssessment.GoalResult = episodeGoalResult(strings.ToLower(strings.TrimSpace(string(proposal.EpisodeAssessment.GoalResult))))
@@ -756,24 +769,18 @@ func (p *episodeMemoryProcessor) createMemory(ctx context.Context, episode TaskE
 		return existing.ID, nil
 	}
 	deviceID := firstNonEmptyString([]string{candidate.Scope["device_id"], episode.DeviceScope["device_id"], defaultMemoryDeviceID})
+	existingID := ""
 	if scoped, equivalent, found, err := p.findMemoryInScope(ctx, candidate, deviceID); err != nil {
 		return "", err
 	} else if found {
 		if !equivalent {
 			return scoped.ID, nil
 		}
-		err := p.plane.device.Update(ctx, scoped.ID, func(item *DeviceMemoryItem) {
-			if item == nil || hasEpisodeEvidence(item.EvidenceRefs, episode.ID) {
-				return
-			}
-			item.Tags = mergeUniqueStrings(normalizeEpisodeMemoryTags(item.Tags), candidate.Tags)
-			item.EvidenceRefs = append(item.EvidenceRefs, episodeMemoryEvidenceRef(episode, candidate.EvidenceRefs))
-		})
-		return scoped.ID, err
+		existingID = scoped.ID
 	}
 	priority, confidence, ttl := episodeMemoryDefaults(candidate.Type)
 	item := DeviceMemoryItem{
-		ID:               "devmem_" + stableMemoryID(episode.ID, candidate.LessonKey),
+		ID:               firstNonEmptyString([]string{existingID, "devmem_" + stableMemoryID(episode.ID, candidate.LessonKey)}),
 		Type:             string(candidate.Type),
 		Status:           deviceMemoryStatusActive,
 		Revision:         1,
@@ -796,7 +803,8 @@ func (p *episodeMemoryProcessor) createMemory(ctx context.Context, episode TaskE
 	if candidate.Type == episodeMemoryTypeProcedure {
 		item.Steps = episodeMemoryProcedureSteps(episode, candidate.EvidenceRefs)
 	}
-	return p.plane.device.Upsert(ctx, item)
+	result, err := p.plane.device.ApplyMemoryIntent(ctx, MemoryIntent{DeviceItem: &item})
+	return result.ID, err
 }
 
 func (p *episodeMemoryProcessor) findMemoryInScope(ctx context.Context, candidate episodeMemoryCandidate, deviceID string) (DeviceMemoryItem, bool, bool, error) {
@@ -871,63 +879,20 @@ func (p *episodeMemoryProcessor) updateMemory(ctx context.Context, episode TaskE
 	if candidate.Type == episodeMemoryTypeProcedure {
 		newSteps = mergeEpisodeMemorySteps(existing.Steps, episodeMemoryProcedureSteps(episode, candidate.EvidenceRefs))
 	}
-	applied := false
-	err = p.plane.device.Update(ctx, candidate.MemoryID, func(item *DeviceMemoryItem) {
-		if item == nil || item.Type != string(candidate.Type) || effectiveDeviceMemoryRevision(*item) != candidate.MemoryRevision {
-			return
-		}
-		applied = true
-		if hasEpisodeEvidence(item.EvidenceRefs, episode.ID) {
-			return
-		}
-		bodyChanged := item.Status != newStatus || item.Title != newTitle || item.Summary != newSummary || item.Content != newContent ||
-			item.DeviceID != deviceID || item.AppName != candidate.Scope["app_name"] || item.PageName != candidate.Scope["page_name"] ||
-			!equalEpisodeMemoryScope(item.Applicability, newScope) || !equalEpisodeMemorySteps(item.Steps, newSteps)
-		if bodyChanged {
-			prior := DeviceMemoryRevision{
-				Revision:      effectiveDeviceMemoryRevision(*item),
-				Status:        item.Status,
-				Title:         item.Title,
-				Summary:       item.Summary,
-				Content:       item.Content,
-				Tags:          append([]string(nil), item.Tags...),
-				Applicability: cloneStringMap(item.Applicability),
-				Steps:         append([]ProcedureStep(nil), item.Steps...),
-				UpdatedAt:     item.UpdatedAt,
-			}
-			item.RevisionHistory = append(item.RevisionHistory, prior)
-			if len(item.RevisionHistory) > 20 {
-				item.RevisionHistory = append([]DeviceMemoryRevision(nil), item.RevisionHistory[len(item.RevisionHistory)-20:]...)
-			}
-			item.Revision = prior.Revision + 1
-		} else if item.Revision == 0 {
-			item.Revision = 1
-		}
-		item.ExtractorVersion = episodeMemoryExtractorVersion
-		item.Status = newStatus
-		if candidate.UnresolvedConflict {
-			item.ConflictsWith = appendUniqueString(item.ConflictsWith, episode.ID)
-		}
-		item.Title = newTitle
-		item.Summary = newSummary
-		item.Content = newContent
-		item.DeviceID = deviceID
-		item.AppName = candidate.Scope["app_name"]
-		item.PageName = candidate.Scope["page_name"]
-		item.Tags = mergeUniqueStrings(normalizeEpisodeMemoryTags(item.Tags), candidate.Tags)
-		item.Applicability = newScope
-		item.EvidenceRefs = append(item.EvidenceRefs, episodeMemoryEvidenceRef(episode, candidate.EvidenceRefs))
-		if candidate.Type == episodeMemoryTypeProcedure {
-			item.Steps = newSteps
-		}
-	})
-	if err != nil {
-		return err
+	item := DeviceMemoryItem{
+		ID: candidate.MemoryID, Type: string(candidate.Type), Status: newStatus,
+		Revision: candidate.MemoryRevision, ExtractorVersion: episodeMemoryExtractorVersion,
+		Title: newTitle, Summary: newSummary, Content: newContent, DeviceID: deviceID,
+		AppName: candidate.Scope["app_name"], PageName: candidate.Scope["page_name"],
+		Tags: normalizeEpisodeMemoryTags(candidate.Tags), Applicability: newScope,
+		EvidenceRefs: []MemorySourceRef{episodeMemoryEvidenceRef(episode, candidate.EvidenceRefs)},
+		Steps:        newSteps,
 	}
-	if !applied {
-		return fmt.Errorf("%w: device memory %s changed before update", errEpisodeMemoryRevisionChanged, candidate.MemoryID)
+	if candidate.UnresolvedConflict {
+		item.ConflictsWith = []string{episode.ID}
 	}
-	return nil
+	_, err = p.plane.device.ApplyMemoryIntent(ctx, MemoryIntent{DeviceItem: &item, ExpectedRevision: candidate.MemoryRevision})
+	return err
 }
 
 func equalEpisodeMemorySteps(left, right []ProcedureStep) bool {

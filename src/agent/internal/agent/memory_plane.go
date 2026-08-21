@@ -34,6 +34,7 @@ type FilesystemMemoryPlane struct {
 	notificationMemoryMu sync.RWMutex
 	notificationContext  *NotificationContext
 	notificationMemory   *notificationMemoryWorker
+	memoryRunGate        *MemoryRunGate
 }
 
 type MemoryRetrieveRequest struct {
@@ -126,6 +127,7 @@ func NewFilesystemMemoryPlane(memoryDir string, extraction MemoryExtractionConfi
 		device:           NewDeviceMemoryStore(filepath.Join(memoryDir, "device")),
 		logger:           logger,
 		episodeIdleDelay: idleDelay,
+		memoryRunGate:    NewMemoryRunGate(),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -152,7 +154,7 @@ func (p *FilesystemMemoryPlane) StartEpisodeMemory(models model.Model) error {
 	if p.episodeMemory != nil {
 		return nil
 	}
-	worker := newEpisodeMemoryWorker(newEpisodeMemoryProcessor(p, models))
+	worker := newEpisodeMemoryWorker(newEpisodeMemoryProcessorWithGate(p, models, p.memoryRunGate))
 	worker.idleDelay = p.episodeIdleDelay
 	if err := worker.Start(); err != nil {
 		return err
@@ -174,7 +176,7 @@ func (p *FilesystemMemoryPlane) StopEpisodeMemory() {
 	}
 }
 
-func (p *FilesystemMemoryPlane) StartNotificationMemory() error {
+func (p *FilesystemMemoryPlane) StartNotificationMemory(models model.Model) error {
 	if p == nil || strings.TrimSpace(p.memoryDir) == "" {
 		return nil
 	}
@@ -187,7 +189,7 @@ func (p *FilesystemMemoryPlane) StartNotificationMemory() error {
 	if err != nil {
 		return err
 	}
-	processor := NewNotificationMemoryProcessor(ctx, p.memoryDir, p.longTerm)
+	processor := newNotificationMemoryProcessorWithGate(ctx, p.memoryDir, p.longTerm, models, p.memoryRunGate)
 	worker := newNotificationMemoryWorker(processor)
 	worker.idleDelay = 0
 	if err := worker.Start(); err != nil {

@@ -295,24 +295,15 @@ func (t *SaveMemoryTool) Call(ctx context.Context, input string) (string, error)
 		Entities:         req.Entities,
 		EvidenceExcerpts: req.Evidence,
 	}
-	action, existingID, err := t.store.DecideAction(ctx, item)
+	result, err := t.store.ApplyMemoryIntent(ctx, MemoryIntent{Item: item})
 	if err != nil {
 		return "", err
 	}
-	var id string
-	switch action {
-	case "ignore":
-		return encodeToolJSON(map[string]string{"status": "ignored", "reason": "duplicate of " + existingID})
-	case "supersede":
-		id, err = t.store.SupersedeMemory(ctx, existingID, item)
-	default:
-		id, err = t.store.AddMemory(ctx, item)
-	}
-	if err != nil {
-		return "", err
+	if result.Operation == MemoryOperationIgnore {
+		return encodeToolJSON(map[string]string{"status": "ignored", "reason": "duplicate of " + result.ID})
 	}
 	t.store.RequestProfileRebuild()
-	return encodeToolJSON(map[string]string{"status": "saved", "id": id})
+	return encodeToolJSON(map[string]string{"status": "saved", "id": result.ID, "operation": string(result.Operation)})
 }
 
 func NewForgetMemoryTool(store *LongTermMemoryStore) *ForgetMemoryTool {
