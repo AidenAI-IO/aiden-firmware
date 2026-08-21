@@ -637,6 +637,77 @@ def test_load_suite_rejects_unknown_setup_keys(tmp_path: Path):
         load_suite(p)
 
 
+def test_load_suite_parses_consolidation_expectation(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [{
+            **FIXTURE["tasks"][0],
+            "setup": {
+                "type": "seed_episode",
+                "episode": {"id": "ep-1", "user_goal": "verify a procedure"},
+                "consolidate": True,
+                "consolidation_expectation": {
+                    "goal_result": "unknown",
+                    "min_memory_ids": 0,
+                    "max_memory_ids": 1,
+                    "allow_empty_memory": True,
+                    "required_assessment_evidence": False,
+                },
+            },
+        }],
+    }
+    p = tmp_path / "consolidation-expectation.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+    expectation = suite.tasks[0].consolidation_expectation
+    assert expectation is not None
+    assert expectation.goal_result == "unknown"
+    assert expectation.max_memory_ids == 1
+    assert expectation.allow_empty_memory is True
+
+
+def test_load_suite_rejects_invalid_consolidation_expectation(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [{
+            **FIXTURE["tasks"][0],
+            "setup": {
+                "type": "seed_episode",
+                "episode": {"id": "ep-1", "user_goal": "verify a procedure"},
+                "consolidation_expectation": {
+                    "goal_result": "maybe",
+                },
+            },
+        }],
+    }
+    p = tmp_path / "invalid-consolidation-expectation.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="goal_result"):
+        load_suite(p)
+
+
+def test_load_suite_rejects_consolidation_expectation_without_consolidation(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [{
+            **FIXTURE["tasks"][0],
+            "setup": {
+                "type": "seed_episode",
+                "episode": {"id": "ep-1", "user_goal": "verify a procedure"},
+                "consolidate": False,
+                "consolidation_expectation": {"goal_result": "unknown"},
+            },
+        }],
+    }
+    p = tmp_path / "contradictory-consolidation-expectation.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="requires consolidate=true"):
+        load_suite(p)
+
+
 def test_load_suite_accepts_quick_capture_setup_keys(tmp_path: Path):
     fixture = {
         **FIXTURE,
@@ -1081,6 +1152,7 @@ def test_episode_memory_suite_guards_against_setup_context_leakage():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "episode_memory_v1.json"
     assert suite_path.read_text(encoding="utf-8").isascii()
     suite = load_suite(suite_path)
+    assert suite.status == "legacy"
     task_by_id = {task.id: task for task in suite.tasks}
     task = task_by_id["reuse_success_episode_for_planning"]
 
@@ -1092,6 +1164,23 @@ def test_episode_memory_suite_guards_against_setup_context_leakage():
         [task.prompt, task.description_for_judge, *(item.check for item in task.rubric)]
     )
     assert "recall_device_memory" not in task_text
+
+
+def test_episode_reflection_suite_covers_assessment_contracts():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "episode_reflection_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert set(task_by_id) == {
+        "successful_workaround_is_extracted",
+        "recorded_success_without_proof_is_not_trusted",
+        "failed_episode_creates_actionable_guard",
+        "transient_value_is_not_memorized",
+    }
+    assert task_by_id["successful_workaround_is_extracted"].consolidation_expectation.goal_result == "achieved"
+    assert task_by_id["recorded_success_without_proof_is_not_trusted"].consolidation_expectation.allow_empty_memory is True
+    assert task_by_id["failed_episode_creates_actionable_guard"].consolidation_expectation.goal_result == "not_achieved"
+    assert task_by_id["transient_value_is_not_memorized"].consolidation_expectation.allow_empty_memory is True
 
 
 def test_episode_memory_conditions_share_natural_and_iphone_tasks():
@@ -1127,10 +1216,17 @@ def test_episode_memory_conditions_share_natural_and_iphone_tasks():
 
     for before_task, after_task in zip(before.tasks, after.tasks, strict=True):
         assert before_task.id == after_task.id
-        assert before_task.prompt == after_task.prompt
+        if before_task.id == "qa_notes_title_save_procedure":
+            assert before_task.prompt != after_task.prompt
+        else:
+            assert before_task.prompt == after_task.prompt
         assert before_task.description_for_judge == after_task.description_for_judge
         assert before_task.rubric == after_task.rubric
-        assert before_task.hard_assertions == after_task.hard_assertions
+        if before_task.id == "qa_notes_title_save_procedure":
+            assert "recall_device_memory" not in before_task.hard_assertions.required_tools
+            assert "recall_device_memory" in after_task.hard_assertions.required_tools
+        else:
+            assert before_task.hard_assertions == after_task.hard_assertions
 
     for suite in (before, after, legacy):
         natural_task = suite.tasks[0]
@@ -1141,7 +1237,8 @@ def test_episode_memory_conditions_share_natural_and_iphone_tasks():
                 *(item.check for item in natural_task.rubric),
             ]
         )
-        assert "recall_device_memory" not in natural_text
+        if suite.name == "episode_memory_before_v1":
+            assert "recall_device_memory" not in natural_text
 
     assert before.tasks[0].setup["consolidate"] is False
     assert after.tasks[0].setup["consolidate"] is True

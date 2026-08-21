@@ -16,8 +16,10 @@ VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory", "percep
 SETUP_KEYS = {
     "agent_prompt": {"type", "prompt", "timeout_sec", "clear_history_after", "expected_response"},
     "seed_memory": {"type", "memories", "timeout_sec", "clear_history_after"},
-    "seed_episode": {"type", "episode", "consolidate", "timeout_sec"},
+    "seed_episode": {"type", "episode", "consolidate", "timeout_sec", "consolidation_expectation"},
 }
+
+VALID_CONSOLIDATION_GOAL_RESULTS = {"achieved", "not_achieved", "unknown"}
 
 class SuiteValidationError(ValueError):
     pass
@@ -50,6 +52,17 @@ class HardAssertions:
     forbidden_tools: list[str] = dc.field(default_factory=list)
     prohibited_actions: list[str] = dc.field(default_factory=list)
     required_tool_calls: list[RequiredToolCallSpec] = dc.field(default_factory=list)
+
+
+@dc.dataclass
+class ConsolidationExpectation:
+    """Assertions over the response returned by process_episode_memory."""
+
+    goal_result: str | None = None
+    min_memory_ids: int = 0
+    max_memory_ids: int | None = None
+    allow_empty_memory: bool = False
+    required_assessment_evidence: bool = False
 
 @dc.dataclass
 class MockToolResponseSpec:
@@ -87,6 +100,7 @@ class TaskSpec:
     platforms: list[str] = dc.field(default_factory=list)
     expected_recalled_memory_ids: list[str] = dc.field(default_factory=list)
     app_ids: list[str] = dc.field(default_factory=list)
+    consolidation_expectation: ConsolidationExpectation | None = None
 
 @dc.dataclass
 class Suite:
@@ -98,6 +112,7 @@ class Suite:
     prompt_prefix: str = ""
     trace_observations: list[TraceObservationSpec] = dc.field(default_factory=list)
     mock_environment: MockEnvironmentSpec | None = None
+    status: str = "active"
 
 
 def effective_mock_environment(
@@ -243,6 +258,15 @@ def load_suite(path: Path) -> Suite:
                 raise SuiteValidationError(
                     f"task {tid}: unsupported {setup_type} setup keys: {', '.join(unknown_setup_keys)}"
                 )
+            consolidation_expectation = _parse_consolidation_expectation(
+                setup.get("consolidation_expectation"), tid
+            ) if setup_type == "seed_episode" else None
+            if consolidation_expectation is not None and setup.get("consolidate", False) is not True:
+                raise SuiteValidationError(
+                    f"task {tid}: consolidation_expectation requires consolidate=true"
+                )
+        else:
+            consolidation_expectation = None
         tasks.append(TaskSpec(
             id=tid, category=cat,
             description_for_judge=raw["description_for_judge"],
@@ -257,10 +281,14 @@ def load_suite(path: Path) -> Suite:
             platforms=platforms,
             expected_recalled_memory_ids=expected_recalled_memory_ids,
             app_ids=app_ids,
+            consolidation_expectation=consolidation_expectation,
         ))
     prompt_prefix = data.get("prompt_prefix", "")
     if not isinstance(prompt_prefix, str):
         raise SuiteValidationError("suite prompt_prefix must be a string")
+    status = data.get("status", "active")
+    if not isinstance(status, str) or not status.strip():
+        raise SuiteValidationError("suite status must be a non-empty string")
 
     trace_observations: list[TraceObservationSpec] = []
     seen_obs_ids: set[str] = set()
@@ -305,6 +333,7 @@ def load_suite(path: Path) -> Suite:
         prompt_prefix=prompt_prefix,
         trace_observations=trace_observations,
         mock_environment=mock_environment,
+        status=status.strip().lower(),
     )
 
 
@@ -322,6 +351,70 @@ def _string_list_assertion(raw: Any, task_id: str, field: str) -> list[str]:
         seen.add(name)
         out.append(name)
     return out
+
+
+def _parse_consolidation_expectation(
+    raw: Any, task_id: str
+) -> ConsolidationExpectation | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise SuiteValidationError(
+            f"task {task_id}: consolidation_expectation must be an object"
+        )
+    allowed = {
+        "goal_result",
+        "min_memory_ids",
+        "max_memory_ids",
+        "allow_empty_memory",
+        "required_assessment_evidence",
+    }
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise SuiteValidationError(
+            f"task {task_id}: unsupported consolidation_expectation keys: {', '.join(unknown)}"
+        )
+    goal_result = raw.get("goal_result")
+    if goal_result is not None:
+        if not isinstance(goal_result, str) or goal_result.strip().lower() not in VALID_CONSOLIDATION_GOAL_RESULTS:
+            raise SuiteValidationError(
+                f"task {task_id}: consolidation_expectation.goal_result must be one of {sorted(VALID_CONSOLIDATION_GOAL_RESULTS)}"
+            )
+        goal_result = goal_result.strip().lower()
+    def non_negative_int(name: str, default: int | None) -> int | None:
+        value = raw.get(name, default)
+        if value is None:
+            return None
+        try:
+            value = int(value)
+        except (TypeError, ValueError) as exc:
+            raise SuiteValidationError(
+                f"task {task_id}: consolidation_expectation.{name} must be an integer"
+            ) from exc
+        if value < 0:
+            raise SuiteValidationError(
+                f"task {task_id}: consolidation_expectation.{name} must be non-negative"
+            )
+        return value
+    min_memory_ids = non_negative_int("min_memory_ids", 0)
+    max_memory_ids = non_negative_int("max_memory_ids", None)
+    if max_memory_ids is not None and min_memory_ids is not None and max_memory_ids < min_memory_ids:
+        raise SuiteValidationError(
+            f"task {task_id}: consolidation_expectation.max_memory_ids must be >= min_memory_ids"
+        )
+    allow_empty_memory = raw.get("allow_empty_memory", False)
+    required_evidence = raw.get("required_assessment_evidence", False)
+    if not isinstance(allow_empty_memory, bool) or not isinstance(required_evidence, bool):
+        raise SuiteValidationError(
+            f"task {task_id}: consolidation_expectation boolean fields must be bool"
+        )
+    return ConsolidationExpectation(
+        goal_result=goal_result,
+        min_memory_ids=min_memory_ids or 0,
+        max_memory_ids=max_memory_ids,
+        allow_empty_memory=allow_empty_memory,
+        required_assessment_evidence=required_evidence,
+    )
 
 def _platform_list(raw: Any, task_id: str) -> list[str]:
     if raw is None:

@@ -8,7 +8,7 @@
       "id": "qa_notes_title_save_procedure",
       "category": "memory",
       "description_for_judge": "The agent should select the title-save sequence that was verified in the seeded QA Notes build 7 episode.",
-      "prompt": "A note title has already been edited in QA Notes build 7. Based on this device's previously verified behavior, which sequence makes the changed title persist? Do not operate the phone; answer directly. End with exactly one line in the form <final_answer>(x)</final_answer>.\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
+      "prompt": "A note title has already been edited in QA Notes build 7. Use recall_device_memory to retrieve the verified device procedure, then answer which sequence makes the changed title persist. Do not operate the phone. End with exactly one line in the form <final_answer>(x)</final_answer>.\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
       "expected_answer": "(b)",
       "answer_format": "option_letter",
       "repeats": 10,
@@ -23,6 +23,8 @@
         "max_tool_calls": 3,
         "must_complete_within_sec": 90,
         "response_required": true,
+        "required_tools": ["recall_device_memory"],
+        "required_tool_calls": [{"tool": "recall_device_memory", "input_contains": {"terms": ["QA Notes"]}}],
         "forbidden_tools": [
           "screenshot",
           "open_app",
@@ -33,6 +35,12 @@
       "setup": {
         "type": "seed_episode",
         "consolidate": true,
+        "consolidation_expectation": {
+          "goal_result": "achieved",
+          "min_memory_ids": 1,
+          "max_memory_ids": 3,
+          "required_assessment_evidence": true
+        },
         "timeout_sec": 90,
         "episode": {
           "id": "ep_benchmark_qa_notes_title_save",
@@ -154,6 +162,12 @@
       "setup": {
         "type": "seed_episode",
         "consolidate": true,
+        "consolidation_expectation": {
+          "goal_result": "achieved",
+          "min_memory_ids": 1,
+          "max_memory_ids": 3,
+          "required_assessment_evidence": true
+        },
         "timeout_sec": 90,
         "episode": {
           "id": "ep_benchmark_iphone_aiden_hid_ecm_ipv4_wifi_contrast_v2",

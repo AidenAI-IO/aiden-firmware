@@ -166,6 +166,33 @@ def test_seed_episode_setup_consolidates_and_requires_memory():
     ]
 
 
+def test_seed_episode_setup_returns_consolidation_artifact_and_accepts_empty_expected_result():
+    class UnknownClient(RecordingSetupClient):
+        def process_episode_memory(self, episode_id, timeout=90):
+            return {
+                "episode_id": episode_id,
+                "status": "done",
+                "assessment": {"goal_result": "unknown", "reason": "No proof", "evidence_refs": []},
+                "memory_ids": [],
+            }
+
+    result = per_task_setup(
+        UnknownClient(),
+        {
+            "type": "seed_episode",
+            "episode": {"id": "ep-unknown", "user_goal": "verify a page"},
+            "consolidate": True,
+            "consolidation_expectation": {
+                "goal_result": "unknown",
+                "allow_empty_memory": True,
+            },
+        },
+    )
+
+    assert result["consolidation"]["assessment"]["goal_result"] == "unknown"
+    assert result["consolidation"]["memory_ids"] == []
+
+
 def test_seed_episode_setup_rejects_consolidation_without_memory():
     class NoMemoryClient(RecordingSetupClient):
         def process_episode_memory(self, episode_id, timeout=90):

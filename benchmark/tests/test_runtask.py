@@ -291,6 +291,52 @@ def test_run_one_task_passes_without_judge_when_hard_assertions_pass(tmp_path: P
     assert result.hard_assertions.response_exists is True
 
 
+def test_run_one_task_writes_consolidation_artifact_from_setup(
+    tmp_path: Path, monkeypatch
+):
+    suite = Suite(
+        name="reflection",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="reflection_case",
+        category="memory",
+        description_for_judge="Reflection contract.",
+        prompt="confirm",
+        rubric=[RubricItem(id="ok", check="responds")],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+        setup={"type": "seed_episode"},
+    )
+
+    monkeypatch.setattr(
+        runtask_mod,
+        "prepare_task_isolation",
+        lambda *args, **kwargs: {
+            "type": "seed_episode",
+            "episode_id": "ep-1",
+            "consolidated": True,
+            "consolidation": {
+                "episode_id": "ep-1",
+                "status": "done",
+                "assessment": {"goal_result": "unknown"},
+                "memory_ids": [],
+            },
+        },
+    )
+
+    artifact_dir = tmp_path / "artifacts"
+    result = run_one_task(
+        FakeClient("done"), suite, task, 1, artifact_dir, None, None, "run-1"
+    )
+
+    assert result.status == "passed"
+    assert json.loads((artifact_dir / "consolidation.json").read_text())["assessment"]["goal_result"] == "unknown"
+    assert not (artifact_dir / "setup.json").exists()
+
+
 def test_run_one_task_fails_without_judge_when_expected_answer_is_wrong(tmp_path: Path):
     suite = Suite(
         name="persona",

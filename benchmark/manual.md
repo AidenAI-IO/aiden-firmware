@@ -315,7 +315,8 @@ Common fields:
 | --- | --- |
 | `prompt_prefix` | Prefix for every task prompt; constrains device type, tool usage, etc. |
 | `global_reset` | Suite-level reset configuration |
-| `setup` | Task-level pre-steps; supports `agent_prompt` and benchmark-token-protected `seed_memory` |
+| `status` | Optional suite lifecycle label, e.g. `active` or `legacy` |
+| `setup` | Task-level pre-steps; supports `agent_prompt`, benchmark-token-protected `seed_memory`, and `seed_episode` with optional `consolidation_expectation` |
 | `app_ids` | Optional MobileGym app IDs to preload during environment setup; omitted tasks skip eager app data loading |
 | `rubric` | The judge model's scoring items |
 | `hard_assertions` | Deterministic checks, e.g. tool-call counts, timeout, required/forbidden tools |
@@ -325,6 +326,12 @@ Common fields:
 | `expected_answer` | Direct answer for multiple-choice/fixed-answer tasks |
 | `trace_observations` | Checks on specific behaviors in the trace, e.g. whether a given skill was read |
 | `mock_environment` | Suite-level default or task-level scripted Phone Bridge state, tool responses, and mock screen |
+
+For `seed_episode`, `consolidation_expectation` may declare `goal_result`
+(`achieved`, `not_achieved`, or `unknown`), `min_memory_ids`,
+`max_memory_ids`, `allow_empty_memory`, and
+`required_assessment_evidence`. The raw process response is saved as
+`consolidation.json` in the task artifact.
 
 For `agent_prompt`, set `expected_response` when setup success has a precise
 completion marker. The runner compares the trimmed response exactly and fails
@@ -768,9 +775,46 @@ uv run python -m runner compare \
 ```
 
 The comparison reports pass-count, median tool-call, and median wall-time
-deltas. The prompt does not name or force a particular memory tool. After the
-five-repeat comparison is stable, rerun the same commands with `--repeats 10`
-and distinct run IDs.
+deltas. The treatment natural task explicitly requires a
+`recall_device_memory` call scoped to QA Notes, so a passing answer includes
+retrieval evidence in addition to the final decision. It is still not a proof
+that every returned field was used correctly; inspect `trace.json` and the
+answer/rubric together. The `before` condition intentionally does not require
+that call; compare its answer rate against `after` rather than interpreting a
+single run. After the five-repeat comparison is stable, rerun the same
+commands with `--repeats 10` and distinct run IDs.
+
+#### Episode Memory reflection contract suite
+
+Use `suites/episode_reflection_v1.json` when the question is whether the agent
+can review an episode and make the right retention decision. It has three
+contract cases: a directly verified success must be `achieved` and produce a
+memory; a success claim without final proof must be `unknown` and may produce no
+memory; a structured failure must be `not_achieved` and retain an actionable
+failure lesson; and a transient IP observation must not create a durable fact.
+Conflict/quarantine and multi-episode revision cases remain a separate follow-up
+because the current benchmark setup seeds one episode per task.
+
+The runner writes the raw consolidation response to each task's
+`consolidation.json` artifact, including `assessment` and `memory_ids`. This
+suite can run through a MobileGym bridge with `--target-platform android`,
+because it does not claim to exercise a real UI. This is a bridge-backed run
+with a real agent daemon (not a pure in-process mock): MobileGym validates the
+seed/process API, assessment contract, and artifact plumbing only; it is not
+evidence that a lesson improves physical interaction.
+
+For example, after starting the MobileGym bridge:
+
+```bash
+uv run python -m runner run \
+  --suite suites/episode_reflection_v1.json \
+  --auto-agent-setup \
+  --environment-url http://<mobilegym-bridge-host>:<port> \
+  --target-platform android \
+  --benchmark-token-file /path/to/control_token \
+  --no-judge \
+  --run-id episode-reflection-mobilegym
+```
 
 #### Episode Memory physical-iPhone execution comparison
 
@@ -837,8 +881,9 @@ three runs. Use an isolated agent data directory for every attempt so Episodes,
 Memory, sessions, and context caches cannot leak across conditions. After the
 five-repeat comparison is stable, rerun the same commands with `--repeats 10`
 and distinct run IDs.
-MobileGym can validate runner and setup plumbing, but the USB Ethernet execution
-result must be validated on the physical iPhone. The primary conclusion comes
+MobileGym can validate runner and setup plumbing, and it can run the reflection
+contract suite above. The USB Ethernet execution result must be validated on the
+physical iPhone. The primary conclusion comes
 from `before` versus `after`; `after` versus `legacy` is a compatibility
 comparison and does not benchmark the removed legacy extractor itself.
 

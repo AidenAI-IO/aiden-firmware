@@ -124,7 +124,13 @@ def clear_stale_adb_android_owner(environment_url: str, timeout: float = 2.0) ->
     return active_task_id
 
 
-def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_prefix: str = "") -> None:
+def per_task_setup(
+    client: AgentClient,
+    setup: dict[str, Any] | None,
+    *,
+    prompt_prefix: str = "",
+    consolidation_expectation: Any = None,
+) -> dict[str, Any] | None:
     if setup is None:
         return
     setup_type = setup.get("type")
@@ -138,13 +144,20 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_
         raise ResetError(f"unsupported {setup_type} setup keys: {', '.join(unknown_keys)}")
     if setup_type == "agent_prompt":
         _per_task_setup_agent_prompt(client, setup, prompt_prefix=prompt_prefix)
-        return
+        return None
     if setup_type == "seed_memory":
         _per_task_setup_seed_memory(client, setup)
-        return
+        return None
     if setup_type == "seed_episode":
-        _per_task_setup_seed_episode(client, setup)
-        return
+        if setup.get("consolidation_expectation") is not None and setup.get("consolidate", False) is not True:
+            raise ResetError(
+                "seed_episode consolidation_expectation requires consolidate=true"
+            )
+        return _per_task_setup_seed_episode(
+            client,
+            setup,
+            consolidation_expectation=consolidation_expectation,
+        )
     raise ResetError(f"unsupported setup form: {setup!r}")
 
 
@@ -213,7 +226,12 @@ def _per_task_setup_seed_memory(client: AgentClient, setup: dict[str, Any]) -> N
             raise ResetError(f"seed_memory clear_history failed: {e}") from e
 
 
-def _per_task_setup_seed_episode(client: AgentClient, setup: dict[str, Any]) -> None:
+def _per_task_setup_seed_episode(
+    client: AgentClient,
+    setup: dict[str, Any],
+    *,
+    consolidation_expectation: Any = None,
+) -> dict[str, Any]:
     episode = setup.get("episode")
     if not isinstance(episode, dict):
         raise ResetError(f"seed_episode setup requires an 'episode' object: {setup!r}")
@@ -236,7 +254,7 @@ def _per_task_setup_seed_episode(client: AgentClient, setup: dict[str, Any]) -> 
     except AgentRequestError as e:
         raise ResetError(f"seed_episode failed for {episode_id!r}: {e}") from e
     if not consolidate:
-        return
+        return {"type": "seed_episode", "episode_id": episode_id, "consolidated": False}
     try:
         result = client.process_episode_memory(episode_id, timeout=timeout)
     except AgentTimeoutError as e:
@@ -252,6 +270,71 @@ def _per_task_setup_seed_episode(client: AgentClient, setup: dict[str, Any]) -> 
         raise ResetError(
             f"episode memory consolidation for {episode_id!r} did not reach a terminal status: {status or 'missing'}"
         )
+    expectation = setup.get("consolidation_expectation")
+    if consolidation_expectation is not None:
+        expectation = vars(consolidation_expectation)
+    _validate_consolidation_result(episode_id, result, expectation)
+    return {
+        "type": "seed_episode",
+        "episode_id": episode_id,
+        "consolidated": True,
+        "consolidation": result,
+    }
+
+
+def _validate_consolidation_result(
+    episode_id: str,
+    result: dict[str, Any],
+    expectation: dict[str, Any] | None,
+) -> None:
+    def fail(message: str) -> None:
+        error = ResetError(message)
+        setattr(error, "consolidation", result)
+        raise error
+
     memory_ids = result.get("memory_ids")
-    if not isinstance(memory_ids, list) or not memory_ids:
-        raise ResetError(f"episode memory consolidation for {episode_id!r} produced no device memory")
+    if not isinstance(memory_ids, list) or not all(isinstance(item, str) and item.strip() for item in memory_ids):
+        fail(
+            f"episode memory consolidation for {episode_id!r} returned invalid memory_ids"
+        )
+    memory_count = len(memory_ids)
+    if expectation is None:
+        if not memory_count:
+            fail(
+                f"episode memory consolidation for {episode_id!r} produced no device memory"
+            )
+        return
+    if not isinstance(expectation, dict):
+        raise ResetError("seed_episode consolidation_expectation must be an object")
+    expected_goal = expectation.get("goal_result")
+    assessment = result.get("assessment")
+    if expected_goal is not None:
+        actual_goal = assessment.get("goal_result") if isinstance(assessment, dict) else None
+        if actual_goal != expected_goal:
+            fail(
+                f"episode memory consolidation for {episode_id!r} goal_result mismatch: expected {expected_goal!r}, got {actual_goal or 'missing'!r}"
+            )
+    if expectation.get("required_assessment_evidence"):
+        refs = assessment.get("evidence_refs") if isinstance(assessment, dict) else None
+        if not isinstance(refs, list) or not refs:
+            fail(
+                f"episode memory consolidation for {episode_id!r} returned no assessment evidence_refs"
+            )
+    try:
+        min_memory_ids = int(expectation.get("min_memory_ids", 0))
+        max_memory_ids = expectation.get("max_memory_ids")
+        max_memory_ids = None if max_memory_ids is None else int(max_memory_ids)
+    except (TypeError, ValueError) as exc:
+        raise ResetError("seed_episode consolidation_expectation has invalid memory bounds") from exc
+    if memory_count < min_memory_ids:
+        fail(
+            f"episode memory consolidation for {episode_id!r} produced {memory_count} device memories, expected at least {min_memory_ids}"
+        )
+    if max_memory_ids is not None and memory_count > max_memory_ids:
+        fail(
+            f"episode memory consolidation for {episode_id!r} produced {memory_count} device memories, expected at most {max_memory_ids}"
+        )
+    if not expectation.get("allow_empty_memory", False) and memory_count == 0:
+        fail(
+            f"episode memory consolidation for {episode_id!r} produced no device memory"
+        )

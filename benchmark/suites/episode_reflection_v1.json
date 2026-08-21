@@ -1,0 +1,122 @@
+{
+  "name": "episode_reflection_v1",
+  "suite_category": "Memory & Cognition",
+  "version": "1.0",
+  "description": "Contract benchmark for Episode Memory reflection: assess the outcome from direct evidence, retain reusable lessons, and avoid treating unsupported success claims as durable memory.",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "successful_workaround_is_extracted",
+      "category": "memory",
+      "platforms": ["android"],
+      "description_for_judge": "The setup episode is directly verified as successful. The consolidation artifact must report achieved with evidence and produce at least one memory candidate.",
+      "prompt": "A previous QA Notes task was completed and verified. Briefly confirm that this reflection case should be treated as a verified reusable procedure.",
+      "rubric": [
+        {"id": "acknowledges_verified_lesson", "check": "The response recognizes that a directly verified successful episode can yield a reusable procedure."}
+      ],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 0, "must_complete_within_sec": 60, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "achieved", "min_memory_ids": 1, "max_memory_ids": 3, "required_assessment_evidence": true},
+        "episode": {
+          "id": "ep_reflection_successful_workaround",
+          "status": "completed",
+          "user_goal": "Persist an edited QA Notes title after reopening.",
+          "device_scope": {"device_id": "default", "app_name": "QA Notes", "app_version": "7", "page_name": "Note editor"},
+          "outcome": {"success": true, "final_state": "The changed title remained visible after reopening.", "final_answer": "The title was saved and verified."},
+          "events": [
+            {"event_id": "direct_save_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "After reopening, the edited title reverted; direct Save did not persist it."},
+            {"event_id": "preview_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Preview mode showed the changed title."},
+            {"event_id": "edit_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Edit mode showed the changed title after returning from Preview."},
+            {"event_id": "save_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "Save completed after the Preview-to-Edit transition."},
+            {"event_id": "verify_result", "type": "tool_result", "tool_name": "touch_gesture", "observation": "The changed title remained visible after reopening the note."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "recorded_success_without_proof_is_not_trusted",
+      "category": "memory",
+      "platforms": ["android"],
+      "description_for_judge": "The episode claims success but contains no direct final proof. The consolidation artifact must report unknown and may legitimately produce no device memory.",
+      "prompt": "Briefly confirm that an episode claiming success without a final result or screenshot should remain untrusted.",
+      "rubric": [
+        {"id": "does_not_trust_claim", "check": "The response says unsupported success should not be treated as a verified reusable lesson."}
+      ],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 0, "must_complete_within_sec": 60, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "unknown", "max_memory_ids": 1, "allow_empty_memory": true},
+        "episode": {
+          "id": "ep_reflection_unproven_success",
+          "status": "completed",
+          "user_goal": "Open Settings and verify the requested page.",
+          "device_scope": {"device_id": "default", "app_name": "Settings", "page_name": "unknown"},
+          "outcome": {"success": true, "final_answer": "Done."},
+          "events": [
+            {"event_id": "open_call", "type": "tool_call", "tool_name": "open_app", "content": "Open Settings."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "failed_episode_creates_actionable_guard",
+      "category": "memory",
+      "platforms": ["android"],
+      "description_for_judge": "The episode has a structured failure and direct error evidence. The consolidation artifact must report not_achieved and retain at least one actionable failure lesson.",
+      "prompt": "Briefly confirm that a failed device episode can be retained as an actionable guard rather than a successful procedure.",
+      "rubric": [
+        {"id": "acknowledges_failure_guard", "check": "The response distinguishes an actionable failure lesson from a successful procedure."}
+      ],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 0, "must_complete_within_sec": 60, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "not_achieved", "min_memory_ids": 1, "max_memory_ids": 3, "required_assessment_evidence": true},
+        "episode": {
+          "id": "ep_reflection_actionable_failure",
+          "status": "completed",
+          "user_goal": "Send the drafted message from the composer.",
+          "device_scope": {"device_id": "default", "app_name": "Messages", "page_name": "Composer"},
+          "outcome": {"success": false, "final_state": "The message was not sent.", "final_answer": "Unable to send the message."},
+          "events": [
+            {"event_id": "send_call", "type": "tool_call", "tool_name": "touch_gesture", "content": "Tap Send."},
+            {"event_id": "send_error", "type": "tool_result", "tool_name": "touch_gesture", "is_error": true, "observation": "Send failed because the recipient field was empty."}
+          ]
+        }
+      }
+    },
+    {
+      "id": "transient_value_is_not_memorized",
+      "category": "memory",
+      "platforms": ["android"],
+      "description_for_judge": "The episode directly observes a transient IP value. Reflection should not retain the value as a Device Memory fact.",
+      "prompt": "Briefly confirm that a transient IP address observed during a one-off task should not be retained as a reusable device fact.",
+      "rubric": [
+        {"id": "rejects_transient_fact", "check": "The response says the one-off IP value should not become durable device memory."}
+      ],
+      "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 0, "must_complete_within_sec": 60, "response_required": true},
+      "setup": {
+        "type": "seed_episode",
+        "consolidate": true,
+        "timeout_sec": 90,
+        "consolidation_expectation": {"goal_result": "achieved", "max_memory_ids": 0, "allow_empty_memory": true},
+        "episode": {
+          "id": "ep_reflection_transient_ip",
+          "status": "completed",
+          "user_goal": "Inspect the current IPv4 address without changing network settings.",
+          "device_scope": {"device_id": "default", "platform": "ios", "app_name": "Settings", "page_name": "Ethernet details"},
+          "outcome": {"success": true, "final_state": "The current IP Address, Subnet Mask, and Router were visible in the final screenshot."},
+          "events": [
+            {"event_id": "ipv4_result", "type": "tool_result", "tool_name": "screenshot", "observation": "IP Address 192.0.2.10, Subnet Mask 255.255.255.0, and Router 192.0.2.1 are visible."}
+          ]
+        }
+      }
+    }
+  ]
+}

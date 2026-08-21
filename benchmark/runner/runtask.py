@@ -275,8 +275,9 @@ def run_one_task(
         rubric_spec=[dc.asdict(r) for r in task.rubric],
     )
     active_skills = _normalise_active_skills(active_skills)
+    setup_result: dict[str, Any] | None = None
     try:
-        prepare_task_isolation(
+        setup_result = prepare_task_isolation(
             client,
             suite,
             task,
@@ -284,10 +285,45 @@ def run_one_task(
             benchmark_task_id=benchmark_task_id,
         )
     except (ResetError, AgentTimeoutError, AgentRequestError) as e:
-        base.status = "skipped"
+        failed_consolidation = getattr(e, "consolidation", None)
+        if isinstance(failed_consolidation, dict):
+            (artifact_dir / "consolidation.json").write_text(
+                json.dumps(failed_consolidation, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        base.status = "failed" if isinstance(failed_consolidation, dict) else "skipped"
         base.metrics = {"error": f"setup: {e}"}
+        if isinstance(failed_consolidation, dict):
+            base.metrics["consolidation_goal_result"] = (
+                failed_consolidation.get("assessment", {}).get("goal_result")
+                if isinstance(failed_consolidation.get("assessment"), dict)
+                else None
+            )
+            base.metrics["consolidation_memory_count"] = len(
+                failed_consolidation.get("memory_ids", [])
+            )
         base.finished_at = now_iso()
         return base
+    if setup_result is not None:
+        if setup_result.get("consolidation") is not None:
+            (artifact_dir / "consolidation.json").write_text(
+                json.dumps(setup_result["consolidation"], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            consolidation = setup_result["consolidation"]
+            base.metrics["consolidation_goal_result"] = (
+                consolidation.get("assessment", {}).get("goal_result")
+                if isinstance(consolidation.get("assessment"), dict)
+                else None
+            )
+            base.metrics["consolidation_memory_count"] = len(
+                consolidation.get("memory_ids", [])
+            )
+        else:
+            (artifact_dir / "setup.json").write_text(
+                json.dumps(setup_result, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
     pre_path = artifact_dir / "pre.jpg"
     attachments = None
     input_screenshot_path = (

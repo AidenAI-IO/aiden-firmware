@@ -1,14 +1,14 @@
 {
   "name": "episode_memory_legacy_v1",
   "suite_category": "Memory & Cognition",
-  "description": "Legacy direct-memory control across natural recall and physical-iPhone execution. Deterministic Device Memory fixtures represent the removed synchronous Episode-to-Memory output before evaluation.",
+  "description": "Legacy direct-memory control across natural recall and physical-iPhone execution. Deterministic Device Memory fixtures represent the removed synchronous Episode-to-Memory output; use episode_reflection_v1 for reflection quality.",
   "global_reset": {},
   "tasks": [
     {
       "id": "qa_notes_title_save_procedure",
       "category": "memory",
       "description_for_judge": "The agent should select the title-save sequence recorded by the legacy direct Episode-to-Memory procedure fixture.",
-      "prompt": "A note title has already been edited in QA Notes build 7. Based on this device's previously verified behavior, which sequence makes the changed title persist? Do not operate the phone; answer directly. End with exactly one line in the form <final_answer>(x)</final_answer>.\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
+      "prompt": "A note title has already been edited in QA Notes build 7. Use recall_device_memory to retrieve the verified device procedure, then answer which sequence makes the changed title persist. Do not operate the phone. End with exactly one line in the form <final_answer>(x)</final_answer>.\n\nOptions:\n(a) Tap Save.\n(b) Tap Preview, then tap Edit, then tap Save.\n(c) Tap Save, then close and reopen the note to confirm.\n(d) Tap Preview, then tap Save.",
       "expected_answer": "(b)",
       "answer_format": "option_letter",
       "repeats": 10,
@@ -23,6 +23,8 @@
         "max_tool_calls": 3,
         "must_complete_within_sec": 90,
         "response_required": true,
+        "required_tools": ["recall_device_memory"],
+        "required_tool_calls": [{"tool": "recall_device_memory", "input_contains": {"terms": ["QA Notes"]}}],
         "forbidden_tools": [
           "screenshot",
           "open_app",
