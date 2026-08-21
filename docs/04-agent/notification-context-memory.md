@@ -2,155 +2,155 @@
 sidebar_position: 12
 ---
 
-# 通知持久化与自动记忆
+# Notification Persistence and Automatic Memory
 
-**状态：** 当前实现说明
+This document describes the notification consumption, persistence, and automatic memory extraction pipeline. Notification events from the BLE service are consumed by the Agent, persisted to disk, and consolidated into Temporary or Long-Term Memory during idle windows.
 
-## 设计结论
+## Architecture
 
-`ble_service` 只生产规范化通知事件。Agent 侧的 `NotificationContext` 负责消费、去重、落盘、游标和清理。
-
-Memory 维护只有一个共享 `MemoryWorker`：
+The notification memory system uses a shared background worker that processes both Episode and Notification scenarios serially:
 
 ```text
-MemoryWorker（Agent 闲时调度，串行执行）
+MemoryWorker (idle-scheduled, serial execution)
 ├── EpisodeProcessor
 └── NotificationProcessor
 ```
 
-Worker 只负责前台取消、默认 5 分钟闲时窗口、按注册顺序串行调用 Processor、pending 和停止生命周期。Worker 不理解 Episode、Notification、Memory 类型或 Store 语义，也不建立跨场景优先级队列。每个 Processor 自己决定读取方式、批大小、提炼规则、proposal 校验和落盘方式。
+The Worker is responsible for foreground preemption, a default 5-minute idle delay, serial invocation of registered Processors in order, pending state, and lifecycle management. The Worker does not understand Episode, Notification, Memory types, or Store semantics, nor does it establish cross-scenario priority queues.
 
-启动时会先一次性注册 EpisodeProcessor 和 NotificationProcessor，再启动
-Worker，确保首个闲时批次也是 Episode -> Notification 的固定顺序。
+Each Processor owns its read strategy, batch size, extraction rules, proposal validation, and persistence. Both processors are registered at startup before the Worker starts, ensuring the first idle batch also follows the fixed Episode → Notification order.
 
-`MemoryMergeEngine` 只抽取两类场景都需要的机械步骤：
-
-```text
-场景原始输入 + 相关 Memory -> 构造场景消息 -> 调用 LLM -> 返回原始 proposal
-```
-
-Episode 和 Notification 的 proposal schema、证据门槛、冲突处理、Memory 新增/更新/晋升逻辑分别留在各自 Processor 中，不强行统一。
-
-## 组件职责
-
-| 模块 | 职责 |
-| --- | --- |
-| `ble_service` | 接收 iOS/Android 通知、规范化、分配事件 ID、维护短期 event ring |
-| `NotificationContext` | 消费事件、去重、JSONL 落盘、source/memory cursor 和清理 |
-| `MemoryWorker` | 统一闲时窗口、前台取消、串行执行 Processor、重试和停止 |
-| `episodeMemoryProcessor` | 读取 Episode、按 Episode 规则提炼并写入 Device Memory |
-| `NotificationMemoryProcessor` | 读取通知、过滤、调用提炼、校验 proposal 并写入 Temporary/Long-Term Memory |
-| `MemoryMergeEngine` | 召回相关 Memory、构造消息、调用 LLM、返回 raw proposal |
-
-## 生命周期
-
-通知先进入 `ble_service` 的 event ring；Agent 进入闲时后，NotificationProcessor
-才消费 ring、把原始记录持久化到 NotificationContext，并继续完成提炼：
+`MemoryMergeEngine` extracts only the mechanical steps both scenarios need:
 
 ```text
-通知源 -> ble_service event ring
-Agent 前台任务结束 -> 等待 5 分钟闲时
-                    -> EpisodeProcessor（最多 5 个 Episode）
-                    -> NotificationProcessor
-                         -> Consume / NotificationContext.append
-                         -> 提炼最多 10 条通知
-                    -> 仍有 pending 时在当前闲时窗口继续下一批
+Scenario input + related Memory → build messages → call LLM → return raw proposal
 ```
 
-通知没有独立的 30 秒 timer，也没有单独的 Notification Worker。通知发布成功后只唤醒共享 Worker 的闲时计时器，不会立即触发 LLM；Processor 在共享 Worker 被调度时先 `Consume` BLE ring，再读取自己的 pending 数据。没有 pending 时返回空结果，Worker 不会持续轮询。
+Episode and Notification proposal schemas, evidence thresholds, conflict resolution, and Memory add/update/promote logic remain in their respective Processors and are not forcibly unified.
 
-## NotificationContext
+## Component Responsibilities
 
-`NotificationContext` 对 runtime 提供：
+| Module                        | Responsibility                                                                                            |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `ble_service`                 | Receives iOS/Android notifications, normalizes, assigns event IDs, maintains short-term event ring        |
+| `NotificationContext`         | Consumes events, deduplicates, persists to JSONL, manages source/memory cursors, cleanup                  |
+| `MemoryWorker`                | Unified idle window, foreground cancellation, serial Processor execution, retry, and stop                 |
+| `episodeMemoryProcessor`      | Reads Episodes, extracts per-Episode rules, writes to Device Memory                                       |
+| `NotificationMemoryProcessor` | Reads notifications, filters, calls extraction, validates proposals, writes to Temporary/Long-Term Memory |
+| `MemoryMergeEngine`           | Recalls related Memory, builds messages, calls LLM, returns raw proposal                                  |
+
+## Lifecycle
+
+Notifications enter the `ble_service` event ring first. When the Agent enters an idle state, the NotificationProcessor consumes the ring, persists raw records to NotificationContext, and continues with extraction:
 
 ```text
-Consume(limit)               从 events_since 拉取并可靠落盘
-ReadPending(limit)           读取 memory cursor 之后的记录
-CommitProcessed(batch)       Memory 写入成功后推进 memory cursor
-CleanupProcessedBefore(...)  只清理已处理的日期分片
+Notification source → ble_service event ring
+Agent foreground task ends → wait 5 minutes idle
+                           → EpisodeProcessor (up to 5 Episodes)
+                           → NotificationProcessor
+                                → Consume / NotificationContext.append
+                                → Extract up to 10 notifications
+                           → Continue next batch in same idle window if still pending
 ```
 
-落盘记录保留 BLE 原始字段，并增加 Agent 本地单调递增的 `context_id`。Memory cursor 使用 `context_id`，不依赖 BLE generation。落盘采用按 UTC 日期分片的 JSONL；写入成功后才推进 source cursor。断电恢复时保留已完整写入的记录，并修复最后一条不完整 JSON 行。
+When a notification is published, it wakes the shared Worker's idle timer. When the Worker is scheduled, the Processor calls `Consume` on the BLE ring, then reads its pending data. When no pending work remains, it returns an empty result.
 
-`CommitProcessed` 要求传入从当前 cursor 开始的连续批次。清理器必须调用 `NotificationContext` 的清理方法，不能绕过 Context 直接删除 JSONL，以避免和 append/commit 并发。
+## Notification Context
 
-原始通知不再额外包装查询接口或 `agent notifications list` 子命令。Agent 的
-`shell` 工具直接只读访问 `/userdata/agent/memory/notifications/events/`；目录下
-按 UTC 日期保存为 `YYYY-MM-DD.jsonl`，每行一条原始通知记录。日期、应用、正文
-和条数筛选使用系统已有的只读 shell 工具完成，不复制一套查询实现。Agent 不得
-通过 shell 修改这些文件。
+`NotificationContext` provides the runtime with:
 
-## NotificationProcessor
+```text
+Consume(limit)               Pull from events_since and persist reliably
+ReadPending(limit)           Read records after memory cursor
+CommitProcessed(batch)       Advance memory cursor after Memory write succeeds
+CleanupProcessedBefore(...)  Only clean processed date shards
+```
 
-Processor 自己拥有通知场景的完整业务流程：
+Persisted records retain BLE original fields and add an Agent-local monotonically increasing `context_id`. The memory cursor uses `context_id` and does not depend on BLE generation. Persistence uses UTC date-sharded JSONL; the source cursor advances only after write succeeds. On power recovery, completely written records are retained and the last incomplete JSON line is repaired.
 
-1. `Consume` 当前 BLE ring，随后 `ReadPending` 取本批数据；
-2. 合并同一通知的 added/modified/removed 变化；
-3. 确定性过滤 OTP、验证码、营销、秘密等明显噪声；
-4. 为本批每条通知检索相关 Memory，并合并成一次 `MemoryMergeEngine.Extract` 调用；
-5. 按 `context_id` 拆分、解析并校验通知专用 proposal；每条通知最多产生一个 action；
-6. 按 action 在 Temporary 或 Long-Term Store 中新增、更新、删除、reinforce 或 promote；
-7. 所有相关 Memory 写入成功后才 `CommitProcessed`；仍有积压时，在同一次闲时窗口继续下一批，不重新等待 5 分钟。
+`CommitProcessed` requires passing in a contiguous batch starting from the current cursor. Cleaners must call `NotificationContext` cleanup methods and cannot bypass Context to delete JSONL directly, to avoid racing with append/commit.
 
-没有模型时，测试和离线场景可以使用确定性的 Temporary Memory fallback。Processor 不把通知业务规则放入 Worker，也不要求 Episode 和 Notification 使用同一套 action 或状态机。
+The Agent's `shell` tool can access `/userdata/agent/memory/notifications/events/` read-only. Files are saved as `YYYY-MM-DD.jsonl` by UTC date, one raw notification record per line. Date, app, body, and count filtering use the system's existing read-only shell tools. The Agent must not modify these files through the shell.
 
-通知 proposal 的 action 包括 `ignore`、`add`、`update`、`reinforce`、`remove` 和 `promote`。更新已有记录必须带准确的 `memory_id` 和 `memory_revision`；无效 proposal 不推进 memory cursor。通知变化会作为新的 Context 记录进入后续批次，因此不保留会阻塞 cursor 的 `hold` 状态。
+## Notification Processor
 
-## EpisodeProcessor
+The Processor owns the complete business flow for the notification scenario:
 
-EpisodeProcessor 保留已有 Episode 语义：
+1. `Consume` the current BLE ring, then `ReadPending` for this batch;
+2. Coalesce added/modified/removed changes for the same notification;
+3. Deterministically filter obvious noise like OTP, verification codes, marketing, and secrets;
+4. For each notification in the batch, retrieve related Memory and merge into one `MemoryMergeEngine.Extract` call;
+5. Split by `context_id`, parse and validate notification-specific proposals; each notification produces at most one action;
+6. Apply actions (add, update, delete, reinforce, or promote) in Temporary or Long-Term Store;
+7. Only `CommitProcessed` after all related Memory writes succeed; if backlog remains, continue next batch in the same idle window without waiting another 5 minutes.
 
-- 只接收已结束且有设备证据的 Episode；
-- 每批最多处理 5 个 Episode，并将整批 Episode 和相关 Device Memory 合并为一次 LLM 调用；
-- LLM 返回带 `episode_id` 的结果，Processor 再按 Episode 逐项校验和落盘；
-- 自己校验 `goal_result`、candidate 类型、证据引用和 revision；
-- 自己执行 Device Memory 的新增、更新和冲突处理；
-- 用 Episode processing ledger 保存 `processing -> proposed -> done/retry/ignored`，支持崩溃恢复。
+When no model is available, tests and offline scenarios can use a deterministic Temporary Memory fallback. The Processor does not place notification business rules into the Worker, nor does it require Episode and Notification to use the same action set or state machine.
 
-## Memory 与 Recall
+Notification proposal actions include `ignore`, `add`, `update`, `reinforce`, `remove`, and `promote`. Updating existing records requires accurate `memory_id` and `memory_revision`; invalid proposals do not advance the memory cursor.
+
+## Episode Processor
+
+EpisodeProcessor retains existing Episode semantics:
+
+- Only accepts completed Episodes with device evidence;
+- Processes at most 5 Episodes per batch and merges the entire batch of Episodes and related Device Memory into one LLM call;
+- The LLM returns results with `episode_id`, then the Processor validates and persists item-by-item per Episode;
+- Validates `goal_result`, candidate types, evidence references, and revisions itself;
+- Executes Device Memory add, update, and conflict resolution itself;
+- Uses the Episode processing ledger to save `processing → proposed → done/retry/ignored`, supporting crash recovery.
+
+## Memory and Recall
 
 ```text
 memory/
-├── notifications/   # 原始通知和游标
-├── temporary/       # 有 expires_at 的短期结论
-├── long_term/       # 稳定偏好、规则和事实
-├── device/          # Episode 产生的设备知识
-└── episodes/        # 不可变 Episode 轨迹
+├── notifications/   # Raw notifications and cursors
+├── temporary/       # Short-term conclusions with expires_at
+├── long_term/       # Stable preferences, rules, and facts
+├── device/          # Device knowledge produced by Episodes
+└── episodes/        # Immutable Episode traces
 ```
 
-Temporary 和 Long-Term 使用相同的可检索记录格式。`recall_memory` 同时搜索两个 Store，过滤过期 Temporary；Device Memory 由 EpisodeProcessor 单独维护。
+Temporary and Long-Term use the same retrievable record format. `recall_memory` searches both Stores simultaneously and filters expired Temporary entries; Device Memory is maintained separately by EpisodeProcessor.
 
-默认值：单条通知正文最多 4 KiB；单次 BLE consume 最多 100 条；Notification 单批最多 10 条；通知重放去重窗口最多保留 4096 个 fingerprint；Temporary 默认 7 天；自动生成的 Long-Term 默认 90 天。Episode 闲时延迟由 `episode_memory_idle_delay_seconds` 配置，默认 300 秒；该值也是共享 Worker 的闲时窗口。
+Default values: single notification body up to 4 KiB; single BLE consume up to 100 entries; Notification single batch up to 10 entries; notification replay deduplication window retains up to 4096 fingerprints; Temporary default 7 days; auto-generated Long-Term default 90 days. Episode idle delay is configured by `episode_memory_idle_delay_seconds`, default 300 seconds; this value is also the shared Worker's idle window.
 
-## 存储水位与隐私
+## Storage Levels and Privacy
 
-`StorageMonitor` 统一管理水位和 Cleaner。Normal/Warning/Critical 分别启用 14/7/1 天的 Notification Context 清理，Emergency 清理全部已处理分片；任何水位都不删除未处理记录。Critical 和 Emergency 会关闭 `notification_context` 写能力，因此 Processor 不再从 BLE consume 新通知，待水位恢复后再从原 source cursor 继续。Temporary Memory Cleaner 在 Normal 起即可清理已过期或 deleted 记录。
+`StorageMonitor` uniformly manages storage levels and Cleaners. Normal/Warning/Critical enable Notification Context cleanup at 14/7/1 days respectively; Emergency cleans all processed shards; no level deletes unprocessed records. Critical and Emergency disable `notification_context` write capability, so the Processor no longer consumes new notifications from BLE and resumes from the original source cursor after the level recovers. The Temporary Memory Cleaner can clean expired or deleted records starting at Normal level.
 
-通知正文会作为提炼输入发送给当前配置的 LLM provider；只有配置本地模型时，
-该内容才会完全留在设备内。日志只记录 event ID、App ID、处理结果和 gap，
-不记录正文。
+Notification body content is sent to the currently configured LLM provider as extraction input; only when a local model is configured does this content remain entirely on-device. Logs record event ID, App ID, processing results, and gaps only; they do not record body content.
 
-## 失败与恢复
+## Failure and Recovery
 
-- BLE consume 失败：不推进 source cursor，保留 pending，下一次闲时重试；
-- LLM、proposal 校验或 Memory 写入失败：不推进 memory cursor；
-- 单个 Processor 失败：记录该场景错误并保留其 pending，按闲时延迟退避，避免 BLE/LLM/磁盘持续错误形成热循环；其他已注册场景仍可在同一轮串行执行，不共享业务事务；
-- 前台任务开始：共享 Worker 取消在途模型调用；Processor 保留自己的持久化状态，下一次闲时继续；
-- Worker 重启：Episode 从 processing ledger 恢复，Notification 从 source/memory cursor 恢复；
-- Notification 当前不单独持久化 proposal ledger；若进程在 Memory 写入成功、cursor 提交前崩溃，下一次会重新提炼该记录，因此 Notification 的 add/update 逻辑必须保持幂等；
-- 一个 Notification 批次内的 Store action 依次执行，不提供跨 Temporary/Long-Term Store 事务；发生中途 I/O 失败时不推进 cursor，并依靠固定 ID、revision 校验和重试收敛；
-- 任何 gap 都写入 `NotificationContextState.Gaps`，不得静默吞掉。
+- BLE consume failure: does not advance source cursor, retains pending, retries at next idle;
+- LLM, proposal validation, or Memory write failure: does not advance memory cursor;
+- Single Processor failure: logs the scenario error and retains its pending, backs off by idle delay to avoid hot loops from persistent BLE/LLM/disk errors; other registered scenarios can still execute serially in the same round and do not share business transactions;
+- Foreground task starts: shared Worker cancels in-flight model call; Processor retains its own persistent state and continues at next idle;
+- Worker restart: Episode recovers from processing ledger, Notification recovers from source/memory cursors;
+- Notification add/update logic must remain idempotent; if the process crashes after Memory write succeeds but before cursor commit, the next run will re-extract that record;
+- Store actions within one Notification batch execute sequentially; on mid-I/O failure, the cursor is not advanced and convergence relies on fixed IDs, revision checks, and retry;
+- Any gap must be written to `NotificationContextState.Gaps` and must not be silently swallowed.
 
-## 验收重点
+## Acceptance Criteria
 
-- Episode 和 Notification 由同一个 `MemoryWorker` 按注册顺序串行调度；每个 Processor 每批只调用一次 LLM，返回结果在本地逐项校验和落盘；
-- Agent 前台任务不会被后台 Memory 提炼阻塞，且能取消在途模型调用；
-- 两个 Processor 可独立决定批大小、proposal 结构和 Apply 逻辑；
-- `MemoryMergeEngine` 不拥有跨场景 Apply 或统一 `MemoryIntent` 语义；
-- 通知无 pending 时不启动持续 polling，也不存在固定 30 秒处理 timer；
-- cursor 只在对应 Memory 写入成功后推进。
+- Episode and Notification are serially scheduled by the same `MemoryWorker` in registration order; each Processor calls the LLM once per batch, then validates and persists results item-by-item locally;
+- Agent foreground tasks are not blocked by background Memory extraction and can cancel in-flight model calls;
+- Both Processors can independently decide batch size, proposal structure, and Apply logic;
+- `MemoryMergeEngine` does not own cross-scenario Apply or unified `MemoryIntent` semantics;
+- Cursors advance only after corresponding Memory writes succeed.
 
-## 相关文档
+## Verification
+
+Run the core regression suite from `src/agent`:
+
+```bash
+go test ./internal/agent -count=1
+go vet ./...
+```
+
+Real-device validation is still required to measure notification extraction quality, cursor correctness, and foreground p50/p95 latency under a real model provider and BLE event stream.
+
+## Related Documentation
 
 - [Memory Plane](memory-plane.md)
 - [Agent Context Lifecycle](context-lifecycle.md)
