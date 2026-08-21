@@ -22,7 +22,8 @@ type SaveMemoryTool struct {
 }
 
 type ForgetMemoryTool struct {
-	store *LongTermMemoryStore
+	store     *LongTermMemoryStore
+	temporary *LongTermMemoryStore
 }
 
 type RecallDeviceMemoryTool struct {
@@ -269,6 +270,10 @@ func NewForgetMemoryTool(store *LongTermMemoryStore) *ForgetMemoryTool {
 	return &ForgetMemoryTool{store: store}
 }
 
+func NewForgetMemoryToolWithTemporary(store, temporary *LongTermMemoryStore) *ForgetMemoryTool {
+	return &ForgetMemoryTool{store: store, temporary: temporary}
+}
+
 func (t *ForgetMemoryTool) Name() string { return "forget_memory" }
 
 func (t *ForgetMemoryTool) Description() string {
@@ -288,7 +293,7 @@ func (t *ForgetMemoryTool) ArgsSchema() map[string]any {
 }
 
 func (t *ForgetMemoryTool) Call(ctx context.Context, input string) (string, error) {
-	if t.store == nil {
+	if t.store == nil && t.temporary == nil {
 		return "", fmt.Errorf("long-term memory store is not configured")
 	}
 	req, err := decodeForgetMemoryRequest(input)
@@ -301,7 +306,14 @@ func (t *ForgetMemoryTool) Call(ctx context.Context, input string) (string, erro
 	if req.Reason == "" {
 		req.Reason = "user requested"
 	}
-	if err := t.store.Forget(ctx, req.ID, req.Reason); err != nil {
+	store := t.store
+	if strings.HasPrefix(req.ID, "tmp_") && t.temporary != nil {
+		store = t.temporary
+	}
+	if store == nil {
+		return "", fmt.Errorf("memory store is not configured for %q", req.ID)
+	}
+	if err := store.Forget(ctx, req.ID, req.Reason); err != nil {
 		return "", err
 	}
 	return encodeToolJSON(map[string]string{"status": "deleted", "id": req.ID})

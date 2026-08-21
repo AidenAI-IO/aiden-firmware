@@ -415,7 +415,7 @@ func (s *ToolSet) RegisterMemoryTools(memoryDir string, summaryMaxChunks int, lo
 	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore, archivedStore)
 	s.tools["recall_memory"] = NewRecallMemoryToolWithTemporary(longTermStore, temporaryStore)
 	s.tools["save_memory"] = NewSaveMemoryTool(longTermStore)
-	s.tools["forget_memory"] = NewForgetMemoryTool(longTermStore)
+	s.tools["forget_memory"] = NewForgetMemoryToolWithTemporary(longTermStore, temporaryStore)
 	s.tools["recall_device_memory"] = NewRecallDeviceMemoryTool(deviceStore)
 	s.tools["inspect_episode"] = NewInspectEpisodeTool(episodeStore)
 }
