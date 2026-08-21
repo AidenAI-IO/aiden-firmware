@@ -56,7 +56,6 @@ class DockerSandboxContractTest(unittest.TestCase):
         config = read_repo_file("docker/dev/agent.toml")
 
         self.assertIn('input_mode = "text"', config)
-        self.assertIn('trigger_mode = "manual"', config)
         self.assertIn('device_type = "iOS"', config)
         self.assertNotIn("api_key", config)
 

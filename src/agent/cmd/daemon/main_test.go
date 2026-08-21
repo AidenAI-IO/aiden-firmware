@@ -306,7 +306,7 @@ func (d *fakeAudioDialog) FlushVAD() []int16 {
 	return nil
 }
 
-func (d *fakeAudioDialog) FinishManualUtterance(pending []int16) []int16 {
+func (d *fakeAudioDialog) FinishPendingUtterance(pending []int16) []int16 {
 	frameSamples := d.VADFrameSamples()
 	consumed := 0
 	for consumed+frameSamples <= len(pending) {
@@ -446,13 +446,12 @@ func withWakeupDebounceClock(t *testing.T, start time.Time) func(time.Duration) 
 	}
 }
 
-func newTestAudioVAD(t *testing.T, alwaysBuffer bool, probabilities []float64) *agent.AudioVAD {
+func newTestAudioVAD(t *testing.T, probabilities []float64) *agent.AudioVAD {
 	t.Helper()
 	vad, err := agent.NewAudioVADWithScorer(agent.AudioVADConfig{
 		SampleRate:      16000,
 		SilenceMs:       90,
 		MinSpeechMs:     60,
-		AlwaysBuffer:    alwaysBuffer,
 		SpeechThreshold: 0.5,
 	}, &testVADScorer{probabilities: probabilities})
 	if err != nil {
@@ -562,51 +561,56 @@ func TestStartWakeupWatchersDebouncesImmediateGPIOBurst(t *testing.T) {
 	}
 }
 
-func TestShouldRunConsoleAudioLoopSkipsManualModeWithoutInteractiveStdin(t *testing.T) {
-	tests := []struct {
-		name        string
-		cfg         agent.Config
-		interactive bool
-		want        bool
-	}{
-		{
-			name:        "stt manual without terminal",
-			cfg:         agent.Config{InputMode: "stt", TriggerMode: "manual"},
-			interactive: false,
-			want:        false,
-		},
-		{
-			name:        "stt default manual without terminal",
-			cfg:         agent.Config{InputMode: "stt"},
-			interactive: false,
-			want:        false,
-		},
-		{
-			name:        "stt manual with terminal",
-			cfg:         agent.Config{InputMode: "stt", TriggerMode: "manual"},
-			interactive: true,
-			want:        true,
-		},
-		{
-			name:        "stt wakeup without terminal",
-			cfg:         agent.Config{InputMode: "stt", TriggerMode: "wakeup"},
-			interactive: false,
-			want:        true,
-		},
-		{
-			name:        "text mode never runs audio loop",
-			cfg:         agent.Config{InputMode: "text", TriggerMode: "manual"},
-			interactive: true,
-			want:        false,
-		},
-	}
+type fakeQuickCaptureTrigger struct {
+	calls int
+	err   error
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := shouldRunConsoleAudioLoop(tt.cfg, tt.interactive); got != tt.want {
-				t.Fatalf("shouldRunConsoleAudioLoop() = %v, want %v", got, tt.want)
-			}
-		})
+func (t *fakeQuickCaptureTrigger) TriggerQuickCapture() error {
+	t.calls++
+	return t.err
+}
+
+func TestStartQuickCaptureGPIOWatcherUsesConfiguredSparePin(t *testing.T) {
+	trigger := &fakeQuickCaptureTrigger{}
+	var configuredPin int
+	var watcher *fakeWakeupWatcher
+
+	got, err := startQuickCaptureGPIOWatcher(agent.Config{
+		QuickCapture: agent.QuickCaptureConfig{GPIOPin: 3},
+	}, trigger, func(pin int, callback func()) (wakeupWatcher, error) {
+		configuredPin = pin
+		watcher = &fakeWakeupWatcher{callback: callback}
+		return watcher, nil
+	})
+	if err != nil {
+		t.Fatalf("startQuickCaptureGPIOWatcher() error = %v", err)
+	}
+	defer got.Stop()
+
+	if configuredPin != 3 || watcher == nil || !watcher.started {
+		t.Fatalf("watcher pin=%d watcher=%+v, want started GPIO 3", configuredPin, watcher)
+	}
+	watcher.callback()
+	if trigger.calls != 1 {
+		t.Fatalf("trigger calls = %d, want 1", trigger.calls)
+	}
+	if got == nil {
+		t.Fatal("watcher = nil, want configured watcher")
+	}
+}
+
+func TestStartQuickCaptureGPIOWatcherDisabledByDefault(t *testing.T) {
+	called := false
+	watcher, err := startQuickCaptureGPIOWatcher(agent.Config{}, &fakeQuickCaptureTrigger{}, func(pin int, callback func()) (wakeupWatcher, error) {
+		called = true
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("startQuickCaptureGPIOWatcher() error = %v", err)
+	}
+	if watcher != nil || called {
+		t.Fatalf("watcher=%v factory_called=%v, want disabled", watcher, called)
 	}
 }
 
@@ -756,79 +760,6 @@ func TestSignalVoiceWakeupEventCoalescesPendingEvents(t *testing.T) {
 	}
 }
 
-func TestProcessAudioLoopStopsRecordingBeforeProcessingUtterance(t *testing.T) {
-	dialog := &fakeAudioDialog{
-		frameSamples:    2,
-		recordingActive: true,
-		chunks: []*agent.AudioChunkResult{
-			{PCM: pcm16BytesFromSamples(100, 200)},
-		},
-		utterance: []int16{100, 200},
-	}
-	processedWhileRecording := false
-	dialog.onUtterance = func() {
-		if dialog.recordingActive {
-			processedWhileRecording = true
-		}
-	}
-
-	processAudioLoop(dialog, nil, context.Background(), nil)
-
-	if processedWhileRecording {
-		t.Fatal("processed utterance while recording was still active")
-	}
-	if dialog.stops != 1 {
-		t.Fatalf("dialog stops = %d, want 1 before utterance processing", dialog.stops)
-	}
-}
-
-func TestProcessAudioLoopFlushesManualTailOnStop(t *testing.T) {
-	vad := newTestAudioVAD(t, true, []float64{0.1, 0.1, 0.1})
-	dialog := &fakeAudioDialog{
-		vad:             vad,
-		recordingActive: true,
-		chunks: []*agent.AudioChunkResult{
-			{PCM: pcm16BytesFromSamples(1, 2, 3)},
-		},
-		repeatEmpty: true,
-		readDelay:   5 * time.Millisecond,
-	}
-	manualStop := make(chan manualStopResult, 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	go processAudioLoop(dialog, nil, ctx, manualStop)
-
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-
-	result := <-manualStop
-	if result.vadHandled {
-		t.Fatal("expected manual stop flush, got vadHandled")
-	}
-	if len(result.utterance) != 3 {
-		t.Fatalf("utterance = %#v, want 3 tail samples preserved", result.utterance)
-	}
-}
-
-func TestProcessAudioLoopStopsRecordingOnVADError(t *testing.T) {
-	dialog := &fakeAudioDialog{
-		frameSamples:    2,
-		recordingActive: true,
-		chunks: []*agent.AudioChunkResult{
-			{PCM: pcm16BytesFromSamples(100, 200)},
-		},
-		vadErr: errors.New("vad failed"),
-	}
-
-	processAudioLoop(dialog, nil, context.Background(), nil)
-
-	if dialog.recordingActive {
-		t.Fatal("dialog recording still active after VAD error")
-	}
-	if dialog.stops != 1 {
-		t.Fatalf("dialog stops = %d, want 1 after VAD error", dialog.stops)
-	}
-}
-
 func TestRunWakeupModeProcessesTriggeredAudioAndStopsOnSignal(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	dialog := &fakeAudioDialog{
@@ -914,7 +845,7 @@ func TestRunWakeupModeLegacyStartsRecordingWithoutWakeupAck(t *testing.T) {
 
 func TestRunWakeupModeStopsRecordingAfterSpeechThenBiasedSilence(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
-	vad := newTestAudioVAD(t, false, []float64{0.9, 0.9, 0.1, 0.1, 0.1})
+	vad := newTestAudioVAD(t, []float64{0.9, 0.9, 0.1, 0.1, 0.1})
 	samples := append([]int16{}, alternatingSamples(vad.FrameSamples()*2, 700, 1000)...)
 	samples = append(samples, constantSamples(vad.FrameSamples()*3, 700)...)
 
@@ -966,7 +897,7 @@ func TestRunWakeupModeStopsRecordingAfterSpeechThenBiasedSilence(t *testing.T) {
 
 func TestRunWakeupModeBuffersSpeechDetectedByRKNNAfterInitialNonSpeech(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
-	vad := newTestAudioVAD(t, false, append(append(make([]float64, 10), 0.9, 0.9), 0.1, 0.1, 0.1))
+	vad := newTestAudioVAD(t, append(append(make([]float64, 10), 0.9, 0.9), 0.1, 0.1, 0.1))
 	noise := alternatingSamples(vad.FrameSamples()*10, 700, 35)
 	speech := alternatingSamples(vad.FrameSamples()*2, 700, 160)
 	silence := constantSamples(vad.FrameSamples()*3, 700)
@@ -1624,7 +1555,7 @@ func TestRunVoiceTurnSignalWaitsForSpeakingGoroutine(t *testing.T) {
 }
 
 func TestCaptureUtteranceTimeoutDiscardsSilenceWhenVADNeverDetectedSpeech(t *testing.T) {
-	vad := newTestAudioVAD(t, false, []float64{0.1, 0.1, 0.1, 0.1})
+	vad := newTestAudioVAD(t, []float64{0.1, 0.1, 0.1, 0.1})
 	dialog := &fakeAudioDialog{
 		vad: vad,
 		chunks: []*agent.AudioChunkResult{
@@ -1644,7 +1575,7 @@ func TestCaptureUtteranceTimeoutDiscardsSilenceWhenVADNeverDetectedSpeech(t *tes
 }
 
 func TestCaptureUtteranceTimeoutReturnsBufferedSpeechWhenVADStarted(t *testing.T) {
-	vad := newTestAudioVAD(t, false, []float64{0.9, 0.9, 0.9})
+	vad := newTestAudioVAD(t, []float64{0.9, 0.9, 0.9})
 	speech := alternatingSamples(vad.FrameSamples()*3, 700, 1000)
 	dialog := &fakeAudioDialog{
 		vad: vad,

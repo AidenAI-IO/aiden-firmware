@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -128,6 +129,16 @@ func TestRecallMemoryToolReturnsMatchingLongTermMemory(t *testing.T) {
 	}
 	if decoded.Results[0].ID != "mem_login" || !strings.Contains(decoded.Results[0].Content, "重新获取验证码") {
 		t.Fatalf("unexpected memory recall result: %#v", decoded.Results[0])
+	}
+}
+
+func TestSaveMemoryToolExcludesScreenSnapshotType(t *testing.T) {
+	props := NewSaveMemoryTool(nil).ArgsSchema()["properties"].(map[string]any)
+	typeSchema := props["type"].(map[string]any)
+	got := typeSchema["enum"].([]string)
+	want := []string{"preference", "rule", "procedure", "fact", "profile"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("save_memory type enum = %v, want %v", got, want)
 	}
 }
 

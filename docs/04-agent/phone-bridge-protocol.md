@@ -93,7 +93,7 @@ The app can also actively send event messages. Events reuse the `BridgeCommandRe
 Current events:
 
 - `phone_environment`: App reports phone environment snapshot upon WebSocket connection success and returning from background to foreground.
-- `phone_app_state`: App reports the last visible app lifecycle state when it changes among `active`, `background`, and `inactive`, plus whether a Live Activity / Dynamic Island entry is available to return to Aiden and whether PiP Bridge mode is enabled. This state is for diagnostics and strategy decisions; it does not mean the app can execute permanently in iOS background.
+- `phone_app_state`: App reports the last visible app lifecycle state when it changes among `active`, `background`, and `inactive`, plus whether a Live Activity / Dynamic Island entry is available to return to the Aiden App and whether PiP Bridge mode is enabled. This state is for diagnostics and strategy decisions; it does not mean the app can execute permanently in iOS background.
 
 Example:
 

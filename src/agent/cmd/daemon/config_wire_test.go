@@ -13,12 +13,12 @@ import (
 )
 
 // These tests exercise the real config_web <-> agent wire contract: the JSON
-// shape produced by config_web.cpp's config_to_json() (snake_case keys, agent
-// settings nested under "agent", search reporting only has_api_key). The
-// PascalCase fixtures in config_commands_test.go validate Config.Validate()
-// directly and never touch this decode path, so a contract drift between the
-// C++ serializer and the Go decoder would pass there while silently accepting
-// every invalid config in production. checkConfig() is the guard against that.
+// shape defined by webConfigDTO (snake_case keys, agent settings nested under
+// "agent", search reporting only has_api_key). The PascalCase fixtures in
+// config_commands_test.go validate Config.Validate() directly and never touch
+// this decode path, so a contract drift between the config page and the Go
+// decoder would pass there while silently accepting every invalid config in
+// production. checkConfig() is the guard against that.
 
 func checkWire(t *testing.T, payload string) ValidationResult {
 	t.Helper()
@@ -165,7 +165,7 @@ func TestConfigCheck_WireCustomInstructionMapsToAgentConfig(t *testing.T) {
 		Search: searchDTO{Provider: "duckduckgo"},
 		Agent:  agentDTO{CustomInstruction: "Use custom behavior."},
 	}
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.Instruction != "Use custom behavior." {
 		t.Fatalf("Instruction = %q, want custom instruction", cfg.Instruction)
 	}
@@ -177,7 +177,7 @@ func TestConfigCheck_WireLocaleMapsToAgentConfig(t *testing.T) {
 		Search: searchDTO{Provider: "duckduckgo"},
 		Agent:  agentDTO{Locale: "en-US"},
 	}
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.Locale != "en-US" {
 		t.Fatalf("Locale = %q, want en-US", cfg.Locale)
 	}
@@ -260,8 +260,8 @@ func TestConfigCheckPath_RejectsInvalidTOML(t *testing.T) {
 
 // TestConfigWire_ProvidersRoundTrip guards the sync point that broke the
 // provider feature end to end: webConfigDTO had no top-level "model_providers" field,
-// so `agent config --format=json` never emitted the section. config_web.cpp
-// builds its AgentToml from that output, which made GET /api/config report zero
+// so `agent config --format=json` never emitted the section. config_web serves
+// GET /api/config straight from that output, which made the page report zero
 // providers and made every save of an unrelated section erase them from
 // agent.toml. Validation was skipped for the same reason.
 func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
@@ -286,8 +286,8 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 			t.Errorf("dto.ModelProviders[my-ollama].BaseURL = %q", got)
 		}
 
-		back := dto.toAgentConfig()
-		if got := back.ModelProviders["my-openai"]; got.Type != "openai" || got.APIKey != "" {
+		back := dto.ToAgentConfig()
+		if got := back.ModelProviders["my-openai"]; got.Type != "openai" || got.APIKey != hasAPIKeyPlaceholder {
 			t.Errorf("redacted model_providers conversion = %#v", back.ModelProviders)
 		}
 	})
@@ -353,6 +353,43 @@ func TestConfigWire_ProvidersRoundTrip(t *testing.T) {
 			t.Fatalf("expected valid=true, got errors: %+v", result.Errors)
 		}
 	})
+}
+
+func TestWebConfigDTOStorageRoundTrip(t *testing.T) {
+	cfg := agent.Config{
+		Storage: agent.StorageConfig{
+			MonitorEnabled:       true,
+			MountPoint:           "/custom/mount",
+			Device:               "mmcblk9",
+			MinCardFreeMB:        77,
+			MigrateStartFreePct:  11,
+			MigrateStopFreePct:   61,
+			RootPath:             "/custom/root",
+			CheckIntervalSeconds: 123,
+			WarningThresholdMB:   81,
+			CriticalThresholdMB:  21,
+			EmergencyThresholdMB: 9,
+			RecoveryHysteresisMB: 4,
+			DegradedMode: agent.StorageDegradedModeConfig{
+				DisableLLMHTTPLog:     false,
+				DisableAudioArchive:   true,
+				DisableSessionArchive: false,
+				MaxAgentLogMB:         3,
+			},
+			Cleanup: agent.StorageCleanupConfig{
+				Enabled:                     false,
+				LLMHTTPLogRetentionDays:     []int{8, 4},
+				AudioArchiveRetentionDays:   []int{20, 2},
+				SessionArchiveRetentionDays: []int{14},
+				CleanupRetryIntervalSeconds: 42,
+			},
+		},
+	}
+	dto := webConfigDTOFromAgentConfig(cfg)
+	back := dto.ToAgentConfig()
+	if !reflect.DeepEqual(back.Storage, cfg.Storage) {
+		t.Fatalf("storage round-trip changed config:\n got:  %+v\n want: %+v", back.Storage, cfg.Storage)
+	}
 }
 
 func TestConfigWire_ModelProviderCanonicalJSON(t *testing.T) {
@@ -437,17 +474,16 @@ func TestConfigWire_ModelProviderCanonicalJSON(t *testing.T) {
 // TestWebConfigDTOTopLevelSectionsAreCovered pins the set of top-level sections
 // that `agent config --format=json` emits.
 //
-// config_web.cpp builds its AgentToml from this payload, so a section the Go DTO
-// does not emit does not exist as far as the C++ read path is concerned. That is
+// config_web serves this payload to the page verbatim, so a section the Go DTO
+// does not emit does not exist as far as the config UI is concerned. That is
 // exactly how the `providers` bug worked: the field was missing here, so the
 // config page always showed zero providers AND every save of an unrelated
 // section started from an empty map and erased them from agent.toml.
 //
-// The C++ fixtures (tests/agent_stub_main.cpp and the resolved_config_json()
-// helper in tests/config_web_e2e_test.cpp) are hand-maintained copies of this
-// payload, so they cannot catch drift on the Go side. This test can: when a
-// section is added to webConfigDTO, this list must be updated, which is the
-// prompt to update the C++ fixtures and the AgentToml struct in the same change.
+// The E2E override fixtures are hand-maintained copies of this payload, so they
+// cannot catch drift on the Go side. This test can: when a section is added to
+// webConfigDTO, this list must be updated, which is the prompt to update those
+// fixtures in the same change.
 func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 	want := []string{
 		"agent",
@@ -461,7 +497,9 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 		"model",
 		"model_providers",
 		"ota",
+		"quick_capture",
 		"search",
+		"storage",
 		"stt",
 		"stt_providers",
 		"telemetry",
@@ -486,16 +524,15 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 	sort.Strings(got)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("webConfigDTO top-level sections drifted.\n got: %v\nwant: %v\n"+
-			"If this is intentional, update this list AND the C++ fixtures in "+
-			"tests/agent_stub_main.cpp and tests/config_web_e2e_test.cpp, plus "+
-			"AgentToml in src/agent_toml.h.", got, want)
+			"If this is intentional, update this list and the E2E override fixtures in "+
+			"tests/agent_stub_main.cpp and tests/config_web_e2e_test.cpp.", got, want)
 	}
 }
 
 // TestWebConfigDTOProvidersOmittedWhenEmpty documents that `model_providers` carries
 // omitempty, so a config with no providers omits the key entirely rather than
-// emitting {}. The C++ read path must treat a missing key as "no providers"
-// rather than as an error.
+// emitting {}. Consumers of the resolved config must treat a missing key as
+// "no providers" rather than as an error.
 func TestWebConfigDTOProvidersOmittedWhenEmpty(t *testing.T) {
 	cfg := agent.Config{
 		Model: agent.ModelConfig{Provider: "openai", Model: "gpt-4o", APIKey: "sk-x"},

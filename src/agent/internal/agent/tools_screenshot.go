@@ -74,6 +74,82 @@ func screenshotMinimalWidth(screenState *screen.ScreenState) int {
 	return minimalWidth
 }
 
+// capturedFrame is a JPEG frame cropped to the Active Area, the region holding
+// the mirrored device screen.
+type capturedFrame struct {
+	Meta           *frameMetadata
+	Data           []byte
+	Width          int
+	Height         int
+	SourceWidth    int
+	SourceHeight   int
+	ActiveArea     screen.ScreenActiveArea
+	AlreadyCropped bool
+	CaptureInfo    screenCaptureInfo
+}
+
+// captureActiveAreaFrame grabs the latest frame and optionally crops it to the
+// Active Area without updating the shared mapping state.
+func captureActiveAreaFrame(client screenshotFrameClient, screenState *screen.ScreenState, cropBlack bool) (capturedFrame, error) {
+	if client == nil {
+		return capturedFrame{}, fmt.Errorf("screen capture client not configured")
+	}
+	meta, jpegData, captureInfo, err := captureScreenshotJPEG(client, screenState, cropBlack)
+	if err != nil {
+		return capturedFrame{}, err
+	}
+	if meta == nil {
+		return capturedFrame{}, fmt.Errorf("frame service returned no metadata")
+	}
+	if meta.Stale {
+		return capturedFrame{}, fmt.Errorf("frame service: STALE_FRAME")
+	}
+	if meta.PixelFormat != "jpeg" {
+		return capturedFrame{}, fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
+	}
+
+	active := screen.ScreenActiveArea{}
+	sourceWidth := int(meta.Width)
+	sourceHeight := int(meta.Height)
+	alreadyCropped := false
+	if fullWidth, fullHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
+		sourceWidth = fullWidth
+		sourceHeight = fullHeight
+		active = sourceActive
+		alreadyCropped = true
+	} else if cropBlack {
+		active = detectScreenshotActiveAreaForScreen(screenState, jpegData, int(meta.Width), int(meta.Height))
+	} else {
+		active = screen.ScreenActiveArea{X: 0, Y: 0, Width: sourceWidth, Height: sourceHeight, Valid: true}
+	}
+
+	displayWidth := int(meta.Width)
+	displayHeight := int(meta.Height)
+	displayData := jpegData
+	if cropBlack && !alreadyCropped && active.Valid &&
+		(active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
+		croppedData, croppedWidth, croppedHeight, cropErr := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
+		if cropErr != nil {
+			return capturedFrame{}, fmt.Errorf("crop screenshot to active area: %w", cropErr)
+		}
+		displayWidth = croppedWidth
+		displayHeight = croppedHeight
+		displayData = croppedData
+	}
+
+	return capturedFrame{
+		Meta:           meta,
+		Data:           displayData,
+		Width:          displayWidth,
+		Height:         displayHeight,
+		SourceWidth:    sourceWidth,
+		SourceHeight:   sourceHeight,
+		ActiveArea:     active,
+		AlreadyCropped: alreadyCropped,
+		CaptureInfo:    captureInfo,
+	}, nil
+}
+
 func applyScreenCaptureInfo(result *screenshotResult, info screenCaptureInfo) {
 	if result == nil {
 		return

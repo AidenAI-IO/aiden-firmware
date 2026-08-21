@@ -11,7 +11,6 @@ target_include_directories(doctest INTERFACE
 )
 
 set(AIDEN_TEST_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/agent_toml.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_playback_session.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_record_session.cpp
     ${CMAKE_SOURCE_DIR}/src/wifi_config.cpp
@@ -98,8 +97,6 @@ list(APPEND AIDEN_IMAGE_TEST_SOURCES aiden_sdk_audio_stub.cpp)
 add_executable(aiden_tests
     test_main.cpp
     aiden_log_test.cpp
-    agent_toml_test.cpp
-    agent_toml_voice_providers_test.cpp
     wifi_config_test.cpp
     frame_service_protocol_test.cpp
     frame_service_defaults_test.cpp
@@ -139,7 +136,6 @@ add_executable(config_web_for_tests
     ${CMAKE_SOURCE_DIR}/src/aiden_log.cpp
     ${CMAKE_SOURCE_DIR}/src/config_web.cpp
     ${CMAKE_SOURCE_DIR}/src/config_web_static_assets.cpp
-    ${CMAKE_SOURCE_DIR}/src/agent_toml.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/service_status.cpp
     ${CMAKE_SOURCE_DIR}/src/uds_client.cpp
@@ -155,7 +151,27 @@ set_target_properties(config_web_for_tests PROPERTIES
     OUTPUT_NAME config_web
 )
 
+find_program(GO_EXECUTABLE go REQUIRED)
+set(AIDEN_AGENT_FOR_TESTS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/agent_for_tests)
+file(GLOB_RECURSE AIDEN_AGENT_GO_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_SOURCE_DIR}/src/agent/*.go
+)
+add_custom_command(
+    OUTPUT ${AIDEN_AGENT_FOR_TESTS}
+    COMMAND ${GO_EXECUTABLE} build -o ${AIDEN_AGENT_FOR_TESTS} ./cmd/daemon
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/src/agent
+    DEPENDS ${AIDEN_AGENT_GO_SOURCES} ${CMAKE_SOURCE_DIR}/src/agent/go.mod ${CMAKE_SOURCE_DIR}/src/agent/go.sum
+    VERBATIM
+)
+add_custom_target(agent_for_tests DEPENDS ${AIDEN_AGENT_FOR_TESTS})
+
 add_executable(agent_stub agent_stub_main.cpp)
+add_dependencies(agent_stub agent_for_tests)
+target_include_directories(agent_stub PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_sources(agent_stub PRIVATE ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c)
+target_compile_definitions(agent_stub PRIVATE
+    AIDEN_REAL_AGENT_BIN="${AIDEN_AGENT_FOR_TESTS}"
+)
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.12)
     target_compile_features(agent_stub PRIVATE cxx_std_11)
 endif()

@@ -8,7 +8,7 @@
       "id": "ios_pip_notes_already_open",
       "category": "multi_step",
       "description_for_judge": "Notes is already open. Query Biden and enter the returned number without reopening or searching for Notes.",
-      "prompt": "测试环境状态：当前已经位于 Apple 备忘录的空白编辑页。Aiden 在后台，iOS PiP Bridge 已开启。请查询通讯录中 Biden 的手机号，并将查询到的完整号码写入当前备忘录。",
+      "prompt": "测试环境状态：当前已经位于 Apple 备忘录的空白编辑页。Aiden App 在后台，iOS PiP Bridge 已开启。请查询通讯录中 Biden 的手机号，并将查询到的完整号码写入当前备忘录。",
       "mock_environment": {
         "platform": "ios",
         "phone_bridge": {
@@ -64,7 +64,7 @@
       "id": "ios_pip_notes_icon_visible",
       "category": "multi_step",
       "description_for_judge": "The Notes icon is directly visible. Query Biden, tap the icon using object-form point coordinates, and enter the returned number without searching.",
-      "prompt": "测试环境状态：当前是 iPhone 主界面，Apple 备忘录图标清晰可见。Aiden 在后台，iOS PiP Bridge 已开启。请查询通讯录中 Biden 的手机号，并将查询到的完整号码写入 Apple 备忘录。",
+      "prompt": "测试环境状态：当前是 iPhone 主界面，Apple 备忘录图标清晰可见。Aiden App 在后台，iOS PiP Bridge 已开启。请查询通讯录中 Biden 的手机号，并将查询到的完整号码写入 Apple 备忘录。",
       "mock_environment": {
         "platform": "ios",
         "phone_bridge": {
@@ -124,7 +124,7 @@
       "id": "ios_pip_notes_icon_missing",
       "category": "multi_step",
       "description_for_judge": "Neither Notes nor its icon is visible. Query Biden, use search_launch_app, and enter the returned number.",
-      "prompt": "测试环境状态：当前是 iPhone 主界面，画面中没有打开的备忘录，也看不到备忘录图标。Aiden 在后台，iOS PiP Bridge 已开启。请查询通讯录中 Biden 的手机号，并将查询到的完整号码写入 Apple 备忘录。",
+      "prompt": "测试环境状态：当前是 iPhone 主界面，画面中没有打开的备忘录，也看不到备忘录图标。Aiden App 在后台，iOS PiP Bridge 已开启。请查询通讯录中 Biden 的手机号，并将查询到的完整号码写入 Apple 备忘录。",
       "mock_environment": {
         "platform": "ios",
         "phone_bridge": {

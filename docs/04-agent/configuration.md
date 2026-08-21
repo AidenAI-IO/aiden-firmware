@@ -23,6 +23,7 @@ under `[device]` below.
 - [`[log]`](#log)
 - [`[audio]`](#audio)
 - [`[frame_service]`](#frame_service)
+- [Quick Capture](#quick-capture)
 - [`[voice_notifications]`](#voice_notifications)
 - [`[hid]`](#hid)
 - [`[stt]` and `[tts]`](#stt-and-tts)
@@ -65,12 +66,13 @@ The firmware starts `config_web` on port 80.
 
 The page fields cover the following config sections (all detailed later on this page). The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
-- `agent`: `locale`, `input_mode`, `trigger_mode`, VAD params, `load_all_tools`, `max_iterations`, `custom_instruction`, `additional_prompt`
+- `agent`: `locale`, `input_mode`, VAD params, `load_all_tools`, `max_iterations`, `custom_instruction`, `additional_prompt`
 - `model`: provider, model, api_key, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, playback_backend
 - `frame_service`: whether Frame Service keeps capture STREAMON between screenshots
+- `quick_capture`: enabled, GPIO trigger pin, Screen Memory retention period
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
 - `log`: LLM HTTP log retention
 - `device`: device_type
@@ -135,7 +137,6 @@ frame_socket = "/run/frame_service/frame_service.sock"
 locale = "zh-CN"
 custom_instruction = ""
 input_mode = "stt"
-trigger_mode = "manual"
 vad_backend = "rknn"
 vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 vad_helper_path = "/oem/usr/bin/rknn_vad"
@@ -212,13 +213,20 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
 | `input_mode`                | `text` / `stt`              | Input mode                                                                                                                                                                                                |
 
+### Quick Capture
+
+| Field                           | Default                                                     | Description                                                                                                                                                                            |
+| ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `quick_capture.enabled`         | `true`                                                       | Enables GPIO-triggered Screen Memory capture; legacy GPIO32/GPIO33 wakeup remains independent                                                                                           |
+| `quick_capture.gpio_pin`        | `0`                                                         | Falling-edge GPIO for Quick Capture; supported values are `0` (disabled) and GPIO3 (physical pin 38), while GPIO32/GPIO33 remain reserved for legacy wakeup                          |
+| `quick_capture.screen_memory_ttl` | `90d`                                                    | Retention period for captured Screen Memory entries, or `forever`                                                                                                                       |
+
 ### Voice & VAD
 
 These fields apply to the `stt` input mode.
 
 | Field                           | Default                                                     | Description                                                                                                                                                                            |
 | ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `trigger_mode`                  | `manual` / `wakeup`                                         | Voice-mode trigger method                                                                                                                                                              |
 | `vad_backend`                   | `rknn`                                                      | VAD backend: `rknn` uses NPU encoder + CPU LSTM/decoder, `cpu` uses a pure-CPU helper                                                                                                  |
 | `vad_model_path`                | `/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"`                                                                                                                  |
 | `vad_helper_path`               | `/oem/usr/bin/rknn_vad`                                     | VAD helper executable path; the CPU backend defaults to `/oem/usr/bin/cpu_vad`                                                                                                         |
@@ -415,17 +423,6 @@ API key and base URL do not carry over to it.
 | `channels`         | `1`                                     | Number of channels                                                                                                                                                                                                            |
 | `bit_width`        | `16`                                    | Bit width                                                                                                                                                                                                                     |
 | `playback_backend` | `auto`                                  | TTS playback backend. `auto` uses `audio_service` on board and the local OS player when the Agent is running in desktop/PC mode through ADB input backend or environment bridge. Use `audio_service` or `local` to force one. |
-
-## `[frame_service]`
-
-```toml
-[frame_service]
-keep_streamon = false
-```
-
-| Field           | Default | Description |
-| --------------- | ------- | ----------- |
-| `keep_streamon` | `false` | Keep RK628 CSI capture STREAMON between screenshots. This reduces per-request capture latency but increases idle power consumption. Config Web persists the value in `/userdata/agent/agent.toml` and restarts Frame Service when it changes. |
 
 ## `[voice_notifications]`
 

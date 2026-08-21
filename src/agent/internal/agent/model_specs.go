@@ -71,6 +71,13 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	// Other dated releases need their own entry, keyed by the exact Ark model id.
 	"doubao-seed-2-1-pro-260628": {ContextWindow: 262_144, MaxOutput: 131_072, DefaultReasoningEffort: stringPtr("low")},
 
+	// Qwen3.8-27B on OpenRouter (vision + tool calling). Context window is
+	// 256K per the Qwen3 published model card. Default reasoning_effort is
+	// "medium" because Qwen3.8 includes native reasoning and performs best
+	// with medium-level reasoning effort out of the box.
+	"qwen/qwen3.8-27b": {ContextWindow: 262_144, MaxOutput: 32_768, DefaultReasoningEffort: stringPtr("medium")},
+	"qwen3.8-27b":      {ContextWindow: 262_144, MaxOutput: 32_768, DefaultReasoningEffort: stringPtr("medium")},
+
 	// Existing entries retained for back-compat with dev/staging configs.
 	"anthropic/claude-3.5-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},
 	"anthropic/claude-3.7-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},

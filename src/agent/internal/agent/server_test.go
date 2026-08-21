@@ -4360,6 +4360,36 @@ func TestHandleBenchmarkSeedMemorySucceeds(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkSeedMemoryCanSeedDeviceFixture(t *testing.T) {
+	server, configDir := newBenchmarkSeedMemoryServer(t)
+	body := `{"store":"device","id":"legacy_device_fixture","type":"procedure","title":"Legacy procedure","content":"Preview, then Edit, then Save.","tags":["qa-notes","save"],"entities":["QA Notes","Preview","Edit","Save"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedMemory(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["status"] != "seeded" || resp["id"] != "legacy_device_fixture" || resp["store"] != "device" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+
+	files, err := filepath.Glob(filepath.Join(configDir, "memory", "device", "procedures", "*.yaml"))
+	if err != nil {
+		t.Fatalf("glob device fixture: %v", err)
+	}
+	if len(files) != 1 || !strings.Contains(files[0], "legacy_device_fixture") {
+		t.Fatalf("device fixture files = %#v", files)
+	}
+}
+
 func TestHandleBenchmarkSeedMemoryRequiresBenchmarkToken(t *testing.T) {
 	server, _ := newBenchmarkSeedMemoryServer(t)
 	body := `{"id":"personamem_test_seed_1","content":"Seeded fixture content."}`
@@ -4370,6 +4400,148 @@ func TestHandleBenchmarkSeedMemoryRequiresBenchmarkToken(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBenchmarkSeedEpisodePersistsCompletedEpisode(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	handler := server.Handler()
+	body := `{
+		"id":"ep_benchmark_title_save",
+		"user_goal":"Change the QA Notes title and verify it persists.",
+		"device_scope":{"device_id":"benchmark-device","app_name":"QA Notes","app_version":"7"},
+		"outcome":{"success":true,"final_state":"The changed title is visible after reopening the note."},
+		"events":[
+			{"event_id":"save_call","type":"tool_call","tool_name":"touch_gesture","tool_input":"{\"type\":\"tap\",\"target\":\"Save\"}"},
+			{"event_id":"save_result","type":"tool_result","tool_name":"touch_gesture","observation":"The title reverted after direct Save."}
+		]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_episode", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected seed status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	getReq := httptest.NewRequest(http.MethodGet, "/api/episodes/ep_benchmark_title_save", nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("unexpected get status: %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var response EpisodeResponse
+	if err := json.NewDecoder(getRec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode episode response: %v", err)
+	}
+	if response.Episode.ID != "ep_benchmark_title_save" || response.Episode.UserGoal != "Change the QA Notes title and verify it persists." {
+		t.Fatalf("unexpected persisted Episode: %#v", response.Episode)
+	}
+	if response.Episode.EndedAt == "" || response.Episode.Status == "running" {
+		t.Fatalf("seeded Episode was not completed: %#v", response.Episode)
+	}
+}
+
+func TestBenchmarkSeedEpisodeRequiresBenchmarkToken(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_episode", bytes.NewBufferString(`{"id":"ep_unauthorized","user_goal":"test","outcome":{"success":true}}`))
+	rec := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBenchmarkProcessEpisodeMemoryConsolidatesSeededEpisode(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	streamingDisabled := false
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "episode_assessment":{"goal_result":"achieved","reason":"The final tool result confirms the changed title persisted after reopening.","evidence_refs":["verify_result"]},
+  "candidates":[{
+    "lesson_key":"qa_notes_v7_title_save_handshake",
+    "type":"procedure",
+    "action":"create",
+    "unresolved_conflict":false,
+    "situation":"When saving an edited title in QA Notes build 7",
+    "guidance":"Switch to Preview, return to Edit, and then tap Save",
+    "expected_effect":"The changed title remains visible after reopening the note",
+    "scope":{"device_id":"benchmark-device","app_name":"QA Notes","app_version":"7","goal_pattern":"persist edited note title"},
+    "tags":["qa-notes","title","save"],
+    "evidence_refs":["preview_call","preview_result","edit_call","edit_result","save_call","save_result","verify_call","verify_result"]
+  }]
+}`}}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:                configDir,
+			Model:                    ModelConfig{Provider: "fake"},
+			Benchmark:                BenchmarkConfig{Token: "test-benchmark-token"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &streamingDisabled,
+		},
+		model,
+		NewMemoryManager(filepath.Join(configDir, "memory")),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	t.Cleanup(func() { runtime.Close() })
+	server := newServerForTest(runtime)
+	t.Cleanup(func() { server.bridge.queue.Stop() })
+	handler := server.Handler()
+	episodeBody := `{
+		"id":"ep_benchmark_title_save",
+		"user_goal":"Change the QA Notes title and verify it persists.",
+		"device_scope":{"device_id":"benchmark-device","app_name":"QA Notes","app_version":"7"},
+		"outcome":{"success":true,"final_state":"The changed title is visible after reopening the note."},
+		"events":[
+			{"event_id":"direct_save_call","type":"tool_call","tool_name":"touch_gesture","tool_input":"{\"type\":\"tap\",\"target\":\"Save\"}"},
+			{"event_id":"direct_save_result","type":"tool_result","tool_name":"touch_gesture","observation":"The title reverted after direct Save."},
+			{"event_id":"preview_call","type":"tool_call","tool_name":"touch_gesture","tool_input":"{\"type\":\"tap\",\"target\":\"Preview\"}"},
+			{"event_id":"preview_result","type":"tool_result","tool_name":"touch_gesture","observation":"Preview mode is visible."},
+			{"event_id":"edit_call","type":"tool_call","tool_name":"touch_gesture","tool_input":"{\"type\":\"tap\",\"target\":\"Edit\"}"},
+			{"event_id":"edit_result","type":"tool_result","tool_name":"touch_gesture","observation":"Edit mode is visible again."},
+			{"event_id":"save_call","type":"tool_call","tool_name":"touch_gesture","tool_input":"{\"type\":\"tap\",\"target\":\"Save\"}"},
+			{"event_id":"save_result","type":"tool_result","tool_name":"touch_gesture","observation":"Save completed after the Preview and Edit transition."},
+			{"event_id":"verify_call","type":"tool_call","tool_name":"touch_gesture","tool_input":"{\"type\":\"reopen_note\"}"},
+			{"event_id":"verify_result","type":"tool_result","tool_name":"touch_gesture","observation":"The changed title remains visible after reopening."}
+		]
+	}`
+	seedReq := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_episode", bytes.NewBufferString(episodeBody))
+	seedReq.Header.Set("Authorization", "Bearer test-benchmark-token")
+	seedRec := httptest.NewRecorder()
+	handler.ServeHTTP(seedRec, seedReq)
+	if seedRec.Code != http.StatusOK {
+		t.Fatalf("seed status: %d body=%s", seedRec.Code, seedRec.Body.String())
+	}
+
+	processReq := httptest.NewRequest(http.MethodPost, "/api/benchmark/episode-memory/process", bytes.NewBufferString(`{"episode_id":"ep_benchmark_title_save"}`))
+	processReq.Header.Set("Authorization", "Bearer test-benchmark-token")
+	processRec := httptest.NewRecorder()
+	handler.ServeHTTP(processRec, processReq)
+
+	if processRec.Code != http.StatusOK {
+		t.Fatalf("process status: %d body=%s", processRec.Code, processRec.Body.String())
+	}
+	var response struct {
+		Status     string                  `json:"status"`
+		Assessment episodeMemoryAssessment `json:"assessment"`
+		MemoryIDs  []string                `json:"memory_ids"`
+	}
+	if err := json.NewDecoder(processRec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode process response: %v", err)
+	}
+	if response.Status != string(episodeMemoryStatusDone) {
+		t.Fatalf("status = %q, want done", response.Status)
+	}
+	if response.Assessment.GoalResult != episodeGoalAchieved {
+		t.Fatalf("assessment = %#v, want achieved", response.Assessment)
+	}
+	if len(response.MemoryIDs) != 1 {
+		t.Fatalf("memory_ids = %#v, want one extracted memory", response.MemoryIDs)
 	}
 }
 
@@ -4505,6 +4677,23 @@ func TestHandleBenchmarkSeedMemoryRejectsMissingFields(t *testing.T) {
 				t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryRejectsUnknownFields(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/benchmark/seed_memory",
+		bytes.NewBufferString(`{"id":"seed","content":"content","evidnce":["typo"]}`),
+	)
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedMemory(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unknown field") {
+		t.Fatalf("expected strict 400, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

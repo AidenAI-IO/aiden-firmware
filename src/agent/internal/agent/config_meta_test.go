@@ -112,7 +112,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		t.Errorf("expected device section first, got %q", ConfigMeta().Sections[0].Name)
 	}
 
-	for _, name := range []string{"device", "model", "tts", "stt", "audio", "audio_archive", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
+	for _, name := range []string{"device", "model", "tts", "stt", "audio", "audio_archive", "frame_service", "quick_capture", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -198,9 +198,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"audio.socket":                  {layout: "wide"},
 		"audio_archive.enabled":         {help: "After enabling, save STT voice recording WAV for Web UI playback; Automatically delete old files when exceeding quantity or capacity limit."},
 		"audio_archive.storage_path":    {layout: "wide"},
-		"frame_service.keep_streamon": {
-			help: "Keep the RK628 CSI capture stream enabled between screenshots. This reduces screenshot latency but increases idle power consumption.",
-		},
+		"frame_service.keep_streamon":   {help: "Keep the RK628 CSI capture stream enabled between screenshots. This reduces screenshot latency but increases idle power consumption."},
 		"ota.github_proxy_url": {
 			label:       "GitHub Proxy URL",
 			help:        "Optional proxy to accelerate GitHub downloads (e.g., https://gh-proxy.com/ or https://ghfast.top/)",
@@ -403,6 +401,9 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
 		{"audio_archive.storage_path", defaults.AudioArchive.StoragePathOrDefault()},
 		{"frame_service.keep_streamon", defaults.FrameService.KeepStreamOn},
+		{"quick_capture.enabled", defaults.QuickCapture.EnabledOrDefault()},
+		{"quick_capture.gpio_pin", defaults.QuickCapture.GPIOPin},
+		{"quick_capture.screen_memory_ttl", defaults.QuickCapture.ScreenMemoryTTLOrDefault()},
 		{"device.device_type", defaults.Device.DeviceTypeOrDefault()},
 		{"log.llm_http_retention_days", defaults.Log.LLMHTTPRetentionDaysOrDefault()},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
@@ -414,7 +415,6 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"search.provider", defaults.Search.ProviderOrDefault()},
 		{"agent.input_mode", defaults.InputMode},
 		{"agent.locale", defaults.LocaleOrDefault()},
-		{"agent.trigger_mode", defaults.TriggerMode},
 		{"agent.vad_backend", defaults.VADBackend},
 		{"agent.vad_model_path", defaults.VADModelPath},
 		{"agent.vad_helper_path", defaults.VADHelperPath},
@@ -711,6 +711,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
 		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},
 		{"frame_service", reflect.TypeOf(FrameServiceConfig{}), nil},
+		{"quick_capture", reflect.TypeOf(QuickCaptureConfig{}), nil},
 		{"device", reflect.TypeOf(DeviceConfig{}), map[string]bool{"backend": true}},
 		{"hid", reflect.TypeOf(HIDConfig{}), map[string]bool{"pointer_mode": true}},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},
