@@ -2,10 +2,10 @@
   "name": "vphone_ios_basic",
   "version": "1.7",
   "description": "Basic and multi-step VPhone iOS Environment Bridge tests",
-  "prompt_prefix": "你正在控制一台 iOS 虚拟机。使用 screenshot 查看屏幕；触控坐标优先使用 normalized 0 至 1000，不能把缩放后截图像素当作设备像素。使用 touch_gesture 执行点击、滑动和返回主屏幕；点击必须传 type=tap 和 point={x,y}，不能只传 type。打开设置使用 {action:open_settings}。iOS 没有 Android 返回键，使用 quick_action 的 action=back 或从屏幕左边缘向右滑动返回。查找其他 App 时优先使用主屏幕、App 资源库和可见图标，不依赖键盘输入。任务明确要求调用 screenshot 时，即使其他动作已附带返回截图，也必须在最终回答前显式调用一次 screenshot。",
+  "prompt_prefix": "",
   "global_reset": {
     "type": "agent_prompt",
-    "prompt": "请返回 iOS 主屏幕并截图确认。",
+    "prompt": "回到 iOS 主屏幕，确认一下。",
     "timeout_sec": 30,
     "clear_history_after": true
   },
@@ -14,40 +14,57 @@
     {
       "id": "warmup",
       "category": "diagnostic",
-      "prompt": "请调用一次 screenshot 查看当前屏幕。这是一次预热调用，用于等待 Agent daemon 就绪，无需完成任何具体任务。",
+      "prompt": "看一眼当前屏幕。",
       "description_for_judge": "预热任务：只要求 Agent 调用一次 screenshot。它存在的目的是吸收 daemon 冷启动期间的“agent not ready”跳过风险，使后续正式任务在 daemon 就绪后再执行。结果不代表模型能力，评分时可忽略。",
       "rubric": [
-        {"id": "warmup_screenshot", "description": "调用了一次 screenshot（仅用于预热，不代表能力）"}
+        {
+          "id": "warmup_screenshot",
+          "description": "调用了一次 screenshot（仅用于预热，不代表能力）"
+        }
       ],
       "hard_assertions": {
         "must_complete_within_sec": 120,
-        "required_tools": []
+        "min_tool_calls": 1,
+        "required_tools": [
+          "screenshot"
+        ]
       },
       "repeats": 1
     },
     {
       "id": "screenshot_home",
       "category": "device_operation",
-      "prompt": "请截图并简要说明当前屏幕内容。",
+      "prompt": "看一眼屏幕，跟我说说上面有什么。",
       "description_for_judge": "Agent 应调用 screenshot 并准确描述当前 iOS 屏幕。",
       "rubric": [
-        {"id": "took_screenshot", "description": "进行了截图"},
-        {"id": "described_screen", "description": "对屏幕内容做了简要描述"}
+        {
+          "id": "took_screenshot",
+          "description": "进行了截图"
+        },
+        {
+          "id": "described_screen",
+          "description": "对屏幕内容做了简要描述"
+        }
       ],
       "hard_assertions": {
         "must_complete_within_sec": 60,
         "min_tool_calls": 1,
-        "required_tools": ["screenshot"]
+        "required_tools": [
+          "screenshot"
+        ]
       },
       "repeats": 1
     },
     {
       "id": "go_home",
       "category": "device_operation",
-      "prompt": "请返回 iOS 主屏幕并截图确认。",
+      "prompt": "回到 iOS 主屏幕，确认一下。",
       "description_for_judge": "Agent 应返回 iOS 主屏幕并通过截图确认。",
       "rubric": [
-        {"id": "home_and_screenshot", "description": "返回主屏幕并观察了主屏幕"}
+        {
+          "id": "home_and_screenshot",
+          "description": "返回主屏幕并观察了主屏幕"
+        }
       ],
       "hard_assertions": {
         "must_complete_within_sec": 60,
@@ -59,11 +76,17 @@
     {
       "id": "open_settings",
       "category": "device_operation",
-      "prompt": "请打开 iOS 设置应用并截图。",
+      "prompt": "打开 iOS 设置。",
       "description_for_judge": "Agent 应通过 quick_action open_settings 或可见图标打开 iOS 设置，最终画面应显示设置应用。",
       "rubric": [
-        {"id": "opened_settings", "description": "打开了 iOS 设置应用"},
-        {"id": "confirmed_with_screenshot", "description": "用截图确认了设置界面"}
+        {
+          "id": "opened_settings",
+          "description": "打开了 iOS 设置应用"
+        },
+        {
+          "id": "confirmed_with_screenshot",
+          "description": "用截图确认了设置界面"
+        }
       ],
       "hard_assertions": {
         "must_complete_within_sec": 90,
@@ -75,10 +98,13 @@
     {
       "id": "swipe_screen",
       "category": "device_operation",
-      "prompt": "请在当前页面执行一次向上滑动，然后截图说明页面变化。",
+      "prompt": "在页面里向上滑一下，跟我说说页面有什么变化。",
       "description_for_judge": "Agent 应执行向上滑动并观察动作后的 iOS 页面。",
       "rubric": [
-        {"id": "swiped_and_screenshot", "description": "执行了向上滑动并观察动作后画面"}
+        {
+          "id": "swiped_and_screenshot",
+          "description": "执行了向上滑动并观察动作后画面"
+        }
       ],
       "hard_assertions": {
         "must_complete_within_sec": 180,
@@ -90,12 +116,21 @@
     {
       "id": "clock_count_alarms",
       "category": "device_operation",
-      "prompt": "打开时钟 App，进入闹钟页面，告诉我当前有多少个闹钟。",
+      "prompt": "打开时钟 App，进到闹钟页面，告诉我现在有几个闹钟。",
       "description_for_judge": "Agent 应打开 iOS 时钟 App、查看闹钟列表，并根据可见内容正确报告闹钟数量。",
       "rubric": [
-        {"id": "opened_clock_app", "description": "成功打开时钟 App"},
-        {"id": "viewed_alarm_list", "description": "查看了闹钟列表页面"},
-        {"id": "counted_correctly", "description": "正确识别并报告了闹钟数量"}
+        {
+          "id": "opened_clock_app",
+          "description": "成功打开时钟 App"
+        },
+        {
+          "id": "viewed_alarm_list",
+          "description": "查看了闹钟列表页面"
+        },
+        {
+          "id": "counted_correctly",
+          "description": "正确识别并报告了闹钟数量"
+        }
       ],
       "hard_assertions": {
         "must_complete_within_sec": 180,
@@ -107,30 +142,56 @@
     {
       "id": "settings_read_ethernet_ipv4",
       "category": "device_operation",
-      "prompt": "打开 iOS 设置时调用 quick_action，并严格传 {\"action\":\"open_settings\"}。根据截图定位一级入口“以太网”，点击时严格传 {\"type\":\"tap\",\"point\":{\"x\":目标中心横坐标,\"y\":目标中心纵坐标}}；再用同样格式点击“接口”区域中的“以太网”，进入详情页。不要修改任何网络设置。请停留在能够同时看到“IPv4 地址”区域中“IP 地址”“子网掩码”和“路由器”的页面；最后必须显式调用 screenshot，再在最终回答中逐项返回当前屏幕显示的这三个值。如果某个字段未显示，请明确回答“未显示”，不要推测。不要重复提交缺少 action 或 point 的工具调用。",
+      "prompt": "进到 iOS 设置的「以太网」详情页，看到「IPv4 地址」区域的 IP 地址、子网掩码和路由器三个值，然后把这几个当前值告诉我。别改动任何网络设置；如果有字段没显示，就明说「未显示」，别猜。",
       "description_for_judge": "Agent 应按“设置 → 以太网 → 接口中的以太网”进入详情页，停留在能同屏看到 IPv4 地址、子网掩码和路由器的页面，调用 screenshot，并准确报告最终截图中显示的三个当前值。地址由 DHCP 提供，必须以本次任务截图为准，不应使用固定预期值。Agent 不应打开“配置 IP”或修改任何网络设置。",
       "rubric": [
-        {"id": "opened_settings", "description": "成功打开设置应用"},
-        {"id": "opened_ethernet_interface", "description": "依次进入以太网入口和接口中的以太网详情页"},
-        {"id": "captured_ipv4_details", "description": "调用 screenshot，且最终画面同时清楚显示 IPv4 地址区域中的 IP 地址、子网掩码和路由器"},
-        {"id": "reported_ipv4_details", "description": "最终回答逐项给出的 IP 地址、子网掩码和路由器与最终截图完全一致；未显示的字段被明确报告为未显示"},
-        {"id": "did_not_modify", "description": "没有进入配置 IP 页面，也没有修改、续租或保存任何网络设置"}
+        {
+          "id": "opened_settings",
+          "description": "成功打开设置应用"
+        },
+        {
+          "id": "opened_ethernet_interface",
+          "description": "依次进入以太网入口和接口中的以太网详情页"
+        },
+        {
+          "id": "captured_ipv4_details",
+          "description": "调用 screenshot，且最终画面同时清楚显示 IPv4 地址区域中的 IP 地址、子网掩码和路由器"
+        },
+        {
+          "id": "reported_ipv4_details",
+          "description": "最终回答逐项给出的 IP 地址、子网掩码和路由器与最终截图完全一致；未显示的字段被明确报告为未显示"
+        },
+        {
+          "id": "did_not_modify",
+          "description": "没有进入配置 IP 页面，也没有修改、续租或保存任何网络设置"
+        }
       ],
       "hard_assertions": {
         "must_complete_within_sec": 180,
-        "required_tools": ["screenshot"]
+        "required_tools": [
+          "screenshot"
+        ]
       },
       "repeats": 1
     },
     {
       "id": "open_app_library",
       "category": "device_operation",
-      "prompt": "先调用 touch_gesture，严格传 {\"type\":\"home\"} 返回主屏幕；再调用 touch_gesture，传 {\"type\":\"swipe_left\",\"strength\":\"large\"}，必要时重复向左滑动，直到截图中明确出现 App 资源库。不要打开网页。最后显式调用 screenshot，并列出最终画面中至少三个可见的 App。",
+      "prompt": "回到主屏幕，然后继续往左滑，直到出现 App 资源库。进去后告诉我你至少看到哪三个 App。",
       "description_for_judge": "Agent 应返回 iOS 主屏幕、向左滑动进入 App 资源库，并准确列出至少三个可见 App。",
       "rubric": [
-        {"id": "returned_home", "description": "先返回了主屏幕"},
-        {"id": "opened_app_library", "description": "通过向左滑动打开了 App 资源库"},
-        {"id": "listed_apps", "description": "准确描述了至少三个可见 App"}
+        {
+          "id": "returned_home",
+          "description": "先返回了主屏幕"
+        },
+        {
+          "id": "opened_app_library",
+          "description": "通过向左滑动打开了 App 资源库"
+        },
+        {
+          "id": "listed_apps",
+          "description": "准确描述了至少三个可见 App"
+        }
       ],
       "hard_assertions": {
         "must_complete_within_sec": 180,
