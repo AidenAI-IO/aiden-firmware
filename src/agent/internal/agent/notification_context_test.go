@@ -32,8 +32,8 @@ func TestNotificationContextConsumesPersistsAndCommits(t *testing.T) {
 	if err != nil || len(events) != 1 {
 		t.Fatalf("Consume() events=%#v err=%v", events, err)
 	}
-	if events[0].Title != "Meeting" || c.State().SourceCursor != "1" {
-		t.Fatalf("unexpected normalized state: event=%#v state=%#v", events[0], c.State())
+	if events[0].Title != "  Meeting  " || c.State().SourceCursor != "1" {
+		t.Fatalf("unexpected raw state: event=%#v state=%#v", events[0], c.State())
 	}
 	pending, err := c.ReadPending(context.Background(), 10)
 	if err != nil || len(pending) != 1 {
@@ -53,8 +53,8 @@ func TestNotificationContextConsumesPersistsAndCommits(t *testing.T) {
 	if err := json.Unmarshal(data[:len(data)-1], &stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Title != "Meeting" {
-		t.Fatalf("stored event was not sanitized: %#v", stored)
+	if stored.Title != "  Meeting  " {
+		t.Fatalf("stored event was not preserved as raw data: %#v", stored)
 	}
 }
 

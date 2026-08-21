@@ -77,7 +77,8 @@ Query(query)                只读查询已落盘的原始通知，不访问 BLE
 落盘记录在 BLE 事件外包一层 `context_id`。BLE 的 `id` 只在当前
 `ble_service` generation 内单调；`context_id` 则由 Agent 本地持久化并跨
 generation 单调递增，Memory cursor 和 shell 的 `--since` 都使用
-`context_id`。原始 BLE `id`、generation 和全部通知字段仍原样保留，便于排障。
+`context_id`。原始 BLE `id`、generation 和全部通知字段仍原样保留，便于排障；
+脱敏、过滤和摘要只发生在 Processor 内，不改写原始 JSONL。
 
 ### Shell 查询
 

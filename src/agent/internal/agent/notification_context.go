@@ -170,7 +170,6 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 		if err := ctx.Err(); err != nil {
 			return accepted, err
 		}
-		event = sanitizeNotificationEvent(event)
 		fingerprint := notificationEventFingerprint(event)
 		if _, exists := c.fingerprints[fingerprint]; exists {
 			if cursor, ok := parseNotificationCursor(event.ID); ok && cursor > parseCursorOrZero(c.state.SourceCursor) {
