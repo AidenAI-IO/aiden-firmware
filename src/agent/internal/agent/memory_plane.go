@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/ble"
 )
 
 type MemoryPlane interface {
@@ -94,8 +96,10 @@ type MemoryHit struct {
 }
 
 const (
-	episodeMemoryProcessNowMaxAttempts = 2048
-	episodeMemoryProcessNowBusyDelay   = 50 * time.Millisecond
+	episodeMemoryProcessNowMaxAttempts      = 2048
+	episodeMemoryProcessNowBusyDelay        = 50 * time.Millisecond
+	notificationMemoryProcessNowMaxAttempts = 2048
+	notificationMemoryProcessNowBusyDelay   = 50 * time.Millisecond
 )
 
 const defaultMemoryDeviceID = "default"
@@ -412,6 +416,126 @@ func (p *FilesystemMemoryPlane) ProcessEpisodeMemoryNow(ctx context.Context, epi
 		}
 	}
 	return status, memoryIDs, nil
+}
+
+// SeedNotificationMemoryForBenchmark installs durable notification fixtures.
+// The server exposes this only through its benchmark-token-protected endpoint.
+func (p *FilesystemMemoryPlane) SeedNotificationMemoryForBenchmark(ctx context.Context, events []ble.NotificationEvent) ([]NotificationRecord, error) {
+	if p == nil {
+		return nil, fmt.Errorf("notification memory is not configured")
+	}
+	p.memoryWorkerMu.RLock()
+	processor := p.notificationProcessor
+	p.memoryWorkerMu.RUnlock()
+	if processor == nil || processor.context == nil {
+		return nil, fmt.Errorf("notification memory worker is not configured")
+	}
+	return processor.context.seedForBenchmark(ctx, events)
+}
+
+// ProcessNotificationMemoryNow drains seeded durable notification records
+// through the same processor and shared worker used during normal idle work.
+// It is a benchmark control path, not a foreground runtime API.
+func (p *FilesystemMemoryPlane) ProcessNotificationMemoryNow(ctx context.Context) (string, []string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if p == nil {
+		return "", nil, fmt.Errorf("notification memory is not configured")
+	}
+	p.memoryWorkerMu.RLock()
+	worker := p.memoryWorker
+	processor := p.notificationProcessor
+	p.memoryWorkerMu.RUnlock()
+	if worker == nil || processor == nil || processor.context == nil {
+		return "", nil, fmt.Errorf("notification memory worker is not configured")
+	}
+	processor.context.setConsumeDisabledForBenchmark(true)
+	defer processor.context.setConsumeDisabledForBenchmark(false)
+	pendingBefore, err := processor.context.ReadPending(ctx, 100)
+	if err != nil {
+		return "", nil, err
+	}
+	seededContextIDs := make(map[string]struct{}, len(pendingBefore))
+	for _, record := range pendingBefore {
+		seededContextIDs[record.ContextID] = struct{}{}
+	}
+	var last MemoryBatchResult
+	for attempt := 0; attempt < notificationMemoryProcessNowMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", nil, err
+		}
+		result, err := worker.ProcessProcessorNow(ctx, processor)
+		if errors.Is(err, errMemoryWorkerBusy) {
+			select {
+			case <-ctx.Done():
+				return "", nil, ctx.Err()
+			case <-time.After(notificationMemoryProcessNowBusyDelay):
+			}
+			continue
+		}
+		last = result
+		pending, readErr := processor.context.ReadPending(ctx, notificationMemoryBatchLimit)
+		if readErr != nil {
+			return "", nil, readErr
+		}
+		if err != nil && len(pending) > 0 {
+			return "", nil, err
+		}
+		if len(pending) == 0 && !result.HasPending {
+			break
+		}
+		if len(pending) == 0 && err != nil {
+			// A seeded run may have no BLE reader. The durable batch has still
+			// committed successfully, so a consume-side error is irrelevant here.
+			break
+		}
+	}
+	if last.HasPending {
+		pending, err := processor.context.ReadPending(ctx, notificationMemoryBatchLimit)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(pending) > 0 {
+			return "", nil, fmt.Errorf("notification memory benchmark did not drain durable pending records")
+		}
+	}
+	state := processor.context.State()
+	ids := make([]string, 0)
+	for _, store := range []*LongTermMemoryStore{processor.temporary, processor.longTerm} {
+		if store == nil {
+			continue
+		}
+		memories, err := store.searchAll(ctx)
+		if err != nil {
+			return "", nil, err
+		}
+		for _, memory := range memories {
+			if memory.Status != "active" || !memoryReferencesNotificationIDs(memory.SourceRefs, seededContextIDs) {
+				continue
+			}
+			ids = append(ids, memory.ID)
+		}
+	}
+	sort.Strings(ids)
+	return state.MemoryCursor, ids, nil
+}
+
+func memoryReferencesNotificationIDs(refs []MemorySourceRef, contextIDs map[string]struct{}) bool {
+	for _, ref := range refs {
+		if ref.Type != "notification" {
+			continue
+		}
+		if _, ok := contextIDs[ref.ID]; ok {
+			return true
+		}
+		for _, eventID := range ref.EventIDs {
+			if _, ok := contextIDs[eventID]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func episodeMemoryProcessNowTerminal(status episodeMemoryEpisodeStatus) bool {

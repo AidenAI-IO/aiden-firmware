@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -40,6 +41,13 @@ func TestNotificationMemoryProcessorFiltersNoiseAndWritesTemporaryMemory(t *test
 	}
 	if got := ctxStore.State().MemoryCursor; got != "2" {
 		t.Fatalf("MemoryCursor=%q, want 2", got)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "notifications", "events", "2026-08-21.jsonl"))
+	if err != nil {
+		t.Fatalf("read raw notification log: %v", err)
+	}
+	if !strings.Contains(string(raw), `"message":"123456"`) || !strings.Contains(string(raw), `"message":"明天送达"`) {
+		t.Fatalf("raw log did not retain both ignored and useful notifications: %s", raw)
 	}
 }
 
@@ -112,6 +120,97 @@ func TestNotificationMemoryProcessorBatchesUsefulNotificationsIntoOneModelCall(t
 	}
 	if got := ctxStore.State().MemoryCursor; got != "2" {
 		t.Fatalf("MemoryCursor=%q, want 2", got)
+	}
+}
+
+func TestNotificationMemoryBenchmarkPathSeedsProcessesAndExposesDerivedMemory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "memory")
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "results":[
+    {"context_id":"1","proposal":{"actions":[{"action":"add","scope":"temporary","type":"fact","title":"包裹更新","content":"包裹明天送达","tags":["delivery"]}]}}
+  ]
+}`}}
+	plane := NewFilesystemMemoryPlane(root, DefaultMemoryExtractionConfig(), nil)
+	if err := plane.StartMemoryWorker(model); err != nil {
+		t.Fatalf("StartMemoryWorker() error = %v", err)
+	}
+	defer plane.StopEpisodeMemory()
+	defer plane.StopNotificationMemory()
+
+	records, err := plane.SeedNotificationMemoryForBenchmark(context.Background(), []ble.NotificationEvent{{
+		ID: "fixture-1", Source: "android", SourceID: "notification-1",
+		SourceEventID: "event-1", AppIdentifier: "com.delivery",
+		Title: "包裹更新", Message: "明天送达", Event: "added",
+		ReceivedAt: "2026-08-21T00:00:00Z",
+	}})
+	if err != nil {
+		t.Fatalf("SeedNotificationMemoryForBenchmark() error = %v", err)
+	}
+	if len(records) != 1 || records[0].ContextID != "1" {
+		t.Fatalf("seeded records = %#v, want one context_id=1 record", records)
+	}
+	cursor, memoryIDs, err := plane.ProcessNotificationMemoryNow(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessNotificationMemoryNow() error = %v", err)
+	}
+	if cursor != "1" {
+		t.Fatalf("memory cursor = %q, want 1", cursor)
+	}
+	if len(memoryIDs) != 1 || memoryIDs[0] != "tmp_notification_1" {
+		t.Fatalf("derived memory IDs = %#v, want tmp_notification_1", memoryIDs)
+	}
+	if got := model.callCount(); got != 1 {
+		t.Fatalf("model calls = %d, want one call", got)
+	}
+	plane.notificationProcessor.context.mu.Lock()
+	consumeDisabled := plane.notificationProcessor.context.consumeDisabled
+	plane.notificationProcessor.context.mu.Unlock()
+	if consumeDisabled {
+		t.Fatal("benchmark processing left live notification consumption disabled")
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "notifications", "events", "2026-08-21.jsonl"))
+	if err != nil {
+		t.Fatalf("read raw notification fixture: %v", err)
+	}
+	if !strings.Contains(string(raw), `"message":"明天送达"`) {
+		t.Fatalf("raw notification log did not preserve original message: %s", raw)
+	}
+}
+
+func TestNotificationMemoryBenchmarkPathDrainsMultipleBatches(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "memory")
+	events := make([]ble.NotificationEvent, 0, 11)
+	for index := 1; index <= 11; index++ {
+		events = append(events, ble.NotificationEvent{
+			ID: strconv.Itoa(index), Source: "android", SourceID: "calendar-batch-" + strconv.Itoa(index),
+			SourceEventID: "calendar-batch-event-" + strconv.Itoa(index), DeviceID: "benchmark-device",
+			NotificationUID: uint32(200 + index), AppIdentifier: "com.calendar",
+			Title: "Calendar update", Message: "Meeting update " + strconv.Itoa(index), Event: "added",
+			ReceivedAt: "2026-08-21T01:00:00Z",
+		})
+	}
+	model := &episodeMemoryScriptedModel{responses: []string{
+		notificationIgnoreBatchResponse(events[:10]),
+		`{"results":[{"context_id":"11","proposal":{"actions":[{"action":"ignore"}]}}]}`,
+	}}
+	plane := NewFilesystemMemoryPlane(root, DefaultMemoryExtractionConfig(), nil)
+	if err := plane.StartMemoryWorker(model); err != nil {
+		t.Fatalf("StartMemoryWorker() error = %v", err)
+	}
+	defer plane.StopEpisodeMemory()
+	defer plane.StopNotificationMemory()
+	if records, err := plane.SeedNotificationMemoryForBenchmark(context.Background(), events); err != nil || len(records) != len(events) {
+		t.Fatalf("seeded records=%d err=%v, want %d records", len(records), err, len(events))
+	}
+	cursor, memoryIDs, err := plane.ProcessNotificationMemoryNow(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessNotificationMemoryNow() error = %v", err)
+	}
+	if cursor != "11" || len(memoryIDs) != 0 {
+		t.Fatalf("cursor=%q memoryIDs=%#v, want cursor 11 and no memories", cursor, memoryIDs)
+	}
+	if got := model.callCount(); got != 2 {
+		t.Fatalf("model calls=%d, want two model calls for two processor batches", got)
 	}
 }
 

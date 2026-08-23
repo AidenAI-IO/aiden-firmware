@@ -1,0 +1,153 @@
+{
+  "name": "notification_memory_v1",
+  "suite_category": "Memory & Cognition",
+  "description": "Notification memory benchmark - checks durable fixture ingestion, idle consolidation into temporary memory, recall, noise filtering, and multi-batch cursor drain.",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "delivery_notification_recall",
+      "category": "memory",
+      "description_for_judge": "The seeded delivery notification should be consolidated into temporary memory and recalled when the user asks what the notification said. The answer must preserve the delivery timing.",
+      "prompt": "I received a package notification earlier. First call recall_memory with notification and com.delivery, then tell me when the package is expected to arrive. Do not call bridge_notification.",
+      "rubric": [
+        {
+          "id": "recalls_notification_memory",
+          "check": "The trace contains recall_memory with notification-related tags or the final answer clearly uses the recalled delivery memory."
+        },
+        {
+          "id": "preserves_delivery_time",
+          "check": "The final answer says the package is expected tomorrow."
+        },
+        {
+          "id": "does_not_invent",
+          "check": "The answer does not invent a carrier, address, or delivery time not present in the notification."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["recall_memory"],
+        "forbidden_tools": ["bridge_notification"]
+      },
+      "expected_recalled_memory_ids": ["tmp_notification_1"],
+      "setup": {
+        "type": "seed_notification",
+        "consolidate": true,
+        "timeout_sec": 120,
+        "expected_memory_count": 1,
+        "expected_memory_scope": "temporary",
+        "events": [
+          {
+            "source": "android",
+            "source_id": "delivery-1",
+            "source_event_id": "delivery-event-1",
+            "device_id": "benchmark-device",
+            "notification_uid": 101,
+            "event": "added",
+            "app_identifier": "com.delivery",
+            "title": "Package update",
+            "message": "Package arrives tomorrow",
+            "received_at": "2026-08-21T00:01:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "id": "notification_noise_is_filtered",
+      "category": "memory",
+      "description_for_judge": "OTP and marketing notifications must not create user memory.",
+      "prompt": "Check memory for the verification-code and marketing notifications in this fixture. Tell me whether either notification was retained as user memory. Do not call bridge_notification.",
+      "rubric": [
+        {
+          "id": "rejects_noise_memory",
+          "check": "The final answer says OTP/verification-code and marketing notifications should not be stored as memory."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "required_tools": ["recall_memory"],
+        "forbidden_tools": ["bridge_notification"]
+      },
+      "setup": {
+        "type": "seed_notification",
+        "consolidate": true,
+        "timeout_sec": 120,
+        "expected_memory_count": 0,
+        "events": [
+          {
+            "source": "android",
+            "source_id": "otp-1",
+            "source_event_id": "otp-event-1",
+            "device_id": "benchmark-device",
+            "notification_uid": 103,
+            "event": "added",
+            "app_identifier": "com.auth",
+            "title": "Verification code",
+            "message": "Login verification code 123456",
+            "received_at": "2026-08-21T00:03:00Z"
+          },
+          {
+            "source": "android",
+            "source_id": "marketing-1",
+            "source_event_id": "marketing-event-1",
+            "device_id": "benchmark-device",
+            "notification_uid": 104,
+            "event": "added",
+            "app_identifier": "com.shop",
+            "title": "Limited-time promotion",
+            "message": "Limited-time discount",
+            "received_at": "2026-08-21T00:04:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "id": "notification_batch_cursor_drain",
+      "category": "memory",
+      "description_for_judge": "A backlog larger than one processor batch must be fully drained, while verification-code noise remains absent from user memory.",
+      "prompt": "Check memory for the verification-code notifications and report whether any were retained. Do not call bridge_notification.",
+      "rubric": [
+        {
+          "id": "checks_notification_memory",
+          "check": "The trace contains recall_memory and the answer is based on its result."
+        },
+        {
+          "id": "reports_noise_absence",
+          "check": "The answer states that the verification-code notifications were not retained as user memory."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["recall_memory"],
+        "forbidden_tools": ["bridge_notification"]
+      },
+      "setup": {
+        "type": "seed_notification",
+        "consolidate": true,
+        "timeout_sec": 120,
+        "expected_memory_count": 0,
+        "events": [
+          {"source": "android", "source_id": "otp-batch-1", "source_event_id": "otp-batch-event-1", "device_id": "benchmark-device", "notification_uid": 201, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100001", "received_at": "2026-08-21T01:00:01Z"},
+          {"source": "android", "source_id": "otp-batch-2", "source_event_id": "otp-batch-event-2", "device_id": "benchmark-device", "notification_uid": 202, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100002", "received_at": "2026-08-21T01:00:02Z"},
+          {"source": "android", "source_id": "otp-batch-3", "source_event_id": "otp-batch-event-3", "device_id": "benchmark-device", "notification_uid": 203, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100003", "received_at": "2026-08-21T01:00:03Z"},
+          {"source": "android", "source_id": "otp-batch-4", "source_event_id": "otp-batch-event-4", "device_id": "benchmark-device", "notification_uid": 204, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100004", "received_at": "2026-08-21T01:00:04Z"},
+          {"source": "android", "source_id": "otp-batch-5", "source_event_id": "otp-batch-event-5", "device_id": "benchmark-device", "notification_uid": 205, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100005", "received_at": "2026-08-21T01:00:05Z"},
+          {"source": "android", "source_id": "otp-batch-6", "source_event_id": "otp-batch-event-6", "device_id": "benchmark-device", "notification_uid": 206, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100006", "received_at": "2026-08-21T01:00:06Z"},
+          {"source": "android", "source_id": "otp-batch-7", "source_event_id": "otp-batch-event-7", "device_id": "benchmark-device", "notification_uid": 207, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100007", "received_at": "2026-08-21T01:00:07Z"},
+          {"source": "android", "source_id": "otp-batch-8", "source_event_id": "otp-batch-event-8", "device_id": "benchmark-device", "notification_uid": 208, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100008", "received_at": "2026-08-21T01:00:08Z"},
+          {"source": "android", "source_id": "otp-batch-9", "source_event_id": "otp-batch-event-9", "device_id": "benchmark-device", "notification_uid": 209, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100009", "received_at": "2026-08-21T01:00:09Z"},
+          {"source": "android", "source_id": "otp-batch-10", "source_event_id": "otp-batch-event-10", "device_id": "benchmark-device", "notification_uid": 210, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100010", "received_at": "2026-08-21T01:00:10Z"},
+          {"source": "android", "source_id": "otp-batch-11", "source_event_id": "otp-batch-event-11", "device_id": "benchmark-device", "notification_uid": 211, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100011", "received_at": "2026-08-21T01:00:11Z"}
+        ]
+      }
+    }
+  ]
+}

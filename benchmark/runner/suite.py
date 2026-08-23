@@ -17,6 +17,10 @@ SETUP_KEYS = {
     "agent_prompt": {"type", "prompt", "timeout_sec", "clear_history_after", "expected_response"},
     "seed_memory": {"type", "memories", "timeout_sec", "clear_history_after"},
     "seed_episode": {"type", "episode", "consolidate", "timeout_sec"},
+    "seed_notification": {
+        "type", "events", "consolidate", "timeout_sec",
+        "expected_memory_count", "expected_memory_scope",
+    },
 }
 
 class SuiteValidationError(ValueError):

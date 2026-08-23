@@ -4075,6 +4075,10 @@ func startFakeFrameServiceSocket(t *testing.T, handler func(map[string]any) (str
 }
 
 func newBenchmarkSeedMemoryServer(t *testing.T) (*Server, string) {
+	return newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{})
+}
+
+func newBenchmarkSeedMemoryServerWithModel(t *testing.T, model *scriptedModel) (*Server, string) {
 	t.Helper()
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	streamingDisabled := false
@@ -4087,7 +4091,7 @@ func newBenchmarkSeedMemoryServer(t *testing.T) (*Server, string) {
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 			VoiceToolCallSpeech:      &streamingDisabled,
 		},
-		&testModelResolver{model: &scriptedModel{}},
+		&testModelResolver{model: model},
 		NewMemoryManager(filepath.Join(configDir, "memory")),
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
@@ -4128,6 +4132,59 @@ func TestHandleBenchmarkSeedMemorySucceeds(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "id: personamem_test_seed_1") {
 		t.Fatalf("memory file missing fixed id, got: %s", string(data))
+	}
+}
+
+func TestHandleBenchmarkSeedNotificationWritesDurableFixture(t *testing.T) {
+	server, configDir := newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse(`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"ignore"}]}}]}`),
+	}})
+	body := `{"events":[{"source":"android","source_id":"delivery-1","source_event_id":"delivery-event-1","device_id":"benchmark-device","notification_uid":101,"event":"added","app_identifier":"com.delivery","title":"包裹更新","message":"包裹明天送达","received_at":"2026-08-21T00:01:00Z"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_notification", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedNotification(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Status     string   `json:"status"`
+		ContextIDs []string `json:"context_ids"`
+		EventCount int      `json:"event_count"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Status != "seeded" || response.EventCount != 1 || len(response.ContextIDs) != 1 || response.ContextIDs[0] != "1" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	rawPath := filepath.Join(configDir, "memory", "notifications", "events", "2026-08-21.jsonl")
+	raw, err := os.ReadFile(rawPath)
+	if err != nil {
+		t.Fatalf("read seeded notification fixture: %v", err)
+	}
+	if !strings.Contains(string(raw), `"message":"包裹明天送达"`) {
+		t.Fatalf("raw fixture missing original message: %s", raw)
+	}
+	processReq := httptest.NewRequest(http.MethodPost, "/api/benchmark/notification-memory/process", bytes.NewBufferString(`{}`))
+	processReq.Header.Set("Content-Type", "application/json")
+	processReq.Header.Set("Authorization", "Bearer test-benchmark-token")
+	processRec := httptest.NewRecorder()
+	server.handleBenchmarkProcessNotificationMemory(processRec, processReq)
+	if processRec.Code != http.StatusOK {
+		t.Fatalf("unexpected process status: %d body=%s", processRec.Code, processRec.Body.String())
+	}
+	var processResponse struct {
+		MemoryCursor string `json:"memory_cursor"`
+	}
+	if err := json.NewDecoder(processRec.Body).Decode(&processResponse); err != nil {
+		t.Fatalf("decode process response: %v", err)
+	}
+	if processResponse.MemoryCursor != "1" {
+		t.Fatalf("process cursor = %q, want 1", processResponse.MemoryCursor)
 	}
 }
 

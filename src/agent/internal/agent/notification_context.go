@@ -79,6 +79,10 @@ type NotificationContext struct {
 	storageGate  StorageWriteGate
 	state        NotificationContextState
 	fingerprints map[string]string
+	// consumeDisabled is used only by the benchmark fixture path. It lets a
+	// seeded durable log be processed without requiring a live BLE socket.
+	// Production ingestion always leaves this false.
+	consumeDisabled bool
 }
 
 var notificationContextMutexes sync.Map
@@ -133,6 +137,61 @@ func (c *NotificationContext) SetStorageWriteGate(gate StorageWriteGate) {
 	c.mu.Unlock()
 }
 
+// seedForBenchmark appends deterministic notification fixtures directly to the
+// durable context log. It is intentionally package-private; the only caller
+// is the benchmark-token-protected HTTP endpoint.
+func (c *NotificationContext) seedForBenchmark(ctx context.Context, events []ble.NotificationEvent) ([]NotificationRecord, error) {
+	if c == nil || len(events) == 0 {
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ensureLoadedLocked(); err != nil {
+		return nil, err
+	}
+	accepted := make([]NotificationRecord, 0, len(events))
+	for _, event := range events {
+		if err := ctx.Err(); err != nil {
+			return accepted, err
+		}
+		event = sanitizeNotificationEvent(event)
+		fingerprint := notificationEventFingerprint(event)
+		if _, exists := c.fingerprints[fingerprint]; exists {
+			continue
+		}
+		contextID := parseCursorOrZero(c.state.StoredCursor) + 1
+		record := NotificationRecord{
+			NotificationEvent: event,
+			ContextID:         strconv.FormatUint(contextID, 10),
+			Generation:        firstNonEmptyString([]string{c.state.Generation, "benchmark"}),
+		}
+		if err := c.appendEventLocked(record); err != nil {
+			return accepted, err
+		}
+		c.fingerprints[fingerprint] = record.ContextID
+		pruneNotificationFingerprints(c.fingerprints)
+		c.state.StoredCursor = record.ContextID
+		c.state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		accepted = append(accepted, record)
+	}
+	if err := c.persistLocked(); err != nil {
+		return accepted, err
+	}
+	return accepted, nil
+}
+
+func (c *NotificationContext) setConsumeDisabledForBenchmark(disabled bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.consumeDisabled = disabled
+	c.mu.Unlock()
+}
+
 // Consume fetches a page from ble_service, appends accepted events durably,
 // and advances SourceCursor only after each event is synced to disk.
 func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]NotificationRecord, error) {
@@ -148,6 +207,9 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.consumeDisabled {
+		return nil, nil
+	}
 	if c.storageGate != nil && !c.storageGate.AllowWrite(StorageCapabilityNotificationContext) {
 		return nil, nil
 	}

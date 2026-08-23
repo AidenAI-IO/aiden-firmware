@@ -47,12 +47,57 @@ class RecordingSetupClient:
         self.calls.append(("process_episode_memory", episode_id, timeout))
         return {"episode_id": episode_id, "status": "done", "memory_ids": ["devmem-1"]}
 
+    def seed_notification(self, events, timeout=30):
+        self.calls.append(("seed_notification", events, timeout))
+        return {"status": "seeded", "context_ids": [str(index + 1) for index in range(len(events))]}
+
+    def process_notification_memory(self, timeout=90):
+        self.calls.append(("process_notification_memory", timeout))
+        return {"memory_cursor": "1", "memory_ids": ["tmp_notification_1"]}
+
+    def invoke_tool(self, name, args, timeout=90):
+        self.calls.append(("invoke_tool", name, args, timeout))
+        from runner.agent_client import ToolInvokeResult
+
+        return ToolInvokeResult(
+            output='{"results":[{"id":"tmp_notification_1","memory_scope":"temporary"}]}',
+            is_error=False,
+            duration_ms=0,
+        )
+
 
 def test_agent_prompt_setup_wraps_chat_errors_as_reset_error():
     setup = {"type": "agent_prompt", "prompt": "remember this", "timeout_sec": 5}
 
     with pytest.raises(ResetError, match="setup agent_prompt failed"):
         per_task_setup(FailingChatClient(), setup)
+
+
+def test_notification_setup_seeds_and_processes_fixture():
+    client = RecordingSetupClient()
+    setup = {
+        "type": "seed_notification",
+        "events": [{"title": "Package", "message": "Tomorrow"}],
+        "consolidate": True,
+        "expected_memory_count": 1,
+        "expected_memory_scope": "temporary",
+    }
+
+    per_task_setup(client, setup)
+
+    assert client.calls == [
+        ("seed_notification", setup["events"], 90),
+        ("process_notification_memory", 90),
+        ("invoke_tool", "recall_memory", {"tags": ["notification"], "limit": 20}, 90),
+    ]
+
+
+def test_notification_setup_rejects_non_boolean_consolidate():
+    with pytest.raises(ResetError, match="consolidate must be boolean"):
+        per_task_setup(
+            RecordingSetupClient(),
+            {"type": "seed_notification", "events": [{"title": "x"}], "consolidate": "false"},
+        )
 
 
 def test_agent_prompt_setup_wraps_timeouts_as_reset_error():

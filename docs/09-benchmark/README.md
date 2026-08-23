@@ -39,6 +39,26 @@ uv run python -m runner run \
 
 Use the `stop_command` printed by `start-agent-daemon` when the run is complete.
 
+For notification memory, run the dedicated suite against a fresh daemon with a
+benchmark token. It injects deterministic raw notification fixtures, processes
+them through the real notification processor, and checks temporary-memory
+recall, OTP/marketing filtering, and multi-batch cursor drain:
+
+```bash
+uv run python -m runner run \
+  --suite suites/notification_memory_v1.json \
+  --agent-url http://127.0.0.1:18081 \
+  --benchmark-token-file /path/to/control_token \
+  --skip-clock-wait
+```
+
+This run enables the judge so the useful-notification answer and noise-filtering
+behavior are scored for effect. Add `--no-judge` when checking only the
+deterministic gates (fixture persistence through the benchmark endpoint, cursor
+advancement, memory count/scope, and required/forbidden tool calls). Raw JSONL
+preservation is covered by the Go integration tests rather than an Agent shell
+task. See the full manual for the corresponding Go performance benchmarks.
+
 ### WebUI
 
 ```bash

@@ -171,6 +171,32 @@ class AgentClient:
         body = _parse_json_response(body_bytes, "episode-memory process")
         return body if isinstance(body, dict) else {}
 
+    def seed_notification(self, events: list[dict[str, Any]], timeout: int = 30) -> dict[str, Any]:
+        headers = {}
+        if self._benchmark_token:
+            headers["Authorization"] = f"Bearer {self._benchmark_token}"
+        status, body_bytes = self._post(
+            "/api/benchmark/seed_notification",
+            {"events": list(events)}, timeout=timeout, headers=headers
+        )
+        if status != 200:
+            raise AgentRequestError(f"seed_notification returned {status}")
+        body = _parse_json_response(body_bytes, "seed_notification")
+        return body if isinstance(body, dict) else {}
+
+    def process_notification_memory(self, timeout: int = 90) -> dict[str, Any]:
+        headers = {}
+        if self._benchmark_token:
+            headers["Authorization"] = f"Bearer {self._benchmark_token}"
+        status, body_bytes = self._post(
+            "/api/benchmark/notification-memory/process", {},
+            timeout=timeout, headers=headers
+        )
+        if status != 200:
+            raise AgentRequestError(f"notification-memory process returned {status}")
+        body = _parse_json_response(body_bytes, "notification-memory process")
+        return body if isinstance(body, dict) else {}
+
     def set_phone_bridge_state(
         self, state: dict[str, Any], timeout: int = 30
     ) -> dict[str, Any]:

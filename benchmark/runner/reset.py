@@ -145,6 +145,9 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_
     if setup_type == "seed_episode":
         _per_task_setup_seed_episode(client, setup)
         return
+    if setup_type == "seed_notification":
+        _per_task_setup_seed_notification(client, setup)
+        return
     raise ResetError(f"unsupported setup form: {setup!r}")
 
 
@@ -255,3 +258,92 @@ def _per_task_setup_seed_episode(client: AgentClient, setup: dict[str, Any]) -> 
     memory_ids = result.get("memory_ids")
     if not isinstance(memory_ids, list) or not memory_ids:
         raise ResetError(f"episode memory consolidation for {episode_id!r} produced no device memory")
+
+
+def _per_task_setup_seed_notification(client: AgentClient, setup: dict[str, Any]) -> None:
+    events = setup.get("events")
+    if not isinstance(events, list) or not events or len(events) > 100:
+        raise ResetError("seed_notification setup requires 1 to 100 events")
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            raise ResetError(f"seed_notification events[{index}] must be an object")
+        if not str(event.get("title") or event.get("message") or "").strip():
+            raise ResetError(f"seed_notification events[{index}] requires a title or message")
+    consolidate = setup.get("consolidate", False)
+    if not isinstance(consolidate, bool):
+        raise ResetError(f"seed_notification consolidate must be boolean: {consolidate!r}")
+    try:
+        timeout = int(setup.get("timeout_sec", 90 if consolidate else 30))
+    except (ValueError, TypeError) as e:
+        raise ResetError(f"invalid timeout_sec: {setup.get('timeout_sec')!r}") from e
+    try:
+        seeded = client.seed_notification(events, timeout=timeout)
+        if not isinstance(seeded, dict):
+            raise ResetError("seed_notification returned an invalid response")
+        context_ids = seeded.get("context_ids")
+        if not isinstance(context_ids, list) or len(context_ids) != len(events):
+            raise ResetError(
+                "seed_notification did not persist every fixture event: "
+                f"expected {len(events)} context ids, got {context_ids!r}"
+            )
+        if not consolidate:
+            return
+        result = client.process_notification_memory(timeout=timeout)
+    except AgentTimeoutError as e:
+        raise ResetError(f"notification benchmark setup timed out: {e}") from e
+    except AgentRequestError as e:
+        raise ResetError(f"notification benchmark setup failed: {e}") from e
+    expected_cursor = str(context_ids[-1]).strip() if context_ids else ""
+    cursor = str(result.get("memory_cursor") or "").strip()
+    if expected_cursor and cursor != expected_cursor:
+        raise ResetError(f"notification memory cursor mismatch: expected {expected_cursor!r}, got {cursor or 'missing'}")
+    memory_ids = result.get("memory_ids")
+    if not isinstance(memory_ids, list):
+        raise ResetError("notification memory consolidation returned invalid memory_ids")
+    expected_count = setup.get("expected_memory_count")
+    if expected_count is not None:
+        try:
+            expected_count = int(expected_count)
+        except (ValueError, TypeError) as e:
+            raise ResetError(
+                f"invalid expected_memory_count: {setup.get('expected_memory_count')!r}"
+            ) from e
+        if expected_count < 0 or len(memory_ids) != expected_count:
+            raise ResetError(
+                "notification memory count mismatch: "
+                f"expected {expected_count}, got {len(memory_ids)}"
+            )
+    expected_scope = str(setup.get("expected_memory_scope") or "").strip().lower()
+    if not expected_scope:
+        return
+    if expected_scope not in {"temporary", "long_term"}:
+        raise ResetError(
+            f"invalid expected_memory_scope: {setup.get('expected_memory_scope')!r}"
+        )
+    try:
+        recalled = client.invoke_tool(
+            "recall_memory",
+            {"tags": ["notification"], "limit": 20},
+            timeout=timeout,
+        )
+    except (AgentTimeoutError, AgentRequestError) as e:
+        raise ResetError(f"notification memory scope check failed: {e}") from e
+    if recalled.is_error:
+        raise ResetError("notification memory scope check returned an error")
+    try:
+        payload = json.loads(recalled.output)
+    except (TypeError, json.JSONDecodeError) as e:
+        raise ResetError(f"notification memory scope check returned invalid JSON: {e}") from e
+    matches = payload.get("results") if isinstance(payload, dict) else []
+    scopes_by_id = {
+        item.get("id"): str(item.get("memory_scope") or "").strip().lower()
+        for item in matches or []
+        if isinstance(item, dict) and item.get("id")
+    }
+    for memory_id in memory_ids:
+        actual_scope = scopes_by_id.get(memory_id, "")
+        if actual_scope != expected_scope:
+            raise ResetError(
+                f"notification memory {memory_id!r} scope mismatch: "
+                f"expected {expected_scope!r}, got {actual_scope or 'missing'}"
+            )

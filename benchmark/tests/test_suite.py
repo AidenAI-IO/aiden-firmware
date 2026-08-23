@@ -30,6 +30,23 @@ def test_load_suite_returns_parsed(tmp_path: Path):
     assert suite.tasks[0].rubric[0].id == "in_settings"
 
 
+def test_notification_memory_suite_uses_benchmark_seed_setup():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "notification_memory_v1.json"
+    suite = load_suite(suite_path)
+    assert suite_path.read_text(encoding="utf-8").isascii()
+
+    assert suite.name == "notification_memory_v1"
+    assert [task.id for task in suite.tasks] == [
+        "delivery_notification_recall",
+        "notification_noise_is_filtered",
+        "notification_batch_cursor_drain",
+    ]
+    assert suite.tasks[0].setup["type"] == "seed_notification"
+    assert suite.tasks[0].setup["expected_memory_scope"] == "temporary"
+    assert suite.tasks[1].setup["consolidate"] is True
+    assert suite.tasks[1].setup["expected_memory_count"] == 0
+
+
 def test_perception_v1_settings_rubric_uses_0_1000_normalized_coordinates():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "perception" / "perception_v1.json"
     suite = load_suite(suite_path)
