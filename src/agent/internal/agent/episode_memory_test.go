@@ -867,6 +867,34 @@ func TestEpisodeMemoryAssessmentDowngradesUnsupportedFailureToUnknown(t *testing
 	}
 }
 
+func TestAbandonedEpisodeWithoutActionableFailureDoesNotCreateFailureMemory(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "episode_assessment":{"goal_result":"not_achieved","reason":"The task was abandoned before completion.","evidence_refs":["open_result"]},
+  "candidates":[{"lesson_key":"abandoned-open","type":"failure","action":"create","retention":"durable","situation":"Opening Settings was not enough.","guidance":"Do something else.","expected_effect":"The task should complete.","scope":{},"tags":[],"evidence_refs":["open_result"]}]
+}`}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{
+		ID: "ep_abandoned", Status: "abandoned", UserGoal: "Open and verify the requested page",
+		Events: []TaskEpisodeEvent{
+			{EventID: "open_call", Type: runEventToolCall, ToolName: "open_app"},
+			{EventID: "open_result", Type: "tool_result", ToolName: "open_app", Observation: "Settings opened"},
+		},
+	}
+
+	proposal, err := processor.proposeEpisode(ctx, episode)
+	if err != nil {
+		t.Fatalf("proposeEpisode() error = %v", err)
+	}
+	if proposal.EpisodeAssessment.GoalResult != episodeGoalUnknown {
+		t.Fatalf("goal_result = %q, want unknown for abandoned episode without failure evidence", proposal.EpisodeAssessment.GoalResult)
+	}
+	if len(proposal.Candidates) != 0 {
+		t.Fatalf("candidates = %#v, want none for abandoned episode without failure evidence", proposal.Candidates)
+	}
+}
+
 func TestHasDirectEpisodeFailureEvidenceUsesStructuredSignals(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -877,6 +905,7 @@ func TestHasDirectEpisodeFailureEvidenceUsesStructuredSignals(t *testing.T) {
 		{name: "missing verification only", episode: TaskEpisode{Status: "completed", Events: []TaskEpisodeEvent{{EventID: "result", Type: "tool_result"}}}, refs: []string{"result"}, want: false},
 		{name: "structured error", episode: TaskEpisode{Status: "completed", Events: []TaskEpisodeEvent{{EventID: "result", Type: "tool_result", IsError: true}}}, refs: []string{"result"}, want: true},
 		{name: "user correction", episode: TaskEpisode{Status: "completed", Events: []TaskEpisodeEvent{{EventID: "steer", Type: "steer"}}}, refs: []string{"steer"}, want: true},
+		{name: "abandoned without failure signal", episode: TaskEpisode{Status: "abandoned"}, want: false},
 		{name: "explicit interruption", episode: TaskEpisode{Status: "interrupted"}, want: true},
 		{name: "failure reason", episode: TaskEpisode{Status: "completed", Outcome: TaskEpisodeOutcome{FailureReason: "runtime stopped"}}, want: true},
 	}

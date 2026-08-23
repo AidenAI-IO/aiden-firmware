@@ -691,7 +691,7 @@ func (p *episodeMemoryProcessor) generateEpisodeMemoryProposal(ctx context.Conte
 
 func hasDirectEpisodeFailureEvidence(episode TaskEpisode, refs []string) bool {
 	switch strings.ToLower(strings.TrimSpace(episode.Status)) {
-	case "abandoned", "interrupted", "cancelled", "canceled":
+	case "interrupted", "cancelled", "canceled":
 		return true
 	}
 	if strings.TrimSpace(episode.Outcome.FailureReason) != "" {

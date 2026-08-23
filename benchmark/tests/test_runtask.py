@@ -476,6 +476,60 @@ def test_evaluate_task_history_records_expected_memory_failure_details(tmp_path:
     )
 
 
+def test_evaluate_task_history_requires_inline_recall_for_consolidation_ids(tmp_path: Path):
+    from runner.runtask import evaluate_task_history
+
+    suite = Suite(
+        name="s",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "s.json",
+    )
+    task = TaskSpec(
+        id="consolidation_recall_case",
+        category="memory",
+        description_for_judge="Recall the newly consolidated memory.",
+        prompt="Recall it.",
+        rubric=[],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=2),
+        expected_recalled_memory_ids=["memory-created-by-consolidation"],
+        expected_recalled_memory_tool="recall_device_memory",
+        expected_recall_from_consolidation=True,
+    )
+    history = [
+        {
+            "type": "tool_call",
+            "tool_name": "recall_device_memory",
+            "tool_input": "{}",
+        },
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+        {"type": "assistant", "content": "I could not verify the recalled memory."},
+    ]
+
+    result = evaluate_task_history(
+        suite=suite,
+        task=task,
+        history=history,
+        attempt=1,
+        artifact_dir=tmp_path / "artifacts",
+        judge_cfg=None,
+        judge_cache_dir=None,
+        run_id="run-1",
+        timed_out=False,
+        metrics={},
+        episode={"retrieved_memory_refs": ["memory-created-by-consolidation"]},
+    )
+
+    assert result.status == "judge_error"
+    assert result.metrics["memory_recall_evidence_source"] == "unavailable"
+    assert result.hard_assertions.expected_recalled_memory is None
+
+
 def _memory_suite_and_task(tmp_path: Path):
     suite = Suite(
         name="persona",

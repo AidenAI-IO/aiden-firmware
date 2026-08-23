@@ -134,6 +134,7 @@ def evaluate_task_history(
             task.expected_recalled_memory_ids,
             episode=episode,
             recall_tool=task.expected_recalled_memory_tool,
+            require_inline_recall=task.expected_recall_from_consolidation,
         )
         base.metrics.update({
             "expected_recalled_memory_ids": recall_outcome.expected_memory_ids,
@@ -426,6 +427,7 @@ def run_one_task(
             history,
             effective_task.expected_recalled_memory_ids,
             recall_tool=effective_task.expected_recalled_memory_tool,
+            require_inline_recall=effective_task.expected_recall_from_consolidation,
         )
     else:
         inline_recall_outcome = None

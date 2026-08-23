@@ -261,6 +261,7 @@ def evaluate_expected_recalled_memory_ids(
     *,
     episode: dict[str, Any] | None = None,
     recall_tool: str = "recall_memory",
+    require_inline_recall: bool = False,
 ) -> ExpectedRecallResult:
     expected_ids = _unique_non_empty_strings(expected_memory_ids)
     recall_called, recalled_ids, inline_complete = _recall_tool_evidence(history, recall_tool)
@@ -279,6 +280,19 @@ def evaluate_expected_recalled_memory_ids(
             expected_memory_ids=expected_ids,
             recalled_memory_ids=recalled_ids,
             evidence_source="inline",
+            recall_memory_called=True,
+        )
+
+    # Consolidation-backed expectations are a release gate on the actual
+    # recall_device_memory tool response.  Episode metadata can be useful for
+    # diagnosing compressed history, but it must not substitute for the tool
+    # output in this mode.
+    if require_inline_recall:
+        return ExpectedRecallResult(
+            passed=None,
+            expected_memory_ids=expected_ids,
+            recalled_memory_ids=[],
+            evidence_source="unavailable",
             recall_memory_called=True,
         )
 

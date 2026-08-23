@@ -360,6 +360,33 @@ def test_expected_recalled_memory_ids_prefers_episode_over_compressed_history():
     assert result.evidence_source == "episode"
 
 
+def test_expected_recalled_memory_ids_does_not_use_episode_for_consolidation_gate():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+    ]
+    episode = {
+        "id": "ep-consolidation",
+        "retrieved_memory_refs": ["memory-created-by-consolidation"],
+    }
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["memory-created-by-consolidation"],
+        episode=episode,
+        recall_tool="recall_device_memory",
+        require_inline_recall=True,
+    )
+
+    assert result.passed is None
+    assert result.recalled_memory_ids == []
+    assert result.evidence_source == "unavailable"
+
+
 def test_expected_recalled_memory_ids_episode_missing_expected_id_is_failure():
     history = [
         {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
