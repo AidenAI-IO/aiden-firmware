@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,6 +22,8 @@ import (
 const (
 	defaultNotificationConsumeLimit = 100
 	defaultNotificationPendingLimit = 20
+	maxNotificationFingerprints     = 4096
+	trimNotificationFingerprintsTo  = 3072
 	maxNotificationStoredText       = 4096
 	maxNotificationStoredApp        = 255
 )
@@ -150,6 +152,11 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 	if page.ResetRequired {
 		c.recordGapLocked("ble_generation_reset", generation, since, page.OldestID)
 		generation = page.Generation
+		c.state.Generation = generation
+		c.state.SourceCursor = "0"
+		if err := c.persistLocked(); err != nil {
+			return nil, err
+		}
 		page, err = c.reader(ctx, "0", generation, limit)
 		if err != nil {
 			return nil, err
@@ -188,15 +195,13 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 			return accepted, err
 		}
 		c.fingerprints[fingerprint] = record.ContextID
+		pruneNotificationFingerprints(c.fingerprints)
 		accepted = append(accepted, record)
 		c.state.StoredCursor = record.ContextID
 		if cursor, ok := parseNotificationCursor(event.ID); ok {
 			c.state.SourceCursor = strconv.FormatUint(cursor, 10)
 		}
 		c.state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		if err := c.persistLocked(); err != nil {
-			return accepted, err
-		}
 	}
 	if len(page.Events) == 0 && page.LastID != "" {
 		if cursor, ok := parseNotificationCursor(page.LastID); ok && cursor > parseCursorOrZero(c.state.SourceCursor) {
@@ -450,23 +455,40 @@ func (c *NotificationContext) appendEventLocked(event NotificationRecord) error 
 }
 
 func readNotificationRecordFile(path string) ([]NotificationRecord, error) {
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 4096), 128*1024)
-	result := make([]NotificationRecord, 0)
-	for scanner.Scan() {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	if !bytes.HasSuffix(data, []byte{'\n'}) {
+		lastNewline := bytes.LastIndexByte(data, '\n')
+		tail := data[lastNewline+1:]
 		var record NotificationRecord
-		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+		if err := json.Unmarshal(tail, &record); err != nil {
+			if err := os.WriteFile(path, data[:lastNewline+1], 0o644); err != nil {
+				return nil, fmt.Errorf("repair incomplete notification record %s: %w", path, err)
+			}
+			data = data[:lastNewline+1]
+		} else {
+			data = append(data, '\n')
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				return nil, fmt.Errorf("repair notification record newline %s: %w", path, err)
+			}
+		}
+	}
+	lines := bytes.Split(data, []byte{'\n'})
+	result := make([]NotificationRecord, 0)
+	for _, line := range lines {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var record NotificationRecord
+		if err := json.Unmarshal(line, &record); err != nil {
 			return nil, fmt.Errorf("decode notification record %s: %w", path, err)
 		}
 		result = append(result, record)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
 	}
 	return result, nil
 }
@@ -474,7 +496,14 @@ func readNotificationRecordFile(path string) ([]NotificationRecord, error) {
 func (c *NotificationContext) load() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.ensureLoadedLocked()
+	if err := c.ensureLoadedLocked(); err != nil {
+		return err
+	}
+	changed, err := c.recoverFromEventLogLocked()
+	if err != nil || !changed {
+		return err
+	}
+	return c.persistLocked()
 }
 
 func (c *NotificationContext) ensureLoadedLocked() error {
@@ -507,7 +536,55 @@ func (c *NotificationContext) ensureLoadedLocked() error {
 	if c.fingerprints == nil {
 		c.fingerprints = map[string]string{}
 	}
+	pruneNotificationFingerprints(c.fingerprints)
 	return nil
+}
+
+// recoverFromEventLogLocked rebuilds the dedupe window and durable cursors
+// from event shards after a process restart or partial state write.
+func (c *NotificationContext) recoverFromEventLogLocked() (bool, error) {
+	entries, err := os.ReadDir(c.eventsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	fingerprintCount := len(c.fingerprints)
+	storedCursor := parseCursorOrZero(c.state.StoredCursor)
+	latestCursor := storedCursor
+	var latest NotificationRecord
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		records, err := readNotificationRecordFile(filepath.Join(c.eventsDir, entry.Name()))
+		if err != nil {
+			return false, err
+		}
+		for _, record := range records {
+			cursor, ok := parseNotificationCursor(record.ContextID)
+			if !ok {
+				continue
+			}
+			c.fingerprints[notificationEventFingerprint(record.NotificationEvent)] = record.ContextID
+			if cursor > latestCursor {
+				latestCursor = cursor
+				latest = record
+			}
+		}
+	}
+	pruneNotificationFingerprints(c.fingerprints)
+	if latestCursor == storedCursor {
+		return len(c.fingerprints) != fingerprintCount, nil
+	}
+	c.state.StoredCursor = strconv.FormatUint(latestCursor, 10)
+	c.state.SourceCursor = normalizeCursor(latest.ID)
+	if latest.Generation != "" {
+		c.state.Generation = latest.Generation
+	}
+	c.state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	return true, nil
 }
 
 func (c *NotificationContext) persistLocked() error {
@@ -608,4 +685,23 @@ func normalizeCursor(value string) string {
 func cloneNotificationContextState(state NotificationContextState) NotificationContextState {
 	state.Gaps = append([]NotificationGap(nil), state.Gaps...)
 	return state
+}
+
+func pruneNotificationFingerprints(fingerprints map[string]string) {
+	if len(fingerprints) <= maxNotificationFingerprints {
+		return
+	}
+	type fingerprintCursor struct {
+		fingerprint string
+		cursor      uint64
+	}
+	ordered := make([]fingerprintCursor, 0, len(fingerprints))
+	for fingerprint, contextID := range fingerprints {
+		ordered = append(ordered, fingerprintCursor{fingerprint: fingerprint, cursor: parseCursorOrZero(contextID)})
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].cursor < ordered[j].cursor })
+	removeCount := len(ordered) - trimNotificationFingerprintsTo
+	for _, item := range ordered[:removeCount] {
+		delete(fingerprints, item.fingerprint)
+	}
 }

@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"aiden-agent/internal/ble"
@@ -162,6 +165,42 @@ func TestNotificationContextRecordsRingGapAndResetsGeneration(t *testing.T) {
 	}
 }
 
+func TestNotificationContextPersistsGenerationResetBeforeRetry(t *testing.T) {
+	root := t.TempDir()
+	calls := 0
+	reader := func(_ context.Context, since, generation string, _ int) (ble.EventPage, error) {
+		calls++
+		if calls == 1 {
+			if since != "0" || generation != "" {
+				t.Fatalf("initial request since=%q generation=%q", since, generation)
+			}
+			return ble.EventPage{Generation: "new", ResetRequired: true, OldestID: "9"}, nil
+		}
+		if since != "0" || generation != "new" {
+			t.Fatalf("reset request since=%q generation=%q", since, generation)
+		}
+		return ble.EventPage{}, context.Canceled
+	}
+	c, err := NewNotificationContext(root, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Consume(context.Background(), 10); err != context.Canceled {
+		t.Fatalf("Consume() err=%v, want context canceled", err)
+	}
+	state := c.State()
+	if state.Generation != "new" || state.SourceCursor != "0" {
+		t.Fatalf("reset state=%#v, want generation new and source cursor 0", state)
+	}
+	reloaded, err := NewNotificationContext(root, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state := reloaded.State(); state.Generation != "new" || state.SourceCursor != "0" {
+		t.Fatalf("persisted reset state=%#v, want generation new and source cursor 0", state)
+	}
+}
+
 func TestNotificationContextCommitRejectsNonContiguousBatch(t *testing.T) {
 	c, err := NewNotificationContext(t.TempDir(), func(context.Context, string, string, int) (ble.EventPage, error) {
 		return ble.EventPage{}, nil
@@ -233,5 +272,111 @@ func TestNotificationContextSanitizeTruncatesUTF8ByRunes(t *testing.T) {
 	value := truncateNotificationText("你好世界", 3)
 	if value != "你好世" {
 		t.Fatalf("truncateNotificationText()=%q, want 你好世", value)
+	}
+}
+
+func TestNotificationContextRepairsIncompleteTailRecord(t *testing.T) {
+	root := t.TempDir()
+	eventsDir := filepath.Join(root, "notifications", "events")
+	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	record := NotificationRecord{
+		NotificationEvent: ble.NotificationEvent{ID: "1", Source: "ios", SourceEventID: "evt-1", Event: "added", ReceivedAt: "2026-08-21T00:00:00Z"},
+		ContextID:         "1",
+		Generation:        "g",
+	}
+	line, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(eventsDir, "2026-08-21.jsonl")
+	partial := append(append(append([]byte{}, line...), '\n'), []byte(`{"context_id":"2"`)...)
+	if err := os.WriteFile(path, partial, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := c.ReadPending(context.Background(), 10)
+	if err != nil || len(pending) != 1 || pending[0].ContextID != "1" {
+		t.Fatalf("ReadPending()=%#v err=%v, want the complete record only", pending, err)
+	}
+	repaired, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(repaired, append(line, '\n')) {
+		t.Fatalf("repaired JSONL=%q, want complete first record with newline", repaired)
+	}
+}
+
+func TestNotificationContextReadsRecordLargerThanScannerLimit(t *testing.T) {
+	root := t.TempDir()
+	eventsDir := filepath.Join(root, "notifications", "events")
+	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	record := NotificationRecord{
+		NotificationEvent: ble.NotificationEvent{ID: "1", Source: "ios", SourceEventID: "large", Event: "added", Message: strings.Repeat("x", 256*1024), ReceivedAt: "2026-08-21T00:00:00Z"},
+		ContextID:         "1",
+		Generation:        "g",
+	}
+	line, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(eventsDir, "2026-08-21.jsonl")
+	if err := os.WriteFile(path, append(line, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := c.Query(context.Background(), NotificationQuery{Limit: 10})
+	if err != nil || len(results) != 1 || len(results[0].Message) != 256*1024 {
+		t.Fatalf("Query() len=%d message=%d err=%v, want one 256 KiB record", len(results), func() int {
+			if len(results) == 0 {
+				return 0
+			}
+			return len(results[0].Message)
+		}(), err)
+	}
+}
+
+func TestNotificationContextBoundsFingerprintWindow(t *testing.T) {
+	root := t.TempDir()
+	const count = maxNotificationFingerprints + 1
+	events := make([]ble.NotificationEvent, 0, count)
+	for i := 1; i <= count; i++ {
+		events = append(events, ble.NotificationEvent{
+			ID: strconv.Itoa(i), Source: "ios", SourceEventID: "evt-" + strconv.Itoa(i), Event: "added", ReceivedAt: "2026-08-21T00:00:00Z",
+		})
+	}
+	c, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{Generation: "g", Events: events}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Consume(context.Background(), count); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "notifications", "fingerprints.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored notificationFingerprintFile
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(stored.Fingerprints); got != trimNotificationFingerprintsTo {
+		t.Fatalf("fingerprint count=%d, want %d", got, trimNotificationFingerprintsTo)
 	}
 }

@@ -393,30 +393,6 @@ The runtime builds cleanup stages from the configured retention arrays.
 
 A retention value of 0 creates an emergency cleanup stage. The default session_archive_retention_days value is [30], so an all-session-archives emergency stage is not enabled unless 0 is explicitly added.
 
-#### Proposed Notification Memory Stages
-
-The notification-memory proposal adds two cleaners; these are not registered by
-the current runtime yet.
-
-| Data | Proposed stage | Minimum level | Protection |
-| --- | --- | --- | --- |
-| Temporary Memory | Per-record `expires_at` | Normal | Deletes only expired records and rebuilds its index |
-| Notification Context | 14 days | Normal | Deletes only Memory-processed events and enforces a 16 MiB local quota |
-| Notification Context | 7 days | Warning | Deletes only Memory-processed events |
-| Notification Context | 1 day | Critical | Deletes only Memory-processed events |
-| Notification Context | 0 days | Emergency | Records an explicit gap before removing any unprocessed range |
-
-Notification cleanup is cursor-aware. StorageMonitor invokes the registered
-cleaner, while `NotificationContext.Cleanup(policy)` owns file selection and
-cursor updates; StorageMonitor never deletes notification JSONL directly.
-
-This is not a reuse of an existing Episode cleaner. The current Episode pipeline
-has no retention cleaner for `memory/episodes/`; its bounded processing ledger
-only removes old terminal statuses. Device Memory TTL is likewise a recall
-filter rather than physical storage reclamation.
-
-See [Notification Persistence and Automatic Memory](notification-context-memory.md)
-for the complete proposal.
 
 #### Python Package Cleanup
 

@@ -66,9 +66,9 @@ func newMemoryWorker(processor MemoryProcessor, batchLimit int, idleDelay time.D
 		processor:  processor,
 		batchLimit: batchLimit,
 		idleDelay:  idleDelay,
-		idleSince: time.Now(),
-		ctx:       ctx,
-		cancel:    cancel,
+		idleSince:  time.Now(),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 

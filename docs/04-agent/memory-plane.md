@@ -222,45 +222,6 @@ The worker:
 
 Episode trace persistence happens before background maintenance is scheduled. A maintenance failure is logged and does not replace the user-facing task result.
 
-## Notification Memory Proposal
-
-The notification design extends the memory plane without routing notification
-consumption through `ble_service`. The service remains an event producer; an
-Agent-side `NotificationContext` consumes, deduplicates, sanitizes, and persists
-the events.
-
-The proposed storage layout adds two roots:
-
-```text
-memory/
-├── notifications/              # raw notification evidence and cursors
-├── temporary/                  # time-bounded recallable conclusions
-│   ├── index.yaml
-│   └── memories/
-└── long_term/                  # durable user memory
-```
-
-Temporary Memory uses the Long-Term Memory record and index schema, requires an
-`expires_at`, and is searched by the existing `recall_memory` tool. Relevant
-unexpired Temporary Memory ranks ahead of a Long-Term Memory baseline for the
-same subject without replacing it.
-
-The existing `episodeMemoryWorker` scheduling behavior should be extracted into
-a generic `MemoryWorker` with a scenario-specific `MemoryProcessor` interface.
-Episode and Notification then use separate Worker instances with independent
-timers, cursors, retry state, cancellation contexts, and persisted processing
-state. They share only the model client and a process-local gate that serializes
-background Memory model calls.
-
-| Worker instance | Trigger | Batch | Output |
-| --- | --- | --- | --- |
-| Episode | Agent idle for 5 minutes | 5 Episodes | Device Memory |
-| Notification | 30 seconds after persistence | 20 events | Temporary or Long-Term Memory |
-
-See [Notification Persistence and Automatic Memory](notification-context-memory.md)
-for the complete proposal, including deduplication, promotion, TTL, and cleanup
-rules.
-
 ## Compatibility
 
 Legacy `reflection:v1` Failure Memory remains readable. Older Device Memory files with an omitted status retain their previous meaning and are treated as active.
