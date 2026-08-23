@@ -314,6 +314,43 @@ func TestNotificationContextRepairsIncompleteTailRecord(t *testing.T) {
 	}
 }
 
+func TestNotificationContextRepairsCompleteTailNewline(t *testing.T) {
+	root := t.TempDir()
+	eventsDir := filepath.Join(root, "notifications", "events")
+	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	record := NotificationRecord{
+		NotificationEvent: ble.NotificationEvent{ID: "1", Source: "ios", SourceEventID: "evt-1", Event: "added", ReceivedAt: "2026-08-21T00:00:00Z"},
+		ContextID:         "1",
+		Generation:        "g",
+	}
+	line, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(eventsDir, "2026-08-21.jsonl")
+	if err := os.WriteFile(path, line, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ReadPending(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(repaired, append(line, '\n')) {
+		t.Fatalf("repaired JSONL=%q, want complete record with newline", repaired)
+	}
+}
+
 func TestNotificationContextReadsRecordLargerThanScannerLimit(t *testing.T) {
 	root := t.TempDir()
 	eventsDir := filepath.Join(root, "notifications", "events")

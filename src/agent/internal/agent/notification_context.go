@@ -467,15 +467,15 @@ func readNotificationRecordFile(path string) ([]NotificationRecord, error) {
 		tail := data[lastNewline+1:]
 		var record NotificationRecord
 		if err := json.Unmarshal(tail, &record); err != nil {
-			if err := os.WriteFile(path, data[:lastNewline+1], 0o644); err != nil {
+			if err := writeFileAtomic(path, data[:lastNewline+1], 0o644); err != nil {
 				return nil, fmt.Errorf("repair incomplete notification record %s: %w", path, err)
 			}
 			data = data[:lastNewline+1]
 		} else {
-			data = append(data, '\n')
-			if err := os.WriteFile(path, data, 0o644); err != nil {
+			if err := appendNotificationRecordNewline(path); err != nil {
 				return nil, fmt.Errorf("repair notification record newline %s: %w", path, err)
 			}
+			data = append(data, '\n')
 		}
 	}
 	lines := bytes.Split(data, []byte{'\n'})
@@ -491,6 +491,22 @@ func readNotificationRecordFile(path string) ([]NotificationRecord, error) {
 		result = append(result, record)
 	}
 	return result, nil
+}
+
+func appendNotificationRecordNewline(path string) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.Write([]byte{'\n'})
+	if writeErr == nil {
+		writeErr = file.Sync()
+	}
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }
 
 func (c *NotificationContext) load() error {
