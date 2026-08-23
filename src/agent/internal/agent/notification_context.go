@@ -568,6 +568,7 @@ func (c *NotificationContext) recoverFromEventLogLocked() (bool, error) {
 				continue
 			}
 			c.fingerprints[notificationEventFingerprint(record.NotificationEvent)] = record.ContextID
+			pruneNotificationFingerprints(c.fingerprints)
 			if cursor > latestCursor {
 				latestCursor = cursor
 				latest = record
