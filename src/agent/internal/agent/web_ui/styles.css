@@ -636,7 +636,11 @@ textarea:focus-visible {
 .message.assistant .message-body {
     max-width: min(100%, 1120px);
     flex: 1;
-    padding: 1px 2px 0 0;
+    padding: 14px 15px;
+    background: var(--panel-strong);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    box-shadow: var(--shadow-soft);
 }
 
 .message.tool_call .message-body,
@@ -1339,7 +1343,7 @@ button, textarea, select, .tool-block, .tool-lab-input {
 .conversation { padding: 10px 18px 0; background: #121316; }
 .message-list { gap: 10px; }
 .message.user .message-body, .message.steer .message-body { border-radius: 6px; background: var(--user-bubble); box-shadow: none; }
-.message.assistant .message-body { padding: 1px 2px 0; }
+.message.assistant .message-body { padding: 14px 15px; background: var(--panel-strong); border: 1px solid var(--line); border-radius: 6px; box-shadow: none; }
 .message.tool_call .message-body, .message.role_output .message-body, .message.tool_result .message-body { border-radius: 6px; background: var(--panel-strong); box-shadow: none; }
 .message-avatar { border-radius: 5px; background: var(--surface-contrast); }
 .message-role, .tool-section-label, .tool-meta-key, .sidebar-kicker { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
@@ -1405,6 +1409,7 @@ body { background: #f5f5f7; color: var(--text); }
 .conversation, .composer { background: #f7f7f8; }
 .new-chat-btn { background: #fff; color: var(--muted-strong); }
 .message.user .message-body { background: var(--user-bubble); }
+.message.assistant .message-body { background: #fff; border-color: var(--line); }
 .message.steer .message-body { background: #fff8e9; }
 .tool-lab-select, .tool-lab-input, .composer-input { background: #fff; color: var(--text); }
 .tool-lab-input[readonly] { background: #f7f7f8; }
