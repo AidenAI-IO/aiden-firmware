@@ -108,6 +108,7 @@ func defaultEpisodeMemoryRetentionAudit(messages []llms.MessageContent) string {
 				}
 				if candidate.Retention == episodeMemoryRetentionDurable {
 					review.Decision = episodeMemoryRetentionDecisionRetain
+					review.Retention = episodeMemoryRetentionDurable
 					review.Rewrite = &episodeMemoryRetentionRewrite{
 						Situation: candidate.Situation, Guidance: candidate.Guidance, ExpectedEffect: candidate.ExpectedEffect,
 						Scope: cloneStringMap(candidate.Scope), Tags: append([]string(nil), candidate.Tags...), EvidenceRefs: append([]string(nil), candidate.EvidenceRefs...),

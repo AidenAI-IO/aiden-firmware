@@ -567,6 +567,65 @@ func TestEpisodeMemoryProcessorUsesGoalResultToRejectFalseSuccessProcedure(t *te
 	}
 }
 
+func TestEpisodeMemoryApplyProposalCreatesNewTypeWhenUpdateTargetTypeDiffers(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	if _, err := plane.device.Upsert(ctx, DeviceMemoryItem{
+		ID: "devmem_existing_procedure", Type: "procedure", Status: deviceMemoryStatusActive, Revision: 1,
+		ExtractorVersion: episodeMemoryExtractorVersion, LessonKey: "verified_save_flow",
+		Title: "When saving a note", Summary: "Use the verified save flow",
+		Content:  "Situation: When saving a note\nGuidance: Use the verified save flow\nExpected effect: The note persists",
+		DeviceID: "device_a", AppName: "QA Notes", PageName: "Editor",
+		Applicability: map[string]string{"device_id": "device_a", "app_name": "QA Notes", "page_name": "Editor"},
+		EvidenceRefs:  []MemorySourceRef{{Type: "episode", ID: "ep_prior_success", EventIDs: []string{"prior_result"}}},
+	}); err != nil {
+		t.Fatalf("Upsert(existing) error = %v", err)
+	}
+	episode := TaskEpisode{
+		ID: "ep_failure_guard", Status: "completed", UserGoal: "Persist the changed note value",
+		DeviceScope: map[string]string{"device_id": "device_a", "app_name": "QA Notes", "page_name": "Editor"},
+		Outcome:     TaskEpisodeOutcome{Success: false, FinalState: "The old value was visible after reopening."},
+		Events: []TaskEpisodeEvent{
+			{EventID: "failure_call", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: "reopen"},
+			{EventID: "failure_result", Type: "tool_result", ToolName: "touch_gesture", IsError: true, Observation: "Reopening showed the old value; persistence failed."},
+		},
+	}
+	proposal := episodeMemoryProposal{
+		EpisodeAssessment: episodeMemoryAssessment{
+			GoalResult: episodeGoalNotAchieved, Reason: "Final verification failed.", EvidenceRefs: []string{"failure_result"},
+		},
+		ExistingRevisions: map[string]int{"devmem_existing_procedure": 1},
+		Candidates: []episodeMemoryCandidate{{
+			LessonKey: "persistence_failure_guard", Type: episodeMemoryTypeFailure, Action: episodeMemoryActionUpdate,
+			MemoryID: "devmem_existing_procedure", MemoryRevision: 1, Retention: episodeMemoryRetentionDurable,
+			Situation: "When a saved note must be verified", Guidance: "Reopen the note and verify the changed value before reporting success",
+			ExpectedEffect: "A reverted value is detected before claiming completion",
+			Scope:          map[string]string{"device_id": "device_a", "app_name": "QA Notes", "page_name": "Editor"},
+			EvidenceRefs:   []string{"failure_result"},
+		}},
+	}
+
+	if err := (&episodeMemoryProcessor{plane: plane}).applyProposal(ctx, episode, proposal); err != nil {
+		t.Fatalf("applyProposal() error = %v", err)
+	}
+	items, err := plane.device.readAll()
+	if err != nil {
+		t.Fatalf("readAll() error = %v", err)
+	}
+	var failure *DeviceMemoryItem
+	for index := range items {
+		if items[index].Type == string(episodeMemoryTypeFailure) {
+			failure = &items[index]
+		}
+	}
+	if failure == nil {
+		t.Fatalf("device memories = %#v, want a new failure guard instead of a no-op update", items)
+	}
+	if failure.ID == "devmem_existing_procedure" {
+		t.Fatalf("failure guard overwrote procedure memory: %#v", *failure)
+	}
+}
+
 func TestEpisodeMemoryProcessorAcceptsNonCanceledStructuredErrorWithoutPairedDeviceCall(t *testing.T) {
 	ctx := context.Background()
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
@@ -867,7 +926,7 @@ func TestEpisodeMemoryAssessmentDowngradesUnsupportedFailureToUnknown(t *testing
 	}
 }
 
-func TestAbandonedEpisodeWithoutActionableFailureDoesNotCreateFailureMemory(t *testing.T) {
+func TestAbandonedEpisodeIsNotAchievedWithoutCreatingFailureMemory(t *testing.T) {
 	ctx := context.Background()
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
 	model := &episodeMemoryScriptedModel{responses: []string{`{
@@ -887,11 +946,31 @@ func TestAbandonedEpisodeWithoutActionableFailureDoesNotCreateFailureMemory(t *t
 	if err != nil {
 		t.Fatalf("proposeEpisode() error = %v", err)
 	}
-	if proposal.EpisodeAssessment.GoalResult != episodeGoalUnknown {
-		t.Fatalf("goal_result = %q, want unknown for abandoned episode without failure evidence", proposal.EpisodeAssessment.GoalResult)
+	if proposal.EpisodeAssessment.GoalResult != episodeGoalNotAchieved {
+		t.Fatalf("goal_result = %q, want not_achieved for explicitly abandoned episode", proposal.EpisodeAssessment.GoalResult)
 	}
 	if len(proposal.Candidates) != 0 {
 		t.Fatalf("candidates = %#v, want none for abandoned episode without failure evidence", proposal.Candidates)
+	}
+}
+
+func TestExplicitlyAbandonedEpisodeCanBeNotAchievedWithoutEventRefs(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "episode_assessment":{"goal_result":"not_achieved","reason":"The task was abandoned before completion.","evidence_refs":[]},
+  "candidates":[]
+}`}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	proposal, err := processor.proposeEpisode(ctx, TaskEpisode{ID: "ep_abandoned_without_refs", Status: "abandoned", UserGoal: "Configure notifications"})
+	if err != nil {
+		t.Fatalf("proposeEpisode() error = %v", err)
+	}
+	if proposal.EpisodeAssessment.GoalResult != episodeGoalNotAchieved {
+		t.Fatalf("goal_result = %q, want not_achieved from explicit abandonment", proposal.EpisodeAssessment.GoalResult)
+	}
+	if len(proposal.Candidates) != 0 {
+		t.Fatalf("candidates = %#v, want none", proposal.Candidates)
 	}
 }
 
@@ -1025,21 +1104,29 @@ func TestEpisodeMemoryCandidatePreservesEpisodeScopeBoundaries(t *testing.T) {
 	}
 }
 
-func TestEpisodeMemoryRetentionAuditRejectsSensitiveProcedure(t *testing.T) {
+func TestEpisodeMemoryRetentionAuditCanGeneralizeSensitiveProcedure(t *testing.T) {
 	ctx := context.Background()
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
 	firstPass := `{
   "episode_assessment":{"goal_result":"achieved","reason":"The destination page confirms completion.","evidence_refs":["verify_result"]},
   "candidates":[{
-    "lesson_key":"authentication_flow","type":"procedure","action":"create","retention":"durable","unresolved_conflict":false,
+    "lesson_key":"authentication_flow","type":"procedure","action":"create","retention":"sensitive","unresolved_conflict":false,
     "situation":"During authentication","guidance":"Enter verification value 913204, then verify the destination page","expected_effect":"Authentication succeeds",
     "scope":{"device_id":"device_a","app_name":"Auth"},"tags":["authentication"],"evidence_refs":["value_call","value_result","verify_call","verify_result"]
   }]
 }`
 	audited := `{
   "reviews":[{
-    "lesson_key":"authentication_flow","decision":"discard",
-    "reason":"The proposed guidance embeds run-bound authentication material that must not persist."
+    "lesson_key":"authentication_flow","decision":"retain","retention":"durable",
+    "reason":"The workflow is reusable.",
+    "rewrite":{
+      "situation":"During authentication",
+      "guidance":"Enter the response for the current challenge, then verify the destination page",
+      "expected_effect":"Authentication succeeds",
+      "scope":{"device_id":"device_a","app_name":"Auth"},
+      "tags":["authentication"],
+      "evidence_refs":["value_call","value_result","verify_call","verify_result"]
+    }
   }]
 }`
 	model := &episodeMemoryScriptedModel{
@@ -1071,8 +1158,8 @@ func TestEpisodeMemoryRetentionAuditRejectsSensitiveProcedure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readAll() error = %v", err)
 	}
-	if len(items) != 0 {
-		t.Fatalf("device memories = %#v, want sensitive procedure discarded", items)
+	if len(items) != 1 || strings.Contains(items[0].Content, "913204") {
+		t.Fatalf("device memories = %#v, want generalized procedure without the one-time value", items)
 	}
 }
 
@@ -1090,6 +1177,7 @@ func TestEpisodeMemoryRetentionAuditGeneralizesRunBoundValue(t *testing.T) {
 	audited := `{
   "reviews":[{
     "lesson_key":"complete_challenge","decision":"retain",
+	"retention":"durable",
     "reason":"The verified sequence is reusable after removing the response that was valid only for this run.",
 	    "rewrite":{
 	      "situation":"When this service presents an interactive challenge","guidance":"Use the response provided for the current challenge, then verify the destination page before reporting completion","expected_effect":"The challenge completes without reusing an earlier response",
@@ -1173,7 +1261,7 @@ func TestRetainedEpisodeMemoryCandidatesFailsClosedOnAmbiguousAudit(t *testing.T
 		ExpectedEffect: "The details page is visible", Scope: map[string]string{"device_id": "device_a"}, EvidenceRefs: []string{"result"},
 	}
 	validReview := episodeMemoryRetentionReview{
-		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Reason: "durable and scoped",
+		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable, Reason: "durable and scoped",
 		Rewrite: &episodeMemoryRetentionRewrite{
 			Situation: base.Situation, Guidance: base.Guidance, ExpectedEffect: base.ExpectedEffect,
 			Scope: base.Scope, Tags: base.Tags, EvidenceRefs: base.EvidenceRefs,
@@ -1186,11 +1274,14 @@ func TestRetainedEpisodeMemoryCandidatesFailsClosedOnAmbiguousAudit(t *testing.T
 	}{
 		{name: "missing review", audit: episodeMemoryRetentionAudit{}},
 		{name: "duplicate review", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{validReview, validReview}}},
+		{name: "missing retention", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
+			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Reason: "classification omitted", Rewrite: validReview.Rewrite,
+		}}}},
 		{name: "missing rewrite", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
-			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Reason: "rewrite omitted",
+			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable, Reason: "rewrite omitted",
 		}}}},
 		{name: "missing reason", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
-			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Rewrite: validReview.Rewrite,
+			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable, Rewrite: validReview.Rewrite,
 		}}}},
 		{name: "discard decision", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
 			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionDiscard, Reason: "not safe to retain",
@@ -1205,6 +1296,25 @@ func TestRetainedEpisodeMemoryCandidatesFailsClosedOnAmbiguousAudit(t *testing.T
 	}
 }
 
+func TestRetainedEpisodeMemoryCandidatesDoesNotUpgradeNonDurableCandidate(t *testing.T) {
+	base := episodeMemoryCandidate{
+		LessonKey: "stable_route", Type: episodeMemoryTypeNavigation, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "During sign-in", Guidance: "Use the verified route",
+		ExpectedEffect: "The current challenge completes", Scope: map[string]string{"app_name": "Auth"}, EvidenceRefs: []string{"result"},
+	}
+	audit := episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
+		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionSensitive,
+		Reason: "The candidate is not safe to persist", Rewrite: &episodeMemoryRetentionRewrite{
+			Situation: base.Situation, Guidance: base.Guidance, ExpectedEffect: base.ExpectedEffect,
+			Scope: base.Scope, EvidenceRefs: base.EvidenceRefs,
+		},
+	}}}
+
+	if got := retainedEpisodeMemoryCandidates([]episodeMemoryCandidate{base}, audit); len(got) != 0 {
+		t.Fatalf("retained candidates = %#v, want non-durable audit classification to discard candidate", got)
+	}
+}
+
 func TestRetainedEpisodeMemoryCandidatesPreservesExtractedScopeBoundary(t *testing.T) {
 	base := episodeMemoryCandidate{
 		LessonKey: "versioned_route", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
@@ -1213,7 +1323,7 @@ func TestRetainedEpisodeMemoryCandidatesPreservesExtractedScopeBoundary(t *testi
 		Tags: []string{"save"}, EvidenceRefs: []string{"result"},
 	}
 	audit := episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
-		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Reason: "the procedure remains reusable",
+		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable, Reason: "the procedure remains reusable",
 		Rewrite: &episodeMemoryRetentionRewrite{
 			Situation: "In the app", Guidance: base.Guidance, ExpectedEffect: base.ExpectedEffect,
 			Scope: map[string]string{"app_name": "Example"}, Tags: base.Tags, EvidenceRefs: base.EvidenceRefs,
@@ -1234,7 +1344,7 @@ func TestRetainedEpisodeMemoryCandidatesRejectsChangedEvidenceRefs(t *testing.T)
 		EvidenceRefs: []string{"call", "result"},
 	}
 	audit := episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
-		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Reason: "reusable",
+		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable, Reason: "reusable",
 		Rewrite: &episodeMemoryRetentionRewrite{
 			Situation: base.Situation, Guidance: base.Guidance, ExpectedEffect: base.ExpectedEffect,
 			Scope: base.Scope, EvidenceRefs: []string{"result", "invented"},
@@ -1278,6 +1388,37 @@ func TestCompactEpisodeMemoryCandidatesRejectsConflictingIdentity(t *testing.T) 
 
 	if got := compactEpisodeMemoryCandidates([]episodeMemoryCandidate{first, second}); len(got) != 0 {
 		t.Fatalf("compacted candidates = %#v, want ambiguous lesson identity discarded", got)
+	}
+}
+
+func TestEpisodeMemoryProposalSkipsRetentionAuditWhenCompactionRejectsAllCandidates(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "episode_assessment":{"goal_result":"achieved","reason":"The result confirms the route.","evidence_refs":["result"]},
+  "candidates":[
+    {"lesson_key":"same_lesson","type":"procedure","action":"create","retention":"durable","situation":"In the app","guidance":"Use the route","expected_effect":"The page opens","scope":{"app_name":"Settings"},"evidence_refs":["call","result"]},
+    {"lesson_key":"same_lesson","type":"failure","action":"create","retention":"durable","situation":"In the app","guidance":"Do not use the route","expected_effect":"The page stays safe","scope":{"app_name":"Settings"},"evidence_refs":["call","result"]}
+  ]
+}`}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{
+		ID: "ep_conflicting_candidates", Status: "completed", UserGoal: "Open Settings", DeviceScope: map[string]string{"app_name": "Settings"},
+		Outcome: TaskEpisodeOutcome{Success: true},
+		Events: []TaskEpisodeEvent{
+			{EventID: "call", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: `{"type":"tap"}`},
+			{EventID: "result", Type: "tool_result", ToolName: "touch_gesture", Observation: "The Settings page opened."},
+		},
+	}
+	proposal, err := processor.proposeEpisode(ctx, episode)
+	if err != nil {
+		t.Fatalf("proposeEpisode() error = %v", err)
+	}
+	if len(proposal.Candidates) != 0 {
+		t.Fatalf("candidates = %#v, want all conflicting candidates discarded", proposal.Candidates)
+	}
+	if got := model.callCount(); got != 1 {
+		t.Fatalf("model calls = %d, want extraction only after compaction rejected all candidates", got)
 	}
 }
 
@@ -1715,7 +1856,7 @@ func TestSearchEpisodeMemoryCandidatesPrioritizesPreferredAndSameScope(t *testin
 	}
 }
 
-func TestEpisodeMemoryCreateDoesNotDuplicateExistingScope(t *testing.T) {
+func TestEpisodeMemoryCreateKeepsIndependentScopedLesson(t *testing.T) {
 	ctx := context.Background()
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
 	if _, err := plane.device.Upsert(ctx, DeviceMemoryItem{
@@ -1736,12 +1877,12 @@ func TestEpisodeMemoryCreateDoesNotDuplicateExistingScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createMemory() error = %v", err)
 	}
-	if id != "existing_scope" {
-		t.Fatalf("createMemory() id = %q, want existing scoped memory", id)
+	if id == "existing_scope" {
+		t.Fatalf("createMemory() returned unrelated scoped memory id %q", id)
 	}
 	items, err := plane.device.readAll()
-	if err != nil || len(items) != 1 {
-		t.Fatalf("memories = %#v error=%v, want no duplicate", items, err)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("memories = %#v error=%v, want independent memory", items, err)
 	}
 }
 

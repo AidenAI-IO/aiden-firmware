@@ -103,6 +103,7 @@ const (
 type episodeMemoryRetentionReview struct {
 	LessonKey string                         `json:"lesson_key"`
 	Decision  episodeMemoryRetentionDecision `json:"decision"`
+	Retention episodeMemoryRetention         `json:"retention"`
 	Reason    string                         `json:"reason"`
 	Rewrite   *episodeMemoryRetentionRewrite `json:"rewrite,omitempty"`
 }
@@ -471,6 +472,9 @@ func (p *episodeMemoryProcessor) proposeEpisode(ctx context.Context, episode Tas
 	}
 	if episodeMemoryProposalNeedsRetentionAudit(proposal) {
 		proposal.Candidates = compactEpisodeMemoryCandidates(proposal.Candidates)
+		if len(proposal.Candidates) == 0 {
+			return proposal, nil
+		}
 		p.logEpisodeMemoryRetentionAudit("started", len(proposal.Candidates), 0, 0)
 		auditParts := []llms.ContentPart{llms.TextPart(buildEpisodeMemoryRetentionAuditPrompt(string(payload), proposal.Candidates))}
 		auditParts = append(auditParts, parts[1:]...)
@@ -599,10 +603,11 @@ func retainedEpisodeMemoryCandidates(original []episodeMemoryCandidate, audit ep
 		key := strings.TrimSpace(base.LessonKey)
 		review, found := reviewByKey[key]
 		decision := episodeMemoryRetentionDecision(strings.ToLower(strings.TrimSpace(string(review.Decision))))
-		if !found || decision != episodeMemoryRetentionDecisionRetain || strings.TrimSpace(review.Reason) == "" || review.Rewrite == nil || !sameEpisodeMemoryEvidenceRefs(base.EvidenceRefs, review.Rewrite.EvidenceRefs) {
+		retention := episodeMemoryRetention(strings.ToLower(strings.TrimSpace(string(review.Retention))))
+		if !found || decision != episodeMemoryRetentionDecisionRetain || retention != episodeMemoryRetentionDurable || strings.TrimSpace(review.Reason) == "" || review.Rewrite == nil || !sameEpisodeMemoryEvidenceRefs(base.EvidenceRefs, review.Rewrite.EvidenceRefs) {
 			continue
 		}
-		base.Retention = episodeMemoryRetentionDurable
+		base.Retention = retention
 		base.Situation = review.Rewrite.Situation
 		base.Guidance = review.Rewrite.Guidance
 		base.ExpectedEffect = review.Rewrite.ExpectedEffect
@@ -669,14 +674,21 @@ func (p *episodeMemoryProcessor) generateEpisodeMemoryProposal(ctx context.Conte
 	}
 	proposal.EpisodeAssessment.EvidenceRefs = validEpisodeMemoryEventIDs(episode, proposal.EpisodeAssessment.EvidenceRefs)
 	if proposal.EpisodeAssessment.GoalResult == episodeGoalNotAchieved && !hasDirectEpisodeFailureEvidence(episode, proposal.EpisodeAssessment.EvidenceRefs) {
-		proposal.EpisodeAssessment.GoalResult = episodeGoalUnknown
-		proposal.EpisodeAssessment.Reason = "Final completion was not directly established, and the cited evidence does not record a structured failure or explicit termination."
 		proposal.Candidates = nil
+		if episodeExplicitlyEndedBeforeCompletion(episode) {
+			proposal.EpisodeAssessment.Reason = "The Episode was explicitly ended before the requested goal completed; no actionable failure evidence was recorded."
+		} else {
+			proposal.EpisodeAssessment.GoalResult = episodeGoalUnknown
+			proposal.EpisodeAssessment.Reason = "Final completion was not directly established, and the cited evidence does not record a structured failure or explicit termination."
+		}
 	}
 	if proposal.EpisodeAssessment.Reason == "" {
 		return episodeMemoryProposal{}, fmt.Errorf("episode assessment requires a reason")
 	}
 	if proposal.EpisodeAssessment.GoalResult != episodeGoalUnknown && !hasDirectEpisodeAssessmentEvidence(episode, proposal.EpisodeAssessment.EvidenceRefs) {
+		if proposal.EpisodeAssessment.GoalResult == episodeGoalNotAchieved && episodeExplicitlyEndedBeforeCompletion(episode) {
+			return proposal, nil
+		}
 		return episodeMemoryProposal{}, fmt.Errorf("episode assessment %s requires direct evidence", proposal.EpisodeAssessment.GoalResult)
 	}
 	if len(proposal.Candidates) > 3 {
@@ -710,6 +722,15 @@ func hasDirectEpisodeFailureEvidence(episode TaskEpisode, refs []string) bool {
 		}
 	}
 	return false
+}
+
+func episodeExplicitlyEndedBeforeCompletion(episode TaskEpisode) bool {
+	switch strings.ToLower(strings.TrimSpace(episode.Status)) {
+	case "abandoned", "interrupted", "cancelled", "canceled":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldReviewEpisodeMemoryProposal(episode TaskEpisode, proposal episodeMemoryProposal) bool {
@@ -839,6 +860,23 @@ func (p *episodeMemoryProcessor) applyProposal(ctx context.Context, episode Task
 			current, found, err := p.plane.device.Get(ctx, candidate.MemoryID)
 			if err != nil {
 				return err
+			}
+			// A lesson key can overlap an existing memory while the proposed
+			// lesson has a different semantic type (for example, a failure guard
+			// discovered while reviewing an existing procedure). Never overwrite
+			// the old type and never silently drop the new lesson: create an
+			// independent memory instead.
+			if found && !strings.EqualFold(strings.TrimSpace(current.Type), strings.TrimSpace(string(candidate.Type))) {
+				if candidate.UnresolvedConflict {
+					continue
+				}
+				candidate.Action = episodeMemoryActionCreate
+				candidate.MemoryID = ""
+				candidate.MemoryRevision = 0
+				if _, err := p.createMemory(ctx, episode, candidate); err != nil {
+					return err
+				}
+				continue
 			}
 			if found && hasEpisodeEvidence(current.EvidenceRefs, episode.ID) {
 				continue
@@ -1036,6 +1074,23 @@ func normalizeEpisodeMemoryScope(scope map[string]string) map[string]string {
 	return result
 }
 
+// equalEpisodeMemoryScope compares persisted applicability metadata while
+// applying an explicit LLM-selected update. It is not used to infer whether a
+// create candidate should replace or merge with another memory.
+func equalEpisodeMemoryScope(left, right map[string]string) bool {
+	left = normalizeEpisodeMemoryScope(left)
+	right = normalizeEpisodeMemoryScope(right)
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if !strings.EqualFold(value, right[key]) {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *episodeMemoryProcessor) createMemory(ctx context.Context, episode TaskEpisode, candidate episodeMemoryCandidate) (string, error) {
 	if existing, found, err := p.plane.device.FindEpisodeMemoryByLesson(ctx, episode.ID, candidate.LessonKey); err != nil {
 		return "", err
@@ -1043,21 +1098,6 @@ func (p *episodeMemoryProcessor) createMemory(ctx context.Context, episode TaskE
 		return existing.ID, nil
 	}
 	deviceID := firstNonEmptyString([]string{candidate.Scope["device_id"], episode.DeviceScope["device_id"], defaultMemoryDeviceID})
-	if scoped, equivalent, found, err := p.findMemoryInScope(ctx, candidate, deviceID); err != nil {
-		return "", err
-	} else if found {
-		if !equivalent {
-			return scoped.ID, nil
-		}
-		err := p.plane.device.Update(ctx, scoped.ID, func(item *DeviceMemoryItem) {
-			if item == nil || hasEpisodeEvidence(item.EvidenceRefs, episode.ID) {
-				return
-			}
-			item.Tags = mergeUniqueStrings(normalizeEpisodeMemoryTags(item.Tags), candidate.Tags)
-			item.EvidenceRefs = append(item.EvidenceRefs, episodeMemoryEvidenceRef(episode, candidate.EvidenceRefs))
-		})
-		return scoped.ID, err
-	}
 	priority, confidence, ttl := episodeMemoryDefaults(candidate.Type)
 	item := DeviceMemoryItem{
 		ID:               "devmem_" + stableMemoryID(episode.ID, candidate.LessonKey),
@@ -1084,51 +1124,6 @@ func (p *episodeMemoryProcessor) createMemory(ctx context.Context, episode TaskE
 		item.Steps = episodeMemoryProcedureSteps(episode, candidate.EvidenceRefs)
 	}
 	return p.plane.device.Upsert(ctx, item)
-}
-
-func (p *episodeMemoryProcessor) findMemoryInScope(ctx context.Context, candidate episodeMemoryCandidate, deviceID string) (DeviceMemoryItem, bool, bool, error) {
-	items, err := p.plane.device.readAll()
-	if err != nil {
-		return DeviceMemoryItem{}, false, false, err
-	}
-	for _, item := range items {
-		select {
-		case <-ctx.Done():
-			return DeviceMemoryItem{}, false, false, ctx.Err()
-		default:
-		}
-		if item.Type != string(candidate.Type) || (item.Status != deviceMemoryStatusActive && item.Status != deviceMemoryStatusDisputed) {
-			continue
-		}
-		if item.DeviceID != "" && deviceID != "" && !strings.EqualFold(item.DeviceID, deviceID) {
-			continue
-		}
-		if !equalEpisodeMemoryScope(item.Applicability, candidate.Scope) {
-			continue
-		}
-		equivalent := normalizeEpisodeMemoryText(item.Title) == normalizeEpisodeMemoryText(candidate.Situation) &&
-			normalizeEpisodeMemoryText(item.Summary) == normalizeEpisodeMemoryText(candidate.Guidance)
-		return item, equivalent, true, nil
-	}
-	return DeviceMemoryItem{}, false, false, nil
-}
-
-func equalEpisodeMemoryScope(left, right map[string]string) bool {
-	left = normalizeEpisodeMemoryScope(left)
-	right = normalizeEpisodeMemoryScope(right)
-	if len(left) != len(right) {
-		return false
-	}
-	for key, value := range left {
-		if !strings.EqualFold(value, right[key]) {
-			return false
-		}
-	}
-	return true
-}
-
-func normalizeEpisodeMemoryText(value string) string {
-	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
 }
 
 func (p *episodeMemoryProcessor) updateMemory(ctx context.Context, episode TaskEpisode, candidate episodeMemoryCandidate) error {
@@ -1501,7 +1496,7 @@ func buildEpisodeMemoryPrompt(payload string, existing []DeviceMemoryItem) strin
   }]
 }
 
-Return at most 3 independent candidates; an empty candidates array is correct when nothing is worth retaining. Every proposed candidate must declare its retention class. Use durable only when the underlying lesson is expected to remain useful across future similar tasks. Use transient for observations whose truth or usefulness is limited to this Episode or its surrounding runtime state. Use sensitive for information that should not be persisted. Only durable candidates are eligible for Device Memory, and every non-empty proposal is independently audited before persistence. Separate a reusable rule from the Episode-specific observations that support it: generalize away values that do not remain valid and safe in the candidate's stated future scope. Every durable candidate must be reusable, change future behavior or decisions, have explicit scope, add new knowledge or evidence, and be safer to recall than to omit. Do not retain information already explicitly saved through a Memory-management tool.
+Return at most 3 independent candidates; an empty candidates array is correct when nothing is worth retaining. Every proposed candidate must declare its retention class. Use durable only when the underlying lesson is expected to remain useful across future similar tasks. Use transient for observations whose truth or usefulness is limited to this Episode or its surrounding runtime state. Use sensitive for information that should not be persisted. One-time verification codes or tokens, passwords, credentials, secrets, and other values valid only for the current session must never be durable; discard them or generalize the reusable procedure without the value. Only durable candidates are eligible for Device Memory, and every non-empty proposal is independently audited before persistence. Separate a reusable rule from the Episode-specific observations that support it: generalize away values that do not remain valid and safe in the candidate's stated future scope. Every durable candidate must be reusable, change future behavior or decisions, have explicit scope, add new knowledge or evidence, and be safer to recall than to omit. Do not retain information already explicitly saved through a Memory-management tool.
 When direct evidence verifies a non-obvious workaround, device-specific route, operational correction, stop condition, or stable fact that satisfies the type rules, you must emit at least one candidate. Do not return an empty candidates array merely because the Episode achieved its goal.
 
 Assess goal_result independently from the recorded success flag. achieved requires direct evidence that the whole requested goal completed. not_achieved requires direct evidence of failure, user correction, or an explicit interruption/abandonment before completion. Use unknown when an action may have succeeded but final verification is absent; absence of proof alone is not proof of failure. Say what evidence is missing. User steer is correction evidence, not an admission gate. Do not rely on verifier_decision or ObservedState; they are not part of this pipeline.
@@ -1515,6 +1510,7 @@ Type rules:
 
 Deduplication and conflict rules:
 - Use action=create only when no existing memory has the same scoped lesson.
+- Do not use action=create for a semantically related existing memory. The persistence layer does not infer semantic equivalence for create candidates.
 - For action=create, omit memory_id and memory_revision.
 - Use action=update with an existing memory_id and its exact memory_revision when the lesson overlaps. Output the complete merged situation, guidance, expected_effect, scope, and tags; preserve valid older conditions rather than merely copying the new Episode.
 - device_profile and app_profile entries are deterministic context only. Do not update them or duplicate facts already represented by them.
@@ -1537,10 +1533,11 @@ func buildEpisodeMemoryRetentionAuditPrompt(payload string, candidates []episode
 
 Return exactly one JSON object matching this schema:
 {
-  "reviews": [{
-    "lesson_key": "an unchanged lesson_key from the proposal",
-    "decision": "retain | discard",
-    "reason": "why the candidate is or is not safe and useful across future Episodes",
+	"reviews": [{
+		"lesson_key": "an unchanged lesson_key from the proposal",
+		"decision": "retain | discard",
+		"retention": "durable | transient | sensitive",
+		"reason": "why the candidate is or is not safe and useful across future Episodes",
     "rewrite": {
       "situation": "generalized applicability condition",
       "guidance": "safe reusable guidance",
@@ -1552,7 +1549,7 @@ Return exactly one JSON object matching this schema:
   }]
 }
 
-Review each proposed candidate independently. Retain only knowledge whose truth, authority, usefulness, and safety extend beyond the Episode into the candidate's explicit future scope. Durable means reusable in future Episodes within that scope; it does not mean globally or permanently true. App, device, page, account mode, build, and version qualifiers may be necessary scope boundaries and should be preserved when evidenced. Distinguish the reusable lesson from observations that merely supported it in this run. A retained rewrite must remove or generalize values whose validity, identity, confidentiality, or authorization is limited to the Episode, session, user, screen state, or other runtime context. Preserve a concrete value in the guidance only when that value itself is the durable knowledge and the cited evidence establishes it for the stated scope. If a safe reusable lesson remains, return decision="retain" with every rewrite field populated. Otherwise discard it. If candidates duplicate the same scoped lesson, retain one complete representative and discard the redundant copies. When uncertain, discard. Do not add lessons, reassess the Episode outcome, or invent evidence.
+Review each proposed candidate independently. Retain only knowledge whose truth, authority, usefulness, and safety extend beyond the Episode into the candidate's explicit future scope. Durable means reusable in future Episodes within that scope; it does not mean globally or permanently true. Set retention="durable" only when the retained rewrite is safe for Device Memory. Set retention="transient" for Episode/session/runtime-bound observations and retention="sensitive" for secrets, credentials, one-time values, or information that should not be persisted; those classifications must use decision="discard". In particular, never retain an exact one-time verification token/code, password, credential, secret, or other session-bound value merely because the Episode succeeded. If the surrounding workflow is reusable, rewrite it without the value and retain only the generalized workflow. A retain decision without retention="durable" is invalid and will be discarded by the persistence gate. App, device, page, account mode, build, and version qualifiers may be necessary scope boundaries and should be preserved when evidenced. Distinguish the reusable lesson from observations that merely supported it in this run. A retained rewrite must remove or generalize values whose validity, identity, confidentiality, or authorization is limited to the Episode, session, user, screen state, or other runtime context. Preserve a concrete value in the guidance only when that value itself is the durable knowledge and the cited evidence establishes it for the stated scope. If a safe reusable lesson remains, return decision="retain", retention="durable", with every rewrite field populated. Otherwise return decision="discard" with the appropriate non-durable retention classification. If candidates duplicate the same scoped lesson, retain one complete representative and discard the redundant copies. When uncertain, discard. Do not add lessons, reassess the Episode outcome, or invent evidence.
 
 Episode:
 ` + payload + `

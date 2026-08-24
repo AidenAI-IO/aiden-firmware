@@ -1247,8 +1247,13 @@ def test_episode_reflection_v2_is_a_release_gate_not_a_smoke_suite():
         task = task_by_id[task_id]
         assert task.setup["type"] == "seed_episode"
         assert task.consolidation_expectation.min_memory_ids >= 1
-        assert "recall_device_memory" in task.hard_assertions.required_tools
+        task_text = " ".join(
+            [task.prompt, task.description_for_judge, *(item.check for item in task.rubric)]
+        )
+        assert "recall_device_memory" not in task_text
+        assert "recall_device_memory" not in task.hard_assertions.required_tools
         assert task.expected_recall_from_consolidation is True
+        assert task.expected_recalled_memory_tool == "recall_device_memory"
 
     expectation = task_by_id["success_claim_without_proof_is_unknown"].consolidation_expectation
     assert expectation.max_memory_ids == 0
@@ -1314,15 +1319,14 @@ def test_episode_memory_conditions_share_natural_and_iphone_tasks():
 
     for before_task, after_task in zip(before.tasks, after.tasks, strict=True):
         assert before_task.id == after_task.id
-        if before_task.id == "qa_notes_title_save_procedure":
-            assert before_task.prompt != after_task.prompt
-        else:
-            assert before_task.prompt == after_task.prompt
+        assert before_task.prompt == after_task.prompt
         assert before_task.description_for_judge == after_task.description_for_judge
         assert before_task.rubric == after_task.rubric
         if before_task.id == "qa_notes_title_save_procedure":
             assert "recall_device_memory" not in before_task.hard_assertions.required_tools
-            assert "recall_device_memory" in after_task.hard_assertions.required_tools
+            assert "recall_device_memory" not in after_task.hard_assertions.required_tools
+            assert after_task.expected_recall_from_consolidation is True
+            assert after_task.expected_recalled_memory_tool == "recall_device_memory"
         else:
             assert before_task.hard_assertions == after_task.hard_assertions
 
@@ -1335,12 +1339,16 @@ def test_episode_memory_conditions_share_natural_and_iphone_tasks():
                 *(item.check for item in natural_task.rubric),
             ]
         )
-        if suite.name == "episode_memory_before_v1":
-            assert "recall_device_memory" not in natural_text
+        assert "recall_device_memory" not in natural_text
 
     assert before.tasks[0].setup["consolidate"] is False
     assert after.tasks[0].setup["consolidate"] is True
     assert legacy.tasks[0].setup["type"] == "seed_memory"
+    assert legacy.tasks[0].prompt == before.tasks[0].prompt
+    assert legacy.tasks[0].expected_recalled_memory_ids == [
+        "legacy_qa_notes_title_save_procedure"
+    ]
+    assert legacy.tasks[0].expected_recalled_memory_tool == "recall_device_memory"
     assert legacy.tasks[1].setup["type"] == "seed_memory"
     assert legacy.tasks[1].setup["memories"][0]["store"] == "device"
 

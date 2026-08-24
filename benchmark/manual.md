@@ -780,14 +780,16 @@ uv run python -m runner compare \
 ```
 
 The comparison reports pass-count, median tool-call, and median wall-time
-deltas. The treatment natural task explicitly requires a
-`recall_device_memory` call scoped to QA Notes, so a passing answer includes
-retrieval evidence in addition to the final decision. It is still not a proof
-that every returned field was used correctly; inspect `trace.json` and the
-answer/rubric together. The `before` condition intentionally does not require
-that call; compare its answer rate against `after` rather than interpreting a
-single run. After the five-repeat comparison is stable, rerun the same
-commands with `--repeats 10` and distinct run IDs.
+deltas. All three conditions use the same natural-language task and do not name
+or require a recall tool in the prompt or hard assertions. The treatment and
+legacy conditions instead pass only when the agent autonomously calls
+`recall_device_memory`, its inline result contains the exact expected Device
+Memory ID, and the final decision is consistent with that lesson. The `before`
+condition has no Device Memory to retrieve; compare its answer rate against
+`after` rather than interpreting a single run. A passing treatment still does
+not prove that every returned field caused the answer, so inspect `trace.json`
+and the answer/rubric together. After the five-repeat comparison is stable,
+rerun the same commands with `--repeats 10` and distinct run IDs.
 
 #### Episode Memory reflection contract suite
 
@@ -829,10 +831,13 @@ remain model-driven: each task declares the expected `goal_result`, evidence
 requirement, memory count, and—where relevant—the actual persisted memory type,
 content, or applicability scope. Tasks that fail those bounds are benchmark
 failures even if the agent's natural-language answer sounds reasonable. The
-recall/application cases also require the exact newly generated memory IDs to
-appear in `recall_device_memory` output and require a consistent option answer.
-This proves retrieval plus answer consistency, not that recall causally produced
-the answer; inspect `trace.json` when investigating that distinction.
+recall/application cases describe the dependency in natural language and do
+not name or require a particular recall tool in the task text or hard
+assertions. They pass only when the exact newly generated memory IDs appear in
+the agent's autonomous `recall_device_memory` output and the option answer is
+consistent. This proves natural recall, retrieval, and answer consistency, not
+that recall causally produced the answer; inspect `trace.json` when
+investigating that distinction.
 
 Run the release gate on MobileGym with:
 
