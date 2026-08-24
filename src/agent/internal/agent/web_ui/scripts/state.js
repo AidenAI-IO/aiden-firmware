@@ -29,6 +29,7 @@ const pendingSteerTextEl = document.getElementById('pendingSteerText');
 const cancelSteerBtn = document.getElementById('cancelSteerBtn');
 const emptyStateEl = document.getElementById('emptyState');
 const stateModalEl = document.getElementById('stateModal');
+const stateModalKickerEl = document.getElementById('stateModalKicker');
 const stateModalTitleEl = document.getElementById('stateModalTitle');
 const stateModalBodyEl = document.getElementById('stateModalBody');
 const stateModalCloseEl = document.getElementById('stateModalClose');

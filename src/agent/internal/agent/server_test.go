@@ -2915,6 +2915,19 @@ func TestServerLoadsPersistedBackendContextBeforeFirstRun(t *testing.T) {
 	}
 }
 
+func TestWebMessageFromContextMessagePreservesNoticeType(t *testing.T) {
+	message, ok := webMessageFromContextMessage(messages.Message{
+		Role:    messages.MessageRoleNotice,
+		Content: "<notice>change strategy</notice>",
+	}, "backend")
+	if !ok {
+		t.Fatal("webMessageFromContextMessage() rejected notice message")
+	}
+	if message.Type != "notice" || message.Role != "notice" {
+		t.Fatalf("notice message = %#v, want notice type and role", message)
+	}
+}
+
 func TestServerContextAttachmentEndpointServesRegisteredAttachment(t *testing.T) {
 	config := Config{Model: ModelConfig{Provider: "fake"}}
 	server := &Server{logger: newTestLogger(), runtime: NewRuntimeWithDeps(

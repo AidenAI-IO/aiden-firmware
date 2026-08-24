@@ -493,8 +493,8 @@ function renderHistory(history) {
     renderedStateMessages = new Map();
     history.forEach(function(msg) {
         if (isControlMessage(msg)) return;
-        if (isStateMessage(msg)) {
-            fragment.appendChild(createStateNode(msg, renderedStateMessages.size));
+        if (isContextMarkerMessage(msg)) {
+            fragment.appendChild(createContextMarkerNode(msg, renderedStateMessages.size));
             return;
         }
         const key = messageIdentity(msg);
@@ -521,11 +521,11 @@ function renderHistory(history) {
 
 function addMessage(msg) {
     if (isControlMessage(msg)) return;
-    if (isStateMessage(msg)) {
+    if (isContextMarkerMessage(msg)) {
         const key = messageIdentity(msg);
         if (!renderedStateMessages.has(key)) {
             const shouldStickToBottom = isConversationNearBottom();
-            messagesDiv.appendChild(createStateNode(msg, renderedStateMessages.size));
+            messagesDiv.appendChild(createContextMarkerNode(msg, renderedStateMessages.size));
             if (shouldStickToBottom) scrollToBottom();
         }
         return;
@@ -565,14 +565,15 @@ function isControlMessage(msg) {
     return normalizeType((msg || {}).type) === 'todo_closed';
 }
 
-function isStateMessage(msg) {
+function isContextMarkerMessage(msg) {
     msg = msg || {};
-    return normalizeType(msg.type) === 'state' || msg.role === 'state';
+    const type = normalizeType(msg.type);
+    return type === 'state' || type === 'notice' || msg.role === 'state' || msg.role === 'notice';
 }
 
 function messageIdentity(msg) {
     msg = msg || {};
-    const type = isStateMessage(msg) ? 'state' : normalizeType(msg.type);
+    const type = isContextMarkerMessage(msg) ? contextMarkerType(msg) : normalizeType(msg.type);
     const content = msg.content || '';
     const requestId = msg.request_id || '';
     if (requestId && type === 'assistant') {
@@ -581,7 +582,7 @@ function messageIdentity(msg) {
     if (requestId && type === 'user') {
         return ['request', requestId, type, content].join('\u001f');
     }
-    if (requestId && type === 'state') {
+    if (requestId && (type === 'state' || type === 'notice')) {
         return ['request', requestId, type].join('\u001f');
     }
 

@@ -79,10 +79,12 @@ function createMessageNode(msg) {
     return card;
 }
 
-function createStateNode(msg, index) {
+function createContextMarkerNode(msg, index) {
     const key = messageIdentity(msg);
+    const markerType = contextMarkerType(msg);
+    const markerLabel = markerType === 'notice' ? 'Notice' : 'State';
     const card = document.createElement('article');
-    card.className = 'state-divider' + (key === activeStateMessageKey ? ' open' : '');
+    card.className = 'state-divider ' + markerType + '-divider' + (key === activeStateMessageKey ? ' open' : '');
     card.dataset.stateKey = key;
     card._stateMessage = msg;
     renderedStateMessages.set(key, card);
@@ -93,8 +95,8 @@ function createStateNode(msg, index) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'state-divider-button';
-    button.textContent = 'State';
-    button.title = stateMessageSummary(msg, index);
+    button.textContent = markerLabel;
+    button.title = contextMarkerSummary(msg, index);
     button.setAttribute('aria-controls', 'stateModal');
     button.setAttribute('aria-expanded', key === activeStateMessageKey ? 'true' : 'false');
     button.addEventListener('click', function() {
@@ -132,17 +134,21 @@ function renderStateModal() {
     stateModalEl.classList.toggle('hidden', !msg);
     document.body.classList.toggle('state-modal-open', !!msg);
     if (!msg) {
+        stateModalKickerEl.textContent = 'State details';
         stateModalTitleEl.textContent = 'State';
         stateModalBodyEl.innerHTML = '';
         return;
     }
 
-    stateModalTitleEl.textContent = 'State';
+    const markerType = contextMarkerType(msg);
+    const markerLabel = markerType === 'notice' ? 'Notice' : 'State';
+    stateModalKickerEl.textContent = markerLabel + ' details';
+    stateModalTitleEl.textContent = markerLabel;
     stateModalBodyEl.innerHTML = '';
     stateModalBodyEl.classList.remove('has-attachments');
-    const content = formatStateContent(msg.content || '');
+    const content = formatContextMarkerContent(msg.content || '', markerType);
     if (content) {
-        const rows = parseStateKeyValues(content);
+        const rows = markerType === 'state' ? parseStateKeyValues(content) : null;
         if (rows) {
             const table = document.createElement('table');
             table.className = 'state-detail-table';
@@ -176,14 +182,15 @@ function renderStateModal() {
     if (!content && !attachmentsEl) {
         const empty = document.createElement('div');
         empty.className = 'state-detail-empty';
-        empty.textContent = 'No state details.';
+        empty.textContent = 'No ' + markerLabel.toLowerCase() + ' details.';
         stateModalBodyEl.appendChild(empty);
     }
 }
 
-function formatStateContent(content) {
+function formatContextMarkerContent(content, markerType) {
     const trimmed = String(content || '').trim();
-    const match = trimmed.match(/^<state>\s*([\s\S]*?)\s*<\/state>$/i);
+    const tag = markerType === 'notice' ? 'notice' : 'state';
+    const match = trimmed.match(new RegExp('^<' + tag + '>\\s*([\\s\\S]*?)\\s*</' + tag + '>$', 'i'));
     return match ? match[1].trim() : trimmed;
 }
 
@@ -211,12 +218,19 @@ function parseStateKeyValues(content) {
     return !invalid && rows.length > 0 ? rows : null;
 }
 
-function stateMessageSummary(msg, index) {
-    const content = formatStateContent(msg.content || '');
+function contextMarkerType(msg) {
+    msg = msg || {};
+    return normalizeType(msg.type) === 'notice' || msg.role === 'notice' ? 'notice' : 'state';
+}
+
+function contextMarkerSummary(msg, index) {
+    const markerType = contextMarkerType(msg);
+    const markerLabel = markerType === 'notice' ? 'Notice' : 'State';
+    const content = formatContextMarkerContent(msg.content || '', markerType);
     const firstLine = content.split('\n').map(function(line) { return line.trim(); }).find(Boolean);
-    if (firstLine) return 'State ' + (index + 1) + ': ' + firstLine;
-    if ((msg.attachments || []).length > 0) return 'State ' + (index + 1) + ': screenshot';
-    return 'State ' + (index + 1);
+    if (firstLine) return markerLabel + ' ' + (index + 1) + ': ' + firstLine;
+    if ((msg.attachments || []).length > 0) return markerLabel + ' ' + (index + 1) + ': attachment';
+    return markerLabel + ' ' + (index + 1);
 }
 
 function playAudio(url, button) {
