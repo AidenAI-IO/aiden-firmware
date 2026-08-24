@@ -191,6 +191,20 @@ func TestRealtimeToolCallAndResultPersistInUserContext(t *testing.T) {
 	}
 }
 
+func TestRealtimeNoticePersistsAsNoticeInUserContext(t *testing.T) {
+	manager, err := contextmanager.NewContextManager(t.TempDir(), "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendRealtimeNoticeMessage(manager, "background task completed"); err != nil {
+		t.Fatal(err)
+	}
+	got := manager.MessageListDump().Messages
+	if len(got) != 2 || got[1].Role != messages.MessageRoleNotice || got[1].Content != "background task completed" {
+		t.Fatalf("messages = %+v, want notice role", got)
+	}
+}
+
 func TestRecentRealtimeContextMessagesKeepsLatestTenUserTurns(t *testing.T) {
 	var all []messages.Message
 	for i := 1; i <= 12; i++ {

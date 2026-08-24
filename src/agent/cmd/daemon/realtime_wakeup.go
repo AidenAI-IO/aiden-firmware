@@ -585,7 +585,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			return nil
 		}
 		message := formatRealtimeTaskUpdates(pendingTaskUpdates)
-		if err := appendRealtimeUserMessage(userContext, message); err != nil {
+		if err := appendRealtimeNoticeMessage(userContext, message); err != nil {
 			return fmt.Errorf("persist task update in realtime context: %w", err)
 		}
 		if err := session.SendText(ctx, message, ""); err != nil {
@@ -911,6 +911,14 @@ func appendRealtimeUserMessage(manager *contextmanager.ContextManager, content s
 		return nil
 	}
 	return manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: content})
+}
+
+func appendRealtimeNoticeMessage(manager *contextmanager.ContextManager, content string) error {
+	content = strings.TrimSpace(content)
+	if manager == nil || content == "" {
+		return nil
+	}
+	return manager.AppendMessage(messages.Message{Role: messages.MessageRoleNotice, Content: content})
 }
 
 func appendRealtimeAssistantMessage(manager *contextmanager.ContextManager, content string) error {
