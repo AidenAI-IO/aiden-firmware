@@ -497,14 +497,14 @@ func (p *NotificationMemoryProcessor) findTemporaryNotificationReference(ctx con
 	if p.temporary == nil {
 		return MemoryMergeReference{}, false
 	}
-	parsed, err := readMemoryMarkdown(p.temporary.memoryPath(strings.TrimSpace(id)))
-	if err != nil {
-		return MemoryMergeReference{}, false
-	}
 	select {
 	case <-ctx.Done():
 		return MemoryMergeReference{}, false
 	default:
+	}
+	parsed, err := readMemoryMarkdown(p.temporary.memoryPath(strings.TrimSpace(id)))
+	if err != nil {
+		return MemoryMergeReference{}, false
 	}
 	item := parsed.Item
 	return MemoryMergeReference{Scope: "temporary", ID: item.ID, Type: item.Type, Status: item.Status, Title: item.Title, Summary: item.Content, Content: item.Content, Tags: item.Tags, Entities: item.Entities, Revision: effectiveMemoryRevision(item), ExpiresAt: item.ExpiresAt, Priority: item.Priority, Confidence: item.Confidence, SourceRefs: item.SourceRefs, EvidenceRefs: item.EvidenceRefs}, true

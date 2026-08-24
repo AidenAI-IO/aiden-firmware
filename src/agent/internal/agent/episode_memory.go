@@ -722,7 +722,7 @@ func validateEpisodeMemoryCandidate(episode TaskEpisode, assessment episodeMemor
 	if candidate.Action != episodeMemoryActionCreate && candidate.Action != episodeMemoryActionUpdate {
 		return episodeMemoryCandidate{}, false
 	}
-	if candidate.Action == episodeMemoryActionUpdate && candidate.MemoryID == "" {
+	if candidate.Action == episodeMemoryActionUpdate && (candidate.MemoryID == "" || candidate.MemoryRevision <= 0) {
 		return episodeMemoryCandidate{}, false
 	}
 	if candidate.Action == episodeMemoryActionCreate && (candidate.MemoryID != "" || candidate.UnresolvedConflict) {

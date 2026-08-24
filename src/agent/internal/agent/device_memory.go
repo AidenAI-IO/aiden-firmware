@@ -282,6 +282,9 @@ func (s *DeviceMemoryStore) applyDeviceMemoryIntentLocked(items []DeviceMemoryIt
 				}
 				return MemoryApplyResult{Operation: MemoryOperationAdd, ID: id}, nil
 			}
+			if memorySourceRefIdentitiesContain(existing.EvidenceRefs, candidate.EvidenceRefs) {
+				return MemoryApplyResult{Operation: MemoryOperationAdd, ID: id}, nil
+			}
 			return MemoryApplyResult{}, fmt.Errorf("%w: %s", errMemoryIDConflict, id)
 		case MemoryIntentActionUpdate, MemoryIntentActionReinforce:
 			if intent.ExpectedRevision <= 0 {
@@ -397,10 +400,10 @@ func deviceMemoryMergedMetadataAlreadyApplied(existing, candidate DeviceMemoryIt
 	if candidate.Applicability != nil && !equalEpisodeMemoryScope(existing.Applicability, candidate.Applicability) {
 		return false
 	}
-	if !memoryStringsContain(existing.Tags, candidate.Tags) ||
-		!memoryStringsContain(existing.Entities, candidate.Entities) ||
-		!memoryStringsContain(existing.Aliases, candidate.Aliases) ||
-		!memoryStringsContain(existing.ConflictsWith, candidate.ConflictsWith) ||
+	if !containsAllStrings(existing.Tags, candidate.Tags) ||
+		!containsAllStrings(existing.Entities, candidate.Entities) ||
+		!containsAllStrings(existing.Aliases, candidate.Aliases) ||
+		!containsAllStrings(existing.ConflictsWith, candidate.ConflictsWith) ||
 		!memorySourceRefsContain(existing.EvidenceRefs, candidate.EvidenceRefs) ||
 		!procedureStepsContain(existing.Steps, candidate.Steps) {
 		return false

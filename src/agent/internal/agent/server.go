@@ -2467,7 +2467,6 @@ type benchmarkSeedMemoryRequest struct {
 	Evidence     []string          `json:"evidence"`
 	SourceRefs   []MemorySourceRef `json:"source_refs"`
 	EvidenceRefs []MemorySourceRef `json:"evidence_refs"`
-	TimeScope    string            `json:"time_scope"`
 	ExpiresAt    string            `json:"expires_at"`
 	Priority     int               `json:"priority"`
 }

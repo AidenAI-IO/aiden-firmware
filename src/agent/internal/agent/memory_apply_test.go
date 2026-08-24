@@ -186,6 +186,36 @@ func TestApplyMemoryIntentCreateDoesNotRunSimilarityMerge(t *testing.T) {
 	}
 }
 
+func TestApplyMemoryIntentCreateRetryKeepsFirstContentForSameSourceIdentity(t *testing.T) {
+	store := NewLongTermMemoryStore(t.TempDir())
+	ctx := context.Background()
+	first := MemoryItem{
+		ID: "tmp_notification_42", Type: "fact", TimeScope: "temporary",
+		Content:          "The package arrives tomorrow.",
+		SourceRefs:       []MemorySourceRef{{Type: "notification", ID: "42", EventIDs: []string{"event-42"}}},
+		EvidenceExcerpts: []string{"The package arrives tomorrow."},
+	}
+	if _, err := store.ApplyMemoryIntent(ctx, MemoryIntent{Item: first, Action: MemoryIntentActionCreate}); err != nil {
+		t.Fatal(err)
+	}
+	reworded := first
+	reworded.Content = "Delivery is expected tomorrow."
+	reworded.EvidenceExcerpts = []string{"Delivery is expected tomorrow."}
+	if result, err := store.ApplyMemoryIntent(ctx, MemoryIntent{Item: reworded, Action: MemoryIntentActionCreate}); err != nil || result.Operation != MemoryOperationAdd {
+		t.Fatalf("reworded create retry=%#v err=%v", result, err)
+	}
+	memories, err := store.Search(ctx, MemoryQuery{Limit: 10})
+	if err != nil || len(memories) != 1 || memories[0].Content != first.Content || memories[0].Revision != 1 {
+		t.Fatalf("memories=%#v err=%v, want first create unchanged", memories, err)
+	}
+
+	unrelated := reworded
+	unrelated.SourceRefs = []MemorySourceRef{{Type: "notification", ID: "99", EventIDs: []string{"event-99"}}}
+	if _, err := store.ApplyMemoryIntent(ctx, MemoryIntent{Item: unrelated, Action: MemoryIntentActionCreate}); !errors.Is(err, errMemoryIDConflict) {
+		t.Fatalf("unrelated same-ID create error=%v, want ID conflict", err)
+	}
+}
+
 func TestApplyMemoryIntentPreservesActionAndIsRetrySafe(t *testing.T) {
 	store := NewLongTermMemoryStore(t.TempDir())
 	ctx := context.Background()
@@ -266,6 +296,29 @@ func TestDeviceMemoryApplyUsesCommonUpdateAndRevision(t *testing.T) {
 	}
 	if current.Revision != 2 || len(current.RevisionHistory) != 1 || len(current.EvidenceRefs) != 2 {
 		t.Fatalf("merged device memory=%#v", current)
+	}
+}
+
+func TestDeviceMemoryCreateRetryKeepsFirstContentForSameEpisode(t *testing.T) {
+	store := NewDeviceMemoryStore(t.TempDir())
+	ctx := context.Background()
+	first := DeviceMemoryItem{
+		ID: "devmem_retry", Type: "fact", Status: deviceMemoryStatusActive,
+		Title: "Delivery", Summary: "Tomorrow", Content: "The package arrives tomorrow.",
+		EvidenceRefs: []MemorySourceRef{{Type: "episode", ID: "episode-retry", EventIDs: []string{"event-1"}}},
+	}
+	if _, err := store.ApplyMemoryIntent(ctx, MemoryIntent{DeviceItem: &first, Action: MemoryIntentActionCreate}); err != nil {
+		t.Fatal(err)
+	}
+	reworded := first
+	reworded.Summary = "Expected tomorrow"
+	reworded.Content = "Delivery is expected tomorrow."
+	if result, err := store.ApplyMemoryIntent(ctx, MemoryIntent{DeviceItem: &reworded, Action: MemoryIntentActionCreate}); err != nil || result.Operation != MemoryOperationAdd {
+		t.Fatalf("device create retry=%#v err=%v", result, err)
+	}
+	current, found, err := store.Get(ctx, first.ID)
+	if err != nil || !found || current.Content != first.Content || effectiveDeviceMemoryRevision(current) != 1 {
+		t.Fatalf("current=%#v found=%v err=%v, want first create unchanged", current, found, err)
 	}
 }
 

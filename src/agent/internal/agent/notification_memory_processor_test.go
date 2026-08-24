@@ -112,6 +112,41 @@ func TestNotificationMemoryProcessorUsesMergeEngineForAdd(t *testing.T) {
 	}
 }
 
+func TestNotificationMemoryProcessorCreateRetryWithRewordedProposalCommits(t *testing.T) {
+	root := t.TempDir()
+	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{{ID: "1", Source: "android", SourceID: "n1", NotificationUID: 1, SourceEventID: "evt-1", AppIdentifier: "com.delivery", Title: "Delivery", Message: "Package arrives tomorrow", Event: "added", ReceivedAt: "2026-08-21T00:00:00Z"}}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &episodeMemoryScriptedModel{responses: []string{
+		`{"actions":[{"action":"add","scope":"temporary","type":"fact","content":"The package arrives tomorrow"}]}`,
+		`{"actions":[{"action":"add","scope":"temporary","type":"fact","content":"Delivery is expected tomorrow"}]}`,
+	}}
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
+	records, err := ctxStore.Consume(context.Background(), 10)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("consume records=%#v err=%v", records, err)
+	}
+	if err := processor.resolveRecords(context.Background(), records); err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	if err := processor.resolveRecords(context.Background(), records); err != nil {
+		t.Fatalf("retry resolve: %v", err)
+	}
+	if err := ctxStore.CommitProcessed(context.Background(), records); err != nil {
+		t.Fatalf("commit retry: %v", err)
+	}
+	if got := ctxStore.State().MemoryCursor; got != "1" {
+		t.Fatalf("memory cursor=%q, want 1", got)
+	}
+	memories, err := processor.temporary.Search(context.Background(), MemoryQuery{Limit: 10})
+	if err != nil || len(memories) != 1 || memories[0].Content != "The package arrives tomorrow" || memories[0].Revision != 1 {
+		t.Fatalf("memories=%#v err=%v, want first create unchanged", memories, err)
+	}
+}
+
 func TestNotificationMemoryProcessorAddDoesNotSupersedeSimilarMemory(t *testing.T) {
 	root := t.TempDir()
 	temporary := NewLongTermMemoryStore(filepath.Join(root, "temporary"))
