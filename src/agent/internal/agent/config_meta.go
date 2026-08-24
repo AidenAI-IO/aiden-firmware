@@ -379,6 +379,14 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
+				Name: "frame_service",
+				Fields: []FieldMeta{
+					{Key: "keep_streamon", Label: "Keep STREAMON", Widget: WidgetBoolean,
+						Default: defaults.FrameService.KeepStreamOn,
+						Help:    "Keep the RK628 CSI capture stream enabled between screenshots. This reduces screenshot latency but increases idle power consumption."},
+				},
+			},
+			{
 				Name: "quick_capture",
 				Fields: []FieldMeta{
 					{Key: "enabled", Label: "Enabled", Widget: WidgetBoolean,

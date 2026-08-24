@@ -22,6 +22,7 @@ under `[device]` below.
 - [`[model]`](#model)
 - [`[log]`](#log)
 - [`[audio]`](#audio)
+- [`[frame_service]`](#frame_service)
 - [Quick Capture](#quick-capture)
 - [`[voice_notifications]`](#voice_notifications)
 - [`[hid]`](#hid)
@@ -70,6 +71,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, playback_backend
+- `frame_service`: whether Frame Service keeps capture STREAMON between screenshots
 - `quick_capture`: enabled, GPIO trigger pin, Screen Memory retention period
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
 - `log`: LLM HTTP log retention
@@ -421,6 +423,12 @@ API key and base URL do not carry over to it.
 | `channels`         | `1`                                     | Number of channels                                                                                                                                                                                                            |
 | `bit_width`        | `16`                                    | Bit width                                                                                                                                                                                                                     |
 | `playback_backend` | `auto`                                  | TTS playback backend. `auto` uses `audio_service` on board and the local OS player when the Agent is running in desktop/PC mode through ADB input backend or environment bridge. Use `audio_service` or `local` to force one. |
+
+## `[frame_service]`
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `keep_streamon` | `false` | When `true`, Frame Service keeps capture STREAMON between screenshots and discards 6 warm-up frames for each request. When `false`, it pauses between screenshots and uses 0 warm-up frames. |
 
 ## `[voice_notifications]`
 

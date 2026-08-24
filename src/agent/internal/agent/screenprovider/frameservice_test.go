@@ -112,7 +112,11 @@ func TestFrameHealthResponseUnmarshalSupportsStringLastRecoveryTs(t *testing.T) 
 }
 
 func TestLatestFrameRequestJSONEscapesFormat(t *testing.T) {
-	encoded, err := latestFrameRequestJSON(`jpeg","evil":true`, 80, true, 16)
+	encoded, err := latestFrameRequestJSON(`jpeg","evil":true`, 80, true, CropHint{
+		MinimalWidth: 16,
+		ScreenWidth:  2608,
+		ScreenHeight: 1200,
+	})
 	if err != nil {
 		t.Fatalf("latestFrameRequestJSON() error = %v", err)
 	}
@@ -123,7 +127,9 @@ func TestLatestFrameRequestJSONEscapesFormat(t *testing.T) {
 	if payload["format"] != `jpeg","evil":true` {
 		t.Fatalf("format = %#v, want the original string as one JSON value", payload["format"])
 	}
-	if payload["method"] != "latest_frame" || payload["quality"] != float64(80) || payload["minimal_width"] != float64(16) {
+	if payload["method"] != "latest_frame" || payload["quality"] != float64(80) ||
+		payload["minimal_width"] != float64(16) || payload["screen_width"] != float64(2608) ||
+		payload["screen_height"] != float64(1200) {
 		t.Fatalf("unexpected request payload: %#v", payload)
 	}
 }

@@ -36,6 +36,7 @@ struct FrameCaptureManagerOptions {
     int recovery_max_backoff_ms = 30000;
     int request_timeout_ms = 4000;
     int warmup_frames = 0;
+    bool keep_streamon = false;
 };
 
 class FrameCaptureManager {

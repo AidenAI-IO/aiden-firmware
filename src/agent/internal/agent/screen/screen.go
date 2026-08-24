@@ -27,6 +27,8 @@ type ScreenState struct {
 	height               int
 	active               ScreenActiveArea
 	phoneScreen          PhoneScreenInfo
+	phoneScreenScope     string
+	phoneScreenScopeFunc func() string
 	updatedAt            time.Time
 	screenshotJPEG       []byte
 	screenshotWidth      int
@@ -63,8 +65,22 @@ func (s *ScreenState) UpdatePhoneScreenInfo(info PhoneScreenInfo) {
 	if s == nil {
 		return
 	}
+	scope := s.currentPhoneScreenScope()
 	s.mu.Lock()
 	s.phoneScreen = info
+	s.phoneScreenScope = scope
+	s.mu.Unlock()
+}
+
+// SetPhoneScreenScopeFunc binds reported phone dimensions to a physical
+// connection scope. Once the scope changes or becomes unavailable, callers no
+// longer receive dimensions from the previous HID session.
+func (s *ScreenState) SetPhoneScreenScopeFunc(fn func() string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.phoneScreenScopeFunc = fn
 	s.mu.Unlock()
 }
 
@@ -74,6 +90,7 @@ func (s *ScreenState) ClearPhoneScreenInfo() {
 	}
 	s.mu.Lock()
 	s.phoneScreen = PhoneScreenInfo{}
+	s.phoneScreenScope = ""
 	s.mu.Unlock()
 }
 
@@ -82,8 +99,30 @@ func (s *ScreenState) PhoneScreenInfo() PhoneScreenInfo {
 		return PhoneScreenInfo{}
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.phoneScreen
+	info := s.phoneScreen
+	storedScope := s.phoneScreenScope
+	scopeFunc := s.phoneScreenScopeFunc
+	s.mu.RUnlock()
+	if scopeFunc != nil {
+		currentScope := strings.TrimSpace(scopeFunc())
+		if storedScope == "" || currentScope == "" || currentScope != storedScope {
+			return PhoneScreenInfo{}
+		}
+	}
+	return info
+}
+
+func (s *ScreenState) currentPhoneScreenScope() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	fn := s.phoneScreenScopeFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return ""
+	}
+	return strings.TrimSpace(fn())
 }
 
 func (s *ScreenState) UpdateActiveArea(width, height int, active ScreenActiveArea) {
