@@ -576,6 +576,12 @@ function messageIdentity(msg) {
     const type = isContextMarkerMessage(msg) ? contextMarkerType(msg) : normalizeType(msg.type);
     const content = msg.content || '';
     const requestId = msg.request_id || '';
+    if (requestId && (type === 'tool_call' || type === 'tool_result')) {
+        return [
+            'request', requestId, type,
+            msg.tool_name || '', msg.tool_input || '', content, msg.timestamp || ''
+        ].join('\u001f');
+    }
     if (requestId && type === 'assistant') {
         return ['request', requestId, type].join('\u001f');
     }
