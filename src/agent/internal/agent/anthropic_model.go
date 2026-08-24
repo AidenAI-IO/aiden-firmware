@@ -273,7 +273,7 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 	nonStreamingFallback := false
 	var streamFallbackCause error
 	fail := func(err error) error {
-		if streamFallbackCause == nil {
+		if streamFallbackCause == nil || isAnthropicContextError(err) {
 			return err
 		}
 		log.Printf("[WARN] [anthropic] non-streaming fallback failed: %v", err)
@@ -390,6 +390,10 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 		}
 		return result, nil
 	}
+}
+
+func isAnthropicContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func emitAnthropicNonStreamingFallback(ctx context.Context, opts *llms.CallOptions, response *llms.ContentResponse, thinkingEnabled bool) error {

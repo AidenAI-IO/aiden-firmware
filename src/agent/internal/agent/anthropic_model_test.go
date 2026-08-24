@@ -495,6 +495,48 @@ func TestAnthropicModelFallsBackToNonStreamingAfterSemanticStreamRetries(t *test
 	}
 }
 
+func TestAnthropicModelPreservesCancellationDuringNonStreamingFallback(t *testing.T) {
+	fallbackStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request anthropicRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		if request.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(strings.Join([]string{
+				`data: {"type":"message_start","message":{"id":"msg_empty","usage":{"input_tokens":10}}}`,
+				``,
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}`,
+				``,
+				`data: {"type":"message_stop"}`,
+				``,
+			}, "\n")))
+			return
+		}
+
+		close(fallbackStarted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-fallbackStarted
+		cancel()
+	}()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicProtocolRetry(0, 0))
+	_, err := model.GenerateContent(ctx, []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("GenerateContent() error = %v, want context.Canceled", err)
+	}
+}
+
 func TestAnthropicModelDoesNotFallbackAfterStreamingOutputWasDelivered(t *testing.T) {
 	t.Parallel()
 
