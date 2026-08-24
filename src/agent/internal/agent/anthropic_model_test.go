@@ -436,6 +436,104 @@ func TestAnthropicModelRetriesEmptyStreamedEndTurn(t *testing.T) {
 	}
 }
 
+func TestAnthropicModelFallsBackToNonStreamingAfterSemanticStreamRetries(t *testing.T) {
+	t.Parallel()
+
+	var streams []bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request anthropicRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		streams = append(streams, request.Stream)
+		w.Header().Set("Content-Type", "application/json")
+		if request.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(strings.Join([]string{
+				`data: {"type":"message_start","message":{"id":"msg_empty","usage":{"input_tokens":10}}}`,
+				``,
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}`,
+				``,
+				`data: {"type":"message_stop"}`,
+				``,
+			}, "\n")))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"id":"msg_fallback",
+			"content":[{"type":"text","text":"fallback ok"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":10,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	var streamed strings.Builder
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicProtocolRetry(1, 0))
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(_ context.Context, chunk []byte) error {
+		streamed.Write(chunk)
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if len(streams) != 3 || !streams[0] || !streams[1] || streams[2] {
+		t.Fatalf("stream flags = %#v, want [true true false]", streams)
+	}
+	if streamed.String() != "fallback ok" {
+		t.Fatalf("streamed = %q, want fallback ok", streamed.String())
+	}
+	choice := response.Choices[0]
+	if choice.Content != "fallback ok" {
+		t.Fatalf("content = %q, want fallback ok", choice.Content)
+	}
+	if got := choice.GenerationInfo["llm_anthropic_stream_fallback"]; got != "non_stream" {
+		t.Fatalf("fallback info = %#v, want non_stream", got)
+	}
+}
+
+func TestAnthropicModelDoesNotFallbackAfterStreamingOutputWasDelivered(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_partial","usage":{"input_tokens":10}}}`,
+			``,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+			``,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	var streamed strings.Builder
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(), withAnthropicProtocolRetry(0, 0))
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithStreamingFunc(func(_ context.Context, chunk []byte) error {
+		streamed.Write(chunk)
+		return nil
+	}))
+	if err == nil {
+		t.Fatal("GenerateContent() error = nil, want stream protocol error")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want no non-streaming fallback after output delivery", attempts)
+	}
+	if streamed.String() != "partial" {
+		t.Fatalf("streamed = %q, want partial", streamed.String())
+	}
+}
+
 func TestAnthropicModelDefaultsToThreeSemanticRetries(t *testing.T) {
 	t.Parallel()
 
