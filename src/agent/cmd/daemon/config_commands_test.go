@@ -12,7 +12,58 @@ import (
 	"testing"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/configupdate"
 )
+
+func TestRunConfigUpdateIODelegatesToService(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte("[hid]\nkeyboard_layout = \"qwerty\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := runConfigUpdateIO(
+		[]string{"--config", path, "--stdin", "--format=json"},
+		strings.NewReader(`{"config":{"hid":{"keyboard_layout":"azerty"}}}`),
+		&stdout,
+		&stderr,
+	)
+	if exitCode != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+	var result configupdate.Result
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if !result.OK || !result.RebootRequired || strings.Join(result.ChangedPaths, ",") != "hid.keyboard_layout" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestRunConfigUpdateIOEncodesInvalidArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exitCode := runConfigUpdateIO(nil, strings.NewReader("{}"), &stdout, &stderr)
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", exitCode)
+	}
+	var result configupdate.Result
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result.OK || result.ErrorKind != configupdate.ErrorKindInvalidRequest {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestRunConfigUpdateIOHelpExitsSuccessfully(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if exitCode := runConfigUpdateIO([]string{"-h"}, strings.NewReader("{}"), &stdout, &stderr); exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "Usage of config-update") {
+		t.Fatalf("stdout=%q stderr=%q, want help on stderr only", stdout.String(), stderr.String())
+	}
+}
 
 func TestExecuteConfigTestUsesModelRuntime(t *testing.T) {
 	values, err := json.Marshal(modelDTO{Provider: "fake"})
@@ -66,7 +117,7 @@ func TestModelDTOProviderTestRequestPreservesSamplingPresenceFromJSON(t *testing
 			if err := json.Unmarshal([]byte(tt.payload), &dto); err != nil {
 				t.Fatalf("unmarshal model values: %v", err)
 			}
-			req := dto.providerTestRequest()
+			req := dto.ProviderTestRequest()
 			if tt.wantTemperature == nil {
 				if req.Temperature != nil {
 					t.Fatalf("temperature request = %v, want unset", req.Temperature)
@@ -358,7 +409,7 @@ func TestWebConfigDTOFromAgentConfigDoesNotInferAudioArchiveEnabled(t *testing.T
 func TestWebConfigDTOMapsTTSReferenceID(t *testing.T) {
 	const referenceID = "fish-reference-id"
 	dto := webConfigDTO{TTS: ttsDTO{Provider: "fish-audio", ReferenceID: referenceID}}
-	if got := dto.toAgentConfig().TTS.ReferenceID; got != referenceID {
+	if got := dto.ToAgentConfig().TTS.ReferenceID; got != referenceID {
 		t.Fatalf("TTS.ReferenceID = %q, want %q", got, referenceID)
 	}
 	if got := webConfigDTOFromAgentConfig(agent.Config{TTS: agent.TTSConfig{Provider: "fish-audio", ReferenceID: referenceID}}).TTS.ReferenceID; got != referenceID {
@@ -428,7 +479,7 @@ func TestWebConfigDTOMapsAudioArchive(t *testing.T) {
 			StoragePath: "/tmp/audio-archive",
 		},
 	}
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.AudioArchive.Enabled {
 		t.Fatal("AudioArchive.Enabled = true, want false")
 	}
@@ -453,7 +504,7 @@ func TestWebConfigDTOMapsAudioBackend(t *testing.T) {
 			Backend:    agent.AudioBackendLocal,
 		},
 	}
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.Audio.Backend != agent.AudioBackendLocal {
 		t.Fatalf("Audio.Backend = %q, want local", cfg.Audio.Backend)
 	}
@@ -471,7 +522,7 @@ func TestWebConfigDTOMapsAudioBackend(t *testing.T) {
 			Backend:    agent.AudioBackendAuto,
 		},
 	}
-	autoCfg := autoDTO.toAgentConfig()
+	autoCfg := autoDTO.ToAgentConfig()
 	if autoCfg.Audio.Backend != agent.AudioBackendAuto {
 		t.Fatalf("auto Audio.Backend = %q, want auto", autoCfg.Audio.Backend)
 	}
@@ -484,24 +535,13 @@ func TestWebConfigDTOMapsAudioBackend(t *testing.T) {
 	}
 }
 
-func TestWebConfigDTOAcceptsLegacyAudioPlaybackBackend(t *testing.T) {
-	dto := webConfigDTO{Audio: audioDTO{LegacyPlaybackBackend: agent.AudioBackendLocal}}
-	if got := dto.toAgentConfig().Audio.Backend; got != agent.AudioBackendLocal {
-		t.Fatalf("Audio.Backend = %q, want local", got)
-	}
-	dto.Audio.Backend = agent.AudioBackendAudioService
-	if got := dto.toAgentConfig().Audio.Backend; got != agent.AudioBackendAudioService {
-		t.Fatalf("Audio.Backend = %q, want audio_service", got)
-	}
-}
-
 func TestWebConfigDTOMapsQuickCapture(t *testing.T) {
 	dto := webConfigDTO{QuickCapture: quickCaptureDTO{
 		Enabled:         false,
 		GPIOPin:         3,
 		ScreenMemoryTTL: "14d",
 	}}
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.QuickCapture.EnabledOrDefault() || cfg.QuickCapture.GPIOPin != 3 || cfg.QuickCapture.ScreenMemoryTTL != "14d" {
 		t.Fatalf("QuickCapture = %+v, want DTO values", cfg.QuickCapture)
 	}
@@ -532,7 +572,7 @@ func TestWebConfigDTOMapsVoiceNotifications(t *testing.T) {
 	}
 
 	dto := webConfigDTOFromAgentConfig(agent.Config{VoiceNotifications: voiceNotifications})
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if !reflect.DeepEqual(cfg.VoiceNotifications, voiceNotifications) {
 		t.Fatalf("VoiceNotifications = %#v, want %#v", cfg.VoiceNotifications, voiceNotifications)
 	}
@@ -544,7 +584,7 @@ func TestWebConfigDTOMapsLog(t *testing.T) {
 		Log:   logDTO{LLMHTTPRetentionDays: 21},
 	}
 
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.Log.LLMHTTPRetentionDays != 21 {
 		t.Fatalf("Log.LLMHTTPRetentionDays = %d, want 21", cfg.Log.LLMHTTPRetentionDays)
 	}
@@ -569,7 +609,7 @@ func TestWebConfigDTOMapsTerminationPolicy(t *testing.T) {
 		ParseFailureLimit:       13,
 	}
 	dto := webConfigDTO{TerminationPolicy: policy}
-	if got := dto.toAgentConfig().TerminationPolicy; !reflect.DeepEqual(got, policy) {
+	if got := dto.ToAgentConfig().TerminationPolicy; !reflect.DeepEqual(got, policy) {
 		t.Fatalf("TerminationPolicy = %#v, want %#v", got, policy)
 	}
 	if got := webConfigDTOFromAgentConfig(agent.Config{TerminationPolicy: policy}).TerminationPolicy; !reflect.DeepEqual(got, policy) {
@@ -586,7 +626,7 @@ func TestWebConfigDTOMapsSTTLanguage(t *testing.T) {
 		},
 	}
 
-	cfg := dto.toAgentConfig()
+	cfg := dto.ToAgentConfig()
 	if cfg.STT.Language != "en" {
 		t.Fatalf("STT.Language = %q, want en", cfg.STT.Language)
 	}
@@ -713,7 +753,7 @@ func TestConfigCheck_InvalidInputMode(t *testing.T) {
 		Search: agent.SearchConfig{
 			Provider: "duckduckgo",
 		},
-		InputMode: "invalid_mode", // Invalid: must be text/stt/realtime
+		InputMode: "invalid_mode", // Invalid: must be text/audio/stt
 	}
 
 	err := invalidConfig.Validate()
@@ -883,7 +923,7 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 		},
 		{
 			name:          "model api mode error",
-			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions or responses)",
+			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions, responses, or responses_stateful)",
 			expectedField: "model.api_mode",
 		},
 		{

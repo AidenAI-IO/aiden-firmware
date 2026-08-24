@@ -457,6 +457,47 @@
         "must_complete_within_sec": 60,
         "response_required": true
       }
+    },
+    {
+      "id": "multi_turn_overwrite_and_verify_last_value",
+      "category": "memory",
+      "description_for_judge": "In one conversation, the user first asks the agent to remember a city, then overwrites it twice in the middle of the conversation, and finally asks what the remembered city is. The agent must keep updating the SAME memory (overwriting the value, not appending duplicate versions), and the final answer must equal the LAST modified value (成都), not the earlier values (杭州 or 深圳).",
+      "prompt": "下面我们边聊边更新一条记忆，请每一步都真实调用记忆工具去保存或召回，不要只在脑子里记。\n\n第 1 步：请记住「我的办公城市是杭州」。\n\n第 2 步：我改主意了，办公城市改成「深圳」。请把之前那条记忆更新成最新的值，别保留旧的杭州。\n\n第 3 步：又调整了一下，办公城市最终定为「成都」。请再次更新这条记忆。\n\n第 4 步：请用 recall_memory 查一下“办公城市”这条记忆，再问我现在的办公城市是什么？只按你最终保存的值回答，并说明这个值是经过前面几次修改后的最新值。",
+      "rubric": [
+        {
+          "id": "saved_initial_value",
+          "check": "The trace contains at least one save_memory call whose content mentions 杭州 as the initially remembered office city."
+        },
+        {
+          "id": "saved_mid_value",
+          "check": "The trace shows the office-city memory was updated once to 深圳 (a save_memory or update whose content mentions 深圳)."
+        },
+        {
+          "id": "saved_final_value",
+          "check": "The trace contains a save_memory call whose content mentions 成都 as the final office city, i.e. the last modification."
+        },
+        {
+          "id": "recalled_before_answer",
+          "check": "The trace contains at least one recall_memory call before the final answer to the city question."
+        },
+        {
+          "id": "answers_last_value",
+          "check": "The final answer states the current office city is 成都 only — it does NOT answer 杭州 or 深圳, and it reflects that this is the value after the last modification."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 4,
+        "max_tool_calls": 4,
+        "must_complete_within_sec": 180,
+        "response_required": true,
+        "required_tools": ["save_memory", "recall_memory"],
+        "required_tool_calls": [
+          {"tool": "save_memory", "input_contains": {"content": {"$contains": "杭州"}}},
+          {"tool": "save_memory", "input_contains": {"content": {"$contains": "深圳"}}},
+          {"tool": "save_memory", "input_contains": {"content": {"$contains": "成都"}}},
+          {"tool": "recall_memory", "input_contains": {"tags": {"$contains": "办公城市"}}}
+        ]
+      }
     }
   ]
 }

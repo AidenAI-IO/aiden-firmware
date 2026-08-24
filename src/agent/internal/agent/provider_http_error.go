@@ -23,14 +23,18 @@ func newProviderHTTPError(statusCode int, body []byte) *ProviderHTTPError {
 	}
 
 	var payload struct {
-		Error struct {
+		ErrorType string `json:"error_type"`
+		Error     struct {
 			Code    json.RawMessage `json:"code"`
 			Type    string          `json:"type"`
 			Message string          `json:"message"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(body, &payload) == nil {
-		err.ProviderCode = normalizeProviderErrorCode(payload.Error.Code)
+		err.ProviderCode = strings.TrimSpace(payload.ErrorType)
+		if err.ProviderCode == "" {
+			err.ProviderCode = normalizeProviderErrorCode(payload.Error.Code)
+		}
 		if err.ProviderCode == "" {
 			err.ProviderCode = strings.TrimSpace(payload.Error.Type)
 		}

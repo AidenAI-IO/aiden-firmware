@@ -45,12 +45,12 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 		t.Errorf("dto.STTProviders[tencent] = %#v", got)
 	}
 
-	back := dto.toAgentConfig()
-	if got := back.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" || got.APIKey != "" {
+	back := dto.ToAgentConfig()
+	if got := back.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" || got.APIKey != hasAPIKeyPlaceholder {
 		t.Errorf("redacted tts_providers conversion = %#v", back.TTSProviders)
 	}
 	if got := back.STTProviders["tencent"]; got.Type != "tencent-asr" || got.AppID != "123" ||
-		got.SecretID != "" || got.SecretKey != "" {
+		got.SecretID != hasAPIKeyPlaceholder || got.SecretKey != hasAPIKeyPlaceholder {
 		t.Errorf("redacted stt_providers conversion = %#v", back.STTProviders)
 	}
 	// The reference itself must not be resolved on the wire: the config page
@@ -132,8 +132,8 @@ func TestConfigWire_CanonicalNullVoiceTypesDoNotUseLegacyAliases(t *testing.T) {
 }
 
 // omitempty on both maps, matching providers: a config with no records omits the
-// key rather than emitting {}, and the C++ read path treats a missing key as
-// "no records" rather than an error.
+// key rather than emitting {}, and consumers of the resolved config treat a
+// missing key as "no records" rather than an error.
 func TestConfigWire_VoiceProvidersOmittedWhenEmpty(t *testing.T) {
 	cfg := agent.Config{Model: agent.ModelConfig{Provider: "openai", Model: "gpt-4o", APIKey: "sk-x"}}
 	payload, err := json.Marshal(webConfigDTOFromAgentConfig(cfg))

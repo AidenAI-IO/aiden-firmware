@@ -200,6 +200,11 @@ assert.equal(
   'Android 使用 HID touchscreen 模式。iOS、macOS、windows 和 linux 使用 absolute 指针模式。',
 );
 assert.equal(t('config.default_value', {value: '16000'}), '默认值：16000');
+assert.equal(t('config.fields.model.api_mode.label'), '对话接口');
+assert.equal(t('config.fields.model.api_mode.options.responses'), 'Responses（本地上下文）');
+assert.equal(t('config.fields.model.responses_context_management.label'), '服务端自动压缩');
+assert.equal(t('config.fields.model.responses_truncation.options.auto'), '自动丢弃最早输入');
+assert.equal(t('config.fields.model.responses_include.label'), '额外返回字段');
 assert.equal(t('logs.jump_to_bottom'), '跳到底部');
 assert.equal(t('system_env.saved'), 'env 已保存。');
 assert.equal(t('missing.translation.key'), 'missing.translation.key');
@@ -214,6 +219,7 @@ applyLocale('en-US', true);
 assert.equal(document.documentElement.lang, 'en-US');
 assert.equal(title.textContent, 'Configuration');
 assert.equal(password.getAttribute('placeholder'), 'Open network can leave empty');
+assert.equal(t('config.fields.model.responses_compact_threshold.label'), 'Compaction threshold (tokens)');
 assert.equal(stored.get('aiden.config.locale'), 'en-US');
 
 const source = await fs.readFile(i18nPath, 'utf8');
@@ -312,6 +318,16 @@ await logsModule.evaluate();
 await systemEnvModule.evaluate();
 await configFormModule.evaluate();
 registerRuntime({getSectionFields: () => ({agent: []}), readSection: () => ({})});
+
+assert.deepEqual(
+  JSON.parse(JSON.stringify(configFormModule.namespace.sectionPatch(
+    'model',
+    {model: 'gpt-5.5', temperature: 0.2},
+    {model: 'gpt-5.5'},
+  ))),
+  {temperature: null},
+  'clearing an optional section value must produce a JSON Merge Patch deletion',
+);
 
 applyLocale('zh-CN', false);
 sttModule.namespace.setSTTTestButtonState(true, false);

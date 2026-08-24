@@ -95,6 +95,7 @@ type PhoneBridgeStatus struct {
 	DeviceType           string            `json:"device_type,omitempty"`
 	PointerMode          string            `json:"pointer_mode,omitempty"`
 	PhoneID              string            `json:"phone_id,omitempty"`
+	HIDConnectionID      string            `json:"hid_connection_id,omitempty"`
 	LastHeartbeatAt      *time.Time        `json:"last_heartbeat_at,omitempty"`
 	AppState             string            `json:"app_state,omitempty"`
 	AppStateUpdatedAt    *time.Time        `json:"app_state_updated_at,omitempty"`
@@ -108,26 +109,47 @@ type PhoneBridgeStatus struct {
 }
 
 type PhoneBridge struct {
-	mu                 sync.Mutex
-	statusExpiryTimer  *time.Timer
-	conn               *websocket.Conn
-	connected          bool
-	platform           string
-	configuredPlatform string
-	phoneID            string
-	lastHeartbeatAt    time.Time
-	appState           string
-	appStateAt         time.Time
-	returnEntry        string
-	returnEntryOK      bool
-	returnEntrySeen    bool
-	pipBridgeEnabled   bool
-	pipBridgeSeen      bool
-	fgsBridgeEnabled   bool
-	fgsBridgeSeen      bool
-	fgsBridgeAt        time.Time
-	environment        *PhoneEnvironment
-	environmentAt      time.Time
+	mu                     sync.Mutex
+	statusExpiryTimer      *time.Timer
+	conn                   *websocket.Conn
+	connected              bool
+	platform               string
+	configuredPlatform     string
+	phoneID                string
+	lastHeartbeatAt        time.Time
+	appState               string
+	appStateAt             time.Time
+	returnEntry            string
+	returnEntryOK          bool
+	returnEntrySeen        bool
+	pipBridgeEnabled       bool
+	pipBridgeSeen          bool
+	fgsBridgeEnabled       bool
+	fgsBridgeSeen          bool
+	fgsBridgeAt            time.Time
+	environment            *PhoneEnvironment
+	environmentAt          time.Time
+	hidConnectionState     func() (connected, known bool)
+	hidConnected           bool
+	hidConnectionKnown     bool
+	hidConnectionID        string
+	hidConnectionSeq       uint64
+	hidConnectionPhone     string
+	hidConnectionCheckedAt time.Time
+	hidMonitorEnabled      bool
+	hidMonitorMu           sync.Mutex
+	hidMonitorRunning      bool
+	hidMonitorStop         chan struct{}
+	hidMonitorStopOnce     sync.Once
+	closeOnce              sync.Once
+
+	screenCache         screen.PhoneScreenInfo
+	screenCachePhoneID  string
+	screenCacheHIDID    string
+	screenCacheAt       time.Time
+	environmentObserver func(*PhoneEnvironment)
+	environmentNotifyMu sync.Mutex
+
 	clipboardText      string
 	clipboardAt        time.Time
 	pendingCmds        map[string]chan BridgeCommandResponse
@@ -143,12 +165,49 @@ type PhoneBridge struct {
 
 func NewPhoneBridge(logger *Logger) *PhoneBridge {
 	return &PhoneBridge{
-		pendingCmds: make(map[string]chan BridgeCommandResponse),
-		logger:      logger,
-		queue:       NewCommandQueue(logger),
-		bleWake:     defaultBLEWake,
-		bleStatus:   defaultBLEStatus,
+		pendingCmds:        make(map[string]chan BridgeCommandResponse),
+		logger:             logger,
+		queue:              NewCommandQueue(logger),
+		bleWake:            defaultBLEWake,
+		bleStatus:          defaultBLEStatus,
+		hidConnectionState: readHIDConnectionState,
+		hidMonitorEnabled:  true,
+		hidMonitorStop:     make(chan struct{}),
 	}
+}
+
+// Close stops background Phone Bridge monitoring. It is safe to call more than
+// once, including when runtime shutdown races with test cleanup.
+func (pb *PhoneBridge) Close() {
+	if pb == nil {
+		return
+	}
+	pb.hidMonitorMu.Lock()
+	stop := pb.hidMonitorStop
+	if stop == nil {
+		stop = make(chan struct{})
+		pb.hidMonitorStop = stop
+	}
+	pb.hidMonitorMu.Unlock()
+	pb.closeOnce.Do(func() {
+		pb.hidMonitorStopOnce.Do(func() {
+			close(stop)
+		})
+	})
+}
+
+// SetEnvironmentObserver keeps consumers such as screenshot cropping in sync
+// with either the live phone environment or a same-phone screen-size fallback.
+func (pb *PhoneBridge) SetEnvironmentObserver(observer func(*PhoneEnvironment)) {
+	if pb == nil {
+		return
+	}
+	pb.ensureHIDConnectionMonitor()
+	pb.refreshHIDConnectionNow()
+	pb.mu.Lock()
+	pb.environmentObserver = observer
+	pb.mu.Unlock()
+	pb.notifyEnvironmentObserver()
 }
 
 // SetConfiguredPlatform supplies the device_type-derived platform used before
@@ -247,6 +306,7 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	platform := r.URL.Query().Get("platform")
 	phoneID := strings.TrimSpace(r.URL.Query().Get("phone_id"))
 
+	pb.refreshHIDConnectionNow()
 	pb.mu.Lock()
 	if pb.conn != nil {
 		oldConn := pb.conn
@@ -257,6 +317,7 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	pb.conn = conn
 	pb.connected = true
 	pb.platform = platform
+	pb.updateHIDConnectionPhoneLocked(phoneID)
 	pb.phoneID = phoneID
 	pb.lastHeartbeatAt = time.Now()
 	pb.environment = nil
@@ -264,6 +325,7 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	pb.done = make(chan struct{})
 	done := pb.done
 	pb.mu.Unlock()
+	pb.notifyEnvironmentObserver()
 
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: client connected (platform=%s phone_id=%s)", platform, phoneID)
@@ -302,6 +364,7 @@ func (pb *PhoneBridge) monitorHeartbeat(conn *websocket.Conn, done chan struct{}
 
 func (pb *PhoneBridge) readLoop(conn *websocket.Conn, done chan struct{}) {
 	defer func() {
+		cleared := false
 		pb.mu.Lock()
 		if pb.conn == conn {
 			pb.conn = nil
@@ -309,12 +372,16 @@ func (pb *PhoneBridge) readLoop(conn *websocket.Conn, done chan struct{}) {
 			pb.phoneID = ""
 			pb.environment = nil
 			pb.environmentAt = time.Time{}
+			cleared = true
 			for id, ch := range pb.pendingCmds {
 				close(ch)
 				delete(pb.pendingCmds, id)
 			}
 		}
 		pb.mu.Unlock()
+		if cleared {
+			pb.notifyEnvironmentObserver()
+		}
 		close(done)
 		conn.Close(websocket.StatusNormalClosure, "")
 		if pb.logger != nil {
@@ -402,6 +469,7 @@ func (pb *PhoneBridge) handleEnvironmentEvent(resp BridgeCommandResponse) bool {
 		return true
 	}
 
+	pb.refreshHIDConnectionNow()
 	pb.mu.Lock()
 	if strings.TrimSpace(env.Platform) == "" {
 		env.Platform = pb.platform
@@ -409,7 +477,15 @@ func (pb *PhoneBridge) handleEnvironmentEvent(resp BridgeCommandResponse) bool {
 	pb.environment = &env
 	pb.environmentAt = time.Now()
 	pb.lastHeartbeatAt = pb.environmentAt
+	if hasPhoneScreenDimensions(env.Screen) &&
+		(pb.phoneID != "" || (pb.hidConnectionKnown && pb.hidConnected)) {
+		pb.screenCache = env.Screen
+		pb.screenCachePhoneID = pb.phoneID
+		pb.screenCacheHIDID = pb.hidConnectionID
+		pb.screenCacheAt = pb.environmentAt
+	}
 	pb.mu.Unlock()
+	pb.notifyEnvironmentObserver()
 
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: environment updated (platform=%s)", env.Platform)
@@ -715,6 +791,7 @@ func (pb *PhoneBridge) UpdateState() map[string]string {
 }
 
 func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
+	pb.refreshHIDConnection()
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	platform := pb.platform
@@ -722,9 +799,10 @@ func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
 		platform = pb.configuredPlatform
 	}
 	status := PhoneBridgeStatus{
-		Connected: pb.connected,
-		Platform:  platform,
-		PhoneID:   pb.phoneID,
+		Connected:       pb.connected,
+		Platform:        platform,
+		PhoneID:         pb.phoneID,
+		HIDConnectionID: pb.hidConnectionID,
 	}
 	if pb.connected && !pb.lastHeartbeatAt.IsZero() {
 		t := pb.lastHeartbeatAt
@@ -756,15 +834,187 @@ func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
 			status.FgsBridgeUpdatedAt = &t
 		}
 	}
-	if pb.connected && pb.environment != nil {
-		env := clonePhoneEnvironment(*pb.environment)
-		status.Environment = &env
-		if !pb.environmentAt.IsZero() {
-			t := pb.environmentAt
+	if env, updatedAt := pb.environmentForStatusLocked(); env != nil {
+		status.Environment = env
+		if !updatedAt.IsZero() {
+			t := updatedAt
 			status.EnvironmentUpdatedAt = &t
 		}
 	}
 	return status
+}
+
+func (pb *PhoneBridge) environmentForStatusLocked() (*PhoneEnvironment, time.Time) {
+	if pb.connected && pb.environment != nil {
+		env := clonePhoneEnvironment(*pb.environment)
+		if !hasPhoneScreenDimensions(env.Screen) && pb.hasMatchingScreenCacheLocked() {
+			env.Screen = pb.screenCache
+			env.Source = "phone-bridge-screen-cache"
+		}
+		return &env, pb.environmentAt
+	}
+	if !pb.hasMatchingScreenCacheLocked() {
+		return nil, time.Time{}
+	}
+	platform := pb.platform
+	if strings.TrimSpace(platform) == "" {
+		platform = pb.configuredPlatform
+	}
+	env := PhoneEnvironment{
+		Source:   "phone-bridge-screen-cache",
+		Platform: platform,
+		Screen:   pb.screenCache,
+	}
+	return &env, pb.screenCacheAt
+}
+
+func (pb *PhoneBridge) hasMatchingScreenCacheLocked() bool {
+	if pb.hidConnectionKnown {
+		matchesPhone := pb.screenCachePhoneID == "" ||
+			(pb.hidConnectionPhone != "" && pb.hidConnectionPhone == pb.screenCachePhoneID)
+		return matchesPhone && pb.hidConnected &&
+			pb.hidConnectionID != "" &&
+			pb.hidConnectionID == pb.screenCacheHIDID &&
+			hasPhoneScreenDimensions(pb.screenCache)
+	}
+	return pb.phoneID != "" &&
+		pb.phoneID == pb.screenCachePhoneID &&
+		hasPhoneScreenDimensions(pb.screenCache)
+}
+
+// ScreenCacheScopeID identifies the physical HID session that owns cached
+// phone screen dimensions. Desktop builds without a UDC sysfs view retain the
+// previous phone_id scope.
+func (pb *PhoneBridge) ScreenCacheScopeID() string {
+	if pb == nil {
+		return ""
+	}
+	pb.refreshHIDConnectionNow()
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	if pb.hidConnectionKnown {
+		if pb.hidConnected {
+			return pb.hidConnectionID
+		}
+		return ""
+	}
+	if phoneID := strings.TrimSpace(pb.phoneID); phoneID != "" {
+		return "phone:" + phoneID
+	}
+	return ""
+}
+
+func (pb *PhoneBridge) refreshHIDConnection() {
+	pb.refreshHIDConnectionWithForce(false)
+}
+
+func (pb *PhoneBridge) refreshHIDConnectionNow() {
+	pb.refreshHIDConnectionWithForce(true)
+}
+
+func (pb *PhoneBridge) refreshHIDConnectionWithForce(force bool) {
+	if pb == nil {
+		return
+	}
+	pb.mu.Lock()
+	state := pb.hidConnectionState
+	if !force && !pb.hidConnectionCheckedAt.IsZero() &&
+		time.Since(pb.hidConnectionCheckedAt) < phoneBridgeHIDConnectionPollInterval {
+		pb.mu.Unlock()
+		return
+	}
+	pb.mu.Unlock()
+	if state == nil {
+		return
+	}
+	connected, known := state()
+	pb.mu.Lock()
+	pb.hidConnectionCheckedAt = time.Now()
+	pb.applyHIDConnectionStateLocked(connected, known)
+	pb.mu.Unlock()
+}
+
+func (pb *PhoneBridge) applyHIDConnectionStateLocked(connected, known bool) {
+	if !known {
+		return
+	}
+	pb.hidConnectionKnown = true
+	if connected {
+		if pb.hidConnected && pb.hidConnectionID != "" {
+			return
+		}
+		pb.hidConnected = true
+		pb.hidConnectionSeq++
+		pb.hidConnectionID = fmt.Sprintf("hid-%d-%d", time.Now().UnixNano(), pb.hidConnectionSeq)
+		return
+	}
+	if !pb.hidConnected && pb.hidConnectionID == "" && pb.screenCacheHIDID == "" {
+		return
+	}
+	pb.hidConnected = false
+	pb.hidConnectionID = ""
+	pb.hidConnectionPhone = ""
+	pb.environment = nil
+	pb.environmentAt = time.Time{}
+	pb.screenCache = screen.PhoneScreenInfo{}
+	pb.screenCachePhoneID = ""
+	pb.screenCacheHIDID = ""
+	pb.screenCacheAt = time.Time{}
+}
+
+func (pb *PhoneBridge) updateHIDConnectionPhoneLocked(phoneID string) {
+	phoneID = strings.TrimSpace(phoneID)
+	if phoneID == "" || !pb.hidConnectionKnown || !pb.hidConnected {
+		return
+	}
+	if pb.hidConnectionPhone != "" && pb.hidConnectionPhone != phoneID {
+		pb.screenCache = screen.PhoneScreenInfo{}
+		pb.screenCachePhoneID = ""
+		pb.screenCacheHIDID = ""
+		pb.screenCacheAt = time.Time{}
+	}
+	pb.hidConnectionPhone = phoneID
+}
+
+func hasPhoneScreenDimensions(info screen.PhoneScreenInfo) bool {
+	switch {
+	case info.WidthPixels != nil && info.HeightPixels != nil && *info.WidthPixels > 0 && *info.HeightPixels > 0:
+		return true
+	case info.NativeWidthPixels != nil && info.NativeHeightPixels != nil && *info.NativeWidthPixels > 0 && *info.NativeHeightPixels > 0:
+		return true
+	case info.Width != nil && info.Height != nil && *info.Width > 0 && *info.Height > 0:
+		return true
+	default:
+		return false
+	}
+}
+
+func notifyPhoneEnvironmentObserver(observer func(*PhoneEnvironment), env *PhoneEnvironment) {
+	if observer == nil {
+		return
+	}
+	if env == nil || !hasPhoneScreenDimensions(env.Screen) {
+		observer(nil)
+		return
+	}
+	copyEnv := clonePhoneEnvironment(*env)
+	observer(&copyEnv)
+}
+
+func (pb *PhoneBridge) notifyEnvironmentObserver() {
+	if pb == nil {
+		return
+	}
+	pb.ensureHIDConnectionMonitor()
+	pb.refreshHIDConnectionNow()
+	pb.environmentNotifyMu.Lock()
+	defer pb.environmentNotifyMu.Unlock()
+
+	pb.mu.Lock()
+	observer := pb.environmentObserver
+	env, _ := pb.environmentForStatusLocked()
+	pb.mu.Unlock()
+	notifyPhoneEnvironmentObserver(observer, env)
 }
 
 func clonePhoneEnvironment(env PhoneEnvironment) PhoneEnvironment {
@@ -802,7 +1052,9 @@ func (pb *PhoneBridge) ApplyBenchmarkStatus(status PhoneBridgeStatus) error {
 	}
 	now := time.Now()
 
+	pb.refreshHIDConnectionNow()
 	pb.mu.Lock()
+	pb.updateHIDConnectionPhoneLocked(status.PhoneID)
 	pb.connected = status.Connected
 	pb.platform = platform
 	pb.phoneID = strings.TrimSpace(status.PhoneID)
@@ -845,11 +1097,19 @@ func (pb *PhoneBridge) ApplyBenchmarkStatus(status PhoneBridgeStatus) error {
 		}
 		pb.environment = &env
 		pb.environmentAt = now
+		if hasPhoneScreenDimensions(env.Screen) &&
+			(pb.phoneID != "" || (pb.hidConnectionKnown && pb.hidConnected)) {
+			pb.screenCache = env.Screen
+			pb.screenCachePhoneID = pb.phoneID
+			pb.screenCacheHIDID = pb.hidConnectionID
+			pb.screenCacheAt = now
+		}
 	} else {
 		pb.environment = nil
 		pb.environmentAt = time.Time{}
 	}
 	pb.mu.Unlock()
+	pb.notifyEnvironmentObserver()
 
 	return nil
 }

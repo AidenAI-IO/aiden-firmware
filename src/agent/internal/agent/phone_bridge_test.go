@@ -149,6 +149,7 @@ func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 			"system_name":"iOS",
 			"system_version":"18.5",
 			"locale":"zh-Hans-CN",
+			"screen":{"width_pixels":1200,"height_pixels":2608},
 			"system_apps":[
 				{"name":"Camera","available":true,"category":"system","availability_source":"builtin"}
 			],
@@ -175,6 +176,9 @@ func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 	}
 	if status.Environment.SystemName != "iOS" {
 		t.Fatalf("environment system_name = %q, want iOS", status.Environment.SystemName)
+	}
+	if !hasPhoneScreenDimensions(status.Environment.Screen) {
+		t.Fatalf("live environment screen = %+v, want dimensions without requiring phone_id", status.Environment.Screen)
 	}
 	if got := len(status.Environment.SystemApps); got != 1 {
 		t.Fatalf("system app count = %d, want 1", got)

@@ -37,6 +37,8 @@ type httpRequestBody struct {
 	Quality      int    `json:"quality"`
 	CropBlack    bool   `json:"crop_black"`
 	MinimalWidth int    `json:"minimal_width"`
+	ScreenWidth  int    `json:"screen_width,omitempty"`
+	ScreenHeight int    `json:"screen_height,omitempty"`
 }
 
 type httpErrorBody struct {
@@ -54,7 +56,7 @@ type httpResponseBody struct {
 	Error *httpErrorBody `json:"error,omitempty"`
 }
 
-func (c *HTTP) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*FrameMetadata, []byte, CaptureInfo, error) {
+func (c *HTTP) LatestFrameWithFormat(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, CaptureInfo, error) {
 	if c == nil || c.endpoint == "" {
 		return nil, nil, CaptureInfo{}, fmt.Errorf("remote screen provider not configured")
 	}
@@ -64,15 +66,15 @@ func (c *HTTP) LatestFrameWithFormat(format string, quality int, cropBlack bool,
 	if quality <= 0 {
 		quality = DefaultJPEGQuality
 	}
-	if minimalWidth < 0 {
-		minimalWidth = 0
-	}
+	hint = normalizeCropHint(hint)
 
 	bodyBytes, err := json.Marshal(httpRequestBody{
 		Format:       format,
 		Quality:      quality,
 		CropBlack:    cropBlack,
-		MinimalWidth: minimalWidth,
+		MinimalWidth: hint.MinimalWidth,
+		ScreenWidth:  hint.ScreenWidth,
+		ScreenHeight: hint.ScreenHeight,
 	})
 	if err != nil {
 		return nil, nil, CaptureInfo{}, fmt.Errorf("marshal screenshot provider request: %w", err)

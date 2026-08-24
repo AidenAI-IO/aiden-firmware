@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
+	"aiden-agent/internal/agent/screenprovider"
 )
 
 // fakeScreenFrameClient returns a canned JPEG frame.
@@ -19,7 +20,7 @@ type fakeScreenFrameClient struct {
 	calls int
 }
 
-func (f *fakeScreenFrameClient) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error) {
+func (f *fakeScreenFrameClient) LatestFrameWithFormat(format string, quality int, cropBlack bool, hint screenprovider.CropHint) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	f.calls++
 	if f.err != nil {
 		return nil, nil, screenCaptureInfo{}, f.err

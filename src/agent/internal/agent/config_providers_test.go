@@ -134,6 +134,29 @@ model = "gpt-4o"
 	}
 }
 
+func TestOpenRouterEndpointUsesOpenRouterCapabilities(t *testing.T) {
+	cfg, err := loadProviderConfig(t, `
+[model_providers.openrouter]
+type = "openai"
+api_key = "sk-test"
+base_url = "https://openrouter.ai/api/v1"
+
+[model]
+provider = "openrouter"
+model = "gpt-5.5"
+api_mode = "responses"
+`)
+	if err != nil {
+		t.Fatalf("load OpenRouter compatibility record: %v", err)
+	}
+	if cfg.Model.Provider != "openrouter" {
+		t.Fatalf("resolved provider = %q, want openrouter", cfg.Model.Provider)
+	}
+	if cfg.Model.BaseURL != "" {
+		t.Fatalf("resolved base_url = %q, want built-in OpenRouter endpoint", cfg.Model.BaseURL)
+	}
+}
+
 func TestProviderReferences(t *testing.T) {
 	tests := []struct {
 		name         string

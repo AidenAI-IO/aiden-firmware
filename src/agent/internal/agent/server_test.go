@@ -33,6 +33,7 @@ import (
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/screenprovider"
 	speechtext "aiden-agent/internal/agent/speech"
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
@@ -888,10 +889,6 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 		},
 		screen: currentScreen,
 	}
-	toolSet.screen.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{
-		NativeWidthPixels:  intPtr(1179),
-		NativeHeightPixels: intPtr(2556),
-	})
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
@@ -901,7 +898,22 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 		toolSet,
 		NewSkillIndex(),
 	)
+	bridge := newTestPhoneBridge(t)
+	bridge.hidConnectionState = func() (bool, bool) { return false, false }
+	bridge.hidMonitorEnabled = false
+	runtime.phoneBridge = bridge
 	server := newServerForTest(runtime)
+	if err := bridge.ApplyBenchmarkStatus(PhoneBridgeStatus{
+		Connected: true,
+		Platform:  "ios",
+		PhoneID:   "coordinate-debug-phone",
+		Environment: &PhoneEnvironment{Screen: screen.PhoneScreenInfo{
+			NativeWidthPixels:  intPtr(1179),
+			NativeHeightPixels: intPtr(2556),
+		}},
+	}); err != nil {
+		t.Fatalf("ApplyBenchmarkStatus() error = %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"double_tap"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1277,7 +1289,7 @@ func TestFrameServiceClientSendsRawCropBlackOption(t *testing.T) {
 	})
 
 	client := NewFrameServiceClient(frameSocket)
-	meta, data, err := client.LatestFrameWithFormat("raw", 0, true, 608)
+	meta, data, err := client.LatestFrameWithFormat("raw", 0, true, screenprovider.CropHint{MinimalWidth: 608})
 	if err != nil {
 		t.Fatalf("LatestFrameWithFormat() error = %v", err)
 	}
@@ -4599,6 +4611,28 @@ func TestBenchmarkSeedEpisodeRequiresBenchmarkToken(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBenchmarkSeedEpisodeRejectsUnknownAndTrailingJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "unknown field", body: `{"id":"ep_unknown","user_goal":"test","unknown":true}`},
+		{name: "trailing object", body: `{"id":"ep_trailing","user_goal":"test"}{}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := newBenchmarkSeedMemoryServer(t)
+			req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_episode", bytes.NewBufferString(tc.body))
+			req.Header.Set("Authorization", "Bearer test-benchmark-token")
+			rec := httptest.NewRecorder()
+			server.handleBenchmarkSeedEpisode(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

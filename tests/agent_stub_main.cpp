@@ -17,8 +17,11 @@
 //                                (default 0).
 //   AIDEN_AGENT_STUB_CONFIG_FILE   path to a file whose contents are written
 //                                  verbatim to stdout for `config`.
-//                                  If unset, prints a minimal resolved config.
+//                                  If unset, delegates to the real test agent.
 //   AIDEN_AGENT_STUB_CONFIG_EXIT   integer exit code for `config` (default 0).
+//   AIDEN_AGENT_STUB_UPDATE_FILE   path to stdout payload for `config-update`.
+//                                  If unset, delegates to the real test agent.
+//   AIDEN_AGENT_STUB_UPDATE_EXIT   integer exit code for `config-update`.
 //   AIDEN_AGENT_STUB_CONFIG_TEST_LOG path where `config-test` writes argv and
 //                                    stdin for assertions.
 //   AIDEN_AGENT_STUB_CONFIG_TEST_FILE path to stdout payload for `config-test`.
@@ -39,6 +42,16 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <vector>
+
+#include <unistd.h>
+
+#include "cJSON/cJSON.h"
+
+#ifndef AIDEN_REAL_AGENT_BIN
+#error "AIDEN_REAL_AGENT_BIN must be set by the build system"
+#endif
+
 
 namespace {
 
@@ -54,6 +67,9 @@ const char* kDefaultMeta =
     "{\"key\":\"base_url\",\"widget\":\"text\",\"visibleWhen\":{\"all\":["
     "{\"field\":\"model_providers.type\",\"op\":\"in\","
     "\"values\":[\"openai\",\"anthropic\",\"ollama\"]}]}}"
+    "]},"
+    "{\"name\":\"frame_service\",\"fields\":["
+    "{\"key\":\"keep_streamon\",\"widget\":\"boolean\",\"default\":false}"
     "]},"
     "{\"name\":\"quick_capture\",\"fields\":["
     "{\"key\":\"enabled\",\"widget\":\"boolean\"},"
@@ -81,6 +97,7 @@ const char* kDefaultConfig =
     "\"channels\":1,\"bit_width\":16},"
     "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
     "\"storage_path\":\"/userdata/audio\"},"
+    "\"frame_service\":{\"keep_streamon\":false},"
     "\"quick_capture\":{\"enabled\":true,\"gpio_pin\":3,\"screen_memory_ttl\":\"90d\"},"
     "\"voice_notifications\":{\"enabled\":true,\"max_pending\":8,"
     "\"response_tail\":{\"enabled\":true,\"max_items\":1,\"max_text_chars\":40},"
@@ -93,7 +110,7 @@ const char* kDefaultConfig =
     "\"telemetry\":{\"enabled\":false,\"provider\":\"langfuse\",\"base_url\":\"\","
     "\"public_key\":\"\",\"secret_key\":\"\",\"upload_screenshots\":true,"
     "\"upload_timeout_sec\":30,\"max_retry\":2,\"tags\":[],\"environment\":\"default\"},"
-    "\"agent\":{\"custom_instruction\":\"stub custom instruction\",\"additional_prompt\":\"\","
+    "\"agent\":{\"locale\":\"zh-CN\",\"custom_instruction\":\"stub custom instruction\",\"additional_prompt\":\"\","
     "\"input_mode\":\"text\",\"vad_backend\":\"rknn\","
     "\"vad_model_path\":\"/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn\","
     "\"vad_helper_path\":\"/oem/usr/bin/rknn_vad\",\"vad_speech_threshold\":0.5,"
@@ -111,6 +128,49 @@ const char* kDefaultConfigTest =
     "{\"ok\":true,\"results\":[{\"check\":\"tts_playback\",\"passed\":true,"
     "\"detail\":\"played test passed\"}]}\n";
 
+const char* kDefaultConfigUpdate =
+    "{\"ok\":true,\"config\":{},\"changed_paths\":[],\"reboot_required\":false}\n";
+
+bool config_check_rejected(const std::string& validation) {
+    cJSON* root = cJSON_Parse(validation.c_str());
+    if (!root) return false;
+    cJSON* valid = cJSON_GetObjectItem(root, "valid");
+    const bool rejected = valid && (valid->type & 0xff) == cJSON_False;
+    cJSON_Delete(root);
+    return rejected;
+}
+
+std::string config_check_error(const std::string& validation) {
+    cJSON* root = cJSON_Parse(validation.c_str());
+    if (!root) return "stub-rejected";
+    cJSON* errors = cJSON_GetObjectItem(root, "errors");
+    cJSON* first = errors && (errors->type & 0xff) == cJSON_Array
+        ? cJSON_GetArrayItem(errors, 0)
+        : nullptr;
+    cJSON* message = first && (first->type & 0xff) == cJSON_Object
+        ? cJSON_GetObjectItem(first, "message")
+        : nullptr;
+    const std::string result = message && (message->type & 0xff) == cJSON_String && message->valuestring
+        ? message->valuestring
+        : "stub-rejected";
+    cJSON_Delete(root);
+    return result;
+}
+
+void write_config_update_error(const std::string& message) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 0);
+    cJSON_AddStringToObject(root, "error", message.c_str());
+    cJSON_AddStringToObject(root, "error_kind", "invalid_request");
+    char* encoded = cJSON_PrintUnformatted(root);
+    if (encoded) {
+        std::fputs(encoded, stdout);
+        std::fputc('\n', stdout);
+        std::free(encoded);
+    }
+    cJSON_Delete(root);
+}
+
 void maybe_sleep() {
     const char* sleep_ms = std::getenv("AIDEN_AGENT_STUB_SLEEP_MS");
     if (!sleep_ms || sleep_ms[0] == '\0') {
@@ -120,6 +180,17 @@ void maybe_sleep() {
     if (ms > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
     }
+}
+
+int delegate_to_real_agent(int argc, char** argv) {
+    std::vector<char*> delegated;
+    delegated.reserve(static_cast<size_t>(argc) + 1);
+    delegated.push_back(const_cast<char*>(AIDEN_REAL_AGENT_BIN));
+    for (int i = 1; i < argc; ++i) delegated.push_back(argv[i]);
+    delegated.push_back(nullptr);
+    ::execv(AIDEN_REAL_AGENT_BIN, delegated.data());
+    std::perror("stub: exec real agent");
+    return 127;
 }
 
 bool write_file_contents(const char* env_var, const char* default_text) {
@@ -201,12 +272,48 @@ int main(int argc, char** argv) {
     }
 
     if (sub == "config") {
+        const char* config_file = std::getenv("AIDEN_AGENT_STUB_CONFIG_FILE");
+        if ((!config_file || config_file[0] == '\0') &&
+            !std::getenv("AIDEN_AGENT_STUB_CONFIG_EXIT")) {
+            return delegate_to_real_agent(argc, argv);
+        }
         maybe_sleep();
         if (!write_file_contents("AIDEN_AGENT_STUB_CONFIG_FILE", kDefaultConfig)) {
             return 1;
         }
         std::fflush(stdout);
         return env_int("AIDEN_AGENT_STUB_CONFIG_EXIT", 0);
+    }
+
+    if (sub == "config-update") {
+        const char* update_file = std::getenv("AIDEN_AGENT_STUB_UPDATE_FILE");
+        if ((update_file && update_file[0] != '\0') || std::getenv("AIDEN_AGENT_STUB_UPDATE_EXIT")) {
+            char buf[4096];
+            while (std::fread(buf, 1, sizeof(buf), stdin) > 0) {
+            }
+            maybe_sleep();
+            if (!write_file_contents("AIDEN_AGENT_STUB_UPDATE_FILE", kDefaultConfigUpdate)) {
+                return 1;
+            }
+            std::fflush(stdout);
+            return env_int("AIDEN_AGENT_STUB_UPDATE_EXIT", 0);
+        }
+        const char* check_file = std::getenv("AIDEN_AGENT_STUB_CHECK_FILE");
+        if (check_file && check_file[0] != '\0') {
+            std::ifstream check(check_file);
+            std::ostringstream check_body;
+            check_body << check.rdbuf();
+            const std::string validation = check_body.str();
+            if (config_check_rejected(validation) || env_int("AIDEN_AGENT_STUB_CHECK_EXIT", 0) != 0) {
+                char buf[4096];
+                while (std::fread(buf, 1, sizeof(buf), stdin) > 0) {
+                }
+                maybe_sleep();
+                write_config_update_error(config_check_error(validation));
+                return 1;
+            }
+        }
+        return delegate_to_real_agent(argc, argv);
     }
 
     if (sub == "config-test") {

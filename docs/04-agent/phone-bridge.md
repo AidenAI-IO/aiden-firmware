@@ -166,12 +166,20 @@ WebSocket's core value:
    Bridge reports `fgs_bridge_enabled` through HTTP queue polling.
 3. The board maintains `bridge_connected`, `platform`, `last_heartbeat_at`,
    `app_state`, return-entry and background-bridge fields, plus the latest
-   environment snapshot.
+   environment snapshot. `hid_connection_id` identifies the current physical
+   USB HID session from the board UDC state. It remains stable across
+   WebSocket reconnects and HTTP/FGS fallback, and changes only after the USB
+   host disconnects and reconnects.
 4. Before each conversational run, the Agent filters App-only tools and actions
    using foreground Phone Bridge, Dynamic Island restore, PiP/FGS polling, BLE
    Wake, and BLE notification-query capabilities.
 
 `bridge_connected` only means the WebSocket is currently active. It is not equivalent to USB cable connectivity. After the iOS app enters background, WebSocket may disconnect while USB ECM remains reachable; Dynamic Island updates use a local BLE Wake followed by a USB ECM read of `/api/live-activity/current`, not the phone bridge WebSocket or a remote relay.
+
+The Agent associates cached phone screen dimensions with
+`hid_connection_id`. A heartbeat timeout therefore does not discard the
+dimensions while the same USB HID session remains attached. A physical USB
+disconnect invalidates the cache before a new host session can reuse it.
 
 When `app_state=background|inactive`, `return_entry=dynamic_island`,
 `return_entry_available=true`, and PiP Bridge mode is not enabled, `open_url`

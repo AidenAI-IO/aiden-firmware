@@ -17,8 +17,9 @@ namespace aiden {
 // queue so the server can drain it via pop_chunk().
 class AudioRecordSession {
 public:
-    static const size_t kMaxQueueChunks = 512;  // ~32s at 16kHz/1024-sample frames
-    static const size_t kChunkSamples   = 1024;  // samples per chunk (16-bit mono)
+    // Frame-count bound; buffered duration varies with the captured frame shape
+    // and any sample-rate conversion performed before enqueueing.
+    static const size_t kMaxQueueChunks = 512;
 
     explicit AudioRecordSession(uint64_t session_id, const AudioFormat& fmt);
     ~AudioRecordSession();
@@ -29,7 +30,8 @@ public:
     bool start();
 
     // Block until a PCM chunk is available or timeout_ms elapses.
-    // Returns OK with data, TIMEOUT if no data arrived, or INTERNAL_ERROR on stop.
+    // Returns OK with data, TIMEOUT if no data arrived, or OK with
+    // end_of_stream=true after stop once the queue has drained.
     AidenServiceStatus pop_chunk(uint32_t timeout_ms, AudioChunkResult* out);
 
     // Signal the session to stop. Unblocks any pending pop_chunk().

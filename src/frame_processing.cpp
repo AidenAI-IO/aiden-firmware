@@ -1,5 +1,4 @@
 #include "frame_processing.h"
-#include "frame_crop_bounds.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -88,117 +87,530 @@ bool convert_frame_to_rgb(const FrameMetadata& metadata,
     return false;
 }
 
-static bool is_black_rgb_column(const std::vector<uint8_t>& rgb,
-                                uint32_t width,
-                                uint32_t height,
-                                uint32_t column,
-                                double threshold,
-                                double stddev_limit) {
-    double sum = 0.0;
-    double squared_sum = 0.0;
-    for (uint32_t y = 0; y < height; ++y) {
-        const size_t offset = (static_cast<size_t>(y) * width + column) * 3;
-        const double brightness = 0.299 * rgb[offset] +
-                                  0.587 * rgb[offset + 1] +
-                                  0.114 * rgb[offset + 2];
-        sum += brightness;
-        squared_sum += brightness * brightness;
-    }
-    const double mean = sum / height;
-    const double variance = std::max(0.0, squared_sum / height - mean * mean);
-    return mean <= threshold && std::sqrt(variance) <= stddev_limit;
+static bool supported_crop_format(const FrameMetadata& metadata) {
+    return metadata.pixel_format == "uyvy" || metadata.pixel_format == "yuyv" ||
+           metadata.pixel_format == "nv12" || metadata.pixel_format == "nv16";
 }
 
-bool crop_frame_horizontal_center(const FrameMetadata& metadata,
-                                   const std::vector<uint8_t>& frame,
-                                   uint32_t target_width,
-                                   FrameMetadata* cropped_metadata,
-                                   std::vector<uint8_t>* cropped_frame) {
-    if (!cropped_metadata || !cropped_frame || target_width == 0 ||
-        metadata.width == 0 || metadata.height == 0 || (metadata.width & 1U) != 0 ||
-        (metadata.pixel_format != "uyvy" && metadata.pixel_format != "yuyv" &&
-         metadata.pixel_format != "nv12" && metadata.pixel_format != "nv16")) {
+static bool valid_crop_frame(const FrameMetadata& metadata,
+                             const std::vector<uint8_t>& frame) {
+    if (metadata.width == 0 || metadata.height == 0 ||
+        (metadata.width & 1U) != 0 || !supported_crop_format(metadata)) {
         return false;
     }
     if (metadata.pixel_format == "nv12" && (metadata.height & 1U) != 0) {
         return false;
     }
-
-    const uint32_t source_width = metadata.width;
-    uint32_t cropped_width = std::min(target_width, source_width);
-    if (cropped_width < source_width && (cropped_width & 1U) != 0) {
-        ++cropped_width;
+    size_t required = static_cast<size_t>(metadata.width) * metadata.height;
+    if (metadata.pixel_format == "uyvy" || metadata.pixel_format == "yuyv" ||
+        metadata.pixel_format == "nv16") {
+        required *= 2U;
+    } else {
+        required += required / 2U;
     }
-    const uint32_t left = ((source_width - cropped_width) / 2U) & ~1U;
+    return frame.size() >= required;
+}
+
+static uint8_t frame_luma_at(const FrameMetadata& metadata,
+                             const std::vector<uint8_t>& frame,
+                             uint32_t x,
+                             uint32_t y) {
+    if (metadata.pixel_format == "uyvy") {
+        return frame[(static_cast<size_t>(y) * metadata.width + x) * 2U + 1U];
+    }
+    if (metadata.pixel_format == "yuyv") {
+        return frame[(static_cast<size_t>(y) * metadata.width + x) * 2U];
+    }
+    return frame[static_cast<size_t>(y) * metadata.width + x];
+}
+
+static bool is_black_luma_line(const FrameMetadata& metadata,
+                               const std::vector<uint8_t>& frame,
+                               bool vertical,
+                               uint32_t position) {
+    double sum = 0.0;
+    double squared_sum = 0.0;
+    const uint32_t length = vertical ? metadata.height : metadata.width;
+    for (uint32_t i = 0; i < length; ++i) {
+        const uint8_t luma = vertical
+                                 ? frame_luma_at(metadata, frame, position, i)
+                                 : frame_luma_at(metadata, frame, i, position);
+        sum += luma;
+        squared_sum += static_cast<double>(luma) * luma;
+    }
+    const double mean = sum / length;
+    const double variance = std::max(0.0, squared_sum / length - mean * mean);
+    // Limited-range YUV black is normally 16. Keep a little headroom for
+    // capture noise while still rejecting dark, detailed UI content.
+    return mean <= 30.0 && std::sqrt(variance) <= 6.0;
+}
+
+struct AxisCrop {
+    int first;
+    int last;
+    bool valid;
+};
+
+template <typename IsBorder>
+static AxisCrop detect_axis_crop(int length, IsBorder is_border) {
+    AxisCrop result = {0, length - 1, false};
+    if (length <= 1 || !is_border(0) || !is_border(length - 1)) {
+        return result;
+    }
+
+    const int probes[] = {
+        length / 2,
+        length / 4,
+        (length * 3) / 4,
+        length / 8,
+        (length * 3) / 8,
+        (length * 5) / 8,
+        (length * 7) / 8,
+    };
+    int active_seed = -1;
+    for (size_t i = 0; i < sizeof(probes) / sizeof(probes[0]); ++i) {
+        const int probe = std::min(length - 1, std::max(0, probes[i]));
+        if (!is_border(probe)) {
+            active_seed = probe;
+            break;
+        }
+    }
+    if (active_seed < 0) {
+        return result;
+    }
+
+    int border = 0;
+    int active = active_seed;
+    while (active - border > 1) {
+        const int middle = border + (active - border) / 2;
+        if (is_border(middle)) {
+            border = middle;
+        } else {
+            active = middle;
+        }
+    }
+    result.first = active;
+
+    active = active_seed;
+    border = length - 1;
+    while (border - active > 1) {
+        const int middle = active + (border - active) / 2;
+        if (is_border(middle)) {
+            border = middle;
+        } else {
+            active = middle;
+        }
+    }
+    result.last = active;
+
+    const int active_length = result.last - result.first + 1;
+    const int leading = result.first;
+    const int trailing = length - 1 - result.last;
+    const int symmetry_tolerance = std::max(4, length / 100);
+    result.valid = active_length >= length / 5 && active_length <= length * 95 / 100 &&
+                   std::abs(leading - trailing) <= symmetry_tolerance;
+    return result;
+}
+
+static bool resolve_crop_metadata(const FrameMetadata& metadata,
+                                  const std::vector<uint8_t>& frame,
+                                  uint32_t crop_x,
+                                  uint32_t crop_y,
+                                  uint32_t crop_width,
+                                  uint32_t crop_height,
+                                  FrameMetadata* cropped_metadata) {
+    if (!cropped_metadata || !valid_crop_frame(metadata, frame) ||
+        crop_width == 0 || crop_height == 0 || crop_x + crop_width > metadata.width ||
+        crop_y + crop_height > metadata.height || (crop_x & 1U) != 0 ||
+        (crop_width & 1U) != 0) {
+        return false;
+    }
+    if (metadata.pixel_format == "nv12" &&
+        (((crop_y | crop_height) & 1U) != 0)) {
+        return false;
+    }
 
     FrameMetadata result = metadata;
-    result.source_width = source_width;
+    result.source_width = metadata.width;
     result.source_height = metadata.height;
-    result.crop_x = left;
-    result.crop_y = 0;
-    result.crop_width = cropped_width;
-    result.crop_height = metadata.height;
-    result.width = cropped_width;
-    result.height = metadata.height;
+    result.crop_x = crop_x;
+    result.crop_y = crop_y;
+    result.crop_width = crop_width;
+    result.crop_height = crop_height;
+    result.width = crop_width;
+    result.height = crop_height;
     result.planes.clear();
 
     if (metadata.pixel_format == "uyvy" || metadata.pixel_format == "yuyv") {
-        const size_t source_row_bytes = static_cast<size_t>(source_width) * 2U;
-        const size_t cropped_row_bytes = static_cast<size_t>(cropped_width) * 2U;
-        if (frame.size() < source_row_bytes * metadata.height) {
-            return false;
-        }
-        cropped_frame->resize(cropped_row_bytes * metadata.height);
-        for (uint32_t y = 0; y < metadata.height; ++y) {
-            const size_t source_offset = static_cast<size_t>(y) * source_row_bytes + left * 2U;
-            const size_t cropped_offset = static_cast<size_t>(y) * cropped_row_bytes;
-            memcpy(cropped_frame->data() + cropped_offset,
-                   frame.data() + source_offset,
-                   cropped_row_bytes);
-        }
-        result.stride = cropped_width * 2U;
+        result.stride = crop_width * 2U;
+        result.bytes = static_cast<uint64_t>(crop_width) * crop_height * 2U;
     } else {
-        const size_t source_y_bytes = static_cast<size_t>(source_width) * metadata.height;
-        const uint32_t uv_rows = metadata.pixel_format == "nv12"
-                                      ? metadata.height / 2U
-                                      : metadata.height;
-        const size_t source_uv_bytes = static_cast<size_t>(source_width) * uv_rows;
-        if (frame.size() < source_y_bytes + source_uv_bytes) {
-            return false;
-        }
-        const size_t cropped_row_bytes = cropped_width;
-        cropped_frame->resize(cropped_row_bytes * (metadata.height + uv_rows));
-        for (uint32_t y = 0; y < metadata.height; ++y) {
-            const size_t source_offset = static_cast<size_t>(y) * source_width + left;
-            const size_t cropped_offset = static_cast<size_t>(y) * cropped_row_bytes;
-            memcpy(cropped_frame->data() + cropped_offset,
-                   frame.data() + source_offset,
-                   cropped_row_bytes);
-        }
-        for (uint32_t y = 0; y < uv_rows; ++y) {
-            const size_t source_offset = source_y_bytes + static_cast<size_t>(y) * source_width + left;
-            const size_t cropped_offset = cropped_row_bytes * metadata.height +
-                                          static_cast<size_t>(y) * cropped_row_bytes;
-            memcpy(cropped_frame->data() + cropped_offset,
-                   frame.data() + source_offset,
-                   cropped_row_bytes);
-        }
+        const uint32_t cropped_uv_rows = metadata.pixel_format == "nv12"
+                                             ? crop_height / 2U
+                                             : crop_height;
         FramePlaneMetadata y_plane;
         y_plane.offset = 0;
-        y_plane.stride = cropped_width;
-        y_plane.bytes = cropped_width * metadata.height;
+        y_plane.stride = crop_width;
+        y_plane.bytes = crop_width * crop_height;
         result.planes.push_back(y_plane);
         FramePlaneMetadata uv_plane;
         uv_plane.offset = y_plane.bytes;
-        uv_plane.stride = cropped_width;
-        uv_plane.bytes = cropped_width * uv_rows;
+        uv_plane.stride = crop_width;
+        uv_plane.bytes = crop_width * cropped_uv_rows;
         result.planes.push_back(uv_plane);
-        result.stride = metadata.pixel_format == "nv16" ? cropped_width * 2U : cropped_width;
+        result.stride = metadata.pixel_format == "nv16" ? crop_width * 2U : crop_width;
+        result.bytes = static_cast<uint64_t>(crop_width) *
+                       (crop_height + cropped_uv_rows);
     }
 
-    result.bytes = cropped_frame->size();
     *cropped_metadata = result;
     return true;
+}
+
+static bool crop_frame_rect(const FrameMetadata& metadata,
+                            const std::vector<uint8_t>& frame,
+                            uint32_t crop_x,
+                            uint32_t crop_y,
+                            uint32_t crop_width,
+                            uint32_t crop_height,
+                            FrameMetadata* cropped_metadata,
+                            std::vector<uint8_t>* cropped_frame) {
+    if (!cropped_metadata || !cropped_frame ||
+        !resolve_crop_metadata(metadata, frame, crop_x, crop_y, crop_width, crop_height,
+                               cropped_metadata)) {
+        return false;
+    }
+
+    if (metadata.pixel_format == "uyvy" || metadata.pixel_format == "yuyv") {
+        const size_t source_row_bytes = static_cast<size_t>(metadata.width) * 2U;
+        const size_t cropped_row_bytes = static_cast<size_t>(crop_width) * 2U;
+        cropped_frame->resize(cropped_row_bytes * crop_height);
+        for (uint32_t y = 0; y < crop_height; ++y) {
+            const size_t source_offset = static_cast<size_t>(crop_y + y) * source_row_bytes +
+                                         static_cast<size_t>(crop_x) * 2U;
+            const size_t cropped_offset = static_cast<size_t>(y) * cropped_row_bytes;
+            memcpy(cropped_frame->data() + cropped_offset,
+                   frame.data() + source_offset,
+                   cropped_row_bytes);
+        }
+    } else {
+        const size_t source_y_bytes = static_cast<size_t>(metadata.width) * metadata.height;
+        const uint32_t source_uv_y = metadata.pixel_format == "nv12" ? crop_y / 2U : crop_y;
+        const uint32_t cropped_uv_rows = metadata.pixel_format == "nv12"
+                                             ? crop_height / 2U
+                                             : crop_height;
+        cropped_frame->resize(static_cast<size_t>(crop_width) *
+                              (crop_height + cropped_uv_rows));
+        for (uint32_t y = 0; y < crop_height; ++y) {
+            const size_t source_offset = static_cast<size_t>(crop_y + y) * metadata.width + crop_x;
+            const size_t cropped_offset = static_cast<size_t>(y) * crop_width;
+            memcpy(cropped_frame->data() + cropped_offset,
+                   frame.data() + source_offset,
+                   crop_width);
+        }
+        for (uint32_t y = 0; y < cropped_uv_rows; ++y) {
+            const size_t source_offset = source_y_bytes +
+                                         static_cast<size_t>(source_uv_y + y) * metadata.width +
+                                         crop_x;
+            const size_t cropped_offset = static_cast<size_t>(crop_width) * crop_height +
+                                          static_cast<size_t>(y) * crop_width;
+            memcpy(cropped_frame->data() + cropped_offset,
+                   frame.data() + source_offset,
+                   crop_width);
+        }
+    }
+
+    cropped_metadata->bytes = cropped_frame->size();
+    return true;
+}
+
+static uint32_t even_crop_extent(uint32_t extent, uint32_t limit) {
+    extent = std::min(extent, limit);
+    if ((extent & 1U) == 0) {
+        return extent;
+    }
+    // Prefer retaining one more pixel/row. If an odd source edge cannot be
+    // expanded, drop one when possible; a one-pixel source is left intact.
+    if (extent < limit) {
+        return extent + 1U;
+    }
+    return extent > 1U ? extent - 1U : extent;
+}
+
+struct CenterCropRect {
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+};
+
+static bool centered_crop_rect(const FrameMetadata& metadata,
+                               uint32_t target_width, uint32_t target_height,
+                               CenterCropRect* rect) {
+    if (!rect || target_width == 0 || target_height == 0) {
+        return false;
+    }
+    rect->width = even_crop_extent(target_width, metadata.width);
+    rect->height = even_crop_extent(target_height, metadata.height);
+    if (rect->width == 0 || rect->height == 0) {
+        return false;
+    }
+    rect->x = ((metadata.width - rect->width) / 2U) & ~1U;
+    rect->y = (metadata.height - rect->height) / 2U;
+    if (metadata.pixel_format == "nv12") {
+        rect->y &= ~1U;
+    }
+    return rect->x + rect->width <= metadata.width &&
+           rect->y + rect->height <= metadata.height;
+}
+
+bool crop_frame_center(const FrameMetadata& metadata,
+                       const std::vector<uint8_t>& frame,
+                       uint32_t target_width,
+                       uint32_t target_height,
+                       FrameMetadata* cropped_metadata,
+                       std::vector<uint8_t>* cropped_frame) {
+    if (!cropped_metadata || !cropped_frame || !valid_crop_frame(metadata, frame) ||
+        target_width == 0 || target_height == 0) {
+        return false;
+    }
+
+    CenterCropRect rect;
+    if (!centered_crop_rect(metadata, target_width, target_height, &rect)) {
+        return false;
+    }
+    return crop_frame_rect(metadata, frame, rect.x, rect.y, rect.width, rect.height,
+                           cropped_metadata, cropped_frame);
+}
+
+bool resolve_frame_center_crop(const FrameMetadata& metadata,
+                               const std::vector<uint8_t>& frame,
+                               uint32_t target_width,
+                               uint32_t target_height,
+                               FrameMetadata* cropped_metadata) {
+    if (!cropped_metadata || !valid_crop_frame(metadata, frame) ||
+        target_width == 0 || target_height == 0) {
+        return false;
+    }
+    CenterCropRect rect;
+    if (!centered_crop_rect(metadata, target_width, target_height, &rect)) {
+        return false;
+    }
+    return resolve_crop_metadata(metadata, frame, rect.x, rect.y, rect.width, rect.height,
+                                 cropped_metadata);
+}
+
+static void centered_aspect_crop_size(uint32_t frame_width, uint32_t frame_height,
+                                      uint32_t screen_width, uint32_t screen_height,
+                                      uint32_t* crop_width, uint32_t* crop_height) {
+    *crop_width = frame_width;
+    *crop_height = frame_height;
+    if (frame_width == 0 || frame_height == 0 || screen_width == 0 || screen_height == 0) {
+        return;
+    }
+    if (static_cast<uint64_t>(screen_width) * frame_height <=
+        static_cast<uint64_t>(screen_height) * frame_width) {
+        const uint64_t numerator = static_cast<uint64_t>(frame_height) * screen_width;
+        *crop_width = static_cast<uint32_t>(
+            std::max<uint64_t>(1, (numerator + screen_height / 2U) / screen_height));
+    } else {
+        const uint64_t numerator = static_cast<uint64_t>(frame_width) * screen_height;
+        *crop_height = static_cast<uint32_t>(
+            std::max<uint64_t>(1, (numerator + screen_width / 2U) / screen_width));
+    }
+    *crop_width = even_crop_extent(*crop_width, frame_width);
+    *crop_height = even_crop_extent(*crop_height, frame_height);
+}
+
+struct BorderScore {
+    uint32_t black;
+    uint32_t total;
+};
+
+static void score_black_border_band(const FrameMetadata& metadata,
+                                    const std::vector<uint8_t>& frame,
+                                    bool vertical,
+                                    uint32_t begin,
+                                    uint32_t end,
+                                    BorderScore* score) {
+    if (!score || begin >= end) {
+        return;
+    }
+    const uint32_t length = end - begin;
+    const uint32_t samples = std::min<uint32_t>(5, length);
+    for (uint32_t i = 0; i < samples; ++i) {
+        const uint32_t offset = samples == 1
+                                    ? 0
+                                    : static_cast<uint32_t>(
+                                          static_cast<uint64_t>(length - 1) * i /
+                                          (samples - 1));
+        if (is_black_luma_line(metadata, frame, vertical, begin + offset)) {
+            ++score->black;
+        }
+        ++score->total;
+    }
+}
+
+static BorderScore centered_crop_border_score(const FrameMetadata& metadata,
+                                               const std::vector<uint8_t>& frame,
+                                               uint32_t crop_width,
+                                               uint32_t crop_height) {
+    BorderScore score = {0, 0};
+    const uint32_t crop_x = (metadata.width - crop_width) / 2U;
+    const uint32_t crop_y = (metadata.height - crop_height) / 2U;
+    score_black_border_band(metadata, frame, true, 0, crop_x, &score);
+    score_black_border_band(metadata, frame, true, crop_x + crop_width,
+                            metadata.width, &score);
+    score_black_border_band(metadata, frame, false, 0, crop_y, &score);
+    score_black_border_band(metadata, frame, false, crop_y + crop_height,
+                            metadata.height, &score);
+    return score;
+}
+
+bool resolve_frame_center_aspect_auto_crop(const FrameMetadata& metadata,
+                                           const std::vector<uint8_t>& frame,
+                                           uint32_t screen_width,
+                                           uint32_t screen_height,
+                                           FrameMetadata* cropped_metadata) {
+    if (!cropped_metadata || !valid_crop_frame(metadata, frame) ||
+        screen_width == 0 || screen_height == 0) {
+        return false;
+    }
+
+    const uint32_t short_side = std::min(screen_width, screen_height);
+    const uint32_t long_side = std::max(screen_width, screen_height);
+    uint32_t portrait_width = metadata.width;
+    uint32_t portrait_height = metadata.height;
+    uint32_t landscape_width = metadata.width;
+    uint32_t landscape_height = metadata.height;
+    centered_aspect_crop_size(metadata.width, metadata.height, short_side, long_side,
+                              &portrait_width, &portrait_height);
+    centered_aspect_crop_size(metadata.width, metadata.height, long_side, short_side,
+                              &landscape_width, &landscape_height);
+
+    if (portrait_width == landscape_width && portrait_height == landscape_height) {
+        return resolve_frame_center_crop(metadata, frame, portrait_width, portrait_height,
+                                         cropped_metadata);
+    }
+    if (portrait_width == metadata.width && portrait_height == metadata.height) {
+        return resolve_frame_center_crop(metadata, frame, portrait_width, portrait_height,
+                                         cropped_metadata);
+    }
+    if (landscape_width == metadata.width && landscape_height == metadata.height) {
+        return resolve_frame_center_crop(metadata, frame, landscape_width, landscape_height,
+                                         cropped_metadata);
+    }
+
+    const BorderScore portrait = centered_crop_border_score(
+        metadata, frame, portrait_width, portrait_height);
+    const BorderScore landscape = centered_crop_border_score(
+        metadata, frame, landscape_width, landscape_height);
+    bool use_landscape;
+    const uint64_t portrait_weighted = static_cast<uint64_t>(portrait.black) * landscape.total;
+    const uint64_t landscape_weighted = static_cast<uint64_t>(landscape.black) * portrait.total;
+    if (landscape_weighted != portrait_weighted) {
+        use_landscape = landscape_weighted > portrait_weighted;
+    } else {
+        // When the pixels are ambiguous, derive orientation from this frame's
+        // geometry rather than from the cached width/height ordering.
+        use_landscape = metadata.width >= metadata.height;
+    }
+
+    return use_landscape
+               ? resolve_frame_center_crop(metadata, frame, landscape_width, landscape_height,
+                                           cropped_metadata)
+               : resolve_frame_center_crop(metadata, frame, portrait_width, portrait_height,
+                                           cropped_metadata);
+}
+
+bool crop_frame_center_aspect_auto(const FrameMetadata& metadata,
+                                   const std::vector<uint8_t>& frame,
+                                   uint32_t screen_width,
+                                   uint32_t screen_height,
+                                   FrameMetadata* cropped_metadata,
+                                   std::vector<uint8_t>* cropped_frame) {
+    FrameMetadata resolved;
+    if (!cropped_metadata || !cropped_frame ||
+        !resolve_frame_center_aspect_auto_crop(metadata, frame, screen_width, screen_height,
+                                               &resolved)) {
+        return false;
+    }
+    return crop_frame_rect(metadata, frame, resolved.crop_x, resolved.crop_y,
+                           resolved.crop_width, resolved.crop_height,
+                           cropped_metadata, cropped_frame);
+}
+
+bool crop_frame_horizontal_center(const FrameMetadata& metadata,
+                                  const std::vector<uint8_t>& frame,
+                                  uint32_t target_width,
+                                  FrameMetadata* cropped_metadata,
+                                  std::vector<uint8_t>* cropped_frame) {
+    return crop_frame_center(metadata, frame, target_width, metadata.height,
+                             cropped_metadata, cropped_frame);
+}
+
+bool resolve_frame_black_bars_crop(const FrameMetadata& metadata,
+                                   const std::vector<uint8_t>& frame,
+                                   FrameMetadata* cropped_metadata) {
+    if (!cropped_metadata || !valid_crop_frame(metadata, frame)) {
+        return false;
+    }
+
+    const AxisCrop horizontal = detect_axis_crop(
+        static_cast<int>(metadata.width), [&](int x) {
+            return is_black_luma_line(metadata, frame, true, static_cast<uint32_t>(x));
+        });
+    const AxisCrop vertical = detect_axis_crop(
+        static_cast<int>(metadata.height), [&](int y) {
+            return is_black_luma_line(metadata, frame, false, static_cast<uint32_t>(y));
+        });
+
+    bool crop_horizontal = horizontal.valid;
+    bool crop_vertical = vertical.valid;
+    if (crop_horizontal && crop_vertical) {
+        const double horizontal_removed =
+            1.0 - static_cast<double>(horizontal.last - horizontal.first + 1) / metadata.width;
+        const double vertical_removed =
+            1.0 - static_cast<double>(vertical.last - vertical.first + 1) / metadata.height;
+        crop_horizontal = horizontal_removed > vertical_removed;
+        crop_vertical = !crop_horizontal;
+    }
+
+    uint32_t crop_x = 0;
+    uint32_t crop_y = 0;
+    uint32_t crop_width = metadata.width;
+    uint32_t crop_height = metadata.height;
+    if (crop_horizontal) {
+        crop_x = static_cast<uint32_t>(horizontal.first) & ~1U;
+        const uint32_t right = std::min(metadata.width - 1U,
+                                        static_cast<uint32_t>(horizontal.last) | 1U);
+        crop_width = right - crop_x + 1U;
+    } else if (crop_vertical) {
+        crop_y = static_cast<uint32_t>(vertical.first);
+        crop_height = static_cast<uint32_t>(vertical.last - vertical.first + 1);
+        if (metadata.pixel_format == "nv12") {
+            crop_y &= ~1U;
+            const uint32_t bottom = std::min(metadata.height - 1U,
+                                             static_cast<uint32_t>(vertical.last) | 1U);
+            crop_height = bottom - crop_y + 1U;
+        }
+    }
+    return resolve_crop_metadata(metadata, frame, crop_x, crop_y, crop_width, crop_height,
+                                 cropped_metadata);
+}
+
+bool crop_frame_black_bars(const FrameMetadata& metadata,
+                           const std::vector<uint8_t>& frame,
+                           FrameMetadata* cropped_metadata,
+                           std::vector<uint8_t>* cropped_frame) {
+    FrameMetadata resolved;
+    if (!cropped_metadata || !cropped_frame ||
+        !resolve_frame_black_bars_crop(metadata, frame, &resolved)) {
+        return false;
+    }
+    return crop_frame_rect(metadata, frame, resolved.crop_x, resolved.crop_y,
+                           resolved.crop_width, resolved.crop_height,
+                           cropped_metadata, cropped_frame);
 }
 
 bool crop_frame_horizontal_black_bars(const FrameMetadata& metadata,
@@ -207,159 +619,18 @@ bool crop_frame_horizontal_black_bars(const FrameMetadata& metadata,
                                       FrameMetadata* cropped_metadata,
                                       std::vector<uint8_t>* cropped_frame,
                                       bool crop_by_aspect) {
-    if (!cropped_metadata || !cropped_frame || metadata.width == 0 || metadata.height == 0 ||
-        (metadata.width & 1U) != 0) {
-        return false;
-    }
-    if (metadata.pixel_format == "nv12" && (metadata.height & 1U) != 0) {
-        return false;
-    }
-
     if (crop_by_aspect && minimal_width > 0) {
         return crop_frame_horizontal_center(metadata, frame, minimal_width,
                                             cropped_metadata, cropped_frame);
     }
-
-    std::vector<uint8_t> rgb;
-    if (!convert_frame_to_rgb(metadata, frame, &rgb)) {
+    if (!crop_frame_black_bars(metadata, frame, cropped_metadata, cropped_frame)) {
         return false;
     }
-
-    const int last_column = static_cast<int>(metadata.width) - 1;
-    const auto is_border = [&](int column) {
-        return is_black_rgb_column(rgb, metadata.width, metadata.height,
-                                   static_cast<uint32_t>(column), 15.0, 6.0);
-    };
-
-    // Black bars are assumed to be contiguous from each edge; locate each
-    // transition with logarithmic probes after finding an active seed.
-    int left = 0;
-    int right = last_column;
-    const bool first_is_border = is_border(0);
-    const bool last_is_border = is_border(last_column);
-    int active_seed = -1;
-    if (!first_is_border) {
-        active_seed = 0;
-    } else if (!last_is_border) {
-        active_seed = last_column;
-    } else {
-        const int probe_positions[] = {
-            static_cast<int>(metadata.width / 2U),
-            static_cast<int>(metadata.width / 4U),
-            static_cast<int>((metadata.width * 3U) / 4U),
-            static_cast<int>(metadata.width / 8U),
-            static_cast<int>((metadata.width * 3U) / 8U),
-            static_cast<int>((metadata.width * 5U) / 8U),
-            static_cast<int>((metadata.width * 7U) / 8U),
-        };
-        for (size_t i = 0; i < sizeof(probe_positions) / sizeof(probe_positions[0]); ++i) {
-            const int probe = std::min(last_column, std::max(0, probe_positions[i]));
-            if (!is_border(probe)) {
-                active_seed = probe;
-                break;
-            }
-        }
+    if (minimal_width > 0 && cropped_metadata->width < minimal_width &&
+        cropped_metadata->height == metadata.height) {
+        return crop_frame_horizontal_center(metadata, frame, minimal_width,
+                                            cropped_metadata, cropped_frame);
     }
-
-    if (active_seed < 0) {
-        left = 0;
-        right = last_column;
-    } else if (first_is_border) {
-        int border = 0;
-        int active = active_seed;
-        while (active - border > 1) {
-            const int middle = border + (active - border) / 2;
-            if (is_border(middle)) {
-                border = middle;
-            } else {
-                active = middle;
-            }
-        }
-        left = active;
-    }
-    if (active_seed >= 0 && last_is_border) {
-        int active = active_seed;
-        int border = last_column;
-        while (border - active > 1) {
-            const int middle = active + (border - active) / 2;
-            if (is_border(middle)) {
-                border = middle;
-            } else {
-                active = middle;
-            }
-        }
-        right = active;
-    }
-
-    include_centered_minimal_width(static_cast<int>(metadata.width), minimal_width, &left, &right);
-
-    // Every supported raw format shares chroma between adjacent horizontal
-    // pixels, so preserve complete pixel pairs in the cropped payload.
-    left &= ~1;
-    right = std::min(static_cast<int>(metadata.width) - 1, right | 1);
-    const uint32_t cropped_width = static_cast<uint32_t>(right - left + 1);
-    const uint32_t height = metadata.height;
-
-    cropped_frame->clear();
-    FrameMetadata result = metadata;
-    result.source_width = metadata.width;
-    result.source_height = metadata.height;
-    result.crop_x = static_cast<uint32_t>(left);
-    result.crop_y = 0;
-    result.crop_width = cropped_width;
-    result.crop_height = height;
-    result.width = cropped_width;
-    result.height = height;
-    result.planes.clear();
-
-    if (metadata.pixel_format == "uyvy" || metadata.pixel_format == "yuyv") {
-        const size_t source_row_bytes = static_cast<size_t>(metadata.width) * 2;
-        const size_t cropped_row_bytes = static_cast<size_t>(cropped_width) * 2;
-        if (frame.size() < source_row_bytes * height) {
-            return false;
-        }
-        cropped_frame->reserve(cropped_row_bytes * height);
-        for (uint32_t y = 0; y < height; ++y) {
-            const size_t begin = static_cast<size_t>(y) * source_row_bytes + static_cast<size_t>(left) * 2;
-            cropped_frame->insert(cropped_frame->end(), frame.begin() + begin,
-                                  frame.begin() + begin + cropped_row_bytes);
-        }
-        result.stride = cropped_width * 2;
-    } else if (metadata.pixel_format == "nv12" || metadata.pixel_format == "nv16") {
-        const size_t source_y_bytes = static_cast<size_t>(metadata.width) * height;
-        const uint32_t uv_rows = metadata.pixel_format == "nv12" ? height / 2 : height;
-        const size_t source_uv_bytes = static_cast<size_t>(metadata.width) * uv_rows;
-        if (frame.size() < source_y_bytes + source_uv_bytes) {
-            return false;
-        }
-        cropped_frame->reserve(static_cast<size_t>(cropped_width) * (height + uv_rows));
-        for (uint32_t y = 0; y < height; ++y) {
-            const size_t begin = static_cast<size_t>(y) * metadata.width + left;
-            cropped_frame->insert(cropped_frame->end(), frame.begin() + begin,
-                                  frame.begin() + begin + cropped_width);
-        }
-        for (uint32_t y = 0; y < uv_rows; ++y) {
-            const size_t begin = source_y_bytes + static_cast<size_t>(y) * metadata.width + left;
-            cropped_frame->insert(cropped_frame->end(), frame.begin() + begin,
-                                  frame.begin() + begin + cropped_width);
-        }
-        FramePlaneMetadata y_plane;
-        y_plane.offset = 0;
-        y_plane.stride = cropped_width;
-        y_plane.bytes = cropped_width * height;
-        result.planes.push_back(y_plane);
-        FramePlaneMetadata uv_plane;
-        uv_plane.offset = y_plane.bytes;
-        uv_plane.stride = cropped_width;
-        uv_plane.bytes = cropped_width * uv_rows;
-        result.planes.push_back(uv_plane);
-        result.stride = metadata.pixel_format == "nv16" ? cropped_width * 2 : cropped_width;
-    } else {
-        return false;
-    }
-
-    result.bytes = cropped_frame->size();
-    *cropped_metadata = result;
     return true;
 }
 

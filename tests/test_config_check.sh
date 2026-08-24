@@ -1,10 +1,10 @@
 #!/bin/bash
 # Integration test for config-check CLI integration with config_web.
 #
-# All payloads use the real wire format produced by config_web.cpp's
-# config_to_json(): snake_case keys, agent-level settings nested under an
-# "agent" object, and search reporting only has_api_key (the UI never echoes
-# the stored secret). Using the actual wire shape here is the point: the
+# All payloads use the real config_web wire format defined by webConfigDTO:
+# snake_case keys, agent-level settings nested under an "agent" object, and
+# search reporting only has_api_key (the UI never echoes the stored secret).
+# Using the actual wire shape here is the point: the
 # earlier PascalCase fixtures bypassed the decode path and masked a contract
 # mismatch that accepted every invalid config in production.
 

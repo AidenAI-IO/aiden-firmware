@@ -18,9 +18,9 @@ func NewEventBroadcaster() *EventBroadcaster {
 	}
 }
 
-// Subscribe returns a buffered channel that receives every Broadcast call.
-// Callers must Unsubscribe when done; the broadcaster does not garbage-collect
-// orphaned channels.
+// Subscribe returns a buffered best-effort delivery channel. Broadcast drops a
+// message for this subscriber when its buffer is full. Callers must Unsubscribe
+// when done; the broadcaster does not garbage-collect orphaned channels.
 func (b *EventBroadcaster) Subscribe() chan Message {
 	ch := make(chan Message, eventSubscriberBufferSize)
 	b.mu.Lock()

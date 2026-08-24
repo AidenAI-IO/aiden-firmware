@@ -12,23 +12,23 @@ import (
 )
 
 type stubProvider struct {
-	meta         FrameMetadata
-	data         []byte
-	info         CaptureInfo
-	err          error
-	calls        int
-	format       string
-	quality      int
-	cropBlack    bool
-	minimalWidth int
+	meta      FrameMetadata
+	data      []byte
+	info      CaptureInfo
+	err       error
+	calls     int
+	format    string
+	quality   int
+	cropBlack bool
+	cropHint  CropHint
 }
 
-func (s *stubProvider) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*FrameMetadata, []byte, CaptureInfo, error) {
+func (s *stubProvider) LatestFrameWithFormat(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, CaptureInfo, error) {
 	s.calls++
 	s.format = format
 	s.quality = quality
 	s.cropBlack = cropBlack
-	s.minimalWidth = minimalWidth
+	s.cropHint = hint
 	if s.err != nil {
 		return nil, nil, CaptureInfo{}, s.err
 	}
@@ -49,7 +49,8 @@ func TestHTTPProviderFetchesFrame(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		if req.Format != "jpeg" || req.Quality != 80 || !req.CropBlack || req.MinimalWidth != 608 {
+		if req.Format != "jpeg" || req.Quality != 80 || !req.CropBlack ||
+			req.ScreenWidth != 2608 || req.ScreenHeight != 1200 {
 			t.Errorf("unexpected request body: %+v", req)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -70,7 +71,7 @@ func TestHTTPProviderFetchesFrame(t *testing.T) {
 	defer server.Close()
 
 	client := NewHTTP(server.URL, "suite:task-1")
-	meta, data, info, err := client.LatestFrameWithFormat("jpeg", 80, true, 608)
+	meta, data, info, err := client.LatestFrameWithFormat("jpeg", 80, true, CropHint{ScreenWidth: 2608, ScreenHeight: 1200})
 	if err != nil {
 		t.Fatalf("LatestFrameWithFormat() error = %v", err)
 	}
@@ -109,7 +110,7 @@ func TestHTTPProviderMapsRemoteError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, _, _, err := NewHTTP(server.URL, "").LatestFrameWithFormat("jpeg", 80, false, 0)
+	_, _, _, err := NewHTTP(server.URL, "").LatestFrameWithFormat("jpeg", 80, false, CropHint{})
 	if err == nil || !strings.Contains(err.Error(), "device offline") {
 		t.Fatalf("error = %v, want device offline", err)
 	}
@@ -127,7 +128,7 @@ func TestHandleHTTPServesProviderFrame(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
 	}
-	if provider.calls != 1 || provider.format != "jpeg" || provider.quality != 80 || !provider.cropBlack || provider.minimalWidth != 100 {
+	if provider.calls != 1 || provider.format != "jpeg" || provider.quality != 80 || !provider.cropBlack || provider.cropHint.MinimalWidth != 100 {
 		t.Fatalf("unexpected provider call: %+v", provider)
 	}
 	body, _ := io.ReadAll(rec.Body)
