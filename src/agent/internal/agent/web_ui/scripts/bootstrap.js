@@ -12,10 +12,20 @@ connectSSE();
 inputEl.addEventListener('input', autoResizeInput);
 imageInputEl.addEventListener('change', handleImageSelection);
 inputEl.addEventListener('paste', handleComposerPaste);
+stateModalCloseEl.addEventListener('click', closeStateDetails);
+stateModalEl.addEventListener('click', function(event) {
+    if (event.target === stateModalEl) closeStateDetails();
+});
 toolSelectEl.addEventListener('change', syncSelectedTool);
 inputEl.addEventListener('keydown', function(event) {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         sendMessage();
+    }
+});
+
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape' && activeStateMessageKey) {
+        closeStateDetails();
     }
 });

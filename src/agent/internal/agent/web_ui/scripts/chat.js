@@ -84,7 +84,7 @@ async function sendMessage() {
         pendingSteer = null;
         renderPendingSteer();
         setComposerState(false);
-        scrollToBottom();
+        if (isConversationNearBottom()) scrollToBottom();
     }
 }
 
@@ -427,9 +427,10 @@ function removeRenderedMessage(messageKey) {
     renderedMessageKeys.delete(messageKey);
     renderedMessageNodes.delete(messageKey);
     if (existing) {
+        const shouldStickToBottom = isConversationNearBottom();
         existing.remove();
         updateEmptyState();
-        scrollToBottom();
+        if (shouldStickToBottom) scrollToBottom();
     }
 }
 
@@ -481,14 +482,21 @@ async function resetAllMemory() {
 }
 
 function renderHistory(history) {
+    const shouldStickToBottom = messagesDiv.children.length === 0 || isConversationNearBottom();
+    const previousScrollTop = conversationEl.scrollTop;
     messagesDiv.innerHTML = '';
     renderedMessageKeys = new Set();
     renderedMessageNodes = new Map();
     streamingAssistantDrafts = {};
 
     const fragment = document.createDocumentFragment();
+    renderedStateMessages = new Map();
     history.forEach(function(msg) {
         if (isControlMessage(msg)) return;
+        if (isStateMessage(msg)) {
+            fragment.appendChild(createStateNode(msg, renderedStateMessages.size));
+            return;
+        }
         const key = messageIdentity(msg);
         if (renderedMessageKeys.has(key)) return;
         renderedMessageKeys.add(key);
@@ -497,13 +505,31 @@ function renderHistory(history) {
         fragment.appendChild(node);
     });
 
+    if (!renderedStateMessages.has(activeStateMessageKey)) {
+        activeStateMessageKey = '';
+    }
+    renderStateModal();
+
     messagesDiv.appendChild(fragment);
     updateEmptyState();
-    scrollToBottom();
+    if (shouldStickToBottom) {
+        scrollToBottom();
+    } else {
+        conversationEl.scrollTop = previousScrollTop;
+    }
 }
 
 function addMessage(msg) {
     if (isControlMessage(msg)) return;
+    if (isStateMessage(msg)) {
+        const key = messageIdentity(msg);
+        if (!renderedStateMessages.has(key)) {
+            const shouldStickToBottom = isConversationNearBottom();
+            messagesDiv.appendChild(createStateNode(msg, renderedStateMessages.size));
+            if (shouldStickToBottom) scrollToBottom();
+        }
+        return;
+    }
     const key = messageIdentity(msg);
     if (renderedMessageKeys.has(key)) {
         if (normalizeType((msg || {}).type) === 'assistant') {
@@ -512,30 +538,41 @@ function addMessage(msg) {
         return;
     }
     renderedMessageKeys.add(key);
+    const shouldStickToBottom = isConversationNearBottom();
     const node = createMessageNode(msg);
     renderedMessageNodes.set(key, node);
     messagesDiv.appendChild(node);
     updateEmptyState();
-    scrollToBottom();
+    if (shouldStickToBottom) scrollToBottom();
+}
+
+function isConversationNearBottom() {
+    return conversationEl.scrollHeight - conversationEl.scrollTop - conversationEl.clientHeight < 72;
 }
 
 function updateMessageNode(key, msg) {
     const existing = renderedMessageNodes.get(key);
     if (!existing) return;
+    const shouldStickToBottom = isConversationNearBottom();
     const replacement = createMessageNode(msg);
     renderedMessageNodes.set(key, replacement);
     existing.replaceWith(replacement);
     updateEmptyState();
-    scrollToBottom();
+    if (shouldStickToBottom) scrollToBottom();
 }
 
 function isControlMessage(msg) {
     return normalizeType((msg || {}).type) === 'todo_closed';
 }
 
+function isStateMessage(msg) {
+    msg = msg || {};
+    return normalizeType(msg.type) === 'state' || msg.role === 'state';
+}
+
 function messageIdentity(msg) {
     msg = msg || {};
-    const type = normalizeType(msg.type);
+    const type = isStateMessage(msg) ? 'state' : normalizeType(msg.type);
     const content = msg.content || '';
     const requestId = msg.request_id || '';
     if (requestId && type === 'assistant') {
@@ -543,6 +580,9 @@ function messageIdentity(msg) {
     }
     if (requestId && type === 'user') {
         return ['request', requestId, type, content].join('\u001f');
+    }
+    if (requestId && type === 'state') {
+        return ['request', requestId, type].join('\u001f');
     }
 
     const episodeId = msg.episode_id || '';

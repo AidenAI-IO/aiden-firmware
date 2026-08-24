@@ -79,6 +79,146 @@ function createMessageNode(msg) {
     return card;
 }
 
+function createStateNode(msg, index) {
+    const key = messageIdentity(msg);
+    const card = document.createElement('article');
+    card.className = 'state-divider' + (key === activeStateMessageKey ? ' open' : '');
+    card.dataset.stateKey = key;
+    card._stateMessage = msg;
+    renderedStateMessages.set(key, card);
+
+    const line = document.createElement('div');
+    line.className = 'state-divider-line';
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'state-divider-button';
+    button.textContent = 'State';
+    button.title = stateMessageSummary(msg, index);
+    button.setAttribute('aria-controls', 'stateModal');
+    button.setAttribute('aria-expanded', key === activeStateMessageKey ? 'true' : 'false');
+    button.addEventListener('click', function() {
+        toggleStateDetails(key);
+    });
+    line.appendChild(button);
+    card.appendChild(line);
+    return card;
+}
+
+function toggleStateDetails(key) {
+    activeStateMessageKey = activeStateMessageKey === key ? '' : key;
+    renderedStateMessages.forEach(function(node, nodeKey) {
+        const open = nodeKey === activeStateMessageKey;
+        node.classList.toggle('open', open);
+        const button = node.querySelector('.state-divider-button');
+        if (button) button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    renderStateModal();
+}
+
+function closeStateDetails() {
+    activeStateMessageKey = '';
+    renderedStateMessages.forEach(function(node) {
+        node.classList.remove('open');
+        const button = node.querySelector('.state-divider-button');
+        if (button) button.setAttribute('aria-expanded', 'false');
+    });
+    renderStateModal();
+}
+
+function renderStateModal() {
+    const node = renderedStateMessages.get(activeStateMessageKey);
+    const msg = node && node._stateMessage;
+    stateModalEl.classList.toggle('hidden', !msg);
+    document.body.classList.toggle('state-modal-open', !!msg);
+    if (!msg) {
+        stateModalTitleEl.textContent = 'State';
+        stateModalBodyEl.innerHTML = '';
+        return;
+    }
+
+    stateModalTitleEl.textContent = 'State';
+    stateModalBodyEl.innerHTML = '';
+    stateModalBodyEl.classList.remove('has-attachments');
+    const content = formatStateContent(msg.content || '');
+    if (content) {
+        const rows = parseStateKeyValues(content);
+        if (rows) {
+            const table = document.createElement('table');
+            table.className = 'state-detail-table';
+            const body = document.createElement('tbody');
+            rows.forEach(function(row) {
+                const tr = document.createElement('tr');
+                const key = document.createElement('th');
+                key.scope = 'row';
+                key.textContent = row.key;
+                const value = document.createElement('td');
+                value.textContent = row.value;
+                tr.appendChild(key);
+                tr.appendChild(value);
+                body.appendChild(tr);
+            });
+            table.appendChild(body);
+            stateModalBodyEl.appendChild(table);
+        } else {
+            const copy = document.createElement('pre');
+            copy.className = 'state-detail-copy';
+            copy.textContent = content;
+            stateModalBodyEl.appendChild(copy);
+        }
+    }
+    const attachmentsEl = renderMessageAttachments(msg.attachments || []);
+    if (attachmentsEl) {
+        attachmentsEl.classList.add('state-detail-attachments');
+        stateModalBodyEl.classList.add('has-attachments');
+        stateModalBodyEl.appendChild(attachmentsEl);
+    }
+    if (!content && !attachmentsEl) {
+        const empty = document.createElement('div');
+        empty.className = 'state-detail-empty';
+        empty.textContent = 'No state details.';
+        stateModalBodyEl.appendChild(empty);
+    }
+}
+
+function formatStateContent(content) {
+    const trimmed = String(content || '').trim();
+    const match = trimmed.match(/^<state>\s*([\s\S]*?)\s*<\/state>$/i);
+    return match ? match[1].trim() : trimmed;
+}
+
+function parseStateKeyValues(content) {
+    const lines = String(content || '').split(/\r?\n/);
+    const rows = [];
+    let invalid = false;
+    lines.forEach(function(line) {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        const separator = trimmed.indexOf(':');
+        if (separator <= 0) {
+            if (rows.length > 0) {
+                rows[rows.length - 1].value += '\n' + trimmed;
+            } else {
+                invalid = true;
+            }
+            return;
+        }
+        rows.push({
+            key: trimmed.slice(0, separator).trim(),
+            value: trimmed.slice(separator + 1).trim()
+        });
+    });
+    return !invalid && rows.length > 0 ? rows : null;
+}
+
+function stateMessageSummary(msg, index) {
+    const content = formatStateContent(msg.content || '');
+    const firstLine = content.split('\n').map(function(line) { return line.trim(); }).find(Boolean);
+    if (firstLine) return 'State ' + (index + 1) + ': ' + firstLine;
+    if ((msg.attachments || []).length > 0) return 'State ' + (index + 1) + ': screenshot';
+    return 'State ' + (index + 1);
+}
+
 function playAudio(url, button) {
     const audio = new Audio(url);
 
@@ -163,6 +303,7 @@ function getRoleLabel(type, toolName, role) {
     if (type === 'role_output') return 'Role · ' + (role || 'agent');
     if (type === 'tool_call') return toolName ? 'Tool Call · ' + toolName : 'Tool Call';
     if (type === 'tool_result') return toolName ? 'Tool Result · ' + toolName : 'Tool Result';
+    if (type === 'state') return 'State';
     return 'Aiden';
 }
 
@@ -173,6 +314,7 @@ function getAvatarLabel(type) {
     if (type === 'role_output') return 'Role';
     if (type === 'tool_call') return 'Call';
     if (type === 'tool_result') return 'Tool';
+    if (type === 'state') return 'State';
     return 'AI';
 }
 

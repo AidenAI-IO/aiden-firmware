@@ -11,7 +11,7 @@ function renderToolCall(msg) {
 
     const inputBlock = document.createElement('pre');
     inputBlock.className = 'tool-block';
-    inputBlock.textContent = formatToolPayload(msg.tool_input || '');
+    renderToolPayload(inputBlock, msg.tool_input || '');
     inputSection.appendChild(inputBlock);
 
     card.appendChild(inputSection);
@@ -86,7 +86,7 @@ function renderToolResult(msg) {
 
         const rawBlock = document.createElement('pre');
         rawBlock.className = 'tool-block';
-        rawBlock.textContent = formatToolPayload(msg.content || '');
+        renderToolPayload(rawBlock, msg.content || '');
         details.appendChild(rawBlock);
         card.appendChild(details);
 
@@ -103,7 +103,7 @@ function renderToolResult(msg) {
 
     const resultBlock = document.createElement('pre');
     resultBlock.className = 'tool-block';
-    resultBlock.textContent = formatToolPayload(msg.content || '');
+    renderToolPayload(resultBlock, msg.content || '');
     resultSection.appendChild(resultBlock);
     card.appendChild(resultSection);
 
@@ -143,6 +143,41 @@ function formatToolPayload(value) {
     } catch (_) {
         return value;
     }
+}
+
+function renderToolPayload(block, value) {
+    if (!value) {
+        block.textContent = '';
+        return;
+    }
+    try {
+        const parsed = redactToolPayloadForDisplay(JSON.parse(value));
+        const formatted = JSON.stringify(parsed, null, 2);
+        block.classList.add('json-highlight');
+        block.innerHTML = highlightJson(formatted);
+    } catch (_) {
+        block.textContent = value;
+    }
+}
+
+function highlightJson(value) {
+    const tokenPattern = /(\"(?:\\.|[^\"\\])*\"(?=\s*:))|(\"(?:\\.|[^\"\\])*\")|(-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|(\btrue\b|\bfalse\b)|(\bnull\b)/g;
+    let html = '';
+    let lastIndex = 0;
+    let match;
+    while ((match = tokenPattern.exec(value)) !== null) {
+        html += escapeHtml(value.slice(lastIndex, match.index));
+        const tokenClass = match[1] ? 'json-key' : match[2] ? 'json-string' : match[3] ? 'json-number' : match[4] ? 'json-boolean' : 'json-null';
+        html += '<span class="' + tokenClass + '">' + escapeHtml(match[0]) + '</span>';
+        lastIndex = match.index + match[0].length;
+    }
+    return html + escapeHtml(value.slice(lastIndex));
+}
+
+function escapeHtml(value) {
+    return String(value).replace(/[&<>\"']/g, function(character) {
+        return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;'}[character];
+    });
 }
 
 function redactToolPayloadForDisplay(value) {

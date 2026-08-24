@@ -127,6 +127,19 @@
         </aside>
     </div>
 
+    <div class="state-modal hidden" id="stateModal" role="dialog" aria-modal="true" aria-labelledby="stateModalTitle">
+        <section class="state-modal-card">
+            <div class="state-detail-header">
+                <div>
+                    <div class="message-role">State details</div>
+                    <strong id="stateModalTitle">State</strong>
+                </div>
+                <button type="button" class="state-detail-close" id="stateModalClose" aria-label="Close state details">×</button>
+            </div>
+            <div class="state-detail-body" id="stateModalBody"></div>
+        </section>
+    </div>
+
     <!-- These classic scripts share page state. Keep state first and bootstrap last. -->
     <script defer src="/web-ui/scripts/state.js"></script>
     <script defer src="/web-ui/scripts/storage.js"></script>

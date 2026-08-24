@@ -50,6 +50,10 @@ body {
     color: var(--text);
 }
 
+body.state-modal-open {
+    overflow: hidden;
+}
+
 button,
 textarea,
 select {
@@ -368,6 +372,185 @@ textarea:focus-visible {
     min-height: 100%;
     display: flex;
     flex-direction: column;
+    position: relative;
+}
+
+.state-divider {
+    display: grid;
+    gap: 0;
+    margin: 12px 0 4px;
+}
+
+.state-divider-line {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.state-divider-line::before {
+    content: '';
+    flex: 1;
+    border-top: 2px dotted var(--muted);
+}
+
+.state-divider-line::after {
+    content: '';
+    flex: 1;
+    border-top: 2px dotted var(--muted);
+}
+
+.state-divider-button {
+    flex: 0 0 auto;
+    min-width: 64px;
+    padding: 6px 10px;
+    border: 1px solid var(--muted-strong);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+    font: 600 0.74rem ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.03em;
+}
+
+.state-divider-button:hover,
+.state-divider.open .state-divider-button {
+    border-color: var(--accent);
+    color: var(--accent-strong);
+}
+
+.state-detail-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 13px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-strong);
+}
+
+.state-detail-header .message-role {
+    margin-bottom: 4px;
+}
+
+.state-detail-header strong {
+    font-size: 0.9rem;
+}
+
+.state-detail-close {
+    width: 26px;
+    height: 26px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--panel);
+    color: var(--muted-strong);
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+}
+
+.state-detail-close:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.state-detail-body {
+    display: grid;
+    gap: 10px;
+    padding: 12px 13px;
+    overflow-y: auto;
+}
+
+.state-detail-body.has-attachments {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr);
+    align-items: start;
+    gap: 16px;
+}
+
+.state-detail-attachments {
+    min-width: 0;
+    margin: 0;
+}
+
+.state-detail-attachments .attachment-card {
+    padding: 8px;
+}
+
+.state-detail-attachments .attachment-card img {
+    width: 100%;
+    max-width: none;
+    max-height: 62vh;
+    object-fit: contain;
+}
+
+.state-detail-copy {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.state-detail-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 0.84rem;
+}
+
+.state-detail-table th,
+.state-detail-table td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.state-detail-table tr:last-child th,
+.state-detail-table tr:last-child td {
+    border-bottom: 0;
+}
+
+.state-detail-table th {
+    width: 34%;
+    color: var(--muted-strong);
+    font: 600 0.72rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.state-detail-table td {
+    color: var(--text);
+}
+
+.state-detail-empty {
+    color: var(--muted);
+    font-size: 0.82rem;
+}
+
+.state-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(15, 18, 24, 0.48);
+}
+
+.state-modal.hidden {
+    display: none;
+}
+
+.state-modal-card {
+    width: min(1040px, 100%);
+    max-height: min(78vh, 720px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
 }
 
 .empty-state {
@@ -652,6 +835,12 @@ textarea:focus-visible {
     white-space: pre-wrap;
     word-break: break-word;
 }
+
+.json-highlight .json-key { color: #8250df; }
+.json-highlight .json-string { color: #0a6b3f; }
+.json-highlight .json-number { color: #b54708; }
+.json-highlight .json-boolean { color: #0969da; }
+.json-highlight .json-null { color: #6e7781; font-style: italic; }
 
 .tool-meta-grid {
     display: grid;
@@ -1047,6 +1236,14 @@ details.tool-details summary {
         font-size: 0.7rem;
     }
 
+    .state-modal {
+        padding: 12px;
+    }
+
+    .state-detail-body.has-attachments {
+        grid-template-columns: 1fr;
+    }
+
     .conversation {
         padding: 8px 10px 0;
     }
@@ -1162,6 +1359,16 @@ button, textarea, select, .tool-block, .tool-lab-input {
 .stop-run-btn { border-radius: 5px; background: transparent; color: var(--tool-error-text); border-color: #6d3838; }
 .spinner { border-color: #303238; border-top-color: var(--accent); }
 .audio-playback-btn { border-radius: 5px; background: var(--accent); color: #101113; }
+
+/* High-contrast message avatars. Keep role identity readable in both themes. */
+.message-avatar { color: #ffffff; border: 1px solid transparent; }
+.message.assistant .message-avatar { background: #3457a7; border-color: #294887; }
+.message.user .message-avatar { background: #147d68; border-color: #0d624f; color: #ffffff; }
+.message.steer .message-avatar { background: #a75c18; border-color: #84470f; color: #ffffff; }
+.message.tool_call .message-avatar { background: #a86616; border-color: #80500f; color: #ffffff; }
+.message.tool_result .message-avatar { background: #2f7d4f; border-color: #23613b; color: #ffffff; }
+.message.role_output .message-avatar { background: #6b4ca3; border-color: #543b81; color: #ffffff; }
+.message.state .message-avatar { background: #596273; border-color: #414958; color: #ffffff; }
 
 /* Zed light palette. */
 :root {
