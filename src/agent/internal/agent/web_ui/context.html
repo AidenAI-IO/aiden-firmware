@@ -55,13 +55,23 @@
         let body = m.content || '';
         if (m.tool_calls) body += (body ? '\n\n' : '') + JSON.stringify(m.tool_calls, null, 2);
         if (m.tool_results) body += (body ? '\n\n' : '') + JSON.stringify(m.tool_results, null, 2);
-        const attachments = (m.attachments || []).map((a, i) => `<button class="attachment" type="button" title="${esc(a.mime_type || 'attachment')}" onclick="openAttachment('${esc(role)}','${esc(a.file_path.split('/').pop())}','${esc(a.mime_type || '')}')">${a.mime_type && a.mime_type.startsWith('image/') ? '▧' : '↗'}</button>`).join('');
+        const attachments = (m.attachments || []).map(a => {
+          const name = String(a.file_path || '').split('/').pop();
+          if (!name) return '';
+          const mime = String(a.mime_type || '');
+          return `<button class="attachment" type="button" title="${esc(mime || 'attachment')}" data-role="${esc(role)}" data-attachment="${esc(name)}" data-mime="${esc(mime)}">${mime.startsWith('image/') ? '▧' : '↗'}</button>`;
+        }).join('');
         return `<article class="message" data-role="${esc(m.role)}"><div class="role">${esc(m.role)}</div><div>${esc(body)}</div>${attachments ? `<div class="attachments">${attachments}</div>` : ''}</article>`;
       }).join('') : '<div class="empty">No messages in this context.</div>';
     }
     function loadContext() { document.getElementById('status').textContent = 'loading…'; fetch('/api/context').then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }).then(data => { currentData=data; render('userMessages','userSession',data.user || {},'user'); render('backendMessages','backendSession',data.backend || {},'backend'); document.getElementById('status').textContent = 'loaded'; }).catch(err => { document.getElementById('status').textContent = 'error'; document.getElementById('userMessages').innerHTML = `<div class="error">${esc(err.message)}</div>`; document.getElementById('backendMessages').innerHTML = ''; }); }
     function closeModal() { document.getElementById('attachmentModal').close(); document.getElementById('modalBody').innerHTML=''; }
     function openAttachment(role, attachment, mime) { const modal=document.getElementById('attachmentModal'); document.getElementById('modalTitle').textContent=attachment; const body=document.getElementById('modalBody'); const url=`/api/context/attachment?role=${encodeURIComponent(role)}&attachment=${encodeURIComponent(attachment)}`; body.innerHTML = mime.startsWith('image/') ? `<img src="${url}" alt="${esc(attachment)}">` : mime.startsWith('audio/') ? `<audio controls src="${url}"></audio>` : mime.startsWith('video/') ? `<video controls src="${url}"></video>` : `<iframe style="width:100%;height:70vh;border:0;background:white" src="${url}"></iframe>`; modal.showModal(); }
+    document.addEventListener('click', event => {
+      const button = event.target instanceof Element ? event.target.closest('.attachment') : null;
+      if (!button) return;
+      openAttachment(button.dataset.role, button.dataset.attachment, button.dataset.mime || '');
+    });
     loadContext();
   </script>
 </body>

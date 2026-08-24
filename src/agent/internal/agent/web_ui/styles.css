@@ -1422,6 +1422,7 @@ button, textarea, select, .tool-block, .tool-lab-input {
 .message.state .message-avatar { background: #596273; border-color: #414958; color: #ffffff; }
 
 /* Zed light palette. */
+@media (prefers-color-scheme: light) {
 :root {
     color-scheme: light;
     --bg: #f5f5f7;
@@ -1466,6 +1467,7 @@ body { background: #f5f5f7; color: var(--text); }
 .send-btn:disabled { background: #c7cad0; color: #747780; }
 .pending-steer { background: #fff8e9; border-color: #e1c78c; }
 .danger-btn { background: #fff7f5; border-color: #e0b0aa; color: #a0382a; }
+}
 
 @media (max-width: 860px) {
     .topbar { align-items: flex-start; flex-direction: column; padding: 14px 16px; }

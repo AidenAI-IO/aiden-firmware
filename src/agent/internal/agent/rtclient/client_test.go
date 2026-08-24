@@ -111,3 +111,13 @@ func TestSingaporeDefaultEndpoint(t *testing.T) {
 		t.Fatalf("endpoint = %q, want %q", got, want)
 	}
 }
+
+func TestClientDefaultsWriteTimeout(t *testing.T) {
+	c, err := New(Config{APIKey: "key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.cfg.WriteTimeout != DefaultWriteTimeout {
+		t.Fatalf("WriteTimeout = %s, want %s", c.cfg.WriteTimeout, DefaultWriteTimeout)
+	}
+}

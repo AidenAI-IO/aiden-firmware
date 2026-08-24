@@ -490,7 +490,10 @@ function renderHistory(history) {
     history.forEach(function(msg) {
         if (isControlMessage(msg)) return;
         if (isContextMarkerMessage(msg)) {
-            fragment.appendChild(createContextMarkerNode(msg, renderedStateMessages.size));
+            const key = messageIdentity(msg);
+            if (!renderedStateMessages.has(key)) {
+                fragment.appendChild(createContextMarkerNode(msg, renderedStateMessages.size));
+            }
             return;
         }
         const key = messageIdentity(msg);

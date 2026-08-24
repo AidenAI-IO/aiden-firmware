@@ -610,6 +610,13 @@ func newWettyReverseProxyForTarget(target *url.URL) *httputil.ReverseProxy {
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		resp.Header.Del("X-Frame-Options")
+		csp := strings.TrimSpace(resp.Header.Get("Content-Security-Policy"))
+		if !strings.Contains(csp, "frame-ancestors") {
+			if csp != "" {
+				csp += "; "
+			}
+			resp.Header.Set("Content-Security-Policy", csp+"frame-ancestors 'self'")
+		}
 		if location := resp.Header.Get("Location"); location != "" {
 			if parsed, err := url.Parse(location); err == nil {
 				path := parsed.Path
@@ -2352,7 +2359,7 @@ func (s *Server) handleContextAttachment(w http.ResponseWriter, r *http.Request)
 	attachmentID := r.URL.Query().Get("attachment")
 	data, mimeType, err := s.runtime.ReadContextAttachment(role, attachmentID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		http.Error(w, "attachment not found", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", mimeType)

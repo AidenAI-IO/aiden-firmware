@@ -140,7 +140,7 @@ func TestSendLocalRecordingChunkPrefersBufferedDeliveryAfterStop(t *testing.T) {
 func TestLocalAudioRecordingHelper(t *testing.T) {
 	if os.Getenv("AIDEN_LOCAL_AUDIO_RECORD_HELPER") == "1" {
 		_, _ = os.Stdout.Write([]byte("local-pcm"))
-		return
+		os.Exit(0)
 	}
 	t.Skip()
 }

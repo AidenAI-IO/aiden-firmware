@@ -65,6 +65,14 @@ static uint32_t audio_sound_mode_channels(AUDIO_SOUND_MODE_E mode) {
     }
 }
 
+static uint32_t audio_frame_channels(AUDIO_SOUND_MODE_E mode, int configured_channels) {
+    uint32_t channels = audio_sound_mode_channels(mode);
+    if (channels != 0) {
+        return channels;
+    }
+    return configured_channels > 0 ? static_cast<uint32_t>(configured_channels) : 1;
+}
+
 static bool configure_ao_volume_curve(AUDIO_DEV dev_id) {
     AUDIO_VOLUME_CURVE_S volume_curve;
     memset(&volume_curve, 0, sizeof(volume_curve));
@@ -604,7 +612,7 @@ public:
                     af.data = data;
                     af.length = frame.u32Len;
                     af.timestamp = frame.u64TimeStamp;
-                    af.channels = audio_sound_mode_channels(frame.enSoundMode);
+                    af.channels = audio_frame_channels(frame.enSoundMode, self->config.channels);
                     af.sample_rate = frame.s32SampleRate > 0
                                          ? static_cast<uint32_t>(frame.s32SampleRate)
                                          : 0;
@@ -783,7 +791,7 @@ bool AudioCapture::get_frame(AudioFrame& frame) {
         frame.data = data;
         frame.length = impl_->frame.u32Len;
         frame.timestamp = impl_->frame.u64TimeStamp;
-        frame.channels = audio_sound_mode_channels(impl_->frame.enSoundMode);
+        frame.channels = audio_frame_channels(impl_->frame.enSoundMode, impl_->config.channels);
         frame.sample_rate = impl_->frame.s32SampleRate > 0
                                 ? static_cast<uint32_t>(impl_->frame.s32SampleRate)
                                 : 0;

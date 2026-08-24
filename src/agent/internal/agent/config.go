@@ -4,6 +4,7 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -415,7 +416,8 @@ func (c VoiceModelConfig) Validate() error {
 	}
 	if endpoint := strings.TrimSpace(c.Endpoint); endpoint != "" {
 		u, err := url.Parse(endpoint)
-		if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {
+		if err != nil || u.Host == "" || (u.Scheme != "wss" &&
+			!(u.Scheme == "ws" && isLoopbackHost(u.Hostname()))) {
 			return fmt.Errorf("voice_model.endpoint: invalid websocket URL %q", c.Endpoint)
 		}
 	}
@@ -426,6 +428,15 @@ func (c VoiceModelConfig) Validate() error {
 		return errors.New("voice_model.turn_detection_silence_ms must be >= 0")
 	}
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 type ProxyConfig struct {
@@ -1393,6 +1404,9 @@ func (c Config) Validate() error {
 				return errors.New("stt.provider is required when input_mode=stt")
 			}
 		case "realtime":
+			if !c.VoiceModel.Enabled() {
+				return errors.New("voice_model.api_key is required when input_mode=realtime")
+			}
 		case "audio":
 			return fmt.Errorf("invalid input_mode: %s (audio mode has been removed; use stt instead)", c.InputMode)
 		default:

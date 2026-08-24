@@ -17,20 +17,22 @@ import (
 )
 
 const (
-	DefaultModel = "qwen-audio-3.0-realtime-plus"
-	DefaultVoice = "longanqian"
+	DefaultModel        = "qwen-audio-3.0-realtime-plus"
+	DefaultVoice        = "longanqian"
+	DefaultWriteTimeout = 10 * time.Second
 )
 
 type Config struct {
-	APIKey      string
-	Model       string
-	WorkspaceID string
-	Region      string // cn-beijing or ap-southeast-1
-	Endpoint    string // useful for tests or compatible services
-	UserAgent   string
-	HTTPHeader  http.Header
-	Dialer      *websocket.Dialer
-	EventBuffer int
+	APIKey       string
+	Model        string
+	WorkspaceID  string
+	Region       string // cn-beijing or ap-southeast-1
+	Endpoint     string // useful for tests or compatible services
+	UserAgent    string
+	HTTPHeader   http.Header
+	Dialer       *websocket.Dialer
+	EventBuffer  int
+	WriteTimeout time.Duration
 }
 
 type Client struct{ cfg Config }
@@ -63,6 +65,9 @@ func New(cfg Config) (*Client, error) {
 	}
 	if cfg.EventBuffer <= 0 {
 		cfg.EventBuffer = 64
+	}
+	if cfg.WriteTimeout <= 0 {
+		cfg.WriteTimeout = DefaultWriteTimeout
 	}
 	return &Client{cfg: cfg}, nil
 }
@@ -106,18 +111,19 @@ func (c *Client) Connect(ctx context.Context) (*Session, error) {
 	}
 	writeGate := make(chan struct{}, 1)
 	writeGate <- struct{}{}
-	s := &Session{conn: conn, writeGate: writeGate, events: make(chan Event, c.cfg.EventBuffer), errs: make(chan error, 1), done: make(chan struct{})}
+	s := &Session{conn: conn, writeGate: writeGate, writeTimeout: c.cfg.WriteTimeout, events: make(chan Event, c.cfg.EventBuffer), errs: make(chan error, 1), done: make(chan struct{})}
 	go s.readLoop()
 	return s, nil
 }
 
 type Session struct {
-	conn      *websocket.Conn
-	writeGate chan struct{}
-	closeOnce sync.Once
-	events    chan Event
-	errs      chan error
-	done      chan struct{}
+	conn         *websocket.Conn
+	writeGate    chan struct{}
+	writeTimeout time.Duration
+	closeOnce    sync.Once
+	events       chan Event
+	errs         chan error
+	done         chan struct{}
 }
 
 func (s *Session) Events() <-chan Event  { return s.events }
@@ -150,10 +156,16 @@ func (s *Session) Send(ctx context.Context, event any) error {
 		return ctx.Err()
 	default:
 	}
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = s.conn.SetWriteDeadline(deadline)
-		defer s.conn.SetWriteDeadline(time.Time{})
+	writeTimeout := s.writeTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = DefaultWriteTimeout
 	}
+	deadline := time.Now().Add(writeTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok {
+		deadline = ctxDeadline
+	}
+	_ = s.conn.SetWriteDeadline(deadline)
+	defer s.conn.SetWriteDeadline(time.Time{})
 	if err := s.conn.WriteMessage(websocket.TextMessage, b); err != nil {
 		return fmt.Errorf("rtclient: send: %w", err)
 	}

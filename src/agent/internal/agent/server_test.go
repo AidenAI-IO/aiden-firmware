@@ -2617,6 +2617,7 @@ func TestWettyReverseProxyUsesUpstreamHostAndRewritesFrameHeaders(t *testing.T) 
 		gotForwardedProto = r.Header.Get("X-Forwarded-Proto")
 		gotForwardedPrefix = r.Header.Get("X-Forwarded-Prefix")
 		w.Header().Set("X-Frame-Options", "sameorigin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'")
 		w.Header().Set("Location", upstream.URL+"/")
 		w.WriteHeader(http.StatusFound)
 	}))
@@ -2638,6 +2639,9 @@ func TestWettyReverseProxyUsesUpstreamHostAndRewritesFrameHeaders(t *testing.T) 
 	}
 	if got := recorder.Header().Get("X-Frame-Options"); got != "" {
 		t.Fatalf("X-Frame-Options = %q, want removed", got)
+	}
+	if got := recorder.Header().Get("Content-Security-Policy"); got != "default-src 'self'; frame-ancestors 'self'" {
+		t.Fatalf("Content-Security-Policy = %q, want upstream policy plus same-origin framing", got)
 	}
 	if got := recorder.Header().Get("Location"); got != "/wetty/" {
 		t.Fatalf("Location = %q, want /wetty/", got)
@@ -2675,6 +2679,13 @@ func TestWebUIUsesContextRequestIDsForToolMessageIdentity(t *testing.T) {
 		if !strings.Contains(chatScript, want) {
 			t.Fatalf("web UI tool message identity missing %q", want)
 		}
+	}
+}
+
+func TestWebUIContextHistoryDeduplicatesMarkers(t *testing.T) {
+	chatScript := readWebUIResource(t, "scripts/chat.js")
+	if !strings.Contains(chatScript, "if (!renderedStateMessages.has(key))") {
+		t.Fatal("renderHistory does not guard duplicate context markers")
 	}
 }
 
@@ -3010,6 +3021,34 @@ func TestServerContextAttachmentEndpointServesRegisteredAttachment(t *testing.T)
 	server.handleContextAttachment(rec, req)
 	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "image/png" || rec.Body.String() != "png-data" {
 		t.Fatalf("attachment response: status=%d type=%q body=%q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+}
+
+func TestServerContextAttachmentEndpointHidesInternalErrors(t *testing.T) {
+	config := Config{Model: ModelConfig{Provider: "fake"}}
+	server := &Server{logger: newTestLogger(), runtime: NewRuntimeWithDeps(
+		withTestConfigDir(t, config),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)}
+	rec := httptest.NewRecorder()
+	server.handleContextAttachment(rec, httptest.NewRequest(http.MethodGet, "/api/context/attachment?role=user&attachment=missing.png", nil))
+	if rec.Code != http.StatusNotFound || rec.Body.String() != "attachment not found\n" {
+		t.Fatalf("attachment error response: status=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestContextPageUsesSafeAttachmentHandlers(t *testing.T) {
+	page := readWebUIResource(t, "context.html")
+	for _, want := range []string{"data-attachment=", "event.target.closest('.attachment')", "String(a.file_path || '')"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("context page missing %q", want)
+		}
+	}
+	if strings.Contains(page, `onclick="openAttachment(`) {
+		t.Fatal("context page still embeds attachment values in an inline JavaScript handler")
 	}
 }
 

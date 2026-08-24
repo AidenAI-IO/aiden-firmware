@@ -31,14 +31,35 @@ func TestConfigValidateAcceptsSTT(t *testing.T) {
 
 func TestConfigValidateAcceptsRealtimeWithoutSTTProvider(t *testing.T) {
 	cfg := Config{
-		Model:     ModelConfig{Provider: "fake"},
-		InputMode: " realtime ",
+		Model:      ModelConfig{Provider: "fake"},
+		VoiceModel: VoiceModelConfig{APIKey: "voice-secret"},
+		InputMode:  " realtime ",
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
 	if got := cfg.InputModeOrDefault(); got != "realtime" {
 		t.Fatalf("InputModeOrDefault() = %q, want realtime", got)
+	}
+}
+
+func TestConfigValidateRejectsRealtimeWithoutVoiceModelCredential(t *testing.T) {
+	err := (Config{Model: ModelConfig{Provider: "fake"}, InputMode: "realtime"}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "voice_model.api_key is required") {
+		t.Fatalf("Validate() error = %v, want missing voice model credential", err)
+	}
+}
+
+func TestVoiceModelConfigRejectsNonLoopbackPlaintextEndpoint(t *testing.T) {
+	for _, endpoint := range []string{"ws://example.com/realtime", "http://localhost/realtime", "not-a-url"} {
+		if err := (VoiceModelConfig{APIKey: "key", Endpoint: endpoint}).Validate(); err == nil {
+			t.Errorf("Validate(%q) succeeded, want error", endpoint)
+		}
+	}
+	for _, endpoint := range []string{"wss://example.com/realtime", "ws://localhost/realtime", "ws://127.0.0.1:3000/realtime", "ws://[::1]:3000/realtime"} {
+		if err := (VoiceModelConfig{APIKey: "key", Endpoint: endpoint}).Validate(); err != nil {
+			t.Errorf("Validate(%q) error = %v", endpoint, err)
+		}
 	}
 }
 
