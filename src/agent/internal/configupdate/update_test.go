@@ -1083,3 +1083,39 @@ func TestResolvedWebConfigOmitsLegacyModelCredential(t *testing.T) {
 		t.Fatalf("resolved web config exposed legacy model credential: %s", encoded)
 	}
 }
+
+func TestUpdateConfigFileWritesResponsesContextFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	source := "[model]\nprovider = \"volcengine\"\nmodel = \"doubao-seed-2-1-pro\"\napi_mode = \"responses_stateful\"\n"
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	patch := []byte(`{"config":{"model":{"responses_context_management":"ark_context_edit","responses_context_edit_trigger":10,"responses_context_edit_keep":3,"responses_context_edit_clear_thinking":true,"responses_include":["reasoning.encrypted_content"]}}}`)
+	result, err := NewService().Update(path, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.Model.ResponsesContextManagement != "ark_context_edit" ||
+		result.Config.Model.ResponsesContextEditTrigger != 10 ||
+		result.Config.Model.ResponsesContextEditKeep != 3 ||
+		!result.Config.Model.ResponsesContextEditClearThinking ||
+		len(result.Config.Model.ResponsesInclude) != 1 {
+		t.Fatalf("unexpected resolved Responses config: %+v", result.Config.Model)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`responses_context_management = "ark_context_edit"`,
+		`responses_context_edit_trigger = 10`,
+		`responses_context_edit_keep = 3`,
+		`responses_context_edit_clear_thinking = true`,
+		`responses_include = ['reasoning.encrypted_content']`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("updated config missing %q:\n%s", want, text)
+		}
+	}
+}

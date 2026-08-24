@@ -1165,7 +1165,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
 	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
 	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
-	if compactionEnabled && tokenUsage > compactionTrigger {
+	if !r.config.Model.ResponsesProviderCompactionEnabled() && compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
 		}

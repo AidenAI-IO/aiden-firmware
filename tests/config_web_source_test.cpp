@@ -1137,13 +1137,13 @@ TEST_CASE("config web updates dependent field visibility from selected values") 
     CHECK(html.find("function bindFieldVisibility()") != std::string::npos);
     CHECK(html.find("document.addEventListener('change',function(event)") != std::string::npos);
     CHECK(html.find("applyFieldVisibility(false,path)") != std::string::npos);
-    CHECK(html.find("fillConfigForm(config){Object.keys(sectionFields).forEach") != std::string::npos);
+    CHECK(html.find("fillConfigForm(config") != std::string::npos);
     // Filling the form has to re-evaluate visibility, or a loaded config shows
     // fields its own values should have hidden. Scoped to fillConfigForm's body
     // rather than anchored on its closing brace, which is not part of the rule.
-    const size_t fill_form_at = html.find("fillConfigForm(config){Object.keys(sectionFields).forEach");
+    const size_t fill_form_at = html.find("fillConfigForm(config");
     REQUIRE(fill_form_at != std::string::npos);
-    CHECK(html.substr(fill_form_at, 400).find("applyFieldVisibility(true)") != std::string::npos);
+    CHECK(html.substr(fill_form_at, 500).find("if(!deferProviderScopedFields)applyFieldVisibility(true)") != std::string::npos);
     // The legacy imperative visibility chain must be gone.
     CHECK(html.find("setFieldVisible('model','base_url',modelProvider!=='openrouter')") == std::string::npos);
     CHECK(html.find("const sttTencent=sttProvider==='tencent'") == std::string::npos);
@@ -1670,6 +1670,28 @@ TEST_CASE("config web html defines provider ui symbols on executable lines") {
     }
 }
 
+// Provider-scoped model fields (including model.api_mode) must be populated
+// only after the configured provider records are loaded. Otherwise the first
+// visibility refresh sees the named provider as an unknown type, filters out
+// provider-specific options, and silently resets Responses provider context to
+// the default Chat Completions option.
+TEST_CASE("config web loads provider records before applying scoped model fields") {
+    const std::string js = read_config_web_config_scripts();
+    const size_t apply_payload = js.find("function applyPayload(");
+    const size_t deferred_fill = js.find("fillConfigForm(appState.config,!!deferProviderScopedFields)", apply_payload);
+    const size_t load_config = js.find("async function loadConfig()");
+    const size_t sync_model = js.find("syncModelProvidersFromConfig();", load_config);
+    const size_t scoped_refresh = js.find("applyFieldVisibility(true);return payload;", load_config);
+
+    REQUIRE(apply_payload != std::string::npos);
+    REQUIRE(deferred_fill != std::string::npos);
+    REQUIRE(load_config != std::string::npos);
+    REQUIRE(sync_model != std::string::npos);
+    REQUIRE(scoped_refresh != std::string::npos);
+    CHECK(deferred_fill > apply_payload);
+    CHECK(sync_model < scoped_refresh);
+}
+
 TEST_CASE("config web keeps provider management beside each provider select") {
     const std::string html = read_config_web_asset_bundle();
 
@@ -1764,7 +1786,7 @@ TEST_CASE("config web html uses canonical provider map and type field names") {
     CHECK(html.find("appState.config.model_providers") != std::string::npos);
     CHECK(html.find("configKey:'model_providers'") != std::string::npos);
     CHECK(html.find("payload.config&&payload.config[self.spec.configKey]") != std::string::npos);
-    CHECK(html.find("ModelProvidersManager.records[providerRef].type") != std::string::npos);
+    CHECK(html.find("resolveModelProviderType(providerRef)") != std::string::npos);
     CHECK(html.find("hydrateSelectField(section,'type'") != std::string::npos);
 }
 
@@ -1817,7 +1839,7 @@ TEST_CASE("config web html keeps the remembered provider in sync with the select
     CHECK(assignments == 2);
 
     // Both event-free repopulate paths have to call it.
-    const size_t fill_at = js.find("function fillConfigForm(config){");
+    const size_t fill_at = js.find("function fillConfigForm(config");
     REQUIRE(fill_at != std::string::npos);
     CHECK(js.substr(fill_at, 400).find("rememberModelProvider()") != std::string::npos);
 
@@ -1835,7 +1857,9 @@ TEST_CASE("config web html keeps the remembered provider in sync with the select
 TEST_CASE("config web html resolves named providers when filtering option scopes") {
     const std::string js = read_config_web_config_scripts();
 
-    CHECK(js.find("function resolveProviderType(value)") != std::string::npos);
+    CHECK(js.find("function resolveModelProviderType(value)") != std::string::npos);
+    CHECK(js.find("host==='openrouter.ai'||host.endsWith('.openrouter.ai')") !=
+          std::string::npos);
     const size_t filter_at = js.find("function providerFilterValue(section)");
     REQUIRE(filter_at != std::string::npos);
     const std::string filter_body = js.substr(filter_at, 700);

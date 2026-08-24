@@ -55,26 +55,40 @@ func (d *Config) UnmarshalJSON(data []byte) error {
 }
 
 type Model struct {
-	Provider             string   `json:"provider"`
-	APIKey               string   `json:"api_key,omitempty"`
-	Model                string   `json:"model"`
-	APIMode              string   `json:"api_mode,omitempty"`
-	ReasoningEffort      string   `json:"reasoning_effort"`
-	Temperature          *float64 `json:"temperature,omitempty"`
-	MaxResponseTokens    int      `json:"max_response_tokens"`
-	LogRawHTTP           bool     `json:"log_raw_http"`
-	ContextWindow        int      `json:"context_window"`
-	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
+	Provider                          string   `json:"provider"`
+	APIKey                            string   `json:"api_key,omitempty"`
+	Model                             string   `json:"model"`
+	APIMode                           string   `json:"api_mode,omitempty"`
+	ResponsesContextManagement        string   `json:"responses_context_management,omitempty"`
+	ResponsesCompactThreshold         int      `json:"responses_compact_threshold,omitempty"`
+	ResponsesContextEditTrigger       int      `json:"responses_context_edit_trigger,omitempty"`
+	ResponsesContextEditKeep          int      `json:"responses_context_edit_keep,omitempty"`
+	ResponsesContextEditClearThinking bool     `json:"responses_context_edit_clear_thinking,omitempty"`
+	ResponsesTruncation               string   `json:"responses_truncation,omitempty"`
+	ResponsesInclude                  []string `json:"responses_include,omitempty"`
+	ReasoningEffort                   string   `json:"reasoning_effort"`
+	Temperature                       *float64 `json:"temperature,omitempty"`
+	MaxResponseTokens                 int      `json:"max_response_tokens"`
+	LogRawHTTP                        bool     `json:"log_raw_http"`
+	ContextWindow                     int      `json:"context_window"`
+	ModelMaxOutputTokens              int      `json:"model_max_output_tokens"`
 }
 
 func (d Model) ProviderTestRequest() agent.ModelProviderTestRequest {
 	return agent.ModelProviderTestRequest{
-		Provider:        d.Provider,
-		APIKey:          d.APIKey,
-		Model:           d.Model,
-		APIMode:         d.APIMode,
-		Temperature:     d.Temperature,
-		ReasoningEffort: d.ReasoningEffort,
+		Provider:                          d.Provider,
+		APIKey:                            d.APIKey,
+		Model:                             d.Model,
+		APIMode:                           d.APIMode,
+		ResponsesContextManagement:        d.ResponsesContextManagement,
+		ResponsesCompactThreshold:         d.ResponsesCompactThreshold,
+		ResponsesContextEditTrigger:       d.ResponsesContextEditTrigger,
+		ResponsesContextEditKeep:          d.ResponsesContextEditKeep,
+		ResponsesContextEditClearThinking: d.ResponsesContextEditClearThinking,
+		ResponsesTruncation:               d.ResponsesTruncation,
+		ResponsesInclude:                  append([]string(nil), d.ResponsesInclude...),
+		Temperature:                       d.Temperature,
+		ReasoningEffort:                   d.ReasoningEffort,
 	}
 }
 
@@ -451,16 +465,23 @@ func (d Config) ToAgentConfig() agent.Config {
 		TTSProviders:   d.ttsProvidersToAgentConfig(),
 		STTProviders:   d.sttProvidersToAgentConfig(),
 		Model: agent.ModelConfig{
-			Provider:             d.Model.Provider,
-			APIKey:               d.Model.APIKey,
-			Model:                d.Model.Model,
-			APIMode:              d.Model.APIMode,
-			ReasoningEffort:      d.Model.ReasoningEffort,
-			Temperature:          d.Model.Temperature,
-			MaxResponseTokens:    d.Model.MaxResponseTokens,
-			LogRawHTTP:           d.Model.LogRawHTTP,
-			ContextWindow:        d.Model.ContextWindow,
-			ModelMaxOutputTokens: d.Model.ModelMaxOutputTokens,
+			Provider:                          d.Model.Provider,
+			APIKey:                            d.Model.APIKey,
+			Model:                             d.Model.Model,
+			APIMode:                           d.Model.APIMode,
+			ResponsesContextManagement:        d.Model.ResponsesContextManagement,
+			ResponsesCompactThreshold:         d.Model.ResponsesCompactThreshold,
+			ResponsesContextEditTrigger:       d.Model.ResponsesContextEditTrigger,
+			ResponsesContextEditKeep:          d.Model.ResponsesContextEditKeep,
+			ResponsesContextEditClearThinking: d.Model.ResponsesContextEditClearThinking,
+			ResponsesTruncation:               d.Model.ResponsesTruncation,
+			ResponsesInclude:                  append([]string(nil), d.Model.ResponsesInclude...),
+			ReasoningEffort:                   d.Model.ReasoningEffort,
+			Temperature:                       d.Model.Temperature,
+			MaxResponseTokens:                 d.Model.MaxResponseTokens,
+			LogRawHTTP:                        d.Model.LogRawHTTP,
+			ContextWindow:                     d.Model.ContextWindow,
+			ModelMaxOutputTokens:              d.Model.ModelMaxOutputTokens,
 		},
 		TTS: agent.TTSConfig{
 			Provider:    d.TTS.Provider,
@@ -724,15 +745,22 @@ func FromAgentConfig(cfg agent.Config) Config {
 		TTSProviders:   ttsProvidersFromConfig(cfg.TTSProviders),
 		STTProviders:   sttProvidersFromConfig(cfg.STTProviders),
 		Model: Model{
-			Provider:             cfg.Model.Provider,
-			Model:                cfg.Model.Model,
-			APIMode:              cfg.Model.APIMode,
-			ReasoningEffort:      cfg.Model.ReasoningEffort,
-			Temperature:          cfg.Model.Temperature,
-			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
-			LogRawHTTP:           cfg.Model.LogRawHTTP,
-			ContextWindow:        cfg.Model.ContextWindow,
-			ModelMaxOutputTokens: cfg.Model.ModelMaxOutputTokens,
+			Provider:                          cfg.Model.Provider,
+			Model:                             cfg.Model.Model,
+			APIMode:                           cfg.Model.APIMode,
+			ResponsesContextManagement:        cfg.Model.ResponsesContextManagement,
+			ResponsesCompactThreshold:         cfg.Model.ResponsesCompactThreshold,
+			ResponsesContextEditTrigger:       cfg.Model.ResponsesContextEditTrigger,
+			ResponsesContextEditKeep:          cfg.Model.ResponsesContextEditKeep,
+			ResponsesContextEditClearThinking: cfg.Model.ResponsesContextEditClearThinking,
+			ResponsesTruncation:               cfg.Model.ResponsesTruncation,
+			ResponsesInclude:                  append([]string(nil), cfg.Model.ResponsesInclude...),
+			ReasoningEffort:                   cfg.Model.ReasoningEffort,
+			Temperature:                       cfg.Model.Temperature,
+			MaxResponseTokens:                 cfg.Model.MaxResponseTokens,
+			LogRawHTTP:                        cfg.Model.LogRawHTTP,
+			ContextWindow:                     cfg.Model.ContextWindow,
+			ModelMaxOutputTokens:              cfg.Model.ModelMaxOutputTokens,
 		},
 		TTS: TTS{
 			Provider:    cfg.TTS.Provider,
