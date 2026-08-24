@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ type ttsDTO = configupdate.TTS
 type sttDTO = configupdate.STT
 type audioDTO = configupdate.Audio
 type audioArchiveDTO = configupdate.AudioArchive
+type frameServiceDTO = configupdate.FrameService
 type quickCaptureDTO = configupdate.QuickCapture
 type storageDTO = configupdate.Storage
 type storageDegradedModeDTO = configupdate.StorageDegradedMode
@@ -250,6 +252,9 @@ func runConfigUpdateIO(args []string, stdin io.Reader, stdout, stderr io.Writer)
 	stdinFlag := fs.Bool("stdin", false, "read JSON merge patch from stdin")
 	configFlag := fs.String("config", "", "path to a TOML config file")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		writeConfigUpdateError(stdout, err, configupdate.ErrorKindInvalidRequest)
 		return 1
 	}

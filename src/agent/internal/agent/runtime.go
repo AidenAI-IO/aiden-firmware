@@ -2619,6 +2619,9 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	if r.phoneBridge != nil {
+		r.phoneBridge.Close()
+	}
 	maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), runtimeEpisodeMaintenanceTimeout)
 	if err := r.episodeMaintenance.closeAndWait(maintenanceCtx); err != nil && r.logger != nil {
 		r.logger.Error("episode maintenance drain on close: %v", err)
