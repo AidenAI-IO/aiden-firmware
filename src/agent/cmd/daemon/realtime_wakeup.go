@@ -433,6 +433,10 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if runtime != nil {
+		unregisterReset := runtime.RegisterUserContextResetHook(cancel)
+		defer unregisterReset()
+	}
 	userContext, err := agent.InitializeContextManager(
 		realtimeSessionConfig(cfg).Instructions,
 		agentpath.UserContextManagerSessionFolder(cfg.ConfigDir),
@@ -608,6 +612,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 
 	for {
 		select {
+		case <-ctx.Done():
+			return nil
 		case <-sigChan:
 			return nil
 		case <-session.Done():

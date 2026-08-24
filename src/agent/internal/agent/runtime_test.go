@@ -5251,6 +5251,68 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	}
 }
 
+func TestRuntimeClearMemoryRotatesUserContextSession(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	runtime, err := NewRuntime(Config{
+		ConfigDir: configDir,
+		Model:     ModelConfig{Provider: "fake"},
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	folder := agentpath.UserContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManager(folder, "realtime system prompt")
+	if err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
+	}
+	oldSessionID := manager.GetSessionID()
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "old user context"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	if err := runtime.ClearMemory(context.Background()); err != nil {
+		t.Fatalf("ClearMemory() error = %v", err)
+	}
+	rotated, err := contextmanager.LoadContextManagerFromCurrentSession(folder)
+	if err != nil {
+		t.Fatalf("load rotated user context: %v", err)
+	}
+	if rotated.GetSessionID() == oldSessionID {
+		t.Fatalf("user context session was not rotated: %q", oldSessionID)
+	}
+	if _, err := contextmanager.LoadContextManagerFromSessionID(folder, oldSessionID); err != nil {
+		t.Fatalf("old user context should remain archived and loadable: %v", err)
+	}
+	rotatedMessages := rotated.MessageListDump().Messages
+	if len(rotatedMessages) != 1 || rotatedMessages[0].Role != messages.MessageRoleSystem || rotatedMessages[0].Content != "realtime system prompt" {
+		t.Fatalf("rotated user context = %#v, want only preserved system prompt", rotatedMessages)
+	}
+}
+
+func TestRuntimeClearMemoryResetsActiveUserContext(t *testing.T) {
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	reset := make(chan struct{}, 1)
+	unregister := runtime.RegisterUserContextResetHook(func() { reset <- struct{}{} })
+	defer unregister()
+
+	if err := runtime.ClearMemory(context.Background()); err != nil {
+		t.Fatalf("ClearMemory() error = %v", err)
+	}
+	select {
+	case <-reset:
+	default:
+		t.Fatal("active user context reset hook was not called")
+	}
+}
+
 func TestRuntimePreemptCancelsActiveRun(t *testing.T) {
 	t.Parallel()
 

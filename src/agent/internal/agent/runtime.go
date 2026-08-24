@@ -78,6 +78,9 @@ type Runtime struct {
 	activeCancel         context.CancelFunc
 	preemptHooks         []func()
 	lastPreemptTime      time.Time
+	userContextResetMu   sync.Mutex
+	userContextResetHook func()
+	userContextResetGen  uint64
 	storage              *StorageManager
 	screenState          *screen.ScreenState
 	phoneBridge          *PhoneBridge
@@ -1504,6 +1507,66 @@ func (r *Runtime) ClearMemory(ctx context.Context) error {
 		return err
 	}
 	r.rotateContext()
+	r.resetActiveUserContext()
+	if err := r.rotateUserContext(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RegisterUserContextResetHook installs the active realtime-session reset
+// callback. Clearing conversation history cancels that live session so it
+// cannot continue writing to the previous user context after rotation.
+func (r *Runtime) RegisterUserContextResetHook(hook func()) func() {
+	if r == nil {
+		return func() {}
+	}
+	r.userContextResetMu.Lock()
+	r.userContextResetGen++
+	generation := r.userContextResetGen
+	r.userContextResetHook = hook
+	r.userContextResetMu.Unlock()
+	return func() {
+		r.userContextResetMu.Lock()
+		if r.userContextResetGen == generation {
+			r.userContextResetHook = nil
+		}
+		r.userContextResetMu.Unlock()
+	}
+}
+
+func (r *Runtime) resetActiveUserContext() {
+	if r == nil {
+		return
+	}
+	r.userContextResetMu.Lock()
+	hook := r.userContextResetHook
+	r.userContextResetMu.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+func (r *Runtime) rotateUserContext() error {
+	if r == nil || strings.TrimSpace(r.config.ConfigDir) == "" {
+		return nil
+	}
+	folder := agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
+	var systemPrompt string
+	if manager, err := contextmanager.LoadContextManagerFromCurrentSession(folder); err == nil && manager != nil {
+		for _, message := range manager.MessageListDump().Messages {
+			if message.Role == messages.MessageRoleSystem {
+				systemPrompt = message.Content
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(systemPrompt) == "" {
+		return nil
+	}
+	if _, err := contextmanager.NewContextManager(folder, systemPrompt); err != nil {
+		return fmt.Errorf("create user context session: %w", err)
+	}
 	return nil
 }
 
@@ -1542,6 +1605,7 @@ func (r *Runtime) hasLoadedSkills() bool {
 }
 
 func (r *Runtime) ClearAllMemory(ctx context.Context) error {
+	r.resetActiveUserContext()
 	if err := r.memories.ClearAll(ctx, "default"); err != nil {
 		return err
 	}
