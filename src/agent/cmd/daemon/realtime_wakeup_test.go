@@ -135,6 +135,23 @@ type fakeRealtimeEventSource struct {
 	done   chan struct{}
 }
 
+type blockingRealtimeTool struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (t *blockingRealtimeTool) Name() string        { return realtimeRecallTool }
+func (t *blockingRealtimeTool) Description() string { return "blocking recall" }
+func (t *blockingRealtimeTool) Call(ctx context.Context, _ string) (string, error) {
+	close(t.started)
+	select {
+	case <-t.release:
+		return `{"status":"ok"}`, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
 func (f *fakeRealtimeEventSource) Events() <-chan rtclient.Event { return f.events }
 func (f *fakeRealtimeEventSource) Errors() <-chan error          { return f.errs }
 func (f *fakeRealtimeEventSource) Done() <-chan struct{}         { return f.done }
@@ -175,6 +192,59 @@ func TestWaitForRealtimeEventPropagatesShutdown(t *testing.T) {
 	signals <- syscall.SIGTERM
 	if err := waitForRealtimeEvent(context.Background(), source, signals, "session.updated", time.Second); !errors.Is(err, errRealtimeShutdown) {
 		t.Fatalf("waitForRealtimeEvent() error = %v, want errRealtimeShutdown", err)
+	}
+}
+
+func TestStartRealtimeToolCallDoesNotBlockEventLoop(t *testing.T) {
+	tool := &blockingRealtimeTool{started: make(chan struct{}), release: make(chan struct{})}
+	results := make(chan realtimeToolResult, 1)
+	call := rtclient.FunctionCallEvent{ResponseID: "resp-1", CallID: "call-1", Name: realtimeRecallTool, Arguments: `{}`}
+
+	startRealtimeToolCall(context.Background(), realtimeVoiceToolExecutor{recall: tool}, call, results)
+	select {
+	case <-tool.started:
+	case <-time.After(time.Second):
+		t.Fatal("tool call did not start")
+	}
+	select {
+	case <-results:
+		t.Fatal("tool call completed before release")
+	default:
+	}
+	close(tool.release)
+	select {
+	case result := <-results:
+		if result.call.CallID != call.CallID || result.output != `{"status":"ok"}` {
+			t.Fatalf("tool result = %+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for asynchronous tool result")
+	}
+}
+
+func TestRealtimeToolTrackerWaitsForAllResultsAfterResponseDone(t *testing.T) {
+	tracker := newRealtimeToolTracker()
+	tracker.start("resp-1")
+	tracker.start("resp-1")
+	if hasTools, continueNow := tracker.done("resp-1"); !hasTools || continueNow {
+		t.Fatalf("done() = (%t, %t), want tools with deferred continuation", hasTools, continueNow)
+	}
+	if tracker.complete("resp-1") {
+		t.Fatal("first tool result continued before all results completed")
+	}
+	if !tracker.complete("resp-1") {
+		t.Fatal("last tool result did not release deferred continuation")
+	}
+}
+
+func TestRealtimeToolTrackerContinuesWhenResultsPrecedeResponseDone(t *testing.T) {
+	tracker := newRealtimeToolTracker()
+	tracker.start("resp-1")
+	if tracker.complete("resp-1") {
+		t.Fatal("tool result continued before response.done")
+	}
+	if hasTools, continueNow := tracker.done("resp-1"); !hasTools || !continueNow {
+		t.Fatalf("done() = (%t, %t), want immediate continuation", hasTools, continueNow)
 	}
 }
 

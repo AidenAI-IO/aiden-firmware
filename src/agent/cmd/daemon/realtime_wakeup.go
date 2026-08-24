@@ -28,6 +28,7 @@ const (
 	realtimeEventTimeout       = 10 * time.Second
 	realtimeUpdateTimeout      = 5 * time.Second
 	realtimePlaybackKeepAlive  = 10 * time.Second
+	realtimeToolCallTimeout    = 30 * time.Second
 	realtimeTaskResultDebounce = 500 * time.Millisecond
 	realtimeContextReplayTurns = 10
 )
@@ -40,6 +41,63 @@ type realtimeChatCommand struct {
 	ctx     context.Context
 	request agent.RealtimeChatRequest
 	events  chan agent.RealtimeChatEvent
+}
+
+type realtimeToolResult struct {
+	call   rtclient.FunctionCallEvent
+	output string
+}
+
+type realtimeToolTracker struct {
+	pending      map[string]int
+	seen         map[string]bool
+	responseDone map[string]bool
+}
+
+func newRealtimeToolTracker() *realtimeToolTracker {
+	return &realtimeToolTracker{
+		pending:      make(map[string]int),
+		seen:         make(map[string]bool),
+		responseDone: make(map[string]bool),
+	}
+}
+
+func (t *realtimeToolTracker) start(responseID string) {
+	t.seen[responseID] = true
+	t.pending[responseID]++
+}
+
+// complete returns true when response.done was already received and this was
+// the final pending tool result, so the caller should create the continuation.
+func (t *realtimeToolTracker) complete(responseID string) bool {
+	if t.pending[responseID] > 0 {
+		t.pending[responseID]--
+	}
+	if t.pending[responseID] != 0 || !t.responseDone[responseID] {
+		return false
+	}
+	t.clear(responseID)
+	return true
+}
+
+// done returns true when a tool-bearing response can continue immediately.
+// A false return means either no tool was seen or pending tool work remains.
+func (t *realtimeToolTracker) done(responseID string) (hasTools bool, continueNow bool) {
+	if !t.seen[responseID] {
+		return false, false
+	}
+	if t.pending[responseID] > 0 {
+		t.responseDone[responseID] = true
+		return true, false
+	}
+	t.clear(responseID)
+	return true, true
+}
+
+func (t *realtimeToolTracker) clear(responseID string) {
+	delete(t.pending, responseID)
+	delete(t.seen, responseID)
+	delete(t.responseDone, responseID)
 }
 
 type realtimeChatBridge struct {
@@ -422,6 +480,21 @@ func realtimeToolJSON(value any) string {
 	return string(encoded)
 }
 
+func startRealtimeToolCall(ctx context.Context, executor realtimeVoiceToolExecutor, call rtclient.FunctionCallEvent, results chan<- realtimeToolResult) {
+	go func() {
+		callCtx, cancel := context.WithTimeout(ctx, realtimeToolCallTimeout)
+		defer cancel()
+		result := realtimeToolResult{
+			call:   call,
+			output: executor.call(callCtx, call.Name, call.Arguments),
+		}
+		select {
+		case results <- result:
+		case <-ctx.Done():
+		}
+	}()
+}
+
 func realtimePlaybackOutputFormat(cfg agent.Config) agent.AudioFormat {
 	return agent.AudioFormat{
 		SampleRate: uint32(cfg.Audio.SampleRateOrDefault()),
@@ -563,7 +636,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	responseActive := false
 	inputSpeechActive := false
 	toolExecutor := newRealtimeVoiceToolExecutor(runtime, tasks)
-	toolResponsesPending := make(map[string]bool)
+	toolResults := make(chan realtimeToolResult, 16)
+	toolTracker := newRealtimeToolTracker()
 	var pendingTaskUpdates []agenttask.Task
 	var taskDebounceTimer *time.Timer
 	var taskDebounce <-chan time.Time
@@ -629,6 +703,20 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 		case err := <-readErrs:
 			if err != nil {
 				return err
+			}
+		case result := <-toolResults:
+			call := result.call
+			if err := session.SendFunctionOutput(ctx, call.CallID, result.output); err != nil {
+				return fmt.Errorf("send realtime tool result: %w", err)
+			}
+			if err := appendRealtimeToolResult(userContext, call, result.output); err != nil {
+				return fmt.Errorf("persist realtime tool result: %w", err)
+			}
+			if toolTracker.complete(call.ResponseID) {
+				responseActive = true
+				if err := session.CreateResponse(ctx, nil); err != nil {
+					return fmt.Errorf("continue realtime response after tool call: %w", err)
+				}
 			}
 		case pcm, ok := <-chunks:
 			if !ok {
@@ -816,14 +904,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				if err := appendRealtimeToolCall(userContext, call); err != nil {
 					return fmt.Errorf("persist realtime tool call: %w", err)
 				}
-				output := toolExecutor.call(ctx, call.Name, call.Arguments)
-				if err := session.SendFunctionOutput(ctx, call.CallID, output); err != nil {
-					return fmt.Errorf("send realtime tool result: %w", err)
-				}
-				if err := appendRealtimeToolResult(userContext, call, output); err != nil {
-					return fmt.Errorf("persist realtime tool result: %w", err)
-				}
-				toolResponsesPending[call.ResponseID] = true
+				toolTracker.start(call.ResponseID)
+				startRealtimeToolCall(ctx, toolExecutor, call, toolResults)
 			case "response.done":
 				var done rtclient.ResponseEvent
 				if err := event.Decode(&done); err != nil {
@@ -832,8 +914,10 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				if err := playback.finishResponse(playbackAudio); err != nil {
 					return fmt.Errorf("finish realtime playback response: %w", err)
 				}
-				if toolResponsesPending[done.Response.ID] {
-					delete(toolResponsesPending, done.Response.ID)
+				if hasTools, continueNow := toolTracker.done(done.Response.ID); hasTools {
+					if !continueNow {
+						continue
+					}
 					responseActive = true
 					if err := session.CreateResponse(ctx, nil); err != nil {
 						return fmt.Errorf("continue realtime response after tool call: %w", err)
