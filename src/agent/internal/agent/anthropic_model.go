@@ -26,9 +26,10 @@ const (
 	anthropicAPIVersion              = "2023-06-01"
 	defaultAnthropicStreamMaxRetries = 5
 	defaultAnthropicStreamRetryDelay = 2 * time.Second
-	defaultAnthropicProtocolRetries  = 1
+	defaultAnthropicProtocolRetries  = 3
 	anthropicDaemonRawSSELimit       = 128 * 1024
 	anthropicRawHTTPRawSSELimit      = 4 * 1024 * 1024
+	anthropicEmptyEndTurnMessage     = "end_turn response has no text or tool_use content"
 )
 
 type anthropicModel struct {
@@ -269,13 +270,22 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 	ctx = m.withRawHTTPLogScope(ctx)
 	streamRetries := 0
 	protocolRetries := 0
+	nonStreamingFallback := false
+	var streamFallbackCause error
+	fail := func(err error) error {
+		if streamFallbackCause == nil || isAnthropicContextError(err) {
+			return err
+		}
+		log.Printf("[WARN] [anthropic] non-streaming fallback failed: %v", err)
+		return streamFallbackCause
+	}
 	for {
 		_ = m.logRawHTTP(ctx, request.Model, "request", 0, string(payload))
 
 		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+"/messages", bytes.NewReader(payload))
 		if err != nil {
 			_ = m.logRawHTTP(ctx, request.Model, "response", 0, "create request error: "+err.Error())
-			return nil, fmt.Errorf("create Anthropic request: %w", err)
+			return nil, fail(fmt.Errorf("create Anthropic request: %w", err))
 		}
 		httpRequest.Header.Set("Content-Type", "application/json")
 		httpRequest.Header.Set("anthropic-version", anthropicAPIVersion)
@@ -288,13 +298,13 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 		response, err := m.httpClient.Do(httpRequest)
 		if err != nil {
 			_ = m.logRawHTTP(ctx, request.Model, "response", 0, "transport error: "+err.Error())
-			return nil, fmt.Errorf("send Anthropic request: %w", err)
+			return nil, fail(fmt.Errorf("send Anthropic request: %w", err))
 		}
 		if response.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(response.Body)
 			response.Body.Close()
 			_ = m.logRawHTTP(ctx, request.Model, "response", response.StatusCode, string(body))
-			return nil, newProviderHTTPError(response.StatusCode, body)
+			return nil, fail(newProviderHTTPError(response.StatusCode, body))
 		}
 
 		if request.Stream {
@@ -309,6 +319,18 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 			if errors.As(streamErr, &responseProtocolErr) {
 				retryLimit = m.protocolRetries
 				retryDelay = m.protocolDelay
+				if protocolRetries >= retryLimit && shouldRetryAnthropicStreamError(streamErr) &&
+					isAnthropicEmptyEndTurnResponseError(streamErr) && !nonStreamingFallback {
+					nonStreamingFallback = true
+					streamFallbackCause = streamErr
+					request.Stream = false
+					payload, err = json.Marshal(request)
+					if err != nil {
+						return nil, fail(fmt.Errorf("marshal Anthropic non-streaming fallback request: %w", err))
+					}
+					log.Printf("[WARN] [anthropic] semantic stream retries exhausted; falling back to non-streaming response")
+					continue
+				}
 				if protocolRetries >= retryLimit || !shouldRetryAnthropicStreamError(streamErr) {
 					return nil, streamErr
 				}
@@ -333,17 +355,17 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 		response.Body.Close()
 		if err != nil {
 			_ = m.logRawHTTP(ctx, request.Model, "response", response.StatusCode, "read response error: "+err.Error())
-			return nil, fmt.Errorf("read Anthropic response: %w", err)
+			return nil, fail(fmt.Errorf("read Anthropic response: %w", err))
 		}
 		_ = m.logRawHTTP(ctx, request.Model, "response", response.StatusCode, string(body))
 		var decoded anthropicResponse
 		if err := json.Unmarshal(body, &decoded); err != nil {
-			return nil, fmt.Errorf("decode Anthropic response: %w", err)
+			return nil, fail(fmt.Errorf("decode Anthropic response: %w", err))
 		}
 		normalized, recovery, protocolErr := normalizeAnthropicResponse(decoded, request.Thinking != nil)
 		if protocolErr != nil {
 			if protocolRetries >= m.protocolRetries {
-				return nil, protocolErr
+				return nil, fail(protocolErr)
 			}
 			protocolRetries++
 			log.Printf("[WARN] [anthropic] retrying semantic protocol error (%d/%d): %v", protocolRetries, m.protocolRetries, protocolErr)
@@ -353,12 +375,41 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 			continue
 		}
 		generationInfo := map[string]any{}
+		if nonStreamingFallback {
+			generationInfo["llm_anthropic_stream_fallback"] = "non_stream"
+		}
 		if recovery != "" {
 			log.Printf("[WARN] [anthropic] recovered response %s as user-visible text (response_id=%s)", recovery, decoded.ID)
 			generationInfo["llm_anthropic_response_recovery"] = recovery
 		}
-		return aggregateAnthropicResponseWithGenerationInfo(normalized, callStarted, generationInfo), nil
+		result := aggregateAnthropicResponseWithGenerationInfo(normalized, callStarted, generationInfo)
+		if nonStreamingFallback {
+			if err := emitAnthropicNonStreamingFallback(ctx, &callOpts, result, request.Thinking != nil); err != nil {
+				return nil, err
+			}
+		}
+		return result, nil
 	}
+}
+
+func isAnthropicContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func emitAnthropicNonStreamingFallback(ctx context.Context, opts *llms.CallOptions, response *llms.ContentResponse, thinkingEnabled bool) error {
+	if opts == nil || response == nil || len(response.Choices) == 0 || response.Choices[0] == nil {
+		return nil
+	}
+	choice := response.Choices[0]
+	if thinkingEnabled && opts.StreamingReasoningFunc != nil && choice.ReasoningContent != "" {
+		if err := opts.StreamingReasoningFunc(ctx, []byte(choice.ReasoningContent), nil); err != nil {
+			return err
+		}
+	}
+	if opts.StreamingFunc != nil && choice.Content != "" {
+		return opts.StreamingFunc(ctx, []byte(choice.Content))
+	}
+	return nil
 }
 
 func convertAnthropicMessages(messages []llms.MessageContent) ([]anthropicContentBlock, []anthropicRequestMessage, error) {
@@ -635,6 +686,11 @@ func newAnthropicResponseProtocolError(message string) error {
 	return &anthropicResponseProtocolError{message: message}
 }
 
+func isAnthropicEmptyEndTurnResponseError(err error) bool {
+	var protocolErr *anthropicResponseProtocolError
+	return errors.As(err, &protocolErr) && protocolErr.message == anthropicEmptyEndTurnMessage
+}
+
 func normalizeAnthropicResponse(response anthropicResponse, thinkingEnabled bool) (anthropicResponse, string, error) {
 	hasText := false
 	hasThinking := false
@@ -680,7 +736,7 @@ func normalizeAnthropicResponse(response anthropicResponse, thinkingEnabled bool
 			}
 			return response, "thinking_as_text", nil
 		}
-		return response, "", newAnthropicResponseProtocolError("end_turn response has no text or tool_use content")
+		return response, "", newAnthropicResponseProtocolError(anthropicEmptyEndTurnMessage)
 	}
 
 	return response, "", nil
