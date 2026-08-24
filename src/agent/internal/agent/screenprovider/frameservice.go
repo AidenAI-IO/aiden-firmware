@@ -185,6 +185,12 @@ func (c *FrameService) LatestFrame() (*FrameMetadata, []byte, error) {
 // cropBlack: whether to crop uniformly dark columns at the left and right edges
 // minimalWidth: optional lower bound for width after horizontal cropping
 func (c *FrameService) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*FrameMetadata, []byte, error) {
+	return c.LatestFrameWithFormatSince(format, quality, cropBlack, minimalWidth, 0, 0)
+}
+
+// LatestFrameWithFormatSince fetches a frame newer than sinceSeq when the
+// frame_service implementation supports the compatibility fields.
+func (c *FrameService) LatestFrameWithFormatSince(format string, quality int, cropBlack bool, minimalWidth int, sinceSeq uint64, timeout time.Duration) (*FrameMetadata, []byte, error) {
 	if format == "" {
 		format = "raw"
 	}
@@ -195,12 +201,26 @@ func (c *FrameService) LatestFrameWithFormat(format string, quality int, cropBla
 		minimalWidth = 0
 	}
 
-	request, err := latestFrameRequestJSON(format, quality, cropBlack, minimalWidth)
+	timeoutMs := 0
+	if timeout > 0 {
+		timeoutMs = int(timeout / time.Millisecond)
+		if timeoutMs < 1 {
+			timeoutMs = 1
+		}
+	}
+	request, err := latestFrameRequestJSON(format, quality, cropBlack, minimalWidth, sinceSeq, timeoutMs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal latest_frame request: %w", err)
 	}
 
-	headerJSON, payload, err := c.doRequest(request, nil, 5*time.Second)
+	requestTimeout := 5 * time.Second
+	if timeout > 0 {
+		requestTimeout = timeout + time.Second
+		if requestTimeout < 5*time.Second {
+			requestTimeout = 5 * time.Second
+		}
+	}
+	headerJSON, payload, err := c.doRequest(request, nil, requestTimeout)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -264,12 +284,12 @@ func (c *FrameService) doRequest(requestJSON string, requestPayload []byte, time
 	return ReadUDSMessage(conn)
 }
 
-func latestFrameRequestJSON(format string, quality int, cropBlack bool, minimalWidth int) (string, error) {
+func latestFrameRequestJSON(format string, quality int, cropBlack bool, minimalWidth int, sinceSeq uint64, timeoutMs int) (string, error) {
 	payload := map[string]any{
 		"type":       "request",
 		"method":     "latest_frame",
-		"since_seq":  "0",
-		"timeout_ms": 0,
+		"since_seq":  strconv.FormatUint(sinceSeq, 10),
+		"timeout_ms": timeoutMs,
 		"format":     format,
 		"quality":    quality,
 		"crop_black": cropBlack,

@@ -150,7 +150,8 @@ textarea:focus-visible {
 }
 
 .tool-lab,
-.skill-export {
+.skill-export,
+.infrastructure-panel {
     display: flex;
     flex-direction: column;
     gap: 9px;
@@ -200,6 +201,11 @@ textarea:focus-visible {
     justify-content: center;
 }
 
+.infrastructure-btn {
+    flex: 1 1 86px;
+    justify-content: center;
+}
+
 .tool-lab-status {
     font-size: 0.76rem;
     color: var(--muted);
@@ -226,6 +232,8 @@ textarea:focus-visible {
     border-radius: 14px;
     border: 1px solid rgba(52, 56, 49, 0.08);
     background: #ffffff;
+    max-height: 260px;
+    object-fit: contain;
 }
 
 .main-panel {

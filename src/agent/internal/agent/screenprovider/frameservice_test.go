@@ -112,7 +112,7 @@ func TestFrameHealthResponseUnmarshalSupportsStringLastRecoveryTs(t *testing.T) 
 }
 
 func TestLatestFrameRequestJSONEscapesFormat(t *testing.T) {
-	encoded, err := latestFrameRequestJSON(`jpeg","evil":true`, 80, true, 16)
+	encoded, err := latestFrameRequestJSON(`jpeg","evil":true`, 80, true, 16, 10, 2500)
 	if err != nil {
 		t.Fatalf("latestFrameRequestJSON() error = %v", err)
 	}
@@ -125,5 +125,8 @@ func TestLatestFrameRequestJSONEscapesFormat(t *testing.T) {
 	}
 	if payload["method"] != "latest_frame" || payload["quality"] != float64(80) || payload["minimal_width"] != float64(16) {
 		t.Fatalf("unexpected request payload: %#v", payload)
+	}
+	if payload["since_seq"] != "10" || payload["timeout_ms"] != float64(2500) {
+		t.Fatalf("unexpected freshness fields: %#v", payload)
 	}
 }

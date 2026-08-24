@@ -516,6 +516,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/storage/status", s.handleStorageStatus)
 	mux.HandleFunc("/api/storage/eject", s.handleStorageEject)
 	mux.HandleFunc("/api/storage/format", s.handleStorageFormat)
+	mux.HandleFunc("/api/infrastructure-test/", s.handleInfrastructureTest)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
 	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
 	mux.HandleFunc("/api/phone-bridge/status", s.handleBridgeStatus)

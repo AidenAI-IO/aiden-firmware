@@ -2573,6 +2573,7 @@ func TestWebUIIsEmbeddedFromStaticResource(t *testing.T) {
 		"/web-ui/scripts/messages.js",
 		"/web-ui/scripts/attachments.js",
 		"/web-ui/scripts/tool_messages.js",
+		"/web-ui/scripts/infrastructure.js",
 		"/web-ui/scripts/bootstrap.js",
 	} {
 		if !strings.Contains(webUI, asset) {
