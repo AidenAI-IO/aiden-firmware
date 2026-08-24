@@ -73,7 +73,7 @@ func (t *EnterTextTool) platform() string {
 func (t *EnterTextTool) Description() string {
 	return `Enter exact text into a visible, focused input field or composer. ` +
 		`First prefers the Phone Bridge clipboard route when it is currently usable, including long, multiline, CJK, and non-ASCII text; it pastes and verifies the complete target. ` +
-		`If Bridge is unavailable, the field must already be focused. The local path holds the pointer-free keyboard isolation profile for the whole operation, probes the current ENG/IME state with a temporary "a", and maintains that state while entering parts in order. ` +
+		`If Bridge is unavailable or its restore/paste attempt fails, the field must already be focused for the local HID/IME fallback. The local path holds the pointer-free keyboard isolation profile for the whole operation, probes the current ENG/IME state with a temporary "a", and maintains that state while entering parts in order. ` +
 		`ASCII parts are typed directly in ENG mode without a vision verification step. IME parts are typed in IME mode and use vision-guided candidate selection until the part is committed. The local path never uses mouse input. ` +
 		`Precondition: the latest screenshot must clearly show the editable field or composer, and focus coordinates must identify that field for bridge paste and visual analysis; never use a guessed blank-space coordinate. ` +
 		`Provide the exact original text only: this tool detects ASCII and IME parts and derives required IME keystrokes internally. ` +
@@ -135,9 +135,13 @@ func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disabl
 		}
 		if !disableBridge && t.bridgeAvailable(args) {
 			bridgeResult, attempted := t.bridgeTool.runClipboardFirstResult(batchCtx, args)
-			if attempted {
+			if attempted && bridgeResult.OK {
 				return enterTextToolResultString(bridgeResult), nil
 			}
+			// A Bridge attempt is an optimization, not a hard dependency. In
+			// particular, restoring the companion app through Dynamic Island can
+			// fail after the route was selected. Continue with the local HID/IME
+			// path so enter_text remains usable on the phone's visible UI.
 		}
 		if platform == "ios" && localController == nil {
 			return enterTextToolFailure(batchCtx, CodeModuleUnavailable, "Enable iOS keyboard isolation, then retry enter_text."), nil

@@ -714,7 +714,7 @@ func TestEnterTextToolPrefersAvailableBridge(t *testing.T) {
 	}
 }
 
-func TestEnterTextToolCallKeepsBridgePathEnabled(t *testing.T) {
+func TestEnterTextToolFallsBackToLocalAfterBridgeFailure(t *testing.T) {
 	pb := newTestPhoneBridge(t)
 	pb.platform = "android"
 	pb.connected = true
@@ -750,11 +750,62 @@ func TestEnterTextToolCallKeepsBridgePathEnabled(t *testing.T) {
 	if bridgeWrites != 1 {
 		t.Fatalf("bridge writes = %d, want public enter_text to attempt Bridge once", bridgeWrites)
 	}
-	if len(keyboardText.calls) != 0 {
-		t.Fatalf("keyboard_text calls = %v, want no local fallback after attempted Bridge path", keyboardText.calls)
+	if len(keyboardText.calls) == 0 {
+		t.Fatal("keyboard_text was not called for local fallback after attempted Bridge path")
 	}
-	if enterTextOutputOK(out, nil) {
-		t.Fatalf("Call() output = %s, want failed Bridge result", out)
+	if !enterTextOutputOK(out, nil) {
+		t.Fatalf("Call() output = %s, want successful local fallback", out)
+	}
+}
+
+func TestEnterTextToolFallsBackToLocalAfterDynamicIslandRestoreFailure(t *testing.T) {
+	pb := newTestPhoneBridge(t)
+	pb.platform = "ios"
+	pb.connected = true
+	pb.appState = "background"
+	pb.returnEntry = "dynamic_island"
+	pb.returnEntrySeen = true
+	pb.returnEntryOK = true
+
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	hw := &textInputHardwareDeps{
+		pointerMode:  "touchscreen",
+		deviceTypeFn: func() string { return "iOS" },
+		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: keyboardText,
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}
+	restoreAttempts := 0
+	restorer := NewPhoneBridgeRestorer(pb, nil)
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		restoreAttempts++
+		return context.DeadlineExceeded
+	}
+	tool := &EnterTextTool{
+		engine: newFastTextInputEngine(*hw, vision),
+		bridgeTool: &textInputBridge{
+			hw:       hw,
+			vision:   vision,
+			bridgeFn: func() *PhoneBridge { return pb },
+			restorer: restorer,
+		},
+	}
+	tool.SetDeviceTypeFunc(hw.deviceTypeFn)
+	tool.iosKeyboardIsolation = newTestIOSKeyboardIsolationController(&[]string{})
+
+	out, err := tool.Call(context.Background(), `{"text":"Aiden","focus":{"x":500,"y":120}}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if !enterTextOutputOK(out, nil) {
+		t.Fatalf("Call() output = %s, want successful HID fallback after Dynamic Island failure", out)
+	}
+	if len(keyboardText.calls) == 0 {
+		t.Fatal("keyboard_text was not called after Dynamic Island restore failure")
+	}
+	if restoreAttempts == 0 {
+		t.Fatal("Dynamic Island restore route was not attempted")
 	}
 }
 
