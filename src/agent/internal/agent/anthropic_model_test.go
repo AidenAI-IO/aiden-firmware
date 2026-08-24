@@ -436,6 +436,45 @@ func TestAnthropicModelRetriesEmptyStreamedEndTurn(t *testing.T) {
 	}
 }
 
+func TestAnthropicModelDefaultsToThreeSemanticRetries(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts <= 3 {
+			_, _ = w.Write([]byte(`{
+				"id":"msg_empty",
+				"content":[],
+				"stop_reason":"end_turn",
+				"usage":{"input_tokens":10,"output_tokens":0}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"id":"msg_ok",
+			"content":[{"type":"text","text":"ok"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":10,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client())
+	response, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if attempts != 4 {
+		t.Fatalf("attempts = %d, want initial request plus three semantic retries", attempts)
+	}
+	if response.Choices[0].Content != "ok" {
+		t.Fatalf("content = %q, want ok", response.Choices[0].Content)
+	}
+}
+
 func TestAnthropicModelStreamsTextAndToolArguments(t *testing.T) {
 	t.Parallel()
 

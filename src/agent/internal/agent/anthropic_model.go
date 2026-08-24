@@ -26,7 +26,7 @@ const (
 	anthropicAPIVersion              = "2023-06-01"
 	defaultAnthropicStreamMaxRetries = 5
 	defaultAnthropicStreamRetryDelay = 2 * time.Second
-	defaultAnthropicProtocolRetries  = 1
+	defaultAnthropicProtocolRetries  = 3
 	anthropicDaemonRawSSELimit       = 128 * 1024
 	anthropicRawHTTPRawSSELimit      = 4 * 1024 * 1024
 )
