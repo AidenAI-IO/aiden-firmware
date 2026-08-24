@@ -68,6 +68,24 @@ func TestNotificationMemoryProcessorImplementsWorkerIsolationSeam(t *testing.T) 
 	worker.Stop()
 }
 
+func TestNotificationMemoryPromptDefinesTargetedActionContract(t *testing.T) {
+	prompt := buildNotificationMemoryBatchPrompt(
+		[]NotificationRecord{{ContextID: "1"}},
+		map[string][]MemoryMergeReference{"1": {{
+			Scope: "temporary", ID: "tmp-1", Revision: 2,
+		}}},
+	)
+	for _, required := range []string{
+		"add and update, content is required",
+		"promote copies the exact temporary catalog memory_id and memory_revision into scope long_term",
+		"Every targeted action must include the exact memory_id and memory_revision",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("notification prompt missing %q: %s", required, prompt)
+		}
+	}
+}
+
 func TestNotificationMemoryProcessorUsesMergeEngineForAdd(t *testing.T) {
 	root := t.TempDir()
 	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
@@ -91,6 +109,66 @@ func TestNotificationMemoryProcessorUsesMergeEngineForAdd(t *testing.T) {
 	}
 	if got := ctxStore.State().MemoryCursor; got != "1" {
 		t.Fatalf("MemoryCursor=%q, want 1", got)
+	}
+}
+
+func TestNotificationMemoryProcessorAddDoesNotSupersedeSimilarMemory(t *testing.T) {
+	root := t.TempDir()
+	temporary := NewLongTermMemoryStore(filepath.Join(root, "temporary"))
+	if _, err := temporary.AddMemory(context.Background(), MemoryItem{
+		ID: "existing-delivery", Type: "fact", TimeScope: "temporary", Title: "Delivery update", Content: "The package arrives tomorrow",
+		Tags: []string{"notification", "com.delivery"}, Entities: []string{"com.delivery"}, EvidenceExcerpts: []string{"old notification"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{{ID: "1", Source: "android", SourceID: "n1", NotificationUID: 1, SourceEventID: "evt-1", AppIdentifier: "com.delivery", Title: "Delivery window", Message: "The package arrives tomorrow at noon", Event: "added", ReceivedAt: "2026-08-21T00:00:00Z"}}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &episodeMemoryScriptedModel{responses: []string{`{"actions":[{"action":"add","scope":"temporary","type":"fact","title":"Delivery window","content":"The package arrives tomorrow at noon","expires_at":"2026-08-28T00:00:00Z","tags":["notification","com.delivery"],"entities":["com.delivery"]}]}`}}
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
+	processor.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
+	if _, err := processor.ProcessBatch(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	memories, err := temporary.Search(context.Background(), MemoryQuery{Tags: []string{"com.delivery"}, Limit: 10})
+	if err != nil || len(memories) != 2 {
+		t.Fatalf("memories=%#v err=%v, want explicit add plus existing memory", memories, err)
+	}
+	active := map[string]bool{}
+	for _, memory := range memories {
+		active[memory.ID] = true
+	}
+	if !active["existing-delivery"] || !active["tmp_notification_1"] {
+		t.Fatalf("active IDs=%#v, want both records", active)
+	}
+}
+
+func TestNotificationMemoryProcessorPreservesReinforceAction(t *testing.T) {
+	root := t.TempDir()
+	temporary := NewLongTermMemoryStore(filepath.Join(root, "temporary"))
+	if _, err := temporary.AddMemory(context.Background(), MemoryItem{
+		ID: "tmp_delivery", Type: "fact", TimeScope: "temporary", Title: "Delivery", Content: "The package arrives tomorrow",
+		Tags: []string{"notification", "com.delivery"}, Entities: []string{"com.delivery"}, EvidenceExcerpts: []string{"old notification"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{{ID: "1", Source: "android", SourceID: "n1", NotificationUID: 1, SourceEventID: "evt-1", AppIdentifier: "com.delivery", Title: "Delivery", Message: "Another notification confirms the delivery", Event: "modified", ReceivedAt: "2026-08-21T00:00:00Z"}}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &episodeMemoryScriptedModel{responses: []string{`{"actions":[{"action":"reinforce","scope":"temporary","memory_id":"tmp_delivery","memory_revision":1,"type":"fact","content":"Text that must not replace the conclusion"}]}`}}
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
+	if _, err := processor.ProcessBatch(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	memories, err := temporary.Search(context.Background(), MemoryQuery{Tags: []string{"com.delivery"}, Limit: 10})
+	if err != nil || len(memories) != 1 || memories[0].Revision != 2 || memories[0].Content != "The package arrives tomorrow" {
+		t.Fatalf("memories=%#v err=%v, want reinforced evidence without conclusion update", memories, err)
 	}
 }
 
@@ -493,7 +571,7 @@ func TestNotificationMemoryProcessorUpdatesWithRevisionAndCanPromote(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := temporary.ApplyMemoryIntent(context.Background(), MemoryIntent{Item: MemoryItem{ID: "tmp_notification_1", Type: "fact", TimeScope: "temporary", Title: "稳定规则", Content: "以后统一寄到公司", Tags: []string{"notification", "com.delivery"}, EvidenceExcerpts: []string{"通知"}}}); err != nil {
+	if _, err := temporary.ApplyMemoryIntent(context.Background(), MemoryIntent{Item: MemoryItem{ID: "tmp_notification_1", Type: "fact", TimeScope: "temporary", Title: "稳定规则", Content: "以后统一寄到公司", Tags: []string{"notification", "com.delivery"}, SourceRefs: []MemorySourceRef{{Type: "notification", ID: "1", EventIDs: []string{"event-1"}}}, EvidenceExcerpts: []string{"通知"}}, Action: MemoryIntentActionCreate}); err != nil {
 		t.Fatal(err)
 	}
 	processor2 := NewNotificationMemoryProcessor(ctxStore2, root, longTerm, &episodeMemoryScriptedModel{responses: []string{`{"actions":[{"action":"promote","scope":"long_term","memory_id":"tmp_notification_1","memory_revision":1}]}`}})
@@ -511,5 +589,58 @@ func TestNotificationMemoryProcessorUpdatesWithRevisionAndCanPromote(t *testing.
 				t.Fatalf("promoted temporary memory still active: %#v", item)
 			}
 		}
+	}
+}
+
+func TestNotificationMemoryPromoteRetryAfterTemporaryRemovalConverges(t *testing.T) {
+	root := t.TempDir()
+	temporary := NewLongTermMemoryStore(filepath.Join(root, "temporary"))
+	longTerm := NewLongTermMemoryStore(filepath.Join(root, "long_term"))
+	record := NotificationRecord{ContextID: "retry", NotificationEvent: ble.NotificationEvent{ID: "event-retry", Source: "android", SourceEventID: "source-retry", AppIdentifier: "com.delivery", Title: "Delivery rule", Message: "Always deliver to the office"}}
+	temporaryItem := MemoryItem{ID: "tmp_notification_retry", Type: "rule", TimeScope: "temporary", Title: "Delivery rule", Content: "Always deliver to the office", Tags: []string{"notification", "com.delivery"}, SourceRefs: []MemorySourceRef{{Type: "notification", ID: "original", EventIDs: []string{"original-event"}}}, EvidenceExcerpts: []string{"Always deliver to the office"}}
+	if _, err := temporary.ApplyMemoryIntent(context.Background(), MemoryIntent{Item: temporaryItem, Action: MemoryIntentActionCreate}); err != nil {
+		t.Fatal(err)
+	}
+	processor := NewNotificationMemoryProcessor(nil, root, longTerm, nil)
+	proposal := notificationMemoryProposal{Actions: []notificationMemoryAction{{Action: "promote", Scope: "long_term", MemoryID: temporaryItem.ID, MemoryRevision: 1, SourceEventIDs: []string{"source-retry"}}}}
+	activeRef := memoryResultMergeReference("temporary", MemoryResult{ID: temporaryItem.ID, Type: temporaryItem.Type, Status: "active", Revision: 1, Title: temporaryItem.Title, Summary: temporaryItem.Content, Content: temporaryItem.Content, Tags: temporaryItem.Tags, SourceRefs: temporaryItem.SourceRefs})
+	validated, err := processor.validateNotificationProposal(context.Background(), record, proposal, []MemoryMergeReference{activeRef})
+	if err != nil {
+		t.Fatalf("validate initial promote: %v", err)
+	}
+	if err := processor.applyNotificationProposal(context.Background(), record, validated, []MemoryMergeReference{activeRef}); err != nil {
+		t.Fatalf("apply initial promote: %v", err)
+	}
+	validated, err = processor.validateNotificationProposal(context.Background(), record, proposal, nil)
+	if err != nil {
+		t.Fatalf("validate retry promote: %v", err)
+	}
+	if err := processor.applyNotificationProposal(context.Background(), record, validated, nil); err != nil {
+		t.Fatalf("apply retry promote: %v", err)
+	}
+	promoted, err := longTerm.Search(context.Background(), MemoryQuery{Tags: []string{"com.delivery"}, Limit: 10})
+	if err != nil || len(promoted) != 1 {
+		t.Fatalf("promoted=%#v err=%v", promoted, err)
+	}
+	if !memorySourceRefsContain(promoted[0].SourceRefs, []MemorySourceRef{{Type: "notification", ID: record.ContextID, EventIDs: []string{"source-retry"}}}) {
+		t.Fatalf("promotion omitted retry evidence: %#v", promoted[0].SourceRefs)
+	}
+}
+
+func TestNotificationMemoryPromoteRejectsUnrelatedDeletedTemporary(t *testing.T) {
+	root := t.TempDir()
+	temporary := NewLongTermMemoryStore(filepath.Join(root, "temporary"))
+	processor := NewNotificationMemoryProcessor(nil, root, NewLongTermMemoryStore(filepath.Join(root, "long_term")), nil)
+	item := MemoryItem{ID: "tmp_deleted", Type: "rule", TimeScope: "temporary", Content: "Do not restore me", SourceRefs: []MemorySourceRef{{Type: "notification", ID: "old", EventIDs: []string{"old-event"}}}, EvidenceExcerpts: []string{"Do not restore me"}}
+	if _, err := temporary.ApplyMemoryIntent(context.Background(), MemoryIntent{Item: item, Action: MemoryIntentActionCreate}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := temporary.ApplyMemoryIntent(context.Background(), MemoryIntent{Item: MemoryItem{ID: item.ID}, Action: MemoryIntentActionRemove, ExpectedRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	record := NotificationRecord{ContextID: "new", NotificationEvent: ble.NotificationEvent{ID: "new-event", SourceEventID: "new-event", Message: "Do not restore me"}}
+	proposal := notificationMemoryProposal{Actions: []notificationMemoryAction{{Action: "promote", Scope: "long_term", MemoryID: item.ID, MemoryRevision: 1}}}
+	if _, err := processor.validateNotificationProposal(context.Background(), record, proposal, nil); err == nil {
+		t.Fatal("deleted temporary without a completed promotion was accepted")
 	}
 }

@@ -896,18 +896,9 @@ func (p *episodeMemoryProcessor) createMemory(ctx context.Context, episode TaskE
 		return existing.ID, nil
 	}
 	deviceID := firstNonEmptyString([]string{candidate.Scope["device_id"], episode.DeviceScope["device_id"], defaultMemoryDeviceID})
-	existingID := ""
-	if scoped, equivalent, found, err := p.findMemoryInScope(ctx, candidate, deviceID); err != nil {
-		return "", err
-	} else if found {
-		if !equivalent {
-			return scoped.ID, nil
-		}
-		existingID = scoped.ID
-	}
 	priority, confidence, ttl := episodeMemoryDefaults(candidate.Type)
 	item := DeviceMemoryItem{
-		ID:               firstNonEmptyString([]string{existingID, "devmem_" + stableMemoryID(episode.ID, candidate.LessonKey)}),
+		ID:               "devmem_" + stableMemoryID(episode.ID, candidate.LessonKey),
 		Type:             string(candidate.Type),
 		Status:           deviceMemoryStatusActive,
 		Revision:         1,
@@ -930,35 +921,8 @@ func (p *episodeMemoryProcessor) createMemory(ctx context.Context, episode TaskE
 	if candidate.Type == episodeMemoryTypeProcedure {
 		item.Steps = episodeMemoryProcedureSteps(episode, candidate.EvidenceRefs)
 	}
-	result, err := p.plane.device.ApplyMemoryIntent(ctx, MemoryIntent{DeviceItem: &item})
+	result, err := p.plane.device.ApplyMemoryIntent(ctx, MemoryIntent{DeviceItem: &item, Action: MemoryIntentActionCreate})
 	return result.ID, err
-}
-
-func (p *episodeMemoryProcessor) findMemoryInScope(ctx context.Context, candidate episodeMemoryCandidate, deviceID string) (DeviceMemoryItem, bool, bool, error) {
-	items, err := p.plane.device.readAll()
-	if err != nil {
-		return DeviceMemoryItem{}, false, false, err
-	}
-	for _, item := range items {
-		select {
-		case <-ctx.Done():
-			return DeviceMemoryItem{}, false, false, ctx.Err()
-		default:
-		}
-		if item.Type != string(candidate.Type) || (item.Status != deviceMemoryStatusActive && item.Status != deviceMemoryStatusDisputed) {
-			continue
-		}
-		if item.DeviceID != "" && deviceID != "" && !strings.EqualFold(item.DeviceID, deviceID) {
-			continue
-		}
-		if !equalEpisodeMemoryScope(item.Applicability, candidate.Scope) {
-			continue
-		}
-		equivalent := normalizeEpisodeMemoryText(item.Title) == normalizeEpisodeMemoryText(candidate.Situation) &&
-			normalizeEpisodeMemoryText(item.Summary) == normalizeEpisodeMemoryText(candidate.Guidance)
-		return item, equivalent, true, nil
-	}
-	return DeviceMemoryItem{}, false, false, nil
 }
 
 func equalEpisodeMemoryScope(left, right map[string]string) bool {
@@ -973,10 +937,6 @@ func equalEpisodeMemoryScope(left, right map[string]string) bool {
 		}
 	}
 	return true
-}
-
-func normalizeEpisodeMemoryText(value string) string {
-	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
 }
 
 func (p *episodeMemoryProcessor) updateMemory(ctx context.Context, episode TaskEpisode, candidate episodeMemoryCandidate) error {
@@ -1018,7 +978,7 @@ func (p *episodeMemoryProcessor) updateMemory(ctx context.Context, episode TaskE
 	if candidate.UnresolvedConflict {
 		item.ConflictsWith = []string{episode.ID}
 	}
-	_, err = p.plane.device.ApplyMemoryIntent(ctx, MemoryIntent{DeviceItem: &item, ExpectedRevision: candidate.MemoryRevision})
+	_, err = p.plane.device.ApplyMemoryIntent(ctx, MemoryIntent{DeviceItem: &item, Action: MemoryIntentActionUpdate, ExpectedRevision: candidate.MemoryRevision})
 	return err
 }
 

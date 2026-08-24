@@ -159,7 +159,15 @@ func (c *NotificationContext) seedForBenchmark(ctx context.Context, events []ble
 		}
 		event = sanitizeNotificationEvent(event)
 		fingerprint := notificationEventFingerprint(event)
-		if _, exists := c.fingerprints[fingerprint]; exists {
+		if contextID, exists := c.fingerprints[fingerprint]; exists {
+			// Setup may be retried after the processor or HTTP response fails.
+			// Return the original identity so benchmark fixture injection is
+			// idempotent instead of reporting that zero events were persisted.
+			accepted = append(accepted, NotificationRecord{
+				NotificationEvent: event,
+				ContextID:         contextID,
+				Generation:        firstNonEmptyString([]string{c.state.Generation, "benchmark"}),
+			})
 			continue
 		}
 		contextID := parseCursorOrZero(c.state.StoredCursor) + 1

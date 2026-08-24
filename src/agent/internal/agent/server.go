@@ -2457,15 +2457,19 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 type benchmarkSeedMemoryRequest struct {
-	Store    string   `json:"store"`
-	ID       string   `json:"id"`
-	Type     string   `json:"type"`
-	Title    string   `json:"title"`
-	Content  string   `json:"content"`
-	Tags     []string `json:"tags"`
-	Entities []string `json:"entities"`
-	Evidence []string `json:"evidence"`
-	Priority int      `json:"priority"`
+	Store        string            `json:"store"`
+	ID           string            `json:"id"`
+	Type         string            `json:"type"`
+	Title        string            `json:"title"`
+	Content      string            `json:"content"`
+	Tags         []string          `json:"tags"`
+	Entities     []string          `json:"entities"`
+	Evidence     []string          `json:"evidence"`
+	SourceRefs   []MemorySourceRef `json:"source_refs"`
+	EvidenceRefs []MemorySourceRef `json:"evidence_refs"`
+	TimeScope    string            `json:"time_scope"`
+	ExpiresAt    string            `json:"expires_at"`
+	Priority     int               `json:"priority"`
 }
 
 func (s *Server) handleBenchmarkSeedEpisode(w http.ResponseWriter, r *http.Request) {
@@ -2611,7 +2615,10 @@ func (s *Server) handleBenchmarkProcessNotificationMemory(w http.ResponseWriter,
 	cursor, memoryIDs, err := plane.ProcessNotificationMemoryNow(r.Context())
 	if err != nil {
 		code := http.StatusInternalServerError
-		if errors.Is(err, errMemoryWorkerBusy) {
+		var proposalErr *notificationProposalError
+		if errors.As(err, &proposalErr) {
+			code = http.StatusUnprocessableEntity
+		} else if errors.Is(err, errMemoryWorkerBusy) {
 			code = http.StatusConflict
 		}
 		http.Error(w, "process notification memory: "+err.Error(), code)
@@ -2703,8 +2710,8 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 	if storeName == "" {
 		storeName = "long_term"
 	}
-	if storeName != "long_term" && storeName != "device" {
-		http.Error(w, "store must be long_term or device", http.StatusBadRequest)
+	if storeName != "long_term" && storeName != "temporary" && storeName != "device" {
+		http.Error(w, "store must be long_term, temporary, or device", http.StatusBadRequest)
 		return
 	}
 	priority := req.Priority
@@ -2738,22 +2745,32 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 			Entities:   req.Entities,
 		})
 	} else {
-		if plane.LongTerm() == nil {
-			http.Error(w, "long-term memory not configured", http.StatusServiceUnavailable)
+		store := plane.LongTerm()
+		memoryScope := "long_term"
+		if storeName == "temporary" {
+			store = NewLongTermMemoryStore(filepath.Join(plane.memoryDir, "temporary"))
+			memoryScope = "temporary"
+		}
+		if store == nil {
+			http.Error(w, "memory store not configured", http.StatusServiceUnavailable)
 			return
 		}
 		item := MemoryItem{
 			ID:               req.ID,
 			Type:             req.Type,
+			TimeScope:        memoryScope,
 			Priority:         priority,
 			Confidence:       0.9,
 			Title:            req.Title,
 			Content:          req.Content,
 			Tags:             req.Tags,
 			Entities:         req.Entities,
+			SourceRefs:       req.SourceRefs,
+			EvidenceRefs:     req.EvidenceRefs,
+			ExpiresAt:        req.ExpiresAt,
 			EvidenceExcerpts: evidence,
 		}
-		id, err = plane.LongTerm().AddMemory(r.Context(), item)
+		id, err = store.AddMemory(r.Context(), item)
 	}
 	if err != nil {
 		if s.logger != nil {
