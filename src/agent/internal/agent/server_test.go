@@ -2861,6 +2861,60 @@ func TestServerContextDumpEndpointReturnsPlannerMessages(t *testing.T) {
 	}
 }
 
+func TestServerLoadsPersistedBackendContextBeforeFirstRun(t *testing.T) {
+	configDir := t.TempDir()
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManager(sessionFolder, "persisted system prompt")
+	if err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
+	}
+	for _, message := range []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "persisted question"},
+		{Role: messages.MessageRoleAssistant, Content: "persisted answer"},
+	} {
+		if err := manager.AppendMessage(message); err != nil {
+			t.Fatalf("AppendMessage() error = %v", err)
+		}
+	}
+
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	if runtime.contextManager != nil {
+		t.Fatal("backend context should remain lazy before the first run")
+	}
+	server := &Server{logger: newTestLogger(), runtime: runtime}
+
+	contextReq := httptest.NewRequest(http.MethodGet, "/api/context", nil)
+	contextRec := httptest.NewRecorder()
+	server.handleContext(contextRec, contextReq)
+	var contextDump ContextResponse
+	if err := json.NewDecoder(contextRec.Body).Decode(&contextDump); err != nil {
+		t.Fatalf("decode context response: %v", err)
+	}
+	if contextDump.Backend.SessionID != manager.GetSessionID() || len(contextDump.Backend.Messages) != 3 {
+		t.Fatalf("backend context = %#v, want persisted session before first run", contextDump.Backend)
+	}
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/api/history", nil)
+	historyRec := httptest.NewRecorder()
+	server.handleHistory(historyRec, historyReq)
+	var history []Message
+	if err := json.NewDecoder(historyRec.Body).Decode(&history); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	if len(history) != 2 || history[0].Content != "persisted question" || history[1].Content != "persisted answer" {
+		t.Fatalf("history = %#v, want persisted conversation before first run", history)
+	}
+	if runtime.contextManager != nil {
+		t.Fatal("read-only context endpoints should not initialize the live context manager")
+	}
+}
+
 func TestServerContextAttachmentEndpointServesRegisteredAttachment(t *testing.T) {
 	config := Config{Model: ModelConfig{Provider: "fake"}}
 	server := &Server{logger: newTestLogger(), runtime: NewRuntimeWithDeps(

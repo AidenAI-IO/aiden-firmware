@@ -1554,11 +1554,20 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 }
 
 func (r *Runtime) ContextDump() contextmanager.MessageListDump {
-	contextManager := r.contextManager
-	if contextManager == nil {
+	if r == nil {
 		return contextmanager.MessageListDump{}
 	}
-	return contextManager.MessageListDump()
+	if r.contextManager != nil {
+		return r.contextManager.MessageListDump()
+	}
+	if strings.TrimSpace(r.config.ConfigDir) == "" {
+		return contextmanager.MessageListDump{}
+	}
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+	if err != nil || manager == nil {
+		return contextmanager.MessageListDump{}
+	}
+	return manager.MessageListDump()
 }
 
 // UserContextDump returns the persisted realtime foreground context.
