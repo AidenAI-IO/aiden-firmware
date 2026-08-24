@@ -315,7 +315,7 @@ Common fields:
 | --- | --- |
 | `prompt_prefix` | Prefix for every task prompt; constrains device type, tool usage, etc. |
 | `global_reset` | Suite-level reset configuration |
-| `setup` | Task-level pre-steps; supports `agent_prompt`, benchmark-token-protected `seed_memory`, `seed_episode`, and `seed_notification` |
+| `setup` | One task-level pre-step or an ordered array of pre-steps; supports `agent_prompt`, benchmark-token-protected `seed_memory`, `seed_episode`, `seed_notification`, and generic `assert_memory` checks |
 | `app_ids` | Optional MobileGym app IDs to preload during environment setup; omitted tasks skip eager app data loading |
 | `rubric` | The judge model's scoring items |
 | `hard_assertions` | Deterministic checks, e.g. tool-call counts, timeout, required/forbidden tools |
@@ -342,7 +342,7 @@ benchmark-only control endpoint, and then checks the Agent's `recall_memory`
 behavior. The setup endpoint is benchmark-token protected and does not
 exist on a daemon without a benchmark token.
 
-The suite intentionally separates three claims:
+The suite separates ingestion/recall claims from explicit Memory action claims:
 
 - `delivery_notification_recall` checks that a useful notification becomes one
   temporary memory and is recalled with the original delivery fact.
@@ -350,21 +350,33 @@ The suite intentionally separates three claims:
   in the raw log but do not become memory.
 - `notification_batch_cursor_drain` checks that a backlog larger than one batch
   is fully committed without producing memory for verification-code noise.
+- `notification_explicit_update` checks revision-guarded replacement of an
+  existing conclusion.
+- `notification_explicit_reinforce` checks that repeated evidence preserves the
+  conclusion while advancing its revision without creating a duplicate.
+- `notification_explicit_remove` checks that a removed notification deletes only
+  the temporary conclusion tied to that stable notification identity.
+- `notification_explicit_promote` checks temporary-to-long-term promotion and
+  removal of the temporary source.
 
 The useful-notification case depends on the configured model's consolidation
 decision; the raw-log and obvious-noise cases have deterministic setup gates.
 The Go notification processor tests cover cursor recovery, generation reset,
 batch-call count, proposal validation, update/remove, and storage behavior.
-Run the suite against a fresh benchmark daemon because notification cursors and
-memory are durable:
+Run the suite against isolated benchmark daemons because notification cursors
+and memory are durable. Explicit action tasks compose generic setup primitives:
+`seed_memory`, `seed_notification`, then `assert_memory`.
+`assert_memory.expected` supports scalar/content/tag/entity checks plus generic
+`source_refs_contain` and `evidence_refs_contain` entries. Reference entries may
+match `type`, `id`, and `event_ids_contains`, which lets suites verify evidence
+preservation without adding scenario-specific runner logic.
 
 ```bash
 cd benchmark
 uv run python -m runner run \
   --suite suites/notification_memory_v1.json \
-  --agent-url http://127.0.0.1:18081 \
-  --benchmark-token-file /path/to/control_token \
-  --skip-clock-wait \
+  --auto-agent-setup \
+  --agent-config /path/to/agent.toml \
   --run-id notification-memory-v1
 ```
 

@@ -40,11 +40,20 @@ def test_notification_memory_suite_uses_benchmark_seed_setup():
         "delivery_notification_recall",
         "notification_noise_is_filtered",
         "notification_batch_cursor_drain",
+        "notification_explicit_update",
+        "notification_explicit_reinforce",
+        "notification_explicit_remove",
+        "notification_explicit_promote",
     ]
     assert suite.tasks[0].setup["type"] == "seed_notification"
     assert suite.tasks[0].setup["expected_memory_scope"] == "temporary"
     assert suite.tasks[1].setup["consolidate"] is True
     assert suite.tasks[1].setup["expected_memory_count"] == 0
+    assert [step["type"] for step in suite.tasks[3].setup] == [
+        "seed_memory",
+        "seed_notification",
+        "assert_memory",
+    ]
 
 
 def test_perception_v1_settings_rubric_uses_0_1000_normalized_coordinates():

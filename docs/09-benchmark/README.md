@@ -47,9 +47,8 @@ recall, OTP/marketing filtering, and multi-batch cursor drain:
 ```bash
 uv run python -m runner run \
   --suite suites/notification_memory_v1.json \
-  --agent-url http://127.0.0.1:18081 \
-  --benchmark-token-file /path/to/control_token \
-  --skip-clock-wait
+  --auto-agent-setup \
+  --agent-config /path/to/agent.toml
 ```
 
 This run enables the judge so the useful-notification answer and noise-filtering
@@ -58,6 +57,12 @@ deterministic gates (fixture persistence through the benchmark endpoint, cursor
 advancement, memory count/scope, and required/forbidden tool calls). Raw JSONL
 preservation is covered by the Go integration tests rather than an Agent shell
 task. See the full manual for the corresponding Go performance benchmarks.
+
+The notification suite also preloads existing temporary memories and validates
+the externally observable `update`, `reinforce`, `remove`, and `promote` paths.
+It uses ordered generic setup primitives and `assert_memory`; the runner does not
+contain action-specific notification logic. Source/evidence reference checks use
+the generic `source_refs_contain`/`evidence_refs_contain` assertion fields.
 
 ### WebUI
 

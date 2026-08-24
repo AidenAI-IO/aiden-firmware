@@ -3,6 +3,7 @@ import pytest
 from runner.agent_client import AgentRequestError, AgentTimeoutError, ChatResponse
 from runner.reset import (
     ResetError,
+    SetupAssertionError,
     call_environment_release,
     call_environment_setup,
     clear_stale_adb_android_owner,
@@ -42,6 +43,10 @@ class RecordingSetupClient:
     def seed_episode(self, episode, timeout=30):
         self.calls.append(("seed_episode", episode, timeout))
         return {"status": "seeded", "id": episode["id"]}
+
+    def seed_memory(self, memory, timeout=30):
+        self.calls.append(("seed_memory", memory, timeout))
+        return {"status": "seeded", "id": memory["id"]}
 
     def process_episode_memory(self, episode_id, timeout=90):
         self.calls.append(("process_episode_memory", episode_id, timeout))
@@ -90,6 +95,96 @@ def test_notification_setup_seeds_and_processes_fixture():
         ("process_notification_memory", 90),
         ("invoke_tool", "recall_memory", {"tags": ["notification"], "limit": 20}, 90),
     ]
+
+
+def test_setup_sequence_runs_existing_primitives_in_order():
+    client = RecordingSetupClient()
+    memory = {"id": "tmp-1", "content": "Existing conclusion"}
+    event = {"title": "Update", "message": "New conclusion"}
+
+    per_task_setup(
+        client,
+        [
+            {"type": "seed_memory", "memories": [memory]},
+            {"type": "seed_notification", "events": [event], "consolidate": False},
+        ],
+    )
+
+    assert client.calls == [
+        ("seed_memory", memory, 30),
+        ("seed_notification", [event], 30),
+    ]
+
+
+def test_assert_memory_mismatch_is_a_setup_assertion_failure():
+    class MismatchClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            from runner.agent_client import ToolInvokeResult
+
+            return ToolInvokeResult(
+                output='{"results":[]}',
+                is_error=False,
+                duration_ms=0,
+            )
+
+    with pytest.raises(SetupAssertionError, match="expected 1, got 0"):
+        per_task_setup(
+            MismatchClient(),
+            {"type": "assert_memory", "expected_count": 1},
+        )
+
+
+def test_assert_memory_matches_source_reference_evidence():
+    class SourceRefClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            from runner.agent_client import ToolInvokeResult
+
+            return ToolInvokeResult(
+                output=(
+                    '{"results":[{"id":"m-1","source_refs":['
+                    '{"type":"notification","id":"old","event_ids":["e-old"]},'
+                    '{"type":"notification","id":"new","event_ids":["e-new"]}]}]}'
+                ),
+                is_error=False,
+                duration_ms=0,
+            )
+
+    per_task_setup(
+        SourceRefClient(),
+        {
+            "type": "assert_memory",
+            "expected": [
+                {
+                    "id": "m-1",
+                    "source_refs_contain": [
+                        {"type": "notification", "id": "old", "event_ids_contains": ["e-old"]},
+                        {"type": "notification", "id": "new", "event_ids_contains": ["e-new"]},
+                    ],
+                }
+            ],
+        },
+    )
+
+
+def test_setup_sequence_preserves_setup_assertion_failure_type():
+    class MismatchClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            from runner.agent_client import ToolInvokeResult
+
+            return ToolInvokeResult(
+                output='{"results":[]}',
+                is_error=False,
+                duration_ms=0,
+            )
+
+    with pytest.raises(SetupAssertionError, match=r"setup\[1\] failed"):
+        per_task_setup(
+            MismatchClient(),
+            [
+                {"type": "seed_memory", "memories": [{"id": "m-1", "content": "x"}]},
+                {"type": "assert_memory", "expected_count": 1},
+            ],
+        )
 
 
 def test_notification_setup_rejects_non_boolean_consolidate():

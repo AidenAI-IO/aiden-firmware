@@ -17,9 +17,20 @@ class AgentTimeoutError(TimeoutError):
 
 
 class AgentRequestError(RuntimeError):
-    def __init__(self, message: str = "", *, request_id: str | None = None):
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        request_id: str | None = None,
+        status_code: int | None = None,
+    ):
         super().__init__(message)
         self.request_id = request_id
+        self.status_code = status_code
+
+
+class AgentSemanticError(AgentRequestError):
+    """The agent rejected a well-formed request because its semantic result was invalid."""
 
 
 def _parse_json_response(
@@ -89,7 +100,10 @@ class AgentClient:
                 body = e.read()
             except Exception:
                 pass
-            raise AgentRequestError(f"HTTP {e.code}: {body[:200]!r}") from e
+            error_type = AgentSemanticError if e.code == 422 else AgentRequestError
+            raise error_type(
+                f"HTTP {e.code}: {body[:200]!r}", status_code=e.code
+            ) from e
         except urllib.error.URLError as e:
             if isinstance(e.reason, socket.timeout):
                 raise AgentTimeoutError(str(e)) from e
@@ -193,7 +207,11 @@ class AgentClient:
             timeout=timeout, headers=headers
         )
         if status != 200:
-            raise AgentRequestError(f"notification-memory process returned {status}")
+            error_type = AgentSemanticError if status == 422 else AgentRequestError
+            raise error_type(
+                f"notification-memory process returned {status}",
+                status_code=status,
+            )
         body = _parse_json_response(body_bytes, "notification-memory process")
         return body if isinstance(body, dict) else {}
 

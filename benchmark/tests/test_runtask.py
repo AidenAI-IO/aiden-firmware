@@ -6,6 +6,7 @@ from PIL import Image
 from runner.agent_client import AgentTimeoutError, ChatResponse
 from runner.judge import JudgeConfig, JudgeOutput
 from runner.models import RubricVerdict
+from runner.reset import SetupAssertionError
 from runner.runtask import run_one_task
 from runner.suite import (
     HardAssertions,
@@ -45,6 +46,36 @@ class FakeClient:
             response=self.response,
             history=[{"type": "assistant", "content": self.response}],
         )
+
+
+def test_run_one_task_marks_setup_assertion_as_failed(tmp_path: Path, monkeypatch):
+    suite = Suite(
+        name="memory",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="memory_update",
+        category="memory",
+        description_for_judge="Update memory.",
+        prompt="check memory",
+        rubric=[],
+        hard_assertions=HardAssertions(),
+    )
+
+    def fail_setup(*args, **kwargs):
+        raise SetupAssertionError("expected revision 2")
+
+    monkeypatch.setattr(runtask_mod, "prepare_task_isolation", fail_setup)
+
+    result = run_one_task(
+        FakeClient(), suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
+    )
+
+    assert result.status == "failed"
+    assert result.metrics["error"] == "setup assertion: expected revision 2"
 
 
 def test_run_one_task_includes_static_screenshot_dimensions(tmp_path: Path):

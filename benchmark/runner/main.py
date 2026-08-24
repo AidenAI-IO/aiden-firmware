@@ -511,9 +511,6 @@ def _cmd_run_auto_agent_setup_inner(
     run_dir: Path,
     mock_server=None,
 ) -> int:
-    if not args.environment_url:
-        print("Error: --auto-agent-setup requires --environment-url", file=sys.stderr)
-        return 2
     if args.repeats is not None and args.repeats <= 0:
         print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
         return 2
@@ -552,14 +549,27 @@ def _cmd_run_auto_agent_setup_inner(
     total_runs = len(units)
     has_runnable_units = any(not unit.skip_reason for unit in units)
     if has_runnable_units:
-        clear_stale_adb_android_owner(args.environment_url)
+        if args.environment_url:
+            clear_stale_adb_android_owner(args.environment_url)
         ensure_daemon_image(args.daemon_image, not args.no_build_daemon_image, setup_log)
-        concurrency = read_environment_bridge_concurrency(args.environment_url) or 1
+        concurrency = (
+            read_environment_bridge_concurrency(args.environment_url) or 1
+            if args.environment_url
+            else 1
+        )
         if args.max_concurrency > 0:
-            concurrency = min(concurrency, args.max_concurrency)
+            concurrency = (
+                min(concurrency, args.max_concurrency)
+                if args.environment_url
+                else args.max_concurrency
+            )
     else:
         concurrency = 1
-    docker_environment_url = endpoint_for_docker(args.environment_url.rstrip("/"))
+    docker_environment_url = (
+        endpoint_for_docker(args.environment_url.rstrip("/"))
+        if args.environment_url
+        else ""
+    )
     judge_cfg = None if args.no_judge else JudgeConfig(model=args.judge_model, base_url=args.judge_base_url)
     active_skills = _selected_skills(args)
     judge_cache = run_dir / "_judge_cache"
@@ -627,10 +637,10 @@ def _cmd_run_auto_agent_setup_inner(
         )
         job = Job(
             id=f"{run_id}-{token}",
-            endpoint=args.environment_url.rstrip("/"),
+            endpoint=args.environment_url.rstrip("/") if args.environment_url else "",
             docker_endpoint=docker_environment_url,
             suites=[str(suite.source_path)],
-            environment_endpoint=args.environment_url.rstrip("/"),
+            environment_endpoint=args.environment_url.rstrip("/") if args.environment_url else "",
             agent_url=agent_url,
             container_name=f"aiden-benchmark-agent-{run_id}-{token}",
             config_dir=str(config_dir),
@@ -664,7 +674,7 @@ def _cmd_run_auto_agent_setup_inner(
                 environment_bridge_endpoint=docker_environment_url,
                 benchmark_task_id=route_id,
                 device_type=unit.target_platform,
-                environment_bridge_mode=True,
+                environment_bridge_mode=bool(args.environment_url),
                 log_path=runner_log,
             )
             published_port = docker_published_port(container_id, 8080)

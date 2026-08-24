@@ -21,6 +21,9 @@ SETUP_KEYS = {
         "type", "events", "consolidate", "timeout_sec",
         "expected_memory_count", "expected_memory_scope",
     },
+    "assert_memory": {
+        "type", "query", "expected", "absent_ids", "expected_count", "timeout_sec",
+    },
 }
 
 class SuiteValidationError(ValueError):
@@ -82,7 +85,7 @@ class TaskSpec:
     prompt: str
     rubric: list[RubricItem]
     hard_assertions: HardAssertions
-    setup: dict[str, Any] | None = None
+    setup: dict[str, Any] | list[dict[str, Any]] | None = None
     mock_environment: MockEnvironmentSpec | None = None
     repeats: int = 1
     input_screenshot: str | None = None
@@ -234,19 +237,29 @@ def load_suite(path: Path) -> Suite:
         )
         setup = raw.get("setup")
         if setup is not None:
-            if not isinstance(setup, dict):
-                raise SuiteValidationError(f"task {tid}: setup must be an object")
-            setup_type = setup.get("type")
-            if not isinstance(setup_type, str):
-                raise SuiteValidationError(f"task {tid}: setup type must be a string")
-            allowed_setup_keys = SETUP_KEYS.get(setup_type)
-            if allowed_setup_keys is None:
-                raise SuiteValidationError(f"task {tid}: unsupported setup type {setup_type!r}")
-            unknown_setup_keys = sorted(set(setup) - allowed_setup_keys)
-            if unknown_setup_keys:
-                raise SuiteValidationError(
-                    f"task {tid}: unsupported {setup_type} setup keys: {', '.join(unknown_setup_keys)}"
-                )
+            setup_items = setup if isinstance(setup, list) else [setup]
+            if not setup_items:
+                raise SuiteValidationError(f"task {tid}: setup sequence must not be empty")
+            for setup_index, setup_item in enumerate(setup_items):
+                if not isinstance(setup_item, dict):
+                    raise SuiteValidationError(
+                        f"task {tid}: setup[{setup_index}] must be an object"
+                    )
+                setup_type = setup_item.get("type")
+                if not isinstance(setup_type, str):
+                    raise SuiteValidationError(
+                        f"task {tid}: setup type must be a string (setup[{setup_index}])"
+                    )
+                allowed_setup_keys = SETUP_KEYS.get(setup_type)
+                if allowed_setup_keys is None:
+                    raise SuiteValidationError(
+                        f"task {tid}: unsupported setup type {setup_type!r}"
+                    )
+                unknown_setup_keys = sorted(set(setup_item) - allowed_setup_keys)
+                if unknown_setup_keys:
+                    raise SuiteValidationError(
+                        f"task {tid}: unsupported {setup_type} setup keys: {', '.join(unknown_setup_keys)}"
+                    )
         tasks.append(TaskSpec(
             id=tid, category=cat,
             description_for_judge=raw["description_for_judge"],
