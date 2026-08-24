@@ -1,19 +1,3 @@
-// Shared DOM references and mutable UI state.
-function createRecorderState() {
-    return {
-        isRecording: false,
-        isStopping: false,
-        mode: '',
-        stream: null,
-        context: null,
-        source: null,
-        processor: null,
-        sink: null,
-        chunks: [],
-        sampleRate: targetAudioSampleRate
-    };
-}
-
 const conversationEl = document.getElementById('conversation');
 const messagesDiv = document.getElementById('messages');
 const inputEl = document.getElementById('input');
@@ -46,14 +30,12 @@ const toolResultPreviewEl = document.getElementById('toolResultPreview');
 const toolResultOutputEl = document.getElementById('toolResultOutput');
 const wettyFrameEl = document.getElementById('wettyFrame');
 const wettyOpenLinkEl = document.getElementById('wettyOpenLink');
-const targetAudioSampleRate = 16000;
 const maxDraftImageAttachments = 4;
 const defaultComposerHint = 'Enter to send, Shift+Enter for newline';
 
 let nextAttachmentId = 1;
 let draftAttachments = [];
 let composerHintTimer = null;
-let recorderState = createRecorderState();
 let toolCatalog = [];
 let currentChatRequestId = '';
 let externalActiveRequestId = '';

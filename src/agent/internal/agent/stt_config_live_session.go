@@ -204,11 +204,6 @@ func (s *Server) handleSTTConfigTestStart(w http.ResponseWriter, r *http.Request
 	}
 
 	s.recordMu.Lock()
-	if s.webRecording != nil {
-		s.recordMu.Unlock()
-		http.Error(w, "device audio recording is already active", http.StatusConflict)
-		return
-	}
 	stale := s.sttConfigTestSession
 	s.sttConfigTestSession = nil
 	s.recordMu.Unlock()
@@ -233,7 +228,7 @@ func (s *Server) handleSTTConfigTestStart(w http.ResponseWriter, r *http.Request
 	}
 
 	s.recordMu.Lock()
-	if s.webRecording != nil || s.sttConfigTestSession != nil {
+	if s.sttConfigTestSession != nil {
 		s.recordMu.Unlock()
 		if err := s.endStaleSTTConfigTestLiveSession(session); err != nil && s.logger != nil {
 			s.logger.Warn("Orphaned STT config-test cleanup failed: %v", err)

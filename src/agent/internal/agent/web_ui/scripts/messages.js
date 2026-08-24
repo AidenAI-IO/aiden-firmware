@@ -268,10 +268,10 @@ function updateEmptyState() {
 }
 
 function setComposerState(isLoading) {
-    sendBtn.disabled = recorderState.isStopping || pendingSteerSubmitting || (isLoading && !currentChatRequestId);
+    sendBtn.disabled = pendingSteerSubmitting || (isLoading && !currentChatRequestId);
     sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';
     const imageSlotsFull = getDraftImageCount() >= maxDraftImageAttachments;
-    imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping || imageSlotsFull;
+    imageBtn.disabled = isLoading || imageSlotsFull;
     imageBtn.title = imageSlotsFull ? 'Maximum 4 images attached' : 'Add image';
     stopRunBtn.disabled = !isLoading;
     if (!isLoading) {

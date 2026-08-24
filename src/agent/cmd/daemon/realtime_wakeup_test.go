@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -159,6 +162,19 @@ func TestWaitForRealtimeEventTimesOut(t *testing.T) {
 
 	if err := waitForRealtimeEvent(context.Background(), source, nil, "session.updated", time.Millisecond); err == nil {
 		t.Fatal("expected timeout")
+	}
+}
+
+func TestWaitForRealtimeEventPropagatesShutdown(t *testing.T) {
+	source := &fakeRealtimeEventSource{
+		events: make(chan rtclient.Event),
+		errs:   make(chan error),
+		done:   make(chan struct{}),
+	}
+	signals := make(chan os.Signal, 1)
+	signals <- syscall.SIGTERM
+	if err := waitForRealtimeEvent(context.Background(), source, signals, "session.updated", time.Second); !errors.Is(err, errRealtimeShutdown) {
+		t.Fatalf("waitForRealtimeEvent() error = %v, want errRealtimeShutdown", err)
 	}
 }
 

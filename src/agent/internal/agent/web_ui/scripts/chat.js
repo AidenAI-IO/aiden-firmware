@@ -5,10 +5,6 @@ async function sendMessage() {
         await submitSteerMessage();
         return;
     }
-    if (recorderState.isRecording || recorderState.isStopping) {
-        await stopRecording();
-    }
-
     const message = inputEl.value.trim();
     const attachments = cloneAttachmentsForTransport(draftAttachments);
     if (!message && attachments.length === 0) return;

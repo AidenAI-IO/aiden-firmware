@@ -71,13 +71,11 @@ type Server struct {
 	sttClient               STTClient
 	ttsManager              *tts.ProviderManager // Borrowed from Runtime.
 	audioClient             *AudioServiceClient
-	recordBackend           audioRecordingBackend
 	ttsPlaybackBackend      tts.AudioServiceBackend
 	screenCaptureMu         sync.Mutex
 	screenCaptureClient     screenprovider.Provider
 	quickCapture            *QuickCaptureController
 	recordMu                sync.Mutex
-	webRecording            *webAudioRecording
 	sttConfigTestSession    *sttConfigTestLiveSession
 	bridge                  *PhoneBridge
 	bleSocketPath           string
@@ -104,30 +102,6 @@ type Server struct {
 	storageMonitor          *StorageMonitor
 	realtimeChatMu          sync.RWMutex
 	realtimeChatHandler     RealtimeChatHandler
-}
-
-type webAudioRecording struct {
-	sessionID  uint64
-	sampleRate int
-	done       chan struct{}
-
-	mu         sync.Mutex
-	samples    []int16
-	hasPending bool
-	pending    byte
-	stopping   bool
-	err        error
-	sttSession *streamingSTTSession
-	transcript string
-}
-
-type AudioRecordStartResponse struct {
-	Status     string `json:"status"`
-	SampleRate int    `json:"sample_rate"`
-}
-
-type AudioRecordStopResponse struct {
-	Attachment MessageAttachment `json:"attachment"`
 }
 
 const maxChatImageAttachments = 4
@@ -473,7 +447,6 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	// Initialize speech clients if configured.
 	cfg := runtime.config
 	s.audioClient = NewAudioServiceClient(cfg.Audio.SocketOrDefault())
-	s.recordBackend = newAudioRecordingBackendFromConfig(cfg, s.audioClient, s.logger)
 	s.ttsPlaybackBackend = newTTSPlaybackBackendFromConfig(cfg, s.audioClient, s.logger)
 
 	sttClient, err := NewSTTClientFromConfig(cfg)
@@ -504,7 +477,6 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	// Register preempt hook: when a new run starts, release WebUI audio resources.
 	runtime.RegisterPreemptHook(func() {
 		s.interruptAllActiveOutputs()
-		s.abortWebRecording()
 	})
 
 	return s
@@ -563,8 +535,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/providers/mnk", s.handleProviderMNK)
 	mux.HandleFunc("/api/concurrent", s.handleConcurrent)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
-	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
-	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
 	mux.HandleFunc("/api/config-test/stt/start", s.handleSTTConfigTestStart)
 	mux.HandleFunc("/api/config-test/stt/stop", s.handleSTTConfigTestStop)
 	mux.HandleFunc("/api/audio/", s.handleAudioFile)
@@ -745,7 +715,6 @@ func (s *Server) Close() {
 
 		s.cancelAllActiveRuns()
 		s.interruptAllActiveOutputs()
-		s.abortWebRecording()
 
 		if srv != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), agentHTTPShutdownTimeout)
@@ -1148,38 +1117,6 @@ func (s *Server) interruptAllActiveOutputs() {
 	s.activeOutputsMu.Unlock()
 	for _, output := range all {
 		output.interrupt()
-	}
-}
-
-// abortWebRecording immediately stops any active web audio recording session,
-// discarding any buffered audio. Used during preemption to release the
-// microphone for the new turn.
-func (s *Server) abortWebRecording() {
-	s.recordMu.Lock()
-	recording := s.webRecording
-	s.webRecording = nil
-	s.recordMu.Unlock()
-	if recording == nil {
-		return
-	}
-	if s.logger != nil {
-		s.logger.Info("[preempt] Aborting web audio recording")
-	}
-
-	// Close STT session if present to avoid resource leak.
-	recording.mu.Lock()
-	sttSession := recording.sttSession
-	recording.sttSession = nil
-	recording.mu.Unlock()
-	if sttSession != nil {
-		_ = sttSession.Close()
-	}
-
-	// Stop the audio recording session.
-	if backend := recordingBackendOrService(s.recordBackend, s.audioClient); backend != nil {
-		if err := backend.StopRecording(recording.sessionID); err != nil && s.logger != nil {
-			s.logger.Warn("[preempt] StopRecording failed: %v", err)
-		}
 	}
 }
 
@@ -2914,308 +2851,6 @@ func (s *Server) handleSkillsReload(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.audioClient == nil {
-		http.Error(w, "audio service client is unavailable", http.StatusServiceUnavailable)
-		return
-	}
-
-	s.recordMu.Lock()
-	defer s.recordMu.Unlock()
-
-	if s.sttConfigTestSession != nil {
-		http.Error(w, "stt config test recording is already active", http.StatusConflict)
-		return
-	}
-	if s.webRecording != nil {
-		stale := s.webRecording
-		s.webRecording = nil
-		if s.logger != nil {
-			s.logger.Warn("Clearing stale web audio recording before start")
-		}
-		if err := s.endStaleWebRecording(stale); err != nil && s.logger != nil {
-			s.logger.Warn("Stale web audio recording cleanup failed: %v", err)
-		}
-	}
-
-	sampleRate := s.runtime.config.Audio.SampleRateOrDefault()
-	result, err := startRecordingWithRetry(recordingBackendOrService(s.recordBackend, s.audioClient), AudioFormat{
-		SampleRate: uint32(sampleRate),
-		Channels:   1,
-		BitWidth:   16,
-	}, recordingStartRetryTimeout, recordingStartRetryInterval)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Web audio recording start failed: %v", err)
-		}
-		http.Error(w, "start device audio recording: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	go func() {
-		if err := playPromptSound(context.Background(), s.currentTTSPlaybackBackend(), promptSoundRecordingStart, true); err != nil && s.logger != nil {
-			s.logger.Error("Recording prompt sound failed: %v", err)
-		}
-	}()
-
-	recording := &webAudioRecording{
-		sessionID:  result.SessionID,
-		sampleRate: sampleRate,
-		done:       make(chan struct{}),
-		samples:    make([]int16, 0, sampleRate),
-	}
-	if s.webAudioInputMode() == TurnModalitySTT && s.sttClient != nil && s.sttClient.Capabilities().SupportsStreamingUpload {
-		streamingSTT, err := beginStreamingSTTSession(r.Context(), s.sttClient, STTStreamConfig{
-			SampleRate: sampleRate,
-			Channels:   1,
-			BitWidth:   16,
-		})
-		if err != nil {
-			if s.logger != nil {
-				s.logger.Warn("Web audio streaming STT unavailable, falling back to one-shot STT: %v", err)
-			}
-		} else if streamingSTT != nil {
-			if s.logger != nil {
-				s.logger.Info("Web audio streaming STT enabled for realtime transcription")
-			}
-			recording.sttSession = streamingSTT
-		}
-	}
-
-	s.webRecording = recording
-
-	go s.readWebAudioRecording(recording)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(AudioRecordStartResponse{
-		Status:     "recording",
-		SampleRate: sampleRate,
-	})
-}
-
-func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.audioClient == nil {
-		http.Error(w, "audio service client is unavailable", http.StatusServiceUnavailable)
-		return
-	}
-
-	s.recordMu.Lock()
-	recording := s.webRecording
-	if recording == nil {
-		s.recordMu.Unlock()
-		http.Error(w, "audio recording is not active", http.StatusBadRequest)
-		return
-	}
-	s.recordMu.Unlock()
-
-	if err := s.endWebRecording(recording); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Web audio recording stop failed: %v", err)
-		}
-		http.Error(w, "stop device audio recording: "+err.Error(), http.StatusInternalServerError)
-		s.recordMu.Lock()
-		if s.webRecording == recording {
-			s.webRecording = nil
-		}
-		s.recordMu.Unlock()
-		return
-	}
-
-	s.recordMu.Lock()
-	if s.webRecording == recording {
-		s.webRecording = nil
-	}
-	s.recordMu.Unlock()
-
-	samples := recording.snapshotSamples()
-	wavData := pcm16MonoToWAV(samples, recording.sampleRate)
-	attachment := MessageAttachment{
-		Kind:       AttachmentKindAudio,
-		Name:       "recording.wav",
-		MIMEType:   "audio/wav",
-		Data:       base64.StdEncoding.EncodeToString(wavData),
-		Size:       len(wavData),
-		Transcript: recording.readTranscript(),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(AudioRecordStopResponse{Attachment: attachment})
-}
-
-const (
-	webRecordingDrainTimeout        = 7 * time.Second
-	webRecordingStaleCleanupTimeout = 200 * time.Millisecond
-)
-
-var webRecordingStreamingSTTFinalizeTimeout = 2 * time.Second
-
-func (s *Server) endWebRecording(recording *webAudioRecording) error {
-	return s.endWebRecordingWithTimeout(recording, webRecordingDrainTimeout)
-}
-
-func (s *Server) endStaleWebRecording(recording *webAudioRecording) error {
-	return s.endWebRecordingWithTimeout(recording, webRecordingStaleCleanupTimeout)
-}
-
-func (s *Server) finalizeWebRecordingTranscript(recording *webAudioRecording) error {
-	if recording == nil {
-		return nil
-	}
-
-	recording.mu.Lock()
-	session := recording.sttSession
-	recording.sttSession = nil
-	recording.mu.Unlock()
-	if session == nil {
-		return nil
-	}
-
-	transcript, err := session.FinalizeWithTimeout(webRecordingStreamingSTTFinalizeTimeout)
-	if err != nil {
-		_ = session.Close()
-		return err
-	}
-	recording.storeTranscript(transcript)
-	return session.Close()
-}
-
-func (s *Server) endWebRecordingWithTimeout(recording *webAudioRecording, timeout time.Duration) error {
-	if recording == nil {
-		return nil
-	}
-	recording.setStopping()
-	stopErr := recordingBackendOrService(s.recordBackend, s.audioClient).StopRecording(recording.sessionID)
-	drained := false
-	select {
-	case <-recording.done:
-		drained = true
-	case <-time.After(timeout):
-		if stopErr == nil {
-			stopErr = fmt.Errorf("timed out waiting for audio recording to drain")
-		}
-	}
-	if err := recording.readError(); err != nil {
-		recording.clearStreamingSession()
-		return err
-	}
-	if !drained {
-		recording.clearStreamingSession()
-		return stopErr
-	}
-	if err := s.finalizeWebRecordingTranscript(recording); err != nil {
-		if s.logger != nil {
-			s.logger.Warn("Finalize web audio streaming transcript failed: %v", err)
-		}
-		if errors.Is(err, errStreamingSTTFinalizeTimeout) {
-			stopErr = errors.Join(stopErr, err)
-		}
-	}
-	return stopErr
-}
-
-func (s *Server) readWebAudioRecording(recording *webAudioRecording) {
-	defer close(recording.done)
-
-	for {
-		chunk, err := recordingBackendOrService(s.recordBackend, s.audioClient).ReadRecordChunk(recording.sessionID, 1000)
-		if err != nil {
-			if !recording.isStopping() {
-				recording.setError(err)
-			}
-			return
-		}
-		if len(chunk.PCM) > 0 {
-			recording.appendPCM(chunk.PCM)
-			if err := recording.uploadPCM(chunk.PCM); err != nil {
-				recording.clearStreamingSession()
-				if s.logger != nil {
-					s.logger.Warn("Web audio streaming STT upload failed, falling back to one-shot STT: %v", err)
-				}
-			}
-		}
-		if chunk.EndOfStream {
-			return
-		}
-	}
-}
-
-func (r *webAudioRecording) appendPCM(pcm []byte) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	AppendPCM16Samples(pcm, &r.samples, &r.hasPending, &r.pending)
-}
-
-func (r *webAudioRecording) setStopping() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.stopping = true
-}
-
-func (r *webAudioRecording) isStopping() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.stopping
-}
-
-func (r *webAudioRecording) setError(err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.err = err
-}
-
-func (r *webAudioRecording) readError() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.err
-}
-
-func (r *webAudioRecording) snapshotSamples() []int16 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	samples := make([]int16, len(r.samples))
-	copy(samples, r.samples)
-	return samples
-}
-
-func (r *webAudioRecording) uploadPCM(pcm []byte) error {
-	r.mu.Lock()
-	session := r.sttSession
-	r.mu.Unlock()
-	if session == nil {
-		return nil
-	}
-	return session.UploadPCM(pcm)
-}
-
-func (r *webAudioRecording) clearStreamingSession() {
-	r.mu.Lock()
-	session := r.sttSession
-	r.sttSession = nil
-	r.mu.Unlock()
-	if session != nil {
-		_ = session.Close()
-	}
-}
-
-func (r *webAudioRecording) storeTranscript(transcript string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.transcript = strings.TrimSpace(transcript)
-}
-
-func (r *webAudioRecording) readTranscript() string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.transcript
 }
 
 func (s *Server) handleAudioFile(w http.ResponseWriter, r *http.Request) {

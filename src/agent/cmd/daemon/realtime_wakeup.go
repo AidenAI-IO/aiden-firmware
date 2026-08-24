@@ -32,6 +32,8 @@ const (
 	realtimeContextReplayTurns = 10
 )
 
+var errRealtimeShutdown = errors.New("realtime shutdown requested")
+
 // runRealtimeWakeupMode owns the realtime voice path. The legacy wakeup
 // runners remain separate so they can be restored without changing this path.
 type realtimeChatCommand struct {
@@ -166,7 +168,9 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 			return
 		case <-events:
 			log.Println("\n[realtime] Activation requested, connecting realtime voice model...")
-			if err := runRealtimeSession(cfg, sigChan, runtime, tasks, bridge); err != nil {
+			if err := runRealtimeSession(cfg, sigChan, runtime, tasks, bridge); errors.Is(err, errRealtimeShutdown) {
+				return
+			} else if err != nil {
 				log.Printf("[realtime] session ended: %v", err)
 				bridge.failQueued(err.Error())
 			}
@@ -615,7 +619,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 		case <-ctx.Done():
 			return nil
 		case <-sigChan:
-			return nil
+			return errRealtimeShutdown
 		case <-session.Done():
 			return nil
 		case err := <-session.Errors():
@@ -1077,7 +1081,7 @@ func waitForRealtimeEvent(ctx context.Context, session realtimeEventSource, sigC
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-sigChan:
-			return context.Canceled
+			return errRealtimeShutdown
 		case <-timer.C:
 			return fmt.Errorf("timed out after %s waiting for %s", timeout, want)
 		case <-session.Done():
