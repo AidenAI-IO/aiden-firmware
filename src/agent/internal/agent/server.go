@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/signal"
@@ -601,6 +602,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 
 	// Static web UI
+	wettyProxy := newWettyReverseProxy()
+	mux.Handle("/wetty", wettyProxy)
+	mux.Handle("/wetty/", wettyProxy)
 	mux.Handle("/web-ui/", http.StripPrefix("/web-ui/", http.FileServer(http.FS(webUIFiles))))
 	mux.HandleFunc("/", s.handleIndex)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -610,6 +614,50 @@ func (s *Server) Handler() http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func newWettyReverseProxy() *httputil.ReverseProxy {
+	target, _ := url.Parse("http://127.0.0.1:3000")
+	return newWettyReverseProxyForTarget(target)
+}
+
+func newWettyReverseProxyForTarget(target *url.URL) *httputil.ReverseProxy {
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Director = func(req *http.Request) {
+		originalHost := req.Host
+		originalProto := "http"
+		if forwardedProto := strings.TrimSpace(req.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+			originalProto = firstForwardedHeaderValue(forwardedProto)
+		} else if req.TLS != nil {
+			originalProto = "https"
+		}
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.Host = target.Host
+		req.Header.Set("X-Forwarded-Host", originalHost)
+		req.Header.Set("X-Forwarded-Proto", originalProto)
+		req.Header.Set("X-Forwarded-Prefix", "/wetty")
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		resp.Header.Del("X-Frame-Options")
+		if location := resp.Header.Get("Location"); location != "" {
+			if parsed, err := url.Parse(location); err == nil {
+				path := parsed.Path
+				if path == "" || path == "/" {
+					path = "/wetty/"
+				} else if !strings.HasPrefix(path, "/wetty") {
+					path = "/wetty" + path
+				}
+				parsed.Scheme = ""
+				parsed.Host = ""
+				parsed.Path = path
+				parsed.RawPath = ""
+				resp.Header.Set("Location", parsed.String())
+			}
+		}
+		return nil
+	}
+	return proxy
 }
 
 // Start starts the HTTP server

@@ -8,6 +8,7 @@ loadStorageStatus();
 setInterval(loadStorageStatus, 5000);
 autoResizeInput();
 connectSSE();
+configureWettyTerminal();
 
 inputEl.addEventListener('input', autoResizeInput);
 imageInputEl.addEventListener('change', handleImageSelection);
@@ -29,3 +30,9 @@ document.addEventListener('keydown', function(event) {
         closeStateDetails();
     }
 });
+
+function configureWettyTerminal() {
+    const wettyUrl = '/wetty/';
+    wettyFrameEl.src = wettyUrl;
+    wettyOpenLinkEl.href = wettyUrl;
+}

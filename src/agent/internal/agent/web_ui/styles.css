@@ -175,7 +175,54 @@ textarea:focus-visible {
 }
 
 .tool-lab-select {
-    padding: 0.68rem 0.78rem;
+    min-height: 34px;
+    padding: 6px 30px 6px 9px;
+    border-radius: 5px;
+    font-size: 0.8rem;
+    line-height: 1.2;
+}
+
+.terminal-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.terminal-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.terminal-panel-head strong {
+    margin-bottom: 0;
+}
+
+.terminal-open-link {
+    flex: 0 0 auto;
+    padding: 4px 7px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--panel-strong);
+    color: var(--muted-strong);
+    text-decoration: none;
+    font: 600 0.68rem ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.terminal-open-link:hover,
+.terminal-open-link:focus-visible {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.wetty-frame {
+    width: 100%;
+    height: 420px;
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: #111216;
 }
 
 .tool-lab-input {

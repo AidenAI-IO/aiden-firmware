@@ -82,7 +82,7 @@
         <aside class="inspector">
             <div class="inspector-header">
                 <span class="sidebar-kicker">Inspector</span>
-                <span class="inspector-hint">TOOLS &amp; STORAGE</span>
+                <span class="inspector-hint">TOOLS · TERMINAL · STORAGE</span>
             </div>
             <div class="sidebar-card tool-lab">
                 <div class="sidebar-kicker">Tool Lab</div>
@@ -111,6 +111,23 @@
                     </div>
                     <pre class="tool-block" id="toolResultOutput"></pre>
                 </div>
+            </div>
+
+            <div class="sidebar-card terminal-panel">
+                <div class="terminal-panel-head">
+                    <div>
+                        <div class="sidebar-kicker">Terminal</div>
+                        <strong>WeTTY</strong>
+                    </div>
+                    <a class="terminal-open-link" id="wettyOpenLink" href="/wetty/" target="_blank" rel="noopener noreferrer">Open ↗</a>
+                </div>
+                <iframe
+                    id="wettyFrame"
+                    class="wetty-frame"
+                    title="Aiden WeTTY terminal"
+                    allow="clipboard-read; clipboard-write; fullscreen"
+                    referrerpolicy="no-referrer"
+                ></iframe>
             </div>
 
             <div class="sidebar-card storage-panel">

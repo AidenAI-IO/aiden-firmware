@@ -2609,6 +2609,42 @@ func TestServerServesEmbeddedWebUIAssets(t *testing.T) {
 	}
 }
 
+func TestWettyReverseProxyUsesUpstreamHostAndRewritesFrameHeaders(t *testing.T) {
+	var gotHost, gotForwardedHost, gotForwardedProto, gotForwardedPrefix string
+	var upstream *httptest.Server
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotForwardedHost = r.Header.Get("X-Forwarded-Host")
+		gotForwardedProto = r.Header.Get("X-Forwarded-Proto")
+		gotForwardedPrefix = r.Header.Get("X-Forwarded-Prefix")
+		w.Header().Set("X-Frame-Options", "sameorigin")
+		w.Header().Set("Location", upstream.URL+"/")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer upstream.Close()
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "http://device.example:8080/wetty/", nil)
+	newWettyReverseProxyForTarget(target).ServeHTTP(recorder, request)
+
+	if gotHost != target.Host {
+		t.Fatalf("upstream Host = %q, want %q", gotHost, target.Host)
+	}
+	if gotForwardedHost != "device.example:8080" || gotForwardedProto != "http" || gotForwardedPrefix != "/wetty" {
+		t.Fatalf("forwarded headers = host %q proto %q prefix %q", gotForwardedHost, gotForwardedProto, gotForwardedPrefix)
+	}
+	if got := recorder.Header().Get("X-Frame-Options"); got != "" {
+		t.Fatalf("X-Frame-Options = %q, want removed", got)
+	}
+	if got := recorder.Header().Get("Location"); got != "/wetty/" {
+		t.Fatalf("Location = %q, want /wetty/", got)
+	}
+}
+
 func TestWebUIImagePasteControlsArePresent(t *testing.T) {
 	attachmentsScript := readWebUIResource(t, "scripts/attachments.js")
 	stateScript := readWebUIResource(t, "scripts/state.js")
