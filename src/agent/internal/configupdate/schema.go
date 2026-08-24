@@ -22,6 +22,7 @@ type Config struct {
 	STT                STT                           `json:"stt"`
 	Audio              Audio                         `json:"audio"`
 	AudioArchive       AudioArchive                  `json:"audio_archive"`
+	FrameService       FrameService                  `json:"frame_service"`
 	QuickCapture       QuickCapture                  `json:"quick_capture"`
 	Storage            Storage                       `json:"storage"`
 	VoiceNotifications VoiceNotifications            `json:"voice_notifications"`
@@ -289,6 +290,10 @@ type QuickCapture struct {
 	ScreenMemoryTTL string `json:"screen_memory_ttl"`
 }
 
+type FrameService struct {
+	KeepStreamOn bool `json:"keep_streamon"`
+}
+
 type Storage struct {
 	MonitorEnabled       bool                `json:"monitor_enabled"`
 	MountPoint           string              `json:"mount_point"`
@@ -471,6 +476,7 @@ func (d Config) ToAgentConfig() agent.Config {
 			ResponsesContextEditClearThinking: d.Model.ResponsesContextEditClearThinking,
 			ResponsesTruncation:               d.Model.ResponsesTruncation,
 			ResponsesInclude:                  append([]string(nil), d.Model.ResponsesInclude...),
+			ReasoningEffort:                   d.Model.ReasoningEffort,
 			Temperature:                       d.Model.Temperature,
 			MaxResponseTokens:                 d.Model.MaxResponseTokens,
 			LogRawHTTP:                        d.Model.LogRawHTTP,
@@ -510,6 +516,9 @@ func (d Config) ToAgentConfig() agent.Config {
 			MaxFiles:    d.AudioArchive.MaxFiles,
 			MaxSizeMB:   d.AudioArchive.MaxSizeMB,
 			StoragePath: d.AudioArchive.StoragePath,
+		},
+		FrameService: agent.FrameServiceConfig{
+			KeepStreamOn: d.FrameService.KeepStreamOn,
 		},
 		QuickCapture: agent.QuickCaptureConfig{
 			Enabled:         boolPtr(d.QuickCapture.Enabled),
@@ -782,6 +791,9 @@ func FromAgentConfig(cfg agent.Config) Config {
 			MaxFiles:    audioArchive.MaxFilesOrDefault(),
 			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
 			StoragePath: audioArchive.StoragePathOrDefault(),
+		},
+		FrameService: FrameService{
+			KeepStreamOn: cfg.FrameService.KeepStreamOn,
 		},
 		QuickCapture: QuickCapture{
 			Enabled:         cfg.QuickCapture.EnabledOrDefault(),

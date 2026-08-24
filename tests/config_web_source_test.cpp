@@ -647,9 +647,24 @@ TEST_CASE("config web exposes quick capture settings") {
 
     CHECK(source.find("Name: \"quick_capture\"") != std::string::npos);
     CHECK(html.find("section-quick_capture") != std::string::npos);
-    CHECK(html.find("Name: \"quick_capture\"") != std::string::npos);
+    CHECK(source.find("Name: \"quick_capture\"") != std::string::npos);
     CHECK(html.find("screen_memory_ttl") != std::string::npos);
     CHECK(html.find("GPIO32/GPIO33 wakeup remains independent") != std::string::npos);
+}
+
+TEST_CASE("config web exposes persistent frame STREAMON settings") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) +
+                                    "/src/agent/internal/agent/config_meta.go";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+    const std::string html = read_config_web_asset_bundle();
+
+    CHECK(source.find("Name: \"frame_service\"") != std::string::npos);
+    CHECK(html.find("section-frame_service") != std::string::npos);
+    CHECK(html.find("keep_streamon") != std::string::npos);
 }
 
 TEST_CASE("config web docs list the model fields") {

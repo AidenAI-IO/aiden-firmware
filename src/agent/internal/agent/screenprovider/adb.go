@@ -61,7 +61,7 @@ func (c *ADB) LatestFrame() (*FrameMetadata, []byte, error) {
 	return c.capture("raw", 0)
 }
 
-func (c *ADB) LatestFrameWithFormat(format string, quality int, _ bool, _ int) (*FrameMetadata, []byte, error) {
+func (c *ADB) LatestFrameWithFormat(format string, quality int, _ bool, _ CropHint) (*FrameMetadata, []byte, error) {
 	return c.capture(format, quality)
 }
 

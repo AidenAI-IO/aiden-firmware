@@ -24,14 +24,17 @@ Default socket:
 | `restart` | Requests service to restart capture manager |
 
 `latest_frame` accepts `format: "jpeg"` or `format: "raw"`, an optional
-`crop_black` boolean, and an optional `minimal_width`. When `crop_black` is
-true, both JPEG and raw responses crop only uniformly dark columns at the left
-and right edges. When `minimal_width` is present, the cropped width will not be
-smaller than that value (clamped to the source width). Raw crops preserve the
-source pixel format and align horizontal bounds to complete chroma pairs. When
-`crop_black` is omitted or false, no cropping is performed. The response includes
-`source_width`, `source_height`, and the `crop_*` rectangle for coordinate
-mapping.
+`crop_black` boolean, an optional legacy `minimal_width`, and optional paired
+`screen_width` / `screen_height` fields. When `crop_black` is true and current
+screen dimensions are present, the service computes the largest centered crop
+with that aspect ratio: either width or height remains equal to the source
+frame. Without screen dimensions, both JPEG and raw responses detect centered
+black bars on the horizontal and vertical axes and crop at most one axis.
+`minimal_width` retains the legacy centered horizontal-only crop. Raw crops
+preserve the source pixel format and align bounds to complete chroma samples.
+When `crop_black` is omitted or false, no cropping is performed. The response
+includes `source_width`, `source_height`, and the `crop_*` rectangle for
+coordinate mapping.
 
 The production service reports `capture_mode: "on_demand"` and
 `ring_buffer_size: 0`, `ring_buffer_used: 0` in `health`. `since_seq` remains

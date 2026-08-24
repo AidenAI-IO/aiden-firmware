@@ -178,6 +178,16 @@ bool wait_for_source_ready(FakeCaptureSource* source) {
     return false;
 }
 
+bool wait_for_source_open(FakeCaptureSource* source) {
+    for (int i = 0; i < 50; ++i) {
+        if (source->opened_count() > 0) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+}
+
 void connect_on_demand_capture(FrameServiceServer* server, FrameCaptureManager* manager) {
     server->set_capture_handler(
         [manager](uint32_t timeout_ms, FrameMetadata* meta, std::vector<uint8_t>* data) {
@@ -281,6 +291,39 @@ TEST_CASE("FrameCaptureManager reopens source after capture failure") {
     CHECK(frame.metadata.capture_ts_ns == 30);
     CHECK(source.opened_count() >= 2);
     CHECK(source.close_count >= 1);
+
+    manager.stop();
+    server.stop();
+}
+
+TEST_CASE("FrameCaptureManager can keep STREAMON between requests") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+
+    FakeCaptureSource source;
+    source.repeat_last = true;
+    source.frames.push_back(CapturedFrame{metadata(20), std::vector<uint8_t>{3, 4}});
+    FrameCaptureManagerOptions options;
+    options.recovery_initial_backoff_ms = 1;
+    options.recovery_max_backoff_ms = 1;
+    options.warmup_frames = 2;
+    options.keep_streamon = true;
+    FrameCaptureManager manager(&source, &server, options);
+    connect_on_demand_capture(&server, &manager);
+    REQUIRE(manager.start());
+    REQUIRE(wait_for_source_open(&source));
+
+    FrameServiceClient client(socket_path.path.c_str());
+    FrameResult frame;
+    REQUIRE(client.latest_frame(0, 0, &frame) == FrameServiceStatus::OK);
+    const uint64_t first_seq = frame.metadata.seq;
+    REQUIRE(client.latest_frame(first_seq, 0, &frame) == FrameServiceStatus::OK);
+
+    CHECK(source.capture_count() == 2);
+    CHECK(source.discarded_count() == 4);
+    CHECK(source.resumed_count() == 0);
+    CHECK(source.paused_count() == 0);
 
     manager.stop();
     server.stop();
