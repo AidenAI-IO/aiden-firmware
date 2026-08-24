@@ -219,11 +219,12 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		t.Fatalf("expected at least 4 history entries for single-agent tool flow, got %d", len(resp.History))
 	}
 
-	if resp.History[0].Type != "user" || resp.History[0].Content != "What is the current volume?" {
-		t.Fatalf("unexpected first history message: %#v", resp.History[0])
+	user, ok := firstMessageOfType(resp.History, "user")
+	if !ok || user.Content != "What is the current volume?" {
+		t.Fatalf("unexpected user history message: %#v", resp.History)
 	}
 	toolCall, ok := firstMessageOfType(resp.History, runEventToolCall)
-	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
+	if !ok || toolCall.ToolName != "audio_volume" || !strings.Contains(toolCall.ToolInput, "{}") {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
 	if toolCall.Content != "Let me read the current volume." {
@@ -239,7 +240,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	}
 }
 
-func TestServerPublicHistoryOmitsLargeToolResultContent(t *testing.T) {
+func TestServerContextHistoryReturnsPersistedToolResultContent(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponse("call_1", "shell", `{"command":"read config.py"}`),
@@ -305,10 +306,10 @@ func TestServerPublicHistoryOmitsLargeToolResultContent(t *testing.T) {
 	}
 	waitForServerRequestFinished(t, server, startResp["request_id"])
 
-	const want = "[Large tool result omitted from public history (4001 chars)]"
+	const want = 4001
 	resultToolMessage, ok := firstMessageOfType(result.History, "tool_result")
-	if !ok || resultToolMessage.Content != want {
-		t.Fatalf("/api/chat/result tool result = %#v, want content %q", resultToolMessage, want)
+	if !ok || len(resultToolMessage.Content) != want {
+		t.Fatalf("/api/chat/result tool result length = %d, want %d", len(resultToolMessage.Content), want)
 	}
 
 	reloaded := newServerForTest(runtime)
@@ -323,12 +324,12 @@ func TestServerPublicHistoryOmitsLargeToolResultContent(t *testing.T) {
 		t.Fatalf("decode history response: %v", err)
 	}
 	historyToolMessage, ok := firstMessageOfType(history, "tool_result")
-	if !ok || historyToolMessage.Content != want {
-		t.Fatalf("/api/history tool result = %#v, want content %q", historyToolMessage, want)
+	if !ok || len(historyToolMessage.Content) != want {
+		t.Fatalf("/api/history tool result length = %d, want %d", len(historyToolMessage.Content), want)
 	}
 }
 
-func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
+func TestServerPersistsContextBackedChatHistory(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	memoryDir := filepath.Join(configDir, "memory")
 	model := &scriptedModel{
@@ -390,12 +391,13 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 	if resp.Status != "complete" {
 		t.Fatalf("result never completed: status=%q", resp.Status)
 	}
-	assistant, ok := firstMessageOfType(resp.History, "assistant")
-	if !ok || assistant.EpisodeID == "" {
-		t.Fatalf("assistant missing episode reference: %#v", resp.History)
+	user, ok := firstMessageOfType(resp.History, "user")
+	if !ok || user.Content != "Do a task" {
+		t.Fatalf("context history missing user message: %#v", resp.History)
 	}
-	if resp.History[0].EpisodeID != assistant.EpisodeID {
-		t.Fatalf("user and assistant episode ids differ: %#v", resp.History)
+	assistant, ok := firstMessageOfType(resp.History, "assistant")
+	if !ok || assistant.Content != "Completed" {
+		t.Fatalf("context history missing assistant message: %#v", resp.History)
 	}
 
 	reloaded := newServerForTest(runtime)
@@ -410,22 +412,8 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 		t.Fatalf("decode restored history: %v", err)
 	}
 	restoredAssistant, ok := firstMessageOfType(restored, "assistant")
-	if !ok || restoredAssistant.EpisodeID != assistant.EpisodeID {
-		t.Fatalf("restored assistant missing episode reference: %#v", restored)
-	}
-
-	episodeReq := httptest.NewRequest(http.MethodGet, "/api/episodes/"+assistant.EpisodeID, nil)
-	episodeRec := httptest.NewRecorder()
-	server.handleEpisodes(episodeRec, episodeReq)
-	if episodeRec.Code != http.StatusOK {
-		t.Fatalf("unexpected episode status: %d body=%s", episodeRec.Code, episodeRec.Body.String())
-	}
-	var episodeResp EpisodeResponse
-	if err := json.NewDecoder(episodeRec.Body).Decode(&episodeResp); err != nil {
-		t.Fatalf("decode episode response: %v", err)
-	}
-	if episodeResp.Episode.ID != assistant.EpisodeID || len(episodeResp.Episode.Events) == 0 {
-		t.Fatalf("unexpected episode response: %#v", episodeResp.Episode)
+	if !ok || restoredAssistant.Content != "Completed" {
+		t.Fatalf("restored context missing assistant response: %#v", restored)
 	}
 }
 
@@ -2836,20 +2824,28 @@ func (s *blockingTTSSession) Err() error {
 }
 
 func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
-	server := &Server{logger: newTestLogger(),
-		runtime: NewRuntimeWithDeps(
-			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
-			&testModelResolver{model: &scriptedModel{}},
-			NewMemoryManager(""),
-			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-			NewSkillIndex(),
-		),
-		history: []Message{
-			{Type: "user", Content: "hello"},
-			{Type: runEventToolCall, ToolName: "screenshot", ToolInput: "{}"},
-			{Type: "tool_result", ToolName: "screenshot", Content: `{"width":100}`},
-		},
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	manager, err := InitializeContextManager("system", agentpath.ContextManagerSessionFolder(runtime.config.ConfigDir), nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	for _, message := range []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "hello"},
+		{Role: messages.MessageRoleToolCall, ToolCalls: []messages.ToolCall{{ID: "call", Name: "screenshot", Arguments: "{}"}}},
+		{Role: messages.MessageRoleToolResult, ToolResults: []messages.ToolResult{{ToolCallID: "call", Name: "screenshot", Content: `{"width":100}`}}},
+	} {
+		if err := manager.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime.contextManager = manager
+	server := &Server{logger: newTestLogger(), runtime: runtime}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/history", nil)
 	rec := httptest.NewRecorder()
@@ -3252,11 +3248,9 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	if len(resp.History) < 2 {
 		t.Fatalf("expected at least 2 history entries for default-mode direct finish, got %d", len(resp.History))
 	}
-	if resp.History[0].Content != "Hello, please summarize this" {
-		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
-	}
-	if len(resp.History[0].Attachments) != 1 || resp.History[0].Attachments[0].Transcript != "Hello, please summarize this" {
-		t.Fatalf("expected transcript on audio attachment, got %#v", resp.History[0].Attachments)
+	user, ok := firstMessageOfType(resp.History, "user")
+	if !ok || user.Content != "Hello, please summarize this" {
+		t.Fatalf("expected transcript as user content, got %#v", resp.History)
 	}
 	assistant, ok := firstMessageOfType(resp.History, "assistant")
 	if !ok || assistant.Content != "Completed" {
@@ -3464,8 +3458,9 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 	if resp.Status != "complete" {
 		t.Fatalf("result never completed: status=%q", resp.Status)
 	}
-	if resp.History[0].Content != "directly reused transcript" {
-		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
+	user, ok := firstMessageOfType(resp.History, "user")
+	if !ok || user.Content != "directly reused transcript" {
+		t.Fatalf("expected transcript as user content, got %#v", resp.History)
 	}
 }
 

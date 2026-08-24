@@ -3223,6 +3223,8 @@ func webMessageFromContextMessage(item messages.Message, contextRole string) (Me
 		}
 	case messages.MessageRoleNotice:
 		message.Type = "notice"
+	case messages.MessageRoleState:
+		message.Type = "state"
 	default:
 		message.Type = "assistant"
 	}
