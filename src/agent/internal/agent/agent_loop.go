@@ -844,7 +844,10 @@ func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *Func
 
 	toolContent := prepared.Content
 	var followups []llms.MessageContent
+	var visual visualScreenshotObservation
+	var hasVisual bool
 	if parser != nil && parser.isVisualObservationTool(step.Action.Tool) {
+		visual, hasVisual = parser.visualScreenshotObservation(step)
 		if content, visualFollowups := parser.observationMessagesForStep(step, true); len(visualFollowups) > 0 {
 			toolContent = content
 			followups = visualFollowups
@@ -861,7 +864,18 @@ func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *Func
 		return fmt.Errorf("failed to append tool result message: %w", err)
 	}
 	for _, followup := range followups {
-		if err := llmExecutor.AppendMessage(visualFollowupMessageFromLLMContent(llmExecutor.ContextManager(), followup)); err != nil {
+		var followupMessage messages.Message
+		if hasVisual && visual.Annotated && visual.Result.GestureMarker != nil {
+			marker := messages.ScreenshotDisplayMarker{
+				Type: visual.Result.GestureMarker.Type,
+				X:    visual.Result.GestureMarker.X,
+				Y:    visual.Result.GestureMarker.Y,
+			}
+			followupMessage = visualFollowupMessageFromLLMContentWithScreenshotMetadata(llmExecutor.ContextManager(), followup, visual.RawImageBytes, &marker)
+		} else {
+			followupMessage = visualFollowupMessageFromLLMContent(llmExecutor.ContextManager(), followup)
+		}
+		if err := llmExecutor.AppendMessage(followupMessage); err != nil {
 			return fmt.Errorf("failed to append visual followup message: %w", err)
 		}
 	}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"aiden-agent/internal/agent/messages"
+
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
@@ -22,9 +24,11 @@ type visualObservationTool interface {
 }
 
 type visualScreenshotObservation struct {
-	Result     postActionScreenshotResult
-	ImageBytes []byte
-	MIMEType   string
+	Result        postActionScreenshotResult
+	RawImageBytes []byte
+	ImageBytes    []byte
+	MIMEType      string
+	Annotated     bool
 }
 
 type structuredInputTool interface {
@@ -181,6 +185,9 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	if summary := screenshotObservationStatusSummary(result); summary != "" {
 		toolContent += " " + summary
 	}
+	if marker := result.GestureMarker; marker != nil && visual.Annotated {
+		toolContent += fmt.Sprintf(" The attached image has a red and white hollow concentric-ring marker at the requested %s coordinate (x=%.1f, y=%.1f) so you can compare the requested location with the post-action UI. This marks the requested coordinate; it is not independent hardware confirmation of where the touch landed. Judge whether the action succeeded from the marked screenshot and the resulting UI state.", marker.Type, marker.X, marker.Y)
+	}
 	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)
 	if !includeVisual {
 		return toolContent, []llms.MessageContent{{
@@ -254,8 +261,8 @@ func parseScreenshotObservation(observation string) (visualScreenshotObservation
 	if strings.TrimSpace(result.Data) == "" {
 		return visualScreenshotObservation{}, false
 	}
-	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
-	if err != nil || len(imageBytes) == 0 {
+	rawImageBytes, err := base64.StdEncoding.DecodeString(result.Data)
+	if err != nil || len(rawImageBytes) == 0 {
 		return visualScreenshotObservation{}, false
 	}
 	format, ok := normalizeScreenshotFormat(result.Format)
@@ -263,13 +270,31 @@ func parseScreenshotObservation(observation string) (visualScreenshotObservation
 		return visualScreenshotObservation{}, false
 	}
 	result.Format = format
+	if result.GestureMarker != nil && !validTouchGesturePostMarker(*result.GestureMarker) {
+		result.GestureMarker = nil
+	}
 	if result.Size <= 0 {
-		result.Size = len(imageBytes)
+		result.Size = len(rawImageBytes)
+	}
+	imageBytes := rawImageBytes
+	annotated := false
+	if result.GestureMarker != nil && format == "jpeg" {
+		marker := messages.ScreenshotDisplayMarker{
+			Type: result.GestureMarker.Type,
+			X:    result.GestureMarker.X,
+			Y:    result.GestureMarker.Y,
+		}
+		if marked, markerErr := messages.ApplyScreenshotDisplayMarker(rawImageBytes, marker); markerErr == nil {
+			imageBytes = marked
+			annotated = true
+		}
 	}
 	return visualScreenshotObservation{
-		Result:     result,
-		ImageBytes: imageBytes,
-		MIMEType:   screenshotMIMEType(format),
+		Result:        result,
+		RawImageBytes: rawImageBytes,
+		ImageBytes:    imageBytes,
+		MIMEType:      screenshotMIMEType(format),
+		Annotated:     annotated,
 	}, true
 }
 
