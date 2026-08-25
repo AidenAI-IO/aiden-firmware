@@ -1311,7 +1311,10 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 				Message: &message,
 			}
 		}
-		attachment := r.captureStateScreenshot()
+		var attachment *messages.Attachment
+		if !messageHasImageAttachment(message) {
+			attachment = r.captureStateScreenshot()
+		}
 		entries := r.stateManager.GetAllStates()
 		// If neither runtime state nor a screenshot is available, just skip.
 		if len(entries) == 0 && attachment == nil {
@@ -1354,6 +1357,15 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 			After:   []messages.Message{},
 		}
 	}
+}
+
+func messageHasImageAttachment(message messages.Message) bool {
+	for _, attachment := range message.Attachments {
+		if isImageMIMEType(attachment.MIMEType) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) captureStateScreenshot() *messages.Attachment {

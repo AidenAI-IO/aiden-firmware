@@ -129,6 +129,80 @@ func TestStateHookAttachesFreshScreenshotToUserTurn(t *testing.T) {
 	}
 }
 
+func TestStateHookSkipsFreshScreenshotWhenUserProvidesImage(t *testing.T) {
+	screenshot := &stubTool{
+		name:        "screenshot",
+		description: "Capture screenshot.",
+		output:      `{"width":390,"height":844,"format":"jpeg","size":18,"data":"unused"}`,
+	}
+	runtime := NewRuntimeWithDeps(Config{}, nil, nil, &ToolSet{tools: map[string]langtools.Tool{
+		"screenshot": screenshot,
+	}}, NewSkillIndex())
+	runtime.stateManager.SetState("device", "connected")
+	manager := newPromptTestContextManager(t)
+	runtime.contextManager = manager
+	manager.AddAppendMessageHook(runtime.getStateHook())
+
+	message := userMessageFromInput(manager, "analyze this", []InputAttachment{{
+		Kind:     AttachmentKindImage,
+		MIMEType: "image/png",
+		Data:     []byte("user image"),
+	}})
+	if err := manager.AppendMessage(message); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	messageList := manager.MessageListDump().Messages
+	if len(messageList) != 2 || messageList[0].Role != messages.MessageRoleState || messageList[1].Role != messages.MessageRoleUser {
+		t.Fatalf("messages = %#v, want text state followed by the user message", messageList)
+	}
+	if len(messageList[0].Attachments) != 0 {
+		t.Fatalf("state attachments = %#v, want no automatic screenshot", messageList[0].Attachments)
+	}
+	if len(messageList[1].Attachments) != 1 || messageList[1].Attachments[0].MIMEType != "image/png" {
+		t.Fatalf("user attachments = %#v, want uploaded image", messageList[1].Attachments)
+	}
+	if len(screenshot.inputs) != 0 {
+		t.Fatalf("screenshot inputs = %#v, want no screenshot call", screenshot.inputs)
+	}
+}
+
+func TestStateHookStillAttachesFreshScreenshotForNonImageAttachment(t *testing.T) {
+	imageData := []byte("current screenshot")
+	screenshot := &stubTool{
+		name:        "screenshot",
+		description: "Capture screenshot.",
+		output: `{"width":390,"height":844,"format":"jpeg","size":18,"data":"` +
+			base64.StdEncoding.EncodeToString(imageData) + `"}`,
+	}
+	runtime := NewRuntimeWithDeps(Config{}, nil, nil, &ToolSet{tools: map[string]langtools.Tool{
+		"screenshot": screenshot,
+	}}, NewSkillIndex())
+	manager := newPromptTestContextManager(t)
+	runtime.contextManager = manager
+	manager.AddAppendMessageHook(runtime.getStateHook())
+
+	message := userMessageFromInput(manager, "listen to this", []InputAttachment{{
+		Kind:     AttachmentKindAudio,
+		MIMEType: "audio/wav",
+		Data:     []byte("audio"),
+	}})
+	if err := manager.AppendMessage(message); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	messageList := manager.MessageListDump().Messages
+	if len(messageList) != 2 || len(messageList[0].Attachments) != 1 {
+		t.Fatalf("messages = %#v, want state screenshot followed by the user message", messageList)
+	}
+	if messageList[0].Attachments[0].Source != messages.AttachmentSourceScreenshotObservation {
+		t.Fatalf("state attachment = %#v, want screenshot observation", messageList[0].Attachments[0])
+	}
+	if len(screenshot.inputs) != 1 || screenshot.inputs[0] != "{}" {
+		t.Fatalf("screenshot inputs = %#v, want one empty-object call", screenshot.inputs)
+	}
+}
+
 func TestStateHookKeepsTextStateWhenScreenshotFails(t *testing.T) {
 	screenshot := &stubTool{
 		name:        "screenshot",
