@@ -160,16 +160,21 @@ func (s *Session) Send(ctx context.Context, event any) error {
 	if writeTimeout <= 0 {
 		writeTimeout = DefaultWriteTimeout
 	}
-	deadline := time.Now().Add(writeTimeout)
-	if ctxDeadline, ok := ctx.Deadline(); ok {
-		deadline = ctxDeadline
-	}
+	deadline := writeDeadline(ctx, time.Now(), writeTimeout)
 	_ = s.conn.SetWriteDeadline(deadline)
 	defer s.conn.SetWriteDeadline(time.Time{})
 	if err := s.conn.WriteMessage(websocket.TextMessage, b); err != nil {
 		return fmt.Errorf("rtclient: send: %w", err)
 	}
 	return nil
+}
+
+func writeDeadline(ctx context.Context, now time.Time, writeTimeout time.Duration) time.Time {
+	deadline := now.Add(writeTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		return ctxDeadline
+	}
+	return deadline
 }
 
 func (s *Session) Close() error {

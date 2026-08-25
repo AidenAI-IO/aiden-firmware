@@ -615,7 +615,7 @@ public:
                     af.channels = audio_frame_channels(frame.enSoundMode, self->config.channels);
                     af.sample_rate = frame.s32SampleRate > 0
                                          ? static_cast<uint32_t>(frame.s32SampleRate)
-                                         : 0;
+                                         : static_cast<uint32_t>(self->config.sample_rate);
                     callback(af);
                 }
                 RK_MPI_AI_ReleaseFrame(dev_id, chn_id, &frame, nullptr);
@@ -794,7 +794,7 @@ bool AudioCapture::get_frame(AudioFrame& frame) {
         frame.channels = audio_frame_channels(impl_->frame.enSoundMode, impl_->config.channels);
         frame.sample_rate = impl_->frame.s32SampleRate > 0
                                 ? static_cast<uint32_t>(impl_->frame.s32SampleRate)
-                                : 0;
+                                : static_cast<uint32_t>(impl_->config.sample_rate);
         return true;
     }
     return false;

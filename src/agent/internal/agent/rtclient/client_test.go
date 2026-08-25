@@ -121,3 +121,23 @@ func TestClientDefaultsWriteTimeout(t *testing.T) {
 		t.Fatalf("WriteTimeout = %s, want %s", c.cfg.WriteTimeout, DefaultWriteTimeout)
 	}
 }
+
+func TestWriteDeadlineUsesEarlierLimit(t *testing.T) {
+	now := time.Now()
+	for _, test := range []struct {
+		name            string
+		contextDeadline time.Time
+		want            time.Time
+	}{
+		{name: "write timeout caps later context", contextDeadline: now.Add(time.Minute), want: now.Add(DefaultWriteTimeout)},
+		{name: "earlier context wins", contextDeadline: now.Add(time.Second), want: now.Add(time.Second)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithDeadline(context.Background(), test.contextDeadline)
+			defer cancel()
+			if got := writeDeadline(ctx, now, DefaultWriteTimeout); !got.Equal(test.want) {
+				t.Fatalf("writeDeadline() = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
