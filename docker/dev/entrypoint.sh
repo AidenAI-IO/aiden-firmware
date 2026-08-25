@@ -5,6 +5,7 @@ agent_dir="${AIDEN_AGENT_DIR:-/userdata/agent}"
 system_env="${AIDEN_SYSTEM_ENV:-/userdata/system/env}"
 agent_service="${AIDEN_AGENT_INIT_SCRIPT:-/usr/local/bin/aiden-agent-service}"
 config_web_pid=""
+wetty_pid=""
 
 mkdir -p \
     "$agent_dir/log" \
@@ -30,6 +31,10 @@ fi
 
 shutdown() {
     trap - INT TERM EXIT
+    if [ -n "$wetty_pid" ]; then
+        kill "$wetty_pid" 2>/dev/null || true
+        wait "$wetty_pid" 2>/dev/null || true
+    fi
     if [ -n "$config_web_pid" ]; then
         kill "$config_web_pid" 2>/dev/null || true
         wait "$config_web_pid" 2>/dev/null || true
@@ -40,6 +45,15 @@ shutdown() {
 trap shutdown INT TERM EXIT
 
 "$agent_service" start
+
+wetty \
+    --host=0.0.0.0 \
+    --port=3000 \
+    --base=/wetty/ \
+    --title="Aiden Shell" \
+    --command=/bin/bash \
+    >>/userdata/agent/log/wetty.log 2>&1 &
+wetty_pid="$!"
 
 config_web \
     --bind=0.0.0.0 \

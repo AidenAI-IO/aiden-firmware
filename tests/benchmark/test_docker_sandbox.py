@@ -42,6 +42,10 @@ class DockerSandboxContractTest(unittest.TestCase):
             compose,
         )
         self.assertIn("AIDEN_DEVICE_TYPE: ${AIDEN_DEVICE_TYPE:-}", compose)
+        self.assertIn(
+            "AIDEN_PUBLIC_AGENT_WEB_PORT: ${AIDEN_AGENT_WEB_PORT:-8080}",
+            compose,
+        )
         self.assertIn("host.docker.internal:host-gateway", compose)
 
     def test_sandbox_image_builds_real_agent_and_config_web_binaries(self):
@@ -51,6 +55,8 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("./cmd/daemon", dockerfile)
         self.assertIn("src/config_web.cpp", dockerfile)
         self.assertIn("src/config_web/web/ /oem/usr/share/aiden/config-web/", dockerfile)
+        self.assertIn("wetty@2.5.0", dockerfile)
+        self.assertIn("sass@1.69.7", dockerfile)
 
     def test_runtime_defaults_to_text_without_credentials(self):
         config = read_repo_file("docker/dev/agent.toml")

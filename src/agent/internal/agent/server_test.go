@@ -2511,7 +2511,7 @@ func TestServerServesEmbeddedWebUIAssets(t *testing.T) {
 	}
 }
 
-func TestWettyReverseProxyUsesUpstreamHostAndRewritesFrameHeaders(t *testing.T) {
+func TestWettyReverseProxyPreservesPublicHostAndRewritesFrameHeaders(t *testing.T) {
 	var gotHost, gotForwardedHost, gotForwardedProto, gotForwardedPrefix string
 	var upstream *httptest.Server
 	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2520,7 +2520,7 @@ func TestWettyReverseProxyUsesUpstreamHostAndRewritesFrameHeaders(t *testing.T) 
 		gotForwardedProto = r.Header.Get("X-Forwarded-Proto")
 		gotForwardedPrefix = r.Header.Get("X-Forwarded-Prefix")
 		w.Header().Set("X-Frame-Options", "sameorigin")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src ws://"+r.Host)
 		w.Header().Set("Location", upstream.URL+"/")
 		w.WriteHeader(http.StatusFound)
 	}))
@@ -2534,8 +2534,8 @@ func TestWettyReverseProxyUsesUpstreamHostAndRewritesFrameHeaders(t *testing.T) 
 	request := httptest.NewRequest(http.MethodGet, "http://device.example:8080/wetty/", nil)
 	newWettyReverseProxyForTarget(target).ServeHTTP(recorder, request)
 
-	if gotHost != target.Host {
-		t.Fatalf("upstream Host = %q, want %q", gotHost, target.Host)
+	if gotHost != "device.example:8080" {
+		t.Fatalf("upstream Host = %q, want device.example:8080", gotHost)
 	}
 	if gotForwardedHost != "device.example:8080" || gotForwardedProto != "http" || gotForwardedPrefix != "/wetty" {
 		t.Fatalf("forwarded headers = host %q proto %q prefix %q", gotForwardedHost, gotForwardedProto, gotForwardedPrefix)
@@ -2543,8 +2543,8 @@ func TestWettyReverseProxyUsesUpstreamHostAndRewritesFrameHeaders(t *testing.T) 
 	if got := recorder.Header().Get("X-Frame-Options"); got != "" {
 		t.Fatalf("X-Frame-Options = %q, want removed", got)
 	}
-	if got := recorder.Header().Get("Content-Security-Policy"); got != "default-src 'self'; frame-ancestors 'self'" {
-		t.Fatalf("Content-Security-Policy = %q, want upstream policy plus same-origin framing", got)
+	if got := recorder.Header().Get("Content-Security-Policy"); got != "default-src 'self'; connect-src ws://device.example:8080; frame-ancestors 'self'" {
+		t.Fatalf("Content-Security-Policy = %q, want public WebSocket host plus same-origin framing", got)
 	}
 	if got := recorder.Header().Get("Location"); got != "/wetty/" {
 		t.Fatalf("Location = %q, want /wetty/", got)

@@ -70,6 +70,8 @@ wait_for_agent
 compose exec -T aiden sh -ec '
 python3 --version
 python3 -m pip --version
+node --version
+wetty --version
 rg --version
 fq --version
 yq --version
@@ -77,6 +79,9 @@ yq --version
 
 config_page="$(curl -fsS --max-time 10 "http://127.0.0.1:$config_port/")"
 agent_page="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/")"
+terminal_page="$(curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/wetty/")"
+terminal_headers="$(curl -fsSIL --max-time 10 "http://127.0.0.1:$agent_port/wetty/")"
+terminal_socket="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/wetty/socket.io/?EIO=4&transport=polling")"
 case "$config_page" in
     *'<!DOCTYPE html>'*) ;;
     *) printf 'Config Web did not return HTML.\n' >&2; exit 1 ;;
@@ -84,6 +89,18 @@ esac
 case "$agent_page" in
     *'<!DOCTYPE html>'*) ;;
     *) printf 'Agent Web did not return HTML.\n' >&2; exit 1 ;;
+esac
+case "$terminal_page" in
+    *'<!doctype html>'*|*'<!DOCTYPE html>'*) ;;
+    *) printf 'WeTTY did not return HTML through Agent Web.\n' >&2; exit 1 ;;
+esac
+case "$terminal_headers" in
+    *"connect-src 'self' ws://127.0.0.1:$agent_port"*) ;;
+    *) printf 'WeTTY did not advertise the Agent Web address for WebSocket connections.\n' >&2; exit 1 ;;
+esac
+case "$terminal_socket" in
+    '0{'*'"upgrades":["websocket"]'*) ;;
+    *) printf 'WeTTY Socket.IO handshake failed through Agent Web.\n' >&2; exit 1 ;;
 esac
 
 before_pid="$(agent_pid)"
