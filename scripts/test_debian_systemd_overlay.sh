@@ -115,6 +115,10 @@ grep -q -- '--wifi-backend=systemd-networkd' \
     "${UNIT_DIR}/aiden-config-web.service"
 grep -q 'AIDEN_USB_COMPOSITE_REFRESH_COMMAND=/usr/lib/aiden/aiden-usb-ecm-watchdog' \
     "${UNIT_DIR}/aiden-agent.service"
+grep -q 'watchdog=running pid=\$pid supervisor=systemd' \
+    "${OVERLAY}/usr/lib/aiden/aiden-agent-control"
+grep -q 'systemctl show aiden-agent.service -p MainPID --value' \
+    "${OVERLAY}/usr/lib/aiden/aiden-agent-control"
 grep -q 'aiden-boot-timeline-init.service' "${UNIT_DIR}/aiden-agent.service"
 grep -qx 'StartLimitIntervalSec=0' "${UNIT_DIR}/aiden-frame.service"
 grep -qx 'Restart=on-failure' "${UNIT_DIR}/aiden-frame.service"
@@ -259,5 +263,6 @@ fi
 
 "${REPO_ROOT}/scripts/test_debian_ota_health_aggregate.sh"
 "${REPO_ROOT}/scripts/test_debian_machine_id_provision.sh"
+"${REPO_ROOT}/scripts/test_debian_agent_control.sh"
 
 echo "Debian systemd overlay tests passed"
