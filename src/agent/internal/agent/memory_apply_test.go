@@ -73,6 +73,17 @@ func TestApplyMemoryIntentRequiresExplicitAction(t *testing.T) {
 	}
 }
 
+func TestApplyMemoryIntentReportsNilStoreBeforeIntentValidation(t *testing.T) {
+	var longTerm *LongTermMemoryStore
+	if _, err := longTerm.ApplyMemoryIntent(context.Background(), MemoryIntent{}); err == nil || err.Error() != "memory store is not configured" {
+		t.Fatalf("long-term nil store error = %v", err)
+	}
+	var device *DeviceMemoryStore
+	if _, err := device.ApplyMemoryIntent(context.Background(), MemoryIntent{}); err == nil || err.Error() != "memory store is not configured" {
+		t.Fatalf("device nil store error = %v", err)
+	}
+}
+
 func TestApplyMemoryIntentCreateRestoresMatchingDeletedMemory(t *testing.T) {
 	store := NewLongTermMemoryStore(t.TempDir())
 	ctx := context.Background()

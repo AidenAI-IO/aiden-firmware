@@ -19,12 +19,19 @@ SETUP_KEYS = {
     "seed_episode": {"type", "episode", "consolidate", "timeout_sec"},
     "seed_notification": {
         "type", "events", "consolidate", "timeout_sec",
-        "expected_memory_count", "expected_memory_scope",
+        "expected_memory_count", "expected_memory_scope", "expected_memory_query",
     },
     "assert_memory": {
         "type", "query", "expected", "absent_ids", "expected_count", "timeout_sec",
     },
 }
+
+ASSERT_MEMORY_EXPECTED_KEYS = {
+    "id", "memory_scope", "type", "revision", "content_contains",
+    "title_contains", "tags_contains", "entities_contains",
+    "source_refs_contain", "evidence_refs_contain",
+}
+ASSERT_MEMORY_REFERENCE_KEYS = {"type", "id", "event_ids_contains"}
 
 class SuiteValidationError(ValueError):
     pass
@@ -260,6 +267,18 @@ def load_suite(path: Path) -> Suite:
                     raise SuiteValidationError(
                         f"task {tid}: unsupported {setup_type} setup keys: {', '.join(unknown_setup_keys)}"
                     )
+                if setup_type == "assert_memory":
+                    validate_assert_memory_setup(
+                        setup_item,
+                        path=f"task {tid}: setup[{setup_index}] assert_memory",
+                    )
+                if setup_type == "seed_notification":
+                    expected_query = setup_item.get("expected_memory_query")
+                    if expected_query is not None and not isinstance(expected_query, dict):
+                        raise SuiteValidationError(
+                            f"task {tid}: setup[{setup_index}] seed_notification "
+                            "expected_memory_query must be an object"
+                        )
         tasks.append(TaskSpec(
             id=tid, category=cat,
             description_for_judge=raw["description_for_judge"],
@@ -323,6 +342,100 @@ def load_suite(path: Path) -> Suite:
         trace_observations=trace_observations,
         mock_environment=mock_environment,
     )
+
+
+def validate_assert_memory_setup(
+    setup: dict[str, Any],
+    *,
+    path: str = "assert_memory",
+) -> None:
+    query = setup.get("query")
+    if query is not None and not isinstance(query, dict):
+        raise SuiteValidationError(f"{path} query must be an object")
+    absent_ids = setup.get("absent_ids")
+    if absent_ids is not None and (
+        not isinstance(absent_ids, list)
+        or not all(isinstance(item, str) and item.strip() for item in absent_ids)
+    ):
+        raise SuiteValidationError(
+            f"{path} absent_ids must be a list of non-empty strings"
+        )
+    expected = setup.get("expected")
+    if expected is None:
+        return
+    if not isinstance(expected, list) or not all(
+        isinstance(item, dict) for item in expected
+    ):
+        raise SuiteValidationError(f"{path} expected must be a list of objects")
+    for index, spec in enumerate(expected):
+        spec_path = f"{path} expected[{index}]"
+        if not spec:
+            raise SuiteValidationError(f"{spec_path} must not be empty")
+        unknown = sorted(set(spec) - ASSERT_MEMORY_EXPECTED_KEYS)
+        if unknown:
+            raise SuiteValidationError(
+                f"{spec_path} contains unsupported keys: {', '.join(unknown)}"
+            )
+        for field in (
+            "id", "memory_scope", "type", "content_contains", "title_contains",
+        ):
+            value = spec.get(field)
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise SuiteValidationError(
+                    f"{spec_path} {field} must be a non-empty string"
+                )
+        revision = spec.get("revision")
+        if revision is not None and (
+            isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0
+        ):
+            raise SuiteValidationError(
+                f"{spec_path} revision must be a positive integer"
+            )
+        for field in ("tags_contains", "entities_contains"):
+            wanted = spec.get(field)
+            if wanted is not None and (
+                not isinstance(wanted, list)
+                or not all(isinstance(item, str) for item in wanted)
+            ):
+                raise SuiteValidationError(
+                    f"{spec_path} {field} must be a list of strings"
+                )
+        for field in ("source_refs_contain", "evidence_refs_contain"):
+            refs = spec.get(field)
+            if refs is None:
+                continue
+            if not isinstance(refs, list) or not all(
+                isinstance(item, dict) for item in refs
+            ):
+                raise SuiteValidationError(
+                    f"{spec_path} {field} must be a list of objects"
+                )
+            for ref_index, ref in enumerate(refs):
+                ref_path = f"{spec_path} {field}[{ref_index}]"
+                unknown_ref_keys = sorted(set(ref) - ASSERT_MEMORY_REFERENCE_KEYS)
+                if unknown_ref_keys:
+                    raise SuiteValidationError(
+                        f"{ref_path} contains unsupported keys: "
+                        + ", ".join(unknown_ref_keys)
+                    )
+                for ref_field in ("type", "id"):
+                    ref_value = ref.get(ref_field)
+                    if ref_value is not None and (
+                        not isinstance(ref_value, str) or not ref_value.strip()
+                    ):
+                        raise SuiteValidationError(
+                            f"{ref_path} {ref_field} must be a non-empty string"
+                        )
+                event_ids = ref.get("event_ids_contains")
+                if event_ids is not None and (
+                    not isinstance(event_ids, list)
+                    or not all(isinstance(item, str) and item.strip() for item in event_ids)
+                ):
+                    raise SuiteValidationError(
+                        f"{ref_path} event_ids_contains must be a list of non-empty strings"
+                    )
 
 
 def _string_list_assertion(raw: Any, task_id: str, field: str) -> list[str]:

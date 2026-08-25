@@ -46,11 +46,11 @@ type MemoryIntent struct {
 }
 
 func (s *LongTermMemoryStore) ApplyMemoryIntent(ctx context.Context, intent MemoryIntent) (MemoryApplyResult, error) {
-	if intent.Action == "" {
-		return MemoryApplyResult{}, errors.New("memory intent requires an action")
-	}
 	if s == nil {
 		return MemoryApplyResult{}, errors.New("memory store is not configured")
+	}
+	if intent.Action == "" {
+		return MemoryApplyResult{}, errors.New("memory intent requires an action")
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -185,9 +185,6 @@ func (s *LongTermMemoryStore) applyMemoryWriteIntentLocked(ctx context.Context, 
 			return MemoryApplyResult{Operation: MemoryOperationAdd, ID: id}, nil
 		}
 		if memorySourceRefIdentitiesContain(parsed.Item.SourceRefs, item.SourceRefs) {
-			// Processor-assigned IDs are stable across crash retries. A retry may
-			// reword the same proposal, but create must neither overwrite the first
-			// committed result nor block the source cursor indefinitely.
 			return MemoryApplyResult{Operation: MemoryOperationAdd, ID: id}, nil
 		}
 		return MemoryApplyResult{}, fmt.Errorf("%w: %s", errMemoryIDConflict, id)
@@ -243,7 +240,7 @@ func memoryCreateAlreadyApplied(existing, candidate MemoryItem) bool {
 	if candidate.TimeScope != "" && existing.TimeScope != candidate.TimeScope {
 		return false
 	}
-	if !containsAllStrings(existing.Tags, candidate.Tags) || !containsAllStrings(existing.Entities, candidate.Entities) {
+	if !memoryStringsContain(existing.Tags, candidate.Tags) || !memoryStringsContain(existing.Entities, candidate.Entities) {
 		return false
 	}
 	if len(candidate.SourceRefs) == 0 {
@@ -254,7 +251,7 @@ func memoryCreateAlreadyApplied(existing, candidate MemoryItem) bool {
 	}
 	return memorySourceRefsContain(existing.SourceRefs, candidate.SourceRefs) &&
 		memorySourceRefsContain(existing.EvidenceRefs, candidate.EvidenceRefs) &&
-		containsAllStrings(existing.EvidenceExcerpts, candidate.EvidenceExcerpts)
+		memoryStringsContain(existing.EvidenceExcerpts, candidate.EvidenceExcerpts)
 }
 
 func memoryUpdateAlreadyApplied(existing, candidate MemoryItem) bool {
@@ -275,9 +272,9 @@ func memoryReinforceAlreadyApplied(existing, candidate MemoryItem) bool {
 		return false
 	}
 	if !memorySourceRefsContain(existing.EvidenceRefs, candidate.EvidenceRefs) ||
-		!containsAllStrings(existing.EvidenceExcerpts, candidate.EvidenceExcerpts) ||
-		!containsAllStrings(existing.Tags, candidate.Tags) ||
-		!containsAllStrings(existing.Entities, candidate.Entities) {
+		!memoryStringsContain(existing.EvidenceExcerpts, candidate.EvidenceExcerpts) ||
+		!memoryStringsContain(existing.Tags, candidate.Tags) ||
+		!memoryStringsContain(existing.Entities, candidate.Entities) {
 		return false
 	}
 	if candidate.ExpiresAt != "" && existing.ExpiresAt != candidate.ExpiresAt {
@@ -293,7 +290,7 @@ func memorySourceRefsContain(existing, candidate []MemorySourceRef) bool {
 			if candidateRef.Type != existingRef.Type || candidateRef.ID != existingRef.ID {
 				continue
 			}
-			if containsAllStrings(existingRef.EventIDs, candidateRef.EventIDs) {
+			if memoryStringsContain(existingRef.EventIDs, candidateRef.EventIDs) {
 				found = true
 				break
 			}
@@ -316,6 +313,22 @@ func memorySourceRefIdentitiesContain(existing, candidate []MemorySourceRef) boo
 		found := false
 		for _, existingRef := range existing {
 			if existingRef.Type == candidateRef.Type && existingRef.ID == candidateRef.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func memoryStringsContain(existing, candidate []string) bool {
+	for _, value := range candidate {
+		found := false
+		for _, current := range existing {
+			if current == value {
 				found = true
 				break
 			}

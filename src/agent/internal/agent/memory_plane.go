@@ -437,8 +437,22 @@ func (p *FilesystemMemoryPlane) SeedNotificationMemoryForBenchmark(ctx context.C
 // through the same processor and shared worker used during normal idle work.
 // It is a benchmark control path, not a foreground runtime API.
 func (p *FilesystemMemoryPlane) ProcessNotificationMemoryNow(ctx context.Context) (string, []string, error) {
+	return p.processNotificationMemoryNow(
+		ctx,
+		notificationMemoryProcessNowMaxAttempts,
+		notificationMemoryProcessNowBusyDelay,
+	)
+}
+
+func (p *FilesystemMemoryPlane) processNotificationMemoryNow(ctx context.Context, maxAttempts int, busyDelay time.Duration) (string, []string, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+	if busyDelay < 0 {
+		busyDelay = 0
 	}
 	if p == nil {
 		return "", nil, fmt.Errorf("notification memory is not configured")
@@ -452,7 +466,7 @@ func (p *FilesystemMemoryPlane) ProcessNotificationMemoryNow(ctx context.Context
 	}
 	processor.context.setConsumeDisabledForBenchmark(true)
 	defer processor.context.setConsumeDisabledForBenchmark(false)
-	pendingBefore, err := processor.context.ReadPending(ctx, 100)
+	pendingBefore, err := processor.context.ReadPendingAll(ctx)
 	if err != nil {
 		return "", nil, err
 	}
@@ -461,19 +475,22 @@ func (p *FilesystemMemoryPlane) ProcessNotificationMemoryNow(ctx context.Context
 		seededContextIDs[record.ContextID] = struct{}{}
 	}
 	var last MemoryBatchResult
-	for attempt := 0; attempt < notificationMemoryProcessNowMaxAttempts; attempt++ {
+	busy := false
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return "", nil, err
 		}
 		result, err := worker.ProcessProcessorNow(ctx, processor)
 		if errors.Is(err, errMemoryWorkerBusy) {
+			busy = true
 			select {
 			case <-ctx.Done():
 				return "", nil, ctx.Err()
-			case <-time.After(notificationMemoryProcessNowBusyDelay):
+			case <-time.After(busyDelay):
 			}
 			continue
 		}
+		busy = false
 		last = result
 		pending, readErr := processor.context.ReadPending(ctx, notificationMemoryBatchLimit)
 		if readErr != nil {
@@ -490,6 +507,9 @@ func (p *FilesystemMemoryPlane) ProcessNotificationMemoryNow(ctx context.Context
 			// committed successfully, so a consume-side error is irrelevant here.
 			break
 		}
+	}
+	if busy {
+		return "", nil, errMemoryWorkerBusy
 	}
 	if last.HasPending {
 		pending, err := processor.context.ReadPending(ctx, notificationMemoryBatchLimit)

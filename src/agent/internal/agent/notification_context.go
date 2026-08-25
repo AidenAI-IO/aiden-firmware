@@ -322,6 +322,24 @@ func (c *NotificationContext) ReadPending(ctx context.Context, limit int) ([]Not
 	return c.readPendingLocked(ctx, parseCursorOrZero(c.state.MemoryCursor), limit)
 }
 
+// ReadPendingAll reads every persisted event after MemoryCursor. It is used by
+// control paths that need a complete provenance set rather than a processing
+// batch and therefore must not silently truncate at the normal batch limit.
+func (c *NotificationContext) ReadPendingAll(ctx context.Context) ([]NotificationRecord, error) {
+	if c == nil {
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ensureLoadedLocked(); err != nil {
+		return nil, err
+	}
+	return c.readPendingLocked(ctx, parseCursorOrZero(c.state.MemoryCursor), 0)
+}
+
 // CommitProcessed advances MemoryCursor after the corresponding Memory write
 // succeeds. The caller must pass the contiguous batch returned by ReadPending.
 func (c *NotificationContext) CommitProcessed(ctx context.Context, events []NotificationRecord) error {
@@ -497,7 +515,11 @@ func (c *NotificationContext) readPendingLocked(ctx context.Context, cursor uint
 		}
 	}
 	sort.Strings(files)
-	result := make([]NotificationRecord, 0, limit)
+	capacity := limit
+	if capacity < 0 {
+		capacity = 0
+	}
+	result := make([]NotificationRecord, 0, capacity)
 	for _, name := range files {
 		records, err := readNotificationRecordFile(filepath.Join(c.eventsDir, name))
 		if err != nil {
@@ -522,7 +544,7 @@ func (c *NotificationContext) readPendingLocked(ctx context.Context, cursor uint
 		}
 		return result[i].ReceivedAt < result[j].ReceivedAt
 	})
-	if len(result) > limit {
+	if limit > 0 && len(result) > limit {
 		result = result[:limit]
 	}
 	return result, nil

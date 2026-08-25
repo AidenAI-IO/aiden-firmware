@@ -10,7 +10,7 @@ from runner.agent_client import (
     AgentTimeoutError,
 )
 from runner.environment_endpoint import EnvironmentEndpoint
-from runner.suite import SETUP_KEYS
+from runner.suite import SETUP_KEYS, SuiteValidationError, validate_assert_memory_setup
 
 
 class ResetError(RuntimeError):
@@ -361,10 +361,21 @@ def _per_task_setup_seed_notification(client: AgentClient, setup: dict[str, Any]
         raise ResetError(
             f"invalid expected_memory_scope: {setup.get('expected_memory_scope')!r}"
         )
+    query = setup.get("expected_memory_query")
+    if query is None:
+        query = {}
+    if not isinstance(query, dict):
+        raise ResetError("seed_notification expected_memory_query must be an object")
+    query = dict(query)
+    try:
+        configured_limit = int(query.get("limit", 0))
+    except (ValueError, TypeError) as e:
+        raise ResetError("seed_notification expected_memory_query limit must be an integer") from e
+    query["limit"] = max(20, len(memory_ids), configured_limit)
     try:
         recalled = client.invoke_tool(
             "recall_memory",
-            {"tags": ["notification"], "limit": 20},
+            query,
             timeout=timeout,
         )
     except (AgentTimeoutError, AgentRequestError) as e:
@@ -391,6 +402,10 @@ def _per_task_setup_seed_notification(client: AgentClient, setup: dict[str, Any]
 
 
 def _per_task_setup_assert_memory(client: AgentClient, setup: dict[str, Any]) -> None:
+    try:
+        validate_assert_memory_setup(setup)
+    except SuiteValidationError as e:
+        raise ResetError(str(e)) from e
     query = setup.get("query") or {"limit": 20}
     if not isinstance(query, dict):
         raise ResetError("assert_memory query must be an object")
@@ -446,14 +461,6 @@ def _per_task_setup_assert_memory(client: AgentClient, setup: dict[str, Any]) ->
 
 
 def _memory_result_matches(result: dict[str, Any], spec: dict[str, Any]) -> bool:
-    supported = {
-        "id", "memory_scope", "type", "revision", "content_contains",
-        "title_contains", "tags_contains", "entities_contains",
-        "source_refs_contain", "evidence_refs_contain",
-    }
-    unknown = sorted(set(spec) - supported)
-    if unknown:
-        raise ResetError(f"assert_memory expected contains unsupported keys: {', '.join(unknown)}")
     for field in ("id", "memory_scope", "type"):
         if field in spec and str(result.get(field) or "").strip().lower() != str(spec[field]).strip().lower():
             return False
@@ -470,8 +477,6 @@ def _memory_result_matches(result: dict[str, Any], spec: dict[str, Any]) -> bool
         if field not in spec:
             continue
         wanted = spec[field]
-        if not isinstance(wanted, list) or not all(isinstance(item, str) for item in wanted):
-            raise ResetError(f"assert_memory {field} must be a list of strings")
         actual = {str(item).strip().lower() for item in result.get(result_field) or []}
         if any(item.strip().lower() not in actual for item in wanted):
             return False
@@ -482,10 +487,6 @@ def _memory_result_matches(result: dict[str, Any], spec: dict[str, Any]) -> bool
         if field not in spec:
             continue
         wanted_refs = spec[field]
-        if not isinstance(wanted_refs, list) or not all(
-            isinstance(item, dict) for item in wanted_refs
-        ):
-            raise ResetError(f"assert_memory {field} must be a list of objects")
         actual_refs = result.get(result_field) or []
         if not isinstance(actual_refs, list):
             return False
@@ -500,13 +501,6 @@ def _memory_result_matches(result: dict[str, Any], spec: dict[str, Any]) -> bool
 def _memory_source_ref_matches(
     actual_refs: list[Any], wanted: dict[str, Any]
 ) -> bool:
-    supported = {"type", "id", "event_ids_contains"}
-    unknown = sorted(set(wanted) - supported)
-    if unknown:
-        raise ResetError(
-            "assert_memory source reference contains unsupported keys: "
-            + ", ".join(unknown)
-        )
     for actual in actual_refs:
         if not isinstance(actual, dict):
             continue
@@ -516,8 +510,6 @@ def _memory_source_ref_matches(
             continue
         event_ids = wanted.get("event_ids_contains")
         if event_ids is not None:
-            if not isinstance(event_ids, list) or not all(isinstance(item, str) for item in event_ids):
-                raise ResetError("assert_memory source reference event_ids_contains must be a list of strings")
             actual_event_ids = {str(item).strip() for item in actual.get("event_ids") or []}
             if any(str(item).strip() not in actual_event_ids for item in event_ids):
                 continue

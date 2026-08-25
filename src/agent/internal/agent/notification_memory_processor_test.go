@@ -327,6 +327,86 @@ func TestNotificationMemoryBenchmarkPathDrainsMultipleBatches(t *testing.T) {
 	}
 }
 
+func TestNotificationMemoryBenchmarkPathTracksProvenanceBeyondFirstHundredPendingRecords(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "memory")
+	events := make([]ble.NotificationEvent, 0, 101)
+	responses := make([]string, 0, 11)
+	for index := 1; index <= 101; index++ {
+		events = append(events, ble.NotificationEvent{
+			ID: strconv.Itoa(index), Source: "android", SourceID: "backlog-" + strconv.Itoa(index),
+			SourceEventID: "backlog-event-" + strconv.Itoa(index), AppIdentifier: "com.backlog",
+			Title: "Backlog", Message: "Backlog item " + strconv.Itoa(index), Event: "added",
+			ReceivedAt: "2026-08-21T01:00:00Z",
+		})
+	}
+	for start := 1; start <= 100; start += 10 {
+		results := make([]notificationMemoryBatchResult, 0, 10)
+		for contextID := start; contextID < start+10; contextID++ {
+			results = append(results, notificationMemoryBatchResult{
+				ContextID: strconv.Itoa(contextID),
+				Proposal:  notificationMemoryProposal{Actions: []notificationMemoryAction{{Action: "ignore"}}},
+			})
+		}
+		data, _ := json.Marshal(notificationMemoryBatchResponse{Results: results})
+		responses = append(responses, string(data))
+	}
+	responses = append(responses, `{"results":[{"context_id":"101","proposal":{"actions":[{"action":"add","scope":"temporary","type":"fact","content":"Backlog item 101","tags":["backlog"]}]}}]}`)
+	model := &episodeMemoryScriptedModel{responses: responses}
+	plane := NewFilesystemMemoryPlane(root, DefaultMemoryExtractionConfig(), nil)
+	if err := plane.StartMemoryWorker(model); err != nil {
+		t.Fatalf("StartMemoryWorker() error = %v", err)
+	}
+	defer plane.StopEpisodeMemory()
+	defer plane.StopNotificationMemory()
+	if records, err := plane.notificationProcessor.context.seedForBenchmark(context.Background(), events); err != nil || len(records) != len(events) {
+		t.Fatalf("seeded records=%d err=%v, want %d", len(records), err, len(events))
+	}
+	cursor, memoryIDs, err := plane.ProcessNotificationMemoryNow(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessNotificationMemoryNow() error = %v", err)
+	}
+	if cursor != "101" || len(memoryIDs) != 1 || memoryIDs[0] != "tmp_notification_101" {
+		t.Fatalf("cursor=%q memoryIDs=%#v", cursor, memoryIDs)
+	}
+}
+
+func TestProcessNotificationMemoryNowReturnsBusyAfterRetryExhaustion(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "memory")
+	model := &episodeMemoryBlockingModel{
+		inner:   &episodeMemoryScriptedModel{responses: []string{`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"ignore"}]}}]}`}},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	plane := NewFilesystemMemoryPlane(root, DefaultMemoryExtractionConfig(), nil)
+	if err := plane.StartNotificationMemory(model); err != nil {
+		t.Fatalf("StartNotificationMemory() error = %v", err)
+	}
+	defer plane.StopNotificationMemory()
+	if _, err := plane.SeedNotificationMemoryForBenchmark(context.Background(), []ble.NotificationEvent{{
+		Source: "android", SourceEventID: "busy-event", Title: "Busy", Event: "added",
+		ReceivedAt: "2026-08-21T00:00:00Z",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	backgroundDone := make(chan error, 1)
+	plane.notificationProcessor.context.setConsumeDisabledForBenchmark(true)
+	go func() {
+		_, err := plane.memoryWorker.ProcessProcessorNow(context.Background(), plane.notificationProcessor)
+		backgroundDone <- err
+	}()
+	select {
+	case <-model.started:
+	case <-time.After(time.Second):
+		t.Fatal("background notification batch did not start")
+	}
+	if _, _, err := plane.processNotificationMemoryNow(context.Background(), 2, 0); !errors.Is(err, errMemoryWorkerBusy) {
+		t.Fatalf("processNotificationMemoryNow() error = %v, want %v", err, errMemoryWorkerBusy)
+	}
+	close(model.release)
+	_ = <-backgroundDone
+	plane.notificationProcessor.context.setConsumeDisabledForBenchmark(false)
+}
+
 func TestNotificationMemoryProcessorUsesTenRecordBatches(t *testing.T) {
 	root := t.TempDir()
 	events := make([]ble.NotificationEvent, 0, 11)

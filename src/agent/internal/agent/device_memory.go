@@ -236,15 +236,18 @@ func (s *DeviceMemoryStore) Upsert(ctx context.Context, item DeviceMemoryItem) (
 // ApplyMemoryIntent applies a Processor-selected operation without making a
 // second semantic merge decision in the persistence layer.
 func (s *DeviceMemoryStore) ApplyMemoryIntent(ctx context.Context, intent MemoryIntent) (MemoryApplyResult, error) {
+	if s == nil {
+		return MemoryApplyResult{}, errors.New("memory store is not configured")
+	}
+	if intent.Action == "" {
+		return MemoryApplyResult{}, errors.New("memory intent requires an action")
+	}
 	select {
 	case <-ctx.Done():
 		return MemoryApplyResult{}, ctx.Err()
 	default:
 	}
-	if intent.Action == "" {
-		return MemoryApplyResult{}, errors.New("memory intent requires an action")
-	}
-	if s == nil || s.rootDir == "" || intent.DeviceItem == nil {
+	if s.rootDir == "" || intent.DeviceItem == nil {
 		return MemoryApplyResult{}, nil
 	}
 	s.writeMu.Lock()
@@ -400,10 +403,10 @@ func deviceMemoryMergedMetadataAlreadyApplied(existing, candidate DeviceMemoryIt
 	if candidate.Applicability != nil && !equalEpisodeMemoryScope(existing.Applicability, candidate.Applicability) {
 		return false
 	}
-	if !containsAllStrings(existing.Tags, candidate.Tags) ||
-		!containsAllStrings(existing.Entities, candidate.Entities) ||
-		!containsAllStrings(existing.Aliases, candidate.Aliases) ||
-		!containsAllStrings(existing.ConflictsWith, candidate.ConflictsWith) ||
+	if !memoryStringsContain(existing.Tags, candidate.Tags) ||
+		!memoryStringsContain(existing.Entities, candidate.Entities) ||
+		!memoryStringsContain(existing.Aliases, candidate.Aliases) ||
+		!memoryStringsContain(existing.ConflictsWith, candidate.ConflictsWith) ||
 		!memorySourceRefsContain(existing.EvidenceRefs, candidate.EvidenceRefs) ||
 		!procedureStepsContain(existing.Steps, candidate.Steps) {
 		return false
@@ -416,22 +419,6 @@ func procedureStepsContain(existing, candidate []ProcedureStep) bool {
 		found := false
 		for _, current := range existing {
 			if current == step {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
-
-func containsAllStrings(haystack, needles []string) bool {
-	for _, needle := range needles {
-		found := false
-		for _, value := range haystack {
-			if needle == value {
 				found = true
 				break
 			}

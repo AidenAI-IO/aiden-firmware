@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from runner.agent_client import AgentRequestError, AgentTimeoutError, ChatResponse
@@ -93,8 +95,47 @@ def test_notification_setup_seeds_and_processes_fixture():
     assert client.calls == [
         ("seed_notification", setup["events"], 90),
         ("process_notification_memory", 90),
-        ("invoke_tool", "recall_memory", {"tags": ["notification"], "limit": 20}, 90),
+        ("invoke_tool", "recall_memory", {"limit": 20}, 90),
     ]
+
+
+def test_notification_scope_setup_uses_configured_query_and_covers_all_memory_ids():
+    client = RecordingSetupClient()
+    setup = {
+        "type": "seed_notification",
+        "events": [{"title": "Package", "message": "Tomorrow"}],
+        "consolidate": True,
+        "expected_memory_count": 25,
+        "expected_memory_scope": "long_term",
+        "expected_memory_query": {"types": ["fact"], "limit": 3},
+    }
+
+    def process_notification_memory(timeout=90):
+        client.calls.append(("process_notification_memory", timeout))
+        return {
+            "memory_cursor": "1",
+            "memory_ids": [f"mem-{index}" for index in range(25)],
+        }
+
+    def invoke_tool(name, args, timeout=90):
+        client.calls.append(("invoke_tool", name, args, timeout))
+        from runner.agent_client import ToolInvokeResult
+
+        return ToolInvokeResult(
+            output=json.dumps({
+                "results": [
+                    {"id": f"mem-{index}", "memory_scope": "long_term"}
+                    for index in range(25)
+                ]
+            }),
+            is_error=False,
+            duration_ms=0,
+        )
+
+    client.process_notification_memory = process_notification_memory
+    client.invoke_tool = invoke_tool
+    per_task_setup(client, setup)
+    assert client.calls[-1][2] == {"types": ["fact"], "limit": 25}
 
 
 def test_setup_sequence_runs_existing_primitives_in_order():
@@ -132,6 +173,25 @@ def test_assert_memory_mismatch_is_a_setup_assertion_failure():
             MismatchClient(),
             {"type": "assert_memory", "expected_count": 1},
         )
+
+
+def test_assert_memory_rejects_malformed_nested_reference_before_recall():
+    client = RecordingSetupClient()
+    with pytest.raises(ResetError, match="event_ids_contains must be a list of non-empty strings"):
+        per_task_setup(
+            client,
+            {
+                "type": "assert_memory",
+                "expected": [
+                    {
+                        "source_refs_contain": [
+                            {"type": "notification", "event_ids_contains": "not-a-list"}
+                        ]
+                    }
+                ],
+            },
+        )
+    assert not any(call[0] == "invoke_tool" for call in client.calls)
 
 
 def test_assert_memory_matches_source_reference_evidence():

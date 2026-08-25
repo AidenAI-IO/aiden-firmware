@@ -81,7 +81,7 @@ The Processor owns the complete business flow for the notification scenario:
 3. Deterministically filter obvious noise like OTP, verification codes, marketing, and secrets;
 4. For each notification in the batch, retrieve related Memory and merge into one `MemoryMergeEngine.Extract` call;
 5. Split by `context_id`, parse and validate notification-specific proposals; each notification produces at most one action;
-6. Apply actions (add, update, delete, reinforce, or promote) in Temporary or Long-Term Store;
+6. Apply actions (add, update, remove, reinforce, or promote) in Temporary or Long-Term Store;
 7. Only `CommitProcessed` after all related Memory writes succeed; if backlog remains, continue next batch in the same idle window without waiting another 5 minutes.
 
 When no model is available, tests and offline scenarios can use a deterministic Temporary Memory fallback. The Processor does not place notification business rules into the Worker, nor does it require Episode and Notification to use the same action set or state machine.
