@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -69,8 +70,8 @@ func (f *fakeInfrastructureFrameClient) Health() (*screenprovider.HealthResult, 
 	if f.health == nil {
 		return &screenprovider.HealthResult{State: "RUNNING", CaptureMode: "on_demand"}, nil
 	}
-	copy := *f.health
-	return &copy, nil
+	snapshot := *f.health
+	return &snapshot, nil
 }
 
 func (f *fakeInfrastructureFrameClient) LatestFrameWithFormatSince(_ string, _ int, _ bool, _ int, sinceSeq uint64, timeout time.Duration) (*screenprovider.FrameMetadata, []byte, error) {
@@ -82,8 +83,8 @@ func (f *fakeInfrastructureFrameClient) LatestFrameWithFormatSince(_ string, _ i
 	if f.frame == nil {
 		return nil, nil, fmt.Errorf("frame missing")
 	}
-	copy := *f.frame
-	return &copy, append([]byte(nil), f.frameData...), nil
+	snapshot := *f.frame
+	return &snapshot, append([]byte(nil), f.frameData...), nil
 }
 
 type fakeInfrastructureAudioClient struct {
@@ -106,20 +107,20 @@ type fakeInfrastructureAudioClient struct {
 
 func (c *fakeInfrastructureAudioClient) Health() (*AudioHealthResult, error) {
 	if c.health != nil {
-		copy := *c.health
-		copy.RecordingActive = c.recordingActive
-		copy.PlaybackActive = c.playbackActive
+		snapshot := *c.health
+		snapshot.RecordingActive = c.recordingActive
+		snapshot.PlaybackActive = c.playbackActive
 		if c.recordingActive {
-			copy.RecordSessions = 1
+			snapshot.RecordSessions = 1
 		} else {
-			copy.RecordSessions = 0
+			snapshot.RecordSessions = 0
 		}
 		if c.playbackActive {
-			copy.PlaybackSessions = 1
+			snapshot.PlaybackSessions = 1
 		} else {
-			copy.PlaybackSessions = 0
+			snapshot.PlaybackSessions = 0
 		}
-		return &copy, nil
+		return &snapshot, nil
 	}
 	return &AudioHealthResult{
 		RecordingActive:  c.recordingActive,
@@ -199,7 +200,7 @@ func TestInfrastructureTestHIDRouteSendsRealHIDReports(t *testing.T) {
 	}
 	server := &Server{runtime: runtime}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/infrastructure-test/hid", strings.NewReader(`{"key":"escape","click":true,"x":500,"y":500,"button":"left","hold_ms":80}`))
+	req := infrastructureTestUSBUIRequest(http.MethodPost, "/api/infrastructure-test/hid", strings.NewReader(`{"key":"escape","click":true,"x":500,"y":500,"button":"left","hold_ms":80}`))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -240,7 +241,7 @@ func TestInfrastructureTestHIDInputModeSendsHThenEnter(t *testing.T) {
 	}
 	server := &Server{runtime: runtime}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/infrastructure-test/hid", strings.NewReader(`{"mode":"input"}`))
+	req := infrastructureTestUSBUIRequest(http.MethodPost, "/api/infrastructure-test/hid", strings.NewReader(`{"mode":"input"}`))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -279,7 +280,7 @@ func TestInfrastructureTestHIDClickModeOnlyClicks(t *testing.T) {
 	}
 	server := &Server{runtime: runtime}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/infrastructure-test/hid", strings.NewReader(`{"mode":"click","x":250,"y":750}`))
+	req := infrastructureTestUSBUIRequest(http.MethodPost, "/api/infrastructure-test/hid", strings.NewReader(`{"mode":"click","x":250,"y":750}`))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -419,6 +420,55 @@ func TestInfrastructureTestAudioRecordRouteOnlyRecords(t *testing.T) {
 	}
 }
 
+func TestInfrastructureTestAudioRecordRouteHandlesNilAudioClient(t *testing.T) {
+	runtime := &Runtime{config: Config{}}
+	server := &Server{runtime: runtime}
+
+	req := infrastructureTestUSBUIRequest(http.MethodPost, "/api/infrastructure-test/audio-record", strings.NewReader(`{"duration_ms":1000}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp infrastructureTestResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.OK || resp.Target != "audio-record" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+	if !strings.Contains(resp.Error, "audio_service client is not configured") {
+		t.Fatalf("error = %q, want missing client", resp.Error)
+	}
+}
+
+func TestInfrastructureTestRouteRejectsNonUSBAndCrossOriginRequests(t *testing.T) {
+	server := &Server{runtime: &Runtime{config: Config{}}}
+
+	nonUSB := httptest.NewRequest(http.MethodPost, "/api/infrastructure-test/audio-record", strings.NewReader(`{}`))
+	nonUSB.RemoteAddr = "192.168.50.140:12345"
+	nonUSB.Header.Set("Origin", "http://192.168.42.1:8080")
+	nonUSB = nonUSB.WithContext(context.WithValue(
+		nonUSB.Context(),
+		http.LocalAddrContextKey,
+		&net.TCPAddr{IP: net.ParseIP("192.168.50.10"), Port: 8080},
+	))
+	nonUSBRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(nonUSBRec, nonUSB)
+	if nonUSBRec.Code != http.StatusForbidden {
+		t.Fatalf("non-USB status = %d body=%s, want 403", nonUSBRec.Code, nonUSBRec.Body.String())
+	}
+
+	crossOrigin := infrastructureTestUSBUIRequest(http.MethodPost, "/api/infrastructure-test/audio-record", strings.NewReader(`{}`))
+	crossOrigin.Header.Set("Origin", "http://evil.example")
+	crossOriginRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(crossOriginRec, crossOrigin)
+	if crossOriginRec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin status = %d body=%s, want 403", crossOriginRec.Code, crossOriginRec.Body.String())
+	}
+}
+
 func makeNonSilentPCMChunk(samples int, peak int16) []byte {
 	if samples <= 0 {
 		return nil
@@ -521,6 +571,18 @@ func writeTempInfrastructureDevice(t *testing.T, dir, name string) string {
 		t.Fatalf("write temp device: %v", err)
 	}
 	return path
+}
+
+func infrastructureTestUSBUIRequest(method, target string, body *strings.Reader) *http.Request {
+	req := httptest.NewRequest(method, target, body)
+	req.RemoteAddr = "192.168.42.2:12345"
+	req.Host = "192.168.42.1:8080"
+	req.Header.Set("Origin", "http://192.168.42.1:8080")
+	return req.WithContext(context.WithValue(
+		req.Context(),
+		http.LocalAddrContextKey,
+		&net.TCPAddr{IP: net.ParseIP("192.168.42.1"), Port: 8080},
+	))
 }
 
 func boolToUint32(value bool) uint32 {

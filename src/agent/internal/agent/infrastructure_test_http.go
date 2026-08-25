@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -105,6 +106,15 @@ type infrastructureAudioClient interface {
 }
 
 func (s *Server) handleInfrastructureTest(w http.ResponseWriter, r *http.Request) {
+	if !infrastructureTestRequestAllowed(r) {
+		writeInfrastructureJSON(w, http.StatusForbidden, infrastructureTestResponse{
+			OK:        false,
+			Message:   "infrastructure test is available only from the board UI or USB network",
+			Error:     "infrastructure test is available only from the board UI or USB network",
+			Timestamp: time.Now(),
+		})
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeInfrastructureJSON(w, http.StatusMethodNotAllowed, infrastructureTestResponse{
 			OK:        false,
@@ -139,17 +149,76 @@ func (s *Server) handleInfrastructureTest(w http.ResponseWriter, r *http.Request
 		}
 		result = runInfrastructureHDMITest(r.Context(), body, screenprovider.NewFrameService(socketPath), startedAt)
 	case "audio-record", "audio-recording", "record", "recording":
-		result = runInfrastructureAudioRecordTest(r.Context(), body, s.audioClient, s.infrastructureAudioFormat(), startedAt)
+		result = runInfrastructureAudioRecordTest(r.Context(), body, s.infrastructureAudioClient(), s.infrastructureAudioFormat(), startedAt)
 	case "audio-playback", "playback":
-		result = runInfrastructureAudioPlaybackTest(r.Context(), body, s.audioClient, s.infrastructureAudioFormat(), startedAt)
+		result = runInfrastructureAudioPlaybackTest(r.Context(), body, s.infrastructureAudioClient(), s.infrastructureAudioFormat(), startedAt)
 	case "audio", "voice":
-		result = runInfrastructureAudioTest(r.Context(), body, s.audioClient, s.infrastructureAudioFormat(), startedAt)
+		result = runInfrastructureAudioTest(r.Context(), body, s.infrastructureAudioClient(), s.infrastructureAudioFormat(), startedAt)
 	default:
 		http.NotFound(w, r)
 		return
 	}
 
 	writeInfrastructureJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) infrastructureAudioClient() infrastructureAudioClient {
+	if s == nil || s.audioClient == nil {
+		return nil
+	}
+	return s.audioClient
+}
+
+func infrastructureTestRequestAllowed(r *http.Request) bool {
+	if r == nil || !bluetoothControlRequestAllowed(r) {
+		return false
+	}
+	baseURL := requestBaseURL(r)
+	if baseURL == "" {
+		return false
+	}
+	return infrastructureTestSameOriginURL(r.Header.Get("Origin"), baseURL) ||
+		infrastructureTestSameOriginURL(r.Referer(), baseURL)
+}
+
+func infrastructureTestSameOriginURL(rawValue, baseURL string) bool {
+	rawValue = strings.TrimSpace(rawValue)
+	if rawValue == "" {
+		return false
+	}
+	requestScheme, requestHost, ok := parseInfrastructureTestOrigin(baseURL)
+	if !ok {
+		return false
+	}
+	valueScheme, valueHost, ok := parseInfrastructureTestOrigin(rawValue)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(requestScheme, valueScheme) && strings.EqualFold(requestHost, valueHost)
+}
+
+func parseInfrastructureTestOrigin(rawValue string) (string, string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(rawValue))
+	if err != nil || parsed == nil || parsed.Host == "" {
+		return "", "", false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", "", false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	host := strings.ToLower(strings.TrimSpace(parsed.Host))
+	if host == "" {
+		return "", "", false
+	}
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		switch scheme {
+		case "https":
+			host = net.JoinHostPort(strings.Trim(host, "[]"), "443")
+		default:
+			host = net.JoinHostPort(strings.Trim(host, "[]"), "80")
+		}
+	}
+	return scheme, host, true
 }
 
 func (s *Server) infrastructureAudioFormat() AudioFormat {
@@ -644,7 +713,13 @@ func runInfrastructureAudioTest(ctx context.Context, body []byte, client infrast
 
 		playbackPCM := pcm
 		if len(playbackPCM) == 0 {
-			playbackPCM = make([]byte, int(format.SampleRate)*int(format.Channels)*int(format.BitWidth/8)/10)
+			tone, toneErr := generateInfrastructurePlaybackPCM(format, 100*time.Millisecond)
+			if toneErr != nil {
+				steps = append(steps, infrastructureStep("audio playback tone", "error", toneErr.Error(), 0))
+				_ = stopInfrastructurePlaybackIgnoringEnded(client, playback.SessionID)
+				return infrastructureTestFailure("audio", "audio playback test tone failed", steps, details, startedAt)
+			}
+			playbackPCM = tone
 		}
 		writeStarted := time.Now()
 		if err := writeInfrastructureAudioPCM(ctx, client, playback.SessionID, playbackPCM); err != nil {
@@ -841,10 +916,6 @@ func normalizeInfrastructureHIDKeySequences(req infrastructureHIDRequest, mode s
 		}
 		return [][]string{keys}
 	}
-}
-
-func normalizeInfrastructureHIDKeys(req infrastructureHIDRequest) []string {
-	return normalizeInfrastructureHIDKeysWithDefault(req, infrastructureHIDDefaultKey)
 }
 
 func normalizeInfrastructureHIDKeysWithDefault(req infrastructureHIDRequest, defaultKey string) []string {

@@ -56,7 +56,10 @@ indent() {
 run_check() {
     aiden_check_name="$1"
     shift
-    aiden_check_tmp="${TMPDIR:-/tmp}/aiden_low_level_check_$$.log"
+    aiden_check_tmp="$(mktemp "${TMPDIR:-/tmp}/aiden_low_level_check.XXXXXX")" || {
+        fail "$aiden_check_name: cannot create temporary log"
+        return 1
+    }
     "$@" >"$aiden_check_tmp" 2>&1
     aiden_check_rc=$?
     if [ "$aiden_check_rc" -eq 0 ]; then
@@ -72,7 +75,10 @@ run_check() {
 run_warn_check() {
     aiden_check_name="$1"
     shift
-    aiden_check_tmp="${TMPDIR:-/tmp}/aiden_low_level_warn_$$.log"
+    aiden_check_tmp="$(mktemp "${TMPDIR:-/tmp}/aiden_low_level_warn.XXXXXX")" || {
+        fail "$aiden_check_name: cannot create temporary log"
+        return 1
+    }
     "$@" >"$aiden_check_tmp" 2>&1
     aiden_check_rc=$?
     if [ "$aiden_check_rc" -eq 0 ]; then

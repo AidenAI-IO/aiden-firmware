@@ -78,14 +78,18 @@ check_socket "audio" "$AUDIO_SOCKET"
 if [ -n "$AUDIO_CLI" ]; then
     run_check "audio_service health" "$AUDIO_CLI" --socket "$AUDIO_SOCKET" health
     run_check "audio_service get-volume" "$AUDIO_CLI" --socket "$AUDIO_SOCKET" get-volume
-    run_check "audio_service record ${AUDIO_SECONDS}s" sh -c "\"$AUDIO_CLI\" --socket \"$AUDIO_SOCKET\" record-stream --seconds \"$AUDIO_SECONDS\" > \"$AUDIO_RECORD_OUT\""
+    run_check "audio_service record ${AUDIO_SECONDS}s" sh -c \
+        'exec "$1" --socket "$2" record-stream --seconds "$3" > "$4"' \
+        sh "$AUDIO_CLI" "$AUDIO_SOCKET" "$AUDIO_SECONDS" "$AUDIO_RECORD_OUT"
     if [ -s "$AUDIO_RECORD_OUT" ]; then
         pass "audio PCM written: $AUDIO_RECORD_OUT ($(wc -c < "$AUDIO_RECORD_OUT") bytes)"
     else
         fail "audio PCM file is empty or missing: $AUDIO_RECORD_OUT"
     fi
     if [ "$PLAY_AUDIO" = "1" ]; then
-        run_check "audio_service playback recorded PCM" sh -c "cat \"$AUDIO_RECORD_OUT\" | \"$AUDIO_CLI\" --socket \"$AUDIO_SOCKET\" play-stream --rate 16000 --ch 1 --bits 16"
+        run_check "audio_service playback recorded PCM" sh -c \
+            'exec "$1" --socket "$2" play-stream --rate 16000 --ch 1 --bits 16 < "$3"' \
+            sh "$AUDIO_CLI" "$AUDIO_SOCKET" "$AUDIO_RECORD_OUT"
     else
         skip "audio playback disabled; pass --play-audio to exercise play-stream"
     fi

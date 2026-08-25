@@ -43,7 +43,6 @@ let nextAttachmentId = 1;
 let draftAttachments = [];
 let composerHintTimer = null;
 let toolCatalog = [];
-let infrastructureActiveTarget = '';
 let currentChatRequestId = '';
 let externalActiveRequestId = '';
 let currentChatAbortController = null;

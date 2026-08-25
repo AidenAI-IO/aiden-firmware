@@ -12,7 +12,6 @@ async function runInfrastructureTest(target) {
     const endpoint = infrastructureEndpointByTarget[target];
     if (!endpoint) return;
 
-    infrastructureActiveTarget = target;
     setInfrastructureButtonsDisabled(true);
     setInfrastructureStatus('Running ' + target + '...');
     clearInfrastructureResultPreview();
@@ -35,13 +34,12 @@ async function runInfrastructureTest(target) {
         renderInfrastructureResult(target, data || {});
     } catch (err) {
         console.error('Infrastructure test failed:', err);
-        setInfrastructureStatus(targetLabel(target) + ' failed: ' + err.message, true);
+        setInfrastructureStatus(infrastructureTargetLabel(target) + ' failed: ' + err.message, true);
         infrastructureResultPanelEl.classList.remove('hidden');
-        infrastructureResultMetaEl.textContent = targetLabel(target) + ' · error';
+        infrastructureResultMetaEl.textContent = infrastructureTargetLabel(target) + ' · error';
         infrastructureResultOutputEl.textContent = err.message;
         clearInfrastructureResultPreview();
     } finally {
-        infrastructureActiveTarget = '';
         setInfrastructureButtonsDisabled(false);
     }
 }
@@ -68,7 +66,7 @@ function infrastructureRequestForTarget(target) {
 function renderInfrastructureResult(target, result) {
     infrastructureResultPanelEl.classList.remove('hidden');
     infrastructureResultMetaEl.textContent = [
-        targetLabel(target),
+        infrastructureTargetLabel(target),
         result.duration_ms + ' ms',
         result.ok ? 'ok' : 'error'
     ].join(' · ');
@@ -83,7 +81,7 @@ function renderInfrastructureResult(target, result) {
     }
 
     const message = result.message || (result.ok ? 'Done.' : 'Failed.');
-    setInfrastructureStatus(targetLabel(target) + ': ' + message, !result.ok);
+    setInfrastructureStatus(infrastructureTargetLabel(target) + ': ' + message, !result.ok);
 }
 
 function infrastructureScreenshotFromResult(result) {
@@ -117,7 +115,7 @@ function setInfrastructureButtonsDisabled(disabled) {
     });
 }
 
-function targetLabel(target) {
+function infrastructureTargetLabel(target) {
     switch (target) {
     case 'hid-click':
         return '点击';
