@@ -129,6 +129,7 @@ type Message struct {
 	OriginalText    string              `json:"original_text,omitempty"`
 	Transcript      string              `json:"transcript,omitempty"`
 	Content         string              `json:"content"`
+	Usage           *messages.Usage     `json:"usage,omitempty"`
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
@@ -3144,7 +3145,11 @@ func (s *Server) webHistorySnapshot() []Message {
 }
 
 func webMessageFromContextMessage(item messages.Message, contextRole string) (Message, bool) {
-	message := Message{Content: item.Content}
+	message := Message{Content: item.Content, Timestamp: item.Timestamp}
+	if item.Usage != nil {
+		usage := *item.Usage
+		message.Usage = &usage
+	}
 	switch item.Role {
 	case messages.MessageRoleSystem:
 		return Message{}, false

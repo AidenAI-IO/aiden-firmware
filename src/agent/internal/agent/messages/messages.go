@@ -2,6 +2,7 @@ package messages
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -44,6 +45,8 @@ func (r MessageRole) ToStandardRole() llms.ChatMessageType {
 type Message struct {
 	Role                   MessageRole             `json:"role"`
 	Content                string                  `json:"content"`
+	Timestamp              time.Time               `json:"timestamp"`
+	Usage                  *Usage                  `json:"usage,omitempty"`
 	ToolCalls              []ToolCall              `json:"tool_calls,omitempty"`
 	ToolResults            []ToolResult            `json:"tool_results,omitempty"`
 	RecoverableToolResults []RecoverableToolResult `json:"recoverable_tool_results,omitempty"`
@@ -65,8 +68,21 @@ type Message struct {
 	ResponsesAssistantPhase string `json:"responses_assistant_phase,omitempty"`
 }
 
+// Usage is the provider-neutral token usage recorded for an LLM response.
+// Providers may use different names for input/output tokens; they are
+// normalized to these three fields before being persisted with the message.
+type Usage struct {
+	TotalTokens  int `json:"total_tokens"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
 func (msg Message) Clone() Message {
 	cloned := msg
+	if msg.Usage != nil {
+		usage := *msg.Usage
+		cloned.Usage = &usage
+	}
 	if len(msg.ToolCalls) > 0 {
 		cloned.ToolCalls = append([]ToolCall(nil), msg.ToolCalls...)
 	}

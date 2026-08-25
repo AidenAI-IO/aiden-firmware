@@ -633,6 +633,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	var chatTranscript strings.Builder
 	var responseText strings.Builder
 	var responseTranscript strings.Builder
+	var realtimeResponseUsage messages.Usage
+	hasRealtimeResponseUsage := false
 	responseActive := false
 	inputSpeechActive := false
 	toolExecutor := newRealtimeVoiceToolExecutor(runtime, tasks)
@@ -911,6 +913,12 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				if err := event.Decode(&done); err != nil {
 					return err
 				}
+				if done.Response.Usage != nil {
+					realtimeResponseUsage.TotalTokens += done.Response.Usage.TotalTokens
+					realtimeResponseUsage.InputTokens += done.Response.Usage.InputTokens
+					realtimeResponseUsage.OutputTokens += done.Response.Usage.OutputTokens
+					hasRealtimeResponseUsage = true
+				}
 				if err := playback.finishResponse(playbackAudio); err != nil {
 					return fmt.Errorf("finish realtime playback response: %w", err)
 				}
@@ -930,11 +938,18 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 						assistantText = strings.TrimSpace(responseTranscript.String())
 					}
 					if assistantText != "" {
-						if err := appendRealtimeAssistantMessage(userContext, assistantText); err != nil {
+						var usage *messages.Usage
+						if hasRealtimeResponseUsage {
+							usageCopy := realtimeResponseUsage
+							usage = &usageCopy
+						}
+						if err := appendRealtimeAssistantMessage(userContext, assistantText, usage); err != nil {
 							return fmt.Errorf("persist realtime assistant response: %w", err)
 						}
 					}
 				}
+				realtimeResponseUsage = messages.Usage{}
+				hasRealtimeResponseUsage = false
 				responseActive = false
 				if activeChat != nil {
 					content := chatText.String()
@@ -1015,12 +1030,12 @@ func appendRealtimeNoticeMessage(manager *contextmanager.ContextManager, content
 	return manager.AppendMessage(messages.Message{Role: messages.MessageRoleNotice, Content: content})
 }
 
-func appendRealtimeAssistantMessage(manager *contextmanager.ContextManager, content string) error {
+func appendRealtimeAssistantMessage(manager *contextmanager.ContextManager, content string, usage *messages.Usage) error {
 	content = strings.TrimSpace(content)
 	if manager == nil || content == "" {
 		return nil
 	}
-	return manager.AppendMessage(messages.Message{Role: messages.MessageRoleAssistant, Content: content})
+	return manager.AppendMessage(messages.Message{Role: messages.MessageRoleAssistant, Content: content, Usage: usage})
 }
 
 func appendRealtimeToolCall(manager *contextmanager.ContextManager, call rtclient.FunctionCallEvent) error {
