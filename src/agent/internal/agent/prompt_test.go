@@ -44,6 +44,15 @@ func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 	}
 }
 
+func TestRolePromptExplainsNotificationMemoryAndRawHistoryLookup(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, want := range []string{"Phone notifications", "recall_memory", "/userdata/agent/memory/notifications/events/", "YYYY-MM-DD.jsonl", "exact original notification"} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing notification guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
 func TestRolePromptIncludesConfiguredResponseLocaleInSystemPrompt(t *testing.T) {
 	manager := NewSkillManager(NewSkillIndex())
 	zh := buildProfile(AgentConfig{Locale: "zh-CN"}, manager, nil, agentRoleRules())
