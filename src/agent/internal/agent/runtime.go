@@ -810,22 +810,9 @@ func (r *Runtime) markInterruptedEpisodesBestEffort() {
 	if len(episodes) == 0 {
 		return
 	}
-	r.persistInterruptedEpisodeHistoryBestEffort(plane, episodes)
 	r.exportInterruptedEpisodesBestEffort(episodes)
 	if r.logger != nil {
 		r.logger.Warn("[memory] marked %d running task episode(s) as interrupted", len(episodes))
-	}
-}
-
-func (r *Runtime) persistInterruptedEpisodeHistoryBestEffort(plane *FilesystemMemoryPlane, episodes []TaskEpisode) {
-	if plane == nil || strings.TrimSpace(plane.memoryDir) == "" || len(episodes) == 0 {
-		return
-	}
-	store := NewChatHistoryStore(filepath.Join(plane.memoryDir, "chat_history"))
-	for _, episode := range episodes {
-		if err := store.Append(context.Background(), interruptedEpisodeStatusMessage(episode)); err != nil && r.logger != nil {
-			r.logger.Warn("[memory] persist interrupted episode history failed: episode_id=%s error=%v", episode.ID, err)
-		}
 	}
 }
 

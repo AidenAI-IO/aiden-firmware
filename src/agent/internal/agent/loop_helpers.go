@@ -30,7 +30,8 @@ func compactStringList(values []string, max int) string {
 }
 
 func compactPromptLine(value string, max int) string {
-	return truncateForLog(singleLineHistoryText(value), max)
+	value = strings.ReplaceAll(strings.ReplaceAll(value, "\r\n", " "), "\n", " ")
+	return truncateForLog(value, max)
 }
 
 func compactScreenshotObservation(toolName, observation string) (string, bool) {

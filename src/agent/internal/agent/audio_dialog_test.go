@@ -20,15 +20,6 @@ import (
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
-func firstAudioDialogTestMessageOfType(messages []Message, messageType string) (Message, bool) {
-	for _, message := range messages {
-		if message.Type == messageType {
-			return message, true
-		}
-	}
-	return Message{}, false
-}
-
 func waitForAudioDialogRecordSTT(t *testing.T, dialog *AudioDialog) {
 	t.Helper()
 	deadline := time.After(time.Second)
@@ -441,7 +432,6 @@ func TestProcessUtteranceSpeaksTaggedTTSOutput(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleDirectResponses(output),
 	}
-	store := NewChatHistoryStore(t.TempDir())
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
@@ -466,8 +456,6 @@ func TestProcessUtteranceSpeaksTaggedTTSOutput(t *testing.T) {
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
 		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
 	}
-	dialog.SetHistoryStore(store)
-
 	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
 		t.Fatalf("ProcessUtterance() error = %v", err)
 	}
@@ -479,24 +467,11 @@ func TestProcessUtteranceSpeaksTaggedTTSOutput(t *testing.T) {
 	if texts[0] != expectedSpeech {
 		t.Fatalf("TTS should use result output directly, got %q want %q", texts[0], expectedSpeech)
 	}
-
-	messages, err := store.Load(context.Background())
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	assistant, ok := firstMessageOfType(messages, "assistant")
-	if !ok {
-		t.Fatalf("assistant history missing: %#v", messages)
-	}
-	if !strings.Contains(assistant.Content, "This detailed description is reserved for the screen") {
-		t.Fatalf("history should keep full output, got %q", assistant.Content)
-	}
 }
 
 func TestProcessUtteranceAppendsVoiceNotificationOnlyToSpokenText(t *testing.T) {
 	output := "Setup completed.\n<tts>Setup completed.</tts>"
 	model := &scriptedModel{responses: roleDirectResponses(output)}
-	store := NewChatHistoryStore(t.TempDir())
 	cfg := DefaultConfig()
 	cfg.Model = ModelConfig{Provider: "fake"}
 	cfg.Instruction = "Answer directly."
@@ -526,23 +501,12 @@ func TestProcessUtteranceAppendsVoiceNotificationOnlyToSpokenText(t *testing.T) 
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
 		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
 	}
-	dialog.SetHistoryStore(store)
-
 	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
 		t.Fatalf("ProcessUtterance() error = %v", err)
 	}
 	texts := provider.texts()
 	if len(texts) != 1 || texts[0] != "Setup completed.另外提醒一下，设备存储空间不足。" {
 		t.Fatalf("spoken texts = %#v", texts)
-	}
-
-	messages, err := store.Load(context.Background())
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	assistant, ok := firstMessageOfType(messages, "assistant")
-	if !ok || strings.Contains(assistant.Content, "存储空间") {
-		t.Fatalf("assistant history was changed by voice notification: %#v", assistant)
 	}
 }
 
@@ -890,209 +854,6 @@ func TestAudioDialogCountsPartialStreamingPlaybackAsStreamedWhenCloseFails(t *te
 	}
 }
 
-func TestAudioDialogPersistVoiceTurnWritesUserAndAssistant(t *testing.T) {
-	store := NewChatHistoryStore(t.TempDir())
-	dialog := &AudioDialog{
-		config:       Config{Audio: AudioConfig{SampleRate: 16000}},
-		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
-	}
-	dialog.SetHistoryStore(store)
-
-	utterance := make([]int16, 16000) // 1 second
-	dialog.persistVoiceTurn(
-		TurnInput{Transcript: "  hello there  "},
-		RunResult{EpisodeID: "ep-123", Output: "  hi back  "},
-		utterance,
-	)
-
-	messages, err := store.Load(context.Background())
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if len(messages) != 2 {
-		t.Fatalf("expected 2 messages, got %d: %#v", len(messages), messages)
-	}
-
-	user := messages[0]
-	if user.Type != "user" || user.Content != "hello there" || user.Source != "voice" || user.EpisodeID != "ep-123" {
-		t.Fatalf("user message = %#v", user)
-	}
-	if user.Timestamp.IsZero() {
-		t.Fatalf("user message timestamp is zero")
-	}
-
-	assistant := messages[1]
-	if assistant.Type != "assistant" || assistant.Content != "hi back" || assistant.Source != "voice" || assistant.EpisodeID != "ep-123" {
-		t.Fatalf("assistant message = %#v", assistant)
-	}
-}
-
-func TestAudioDialogPersistVoiceTurnNoTranscriptOnlyAssistant(t *testing.T) {
-	store := NewChatHistoryStore(t.TempDir())
-	dialog := &AudioDialog{
-		config:       Config{Audio: AudioConfig{SampleRate: 16000}},
-		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
-	}
-	dialog.SetHistoryStore(store)
-
-	utterance := make([]int16, 16000)
-	dialog.persistVoiceTurn(
-		TurnInput{Transcript: ""},
-		RunResult{EpisodeID: "ep-456", Output: "answer"},
-		utterance,
-	)
-
-	messages, err := store.Load(context.Background())
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if len(messages) != 1 {
-		t.Fatalf("expected 1 message, got %d: %#v", len(messages), messages)
-	}
-	if messages[0].Type != "assistant" || messages[0].Source != "voice" || messages[0].Content != "answer" {
-		t.Fatalf("assistant message = %#v", messages[0])
-	}
-}
-
-func TestAudioDialogPersistVoiceTurnNilStoreDoesNotPanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("persistVoiceTurn panicked with nil store: %v", r)
-		}
-	}()
-	dialog := &AudioDialog{
-		config:       Config{Audio: AudioConfig{SampleRate: 16000}},
-		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
-	}
-	utterance := make([]int16, 16000)
-	dialog.persistVoiceTurn(
-		TurnInput{Transcript: "anything"},
-		RunResult{Output: "anything"},
-		utterance,
-	)
-}
-
-func TestAudioDialogPersistVoiceTurnEmptyOutputSkipsAssistant(t *testing.T) {
-	store := NewChatHistoryStore(t.TempDir())
-	dialog := &AudioDialog{
-		config:       Config{Audio: AudioConfig{SampleRate: 16000}},
-		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
-	}
-	dialog.SetHistoryStore(store)
-
-	utterance := make([]int16, 16000)
-	dialog.persistVoiceTurn(
-		TurnInput{Transcript: "user said this"},
-		RunResult{EpisodeID: "ep-789", Output: "   "},
-		utterance,
-	)
-
-	messages, err := store.Load(context.Background())
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if len(messages) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(messages))
-	}
-	if messages[0].Type != "user" || messages[0].Content != "user said this" {
-		t.Fatalf("user message = %#v", messages[0])
-	}
-}
-
-func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
-	store := NewChatHistoryStore(t.TempDir())
-	model := &scriptedModel{
-		responses: roleDirectResponses("voice reply"),
-	}
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use attached audio.",
-		}),
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-
-	provider := &recordingTTSProvider{name: "dialog-provider"}
-	audioClient := NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
-	dialog := &AudioDialog{
-		config: Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Audio:                    AudioConfig{SampleRate: 16000},
-			InputMode:                "stt",
-			VoiceStreamingTTSEnabled: boolPtr(false),
-		},
-		sttClient:    &stubSTTClient{transcript: "voice question"},
-		audioClient:  audioClient,
-		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
-		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
-	}
-	dialog.SetHistoryStore(store)
-
-	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
-		t.Fatalf("ProcessUtterance() error = %v", err)
-	}
-
-	messages, err := store.Load(context.Background())
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	userMessage, ok := firstAudioDialogTestMessageOfType(messages, "user")
-	if !ok || userMessage.Source != "voice" || userMessage.Modality != TurnModalitySTT || userMessage.Content != "voice question" {
-		t.Fatalf("user voice message = %#v in %#v", userMessage, messages)
-	}
-	if len(userMessage.Attachments) != 0 {
-		t.Fatalf("user voice message should not include audio attachments: %#v", userMessage.Attachments)
-	}
-	assistantMessage, ok := firstAudioDialogTestMessageOfType(messages, "assistant")
-	if !ok || assistantMessage.Source != "voice" || assistantMessage.Content != "voice reply" {
-		t.Fatalf("assistant message = %#v in %#v", assistantMessage, messages)
-	}
-}
-
-func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
-	model := &scriptedModel{
-		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
-	}
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use tools when requested.",
-		}),
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{
-			"echo": &staticTool{name: "echo", output: `{"ok":true}`},
-		}},
-		NewSkillIndex(),
-	)
-	dialog := &AudioDialog{
-		config: Config{
-			Model: ModelConfig{Provider: "fake"},
-		},
-	}
-	var messages []Message
-	dialog.SetHistoryAppender(func(message Message) {
-		messages = append(messages, message)
-	})
-
-	if _, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "use echo"}, runtime); err != nil {
-		t.Fatalf("RunAgentTurn() error = %v", err)
-	}
-
-	for _, wantType := range []string{runEventToolCall, "tool_result", "assistant"} {
-		message, ok := firstAudioDialogTestMessageOfType(messages, wantType)
-		if !ok {
-			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
-		}
-		if message.Source != "voice" {
-			t.Fatalf("%s Source = %q, want voice", wantType, message.Source)
-		}
-	}
-}
-
 func TestAudioDialogRunAgentTurnQueuesButDoesNotConsumeSteer(t *testing.T) {
 	firstCallStarted := make(chan struct{})
 	releaseFirstCall := make(chan struct{})
@@ -1120,11 +881,6 @@ func TestAudioDialogRunAgentTurnQueuesButDoesNotConsumeSteer(t *testing.T) {
 			Model: ModelConfig{Provider: "fake"},
 		},
 	}
-	var messages []Message
-	dialog.SetHistoryAppender(func(message Message) {
-		messages = append(messages, message)
-	})
-
 	resultCh := make(chan struct {
 		result RunResult
 		err    error
@@ -1162,75 +918,8 @@ func TestAudioDialogRunAgentTurnQueuesButDoesNotConsumeSteer(t *testing.T) {
 	if runResult.result.Output != "first answer" {
 		t.Fatalf("Output = %q, want first answer", runResult.result.Output)
 	}
-	if steerMessage, ok := firstAudioDialogTestMessageOfType(messages, "steer"); ok {
-		t.Fatalf("unexpected steer history message: %#v", steerMessage)
-	}
 	if dialog.QueueSteer(TurnInput{InputText: "too late"}) {
 		t.Fatal("QueueSteer returned true after voice run completed")
-	}
-}
-
-func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t *testing.T) {
-	model := &scriptedModel{responses: roleDirectResponses("final answer\n<tts>final answer</tts>")}
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{
-			Model:           ModelConfig{Provider: "fake"},
-			Instruction:     "Answer directly.",
-			ForceSimpleLoop: true,
-		}),
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	dialog := &AudioDialog{
-		config: Config{
-			Model: ModelConfig{Provider: "fake"},
-		},
-	}
-
-	assistantAppendStarted := make(chan struct{})
-	releaseAssistantAppend := make(chan struct{})
-	dialog.SetHistoryAppender(func(message Message) {
-		if message.Type != "assistant" {
-			return
-		}
-		close(assistantAppendStarted)
-		<-releaseAssistantAppend
-	})
-
-	resultCh := make(chan struct {
-		result RunResult
-		err    error
-	}, 1)
-	go func() {
-		result, err := dialog.RunVoiceTurnWithContext(context.Background(), TurnInput{InputText: "original"}, nil, runtime, VoiceTurnContext{})
-		resultCh <- struct {
-			result RunResult
-			err    error
-		}{result: result, err: err}
-	}()
-
-	select {
-	case <-assistantAppendStarted:
-	case <-time.After(time.Second):
-		t.Fatal("assistant history append did not start")
-	}
-	if dialog.QueueSteer(TurnInput{InputText: "too late", Transcript: "too late"}) {
-		t.Fatal("QueueSteer returned true after runtime finished consuming steer")
-	}
-	close(releaseAssistantAppend)
-
-	select {
-	case runResult := <-resultCh:
-		if runResult.err != nil {
-			t.Fatalf("RunVoiceTurnWithContext() error = %v", runResult.err)
-		}
-		if runResult.result.Output != "final answer\n<tts>final answer</tts>" {
-			t.Fatalf("Output = %q, want final answer", runResult.result.Output)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("RunVoiceTurnWithContext did not finish")
 	}
 }
 
@@ -1306,7 +995,7 @@ func TestAudioDialogBeginSteerInterruptAppliesQueuedCorrection(t *testing.T) {
 	}
 }
 
-func TestAudioDialogRunVoiceTurnDoesNotPersistUserWhenVoiceRunActive(t *testing.T) {
+func TestAudioDialogRunVoiceTurnRejectsConcurrentRun(t *testing.T) {
 	dialog := &AudioDialog{
 		config: Config{
 			Model:        ModelConfig{Provider: "fake"},
@@ -1315,11 +1004,6 @@ func TestAudioDialogRunVoiceTurnDoesNotPersistUserWhenVoiceRunActive(t *testing.
 		},
 		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
 	}
-	var messages []Message
-	dialog.SetHistoryAppender(func(message Message) {
-		messages = append(messages, message)
-	})
-
 	if !dialog.beginVoiceRunControl("existing-request") {
 		t.Fatal("beginVoiceRunControl returned false for setup")
 	}
@@ -1335,81 +1019,43 @@ func TestAudioDialogRunVoiceTurnDoesNotPersistUserWhenVoiceRunActive(t *testing.
 	if err == nil || !strings.Contains(err.Error(), "voice run already active") {
 		t.Fatalf("RunVoiceTurnWithContext() error = %v, want voice run already active", err)
 	}
-	if len(messages) != 0 {
-		t.Fatalf("persisted messages = %#v, want none when voice run is already active", messages)
-	}
 }
 
-func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
-	configDir := ensureTestConfigDir(t, t.TempDir())
-	model := &scriptedModel{
-		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
-	}
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{
-			ConfigDir:       configDir,
-			Model:           ModelConfig{Provider: "fake"},
-			Instruction:     "Use tools when requested.",
-			ForceSimpleLoop: true,
-		}),
-		&testModelResolver{model: model},
-		NewMemoryManager(filepath.Join(configDir, "memory")),
-		&ToolSet{tools: map[string]langtools.Tool{
-			"echo": &staticTool{name: "echo", output: `{"ok":true}`},
-		}},
-		NewSkillIndex(),
-	)
-	dialog := &AudioDialog{
-		config: Config{
-			Model:        ModelConfig{Provider: "fake"},
-			Audio:        AudioConfig{SampleRate: 16000},
-			AudioArchive: AudioArchiveConfig{Enabled: false},
-		},
-		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
-	}
+func TestAudioDialogPublishesVoiceMessages(t *testing.T) {
+	dialog := &AudioDialog{config: Config{Audio: AudioConfig{SampleRate: 16000}}}
 	var messages []Message
-	dialog.SetHistoryAppender(func(message Message) {
+	dialog.SetMessagePublisher(func(message Message) {
 		messages = append(messages, message)
 	})
+	if !dialog.beginVoiceRunControl("voice-request") {
+		t.Fatal("beginVoiceRunControl returned false")
+	}
+	defer dialog.endVoiceRunControl("voice-request")
 
-	_, err := dialog.RunVoiceTurn(
-		context.Background(),
-		TurnInput{InputText: "use echo", Transcript: "use echo"},
-		[]int16{100, -100, 200, -200},
-		runtime,
+	dialog.publishVoiceUserInput(
+		TurnInput{InputText: "hello", Modality: TurnModalitySTT},
+		nil,
+		"episode-1",
+		"voice-request",
 	)
-	if err != nil {
-		t.Fatalf("RunVoiceTurn() error = %v", err)
+	dialog.publishVoiceRunEvent(RunEvent{
+		Type:      "assistant_output",
+		EpisodeID: "episode-1",
+		Content:   "hi",
+	}, "voice-request")
+
+	if len(messages) != 2 {
+		t.Fatalf("published messages = %#v, want user and assistant", messages)
 	}
-	if len(messages) < 4 {
-		t.Fatalf("expected user, run events, and assistant messages, got %#v", messages)
+	if messages[0].Type != "user" || messages[0].Source != "voice" {
+		t.Fatalf("user message = %#v", messages[0])
 	}
-	if messages[0].Type != "user" {
-		t.Fatalf("first message type = %q, want user in %#v", messages[0].Type, messages)
-	}
-	if messages[len(messages)-1].Type != "assistant" {
-		t.Fatalf("last message type = %q, want assistant in %#v", messages[len(messages)-1].Type, messages)
-	}
-	for _, wantType := range []string{runEventToolCall, "tool_result", "assistant"} {
-		if _, ok := firstAudioDialogTestMessageOfType(messages, wantType); !ok {
-			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
-		}
-	}
-	episodeID := messages[0].EpisodeID
-	if episodeID == "" {
-		t.Fatalf("user message missing episode id: %#v", messages[0])
-	}
-	for _, message := range messages {
-		if message.Source != "voice" {
-			t.Fatalf("message source = %q, want voice: %#v", message.Source, message)
-		}
-		if message.EpisodeID != episodeID {
-			t.Fatalf("message episode id = %q, want %q in %#v", message.EpisodeID, episodeID, messages)
-		}
+	if messages[1].Type != "assistant" || messages[1].Source != "voice" {
+		t.Fatalf("assistant message = %#v", messages[1])
 	}
 }
 
-func TestAudioDialogProcessUtteranceSavesAudioFile(t *testing.T) {
+func TestAudioDialogEnsureVoiceInputAudioArtifactSavesAudioFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	cfg := Config{
@@ -1429,15 +1075,8 @@ func TestAudioDialogProcessUtteranceSavesAudioFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	historyStore := NewChatHistoryStore(filepath.Join(tmpDir, "history"))
-	dialog.SetHistoryStore(historyStore)
-
-	// Manually call persistVoiceTurn with a transcript to test audio file saving
 	utterance := make([]int16, 16000) // 1 second
-	input := TurnInput{Transcript: "hello"}
-	result := RunResult{EpisodeID: "ep-test", Output: "hi"}
-
-	dialog.persistVoiceTurn(input, result, utterance)
+	input := dialog.ensureVoiceInputAudioArtifact(TurnInput{Transcript: "hello"}, utterance, nil)
 
 	// Verify audio file saved
 	files, err := os.ReadDir(filepath.Join(tmpDir, "audio"))
@@ -1453,34 +1092,18 @@ func TestAudioDialogProcessUtteranceSavesAudioFile(t *testing.T) {
 		t.Errorf("Audio file should be WAV: %s", files[0].Name())
 	}
 
-	// Verify message has audio_file field
-	messages, err := historyStore.Load(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	artifact, ok := firstAudioArtifact(input)
+	if !ok {
+		t.Fatal("audio artifact missing")
 	}
-
-	var userMsg *Message
-	for i := range messages {
-		if messages[i].Type == "user" {
-			userMsg = &messages[i]
-			break
-		}
+	if artifact.Path == "" {
+		t.Error("audio artifact path is empty")
 	}
-
-	if userMsg == nil {
-		t.Fatal("No user message found")
+	if artifact.DurationMS == 0 {
+		t.Error("audio artifact duration is zero")
 	}
-
-	if userMsg.AudioFile == "" {
-		t.Error("User message should have audio_file set")
-	}
-	if userMsg.AudioDurationMs == 0 {
-		t.Error("User message should have audio_duration_ms set")
-	}
-
-	// Verify the audio file path is absolute and exists
-	if _, err := os.Stat(userMsg.AudioFile); err != nil {
-		t.Errorf("Audio file should exist at %s: %v", userMsg.AudioFile, err)
+	if _, err := os.Stat(artifact.Path); err != nil {
+		t.Errorf("audio file should exist at %s: %v", artifact.Path, err)
 	}
 }
 

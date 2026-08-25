@@ -49,8 +49,7 @@ type AudioDialog struct {
 	outputMu            sync.Mutex
 	activeOutputs       map[*activeTTSOutput]struct{}
 	runControl          voiceRunControl
-	historyStore        *ChatHistoryStore
-	historyAppend       func(Message)
+	messagePublish      func(Message)
 	audioArchive        *AudioArchiveManager
 	connWarmer          *ConnectionWarmer
 }
@@ -679,43 +678,17 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	return err
 }
 
-// SetHistoryStore wires the chat history store. When non-nil, voice messages
-// produced during RunVoiceTurn are appended with Source="voice".
-func (d *AudioDialog) SetHistoryStore(store *ChatHistoryStore) {
-	d.historyStore = store
+// SetMessagePublisher sends voice conversation updates to transient consumers
+// such as the Web UI without persisting a separate conversation log.
+func (d *AudioDialog) SetMessagePublisher(publish func(Message)) {
+	d.messagePublish = publish
 }
 
-// SetHistoryAppender wires a higher-level history appender. The server uses
-// this so voice turns update both persistent history and the in-memory Web UI
-// snapshot in the same path as HTTP chat messages.
-func (d *AudioDialog) SetHistoryAppender(appender func(Message)) {
-	d.historyAppend = appender
-}
-
-// persistVoiceTurn appends user (when transcript is available) and assistant
-// messages to the chat history store, tagging both with Source="voice". It is
-// best-effort: errors are logged and never break the voice loop. Uses
-// context.Background since the caller's context may be cancelled by the time
-// we persist.
-func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
-	d.PersistVoiceTurn(input, result, utterance)
-}
-
-func (d *AudioDialog) PersistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
-	d.persistVoiceUserInput(input, utterance, result.EpisodeID, "")
-	d.persistVoiceAssistantOutput(result, "")
-}
-
-func (d *AudioDialog) PersistVoiceUserInput(input TurnInput, utterance []int16) {
-	d.persistVoiceUserInput(input, utterance, "", "")
-}
-
-func (d *AudioDialog) persistVoiceUserInput(input TurnInput, utterance []int16, episodeID, requestID string) {
-	if d.historyAppend == nil && d.historyStore == nil {
+func (d *AudioDialog) publishVoiceUserInput(input TurnInput, utterance []int16, episodeID, requestID string) {
+	if d.messagePublish == nil {
 		return
 	}
 	input = d.ensureVoiceInputAudioArtifact(input, utterance, nil)
-
 	content := strings.TrimSpace(input.InputText)
 	if content == "" {
 		content = strings.TrimSpace(input.Transcript)
@@ -723,43 +696,14 @@ func (d *AudioDialog) persistVoiceUserInput(input TurnInput, utterance []int16, 
 	if content == "" {
 		return
 	}
-	userMsg := messageFromTurnInput(input, episodeID, requestID, nil, time.Now())
-	userMsg.Content = content
-	if userMsg.Source == "" {
-		userMsg.Source = "voice"
-	}
-	d.appendVoiceHistory(userMsg, requestID)
+	message := messageFromTurnInput(input, episodeID, requestID, nil, time.Now())
+	message.Content = content
+	message.Source = "voice"
+	d.publishVoiceMessage(message, requestID)
 }
 
-func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
-	d.persistVoiceAssistantOutput(result, "")
-}
-
-func (d *AudioDialog) persistVoiceAssistantOutput(result RunResult, requestID string) {
-	if d.historyAppend == nil && d.historyStore == nil {
-		return
-	}
-	now := time.Now()
-	output := strings.TrimSpace(result.Output)
-	if output != "" {
-		assistantMsg := Message{
-			Type:      "assistant",
-			EpisodeID: result.EpisodeID,
-			RequestID: requestID,
-			Content:   output,
-			Source:    "voice",
-			Timestamp: now,
-		}
-		d.appendVoiceHistory(assistantMsg, requestID)
-	}
-}
-
-func (d *AudioDialog) appendVoiceRunEvent(event RunEvent, requestID string) {
-	if d.historyAppend == nil && d.historyStore == nil {
-		return
-	}
-	// Ignore events from stale requests after ForceResetVoiceRun
-	if !d.runControl.isActiveRequest(requestID) {
+func (d *AudioDialog) publishVoiceRunEvent(event RunEvent, requestID string) {
+	if d.messagePublish == nil || !d.runControl.isActiveRequest(requestID) {
 		return
 	}
 	message := messageFromRunEvent(event, event.EpisodeID, requestID)
@@ -767,28 +711,18 @@ func (d *AudioDialog) appendVoiceRunEvent(event RunEvent, requestID string) {
 		return
 	}
 	message.Source = "voice"
-	d.appendVoiceHistory(message, requestID)
+	d.publishVoiceMessage(message, requestID)
 }
 
-func (d *AudioDialog) appendVoiceHistory(message Message, requestID string) {
-	// Ignore messages from stale requests after ForceResetVoiceRun
+func (d *AudioDialog) publishVoiceMessage(message Message, requestID string) {
 	if requestID != "" && !d.runControl.isActiveRequest(requestID) {
 		return
 	}
-	var ok bool
-	message, ok = normalizeChatHistoryMessage(message)
+	message, ok := normalizePublicMessage(message)
 	if !ok {
 		return
 	}
-	if d.historyAppend != nil {
-		d.historyAppend(message)
-		return
-	}
-	if d.historyStore != nil {
-		if err := d.historyStore.Append(context.Background(), message); err != nil {
-			log.Printf("[history] persist voice message failed: %v", err)
-		}
-	}
+	d.messagePublish(message)
 }
 
 func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
@@ -896,7 +830,7 @@ func (d *AudioDialog) RunVoiceTurnWithContext(ctx context.Context, input TurnInp
 		return RunResult{}, fmt.Errorf("voice run already active")
 	}
 	defer d.endVoiceRunControl(requestID)
-	d.persistVoiceUserInput(input, utterance, episodeID, requestID)
+	d.publishVoiceUserInput(input, utterance, episodeID, requestID)
 	result, err := d.runAgentTurnWithActiveRequest(ctx, input, runtime, episodeID, requestID, turnContext)
 	if err != nil {
 		return RunResult{}, err
@@ -948,7 +882,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 				return
 			}
 			toolSpeechStreamed := event.Type == runEventToolCall && speechWriter.FinalizeResponse()
-			d.appendVoiceRunEvent(event, requestID)
+			d.publishVoiceRunEvent(event, requestID)
 			if toolSpeechStreamed {
 				log.Printf("[tts] Tool content already streamed: tool=%s", event.ToolName)
 			} else {
@@ -1013,9 +947,8 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 		return result, fmt.Errorf("LLM request failed: %w", err)
 	}
 	if finalAssistantEvent != nil {
-		d.appendVoiceRunEvent(*finalAssistantEvent, requestID)
+		d.publishVoiceRunEvent(*finalAssistantEvent, requestID)
 	}
-
 	log.Printf("[llm] Response received\n")
 	return result, nil
 }
@@ -1341,7 +1274,6 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
-	var finalAssistantEvent *RunEvent
 	var speechWriter *speech.StreamWriter
 
 	req := RunRequest{
@@ -1349,12 +1281,9 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		Turn:  NewTextTurnInput(text, nil),
 		EventHandler: func(event RunEvent) {
 			if event.Type == "assistant_output" {
-				captured := event
-				finalAssistantEvent = &captured
 				return
 			}
 			toolSpeechStreamed := event.Type == runEventToolCall && speechWriter.FinalizeResponse()
-			d.appendVoiceRunEvent(event, "")
 			if toolSpeechStreamed {
 				log.Printf("[tts] Tool content already streamed: tool=%s", event.ToolName)
 			} else {
@@ -1398,10 +1327,6 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		}
 		return fmt.Errorf("LLM request failed: %w", err)
 	}
-	if finalAssistantEvent != nil {
-		d.appendVoiceRunEvent(*finalAssistantEvent, "")
-	}
-
 	log.Printf("[llm] Response received\n")
 
 	// Speak response if TTS is available
