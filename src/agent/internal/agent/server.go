@@ -2558,7 +2558,7 @@ func (s *Server) handleBenchmarkProcessEpisodeMemory(w http.ResponseWriter, r *h
 	status, memoryIDs, err := plane.ProcessEpisodeMemoryNow(r.Context(), req.EpisodeID)
 	if err != nil {
 		code := http.StatusInternalServerError
-		if errors.Is(err, errEpisodeMemoryWorkerBusy) {
+		if errors.Is(err, errMemoryWorkerBusy) {
 			code = http.StatusConflict
 		}
 		http.Error(w, "process episode memory: "+err.Error(), code)

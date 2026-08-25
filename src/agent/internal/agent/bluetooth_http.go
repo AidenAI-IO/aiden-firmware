@@ -221,6 +221,11 @@ func (s *Server) handlePhoneNotificationEvents(w http.ResponseWriter, r *http.Re
 		Duplicates: result.Duplicates,
 		LastID:     result.LastID,
 	})
+	if result.Accepted > 0 && s.runtime != nil {
+		if plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane); ok {
+			plane.NotifyMemory()
+		}
+	}
 }
 
 func (s *Server) bluetoothServiceSocketPath() string {

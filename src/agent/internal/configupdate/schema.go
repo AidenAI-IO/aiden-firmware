@@ -347,11 +347,12 @@ type StorageDegradedMode struct {
 }
 
 type StorageCleanup struct {
-	Enabled                     bool  `json:"enabled"`
-	LLMHTTPLogRetentionDays     []int `json:"llm_http_log_retention_days"`
-	AudioArchiveRetentionDays   []int `json:"audio_archive_retention_days"`
-	SessionArchiveRetentionDays []int `json:"session_archive_retention_days"`
-	CleanupRetryIntervalSeconds int   `json:"cleanup_retry_interval_seconds"`
+	Enabled                          bool  `json:"enabled"`
+	LLMHTTPLogRetentionDays          []int `json:"llm_http_log_retention_days"`
+	AudioArchiveRetentionDays        []int `json:"audio_archive_retention_days"`
+	SessionArchiveRetentionDays      []int `json:"session_archive_retention_days"`
+	NotificationContextRetentionDays []int `json:"notification_context_retention_days"`
+	CleanupRetryIntervalSeconds      int   `json:"cleanup_retry_interval_seconds"`
 }
 
 type Device struct {
@@ -486,11 +487,12 @@ func (d Config) ToAgentConfig() agent.Config {
 		MaxAgentLogMB:         d.Storage.DegradedMode.MaxAgentLogMB,
 	}
 	storage.Cleanup = agent.StorageCleanupConfig{
-		Enabled:                     d.Storage.Cleanup.Enabled,
-		LLMHTTPLogRetentionDays:     d.Storage.Cleanup.LLMHTTPLogRetentionDays,
-		AudioArchiveRetentionDays:   d.Storage.Cleanup.AudioArchiveRetentionDays,
-		SessionArchiveRetentionDays: d.Storage.Cleanup.SessionArchiveRetentionDays,
-		CleanupRetryIntervalSeconds: d.Storage.Cleanup.CleanupRetryIntervalSeconds,
+		Enabled:                          d.Storage.Cleanup.Enabled,
+		LLMHTTPLogRetentionDays:          d.Storage.Cleanup.LLMHTTPLogRetentionDays,
+		AudioArchiveRetentionDays:        d.Storage.Cleanup.AudioArchiveRetentionDays,
+		SessionArchiveRetentionDays:      d.Storage.Cleanup.SessionArchiveRetentionDays,
+		NotificationContextRetentionDays: d.Storage.Cleanup.NotificationContextRetentionDays,
+		CleanupRetryIntervalSeconds:      d.Storage.Cleanup.CleanupRetryIntervalSeconds,
 	}
 	return agent.Config{
 		ModelProviders: d.modelProvidersToAgentConfig(),
@@ -882,11 +884,12 @@ func FromAgentConfig(cfg agent.Config) Config {
 				MaxAgentLogMB:         cfg.Storage.DegradedMode.MaxAgentLogMB,
 			},
 			Cleanup: StorageCleanup{
-				Enabled:                     cfg.Storage.Cleanup.Enabled,
-				LLMHTTPLogRetentionDays:     cfg.Storage.Cleanup.LLMHTTPLogRetentionDays,
-				AudioArchiveRetentionDays:   cfg.Storage.Cleanup.AudioArchiveRetentionDays,
-				SessionArchiveRetentionDays: cfg.Storage.Cleanup.SessionArchiveRetentionDays,
-				CleanupRetryIntervalSeconds: cfg.Storage.Cleanup.CleanupRetryIntervalSeconds,
+				Enabled:                          cfg.Storage.Cleanup.Enabled,
+				LLMHTTPLogRetentionDays:          cfg.Storage.Cleanup.LLMHTTPLogRetentionDays,
+				AudioArchiveRetentionDays:        cfg.Storage.Cleanup.AudioArchiveRetentionDays,
+				SessionArchiveRetentionDays:      cfg.Storage.Cleanup.SessionArchiveRetentionDays,
+				NotificationContextRetentionDays: cfg.Storage.Cleanup.NotificationContextRetentionDays,
+				CleanupRetryIntervalSeconds:      cfg.Storage.Cleanup.CleanupRetryIntervalSeconds,
 			},
 		},
 		Device: Device{

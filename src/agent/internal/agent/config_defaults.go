@@ -161,11 +161,12 @@ func DefaultConfig() Config {
 				MaxAgentLogMB:         1,
 			},
 			Cleanup: StorageCleanupConfig{
-				Enabled:                     true,
-				LLMHTTPLogRetentionDays:     []int{7, 3, 1, 0},
-				AudioArchiveRetentionDays:   []int{30, 7, 0},
-				SessionArchiveRetentionDays: []int{30},
-				CleanupRetryIntervalSeconds: 60,
+				Enabled:                          true,
+				LLMHTTPLogRetentionDays:          []int{7, 3, 1, 0},
+				AudioArchiveRetentionDays:        []int{30, 7, 0},
+				SessionArchiveRetentionDays:      []int{30},
+				NotificationContextRetentionDays: []int{14, 7, 1, 0},
+				CleanupRetryIntervalSeconds:      60,
 			},
 		},
 		Log: LogConfig{
