@@ -974,6 +974,38 @@ func TestExplicitlyAbandonedEpisodeCanBeNotAchievedWithoutEventRefs(t *testing.T
 	}
 }
 
+func TestEndedEpisodeWithoutAssessmentRefsStillFinalizesProposal(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "episode_assessment":{"goal_result":"not_achieved","reason":"The task was interrupted before completion.","evidence_refs":[]},
+  "candidates":[
+    {"lesson_key":"one","type":"procedure","action":"update","retention":"durable","memory_id":"devmem_existing","memory_revision":7},
+    {"lesson_key":"two","type":"failure","action":"create","retention":"durable"},
+    {"lesson_key":"three","type":"failure","action":"create","retention":"durable"},
+    {"lesson_key":"four","type":"failure","action":"create","retention":"durable"}
+  ]
+}`}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	existing := []DeviceMemoryItem{{ID: "devmem_existing", Revision: 7}}
+
+	proposal, err := processor.generateEpisodeMemoryProposal(
+		ctx,
+		TaskEpisode{ID: "ep_interrupted", Status: "interrupted", UserGoal: "Complete the task"},
+		existing,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generateEpisodeMemoryProposal() error = %v", err)
+	}
+	if len(proposal.Candidates) != 3 {
+		t.Fatalf("candidates = %d, want cap of 3", len(proposal.Candidates))
+	}
+	if got := proposal.ExistingRevisions["devmem_existing"]; got != 7 {
+		t.Fatalf("existing revision = %d, want 7", got)
+	}
+}
+
 func TestHasDirectEpisodeFailureEvidenceUsesStructuredSignals(t *testing.T) {
 	tests := []struct {
 		name    string

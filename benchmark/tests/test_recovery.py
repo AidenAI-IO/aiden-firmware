@@ -333,6 +333,50 @@ def test_prepare_task_isolation_raises_after_exhausting_retries(monkeypatch):
         prepare_task_isolation(client, suite, task, ready_timeout_sec=10, setup_attempts=2)
 
 
+def test_prepare_task_isolation_does_not_retry_consolidation_contract_failure(
+    monkeypatch,
+):
+    setup_attempts = 0
+
+    def fail_consolidation_contract(*args, **kwargs):
+        nonlocal setup_attempts
+        setup_attempts += 1
+        error = ResetError("consolidation contract failed")
+        error.consolidation = {"status": "done", "memory_ids": []}
+        raise error
+
+    monkeypatch.setattr("runner.recovery.per_task_setup", fail_consolidation_contract)
+    client = SetupClient()
+    suite = Suite(
+        name="memory",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=__import__("pathlib").Path("suite.json"),
+    )
+    task = TaskSpec(
+        id="reflection_contract",
+        category="memory",
+        description_for_judge="Validate reflection.",
+        prompt="confirm",
+        rubric=[RubricItem(id="ok", check="ok")],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+        setup={"type": "seed_episode"},
+    )
+
+    with pytest.raises(ResetError, match="consolidation contract failed"):
+        prepare_task_isolation(
+            client,
+            suite,
+            task,
+            ready_timeout_sec=10,
+            setup_attempts=3,
+        )
+
+    assert setup_attempts == 1
+    assert client.clears == 1
+
+
 def test_prepare_task_isolation_does_not_repeat_failed_environment_setup(monkeypatch):
     setup_calls = 0
 

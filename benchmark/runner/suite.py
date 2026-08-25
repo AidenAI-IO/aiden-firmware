@@ -471,6 +471,10 @@ def _parse_consolidation_expectation(
         raise SuiteValidationError(
             f"task {task_id}: consolidation_expectation.max_memory_ids cannot be 0 when required memory content, type, or scope is declared"
         )
+    if allow_empty_memory and (min_memory_ids or 0) > 0:
+        raise SuiteValidationError(
+            f"task {task_id}: consolidation_expectation.allow_empty_memory cannot be true when min_memory_ids is positive"
+        )
     return ConsolidationExpectation(
         goal_result=goal_result,
         min_memory_ids=min_memory_ids or 0,

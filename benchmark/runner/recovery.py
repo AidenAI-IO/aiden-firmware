@@ -90,6 +90,8 @@ def prepare_task_isolation(
             return setup_result
         except (ResetError, AgentTimeoutError, AgentRequestError) as e:
             last_error = e
+            if getattr(e, "consolidation", None) is not None:
+                raise
             if attempt >= setup_attempts:
                 break
             per_attempt_timeout = max(15, ready_timeout_sec // setup_attempts)

@@ -740,6 +740,29 @@ def test_load_suite_rejects_allow_empty_with_positive_memory_contract(tmp_path: 
         load_suite(p)
 
 
+def test_load_suite_rejects_allow_empty_with_positive_minimum(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [{
+            **FIXTURE["tasks"][0],
+            "setup": {
+                "type": "seed_episode",
+                "episode": {"id": "ep-1", "user_goal": "verify a procedure"},
+                "consolidate": True,
+                "consolidation_expectation": {
+                    "allow_empty_memory": True,
+                    "min_memory_ids": 1,
+                },
+            },
+        }],
+    }
+    p = tmp_path / "empty-positive-minimum.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="min_memory_ids is positive"):
+        load_suite(p)
+
+
 def test_load_suite_accepts_quick_capture_setup_keys(tmp_path: Path):
     fixture = {
         **FIXTURE,
@@ -1282,6 +1305,7 @@ def test_episode_reflection_v2_is_a_release_gate_not_a_smoke_suite():
         "final_verification_beats_intermediate_success",
     ):
         assert task_by_id[task_id].consolidation_expectation.goal_result == "not_achieved"
+        assert task_by_id[task_id].consolidation_expectation.required_assessment_evidence is True
 
     assert task_by_id["duplicate_attempts_are_compacted"].consolidation_expectation.max_memory_ids == 1
 

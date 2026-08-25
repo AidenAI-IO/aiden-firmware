@@ -686,10 +686,9 @@ func (p *episodeMemoryProcessor) generateEpisodeMemoryProposal(ctx context.Conte
 		return episodeMemoryProposal{}, fmt.Errorf("episode assessment requires a reason")
 	}
 	if proposal.EpisodeAssessment.GoalResult != episodeGoalUnknown && !hasDirectEpisodeAssessmentEvidence(episode, proposal.EpisodeAssessment.EvidenceRefs) {
-		if proposal.EpisodeAssessment.GoalResult == episodeGoalNotAchieved && episodeExplicitlyEndedBeforeCompletion(episode) {
-			return proposal, nil
+		if proposal.EpisodeAssessment.GoalResult != episodeGoalNotAchieved || !episodeExplicitlyEndedBeforeCompletion(episode) {
+			return episodeMemoryProposal{}, fmt.Errorf("episode assessment %s requires direct evidence", proposal.EpisodeAssessment.GoalResult)
 		}
-		return episodeMemoryProposal{}, fmt.Errorf("episode assessment %s requires direct evidence", proposal.EpisodeAssessment.GoalResult)
 	}
 	if len(proposal.Candidates) > 3 {
 		proposal.Candidates = proposal.Candidates[:3]

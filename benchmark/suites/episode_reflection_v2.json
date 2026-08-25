@@ -308,7 +308,7 @@
         "type": "seed_episode",
         "consolidate": true,
         "timeout_sec": 90,
-        "consolidation_expectation": {"goal_result": "not_achieved", "min_memory_ids": 1, "max_memory_ids": 3, "required_memory_types": ["failure"], "required_memory_substrings": ["reopen"]},
+        "consolidation_expectation": {"goal_result": "not_achieved", "min_memory_ids": 1, "max_memory_ids": 3, "required_assessment_evidence": true, "required_memory_types": ["failure"], "required_memory_substrings": ["reopen"]},
         "episode": {
           "id": "ep_v2_intermediate_success_final_failure",
           "status": "completed",

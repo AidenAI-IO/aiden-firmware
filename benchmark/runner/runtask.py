@@ -306,16 +306,6 @@ def run_one_task(
             )
         base.finished_at = now_iso()
         return base
-    effective_task = task
-    if task.expected_recall_from_consolidation:
-        consolidation = setup_result.get("consolidation") if isinstance(setup_result, dict) else None
-        memory_ids = consolidation.get("memory_ids") if isinstance(consolidation, dict) else None
-        if not isinstance(memory_ids, list) or not memory_ids:
-            base.status = "failed"
-            base.metrics = {"error": "expected_recall_from_consolidation requires non-empty consolidation memory_ids"}
-            base.finished_at = now_iso()
-            return base
-        effective_task = dc.replace(task, expected_recalled_memory_ids=[str(item) for item in memory_ids])
     if setup_result is not None:
         if setup_result.get("consolidation") is not None:
             (artifact_dir / "consolidation.json").write_text(
@@ -336,6 +326,16 @@ def run_one_task(
                 json.dumps(setup_result, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+    effective_task = task
+    if task.expected_recall_from_consolidation:
+        consolidation = setup_result.get("consolidation") if isinstance(setup_result, dict) else None
+        memory_ids = consolidation.get("memory_ids") if isinstance(consolidation, dict) else None
+        if not isinstance(memory_ids, list) or not memory_ids:
+            base.status = "failed"
+            base.metrics["error"] = "expected_recall_from_consolidation requires non-empty consolidation memory_ids"
+            base.finished_at = now_iso()
+            return base
+        effective_task = dc.replace(task, expected_recalled_memory_ids=[str(item) for item in memory_ids])
     pre_path = artifact_dir / "pre.jpg"
     attachments = None
     input_screenshot_path = (

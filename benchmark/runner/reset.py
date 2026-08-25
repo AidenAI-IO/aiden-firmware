@@ -149,7 +149,11 @@ def per_task_setup(
         _per_task_setup_seed_memory(client, setup)
         return None
     if setup_type == "seed_episode":
-        if setup.get("consolidation_expectation") is not None and setup.get("consolidate", False) is not True:
+        has_consolidation_expectation = (
+            setup.get("consolidation_expectation") is not None
+            or consolidation_expectation is not None
+        )
+        if has_consolidation_expectation and setup.get("consolidate", False) is not True:
             raise ResetError(
                 "seed_episode consolidation_expectation requires consolidate=true"
             )
@@ -302,7 +306,7 @@ def _validate_consolidation_result(
 ) -> None:
     def fail(message: str) -> None:
         error = ResetError(message)
-        setattr(error, "consolidation", result)
+        error.consolidation = result
         raise error
 
     memory_ids = result.get("memory_ids")
@@ -384,13 +388,13 @@ def _validate_consolidated_memory_content(
             error = ResetError(
                 f"episode memory consolidation for {episode_id!r} produced no device memory for the required content/type/scope contract"
             )
-            setattr(error, "consolidation", result)
+            error.consolidation = result
             raise error
         return
 
     def fail(message: str) -> None:
         error = ResetError(message)
-        setattr(error, "consolidation", result)
+        error.consolidation = result
         raise error
 
     generated_memories: list[dict[str, Any]] = []

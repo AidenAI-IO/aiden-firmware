@@ -153,6 +153,23 @@ def test_seed_episode_setup_can_leave_episode_unconsolidated():
     assert client.calls == [("seed_episode", episode, 45)]
 
 
+def test_seed_episode_setup_rejects_task_expectation_without_consolidation():
+    client = RecordingSetupClient()
+
+    with pytest.raises(ResetError, match="requires consolidate=true"):
+        per_task_setup(
+            client,
+            {
+                "type": "seed_episode",
+                "episode": {"id": "ep-1", "user_goal": "verify a procedure"},
+                "consolidate": False,
+            },
+            consolidation_expectation=object(),
+        )
+
+    assert client.calls == []
+
+
 def test_seed_episode_setup_consolidates_and_requires_memory():
     client = RecordingSetupClient()
     episode = {"id": "ep-1", "user_goal": "verify a device procedure"}
