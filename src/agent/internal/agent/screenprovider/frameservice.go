@@ -193,65 +193,12 @@ func (c *FrameService) LatestFrameWithFormat(format string, quality int, cropBla
 	}
 	hint = normalizeCropHint(hint)
 
-	request, err := latestFrameRequestJSON(format, quality, cropBlack, hint, 0, 0)
+	request, err := latestFrameRequestJSON(format, quality, cropBlack, hint)
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal latest_frame request: %w", err)
 	}
 
 	headerJSON, payload, err := c.doRequest(request, nil, 5*time.Second)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var resp frameResponse
-	if err := json.Unmarshal(headerJSON, &resp); err != nil {
-		return nil, nil, fmt.Errorf("parse response: %w", err)
-	}
-	if resp.Status != "OK" {
-		return nil, nil, fmt.Errorf("frame service: %s", resp.Status)
-	}
-	if uint64(len(payload)) != resp.Frame.Bytes {
-		return nil, nil, fmt.Errorf("payload size mismatch: got %d, expected %d", len(payload), resp.Frame.Bytes)
-	}
-	// Return stale frame but let caller check meta.Stale flag
-	return &resp.Frame, payload, nil
-}
-
-// LatestFrameWithFormatSince fetches a frame newer than sinceSeq when the
-// frame_service implementation supports the compatibility fields.
-func (c *FrameService) LatestFrameWithFormatSince(format string, quality int, cropBlack bool, minimalWidth int, sinceSeq uint64, timeout time.Duration) (*FrameMetadata, []byte, error) {
-	if format == "" {
-		format = "raw"
-	}
-	if quality <= 0 {
-		quality = DefaultJPEGQuality
-	}
-	if minimalWidth < 0 {
-		minimalWidth = 0
-	}
-
-	hint := normalizeCropHint(CropHint{MinimalWidth: minimalWidth})
-
-	timeoutMs := 0
-	if timeout > 0 {
-		timeoutMs = int(timeout / time.Millisecond)
-		if timeoutMs < 1 {
-			timeoutMs = 1
-		}
-	}
-	request, err := latestFrameRequestJSON(format, quality, cropBlack, hint, sinceSeq, timeoutMs)
-	if err != nil {
-		return nil, nil, fmt.Errorf("marshal latest_frame request: %w", err)
-	}
-
-	requestTimeout := 5 * time.Second
-	if timeout > 0 {
-		requestTimeout = timeout + time.Second
-		if requestTimeout < 5*time.Second {
-			requestTimeout = 5 * time.Second
-		}
-	}
-	headerJSON, payload, err := c.doRequest(request, nil, requestTimeout)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -315,13 +262,13 @@ func (c *FrameService) doRequest(requestJSON string, requestPayload []byte, time
 	return ReadUDSMessage(conn)
 }
 
-func latestFrameRequestJSON(format string, quality int, cropBlack bool, hint CropHint, sinceSeq uint64, timeoutMs int) (string, error) {
+func latestFrameRequestJSON(format string, quality int, cropBlack bool, hint CropHint) (string, error) {
 	hint = normalizeCropHint(hint)
 	payload := map[string]any{
 		"type":       "request",
 		"method":     "latest_frame",
-		"since_seq":  strconv.FormatUint(sinceSeq, 10),
-		"timeout_ms": timeoutMs,
+		"since_seq":  "0",
+		"timeout_ms": 0,
 		"format":     format,
 		"quality":    quality,
 		"crop_black": cropBlack,

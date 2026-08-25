@@ -27,7 +27,7 @@ Options:
   --run-id ID         Artifact run id, default UTC timestamp
   -h, --help          Show this help
 
-This script does not use SSH and must run on the board.
+This script does not use Agent, Config Web, SSH, or HTTP APIs and must run on the board.
 USAGE
 }
 

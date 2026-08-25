@@ -14,7 +14,7 @@ Runs board-local system readiness checks:
   - USB HID, frame, and audio service status
   - required low-level binaries
 
-This script does not use SSH and must run on the board.
+This script does not use Agent, Config Web, SSH, or HTTP APIs and must run on the board.
 USAGE
 }
 

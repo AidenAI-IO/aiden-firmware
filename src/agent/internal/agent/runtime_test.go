@@ -4801,8 +4801,12 @@ func (m *queuedCancelModel) GenerateContent(ctx context.Context, _ []llms.Messag
 		if m.firstStartedOnce.CompareAndSwap(false, true) {
 			close(m.firstStarted)
 		}
-		<-m.releaseFirst
-		return nil, errors.New("first run stopped")
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-m.releaseFirst:
+			return nil, errors.New("first run stopped")
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

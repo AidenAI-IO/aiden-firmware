@@ -113,28 +113,6 @@
                 </div>
             </div>
 
-            <div class="sidebar-card infrastructure-panel">
-                <div class="sidebar-kicker">Infrastructure</div>
-                <strong>基础设施测试</strong>
-                <div class="tool-lab-row">
-                    <button type="button" class="composer-btn infrastructure-btn" data-infrastructure-target="hid-click" onclick="runInfrastructureTest('hid-click')">点击</button>
-                    <button type="button" class="composer-btn infrastructure-btn" data-infrastructure-target="hid-output" onclick="runInfrastructureTest('hid-output')">输出</button>
-                </div>
-                <div class="tool-lab-row">
-                    <button type="button" class="composer-btn infrastructure-btn" data-infrastructure-target="hdmi" onclick="runInfrastructureTest('hdmi')">HDMI</button>
-                    <button type="button" class="composer-btn infrastructure-btn" data-infrastructure-target="audio-record" onclick="runInfrastructureTest('audio-record')">录音</button>
-                    <button type="button" class="composer-btn infrastructure-btn" data-infrastructure-target="audio-playback" onclick="runInfrastructureTest('audio-playback')">播放</button>
-                </div>
-                <div class="tool-lab-status" id="infrastructureStatus" role="status" aria-live="polite"></div>
-                <div class="tool-lab-result hidden" id="infrastructureResultPanel">
-                    <div class="tool-lab-result-meta" id="infrastructureResultMeta"></div>
-                    <div class="tool-lab-preview hidden" id="infrastructurePreviewWrap">
-                        <img id="infrastructurePreview" alt="Infrastructure test screenshot" />
-                    </div>
-                    <pre class="tool-block" id="infrastructureResultOutput"></pre>
-                </div>
-            </div>
-
             <div class="sidebar-card terminal-panel">
                 <div class="terminal-panel-head">
                     <div>
@@ -188,7 +166,6 @@
     <script defer src="/web-ui/scripts/messages.js"></script>
     <script defer src="/web-ui/scripts/attachments.js"></script>
     <script defer src="/web-ui/scripts/tool_messages.js"></script>
-    <script defer src="/web-ui/scripts/infrastructure.js"></script>
     <script defer src="/web-ui/scripts/bootstrap.js"></script>
 </body>
 </html>

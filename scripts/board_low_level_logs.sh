@@ -17,7 +17,7 @@ Options:
   --lines N    Lines per log file, default 30
   -h, --help   Show this help
 
-This script does not use SSH and must run on the board.
+This script does not use Agent, Config Web, SSH, or HTTP APIs and must run on the board.
 USAGE
 }
 
@@ -41,7 +41,7 @@ require_uint "--lines" "$LINES"
 
 section "recent logs"
 FOUND=0
-for log_path in /var/log/frame_service/frame_service.log /var/log/audio_service/audio_service.log /var/log/agent/agent.log; do
+for log_path in /var/log/frame_service/frame_service.log /var/log/audio_service/audio_service.log; do
     if [ -r "$log_path" ]; then
         FOUND=1
         printf '%s\n' "-- $log_path"

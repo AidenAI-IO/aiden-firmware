@@ -47,7 +47,7 @@ Options:
   --skip NAME            Skip system|hid|hdmi|audio|logs
   -h, --help             Show this help
 
-This script does not use SSH and must run on the board.
+This script does not use Agent, Config Web, SSH, or HTTP APIs and must run on the board.
 USAGE
 }
 
@@ -174,7 +174,7 @@ export SEND_HID HID_KEY HID_TEXT HID_CLICK_X HID_CLICK_Y HID_CLICK_BUTTON HID_DU
 export AUDIO_SECONDS PLAY_AUDIO
 
 echo "Board-local low-level smoke test"
-echo "Agent API and SSH are intentionally not used."
+echo "Agent, Config Web, SSH, and HTTP APIs are intentionally not used."
 echo "run_id=$RUN_ID"
 echo "artifact_dir=$AIDEN_LOW_LEVEL_ARTIFACT_DIR"
 if [ "$SEND_HID" = "1" ]; then

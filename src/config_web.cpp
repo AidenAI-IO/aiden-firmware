@@ -235,7 +235,6 @@ const size_t kMaxAgentConfigSize = 1024 * 1024;
 
 std::string read_file_contents(const char* path, size_t max_size);
 bool read_file_contents_checked(const char* path, size_t max_size, std::string* contents, std::string* error);
-bool write_all(int fd, const void* data, size_t size);
 std::string shell_quote(const std::string& text);
 std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
@@ -248,9 +247,6 @@ bool prepare_ota_update_log_file(const std::string& path,
                                  size_t max_size,
                                  unsigned long long* start_size_bytes,
                                  std::string* error);
-bool trim_ota_update_log_file(const std::string& path,
-                              size_t max_size,
-                              std::string* error);
 bool set_fd_cloexec(int fd, std::string* error);
 bool create_temp_file_in_dir(const std::string& dir,
                              const std::string& prefix,
@@ -2690,10 +2686,6 @@ bool launch_ota_update_supervisor(int lock_fd, const std::string& log_path, std:
         std::string cmd = build_ota_update_command(log_path);
         int rc = system(cmd.c_str());
         (void)rc;
-        std::string trim_error;
-        if (!trim_ota_update_log_file(log_path, kOtaWebUpdateLogMaxBytes, &trim_error)) {
-            (void)trim_error;
-        }
         close(lock_fd);
         _exit(0);
     }
@@ -3057,109 +3049,6 @@ bool prepare_ota_update_log_file(const std::string& path,
     }
     if (start_size_bytes) {
         *start_size_bytes = size_bytes;
-    }
-    return true;
-}
-
-bool trim_ota_update_log_file(const std::string& path,
-                              size_t max_size,
-                              std::string* error) {
-    if (path.empty()) {
-        if (error) *error = "ota update log path is empty";
-        return false;
-    }
-    if (max_size == 0) {
-        if (error) *error = "ota update log max size is zero";
-        return false;
-    }
-
-    int source_fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (source_fd < 0) {
-        if (error) *error = "open " + path + ": " + strerror(errno);
-        return false;
-    }
-
-    struct stat st;
-    if (fstat(source_fd, &st) != 0) {
-        if (error) *error = "stat " + path + ": " + strerror(errno);
-        close(source_fd);
-        return false;
-    }
-    if (!S_ISREG(st.st_mode)) {
-        if (error) *error = path + " is not a regular file";
-        close(source_fd);
-        return false;
-    }
-    if (st.st_size < 0) {
-        if (error) *error = "stat " + path + ": negative file size";
-        close(source_fd);
-        return false;
-    }
-
-    unsigned long long size_bytes = static_cast<unsigned long long>(st.st_size);
-    if (size_bytes <= static_cast<unsigned long long>(max_size)) {
-        close(source_fd);
-        return true;
-    }
-
-    std::string temp_path;
-    int temp_fd = -1;
-    if (!create_temp_file_in_dir(parent_dir(path), "ota-update-log-", 0644, &temp_fd, &temp_path, error)) {
-        close(source_fd);
-        return false;
-    }
-
-    off_t start_offset = st.st_size - static_cast<off_t>(max_size);
-    if (lseek(source_fd, start_offset, SEEK_SET) == static_cast<off_t>(-1)) {
-        if (error) *error = "seek " + path + ": " + strerror(errno);
-        close(temp_fd);
-        unlink(temp_path.c_str());
-        close(source_fd);
-        return false;
-    }
-
-    size_t bytes_left = max_size;
-    char buf[16 * 1024];
-    bool ok = true;
-    while (ok && bytes_left > 0) {
-        size_t read_size = std::min(sizeof(buf), bytes_left);
-        ssize_t n = read(source_fd, buf, read_size);
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            if (error) *error = "read " + path + ": " + strerror(errno);
-            ok = false;
-            break;
-        }
-        if (n == 0) {
-            break;
-        }
-        if (!write_all(temp_fd, buf, static_cast<size_t>(n))) {
-            if (error) *error = "write " + temp_path + ": " + strerror(errno);
-            ok = false;
-            break;
-        }
-        bytes_left -= static_cast<size_t>(n);
-    }
-
-    if (close(temp_fd) != 0 && ok) {
-        if (error) *error = "close " + temp_path + ": " + strerror(errno);
-        ok = false;
-    }
-    if (close(source_fd) != 0 && ok) {
-        if (error) *error = "close " + path + ": " + strerror(errno);
-        ok = false;
-    }
-    if (!ok) {
-        unlink(temp_path.c_str());
-        return false;
-    }
-
-    if (rename(temp_path.c_str(), path.c_str()) != 0) {
-        if (error) *error = "rename " + temp_path + " -> " + path + ": " + strerror(errno);
-        unlink(temp_path.c_str());
-        return false;
     }
     return true;
 }

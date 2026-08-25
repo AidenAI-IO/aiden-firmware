@@ -116,7 +116,7 @@ func TestLatestFrameRequestJSONEscapesFormat(t *testing.T) {
 		MinimalWidth: 16,
 		ScreenWidth:  2608,
 		ScreenHeight: 1200,
-	}, 10, 2500)
+	})
 	if err != nil {
 		t.Fatalf("latestFrameRequestJSON() error = %v", err)
 	}
@@ -131,8 +131,5 @@ func TestLatestFrameRequestJSONEscapesFormat(t *testing.T) {
 		payload["minimal_width"] != float64(16) || payload["screen_width"] != float64(2608) ||
 		payload["screen_height"] != float64(1200) {
 		t.Fatalf("unexpected request payload: %#v", payload)
-	}
-	if payload["since_seq"] != "10" || payload["timeout_ms"] != float64(2500) {
-		t.Fatalf("unexpected freshness fields: %#v", payload)
 	}
 }
