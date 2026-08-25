@@ -189,9 +189,6 @@ state is not exposed through a hot-window label, and no synthetic hot-window
 start/end markers are added. The session compaction thresholds and model context
 budget are the controls for prompt growth.
 
-**Note**: The `chat_history` store, while persisted, is NOT injected into the
-Agent context. See `context-lifecycle.md` for rationale.
-
 Synthetic prompt text must not be persisted into `ChatMessageHistory`.
 `Snapshot()` reads history verbatim and `appendSessionEvents()` writes records
 by index, so storing non-event text there would desynchronize `eventCount` from
@@ -206,8 +203,6 @@ The scrubber is idempotent and is used at every session-memory persistence bound
 - `sanitizeMessageRecords` before synchronizing `MessageRecord` slices into session events.
 - `sessionEventFromRecord` when converting langchain `MessageRecord` values into `SessionEvent` values.
 - `SessionMemoryStore.AppendEvent` for direct writes that bypass the conversion path.
-
-`compactToolResultForChatHistory` also uses the same function for the `chat_history` persistence path.
 
 ## chunk cut_meta
 

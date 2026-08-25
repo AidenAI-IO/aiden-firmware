@@ -250,7 +250,7 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 			log.Printf("[audio] close dialog: %v\n", err)
 		}
 	}()
-	dialog.SetHistoryAppender(server.AppendHistory)
+	dialog.SetMessagePublisher(server.BroadcastMessage)
 	dialog.SetStorageManager(runtime.Storage())
 	dialog.SetStorageMonitor(runtime.StorageMonitor())
 

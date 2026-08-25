@@ -4,7 +4,7 @@ import "sync"
 
 // EventBroadcaster fans out messages to multiple subscribers via channels.
 // Slow subscribers (channel full) are skipped so a single stuck client cannot
-// block message persistence or other broadcasters.
+// block other message consumers.
 type EventBroadcaster struct {
 	mu          sync.RWMutex
 	subscribers map[chan Message]struct{}

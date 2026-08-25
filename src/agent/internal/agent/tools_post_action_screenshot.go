@@ -24,6 +24,33 @@ type postActionScreenshotResult struct {
 	LastDiff      *float64 `json:"last_diff,omitempty"`
 }
 
+// stripScreenshotData removes the base64 payload while retaining metadata used
+// by session memory, logs, and tool consumers.
+func stripScreenshotData(content string) string {
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(content), &result); err != nil || result.Data == "" {
+		return content
+	}
+	format := strings.TrimSpace(result.Format)
+	if format == "" {
+		format = "jpeg"
+	}
+	compact := map[string]interface{}{
+		"width":  result.Width,
+		"height": result.Height,
+		"format": format,
+		"size":   result.Size,
+	}
+	if strings.TrimSpace(result.ActionOutput) != "" {
+		compact["action_output"] = strings.TrimSpace(result.ActionOutput)
+	}
+	data, err := json.Marshal(compact)
+	if err != nil {
+		return content
+	}
+	return string(data)
+}
+
 type postActionScreenshotTool struct {
 	inner      langtools.Tool
 	waitStable langtools.Tool

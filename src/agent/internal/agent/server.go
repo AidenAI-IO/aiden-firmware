@@ -65,8 +65,6 @@ type Server struct {
 	userFilesGenerateMu     sync.Mutex
 	userFilesGeneration     *userFilesReportGeneration
 	mu                      sync.Mutex
-	history                 []Message
-	historyStore            *ChatHistoryStore
 	episodeStore            *TaskEpisodeStore
 	sttClient               STTClient
 	ttsManager              *tts.ProviderManager // Borrowed from Runtime.
@@ -120,7 +118,7 @@ type MessageAttachment struct {
 	PreviewURL string `json:"preview_url,omitempty"`
 }
 
-// Message represents a public chat history message or tool call.
+// Message represents a public chat or tool event.
 type Message struct {
 	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result"
 	Role            string              `json:"role,omitempty"`
@@ -144,7 +142,7 @@ type Message struct {
 	IsError         bool                `json:"is_error,omitempty"`
 }
 
-func normalizeChatHistoryMessage(message Message) (Message, bool) {
+func normalizePublicMessage(message Message) (Message, bool) {
 	switch strings.TrimSpace(message.Type) {
 	case "user", "user_input", "steer":
 		message.Type = "user"
@@ -182,7 +180,7 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		Timestamp:      event.Timestamp,
 		IsError:        event.IsError,
 	}
-	message, ok := normalizeChatHistoryMessage(message)
+	message, ok := normalizePublicMessage(message)
 	if !ok {
 		return Message{}
 	}
@@ -403,7 +401,6 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		userFilesMemoryDir:      filepath.Join(userFilesBaseDir, "memory"),
 		userFilesSkillsDir:      filepath.Join(userFilesBaseDir, "skills"),
 		userFilesSkillStateDir:  filepath.Join(userFilesBaseDir, "skill-state"),
-		history:                 make([]Message, 0),
 		screenCaptureClient:     screenProviderFromRuntime(runtime),
 		bridge:                  runtime.PhoneBridge(),
 		bleSocketPath:           configuredBLEServiceSocketPath(),
@@ -430,20 +427,11 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		s.liveActivity.SetLocalUpdateNotifier(defaultBLEWake)
 	}
 	if s.userFilesMemoryDir != "" {
-		s.historyStore = NewChatHistoryStore(filepath.Join(s.userFilesMemoryDir, "chat_history"))
 		s.episodeStore = NewTaskEpisodeStore(filepath.Join(s.userFilesMemoryDir, "episodes"))
-	}
-	// Connect history store to event broadcaster
-	if s.historyStore != nil {
-		s.historyStore.SetOnNewMessage(func(msg Message) {
-			s.eventBroadcaster.Broadcast(msg)
-		})
 	}
 	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
 	s.quickCapture = newServerQuickCapture(runtime, s.screenCaptureClient)
 	runtime.tools.RegisterPhoneBridge(s.bridge)
-	s.loadHistoryFromDisk()
-
 	// Initialize speech clients if configured.
 	cfg := runtime.config
 	s.audioClient = NewAudioServiceClient(cfg.Audio.SocketOrDefault())
@@ -1320,7 +1308,7 @@ func (s *Server) handleChatAsync(
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
 	}
-	s.appendHistory(userMsg)
+	s.publishMessage(userMsg)
 	if s.liveActivity != nil {
 		s.liveActivity.StartTask(requestID, inputText, s.liveActivityPhoneID(req))
 	}
@@ -1354,7 +1342,7 @@ func (s *Server) handleChatAsync(
 		eventHandler := func(event RunEvent) {
 			msg := messageFromRunEvent(event, userMsg.EpisodeID, requestID)
 			if msg.Type != "" {
-				if msg, ok := s.appendHistory(msg); ok {
+				if msg, ok := s.publishMessage(msg); ok {
 					pending.mu.Lock()
 					pending.history = append(pending.history, msg)
 					pending.messages = append(pending.messages, msg)
@@ -1446,7 +1434,7 @@ func (s *Server) handleChatAsync(
 					Timestamp: time.Now(),
 					IsError:   true,
 				}
-				if errorMsg, ok := s.appendHistory(errorMsg); ok {
+				if errorMsg, ok := s.publishMessage(errorMsg); ok {
 					pending.history = append(pending.history, errorMsg)
 					pending.messages = append(pending.messages, errorMsg)
 				}
@@ -1735,7 +1723,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	s.logger.Info("Appending history")
-	s.appendHistory(userMessage)
+	s.publishMessage(userMessage)
 	if s.liveActivity != nil {
 		s.logger.Info("Starting live activity")
 		s.liveActivity.StartTask(req.RequestID, inputText, s.liveActivityPhoneID(req))
@@ -1757,7 +1745,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		EventHandler: func(event RunEvent) {
 			message := messageFromRunEvent(event, episodeID, req.RequestID)
 			if message.Type != "" {
-				if message, ok := s.appendHistory(message); ok {
+				if message, ok := s.publishMessage(message); ok {
 					stream.Write(ChatStreamEvent{Type: "message", Message: &message})
 				}
 			}
@@ -1841,7 +1829,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			Timestamp: time.Now(),
 			IsError:   true,
 		}
-		if errorMessage, ok := s.appendHistory(errorMessage); ok {
+		if errorMessage, ok := s.publishMessage(errorMessage); ok {
 			stream.Write(ChatStreamEvent{Type: "message", Message: &errorMessage})
 		}
 		if s.logger != nil {
@@ -2420,7 +2408,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func shouldStreamEventMessage(msg Message) bool {
-	_, ok := normalizeChatHistoryMessage(msg)
+	_, ok := normalizePublicMessage(msg)
 	return ok
 }
 
@@ -2780,21 +2768,8 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	s.history = make([]Message, 0)
-	s.mu.Unlock()
-
 	if s.logger != nil {
 		s.logger.Info("Conversation history cleared")
-	}
-	if s.historyStore != nil {
-		if err := s.historyStore.Clear(); err != nil {
-			if s.logger != nil {
-				s.logger.Error("Clear chat history failed: %v", err)
-			}
-			http.Error(w, fmt.Sprintf("Clear chat history failed: %v", err), http.StatusInternalServerError)
-			return
-		}
 	}
 	if err := s.runtime.ClearMemory(r.Context()); err != nil {
 		if s.logger != nil {
@@ -2822,18 +2797,6 @@ func (s *Server) handleClearAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	s.history = make([]Message, 0)
-	s.mu.Unlock()
-	if s.historyStore != nil {
-		if err := s.historyStore.Clear(); err != nil {
-			if s.logger != nil {
-				s.logger.Error("Clear chat history failed: %v", err)
-			}
-			http.Error(w, fmt.Sprintf("Clear chat history failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-	}
 	if s.logger != nil {
 		s.logger.Info("All memory cleared")
 	}
@@ -3137,54 +3100,27 @@ func legacyToolOutputLooksLikeError(output string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(output)), "error:")
 }
 
-func (s *Server) appendHistory(message Message) (Message, bool) {
-	message, ok := normalizeChatHistoryMessage(message)
+func (s *Server) publishMessage(message Message) (Message, bool) {
+	message, ok := normalizePublicMessage(message)
 	if !ok {
 		return Message{}, false
 	}
-	s.mu.Lock()
-	s.history = append(s.history, message)
-	s.mu.Unlock()
-	if s.historyStore != nil {
-		if err := s.historyStore.Append(context.Background(), message); err != nil && s.logger != nil {
-			s.logger.Warn("Persist chat history failed: %v", err)
-		}
-	} else if s.eventBroadcaster != nil {
+	if s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(message)
 	}
 	return message, true
 }
 
-// AppendHistory appends a message through the server history path so persistent
-// history, in-memory /api/history snapshots, and SSE broadcasts stay aligned.
-func (s *Server) AppendHistory(message Message) {
-	s.appendHistory(message)
-}
-
-// HistoryStore returns the chat history store, used by audio dialog to persist
-// voice messages. May return nil if no config dir was provided.
-func (s *Server) HistoryStore() *ChatHistoryStore {
-	return s.historyStore
-}
-
 // BroadcastMessage sends a message to all SSE subscribers.
 func (s *Server) BroadcastMessage(msg Message) {
 	var ok bool
-	msg, ok = normalizeChatHistoryMessage(msg)
+	msg, ok = normalizePublicMessage(msg)
 	if !ok {
 		return
 	}
 	if s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(msg)
 	}
-}
-
-func (s *Server) historySnapshot() []Message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	historySnapshot := make([]Message, len(s.history))
-	copy(historySnapshot, s.history)
-	return historySnapshot
 }
 
 func (s *Server) webHistorySnapshot() []Message {
@@ -3261,76 +3197,6 @@ func attachmentKindFromMIME(mimeType string) string {
 		return AttachmentKindAudio
 	}
 	return "file"
-}
-
-func (s *Server) loadHistoryFromDisk() {
-	if s.runtime.config.ConfigDir == "" {
-		return
-	}
-	if s.historyStore != nil {
-		messages, err := s.historyStore.Load(context.Background())
-		if err == nil && len(messages) > 0 {
-			s.history = append(s.history, messages...)
-			return
-		}
-	}
-	eventsPath := filepath.Join(s.runtime.config.ConfigDir, "memory", "session", "events.jsonl")
-	store := NewSessionMemoryStore(filepath.Join(s.runtime.config.ConfigDir, "memory", "session"))
-	events, err := store.readEvents(eventsPath)
-	if err != nil {
-		return
-	}
-	for _, evt := range events {
-		if message, ok := chatMessageFromSessionEvent(evt); ok {
-			s.history = append(s.history, message)
-		}
-	}
-}
-
-func chatMessageFromSessionEvent(evt SessionEvent) (Message, bool) {
-	ts, _ := time.Parse(time.RFC3339Nano, evt.Ts)
-	message := Message{
-		Type:         chatMessageTypeFromSessionEvent(evt),
-		Role:         evt.Role,
-		EpisodeID:    evt.EpisodeID,
-		RequestID:    evt.RequestID,
-		Status:       evt.Status,
-		Modality:     evt.Modality,
-		OriginalText: evt.OriginalText,
-		Transcript:   evt.Transcript,
-		Content:      evt.Content,
-		ToolName:     firstNonEmptyString([]string{evt.ToolName, evt.Source}),
-		ToolInput:    evt.ToolInput,
-		ToolError:    cloneToolError(evt.ToolError),
-		Artifacts:    sanitizeInputArtifacts(evt.Artifacts),
-		Timestamp:    ts,
-		IsError:      evt.IsError,
-	}
-	return normalizeChatHistoryMessage(message)
-}
-
-func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
-	switch strings.TrimSpace(evt.Type) {
-	case "user_input", "steer":
-		return "user"
-	case "assistant_output":
-		return "assistant"
-	case runEventToolCall:
-		return runEventToolCall
-	case "tool_result":
-		return "tool_result"
-	}
-
-	switch strings.TrimSpace(evt.Role) {
-	case "user", "human":
-		return "user"
-	case "assistant", "ai":
-		return "assistant"
-	case "tool":
-		return "tool_result"
-	}
-
-	return ""
 }
 
 func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttachment, error) {

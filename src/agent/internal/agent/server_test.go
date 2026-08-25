@@ -417,108 +417,6 @@ func TestServerPersistsContextBackedChatHistory(t *testing.T) {
 	}
 }
 
-func TestServerRestoresSessionEventsUsingEventType(t *testing.T) {
-	configDir := ensureTestConfigDir(t, t.TempDir())
-	session := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session"))
-	now := time.Now().UTC()
-	events := []SessionEvent{
-		{
-			EventID:   "evt_user",
-			Ts:        now.Format(time.RFC3339Nano),
-			Type:      "user_input",
-			Role:      "user",
-			EpisodeID: "ep_restore",
-			RequestID: "req_restore",
-			Content:   "换头",
-		},
-		{
-			EventID:   "evt_role",
-			Ts:        now.Add(time.Second).Format(time.RFC3339Nano),
-			Type:      "role_output",
-			Role:      "planner",
-			EpisodeID: "ep_restore",
-			RequestID: "req_restore",
-			Content:   `{"can_finish":false,"needs_human_handoff":true}`,
-		},
-		{
-			EventID:   "evt_tool",
-			Ts:        now.Add(2 * time.Second).Format(time.RFC3339Nano),
-			Type:      runEventToolCall,
-			Role:      "assistant",
-			EpisodeID: "ep_restore",
-			RequestID: "req_restore",
-			ToolName:  "screenshot",
-			ToolInput: "{}",
-			ToolError: NewToolErrorWithDetails(CodeToolExecutionFailed, "camera unavailable", map[string]any{"device": "video0"}),
-			Artifacts: []InputArtifact{{
-				Kind:     AttachmentKindImage,
-				Name:     "screen.jpg",
-				MIMEType: "image/jpeg",
-				Path:     "/userdata/agent/artifacts/screen.jpg",
-				Size:     1234,
-				Data:     []byte("binary-image-data"),
-			}},
-			Content: "tool_call: screenshot input={}",
-		},
-		{
-			EventID:   "evt_unknown_planner",
-			Ts:        now.Add(3 * time.Second).Format(time.RFC3339Nano),
-			Type:      "planner_decision",
-			Role:      "planner",
-			EpisodeID: "ep_restore",
-			RequestID: "req_restore",
-			Content:   `{"mode":"simple"}`,
-		},
-		{
-			EventID:   "evt_assistant",
-			Ts:        now.Add(4 * time.Second).Format(time.RFC3339Nano),
-			Type:      "assistant_output",
-			Role:      "assistant",
-			EpisodeID: "ep_restore",
-			RequestID: "req_restore",
-			Content:   "请明确说明您想更换的是聊天对象的头像，还是其他内容。",
-		},
-	}
-	for _, event := range events {
-		if _, err := session.AppendEvent(context.Background(), event); err != nil {
-			t.Fatalf("AppendEvent(%s) error: %v", event.EventID, err)
-		}
-	}
-
-	server := &Server{logger: newTestLogger(), runtime: &Runtime{config: Config{ConfigDir: configDir}}}
-	server.loadHistoryFromDisk()
-	history := server.historySnapshot()
-	if len(history) != 3 {
-		t.Fatalf("restored history entries = %d, want 3 public messages: %#v", len(history), history)
-	}
-
-	if history[0].Type != "user" || history[0].Content != "换头" {
-		t.Fatalf("user_input was not restored as user message: %#v", history[0])
-	}
-	if history[1].Type != runEventToolCall || history[1].ToolName != "screenshot" || history[1].ToolInput != "{}" {
-		t.Fatalf("tool_call metadata not restored: %#v", history[1])
-	}
-	if history[1].ToolError == nil || history[1].ToolError.Code != CodeToolExecutionFailed || history[1].ToolError.Details["device"] != "video0" {
-		t.Fatalf("tool_call structured error not restored: %#v", history[1].ToolError)
-	}
-	if len(history[1].Artifacts) != 1 || history[1].Artifacts[0].Path != "/userdata/agent/artifacts/screen.jpg" || history[1].Artifacts[0].Data != nil {
-		t.Fatalf("tool_call artifacts not restored safely: %#v", history[1].Artifacts)
-	}
-	if history[2].Type != "assistant" || history[2].Content == "" {
-		t.Fatalf("assistant_output was not restored as assistant message: %#v", history[2])
-	}
-
-	userCount := 0
-	for _, msg := range history {
-		if msg.Type == "user" {
-			userCount++
-		}
-	}
-	if userCount != 1 {
-		t.Fatalf("restored user message count = %d, want only the original user input: %#v", userCount, history)
-	}
-}
-
 func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"Let me read the current volume."}`, "The current audio volume is 42."),
@@ -1021,7 +919,7 @@ func TestHandleCoordinateDebugTapMapsStructuredToolErrorStatus(t *testing.T) {
 	}
 }
 
-func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
+func TestServerHandleChatStreamBroadcastsRequestID(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleDirectResponses("Hello!"),
 	}
@@ -1036,6 +934,8 @@ func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 		NewSkillIndex(),
 	)
 	server := newServerForTest(runtime)
+	messages := server.eventBroadcaster.Subscribe()
+	defer server.eventBroadcaster.Unsubscribe(messages)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-1"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1048,17 +948,20 @@ func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
-	history := server.historySnapshot()
-	user, ok := firstMessageOfType(history, "user")
+	var broadcast []Message
+	for len(messages) > 0 {
+		broadcast = append(broadcast, <-messages)
+	}
+	user, ok := firstMessageOfType(broadcast, "user")
 	if !ok {
-		t.Fatalf("missing user history: %#v", history)
+		t.Fatalf("missing user broadcast: %#v", broadcast)
 	}
 	if user.RequestID != "web-req-1" {
 		t.Fatalf("user request_id = %q, want web-req-1", user.RequestID)
 	}
-	assistant, ok := firstMessageOfType(history, "assistant")
+	assistant, ok := firstMessageOfType(broadcast, "assistant")
 	if !ok {
-		t.Fatalf("missing assistant history: %#v", history)
+		t.Fatalf("missing assistant broadcast: %#v", broadcast)
 	}
 	if assistant.RequestID != "web-req-1" {
 		t.Fatalf("assistant request_id = %q, want web-req-1", assistant.RequestID)
@@ -2698,11 +2601,10 @@ func readWebUIResource(t *testing.T, name string) string {
 	return string(data)
 }
 
-func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
+func TestServerHandleChatAsyncRejectsDuplicateRequestID(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		activeRuns:     make(map[string]context.CancelFunc),
 		pendingResults: map[string]*chatPendingResult{"req-1": {}},
-		history:        make([]Message, 0),
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":" req-1 "}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -2713,15 +2615,11 @@ func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
-	if got := server.historySnapshot(); len(got) != 0 {
-		t.Fatalf("duplicate request appended history: %#v", got)
-	}
 }
 
-func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
+func TestServerHandleChatStreamRejectsDuplicateRequestID(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		activeRuns: make(map[string]context.CancelFunc),
-		history:    make([]Message, 0),
 	}
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2737,9 +2635,6 @@ func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
-	}
-	if got := server.historySnapshot(); len(got) != 0 {
-		t.Fatalf("duplicate stream request appended history: %#v", got)
 	}
 }
 
@@ -3079,7 +2974,6 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 			NewSkillIndex(),
 		),
-		history: []Message{{Type: "user", Content: "hello"}},
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/clear", nil)
@@ -3089,18 +2983,13 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
-	if len(server.history) != 0 {
-		t.Fatalf("expected web history to be cleared, got %#v", server.history)
-	}
 	if _, err := os.Stat(filepath.Join(storageDir, "session")); !os.IsNotExist(err) {
 		t.Fatalf("expected session memory to be removed, stat err = %v", err)
 	}
 }
 
-func TestServerHandleSetupReturnsSuccessWithoutClearingHistory(t *testing.T) {
-	server := &Server{logger: newTestLogger(),
-		history: []Message{{Type: "user", Content: "hello"}},
-	}
+func TestServerHandleSetupReturnsSuccess(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/setup", nil)
 	rec := httptest.NewRecorder()
@@ -3123,9 +3012,6 @@ func TestServerHandleSetupReturnsSuccessWithoutClearingHistory(t *testing.T) {
 	}
 	if got.Data.Setup {
 		t.Fatalf("expected setup=false for Go agent no-op response")
-	}
-	if len(server.history) != 1 || server.history[0].Content != "hello" {
-		t.Fatalf("setup should not clear history, got %#v", server.history)
 	}
 }
 
@@ -3216,7 +3102,6 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	)
 	server := &Server{logger: newTestLogger(),
 		runtime:        runtime,
-		history:        make([]Message, 0),
 		sttClient:      stt,
 		pendingResults: make(map[string]*chatPendingResult),
 		activeRuns:     make(map[string]context.CancelFunc),
@@ -3431,7 +3316,6 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 	stt := &stubSTTClient{transcript: "should not be called"}
 	server := &Server{logger: newTestLogger(),
 		runtime:        runtime,
-		history:        make([]Message, 0),
 		sttClient:      stt,
 		pendingResults: make(map[string]*chatPendingResult),
 		activeRuns:     make(map[string]context.CancelFunc),

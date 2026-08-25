@@ -228,27 +228,10 @@ Success and failure do not gate learning. The worker independently assesses goal
 
 Deterministic device and app profiles remain separate from LLM-generated lessons. Automatic Episode learning does not write user profile, preference, or rule entries to Long-Term Memory.
 
-### Persisted Chat History
-
-**NOTE: As of the current architecture, chat_history injection into Agent context is DISABLED.**
-
-The `chat_history/` store persists UI-level conversation logs but is NOT automatically injected into the Agent's context. This prevents:
-- Duplicate, uncompressed context competing with the session system
-- Unbounded growth of Agent prompts
-- Confusion between active session and archived history
-
-For "resume interrupted task" scenarios, use explicit session restore or recall tools instead. The session system already provides comprehensive history management with compaction, archiving, and recall capabilities.
-
-The chat_history store remains available for:
-- UI display of conversation history across sessions
-- Audit logging
-- Future explicit session restore features
-
 ## Storage Map
 
 ```text
 /userdata/agent/memory/
-|-- chat_history/                # optional persisted UI chat history
 |-- session/
 |   |-- events.jsonl             # hot window
 |   |-- summary.md               # compressed session summary
