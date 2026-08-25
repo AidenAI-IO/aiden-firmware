@@ -35,6 +35,21 @@ grep -q 'debian-archive-keyring' \
     "${stage1_dir}/container-build-rootfs.sh"
 grep -q '9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac' \
     "${stage1_dir}/container-build-rootfs.sh"
+grep -Fq 'mount -t binfmt_misc binfmt_misc "${BINFMT_DIR}"' \
+    "${stage1_dir}/container-build-rootfs.sh"
+grep -Fq '/usr/lib/systemd/systemd-binfmt' \
+    "${stage1_dir}/container-build-rootfs.sh"
+grep -Fq '/usr/lib/binfmt.d/qemu-arm.conf' \
+    "${stage1_dir}/container-build-rootfs.sh"
+grep -Fq 'grep -qx enabled "${BINFMT_DIR}/qemu-arm"' \
+    "${stage1_dir}/container-build-rootfs.sh"
+if grep -Fq 'update-binfmts --enable qemu-arm >/dev/null 2>&1 || true' \
+    "${stage1_dir}/container-build-rootfs.sh"; then
+    echo "Stage-1 rootfs builder silently ignores qemu-arm registration failures" >&2
+    exit 1
+fi
+grep -Eq '^[[:space:]]*debootstrap --arch=armhf' \
+    "${stage1_dir}/container-build-rootfs.sh"
 grep -q 'sshd-keygen.service' \
     "${stage1_dir}/container-build-rootfs.sh"
 grep -qx 'ConditionFirstBoot=' \
