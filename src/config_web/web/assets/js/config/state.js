@@ -4,7 +4,16 @@ export const sectionSnapshots = {};
 export const modelProvidersByName = {};
 
 export function byId(id) { return document.getElementById(id); }
-export function configureTerminalLink() { const link=byId('terminalLink');if(link)link.href='http://192.168.42.1:3000/wetty/'; }
+export function configureTerminalLink(port = 8080) {
+  const link = byId('terminalLink');
+  if (!link) return;
+  const terminalUrl = new URL(window.location.href);
+  terminalUrl.port = String(port || 8080);
+  terminalUrl.pathname = '/wetty/';
+  terminalUrl.search = '';
+  terminalUrl.hash = '';
+  link.href = terminalUrl.toString();
+}
 export function registerRuntime(bindings) { Object.assign(runtime, bindings); }
 export function runtimeFunction(name) { return (...args) => runtime[name](...args); }
 export function runtimeObject(name) {

@@ -594,7 +594,7 @@ func newWettyReverseProxyForTarget(target *url.URL) *httputil.ReverseProxy {
 		}
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
-		req.Host = target.Host
+		req.Host = originalHost
 		req.Header.Set("X-Forwarded-Host", originalHost)
 		req.Header.Set("X-Forwarded-Proto", originalProto)
 		req.Header.Set("X-Forwarded-Prefix", "/wetty")
