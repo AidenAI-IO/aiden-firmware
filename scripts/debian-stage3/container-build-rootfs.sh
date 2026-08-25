@@ -13,6 +13,7 @@ readonly ROOTFS_ARCHIVE=${OUTPUT_DIR}/rootfs.tar.zst
 readonly SNAPSHOT=http://snapshot.debian.org/archive/debian/20260803T000000Z
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
 readonly ROOTFS_UUID=1d29a2d4-5488-4bea-a648-bf133c4b53d3
+readonly BINFMT_DIR=/proc/sys/fs/binfmt_misc
 
 mounts=()
 
@@ -44,11 +45,49 @@ unmount_all() {
     mounts=()
 }
 
+arm_binfmt_is_enabled() {
+    [ -r "${BINFMT_DIR}/qemu-arm" ] \
+        && grep -qx enabled "${BINFMT_DIR}/qemu-arm"
+}
+
+ensure_arm_binfmt() {
+    if ! mountpoint -q "${BINFMT_DIR}"; then
+        if ! mount -t binfmt_misc binfmt_misc "${BINFMT_DIR}"; then
+            echo "Unable to mount binfmt_misc; the rootfs builder must run in a privileged container" >&2
+            exit 1
+        fi
+    fi
+
+    if ! arm_binfmt_is_enabled; then
+        if [ -x /usr/lib/systemd/systemd-binfmt ] \
+            && [ -f /usr/lib/binfmt.d/qemu-arm.conf ]; then
+            if ! /usr/lib/systemd/systemd-binfmt \
+                /usr/lib/binfmt.d/qemu-arm.conf; then
+                echo "Failed to register qemu-arm with systemd-binfmt" >&2
+                exit 1
+            fi
+        elif command -v update-binfmts >/dev/null 2>&1; then
+            if ! update-binfmts --enable qemu-arm; then
+                echo "Failed to register qemu-arm with update-binfmts" >&2
+                exit 1
+            fi
+        else
+            echo "No supported qemu-arm binfmt registration tool is installed" >&2
+            exit 1
+        fi
+    fi
+
+    if ! arm_binfmt_is_enabled; then
+        echo "qemu-arm binfmt registration is not enabled" >&2
+        exit 1
+    fi
+}
+
 bootstrap_rootfs() {
     rm -rf "${WORK_DIR}"
     mkdir -p "${ROOTFS_DIR}" "${MOUNT_DIR}"
-    update-binfmts --enable qemu-arm >/dev/null 2>&1 || true
-    qemu-debootstrap \
+    ensure_arm_binfmt
+    debootstrap \
         --arch=armhf \
         --variant=minbase \
         --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \

@@ -37,6 +37,20 @@ grep -q 'snapshot.debian.org/archive/debian-security/20260803T000000Z' \
     "${STAGE3_DIR}/debian.sources"
 grep -q '^Check-Valid-Until: no$' "${STAGE3_DIR}/debian.sources"
 grep -q '^FROM debian:trixie-slim@sha256:' "${STAGE3_DIR}/Dockerfile"
+grep -Fq 'mount -t binfmt_misc binfmt_misc "${BINFMT_DIR}"' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq '/usr/lib/systemd/systemd-binfmt' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq '/usr/lib/binfmt.d/qemu-arm.conf' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'grep -qx enabled "${BINFMT_DIR}/qemu-arm"' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+if grep -Fq 'update-binfmts --enable qemu-arm >/dev/null 2>&1 || true' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"; then
+    fail "rootfs builder silently ignores qemu-arm registration failures"
+fi
+grep -Eq '^[[:space:]]*debootstrap \\' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
 
 for package in \
     systemd-sysv udev dbus kmod openssh-server sudo adb iproute2 iputils-arping \
@@ -166,6 +180,19 @@ grep -Fq 'nondeterministic APT source cache leaked' "${STAGE3_DIR}/container-aud
 grep -Fq 'nondeterministic ldconfig cache leaked' "${STAGE3_DIR}/container-audit-images.sh"
 grep -Fq 'unresolved OEM DT_NEEDED' "${STAGE3_DIR}/container-audit-images.sh"
 grep -Fq 'generic OTA image is not empty' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'stage_oem_image()' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'rsync -aHAX --numeric-ids --delete' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'unmount_mounts' "${STAGE3_DIR}/container-audit-images.sh"
+if grep -Fq 'mount_image "${IMAGE_DIR}/userdata.img" "${USERDATA_MOUNT}"' \
+    "${STAGE3_DIR}/container-audit-images.sh" \
+    && grep -Fq 'mount_image "${IMAGE_DIR}/ota.img" "${OTA_MOUNT}"' \
+    "${STAGE3_DIR}/container-audit-images.sh"; then
+    test "$(grep -n 'mount_image "\${IMAGE_DIR}/userdata.img"' \
+        "${STAGE3_DIR}/container-audit-images.sh" | cut -d: -f1)" -lt \
+        "$(grep -n 'mount_image "\${IMAGE_DIR}/ota.img"' \
+            "${STAGE3_DIR}/container-audit-images.sh" | cut -d: -f1)"
+fi
 
 cat >"${TEST_ROOT}/packages.tsv" <<'EOF'
 package	version	architecture	source	maintainer

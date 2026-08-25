@@ -14,6 +14,7 @@ readonly DEBIAN_KEYRING_VERSION=2025.1
 readonly DEBIAN_KEYRING_SHA256=9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac
 readonly DEBIAN_KEYRING_URL=https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/debian-archive-keyring_${DEBIAN_KEYRING_VERSION}_all.deb
 readonly ELF_SANITIZATION_REPORT=${OUTPUT_DIR}/elf-sanitization.txt
+readonly BINFMT_DIR=/proc/sys/fs/binfmt_misc
 
 mounts=()
 
@@ -44,6 +45,44 @@ unmount_chroot_fs() {
     mounts=()
 }
 
+arm_binfmt_is_enabled() {
+    [ -r "${BINFMT_DIR}/qemu-arm" ] \
+        && grep -qx enabled "${BINFMT_DIR}/qemu-arm"
+}
+
+ensure_arm_binfmt() {
+    if ! mountpoint -q "${BINFMT_DIR}"; then
+        if ! mount -t binfmt_misc binfmt_misc "${BINFMT_DIR}"; then
+            echo "Unable to mount binfmt_misc; the rootfs builder must run in a privileged container" >&2
+            exit 1
+        fi
+    fi
+
+    if ! arm_binfmt_is_enabled; then
+        if [ -x /usr/lib/systemd/systemd-binfmt ] \
+            && [ -f /usr/lib/binfmt.d/qemu-arm.conf ]; then
+            if ! /usr/lib/systemd/systemd-binfmt \
+                /usr/lib/binfmt.d/qemu-arm.conf; then
+                echo "Failed to register qemu-arm with systemd-binfmt" >&2
+                exit 1
+            fi
+        elif command -v update-binfmts >/dev/null 2>&1; then
+            if ! update-binfmts --enable qemu-arm; then
+                echo "Failed to register qemu-arm with update-binfmts" >&2
+                exit 1
+            fi
+        else
+            echo "No supported qemu-arm binfmt registration tool is installed" >&2
+            exit 1
+        fi
+    fi
+
+    if ! arm_binfmt_is_enabled; then
+        echo "qemu-arm binfmt registration is not enabled" >&2
+        exit 1
+    fi
+}
+
 install_host_tools() {
     local keyring_deb=/tmp/debian-archive-keyring.deb
     export DEBIAN_FRONTEND=noninteractive
@@ -64,8 +103,8 @@ bootstrap_rootfs() {
     rm -rf "${WORK_DIR}"
     mkdir -p "${ROOTFS_DIR}" "${MOUNT_DIR}" "${OUTPUT_DIR}"
 
-    update-binfmts --enable qemu-arm >/dev/null 2>&1 || true
-    qemu-debootstrap --arch=armhf --variant=minbase \
+    ensure_arm_binfmt
+    debootstrap --arch=armhf --variant=minbase \
         --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
         trixie "${ROOTFS_DIR}" "${MIRROR}"
 
