@@ -314,6 +314,23 @@ func TestRolePromptsGuideSkillCatalogAndPreloadedSkills(t *testing.T) {
 	}
 }
 
+func TestRolePromptPrioritizesClearlyVisibleAppTargetOverOpenApp(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, expected := range []string{
+		"inspect the latest screenshot first",
+		"you MUST call touch_gesture",
+		"overrides any general preference for open_app or system search",
+		"Call open_app with a semantic app name only when the target is not clearly and reliably tappable",
+	} {
+		if !strings.Contains(profile.SystemPrompt, expected) {
+			t.Fatalf("system prompt missing visible app-target rule %q:\n%s", expected, profile.SystemPrompt)
+		}
+	}
+	if strings.Contains(profile.SystemPrompt, "For app launch requests, call open_app with a semantic app name") {
+		t.Fatalf("system prompt retained unconditional open_app rule:\n%s", profile.SystemPrompt)
+	}
+}
+
 func TestRolePromptOmitsRuntimeAndMemoryContext(t *testing.T) {
 	profile := testPromptProfile(AgentConfig{})
 

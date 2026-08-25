@@ -183,6 +183,19 @@ func TestOpenAppSchemaInfersPlatformFromDeviceState(t *testing.T) {
 	}
 }
 
+func TestOpenAppDescriptionDefersToClearlyVisibleTarget(t *testing.T) {
+	description := NewOpenAppTool(nil, nil, nil).Description()
+	for _, expected := range []string{
+		"not clearly and uniquely visible in the latest screenshot",
+		"use touch_gesture",
+		"instead of calling open_app",
+	} {
+		if !strings.Contains(description, expected) {
+			t.Fatalf("open_app description missing %q: %s", expected, description)
+		}
+	}
+}
+
 func TestParseRoutedOpenAppArgsKeepsSemanticAlias(t *testing.T) {
 	args, te := parseRoutedOpenAppArgs(`{"app":" weixin "}`)
 	if te != nil {

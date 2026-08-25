@@ -185,8 +185,8 @@ func TestPostActionScreenshotToolUsesInternalStableWaitWithoutWaitScreenshot(t *
 	if waitStable.waitCount != 1 {
 		t.Fatalf("wait count = %d, want 1", waitStable.waitCount)
 	}
-	if len(screenshot.inputs) != 1 {
-		t.Fatalf("post-action screenshot inputs = %#v, want one capture", screenshot.inputs)
+	if len(screenshot.inputs) != 2 {
+		t.Fatalf("post-action screenshot inputs = %#v, want baseline and final captures", screenshot.inputs)
 	}
 }
 

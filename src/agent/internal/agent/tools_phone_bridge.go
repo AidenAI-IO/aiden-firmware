@@ -42,7 +42,9 @@ func NewOpenAppTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer, searchOp
 func (t *OpenAppTool) Name() string { return toolOpenApp }
 
 func (t *OpenAppTool) Description() string {
-	return `Open an app by semantic app name. The tool automatically uses Phone Bridge when the companion app is ready, otherwise it searches for and opens the app through the visible system UI. ` +
+	return `Open an app by semantic app name when the target app is not clearly and uniquely visible in the latest screenshot, or when a direct visible-target tap has already failed. ` +
+		`If the target app icon or card is clearly visible, use touch_gesture to tap its visible non-overlapping center instead of calling open_app. ` +
+		`The tool automatically uses Phone Bridge when the companion app is ready, otherwise it searches for and opens the app through the visible system UI. ` +
 		`If the Phone Bridge launch fails, the tool retries through visible system search. ` +
 		`Returns ok:true when the selected launch path reports success. After launch, inspect the opened screen before performing in-app navigation or text entry.`
 }

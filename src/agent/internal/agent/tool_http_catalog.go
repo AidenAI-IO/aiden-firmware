@@ -115,7 +115,7 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 		} else if descriptor.Name == "enter_text" {
 			builder.WriteString("  `action_output` contains only `{\"ok\":true}` on success, or `{\"ok\":false,\"suggestion\":\"...\"}` on failure. The outer post-action output also includes `screen_stable`, `stable_wait_ms`, `screen_changed`, `width`, `height`, `format`, `size`, and base64 JPEG `data`.\n")
 		} else if descriptor.Category == "input" {
-			builder.WriteString("  On successful execution, output JSON includes `action_output`, `screen_stable`, `stable_wait_ms`, `screen_changed`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a post-action screenshot. `screen_changed=false` means no visible change was observed during the wait window; `screen_stable=false` is not a failure.\n")
+			builder.WriteString("  On successful execution, output JSON includes `action_output`, `screen_stable`, `stable_wait_ms`, `screen_changed`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a post-action screenshot. `screen_changed` reports meaningful structural change between a pre-action baseline and the final settled screenshot while ignoring the top status area and minor image noise; `screen_stable=false` is not a failure.\n")
 		}
 		if strings.TrimSpace(descriptor.ExampleInput) != "" {
 			builder.WriteString(fmt.Sprintf("  Example input: `%s`\n", descriptor.ExampleInput))
@@ -123,7 +123,7 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	}
 	builder.WriteString("\nExecution rules:\n")
 	builder.WriteString("- Treat `is_error=true` or outputs that start with `error:` as failures.\n")
-	builder.WriteString("- For successful keyboard, mouse, and touch calls, inspect the returned post-action screenshot before deciding the next step. `screen_changed=false` means no visible change was observed during the wait window. `screen_stable=false` means the wait timed out while the screen kept changing; continue if the screenshot is still useful. For separate observations after an action, call `wait_for_stable_screen` and inspect its returned screenshot.\n")
+	builder.WriteString("- For successful keyboard, mouse, and touch calls, inspect the returned post-action screenshot before deciding the next step. `screen_changed=false` means no meaningful structural change was detected between the pre-action baseline and final settled screenshot. `screen_stable=false` means the wait timed out while the screen kept changing; continue if the screenshot is still useful. For separate observations after an action, call `wait_for_stable_screen` and inspect its returned screenshot.\n")
 	builder.WriteString("- Do not use repeated scrolling as the first search strategy on phone UIs; try available search controls first.\n")
 	builder.WriteString("- Keep tool input minimal and deterministic; prefer the example payloads as a starting point.\n")
 	return builder.String()

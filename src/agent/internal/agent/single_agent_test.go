@@ -159,7 +159,7 @@ func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) 
 	if model.callCount != 2 {
 		t.Fatalf("model calls = %d, want open_app plus completion", model.callCount)
 	}
-	if len(screenshot.inputs) != 2 || len(searchLaunch.inputs) != 1 {
+	if len(screenshot.inputs) != 3 || len(searchLaunch.inputs) != 1 {
 		t.Fatalf("routed calls: screenshot=%v search_launch_app=%v", screenshot.inputs, searchLaunch.inputs)
 	}
 	var searchInput map[string]any

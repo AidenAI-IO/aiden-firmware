@@ -316,6 +316,7 @@ type Config struct {
 	ForceSimpleLoop            bool                     `toml:"-"`
 	ScreenshotKeepN            int                      `toml:"screenshot_keep_n,omitempty"`
 	ScreenshotPruneInterval    int                      `toml:"screenshot_prune_interval,omitempty"`
+	TouchGesturePostMarker     bool                     `toml:"touch_gesture_post_marker,omitempty"`
 	ScreenStableTimeoutMs      int                      `toml:"screen_stable_timeout_ms,omitempty"`
 	ScreenStableMs             int                      `toml:"screen_stable_ms,omitempty"`
 	ScreenStableDiffThreshold  float64                  `toml:"screen_stable_diff_threshold,omitempty"`

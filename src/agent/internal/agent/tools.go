@@ -40,6 +40,7 @@ type builtinToolSetOptions struct {
 	screenState             *screen.ScreenState
 	screenProvider          screenprovider.Provider
 	mnkProvider             mnk.Provider
+	touchGesturePostMarker  bool
 	shellTemporaryDirectory string
 }
 
@@ -88,12 +89,19 @@ func WithMNKProvider(provider mnk.Provider) BuiltinToolSetOption {
 	}
 }
 
+func WithTouchGesturePostMarker(enabled bool) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.touchGesturePostMarker = enabled
+	}
+}
+
 func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	return newHardwareToolSet(hidCfg, audioCfg, searchCfg, proxyCfg, options...)
 }
 
 func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	defaultOptions := make([]BuiltinToolSetOption, 0, len(options)+2)
+	defaultOptions = append(defaultOptions, WithTouchGesturePostMarker(cfg.TouchGesturePostMarker))
 	if cfg.ConfigDir != "" {
 		defaultOptions = append(defaultOptions, WithRunScriptScriptsDir(filepath.Join(cfg.ConfigDir, "scripts")))
 	}
@@ -223,10 +231,17 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	}
 
 	tools := map[string]langtools.Tool{
-		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{mnkProvider: mnkProvider}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{mnkProvider: mnkProvider}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"keyboard_tap": newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"mouse_move":   newPostActionStableScreenshotTool(&MouseMoveTool{mnkProvider: mnkProvider}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"mouse_scroll": newPostActionStableScreenshotTool(&MouseScrollTool{mnkProvider: mnkProvider}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"touch_gesture": newPostActionStableScreenshotTool(
+			touchGesture,
+			waitStable,
+			screenshot,
+			postActionScreenshotDelay,
+			screenStable,
+			withTouchGesturePostMarker(toolOptions.touchGesturePostMarker),
+		),
 		"wheel_nudge":            newPostActionStableScreenshotTool(wheelNudge, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"screenshot":             screenshot,

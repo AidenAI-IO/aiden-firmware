@@ -25,6 +25,7 @@ type visualScreenshotObservation struct {
 	Result     postActionScreenshotResult
 	ImageBytes []byte
 	MIMEType   string
+	Annotated  bool
 }
 
 type structuredInputTool interface {
@@ -181,6 +182,14 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	if summary := screenshotObservationStatusSummary(result); summary != "" {
 		toolContent += " " + summary
 	}
+	if visual.Annotated && result.GestureMarker != nil {
+		toolContent += fmt.Sprintf(
+			" The post-action screenshot is annotated with red and white concentric hollow rings centered at the requested %s point (normalized x=%.0f, y=%.0f). Judge only whether the rings' shared center lies inside the intended visible target; the ring boundaries indicate neither touch area nor target overlap. The marker shows the requested coordinate, not independently measured physical touch hardware feedback.",
+			result.GestureMarker.Type,
+			result.GestureMarker.X,
+			result.GestureMarker.Y,
+		)
+	}
 	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)
 	if !includeVisual {
 		return toolContent, []llms.MessageContent{{
@@ -205,9 +214,9 @@ func screenshotObservationStatusSummary(result postActionScreenshotResult) strin
 	var notes []string
 	if result.ScreenChanged != nil {
 		if *result.ScreenChanged {
-			notes = append(notes, "Visible screen change was observed during the stable-screen wait.")
+			notes = append(notes, "A meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot.")
 		} else {
-			notes = append(notes, "No visible screen change was observed during the stable-screen wait.")
+			notes = append(notes, "No meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot.")
 			notes = append(notes, "Do not assume the action succeeded from tool output alone; inspect the screenshot and verify whether the expected UI change happened before answering or retrying.")
 		}
 	}
@@ -263,6 +272,14 @@ func parseScreenshotObservation(observation string) (visualScreenshotObservation
 		return visualScreenshotObservation{}, false
 	}
 	result.Format = format
+	annotated := false
+	if result.GestureMarker != nil && format == "jpeg" {
+		if marked, markErr := drawTouchGesturePostMarker(imageBytes, *result.GestureMarker); markErr == nil {
+			imageBytes = marked
+			result.Size = len(marked)
+			annotated = true
+		}
+	}
 	if result.Size <= 0 {
 		result.Size = len(imageBytes)
 	}
@@ -270,6 +287,7 @@ func parseScreenshotObservation(observation string) (visualScreenshotObservation
 		Result:     result,
 		ImageBytes: imageBytes,
 		MIMEType:   screenshotMIMEType(format),
+		Annotated:  annotated,
 	}, true
 }
 

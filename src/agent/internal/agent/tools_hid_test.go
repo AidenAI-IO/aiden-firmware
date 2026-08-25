@@ -1852,12 +1852,209 @@ func TestPostActionScreenshotToolReturnsScreenshotJSON(t *testing.T) {
 	if len(action.inputs) != 1 || action.inputs[0] != `{"keys":["enter"]}` {
 		t.Fatalf("action inputs = %#v", action.inputs)
 	}
-	if len(screenshot.inputs) != 1 || screenshot.inputs[0] != "{}" {
-		t.Fatalf("screenshot inputs = %#v", screenshot.inputs)
+	if len(screenshot.inputs) != 2 || screenshot.inputs[0] != "{}" || screenshot.inputs[1] != "{}" {
+		t.Fatalf("screenshot inputs = %#v, want pre-action and final captures", screenshot.inputs)
 	}
 	visual, ok := tool.(visualObservationTool)
 	if !ok || !visual.ReturnsVisualObservation() {
 		t.Fatalf("post-action tool must be a visual observation tool")
+	}
+}
+
+func TestPostActionScreenshotToolComparesPreActionAndFinalScreenshots(t *testing.T) {
+	before := terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{})
+	tests := []struct {
+		name    string
+		after   string
+		changed bool
+	}{
+		{
+			name:    "unchanged",
+			after:   terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{}),
+			changed: false,
+		},
+		{
+			name:    "top status area only",
+			after:   terminationPolicyScreenshotObservation(t, 200, 400, image.Rect(0, 0, 200, 32)),
+			changed: false,
+		},
+		{
+			name:    "meaningful structural change",
+			after:   terminationPolicyScreenshotObservation(t, 200, 400, image.Rect(20, 100, 120, 200)),
+			changed: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events := make([]string, 0, 3)
+			screenshot := &stubTool{name: "screenshot"}
+			screenshot.callFn = func(context.Context, string) (string, error) {
+				if len(screenshot.inputs) == 1 {
+					events = append(events, "baseline")
+					return before, nil
+				}
+				events = append(events, "final")
+				return test.after, nil
+			}
+			action := &stubTool{name: "touch_gesture"}
+			action.callFn = func(context.Context, string) (string, error) {
+				events = append(events, "action")
+				return "ok", nil
+			}
+			tool := newPostActionScreenshotTool(action, screenshot, 0)
+
+			out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500}}`)
+			if err != nil {
+				t.Fatalf("Call returned error: %v", err)
+			}
+			var result postActionScreenshotResult
+			if err := json.Unmarshal([]byte(out), &result); err != nil {
+				t.Fatalf("unmarshal result: %v", err)
+			}
+			if result.ScreenChanged == nil || *result.ScreenChanged != test.changed {
+				t.Fatalf("ScreenChanged = %#v, want %v", result.ScreenChanged, test.changed)
+			}
+			if !slices.Equal(events, []string{"baseline", "action", "final"}) {
+				t.Fatalf("call order = %#v, want baseline, action, final", events)
+			}
+		})
+	}
+}
+
+func TestPostActionScreenshotToolContinuesWhenBaselineCaptureFails(t *testing.T) {
+	final := terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{})
+	screenshot := &stubTool{name: "screenshot"}
+	screenshot.callFn = func(context.Context, string) (string, error) {
+		if len(screenshot.inputs) == 1 {
+			return "", errors.New("baseline unavailable")
+		}
+		return final, nil
+	}
+	action := &stubTool{name: "touch_gesture", output: "ok"}
+	tool := newPostActionScreenshotTool(action, screenshot, 0)
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(action.inputs) != 1 || len(screenshot.inputs) != 2 {
+		t.Fatalf("calls after baseline failure: action=%#v screenshot=%#v", action.inputs, screenshot.inputs)
+	}
+	if result.ScreenChanged != nil {
+		t.Fatalf("ScreenChanged = %#v, want omitted without a baseline", result.ScreenChanged)
+	}
+	if result.Data == "" {
+		t.Fatal("final screenshot was not returned")
+	}
+}
+
+func TestPostActionScreenshotToolMarksTouchPointWhenEnabled(t *testing.T) {
+	action := &stubTool{name: "touch_gesture", output: "ok"}
+	originalJPEG := uniformWheelScreenshotJPEG(t, 200, 400)
+	screenshot := &stubTool{
+		name: "screenshot",
+		output: fmt.Sprintf(
+			`{"width":200,"height":400,"format":"jpeg","size":%d,"data":%q}`,
+			len(originalJPEG),
+			base64.StdEncoding.EncodeToString(originalJPEG),
+		),
+	}
+	tool := newPostActionStableScreenshotTool(
+		action,
+		nil,
+		screenshot,
+		0,
+		ScreenStableDefaults{},
+		withTouchGesturePostMarker(true),
+	)
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":250,"y":750}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("output is not valid post-action screenshot JSON: %v", err)
+	}
+	if result.GestureMarker == nil || result.GestureMarker.Type != "tap" || result.GestureMarker.X != 250 || result.GestureMarker.Y != 750 {
+		t.Fatalf("GestureMarker = %#v", result.GestureMarker)
+	}
+	if result.ScreenChanged == nil || *result.ScreenChanged {
+		t.Fatalf("ScreenChanged = %#v, want false because annotation must not affect comparison", result.ScreenChanged)
+	}
+	if got, _ := base64.StdEncoding.DecodeString(result.Data); !bytes.Equal(got, originalJPEG) {
+		t.Fatal("tool output screenshot should remain the original unannotated JPEG")
+	}
+	markedJPEG, err := drawTouchGesturePostMarker(originalJPEG, *result.GestureMarker)
+	if err != nil {
+		t.Fatalf("drawTouchGesturePostMarker: %v", err)
+	}
+	if bytes.Equal(markedJPEG, originalJPEG) {
+		t.Fatal("marked screenshot data equals original JPEG")
+	}
+	markedImage, err := jpeg.Decode(bytes.NewReader(markedJPEG))
+	if err != nil {
+		t.Fatalf("decode marked image: %v", err)
+	}
+	x := int(math.Round(0.25 * 199))
+	y := int(math.Round(0.75 * 399))
+	centerR, centerG, centerB, _ := markedImage.At(x, y).RGBA()
+	if centerR > 15000 || centerG > 15000 || centerB > 15000 {
+		t.Fatalf("marker center pixel = (%d,%d,%d), want original dark image visible", centerR, centerG, centerB)
+	}
+	radius := max(10, min(24, min(markedImage.Bounds().Dx(), markedImage.Bounds().Dy())/28))
+	redR, redG, redB, _ := markedImage.At(x+radius, y).RGBA()
+	if redR < 25000 || redR <= redG+8000 || redR <= redB+8000 {
+		t.Fatalf("marker inner ring pixel = (%d,%d,%d), want red-dominant", redR, redG, redB)
+	}
+	whiteR, whiteG, whiteB, _ := markedImage.At(x+radius+3, y).RGBA()
+	if whiteR < 45000 || whiteG < 45000 || whiteB < 45000 {
+		t.Fatalf("marker outer ring pixel = (%d,%d,%d), want white", whiteR, whiteG, whiteB)
+	}
+}
+
+func TestPostActionScreenshotToolDoesNotMarkSwipeOrDisabledTap(t *testing.T) {
+	originalJPEG := uniformWheelScreenshotJPEG(t, 40, 80)
+	encoded := base64.StdEncoding.EncodeToString(originalJPEG)
+	newScreenshot := func() *stubTool {
+		return &stubTool{name: "screenshot", output: fmt.Sprintf(`{"width":40,"height":80,"format":"jpeg","size":%d,"data":%q}`, len(originalJPEG), encoded)}
+	}
+
+	for _, test := range []struct {
+		name    string
+		input   string
+		enabled bool
+	}{
+		{name: "disabled tap", input: `{"type":"tap","point":{"x":500,"y":500}}`, enabled: false},
+		{name: "swipe", input: `{"type":"swipe","start":{"x":500,"y":800},"end":{"x":500,"y":200}}`, enabled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tool := newPostActionStableScreenshotTool(
+				&stubTool{name: "touch_gesture", output: "ok"},
+				nil,
+				newScreenshot(),
+				0,
+				ScreenStableDefaults{},
+				withTouchGesturePostMarker(test.enabled),
+			)
+			out, err := tool.Call(context.Background(), test.input)
+			if err != nil {
+				t.Fatalf("Call returned error: %v", err)
+			}
+			var result postActionScreenshotResult
+			if err := json.Unmarshal([]byte(out), &result); err != nil {
+				t.Fatalf("unmarshal result: %v", err)
+			}
+			if result.GestureMarker != nil || result.Data != encoded {
+				t.Fatalf("unexpected annotation result: %#v", result)
+			}
+		})
 	}
 }
 
@@ -1867,10 +2064,8 @@ func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testin
 		name:   "wait_for_stable_screen",
 		output: `{"ok":true,"stable":false,"elapsed_ms":3001,"screen_changed":true,"last_diff":18.5}`,
 	}
-	screenshot := &stubTool{
-		name:   "screenshot",
-		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
-	}
+	unchanged := terminationPolicyScreenshotObservation(t, 320, 240, image.Rectangle{})
+	screenshot := &stubTool{name: "screenshot", output: unchanged}
 	tool := newPostActionStableScreenshotTool(action, waitStable, screenshot, 0, ScreenStableDefaults{TimeoutMs: 3000, StableMs: 500})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500}}`)
@@ -1891,8 +2086,8 @@ func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testin
 	if result.ScreenStable == nil || *result.ScreenStable {
 		t.Fatalf("ScreenStable = %#v, want false", result.ScreenStable)
 	}
-	if result.ScreenChanged == nil || !*result.ScreenChanged {
-		t.Fatalf("ScreenChanged = %#v, want true", result.ScreenChanged)
+	if result.ScreenChanged == nil || *result.ScreenChanged {
+		t.Fatalf("ScreenChanged = %#v, want false from unchanged pre-action/final screenshots despite wait motion", result.ScreenChanged)
 	}
 	if result.StableWaitMs == nil || *result.StableWaitMs != 3001 {
 		t.Fatalf("StableWaitMs = %#v, want 3001", result.StableWaitMs)
@@ -1900,20 +2095,31 @@ func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testin
 	if result.LastDiff == nil || *result.LastDiff != 18.5 {
 		t.Fatalf("LastDiff = %#v, want 18.5", result.LastDiff)
 	}
-	if result.Data != "ZmFrZQ==" {
-		t.Fatalf("screenshot data = %q, want fallback capture", result.Data)
+	var expected screenshotResult
+	if err := json.Unmarshal([]byte(unchanged), &expected); err != nil {
+		t.Fatalf("unmarshal expected screenshot: %v", err)
+	}
+	if result.Data != expected.Data {
+		t.Fatalf("screenshot data differs from fallback capture")
 	}
 	if len(waitStable.inputs) != 1 || waitStable.inputs[0] != `{"timeout_ms":3000,"stable_ms":500,"diff_threshold":6}` {
 		t.Fatalf("wait stable inputs = %#v", waitStable.inputs)
 	}
-	if len(screenshot.inputs) != 1 {
+	if len(screenshot.inputs) != 2 {
 		t.Fatalf("screenshot should still be called, got inputs %#v", screenshot.inputs)
 	}
 }
 
 func TestPostActionScreenshotFailureMarksActionAsCompleted(t *testing.T) {
 	action := &stubTool{name: "wheel_nudge", output: "ok: wheel_nudge rows=2"}
-	screenshot := &stubTool{name: "screenshot", err: errors.New("capture unavailable")}
+	baseline := terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{})
+	screenshot := &stubTool{name: "screenshot"}
+	screenshot.callFn = func(context.Context, string) (string, error) {
+		if len(screenshot.inputs) == 1 {
+			return baseline, nil
+		}
+		return "", errors.New("capture unavailable")
+	}
 	tool := newPostActionScreenshotTool(action, screenshot, 0)
 	ctx, _ := WithToolError(context.Background())
 
@@ -1928,6 +2134,9 @@ func TestPostActionScreenshotFailureMarksActionAsCompleted(t *testing.T) {
 	if completed, _ := toolErr.Details[postActionCompletedDetail].(bool); !completed {
 		t.Fatalf("post-action error details = %#v, want action_completed=true", toolErr.Details)
 	}
+	if len(action.inputs) != 1 || len(screenshot.inputs) != 2 {
+		t.Fatalf("final failure call counts: action=%#v screenshot=%#v", action.inputs, screenshot.inputs)
+	}
 }
 
 func TestPostActionScreenshotToolOmitsLastDiffWhenStableWaitOmitsIt(t *testing.T) {
@@ -1936,10 +2145,7 @@ func TestPostActionScreenshotToolOmitsLastDiffWhenStableWaitOmitsIt(t *testing.T
 		name:   "wait_for_stable_screen",
 		output: `{"ok":true,"stable":true,"elapsed_ms":600,"screen_changed":false}`,
 	}
-	screenshot := &stubTool{
-		name:   "screenshot",
-		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
-	}
+	screenshot := &stubTool{name: "screenshot", output: terminationPolicyScreenshotObservation(t, 320, 240, image.Rectangle{})}
 	tool := newPostActionStableScreenshotTool(action, waitStable, screenshot, 0, ScreenStableDefaults{})
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500}}`)
@@ -1978,8 +2184,8 @@ func TestPostActionScreenshotToolSkipsScreenshotOnActionErrorOutput(t *testing.T
 	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeToolExecutionFailed || got.Message != out {
 		t.Fatalf("ToolError = %+v, want tool_execution_failed with output message", got)
 	}
-	if len(screenshot.inputs) != 0 {
-		t.Fatalf("screenshot should not be called on action error, got inputs %#v", screenshot.inputs)
+	if len(screenshot.inputs) != 1 {
+		t.Fatalf("only the pre-action baseline should be captured on action error, got inputs %#v", screenshot.inputs)
 	}
 }
 
@@ -2003,8 +2209,8 @@ func TestPostActionScreenshotToolSkipsScreenshotOnStructuredActionError(t *testi
 	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments {
 		t.Fatalf("context ToolError = %+v, want invalid_arguments", got)
 	}
-	if len(screenshot.inputs) != 0 {
-		t.Fatalf("screenshot should not be called on structured action error, got inputs %#v", screenshot.inputs)
+	if len(screenshot.inputs) != 1 {
+		t.Fatalf("only the pre-action baseline should be captured on structured action error, got inputs %#v", screenshot.inputs)
 	}
 }
 
