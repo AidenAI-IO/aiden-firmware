@@ -3824,7 +3824,7 @@ TEST_CASE("config_web: manual OTA update truncates oversized update log before a
     const std::string ota_path = tmp + "/ota";
     const std::string lock_path = tmp + "/config_web_ota_update.lock";
     const std::string log_path = tmp + "/config_web_ota_update.log";
-    write_file(log_path, std::string(1024 * 1024, 'x'));
+    write_file(log_path, std::string(100 * 1024 + 1, 'x'));
 
     write_file(env_run_path, "#!/bin/sh\nexec \"$@\"\n");
     REQUIRE(::chmod(env_run_path.c_str(), 0755) == 0);
