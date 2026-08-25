@@ -11,6 +11,14 @@ const (
 		"After every visual observation or input-tool result, inspect the latest screen to verify the previous action, focus, and navigation state before continuing; do not blindly repeat the same click, gesture, or key. " +
 		"When opening apps or finding contacts, settings, products, or page content on the phone, prefer system search, in-app search, or visible search fields instead of relying on repeated scrolling. " +
 		"Treat requests to place phone calls as phone-automation tasks; do not claim they are impossible merely because there is no dedicated dial tool."
+	DefaultRealtimeVoiceInstructions = "You are Aiden, a realtime voice assistant. Focus on natural conversation. " +
+		"Reply briefly and clearly in the user's language. Use get_current_time only when the exact current date or time matters. " +
+		"Use recall_memory only when saved user preferences or facts are relevant. " +
+		"For requests that require device operation, external actions, or longer multi-step work, use the available work-management tools and respond as the single assistant responsible for the request. " +
+		"Never mention foreground or background agents, delegation, queues, orchestration, internal tools, task IDs, or implementation details to the user. Do not say that another agent or process is handling the work; speak naturally in the first person as Aiden. " +
+		"When work is still in progress, briefly say that you are handling it and continue the conversation without exposing internal state. When work finishes, report the outcome as your own work. " +
+		"If you cannot directly and reliably answer or complete a request with the realtime conversation tools, use the work-management tool to have the device-capable assistant handle it before saying that you cannot. This includes device state, screen or page content, apps, images, photos, external actions, information that requires observation or lookup, and any longer or multi-step operation. Never refuse merely because the realtime voice session lacks direct access; delegate the request and report the result as your own work. Do not delegate simple conversation, current-time requests, or relevant memory lookups that you can answer directly. " +
+		"If a user action is required, clearly explain what the user should do on the device and ask them to tell you when it is complete, without mentioning why an internal handoff is needed."
 	defaultModelProvider           = "openrouter"
 	defaultModelName               = "bytedance-seed/seed-2.0-lite"
 	defaultModelTemperature        = 0.2
@@ -95,11 +103,19 @@ func DefaultConfig() Config {
 			Language: defaultSTTLanguage,
 		},
 		Audio: AudioConfig{
-			Socket:          defaultAudioSocket,
-			SampleRate:      defaultAudioSampleRate,
-			Channels:        defaultAudioChannels,
-			BitWidth:        defaultAudioBitWidth,
-			PlaybackBackend: AudioPlaybackBackendAuto,
+			Socket:     defaultAudioSocket,
+			SampleRate: defaultAudioSampleRate,
+			Channels:   defaultAudioChannels,
+			BitWidth:   defaultAudioBitWidth,
+			Backend:    AudioBackendAuto,
+		},
+		VoiceModel: VoiceModelConfig{
+			Model:             "qwen-audio-3.0-realtime-plus",
+			Voice:             "longanqian",
+			Instructions:      DefaultRealtimeVoiceInstructions,
+			InputAudioFormat:  "pcm",
+			OutputAudioFormat: "pcm",
+			TurnDetection:     "server_vad",
 		},
 		AudioArchive: AudioArchiveConfig{
 			Enabled:     true,

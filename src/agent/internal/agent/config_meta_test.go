@@ -361,16 +361,16 @@ func TestConfigMeta_NonRegistryEnumsMatchValidation(t *testing.T) {
 		}
 	}
 
-	audioPlaybackEnum := enumValues("audio.playback_backend")
-	for _, b := range []string{AudioPlaybackBackendAuto, AudioPlaybackBackendAudioService, AudioPlaybackBackendLocal} {
+	audioPlaybackEnum := enumValues("audio.backend")
+	for _, b := range []string{AudioBackendAuto, AudioBackendAudioService, AudioBackendLocal} {
 		if !contains(audioPlaybackEnum, b) {
-			t.Errorf("audio.playback_backend enum missing %q", b)
+			t.Errorf("audio.backend enum missing %q", b)
 		}
 	}
 	for _, b := range audioPlaybackEnum {
-		c := Config{Audio: AudioConfig{PlaybackBackend: b}, Model: ModelConfig{Provider: "openai", Model: "x"}}
+		c := Config{Audio: AudioConfig{Backend: b}, Model: ModelConfig{Provider: "openai", Model: "x"}}
 		if err := c.Validate(); err != nil {
-			t.Errorf("audio.playback_backend enum value %q rejected by Validate: %v", b, err)
+			t.Errorf("audio.backend enum value %q rejected by Validate: %v", b, err)
 		}
 	}
 
@@ -423,7 +423,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio.sample_rate", defaults.Audio.SampleRate},
 		{"audio.channels", defaults.Audio.Channels},
 		{"audio.bit_width", defaults.Audio.BitWidth},
-		{"audio.playback_backend", defaults.Audio.PlaybackBackend},
+		{"audio.backend", defaults.Audio.Backend},
 		{"audio_archive.enabled", defaults.AudioArchive.Enabled},
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},

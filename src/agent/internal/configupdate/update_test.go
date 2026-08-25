@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1081,6 +1082,38 @@ func TestResolvedWebConfigOmitsLegacyModelCredential(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "top-secret") || strings.Contains(string(encoded), `"api_key"`) {
 		t.Fatalf("resolved web config exposed legacy model credential: %s", encoded)
+	}
+}
+
+func TestVoiceModelConfigRoundTripPreservesSettingsAndCredentialPresence(t *testing.T) {
+	emotion := true
+	threshold := 0.72
+	want := agent.Config{VoiceModel: agent.VoiceModelConfig{
+		APIKey:                 "voice-secret",
+		Model:                  "qwen-audio-3.0-realtime-plus",
+		WorkspaceID:            "workspace-1",
+		Region:                 "cn-beijing",
+		Endpoint:               "wss://voice.example.test/realtime",
+		Voice:                  "longanqian",
+		Instructions:           "be concise",
+		EnableSpeechEmotion:    &emotion,
+		InputAudioFormat:       "pcm16",
+		OutputAudioFormat:      "pcm16",
+		TurnDetection:          "smart_turn",
+		TurnDetectionThreshold: &threshold,
+		TurnDetectionSilenceMs: 900,
+	}}
+	dto := FromAgentConfig(want)
+	if dto.VoiceModel.APIKey != "" || !dto.VoiceModel.HasAPIKey {
+		t.Fatalf("voice credential was not redacted correctly: %+v", dto.VoiceModel)
+	}
+	got := dto.ToAgentConfig().VoiceModel
+	if got.APIKey != hasAPIKeyPlaceholder {
+		t.Fatalf("round-trip API key = %q, want placeholder", got.APIKey)
+	}
+	got.APIKey = want.VoiceModel.APIKey
+	if !reflect.DeepEqual(got, want.VoiceModel) {
+		t.Fatalf("voice model round-trip = %+v, want %+v", got, want.VoiceModel)
 	}
 }
 

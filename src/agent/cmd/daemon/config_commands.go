@@ -535,8 +535,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "audio.channels"
 	} else if strings.Contains(errMsg, "audio.bit_width") {
 		field = "audio.bit_width"
-	} else if strings.Contains(errMsg, "audio.playback_backend") {
-		field = "audio.playback_backend"
+	} else if strings.Contains(errMsg, "audio.backend") {
+		field = "audio.backend"
 	} else if strings.Contains(errMsg, "telemetry.base_url") {
 		field = "telemetry.base_url"
 	} else if strings.Contains(errMsg, "telemetry.public_key") {

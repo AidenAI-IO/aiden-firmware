@@ -29,6 +29,40 @@ func TestConfigValidateAcceptsSTT(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAcceptsRealtimeWithoutSTTProvider(t *testing.T) {
+	cfg := Config{
+		Model:      ModelConfig{Provider: "fake"},
+		VoiceModel: VoiceModelConfig{APIKey: "voice-secret"},
+		InputMode:  " realtime ",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if got := cfg.InputModeOrDefault(); got != "realtime" {
+		t.Fatalf("InputModeOrDefault() = %q, want realtime", got)
+	}
+}
+
+func TestConfigValidateRejectsRealtimeWithoutVoiceModelCredential(t *testing.T) {
+	err := (Config{Model: ModelConfig{Provider: "fake"}, InputMode: "realtime"}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "voice_model.api_key is required") {
+		t.Fatalf("Validate() error = %v, want missing voice model credential", err)
+	}
+}
+
+func TestVoiceModelConfigRejectsNonLoopbackPlaintextEndpoint(t *testing.T) {
+	for _, endpoint := range []string{"ws://example.com/realtime", "http://localhost/realtime", "not-a-url"} {
+		if err := (VoiceModelConfig{APIKey: "key", Endpoint: endpoint}).Validate(); err == nil {
+			t.Errorf("Validate(%q) succeeded, want error", endpoint)
+		}
+	}
+	for _, endpoint := range []string{"wss://example.com/realtime", "ws://localhost/realtime", "ws://127.0.0.1:3000/realtime", "ws://[::1]:3000/realtime"} {
+		if err := (VoiceModelConfig{APIKey: "key", Endpoint: endpoint}).Validate(); err != nil {
+			t.Errorf("Validate(%q) error = %v", endpoint, err)
+		}
+	}
+}
+
 func TestConfigValidateRejectsRemovedAudioMode(t *testing.T) {
 	cfg := Config{
 		Model:     ModelConfig{Provider: "fake"},
@@ -1224,29 +1258,59 @@ func TestDeviceConfigBackendDefaultsToHDMI(t *testing.T) {
 	}
 }
 
-func TestAudioPlaybackBackendDefaultsByAgentMode(t *testing.T) {
-	if got := (Config{Model: ModelConfig{Provider: "fake"}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendAudioService {
+func TestAudioBackendDefaultsByAgentMode(t *testing.T) {
+	if got := (Config{Model: ModelConfig{Provider: "fake"}}).AudioBackendOrDefault(); got != AudioBackendAudioService {
 		t.Fatalf("default playback backend = %q, want audio_service", got)
 	}
-	if got := (Config{Model: ModelConfig{Provider: "fake"}, HID: HIDConfig{InputBackend: "adb"}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendLocal {
+	if got := (Config{Model: ModelConfig{Provider: "fake"}, HID: HIDConfig{InputBackend: "adb"}}).AudioBackendOrDefault(); got != AudioBackendLocal {
 		t.Fatalf("adb playback backend = %q, want local", got)
 	}
-	if got := (Config{Model: ModelConfig{Provider: "fake"}, EnvironmentBridge: EnvironmentBridgeConfig{Enabled: true}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendLocal {
+	if got := (Config{Model: ModelConfig{Provider: "fake"}, EnvironmentBridge: EnvironmentBridgeConfig{Enabled: true}}).AudioBackendOrDefault(); got != AudioBackendLocal {
 		t.Fatalf("environment bridge playback backend = %q, want local", got)
 	}
-	if got := (Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{PlaybackBackend: "audio-service"}, HID: HIDConfig{InputBackend: "adb"}}).AudioPlaybackBackendOrDefault(); got != AudioPlaybackBackendAudioService {
+	if got := (Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{Backend: "audio-service"}, HID: HIDConfig{InputBackend: "adb"}}).AudioBackendOrDefault(); got != AudioBackendAudioService {
 		t.Fatalf("explicit audio-service backend = %q, want audio_service", got)
 	}
 }
 
-func TestConfigValidateRejectsUnknownAudioPlaybackBackend(t *testing.T) {
+func TestConfigValidateRejectsUnknownAudioBackend(t *testing.T) {
 	cfg := Config{
 		Model: ModelConfig{Provider: "fake"},
-		Audio: AudioConfig{PlaybackBackend: "bogus"},
+		Audio: AudioConfig{Backend: "bogus"},
 	}
 	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "invalid audio.playback_backend") {
-		t.Fatalf("Validate() error = %v, want invalid audio.playback_backend", err)
+	if err == nil || !strings.Contains(err.Error(), "invalid audio.backend") {
+		t.Fatalf("Validate() error = %v, want invalid audio.backend", err)
+	}
+}
+
+func TestLoadConfigMigratesLegacyAudioPlaybackBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte("[model]\nprovider = \"fake\"\n\n[audio]\nplayback_backend = \"local\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Audio.Backend != AudioBackendLocal {
+		t.Fatalf("Audio.Backend = %q, want local", cfg.Audio.Backend)
+	}
+}
+
+func TestLoadConfigPrefersNewAudioBackendOverLegacy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte("[model]\nprovider = \"fake\"\n\n[audio]\nbackend = \"audio_service\"\nplayback_backend = \"local\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Audio.Backend != AudioBackendAudioService {
+		t.Fatalf("Audio.Backend = %q, want audio_service", cfg.Audio.Backend)
 	}
 }
 
@@ -1346,6 +1410,41 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestVoiceModelConfigLoadsAndValidates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	config := `[model]
+provider = "fake"
+model = "fake"
+input_mode = "stt"
+
+[stt]
+provider = "openai-whisper"
+
+[tts]
+provider = "minimax-cn"
+
+[voice_model]
+api_key = "voice-secret"
+model = "qwen-audio-3.0-realtime-plus"
+workspace_id = "ws-123"
+region = "cn-beijing"
+voice = "longanqian"
+turn_detection = "smart_turn"
+turn_detection_silence_ms = 900
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.VoiceModel.Enabled() || cfg.VoiceModel.Model != "qwen-audio-3.0-realtime-plus" || cfg.VoiceModel.TurnDetection != "smart_turn" {
+		t.Fatalf("unexpected voice model config: %+v", cfg.VoiceModel)
 	}
 }
 

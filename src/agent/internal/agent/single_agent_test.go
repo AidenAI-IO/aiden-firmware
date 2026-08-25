@@ -137,7 +137,7 @@ func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) 
 		phoneBridge: bridge,
 		tools: map[string]langtools.Tool{
 			"open_app":              newPostActionScreenshotTool(NewOpenAppTool(bridge, nil, searchLaunch), screenshot, 0),
-			"request_human_handoff": NewHumanHandoffTool(),
+			"request_user_action": NewHumanHandoffTool(),
 			"screenshot":            screenshot,
 		},
 	}

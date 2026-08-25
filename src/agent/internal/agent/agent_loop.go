@@ -941,11 +941,11 @@ func toolNameEqual(got, want string) bool {
 }
 
 func isRunPausingTool(name string) bool {
-	return toolNameEqual(name, toolWaitForWakeup) || toolNameEqual(name, toolHumanHandoffStep)
+	return toolNameEqual(name, toolWaitForWakeup) || toolNameEqual(name, toolUserActionStep)
 }
 
 func runPausingToolFinalAnswer(step *schema.AgentStep) string {
-	if step != nil && toolNameEqual(step.Action.Tool, toolHumanHandoffStep) {
+	if step != nil && toolNameEqual(step.Action.Tool, toolUserActionStep) {
 		return humanHandoffFinalAnswer(step)
 	}
 	return waitForWakeupFinalAnswer(step)

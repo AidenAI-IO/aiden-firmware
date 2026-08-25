@@ -1,12 +1,24 @@
 // History loading and server-sent event synchronization.
 async function loadHistory() {
+    if (typeof currentChatRequestId !== 'undefined' && currentChatRequestId) return;
     try {
         const res = await fetch('/api/history');
+        if (!res.ok) throw new Error(await res.text() || 'Failed to load context history');
         const history = await res.json();
         renderHistory(history);
     } catch (err) {
         console.error('Failed to load history:', err);
     }
+}
+
+let historyRefreshTimer = null;
+function refreshHistoryFromContext() {
+    if (typeof currentChatRequestId !== 'undefined' && currentChatRequestId) return;
+    if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
+    historyRefreshTimer = setTimeout(function() {
+        historyRefreshTimer = null;
+        loadHistory();
+    }, 80);
 }
 
 function connectSSE() {
@@ -28,9 +40,7 @@ function connectSSE() {
                 return;
             }
 
-            if (data.type) {
-                addMessage(data);
-            }
+            if (data.type) refreshHistoryFromContext();
         } catch (err) {
             console.error('[SSE] Parse error:', err);
         }

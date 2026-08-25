@@ -64,7 +64,7 @@ adb reverse tcp:8080 tcp:8080
 
 The companion app keeps `192.168.42.1` as the first target, then falls back to the desktop ADB reverse target when the board API is unavailable. Android board-network binding is skipped for loopback URLs so the app can reach the ADB reverse socket.
 
-For TTS replies in this desktop/PC Agent mode, keep `audio.playback_backend = "auto"` or set it to `"local"`. The Agent will synthesize TTS normally, wrap the PCM as a temporary WAV, and play it through the host OS player instead of `audio_service`.
+For host microphone recording and TTS replies in this desktop/PC Agent mode, keep `audio.backend = "auto"` or set it to `"local"`. The Agent captures PCM through an installed host recorder command and plays temporary WAV files through the host OS player instead of `audio_service`.
 
 ## App Opening Flow
 

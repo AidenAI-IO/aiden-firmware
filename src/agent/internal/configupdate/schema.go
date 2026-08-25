@@ -21,6 +21,7 @@ type Config struct {
 	TTS                TTS                           `json:"tts"`
 	STT                STT                           `json:"stt"`
 	Audio              Audio                         `json:"audio"`
+	VoiceModel         VoiceModel                    `json:"voice_model"`
 	AudioArchive       AudioArchive                  `json:"audio_archive"`
 	FrameService       FrameService                  `json:"frame_service"`
 	QuickCapture       QuickCapture                  `json:"quick_capture"`
@@ -253,6 +254,25 @@ type STT struct {
 	EngineModelType string `json:"engine_model_type"`
 }
 
+// VoiceModel mirrors the realtime voice model settings. The credential itself
+// is write-only; has_api_key reports whether one is already configured.
+type VoiceModel struct {
+	APIKey                 string   `json:"api_key,omitempty"`
+	HasAPIKey              bool     `json:"has_api_key"`
+	Model                  string   `json:"model"`
+	WorkspaceID            string   `json:"workspace_id"`
+	Region                 string   `json:"region"`
+	Endpoint               string   `json:"endpoint"`
+	Voice                  string   `json:"voice"`
+	Instructions           string   `json:"instructions"`
+	EnableSpeechEmotion    *bool    `json:"enable_speech_emotion,omitempty"`
+	InputAudioFormat       string   `json:"input_audio_format"`
+	OutputAudioFormat      string   `json:"output_audio_format"`
+	TurnDetection          string   `json:"turn_detection"`
+	TurnDetectionThreshold *float64 `json:"turn_detection_threshold,omitempty"`
+	TurnDetectionSilenceMs int      `json:"turn_detection_silence_ms"`
+}
+
 func (d STT) TranscriptionTestRequest(wavData []byte) agent.STTTranscriptionTestRequest {
 	return agent.STTTranscriptionTestRequest{
 		Provider:        d.Provider,
@@ -270,11 +290,19 @@ func (d STT) TranscriptionTestRequest(wavData []byte) agent.STTTranscriptionTest
 }
 
 type Audio struct {
-	Socket          string `json:"socket"`
-	SampleRate      int    `json:"sample_rate"`
-	Channels        int    `json:"channels"`
-	BitWidth        int    `json:"bit_width"`
-	PlaybackBackend string `json:"playback_backend"`
+	Socket                string `json:"socket"`
+	SampleRate            int    `json:"sample_rate"`
+	Channels              int    `json:"channels"`
+	BitWidth              int    `json:"bit_width"`
+	Backend               string `json:"backend"`
+	LegacyPlaybackBackend string `json:"playback_backend,omitempty"`
+}
+
+func (d Audio) backend() string {
+	if strings.TrimSpace(d.Backend) != "" {
+		return d.Backend
+	}
+	return d.LegacyPlaybackBackend
 }
 
 type AudioArchive struct {
@@ -434,6 +462,10 @@ func (d Config) ToAgentConfig() agent.Config {
 	} else if d.Search.HasAPIKey {
 		searchKey = hasAPIKeyPlaceholder
 	}
+	voiceModelKey := d.VoiceModel.APIKey
+	if strings.TrimSpace(voiceModelKey) == "" && d.VoiceModel.HasAPIKey {
+		voiceModelKey = hasAPIKeyPlaceholder
+	}
 	storage := agent.DefaultConfig().Storage
 	storage.MonitorEnabled = d.Storage.MonitorEnabled
 	storage.MountPoint = d.Storage.MountPoint
@@ -505,11 +537,26 @@ func (d Config) ToAgentConfig() agent.Config {
 			EngineModelType: d.STT.EngineModelType,
 		},
 		Audio: agent.AudioConfig{
-			Socket:          d.Audio.Socket,
-			SampleRate:      d.Audio.SampleRate,
-			Channels:        d.Audio.Channels,
-			BitWidth:        d.Audio.BitWidth,
-			PlaybackBackend: d.Audio.PlaybackBackend,
+			Socket:     d.Audio.Socket,
+			SampleRate: d.Audio.SampleRate,
+			Channels:   d.Audio.Channels,
+			BitWidth:   d.Audio.BitWidth,
+			Backend:    d.Audio.backend(),
+		},
+		VoiceModel: agent.VoiceModelConfig{
+			APIKey:                 voiceModelKey,
+			Model:                  d.VoiceModel.Model,
+			WorkspaceID:            d.VoiceModel.WorkspaceID,
+			Region:                 d.VoiceModel.Region,
+			Endpoint:               d.VoiceModel.Endpoint,
+			Voice:                  d.VoiceModel.Voice,
+			Instructions:           d.VoiceModel.Instructions,
+			EnableSpeechEmotion:    d.VoiceModel.EnableSpeechEmotion,
+			InputAudioFormat:       d.VoiceModel.InputAudioFormat,
+			OutputAudioFormat:      d.VoiceModel.OutputAudioFormat,
+			TurnDetection:          d.VoiceModel.TurnDetection,
+			TurnDetectionThreshold: d.VoiceModel.TurnDetectionThreshold,
+			TurnDetectionSilenceMs: d.VoiceModel.TurnDetectionSilenceMs,
 		},
 		AudioArchive: agent.AudioArchiveConfig{
 			Enabled:     d.AudioArchive.Enabled,
@@ -780,11 +827,26 @@ func FromAgentConfig(cfg agent.Config) Config {
 			EngineModelType: cfg.STT.EngineModelType,
 		},
 		Audio: Audio{
-			Socket:          cfg.Audio.SocketOrDefault(),
-			SampleRate:      cfg.Audio.SampleRateOrDefault(),
-			Channels:        cfg.Audio.ChannelsOrDefault(),
-			BitWidth:        cfg.Audio.BitWidthOrDefault(),
-			PlaybackBackend: cfg.Audio.PlaybackBackendOrDefault(),
+			Socket:     cfg.Audio.SocketOrDefault(),
+			SampleRate: cfg.Audio.SampleRateOrDefault(),
+			Channels:   cfg.Audio.ChannelsOrDefault(),
+			BitWidth:   cfg.Audio.BitWidthOrDefault(),
+			Backend:    cfg.Audio.BackendOrDefault(),
+		},
+		VoiceModel: VoiceModel{
+			HasAPIKey:              strings.TrimSpace(cfg.VoiceModel.APIKey) != "",
+			Model:                  cfg.VoiceModel.Model,
+			WorkspaceID:            cfg.VoiceModel.WorkspaceID,
+			Region:                 cfg.VoiceModel.Region,
+			Endpoint:               cfg.VoiceModel.Endpoint,
+			Voice:                  cfg.VoiceModel.Voice,
+			Instructions:           cfg.VoiceModel.Instructions,
+			EnableSpeechEmotion:    cfg.VoiceModel.EnableSpeechEmotion,
+			InputAudioFormat:       cfg.VoiceModel.InputAudioFormat,
+			OutputAudioFormat:      cfg.VoiceModel.OutputAudioFormat,
+			TurnDetection:          cfg.VoiceModel.TurnDetection,
+			TurnDetectionThreshold: cfg.VoiceModel.TurnDetectionThreshold,
+			TurnDetectionSilenceMs: cfg.VoiceModel.TurnDetectionSilenceMs,
 		},
 		AudioArchive: AudioArchive{
 			Enabled:     audioArchive.Enabled,

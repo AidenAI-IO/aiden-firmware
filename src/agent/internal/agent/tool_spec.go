@@ -206,7 +206,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"timeout_ms":2200,"stable_ms":250,"diff_threshold":6}`,
 	},
-	"request_human_handoff": {
+	"request_user_action": {
 		Category:     "handoff",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"reason":"authentication","details":"Login screen requires password","suggested_action":"Please enter your credentials on the device"}`,

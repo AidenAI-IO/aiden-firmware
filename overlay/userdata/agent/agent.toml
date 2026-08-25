@@ -17,6 +17,8 @@ locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification
 # Input mode controls the device-side audio loop:
 # - text: HTTP server and Web UI only
 # - stt: also run device audio -> STT -> LLM -> TTS
+# - realtime: run the realtime voice model directly; [voice_model] is selected
+#   by this mode rather than by whether voice_model.api_key is present
 input_mode = "stt"
 
 # RKNN Silero VAD parameters
@@ -39,6 +41,26 @@ input_mode = "stt"
 # voice_tool_call_speech = true
 # voice_progress_speech_enabled = true
 # voice_max_response_tokens = 300
+
+# Realtime voice model. When input_mode = "realtime", GPIO wakeup opens a
+# continuous PCM duplex session with rtclient. The legacy STT/LLM/TTS loop is
+# used when input_mode = "stt". In realtime mode, the voice model is
+# the non-blocking foreground agent; device and multi-step work is queued to
+# the legacy agent loop through create_agent_task.
+# [voice_model]
+# api_key = "$DASHSCOPE_API_KEY"
+# model = "qwen-audio-3.0-realtime-plus"
+# workspace_id = ""
+# region = "cn-beijing" # or "ap-southeast-1"
+# endpoint = ""         # optional ws/wss endpoint override
+# voice = "longanqian"
+# instructions = ""    # optional override; defaults to a short conversation-only prompt
+# enable_speech_emotion = true
+# input_audio_format = "pcm"
+# output_audio_format = "pcm"
+# turn_detection = "server_vad" # or "smart_turn"
+# turn_detection_threshold = 0.5
+# turn_detection_silence_ms = 800
 
 # Quick Capture uses the verified spare falling-edge input on the 40Pin header:
 # Luckfox Pico Zero physical pin 38 (GPIO3). GPIO32/GPIO33 remain legacy wakeup.
@@ -138,7 +160,7 @@ model = "gpt-5.5"
 # sample_rate = 16000
 # channels = 1
 # bit_width = 16
-# playback_backend = "auto" # "auto" uses audio_service on board, local player in PC/ADB agent mode; "audio_service" and "local" force a backend
+# backend = "auto" # Selects recording and playback together: audio_service on board, local recorder/player in PC/ADB agent mode
 
 # Audio archive configuration (optional)
 # When enabled, saves audio recordings to disk for playback in web UI.

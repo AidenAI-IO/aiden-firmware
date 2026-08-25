@@ -47,7 +47,7 @@ func canPlayTTSUnavailableFallback(cfg Config) bool {
 	return err == nil && info.Mode().IsRegular() && info.Size() > 44
 }
 
-func playTTSUnavailableFallback(ctx context.Context, audio *AudioServiceClient, cfg Config) error {
+func playTTSUnavailableFallback(ctx context.Context, audio tts.AudioServiceBackend, cfg Config) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -55,7 +55,7 @@ func playTTSUnavailableFallback(ctx context.Context, audio *AudioServiceClient, 
 		return err
 	}
 	if audio == nil {
-		return errors.New("audio service is not configured")
+		return errors.New("audio backend is not configured")
 	}
 	path := ttsUnavailableFallbackPath(cfg)
 	if path == "" {
@@ -73,7 +73,7 @@ func playTTSUnavailableFallback(ctx context.Context, audio *AudioServiceClient, 
 		return fmt.Errorf("local TTS fallback %s contains no PCM audio", path)
 	}
 
-	sink := tts.NewAudioServiceSink(newAudioBackend(audio), tts.AudioFormat{
+	sink := tts.NewAudioServiceSink(audio, tts.AudioFormat{
 		SampleRate: sampleRate,
 		Channels:   1,
 		BitWidth:   16,
@@ -92,7 +92,7 @@ func playTTSUnavailableFallback(ctx context.Context, audio *AudioServiceClient, 
 // attemptTTSUnavailableFallback preserves the original TTS error even when
 // the local recording plays successfully. Callers use the non-nil error to
 // avoid acknowledging response-tail delivery for speech that was not spoken.
-func attemptTTSUnavailableFallback(ctx context.Context, audio *AudioServiceClient, cfg Config, speechStarted bool, ttsErr error) (bool, error) {
+func attemptTTSUnavailableFallback(ctx context.Context, audio tts.AudioServiceBackend, cfg Config, speechStarted bool, ttsErr error) (bool, error) {
 	if ttsErr == nil || speechStarted || !canPlayTTSUnavailableFallback(cfg) {
 		return false, ttsErr
 	}

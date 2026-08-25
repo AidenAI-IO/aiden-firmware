@@ -280,7 +280,7 @@ var knownToolNames = map[string]struct{}{
 	"recall_memory":          {},
 	"recall_session_chunks":  {},
 	"read_script":            {},
-	"request_human_handoff":  {},
+	"request_user_action":  {},
 	"run_script":             {},
 	"save_memory":            {},
 	toolSearchLaunchApp:      {},

@@ -10,8 +10,8 @@ import (
 
 func TestHumanHandoffTool_Name(t *testing.T) {
 	tool := NewHumanHandoffTool()
-	if got := tool.Name(); got != "request_human_handoff" {
-		t.Errorf("Name() = %q, want %q", got, "request_human_handoff")
+	if got := tool.Name(); got != "request_user_action" {
+		t.Errorf("Name() = %q, want %q", got, "request_user_action")
 	}
 }
 
@@ -67,6 +67,25 @@ func TestHumanHandoffTool_Call_Success(t *testing.T) {
 	}
 	if payload.Status != "HUMAN_HANDOFF_REQUESTED" || payload.Reason != "authentication" {
 		t.Errorf("Unexpected payload: %#v", payload)
+	}
+}
+
+func TestHumanHandoffTool_Call_UserActionMode(t *testing.T) {
+	tool := NewHumanHandoffTool()
+	var got HumanHandoffRequest
+	ctx := WithUserActionHandler(context.Background(), func(_ context.Context, request HumanHandoffRequest) error {
+		got = request
+		return nil
+	})
+	result, err := tool.Call(ctx, `{"reason":"authentication","details":"Login is required","suggested_action":"Sign in on device"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, `"status":"USER_ACTION_REQUESTED"`) {
+		t.Fatalf("result = %s", result)
+	}
+	if got.Reason != "authentication" || got.Details != "Login is required" {
+		t.Fatalf("handler request = %+v", got)
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 const phoneBridgeBackgroundStateMaxAge = 15 * time.Second
 
 const (
-	phoneBridgeDisconnectedRecoveryGuidance = "If Phone Bridge recovery is unavailable, do not stop the task: call screenshot first to inspect the current phone state, then use visible app search or suitable HID/touch tools. Call request_human_handoff only after observation or input fallback is also unavailable, or the next step truly requires user action."
+	phoneBridgeDisconnectedRecoveryGuidance = "If Phone Bridge recovery is unavailable, do not stop the task: call screenshot first to inspect the current phone state, then use visible app search or suitable HID/touch tools. Call request_user_action only after observation or input fallback is also unavailable, or the next step truly requires user action."
 	phoneBridgeIOSOpenAppRecoveryGuidance   = "If a Dynamic Island entry is visible, tap it to reopen the Aiden App, wait for Phone Bridge to reconnect, then retry. " + phoneBridgeDisconnectedRecoveryGuidance
 )
 

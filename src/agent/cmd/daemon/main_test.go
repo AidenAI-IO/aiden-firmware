@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -15,6 +17,10 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/agent/rtclient"
+	"aiden-agent/internal/agenttask"
 )
 
 func TestDaemonDeviceTypeFlag(t *testing.T) {
@@ -27,6 +33,231 @@ func TestDaemonDeviceTypeFlag(t *testing.T) {
 		t.Fatalf("device type flag = %q, want android", *deviceType)
 	}
 }
+
+func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
+	emotion := false
+	cfg := agent.Config{
+		Instruction: "be concise",
+		VoiceModel: agent.VoiceModelConfig{
+			Voice:                  "custom-voice",
+			Instructions:           "speak naturally",
+			EnableSpeechEmotion:    &emotion,
+			InputAudioFormat:       "pcm",
+			OutputAudioFormat:      "pcm",
+			TurnDetection:          "smart_turn",
+			TurnDetectionThreshold: floatPtr(0.2),
+			TurnDetectionSilenceMs: 900,
+		},
+	}
+	got := realtimeSessionConfig(cfg)
+	if got.Voice != "custom-voice" || got.Instructions != "speak naturally" || got.TurnDetection == nil {
+		t.Fatalf("unexpected realtime session config: %+v", got)
+	}
+	if got.TurnDetection.Type != "smart_turn" || got.TurnDetection.SilenceDurationMS != 900 || got.TurnDetection.Threshold == nil || *got.TurnDetection.Threshold != 0.2 {
+		t.Fatalf("unexpected turn detection config: %+v", got.TurnDetection)
+	}
+	if got.EnableSpeechEmotion == nil || *got.EnableSpeechEmotion {
+		t.Fatalf("enable_speech_emotion = %#v, want false", got.EnableSpeechEmotion)
+	}
+	wantTools := []string{"get_current_time", "recall_memory", "create_agent_task", "cancel_agent_task", "query_agent_task", "response_user_action"}
+	if len(got.Tools) != len(wantTools) {
+		t.Fatalf("realtime tools = %#v, want %v", got.Tools, wantTools)
+	}
+	for i, want := range wantTools {
+		if got.Tools[i].Function.Name != want {
+			t.Fatalf("realtime tool[%d] = %q, want %q", i, got.Tools[i].Function.Name, want)
+		}
+	}
+}
+
+func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
+	cfg := agent.Config{Instruction: "legacy phone automation prompt"}
+	got := realtimeSessionConfig(cfg)
+	if got.Instructions != agent.DefaultRealtimeVoiceInstructions {
+		t.Fatalf("instructions = %q, want realtime default", got.Instructions)
+	}
+	if got.Instructions == cfg.Instruction {
+		t.Fatal("realtime session reused the legacy agent instruction")
+	}
+}
+
+func TestRealtimeInstructionsRouteVisualRequestsToDeviceWork(t *testing.T) {
+	instructions := agent.DefaultRealtimeVoiceInstructions
+	for _, phrase := range []string{"cannot directly and reliably answer", "screen or page content", "Never refuse merely because"} {
+		if !strings.Contains(instructions, phrase) {
+			t.Fatalf("realtime instructions missing visual-routing guidance %q: %s", phrase, instructions)
+		}
+	}
+}
+
+func TestRealtimeCurrentTimeTool(t *testing.T) {
+	want := time.Date(2026, time.August, 20, 14, 30, 0, 0, time.FixedZone("CST", 8*60*60))
+	executor := realtimeVoiceToolExecutor{now: func() time.Time { return want }}
+	output := executor.call(context.Background(), realtimeCurrentTimeTool, `{}`)
+	var got struct {
+		Datetime         string `json:"datetime"`
+		Timezone         string `json:"timezone"`
+		UTCOffsetSeconds int    `json:"utc_offset_seconds"`
+	}
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if got.Datetime != "2026-08-20T14:30:00+08:00" || got.Timezone != "CST" || got.UTCOffsetSeconds != 8*60*60 {
+		t.Fatalf("current time output = %+v", got)
+	}
+}
+
+func TestRealtimeRecallToolDelegatesToRuntimeTool(t *testing.T) {
+	recall := &fakeRealtimeTool{output: `{"results":[{"content":"likes concise replies"}]}`}
+	executor := realtimeVoiceToolExecutor{recall: recall, now: time.Now}
+	input := `{"tags":["preference"],"limit":3}`
+	if got := executor.call(context.Background(), realtimeRecallTool, input); got != recall.output {
+		t.Fatalf("recall output = %q, want %q", got, recall.output)
+	}
+	if recall.input != input {
+		t.Fatalf("recall input = %q, want %q", recall.input, input)
+	}
+}
+
+func TestRealtimeAgentTaskToolsAreNonBlocking(t *testing.T) {
+	runner := &fakeBackgroundTaskRunner{
+		started: make(chan string, 1),
+		release: make(chan struct{}),
+	}
+	manager := agenttask.NewManager(runner)
+	defer manager.Close()
+	executor := realtimeVoiceToolExecutor{tasks: manager, now: time.Now}
+
+	startedAt := time.Now()
+	output := executor.call(context.Background(), realtimeCreateTaskTool, `{"task":"open settings"}`)
+	if time.Since(startedAt) > 100*time.Millisecond {
+		t.Fatal("create_agent_task blocked on background execution")
+	}
+	var created agenttask.Task
+	if err := json.Unmarshal([]byte(output), &created); err != nil {
+		t.Fatalf("decode created task: %v", err)
+	}
+	if created.Status != agenttask.StatusQueued || created.ID == "" {
+		t.Fatalf("created task = %+v", created)
+	}
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("background task did not start")
+	}
+	query := executor.call(context.Background(), realtimeQueryTaskTool, fmt.Sprintf(`{"task_id":%q}`, created.ID))
+	var running agenttask.Task
+	if err := json.Unmarshal([]byte(query), &running); err != nil || running.Status != agenttask.StatusRunning {
+		t.Fatalf("query output = %s, error = %v", query, err)
+	}
+	cancelled := executor.call(context.Background(), realtimeCancelTaskTool, fmt.Sprintf(`{"task_id":%q}`, created.ID))
+	var cancelling agenttask.Task
+	if err := json.Unmarshal([]byte(cancelled), &cancelling); err != nil || cancelling.Status != agenttask.StatusCancelling {
+		t.Fatalf("cancel output = %s, error = %v", cancelled, err)
+	}
+}
+
+func TestFormatRealtimeTaskUpdatesAggregatesResults(t *testing.T) {
+	message := formatRealtimeTaskUpdates([]agenttask.Task{
+		{ID: "task_1", Prompt: "first", Status: agenttask.StatusCompleted, Result: "done"},
+		{ID: "task_2", Prompt: "second", Status: agenttask.StatusFailed, Error: "boom"},
+	})
+	for _, value := range []string{"task_1", "task_2", "done", "boom"} {
+		if !strings.Contains(message, value) {
+			t.Fatalf("aggregated message missing %q: %s", value, message)
+		}
+	}
+}
+
+func TestRealtimeToolCallAndResultPersistInUserContext(t *testing.T) {
+	manager, err := contextmanager.NewContextManager(t.TempDir(), "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := rtclient.FunctionCallEvent{CallID: "call_1", Name: realtimeCreateTaskTool, Arguments: `{"task":"打开微信"}`}
+	if err := appendRealtimeToolCall(manager, call); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendRealtimeToolResult(manager, call, `{"id":"task_1","status":"queued"}`); err != nil {
+		t.Fatal(err)
+	}
+	got := manager.MessageListDump().Messages
+	if len(got) != 3 || got[1].Role != messages.MessageRoleToolCall || got[2].Role != messages.MessageRoleToolResult {
+		t.Fatalf("messages = %+v", got)
+	}
+	if got[1].ToolCalls[0].Name != realtimeCreateTaskTool || got[2].ToolResults[0].ToolCallID != "call_1" {
+		t.Fatalf("tool messages = %+v", got[1:])
+	}
+}
+
+func TestRealtimeNoticePersistsAsNoticeInUserContext(t *testing.T) {
+	manager, err := contextmanager.NewContextManager(t.TempDir(), "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendRealtimeNoticeMessage(manager, "background task completed"); err != nil {
+		t.Fatal(err)
+	}
+	got := manager.MessageListDump().Messages
+	if len(got) != 2 || got[1].Role != messages.MessageRoleNotice || got[1].Content != "background task completed" {
+		t.Fatalf("messages = %+v, want notice role", got)
+	}
+}
+
+func TestRecentRealtimeContextMessagesKeepsLatestTenUserTurns(t *testing.T) {
+	var all []messages.Message
+	for i := 1; i <= 12; i++ {
+		all = append(all,
+			messages.Message{Role: messages.MessageRoleUser, Content: fmt.Sprintf("user-%d", i)},
+			messages.Message{Role: messages.MessageRoleToolCall, ToolCalls: []messages.ToolCall{{ID: fmt.Sprintf("call-%d", i)}}},
+			messages.Message{Role: messages.MessageRoleToolResult, ToolResults: []messages.ToolResult{{ToolCallID: fmt.Sprintf("call-%d", i)}}},
+			messages.Message{Role: messages.MessageRoleAssistant, Content: fmt.Sprintf("assistant-%d", i)},
+		)
+	}
+	got := recentRealtimeContextMessages(all, 10)
+	if len(got) != 40 || got[0].Content != "user-3" || got[len(got)-1].Content != "assistant-12" {
+		t.Fatalf("recent messages = %+v", got)
+	}
+	for i := 0; i < len(got); i++ {
+		if got[i].Role != messages.MessageRoleToolCall {
+			continue
+		}
+		if i+1 >= len(got) || got[i+1].Role != messages.MessageRoleToolResult ||
+			got[i].ToolCalls[0].ID != got[i+1].ToolResults[0].ToolCallID {
+			t.Fatalf("tool exchange was split: %+v", got[i:])
+		}
+	}
+}
+
+type fakeBackgroundTaskRunner struct {
+	started chan string
+	release chan struct{}
+}
+
+func (r *fakeBackgroundTaskRunner) Run(ctx context.Context, prompt string) (string, error) {
+	r.started <- prompt
+	select {
+	case <-r.release:
+		return "done", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+type fakeRealtimeTool struct {
+	input  string
+	output string
+}
+
+func (t *fakeRealtimeTool) Name() string        { return realtimeRecallTool }
+func (t *fakeRealtimeTool) Description() string { return "fake recall" }
+func (t *fakeRealtimeTool) Call(_ context.Context, input string) (string, error) {
+	t.input = input
+	return t.output, nil
+}
+
+func floatPtr(value float64) *float64 { return &value }
 
 func TestApplyDeviceTypeOverrideTakesPrecedenceOverConfig(t *testing.T) {
 	cfg := agent.Config{

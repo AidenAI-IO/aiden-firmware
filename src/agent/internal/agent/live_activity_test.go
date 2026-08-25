@@ -144,7 +144,7 @@ func TestLiveActivityManagerKeepsHumanHandoffVisible(t *testing.T) {
 
 	state := manager.UpdateFromRunEvent("req-handoff", RunEvent{
 		Type:      runEventToolCall,
-		ToolName:  toolHumanHandoffStep,
+		ToolName:  toolUserActionStep,
 		ToolInput: `{"reason":"verification_code","details":"A verification code is required","suggested_action":"请在手机上输入验证码"}`,
 		Content:   "Waiting for the user to complete verification",
 		Timestamp: time.Now(),
@@ -158,7 +158,7 @@ func TestLiveActivityManagerKeepsHumanHandoffVisible(t *testing.T) {
 
 	state = manager.UpdateFromRunEvent("req-handoff", RunEvent{
 		Type:      "tool_result",
-		ToolName:  toolHumanHandoffStep,
+		ToolName:  toolUserActionStep,
 		Content:   `{"status":"HUMAN_HANDOFF_REQUESTED","reason":"verification_code","details":"A verification code is required","suggested_action":"请在手机上输入验证码"}`,
 		Timestamp: time.Now(),
 	})

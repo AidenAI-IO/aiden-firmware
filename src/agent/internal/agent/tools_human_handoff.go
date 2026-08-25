@@ -7,6 +7,22 @@ import (
 	"strings"
 )
 
+type UserActionHandler func(context.Context, HumanHandoffRequest) error
+
+type userActionHandlerContextKey struct{}
+
+func WithUserActionHandler(ctx context.Context, handler UserActionHandler) context.Context {
+	return context.WithValue(ctx, userActionHandlerContextKey{}, handler)
+}
+
+func userActionHandlerFromContext(ctx context.Context) UserActionHandler {
+	if ctx == nil {
+		return nil
+	}
+	handler, _ := ctx.Value(userActionHandlerContextKey{}).(UserActionHandler)
+	return handler
+}
+
 // HumanHandoffTool allows the agent to request human intervention when it encounters
 // situations that require human judgment, input, or actions beyond its capabilities.
 //
@@ -53,7 +69,7 @@ const (
 	HandoffReasonOther                  HandoffReason = "other"
 )
 
-const toolHumanHandoffStep = "request_human_handoff"
+const toolUserActionStep = "request_user_action"
 
 var validHandoffReasonValues = []string{
 	string(HandoffReasonAuthentication),
@@ -96,11 +112,11 @@ func NewHumanHandoffTool() *HumanHandoffTool {
 }
 
 func (t *HumanHandoffTool) Name() string {
-	return toolHumanHandoffStep
+	return toolUserActionStep
 }
 
 func (t *HumanHandoffTool) Description() string {
-	return `Request human intervention for credentials, CAPTCHA, verification codes, sensitive operations, or when stuck. ` +
+	return `Request user action for credentials, CAPTCHA, verification codes, sensitive operations, or when stuck. ` +
 		`suggested_action should tell the human what to do without asking them to share private credentials in chat. ` +
 		`This tool returns immediately with a handoff marker; wait for the user to continue, then verify the result with a screenshot before proceeding.`
 }
@@ -155,14 +171,24 @@ func (t *HumanHandoffTool) Call(ctx context.Context, input string) (string, erro
 
 	details := strings.TrimSpace(args.Details)
 	suggestedAction := strings.TrimSpace(args.SuggestedAction)
+	request := HumanHandoffRequest{Reason: reason, Details: details, SuggestedAction: suggestedAction}
+	if handler := userActionHandlerFromContext(ctx); handler != nil {
+		if err := handler(ctx, request); err != nil {
+			return "", err
+		}
+	}
 
+	status := "HUMAN_HANDOFF_REQUESTED"
+	if userActionHandlerFromContext(ctx) != nil {
+		status = "USER_ACTION_REQUESTED"
+	}
 	response := struct {
 		Status          string `json:"status"`
 		Reason          string `json:"reason"`
 		Details         string `json:"details"`
 		SuggestedAction string `json:"suggested_action,omitempty"`
 	}{
-		Status:          "HUMAN_HANDOFF_REQUESTED",
+		Status:          status,
 		Reason:          reason,
 		Details:         details,
 		SuggestedAction: suggestedAction,

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/agenttask"
 	"aiden-agent/internal/logging"
 	"aiden-agent/internal/ota"
 )
@@ -196,7 +197,7 @@ func main() {
 		serverErr <- server.Start()
 	}()
 
-	if inputMode == "stt" {
+	if inputMode == "stt" || inputMode == "realtime" {
 		go func() {
 			if err := <-serverErr; err != nil {
 				log.Printf("[server] HTTP server stopped: %v", err)
@@ -227,6 +228,16 @@ func applyDeviceTypeOverride(cfg *agent.Config, value string) error {
 }
 
 func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server) {
+	// Setup signal handler for both legacy and realtime voice paths.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+	if cfg.InputModeOrDefault() == "realtime" {
+		tasks := agenttask.NewManager(runtimeAgentTaskRunner{runtime: runtime})
+		defer tasks.Close()
+		runRealtimeWakeupModeWithServer(cfg, sigChan, server, runtime, tasks, newGPIOWatcher)
+		return
+	}
 	dialog, err := agent.NewAudioDialog(runtime)
 	if err != nil {
 		_ = logging.LogEvent(logging.Error, "agent", "audio", "dialog_create_failed",
@@ -262,10 +273,6 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 		floatOrDefault(cfg.VADSpeechThreshold, agent.DefaultVADSpeechThreshold()),
 		cfg.SilenceMs,
 		cfg.MinSpeechMs)
-
-	// Setup signal handler
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	runWakeupMode(cfg, dialog, runtime, sigChan, newGPIOWatcher)
 }

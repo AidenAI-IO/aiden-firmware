@@ -29,6 +29,7 @@ The HTTP server and Web UI run in every input mode:
 
 - **`input_mode = "text"`**: HTTP-based interaction only, mainly for testing and debugging.
 - **`input_mode = "stt"`**: Runs the device audio loop in parallel with the HTTP server, using `audio_service`, VAD, the selected STT provider, the model, and the selected TTS provider.
+- **`input_mode = "realtime"`**: Runs the configured realtime voice model directly; realtime activation is selected explicitly by this mode.
 
 ## Configuration
 
@@ -50,7 +51,7 @@ model = "gpt-5.5"
 
 [audio]
 # socket = "/run/audio_service/audio_service.sock"
-# playback_backend = "auto"
+# backend = "auto"
 
 [hid]
 # keyboard_device = "/dev/hidg0"

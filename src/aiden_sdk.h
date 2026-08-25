@@ -21,6 +21,8 @@ struct AudioFrame {
     void* data;
     uint32_t length;
     uint64_t timestamp;
+    uint32_t channels;
+    uint32_t sample_rate;
 };
 
 // Camera configuration

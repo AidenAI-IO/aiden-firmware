@@ -248,7 +248,7 @@ func (p *TerminationPolicy) BeforeToolCall(toolName, input string) (ToolResult, 
 		return ToolResult{}, true
 	}
 	message := fmt.Sprintf(
-		"Loop guard blocked %q: repeated actions produced no progress. Use observation tools, request_human_handoff, or explain the blocker to the user instead of repeating UI actions.",
+		"Loop guard blocked %q: repeated actions produced no progress. Use observation tools, request_user_action, or explain the blocker to the user instead of repeating UI actions.",
 		strings.TrimSpace(toolName),
 	)
 	return ToolResult{
@@ -390,7 +390,7 @@ func (p *TerminationPolicy) interventionDecision() TerminationDecision {
 func (p *TerminationPolicy) noticeForTier(tier InterventionTier) string {
 	switch tier {
 	case TierSoftNotice:
-		return "Loop guard: recent tool calls are repeating or not changing the screen. Change strategy, verify with observation tools, or call request_human_handoff if blocked."
+		return "Loop guard: recent tool calls are repeating or not changing the screen. Change strategy, verify with observation tools, or call request_user_action if blocked."
 	case TierRestrictTools:
 		return "Loop guard: UI action tools are temporarily restricted because repeated actions produced no progress. Diagnose with screenshot/image_diff or ask the user to intervene."
 	default:

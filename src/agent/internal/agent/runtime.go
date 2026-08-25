@@ -78,6 +78,9 @@ type Runtime struct {
 	activeCancel         context.CancelFunc
 	preemptHooks         []func()
 	lastPreemptTime      time.Time
+	userContextResetMu   sync.Mutex
+	userContextResetHook func()
+	userContextResetGen  uint64
 	storage              *StorageManager
 	screenState          *screen.ScreenState
 	phoneBridge          *PhoneBridge
@@ -126,6 +129,7 @@ type RunRequest struct {
 	// AsyncEpisodeMaintenance keeps the episode trace write synchronous but moves
 	// lesson extraction and referenced-memory maintenance off the response path.
 	AsyncEpisodeMaintenance bool
+	UserActionHandler       UserActionHandler
 }
 
 type RunResult struct {
@@ -865,6 +869,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	// Register this run's cancel so future callers can preempt us.
 	runCtx, runCancel := context.WithCancel(ctx)
+	if req.UserActionHandler != nil {
+		runCtx = WithUserActionHandler(runCtx, req.UserActionHandler)
+	}
 	r.preemptMu.Lock()
 	r.activeCancel = runCancel
 	r.preemptMu.Unlock()
@@ -1500,6 +1507,66 @@ func (r *Runtime) ClearMemory(ctx context.Context) error {
 		return err
 	}
 	r.rotateContext()
+	r.resetActiveUserContext()
+	if err := r.rotateUserContext(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RegisterUserContextResetHook installs the active realtime-session reset
+// callback. Clearing conversation history cancels that live session so it
+// cannot continue writing to the previous user context after rotation.
+func (r *Runtime) RegisterUserContextResetHook(hook func()) func() {
+	if r == nil {
+		return func() {}
+	}
+	r.userContextResetMu.Lock()
+	r.userContextResetGen++
+	generation := r.userContextResetGen
+	r.userContextResetHook = hook
+	r.userContextResetMu.Unlock()
+	return func() {
+		r.userContextResetMu.Lock()
+		if r.userContextResetGen == generation {
+			r.userContextResetHook = nil
+		}
+		r.userContextResetMu.Unlock()
+	}
+}
+
+func (r *Runtime) resetActiveUserContext() {
+	if r == nil {
+		return
+	}
+	r.userContextResetMu.Lock()
+	hook := r.userContextResetHook
+	r.userContextResetMu.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+func (r *Runtime) rotateUserContext() error {
+	if r == nil || strings.TrimSpace(r.config.ConfigDir) == "" {
+		return nil
+	}
+	folder := agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
+	var systemPrompt string
+	if manager, err := contextmanager.LoadContextManagerFromCurrentSession(folder); err == nil && manager != nil {
+		for _, message := range manager.MessageListDump().Messages {
+			if message.Role == messages.MessageRoleSystem {
+				systemPrompt = message.Content
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(systemPrompt) == "" {
+		return nil
+	}
+	if _, err := contextmanager.NewContextManager(folder, systemPrompt); err != nil {
+		return fmt.Errorf("create user context session: %w", err)
+	}
 	return nil
 }
 
@@ -1538,22 +1605,92 @@ func (r *Runtime) hasLoadedSkills() bool {
 }
 
 func (r *Runtime) ClearAllMemory(ctx context.Context) error {
+	r.resetActiveUserContext()
 	if err := r.memories.ClearAll(ctx, "default"); err != nil {
 		return err
 	}
 
 	_ = contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+	_ = contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir))
 	r.rotateContext()
 
 	return nil
 }
 
 func (r *Runtime) ContextDump() contextmanager.MessageListDump {
-	contextManager := r.contextManager
-	if contextManager == nil {
+	if r == nil {
 		return contextmanager.MessageListDump{}
 	}
-	return contextManager.MessageListDump()
+	if r.contextManager != nil {
+		return r.contextManager.MessageListDump()
+	}
+	if strings.TrimSpace(r.config.ConfigDir) == "" {
+		return contextmanager.MessageListDump{}
+	}
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+	if err != nil || manager == nil {
+		return contextmanager.MessageListDump{}
+	}
+	return manager.MessageListDump()
+}
+
+// UserContextDump returns the persisted realtime foreground context.
+func (r *Runtime) UserContextDump() contextmanager.MessageListDump {
+	if r == nil {
+		return contextmanager.MessageListDump{}
+	}
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir))
+	if err != nil || manager == nil {
+		return contextmanager.MessageListDump{}
+	}
+	return manager.MessageListDump()
+}
+
+// WebContextDump returns the context that the Web UI should display for the
+// active input mode.
+func (r *Runtime) WebContextDump() contextmanager.MessageListDump {
+	if r == nil {
+		return contextmanager.MessageListDump{}
+	}
+	if r.config.InputModeOrDefault() == "realtime" {
+		return r.UserContextDump()
+	}
+	return r.ContextDump()
+}
+
+// ReadContextAttachment reads an attachment registered in the user or backend
+// context. It never accepts an arbitrary filesystem path.
+func (r *Runtime) ReadContextAttachment(role, attachmentID string) ([]byte, string, error) {
+	if r == nil {
+		return nil, "", fmt.Errorf("runtime is unavailable")
+	}
+	var folder string
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "user":
+		folder = agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
+	case "backend":
+		folder = agentpath.ContextManagerSessionFolder(r.config.ConfigDir)
+	default:
+		return nil, "", fmt.Errorf("invalid context role")
+	}
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(folder)
+	if err != nil {
+		return nil, "", err
+	}
+	mimeType := "application/octet-stream"
+	for _, message := range manager.MessageListDump().Messages {
+		for _, attachment := range message.Attachments {
+			if filepath.Base(attachment.FilePath) == filepath.Base(attachmentID) {
+				mimeType = attachment.MIMEType
+				break
+			}
+		}
+	}
+	data, err := manager.ReadAttachment(attachmentID)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, mimeType, nil
 }
 
 func (r *Runtime) rotateContext() {
@@ -1571,6 +1708,16 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	}
 	tools := NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
 	return r.filterPhoneBridgeAgentTools(tools)
+}
+
+// Tool returns a registered runtime tool by name. Realtime voice uses this to
+// reuse the same recall_memory implementation and long-term store as the
+// legacy agent while exposing its own smaller model-facing tool catalog.
+func (r *Runtime) Tool(name string) (langtools.Tool, bool) {
+	if r == nil || r.tools == nil {
+		return nil, false
+	}
+	return r.tools.Get(name)
 }
 
 func (r *Runtime) filterPhoneBridgeAgentTools(tools []langtools.Tool) []langtools.Tool {

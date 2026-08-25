@@ -258,7 +258,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	tools["read_script"] = NewReadScriptTool(toolOptions.scriptsDir)
 	tools["write_script"] = NewWriteScriptTool(toolOptions.scriptsDir)
 	// Always register human handoff tool - no callback needed for non-blocking version
-	tools["request_human_handoff"] = NewHumanHandoffTool()
+	tools["request_user_action"] = NewHumanHandoffTool()
 
 	toolSet := &ToolSet{
 		tools:                tools,

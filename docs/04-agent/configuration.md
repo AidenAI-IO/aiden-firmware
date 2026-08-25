@@ -22,6 +22,7 @@ under `[device]` below.
 - [`[model]`](#model)
 - [`[log]`](#log)
 - [`[audio]`](#audio)
+- [`[voice_model]`](#voice_model)
 - [`[frame_service]`](#frame_service)
 - [Quick Capture](#quick-capture)
 - [`[voice_notifications]`](#voice_notifications)
@@ -70,7 +71,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `model`: provider, model, api_key, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
-- `audio`: socket, sample_rate, channels, bit_width, playback_backend
+- `audio`: socket, sample_rate, channels, bit_width, backend
 - `frame_service`: whether Frame Service keeps capture STREAMON between screenshots
 - `quick_capture`: enabled, GPIO trigger pin, Screen Memory retention period
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
@@ -131,7 +132,7 @@ socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
 bit_width = 16
-playback_backend = "auto"
+backend = "auto"
 
 [log]
 llm_http_retention_days = 7
@@ -203,7 +204,7 @@ socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
 bit_width = 16
-playback_backend = "auto"
+backend = "auto"
 
 [hid]
 keyboard_device = "/dev/hidg0"
@@ -226,7 +227,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
-| `input_mode`                | `text` / `stt`              | Input mode                                                                                                                                                                                                |
+| `input_mode`                | `text` / `stt` / `realtime` | Input mode: HTTP/Web UI only, legacy STT/TTS voice loop, or direct realtime voice model                                                                                                                                 |
 
 ### Quick Capture
 
@@ -461,7 +462,35 @@ API key and base URL do not carry over to it.
 | `sample_rate`      | `16000`                                 | Sample rate                                                                                                                                                                                                                   |
 | `channels`         | `1`                                     | Number of channels                                                                                                                                                                                                            |
 | `bit_width`        | `16`                                    | Bit width                                                                                                                                                                                                                     |
-| `playback_backend` | `auto`                                  | TTS playback backend. `auto` uses `audio_service` on board and the local OS player when the Agent is running in desktop/PC mode through ADB input backend or environment bridge. Use `audio_service` or `local` to force one. |
+| `backend`           | `auto`                                  | Recording and playback backend. `auto` uses `audio_service` on the board and host recorder/player commands in desktop/PC mode through the ADB input backend or environment bridge. Use `audio_service` or `local` to force both directions to one backend. |
+
+## `[voice_model]`
+
+This section selects the realtime voice model used after a GPIO wakeup or an
+`/api/chat` request. It is active when `input_mode = "realtime"`; the mode,
+not API key presence, controls whether the daemon starts the realtime path. The
+daemon then streams 16 kHz PCM microphone data
+to `rtclient` continuously and plays the model's 24 kHz PCM response stream.
+When no session is active, `/api/chat` queues its text input, connects the
+realtime session, and sends that text as the first user message. This API
+activation remains available when host GPIO is unavailable.
+Use `input_mode = "stt"` to select the existing VAD/STT/LLM/TTS wakeup loop.
+This section is currently TOML-only and is not rendered by Config Web.
+
+| Field | Default | Description |
+| ----- | ------- | ----------- |
+| `api_key` | empty | DashScope API key; supports `$ENV_VAR` expansion. |
+| `model` | `qwen-audio-3.0-realtime-plus` | Realtime voice model name. |
+| `workspace_id` | empty | Optional DashScope workspace. |
+| `region` | empty | `cn-beijing` or `ap-southeast-1`; endpoint is selected automatically. |
+| `endpoint` | empty | Optional `ws://` or `wss://` endpoint override. |
+| `voice` | `longanqian` | Realtime output voice. |
+| `instructions` | empty | Session instructions; falls back to `custom_instruction`. |
+| `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
+| `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
+| `turn_detection` | `server_vad` | Server turn detector: `server_vad` or `smart_turn`. |
+| `turn_detection_threshold` | empty | Optional server VAD threshold. |
+| `turn_detection_silence_ms` | `800` | Silence duration before a response is generated. |
 
 ## `[frame_service]`
 
