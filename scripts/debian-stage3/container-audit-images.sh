@@ -8,6 +8,7 @@ readonly SDK_DIR=${OUTPUT_DIR}/luckfox-pico-sdk
 readonly WORK_DIR=${OUTPUT_DIR}/audit-work
 readonly ROOTFS_MOUNT=${WORK_DIR}/rootfs
 readonly OEM_MOUNT=${WORK_DIR}/oem
+readonly OEM_IMAGE_MOUNT=${WORK_DIR}/oem-image
 readonly USERDATA_MOUNT=${WORK_DIR}/userdata
 readonly OTA_MOUNT=${WORK_DIR}/ota
 readonly UNPACK_DIR=${WORK_DIR}/unpacked
@@ -28,11 +29,16 @@ readonly -a PRODUCTION_BINARIES=(
 )
 
 mounts=()
-cleanup() {
+unmount_mounts() {
     local index
     for ((index = ${#mounts[@]} - 1; index >= 0; index--)); do
         mountpoint -q "${mounts[index]}" && umount "${mounts[index]}" || true
     done
+    mounts=()
+}
+
+cleanup() {
+    unmount_mounts
     rm -rf "${WORK_DIR}"
 }
 trap cleanup EXIT
@@ -48,6 +54,17 @@ mount_image() {
     mkdir -p "${target}"
     mount -o loop,ro "${image}" "${target}"
     mounts+=("${target}")
+}
+
+stage_oem_image() {
+    rm -rf "${OEM_MOUNT}" "${OEM_IMAGE_MOUNT}"
+    mkdir -p "${OEM_MOUNT}" "${OEM_IMAGE_MOUNT}"
+    mount_image "${IMAGE_DIR}/oem.img" "${OEM_IMAGE_MOUNT}"
+    rsync -aHAX --numeric-ids --delete \
+        "${OEM_IMAGE_MOUNT}/" "${OEM_MOUNT}/"
+    # Keep the OEM tree available for the remaining checks while releasing
+    # the loop device before mounting another filesystem image.
+    unmount_mounts
 }
 
 audit_ext4() {
@@ -364,13 +381,14 @@ main() {
     audit_ext4 "${IMAGE_DIR}/ota.img" ota
     audit_packages
 
+    stage_oem_image
     mount_image "${IMAGE_DIR}/rootfs.img" "${ROOTFS_MOUNT}"
-    mount_image "${IMAGE_DIR}/oem.img" "${OEM_MOUNT}"
-    mount_image "${IMAGE_DIR}/userdata.img" "${USERDATA_MOUNT}"
-    mount_image "${IMAGE_DIR}/ota.img" "${OTA_MOUNT}"
     audit_rootfs
     audit_oem_files
     audit_elf_closure
+    unmount_mounts
+
+    mount_image "${IMAGE_DIR}/userdata.img" "${USERDATA_MOUNT}"
     test -f "${USERDATA_MOUNT}/agent/agent.toml" \
         || fail "Agent configuration is missing from userdata"
     test "$(stat -c '%u:%g:%a' "${USERDATA_MOUNT}/agent/agent.toml")" = 0:0:600 \
@@ -398,9 +416,12 @@ main() {
         --oem "${IMAGE_DIR}/oem.img" \
         --rootfs "${IMAGE_DIR}/rootfs.img" \
         >"${OUTPUT_DIR}/ota-config-mounted-audit.txt"
+    unmount_mounts
+
+    mount_image "${IMAGE_DIR}/ota.img" "${OTA_MOUNT}"
     [ -z "$(find "${OTA_MOUNT}" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit)" ] \
         || fail "generic OTA image is not empty"
-    unmount_all
+    unmount_mounts
 
     audit_boot
     audit_update_image
@@ -417,12 +438,6 @@ main() {
         "${OUTPUT_DIR}/boot-fit-audit.txt" \
         "${OUTPUT_DIR}/ota-config-mounted-audit.txt" \
         "${OUTPUT_DIR}/agent-config.sha256" "${OUTPUT_DIR}/SHA256SUMS"
-}
-
-unmount_all() {
-    cleanup
-    mounts=()
-    mkdir -p "${WORK_DIR}"
 }
 
 main
