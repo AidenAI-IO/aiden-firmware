@@ -1,12 +1,8 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
-	"image/jpeg"
-	"math"
 	"strings"
 	"testing"
 
@@ -698,59 +694,5 @@ func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing
 	}
 	if len(followups) != 1 {
 		t.Fatalf("expected one followup screenshot message, got %#v", followups)
-	}
-}
-
-func TestFunctionAgentDescribesTouchGesturePostMarker(t *testing.T) {
-	agent := &FunctionAgent{
-		Tools: []langtools.Tool{&stubTool{name: "touch_gesture", visual: true}},
-	}
-	imageData := uniformWheelScreenshotJPEG(t, 800, 600)
-	observation := `{"action_output":"ok","width":800,"height":600,"format":"jpeg","size":` +
-		fmt.Sprintf("%d", len(imageData)) + `,"data":"` +
-		base64.StdEncoding.EncodeToString(imageData) +
-		`","gesture_marker":{"type":"tap","x":625,"y":300}}`
-
-	toolContent, followups := agent.observationMessagesForStep(schema.AgentStep{
-		Action:      schema.AgentAction{Tool: "touch_gesture"},
-		Observation: observation,
-	}, true)
-
-	for _, want := range []string{
-		"annotated with red and white concentric hollow rings",
-		"normalized x=625, y=300",
-		"shared center lies inside the intended visible target",
-		"ring boundaries indicate neither touch area nor target overlap",
-		"requested coordinate, not independently measured physical touch hardware feedback",
-	} {
-		if !strings.Contains(toolContent, want) {
-			t.Fatalf("toolContent missing %q: %q", want, toolContent)
-		}
-	}
-	if len(followups) != 1 {
-		t.Fatalf("expected one followup screenshot message, got %#v", followups)
-	}
-	imagePart, ok := followups[0].Parts[1].(llms.ImageURLContent)
-	if !ok {
-		t.Fatalf("expected image followup part, got %#v", followups[0].Parts)
-	}
-	_, markedBytes, ok := telemetryDataURL(imagePart.URL)
-	if !ok {
-		t.Fatal("expected data URL image followup")
-	}
-	markedImage, err := jpeg.Decode(bytes.NewReader(markedBytes))
-	if err != nil {
-		t.Fatalf("decode marked image: %v", err)
-	}
-	x := int(math.Round(0.625 * 799))
-	y := int(math.Round(0.3 * 599))
-	centerR, centerG, centerB, _ := markedImage.At(x, y).RGBA()
-	if centerR > 15000 || centerG > 15000 || centerB > 15000 {
-		t.Fatalf("marker center pixel = (%d,%d,%d), want original dark image visible", centerR, centerG, centerB)
-	}
-	radius := max(10, min(24, min(markedImage.Bounds().Dx(), markedImage.Bounds().Dy())/28))
-	redR, redG, redB, _ := markedImage.At(x+radius, y).RGBA()
-	if redR < 25000 || redR <= redG+8000 || redR <= redB+8000 {
-		t.Fatalf("marker inner ring pixel = (%d,%d,%d), want red-dominant", redR, redG, redB)
 	}
 }

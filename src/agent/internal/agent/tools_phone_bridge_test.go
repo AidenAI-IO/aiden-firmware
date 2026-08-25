@@ -78,6 +78,23 @@ func TestPhoneBridgeScreenCacheFollowsPhoneIDAcrossHTTPFallback(t *testing.T) {
 	}
 }
 
+func TestRegisterPhoneBridgeWrapsOpenURLWithPostActionScreenshot(t *testing.T) {
+	bridge := newTestPhoneBridge(t)
+	tools := &ToolSet{tools: map[string]langtools.Tool{
+		"screenshot": &stubTool{name: "screenshot", output: `{"width":1,"height":1,"format":"jpeg","size":1,"data":"YQ=="}`},
+	}}
+
+	tools.RegisterPhoneBridge(bridge)
+	openURL, ok := tools.tools[toolOpenURL]
+	if !ok || openURL == nil {
+		t.Fatal("open_url was not registered")
+	}
+	visual, ok := openURL.(visualObservationTool)
+	if !ok || !visual.ReturnsVisualObservation() {
+		t.Fatalf("open_url = %T, want post-action visual observation wrapper", openURL)
+	}
+}
+
 func TestPhoneBridgeScreenCacheFollowsPhysicalHIDConnection(t *testing.T) {
 	bridge := newTestPhoneBridge(t)
 	hidConnected := true

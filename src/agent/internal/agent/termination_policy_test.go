@@ -69,40 +69,6 @@ func TestTerminationPolicyIgnoresTopStatusBarChanges(t *testing.T) {
 	}
 }
 
-func TestTerminationPolicyIgnoresTouchGestureMarkerMetadata(t *testing.T) {
-	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
-	observation := terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{})
-
-	withMarker := func(x, y float64) string {
-		var payload map[string]any
-		if err := json.Unmarshal([]byte(observation), &payload); err != nil {
-			t.Fatalf("decode screenshot observation: %v", err)
-		}
-		payload["gesture_marker"] = map[string]any{
-			"type": "tap",
-			"x":    x,
-			"y":    y,
-		}
-		encoded, err := json.Marshal(payload)
-		if err != nil {
-			t.Fatalf("encode screenshot observation: %v", err)
-		}
-		return string(encoded)
-	}
-
-	policy.AfterToolCall("touch_gesture", `{"type":"tap","point":{"x":372,"y":649}}`, withMarker(372, 649), false)
-	decision := policy.AfterToolCall("touch_gesture", `{"type":"tap","point":{"x":372,"y":655}}`, withMarker(372, 655), false)
-
-	if decision.Tier != TierSoftNotice || policy.screenUnchangedAfterAction != 1 || policy.stallScore != 2 {
-		t.Fatalf(
-			"marker-only metadata change counted as progress: decision=%#v unchanged=%d score=%d",
-			decision,
-			policy.screenUnchangedAfterAction,
-			policy.stallScore,
-		)
-	}
-}
-
 func TestTerminationPolicyIgnoresSubOnePercentPixelChanges(t *testing.T) {
 	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
 	before := terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{})

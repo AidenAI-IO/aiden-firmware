@@ -399,7 +399,12 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 		s.phoneBridgeRestorer.SetBridge(bridge)
 	}
 	s.refreshOpenAppTool()
-	s.tools[toolOpenURL] = NewOpenURLTool(bridge, s.phoneBridgeRestorer)
+	openURL := NewOpenURLTool(bridge, s.phoneBridgeRestorer)
+	if screenshot, ok := s.tools["screenshot"]; ok && screenshot != nil {
+		s.tools[toolOpenURL] = newPostActionScreenshotTool(openURL, screenshot, postActionScreenshotDelay)
+	} else {
+		s.tools[toolOpenURL] = openURL
+	}
 	s.tools[toolBridgeClipboard] = NewClipboardTool(bridge, s.phoneBridgeRestorer)
 	s.tools[toolBridgeCalendar] = NewCalendarTool(bridge, s.phoneBridgeRestorer)
 	s.tools[toolBridgeContacts] = NewContactsTool(bridge, s.phoneBridgeRestorer)

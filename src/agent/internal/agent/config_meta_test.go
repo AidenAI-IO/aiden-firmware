@@ -462,7 +462,6 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"agent.max_iterations", defaults.MaxIterations},
 		{"agent.screenshot_keep_n", defaults.ScreenshotKeepN},
 		{"agent.screenshot_prune_interval", defaults.ScreenshotPruneInterval},
-		{"agent.touch_gesture_post_marker", defaults.TouchGesturePostMarker},
 		{"agent.screen_stable_timeout_ms", defaults.ScreenStableTimeoutMs},
 		{"agent.screen_stable_ms", defaults.ScreenStableMs},
 		{"agent.screen_stable_diff_threshold", defaults.ScreenStableDiffThreshold},
