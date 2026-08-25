@@ -238,11 +238,6 @@ func pruneEpisodeMemoryTerminalStatuses(state *episodeMemoryStateFile, limit int
 	}
 }
 
-type episodeMemoryBatchResult struct {
-	HasPending bool
-	NextRunAt  time.Time
-}
-
 func episodeMemoryEntryAfterCursor(episodeID string, endedAt time.Time, state episodeMemoryStateFile) bool {
 	cursorAt, err := time.Parse(time.RFC3339Nano, state.CompletedThroughAt)
 	if err != nil {

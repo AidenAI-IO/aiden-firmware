@@ -97,6 +97,17 @@ Screenshot binary data is stored as an Episode artifact. Event records contain r
 
 The recorded `outcome.success` value is not treated as verified truth. It is input evidence for later assessment.
 
+### Episode Storage Retention
+
+The current Episode implementation does not register a retention cleaner for
+`memory/episodes/`. Episode metadata, events, and artifacts remain on disk until
+the whole memory plane is explicitly cleared.
+
+The consolidation ledger is bounded separately. It retains the latest 64
+`done` or `ignored` terminal statuses while preserving processing and retry
+state. Device Memory TTL also affects recall only: expired records are excluded
+from search, but StorageMonitor does not routinely delete their YAML files.
+
 ## Episode Memory Consolidation
 
 The background pipeline is:
