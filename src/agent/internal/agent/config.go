@@ -4,6 +4,7 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -278,6 +279,7 @@ type Config struct {
 	HID                        HIDConfig                `toml:"hid"`
 	Device                     DeviceConfig             `toml:"device,omitempty"`
 	Audio                      AudioConfig              `toml:"audio,omitempty"`
+	VoiceModel                 VoiceModelConfig         `toml:"voice_model,omitempty"`
 	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
 	FrameService               FrameServiceConfig       `toml:"frame_service,omitempty"`
 	Storage                    StorageConfig            `toml:"storage,omitempty"`
@@ -292,7 +294,7 @@ type Config struct {
 	Locale                     string                   `toml:"locale,omitempty"`
 	Instruction                string                   `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string                   `toml:"additional_prompt,omitempty"`
-	InputMode                  string                   `toml:"input_mode,omitempty"`  // "text" or "stt"
+	InputMode                  string                   `toml:"input_mode,omitempty"`  // "text", "stt", or "realtime"
 	VADBackend                 string                   `toml:"vad_backend,omitempty"` // "rknn", "cpu"
 	VADModelPath               string                   `toml:"vad_model_path,omitempty"`
 	VADHelperPath              string                   `toml:"vad_helper_path,omitempty"`
@@ -381,11 +383,60 @@ type STTConfig struct {
 }
 
 type AudioConfig struct {
-	Socket          string `toml:"socket,omitempty"`
-	SampleRate      int    `toml:"sample_rate,omitempty"`
-	Channels        int    `toml:"channels,omitempty"`
-	BitWidth        int    `toml:"bit_width,omitempty"`
-	PlaybackBackend string `toml:"playback_backend,omitempty"`
+	Socket     string `toml:"socket,omitempty"`
+	SampleRate int    `toml:"sample_rate,omitempty"`
+	Channels   int    `toml:"channels,omitempty"`
+	BitWidth   int    `toml:"bit_width,omitempty"`
+	Backend    string `toml:"backend,omitempty"`
+}
+
+// VoiceModelConfig configures the realtime audio model used by the realtime
+// voice path. The path is selected by agent.input_mode, not by API key presence.
+type VoiceModelConfig struct {
+	APIKey                 string   `toml:"api_key,omitempty"`
+	Model                  string   `toml:"model,omitempty"`
+	WorkspaceID            string   `toml:"workspace_id,omitempty"`
+	Region                 string   `toml:"region,omitempty"`
+	Endpoint               string   `toml:"endpoint,omitempty"`
+	Voice                  string   `toml:"voice,omitempty"`
+	Instructions           string   `toml:"instructions,omitempty"`
+	EnableSpeechEmotion    *bool    `toml:"enable_speech_emotion,omitempty"`
+	InputAudioFormat       string   `toml:"input_audio_format,omitempty"`
+	OutputAudioFormat      string   `toml:"output_audio_format,omitempty"`
+	TurnDetection          string   `toml:"turn_detection,omitempty"`
+	TurnDetectionThreshold *float64 `toml:"turn_detection_threshold,omitempty"`
+	TurnDetectionSilenceMs int      `toml:"turn_detection_silence_ms,omitempty"`
+}
+
+func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) != "" }
+
+func (c VoiceModelConfig) Validate() error {
+	if region := strings.TrimSpace(c.Region); region != "" && region != "cn-beijing" && region != "ap-southeast-1" {
+		return fmt.Errorf("voice_model.region: unsupported region %q", c.Region)
+	}
+	if endpoint := strings.TrimSpace(c.Endpoint); endpoint != "" {
+		u, err := url.Parse(endpoint)
+		if err != nil || u.Host == "" || (u.Scheme != "wss" &&
+			!(u.Scheme == "ws" && isLoopbackHost(u.Hostname()))) {
+			return fmt.Errorf("voice_model.endpoint: invalid websocket URL %q", c.Endpoint)
+		}
+	}
+	if c.TurnDetection != "" && c.TurnDetection != "server_vad" && c.TurnDetection != "smart_turn" {
+		return fmt.Errorf("voice_model.turn_detection: unsupported type %q", c.TurnDetection)
+	}
+	if c.TurnDetectionSilenceMs < 0 {
+		return errors.New("voice_model.turn_detection_silence_ms must be >= 0")
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 type ProxyConfig struct {
@@ -478,44 +529,44 @@ func (a AudioConfig) BitWidthOrDefault() int {
 }
 
 const (
-	AudioPlaybackBackendAuto         = "auto"
-	AudioPlaybackBackendAudioService = "audio_service"
-	AudioPlaybackBackendLocal        = "local"
+	AudioBackendAuto         = "auto"
+	AudioBackendAudioService = "audio_service"
+	AudioBackendLocal        = "local"
 )
 
-func normalizeAudioPlaybackBackend(value string) (string, error) {
+func normalizeAudioBackend(value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", AudioPlaybackBackendAuto:
-		return AudioPlaybackBackendAuto, nil
-	case AudioPlaybackBackendAudioService, "audio-service", "audioservice":
-		return AudioPlaybackBackendAudioService, nil
-	case AudioPlaybackBackendLocal, "pc", "desktop":
-		return AudioPlaybackBackendLocal, nil
+	case "", AudioBackendAuto:
+		return AudioBackendAuto, nil
+	case AudioBackendAudioService, "audio-service", "audioservice":
+		return AudioBackendAudioService, nil
+	case AudioBackendLocal, "pc", "desktop":
+		return AudioBackendLocal, nil
 	default:
-		return "", fmt.Errorf("invalid audio.playback_backend: %s (expected auto, audio_service, or local)", value)
+		return "", fmt.Errorf("invalid audio.backend: %s (expected auto, audio_service, or local)", value)
 	}
 }
 
-func (a AudioConfig) PlaybackBackendOrDefault() string {
-	backend, err := normalizeAudioPlaybackBackend(a.PlaybackBackend)
+func (a AudioConfig) BackendOrDefault() string {
+	backend, err := normalizeAudioBackend(a.Backend)
 	if err != nil {
-		return strings.ToLower(strings.TrimSpace(a.PlaybackBackend))
+		return strings.ToLower(strings.TrimSpace(a.Backend))
 	}
 	return backend
 }
 
-func (c Config) AudioPlaybackBackendOrDefault() string {
-	backend, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend)
+func (c Config) AudioBackendOrDefault() string {
+	backend, err := normalizeAudioBackend(c.Audio.Backend)
 	if err != nil {
-		return strings.ToLower(strings.TrimSpace(c.Audio.PlaybackBackend))
+		return strings.ToLower(strings.TrimSpace(c.Audio.Backend))
 	}
-	if backend != AudioPlaybackBackendAuto {
+	if backend != AudioBackendAuto {
 		return backend
 	}
 	if c.HID.InputBackendADB() || c.EnvironmentBridge.Enabled {
-		return AudioPlaybackBackendLocal
+		return AudioBackendLocal
 	}
-	return AudioPlaybackBackendAudioService
+	return AudioBackendAudioService
 }
 
 type HIDConfig struct {
@@ -856,6 +907,7 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	// config page runs Config.ValidateVoiceProviders on save for strict checks.
 	resolveTTSProvider(&cfg)
 	resolveSTTProvider(&cfg)
+	cfg.VoiceModel.APIKey = resolveProviderAPIKey(cfg.VoiceModel.APIKey)
 
 	// Apply provider references to model configurations. This must run before
 	// the base_url whitelist below: until the reference is expanded, Provider
@@ -1176,7 +1228,27 @@ func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 	if err := applyLegacyModelMaxTokens(path, metadata, cfg); err != nil {
 		return toml.MetaData{}, err
 	}
+	if err := applyLegacyAudioBackend(path, metadata, cfg); err != nil {
+		return toml.MetaData{}, err
+	}
 	return metadata, nil
+}
+
+func applyLegacyAudioBackend(path string, metadata toml.MetaData, cfg *Config) error {
+	if cfg == nil || metadata.IsDefined("audio", "backend") || !metadata.IsDefined("audio", "playback_backend") {
+		return nil
+	}
+
+	var raw struct {
+		Audio struct {
+			PlaybackBackend string `toml:"playback_backend"`
+		} `toml:"audio"`
+	}
+	if _, err := toml.DecodeFile(path, &raw); err != nil {
+		return fmt.Errorf("decode legacy audio backend: %w", err)
+	}
+	cfg.Audio.Backend = raw.Audio.PlaybackBackend
+	return nil
 }
 
 func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {
@@ -1307,7 +1379,10 @@ func (c Config) Validate() error {
 	if _, ok := normalizeDeviceType(c.Device.DeviceType); !ok {
 		return fmt.Errorf("invalid device.device_type: %s (expected iOS, Android, macOS, windows, or linux)", c.Device.DeviceType)
 	}
-	if _, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend); err != nil {
+	if _, err := normalizeAudioBackend(c.Audio.Backend); err != nil {
+		return err
+	}
+	if err := c.VoiceModel.Validate(); err != nil {
 		return err
 	}
 	if c.Model.MaxResponseTokens < 0 {
@@ -1328,18 +1403,22 @@ func (c Config) Validate() error {
 			if strings.TrimSpace(c.STT.Provider) == "" {
 				return errors.New("stt.provider is required when input_mode=stt")
 			}
+		case "realtime":
+			if !c.VoiceModel.Enabled() {
+				return errors.New("voice_model.api_key is required when input_mode=realtime")
+			}
 		case "audio":
 			return fmt.Errorf("invalid input_mode: %s (audio mode has been removed; use stt instead)", c.InputMode)
 		default:
-			return fmt.Errorf("invalid input_mode: %s (expected text or stt)", c.InputMode)
+			return fmt.Errorf("invalid input_mode: %s (expected text, stt, or realtime)", c.InputMode)
 		}
 
-		// Validate TTS config if not in text mode
+		// Validate TTS/STT config only for the legacy STT audio path.
 		if mode == "stt" && strings.TrimSpace(c.TTS.Provider) == "" {
 			return errors.New("tts.provider is required when input_mode=stt")
 		}
 
-		if mode == "stt" {
+		if mode == "stt" || mode == "realtime" {
 			if c.Audio.SampleRate != 0 && c.Audio.SampleRate < 8000 {
 				return fmt.Errorf("audio.sample_rate must be at least 8000 when set, got %d", c.Audio.SampleRate)
 			}

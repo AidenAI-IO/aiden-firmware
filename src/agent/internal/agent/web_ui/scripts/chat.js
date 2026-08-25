@@ -5,10 +5,6 @@ async function sendMessage() {
         await submitSteerMessage();
         return;
     }
-    if (recorderState.isRecording || recorderState.isStopping) {
-        await stopRecording();
-    }
-
     const message = inputEl.value.trim();
     const attachments = cloneAttachmentsForTransport(draftAttachments);
     if (!message && attachments.length === 0) return;
@@ -84,7 +80,7 @@ async function sendMessage() {
         pendingSteer = null;
         renderPendingSteer();
         setComposerState(false);
-        scrollToBottom();
+        if (isConversationNearBottom()) scrollToBottom();
     }
 }
 
@@ -427,9 +423,10 @@ function removeRenderedMessage(messageKey) {
     renderedMessageKeys.delete(messageKey);
     renderedMessageNodes.delete(messageKey);
     if (existing) {
+        const shouldStickToBottom = isConversationNearBottom();
         existing.remove();
         updateEmptyState();
-        scrollToBottom();
+        if (shouldStickToBottom) scrollToBottom();
     }
 }
 
@@ -481,14 +478,24 @@ async function resetAllMemory() {
 }
 
 function renderHistory(history) {
+    const shouldStickToBottom = messagesDiv.children.length === 0 || isConversationNearBottom();
+    const previousScrollTop = conversationEl.scrollTop;
     messagesDiv.innerHTML = '';
     renderedMessageKeys = new Set();
     renderedMessageNodes = new Map();
     streamingAssistantDrafts = {};
 
     const fragment = document.createDocumentFragment();
+    renderedStateMessages = new Map();
     history.forEach(function(msg) {
         if (isControlMessage(msg)) return;
+        if (isContextMarkerMessage(msg)) {
+            const key = messageIdentity(msg);
+            if (!renderedStateMessages.has(key)) {
+                fragment.appendChild(createContextMarkerNode(msg, renderedStateMessages.size));
+            }
+            return;
+        }
         const key = messageIdentity(msg);
         if (renderedMessageKeys.has(key)) return;
         renderedMessageKeys.add(key);
@@ -497,13 +504,31 @@ function renderHistory(history) {
         fragment.appendChild(node);
     });
 
+    if (!renderedStateMessages.has(activeStateMessageKey)) {
+        activeStateMessageKey = '';
+    }
+    renderStateModal();
+
     messagesDiv.appendChild(fragment);
     updateEmptyState();
-    scrollToBottom();
+    if (shouldStickToBottom) {
+        scrollToBottom();
+    } else {
+        conversationEl.scrollTop = previousScrollTop;
+    }
 }
 
 function addMessage(msg) {
     if (isControlMessage(msg)) return;
+    if (isContextMarkerMessage(msg)) {
+        const key = messageIdentity(msg);
+        if (!renderedStateMessages.has(key)) {
+            const shouldStickToBottom = isConversationNearBottom();
+            messagesDiv.appendChild(createContextMarkerNode(msg, renderedStateMessages.size));
+            if (shouldStickToBottom) scrollToBottom();
+        }
+        return;
+    }
     const key = messageIdentity(msg);
     if (renderedMessageKeys.has(key)) {
         if (normalizeType((msg || {}).type) === 'assistant') {
@@ -512,37 +537,58 @@ function addMessage(msg) {
         return;
     }
     renderedMessageKeys.add(key);
+    const shouldStickToBottom = isConversationNearBottom();
     const node = createMessageNode(msg);
     renderedMessageNodes.set(key, node);
     messagesDiv.appendChild(node);
     updateEmptyState();
-    scrollToBottom();
+    if (shouldStickToBottom) scrollToBottom();
+}
+
+function isConversationNearBottom() {
+    return conversationEl.scrollHeight - conversationEl.scrollTop - conversationEl.clientHeight < 72;
 }
 
 function updateMessageNode(key, msg) {
     const existing = renderedMessageNodes.get(key);
     if (!existing) return;
+    const shouldStickToBottom = isConversationNearBottom();
     const replacement = createMessageNode(msg);
     renderedMessageNodes.set(key, replacement);
     existing.replaceWith(replacement);
     updateEmptyState();
-    scrollToBottom();
+    if (shouldStickToBottom) scrollToBottom();
 }
 
 function isControlMessage(msg) {
     return normalizeType((msg || {}).type) === 'todo_closed';
 }
 
-function messageIdentity(msg) {
+function isContextMarkerMessage(msg) {
     msg = msg || {};
     const type = normalizeType(msg.type);
+    return type === 'state' || type === 'notice' || msg.role === 'state' || msg.role === 'notice';
+}
+
+function messageIdentity(msg) {
+    msg = msg || {};
+    const type = isContextMarkerMessage(msg) ? contextMarkerType(msg) : normalizeType(msg.type);
     const content = msg.content || '';
     const requestId = msg.request_id || '';
+    if (requestId && (type === 'tool_call' || type === 'tool_result')) {
+        return [
+            'request', requestId, type,
+            msg.tool_name || '', msg.tool_input || '', content, msg.timestamp || ''
+        ].join('\u001f');
+    }
     if (requestId && type === 'assistant') {
         return ['request', requestId, type].join('\u001f');
     }
     if (requestId && type === 'user') {
         return ['request', requestId, type, content].join('\u001f');
+    }
+    if (requestId && (type === 'state' || type === 'notice')) {
+        return ['request', requestId, type].join('\u001f');
     }
 
     const episodeId = msg.episode_id || '';

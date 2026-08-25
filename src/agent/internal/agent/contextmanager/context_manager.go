@@ -269,23 +269,19 @@ func (c *ContextManager) StoreAttachment(mimeType string, data []byte) (messages
 	return c.attachmentStore.store(mimeType, data)
 }
 
-// ReadScreenshotAttachment returns a screenshot attachment registered in the
-// active context. The caller supplies only the opaque attachment filename that
-// was shown to the model; arbitrary paths and non-screenshot attachments are
+// ReadAttachment returns a registered attachment from the active context. The
+// caller supplies only the opaque attachment filename; arbitrary paths are
 // rejected.
-func (c *ContextManager) ReadScreenshotAttachment(attachmentID string) ([]byte, error) {
+func (c *ContextManager) ReadAttachment(attachmentID string) ([]byte, error) {
 	attachmentID = strings.TrimSpace(attachmentID)
 	if attachmentID == "" || filepath.Base(attachmentID) != attachmentID || strings.ContainsAny(attachmentID, `/\\`) {
-		return nil, fmt.Errorf("invalid screenshot attachment ID")
+		return nil, fmt.Errorf("invalid attachment ID")
 	}
 
 	c.mu.RLock()
 	filePath := ""
 	for _, message := range c.messageList {
 		for _, attachment := range message.Attachments {
-			if attachment.Source != messages.AttachmentSourceScreenshotObservation {
-				continue
-			}
 			candidate := strings.TrimSpace(attachment.FilePath)
 			if candidate != "" && filepath.Base(candidate) == attachmentID {
 				filePath = candidate
@@ -323,6 +319,26 @@ func (c *ContextManager) ReadScreenshotAttachment(attachmentID string) ([]byte, 
 		return nil, fmt.Errorf("screenshot attachment is empty")
 	}
 	return data, nil
+}
+
+// ReadScreenshotAttachment is kept for callers that specifically request a
+// screenshot attachment.
+func (c *ContextManager) ReadScreenshotAttachment(attachmentID string) ([]byte, error) {
+	attachmentID = strings.TrimSpace(attachmentID)
+	if attachmentID == "" {
+		return nil, fmt.Errorf("invalid screenshot attachment ID")
+	}
+	c.mu.RLock()
+	for _, message := range c.messageList {
+		for _, attachment := range message.Attachments {
+			if attachment.Source == messages.AttachmentSourceScreenshotObservation && filepath.Base(attachment.FilePath) == attachmentID {
+				c.mu.RUnlock()
+				return c.ReadAttachment(attachmentID)
+			}
+		}
+	}
+	c.mu.RUnlock()
+	return nil, fmt.Errorf("attachment is not a registered screenshot")
 }
 
 func cloneMessages(messageList []messages.Message) []messages.Message {

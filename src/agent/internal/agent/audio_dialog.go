@@ -31,6 +31,7 @@ var (
 type AudioDialog struct {
 	config              Config
 	audioClient         *AudioServiceClient
+	recordBackend       audioRecordingBackend
 	sttClient           STTClient
 	ttsManager          *tts.ProviderManager
 	ttsPlaybackBackend  tts.AudioServiceBackend
@@ -154,6 +155,7 @@ func NewAudioDialog(runtime *Runtime) (*AudioDialog, error) {
 
 	// Create audio client
 	audioClient := NewAudioServiceClient(cfg.Audio.SocketOrDefault())
+	recordBackend := newAudioRecordingBackendFromConfig(cfg, audioClient, nil)
 
 	// Create STT client if needed
 	var sttClient STTClient
@@ -204,6 +206,7 @@ func NewAudioDialog(runtime *Runtime) (*AudioDialog, error) {
 	return &AudioDialog{
 		config:             cfg,
 		audioClient:        audioClient,
+		recordBackend:      recordBackend,
 		sttClient:          sttClient,
 		ttsManager:         ttsManager,
 		ttsPlaybackBackend: newTTSPlaybackBackendFromConfig(cfg, audioClient, nil),
@@ -269,15 +272,17 @@ func (d *AudioDialog) StartRecording() error {
 		BitWidth:   uint32(d.config.Audio.BitWidthOrDefault()),
 	}
 
-	result, err := startRecordingWithRetry(d.audioClient, format, recordingStartRetryTimeout, recordingStartRetryInterval)
+	result, err := startRecordingWithRetry(recordingBackendOrService(d.recordBackend, d.audioClient), format, recordingStartRetryTimeout, recordingStartRetryInterval)
 	if err != nil {
 		return fmt.Errorf("start recording: %w", err)
 	}
 	d.sessionID = result.SessionID
-	if reader, err := d.audioClient.OpenRecordChunkReader(result.SessionID); err == nil {
-		d.recordReader = reader
-	} else {
-		log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
+	if d.config.AudioBackendOrDefault() != AudioBackendLocal {
+		if reader, err := d.audioClient.OpenRecordChunkReader(result.SessionID); err == nil {
+			d.recordReader = reader
+		} else {
+			log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
+		}
 	}
 	d.recordText = ""
 	d.recordSTTTelemetry = newSTTTurnTelemetry(d.config, d.sttClient, recordStartedAt)
@@ -333,44 +338,6 @@ func (d *AudioDialog) StartRecording() error {
 	return nil
 }
 
-func startRecordingWithRetry(audio *AudioServiceClient, format AudioFormat, retryTimeout, retryInterval time.Duration) (*RecordStartResult, error) {
-	if retryTimeout <= 0 {
-		return audio.StartRecording(format)
-	}
-	if retryInterval <= 0 {
-		retryInterval = 100 * time.Millisecond
-	}
-
-	deadline := time.Now().Add(retryTimeout)
-	attempts := 0
-	var lastErr error
-	for {
-		result, err := audio.StartRecording(format)
-		if err == nil {
-			if attempts > 0 {
-				log.Printf("[audio] Record session opened after %d retries\n", attempts)
-			}
-			return result, nil
-		}
-		lastErr = err
-		attempts++
-		if attempts == 1 {
-			log.Printf("[audio] Record session unavailable, retrying for up to %s: %v\n", retryTimeout, err)
-		}
-
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		sleep := retryInterval
-		if sleep > remaining {
-			sleep = remaining
-		}
-		time.Sleep(sleep)
-	}
-	return nil, fmt.Errorf("after %s: %w", retryTimeout, lastErr)
-}
-
 // StopRecording stops the current recording session
 func (d *AudioDialog) StopRecording() error {
 	d.recordMu.Lock()
@@ -399,7 +366,7 @@ func (d *AudioDialog) StopRecording() error {
 		_ = reader.Close()
 	}
 
-	if err := d.audioClient.StopRecording(sessionID); err != nil {
+	if err := recordingBackendOrService(d.recordBackend, d.audioClient).StopRecording(sessionID); err != nil {
 		return fmt.Errorf("stop recording: %w", err)
 	}
 	if recordSTT != nil {
@@ -458,7 +425,7 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 		}
 		d.recordMu.Unlock()
 	}
-	chunk, err := d.audioClient.ReadRecordChunk(sessionID, timeoutMs)
+	chunk, err := recordingBackendOrService(d.recordBackend, d.audioClient).ReadRecordChunk(sessionID, timeoutMs)
 	if err == nil {
 		d.uploadRecordChunkToStreamingSTT(sessionID, chunk)
 	}
@@ -1312,7 +1279,7 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 	if !allowFallback {
 		return ttsErr
 	}
-	fallbackPlayed, resultErr := attemptTTSUnavailableFallback(speakCtx, d.audioClient, d.config, speechStarted, ttsErr)
+	fallbackPlayed, resultErr := attemptTTSUnavailableFallback(speakCtx, d.currentTTSPlaybackBackend(), d.config, speechStarted, ttsErr)
 	if fallbackPlayed {
 		log.Printf("[tts] Local unavailable fallback played: %s\n", ttsUnavailableFallbackPath(d.config))
 	}
@@ -1345,7 +1312,7 @@ func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait b
 
 	d.speechMu.Lock()
 	defer d.speechMu.Unlock()
-	if err := playPromptSound(outputCtx, d.audioClient, kind, wait); err != nil {
+	if err := playPromptSound(outputCtx, d.currentTTSPlaybackBackend(), kind, wait); err != nil {
 		log.Printf("[audio] %s prompt sound failed: %v\n", label, err)
 		return err
 	}
@@ -1357,7 +1324,7 @@ func (d *AudioDialog) playPromptSoundUninterruptible(kind promptSoundKind, label
 	log.Printf("[audio] %s prompt sound requested (uninterruptible)\n", label)
 	d.speechMu.Lock()
 	defer d.speechMu.Unlock()
-	if err := playPromptSound(context.Background(), d.audioClient, kind, wait); err != nil {
+	if err := playPromptSound(context.Background(), d.currentTTSPlaybackBackend(), kind, wait); err != nil {
 		log.Printf("[audio] %s prompt sound failed after %s: %v\n", label, time.Since(startedAt).Round(time.Millisecond), err)
 		return
 	}

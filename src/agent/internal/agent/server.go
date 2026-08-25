@@ -10,6 +10,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,6 +25,8 @@ import (
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 
+	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/mnk"
 	"aiden-agent/internal/agent/screenprovider"
 	"aiden-agent/internal/agent/speech"
@@ -72,7 +76,6 @@ type Server struct {
 	screenCaptureClient     screenprovider.Provider
 	quickCapture            *QuickCaptureController
 	recordMu                sync.Mutex
-	webRecording            *webAudioRecording
 	sttConfigTestSession    *sttConfigTestLiveSession
 	bridge                  *PhoneBridge
 	bleSocketPath           string
@@ -97,30 +100,8 @@ type Server struct {
 	steersMu                sync.Mutex
 	eventBroadcaster        *EventBroadcaster
 	storageMonitor          *StorageMonitor
-}
-
-type webAudioRecording struct {
-	sessionID  uint64
-	sampleRate int
-	done       chan struct{}
-
-	mu         sync.Mutex
-	samples    []int16
-	hasPending bool
-	pending    byte
-	stopping   bool
-	err        error
-	sttSession *streamingSTTSession
-	transcript string
-}
-
-type AudioRecordStartResponse struct {
-	Status     string `json:"status"`
-	SampleRate int    `json:"sample_rate"`
-}
-
-type AudioRecordStopResponse struct {
-	Attachment MessageAttachment `json:"attachment"`
+	realtimeChatMu          sync.RWMutex
+	realtimeChatHandler     RealtimeChatHandler
 }
 
 const maxChatImageAttachments = 4
@@ -136,6 +117,7 @@ type MessageAttachment struct {
 	Size       int    `json:"size,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
 	Transcript string `json:"transcript,omitempty"`
+	PreviewURL string `json:"preview_url,omitempty"`
 }
 
 // Message represents a public chat history message or tool call.
@@ -284,6 +266,33 @@ type ChatRequest struct {
 	RequestID   string              `json:"request_id,omitempty"`
 	PhoneID     string              `json:"phone_id,omitempty"`
 }
+
+// RealtimeChatRequest is the text-only request forwarded to an active
+// realtime voice session.
+type RealtimeChatRequest struct {
+	RequestID string
+	Message   string
+}
+
+// RealtimeChatEvent is emitted by a realtime chat handler. Delta events are
+// streamed to clients; done contains the complete response; error terminates
+// the request with an error message.
+type RealtimeChatEvent struct {
+	Type     string
+	Delta    string
+	Response string
+	Error    string
+}
+
+const (
+	RealtimeChatEventDelta = "delta"
+	RealtimeChatEventDone  = "done"
+	RealtimeChatEventError = "error"
+)
+
+// RealtimeChatHandler submits text to the currently active realtime session.
+// The returned channel is closed after a done or error event.
+type RealtimeChatHandler func(context.Context, RealtimeChatRequest) (<-chan RealtimeChatEvent, error)
 
 type ChatCancelRequest struct {
 	RequestID string `json:"request_id"`
@@ -468,10 +477,29 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	// Register preempt hook: when a new run starts, release WebUI audio resources.
 	runtime.RegisterPreemptHook(func() {
 		s.interruptAllActiveOutputs()
-		s.abortWebRecording()
 	})
 
 	return s
+}
+
+// SetRealtimeChatHandler installs the text bridge used while the realtime
+// voice session is active. Passing nil disables the bridge.
+func (s *Server) SetRealtimeChatHandler(handler RealtimeChatHandler) {
+	if s == nil {
+		return
+	}
+	s.realtimeChatMu.Lock()
+	s.realtimeChatHandler = handler
+	s.realtimeChatMu.Unlock()
+}
+
+func (s *Server) realtimeChatHandlerSnapshot() RealtimeChatHandler {
+	if s == nil {
+		return nil
+	}
+	s.realtimeChatMu.RLock()
+	defer s.realtimeChatMu.RUnlock()
+	return s.realtimeChatHandler
 }
 
 // Handler returns the HTTP API and web UI routes served by Server.
@@ -488,7 +516,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/live-activity/current", s.handleLiveActivityCurrent)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
-	mux.HandleFunc("/api/context-dump", s.handleContextDump)
+	mux.HandleFunc("/api/context", s.handleContext)
+	mux.HandleFunc("/api/context/attachment", s.handleContextAttachment)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/setup", s.handleSetup)
 	if s.benchmarkToken() != "" {
@@ -506,8 +535,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/providers/mnk", s.handleProviderMNK)
 	mux.HandleFunc("/api/concurrent", s.handleConcurrent)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
-	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
-	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
 	mux.HandleFunc("/api/config-test/stt/start", s.handleSTTConfigTestStart)
 	mux.HandleFunc("/api/config-test/stt/stop", s.handleSTTConfigTestStop)
 	mux.HandleFunc("/api/audio/", s.handleAudioFile)
@@ -546,6 +573,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 
 	// Static web UI
+	wettyProxy := newWettyReverseProxy()
+	mux.Handle("/wetty", wettyProxy)
+	mux.Handle("/wetty/", wettyProxy)
 	mux.Handle("/web-ui/", http.StripPrefix("/web-ui/", http.FileServer(http.FS(webUIFiles))))
 	mux.HandleFunc("/", s.handleIndex)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -555,6 +585,57 @@ func (s *Server) Handler() http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func newWettyReverseProxy() *httputil.ReverseProxy {
+	target, _ := url.Parse("http://127.0.0.1:3000")
+	return newWettyReverseProxyForTarget(target)
+}
+
+func newWettyReverseProxyForTarget(target *url.URL) *httputil.ReverseProxy {
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Director = func(req *http.Request) {
+		originalHost := req.Host
+		originalProto := "http"
+		if forwardedProto := strings.TrimSpace(req.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+			originalProto = firstForwardedHeaderValue(forwardedProto)
+		} else if req.TLS != nil {
+			originalProto = "https"
+		}
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.Host = target.Host
+		req.Header.Set("X-Forwarded-Host", originalHost)
+		req.Header.Set("X-Forwarded-Proto", originalProto)
+		req.Header.Set("X-Forwarded-Prefix", "/wetty")
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		resp.Header.Del("X-Frame-Options")
+		csp := strings.TrimSpace(resp.Header.Get("Content-Security-Policy"))
+		if !strings.Contains(csp, "frame-ancestors") {
+			if csp != "" {
+				csp += "; "
+			}
+			resp.Header.Set("Content-Security-Policy", csp+"frame-ancestors 'self'")
+		}
+		if location := resp.Header.Get("Location"); location != "" {
+			if parsed, err := url.Parse(location); err == nil {
+				path := parsed.Path
+				if path == "" || path == "/" {
+					path = "/wetty/"
+				} else if !strings.HasPrefix(path, "/wetty") {
+					path = "/wetty" + path
+				}
+				parsed.Scheme = ""
+				parsed.Host = ""
+				parsed.Path = path
+				parsed.RawPath = ""
+				resp.Header.Set("Location", parsed.String())
+			}
+		}
+		return nil
+	}
+	return proxy
 }
 
 // Start starts the HTTP server
@@ -642,7 +723,6 @@ func (s *Server) Close() {
 
 		s.cancelAllActiveRuns()
 		s.interruptAllActiveOutputs()
-		s.abortWebRecording()
 
 		if srv != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), agentHTTPShutdownTimeout)
@@ -710,6 +790,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	turnInput, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
 		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if handler := s.realtimeChatHandlerSnapshot(); handler != nil {
+		if len(turnInput.Attachments) > 0 {
+			http.Error(w, "realtime chat supports text messages only", http.StatusBadRequest)
+			return
+		}
+		s.handleRealtimeChatAsync(w, req, turnInput)
 		return
 	}
 	episodeID := s.runtime.NewEpisodeID()
@@ -1037,36 +1125,6 @@ func (s *Server) interruptAllActiveOutputs() {
 	s.activeOutputsMu.Unlock()
 	for _, output := range all {
 		output.interrupt()
-	}
-}
-
-// abortWebRecording immediately stops any active web audio recording session,
-// discarding any buffered audio. Used during preemption to release the
-// microphone for the new turn.
-func (s *Server) abortWebRecording() {
-	s.recordMu.Lock()
-	recording := s.webRecording
-	s.webRecording = nil
-	s.recordMu.Unlock()
-	if recording == nil {
-		return
-	}
-	if s.logger != nil {
-		s.logger.Info("[preempt] Aborting web audio recording")
-	}
-
-	// Close STT session if present to avoid resource leak.
-	recording.mu.Lock()
-	sttSession := recording.sttSession
-	recording.sttSession = nil
-	recording.mu.Unlock()
-	if sttSession != nil {
-		_ = sttSession.Close()
-	}
-
-	// Stop the audio recording session.
-	if err := s.audioClient.StopRecording(recording.sessionID); err != nil && s.logger != nil {
-		s.logger.Warn("[preempt] StopRecording failed: %v", err)
 	}
 }
 
@@ -1505,11 +1563,10 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 		var historySnapshot []Message
 		response := ""
 		if done {
-			historySnapshot = make([]Message, len(pending.history))
-			copy(historySnapshot, pending.history)
-			for i := len(pending.history) - 1; i >= 0; i-- {
-				if pending.history[i].Type == "assistant" {
-					response = pending.history[i].Content
+			historySnapshot = s.webHistorySnapshot()
+			for i := len(historySnapshot) - 1; i >= 0; i-- {
+				if historySnapshot[i].Type == "assistant" {
+					response = historySnapshot[i].Content
 					break
 				}
 			}
@@ -1626,6 +1683,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	turnInput, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
 		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if handler := s.realtimeChatHandlerSnapshot(); handler != nil {
+		if len(turnInput.Attachments) > 0 {
+			http.Error(w, "realtime chat supports text messages only", http.StatusBadRequest)
+			return
+		}
+		s.handleRealtimeChatStream(w, r, req, turnInput)
 		return
 	}
 	inputText := turnInput.InputText
@@ -1765,7 +1830,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if s.logger != nil {
 				s.logger.Info("Agent run canceled: request_id=%s", req.RequestID)
 			}
-			stream.Write(ChatStreamEvent{Type: "error", Error: "request canceled", History: s.historySnapshot()})
+			stream.Write(ChatStreamEvent{Type: "error", Error: "request canceled", History: s.webHistorySnapshot()})
 			return
 		}
 		errorMessage := Message{
@@ -1787,11 +1852,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			prepared := s.runtime.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: result.TurnFailure})
 			s.speakFinalText(ctx, req.RequestID, prepared)
 		}
-		stream.Write(ChatStreamEvent{Type: "error", Error: err.Error(), History: s.historySnapshot()})
+		stream.Write(ChatStreamEvent{Type: "error", Error: err.Error(), History: s.webHistorySnapshot()})
 		return
 	}
 
-	historySnapshot := s.historySnapshot()
+	historySnapshot := s.webHistorySnapshot()
 	if s.liveActivity != nil {
 		s.liveActivity.CompleteTask(req.RequestID, result.Output)
 	}
@@ -2216,7 +2281,7 @@ func (s *Server) speakTextObservedMode(ctx context.Context, requestID, text stri
 	if ttsErr == nil || !allowFallback {
 		return false, ttsErr
 	}
-	return attemptTTSUnavailableFallback(speakCtx, s.audioClient, cfg, speechStarted, ttsErr)
+	return attemptTTSUnavailableFallback(speakCtx, s.currentTTSPlaybackBackend(), cfg, speechStarted, ttsErr)
 }
 
 func (s *Server) speakText(ctx context.Context, text string, timeoutAfterLock time.Duration) error {
@@ -2249,7 +2314,7 @@ func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {
 		return
 	}
 	go func() {
-		if err := playPromptSound(context.Background(), s.audioClient, kind, false); err != nil && s.logger != nil {
+		if err := playPromptSound(context.Background(), s.currentTTSPlaybackBackend(), kind, false); err != nil && s.logger != nil {
 			s.logger.Error("%s prompt sound failed: %v", label, err)
 		}
 	}()
@@ -2262,20 +2327,46 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	historySnapshot := s.historySnapshot()
+	historySnapshot := s.webHistorySnapshot()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(historySnapshot)
 }
 
-func (s *Server) handleContextDump(w http.ResponseWriter, r *http.Request) {
+type ContextResponse struct {
+	User    contextmanager.MessageListDump `json:"user"`
+	Backend contextmanager.MessageListDump `json:"backend"`
+}
+
+func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s.runtime.ContextDump())
+	json.NewEncoder(w).Encode(ContextResponse{
+		User:    s.runtime.UserContextDump(),
+		Backend: s.runtime.ContextDump(),
+	})
+}
+
+func (s *Server) handleContextAttachment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	role := r.URL.Query().Get("role")
+	attachmentID := r.URL.Query().Get("attachment")
+	data, mimeType, err := s.runtime.ReadContextAttachment(role, attachmentID)
+	if err != nil {
+		http.Error(w, "attachment not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -2770,308 +2861,6 @@ func (s *Server) handleSkillsReload(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.audioClient == nil {
-		http.Error(w, "audio service client is unavailable", http.StatusServiceUnavailable)
-		return
-	}
-
-	s.recordMu.Lock()
-	defer s.recordMu.Unlock()
-
-	if s.sttConfigTestSession != nil {
-		http.Error(w, "stt config test recording is already active", http.StatusConflict)
-		return
-	}
-	if s.webRecording != nil {
-		stale := s.webRecording
-		s.webRecording = nil
-		if s.logger != nil {
-			s.logger.Warn("Clearing stale web audio recording before start")
-		}
-		if err := s.endStaleWebRecording(stale); err != nil && s.logger != nil {
-			s.logger.Warn("Stale web audio recording cleanup failed: %v", err)
-		}
-	}
-
-	sampleRate := s.runtime.config.Audio.SampleRateOrDefault()
-	result, err := s.audioClient.StartRecording(AudioFormat{
-		SampleRate: uint32(sampleRate),
-		Channels:   1,
-		BitWidth:   16,
-	})
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Web audio recording start failed: %v", err)
-		}
-		http.Error(w, "start device audio recording: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	go func() {
-		if err := playPromptSound(context.Background(), s.audioClient, promptSoundRecordingStart, true); err != nil && s.logger != nil {
-			s.logger.Error("Recording prompt sound failed: %v", err)
-		}
-	}()
-
-	recording := &webAudioRecording{
-		sessionID:  result.SessionID,
-		sampleRate: sampleRate,
-		done:       make(chan struct{}),
-		samples:    make([]int16, 0, sampleRate),
-	}
-	if s.webAudioInputMode() == TurnModalitySTT && s.sttClient != nil && s.sttClient.Capabilities().SupportsStreamingUpload {
-		streamingSTT, err := beginStreamingSTTSession(r.Context(), s.sttClient, STTStreamConfig{
-			SampleRate: sampleRate,
-			Channels:   1,
-			BitWidth:   16,
-		})
-		if err != nil {
-			if s.logger != nil {
-				s.logger.Warn("Web audio streaming STT unavailable, falling back to one-shot STT: %v", err)
-			}
-		} else if streamingSTT != nil {
-			if s.logger != nil {
-				s.logger.Info("Web audio streaming STT enabled for realtime transcription")
-			}
-			recording.sttSession = streamingSTT
-		}
-	}
-
-	s.webRecording = recording
-
-	go s.readWebAudioRecording(recording)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(AudioRecordStartResponse{
-		Status:     "recording",
-		SampleRate: sampleRate,
-	})
-}
-
-func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.audioClient == nil {
-		http.Error(w, "audio service client is unavailable", http.StatusServiceUnavailable)
-		return
-	}
-
-	s.recordMu.Lock()
-	recording := s.webRecording
-	if recording == nil {
-		s.recordMu.Unlock()
-		http.Error(w, "audio recording is not active", http.StatusBadRequest)
-		return
-	}
-	s.recordMu.Unlock()
-
-	if err := s.endWebRecording(recording); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Web audio recording stop failed: %v", err)
-		}
-		http.Error(w, "stop device audio recording: "+err.Error(), http.StatusInternalServerError)
-		s.recordMu.Lock()
-		if s.webRecording == recording {
-			s.webRecording = nil
-		}
-		s.recordMu.Unlock()
-		return
-	}
-
-	s.recordMu.Lock()
-	if s.webRecording == recording {
-		s.webRecording = nil
-	}
-	s.recordMu.Unlock()
-
-	samples := recording.snapshotSamples()
-	wavData := pcm16MonoToWAV(samples, recording.sampleRate)
-	attachment := MessageAttachment{
-		Kind:       AttachmentKindAudio,
-		Name:       "recording.wav",
-		MIMEType:   "audio/wav",
-		Data:       base64.StdEncoding.EncodeToString(wavData),
-		Size:       len(wavData),
-		Transcript: recording.readTranscript(),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(AudioRecordStopResponse{Attachment: attachment})
-}
-
-const (
-	webRecordingDrainTimeout        = 7 * time.Second
-	webRecordingStaleCleanupTimeout = 200 * time.Millisecond
-)
-
-var webRecordingStreamingSTTFinalizeTimeout = 2 * time.Second
-
-func (s *Server) endWebRecording(recording *webAudioRecording) error {
-	return s.endWebRecordingWithTimeout(recording, webRecordingDrainTimeout)
-}
-
-func (s *Server) endStaleWebRecording(recording *webAudioRecording) error {
-	return s.endWebRecordingWithTimeout(recording, webRecordingStaleCleanupTimeout)
-}
-
-func (s *Server) finalizeWebRecordingTranscript(recording *webAudioRecording) error {
-	if recording == nil {
-		return nil
-	}
-
-	recording.mu.Lock()
-	session := recording.sttSession
-	recording.sttSession = nil
-	recording.mu.Unlock()
-	if session == nil {
-		return nil
-	}
-
-	transcript, err := session.FinalizeWithTimeout(webRecordingStreamingSTTFinalizeTimeout)
-	if err != nil {
-		_ = session.Close()
-		return err
-	}
-	recording.storeTranscript(transcript)
-	return session.Close()
-}
-
-func (s *Server) endWebRecordingWithTimeout(recording *webAudioRecording, timeout time.Duration) error {
-	if recording == nil {
-		return nil
-	}
-	recording.setStopping()
-	stopErr := s.audioClient.StopRecording(recording.sessionID)
-	drained := false
-	select {
-	case <-recording.done:
-		drained = true
-	case <-time.After(timeout):
-		if stopErr == nil {
-			stopErr = fmt.Errorf("timed out waiting for audio recording to drain")
-		}
-	}
-	if err := recording.readError(); err != nil {
-		recording.clearStreamingSession()
-		return err
-	}
-	if !drained {
-		recording.clearStreamingSession()
-		return stopErr
-	}
-	if err := s.finalizeWebRecordingTranscript(recording); err != nil {
-		if s.logger != nil {
-			s.logger.Warn("Finalize web audio streaming transcript failed: %v", err)
-		}
-		if errors.Is(err, errStreamingSTTFinalizeTimeout) {
-			stopErr = errors.Join(stopErr, err)
-		}
-	}
-	return stopErr
-}
-
-func (s *Server) readWebAudioRecording(recording *webAudioRecording) {
-	defer close(recording.done)
-
-	for {
-		chunk, err := s.audioClient.ReadRecordChunk(recording.sessionID, 1000)
-		if err != nil {
-			if !recording.isStopping() {
-				recording.setError(err)
-			}
-			return
-		}
-		if len(chunk.PCM) > 0 {
-			recording.appendPCM(chunk.PCM)
-			if err := recording.uploadPCM(chunk.PCM); err != nil {
-				recording.clearStreamingSession()
-				if s.logger != nil {
-					s.logger.Warn("Web audio streaming STT upload failed, falling back to one-shot STT: %v", err)
-				}
-			}
-		}
-		if chunk.EndOfStream {
-			return
-		}
-	}
-}
-
-func (r *webAudioRecording) appendPCM(pcm []byte) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	AppendPCM16Samples(pcm, &r.samples, &r.hasPending, &r.pending)
-}
-
-func (r *webAudioRecording) setStopping() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.stopping = true
-}
-
-func (r *webAudioRecording) isStopping() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.stopping
-}
-
-func (r *webAudioRecording) setError(err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.err = err
-}
-
-func (r *webAudioRecording) readError() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.err
-}
-
-func (r *webAudioRecording) snapshotSamples() []int16 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	samples := make([]int16, len(r.samples))
-	copy(samples, r.samples)
-	return samples
-}
-
-func (r *webAudioRecording) uploadPCM(pcm []byte) error {
-	r.mu.Lock()
-	session := r.sttSession
-	r.mu.Unlock()
-	if session == nil {
-		return nil
-	}
-	return session.UploadPCM(pcm)
-}
-
-func (r *webAudioRecording) clearStreamingSession() {
-	r.mu.Lock()
-	session := r.sttSession
-	r.sttSession = nil
-	r.mu.Unlock()
-	if session != nil {
-		_ = session.Close()
-	}
-}
-
-func (r *webAudioRecording) storeTranscript(transcript string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.transcript = strings.TrimSpace(transcript)
-}
-
-func (r *webAudioRecording) readTranscript() string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.transcript
-}
-
 func (s *Server) handleAudioFile(w http.ResponseWriter, r *http.Request) {
 	// Extract filename from URL path
 	filename := strings.TrimPrefix(r.URL.Path, "/api/audio/")
@@ -3399,6 +3188,82 @@ func (s *Server) historySnapshot() []Message {
 	return historySnapshot
 }
 
+func (s *Server) webHistorySnapshot() []Message {
+	if s == nil || s.runtime == nil {
+		return nil
+	}
+	dump := s.runtime.WebContextDump()
+	result := make([]Message, 0, len(dump.Messages))
+	role := "backend"
+	if s.runtime.config.InputModeOrDefault() == "realtime" {
+		role = "user"
+	}
+	for i, item := range dump.Messages {
+		message, ok := webMessageFromContextMessage(item, role)
+		if ok {
+			message.RequestID = fmt.Sprintf("context-%s-%d", role, i)
+			result = append(result, message)
+		}
+	}
+	return result
+}
+
+func webMessageFromContextMessage(item messages.Message, contextRole string) (Message, bool) {
+	message := Message{Content: item.Content}
+	switch item.Role {
+	case messages.MessageRoleSystem:
+		return Message{}, false
+	case messages.MessageRoleUser:
+		message.Type = "user"
+	case messages.MessageRoleAssistant:
+		message.Type = "assistant"
+	case messages.MessageRoleToolCall:
+		message.Type = "tool_call"
+		if len(item.ToolCalls) > 0 {
+			message.ToolName = item.ToolCalls[0].Name
+			message.ToolInput = item.ToolCalls[0].Arguments
+		}
+	case messages.MessageRoleToolResult:
+		message.Type = "tool_result"
+		if len(item.ToolResults) > 0 {
+			message.ToolName = item.ToolResults[0].Name
+			message.Content = item.ToolResults[0].Content
+		}
+	case messages.MessageRoleNotice:
+		message.Type = "notice"
+	case messages.MessageRoleState:
+		message.Type = "state"
+	default:
+		message.Type = "assistant"
+	}
+	message.Role = string(item.Role)
+	for _, attachment := range item.Attachments {
+		name := filepath.Base(attachment.FilePath)
+		if name == "." || name == string(filepath.Separator) || name == "" {
+			continue
+		}
+		message.Attachments = append(message.Attachments, MessageAttachment{
+			Kind:       attachmentKindFromMIME(attachment.MIMEType),
+			Name:       name,
+			MIMEType:   attachment.MIMEType,
+			Size:       int(attachment.FileSize),
+			Path:       attachment.FilePath,
+			PreviewURL: "/api/context/attachment?role=" + url.QueryEscape(contextRole) + "&attachment=" + url.QueryEscape(name),
+		})
+	}
+	return message, true
+}
+
+func attachmentKindFromMIME(mimeType string) string {
+	if isImageMIMEType(mimeType) {
+		return AttachmentKindImage
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "audio/") {
+		return AttachmentKindAudio
+	}
+	return "file"
+}
+
 func (s *Server) loadHistoryFromDisk() {
 	if s.runtime.config.ConfigDir == "" {
 		return
@@ -3509,6 +3374,8 @@ func (s *Server) webAudioInputMode() string {
 	switch s.runtime.config.InputModeOrDefault() {
 	case "stt":
 		return "stt"
+	case "realtime":
+		return "text"
 	default:
 		if s.sttClient != nil {
 			return "stt"

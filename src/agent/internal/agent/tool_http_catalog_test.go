@@ -283,7 +283,7 @@ func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
 		"web_search",
 		"web_scraper",
 		"wikipedia",
-		"request_human_handoff",
+		"request_user_action",
 		"run_script",
 		"open_app",
 		"open_url",

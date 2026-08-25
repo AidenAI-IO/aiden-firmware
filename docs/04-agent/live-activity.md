@@ -48,7 +48,7 @@ snapshot, so skipped intermediate Wake notifications do not lose final state.
 - `needs_app`: asks the user to return to the Aiden App when an operation needs the
   foreground companion app.
 - `waiting_user` with `current_action=request_user_input`: keeps the handoff
-  instruction visible after `request_human_handoff` so the user can take over
+  instruction visible after `request_user_action` so the user can take over
   on the phone.
 - `completed` / `failed` / `canceled`: keeps the terminal text visible in the
   existing Live Activity instead of immediately replacing it with standby.
@@ -204,7 +204,7 @@ board snapshot.
    exists.
 4. Start a task from Agent Web UI and confirm the card changes to `running`
    without reopening the app.
-5. Trigger `request_human_handoff` and confirm the card alerts once, displays
+5. Trigger `request_user_action` and confirm the card alerts once, displays
    the suggested action, and remains in the handoff state after the Agent turn
    stops.
 6. Confirm completed and failed text remains visible and alerts once; ordinary

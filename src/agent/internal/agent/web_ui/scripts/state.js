@@ -1,26 +1,9 @@
-// Shared DOM references and mutable UI state.
-function createRecorderState() {
-    return {
-        isRecording: false,
-        isStopping: false,
-        mode: '',
-        stream: null,
-        context: null,
-        source: null,
-        processor: null,
-        sink: null,
-        chunks: [],
-        sampleRate: targetAudioSampleRate
-    };
-}
-
 const conversationEl = document.getElementById('conversation');
 const messagesDiv = document.getElementById('messages');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
 const imageInputEl = document.getElementById('imageInput');
 const imageBtn = document.getElementById('imageBtn');
-const recordBtn = document.getElementById('recordBtn');
 const draftAttachmentsEl = document.getElementById('draftAttachments');
 const composerHintEl = document.getElementById('composerHint');
 const loadingDiv = document.getElementById('loading');
@@ -29,6 +12,11 @@ const pendingSteerEl = document.getElementById('pendingSteer');
 const pendingSteerTextEl = document.getElementById('pendingSteerText');
 const cancelSteerBtn = document.getElementById('cancelSteerBtn');
 const emptyStateEl = document.getElementById('emptyState');
+const stateModalEl = document.getElementById('stateModal');
+const stateModalKickerEl = document.getElementById('stateModalKicker');
+const stateModalTitleEl = document.getElementById('stateModalTitle');
+const stateModalBodyEl = document.getElementById('stateModalBody');
+const stateModalCloseEl = document.getElementById('stateModalClose');
 const toolSelectEl = document.getElementById('toolSelect');
 const toolDescriptionEl = document.getElementById('toolDescription');
 const toolInputEl = document.getElementById('toolInput');
@@ -46,20 +34,15 @@ const infrastructureResultMetaEl = document.getElementById('infrastructureResult
 const infrastructurePreviewWrapEl = document.getElementById('infrastructurePreviewWrap');
 const infrastructurePreviewEl = document.getElementById('infrastructurePreview');
 const infrastructureResultOutputEl = document.getElementById('infrastructureResultOutput');
-const skillSelectEl = document.getElementById('skillSelect');
-const skillMarkdownEl = document.getElementById('skillMarkdown');
-const skillStatusEl = document.getElementById('skillStatus');
-const copySkillBtnEl = document.getElementById('copySkillBtn');
-const targetAudioSampleRate = 16000;
+const wettyFrameEl = document.getElementById('wettyFrame');
+const wettyOpenLinkEl = document.getElementById('wettyOpenLink');
 const maxDraftImageAttachments = 4;
 const defaultComposerHint = 'Enter to send, Shift+Enter for newline';
 
 let nextAttachmentId = 1;
 let draftAttachments = [];
 let composerHintTimer = null;
-let recorderState = createRecorderState();
 let toolCatalog = [];
-let toolSkills = [];
 let infrastructureActiveTarget = '';
 let currentChatRequestId = '';
 let externalActiveRequestId = '';
@@ -71,8 +54,9 @@ let stopRunArmedUntil = 0;
 let stopRunArmTimer = null;
 let pendingSteer = null;
 let pendingSteerSubmitting = false;
-let episodeCache = {};
 let eventSource = null;
 let renderedMessageKeys = new Set();
 let renderedMessageNodes = new Map();
 let streamingAssistantDrafts = {};
+let renderedStateMessages = new Map();
+let activeStateMessageKey = '';

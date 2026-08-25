@@ -39,7 +39,7 @@ func TestPlayTTSUnavailableFallbackStreamsBundledWAV(t *testing.T) {
 
 	ops := &recordedAudioOps{}
 	audio := NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, ops))
-	if err := playTTSUnavailableFallback(context.Background(), audio, Config{}); err != nil {
+	if err := playTTSUnavailableFallback(context.Background(), newAudioBackend(audio), Config{}); err != nil {
 		t.Fatalf("playTTSUnavailableFallback() error = %v", err)
 	}
 	if got := ops.countOp("start_playback"); got != 1 {
@@ -58,7 +58,7 @@ func TestAttemptTTSUnavailableFallbackPreservesOriginalError(t *testing.T) {
 	ops := &recordedAudioOps{}
 	audio := NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, ops))
 	original := errors.New("dial tcp: connection refused")
-	played, err := attemptTTSUnavailableFallback(context.Background(), audio, Config{}, false, original)
+	played, err := attemptTTSUnavailableFallback(context.Background(), newAudioBackend(audio), Config{}, false, original)
 	if !played {
 		t.Fatal("fallback played = false, want true")
 	}
@@ -78,12 +78,12 @@ func TestAttemptTTSUnavailableFallbackSkipsPartialSpeechAndCancellation(t *testi
 	ops := &recordedAudioOps{}
 	audio := NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, ops))
 	original := errors.New("dial tcp: connection reset")
-	if played, err := attemptTTSUnavailableFallback(context.Background(), audio, Config{}, true, original); played || !errors.Is(err, original) {
+	if played, err := attemptTTSUnavailableFallback(context.Background(), newAudioBackend(audio), Config{}, true, original); played || !errors.Is(err, original) {
 		t.Fatalf("partial speech fallback = (%v, %v), want (false, original error)", played, err)
 	}
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if played, err := attemptTTSUnavailableFallback(canceledCtx, audio, Config{}, false, original); played || !errors.Is(err, original) {
+	if played, err := attemptTTSUnavailableFallback(canceledCtx, newAudioBackend(audio), Config{}, false, original); played || !errors.Is(err, original) {
 		t.Fatalf("canceled fallback = (%v, %v), want (false, original error)", played, err)
 	}
 	if got := ops.countOp("start_playback"); got != 0 {
