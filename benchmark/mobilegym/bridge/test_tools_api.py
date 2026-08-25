@@ -97,12 +97,13 @@ def test_get_tools_catalog(bridge_server):
     assert touch_props["point"]["required"] == ["x", "y"]
     assert "coord_space" not in touch_props
     assert touch_props["button"]["enum"] == ["left", "right", "middle"]
-    assert touch_props["strength"]["enum"] == ["large", "medium", "small", "tiny"]
-    assert "hold_before_ms" in touch_props
-    assert "hold_after_ms" in touch_props
+    assert touch_props["type"]["enum"] == ["tap", "double_tap", "long_press", "swipe", "drag"]
+    assert touch_props["direction"]["enum"] == ["up", "down", "left", "right"]
+    assert touch_props["speed"]["exclusiveMinimum"] == 0
     assert "hold_ms" in touch_props
     assert "pause_ms" in touch_props
-    assert "steps" in touch_props
+    for removed in ("strength", "distance", "anchor", "hold_before_ms", "hold_after_ms", "steps"):
+        assert removed not in touch_props
 
     keyboard_tap_props = tools["keyboard_tap"]["args_schema"]["properties"]
     assert tools["keyboard_text"]["args_schema"]["additionalProperties"] is False
@@ -564,7 +565,7 @@ def test_invoke_without_episode_returns_error(bridge_server):
 
     server, base_url, state = bridge_server
 
-    request_body = json.dumps({"input": {"type": "home"}}).encode()
+    request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
     req = Request(
         f"{base_url}/api/tools/touch_gesture",
         data=request_body,
@@ -594,7 +595,7 @@ def test_invoke_stale_episode_returns_conflict(bridge_server, monkeypatch):
         raise StaleEpisodeError("stale episode_id")
 
     monkeypatch.setattr(state, "require_active", fail_require_active)
-    request_body = json.dumps({"input": {"type": "home"}}).encode()
+    request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
     req = Request(
         f"{base_url}/api/tools/touch_gesture",
         data=request_body,
@@ -633,7 +634,7 @@ def test_invoke_without_token_still_works(bridge_server):
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-004"
 
-    request_body = json.dumps({"input": {"type": "home"}}).encode()
+    request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
     req = Request(
         f"{base_url}/api/tools/touch_gesture",
         data=request_body,
@@ -652,7 +653,7 @@ def test_invoke_unknown_tool_returns_error(bridge_server):
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-005"
 
-    request_body = json.dumps({"input": {"type": "home"}}).encode()
+    request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
     req = Request(
         f"{base_url}/api/tools/unknown_tool",
         data=request_body,
@@ -732,7 +733,7 @@ def test_multi_env_tools_require_benchmark_task_id_header():
     server = BridgeServer(BridgeTaskRouter(states), host="127.0.0.1", port=0)
     base_url = server.start()
     try:
-        request_body = json.dumps({"input": {"type": "home"}}).encode()
+        request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
         req = Request(
             f"{base_url}/api/tools/touch_gesture",
             data=request_body,
@@ -1251,7 +1252,7 @@ def test_multi_env_tools_return_capacity_error_until_task_released():
     base_url = server.start()
     try:
         for task_id in ("task.alpha", "task.beta"):
-            request_body = json.dumps({"input": {"type": "home"}}).encode()
+            request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
             req = Request(
                 f"{base_url}/api/tools/touch_gesture",
                 data=request_body,
@@ -1277,7 +1278,7 @@ def test_multi_env_tools_return_capacity_error_until_task_released():
         with urlopen(release_req, timeout=5) as resp:
             assert resp.status == 200
 
-        request_body = json.dumps({"input": {"type": "home"}}).encode()
+        request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
         req = Request(
             f"{base_url}/api/tools/touch_gesture",
             data=request_body,

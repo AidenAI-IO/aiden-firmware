@@ -46,14 +46,6 @@ const (
 	defaultSwipeDurationMs = 700
 	defaultSwipeSteps      = 24
 
-	// defaultDirectionalSwipeDistance is the normalized travel for swipe_left/right/up/down.
-	// Coordinates use 0-1000 normalized scale.
-	defaultDirectionalSwipeDistance = 700.0
-	directionalSwipeLargeDistance   = 700.0
-	directionalSwipeMediumDistance  = 500.0
-	directionalSwipeSmallDistance   = 200.0
-	directionalSwipeTinyDistance    = 40.0
-
 	wheelNudgeDefaultMs      = 1400
 	wheelNudgeDefaultSteps   = 18
 	wheelNudgeRowTolerance   = 0.20
@@ -63,14 +55,6 @@ const (
 	// short. It is only applied when the plan leaves at least one full row of
 	// target margin, so an exact-target drag cannot be pushed past its target.
 	wheelNudgeMultiRowCompensation = 0.45
-
-	phoneBackStartX = 1
-	phoneBackEndX   = 750
-	phoneBackY      = 500
-
-	phoneHomeX      = 500
-	phoneHomeStartY = 999
-	phoneHomeEndY   = 180
 
 	// defaultCursorSettleMs is the dwell between positioning the HID absolute
 	// cursor and pressing a button at that position. iOS HID cursor mode
@@ -893,55 +877,34 @@ func (t *TouchGestureTool) platform() string {
 }
 
 func (t *TouchGestureTool) Description() string {
-	description := `Perform a custom touch/pointer gesture via HID. Use this for tap/swipe/drag and other freehand screen gestures. `
-	if touchGestureIncludesEdgeNavigation(t.platform()) {
-		description += `Prefer quick_action for semantic platform actions. For go-home/home-screen requests such as 回到桌面, call quick_action with {"action":"home"} first; use touch_gesture {"type":"home"} only as a fallback. `
-	}
-	return description +
+	return `Perform a custom touch/pointer gesture via HID. Use this for tap/swipe/drag and other freehand screen gestures. ` +
 		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Point, start, and end never accept screenshot pixels: convert a target measured at (pixel_x,pixel_y) in the latest image with x=pixel_x/max(image_width-1,1)*1000 and y=pixel_y/max(image_height-1,1)*1000 before calling. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
+		`For swipe, provide start and either end or direction (up/down/left/right). Speed is normalized coordinate units per second and defaults to 2500; duration_ms may be supplied to override the calculated duration. A direction-only swipe travels toward the corresponding screen edge when duration_ms is omitted, or travels speed*duration_ms/1000 normalized units when duration_ms is supplied. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
-	typeDescription := "Gesture type. tap, double_tap, and long_press require point. swipe and drag require start and end. Directional swipe types accept optional strength, distance, and anchor."
-	if touchGestureIncludesEdgeNavigation(t.platform()) {
-		typeDescription += ` Edge aliases use real edges: back starts at x=1, home starts at y=999. For semantic home/back requests, prefer quick_action first, especially quick_action {"action":"home"} for go-home/home-screen requests; use back/home here only as fallback alternatives.`
-	}
+	typeDescription := "Gesture type. tap, double_tap, and long_press require point. drag requires start and end. swipe requires start and either end or direction."
+	speedSchema := numberArgSchema("Swipe speed in normalized coordinate units per second. Defaults to 2500.", 2500)
+	speedSchema["exclusiveMinimum"] = 0
 	schema := objectArgsSchema(map[string]any{
-		"type":     stringEnumArgSchema(typeDescription, touchGestureTypesForPlatform(t.platform())...),
-		"point":    pointSchema(`Required for tap, double_tap, and long_press. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"start":    pointSchema(`Required start point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"end":      pointSchema(`Required end point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"button":   stringEnumArgSchema("Mouse button for drag.", "left", "right", "middle"),
-		"hold_ms":  nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
-		"distance": coordinateSchema("Directional swipe travel in 0-1000 normalized units (700 ≈ 70% of screen).", 700),
-		"anchor":   coordinateSchema("Directional swipe fixed-axis coordinate in 0-1000 normalized units.", 500),
-		"strength": stringEnumArgSchema("Directional swipe preset distance.", "large", "medium", "small", "tiny"),
+		"type":        stringEnumArgSchema(typeDescription, "tap", "double_tap", "long_press", "drag", "swipe"),
+		"point":       pointSchema(`Required for tap, double_tap, and long_press. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"start":       pointSchema(`Required start point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"end":         pointSchema(`End point for swipe or drag. Swipe may provide direction instead of end.`),
+		"direction":   stringEnumArgSchema("Swipe direction when end is omitted. The gesture starts at start and moves toward that direction.", "up", "down", "left", "right"),
+		"button":      stringEnumArgSchema("Mouse button for pointer gestures.", "left", "right", "middle"),
+		"hold_ms":     nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
+		"speed":       speedSchema,
+		"duration_ms": rangedIntegerArgSchema("Optional swipe duration in milliseconds. With end, it overrides timing calculated from speed; with direction, speed × duration determines travel.", 1, mnk.MaxSwipeDurationMs),
 	}, "type")
-	schema["description"] = `JSON object for one gesture. Unknown fields are ignored. Coordinate fields point, start, and end use named objects containing both x and y.`
+	schema["description"] = `JSON object for one gesture. Unknown fields are ignored. Coordinate fields point, start, and end use named objects containing both x and y. Swipe accepts either start+end or start+direction; speed defaults to 2500 normalized units per second and duration_ms overrides calculated timing.`
 	schema["examples"] = []map[string]any{
 		{"type": "tap", "point": map[string]any{"x": 500, "y": 500}},
-		{"type": "swipe", "start": map[string]any{"x": 500, "y": 800}, "end": map[string]any{"x": 500, "y": 200}},
-		{"type": "swipe_up", "strength": "medium"},
+		{"type": "swipe", "start": map[string]any{"x": 500, "y": 800}, "end": map[string]any{"x": 500, "y": 200}, "speed": 2500},
+		{"type": "swipe", "start": map[string]any{"x": 500, "y": 800}, "direction": "up", "speed": 2500, "duration_ms": 300},
 	}
 	return schema
-}
-
-func touchGestureTypesForPlatform(platform string) []string {
-	types := []string{"tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down"}
-	if touchGestureIncludesEdgeNavigation(platform) {
-		types = append(types, "back", "home")
-	}
-	return types
-}
-
-func touchGestureIncludesEdgeNavigation(platform string) bool {
-	switch normalizeAgentToolPlatform(platform) {
-	case "", "ios", "android":
-		return true
-	default:
-		return false
-	}
 }
 
 func pointSchema(description string) map[string]any {
@@ -1764,113 +1727,6 @@ func runSwipeLikeGesture(pc *pointerController, start, end resolvedPointerPoint,
 
 func runPositionedDragGesture(pc *pointerController, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, holdAfterMs, steps int) error {
 	return dragPointer(pc, start, end, button, durationMs, holdBeforeMs, holdAfterMs, steps)
-}
-
-type directionalSwipeSettings struct {
-	distance     float64
-	durationMs   int
-	steps        int
-	holdBeforeMs int
-	holdAfterMs  int
-}
-
-func directionalSwipePreset(strength string) (directionalSwipeSettings, error) {
-	switch strings.ToLower(strings.TrimSpace(strength)) {
-	case "", "default":
-		return directionalSwipeSettings{distance: defaultDirectionalSwipeDistance, durationMs: defaultSwipeDurationMs, steps: defaultSwipeSteps, holdBeforeMs: defaultSwipeHoldBeforeMs, holdAfterMs: defaultSwipeHoldAfterMs}, nil
-	case "large":
-		return directionalSwipeSettings{distance: directionalSwipeLargeDistance, durationMs: 800, steps: 28, holdBeforeMs: 90, holdAfterMs: defaultSwipeHoldAfterMs}, nil
-	case "medium":
-		return directionalSwipeSettings{distance: directionalSwipeMediumDistance, durationMs: 650, steps: 22, holdBeforeMs: 90, holdAfterMs: defaultSwipeHoldAfterMs}, nil
-	case "small":
-		return directionalSwipeSettings{distance: directionalSwipeSmallDistance, durationMs: 420, steps: 14, holdBeforeMs: 100, holdAfterMs: defaultSwipeHoldAfterMs}, nil
-	case "tiny":
-		return directionalSwipeSettings{distance: directionalSwipeTinyDistance, durationMs: 320, steps: 10, holdBeforeMs: 100, holdAfterMs: defaultSwipeHoldAfterMs}, nil
-	default:
-		return directionalSwipeSettings{}, fmt.Errorf("unsupported strength: %q", strength)
-	}
-}
-
-func directionalSwipeEndpoints(screen *screen.ScreenState, touchscreen bool, gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {
-	startX, startY, endX, endY, err := directionalSwipeNormalizedCoordinates(gestureType, distance, anchor, preset)
-	if err != nil {
-		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
-	}
-
-	startAbsX, startAbsY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, startX, startY)
-	if err != nil {
-		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
-	}
-	endAbsX, endAbsY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, endX, endY)
-	if err != nil {
-		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
-	}
-	travel := preset.distance
-	if travel <= 0 {
-		travel = defaultDirectionalSwipeDistance
-	}
-	if distance != nil && *distance > 0 {
-		travel = clampFloat(*distance, 1, 1000)
-	}
-	center := 500.0
-	if anchor != nil {
-		center = clampFloat(*anchor, 0, 1000)
-	}
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf(
-			"directionalSwipeEndpoints type=%q touchscreen=%v travel=%.2f anchor=%.2f start_norm=(%.2f,%.2f) end_norm=(%.2f,%.2f) start_abs=(%d,%d) end_abs=(%d,%d) mapping_at_resolve={%s}",
-			gestureType,
-			touchscreen,
-			travel,
-			center,
-			startX,
-			startY,
-			endX,
-			endY,
-			startAbsX,
-			startAbsY,
-			endAbsX,
-			endAbsY,
-			screen.Format(),
-		)
-	}
-	return resolvedPointerPoint{x: startAbsX, y: startAbsY}, resolvedPointerPoint{x: endAbsX, y: endAbsY}, nil
-}
-
-func directionalSwipeNormalizedCoordinates(gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (float64, float64, float64, float64, error) {
-	travel := preset.distance
-	if travel <= 0 {
-		travel = defaultDirectionalSwipeDistance
-	}
-	if distance != nil && *distance > 0 {
-		travel = clampFloat(*distance, 1, 1000)
-	}
-	center := 500.0
-	if anchor != nil {
-		center = clampFloat(*anchor, 0, 1000)
-	}
-	half := travel / 2
-
-	var startX, startY, endX, endY float64
-	switch gestureType {
-	case "swipe_left":
-		startX, endX = center+half, center-half
-		startY, endY = center, center
-	case "swipe_right":
-		startX, endX = center-half, center+half
-		startY, endY = center, center
-	case "swipe_up":
-		startY, endY = center+half, center-half
-		startX, endX = center, center
-	case "swipe_down":
-		startY, endY = center-half, center+half
-		startX, endX = center, center
-	default:
-		return 0, 0, 0, 0, fmt.Errorf("unsupported directional swipe: %q", gestureType)
-	}
-
-	return clampFloat(startX, 0, 1000), clampFloat(startY, 0, 1000),
-		clampFloat(endX, 0, 1000), clampFloat(endY, 0, 1000), nil
 }
 
 func dragPointer(pc *pointerController, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, holdAfterMs, steps int) (dragErr error) {

@@ -57,7 +57,7 @@ Prefer the highest-level reliable tool for the job:
   - Do not infer that `quick_action` is unavailable from an unrelated tool failure, text-entry failure, stale screenshot, HID problem, or your own assumption.
   - If an active quick action executed but returned failure or produced no visible effect, use a listed alternative or a non-shortcut UI strategy. Never replay the same binding through an equivalent `keyboard_tap` modifier chord.
   - If `ok=true` but the screenshot shows no expected change, treat it as ineffective: try `alternative=true` once when alternatives are listed, otherwise switch tools. Never loop on the same binding.
-- Use `touch_gesture` for taps, swipes, and drags on mobile or desktop targets, and as a listed or non-shortcut fallback for back/home gestures.
+- Use `touch_gesture` for taps, swipes, and drags on mobile or desktop targets. Back/home gesture fallbacks are ordinary `type:"swipe"` calls with explicit edge coordinates.
 - For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `enter_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
 - Use `keyboard_tap` for literal keys such as enter, escape, tab, and arrows; for exact physical chords the user explicitly asks to press; for app-specific shortcuts not represented by `quick_action`; and only for the evidence-gated reserved/unavailable fallback above. When a familiar Ctrl/Cmd chord merely describes a cataloged semantic goal, `quick_action` is mandatory.
@@ -144,10 +144,10 @@ On iOS, if Phone Bridge context says the companion app is backgrounded/inactive 
 
 ## Scrolling and Picker Controls
 
-Directional swipe names describe finger movement, not content direction:
+Swipe `direction` describes finger movement, not content direction:
 
-- `swipe_up`: finger moves up → viewport scrolls down → reveals content below.
-- `swipe_down`: finger moves down → viewport scrolls up → reveals content above.
+- `direction:"up"`: finger moves up → viewport scrolls down → reveals content below.
+- `direction:"down"`: finger moves down → viewport scrolls up → reveals content above.
 
 Scrollable region discipline:
 
@@ -157,13 +157,13 @@ Scrollable region discipline:
 
 Calibration loop:
 
-1. Record the current screenshot's `screenshot_attachment_id`, then start with medium strength.
+1. Record the current screenshot's `screenshot_attachment_id`, then start with an explicit start/end path and the default `speed:2500`.
 2. Read the gesture result's automatic post-action screenshot and its `screenshot_attachment_id`; do not take another screenshot before comparison.
 3. Use visual inspection or call `image_diff` with those exact values in `before` and `after` to confirm movement and estimate rows/items moved.
    Never invent attachment IDs. If there is no suitable pre-action screenshot attachment, call `screenshot` before the gesture.
-4. If far from target, increase strength; if close, use small/tiny.
-5. If overshot, reverse direction and reduce strength.
-6. Do not repeat the same strength/distance after a failed attempt.
+4. If far from target, increase the start/end distance; if close, shorten it.
+5. If overshot, reverse the path and reduce its distance.
+6. Do not repeat the same path and speed after a failed attempt.
 
 If the same list boundary appears again, stop searching in that direction. Try search/filter, a different tab, or ask the user.
 

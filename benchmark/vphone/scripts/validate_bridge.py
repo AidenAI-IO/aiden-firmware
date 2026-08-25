@@ -142,7 +142,7 @@ def validate_bridge(
             "/api/tools/touch_gesture",
             method="POST",
             task_id=task_id,
-            payload={"input": {"type": "home"}},
+            payload={"input": {"type": "tap", "point": {"x": 500, "y": 500}}},
         )
         if status != 200 or tool.get("is_error") is not False:
             raise BridgeValidationError(f"touch_gesture failed: HTTP {status}: {tool}")

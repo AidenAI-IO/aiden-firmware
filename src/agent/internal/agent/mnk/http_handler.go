@@ -110,7 +110,7 @@ func (h *HTTPHandler) handleSwipe(ctx context.Context, params *DragParams) error
 	if len(params.Path) < 2 {
 		return InvalidArguments("swipe path must contain at least 2 points")
 	}
-	return h.provider.Swipe(ctx, params.Path, params.Button)
+	return swipeWithDuration(ctx, h.provider, params.Path, params.Button, params.DurationMs)
 }
 
 func (h *HTTPHandler) handleDrag(ctx context.Context, params *DragParams) error {

@@ -96,6 +96,21 @@ func TestHTTPProvider(t *testing.T) {
 		if mockProvider.swipes[0].Path[0] != path[0] || mockProvider.swipes[0].Path[1] != path[1] {
 			t.Fatalf("swipe path = %#v, want %#v", mockProvider.swipes[0].Path, path)
 		}
+		if mockProvider.swipes[0].DurationMs != defaultSwipeGestureDurationMs {
+			t.Fatalf("swipe duration = %d, want %d", mockProvider.swipes[0].DurationMs, defaultSwipeGestureDurationMs)
+		}
+	})
+
+	t.Run("timed_swipe", func(t *testing.T) {
+		mockProvider.Reset()
+
+		path := [][2]float64{{500, 800}, {500, 200}}
+		if err := httpProvider.SwipeWithDuration(context.Background(), path, "left", 240); err != nil {
+			t.Fatalf("SwipeWithDuration failed: %v", err)
+		}
+		if len(mockProvider.swipes) != 1 || mockProvider.swipes[0].DurationMs != 240 {
+			t.Fatalf("swipes = %#v, want one 240ms swipe", mockProvider.swipes)
+		}
 	})
 
 	t.Run("drag", func(t *testing.T) {

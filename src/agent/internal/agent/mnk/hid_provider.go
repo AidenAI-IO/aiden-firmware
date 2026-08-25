@@ -159,8 +159,16 @@ func (p *HIDProvider) Drag(ctx context.Context, path [][2]float64, button string
 
 // Swipe performs a short gesture without the pre-movement dwell used by Drag.
 func (p *HIDProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
+	return p.SwipeWithDuration(ctx, path, button, defaultSwipeGestureDurationMs)
+}
+
+// SwipeWithDuration performs a swipe using the caller-selected motion time.
+func (p *HIDProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, button string, durationMs int) error {
 	return runPointerGate(p.gate, ctx, func() error {
-		return p.dragLockedWithTiming(path, button, defaultSwipeGestureDurationMs, defaultSwipeGestureHoldBeforeMs)
+		if durationMs <= 0 {
+			durationMs = defaultSwipeGestureDurationMs
+		}
+		return p.dragLockedWithTiming(path, button, durationMs, defaultSwipeGestureHoldBeforeMs)
 	})
 }
 

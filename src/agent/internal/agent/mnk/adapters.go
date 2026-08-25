@@ -9,6 +9,20 @@ import (
 	"strings"
 )
 
+const (
+	// DefaultSwipeSpeed is the normalized gesture speed used when callers do
+	// not provide speed or duration_ms.
+	DefaultSwipeSpeed  = 2500.0
+	MaxSwipeDurationMs = 10_000
+)
+
+// timedSwipeProvider is implemented by providers that can honor a caller's
+// requested swipe duration. Provider keeps the historical Swipe method for
+// internal callers that do not need timing control.
+type timedSwipeProvider interface {
+	SwipeWithDuration(context.Context, [][2]float64, string, int) error
+}
+
 // TouchGestureToolAdapter 使用 MNK Provider 的 touch_gesture 工具适配器
 type TouchGestureToolAdapter struct {
 	provider Provider
@@ -26,15 +40,15 @@ func NewTouchGestureToolAdapter(provider Provider) *TouchGestureToolAdapter {
 // Provider 执行失败返回 ExecutionFailed。调用方应映射为 structured ToolError 并返回 (msg, nil)。
 func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
-		Type     string        `json:"type"`
-		Point    *pointerPoint `json:"point"`
-		Start    *pointerPoint `json:"start"`
-		End      *pointerPoint `json:"end"`
-		Button   string        `json:"button"`
-		HoldMs   *int          `json:"hold_ms"`
-		Distance *float64      `json:"distance"`
-		Anchor   *float64      `json:"anchor"`
-		Strength string        `json:"strength"`
+		Type       string        `json:"type"`
+		Point      *pointerPoint `json:"point"`
+		Start      *pointerPoint `json:"start"`
+		End        *pointerPoint `json:"end"`
+		Direction  string        `json:"direction"`
+		Button     string        `json:"button"`
+		HoldMs     *int          `json:"hold_ms"`
+		Speed      *float64      `json:"speed"`
+		DurationMs *int          `json:"duration_ms"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
@@ -88,16 +102,14 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		return t.handleDoubleTap(ctx, args.Point, button)
 
 	case "swipe":
-		if args.Start == nil || args.End == nil {
-			return "", InvalidArguments("start and end are required for swipe")
-		}
-		if samePointerPoint(args.Start, args.End) {
-			return "", InvalidArguments("swipe requires distinct start and end points")
+		start, end, durationMs, err := resolveSwipeArgs(args.Start, args.End, args.Direction, args.Speed, args.DurationMs)
+		if err != nil {
+			return "", err
 		}
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
-		return t.handleSwipe(ctx, args.Start, args.End, button)
+		return t.handleSwipe(ctx, start, end, button, durationMs)
 
 	case "drag":
 		if args.Start == nil || args.End == nil {
@@ -111,45 +123,9 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		}
 		return t.handleDrag(ctx, args.Start, args.End, button)
 
-	case "swipe_left", "swipe_right", "swipe_up", "swipe_down":
-		if err := t.requireProvider(); err != nil {
-			return "", err
-		}
-		return t.handleDirectionalSwipe(ctx, gestureType, args.Distance, args.Anchor, args.Strength, button)
-
-	case "back", "edge_back", "left_edge_back":
-		if err := t.requireProvider(); err != nil {
-			return "", err
-		}
-		if navigation, ok := t.provider.(systemNavigationProvider); ok {
-			return t.handleSystemNavigation(ctx, navigation.Back)
-		}
-		return t.handleEdgeBack(ctx, button)
-
-	case "home", "home_swipe", "bottom_edge_home":
-		if err := t.requireProvider(); err != nil {
-			return "", err
-		}
-		if navigation, ok := t.provider.(systemNavigationProvider); ok {
-			return t.handleSystemNavigation(ctx, navigation.Home)
-		}
-		return t.handleEdgeHome(ctx, button)
-
 	default:
 		return "", InvalidArgumentsf("unsupported gesture type: %q", args.Type)
 	}
-}
-
-type systemNavigationProvider interface {
-	Back(context.Context) error
-	Home(context.Context) error
-}
-
-func (t *TouchGestureToolAdapter) handleSystemNavigation(ctx context.Context, navigate func(context.Context) error) (string, error) {
-	if err := navigate(ctx); err != nil {
-		return "", WrapExecutionFailed(err)
-	}
-	return "ok", nil
 }
 
 func (t *TouchGestureToolAdapter) requireProvider() error {
@@ -173,12 +149,12 @@ func (t *TouchGestureToolAdapter) handleDoubleTap(ctx context.Context, point *po
 	return "ok", nil
 }
 
-func (t *TouchGestureToolAdapter) handleSwipe(ctx context.Context, start, end *pointerPoint, button string) (string, error) {
+func (t *TouchGestureToolAdapter) handleSwipe(ctx context.Context, start, end *pointerPoint, button string, durationMs int) (string, error) {
 	path := [][2]float64{
 		{start.X.Float64(), start.Y.Float64()},
 		{end.X.Float64(), end.Y.Float64()},
 	}
-	if err := t.provider.Swipe(ctx, path, button); err != nil {
+	if err := swipeWithDuration(ctx, t.provider, path, button, durationMs); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 	return "ok", nil
@@ -195,97 +171,141 @@ func (t *TouchGestureToolAdapter) handleDrag(ctx context.Context, start, end *po
 	return "ok", nil
 }
 
-func (t *TouchGestureToolAdapter) handleDirectionalSwipe(ctx context.Context, gestureType string, distance, anchor *float64, strength, button string) (string, error) {
-	travel := 700.0 // 默认距离
+func swipeWithDuration(ctx context.Context, provider Provider, path [][2]float64, button string, durationMs int) error {
+	if durationMs <= 0 {
+		return provider.Swipe(ctx, path, button)
+	}
+	if timed, ok := provider.(timedSwipeProvider); ok {
+		return timed.SwipeWithDuration(ctx, path, button, durationMs)
+	}
+	return provider.Swipe(ctx, path, button)
+}
 
-	switch strings.ToLower(strength) {
-	case "large":
-		travel = 700.0
-	case "medium":
-		travel = 500.0
-	case "small":
-		travel = 200.0
-	case "tiny":
-		travel = 40.0
-	case "", "default":
-		// keep travel from distance/default
+func resolveSwipeArgs(start, end *pointerPoint, direction string, speed *float64, durationMs *int) (*pointerPoint, *pointerPoint, int, error) {
+	if start == nil {
+		return nil, nil, 0, InvalidArguments("start is required for swipe")
+	}
+	if err := validateSwipePoint("start", start); err != nil {
+		return nil, nil, 0, err
+	}
+	if end != nil && strings.TrimSpace(direction) != "" {
+		return nil, nil, 0, InvalidArguments("swipe accepts either end or direction, not both")
+	}
+
+	resolvedSpeed := DefaultSwipeSpeed
+	if speed != nil {
+		if math.IsNaN(*speed) || math.IsInf(*speed, 0) || *speed <= 0 {
+			return nil, nil, 0, InvalidArguments("speed must be a positive finite number")
+		}
+		resolvedSpeed = *speed
+	}
+	resolvedDuration := 0
+	if durationMs != nil {
+		if *durationMs <= 0 || *durationMs > MaxSwipeDurationMs {
+			return nil, nil, 0, InvalidArgumentsf("duration_ms must be in range [1, %d]", MaxSwipeDurationMs)
+		}
+		resolvedDuration = *durationMs
+	}
+
+	if end == nil {
+		direction = strings.ToLower(strings.TrimSpace(direction))
+		if direction == "" {
+			return nil, nil, 0, InvalidArguments("end or direction is required for swipe")
+		}
+		if direction != "up" && direction != "down" && direction != "left" && direction != "right" {
+			return nil, nil, 0, InvalidArgumentsf("unsupported swipe direction: %q; use up, down, left, or right", direction)
+		}
+
+		travel := distanceToEdge(start, direction)
+		if resolvedDuration > 0 {
+			travel = resolvedSpeed * float64(resolvedDuration) / 1000.0
+		}
+		end = directionEnd(start, direction, travel)
+		if err := validateSwipePoint("derived end", end); err != nil {
+			return nil, nil, 0, InvalidArgumentsf("speed and duration_ms move the swipe past the screen edge: %v", err)
+		}
+		if samePointerPoint(start, end) {
+			return nil, nil, 0, InvalidArguments("swipe direction does not move from start before reaching the screen edge")
+		}
+		if resolvedDuration == 0 {
+			resolvedDuration = swipeDurationForDistance(start, end, resolvedSpeed)
+			if resolvedDuration > MaxSwipeDurationMs {
+				return nil, nil, 0, InvalidArgumentsf("speed is too low for this swipe; calculated duration_ms=%d exceeds %d", resolvedDuration, MaxSwipeDurationMs)
+			}
+		}
+		return start, end, resolvedDuration, nil
+	}
+
+	if err := validateSwipePoint("end", end); err != nil {
+		return nil, nil, 0, err
+	}
+	if samePointerPoint(start, end) {
+		return nil, nil, 0, InvalidArguments("swipe requires distinct start and end points")
+	}
+	if resolvedDuration == 0 {
+		resolvedDuration = swipeDurationForDistance(start, end, resolvedSpeed)
+		if resolvedDuration > MaxSwipeDurationMs {
+			return nil, nil, 0, InvalidArgumentsf("speed is too low for this swipe; calculated duration_ms=%d exceeds %d", resolvedDuration, MaxSwipeDurationMs)
+		}
+	}
+	return start, end, resolvedDuration, nil
+}
+
+func distanceToEdge(start *pointerPoint, direction string) float64 {
+	switch direction {
+	case "up":
+		return start.Y.Float64()
+	case "down":
+		return 1000 - start.Y.Float64()
+	case "left":
+		return start.X.Float64()
+	case "right":
+		return 1000 - start.X.Float64()
 	default:
-		return "", InvalidArgumentsf("unsupported strength: %q", strength)
+		return 0
 	}
-	if distance != nil {
-		if *distance <= 0 || *distance > 1000 {
-			return "", InvalidArgumentsf("distance must be in range (0, 1000], got %.2f", *distance)
-		}
-		travel = *distance
-	}
-
-	// anchor is the cross-axis position: row for horizontal swipes and column
-	// for vertical swipes. Travel remains centered on the primary axis.
-	anchorPosition := 500.0
-	if anchor != nil {
-		if *anchor < 0 || *anchor > 1000 {
-			return "", InvalidArgumentsf("anchor must be in range [0, 1000], got %.2f", *anchor)
-		}
-		anchorPosition = *anchor
-	}
-
-	half := travel / 2
-	travelCenter := 500.0
-
-	var path [][2]float64
-	switch gestureType {
-	case "swipe_left":
-		path = [][2]float64{
-			{travelCenter + half, anchorPosition},
-			{travelCenter - half, anchorPosition},
-		}
-	case "swipe_right":
-		path = [][2]float64{
-			{travelCenter - half, anchorPosition},
-			{travelCenter + half, anchorPosition},
-		}
-	case "swipe_up":
-		path = [][2]float64{
-			{anchorPosition, travelCenter + half},
-			{anchorPosition, travelCenter - half},
-		}
-	case "swipe_down":
-		path = [][2]float64{
-			{anchorPosition, travelCenter - half},
-			{anchorPosition, travelCenter + half},
-		}
-	}
-	for i := range path {
-		path[i][0] = clampFloat(path[i][0], 0, 1000)
-		path[i][1] = clampFloat(path[i][1], 0, 1000)
-	}
-
-	if err := t.provider.Swipe(ctx, path, button); err != nil {
-		return "", WrapExecutionFailed(err)
-	}
-	return "ok", nil
 }
 
-func (t *TouchGestureToolAdapter) handleEdgeBack(ctx context.Context, button string) (string, error) {
-	path := [][2]float64{
-		{1, 500},
-		{750, 500},
+func directionEnd(start *pointerPoint, direction string, travel float64) *pointerPoint {
+	x := start.X.Float64()
+	y := start.Y.Float64()
+	switch direction {
+	case "up":
+		y -= travel
+	case "down":
+		y += travel
+	case "left":
+		x -= travel
+	case "right":
+		x += travel
 	}
-	if err := t.provider.Drag(ctx, path, button); err != nil {
-		return "", WrapExecutionFailed(err)
+	return &pointerPoint{
+		X: pointerCoordinate(x),
+		Y: pointerCoordinate(y),
 	}
-	return "ok", nil
 }
 
-func (t *TouchGestureToolAdapter) handleEdgeHome(ctx context.Context, button string) (string, error) {
-	path := [][2]float64{
-		{500, 999},
-		{500, 180},
+func validateSwipePoint(name string, point *pointerPoint) error {
+	x := point.X.Float64()
+	y := point.Y.Float64()
+	if math.IsNaN(x) || math.IsInf(x, 0) || math.IsNaN(y) || math.IsInf(y, 0) {
+		return InvalidArgumentsf("%s coordinates must be finite", name)
 	}
-	if err := t.provider.Drag(ctx, path, button); err != nil {
-		return "", WrapExecutionFailed(err)
+	if x < 0 || x > 1000 || y < 0 || y > 1000 {
+		return InvalidArgumentsf("%s coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f", name, x, y)
 	}
-	return "ok", nil
+	return nil
+}
+
+func swipeDurationForDistance(start, end *pointerPoint, speed float64) int {
+	dx := end.X.Float64() - start.X.Float64()
+	dy := end.Y.Float64() - start.Y.Float64()
+	distance := math.Hypot(dx, dy)
+	duration := int(math.Round(distance / speed * 1000.0))
+	if duration < 1 {
+		return 1
+	}
+	return duration
 }
 
 // KeyboardTapToolAdapter 使用 MNK Provider 的 keyboard_tap 工具适配器

@@ -590,7 +590,7 @@ func TestWheelGestureGuardIgnoresTouchGestureWithProviderPopulatedWheelMetadata(
 	var guard wheelNudgeGuard
 	swipe := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"swipe_down","start":{"x":500,"y":200},"end":{"x":500,"y":520},"wheel":{"is_picker_row":true,"picker_id":"bad","column_x":0,"center_y":0,"current_value":0,"tapped_value":0,"target_value":0,"cycle_size":0,"cycle_start":0,"row_offset":0,"row_spacing":0,"value_step":0}}`,
+		Input: `{"type":"swipe","start":{"x":500,"y":200},"end":{"x":500,"y":520},"wheel":{"is_picker_row":true,"picker_id":"bad","column_x":0,"center_y":0,"current_value":0,"tapped_value":0,"target_value":0,"cycle_size":0,"cycle_start":0,"row_offset":0,"row_spacing":0,"value_step":0}}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); !allowed || result.Error != nil {
 		t.Fatalf("generic touch gesture must not be inspected by wheel guard: allowed=%v result=%#v", allowed, result)
@@ -614,7 +614,7 @@ func TestWheelGestureGuardBlocksTouchGestureOnActiveWheelColumn(t *testing.T) {
 	}
 }
 
-func TestWheelGestureGuardBlocksDirectionalSwipeWhilePickerIsActive(t *testing.T) {
+func TestWheelGestureGuardBlocksDirectionFormSwipeWhilePickerIsActive(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	guard := newWheelNudgeGuard(screenState)
@@ -623,39 +623,36 @@ func TestWheelGestureGuardBlocksDirectionalSwipeWhilePickerIsActive(t *testing.T
 
 	swipe := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"swipe_up","strength":"small","anchor":611}`,
+		Input: `{"type":"swipe","start":{"x":611,"y":500},"direction":"up","speed":2500,"duration_ms":80}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); allowed || result.Error == nil {
-		t.Fatalf("directional swipe should be blocked while picker is active: allowed=%v result=%#v", allowed, result)
+		t.Fatalf("direction-form swipe should be blocked while picker is active: allowed=%v result=%#v", allowed, result)
 	}
 }
 
-func TestWheelGestureGuardBlocksDirectionalSwipeWithExplicitWheelPoints(t *testing.T) {
+func TestWheelGestureGuardBlocksSwipeWithExplicitWheelPoints(t *testing.T) {
 	guard := newWheelNudgeGuard(nil)
 	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(400, 260, 15, 7, 24, 0)))
 
-	// This is the exact malformed fallback emitted after wheel_nudge failed on
-	// the alarm picker. Directional aliases ignore start/end at execution time,
-	// but those points still reveal an attempt to bypass the owned wheel column.
 	swipe := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"swipe_up","start":{"x":400,"y":300},"end":{"x":400,"y":600}}`,
+		Input: `{"type":"swipe","start":{"x":400,"y":300},"end":{"x":400,"y":600}}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); allowed || result.Error == nil {
-		t.Fatalf("directional swipe with explicit wheel points should be blocked: allowed=%v result=%#v", allowed, result)
+		t.Fatalf("swipe with explicit wheel points should be blocked: allowed=%v result=%#v", allowed, result)
 	}
 }
 
-func TestWheelGestureGuardAllowsDirectionalSwipeOutsidePickerColumns(t *testing.T) {
+func TestWheelGestureGuardAllowsDirectionFormSwipeOutsidePickerColumns(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	guard := newWheelNudgeGuard(screenState)
 	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
 	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(612, 275, 48, 5, 60, 0)))
 
-	swipe := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: `{"type":"swipe_up","strength":"small","anchor":150}`}
+	swipe := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: `{"type":"swipe","start":{"x":150,"y":500},"direction":"up","speed":2500,"duration_ms":80}`}
 	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); !allowed || result.Error != nil {
-		t.Fatalf("directional swipe outside picker column should remain allowed: allowed=%v result=%#v", allowed, result)
+		t.Fatalf("direction-form swipe outside picker column should remain allowed: allowed=%v result=%#v", allowed, result)
 	}
 }
 

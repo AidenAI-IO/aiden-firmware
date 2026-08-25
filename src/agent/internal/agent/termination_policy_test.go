@@ -17,11 +17,11 @@ func TestTerminationPolicyRepeatWithoutProgressTerminates(t *testing.T) {
 	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
 	observation := terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{})
 	for i := 0; i < 2; i++ {
-		if decision := policy.AfterToolCall("touch_gesture", `{"gesture":"swipe_up"}`, observation, false); decision.Stop {
+		if decision := policy.AfterToolCall("touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`, observation, false); decision.Stop {
 			t.Fatalf("iteration %d: unexpected stop: %#v", i+1, decision)
 		}
 	}
-	decision := policy.AfterToolCall("touch_gesture", `{"gesture":"swipe_up"}`, observation, false)
+	decision := policy.AfterToolCall("touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`, observation, false)
 	if !decision.Stop || decision.Reason != StopReasonLoopDetected {
 		t.Fatalf("expected loop termination, got %#v", decision)
 	}
@@ -31,14 +31,14 @@ func TestTerminationPolicyRestrictsActionToolsAndRecoversAfterProgress(t *testin
 	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
 	sameScreen := terminationPolicyScreenshotObservation(t, 200, 400, image.Rectangle{})
 	for i := 0; i < 2; i++ {
-		if decision := policy.AfterToolCall("touch_gesture", `{"gesture":"swipe_up"}`, sameScreen, false); decision.Stop {
+		if decision := policy.AfterToolCall("touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`, sameScreen, false); decision.Stop {
 			t.Fatalf("iteration %d: unexpected stop: %#v", i+1, decision)
 		}
 	}
 	if policy.tier < TierRestrictTools {
 		t.Fatalf("tier = %d, want restrict tier", policy.tier)
 	}
-	if _, allowed := policy.BeforeToolCall("touch_gesture", `{"gesture":"swipe_up"}`); allowed {
+	if _, allowed := policy.BeforeToolCall("touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`); allowed {
 		t.Fatal("expected action tool blocked at restrict tier")
 	}
 
@@ -47,7 +47,7 @@ func TestTerminationPolicyRestrictsActionToolsAndRecoversAfterProgress(t *testin
 	if progress.Stop || policy.tier != TierNone || policy.stallScore != 0 {
 		t.Fatalf("progress should clear restriction, decision=%#v score=%d tier=%d", progress, policy.stallScore, policy.tier)
 	}
-	if _, allowed := policy.BeforeToolCall("touch_gesture", `{"gesture":"swipe_up"}`); !allowed {
+	if _, allowed := policy.BeforeToolCall("touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`); !allowed {
 		t.Fatal("action tool should be allowed after progress")
 	}
 }

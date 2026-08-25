@@ -25,8 +25,9 @@ type MockDoubleClick struct {
 }
 
 type MockDrag struct {
-	Path   [][2]float64
-	Button string
+	Path       [][2]float64
+	Button     string
+	DurationMs int
 }
 
 type MockKeypress struct {
@@ -58,8 +59,12 @@ func (m *MockProvider) DoubleClick(ctx context.Context, x, y float64, button str
 }
 
 func (m *MockProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
+	return m.SwipeWithDuration(ctx, path, button, defaultSwipeGestureDurationMs)
+}
+
+func (m *MockProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, button string, durationMs int) error {
 	_ = ctx
-	m.swipes = append(m.swipes, MockDrag{Path: path, Button: button})
+	m.swipes = append(m.swipes, MockDrag{Path: path, Button: button, DurationMs: durationMs})
 	return nil
 }
 

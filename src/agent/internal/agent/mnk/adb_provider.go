@@ -145,7 +145,13 @@ func (p *ADBProvider) Drag(ctx context.Context, path [][2]float64, button string
 
 // Swipe performs a short gesture that avoids Android long-press recognition.
 func (p *ADBProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
-	return p.dragWithDuration(ctx, path, button, defaultSwipeGestureDurationMs)
+	return p.SwipeWithDuration(ctx, path, button, defaultSwipeGestureDurationMs)
+}
+
+// SwipeWithDuration performs a swipe using the caller-selected motion time.
+func (p *ADBProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, button string, durationMs int) error {
+	durationMs = p.clampDuration(durationMs, defaultSwipeGestureDurationMs, 1)
+	return p.dragWithDuration(ctx, path, button, durationMs)
 }
 
 func (p *ADBProvider) dragWithDuration(ctx context.Context, path [][2]float64, button string, totalDurationMs int) error {

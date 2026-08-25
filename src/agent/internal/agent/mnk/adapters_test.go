@@ -75,36 +75,24 @@ func TestTouchGestureToolAdapter(t *testing.T) {
 				if swipe.Path[1][0] != 900 || swipe.Path[1][1] != 500 {
 					t.Errorf("expected end (900, 500), got (%.0f, %.0f)", swipe.Path[1][0], swipe.Path[1][1])
 				}
+				if swipe.DurationMs != 320 {
+					t.Errorf("expected duration 320ms at default speed, got %d", swipe.DurationMs)
+				}
 			},
 		},
 		{
-			name:  "swipe_up",
-			input: `{"type":"swipe_up","strength":"medium"}`,
+			name:  "swipe_direction",
+			input: `{"type":"swipe","start":{"x":500,"y":800},"direction":"up","speed":2500,"duration_ms":300}`,
 			validate: func(t *testing.T) {
 				if len(mock.swipes) != 1 {
 					t.Fatalf("expected 1 swipe, got %d", len(mock.swipes))
 				}
 				swipe := mock.swipes[0]
-				if len(swipe.Path) != 2 {
-					t.Fatalf("expected path length 2, got %d", len(swipe.Path))
+				if swipe.Path[0] != [2]float64{500, 800} || swipe.Path[1] != [2]float64{500, 50} {
+					t.Errorf("swipe path = %#v, want [[500 800] [500 50]]", swipe.Path)
 				}
-				// Swipe up: start below, end above
-				if swipe.Path[0][1] <= swipe.Path[1][1] {
-					t.Errorf("swipe_up should move upward, got start Y=%.0f, end Y=%.0f", swipe.Path[0][1], swipe.Path[1][1])
-				}
-			},
-		},
-		{
-			name:  "back",
-			input: `{"type":"back"}`,
-			validate: func(t *testing.T) {
-				if len(mock.drags) != 1 {
-					t.Fatalf("expected 1 drag, got %d", len(mock.drags))
-				}
-				drag := mock.drags[0]
-				// Edge swipe from left
-				if drag.Path[0][0] >= 50 {
-					t.Errorf("back gesture should start from left edge, got X=%.0f", drag.Path[0][0])
+				if swipe.DurationMs != 300 {
+					t.Errorf("duration = %d, want 300", swipe.DurationMs)
 				}
 			},
 		},
@@ -157,10 +145,10 @@ func TestTouchGestureToolAdapterRejectsZeroDistancePaths(t *testing.T) {
 	}
 }
 
-func TestTouchGestureToolAdapterDirectionalSwipeAnchor(t *testing.T) {
+func TestTouchGestureToolAdapterSwipeForms(t *testing.T) {
 	mock := NewMockProvider()
 	adapter := NewTouchGestureToolAdapter(mock)
-	_, err := adapter.Call(context.Background(), `{"type":"swipe_left","distance":800,"anchor":125}`)
+	_, err := adapter.Call(context.Background(), `{"type":"swipe","start":{"x":900,"y":125},"direction":"left","speed":2000,"duration_ms":400}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
@@ -171,10 +159,20 @@ func TestTouchGestureToolAdapterDirectionalSwipeAnchor(t *testing.T) {
 	if path[0] != [2]float64{900, 125} || path[1] != [2]float64{100, 125} {
 		t.Fatalf("path = %#v, want [[900 125] [100 125]]", path)
 	}
+	if mock.swipes[0].DurationMs != 400 {
+		t.Fatalf("duration = %d, want 400", mock.swipes[0].DurationMs)
+	}
 
 	for _, input := range []string{
-		`{"type":"swipe_up","distance":1001}`,
-		`{"type":"swipe_down","anchor":-1}`,
+		`{"type":"swipe","start":{"x":500,"y":500}}`,
+		`{"type":"swipe","start":{"x":500,"y":500},"end":{"x":500,"y":100},"direction":"up"}`,
+		`{"type":"swipe","start":{"x":500,"y":500},"direction":"diagonal"}`,
+		`{"type":"swipe","start":{"x":500,"y":500},"direction":"up","speed":0}`,
+		`{"type":"swipe","start":{"x":500,"y":500},"direction":"up","speed":0.01}`,
+		`{"type":"swipe","start":{"x":500,"y":500},"direction":"up","duration_ms":0}`,
+		`{"type":"swipe_up","start":{"x":500,"y":800}}`,
+		`{"type":"back"}`,
+		`{"type":"home"}`,
 	} {
 		mock.Reset()
 		if _, err := adapter.Call(context.Background(), input); AsError(err) == nil || AsError(err).Kind != ErrInvalidArguments {
@@ -190,7 +188,7 @@ func TestTouchGestureToolAdapterSeparatesSwipeFromDrag(t *testing.T) {
 	provider := NewMockProvider()
 	adapter := NewTouchGestureToolAdapter(provider)
 
-	if _, err := adapter.Call(context.Background(), `{"type":"swipe_left","distance":400}`); err != nil {
+	if _, err := adapter.Call(context.Background(), `{"type":"swipe","start":{"x":700,"y":500},"direction":"left","duration_ms":160}`); err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
 	if len(provider.swipes) != 1 {

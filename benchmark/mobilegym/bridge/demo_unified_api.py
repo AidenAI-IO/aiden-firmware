@@ -141,7 +141,7 @@ def main():
 
         # 7. Press back button
         print("7. Pressing back button...")
-        result = call_tool(BASE_URL, "touch_gesture", {"type": "back"})
+        result = call_tool(BASE_URL, "touch_gesture", {"type": "swipe", "start": {"x": 1, "y": 500}, "end": {"x": 750, "y": 500}, "duration_ms": 700})
         if result["is_error"]:
             print(f"   ✗ Error: {result['output']}")
         else:

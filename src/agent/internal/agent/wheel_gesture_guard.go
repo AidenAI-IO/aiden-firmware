@@ -475,11 +475,10 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 		return ToolResult{}, true
 	}
 	var args struct {
-		Type   string        `json:"type"`
-		Point  *pointerPoint `json:"point"`
-		Start  *pointerPoint `json:"start"`
-		End    *pointerPoint `json:"end"`
-		Anchor *float64      `json:"anchor"`
+		Type  string        `json:"type"`
+		Point *pointerPoint `json:"point"`
+		Start *pointerPoint `json:"start"`
+		End   *pointerPoint `json:"end"`
 	}
 	if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 		return ToolResult{}, true
@@ -491,32 +490,6 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 		points = []*pointerPoint{args.Point}
 	case "drag", "swipe":
 		points = []*pointerPoint{args.Start, args.End}
-	case "swipe_up", "swipe_down":
-		anchor := 500.0
-		if args.Anchor != nil {
-			anchor = *args.Anchor
-		}
-		candidateAnchors := []float64{anchor}
-		for _, point := range []*pointerPoint{args.Start, args.End} {
-			if point != nil {
-				candidateAnchors = append(candidateAnchors, point.X.Float64())
-			}
-		}
-		for _, candidate := range candidateAnchors {
-			for _, column := range g.columns {
-				x := clampFloat(candidate, 0, 1000)
-				if math.Abs(column.centerX-x) <= wheelNudgeColumnTolerance {
-					message := "active picker column is owned by wheel_nudge: refusing a directional swipe anchored on that column"
-					return invalidWheelResult(message, map[string]any{"column_x": column.centerX, "retry_same_column": true}), false
-				}
-			}
-		}
-		return ToolResult{}, true
-	case "swipe_left", "swipe_right":
-		return ToolResult{}, true
-	case "back", "home":
-		g.pendingNavigation = wheelToolCallKey(call)
-		return ToolResult{}, true
 	default:
 		return ToolResult{}, true
 	}
