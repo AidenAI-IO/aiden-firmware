@@ -268,14 +268,20 @@ def _per_task_setup_seed_episode(
     expectation = setup.get("consolidation_expectation")
     if consolidation_expectation is not None:
         expectation = vars(consolidation_expectation)
+
+    def fail(message: str) -> None:
+        error = ResetError(message)
+        error.consolidation = result
+        raise error
+
     status = str(result.get("status") or "").strip().lower()
     expected_status = (expectation or {}).get("expected_status") if isinstance(expectation, dict) else None
     if expected_status is not None and status != expected_status:
-        raise ResetError(
+        fail(
             f"episode memory consolidation for {episode_id!r} status mismatch: expected {expected_status!r}, got {status or 'missing'!r}"
         )
     if status == "ignored" and expected_status != "ignored":
-        raise ResetError(
+        fail(
             f"episode memory consolidation for {episode_id!r} was ignored by the worker"
         )
     if status == "ignored":
@@ -286,7 +292,7 @@ def _per_task_setup_seed_episode(
             "consolidation": result,
         }
     if status != "done":
-        raise ResetError(
+        fail(
             f"episode memory consolidation for {episode_id!r} did not reach a terminal status: {status or 'missing'}"
         )
     _validate_consolidation_result(episode_id, result, expectation)

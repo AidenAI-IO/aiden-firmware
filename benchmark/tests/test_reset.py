@@ -391,6 +391,47 @@ def test_seed_episode_setup_reports_ignored_status():
         )
 
 
+@pytest.mark.parametrize(
+    ("result", "expectation", "message"),
+    [
+        (
+            {"episode_id": "ep-1", "status": "done", "memory_ids": ["devmem-1"]},
+            {"expected_status": "ignored"},
+            "status mismatch",
+        ),
+        (
+            {"episode_id": "ep-1", "status": "ignored", "memory_ids": []},
+            None,
+            "was ignored by the worker",
+        ),
+        (
+            {"episode_id": "ep-1", "status": "processing", "memory_ids": []},
+            None,
+            "did not reach a terminal status",
+        ),
+    ],
+)
+def test_seed_episode_setup_attaches_result_to_status_failures(
+    result, expectation, message
+):
+    class StatusClient(RecordingSetupClient):
+        def process_episode_memory(self, episode_id, timeout=90):
+            return result
+
+    setup = {
+        "type": "seed_episode",
+        "episode": {"id": "ep-1", "user_goal": "verify a device procedure"},
+        "consolidate": True,
+    }
+    if expectation is not None:
+        setup["consolidation_expectation"] = expectation
+
+    with pytest.raises(ResetError, match=message) as exc_info:
+        per_task_setup(StatusClient(), setup)
+
+    assert exc_info.value.consolidation == result
+
+
 def test_per_task_setup_rejects_unknown_keys():
     with pytest.raises(ResetError, match="unsupported seed_episode setup keys: consolodate"):
         per_task_setup(
