@@ -315,7 +315,7 @@ Common fields:
 | --- | --- |
 | `prompt_prefix` | Prefix for every task prompt; constrains device type, tool usage, etc. |
 | `global_reset` | Suite-level reset configuration |
-| `setup` | Task-level pre-steps; supports `agent_prompt` and benchmark-token-protected `seed_memory` |
+| `setup` | One task-level pre-step or an ordered array of pre-steps; supports `agent_prompt`, benchmark-token-protected `seed_memory`, `seed_episode`, `seed_notification`, and generic `assert_memory` checks |
 | `app_ids` | Optional MobileGym app IDs to preload during environment setup; omitted tasks skip eager app data loading |
 | `rubric` | The judge model's scoring items |
 | `hard_assertions` | Deterministic checks, e.g. tool-call counts, timeout, required/forbidden tools |
@@ -332,6 +332,68 @@ the task setup on any other output.
 
 A unit suite is a different format with `kind` set to `unit`; it tests a tool's
 input/output directly without going through agent chat.
+
+#### Notification Memory benchmark
+
+Use `suites/notification_memory_v1.json` to validate the notification memory
+path end to end. Its `seed_notification` setup writes deterministic raw events
+to the date-sharded JSONL log, runs the real notification processor through the
+benchmark-only control endpoint, and then checks the Agent's `recall_memory`
+behavior. The setup endpoint is benchmark-token protected and does not
+exist on a daemon without a benchmark token.
+
+The suite separates ingestion/recall claims from explicit Memory action claims:
+
+- `delivery_notification_recall` checks that a useful notification becomes one
+  temporary memory and is recalled with the original delivery fact.
+- `notification_noise_is_filtered` checks that OTP and marketing events remain
+  in the raw log but do not become memory.
+- `notification_batch_cursor_drain` checks that a backlog larger than one batch
+  is fully committed without producing memory for verification-code noise.
+- `notification_explicit_update` checks revision-guarded replacement of an
+  existing conclusion.
+- `notification_explicit_reinforce` checks that repeated evidence preserves the
+  conclusion while advancing its revision without creating a duplicate.
+- `notification_explicit_remove` checks that a removed notification deletes only
+  the temporary conclusion tied to that stable notification identity.
+- `notification_explicit_promote` checks temporary-to-long-term promotion and
+  removal of the temporary source.
+
+The useful-notification case depends on the configured model's consolidation
+decision; the raw-log and obvious-noise cases have deterministic setup gates.
+The Go notification processor tests cover cursor recovery, generation reset,
+batch-call count, proposal validation, update/remove, and storage behavior.
+Run the suite against isolated benchmark daemons because notification cursors
+and memory are durable. Explicit action tasks compose generic setup primitives:
+`seed_memory`, `seed_notification`, then `assert_memory`.
+`assert_memory.expected` supports scalar/content/tag/entity checks plus generic
+`source_refs_contain` and `evidence_refs_contain` entries. Reference entries may
+match `type`, `id`, and `event_ids_contains`, which lets suites verify evidence
+preservation without adding scenario-specific runner logic.
+
+```bash
+cd benchmark
+uv run python -m runner run \
+  --suite suites/notification_memory_v1.json \
+  --auto-agent-setup \
+  --agent-config /path/to/agent.toml \
+  --run-id notification-memory-v1
+```
+
+This command enables the configured LLM judge for effect checks: whether the
+useful notification answer preserves the delivery fact and whether it states
+that OTP/marketing noise is not retained. Use `--no-judge` for deterministic
+functional gates only; those gates still validate fixture persistence through
+the benchmark endpoint, cursor advancement, memory count/scope, and tool-call
+policy. Raw JSONL preservation is covered by the Go integration tests rather
+than an Agent shell task. A judge API key is required for the effect run.
+
+For a lower-level performance snapshot, run the deterministic Go benchmarks:
+
+```bash
+cd src/agent
+go test ./internal/agent -run '^$' -bench 'BenchmarkNotification' -benchmem
+```
 
 ## 2. WebUI guide
 

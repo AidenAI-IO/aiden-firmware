@@ -20,7 +20,7 @@ from runner.capture import take_environment_screenshot
 from runner.judge import judge_task, JudgeConfig
 from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 from runner.recovery import prepare_task_isolation, recover_agent_after_timeout
-from runner.reset import ResetError
+from runner.reset import ResetError, SetupAssertionError
 from runner.suite import Suite, TaskSpec, effective_mock_environment
 from runner.trace import extract_trace
 from runner.report import now_iso
@@ -283,6 +283,11 @@ def run_one_task(
             environment_url=environment_url,
             benchmark_task_id=benchmark_task_id,
         )
+    except SetupAssertionError as e:
+        base.status = "failed"
+        base.metrics = {"error": f"setup assertion: {e}"}
+        base.finished_at = now_iso()
+        return base
     except (ResetError, AgentTimeoutError, AgentRequestError) as e:
         base.status = "skipped"
         base.metrics = {"error": f"setup: {e}"}

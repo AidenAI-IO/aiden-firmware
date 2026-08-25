@@ -4,7 +4,7 @@ import pytest
 
 from runner.agent_client import AgentRequestError, AgentTimeoutError
 from runner.recovery import prepare_task_isolation, wait_for_agent_ready
-from runner.reset import ResetError
+from runner.reset import ResetError, SetupAssertionError
 from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec
 
 
@@ -308,6 +308,46 @@ def test_prepare_task_isolation_runs_seed_memory_with_environment_setup(monkeypa
     assert client.seeded_memories == [
         ({"id": "mem-1", "content": "The user likes flashcards.", "tags": ["study"]}, 7)
     ]
+
+
+def test_prepare_task_isolation_does_not_retry_setup_assertion(monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    setup_calls = []
+
+    def fail_assertion(*args, **kwargs):
+        setup_calls.append((args, kwargs))
+        raise SetupAssertionError("expected memory is absent")
+
+    monkeypatch.setattr("runner.recovery.per_task_setup", fail_assertion)
+    client = SetupClient()
+    suite = Suite(
+        name="memory",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=__import__("pathlib").Path("memory.json"),
+    )
+    task = TaskSpec(
+        id="memory_update",
+        category="memory",
+        description_for_judge="Update memory.",
+        prompt="check memory",
+        rubric=[RubricItem(id="ok", check="ok")],
+        hard_assertions=HardAssertions(),
+        setup={"type": "assert_memory", "expected_count": 1},
+    )
+
+    with pytest.raises(SetupAssertionError, match="expected memory is absent"):
+        prepare_task_isolation(
+            client,
+            suite,
+            task,
+            ready_timeout_sec=10,
+            setup_attempts=3,
+        )
+
+    assert len(setup_calls) == 1
+    assert client.clears == 1
 
 
 def test_prepare_task_isolation_raises_after_exhausting_retries(monkeypatch):

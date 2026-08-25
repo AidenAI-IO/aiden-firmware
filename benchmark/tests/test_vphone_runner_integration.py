@@ -29,7 +29,7 @@ def test_vphone_ios_basic_suite_loads():
     ]
     warmup = suite.tasks[0]
     assert warmup.category == "diagnostic"
-    assert warmup.hard_assertions.required_tools == []
+    assert warmup.hard_assertions.required_tools == ["screenshot"]
     assert all(task.repeats == 1 for task in suite.tasks)
 
     ethernet = next(task for task in suite.tasks if task.id == "settings_read_ethernet_ipv4")

@@ -324,6 +324,35 @@ func TestNotificationContextReadPendingAppliesLimitAfterCursorSort(t *testing.T)
 	}
 }
 
+func TestNotificationContextReadPendingAllDoesNotApplyDefaultLimit(t *testing.T) {
+	root := t.TempDir()
+	c, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make([]ble.NotificationEvent, 0, 125)
+	for index := 1; index <= 125; index++ {
+		events = append(events, ble.NotificationEvent{
+			Source:        "android",
+			SourceEventID: "event-" + strconv.Itoa(index),
+			Title:         "Notification " + strconv.Itoa(index),
+			ReceivedAt:    "2026-08-21T00:00:00Z",
+		})
+	}
+	if records, err := c.seedForBenchmark(context.Background(), events); err != nil || len(records) != len(events) {
+		t.Fatalf("seedForBenchmark() records=%d err=%v", len(records), err)
+	}
+	got, err := c.ReadPendingAll(context.Background())
+	if err != nil || len(got) != len(events) {
+		t.Fatalf("ReadPendingAll() records=%d err=%v, want %d", len(got), err, len(events))
+	}
+	if got[0].ContextID != "1" || got[len(got)-1].ContextID != "125" {
+		t.Fatalf("ReadPendingAll() cursors=%q..%q", got[0].ContextID, got[len(got)-1].ContextID)
+	}
+}
+
 func TestNotificationContextSanitizeTruncatesUTF8ByRunes(t *testing.T) {
 	value := truncateNotificationText("你好世界", 3)
 	if value != "你好世" {
