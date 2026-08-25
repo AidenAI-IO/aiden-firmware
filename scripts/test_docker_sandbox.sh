@@ -9,6 +9,7 @@ sandbox_bridge_endpoint=""
 sandbox_device_type=""
 bridge_pid=""
 bridge_log=""
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 compose() {
     AIDEN_CONFIG_WEB_PORT="$config_port" \
@@ -51,20 +52,13 @@ wait_for_agent() {
     return 1
 }
 
-published_port() {
-    container_port="$1"
-    compose port aiden "$container_port" | tail -n 1 | sed 's/.*://'
-}
-
 trap cleanup INT TERM EXIT
 
+selected_ports="$(python3 "$script_dir/select_docker_web_ports.py" "$config_port" "$agent_port")"
+config_port="${selected_ports%% *}"
+agent_port="${selected_ports#* }"
+
 compose up -d --build
-if [ "$config_port" = 0 ]; then
-    config_port="$(published_port 80)"
-fi
-if [ "$agent_port" = 0 ]; then
-    agent_port="$(published_port 8080)"
-fi
 wait_for_agent
 
 compose exec -T aiden sh -ec '
@@ -82,6 +76,11 @@ agent_page="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/")"
 terminal_page="$(curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/wetty/")"
 terminal_headers="$(curl -fsSIL --max-time 10 "http://127.0.0.1:$agent_port/wetty/")"
 terminal_socket="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/wetty/socket.io/?EIO=4&transport=polling")"
+reported_agent_port="$(
+    curl -fsS --max-time 10 "http://127.0.0.1:$config_port/api/config" \
+        | python3 -c 'import json, sys; print(json.load(sys.stdin)["agent_status"]["public_port"])'
+)"
+test "$reported_agent_port" -eq "$agent_port"
 case "$config_page" in
     *'<!DOCTYPE html>'*) ;;
     *) printf 'Config Web did not return HTML.\n' >&2; exit 1 ;;
@@ -102,6 +101,34 @@ case "$terminal_socket" in
     '0{'*'"upgrades":["websocket"]'*) ;;
     *) printf 'WeTTY Socket.IO handshake failed through Agent Web.\n' >&2; exit 1 ;;
 esac
+
+container_id="$(compose ps -q aiden)"
+restart_count="$(docker inspect --format '{{.RestartCount}}' "$container_id")"
+wetty_pid="$(compose exec -T aiden sh -ec '
+for process in /proc/[0-9]*; do
+    executable="$(readlink "$process/exe" 2>/dev/null || true)"
+    if [ "$executable" = /usr/local/bin/node ]; then
+        basename "$process"
+        exit 0
+    fi
+done
+exit 1
+')"
+test -n "$wetty_pid"
+compose exec -T aiden sh -c 'kill "$1"' sh "$wetty_pid"
+
+attempt=1
+while [ "$attempt" -le 30 ]; do
+    current_restart_count="$(docker inspect --format '{{.RestartCount}}' "$container_id")"
+    if [ "$current_restart_count" -gt "$restart_count" ]; then
+        break
+    fi
+    sleep 1
+    attempt="$((attempt + 1))"
+done
+test "$current_restart_count" -gt "$restart_count"
+wait_for_agent
+curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/wetty/" >/dev/null
 
 before_pid="$(agent_pid)"
 test -n "$before_pid"

@@ -5,6 +5,7 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 WAIT_TIMEOUT="${AIDEN_SANDBOX_WAIT_TIMEOUT:-180}"
 CONFIG_WEB_PORT="${AIDEN_CONFIG_WEB_PORT:-8000}"
 AGENT_WEB_PORT="${AIDEN_AGENT_WEB_PORT:-8080}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 if [[ $# -gt 0 ]]; then
     echo "Usage: $0" >&2
@@ -32,6 +33,15 @@ for required_option in --wait --wait-timeout; do
         exit 1
     fi
 done
+
+if [[ "$CONFIG_WEB_PORT" == 0 || "$AGENT_WEB_PORT" == 0 ]]; then
+    read -r CONFIG_WEB_PORT AGENT_WEB_PORT < <(
+        python3 "$SCRIPT_DIR/select_docker_web_ports.py" \
+            "$CONFIG_WEB_PORT" "$AGENT_WEB_PORT"
+    )
+fi
+export AIDEN_CONFIG_WEB_PORT="$CONFIG_WEB_PORT"
+export AIDEN_AGENT_WEB_PORT="$AGENT_WEB_PORT"
 
 compose_args=(
     --detach

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -eu
 
 agent_dir="${AIDEN_AGENT_DIR:-/userdata/agent}"
@@ -67,8 +67,8 @@ config_web \
 config_web_pid="$!"
 
 set +e
-wait "$config_web_pid"
+# Keep both web frontends tied to the container lifecycle so Compose can restart them together.
+wait -n "$config_web_pid" "$wetty_pid"
 status="$?"
 set -e
-config_web_pid=""
 exit "$status"
