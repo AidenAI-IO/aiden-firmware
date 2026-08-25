@@ -331,6 +331,28 @@ func TestRolePromptPrioritizesClearlyVisibleAppTargetOverOpenApp(t *testing.T) {
 	}
 }
 
+func TestRolePromptRequiresVerifiedAppLaunchCompletion(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, expected := range []string{
+		"report completion only after post-action verification",
+		"require screen_changed=true or equivalent visual confirmation",
+		"ok=true only confirms that the OS accepted the launch",
+		"screen_changed=false or an omitted screen_changed field without visual confirmation is not proof",
+	} {
+		if !strings.Contains(profile.SystemPrompt, expected) {
+			t.Fatalf("system prompt missing launch verification rule %q:\n%s", expected, profile.SystemPrompt)
+		}
+	}
+	for _, outdated := range []string{
+		"success from the matching direct tool is enough",
+		"treat the launch as complete unless the user requested additional actions",
+	} {
+		if strings.Contains(profile.SystemPrompt, outdated) {
+			t.Fatalf("system prompt retained unverified launch completion rule %q:\n%s", outdated, profile.SystemPrompt)
+		}
+	}
+}
+
 func TestRolePromptOmitsRuntimeAndMemoryContext(t *testing.T) {
 	profile := testPromptProfile(AgentConfig{})
 

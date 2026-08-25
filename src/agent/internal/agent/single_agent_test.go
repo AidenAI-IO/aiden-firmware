@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -114,6 +115,7 @@ func TestSingleAgentDoesNotRunDefaultFinalVerifierReview(t *testing.T) {
 
 func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) {
 	model := &routedOpenAppModel{}
+	events := make([]string, 0, 4)
 	bridge := NewPhoneBridge(nil)
 	bridge.mu.Lock()
 	bridge.platform = "ios"
@@ -126,19 +128,31 @@ func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) 
 		name:        "screenshot",
 		description: "Capture the current phone screen.",
 		visual:      true,
-		output:      `{"format":"jpeg","width":1,"height":1,"size":1,"data":"YQ=="}`,
+	}
+	screenshot.callFn = func(context.Context, string) (string, error) {
+		roles := []string{"state screenshot", "pre-action baseline", "post-action final"}
+		callIndex := len(screenshot.inputs) - 1
+		if callIndex >= 0 && callIndex < len(roles) {
+			events = append(events, roles[callIndex])
+		} else {
+			events = append(events, "unexpected screenshot")
+		}
+		return `{"format":"jpeg","width":1,"height":1,"size":1,"data":"YQ=="}`, nil
 	}
 	searchLaunch := &stubTool{
 		name:        "search_launch_app",
 		description: "Open an app through visible system search.",
-		output:      `{"ok":true,"opened":true}`,
+	}
+	searchLaunch.callFn = func(context.Context, string) (string, error) {
+		events = append(events, "routed open_app")
+		return `{"ok":true,"opened":true}`, nil
 	}
 	toolSet := &ToolSet{
 		phoneBridge: bridge,
 		tools: map[string]langtools.Tool{
-			"open_app":              newPostActionScreenshotTool(NewOpenAppTool(bridge, nil, searchLaunch), screenshot, 0),
+			"open_app":            newPostActionScreenshotTool(NewOpenAppTool(bridge, nil, searchLaunch), screenshot, 0),
 			"request_user_action": NewHumanHandoffTool(),
-			"screenshot":            screenshot,
+			"screenshot":          screenshot,
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -161,6 +175,9 @@ func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) 
 	}
 	if len(screenshot.inputs) != 3 || len(searchLaunch.inputs) != 1 {
 		t.Fatalf("routed calls: screenshot=%v search_launch_app=%v", screenshot.inputs, searchLaunch.inputs)
+	}
+	if want := []string{"state screenshot", "pre-action baseline", "routed open_app", "post-action final"}; !slices.Equal(events, want) {
+		t.Fatalf("routed call order = %#v, want %#v", events, want)
 	}
 	var searchInput map[string]any
 	if err := json.Unmarshal([]byte(searchLaunch.inputs[0]), &searchInput); err != nil {

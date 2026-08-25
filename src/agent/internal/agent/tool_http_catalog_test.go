@@ -145,6 +145,24 @@ func TestUnknownToolsDefaultToHTTPVisible(t *testing.T) {
 	}
 }
 
+func TestHTTPToolSkillDocumentsOptionalPostActionScreenChanged(t *testing.T) {
+	markdown := buildHTTPToolSkillMarkdown(
+		"test-http-tools",
+		"Test HTTP tools.",
+		defaultHTTPToolSkillBaseURL,
+		[]ToolDescriptor{{Name: "touch_gesture", Category: "input"}},
+	)
+	for _, expected := range []string{
+		"optional `screen_changed`",
+		"When present, `screen_changed` reports meaningful structural change",
+		"an omitted field means comparison was unavailable, not that no change occurred",
+	} {
+		if !strings.Contains(markdown, expected) {
+			t.Fatalf("generated HTTP tool skill missing optional screen_changed guidance %q:\n%s", expected, markdown)
+		}
+	}
+}
+
 func TestWheelNudgeIsNotDirectlyHTTPExposed(t *testing.T) {
 	spec := NewToolSpec(&WheelNudgeTool{})
 	if spec.HTTPExposed {
