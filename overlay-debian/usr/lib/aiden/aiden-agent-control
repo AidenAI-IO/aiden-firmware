@@ -11,7 +11,18 @@ case "${1:-}" in
         ;;
     status)
         if systemctl is-active --quiet aiden-agent.service; then
-            echo "agent=running"
+            # config_web keeps the legacy `watchdog=running` status contract
+            # for the Buildroot image.  Debian has no separate watchdog
+            # process: systemd supervises the foreground Agent service.  Use
+            # the unit's MainPID as the compatibility PID so the existing UI
+            # reports the supervisor as running instead of falsely showing
+            # "watchdog stopped".
+            pid="$(systemctl show aiden-agent.service -p MainPID --value 2>/dev/null || true)"
+            case "$pid" in
+                ''|*[!0-9]*) pid=0 ;;
+            esac
+            echo "watchdog=running pid=$pid supervisor=systemd"
+            echo "agent=running pid=$pid addr=0.0.0.0:8080"
             exit 0
         fi
         echo "agent=stopped"
