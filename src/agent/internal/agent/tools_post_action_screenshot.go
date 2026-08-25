@@ -44,6 +44,18 @@ func stripScreenshotData(content string) string {
 	if strings.TrimSpace(result.ActionOutput) != "" {
 		compact["action_output"] = strings.TrimSpace(result.ActionOutput)
 	}
+	if result.ScreenStable != nil {
+		compact["screen_stable"] = *result.ScreenStable
+	}
+	if result.StableWaitMs != nil {
+		compact["stable_wait_ms"] = *result.StableWaitMs
+	}
+	if result.ScreenChanged != nil {
+		compact["screen_changed"] = *result.ScreenChanged
+	}
+	if result.LastDiff != nil {
+		compact["last_diff"] = *result.LastDiff
+	}
 	data, err := json.Marshal(compact)
 	if err != nil {
 		return content
