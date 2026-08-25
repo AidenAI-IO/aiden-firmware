@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -123,6 +124,12 @@ func newContextManagerFromMessageList(sessionFolder, sessionID string, messageLi
 		attachmentStore: attachmentStore,
 		artifactStore:   artifactStore,
 	}
+	now := time.Now().UTC()
+	for i := range manager.messageList {
+		if manager.messageList[i].Timestamp.IsZero() {
+			manager.messageList[i].Timestamp = now
+		}
+	}
 	if err := manager.flushFull(); err != nil {
 		return nil, err
 	}
@@ -169,6 +176,12 @@ func (c *ContextManager) appendToList(messages []messages.Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
+	now := time.Now().UTC()
+	for i := range messages {
+		if messages[i].Timestamp.IsZero() {
+			messages[i].Timestamp = now
+		}
+	}
 
 	if err := appendSession(c.sessionFolder, c.sessionID, messages); err != nil {
 		log.Println("[CM] Failed to append messages to session", err)
@@ -209,7 +222,6 @@ func (c *ContextManager) AppendMessage(message messages.Message) error {
 	if len(messageList) == 0 {
 		return nil
 	}
-
 	return c.appendToList(messageList)
 }
 

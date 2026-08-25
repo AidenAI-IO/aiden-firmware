@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -38,6 +39,33 @@ func TestConvertStandardMessageToContextManagerMessage_Assistant(t *testing.T) {
 	}
 	if message.Content != "hello" {
 		t.Fatalf("content = %q, want %q", message.Content, "hello")
+	}
+}
+
+func TestConvertStandardMessageToContextManagerMessage_NormalizesUsage(t *testing.T) {
+	tests := []struct {
+		name string
+		info map[string]any
+		want messages.Usage
+	}{
+		{
+			name: "openai",
+			info: map[string]any{"prompt_tokens": 19, "completion_tokens": 10, "total_tokens": 29},
+			want: messages.Usage{InputTokens: 19, OutputTokens: 10, TotalTokens: 29},
+		},
+		{
+			name: "realtime",
+			info: map[string]any{"input_tokens": 336, "output_tokens": 41, "total_tokens": 377},
+			want: messages.Usage{InputTokens: 336, OutputTokens: 41, TotalTokens: 377},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			message := messages.ConvertChoiceToContextManagerMessage(llms.ContentChoice{Content: "ok", GenerationInfo: tt.info})
+			if message.Usage == nil || *message.Usage != tt.want {
+				t.Fatalf("usage = %#v, want %#v", message.Usage, tt.want)
+			}
+		})
 	}
 }
 
@@ -233,11 +261,13 @@ func TestConvertToStandardMessageList_ToolResults(t *testing.T) {
 
 func TestNewContextManagerFromMessageListPersistsMessages(t *testing.T) {
 	sessionFolder := t.TempDir()
+	timestamp := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
 	want := []messages.Message{
-		{Role: messages.MessageRoleSystem, Content: "system prompt"},
+		{Role: messages.MessageRoleSystem, Content: "system prompt", Timestamp: timestamp},
 		{
-			Role:    messages.MessageRoleUser,
-			Content: "compacted summary",
+			Role:      messages.MessageRoleUser,
+			Content:   "compacted summary",
+			Timestamp: timestamp,
 			RecoverableToolResults: []messages.RecoverableToolResult{{
 				ToolName:         "shell",
 				ArtifactPath:     "/tmp/tool-results/tr_persisted.data",
@@ -246,8 +276,10 @@ func TestNewContextManagerFromMessageListPersistsMessages(t *testing.T) {
 			}},
 		},
 		{
-			Role:    messages.MessageRoleToolCall,
-			Content: "checking",
+			Role:      messages.MessageRoleToolCall,
+			Content:   "checking",
+			Timestamp: timestamp,
+			Usage:     &messages.Usage{InputTokens: 19, OutputTokens: 10, TotalTokens: 29},
 			ToolCalls: []messages.ToolCall{{
 				ID:        "call_1",
 				Name:      "echo",
@@ -255,7 +287,8 @@ func TestNewContextManagerFromMessageListPersistsMessages(t *testing.T) {
 			}},
 		},
 		{
-			Role: messages.MessageRoleToolResult,
+			Role:      messages.MessageRoleToolResult,
+			Timestamp: timestamp,
 			ToolResults: []messages.ToolResult{{
 				ToolCallID: "call_1",
 				Name:       "echo",
@@ -276,6 +309,26 @@ func TestNewContextManagerFromMessageListPersistsMessages(t *testing.T) {
 
 	if got := reloaded.CloneMessageList(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("reloaded messages = %#v, want %#v", got, want)
+	}
+}
+
+func TestAppendMessageAddsTimestampAndPersistsUsage(t *testing.T) {
+	manager := newTestContextManager(t)
+	usage := &messages.Usage{InputTokens: 336, OutputTokens: 41, TotalTokens: 377}
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleAssistant, Content: "ok", Usage: usage}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	reloaded, err := LoadContextManagerFromSessionID(manager.GetSessionFolder(), manager.GetSessionID())
+	if err != nil {
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
+	}
+	got := reloaded.CloneMessageList()
+	if len(got) != 1 || got[0].Timestamp.IsZero() {
+		t.Fatalf("messages = %#v, want a timestamped message", got)
+	}
+	if got[0].Usage == nil || *got[0].Usage != *usage {
+		t.Fatalf("usage = %#v, want %#v", got[0].Usage, usage)
 	}
 }
 

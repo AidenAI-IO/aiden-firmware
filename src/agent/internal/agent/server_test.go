@@ -2743,7 +2743,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	}
 	for _, message := range []messages.Message{
 		{Role: messages.MessageRoleUser, Content: "hello"},
-		{Role: messages.MessageRoleToolCall, ToolCalls: []messages.ToolCall{{ID: "call", Name: "screenshot", Arguments: "{}"}}},
+		{Role: messages.MessageRoleToolCall, Usage: &messages.Usage{InputTokens: 19, OutputTokens: 10, TotalTokens: 29}, ToolCalls: []messages.ToolCall{{ID: "call", Name: "screenshot", Arguments: "{}"}}},
 		{Role: messages.MessageRoleToolResult, ToolResults: []messages.ToolResult{{ToolCallID: "call", Name: "screenshot", Content: `{"width":100}`}}},
 	} {
 		if err := manager.AppendMessage(message); err != nil {
@@ -2770,6 +2770,9 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	}
 	if history[1].Type != runEventToolCall || history[2].Type != "tool_result" {
 		t.Fatalf("unexpected history payload: %#v", history)
+	}
+	if history[1].Usage == nil || history[1].Usage.InputTokens != 19 || history[1].Usage.OutputTokens != 10 || history[1].Usage.TotalTokens != 29 {
+		t.Fatalf("history usage = %#v, want normalized token usage", history[1].Usage)
 	}
 }
 
@@ -2890,6 +2893,24 @@ func TestWebMessageFromContextMessagePreservesNoticeType(t *testing.T) {
 	}
 }
 
+func TestWebMessageFromContextMessagePreservesUsage(t *testing.T) {
+	usage := &messages.Usage{InputTokens: 336, OutputTokens: 41, TotalTokens: 377}
+	message, ok := webMessageFromContextMessage(messages.Message{
+		Role:    messages.MessageRoleAssistant,
+		Content: "done",
+		Usage:   usage,
+	}, "backend")
+	if !ok {
+		t.Fatal("webMessageFromContextMessage() rejected assistant message")
+	}
+	if message.Usage == nil || *message.Usage != *usage {
+		t.Fatalf("usage = %#v, want %#v", message.Usage, usage)
+	}
+	if message.Usage == usage {
+		t.Fatal("web message usage should not share the context message pointer")
+	}
+}
+
 func TestServerContextAttachmentEndpointServesRegisteredAttachment(t *testing.T) {
 	config := Config{Model: ModelConfig{Provider: "fake"}}
 	server := &Server{logger: newTestLogger(), runtime: NewRuntimeWithDeps(
@@ -2944,6 +2965,31 @@ func TestContextPageUsesSafeAttachmentHandlers(t *testing.T) {
 	}
 	if strings.Contains(page, `onclick="openAttachment(`) {
 		t.Fatal("context page still embeds attachment values in an inline JavaScript handler")
+	}
+}
+
+func TestWebUIShowsMessageTokenUsage(t *testing.T) {
+	messagesScript := readWebUIResource(t, "scripts/messages.js")
+	styles := readWebUIResource(t, "styles.css")
+	contextPage := readWebUIResource(t, "context.html")
+	for _, want := range []string{"function renderMessageUsage(usage)", "usage.input_tokens", "usage.output_tokens", "usage.total_tokens"} {
+		if !strings.Contains(messagesScript, want) {
+			t.Fatalf("message renderer missing %q", want)
+		}
+	}
+	for _, want := range []string{".message-footer", ".message-usage", ".message-usage-item"} {
+		if !strings.Contains(styles, want) {
+			t.Fatalf("web UI styles missing %q", want)
+		}
+	}
+	if !strings.Contains(contextPage, "m.usage.input_tokens") || !strings.Contains(contextPage, "m.usage.total_tokens") {
+		t.Fatal("context page does not render token usage")
+	}
+	if strings.Index(messagesScript, "footer.appendChild(timeDiv)") > strings.Index(messagesScript, "footer.appendChild(usageDiv)") {
+		t.Fatal("message footer must render time before usage")
+	}
+	if !strings.Contains(styles, "margin-right: auto;") || !strings.Contains(styles, "margin-left: auto;") {
+		t.Fatal("message footer must pin time left and usage right")
 	}
 }
 
