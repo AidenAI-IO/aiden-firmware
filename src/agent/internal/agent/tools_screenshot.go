@@ -35,11 +35,43 @@ type screenshotResult struct {
 type screenshotFrameClient = screenprovider.Provider
 
 func captureScreenshotJPEG(client screenshotFrameClient, screenState *screen.ScreenState, cropBlack bool) (*frameMetadata, []byte, screenCaptureInfo, error) {
-	minimalWidth := 0
+	hint := screenprovider.CropHint{}
 	if cropBlack {
-		minimalWidth = screenshotMinimalWidth(screenState)
+		hint = screenshotCropHint(screenState)
 	}
-	return client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, cropBlack, minimalWidth)
+	return client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, cropBlack, hint)
+}
+
+func screenshotCropHint(screenState *screen.ScreenState) screenprovider.CropHint {
+	if screenState == nil {
+		return screenprovider.CropHint{}
+	}
+	phoneScreen := screenState.PhoneScreenInfo()
+	width, height, ok := currentPhoneScreenDimensions(phoneScreen)
+	if !ok {
+		width, height, ok = nativePhoneScreenDimensions(phoneScreen)
+		if !ok {
+			return screenprovider.CropHint{}
+		}
+	}
+	return screenprovider.CropHint{
+		ScreenWidth:  int(math.Round(width)),
+		ScreenHeight: int(math.Round(height)),
+	}
+}
+
+// screenshotMinimalWidth is retained for callers that still need the legacy
+// horizontal-only hint.
+func screenshotMinimalWidth(screenState *screen.ScreenState) int {
+	hint := screenshotCropHint(screenState)
+	if hint.ScreenWidth <= 0 || hint.ScreenHeight <= 0 {
+		return 0
+	}
+	minimalWidth := int(math.Round(1080 * float64(hint.ScreenWidth) / float64(hint.ScreenHeight)))
+	if minimalWidth < 1 {
+		return 0
+	}
+	return minimalWidth
 }
 
 // capturedFrame is a JPEG frame cropped to the Active Area, the region holding
@@ -57,18 +89,11 @@ type capturedFrame struct {
 }
 
 // captureActiveAreaFrame grabs the latest frame and optionally crops it to the
-// Active Area.
-//
-// screenState is read to help resolve the Active Area but is never written:
-// callers decide whether this capture should update the shared coordinate
-// mapping. Quick Capture deliberately does not, so that saving a screen cannot
-// perturb an agent task already in flight.
+// Active Area without updating the shared mapping state.
 func captureActiveAreaFrame(client screenshotFrameClient, screenState *screen.ScreenState, cropBlack bool) (capturedFrame, error) {
 	if client == nil {
 		return capturedFrame{}, fmt.Errorf("screen capture client not configured")
 	}
-	// Request an Active Area-aware JPEG through the shared provider API. The
-	// provider may already crop and report the source area in metadata.
 	meta, jpegData, captureInfo, err := captureScreenshotJPEG(client, screenState, cropBlack)
 	if err != nil {
 		return capturedFrame{}, err
@@ -101,7 +126,8 @@ func captureActiveAreaFrame(client screenshotFrameClient, screenState *screen.Sc
 	displayWidth := int(meta.Width)
 	displayHeight := int(meta.Height)
 	displayData := jpegData
-	if cropBlack && !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
+	if cropBlack && !alreadyCropped && active.Valid &&
+		(active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
 		croppedData, croppedWidth, croppedHeight, cropErr := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
 		if cropErr != nil {
 			return capturedFrame{}, fmt.Errorf("crop screenshot to active area: %w", cropErr)
@@ -122,25 +148,6 @@ func captureActiveAreaFrame(client screenshotFrameClient, screenState *screen.Sc
 		AlreadyCropped: alreadyCropped,
 		CaptureInfo:    captureInfo,
 	}, nil
-}
-
-func screenshotMinimalWidth(screenState *screen.ScreenState) int {
-	if screenState == nil {
-		return 0
-	}
-	phoneScreen := screenState.PhoneScreenInfo()
-	width, height, ok := currentPhoneScreenDimensions(phoneScreen)
-	if !ok {
-		width, height, ok = nativePhoneScreenDimensions(phoneScreen)
-		if !ok {
-			return 0
-		}
-	}
-	minimalWidth := int(math.Round(1080 * width / height))
-	if minimalWidth < 1 {
-		return 0
-	}
-	return minimalWidth
 }
 
 func applyScreenCaptureInfo(result *screenshotResult, info screenCaptureInfo) {
@@ -231,19 +238,35 @@ func (t *ScreenshotTool) ArgsSchema() map[string]any {
 }
 
 func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
-	frame, err := captureActiveAreaFrame(t.client, t.screen, t.cropBlack())
+	// Request JPEG format directly from frame_service (hardware-encoded)
+	cropBlack := t.cropBlack()
+	meta, jpegData, captureInfo, err := captureScreenshotJPEG(t.client, t.screen, cropBlack)
 	if err != nil {
 		return "", err
 	}
-	meta := frame.Meta
-	captureInfo := frame.CaptureInfo
+	if meta.Stale {
+		return "", fmt.Errorf("frame service: STALE_FRAME")
+	}
+	if meta.PixelFormat != "jpeg" {
+		return "", fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
+	}
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf("screenshot frame meta=%s capture_backend=%q mapping_before={%s}", formatTouchscreenRCAMetadata(meta), captureInfo.Backend, t.screen.Format())
 	}
-	active := frame.ActiveArea
-	sourceWidth := frame.SourceWidth
-	sourceHeight := frame.SourceHeight
-	alreadyCropped := frame.AlreadyCropped
+	active := screen.ScreenActiveArea{}
+	sourceWidth := int(meta.Width)
+	sourceHeight := int(meta.Height)
+	alreadyCropped := false
+	if fullWidth, fullHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
+		sourceWidth = fullWidth
+		sourceHeight = fullHeight
+		active = sourceActive
+		alreadyCropped = true
+	} else if cropBlack {
+		active = detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
+	} else {
+		active = screen.ScreenActiveArea{X: 0, Y: 0, Width: sourceWidth, Height: sourceHeight, Valid: true}
+	}
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf(
 			"screenshot resolved active_area source=%dx%d active=%s already_cropped=%v jpeg_dimensions=%dx%d mapping_before_update={%s}",
@@ -260,11 +283,19 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		t.screen.UpdateActiveArea(sourceWidth, sourceHeight, active)
 	}
 
-	// Already cropped to active_area so the LLM sees only the mirrored phone
-	// touch region.
-	displayWidth := frame.Width
-	displayHeight := frame.Height
-	displayData := frame.Data
+	// Crop to active_area so LLM sees only the mirrored phone touch region.
+	displayWidth := int(meta.Width)
+	displayHeight := int(meta.Height)
+	displayData := jpegData
+	if cropBlack && !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
+		croppedData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
+		if err != nil {
+			return "", fmt.Errorf("crop screenshot to active area: %w", err)
+		}
+		displayWidth = croppedWidth
+		displayHeight = croppedHeight
+		displayData = croppedData
+	}
 	if t.screen != nil {
 		t.screen.UpdateScreenshot(displayData, displayWidth, displayHeight)
 	}
@@ -334,10 +365,6 @@ func deriveActiveAreaFromPhoneScreen(frameWidth, frameHeight int, phoneScreen sc
 	if len(candidates) > 1 && !approx.Valid {
 		return screen.ScreenActiveArea{}, false
 	}
-	if approx.Valid && (approx.Y != 0 || approx.Height != frameHeight) {
-		return screen.ScreenActiveArea{}, false
-	}
-
 	best := screen.ScreenActiveArea{}
 	bestScore := math.MaxFloat64
 	for _, aspectRatio := range candidates {
@@ -412,15 +439,22 @@ func projectAspectRatioToFrame(frameWidth, frameHeight int, aspectRatio float64)
 	if frameWidth <= 0 || frameHeight <= 0 || aspectRatio <= 0 || math.IsNaN(aspectRatio) || math.IsInf(aspectRatio, 0) {
 		return screen.ScreenActiveArea{}, false
 	}
-	activeWidth := int(math.Round(float64(frameHeight) * aspectRatio))
-	if activeWidth < 1 || activeWidth > frameWidth {
+	frameAspectRatio := float64(frameWidth) / float64(frameHeight)
+	activeWidth := frameWidth
+	activeHeight := frameHeight
+	if aspectRatio <= frameAspectRatio {
+		activeWidth = int(math.Round(float64(frameHeight) * aspectRatio))
+	} else {
+		activeHeight = int(math.Round(float64(frameWidth) / aspectRatio))
+	}
+	if activeWidth < 1 || activeWidth > frameWidth || activeHeight < 1 || activeHeight > frameHeight {
 		return screen.ScreenActiveArea{}, false
 	}
 	return screen.ScreenActiveArea{
 		X:      (frameWidth - activeWidth) / 2,
-		Y:      0,
+		Y:      (frameHeight - activeHeight) / 2,
 		Width:  activeWidth,
-		Height: frameHeight,
+		Height: activeHeight,
 		Valid:  true,
 	}, true
 }
@@ -448,46 +482,99 @@ func detectImageActiveArea(img image.Image, expectedWidth, expectedHeight int) s
 	}
 
 	threshold := 10.0
-	left := 0
-	for left < width && imageColumnDark(img, bounds.Min.X+left, bounds.Min.Y, height, threshold) {
-		left++
+	left, right, horizontal := detectImageAxisBounds(width, func(position int) bool {
+		return imageColumnDark(img, bounds.Min.X+position, bounds.Min.Y, height, threshold)
+	})
+	top, bottom, vertical := detectImageAxisBounds(height, func(position int) bool {
+		return imageRowDark(img, bounds.Min.Y+position, bounds.Min.X, width, threshold)
+	})
+	if horizontal && vertical {
+		horizontalRemoved := 1 - float64(right-left+1)/float64(width)
+		verticalRemoved := 1 - float64(bottom-top+1)/float64(height)
+		horizontal = horizontalRemoved > verticalRemoved
+		vertical = !horizontal
 	}
-	right := width - 1
-	for right >= left && imageColumnDark(img, bounds.Min.X+right, bounds.Min.Y, height, threshold) {
-		right--
+	if horizontal {
+		return screen.ScreenActiveArea{X: left, Y: 0, Width: right - left + 1, Height: height, Valid: true}
 	}
-	activeWidth := right - left + 1
-	if activeWidth <= 0 {
-		return screen.ScreenActiveArea{}
+	if vertical {
+		return screen.ScreenActiveArea{X: 0, Y: top, Width: width, Height: bottom - top + 1, Valid: true}
 	}
-	if activeWidth > width*95/100 {
-		return screen.ScreenActiveArea{}
+	return screen.ScreenActiveArea{}
+}
+
+func detectImageAxisBounds(length int, dark func(int) bool) (int, int, bool) {
+	if length <= 1 || !dark(0) || !dark(length-1) {
+		return 0, length - 1, false
 	}
-	if activeWidth < width/5 {
-		return screen.ScreenActiveArea{}
+	activeSeed := -1
+	for _, position := range []int{length / 2, length / 4, length * 3 / 4, length / 8, length * 3 / 8, length * 5 / 8, length * 7 / 8} {
+		if !dark(position) {
+			activeSeed = position
+			break
+		}
 	}
-	return screen.ScreenActiveArea{X: left, Y: 0, Width: activeWidth, Height: height, Valid: true}
+	if activeSeed < 0 {
+		return 0, length - 1, false
+	}
+	first := 0
+	for first < activeSeed && dark(first) {
+		first++
+	}
+	last := length - 1
+	for last > activeSeed && dark(last) {
+		last--
+	}
+	if first > last {
+		return 0, length - 1, false
+	}
+	activeLength := last - first + 1
+	tolerance := max(4, length/100)
+	valid := activeLength >= length/5 && activeLength <= length*95/100 &&
+		cropAbsInt(first-(length-1-last)) <= tolerance
+	return first, last, valid
 }
 
 func imageColumnDark(img image.Image, x, minY, height int, threshold float64) bool {
-	samples := 64
-	if height < samples {
-		samples = height
-	}
+	return imageAxisDark(img, x, minY, height, threshold, false)
+}
+
+func imageRowDark(img image.Image, y, minX, width int, threshold float64) bool {
+	return imageAxisDark(img, y, minX, width, threshold, true)
+}
+
+func imageAxisDark(img image.Image, fixed, varyingStart, varyingLength int, threshold float64, varyingX bool) bool {
+	samples := min(64, varyingLength)
 	if samples <= 0 {
 		return true
 	}
 	if samples == 1 {
-		return pixelBrightness(img.At(x, minY)) <= threshold
+		if varyingX {
+			return pixelBrightness(img.At(varyingStart, fixed)) <= threshold
+		}
+		return pixelBrightness(img.At(fixed, varyingStart)) <= threshold
 	}
 	bright := 0
 	for i := 0; i < samples; i++ {
-		y := minY + int(math.Round(float64(i)*float64(height-1)/float64(samples-1)))
-		if pixelBrightness(img.At(x, y)) > threshold {
+		position := varyingStart + int(math.Round(float64(i)*float64(varyingLength-1)/float64(samples-1)))
+		var c color.Color
+		if varyingX {
+			c = img.At(position, fixed)
+		} else {
+			c = img.At(fixed, position)
+		}
+		if pixelBrightness(c) > threshold {
 			bright++
 		}
 	}
 	return bright <= samples/20
+}
+
+func cropAbsInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func pixelBrightness(c color.Color) float64 {

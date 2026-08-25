@@ -55,6 +55,16 @@ func TestRunConfigUpdateIOEncodesInvalidArguments(t *testing.T) {
 	}
 }
 
+func TestRunConfigUpdateIOHelpExitsSuccessfully(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if exitCode := runConfigUpdateIO([]string{"-h"}, strings.NewReader("{}"), &stdout, &stderr); exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "Usage of config-update") {
+		t.Fatalf("stdout=%q stderr=%q, want help on stderr only", stdout.String(), stderr.String())
+	}
+}
+
 func TestExecuteConfigTestUsesModelRuntime(t *testing.T) {
 	values, err := json.Marshal(modelDTO{Provider: "fake"})
 	if err != nil {
@@ -913,7 +923,7 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 		},
 		{
 			name:          "model api mode error",
-			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions or responses)",
+			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions, responses, or responses_stateful)",
 			expectedField: "model.api_mode",
 		},
 		{

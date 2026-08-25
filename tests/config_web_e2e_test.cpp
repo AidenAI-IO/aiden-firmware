@@ -216,8 +216,17 @@ std::string replace_all(std::string text, const std::string& needle, const std::
 
 std::string toml_section_text(const std::string& toml, const std::string& section) {
     const std::string header = "[" + section + "]";
-    const size_t begin = toml.find(header);
-    if (begin == std::string::npos) {
+    size_t begin = 0;
+    while (begin < toml.size() &&
+           !(toml.compare(begin, header.size(), header) == 0 &&
+             (begin == 0 || toml[begin - 1] == '\n'))) {
+        const size_t newline = toml.find('\n', begin);
+        if (newline == std::string::npos) {
+            return "";
+        }
+        begin = newline + 1;
+    }
+    if (begin >= toml.size()) {
         return "";
     }
     const size_t end = toml.find("\n[", begin + header.size());
@@ -243,6 +252,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"channels\":1,\"bit_width\":16,\"playback_backend\":\"audio_service\"},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
+        "\"frame_service\":{\"keep_streamon\":false},"
         "\"quick_capture\":{\"enabled\":true,\"gpio_pin\":3,\"screen_memory_ttl\":\"90d\"},"
         "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
         "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
@@ -824,6 +834,9 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env,
         }
         auto replace_env = [&env_storage](const std::string& assignment) {
             const size_t equals = assignment.find('=');
+            if (equals == std::string::npos) {
+                return;
+            }
             const std::string prefix = assignment.substr(0, equals + 1);
             env_storage.erase(
                 std::remove_if(
@@ -1016,7 +1029,9 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
 
     cJSON* quick_capture = cJSON_GetObjectItem(config, "quick_capture");
     REQUIRE(quick_capture != nullptr);
-    CHECK((cJSON_GetObjectItem(quick_capture, "enabled")->type & 0xff) == cJSON_True);
+    cJSON* quick_capture_enabled = cJSON_GetObjectItem(quick_capture, "enabled");
+    REQUIRE(quick_capture_enabled != nullptr);
+    CHECK((quick_capture_enabled->type & 0xff) == cJSON_True);
     CHECK(required_json_int(quick_capture, "gpio_pin") == 3);
     CHECK(required_json_string(quick_capture, "screen_memory_ttl") == "90d");
     cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");

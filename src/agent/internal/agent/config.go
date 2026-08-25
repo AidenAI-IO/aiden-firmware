@@ -78,6 +78,13 @@ type AudioArchiveConfig struct {
 	StoragePath string `toml:"storage_path,omitempty"`
 }
 
+// FrameServiceConfig controls the board-side HDMI capture service lifecycle.
+// The Agent preserves this section so the setup portal can own the setting,
+// while frame_service itself reads the persisted TOML at service startup.
+type FrameServiceConfig struct {
+	KeepStreamOn bool `toml:"keep_streamon"`
+}
+
 // MaxFilesOrDefault returns MaxFiles if positive, else 500.
 func (c AudioArchiveConfig) MaxFilesOrDefault() int {
 	if c.MaxFiles <= 0 {
@@ -272,6 +279,7 @@ type Config struct {
 	Device                     DeviceConfig             `toml:"device,omitempty"`
 	Audio                      AudioConfig              `toml:"audio,omitempty"`
 	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
+	FrameService               FrameServiceConfig       `toml:"frame_service,omitempty"`
 	Storage                    StorageConfig            `toml:"storage,omitempty"`
 	VoiceNotifications         VoiceNotificationsConfig `toml:"voice_notifications,omitempty"`
 	QuickCapture               QuickCaptureConfig       `toml:"quick_capture,omitempty"`
@@ -693,8 +701,27 @@ type ModelConfig struct {
 	APIKey   string `toml:"api_key,omitempty"`
 	// APIMode selects the wire protocol for OpenAI-compatible providers. Empty
 	// and "chat_completions" preserve the historical default; "responses"
-	// sends the locally maintained context as Responses input items.
+	// sends the locally maintained context as Responses input items;
+	// "responses_stateful" chains provider-stored responses with
+	// previous_response_id.
 	APIMode string `toml:"api_mode,omitempty"`
+	// ResponsesContextManagement selects provider-side context management for
+	// Responses requests. "compaction" is OpenAI's token-based policy and
+	// "ark_context_edit" is Volcengine Ark's tool/thinking edit policy.
+	ResponsesContextManagement        string `toml:"responses_context_management,omitempty"`
+	ResponsesCompactThreshold         int    `toml:"responses_compact_threshold,omitempty"`
+	ResponsesContextEditTrigger       int    `toml:"responses_context_edit_trigger,omitempty"`
+	ResponsesContextEditKeep          int    `toml:"responses_context_edit_keep,omitempty"`
+	ResponsesContextEditClearThinking bool   `toml:"responses_context_edit_clear_thinking,omitempty"`
+	// ResponsesTruncation controls the OpenAI-compatible truncation policy used
+	// by OpenAI and OpenRouter. Ark does not use this request field.
+	// Empty preserves the API default (disabled); "auto" delegates truncation
+	// to the provider when supported.
+	ResponsesTruncation string `toml:"responses_truncation,omitempty"`
+	// ResponsesInclude lists official Responses include values such as
+	// reasoning.encrypted_content. It is intentionally provider-configurable
+	// because compatible gateways do not all implement the same include set.
+	ResponsesInclude []string `toml:"responses_include,omitempty"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
 	// (see applyModelTemperatureDefault); an explicit value, including 0, is
@@ -707,6 +734,13 @@ type ModelConfig struct {
 	ContextWindow        int      `toml:"context_window,omitempty"`
 	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`
 	Responses            []string `toml:"responses,omitempty"`
+}
+
+func (m ModelConfig) ResponsesProviderCompactionEnabled() bool {
+	apiMode := normalizeModelAPIMode(m.APIMode)
+	return (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) &&
+		effectiveModelProviderType(m.Provider, m.BaseURL) == "openai" &&
+		normalizeResponsesContextManagement(m.ResponsesContextManagement) == responsesContextManagementCompaction
 }
 
 // AgentConfig is used internally by the runtime prompt builder.
@@ -950,7 +984,7 @@ func resolveModelProvider(cfg *Config, m *ModelConfig) error {
 
 // applyProviderToModel applies a provider configuration to a model config.
 func applyProviderToModel(provider ModelProvider, originalRef string, m *ModelConfig) error {
-	providerType := strings.TrimSpace(provider.Type)
+	providerType := effectiveModelProviderType(provider.Type, provider.BaseURL)
 	if providerType == "" {
 		return fmt.Errorf("provider %q has no provider type specified", originalRef)
 	}
@@ -1229,10 +1263,40 @@ func (c Config) Validate() error {
 	}
 	apiMode := normalizeModelAPIMode(c.Model.APIMode)
 	if apiMode == "" {
-		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions or responses)", c.Model.APIMode)
+		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions, responses, or responses_stateful)", c.Model.APIMode)
 	}
-	if apiMode == modelAPIModeResponses && !c.modelProviderSupportsResponses() {
-		return fmt.Errorf("model.api_mode=responses requires a provider transport with an OpenAI-compatible /responses endpoint")
+	if (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) && !c.modelProviderSupportsResponses() {
+		return fmt.Errorf("model.api_mode=%s requires a provider transport with an OpenAI-compatible /responses endpoint", apiMode)
+	}
+	if apiMode == modelAPIModeResponsesStateful && !c.modelProviderSupportsResponsesStateful() {
+		return fmt.Errorf("model.api_mode=responses_stateful requires a provider that supports stored Responses and previous_response_id; use responses for stateless-compatible endpoints")
+	}
+	contextManagement := strings.ToLower(strings.TrimSpace(c.Model.ResponsesContextManagement))
+	switch contextManagement {
+	case "", "none", "disabled", responsesContextManagementCompaction:
+	case responsesContextManagementArkEdits, "ark", "volcengine", "ark-edits":
+	default:
+		return fmt.Errorf("invalid model.responses_context_management: %s (expected empty, compaction, ark_context_edit, or disabled)", c.Model.ResponsesContextManagement)
+	}
+	if threshold := c.Model.ResponsesCompactThreshold; threshold != 0 && threshold < 1000 {
+		return fmt.Errorf("model.responses_compact_threshold must be 0 or >= 1000, got %d", threshold)
+	}
+	if c.Model.ResponsesContextEditTrigger < 0 {
+		return fmt.Errorf("model.responses_context_edit_trigger must be >= 0, got %d", c.Model.ResponsesContextEditTrigger)
+	}
+	if c.Model.ResponsesContextEditKeep < 0 {
+		return fmt.Errorf("model.responses_context_edit_keep must be >= 0, got %d", c.Model.ResponsesContextEditKeep)
+	}
+	for _, include := range c.Model.ResponsesInclude {
+		if strings.TrimSpace(include) == "" {
+			return errors.New("model.responses_include entries must be non-empty")
+		}
+	}
+	truncation := strings.ToLower(strings.TrimSpace(c.Model.ResponsesTruncation))
+	switch truncation {
+	case "", responsesTruncationDisabled, responsesTruncationAuto:
+	default:
+		return fmt.Errorf("invalid model.responses_truncation: %s (expected empty, auto, or disabled)", c.Model.ResponsesTruncation)
 	}
 	backend := c.Device.BackendOrDefault()
 	switch backend {
@@ -1392,11 +1456,50 @@ func (c Config) Validate() error {
 // are rejected before a configuration is persisted or used at startup.
 func (c Config) modelProviderSupportsResponses() bool {
 	providerType := strings.TrimSpace(c.Model.Provider)
+	baseURL := c.Model.BaseURL
 	if provider, ok := c.ModelProviders[providerType]; ok {
-		providerType = strings.TrimSpace(provider.Type)
+		providerType = provider.Type
+		baseURL = provider.BaseURL
 	}
+	providerType = effectiveModelProviderType(providerType, baseURL)
 	definition, ok := lookupModelProviderDefinition(providerType)
 	return ok && definition.supportsResponses
+}
+
+func (c Config) modelProviderSupportsResponsesStateful() bool {
+	providerType := strings.TrimSpace(c.Model.Provider)
+	baseURL := c.Model.BaseURL
+	if provider, ok := c.ModelProviders[providerType]; ok {
+		providerType = provider.Type
+		baseURL = provider.BaseURL
+	}
+	providerType = effectiveModelProviderType(providerType, baseURL)
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsResponsesStateful
+}
+
+// effectiveModelProviderType recognizes well-known endpoints that were saved
+// as generic OpenAI-compatible transports by older config pages. This keeps
+// provider capability checks and runtime request behavior aligned: OpenRouter
+// implements only stateless /responses, while Volcengine Ark supports stored
+// response chaining with a different set of request fields.
+func effectiveModelProviderType(providerType, baseURL string) string {
+	providerType = strings.ToLower(strings.TrimSpace(providerType))
+	if providerType != "openai" {
+		return providerType
+	}
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return providerType
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "openrouter.ai" || strings.HasSuffix(host, ".openrouter.ai") {
+		return "openrouter"
+	}
+	if host == "ark.cn-beijing.volces.com" || strings.HasSuffix(host, ".ark.cn-beijing.volces.com") {
+		return "volcengine"
+	}
+	return providerType
 }
 
 // isKnownProviderType reports whether the value names a built-in model

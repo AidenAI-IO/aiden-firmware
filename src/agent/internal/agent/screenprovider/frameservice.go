@@ -176,16 +176,45 @@ func (r *frameHealthResponse) UnmarshalJSON(data []byte) error {
 
 // LatestFrame fetches the most recent frame from the service.
 func (c *FrameService) LatestFrame() (*FrameMetadata, []byte, error) {
-	return c.LatestFrameWithFormat("raw", 0, false, 0)
+	return c.LatestFrameWithFormat("raw", 0, false, CropHint{})
 }
 
 // LatestFrameWithFormat fetches the most recent frame with specified format.
 // format: "raw" (YUV) or "jpeg"
 // quality: JPEG quality (1-100), ignored for raw format
-// cropBlack: whether to crop uniformly dark columns at the left and right edges
-// minimalWidth: optional lower bound for width after horizontal cropping
-func (c *FrameService) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*FrameMetadata, []byte, error) {
-	return c.LatestFrameWithFormatSince(format, quality, cropBlack, minimalWidth, 0, 0)
+// cropBlack: whether to crop centered black bars on either axis
+// hint: optional current screen dimensions or legacy horizontal crop width
+func (c *FrameService) LatestFrameWithFormat(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, error) {
+	if format == "" {
+		format = "raw"
+	}
+	if quality <= 0 {
+		quality = DefaultJPEGQuality
+	}
+	hint = normalizeCropHint(hint)
+
+	request, err := latestFrameRequestJSON(format, quality, cropBlack, hint, 0, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal latest_frame request: %w", err)
+	}
+
+	headerJSON, payload, err := c.doRequest(request, nil, 5*time.Second)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var resp frameResponse
+	if err := json.Unmarshal(headerJSON, &resp); err != nil {
+		return nil, nil, fmt.Errorf("parse response: %w", err)
+	}
+	if resp.Status != "OK" {
+		return nil, nil, fmt.Errorf("frame service: %s", resp.Status)
+	}
+	if uint64(len(payload)) != resp.Frame.Bytes {
+		return nil, nil, fmt.Errorf("payload size mismatch: got %d, expected %d", len(payload), resp.Frame.Bytes)
+	}
+	// Return stale frame but let caller check meta.Stale flag
+	return &resp.Frame, payload, nil
 }
 
 // LatestFrameWithFormatSince fetches a frame newer than sinceSeq when the
@@ -201,6 +230,8 @@ func (c *FrameService) LatestFrameWithFormatSince(format string, quality int, cr
 		minimalWidth = 0
 	}
 
+	hint := normalizeCropHint(CropHint{MinimalWidth: minimalWidth})
+
 	timeoutMs := 0
 	if timeout > 0 {
 		timeoutMs = int(timeout / time.Millisecond)
@@ -208,7 +239,7 @@ func (c *FrameService) LatestFrameWithFormatSince(format string, quality int, cr
 			timeoutMs = 1
 		}
 	}
-	request, err := latestFrameRequestJSON(format, quality, cropBlack, minimalWidth, sinceSeq, timeoutMs)
+	request, err := latestFrameRequestJSON(format, quality, cropBlack, hint, sinceSeq, timeoutMs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal latest_frame request: %w", err)
 	}
@@ -284,7 +315,8 @@ func (c *FrameService) doRequest(requestJSON string, requestPayload []byte, time
 	return ReadUDSMessage(conn)
 }
 
-func latestFrameRequestJSON(format string, quality int, cropBlack bool, minimalWidth int, sinceSeq uint64, timeoutMs int) (string, error) {
+func latestFrameRequestJSON(format string, quality int, cropBlack bool, hint CropHint, sinceSeq uint64, timeoutMs int) (string, error) {
+	hint = normalizeCropHint(hint)
 	payload := map[string]any{
 		"type":       "request",
 		"method":     "latest_frame",
@@ -294,14 +326,29 @@ func latestFrameRequestJSON(format string, quality int, cropBlack bool, minimalW
 		"quality":    quality,
 		"crop_black": cropBlack,
 	}
-	if minimalWidth > 0 {
-		payload["minimal_width"] = minimalWidth
+	if hint.MinimalWidth > 0 {
+		payload["minimal_width"] = hint.MinimalWidth
+	}
+	if hint.ScreenWidth > 0 && hint.ScreenHeight > 0 {
+		payload["screen_width"] = hint.ScreenWidth
+		payload["screen_height"] = hint.ScreenHeight
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func normalizeCropHint(hint CropHint) CropHint {
+	if hint.MinimalWidth < 0 {
+		hint.MinimalWidth = 0
+	}
+	if hint.ScreenWidth <= 0 || hint.ScreenHeight <= 0 {
+		hint.ScreenWidth = 0
+		hint.ScreenHeight = 0
+	}
+	return hint
 }
 
 // Wire protocol: [header_len LE32][payload_len LE64][header bytes][payload bytes]

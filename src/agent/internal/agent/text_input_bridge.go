@@ -448,7 +448,10 @@ func (t *textInputBridge) currentBridge() *PhoneBridge {
 }
 
 func (t *textInputBridge) callQuickAction(ctx context.Context, action string) (string, error) {
-	out, err := t.hw.quickAction.Call(ctx, jsonString(map[string]any{"action": action}))
+	// Quick actions are an internal optimization for bridge paste. Isolate
+	// their structured error from the parent enter_text call so a failed
+	// Dynamic Island/paste route can still complete through local HID input.
+	out, err := callTextInputTool(ctx, t.hw.quickAction, jsonString(map[string]any{"action": action}))
 	if err != nil {
 		return out, err
 	}

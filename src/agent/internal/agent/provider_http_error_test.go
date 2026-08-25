@@ -15,6 +15,15 @@ func TestProviderHTTPErrorReadsAnthropicType(t *testing.T) {
 	}
 }
 
+func TestProviderHTTPErrorReadsTopLevelErrorType(t *testing.T) {
+	err := newProviderHTTPError(http.StatusInternalServerError, []byte(
+		`{"error":{"code":"server_error","message":"Invalid credentials"},"error_type":"authentication"}`,
+	))
+	if err.ProviderCode != "authentication" || err.Message != "Invalid credentials" {
+		t.Fatalf("ProviderHTTPError = %#v", err)
+	}
+}
+
 func TestIsProviderContextExceededError(t *testing.T) {
 	tests := []struct {
 		name string

@@ -52,6 +52,17 @@ type Message struct {
 	// later stateless request can submit it verbatim. It is deliberately not
 	// converted into ordinary chat content.
 	ResponsesReasoningItems []json.RawMessage `json:"responses_reasoning_items,omitempty"`
+	// ResponsesResponseID identifies the provider-owned response that produced
+	// this assistant/tool-call message. Stateful Responses mode uses it as the
+	// anchor for the next incremental request.
+	ResponsesResponseID string `json:"responses_response_id,omitempty"`
+	// ResponsesOutputItems preserves the complete raw Responses output for
+	// stateless replay, including item fields that the common message model does
+	// not represent (for example phase and encrypted reasoning payloads).
+	ResponsesOutputItems []json.RawMessage `json:"responses_output_items,omitempty"`
+	// ResponsesAssistantPhase preserves the Responses assistant phase when a
+	// raw output item is unavailable or a gateway omits it from persisted data.
+	ResponsesAssistantPhase string `json:"responses_assistant_phase,omitempty"`
 }
 
 func (msg Message) Clone() Message {
@@ -79,6 +90,12 @@ func (msg Message) Clone() Message {
 		cloned.ResponsesReasoningItems = make([]json.RawMessage, len(msg.ResponsesReasoningItems))
 		for i := range msg.ResponsesReasoningItems {
 			cloned.ResponsesReasoningItems[i] = append(json.RawMessage(nil), msg.ResponsesReasoningItems[i]...)
+		}
+	}
+	if len(msg.ResponsesOutputItems) > 0 {
+		cloned.ResponsesOutputItems = make([]json.RawMessage, len(msg.ResponsesOutputItems))
+		for i := range msg.ResponsesOutputItems {
+			cloned.ResponsesOutputItems[i] = append(json.RawMessage(nil), msg.ResponsesOutputItems[i]...)
 		}
 	}
 	return cloned

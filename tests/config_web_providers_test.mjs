@@ -145,6 +145,11 @@ registerRuntime({
   isSectionEditing: (section) => section === 'model' && modelSectionEditing,
   optionValue: (option) => option.value,
   request: (...args) => requestImpl(...args),
+  resolveModelProviderType: (providerRef) => {
+    const manager = stateModule.namespace.runtime.ModelProvidersManager;
+    const record = manager && manager.records ? manager.records[providerRef] : null;
+    return record ? record.type : providerRef;
+  },
   setBanner() {},
   setDetails: (message) => { latestDetails = message; },
   t: (key) => key,
@@ -396,6 +401,14 @@ requestImpl = async () => { throw new Error('save failed'); };
 assert.equal(await ModelProvidersManager.save(), false);
 assert.deepEqual(JSON.parse(JSON.stringify(ModelProvidersManager.records)), {
   initial: {type: 'openai'},
+});
+
+ModelProvidersManager.load({doubao: {type: 'openai', base_url: 'https://ark.cn-beijing.volces.com/api/v3'}});
+ModelProvidersManager.records = {doubao: {type: 'volcengine'}};
+requestImpl = async () => ({config: {model_providers: {doubao: {type: 'openai'}}}});
+assert.equal(await ModelProvidersManager.save(), false, 'provider save must reject a response that did not persist the new type');
+assert.deepEqual(JSON.parse(JSON.stringify(ModelProvidersManager.records)), {
+  doubao: {type: 'openai', base_url: 'https://ark.cn-beijing.volces.com/api/v3'},
 });
 
 const firstRequest = deferred();

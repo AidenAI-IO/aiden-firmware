@@ -1165,7 +1165,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
 	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
 	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
-	if compactionEnabled && tokenUsage > compactionTrigger {
+	if !r.config.Model.ResponsesProviderCompactionEnabled() && compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
 		}
@@ -2619,6 +2619,9 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	if r.phoneBridge != nil {
+		r.phoneBridge.Close()
+	}
 	maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), runtimeEpisodeMaintenanceTimeout)
 	if err := r.episodeMaintenance.closeAndWait(maintenanceCtx); err != nil && r.logger != nil {
 		r.logger.Error("episode maintenance drain on close: %v", err)
