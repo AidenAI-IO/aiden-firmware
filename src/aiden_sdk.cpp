@@ -612,10 +612,10 @@ public:
                     af.data = data;
                     af.length = frame.u32Len;
                     af.timestamp = frame.u64TimeStamp;
-                    af.channels = audio_frame_channels(frame.enSoundMode, self->config.channels);
+                    af.channels = audio_frame_channels(frame.enSoundMode, config.channels);
                     af.sample_rate = frame.s32SampleRate > 0
                                          ? static_cast<uint32_t>(frame.s32SampleRate)
-                                         : static_cast<uint32_t>(self->config.sample_rate);
+                                         : static_cast<uint32_t>(config.sample_rate);
                     callback(af);
                 }
                 RK_MPI_AI_ReleaseFrame(dev_id, chn_id, &frame, nullptr);

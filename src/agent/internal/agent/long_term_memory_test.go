@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -550,5 +551,47 @@ func TestLongTermMemoryProfileSkipsExpiredEntries(t *testing.T) {
 	}
 	if _, err := os.Stat(profilePath); !os.IsNotExist(err) {
 		t.Fatalf("profile file still exists after all sources expired: %v", err)
+	}
+}
+
+func TestRegenerateProfileDoesNotHoldStoreLockDuringProfileFn(t *testing.T) {
+	ctx := context.Background()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"), WithStoreProfileFn(func(context.Context, []ProfileEntry) string {
+		once.Do(func() { close(started) })
+		<-release
+		return "# Profile"
+	}))
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID: "mem_profile_lock", Type: "profile", Content: "profile content", EvidenceExcerpts: []string{"evidence"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	regenerated := make(chan error, 1)
+	go func() { regenerated <- store.RegenerateProfileMD(ctx) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("profile function did not start")
+	}
+	searched := make(chan error, 1)
+	go func() {
+		_, err := store.Search(ctx, MemoryQuery{Limit: 1})
+		searched <- err
+	}()
+	select {
+	case err := <-searched:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("Search blocked behind the profile model call")
+	}
+	close(release)
+	if err := <-regenerated; err != nil {
+		t.Fatal(err)
 	}
 }

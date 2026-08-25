@@ -38,7 +38,7 @@ persist the completed Episode
   |
   +--> update deterministic device/app profiles
   |
-  `--> notify the background Episode Memory Worker
+  `--> notify the shared background MemoryWorker
 ```
 
 Recall tools record the IDs actually shown to the Agent. The background worker checks those records first when deciding whether a new lesson should update an existing Memory.
@@ -97,18 +97,29 @@ Screenshot binary data is stored as an Episode artifact. Event records contain r
 
 The recorded `outcome.success` value is not treated as verified truth. It is input evidence for later assessment.
 
+### Episode Storage Retention
+
+The current Episode implementation does not register a retention cleaner for
+`memory/episodes/`. Episode metadata, events, and artifacts remain on disk until
+the whole memory plane is explicitly cleared.
+
+The consolidation ledger is bounded separately. It retains the latest 64
+`done` or `ignored` terminal statuses while preserving processing and retry
+state. Device Memory TTL also affects recall only: expired records are excluded
+from search, but StorageMonitor does not routinely delete their YAML files.
+
 ## Episode Memory Consolidation
 
 The background pipeline is:
 
 ```text
-completed Episode
+completed Episode batch (up to five)
   |
   v
 deterministic prefilter
   |
   v
-one background LLM assessment and extraction
+one background LLM assessment and extraction for the batch
   |
   v
 code-level evidence and type validation
@@ -204,12 +215,58 @@ Episode consolidation does not add a synchronous LLM call, screenshot, OCR pass,
 The worker:
 
 - starts after an idle delay;
-- processes at most five Episodes per batch, sequentially;
+- processes at most five Episodes per batch; each Processor batch uses one model call and applies returned results locally;
 - has only one in-flight background model call;
 - cancels that call when a foreground task starts;
 - resumes scheduling after the foreground task finishes.
 
 Episode trace persistence happens before background maintenance is scheduled. A maintenance failure is logged and does not replace the user-facing task result.
+
+## Notification Memory
+
+Notification Memory extends the memory plane while keeping `ble_service` as the
+event producer. The Agent consumes notifications through the `ble_service` API;
+Memory processing remains in the Agent. During the shared idle window, the
+Agent-side `NotificationProcessor` consumes the BLE event ring and
+`NotificationContext` deduplicates and persists sanitized source records before
+Memory extraction.
+
+The storage layout includes two additional roots:
+
+```text
+memory/
+├── notifications/              # sanitized source evidence and cursors
+├── temporary/                  # time-bounded recallable conclusions
+│   ├── index.yaml
+│   └── memories/
+└── long_term/                  # durable user memory
+```
+
+Temporary Memory uses the Long-Term Memory record and index schema, requires an
+`expires_at`, and is searched by the existing `recall_memory` tool. Relevant
+unexpired Temporary Memory ranks ahead of a Long-Term Memory baseline for the
+same subject without replacing it.
+
+The plane owns one shared `MemoryWorker`, registers both scenario processors,
+and starts the Worker only after registration completes. The Worker is the only
+idle scheduler: after the Agent has been idle for five minutes it invokes the
+processors in Episode -> Notification order, serially, and cancels in-flight
+work when a foreground task starts. While the Agent stays idle, bounded pending
+batches continue without another five-minute wait. Each Processor owns its own
+input, batch size, proposal validation, retry state, and Store Apply rules.
+Processor failures are isolated: the error is logged and retried without
+preventing a later registered scenario from running its own batch. Normal
+pending work continues in the current idle window; failed batches wait for the
+idle retry delay to avoid a hot loop.
+
+| Processor | Trigger | Batch | Output |
+| --- | --- | --- | --- |
+| EpisodeProcessor | Shared Agent idle window | 5 Episodes / 1 LLM call | Device Memory |
+| NotificationProcessor | Shared Agent idle window | 10 events / 1 LLM call | Temporary or Long-Term Memory |
+
+Notification persistence does not start a 30-second timer. A Notification
+Processor run first consumes the BLE ring and then checks its durable pending
+cursor; when there is no pending work it returns without polling again.
 
 ## Compatibility
 

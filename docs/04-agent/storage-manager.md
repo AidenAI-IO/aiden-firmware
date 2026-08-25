@@ -393,6 +393,31 @@ The runtime builds cleanup stages from the configured retention arrays.
 
 A retention value of 0 creates an emergency cleanup stage. The default session_archive_retention_days value is [30], so an all-session-archives emergency stage is not enabled unless 0 is explicitly added.
 
+#### Notification Memory Stages
+
+The runtime registers Temporary Memory and Notification Context cleaners when
+the Agent config directory is available.
+
+| Data | Stage | Minimum level | Protection |
+| --- | --- | --- | --- |
+| Temporary Memory | Per-record `expires_at` | Normal | Deletes only expired records and rebuilds its index |
+| Notification Context | 14 days | Normal | Deletes only Memory-processed date shards |
+| Notification Context | 7 days | Warning | Deletes only Memory-processed events |
+| Notification Context | 1 day | Critical | Deletes only Memory-processed events |
+| Notification Context | 0 days | Emergency | Deletes all fully processed shards; unprocessed records remain protected |
+
+Notification cleanup is cursor-aware. StorageMonitor invokes the registered
+cleaner, while `NotificationContext.CleanupProcessedBefore(...)` owns file
+selection; StorageMonitor never deletes notification JSONL directly.
+At Critical and Emergency levels the monitor also marks
+`notification_context` unavailable, so Agent pauses new BLE consumption until
+the storage level recovers. Existing unprocessed JSONL remains protected.
+
+This is not a reuse of an existing Episode cleaner. The current Episode pipeline
+has no retention cleaner for `memory/episodes/`; its bounded processing ledger
+only removes old terminal statuses. Device Memory TTL is likewise a recall
+filter rather than physical storage reclamation.
+
 #### Python Package Cleanup
 
 The persistent Python environment registers one `python_userbase` cleaner.
@@ -582,6 +607,7 @@ enabled = true
 llm_http_log_retention_days = [7, 3, 1, 0]
 audio_archive_retention_days = [30, 7, 0]
 session_archive_retention_days = [30]
+notification_context_retention_days = [14, 7, 1, 0]
 cleanup_retry_interval_seconds = 60
 ~~~
 
@@ -592,7 +618,7 @@ Validation rules:
 - Thresholds must satisfy emergency < critical < warning.
 - max_agent_log_mb must be greater than zero.
 - cleanup_retry_interval_seconds cannot be negative.
-- Retention values cannot be negative.
+- Retention values cannot be negative. Notification Context cleanup deletes only fully processed date shards; records newer than `memory_cursor` remain protected even for forced cleanup.
 
 ### Optional Event Output
 

@@ -67,6 +67,7 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 	regularLLM, aggressiveLLMDays := splitStorageRetentionDays(storageConfig.Cleanup.LLMHTTPLogRetentionDays)
 	regularAudio, aggressiveAudioDays := splitStorageRetentionDays(storageConfig.Cleanup.AudioArchiveRetentionDays)
 	regularSessions, aggressiveSessionDays := splitStorageRetentionDays(storageConfig.Cleanup.SessionArchiveRetentionDays)
+	regularNotifications, aggressiveNotificationDays := splitStorageRetentionDays(storageConfig.Cleanup.NotificationContextRetentionDays)
 
 	for index, retentionDays := range regularLLM {
 		cleaner := NewLLMHTTPLogCleanerWithCheckedSessionProvider(logDir, retentionDays, priority, currentSessionID)
@@ -99,6 +100,25 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 		cleaners = append(cleaners, withMinimumStorageLevel(cleaner, StorageLevelWarning))
 	}
 
+	if cfg.ConfigDir != "" {
+		temporaryCleaner := NewTemporaryMemoryCleaner(filepath.Join(cfg.ConfigDir, "memory", "temporary"), priority)
+		priority++
+		cleaners = append(cleaners, withMinimumStorageLevel(temporaryCleaner, StorageLevelNormal))
+
+		for index, retentionDays := range regularNotifications {
+			cleaner := NewNotificationContextCleaner(filepath.Join(cfg.ConfigDir, "memory"), retentionDays, priority)
+			priority++
+			minimumLevel := StorageLevelNormal
+			switch index {
+			case 1:
+				minimumLevel = StorageLevelWarning
+			case 2:
+				minimumLevel = StorageLevelCritical
+			}
+			cleaners = append(cleaners, withMinimumStorageLevel(cleaner, minimumLevel))
+		}
+	}
+
 	for range aggressiveLLMDays {
 		cleaner := NewLLMHTTPLogCleanerWithCheckedSessionProvider(logDir, 0, priority, currentSessionID)
 		priority++
@@ -113,6 +133,13 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 		cleaner := NewSessionArchiveCleaner(sessionArchiveDir, 0, 0, priority)
 		priority++
 		cleaners = append(cleaners, withMinimumStorageLevel(cleaner, StorageLevelEmergency))
+	}
+	if cfg.ConfigDir != "" {
+		for range aggressiveNotificationDays {
+			cleaner := NewNotificationContextCleaner(filepath.Join(cfg.ConfigDir, "memory"), 0, priority)
+			priority++
+			cleaners = append(cleaners, withMinimumStorageLevel(cleaner, StorageLevelEmergency))
+		}
 	}
 	monitor := NewStorageMonitor(storageConfig, nil, logger, cleaners, nil)
 	monitor.SetLevelStatePath("/run/agent/storage_level")
