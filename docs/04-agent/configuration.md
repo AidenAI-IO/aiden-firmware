@@ -485,7 +485,7 @@ This section is currently TOML-only and is not rendered by Config Web.
 | `region` | empty | `cn-beijing` or `ap-southeast-1`; endpoint is selected automatically. |
 | `endpoint` | empty | Optional `ws://` or `wss://` endpoint override. |
 | `voice` | `longanqian` | Realtime output voice. |
-| `instructions` | empty | Session instructions; falls back to `custom_instruction`. |
+| `instructions` | built-in voice model instruction | Session instructions. Leave empty to use the built-in default voice model instruction. |
 | `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
 | `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
 | `turn_detection` | `server_vad` | Server turn detector: `server_vad` or `smart_turn`. |
