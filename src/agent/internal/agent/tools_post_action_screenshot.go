@@ -238,19 +238,16 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 
 func parseTouchGesturePostMarker(input string) (touchGesturePostMarkerInfo, bool) {
 	var args struct {
-		Type  string `json:"type"`
-		Point *struct {
-			X float64 `json:"x"`
-			Y float64 `json:"y"`
-		} `json:"point"`
+		Type  string        `json:"type"`
+		Point *pointerPoint `json:"point"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil || args.Point == nil {
 		return touchGesturePostMarkerInfo{}, false
 	}
 	marker := touchGesturePostMarkerInfo{
 		Type: strings.ToLower(strings.TrimSpace(args.Type)),
-		X:    args.Point.X,
-		Y:    args.Point.Y,
+		X:    args.Point.X.Float64(),
+		Y:    args.Point.Y.Float64(),
 	}
 	if !validTouchGesturePostMarker(marker) {
 		return touchGesturePostMarkerInfo{}, false

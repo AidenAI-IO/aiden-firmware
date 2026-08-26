@@ -49,6 +49,10 @@ func TestParseTouchGesturePostMarker(t *testing.T) {
 			t.Fatalf("%s marker = %#v, %v", gestureType, marker, ok)
 		}
 	}
+	marker, ok := parseTouchGesturePostMarker(`{"type":"tap","point":{"x":"125","y":"875"}}`)
+	if !ok || marker.Type != "tap" || marker.X != 125 || marker.Y != 875 {
+		t.Fatalf("string-coordinate marker = %#v, %v", marker, ok)
+	}
 	for _, input := range []string{
 		`{"type":"swipe","point":{"x":125,"y":875}}`,
 		`{"type":"home","point":{"x":125,"y":875}}`,
