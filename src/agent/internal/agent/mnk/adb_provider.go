@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,7 +16,9 @@ import (
 )
 
 // ADBProvider implements Provider interface using Android Debug Bridge (adb).
-// This sends input through "adb shell input" commands rather than USB HID.
+// Regular actions use "adb shell input" commands. Atomic touch programs use
+// the physical Linux input stream (getevent/sendevent) when permitted, with
+// Android's input motionevent primitive as a best-effort fallback.
 type ADBProvider struct {
 	screen *screen.ScreenState
 	client *ADBScreenClient
@@ -33,6 +36,16 @@ type ADBProvider struct {
 	screenSizeTTL     time.Duration
 	textRestoreWait   int // milliseconds
 	maxDurationMs     int
+
+	// Raw touchscreen event discovery is cached because getevent -lp is
+	// relatively expensive and the input device topology is stable for the
+	// lifetime of an Android boot. touchMu also serializes event programs so
+	// two callers cannot interleave sendevent streams on the same device.
+	touchMu            sync.Mutex
+	cachedTouchDevice  adbTouchDevice
+	touchDeviceExpires time.Time
+	rawTouchBlockedTil time.Time
+	nextTrackingID     int
 }
 
 type adbCommandRunner func(context.Context, string, ...string) ([]byte, []byte, error)
@@ -50,11 +63,47 @@ const (
 	adbMaxActionDurationMs        = 10000
 	adbKeyboardIME                = "com.android.adbkeyboard/.AdbIME"
 	adbScreenDimensionsStaleAfter = 30 * time.Second
+	adbTouchDeviceTTL             = 30 * time.Second
+	adbTouchMoveSteps             = 24
+	adbEventSyn                   = 0
+	adbEventKey                   = 1
+	adbEventAbs                   = 3
+	adbSynReport                  = 0
+	adbBtnTouch                   = 330
+	adbBtnToolFinger              = 325
+	adbAbsX                       = 0
+	adbAbsY                       = 1
+	adbAbsMtSlot                  = 47
+	adbAbsMtTouchMajor            = 48
+	adbAbsMtPositionX             = 53
+	adbAbsMtPositionY             = 54
+	adbAbsMtToolType              = 55
+	adbAbsMtTrackingID            = 57
+	adbAbsMtPressure              = 58
 )
 
 var (
-	adbWMSizePattern = regexp.MustCompile(`(?m)(?:Physical|Override) size:\s*([0-9]+)x([0-9]+)`)
+	adbWMSizePattern          = regexp.MustCompile(`(?m)(?:Physical|Override) size:\s*([0-9]+)x([0-9]+)`)
+	adbInputDeviceNamePattern = regexp.MustCompile(`(?m)^\s*name:\s*"([^"]*)"`)
+	adbInputAbsRangePattern   = regexp.MustCompile(`(?m)^\s*(?:ABS \(\d+\):\s*)?([A-Z0-9_]+)\s*:\s*value\s*-?\d+,\s*min\s*(-?\d+),\s*max\s*(-?\d+)`)
+	adbInputEventPathPattern  = regexp.MustCompile(`^/dev/input/event[0-9]+$`)
 )
+
+type adbTouchDevice struct {
+	path          string
+	name          string
+	xMin, xMax    int
+	yMin, yMax    int
+	mt            bool
+	protocolB     bool
+	hasAbsXY      bool
+	hasTrackingID bool
+	hasTouchMajor bool
+	hasPressure   bool
+	hasToolType   bool
+	hasBtnTouch   bool
+	hasToolFinger bool
+}
 
 // NewADBProvider creates a new ADB-based MNK provider.
 func NewADBProvider(screen *screen.ScreenState, client *ADBScreenClient, runADB adbCommandRunner) *ADBProvider {
@@ -189,14 +238,541 @@ func waitContext(ctx context.Context, durationMs int) error {
 	}
 }
 
-// TouchActions cannot be represented faithfully by adb input: adb exposes
-// gestures as complete press/move/release commands rather than an independent
-// contact stream. Refuse the atomic syntax instead of silently collapsing it
-// into a gesture with different timing semantics.
+// TouchActions executes an atomic touch program through Linux input events.
+// Android's `input swipe` command cannot keep a contact alive across separate
+// operations, but `sendevent` can write the underlying ABS/KEY/SYN stream. We
+// discover a physical touchscreen with `getevent -lp`, then send the complete
+// program as one shell script so no ADB round trip occurs between events.
 func (p *ADBProvider) TouchActions(ctx context.Context, actions []TouchAction) error {
-	_ = ctx
-	_ = actions
-	return ModuleUnavailable("atomic touch actions require a HID pointer provider; adb input does not expose touch_down/touch_up primitives")
+	if err := validateADBTouchActions(actions); err != nil {
+		return err
+	}
+
+	p.touchMu.Lock()
+	defer p.touchMu.Unlock()
+	if time.Now().Before(p.rawTouchBlockedTil) {
+		return p.runADBInputMotionActions(ctx, actions)
+	}
+
+	device, err := p.adbTouchDevice(ctx)
+	if err != nil {
+		if fallbackErr := p.runADBInputMotionActions(ctx, actions); fallbackErr == nil {
+			p.rawTouchBlockedTil = time.Now().Add(adbTouchDeviceTTL)
+			return nil
+		} else {
+			return ModuleUnavailablef("adb raw touch discovery failed (%v); input motionevent fallback failed: %v", err, fallbackErr)
+		}
+	}
+
+	p.nextTrackingID++
+	if p.nextTrackingID <= 0 || p.nextTrackingID > 65535 {
+		p.nextTrackingID = 1
+	}
+	script, totalDurationMs, err := buildADBTouchScript(device, actions, p.nextTrackingID)
+	if err != nil {
+		return err
+	}
+
+	_, err = p.runShellScriptWithTimeout(ctx, p.timeoutForDuration(totalDurationMs), script)
+	if err != nil {
+		// Permission failures are common on production builds where the shell
+		// domain may inspect input devices but is not allowed to inject them.
+		if strings.Contains(strings.ToLower(err.Error()), "permission denied") ||
+			strings.Contains(strings.ToLower(err.Error()), "operation not permitted") {
+			// Newer Android releases expose the same DOWN/MOVE/UP primitive
+			// through `input motionevent`. It does not require write access to
+			// /dev/input, so use it as a best-effort fallback when raw injection
+			// is blocked by SELinux or device permissions.
+			fallbackErr := p.runADBInputMotionActions(ctx, actions)
+			p.cachedTouchDevice = adbTouchDevice{}
+			p.touchDeviceExpires = time.Time{}
+			p.rawTouchBlockedTil = time.Now().Add(adbTouchDeviceTTL)
+			if fallbackErr != nil {
+				return ModuleUnavailablef("adb atomic touch actions are not permitted via sendevent (%v); input motionevent fallback failed: %v", err, fallbackErr)
+			}
+			return nil
+		}
+		p.cachedTouchDevice = adbTouchDevice{}
+		p.touchDeviceExpires = time.Time{}
+		return fmt.Errorf("adb atomic touch actions failed: %w", err)
+	}
+	return nil
+}
+
+func (p *ADBProvider) runADBInputMotionActions(ctx context.Context, actions []TouchAction) error {
+	size, err := p.screenSize(ctx)
+	if err != nil {
+		return err
+	}
+	script, totalDurationMs, err := buildADBInputMotionScript(actions, size)
+	if err != nil {
+		return err
+	}
+	_, err = p.runShellScriptWithTimeout(ctx, p.timeoutForDuration(totalDurationMs), script)
+	return err
+}
+
+func validateADBTouchActions(actions []TouchAction) error {
+	if len(actions) == 0 {
+		return InvalidArguments("touch actions must contain at least one atomic action")
+	}
+	if len(actions) > 128 {
+		return InvalidArguments("touch actions must contain at most 128 atomic actions")
+	}
+	active := false
+	totalWaitMs := 0
+	for i, action := range actions {
+		actionType := strings.ToLower(strings.TrimSpace(action.Type))
+		if actionType == "" {
+			return InvalidArgumentsf("touch action %d action is required", i)
+		}
+		if action.Button != "" && action.Button != ButtonLeft && action.Button != "left" {
+			return InvalidArgumentsf("adb only supports left-button touch semantics, got %q", action.Button)
+		}
+		if action.DurationMs < 0 || action.DurationMs > 30000 {
+			return InvalidArgumentsf("touch action %d duration must be between 0 and 30000 ms", i)
+		}
+		if action.Point != nil {
+			if err := validateADBTouchPoint(*action.Point); err != nil {
+				return InvalidArgumentsf("touch action %d: %v", i, err)
+			}
+		}
+
+		switch actionType {
+		case "touch_down":
+			if action.Point == nil {
+				return InvalidArgumentsf("touch action %d touch_down requires point", i)
+			}
+			if active {
+				return InvalidArgumentsf("touch action %d touch_down while a contact is already active", i)
+			}
+			active = true
+		case "move_to":
+			if action.Point == nil {
+				return InvalidArgumentsf("touch action %d move_to requires point", i)
+			}
+		case "wait":
+			totalWaitMs += action.DurationMs
+			if totalWaitMs > 60000 {
+				return InvalidArguments("total wait time in touch actions must not exceed 60000 ms")
+			}
+		case "touch_up":
+			if !active {
+				return InvalidArgumentsf("touch action %d touch_up without an active contact", i)
+			}
+			active = false
+		default:
+			return InvalidArgumentsf("touch action %d has unsupported action %q; use touch_down, move_to, wait, or touch_up", i, action.Type)
+		}
+	}
+	if active {
+		return InvalidArguments("touch action sequence must end with touch_up")
+	}
+	return nil
+}
+
+func validateADBTouchPoint(point Point) error {
+	if math.IsNaN(point.X) || math.IsInf(point.X, 0) || math.IsNaN(point.Y) || math.IsInf(point.Y, 0) {
+		return fmt.Errorf("coordinates must be finite")
+	}
+	if point.X < 0 || point.X > 1000 || point.Y < 0 || point.Y > 1000 {
+		return fmt.Errorf("coordinates must use the normalized 0-1000 scale, got x=%.2f y=%.2f", point.X, point.Y)
+	}
+	return nil
+}
+
+func (p *ADBProvider) adbTouchDevice(ctx context.Context) (adbTouchDevice, error) {
+	now := time.Now()
+	if p.cachedTouchDevice.path != "" && now.Before(p.touchDeviceExpires) {
+		return p.cachedTouchDevice, nil
+	}
+
+	out, err := p.runShellOutput(ctx, "getevent", "-lp")
+	if err != nil {
+		return adbTouchDevice{}, ModuleUnavailablef("adb cannot inspect touchscreen devices with getevent: %v", err)
+	}
+	devices := parseADBTouchDevices(out)
+	if len(devices) == 0 {
+		return adbTouchDevice{}, ModuleUnavailable("adb getevent found no usable touchscreen input device")
+	}
+	device := devices[0]
+	p.cachedTouchDevice = device
+	p.touchDeviceExpires = now.Add(adbTouchDeviceTTL)
+	return device, nil
+}
+
+func parseADBTouchDevices(output string) []adbTouchDevice {
+	type scoredDevice struct {
+		device adbTouchDevice
+		score  int
+	}
+	var candidates []scoredDevice
+	for _, block := range adbInputDeviceBlocks(output) {
+		if !adbInputEventPathPattern.MatchString(block.path) {
+			continue
+		}
+		body := block.body
+		name := ""
+		if nameMatch := adbInputDeviceNamePattern.FindStringSubmatch(body); len(nameMatch) == 2 {
+			name = nameMatch[1]
+		}
+		ranges := make(map[string][2]int)
+		for _, rangeMatch := range adbInputAbsRangePattern.FindAllStringSubmatch(body, -1) {
+			if len(rangeMatch) != 4 {
+				continue
+			}
+			minValue, minErr := strconv.Atoi(rangeMatch[2])
+			maxValue, maxErr := strconv.Atoi(rangeMatch[3])
+			if minErr == nil && maxErr == nil && maxValue > minValue {
+				ranges[rangeMatch[1]] = [2]int{minValue, maxValue}
+			}
+		}
+
+		xRange, mt := ranges["ABS_MT_POSITION_X"]
+		yRange, mtY := ranges["ABS_MT_POSITION_Y"]
+		if !mt || !mtY {
+			xRange, mt = ranges["ABS_X"]
+			yRange, mtY = ranges["ABS_Y"]
+		}
+		if !mt || !mtY {
+			continue
+		}
+		hasMT := ranges["ABS_MT_POSITION_X"] != [2]int{} && ranges["ABS_MT_POSITION_Y"] != [2]int{}
+		hasTrackingID := ranges["ABS_MT_TRACKING_ID"] != [2]int{}
+		hasTouchMajor := ranges["ABS_MT_TOUCH_MAJOR"] != [2]int{}
+		hasPressure := ranges["ABS_MT_PRESSURE"] != [2]int{}
+		hasToolType := ranges["ABS_MT_TOOL_TYPE"] != [2]int{}
+		protocolB := hasMT && hasTrackingID && strings.Contains(body, "ABS_MT_SLOT")
+		hasBtnTouch := strings.Contains(body, "BTN_TOUCH")
+		hasToolFinger := strings.Contains(body, "BTN_TOOL_FINGER")
+		if !hasBtnTouch && !hasMT {
+			continue
+		}
+
+		_, hasAbsX := ranges["ABS_X"]
+		_, hasAbsY := ranges["ABS_Y"]
+		device := adbTouchDevice{
+			path:          block.path,
+			name:          name,
+			xMin:          xRange[0],
+			xMax:          xRange[1],
+			yMin:          yRange[0],
+			yMax:          yRange[1],
+			mt:            hasMT,
+			protocolB:     protocolB,
+			hasAbsXY:      hasAbsX && hasAbsY,
+			hasTrackingID: hasTrackingID,
+			hasTouchMajor: hasTouchMajor,
+			hasPressure:   hasPressure,
+			hasToolType:   hasToolType,
+			hasBtnTouch:   hasBtnTouch,
+			hasToolFinger: hasToolFinger,
+		}
+
+		lowerName := strings.ToLower(name)
+		score := 0
+		if strings.Contains(body, "INPUT_PROP_DIRECT") {
+			score += 8
+		}
+		if hasBtnTouch {
+			score += 5
+		}
+		if hasMT {
+			score += 5
+		}
+		if protocolB {
+			score += 2
+		}
+		for _, hint := range []string{"touch", "goodix", "synaptics", "focal", "fts", "elan", "ts"} {
+			if strings.Contains(lowerName, hint) {
+				score += 2
+				break
+			}
+		}
+		for _, virtualHint := range []string{"aiden", "hid", "uinput", "virtual"} {
+			if strings.Contains(lowerName, virtualHint) {
+				score -= 12
+			}
+		}
+		candidates = append(candidates, scoredDevice{device: device, score: score})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+	devices := make([]adbTouchDevice, 0, len(candidates))
+	for _, candidate := range candidates {
+		devices = append(devices, candidate.device)
+	}
+	return devices
+}
+
+type adbInputDeviceBlock struct {
+	path string
+	body string
+}
+
+func adbInputDeviceBlocks(output string) []adbInputDeviceBlock {
+	lines := strings.Split(output, "\n")
+	blocks := make([]adbInputDeviceBlock, 0)
+	current := -1
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "add device ") {
+			fields := strings.Fields(trimmed)
+			if len(fields) >= 4 && strings.HasSuffix(fields[2], ":") {
+				blocks = append(blocks, adbInputDeviceBlock{path: fields[3]})
+				current = len(blocks) - 1
+				continue
+			}
+		}
+		if current >= 0 {
+			blocks[current].body += line + "\n"
+		}
+	}
+	return blocks
+}
+
+func buildADBTouchScript(device adbTouchDevice, actions []TouchAction, trackingID int) (string, int, error) {
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	active := false
+	currentX, currentY := device.xMin, device.yMin
+	totalDurationMs := 0
+	for index, action := range actions {
+		actionType := strings.ToLower(strings.TrimSpace(action.Type))
+		switch actionType {
+		case "wait":
+			appendADBSleep(&script, action.DurationMs)
+			totalDurationMs += action.DurationMs
+		case "move_to":
+			x, y := adbTouchPointToDevice(device, *action.Point)
+			duration := action.DurationMs
+			if duration > 0 {
+				steps := adbTouchMoveSteps
+				distance := math.Hypot(float64(x-currentX), float64(y-currentY))
+				if distance < float64(steps) {
+					steps = int(math.Max(1, math.Round(distance)))
+				}
+				if steps < 1 {
+					steps = 1
+				}
+				for step := 1; step <= steps; step++ {
+					progress := float64(step) / float64(steps)
+					stepX := int(math.Round(float64(currentX) + float64(x-currentX)*progress))
+					stepY := int(math.Round(float64(currentY) + float64(y-currentY)*progress))
+					appendADBTouchPosition(&script, device, stepX, stepY, active)
+					if step < steps {
+						appendADBSleep(&script, duration/steps)
+					}
+				}
+				totalDurationMs += duration
+			} else {
+				appendADBTouchPosition(&script, device, x, y, active)
+			}
+			currentX, currentY = x, y
+		case "touch_down":
+			x, y := adbTouchPointToDevice(device, *action.Point)
+			appendADBTouchDown(&script, device, x, y, trackingID)
+			currentX, currentY = x, y
+			active = true
+		case "touch_up":
+			if action.Point != nil {
+				x, y := adbTouchPointToDevice(device, *action.Point)
+				if action.DurationMs > 0 {
+					appendADBTouchPosition(&script, device, x, y, true)
+					appendADBSleep(&script, action.DurationMs)
+					totalDurationMs += action.DurationMs
+				} else {
+					appendADBTouchPosition(&script, device, x, y, true)
+				}
+				currentX, currentY = x, y
+			}
+			appendADBTouchUp(&script, device)
+			active = false
+		default:
+			return "", 0, InvalidArgumentsf("touch action %d has unsupported action %q", index, action.Type)
+		}
+	}
+	if active {
+		return "", 0, InvalidArguments("touch action sequence must end with touch_up")
+	}
+	return script.String(), totalDurationMs, nil
+}
+
+func adbTouchPointToDevice(device adbTouchDevice, point Point) (int, int) {
+	x := int(math.Round(float64(device.xMin) + point.X/1000.0*float64(device.xMax-device.xMin)))
+	y := int(math.Round(float64(device.yMin) + point.Y/1000.0*float64(device.yMax-device.yMin)))
+	return x, y
+}
+
+func appendADBEvent(script *strings.Builder, devicePath string, eventType, code, value int) {
+	fmt.Fprintf(script, "sendevent %s %d %d %d\n", devicePath, eventType, code, value)
+}
+
+func appendADBTouchPosition(script *strings.Builder, device adbTouchDevice, x, y int, active bool) {
+	if device.mt && active {
+		if device.protocolB {
+			appendADBEvent(script, device.path, adbEventAbs, adbAbsMtSlot, 0)
+		}
+		appendADBEvent(script, device.path, adbEventAbs, adbAbsMtPositionX, x)
+		appendADBEvent(script, device.path, adbEventAbs, adbAbsMtPositionY, y)
+	}
+	if device.hasAbsXY {
+		appendADBEvent(script, device.path, adbEventAbs, adbAbsX, x)
+		appendADBEvent(script, device.path, adbEventAbs, adbAbsY, y)
+	}
+	appendADBEvent(script, device.path, adbEventSyn, adbSynReport, 0)
+}
+
+func appendADBTouchDown(script *strings.Builder, device adbTouchDevice, x, y, trackingID int) {
+	if device.protocolB {
+		appendADBEvent(script, device.path, adbEventAbs, adbAbsMtSlot, 0)
+	}
+	if device.mt {
+		if device.hasTrackingID {
+			appendADBEvent(script, device.path, adbEventAbs, adbAbsMtTrackingID, trackingID)
+		}
+		if device.hasToolType {
+			appendADBEvent(script, device.path, adbEventAbs, adbAbsMtToolType, 0)
+		}
+		appendADBEvent(script, device.path, adbEventAbs, adbAbsMtPositionX, x)
+		appendADBEvent(script, device.path, adbEventAbs, adbAbsMtPositionY, y)
+		if device.hasTouchMajor {
+			appendADBEvent(script, device.path, adbEventAbs, adbAbsMtTouchMajor, 1)
+		}
+		if device.hasPressure {
+			appendADBEvent(script, device.path, adbEventAbs, adbAbsMtPressure, 1)
+		}
+	}
+	if device.hasAbsXY {
+		appendADBEvent(script, device.path, adbEventAbs, adbAbsX, x)
+		appendADBEvent(script, device.path, adbEventAbs, adbAbsY, y)
+	}
+	if device.hasBtnTouch {
+		appendADBEvent(script, device.path, adbEventKey, adbBtnTouch, 1)
+	}
+	if device.hasToolFinger {
+		appendADBEvent(script, device.path, adbEventKey, adbBtnToolFinger, 1)
+	}
+	if device.mt && !device.protocolB {
+		appendADBEvent(script, device.path, adbEventSyn, 2, 0)
+	}
+	appendADBEvent(script, device.path, adbEventSyn, adbSynReport, 0)
+}
+
+func appendADBTouchUp(script *strings.Builder, device adbTouchDevice) {
+	if device.protocolB {
+		appendADBEvent(script, device.path, adbEventAbs, adbAbsMtSlot, 0)
+	}
+	if device.mt {
+		if device.hasTrackingID {
+			appendADBEvent(script, device.path, adbEventAbs, adbAbsMtTrackingID, -1)
+		}
+		if !device.protocolB {
+			appendADBEvent(script, device.path, adbEventSyn, 2, 0)
+		}
+	}
+	if device.hasBtnTouch {
+		appendADBEvent(script, device.path, adbEventKey, adbBtnTouch, 0)
+	}
+	if device.hasToolFinger {
+		appendADBEvent(script, device.path, adbEventKey, adbBtnToolFinger, 0)
+	}
+	appendADBEvent(script, device.path, adbEventSyn, adbSynReport, 0)
+}
+
+func appendADBSleep(script *strings.Builder, durationMs int) {
+	if durationMs <= 0 {
+		return
+	}
+	fmt.Fprintf(script, "sleep %d.%03d\n", durationMs/1000, durationMs%1000)
+}
+
+func buildADBInputMotionScript(actions []TouchAction, size adbInputScreenSize) (string, int, error) {
+	if size.width <= 1 || size.height <= 1 {
+		return "", 0, ModuleUnavailable("adb input motionevent fallback requires known screen dimensions")
+	}
+
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	currentX, currentY := 0, 0
+	active := false
+	totalDurationMs := 0
+	for index, action := range actions {
+		actionType := strings.ToLower(strings.TrimSpace(action.Type))
+		switch actionType {
+		case "wait":
+			appendADBSleep(&script, action.DurationMs)
+			totalDurationMs += action.DurationMs
+		case "touch_down":
+			currentX, currentY = adbInputPointToPixel(*action.Point, size)
+			appendADBInputMotionEvent(&script, "DOWN", currentX, currentY)
+			active = true
+		case "move_to":
+			x, y := adbInputPointToPixel(*action.Point, size)
+			duration := action.DurationMs
+			if duration > 0 && active {
+				steps := adbTouchMoveSteps
+				distance := math.Hypot(float64(x-currentX), float64(y-currentY))
+				if distance < float64(steps) {
+					steps = int(math.Max(1, math.Round(distance)))
+				}
+				for step := 1; step <= steps; step++ {
+					progress := float64(step) / float64(steps)
+					stepX := int(math.Round(float64(currentX) + float64(x-currentX)*progress))
+					stepY := int(math.Round(float64(currentY) + float64(y-currentY)*progress))
+					appendADBInputMotionEvent(&script, "MOVE", stepX, stepY)
+					if step < steps {
+						appendADBSleep(&script, duration/steps)
+					}
+				}
+				totalDurationMs += duration
+			} else {
+				appendADBInputMotionEvent(&script, "MOVE", x, y)
+			}
+			currentX, currentY = x, y
+		case "touch_up":
+			if action.Point != nil {
+				currentX, currentY = adbInputPointToPixel(*action.Point, size)
+			}
+			appendADBInputMotionEvent(&script, "UP", currentX, currentY)
+			active = false
+		default:
+			return "", 0, InvalidArgumentsf("touch action %d has unsupported action %q", index, action.Type)
+		}
+	}
+	if active {
+		return "", 0, InvalidArguments("touch action sequence must end with touch_up")
+	}
+	return script.String(), totalDurationMs, nil
+}
+
+func adbInputPointToPixel(point Point, size adbInputScreenSize) (int, int) {
+	return scaleNormalizedToDimension(point.X, size.width), scaleNormalizedToDimension(point.Y, size.height)
+}
+
+func scaleNormalizedToDimension(value float64, dimension int) int {
+	if dimension <= 1 {
+		return 0
+	}
+	return int(math.Round(clampFloat(value, 0, 1000) / 1000.0 * float64(dimension-1)))
+}
+
+func appendADBInputMotionEvent(script *strings.Builder, action string, x, y int) {
+	fmt.Fprintf(script, "input touchscreen motionevent %s %d %d\n", action, x, y)
+}
+
+func (p *ADBProvider) runShellScriptWithTimeout(ctx context.Context, timeout time.Duration, script string) (string, error) {
+	// adb shell concatenates its remaining local argv before asking the remote
+	// shell to parse it. Keep the whole command in one argv and quote the inner
+	// script explicitly; passing "sh", "-c", script as three argv values causes
+	// the remote shell to split the script at its first whitespace character.
+	command := "sh -c " + shellSingleQuote(script)
+	return p.runShellOutputWithTimeout(ctx, timeout, command)
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func (p *ADBProvider) dragWithDuration(ctx context.Context, path [][2]float64, button string, totalDurationMs int) error {

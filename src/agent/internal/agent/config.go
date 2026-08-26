@@ -580,7 +580,8 @@ type HIDConfig struct {
 	// plus full hid.usb2 Android extension keys).
 	PointerMode string `toml:"pointer_mode,omitempty"`
 	// InputBackend selects the low-level input path for keyboard/touch tools:
-	// "hid" writes USB HID reports, "adb" sends Android adb shell input commands.
+	// "hid" writes USB HID reports; "adb" sends Android shell input commands
+	// and uses getevent/sendevent (with motionevent fallback) for atomic touch.
 	InputBackend string `toml:"input_backend,omitempty"`
 }
 

@@ -41,7 +41,9 @@ The action vocabulary is deliberately small:
 - `wait`: waits for `ms` milliseconds without changing contact state.
 - `touch_up`: releases the current contact; `point` is optional.
 
-Coordinates use the normalized `0..1000` range. A program must contain at least one action and must end with `touch_up`; waits are bounded to 30 seconds and programs to 128 actions. The legacy one-object `type` form remains accepted for existing scripts, but new integrations should use the atomic form. ADB input backends reject atomic programs because they cannot preserve an independent contact between commands.
+Coordinates use the normalized `0..1000` range. A program must contain at least one action and must end with `touch_up`; waits are bounded to 30 seconds and programs to 128 actions. The legacy one-object `type` form remains accepted for existing scripts, but new integrations should use the atomic form.
+
+On Android ADB backends, the provider discovers the physical touchscreen and its absolute coordinate range with `getevent -lp`, then emits one `sendevent` program that preserves the contact across `wait` and `move_to`. This requires the Android shell user to have write access to the selected `/dev/input/event*` device. When device permissions or SELinux prohibit raw injection, the provider falls back to Android's `input touchscreen motionevent DOWN|MOVE|UP` primitive; if that is also unavailable, atomic actions return `module_unavailable` and HID remains the fallback.
 
 Use the atomic form for ordinary lists, carousels, maps, and other free-scrolling surfaces:
 

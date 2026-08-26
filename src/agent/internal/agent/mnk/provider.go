@@ -108,8 +108,8 @@ type TouchAction struct {
 
 // TouchActionProvider executes a validated sequence of atomic touch actions
 // while keeping the pointer profile and contact state alive for the whole
-// sequence. Providers that cannot represent an independent touch contact
-// (such as ADB input) should return ModuleUnavailable.
+// sequence. Providers should return ModuleUnavailable when the selected
+// backend or device cannot represent an independent touch contact.
 type TouchActionProvider interface {
 	TouchActions(ctx context.Context, actions []TouchAction) error
 }
