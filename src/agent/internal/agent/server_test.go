@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -2594,25 +2595,15 @@ func TestWebUIContextHistoryDeduplicatesMarkers(t *testing.T) {
 }
 
 func TestWebUIHistoryRefreshPreservesStableDOM(t *testing.T) {
-	chatScript := readWebUIResource(t, "scripts/chat.js")
-	stateScript := readWebUIResource(t, "scripts/state.js")
-	if !strings.Contains(stateScript, "let renderedHistoryFingerprint = null;") {
-		t.Fatal("web UI is missing the rendered history fingerprint state")
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatalf("node is required for the DOM-level web UI test: %v", err)
 	}
-	if strings.Contains(chatScript, "messagesDiv.innerHTML = ''") {
-		t.Fatal("web UI still clears the whole message list during history refresh")
-	}
-	for _, want := range []string{
-		"const fingerprint = JSON.stringify(history);",
-		"if (fingerprint === renderedHistoryFingerprint) return;",
-		"messagesDiv.insertBefore(node, messagesDiv.children[index] || null);",
-		"previousMessageNodes.forEach(function(node, key)",
-		"return stableSerialize(displayMessage);",
-		"renderedHistoryFingerprint = fingerprint;",
-	} {
-		if !strings.Contains(chatScript, want) {
-			t.Fatalf("web UI history refresh is missing %q", want)
-		}
+	testScript := filepath.Join("testdata", "history_reconciliation.test.js")
+	cmd := exec.Command(node, testScript)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("DOM-level web UI test failed: %v\n%s", err, output)
 	}
 }
 
