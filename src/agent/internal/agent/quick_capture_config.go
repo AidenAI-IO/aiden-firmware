@@ -18,13 +18,13 @@ type QuickCaptureConfig struct {
 	// so "forever" means these entries accumulate until deleted by hand.
 	ScreenMemoryTTL string `toml:"screen_memory_ttl,omitempty"`
 
-	// GPIOPin enables an independent falling-edge trigger. Zero disables it.
-	// GPIO 3 (physical pin 38) is the verified spare pin on Luckfox Pico Zero.
+	// GPIOPin selects the falling-edge trigger. Zero disables it. The default
+	// is GPIO 3 (physical pin 38), the Quick Capture button on Luckfox Pico
+	// Zero; see defaultQuickCaptureGPIOPin.
 	GPIOPin int `toml:"gpio_pin,omitempty"`
 }
 
-// EnabledOrDefault reports whether Quick Capture is on. With GPIOPin left at
-// zero, the default does not start any watcher.
+// EnabledOrDefault reports whether Quick Capture is on.
 func (c QuickCaptureConfig) EnabledOrDefault() bool {
 	if c.Enabled != nil {
 		return *c.Enabled

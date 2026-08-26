@@ -1,6 +1,6 @@
 # Device UI and Agent response language: "zh-CN" or "en-US".
 # This is independent from [stt].language, which only controls speech recognition.
-locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification text
+# locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification text
 
 # Agent instruction and behavior
 # custom_instruction = ""
@@ -65,20 +65,20 @@ input_mode = "stt"
 # Quick Capture uses the verified spare falling-edge input on the 40Pin header:
 # Luckfox Pico Zero physical pin 38 (GPIO3). GPIO32/GPIO33 remain legacy wakeup.
 [quick_capture]
-enabled = true
-gpio_pin = 3
-screen_memory_ttl = "90d"
+# enabled = true
+# gpio_pin = 3
+# screen_memory_ttl = "90d"
 
 # Target device configuration.
 # Android derives HID pointer_mode = "touchscreen"; iOS, macOS, windows, and linux derive "absolute".
 # Accepted device_type values: "iOS", "Android", "macOS", "windows", or "linux".
 [device]
-device_type = "iOS"
+# device_type = "iOS"
 
 # Keep the RK628 CSI capture stream enabled between screenshots. Enabling this
 # reduces screenshot latency but increases idle power consumption.
 [frame_service]
-keep_streamon = false
+# keep_streamon = false
 
 # Tiered loop guard and termination policy. Zero-valued numeric fields use defaults.
 [termination_policy]
@@ -213,7 +213,7 @@ model = "gpt-5.5"
 # disable_llm_http_log = true
 # disable_audio_archive = true
 # disable_session_archive = true
-max_agent_log_mb = 1
+# max_agent_log_mb = 1
 
 [storage.cleanup]
 # enabled = true
@@ -260,7 +260,7 @@ emotion = "happy"             # Emotion: happy, sad, angry, etc.
 
 [tts]
 provider = "minimax-main"
-speed = 1.0                   # Speech speed: 0.5 - 2.0
+# speed = 1.0                 # Speech speed: 0.5 - 2.0
 
 # HID (Human Interface Device) configuration
 [hid]
@@ -274,14 +274,14 @@ speed = 1.0                   # Speech speed: 0.5 - 2.0
 # Web search tool configuration
 # provider: "duckduckgo" (free, no key), "brave" (Brave Search, needs api_key), or "tavily" (needs api_key)
 [search]
-provider = "duckduckgo"
-api_key = ""
+# provider = "duckduckgo"
+# api_key = ""
 
 # Live Activity / Dynamic Island.
 # State updates stay local: BLE carries only a wake hint and the iOS app reads
 # the current snapshot over USB ECM before updating ActivityKit.
 [live_activity]
-enabled = true
+# enabled = true
 
 # Episode telemetry (Langfuse). Disabled by default.
 # Set enabled = true and configure base_url + public_key + secret_key.

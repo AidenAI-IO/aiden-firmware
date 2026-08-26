@@ -234,7 +234,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | Field                           | Default                                                     | Description                                                                                                                                                                            |
 | ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `quick_capture.enabled`         | `true`                                                       | Enables GPIO-triggered Screen Memory capture; legacy GPIO32/GPIO33 wakeup remains independent                                                                                           |
-| `quick_capture.gpio_pin`        | `0`                                                         | Falling-edge GPIO for Quick Capture; supported values are `0` (disabled) and GPIO3 (physical pin 38), while GPIO32/GPIO33 remain reserved for legacy wakeup                          |
+| `quick_capture.gpio_pin`        | `3`                                                         | Falling-edge GPIO for Quick Capture; supported values are `3` (physical pin 38) and `0` (disabled), while GPIO32/GPIO33 remain reserved for legacy wakeup                          |
 | `quick_capture.screen_memory_ttl` | `90d`                                                    | Retention period for captured Screen Memory entries, or `forever`                                                                                                                       |
 
 ### Voice & VAD
