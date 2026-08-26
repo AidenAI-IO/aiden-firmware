@@ -1,5 +1,5 @@
 export const runtime = Object.create(null);
-export const appState = {config:null,wifi:null,wifiStatus:null,agentStatus:null,agentLog:null,agentLogPendingSnapshot:null,agentLogFailureView:null,agentLogBackgroundError:null,agentLogAutoScroll:true,otaLog:null,otaLogVisible:false,otaLogPending:false,otaLogStartSize:0,systemEnv:'',networks:[],selectedSsid:'',wifiListExpanded:false,sttTest:{recording:false,busy:false},testToast:{owner:null,generation:0,view:null}};
+export const appState = {config:null,wifi:null,wifiStatus:null,agentStatus:null,agentLog:null,agentLogPendingSnapshot:null,agentLogFailureView:null,agentLogBackgroundError:null,agentLogAutoScroll:true,otaLog:null,otaLogVisible:false,otaLogPending:false,otaLogStartSize:0,otaUpdateRunning:false,systemEnv:'',networks:[],selectedSsid:'',wifiListExpanded:false,sttTest:{recording:false,busy:false},testToast:{owner:null,generation:0,view:null}};
 export const sectionSnapshots = {};
 export const modelProvidersByName = {};
 
