@@ -4,7 +4,12 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
-from runner.reset import ResetError, call_environment_setup, per_task_setup
+from runner.reset import (
+    ResetError,
+    SetupAssertionError,
+    call_environment_setup,
+    per_task_setup,
+)
 
 if TYPE_CHECKING:
     from runner.suite import Suite, TaskSpec
@@ -90,6 +95,8 @@ def prepare_task_isolation(
             return setup_result
         except (ResetError, AgentTimeoutError, AgentRequestError) as e:
             last_error = e
+            if isinstance(e, SetupAssertionError):
+                raise
             if getattr(e, "consolidation", None) is not None:
                 raise
             if attempt >= setup_attempts:

@@ -1092,6 +1092,94 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert stale_clears == ["http://127.0.0.1:19090"]
 
 
+def test_auto_agent_setup_runs_memory_suite_without_environment_bridge(monkeypatch, tmp_path):
+    suite_path = tmp_path / "memory-suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "memory_suite",
+                "tasks": [
+                    {
+                        "id": "recall_memory",
+                        "category": "memory",
+                        "prompt": "recall memory",
+                        "description_for_judge": "recall memory",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            captured["client_base_url"] = base_url
+            captured["benchmark_token"] = benchmark_token
+
+        def close(self):
+            pass
+
+    def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "control_token").write_text("memory-token", encoding="utf-8")
+
+    def fake_start_daemon_compose(job, **kwargs):
+        captured["job"] = job
+        captured["daemon_kwargs"] = kwargs
+        return "container-id"
+
+    def fake_run_one_task(client, suite, task, attempt, artifact_dir, *args, **kwargs):
+        captured["task_kwargs"] = kwargs
+        return TaskResult(
+            suite=suite.name,
+            run_id="memory-run",
+            task_id=task.id,
+            category=task.category,
+            attempt=attempt,
+            status="passed",
+            rubric=[],
+            rubric_pass_count=0,
+            rubric_total=0,
+            artifact_dir=str(artifact_dir),
+        )
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "prepare_run_config", fake_prepare_run_config)
+    monkeypatch.setattr(webui, "docker_published_port", lambda *args, **kwargs: 18082)
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
+    monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "run_one_task", fake_run_one_task)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "memory-run",
+            "--auto-agent-setup",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    assert captured["job"].endpoint == ""
+    assert captured["job"].docker_endpoint == ""
+    assert captured["daemon_kwargs"]["environment_bridge_endpoint"] == ""
+    assert captured["daemon_kwargs"]["environment_bridge_mode"] is False
+    assert captured["task_kwargs"]["environment_url"] is None
+    assert captured["benchmark_token"] == "memory-token"
+
+
 def test_run_rejects_external_daemon_platform_mismatch(monkeypatch, tmp_path, capsys):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(

@@ -146,6 +146,7 @@ const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
+const char* kFrameServiceInitScript = "/etc/init.d/S52frame_service";
 const char* kLocaleSimplifiedChinese = "zh-CN";
 const char* kLocaleEnglishUS = "en-US";
 // Default path to the agent binary on device. Tests override this via the
@@ -180,6 +181,19 @@ const char* agent_init_script_path() {
     }();
     return cached;
 }
+
+// Tests can replace the frame service init script with a deterministic
+// fixture. Production uses the fixed on-device path.
+const char* frame_service_init_script_path() {
+    static const char* cached = []() -> const char* {
+        const char* override_path = std::getenv("AIDEN_FRAME_SERVICE_INIT_SCRIPT");
+        if (override_path && override_path[0] != '\0') {
+            return override_path;
+        }
+        return kFrameServiceInitScript;
+    }();
+    return cached;
+}
 const char* kOtaBin = "/oem/usr/bin/ota";
 const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
 const char* kOtaHealthLogPath = "/var/log/ota/ota.log";
@@ -196,7 +210,7 @@ const size_t kAgentLogReadSize = 64 * 1024;
 const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kOtaLogReadSize = 128 * 1024;
 const size_t kOtaLogDisplaySize = 96 * 1024;
-const size_t kOtaWebUpdateLogMaxBytes = 1024 * 1024;
+const size_t kOtaWebUpdateLogMaxBytes = 100 * 1024;
 const int kSupportLogExportTimeoutMs = 30000;
 const char* kSupportLogArchiveName = "aiden-logs.tar.gz";
 const char* kSupportLogStagePrefix = "aiden-logs-stage-";
@@ -316,6 +330,8 @@ enum LlmLogOpenStatus {
 void on_signal(int) {
     g_should_stop = 1;
 }
+
+bool schedule_frame_service_restart(const std::string& agent_config_path, std::string* error);
 
 bool file_exists(const char* path) {
     return path && access(path, F_OK) == 0;
@@ -2506,6 +2522,88 @@ void schedule_agent_restart() {
     }
 }
 
+bool schedule_frame_service_restart(const std::string& agent_config_path, std::string* error) {
+    if (error) error->clear();
+    const char* init_script = frame_service_init_script_path();
+    if (!init_script || init_script[0] == '\0') {
+        if (error) *error = "frame service init script path is empty";
+        return false;
+    }
+    int status_pipe[2] = {-1, -1};
+    if (pipe(status_pipe) != 0) {
+        if (error) *error = std::string("pipe frame service restart: ") + strerror(errno);
+        return false;
+    }
+    std::string cloexec_error;
+    if (!set_fd_cloexec(status_pipe[1], &cloexec_error)) {
+        close(status_pipe[0]);
+        close(status_pipe[1]);
+        if (error) *error = cloexec_error;
+        return false;
+    }
+    pid_t launcher_pid = fork();
+    if (launcher_pid < 0) {
+        close(status_pipe[0]);
+        close(status_pipe[1]);
+        if (error) *error = std::string("fork frame service restart: ") + strerror(errno);
+        return false;
+    }
+    if (launcher_pid == 0) {
+        close(status_pipe[0]);
+        pid_t supervisor_pid = fork();
+        if (supervisor_pid < 0) {
+            const int launch_errno = errno;
+            (void)write(status_pipe[1], &launch_errno, sizeof(launch_errno));
+            _exit(127);
+        }
+        if (supervisor_pid > 0) _exit(0);
+        setsid();
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) close(devnull);
+        }
+        if (setenv("AGENT_CONFIG", agent_config_path.c_str(), 1) != 0) {
+            const int launch_errno = errno;
+            (void)write(status_pipe[1], &launch_errno, sizeof(launch_errno));
+            _exit(127);
+        }
+        execl(init_script, init_script, "restart", static_cast<char*>(NULL));
+        execl("/bin/sh", "sh", init_script, "restart", static_cast<char*>(NULL));
+        const int launch_errno = errno;
+        (void)write(status_pipe[1], &launch_errno, sizeof(launch_errno));
+        _exit(127);
+    }
+    close(status_pipe[1]);
+    int launch_errno = 0;
+    ssize_t received = 0;
+    while (received < static_cast<ssize_t>(sizeof(launch_errno))) {
+        ssize_t n = read(status_pipe[0], reinterpret_cast<char*>(&launch_errno) + received,
+                         sizeof(launch_errno) - static_cast<size_t>(received));
+        if (n > 0) {
+            received += n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) {
+            if (error) *error = std::string("read frame service restart status: ") + strerror(errno);
+            close(status_pipe[0]);
+            (void)waitpid(launcher_pid, NULL, 0);
+            return false;
+        }
+        break;
+    }
+    close(status_pipe[0]);
+    (void)waitpid(launcher_pid, NULL, 0);
+    if (received != 0) {
+        if (error) *error = std::string("launch frame service restart: ") + strerror(launch_errno);
+        return false;
+    }
+    return true;
+}
+
 int acquire_ota_update_launch_lock(std::string* error) {
     std::string lock_path = ota_update_lock_path();
     int lock_fd = open(lock_path.c_str(), O_CREAT | O_RDWR, 0600);
@@ -3786,6 +3884,12 @@ cJSON* agent_status_to_json(const AgentRuntimeStatus& status) {
     cJSON_AddStringToObject(root, "addr", status.addr.c_str());
     cJSON_AddStringToObject(root, "port_host", status.port_host.c_str());
     cJSON_AddNumberToObject(root, "port", status.port);
+    int public_port = status.port;
+    const char* public_port_env = std::getenv("AIDEN_PUBLIC_AGENT_WEB_PORT");
+    if (public_port_env) {
+        parse_decimal(public_port_env, 1, 65535, &public_port);
+    }
+    cJSON_AddNumberToObject(root, "public_port", public_port);
     cJSON_AddBoolToObject(root, "port_reachable", status.port_reachable ? 1 : 0);
     cJSON_AddStringToObject(root, "port_detail", status.port_detail.c_str());
     cJSON_AddStringToObject(root, "detail", status.detail.c_str());
@@ -4105,6 +4209,17 @@ ApiResponse handle_post_config_via_cli(const Options& options, const std::string
     if (config) cJSON_AddItemToObject(response, "config", config);
     cJSON* changed = cJSON_DetachItemFromObject(update, "changed_paths");
     const bool config_changed = json_is_array(changed) && cJSON_GetArraySize(changed) > 0;
+    bool frame_service_changed = false;
+    if (json_is_array(changed)) {
+        for (int i = 0; i < cJSON_GetArraySize(changed); ++i) {
+            cJSON* path = cJSON_GetArrayItem(changed, i);
+            if (json_is_string(path) &&
+                std::string(path->valuestring) == "frame_service.keep_streamon") {
+                frame_service_changed = true;
+                break;
+            }
+        }
+    }
     if (changed) cJSON_AddItemToObject(response, "changed_paths", changed);
     cJSON* reboot = cJSON_DetachItemFromObject(update, "reboot_required");
 	bool reboot_required = json_is_type(reboot, cJSON_True);
@@ -4113,6 +4228,19 @@ ApiResponse handle_post_config_via_cli(const Options& options, const std::string
     cJSON_AddBoolToObject(response, "agent_restart_scheduled", config_changed && !reboot_required ? 1 : 0);
     cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
     cJSON_AddBoolToObject(response, "usb_reenumeration_scheduled", 0);
+    bool frame_service_restart_scheduled = false;
+    if (frame_service_changed) {
+        std::string restart_error;
+        if (!schedule_frame_service_restart(options.agent_config_path, &restart_error)) {
+            cJSON_Delete(response);
+            cJSON_Delete(update);
+            return make_json_error(500, restart_error.empty()
+                ? "failed to restart frame service" : restart_error);
+        }
+        frame_service_restart_scheduled = true;
+    }
+    cJSON_AddBoolToObject(response, "frame_service_restart_scheduled",
+                          frame_service_restart_scheduled ? 1 : 0);
     cJSON_AddStringToObject(response, "message",
                             reboot_required
                                 ? "config saved; USB HID configuration changed; reboot required"

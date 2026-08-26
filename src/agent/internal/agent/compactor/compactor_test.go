@@ -143,7 +143,15 @@ func TestCompactSummarizesHistoricalToolResults(t *testing.T) {
 		{Role: messages.MessageRoleSystem, Content: "system"},
 		{Role: messages.MessageRoleUser, Content: "old request"},
 		{
-			Role: messages.MessageRoleToolCall,
+			Role:                messages.MessageRoleToolCall,
+			ResponsesResponseID: "resp_old_tool",
+			ResponsesReasoningItems: []json.RawMessage{
+				json.RawMessage(`{"type":"reasoning","id":"rs_old"}`),
+			},
+			ResponsesOutputItems: []json.RawMessage{
+				json.RawMessage(`{"type":"function_call","call_id":"old_call","name":"shell","arguments":"{}"}`),
+			},
+			ResponsesAssistantPhase: "commentary",
 			ToolCalls: []messages.ToolCall{{
 				ID:        "old_call",
 				Name:      "shell",
@@ -166,11 +174,19 @@ func TestCompactSummarizesHistoricalToolResults(t *testing.T) {
 				},
 			}},
 		},
-		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer", ResponsesResponseID: "resp_old_answer"},
 		{Role: messages.MessageRoleUser, Content: "new request"},
 		{
-			Role:      messages.MessageRoleToolCall,
-			ToolCalls: []messages.ToolCall{{ID: "new_call", Name: "shell", Arguments: `{"command":"pwd"}`}},
+			Role:                messages.MessageRoleToolCall,
+			ToolCalls:           []messages.ToolCall{{ID: "new_call", Name: "shell", Arguments: `{"command":"pwd"}`}},
+			ResponsesResponseID: "resp_new_tool",
+			ResponsesReasoningItems: []json.RawMessage{
+				json.RawMessage(`{"type":"reasoning","id":"rs_new"}`),
+			},
+			ResponsesOutputItems: []json.RawMessage{
+				json.RawMessage(`{"type":"function_call","call_id":"new_call","name":"shell","arguments":"{}"}`),
+			},
+			ResponsesAssistantPhase: "commentary",
 		},
 		{
 			Role:        messages.MessageRoleToolResult,
@@ -206,6 +222,15 @@ func TestCompactSummarizesHistoricalToolResults(t *testing.T) {
 	}
 	if got := compactedMessages[5].ToolResults[0].Content; got != "current result" {
 		t.Fatalf("current tool result = %q, want unchanged", got)
+	}
+	for _, message := range compactedMessages {
+		if message.ResponsesResponseID != "" {
+			t.Fatalf("compacted message retained provider response ID: %#v", message)
+		}
+	}
+	retainedToolCall := compactedMessages[4]
+	if len(retainedToolCall.ResponsesReasoningItems) != 1 || len(retainedToolCall.ResponsesOutputItems) != 1 || retainedToolCall.ResponsesAssistantPhase != "commentary" {
+		t.Fatalf("compacted retained message lost replay metadata: %#v", retainedToolCall)
 	}
 }
 

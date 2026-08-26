@@ -78,6 +78,9 @@ type Runtime struct {
 	activeCancel         context.CancelFunc
 	preemptHooks         []func()
 	lastPreemptTime      time.Time
+	userContextResetMu   sync.Mutex
+	userContextResetHook func()
+	userContextResetGen  uint64
 	storage              *StorageManager
 	screenState          *screen.ScreenState
 	phoneBridge          *PhoneBridge
@@ -126,6 +129,7 @@ type RunRequest struct {
 	// AsyncEpisodeMaintenance keeps the episode trace write synchronous but moves
 	// lesson extraction and referenced-memory maintenance off the response path.
 	AsyncEpisodeMaintenance bool
+	UserActionHandler       UserActionHandler
 }
 
 type RunResult struct {
@@ -500,7 +504,10 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger, WithMemoryPlaneLongTermStore(longTermStore))
 		rt.markInterruptedEpisodesBestEffort()
 	}
-	rt.startEpisodeMemory(logger)
+	if plane, ok := rt.memoryPlane.(*FilesystemMemoryPlane); ok && plane != nil {
+		plane.SetStorageWriteGate(rt.storageMonitor)
+	}
+	rt.startMemoryWorker(logger)
 
 	// Start the SD/eMMC storage manager on every device. Missing or unusable
 	// card hardware degrades to eMMC-only operation.
@@ -626,7 +633,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, LoadMemoryExtractionConfig(cfg.ConfigDir), nil, WithMemoryPlaneLongTermStore(longTermStore))
 		rt.markInterruptedEpisodesBestEffort()
-		rt.startEpisodeMemory(nil)
+		rt.startMemoryWorker(nil)
 	}
 	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
 	skillManager.SetDeviceTypeFunc(rt.deviceTypeFromState)
@@ -638,7 +645,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	return rt
 }
 
-func (r *Runtime) startEpisodeMemory(runtimeLogger *Logger) {
+func (r *Runtime) startMemoryWorker(runtimeLogger *Logger) {
 	if r == nil {
 		return
 	}
@@ -650,16 +657,16 @@ func (r *Runtime) startEpisodeMemory(runtimeLogger *Logger) {
 	if runtimeLogger != nil {
 		plane.logger = runtimeLogger
 	}
-	err := plane.StartEpisodeMemory(r.models)
+	err := plane.StartMemoryWorker(r.models)
 	r.episodeMemoryInitErr = err
 	if err == nil {
 		return
 	}
 	if runtimeLogger != nil {
-		runtimeLogger.Warn("[episode-memory] worker disabled: %v", err)
+		runtimeLogger.Warn("[memory] worker disabled: %v", err)
 		return
 	}
-	log.Printf("[episode-memory] worker disabled: %v", err)
+	log.Printf("[memory] worker disabled: %v", err)
 }
 
 // EpisodeMemoryInitializationError reports why the background consolidation
@@ -806,22 +813,9 @@ func (r *Runtime) markInterruptedEpisodesBestEffort() {
 	if len(episodes) == 0 {
 		return
 	}
-	r.persistInterruptedEpisodeHistoryBestEffort(plane, episodes)
 	r.exportInterruptedEpisodesBestEffort(episodes)
 	if r.logger != nil {
 		r.logger.Warn("[memory] marked %d running task episode(s) as interrupted", len(episodes))
-	}
-}
-
-func (r *Runtime) persistInterruptedEpisodeHistoryBestEffort(plane *FilesystemMemoryPlane, episodes []TaskEpisode) {
-	if plane == nil || strings.TrimSpace(plane.memoryDir) == "" || len(episodes) == 0 {
-		return
-	}
-	store := NewChatHistoryStore(filepath.Join(plane.memoryDir, "chat_history"))
-	for _, episode := range episodes {
-		if err := store.Append(context.Background(), interruptedEpisodeStatusMessage(episode)); err != nil && r.logger != nil {
-			r.logger.Warn("[memory] persist interrupted episode history failed: episode_id=%s error=%v", episode.ID, err)
-		}
 	}
 }
 
@@ -850,8 +844,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		ctx = context.Background()
 	}
 	if plane, ok := r.memoryPlane.(*FilesystemMemoryPlane); ok {
-		plane.EpisodeMemoryTaskStarted()
-		defer plane.EpisodeMemoryTaskFinished()
+		plane.MemoryTaskStarted()
+		defer plane.MemoryTaskFinished()
 	}
 
 	// Preempt any currently active run and its resources.
@@ -865,6 +859,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	// Register this run's cancel so future callers can preempt us.
 	runCtx, runCancel := context.WithCancel(ctx)
+	if req.UserActionHandler != nil {
+		runCtx = WithUserActionHandler(runCtx, req.UserActionHandler)
+	}
 	r.preemptMu.Lock()
 	r.activeCancel = runCancel
 	r.preemptMu.Unlock()
@@ -1165,7 +1162,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
 	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
 	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
-	if compactionEnabled && tokenUsage > compactionTrigger {
+	if !r.config.Model.ResponsesProviderCompactionEnabled() && compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
 		}
@@ -1317,7 +1314,10 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 				Message: &message,
 			}
 		}
-		attachment := r.captureStateScreenshot()
+		var attachment *messages.Attachment
+		if !messageHasImageAttachment(message) {
+			attachment = r.captureStateScreenshot()
+		}
 		entries := r.stateManager.GetAllStates()
 		// If neither runtime state nor a screenshot is available, just skip.
 		if len(entries) == 0 && attachment == nil {
@@ -1360,6 +1360,15 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 			After:   []messages.Message{},
 		}
 	}
+}
+
+func messageHasImageAttachment(message messages.Message) bool {
+	for _, attachment := range message.Attachments {
+		if isImageMIMEType(attachment.MIMEType) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) captureStateScreenshot() *messages.Attachment {
@@ -1500,6 +1509,66 @@ func (r *Runtime) ClearMemory(ctx context.Context) error {
 		return err
 	}
 	r.rotateContext()
+	r.resetActiveUserContext()
+	if err := r.rotateUserContext(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RegisterUserContextResetHook installs the active realtime-session reset
+// callback. Clearing conversation history cancels that live session so it
+// cannot continue writing to the previous user context after rotation.
+func (r *Runtime) RegisterUserContextResetHook(hook func()) func() {
+	if r == nil {
+		return func() {}
+	}
+	r.userContextResetMu.Lock()
+	r.userContextResetGen++
+	generation := r.userContextResetGen
+	r.userContextResetHook = hook
+	r.userContextResetMu.Unlock()
+	return func() {
+		r.userContextResetMu.Lock()
+		if r.userContextResetGen == generation {
+			r.userContextResetHook = nil
+		}
+		r.userContextResetMu.Unlock()
+	}
+}
+
+func (r *Runtime) resetActiveUserContext() {
+	if r == nil {
+		return
+	}
+	r.userContextResetMu.Lock()
+	hook := r.userContextResetHook
+	r.userContextResetMu.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+func (r *Runtime) rotateUserContext() error {
+	if r == nil || strings.TrimSpace(r.config.ConfigDir) == "" {
+		return nil
+	}
+	folder := agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
+	var systemPrompt string
+	if manager, err := contextmanager.LoadContextManagerFromCurrentSession(folder); err == nil && manager != nil {
+		for _, message := range manager.MessageListDump().Messages {
+			if message.Role == messages.MessageRoleSystem {
+				systemPrompt = message.Content
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(systemPrompt) == "" {
+		return nil
+	}
+	if _, err := contextmanager.NewContextManager(folder, systemPrompt); err != nil {
+		return fmt.Errorf("create user context session: %w", err)
+	}
 	return nil
 }
 
@@ -1538,22 +1607,92 @@ func (r *Runtime) hasLoadedSkills() bool {
 }
 
 func (r *Runtime) ClearAllMemory(ctx context.Context) error {
+	r.resetActiveUserContext()
 	if err := r.memories.ClearAll(ctx, "default"); err != nil {
 		return err
 	}
 
 	_ = contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+	_ = contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir))
 	r.rotateContext()
 
 	return nil
 }
 
 func (r *Runtime) ContextDump() contextmanager.MessageListDump {
-	contextManager := r.contextManager
-	if contextManager == nil {
+	if r == nil {
 		return contextmanager.MessageListDump{}
 	}
-	return contextManager.MessageListDump()
+	if r.contextManager != nil {
+		return r.contextManager.MessageListDump()
+	}
+	if strings.TrimSpace(r.config.ConfigDir) == "" {
+		return contextmanager.MessageListDump{}
+	}
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+	if err != nil || manager == nil {
+		return contextmanager.MessageListDump{}
+	}
+	return manager.MessageListDump()
+}
+
+// UserContextDump returns the persisted realtime foreground context.
+func (r *Runtime) UserContextDump() contextmanager.MessageListDump {
+	if r == nil {
+		return contextmanager.MessageListDump{}
+	}
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir))
+	if err != nil || manager == nil {
+		return contextmanager.MessageListDump{}
+	}
+	return manager.MessageListDump()
+}
+
+// WebContextDump returns the context that the Web UI should display for the
+// active input mode.
+func (r *Runtime) WebContextDump() contextmanager.MessageListDump {
+	if r == nil {
+		return contextmanager.MessageListDump{}
+	}
+	if r.config.InputModeOrDefault() == "realtime" {
+		return r.UserContextDump()
+	}
+	return r.ContextDump()
+}
+
+// ReadContextAttachment reads an attachment registered in the user or backend
+// context. It never accepts an arbitrary filesystem path.
+func (r *Runtime) ReadContextAttachment(role, attachmentID string) ([]byte, string, error) {
+	if r == nil {
+		return nil, "", fmt.Errorf("runtime is unavailable")
+	}
+	var folder string
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "user":
+		folder = agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
+	case "backend":
+		folder = agentpath.ContextManagerSessionFolder(r.config.ConfigDir)
+	default:
+		return nil, "", fmt.Errorf("invalid context role")
+	}
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(folder)
+	if err != nil {
+		return nil, "", err
+	}
+	mimeType := "application/octet-stream"
+	for _, message := range manager.MessageListDump().Messages {
+		for _, attachment := range message.Attachments {
+			if filepath.Base(attachment.FilePath) == filepath.Base(attachmentID) {
+				mimeType = attachment.MIMEType
+				break
+			}
+		}
+	}
+	data, err := manager.ReadAttachment(attachmentID)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, mimeType, nil
 }
 
 func (r *Runtime) rotateContext() {
@@ -1571,6 +1710,16 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	}
 	tools := NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
 	return r.filterPhoneBridgeAgentTools(tools)
+}
+
+// Tool returns a registered runtime tool by name. Realtime voice uses this to
+// reuse the same recall_memory implementation and long-term store as the
+// legacy agent while exposing its own smaller model-facing tool catalog.
+func (r *Runtime) Tool(name string) (langtools.Tool, bool) {
+	if r == nil || r.tools == nil {
+		return nil, false
+	}
+	return r.tools.Get(name)
 }
 
 func (r *Runtime) filterPhoneBridgeAgentTools(tools []langtools.Tool) []langtools.Tool {
@@ -2619,6 +2768,9 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	if r.phoneBridge != nil {
+		r.phoneBridge.Close()
+	}
 	maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), runtimeEpisodeMaintenanceTimeout)
 	if err := r.episodeMaintenance.closeAndWait(maintenanceCtx); err != nil && r.logger != nil {
 		r.logger.Error("episode maintenance drain on close: %v", err)
@@ -2626,6 +2778,7 @@ func (r *Runtime) Close() error {
 	maintenanceCancel()
 	if plane, ok := r.memoryPlane.(*FilesystemMemoryPlane); ok {
 		plane.StopEpisodeMemory()
+		plane.StopNotificationMemory()
 	}
 	if r.storageMonitor != nil {
 		r.storageMonitor.Stop()

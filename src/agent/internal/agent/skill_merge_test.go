@@ -879,7 +879,7 @@ func TestBundledDeviceOperatorAllowedToolsCoverEmbeddedPlaybooks(t *testing.T) {
 		"enter_text",
 		"open_app",
 		"open_url",
-		"request_human_handoff",
+		"request_user_action",
 		"recall_memory",
 		"save_memory",
 		"shell",

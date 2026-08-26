@@ -84,9 +84,66 @@ func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) Message {
 	return Message{
 		Role:                    role,
 		Content:                 contentChoiceText(choice),
+		Usage:                   UsageFromGenerationInfo(choice.GenerationInfo),
 		ToolCalls:               toolCallsFromContentChoice(choice),
 		ResponsesReasoningItems: responsesReasoningItemsFromGenerationInfo(choice.GenerationInfo),
+		ResponsesResponseID:     responsesResponseIDFromGenerationInfo(choice.GenerationInfo),
+		ResponsesOutputItems:    responsesOutputItemsFromGenerationInfo(choice.GenerationInfo),
+		ResponsesAssistantPhase: responsesAssistantPhaseFromGenerationInfo(choice.GenerationInfo),
 	}
+}
+
+// UsageFromGenerationInfo normalizes provider-specific generation metadata to
+// the compact usage shape persisted on messages. OpenAI-compatible providers
+// report prompt/completion tokens; Responses, Anthropic, and realtime paths
+// use input/output tokens. Both forms are accepted here.
+func UsageFromGenerationInfo(info map[string]any) *Usage {
+	if len(info) == 0 {
+		return nil
+	}
+	input, inputOK := usageMetricInt(info["input_tokens"])
+	if prompt, ok := usageMetricInt(info["prompt_tokens"]); ok {
+		input = prompt
+		inputOK = true
+	}
+	output, outputOK := usageMetricInt(info["output_tokens"])
+	if completion, ok := usageMetricInt(info["completion_tokens"]); ok {
+		output = completion
+		outputOK = true
+	}
+	total, totalOK := usageMetricInt(info["total_tokens"])
+	if !inputOK && !outputOK && !totalOK {
+		return nil
+	}
+	if !totalOK && (inputOK || outputOK) {
+		total = input + output
+	}
+	return &Usage{TotalTokens: total, InputTokens: input, OutputTokens: output}
+}
+
+func usageMetricInt(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int32:
+		return int(typed), true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case float32:
+		return int(typed), true
+	default:
+		return 0, false
+	}
+}
+
+func responsesResponseIDFromGenerationInfo(info map[string]any) string {
+	if len(info) == 0 {
+		return ""
+	}
+	id, _ := info["llm_response_id"].(string)
+	return strings.TrimSpace(id)
 }
 
 func responsesReasoningItemsFromGenerationInfo(info map[string]any) []json.RawMessage {
@@ -104,6 +161,31 @@ func responsesReasoningItemsFromGenerationInfo(info map[string]any) []json.RawMe
 		}
 	}
 	return cloned
+}
+
+func responsesOutputItemsFromGenerationInfo(info map[string]any) []json.RawMessage {
+	if len(info) == 0 {
+		return nil
+	}
+	items, ok := info["responses_output_items"].([]json.RawMessage)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+	cloned := make([]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		if len(item) != 0 {
+			cloned = append(cloned, append(json.RawMessage(nil), item...))
+		}
+	}
+	return cloned
+}
+
+func responsesAssistantPhaseFromGenerationInfo(info map[string]any) string {
+	if len(info) == 0 {
+		return ""
+	}
+	phase, _ := info["responses_assistant_phase"].(string)
+	return strings.TrimSpace(phase)
 }
 
 func contentChoiceHasToolCalls(choice llms.ContentChoice) bool {

@@ -17,6 +17,18 @@ func TestResamplingSinkSkipsEmptyResamplerOutput(t *testing.T) {
 	}
 }
 
+func TestPCM16MonoResamplerConvertsStreamingChunks(t *testing.T) {
+	r := NewPCM16MonoResampler(24000, 16000)
+	first := r.Write([]byte{0, 0, 0})
+	if len(first) != 0 {
+		t.Fatalf("first output bytes = %d, want no complete sample output", len(first))
+	}
+	second := r.Write([]byte{0, 0, 0, 0, 0})
+	if len(second) == 0 || len(second)%2 != 0 {
+		t.Fatalf("second output bytes = %d, want non-empty PCM16 output", len(second))
+	}
+}
+
 type countingAudioSink struct {
 	format AudioFormat
 	writes int

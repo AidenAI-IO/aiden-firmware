@@ -30,6 +30,7 @@ namespace aiden {
 
 static std::mutex sys_init_mutex;
 static int sys_init_count = 0;
+static const char* kAudioVqeConfigPath = "/oem/usr/share/aiden/audio/config_aivqe.json";
 
 static void ensure_sys_init() {
     std::lock_guard<std::mutex> lock(sys_init_mutex);
@@ -51,6 +52,25 @@ static AUDIO_BIT_WIDTH_E to_bit_width(int bits) {
     case 24: return AUDIO_BIT_WIDTH_24;
     default: return AUDIO_BIT_WIDTH_16;
     }
+}
+
+static uint32_t audio_sound_mode_channels(AUDIO_SOUND_MODE_E mode) {
+    switch (mode) {
+    case AUDIO_SOUND_MODE_MONO:   return 1;
+    case AUDIO_SOUND_MODE_STEREO: return 2;
+    case AUDIO_SOUND_MODE_4_CHN:  return 4;
+    case AUDIO_SOUND_MODE_6_CHN:  return 6;
+    case AUDIO_SOUND_MODE_8_CHN:  return 8;
+    default:                      return 0;
+    }
+}
+
+static uint32_t audio_frame_channels(AUDIO_SOUND_MODE_E mode, int configured_channels) {
+    uint32_t channels = audio_sound_mode_channels(mode);
+    if (channels != 0) {
+        return channels;
+    }
+    return configured_channels > 0 ? static_cast<uint32_t>(configured_channels) : 1;
 }
 
 static bool configure_ao_volume_curve(AUDIO_DEV dev_id) {
@@ -566,6 +586,7 @@ class AudioCaptureImpl {
 public:
     std::atomic<bool> running{false};
     bool initialized = false;
+    bool vqe_enabled = false;
     pthread_t thread{};
     AudioConfig config;
     AudioStreamCallback callback;
@@ -591,6 +612,10 @@ public:
                     af.data = data;
                     af.length = frame.u32Len;
                     af.timestamp = frame.u64TimeStamp;
+                    af.channels = audio_frame_channels(frame.enSoundMode, config.channels);
+                    af.sample_rate = frame.s32SampleRate > 0
+                                         ? static_cast<uint32_t>(frame.s32SampleRate)
+                                         : static_cast<uint32_t>(config.sample_rate);
                     callback(af);
                 }
                 RK_MPI_AI_ReleaseFrame(dev_id, chn_id, &frame, nullptr);
@@ -608,6 +633,15 @@ bool AudioCapture::init(const AudioConfig& config) {
     impl_->config = config;
     impl_->dev_id = 0;
     impl_->chn_id = 0;
+    impl_->vqe_enabled = false;
+
+    if (config.bit_width != 16 ||
+        (config.sample_rate != 8000 && config.sample_rate != 16000 && config.sample_rate != 48000)) {
+        AIDEN_LOG_ERROR("recording", "vqe_format_unsupported",
+                        "sample_rate=%d bit_width=%d", config.sample_rate, config.bit_width);
+        maybe_sys_deinit();
+        return false;
+    }
 
     memset(&impl_->attr, 0, sizeof(AIO_ATTR_S));
 
@@ -621,7 +655,9 @@ bool AudioCapture::init(const AudioConfig& config) {
     impl_->attr.soundCard.bitWidth = to_bit_width(config.bit_width);
     impl_->attr.enBitwidth = to_bit_width(config.bit_width);
     impl_->attr.enSamplerate = (AUDIO_SAMPLE_RATE_E)config.sample_rate;
-    impl_->attr.enSoundmode = (config.channels == 1) ? AUDIO_SOUND_MODE_MONO : AUDIO_SOUND_MODE_STEREO;
+    // VQE consumes the physical two-channel stream (mic + AO loopback) and
+    // exposes a single processed microphone channel to callers.
+    impl_->attr.enSoundmode = AUDIO_SOUND_MODE_MONO;
     impl_->attr.u32PtNumPerFrm = 1024;
     impl_->attr.u32FrmNum = 4;
     impl_->attr.u32EXFlag = 0;
@@ -633,13 +669,20 @@ bool AudioCapture::init(const AudioConfig& config) {
         return false;
     }
 
-    // RV1106 mixer: enable loopback and set ADC volume
-    RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Mode2");
+    // Mode2 places the microphone on channel bit 0 and the digital AO
+    // reference on channel bit 1, which is the layout expected below.
+    ret = RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Mode2");
+    if (ret != RK_SUCCESS) {
+        AIDEN_LOG_ERROR("recording", "loopback_enable_failed", "ret=%#x", ret);
+        maybe_sys_deinit();
+        return false;
+    }
     RK_MPI_AMIX_SetControl(impl_->dev_id, "ADC ALC Left Volume", (char*)"22");
     RK_MPI_AMIX_SetControl(impl_->dev_id, "ADC ALC Right Volume", (char*)"22");
 
     ret = RK_MPI_AI_Enable(impl_->dev_id);
     if (ret != RK_SUCCESS) {
+        RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Disabled");
         maybe_sys_deinit();
         return false;
     }
@@ -648,11 +691,56 @@ bool AudioCapture::init(const AudioConfig& config) {
     AI_CHN_PARAM_S chnParam;
     memset(&chnParam, 0, sizeof(AI_CHN_PARAM_S));
     chnParam.s32UsrFrmDepth = 4;
-    RK_MPI_AI_SetChnParam(impl_->dev_id, impl_->chn_id, &chnParam);
+    ret = RK_MPI_AI_SetChnParam(impl_->dev_id, impl_->chn_id, &chnParam);
+    if (ret != RK_SUCCESS) {
+        AIDEN_LOG_ERROR("recording", "channel_config_failed", "ret=%#x", ret);
+        RK_MPI_AI_Disable(impl_->dev_id);
+        RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Disabled");
+        maybe_sys_deinit();
+        return false;
+    }
+
+    AI_VQE_CONFIG_S vqeConfig;
+    memset(&vqeConfig, 0, sizeof(vqeConfig));
+    if (access(kAudioVqeConfigPath, R_OK) != 0) {
+        AIDEN_LOG_ERROR("recording", "vqe_config_missing", "path=%s", kAudioVqeConfigPath);
+        RK_MPI_AI_Disable(impl_->dev_id);
+        RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Disabled");
+        maybe_sys_deinit();
+        return false;
+    }
+    vqeConfig.enCfgMode = AIO_VQE_CONFIG_LOAD_FILE;
+    snprintf(vqeConfig.aCfgFile, sizeof(vqeConfig.aCfgFile), "%s", kAudioVqeConfigPath);
+    vqeConfig.s32WorkSampleRate = config.sample_rate;
+    vqeConfig.s32FrameSample = config.sample_rate * 16 / 1000;
+    vqeConfig.s64RecChannelType = 0x1;
+    vqeConfig.s64RefChannelType = 0x2;
+    vqeConfig.s64ChannelLayoutType = 0x3;
+    ret = RK_MPI_AI_SetVqeAttr(impl_->dev_id, impl_->chn_id, 0, 0, &vqeConfig);
+    if (ret != RK_SUCCESS) {
+        AIDEN_LOG_ERROR("recording", "vqe_config_failed", "ret=%#x", ret);
+        RK_MPI_AI_Disable(impl_->dev_id);
+        RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Disabled");
+        maybe_sys_deinit();
+        return false;
+    }
+
+    ret = RK_MPI_AI_EnableVqe(impl_->dev_id, impl_->chn_id);
+    if (ret != RK_SUCCESS) {
+        AIDEN_LOG_ERROR("recording", "vqe_enable_failed", "ret=%#x", ret);
+        RK_MPI_AI_Disable(impl_->dev_id);
+        RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Disabled");
+        maybe_sys_deinit();
+        return false;
+    }
+    impl_->vqe_enabled = true;
 
     ret = RK_MPI_AI_EnableChn(impl_->dev_id, impl_->chn_id);
     if (ret != RK_SUCCESS) {
+        RK_MPI_AI_DisableVqe(impl_->dev_id, impl_->chn_id);
+        impl_->vqe_enabled = false;
         RK_MPI_AI_Disable(impl_->dev_id);
+        RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Disabled");
         maybe_sys_deinit();
         return false;
     }
@@ -661,6 +749,9 @@ bool AudioCapture::init(const AudioConfig& config) {
     RK_MPI_AI_SetTrackMode(impl_->dev_id, AUDIO_TRACK_NORMAL);
 
     impl_->initialized = true;
+    AIDEN_LOG_INFO("recording", "vqe_enabled",
+                   "sample_rate=%d frame_samples=%d rec_layout=0x1 ref_layout=0x2",
+                   config.sample_rate, vqeConfig.s32FrameSample);
     return true;
 }
 
@@ -681,6 +772,10 @@ void AudioCapture::stop() {
         pthread_join(impl_->thread, nullptr);
     }
 
+    if (impl_->vqe_enabled) {
+        RK_MPI_AI_DisableVqe(impl_->dev_id, impl_->chn_id);
+        impl_->vqe_enabled = false;
+    }
     RK_MPI_AI_DisableChn(impl_->dev_id, impl_->chn_id);
     RK_MPI_AI_Disable(impl_->dev_id);
     RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Disabled");
@@ -696,6 +791,10 @@ bool AudioCapture::get_frame(AudioFrame& frame) {
         frame.data = data;
         frame.length = impl_->frame.u32Len;
         frame.timestamp = impl_->frame.u64TimeStamp;
+        frame.channels = audio_frame_channels(impl_->frame.enSoundMode, impl_->config.channels);
+        frame.sample_rate = impl_->frame.s32SampleRate > 0
+                                ? static_cast<uint32_t>(impl_->frame.s32SampleRate)
+                                : static_cast<uint32_t>(impl_->config.sample_rate);
         return true;
     }
     return false;

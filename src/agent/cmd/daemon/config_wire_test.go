@@ -114,8 +114,8 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 			name: "invalid audio playback backend",
 			payload: `{"model":{"provider":"openai","model":"gpt-4"},
 				"search":{"provider":"duckduckgo"},
-				"audio":{"playback_backend":"speaker"},"agent":{}}`,
-			wantInField: "audio.playback_backend",
+				"audio":{"backend":"speaker"},"agent":{}}`,
+			wantInField: "audio.backend",
 		},
 	}
 
@@ -183,6 +183,22 @@ func TestConfigCheck_WireLocaleMapsToAgentConfig(t *testing.T) {
 	}
 	if got := webConfigDTOFromAgentConfig(cfg).Agent.Locale; got != "en-US" {
 		t.Fatalf("round-trip locale = %q, want en-US", got)
+	}
+}
+
+func TestConfigCheck_WireModelReasoningEffortRoundTrip(t *testing.T) {
+	cfg := agent.Config{Model: agent.ModelConfig{
+		Provider:        "openai",
+		Model:           "gpt-4",
+		ReasoningEffort: "high",
+	}}
+	dto := webConfigDTOFromAgentConfig(cfg)
+	if dto.Model.ReasoningEffort != "high" {
+		t.Fatalf("DTO reasoning_effort = %q, want high", dto.Model.ReasoningEffort)
+	}
+	back := dto.ToAgentConfig()
+	if back.Model.ReasoningEffort != "high" {
+		t.Fatalf("round-trip reasoning_effort = %q, want high", back.Model.ReasoningEffort)
 	}
 }
 
@@ -490,6 +506,7 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 		"audio",
 		"audio_archive",
 		"device",
+		"frame_service",
 		"hid",
 		"live_activity",
 		"log",
@@ -505,6 +522,7 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 		"termination_policy",
 		"tts",
 		"tts_providers",
+		"voice_model",
 		"voice_notifications",
 	}
 
@@ -554,5 +572,41 @@ func TestWebConfigDTOProvidersOmittedWhenEmpty(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), `"model_providers"`) {
 		t.Errorf("expected model_providers in the payload, got: %s", payload)
+	}
+}
+
+func TestWebConfigDTOResponsesFieldsRoundTrip(t *testing.T) {
+	include := []string{"reasoning.encrypted_content", "message.output_text"}
+	cfg := agent.Config{Model: agent.ModelConfig{
+		Provider:                          "volcengine",
+		Model:                             "doubao-seed-2-1-pro",
+		APIMode:                           "responses_stateful",
+		ResponsesContextManagement:        "ark_context_edit",
+		ResponsesCompactThreshold:         12345,
+		ResponsesContextEditTrigger:       10,
+		ResponsesContextEditKeep:          3,
+		ResponsesContextEditClearThinking: true,
+		ResponsesTruncation:               "auto",
+		ResponsesInclude:                  include,
+	}}
+	dto := webConfigDTOFromAgentConfig(cfg)
+	if dto.Model.ResponsesContextManagement != "ark_context_edit" ||
+		dto.Model.ResponsesCompactThreshold != 12345 ||
+		dto.Model.ResponsesContextEditTrigger != 10 ||
+		dto.Model.ResponsesContextEditKeep != 3 ||
+		!dto.Model.ResponsesContextEditClearThinking ||
+		dto.Model.ResponsesTruncation != "auto" ||
+		!reflect.DeepEqual(dto.Model.ResponsesInclude, include) {
+		t.Fatalf("Responses fields were not emitted: %+v", dto.Model)
+	}
+	got := dto.ToAgentConfig().Model
+	if got.ResponsesContextManagement != cfg.Model.ResponsesContextManagement ||
+		got.ResponsesCompactThreshold != cfg.Model.ResponsesCompactThreshold ||
+		got.ResponsesContextEditTrigger != cfg.Model.ResponsesContextEditTrigger ||
+		got.ResponsesContextEditKeep != cfg.Model.ResponsesContextEditKeep ||
+		got.ResponsesContextEditClearThinking != cfg.Model.ResponsesContextEditClearThinking ||
+		got.ResponsesTruncation != cfg.Model.ResponsesTruncation ||
+		!reflect.DeepEqual(got.ResponsesInclude, include) {
+		t.Fatalf("Responses fields did not round-trip: %+v", got)
 	}
 }

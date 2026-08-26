@@ -21,7 +21,9 @@ type Config struct {
 	TTS                TTS                           `json:"tts"`
 	STT                STT                           `json:"stt"`
 	Audio              Audio                         `json:"audio"`
+	VoiceModel         VoiceModel                    `json:"voice_model"`
 	AudioArchive       AudioArchive                  `json:"audio_archive"`
+	FrameService       FrameService                  `json:"frame_service"`
 	QuickCapture       QuickCapture                  `json:"quick_capture"`
 	Storage            Storage                       `json:"storage"`
 	VoiceNotifications VoiceNotifications            `json:"voice_notifications"`
@@ -54,26 +56,40 @@ func (d *Config) UnmarshalJSON(data []byte) error {
 }
 
 type Model struct {
-	Provider             string   `json:"provider"`
-	APIKey               string   `json:"api_key,omitempty"`
-	Model                string   `json:"model"`
-	APIMode              string   `json:"api_mode,omitempty"`
-	ReasoningEffort      string   `json:"reasoning_effort"`
-	Temperature          *float64 `json:"temperature,omitempty"`
-	MaxResponseTokens    int      `json:"max_response_tokens"`
-	LogRawHTTP           bool     `json:"log_raw_http"`
-	ContextWindow        int      `json:"context_window"`
-	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
+	Provider                          string   `json:"provider"`
+	APIKey                            string   `json:"api_key,omitempty"`
+	Model                             string   `json:"model"`
+	APIMode                           string   `json:"api_mode,omitempty"`
+	ResponsesContextManagement        string   `json:"responses_context_management,omitempty"`
+	ResponsesCompactThreshold         int      `json:"responses_compact_threshold,omitempty"`
+	ResponsesContextEditTrigger       int      `json:"responses_context_edit_trigger,omitempty"`
+	ResponsesContextEditKeep          int      `json:"responses_context_edit_keep,omitempty"`
+	ResponsesContextEditClearThinking bool     `json:"responses_context_edit_clear_thinking,omitempty"`
+	ResponsesTruncation               string   `json:"responses_truncation,omitempty"`
+	ResponsesInclude                  []string `json:"responses_include,omitempty"`
+	ReasoningEffort                   string   `json:"reasoning_effort"`
+	Temperature                       *float64 `json:"temperature,omitempty"`
+	MaxResponseTokens                 int      `json:"max_response_tokens"`
+	LogRawHTTP                        bool     `json:"log_raw_http"`
+	ContextWindow                     int      `json:"context_window"`
+	ModelMaxOutputTokens              int      `json:"model_max_output_tokens"`
 }
 
 func (d Model) ProviderTestRequest() agent.ModelProviderTestRequest {
 	return agent.ModelProviderTestRequest{
-		Provider:        d.Provider,
-		APIKey:          d.APIKey,
-		Model:           d.Model,
-		APIMode:         d.APIMode,
-		Temperature:     d.Temperature,
-		ReasoningEffort: d.ReasoningEffort,
+		Provider:                          d.Provider,
+		APIKey:                            d.APIKey,
+		Model:                             d.Model,
+		APIMode:                           d.APIMode,
+		ResponsesContextManagement:        d.ResponsesContextManagement,
+		ResponsesCompactThreshold:         d.ResponsesCompactThreshold,
+		ResponsesContextEditTrigger:       d.ResponsesContextEditTrigger,
+		ResponsesContextEditKeep:          d.ResponsesContextEditKeep,
+		ResponsesContextEditClearThinking: d.ResponsesContextEditClearThinking,
+		ResponsesTruncation:               d.ResponsesTruncation,
+		ResponsesInclude:                  append([]string(nil), d.ResponsesInclude...),
+		Temperature:                       d.Temperature,
+		ReasoningEffort:                   d.ReasoningEffort,
 	}
 }
 
@@ -238,6 +254,25 @@ type STT struct {
 	EngineModelType string `json:"engine_model_type"`
 }
 
+// VoiceModel mirrors the realtime voice model settings. The credential itself
+// is write-only; has_api_key reports whether one is already configured.
+type VoiceModel struct {
+	APIKey                 string   `json:"api_key,omitempty"`
+	HasAPIKey              bool     `json:"has_api_key"`
+	Model                  string   `json:"model"`
+	WorkspaceID            string   `json:"workspace_id"`
+	Region                 string   `json:"region"`
+	Endpoint               string   `json:"endpoint"`
+	Voice                  string   `json:"voice"`
+	Instructions           string   `json:"instructions"`
+	EnableSpeechEmotion    *bool    `json:"enable_speech_emotion,omitempty"`
+	InputAudioFormat       string   `json:"input_audio_format"`
+	OutputAudioFormat      string   `json:"output_audio_format"`
+	TurnDetection          string   `json:"turn_detection"`
+	TurnDetectionThreshold *float64 `json:"turn_detection_threshold,omitempty"`
+	TurnDetectionSilenceMs int      `json:"turn_detection_silence_ms"`
+}
+
 func (d STT) TranscriptionTestRequest(wavData []byte) agent.STTTranscriptionTestRequest {
 	return agent.STTTranscriptionTestRequest{
 		Provider:        d.Provider,
@@ -255,11 +290,19 @@ func (d STT) TranscriptionTestRequest(wavData []byte) agent.STTTranscriptionTest
 }
 
 type Audio struct {
-	Socket          string `json:"socket"`
-	SampleRate      int    `json:"sample_rate"`
-	Channels        int    `json:"channels"`
-	BitWidth        int    `json:"bit_width"`
-	PlaybackBackend string `json:"playback_backend"`
+	Socket                string `json:"socket"`
+	SampleRate            int    `json:"sample_rate"`
+	Channels              int    `json:"channels"`
+	BitWidth              int    `json:"bit_width"`
+	Backend               string `json:"backend"`
+	LegacyPlaybackBackend string `json:"playback_backend,omitempty"`
+}
+
+func (d Audio) backend() string {
+	if strings.TrimSpace(d.Backend) != "" {
+		return d.Backend
+	}
+	return d.LegacyPlaybackBackend
 }
 
 type AudioArchive struct {
@@ -273,6 +316,10 @@ type QuickCapture struct {
 	Enabled         bool   `json:"enabled"`
 	GPIOPin         int    `json:"gpio_pin"`
 	ScreenMemoryTTL string `json:"screen_memory_ttl"`
+}
+
+type FrameService struct {
+	KeepStreamOn bool `json:"keep_streamon"`
 }
 
 type Storage struct {
@@ -300,11 +347,12 @@ type StorageDegradedMode struct {
 }
 
 type StorageCleanup struct {
-	Enabled                     bool  `json:"enabled"`
-	LLMHTTPLogRetentionDays     []int `json:"llm_http_log_retention_days"`
-	AudioArchiveRetentionDays   []int `json:"audio_archive_retention_days"`
-	SessionArchiveRetentionDays []int `json:"session_archive_retention_days"`
-	CleanupRetryIntervalSeconds int   `json:"cleanup_retry_interval_seconds"`
+	Enabled                          bool  `json:"enabled"`
+	LLMHTTPLogRetentionDays          []int `json:"llm_http_log_retention_days"`
+	AudioArchiveRetentionDays        []int `json:"audio_archive_retention_days"`
+	SessionArchiveRetentionDays      []int `json:"session_archive_retention_days"`
+	NotificationContextRetentionDays []int `json:"notification_context_retention_days"`
+	CleanupRetryIntervalSeconds      int   `json:"cleanup_retry_interval_seconds"`
 }
 
 type Device struct {
@@ -415,6 +463,10 @@ func (d Config) ToAgentConfig() agent.Config {
 	} else if d.Search.HasAPIKey {
 		searchKey = hasAPIKeyPlaceholder
 	}
+	voiceModelKey := d.VoiceModel.APIKey
+	if strings.TrimSpace(voiceModelKey) == "" && d.VoiceModel.HasAPIKey {
+		voiceModelKey = hasAPIKeyPlaceholder
+	}
 	storage := agent.DefaultConfig().Storage
 	storage.MonitorEnabled = d.Storage.MonitorEnabled
 	storage.MountPoint = d.Storage.MountPoint
@@ -435,26 +487,35 @@ func (d Config) ToAgentConfig() agent.Config {
 		MaxAgentLogMB:         d.Storage.DegradedMode.MaxAgentLogMB,
 	}
 	storage.Cleanup = agent.StorageCleanupConfig{
-		Enabled:                     d.Storage.Cleanup.Enabled,
-		LLMHTTPLogRetentionDays:     d.Storage.Cleanup.LLMHTTPLogRetentionDays,
-		AudioArchiveRetentionDays:   d.Storage.Cleanup.AudioArchiveRetentionDays,
-		SessionArchiveRetentionDays: d.Storage.Cleanup.SessionArchiveRetentionDays,
-		CleanupRetryIntervalSeconds: d.Storage.Cleanup.CleanupRetryIntervalSeconds,
+		Enabled:                          d.Storage.Cleanup.Enabled,
+		LLMHTTPLogRetentionDays:          d.Storage.Cleanup.LLMHTTPLogRetentionDays,
+		AudioArchiveRetentionDays:        d.Storage.Cleanup.AudioArchiveRetentionDays,
+		SessionArchiveRetentionDays:      d.Storage.Cleanup.SessionArchiveRetentionDays,
+		NotificationContextRetentionDays: d.Storage.Cleanup.NotificationContextRetentionDays,
+		CleanupRetryIntervalSeconds:      d.Storage.Cleanup.CleanupRetryIntervalSeconds,
 	}
 	return agent.Config{
 		ModelProviders: d.modelProvidersToAgentConfig(),
 		TTSProviders:   d.ttsProvidersToAgentConfig(),
 		STTProviders:   d.sttProvidersToAgentConfig(),
 		Model: agent.ModelConfig{
-			Provider:             d.Model.Provider,
-			APIKey:               d.Model.APIKey,
-			Model:                d.Model.Model,
-			APIMode:              d.Model.APIMode,
-			Temperature:          d.Model.Temperature,
-			MaxResponseTokens:    d.Model.MaxResponseTokens,
-			LogRawHTTP:           d.Model.LogRawHTTP,
-			ContextWindow:        d.Model.ContextWindow,
-			ModelMaxOutputTokens: d.Model.ModelMaxOutputTokens,
+			Provider:                          d.Model.Provider,
+			APIKey:                            d.Model.APIKey,
+			Model:                             d.Model.Model,
+			APIMode:                           d.Model.APIMode,
+			ResponsesContextManagement:        d.Model.ResponsesContextManagement,
+			ResponsesCompactThreshold:         d.Model.ResponsesCompactThreshold,
+			ResponsesContextEditTrigger:       d.Model.ResponsesContextEditTrigger,
+			ResponsesContextEditKeep:          d.Model.ResponsesContextEditKeep,
+			ResponsesContextEditClearThinking: d.Model.ResponsesContextEditClearThinking,
+			ResponsesTruncation:               d.Model.ResponsesTruncation,
+			ResponsesInclude:                  append([]string(nil), d.Model.ResponsesInclude...),
+			ReasoningEffort:                   d.Model.ReasoningEffort,
+			Temperature:                       d.Model.Temperature,
+			MaxResponseTokens:                 d.Model.MaxResponseTokens,
+			LogRawHTTP:                        d.Model.LogRawHTTP,
+			ContextWindow:                     d.Model.ContextWindow,
+			ModelMaxOutputTokens:              d.Model.ModelMaxOutputTokens,
 		},
 		TTS: agent.TTSConfig{
 			Provider:    d.TTS.Provider,
@@ -478,17 +539,35 @@ func (d Config) ToAgentConfig() agent.Config {
 			EngineModelType: d.STT.EngineModelType,
 		},
 		Audio: agent.AudioConfig{
-			Socket:          d.Audio.Socket,
-			SampleRate:      d.Audio.SampleRate,
-			Channels:        d.Audio.Channels,
-			BitWidth:        d.Audio.BitWidth,
-			PlaybackBackend: d.Audio.PlaybackBackend,
+			Socket:     d.Audio.Socket,
+			SampleRate: d.Audio.SampleRate,
+			Channels:   d.Audio.Channels,
+			BitWidth:   d.Audio.BitWidth,
+			Backend:    d.Audio.backend(),
+		},
+		VoiceModel: agent.VoiceModelConfig{
+			APIKey:                 voiceModelKey,
+			Model:                  d.VoiceModel.Model,
+			WorkspaceID:            d.VoiceModel.WorkspaceID,
+			Region:                 d.VoiceModel.Region,
+			Endpoint:               d.VoiceModel.Endpoint,
+			Voice:                  d.VoiceModel.Voice,
+			Instructions:           d.VoiceModel.Instructions,
+			EnableSpeechEmotion:    d.VoiceModel.EnableSpeechEmotion,
+			InputAudioFormat:       d.VoiceModel.InputAudioFormat,
+			OutputAudioFormat:      d.VoiceModel.OutputAudioFormat,
+			TurnDetection:          d.VoiceModel.TurnDetection,
+			TurnDetectionThreshold: d.VoiceModel.TurnDetectionThreshold,
+			TurnDetectionSilenceMs: d.VoiceModel.TurnDetectionSilenceMs,
 		},
 		AudioArchive: agent.AudioArchiveConfig{
 			Enabled:     d.AudioArchive.Enabled,
 			MaxFiles:    d.AudioArchive.MaxFiles,
 			MaxSizeMB:   d.AudioArchive.MaxSizeMB,
 			StoragePath: d.AudioArchive.StoragePath,
+		},
+		FrameService: agent.FrameServiceConfig{
+			KeepStreamOn: d.FrameService.KeepStreamOn,
 		},
 		QuickCapture: agent.QuickCaptureConfig{
 			Enabled:         boolPtr(d.QuickCapture.Enabled),
@@ -715,15 +794,22 @@ func FromAgentConfig(cfg agent.Config) Config {
 		TTSProviders:   ttsProvidersFromConfig(cfg.TTSProviders),
 		STTProviders:   sttProvidersFromConfig(cfg.STTProviders),
 		Model: Model{
-			Provider:             cfg.Model.Provider,
-			Model:                cfg.Model.Model,
-			APIMode:              cfg.Model.APIMode,
-			ReasoningEffort:      cfg.Model.ReasoningEffort,
-			Temperature:          cfg.Model.Temperature,
-			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
-			LogRawHTTP:           cfg.Model.LogRawHTTP,
-			ContextWindow:        cfg.Model.ContextWindow,
-			ModelMaxOutputTokens: cfg.Model.ModelMaxOutputTokens,
+			Provider:                          cfg.Model.Provider,
+			Model:                             cfg.Model.Model,
+			APIMode:                           cfg.Model.APIMode,
+			ResponsesContextManagement:        cfg.Model.ResponsesContextManagement,
+			ResponsesCompactThreshold:         cfg.Model.ResponsesCompactThreshold,
+			ResponsesContextEditTrigger:       cfg.Model.ResponsesContextEditTrigger,
+			ResponsesContextEditKeep:          cfg.Model.ResponsesContextEditKeep,
+			ResponsesContextEditClearThinking: cfg.Model.ResponsesContextEditClearThinking,
+			ResponsesTruncation:               cfg.Model.ResponsesTruncation,
+			ResponsesInclude:                  append([]string(nil), cfg.Model.ResponsesInclude...),
+			ReasoningEffort:                   cfg.Model.ReasoningEffort,
+			Temperature:                       cfg.Model.Temperature,
+			MaxResponseTokens:                 cfg.Model.MaxResponseTokens,
+			LogRawHTTP:                        cfg.Model.LogRawHTTP,
+			ContextWindow:                     cfg.Model.ContextWindow,
+			ModelMaxOutputTokens:              cfg.Model.ModelMaxOutputTokens,
 		},
 		TTS: TTS{
 			Provider:    cfg.TTS.Provider,
@@ -743,17 +829,35 @@ func FromAgentConfig(cfg agent.Config) Config {
 			EngineModelType: cfg.STT.EngineModelType,
 		},
 		Audio: Audio{
-			Socket:          cfg.Audio.SocketOrDefault(),
-			SampleRate:      cfg.Audio.SampleRateOrDefault(),
-			Channels:        cfg.Audio.ChannelsOrDefault(),
-			BitWidth:        cfg.Audio.BitWidthOrDefault(),
-			PlaybackBackend: cfg.Audio.PlaybackBackendOrDefault(),
+			Socket:     cfg.Audio.SocketOrDefault(),
+			SampleRate: cfg.Audio.SampleRateOrDefault(),
+			Channels:   cfg.Audio.ChannelsOrDefault(),
+			BitWidth:   cfg.Audio.BitWidthOrDefault(),
+			Backend:    cfg.Audio.BackendOrDefault(),
+		},
+		VoiceModel: VoiceModel{
+			HasAPIKey:              strings.TrimSpace(cfg.VoiceModel.APIKey) != "",
+			Model:                  cfg.VoiceModel.Model,
+			WorkspaceID:            cfg.VoiceModel.WorkspaceID,
+			Region:                 cfg.VoiceModel.Region,
+			Endpoint:               cfg.VoiceModel.Endpoint,
+			Voice:                  cfg.VoiceModel.Voice,
+			Instructions:           cfg.VoiceModel.Instructions,
+			EnableSpeechEmotion:    cfg.VoiceModel.EnableSpeechEmotion,
+			InputAudioFormat:       cfg.VoiceModel.InputAudioFormat,
+			OutputAudioFormat:      cfg.VoiceModel.OutputAudioFormat,
+			TurnDetection:          cfg.VoiceModel.TurnDetection,
+			TurnDetectionThreshold: cfg.VoiceModel.TurnDetectionThreshold,
+			TurnDetectionSilenceMs: cfg.VoiceModel.TurnDetectionSilenceMs,
 		},
 		AudioArchive: AudioArchive{
 			Enabled:     audioArchive.Enabled,
 			MaxFiles:    audioArchive.MaxFilesOrDefault(),
 			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
 			StoragePath: audioArchive.StoragePathOrDefault(),
+		},
+		FrameService: FrameService{
+			KeepStreamOn: cfg.FrameService.KeepStreamOn,
 		},
 		QuickCapture: QuickCapture{
 			Enabled:         cfg.QuickCapture.EnabledOrDefault(),
@@ -780,11 +884,12 @@ func FromAgentConfig(cfg agent.Config) Config {
 				MaxAgentLogMB:         cfg.Storage.DegradedMode.MaxAgentLogMB,
 			},
 			Cleanup: StorageCleanup{
-				Enabled:                     cfg.Storage.Cleanup.Enabled,
-				LLMHTTPLogRetentionDays:     cfg.Storage.Cleanup.LLMHTTPLogRetentionDays,
-				AudioArchiveRetentionDays:   cfg.Storage.Cleanup.AudioArchiveRetentionDays,
-				SessionArchiveRetentionDays: cfg.Storage.Cleanup.SessionArchiveRetentionDays,
-				CleanupRetryIntervalSeconds: cfg.Storage.Cleanup.CleanupRetryIntervalSeconds,
+				Enabled:                          cfg.Storage.Cleanup.Enabled,
+				LLMHTTPLogRetentionDays:          cfg.Storage.Cleanup.LLMHTTPLogRetentionDays,
+				AudioArchiveRetentionDays:        cfg.Storage.Cleanup.AudioArchiveRetentionDays,
+				SessionArchiveRetentionDays:      cfg.Storage.Cleanup.SessionArchiveRetentionDays,
+				NotificationContextRetentionDays: cfg.Storage.Cleanup.NotificationContextRetentionDays,
+				CleanupRetryIntervalSeconds:      cfg.Storage.Cleanup.CleanupRetryIntervalSeconds,
 			},
 		},
 		Device: Device{

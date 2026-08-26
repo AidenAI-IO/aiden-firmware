@@ -122,6 +122,14 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 		Content: formattedSummary,
 	})
 	newMessageList = append(newMessageList, tails...)
+	// A compaction revision starts a fresh provider conversation. Retaining an
+	// old Responses response ID here would make provider-managed mode chain the
+	// summarized local transcript onto a response whose context no longer
+	// matches it. The durable local transcript remains intact; only the provider
+	// anchor is reset.
+	for i := range newMessageList {
+		newMessageList[i].ResponsesResponseID = ""
+	}
 	// create new context manager
 	newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, newMessageList)
 	if err != nil {

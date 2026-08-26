@@ -11,7 +11,7 @@ The handoff is conversational rather than blocking. The tool returns immediately
 ## Interaction Flow
 
 1. The Agent observes a step that requires human action.
-2. It calls `request_human_handoff` with a reason, details, and an optional suggested action.
+2. It calls `request_user_action` with a reason, details, and an optional suggested action.
 3. The Agent tells the user what to do without requesting private credentials in chat.
 4. The user completes the action directly on the phone and replies when finished.
 5. The Agent takes a fresh screenshot or uses another appropriate observation to verify the new state.
@@ -39,7 +39,7 @@ The handoff is conversational rather than blocking. The tool returns immediately
 Tool name:
 
 ```text
-request_human_handoff
+request_user_action
 ```
 
 Input:
@@ -70,6 +70,12 @@ The tool returns a structured marker immediately:
   "suggested_action": "Enter the password on the phone, submit the form, and tell me when it is complete."
 }
 ```
+
+For a background task, the same tool is mode-aware and returns
+`USER_ACTION_REQUESTED` to the orchestration layer. The task stays `running`
+while its agent loop ends. The realtime foreground agent presents the action to
+the user; after the user confirms completion it calls `response_user_action`.
+Ordinary legacy runs continue to return `HUMAN_HANDOFF_REQUESTED`.
 
 ## Agent Behavior
 

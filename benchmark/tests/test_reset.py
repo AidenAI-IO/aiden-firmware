@@ -5,6 +5,7 @@ import pytest
 from runner.agent_client import AgentRequestError, AgentTimeoutError, ChatResponse, ToolInvokeResult
 from runner.reset import (
     ResetError,
+    SetupAssertionError,
     call_environment_release,
     call_environment_setup,
     clear_stale_adb_android_owner,
@@ -45,9 +46,31 @@ class RecordingSetupClient:
         self.calls.append(("seed_episode", episode, timeout))
         return {"status": "seeded", "id": episode["id"]}
 
+    def seed_memory(self, memory, timeout=30):
+        self.calls.append(("seed_memory", memory, timeout))
+        return {"status": "seeded", "id": memory["id"]}
+
     def process_episode_memory(self, episode_id, timeout=90):
         self.calls.append(("process_episode_memory", episode_id, timeout))
         return {"episode_id": episode_id, "status": "done", "memory_ids": ["devmem-1"]}
+
+    def seed_notification(self, events, timeout=30):
+        self.calls.append(("seed_notification", events, timeout))
+        return {"status": "seeded", "context_ids": [str(index + 1) for index in range(len(events))]}
+
+    def process_notification_memory(self, timeout=90):
+        self.calls.append(("process_notification_memory", timeout))
+        return {"memory_cursor": "1", "memory_ids": ["tmp_notification_1"]}
+
+    def invoke_tool(self, name, args, timeout=90):
+        self.calls.append(("invoke_tool", name, args, timeout))
+        from runner.agent_client import ToolInvokeResult
+
+        return ToolInvokeResult(
+            output='{"results":[{"id":"tmp_notification_1","memory_scope":"temporary"}]}',
+            is_error=False,
+            duration_ms=0,
+        )
 
 
 def test_agent_prompt_setup_wraps_chat_errors_as_reset_error():
@@ -55,6 +78,181 @@ def test_agent_prompt_setup_wraps_chat_errors_as_reset_error():
 
     with pytest.raises(ResetError, match="setup agent_prompt failed"):
         per_task_setup(FailingChatClient(), setup)
+
+
+def test_notification_setup_seeds_and_processes_fixture():
+    client = RecordingSetupClient()
+    setup = {
+        "type": "seed_notification",
+        "events": [{"title": "Package", "message": "Tomorrow"}],
+        "consolidate": True,
+        "expected_memory_count": 1,
+        "expected_memory_scope": "temporary",
+    }
+
+    per_task_setup(client, setup)
+
+    assert client.calls == [
+        ("seed_notification", setup["events"], 90),
+        ("process_notification_memory", 90),
+        ("invoke_tool", "recall_memory", {"limit": 20}, 90),
+    ]
+
+
+def test_notification_scope_setup_uses_configured_query_and_covers_all_memory_ids():
+    client = RecordingSetupClient()
+    setup = {
+        "type": "seed_notification",
+        "events": [{"title": "Package", "message": "Tomorrow"}],
+        "consolidate": True,
+        "expected_memory_count": 25,
+        "expected_memory_scope": "long_term",
+        "expected_memory_query": {"types": ["fact"], "limit": 3},
+    }
+
+    def process_notification_memory(timeout=90):
+        client.calls.append(("process_notification_memory", timeout))
+        return {
+            "memory_cursor": "1",
+            "memory_ids": [f"mem-{index}" for index in range(25)],
+        }
+
+    def invoke_tool(name, args, timeout=90):
+        client.calls.append(("invoke_tool", name, args, timeout))
+        from runner.agent_client import ToolInvokeResult
+
+        return ToolInvokeResult(
+            output=json.dumps({
+                "results": [
+                    {"id": f"mem-{index}", "memory_scope": "long_term"}
+                    for index in range(25)
+                ]
+            }),
+            is_error=False,
+            duration_ms=0,
+        )
+
+    client.process_notification_memory = process_notification_memory
+    client.invoke_tool = invoke_tool
+    per_task_setup(client, setup)
+    assert client.calls[-1][2] == {"types": ["fact"], "limit": 25}
+
+
+def test_setup_sequence_runs_existing_primitives_in_order():
+    client = RecordingSetupClient()
+    memory = {"id": "tmp-1", "content": "Existing conclusion"}
+    event = {"title": "Update", "message": "New conclusion"}
+
+    per_task_setup(
+        client,
+        [
+            {"type": "seed_memory", "memories": [memory]},
+            {"type": "seed_notification", "events": [event], "consolidate": False},
+        ],
+    )
+
+    assert client.calls == [
+        ("seed_memory", memory, 30),
+        ("seed_notification", [event], 30),
+    ]
+
+
+def test_assert_memory_mismatch_is_a_setup_assertion_failure():
+    class MismatchClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            from runner.agent_client import ToolInvokeResult
+
+            return ToolInvokeResult(
+                output='{"results":[]}',
+                is_error=False,
+                duration_ms=0,
+            )
+
+    with pytest.raises(SetupAssertionError, match="expected 1, got 0"):
+        per_task_setup(
+            MismatchClient(),
+            {"type": "assert_memory", "expected_count": 1},
+        )
+
+
+def test_assert_memory_rejects_malformed_nested_reference_before_recall():
+    client = RecordingSetupClient()
+    with pytest.raises(ResetError, match="event_ids_contains must be a list of non-empty strings"):
+        per_task_setup(
+            client,
+            {
+                "type": "assert_memory",
+                "expected": [
+                    {
+                        "source_refs_contain": [
+                            {"type": "notification", "event_ids_contains": "not-a-list"}
+                        ]
+                    }
+                ],
+            },
+        )
+    assert not any(call[0] == "invoke_tool" for call in client.calls)
+
+
+def test_assert_memory_matches_source_reference_evidence():
+    class SourceRefClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            from runner.agent_client import ToolInvokeResult
+
+            return ToolInvokeResult(
+                output=(
+                    '{"results":[{"id":"m-1","source_refs":['
+                    '{"type":"notification","id":"old","event_ids":["e-old"]},'
+                    '{"type":"notification","id":"new","event_ids":["e-new"]}]}]}'
+                ),
+                is_error=False,
+                duration_ms=0,
+            )
+
+    per_task_setup(
+        SourceRefClient(),
+        {
+            "type": "assert_memory",
+            "expected": [
+                {
+                    "id": "m-1",
+                    "source_refs_contain": [
+                        {"type": "notification", "id": "old", "event_ids_contains": ["e-old"]},
+                        {"type": "notification", "id": "new", "event_ids_contains": ["e-new"]},
+                    ],
+                }
+            ],
+        },
+    )
+
+
+def test_setup_sequence_preserves_setup_assertion_failure_type():
+    class MismatchClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            from runner.agent_client import ToolInvokeResult
+
+            return ToolInvokeResult(
+                output='{"results":[]}',
+                is_error=False,
+                duration_ms=0,
+            )
+
+    with pytest.raises(SetupAssertionError, match=r"setup\[1\] failed"):
+        per_task_setup(
+            MismatchClient(),
+            [
+                {"type": "seed_memory", "memories": [{"id": "m-1", "content": "x"}]},
+                {"type": "assert_memory", "expected_count": 1},
+            ],
+        )
+
+
+def test_notification_setup_rejects_non_boolean_consolidate():
+    with pytest.raises(ResetError, match="consolidate must be boolean"):
+        per_task_setup(
+            RecordingSetupClient(),
+            {"type": "seed_notification", "events": [{"title": "x"}], "consolidate": "false"},
+        )
 
 
 def test_agent_prompt_setup_wraps_timeouts_as_reset_error():

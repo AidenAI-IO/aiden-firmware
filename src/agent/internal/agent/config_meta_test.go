@@ -112,7 +112,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		t.Errorf("expected device section first, got %q", ConfigMeta().Sections[0].Name)
 	}
 
-	for _, name := range []string{"device", "model", "tts", "stt", "audio", "audio_archive", "quick_capture", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
+	for _, name := range []string{"device", "model", "tts", "stt", "audio", "audio_archive", "frame_service", "quick_capture", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -184,20 +184,49 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"device.device_type": {
 			help: "Android uses HID touchscreen mode. iOS, macOS, windows, and linux use absolute pointer mode.",
 		},
-		"agent.vad_model_path":          {layout: "wide"},
-		"agent.vad_helper_path":         {layout: "wide"},
-		"agent.custom_instruction":      {layout: "wide"},
-		"agent.additional_prompt":       {layout: "wide"},
-		"model.provider":                {layout: "wide"},
-		"model.model":                   {layout: "wide"},
-		"model.reasoning_effort":        {help: "Empty = auto. For no-tool requests, Anthropic maps low/medium/high to adaptive thinking; tool requests use Claude's default reasoning because thinking signatures are not persisted. Minimal is OpenRouter and Volcengine Ark only; none is not supported by Anthropic or Ark."},
-		"model.context_window":          {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
-		"model.model_max_output_tokens": {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
-		"tts.provider":                  {layout: "wide"},
-		"stt.provider":                  {layout: "wide"},
-		"audio.socket":                  {layout: "wide"},
-		"audio_archive.enabled":         {help: "After enabling, save STT voice recording WAV for Web UI playback; Automatically delete old files when exceeding quantity or capacity limit."},
-		"audio_archive.storage_path":    {layout: "wide"},
+		"agent.vad_model_path":     {layout: "wide"},
+		"agent.vad_helper_path":    {layout: "wide"},
+		"agent.custom_instruction": {layout: "wide"},
+		"agent.additional_prompt":  {layout: "wide"},
+		"model.provider":           {layout: "wide"},
+		"model.model":              {layout: "wide"},
+		"model.api_mode": {
+			layout: "wide",
+			label:  "Conversation API",
+			help:   "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
+		},
+		"model.responses_context_management": {
+			layout: "wide",
+			label:  "Provider compaction",
+			help:   "Choose provider-side context cleanup. OpenAI uses token compaction; Volcengine Ark uses tool-call and thinking edits.",
+		},
+		"model.responses_compact_threshold": {
+			label:       "Compaction threshold (tokens)",
+			placeholder: "0 = provider default",
+			help:        "Token count that triggers provider compaction. 0 lets the provider choose.",
+		},
+		"model.responses_truncation": {
+			label: "Over-limit input",
+			help:  "Fail when input is too long, or let a compatible provider discard the oldest input and continue.",
+		},
+		"model.responses_include": {
+			label:       "Extra response fields",
+			placeholder: "reasoning.encrypted_content",
+			layout:      "wide",
+			help:        "Usually leave empty. Add provider-supported include values only when needed, one per line.",
+		},
+		"model.responses_context_edit_trigger":        {label: "Ark tool-call trigger", placeholder: "10 = recommended", help: "After this many tool calls, Ark clears old tool inputs. 0 uses the recommended value 10."},
+		"model.responses_context_edit_keep":           {label: "Ark tool calls to keep", placeholder: "3 = recommended", help: "Number of recent tool calls Ark keeps after cleanup. 0 uses the recommended value 3."},
+		"model.responses_context_edit_clear_thinking": {label: "Clear old thinking", help: "Ask Ark to remove previous thinking turns when it applies the context edit."},
+		"model.reasoning_effort":                      {help: "Empty = auto. For no-tool requests, Anthropic maps low/medium/high to adaptive thinking; tool requests use Claude's default reasoning because thinking signatures are not persisted. Minimal is OpenRouter and Volcengine Ark only; none is not supported by Anthropic or Ark."},
+		"model.context_window":                        {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
+		"model.model_max_output_tokens":               {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
+		"tts.provider":                                {layout: "wide"},
+		"stt.provider":                                {layout: "wide"},
+		"audio.socket":                                {layout: "wide"},
+		"audio_archive.enabled":                       {help: "After enabling, save STT voice recording WAV for Web UI playback; Automatically delete old files when exceeding quantity or capacity limit."},
+		"audio_archive.storage_path":                  {layout: "wide"},
+		"frame_service.keep_streamon":                 {help: "Keep the RK628 CSI capture stream enabled between screenshots. This reduces screenshot latency but increases idle power consumption."},
 		"ota.github_proxy_url": {
 			label:       "GitHub Proxy URL",
 			help:        "Optional proxy to accelerate GitHub downloads (e.g., https://gh-proxy.com/ or https://ghfast.top/)",
@@ -332,16 +361,16 @@ func TestConfigMeta_NonRegistryEnumsMatchValidation(t *testing.T) {
 		}
 	}
 
-	audioPlaybackEnum := enumValues("audio.playback_backend")
-	for _, b := range []string{AudioPlaybackBackendAuto, AudioPlaybackBackendAudioService, AudioPlaybackBackendLocal} {
+	audioPlaybackEnum := enumValues("audio.backend")
+	for _, b := range []string{AudioBackendAuto, AudioBackendAudioService, AudioBackendLocal} {
 		if !contains(audioPlaybackEnum, b) {
-			t.Errorf("audio.playback_backend enum missing %q", b)
+			t.Errorf("audio.backend enum missing %q", b)
 		}
 	}
 	for _, b := range audioPlaybackEnum {
-		c := Config{Audio: AudioConfig{PlaybackBackend: b}, Model: ModelConfig{Provider: "openai", Model: "x"}}
+		c := Config{Audio: AudioConfig{Backend: b}, Model: ModelConfig{Provider: "openai", Model: "x"}}
 		if err := c.Validate(); err != nil {
-			t.Errorf("audio.playback_backend enum value %q rejected by Validate: %v", b, err)
+			t.Errorf("audio.backend enum value %q rejected by Validate: %v", b, err)
 		}
 	}
 
@@ -394,11 +423,12 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio.sample_rate", defaults.Audio.SampleRate},
 		{"audio.channels", defaults.Audio.Channels},
 		{"audio.bit_width", defaults.Audio.BitWidth},
-		{"audio.playback_backend", defaults.Audio.PlaybackBackend},
+		{"audio.backend", defaults.Audio.Backend},
 		{"audio_archive.enabled", defaults.AudioArchive.Enabled},
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
 		{"audio_archive.storage_path", defaults.AudioArchive.StoragePathOrDefault()},
+		{"frame_service.keep_streamon", defaults.FrameService.KeepStreamOn},
 		{"quick_capture.enabled", defaults.QuickCapture.EnabledOrDefault()},
 		{"quick_capture.gpio_pin", defaults.QuickCapture.GPIOPin},
 		{"quick_capture.screen_memory_ttl", defaults.QuickCapture.ScreenMemoryTTLOrDefault()},
@@ -595,6 +625,90 @@ func TestConfigMeta_ModelReasoningEffortProviderScoping(t *testing.T) {
 	}
 }
 
+func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
+	idx := fieldIndex(t)
+	field, ok := idx["model.api_mode"]
+	if !ok {
+		t.Fatal("missing model.api_mode metadata")
+	}
+	wantProviders := map[string][]string{
+		"responses":          {"openai", "openrouter", "volcengine"},
+		"responses_stateful": {"openai", "volcengine"},
+	}
+	for _, option := range field.Enum {
+		want, tracked := wantProviders[option.Value]
+		if !tracked {
+			continue
+		}
+		if !reflect.DeepEqual(option.Providers, want) {
+			t.Errorf("%s providers = %#v, want %#v", option.Value, option.Providers, want)
+		}
+		delete(wantProviders, option.Value)
+	}
+	if len(wantProviders) != 0 {
+		t.Fatalf("model.api_mode enum missing scoped options: %#v", wantProviders)
+	}
+
+	for _, tt := range []struct {
+		field     string
+		value     string
+		providers []string
+	}{
+		{field: "model.responses_context_management", value: "compaction", providers: []string{"openai"}},
+		{field: "model.responses_context_management", value: "ark_context_edit", providers: []string{"volcengine"}},
+		{field: "model.responses_truncation", value: "auto", providers: []string{"openai", "openrouter"}},
+	} {
+		meta, ok := idx[tt.field]
+		if !ok {
+			t.Fatalf("missing %s metadata", tt.field)
+		}
+		found := false
+		for _, option := range meta.Enum {
+			if option.Value != tt.value {
+				continue
+			}
+			found = true
+			if !reflect.DeepEqual(option.Providers, tt.providers) {
+				t.Errorf("%s=%s providers = %#v, want %#v", tt.field, tt.value, option.Providers, tt.providers)
+			}
+		}
+		if !found {
+			t.Errorf("%s enum missing %s", tt.field, tt.value)
+		}
+	}
+}
+
+func TestConfigMeta_ResponsesOptionsUsePlainLanguage(t *testing.T) {
+	idx := fieldIndex(t)
+	wantLabels := map[string]string{
+		"model.api_mode":                              "Conversation API",
+		"model.responses_context_management":          "Provider compaction",
+		"model.responses_compact_threshold":           "Compaction threshold (tokens)",
+		"model.responses_truncation":                  "Over-limit input",
+		"model.responses_include":                     "Extra response fields",
+		"model.responses_context_edit_trigger":        "Ark tool-call trigger",
+		"model.responses_context_edit_keep":           "Ark tool calls to keep",
+		"model.responses_context_edit_clear_thinking": "Clear old thinking",
+	}
+	for path, want := range wantLabels {
+		if got := idx[path].Label; got != want {
+			t.Errorf("%s label = %q, want %q", path, got, want)
+		}
+	}
+
+	apiMode := idx["model.api_mode"]
+	wantOptions := map[string]string{
+		"":                   "Chat Completions (compatible)",
+		"responses":          "Responses (local context)",
+		"responses_stateful": "Responses (provider context)",
+	}
+	for _, option := range apiMode.Enum {
+		if want, ok := wantOptions[option.Value]; ok && option.Label != want {
+			t.Errorf("model.api_mode option %q label = %q, want %q", option.Value, option.Label, want)
+		}
+	}
+}
+
 func TestConfigMeta_STTTencentASRProviderMetadata(t *testing.T) {
 	idx := fieldIndex(t)
 
@@ -708,6 +822,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"stt", reflect.TypeOf(STTConfig{}), nil},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
 		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},
+		{"frame_service", reflect.TypeOf(FrameServiceConfig{}), nil},
 		{"quick_capture", reflect.TypeOf(QuickCaptureConfig{}), nil},
 		{"device", reflect.TypeOf(DeviceConfig{}), map[string]bool{"backend": true}},
 		{"hid", reflect.TypeOf(HIDConfig{}), map[string]bool{"pointer_mode": true}},

@@ -16,21 +16,24 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
 
+	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/screenprovider"
 	speechtext "aiden-agent/internal/agent/speech"
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
@@ -217,11 +220,12 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		t.Fatalf("expected at least 4 history entries for single-agent tool flow, got %d", len(resp.History))
 	}
 
-	if resp.History[0].Type != "user" || resp.History[0].Content != "What is the current volume?" {
-		t.Fatalf("unexpected first history message: %#v", resp.History[0])
+	user, ok := firstMessageOfType(resp.History, "user")
+	if !ok || user.Content != "What is the current volume?" {
+		t.Fatalf("unexpected user history message: %#v", resp.History)
 	}
 	toolCall, ok := firstMessageOfType(resp.History, runEventToolCall)
-	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
+	if !ok || toolCall.ToolName != "audio_volume" || !strings.Contains(toolCall.ToolInput, "{}") {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
 	if toolCall.Content != "Let me read the current volume." {
@@ -237,7 +241,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	}
 }
 
-func TestServerPublicHistoryOmitsLargeToolResultContent(t *testing.T) {
+func TestServerContextHistoryReturnsPersistedToolResultContent(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponse("call_1", "shell", `{"command":"read config.py"}`),
@@ -303,10 +307,10 @@ func TestServerPublicHistoryOmitsLargeToolResultContent(t *testing.T) {
 	}
 	waitForServerRequestFinished(t, server, startResp["request_id"])
 
-	const want = "[Large tool result omitted from public history (4001 chars)]"
+	const want = 4001
 	resultToolMessage, ok := firstMessageOfType(result.History, "tool_result")
-	if !ok || resultToolMessage.Content != want {
-		t.Fatalf("/api/chat/result tool result = %#v, want content %q", resultToolMessage, want)
+	if !ok || len(resultToolMessage.Content) != want {
+		t.Fatalf("/api/chat/result tool result length = %d, want %d", len(resultToolMessage.Content), want)
 	}
 
 	reloaded := newServerForTest(runtime)
@@ -321,12 +325,12 @@ func TestServerPublicHistoryOmitsLargeToolResultContent(t *testing.T) {
 		t.Fatalf("decode history response: %v", err)
 	}
 	historyToolMessage, ok := firstMessageOfType(history, "tool_result")
-	if !ok || historyToolMessage.Content != want {
-		t.Fatalf("/api/history tool result = %#v, want content %q", historyToolMessage, want)
+	if !ok || len(historyToolMessage.Content) != want {
+		t.Fatalf("/api/history tool result length = %d, want %d", len(historyToolMessage.Content), want)
 	}
 }
 
-func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
+func TestServerPersistsContextBackedChatHistory(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	memoryDir := filepath.Join(configDir, "memory")
 	model := &scriptedModel{
@@ -388,12 +392,13 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 	if resp.Status != "complete" {
 		t.Fatalf("result never completed: status=%q", resp.Status)
 	}
-	assistant, ok := firstMessageOfType(resp.History, "assistant")
-	if !ok || assistant.EpisodeID == "" {
-		t.Fatalf("assistant missing episode reference: %#v", resp.History)
+	user, ok := firstMessageOfType(resp.History, "user")
+	if !ok || user.Content != "Do a task" {
+		t.Fatalf("context history missing user message: %#v", resp.History)
 	}
-	if resp.History[0].EpisodeID != assistant.EpisodeID {
-		t.Fatalf("user and assistant episode ids differ: %#v", resp.History)
+	assistant, ok := firstMessageOfType(resp.History, "assistant")
+	if !ok || assistant.Content != "Completed" {
+		t.Fatalf("context history missing assistant message: %#v", resp.History)
 	}
 
 	reloaded := newServerForTest(runtime)
@@ -408,124 +413,8 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 		t.Fatalf("decode restored history: %v", err)
 	}
 	restoredAssistant, ok := firstMessageOfType(restored, "assistant")
-	if !ok || restoredAssistant.EpisodeID != assistant.EpisodeID {
-		t.Fatalf("restored assistant missing episode reference: %#v", restored)
-	}
-
-	episodeReq := httptest.NewRequest(http.MethodGet, "/api/episodes/"+assistant.EpisodeID, nil)
-	episodeRec := httptest.NewRecorder()
-	server.handleEpisodes(episodeRec, episodeReq)
-	if episodeRec.Code != http.StatusOK {
-		t.Fatalf("unexpected episode status: %d body=%s", episodeRec.Code, episodeRec.Body.String())
-	}
-	var episodeResp EpisodeResponse
-	if err := json.NewDecoder(episodeRec.Body).Decode(&episodeResp); err != nil {
-		t.Fatalf("decode episode response: %v", err)
-	}
-	if episodeResp.Episode.ID != assistant.EpisodeID || len(episodeResp.Episode.Events) == 0 {
-		t.Fatalf("unexpected episode response: %#v", episodeResp.Episode)
-	}
-}
-
-func TestServerRestoresSessionEventsUsingEventType(t *testing.T) {
-	configDir := ensureTestConfigDir(t, t.TempDir())
-	session := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session"))
-	now := time.Now().UTC()
-	events := []SessionEvent{
-		{
-			EventID:   "evt_user",
-			Ts:        now.Format(time.RFC3339Nano),
-			Type:      "user_input",
-			Role:      "user",
-			EpisodeID: "ep_restore",
-			RequestID: "req_restore",
-			Content:   "换头",
-		},
-		{
-			EventID:   "evt_role",
-			Ts:        now.Add(time.Second).Format(time.RFC3339Nano),
-			Type:      "role_output",
-			Role:      "planner",
-			EpisodeID: "ep_restore",
-			RequestID: "req_restore",
-			Content:   `{"can_finish":false,"needs_human_handoff":true}`,
-		},
-		{
-			EventID:   "evt_tool",
-			Ts:        now.Add(2 * time.Second).Format(time.RFC3339Nano),
-			Type:      runEventToolCall,
-			Role:      "assistant",
-			EpisodeID: "ep_restore",
-			RequestID: "req_restore",
-			ToolName:  "screenshot",
-			ToolInput: "{}",
-			ToolError: NewToolErrorWithDetails(CodeToolExecutionFailed, "camera unavailable", map[string]any{"device": "video0"}),
-			Artifacts: []InputArtifact{{
-				Kind:     AttachmentKindImage,
-				Name:     "screen.jpg",
-				MIMEType: "image/jpeg",
-				Path:     "/userdata/agent/artifacts/screen.jpg",
-				Size:     1234,
-				Data:     []byte("binary-image-data"),
-			}},
-			Content: "tool_call: screenshot input={}",
-		},
-		{
-			EventID:   "evt_unknown_planner",
-			Ts:        now.Add(3 * time.Second).Format(time.RFC3339Nano),
-			Type:      "planner_decision",
-			Role:      "planner",
-			EpisodeID: "ep_restore",
-			RequestID: "req_restore",
-			Content:   `{"mode":"simple"}`,
-		},
-		{
-			EventID:   "evt_assistant",
-			Ts:        now.Add(4 * time.Second).Format(time.RFC3339Nano),
-			Type:      "assistant_output",
-			Role:      "assistant",
-			EpisodeID: "ep_restore",
-			RequestID: "req_restore",
-			Content:   "请明确说明您想更换的是聊天对象的头像，还是其他内容。",
-		},
-	}
-	for _, event := range events {
-		if _, err := session.AppendEvent(context.Background(), event); err != nil {
-			t.Fatalf("AppendEvent(%s) error: %v", event.EventID, err)
-		}
-	}
-
-	server := &Server{logger: newTestLogger(), runtime: &Runtime{config: Config{ConfigDir: configDir}}}
-	server.loadHistoryFromDisk()
-	history := server.historySnapshot()
-	if len(history) != 3 {
-		t.Fatalf("restored history entries = %d, want 3 public messages: %#v", len(history), history)
-	}
-
-	if history[0].Type != "user" || history[0].Content != "换头" {
-		t.Fatalf("user_input was not restored as user message: %#v", history[0])
-	}
-	if history[1].Type != runEventToolCall || history[1].ToolName != "screenshot" || history[1].ToolInput != "{}" {
-		t.Fatalf("tool_call metadata not restored: %#v", history[1])
-	}
-	if history[1].ToolError == nil || history[1].ToolError.Code != CodeToolExecutionFailed || history[1].ToolError.Details["device"] != "video0" {
-		t.Fatalf("tool_call structured error not restored: %#v", history[1].ToolError)
-	}
-	if len(history[1].Artifacts) != 1 || history[1].Artifacts[0].Path != "/userdata/agent/artifacts/screen.jpg" || history[1].Artifacts[0].Data != nil {
-		t.Fatalf("tool_call artifacts not restored safely: %#v", history[1].Artifacts)
-	}
-	if history[2].Type != "assistant" || history[2].Content == "" {
-		t.Fatalf("assistant_output was not restored as assistant message: %#v", history[2])
-	}
-
-	userCount := 0
-	for _, msg := range history {
-		if msg.Type == "user" {
-			userCount++
-		}
-	}
-	if userCount != 1 {
-		t.Fatalf("restored user message count = %d, want only the original user input: %#v", userCount, history)
+	if !ok || restoredAssistant.Content != "Completed" {
+		t.Fatalf("restored context missing assistant response: %#v", restored)
 	}
 }
 
@@ -886,10 +775,6 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 		},
 		screen: currentScreen,
 	}
-	toolSet.screen.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{
-		NativeWidthPixels:  intPtr(1179),
-		NativeHeightPixels: intPtr(2556),
-	})
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
@@ -899,7 +784,22 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 		toolSet,
 		NewSkillIndex(),
 	)
+	bridge := newTestPhoneBridge(t)
+	bridge.hidConnectionState = func() (bool, bool) { return false, false }
+	bridge.hidMonitorEnabled = false
+	runtime.phoneBridge = bridge
 	server := newServerForTest(runtime)
+	if err := bridge.ApplyBenchmarkStatus(PhoneBridgeStatus{
+		Connected: true,
+		Platform:  "ios",
+		PhoneID:   "coordinate-debug-phone",
+		Environment: &PhoneEnvironment{Screen: screen.PhoneScreenInfo{
+			NativeWidthPixels:  intPtr(1179),
+			NativeHeightPixels: intPtr(2556),
+		}},
+	}); err != nil {
+		t.Fatalf("ApplyBenchmarkStatus() error = %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"double_tap"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1020,7 +920,7 @@ func TestHandleCoordinateDebugTapMapsStructuredToolErrorStatus(t *testing.T) {
 	}
 }
 
-func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
+func TestServerHandleChatStreamBroadcastsRequestID(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleDirectResponses("Hello!"),
 	}
@@ -1035,6 +935,8 @@ func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 		NewSkillIndex(),
 	)
 	server := newServerForTest(runtime)
+	messages := server.eventBroadcaster.Subscribe()
+	defer server.eventBroadcaster.Unsubscribe(messages)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-1"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1047,17 +949,20 @@ func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
-	history := server.historySnapshot()
-	user, ok := firstMessageOfType(history, "user")
+	var broadcast []Message
+	for len(messages) > 0 {
+		broadcast = append(broadcast, <-messages)
+	}
+	user, ok := firstMessageOfType(broadcast, "user")
 	if !ok {
-		t.Fatalf("missing user history: %#v", history)
+		t.Fatalf("missing user broadcast: %#v", broadcast)
 	}
 	if user.RequestID != "web-req-1" {
 		t.Fatalf("user request_id = %q, want web-req-1", user.RequestID)
 	}
-	assistant, ok := firstMessageOfType(history, "assistant")
+	assistant, ok := firstMessageOfType(broadcast, "assistant")
 	if !ok {
-		t.Fatalf("missing assistant history: %#v", history)
+		t.Fatalf("missing assistant broadcast: %#v", broadcast)
 	}
 	if assistant.RequestID != "web-req-1" {
 		t.Fatalf("assistant request_id = %q, want web-req-1", assistant.RequestID)
@@ -1275,7 +1180,7 @@ func TestFrameServiceClientSendsRawCropBlackOption(t *testing.T) {
 	})
 
 	client := NewFrameServiceClient(frameSocket)
-	meta, data, err := client.LatestFrameWithFormat("raw", 0, true, 608)
+	meta, data, err := client.LatestFrameWithFormat("raw", 0, true, screenprovider.CropHint{MinimalWidth: 608})
 	if err != nil {
 		t.Fatalf("LatestFrameWithFormat() error = %v", err)
 	}
@@ -2607,6 +2512,46 @@ func TestServerServesEmbeddedWebUIAssets(t *testing.T) {
 	}
 }
 
+func TestWettyReverseProxyPreservesPublicHostAndRewritesFrameHeaders(t *testing.T) {
+	var gotHost, gotForwardedHost, gotForwardedProto, gotForwardedPrefix string
+	var upstream *httptest.Server
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotForwardedHost = r.Header.Get("X-Forwarded-Host")
+		gotForwardedProto = r.Header.Get("X-Forwarded-Proto")
+		gotForwardedPrefix = r.Header.Get("X-Forwarded-Prefix")
+		w.Header().Set("X-Frame-Options", "sameorigin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src ws://"+r.Host)
+		w.Header().Set("Location", upstream.URL+"/")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer upstream.Close()
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "http://device.example:8080/wetty/", nil)
+	newWettyReverseProxyForTarget(target).ServeHTTP(recorder, request)
+
+	if gotHost != "device.example:8080" {
+		t.Fatalf("upstream Host = %q, want device.example:8080", gotHost)
+	}
+	if gotForwardedHost != "device.example:8080" || gotForwardedProto != "http" || gotForwardedPrefix != "/wetty" {
+		t.Fatalf("forwarded headers = host %q proto %q prefix %q", gotForwardedHost, gotForwardedProto, gotForwardedPrefix)
+	}
+	if got := recorder.Header().Get("X-Frame-Options"); got != "" {
+		t.Fatalf("X-Frame-Options = %q, want removed", got)
+	}
+	if got := recorder.Header().Get("Content-Security-Policy"); got != "default-src 'self'; connect-src ws://device.example:8080; frame-ancestors 'self'" {
+		t.Fatalf("Content-Security-Policy = %q, want public WebSocket host plus same-origin framing", got)
+	}
+	if got := recorder.Header().Get("Location"); got != "/wetty/" {
+		t.Fatalf("Location = %q, want /wetty/", got)
+	}
+}
+
 func TestWebUIImagePasteControlsArePresent(t *testing.T) {
 	attachmentsScript := readWebUIResource(t, "scripts/attachments.js")
 	stateScript := readWebUIResource(t, "scripts/state.js")
@@ -2628,6 +2573,26 @@ func TestWebUIImagePasteControlsArePresent(t *testing.T) {
 	}
 }
 
+func TestWebUIUsesContextRequestIDsForToolMessageIdentity(t *testing.T) {
+	chatScript := readWebUIResource(t, "scripts/chat.js")
+	for _, want := range []string{
+		"type === 'tool_call' || type === 'tool_result'",
+		"'request', requestId, type",
+		"msg.tool_name || '', msg.tool_input || '', content",
+	} {
+		if !strings.Contains(chatScript, want) {
+			t.Fatalf("web UI tool message identity missing %q", want)
+		}
+	}
+}
+
+func TestWebUIContextHistoryDeduplicatesMarkers(t *testing.T) {
+	chatScript := readWebUIResource(t, "scripts/chat.js")
+	if !strings.Contains(chatScript, "if (!renderedStateMessages.has(key))") {
+		t.Fatal("renderHistory does not guard duplicate context markers")
+	}
+}
+
 func readWebUIResource(t *testing.T, name string) string {
 	t.Helper()
 	data, err := fs.ReadFile(webUIFiles, name)
@@ -2637,11 +2602,10 @@ func readWebUIResource(t *testing.T, name string) string {
 	return string(data)
 }
 
-func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
+func TestServerHandleChatAsyncRejectsDuplicateRequestID(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		activeRuns:     make(map[string]context.CancelFunc),
 		pendingResults: map[string]*chatPendingResult{"req-1": {}},
-		history:        make([]Message, 0),
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":" req-1 "}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -2652,15 +2616,11 @@ func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
-	if got := server.historySnapshot(); len(got) != 0 {
-		t.Fatalf("duplicate request appended history: %#v", got)
-	}
 }
 
-func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
+func TestServerHandleChatStreamRejectsDuplicateRequestID(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		activeRuns: make(map[string]context.CancelFunc),
-		history:    make([]Message, 0),
 	}
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2676,9 +2636,6 @@ func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
-	}
-	if got := server.historySnapshot(); len(got) != 0 {
-		t.Fatalf("duplicate stream request appended history: %#v", got)
 	}
 }
 
@@ -2774,20 +2731,28 @@ func (s *blockingTTSSession) Err() error {
 }
 
 func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
-	server := &Server{logger: newTestLogger(),
-		runtime: NewRuntimeWithDeps(
-			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
-			&testModelResolver{model: &scriptedModel{}},
-			NewMemoryManager(""),
-			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-			NewSkillIndex(),
-		),
-		history: []Message{
-			{Type: "user", Content: "hello"},
-			{Type: runEventToolCall, ToolName: "screenshot", ToolInput: "{}"},
-			{Type: "tool_result", ToolName: "screenshot", Content: `{"width":100}`},
-		},
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	manager, err := InitializeContextManager("system", agentpath.ContextManagerSessionFolder(runtime.config.ConfigDir), nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	for _, message := range []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "hello"},
+		{Role: messages.MessageRoleToolCall, Usage: &messages.Usage{InputTokens: 19, OutputTokens: 10, TotalTokens: 29}, ToolCalls: []messages.ToolCall{{ID: "call", Name: "screenshot", Arguments: "{}"}}},
+		{Role: messages.MessageRoleToolResult, ToolResults: []messages.ToolResult{{ToolCallID: "call", Name: "screenshot", Content: `{"width":100}`}}},
+	} {
+		if err := manager.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime.contextManager = manager
+	server := &Server{logger: newTestLogger(), runtime: runtime}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/history", nil)
 	rec := httptest.NewRecorder()
@@ -2806,6 +2771,9 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	}
 	if history[1].Type != runEventToolCall || history[2].Type != "tool_result" {
 		t.Fatalf("unexpected history payload: %#v", history)
+	}
+	if history[1].Usage == nil || history[1].Usage.InputTokens != 19 || history[1].Usage.OutputTokens != 10 || history[1].Usage.TotalTokens != 29 {
+		t.Fatalf("history usage = %#v, want normalized token usage", history[1].Usage)
 	}
 }
 
@@ -2839,23 +2807,190 @@ func TestServerContextDumpEndpointReturnsPlannerMessages(t *testing.T) {
 	}
 	server.runtime.contextManager = manager
 
-	req := httptest.NewRequest(http.MethodGet, "/api/context-dump", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/context", nil)
 	rec := httptest.NewRecorder()
-	server.handleContextDump(rec, req)
+	server.handleContext(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	var dump contextmanager.MessageListDump
+	var dump ContextResponse
 	if err := json.NewDecoder(rec.Body).Decode(&dump); err != nil {
 		t.Fatalf("decode context dump: %v", err)
 	}
-	if dump.SessionID == "" {
-		t.Fatal("expected session_id in context dump")
+	if dump.Backend.SessionID == "" {
+		t.Fatal("expected backend session_id in context dump")
 	}
-	if len(dump.Messages) != 1 || dump.Messages[0].Content != "hello planner" {
-		t.Fatalf("unexpected context dump payload: %#v", dump)
+	if len(dump.Backend.Messages) != 1 || dump.Backend.Messages[0].Content != "hello planner" {
+		t.Fatalf("unexpected context dump payload: %#v", dump.Backend)
+	}
+}
+
+func TestServerLoadsPersistedBackendContextBeforeFirstRun(t *testing.T) {
+	configDir := t.TempDir()
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManager(sessionFolder, "persisted system prompt")
+	if err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
+	}
+	for _, message := range []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "persisted question"},
+		{Role: messages.MessageRoleAssistant, Content: "persisted answer"},
+	} {
+		if err := manager.AppendMessage(message); err != nil {
+			t.Fatalf("AppendMessage() error = %v", err)
+		}
+	}
+
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	if runtime.contextManager != nil {
+		t.Fatal("backend context should remain lazy before the first run")
+	}
+	server := &Server{logger: newTestLogger(), runtime: runtime}
+
+	contextReq := httptest.NewRequest(http.MethodGet, "/api/context", nil)
+	contextRec := httptest.NewRecorder()
+	server.handleContext(contextRec, contextReq)
+	var contextDump ContextResponse
+	if err := json.NewDecoder(contextRec.Body).Decode(&contextDump); err != nil {
+		t.Fatalf("decode context response: %v", err)
+	}
+	if contextDump.Backend.SessionID != manager.GetSessionID() || len(contextDump.Backend.Messages) != 3 {
+		t.Fatalf("backend context = %#v, want persisted session before first run", contextDump.Backend)
+	}
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/api/history", nil)
+	historyRec := httptest.NewRecorder()
+	server.handleHistory(historyRec, historyReq)
+	var history []Message
+	if err := json.NewDecoder(historyRec.Body).Decode(&history); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	if len(history) != 2 || history[0].Content != "persisted question" || history[1].Content != "persisted answer" {
+		t.Fatalf("history = %#v, want persisted conversation before first run", history)
+	}
+	if runtime.contextManager != nil {
+		t.Fatal("read-only context endpoints should not initialize the live context manager")
+	}
+}
+
+func TestWebMessageFromContextMessagePreservesNoticeType(t *testing.T) {
+	message, ok := webMessageFromContextMessage(messages.Message{
+		Role:    messages.MessageRoleNotice,
+		Content: "<notice>change strategy</notice>",
+	}, "backend")
+	if !ok {
+		t.Fatal("webMessageFromContextMessage() rejected notice message")
+	}
+	if message.Type != "notice" || message.Role != "notice" {
+		t.Fatalf("notice message = %#v, want notice type and role", message)
+	}
+}
+
+func TestWebMessageFromContextMessagePreservesUsage(t *testing.T) {
+	usage := &messages.Usage{InputTokens: 336, OutputTokens: 41, TotalTokens: 377}
+	message, ok := webMessageFromContextMessage(messages.Message{
+		Role:    messages.MessageRoleAssistant,
+		Content: "done",
+		Usage:   usage,
+	}, "backend")
+	if !ok {
+		t.Fatal("webMessageFromContextMessage() rejected assistant message")
+	}
+	if message.Usage == nil || *message.Usage != *usage {
+		t.Fatalf("usage = %#v, want %#v", message.Usage, usage)
+	}
+	if message.Usage == usage {
+		t.Fatal("web message usage should not share the context message pointer")
+	}
+}
+
+func TestServerContextAttachmentEndpointServesRegisteredAttachment(t *testing.T) {
+	config := Config{Model: ModelConfig{Provider: "fake"}}
+	server := &Server{logger: newTestLogger(), runtime: NewRuntimeWithDeps(
+		withTestConfigDir(t, config),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)}
+	folder := agentpath.UserContextManagerSessionFolder(server.runtime.config.ConfigDir)
+	manager, err := contextmanager.NewContextManager(folder, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachment, err := manager.StoreAttachment("image/png", []byte("png-data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Attachments: []messages.Attachment{attachment}}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/context/attachment?role=user&attachment="+url.QueryEscape(filepath.Base(attachment.FilePath)), nil)
+	rec := httptest.NewRecorder()
+	server.handleContextAttachment(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "image/png" || rec.Body.String() != "png-data" {
+		t.Fatalf("attachment response: status=%d type=%q body=%q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+}
+
+func TestServerContextAttachmentEndpointHidesInternalErrors(t *testing.T) {
+	config := Config{Model: ModelConfig{Provider: "fake"}}
+	server := &Server{logger: newTestLogger(), runtime: NewRuntimeWithDeps(
+		withTestConfigDir(t, config),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)}
+	rec := httptest.NewRecorder()
+	server.handleContextAttachment(rec, httptest.NewRequest(http.MethodGet, "/api/context/attachment?role=user&attachment=missing.png", nil))
+	if rec.Code != http.StatusNotFound || rec.Body.String() != "attachment not found\n" {
+		t.Fatalf("attachment error response: status=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestContextPageUsesSafeAttachmentHandlers(t *testing.T) {
+	page := readWebUIResource(t, "context.html")
+	for _, want := range []string{"data-attachment=", "event.target.closest('.attachment')", "String(a.file_path || '')"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("context page missing %q", want)
+		}
+	}
+	if strings.Contains(page, `onclick="openAttachment(`) {
+		t.Fatal("context page still embeds attachment values in an inline JavaScript handler")
+	}
+}
+
+func TestWebUIShowsMessageTokenUsage(t *testing.T) {
+	messagesScript := readWebUIResource(t, "scripts/messages.js")
+	styles := readWebUIResource(t, "styles.css")
+	contextPage := readWebUIResource(t, "context.html")
+	for _, want := range []string{"function renderMessageUsage(usage)", "usage.input_tokens", "usage.output_tokens", "usage.total_tokens"} {
+		if !strings.Contains(messagesScript, want) {
+			t.Fatalf("message renderer missing %q", want)
+		}
+	}
+	for _, want := range []string{".message-footer", ".message-usage", ".message-usage-item"} {
+		if !strings.Contains(styles, want) {
+			t.Fatalf("web UI styles missing %q", want)
+		}
+	}
+	if !strings.Contains(contextPage, "m.usage.input_tokens") || !strings.Contains(contextPage, "m.usage.total_tokens") {
+		t.Fatal("context page does not render token usage")
+	}
+	if strings.Index(messagesScript, "footer.appendChild(timeDiv)") > strings.Index(messagesScript, "footer.appendChild(usageDiv)") {
+		t.Fatal("message footer must render time before usage")
+	}
+	if !strings.Contains(styles, "margin-right: auto;") || !strings.Contains(styles, "margin-left: auto;") {
+		t.Fatal("message footer must pin time left and usage right")
 	}
 }
 
@@ -2886,7 +3021,6 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 			NewSkillIndex(),
 		),
-		history: []Message{{Type: "user", Content: "hello"}},
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/clear", nil)
@@ -2896,18 +3030,13 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
-	if len(server.history) != 0 {
-		t.Fatalf("expected web history to be cleared, got %#v", server.history)
-	}
 	if _, err := os.Stat(filepath.Join(storageDir, "session")); !os.IsNotExist(err) {
 		t.Fatalf("expected session memory to be removed, stat err = %v", err)
 	}
 }
 
-func TestServerHandleSetupReturnsSuccessWithoutClearingHistory(t *testing.T) {
-	server := &Server{logger: newTestLogger(),
-		history: []Message{{Type: "user", Content: "hello"}},
-	}
+func TestServerHandleSetupReturnsSuccess(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/setup", nil)
 	rec := httptest.NewRecorder()
@@ -2930,9 +3059,6 @@ func TestServerHandleSetupReturnsSuccessWithoutClearingHistory(t *testing.T) {
 	}
 	if got.Data.Setup {
 		t.Fatalf("expected setup=false for Go agent no-op response")
-	}
-	if len(server.history) != 1 || server.history[0].Content != "hello" {
-		t.Fatalf("setup should not clear history, got %#v", server.history)
 	}
 }
 
@@ -3023,7 +3149,6 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	)
 	server := &Server{logger: newTestLogger(),
 		runtime:        runtime,
-		history:        make([]Message, 0),
 		sttClient:      stt,
 		pendingResults: make(map[string]*chatPendingResult),
 		activeRuns:     make(map[string]context.CancelFunc),
@@ -3094,11 +3219,9 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	if len(resp.History) < 2 {
 		t.Fatalf("expected at least 2 history entries for default-mode direct finish, got %d", len(resp.History))
 	}
-	if resp.History[0].Content != "Hello, please summarize this" {
-		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
-	}
-	if len(resp.History[0].Attachments) != 1 || resp.History[0].Attachments[0].Transcript != "Hello, please summarize this" {
-		t.Fatalf("expected transcript on audio attachment, got %#v", resp.History[0].Attachments)
+	user, ok := firstMessageOfType(resp.History, "user")
+	if !ok || user.Content != "Hello, please summarize this" {
+		t.Fatalf("expected transcript as user content, got %#v", resp.History)
 	}
 	assistant, ok := firstMessageOfType(resp.History, "assistant")
 	if !ok || assistant.Content != "Completed" {
@@ -3175,253 +3298,6 @@ func TestDecodeMessageAttachmentsPreservesImageDimensions(t *testing.T) {
 	}
 }
 
-func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
-	stopCh := make(chan struct{})
-	var stopOnce sync.Once
-	var readCount int32
-	var startPlaybackCount int32
-	var writePlayChunkCount int32
-	var healthCount int32
-
-	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
-		switch req.Op {
-		case "start_playback":
-			atomic.AddInt32(&startPlaybackCount, 1)
-			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
-		case "write_play_chunk":
-			atomic.AddInt32(&writePlayChunkCount, 1)
-			return audioResponse{Status: "OK"}, nil
-		case "health":
-			atomic.AddInt32(&healthCount, 1)
-			return audioResponse{
-				Status:           "OK",
-				RecordingActive:  false,
-				PlaybackActive:   false,
-				RecordSessions:   0,
-				PlaybackSessions: 0,
-			}, nil
-		case "start_recording":
-			if req.SampleRate != 16000 || req.Channels != 1 || req.BitWidth != 16 {
-				t.Errorf("unexpected recording format: %#v", req)
-			}
-			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
-		case "read_record_chunk":
-			count := atomic.AddInt32(&readCount, 1)
-			if count == 1 {
-				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0}
-			}
-			<-stopCh
-			return audioResponse{Status: "OK", EndOfStream: true}, nil
-		case "stop_recording":
-			stopOnce.Do(func() { close(stopCh) })
-			return audioResponse{Status: "OK"}, nil
-		default:
-			return audioResponse{Status: "INTERNAL_ERROR"}, nil
-		}
-	})
-
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{
-			Model: ModelConfig{Provider: "fake"},
-			Audio: AudioConfig{
-				Socket:     socketPath,
-				SampleRate: 16000,
-			},
-		}),
-		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-	server := newServerForTest(runtime)
-
-	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
-	startRec := httptest.NewRecorder()
-	server.handleAudioRecordStart(startRec, startReq)
-	if startRec.Code != http.StatusOK {
-		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
-	}
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if atomic.LoadInt32(&startPlaybackCount) > 0 &&
-			atomic.LoadInt32(&writePlayChunkCount) > 0 &&
-			atomic.LoadInt32(&healthCount) > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if atomic.LoadInt32(&startPlaybackCount) == 0 ||
-		atomic.LoadInt32(&writePlayChunkCount) == 0 ||
-		atomic.LoadInt32(&healthCount) == 0 {
-		t.Fatalf("expected prompt sound playback flow to call start_playback/write_play_chunk/health, got start=%d write=%d health=%d",
-			startPlaybackCount, writePlayChunkCount, healthCount)
-	}
-
-	stopReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/stop", nil)
-	stopRec := httptest.NewRecorder()
-	server.handleAudioRecordStop(stopRec, stopReq)
-	if stopRec.Code != http.StatusOK {
-		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
-	}
-
-	var resp AudioRecordStopResponse
-	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode stop response: %v", err)
-	}
-	if resp.Attachment.Kind != AttachmentKindAudio || resp.Attachment.MIMEType != "audio/wav" {
-		t.Fatalf("unexpected attachment metadata: %#v", resp.Attachment)
-	}
-	wavData, err := base64.StdEncoding.DecodeString(resp.Attachment.Data)
-	if err != nil {
-		t.Fatalf("decode wav payload: %v", err)
-	}
-	if !bytes.HasPrefix(wavData, []byte("RIFF")) || !bytes.Contains(wavData[:44], []byte("WAVE")) {
-		t.Fatalf("expected wav payload, got %q", string(wavData[:12]))
-	}
-	if len(wavData) != 48 {
-		t.Fatalf("expected 2 PCM16 samples in WAV, got %d bytes", len(wavData))
-	}
-}
-
-func TestServerDeviceAudioRecordingStopIncludesStreamingTranscript(t *testing.T) {
-	stopCh := make(chan struct{})
-	var stopOnce sync.Once
-
-	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
-		switch req.Op {
-		case "start_playback":
-			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
-		case "write_play_chunk", "health":
-			return audioResponse{Status: "OK"}, nil
-		case "start_recording":
-			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
-		case "read_record_chunk":
-			select {
-			case <-stopCh:
-				return audioResponse{Status: "OK", EndOfStream: true}, nil
-			default:
-				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0}
-			}
-		case "stop_recording":
-			stopOnce.Do(func() { close(stopCh) })
-			return audioResponse{Status: "OK"}, nil
-		default:
-			return audioResponse{Status: "INTERNAL_ERROR"}, nil
-		}
-	})
-
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{
-			Model: ModelConfig{Provider: "fake"},
-			Audio: AudioConfig{
-				Socket:     socketPath,
-				SampleRate: 16000,
-				Channels:   1,
-				BitWidth:   16,
-			},
-		}),
-		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-	server := newServerForTest(runtime)
-	server.sttClient = &stubSTTClient{
-		supportsStreaming: true,
-		streamUploader:    &stubSTTStreamUploader{transcript: "streaming upload result"},
-	}
-
-	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
-	startRec := httptest.NewRecorder()
-	server.handleAudioRecordStart(startRec, startReq)
-	if startRec.Code != http.StatusOK {
-		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
-	}
-
-	stopReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/stop", nil)
-	stopRec := httptest.NewRecorder()
-	server.handleAudioRecordStop(stopRec, stopReq)
-	if stopRec.Code != http.StatusOK {
-		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
-	}
-
-	var resp AudioRecordStopResponse
-	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode stop response: %v", err)
-	}
-	if resp.Attachment.Transcript != "streaming upload result" {
-		t.Fatalf("Attachment.Transcript = %q, want streaming upload result", resp.Attachment.Transcript)
-	}
-}
-
-func TestServerEndWebRecordingClearsStreamingSessionOnDrainTimeout(t *testing.T) {
-	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
-		switch req.Op {
-		case "stop_recording":
-			return audioResponse{Status: "OK"}, nil
-		default:
-			return audioResponse{Status: "OK"}, nil
-		}
-	})
-
-	uploader := newBlockingFinalizeUploader("")
-	server := &Server{logger: newTestLogger(), audioClient: NewAudioServiceClient(socketPath)}
-	recording := &webAudioRecording{
-		sessionID:  42,
-		sampleRate: 16000,
-		done:       make(chan struct{}),
-		sttSession: &streamingSTTSession{uploader: uploader},
-	}
-
-	err := server.endWebRecordingWithTimeout(recording, 20*time.Millisecond)
-	if err == nil || !strings.Contains(err.Error(), "timed out waiting for audio recording to drain") {
-		t.Fatalf("endWebRecordingWithTimeout() error = %v, want drain timeout", err)
-	}
-	select {
-	case <-uploader.closed:
-	case <-time.After(time.Second):
-		t.Fatal("expected uploader to be closed after drain timeout")
-	}
-}
-
-func TestServerEndWebRecordingReturnsFinalizeTimeout(t *testing.T) {
-	oldTimeout := webRecordingStreamingSTTFinalizeTimeout
-	webRecordingStreamingSTTFinalizeTimeout = 20 * time.Millisecond
-	t.Cleanup(func() {
-		webRecordingStreamingSTTFinalizeTimeout = oldTimeout
-	})
-
-	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
-		switch req.Op {
-		case "stop_recording":
-			return audioResponse{Status: "OK"}, nil
-		default:
-			return audioResponse{Status: "OK"}, nil
-		}
-	})
-
-	done := make(chan struct{})
-	close(done)
-	uploader := newBlockingFinalizeUploader("")
-	server := &Server{logger: newTestLogger(), audioClient: NewAudioServiceClient(socketPath)}
-	recording := &webAudioRecording{
-		sessionID:  42,
-		sampleRate: 16000,
-		done:       done,
-		sttSession: &streamingSTTSession{uploader: uploader},
-	}
-
-	err := server.endWebRecordingWithTimeout(recording, time.Second)
-	if !errors.Is(err, errStreamingSTTFinalizeTimeout) {
-		t.Fatalf("endWebRecordingWithTimeout() error = %v, want finalize timeout", err)
-	}
-	select {
-	case <-uploader.closed:
-	case <-time.After(time.Second):
-		t.Fatal("expected uploader to be closed after finalize timeout")
-	}
-}
-
 func TestServerWebAudioInputModeNeverFallsBackToRemovedAudio(t *testing.T) {
 	tests := []struct {
 		name string
@@ -3487,7 +3363,6 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 	stt := &stubSTTClient{transcript: "should not be called"}
 	server := &Server{logger: newTestLogger(),
 		runtime:        runtime,
-		history:        make([]Message, 0),
 		sttClient:      stt,
 		pendingResults: make(map[string]*chatPendingResult),
 		activeRuns:     make(map[string]context.CancelFunc),
@@ -3553,8 +3428,9 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 	if resp.Status != "complete" {
 		t.Fatalf("result never completed: status=%q", resp.Status)
 	}
-	if resp.History[0].Content != "directly reused transcript" {
-		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
+	user, ok := firstMessageOfType(resp.History, "user")
+	if !ok || user.Content != "directly reused transcript" {
+		t.Fatalf("expected transcript as user content, got %#v", resp.History)
 	}
 }
 
@@ -3754,63 +3630,6 @@ func TestServerSTTConfigTestLiveSessionFallsBackToOneShot(t *testing.T) {
 	}
 	if len(resp.Results) != 1 || !strings.Contains(resp.Results[0].Detail, "one-shot") {
 		t.Fatalf("unexpected results: %#v", resp.Results)
-	}
-}
-
-func TestServerDeviceAudioRecordingStartRecoversStaleSession(t *testing.T) {
-	stopCh := make(chan struct{})
-	var stopOnce sync.Once
-
-	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
-		switch req.Op {
-		case "start_playback":
-			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
-		case "write_play_chunk":
-			return audioResponse{Status: "OK"}, nil
-		case "health":
-			return audioResponse{Status: "OK"}, nil
-		case "start_recording":
-			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
-		case "read_record_chunk":
-			select {
-			case <-stopCh:
-				return audioResponse{Status: "OK", EndOfStream: true}, nil
-			default:
-				return audioResponse{Status: "OK"}, []byte{1, 0}
-			}
-		case "stop_recording":
-			stopOnce.Do(func() { close(stopCh) })
-			return audioResponse{Status: "OK"}, nil
-		default:
-			return audioResponse{Status: "INTERNAL_ERROR"}, nil
-		}
-	})
-
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{
-			Model: ModelConfig{Provider: "fake"},
-			Audio: AudioConfig{Socket: socketPath, SampleRate: 16000},
-		}),
-		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-	server := newServerForTest(runtime)
-	server.webRecording = &webAudioRecording{
-		sessionID:  99,
-		sampleRate: 16000,
-		done:       make(chan struct{}),
-	}
-
-	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
-	startRec := httptest.NewRecorder()
-	server.handleAudioRecordStart(startRec, startReq)
-	if startRec.Code != http.StatusOK {
-		t.Fatalf("unexpected start status after stale recovery: %d body=%s", startRec.Code, startRec.Body.String())
-	}
-	if server.webRecording == nil || server.webRecording.sessionID != 42 {
-		t.Fatalf("webRecording = %#v, want new session 42", server.webRecording)
 	}
 }
 
@@ -4303,6 +4122,10 @@ func startFakeFrameServiceSocket(t *testing.T, handler func(map[string]any) (str
 }
 
 func newBenchmarkSeedMemoryServer(t *testing.T) (*Server, string) {
+	return newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{})
+}
+
+func newBenchmarkSeedMemoryServerWithModel(t *testing.T, model *scriptedModel) (*Server, string) {
 	t.Helper()
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	streamingDisabled := false
@@ -4315,7 +4138,7 @@ func newBenchmarkSeedMemoryServer(t *testing.T) (*Server, string) {
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 			VoiceToolCallSpeech:      &streamingDisabled,
 		},
-		&testModelResolver{model: &scriptedModel{}},
+		&testModelResolver{model: model},
 		NewMemoryManager(filepath.Join(configDir, "memory")),
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
@@ -4359,6 +4182,108 @@ func TestHandleBenchmarkSeedMemorySucceeds(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkSeedNotificationWritesDurableFixture(t *testing.T) {
+	server, configDir := newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse(`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"ignore"}]}}]}`),
+	}})
+	body := `{"events":[{"source":"android","source_id":"delivery-1","source_event_id":"delivery-event-1","device_id":"benchmark-device","notification_uid":101,"event":"added","app_identifier":"com.delivery","title":"包裹更新","message":"包裹明天送达","received_at":"2026-08-21T00:01:00Z"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_notification", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedNotification(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Status     string   `json:"status"`
+		ContextIDs []string `json:"context_ids"`
+		EventCount int      `json:"event_count"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Status != "seeded" || response.EventCount != 1 || len(response.ContextIDs) != 1 || response.ContextIDs[0] != "1" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	rawPath := filepath.Join(configDir, "memory", "notifications", "events", "2026-08-21.jsonl")
+	raw, err := os.ReadFile(rawPath)
+	if err != nil {
+		t.Fatalf("read seeded notification fixture: %v", err)
+	}
+	if !strings.Contains(string(raw), `"message":"包裹明天送达"`) {
+		t.Fatalf("raw fixture missing original message: %s", raw)
+	}
+	processReq := httptest.NewRequest(http.MethodPost, "/api/benchmark/notification-memory/process", bytes.NewBufferString(`{}`))
+	processReq.Header.Set("Content-Type", "application/json")
+	processReq.Header.Set("Authorization", "Bearer test-benchmark-token")
+	processRec := httptest.NewRecorder()
+	server.handleBenchmarkProcessNotificationMemory(processRec, processReq)
+	if processRec.Code != http.StatusOK {
+		t.Fatalf("unexpected process status: %d body=%s", processRec.Code, processRec.Body.String())
+	}
+	var processResponse struct {
+		MemoryCursor string `json:"memory_cursor"`
+	}
+	if err := json.NewDecoder(processRec.Body).Decode(&processResponse); err != nil {
+		t.Fatalf("decode process response: %v", err)
+	}
+	if processResponse.MemoryCursor != "1" {
+		t.Fatalf("process cursor = %q, want 1", processResponse.MemoryCursor)
+	}
+}
+
+func TestHandleBenchmarkProcessNotificationMemoryClassifiesInvalidProposal(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse(`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"add","scope":"temporary","type":"not-a-memory-type","content":"Package arrives tomorrow"}]}}]}`),
+	}})
+	seedBody := `{"events":[{"source":"android","source_id":"delivery-invalid","source_event_id":"delivery-invalid-event","device_id":"benchmark-device","notification_uid":110,"event":"added","app_identifier":"com.delivery","title":"Package update","message":"Package arrives tomorrow","received_at":"2026-08-21T00:01:00Z"}]}`
+	seedReq := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_notification", bytes.NewBufferString(seedBody))
+	seedReq.Header.Set("Authorization", "Bearer test-benchmark-token")
+	seedRec := httptest.NewRecorder()
+	server.handleBenchmarkSeedNotification(seedRec, seedReq)
+	if seedRec.Code != http.StatusOK {
+		t.Fatalf("seed status=%d body=%s", seedRec.Code, seedRec.Body.String())
+	}
+
+	processReq := httptest.NewRequest(http.MethodPost, "/api/benchmark/notification-memory/process", bytes.NewBufferString(`{}`))
+	processReq.Header.Set("Authorization", "Bearer test-benchmark-token")
+	processRec := httptest.NewRecorder()
+	server.handleBenchmarkProcessNotificationMemory(processRec, processReq)
+
+	if processRec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("process status=%d body=%s, want 422", processRec.Code, processRec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkSeedNotificationRetryReturnsOriginalContextID(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	body := `{"events":[{"source":"android","source_id":"delivery-retry","source_event_id":"delivery-retry-event","device_id":"benchmark-device","notification_uid":102,"event":"added","app_identifier":"com.delivery","title":"Package update","message":"Package arrives tomorrow","received_at":"2026-08-21T00:02:00Z"}]}`
+	seed := func() map[string]any {
+		req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_notification", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-benchmark-token")
+		rec := httptest.NewRecorder()
+		server.handleBenchmarkSeedNotification(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var response map[string]any
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return response
+	}
+
+	first := seed()
+	retried := seed()
+	if !reflect.DeepEqual(first["context_ids"], retried["context_ids"]) || retried["event_count"] != float64(1) {
+		t.Fatalf("first=%#v retried=%#v", first, retried)
+	}
+}
+
 func TestHandleBenchmarkSeedMemoryCanSeedDeviceFixture(t *testing.T) {
 	server, configDir := newBenchmarkSeedMemoryServer(t)
 	body := `{"store":"device","id":"legacy_device_fixture","type":"procedure","title":"Legacy procedure","content":"Preview, then Edit, then Save.","tags":["qa-notes","save"],"entities":["QA Notes","Preview","Edit","Save"]}`
@@ -4386,6 +4311,29 @@ func TestHandleBenchmarkSeedMemoryCanSeedDeviceFixture(t *testing.T) {
 	}
 	if len(files) != 1 || !strings.Contains(files[0], "legacy_device_fixture") {
 		t.Fatalf("device fixture files = %#v", files)
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryCanSeedTemporaryFixture(t *testing.T) {
+	server, configDir := newBenchmarkSeedMemoryServer(t)
+	body := `{"store":"temporary","id":"tmp_benchmark_delivery","type":"fact","title":"Delivery","content":"Package arrives today.","tags":["notification","com.delivery"],"source_refs":[{"type":"notification","id":"fixture-old","event_ids":["old-event"]}],"expires_at":"2099-01-01T00:00:00Z"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedMemory(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	memPath := filepath.Join(configDir, "memory", "temporary", "memories", "tmp_benchmark_delivery.md")
+	parsed, err := readMemoryMarkdown(memPath)
+	if err != nil {
+		t.Fatalf("read temporary fixture: %v", err)
+	}
+	if parsed.Item.TimeScope != "temporary" || len(parsed.Item.SourceRefs) != 1 {
+		t.Fatalf("temporary fixture = %#v", parsed.Item)
 	}
 }
 
@@ -4452,6 +4400,28 @@ func TestBenchmarkSeedEpisodeRequiresBenchmarkToken(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBenchmarkSeedEpisodeRejectsUnknownAndTrailingJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "unknown field", body: `{"id":"ep_unknown","user_goal":"test","unknown":true}`},
+		{name: "trailing object", body: `{"id":"ep_trailing","user_goal":"test"}{}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := newBenchmarkSeedMemoryServer(t)
+			req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_episode", bytes.NewBufferString(tc.body))
+			req.Header.Set("Authorization", "Bearer test-benchmark-token")
+			rec := httptest.NewRecorder()
+			server.handleBenchmarkSeedEpisode(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

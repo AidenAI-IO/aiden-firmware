@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -62,7 +63,6 @@ func (m *episodeMemoryBlockingModel) Spec() modelpkg.ModelSpec {
 func (m *episodeMemoryScriptedModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, messages)
 	if episodeMemoryMessagesContain(messages, "mandatory retention gate") {
 		if len(m.auditResponses) > 0 {
 			response := m.auditResponses[0]
@@ -75,13 +75,70 @@ func (m *episodeMemoryScriptedModel) GenerateContent(_ context.Context, messages
 			return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: response}}}, nil
 		}
 	}
+	m.calls = append(m.calls, messages)
 	if len(m.responses) == 0 {
 		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: `{}`}}}, nil
 	}
 	response := m.responses[0]
 	m.responses = m.responses[1:]
+	response = normalizeEpisodeMemoryScriptedResponse(response)
+	if strings.TrimSpace(response) != "" && !strings.Contains(response, `"results"`) {
+		if episodeID := episodeMemoryPromptEpisodeID(messages); episodeID != "" {
+			response = `{"results":[{"episode_id":` + strconv.Quote(episodeID) + `,"proposal":` + response + `}]}`
+		}
+	}
 	m.lastResponse = response
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: response}}}, nil
+}
+
+func normalizeEpisodeMemoryScriptedResponse(response string) string {
+	var value any
+	if err := json.Unmarshal([]byte(response), &value); err != nil {
+		return response
+	}
+	var visit func(any)
+	visit = func(node any) {
+		switch item := node.(type) {
+		case map[string]any:
+			if _, ok := item["lesson_key"]; ok {
+				if _, ok := item["retention"]; !ok {
+					item["retention"] = string(episodeMemoryRetentionDurable)
+				}
+			}
+			for _, child := range item {
+				visit(child)
+			}
+		case []any:
+			for _, child := range item {
+				visit(child)
+			}
+		}
+	}
+	visit(value)
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return response
+	}
+	return string(encoded)
+}
+
+func episodeMemoryPromptEpisodeID(messages []llms.MessageContent) string {
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			textPart, ok := part.(llms.TextContent)
+			if !ok {
+				continue
+			}
+			const marker = "===== Episode "
+			if index := strings.Index(textPart.Text, marker); index >= 0 {
+				value := textPart.Text[index+len(marker):]
+				if end := strings.Index(value, " ====="); end >= 0 {
+					return strings.TrimSpace(value[:end])
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func defaultEpisodeMemoryRetentionAudit(messages []llms.MessageContent) string {
@@ -103,10 +160,15 @@ func defaultEpisodeMemoryRetentionAudit(messages []llms.MessageContent) string {
 			reviews := episodeMemoryRetentionAudit{Reviews: make([]episodeMemoryRetentionReview, 0, len(candidates))}
 			for _, candidate := range candidates {
 				review := episodeMemoryRetentionReview{
-					LessonKey: candidate.LessonKey,
-					Reason:    "the scripted test candidate is reusable and safe for its declared scope",
+					LessonKey:       candidate.LessonKey,
+					Reason:          "the scripted test candidate is reusable and safe for its declared scope",
+					SensitiveValues: []string{},
 				}
-				if candidate.Retention == episodeMemoryRetentionDurable {
+				// Older fixtures predate the explicit retention field. Treat an
+				// omitted class as durable in this scripted model so these tests
+				// continue to exercise batch persistence rather than the retention
+				// schema migration itself.
+				if candidate.Retention == "" || candidate.Retention == episodeMemoryRetentionDurable {
 					review.Decision = episodeMemoryRetentionDecisionRetain
 					review.Retention = episodeMemoryRetentionDurable
 					review.Rewrite = &episodeMemoryRetentionRewrite{

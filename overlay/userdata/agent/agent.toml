@@ -17,6 +17,8 @@ locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification
 # Input mode controls the device-side audio loop:
 # - text: HTTP server and Web UI only
 # - stt: also run device audio -> STT -> LLM -> TTS
+# - realtime: run the realtime voice model directly; [voice_model] is selected
+#   by this mode rather than by whether voice_model.api_key is present
 input_mode = "stt"
 
 # RKNN Silero VAD parameters
@@ -40,6 +42,26 @@ input_mode = "stt"
 # voice_progress_speech_enabled = true
 # voice_max_response_tokens = 300
 
+# Realtime voice model. When input_mode = "realtime", GPIO wakeup opens a
+# continuous PCM duplex session with rtclient. The legacy STT/LLM/TTS loop is
+# used when input_mode = "stt". In realtime mode, the voice model is
+# the non-blocking foreground agent; device and multi-step work is queued to
+# the legacy agent loop through create_agent_task.
+# [voice_model]
+# api_key = "$DASHSCOPE_API_KEY"
+# model = "qwen-audio-3.0-realtime-plus"
+# workspace_id = ""
+# region = "cn-beijing" # or "ap-southeast-1"
+# endpoint = ""         # optional ws/wss endpoint override
+# voice = "longanqian"
+# instructions = ""    # optional override; defaults to a short conversation-only prompt
+# enable_speech_emotion = true
+# input_audio_format = "pcm"
+# output_audio_format = "pcm"
+# turn_detection = "server_vad" # or "smart_turn"
+# turn_detection_threshold = 0.5
+# turn_detection_silence_ms = 800
+
 # Quick Capture uses the verified spare falling-edge input on the 40Pin header:
 # Luckfox Pico Zero physical pin 38 (GPIO3). GPIO32/GPIO33 remain legacy wakeup.
 [quick_capture]
@@ -52,6 +74,11 @@ screen_memory_ttl = "90d"
 # Accepted device_type values: "iOS", "Android", "macOS", "windows", or "linux".
 [device]
 device_type = "iOS"
+
+# Keep the RK628 CSI capture stream enabled between screenshots. Enabling this
+# reduces screenshot latency but increases idle power consumption.
+[frame_service]
+keep_streamon = false
 
 # Tiered loop guard and termination policy. Zero-valued numeric fields use defaults.
 [termination_policy]
@@ -75,8 +102,14 @@ provider = "openai-main"
 model = "gpt-5.5"
 # temperature = 0.2
 # max_response_tokens = 1000
-# Responses API experiment: local ContextManager history, store=false.
+# Responses API experiments: "responses" uses local history with store=false;
+# "responses_stateful" lets the provider retain and chain context.
 # api_mode = "responses"
+# api_mode = "responses_stateful"
+# responses_context_management = "compaction"
+# responses_compact_threshold = 0
+# responses_truncation = "auto"
+# responses_include = ["reasoning.encrypted_content"]
 # Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
 # context_window = 128000
 # model_max_output_tokens = 8192
@@ -96,6 +129,8 @@ model = "gpt-5.5"
 # For Moonshot Kimi K3, use the "kimi" (global) or "kimi-cn" (mainland China)
 # provider. Each uses its built-in Moonshot endpoint, so only model + api_key
 # are needed. Custom base_url values are not supported for Kimi providers.
+# Moonshot's official endpoint supports Chat Completions, not /responses, so
+# keep api_mode unset (or set it to "chat_completions").
 # [model_providers.kimi-main]
 # type = "kimi"           # global: https://api.moonshot.ai/v1
 # type = "kimi-cn"        # mainland China: https://api.moonshot.cn/v1
@@ -106,6 +141,9 @@ model = "gpt-5.5"
 # For Volcengine Ark (Doubao), use the "volcengine" provider. It uses its
 # built-in OpenAI-compatible endpoint, so only model + api_key are needed.
 # Custom base_url values are not supported for Volcengine providers.
+# Ark supports api_mode = "responses_stateful" with store + previous_response_id,
+# without requiring caching. Aiden does not send its OpenAI-specific compaction
+# array or truncation setting to Ark; Ark's own context_management schema differs.
 # [model_providers.ark-main]
 # type = "volcengine"      # https://ark.cn-beijing.volces.com/api/v3
 # api_key = "$ARK_API_KEY"
@@ -122,7 +160,7 @@ model = "gpt-5.5"
 # sample_rate = 16000
 # channels = 1
 # bit_width = 16
-# playback_backend = "auto" # "auto" uses audio_service on board, local player in PC/ADB agent mode; "audio_service" and "local" force a backend
+# backend = "auto" # Selects recording and playback together: audio_service on board, local recorder/player in PC/ADB agent mode
 
 # Audio archive configuration (optional)
 # When enabled, saves audio recordings to disk for playback in web UI.

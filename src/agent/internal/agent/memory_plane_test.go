@@ -62,6 +62,29 @@ func TestPersistentEpisodeRecorderWritesIncrementalEventsAndMarksInterrupted(t *
 	}
 }
 
+func TestMemoryPlaneStartsBothProcessorsBeforeSharedWorker(t *testing.T) {
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	if err := plane.StartMemoryWorker(&episodeMemoryScriptedModel{}); err != nil {
+		t.Fatalf("StartMemoryWorker() error = %v", err)
+	}
+	defer plane.StopEpisodeMemory()
+	defer plane.StopNotificationMemory()
+
+	plane.memoryWorkerMu.RLock()
+	worker := plane.memoryWorker
+	episode := plane.episodeProcessor
+	notification := plane.notificationProcessor
+	plane.memoryWorkerMu.RUnlock()
+	if worker == nil || episode == nil || notification == nil {
+		t.Fatalf("worker=%p episode=%p notification=%p, want all initialized", worker, episode, notification)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if !worker.started || len(worker.processors) != 2 || worker.processors[0] != episode || worker.processors[1] != notification {
+		t.Fatalf("started=%v processors=%#v, want [episode notification]", worker.started, worker.processors)
+	}
+}
+
 func TestTaskEpisodeIndexSummaryOmitsScreenshotBase64(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")

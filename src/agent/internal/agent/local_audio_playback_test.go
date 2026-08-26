@@ -16,7 +16,7 @@ import (
 	"aiden-agent/internal/agent/tts"
 )
 
-func TestLocalAudioPlaybackBackendWritesWAVAndCleansUp(t *testing.T) {
+func TestLocalAudioBackendWritesWAVAndCleansUp(t *testing.T) {
 	oldLookPath := localAudioLookPath
 	oldCommandContext := localAudioCommandContext
 	defer func() {
@@ -76,7 +76,7 @@ func TestLocalAudioPlaybackBackendWritesWAVAndCleansUp(t *testing.T) {
 	}
 }
 
-func TestLocalAudioPlaybackBackendReportsMissingPlayer(t *testing.T) {
+func TestLocalAudioBackendReportsMissingPlayer(t *testing.T) {
 	oldLookPath := localAudioLookPath
 	defer func() { localAudioLookPath = oldLookPath }()
 	localAudioLookPath = func(name string) (string, error) {
@@ -88,6 +88,61 @@ func TestLocalAudioPlaybackBackendReportsMissingPlayer(t *testing.T) {
 	if err == nil {
 		t.Fatal("StartPlayback() error = nil, want missing local player")
 	}
+}
+
+func TestLocalAudioRecordingBackendStreamsPCMAndStops(t *testing.T) {
+	oldLookPath := localAudioRecorderLookPath
+	oldCommandContext := localAudioRecorderCommandContext
+	defer func() {
+		localAudioRecorderLookPath = oldLookPath
+		localAudioRecorderCommandContext = oldCommandContext
+	}()
+	localAudioRecorderLookPath = func(string) (string, error) { return "helper", nil }
+	localAudioRecorderCommandContext = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestLocalAudioRecordingHelper")
+		cmd.Env = append(os.Environ(), "AIDEN_LOCAL_AUDIO_RECORD_HELPER=1")
+		return cmd
+	}
+
+	backend := newLocalAudioRecordingBackend(nil)
+	result, err := backend.StartRecording(AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err != nil {
+		t.Fatalf("StartRecording() error = %v", err)
+	}
+	chunk, err := backend.ReadRecordChunk(result.SessionID, 1000)
+	if err != nil {
+		t.Fatalf("ReadRecordChunk() error = %v", err)
+	}
+	if string(chunk.PCM) != "local-pcm" {
+		t.Fatalf("PCM = %q, want local-pcm", chunk.PCM)
+	}
+	if err := backend.StopRecording(result.SessionID); err != nil {
+		t.Fatalf("StopRecording() error = %v", err)
+	}
+}
+
+func TestSendLocalRecordingChunkPrefersBufferedDeliveryAfterStop(t *testing.T) {
+	session := &localAudioRecordingSession{
+		chunks: make(chan []byte, 1),
+		stopCh: make(chan struct{}),
+	}
+	close(session.stopCh)
+
+	want := []byte("recording-tail")
+	if !sendLocalRecordingChunk(session, want) {
+		t.Fatal("sendLocalRecordingChunk() = false, want already-read PCM delivered")
+	}
+	if got := <-session.chunks; string(got) != string(want) {
+		t.Fatalf("delivered PCM = %q, want %q", got, want)
+	}
+}
+
+func TestLocalAudioRecordingHelper(t *testing.T) {
+	if os.Getenv("AIDEN_LOCAL_AUDIO_RECORD_HELPER") == "1" {
+		_, _ = os.Stdout.Write([]byte("local-pcm"))
+		os.Exit(0)
+	}
+	t.Skip()
 }
 
 func TestValidateLocalPlaybackFormatRejectsWAVHeaderOverflow(t *testing.T) {
@@ -140,7 +195,7 @@ func TestValidateLocalPlaybackFormatRejectsWAVHeaderOverflow(t *testing.T) {
 	}
 }
 
-func TestLocalAudioPlaybackBackendRejectsRIFFDataOverflow(t *testing.T) {
+func TestLocalAudioBackendRejectsRIFFDataOverflow(t *testing.T) {
 	oldLookPath := localAudioLookPath
 	defer func() { localAudioLookPath = oldLookPath }()
 	localAudioLookPath = func(name string) (string, error) {
@@ -176,7 +231,7 @@ func TestLocalAudioPlaybackBackendRejectsRIFFDataOverflow(t *testing.T) {
 	}
 }
 
-func TestLocalAudioPlaybackBackendFinalizationFailureCleansUp(t *testing.T) {
+func TestLocalAudioBackendFinalizationFailureCleansUp(t *testing.T) {
 	oldLookPath := localAudioLookPath
 	oldCommandContext := localAudioCommandContext
 	defer func() {
@@ -225,7 +280,7 @@ func TestLocalAudioPlaybackBackendFinalizationFailureCleansUp(t *testing.T) {
 	}
 }
 
-func TestLocalAudioPlaybackBackendWriteFailureCleansUp(t *testing.T) {
+func TestLocalAudioBackendWriteFailureCleansUp(t *testing.T) {
 	oldLookPath := localAudioLookPath
 	defer func() { localAudioLookPath = oldLookPath }()
 	localAudioLookPath = func(name string) (string, error) {
@@ -267,7 +322,7 @@ func TestLocalAudioPlaybackBackendWriteFailureCleansUp(t *testing.T) {
 	}
 }
 
-func TestLocalAudioPlaybackBackendSerializesPlayerAdmission(t *testing.T) {
+func TestLocalAudioBackendSerializesPlayerAdmission(t *testing.T) {
 	oldLookPath := localAudioLookPath
 	oldCommandContext := localAudioCommandContext
 	defer func() {

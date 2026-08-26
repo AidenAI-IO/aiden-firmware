@@ -2,6 +2,7 @@ package messages
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -44,6 +45,8 @@ func (r MessageRole) ToStandardRole() llms.ChatMessageType {
 type Message struct {
 	Role                   MessageRole             `json:"role"`
 	Content                string                  `json:"content"`
+	Timestamp              time.Time               `json:"timestamp"`
+	Usage                  *Usage                  `json:"usage,omitempty"`
 	ToolCalls              []ToolCall              `json:"tool_calls,omitempty"`
 	ToolResults            []ToolResult            `json:"tool_results,omitempty"`
 	RecoverableToolResults []RecoverableToolResult `json:"recoverable_tool_results,omitempty"`
@@ -52,10 +55,34 @@ type Message struct {
 	// later stateless request can submit it verbatim. It is deliberately not
 	// converted into ordinary chat content.
 	ResponsesReasoningItems []json.RawMessage `json:"responses_reasoning_items,omitempty"`
+	// ResponsesResponseID identifies the provider-owned response that produced
+	// this assistant/tool-call message. Stateful Responses mode uses it as the
+	// anchor for the next incremental request.
+	ResponsesResponseID string `json:"responses_response_id,omitempty"`
+	// ResponsesOutputItems preserves the complete raw Responses output for
+	// stateless replay, including item fields that the common message model does
+	// not represent (for example phase and encrypted reasoning payloads).
+	ResponsesOutputItems []json.RawMessage `json:"responses_output_items,omitempty"`
+	// ResponsesAssistantPhase preserves the Responses assistant phase when a
+	// raw output item is unavailable or a gateway omits it from persisted data.
+	ResponsesAssistantPhase string `json:"responses_assistant_phase,omitempty"`
+}
+
+// Usage is the provider-neutral token usage recorded for an LLM response.
+// Providers may use different names for input/output tokens; they are
+// normalized to these three fields before being persisted with the message.
+type Usage struct {
+	TotalTokens  int `json:"total_tokens"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 func (msg Message) Clone() Message {
 	cloned := msg
+	if msg.Usage != nil {
+		usage := *msg.Usage
+		cloned.Usage = &usage
+	}
 	if len(msg.ToolCalls) > 0 {
 		cloned.ToolCalls = append([]ToolCall(nil), msg.ToolCalls...)
 	}
@@ -79,6 +106,12 @@ func (msg Message) Clone() Message {
 		cloned.ResponsesReasoningItems = make([]json.RawMessage, len(msg.ResponsesReasoningItems))
 		for i := range msg.ResponsesReasoningItems {
 			cloned.ResponsesReasoningItems[i] = append(json.RawMessage(nil), msg.ResponsesReasoningItems[i]...)
+		}
+	}
+	if len(msg.ResponsesOutputItems) > 0 {
+		cloned.ResponsesOutputItems = make([]json.RawMessage, len(msg.ResponsesOutputItems))
+		for i := range msg.ResponsesOutputItems {
+			cloned.ResponsesOutputItems[i] = append(json.RawMessage(nil), msg.ResponsesOutputItems[i]...)
 		}
 	}
 	return cloned

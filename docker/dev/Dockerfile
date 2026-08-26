@@ -9,6 +9,11 @@ COPY src/agent/ ./
 RUN mkdir -p /out \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/agent ./cmd/daemon
 
+FROM node:16-bookworm AS wetty-builder
+
+RUN npm install --global --omit=optional wetty@2.5.0 sass@1.69.7 \
+    && npm cache clean --force
+
 FROM debian:bookworm-slim AS runtime-base
 
 RUN apt-get update \
@@ -85,6 +90,8 @@ FROM runtime-base AS runtime
 
 COPY --from=agent-builder /out/agent /oem/usr/bin/agent
 COPY --from=config-web-builder /out/config_web /usr/local/bin/config_web
+COPY --from=wetty-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=wetty-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=runtime-tools-builder /out/fq /usr/bin/fq
 COPY --from=runtime-tools-builder /out/rg /usr/bin/rg
 COPY --from=runtime-tools-builder /out/yq /usr/bin/yq
@@ -93,12 +100,14 @@ COPY src/agent/config/skills/ /oem/usr/share/aiden/skills/
 COPY docker/dev/agent.toml /opt/aiden/defaults/agent.toml
 COPY docker/dev/agent-service.sh /usr/local/bin/aiden-agent-service
 COPY docker/dev/entrypoint.sh /usr/local/bin/aiden-docker-entrypoint
+COPY docker/dev/wetty /usr/local/bin/wetty
 
 RUN chmod 0755 \
         /oem/usr/bin/agent \
         /usr/local/bin/config_web \
         /usr/local/bin/aiden-agent-service \
-        /usr/local/bin/aiden-docker-entrypoint
+        /usr/local/bin/aiden-docker-entrypoint \
+        /usr/local/bin/wetty
 
 ENV AIDEN_AGENT_BIN=/oem/usr/bin/agent \
     AIDEN_AGENT_INIT_SCRIPT=/usr/local/bin/aiden-agent-service \

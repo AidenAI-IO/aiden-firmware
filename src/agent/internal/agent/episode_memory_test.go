@@ -17,13 +17,13 @@ func (panickingEpisodeMemoryBatchProcessor) Initialize() error { return nil }
 func (panickingEpisodeMemoryBatchProcessor) NextRunAt(context.Context) (time.Time, error) {
 	return time.Time{}, nil
 }
-func (panickingEpisodeMemoryBatchProcessor) ProcessBatch(context.Context, int, func() bool) (episodeMemoryBatchResult, error) {
+func (panickingEpisodeMemoryBatchProcessor) ProcessBatch(context.Context, func() bool) (MemoryBatchResult, error) {
 	panic("batch failed")
 }
 func (panickingEpisodeMemoryBatchProcessor) logBatchError(error) {}
 
 func TestEpisodeMemoryWorkerCleansUpPanickingBatch(t *testing.T) {
-	worker := newEpisodeMemoryWorker(panickingEpisodeMemoryBatchProcessor{})
+	worker := newMemoryWorker(panickingEpisodeMemoryBatchProcessor{}, defaultMemoryWorkerIdleDelay)
 	worker.mu.Lock()
 	batchCtx, cancel := worker.startBatchLocked(context.Background())
 	worker.mu.Unlock()
@@ -61,15 +61,14 @@ func TestEpisodeMemoryWorkerCleansUpPanickingBatch(t *testing.T) {
 func TestProcessEpisodeMemoryNowContinuesAcrossBoundedBatches(t *testing.T) {
 	ctx := context.Background()
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	response := `{
-	  "episode_assessment":{"goal_result":"achieved","reason":"The app opened.","evidence_refs":["result"]},
-	  "candidates":[]
-	}`
-	responses := make([]string, episodeMemoryBatchLimit+1)
-	for index := range responses {
-		responses[index] = response
+	proposal := episodeMemoryProposal{EpisodeAssessment: episodeMemoryAssessment{GoalResult: episodeGoalAchieved, Reason: "The app opened.", EvidenceRefs: []string{"result"}}}
+	firstResults := make([]episodeMemoryBatchResult, 0, episodeMemoryBatchLimit)
+	for index := 0; index < episodeMemoryBatchLimit; index++ {
+		firstResults = append(firstResults, episodeMemoryBatchResult{EpisodeID: fmt.Sprintf("ep_batch_%02d", index), Proposal: proposal})
 	}
-	model := &episodeMemoryScriptedModel{responses: responses}
+	firstResponse, _ := json.Marshal(episodeMemoryBatchResponse{Results: firstResults})
+	secondResponse, _ := json.Marshal(episodeMemoryBatchResponse{Results: []episodeMemoryBatchResult{{EpisodeID: fmt.Sprintf("ep_batch_%02d", episodeMemoryBatchLimit), Proposal: proposal}}})
+	model := &episodeMemoryScriptedModel{responses: []string{string(firstResponse), string(secondResponse)}}
 	processor := newEpisodeMemoryProcessor(plane, model)
 	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
 	if err := processor.Initialize(); err != nil {
@@ -91,8 +90,9 @@ func TestProcessEpisodeMemoryNowContinuesAcrossBoundedBatches(t *testing.T) {
 			t.Fatalf("AddEpisode(%s) error = %v", episodeID, err)
 		}
 	}
-	worker := newEpisodeMemoryWorker(processor)
-	plane.episodeMemory = worker
+	worker := newMemoryWorker(processor, defaultMemoryWorkerIdleDelay)
+	plane.memoryWorker = worker
+	plane.episodeProcessor = processor
 	status, _, err := plane.ProcessEpisodeMemoryNow(ctx, fmt.Sprintf("ep_batch_%02d", episodeMemoryBatchLimit))
 	if err != nil {
 		t.Fatalf("ProcessEpisodeMemoryNow() error = %v", err)
@@ -100,8 +100,102 @@ func TestProcessEpisodeMemoryNowContinuesAcrossBoundedBatches(t *testing.T) {
 	if status.Status != episodeMemoryStatusDone {
 		t.Fatalf("status = %q, want done", status.Status)
 	}
-	if got := model.callCount(); got != episodeMemoryBatchLimit+1 {
-		t.Fatalf("model calls = %d, want %d", got, episodeMemoryBatchLimit+1)
+	if got := model.callCount(); got != 2 {
+		t.Fatalf("model calls = %d, want two bounded batch calls", got)
+	}
+}
+
+func TestEpisodeMemoryProcessorBatchesEligibleEpisodesIntoOneModelCall(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "results":[
+    {
+      "episode_id":"ep_batch_first",
+      "proposal":{"episode_assessment":{"goal_result":"achieved","reason":"Settings opened.","evidence_refs":["ep_batch_first_result"]},"candidates":[]}
+    },
+    {
+      "episode_id":"ep_batch_second",
+      "proposal":{"episode_assessment":{"goal_result":"achieved","reason":"Clock opened.","evidence_refs":["ep_batch_second_result"]},"candidates":[]}
+    }
+  ]
+}`}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	for index, app := range []string{"Settings", "Clock"} {
+		episodeID := []string{"ep_batch_first", "ep_batch_second"}[index]
+		endedAt := time.Date(2026, 8, 14, 0, 0, index+1, 0, time.UTC)
+		if _, err := plane.episodes.AddEpisode(ctx, TaskEpisode{
+			ID: episodeID, Status: "active",
+			StartedAt: endedAt.Add(-time.Second).Format(time.RFC3339Nano),
+			EndedAt:   endedAt.Format(time.RFC3339Nano),
+			UserGoal:  "Open " + app,
+			Events: []TaskEpisodeEvent{
+				{EventID: episodeID + "_call", Type: runEventToolCall, ToolName: "open_app"},
+				{EventID: episodeID + "_result", Type: "tool_result", ToolName: "open_app", Observation: app + " opened"},
+			},
+		}); err != nil {
+			t.Fatalf("AddEpisode(%s) error = %v", episodeID, err)
+		}
+	}
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
+		t.Fatalf("ProcessBatch() error = %v", err)
+	}
+	if got := model.callCount(); got != 1 {
+		t.Fatalf("model calls = %d, want one call for the Episode batch", got)
+	}
+	state, err := processor.state.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	for _, episodeID := range []string{"ep_batch_first", "ep_batch_second"} {
+		if status := state.Episodes[episodeMemoryStateKey(episodeID, episodeMemoryExtractorVersion)]; status.Status != episodeMemoryStatusDone {
+			t.Fatalf("status for %s = %#v, want done", episodeID, status)
+		}
+	}
+}
+
+func TestEpisodeMemoryProcessorKeepsValidBatchResultsWhenOneProposalIsInvalid(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "results":[
+    {"episode_id":"ep_valid","proposal":{"episode_assessment":{"goal_result":"achieved","reason":"Settings opened.","evidence_refs":["ep_valid_result"]},"candidates":[]}},
+    {"episode_id":"ep_invalid","proposal":{"episode_assessment":{"goal_result":"achieved","reason":"Missing direct evidence.","evidence_refs":[]},"candidates":[]}}
+  ]
+}`}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	for index, episodeID := range []string{"ep_valid", "ep_invalid"} {
+		endedAt := time.Date(2026, 8, 14, 1, 0, index, 0, time.UTC)
+		if _, err := plane.episodes.AddEpisode(ctx, TaskEpisode{
+			ID: episodeID, Status: "active", StartedAt: endedAt.Add(-time.Second).Format(time.RFC3339Nano), EndedAt: endedAt.Format(time.RFC3339Nano), UserGoal: "Open Settings",
+			Events: []TaskEpisodeEvent{{EventID: episodeID + "_call", Type: runEventToolCall, ToolName: "open_app"}, {EventID: episodeID + "_result", Type: "tool_result", ToolName: "open_app", Observation: "Settings opened"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	state, err := processor.state.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Episodes[episodeMemoryStateKey("ep_valid", episodeMemoryExtractorVersion)].Status; got != episodeMemoryStatusDone {
+		t.Fatalf("valid status = %q, want done", got)
+	}
+	if got := state.Episodes[episodeMemoryStateKey("ep_invalid", episodeMemoryExtractorVersion)].Status; got != episodeMemoryStatusIgnored {
+		t.Fatalf("invalid status = %q, want ignored", got)
+	}
+	if got := model.callCount(); got != 1 {
+		t.Fatalf("model calls = %d, want one batch call", got)
 	}
 }
 
@@ -129,8 +223,9 @@ func TestProcessEpisodeMemoryNowWaitsForBusyWorker(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AddEpisode() error = %v", err)
 	}
-	worker := newEpisodeMemoryWorker(processor)
-	plane.episodeMemory = worker
+	worker := newMemoryWorker(processor, defaultMemoryWorkerIdleDelay)
+	plane.memoryWorker = worker
+	plane.episodeProcessor = processor
 	backgroundDone := make(chan error, 1)
 	go func() {
 		_, err := worker.ProcessNow(ctx)
@@ -198,7 +293,7 @@ func TestEpisodeMemoryProcessorPrefiltersNoiseAndProcessesSuccessfulDeviceEpisod
 		}
 	}
 
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
 	if got := model.callCount(); got != 1 {
@@ -226,7 +321,6 @@ func TestEpisodeMemoryProcessorCreatesMultipleTypedMemoriesWithOneModelCall(t *t
       "lesson_key":"open_display_settings",
       "type":"procedure",
       "action":"create",
-	  "retention":"durable",
       "memory_revision":1,
       "unresolved_conflict":false,
       "situation":"When the user wants the display settings on this device",
@@ -240,7 +334,6 @@ func TestEpisodeMemoryProcessorCreatesMultipleTypedMemoriesWithOneModelCall(t *t
       "lesson_key":"settings_display_location",
       "type":"fact",
       "action":"create",
-	  "retention":"durable",
       "unresolved_conflict":false,
       "situation":"In the Settings app on this device",
       "guidance":"Use the Display entry to reach display controls",
@@ -270,11 +363,11 @@ func TestEpisodeMemoryProcessorCreatesMultipleTypedMemoriesWithOneModelCall(t *t
 	if _, err := plane.episodes.AddEpisode(ctx, episode); err != nil {
 		t.Fatalf("AddEpisode() error = %v", err)
 	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
-	if got := model.callCount(); got != 2 {
-		t.Fatalf("model calls = %d, want extraction and retention audit", got)
+	if got := model.callCount(); got != 1 {
+		t.Fatalf("model calls = %d, want 1", got)
 	}
 	items, err := plane.device.readAll()
 	if err != nil {
@@ -312,27 +405,29 @@ func TestEpisodeMemoryProcessorUpdatesRevisionAndQuarantinesUnresolvedConflict(t
 	}); err != nil {
 		t.Fatalf("Upsert(existing) error = %v", err)
 	}
-	model := &episodeMemoryScriptedModel{responses: []string{
-		`{
+	model := &episodeMemoryScriptedModel{responses: []string{`{
+  "results":[
+    {"episode_id":"ep_update","proposal":{
   "episode_assessment":{"goal_result":"achieved","reason":"The Display entry opened the controls.","evidence_refs":["ep_update_result"]},
   "candidates":[{
-    "lesson_key":"settings_display_location_update","type":"fact","action":"update","retention":"durable","memory_id":"devmem_settings_fact","memory_revision":1,
+    "lesson_key":"settings_display_location_update","type":"fact","action":"update","memory_id":"devmem_settings_fact","memory_revision":1,
     "unresolved_conflict":false,"situation":"In Settings on device A","guidance":"Open the Display entry from the main list","expected_effect":"Display controls are visible",
     "scope":{"device_id":"device_a","app_name":"Settings","page_name":"main"},"tags":["settings","display"],
     "evidence_refs":["ep_update_result"]
   }]
-}`,
-		`{
+}},
+    {"episode_id":"ep_conflict","proposal":{
   "episode_assessment":{"goal_result":"unknown","reason":"The same scope now shows a different location and there is not enough evidence to condition it.","evidence_refs":["ep_conflict_result"]},
   "candidates":[{
-    "lesson_key":"settings_display_location_conflict","type":"fact","action":"update","retention":"durable","memory_id":"devmem_settings_fact","memory_revision":2,
+    "lesson_key":"settings_display_location_conflict","type":"fact","action":"update","memory_id":"devmem_settings_fact","memory_revision":1,
     "unresolved_conflict":true,"conflict_reason":"The same Settings scope showed an incompatible location without a distinguishing precondition.",
     "situation":"In Settings on device A","guidance":"Do not rely on one fixed Display location until the differing UI states can be distinguished","expected_effect":"The agent avoids following an unsafe location rule",
     "scope":{"device_id":"device_a","app_name":"Settings"},"tags":["settings","display"],
     "evidence_refs":["ep_conflict_result"]
   }]
-}`,
-	}}
+}}
+  ]
+}`}}
 	processor := newEpisodeMemoryProcessor(plane, model)
 	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
 	if err := processor.Initialize(); err != nil {
@@ -360,13 +455,43 @@ func TestEpisodeMemoryProcessorUpdatesRevisionAndQuarantinesUnresolvedConflict(t
 			t.Fatalf("AddEpisode(%d) error = %v", index, err)
 		}
 	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
-	if got := model.callCount(); got != 4 {
-		t.Fatalf("model calls = %d, want extraction and retention audit per Episode", got)
+	if got := model.callCount(); got != 1 {
+		t.Fatalf("model calls = %d, want one for both Episodes", got)
 	}
 	updated, found, err := plane.device.Get(ctx, "devmem_settings_fact")
+	if err != nil || !found {
+		t.Fatalf("Get(first batch) found=%v error=%v", found, err)
+	}
+	if updated.Status != "active" || updated.Revision != 2 {
+		t.Fatalf("first batch memory = %#v, want active revision 2", updated)
+	}
+	state, err := processor.state.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if status := state.Episodes[episodeMemoryStateKey("ep_conflict", episodeMemoryExtractorVersion)]; status.Status != episodeMemoryStatusRetry || status.Proposal != nil {
+		t.Fatalf("conflicting batch status = %#v, want retry without stale proposal", status)
+	}
+	model.appendResponses(`{
+  "episode_assessment":{"goal_result":"unknown","reason":"The same scope now shows a different location and there is not enough evidence to condition it.","evidence_refs":["ep_conflict_result"]},
+  "candidates":[{
+    "lesson_key":"settings_display_location_conflict","type":"fact","action":"update","memory_id":"devmem_settings_fact","memory_revision":2,
+    "unresolved_conflict":true,"conflict_reason":"The same Settings scope showed an incompatible location without a distinguishing precondition.",
+    "situation":"In Settings on device A","guidance":"Do not rely on one fixed Display location until the differing UI states can be distinguished","expected_effect":"The agent avoids following an unsafe location rule",
+    "scope":{"device_id":"device_a","app_name":"Settings"},"tags":["settings","display"],
+    "evidence_refs":["ep_conflict_result"]
+  }]
+}`)
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
+		t.Fatalf("ProcessBatch(retry) error = %v", err)
+	}
+	if got := model.callCount(); got != 2 {
+		t.Fatalf("model calls after revision collision = %d, want one batch call plus one focused retry", got)
+	}
+	updated, found, err = plane.device.Get(ctx, "devmem_settings_fact")
 	if err != nil || !found {
 		t.Fatalf("Get(updated) found=%v error=%v", found, err)
 	}
@@ -418,7 +543,7 @@ func TestEpisodeMemoryProcessorResumesPersistedProposalWithoutCallingModelAgain(
 	}); err != nil {
 		t.Fatalf("SetEpisode(proposed) error = %v", err)
 	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
 	if got := model.callCount(); got != 0 {
@@ -431,7 +556,7 @@ func TestEpisodeMemoryProcessorResumesPersistedProposalWithoutCallingModelAgain(
 	if len(items) != 1 || items[0].LessonKey != "screen_dimensions" {
 		t.Fatalf("resumed memories = %#v, want persisted proposal applied once", items)
 	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch(second) error = %v", err)
 	}
 	items, err = plane.device.readAll()
@@ -485,7 +610,7 @@ func TestEpisodeMemoryProcessorDoesNotCarryErrorIntoNextPersistedProposal(t *tes
 		t.Fatalf("SetEpisode(proposed) error = %v", err)
 	}
 
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
 	if got := model.callCount(); got != 1 {
@@ -517,13 +642,13 @@ func TestEpisodeMemoryProcessorUsesGoalResultToRejectFalseSuccessProcedure(t *te
   "episode_assessment":{"goal_result":"not_achieved","reason":"The user said the requested message was not sent.","evidence_refs":["ep_false_success_steer"]},
   "candidates":[
     {
-      "lesson_key":"send_message_path","type":"procedure","action":"create","retention":"durable","unresolved_conflict":false,
+      "lesson_key":"send_message_path","type":"procedure","action":"create","unresolved_conflict":false,
       "situation":"When sending a message","guidance":"Tap Send after entering text","expected_effect":"The requested message is sent",
       "scope":{"device_id":"device_a","app_name":"Messages","goal_pattern":"send message"},"tags":["messages"],
       "evidence_refs":["ep_false_success_call","ep_false_success_result"]
     },
     {
-      "lesson_key":"verify_message_sent","type":"failure","action":"create","retention":"durable","unresolved_conflict":false,
+      "lesson_key":"verify_message_sent","type":"failure","action":"create","unresolved_conflict":false,
       "situation":"After attempting to send a message","guidance":"Verify the requested message appears as sent before reporting completion","expected_effect":"The agent does not claim success when the message was not sent",
       "scope":{"device_id":"device_a","app_name":"Messages"},"tags":["messages","verify-before-finish"],
       "evidence_refs":["ep_false_success_result","ep_false_success_steer"]
@@ -548,7 +673,7 @@ func TestEpisodeMemoryProcessorUsesGoalResultToRejectFalseSuccessProcedure(t *te
 	if _, err := plane.episodes.AddEpisode(ctx, episode); err != nil {
 		t.Fatalf("AddEpisode() error = %v", err)
 	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
 	items, err := plane.device.readAll()
@@ -564,65 +689,6 @@ func TestEpisodeMemoryProcessorUsesGoalResultToRejectFalseSuccessProcedure(t *te
 	}
 	if assessment := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)].Assessment; assessment == nil || assessment.GoalResult != "not_achieved" {
 		t.Fatalf("persisted assessment = %#v, want not_achieved audit result", assessment)
-	}
-}
-
-func TestEpisodeMemoryApplyProposalCreatesNewTypeWhenUpdateTargetTypeDiffers(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	if _, err := plane.device.Upsert(ctx, DeviceMemoryItem{
-		ID: "devmem_existing_procedure", Type: "procedure", Status: deviceMemoryStatusActive, Revision: 1,
-		ExtractorVersion: episodeMemoryExtractorVersion, LessonKey: "verified_save_flow",
-		Title: "When saving a note", Summary: "Use the verified save flow",
-		Content:  "Situation: When saving a note\nGuidance: Use the verified save flow\nExpected effect: The note persists",
-		DeviceID: "device_a", AppName: "QA Notes", PageName: "Editor",
-		Applicability: map[string]string{"device_id": "device_a", "app_name": "QA Notes", "page_name": "Editor"},
-		EvidenceRefs:  []MemorySourceRef{{Type: "episode", ID: "ep_prior_success", EventIDs: []string{"prior_result"}}},
-	}); err != nil {
-		t.Fatalf("Upsert(existing) error = %v", err)
-	}
-	episode := TaskEpisode{
-		ID: "ep_failure_guard", Status: "completed", UserGoal: "Persist the changed note value",
-		DeviceScope: map[string]string{"device_id": "device_a", "app_name": "QA Notes", "page_name": "Editor"},
-		Outcome:     TaskEpisodeOutcome{Success: false, FinalState: "The old value was visible after reopening."},
-		Events: []TaskEpisodeEvent{
-			{EventID: "failure_call", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: "reopen"},
-			{EventID: "failure_result", Type: "tool_result", ToolName: "touch_gesture", IsError: true, Observation: "Reopening showed the old value; persistence failed."},
-		},
-	}
-	proposal := episodeMemoryProposal{
-		EpisodeAssessment: episodeMemoryAssessment{
-			GoalResult: episodeGoalNotAchieved, Reason: "Final verification failed.", EvidenceRefs: []string{"failure_result"},
-		},
-		ExistingRevisions: map[string]int{"devmem_existing_procedure": 1},
-		Candidates: []episodeMemoryCandidate{{
-			LessonKey: "persistence_failure_guard", Type: episodeMemoryTypeFailure, Action: episodeMemoryActionUpdate,
-			MemoryID: "devmem_existing_procedure", MemoryRevision: 1, Retention: episodeMemoryRetentionDurable,
-			Situation: "When a saved note must be verified", Guidance: "Reopen the note and verify the changed value before reporting success",
-			ExpectedEffect: "A reverted value is detected before claiming completion",
-			Scope:          map[string]string{"device_id": "device_a", "app_name": "QA Notes", "page_name": "Editor"},
-			EvidenceRefs:   []string{"failure_result"},
-		}},
-	}
-
-	if err := (&episodeMemoryProcessor{plane: plane}).applyProposal(ctx, episode, proposal); err != nil {
-		t.Fatalf("applyProposal() error = %v", err)
-	}
-	items, err := plane.device.readAll()
-	if err != nil {
-		t.Fatalf("readAll() error = %v", err)
-	}
-	var failure *DeviceMemoryItem
-	for index := range items {
-		if items[index].Type == string(episodeMemoryTypeFailure) {
-			failure = &items[index]
-		}
-	}
-	if failure == nil {
-		t.Fatalf("device memories = %#v, want a new failure guard instead of a no-op update", items)
-	}
-	if failure.ID == "devmem_existing_procedure" {
-		t.Fatalf("failure guard overwrote procedure memory: %#v", *failure)
 	}
 }
 
@@ -652,7 +718,7 @@ func TestEpisodeMemoryProcessorAcceptsNonCanceledStructuredErrorWithoutPairedDev
 			t.Fatalf("AddEpisode(%s) error = %v", episode.ID, err)
 		}
 	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
 	if got := model.callCount(); got != 1 {
@@ -687,8 +753,10 @@ func TestEpisodeMemoryModelInputUsesDirectEvidenceWithoutVerifierState(t *testin
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if _, err := processor.proposeEpisode(ctx, stored); err != nil {
-		t.Fatalf("proposeEpisode() error = %v", err)
+	if _, errs, err := processor.proposeEpisodeBatch(ctx, []TaskEpisode{stored}); err != nil {
+		t.Fatalf("proposeEpisodeBatch() error = %v", err)
+	} else if errs[stored.ID] != nil {
+		t.Fatalf("proposeEpisodeBatch() proposal error = %v", errs[stored.ID])
 	}
 	prompt := model.firstCallText()
 	for _, forbidden := range []string{"SECRET_VERIFIER_REASON", "SECRET_OBSERVED_APP", "SECRET_OBSERVED_PAGE", "verifier_reason", "observed_state"} {
@@ -730,7 +798,7 @@ func TestEpisodeMemoryWorkerCancelsBackgroundModelWhenForegroundTaskStarts(t *te
 	if _, err := plane.episodes.AddEpisode(ctx, episode); err != nil {
 		t.Fatalf("AddEpisode() error = %v", err)
 	}
-	worker := newEpisodeMemoryWorker(processor)
+	worker := newMemoryWorker(processor, defaultMemoryWorkerIdleDelay)
 	worker.idleDelay = 10 * time.Millisecond
 	if err := worker.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -780,7 +848,7 @@ func TestEpisodeMemoryProcessorRequeuesProposalWhenMemoryRevisionChanged(t *test
 	model := &episodeMemoryScriptedModel{responses: []string{`{
   "episode_assessment":{"goal_result":"achieved","reason":"The tool result confirms the current location.","evidence_refs":["ep_revision_result"]},
   "candidates":[{
-    "lesson_key":"refresh_revision","type":"fact","action":"update","retention":"durable","memory_id":"devmem_revision","memory_revision":2,
+    "lesson_key":"refresh_revision","type":"fact","action":"update","memory_id":"devmem_revision","memory_revision":2,
     "unresolved_conflict":false,"situation":"In Settings on device A","guidance":"Open Display from the main list","expected_effect":"Display controls become visible",
     "scope":{"device_id":"device_a","app_name":"Settings"},"tags":["settings"],"evidence_refs":["ep_revision_result"]
   }]
@@ -815,7 +883,7 @@ func TestEpisodeMemoryProcessorRequeuesProposalWhenMemoryRevisionChanged(t *test
 	}); err != nil {
 		t.Fatalf("SetEpisode(stale proposed) error = %v", err)
 	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch(stale) error = %v", err)
 	}
 	if got := model.callCount(); got != 0 {
@@ -828,11 +896,11 @@ func TestEpisodeMemoryProcessorRequeuesProposalWhenMemoryRevisionChanged(t *test
 	if status := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)]; status.Status != episodeMemoryStatusRetry || status.Proposal != nil {
 		t.Fatalf("stale proposal state = %#v, want retry without old proposal", status)
 	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch(requeued) error = %v", err)
 	}
-	if got := model.callCount(); got != 2 {
-		t.Fatalf("model calls after requeue = %d, want extraction and retention audit", got)
+	if got := model.callCount(); got != 1 {
+		t.Fatalf("model calls after requeue = %d, want 1 fresh extraction", got)
 	}
 	updated, found, err := plane.device.Get(ctx, "devmem_revision")
 	if err != nil || !found || updated.Revision != 3 {
@@ -851,9 +919,9 @@ func TestMemoryPlaneNotifiesEpisodeMemoryWorkerForSuccessfulEpisode(t *testing.T
 		t.Fatalf("StartEpisodeMemory() error = %v", err)
 	}
 	defer plane.StopEpisodeMemory()
-	plane.episodeMemoryMu.RLock()
-	worker := plane.episodeMemory
-	plane.episodeMemoryMu.RUnlock()
+	plane.memoryWorkerMu.RLock()
+	worker := plane.memoryWorker
+	plane.memoryWorkerMu.RUnlock()
 	worker.mu.Lock()
 	worker.idleDelay = 10 * time.Millisecond
 	worker.mu.Unlock()
@@ -892,140 +960,8 @@ func TestEpisodeMemoryAssessmentRejectsIndirectEvidence(t *testing.T) {
 			{EventID: "ep_indirect_result", Type: "tool_result", ToolName: "launch_app", Content: "request accepted"},
 		},
 	}
-	if _, err := processor.proposeEpisode(ctx, episode); err == nil || !strings.Contains(err.Error(), "requires direct evidence") {
-		t.Fatalf("proposeEpisode() error = %v, want direct-evidence rejection", err)
-	}
-}
-
-func TestEpisodeMemoryAssessmentDowngradesUnsupportedFailureToUnknown(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	model := &episodeMemoryScriptedModel{responses: []string{`{
-  "episode_assessment":{"goal_result":"not_achieved","reason":"The final page was not verified.","evidence_refs":["open_result"]},
-  "candidates":[]
-}`}}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	episode := TaskEpisode{
-		ID: "ep_missing_verification", Status: "completed", UserGoal: "Open and verify the requested page",
-		Outcome: TaskEpisodeOutcome{Success: true, FinalAnswer: "Done."},
-		Events: []TaskEpisodeEvent{
-			{EventID: "open_call", Type: runEventToolCall, ToolName: "open_app"},
-			{EventID: "open_result", Type: "tool_result", ToolName: "open_app", Observation: "The app opened, but the requested page was not verified."},
-		},
-	}
-
-	proposal, err := processor.proposeEpisode(ctx, episode)
-	if err != nil {
-		t.Fatalf("proposeEpisode() error = %v", err)
-	}
-	if proposal.EpisodeAssessment.GoalResult != episodeGoalUnknown {
-		t.Fatalf("goal_result = %q, want unknown without structured failure evidence", proposal.EpisodeAssessment.GoalResult)
-	}
-	if len(proposal.Candidates) != 0 {
-		t.Fatalf("candidates = %#v, want none after unsupported failure downgrade", proposal.Candidates)
-	}
-}
-
-func TestAbandonedEpisodeIsNotAchievedWithoutCreatingFailureMemory(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	model := &episodeMemoryScriptedModel{responses: []string{`{
-  "episode_assessment":{"goal_result":"not_achieved","reason":"The task was abandoned before completion.","evidence_refs":["open_result"]},
-  "candidates":[{"lesson_key":"abandoned-open","type":"failure","action":"create","retention":"durable","situation":"Opening Settings was not enough.","guidance":"Do something else.","expected_effect":"The task should complete.","scope":{},"tags":[],"evidence_refs":["open_result"]}]
-}`}}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	episode := TaskEpisode{
-		ID: "ep_abandoned", Status: "abandoned", UserGoal: "Open and verify the requested page",
-		Events: []TaskEpisodeEvent{
-			{EventID: "open_call", Type: runEventToolCall, ToolName: "open_app"},
-			{EventID: "open_result", Type: "tool_result", ToolName: "open_app", Observation: "Settings opened"},
-		},
-	}
-
-	proposal, err := processor.proposeEpisode(ctx, episode)
-	if err != nil {
-		t.Fatalf("proposeEpisode() error = %v", err)
-	}
-	if proposal.EpisodeAssessment.GoalResult != episodeGoalNotAchieved {
-		t.Fatalf("goal_result = %q, want not_achieved for explicitly abandoned episode", proposal.EpisodeAssessment.GoalResult)
-	}
-	if len(proposal.Candidates) != 0 {
-		t.Fatalf("candidates = %#v, want none for abandoned episode without failure evidence", proposal.Candidates)
-	}
-}
-
-func TestExplicitlyAbandonedEpisodeCanBeNotAchievedWithoutEventRefs(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	model := &episodeMemoryScriptedModel{responses: []string{`{
-  "episode_assessment":{"goal_result":"not_achieved","reason":"The task was abandoned before completion.","evidence_refs":[]},
-  "candidates":[]
-}`}}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	proposal, err := processor.proposeEpisode(ctx, TaskEpisode{ID: "ep_abandoned_without_refs", Status: "abandoned", UserGoal: "Configure notifications"})
-	if err != nil {
-		t.Fatalf("proposeEpisode() error = %v", err)
-	}
-	if proposal.EpisodeAssessment.GoalResult != episodeGoalNotAchieved {
-		t.Fatalf("goal_result = %q, want not_achieved from explicit abandonment", proposal.EpisodeAssessment.GoalResult)
-	}
-	if len(proposal.Candidates) != 0 {
-		t.Fatalf("candidates = %#v, want none", proposal.Candidates)
-	}
-}
-
-func TestEndedEpisodeWithoutAssessmentRefsStillFinalizesProposal(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	model := &episodeMemoryScriptedModel{responses: []string{`{
-  "episode_assessment":{"goal_result":"not_achieved","reason":"The task was interrupted before completion.","evidence_refs":[]},
-  "candidates":[
-    {"lesson_key":"one","type":"procedure","action":"update","retention":"durable","memory_id":"devmem_existing","memory_revision":7},
-    {"lesson_key":"two","type":"failure","action":"create","retention":"durable"},
-    {"lesson_key":"three","type":"failure","action":"create","retention":"durable"},
-    {"lesson_key":"four","type":"failure","action":"create","retention":"durable"}
-  ]
-}`}}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	existing := []DeviceMemoryItem{{ID: "devmem_existing", Revision: 7}}
-
-	proposal, err := processor.generateEpisodeMemoryProposal(
-		ctx,
-		TaskEpisode{ID: "ep_interrupted", Status: "interrupted", UserGoal: "Complete the task"},
-		existing,
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("generateEpisodeMemoryProposal() error = %v", err)
-	}
-	if len(proposal.Candidates) != 3 {
-		t.Fatalf("candidates = %d, want cap of 3", len(proposal.Candidates))
-	}
-	if got := proposal.ExistingRevisions["devmem_existing"]; got != 7 {
-		t.Fatalf("existing revision = %d, want 7", got)
-	}
-}
-
-func TestHasDirectEpisodeFailureEvidenceUsesStructuredSignals(t *testing.T) {
-	tests := []struct {
-		name    string
-		episode TaskEpisode
-		refs    []string
-		want    bool
-	}{
-		{name: "missing verification only", episode: TaskEpisode{Status: "completed", Events: []TaskEpisodeEvent{{EventID: "result", Type: "tool_result"}}}, refs: []string{"result"}, want: false},
-		{name: "structured error", episode: TaskEpisode{Status: "completed", Events: []TaskEpisodeEvent{{EventID: "result", Type: "tool_result", IsError: true}}}, refs: []string{"result"}, want: true},
-		{name: "user correction", episode: TaskEpisode{Status: "completed", Events: []TaskEpisodeEvent{{EventID: "steer", Type: "steer"}}}, refs: []string{"steer"}, want: true},
-		{name: "abandoned without failure signal", episode: TaskEpisode{Status: "abandoned"}, want: false},
-		{name: "explicit interruption", episode: TaskEpisode{Status: "interrupted"}, want: true},
-		{name: "failure reason", episode: TaskEpisode{Status: "completed", Outcome: TaskEpisodeOutcome{FailureReason: "runtime stopped"}}, want: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := hasDirectEpisodeFailureEvidence(test.episode, test.refs); got != test.want {
-				t.Fatalf("hasDirectEpisodeFailureEvidence() = %v, want %v", got, test.want)
-			}
-		})
+	if _, errs, err := processor.proposeEpisodeBatch(ctx, []TaskEpisode{episode}); err != nil || errs[episode.ID] == nil || !strings.Contains(errs[episode.ID].Error(), "requires direct evidence") {
+		t.Fatalf("proposeEpisodeBatch() error = %v proposal error = %v, want direct-evidence rejection", err, errs[episode.ID])
 	}
 }
 
@@ -1060,584 +996,165 @@ func TestFailureCandidateMustReferenceNotAchievedEvidence(t *testing.T) {
 	}
 }
 
-func TestEpisodeMemoryCandidateRequiresDurableRetention(t *testing.T) {
-	episode := TaskEpisode{Events: []TaskEpisodeEvent{
-		{EventID: "call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
-		{EventID: "result", Type: "tool_result", ToolName: "read_screen", Observation: "The requested value is visible."},
-	}}
-	assessment := episodeMemoryAssessment{
-		GoalResult:   episodeGoalAchieved,
-		Reason:       "The result directly shows the requested value.",
-		EvidenceRefs: []string{"result"},
+func TestEpisodeMemoryCandidatePreservesExplicitVersionScope(t *testing.T) {
+	episode := TaskEpisode{
+		DeviceScope: map[string]string{
+			"device_id":   "device_a",
+			"app_name":    "QA Notes",
+			"app_version": "7",
+			"page_name":   "Note editor",
+		},
+		Events: []TaskEpisodeEvent{
+			{EventID: "result", Type: "tool_result", ToolName: "touch_gesture", Observation: "The title was saved."},
+		},
 	}
-	base := episodeMemoryCandidate{
-		LessonKey:      "observed_value",
+	candidate := episodeMemoryCandidate{
+		LessonKey:      "qa_notes_save",
 		Type:           episodeMemoryTypeFact,
 		Action:         episodeMemoryActionCreate,
-		Situation:      "When inspecting this device configuration",
-		Guidance:       "Use the observed IP address as the configured endpoint",
-		ExpectedEffect: "The device endpoint can be selected correctly",
-		Scope:          map[string]string{"device_id": "device_a"},
+		Retention:      episodeMemoryRetentionDurable,
+		Situation:      "When saving an edited title in QA Notes",
+		Guidance:       "Use the verified save flow",
+		ExpectedEffect: "The title remains saved",
+		Scope: map[string]string{
+			"app_name":     "QA Notes",
+			"precondition": "app_version=7; title edited",
+		},
+		EvidenceRefs: []string{"result"},
+	}
+
+	validated, ok := validateEpisodeMemoryCandidate(episode, episodeMemoryAssessment{GoalResult: episodeGoalAchieved}, candidate, map[string]bool{})
+	if !ok {
+		t.Fatal("candidate with an omitted explicit version boundary was rejected")
+	}
+	for key, want := range map[string]string{"device_id": "device_a", "app_name": "QA Notes", "app_version": "7", "page_name": "Note editor"} {
+		if got := validated.Scope[key]; !strings.EqualFold(got, want) {
+			t.Fatalf("validated scope[%q] = %q, want %q; scope=%#v", key, got, want, validated.Scope)
+		}
+	}
+}
+
+func TestEpisodeMemoryCandidateRejectsConflictingVersionScope(t *testing.T) {
+	episode := TaskEpisode{
+		DeviceScope: map[string]string{"app_name": "QA Notes", "app_version": "7"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "result", Type: "tool_result", ToolName: "touch_gesture", Observation: "The title was saved."},
+		},
+	}
+	candidate := episodeMemoryCandidate{
+		LessonKey:      "qa_notes_save_wrong_version",
+		Type:           episodeMemoryTypeFact,
+		Action:         episodeMemoryActionCreate,
+		Retention:      episodeMemoryRetentionDurable,
+		Situation:      "When saving an edited title in QA Notes",
+		Guidance:       "Use the verified save flow",
+		ExpectedEffect: "The title remains saved",
+		Scope:          map[string]string{"app_name": "QA Notes", "app_version": "8"},
 		EvidenceRefs:   []string{"result"},
 	}
-
-	tests := []struct {
-		name      string
-		retention episodeMemoryRetention
-		want      bool
-	}{
-		{name: "durable", retention: episodeMemoryRetentionDurable, want: true},
-		{name: "transient", retention: episodeMemoryRetentionTransient, want: false},
-		{name: "sensitive", retention: episodeMemoryRetentionSensitive, want: false},
-		{name: "missing", retention: "", want: false},
-		{name: "unknown", retention: "session_only", want: false},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			candidate := base
-			candidate.Retention = test.retention
-			_, got := validateEpisodeMemoryCandidate(episode, assessment, candidate, map[string]bool{})
-			if got != test.want {
-				t.Fatalf("candidate accepted = %v, want %v", got, test.want)
-			}
-		})
+	if _, ok := validateEpisodeMemoryCandidate(episode, episodeMemoryAssessment{GoalResult: episodeGoalAchieved}, candidate, map[string]bool{}); ok {
+		t.Fatal("candidate with a conflicting app_version was accepted")
 	}
 }
 
-func TestEpisodeMemoryCandidatePreservesEpisodeScopeBoundaries(t *testing.T) {
-	episode := TaskEpisode{
-		DeviceScope: map[string]string{"device_id": "device_a", "app_name": "Example", "app_version": "7"},
-		Events:      []TaskEpisodeEvent{{EventID: "result", Type: "tool_result", ToolName: "read_screen", Observation: "The page is visible."}},
-	}
-	base := episodeMemoryCandidate{
-		LessonKey: "versioned_fact", Type: episodeMemoryTypeFact, Action: episodeMemoryActionCreate,
-		Retention: episodeMemoryRetentionDurable, Situation: "On the page", Guidance: "Use the visible label",
-		ExpectedEffect: "The page can be identified", Scope: map[string]string{"app_name": "Example"}, EvidenceRefs: []string{"result"},
-	}
-
-	validated, ok := validateEpisodeMemoryCandidate(
-		episode,
-		episodeMemoryAssessment{GoalResult: episodeGoalAchieved},
-		base,
-		map[string]bool{},
-	)
-	if !ok || validated.Scope["app_version"] != "7" || validated.Scope["device_id"] != "device_a" {
-		t.Fatalf("validated candidate = %#v ok=%v, want Episode scope boundaries preserved", validated, ok)
-	}
-
-	base.Scope["app_version"] = "8"
-	if _, ok := validateEpisodeMemoryCandidate(
-		episode,
-		episodeMemoryAssessment{GoalResult: episodeGoalAchieved},
-		base,
-		map[string]bool{},
-	); ok {
-		t.Fatal("candidate with scope conflicting with the Episode was accepted")
-	}
-}
-
-func TestEpisodeMemoryRetentionAuditCanGeneralizeSensitiveProcedure(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	firstPass := `{
-  "episode_assessment":{"goal_result":"achieved","reason":"The destination page confirms completion.","evidence_refs":["verify_result"]},
-  "candidates":[{
-    "lesson_key":"authentication_flow","type":"procedure","action":"create","retention":"sensitive","unresolved_conflict":false,
-    "situation":"During authentication","guidance":"Enter verification value 913204, then verify the destination page","expected_effect":"Authentication succeeds",
-    "scope":{"device_id":"device_a","app_name":"Auth"},"tags":["authentication"],"evidence_refs":["value_call","value_result","verify_call","verify_result"]
-  }]
-}`
-	audited := `{
-  "reviews":[{
-    "lesson_key":"authentication_flow","decision":"retain","retention":"durable",
-    "reason":"The workflow is reusable.",
-    "rewrite":{
-      "situation":"During authentication",
-      "guidance":"Enter the response for the current challenge, then verify the destination page",
-      "expected_effect":"Authentication succeeds",
-      "scope":{"device_id":"device_a","app_name":"Auth"},
-      "tags":["authentication"],
-      "evidence_refs":["value_call","value_result","verify_call","verify_result"]
-    }
-  }]
-}`
-	model := &episodeMemoryScriptedModel{
-		responses:      []string{firstPass},
-		auditResponses: []string{audited},
-	}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	episode := TaskEpisode{
-		ID: "ep_sensitive_fact", DeviceScope: map[string]string{"device_id": "device_a"},
-		Events: []TaskEpisodeEvent{
-			{EventID: "value_call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
-			{EventID: "value_result", Type: "tool_result", ToolName: "read_screen", Observation: "Verification value 913204 was accepted."},
-			{EventID: "verify_call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
-			{EventID: "verify_result", Type: "tool_result", ToolName: "read_screen", Observation: "The destination page is visible."},
-		},
-	}
-
-	proposal, err := processor.proposeEpisode(ctx, episode)
-	if err != nil {
-		t.Fatalf("proposeEpisode() error = %v", err)
-	}
-	if got := model.callCount(); got != 2 {
-		t.Fatalf("model calls = %d, want extraction and retention audit", got)
-	}
-	if err := processor.applyProposal(ctx, episode, proposal); err != nil {
-		t.Fatalf("applyProposal() error = %v", err)
-	}
-	items, err := plane.device.readAll()
-	if err != nil {
-		t.Fatalf("readAll() error = %v", err)
-	}
-	if len(items) != 1 || strings.Contains(items[0].Content, "913204") {
-		t.Fatalf("device memories = %#v, want generalized procedure without the one-time value", items)
-	}
-}
-
-func TestEpisodeMemoryRetentionAuditGeneralizesRunBoundValue(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	firstPass := `{
-  "episode_assessment":{"goal_result":"achieved","reason":"The destination page confirms completion.","evidence_refs":["verify_result"]},
-  "candidates":[{
-    "lesson_key":"complete_challenge","type":"procedure","action":"create","retention":"durable","unresolved_conflict":false,
-    "situation":"When this service presents an interactive challenge","guidance":"Enter the observed response river-glass-amber, then verify the destination page","expected_effect":"The challenge completes",
-    "scope":{"device_id":"device_a","app_name":"Service"},"tags":["challenge"],"evidence_refs":["value_call","value_result","verify_call","verify_result"]
-  }]
-}`
-	audited := `{
-  "reviews":[{
-    "lesson_key":"complete_challenge","decision":"retain",
-	"retention":"durable",
-    "reason":"The verified sequence is reusable after removing the response that was valid only for this run.",
-	    "rewrite":{
-	      "situation":"When this service presents an interactive challenge","guidance":"Use the response provided for the current challenge, then verify the destination page before reporting completion","expected_effect":"The challenge completes without reusing an earlier response",
-	      "scope":{"device_id":"device_a","app_name":"Service"},"tags":["challenge","verify-completion"],"evidence_refs":["value_call","value_result","verify_call","verify_result"]
-	    }
-  }]
-}`
-	model := &episodeMemoryScriptedModel{
-		responses:      []string{firstPass},
-		auditResponses: []string{audited},
-	}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	episode := TaskEpisode{
-		ID: "ep_generalized_value", DeviceScope: map[string]string{"device_id": "device_a"},
-		Events: []TaskEpisodeEvent{
-			{EventID: "value_call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
-			{EventID: "value_result", Type: "tool_result", ToolName: "read_screen", Observation: "The current response river-glass-amber was accepted."},
-			{EventID: "verify_call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
-			{EventID: "verify_result", Type: "tool_result", ToolName: "read_screen", Observation: "The destination page is visible."},
-		},
-	}
-
-	proposal, err := processor.proposeEpisode(ctx, episode)
-	if err != nil {
-		t.Fatalf("proposeEpisode() error = %v", err)
-	}
-	if len(proposal.Candidates) != 1 {
-		t.Fatalf("audited candidates = %#v, want one generalized candidate", proposal.Candidates)
-	}
-	if strings.Contains(proposal.Candidates[0].Guidance, "river-glass-amber") {
-		t.Fatalf("audited guidance retained run-bound value: %q", proposal.Candidates[0].Guidance)
-	}
-	if err := processor.applyProposal(ctx, episode, proposal); err != nil {
-		t.Fatalf("applyProposal() error = %v", err)
-	}
-	items, err := plane.device.readAll()
-	if err != nil {
-		t.Fatalf("readAll() error = %v", err)
-	}
-	if len(items) != 1 || strings.Contains(items[0].Content, "river-glass-amber") {
-		t.Fatalf("device memories = %#v, want one generalized memory without the run-bound value", items)
-	}
-}
-
-func TestEpisodeMemoryRetentionAuditFailureIsReported(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	model := &episodeMemoryScriptedModel{
-		responses: []string{`{
-  "episode_assessment":{"goal_result":"achieved","reason":"The observed page confirms the inspection completed.","evidence_refs":["result"]},
-  "candidates":[{
-    "lesson_key":"observed_page_fact","type":"fact","action":"create","retention":"durable","unresolved_conflict":false,
-    "situation":"On the inspected page","guidance":"Use the observed page label","expected_effect":"The page can be identified",
-    "scope":{"device_id":"device_a","app_name":"Example"},"tags":["page"],"evidence_refs":["result"]
-  }]
-}`},
-		auditResponses: []string{`not-json`},
-	}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	episode := TaskEpisode{
-		ID: "ep_audit_failure", DeviceScope: map[string]string{"device_id": "device_a"},
-		Events: []TaskEpisodeEvent{
-			{EventID: "call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
-			{EventID: "result", Type: "tool_result", ToolName: "read_screen", Observation: "The inspected page is visible."},
-		},
-	}
-
-	_, err := processor.proposeEpisode(ctx, episode)
-	if err == nil || !strings.Contains(err.Error(), "parse episode memory retention audit") {
-		t.Fatalf("proposeEpisode() error = %v, want retention audit parse failure", err)
-	}
-	if got := model.callCount(); got != 2 {
-		t.Fatalf("model calls = %d, want extraction and failed retention audit", got)
-	}
-}
-
-func TestRetainedEpisodeMemoryCandidatesFailsClosedOnAmbiguousAudit(t *testing.T) {
-	base := episodeMemoryCandidate{
-		LessonKey: "stable_route", Type: episodeMemoryTypeNavigation, Action: episodeMemoryActionCreate,
-		Retention: episodeMemoryRetentionDurable, Situation: "On the target page", Guidance: "Open the details entry",
-		ExpectedEffect: "The details page is visible", Scope: map[string]string{"device_id": "device_a"}, EvidenceRefs: []string{"result"},
-	}
-	validReview := episodeMemoryRetentionReview{
-		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable, Reason: "durable and scoped",
-		Rewrite: &episodeMemoryRetentionRewrite{
-			Situation: base.Situation, Guidance: base.Guidance, ExpectedEffect: base.ExpectedEffect,
-			Scope: base.Scope, Tags: base.Tags, EvidenceRefs: base.EvidenceRefs,
-		},
-	}
-
-	tests := []struct {
-		name  string
-		audit episodeMemoryRetentionAudit
-	}{
-		{name: "missing review", audit: episodeMemoryRetentionAudit{}},
-		{name: "duplicate review", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{validReview, validReview}}},
-		{name: "missing retention", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
-			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Reason: "classification omitted", Rewrite: validReview.Rewrite,
-		}}}},
-		{name: "missing rewrite", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
-			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable, Reason: "rewrite omitted",
-		}}}},
-		{name: "missing reason", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
-			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable, Rewrite: validReview.Rewrite,
-		}}}},
-		{name: "discard decision", audit: episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
-			LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionDiscard, Reason: "not safe to retain",
-		}}}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := retainedEpisodeMemoryCandidates([]episodeMemoryCandidate{base}, test.audit); len(got) != 0 {
-				t.Fatalf("retained candidates = %#v, want ambiguous audit to discard candidate", got)
-			}
-		})
-	}
-}
-
-func TestRetainedEpisodeMemoryCandidatesDoesNotUpgradeNonDurableCandidate(t *testing.T) {
-	base := episodeMemoryCandidate{
-		LessonKey: "stable_route", Type: episodeMemoryTypeNavigation, Action: episodeMemoryActionCreate,
-		Retention: episodeMemoryRetentionDurable, Situation: "During sign-in", Guidance: "Use the verified route",
-		ExpectedEffect: "The current challenge completes", Scope: map[string]string{"app_name": "Auth"}, EvidenceRefs: []string{"result"},
-	}
+func TestRetainedEpisodeMemoryCandidateUsesRewrittenScope(t *testing.T) {
+	original := []episodeMemoryCandidate{{
+		LessonKey: "qa_notes_save", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "old", Guidance: "old", ExpectedEffect: "old",
+		Scope: map[string]string{"app_name": "QA Notes"}, EvidenceRefs: []string{"result"},
+	}}
 	audit := episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
-		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionSensitive,
-		Reason: "The candidate is not safe to persist", Rewrite: &episodeMemoryRetentionRewrite{
-			Situation: base.Situation, Guidance: base.Guidance, ExpectedEffect: base.ExpectedEffect,
-			Scope: base.Scope, EvidenceRefs: base.EvidenceRefs,
+		LessonKey: "qa_notes_save", Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable,
+		Reason: "verified", SensitiveValues: []string{}, Rewrite: &episodeMemoryRetentionRewrite{
+			Situation: "new", Guidance: "new", ExpectedEffect: "new",
+			Scope: map[string]string{"app_name": "QA Notes", "app_version": "7"}, EvidenceRefs: []string{"result"},
 		},
 	}}}
-
-	if got := retainedEpisodeMemoryCandidates([]episodeMemoryCandidate{base}, audit); len(got) != 0 {
-		t.Fatalf("retained candidates = %#v, want non-durable audit classification to discard candidate", got)
+	retained := retainedEpisodeMemoryCandidates(original, audit)
+	if len(retained) != 1 || retained[0].Scope["app_version"] != "7" {
+		t.Fatalf("retained candidate scope = %#v, want rewritten app_version=7", retained)
 	}
 }
 
-func TestRetainedEpisodeMemoryCandidatesPreservesExtractedScopeBoundary(t *testing.T) {
-	base := episodeMemoryCandidate{
-		LessonKey: "versioned_route", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
-		Retention: episodeMemoryRetentionDurable, Situation: "In build 7", Guidance: "Run the verified flow",
-		ExpectedEffect: "The value persists", Scope: map[string]string{"app_name": "Example", "app_version": "7"},
-		Tags: []string{"save"}, EvidenceRefs: []string{"result"},
-	}
+func TestRetainedEpisodeMemoryCandidatePreservesScopeOmittedByRewrite(t *testing.T) {
+	original := []episodeMemoryCandidate{{
+		LessonKey: "qa_notes_save", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "old", Guidance: "old", ExpectedEffect: "old",
+		Scope: map[string]string{"app_name": "QA Notes", "app_version": "7", "goal_pattern": "persist title"}, EvidenceRefs: []string{"result"},
+	}}
 	audit := episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
-		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable, Reason: "the procedure remains reusable",
-		Rewrite: &episodeMemoryRetentionRewrite{
-			Situation: "In the app", Guidance: base.Guidance, ExpectedEffect: base.ExpectedEffect,
-			Scope: map[string]string{"app_name": "Example"}, Tags: base.Tags, EvidenceRefs: base.EvidenceRefs,
+		LessonKey: "qa_notes_save", Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable,
+		Reason: "verified", SensitiveValues: []string{}, Rewrite: &episodeMemoryRetentionRewrite{
+			Situation: "new", Guidance: "new", ExpectedEffect: "new",
+			Scope: map[string]string{"precondition": "title edited"}, EvidenceRefs: []string{"result"},
 		},
 	}}}
-
-	got := retainedEpisodeMemoryCandidates([]episodeMemoryCandidate{base}, audit)
-	if len(got) != 1 || got[0].Scope["app_version"] != "7" {
-		t.Fatalf("retained candidates = %#v, want extracted version boundary preserved", got)
+	retained := retainedEpisodeMemoryCandidates(original, audit)
+	if len(retained) != 1 {
+		t.Fatalf("retained candidates = %#v, want one", retained)
+	}
+	for key, want := range map[string]string{"app_name": "QA Notes", "app_version": "7", "goal_pattern": "persist title", "precondition": "title edited"} {
+		if got := retained[0].Scope[key]; got != want {
+			t.Fatalf("retained scope[%q] = %q, want %q; scope=%#v", key, got, want, retained[0].Scope)
+		}
 	}
 }
 
-func TestRetainedEpisodeMemoryCandidatesRejectsChangedEvidenceRefs(t *testing.T) {
-	base := episodeMemoryCandidate{
-		LessonKey: "verified_route", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
-		Retention: episodeMemoryRetentionDurable, Situation: "In the app", Guidance: "Run the verified flow",
-		ExpectedEffect: "The value persists", Scope: map[string]string{"app_name": "Example"},
-		EvidenceRefs: []string{"call", "result"},
-	}
+func TestRetainedEpisodeMemoryCandidateRejectsSensitiveValueLeftInRewrite(t *testing.T) {
+	original := []episodeMemoryCandidate{{
+		LessonKey: "verification_flow", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "challenge", Guidance: "enter the observed value", ExpectedEffect: "sign-in succeeds",
+		Scope: map[string]string{"app_name": "Auth"}, EvidenceRefs: []string{"result"},
+	}}
 	audit := episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
-		LessonKey: base.LessonKey, Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable, Reason: "reusable",
-		Rewrite: &episodeMemoryRetentionRewrite{
-			Situation: base.Situation, Guidance: base.Guidance, ExpectedEffect: base.ExpectedEffect,
-			Scope: base.Scope, EvidenceRefs: []string{"result", "invented"},
+		LessonKey: "verification_flow", Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable,
+		Reason: "the workflow is reusable", SensitiveValues: []string{"913204"}, Rewrite: &episodeMemoryRetentionRewrite{
+			Situation: "During a one-time sign-in challenge", Guidance: "Enter 913204", ExpectedEffect: "The challenge completes",
+			Scope: map[string]string{"app_name": "Auth"}, EvidenceRefs: []string{"result"},
 		},
 	}}}
-
-	if got := retainedEpisodeMemoryCandidates([]episodeMemoryCandidate{base}, audit); len(got) != 0 {
-		t.Fatalf("retained candidates = %#v, want audit with changed evidence refs discarded", got)
+	if retained := retainedEpisodeMemoryCandidates(original, audit); len(retained) != 0 {
+		t.Fatalf("retained candidates = %#v, want sensitive rewrite discarded", retained)
 	}
 }
 
-func TestCompactEpisodeMemoryCandidatesMergesDuplicateEvidence(t *testing.T) {
-	first := episodeMemoryCandidate{
-		LessonKey: "same_lesson", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
-		Retention: episodeMemoryRetentionDurable, Situation: "In the scoped app", Guidance: "Run the verified flow",
-		ExpectedEffect: "The value persists", Scope: map[string]string{"app_version": "7"},
-		Tags: []string{"save"}, EvidenceRefs: []string{"first_result"},
-	}
-	second := first
-	second.Tags = []string{"verify"}
-	second.EvidenceRefs = []string{"second_result"}
-
-	got := compactEpisodeMemoryCandidates([]episodeMemoryCandidate{first, second})
-	if len(got) != 1 {
-		t.Fatalf("compacted candidates = %#v, want one candidate", got)
-	}
-	if len(got[0].Tags) != 2 || len(got[0].EvidenceRefs) != 2 {
-		t.Fatalf("compacted candidate = %#v, want merged tags and evidence", got[0])
+func TestRetainedEpisodeMemoryCandidateAcceptsGeneralizedSensitiveWorkflow(t *testing.T) {
+	original := []episodeMemoryCandidate{{
+		LessonKey: "verification_flow", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "challenge", Guidance: "enter the observed value", ExpectedEffect: "sign-in succeeds",
+		Scope: map[string]string{"app_name": "Auth"}, EvidenceRefs: []string{"result"},
+	}}
+	audit := episodeMemoryRetentionAudit{Reviews: []episodeMemoryRetentionReview{{
+		LessonKey: "verification_flow", Decision: episodeMemoryRetentionDecisionRetain, Retention: episodeMemoryRetentionDurable,
+		Reason: "the generalized workflow is reusable", SensitiveValues: []string{"913204"}, Rewrite: &episodeMemoryRetentionRewrite{
+			Situation: "During a one-time sign-in challenge", Guidance: "Enter the current challenge value shown for this session", ExpectedEffect: "The challenge completes",
+			Scope: map[string]string{"app_name": "Auth"}, EvidenceRefs: []string{"result"},
+		},
+	}}}
+	if retained := retainedEpisodeMemoryCandidates(original, audit); len(retained) != 1 {
+		t.Fatalf("retained candidates = %#v, want generalized workflow retained", retained)
 	}
 }
 
-func TestCompactEpisodeMemoryCandidatesRejectsConflictingIdentity(t *testing.T) {
-	first := episodeMemoryCandidate{
-		LessonKey: "same_lesson", Type: episodeMemoryTypeProcedure, Action: episodeMemoryActionCreate,
-		Retention: episodeMemoryRetentionDurable, Situation: "In the scoped app", Guidance: "Run the verified flow",
-		ExpectedEffect: "The value persists", Scope: map[string]string{"app_version": "7"}, EvidenceRefs: []string{"first_result"},
-	}
-	second := first
-	second.Type = episodeMemoryTypeFailure
-	second.EvidenceRefs = []string{"second_result"}
-
-	if got := compactEpisodeMemoryCandidates([]episodeMemoryCandidate{first, second}); len(got) != 0 {
-		t.Fatalf("compacted candidates = %#v, want ambiguous lesson identity discarded", got)
-	}
-}
-
-func TestEpisodeMemoryProposalSkipsRetentionAuditWhenCompactionRejectsAllCandidates(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	model := &episodeMemoryScriptedModel{responses: []string{`{
-  "episode_assessment":{"goal_result":"achieved","reason":"The result confirms the route.","evidence_refs":["result"]},
-  "candidates":[
-    {"lesson_key":"same_lesson","type":"procedure","action":"create","retention":"durable","situation":"In the app","guidance":"Use the route","expected_effect":"The page opens","scope":{"app_name":"Settings"},"evidence_refs":["call","result"]},
-    {"lesson_key":"same_lesson","type":"failure","action":"create","retention":"durable","situation":"In the app","guidance":"Do not use the route","expected_effect":"The page stays safe","scope":{"app_name":"Settings"},"evidence_refs":["call","result"]}
-  ]
-}`}}
-	processor := newEpisodeMemoryProcessor(plane, model)
+func TestEpisodeMemoryProcedureStepsRedactAuditedSensitiveValues(t *testing.T) {
 	episode := TaskEpisode{
-		ID: "ep_conflicting_candidates", Status: "completed", UserGoal: "Open Settings", DeviceScope: map[string]string{"app_name": "Settings"},
-		Outcome: TaskEpisodeOutcome{Success: true},
+		Entities: []string{"Auth", "913204"},
 		Events: []TaskEpisodeEvent{
-			{EventID: "call", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: `{"type":"tap"}`},
-			{EventID: "result", Type: "tool_result", ToolName: "touch_gesture", Observation: "The Settings page opened."},
+			{EventID: "call", Type: runEventToolCall, ToolName: "enter_text", ToolInput: `{"text":"913204"}`, Content: "Enter 913204"},
+			{EventID: "result", Type: "tool_result", ToolName: "enter_text", Observation: "913204 was accepted"},
 		},
 	}
-	proposal, err := processor.proposeEpisode(ctx, episode)
-	if err != nil {
-		t.Fatalf("proposeEpisode() error = %v", err)
+	steps := episodeMemoryProcedureSteps(episode, []string{"call", "result"}, []string{"913204"})
+	if len(steps) != 1 {
+		t.Fatalf("steps = %#v, want one", steps)
 	}
-	if len(proposal.Candidates) != 0 {
-		t.Fatalf("candidates = %#v, want all conflicting candidates discarded", proposal.Candidates)
+	encoded, _ := json.Marshal(steps)
+	if strings.Contains(string(encoded), "913204") {
+		t.Fatalf("steps retained audited sensitive value: %s", encoded)
 	}
-	if got := model.callCount(); got != 1 {
-		t.Fatalf("model calls = %d, want extraction only after compaction rejected all candidates", got)
-	}
-}
-
-func TestEpisodeMemoryReviewsEmptyMultiStepProposalOnce(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	model := &episodeMemoryScriptedModel{responses: []string{
-		`{
-  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the requested page opened.","evidence_refs":["result_2"]},
-  "candidates":[]
-}`,
-		`{
-  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the requested page opened.","evidence_refs":["result_2"]},
-  "candidates":[{
-    "lesson_key":"open_target_page","type":"procedure","action":"create","retention":"durable","unresolved_conflict":false,
-    "situation":"When opening the target page on this device","guidance":"Open Settings, then select the target page","expected_effect":"The target page is visible",
-    "scope":{"device_id":"device_a","app_name":"Settings"},"tags":["settings"],
-    "evidence_refs":["call_1","result_1","call_2","result_2"]
-  }]
-}`,
-	}}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	episode := TaskEpisode{
-		ID: "ep_review", DeviceScope: map[string]string{"device_id": "device_a"},
-		Events: []TaskEpisodeEvent{
-			{EventID: "call_1", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{"app":"Settings"}`},
-			{EventID: "result_1", Type: "tool_result", ToolName: "launch_app", Observation: "Settings is visible."},
-			{EventID: "call_2", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: `{"type":"tap","target":"Target"}`},
-			{EventID: "result_2", Type: "tool_result", ToolName: "touch_gesture", Observation: "The target page is visible."},
-		},
-	}
-
-	proposal, err := processor.proposeEpisode(ctx, episode)
-	if err != nil {
-		t.Fatalf("proposeEpisode() error = %v", err)
-	}
-	if got := model.callCount(); got != 3 {
-		t.Fatalf("model calls = %d, want extraction, omission review, and retention audit", got)
-	}
-	if len(proposal.Candidates) != 1 || proposal.Candidates[0].Retention != episodeMemoryRetentionDurable {
-		t.Fatalf("reviewed proposal = %#v, want one durable candidate", proposal)
-	}
-	if err := processor.applyProposal(ctx, episode, proposal); err != nil {
-		t.Fatalf("applyProposal() error = %v", err)
-	}
-	items, err := plane.device.readAll()
-	if err != nil {
-		t.Fatalf("readAll() error = %v", err)
-	}
-	if len(items) != 1 {
-		t.Fatalf("device memories = %#v, want one reviewed memory", items)
-	}
-}
-
-func TestEpisodeMemoryReviewCanRemainEmpty(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	empty := `{
-  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the requested page opened.","evidence_refs":["result_2"]},
-  "candidates":[]
-}`
-	model := &episodeMemoryScriptedModel{responses: []string{empty, empty}}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	episode := TaskEpisode{Events: []TaskEpisodeEvent{
-		{EventID: "call_1", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{}`},
-		{EventID: "result_1", Type: "tool_result", ToolName: "launch_app", Observation: "Settings is visible."},
-		{EventID: "call_2", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
-		{EventID: "result_2", Type: "tool_result", ToolName: "read_screen", Observation: "The requested page is visible."},
-	}}
-
-	proposal, err := processor.proposeEpisode(ctx, episode)
-	if err != nil {
-		t.Fatalf("proposeEpisode() error = %v", err)
-	}
-	if got := model.callCount(); got != 2 {
-		t.Fatalf("model calls = %d, want one extraction and one review", got)
-	}
-	if len(proposal.Candidates) != 0 {
-		t.Fatalf("reviewed candidates = %#v, want empty", proposal.Candidates)
-	}
-}
-
-func TestEpisodeMemoryOmissionReviewFailureIsRetried(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	model := &episodeMemoryScriptedModel{responses: []string{
-		`{
-  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the page opened.","evidence_refs":["result_2"]},
-  "candidates":[]
-}`,
-		`not-json`,
-	}}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
-	if err := processor.Initialize(); err != nil {
-		t.Fatalf("Initialize() error = %v", err)
-	}
-	episode := TaskEpisode{
-		ID: "ep_review_retry", Status: "active", StartedAt: "2026-08-14T10:25:00Z", EndedAt: "2026-08-14T10:25:01Z",
-		UserGoal: "Open the target page", DeviceScope: map[string]string{"device_id": "device_a"},
-		Events: []TaskEpisodeEvent{
-			{EventID: "call_1", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{}`},
-			{EventID: "result_1", Type: "tool_result", ToolName: "launch_app", Observation: "The app is visible."},
-			{EventID: "call_2", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: `{}`},
-			{EventID: "result_2", Type: "tool_result", ToolName: "touch_gesture", Observation: "The target page is visible."},
-		},
-	}
-	if _, err := plane.episodes.AddEpisode(ctx, episode); err != nil {
-		t.Fatalf("AddEpisode() error = %v", err)
-	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
-		t.Fatalf("ProcessBatch() error = %v", err)
-	}
-	state, err := processor.state.Snapshot()
-	if err != nil {
-		t.Fatalf("Snapshot() error = %v", err)
-	}
-	status := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)]
-	if status.Status != episodeMemoryStatusRetry || status.AttemptCount != 1 || !strings.Contains(status.LastError, "omission review") {
-		t.Fatalf("state = %#v, want retry after omission-review failure", status)
-	}
-}
-
-func TestEpisodeMemoryDoesNotReviewUnknownAssessment(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	model := &episodeMemoryScriptedModel{responses: []string{`{
-  "episode_assessment":{"goal_result":"unknown","reason":"The final state was not observed.","evidence_refs":[]},
-  "candidates":[]
-}`}}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	episode := TaskEpisode{Events: []TaskEpisodeEvent{
-		{EventID: "call_1", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{}`},
-		{EventID: "result_1", Type: "tool_result", ToolName: "launch_app", Observation: "Settings is visible."},
-		{EventID: "call_2", Type: runEventToolCall, ToolName: "touch_gesture", ToolInput: `{}`},
-		{EventID: "result_2", Type: "tool_result", ToolName: "touch_gesture", Observation: "The action completed without final proof."},
-	}}
-
-	if _, err := processor.proposeEpisode(ctx, episode); err != nil {
-		t.Fatalf("proposeEpisode() error = %v", err)
-	}
-	if got := model.callCount(); got != 1 {
-		t.Fatalf("model calls = %d, want no review for unknown assessment", got)
-	}
-}
-
-func TestEpisodeMemoryDiscardsTransientReviewCandidate(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	model := &episodeMemoryScriptedModel{responses: []string{
-		`{
-  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the inspection completed.","evidence_refs":["result_2"]},
-  "candidates":[]
-}`,
-		`{
-  "episode_assessment":{"goal_result":"achieved","reason":"The final result confirms the inspection completed.","evidence_refs":["result_2"]},
-  "candidates":[{
-    "lesson_key":"current_observation","type":"fact","action":"create","retention":"transient","unresolved_conflict":false,
-    "situation":"During the current inspection","guidance":"Reuse the value currently shown on screen","expected_effect":"The current value is available",
-    "scope":{"device_id":"device_a"},"tags":["inspection"],"evidence_refs":["result_2"]
-  }]
-}`,
-	}}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	episode := TaskEpisode{
-		ID: "ep_transient_review", DeviceScope: map[string]string{"device_id": "device_a"},
-		Events: []TaskEpisodeEvent{
-			{EventID: "call_1", Type: runEventToolCall, ToolName: "launch_app", ToolInput: `{}`},
-			{EventID: "result_1", Type: "tool_result", ToolName: "launch_app", Observation: "The details page is visible."},
-			{EventID: "call_2", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
-			{EventID: "result_2", Type: "tool_result", ToolName: "read_screen", Observation: "The requested current value is visible."},
-		},
-	}
-
-	proposal, err := processor.proposeEpisode(ctx, episode)
-	if err != nil {
-		t.Fatalf("proposeEpisode() error = %v", err)
-	}
-	if err := processor.applyProposal(ctx, episode, proposal); err != nil {
-		t.Fatalf("applyProposal() error = %v", err)
-	}
-	items, err := plane.device.readAll()
-	if err != nil {
-		t.Fatalf("readAll() error = %v", err)
-	}
-	if len(items) != 0 {
-		t.Fatalf("device memories = %#v, want transient review candidate discarded", items)
+	entities := redactEpisodeMemorySensitiveStrings(episode.Entities, []string{"913204"})
+	if encoded, _ := json.Marshal(entities); strings.Contains(string(encoded), "913204") {
+		t.Fatalf("entities retained audited sensitive value: %s", encoded)
 	}
 }
 
@@ -1711,7 +1228,7 @@ func TestEpisodeMemoryProcessorProcessesInterruptedEpisodeWithDeviceEvidence(t *
 			t.Fatalf("AddEpisode(%s) error = %v", episode.ID, err)
 		}
 	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
 	if got := model.callCount(); got != 1 {
@@ -1742,7 +1259,7 @@ func TestEpisodeMemoryExtractionFailureIsNotRetried(t *testing.T) {
 		t.Fatalf("AddEpisode() error = %v", err)
 	}
 	for pass := 0; pass < 2; pass++ {
-		if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+		if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 			t.Fatalf("ProcessBatch(%d) error = %v", pass, err)
 		}
 	}
@@ -1756,49 +1273,6 @@ func TestEpisodeMemoryExtractionFailureIsNotRetried(t *testing.T) {
 	status := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)]
 	if status.Status != episodeMemoryStatusIgnored || status.AttemptCount != 1 {
 		t.Fatalf("state = %#v, want one terminal ignored attempt", status)
-	}
-}
-
-func TestEpisodeMemoryRetentionAuditFailureIsRetried(t *testing.T) {
-	ctx := context.Background()
-	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
-	model := &episodeMemoryScriptedModel{
-		responses: []string{`{
-  "episode_assessment":{"goal_result":"achieved","reason":"The final page was observed.","evidence_refs":["result"]},
-  "candidates":[{
-    "lesson_key":"observed_page_fact","type":"fact","action":"create","retention":"durable","unresolved_conflict":false,
-    "situation":"On the inspected page","guidance":"Use the observed page label","expected_effect":"The page can be identified",
-    "scope":{"device_id":"device_a","app_name":"Example"},"tags":["page"],"evidence_refs":["result"]
-  }]
-}`},
-		auditResponses: []string{`not-json`},
-	}
-	processor := newEpisodeMemoryProcessor(plane, model)
-	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
-	if err := processor.Initialize(); err != nil {
-		t.Fatalf("Initialize() error = %v", err)
-	}
-	episode := TaskEpisode{
-		ID: "ep_audit_retry", Status: "active", StartedAt: "2026-08-14T10:30:00Z", EndedAt: "2026-08-14T10:30:01Z",
-		UserGoal: "Inspect the example page", DeviceScope: map[string]string{"device_id": "device_a"},
-		Events: []TaskEpisodeEvent{
-			{EventID: "call", Type: runEventToolCall, ToolName: "read_screen", ToolInput: `{}`},
-			{EventID: "result", Type: "tool_result", ToolName: "read_screen", Observation: "The final page is visible."},
-		},
-	}
-	if _, err := plane.episodes.AddEpisode(ctx, episode); err != nil {
-		t.Fatalf("AddEpisode() error = %v", err)
-	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
-		t.Fatalf("ProcessBatch() error = %v", err)
-	}
-	state, err := processor.state.Snapshot()
-	if err != nil {
-		t.Fatalf("Snapshot() error = %v", err)
-	}
-	status := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)]
-	if status.Status != episodeMemoryStatusRetry || status.AttemptCount != 1 || !strings.Contains(status.LastError, "retention audit") {
-		t.Fatalf("state = %#v, want retry after retention audit failure", status)
 	}
 }
 
@@ -1816,7 +1290,7 @@ func TestEpisodeMemoryProcedureUpdatePreservesExistingSteps(t *testing.T) {
 	model := &episodeMemoryScriptedModel{responses: []string{`{
   "episode_assessment":{"goal_result":"achieved","reason":"The final tool result shows the Display controls.","evidence_refs":["ep_proc_result_2"]},
   "candidates":[{
-    "lesson_key":"merge_display_path","type":"procedure","action":"update","retention":"durable","memory_id":"devmem_procedure","memory_revision":1,
+    "lesson_key":"merge_display_path","type":"procedure","action":"update","memory_id":"devmem_procedure","memory_revision":1,
     "unresolved_conflict":false,"situation":"When opening display settings","guidance":"Open Settings and select Display","expected_effect":"Display controls are visible",
     "scope":{"device_id":"device_a","app_name":"Settings"},"tags":["display"],
     "evidence_refs":["ep_proc_call_1","ep_proc_result_1","ep_proc_call_2","ep_proc_result_2"]
@@ -1840,7 +1314,7 @@ func TestEpisodeMemoryProcedureUpdatePreservesExistingSteps(t *testing.T) {
 	if _, err := plane.episodes.AddEpisode(ctx, episode); err != nil {
 		t.Fatalf("AddEpisode() error = %v", err)
 	}
-	if _, err := processor.ProcessBatch(ctx, episodeMemoryBatchLimit, nil); err != nil {
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
 	updated, found, err := plane.device.Get(ctx, "devmem_procedure")
@@ -1888,7 +1362,7 @@ func TestSearchEpisodeMemoryCandidatesPrioritizesPreferredAndSameScope(t *testin
 	}
 }
 
-func TestEpisodeMemoryCreateKeepsIndependentScopedLesson(t *testing.T) {
+func TestEpisodeMemoryCreatePreservesExplicitCreateAction(t *testing.T) {
 	ctx := context.Background()
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
 	if _, err := plane.device.Upsert(ctx, DeviceMemoryItem{
@@ -1901,7 +1375,7 @@ func TestEpisodeMemoryCreateKeepsIndependentScopedLesson(t *testing.T) {
 	processor := newEpisodeMemoryProcessor(plane, &episodeMemoryScriptedModel{})
 	episode := TaskEpisode{ID: "ep_collision", DeviceScope: map[string]string{"device_id": "device_a"}}
 	candidate := episodeMemoryCandidate{
-		LessonKey: "different_wording", Type: episodeMemoryTypeFact, Action: episodeMemoryActionCreate, Retention: episodeMemoryRetentionDurable,
+		LessonKey: "different_wording", Type: episodeMemoryTypeFact, Action: episodeMemoryActionCreate,
 		Situation: "Different conclusion", Guidance: "Use a different rule", ExpectedEffect: "Different effect",
 		Scope: map[string]string{"device_id": "device_a", "app_name": "Settings"}, EvidenceRefs: []string{"evt"},
 	}
@@ -1909,12 +1383,12 @@ func TestEpisodeMemoryCreateKeepsIndependentScopedLesson(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createMemory() error = %v", err)
 	}
-	if id == "existing_scope" {
-		t.Fatalf("createMemory() returned unrelated scoped memory id %q", id)
+	if id == "existing_scope" || !strings.HasPrefix(id, "devmem_") {
+		t.Fatalf("createMemory() id = %q, want a new deterministic memory", id)
 	}
 	items, err := plane.device.readAll()
 	if err != nil || len(items) != 2 {
-		t.Fatalf("memories = %#v error=%v, want independent memory", items, err)
+		t.Fatalf("memories = %#v error=%v, want explicit create to retain both records", items, err)
 	}
 }
 

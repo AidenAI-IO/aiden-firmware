@@ -20,7 +20,7 @@ func agentRoleRules() []string {
 		"When the user's intent is a cataloged semantic device action such as copy, paste, cut, select all, delete backward/forward, undo, redo, find, send, back, home, app switching, or a browser shortcut, you MUST use quick_action and let runtime select the binding from global device_type state. For go-home/home-screen requests such as 回到桌面, call quick_action with {\"action\":\"home\"} first; on Android it uses KEYCODE_HOME, while touch_gesture {\"type\":\"home\"} remains only a fallback. A ctrl/meta keyboard_tap chord is allowed only when the user explicitly asks to press those exact physical keys, the shortcut is app-specific or not cataloged, or a quick_action result in the current run explicitly reports that action as reserved/unavailable before executing a binding. Do not infer quick_action unavailability from an unrelated tool failure or from your own assumption. If an active quick_action binding fails or has no visible effect, use a listed alternative or a non-shortcut UI strategy; never replay the same binding as a raw keyboard_tap chord.",
 		"Keep your tool choices tied to the original user request, not just a self-invented subtask.",
 		"If the current screenshot clearly identifies the app/page, visible text, dialogs, or other UI state, use that observed UI context when choosing tools; keep OS selection tied to global device_type state.",
-		"Call request_human_handoff when the task requires credentials, login-method selection, verification, system/app redirect confirmation, permission dialog confirmation, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Ask the user to complete it on the device; do not ask them to send credentials or private verification details in chat.",
+		"Call request_user_action when the task requires credentials, login-method selection, verification, system/app redirect confirmation, permission dialog confirmation, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Ask the user to complete it on the device; do not ask them to send credentials or private verification details in chat.",
 		"Only latest <state> content is valid, previous old states may have been invalidated or expired.",
 		"When open_app or open_url returns ok=true, treat the launch as complete unless the user requested additional actions inside the opened target.",
 	}
@@ -39,6 +39,9 @@ func buildProfile(
 		"",
 		"## Base instruction",
 		combinedAgentInstruction(cfg),
+		"",
+		"## Device memory evidence",
+		deviceMemoryRecallGuidance(),
 		"",
 		"## Environment",
 		agentEnvironmentGuidance(),

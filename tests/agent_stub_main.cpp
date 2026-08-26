@@ -68,6 +68,9 @@ const char* kDefaultMeta =
     "{\"field\":\"model_providers.type\",\"op\":\"in\","
     "\"values\":[\"openai\",\"anthropic\",\"ollama\"]}]}}"
     "]},"
+    "{\"name\":\"frame_service\",\"fields\":["
+    "{\"key\":\"keep_streamon\",\"widget\":\"boolean\",\"default\":false}"
+    "]},"
     "{\"name\":\"quick_capture\",\"fields\":["
     "{\"key\":\"enabled\",\"widget\":\"boolean\"},"
     "{\"key\":\"gpio_pin\",\"widget\":\"number\"},"
@@ -92,8 +95,13 @@ const char* kDefaultConfig =
     "\"app_id\":\"\",\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"
     "\"audio\":{\"socket\":\"/run/audio_service/audio_service.sock\",\"sample_rate\":16000,"
     "\"channels\":1,\"bit_width\":16},"
+    "\"voice_model\":{\"has_api_key\":false,\"model\":\"qwen-audio-3.0-realtime-plus\","
+    "\"workspace_id\":\"\",\"region\":\"\",\"endpoint\":\"\",\"voice\":\"longanqian\","
+    "\"instructions\":\"\",\"input_audio_format\":\"pcm\",\"output_audio_format\":\"pcm\","
+    "\"turn_detection\":\"server_vad\",\"turn_detection_silence_ms\":0},"
     "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
     "\"storage_path\":\"/userdata/audio\"},"
+    "\"frame_service\":{\"keep_streamon\":false},"
     "\"quick_capture\":{\"enabled\":true,\"gpio_pin\":3,\"screen_memory_ttl\":\"90d\"},"
     "\"voice_notifications\":{\"enabled\":true,\"max_pending\":8,"
     "\"response_tail\":{\"enabled\":true,\"max_items\":1,\"max_text_chars\":40},"
@@ -157,6 +165,7 @@ void write_config_update_error(const std::string& message) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 0);
     cJSON_AddStringToObject(root, "error", message.c_str());
+    cJSON_AddStringToObject(root, "error_kind", "invalid_request");
     char* encoded = cJSON_PrintUnformatted(root);
     if (encoded) {
         std::fputs(encoded, stdout);
@@ -267,7 +276,8 @@ int main(int argc, char** argv) {
     }
 
     if (sub == "config") {
-        if (!std::getenv("AIDEN_AGENT_STUB_CONFIG_FILE") &&
+        const char* config_file = std::getenv("AIDEN_AGENT_STUB_CONFIG_FILE");
+        if ((!config_file || config_file[0] == '\0') &&
             !std::getenv("AIDEN_AGENT_STUB_CONFIG_EXIT")) {
             return delegate_to_real_agent(argc, argv);
         }

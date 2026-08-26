@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Context · Aiden</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101113; --panel:#17181b; --panel2:#1d1f23; --line:#303238; --text:#e8e8e8; --muted:#8f9299; --blue:#8ab4ff; --purple:#c7a5ff; --green:#9bd6a8; --orange:#e8b47a; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 20% 0%,#20232b 0,#101113 42%); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    header { height:64px; display:flex; align-items:center; gap:14px; padding:0 24px; border-bottom:1px solid var(--line); background:rgba(16,17,19,.88); }
+    .mark { width:10px; height:10px; border-radius:50%; background:var(--blue); box-shadow:0 0 16px var(--blue); }
+    h1 { margin:0; font:600 16px/1 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.02em; }
+    .spacer { flex:1; }
+    .refresh { border:1px solid var(--line); border-radius:5px; padding:7px 12px; color:var(--text); background:var(--panel2); cursor:pointer; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .refresh:hover { border-color:var(--blue); color:var(--blue); }
+    .meta { color:var(--muted); font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    main { display:grid; grid-template-columns:1fr 1fr; gap:1px; min-height:calc(100vh - 64px); background:var(--line); }
+    section { min-width:0; padding:22px; background:var(--panel); }
+    .title { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid var(--line); }
+    h2 { margin:0; font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace; text-transform:uppercase; letter-spacing:.12em; }
+    .user h2 { color:var(--blue); } .backend h2 { color:var(--purple); }
+    .session { color:var(--muted); font:11px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .message { margin:0 0 10px; padding:12px 14px; border:1px solid var(--line); border-radius:6px; background:var(--panel2); white-space:pre-wrap; overflow-wrap:anywhere; }
+    .role { margin-bottom:6px; color:var(--muted); font:11px ui-monospace,SFMono-Regular,Menlo,monospace; text-transform:uppercase; }
+    .usage { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; padding-top:8px; border-top:1px solid var(--line); color:var(--muted); font:11px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .usage strong { color:var(--text); font-weight:600; }
+    .user .message[data-role="user"] .role { color:var(--blue); } .message[data-role="assistant"] .role { color:var(--green); } .message[data-role="tool_call"] .role { color:var(--orange); } .message[data-role="tool_result"] .role { color:var(--purple); }
+    .empty, .error { color:var(--muted); font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .attachments { display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; }
+    .attachment { width:34px; height:30px; border:1px solid var(--line); border-radius:5px; background:#25272c; color:var(--blue); cursor:pointer; font-size:16px; }
+    .attachment:hover { border-color:var(--blue); }
+    dialog { width:min(900px,92vw); max-height:90vh; padding:0; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); box-shadow:0 24px 80px #000b; }
+    dialog::backdrop { background:#0009; backdrop-filter:blur(4px); }
+    .modal-head { display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid var(--line); }
+    .modal-head strong { font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .modal-close { margin-left:auto; border:0; background:transparent; color:var(--muted); cursor:pointer; font-size:20px; }
+    .modal-body { display:flex; justify-content:center; align-items:center; min-height:180px; max-height:calc(90vh - 56px); padding:18px; overflow:auto; }
+    .modal-body img, .modal-body video { max-width:100%; max-height:72vh; }
+    .modal-body audio { width:min(620px,100%); }
+    .modal-body pre { width:100%; max-height:70vh; margin:0; overflow:auto; white-space:pre-wrap; color:var(--muted); }
+    @media (max-width: 800px) { main { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header><span class="mark"></span><h1>Context</h1><span class="meta" id="status">loading…</span><span class="spacer"></span><button class="refresh" type="button" onclick="loadContext()">↻ Refresh</button></header>
+  <main><section class="user"><div class="title"><h2>User agent</h2><span class="session" id="userSession"></span></div><div id="userMessages"></div></section><section class="backend"><div class="title"><h2>Backend agent</h2><span class="session" id="backendSession"></span></div><div id="backendMessages"></div></section></main>
+  <dialog id="attachmentModal"><div class="modal-head"><strong id="modalTitle">Attachment</strong><button class="modal-close" type="button" onclick="closeModal()">×</button></div><div class="modal-body" id="modalBody"></div></dialog>
+  <script>
+    const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    let currentData;
+    function render(target, sessionTarget, dump, role) {
+      document.getElementById(sessionTarget).textContent = dump.session_id ? dump.session_id : 'no active session';
+      const root = document.getElementById(target);
+      const messages = dump.messages || [];
+      root.innerHTML = messages.length ? messages.map(m => {
+        let body = m.content || '';
+        if (m.tool_calls) body += (body ? '\n\n' : '') + JSON.stringify(m.tool_calls, null, 2);
+        if (m.tool_results) body += (body ? '\n\n' : '') + JSON.stringify(m.tool_results, null, 2);
+        const attachments = (m.attachments || []).map(a => {
+          const name = String(a.file_path || '').split('/').pop();
+          if (!name) return '';
+          const mime = String(a.mime_type || '');
+          return `<button class="attachment" type="button" title="${esc(mime || 'attachment')}" data-role="${esc(role)}" data-attachment="${esc(name)}" data-mime="${esc(mime)}">${mime.startsWith('image/') ? '▧' : '↗'}</button>`;
+        }).join('');
+        const usage = m.usage ? `<div class="usage"><span>Input <strong>${esc(m.usage.input_tokens ?? 0)}</strong></span><span>Output <strong>${esc(m.usage.output_tokens ?? 0)}</strong></span><span>Total <strong>${esc(m.usage.total_tokens ?? 0)}</strong></span></div>` : '';
+        return `<article class="message" data-role="${esc(m.role)}"><div class="role">${esc(m.role)}</div><div>${esc(body)}</div>${attachments ? `<div class="attachments">${attachments}</div>` : ''}${usage}</article>`;
+      }).join('') : '<div class="empty">No messages in this context.</div>';
+    }
+    function loadContext() { document.getElementById('status').textContent = 'loading…'; fetch('/api/context').then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }).then(data => { currentData=data; render('userMessages','userSession',data.user || {},'user'); render('backendMessages','backendSession',data.backend || {},'backend'); document.getElementById('status').textContent = 'loaded'; }).catch(err => { document.getElementById('status').textContent = 'error'; document.getElementById('userMessages').innerHTML = `<div class="error">${esc(err.message)}</div>`; document.getElementById('backendMessages').innerHTML = ''; }); }
+    function closeModal() { document.getElementById('attachmentModal').close(); document.getElementById('modalBody').innerHTML=''; }
+    function openAttachment(role, attachment, mime) { const modal=document.getElementById('attachmentModal'); document.getElementById('modalTitle').textContent=attachment; const body=document.getElementById('modalBody'); const url=`/api/context/attachment?role=${encodeURIComponent(role)}&attachment=${encodeURIComponent(attachment)}`; body.innerHTML = mime.startsWith('image/') ? `<img src="${url}" alt="${esc(attachment)}">` : mime.startsWith('audio/') ? `<audio controls src="${url}"></audio>` : mime.startsWith('video/') ? `<video controls src="${url}"></video>` : `<iframe style="width:100%;height:70vh;border:0;background:white" src="${url}"></iframe>`; modal.showModal(); }
+    document.addEventListener('click', event => {
+      const button = event.target instanceof Element ? event.target.closest('.attachment') : null;
+      if (!button) return;
+      openAttachment(button.dataset.role, button.dataset.attachment, button.dataset.mime || '');
+    });
+    loadContext();
+  </script>
+</body>
+</html>

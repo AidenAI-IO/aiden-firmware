@@ -55,6 +55,16 @@ func TestRunConfigUpdateIOEncodesInvalidArguments(t *testing.T) {
 	}
 }
 
+func TestRunConfigUpdateIOHelpExitsSuccessfully(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if exitCode := runConfigUpdateIO([]string{"-h"}, strings.NewReader("{}"), &stdout, &stderr); exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "Usage of config-update") {
+		t.Fatalf("stdout=%q stderr=%q, want help on stderr only", stdout.String(), stderr.String())
+	}
+}
+
 func TestExecuteConfigTestUsesModelRuntime(t *testing.T) {
 	values, err := json.Marshal(modelDTO{Provider: "fake"})
 	if err != nil {
@@ -340,8 +350,8 @@ llm_http_retention_days = 14
 		t.Fatalf("audio.socket = %q, want default %q",
 			dto.Audio.Socket, agent.DefaultConfig().Audio.Socket)
 	}
-	if dto.Audio.PlaybackBackend != agent.AudioPlaybackBackendAuto {
-		t.Fatalf("audio.playback_backend = %q, want auto", dto.Audio.PlaybackBackend)
+	if dto.Audio.Backend != agent.AudioBackendAuto {
+		t.Fatalf("audio.backend = %q, want auto", dto.Audio.Backend)
 	}
 	if dto.Log.LLMHTTPRetentionDays != 14 {
 		t.Fatalf("log.llm_http_retention_days = %d, want 14", dto.Log.LLMHTTPRetentionDays)
@@ -361,7 +371,7 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	}
 	if defaults.Audio.Socket == "" || defaults.Audio.SampleRate == 0 ||
 		defaults.Audio.Channels == 0 || defaults.Audio.BitWidth == 0 ||
-		defaults.Audio.PlaybackBackend == "" {
+		defaults.Audio.Backend == "" {
 		t.Fatalf("audio defaults were not populated: %+v", defaults.Audio)
 	}
 	if defaults.AudioArchive.Enabled || defaults.AudioArchive.StoragePath == "" ||
@@ -484,44 +494,44 @@ func TestWebConfigDTOMapsAudioArchive(t *testing.T) {
 	}
 }
 
-func TestWebConfigDTOMapsAudioPlaybackBackend(t *testing.T) {
+func TestWebConfigDTOMapsAudioBackend(t *testing.T) {
 	dto := webConfigDTO{
 		Audio: audioDTO{
-			Socket:          "/tmp/audio.sock",
-			SampleRate:      24000,
-			Channels:        1,
-			BitWidth:        16,
-			PlaybackBackend: agent.AudioPlaybackBackendLocal,
+			Socket:     "/tmp/audio.sock",
+			SampleRate: 24000,
+			Channels:   1,
+			BitWidth:   16,
+			Backend:    agent.AudioBackendLocal,
 		},
 	}
 	cfg := dto.ToAgentConfig()
-	if cfg.Audio.PlaybackBackend != agent.AudioPlaybackBackendLocal {
-		t.Fatalf("Audio.PlaybackBackend = %q, want local", cfg.Audio.PlaybackBackend)
+	if cfg.Audio.Backend != agent.AudioBackendLocal {
+		t.Fatalf("Audio.Backend = %q, want local", cfg.Audio.Backend)
 	}
 	roundTrip := webConfigDTOFromAgentConfig(agent.Config{Audio: cfg.Audio})
-	if roundTrip.Audio.PlaybackBackend != agent.AudioPlaybackBackendLocal {
-		t.Fatalf("round-trip audio.playback_backend = %q, want local", roundTrip.Audio.PlaybackBackend)
+	if roundTrip.Audio.Backend != agent.AudioBackendLocal {
+		t.Fatalf("round-trip audio.backend = %q, want local", roundTrip.Audio.Backend)
 	}
 
 	autoDTO := webConfigDTO{
 		Audio: audioDTO{
-			Socket:          "/tmp/audio.sock",
-			SampleRate:      24000,
-			Channels:        1,
-			BitWidth:        16,
-			PlaybackBackend: agent.AudioPlaybackBackendAuto,
+			Socket:     "/tmp/audio.sock",
+			SampleRate: 24000,
+			Channels:   1,
+			BitWidth:   16,
+			Backend:    agent.AudioBackendAuto,
 		},
 	}
 	autoCfg := autoDTO.ToAgentConfig()
-	if autoCfg.Audio.PlaybackBackend != agent.AudioPlaybackBackendAuto {
-		t.Fatalf("auto Audio.PlaybackBackend = %q, want auto", autoCfg.Audio.PlaybackBackend)
+	if autoCfg.Audio.Backend != agent.AudioBackendAuto {
+		t.Fatalf("auto Audio.Backend = %q, want auto", autoCfg.Audio.Backend)
 	}
 	autoRoundTrip := webConfigDTOFromAgentConfig(agent.Config{
 		Audio: autoCfg.Audio,
 		HID:   agent.HIDConfig{InputBackend: "adb"},
 	})
-	if autoRoundTrip.Audio.PlaybackBackend != agent.AudioPlaybackBackendAuto {
-		t.Fatalf("auto round-trip audio.playback_backend = %q, want auto", autoRoundTrip.Audio.PlaybackBackend)
+	if autoRoundTrip.Audio.Backend != agent.AudioBackendAuto {
+		t.Fatalf("auto round-trip audio.backend = %q, want auto", autoRoundTrip.Audio.Backend)
 	}
 }
 
@@ -913,7 +923,7 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 		},
 		{
 			name:          "model api mode error",
-			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions or responses)",
+			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions, responses, or responses_stateful)",
 			expectedField: "model.api_mode",
 		},
 		{

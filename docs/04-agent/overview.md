@@ -45,6 +45,7 @@ The HTTP server and Web UI start in every input mode. `input_mode` controls whet
 | ------ | --------------------------------------------------------------------------- |
 | `text` | HTTP server and Web UI only                                                  |
 | `stt`  | HTTP server and Web UI plus device recording → VAD → STT → LLM → TTS loop    |
+| `realtime` | HTTP server and Web UI plus the configured realtime voice model session |
 
 In `stt` mode, Web UI requests and device voice interactions share the same Agent runtime and run in the same daemon process.
 

@@ -4,6 +4,7 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -76,6 +77,13 @@ type AudioArchiveConfig struct {
 	MaxFiles    int    `toml:"max_files,omitempty"`
 	MaxSizeMB   int    `toml:"max_size_mb,omitempty"`
 	StoragePath string `toml:"storage_path,omitempty"`
+}
+
+// FrameServiceConfig controls the board-side HDMI capture service lifecycle.
+// The Agent preserves this section so the setup portal can own the setting,
+// while frame_service itself reads the persisted TOML at service startup.
+type FrameServiceConfig struct {
+	KeepStreamOn bool `toml:"keep_streamon"`
 }
 
 // MaxFilesOrDefault returns MaxFiles if positive, else 500.
@@ -271,7 +279,9 @@ type Config struct {
 	HID                        HIDConfig                `toml:"hid"`
 	Device                     DeviceConfig             `toml:"device,omitempty"`
 	Audio                      AudioConfig              `toml:"audio,omitempty"`
+	VoiceModel                 VoiceModelConfig         `toml:"voice_model,omitempty"`
 	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
+	FrameService               FrameServiceConfig       `toml:"frame_service,omitempty"`
 	Storage                    StorageConfig            `toml:"storage,omitempty"`
 	VoiceNotifications         VoiceNotificationsConfig `toml:"voice_notifications,omitempty"`
 	QuickCapture               QuickCaptureConfig       `toml:"quick_capture,omitempty"`
@@ -284,7 +294,7 @@ type Config struct {
 	Locale                     string                   `toml:"locale,omitempty"`
 	Instruction                string                   `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string                   `toml:"additional_prompt,omitempty"`
-	InputMode                  string                   `toml:"input_mode,omitempty"`  // "text" or "stt"
+	InputMode                  string                   `toml:"input_mode,omitempty"`  // "text", "stt", or "realtime"
 	VADBackend                 string                   `toml:"vad_backend,omitempty"` // "rknn", "cpu"
 	VADModelPath               string                   `toml:"vad_model_path,omitempty"`
 	VADHelperPath              string                   `toml:"vad_helper_path,omitempty"`
@@ -373,11 +383,60 @@ type STTConfig struct {
 }
 
 type AudioConfig struct {
-	Socket          string `toml:"socket,omitempty"`
-	SampleRate      int    `toml:"sample_rate,omitempty"`
-	Channels        int    `toml:"channels,omitempty"`
-	BitWidth        int    `toml:"bit_width,omitempty"`
-	PlaybackBackend string `toml:"playback_backend,omitempty"`
+	Socket     string `toml:"socket,omitempty"`
+	SampleRate int    `toml:"sample_rate,omitempty"`
+	Channels   int    `toml:"channels,omitempty"`
+	BitWidth   int    `toml:"bit_width,omitempty"`
+	Backend    string `toml:"backend,omitempty"`
+}
+
+// VoiceModelConfig configures the realtime audio model used by the realtime
+// voice path. The path is selected by agent.input_mode, not by API key presence.
+type VoiceModelConfig struct {
+	APIKey                 string   `toml:"api_key,omitempty"`
+	Model                  string   `toml:"model,omitempty"`
+	WorkspaceID            string   `toml:"workspace_id,omitempty"`
+	Region                 string   `toml:"region,omitempty"`
+	Endpoint               string   `toml:"endpoint,omitempty"`
+	Voice                  string   `toml:"voice,omitempty"`
+	Instructions           string   `toml:"instructions,omitempty"`
+	EnableSpeechEmotion    *bool    `toml:"enable_speech_emotion,omitempty"`
+	InputAudioFormat       string   `toml:"input_audio_format,omitempty"`
+	OutputAudioFormat      string   `toml:"output_audio_format,omitempty"`
+	TurnDetection          string   `toml:"turn_detection,omitempty"`
+	TurnDetectionThreshold *float64 `toml:"turn_detection_threshold,omitempty"`
+	TurnDetectionSilenceMs int      `toml:"turn_detection_silence_ms,omitempty"`
+}
+
+func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) != "" }
+
+func (c VoiceModelConfig) Validate() error {
+	if region := strings.TrimSpace(c.Region); region != "" && region != "cn-beijing" && region != "ap-southeast-1" {
+		return fmt.Errorf("voice_model.region: unsupported region %q", c.Region)
+	}
+	if endpoint := strings.TrimSpace(c.Endpoint); endpoint != "" {
+		u, err := url.Parse(endpoint)
+		if err != nil || u.Host == "" || (u.Scheme != "wss" &&
+			!(u.Scheme == "ws" && isLoopbackHost(u.Hostname()))) {
+			return fmt.Errorf("voice_model.endpoint: invalid websocket URL %q", c.Endpoint)
+		}
+	}
+	if c.TurnDetection != "" && c.TurnDetection != "server_vad" && c.TurnDetection != "smart_turn" {
+		return fmt.Errorf("voice_model.turn_detection: unsupported type %q", c.TurnDetection)
+	}
+	if c.TurnDetectionSilenceMs < 0 {
+		return errors.New("voice_model.turn_detection_silence_ms must be >= 0")
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 type ProxyConfig struct {
@@ -470,44 +529,44 @@ func (a AudioConfig) BitWidthOrDefault() int {
 }
 
 const (
-	AudioPlaybackBackendAuto         = "auto"
-	AudioPlaybackBackendAudioService = "audio_service"
-	AudioPlaybackBackendLocal        = "local"
+	AudioBackendAuto         = "auto"
+	AudioBackendAudioService = "audio_service"
+	AudioBackendLocal        = "local"
 )
 
-func normalizeAudioPlaybackBackend(value string) (string, error) {
+func normalizeAudioBackend(value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", AudioPlaybackBackendAuto:
-		return AudioPlaybackBackendAuto, nil
-	case AudioPlaybackBackendAudioService, "audio-service", "audioservice":
-		return AudioPlaybackBackendAudioService, nil
-	case AudioPlaybackBackendLocal, "pc", "desktop":
-		return AudioPlaybackBackendLocal, nil
+	case "", AudioBackendAuto:
+		return AudioBackendAuto, nil
+	case AudioBackendAudioService, "audio-service", "audioservice":
+		return AudioBackendAudioService, nil
+	case AudioBackendLocal, "pc", "desktop":
+		return AudioBackendLocal, nil
 	default:
-		return "", fmt.Errorf("invalid audio.playback_backend: %s (expected auto, audio_service, or local)", value)
+		return "", fmt.Errorf("invalid audio.backend: %s (expected auto, audio_service, or local)", value)
 	}
 }
 
-func (a AudioConfig) PlaybackBackendOrDefault() string {
-	backend, err := normalizeAudioPlaybackBackend(a.PlaybackBackend)
+func (a AudioConfig) BackendOrDefault() string {
+	backend, err := normalizeAudioBackend(a.Backend)
 	if err != nil {
-		return strings.ToLower(strings.TrimSpace(a.PlaybackBackend))
+		return strings.ToLower(strings.TrimSpace(a.Backend))
 	}
 	return backend
 }
 
-func (c Config) AudioPlaybackBackendOrDefault() string {
-	backend, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend)
+func (c Config) AudioBackendOrDefault() string {
+	backend, err := normalizeAudioBackend(c.Audio.Backend)
 	if err != nil {
-		return strings.ToLower(strings.TrimSpace(c.Audio.PlaybackBackend))
+		return strings.ToLower(strings.TrimSpace(c.Audio.Backend))
 	}
-	if backend != AudioPlaybackBackendAuto {
+	if backend != AudioBackendAuto {
 		return backend
 	}
 	if c.HID.InputBackendADB() || c.EnvironmentBridge.Enabled {
-		return AudioPlaybackBackendLocal
+		return AudioBackendLocal
 	}
-	return AudioPlaybackBackendAudioService
+	return AudioBackendAudioService
 }
 
 type HIDConfig struct {
@@ -693,8 +752,27 @@ type ModelConfig struct {
 	APIKey   string `toml:"api_key,omitempty"`
 	// APIMode selects the wire protocol for OpenAI-compatible providers. Empty
 	// and "chat_completions" preserve the historical default; "responses"
-	// sends the locally maintained context as Responses input items.
+	// sends the locally maintained context as Responses input items;
+	// "responses_stateful" chains provider-stored responses with
+	// previous_response_id.
 	APIMode string `toml:"api_mode,omitempty"`
+	// ResponsesContextManagement selects provider-side context management for
+	// Responses requests. "compaction" is OpenAI's token-based policy and
+	// "ark_context_edit" is Volcengine Ark's tool/thinking edit policy.
+	ResponsesContextManagement        string `toml:"responses_context_management,omitempty"`
+	ResponsesCompactThreshold         int    `toml:"responses_compact_threshold,omitempty"`
+	ResponsesContextEditTrigger       int    `toml:"responses_context_edit_trigger,omitempty"`
+	ResponsesContextEditKeep          int    `toml:"responses_context_edit_keep,omitempty"`
+	ResponsesContextEditClearThinking bool   `toml:"responses_context_edit_clear_thinking,omitempty"`
+	// ResponsesTruncation controls the OpenAI-compatible truncation policy used
+	// by OpenAI and OpenRouter. Ark does not use this request field.
+	// Empty preserves the API default (disabled); "auto" delegates truncation
+	// to the provider when supported.
+	ResponsesTruncation string `toml:"responses_truncation,omitempty"`
+	// ResponsesInclude lists official Responses include values such as
+	// reasoning.encrypted_content. It is intentionally provider-configurable
+	// because compatible gateways do not all implement the same include set.
+	ResponsesInclude []string `toml:"responses_include,omitempty"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
 	// (see applyModelTemperatureDefault); an explicit value, including 0, is
@@ -707,6 +785,13 @@ type ModelConfig struct {
 	ContextWindow        int      `toml:"context_window,omitempty"`
 	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`
 	Responses            []string `toml:"responses,omitempty"`
+}
+
+func (m ModelConfig) ResponsesProviderCompactionEnabled() bool {
+	apiMode := normalizeModelAPIMode(m.APIMode)
+	return (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) &&
+		effectiveModelProviderType(m.Provider, m.BaseURL) == "openai" &&
+		normalizeResponsesContextManagement(m.ResponsesContextManagement) == responsesContextManagementCompaction
 }
 
 // AgentConfig is used internally by the runtime prompt builder.
@@ -822,6 +907,7 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	// config page runs Config.ValidateVoiceProviders on save for strict checks.
 	resolveTTSProvider(&cfg)
 	resolveSTTProvider(&cfg)
+	cfg.VoiceModel.APIKey = resolveProviderAPIKey(cfg.VoiceModel.APIKey)
 
 	// Apply provider references to model configurations. This must run before
 	// the base_url whitelist below: until the reference is expanded, Provider
@@ -950,7 +1036,7 @@ func resolveModelProvider(cfg *Config, m *ModelConfig) error {
 
 // applyProviderToModel applies a provider configuration to a model config.
 func applyProviderToModel(provider ModelProvider, originalRef string, m *ModelConfig) error {
-	providerType := strings.TrimSpace(provider.Type)
+	providerType := effectiveModelProviderType(provider.Type, provider.BaseURL)
 	if providerType == "" {
 		return fmt.Errorf("provider %q has no provider type specified", originalRef)
 	}
@@ -1142,7 +1228,27 @@ func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 	if err := applyLegacyModelMaxTokens(path, metadata, cfg); err != nil {
 		return toml.MetaData{}, err
 	}
+	if err := applyLegacyAudioBackend(path, metadata, cfg); err != nil {
+		return toml.MetaData{}, err
+	}
 	return metadata, nil
+}
+
+func applyLegacyAudioBackend(path string, metadata toml.MetaData, cfg *Config) error {
+	if cfg == nil || metadata.IsDefined("audio", "backend") || !metadata.IsDefined("audio", "playback_backend") {
+		return nil
+	}
+
+	var raw struct {
+		Audio struct {
+			PlaybackBackend string `toml:"playback_backend"`
+		} `toml:"audio"`
+	}
+	if _, err := toml.DecodeFile(path, &raw); err != nil {
+		return fmt.Errorf("decode legacy audio backend: %w", err)
+	}
+	cfg.Audio.Backend = raw.Audio.PlaybackBackend
+	return nil
 }
 
 func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {
@@ -1229,10 +1335,40 @@ func (c Config) Validate() error {
 	}
 	apiMode := normalizeModelAPIMode(c.Model.APIMode)
 	if apiMode == "" {
-		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions or responses)", c.Model.APIMode)
+		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions, responses, or responses_stateful)", c.Model.APIMode)
 	}
-	if apiMode == modelAPIModeResponses && !c.modelProviderSupportsResponses() {
-		return fmt.Errorf("model.api_mode=responses requires a provider transport with an OpenAI-compatible /responses endpoint")
+	if (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) && !c.modelProviderSupportsResponses() {
+		return fmt.Errorf("model.api_mode=%s requires a provider transport with an OpenAI-compatible /responses endpoint", apiMode)
+	}
+	if apiMode == modelAPIModeResponsesStateful && !c.modelProviderSupportsResponsesStateful() {
+		return fmt.Errorf("model.api_mode=responses_stateful requires a provider that supports stored Responses and previous_response_id; use responses for stateless-compatible endpoints")
+	}
+	contextManagement := strings.ToLower(strings.TrimSpace(c.Model.ResponsesContextManagement))
+	switch contextManagement {
+	case "", "none", "disabled", responsesContextManagementCompaction:
+	case responsesContextManagementArkEdits, "ark", "volcengine", "ark-edits":
+	default:
+		return fmt.Errorf("invalid model.responses_context_management: %s (expected empty, compaction, ark_context_edit, or disabled)", c.Model.ResponsesContextManagement)
+	}
+	if threshold := c.Model.ResponsesCompactThreshold; threshold != 0 && threshold < 1000 {
+		return fmt.Errorf("model.responses_compact_threshold must be 0 or >= 1000, got %d", threshold)
+	}
+	if c.Model.ResponsesContextEditTrigger < 0 {
+		return fmt.Errorf("model.responses_context_edit_trigger must be >= 0, got %d", c.Model.ResponsesContextEditTrigger)
+	}
+	if c.Model.ResponsesContextEditKeep < 0 {
+		return fmt.Errorf("model.responses_context_edit_keep must be >= 0, got %d", c.Model.ResponsesContextEditKeep)
+	}
+	for _, include := range c.Model.ResponsesInclude {
+		if strings.TrimSpace(include) == "" {
+			return errors.New("model.responses_include entries must be non-empty")
+		}
+	}
+	truncation := strings.ToLower(strings.TrimSpace(c.Model.ResponsesTruncation))
+	switch truncation {
+	case "", responsesTruncationDisabled, responsesTruncationAuto:
+	default:
+		return fmt.Errorf("invalid model.responses_truncation: %s (expected empty, auto, or disabled)", c.Model.ResponsesTruncation)
 	}
 	backend := c.Device.BackendOrDefault()
 	switch backend {
@@ -1243,7 +1379,10 @@ func (c Config) Validate() error {
 	if _, ok := normalizeDeviceType(c.Device.DeviceType); !ok {
 		return fmt.Errorf("invalid device.device_type: %s (expected iOS, Android, macOS, windows, or linux)", c.Device.DeviceType)
 	}
-	if _, err := normalizeAudioPlaybackBackend(c.Audio.PlaybackBackend); err != nil {
+	if _, err := normalizeAudioBackend(c.Audio.Backend); err != nil {
+		return err
+	}
+	if err := c.VoiceModel.Validate(); err != nil {
 		return err
 	}
 	if c.Model.MaxResponseTokens < 0 {
@@ -1264,18 +1403,22 @@ func (c Config) Validate() error {
 			if strings.TrimSpace(c.STT.Provider) == "" {
 				return errors.New("stt.provider is required when input_mode=stt")
 			}
+		case "realtime":
+			if !c.VoiceModel.Enabled() {
+				return errors.New("voice_model.api_key is required when input_mode=realtime")
+			}
 		case "audio":
 			return fmt.Errorf("invalid input_mode: %s (audio mode has been removed; use stt instead)", c.InputMode)
 		default:
-			return fmt.Errorf("invalid input_mode: %s (expected text or stt)", c.InputMode)
+			return fmt.Errorf("invalid input_mode: %s (expected text, stt, or realtime)", c.InputMode)
 		}
 
-		// Validate TTS config if not in text mode
+		// Validate TTS/STT config only for the legacy STT audio path.
 		if mode == "stt" && strings.TrimSpace(c.TTS.Provider) == "" {
 			return errors.New("tts.provider is required when input_mode=stt")
 		}
 
-		if mode == "stt" {
+		if mode == "stt" || mode == "realtime" {
 			if c.Audio.SampleRate != 0 && c.Audio.SampleRate < 8000 {
 				return fmt.Errorf("audio.sample_rate must be at least 8000 when set, got %d", c.Audio.SampleRate)
 			}
@@ -1392,11 +1535,50 @@ func (c Config) Validate() error {
 // are rejected before a configuration is persisted or used at startup.
 func (c Config) modelProviderSupportsResponses() bool {
 	providerType := strings.TrimSpace(c.Model.Provider)
+	baseURL := c.Model.BaseURL
 	if provider, ok := c.ModelProviders[providerType]; ok {
-		providerType = strings.TrimSpace(provider.Type)
+		providerType = provider.Type
+		baseURL = provider.BaseURL
 	}
+	providerType = effectiveModelProviderType(providerType, baseURL)
 	definition, ok := lookupModelProviderDefinition(providerType)
 	return ok && definition.supportsResponses
+}
+
+func (c Config) modelProviderSupportsResponsesStateful() bool {
+	providerType := strings.TrimSpace(c.Model.Provider)
+	baseURL := c.Model.BaseURL
+	if provider, ok := c.ModelProviders[providerType]; ok {
+		providerType = provider.Type
+		baseURL = provider.BaseURL
+	}
+	providerType = effectiveModelProviderType(providerType, baseURL)
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsResponsesStateful
+}
+
+// effectiveModelProviderType recognizes well-known endpoints that were saved
+// as generic OpenAI-compatible transports by older config pages. This keeps
+// provider capability checks and runtime request behavior aligned: OpenRouter
+// implements only stateless /responses, while Volcengine Ark supports stored
+// response chaining with a different set of request fields.
+func effectiveModelProviderType(providerType, baseURL string) string {
+	providerType = strings.ToLower(strings.TrimSpace(providerType))
+	if providerType != "openai" {
+		return providerType
+	}
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return providerType
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "openrouter.ai" || strings.HasSuffix(host, ".openrouter.ai") {
+		return "openrouter"
+	}
+	if host == "ark.cn-beijing.volces.com" || strings.HasSuffix(host, ".ark.cn-beijing.volces.com") {
+		return "volcengine"
+	}
+	return providerType
 }
 
 // isKnownProviderType reports whether the value names a built-in model

@@ -20,14 +20,14 @@ func NewResamplingSink(sourceFormat AudioFormat, target AudioSink) AudioSink {
 	return &resamplingSink{
 		sourceFormat: sourceFormat,
 		target:       target,
-		resampler:    newPCM16MonoLinearResampler(sourceFormat.SampleRate, targetFormat.SampleRate),
+		resampler:    NewPCM16MonoResampler(sourceFormat.SampleRate, targetFormat.SampleRate),
 	}
 }
 
 type resamplingSink struct {
 	sourceFormat AudioFormat
 	target       AudioSink
-	resampler    *pcm16MonoLinearResampler
+	resampler    *PCM16MonoResampler
 }
 
 func (s *resamplingSink) Format() AudioFormat { return s.sourceFormat }
@@ -44,7 +44,9 @@ func (s *resamplingSink) Drain(ctx context.Context) error { return s.target.Drai
 
 func (s *resamplingSink) Stop() error { return s.target.Stop() }
 
-type pcm16MonoLinearResampler struct {
+// PCM16MonoResampler converts little-endian signed 16-bit mono PCM between
+// sample rates. It keeps state across streaming chunks.
+type PCM16MonoResampler struct {
 	srcRate int
 	dstRate int
 
@@ -55,11 +57,12 @@ type pcm16MonoLinearResampler struct {
 	dstEmitted  int64
 }
 
-func newPCM16MonoLinearResampler(srcRate, dstRate int) *pcm16MonoLinearResampler {
-	return &pcm16MonoLinearResampler{srcRate: srcRate, dstRate: dstRate}
+// NewPCM16MonoResampler creates a streaming PCM16 mono sample-rate converter.
+func NewPCM16MonoResampler(srcRate, dstRate int) *PCM16MonoResampler {
+	return &PCM16MonoResampler{srcRate: srcRate, dstRate: dstRate}
 }
 
-func (r *pcm16MonoLinearResampler) Write(data []byte) []byte {
+func (r *PCM16MonoResampler) Write(data []byte) []byte {
 	if len(data) == 0 {
 		return nil
 	}

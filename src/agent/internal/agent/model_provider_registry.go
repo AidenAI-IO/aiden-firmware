@@ -21,11 +21,12 @@ type ModelBuildContext struct {
 type ModelProviderBuilder func(ModelBuildContext, ModelConfig) (llms.Model, error)
 
 type modelProviderDefinition struct {
-	providerType        string
-	allowsCustomBaseURL bool
-	supportsResponses   bool
-	hiddenFromConfigUI  bool
-	build               ModelProviderBuilder
+	providerType              string
+	allowsCustomBaseURL       bool
+	supportsResponses         bool
+	supportsResponsesStateful bool
+	hiddenFromConfigUI        bool
+	build                     ModelProviderBuilder
 }
 
 var modelProviderDefinitions = []modelProviderDefinition{
@@ -35,11 +36,12 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		build:             buildOpenRouterModel,
 	},
 	{
-		providerType:        "openai",
-		allowsCustomBaseURL: true,
-		supportsResponses:   true,
+		providerType:              "openai",
+		allowsCustomBaseURL:       true,
+		supportsResponses:         true,
+		supportsResponsesStateful: true,
 		build: func(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
-			return buildOpenAICompatibleModel(ctx, cfg, "https://api.openai.com/v1"), nil
+			return buildOpenAICompatibleModel(ctx, cfg, "https://api.openai.com/v1", responsesDialectOpenAI), nil
 		},
 	},
 	{
@@ -48,24 +50,23 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		build:               buildAnthropicModel,
 	},
 	{
-		providerType:      "kimi",
-		supportsResponses: true,
+		providerType: "kimi",
 		build: func(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
-			return buildOpenAICompatibleModel(ctx, cfg, moonshotGlobalBaseURL), nil
+			return buildKimiModel(ctx, cfg, moonshotGlobalBaseURL)
 		},
 	},
 	{
-		providerType:      "kimi-cn",
-		supportsResponses: true,
+		providerType: "kimi-cn",
 		build: func(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
-			return buildOpenAICompatibleModel(ctx, cfg, moonshotCNBaseURL), nil
+			return buildKimiModel(ctx, cfg, moonshotCNBaseURL)
 		},
 	},
 	{
-		providerType:      "volcengine",
-		supportsResponses: true,
+		providerType:              "volcengine",
+		supportsResponses:         true,
+		supportsResponsesStateful: true,
 		build: func(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
-			return buildOpenAICompatibleModel(ctx, cfg, arkBeijingBaseURL), nil
+			return buildOpenAICompatibleModel(ctx, cfg, arkBeijingBaseURL, responsesDialectVolcengine), nil
 		},
 	},
 	{
@@ -74,32 +75,55 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		build:               buildOllamaModel,
 	},
 	{
-		providerType:       "fake",
-		supportsResponses:  true,
-		hiddenFromConfigUI: true,
+		providerType:              "fake",
+		supportsResponses:         true,
+		supportsResponsesStateful: true,
+		hiddenFromConfigUI:        true,
 		build: func(_ ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
 			return fakellm.NewFakeLLM(cfg.Responses), nil
 		},
 	},
 }
 
-func buildOpenAICompatibleModel(ctx ModelBuildContext, cfg ModelConfig, defaultBaseURL string) llms.Model {
+func buildOpenAICompatibleModel(ctx ModelBuildContext, cfg ModelConfig, defaultBaseURL string, dialect responsesDialect) llms.Model {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
+	apiMode := normalizeModelAPIMode(cfg.APIMode)
+	if apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
 		return newResponsesModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, responsesModelOptions{
-			rawLogger:         ctx.RawHTTPLogger,
-			sessionIDProvider: ctx.SessionIDProvider,
-			reasoningEffort:   cfg.ReasoningEffort,
-			temperature:       cfg.Temperature,
+			rawLogger:                ctx.RawHTTPLogger,
+			sessionIDProvider:        ctx.SessionIDProvider,
+			reasoningEffort:          cfg.ReasoningEffort,
+			temperature:              cfg.Temperature,
+			providerManagedContext:   apiMode == modelAPIModeResponsesStateful,
+			contextManagement:        cfg.ResponsesContextManagement,
+			compactThreshold:         cfg.ResponsesCompactThreshold,
+			contextEditTrigger:       cfg.ResponsesContextEditTrigger,
+			contextEditKeep:          cfg.ResponsesContextEditKeep,
+			contextEditClearThinking: cfg.ResponsesContextEditClearThinking,
+			truncation:               cfg.ResponsesTruncation,
+			include:                  cfg.ResponsesInclude,
+			dialect:                  dialect,
 		})
 	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, openAICompatibleOptions(ctx, cfg)...)
 }
 
+func buildKimiModel(ctx ModelBuildContext, cfg ModelConfig, defaultBaseURL string) (llms.Model, error) {
+	apiMode := normalizeModelAPIMode(cfg.APIMode)
+	if apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
+		return nil, fmt.Errorf("model.api_mode=%s is not supported by Moonshot Kimi; its official endpoint implements OpenAI-compatible Chat Completions, not /responses", apiMode)
+	}
+	return buildOpenAICompatibleModel(ctx, cfg, defaultBaseURL, responsesDialectOpenAI), nil
+}
+
 func buildOpenRouterModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
+	apiMode := normalizeModelAPIMode(cfg.APIMode)
+	if apiMode == modelAPIModeResponsesStateful {
+		return nil, fmt.Errorf("model.api_mode=responses_stateful is not supported by OpenRouter; its /responses endpoint is stateless and rejects store=true or previous_response_id")
+	}
 	token := resolveToken(cfg)
 	if token == "" {
 		if env, ok := providerAPIKeyEnv(cfg.APIKey); ok && env != "" {
@@ -118,21 +142,30 @@ func buildOpenRouterModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, e
 	if ctx.PromptCachePolicy.UsesExplicitCacheControl() {
 		opts = append(opts, withOpenAICompatibleExplicitPromptCache())
 	}
-	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
+	if apiMode == modelAPIModeResponses {
 		return newResponsesModel(baseURL, cfg.Model, token, ctx.HTTPClient, responsesModelOptions{
-			rawLogger:         ctx.RawHTTPLogger,
-			sessionIDProvider: ctx.SessionIDProvider,
-			reasoningEffort:   cfg.ReasoningEffort,
-			temperature:       cfg.Temperature,
-			routerMetadata:    true,
+			rawLogger:                ctx.RawHTTPLogger,
+			sessionIDProvider:        ctx.SessionIDProvider,
+			reasoningEffort:          cfg.ReasoningEffort,
+			temperature:              cfg.Temperature,
+			routerMetadata:           true,
+			providerManagedContext:   false,
+			contextManagement:        cfg.ResponsesContextManagement,
+			compactThreshold:         cfg.ResponsesCompactThreshold,
+			contextEditTrigger:       cfg.ResponsesContextEditTrigger,
+			contextEditKeep:          cfg.ResponsesContextEditKeep,
+			contextEditClearThinking: cfg.ResponsesContextEditClearThinking,
+			truncation:               cfg.ResponsesTruncation,
+			include:                  cfg.ResponsesInclude,
+			dialect:                  responsesDialectOpenRouter,
 		}), nil
 	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, token, ctx.HTTPClient, opts...), nil
 }
 
 func buildAnthropicModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
-	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
-		return nil, fmt.Errorf("model.api_mode=responses requires an OpenAI-compatible /responses endpoint; configure that endpoint with provider type openai")
+	if apiMode := normalizeModelAPIMode(cfg.APIMode); apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
+		return nil, fmt.Errorf("model.api_mode=%s requires an OpenAI-compatible /responses endpoint; configure that endpoint with provider type openai", apiMode)
 	}
 	token, useBearerAuth := resolveAnthropicToken(cfg.APIKey)
 	if token == "" {
@@ -149,8 +182,8 @@ func buildAnthropicModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, er
 }
 
 func buildOllamaModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
-	if normalizeModelAPIMode(cfg.APIMode) == modelAPIModeResponses {
-		return nil, fmt.Errorf("model.api_mode=responses requires an OpenAI-compatible /responses endpoint; configure that endpoint with provider type openai")
+	if apiMode := normalizeModelAPIMode(cfg.APIMode); apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
+		return nil, fmt.Errorf("model.api_mode=%s requires an OpenAI-compatible /responses endpoint; configure that endpoint with provider type openai", apiMode)
 	}
 	options := []ollama.Option{ollama.WithModel(cfg.Model), ollama.WithHTTPClient(ctx.OllamaHTTPClient)}
 	if cfg.BaseURL != "" {

@@ -215,9 +215,14 @@ void AudioRecordSession::capture_loop() {
                 capture_.release_frame();
                 continue;
             }
-            if ((total_samples % 2) != 0) {
+            if (frame.channels == 1 || frame.channels == 2) {
+                hw_channels_ = static_cast<int>(frame.channels);
+            } else if ((total_samples % 2) != 0) {
                 // Odd sample count cannot be stereo-interleaved.
                 hw_channels_ = 1;
+            }
+            if (frame.sample_rate > 0) {
+                hw_sample_rate_ = static_cast<int>(frame.sample_rate);
             }
 
             size_t frame_samples_per_channel =

@@ -1,4 +1,4 @@
-// Tool Lab catalog, invocation, and skill export controls.
+// Tool Lab catalog and invocation controls.
 async function loadToolCatalog() {
     try {
         const res = await fetch('/api/tools');
@@ -168,91 +168,4 @@ function renderToolInvokeResult(result) {
 function clearToolResultPreview() {
     toolResultPreviewWrapEl.classList.add('hidden');
     toolResultPreviewEl.removeAttribute('src');
-}
-
-async function loadToolSkills() {
-    try {
-        const res = await fetch('/api/tool-skills');
-        if (!res.ok) {
-            throw new Error(await res.text() || 'Failed to load tool skills');
-        }
-        const data = await res.json();
-        toolSkills = data.skills || [];
-        renderToolSkills();
-    } catch (err) {
-        console.error('Failed to load tool skills:', err);
-        toolSkills = [];
-        skillSelectEl.innerHTML = '<option value="">Skills unavailable</option>';
-        skillSelectEl.disabled = true;
-        skillMarkdownEl.value = '';
-        copySkillBtnEl.disabled = true;
-        skillStatusEl.textContent = 'Skill export unavailable: ' + err.message;
-        skillStatusEl.classList.add('error');
-    }
-}
-
-function renderToolSkills() {
-    skillSelectEl.innerHTML = '';
-
-    if (toolSkills.length === 0) {
-        skillSelectEl.innerHTML = '<option value="">No generated skills</option>';
-        skillSelectEl.disabled = true;
-        skillMarkdownEl.value = '';
-        copySkillBtnEl.disabled = true;
-        return;
-    }
-
-    skillSelectEl.disabled = false;
-    copySkillBtnEl.disabled = false;
-
-    toolSkills.forEach(function(skill) {
-        const option = document.createElement('option');
-        option.value = skill.name;
-        option.textContent = skill.name;
-        skillSelectEl.appendChild(option);
-    });
-
-    syncSelectedSkill();
-}
-
-function getSelectedSkill() {
-    const selectedName = skillSelectEl.value;
-    for (let i = 0; i < toolSkills.length; i++) {
-        if (toolSkills[i].name === selectedName) {
-            return toolSkills[i];
-        }
-    }
-    return toolSkills.length > 0 ? toolSkills[0] : null;
-}
-
-function syncSelectedSkill() {
-    const skill = getSelectedSkill();
-    if (!skill) return;
-    if (skillSelectEl.value !== skill.name) {
-        skillSelectEl.value = skill.name;
-    }
-    skillMarkdownEl.value = skill.markdown || '';
-    skillStatusEl.textContent = skill.description || '';
-    skillStatusEl.classList.remove('error');
-}
-
-async function copySelectedSkill() {
-    const skill = getSelectedSkill();
-    if (!skill || !skill.markdown) return;
-
-    try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            await navigator.clipboard.writeText(skill.markdown);
-        } else {
-            skillMarkdownEl.focus();
-            skillMarkdownEl.select();
-            document.execCommand('copy');
-        }
-        skillStatusEl.textContent = 'Copied.';
-        skillStatusEl.classList.remove('error');
-    } catch (err) {
-        console.error('Failed to copy skill:', err);
-        skillStatusEl.textContent = 'Copy failed.';
-        skillStatusEl.classList.add('error');
-    }
 }

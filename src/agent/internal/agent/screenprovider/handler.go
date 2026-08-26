@@ -13,6 +13,8 @@ type httpHandlerRequest struct {
 	Quality      int    `json:"quality"`
 	CropBlack    bool   `json:"crop_black"`
 	MinimalWidth int    `json:"minimal_width"`
+	ScreenWidth  int    `json:"screen_width"`
+	ScreenHeight int    `json:"screen_height"`
 }
 
 // HandleHTTP serves POST /api/providers/screenshot from a local Provider.
@@ -44,7 +46,8 @@ func HandleHTTP(w http.ResponseWriter, r *http.Request, provider Provider) {
 		req.Quality = DefaultJPEGQuality
 	}
 
-	meta, image, info, err := provider.LatestFrameWithFormat(req.Format, req.Quality, req.CropBlack, req.MinimalWidth)
+	hint := CropHint{MinimalWidth: req.MinimalWidth, ScreenWidth: req.ScreenWidth, ScreenHeight: req.ScreenHeight}
+	meta, image, info, err := provider.LatestFrameWithFormat(req.Format, req.Quality, req.CropBlack, hint)
 	if err != nil {
 		writeProviderError(w, http.StatusInternalServerError, "capture_failed", err.Error())
 		return

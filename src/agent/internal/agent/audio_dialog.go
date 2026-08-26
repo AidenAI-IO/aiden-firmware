@@ -31,6 +31,7 @@ var (
 type AudioDialog struct {
 	config              Config
 	audioClient         *AudioServiceClient
+	recordBackend       audioRecordingBackend
 	sttClient           STTClient
 	ttsManager          *tts.ProviderManager
 	ttsPlaybackBackend  tts.AudioServiceBackend
@@ -48,8 +49,7 @@ type AudioDialog struct {
 	outputMu            sync.Mutex
 	activeOutputs       map[*activeTTSOutput]struct{}
 	runControl          voiceRunControl
-	historyStore        *ChatHistoryStore
-	historyAppend       func(Message)
+	messagePublish      func(Message)
 	audioArchive        *AudioArchiveManager
 	connWarmer          *ConnectionWarmer
 }
@@ -154,6 +154,7 @@ func NewAudioDialog(runtime *Runtime) (*AudioDialog, error) {
 
 	// Create audio client
 	audioClient := NewAudioServiceClient(cfg.Audio.SocketOrDefault())
+	recordBackend := newAudioRecordingBackendFromConfig(cfg, audioClient, nil)
 
 	// Create STT client if needed
 	var sttClient STTClient
@@ -204,6 +205,7 @@ func NewAudioDialog(runtime *Runtime) (*AudioDialog, error) {
 	return &AudioDialog{
 		config:             cfg,
 		audioClient:        audioClient,
+		recordBackend:      recordBackend,
 		sttClient:          sttClient,
 		ttsManager:         ttsManager,
 		ttsPlaybackBackend: newTTSPlaybackBackendFromConfig(cfg, audioClient, nil),
@@ -269,15 +271,17 @@ func (d *AudioDialog) StartRecording() error {
 		BitWidth:   uint32(d.config.Audio.BitWidthOrDefault()),
 	}
 
-	result, err := startRecordingWithRetry(d.audioClient, format, recordingStartRetryTimeout, recordingStartRetryInterval)
+	result, err := startRecordingWithRetry(recordingBackendOrService(d.recordBackend, d.audioClient), format, recordingStartRetryTimeout, recordingStartRetryInterval)
 	if err != nil {
 		return fmt.Errorf("start recording: %w", err)
 	}
 	d.sessionID = result.SessionID
-	if reader, err := d.audioClient.OpenRecordChunkReader(result.SessionID); err == nil {
-		d.recordReader = reader
-	} else {
-		log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
+	if d.config.AudioBackendOrDefault() != AudioBackendLocal {
+		if reader, err := d.audioClient.OpenRecordChunkReader(result.SessionID); err == nil {
+			d.recordReader = reader
+		} else {
+			log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
+		}
 	}
 	d.recordText = ""
 	d.recordSTTTelemetry = newSTTTurnTelemetry(d.config, d.sttClient, recordStartedAt)
@@ -333,44 +337,6 @@ func (d *AudioDialog) StartRecording() error {
 	return nil
 }
 
-func startRecordingWithRetry(audio *AudioServiceClient, format AudioFormat, retryTimeout, retryInterval time.Duration) (*RecordStartResult, error) {
-	if retryTimeout <= 0 {
-		return audio.StartRecording(format)
-	}
-	if retryInterval <= 0 {
-		retryInterval = 100 * time.Millisecond
-	}
-
-	deadline := time.Now().Add(retryTimeout)
-	attempts := 0
-	var lastErr error
-	for {
-		result, err := audio.StartRecording(format)
-		if err == nil {
-			if attempts > 0 {
-				log.Printf("[audio] Record session opened after %d retries\n", attempts)
-			}
-			return result, nil
-		}
-		lastErr = err
-		attempts++
-		if attempts == 1 {
-			log.Printf("[audio] Record session unavailable, retrying for up to %s: %v\n", retryTimeout, err)
-		}
-
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		sleep := retryInterval
-		if sleep > remaining {
-			sleep = remaining
-		}
-		time.Sleep(sleep)
-	}
-	return nil, fmt.Errorf("after %s: %w", retryTimeout, lastErr)
-}
-
 // StopRecording stops the current recording session
 func (d *AudioDialog) StopRecording() error {
 	d.recordMu.Lock()
@@ -399,7 +365,7 @@ func (d *AudioDialog) StopRecording() error {
 		_ = reader.Close()
 	}
 
-	if err := d.audioClient.StopRecording(sessionID); err != nil {
+	if err := recordingBackendOrService(d.recordBackend, d.audioClient).StopRecording(sessionID); err != nil {
 		return fmt.Errorf("stop recording: %w", err)
 	}
 	if recordSTT != nil {
@@ -458,7 +424,7 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 		}
 		d.recordMu.Unlock()
 	}
-	chunk, err := d.audioClient.ReadRecordChunk(sessionID, timeoutMs)
+	chunk, err := recordingBackendOrService(d.recordBackend, d.audioClient).ReadRecordChunk(sessionID, timeoutMs)
 	if err == nil {
 		d.uploadRecordChunkToStreamingSTT(sessionID, chunk)
 	}
@@ -712,43 +678,17 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	return err
 }
 
-// SetHistoryStore wires the chat history store. When non-nil, voice messages
-// produced during RunVoiceTurn are appended with Source="voice".
-func (d *AudioDialog) SetHistoryStore(store *ChatHistoryStore) {
-	d.historyStore = store
+// SetMessagePublisher sends voice conversation updates to transient consumers
+// such as the Web UI without persisting a separate conversation log.
+func (d *AudioDialog) SetMessagePublisher(publish func(Message)) {
+	d.messagePublish = publish
 }
 
-// SetHistoryAppender wires a higher-level history appender. The server uses
-// this so voice turns update both persistent history and the in-memory Web UI
-// snapshot in the same path as HTTP chat messages.
-func (d *AudioDialog) SetHistoryAppender(appender func(Message)) {
-	d.historyAppend = appender
-}
-
-// persistVoiceTurn appends user (when transcript is available) and assistant
-// messages to the chat history store, tagging both with Source="voice". It is
-// best-effort: errors are logged and never break the voice loop. Uses
-// context.Background since the caller's context may be cancelled by the time
-// we persist.
-func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
-	d.PersistVoiceTurn(input, result, utterance)
-}
-
-func (d *AudioDialog) PersistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
-	d.persistVoiceUserInput(input, utterance, result.EpisodeID, "")
-	d.persistVoiceAssistantOutput(result, "")
-}
-
-func (d *AudioDialog) PersistVoiceUserInput(input TurnInput, utterance []int16) {
-	d.persistVoiceUserInput(input, utterance, "", "")
-}
-
-func (d *AudioDialog) persistVoiceUserInput(input TurnInput, utterance []int16, episodeID, requestID string) {
-	if d.historyAppend == nil && d.historyStore == nil {
+func (d *AudioDialog) publishVoiceUserInput(input TurnInput, utterance []int16, episodeID, requestID string) {
+	if d.messagePublish == nil {
 		return
 	}
 	input = d.ensureVoiceInputAudioArtifact(input, utterance, nil)
-
 	content := strings.TrimSpace(input.InputText)
 	if content == "" {
 		content = strings.TrimSpace(input.Transcript)
@@ -756,43 +696,14 @@ func (d *AudioDialog) persistVoiceUserInput(input TurnInput, utterance []int16, 
 	if content == "" {
 		return
 	}
-	userMsg := messageFromTurnInput(input, episodeID, requestID, nil, time.Now())
-	userMsg.Content = content
-	if userMsg.Source == "" {
-		userMsg.Source = "voice"
-	}
-	d.appendVoiceHistory(userMsg, requestID)
+	message := messageFromTurnInput(input, episodeID, requestID, nil, time.Now())
+	message.Content = content
+	message.Source = "voice"
+	d.publishVoiceMessage(message, requestID)
 }
 
-func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
-	d.persistVoiceAssistantOutput(result, "")
-}
-
-func (d *AudioDialog) persistVoiceAssistantOutput(result RunResult, requestID string) {
-	if d.historyAppend == nil && d.historyStore == nil {
-		return
-	}
-	now := time.Now()
-	output := strings.TrimSpace(result.Output)
-	if output != "" {
-		assistantMsg := Message{
-			Type:      "assistant",
-			EpisodeID: result.EpisodeID,
-			RequestID: requestID,
-			Content:   output,
-			Source:    "voice",
-			Timestamp: now,
-		}
-		d.appendVoiceHistory(assistantMsg, requestID)
-	}
-}
-
-func (d *AudioDialog) appendVoiceRunEvent(event RunEvent, requestID string) {
-	if d.historyAppend == nil && d.historyStore == nil {
-		return
-	}
-	// Ignore events from stale requests after ForceResetVoiceRun
-	if !d.runControl.isActiveRequest(requestID) {
+func (d *AudioDialog) publishVoiceRunEvent(event RunEvent, requestID string) {
+	if d.messagePublish == nil || !d.runControl.isActiveRequest(requestID) {
 		return
 	}
 	message := messageFromRunEvent(event, event.EpisodeID, requestID)
@@ -800,28 +711,18 @@ func (d *AudioDialog) appendVoiceRunEvent(event RunEvent, requestID string) {
 		return
 	}
 	message.Source = "voice"
-	d.appendVoiceHistory(message, requestID)
+	d.publishVoiceMessage(message, requestID)
 }
 
-func (d *AudioDialog) appendVoiceHistory(message Message, requestID string) {
-	// Ignore messages from stale requests after ForceResetVoiceRun
+func (d *AudioDialog) publishVoiceMessage(message Message, requestID string) {
 	if requestID != "" && !d.runControl.isActiveRequest(requestID) {
 		return
 	}
-	var ok bool
-	message, ok = normalizeChatHistoryMessage(message)
+	message, ok := normalizePublicMessage(message)
 	if !ok {
 		return
 	}
-	if d.historyAppend != nil {
-		d.historyAppend(message)
-		return
-	}
-	if d.historyStore != nil {
-		if err := d.historyStore.Append(context.Background(), message); err != nil {
-			log.Printf("[history] persist voice message failed: %v", err)
-		}
-	}
+	d.messagePublish(message)
 }
 
 func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
@@ -929,7 +830,7 @@ func (d *AudioDialog) RunVoiceTurnWithContext(ctx context.Context, input TurnInp
 		return RunResult{}, fmt.Errorf("voice run already active")
 	}
 	defer d.endVoiceRunControl(requestID)
-	d.persistVoiceUserInput(input, utterance, episodeID, requestID)
+	d.publishVoiceUserInput(input, utterance, episodeID, requestID)
 	result, err := d.runAgentTurnWithActiveRequest(ctx, input, runtime, episodeID, requestID, turnContext)
 	if err != nil {
 		return RunResult{}, err
@@ -981,7 +882,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 				return
 			}
 			toolSpeechStreamed := event.Type == runEventToolCall && speechWriter.FinalizeResponse()
-			d.appendVoiceRunEvent(event, requestID)
+			d.publishVoiceRunEvent(event, requestID)
 			if toolSpeechStreamed {
 				log.Printf("[tts] Tool content already streamed: tool=%s", event.ToolName)
 			} else {
@@ -1046,9 +947,8 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 		return result, fmt.Errorf("LLM request failed: %w", err)
 	}
 	if finalAssistantEvent != nil {
-		d.appendVoiceRunEvent(*finalAssistantEvent, requestID)
+		d.publishVoiceRunEvent(*finalAssistantEvent, requestID)
 	}
-
 	log.Printf("[llm] Response received\n")
 	return result, nil
 }
@@ -1312,7 +1212,7 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 	if !allowFallback {
 		return ttsErr
 	}
-	fallbackPlayed, resultErr := attemptTTSUnavailableFallback(speakCtx, d.audioClient, d.config, speechStarted, ttsErr)
+	fallbackPlayed, resultErr := attemptTTSUnavailableFallback(speakCtx, d.currentTTSPlaybackBackend(), d.config, speechStarted, ttsErr)
 	if fallbackPlayed {
 		log.Printf("[tts] Local unavailable fallback played: %s\n", ttsUnavailableFallbackPath(d.config))
 	}
@@ -1345,7 +1245,7 @@ func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait b
 
 	d.speechMu.Lock()
 	defer d.speechMu.Unlock()
-	if err := playPromptSound(outputCtx, d.audioClient, kind, wait); err != nil {
+	if err := playPromptSound(outputCtx, d.currentTTSPlaybackBackend(), kind, wait); err != nil {
 		log.Printf("[audio] %s prompt sound failed: %v\n", label, err)
 		return err
 	}
@@ -1357,7 +1257,7 @@ func (d *AudioDialog) playPromptSoundUninterruptible(kind promptSoundKind, label
 	log.Printf("[audio] %s prompt sound requested (uninterruptible)\n", label)
 	d.speechMu.Lock()
 	defer d.speechMu.Unlock()
-	if err := playPromptSound(context.Background(), d.audioClient, kind, wait); err != nil {
+	if err := playPromptSound(context.Background(), d.currentTTSPlaybackBackend(), kind, wait); err != nil {
 		log.Printf("[audio] %s prompt sound failed after %s: %v\n", label, time.Since(startedAt).Round(time.Millisecond), err)
 		return
 	}
@@ -1374,7 +1274,6 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
-	var finalAssistantEvent *RunEvent
 	var speechWriter *speech.StreamWriter
 
 	req := RunRequest{
@@ -1382,12 +1281,9 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		Turn:  NewTextTurnInput(text, nil),
 		EventHandler: func(event RunEvent) {
 			if event.Type == "assistant_output" {
-				captured := event
-				finalAssistantEvent = &captured
 				return
 			}
 			toolSpeechStreamed := event.Type == runEventToolCall && speechWriter.FinalizeResponse()
-			d.appendVoiceRunEvent(event, "")
 			if toolSpeechStreamed {
 				log.Printf("[tts] Tool content already streamed: tool=%s", event.ToolName)
 			} else {
@@ -1431,10 +1327,6 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		}
 		return fmt.Errorf("LLM request failed: %w", err)
 	}
-	if finalAssistantEvent != nil {
-		d.appendVoiceRunEvent(*finalAssistantEvent, "")
-	}
-
 	log.Printf("[llm] Response received\n")
 
 	// Speak response if TTS is available

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/agent/screenprovider"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -11,15 +12,24 @@ import (
 )
 
 type fakeScreenshotFrameClient struct {
-	meta         frameMetadata
-	data         []byte
-	calls        int
-	cropBlack    bool
-	minimalWidth int
-	captureInfo  screenCaptureInfo
+	meta        frameMetadata
+	data        []byte
+	calls       int
+	cropBlack   bool
+	cropHint    screenprovider.CropHint
+	captureInfo screenCaptureInfo
 }
 
-func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality int, cropBlack bool, minimalWidth int) (*frameMetadata, []byte, screenCaptureInfo, error) {
+func TestDetectImageAxisBoundsIgnoresInteriorDarkRun(t *testing.T) {
+	left, right, valid := detectImageAxisBounds(40, func(position int) bool {
+		return position < 2 || position >= 38 || position == 34
+	})
+	if left != 2 || right != 37 || !valid {
+		t.Fatalf("bounds = (%d, %d), valid=%v, want (2, 37), true", left, right, valid)
+	}
+}
+
+func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality int, cropBlack bool, hint screenprovider.CropHint) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if format != "jpeg" {
 		return nil, nil, screenCaptureInfo{}, fmt.Errorf("unexpected format %q", format)
 	}
@@ -28,7 +38,7 @@ func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality
 	}
 	c.calls++
 	c.cropBlack = cropBlack
-	c.minimalWidth = minimalWidth
+	c.cropHint = hint
 	meta := c.meta
 	return &meta, append([]byte(nil), c.data...), cloneScreenCaptureInfo(c.captureInfo), nil
 }
@@ -55,11 +65,35 @@ func TestScreenshotToolPassesReportedScreenWidthAt1080Height(t *testing.T) {
 	if _, err := tool.Call(context.Background(), `{}`); err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
-	if client.minimalWidth != 498 {
-		t.Fatalf("minimal_width = %d, want 498", client.minimalWidth)
+	if client.cropHint.ScreenWidth != 1179 || client.cropHint.ScreenHeight != 2556 {
+		t.Fatalf("crop hint = %+v, want current 1179x2556 screen", client.cropHint)
 	}
 	if !client.cropBlack {
 		t.Fatal("crop_black = false, want true for default iOS device type")
+	}
+}
+
+func TestScreenshotToolPassesLandscapeScreenDimensions(t *testing.T) {
+	jpegData, err := encodeJPEG([]byte{255, 255, 255}, 1, 1, screenshotJPEGQuality)
+	if err != nil {
+		t.Fatalf("encodeJPEG() error = %v", err)
+	}
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{
+		WidthPixels:  intPtr(2608),
+		HeightPixels: intPtr(1200),
+	})
+	client := &fakeScreenshotFrameClient{
+		meta: frameMetadata{Width: 1, Height: 1, PixelFormat: "jpeg", Bytes: uint64(len(jpegData))},
+		data: jpegData,
+	}
+
+	tool := &ScreenshotTool{client: client, screen: screenState}
+	if _, err := tool.Call(context.Background(), `{}`); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if client.cropHint.ScreenWidth != 2608 || client.cropHint.ScreenHeight != 1200 {
+		t.Fatalf("crop hint = %+v, want landscape 2608x1200 screen", client.cropHint)
 	}
 }
 
@@ -77,8 +111,8 @@ func TestScreenshotToolOmitsMinimalWidthWithoutReportedScreen(t *testing.T) {
 	if _, err := tool.Call(context.Background(), `{}`); err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
-	if client.minimalWidth != 0 {
-		t.Fatalf("minimal_width = %d, want 0", client.minimalWidth)
+	if client.cropHint != (screenprovider.CropHint{}) {
+		t.Fatalf("crop hint = %+v, want empty", client.cropHint)
 	}
 }
 
@@ -101,8 +135,8 @@ func TestScreenshotToolDisablesBlackCropForDesktopDeviceTypes(t *testing.T) {
 	if client.cropBlack {
 		t.Fatal("crop_black = true, want false for macOS")
 	}
-	if client.minimalWidth != 0 {
-		t.Fatalf("minimal_width = %d, want 0 when cropping is disabled", client.minimalWidth)
+	if client.cropHint != (screenprovider.CropHint{}) {
+		t.Fatalf("crop hint = %+v, want empty when cropping is disabled", client.cropHint)
 	}
 }
 

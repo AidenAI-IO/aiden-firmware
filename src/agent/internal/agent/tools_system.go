@@ -44,7 +44,7 @@ func (t *WeatherTool) Description() string {
 
 func (t *WeatherTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"location":  stringArgSchema("Location name to geocode, or a display name when latitude/longitude are provided."),
+		"location":  stringArgSchema("Romanized place name to geocode (e.g. \"Shanghai\", not \"上海\"); non-Latin input is unsupported. Use commas to disambiguate. With latitude/longitude, this is used as the display label."),
 		"latitude":  rangedNumberArgSchema("Latitude in decimal degrees.", -90, 90),
 		"longitude": rangedNumberArgSchema("Longitude in decimal degrees.", -180, 180),
 	})

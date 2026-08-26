@@ -315,8 +315,7 @@ Common fields:
 | --- | --- |
 | `prompt_prefix` | Prefix for every task prompt; constrains device type, tool usage, etc. |
 | `global_reset` | Suite-level reset configuration |
-| `status` | Optional suite lifecycle label, e.g. `active` or `legacy` |
-| `setup` | Task-level pre-steps; supports `agent_prompt`, benchmark-token-protected `seed_memory`, and `seed_episode` with optional `consolidation_expectation` |
+| `setup` | One task-level pre-step or an ordered array of pre-steps; supports `agent_prompt`, benchmark-token-protected `seed_memory`, `seed_episode`, `seed_notification`, and generic `assert_memory` checks |
 | `app_ids` | Optional MobileGym app IDs to preload during environment setup; omitted tasks skip eager app data loading |
 | `rubric` | The judge model's scoring items |
 | `hard_assertions` | Deterministic checks, e.g. tool-call counts, timeout, required/forbidden tools |
@@ -324,19 +323,8 @@ Common fields:
 | `repeats` | Number of times a single task is repeated |
 | `input_screenshot` | Static image input, suitable for perception tasks |
 | `expected_answer` | Direct answer for multiple-choice/fixed-answer tasks |
-| `expected_recall_from_consolidation` | Require the task to recall the memory IDs created by its `seed_episode` consolidation step |
-| `expected_recalled_memory_tool` | Recall tool used to verify those IDs; `recall_memory` by default or `recall_device_memory` for Device Memory |
 | `trace_observations` | Checks on specific behaviors in the trace, e.g. whether a given skill was read |
 | `mock_environment` | Suite-level default or task-level scripted Phone Bridge state, tool responses, and mock screen |
-
-For `seed_episode`, `consolidation_expectation` may declare `goal_result`
-(`achieved`, `not_achieved`, or `unknown`), `min_memory_ids`,
-`max_memory_ids`, `allow_empty_memory`, `required_assessment_evidence`,
-`expected_status`, `forbidden_memory_substrings`,
-`required_memory_substrings`, `required_memory_types`, and
-`required_memory_scope`. These content assertions inspect the actual generated
-Device Memory records, not only the consolidation response. The raw process
-response is saved as `consolidation.json` in the task artifact.
 
 For `agent_prompt`, set `expected_response` when setup success has a precise
 completion marker. The runner compares the trimmed response exactly and fails
@@ -344,6 +332,68 @@ the task setup on any other output.
 
 A unit suite is a different format with `kind` set to `unit`; it tests a tool's
 input/output directly without going through agent chat.
+
+#### Notification Memory benchmark
+
+Use `suites/notification_memory_v1.json` to validate the notification memory
+path end to end. Its `seed_notification` setup writes deterministic raw events
+to the date-sharded JSONL log, runs the real notification processor through the
+benchmark-only control endpoint, and then checks the Agent's `recall_memory`
+behavior. The setup endpoint is benchmark-token protected and does not
+exist on a daemon without a benchmark token.
+
+The suite separates ingestion/recall claims from explicit Memory action claims:
+
+- `delivery_notification_recall` checks that a useful notification becomes one
+  temporary memory and is recalled with the original delivery fact.
+- `notification_noise_is_filtered` checks that OTP and marketing events remain
+  in the raw log but do not become memory.
+- `notification_batch_cursor_drain` checks that a backlog larger than one batch
+  is fully committed without producing memory for verification-code noise.
+- `notification_explicit_update` checks revision-guarded replacement of an
+  existing conclusion.
+- `notification_explicit_reinforce` checks that repeated evidence preserves the
+  conclusion while advancing its revision without creating a duplicate.
+- `notification_explicit_remove` checks that a removed notification deletes only
+  the temporary conclusion tied to that stable notification identity.
+- `notification_explicit_promote` checks temporary-to-long-term promotion and
+  removal of the temporary source.
+
+The useful-notification case depends on the configured model's consolidation
+decision; the raw-log and obvious-noise cases have deterministic setup gates.
+The Go notification processor tests cover cursor recovery, generation reset,
+batch-call count, proposal validation, update/remove, and storage behavior.
+Run the suite against isolated benchmark daemons because notification cursors
+and memory are durable. Explicit action tasks compose generic setup primitives:
+`seed_memory`, `seed_notification`, then `assert_memory`.
+`assert_memory.expected` supports scalar/content/tag/entity checks plus generic
+`source_refs_contain` and `evidence_refs_contain` entries. Reference entries may
+match `type`, `id`, and `event_ids_contains`, which lets suites verify evidence
+preservation without adding scenario-specific runner logic.
+
+```bash
+cd benchmark
+uv run python -m runner run \
+  --suite suites/notification_memory_v1.json \
+  --auto-agent-setup \
+  --agent-config /path/to/agent.toml \
+  --run-id notification-memory-v1
+```
+
+This command enables the configured LLM judge for effect checks: whether the
+useful notification answer preserves the delivery fact and whether it states
+that OTP/marketing noise is not retained. Use `--no-judge` for deterministic
+functional gates only; those gates still validate fixture persistence through
+the benchmark endpoint, cursor advancement, memory count/scope, and tool-call
+policy. Raw JSONL preservation is covered by the Go integration tests rather
+than an Agent shell task. A judge API key is required for the effect run.
+
+For a lower-level performance snapshot, run the deterministic Go benchmarks:
+
+```bash
+cd src/agent
+go test ./internal/agent -run '^$' -bench 'BenchmarkNotification' -benchmem
+```
 
 ## 2. WebUI guide
 
@@ -780,103 +830,9 @@ uv run python -m runner compare \
 ```
 
 The comparison reports pass-count, median tool-call, and median wall-time
-deltas. All three conditions use the same natural-language task and do not name
-or require a recall tool in the prompt or hard assertions. The treatment and
-legacy conditions instead pass only when the agent autonomously calls
-`recall_device_memory`, its inline result contains the exact expected Device
-Memory ID, and the final decision is consistent with that lesson. The `before`
-condition has no Device Memory to retrieve; compare its answer rate against
-`after` rather than interpreting a single run. A passing treatment still does
-not prove that every returned field caused the answer, so inspect `trace.json`
-and the answer/rubric together. After the five-repeat comparison is stable,
-rerun the same commands with `--repeats 10` and distinct run IDs.
-
-#### Episode Memory reflection contract suite
-
-Use `suites/episode_reflection_v1.json` when the question is whether the agent
-can review an episode and make the right retention decision. It has four
-contract cases: a directly verified success must be `achieved` and produce a
-memory; a success claim without final proof must be `unknown` and may produce no
-memory; a structured failure must be `not_achieved` and retain an actionable
-failure lesson; and a transient IP observation must not create a durable fact.
-Conflict/quarantine and multi-episode revision cases remain a separate follow-up
-because the current benchmark setup seeds one episode per task.
-
-The runner writes the raw consolidation response to each task's
-`consolidation.json` artifact, including `assessment` and `memory_ids`. This
-suite can run through a MobileGym bridge with `--target-platform android`,
-because it does not claim to exercise a real UI. The reflection suite itself is
-platform-neutral; `android` here only selects the currently running MobileGym
-environment. The same suite can run against an iOS or other compatible agent
-environment by changing the daemon/environment platform. This is a
-bridge-backed run with a real agent daemon (not a pure in-process mock):
-MobileGym validates the seed/process API, assessment contract, and artifact
-plumbing only; it is not evidence that a lesson improves physical interaction.
-
-#### Episode Memory release-gate suite
-
-Use `suites/episode_reflection_v2.json` for the pre-release reflection gate. It
-contains 12 cases covering a broad release boundary rather than a smoke test:
-
-- verified success extraction and recall/application;
-- unsupported, incomplete, contradictory, and final-verification evidence;
-- actionable failure guards and their later use;
-- version/device scope and fresh-check requirements;
-- duplicate-attempt compression;
-- one-off IPs and one-time tokens that must not become durable memory; and
-- auditable assessment evidence on every retained lesson.
-
-The gate's assertions are deterministic even though extraction and retention
-remain model-driven: each task declares the expected `goal_result`, evidence
-requirement, memory count, and—where relevant—the actual persisted memory type,
-content, or applicability scope. Tasks that fail those bounds are benchmark
-failures even if the agent's natural-language answer sounds reasonable. The
-recall/application cases describe the dependency in natural language and do
-not name or require a particular recall tool in the task text or hard
-assertions. They pass only when the exact newly generated memory IDs appear in
-the agent's autonomous `recall_device_memory` output and the option answer is
-consistent. This proves natural recall, retrieval, and answer consistency, not
-that recall causally produced the answer; inspect `trace.json` when
-investigating that distinction.
-
-Run the release gate on MobileGym with:
-
-```bash
-uv run python -m runner run \
-  --suite suites/episode_reflection_v2.json \
-  --auto-agent-setup \
-  --environment-url http://<mobilegym-bridge-host>:<port> \
-  --target-platform android \
-  --benchmark-token-file /path/to/control_token \
-  --no-judge \
-  --run-id episode-reflection-release-gate
-```
-
-MobileGym is sufficient for the reflection/retrieval gate because these cases
-seed completed episodes and exercise the real daemon's consolidation and recall
-paths. It does not replace physical-device suites for proving that a recalled
-lesson improves real UI navigation or HID/network interaction. For release,
-run the v2 suite at least five times with a pinned Agent model/config. Assessment,
-content, scope, deduplication, and recall cases must pass 5/5. Privacy cases must
-also pass 5/5; any persisted forbidden value is a release blocker rather than a
-failure that may be averaged away. The physical-device execution suites should
-be run separately for any device-specific procedure.
-Cross-episode update/revision and conflict-quarantine behavior are not yet part
-of v2 because each task currently seeds one Episode; they require a sequential
-multi-Episode setup mode rather than another single-Episode fixture.
-
-For example, after starting the MobileGym bridge:
-
-```bash
-uv run python -m runner run \
-  --suite suites/episode_reflection_v1.json \
-  --auto-agent-setup \
-  --environment-url http://<mobilegym-bridge-host>:<port> \
-  --target-platform android \
-  --benchmark-token-file /path/to/control_token \
-  --no-judge \
-  --run-id episode-reflection-mobilegym
-```
+deltas. The prompt does not name or force a particular memory tool. After the
+five-repeat comparison is stable, rerun the same commands with `--repeats 10`
+and distinct run IDs.
 
 #### Episode Memory physical-iPhone execution comparison
 
@@ -943,9 +899,8 @@ three runs. Use an isolated agent data directory for every attempt so Episodes,
 Memory, sessions, and context caches cannot leak across conditions. After the
 five-repeat comparison is stable, rerun the same commands with `--repeats 10`
 and distinct run IDs.
-MobileGym can validate runner and setup plumbing, and it can run the reflection
-contract suite above. The USB Ethernet execution result must be validated on the
-physical iPhone. The primary conclusion comes
+MobileGym can validate runner and setup plumbing, but the USB Ethernet execution
+result must be validated on the physical iPhone. The primary conclusion comes
 from `before` versus `after`; `after` versus `legacy` is a compatibility
 comparison and does not benchmark the removed legacy extractor itself.
 

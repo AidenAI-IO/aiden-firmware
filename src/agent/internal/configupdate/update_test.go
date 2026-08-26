@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1081,5 +1082,73 @@ func TestResolvedWebConfigOmitsLegacyModelCredential(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "top-secret") || strings.Contains(string(encoded), `"api_key"`) {
 		t.Fatalf("resolved web config exposed legacy model credential: %s", encoded)
+	}
+}
+
+func TestVoiceModelConfigRoundTripPreservesSettingsAndCredentialPresence(t *testing.T) {
+	emotion := true
+	threshold := 0.72
+	want := agent.Config{VoiceModel: agent.VoiceModelConfig{
+		APIKey:                 "voice-secret",
+		Model:                  "qwen-audio-3.0-realtime-plus",
+		WorkspaceID:            "workspace-1",
+		Region:                 "cn-beijing",
+		Endpoint:               "wss://voice.example.test/realtime",
+		Voice:                  "longanqian",
+		Instructions:           "be concise",
+		EnableSpeechEmotion:    &emotion,
+		InputAudioFormat:       "pcm16",
+		OutputAudioFormat:      "pcm16",
+		TurnDetection:          "smart_turn",
+		TurnDetectionThreshold: &threshold,
+		TurnDetectionSilenceMs: 900,
+	}}
+	dto := FromAgentConfig(want)
+	if dto.VoiceModel.APIKey != "" || !dto.VoiceModel.HasAPIKey {
+		t.Fatalf("voice credential was not redacted correctly: %+v", dto.VoiceModel)
+	}
+	got := dto.ToAgentConfig().VoiceModel
+	if got.APIKey != hasAPIKeyPlaceholder {
+		t.Fatalf("round-trip API key = %q, want placeholder", got.APIKey)
+	}
+	got.APIKey = want.VoiceModel.APIKey
+	if !reflect.DeepEqual(got, want.VoiceModel) {
+		t.Fatalf("voice model round-trip = %+v, want %+v", got, want.VoiceModel)
+	}
+}
+
+func TestUpdateConfigFileWritesResponsesContextFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	source := "[model]\nprovider = \"volcengine\"\nmodel = \"doubao-seed-2-1-pro\"\napi_mode = \"responses_stateful\"\n"
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	patch := []byte(`{"config":{"model":{"responses_context_management":"ark_context_edit","responses_context_edit_trigger":10,"responses_context_edit_keep":3,"responses_context_edit_clear_thinking":true,"responses_include":["reasoning.encrypted_content"]}}}`)
+	result, err := NewService().Update(path, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.Model.ResponsesContextManagement != "ark_context_edit" ||
+		result.Config.Model.ResponsesContextEditTrigger != 10 ||
+		result.Config.Model.ResponsesContextEditKeep != 3 ||
+		!result.Config.Model.ResponsesContextEditClearThinking ||
+		len(result.Config.Model.ResponsesInclude) != 1 {
+		t.Fatalf("unexpected resolved Responses config: %+v", result.Config.Model)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`responses_context_management = "ark_context_edit"`,
+		`responses_context_edit_trigger = 10`,
+		`responses_context_edit_keep = 3`,
+		`responses_context_edit_clear_thinking = true`,
+		`responses_include = ['reasoning.encrypted_content']`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("updated config missing %q:\n%s", want, text)
+		}
 	}
 }
