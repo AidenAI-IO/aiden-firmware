@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -429,21 +430,37 @@ type SkillManageTool struct {
 	skillsDir    string
 	manifestPath string
 	usagePath    string
+	httpClient   *http.Client
 	onModify     func()
 }
 
 func NewSkillManageTool(skillsDir, manifestPath string, onModify ...func()) *SkillManageTool {
-	tool := &SkillManageTool{skillsDir: skillsDir, manifestPath: manifestPath, usagePath: usagePathForManifest(manifestPath)}
+	tool := &SkillManageTool{
+		skillsDir:    skillsDir,
+		manifestPath: manifestPath,
+		usagePath:    usagePathForManifest(manifestPath),
+		httpClient:   &http.Client{Timeout: 30 * time.Second},
+	}
 	if len(onModify) > 0 {
 		tool.onModify = onModify[0]
 	}
 	return tool
 }
 
+// SetHTTPClient replaces the external client used by action=install. It is
+// primarily useful for callers that need proxy/auth policy or deterministic
+// tests; nil restores the default bounded client.
+func (t *SkillManageTool) SetHTTPClient(client *http.Client) {
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	t.httpClient = client
+}
+
 func (t *SkillManageTool) Name() string { return "skill_manage" }
 
 func (t *SkillManageTool) Description() string {
-	return `Create, edit, patch, delete, archive, or restore skills, similar to Hermes skill_manage. Use only when the user asks to create/update/delete skills, or after reading a skill with skill_read and deciding a maintenance change is needed.`
+	return `For any HTTP(S) or GitHub skill URL, call this tool directly with {"action":"install","source_url":"<original URL>"}; do not fetch or copy the remote contents first. The install action downloads, validates, and atomically commits the complete skill and its supported files. This tool also creates, edits, patches, deletes, archives, or restores local skills. Use it only when the user requests skill installation or maintenance, or after reading a skill with skill_read and deciding a maintenance change is needed.`
 }
 
 const skillManageInputExample = `{"action":"patch","name":"device-operator","old_string":"old instructions","new_string":"new instructions","reason":"add recovery steps"}`
@@ -456,23 +473,25 @@ type skillManageInput struct {
 	NewString   string `json:"new_string,omitempty"`
 	FilePath    string `json:"file_path,omitempty"`
 	FileContent string `json:"file_content,omitempty"`
+	SourceURL   string `json:"source_url,omitempty"`
 	Reason      string `json:"reason,omitempty"`
 }
 
 func (t *SkillManageTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"action":       stringEnumArgSchema("Skill management action.", "create", "edit", "patch", "delete", "write_file", "remove_file", "mark_stale", "archive", "restore_archive"),
-		"name":         stringArgSchema("Skill name."),
+		"action":       stringEnumArgSchema("Skill management action. Use install for a remote skill URL.", "create", "edit", "patch", "install", "delete", "write_file", "remove_file", "mark_stale", "archive", "restore_archive"),
+		"name":         stringArgSchema("Skill name. Optional for install; otherwise required."),
 		"content":      stringArgSchema("Full SKILL.md content for create or edit."),
 		"old_string":   stringArgSchema("Exact text to replace for patch."),
 		"new_string":   stringArgSchema("Replacement text for patch."),
 		"file_path":    stringArgSchema("File path under references/, templates/, scripts/, or assets/ for write_file/remove_file."),
 		"file_content": stringArgSchema("Full file content for write_file."),
+		"source_url":   stringArgSchema("Original HTTP(S) URL; required for install. GitHub tree URLs install SKILL.md and supported files under references/, templates/, scripts/, and assets/.", "https://github.com/owner/repo/tree/main/skills/example"),
 		"reason":       stringArgSchema("Reason for making this skill change."),
-	}, "action", "name")
+	}, "action")
 }
 
-func (t *SkillManageTool) Call(_ context.Context, input string) (string, error) {
+func (t *SkillManageTool) Call(ctx context.Context, input string) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return "", fmt.Errorf("skill_manage input must be a JSON object, for example %s", skillManageInputExample)
 	}
@@ -480,10 +499,10 @@ func (t *SkillManageTool) Call(_ context.Context, input string) (string, error) 
 	if err := json.Unmarshal([]byte(input), &req); err != nil {
 		return "", fmt.Errorf("skill_manage input must be a JSON object, for example %s: invalid JSON input: %w", skillManageInputExample, err)
 	}
-	if req.Name == "" {
+	if req.Action != "install" && req.Name == "" {
 		return "", fmt.Errorf("name is required")
 	}
-	if !isValidSkillName(req.Name) {
+	if req.Name != "" && !isValidSkillName(req.Name) {
 		return "", fmt.Errorf("invalid skill name %q: must not contain path separators or '..'", req.Name)
 	}
 
@@ -494,6 +513,8 @@ func (t *SkillManageTool) Call(_ context.Context, input string) (string, error) 
 		return t.edit(req)
 	case "patch":
 		return t.patch(req)
+	case "install":
+		return t.install(ctx, req)
 	case "delete":
 		return t.deleteSkill(req)
 	case "write_file":
@@ -538,14 +559,14 @@ func (t *SkillManageTool) create(req skillManageInput) (string, error) {
 		return "", err
 	}
 	skillFileMu.Lock()
-	err = os.WriteFile(skillPath, []byte(req.Content), 0o644)
+	err = writeFileAtomic(skillPath, []byte(req.Content), 0o644)
 	skillFileMu.Unlock()
 	if err != nil {
 		return "", err
 	}
 	t.updateManifestOnModify(req.Name, true)
 	t.recordModify(req.Name)
-	return fmt.Sprintf("Created skill %q", req.Name), nil
+	return skillManageContentResult("Created", req.Name, []byte(req.Content)), nil
 }
 
 func (t *SkillManageTool) edit(req skillManageInput) (string, error) {
@@ -553,7 +574,8 @@ func (t *SkillManageTool) edit(req skillManageInput) (string, error) {
 		return "", fmt.Errorf("content is required for edit")
 	}
 	skillPath := filepath.Join(t.skillsDir, req.Name, "SKILL.md")
-	if !fileExists(skillPath) {
+	previous, err := os.ReadFile(skillPath)
+	if err != nil {
 		return "", fmt.Errorf("skill %q not found, use create", req.Name)
 	}
 	skill, err := parseSkillFromContent(req.Content)
@@ -564,14 +586,14 @@ func (t *SkillManageTool) edit(req skillManageInput) (string, error) {
 		return "", fmt.Errorf("frontmatter name %q must match %q", skill.Name, req.Name)
 	}
 	skillFileMu.Lock()
-	err = os.WriteFile(skillPath, []byte(req.Content), 0o644)
+	err = writeFileAtomic(skillPath, []byte(req.Content), 0o644)
 	skillFileMu.Unlock()
 	if err != nil {
 		return "", err
 	}
 	t.updateManifestOnModify(req.Name, true)
 	t.recordModify(req.Name)
-	return fmt.Sprintf("Updated skill %q", req.Name), nil
+	return skillManageReplacementResult("Updated", req.Name, previous, []byte(req.Content), changedLineRange(previous, []byte(req.Content))), nil
 }
 
 func (t *SkillManageTool) patch(req skillManageInput) (string, error) {
@@ -586,24 +608,153 @@ func (t *SkillManageTool) patch(req skillManageInput) (string, error) {
 	content := string(data)
 	count := strings.Count(content, req.OldString)
 	if count == 0 {
-		return "", fmt.Errorf("old_string not found in skill %q", req.Name)
+		caseInsensitiveMatches := strings.Count(strings.ToLower(content), strings.ToLower(req.OldString))
+		normalizedContent := strings.Join(strings.Fields(content), " ")
+		normalizedOld := strings.Join(strings.Fields(req.OldString), " ")
+		whitespaceNormalizedMatches := 0
+		if normalizedOld != "" {
+			whitespaceNormalizedMatches = strings.Count(normalizedContent, normalizedOld)
+		}
+		return "", fmt.Errorf(
+			"old_string not found in skill %q (case_insensitive_matches=%d, whitespace_normalized_matches=%d)",
+			req.Name,
+			caseInsensitiveMatches,
+			whitespaceNormalizedMatches,
+		)
 	}
 	if count > 1 {
-		return "", fmt.Errorf("old_string matches %d times, must be unique", count)
+		return "", fmt.Errorf(
+			"old_string matches %d times, must be unique (matching_lines=%s)",
+			count,
+			matchingLineNumbers(content, req.OldString, 8),
+		)
 	}
 	newContent := strings.Replace(content, req.OldString, req.NewString, 1)
-	if _, err := parseSkillFromContent(newContent); err != nil {
+	_, err = parseSkillFromContent(newContent)
+	if err != nil {
 		return "", fmt.Errorf("patch produces invalid SKILL.md: %w", err)
 	}
 	skillFileMu.Lock()
-	err = os.WriteFile(skillPath, []byte(newContent), 0o644)
+	err = writeFileAtomic(skillPath, []byte(newContent), 0o644)
 	skillFileMu.Unlock()
 	if err != nil {
 		return "", err
 	}
 	t.updateManifestOnModify(req.Name, true)
 	t.recordModify(req.Name)
-	return fmt.Sprintf("Patched skill %q", req.Name), nil
+	start := strings.Index(content, req.OldString)
+	changedStart, changedEnd := lineSpan(content, start, start+len(req.OldString))
+	return skillManageReplacementResult(
+		"Patched", req.Name, data, []byte(newContent),
+		fmt.Sprintf("changed_lines=%d-%d", changedStart, changedEnd),
+	), nil
+}
+
+func validateSkillDefinition(skill *SkillDefinition, expectedName string) error {
+	if skill == nil {
+		return fmt.Errorf("invalid SKILL.md: skill definition is empty")
+	}
+	if skill.Name != expectedName {
+		return fmt.Errorf("frontmatter name %q must match %q", skill.Name, expectedName)
+	}
+	if strings.TrimSpace(skill.Description) == "" {
+		return fmt.Errorf("invalid SKILL.md: skill description is required")
+	}
+	if strings.TrimSpace(skill.Instructions) == "" {
+		return fmt.Errorf("invalid SKILL.md: skill instructions are required")
+	}
+	if !allowedToolsExist(skill.AllowedTools) {
+		return fmt.Errorf("invalid SKILL.md: metadata.allowed_tools contains unknown tools")
+	}
+	return nil
+}
+
+func skillManageContentResult(action, name string, content []byte) string {
+	return fmt.Sprintf(
+		`%s skill %q (bytes=%d, lines=%d, sha256=%s)`,
+		action,
+		name,
+		len(content),
+		lineCount(content),
+		strings.TrimPrefix(hashContent(content), "sha256:"),
+	)
+}
+
+func skillManageReplacementResult(action, name string, previous, current []byte, details string) string {
+	return fmt.Sprintf(
+		`%s skill %q (%s, previous_bytes=%d, %s)`,
+		action,
+		name,
+		skillContentSummary(current),
+		len(previous),
+		details,
+	)
+}
+
+func skillContentSummary(content []byte) string {
+	return fmt.Sprintf("bytes=%d, lines=%d, sha256=%s", len(content), lineCount(content), strings.TrimPrefix(hashContent(content), "sha256:"))
+}
+
+func lineSpan(content string, start, end int) (int, int) {
+	if start < 0 {
+		return 0, 0
+	}
+	startLine := 1 + strings.Count(content[:start], "\n")
+	if end <= start {
+		return startLine, startLine
+	}
+	last := end - 1
+	if last >= len(content) {
+		last = len(content) - 1
+	}
+	if last < 0 {
+		return startLine, startLine
+	}
+	return startLine, 1 + strings.Count(content[:last], "\n")
+}
+
+func matchingLineNumbers(content, target string, limit int) string {
+	var lines []string
+	for offset := 0; offset < len(content) && len(lines) < limit; {
+		index := strings.Index(content[offset:], target)
+		if index < 0 {
+			break
+		}
+		absolute := offset + index
+		lines = append(lines, fmt.Sprintf("%d", 1+strings.Count(content[:absolute], "\n")))
+		offset = absolute + len(target)
+	}
+	return strings.Join(lines, ",")
+}
+
+func changedLineRange(previous, current []byte) string {
+	oldLines := strings.Split(string(previous), "\n")
+	newLines := strings.Split(string(current), "\n")
+	first := -1
+	last := -1
+	maxLines := len(oldLines)
+	if len(newLines) > maxLines {
+		maxLines = len(newLines)
+	}
+	for i := 0; i < maxLines; i++ {
+		var oldLine, newLine string
+		if i < len(oldLines) {
+			oldLine = oldLines[i]
+		}
+		if i < len(newLines) {
+			newLine = newLines[i]
+		}
+		if oldLine != newLine {
+			if first == -1 {
+				first = i + 1
+			}
+			last = i + 1
+		}
+	}
+	if first == -1 {
+		return "changed_lines=none"
+	}
+	return fmt.Sprintf("changed_lines=%d-%d", first, last)
 }
 
 func (t *SkillManageTool) deleteSkill(req skillManageInput) (string, error) {
@@ -641,18 +792,29 @@ func (t *SkillManageTool) writeFile(req skillManageInput) (string, error) {
 		return "", fmt.Errorf("skill %q not found", req.Name)
 	}
 	fullPath := filepath.Join(t.skillsDir, req.Name, req.FilePath)
+	_, previousErr := os.Stat(fullPath)
+	previousExists := previousErr == nil
+	if previousErr != nil && !os.IsNotExist(previousErr) {
+		return "", fmt.Errorf("read existing %s: %w", req.FilePath, previousErr)
+	}
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return "", err
 	}
 	skillFileMu.Lock()
-	err := os.WriteFile(fullPath, []byte(req.FileContent), 0o644)
+	err := writeFileAtomic(fullPath, []byte(req.FileContent), 0o644)
 	skillFileMu.Unlock()
 	if err != nil {
 		return "", err
 	}
 	t.updateManifestOnModify(req.Name, false)
 	t.recordModify(req.Name)
-	return fmt.Sprintf("Wrote %s for skill %q", req.FilePath, req.Name), nil
+	return fmt.Sprintf(
+		`Wrote %s for skill %q (created=%t, %s)`,
+		req.FilePath,
+		req.Name,
+		!previousExists,
+		skillContentSummary([]byte(req.FileContent)),
+	), nil
 }
 
 func (t *SkillManageTool) removeFile(req skillManageInput) (string, error) {

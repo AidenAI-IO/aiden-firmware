@@ -1,13 +1,15 @@
 package agent
 
 import (
+	"net/http"
+	"path/filepath"
+	"sort"
+	"time"
+
 	"aiden-agent/internal/agent/mnk"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/screenprovider"
-	"path/filepath"
-	"sort"
-	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -23,6 +25,7 @@ type ToolSet struct {
 	textInputHW          *textInputHardwareDeps
 	iosKeyboardIsolation *iosKeyboardIsolationController
 	searchOpenTool       *appSearchOpenTool
+	skillInstallClient   *http.Client
 }
 
 type runtimeDeviceTypeConfigurable interface {
@@ -268,7 +271,9 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		phoneBridgeRestorer:  NewPhoneBridgeRestorer(nil, pointer),
 		textInputHW:          textInputHW,
 		iosKeyboardIsolation: iosKeyboardIsolation,
+		skillInstallClient:   newProxyHTTPClient(proxyCfg),
 	}
+	toolSet.skillInstallClient.Timeout = 30 * time.Second
 	touchGesture.primeScreenMapping = toolSet.PrimeScreenMapping
 	return toolSet
 }
@@ -436,7 +441,11 @@ func (s *ToolSet) registerSkillTools(skillsDir, manifestPath string, deviceTypeF
 	readTool.SetDeviceTypeFunc(deviceTypeFn)
 	s.tools["skill_list"] = listTool
 	s.tools["skill_read"] = readTool
-	s.tools["skill_manage"] = NewSkillManageTool(skillsDir, manifestPath, onModify...)
+	manageTool := NewSkillManageTool(skillsDir, manifestPath, onModify...)
+	if s.skillInstallClient != nil {
+		manageTool.SetHTTPClient(s.skillInstallClient)
+	}
+	s.tools["skill_manage"] = manageTool
 	s.tools["skill_mark_used"] = NewSkillMarkUsedTool(skillsDir, usagePath)
 }
 

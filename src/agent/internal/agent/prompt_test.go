@@ -62,6 +62,15 @@ func TestRolePromptRequiresRecallForNaturalLanguagePriorDeviceExperience(t *test
 	}
 }
 
+func TestRolePromptDirectsRemoteSkillURLsToInstallAction(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, want := range []string{"skill_manage", "action=install", "source_url", "Do not fetch the skill with web_scraper or shell/curl"} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing remote skill install guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
 func TestRolePromptIncludesConfiguredResponseLocaleInSystemPrompt(t *testing.T) {
 	manager := NewSkillManager(NewSkillIndex())
 	zh := buildProfile(AgentConfig{Locale: "zh-CN"}, manager, nil, agentRoleRules())
