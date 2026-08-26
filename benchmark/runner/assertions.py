@@ -260,12 +260,11 @@ def evaluate_expected_recalled_memory_ids(
     expected_memory_ids: list[str],
     *,
     episode: dict[str, Any] | None = None,
+    recall_tool: str = "recall_memory",
+    require_inline_recall: bool = False,
 ) -> ExpectedRecallResult:
     expected_ids = _unique_non_empty_strings(expected_memory_ids)
-    recall_called, recalled_ids, inline_complete = _recall_tool_evidence(
-        history,
-        "recall_memory",
-    )
+    recall_called, recalled_ids, inline_complete = _recall_tool_evidence(history, recall_tool)
     if not recall_called:
         return ExpectedRecallResult(
             passed=False,
@@ -281,6 +280,19 @@ def evaluate_expected_recalled_memory_ids(
             expected_memory_ids=expected_ids,
             recalled_memory_ids=recalled_ids,
             evidence_source="inline",
+            recall_memory_called=True,
+        )
+
+    # Consolidation-backed expectations are a release gate on the actual
+    # recall_device_memory tool response.  Episode metadata can be useful for
+    # diagnosing compressed history, but it must not substitute for the tool
+    # output in this mode.
+    if require_inline_recall:
+        return ExpectedRecallResult(
+            passed=None,
+            expected_memory_ids=expected_ids,
+            recalled_memory_ids=[],
+            evidence_source="unavailable",
             recall_memory_called=True,
         )
 
@@ -304,7 +316,7 @@ def evaluate_expected_recalled_memory_ids(
 
     other_recalled_ids: list[str] = []
     other_evidence_complete = True
-    for tool_name in MEMORY_REF_AGGREGATING_RECALL_TOOLS - {"recall_memory"}:
+    for tool_name in MEMORY_REF_AGGREGATING_RECALL_TOOLS - {recall_tool}:
         other_called, tool_recalled_ids, tool_evidence_complete = (
             _recall_tool_evidence(history, tool_name)
         )
@@ -447,8 +459,13 @@ def _extract_option_answer(final_response: str) -> str | None:
         end = text.lower().find("</final_answer>")
         if end != -1:
             text = text[:end]
-    matches = re.findall(r"\(([a-d])\)|\b([a-d])\b", text.lower())
-    answers = [a or b for a, b in matches]
+    parenthesized = re.findall(r"\(([a-d])\)", text.lower())
+    if parenthesized:
+        if len(set(parenthesized)) != 1:
+            return None
+        return f"({parenthesized[0]})"
+    matches = re.findall(r"\b([a-d])\b", text.lower())
+    answers = list(matches)
     if len(set(answers)) != 1:
         return None
     return f"({answers[0]})"

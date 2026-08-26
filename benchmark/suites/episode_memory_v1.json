@@ -1,7 +1,8 @@
 {
   "name": "episode_memory_v1",
   "suite_category": "Memory & Cognition",
-  "description": "Task episode and device memory benchmark - verifies on-demand retrieval, failure-memory use, and conflict handling.",
+  "status": "legacy",
+  "description": "Legacy task episode and device memory smoke cases. Deprecated for reflection quality; use episode_reflection_v1 for consolidation assessment and evidence contracts.",
   "global_reset": {},
   "tasks": [
     {
@@ -39,20 +40,20 @@
     {
       "id": "failure_memory_guides_verifier_policy",
       "category": "memory",
-      "description_for_judge": "The task asks whether direct Chinese input via keyboard_text is acceptable. The agent should surface the device failure lesson that pinyin/candidate selection is more reliable.",
-      "prompt": "I need to enter the name Zhang San, written in Chinese characters, directly with keyboard_text in a phone text field. Based on known device failures, is that reliable? What should I do instead?",
+      "description_for_judge": "The task asks whether direct Chinese input via keyboard_text is acceptable. The agent should surface the device input policy and choose the non-ASCII-safe enter_text path.",
+      "prompt": "I need to enter the name \u5f20\u4e09, written in Chinese characters, into a phone text field. Is keyboard_text appropriate for this? What should I use instead?",
       "rubric": [
         {
           "id": "rejects_direct_chinese_keyboard_text",
-          "check": "The final response says direct Chinese input with keyboard_text is not reliable or should not be used."
+          "check": "The final response says keyboard_text should not be used for direct Chinese input."
         },
         {
-          "id": "recommends_pinyin_candidate",
-          "check": "The final response recommends pinyin/English keyword input and selecting a candidate or search result."
+          "id": "recommends_enter_text",
+          "check": "The final response recommends enter_text, which uses the phone's input method for non-ASCII text."
         },
         {
           "id": "uses_failure_lesson",
-          "check": "The reasoning is consistent with a known device failure lesson rather than merely asking the user to try."
+          "check": "The reasoning is consistent with the documented non-ASCII input policy rather than merely asking the user to try."
         }
       ],
       "hard_assertions": {

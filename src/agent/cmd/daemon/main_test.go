@@ -176,10 +176,7 @@ func TestRealtimeToolCallAndResultPersistInUserContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := rtclient.FunctionCallEvent{CallID: "call_1", Name: realtimeCreateTaskTool, Arguments: `{"task":"打开微信"}`}
-	if err := appendRealtimeToolCall(manager, call); err != nil {
-		t.Fatal(err)
-	}
-	if err := appendRealtimeToolResult(manager, call, `{"id":"task_1","status":"queued"}`); err != nil {
+	if err := appendRealtimeToolExecution(manager, call, `{"id":"task_1","status":"queued"}`); err != nil {
 		t.Fatal(err)
 	}
 	got := manager.MessageListDump().Messages

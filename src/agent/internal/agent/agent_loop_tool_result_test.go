@@ -41,10 +41,20 @@ func TestAppendToolExecutionMessagesPersistsPreparedContentAndMetadata(t *testin
 		Action:      schema.AgentAction{ToolID: "call_1", Tool: "shell"},
 		Observation: "RAW_OUTPUT_MUST_NOT_BE_STORED",
 	}
-	if err := appendToolExecutionMessages(llmExecutor, nil, step, prepared); err != nil {
+	toolCall := messages.Message{
+		Role: messages.MessageRoleToolCall,
+		ToolCalls: []messages.ToolCall{{
+			ID: "call_1", Name: "shell", Arguments: `{"command":"produce"}`,
+		}},
+	}
+	if err := appendToolExecutionMessages(llmExecutor, nil, toolCall, step, prepared); err != nil {
 		t.Fatalf("appendToolExecutionMessages() error = %v", err)
 	}
-	stored := manager.CloneMessageList()[0].ToolResults[0]
+	storedMessages := manager.CloneMessageList()
+	if len(storedMessages) != 2 || storedMessages[0].Role != messages.MessageRoleToolCall || storedMessages[1].Role != messages.MessageRoleToolResult {
+		t.Fatalf("stored messages = %#v, want tool call followed by result", storedMessages)
+	}
+	stored := storedMessages[1].ToolResults[0]
 	if stored.Content != prepared.Content {
 		t.Fatalf("stored content = %q, want prepared content", stored.Content)
 	}
