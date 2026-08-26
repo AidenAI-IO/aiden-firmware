@@ -236,6 +236,8 @@ TEST_CASE("config web exposes agent runtime status") {
     const std::string html = read_config_web_asset_bundle();
 
     CHECK(source.find("\"agent_status\"") != std::string::npos);
+    CHECK(source.find("\"public_port\"") != std::string::npos);
+    CHECK(source.find("AIDEN_PUBLIC_AGENT_WEB_PORT") != std::string::npos);
     CHECK(source.find("\"/api/agent/status\"") != std::string::npos);
     CHECK(source.find("query_agent_status") != std::string::npos);
     CHECK(source.find("check_tcp_port") != std::string::npos);
@@ -356,8 +358,12 @@ TEST_CASE("config web links to wetty browser terminal") {
 
     CHECK(html.find("id=\"terminalLink\"") != std::string::npos);
     CHECK(html.find("Terminal") != std::string::npos);
-    CHECK(html.find(":3000/wetty/") != std::string::npos);
-    CHECK(html.find("function configureTerminalLink()") != std::string::npos);
+    CHECK(html.find("function configureTerminalLink(port = 8080)") != std::string::npos);
+    CHECK(html.find("new URL(window.location.href)") != std::string::npos);
+    CHECK(html.find("terminalUrl.port=String(port||8080)") != std::string::npos);
+    CHECK(html.find("terminalUrl.pathname='/wetty/'") != std::string::npos);
+    CHECK(html.find("configureTerminalLink(status.public_port||port)") != std::string::npos);
+    CHECK(html.find("http://192.168.42.1:3000/wetty/") == std::string::npos);
     CHECK(html.find("configureTerminalLink();") != std::string::npos);
     CHECK(html.find("let metaOk = true") != std::string::npos);
 }

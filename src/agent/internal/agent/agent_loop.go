@@ -287,8 +287,11 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	actions, finish, err := parser.ParseOutput(contentResp)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
-		if err := llmExecutor.AppendMessage(messages.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
-			return "", iterationContinue, err
+		choiceMessage := messages.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])
+		if choiceMessage.Role != messages.MessageRoleToolCall {
+			if err := llmExecutor.AppendMessage(choiceMessage); err != nil {
+				return "", iterationContinue, err
+			}
 		}
 		decision := policy.RecordParseFailure()
 		if decision.Stop {
@@ -334,11 +337,6 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	// Problem 4: Check for pending steer after LLM returns actions (before tool execution)
 	if steer, hasPending := l.checkPendingSteer(ctx); hasPending {
 		policy.ResetForSteer()
-		// Append LLM response first, then steer, so context order is correct:
-		// assistant(tool_call) → user(steer)
-		if err := llmExecutor.AppendMessage(messages.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
-			return "", iterationContinue, err
-		}
 		if err := l.persistSteer(ctx, llmExecutor, steer); err != nil {
 			return "", iterationContinue, err
 		}
@@ -347,9 +345,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	}
 
 	action := actions[0]
-	if err := llmExecutor.AppendMessage(messages.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))); err != nil {
-		return "", iterationContinue, err
-	}
+	toolCallMessage := messages.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))
 	var after AfterToolCallHook
 	if toolExecutionHooks != nil {
 		after = func(ctx context.Context, call ToolCall, result ToolResult) ToolResult {
@@ -429,7 +425,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			},
 		})
 	}
-	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step, prepared)
+	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolCallMessage, toolExecution.Step, prepared)
 	if toolExecution.Error != nil {
 		if appendErr != nil {
 			return "", iterationContinue, errors.Join(toolExecution.Error, appendErr)
@@ -837,14 +833,17 @@ func roleResponseDebugText(res *llms.ContentResponse) string {
 	return strings.Join(parts, "\n")
 }
 
-func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, step schema.AgentStep, prepared PreparedToolResult) error {
+func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolCall messages.Message, step schema.AgentStep, prepared PreparedToolResult) error {
 	if llmExecutor == nil {
 		return fmt.Errorf("llm executor is nil")
 	}
 
 	toolContent := prepared.Content
 	var followups []llms.MessageContent
+	var visual visualScreenshotObservation
+	var hasVisual bool
 	if parser != nil && parser.isVisualObservationTool(step.Action.Tool) {
+		visual, hasVisual = parser.visualScreenshotObservation(step)
 		if content, visualFollowups := parser.observationMessagesForStep(step, true); len(visualFollowups) > 0 {
 			toolContent = content
 			followups = visualFollowups
@@ -853,17 +852,25 @@ func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *Func
 	}
 	prepared.Content = toolContent
 
-	if err := llmExecutor.AppendMessage(toolResultMessage(
+	contextMessages := []messages.Message{toolCall, toolResultMessage(
 		step.Action.ToolID,
 		step.Action.Tool,
 		prepared,
-	)); err != nil {
-		return fmt.Errorf("failed to append tool result message: %w", err)
-	}
+	)}
 	for _, followup := range followups {
-		if err := llmExecutor.AppendMessage(visualFollowupMessageFromLLMContent(llmExecutor.ContextManager(), followup)); err != nil {
-			return fmt.Errorf("failed to append visual followup message: %w", err)
+		if hasVisual && visual.Annotated && visual.Result.GestureMarker != nil {
+			marker := messages.ScreenshotDisplayMarker{
+				Type: visual.Result.GestureMarker.Type,
+				X:    visual.Result.GestureMarker.X,
+				Y:    visual.Result.GestureMarker.Y,
+			}
+			contextMessages = append(contextMessages, visualFollowupMessageFromLLMContentWithScreenshotMetadata(llmExecutor.ContextManager(), followup, visual.RawImageBytes, &marker))
+		} else {
+			contextMessages = append(contextMessages, visualFollowupMessageFromLLMContent(llmExecutor.ContextManager(), followup))
 		}
+	}
+	if err := llmExecutor.AppendMessages(contextMessages); err != nil {
+		return fmt.Errorf("failed to append tool call and result messages: %w", err)
 	}
 	return nil
 }

@@ -3,13 +3,22 @@ import json
 import urllib.error
 import urllib.request
 from typing import Any
-from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
+from runner.agent_client import (
+    AgentClient,
+    AgentRequestError,
+    AgentSemanticError,
+    AgentTimeoutError,
+)
 from runner.environment_endpoint import EnvironmentEndpoint
-from runner.suite import SETUP_KEYS
+from runner.suite import SETUP_KEYS, SuiteValidationError, validate_assert_memory_setup
 
 
 class ResetError(RuntimeError):
     pass
+
+
+class SetupAssertionError(ResetError):
+    """A setup assertion observed a benchmark capability mismatch."""
 
 
 STALE_ADB_OWNER_LEASE_STATES = {"expired", "abandoned"}
@@ -124,9 +133,29 @@ def clear_stale_adb_android_owner(environment_url: str, timeout: float = 2.0) ->
     return active_task_id
 
 
-def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_prefix: str = "") -> None:
+def per_task_setup(
+    client: AgentClient,
+    setup: dict[str, Any] | list[dict[str, Any]] | None,
+    *,
+    prompt_prefix: str = "",
+) -> None:
     if setup is None:
         return
+    if isinstance(setup, list):
+        if not setup:
+            raise ResetError("setup sequence must contain at least one setup")
+        for index, item in enumerate(setup):
+            if not isinstance(item, dict):
+                raise ResetError(f"setup[{index}] must be an object")
+            try:
+                per_task_setup(client, item, prompt_prefix=prompt_prefix)
+            except SetupAssertionError as e:
+                raise SetupAssertionError(f"setup[{index}] failed: {e}") from e
+            except ResetError as e:
+                raise ResetError(f"setup[{index}] failed: {e}") from e
+        return
+    if not isinstance(setup, dict):
+        raise ResetError(f"setup must be an object or an array: {setup!r}")
     setup_type = setup.get("type")
     if not isinstance(setup_type, str):
         raise ResetError(f"setup type must be a string: {setup!r}")
@@ -144,6 +173,12 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None, *, prompt_
         return
     if setup_type == "seed_episode":
         _per_task_setup_seed_episode(client, setup)
+        return
+    if setup_type == "seed_notification":
+        _per_task_setup_seed_notification(client, setup)
+        return
+    if setup_type == "assert_memory":
+        _per_task_setup_assert_memory(client, setup)
         return
     raise ResetError(f"unsupported setup form: {setup!r}")
 
@@ -255,3 +290,228 @@ def _per_task_setup_seed_episode(client: AgentClient, setup: dict[str, Any]) -> 
     memory_ids = result.get("memory_ids")
     if not isinstance(memory_ids, list) or not memory_ids:
         raise ResetError(f"episode memory consolidation for {episode_id!r} produced no device memory")
+
+
+def _per_task_setup_seed_notification(client: AgentClient, setup: dict[str, Any]) -> None:
+    events = setup.get("events")
+    if not isinstance(events, list) or not events or len(events) > 100:
+        raise ResetError("seed_notification setup requires 1 to 100 events")
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            raise ResetError(f"seed_notification events[{index}] must be an object")
+        if not str(event.get("title") or event.get("message") or "").strip():
+            raise ResetError(f"seed_notification events[{index}] requires a title or message")
+    consolidate = setup.get("consolidate", False)
+    if not isinstance(consolidate, bool):
+        raise ResetError(f"seed_notification consolidate must be boolean: {consolidate!r}")
+    try:
+        timeout = int(setup.get("timeout_sec", 90 if consolidate else 30))
+    except (ValueError, TypeError) as e:
+        raise ResetError(f"invalid timeout_sec: {setup.get('timeout_sec')!r}") from e
+    try:
+        seeded = client.seed_notification(events, timeout=timeout)
+        if not isinstance(seeded, dict):
+            raise ResetError("seed_notification returned an invalid response")
+        context_ids = seeded.get("context_ids")
+        if not isinstance(context_ids, list) or len(context_ids) != len(events):
+            raise ResetError(
+                "seed_notification did not persist every fixture event: "
+                f"expected {len(events)} context ids, got {context_ids!r}"
+            )
+        if not consolidate:
+            return
+    except AgentTimeoutError as e:
+        raise ResetError(f"notification benchmark setup timed out: {e}") from e
+    except AgentRequestError as e:
+        raise ResetError(f"notification benchmark setup failed: {e}") from e
+    try:
+        result = client.process_notification_memory(timeout=timeout)
+    except AgentTimeoutError as e:
+        raise ResetError(f"notification memory processing timed out: {e}") from e
+    except AgentSemanticError as e:
+        raise SetupAssertionError(
+            f"notification memory processing failed: {e}"
+        ) from e
+    except AgentRequestError as e:
+        raise ResetError(f"notification memory processing failed: {e}") from e
+    expected_cursor = str(context_ids[-1]).strip() if context_ids else ""
+    cursor = str(result.get("memory_cursor") or "").strip()
+    if expected_cursor and cursor != expected_cursor:
+        raise SetupAssertionError(f"notification memory cursor mismatch: expected {expected_cursor!r}, got {cursor or 'missing'}")
+    memory_ids = result.get("memory_ids")
+    if not isinstance(memory_ids, list):
+        raise ResetError("notification memory consolidation returned invalid memory_ids")
+    expected_count = setup.get("expected_memory_count")
+    if expected_count is not None:
+        try:
+            expected_count = int(expected_count)
+        except (ValueError, TypeError) as e:
+            raise ResetError(
+                f"invalid expected_memory_count: {setup.get('expected_memory_count')!r}"
+            ) from e
+        if expected_count < 0 or len(memory_ids) != expected_count:
+            raise SetupAssertionError(
+                "notification memory count mismatch: "
+                f"expected {expected_count}, got {len(memory_ids)}"
+            )
+    expected_scope = str(setup.get("expected_memory_scope") or "").strip().lower()
+    if not expected_scope:
+        return
+    if expected_scope not in {"temporary", "long_term"}:
+        raise ResetError(
+            f"invalid expected_memory_scope: {setup.get('expected_memory_scope')!r}"
+        )
+    query = setup.get("expected_memory_query")
+    if query is None:
+        query = {}
+    if not isinstance(query, dict):
+        raise ResetError("seed_notification expected_memory_query must be an object")
+    query = dict(query)
+    try:
+        configured_limit = int(query.get("limit", 0))
+    except (ValueError, TypeError) as e:
+        raise ResetError("seed_notification expected_memory_query limit must be an integer") from e
+    query["limit"] = max(20, len(memory_ids), configured_limit)
+    try:
+        recalled = client.invoke_tool(
+            "recall_memory",
+            query,
+            timeout=timeout,
+        )
+    except (AgentTimeoutError, AgentRequestError) as e:
+        raise ResetError(f"notification memory scope check failed: {e}") from e
+    if recalled.is_error:
+        raise ResetError("notification memory scope check returned an error")
+    try:
+        payload = json.loads(recalled.output)
+    except (TypeError, json.JSONDecodeError) as e:
+        raise ResetError(f"notification memory scope check returned invalid JSON: {e}") from e
+    matches = payload.get("results") if isinstance(payload, dict) else []
+    scopes_by_id = {
+        item.get("id"): str(item.get("memory_scope") or "").strip().lower()
+        for item in matches or []
+        if isinstance(item, dict) and item.get("id")
+    }
+    for memory_id in memory_ids:
+        actual_scope = scopes_by_id.get(memory_id, "")
+        if actual_scope != expected_scope:
+            raise SetupAssertionError(
+                f"notification memory {memory_id!r} scope mismatch: "
+                f"expected {expected_scope!r}, got {actual_scope or 'missing'}"
+            )
+
+
+def _per_task_setup_assert_memory(client: AgentClient, setup: dict[str, Any]) -> None:
+    try:
+        validate_assert_memory_setup(setup)
+    except SuiteValidationError as e:
+        raise ResetError(str(e)) from e
+    query = setup.get("query") or {"limit": 20}
+    if not isinstance(query, dict):
+        raise ResetError("assert_memory query must be an object")
+    try:
+        timeout = int(setup.get("timeout_sec", 30))
+    except (ValueError, TypeError) as e:
+        raise ResetError(f"invalid timeout_sec: {setup.get('timeout_sec')!r}") from e
+    try:
+        recalled = client.invoke_tool("recall_memory", query, timeout=timeout)
+    except (AgentTimeoutError, AgentRequestError) as e:
+        raise ResetError(f"assert_memory recall failed: {e}") from e
+    if recalled.is_error:
+        raise ResetError("assert_memory recall returned an error")
+    try:
+        payload = json.loads(recalled.output)
+    except (TypeError, json.JSONDecodeError) as e:
+        raise ResetError(f"assert_memory recall returned invalid JSON: {e}") from e
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list) or not all(isinstance(item, dict) for item in results):
+        raise ResetError("assert_memory recall returned invalid results")
+
+    expected_count = setup.get("expected_count")
+    if expected_count is not None:
+        try:
+            expected_count = int(expected_count)
+        except (ValueError, TypeError) as e:
+            raise ResetError(f"invalid expected_count: {setup.get('expected_count')!r}") from e
+        if expected_count < 0 or len(results) != expected_count:
+            raise SetupAssertionError(
+                f"assert_memory count mismatch: expected {expected_count}, got {len(results)}"
+            )
+
+    absent_ids = setup.get("absent_ids") or []
+    if not isinstance(absent_ids, list) or not all(
+        isinstance(item, str) and item.strip() for item in absent_ids
+    ):
+        raise ResetError("assert_memory absent_ids must be a list of non-empty strings")
+    result_ids = {str(item.get("id") or "").strip() for item in results}
+    unexpected = [item for item in absent_ids if item.strip() in result_ids]
+    if unexpected:
+        raise SetupAssertionError(f"assert_memory found absent id(s): {', '.join(unexpected)}")
+
+    expected = setup.get("expected") or []
+    if not isinstance(expected, list) or not all(isinstance(item, dict) for item in expected):
+        raise ResetError("assert_memory expected must be a list of objects")
+    for index, spec in enumerate(expected):
+        if not spec:
+            raise ResetError(f"assert_memory expected[{index}] must not be empty")
+        if not any(_memory_result_matches(item, spec) for item in results):
+            raise SetupAssertionError(
+                f"assert_memory expected[{index}] did not match any recalled memory: {spec!r}"
+            )
+
+
+def _memory_result_matches(result: dict[str, Any], spec: dict[str, Any]) -> bool:
+    for field in ("id", "memory_scope", "type"):
+        if field in spec and str(result.get(field) or "").strip().lower() != str(spec[field]).strip().lower():
+            return False
+    if "revision" in spec:
+        try:
+            if int(result.get("revision") or 0) != int(spec["revision"]):
+                return False
+        except (ValueError, TypeError):
+            return False
+    for field, result_field in (("content_contains", "content"), ("title_contains", "title")):
+        if field in spec and str(spec[field]).strip().lower() not in str(result.get(result_field) or "").lower():
+            return False
+    for field, result_field in (("tags_contains", "tags"), ("entities_contains", "entities")):
+        if field not in spec:
+            continue
+        wanted = spec[field]
+        actual = {str(item).strip().lower() for item in result.get(result_field) or []}
+        if any(item.strip().lower() not in actual for item in wanted):
+            return False
+    for field, result_field in (
+        ("source_refs_contain", "source_refs"),
+        ("evidence_refs_contain", "evidence_refs"),
+    ):
+        if field not in spec:
+            continue
+        wanted_refs = spec[field]
+        actual_refs = result.get(result_field) or []
+        if not isinstance(actual_refs, list):
+            return False
+        if not all(
+            isinstance(item, dict) and _memory_source_ref_matches(actual_refs, item)
+            for item in wanted_refs
+        ):
+            return False
+    return True
+
+
+def _memory_source_ref_matches(
+    actual_refs: list[Any], wanted: dict[str, Any]
+) -> bool:
+    for actual in actual_refs:
+        if not isinstance(actual, dict):
+            continue
+        if "type" in wanted and str(actual.get("type") or "").strip().lower() != str(wanted["type"]).strip().lower():
+            continue
+        if "id" in wanted and str(actual.get("id") or "").strip() != str(wanted["id"]).strip():
+            continue
+        event_ids = wanted.get("event_ids_contains")
+        if event_ids is not None:
+            actual_event_ids = {str(item).strip() for item in actual.get("event_ids") or []}
+            if any(str(item).strip() not in actual_event_ids for item in event_ids):
+                continue
+        return True
+    return False

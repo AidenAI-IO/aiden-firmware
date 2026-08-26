@@ -1196,7 +1196,7 @@ func TestSearchEpisodeMemoryCandidatesPrioritizesPreferredAndSameScope(t *testin
 	}
 }
 
-func TestEpisodeMemoryCreateDoesNotDuplicateExistingScope(t *testing.T) {
+func TestEpisodeMemoryCreatePreservesExplicitCreateAction(t *testing.T) {
 	ctx := context.Background()
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
 	if _, err := plane.device.Upsert(ctx, DeviceMemoryItem{
@@ -1217,12 +1217,12 @@ func TestEpisodeMemoryCreateDoesNotDuplicateExistingScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createMemory() error = %v", err)
 	}
-	if id != "existing_scope" {
-		t.Fatalf("createMemory() id = %q, want existing scoped memory", id)
+	if id == "existing_scope" || !strings.HasPrefix(id, "devmem_") {
+		t.Fatalf("createMemory() id = %q, want a new deterministic memory", id)
 	}
 	items, err := plane.device.readAll()
-	if err != nil || len(items) != 1 {
-		t.Fatalf("memories = %#v error=%v, want no duplicate", items, err)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("memories = %#v error=%v, want explicit create to retain both records", items, err)
 	}
 }
 

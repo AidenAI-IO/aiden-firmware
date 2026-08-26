@@ -117,6 +117,10 @@ func toolResultMessage(toolCallID, toolName string, prepared PreparedToolResult)
 }
 
 func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager, content llms.MessageContent) messages.Message {
+	return visualFollowupMessageFromLLMContentWithScreenshotMetadata(manager, content, nil, nil)
+}
+
+func visualFollowupMessageFromLLMContentWithScreenshotMetadata(manager *contextmanager.ContextManager, content llms.MessageContent, originalScreenshot []byte, marker *messages.ScreenshotDisplayMarker) messages.Message {
 	message := messages.Message{Role: messages.MessageRoleState}
 	for _, part := range content.Parts {
 		switch typed := part.(type) {
@@ -125,9 +129,17 @@ func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager,
 		case llms.ImageURLContent:
 			mimeType, data, ok := telemetryDataURL(typed.URL)
 			if ok && strings.HasPrefix(strings.ToLower(mimeType), "image/") && len(data) > 0 && manager != nil {
-				stored, err := manager.StoreAttachment(mimeType, data)
+				storedData := data
+				if len(originalScreenshot) > 0 && marker != nil && isJPEGMediaType(mimeType) {
+					storedData = originalScreenshot
+				}
+				stored, err := manager.StoreAttachment(mimeType, storedData)
 				if err == nil {
 					stored.Source = messages.AttachmentSourceScreenshotObservation
+					if len(originalScreenshot) > 0 && marker != nil && isJPEGMediaType(mimeType) {
+						markerCopy := *marker
+						stored.DisplayMarker = &markerCopy
+					}
 					message.Attachments = append(message.Attachments, stored)
 					continue
 				}
@@ -141,12 +153,20 @@ func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager,
 			if manager == nil {
 				continue
 			}
-			stored, err := manager.StoreAttachment(typed.MIMEType, typed.Data)
+			storedData := typed.Data
+			if len(originalScreenshot) > 0 && marker != nil && isJPEGMediaType(typed.MIMEType) {
+				storedData = originalScreenshot
+			}
+			stored, err := manager.StoreAttachment(typed.MIMEType, storedData)
 			if err != nil {
 				message.Content = mergePromptText(message.Content, attachmentStorageFailureText(typed.MIMEType, err))
 				continue
 			}
 			stored.Source = messages.AttachmentSourceScreenshotObservation
+			if len(originalScreenshot) > 0 && marker != nil && isJPEGMediaType(typed.MIMEType) {
+				markerCopy := *marker
+				stored.DisplayMarker = &markerCopy
+			}
 			message.Attachments = append(message.Attachments, stored)
 		default:
 			fallback := messageFromLLMContent(manager, llms.MessageContent{
@@ -160,6 +180,11 @@ func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager,
 		}
 	}
 	return message
+}
+
+func isJPEGMediaType(mimeType string) bool {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	return mimeType == "image/jpeg" || mimeType == "image/jpg"
 }
 
 func attachmentMIMETypeOrDefault(attachment InputAttachment) string {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -137,6 +138,35 @@ type notificationMemoryProposal struct {
 	Actions []notificationMemoryAction `json:"actions"`
 }
 
+type notificationProposalError struct {
+	err error
+}
+
+func (e *notificationProposalError) Error() string {
+	if e == nil || e.err == nil {
+		return "invalid notification memory proposal"
+	}
+	return e.err.Error()
+}
+
+func (e *notificationProposalError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func wrapNotificationProposalError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var proposalErr *notificationProposalError
+	if errors.As(err, &proposalErr) {
+		return err
+	}
+	return &notificationProposalError{err: err}
+}
+
 type notificationMemoryAction struct {
 	Action         string   `json:"action"`
 	Scope          string   `json:"scope"`
@@ -234,7 +264,7 @@ func (p *NotificationMemoryProcessor) resolveRecords(ctx context.Context, record
 		}
 		seen[record.ContextID] = true
 		if err := validateNotificationProposalShape(result.Proposal); err != nil {
-			return err
+			return wrapNotificationProposalError(err)
 		}
 		proposalsByContext[record.ContextID] = validatedNotificationResult{record: record, proposal: result.Proposal, refs: refsByContext[record.ContextID]}
 	}
@@ -245,9 +275,9 @@ func (p *NotificationMemoryProcessor) resolveRecords(ctx context.Context, record
 	ordered = coalesceNotificationBatchTargets(ordered)
 	validated := make([]validatedNotificationResult, 0, len(ordered))
 	for _, result := range ordered {
-		proposal, err := p.validateNotificationProposal(result.record, result.proposal, result.refs)
+		proposal, err := p.validateNotificationProposal(ctx, result.record, result.proposal, result.refs)
 		if err != nil {
-			return err
+			return wrapNotificationProposalError(err)
 		}
 		result.proposal = proposal
 		validated = append(validated, result)
@@ -328,8 +358,10 @@ func buildNotificationMemoryBatchPrompt(records []NotificationRecord, refsByCont
 		"Return one result for every notification and at most one action per result. Do not combine evidence across notifications. " +
 		"A memory_catalog target may be modified by at most one result; when multiple notifications relate to it, only the latest notification may target it and earlier results must ignore it. " +
 		"Use only the supplied notification evidence. action must be ignore, add, update, reinforce, remove, or promote; scope must be temporary or long_term. " +
+		"Choose actions by these semantics: add creates a new conclusion with no target memory_id; update replaces a changed conclusion at the exact catalog memory_id and memory_revision; reinforce keeps the same conclusion while recording new evidence at the exact catalog memory_id and memory_revision; remove withdraws the exact catalog memory_id and memory_revision; promote copies the exact temporary catalog memory_id and memory_revision into scope long_term when the notification establishes a stable rule or preference that should outlive temporary expiry. Do not use reinforce for an explicit stable rule or preference that should be promoted. " +
+		"For add and update, content is required; for add also provide exactly one valid type: fact, preference, rule, or profile. For reinforce, remove, and promote, preserve the exact target identity and revision even when content is omitted. " +
 		"Do not retain OTPs, marketing, secrets, or one-off noise. For temporary conclusions use an expiry. " +
-		"For updates include the exact memory_id and memory_revision from memory_catalog.\n\n" + string(payload)
+		"Every targeted action must include the exact memory_id and memory_revision from memory_catalog.\n\n" + string(payload)
 }
 
 func (p *NotificationMemoryProcessor) searchRelatedNotificationMemories(ctx context.Context, record NotificationRecord) ([]MemoryMergeReference, error) {
@@ -371,7 +403,7 @@ func memoryResultMergeReference(scope string, result MemoryResult) MemoryMergeRe
 	return MemoryMergeReference{Scope: scope, ID: result.ID, Type: result.Type, Status: result.Status, Title: result.Title, Summary: result.Summary, Content: result.Content, Tags: result.Tags, Entities: result.Entities, Revision: result.Revision, ExpiresAt: result.ExpiresAt, Priority: result.Priority, Confidence: result.Confidence, SourceRefs: result.SourceRefs, EvidenceRefs: result.EvidenceRefs}
 }
 
-func (p *NotificationMemoryProcessor) validateNotificationProposal(record NotificationRecord, proposal notificationMemoryProposal, refs []MemoryMergeReference) (notificationMemoryProposal, error) {
+func (p *NotificationMemoryProcessor) validateNotificationProposal(ctx context.Context, record NotificationRecord, proposal notificationMemoryProposal, refs []MemoryMergeReference) (notificationMemoryProposal, error) {
 	if err := validateNotificationProposalShape(proposal); err != nil {
 		return notificationMemoryProposal{}, err
 	}
@@ -397,7 +429,16 @@ func (p *NotificationMemoryProcessor) validateNotificationProposal(record Notifi
 			if action.Scope != "long_term" || strings.TrimSpace(action.MemoryID) == "" || action.MemoryRevision <= 0 {
 				return notificationMemoryProposal{}, fmt.Errorf("notification promote proposal requires long_term scope, temporary memory_id, and memory_revision")
 			}
+			if err := validateNotificationProposalSourceEvents(record, action.SourceEventIDs); err != nil {
+				return notificationMemoryProposal{}, err
+			}
 			ref, ok := findNotificationReference(action.MemoryID, "temporary", refs)
+			if !ok {
+				ref, ok = p.findTemporaryNotificationReference(ctx, action.MemoryID)
+				if ok && ref.Status == "deleted" && !p.notificationPromotionAlreadyCreated(record, action, ref) {
+					ok = false
+				}
+			}
 			if !ok || effectiveMergeReferenceRevision(ref) != action.MemoryRevision {
 				return notificationMemoryProposal{}, fmt.Errorf("notification promote proposal references unknown or stale temporary memory %q", action.MemoryID)
 			}
@@ -452,6 +493,39 @@ func (p *NotificationMemoryProcessor) validateNotificationProposal(record Notifi
 	return validated, nil
 }
 
+func (p *NotificationMemoryProcessor) findTemporaryNotificationReference(ctx context.Context, id string) (MemoryMergeReference, bool) {
+	if p.temporary == nil {
+		return MemoryMergeReference{}, false
+	}
+	select {
+	case <-ctx.Done():
+		return MemoryMergeReference{}, false
+	default:
+	}
+	parsed, err := readMemoryMarkdown(p.temporary.memoryPath(strings.TrimSpace(id)))
+	if err != nil {
+		return MemoryMergeReference{}, false
+	}
+	item := parsed.Item
+	return MemoryMergeReference{Scope: "temporary", ID: item.ID, Type: item.Type, Status: item.Status, Title: item.Title, Summary: item.Content, Content: item.Content, Tags: item.Tags, Entities: item.Entities, Revision: effectiveMemoryRevision(item), ExpiresAt: item.ExpiresAt, Priority: item.Priority, Confidence: item.Confidence, SourceRefs: item.SourceRefs, EvidenceRefs: item.EvidenceRefs}, true
+}
+
+func (p *NotificationMemoryProcessor) notificationPromotionAlreadyCreated(record NotificationRecord, action notificationMemoryAction, ref MemoryMergeReference) bool {
+	if p.longTerm == nil {
+		return false
+	}
+	parsed, err := readMemoryMarkdown(p.longTerm.memoryPath("mem_notification_" + record.ContextID))
+	if err != nil || parsed.Item.Status != "active" {
+		return false
+	}
+	expectedContent := firstNonEmptyString([]string{action.Content, ref.Content, ref.Summary})
+	if strings.TrimSpace(parsed.Item.Content) != strings.TrimSpace(expectedContent) {
+		return false
+	}
+	expectedSourceRefs := mergeMemorySourceRefs(ref.SourceRefs, []MemorySourceRef{{Type: "notification", ID: record.ContextID, EventIDs: mergeUniqueStrings(notificationMemoryEvidenceIDs(record), action.SourceEventIDs)}})
+	return memorySourceRefsContain(parsed.Item.SourceRefs, expectedSourceRefs)
+}
+
 func validateNotificationProposalShape(proposal notificationMemoryProposal) error {
 	if len(proposal.Actions) > 1 {
 		return fmt.Errorf("notification proposal has %d actions; maximum is 1", len(proposal.Actions))
@@ -465,12 +539,16 @@ func (p *NotificationMemoryProcessor) applyNotificationProposal(ctx context.Cont
 			continue
 		}
 		if action.Action == "promote" {
-			ref, _ := findNotificationReference(action.MemoryID, "temporary", refs)
-			item := MemoryItem{ID: "mem_notification_" + record.ContextID, Type: firstNonEmptyString([]string{action.Type, ref.Type, "fact"}), TimeScope: "long_term", Title: firstNonEmptyString([]string{action.Title, ref.Title}), Content: firstNonEmptyString([]string{action.Content, ref.Content, ref.Summary}), ExpiresAt: p.now().Add(notificationLongTermTTL).Format(time.RFC3339Nano), Tags: mergeUniqueStrings(ref.Tags, action.Tags), Entities: mergeUniqueStrings(ref.Entities, action.Entities), SourceRefs: ref.SourceRefs, EvidenceRefs: ref.EvidenceRefs, EvidenceExcerpts: []string{firstNonEmptyString([]string{action.Content, ref.Content, ref.Summary, record.NotificationEvent.Message, record.NotificationEvent.Title})}}
-			if _, err := p.longTerm.ApplyMemoryIntent(ctx, MemoryIntent{Item: item}); err != nil {
+			ref, ok := findNotificationReference(action.MemoryID, "temporary", refs)
+			if !ok {
+				ref, _ = p.findTemporaryNotificationReference(ctx, action.MemoryID)
+			}
+			sourceRefs := mergeMemorySourceRefs(ref.SourceRefs, []MemorySourceRef{{Type: "notification", ID: record.ContextID, EventIDs: mergeUniqueStrings(notificationMemoryEvidenceIDs(record), action.SourceEventIDs)}})
+			item := MemoryItem{ID: "mem_notification_" + record.ContextID, Type: firstNonEmptyString([]string{action.Type, ref.Type, "fact"}), TimeScope: "long_term", Title: firstNonEmptyString([]string{action.Title, ref.Title}), Content: firstNonEmptyString([]string{action.Content, ref.Content, ref.Summary}), ExpiresAt: p.now().Add(notificationLongTermTTL).Format(time.RFC3339Nano), Tags: mergeUniqueStrings(ref.Tags, action.Tags), Entities: mergeUniqueStrings(ref.Entities, action.Entities), SourceRefs: sourceRefs, EvidenceRefs: ref.EvidenceRefs, EvidenceExcerpts: []string{firstNonEmptyString([]string{action.Content, ref.Content, ref.Summary, record.NotificationEvent.Message, record.NotificationEvent.Title})}}
+			if _, err := p.longTerm.ApplyMemoryIntent(ctx, MemoryIntent{Item: item, Action: MemoryIntentActionCreate}); err != nil {
 				return err
 			}
-			if _, err := p.temporary.ApplyMemoryIntent(ctx, MemoryIntent{Item: MemoryItem{ID: action.MemoryID}, ExpectedRevision: action.MemoryRevision, Remove: true}); err != nil {
+			if _, err := p.temporary.ApplyMemoryIntent(ctx, MemoryIntent{Item: MemoryItem{ID: action.MemoryID}, Action: MemoryIntentActionRemove, ExpectedRevision: action.MemoryRevision}); err != nil {
 				return err
 			}
 			continue
@@ -497,7 +575,16 @@ func (p *NotificationMemoryProcessor) applyNotificationProposal(ctx context.Cont
 		if store == nil {
 			return fmt.Errorf("notification memory store is not configured for scope %s", action.Scope)
 		}
-		_, err := store.ApplyMemoryIntent(ctx, MemoryIntent{Item: item, ExpectedRevision: action.MemoryRevision, Remove: action.Action == "remove"})
+		intentAction := MemoryIntentActionCreate
+		switch action.Action {
+		case "update":
+			intentAction = MemoryIntentActionUpdate
+		case "reinforce":
+			intentAction = MemoryIntentActionReinforce
+		case "remove":
+			intentAction = MemoryIntentActionRemove
+		}
+		_, err := store.ApplyMemoryIntent(ctx, MemoryIntent{Item: item, Action: intentAction, ExpectedRevision: action.MemoryRevision})
 		if err != nil {
 			return err
 		}
@@ -640,7 +727,7 @@ func (p *NotificationMemoryProcessor) persistTemporary(ctx context.Context, reco
 	if p.temporary == nil {
 		return fmt.Errorf("temporary memory store is not configured")
 	}
-	_, err := p.temporary.ApplyMemoryIntent(ctx, MemoryIntent{Item: item})
+	_, err := p.temporary.ApplyMemoryIntent(ctx, MemoryIntent{Item: item, Action: MemoryIntentActionCreate})
 	return err
 }
 
@@ -657,7 +744,7 @@ func (p *NotificationMemoryProcessor) removeTemporary(ctx context.Context, recor
 		if !notificationMemoryReferencesRecord(memory.SourceRefs, record) {
 			continue
 		}
-		if _, err := p.temporary.ApplyMemoryIntent(ctx, MemoryIntent{Item: MemoryItem{ID: memory.ID}, ExpectedRevision: effectiveMemoryResultRevision(memory), Remove: true}); err != nil {
+		if _, err := p.temporary.ApplyMemoryIntent(ctx, MemoryIntent{Item: MemoryItem{ID: memory.ID}, Action: MemoryIntentActionRemove, ExpectedRevision: effectiveMemoryResultRevision(memory)}); err != nil {
 			return err
 		}
 		removed = true
@@ -665,8 +752,15 @@ func (p *NotificationMemoryProcessor) removeTemporary(ctx context.Context, recor
 	if removed {
 		return nil
 	}
-	_, err = p.temporary.ApplyMemoryIntent(ctx, MemoryIntent{Item: MemoryItem{ID: "tmp_notification_" + record.ContextID}, Remove: true})
-	return err
+	fallbackID := "tmp_notification_" + record.ContextID
+	for _, memory := range memories {
+		if memory.ID != fallbackID {
+			continue
+		}
+		_, err := p.temporary.ApplyMemoryIntent(ctx, MemoryIntent{Item: MemoryItem{ID: fallbackID}, Action: MemoryIntentActionRemove, ExpectedRevision: effectiveMemoryResultRevision(memory)})
+		return err
+	}
+	return nil
 }
 
 func effectiveMemoryResultRevision(memory MemoryResult) int {

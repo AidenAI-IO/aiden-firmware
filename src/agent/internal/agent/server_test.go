@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -2511,7 +2512,7 @@ func TestServerServesEmbeddedWebUIAssets(t *testing.T) {
 	}
 }
 
-func TestWettyReverseProxyUsesUpstreamHostAndRewritesFrameHeaders(t *testing.T) {
+func TestWettyReverseProxyPreservesPublicHostAndRewritesFrameHeaders(t *testing.T) {
 	var gotHost, gotForwardedHost, gotForwardedProto, gotForwardedPrefix string
 	var upstream *httptest.Server
 	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2520,7 +2521,7 @@ func TestWettyReverseProxyUsesUpstreamHostAndRewritesFrameHeaders(t *testing.T) 
 		gotForwardedProto = r.Header.Get("X-Forwarded-Proto")
 		gotForwardedPrefix = r.Header.Get("X-Forwarded-Prefix")
 		w.Header().Set("X-Frame-Options", "sameorigin")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src ws://"+r.Host)
 		w.Header().Set("Location", upstream.URL+"/")
 		w.WriteHeader(http.StatusFound)
 	}))
@@ -2534,8 +2535,8 @@ func TestWettyReverseProxyUsesUpstreamHostAndRewritesFrameHeaders(t *testing.T) 
 	request := httptest.NewRequest(http.MethodGet, "http://device.example:8080/wetty/", nil)
 	newWettyReverseProxyForTarget(target).ServeHTTP(recorder, request)
 
-	if gotHost != target.Host {
-		t.Fatalf("upstream Host = %q, want %q", gotHost, target.Host)
+	if gotHost != "device.example:8080" {
+		t.Fatalf("upstream Host = %q, want device.example:8080", gotHost)
 	}
 	if gotForwardedHost != "device.example:8080" || gotForwardedProto != "http" || gotForwardedPrefix != "/wetty" {
 		t.Fatalf("forwarded headers = host %q proto %q prefix %q", gotForwardedHost, gotForwardedProto, gotForwardedPrefix)
@@ -2543,8 +2544,8 @@ func TestWettyReverseProxyUsesUpstreamHostAndRewritesFrameHeaders(t *testing.T) 
 	if got := recorder.Header().Get("X-Frame-Options"); got != "" {
 		t.Fatalf("X-Frame-Options = %q, want removed", got)
 	}
-	if got := recorder.Header().Get("Content-Security-Policy"); got != "default-src 'self'; frame-ancestors 'self'" {
-		t.Fatalf("Content-Security-Policy = %q, want upstream policy plus same-origin framing", got)
+	if got := recorder.Header().Get("Content-Security-Policy"); got != "default-src 'self'; connect-src ws://device.example:8080; frame-ancestors 'self'" {
+		t.Fatalf("Content-Security-Policy = %q, want public WebSocket host plus same-origin framing", got)
 	}
 	if got := recorder.Header().Get("Location"); got != "/wetty/" {
 		t.Fatalf("Location = %q, want /wetty/", got)
@@ -4121,6 +4122,10 @@ func startFakeFrameServiceSocket(t *testing.T, handler func(map[string]any) (str
 }
 
 func newBenchmarkSeedMemoryServer(t *testing.T) (*Server, string) {
+	return newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{})
+}
+
+func newBenchmarkSeedMemoryServerWithModel(t *testing.T, model *scriptedModel) (*Server, string) {
 	t.Helper()
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	streamingDisabled := false
@@ -4133,7 +4138,7 @@ func newBenchmarkSeedMemoryServer(t *testing.T) (*Server, string) {
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 			VoiceToolCallSpeech:      &streamingDisabled,
 		},
-		&testModelResolver{model: &scriptedModel{}},
+		&testModelResolver{model: model},
 		NewMemoryManager(filepath.Join(configDir, "memory")),
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
@@ -4177,6 +4182,108 @@ func TestHandleBenchmarkSeedMemorySucceeds(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkSeedNotificationWritesDurableFixture(t *testing.T) {
+	server, configDir := newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse(`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"ignore"}]}}]}`),
+	}})
+	body := `{"events":[{"source":"android","source_id":"delivery-1","source_event_id":"delivery-event-1","device_id":"benchmark-device","notification_uid":101,"event":"added","app_identifier":"com.delivery","title":"包裹更新","message":"包裹明天送达","received_at":"2026-08-21T00:01:00Z"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_notification", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedNotification(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Status     string   `json:"status"`
+		ContextIDs []string `json:"context_ids"`
+		EventCount int      `json:"event_count"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Status != "seeded" || response.EventCount != 1 || len(response.ContextIDs) != 1 || response.ContextIDs[0] != "1" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	rawPath := filepath.Join(configDir, "memory", "notifications", "events", "2026-08-21.jsonl")
+	raw, err := os.ReadFile(rawPath)
+	if err != nil {
+		t.Fatalf("read seeded notification fixture: %v", err)
+	}
+	if !strings.Contains(string(raw), `"message":"包裹明天送达"`) {
+		t.Fatalf("raw fixture missing original message: %s", raw)
+	}
+	processReq := httptest.NewRequest(http.MethodPost, "/api/benchmark/notification-memory/process", bytes.NewBufferString(`{}`))
+	processReq.Header.Set("Content-Type", "application/json")
+	processReq.Header.Set("Authorization", "Bearer test-benchmark-token")
+	processRec := httptest.NewRecorder()
+	server.handleBenchmarkProcessNotificationMemory(processRec, processReq)
+	if processRec.Code != http.StatusOK {
+		t.Fatalf("unexpected process status: %d body=%s", processRec.Code, processRec.Body.String())
+	}
+	var processResponse struct {
+		MemoryCursor string `json:"memory_cursor"`
+	}
+	if err := json.NewDecoder(processRec.Body).Decode(&processResponse); err != nil {
+		t.Fatalf("decode process response: %v", err)
+	}
+	if processResponse.MemoryCursor != "1" {
+		t.Fatalf("process cursor = %q, want 1", processResponse.MemoryCursor)
+	}
+}
+
+func TestHandleBenchmarkProcessNotificationMemoryClassifiesInvalidProposal(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse(`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"add","scope":"temporary","type":"not-a-memory-type","content":"Package arrives tomorrow"}]}}]}`),
+	}})
+	seedBody := `{"events":[{"source":"android","source_id":"delivery-invalid","source_event_id":"delivery-invalid-event","device_id":"benchmark-device","notification_uid":110,"event":"added","app_identifier":"com.delivery","title":"Package update","message":"Package arrives tomorrow","received_at":"2026-08-21T00:01:00Z"}]}`
+	seedReq := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_notification", bytes.NewBufferString(seedBody))
+	seedReq.Header.Set("Authorization", "Bearer test-benchmark-token")
+	seedRec := httptest.NewRecorder()
+	server.handleBenchmarkSeedNotification(seedRec, seedReq)
+	if seedRec.Code != http.StatusOK {
+		t.Fatalf("seed status=%d body=%s", seedRec.Code, seedRec.Body.String())
+	}
+
+	processReq := httptest.NewRequest(http.MethodPost, "/api/benchmark/notification-memory/process", bytes.NewBufferString(`{}`))
+	processReq.Header.Set("Authorization", "Bearer test-benchmark-token")
+	processRec := httptest.NewRecorder()
+	server.handleBenchmarkProcessNotificationMemory(processRec, processReq)
+
+	if processRec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("process status=%d body=%s, want 422", processRec.Code, processRec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkSeedNotificationRetryReturnsOriginalContextID(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	body := `{"events":[{"source":"android","source_id":"delivery-retry","source_event_id":"delivery-retry-event","device_id":"benchmark-device","notification_uid":102,"event":"added","app_identifier":"com.delivery","title":"Package update","message":"Package arrives tomorrow","received_at":"2026-08-21T00:02:00Z"}]}`
+	seed := func() map[string]any {
+		req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_notification", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-benchmark-token")
+		rec := httptest.NewRecorder()
+		server.handleBenchmarkSeedNotification(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var response map[string]any
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return response
+	}
+
+	first := seed()
+	retried := seed()
+	if !reflect.DeepEqual(first["context_ids"], retried["context_ids"]) || retried["event_count"] != float64(1) {
+		t.Fatalf("first=%#v retried=%#v", first, retried)
+	}
+}
+
 func TestHandleBenchmarkSeedMemoryCanSeedDeviceFixture(t *testing.T) {
 	server, configDir := newBenchmarkSeedMemoryServer(t)
 	body := `{"store":"device","id":"legacy_device_fixture","type":"procedure","title":"Legacy procedure","content":"Preview, then Edit, then Save.","tags":["qa-notes","save"],"entities":["QA Notes","Preview","Edit","Save"]}`
@@ -4204,6 +4311,29 @@ func TestHandleBenchmarkSeedMemoryCanSeedDeviceFixture(t *testing.T) {
 	}
 	if len(files) != 1 || !strings.Contains(files[0], "legacy_device_fixture") {
 		t.Fatalf("device fixture files = %#v", files)
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryCanSeedTemporaryFixture(t *testing.T) {
+	server, configDir := newBenchmarkSeedMemoryServer(t)
+	body := `{"store":"temporary","id":"tmp_benchmark_delivery","type":"fact","title":"Delivery","content":"Package arrives today.","tags":["notification","com.delivery"],"source_refs":[{"type":"notification","id":"fixture-old","event_ids":["old-event"]}],"expires_at":"2099-01-01T00:00:00Z"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedMemory(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	memPath := filepath.Join(configDir, "memory", "temporary", "memories", "tmp_benchmark_delivery.md")
+	parsed, err := readMemoryMarkdown(memPath)
+	if err != nil {
+		t.Fatalf("read temporary fixture: %v", err)
+	}
+	if parsed.Item.TimeScope != "temporary" || len(parsed.Item.SourceRefs) != 1 {
+		t.Fatalf("temporary fixture = %#v", parsed.Item)
 	}
 }
 

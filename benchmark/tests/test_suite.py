@@ -30,6 +30,62 @@ def test_load_suite_returns_parsed(tmp_path: Path):
     assert suite.tasks[0].rubric[0].id == "in_settings"
 
 
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ([{"unsupported": True}], "contains unsupported keys"),
+        (
+            [{"source_refs_contain": [{"event_ids_contains": "bad"}]}],
+            "event_ids_contains must be a list of non-empty strings",
+        ),
+        (
+            [{"evidence_refs_contain": [{"id": 123}]}],
+            "id must be a non-empty string",
+        ),
+        ([{"id": 123}], "id must be a non-empty string"),
+        ([{"revision": "2"}], "revision must be a positive integer"),
+    ],
+)
+def test_load_suite_rejects_malformed_assert_memory_nested_schema(
+    tmp_path: Path, value, message
+):
+    fixture = json.loads(json.dumps(FIXTURE))
+    fixture["tasks"][0]["setup"] = {
+        "type": "assert_memory",
+        "expected": value,
+    }
+    path = tmp_path / "invalid.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    with pytest.raises(SuiteValidationError, match=message):
+        load_suite(path)
+
+
+def test_notification_memory_suite_uses_benchmark_seed_setup():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "notification_memory_v1.json"
+    suite = load_suite(suite_path)
+    assert suite_path.read_text(encoding="utf-8").isascii()
+
+    assert suite.name == "notification_memory_v1"
+    assert [task.id for task in suite.tasks] == [
+        "delivery_notification_recall",
+        "notification_noise_is_filtered",
+        "notification_batch_cursor_drain",
+        "notification_explicit_update",
+        "notification_explicit_reinforce",
+        "notification_explicit_remove",
+        "notification_explicit_promote",
+    ]
+    assert suite.tasks[0].setup["type"] == "seed_notification"
+    assert suite.tasks[0].setup["expected_memory_scope"] == "temporary"
+    assert suite.tasks[1].setup["consolidate"] is True
+    assert suite.tasks[1].setup["expected_memory_count"] == 0
+    assert [step["type"] for step in suite.tasks[3].setup] == [
+        "seed_memory",
+        "seed_notification",
+        "assert_memory",
+    ]
+
+
 def test_perception_v1_settings_rubric_uses_0_1000_normalized_coordinates():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "perception" / "perception_v1.json"
     suite = load_suite(suite_path)
