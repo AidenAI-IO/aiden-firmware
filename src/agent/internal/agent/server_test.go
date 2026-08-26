@@ -4434,6 +4434,7 @@ func TestBenchmarkProcessEpisodeMemoryConsolidatesSeededEpisode(t *testing.T) {
     "lesson_key":"qa_notes_v7_title_save_handshake",
     "type":"procedure",
     "action":"create",
+	"retention":"durable",
     "unresolved_conflict":false,
     "situation":"When saving an edited title in QA Notes build 7",
     "guidance":"Switch to Preview, return to Edit, and then tap Save",

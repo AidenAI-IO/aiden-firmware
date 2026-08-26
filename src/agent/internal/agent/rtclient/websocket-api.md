@@ -7,9 +7,9 @@ Qwen-Audio Realtime API 通过 WebSocket 协议提供实时语音对话能力。
 阿里云百炼为华北2（北京）、新加坡地域推出了业务空间专属域名，能够为推理请求提供卓越的性能和更高的稳定性，建议迁移至新域名：
 
 -   华北2（北京）地域：从 `dashscope.aliyuncs.com` 迁移至 `{WorkspaceId}.cn-beijing.maas.aliyuncs.com`
-    
+
 -   新加坡地域：从 `dashscope-intl.aliyuncs.com` 迁移至 `{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`
-    
+
 
 `{WorkspaceId}`需要替换为真实的[Workspace ID](https://help.aliyun.com/zh/model-studio/obtain-the-app-id-and-workspace-id#d3eb3cd37b7fu)。现有域名仍可正常使用。
 
@@ -50,15 +50,15 @@ Authorization 鉴权在 WebSocket 握手阶段验证。如果 API Key 无效或�
 ## **核心概念**
 
 -   **Session（会话）**：一次 WebSocket 连接对应一个会话，会话内维护配置和对话上下文。
-    
+
 -   **Conversation Item（对话项）**：对话中的每条消息，按链表顺序组织。
-    
+
 -   **Response（响应）**：一次模型推理产生的输出，包含一个或多个输出项，输出项可以是助手消息，也可以是函数调用。
-    
+
 -   **Function Call（函数调用）**：模型请求客户端执行工具函数时产生的输出项。客户端执行完成后通过 `function_call_output` 写回结果，再用 `response.create` 触发下一轮推理。
-    
+
 -   **Turn Detection（轮次检测）**：控制何时触发推理。
-    
+
 
 ## **交互模式**
 
@@ -89,17 +89,17 @@ Qwen-Audio Realtime API 支持三种交互模式，通过 `session.update` 事�
 按时间顺序，客户端与服务端的交互流程如下：
 
 1.  客户端建立 WebSocket 连接，服务端返回 `session.created` 事件。
-    
+
 2.  客户端发送 `session.update` 配置会话参数，服务端返回 `session.updated`。
-    
+
 3.  客户端持续发送 `input_audio_buffer.append` 追加音频数据。
-    
+
 4.  服务端检测到语音开始，返回 `input_audio_buffer.speech_started`，同时流式返回 ASR 转写增量 `conversation.item.input_audio_transcription.delta`。
-    
+
 5.  服务端检测到语音结束，返回 `input_audio_buffer.speech_stopped`、`input_audio_buffer.committed` 和 `conversation.item.created`。
-    
+
 6.  服务端自动生成响应，流式返回文本和音频增量（`response.audio_transcript.delta`、`response.audio.delta`），最终返回 `response.done`。
-    
+
 
 ## **用户打断**
 
@@ -122,11 +122,11 @@ Qwen-Audio Realtime API 支持三种交互模式，通过 `session.update` 事�
 与 server\_vad 模式的主要区别：
 
 -   无语义声音（“嗯”、“啊”等）不会触发推理，而是通过 `ambient_audio_transcription` 事件返回。
-    
+
 -   已判定有效的语音可能被撤回（`input_audio_buffer.speech_stopped` 返回 `reason=turn_invalid`），此时不触发推理。
-    
+
 -   在等待用户下一轮输入时，客户端可显式发送 `response.create` 触发推理。
-    
+
 
 ## **用户打断**
 
@@ -147,17 +147,17 @@ Qwen-Audio Realtime API 支持三种交互模式，通过 `session.update` 事�
 按时间顺序，声纹注册的交互流程如下：
 
 1.  客户端发送 `session.update`，在 `turn_detection.voiceprint_audio_urls` 中传入声纹音频 URL，服务端返回 `session.created`。
-    
+
 2.  服务端立即异步启动声纹注册，在 `session.updated` 返回**之前**先推送 `voiceprint_audio_list.in_progress` 事件，携带本次注册任务的唯一标识 `item_id`。
-    
+
 3.  服务端返回 `session.updated`，确认会话配置已生效。
-    
+
 4.  声纹注册完成后，服务端推送终态事件（`item_id` 与步骤 2 一致）：
-    
+
     -   注册成功：`voiceprint_audio_list.completed`。
-        
+
     -   注册失败：`voiceprint_audio_list.failed`，附带 `reason` 字段说明失败原因（如音频 URL 无法下载）。
-        
+
 
 **说明**
 
@@ -178,13 +178,13 @@ Qwen-Audio Realtime API 支持三种交互模式，通过 `session.update` 事�
 按时间顺序，客户端与服务端的交互流程如下：
 
 1.  客户端持续发送 `input_audio_buffer.append` 追加音频数据。
-    
+
 2.  用户说完话后，客户端发送 `input_audio_buffer.commit` 提交缓冲区。
-    
+
 3.  客户端发送 `response.create` 手动触发推理。
-    
+
 4.  服务端生成响应，流式返回文本和音频。
-    
+
 
 ## **用户打断**
 

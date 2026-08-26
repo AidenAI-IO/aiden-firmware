@@ -53,6 +53,15 @@ func TestRolePromptExplainsNotificationMemoryAndRawHistoryLookup(t *testing.T) {
 	}
 }
 
+func TestRolePromptRequiresRecallForNaturalLanguagePriorDeviceExperience(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, want := range []string{"## Device memory evidence", "must call recall_device_memory", "previously learned behavior", "prior device experience", "earlier workaround", "not a substitute for the saved evidence", "answer appears obvious", "not an unnecessary tool call"} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing natural-language device recall guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
 func TestRolePromptIncludesConfiguredResponseLocaleInSystemPrompt(t *testing.T) {
 	manager := NewSkillManager(NewSkillIndex())
 	zh := buildProfile(AgentConfig{Locale: "zh-CN"}, manager, nil, agentRoleRules())
