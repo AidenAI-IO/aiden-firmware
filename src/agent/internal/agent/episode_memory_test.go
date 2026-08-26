@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -1273,6 +1274,37 @@ func TestEpisodeMemoryExtractionFailureIsNotRetried(t *testing.T) {
 	status := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)]
 	if status.Status != episodeMemoryStatusIgnored || status.AttemptCount != 1 {
 		t.Fatalf("state = %#v, want one terminal ignored attempt", status)
+	}
+}
+
+func TestEpisodeMemoryProposalRetryStopsAtMaximumAttempts(t *testing.T) {
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	processor := newEpisodeMemoryProcessor(plane, &episodeMemoryScriptedModel{})
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	endedAt := time.Date(2026, 8, 14, 10, 0, 1, 0, time.UTC)
+	episode := TaskEpisode{ID: "ep_retry_limit", Status: "active", StartedAt: endedAt.Add(-time.Second).Format(time.RFC3339Nano), EndedAt: endedAt.Format(time.RFC3339Nano), UserGoal: "retry a proposal"}
+	work := &episodeMemoryWork{
+		episode:        episode,
+		originalStatus: episodeMemoryEpisodeStatus{AttemptCount: episodeMemoryMaxAttempts - 1},
+		status:         episodeMemoryEpisodeStatus{AttemptCount: episodeMemoryMaxAttempts - 1},
+	}
+	result := &MemoryBatchResult{}
+	if err := processor.retryEpisodeMemoryWork(&episodeMemoryStateFile{Episodes: map[string]episodeMemoryEpisodeStatus{}}, work, errors.New("retention audit failed"), result); err != nil {
+		t.Fatalf("retryEpisodeMemoryWork() error = %v", err)
+	}
+	state, err := processor.state.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	status := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)]
+	if status.Status != episodeMemoryStatusIgnored || status.AttemptCount != episodeMemoryMaxAttempts {
+		t.Fatalf("state = %#v, want terminal ignored at max attempts", status)
+	}
+	if result.HasPending {
+		t.Fatal("retry at maximum attempts unexpectedly scheduled pending work")
 	}
 }
 

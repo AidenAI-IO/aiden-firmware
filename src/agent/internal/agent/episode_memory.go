@@ -406,13 +406,17 @@ func isEpisodeMemoryProposalRetryable(err error) bool {
 }
 
 func (p *episodeMemoryProcessor) retryEpisodeMemoryWork(state *episodeMemoryStateFile, work *episodeMemoryWork, cause error, result *MemoryBatchResult) error {
+	attemptCount := max(work.originalStatus.AttemptCount, work.status.AttemptCount) + 1
+	if attemptCount >= episodeMemoryMaxAttempts {
+		return p.ignoreEpisodeMemoryWork(state, work, cause)
+	}
 	retryAt := p.now().Add(episodeMemoryRetryDelay)
 	retry := episodeMemoryEpisodeStatus{
 		Status:           episodeMemoryStatusRetry,
 		ExtractorVersion: episodeMemoryExtractorVersion,
 		RetryAt:          retryAt.Format(time.RFC3339Nano),
 		LastError:        truncateForLog(cause.Error(), 500),
-		AttemptCount:     max(work.originalStatus.AttemptCount, work.status.AttemptCount) + 1,
+		AttemptCount:     attemptCount,
 	}
 	if err := p.state.SetEpisode(work.episode.ID, retry); err != nil {
 		return err

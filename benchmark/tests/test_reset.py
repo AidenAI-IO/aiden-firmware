@@ -157,6 +157,22 @@ def test_setup_sequence_runs_existing_primitives_in_order():
     ]
 
 
+def test_setup_sequence_preserves_consolidation_result_when_later_setup_returns_none():
+    client = RecordingSetupClient()
+    episode = {"id": "ep-1", "user_goal": "verify a device procedure"}
+
+    result = per_task_setup(
+        client,
+        [
+            {"type": "seed_episode", "episode": episode, "consolidate": True},
+            {"type": "agent_prompt", "prompt": "continue"},
+        ],
+    )
+
+    assert result is not None
+    assert result["consolidation"]["memory_ids"] == ["devmem-1"]
+
+
 def test_assert_memory_mismatch_is_a_setup_assertion_failure():
     class MismatchClient(RecordingSetupClient):
         def invoke_tool(self, name, args, timeout=90):

@@ -309,6 +309,16 @@ def load_suite(path: Path) -> Suite:
                             "expected_memory_query must be an object"
                         )
             consolidation_expectation = None
+            seed_episode_expectations = [
+                setup_item
+                for setup_item in setup_items
+                if setup_item.get("type") == "seed_episode"
+                and setup_item.get("consolidation_expectation") is not None
+            ]
+            if len(seed_episode_expectations) > 1:
+                raise SuiteValidationError(
+                    f"task {tid}: only one seed_episode may declare consolidation_expectation"
+                )
             for setup_item in setup_items:
                 if setup_item.get("type") == "seed_episode":
                     consolidation_expectation = _parse_consolidation_expectation(

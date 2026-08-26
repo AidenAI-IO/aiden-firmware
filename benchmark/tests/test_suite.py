@@ -819,6 +819,34 @@ def test_load_suite_rejects_allow_empty_with_positive_minimum(tmp_path: Path):
         load_suite(p)
 
 
+def test_load_suite_rejects_multiple_seed_episode_expectations(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [{
+            **FIXTURE["tasks"][0],
+            "setup": [
+                {
+                    "type": "seed_episode",
+                    "episode": {"id": "ep-1", "user_goal": "first"},
+                    "consolidate": True,
+                    "consolidation_expectation": {"goal_result": "achieved"},
+                },
+                {
+                    "type": "seed_episode",
+                    "episode": {"id": "ep-2", "user_goal": "second"},
+                    "consolidate": True,
+                    "consolidation_expectation": {"goal_result": "achieved"},
+                },
+            ],
+        }],
+    }
+    p = tmp_path / "duplicate-seed-episode-expectations.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="only one seed_episode"):
+        load_suite(p)
+
+
 def test_load_suite_accepts_quick_capture_setup_keys(tmp_path: Path):
     fixture = {
         **FIXTURE,

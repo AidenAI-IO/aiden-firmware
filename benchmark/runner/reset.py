@@ -150,12 +150,14 @@ def per_task_setup(
             if not isinstance(item, dict):
                 raise ResetError(f"setup[{index}] must be an object")
             try:
-                result = per_task_setup(
+                item_result = per_task_setup(
                     client,
                     item,
                     prompt_prefix=prompt_prefix,
                     consolidation_expectation=consolidation_expectation,
                 )
+                if result is None and item_result is not None:
+                    result = item_result
             except SetupAssertionError as e:
                 raise SetupAssertionError(f"setup[{index}] failed: {e}") from e
             except ResetError as e:
