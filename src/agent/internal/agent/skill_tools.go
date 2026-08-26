@@ -439,7 +439,7 @@ func NewSkillManageTool(skillsDir, manifestPath string, onModify ...func()) *Ski
 		skillsDir:    skillsDir,
 		manifestPath: manifestPath,
 		usagePath:    usagePathForManifest(manifestPath),
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		httpClient:   newSkillInstallHTTPClient(ProxyConfigFromEnvironment()),
 	}
 	if len(onModify) > 0 {
 		tool.onModify = onModify[0]
@@ -452,7 +452,7 @@ func NewSkillManageTool(skillsDir, manifestPath string, onModify ...func()) *Ski
 // tests; nil restores the default bounded client.
 func (t *SkillManageTool) SetHTTPClient(client *http.Client) {
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = newSkillInstallHTTPClient(ProxyConfigFromEnvironment())
 	}
 	t.httpClient = client
 }
@@ -552,8 +552,8 @@ func (t *SkillManageTool) create(req skillManageInput) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid SKILL.md: %w", err)
 	}
-	if skill.Name != req.Name {
-		return "", fmt.Errorf("frontmatter name %q must match %q", skill.Name, req.Name)
+	if err := validateSkillDefinition(skill, req.Name); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		return "", err
@@ -582,8 +582,8 @@ func (t *SkillManageTool) edit(req skillManageInput) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid SKILL.md: %w", err)
 	}
-	if skill.Name != req.Name {
-		return "", fmt.Errorf("frontmatter name %q must match %q", skill.Name, req.Name)
+	if err := validateSkillDefinition(skill, req.Name); err != nil {
+		return "", err
 	}
 	skillFileMu.Lock()
 	err = writeFileAtomic(skillPath, []byte(req.Content), 0o644)
@@ -630,8 +630,11 @@ func (t *SkillManageTool) patch(req skillManageInput) (string, error) {
 		)
 	}
 	newContent := strings.Replace(content, req.OldString, req.NewString, 1)
-	_, err = parseSkillFromContent(newContent)
+	skill, err := parseSkillFromContent(newContent)
 	if err != nil {
+		return "", fmt.Errorf("patch produces invalid SKILL.md: %w", err)
+	}
+	if err := validateSkillDefinition(skill, req.Name); err != nil {
 		return "", fmt.Errorf("patch produces invalid SKILL.md: %w", err)
 	}
 	skillFileMu.Lock()

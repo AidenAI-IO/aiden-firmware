@@ -4,9 +4,12 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -24,6 +28,198 @@ const (
 	maxSkillInstallMetadataBytes = 8 * 1024 * 1024
 	maxSkillInstallFiles         = 256
 )
+
+var lookupSkillInstallHostIPs = net.LookupIP
+
+type skillInstallTargetGuard struct {
+	next http.RoundTripper
+}
+
+func (g skillInstallTargetGuard) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req == nil || req.URL == nil {
+		return nil, fmt.Errorf("invalid skill source request")
+	}
+	addrs, err := lookupAllowedSkillInstallHostIPs(req.URL.Hostname())
+	if err != nil {
+		return nil, err
+	}
+	pinnedReq, next, err := pinSkillInstallProxyTarget(req, g.next, addrs[0])
+	if err != nil {
+		return nil, err
+	}
+	resp, err := next.RoundTrip(pinnedReq)
+	if resp != nil {
+		// Keep redirect and cookie handling anchored to the original hostname.
+		resp.Request = req
+	}
+	return resp, err
+}
+
+func pinSkillInstallProxyTarget(req *http.Request, next http.RoundTripper, ip net.IP) (*http.Request, http.RoundTripper, error) {
+	transport, ok := next.(*http.Transport)
+	if !ok || transport.Proxy == nil {
+		return req, next, nil
+	}
+	proxyURL, err := transport.Proxy(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	if proxyURL == nil {
+		return req, next, nil
+	}
+
+	host := req.URL.Hostname()
+	port := req.URL.Port()
+	if port == "" {
+		if strings.EqualFold(req.URL.Scheme, "https") {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	pinnedReq := req.Clone(req.Context())
+	pinnedURL := *req.URL
+	pinnedURL.Host = net.JoinHostPort(ip.String(), port)
+	pinnedReq.URL = &pinnedURL
+	pinnedReq.Host = req.URL.Host
+
+	pinnedTransport := transport.Clone()
+	pinnedTransport.Proxy = http.ProxyURL(proxyURL)
+	if strings.EqualFold(req.URL.Scheme, "https") {
+		tlsConfig := pinnedTransport.TLSClientConfig
+		if tlsConfig == nil {
+			tlsConfig = &tls.Config{}
+		} else {
+			tlsConfig = tlsConfig.Clone()
+		}
+		tlsConfig.ServerName = host
+		pinnedTransport.TLSClientConfig = tlsConfig
+	}
+	return pinnedReq, pinnedTransport, nil
+}
+
+func newSkillInstallHTTPClient(proxy ProxyConfig) *http.Client {
+	transport := newProxyTransport(proxy)
+	if httpTransport, ok := transport.(*http.Transport); ok {
+		baseDialContext := httpTransport.DialContext
+		if baseDialContext == nil {
+			baseDialContext = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+		}
+		proxyAddressConfig := proxy
+		if !proxyAddressConfig.HasProxyURL() {
+			proxyAddressConfig = ProxyConfigFromEnvironment()
+		}
+		proxyAddresses := skillInstallProxyAddresses(proxyAddressConfig)
+		httpTransport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			if _, isProxy := proxyAddresses[normalizeSkillInstallDialAddress(address)]; isProxy {
+				return baseDialContext(ctx, network, address)
+			}
+			return dialAllowedSkillInstallAddress(ctx, baseDialContext, network, address)
+		}
+	}
+	return &http.Client{
+		Transport: skillInstallTargetGuard{next: transport},
+		Timeout:   30 * time.Second,
+	}
+}
+
+func skillInstallProxyAddresses(proxy ProxyConfig) map[string]struct{} {
+	addresses := make(map[string]struct{})
+	for _, raw := range []string{proxy.HTTPProxy, proxy.HTTPSProxy, proxy.AllProxy} {
+		proxyURL, err := parseProxyURL(strings.TrimSpace(raw))
+		if err != nil || proxyURL == nil {
+			continue
+		}
+		port := proxyURL.Port()
+		if port == "" {
+			switch strings.ToLower(proxyURL.Scheme) {
+			case "https":
+				port = "443"
+			case "socks5":
+				port = "1080"
+			default:
+				port = "80"
+			}
+		}
+		addresses[normalizeSkillInstallDialAddress(net.JoinHostPort(proxyURL.Hostname(), port))] = struct{}{}
+	}
+	return addresses
+}
+
+func normalizeSkillInstallDialAddress(address string) string {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(address))
+	}
+	return net.JoinHostPort(strings.ToLower(strings.TrimSpace(strings.Trim(host, "[]"))), port)
+}
+
+func dialAllowedSkillInstallAddress(ctx context.Context, dialContext func(context.Context, string, string) (net.Conn, error), network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	addrs, err := lookupAllowedSkillInstallHostIPs(host)
+	if err != nil {
+		return nil, err
+	}
+	var lastErr error
+	for _, ip := range addrs {
+		conn, err := dialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func lookupAllowedSkillInstallHostIPs(host string) ([]net.IP, error) {
+	host = strings.ToLower(strings.TrimSpace(strings.Trim(host, "[]")))
+	if host == "" {
+		return nil, fmt.Errorf("invalid skill source URL: empty host")
+	}
+	if host == "localhost" {
+		return nil, fmt.Errorf("skill source URL host is not public")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if skillInstallIPIsDisallowed(ip) {
+			return nil, fmt.Errorf("skill source URL host is not public")
+		}
+		return []net.IP{ip}, nil
+	}
+	addrs, err := lookupSkillInstallHostIPs(host)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("resolve skill source URL host: %w", err)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("resolve skill source URL host: no addresses")
+	}
+	for _, ip := range addrs {
+		if skillInstallIPIsDisallowed(ip) {
+			return nil, fmt.Errorf("skill source URL host resolves to a non-public address")
+		}
+	}
+	return addrs, nil
+}
+
+func skillInstallIPIsDisallowed(ip net.IP) bool {
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	return v4[0] == 100 && v4[1]&0xc0 == 0x40 || // 100.64.0.0/10 shared address space
+		v4[0] == 198 && v4[1]&0xfe == 18 // 198.18.0.0/15 benchmark networks
+}
 
 type githubSkillSource struct {
 	Owner     string
@@ -359,8 +555,7 @@ func fetchSkillURL(ctx context.Context, client *http.Client, sourceURL string, l
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return readLimited(resp.Body, limit)
 }

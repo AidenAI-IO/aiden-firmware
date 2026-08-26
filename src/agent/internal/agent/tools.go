@@ -271,9 +271,8 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		phoneBridgeRestorer:  NewPhoneBridgeRestorer(nil, pointer),
 		textInputHW:          textInputHW,
 		iosKeyboardIsolation: iosKeyboardIsolation,
-		skillInstallClient:   newProxyHTTPClient(proxyCfg),
+		skillInstallClient:   newSkillInstallHTTPClient(proxyCfg),
 	}
-	toolSet.skillInstallClient.Timeout = 30 * time.Second
 	touchGesture.primeScreenMapping = toolSet.PrimeScreenMapping
 	return toolSet
 }
