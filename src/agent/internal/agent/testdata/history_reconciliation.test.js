@@ -16,6 +16,10 @@ class FakeElement {
         return this.childNodes;
     }
 
+    set innerHTML(value) {
+        while (this.childNodes.length) this.removeChild(this.childNodes[0]);
+    }
+
     set className(value) {
         this.classes = new Set(String(value || '').split(/\s+/).filter(Boolean));
     }
@@ -25,6 +29,10 @@ class FakeElement {
     }
 
     insertBefore(node, reference) {
+        if (node._isFragment) {
+            node.childNodes.slice().forEach(child => this.insertBefore(child, reference));
+            return node;
+        }
         if (node.parentNode) node.parentNode.removeChild(node);
         const index = reference ? this.childNodes.indexOf(reference) : -1;
         node.parentNode = this;
@@ -74,6 +82,12 @@ class FakeDocument {
 
     createElement() {
         return new FakeElement();
+    }
+
+    createDocumentFragment() {
+        const fragment = new FakeElement();
+        fragment._isFragment = true;
+        return fragment;
     }
 
     getElementById(id) {
@@ -129,15 +143,18 @@ const source = [
 const historyA = [
     {type: 'user', request_id: 'user-1', content: 'hello', timestamp: 't1'},
     {type: 'state', request_id: 'state-1', content: 'device: phone', timestamp: 't2'},
+    {type: 'state', request_id: 'state-1', content: 'duplicate marker', timestamp: 't2-duplicate'},
     {type: 'assistant', request_id: 'assistant-1', content: 'first answer', timestamp: 't3'}
 ];
 renderHistory(historyA);
 const firstNodes = Array.from(messagesDiv.children);
+assert.equal(firstNodes.length, 3, 'duplicate context marker should render once');
+assert.strictEqual(firstNodes[1]._stateMessage, historyA[1]);
 
 const historyB = [
     historyA[0],
     historyA[1],
-    Object.assign({}, historyA[2], {content: 'updated answer'})
+    Object.assign({}, historyA[3], {content: 'updated answer'})
 ];
 renderHistory(historyB);
 const secondNodes = Array.from(messagesDiv.children);
