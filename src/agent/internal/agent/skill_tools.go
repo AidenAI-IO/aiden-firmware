@@ -667,7 +667,7 @@ func validateSkillDefinition(skill *SkillDefinition, expectedName string) error 
 		return fmt.Errorf("invalid SKILL.md: skill instructions are required")
 	}
 	if !allowedToolsExist(skill.AllowedTools) {
-		return fmt.Errorf("invalid SKILL.md: metadata.allowed_tools contains unknown tools")
+		return fmt.Errorf("invalid SKILL.md: metadata.allowed_tools contains unknown or unavailable tools")
 	}
 	return nil
 }

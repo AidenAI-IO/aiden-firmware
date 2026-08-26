@@ -246,8 +246,20 @@ func mergeResultOK(result *SkillMergeResult, expectedName string) bool {
 	if strings.TrimSpace(skill.Instructions) == "" {
 		return false
 	}
-	if !allowedToolsExist(skill.AllowedTools) {
+	if !registeredToolsExist(skill.AllowedTools) {
 		return false
+	}
+	return true
+}
+
+func registeredToolsExist(tools []string) bool {
+	for _, tool := range tools {
+		if strings.HasPrefix(tool, "delegate_") {
+			continue
+		}
+		if _, ok := builtInToolSpecMetadata[tool]; !ok {
+			return false
+		}
 	}
 	return true
 }
@@ -257,7 +269,8 @@ func allowedToolsExist(tools []string) bool {
 		if strings.HasPrefix(tool, "delegate_") {
 			continue
 		}
-		if _, ok := builtInToolSpecMetadata[tool]; !ok {
+		metadata, ok := builtInToolSpecMetadata[tool]
+		if !ok || (metadata.AgentExposed != nil && !*metadata.AgentExposed) {
 			return false
 		}
 	}

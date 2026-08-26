@@ -319,7 +319,7 @@ func TestBundledSkillsReferenceKnownAllowedTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, skill := range index.All() {
-		if !allowedToolsExist(skill.AllowedTools) {
+		if !registeredToolsExist(skill.AllowedTools) {
 			t.Fatalf("bundled skill %q references unknown allowed_tools %v", skill.Name, skill.AllowedTools)
 		}
 	}
@@ -993,6 +993,15 @@ func TestSkillManageTool_CreateAllowsRegisteredTools(t *testing.T) {
 	}
 }
 
+func TestSkillManageTool_CreateRejectsAgentHiddenTool(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewSkillManageTool(dir, "")
+	content := "---\nname: hidden\ndescription: Hidden tool skill\nmetadata:\n  allowed_tools: [list_scripts]\n---\n\nDo hidden work.\n"
+	if _, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"create","name":"hidden","content":%q}`, content)); err == nil || !strings.Contains(err.Error(), "allowed_tools") {
+		t.Fatalf("create should reject agent-hidden tool, got %v", err)
+	}
+}
+
 func TestSkillManageTool_ActionResultsExposeVerificationDetails(t *testing.T) {
 	configDir := t.TempDir()
 	skillsDir := filepath.Join(configDir, "skills")
@@ -1324,6 +1333,26 @@ func TestSkillManageTool_InstallRejectsUnknownAllowedTool(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, "remote")); !os.IsNotExist(statErr) {
 		t.Fatalf("invalid install should not create a skill, stat err=%v", statErr)
+	}
+}
+
+func TestSkillManageTool_InstallRejectsAgentHiddenTool(t *testing.T) {
+	content := "---\nname: remote-hidden\ndescription: Hidden tool skill\nmetadata:\n  allowed_tools: [list_scripts]\n---\n\nDo hidden work.\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/markdown")
+		_, _ = io.WriteString(w, content)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	tool := NewSkillManageTool(dir, "")
+	tool.SetHTTPClient(server.Client())
+	_, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"install","source_url":%q}`, server.URL+"/SKILL.md"))
+	if err == nil || !strings.Contains(err.Error(), "allowed_tools") {
+		t.Fatalf("install should reject agent-hidden tool, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "remote-hidden")); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected install left skill directory, stat error = %v", statErr)
 	}
 }
 
