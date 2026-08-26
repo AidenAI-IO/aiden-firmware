@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -171,6 +172,35 @@ def test_setup_sequence_preserves_consolidation_result_when_later_setup_returns_
 
     assert result is not None
     assert result["consolidation"]["memory_ids"] == ["devmem-1"]
+
+
+def test_setup_sequence_applies_expectation_only_to_matching_seed_episode():
+    client = RecordingSetupClient()
+    first = {"id": "ep-1", "user_goal": "first episode"}
+    second = {"id": "ep-2", "user_goal": "second episode"}
+
+    result = per_task_setup(
+        client,
+        [
+            {"type": "seed_episode", "episode": first, "consolidate": False},
+            {
+                "type": "seed_episode",
+                "episode": second,
+                "consolidate": True,
+                "consolidation_expectation": {"min_memory_ids": 1},
+            },
+            {"type": "agent_prompt", "prompt": "continue"},
+        ],
+        consolidation_expectation=SimpleNamespace(min_memory_ids=1),
+    )
+
+    assert result is not None
+    assert result["episode_id"] == "ep-2"
+    assert client.calls[:3] == [
+        ("seed_episode", first, 30),
+        ("seed_episode", second, 90),
+        ("process_episode_memory", "ep-2", 90),
+    ]
 
 
 def test_assert_memory_mismatch_is_a_setup_assertion_failure():

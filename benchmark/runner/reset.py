@@ -145,6 +145,25 @@ def per_task_setup(
     if isinstance(setup, list):
         if not setup:
             raise ResetError("setup sequence must contain at least one setup")
+        expectation_indexes = [
+            index
+            for index, item in enumerate(setup)
+            if isinstance(item, dict)
+            and item.get("type") == "seed_episode"
+            and item.get("consolidation_expectation") is not None
+        ]
+        expectation_index = expectation_indexes[0] if expectation_indexes else None
+        if consolidation_expectation is not None and expectation_index is None:
+            seed_episode_indexes = [
+                index
+                for index, item in enumerate(setup)
+                if isinstance(item, dict) and item.get("type") == "seed_episode"
+            ]
+            if len(seed_episode_indexes) != 1:
+                raise ResetError(
+                    "task-level consolidation_expectation requires exactly one seed_episode setup"
+                )
+            expectation_index = seed_episode_indexes[0]
         result: dict[str, Any] | None = None
         for index, item in enumerate(setup):
             if not isinstance(item, dict):
@@ -154,9 +173,15 @@ def per_task_setup(
                     client,
                     item,
                     prompt_prefix=prompt_prefix,
-                    consolidation_expectation=consolidation_expectation,
+                    consolidation_expectation=(
+                        consolidation_expectation
+                        if index == expectation_index
+                        else None
+                    ),
                 )
-                if result is None and item_result is not None:
+                if item_result is not None and (
+                    result is None or index == expectation_index
+                ):
                     result = item_result
             except SetupAssertionError as e:
                 raise SetupAssertionError(f"setup[{index}] failed: {e}") from e

@@ -319,25 +319,15 @@ def load_suite(path: Path) -> Suite:
                 raise SuiteValidationError(
                     f"task {tid}: only one seed_episode may declare consolidation_expectation"
                 )
-            for setup_item in setup_items:
-                if setup_item.get("type") == "seed_episode":
-                    consolidation_expectation = _parse_consolidation_expectation(
-                        setup_item.get("consolidation_expectation"), tid
+            if seed_episode_expectations:
+                expectation_setup_item = seed_episode_expectations[0]
+                consolidation_expectation = _parse_consolidation_expectation(
+                    expectation_setup_item.get("consolidation_expectation"), tid
+                )
+                if expectation_setup_item.get("consolidate", False) is not True:
+                    raise SuiteValidationError(
+                        f"task {tid}: consolidation_expectation requires consolidate=true"
                     )
-                    if consolidation_expectation is not None and setup_item.get("consolidate", False) is not True:
-                        raise SuiteValidationError(
-                            f"task {tid}: consolidation_expectation requires consolidate=true"
-                        )
-                    break
-            if consolidation_expectation is not None:
-                if isinstance(setup, dict):
-                    setup = dict(setup)
-                    setup.pop("consolidation_expectation", None)
-                else:
-                    setup = [dict(item) for item in setup]
-                    for item in setup:
-                        if item.get("type") == "seed_episode":
-                            item.pop("consolidation_expectation", None)
         else:
             consolidation_expectation = None
         tasks.append(TaskSpec(
