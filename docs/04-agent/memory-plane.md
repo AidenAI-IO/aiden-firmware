@@ -182,9 +182,9 @@ When `goal_result=not_achieved`, a candidate cannot claim that the full goal pat
 
 ## Create, Update, And Conflict
 
-The model proposes `create` or `update`, but code owns admission, storage paths, and final status.
+The model proposes `create` or `update`, but code owns admission, storage paths, and final status. The Processor supplies the bounded related-memory view used for that decision and assigns a deterministic create ID. The Store executes an explicit create intent without running a second similarity or scope decision.
 
-Create checks active and disputed Device Memory for an existing record with the same type and normalized scope. A mistaken create proposal cannot produce a second active record for that scope.
+If a create proposal missed an existing record outside the bounded view, duplicate resolution is handled as a later explicit consolidation/update operation rather than silently rewriting the create intent at persistence time.
 
 Update requires the exact Memory revision observed during extraction. It preserves prior evidence and existing Procedure steps. Material body changes append the previous value to bounded revision history.
 

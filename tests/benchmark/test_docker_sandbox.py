@@ -42,6 +42,10 @@ class DockerSandboxContractTest(unittest.TestCase):
             compose,
         )
         self.assertIn("AIDEN_DEVICE_TYPE: ${AIDEN_DEVICE_TYPE:-}", compose)
+        self.assertIn(
+            "AIDEN_PUBLIC_AGENT_WEB_PORT: ${AIDEN_AGENT_WEB_PORT:-8080}",
+            compose,
+        )
         self.assertIn("host.docker.internal:host-gateway", compose)
 
     def test_sandbox_image_builds_real_agent_and_config_web_binaries(self):
@@ -51,6 +55,8 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("./cmd/daemon", dockerfile)
         self.assertIn("src/config_web.cpp", dockerfile)
         self.assertIn("src/config_web/web/ /oem/usr/share/aiden/config-web/", dockerfile)
+        self.assertIn("wetty@2.5.0", dockerfile)
+        self.assertIn("sass@1.69.7", dockerfile)
 
     def test_runtime_defaults_to_text_without_credentials(self):
         config = read_repo_file("docker/dev/agent.toml")
@@ -109,6 +115,46 @@ class DockerSandboxContractTest(unittest.TestCase):
             self.assertEqual(len(up_commands), 1, invocations.read_text())
             self.assertIn("--build", up_commands[0].split())
 
+    def test_start_target_resolves_random_ports_before_compose(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            invocation = temporary_path / "docker-invocation"
+            docker = temporary_path / "docker"
+            docker.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = compose ] && [ "$2" = version ]; then exit 0; fi\n'
+                'if [ "$1" = compose ] && [ "$2" = up ] && [ "$3" = --help ]; then\n'
+                "    printf '  --build\\n  --wait\\n  --wait-timeout duration\\n'\n"
+                "    exit 0\n"
+                "fi\n"
+                'printf "%s %s\\n" "$AIDEN_CONFIG_WEB_PORT" "$AIDEN_AGENT_WEB_PORT" '
+                '>>"$AIDEN_FAKE_DOCKER_LOG"\n'
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            docker.chmod(0o755)
+
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{temporary_path}{os.pathsep}{environment['PATH']}",
+                    "AIDEN_FAKE_DOCKER_LOG": str(invocation),
+                    "AIDEN_CONFIG_WEB_PORT": "0",
+                    "AIDEN_AGENT_WEB_PORT": "0",
+                }
+            )
+            completed = subprocess.run(
+                [str(REPO_ROOT / "scripts/start_docker_sandbox.sh")],
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            config_port, agent_port = map(int, invocation.read_text().split())
+            self.assertNotEqual(config_port, 0)
+            self.assertNotEqual(agent_port, 0)
+            self.assertNotEqual(config_port, agent_port)
+
     def test_try_aiden_on_pc_is_the_hardware_free_sandbox_entrypoint(self):
         guide = read_repo_file("docs/01-getting-started/try-aiden-on-pc.md")
         readme = read_repo_file("README.md")
@@ -146,6 +192,43 @@ class DockerSandboxContractTest(unittest.TestCase):
             "- name: Verify Docker sandbox contract", 1
         )[1].split("- name:", 1)[0]
         self.assertIn("timeout-minutes: 25", docker_step)
+
+    def test_docker_smoke_resolves_random_host_ports_before_startup(self):
+        smoke_script = read_repo_file("scripts/test_docker_sandbox.sh")
+
+        selection = (
+            'python3 "$script_dir/select_docker_web_ports.py" '
+            '"$config_port" "$agent_port"'
+        )
+        first_start = "compose up -d --build"
+        self.assertIn(selection, smoke_script)
+        self.assertLess(smoke_script.index(selection), smoke_script.index(first_start))
+        self.assertNotIn("published_port()", smoke_script)
+
+        completed = subprocess.run(
+            [
+                "python3",
+                str(REPO_ROOT / "scripts/select_docker_web_ports.py"),
+                "0",
+                "0",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        config_port, agent_port = map(int, completed.stdout.split())
+        self.assertNotEqual(config_port, 0)
+        self.assertNotEqual(agent_port, 0)
+        self.assertNotEqual(config_port, agent_port)
+
+    def test_entrypoint_exits_when_either_web_process_stops(self):
+        entrypoint = read_repo_file("docker/dev/entrypoint.sh")
+
+        self.assertTrue(entrypoint.startswith("#!/bin/bash\n"))
+        self.assertIn(
+            'wait -n "$config_web_pid" "$wetty_pid"',
+            entrypoint,
+        )
 
     def test_agent_supervisor_truncates_the_persistent_log(self):
         service = REPO_ROOT / "docker/dev/agent-service.sh"

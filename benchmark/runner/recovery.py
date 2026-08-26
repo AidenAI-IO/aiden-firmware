@@ -4,7 +4,12 @@ import time
 from typing import TYPE_CHECKING
 
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
-from runner.reset import ResetError, call_environment_setup, per_task_setup
+from runner.reset import (
+    ResetError,
+    SetupAssertionError,
+    call_environment_setup,
+    per_task_setup,
+)
 
 if TYPE_CHECKING:
     from runner.suite import Suite, TaskSpec
@@ -82,6 +87,8 @@ def prepare_task_isolation(
             if not task.input_screenshot:
                 per_task_setup(client, task.setup, prompt_prefix=suite.prompt_prefix)
             return
+        except SetupAssertionError:
+            raise
         except (ResetError, AgentTimeoutError, AgentRequestError) as e:
             last_error = e
             if attempt >= setup_attempts:

@@ -45,10 +45,20 @@ func TestAppendToolExecutionMessagesPersistsPreparedContentAndMetadata(t *testin
 		Action:      schema.AgentAction{ToolID: "call_1", Tool: "shell"},
 		Observation: "RAW_OUTPUT_MUST_NOT_BE_STORED",
 	}
-	if err := appendToolExecutionMessages(llmExecutor, nil, step, prepared); err != nil {
+	toolCall := messages.Message{
+		Role: messages.MessageRoleToolCall,
+		ToolCalls: []messages.ToolCall{{
+			ID: "call_1", Name: "shell", Arguments: `{"command":"produce"}`,
+		}},
+	}
+	if err := appendToolExecutionMessages(llmExecutor, nil, toolCall, step, prepared); err != nil {
 		t.Fatalf("appendToolExecutionMessages() error = %v", err)
 	}
-	stored := manager.CloneMessageList()[0].ToolResults[0]
+	storedMessages := manager.CloneMessageList()
+	if len(storedMessages) != 2 || storedMessages[0].Role != messages.MessageRoleToolCall || storedMessages[1].Role != messages.MessageRoleToolResult {
+		t.Fatalf("stored messages = %#v, want tool call followed by result", storedMessages)
+	}
+	stored := storedMessages[1].ToolResults[0]
 	if stored.Content != prepared.Content {
 		t.Fatalf("stored content = %q, want prepared content", stored.Content)
 	}
@@ -71,16 +81,22 @@ func TestAppendToolExecutionMessagesPersistsRawTouchScreenshotWithDisplayMarker(
 		Action:      schema.AgentAction{ToolID: "call_touch", Tool: "touch_gesture"},
 		Observation: observation,
 	}
+	toolCall := messages.Message{
+		Role: messages.MessageRoleToolCall,
+		ToolCalls: []messages.ToolCall{{
+			ID: "call_touch", Name: "touch_gesture", Arguments: `{"type":"tap","point":{"x":500,"y":500}}`,
+		}},
+	}
 	parser := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "touch_gesture", visual: true}}}
 
-	if err := appendToolExecutionMessages(llmExecutor, parser, step, PreparedToolResult{Content: observation, Complete: true}); err != nil {
+	if err := appendToolExecutionMessages(llmExecutor, parser, toolCall, step, PreparedToolResult{Content: observation, Complete: true}); err != nil {
 		t.Fatalf("appendToolExecutionMessages() error = %v", err)
 	}
 	storedMessages := manager.CloneMessageList()
-	if len(storedMessages) != 2 || len(storedMessages[1].Attachments) != 1 {
+	if len(storedMessages) != 3 || len(storedMessages[2].Attachments) != 1 {
 		t.Fatalf("stored messages = %#v", storedMessages)
 	}
-	attachment := storedMessages[1].Attachments[0]
+	attachment := storedMessages[2].Attachments[0]
 	if attachment.DisplayMarker == nil || attachment.DisplayMarker.Type != "tap" || attachment.DisplayMarker.X != 500 || attachment.DisplayMarker.Y != 500 {
 		t.Fatalf("DisplayMarker = %#v", attachment.DisplayMarker)
 	}
@@ -93,7 +109,7 @@ func TestAppendToolExecutionMessagesPersistsRawTouchScreenshotWithDisplayMarker(
 	}
 	converted := messages.ConvertMessageList(storedMessages)
 	var modelImage []byte
-	for _, part := range converted[1].Parts {
+	for _, part := range converted[2].Parts {
 		if binary, ok := part.(llms.BinaryContent); ok {
 			modelImage = binary.Data
 		}

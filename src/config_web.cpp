@@ -3884,6 +3884,12 @@ cJSON* agent_status_to_json(const AgentRuntimeStatus& status) {
     cJSON_AddStringToObject(root, "addr", status.addr.c_str());
     cJSON_AddStringToObject(root, "port_host", status.port_host.c_str());
     cJSON_AddNumberToObject(root, "port", status.port);
+    int public_port = status.port;
+    const char* public_port_env = std::getenv("AIDEN_PUBLIC_AGENT_WEB_PORT");
+    if (public_port_env) {
+        parse_decimal(public_port_env, 1, 65535, &public_port);
+    }
+    cJSON_AddNumberToObject(root, "public_port", public_port);
     cJSON_AddBoolToObject(root, "port_reachable", status.port_reachable ? 1 : 0);
     cJSON_AddStringToObject(root, "port_detail", status.port_detail.c_str());
     cJSON_AddStringToObject(root, "detail", status.detail.c_str());

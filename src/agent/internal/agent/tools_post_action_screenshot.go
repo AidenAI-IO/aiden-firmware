@@ -238,16 +238,46 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 
 func parseTouchGesturePostMarker(input string) (touchGesturePostMarkerInfo, bool) {
 	var args struct {
-		Type  string        `json:"type"`
-		Point *pointerPoint `json:"point"`
+		Type  string          `json:"type"`
+		Point json.RawMessage `json:"point"`
 	}
-	if err := json.Unmarshal([]byte(input), &args); err != nil || args.Point == nil {
+	if err := json.Unmarshal([]byte(input), &args); err != nil || len(args.Point) == 0 || strings.TrimSpace(string(args.Point)) == "null" {
 		return touchGesturePostMarkerInfo{}, false
 	}
+
+	// Keep accepting the array form supported by pointerPoint, while tracking
+	// object-field presence separately so an incomplete object cannot silently
+	// become the valid zero coordinate (0, 0).
+	var coordinates []json.RawMessage
+	if json.Unmarshal(args.Point, &coordinates) == nil {
+		if len(coordinates) != 2 {
+			return touchGesturePostMarkerInfo{}, false
+		}
+		var x, y pointerCoordinate
+		if err := json.Unmarshal(coordinates[0], &x); err != nil {
+			return touchGesturePostMarkerInfo{}, false
+		}
+		if err := json.Unmarshal(coordinates[1], &y); err != nil {
+			return touchGesturePostMarkerInfo{}, false
+		}
+		return validTouchGesturePostMarkerInfo(args.Type, x.Float64(), y.Float64())
+	}
+
+	var point struct {
+		X *pointerCoordinate `json:"x"`
+		Y *pointerCoordinate `json:"y"`
+	}
+	if err := decodeStrictJSONObject(string(args.Point), &point); err != nil || point.X == nil || point.Y == nil {
+		return touchGesturePostMarkerInfo{}, false
+	}
+	return validTouchGesturePostMarkerInfo(args.Type, point.X.Float64(), point.Y.Float64())
+}
+
+func validTouchGesturePostMarkerInfo(gestureType string, x, y float64) (touchGesturePostMarkerInfo, bool) {
 	marker := touchGesturePostMarkerInfo{
-		Type: strings.ToLower(strings.TrimSpace(args.Type)),
-		X:    args.Point.X.Float64(),
-		Y:    args.Point.Y.Float64(),
+		Type: strings.ToLower(strings.TrimSpace(gestureType)),
+		X:    x,
+		Y:    y,
 	}
 	if !validTouchGesturePostMarker(marker) {
 		return touchGesturePostMarkerInfo{}, false

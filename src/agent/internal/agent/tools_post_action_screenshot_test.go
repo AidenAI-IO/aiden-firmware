@@ -53,10 +53,25 @@ func TestParseTouchGesturePostMarker(t *testing.T) {
 	if !ok || marker.Type != "tap" || marker.X != 125 || marker.Y != 875 {
 		t.Fatalf("string-coordinate marker = %#v, %v", marker, ok)
 	}
+	marker, ok = parseTouchGesturePostMarker(`{"type":"tap","point":{"x":0,"y":0}}`)
+	if !ok || marker.Type != "tap" || marker.X != 0 || marker.Y != 0 {
+		t.Fatalf("explicit zero-coordinate marker = %#v, %v", marker, ok)
+	}
+	marker, ok = parseTouchGesturePostMarker(`{"type":"tap","point":[0,"0"]}`)
+	if !ok || marker.Type != "tap" || marker.X != 0 || marker.Y != 0 {
+		t.Fatalf("array zero-coordinate marker = %#v, %v", marker, ok)
+	}
+	marker, ok = parseTouchGesturePostMarker(`{"type":"tap","point":{"x":0,"y":0},"hold_ms":100}`)
+	if !ok || marker.Type != "tap" || marker.X != 0 || marker.Y != 0 {
+		t.Fatalf("marker with unrelated gesture fields = %#v, %v", marker, ok)
+	}
 	for _, input := range []string{
 		`{"type":"swipe","point":{"x":125,"y":875}}`,
 		`{"type":"home","point":{"x":125,"y":875}}`,
 		`{"type":"tap"}`,
+		`{"type":"tap","point":{}}`,
+		`{"type":"tap","point":{"x":100}}`,
+		`{"type":"tap","point":{"y":200}}`,
 		`{"type":"tap","point":{"x":-1,"y":875}}`,
 		`{"type":"tap","point":{"x":125,"y":1001}}`,
 	} {

@@ -48,10 +48,12 @@ Default runtime values:
 
 ## Access
 
-The config web page at `http://192.168.42.1` includes a `Terminal` link. WeTTY listens on all interfaces, and the page opens the device's reachable address:
+The config web page at `http://192.168.42.1` includes a `Terminal` link. The link uses the Agent Web reverse proxy so the same page also works in the Docker sandbox:
 
 ```text
-http://192.168.42.1:3000/wetty/
+http://192.168.42.1:8080/wetty/
 ```
+
+WeTTY itself still listens on port `3000`; the Agent Web service proxies `/wetty/` to it.
 
 The init script uses `/bin/login`, so authenticate with the board's Linux account credentials.

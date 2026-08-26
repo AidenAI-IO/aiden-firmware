@@ -1,0 +1,456 @@
+{
+  "name": "notification_memory_v1",
+  "suite_category": "Memory & Cognition",
+  "description": "Notification memory benchmark - checks durable fixture ingestion, idle consolidation into temporary memory, recall, noise filtering, and multi-batch cursor drain.",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "delivery_notification_recall",
+      "category": "memory",
+      "description_for_judge": "The seeded delivery notification should be consolidated into temporary memory and recalled when the user asks what the notification said. The answer must preserve the delivery timing.",
+      "prompt": "I received a package notification earlier. First call recall_memory with notification and com.delivery, then tell me when the package is expected to arrive. Do not call bridge_notification.",
+      "rubric": [
+        {
+          "id": "recalls_notification_memory",
+          "check": "The trace contains recall_memory with notification-related tags or the final answer clearly uses the recalled delivery memory."
+        },
+        {
+          "id": "preserves_delivery_time",
+          "check": "The final answer says the package is expected tomorrow."
+        },
+        {
+          "id": "does_not_invent",
+          "check": "The answer does not invent a carrier, address, or delivery time not present in the notification."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["recall_memory"],
+        "forbidden_tools": ["bridge_notification"]
+      },
+      "expected_recalled_memory_ids": ["tmp_notification_1"],
+      "setup": {
+        "type": "seed_notification",
+        "consolidate": true,
+        "timeout_sec": 120,
+        "expected_memory_count": 1,
+        "expected_memory_scope": "temporary",
+        "events": [
+          {
+            "source": "android",
+            "source_id": "delivery-1",
+            "source_event_id": "delivery-event-1",
+            "device_id": "benchmark-device",
+            "notification_uid": 101,
+            "event": "added",
+            "app_identifier": "com.delivery",
+            "title": "Package update",
+            "message": "Package arrives tomorrow",
+            "received_at": "2026-08-21T00:01:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "id": "notification_noise_is_filtered",
+      "category": "memory",
+      "description_for_judge": "OTP and marketing notifications must not create user memory.",
+      "prompt": "Check memory for the verification-code and marketing notifications in this fixture. Tell me whether either notification was retained as user memory. Do not call bridge_notification.",
+      "rubric": [
+        {
+          "id": "rejects_noise_memory",
+          "check": "The final answer says OTP/verification-code and marketing notifications should not be stored as memory."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "required_tools": ["recall_memory"],
+        "forbidden_tools": ["bridge_notification"]
+      },
+      "setup": {
+        "type": "seed_notification",
+        "consolidate": true,
+        "timeout_sec": 120,
+        "expected_memory_count": 0,
+        "events": [
+          {
+            "source": "android",
+            "source_id": "otp-1",
+            "source_event_id": "otp-event-1",
+            "device_id": "benchmark-device",
+            "notification_uid": 103,
+            "event": "added",
+            "app_identifier": "com.auth",
+            "title": "Verification code",
+            "message": "Login verification code 123456",
+            "received_at": "2026-08-21T00:03:00Z"
+          },
+          {
+            "source": "android",
+            "source_id": "marketing-1",
+            "source_event_id": "marketing-event-1",
+            "device_id": "benchmark-device",
+            "notification_uid": 104,
+            "event": "added",
+            "app_identifier": "com.shop",
+            "title": "Limited-time promotion",
+            "message": "Limited-time discount",
+            "received_at": "2026-08-21T00:04:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "id": "notification_batch_cursor_drain",
+      "category": "memory",
+      "description_for_judge": "A backlog larger than one processor batch must be fully drained, while verification-code noise remains absent from user memory.",
+      "prompt": "Check memory for the verification-code notifications and report whether any were retained. Do not call bridge_notification.",
+      "rubric": [
+        {
+          "id": "checks_notification_memory",
+          "check": "The trace contains recall_memory and the answer is based on its result."
+        },
+        {
+          "id": "reports_noise_absence",
+          "check": "The answer states that the verification-code notifications were not retained as user memory."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["recall_memory"],
+        "forbidden_tools": ["bridge_notification"]
+      },
+      "setup": {
+        "type": "seed_notification",
+        "consolidate": true,
+        "timeout_sec": 120,
+        "expected_memory_count": 0,
+        "events": [
+          {"source": "android", "source_id": "otp-batch-1", "source_event_id": "otp-batch-event-1", "device_id": "benchmark-device", "notification_uid": 201, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100001", "received_at": "2026-08-21T01:00:01Z"},
+          {"source": "android", "source_id": "otp-batch-2", "source_event_id": "otp-batch-event-2", "device_id": "benchmark-device", "notification_uid": 202, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100002", "received_at": "2026-08-21T01:00:02Z"},
+          {"source": "android", "source_id": "otp-batch-3", "source_event_id": "otp-batch-event-3", "device_id": "benchmark-device", "notification_uid": 203, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100003", "received_at": "2026-08-21T01:00:03Z"},
+          {"source": "android", "source_id": "otp-batch-4", "source_event_id": "otp-batch-event-4", "device_id": "benchmark-device", "notification_uid": 204, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100004", "received_at": "2026-08-21T01:00:04Z"},
+          {"source": "android", "source_id": "otp-batch-5", "source_event_id": "otp-batch-event-5", "device_id": "benchmark-device", "notification_uid": 205, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100005", "received_at": "2026-08-21T01:00:05Z"},
+          {"source": "android", "source_id": "otp-batch-6", "source_event_id": "otp-batch-event-6", "device_id": "benchmark-device", "notification_uid": 206, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100006", "received_at": "2026-08-21T01:00:06Z"},
+          {"source": "android", "source_id": "otp-batch-7", "source_event_id": "otp-batch-event-7", "device_id": "benchmark-device", "notification_uid": 207, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100007", "received_at": "2026-08-21T01:00:07Z"},
+          {"source": "android", "source_id": "otp-batch-8", "source_event_id": "otp-batch-event-8", "device_id": "benchmark-device", "notification_uid": 208, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100008", "received_at": "2026-08-21T01:00:08Z"},
+          {"source": "android", "source_id": "otp-batch-9", "source_event_id": "otp-batch-event-9", "device_id": "benchmark-device", "notification_uid": 209, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100009", "received_at": "2026-08-21T01:00:09Z"},
+          {"source": "android", "source_id": "otp-batch-10", "source_event_id": "otp-batch-event-10", "device_id": "benchmark-device", "notification_uid": 210, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100010", "received_at": "2026-08-21T01:00:10Z"},
+          {"source": "android", "source_id": "otp-batch-11", "source_event_id": "otp-batch-event-11", "device_id": "benchmark-device", "notification_uid": 211, "event": "added", "app_identifier": "com.auth", "title": "Verification code", "message": "Code 100011", "received_at": "2026-08-21T01:00:11Z"}
+        ]
+      }
+    },
+    {
+      "id": "notification_explicit_update",
+      "category": "memory",
+      "description_for_judge": "A changed notification must update the related temporary memory selected from the memory catalog, preserving one record and advancing its revision.",
+      "prompt": "Check the delivery update memory and tell me the current delivery conclusion. Use recall_memory with com.delivery.update. Do not call bridge_notification.",
+      "rubric": [
+        {
+          "id": "uses_updated_memory",
+          "check": "The final answer says the package arrives tomorrow and does not repeat the obsolete today conclusion."
+        },
+        {
+          "id": "keeps_one_memory",
+          "check": "The recalled result shows the existing delivery memory as one updated conclusion rather than two competing records."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 4,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["recall_memory"],
+        "forbidden_tools": ["bridge_notification"]
+      },
+      "setup": [
+        {
+          "type": "seed_memory",
+          "memories": [
+            {
+              "store": "temporary",
+              "id": "tmp_update_delivery",
+              "type": "fact",
+              "title": "Delivery status",
+              "content": "The package arrives today.",
+              "tags": ["notification", "com.delivery.update"],
+              "entities": ["com.delivery.update"],
+              "source_refs": [{"type": "notification", "id": "fixture-update-old", "event_ids": ["old-event"]}],
+              "evidence_refs": [{"type": "notification", "id": "fixture-update-evidence", "event_ids": ["old-evidence-event"]}],
+              "evidence": ["The package arrives today."],
+              "expires_at": "2026-09-30T00:00:00Z"
+            }
+          ]
+        },
+        {
+          "type": "seed_notification",
+          "consolidate": true,
+          "timeout_sec": 120,
+          "expected_memory_count": 1,
+          "expected_memory_scope": "temporary",
+          "events": [
+            {
+              "source": "android",
+              "source_id": "update-delivery-1",
+              "source_event_id": "update-delivery-event-1",
+              "device_id": "benchmark-device",
+              "notification_uid": 301,
+              "event": "modified",
+              "app_identifier": "com.delivery.update",
+              "title": "Package update",
+              "message": "Package arrives tomorrow",
+              "received_at": "2026-08-22T00:01:00Z"
+            }
+          ]
+        },
+        {
+          "type": "assert_memory",
+          "query": {"tags": ["com.delivery.update"], "limit": 20},
+          "expected": [
+            {"id": "tmp_update_delivery", "memory_scope": "temporary", "revision": 2, "content_contains": "tomorrow", "source_refs_contain": [{"type": "notification", "id": "fixture-update-old", "event_ids_contains": ["old-event"]}, {"type": "notification", "event_ids_contains": ["update-delivery-event-1"]}], "evidence_refs_contain": [{"type": "notification", "id": "fixture-update-evidence", "event_ids_contains": ["old-evidence-event"]}]}
+          ],
+          "expected_count": 1
+        }
+      ]
+    },
+    {
+      "id": "notification_explicit_reinforce",
+      "category": "memory",
+      "description_for_judge": "A repeated notification with the same conclusion must reinforce the existing temporary memory instead of replacing its content or creating a duplicate.",
+      "prompt": "Check the calendar notification memory for the meeting time. Use recall_memory with com.calendar.reinforce and report the time. Do not call bridge_notification.",
+      "rubric": [
+        {
+          "id": "preserves_conclusion",
+          "check": "The final answer says the meeting is tomorrow at 10:00."
+        },
+        {
+          "id": "does_not_duplicate",
+          "check": "The answer is based on one reinforced calendar conclusion, not multiple conflicting memories."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 4,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["recall_memory"],
+        "forbidden_tools": ["bridge_notification"]
+      },
+      "setup": [
+        {
+          "type": "seed_memory",
+          "memories": [
+            {
+              "store": "temporary",
+              "id": "tmp_reinforce_calendar",
+              "type": "fact",
+              "title": "Calendar reminder",
+              "content": "The meeting is tomorrow at 10:00.",
+              "tags": ["notification", "com.calendar.reinforce"],
+              "entities": ["com.calendar.reinforce"],
+              "source_refs": [{"type": "notification", "id": "fixture-reinforce-old", "event_ids": ["old-event"]}],
+              "evidence": ["The meeting is tomorrow at 10:00."],
+              "expires_at": "2026-09-30T00:00:00Z"
+            }
+          ]
+        },
+        {
+          "type": "seed_notification",
+          "consolidate": true,
+          "timeout_sec": 120,
+          "expected_memory_count": 1,
+          "expected_memory_scope": "temporary",
+          "events": [
+            {
+              "source": "android",
+              "source_id": "reinforce-calendar-1",
+              "source_event_id": "reinforce-calendar-event-1",
+              "device_id": "benchmark-device",
+              "notification_uid": 302,
+              "event": "added",
+              "app_identifier": "com.calendar.reinforce",
+              "title": "Meeting confirmation",
+              "message": "The meeting remains tomorrow at 10:00",
+              "received_at": "2026-08-22T00:02:00Z"
+            }
+          ]
+        },
+        {
+          "type": "assert_memory",
+          "query": {"tags": ["com.calendar.reinforce"], "limit": 20},
+          "expected": [
+            {"id": "tmp_reinforce_calendar", "memory_scope": "temporary", "revision": 2, "content_contains": "tomorrow at 10:00", "source_refs_contain": [{"type": "notification", "id": "fixture-reinforce-old", "event_ids_contains": ["old-event"]}, {"type": "notification", "event_ids_contains": ["reinforce-calendar-event-1"]}]}
+          ],
+          "expected_count": 1
+        }
+      ]
+    },
+    {
+      "id": "notification_explicit_remove",
+      "category": "memory",
+      "description_for_judge": "A notification that explicitly withdraws an existing conclusion must produce a targeted remove action and leave a related control memory intact.",
+      "prompt": "Check memory for the cancelled delivery notification. Use recall_memory with com.delivery.remove and tell me whether it is still retained. Do not call bridge_notification.",
+      "rubric": [
+        {
+          "id": "removed_memory_absent",
+          "check": "The final answer says the cancelled delivery notification is no longer retained as memory."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 4,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "required_tools": ["recall_memory"],
+        "forbidden_tools": ["bridge_notification"]
+      },
+      "setup": [
+        {
+          "type": "seed_memory",
+          "memories": [
+            {
+              "store": "temporary",
+              "id": "tmp_remove_delivery",
+              "type": "fact",
+              "title": "Cancelled delivery",
+              "content": "The package delivery was scheduled for Friday.",
+              "tags": ["notification", "com.delivery.remove"],
+              "entities": ["com.delivery.remove"],
+              "source_refs": [
+                {
+                  "type": "notification",
+                  "id": "fixture-remove-old",
+                  "event_ids": ["old-remove-event"]
+                }
+              ],
+              "evidence": ["The package delivery was scheduled for Friday."],
+              "expires_at": "2026-09-30T00:00:00Z"
+            },
+            {
+              "store": "temporary",
+              "id": "tmp_remove_delivery_control",
+              "type": "fact",
+              "title": "Unrelated delivery",
+              "content": "A different package is scheduled for Monday.",
+              "tags": ["notification", "com.delivery.remove"],
+              "entities": ["com.delivery.remove"],
+              "source_refs": [{"type": "notification", "id": "fixture-remove-control", "event_ids": ["control-event"]}],
+              "evidence": ["A different package is scheduled for Monday."],
+              "expires_at": "2026-09-30T00:00:00Z"
+            }
+          ]
+        },
+        {
+          "type": "seed_notification",
+          "consolidate": true,
+          "timeout_sec": 120,
+          "expected_memory_count": 0,
+          "events": [
+            {
+              "source": "android",
+              "source_id": "remove-delivery-1",
+              "source_event_id": "remove-delivery-event-1",
+              "device_id": "benchmark-device",
+              "notification_uid": 303,
+              "event": "modified",
+              "app_identifier": "com.delivery.remove",
+              "title": "Friday delivery notice withdrawn",
+              "message": "The earlier Friday delivery notice was sent in error and is withdrawn. There is no replacement delivery information.",
+              "received_at": "2026-08-22T00:03:00Z"
+            }
+          ]
+        },
+        {
+          "type": "assert_memory",
+          "query": {"tags": ["com.delivery.remove"], "limit": 20},
+          "absent_ids": ["tmp_remove_delivery"],
+          "expected": [{"id": "tmp_remove_delivery_control", "source_refs_contain": [{"type": "notification", "id": "fixture-remove-control", "event_ids_contains": ["control-event"]}]}],
+          "expected_count": 1
+        }
+      ]
+    },
+    {
+      "id": "notification_explicit_promote",
+      "category": "memory",
+      "description_for_judge": "A stable notification conclusion must be promoted from temporary to long-term memory, leaving the temporary source inactive.",
+      "prompt": "Check the delivery rule memory. Use recall_memory with com.delivery.promote and tell me where future packages should be delivered. Do not call bridge_notification.",
+      "rubric": [
+        {
+          "id": "recalls_long_term_rule",
+          "check": "The final answer says future packages should be delivered to the office."
+        },
+        {
+          "id": "uses_promoted_scope",
+          "check": "The recalled rule is a long-term memory, not the temporary source record."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 4,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["recall_memory"],
+        "forbidden_tools": ["bridge_notification"]
+      },
+      "setup": [
+        {
+          "type": "seed_memory",
+          "memories": [
+            {
+              "store": "temporary",
+              "id": "tmp_promote_delivery",
+              "type": "rule",
+              "title": "Delivery destination",
+              "content": "Future packages should be delivered to the office.",
+              "tags": ["notification", "com.delivery.promote"],
+              "entities": ["com.delivery.promote"],
+              "source_refs": [{"type": "notification", "id": "fixture-promote-old", "event_ids": ["old-event"]}],
+              "evidence_refs": [{"type": "notification", "id": "fixture-promote-evidence", "event_ids": ["old-evidence-event"]}],
+              "evidence": ["Future packages should be delivered to the office."],
+              "expires_at": "2026-09-30T00:00:00Z"
+            }
+          ]
+        },
+        {
+          "type": "seed_notification",
+          "consolidate": true,
+          "timeout_sec": 120,
+          "expected_memory_count": 1,
+          "expected_memory_scope": "long_term",
+          "events": [
+            {
+              "source": "android",
+              "source_id": "promote-delivery-1",
+              "source_event_id": "promote-delivery-event-1",
+              "device_id": "benchmark-device",
+              "notification_uid": 304,
+              "event": "added",
+              "app_identifier": "com.delivery.promote",
+              "title": "Delivery preference",
+              "message": "Future packages should be delivered to the office",
+              "received_at": "2026-08-22T00:04:00Z"
+            }
+          ]
+        },
+        {
+          "type": "assert_memory",
+          "query": {"tags": ["com.delivery.promote"], "limit": 20},
+          "expected": [
+            {"memory_scope": "long_term", "content_contains": "delivered to the office", "source_refs_contain": [{"type": "notification", "id": "fixture-promote-old", "event_ids_contains": ["old-event"]}, {"type": "notification", "event_ids_contains": ["promote-delivery-event-1"]}], "evidence_refs_contain": [{"type": "notification", "id": "fixture-promote-evidence", "event_ids_contains": ["old-evidence-event"]}]}
+          ],
+          "absent_ids": ["tmp_promote_delivery"],
+          "expected_count": 1
+        }
+      ]
+    }
+  ]
+}
