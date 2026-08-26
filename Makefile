@@ -21,7 +21,7 @@ test: test-build
 	cd $(TEST_BUILD_DIR) && ctest --output-on-failure
 
 test-agent-webui:
-	node src/agent/internal/agent/testdata/history_reconciliation.test.js
+	node src/agent/internal/agent/web_ui_test/history_reconciliation.test.js
 
 test-clean:
 	rm -rf $(TEST_BUILD_DIR)
