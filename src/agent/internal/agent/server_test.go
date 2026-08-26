@@ -2593,6 +2593,29 @@ func TestWebUIContextHistoryDeduplicatesMarkers(t *testing.T) {
 	}
 }
 
+func TestWebUIHistoryRefreshPreservesStableDOM(t *testing.T) {
+	chatScript := readWebUIResource(t, "scripts/chat.js")
+	stateScript := readWebUIResource(t, "scripts/state.js")
+	if !strings.Contains(stateScript, "let renderedHistoryFingerprint = null;") {
+		t.Fatal("web UI is missing the rendered history fingerprint state")
+	}
+	if strings.Contains(chatScript, "messagesDiv.innerHTML = ''") {
+		t.Fatal("web UI still clears the whole message list during history refresh")
+	}
+	for _, want := range []string{
+		"const fingerprint = JSON.stringify(history);",
+		"if (fingerprint === renderedHistoryFingerprint) return;",
+		"messagesDiv.insertBefore(node, messagesDiv.children[index] || null);",
+		"previousMessageNodes.forEach(function(node, key)",
+		"return stableSerialize(displayMessage);",
+		"renderedHistoryFingerprint = fingerprint;",
+	} {
+		if !strings.Contains(chatScript, want) {
+			t.Fatalf("web UI history refresh is missing %q", want)
+		}
+	}
+}
+
 func readWebUIResource(t *testing.T, name string) string {
 	t.Helper()
 	data, err := fs.ReadFile(webUIFiles, name)
