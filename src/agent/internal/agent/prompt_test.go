@@ -90,6 +90,9 @@ func TestStateHookDoesNotInjectResponseLocale(t *testing.T) {
 	if !strings.Contains(messageList[0].Content, "device_type") {
 		t.Fatalf("state message missing device state: %q", messageList[0].Content)
 	}
+	if strings.Contains(messageList[0].Content, "<state>") {
+		t.Fatalf("persisted state message must remain unwrapped: %q", messageList[0].Content)
+	}
 }
 
 func TestStateHookAttachesFreshScreenshotToUserTurn(t *testing.T) {

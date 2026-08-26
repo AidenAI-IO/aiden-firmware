@@ -2884,7 +2884,7 @@ func TestServerLoadsPersistedBackendContextBeforeFirstRun(t *testing.T) {
 func TestWebMessageFromContextMessagePreservesNoticeType(t *testing.T) {
 	message, ok := webMessageFromContextMessage(messages.Message{
 		Role:    messages.MessageRoleNotice,
-		Content: "<notice>change strategy</notice>",
+		Content: "change strategy",
 	}, "backend")
 	if !ok {
 		t.Fatal("webMessageFromContextMessage() rejected notice message")
