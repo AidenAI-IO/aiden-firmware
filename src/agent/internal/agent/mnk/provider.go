@@ -4,6 +4,17 @@ import "context"
 
 const defaultSwipeGestureDurationMs = 300
 
+// SwipeOptions controls the timing and interpolation of a swipe. A zero
+// duration uses the provider's default swipe duration; a zero Steps uses the
+// provider's default interpolation step count. Hold durations are optional
+// and default to zero.
+type SwipeOptions struct {
+	DurationMs   int
+	HoldBeforeMs int
+	HoldAfterMs  int
+	Steps        int
+}
+
 // Provider defines a minimal set of mouse/keyboard primitives for device input.
 // This interface isolates tools from device-specific implementations (HID, ADB, etc).
 //

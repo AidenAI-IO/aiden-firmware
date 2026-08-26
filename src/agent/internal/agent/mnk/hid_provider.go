@@ -159,22 +159,52 @@ func (p *HIDProvider) Drag(ctx context.Context, path [][2]float64, button string
 
 // Swipe performs a short gesture without the pre-movement dwell used by Drag.
 func (p *HIDProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
-	return p.SwipeWithDuration(ctx, path, button, defaultSwipeGestureDurationMs)
+	return p.SwipeWithOptions(ctx, path, button, SwipeOptions{})
 }
 
 // SwipeWithDuration performs a swipe using the caller-selected motion time.
 func (p *HIDProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, button string, durationMs int) error {
+	return p.SwipeWithOptions(ctx, path, button, SwipeOptions{DurationMs: durationMs})
+}
+
+// SwipeWithOptions performs a swipe with caller-selected timing and HID
+// interpolation settings.
+func (p *HIDProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
 	return runPointerGate(p.gate, ctx, func() error {
-		if durationMs <= 0 {
-			durationMs = defaultSwipeGestureDurationMs
-		}
-		return p.dragLockedWithTiming(path, button, durationMs, defaultSwipeGestureHoldBeforeMs)
+		return p.dragLockedWithSwipeOptions(path, button, options)
 	})
 }
 
 func (p *HIDProvider) dragLockedWithTiming(path [][2]float64, button string, durationMs, holdBeforeMs int) error {
+	return p.dragLockedWithSwipeOptions(path, button, SwipeOptions{
+		DurationMs:   durationMs,
+		HoldBeforeMs: holdBeforeMs,
+		HoldAfterMs:  p.swipeHoldAfterMs,
+		Steps:        p.swipeSteps,
+	})
+}
+
+func (p *HIDProvider) dragLockedWithSwipeOptions(path [][2]float64, button string, options SwipeOptions) error {
 	if len(path) < 2 {
 		return InvalidArgumentsf("drag path must contain at least 2 points, got %d", len(path))
+	}
+	if options.DurationMs <= 0 {
+		options.DurationMs = defaultSwipeGestureDurationMs
+	}
+	if options.HoldBeforeMs == 0 {
+		options.HoldBeforeMs = defaultSwipeGestureHoldBeforeMs
+	}
+	if options.HoldBeforeMs < 0 {
+		options.HoldBeforeMs = 0
+	}
+	if options.HoldAfterMs < 0 {
+		options.HoldAfterMs = 0
+	}
+	if options.Steps <= 0 {
+		options.Steps = p.swipeSteps
+	}
+	if options.Steps <= 0 {
+		options.Steps = defaultSwipeSteps
 	}
 
 	// Validate all points first
@@ -212,20 +242,20 @@ func (p *HIDProvider) dragLockedWithTiming(path [][2]float64, button string, dur
 	}
 
 	// Hold before starting movement
-	if holdBeforeMs > 0 {
-		time.Sleep(time.Duration(holdBeforeMs) * time.Millisecond)
+	if options.HoldBeforeMs > 0 {
+		time.Sleep(time.Duration(options.HoldBeforeMs) * time.Millisecond)
 	}
 
 	// Interpolate and move through each segment
-	if err := p.dragAlongPath(absPath, buttonByte, durationMs); err != nil {
+	if err := p.dragAlongPathWithSteps(absPath, buttonByte, options.DurationMs, options.Steps); err != nil {
 		// Attempt to release even if drag failed
 		_ = p.releasePointerRepeated(absPath[len(absPath)-1][0], absPath[len(absPath)-1][1])
 		return err
 	}
 
 	// Hold at end
-	if p.swipeHoldAfterMs > 0 {
-		time.Sleep(time.Duration(p.swipeHoldAfterMs) * time.Millisecond)
+	if options.HoldAfterMs > 0 {
+		time.Sleep(time.Duration(options.HoldAfterMs) * time.Millisecond)
 	}
 
 	// Release at final position
@@ -235,6 +265,10 @@ func (p *HIDProvider) dragLockedWithTiming(path [][2]float64, button string, dur
 
 // dragAlongPath interpolates and moves through a multi-point path.
 func (p *HIDProvider) dragAlongPath(absPath [][2]int, buttonByte uint8, durationMs int) error {
+	return p.dragAlongPathWithSteps(absPath, buttonByte, durationMs, p.swipeSteps)
+}
+
+func (p *HIDProvider) dragAlongPathWithSteps(absPath [][2]int, buttonByte uint8, durationMs, steps int) error {
 	// Calculate total path length for timing distribution
 	totalLength := pathLength(absPath)
 
@@ -248,7 +282,7 @@ func (p *HIDProvider) dragAlongPath(absPath [][2]int, buttonByte uint8, duration
 		segmentLength := math.Sqrt(dx*dx + dy*dy)
 
 		// Proportional step count and duration for this segment
-		segmentSteps := int(math.Round(float64(p.swipeSteps) * segmentLength / totalLength))
+		segmentSteps := int(math.Round(float64(steps) * segmentLength / totalLength))
 		if segmentSteps < 1 {
 			segmentSteps = 1
 		}

@@ -72,17 +72,26 @@ func (p *HTTPProvider) DoubleClick(ctx context.Context, x, y float64, button str
 
 // Swipe performs a swipe operation via HTTP.
 func (p *HTTPProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
-	return p.SwipeWithDuration(ctx, path, button, defaultSwipeGestureDurationMs)
+	return p.SwipeWithOptions(ctx, path, button, SwipeOptions{})
 }
 
 // SwipeWithDuration performs a swipe operation via HTTP with explicit timing.
 func (p *HTTPProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, button string, durationMs int) error {
+	return p.SwipeWithOptions(ctx, path, button, SwipeOptions{DurationMs: durationMs})
+}
+
+// SwipeWithOptions performs a swipe operation via HTTP with explicit timing
+// and interpolation settings.
+func (p *HTTPProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
 	req := MNKRequest{
 		Operation: "swipe",
 		Swipe: &DragParams{
-			Path:       path,
-			Button:     button,
-			DurationMs: durationMs,
+			Path:         path,
+			Button:       button,
+			DurationMs:   options.DurationMs,
+			HoldBeforeMs: options.HoldBeforeMs,
+			HoldAfterMs:  options.HoldAfterMs,
+			Steps:        options.Steps,
 		},
 	}
 	return p.sendRequest(ctx, req)
@@ -224,9 +233,12 @@ type DoubleClickParams struct {
 
 // DragParams parameters for drag operation
 type DragParams struct {
-	Path       [][2]float64 `json:"path"`
-	Button     string       `json:"button"`
-	DurationMs int          `json:"duration_ms,omitempty"`
+	Path         [][2]float64 `json:"path"`
+	Button       string       `json:"button"`
+	DurationMs   int          `json:"duration_ms,omitempty"`
+	HoldBeforeMs int          `json:"hold_before_ms,omitempty"`
+	HoldAfterMs  int          `json:"hold_after_ms,omitempty"`
+	Steps        int          `json:"steps,omitempty"`
 }
 
 // KeypressParams parameters for keypress operation

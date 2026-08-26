@@ -145,13 +145,48 @@ func (p *ADBProvider) Drag(ctx context.Context, path [][2]float64, button string
 
 // Swipe performs a short gesture that avoids Android long-press recognition.
 func (p *ADBProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
-	return p.SwipeWithDuration(ctx, path, button, defaultSwipeGestureDurationMs)
+	return p.SwipeWithOptions(ctx, path, button, SwipeOptions{})
 }
 
 // SwipeWithDuration performs a swipe using the caller-selected motion time.
 func (p *ADBProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, button string, durationMs int) error {
-	durationMs = p.clampDuration(durationMs, defaultSwipeGestureDurationMs, 1)
-	return p.dragWithDuration(ctx, path, button, durationMs)
+	return p.SwipeWithOptions(ctx, path, button, SwipeOptions{DurationMs: durationMs})
+}
+
+// SwipeWithOptions performs a swipe using the caller-selected timing. ADB's
+// input primitive has no interpolation-step control; Steps is accepted for
+// protocol compatibility and is used by the HID provider.
+func (p *ADBProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
+	if options.HoldBeforeMs < 0 || options.HoldAfterMs < 0 || options.Steps < 0 {
+		return InvalidArguments("swipe timing values must not be negative")
+	}
+	durationMs := p.clampDuration(options.DurationMs, defaultSwipeGestureDurationMs, 1)
+	if options.HoldBeforeMs > 0 {
+		if err := waitContext(ctx, options.HoldBeforeMs); err != nil {
+			return err
+		}
+	}
+	if err := p.dragWithDuration(ctx, path, button, durationMs); err != nil {
+		return err
+	}
+	if options.HoldAfterMs > 0 {
+		return waitContext(ctx, options.HoldAfterMs)
+	}
+	return nil
+}
+
+func waitContext(ctx context.Context, durationMs int) error {
+	if durationMs <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(time.Duration(durationMs) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (p *ADBProvider) dragWithDuration(ctx context.Context, path [][2]float64, button string, totalDurationMs int) error {

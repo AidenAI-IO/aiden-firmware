@@ -216,6 +216,48 @@ func TestTouchGestureToolAdapterSeparatesSwipeFromDrag(t *testing.T) {
 	}
 }
 
+func TestTouchGestureToolAdapterPassesSwipeTimingOptions(t *testing.T) {
+	provider := NewMockProvider()
+	adapter := NewTouchGestureToolAdapter(provider)
+
+	if _, err := adapter.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":800},"end":{"x":900,"y":200},"speed":2500,"hold_before_ms":120,"hold_after_ms":80,"steps":12}`); err != nil {
+		t.Fatalf("explicit options Call() error = %v", err)
+	}
+	if len(provider.swipes) != 1 {
+		t.Fatalf("swipes = %d, want 1", len(provider.swipes))
+	}
+	got := provider.swipes[0]
+	if got.DurationMs != 400 {
+		t.Fatalf("duration = %d, want 400", got.DurationMs)
+	}
+	if got.HoldBeforeMs != 120 || got.HoldAfterMs != 80 || got.Steps != 12 {
+		t.Fatalf("swipe timing = before=%d after=%d steps=%d, want 120/80/12", got.HoldBeforeMs, got.HoldAfterMs, got.Steps)
+	}
+
+	provider.Reset()
+	if _, err := adapter.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":800},"end":{"x":900,"y":200}}`); err != nil {
+		t.Fatalf("default options Call() error = %v", err)
+	}
+	got = provider.swipes[0]
+	if got.HoldBeforeMs != 0 || got.HoldAfterMs != 0 || got.Steps != defaultSwipeSteps {
+		t.Fatalf("default swipe timing = before=%d after=%d steps=%d, want 0/0/%d", got.HoldBeforeMs, got.HoldAfterMs, got.Steps, defaultSwipeSteps)
+	}
+}
+
+func TestTouchGestureToolAdapterRejectsInvalidSwipeTimingOptions(t *testing.T) {
+	adapter := NewTouchGestureToolAdapter(NewMockProvider())
+	for _, input := range []string{
+		`{"type":"swipe","start":{"x":100,"y":800},"end":{"x":900,"y":200},"hold_before_ms":-1}`,
+		`{"type":"swipe","start":{"x":100,"y":800},"end":{"x":900,"y":200},"hold_after_ms":10001}`,
+		`{"type":"swipe","start":{"x":100,"y":800},"end":{"x":900,"y":200},"steps":0}`,
+		`{"type":"swipe","start":{"x":100,"y":800},"end":{"x":900,"y":200},"steps":1001}`,
+	} {
+		if _, err := adapter.Call(context.Background(), input); AsError(err) == nil || AsError(err).Kind != ErrInvalidArguments {
+			t.Fatalf("Call(%s) error = %v, want invalid arguments", input, err)
+		}
+	}
+}
+
 // TestKeyboardTapToolAdapter 测试 keyboard_tap 工具适配器
 func TestKeyboardTapToolAdapter(t *testing.T) {
 	mock := NewMockProvider()

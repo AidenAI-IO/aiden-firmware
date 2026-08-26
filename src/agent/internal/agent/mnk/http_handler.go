@@ -110,7 +110,32 @@ func (h *HTTPHandler) handleSwipe(ctx context.Context, params *DragParams) error
 	if len(params.Path) < 2 {
 		return InvalidArguments("swipe path must contain at least 2 points")
 	}
-	return swipeWithDuration(ctx, h.provider, params.Path, params.Button, params.DurationMs)
+	options := SwipeOptions{
+		DurationMs:   params.DurationMs,
+		HoldBeforeMs: params.HoldBeforeMs,
+		HoldAfterMs:  params.HoldAfterMs,
+		Steps:        params.Steps,
+	}
+	if err := validateSwipeOptions(options); err != nil {
+		return err
+	}
+	return swipeWithOptions(ctx, h.provider, params.Path, params.Button, options)
+}
+
+func validateSwipeOptions(options SwipeOptions) error {
+	if options.DurationMs < 0 || options.DurationMs > MaxSwipeDurationMs {
+		return InvalidArgumentsf("duration_ms must be in range [0, %d]", MaxSwipeDurationMs)
+	}
+	if options.HoldBeforeMs < 0 || options.HoldBeforeMs > MaxSwipeHoldMs {
+		return InvalidArgumentsf("hold_before_ms must be in range [0, %d]", MaxSwipeHoldMs)
+	}
+	if options.HoldAfterMs < 0 || options.HoldAfterMs > MaxSwipeHoldMs {
+		return InvalidArgumentsf("hold_after_ms must be in range [0, %d]", MaxSwipeHoldMs)
+	}
+	if options.Steps < 0 || options.Steps > MaxSwipeSteps {
+		return InvalidArgumentsf("steps must be in range [0, %d]", MaxSwipeSteps)
+	}
+	return nil
 }
 
 func (h *HTTPHandler) handleDrag(ctx context.Context, params *DragParams) error {

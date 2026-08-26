@@ -13,7 +13,7 @@
             "type": "swipe",
             "start": { "x": 1, "y": 500 },
             "end": { "x": 750, "y": 500 },
-            "duration_ms": 700
+            "speed": 2500
           },
           "note": "left-edge swipe expressed through the unified swipe form"
         },
@@ -51,7 +51,7 @@
             "type": "swipe",
             "start": { "x": 500, "y": 999 },
             "end": { "x": 500, "y": 180 },
-            "duration_ms": 700
+            "speed": 2500
           },
           "note": "bottom edge swipe to return to Home Screen"
         },
@@ -68,7 +68,7 @@
                 "type": "swipe",
                 "start": { "x": 500, "y": 999 },
                 "end": { "x": 500, "y": 180 },
-                "duration_ms": 700
+                "speed": 2500
               },
               "note": "edge swipe fallback"
             }
@@ -92,7 +92,7 @@
             "type": "swipe",
             "start": { "x": 500, "y": 1000 },
             "end": { "x": 500, "y": 500 },
-            "duration_ms": 900
+            "speed": 500
           },
           "note": "verified: slow bottom-edge swipe up to mid-screen"
         },
@@ -130,7 +130,7 @@
             "type": "swipe",
             "start": { "x": 500, "y": 1000 },
             "end": { "x": 1000, "y": 1000 },
-            "duration_ms": 400
+            "speed": 500
           },
           "note": "verified: swipe right from bottom center to switch to the previous app"
         },
@@ -141,7 +141,7 @@
             "type": "swipe",
             "start": { "x": 500, "y": 1000 },
             "end": { "x": 1000, "y": 1000 },
-            "duration_ms": 400
+            "speed": 500
           },
           "note": "swipe right from bottom center to switch to the previous app"
         },
@@ -163,7 +163,7 @@
             "type": "swipe",
             "start": { "x": 500, "y": 1000 },
             "end": { "x": 0, "y": 1000 },
-            "duration_ms": 400
+            "speed": 500
           },
           "note": "verified: swipe left from bottom center to left edge"
         },
@@ -189,7 +189,7 @@
             "type": "swipe",
             "start": { "x": 500, "y": 1000 },
             "end": { "x": 1000, "y": 1000 },
-            "duration_ms": 400
+            "speed": 500
           },
           "note": "verified: swipe right from bottom center to right edge"
         },
@@ -215,7 +215,7 @@
             "type": "swipe",
             "start": { "x": 100, "y": 0 },
             "end": { "x": 100, "y": 700 },
-            "duration_ms": 500
+            "speed": 500
           },
           "note": "verified: swipe down from top-left area"
         },
@@ -273,7 +273,7 @@
             {
               "status": "active",
               "steps": [
-                { "tool": "touch_gesture", "input": { "type": "swipe", "start": { "x": 500, "y": 250 }, "end": { "x": 500, "y": 750 }, "duration_ms": 300 }, "delay_ms_after": 600 },
+                { "tool": "touch_gesture", "input": { "type": "swipe", "start": { "x": 500, "y": 250 }, "end": { "x": 500, "y": 750 }, "speed": 2500 }, "delay_ms_after": 600 },
                 { "tool": "keyboard_tap", "input": { "keys": ["meta", "a"] }, "delay_ms_after": 60 },
                 { "tool": "keyboard_tap", "input": { "keys": ["backspace"] }, "delay_ms_after": 60 },
                 { "tool": "keyboard_tap", "input": { "keys": ["meta", "a"] }, "delay_ms_after": 60 },
@@ -312,7 +312,7 @@
         "android": {
           "status": "active",
           "tool": "touch_gesture",
-          "input": { "type": "swipe", "start": { "x": 500, "y": 850 }, "end": { "x": 500, "y": 150 }, "duration_ms": 300 },
+          "input": { "type": "swipe", "start": { "x": 500, "y": 850 }, "end": { "x": 500, "y": 150 }, "speed": 2500 },
           "note": "swipe up from bottom on home screen"
         },
         "mac": {
@@ -333,14 +333,14 @@
             "type": "swipe",
             "start": { "x": 500, "y": 1000 },
             "end": { "x": 500, "y": 500 },
-            "duration_ms": 400
+            "speed": 500
           },
           "note": "verified: swipe up from bottom center to mid-screen"
         },
         "android": {
           "status": "active",
           "tool": "touch_gesture",
-          "input": { "type": "swipe", "start": { "x": 500, "y": 750 }, "end": { "x": 500, "y": 250 }, "duration_ms": 300 }
+          "input": { "type": "swipe", "start": { "x": 500, "y": 750 }, "end": { "x": 500, "y": 250 }, "speed": 2500 }
         },
         "mac": {
           "status": "active",
@@ -677,7 +677,7 @@
             "type": "swipe",
             "start": { "x": 500, "y": 500 },
             "end": { "x": 500, "y": 120 },
-            "duration_ms": 300
+            "speed": 500
           },
           "note": "open recents first, press center of card and quick flick up"
         },
@@ -699,7 +699,7 @@
         "ios": {
           "status": "active",
           "tool": "touch_gesture",
-          "input": { "type": "swipe", "start": { "x": 750, "y": 500 }, "end": { "x": 250, "y": 500 }, "duration_ms": 300 },
+          "input": { "type": "swipe", "start": { "x": 750, "y": 500 }, "end": { "x": 250, "y": 500 }, "speed": 2500 },
           "note": "when recents is already open"
         },
         "android": {
@@ -720,7 +720,7 @@
         "ios": {
           "status": "active",
           "tool": "touch_gesture",
-          "input": { "type": "swipe", "start": { "x": 250, "y": 500 }, "end": { "x": 750, "y": 500 }, "duration_ms": 300 },
+          "input": { "type": "swipe", "start": { "x": 250, "y": 500 }, "end": { "x": 750, "y": 500 }, "speed": 2500 },
           "note": "when recents is already open"
         },
         "android": {

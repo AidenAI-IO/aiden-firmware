@@ -81,7 +81,12 @@ def test_fallback_action_type_does_not_expose_generic_key():
                 "steps": 5,
             },
             "SWIPE",
-            {"point1": [100.0, 200.0], "point2": [800.0, 900.0], "duration": 300.0},
+            {
+                "point1": [100.0, 200.0],
+                "point2": [800.0, 900.0],
+                "duration": 300.0,
+                "steps": 5,
+            },
         ),
         (
             "drag",

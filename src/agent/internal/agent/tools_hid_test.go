@@ -2837,6 +2837,31 @@ func TestTouchGestureSwipeDefaultsUseFastMotionAndImmediateRelease(t *testing.T)
 	}
 }
 
+func TestTouchGestureSwipeRestoresTimingAndSteps(t *testing.T) {
+	dev, w := newTimedHIDDevice()
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
+
+	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":500},"end":{"x":900,"y":500},"duration_ms":20,"hold_before_ms":10,"hold_after_ms":10,"steps":4}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	times := w.writeTimes()
+	if len(times) != 2+4+touchReleaseReportCount {
+		t.Fatalf("len(times) = %d, want %d", len(times), 2+4+touchReleaseReportCount)
+	}
+	if gap := times[2].Sub(times[1]); gap < 7*time.Millisecond {
+		t.Fatalf("press-to-first-move gap = %v, want hold_before_ms to be applied", gap)
+	}
+	firstRelease := len(times) - touchReleaseReportCount
+	if gap := times[firstRelease].Sub(times[firstRelease-1]); gap < 7*time.Millisecond {
+		t.Fatalf("final-move-to-release gap = %v, want hold_after_ms to be applied", gap)
+	}
+}
+
 func TestTouchGestureExplicitBackSwipeStartsAtLeftPhysicalEdge(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
@@ -2909,7 +2934,7 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 	if !ok {
 		t.Fatalf("schema properties = %#v", schema["properties"])
 	}
-	for _, removed := range []string{"distance", "anchor", "strength", "hold_before_ms", "hold_after_ms", "pause_ms", "steps"} {
+	for _, removed := range []string{"distance", "anchor", "strength", "pause_ms"} {
 		if _, ok := properties[removed]; ok {
 			t.Fatalf("touch_gesture schema still exposes removed field %q", removed)
 		}
@@ -2917,7 +2942,7 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 	if _, ok := properties["hold_ms"]; !ok {
 		t.Fatal("touch_gesture schema must retain hold_ms for tap and long_press")
 	}
-	for _, added := range []string{"direction", "speed", "duration_ms"} {
+	for _, added := range []string{"direction", "speed", "duration_ms", "hold_before_ms", "hold_after_ms", "steps"} {
 		if _, ok := properties[added]; !ok {
 			t.Fatalf("touch_gesture schema missing unified swipe field %q", added)
 		}

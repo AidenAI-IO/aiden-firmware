@@ -14,6 +14,8 @@ const (
 	// not provide speed or duration_ms.
 	DefaultSwipeSpeed  = 2500.0
 	MaxSwipeDurationMs = 10_000
+	MaxSwipeHoldMs     = 10_000
+	MaxSwipeSteps      = 1_000
 )
 
 // timedSwipeProvider is implemented by providers that can honor a caller's
@@ -21,6 +23,13 @@ const (
 // internal callers that do not need timing control.
 type timedSwipeProvider interface {
 	SwipeWithDuration(context.Context, [][2]float64, string, int) error
+}
+
+// swipeOptionsProvider is implemented by providers that can honor the full
+// swipe timing contract. It is optional so existing Provider implementations
+// retain the duration-only compatibility path.
+type swipeOptionsProvider interface {
+	SwipeWithOptions(context.Context, [][2]float64, string, SwipeOptions) error
 }
 
 // TouchGestureToolAdapter 使用 MNK Provider 的 touch_gesture 工具适配器
@@ -40,15 +49,18 @@ func NewTouchGestureToolAdapter(provider Provider) *TouchGestureToolAdapter {
 // Provider 执行失败返回 ExecutionFailed。调用方应映射为 structured ToolError 并返回 (msg, nil)。
 func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
-		Type       string        `json:"type"`
-		Point      *pointerPoint `json:"point"`
-		Start      *pointerPoint `json:"start"`
-		End        *pointerPoint `json:"end"`
-		Direction  string        `json:"direction"`
-		Button     string        `json:"button"`
-		HoldMs     *int          `json:"hold_ms"`
-		Speed      *float64      `json:"speed"`
-		DurationMs *int          `json:"duration_ms"`
+		Type         string        `json:"type"`
+		Point        *pointerPoint `json:"point"`
+		Start        *pointerPoint `json:"start"`
+		End          *pointerPoint `json:"end"`
+		Direction    string        `json:"direction"`
+		Button       string        `json:"button"`
+		HoldMs       *int          `json:"hold_ms"`
+		Speed        *float64      `json:"speed"`
+		DurationMs   *int          `json:"duration_ms"`
+		HoldBeforeMs *int          `json:"hold_before_ms"`
+		HoldAfterMs  *int          `json:"hold_after_ms"`
+		Steps        *int          `json:"steps"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
@@ -102,14 +114,23 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		return t.handleDoubleTap(ctx, args.Point, button)
 
 	case "swipe":
-		start, end, durationMs, err := resolveSwipeArgs(args.Start, args.End, args.Direction, args.Speed, args.DurationMs)
+		start, end, options, err := resolveSwipeArgsWithOptions(
+			args.Start,
+			args.End,
+			args.Direction,
+			args.Speed,
+			args.DurationMs,
+			args.HoldBeforeMs,
+			args.HoldAfterMs,
+			args.Steps,
+		)
 		if err != nil {
 			return "", err
 		}
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
-		return t.handleSwipe(ctx, start, end, button, durationMs)
+		return t.handleSwipe(ctx, start, end, button, options)
 
 	case "drag":
 		if args.Start == nil || args.End == nil {
@@ -149,12 +170,12 @@ func (t *TouchGestureToolAdapter) handleDoubleTap(ctx context.Context, point *po
 	return "ok", nil
 }
 
-func (t *TouchGestureToolAdapter) handleSwipe(ctx context.Context, start, end *pointerPoint, button string, durationMs int) (string, error) {
+func (t *TouchGestureToolAdapter) handleSwipe(ctx context.Context, start, end *pointerPoint, button string, options SwipeOptions) (string, error) {
 	path := [][2]float64{
 		{start.X.Float64(), start.Y.Float64()},
 		{end.X.Float64(), end.Y.Float64()},
 	}
-	if err := swipeWithDuration(ctx, t.provider, path, button, durationMs); err != nil {
+	if err := swipeWithOptions(ctx, t.provider, path, button, options); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 	return "ok", nil
@@ -172,16 +193,56 @@ func (t *TouchGestureToolAdapter) handleDrag(ctx context.Context, start, end *po
 }
 
 func swipeWithDuration(ctx context.Context, provider Provider, path [][2]float64, button string, durationMs int) error {
-	if durationMs <= 0 {
-		return provider.Swipe(ctx, path, button)
+	return swipeWithOptions(ctx, provider, path, button, SwipeOptions{DurationMs: durationMs})
+}
+
+func swipeWithOptions(ctx context.Context, provider Provider, path [][2]float64, button string, options SwipeOptions) error {
+	if configured, ok := provider.(swipeOptionsProvider); ok {
+		return configured.SwipeWithOptions(ctx, path, button, options)
 	}
-	if timed, ok := provider.(timedSwipeProvider); ok {
-		return timed.SwipeWithDuration(ctx, path, button, durationMs)
+	if options.DurationMs > 0 {
+		if timed, ok := provider.(timedSwipeProvider); ok {
+			return timed.SwipeWithDuration(ctx, path, button, options.DurationMs)
+		}
 	}
 	return provider.Swipe(ctx, path, button)
 }
 
 func resolveSwipeArgs(start, end *pointerPoint, direction string, speed *float64, durationMs *int) (*pointerPoint, *pointerPoint, int, error) {
+	resolvedStart, resolvedEnd, options, err := resolveSwipeArgsWithOptions(start, end, direction, speed, durationMs, nil, nil, nil)
+	return resolvedStart, resolvedEnd, options.DurationMs, err
+}
+
+func resolveSwipeArgsWithOptions(start, end *pointerPoint, direction string, speed *float64, durationMs, holdBeforeMs, holdAfterMs, steps *int) (*pointerPoint, *pointerPoint, SwipeOptions, error) {
+	options := SwipeOptions{}
+	if holdBeforeMs != nil {
+		if *holdBeforeMs < 0 || *holdBeforeMs > MaxSwipeHoldMs {
+			return nil, nil, options, InvalidArgumentsf("hold_before_ms must be in range [0, %d]", MaxSwipeHoldMs)
+		}
+		options.HoldBeforeMs = *holdBeforeMs
+	}
+	if holdAfterMs != nil {
+		if *holdAfterMs < 0 || *holdAfterMs > MaxSwipeHoldMs {
+			return nil, nil, options, InvalidArgumentsf("hold_after_ms must be in range [0, %d]", MaxSwipeHoldMs)
+		}
+		options.HoldAfterMs = *holdAfterMs
+	}
+	if steps != nil {
+		if *steps < 1 || *steps > MaxSwipeSteps {
+			return nil, nil, options, InvalidArgumentsf("steps must be in range [1, %d]", MaxSwipeSteps)
+		}
+		options.Steps = *steps
+	}
+
+	resolvedStart, resolvedEnd, resolvedDuration, err := resolveSwipeGeometry(start, end, direction, speed, durationMs)
+	if err != nil {
+		return nil, nil, options, err
+	}
+	options.DurationMs = resolvedDuration
+	return resolvedStart, resolvedEnd, options, nil
+}
+
+func resolveSwipeGeometry(start, end *pointerPoint, direction string, speed *float64, durationMs *int) (*pointerPoint, *pointerPoint, int, error) {
 	if start == nil {
 		return nil, nil, 0, InvalidArguments("start is required for swipe")
 	}

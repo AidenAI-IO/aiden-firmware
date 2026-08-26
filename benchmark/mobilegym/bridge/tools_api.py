@@ -26,6 +26,8 @@ from .protocol import encode_screenshot
 
 DEFAULT_SWIPE_SPEED = 2500.0
 MAX_SWIPE_DURATION_MS = 10_000
+MAX_SWIPE_HOLD_MS = 10_000
+MAX_SWIPE_STEPS = 1_000
 US_KEYBOARD_TEXT_CHARS = set(
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -125,8 +127,11 @@ class ToolsAPIHandler:
                             "description": "End point for swipe/drag",
                         },
                         "duration_ms": {"type": "integer", "minimum": 1, "maximum": MAX_SWIPE_DURATION_MS, "description": "Optional swipe duration in milliseconds"},
+                        "hold_before_ms": {"type": "integer", "minimum": 0, "maximum": MAX_SWIPE_HOLD_MS, "description": "Optional dwell after pressing before a swipe begins."},
+                        "hold_after_ms": {"type": "integer", "minimum": 0, "maximum": MAX_SWIPE_HOLD_MS, "description": "Optional dwell at the destination before release."},
                         "hold_ms": {"type": "integer", "minimum": 0, "description": "Tap or long-press hold duration in milliseconds."},
                         "pause_ms": {"type": "integer", "minimum": 0, "description": "Pause between taps for double_tap."},
+                        "steps": {"type": "integer", "minimum": 1, "maximum": MAX_SWIPE_STEPS, "description": "Number of movement steps for swipe or drag."},
                         "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "description": "Swipe direction when end is omitted"},
                         "speed": {"type": "number", "exclusiveMinimum": 0, "description": "Optional swipe speed in normalized coordinate units per second; defaults to 2500"},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
@@ -472,6 +477,7 @@ class ToolsAPIHandler:
                         y_key="end_y",
                     )
                     duration_ms = tool_input.get("duration_ms", 700)
+                timing = _swipe_timing_options(tool_input)
                 action = build_action(
                     gesture_type,
                     {
@@ -480,6 +486,7 @@ class ToolsAPIHandler:
                         "end_x": end["x"],
                         "end_y": end["y"],
                         "duration_ms": duration_ms,
+                        **timing,
                     },
                 )
             else:
@@ -925,12 +932,30 @@ def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str
     allowed = {
         "touch_gesture": {
             "type", "point", "start", "end", "x", "y", "start_x", "start_y",
-            "end_x", "end_y", "direction", "speed", "duration_ms", "hold_ms", "pause_ms", "button",
+            "end_x", "end_y", "direction", "speed", "duration_ms", "hold_before_ms", "hold_after_ms",
+            "hold_ms", "pause_ms", "steps", "button",
         },
         "mouse_move": {"x", "y"},
         "quick_action": {"action", "list", "alternative", "alternative_index"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)
+
+
+def _swipe_timing_options(tool_input: dict[str, Any]) -> dict[str, int]:
+    options: dict[str, int] = {}
+    for name in ("hold_before_ms", "hold_after_ms"):
+        value = tool_input.get(name)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_SWIPE_HOLD_MS:
+            raise ValueError(f"{name} must be an integer in range [0, {MAX_SWIPE_HOLD_MS}]")
+        options[name] = value
+    value = tool_input.get("steps")
+    if value is not None:
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_SWIPE_STEPS:
+            raise ValueError(f"steps must be an integer in range [1, {MAX_SWIPE_STEPS}]")
+        options["steps"] = value
+    return options
 
 
 def _finite_float(value: Any, name: str) -> float:

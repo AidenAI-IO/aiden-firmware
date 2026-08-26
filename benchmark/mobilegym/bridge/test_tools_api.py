@@ -102,8 +102,11 @@ def test_get_tools_catalog(bridge_server):
     assert touch_props["speed"]["exclusiveMinimum"] == 0
     assert "hold_ms" in touch_props
     assert "pause_ms" in touch_props
-    for removed in ("strength", "distance", "anchor", "hold_before_ms", "hold_after_ms", "steps"):
+    for removed in ("strength", "distance", "anchor"):
         assert removed not in touch_props
+    assert "hold_before_ms" in touch_props
+    assert "hold_after_ms" in touch_props
+    assert "steps" in touch_props
 
     keyboard_tap_props = tools["keyboard_tap"]["args_schema"]["properties"]
     assert tools["keyboard_text"]["args_schema"]["additionalProperties"] is False

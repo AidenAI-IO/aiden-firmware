@@ -879,7 +879,7 @@ func (t *TouchGestureTool) platform() string {
 func (t *TouchGestureTool) Description() string {
 	return `Perform a custom touch/pointer gesture via HID. Use this for tap/swipe/drag and other freehand screen gestures. ` +
 		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Point, start, and end never accept screenshot pixels: convert a target measured at (pixel_x,pixel_y) in the latest image with x=pixel_x/max(image_width-1,1)*1000 and y=pixel_y/max(image_height-1,1)*1000 before calling. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
-		`For swipe, provide start and either end or direction (up/down/left/right). Speed is normalized coordinate units per second and defaults to 2500; duration_ms may be supplied to override the calculated duration. A direction-only swipe travels toward the corresponding screen edge when duration_ms is omitted, or travels speed*duration_ms/1000 normalized units when duration_ms is supplied. ` +
+		`For swipe, provide start and either end or direction (up/down/left/right). Speed is normalized coordinate units per second and defaults to 2500; duration_ms may be supplied to override the calculated duration. hold_before_ms and hold_after_ms optionally dwell after press and before release, and steps controls HID interpolation (provider default 24). A direction-only swipe travels toward the corresponding screen edge when duration_ms is omitted, or travels speed*duration_ms/1000 normalized units when duration_ms is supplied. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
 }
 
@@ -888,17 +888,20 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 	speedSchema := numberArgSchema("Swipe speed in normalized coordinate units per second. Defaults to 2500.", 2500)
 	speedSchema["exclusiveMinimum"] = 0
 	schema := objectArgsSchema(map[string]any{
-		"type":        stringEnumArgSchema(typeDescription, "tap", "double_tap", "long_press", "drag", "swipe"),
-		"point":       pointSchema(`Required for tap, double_tap, and long_press. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"start":       pointSchema(`Required start point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"end":         pointSchema(`End point for swipe or drag. Swipe may provide direction instead of end.`),
-		"direction":   stringEnumArgSchema("Swipe direction when end is omitted. The gesture starts at start and moves toward that direction.", "up", "down", "left", "right"),
-		"button":      stringEnumArgSchema("Mouse button for pointer gestures.", "left", "right", "middle"),
-		"hold_ms":     nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
-		"speed":       speedSchema,
-		"duration_ms": rangedIntegerArgSchema("Optional swipe duration in milliseconds. With end, it overrides timing calculated from speed; with direction, speed × duration determines travel.", 1, mnk.MaxSwipeDurationMs),
+		"type":           stringEnumArgSchema(typeDescription, "tap", "double_tap", "long_press", "drag", "swipe"),
+		"point":          pointSchema(`Required for tap, double_tap, and long_press. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"start":          pointSchema(`Required start point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"end":            pointSchema(`End point for swipe or drag. Swipe may provide direction instead of end.`),
+		"direction":      stringEnumArgSchema("Swipe direction when end is omitted. The gesture starts at start and moves toward that direction.", "up", "down", "left", "right"),
+		"button":         stringEnumArgSchema("Mouse button for pointer gestures.", "left", "right", "middle"),
+		"hold_ms":        nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
+		"speed":          speedSchema,
+		"duration_ms":    rangedIntegerArgSchema("Optional swipe duration in milliseconds. With end, it overrides timing calculated from speed; with direction, speed × duration determines travel.", 1, mnk.MaxSwipeDurationMs),
+		"hold_before_ms": rangedIntegerArgSchema("Optional swipe dwell after pressing and before movement.", 0, mnk.MaxSwipeHoldMs),
+		"hold_after_ms":  rangedIntegerArgSchema("Optional swipe dwell at the end before release.", 0, mnk.MaxSwipeHoldMs),
+		"steps":          rangedIntegerArgSchema("Optional HID interpolation step count; larger values produce smoother motion. Defaults to the provider default (24).", 1, mnk.MaxSwipeSteps),
 	}, "type")
-	schema["description"] = `JSON object for one gesture. Unknown fields are ignored. Coordinate fields point, start, and end use named objects containing both x and y. Swipe accepts either start+end or start+direction; speed defaults to 2500 normalized units per second and duration_ms overrides calculated timing.`
+	schema["description"] = `JSON object for one gesture. Unknown fields are ignored. Coordinate fields point, start, and end use named objects containing both x and y. Swipe accepts either start+end or start+direction; speed defaults to 2500 normalized units per second and duration_ms overrides calculated timing. hold_before_ms, hold_after_ms, and steps are optional swipe timing controls.`
 	schema["examples"] = []map[string]any{
 		{"type": "tap", "point": map[string]any{"x": 500, "y": 500}},
 		{"type": "swipe", "start": map[string]any{"x": 500, "y": 800}, "end": map[string]any{"x": 500, "y": 200}, "speed": 2500},

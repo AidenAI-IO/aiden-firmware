@@ -32,7 +32,7 @@ Use `touch_gesture` for ordinary lists, carousels, maps, and other free-scrollin
 }
 ```
 
-`speed` is optional and defaults to `2500` normalized coordinate units per second. A swipe accepts either `start` + `end`, or `start` + `direction` (`up`, `down`, `left`, `right`). `duration_ms` is optional: with an explicit `end` it overrides the calculated timing; with a `direction` it determines travel as `speed * duration_ms / 1000`. Without a duration, a directional swipe travels to the corresponding screen edge. For example, `{"type":"swipe","start":{"x":500,"y":800},"direction":"up","speed":2500,"duration_ms":300}` ends at `{"x":500,"y":50}`.
+`speed` is optional and defaults to `2500` normalized coordinate units per second. A swipe accepts either `start` + `end`, or `start` + `direction` (`up`, `down`, `left`, `right`). `duration_ms` is optional: with an explicit `end` it overrides the calculated timing; with a `direction` it determines travel as `speed * duration_ms / 1000`. Without a duration, a directional swipe travels to the corresponding screen edge. `hold_before_ms` and `hold_after_ms` optionally add dwell after press and before release (default 0), while `steps` optionally controls HID interpolation (default 24). For example, `{"type":"swipe","start":{"x":500,"y":800},"direction":"up","speed":2500,"duration_ms":300}` ends at `{"x":500,"y":50}`.
 
 Normalized coordinates use a `0..1000` range on each axis. HID action tools return a post-action screenshot after the screen settles.
 
