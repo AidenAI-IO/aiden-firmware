@@ -423,6 +423,7 @@ function removeRenderedMessage(messageKey) {
     renderedMessageKeys.delete(messageKey);
     renderedMessageNodes.delete(messageKey);
     if (existing) {
+        renderedHistoryFingerprint = null;
         const shouldStickToBottom = isConversationNearBottom();
         existing.remove();
         updateEmptyState();
@@ -478,44 +479,78 @@ async function resetAllMemory() {
 }
 
 function renderHistory(history) {
+    history = Array.isArray(history) ? history : [];
+    const fingerprint = JSON.stringify(history);
+    if (fingerprint === renderedHistoryFingerprint) return;
+
     const shouldStickToBottom = messagesDiv.children.length === 0 || isConversationNearBottom();
     const previousScrollTop = conversationEl.scrollTop;
-    messagesDiv.innerHTML = '';
-    renderedMessageKeys = new Set();
-    renderedMessageNodes = new Map();
+    const previousMessageNodes = renderedMessageNodes;
+    const previousStateMessages = renderedStateMessages;
+    const nextMessageKeys = new Set();
+    const nextMessageNodes = new Map();
+    renderedStateMessages = new Map();
     streamingAssistantDrafts = {};
 
-    const fragment = document.createDocumentFragment();
-    renderedStateMessages = new Map();
+    const orderedNodes = [];
     history.forEach(function(msg) {
         if (isControlMessage(msg)) return;
         if (isContextMarkerMessage(msg)) {
             const key = messageIdentity(msg);
-            if (!renderedStateMessages.has(key)) {
-                fragment.appendChild(createContextMarkerNode(msg, renderedStateMessages.size));
+            if (renderedStateMessages.has(key)) return;
+
+            const index = renderedStateMessages.size;
+            let node = previousStateMessages.get(key);
+            if (node) {
+                updateContextMarkerNode(node, msg, index);
+                renderedStateMessages.set(key, node);
+            } else {
+                node = createContextMarkerNode(msg, index);
             }
+            orderedNodes.push(node);
             return;
         }
         const key = messageIdentity(msg);
-        if (renderedMessageKeys.has(key)) return;
-        renderedMessageKeys.add(key);
-        const node = createMessageNode(msg);
-        renderedMessageNodes.set(key, node);
-        fragment.appendChild(node);
+        if (nextMessageKeys.has(key)) return;
+        nextMessageKeys.add(key);
+
+        const incomingFingerprint = messageRenderFingerprint(msg);
+        const existing = previousMessageNodes.get(key);
+        let node = existing;
+        if (!existing || existing._messageFingerprint !== incomingFingerprint) {
+            node = createTrackedMessageNode(msg, incomingFingerprint);
+            if (existing) existing.replaceWith(node);
+        }
+        nextMessageNodes.set(key, node);
+        orderedNodes.push(node);
     });
 
+    previousMessageNodes.forEach(function(node, key) {
+        if (!nextMessageNodes.has(key)) node.remove();
+    });
+    previousStateMessages.forEach(function(node, key) {
+        if (!renderedStateMessages.has(key)) node.remove();
+    });
+
+    renderedMessageKeys = nextMessageKeys;
+    renderedMessageNodes = nextMessageNodes;
     if (!renderedStateMessages.has(activeStateMessageKey)) {
         activeStateMessageKey = '';
     }
     renderStateModal();
 
-    messagesDiv.appendChild(fragment);
+    orderedNodes.forEach(function(node, index) {
+        if (messagesDiv.children[index] !== node) {
+            messagesDiv.insertBefore(node, messagesDiv.children[index] || null);
+        }
+    });
     updateEmptyState();
     if (shouldStickToBottom) {
         scrollToBottom();
     } else {
         conversationEl.scrollTop = previousScrollTop;
     }
+    renderedHistoryFingerprint = fingerprint;
 }
 
 function addMessage(msg) {
@@ -523,6 +558,7 @@ function addMessage(msg) {
     if (isContextMarkerMessage(msg)) {
         const key = messageIdentity(msg);
         if (!renderedStateMessages.has(key)) {
+            renderedHistoryFingerprint = null;
             const shouldStickToBottom = isConversationNearBottom();
             messagesDiv.appendChild(createContextMarkerNode(msg, renderedStateMessages.size));
             if (shouldStickToBottom) scrollToBottom();
@@ -536,9 +572,10 @@ function addMessage(msg) {
         }
         return;
     }
+    renderedHistoryFingerprint = null;
     renderedMessageKeys.add(key);
     const shouldStickToBottom = isConversationNearBottom();
-    const node = createMessageNode(msg);
+    const node = createTrackedMessageNode(msg);
     renderedMessageNodes.set(key, node);
     messagesDiv.appendChild(node);
     updateEmptyState();
@@ -552,12 +589,49 @@ function isConversationNearBottom() {
 function updateMessageNode(key, msg) {
     const existing = renderedMessageNodes.get(key);
     if (!existing) return;
+    const incomingFingerprint = messageRenderFingerprint(msg);
+    if (existing._messageFingerprint === incomingFingerprint) return;
+    renderedHistoryFingerprint = null;
     const shouldStickToBottom = isConversationNearBottom();
-    const replacement = createMessageNode(msg);
+    const replacement = createTrackedMessageNode(msg, incomingFingerprint);
     renderedMessageNodes.set(key, replacement);
     existing.replaceWith(replacement);
     updateEmptyState();
     if (shouldStickToBottom) scrollToBottom();
+}
+
+function createTrackedMessageNode(msg, fingerprint) {
+    const node = createMessageNode(msg);
+    node._messageFingerprint = fingerprint || messageRenderFingerprint(msg);
+    return node;
+}
+
+function messageRenderFingerprint(msg) {
+    const displayMessage = Object.assign({}, msg || {});
+    displayMessage.timestamp = formatTime(displayMessage.timestamp);
+    return stableSerialize(displayMessage);
+}
+
+function stableSerialize(value) {
+    if (value === null || typeof value !== 'object') {
+        return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+        return '[' + value.map(stableSerialize).join(',') + ']';
+    }
+    return '{' + Object.keys(value).sort().filter(function(key) {
+        return typeof value[key] !== 'undefined';
+    }).map(function(key) {
+        return JSON.stringify(key) + ':' + stableSerialize(value[key]);
+    }).join(',') + '}';
+}
+
+function updateContextMarkerNode(node, msg, index) {
+    node._stateMessage = msg;
+    const button = node.querySelector('.state-divider-button');
+    if (!button) return;
+    button.title = contextMarkerSummary(msg, index);
+    button.setAttribute('aria-expanded', node.classList.contains('open') ? 'true' : 'false');
 }
 
 function isControlMessage(msg) {

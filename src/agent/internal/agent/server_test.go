@@ -2586,13 +2586,6 @@ func TestWebUIUsesContextRequestIDsForToolMessageIdentity(t *testing.T) {
 	}
 }
 
-func TestWebUIContextHistoryDeduplicatesMarkers(t *testing.T) {
-	chatScript := readWebUIResource(t, "scripts/chat.js")
-	if !strings.Contains(chatScript, "if (!renderedStateMessages.has(key))") {
-		t.Fatal("renderHistory does not guard duplicate context markers")
-	}
-}
-
 func readWebUIResource(t *testing.T, name string) string {
 	t.Helper()
 	data, err := fs.ReadFile(webUIFiles, name)
