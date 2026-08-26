@@ -18,7 +18,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -2591,19 +2590,6 @@ func TestWebUIContextHistoryDeduplicatesMarkers(t *testing.T) {
 	chatScript := readWebUIResource(t, "scripts/chat.js")
 	if !strings.Contains(chatScript, "if (!renderedStateMessages.has(key))") {
 		t.Fatal("renderHistory does not guard duplicate context markers")
-	}
-}
-
-func TestWebUIHistoryRefreshPreservesStableDOM(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatalf("node is required for the DOM-level web UI test: %v", err)
-	}
-	testScript := filepath.Join("testdata", "history_reconciliation.test.js")
-	cmd := exec.Command(node, testScript)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("DOM-level web UI test failed: %v\n%s", err, output)
 	}
 }
 

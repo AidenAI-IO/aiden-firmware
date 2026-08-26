@@ -1,4 +1,4 @@
-.PHONY: all configure build clean test test-clean sandbox-start sandbox-logs sandbox-stop
+.PHONY: all configure build clean test test-agent-webui test-clean sandbox-start sandbox-logs sandbox-stop
 
 BUILD_DIR := build
 TEST_BUILD_DIR := build-host
@@ -19,6 +19,9 @@ test-build: test-configure
 
 test: test-build
 	cd $(TEST_BUILD_DIR) && ctest --output-on-failure
+
+test-agent-webui:
+	node src/agent/internal/agent/testdata/history_reconciliation.test.js
 
 test-clean:
 	rm -rf $(TEST_BUILD_DIR)
