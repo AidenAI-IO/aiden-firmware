@@ -201,11 +201,18 @@ func (c *ContextManager) flushFull() error {
 }
 
 func (c *ContextManager) AppendMessage(message messages.Message) error {
+	return c.AppendMessages([]messages.Message{message})
+}
+
+// AppendMessages applies append hooks to a batch and persists the resulting
+// messages in one context-manager append operation. This keeps related
+// protocol messages, such as a tool call and its result, together.
+func (c *ContextManager) AppendMessages(messagesToAppend []messages.Message) error {
 	c.mu.RLock()
 	hooks := append([]AppendMessageHook(nil), c.appendHooks...)
 	c.mu.RUnlock()
 
-	messageList := []messages.Message{message.Clone()}
+	messageList := cloneMessages(messagesToAppend)
 	for _, entry := range hooks {
 		var next []messages.Message
 		for _, current := range messageList {
