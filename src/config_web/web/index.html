@@ -119,6 +119,18 @@
           </div>
           <div class="grid" data-config-section="agent"></div>
         </div>
+        <div class="section-card" id="section-voice_model" data-hide-when-empty>
+          <div class="card-head">
+            <h3>[voice_model]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="voice_model" data-i18n="action.edit">Edit</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="voice_model" data-i18n="action.cancel">Cancel</button>
+              <button id="save-voice_model" class="button primary save-btn" data-action="save-section" data-section-target="voice_model" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="field-hint section-note" data-i18n="config.voice_model_qwen_only">Current firmware connects this section to DashScope Qwen Realtime and attaches Aiden's realtime tools automatically.</div>
+          <div class="grid" data-config-section="voice_model"></div>
+        </div>
         <div class="section-card" id="section-model">
           <div class="card-head">
             <h3>[model]</h3>

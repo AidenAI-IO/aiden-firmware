@@ -112,7 +112,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		t.Errorf("expected device section first, got %q", ConfigMeta().Sections[0].Name)
 	}
 
-	for _, name := range []string{"device", "model", "tts", "stt", "audio", "audio_archive", "frame_service", "quick_capture", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
+	for _, name := range []string{"device", "model", "tts", "stt", "audio", "voice_model", "audio_archive", "frame_service", "quick_capture", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -424,6 +424,9 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio.channels", defaults.Audio.Channels},
 		{"audio.bit_width", defaults.Audio.BitWidth},
 		{"audio.backend", defaults.Audio.Backend},
+		{"voice_model.model", defaults.VoiceModel.Model},
+		{"voice_model.region", defaults.VoiceModel.Region},
+		{"voice_model.voice", defaults.VoiceModel.Voice},
 		{"audio_archive.enabled", defaults.AudioArchive.Enabled},
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
@@ -781,6 +784,40 @@ func TestConfigMeta_AudioArchiveRequiresSTTInputMode(t *testing.T) {
 			}
 			t.Fatalf("%s visibleWhen = %#v, want agent.input_mode == stt", path, field.VisibleWhen)
 		})
+	}
+}
+
+func TestConfigMeta_VoiceModelRequiresRealtimeInputMode(t *testing.T) {
+	idx := fieldIndex(t)
+	wantFields := []string{"api_key", "model", "region", "voice"}
+	for _, section := range ConfigMeta().Sections {
+		if section.Name == "voice_model" && len(section.Fields) != len(wantFields) {
+			t.Fatalf("voice_model exposes %d fields, want the %d common settings", len(section.Fields), len(wantFields))
+		}
+	}
+
+	for _, name := range wantFields {
+		path := "voice_model." + name
+		t.Run(path, func(t *testing.T) {
+			field, ok := idx[path]
+			if !ok {
+				t.Fatalf("missing metadata field %s", path)
+			}
+			if field.VisibleWhen == nil {
+				t.Fatalf("%s has no visibleWhen rule", path)
+			}
+			for _, cond := range field.VisibleWhen.All {
+				if cond.Field == "agent.input_mode" && cond.Op == "eq" && cond.Value == "realtime" {
+					return
+				}
+			}
+			t.Fatalf("%s visibleWhen = %#v, want agent.input_mode == realtime", path, field.VisibleWhen)
+		})
+	}
+
+	apiKey := idx["voice_model.api_key"]
+	if !apiKey.Secret {
+		t.Fatal("voice_model.api_key must be a secret field")
 	}
 }
 

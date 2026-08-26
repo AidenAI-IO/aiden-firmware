@@ -404,6 +404,29 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
+				Name: "voice_model",
+				Fields: []FieldMeta{
+					{Key: "api_key", Label: "DashScope API Key", Widget: WidgetText, Secret: true, Layout: "wide",
+						Help:        "DashScope credential for the Qwen realtime session. Use a literal key or $ENV_VAR.",
+						Placeholder: "$DASHSCOPE_API_KEY",
+						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
+					{Key: "model", Label: "Realtime Model", Widget: WidgetText, Default: defaults.VoiceModel.Model, Layout: "wide",
+						Help:        "DashScope Qwen realtime model ID.",
+						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
+					{Key: "region", Label: "Region", Widget: WidgetSelect,
+						Enum: []EnumOption{
+							{Value: "", Label: "Automatic"},
+							{Value: "cn-beijing", Label: "China (Beijing)"},
+							{Value: "ap-southeast-1", Label: "Singapore"},
+						},
+						Default:     defaults.VoiceModel.Region,
+						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
+					{Key: "voice", Label: "Voice", Widget: WidgetText, Default: defaults.VoiceModel.Voice,
+						Help:        "Qwen realtime system voice name or voice-clone ID.",
+						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
+				},
+			},
+			{
 				Name: "audio_archive",
 				Fields: []FieldMeta{
 					{Key: "enabled", Widget: WidgetBoolean, Default: defaults.AudioArchive.Enabled,

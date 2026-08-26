@@ -72,6 +72,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, backend
+- `voice_model`: DashScope API key, Qwen realtime model, region, and voice; shown when `agent.input_mode = "realtime"`
 - `frame_service`: whether Frame Service keeps capture STREAMON between screenshots
 - `quick_capture`: enabled, GPIO trigger pin, Screen Memory retention period
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
@@ -475,7 +476,14 @@ When no session is active, `/api/chat` queues its text input, connects the
 realtime session, and sends that text as the first user message. This API
 activation remains available when host GPIO is unavailable.
 Use `input_mode = "stt"` to select the existing VAD/STT/LLM/TTS wakeup loop.
-This section is currently TOML-only and is not rendered by Config Web.
+Config Web renders this section when `agent.input_mode = "realtime"` and keeps
+its saved values when another input mode is selected. It exposes only the four
+settings normally needed on the board: API key, model, region, and voice. The
+advanced fields below keep their TOML values and runtime defaults. The current
+runtime uses the DashScope Qwen realtime WebSocket protocol and automatically
+attaches Aiden's realtime tool catalog. An OpenAI, Gemini, Azure, or other
+provider model ID cannot be used here until its wire-protocol adapter is
+implemented.
 
 | Field | Default | Description |
 | ----- | ------- | ----------- |

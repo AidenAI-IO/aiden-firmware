@@ -69,6 +69,10 @@ class Element {
     return this.classList.toString();
   }
 
+  get options() {
+    return this.tagName === 'SELECT' ? this.children : undefined;
+  }
+
   setAttribute(name, value) {
     const normalized = String(value);
     this.attributes.set(name, normalized);
@@ -180,11 +184,11 @@ function findById(root, id) {
   return null;
 }
 
-function appendTarget(document, section) {
+function appendTarget(document, section, parent = document.body) {
   const target = document.createElement('div');
   target.className = 'grid';
   target.setAttribute('data-config-section', section);
-  document.body.appendChild(target);
+  parent.appendChild(target);
   return target;
 }
 
@@ -203,6 +207,12 @@ const document = new Document();
 const agentTarget = appendTarget(document, 'agent');
 const modelTarget = appendTarget(document, 'model');
 const quickCaptureTarget = appendTarget(document, 'quick_capture');
+const voiceModelCard = document.createElement('div');
+voiceModelCard.id = 'section-voice_model';
+voiceModelCard.className = 'section-card';
+voiceModelCard.setAttribute('data-hide-when-empty', '');
+document.body.appendChild(voiceModelCard);
+const voiceModelTarget = appendTarget(document, 'voice_model', voiceModelCard);
 const modelProviderField = appendSpecialField(document, modelTarget, 'model.provider', 'model_provider');
 const modelNameField = appendSpecialField(document, modelTarget, 'model.model', 'model_model', 'input');
 document.getElementById('model_provider').setAttribute('data-section', 'model');
@@ -240,6 +250,10 @@ async function loadModule(filePath) {
 const stateModule = await loadModule(path.join(webRoot, 'assets/js/config/state.js'));
 await stateModule.evaluate();
 stateModule.namespace.runtime.t = (key, params = {}) => String(params.defaultValue ?? key).replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (_match, name) => params[name] ?? '');
+stateModule.namespace.runtime.applyAudioArchiveAvailability = () => {};
+stateModule.namespace.runtime.rememberModelProvider = () => {};
+stateModule.namespace.runtime.syncModelSelectorSummary = () => {};
+stateModule.namespace.runtime.updateAllProviderActionStates = () => {};
 const configMetaModule = await loadModule(path.join(webRoot, 'assets/js/config/config-meta.js'));
 await configMetaModule.evaluate();
 const {buildConfigMeta} = configMetaModule.namespace;
@@ -263,6 +277,10 @@ buildConfigMeta({sections: [
     {key: 'gpio_pin', label: 'GPIO Pin', widget: 'number', default: 0},
     {key: 'screen_memory_ttl', label: 'Screen Memory TTL', widget: 'text', default: '90d'},
   ]},
+  {name: 'voice_model', fields: [
+    {key: 'api_key', label: 'API key', widget: 'text', secret: true, visibleWhen: {all: [{field: 'agent.input_mode', op: 'eq', value: 'realtime'}]}},
+    {key: 'model', label: 'Model', widget: 'text', visibleWhen: {all: [{field: 'agent.input_mode', op: 'eq', value: 'realtime'}]}},
+  ]},
 ]});
 
 assert.equal(document.getElementById('agent_locale'), null, 'agent.locale remains rendered by the page-level locale control');
@@ -285,6 +303,7 @@ assert.equal(document.getElementById('model_temperature').type, 'number');
 assert.equal(document.getElementById('quick_capture_enabled').type, 'checkbox');
 assert.equal(document.getElementById('quick_capture_gpio_pin').type, 'number');
 assert.equal(document.getElementById('quick_capture_screen_memory_ttl').dataset.configDefaultPlaceholder, '90d');
+assert.equal(document.getElementById('voice_model_api_key').type, 'password');
 assert.deepEqual(quickCaptureTarget.children.map((field) => field.getAttribute('data-config-field')), [
   'quick_capture.enabled',
   'quick_capture.gpio_pin',
@@ -298,8 +317,43 @@ assert.deepEqual(agentTarget.children.map((field) => field.getAttribute('data-co
   'agent.notes',
 ]);
 
+document.getElementById('agent_input_mode').value = 'stt';
+configMetaModule.namespace.applyFieldVisibility(true);
+assert.equal(voiceModelCard.classList.contains('hidden'), true, 'voice model card is hidden outside realtime mode');
+document.getElementById('agent_input_mode').value = 'realtime';
+configMetaModule.namespace.applyFieldVisibility(true);
+assert.equal(voiceModelCard.classList.contains('hidden'), false, 'voice model card is visible in realtime mode');
+
 const configFormModule = await loadModule(path.join(webRoot, 'assets/js/config/config-form.js'));
 await configFormModule.evaluate();
+stateModule.namespace.appState.config = {
+  agent: {input_mode: 'stt'},
+  voice_model: {
+    has_api_key: true,
+    model: 'saved-realtime-model',
+    endpoint: 'wss://advanced.example.test/realtime',
+    turn_detection: 'smart_turn',
+  },
+};
+configFormModule.namespace.fillConfigForm(stateModule.namespace.appState.config);
+assert.equal(voiceModelCard.classList.contains('hidden'), true);
+assert.equal(document.getElementById('voice_model_api_key').value, '');
+assert.equal(document.getElementById('voice_model_api_key').placeholder, 'config.secret_saved_placeholder');
+assert.equal(JSON.stringify(configFormModule.namespace.readSection('voice_model')), JSON.stringify({
+  has_api_key: true,
+  model: 'saved-realtime-model',
+  endpoint: 'wss://advanced.example.test/realtime',
+  turn_detection: 'smart_turn',
+}), 'hidden realtime fields preserve their saved values');
+document.getElementById('agent_input_mode').value = 'realtime';
+configMetaModule.namespace.applyFieldVisibility(true);
+document.getElementById('voice_model_model').value = 'updated-realtime-model';
+assert.equal(JSON.stringify(configFormModule.namespace.readSection('voice_model')), JSON.stringify({
+  has_api_key: true,
+  model: 'updated-realtime-model',
+  endpoint: 'wss://advanced.example.test/realtime',
+  turn_detection: 'smart_turn',
+}), 'editing common realtime fields preserves advanced settings');
 configFormModule.namespace.setSectionLocked('model', true);
 assert.equal(document.getElementById('model_provider').disabled, true, 'locking a section disables its fields');
 assert.equal(modelSaveButton.disabled, true, 'locking a section disables its save button');
@@ -314,6 +368,8 @@ assert.equal(modelSelectorDetails.inert, false, 'editing a section enables compo
 const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
 assert.match(indexHtml, /data-config-section="agent"/);
 assert.match(indexHtml, /data-config-section="quick_capture"/);
+assert.match(indexHtml, /id="section-voice_model"/);
+assert.match(indexHtml, /data-config-section="voice_model"/);
 assert.match(indexHtml, /data-config-field="model\.provider"/);
 assert.doesNotMatch(indexHtml, /id="agent_input_mode"/, 'ordinary controls must not be hand-maintained in index.html');
 assert.match(indexHtml, /data-action="enter-edit-section" data-section-target="model"/);
