@@ -7,7 +7,7 @@ from runner.agent_client import AgentTimeoutError, ChatResponse
 from runner.judge import JudgeConfig, JudgeOutput
 from runner.models import RubricVerdict
 from runner.reset import SetupAssertionError
-from runner.runtask import run_one_task
+from runner.runtask import _history_usage, run_one_task
 from runner.suite import (
     HardAssertions,
     MockEnvironmentSpec,
@@ -17,6 +17,20 @@ from runner.suite import (
     TraceObservationSpec,
 )
 import runner.runtask as runtask_mod
+
+
+def test_history_usage_sums_normalized_and_legacy_token_fields():
+    assert _history_usage([
+        {"type": "assistant", "usage": {
+            "input_tokens": 10, "output_tokens": 4, "total_tokens": 14,
+        }},
+        {"type": "assistant", "usage": {
+            "prompt_tokens": 20, "completion_tokens": 5,
+        }},
+        {"type": "tool_result", "usage": {"input_tokens": 0}},
+    ]) == {"input_tokens": 30, "output_tokens": 9, "total_tokens": 39}
+
+    assert _history_usage([{"type": "assistant", "content": "no usage"}]) is None
 
 
 class FakeClient:

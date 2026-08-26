@@ -127,6 +127,13 @@ def evaluate_task_history(
                          "screenshots_taken": sum(1 for tc in trace.tool_calls if tc.has_screenshot),
                          "pre_screenshot_file": bool(pre_screenshot and pre_screenshot.exists()),
                          "post_screenshot_file": bool(post_screenshot and post_screenshot.exists())})
+    # The public history includes provider-normalized usage on assistant
+    # messages. Keep a task-level total so paired benchmark runs can report
+    # token/cost overhead in addition to wall-clock overhead. Older agents may
+    # omit usage; in that case these fields are simply absent.
+    usage = _history_usage(history)
+    if usage is not None:
+        base.metrics.update(usage)
     recall_outcome = None
     if task.expected_recalled_memory_ids:
         recall_outcome = evaluate_expected_recalled_memory_ids(
@@ -250,6 +257,46 @@ def evaluate_task_history(
     base.status = "passed" if base.rubric_pass_count == base.rubric_total else "failed"
     base.finished_at = now_iso()
     return base
+
+
+def _history_usage(history: list[dict[str, Any]]) -> dict[str, int] | None:
+    """Sum normalized token usage exposed by the Agent history endpoint.
+
+    Usage is attached to assistant messages, one record per model response.
+    Providers use different names internally, but the public API normalizes
+    them to ``input_tokens``, ``output_tokens`` and ``total_tokens``. We also
+    accept the legacy prompt/completion names for old benchmark daemons.
+    """
+    input_tokens = 0
+    output_tokens = 0
+    total_tokens = 0
+    found = False
+    for message in history:
+        raw = message.get("usage") if isinstance(message, dict) else None
+        if not isinstance(raw, dict):
+            continue
+        input_value = raw.get("input_tokens", raw.get("prompt_tokens"))
+        output_value = raw.get("output_tokens", raw.get("completion_tokens"))
+        total_value = raw.get("total_tokens")
+        values: list[int] = []
+        for value in (input_value, output_value, total_value):
+            try:
+                values.append(int(value))
+            except (TypeError, ValueError):
+                values.append(0)
+        if not any(values):
+            continue
+        found = True
+        input_tokens += values[0]
+        output_tokens += values[1]
+        total_tokens += values[2] if values[2] else values[0] + values[1]
+    if not found:
+        return None
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
 
 
 def run_one_task(
@@ -405,6 +452,7 @@ def run_one_task(
             )
     timed_out = False
     chat_completed = False
+    agent_started_mono = time.monotonic()
     episode = None
     try:
         prompt = effective_task.prompt
@@ -427,6 +475,7 @@ def run_one_task(
     except Exception as e:
         history = client_history_or_empty(client)
         base.metrics["agent_error"] = str(e)[:300]
+    base.metrics["agent_wall_ms"] = int((time.monotonic() - agent_started_mono) * 1000)
     if chat_completed and effective_task.expected_recalled_memory_ids:
         inline_recall_outcome = evaluate_expected_recalled_memory_ids(
             history,

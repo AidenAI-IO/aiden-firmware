@@ -14,6 +14,11 @@ are:
 
 For the full manual, see [`benchmark/manual.md`](../../benchmark/manual.md).
 
+For the Thinking on/off paired experiment, see
+[Thinking 开关对照实验](./thinking-comparison.md). It documents the two
+`reasoning_effort` conditions, repeated benchmark runs, and the quality/time/token
+comparison emitted by `runner compare`.
+
 ## Quick Start
 
 ### Dedicated Agent

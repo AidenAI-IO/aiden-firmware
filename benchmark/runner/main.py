@@ -110,6 +110,11 @@ def cli(argv: list[str] | None = None) -> int:
         help="OpenAI-compatible base URL for judge requests",
     )
     p_run.add_argument("--agent-model", default=os.environ.get(BENCHMARK_AGENT_MODEL_ENV, ""))
+    p_run.add_argument(
+        "--condition",
+        default="",
+        help="Experiment condition label stored in the run manifest (for example thinking-off or thinking-on)",
+    )
     p_run.add_argument("--no-judge", action="store_true")
     p_run.add_argument("--repeats", type=int, default=None)
     p_run.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"))
@@ -172,6 +177,11 @@ def cli(argv: list[str] | None = None) -> int:
     )
     p_compare = sub.add_parser("compare")
     p_compare.add_argument("--runs", nargs=2, required=True)
+    p_compare.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable paired metrics instead of the human summary",
+    )
     p_webui = sub.add_parser("webui")
     p_webui.add_argument("--host", default="127.0.0.1")
     p_webui.add_argument("--port", type=int, default=8765)
@@ -193,7 +203,9 @@ def cli(argv: list[str] | None = None) -> int:
         return rejudge_run(Path(args.run_dir), args.judge_model, args.judge_base_url)
     if args.cmd == "compare":
         from runner.compare import compare_runs
-        return compare_runs(Path(args.runs[0]), Path(args.runs[1]))
+        return compare_runs(
+            Path(args.runs[0]), Path(args.runs[1]), json_output=args.json
+        )
     if args.cmd == "webui":
         from runner.webui import cli as webui_cli
         forwarded = [
@@ -787,6 +799,7 @@ def _cmd_run_auto_agent_setup_inner(
         "agent_url": None,
         "environment_url": display_environment_url or None,
         "agent_model": args.agent_model,
+        "condition": args.condition,
         "active_skills": active_skills,
         "judge_config": {"provider": judge_cfg.provider, "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
         "judge_prompt_version": "v1",
@@ -1068,6 +1081,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "agent_url": args.agent_url,
         "environment_url": args.environment_url or None,
         "agent_model": args.agent_model,
+        "condition": args.condition,
         "active_skills": active_skills,
         "judge_config": {"provider": judge_cfg.provider, "model": args.judge_model, "base_url": args.judge_base_url} if judge_cfg else None,
         "judge_prompt_version": "v1",
