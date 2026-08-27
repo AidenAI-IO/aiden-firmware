@@ -163,6 +163,72 @@ grep -qx 'last_refresh_reason=manual refresh' "${watchdog_root}/refresh.state"
 grep -qx 'last_refresh_result=ok' "${watchdog_root}/refresh.state"
 grep -qx 'ffb00000.usb' "${watchdog_root}/UDC"
 
+# A composite reset drops the HID session together with ECM, so an unanswered
+# ARP burst alone must never be enough to tear a working session down.
+grep -Fq 'command -v arping >/dev/null 2>&1 || return 2' "${watchdog}" \
+    || fail "a missing arping must not be able to justify a composite reset"
+grep -Fq 'carrier_up()' "${watchdog}" \
+    || fail "watchdog must treat a carrier-less usb0 as idle rather than stalled"
+grep -Fq 'read_rx_packets()' "${watchdog}" \
+    || fail "watchdog must sample usb0 RX counters as a positive liveness signal"
+if grep -Eq '^threshold=\$\{USB_ECM_FAIL_THRESHOLD:-[1-5]\}$' "${watchdog}"; then
+    fail "ECM stall confirmation must span more than a few probe intervals"
+fi
+
+# Drive the real watch loop against a fake sysfs to prove the liveness guard:
+# ARP goes unanswered throughout, so only the RX counter decides the outcome.
+run_ecm_watchdog() {
+    local root=$1 seconds=$2
+    mkdir -p "${root}/bin" "${root}/net/statistics"
+    printf '%s\n' ffb00000.usb >"${root}/UDC"
+    printf '%s\n' configured >"${root}/state"
+    printf '%s\n' 1 >"${root}/net/carrier"
+    printf '%s\n' '0 aa:bb:cc:dd:ee:ff 192.168.42.99 host *' >"${root}/leases"
+    printf '#!/bin/sh\nexit 1\n' >"${root}/bin/arping"
+    chmod 0755 "${root}/bin/arping"
+    PATH="${root}/bin:${PATH}" \
+    AIDEN_USB_UDC_FILE="${root}/UDC" \
+    AIDEN_USB_UDC_STATE_FILE="${root}/state" \
+    AIDEN_USB_NET_CLASS_PATH="${root}/net" \
+    AIDEN_USB_CARRIER_FILE="${root}/net/carrier" \
+    AIDEN_USB_RX_PACKETS_FILE="${root}/net/statistics/rx_packets" \
+    AIDEN_USB_LEASE_FILE="${root}/leases" \
+    AIDEN_USB_LOCK_DIR="${root}/lock" \
+    AIDEN_USB_GRACE_FILE="${root}/grace" \
+    AIDEN_USB_REFRESH_STATE_FILE="${root}/refresh.state" \
+    USB_ECM_PROBE_INTERVAL=1 USB_ECM_FAIL_THRESHOLD=2 USB_ECM_COOLDOWN=1 \
+        timeout "${seconds}" "${watchdog}" watch >/dev/null 2>&1 || true
+}
+
+live_root=${TEST_ROOT}/usb-watchdog-live
+mkdir -p "${live_root}/net/statistics"
+printf '%s\n' 100 >"${live_root}/net/statistics/rx_packets"
+(
+    for i in $(seq 1 12); do
+        printf '%s\n' $((100 + i)) >"${live_root}/net/statistics/rx_packets"
+        sleep 1
+    done
+) &
+rx_writer=$!
+run_ecm_watchdog "${live_root}" 5
+kill "${rx_writer}" 2>/dev/null || true
+wait "${rx_writer}" 2>/dev/null || true
+grep -qx 'ffb00000.usb' "${live_root}/UDC" \
+    || fail "a session still receiving traffic must stay bound to the UDC"
+[ ! -f "${live_root}/refresh.state" ] \
+    || fail "a session still receiving traffic must never be reset over silent ARP"
+
+# Negative control: with RX frozen the same unanswered probes are a real stall
+# and recovery must still fire, so the guard above is not simply disabling it.
+stalled_root=${TEST_ROOT}/usb-watchdog-stalled
+mkdir -p "${stalled_root}/net/statistics"
+printf '%s\n' 100 >"${stalled_root}/net/statistics/rx_packets"
+run_ecm_watchdog "${stalled_root}" 6
+[ -f "${stalled_root}/refresh.state" ] \
+    || fail "a genuinely stalled ECM session must still be recovered"
+grep -qx 'last_refresh_reason=ECM stall' "${stalled_root}/refresh.state" \
+    || fail "a stalled ECM session must be recovered with the ECM stall reason"
+
 grep -q '/oem/usr/bin/aiden-environment' "${UNIT_DIR}/aiden-environment.service"
 grep -q '/run/aiden/environment.invalid' "${UNIT_DIR}/aiden-environment.service"
 grep -q 'schema_version' "${OVERLAY}/usr/lib/aiden/aiden-userdata-migrate"
