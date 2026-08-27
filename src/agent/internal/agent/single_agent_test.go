@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -114,6 +115,7 @@ func TestSingleAgentDoesNotRunDefaultFinalVerifierReview(t *testing.T) {
 
 func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) {
 	model := &routedOpenAppModel{}
+	events := make([]string, 0, 4)
 	bridge := NewPhoneBridge(nil)
 	bridge.mu.Lock()
 	bridge.platform = "ios"
@@ -122,23 +124,38 @@ func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) 
 	bridge.returnEntrySeen = true
 	bridge.returnEntryOK = true
 	bridge.mu.Unlock()
-	screenshot := &stubTool{
+	stateScreenshot := &stubTool{
 		name:        "screenshot",
 		description: "Capture the current phone screen.",
 		visual:      true,
-		output:      `{"format":"jpeg","width":1,"height":1,"size":1,"data":"YQ=="}`,
+	}
+	stateScreenshot.callFn = func(context.Context, string) (string, error) {
+		events = append(events, "state screenshot")
+		return `{"format":"jpeg","width":1,"height":1,"size":1,"data":"YQ=="}`, nil
+	}
+	postActionScreenshot := &stubTool{name: "screenshot"}
+	postActionScreenshot.callFn = func(context.Context, string) (string, error) {
+		if len(postActionScreenshot.inputs) == 1 {
+			events = append(events, "pre-action baseline")
+		} else {
+			events = append(events, "post-action final")
+		}
+		return `{"format":"jpeg","width":1,"height":1,"size":1,"data":"YQ=="}`, nil
 	}
 	searchLaunch := &stubTool{
 		name:        "search_launch_app",
 		description: "Open an app through visible system search.",
-		output:      `{"ok":true,"opened":true}`,
+	}
+	searchLaunch.callFn = func(context.Context, string) (string, error) {
+		events = append(events, "routed open_app")
+		return `{"ok":true,"opened":true}`, nil
 	}
 	toolSet := &ToolSet{
 		phoneBridge: bridge,
 		tools: map[string]langtools.Tool{
-			"open_app":              newPostActionScreenshotTool(NewOpenAppTool(bridge, nil, searchLaunch), screenshot, 0),
+			"open_app":            newPostActionScreenshotTool(NewOpenAppTool(bridge, nil, searchLaunch), postActionScreenshot, 0),
 			"request_user_action": NewHumanHandoffTool(),
-			"screenshot":            screenshot,
+			"screenshot":          stateScreenshot,
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -159,8 +176,11 @@ func TestSingleAgentOpenAppRoutesInternallyWhenBridgeDisconnected(t *testing.T) 
 	if model.callCount != 2 {
 		t.Fatalf("model calls = %d, want open_app plus completion", model.callCount)
 	}
-	if len(screenshot.inputs) != 2 || len(searchLaunch.inputs) != 1 {
-		t.Fatalf("routed calls: screenshot=%v search_launch_app=%v", screenshot.inputs, searchLaunch.inputs)
+	if len(stateScreenshot.inputs) != 1 || len(postActionScreenshot.inputs) != 2 || len(searchLaunch.inputs) != 1 {
+		t.Fatalf("routed calls: state_screenshot=%v post_action_screenshot=%v search_launch_app=%v", stateScreenshot.inputs, postActionScreenshot.inputs, searchLaunch.inputs)
+	}
+	if want := []string{"state screenshot", "pre-action baseline", "routed open_app", "post-action final"}; !slices.Equal(events, want) {
+		t.Fatalf("routed call order = %#v, want %#v", events, want)
 	}
 	var searchInput map[string]any
 	if err := json.Unmarshal([]byte(searchLaunch.inputs[0]), &searchInput); err != nil {

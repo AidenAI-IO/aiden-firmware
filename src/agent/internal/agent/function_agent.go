@@ -178,7 +178,7 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 			imageAvailability,
 		)
 	}
-	if summary := screenshotObservationStatusSummary(result); summary != "" {
+	if summary := screenshotObservationStatusSummary(step.Action.Tool, result); summary != "" {
 		toolContent += " " + summary
 	}
 	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)
@@ -201,13 +201,19 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	}}
 }
 
-func screenshotObservationStatusSummary(result postActionScreenshotResult) string {
+func screenshotObservationStatusSummary(toolName string, result postActionScreenshotResult) string {
 	var notes []string
 	if result.ScreenChanged != nil {
-		if *result.ScreenChanged {
-			notes = append(notes, "Visible screen change was observed during the stable-screen wait.")
+		if strings.EqualFold(strings.TrimSpace(toolName), "wait_for_stable_screen") {
+			if *result.ScreenChanged {
+				notes = append(notes, "Screen motion was observed during this wait window; this does not by itself prove that the preceding action succeeded.")
+			} else {
+				notes = append(notes, "No frame-to-frame screen motion was observed during this wait window; this does not by itself prove that the preceding action had no effect.")
+			}
+		} else if *result.ScreenChanged {
+			notes = append(notes, "A meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot.")
 		} else {
-			notes = append(notes, "No visible screen change was observed during the stable-screen wait.")
+			notes = append(notes, "No meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot.")
 			notes = append(notes, "Do not assume the action succeeded from tool output alone; inspect the screenshot and verify whether the expected UI change happened before answering or retrying.")
 		}
 	}

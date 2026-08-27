@@ -208,6 +208,10 @@ add_test(NAME frame_service_bridge_policy
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_frame_service_bridge_policy.sh
 )
 
+add_test(NAME board_low_level_smoke_scripts
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_board_low_level_smoke.sh
+)
+
 find_program(NODE_EXECUTABLE node)
 if(NODE_EXECUTABLE)
     add_test(NAME config_web_dynamic_form
