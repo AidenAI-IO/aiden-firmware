@@ -1990,6 +1990,190 @@ func TestServerTerminationMarkerWaitsForAllRequestOwnedWork(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatCancelConcurrentRequests(t *testing.T) {
+	const requestCount = 256
+
+	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
+	requestIDs := make([]string, requestCount)
+	runDone := make([]<-chan struct{}, requestCount)
+	for i := range requestCount {
+		requestID := fmt.Sprintf("req-concurrent-cancel-%d", i)
+		ctx, cancel := context.WithCancel(context.Background())
+		if !server.registerActiveRun(requestID, cancel) {
+			t.Fatalf("registerActiveRun(%q) failed", requestID)
+		}
+		requestIDs[i] = requestID
+		runDone[i] = ctx.Done()
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, requestCount)
+	var wg sync.WaitGroup
+	for _, requestID := range requestIDs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+
+			req := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"`+requestID+`"}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.handleChatCancel(rec, req)
+			if rec.Code != http.StatusOK {
+				errs <- fmt.Errorf("cancel %q returned status %d: %s", requestID, rec.Code, rec.Body.String())
+				return
+			}
+			var resp ChatCancelResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				errs <- fmt.Errorf("decode cancel %q response: %w", requestID, err)
+				return
+			}
+			if resp.Status != "canceled" || resp.RequestID != requestID {
+				errs <- fmt.Errorf("cancel %q response = %#v", requestID, resp)
+				return
+			}
+			server.unregisterActiveRun(requestID)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if t.Failed() {
+		return
+	}
+
+	for i, done := range runDone {
+		select {
+		case <-done:
+		default:
+			t.Errorf("request %q was not canceled", requestIDs[i])
+		}
+	}
+	server.terminatedRequestsMu.RLock()
+	defer server.terminatedRequestsMu.RUnlock()
+	if server.terminatedRequests != nil {
+		t.Fatalf("termination marker map retained %d entries", len(server.terminatedRequests))
+	}
+}
+
+func TestServerReusedRequestTerminationSurvivesPreviousCleanup(t *testing.T) {
+	const requestID = "req-reused-during-cleanup"
+
+	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
+	if !server.registerActiveRun(requestID, func() {}) {
+		t.Fatal("registerActiveRun() failed for previous lifecycle")
+	}
+	if !server.cancelActiveRun(requestID) {
+		t.Fatal("cancelActiveRun() failed for previous lifecycle")
+	}
+
+	// Hold output inspection so the previous lifecycle cleanup overlaps the
+	// registration and cancellation of the reused request ID.
+	server.activeOutputsMu.Lock()
+	previousCleanupDone := make(chan struct{})
+	go func() {
+		server.unregisterActiveRun(requestID)
+		close(previousCleanupDone)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		server.activeRunsMu.Lock()
+		_, active := server.activeRuns[requestID]
+		server.activeRunsMu.Unlock()
+		if !active {
+			break
+		}
+		if time.Now().After(deadline) {
+			server.activeOutputsMu.Unlock()
+			t.Fatal("previous lifecycle did not release its active run")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Give cleanup time to reach the intentionally blocked output check.
+	time.Sleep(10 * time.Millisecond)
+
+	registered := make(chan bool, 1)
+	go func() {
+		registered <- server.registerActiveRun(requestID, func() {})
+	}()
+	newLifecycleCanceled := false
+	select {
+	case ok := <-registered:
+		if !ok {
+			server.activeOutputsMu.Unlock()
+			t.Fatal("registerActiveRun() failed for reused lifecycle")
+		}
+		if !server.cancelActiveRun(requestID) {
+			server.activeOutputsMu.Unlock()
+			t.Fatal("cancelActiveRun() failed for reused lifecycle")
+		}
+		newLifecycleCanceled = true
+	case <-time.After(20 * time.Millisecond):
+		// The current lock ordering blocks registration until cleanup finishes.
+	}
+	server.activeOutputsMu.Unlock()
+
+	select {
+	case <-previousCleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("previous lifecycle cleanup did not finish")
+	}
+	if !newLifecycleCanceled {
+		select {
+		case ok := <-registered:
+			if !ok {
+				t.Fatal("registerActiveRun() failed for reused lifecycle")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("reused lifecycle registration did not finish")
+		}
+		if !server.cancelActiveRun(requestID) {
+			t.Fatal("cancelActiveRun() failed for reused lifecycle")
+		}
+	}
+
+	if !server.isRequestTerminated(requestID) {
+		t.Fatal("previous lifecycle cleanup removed the reused lifecycle marker")
+	}
+	server.unregisterActiveRun(requestID)
+}
+
+func TestServerReleasesTerminationMarkerStorageAfterBurst(t *testing.T) {
+	const requestCount = 10_000
+
+	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
+	requestIDs := make([]string, requestCount)
+	for i := range requestCount {
+		requestID := fmt.Sprintf("req-marker-burst-%d", i)
+		if !server.registerActiveRun(requestID, func() {}) {
+			t.Fatalf("registerActiveRun(%q) failed", requestID)
+		}
+		if !server.cancelActiveRun(requestID) {
+			t.Fatalf("cancelActiveRun(%q) failed", requestID)
+		}
+		requestIDs[i] = requestID
+	}
+
+	server.terminatedRequestsMu.RLock()
+	markerCount := len(server.terminatedRequests)
+	server.terminatedRequestsMu.RUnlock()
+	if markerCount != requestCount {
+		t.Fatalf("termination marker count = %d, want %d", markerCount, requestCount)
+	}
+
+	for _, requestID := range requestIDs {
+		server.unregisterActiveRun(requestID)
+	}
+	server.terminatedRequestsMu.RLock()
+	defer server.terminatedRequestsMu.RUnlock()
+	if server.terminatedRequests != nil {
+		t.Fatalf("termination marker map retained %d entries after burst cleanup", len(server.terminatedRequests))
+	}
+}
+
 func TestServerCloseClearsTerminationMarkers(t *testing.T) {
 	server := &Server{
 		activeRuns:         make(map[string]context.CancelFunc),
