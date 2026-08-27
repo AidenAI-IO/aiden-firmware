@@ -3009,6 +3009,9 @@ func TestTouchGestureSchemaExposesAtomicActions(t *testing.T) {
 	if !ok || !slices.Contains(action["enum"].([]string), "touch_down") || !slices.Contains(action["enum"].([]string), "touch_up") {
 		t.Fatalf("atomic action enum = %#v", itemProperties["action"])
 	}
+	if _, ok := itemProperties["speed"].(map[string]any); !ok {
+		t.Fatalf("atomic speed schema = %#v", itemProperties["speed"])
+	}
 }
 
 func TestTouchGestureSchemaUsesUnifiedTypesOnEveryPlatform(t *testing.T) {

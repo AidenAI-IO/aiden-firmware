@@ -89,12 +89,15 @@
           "status": "active",
           "tool": "touch_gesture",
           "input": {
-            "type": "swipe",
-            "start": { "x": 500, "y": 1000 },
-            "end": { "x": 500, "y": 500 },
-            "speed": 500
+            "actions": [
+              { "action": "touch_down", "point": { "x": 500, "y": 1000 } },
+              { "action": "wait", "ms": 250 },
+              { "action": "move_to", "point": { "x": 500, "y": 500 }, "duration_ms": 900 },
+              { "action": "wait", "ms": 600 },
+              { "action": "touch_up" }
+            ]
           },
-          "note": "verified: slow bottom-edge swipe up to mid-screen"
+          "note": "verified: bottom edge swipe up to mid-screen, pause before release"
         },
         "android": {
           "status": "active",
@@ -127,23 +130,18 @@
           "status": "active",
           "tool": "touch_gesture",
           "input": {
-            "type": "swipe",
-            "start": { "x": 500, "y": 1000 },
-            "end": { "x": 1000, "y": 1000 },
-            "speed": 500
+            "actions": [
+              { "action": "touch_down", "point": { "x": 500, "y": 1000 } },
+              { "action": "wait", "ms": 80 },
+              { "action": "move_to", "point": { "x": 1000, "y": 1000 }, "duration_ms": 400 },
+              { "action": "touch_up" }
+            ]
           },
           "note": "verified: swipe right from bottom center to switch to the previous app"
         },
         "android": {
-          "status": "active",
-          "tool": "touch_gesture",
-          "input": {
-            "type": "swipe",
-            "start": { "x": 500, "y": 1000 },
-            "end": { "x": 1000, "y": 1000 },
-            "speed": 500
-          },
-          "note": "swipe right from bottom center to switch to the previous app"
+          "status": "reserved",
+          "note": "unavailable: double KEYCODE_APP_SWITCH and bottom-edge gestures do not reliably return to the previous app on Android"
         },
         "mac": {
           "status": "reserved",
@@ -160,10 +158,12 @@
           "status": "active",
           "tool": "touch_gesture",
           "input": {
-            "type": "swipe",
-            "start": { "x": 500, "y": 1000 },
-            "end": { "x": 0, "y": 1000 },
-            "speed": 500
+            "actions": [
+              { "action": "touch_down", "point": { "x": 500, "y": 1000 } },
+              { "action": "wait", "ms": 80 },
+              { "action": "move_to", "point": { "x": 0, "y": 1000 }, "duration_ms": 400 },
+              { "action": "touch_up" }
+            ]
           },
           "note": "verified: swipe left from bottom center to left edge"
         },
@@ -186,10 +186,12 @@
           "status": "active",
           "tool": "touch_gesture",
           "input": {
-            "type": "swipe",
-            "start": { "x": 500, "y": 1000 },
-            "end": { "x": 1000, "y": 1000 },
-            "speed": 500
+            "actions": [
+              { "action": "touch_down", "point": { "x": 500, "y": 1000 } },
+              { "action": "wait", "ms": 80 },
+              { "action": "move_to", "point": { "x": 1000, "y": 1000 }, "duration_ms": 400 },
+              { "action": "touch_up" }
+            ]
           },
           "note": "verified: swipe right from bottom center to right edge"
         },
@@ -212,17 +214,24 @@
           "status": "active",
           "tool": "touch_gesture",
           "input": {
-            "type": "swipe",
-            "start": { "x": 100, "y": 0 },
-            "end": { "x": 100, "y": 700 },
-            "speed": 500
+            "actions": [
+              { "action": "touch_down", "point": { "x": 100, "y": 0 } },
+              { "action": "wait", "ms": 80 },
+              { "action": "move_to", "point": { "x": 100, "y": 700 }, "duration_ms": 500 },
+              { "action": "touch_up" }
+            ]
           },
           "note": "verified: swipe down from top-left area"
         },
         "android": {
           "status": "active",
           "tool": "touch_gesture",
-          "input": { "type": "swipe", "start": { "x": 500, "y": 250 }, "end": { "x": 500, "y": 750 }, "duration_ms": 300 }
+          "input": {
+            "type": "swipe",
+            "start": { "x": 300, "y": 0 },
+            "end": { "x": 300, "y": 250 },
+            "speed": 2500
+          }
         },
         "mac": {
           "status": "reserved",
@@ -330,17 +339,24 @@
           "status": "active",
           "tool": "touch_gesture",
           "input": {
-            "type": "swipe",
-            "start": { "x": 500, "y": 1000 },
-            "end": { "x": 500, "y": 500 },
-            "speed": 500
+            "actions": [
+              { "action": "touch_down", "point": { "x": 500, "y": 1000 } },
+              { "action": "wait", "ms": 80 },
+              { "action": "move_to", "point": { "x": 500, "y": 500 }, "duration_ms": 400 },
+              { "action": "touch_up" }
+            ]
           },
           "note": "verified: swipe up from bottom center to mid-screen"
         },
         "android": {
           "status": "active",
           "tool": "touch_gesture",
-          "input": { "type": "swipe", "start": { "x": 500, "y": 750 }, "end": { "x": 500, "y": 250 }, "speed": 2500 }
+          "input": {
+            "type": "swipe",
+            "start": { "x": 500, "y": 750 },
+            "end": { "x": 500, "y": 250 },
+            "speed": 2500
+          }
         },
         "mac": {
           "status": "active",
@@ -674,10 +690,12 @@
           "status": "active",
           "tool": "touch_gesture",
           "input": {
-            "type": "swipe",
-            "start": { "x": 500, "y": 500 },
-            "end": { "x": 500, "y": 120 },
-            "speed": 500
+            "actions": [
+              { "action": "touch_down", "point": { "x": 500, "y": 500 } },
+              { "action": "wait", "ms": 80 },
+              { "action": "move_to", "point": { "x": 500, "y": 120 }, "duration_ms": 300 },
+              { "action": "touch_up" }
+            ]
           },
           "note": "open recents first, press center of card and quick flick up"
         },

@@ -283,6 +283,28 @@ func TestTouchGestureToolAdapterAtomicActions(t *testing.T) {
 	}
 }
 
+func TestTouchGestureToolAdapterAtomicMoveToSpeed(t *testing.T) {
+	provider := NewMockProvider()
+	adapter := NewTouchGestureToolAdapter(provider)
+	result, err := adapter.Call(context.Background(), `{"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"move_to","point":{"x":500,"y":300},"speed":2000},{"action":"move_to","point":{"x":900,"y":300},"speed":100,"duration_ms":75},{"action":"touch_up"}]}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if result != "ok" {
+		t.Fatalf("Call() result = %q, want ok", result)
+	}
+	actions := provider.TouchActionCalls()
+	if len(actions) != 4 {
+		t.Fatalf("recorded %d actions, want 4", len(actions))
+	}
+	if actions[1].DurationMs != 200 {
+		t.Fatalf("speed-derived move duration = %d, want 200", actions[1].DurationMs)
+	}
+	if actions[2].DurationMs != 75 {
+		t.Fatalf("explicit move duration = %d, want 75", actions[2].DurationMs)
+	}
+}
+
 func TestTouchGestureToolAdapterAtomicActionsValidation(t *testing.T) {
 	provider := NewMockProvider()
 	adapter := NewTouchGestureToolAdapter(provider)
@@ -292,6 +314,9 @@ func TestTouchGestureToolAdapterAtomicActionsValidation(t *testing.T) {
 		`{"actions":[{"action":"wait"}]}`,
 		`{"actions":[{"action":"pause","ms":10}]}`,
 		`{"actions":[{"action":"wait","ms":30001}]}`,
+		`{"actions":[{"action":"touch_down","point":{"x":500,"y":500}},{"action":"move_to","point":{"x":500,"y":300},"speed":0},{"action":"touch_up"}]}`,
+		`{"actions":[{"action":"move_to","point":{"x":500,"y":300},"speed":2500}]}`,
+		`{"actions":[{"action":"touch_down","point":{"x":0,"y":0}},{"action":"move_to","point":{"x":1000,"y":1000},"speed":0.01},{"action":"touch_up"}]}`,
 	} {
 		if _, err := adapter.Call(context.Background(), input); AsError(err) == nil || AsError(err).Kind != ErrInvalidArguments {
 			t.Fatalf("Call(%s) error = %v, want invalid arguments", input, err)

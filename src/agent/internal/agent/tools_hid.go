@@ -877,7 +877,7 @@ func (t *TouchGestureTool) platform() string {
 }
 
 func (t *TouchGestureTool) Description() string {
-	return `Perform a touch/pointer program via HID. Prefer the atomic actions form: {"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"wait","ms":100},{"action":"move_to","point":{"x":500,"y":300}},{"action":"touch_up"}]}. The actions execute in order and keep the contact pressed until touch_up; use them for precise taps, long presses, and drags. The legacy type/point gesture form remains accepted for compatibility. ` +
+	return `Perform a touch/pointer program via HID. Prefer the atomic actions form: {"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"wait","ms":100},{"action":"move_to","point":{"x":500,"y":300},"speed":2500},{"action":"touch_up"}]}. The actions execute in order and keep the contact pressed until touch_up; use them for precise taps, long presses, and drags. Atomic move_to accepts speed in normalized coordinate units per second; duration_ms overrides speed, and omitting both preserves immediate movement. The legacy type/point gesture form remains accepted for compatibility. ` +
 		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Point, start, and end never accept screenshot pixels: convert a target measured at (pixel_x,pixel_y) in the latest image with x=pixel_x/max(image_width-1,1)*1000 and y=pixel_y/max(image_height-1,1)*1000 before calling. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
 		`For swipe, provide start and either end or direction (up/down/left/right). Speed is normalized coordinate units per second and defaults to 2500; duration_ms may be supplied to override the calculated duration. hold_before_ms and hold_after_ms optionally dwell after press and before release, and steps controls HID interpolation (provider default 24). A direction-only swipe travels toward the corresponding screen edge when duration_ms is omitted, or travels speed*duration_ms/1000 normalized units when duration_ms is supplied. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
@@ -892,7 +892,7 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 			"type":        "array",
 			"minItems":    1,
 			"maxItems":    128,
-			"description": "Preferred atomic touch program. Each action is one of touch_down, move_to, wait, or touch_up. move_to and touch_down require point; wait requires ms; move_to may use duration_ms for interpolated movement. A program must end with touch_up.",
+			"description": "Preferred atomic touch program. Each action is one of touch_down, move_to, wait, or touch_up. move_to and touch_down require point; wait requires ms. move_to may use speed or duration_ms for interpolated movement, with duration_ms taking precedence. A program must end with touch_up.",
 			"items": objectArgsSchema(map[string]any{
 				"action":      stringEnumArgSchema("Atomic action to execute.", "touch_down", "move_to", "wait", "touch_up"),
 				"point":       pointSchema("Normalized point for move_to or touch_down."),
@@ -900,6 +900,7 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 				"y":           coordinateSchema("Normalized Y coordinate; use point for new programs.", 300),
 				"ms":          rangedIntegerArgSchema("Wait duration in milliseconds.", 0, 30000),
 				"duration_ms": rangedIntegerArgSchema("Optional movement duration for move_to in milliseconds.", 0, 30000),
+				"speed":       speedSchema,
 				"button":      stringEnumArgSchema("Pointer button held during the contact.", "left", "right", "middle"),
 			}, "action"),
 		},

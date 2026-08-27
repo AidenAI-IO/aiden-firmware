@@ -171,6 +171,7 @@ type atomicTouchActionInput struct {
 	Y          *float64      `json:"y"`
 	Ms         *int          `json:"ms"`
 	DurationMs *int          `json:"duration_ms"`
+	Speed      *float64      `json:"speed"`
 	Button     string        `json:"button"`
 }
 
@@ -192,6 +193,7 @@ func (t *TouchGestureToolAdapter) callAtomic(ctx context.Context, rawActions []j
 	actions := make([]TouchAction, 0, len(rawActions))
 	contactActive := false
 	totalWaitMs := 0
+	var currentPoint *pointerPoint
 	for index, raw := range rawActions {
 		var parsed atomicTouchActionInput
 		if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -245,16 +247,39 @@ func (t *TouchGestureToolAdapter) callAtomic(ctx context.Context, rawActions []j
 				return "", InvalidArgumentsf("actions[%d] touch_down requires touch_up before starting another contact", index)
 			}
 			contactActive = true
+			currentPoint = point
 		case "move_to":
 			if action.Point == nil {
 				return "", InvalidArgumentsf("actions[%d] %s requires point (x/y)", index, actionType)
 			}
+			if parsed.Speed != nil {
+				if math.IsNaN(*parsed.Speed) || math.IsInf(*parsed.Speed, 0) || *parsed.Speed <= 0 {
+					return "", InvalidArgumentsf("actions[%d] speed must be a positive finite number", index)
+				}
+				// Explicit timing retains the same precedence as legacy swipe:
+				// duration_ms (or its ms alias) overrides speed. Otherwise,
+				// derive movement time from normalized 0-1000 coordinates.
+				if duration == nil {
+					if currentPoint == nil {
+						return "", InvalidArgumentsf("actions[%d] move_to speed requires a preceding touch_down or move_to point", index)
+					}
+					calculatedDuration := swipeDurationForDistance(currentPoint, point, *parsed.Speed)
+					if calculatedDuration > 30000 {
+						return "", InvalidArgumentsf("actions[%d] speed is too low for move_to; calculated duration_ms=%d exceeds 30000", index, calculatedDuration)
+					}
+					action.DurationMs = calculatedDuration
+				}
+			}
+			currentPoint = point
 		case "touch_up":
 			// point is optional: release at the current contact location.
 			if !contactActive {
 				return "", InvalidArgumentsf("actions[%d] touch_up requires an active contact", index)
 			}
 			contactActive = false
+			if point != nil {
+				currentPoint = point
+			}
 		case "wait":
 			if duration == nil {
 				return "", InvalidArgumentsf("actions[%d] wait requires ms", index)

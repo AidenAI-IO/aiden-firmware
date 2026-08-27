@@ -121,8 +121,12 @@ input. The program uses normalized `0..1000` points and the actions
 session and must release every contact before returning. Example:
 
 ```json
-{"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"wait","ms":80},{"action":"move_to","point":{"x":500,"y":300}},{"action":"touch_up"}]}
+{"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"wait","ms":80},{"action":"move_to","point":{"x":500,"y":300},"speed":2500},{"action":"touch_up"}]}
 ```
+
+`move_to.speed` is optional and uses normalized coordinate units per second.
+When both `speed` and `duration_ms` are present, `duration_ms` takes precedence;
+omitting both preserves the existing immediate-move behavior.
 
 The former one-object gesture syntax remains accepted for compatibility with
 existing quick actions and scripts.

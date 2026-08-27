@@ -28,7 +28,7 @@ JPEG noise, animation frames, and repeated content make exact pixel displacement
   "actions": [
     {"action": "touch_down", "point": {"x": 500, "y": 700}},
     {"action": "wait", "ms": 80},
-    {"action": "move_to", "point": {"x": 500, "y": 300}},
+    {"action": "move_to", "point": {"x": 500, "y": 300}, "speed": 2500},
     {"action": "touch_up"}
   ]
 }
@@ -37,7 +37,7 @@ JPEG noise, animation frames, and repeated content make exact pixel displacement
 The action vocabulary is deliberately small:
 
 - `touch_down`: starts a contact and requires `point`.
-- `move_to`: moves to `point`, preserving the current contact state.
+- `move_to`: moves to `point`, preserving the current contact state. Optional `speed` uses normalized coordinate units per second and derives movement time from the preceding point. `duration_ms` overrides `speed`; omitting both keeps the existing immediate move.
 - `wait`: waits for `ms` milliseconds without changing contact state.
 - `touch_up`: releases the current contact; `point` is optional.
 
