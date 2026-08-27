@@ -189,6 +189,7 @@ int main(int argc, char** argv) {
     // when a board boots without an HDMI source.
     manager_options.recovery_initial_backoff_ms = 1000;
     manager_options.recovery_max_backoff_ms = 5000;
+    manager_options.recovery_idle_max_backoff_ms = 10000;
     aiden::FrameCaptureManager manager(&source, &server, manager_options);
     server.set_capture_handler(
         [&manager](uint32_t timeout_ms,
