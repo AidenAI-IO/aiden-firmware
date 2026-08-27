@@ -63,6 +63,9 @@ func TestImageDiffRemainsDiagnosticOnly(t *testing.T) {
 	if spec.AgentExposed {
 		t.Fatal("image_diff should not be exposed to the conversational Agent")
 	}
+	if spec.AgentLoadAll {
+		t.Fatal("image_diff should remain hidden when load_all_tools is enabled")
+	}
 	if !spec.HTTPExposed {
 		t.Fatal("image_diff should remain available to the HTTP Tool Lab")
 	}
@@ -70,6 +73,12 @@ func TestImageDiffRemainsDiagnosticOnly(t *testing.T) {
 	for _, tool := range runtime.availableTools() {
 		if tool != nil && tool.Name() == "image_diff" {
 			t.Fatal("image_diff should not be included in the default conversational Agent catalog")
+		}
+	}
+	runtime.config.LoadAllTools = true
+	for _, tool := range runtime.availableTools() {
+		if tool != nil && tool.Name() == "image_diff" {
+			t.Fatal("image_diff should not be included when load_all_tools is enabled")
 		}
 	}
 	if _, ok := runtime.ToolDescriptorByName("image_diff"); !ok {

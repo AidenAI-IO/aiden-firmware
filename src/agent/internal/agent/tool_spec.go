@@ -29,6 +29,10 @@ type ToolSpec struct {
 	InputMode    string
 	ExampleInput string
 	AgentExposed bool
+	// AgentLoadAll controls whether a tool hidden from the default
+	// conversational catalog can be restored by load_all_tools. Some tools,
+	// such as image_diff, are diagnostic-only and must remain hidden even then.
+	AgentLoadAll bool
 	HTTPExposed  bool
 	// AgentPlatforms lists device_type-derived platforms where the tool should
 	// be shown to the conversational model. Empty means all platforms.
@@ -67,6 +71,7 @@ type toolSpecMetadata struct {
 	InputMode      string
 	ExampleInput   string
 	AgentExposed   *bool
+	AgentLoadAll   *bool
 	HTTPExposed    *bool
 	AgentPlatforms []string
 }
@@ -151,8 +156,10 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		// Post-action tools now compute screen_changed automatically. Keep
 		// image_diff available to the HTTP Tool Lab, scripts, and internal
 		// diagnostics, but do not teach the conversational Agent to call it as
-		// a normal step in the visual feedback loop.
+		// a normal step in the visual feedback loop. It remains hidden even when
+		// load_all_tools is enabled.
 		AgentExposed: toolSpecBoolPtr(false),
+		AgentLoadAll: toolSpecBoolPtr(false),
 	},
 	"shell": {
 		Category:     "system",
@@ -363,6 +370,10 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 	if meta.AgentExposed != nil {
 		agentExposed = *meta.AgentExposed
 	}
+	agentLoadAll := !agentExposed
+	if meta.AgentLoadAll != nil {
+		agentLoadAll = *meta.AgentLoadAll
+	}
 	httpExposed := true
 	if meta.HTTPExposed != nil {
 		httpExposed = *meta.HTTPExposed
@@ -384,6 +395,7 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 		InputMode:      defaultString(meta.InputMode, toolInputModeText),
 		ExampleInput:   exampleInput,
 		AgentExposed:   agentExposed,
+		AgentLoadAll:   agentLoadAll,
 		HTTPExposed:    httpExposed,
 		AgentPlatforms: normalizeAgentToolPlatforms(meta.AgentPlatforms),
 	}
@@ -419,14 +431,15 @@ func (s *ToolSpecs) AgentTools(loadAll bool) []langtools.Tool {
 // AgentToolsForPlatform returns conversational tools for the current
 // device_type-derived platform. Platform-specific tools must declare their
 // allowed platforms in builtInToolSpecMetadata; empty metadata means portable.
-// loadAll only bypasses AgentExposed, not HTTP or platform exposure policy.
+// loadAll restores tools explicitly eligible for opt-in exposure, but does not
+// bypass diagnostic-only or platform exposure policy.
 func (s *ToolSpecs) AgentToolsForPlatform(loadAll bool, platform string) []langtools.Tool {
 	if s == nil {
 		return nil
 	}
 	tools := make([]langtools.Tool, 0, len(s.names))
 	for _, spec := range s.All() {
-		if !(loadAll || spec.AgentExposed) {
+		if !(spec.AgentExposed || (loadAll && spec.AgentLoadAll)) {
 			continue
 		}
 		if !spec.AgentAvailableForPlatform(platform) {
