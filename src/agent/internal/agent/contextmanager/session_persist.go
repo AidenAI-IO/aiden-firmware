@@ -34,7 +34,32 @@ func fetchCurrentSession(sessionFolder string) string {
 
 func saveCurrentSession(sessionFolder string, sessionID string) error {
 	sessionIDFile := filepath.Join(sessionFolder, ".current_session")
-	return os.WriteFile(sessionIDFile, []byte(sessionID), 0o644)
+	file, err := os.CreateTemp(sessionFolder, ".current_session-*")
+	if err != nil {
+		return fmt.Errorf("create current session temp file: %w", err)
+	}
+	tempPath := file.Name()
+	defer os.Remove(tempPath)
+
+	if err := file.Chmod(0o644); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("chmod current session temp file: %w", err)
+	}
+	if _, err := file.WriteString(sessionID); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write current session temp file: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync current session temp file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close current session temp file: %w", err)
+	}
+	if err := os.Rename(tempPath, sessionIDFile); err != nil {
+		return fmt.Errorf("install current session file: %w", err)
+	}
+	return nil
 }
 
 func sessionMetadataPath(sessionFolder, sessionID string) string {
