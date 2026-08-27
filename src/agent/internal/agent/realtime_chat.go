@@ -29,6 +29,7 @@ func (s *Server) handleRealtimeChatAsync(w http.ResponseWriter, req ChatRequest,
 		s.pendingResultsMu.Lock()
 		delete(s.pendingResults, requestID)
 		s.pendingResultsMu.Unlock()
+		s.clearRequestTerminationIfInactive(requestID)
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
 	}
@@ -49,6 +50,7 @@ func (s *Server) handleRealtimeChatAsync(w http.ResponseWriter, req ChatRequest,
 				s.pendingResultsMu.Lock()
 				delete(s.pendingResults, requestID)
 				s.pendingResultsMu.Unlock()
+				s.clearRequestTerminationIfInactive(requestID)
 			})
 		}()
 
@@ -133,6 +135,7 @@ func (s *Server) handleRealtimeChatStream(w http.ResponseWriter, r *http.Request
 	runCtx, cancel := context.WithCancel(context.Background())
 	if !s.registerActiveRun(req.RequestID, cancel) {
 		cancel()
+		s.clearRequestTerminationIfInactive(req.RequestID)
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
 	}

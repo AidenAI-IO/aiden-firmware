@@ -90,7 +90,7 @@ type Server struct {
 	activeRuns              map[string]context.CancelFunc
 	activeRunsMu            sync.Mutex
 	terminatedRequests      map[string]struct{}
-	terminatedRequestsMu    sync.Mutex
+	terminatedRequestsMu    sync.RWMutex
 	activeOutputs           map[string]map[*activeTTSOutput]struct{}
 	activeOutputsMu         sync.Mutex
 	pendingSteers           map[string]pendingSteerMessage
@@ -734,6 +734,10 @@ func (s *Server) Close() {
 		}
 		s.httpMu.Unlock()
 	})
+	// A closed server cannot accept new runs, and request-scoped output
+	// registration is rejected while closing, so no termination marker is
+	// needed after shutdown begins.
+	s.clearAllRequestTerminations()
 }
 
 func isLoopbackServerAddr(addr string) bool {
@@ -816,7 +820,6 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	source := chatCancelRequestSource(r)
 
-	s.markRequestTerminated(requestID)
 	runCanceled := s.cancelActiveRun(requestID)
 	outputCanceled := s.interruptRequestOutputs(requestID)
 	if runCanceled || outputCanceled {
@@ -834,6 +837,7 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 	if s.liveActivity != nil {
 		if state := s.liveActivity.Snapshot(requestID); state != nil && isCancelableLiveActivityStatus(state.Status) {
 			s.liveActivity.CancelTask(requestID)
+			s.clearRequestTerminationIfInactive(requestID)
 			if s.logger != nil {
 				s.logger.Info("Chat request live activity canceled without active run: request_id=%s source=%s", requestID, source)
 			}
@@ -842,6 +846,10 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The marker protects a request only while a run or request-scoped output
+	// can still race with cancellation. Unknown or already-finished requests do
+	// not need a tombstone.
+	s.clearRequestTerminationIfInactive(requestID)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "not_running"})
@@ -955,7 +963,10 @@ func (s *Server) registerActiveRun(requestID string, cancel context.CancelFunc) 
 	if requestID == "" {
 		return true
 	}
-	s.clearRequestTermination(requestID)
+	// Serialize registration with termination marking. A successful new run is
+	// the only point at which reusing a request ID should clear its marker.
+	s.terminatedRequestsMu.Lock()
+	defer s.terminatedRequestsMu.Unlock()
 	s.activeRunsMu.Lock()
 	defer s.activeRunsMu.Unlock()
 	if s.closing.Load() {
@@ -968,6 +979,7 @@ func (s *Server) registerActiveRun(requestID string, cancel context.CancelFunc) 
 		return false
 	}
 	s.activeRuns[requestID] = cancel
+	s.deleteRequestTerminationLocked(requestID)
 	return true
 }
 
@@ -978,16 +990,27 @@ func (s *Server) unregisterActiveRun(requestID string) {
 	s.activeRunsMu.Lock()
 	delete(s.activeRuns, requestID)
 	s.activeRunsMu.Unlock()
+	s.clearRequestTerminationIfInactive(requestID)
 }
 
 func (s *Server) cancelActiveRun(requestID string) bool {
-	s.activeRunsMu.Lock()
-	cancel := s.activeRuns[requestID]
-	s.activeRunsMu.Unlock()
-	if cancel == nil {
+	if s == nil || requestID == "" {
 		return false
 	}
-	cancel()
+	s.terminatedRequestsMu.Lock()
+	s.activeRunsMu.Lock()
+	cancel, active := s.activeRuns[requestID]
+	if active && !s.closing.Load() {
+		s.markRequestTerminatedLocked(requestID)
+	}
+	s.activeRunsMu.Unlock()
+	s.terminatedRequestsMu.Unlock()
+	if !active {
+		return false
+	}
+	if cancel != nil {
+		cancel()
+	}
 	return true
 }
 
@@ -1010,11 +1033,20 @@ func (s *Server) markRequestTerminated(requestID string) {
 		return
 	}
 	s.terminatedRequestsMu.Lock()
+	s.markRequestTerminatedLocked(requestID)
+	s.terminatedRequestsMu.Unlock()
+}
+
+func (s *Server) markRequestTerminatedLocked(requestID string) {
 	if s.terminatedRequests == nil {
 		s.terminatedRequests = make(map[string]struct{})
 	}
 	s.terminatedRequests[requestID] = struct{}{}
-	s.terminatedRequestsMu.Unlock()
+}
+
+func (s *Server) isRequestTerminatedLocked(requestID string) bool {
+	_, terminated := s.terminatedRequests[requestID]
+	return terminated
 }
 
 func (s *Server) clearRequestTermination(requestID string) {
@@ -1022,7 +1054,55 @@ func (s *Server) clearRequestTermination(requestID string) {
 		return
 	}
 	s.terminatedRequestsMu.Lock()
+	s.deleteRequestTerminationLocked(requestID)
+	s.terminatedRequestsMu.Unlock()
+}
+
+func (s *Server) deleteRequestTerminationLocked(requestID string) {
 	delete(s.terminatedRequests, requestID)
+	if len(s.terminatedRequests) == 0 {
+		// Releasing an empty map also releases buckets retained after a burst of
+		// cancellations, so the server does not keep the peak map capacity.
+		s.terminatedRequests = nil
+	}
+}
+
+// clearRequestTerminationIfInactive drops a cancellation marker once no
+// request-owned work can still observe it. Keeping the marker while another
+// run or output is active prevents a late TTS start from racing cancellation.
+func (s *Server) clearRequestTerminationIfInactive(requestID string) {
+	if s == nil || requestID == "" {
+		return
+	}
+
+	// Keep the activity check and deletion under one termination critical
+	// section so a concurrent cancellation cannot race a cleanup callback.
+	s.terminatedRequestsMu.Lock()
+	defer s.terminatedRequestsMu.Unlock()
+
+	s.activeRunsMu.Lock()
+	_, runActive := s.activeRuns[requestID]
+	s.activeRunsMu.Unlock()
+	if runActive {
+		return
+	}
+
+	s.activeOutputsMu.Lock()
+	outputActive := len(s.activeOutputs[requestID]) > 0
+	s.activeOutputsMu.Unlock()
+	if outputActive {
+		return
+	}
+
+	s.deleteRequestTerminationLocked(requestID)
+}
+
+func (s *Server) clearAllRequestTerminations() {
+	if s == nil {
+		return
+	}
+	s.terminatedRequestsMu.Lock()
+	s.terminatedRequests = nil
 	s.terminatedRequestsMu.Unlock()
 }
 
@@ -1030,9 +1110,9 @@ func (s *Server) isRequestTerminated(requestID string) bool {
 	if s == nil || requestID == "" {
 		return false
 	}
-	s.terminatedRequestsMu.Lock()
-	_, terminated := s.terminatedRequests[requestID]
-	s.terminatedRequestsMu.Unlock()
+	s.terminatedRequestsMu.RLock()
+	terminated := s.isRequestTerminatedLocked(requestID)
+	s.terminatedRequestsMu.RUnlock()
 	return terminated
 }
 
@@ -1044,9 +1124,11 @@ func (s *Server) registerActiveOutput(requestID string, output *activeTTSOutput)
 		output.interrupt()
 		return output.finish
 	}
+	s.terminatedRequestsMu.Lock()
 	s.activeOutputsMu.Lock()
-	if s.closing.Load() {
+	if s.closing.Load() || s.isRequestTerminatedLocked(requestID) {
 		s.activeOutputsMu.Unlock()
+		s.terminatedRequestsMu.Unlock()
 		output.interrupt()
 		return output.finish
 	}
@@ -1060,17 +1142,23 @@ func (s *Server) registerActiveOutput(requestID string, output *activeTTSOutput)
 	}
 	outputs[output] = struct{}{}
 	s.activeOutputsMu.Unlock()
+	s.terminatedRequestsMu.Unlock()
+
+	var once sync.Once
 	return func() {
-		s.activeOutputsMu.Lock()
-		outputs := s.activeOutputs[requestID]
-		if outputs != nil {
-			delete(outputs, output)
-			if len(outputs) == 0 {
-				delete(s.activeOutputs, requestID)
+		once.Do(func() {
+			s.activeOutputsMu.Lock()
+			outputs := s.activeOutputs[requestID]
+			if outputs != nil {
+				delete(outputs, output)
+				if len(outputs) == 0 {
+					delete(s.activeOutputs, requestID)
+				}
 			}
-		}
-		s.activeOutputsMu.Unlock()
-		output.finish()
+			s.activeOutputsMu.Unlock()
+			output.finish()
+			s.clearRequestTerminationIfInactive(requestID)
+		})
 	}
 }
 
@@ -1080,6 +1168,10 @@ func (s *Server) snapshotActiveOutputs(requestID string) []*activeTTSOutput {
 	}
 	s.activeOutputsMu.Lock()
 	defer s.activeOutputsMu.Unlock()
+	return s.snapshotActiveOutputsLocked(requestID)
+}
+
+func (s *Server) snapshotActiveOutputsLocked(requestID string) []*activeTTSOutput {
 	outputs := s.activeOutputs[requestID]
 	if len(outputs) == 0 {
 		return nil
@@ -1092,7 +1184,17 @@ func (s *Server) snapshotActiveOutputs(requestID string) []*activeTTSOutput {
 }
 
 func (s *Server) interruptRequestOutputs(requestID string) bool {
-	outputs := s.snapshotActiveOutputs(requestID)
+	if s == nil || requestID == "" {
+		return false
+	}
+	s.terminatedRequestsMu.Lock()
+	s.activeOutputsMu.Lock()
+	outputs := s.snapshotActiveOutputsLocked(requestID)
+	s.activeOutputsMu.Unlock()
+	if len(outputs) > 0 && !s.closing.Load() {
+		s.markRequestTerminatedLocked(requestID)
+	}
+	s.terminatedRequestsMu.Unlock()
 	if len(outputs) == 0 {
 		return false
 	}
@@ -1308,6 +1410,7 @@ func (s *Server) handleChatAsync(
 		s.pendingResultsMu.Lock()
 		delete(s.pendingResults, requestID)
 		s.pendingResultsMu.Unlock()
+		s.clearRequestTerminationIfInactive(requestID)
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
 	}
@@ -1335,6 +1438,7 @@ func (s *Server) handleChatAsync(
 				s.pendingResultsMu.Lock()
 				delete(s.pendingResults, requestID)
 				s.pendingResultsMu.Unlock()
+				s.clearRequestTerminationIfInactive(requestID)
 			})
 		}()
 
@@ -1706,6 +1810,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	if !s.registerActiveRun(req.RequestID, cancel) {
 		s.logger.Error("Request ID already in use: %s", req.RequestID)
 		cancel()
+		s.clearRequestTerminationIfInactive(req.RequestID)
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
 	}

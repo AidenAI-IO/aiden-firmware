@@ -1844,7 +1844,11 @@ func TestServerShouldSpeakToolCallRequiresTTSTag(t *testing.T) {
 }
 
 func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
-	server := &Server{logger: newTestLogger(), activeRuns: make(map[string]context.CancelFunc)}
+	server := &Server{
+		logger:             newTestLogger(),
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	server.registerActiveRun("req-1", cancel)
 
@@ -1869,6 +1873,136 @@ func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
 	}
 	if resp.Status != "canceled" || resp.RequestID != "req-1" {
 		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	if !server.isRequestTerminated("req-1") {
+		t.Fatal("active request was not marked terminated")
+	}
+	server.unregisterActiveRun("req-1")
+	if server.isRequestTerminated("req-1") {
+		t.Fatal("termination marker remained after active run cleanup")
+	}
+}
+
+func TestServerHandleChatCancelUnknownRequestDoesNotRetainTermination(t *testing.T) {
+	server := &Server{
+		logger:             newTestLogger(),
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"req-unknown"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleChatCancel(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "not_running" || resp.RequestID != "req-unknown" {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	if server.isRequestTerminated("req-unknown") {
+		t.Fatal("unknown request left a termination marker")
+	}
+}
+
+func TestServerUnregisterActiveRunClearsTermination(t *testing.T) {
+	server := &Server{
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+	}
+	_, cancel := context.WithCancel(context.Background())
+	if !server.registerActiveRun("req-finished", cancel) {
+		t.Fatal("registerActiveRun() failed")
+	}
+	server.markRequestTerminated("req-finished")
+	server.unregisterActiveRun("req-finished")
+
+	if server.isRequestTerminated("req-finished") {
+		t.Fatal("finished request left a termination marker")
+	}
+}
+
+func TestServerUnregisterActiveOutputClearsTermination(t *testing.T) {
+	server := &Server{terminatedRequests: make(map[string]struct{})}
+	output := newActiveTTSOutput(nil)
+	unregister := server.registerActiveOutput("req-output-finished", output)
+	server.markRequestTerminated("req-output-finished")
+	unregister()
+
+	if server.isRequestTerminated("req-output-finished") {
+		t.Fatal("finished output left a termination marker")
+	}
+}
+
+func TestServerRegisterActiveOutputRejectsTerminatedRequest(t *testing.T) {
+	requestID := "req-output-after-cancel"
+	server := &Server{terminatedRequests: make(map[string]struct{})}
+	server.markRequestTerminated(requestID)
+
+	outputCtx, cancelOutput := context.WithCancel(context.Background())
+	output := newActiveTTSOutput(cancelOutput)
+	unregister := server.registerActiveOutput(requestID, output)
+	defer unregister()
+
+	select {
+	case <-outputCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("terminated request output was not interrupted")
+	}
+	if outputs := server.snapshotActiveOutputs(requestID); len(outputs) != 0 {
+		t.Fatalf("terminated request registered %d active outputs, want 0", len(outputs))
+	}
+}
+
+func TestServerTerminationMarkerWaitsForAllRequestOwnedWork(t *testing.T) {
+	requestID := "req-multiple-resources"
+	server := &Server{
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+	}
+	_, cancel := context.WithCancel(context.Background())
+	if !server.registerActiveRun(requestID, cancel) {
+		t.Fatal("registerActiveRun() failed")
+	}
+	output := newActiveTTSOutput(nil)
+	unregisterOutput := server.registerActiveOutput(requestID, output)
+	server.markRequestTerminated(requestID)
+
+	server.unregisterActiveRun(requestID)
+	if !server.isRequestTerminated(requestID) {
+		t.Fatal("termination marker was cleared while output was still active")
+	}
+
+	unregisterOutput()
+	if server.isRequestTerminated(requestID) {
+		t.Fatal("termination marker remained after all request work finished")
+	}
+}
+
+func TestServerCloseClearsTerminationMarkers(t *testing.T) {
+	server := &Server{
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+	}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if !server.registerActiveRun("req-closed", cancel) {
+		t.Fatal("registerActiveRun() failed")
+	}
+	server.markRequestTerminated("req-closed")
+
+	server.Close()
+
+	server.terminatedRequestsMu.Lock()
+	count := len(server.terminatedRequests)
+	server.terminatedRequestsMu.Unlock()
+	if count != 0 {
+		t.Fatalf("termination marker count after Close() = %d, want 0", count)
 	}
 }
 
