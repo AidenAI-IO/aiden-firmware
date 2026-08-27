@@ -67,6 +67,9 @@ const (
 	defaultVoiceMaxTurns              = 0
 	defaultVoiceMaxResponseTokens     = 300
 	defaultMaxIterations              = -1
+	// GPIO 3 (physical pin 38) is the Quick Capture button on Luckfox Pico Zero.
+	// Zero disables the trigger; see QuickCaptureConfig.Validate.
+	defaultQuickCaptureGPIOPin = 3
 
 	defaultTelemetryProvider    = "langfuse"
 	defaultTelemetryTimeoutSec  = 30
@@ -125,6 +128,11 @@ func DefaultConfig() Config {
 		},
 		FrameService: FrameServiceConfig{
 			KeepStreamOn: false,
+		},
+		QuickCapture: QuickCaptureConfig{
+			Enabled:         defaultBoolPtr(true),
+			GPIOPin:         defaultQuickCaptureGPIOPin,
+			ScreenMemoryTTL: DefaultScreenMemoryTTL,
 		},
 		VoiceNotifications: VoiceNotificationsConfig{
 			Enabled:    defaultBoolPtr(true),

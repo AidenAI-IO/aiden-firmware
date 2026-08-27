@@ -140,6 +140,73 @@ func TestRecallDeviceMemoryToolToleratesMalformedLLMInput(t *testing.T) {
 	}
 }
 
+func TestRecallDeviceMemoryToolFallsBackFromOverSpecificTags(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := NewDeviceMemoryStore(filepath.Join(root, "device"))
+	if _, err := store.Upsert(ctx, DeviceMemoryItem{
+		ID: "dev_fallback", Type: "procedure", Status: deviceMemoryStatusActive,
+		Title: "QA Notes title persistence", Summary: "Preview then Edit before Save and reopen",
+		Content: "The title remains after reopening.", DeviceID: "default",
+		AppName: "QA Notes", Tags: []string{"episode-memory:v1", "qa-notes", "title", "save"},
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	tool := NewRecallDeviceMemoryTool(store)
+	out, err := tool.Call(ctx, `{"terms":["QA Notes","title","Save"],"tags":["verification"],"entities":["QA Notes"],"types":["procedure"],"limit":5}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if !strings.Contains(out, `"dev_fallback"`) {
+		t.Fatalf("Call() returned %q; expected free-text fallback to recover the procedure", out)
+	}
+}
+
+func TestRecallDeviceMemoryToolDoesNotReturnUnrelatedScopedCandidates(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := NewDeviceMemoryStore(filepath.Join(root, "device"))
+	if _, err := store.Upsert(ctx, DeviceMemoryItem{
+		ID: "dev_scoped_fallback", Type: "failure", Status: deviceMemoryStatusActive,
+		Title: "Verified guard", Content: "Check the required field before continuing.", DeviceID: "default",
+		Tags: []string{episodeMemoryTag},
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	tool := NewRecallDeviceMemoryTool(store)
+	out, err := tool.Call(ctx, `{"terms":["unmatched-language-query"],"types":["failure"],"device_id":"default","limit":5}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if strings.Contains(out, `"dev_scoped_fallback"`) {
+		t.Fatalf("Call() returned %q; unrelated lexical miss must not broaden to arbitrary scoped candidates", out)
+	}
+}
+
+func TestRecallDeviceMemoryToolFallbackPreservesEntityBoundary(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := NewDeviceMemoryStore(filepath.Join(root, "device"))
+	if _, err := store.Upsert(ctx, DeviceMemoryItem{
+		ID: "dev_account_a", Type: "procedure", Status: deviceMemoryStatusActive,
+		Title: "Save the draft", Content: "Save the draft before reopening it.", DeviceID: "default",
+		Tags: []string{episodeMemoryTag, "draft"}, Entities: []string{"Account A"},
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	tool := NewRecallDeviceMemoryTool(store)
+	out, err := tool.Call(ctx, `{"terms":["save","draft"],"tags":["verification"],"entities":["Account B"],"types":["procedure"],"limit":5}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if strings.Contains(out, `"dev_account_a"`) {
+		t.Fatalf("Call() returned %q; tag fallback must preserve the account/entity boundary", out)
+	}
+}
+
 func TestSaveMemoryToolToleratesMalformedLLMInput(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

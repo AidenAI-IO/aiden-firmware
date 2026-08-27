@@ -119,6 +119,12 @@ jobs:
         with:
           go-version-file: src/agent/go.mod
           cache-dependency-path: src/agent/go.sum
+      # Host Web UI tests execute JavaScript directly. Declare Node explicitly
+      # instead of relying on the runner image to happen to provide it.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Run C++ unit tests
         run: |
           sudo apt-get update
@@ -127,3 +133,5 @@ jobs:
       - name: Run Go unit tests
         working-directory: src/agent
         run: go test ./...
+      - name: Run Agent Web UI tests
+        run: make test-agent-webui

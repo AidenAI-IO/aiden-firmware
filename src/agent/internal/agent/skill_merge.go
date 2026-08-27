@@ -246,8 +246,20 @@ func mergeResultOK(result *SkillMergeResult, expectedName string) bool {
 	if strings.TrimSpace(skill.Instructions) == "" {
 		return false
 	}
-	if !allowedToolsExist(skill.AllowedTools) {
+	if !registeredToolsExist(skill.AllowedTools) {
 		return false
+	}
+	return true
+}
+
+func registeredToolsExist(tools []string) bool {
+	for _, tool := range tools {
+		if strings.HasPrefix(tool, "delegate_") {
+			continue
+		}
+		if _, ok := builtInToolSpecMetadata[tool]; !ok {
+			return false
+		}
 	}
 	return true
 }
@@ -257,47 +269,12 @@ func allowedToolsExist(tools []string) bool {
 		if strings.HasPrefix(tool, "delegate_") {
 			continue
 		}
-		if _, ok := knownToolNames[tool]; !ok {
+		metadata, ok := builtInToolSpecMetadata[tool]
+		if !ok || (metadata.AgentExposed != nil && !*metadata.AgentExposed) {
 			return false
 		}
 	}
 	return true
-}
-
-var knownToolNames = map[string]struct{}{
-	"audio_volume":           {},
-	"enter_text":             {},
-	"forget_memory":          {},
-	"image_diff":             {},
-	"keyboard_tap":           {},
-	"list_scripts":           {},
-	"mouse_move":             {},
-	"mouse_scroll":           {},
-	toolOpenApp:              {},
-	toolOpenURL:              {},
-	toolBridgeOpenApp:        {},
-	"quick_action":           {},
-	"recall_memory":          {},
-	"recall_session_chunks":  {},
-	"read_script":            {},
-	"request_user_action":  {},
-	"run_script":             {},
-	"save_memory":            {},
-	toolSearchLaunchApp:      {},
-	"screenshot":             {},
-	"shell":                  {},
-	"skill_list":             {},
-	"skill_mark_used":        {},
-	"skill_manage":           {},
-	"skill_read":             {},
-	"touch_gesture":          {},
-	"wait_for_stable_screen": {},
-	"wheel_nudge":            {},
-	"weather":                {},
-	"web_scraper":            {},
-	"web_search":             {},
-	"wikipedia":              {},
-	"write_script":           {},
 }
 
 func computeMergeKey(mode SkillMergeMode, skillName, baseHash, upstreamHash, localHash string) string {
