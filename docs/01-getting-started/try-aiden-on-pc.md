@@ -216,6 +216,28 @@ access to an arbitrary virtual machine merely because the VM is running. For the
 project's virtual iPhone workflow, use `AIDEN_DEVICE_TYPE=iOS` and see the
 [vphone CLI setup guide](../09-benchmark/vphone-cli-setup-guide-en.md).
 
+### Host Desktop
+
+To let the Agent operate the desktop session running the benchmark, start the
+host desktop bridge from `benchmark/`:
+
+```bash
+uv run python -m runner start-desktop-env --bridge-port 8898
+```
+
+Then point the sandbox at the reported endpoint:
+
+```bash
+AIDEN_DEVICE_TYPE=macOS \
+AIDEN_ENVIRONMENT_BRIDGE_ENDPOINT=http://host.docker.internal:8898 \
+  docker compose up --build
+```
+
+The bridge uses `pyautogui` for pointer and keyboard input and normalized
+0–1000 coordinates for all pointer operations. Install it with
+`uv pip install pyautogui`, and grant Screen Recording/Accessibility permission
+on macOS (or the equivalent desktop-session permissions on Linux/Windows).
+
 ## Stop or Reset the Sandbox
 
 For a foreground run, press `Ctrl-C`. Then remove the stopped containers and

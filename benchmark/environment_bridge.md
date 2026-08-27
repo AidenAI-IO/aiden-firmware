@@ -10,6 +10,8 @@ Implementations in this repository:
 - MobileGym bridge: concurrency equals the started env pool size.
 - ADB Android bridge (`benchmark/adbandroid/`, see its README): drives an
   Android emulator or physical device through adb; fixed concurrency `1`.
+- Desktop bridge (`benchmark/desktop/`): drives the host macOS, Linux, or
+  Windows desktop through `pyautogui`; fixed concurrency `1`.
 
 ## Required Endpoints
 

@@ -500,6 +500,58 @@ def test_start_adb_android_env_requires_serial(tmp_path: Path, capsys):
     assert services.cmd_start_adb_android_env(args) == 2
 
 
+def test_start_desktop_env_rejects_live_pid_file(tmp_path: Path, monkeypatch, capsys):
+    service_dir = tmp_path / "desktop-live"
+    service_dir.mkdir()
+    (service_dir / "desktop.pid").write_text("4242", encoding="utf-8")
+    monkeypatch.setattr(services, "desktop_pid_alive", lambda pid: pid == 4242)
+    args = _ns(
+        name="live",
+        runs_dir=str(tmp_path),
+        bridge_host="127.0.0.1",
+        bridge_port=18899,
+        backend="auto",
+        screenshot_command="",
+        ready_timeout_sec=12,
+        json=True,
+    )
+
+    assert services.cmd_start_desktop_env(args) == 2
+    assert "running process 4242" in capsys.readouterr().err
+    assert (service_dir / "desktop.pid").read_text(encoding="utf-8") == "4242"
+
+
+def test_start_desktop_env_removes_stale_pid_before_launch(tmp_path: Path, monkeypatch, capsys):
+    service_dir = tmp_path / "desktop-stale"
+    service_dir.mkdir()
+    pid_path = service_dir / "desktop.pid"
+    pid_path.write_text("not-a-pid", encoding="utf-8")
+    launched = []
+
+    class FakeProc:
+        pid = 5151
+
+    monkeypatch.setattr(services, "start_desktop_bridge_process", lambda **kwargs: (launched.append(kwargs) or FakeProc()))
+    monkeypatch.setattr(services, "wait_for_desktop_bridge", lambda endpoint, timeout: None)
+    monkeypatch.setattr(services, "desktop_pid_alive", lambda pid: False)
+    args = _ns(
+        name="stale",
+        runs_dir=str(tmp_path),
+        bridge_host="127.0.0.1",
+        bridge_port=18899,
+        backend="auto",
+        screenshot_command="",
+        ready_timeout_sec=12,
+        json=True,
+    )
+
+    assert services.cmd_start_desktop_env(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pid"] == 5151
+    assert pid_path.read_text(encoding="utf-8") == "5151"
+    assert launched[0]["bridge_port"] == 18899
+
+
 def test_start_adb_android_env_terminates_process_on_health_failure(tmp_path: Path, monkeypatch, capsys):
     killed = []
 

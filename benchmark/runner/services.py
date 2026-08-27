@@ -26,6 +26,7 @@ from runner.adb_android_environment import (
     start_adb_bridge_process,
     terminate_pid,
 )
+from runner.desktop_environment import pid_alive as desktop_pid_alive, start_desktop_bridge_process, terminate_pid as terminate_desktop_pid, wait_for_desktop_bridge
 from runner.webui import (
     BENCHMARK_ROOT,
     DEFAULT_BASE_CONFIG_DIR,
@@ -107,6 +108,19 @@ def add_service_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     p_adb.add_argument("--bridge-port", type=int, default=0, help="Host port for the bridge API (default: auto)")
     p_adb.add_argument("--ready-timeout-sec", type=int, default=DEFAULT_ADB_BRIDGE_READY_TIMEOUT_SEC)
     p_adb.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+
+    p_desktop = subparsers.add_parser(
+        "start-desktop-env",
+        help="Start a host desktop environment bridge process.",
+    )
+    p_desktop.add_argument("--name", default="", help="Stable name suffix for the environment")
+    p_desktop.add_argument("--runs-dir", default=str(DEFAULT_CLI_RUNS_DIR))
+    p_desktop.add_argument("--bridge-host", default="127.0.0.1")
+    p_desktop.add_argument("--bridge-port", type=int, default=0)
+    p_desktop.add_argument("--backend", choices=["auto", "pyautogui"], default="auto")
+    p_desktop.add_argument("--screenshot-command", default="")
+    p_desktop.add_argument("--ready-timeout-sec", type=int, default=30)
+    p_desktop.add_argument("--json", action="store_true", help="Print machine-readable JSON")
 
 
 def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
@@ -409,6 +423,67 @@ def cmd_start_adb_android_env(args: argparse.Namespace) -> int:
     }
     _print_adb_android_payload(payload, json_output=bool(args.json))
     return 0
+
+
+def cmd_start_desktop_env(args: argparse.Namespace) -> int:
+    if args.bridge_port < 0 or args.bridge_port > 65535:
+        print("Error: --bridge-port must be between 0 and 65535", file=sys.stderr); return 2
+    if args.ready_timeout_sec <= 0:
+        print("Error: --ready-timeout-sec must be positive", file=sys.stderr); return 2
+    service_id = _service_id("desktop", args.name)
+    service_dir = Path(args.runs_dir) / service_id
+    log_path = service_dir / "desktop-env.log"; pid_path = service_dir / "desktop.pid"
+    if pid_path.exists():
+        try:
+            existing_pid = int(pid_path.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            existing_pid = 0
+        if existing_pid > 0 and desktop_pid_alive(existing_pid):
+            print(
+                f"Error: service ID '{service_id}' already exists with running process {existing_pid}.\n"
+                f"Stop it first (kill {existing_pid}) or use a different --name.",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            pid_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"Error: failed to remove stale desktop pid file {pid_path}: {exc}", file=sys.stderr)
+            return 2
+    service_dir.mkdir(parents=True, exist_ok=True)
+    bridge_port = int(args.bridge_port or 0)
+    if bridge_port == 0:
+        bridge_port = reserve_free_port()
+    endpoint = f"http://{args.bridge_host}:{bridge_port}"
+    pid = 0
+    try:
+        proc = start_desktop_bridge_process(bridge_host=args.bridge_host, bridge_port=bridge_port, backend=args.backend, screenshot_command=args.screenshot_command, log_path=log_path)
+        pid = proc.pid; pid_path.write_text(str(pid), encoding="utf-8")
+        wait_for_desktop_bridge(endpoint, args.ready_timeout_sec)
+    except Exception as exc:
+        terminate_desktop_pid(pid); append_log(log_path, f"ERROR: {exc}")
+        print(f"Error: failed to start desktop environment: {exc}", file=sys.stderr); return 1
+    docker_endpoint = endpoint_for_docker_host(endpoint)
+    payload = {"type": "desktop-env", "environment_url": endpoint, "docker_environment_url": docker_endpoint, "platform": _desktop_platform(), "backend": args.backend, "pid": pid, "pid_path": str(pid_path), "log_path": str(log_path), "stop_command": f"kill -TERM {pid}", "agent_daemon_command": f"uv run python -m runner start-agent-daemon --environment-bridge-endpoint {endpoint} --device-type {_desktop_device_type()}"}
+    if args.json: print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+    else:
+        print("Desktop environment started", flush=True)
+        for key in ("environment_url", "platform", "backend", "pid", "log_path", "stop_command", "agent_daemon_command"): _print_kv(key, payload[key])
+        print(f"\nexport AIDEN_ENVIRONMENT_URL={endpoint}", flush=True)
+    return 0
+
+
+def _desktop_platform() -> str:
+    import platform
+    system = platform.system().lower()
+    return "mac" if system == "darwin" else "windows" if system == "windows" else "linux"
+
+
+def _desktop_device_type() -> str:
+    platform_name = _desktop_platform()
+    return "macOS" if platform_name == "mac" else platform_name
 
 
 def _print_adb_android_payload(payload: dict[str, Any], *, json_output: bool) -> None:
