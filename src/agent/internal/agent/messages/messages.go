@@ -101,13 +101,6 @@ func (msg Message) Clone() Message {
 	}
 	if len(msg.Attachments) > 0 {
 		cloned.Attachments = append([]Attachment(nil), msg.Attachments...)
-		for i := range cloned.Attachments {
-			if msg.Attachments[i].DisplayMarker == nil {
-				continue
-			}
-			marker := *msg.Attachments[i].DisplayMarker
-			cloned.Attachments[i].DisplayMarker = &marker
-		}
 	}
 	if len(msg.ResponsesReasoningItems) > 0 {
 		cloned.ResponsesReasoningItems = make([]json.RawMessage, len(msg.ResponsesReasoningItems))
@@ -127,20 +120,10 @@ func (msg Message) Clone() Message {
 // Attachment tracks file metadata for message attachments. Binary content is stored on disk
 // and only loaded when ConvertToStandardMessageList is called.
 type Attachment struct {
-	MIMEType      string                   `json:"mime_type"`
-	FileSize      int64                    `json:"file_size"`
-	FilePath      string                   `json:"file_path"`
-	Source        string                   `json:"source,omitempty"`
-	DisplayMarker *ScreenshotDisplayMarker `json:"display_marker,omitempty"`
-}
-
-// ScreenshotDisplayMarker describes a visual-only overlay applied when a
-// persisted screenshot attachment is sent to the model. The file on disk stays
-// unchanged so tools such as image_diff always operate on the original image.
-type ScreenshotDisplayMarker struct {
-	Type string  `json:"type"`
-	X    float64 `json:"x"`
-	Y    float64 `json:"y"`
+	MIMEType string `json:"mime_type"`
+	FileSize int64  `json:"file_size"`
+	FilePath string `json:"file_path"`
+	Source   string `json:"source,omitempty"`
 }
 
 type ToolCall struct {

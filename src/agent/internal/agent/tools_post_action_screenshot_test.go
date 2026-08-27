@@ -1,14 +1,19 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"image/color"
+	"image/jpeg"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 func TestStripScreenshotDataPreservesStableScreenStatus(t *testing.T) {
-	content := `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":" completed ","screen_stable":false,"stable_wait_ms":0,"screen_changed":true,"last_diff":1.25,"gesture_marker":{"type":"tap","x":250,"y":750}}`
+	content := `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":" completed ","screen_stable":false,"stable_wait_ms":0,"screen_changed":true,"last_diff":1.25}`
 
 	stripped := stripScreenshotData(content)
 
@@ -37,8 +42,8 @@ func TestStripScreenshotDataPreservesStableScreenStatus(t *testing.T) {
 	if result.LastDiff == nil || *result.LastDiff != 1.25 {
 		t.Fatalf("LastDiff = %#v, want 1.25", result.LastDiff)
 	}
-	if result.GestureMarker == nil || result.GestureMarker.Type != "tap" || result.GestureMarker.X != 250 || result.GestureMarker.Y != 750 {
-		t.Fatalf("GestureMarker = %#v", result.GestureMarker)
+	if strings.Contains(stripped, "gesture_marker") {
+		t.Fatalf("marker metadata leaked into stripped result: %s", stripped)
 	}
 }
 
@@ -77,10 +82,12 @@ func TestParseTouchGesturePostMarker(t *testing.T) {
 	}
 }
 
-func TestPostActionTouchGestureReturnsRawScreenshotWithMarkerMetadata(t *testing.T) {
-	const rawData = "ZmFrZS1qcGVn"
+func TestPostActionTouchGestureMarksReturnedScreenshot(t *testing.T) {
+	raw := solidJPEG(t, 120, 80, color.RGBA{R: 24, G: 48, B: 72, A: 255})
+	rawData := base64.StdEncoding.EncodeToString(raw)
 	action := &stubTool{name: "touch_gesture", output: "ok"}
-	screenshot := &stubTool{name: "screenshot", output: `{"width":320,"height":240,"format":"jpeg","size":9,"data":"` + rawData + `"}`}
+	screenshot := &stubTool{name: "screenshot", output: `{"width":120,"height":80,"format":"jpeg","size":` +
+		strconv.Itoa(len(raw)) + `,"data":"` + rawData + `"}`}
 	tool := newPostActionScreenshotTool(action, screenshot, 0)
 
 	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":250,"y":750}}`)
@@ -91,17 +98,31 @@ func TestPostActionTouchGestureReturnsRawScreenshotWithMarkerMetadata(t *testing
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("decode result: %v", err)
 	}
-	if result.Data != rawData {
-		t.Fatalf("tool JSON screenshot data changed: %q", result.Data)
+	marked, err := base64.StdEncoding.DecodeString(result.Data)
+	if err != nil {
+		t.Fatalf("decode marked screenshot: %v", err)
 	}
-	if result.GestureMarker == nil || result.GestureMarker.Type != "tap" || result.GestureMarker.X != 250 || result.GestureMarker.Y != 750 {
-		t.Fatalf("GestureMarker = %#v", result.GestureMarker)
+	if bytes.Equal(marked, raw) {
+		t.Fatal("returned screenshot did not contain the touch marker")
+	}
+	if result.Size != len(marked) {
+		t.Fatalf("result size = %d, want marked image size %d", result.Size, len(marked))
+	}
+	decoded, err := jpeg.Decode(bytes.NewReader(marked))
+	if err != nil {
+		t.Fatalf("decode marked JPEG: %v", err)
+	}
+	if got := color.RGBAModel.Convert(decoded.At(30, 60)).(color.RGBA); got.R > 100 || got.G > 100 || got.B > 100 {
+		t.Fatalf("marker center should remain hollow, got %#v", got)
 	}
 }
 
 func TestPostActionTouchGestureDoesNotMarkSwipe(t *testing.T) {
+	raw := solidJPEG(t, 120, 80, color.RGBA{R: 24, G: 48, B: 72, A: 255})
+	rawData := base64.StdEncoding.EncodeToString(raw)
 	action := &stubTool{name: "touch_gesture", output: "ok"}
-	screenshot := &stubTool{name: "screenshot", output: `{"width":320,"height":240,"format":"jpeg","size":9,"data":"ZmFrZS1qcGVn"}`}
+	screenshot := &stubTool{name: "screenshot", output: `{"width":120,"height":80,"format":"jpeg","size":` +
+		strconv.Itoa(len(raw)) + `,"data":"` + rawData + `"}`}
 	tool := newPostActionScreenshotTool(action, screenshot, 0)
 
 	out, err := tool.Call(context.Background(), `{"type":"swipe","point":{"x":250,"y":750}}`)
@@ -112,7 +133,7 @@ func TestPostActionTouchGestureDoesNotMarkSwipe(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("decode result: %v", err)
 	}
-	if result.GestureMarker != nil {
-		t.Fatalf("swipe GestureMarker = %#v, want nil", result.GestureMarker)
+	if result.Data != rawData {
+		t.Fatalf("swipe screenshot was marked: %q", result.Data)
 	}
 }

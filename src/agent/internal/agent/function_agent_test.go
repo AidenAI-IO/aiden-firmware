@@ -728,31 +728,27 @@ func TestFunctionAgentWaitStableScreenDoesNotTreatMotionAsActionResult(t *testin
 	}
 }
 
-func TestFunctionAgentAnnotatesTouchGestureScreenshotForModel(t *testing.T) {
+func TestFunctionAgentUsesMarkedTouchGestureScreenshotForModel(t *testing.T) {
 	raw := solidJPEG(t, 120, 80, color.RGBA{R: 24, G: 48, B: 72, A: 255})
+	marked, err := drawTouchGesturePostMarker(raw, touchGesturePostMarkerInfo{Type: "tap", X: 500, Y: 500})
+	if err != nil {
+		t.Fatalf("drawTouchGesturePostMarker() error = %v", err)
+	}
 	agent := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "touch_gesture", visual: true}}}
-	observation := fmt.Sprintf(`{"action_output":"ok","width":120,"height":80,"format":"jpeg","size":%d,"data":"%s","gesture_marker":{"type":"tap","x":500,"y":500}}`, len(raw), base64.StdEncoding.EncodeToString(raw))
+	observation := fmt.Sprintf(`{"action_output":"ok","width":120,"height":80,"format":"jpeg","size":%d,"data":"%s"}`, len(marked), base64.StdEncoding.EncodeToString(marked))
 	step := schema.AgentStep{Action: schema.AgentAction{Tool: "touch_gesture"}, Observation: observation}
 
 	visual, ok := agent.visualScreenshotObservation(step)
 	if !ok {
 		t.Fatal("touch gesture screenshot was not recognized as visual")
 	}
-	if !visual.Annotated {
-		t.Fatal("touch gesture screenshot was not annotated")
-	}
-	if !bytes.Equal(visual.RawImageBytes, raw) {
-		t.Fatal("raw screenshot bytes changed")
-	}
-	if bytes.Equal(visual.ImageBytes, raw) {
-		t.Fatal("model screenshot did not include the marker")
+	if !bytes.Equal(visual.ImageBytes, marked) {
+		t.Fatal("model screenshot did not preserve the marked image")
 	}
 
 	toolContent, followups := agent.observationMessagesForStep(step, true)
-	for _, want := range []string{"requested tap coordinate", "not independent hardware confirmation", "resulting UI state"} {
-		if !strings.Contains(toolContent, want) {
-			t.Fatalf("tool content missing %q: %s", want, toolContent)
-		}
+	if strings.Contains(toolContent, "requested tap coordinate") {
+		t.Fatalf("tool content should not carry marker metadata: %s", toolContent)
 	}
 	if len(followups) != 1 || len(followups[0].Parts) != 2 {
 		t.Fatalf("visual followups = %#v", followups)
@@ -762,8 +758,8 @@ func TestFunctionAgentAnnotatesTouchGestureScreenshotForModel(t *testing.T) {
 		t.Fatalf("image part = %T", followups[0].Parts[1])
 	}
 	_, display, ok := telemetryDataURL(imagePart.URL)
-	if !ok || !bytes.Equal(display, visual.ImageBytes) {
-		t.Fatal("model followup did not contain the annotated screenshot")
+	if !ok || !bytes.Equal(display, marked) {
+		t.Fatal("model followup did not contain the marked screenshot")
 	}
 }
 

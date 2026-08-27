@@ -62,19 +62,13 @@ func ConvertMessageList(messageList []Message) []llms.MessageContent {
 			if len(data) == 0 {
 				continue
 			}
-			displayData := data
-			if attachment.Source == AttachmentSourceScreenshotObservation && attachment.DisplayMarker != nil && (strings.EqualFold(attachment.MIMEType, "image/jpeg") || strings.EqualFold(attachment.MIMEType, "image/jpg")) {
-				if marked, markerErr := ApplyScreenshotDisplayMarker(data, *attachment.DisplayMarker); markerErr == nil {
-					displayData = marked
-				}
-			}
 			if attachment.Source == AttachmentSourceScreenshotObservation {
 				attachmentID := filepath.Base(filePath)
 				if attachmentID != "." && attachmentID != "" {
 					newMessage.Parts = append(newMessage.Parts, llms.TextPart(fmt.Sprintf("[screenshot_attachment_id=%s]", attachmentID)))
 				}
 			}
-			newMessage.Parts = append(newMessage.Parts, llms.BinaryPart(attachment.MIMEType, displayData))
+			newMessage.Parts = append(newMessage.Parts, llms.BinaryPart(attachment.MIMEType, data))
 		}
 		standardMessageList[i] = newMessage
 	}

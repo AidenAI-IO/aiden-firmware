@@ -1994,8 +1994,16 @@ func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testin
 	if err := json.Unmarshal([]byte(unchanged), &expected); err != nil {
 		t.Fatalf("unmarshal expected screenshot: %v", err)
 	}
-	if result.Data != expected.Data {
-		t.Fatalf("screenshot data differs from fallback capture")
+	raw, err := base64.StdEncoding.DecodeString(expected.Data)
+	if err != nil {
+		t.Fatalf("decode expected screenshot: %v", err)
+	}
+	marked, err := drawTouchGesturePostMarker(raw, touchGesturePostMarkerInfo{Type: "tap", X: 500, Y: 500})
+	if err != nil {
+		t.Fatalf("mark expected screenshot: %v", err)
+	}
+	if result.Data != base64.StdEncoding.EncodeToString(marked) {
+		t.Fatalf("screenshot data does not contain the requested touch marker")
 	}
 	if len(waitStable.inputs) != 1 || waitStable.inputs[0] != `{"timeout_ms":3000,"stable_ms":500,"diff_threshold":6}` {
 		t.Fatalf("wait stable inputs = %#v", waitStable.inputs)

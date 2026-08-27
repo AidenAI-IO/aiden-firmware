@@ -1,13 +1,9 @@
 package agent
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"image/color"
 	"os"
 	"reflect"
 	"strings"
@@ -64,58 +60,6 @@ func TestAppendToolExecutionMessagesPersistsPreparedContentAndMetadata(t *testin
 	}
 	if stored.Meta == nil || stored.Meta.ArtifactPath != prepared.ArtifactPath || stored.Meta.Summary != prepared.Summary {
 		t.Fatalf("stored metadata = %#v", stored.Meta)
-	}
-}
-
-func TestAppendToolExecutionMessagesPersistsRawTouchScreenshotWithDisplayMarker(t *testing.T) {
-	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
-	}
-	llmExecutor := executor.NewLLMExecutor(nil, manager)
-	raw := solidJPEG(t, 120, 80, color.RGBA{R: 16, G: 32, B: 48, A: 255})
-	observation := `{"action_output":"ok","width":120,"height":80,"format":"jpeg","size":` +
-		fmt.Sprintf("%d", len(raw)) + `,"data":"` + base64.StdEncoding.EncodeToString(raw) +
-		`","gesture_marker":{"type":"tap","x":500,"y":500}}`
-	step := schema.AgentStep{
-		Action:      schema.AgentAction{ToolID: "call_touch", Tool: "touch_gesture"},
-		Observation: observation,
-	}
-	parser := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "touch_gesture", visual: true}}}
-
-	toolCall := messages.Message{
-		Role: messages.MessageRoleToolCall,
-		ToolCalls: []messages.ToolCall{{
-			ID: "call_touch", Name: "touch_gesture", Arguments: `{"type":"tap","point":{"x":500,"y":500}}`,
-		}},
-	}
-	if err := appendToolExecutionMessages(llmExecutor, parser, toolCall, step, PreparedToolResult{Content: observation, Complete: true}); err != nil {
-		t.Fatalf("appendToolExecutionMessages() error = %v", err)
-	}
-	storedMessages := manager.CloneMessageList()
-	if len(storedMessages) != 3 || len(storedMessages[2].Attachments) != 1 {
-		t.Fatalf("stored messages = %#v", storedMessages)
-	}
-	attachment := storedMessages[2].Attachments[0]
-	if attachment.DisplayMarker == nil || attachment.DisplayMarker.Type != "tap" || attachment.DisplayMarker.X != 500 || attachment.DisplayMarker.Y != 500 {
-		t.Fatalf("DisplayMarker = %#v", attachment.DisplayMarker)
-	}
-	storedRaw, err := os.ReadFile(attachment.FilePath)
-	if err != nil {
-		t.Fatalf("read attachment: %v", err)
-	}
-	if !bytes.Equal(storedRaw, raw) {
-		t.Fatal("stored attachment is not the original unmarked screenshot")
-	}
-	converted := messages.ConvertMessageList(storedMessages)
-	var modelImage []byte
-	for _, part := range converted[2].Parts {
-		if binary, ok := part.(llms.BinaryContent); ok {
-			modelImage = binary.Data
-		}
-	}
-	if len(modelImage) == 0 || bytes.Equal(modelImage, raw) {
-		t.Fatal("model message did not receive the marked screenshot")
 	}
 }
 
