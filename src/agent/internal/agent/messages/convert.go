@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"aiden-agent/internal/util"
+
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -32,7 +34,7 @@ func ConvertMessageList(messageList []Message) []llms.MessageContent {
 			standardMessageList[i] = newMessage
 			continue
 		}
-		if content := strings.TrimSpace(message.Content); content != "" {
+		if content := standardMessageContent(message); content != "" {
 			newMessage.Parts = append(newMessage.Parts, llms.TextPart(content))
 		}
 		for toolIndex, call := range message.ToolCalls {
@@ -73,6 +75,21 @@ func ConvertMessageList(messageList []Message) []llms.MessageContent {
 		standardMessageList[i] = newMessage
 	}
 	return standardMessageList
+}
+
+func standardMessageContent(message Message) string {
+	content := strings.TrimSpace(message.Content)
+	if content == "" {
+		return content
+	}
+	switch message.Role {
+	case MessageRoleNotice:
+		return util.STag("notice", content)
+	case MessageRoleState:
+		return util.STag("state", content)
+	default:
+		return content
+	}
 }
 
 // ConvertChoiceToContextManagerMessage converts a content choice to a context manager message

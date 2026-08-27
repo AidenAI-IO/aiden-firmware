@@ -13,7 +13,6 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
-	"aiden-agent/internal/util"
 
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
@@ -546,7 +545,7 @@ func (l *AgentLoop) applyLoopGuardDecision(decision TerminationDecision) {
 	}
 	if err := l.contextManager.AppendMessage(messages.Message{
 		Role:    messages.MessageRoleNotice,
-		Content: util.STag("notice", decision.Notice),
+		Content: decision.Notice,
 	}); err != nil {
 		log.Printf("[loop guard] failed to append notice message: %v", err)
 	}

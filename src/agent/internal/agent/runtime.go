@@ -1342,14 +1342,10 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 				Message: &message,
 			}
 		}
-		tagged := ""
-		if formated.Len() > 0 {
-			tagged = util.STag("state", formated.String())
-		}
 		// create a new StateMessage
 		stateMessage := messages.Message{
 			Role:    messages.MessageRoleState,
-			Content: tagged,
+			Content: formated.String(),
 		}
 		if attachment != nil {
 			stateMessage.Attachments = []messages.Attachment{*attachment}
