@@ -264,9 +264,15 @@ func parseTouchGesturePostMarker(input string) (touchGesturePostMarkerInfo, bool
 		if err := json.Unmarshal(args.Point, &coordinates); err != nil || len(coordinates) != 2 {
 			return touchGesturePostMarkerInfo{}, false
 		}
+		if !validTouchMarkerCoordinateJSON(coordinates[0]) || !validTouchMarkerCoordinateJSON(coordinates[1]) {
+			return touchGesturePostMarkerInfo{}, false
+		}
 	} else if strings.HasPrefix(trimmedPoint, "{") {
 		var object map[string]json.RawMessage
 		if err := json.Unmarshal(args.Point, &object); err != nil || object["x"] == nil || object["y"] == nil {
+			return touchGesturePostMarkerInfo{}, false
+		}
+		if !validTouchMarkerCoordinateJSON(object["x"]) || !validTouchMarkerCoordinateJSON(object["y"]) {
 			return touchGesturePostMarkerInfo{}, false
 		}
 	} else {
@@ -285,6 +291,11 @@ func parseTouchGesturePostMarker(input string) (touchGesturePostMarkerInfo, bool
 		return touchGesturePostMarkerInfo{}, false
 	}
 	return marker, true
+}
+
+func validTouchMarkerCoordinateJSON(value json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(value))
+	return trimmed != "" && trimmed != "null"
 }
 
 func validTouchGesturePostMarker(marker touchGesturePostMarkerInfo) bool {

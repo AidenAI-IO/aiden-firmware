@@ -61,6 +61,10 @@ func TestParseTouchGesturePostMarker(t *testing.T) {
 	for _, input := range []string{
 		`{"type":"swipe","point":{"x":125,"y":875}}`,
 		`{"type":"home","point":{"x":125,"y":875}}`,
+		`{"type":"tap","point":{"x":null,"y":875}}`,
+		`{"type":"tap","point":{"x":125,"y":null}}`,
+		`{"type":"tap","point":[null,875]}`,
+		`{"type":"tap","point":[125,null]}`,
 		`{"type":"tap"}`,
 		`{"type":"tap","point":{"x":125}}`,
 		`{"type":"tap","point":{"y":875}}`,
