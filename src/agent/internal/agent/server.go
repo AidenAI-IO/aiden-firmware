@@ -802,6 +802,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.handleChatAsync(w, req, turnInput, userMsg)
 }
 
+// handleChatCancel stops request-owned work without retaining a termination
+// marker for an unknown or already-finished request.
 func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -956,6 +958,8 @@ func (s *Server) handleChatSteerCancel(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ChatSteerResponse{RequestID: requestID, Status: status})
 }
 
+// registerActiveRun atomically claims a request ID and clears any marker left
+// by its previous lifecycle. It rejects registration while the server closes.
 func (s *Server) registerActiveRun(requestID string, cancel context.CancelFunc) bool {
 	if s == nil || s.closing.Load() {
 		return false
@@ -983,6 +987,8 @@ func (s *Server) registerActiveRun(requestID string, cancel context.CancelFunc) 
 	return true
 }
 
+// unregisterActiveRun releases a request ID and drops its termination marker
+// once no request-scoped output remains.
 func (s *Server) unregisterActiveRun(requestID string) {
 	if requestID == "" {
 		return
@@ -993,6 +999,8 @@ func (s *Server) unregisterActiveRun(requestID string) {
 	s.clearRequestTerminationIfInactive(requestID)
 }
 
+// cancelActiveRun marks an active request before invoking its cancellation
+// callback, preventing new request-scoped output from registering meanwhile.
 func (s *Server) cancelActiveRun(requestID string) bool {
 	if s == nil || requestID == "" {
 		return false
@@ -1014,6 +1022,8 @@ func (s *Server) cancelActiveRun(requestID string) bool {
 	return true
 }
 
+// cancelAllActiveRuns snapshots and cancels every registered run during
+// shutdown without holding activeRunsMu while callbacks execute.
 func (s *Server) cancelAllActiveRuns() {
 	s.activeRunsMu.Lock()
 	cancels := make([]context.CancelFunc, 0, len(s.activeRuns))
@@ -1028,6 +1038,7 @@ func (s *Server) cancelAllActiveRuns() {
 	}
 }
 
+// markRequestTerminated records that request-scoped work must not start.
 func (s *Server) markRequestTerminated(requestID string) {
 	if s == nil || requestID == "" {
 		return
@@ -1037,6 +1048,8 @@ func (s *Server) markRequestTerminated(requestID string) {
 	s.terminatedRequestsMu.Unlock()
 }
 
+// markRequestTerminatedLocked records a marker while terminatedRequestsMu is
+// held for writing.
 func (s *Server) markRequestTerminatedLocked(requestID string) {
 	if s.terminatedRequests == nil {
 		s.terminatedRequests = make(map[string]struct{})
@@ -1044,11 +1057,14 @@ func (s *Server) markRequestTerminatedLocked(requestID string) {
 	s.terminatedRequests[requestID] = struct{}{}
 }
 
+// isRequestTerminatedLocked reports marker state while terminatedRequestsMu is
+// held for reading or writing.
 func (s *Server) isRequestTerminatedLocked(requestID string) bool {
 	_, terminated := s.terminatedRequests[requestID]
 	return terminated
 }
 
+// clearRequestTermination unconditionally removes a request marker.
 func (s *Server) clearRequestTermination(requestID string) {
 	if s == nil || requestID == "" {
 		return
@@ -1058,6 +1074,8 @@ func (s *Server) clearRequestTermination(requestID string) {
 	s.terminatedRequestsMu.Unlock()
 }
 
+// deleteRequestTerminationLocked removes a marker while terminatedRequestsMu
+// is held for writing and releases an empty map's retained capacity.
 func (s *Server) deleteRequestTerminationLocked(requestID string) {
 	delete(s.terminatedRequests, requestID)
 	if len(s.terminatedRequests) == 0 {
@@ -1097,6 +1115,8 @@ func (s *Server) clearRequestTerminationIfInactive(requestID string) {
 	s.deleteRequestTerminationLocked(requestID)
 }
 
+// clearAllRequestTerminations releases all marker storage after shutdown has
+// prevented new request-owned work from registering.
 func (s *Server) clearAllRequestTerminations() {
 	if s == nil {
 		return
@@ -1106,6 +1126,8 @@ func (s *Server) clearAllRequestTerminations() {
 	s.terminatedRequestsMu.Unlock()
 }
 
+// isRequestTerminated reports whether cancellation currently blocks new work
+// for a request ID.
 func (s *Server) isRequestTerminated(requestID string) bool {
 	if s == nil || requestID == "" {
 		return false
@@ -1116,6 +1138,8 @@ func (s *Server) isRequestTerminated(requestID string) bool {
 	return terminated
 }
 
+// registerActiveOutput attaches TTS output to a live request and returns an
+// idempotent cleanup callback. Terminated requests interrupt the output.
 func (s *Server) registerActiveOutput(requestID string, output *activeTTSOutput) func() {
 	if s == nil || requestID == "" || output == nil {
 		return func() {}
@@ -1162,6 +1186,7 @@ func (s *Server) registerActiveOutput(requestID string, output *activeTTSOutput)
 	}
 }
 
+// snapshotActiveOutputs copies the outputs currently owned by a request.
 func (s *Server) snapshotActiveOutputs(requestID string) []*activeTTSOutput {
 	if s == nil || requestID == "" {
 		return nil
@@ -1171,6 +1196,8 @@ func (s *Server) snapshotActiveOutputs(requestID string) []*activeTTSOutput {
 	return s.snapshotActiveOutputsLocked(requestID)
 }
 
+// snapshotActiveOutputsLocked copies request outputs while activeOutputsMu is
+// held.
 func (s *Server) snapshotActiveOutputsLocked(requestID string) []*activeTTSOutput {
 	outputs := s.activeOutputs[requestID]
 	if len(outputs) == 0 {
@@ -1183,6 +1210,8 @@ func (s *Server) snapshotActiveOutputsLocked(requestID string) []*activeTTSOutpu
 	return snapshot
 }
 
+// interruptRequestOutputs marks and interrupts every output currently owned by
+// a request, blocking late output registration until cleanup completes.
 func (s *Server) interruptRequestOutputs(requestID string) bool {
 	if s == nil || requestID == "" {
 		return false
@@ -1763,6 +1792,8 @@ func wantsChatStream(r *http.Request) bool {
 		r.URL.Query().Get("stream") == "1"
 }
 
+// handleChatStream registers the run independently of the HTTP connection so
+// an explicit cancellation request remains the only operation that stops it.
 func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
