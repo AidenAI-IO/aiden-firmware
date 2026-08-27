@@ -45,11 +45,13 @@ Do not use `touch_gesture`, mouse clicks, or keyboard input to change an active 
 
 ```json
 {
-  "before": "<before-screenshot-attachment-id-or-base64>",
-  "after": "<after-screenshot-attachment-id-or-base64>",
+  "before": "<base64-jpeg-from-earlier-screenshot>",
+  "after": "<base64-jpeg-from-later-screenshot>",
   "region": {"x": 100, "y": 150, "w": 800, "h": 700}
 }
 ```
+
+When running inside an active Agent or prepared script context, `before` and `after` may instead be the exact `screenshot_attachment_id` values from the corresponding observations. Direct HTTP requests must send Base64 JPEG data because the server cannot resolve Agent-local attachment IDs for an unrelated request.
 
 Output fields:
 
