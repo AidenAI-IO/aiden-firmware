@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -162,13 +163,28 @@ func TestWaitStableScreenToolWaitReportsScreenChangedWhenFramesDiffer(t *testing
 }
 
 func TestPostActionScreenshotToolUsesInternalStableWaitWithoutWaitScreenshot(t *testing.T) {
-	action := &stubTool{name: "touch_gesture", output: "ok"}
+	events := make([]string, 0, 4)
+	action := &stubTool{name: "touch_gesture"}
+	action.callFn = func(context.Context, string) (string, error) {
+		events = append(events, "action")
+		return "ok", nil
+	}
 	waitStable := &fakeInternalWaitTool{
 		result: waitStableScreenResult{OK: true, Stable: true, ElapsedMs: 12},
+		onWait: func() {
+			events = append(events, "stable wait")
+		},
 	}
 	screenshot := &stubTool{
-		name:   "screenshot",
-		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
+		name: "screenshot",
+	}
+	screenshot.callFn = func(context.Context, string) (string, error) {
+		if len(screenshot.inputs) == 1 {
+			events = append(events, "pre-action baseline")
+		} else {
+			events = append(events, "post-stable final")
+		}
+		return `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`, nil
 	}
 	tool := newPostActionStableScreenshotTool(action, waitStable, screenshot, 0, ScreenStableDefaults{TimeoutMs: 50, StableMs: 1, DiffThreshold: 2})
 
@@ -185,8 +201,11 @@ func TestPostActionScreenshotToolUsesInternalStableWaitWithoutWaitScreenshot(t *
 	if waitStable.waitCount != 1 {
 		t.Fatalf("wait count = %d, want 1", waitStable.waitCount)
 	}
-	if len(screenshot.inputs) != 1 {
-		t.Fatalf("post-action screenshot inputs = %#v, want one capture", screenshot.inputs)
+	if len(screenshot.inputs) != 2 {
+		t.Fatalf("post-action screenshot inputs = %#v, want baseline and final captures", screenshot.inputs)
+	}
+	if want := []string{"pre-action baseline", "action", "stable wait", "post-stable final"}; !slices.Equal(events, want) {
+		t.Fatalf("post-action call order = %#v, want %#v", events, want)
 	}
 }
 
@@ -385,6 +404,7 @@ type fakeInternalWaitTool struct {
 	err       error
 	callCount int
 	waitCount int
+	onWait    func()
 }
 
 func (t *fakeInternalWaitTool) Name() string { return "wait_for_stable_screen" }
@@ -398,5 +418,8 @@ func (t *fakeInternalWaitTool) Call(context.Context, string) (string, error) {
 
 func (t *fakeInternalWaitTool) wait(context.Context, string) (waitStableScreenResult, error) {
 	t.waitCount++
+	if t.onWait != nil {
+		t.onWait()
+	}
 	return t.result, t.err
 }

@@ -1,8 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"strings"
 	"testing"
 
@@ -683,7 +688,7 @@ func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing
 
 	toolContent, followups := agent.observationMessagesForStep(step, true)
 
-	if !strings.Contains(toolContent, "No visible screen change was observed") {
+	if !strings.Contains(toolContent, "No meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot") {
 		t.Fatalf("toolContent missing screen_changed warning: %q", toolContent)
 	}
 	if !strings.Contains(toolContent, "Do not assume the action succeeded") {
@@ -695,4 +700,58 @@ func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing
 	if len(followups) != 1 {
 		t.Fatalf("expected one followup screenshot message, got %#v", followups)
 	}
+}
+
+func TestFunctionAgentAnnotatesTouchGestureScreenshotForModel(t *testing.T) {
+	raw := solidJPEG(t, 120, 80, color.RGBA{R: 24, G: 48, B: 72, A: 255})
+	agent := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "touch_gesture", visual: true}}}
+	observation := fmt.Sprintf(`{"action_output":"ok","width":120,"height":80,"format":"jpeg","size":%d,"data":"%s","gesture_marker":{"type":"tap","x":500,"y":500}}`, len(raw), base64.StdEncoding.EncodeToString(raw))
+	step := schema.AgentStep{Action: schema.AgentAction{Tool: "touch_gesture"}, Observation: observation}
+
+	visual, ok := agent.visualScreenshotObservation(step)
+	if !ok {
+		t.Fatal("touch gesture screenshot was not recognized as visual")
+	}
+	if !visual.Annotated {
+		t.Fatal("touch gesture screenshot was not annotated")
+	}
+	if !bytes.Equal(visual.RawImageBytes, raw) {
+		t.Fatal("raw screenshot bytes changed")
+	}
+	if bytes.Equal(visual.ImageBytes, raw) {
+		t.Fatal("model screenshot did not include the marker")
+	}
+
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+	for _, want := range []string{"requested tap coordinate", "not independent hardware confirmation", "resulting UI state"} {
+		if !strings.Contains(toolContent, want) {
+			t.Fatalf("tool content missing %q: %s", want, toolContent)
+		}
+	}
+	if len(followups) != 1 || len(followups[0].Parts) != 2 {
+		t.Fatalf("visual followups = %#v", followups)
+	}
+	imagePart, ok := followups[0].Parts[1].(llms.ImageURLContent)
+	if !ok {
+		t.Fatalf("image part = %T", followups[0].Parts[1])
+	}
+	_, display, ok := telemetryDataURL(imagePart.URL)
+	if !ok || !bytes.Equal(display, visual.ImageBytes) {
+		t.Fatal("model followup did not contain the annotated screenshot")
+	}
+}
+
+func solidJPEG(t *testing.T, width, height int, fill color.Color) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, fill)
+		}
+	}
+	var output bytes.Buffer
+	if err := jpeg.Encode(&output, img, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatalf("encode jpeg: %v", err)
+	}
+	return output.Bytes()
 }

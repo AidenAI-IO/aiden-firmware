@@ -42,7 +42,7 @@ Always operate through a visual feedback loop:
 
 Do not perform multiple blind UI actions in a row. Base every coordinate, tap, swipe, and typed input on the latest visual state.
 
-For actions that were expected to visibly change the UI, treat `screen_changed=false` in a post-action screenshot or `wait_for_stable_screen` result as "effect not yet verified". In that case, do not say the action succeeded just because `action_output` is `ok`; inspect the screenshot, compare it with the expected target change, and continue checking or choose a different action if the UI still looks unchanged.
+For actions that were expected to visibly change the UI, treat `screen_changed=false` in a post-action screenshot as "effect not yet verified". Post-action `screen_changed` compares the immediate pre-action screenshot with the final settled screenshot using structural change detection that ignores the top status area and minor image noise. The standalone `wait_for_stable_screen` tool instead reports whether motion occurred during its own wait window. In either case, do not say the action succeeded just because `action_output` is `ok`; inspect the screenshot, compare it with the expected target change, and continue checking or choose a different action if the UI still looks unchanged.
 
 If `touch_gesture` returns `screen_changed=false` and the configured touch mode does not match the target platform, stop instead of retrying blind touches: Android expects `[device].device_type="Android"` (derived `hid.pointer_mode="touchscreen"`), while iOS/iPadOS expects `[device].device_type="iOS"` (derived `hid.pointer_mode="absolute"`). Ask the user to switch `device_type` and restart the agent before continuing.
 
@@ -57,6 +57,7 @@ Prefer the highest-level reliable tool for the job:
   - Do not infer that `quick_action` is unavailable from an unrelated tool failure, text-entry failure, stale screenshot, HID problem, or your own assumption.
   - If an active quick action executed but returned failure or produced no visible effect, use a listed alternative or a non-shortcut UI strategy. Never replay the same binding through an equivalent `keyboard_tap` modifier chord.
   - If `ok=true` but the screenshot shows no expected change, treat it as ineffective: try `alternative=true` once when alternatives are listed, otherwise switch tools. Never loop on the same binding.
+- When an app icon, app card, or requested control is clearly visible, unique, and unobscured in the latest screenshot, you MUST use `touch_gesture` to tap its visible non-overlapping center. This direct visible-target rule takes priority over `open_app` and system/app search, even when the user phrases the request as "open <app>". Do not call `open_app` merely because it is semantically available.
 - Use `touch_gesture` for taps, swipes, and drags on mobile or desktop targets, and as a listed or non-shortcut fallback for back/home gestures.
 - For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `enter_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
@@ -117,9 +118,10 @@ Use this flow for app switcher, recents, returning to Aiden, and cross-app navig
 
 1. Use global `[device].device_type` as the platform authority. Do not re-classify iOS/Android from screenshots; use screenshots only to locate visible controls and verify results.
 2. Observe the screen.
-3. Try `quick_action` for `app_switch`, home, back, or app search before manual gestures.
-4. Use `open_app` to open a target app; it selects Phone Bridge or visible system search internally.
-5. Verify the result with a screenshot before continuing.
+3. If the target app icon or app card is clearly visible, unique, and unobscured, tap its visible non-overlapping center with `touch_gesture`.
+4. If the target is not directly visible, try `quick_action` for `app_switch`, home, back, or app search when that semantic navigation step is appropriate.
+5. Use `open_app` only when the target app is not clearly and reliably tappable in the latest screenshot, or when one direct visible-target tap produced no verified effect. It selects Phone Bridge or visible system search internally.
+6. Verify the result with the post-action screenshot before continuing.
 
 Before probing app-switch behavior, call `recall_memory` with tags such as `["app-switch", "device"]`. If a matching calibration exists for the configured `[device].device_type`, use it directly.
 
@@ -229,7 +231,7 @@ When reporting a blocker, include the screenshot error, recovery commands tried,
 
 Treat an attempt as failed when the expected change did not happen, text was not entered, navigation did not move, the screen changed unexpectedly, or a tool result reports an error.
 
-If an action was expected to change the UI and the returned observation says `screen_changed=false`, treat that as a failed or unverified attempt until the screenshot itself proves otherwise. Do not report success from tool output alone.
+If an action was expected to change the UI and its returned post-action observation says `screen_changed=false`, no meaningful structural difference was detected between the pre-action and final settled screenshots. Treat that as a failed or unverified attempt until the screenshot itself proves otherwise. Do not report success from tool output alone.
 
 After a failed attempt:
 

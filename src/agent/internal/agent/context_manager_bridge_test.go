@@ -1,6 +1,11 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/base64"
+	"image/color"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -123,6 +128,56 @@ func TestVisualFollowupMarksScreenshotObservationSource(t *testing.T) {
 	}
 	if msg.Attachments[0].Source != messages.AttachmentSourceScreenshotObservation {
 		t.Fatalf("Source = %q", msg.Attachments[0].Source)
+	}
+}
+
+func TestVisualFollowupStoresRawScreenshotAndReplaysMarkedImage(t *testing.T) {
+	manager, err := InitializeContextManager("system", t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("InitializeContextManager() error = %v", err)
+	}
+	raw := solidJPEG(t, 120, 80, color.RGBA{R: 20, G: 40, B: 60, A: 255})
+	marked, err := messages.ApplyScreenshotDisplayMarker(raw, messages.ScreenshotDisplayMarker{Type: "tap", X: 500, Y: 500})
+	if err != nil {
+		t.Fatalf("ApplyScreenshotDisplayMarker() error = %v", err)
+	}
+	marker := &messages.ScreenshotDisplayMarker{Type: "tap", X: 500, Y: 500}
+	msg := visualFollowupMessageFromLLMContentWithScreenshotMetadata(manager, llms.MessageContent{
+		Role: llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{
+			llms.TextPart("post-action screenshot"),
+			llms.ImageURLPart("data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(marked)),
+		},
+	}, raw, marker)
+	if len(msg.Attachments) != 1 || msg.Attachments[0].DisplayMarker == nil {
+		t.Fatalf("attachments = %#v", msg.Attachments)
+	}
+	storedRaw, err := os.ReadFile(msg.Attachments[0].FilePath)
+	if err != nil {
+		t.Fatalf("read stored screenshot: %v", err)
+	}
+	if !bytes.Equal(storedRaw, raw) {
+		t.Fatal("stored screenshot is not the original unmarked JPEG")
+	}
+	if err := manager.AppendMessage(msg); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+	readRaw, err := manager.ReadScreenshotAttachment(filepath.Base(msg.Attachments[0].FilePath))
+	if err != nil {
+		t.Fatalf("ReadScreenshotAttachment() error = %v", err)
+	}
+	if !bytes.Equal(readRaw, raw) {
+		t.Fatal("ReadScreenshotAttachment() returned marked data")
+	}
+	converted := messages.ConvertMessageList(manager.CloneMessageList())
+	var modelImage []byte
+	for _, part := range converted[len(converted)-1].Parts {
+		if binary, ok := part.(llms.BinaryContent); ok {
+			modelImage = binary.Data
+		}
+	}
+	if len(modelImage) == 0 || bytes.Equal(modelImage, raw) {
+		t.Fatal("model context replay did not apply the marker")
 	}
 }
 

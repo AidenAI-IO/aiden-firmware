@@ -3971,7 +3971,7 @@ func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {
 					if !strings.Contains(p.Content, "returned a screenshot observation") {
 						t.Fatalf("keyboard tool response = %q, want screenshot observation summary", p.Content)
 					}
-					if !strings.Contains(p.Content, "No visible screen change was observed") {
+					if !strings.Contains(p.Content, "No meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot") {
 						t.Fatalf("keyboard tool response = %q, want screen_changed warning", p.Content)
 					}
 					if !strings.Contains(p.Content, "Do not assume the action succeeded") {
