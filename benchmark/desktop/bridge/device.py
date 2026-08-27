@@ -268,7 +268,10 @@ class DesktopDevice:
         if not (0 <= float(x) <= 1000 and 0 <= float(y) <= 1000):
             raise ValueError("x and y must be in range [0, 1000]")
         width, height = self.screen_size()
-        return round(float(x) * width / 1000), round(float(y) * height / 1000)
+        return (
+            max(0, min(width - 1, round(float(x) * width / 1000))),
+            max(0, min(height - 1, round(float(y) * height / 1000))),
+        )
 
     def _screenshot_command(self) -> list[str]:
         if self.screenshot_command:

@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from .device import DesktopDevice, DesktopDeviceError
-from .state import DesktopBridgeState, benchmark_task_id_from_headers
+from .state import DesktopBridgeState, NoBridgeEnvAvailableError, benchmark_task_id_from_headers
 
 
 MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024
@@ -124,6 +124,8 @@ class DesktopToolsAPIHandler:
             if not isinstance(value, dict): raise ValueError("tool input must be a JSON object")
             result = self.invoke(tool_name, value)
             self._send(handler, 200, {"tool": {"name": tool_name}, "raw_input": json.dumps(value, ensure_ascii=False), **result})
+        except NoBridgeEnvAvailableError as exc:
+            self._send(handler, 429, {"error": "no_bridge_env_available", "output": str(exc), "is_error": True})
         except Exception as exc:
             self._send(handler, 400, {"error": str(exc), "output": str(exc), "is_error": True})
 
@@ -136,6 +138,7 @@ class DesktopToolsAPIHandler:
 def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     try: length = int(handler.headers.get("Content-Length", "0") or "0")
     except ValueError as exc: raise ValueError("invalid Content-Length") from exc
+    if length < 0: raise ValueError("Content-Length must be non-negative")
     if length > MAX_REQUEST_BODY_BYTES: raise ValueError("request body too large")
     raw = handler.rfile.read(length) if length else b"{}"
     value = json.loads(raw.decode("utf-8"))

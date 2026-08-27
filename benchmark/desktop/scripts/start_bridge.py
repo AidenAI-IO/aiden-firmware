@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import signal
 import sys
 import time
@@ -18,10 +19,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.bridge_port < 0 or args.bridge_port > 65535:
         parser.error("--bridge-port must be between 0 and 65535")
+    bridge_host = str(args.bridge_host or "").strip()
+    if bridge_host.lower() != "localhost":
+        try:
+            host_address = ipaddress.ip_address(bridge_host)
+        except ValueError:
+            parser.error("--bridge-host must be localhost or an IPv4 loopback address")
+        if host_address.version != 4 or not host_address.is_loopback:
+            parser.error("--bridge-host must be localhost or an IPv4 loopback address")
     try:
         device = DesktopDevice(backend=args.backend, screenshot_command=args.screenshot_command)
         print(f"permission_notice: {device.permission_hint}", file=sys.stderr, flush=True)
-        bridge = DesktopBridgeServer(device=device, host=args.bridge_host, port=args.bridge_port)
+        bridge = DesktopBridgeServer(device=device, host=bridge_host, port=args.bridge_port)
         url = bridge.start()
     except Exception as exc:
         print(f"failed to start desktop bridge: {exc}", file=sys.stderr)

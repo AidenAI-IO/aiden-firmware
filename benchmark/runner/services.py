@@ -26,7 +26,7 @@ from runner.adb_android_environment import (
     start_adb_bridge_process,
     terminate_pid,
 )
-from runner.desktop_environment import start_desktop_bridge_process, terminate_pid as terminate_desktop_pid, wait_for_desktop_bridge
+from runner.desktop_environment import pid_alive as desktop_pid_alive, start_desktop_bridge_process, terminate_pid as terminate_desktop_pid, wait_for_desktop_bridge
 from runner.webui import (
     BENCHMARK_ROOT,
     DEFAULT_BASE_CONFIG_DIR,
@@ -431,8 +431,28 @@ def cmd_start_desktop_env(args: argparse.Namespace) -> int:
     if args.ready_timeout_sec <= 0:
         print("Error: --ready-timeout-sec must be positive", file=sys.stderr); return 2
     service_id = _service_id("desktop", args.name)
-    service_dir = Path(args.runs_dir) / service_id; service_dir.mkdir(parents=True, exist_ok=True)
+    service_dir = Path(args.runs_dir) / service_id
     log_path = service_dir / "desktop-env.log"; pid_path = service_dir / "desktop.pid"
+    if pid_path.exists():
+        try:
+            existing_pid = int(pid_path.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            existing_pid = 0
+        if existing_pid > 0 and desktop_pid_alive(existing_pid):
+            print(
+                f"Error: service ID '{service_id}' already exists with running process {existing_pid}.\n"
+                f"Stop it first (kill {existing_pid}) or use a different --name.",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            pid_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"Error: failed to remove stale desktop pid file {pid_path}: {exc}", file=sys.stderr)
+            return 2
+    service_dir.mkdir(parents=True, exist_ok=True)
     bridge_port = int(args.bridge_port or 0)
     if bridge_port == 0:
         bridge_port = reserve_free_port()

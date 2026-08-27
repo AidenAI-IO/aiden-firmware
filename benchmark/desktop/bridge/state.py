@@ -3,7 +3,6 @@ from __future__ import annotations
 import dataclasses as dc
 import threading
 import time
-import uuid
 from typing import Any
 
 
@@ -51,29 +50,33 @@ class DesktopBridgeState:
     def check_task_access(self, task_id: str) -> None:
         task_id = str(task_id or "").strip()
         if not task_id:
-            return
+            raise NoBridgeEnvAvailableError("benchmark task id is required")
         with self.lock:
             self._clear_expired()
-            if self.active_task_id and self.active_task_id != task_id:
+            if not self.active_task_id:
+                raise NoBridgeEnvAvailableError(
+                    "desktop environment is not leased to a benchmark task"
+                )
+            if self.active_task_id != task_id:
                 raise NoBridgeEnvAvailableError(
                     f"desktop environment is owned by benchmark task {self.active_task_id!r}"
                 )
-            if self.active_task_id == task_id:
-                self._renew()
+            self._renew()
 
     def acquire(self, task_id: str) -> tuple[str, bool]:
         task_id = str(task_id or "").strip()
         with self.lock:
             self._clear_expired()
-            if task_id and self.active_task_id and self.active_task_id != task_id:
+            if not task_id:
+                raise ValueError("benchmark task id is required")
+            if self.active_task_id and self.active_task_id != task_id:
                 raise NoBridgeEnvAvailableError(
                     f"desktop environment is owned by benchmark task {self.active_task_id!r}"
                 )
-            newly_acquired = bool(task_id and self.active_task_id != task_id)
-            if task_id:
-                self.active_task_id = task_id
-                self._renew()
-            self.active_episode_id = task_id or f"desktop-{uuid.uuid4().hex}"
+            newly_acquired = self.active_task_id != task_id
+            self.active_task_id = task_id
+            self._renew()
+            self.active_episode_id = task_id
             return self.active_episode_id, newly_acquired
 
     def release(self, task_id: str) -> bool:
