@@ -702,6 +702,32 @@ func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing
 	}
 }
 
+func TestFunctionAgentWaitStableScreenDoesNotTreatMotionAsActionResult(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "wait_for_stable_screen", visual: true}},
+	}
+	observation := `{"ok":true,"stable":true,"elapsed_ms":250,"screen_changed":false,"width":800,"height":600,"format":"jpeg","size":4,"data":"` +
+		base64.StdEncoding.EncodeToString([]byte("img1")) + `"}`
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "wait_for_stable_screen"},
+		Observation: observation,
+	}
+
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+	if strings.Contains(toolContent, "between the pre-action baseline and the final settled screenshot") {
+		t.Fatalf("wait_for_stable_screen used post-action screen_changed wording: %q", toolContent)
+	}
+	if !strings.Contains(toolContent, "No frame-to-frame screen motion was observed during this wait window") {
+		t.Fatalf("toolContent missing wait-window motion wording: %q", toolContent)
+	}
+	if strings.Contains(toolContent, "Do not assume the action succeeded") {
+		t.Fatalf("standalone wait incorrectly warned about action success: %q", toolContent)
+	}
+	if len(followups) != 1 {
+		t.Fatalf("expected one followup screenshot message, got %#v", followups)
+	}
+}
+
 func TestFunctionAgentAnnotatesTouchGestureScreenshotForModel(t *testing.T) {
 	raw := solidJPEG(t, 120, 80, color.RGBA{R: 24, G: 48, B: 72, A: 255})
 	agent := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "touch_gesture", visual: true}}}

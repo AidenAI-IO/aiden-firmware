@@ -182,7 +182,7 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 			imageAvailability,
 		)
 	}
-	if summary := screenshotObservationStatusSummary(result); summary != "" {
+	if summary := screenshotObservationStatusSummary(step.Action.Tool, result); summary != "" {
 		toolContent += " " + summary
 	}
 	if marker := result.GestureMarker; marker != nil && visual.Annotated {
@@ -208,10 +208,16 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	}}
 }
 
-func screenshotObservationStatusSummary(result postActionScreenshotResult) string {
+func screenshotObservationStatusSummary(toolName string, result postActionScreenshotResult) string {
 	var notes []string
 	if result.ScreenChanged != nil {
-		if *result.ScreenChanged {
+		if strings.EqualFold(strings.TrimSpace(toolName), "wait_for_stable_screen") {
+			if *result.ScreenChanged {
+				notes = append(notes, "Screen motion was observed during this wait window; this does not by itself prove that the preceding action succeeded.")
+			} else {
+				notes = append(notes, "No frame-to-frame screen motion was observed during this wait window; this does not by itself prove that the preceding action had no effect.")
+			}
+		} else if *result.ScreenChanged {
 			notes = append(notes, "A meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot.")
 		} else {
 			notes = append(notes, "No meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot.")

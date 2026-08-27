@@ -248,19 +248,38 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 
 func parseTouchGesturePostMarker(input string) (touchGesturePostMarkerInfo, bool) {
 	var args struct {
-		Type  string `json:"type"`
-		Point *struct {
-			X *pointerCoordinate `json:"x"`
-			Y *pointerCoordinate `json:"y"`
-		} `json:"point"`
+		Type  string          `json:"type"`
+		Point json.RawMessage `json:"point"`
 	}
-	if err := json.Unmarshal([]byte(input), &args); err != nil || args.Point == nil || args.Point.X == nil || args.Point.Y == nil {
+	if err := json.Unmarshal([]byte(input), &args); err != nil || len(args.Point) == 0 || string(args.Point) == "null" {
+		return touchGesturePostMarkerInfo{}, false
+	}
+	// The public schema asks for an object, while the low-level pointer parser
+	// also accepts [x,y] as a compatibility form. Keep marker parsing aligned
+	// with both accepted forms and require both coordinates when the point is
+	// present so an invalid action cannot receive a misleading marker.
+	trimmedPoint := strings.TrimSpace(string(args.Point))
+	if strings.HasPrefix(trimmedPoint, "[") {
+		var coordinates []json.RawMessage
+		if err := json.Unmarshal(args.Point, &coordinates); err != nil || len(coordinates) != 2 {
+			return touchGesturePostMarkerInfo{}, false
+		}
+	} else if strings.HasPrefix(trimmedPoint, "{") {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(args.Point, &object); err != nil || object["x"] == nil || object["y"] == nil {
+			return touchGesturePostMarkerInfo{}, false
+		}
+	} else {
+		return touchGesturePostMarkerInfo{}, false
+	}
+	var point pointerPoint
+	if err := json.Unmarshal(args.Point, &point); err != nil {
 		return touchGesturePostMarkerInfo{}, false
 	}
 	marker := touchGesturePostMarkerInfo{
 		Type: strings.ToLower(strings.TrimSpace(args.Type)),
-		X:    args.Point.X.Float64(),
-		Y:    args.Point.Y.Float64(),
+		X:    point.X.Float64(),
+		Y:    point.Y.Float64(),
 	}
 	if !validTouchGesturePostMarker(marker) {
 		return touchGesturePostMarkerInfo{}, false
