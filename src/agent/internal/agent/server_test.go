@@ -1910,6 +1910,12 @@ func TestServerHandleChatCancelUnknownRequestDoesNotRetainTermination(t *testing
 	}
 }
 
+func markRequestTerminatedForTest(server *Server, requestID string) {
+	server.terminatedRequestsMu.Lock()
+	defer server.terminatedRequestsMu.Unlock()
+	server.markRequestTerminatedLocked(requestID)
+}
+
 func TestServerUnregisterActiveRunClearsTermination(t *testing.T) {
 	server := &Server{
 		activeRuns:         make(map[string]context.CancelFunc),
@@ -1919,7 +1925,7 @@ func TestServerUnregisterActiveRunClearsTermination(t *testing.T) {
 	if !server.registerActiveRun("req-finished", cancel) {
 		t.Fatal("registerActiveRun() failed")
 	}
-	server.markRequestTerminated("req-finished")
+	markRequestTerminatedForTest(server, "req-finished")
 	server.unregisterActiveRun("req-finished")
 
 	if server.isRequestTerminated("req-finished") {
@@ -1931,7 +1937,7 @@ func TestServerUnregisterActiveOutputClearsTermination(t *testing.T) {
 	server := &Server{terminatedRequests: make(map[string]struct{})}
 	output := newActiveTTSOutput(nil)
 	unregister := server.registerActiveOutput("req-output-finished", output)
-	server.markRequestTerminated("req-output-finished")
+	markRequestTerminatedForTest(server, "req-output-finished")
 	unregister()
 
 	if server.isRequestTerminated("req-output-finished") {
@@ -1942,7 +1948,7 @@ func TestServerUnregisterActiveOutputClearsTermination(t *testing.T) {
 func TestServerRegisterActiveOutputRejectsTerminatedRequest(t *testing.T) {
 	requestID := "req-output-after-cancel"
 	server := &Server{terminatedRequests: make(map[string]struct{})}
-	server.markRequestTerminated(requestID)
+	markRequestTerminatedForTest(server, requestID)
 
 	outputCtx, cancelOutput := context.WithCancel(context.Background())
 	output := newActiveTTSOutput(cancelOutput)
@@ -1971,7 +1977,7 @@ func TestServerTerminationMarkerWaitsForAllRequestOwnedWork(t *testing.T) {
 	}
 	output := newActiveTTSOutput(nil)
 	unregisterOutput := server.registerActiveOutput(requestID, output)
-	server.markRequestTerminated(requestID)
+	markRequestTerminatedForTest(server, requestID)
 
 	server.unregisterActiveRun(requestID)
 	if !server.isRequestTerminated(requestID) {
@@ -1994,7 +2000,7 @@ func TestServerCloseClearsTerminationMarkers(t *testing.T) {
 	if !server.registerActiveRun("req-closed", cancel) {
 		t.Fatal("registerActiveRun() failed")
 	}
-	server.markRequestTerminated("req-closed")
+	markRequestTerminatedForTest(server, "req-closed")
 
 	server.Close()
 
@@ -2291,7 +2297,7 @@ func TestSpeakTextForRequestRefusesTerminatedRequest(t *testing.T) {
 		ttsManager:         ttsmodule.NewProviderManager(provider, nil),
 		audioClient:        NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
 	}
-	server.markRequestTerminated(requestID)
+	markRequestTerminatedForTest(server, requestID)
 
 	err := server.speakTextForRequest(context.Background(), requestID, "should not play", 0)
 	if !errors.Is(err, context.Canceled) {

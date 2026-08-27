@@ -1038,16 +1038,6 @@ func (s *Server) cancelAllActiveRuns() {
 	}
 }
 
-// markRequestTerminated records that request-scoped work must not start.
-func (s *Server) markRequestTerminated(requestID string) {
-	if s == nil || requestID == "" {
-		return
-	}
-	s.terminatedRequestsMu.Lock()
-	s.markRequestTerminatedLocked(requestID)
-	s.terminatedRequestsMu.Unlock()
-}
-
 // markRequestTerminatedLocked records a marker while terminatedRequestsMu is
 // held for writing.
 func (s *Server) markRequestTerminatedLocked(requestID string) {
@@ -1062,16 +1052,6 @@ func (s *Server) markRequestTerminatedLocked(requestID string) {
 func (s *Server) isRequestTerminatedLocked(requestID string) bool {
 	_, terminated := s.terminatedRequests[requestID]
 	return terminated
-}
-
-// clearRequestTermination unconditionally removes a request marker.
-func (s *Server) clearRequestTermination(requestID string) {
-	if s == nil || requestID == "" {
-		return
-	}
-	s.terminatedRequestsMu.Lock()
-	s.deleteRequestTerminationLocked(requestID)
-	s.terminatedRequestsMu.Unlock()
 }
 
 // deleteRequestTerminationLocked removes a marker while terminatedRequestsMu
@@ -1439,7 +1419,6 @@ func (s *Server) handleChatAsync(
 		s.pendingResultsMu.Lock()
 		delete(s.pendingResults, requestID)
 		s.pendingResultsMu.Unlock()
-		s.clearRequestTerminationIfInactive(requestID)
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
 	}
@@ -1467,7 +1446,6 @@ func (s *Server) handleChatAsync(
 				s.pendingResultsMu.Lock()
 				delete(s.pendingResults, requestID)
 				s.pendingResultsMu.Unlock()
-				s.clearRequestTerminationIfInactive(requestID)
 			})
 		}()
 
@@ -1841,7 +1819,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	if !s.registerActiveRun(req.RequestID, cancel) {
 		s.logger.Error("Request ID already in use: %s", req.RequestID)
 		cancel()
-		s.clearRequestTerminationIfInactive(req.RequestID)
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
 	}
