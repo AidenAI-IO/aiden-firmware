@@ -233,18 +233,21 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
 		AgentExposed: toolSpecBoolPtr(false),
+		AgentLoadAll: toolSpecBoolPtr(true),
 	},
 	"read_script": {
 		Category:     "demo",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"file":"demo.jsonl"}`,
 		AgentExposed: toolSpecBoolPtr(false),
+		AgentLoadAll: toolSpecBoolPtr(true),
 	},
 	"write_script": {
 		Category:     "demo",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"file":"demo.jsonl","content":"# 打开设置演示\n{\"type\":\"wait\",\"ms\":500}\n{\"type\":\"tts\",\"text\":\"正在打开设置\"}"}`,
 		AgentExposed: toolSpecBoolPtr(false),
+		AgentLoadAll: toolSpecBoolPtr(true),
 	},
 	"skill_manage": {
 		Category:     "skills",
@@ -370,7 +373,7 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 	if meta.AgentExposed != nil {
 		agentExposed = *meta.AgentExposed
 	}
-	agentLoadAll := !agentExposed
+	agentLoadAll := false
 	if meta.AgentLoadAll != nil {
 		agentLoadAll = *meta.AgentLoadAll
 	}

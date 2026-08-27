@@ -80,7 +80,7 @@ Tool execution failures are also returned in JSON format. Check:
 
 The HTTP catalog is generated from registered Agent-owned tools at runtime. It can include diagnostic, browser Tool Lab, and external-agent tools that are intentionally absent from the default conversational Agent prompt.
 
-`current_time` and `calculator` are not registered and therefore do not appear in either the conversational or HTTP tool catalogs. Use `shell` for controller-local precise time, timezone, and deterministic calculations. The conversational Agent omits `list_scripts`, `read_script`, and `write_script` from its default LLM `tools` request; configure `load_all_tools = true` to include those three script-authoring tools.
+`current_time` and `calculator` are not registered and therefore do not appear in either the conversational or HTTP tool catalogs. Use `shell` for controller-local precise time, timezone, and deterministic calculations. The conversational Agent omits `list_scripts`, `read_script`, and `write_script` from its default LLM `tools` request; configure `load_all_tools = true` to include those three script-authoring tools. Diagnostic-only `image_diff` is intentionally omitted from the conversational catalog even when `load_all_tools = true`, but remains available through this HTTP catalog for Tool Lab and prepared-script diagnostics.
 
 ## Platform-Specific Conversational Catalog
 
