@@ -350,5 +350,3 @@ Qwen-Audio Realtime API 的服务端事件参考。所有服务端事件均包�
 | **type** `*string*` 事件类型，固定为 `voiceprint_audio_list.failed`。 |
 | **item\\_id** `*string*` 声纹注册任务的唯一标识符。 |
 | **reason** `*string*` 失败原因描述。 |
-
-

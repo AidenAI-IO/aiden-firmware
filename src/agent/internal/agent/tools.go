@@ -1,13 +1,15 @@
 package agent
 
 import (
+	"net/http"
+	"path/filepath"
+	"sort"
+	"time"
+
 	"aiden-agent/internal/agent/mnk"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/screenprovider"
-	"path/filepath"
-	"sort"
-	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -23,6 +25,7 @@ type ToolSet struct {
 	textInputHW          *textInputHardwareDeps
 	iosKeyboardIsolation *iosKeyboardIsolationController
 	searchOpenTool       *appSearchOpenTool
+	skillInstallClient   *http.Client
 }
 
 type runtimeDeviceTypeConfigurable interface {
@@ -268,6 +271,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		phoneBridgeRestorer:  NewPhoneBridgeRestorer(nil, pointer),
 		textInputHW:          textInputHW,
 		iosKeyboardIsolation: iosKeyboardIsolation,
+		skillInstallClient:   newSkillInstallHTTPClient(proxyCfg),
 	}
 	touchGesture.primeScreenMapping = toolSet.PrimeScreenMapping
 	return toolSet
@@ -409,12 +413,13 @@ func (s *ToolSet) RegisterMemoryTools(memoryDir string, summaryMaxChunks int, lo
 	if longTermStore == nil {
 		longTermStore = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")))
 	}
+	temporaryStore := NewLongTermMemoryStore(filepath.Join(memoryDir, "temporary"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")))
 	deviceStore := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
 	episodeStore := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
 	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore, archivedStore)
-	s.tools["recall_memory"] = NewRecallMemoryTool(longTermStore)
+	s.tools["recall_memory"] = NewRecallMemoryToolWithTemporary(longTermStore, temporaryStore)
 	s.tools["save_memory"] = NewSaveMemoryTool(longTermStore)
-	s.tools["forget_memory"] = NewForgetMemoryTool(longTermStore)
+	s.tools["forget_memory"] = NewForgetMemoryToolWithTemporary(longTermStore, temporaryStore)
 	s.tools["recall_device_memory"] = NewRecallDeviceMemoryTool(deviceStore)
 	s.tools["inspect_episode"] = NewInspectEpisodeTool(episodeStore)
 }
@@ -435,7 +440,11 @@ func (s *ToolSet) registerSkillTools(skillsDir, manifestPath string, deviceTypeF
 	readTool.SetDeviceTypeFunc(deviceTypeFn)
 	s.tools["skill_list"] = listTool
 	s.tools["skill_read"] = readTool
-	s.tools["skill_manage"] = NewSkillManageTool(skillsDir, manifestPath, onModify...)
+	manageTool := NewSkillManageTool(skillsDir, manifestPath, onModify...)
+	if s.skillInstallClient != nil {
+		manageTool.SetHTTPClient(s.skillInstallClient)
+	}
+	s.tools["skill_manage"] = manageTool
 	s.tools["skill_mark_used"] = NewSkillMarkUsedTool(skillsDir, usagePath)
 }
 

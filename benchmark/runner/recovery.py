@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
-from runner.reset import ResetError, call_environment_setup, per_task_setup
+from runner.reset import (
+    ResetError,
+    SetupAssertionError,
+    call_environment_setup,
+    per_task_setup,
+)
 
 if TYPE_CHECKING:
     from runner.suite import Suite, TaskSpec
@@ -45,7 +50,7 @@ def prepare_task_isolation(
     benchmark_task_id: str | None = None,
     ready_timeout_sec: int = 120,
     setup_attempts: int = 3,
-) -> None:
+) -> dict[str, Any] | None:
     if not wait_for_agent_ready(client, timeout_sec=ready_timeout_sec):
         raise ResetError(f"agent not ready within {ready_timeout_sec}s")
     if not recover_agent_after_timeout(client, timeout_sec=min(30, ready_timeout_sec)):
@@ -54,6 +59,7 @@ def prepare_task_isolation(
     environment_setup_required = bool(environment_url and not task.input_screenshot)
     environment_setup_done = not environment_setup_required
     last_error: Exception | None = None
+    setup_result: dict[str, Any] | None = None
     for attempt in range(1, setup_attempts + 1):
         try:
             client.clear_history()
@@ -80,10 +86,19 @@ def prepare_task_isolation(
 
         try:
             if not task.input_screenshot:
-                per_task_setup(client, task.setup, prompt_prefix=suite.prompt_prefix)
-            return
+                setup_result = per_task_setup(
+                    client,
+                    task.setup,
+                    prompt_prefix=suite.prompt_prefix,
+                    consolidation_expectation=task.consolidation_expectation,
+                )
+            return setup_result
         except (ResetError, AgentTimeoutError, AgentRequestError) as e:
             last_error = e
+            if isinstance(e, SetupAssertionError):
+                raise
+            if getattr(e, "consolidation", None) is not None:
+                raise
             if attempt >= setup_attempts:
                 break
             per_attempt_timeout = max(15, ready_timeout_sec // setup_attempts)

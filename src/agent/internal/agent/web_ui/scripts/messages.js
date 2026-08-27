@@ -68,15 +68,55 @@ function createMessageNode(msg) {
         body.appendChild(audioBtn);
     }
 
-    const timeDiv = document.createElement('div');
-    timeDiv.className = 'message-time';
-    timeDiv.textContent = formatTime(msg.timestamp);
-    body.appendChild(timeDiv);
+    const footer = document.createElement('div');
+    footer.className = 'message-footer';
+
+    const formattedTime = formatTime(msg.timestamp);
+    if (formattedTime) {
+        const timeDiv = document.createElement('div');
+        timeDiv.className = 'message-time';
+        timeDiv.textContent = formattedTime;
+        footer.appendChild(timeDiv);
+    }
+
+    const usageDiv = renderMessageUsage(msg.usage);
+    if (usageDiv) {
+        footer.appendChild(usageDiv);
+    }
+    if (footer.childNodes.length > 0) {
+        body.appendChild(footer);
+    }
 
     shell.appendChild(avatar);
     shell.appendChild(body);
     card.appendChild(shell);
     return card;
+}
+
+function renderMessageUsage(usage) {
+    if (!usage || typeof usage !== 'object') return null;
+
+    const root = document.createElement('div');
+    root.className = 'message-usage';
+    root.title = 'LLM token usage';
+
+    [
+        ['Input', usage.input_tokens],
+        ['Output', usage.output_tokens],
+        ['Total', usage.total_tokens]
+    ].forEach(function(metric) {
+        const item = document.createElement('span');
+        item.className = 'message-usage-item';
+        item.textContent = metric[0] + ' ' + formatTokenCount(metric[1]);
+        root.appendChild(item);
+    });
+    return root;
+}
+
+function formatTokenCount(value) {
+    const count = Number(value);
+    if (!Number.isFinite(count) || count < 0) return '0';
+    return Math.floor(count).toLocaleString();
 }
 
 function createContextMarkerNode(msg, index) {

@@ -4,7 +4,7 @@ import pytest
 
 from runner.agent_client import AgentRequestError, AgentTimeoutError
 from runner.recovery import prepare_task_isolation, wait_for_agent_ready
-from runner.reset import ResetError
+from runner.reset import ResetError, SetupAssertionError
 from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec
 
 
@@ -310,6 +310,46 @@ def test_prepare_task_isolation_runs_seed_memory_with_environment_setup(monkeypa
     ]
 
 
+def test_prepare_task_isolation_does_not_retry_setup_assertion(monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    setup_calls = []
+
+    def fail_assertion(*args, **kwargs):
+        setup_calls.append((args, kwargs))
+        raise SetupAssertionError("expected memory is absent")
+
+    monkeypatch.setattr("runner.recovery.per_task_setup", fail_assertion)
+    client = SetupClient()
+    suite = Suite(
+        name="memory",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=__import__("pathlib").Path("memory.json"),
+    )
+    task = TaskSpec(
+        id="memory_update",
+        category="memory",
+        description_for_judge="Update memory.",
+        prompt="check memory",
+        rubric=[RubricItem(id="ok", check="ok")],
+        hard_assertions=HardAssertions(),
+        setup={"type": "assert_memory", "expected_count": 1},
+    )
+
+    with pytest.raises(SetupAssertionError, match="expected memory is absent"):
+        prepare_task_isolation(
+            client,
+            suite,
+            task,
+            ready_timeout_sec=10,
+            setup_attempts=3,
+        )
+
+    assert len(setup_calls) == 1
+    assert client.clears == 1
+
+
 def test_prepare_task_isolation_raises_after_exhausting_retries(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     client = SetupClient(fail_clears=3)
@@ -331,6 +371,50 @@ def test_prepare_task_isolation_raises_after_exhausting_retries(monkeypatch):
 
     with pytest.raises(AgentTimeoutError, match="clear timed out"):
         prepare_task_isolation(client, suite, task, ready_timeout_sec=10, setup_attempts=2)
+
+
+def test_prepare_task_isolation_does_not_retry_consolidation_contract_failure(
+    monkeypatch,
+):
+    setup_attempts = 0
+
+    def fail_consolidation_contract(*args, **kwargs):
+        nonlocal setup_attempts
+        setup_attempts += 1
+        error = ResetError("consolidation contract failed")
+        error.consolidation = {"status": "done", "memory_ids": []}
+        raise error
+
+    monkeypatch.setattr("runner.recovery.per_task_setup", fail_consolidation_contract)
+    client = SetupClient()
+    suite = Suite(
+        name="memory",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=__import__("pathlib").Path("suite.json"),
+    )
+    task = TaskSpec(
+        id="reflection_contract",
+        category="memory",
+        description_for_judge="Validate reflection.",
+        prompt="confirm",
+        rubric=[RubricItem(id="ok", check="ok")],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+        setup={"type": "seed_episode"},
+    )
+
+    with pytest.raises(ResetError, match="consolidation contract failed"):
+        prepare_task_isolation(
+            client,
+            suite,
+            task,
+            ready_timeout_sec=10,
+            setup_attempts=3,
+        )
+
+    assert setup_attempts == 1
+    assert client.clears == 1
 
 
 def test_prepare_task_isolation_does_not_repeat_failed_environment_setup(monkeypatch):

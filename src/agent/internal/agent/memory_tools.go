@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -13,7 +14,8 @@ type RecallSessionChunksTool struct {
 }
 
 type RecallMemoryTool struct {
-	store *LongTermMemoryStore
+	store     *LongTermMemoryStore
+	temporary *LongTermMemoryStore
 }
 
 type SaveMemoryTool struct {
@@ -21,7 +23,8 @@ type SaveMemoryTool struct {
 }
 
 type ForgetMemoryTool struct {
-	store *LongTermMemoryStore
+	store     *LongTermMemoryStore
+	temporary *LongTermMemoryStore
 }
 
 type RecallDeviceMemoryTool struct {
@@ -106,13 +109,19 @@ func NewRecallMemoryTool(store *LongTermMemoryStore) *RecallMemoryTool {
 	return &RecallMemoryTool{store: store}
 }
 
+func NewRecallMemoryToolWithTemporary(store, temporary *LongTermMemoryStore) *RecallMemoryTool {
+	return &RecallMemoryTool{store: store, temporary: temporary}
+}
+
 func (t *RecallMemoryTool) Name() string { return "recall_memory" }
 
 func (t *RecallMemoryTool) Description() string {
 	return strings.Join([]string{
-		"Recall long-term memories by tags, entities, or types. Leave arrays empty to match all.",
+		"Recall temporary and long-term memories by tags, entities, or types. Leave arrays empty to match all.",
+		"Temporary memories are short-lived notification-derived conclusions and are returned with memory_scope=temporary; long-term memories are returned with memory_scope=long_term.",
 		"Use for remembered preferences, rules, procedures, facts, profile info, or screen content the user saved earlier with the device button.",
 		"Screen content the user saved belongs here even when they phrase it as something recent (\"the tracking number I just saved\"); use types [\"screen_snapshot\"] for those. Only use recall_session_chunks for what was actually said in conversation.",
+		"Notification-derived temporary memories are included automatically. Use this tool for remembered notification conclusions; when the exact original notification record is required, use shell to read `/userdata/agent/memory/notifications/events/*.jsonl` without modifying it.",
 		"Returns matching memories with id, type, title, content, summary.",
 	}, " ")
 }
@@ -134,12 +143,77 @@ func (t *RecallMemoryTool) Call(ctx context.Context, input string) (string, erro
 	if err != nil {
 		return "", fmt.Errorf("decode recall_memory input: %w", err)
 	}
-	results, err := t.store.Search(ctx, query)
+	results := make([]MemoryResult, 0)
+	if t.temporary != nil {
+		temporary, err := t.temporary.Search(ctx, query)
+		if err != nil {
+			return "", err
+		}
+		for i := range temporary {
+			temporary[i].MemoryScope = "temporary"
+		}
+		results = append(results, temporary...)
+	}
+	longTerm, err := t.store.Search(ctx, query)
 	if err != nil {
 		return "", err
 	}
+	for i := range longTerm {
+		longTerm[i].MemoryScope = "long_term"
+	}
+	results = append(results, longTerm...)
+	sort.SliceStable(results, func(i, j int) bool {
+		si := recallMemoryResultScore(query, results[i])
+		sj := recallMemoryResultScore(query, results[j])
+		if si != sj {
+			return si > sj
+		}
+		if results[i].MemoryScope != results[j].MemoryScope {
+			return results[i].MemoryScope == "temporary"
+		}
+		if results[i].Priority != results[j].Priority {
+			return results[i].Priority > results[j].Priority
+		}
+		return results[i].ID < results[j].ID
+	})
+	if query.Limit > 0 && len(results) > query.Limit {
+		results = results[:query.Limit]
+	}
 	recordRecalledMemoryIDs(ctx, results, func(r MemoryResult) string { return r.ID })
 	return encodeToolJSON(map[string]any{"results": results})
+}
+
+func recallMemoryResultScore(query MemoryQuery, result MemoryResult) int {
+	if len(query.Tags) == 0 && len(query.Entities) == 0 && len(query.Types) == 0 {
+		if result.MemoryScope == "temporary" {
+			return 1
+		}
+		return 0
+	}
+	score := 0
+	for _, want := range query.Tags {
+		for _, got := range result.Tags {
+			if strings.EqualFold(strings.TrimSpace(want), strings.TrimSpace(got)) {
+				score += 4
+			}
+		}
+	}
+	for _, want := range query.Entities {
+		for _, got := range result.Entities {
+			if strings.EqualFold(strings.TrimSpace(want), strings.TrimSpace(got)) {
+				score += 5
+			}
+		}
+	}
+	for _, want := range query.Types {
+		if strings.EqualFold(strings.TrimSpace(want), result.Type) {
+			score += 3
+		}
+	}
+	if score > 0 && result.MemoryScope == "temporary" {
+		score++
+	}
+	return score
 }
 
 // recordRecalledMemoryIDs reports the IDs of memories surfaced by a recall tool
@@ -221,28 +295,23 @@ func (t *SaveMemoryTool) Call(ctx context.Context, input string) (string, error)
 		Entities:         req.Entities,
 		EvidenceExcerpts: req.Evidence,
 	}
-	action, existingID, err := t.store.DecideAction(ctx, item)
+	result, err := t.store.ApplyMemoryCandidate(ctx, item)
 	if err != nil {
 		return "", err
 	}
-	var id string
-	switch action {
-	case "ignore":
-		return encodeToolJSON(map[string]string{"status": "ignored", "reason": "duplicate of " + existingID})
-	case "supersede":
-		id, err = t.store.SupersedeMemory(ctx, existingID, item)
-	default:
-		id, err = t.store.AddMemory(ctx, item)
-	}
-	if err != nil {
-		return "", err
+	if result.Operation == MemoryOperationIgnore {
+		return encodeToolJSON(map[string]string{"status": "ignored", "reason": "duplicate of " + result.ID})
 	}
 	t.store.RequestProfileRebuild()
-	return encodeToolJSON(map[string]string{"status": "saved", "id": id})
+	return encodeToolJSON(map[string]string{"status": "saved", "id": result.ID, "operation": string(result.Operation)})
 }
 
 func NewForgetMemoryTool(store *LongTermMemoryStore) *ForgetMemoryTool {
 	return &ForgetMemoryTool{store: store}
+}
+
+func NewForgetMemoryToolWithTemporary(store, temporary *LongTermMemoryStore) *ForgetMemoryTool {
+	return &ForgetMemoryTool{store: store, temporary: temporary}
 }
 
 func (t *ForgetMemoryTool) Name() string { return "forget_memory" }
@@ -264,7 +333,7 @@ func (t *ForgetMemoryTool) ArgsSchema() map[string]any {
 }
 
 func (t *ForgetMemoryTool) Call(ctx context.Context, input string) (string, error) {
-	if t.store == nil {
+	if t.store == nil && t.temporary == nil {
 		return "", fmt.Errorf("long-term memory store is not configured")
 	}
 	req, err := decodeForgetMemoryRequest(input)
@@ -277,7 +346,14 @@ func (t *ForgetMemoryTool) Call(ctx context.Context, input string) (string, erro
 	if req.Reason == "" {
 		req.Reason = "user requested"
 	}
-	if err := t.store.Forget(ctx, req.ID, req.Reason); err != nil {
+	store := t.store
+	if strings.HasPrefix(req.ID, "tmp_") && t.temporary != nil {
+		store = t.temporary
+	}
+	if store == nil {
+		return "", fmt.Errorf("memory store is not configured for %q", req.ID)
+	}
+	if err := store.Forget(ctx, req.ID, req.Reason); err != nil {
 		return "", err
 	}
 	return encodeToolJSON(map[string]string{"status": "deleted", "id": req.ID})
@@ -292,7 +368,7 @@ func (t *RecallDeviceMemoryTool) Name() string { return "recall_device_memory" }
 func (t *RecallDeviceMemoryTool) Description() string {
 	return strings.Join([]string{
 		"Recall device and UI memory by terms, tags, entities, types, or device id.",
-		"Use on demand when a task materially depends on saved device or app profiles, procedures, navigation, failure-prevention lessons, calibration notes, or facts; do not call merely because a device or app is mentioned.",
+		"Required when a task materially depends on saved device or app profiles, procedures, navigation, failure-prevention lessons, calibration notes, or facts, including natural-language references to previously learned behavior, prior device experience, or an earlier workaround; recall before answering even when the answer appears obvious, but do not call merely because a device or app is mentioned.",
 		`Input JSON: {"terms":["微信"],"tags":["登录"],"entities":["微信App"],"types":["procedure","failure"],"device_id":"default","limit":5}`,
 	}, " ")
 }
@@ -322,6 +398,19 @@ func (t *RecallDeviceMemoryTool) Call(ctx context.Context, input string) (string
 	results, err := t.store.Search(ctx, query)
 	if err != nil {
 		return "", err
+	}
+	if len(results) == 0 && len(query.Tags) > 0 && len(query.Terms) > 0 {
+		// LLMs often emit a useful free-text query together with an overly
+		// specific tag filter. Retry with tags as ranking terms while preserving
+		// hard entity, type, and device constraints. Entities can identify an app,
+		// account, or device boundary, so relaxing them risks cross-scope recall.
+		fallback := query
+		fallback.Terms = append(append([]string(nil), query.Terms...), query.Tags...)
+		fallback.Tags = nil
+		results, err = t.store.Search(ctx, fallback)
+		if err != nil {
+			return "", err
+		}
 	}
 	results = limitDeviceMemoryRecall(results, 4800)
 	recordRecalledMemoryIDs(ctx, results, func(h MemoryHit) string { return h.ID })

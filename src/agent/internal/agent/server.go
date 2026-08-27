@@ -65,8 +65,6 @@ type Server struct {
 	userFilesGenerateMu     sync.Mutex
 	userFilesGeneration     *userFilesReportGeneration
 	mu                      sync.Mutex
-	history                 []Message
-	historyStore            *ChatHistoryStore
 	episodeStore            *TaskEpisodeStore
 	sttClient               STTClient
 	ttsManager              *tts.ProviderManager // Borrowed from Runtime.
@@ -120,7 +118,7 @@ type MessageAttachment struct {
 	PreviewURL string `json:"preview_url,omitempty"`
 }
 
-// Message represents a public chat history message or tool call.
+// Message represents a public chat or tool event.
 type Message struct {
 	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result"
 	Role            string              `json:"role,omitempty"`
@@ -131,6 +129,7 @@ type Message struct {
 	OriginalText    string              `json:"original_text,omitempty"`
 	Transcript      string              `json:"transcript,omitempty"`
 	Content         string              `json:"content"`
+	Usage           *messages.Usage     `json:"usage,omitempty"`
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
@@ -144,7 +143,7 @@ type Message struct {
 	IsError         bool                `json:"is_error,omitempty"`
 }
 
-func normalizeChatHistoryMessage(message Message) (Message, bool) {
+func normalizePublicMessage(message Message) (Message, bool) {
 	switch strings.TrimSpace(message.Type) {
 	case "user", "user_input", "steer":
 		message.Type = "user"
@@ -182,7 +181,7 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		Timestamp:      event.Timestamp,
 		IsError:        event.IsError,
 	}
-	message, ok := normalizeChatHistoryMessage(message)
+	message, ok := normalizePublicMessage(message)
 	if !ok {
 		return Message{}
 	}
@@ -403,7 +402,6 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		userFilesMemoryDir:      filepath.Join(userFilesBaseDir, "memory"),
 		userFilesSkillsDir:      filepath.Join(userFilesBaseDir, "skills"),
 		userFilesSkillStateDir:  filepath.Join(userFilesBaseDir, "skill-state"),
-		history:                 make([]Message, 0),
 		screenCaptureClient:     screenProviderFromRuntime(runtime),
 		bridge:                  runtime.PhoneBridge(),
 		bleSocketPath:           configuredBLEServiceSocketPath(),
@@ -430,20 +428,11 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		s.liveActivity.SetLocalUpdateNotifier(defaultBLEWake)
 	}
 	if s.userFilesMemoryDir != "" {
-		s.historyStore = NewChatHistoryStore(filepath.Join(s.userFilesMemoryDir, "chat_history"))
 		s.episodeStore = NewTaskEpisodeStore(filepath.Join(s.userFilesMemoryDir, "episodes"))
-	}
-	// Connect history store to event broadcaster
-	if s.historyStore != nil {
-		s.historyStore.SetOnNewMessage(func(msg Message) {
-			s.eventBroadcaster.Broadcast(msg)
-		})
 	}
 	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
 	s.quickCapture = newServerQuickCapture(runtime, s.screenCaptureClient)
 	runtime.tools.RegisterPhoneBridge(s.bridge)
-	s.loadHistoryFromDisk()
-
 	// Initialize speech clients if configured.
 	cfg := runtime.config
 	s.audioClient = NewAudioServiceClient(cfg.Audio.SocketOrDefault())
@@ -524,6 +513,8 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
 		mux.HandleFunc("/api/benchmark/seed_episode", s.handleBenchmarkSeedEpisode)
 		mux.HandleFunc("/api/benchmark/episode-memory/process", s.handleBenchmarkProcessEpisodeMemory)
+		mux.HandleFunc("/api/benchmark/seed_notification", s.handleBenchmarkSeedNotification)
+		mux.HandleFunc("/api/benchmark/notification-memory/process", s.handleBenchmarkProcessNotificationMemory)
 		mux.HandleFunc("/api/benchmark/phone_bridge_state", s.handleBenchmarkPhoneBridgeState)
 	}
 	mux.HandleFunc("/api/clear", s.handleClear)
@@ -603,7 +594,7 @@ func newWettyReverseProxyForTarget(target *url.URL) *httputil.ReverseProxy {
 		}
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
-		req.Host = target.Host
+		req.Host = originalHost
 		req.Header.Set("X-Forwarded-Host", originalHost)
 		req.Header.Set("X-Forwarded-Proto", originalProto)
 		req.Header.Set("X-Forwarded-Prefix", "/wetty")
@@ -1320,7 +1311,7 @@ func (s *Server) handleChatAsync(
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
 	}
-	s.appendHistory(userMsg)
+	s.publishMessage(userMsg)
 	if s.liveActivity != nil {
 		s.liveActivity.StartTask(requestID, inputText, s.liveActivityPhoneID(req))
 	}
@@ -1354,7 +1345,7 @@ func (s *Server) handleChatAsync(
 		eventHandler := func(event RunEvent) {
 			msg := messageFromRunEvent(event, userMsg.EpisodeID, requestID)
 			if msg.Type != "" {
-				if msg, ok := s.appendHistory(msg); ok {
+				if msg, ok := s.publishMessage(msg); ok {
 					pending.mu.Lock()
 					pending.history = append(pending.history, msg)
 					pending.messages = append(pending.messages, msg)
@@ -1446,7 +1437,7 @@ func (s *Server) handleChatAsync(
 					Timestamp: time.Now(),
 					IsError:   true,
 				}
-				if errorMsg, ok := s.appendHistory(errorMsg); ok {
+				if errorMsg, ok := s.publishMessage(errorMsg); ok {
 					pending.history = append(pending.history, errorMsg)
 					pending.messages = append(pending.messages, errorMsg)
 				}
@@ -1735,7 +1726,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	s.logger.Info("Appending history")
-	s.appendHistory(userMessage)
+	s.publishMessage(userMessage)
 	if s.liveActivity != nil {
 		s.logger.Info("Starting live activity")
 		s.liveActivity.StartTask(req.RequestID, inputText, s.liveActivityPhoneID(req))
@@ -1757,7 +1748,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		EventHandler: func(event RunEvent) {
 			message := messageFromRunEvent(event, episodeID, req.RequestID)
 			if message.Type != "" {
-				if message, ok := s.appendHistory(message); ok {
+				if message, ok := s.publishMessage(message); ok {
 					stream.Write(ChatStreamEvent{Type: "message", Message: &message})
 				}
 			}
@@ -1841,7 +1832,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			Timestamp: time.Now(),
 			IsError:   true,
 		}
-		if errorMessage, ok := s.appendHistory(errorMessage); ok {
+		if errorMessage, ok := s.publishMessage(errorMessage); ok {
 			stream.Write(ChatStreamEvent{Type: "message", Message: &errorMessage})
 		}
 		if s.logger != nil {
@@ -2420,7 +2411,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func shouldStreamEventMessage(msg Message) bool {
-	_, ok := normalizeChatHistoryMessage(msg)
+	_, ok := normalizePublicMessage(msg)
 	return ok
 }
 
@@ -2467,15 +2458,18 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 type benchmarkSeedMemoryRequest struct {
-	Store    string   `json:"store"`
-	ID       string   `json:"id"`
-	Type     string   `json:"type"`
-	Title    string   `json:"title"`
-	Content  string   `json:"content"`
-	Tags     []string `json:"tags"`
-	Entities []string `json:"entities"`
-	Evidence []string `json:"evidence"`
-	Priority int      `json:"priority"`
+	Store        string            `json:"store"`
+	ID           string            `json:"id"`
+	Type         string            `json:"type"`
+	Title        string            `json:"title"`
+	Content      string            `json:"content"`
+	Tags         []string          `json:"tags"`
+	Entities     []string          `json:"entities"`
+	Evidence     []string          `json:"evidence"`
+	SourceRefs   []MemorySourceRef `json:"source_refs"`
+	EvidenceRefs []MemorySourceRef `json:"evidence_refs"`
+	ExpiresAt    string            `json:"expires_at"`
+	Priority     int               `json:"priority"`
 }
 
 func (s *Server) handleBenchmarkSeedEpisode(w http.ResponseWriter, r *http.Request) {
@@ -2543,6 +2537,100 @@ type benchmarkProcessEpisodeMemoryResponse struct {
 	MemoryIDs  []string                 `json:"memory_ids"`
 }
 
+type benchmarkSeedNotificationRequest struct {
+	Events []ble.NotificationEvent `json:"events"`
+}
+
+type benchmarkProcessNotificationMemoryResponse struct {
+	MemoryCursor string   `json:"memory_cursor"`
+	MemoryIDs    []string `json:"memory_ids"`
+}
+
+func (s *Server) handleBenchmarkSeedNotification(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req benchmarkSeedNotificationRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512*1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, "decode notification fixture: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		http.Error(w, "decode notification fixture: expected exactly one JSON object", http.StatusBadRequest)
+		return
+	}
+	if len(req.Events) == 0 || len(req.Events) > 100 {
+		http.Error(w, "events must contain between 1 and 100 entries", http.StatusBadRequest)
+		return
+	}
+	for index, event := range req.Events {
+		if strings.TrimSpace(event.Title) == "" && strings.TrimSpace(event.Message) == "" {
+			http.Error(w, fmt.Sprintf("events[%d] requires a title or message", index), http.StatusBadRequest)
+			return
+		}
+	}
+	plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane)
+	if !ok || plane == nil {
+		http.Error(w, "filesystem memory plane not configured", http.StatusServiceUnavailable)
+		return
+	}
+	records, err := plane.SeedNotificationMemoryForBenchmark(r.Context(), req.Events)
+	if err != nil {
+		http.Error(w, "seed notification: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		ids = append(ids, record.ContextID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":      "seeded",
+		"context_ids": ids,
+		"event_count": len(records),
+	})
+}
+
+func (s *Server) handleBenchmarkProcessNotificationMemory(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane)
+	if !ok || plane == nil {
+		http.Error(w, "filesystem memory plane not configured", http.StatusServiceUnavailable)
+		return
+	}
+	cursor, memoryIDs, err := plane.ProcessNotificationMemoryNow(r.Context())
+	if err != nil {
+		code := http.StatusInternalServerError
+		var proposalErr *notificationProposalError
+		if errors.As(err, &proposalErr) {
+			code = http.StatusUnprocessableEntity
+		} else if errors.Is(err, errMemoryWorkerBusy) {
+			code = http.StatusConflict
+		}
+		http.Error(w, "process notification memory: "+err.Error(), code)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(benchmarkProcessNotificationMemoryResponse{
+		MemoryCursor: cursor,
+		MemoryIDs:    memoryIDs,
+	})
+}
+
 func (s *Server) handleBenchmarkProcessEpisodeMemory(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeBenchmarkRequest(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -2570,7 +2658,7 @@ func (s *Server) handleBenchmarkProcessEpisodeMemory(w http.ResponseWriter, r *h
 	status, memoryIDs, err := plane.ProcessEpisodeMemoryNow(r.Context(), req.EpisodeID)
 	if err != nil {
 		code := http.StatusInternalServerError
-		if errors.Is(err, errEpisodeMemoryWorkerBusy) {
+		if errors.Is(err, errMemoryWorkerBusy) {
 			code = http.StatusConflict
 		}
 		http.Error(w, "process episode memory: "+err.Error(), code)
@@ -2622,8 +2710,8 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 	if storeName == "" {
 		storeName = "long_term"
 	}
-	if storeName != "long_term" && storeName != "device" {
-		http.Error(w, "store must be long_term or device", http.StatusBadRequest)
+	if storeName != "long_term" && storeName != "temporary" && storeName != "device" {
+		http.Error(w, "store must be long_term, temporary, or device", http.StatusBadRequest)
 		return
 	}
 	priority := req.Priority
@@ -2657,22 +2745,32 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 			Entities:   req.Entities,
 		})
 	} else {
-		if plane.LongTerm() == nil {
-			http.Error(w, "long-term memory not configured", http.StatusServiceUnavailable)
+		store := plane.LongTerm()
+		memoryScope := "long_term"
+		if storeName == "temporary" {
+			store = NewLongTermMemoryStore(filepath.Join(plane.memoryDir, "temporary"))
+			memoryScope = "temporary"
+		}
+		if store == nil {
+			http.Error(w, "memory store not configured", http.StatusServiceUnavailable)
 			return
 		}
 		item := MemoryItem{
 			ID:               req.ID,
 			Type:             req.Type,
+			TimeScope:        memoryScope,
 			Priority:         priority,
 			Confidence:       0.9,
 			Title:            req.Title,
 			Content:          req.Content,
 			Tags:             req.Tags,
 			Entities:         req.Entities,
+			SourceRefs:       req.SourceRefs,
+			EvidenceRefs:     req.EvidenceRefs,
+			ExpiresAt:        req.ExpiresAt,
 			EvidenceExcerpts: evidence,
 		}
-		id, err = plane.LongTerm().AddMemory(r.Context(), item)
+		id, err = store.AddMemory(r.Context(), item)
 	}
 	if err != nil {
 		if s.logger != nil {
@@ -2780,21 +2878,8 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	s.history = make([]Message, 0)
-	s.mu.Unlock()
-
 	if s.logger != nil {
 		s.logger.Info("Conversation history cleared")
-	}
-	if s.historyStore != nil {
-		if err := s.historyStore.Clear(); err != nil {
-			if s.logger != nil {
-				s.logger.Error("Clear chat history failed: %v", err)
-			}
-			http.Error(w, fmt.Sprintf("Clear chat history failed: %v", err), http.StatusInternalServerError)
-			return
-		}
 	}
 	if err := s.runtime.ClearMemory(r.Context()); err != nil {
 		if s.logger != nil {
@@ -2822,18 +2907,6 @@ func (s *Server) handleClearAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	s.history = make([]Message, 0)
-	s.mu.Unlock()
-	if s.historyStore != nil {
-		if err := s.historyStore.Clear(); err != nil {
-			if s.logger != nil {
-				s.logger.Error("Clear chat history failed: %v", err)
-			}
-			http.Error(w, fmt.Sprintf("Clear chat history failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-	}
 	if s.logger != nil {
 		s.logger.Info("All memory cleared")
 	}
@@ -3137,54 +3210,27 @@ func legacyToolOutputLooksLikeError(output string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(output)), "error:")
 }
 
-func (s *Server) appendHistory(message Message) (Message, bool) {
-	message, ok := normalizeChatHistoryMessage(message)
+func (s *Server) publishMessage(message Message) (Message, bool) {
+	message, ok := normalizePublicMessage(message)
 	if !ok {
 		return Message{}, false
 	}
-	s.mu.Lock()
-	s.history = append(s.history, message)
-	s.mu.Unlock()
-	if s.historyStore != nil {
-		if err := s.historyStore.Append(context.Background(), message); err != nil && s.logger != nil {
-			s.logger.Warn("Persist chat history failed: %v", err)
-		}
-	} else if s.eventBroadcaster != nil {
+	if s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(message)
 	}
 	return message, true
 }
 
-// AppendHistory appends a message through the server history path so persistent
-// history, in-memory /api/history snapshots, and SSE broadcasts stay aligned.
-func (s *Server) AppendHistory(message Message) {
-	s.appendHistory(message)
-}
-
-// HistoryStore returns the chat history store, used by audio dialog to persist
-// voice messages. May return nil if no config dir was provided.
-func (s *Server) HistoryStore() *ChatHistoryStore {
-	return s.historyStore
-}
-
 // BroadcastMessage sends a message to all SSE subscribers.
 func (s *Server) BroadcastMessage(msg Message) {
 	var ok bool
-	msg, ok = normalizeChatHistoryMessage(msg)
+	msg, ok = normalizePublicMessage(msg)
 	if !ok {
 		return
 	}
 	if s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(msg)
 	}
-}
-
-func (s *Server) historySnapshot() []Message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	historySnapshot := make([]Message, len(s.history))
-	copy(historySnapshot, s.history)
-	return historySnapshot
 }
 
 func (s *Server) webHistorySnapshot() []Message {
@@ -3208,7 +3254,11 @@ func (s *Server) webHistorySnapshot() []Message {
 }
 
 func webMessageFromContextMessage(item messages.Message, contextRole string) (Message, bool) {
-	message := Message{Content: item.Content}
+	message := Message{Content: item.Content, Timestamp: item.Timestamp}
+	if item.Usage != nil {
+		usage := *item.Usage
+		message.Usage = &usage
+	}
 	switch item.Role {
 	case messages.MessageRoleSystem:
 		return Message{}, false
@@ -3261,76 +3311,6 @@ func attachmentKindFromMIME(mimeType string) string {
 		return AttachmentKindAudio
 	}
 	return "file"
-}
-
-func (s *Server) loadHistoryFromDisk() {
-	if s.runtime.config.ConfigDir == "" {
-		return
-	}
-	if s.historyStore != nil {
-		messages, err := s.historyStore.Load(context.Background())
-		if err == nil && len(messages) > 0 {
-			s.history = append(s.history, messages...)
-			return
-		}
-	}
-	eventsPath := filepath.Join(s.runtime.config.ConfigDir, "memory", "session", "events.jsonl")
-	store := NewSessionMemoryStore(filepath.Join(s.runtime.config.ConfigDir, "memory", "session"))
-	events, err := store.readEvents(eventsPath)
-	if err != nil {
-		return
-	}
-	for _, evt := range events {
-		if message, ok := chatMessageFromSessionEvent(evt); ok {
-			s.history = append(s.history, message)
-		}
-	}
-}
-
-func chatMessageFromSessionEvent(evt SessionEvent) (Message, bool) {
-	ts, _ := time.Parse(time.RFC3339Nano, evt.Ts)
-	message := Message{
-		Type:         chatMessageTypeFromSessionEvent(evt),
-		Role:         evt.Role,
-		EpisodeID:    evt.EpisodeID,
-		RequestID:    evt.RequestID,
-		Status:       evt.Status,
-		Modality:     evt.Modality,
-		OriginalText: evt.OriginalText,
-		Transcript:   evt.Transcript,
-		Content:      evt.Content,
-		ToolName:     firstNonEmptyString([]string{evt.ToolName, evt.Source}),
-		ToolInput:    evt.ToolInput,
-		ToolError:    cloneToolError(evt.ToolError),
-		Artifacts:    sanitizeInputArtifacts(evt.Artifacts),
-		Timestamp:    ts,
-		IsError:      evt.IsError,
-	}
-	return normalizeChatHistoryMessage(message)
-}
-
-func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
-	switch strings.TrimSpace(evt.Type) {
-	case "user_input", "steer":
-		return "user"
-	case "assistant_output":
-		return "assistant"
-	case runEventToolCall:
-		return runEventToolCall
-	case "tool_result":
-		return "tool_result"
-	}
-
-	switch strings.TrimSpace(evt.Role) {
-	case "user", "human":
-		return "user"
-	case "assistant", "ai":
-		return "assistant"
-	case "tool":
-		return "tool_result"
-	}
-
-	return ""
 }
 
 func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttachment, error) {

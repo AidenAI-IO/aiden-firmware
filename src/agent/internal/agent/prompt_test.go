@@ -44,6 +44,33 @@ func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 	}
 }
 
+func TestRolePromptExplainsNotificationMemoryAndRawHistoryLookup(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, want := range []string{"Phone notifications", "recall_memory", "/userdata/agent/memory/notifications/events/", "YYYY-MM-DD.jsonl", "exact original notification"} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing notification guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
+func TestRolePromptRequiresRecallForNaturalLanguagePriorDeviceExperience(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, want := range []string{"## Device memory evidence", "must call recall_device_memory", "previously learned behavior", "prior device experience", "earlier workaround", "not a substitute for the saved evidence", "answer appears obvious", "not an unnecessary tool call"} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing natural-language device recall guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
+func TestRolePromptDirectsRemoteSkillURLsToInstallAction(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, want := range []string{"skill_manage", "action=install", "source_url", "Do not fetch the skill with web_scraper or shell/curl"} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing remote skill install guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
 func TestRolePromptIncludesConfiguredResponseLocaleInSystemPrompt(t *testing.T) {
 	manager := NewSkillManager(NewSkillIndex())
 	zh := buildProfile(AgentConfig{Locale: "zh-CN"}, manager, nil, agentRoleRules())
@@ -80,6 +107,9 @@ func TestStateHookDoesNotInjectResponseLocale(t *testing.T) {
 	}
 	if !strings.Contains(messageList[0].Content, "device_type") {
 		t.Fatalf("state message missing device state: %q", messageList[0].Content)
+	}
+	if strings.Contains(messageList[0].Content, "<state>") {
+		t.Fatalf("persisted state message must remain unwrapped: %q", messageList[0].Content)
 	}
 }
 
@@ -123,6 +153,80 @@ func TestStateHookAttachesFreshScreenshotToUserTurn(t *testing.T) {
 	}
 	if !foundImage {
 		t.Fatalf("converted state message has no screenshot binary: %#v", standard[0].Parts)
+	}
+	if len(screenshot.inputs) != 1 || screenshot.inputs[0] != "{}" {
+		t.Fatalf("screenshot inputs = %#v, want one empty-object call", screenshot.inputs)
+	}
+}
+
+func TestStateHookSkipsFreshScreenshotWhenUserProvidesImage(t *testing.T) {
+	screenshot := &stubTool{
+		name:        "screenshot",
+		description: "Capture screenshot.",
+		output:      `{"width":390,"height":844,"format":"jpeg","size":18,"data":"unused"}`,
+	}
+	runtime := NewRuntimeWithDeps(Config{}, nil, nil, &ToolSet{tools: map[string]langtools.Tool{
+		"screenshot": screenshot,
+	}}, NewSkillIndex())
+	runtime.stateManager.SetState("device", "connected")
+	manager := newPromptTestContextManager(t)
+	runtime.contextManager = manager
+	manager.AddAppendMessageHook(runtime.getStateHook())
+
+	message := userMessageFromInput(manager, "analyze this", []InputAttachment{{
+		Kind:     AttachmentKindImage,
+		MIMEType: "image/png",
+		Data:     []byte("user image"),
+	}})
+	if err := manager.AppendMessage(message); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	messageList := manager.MessageListDump().Messages
+	if len(messageList) != 2 || messageList[0].Role != messages.MessageRoleState || messageList[1].Role != messages.MessageRoleUser {
+		t.Fatalf("messages = %#v, want text state followed by the user message", messageList)
+	}
+	if len(messageList[0].Attachments) != 0 {
+		t.Fatalf("state attachments = %#v, want no automatic screenshot", messageList[0].Attachments)
+	}
+	if len(messageList[1].Attachments) != 1 || messageList[1].Attachments[0].MIMEType != "image/png" {
+		t.Fatalf("user attachments = %#v, want uploaded image", messageList[1].Attachments)
+	}
+	if len(screenshot.inputs) != 0 {
+		t.Fatalf("screenshot inputs = %#v, want no screenshot call", screenshot.inputs)
+	}
+}
+
+func TestStateHookStillAttachesFreshScreenshotForNonImageAttachment(t *testing.T) {
+	imageData := []byte("current screenshot")
+	screenshot := &stubTool{
+		name:        "screenshot",
+		description: "Capture screenshot.",
+		output: `{"width":390,"height":844,"format":"jpeg","size":18,"data":"` +
+			base64.StdEncoding.EncodeToString(imageData) + `"}`,
+	}
+	runtime := NewRuntimeWithDeps(Config{}, nil, nil, &ToolSet{tools: map[string]langtools.Tool{
+		"screenshot": screenshot,
+	}}, NewSkillIndex())
+	manager := newPromptTestContextManager(t)
+	runtime.contextManager = manager
+	manager.AddAppendMessageHook(runtime.getStateHook())
+
+	message := userMessageFromInput(manager, "listen to this", []InputAttachment{{
+		Kind:     AttachmentKindAudio,
+		MIMEType: "audio/wav",
+		Data:     []byte("audio"),
+	}})
+	if err := manager.AppendMessage(message); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	messageList := manager.MessageListDump().Messages
+	if len(messageList) != 2 || len(messageList[0].Attachments) != 1 {
+		t.Fatalf("messages = %#v, want state screenshot followed by the user message", messageList)
+	}
+	if messageList[0].Attachments[0].Source != messages.AttachmentSourceScreenshotObservation {
+		t.Fatalf("state attachment = %#v, want screenshot observation", messageList[0].Attachments[0])
 	}
 	if len(screenshot.inputs) != 1 || screenshot.inputs[0] != "{}" {
 		t.Fatalf("screenshot inputs = %#v, want one empty-object call", screenshot.inputs)

@@ -359,7 +359,8 @@ llm_http_retention_days = 14
 	if !dto.AudioArchive.Enabled || dto.AudioArchive.StoragePath != agent.DefaultConfig().AudioArchive.StoragePath {
 		t.Fatalf("audio_archive defaults = %+v, want enabled default storage", dto.AudioArchive)
 	}
-	if !dto.QuickCapture.Enabled || dto.QuickCapture.GPIOPin != 0 || dto.QuickCapture.ScreenMemoryTTL != agent.DefaultScreenMemoryTTL {
+	if !dto.QuickCapture.Enabled || dto.QuickCapture.GPIOPin != agent.DefaultConfig().QuickCapture.GPIOPin ||
+		dto.QuickCapture.ScreenMemoryTTL != agent.DefaultScreenMemoryTTL {
 		t.Fatalf("quick_capture defaults = %+v", dto.QuickCapture)
 	}
 }

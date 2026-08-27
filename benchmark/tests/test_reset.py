@@ -1,8 +1,12 @@
+import json
+from types import SimpleNamespace
+
 import pytest
 
-from runner.agent_client import AgentRequestError, AgentTimeoutError, ChatResponse
+from runner.agent_client import AgentRequestError, AgentTimeoutError, ChatResponse, ToolInvokeResult
 from runner.reset import (
     ResetError,
+    SetupAssertionError,
     call_environment_release,
     call_environment_setup,
     clear_stale_adb_android_owner,
@@ -43,9 +47,31 @@ class RecordingSetupClient:
         self.calls.append(("seed_episode", episode, timeout))
         return {"status": "seeded", "id": episode["id"]}
 
+    def seed_memory(self, memory, timeout=30):
+        self.calls.append(("seed_memory", memory, timeout))
+        return {"status": "seeded", "id": memory["id"]}
+
     def process_episode_memory(self, episode_id, timeout=90):
         self.calls.append(("process_episode_memory", episode_id, timeout))
         return {"episode_id": episode_id, "status": "done", "memory_ids": ["devmem-1"]}
+
+    def seed_notification(self, events, timeout=30):
+        self.calls.append(("seed_notification", events, timeout))
+        return {"status": "seeded", "context_ids": [str(index + 1) for index in range(len(events))]}
+
+    def process_notification_memory(self, timeout=90):
+        self.calls.append(("process_notification_memory", timeout))
+        return {"memory_cursor": "1", "memory_ids": ["tmp_notification_1"]}
+
+    def invoke_tool(self, name, args, timeout=90):
+        self.calls.append(("invoke_tool", name, args, timeout))
+        from runner.agent_client import ToolInvokeResult
+
+        return ToolInvokeResult(
+            output='{"results":[{"id":"tmp_notification_1","memory_scope":"temporary"}]}',
+            is_error=False,
+            duration_ms=0,
+        )
 
 
 def test_agent_prompt_setup_wraps_chat_errors_as_reset_error():
@@ -53,6 +79,226 @@ def test_agent_prompt_setup_wraps_chat_errors_as_reset_error():
 
     with pytest.raises(ResetError, match="setup agent_prompt failed"):
         per_task_setup(FailingChatClient(), setup)
+
+
+def test_notification_setup_seeds_and_processes_fixture():
+    client = RecordingSetupClient()
+    setup = {
+        "type": "seed_notification",
+        "events": [{"title": "Package", "message": "Tomorrow"}],
+        "consolidate": True,
+        "expected_memory_count": 1,
+        "expected_memory_scope": "temporary",
+    }
+
+    per_task_setup(client, setup)
+
+    assert client.calls == [
+        ("seed_notification", setup["events"], 90),
+        ("process_notification_memory", 90),
+        ("invoke_tool", "recall_memory", {"limit": 20}, 90),
+    ]
+
+
+def test_notification_scope_setup_uses_configured_query_and_covers_all_memory_ids():
+    client = RecordingSetupClient()
+    setup = {
+        "type": "seed_notification",
+        "events": [{"title": "Package", "message": "Tomorrow"}],
+        "consolidate": True,
+        "expected_memory_count": 25,
+        "expected_memory_scope": "long_term",
+        "expected_memory_query": {"types": ["fact"], "limit": 3},
+    }
+
+    def process_notification_memory(timeout=90):
+        client.calls.append(("process_notification_memory", timeout))
+        return {
+            "memory_cursor": "1",
+            "memory_ids": [f"mem-{index}" for index in range(25)],
+        }
+
+    def invoke_tool(name, args, timeout=90):
+        client.calls.append(("invoke_tool", name, args, timeout))
+        from runner.agent_client import ToolInvokeResult
+
+        return ToolInvokeResult(
+            output=json.dumps({
+                "results": [
+                    {"id": f"mem-{index}", "memory_scope": "long_term"}
+                    for index in range(25)
+                ]
+            }),
+            is_error=False,
+            duration_ms=0,
+        )
+
+    client.process_notification_memory = process_notification_memory
+    client.invoke_tool = invoke_tool
+    per_task_setup(client, setup)
+    assert client.calls[-1][2] == {"types": ["fact"], "limit": 25}
+
+
+def test_setup_sequence_runs_existing_primitives_in_order():
+    client = RecordingSetupClient()
+    memory = {"id": "tmp-1", "content": "Existing conclusion"}
+    event = {"title": "Update", "message": "New conclusion"}
+
+    per_task_setup(
+        client,
+        [
+            {"type": "seed_memory", "memories": [memory]},
+            {"type": "seed_notification", "events": [event], "consolidate": False},
+        ],
+    )
+
+    assert client.calls == [
+        ("seed_memory", memory, 30),
+        ("seed_notification", [event], 30),
+    ]
+
+
+def test_setup_sequence_preserves_consolidation_result_when_later_setup_returns_none():
+    client = RecordingSetupClient()
+    episode = {"id": "ep-1", "user_goal": "verify a device procedure"}
+
+    result = per_task_setup(
+        client,
+        [
+            {"type": "seed_episode", "episode": episode, "consolidate": True},
+            {"type": "agent_prompt", "prompt": "continue"},
+        ],
+    )
+
+    assert result is not None
+    assert result["consolidation"]["memory_ids"] == ["devmem-1"]
+
+
+def test_setup_sequence_applies_expectation_only_to_matching_seed_episode():
+    client = RecordingSetupClient()
+    first = {"id": "ep-1", "user_goal": "first episode"}
+    second = {"id": "ep-2", "user_goal": "second episode"}
+
+    result = per_task_setup(
+        client,
+        [
+            {"type": "seed_episode", "episode": first, "consolidate": False},
+            {
+                "type": "seed_episode",
+                "episode": second,
+                "consolidate": True,
+                "consolidation_expectation": {"min_memory_ids": 1},
+            },
+            {"type": "agent_prompt", "prompt": "continue"},
+        ],
+        consolidation_expectation=SimpleNamespace(min_memory_ids=1),
+    )
+
+    assert result is not None
+    assert result["episode_id"] == "ep-2"
+    assert client.calls[:3] == [
+        ("seed_episode", first, 30),
+        ("seed_episode", second, 90),
+        ("process_episode_memory", "ep-2", 90),
+    ]
+
+
+def test_assert_memory_mismatch_is_a_setup_assertion_failure():
+    class MismatchClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            from runner.agent_client import ToolInvokeResult
+
+            return ToolInvokeResult(
+                output='{"results":[]}',
+                is_error=False,
+                duration_ms=0,
+            )
+
+    with pytest.raises(SetupAssertionError, match="expected 1, got 0"):
+        per_task_setup(
+            MismatchClient(),
+            {"type": "assert_memory", "expected_count": 1},
+        )
+
+
+def test_assert_memory_rejects_malformed_nested_reference_before_recall():
+    client = RecordingSetupClient()
+    with pytest.raises(ResetError, match="event_ids_contains must be a list of non-empty strings"):
+        per_task_setup(
+            client,
+            {
+                "type": "assert_memory",
+                "expected": [
+                    {
+                        "source_refs_contain": [
+                            {"type": "notification", "event_ids_contains": "not-a-list"}
+                        ]
+                    }
+                ],
+            },
+        )
+    assert not any(call[0] == "invoke_tool" for call in client.calls)
+
+
+def test_assert_memory_matches_source_reference_evidence():
+    class SourceRefClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            from runner.agent_client import ToolInvokeResult
+
+            return ToolInvokeResult(
+                output=(
+                    '{"results":[{"id":"m-1","source_refs":['
+                    '{"type":"notification","id":"old","event_ids":["e-old"]},'
+                    '{"type":"notification","id":"new","event_ids":["e-new"]}]}]}'
+                ),
+                is_error=False,
+                duration_ms=0,
+            )
+
+    per_task_setup(
+        SourceRefClient(),
+        {
+            "type": "assert_memory",
+            "expected": [
+                {
+                    "id": "m-1",
+                    "source_refs_contain": [
+                        {"type": "notification", "id": "old", "event_ids_contains": ["e-old"]},
+                        {"type": "notification", "id": "new", "event_ids_contains": ["e-new"]},
+                    ],
+                }
+            ],
+        },
+    )
+
+
+def test_setup_sequence_preserves_setup_assertion_failure_type():
+    class MismatchClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            from runner.agent_client import ToolInvokeResult
+
+            return ToolInvokeResult(
+                output='{"results":[]}',
+                is_error=False,
+                duration_ms=0,
+            )
+
+    with pytest.raises(SetupAssertionError, match=r"setup\[1\] failed"):
+        per_task_setup(
+            MismatchClient(),
+            [
+                {"type": "seed_memory", "memories": [{"id": "m-1", "content": "x"}]},
+                {"type": "assert_memory", "expected_count": 1},
+            ],
+        )
+
+
+def test_notification_setup_rejects_non_boolean_consolidate():
+    with pytest.raises(ResetError, match="consolidate must be boolean"):
+        per_task_setup(
+            RecordingSetupClient(),
+            {"type": "seed_notification", "events": [{"title": "x"}], "consolidate": "false"},
+        )
 
 
 def test_agent_prompt_setup_wraps_timeouts_as_reset_error():
@@ -151,6 +397,23 @@ def test_seed_episode_setup_can_leave_episode_unconsolidated():
     assert client.calls == [("seed_episode", episode, 45)]
 
 
+def test_seed_episode_setup_rejects_task_expectation_without_consolidation():
+    client = RecordingSetupClient()
+
+    with pytest.raises(ResetError, match="requires consolidate=true"):
+        per_task_setup(
+            client,
+            {
+                "type": "seed_episode",
+                "episode": {"id": "ep-1", "user_goal": "verify a procedure"},
+                "consolidate": False,
+            },
+            consolidation_expectation=object(),
+        )
+
+    assert client.calls == []
+
+
 def test_seed_episode_setup_consolidates_and_requires_memory():
     client = RecordingSetupClient()
     episode = {"id": "ep-1", "user_goal": "verify a device procedure"}
@@ -164,6 +427,180 @@ def test_seed_episode_setup_consolidates_and_requires_memory():
         ("seed_episode", episode, 45),
         ("process_episode_memory", "ep-1", 45),
     ]
+
+
+def test_seed_episode_setup_returns_consolidation_artifact_and_accepts_empty_expected_result():
+    class UnknownClient(RecordingSetupClient):
+        def process_episode_memory(self, episode_id, timeout=90):
+            return {
+                "episode_id": episode_id,
+                "status": "done",
+                "assessment": {"goal_result": "unknown", "reason": "No proof", "evidence_refs": []},
+                "memory_ids": [],
+            }
+
+    result = per_task_setup(
+        UnknownClient(),
+        {
+            "type": "seed_episode",
+            "episode": {"id": "ep-unknown", "user_goal": "verify a page"},
+            "consolidate": True,
+            "consolidation_expectation": {
+                "goal_result": "unknown",
+                "allow_empty_memory": True,
+            },
+        },
+    )
+
+    assert result["consolidation"]["assessment"]["goal_result"] == "unknown"
+    assert result["consolidation"]["memory_ids"] == []
+
+
+def test_seed_episode_setup_rejects_forbidden_generated_memory_content():
+    class LeakingClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            self.calls.append(("invoke_tool", name, args, timeout))
+            return ToolInvokeResult(
+                output='{"results":[{"id":"devmem-1","content":"Saved exact value 913204"}]}',
+                is_error=False,
+                duration_ms=1,
+            )
+
+    with pytest.raises(ResetError, match="persisted forbidden value"):
+        per_task_setup(
+            LeakingClient(),
+            {
+                "type": "seed_episode",
+                "episode": {"id": "ep-sensitive", "user_goal": "complete verification"},
+                "consolidate": True,
+                "consolidation_expectation": {
+                    "allow_empty_memory": True,
+                    "forbidden_memory_substrings": ["913204"],
+                },
+            },
+        )
+
+
+def test_seed_episode_setup_allows_generic_memory_without_forbidden_value():
+    class SafeClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            self.calls.append(("invoke_tool", name, args, timeout))
+            return ToolInvokeResult(
+                output='{"results":[{"id":"devmem-1","content":"Verify the destination page after authentication."}]}',
+                is_error=False,
+                duration_ms=1,
+            )
+
+    result = per_task_setup(
+        SafeClient(),
+        {
+            "type": "seed_episode",
+            "episode": {"id": "ep-sensitive", "user_goal": "complete verification"},
+            "consolidate": True,
+            "consolidation_expectation": {
+                "allow_empty_memory": True,
+                "forbidden_memory_substrings": ["913204"],
+            },
+        },
+    )
+
+    assert result["consolidation"]["memory_ids"] == ["devmem-1"]
+
+
+def test_seed_episode_setup_validates_generated_memory_content_type_and_scope():
+    class InspectableClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            return ToolInvokeResult(
+                output='{"results":[{"id":"devmem-1","type":"procedure","content":"Switch to Preview, save, then reopen to verify.","applicability":{"app_name":"QA Notes","app_version":"7"}}]}',
+                is_error=False,
+                duration_ms=1,
+            )
+
+    result = per_task_setup(
+        InspectableClient(),
+        {
+            "type": "seed_episode",
+            "episode": {"id": "ep-procedure", "user_goal": "persist a title"},
+            "consolidate": True,
+            "consolidation_expectation": {
+                "required_memory_substrings": ["Preview", "reopen"],
+                "required_memory_types": ["procedure"],
+                "required_memory_scope": {"app_name": "QA Notes", "app_version": "7"},
+            },
+        },
+    )
+
+    assert result["consolidation"]["memory_ids"] == ["devmem-1"]
+
+
+def test_seed_episode_setup_rejects_wrong_generated_memory_type():
+    class WrongTypeClient(RecordingSetupClient):
+        def invoke_tool(self, name, args, timeout=90):
+            return ToolInvokeResult(
+                output='{"results":[{"id":"devmem-1","type":"fact","content":"Preview then reopen","applicability":{"app_version":"7"}}]}',
+                is_error=False,
+                duration_ms=1,
+            )
+
+    with pytest.raises(ResetError, match="no single memory matching"):
+        per_task_setup(
+            WrongTypeClient(),
+            {
+                "type": "seed_episode",
+                "episode": {"id": "ep-procedure", "user_goal": "persist a title"},
+                "consolidate": True,
+                "consolidation_expectation": {"required_memory_types": ["procedure"]},
+            },
+        )
+
+
+def test_seed_episode_setup_requires_type_content_and_scope_on_same_memory():
+    class SplitEvidenceClient(RecordingSetupClient):
+        def process_episode_memory(self, episode_id, timeout=90):
+            return {"episode_id": episode_id, "status": "done", "memory_ids": ["devmem-1", "devmem-2"]}
+
+        def invoke_tool(self, name, args, timeout=90):
+            memory_id = args["terms"][0]
+            if memory_id == "devmem-1":
+                item = {"id": memory_id, "type": "procedure", "content": "unrelated", "applicability": {"app_version": "7"}}
+            else:
+                item = {"id": memory_id, "type": "fact", "content": "Preview then reopen", "applicability": {"app_version": "8"}}
+            return ToolInvokeResult(output=json.dumps({"results": [item]}), is_error=False, duration_ms=1)
+
+    with pytest.raises(ResetError, match="no single memory matching"):
+        per_task_setup(
+            SplitEvidenceClient(),
+            {
+                "type": "seed_episode",
+                "episode": {"id": "ep-split", "user_goal": "persist a title"},
+                "consolidate": True,
+                "consolidation_expectation": {
+                    "required_memory_substrings": ["Preview", "reopen"],
+                    "required_memory_types": ["procedure"],
+                    "required_memory_scope": {"app_version": "7"},
+                },
+            },
+        )
+
+
+def test_seed_episode_setup_rejects_empty_memory_with_positive_contract_even_when_allowed():
+    class NoMemoryPositiveContractClient(RecordingSetupClient):
+        def process_episode_memory(self, episode_id, timeout=90):
+            return {"episode_id": episode_id, "status": "done", "memory_ids": []}
+
+    with pytest.raises(ResetError, match="produced no device memory"):
+        per_task_setup(
+            NoMemoryPositiveContractClient(),
+            {
+                "type": "seed_episode",
+                "episode": {"id": "ep-empty-positive", "user_goal": "persist a title"},
+                "consolidate": True,
+                "consolidation_expectation": {
+                    "allow_empty_memory": True,
+                    "required_memory_types": ["procedure"],
+                },
+            },
+        )
 
 
 def test_seed_episode_setup_rejects_consolidation_without_memory():
@@ -196,6 +633,47 @@ def test_seed_episode_setup_reports_ignored_status():
                 "consolidate": True,
             },
         )
+
+
+@pytest.mark.parametrize(
+    ("result", "expectation", "message"),
+    [
+        (
+            {"episode_id": "ep-1", "status": "done", "memory_ids": ["devmem-1"]},
+            {"expected_status": "ignored"},
+            "status mismatch",
+        ),
+        (
+            {"episode_id": "ep-1", "status": "ignored", "memory_ids": []},
+            None,
+            "was ignored by the worker",
+        ),
+        (
+            {"episode_id": "ep-1", "status": "processing", "memory_ids": []},
+            None,
+            "did not reach a terminal status",
+        ),
+    ],
+)
+def test_seed_episode_setup_attaches_result_to_status_failures(
+    result, expectation, message
+):
+    class StatusClient(RecordingSetupClient):
+        def process_episode_memory(self, episode_id, timeout=90):
+            return result
+
+    setup = {
+        "type": "seed_episode",
+        "episode": {"id": "ep-1", "user_goal": "verify a device procedure"},
+        "consolidate": True,
+    }
+    if expectation is not None:
+        setup["consolidation_expectation"] = expectation
+
+    with pytest.raises(ResetError, match=message) as exc_info:
+        per_task_setup(StatusClient(), setup)
+
+    assert exc_info.value.consolidation == result
 
 
 def test_per_task_setup_rejects_unknown_keys():

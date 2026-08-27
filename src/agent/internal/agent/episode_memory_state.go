@@ -16,6 +16,7 @@ const (
 	episodeMemoryStateVersion     = 3
 	legacyReflectionFailureTag    = "reflection:v1"
 	episodeMemoryBatchLimit       = 5
+	episodeMemoryBatchMaxTokens   = 8000
 	episodeMemoryRecentTerminals  = 64
 	episodeMemoryProcessingLease  = 15 * time.Minute
 	episodeMemoryRetryDelay       = 5 * time.Minute
@@ -236,11 +237,6 @@ func pruneEpisodeMemoryTerminalStatuses(state *episodeMemoryStateFile, limit int
 	for _, terminal := range terminals[limit:] {
 		delete(state.Episodes, terminal.id)
 	}
-}
-
-type episodeMemoryBatchResult struct {
-	HasPending bool
-	NextRunAt  time.Time
 }
 
 func episodeMemoryEntryAfterCursor(episodeID string, endedAt time.Time, state episodeMemoryStateFile) bool {

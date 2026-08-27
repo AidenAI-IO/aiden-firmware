@@ -32,7 +32,7 @@ func (s *Server) handleRealtimeChatAsync(w http.ResponseWriter, req ChatRequest,
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
 	}
-	s.appendHistory(userMsg)
+	s.publishMessage(userMsg)
 	if s.liveActivity != nil {
 		s.liveActivity.StartTask(requestID, input.InputText, s.liveActivityPhoneID(req))
 	}
@@ -60,7 +60,7 @@ func (s *Server) handleRealtimeChatAsync(w http.ResponseWriter, req ChatRequest,
 			}
 			content := response.String()
 			assistant := Message{Type: "assistant", EpisodeID: episodeID, RequestID: requestID, Content: content, Timestamp: time.Now()}
-			if normalized, ok := s.appendHistory(assistant); ok {
+			if normalized, ok := s.publishMessage(assistant); ok {
 				pending.mu.Lock()
 				pending.history = append(pending.history, normalized)
 				pending.messages = append(pending.messages, normalized)
@@ -140,7 +140,7 @@ func (s *Server) handleRealtimeChatStream(w http.ResponseWriter, r *http.Request
 		s.unregisterActiveRun(req.RequestID)
 		cancel()
 	}()
-	s.appendHistory(userMessage)
+	s.publishMessage(userMessage)
 	if s.liveActivity != nil {
 		s.liveActivity.StartTask(req.RequestID, input.InputText, s.liveActivityPhoneID(req))
 	}
@@ -176,7 +176,7 @@ func (s *Server) handleRealtimeChatStream(w http.ResponseWriter, r *http.Request
 					response.WriteString(event.Response)
 				}
 				assistant := Message{Type: "assistant", EpisodeID: episodeID, RequestID: req.RequestID, Content: response.String(), Timestamp: time.Now()}
-				if normalized, ok := s.appendHistory(assistant); ok {
+				if normalized, ok := s.publishMessage(assistant); ok {
 					history := s.webHistorySnapshot()
 					if s.liveActivity != nil {
 						s.liveActivity.CompleteTask(req.RequestID, normalized.Content)

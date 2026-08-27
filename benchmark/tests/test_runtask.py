@@ -6,6 +6,7 @@ from PIL import Image
 from runner.agent_client import AgentTimeoutError, ChatResponse
 from runner.judge import JudgeConfig, JudgeOutput
 from runner.models import RubricVerdict
+from runner.reset import SetupAssertionError
 from runner.runtask import run_one_task
 from runner.suite import (
     HardAssertions,
@@ -45,6 +46,36 @@ class FakeClient:
             response=self.response,
             history=[{"type": "assistant", "content": self.response}],
         )
+
+
+def test_run_one_task_marks_setup_assertion_as_failed(tmp_path: Path, monkeypatch):
+    suite = Suite(
+        name="memory",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="memory_update",
+        category="memory",
+        description_for_judge="Update memory.",
+        prompt="check memory",
+        rubric=[],
+        hard_assertions=HardAssertions(),
+    )
+
+    def fail_setup(*args, **kwargs):
+        raise SetupAssertionError("expected revision 2")
+
+    monkeypatch.setattr(runtask_mod, "prepare_task_isolation", fail_setup)
+
+    result = run_one_task(
+        FakeClient(), suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
+    )
+
+    assert result.status == "failed"
+    assert result.metrics["error"] == "setup assertion: expected revision 2"
 
 
 def test_run_one_task_includes_static_screenshot_dimensions(tmp_path: Path):
@@ -291,6 +322,102 @@ def test_run_one_task_passes_without_judge_when_hard_assertions_pass(tmp_path: P
     assert result.hard_assertions.response_exists is True
 
 
+def test_run_one_task_writes_consolidation_artifact_from_setup(
+    tmp_path: Path, monkeypatch
+):
+    suite = Suite(
+        name="reflection",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="reflection_case",
+        category="memory",
+        description_for_judge="Reflection contract.",
+        prompt="confirm",
+        rubric=[RubricItem(id="ok", check="responds")],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+        setup={"type": "seed_episode"},
+    )
+
+    monkeypatch.setattr(
+        runtask_mod,
+        "prepare_task_isolation",
+        lambda *args, **kwargs: {
+            "type": "seed_episode",
+            "episode_id": "ep-1",
+            "consolidated": True,
+            "consolidation": {
+                "episode_id": "ep-1",
+                "status": "done",
+                "assessment": {"goal_result": "unknown"},
+                "memory_ids": [],
+            },
+        },
+    )
+
+    artifact_dir = tmp_path / "artifacts"
+    result = run_one_task(
+        FakeClient("done"), suite, task, 1, artifact_dir, None, None, "run-1"
+    )
+
+    assert result.status == "passed"
+    assert json.loads((artifact_dir / "consolidation.json").read_text())["assessment"]["goal_result"] == "unknown"
+    assert not (artifact_dir / "setup.json").exists()
+
+
+def test_run_one_task_preserves_empty_consolidation_artifact_before_recall_failure(
+    tmp_path: Path, monkeypatch
+):
+    suite = Suite(
+        name="reflection",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="reflection_recall_case",
+        category="memory",
+        description_for_judge="Recall a consolidated lesson.",
+        prompt="confirm",
+        rubric=[RubricItem(id="ok", check="responds")],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=1),
+        setup={"type": "seed_episode"},
+        expected_recall_from_consolidation=True,
+        expected_recalled_memory_tool="recall_device_memory",
+    )
+    consolidation = {
+        "episode_id": "ep-1",
+        "status": "done",
+        "assessment": {"goal_result": "unknown"},
+        "memory_ids": [],
+    }
+    monkeypatch.setattr(
+        runtask_mod,
+        "prepare_task_isolation",
+        lambda *args, **kwargs: {
+            "type": "seed_episode",
+            "episode_id": "ep-1",
+            "consolidated": True,
+            "consolidation": consolidation,
+        },
+    )
+
+    artifact_dir = tmp_path / "artifacts"
+    result = run_one_task(
+        FakeClient("done"), suite, task, 1, artifact_dir, None, None, "run-1"
+    )
+
+    assert result.status == "failed"
+    assert json.loads((artifact_dir / "consolidation.json").read_text()) == consolidation
+    assert result.metrics["consolidation_goal_result"] == "unknown"
+    assert result.metrics["consolidation_memory_count"] == 0
+    assert "non-empty consolidation memory_ids" in result.metrics["error"]
+
+
 def test_run_one_task_fails_without_judge_when_expected_answer_is_wrong(tmp_path: Path):
     suite = Suite(
         name="persona",
@@ -428,6 +555,60 @@ def test_evaluate_task_history_records_expected_memory_failure_details(tmp_path:
         result.hard_assertion_failures[-1].actual
         == "Missing: personamem_solo_travel. Recalled: personamem_campfire_storytelling."
     )
+
+
+def test_evaluate_task_history_requires_inline_recall_for_consolidation_ids(tmp_path: Path):
+    from runner.runtask import evaluate_task_history
+
+    suite = Suite(
+        name="s",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "s.json",
+    )
+    task = TaskSpec(
+        id="consolidation_recall_case",
+        category="memory",
+        description_for_judge="Recall the newly consolidated memory.",
+        prompt="Recall it.",
+        rubric=[],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=2),
+        expected_recalled_memory_ids=["memory-created-by-consolidation"],
+        expected_recalled_memory_tool="recall_device_memory",
+        expected_recall_from_consolidation=True,
+    )
+    history = [
+        {
+            "type": "tool_call",
+            "tool_name": "recall_device_memory",
+            "tool_input": "{}",
+        },
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+        {"type": "assistant", "content": "I could not verify the recalled memory."},
+    ]
+
+    result = evaluate_task_history(
+        suite=suite,
+        task=task,
+        history=history,
+        attempt=1,
+        artifact_dir=tmp_path / "artifacts",
+        judge_cfg=None,
+        judge_cache_dir=None,
+        run_id="run-1",
+        timed_out=False,
+        metrics={},
+        episode={"retrieved_memory_refs": ["memory-created-by-consolidation"]},
+    )
+
+    assert result.status == "judge_error"
+    assert result.metrics["memory_recall_evidence_source"] == "unavailable"
+    assert result.hard_assertions.expected_recalled_memory is None
 
 
 def _memory_suite_and_task(tmp_path: Path):

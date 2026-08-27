@@ -208,7 +208,7 @@ Within one runtime, memory tools, `MemoryPlane`, and profile rebuilding share a 
 
 ### Device And Episode Memory
 
-The episode recorder captures tool calls, tool results, screenshots, user corrections, and recorded outcome data during the run. `MemoryPlane.CommitEpisode` persists the trace and notifies the background Episode Memory Worker.
+The episode recorder captures tool calls, tool results, screenshots, user corrections, and recorded outcome data during the run. `MemoryPlane.CommitEpisode` persists the trace and notifies the shared background `MemoryWorker`; the worker later invokes `EpisodeProcessor` during the common idle window.
 
 Common episode event types:
 
@@ -228,27 +228,10 @@ Success and failure do not gate learning. The worker independently assesses goal
 
 Deterministic device and app profiles remain separate from LLM-generated lessons. Automatic Episode learning does not write user profile, preference, or rule entries to Long-Term Memory.
 
-### Persisted Chat History
-
-**NOTE: As of the current architecture, chat_history injection into Agent context is DISABLED.**
-
-The `chat_history/` store persists UI-level conversation logs but is NOT automatically injected into the Agent's context. This prevents:
-- Duplicate, uncompressed context competing with the session system
-- Unbounded growth of Agent prompts
-- Confusion between active session and archived history
-
-For "resume interrupted task" scenarios, use explicit session restore or recall tools instead. The session system already provides comprehensive history management with compaction, archiving, and recall capabilities.
-
-The chat_history store remains available for:
-- UI display of conversation history across sessions
-- Audit logging
-- Future explicit session restore features
-
 ## Storage Map
 
 ```text
 /userdata/agent/memory/
-|-- chat_history/                # optional persisted UI chat history
 |-- session/
 |   |-- events.jsonl             # hot window
 |   |-- summary.md               # compressed session summary

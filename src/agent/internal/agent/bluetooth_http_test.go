@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"aiden-agent/internal/ble"
 )
@@ -154,6 +155,31 @@ func TestPhoneNotificationEventsPublishesAndroidBatch(t *testing.T) {
 	}
 	if gotPhoneID != "android-1" || len(gotEvents) != 1 || gotEvents[0].SourceEventID != "event-1" {
 		t.Fatalf("unexpected publish request phone=%q events=%#v", gotPhoneID, gotEvents)
+	}
+}
+
+func TestPhoneNotificationEventsNotifiesSharedMemoryWorker(t *testing.T) {
+	worker := newMemoryWorkerWithProcessors(nil, time.Hour)
+	defer worker.Stop()
+	plane := &FilesystemMemoryPlane{memoryWorker: worker}
+	server := &Server{
+		runtime: &Runtime{memoryPlane: plane},
+		bleNotifyRequest: func(context.Context, string, string, []ble.NotificationEvent) (ble.NotificationPublishResult, error) {
+			return ble.NotificationPublishResult{Accepted: 1, LastID: "1"}, nil
+		},
+	}
+	body := `{"phone_id":"android-1","events":[{"source_id":"key","source_event_id":"event-1","event":"added","app_identifier":"com.example"}]}`
+	request := bluetoothControlRequestForPath(http.MethodPost, "/api/phone-notifications/events")
+	request.Body = io.NopCloser(strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+	server.handlePhoneNotificationEvents(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("publish code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if !worker.pending || worker.timer == nil {
+		t.Fatal("accepted notification did not wake the shared MemoryWorker idle timer")
 	}
 }
 
