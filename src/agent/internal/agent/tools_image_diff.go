@@ -41,8 +41,7 @@ func (t *ImageDiffTool) Name() string { return "image_diff" }
 
 func (t *ImageDiffTool) Description() string {
 	return `Compare two JPEG screenshots and return pixel-level difference metrics. ` +
-		`For Agent calls, copy the screenshot_attachment_id shown beside each screenshot observation into before and after; never invent or modify attachment IDs. ` +
-		`Direct HTTP callers may also pass the Base64 JPEG data returned by the screenshot tool. ` +
+		`Tool Lab and internal/script callers may pass screenshot_attachment_id values from the current context, or Base64 JPEG data returned by the screenshot tool. ` +
 		`"region" is optional normalized coordinates (0-1000) to restrict comparison to a sub-region — use this to focus on the scrollable area and ignore static UI chrome. ` +
 		`Returns: ` +
 		`"changed" (bool, true when diff_ratio > 0.01), ` +

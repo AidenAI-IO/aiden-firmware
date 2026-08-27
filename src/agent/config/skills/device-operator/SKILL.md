@@ -7,7 +7,6 @@ metadata:
     [
       screenshot,
       wait_for_stable_screen,
-      image_diff,
       quick_action,
       touch_gesture,
       wheel_nudge,
@@ -159,10 +158,10 @@ Scrollable region discipline:
 
 Calibration loop:
 
-1. Record the current screenshot's `screenshot_attachment_id`, then start with medium strength.
-2. Read the gesture result's automatic post-action screenshot and its `screenshot_attachment_id`; do not take another screenshot before comparison.
-3. Use visual inspection or call `image_diff` with those exact values in `before` and `after` to confirm movement and estimate rows/items moved.
-   Never invent attachment IDs. If there is no suitable pre-action screenshot attachment, call `screenshot` before the gesture.
+1. Start with medium strength from the latest screenshot.
+2. Read the gesture result's automatic post-action screenshot.
+3. Use the returned screenshot and its `screen_changed` field to confirm movement. If a finer-grained diagnostic is needed in Tool Lab or a prepared script, `image_diff` remains available there, but it is not a normal conversational Agent step.
+   An omitted `screen_changed` means the baseline comparison was unavailable; judge the returned screenshot directly.
 4. If far from target, increase strength; if close, use small/tiny.
 5. If overshot, reverse direction and reduce strength.
 6. Do not repeat the same strength/distance after a failed attempt.

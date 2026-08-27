@@ -148,6 +148,11 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "observation",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"before":"<screenshot-attachment-id>","after":"<screenshot-attachment-id>"}`,
+		// Post-action tools now compute screen_changed automatically. Keep
+		// image_diff available to the HTTP Tool Lab, scripts, and internal
+		// diagnostics, but do not teach the conversational Agent to call it as
+		// a normal step in the visual feedback loop.
+		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"shell": {
 		Category:     "system",

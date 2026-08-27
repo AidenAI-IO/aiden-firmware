@@ -58,6 +58,25 @@ func TestQuickActionExposedToAgentAndToolLab(t *testing.T) {
 	}
 }
 
+func TestImageDiffRemainsDiagnosticOnly(t *testing.T) {
+	spec := NewToolSpec(&stubTool{name: "image_diff", description: "image diff"})
+	if spec.AgentExposed {
+		t.Fatal("image_diff should not be exposed to the conversational Agent")
+	}
+	if !spec.HTTPExposed {
+		t.Fatal("image_diff should remain available to the HTTP Tool Lab")
+	}
+	runtime := newRuntimeWithTextEntryTools()
+	for _, tool := range runtime.availableTools() {
+		if tool != nil && tool.Name() == "image_diff" {
+			t.Fatal("image_diff should not be included in the default conversational Agent catalog")
+		}
+	}
+	if _, ok := runtime.ToolDescriptorByName("image_diff"); !ok {
+		t.Fatal("image_diff should remain in the HTTP Tool Lab catalog")
+	}
+}
+
 func TestWaitForWakeupExposedToAgentAndToolLab(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{},
@@ -278,7 +297,6 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
 	coreTools := []string{
 		"audio_volume",
-		"image_diff",
 		"inspect_episode",
 		"keyboard_tap",
 		"keyboard_text",

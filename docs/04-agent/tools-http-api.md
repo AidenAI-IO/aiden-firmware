@@ -113,6 +113,8 @@ tools retain normal client-cancellation behavior.
 
 The HTTP catalog is a separate policy. It exposes registered operational and specialized tools together with their `args_schema`, but internal maintenance tools such as `skill_manage` and `skill_mark_used` are never listed or callable through the default HTTP Tool API.
 
+For app launch requests, inspect the latest screenshot first. If the requested app icon or card is clearly visible, unique, and unobscured, use `touch_gesture` on its visible non-overlapping center instead of `open_app`; use `open_app` only when the target is not clearly tappable or a direct tap did not produce a verified result. Both `open_app` and `open_url` return a post-action screenshot; always inspect it before answering or continuing. `ok:true` only means that the OS accepted the launch request, not that the requested app or page is visible.
+
 ## curl Examples
 
 ```bash
@@ -131,7 +133,8 @@ curl -X POST http://127.0.0.1:8080/api/tools/screenshot \
   -d '{"input":{}}'
 
 # Replace the placeholders with the base64 JPEG data returned by two screenshot
-# or post-action tool results.
+# or post-action tool results. This diagnostic endpoint is not included in the
+# normal conversational Agent tool catalog.
 curl -X POST http://127.0.0.1:8080/api/tools/image_diff \
   -H 'Content-Type: application/json' \
   -d '{"input":{"before":"<before-base64-jpeg>","after":"<after-base64-jpeg>"}}'
@@ -143,7 +146,7 @@ curl -X POST http://127.0.0.1:8080/api/tools/weather \
 
 A successful `screenshot` output typically includes `width`, `height`, `format`, `size`, and base64 JPEG `data`.
 A successful `wait_for_stable_screen` output includes stability fields `ok`, `stable`, `elapsed_ms`, `screen_changed`, and also returns a screenshot with `width`, `height`, `format`, `size`, and base64 JPEG `data`; `screen_changed=false` means no visible frame change was observed during the wait window, while `stable=false` indicates the screen is still changing but the screenshot can still be used as a current observation.
-Before executing `keyboard_tap`, `enter_text`, `mouse_move`, `mouse_scroll`, or `touch_gesture`, the system captures a best-effort baseline. After successful execution it waits for screen stability (or until timeout) and automatically takes a final screenshot. Their `output` is JSON containing the original action result `action_output`, `screen_stable`, `stable_wait_ms`, optional `screen_changed`, and the final screenshot's `width`, `height`, `format`, `size`, and base64 JPEG `data`. When present, post-action `screen_changed` compares the baseline with the final screenshot using the PR #442 structural detector: it ignores the top 8% of the image, averages a 40 by 80 block grid, and requires more than 1% of blocks to exceed the color-difference threshold. If the best-effort baseline was unavailable, `screen_changed` is omitted; treat `screen_changed=false` as no meaningful change only when the field is present. `last_diff`, when present, remains a stability-wait diagnostic. Direct HTTP callers pass two JPEG `data` values to `image_diff`. Inside an Agent run, persisted visual observations are instead labeled with unique `screenshot_attachment_id` values that can be passed in the same `before` and `after` fields.
+Before executing `keyboard_tap`, `mouse_move`, `mouse_scroll`, or `touch_gesture`, the system captures a best-effort baseline. After successful execution it waits for screen stability (or until timeout) and automatically takes a final screenshot. Their `output` is JSON containing the original action result `action_output`, `screen_stable`, `stable_wait_ms`, optional `screen_changed`, and the final screenshot's `width`, `height`, `format`, `size`, and base64 JPEG `data`. `enter_text` also captures a best-effort baseline and returns a short-delay post-action screenshot, but does not perform the stable-screen wait; its `screen_stable` and `stable_wait_ms` fields are omitted. When present, post-action `screen_changed` compares the baseline with the final screenshot using the PR #442 structural detector: it ignores the top 8% of the image, averages a 40 by 80 block grid, and requires more than 1% of blocks to exceed the color-difference threshold. If the best-effort baseline was unavailable, `screen_changed` is omitted; treat `screen_changed=false` as no meaningful change only when the field is present. `last_diff`, when present, remains a stability-wait diagnostic. Direct HTTP callers pass two JPEG `data` values to `image_diff`; screenshot attachment IDs are only resolvable inside an active Agent/script context.
 For `touch_gesture`, `back` swipes from near the left physical edge, and `home` swipes up from near the bottom physical edge; normalized coordinates use the 0-1000 range. When manually writing `swipe`, also use edge-aligned start points, e.g., `start.x=1` or `start.y=999`.
 `weather` supports location names or latitude/longitude coordinates, fetching geocoding, current weather, and short-term forecasts from Open-Meteo at runtime.
 `wait_for_wakeup` is a terminating runtime tool. After a successful tool call, it immediately ends the current Agent run and returns the voice interaction to waiting for the next wakeup; it does not ask the model to provide an additional final answer. The run result will set `wait_for_wakeup_requested` / `wait_for_wakeup_reason`; the old fields `sleep_requested` / `sleep_reason` are retained as compatibility aliases only.

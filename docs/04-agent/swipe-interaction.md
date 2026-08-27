@@ -41,12 +41,12 @@ Do not use `touch_gesture`, mouse clicks, or keyboard input to change an active 
 
 ### `image_diff`
 
-`image_diff` compares two JPEG screenshots. Agent calls use screenshot attachment IDs from the current context; direct HTTP calls may pass Base64 JPEG data.
+`image_diff` compares two JPEG screenshots. It remains available for Tool Lab, prepared scripts, and internal diagnostics; the conversational Agent relies on each post-action tool's automatic `screen_changed` result instead of calling it directly.
 
 ```json
 {
-  "before": "<before-screenshot-attachment-id>",
-  "after": "<after-screenshot-attachment-id>",
+  "before": "<before-screenshot-attachment-id-or-base64>",
+  "after": "<after-screenshot-attachment-id-or-base64>",
   "region": {"x": 100, "y": 150, "w": 800, "h": 700}
 }
 ```
@@ -113,7 +113,7 @@ The run-scoped safety policy:
 
 1. Prefer a visible search field over blind scrolling.
 2. Use a moderate swipe for exploration.
-3. Inspect the returned screenshot or use `image_diff` on the scrollable region.
+3. Inspect the returned screenshot and `screen_changed`; use `image_diff` only for Tool Lab or prepared-script diagnostics when a finer-grained comparison is needed.
 4. Switch to a shorter swipe when the target approaches the viewport.
 5. Stop when the screen no longer changes or a visible boundary is reached.
 

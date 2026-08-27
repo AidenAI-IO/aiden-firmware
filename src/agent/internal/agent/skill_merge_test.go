@@ -879,7 +879,6 @@ func TestBundledDeviceOperatorAllowedToolsCoverEmbeddedPlaybooks(t *testing.T) {
 	for _, tool := range []string{
 		"screenshot",
 		"wait_for_stable_screen",
-		"image_diff",
 		"quick_action",
 		"touch_gesture",
 		"mouse_move",
