@@ -445,27 +445,64 @@ func exportIntrospection(conn *dbus.Conn, path dbus.ObjectPath, interfaceName st
 	return conn.Export(introspect.NewIntrospectable(node), path, introspect.IntrospectData.Name)
 }
 
+// signalMatchSpec describes one AddMatchSignal subscription. Kept as data so the
+// scope of each subscription is assertable without a live bus.
+type signalMatchSpec struct {
+	name    string
+	options []dbus.MatchOption
+}
+
+// signalMatchSpecs lists every BlueZ signal subscription the backend needs.
+//
+// The ObjectManager entry deliberately does NOT filter on a path namespace.
+// BlueZ exports its ObjectManager at the root path "/" (see blueZRootPath, used
+// by getManagedObjects), and InterfacesAdded/InterfacesRemoved are emitted from
+// that object -- the path of the object being added travels in argument 0, not
+// in the message path. A path_namespace of "/org/bluez" therefore matches
+// neither, and the bus drops every one of those signals before delivery.
+//
+// Losing them breaks discovery of anything that appears after startup: a device
+// paired later, and the ANCS GattService1/GattCharacteristic1 objects iOS only
+// exposes to a bonded peer, are all announced solely via InterfacesAdded. The
+// reconciler never runs while those objects exist, so notifications are never
+// ingested until the service restarts and re-reads the whole tree directly.
+func signalMatchSpecs() []signalMatchSpec {
+	return []signalMatchSpec{
+		{
+			name: "properties",
+			options: []dbus.MatchOption{
+				dbus.WithMatchSender(BlueZBusName),
+				dbus.WithMatchInterface(dbusPropertiesInterface),
+				dbus.WithMatchPathNamespace(dbus.ObjectPath("/org/bluez")),
+			},
+		},
+		{
+			name: "object_manager",
+			options: []dbus.MatchOption{
+				dbus.WithMatchSender(BlueZBusName),
+				dbus.WithMatchInterface(dbusObjectManagerInterface),
+				dbus.WithMatchObjectPath(blueZRootPath),
+			},
+		},
+		{
+			name: "name_owner_changed",
+			options: []dbus.MatchOption{
+				dbus.WithMatchSender(dbusBusName),
+				dbus.WithMatchInterface(dbusBusInterface),
+				dbus.WithMatchMember("NameOwnerChanged"),
+				dbus.WithMatchArg(0, BlueZBusName),
+			},
+		},
+	}
+}
+
 func (b *blueZBackend) addSignalMatches() error {
-	if err := b.conn.AddMatchSignal(
-		dbus.WithMatchSender(BlueZBusName),
-		dbus.WithMatchInterface(dbusPropertiesInterface),
-		dbus.WithMatchPathNamespace(dbus.ObjectPath("/org/bluez")),
-	); err != nil {
-		return err
+	for _, spec := range signalMatchSpecs() {
+		if err := b.conn.AddMatchSignal(spec.options...); err != nil {
+			return fmt.Errorf("subscribe %s signals: %w", spec.name, err)
+		}
 	}
-	if err := b.conn.AddMatchSignal(
-		dbus.WithMatchSender(BlueZBusName),
-		dbus.WithMatchInterface(dbusObjectManagerInterface),
-		dbus.WithMatchPathNamespace(dbus.ObjectPath("/org/bluez")),
-	); err != nil {
-		return err
-	}
-	return b.conn.AddMatchSignal(
-		dbus.WithMatchSender(dbusBusName),
-		dbus.WithMatchInterface(dbusBusInterface),
-		dbus.WithMatchMember("NameOwnerChanged"),
-		dbus.WithMatchArg(0, BlueZBusName),
-	)
+	return nil
 }
 
 func (b *blueZBackend) configureAdapter(pairingOpen bool) error {

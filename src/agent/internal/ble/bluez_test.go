@@ -80,3 +80,69 @@ func TestANCSRescanDoesNotWaitForWakeSubscriber(t *testing.T) {
 		t.Fatalf("metadata error = %q; ANCS must be reconciled independently of Wake subscription", got)
 	}
 }
+
+func TestObjectManagerSignalMatchCoversRootPath(t *testing.T) {
+	// Regression test: BlueZ exports its ObjectManager at "/" and emits
+	// InterfacesAdded/InterfacesRemoved from that object, carrying the added
+	// object's path in argument 0. Subscribing with path_namespace=/org/bluez
+	// matches neither "/" nor its own emissions, so the bus silently drops every
+	// one of those signals.
+	//
+	// The visible symptom is narrow but severe: a phone paired AFTER ble_service
+	// starts is announced only via InterfacesAdded, as are the ANCS
+	// GattService1/GattCharacteristic1 objects iOS exposes once bonded. Losing
+	// them means the reconciler never runs while those objects exist and no
+	// notifications are ingested until the service restarts and re-reads the
+	// whole object tree via a direct GetManagedObjects call.
+	var spec *signalMatchSpec
+	for _, candidate := range signalMatchSpecs() {
+		if candidate.name == "object_manager" {
+			spec = &candidate
+			break
+		}
+	}
+	if spec == nil {
+		t.Fatal("no object_manager signal subscription is registered")
+	}
+
+	// MatchOption keeps its fields private and formatMatchOptions is unexported,
+	// so assert by comparing against independently constructed options.
+	forbidden := dbus.WithMatchPathNamespace(dbus.ObjectPath("/org/bluez"))
+	wantPath := dbus.WithMatchObjectPath(blueZRootPath)
+	sawRootPath := false
+	for _, option := range spec.options {
+		if option == forbidden {
+			t.Error("ObjectManager subscription filters on path_namespace=/org/bluez, " +
+				"which excludes the root path the signals are emitted from")
+		}
+		if option == wantPath {
+			sawRootPath = true
+		}
+	}
+	if !sawRootPath {
+		t.Errorf("ObjectManager subscription does not cover the root path %q", blueZRootPath)
+	}
+}
+
+func TestPropertiesSignalMatchStaysScopedToBlueZObjects(t *testing.T) {
+	// The Properties subscription is correct as-is and must not be widened while
+	// fixing the ObjectManager one: PropertiesChanged is emitted from the object
+	// that changed, so /org/bluez is the right namespace there.
+	var spec *signalMatchSpec
+	for _, candidate := range signalMatchSpecs() {
+		if candidate.name == "properties" {
+			spec = &candidate
+			break
+		}
+	}
+	if spec == nil {
+		t.Fatal("no properties signal subscription is registered")
+	}
+	want := dbus.WithMatchPathNamespace(dbus.ObjectPath("/org/bluez"))
+	for _, option := range spec.options {
+		if option == want {
+			return
+		}
+	}
+	t.Error("properties subscription lost its /org/bluez path namespace")
+}

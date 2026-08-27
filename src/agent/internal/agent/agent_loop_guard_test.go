@@ -135,7 +135,7 @@ func TestAgentLoopPersistsSoftNoticeInContext(t *testing.T) {
 	if len(notices) != 1 {
 		t.Fatalf("persisted notice count = %d, want 1; messages=%#v", len(notices), manager.MessageListDump().Messages)
 	}
-	if !strings.Contains(notices[0].Content, "Loop guard: recent tool calls are repeating or not changing the screen.") {
+	if strings.Contains(notices[0].Content, "<notice>") || !strings.Contains(notices[0].Content, "Loop guard: recent tool calls are repeating or not changing the screen.") {
 		t.Fatalf("persisted notice = %#v", notices[0])
 	}
 }
@@ -183,7 +183,7 @@ func TestAgentLoopEscalatesFromPersistedNoticeToRestrictionAndTermination(t *tes
 	if len(notices) != 1 {
 		t.Fatalf("persisted notice count = %d, want 1; messages=%#v", len(notices), manager.MessageListDump().Messages)
 	}
-	if !strings.Contains(notices[0].Content, "Loop guard: UI action tools are temporarily restricted because repeated actions produced no progress.") {
+	if strings.Contains(notices[0].Content, "<notice>") || !strings.Contains(notices[0].Content, "Loop guard: UI action tools are temporarily restricted because repeated actions produced no progress.") {
 		t.Fatalf("persisted notice = %#v", notices[0])
 	}
 }
