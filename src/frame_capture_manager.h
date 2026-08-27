@@ -34,6 +34,10 @@ public:
 struct FrameCaptureManagerOptions {
     int recovery_initial_backoff_ms = 1000;
     int recovery_max_backoff_ms = 30000;
+    // Use a slower cap until this open session has produced a valid frame.
+    // Rebuilding an unavailable HDMI pipeline at the normal recovery cadence
+    // wastes CPU while the board is otherwise idle.
+    int recovery_idle_max_backoff_ms = 30000;
     int request_timeout_ms = 4000;
     int warmup_frames = 0;
     bool keep_streamon = false;
@@ -54,7 +58,15 @@ public:
 
 private:
     void run();
-    void recover(int* backoff_ms, const char* error, bool count_failure);
+    void recover(int* backoff_ms,
+                 int max_backoff_ms,
+                 const char* error,
+                 bool count_failure);
+    int initial_backoff_ms() const {
+        return options_.recovery_initial_backoff_ms > 0
+            ? options_.recovery_initial_backoff_ms
+            : 1;
+    }
 
     FrameCaptureSource* source_;
     FrameServiceServer* server_;
