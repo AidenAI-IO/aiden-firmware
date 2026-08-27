@@ -33,8 +33,15 @@ const (
 	DefaultOTADownloadSafetyMarginBytes = 16 << 20
 	DefaultReleaseURL                   = "https://api.github.com/repos/AidenAI-IO/aiden-firmware/releases/latest"
 	MaxRemoteManifestBytes              = 1 << 20
-	DefaultHTTPRequestLimit             = 30 * time.Minute
-	DefaultHTTPResponseHeaderTimeout    = 30 * time.Second
+	// DefaultHTTPRequestLimit bounds metadata requests (release JSON, manifest).
+	// Those are small and fast; 30m is already generous.
+	DefaultHTTPRequestLimit = 30 * time.Minute
+	// DefaultHTTPDownloadLimit bounds a single image download. Images are
+	// hundreds of MB and the device may be on a slow link, so this gets a
+	// larger budget than metadata requests. An explicit HTTPTimeout overrides
+	// both -- this is only the default when none is configured.
+	DefaultHTTPDownloadLimit         = time.Hour
+	DefaultHTTPResponseHeaderTimeout = 30 * time.Second
 )
 
 var ErrUpdateAlreadyRunning = errors.New("ota update already running")
@@ -68,6 +75,8 @@ type UpdaterConfig struct {
 	HealthPollInterval        time.Duration                `json:"-"`
 	HTTPTimeout               time.Duration                `json:"-"`
 	HTTPTimeoutSecs           int                          `json:"http_timeout_seconds,omitempty"`
+	DownloadTimeout           time.Duration                `json:"-"`
+	DownloadTimeoutSecs       int                          `json:"download_timeout_seconds,omitempty"`
 	DryRun                    bool                         `json:"dry_run,omitempty"`
 	TargetSlotOverride        string                       `json:"target_slot_override,omitempty"`
 	Logger                    *log.Logger                  `json:"-"`
@@ -113,6 +122,9 @@ func DefaultUpdaterConfig() UpdaterConfig {
 }
 
 func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
+	// Captured before the defaults below overwrite HTTPTimeout, so the download
+	// budget can tell "operator asked for this" from "nobody set anything".
+	httpTimeoutWasExplicit := config.HTTPTimeout > 0 || config.HTTPTimeoutSecs > 0
 	if config.StateDir == "" {
 		config.StateDir = DefaultOTAStateDir
 	}
@@ -179,6 +191,21 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 			config.HTTPTimeout = time.Duration(config.HTTPTimeoutSecs) * time.Second
 		} else {
 			config.HTTPTimeout = DefaultHTTPRequestLimit
+		}
+	}
+	// Resolve the download budget after HTTPTimeout so an operator who sets only
+	// HTTPTimeout still gets that value applied to downloads. This has to read
+	// the caller's intent rather than the normalized field, which is why it
+	// checks *Secs and the pre-normalization duration instead of the result
+	// above -- by now an unset HTTPTimeout looks identical to an explicit 30m.
+	if config.DownloadTimeout <= 0 {
+		switch {
+		case config.DownloadTimeoutSecs > 0:
+			config.DownloadTimeout = time.Duration(config.DownloadTimeoutSecs) * time.Second
+		case httpTimeoutWasExplicit:
+			config.DownloadTimeout = config.HTTPTimeout
+		default:
+			config.DownloadTimeout = DefaultHTTPDownloadLimit
 		}
 	}
 	if config.SwitchTries > MaxTries {
@@ -738,11 +765,12 @@ func (u *Updater) Status() (State, ABData, error) {
 }
 
 func (u *Updater) VerifyManifestFile(path string) (Manifest, error) {
-	ctx, cancel := u.httpContext(context.Background())
+	parent := context.Background()
+	ctx, cancel := u.httpContext(parent)
 	defer cancel()
 	data, err := readLocalOrRemoteManifest(ctx, path)
 	if err != nil {
-		return Manifest{}, err
+		return Manifest{}, describeTimeout(parent, err, "manifest read", u.httpTimeout())
 	}
 	key, err := u.publicKey()
 	if err != nil {
@@ -752,11 +780,44 @@ func (u *Updater) VerifyManifestFile(path string) (Manifest, error) {
 }
 
 func (u *Updater) httpContext(parent context.Context) (context.Context, context.CancelFunc) {
-	timeout := u.config.HTTPTimeout
-	if timeout <= 0 {
-		timeout = DefaultHTTPRequestLimit
+	return context.WithTimeout(parent, u.httpTimeout())
+}
+
+func (u *Updater) httpTimeout() time.Duration {
+	if u.config.HTTPTimeout > 0 {
+		return u.config.HTTPTimeout
 	}
-	return context.WithTimeout(parent, timeout)
+	return DefaultHTTPRequestLimit
+}
+
+// downloadContext bounds a single image download. It reuses an explicitly
+// configured HTTPTimeout when present so operators keep one knob, and otherwise
+// falls back to the larger download-specific default.
+func (u *Updater) downloadContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, u.downloadTimeout())
+}
+
+func (u *Updater) downloadTimeout() time.Duration {
+	if u.config.DownloadTimeout > 0 {
+		return u.config.DownloadTimeout
+	}
+	return DefaultHTTPDownloadLimit
+}
+
+// describeTimeout turns a bare "context deadline exceeded" into something that
+// names the budget that was blown. Without this the OTA log and state.json
+// last_error both just say "context deadline exceeded", which reads like a
+// generic network fault and gives no hint that raising the timeout is the fix.
+// A parent cancellation (shutdown, SIGTERM) is reported as such instead, since
+// that is not a timeout and must not point the reader at the timeout setting.
+func describeTimeout(parent context.Context, err error, what string, budget time.Duration) error {
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if parent.Err() != nil {
+		return err
+	}
+	return fmt.Errorf("%s timed out after %s: %w", what, budget, err)
 }
 
 func readLocalOrRemoteManifest(ctx context.Context, path string) ([]byte, error) {
@@ -896,7 +957,8 @@ func (u *Updater) partitionSizes() map[string]int64 {
 func (u *Updater) fetchLatestReleaseAssets(parent context.Context, releaseURL string, token string) (map[string]string, error) {
 	ctx, cancel := u.httpContext(parent)
 	defer cancel()
-	return FetchLatestReleaseAssetsWithProxy(ctx, releaseURL, token, u.config.GitHubProxyURL)
+	assets, err := FetchLatestReleaseAssetsWithProxy(ctx, releaseURL, token, u.config.GitHubProxyURL)
+	return assets, describeTimeout(parent, err, "release metadata request", u.httpTimeout())
 }
 
 func (u *Updater) fetchBytesWithTokenLimit(parent context.Context, url string, token string, limit int64) ([]byte, error) {
@@ -909,17 +971,19 @@ func (u *Updater) fetchBytesWithTokenLimit(parent context.Context, url string, t
 		_ = logging.LogEvent(logging.Info, "ota", "manifest", "proxy_enabled")
 	}
 
-	return fetchBytesWithTokenLimit(ctx, fetchURL, token, limit)
+	data, err := fetchBytesWithTokenLimit(ctx, fetchURL, token, limit)
+	return data, describeTimeout(parent, err, "manifest request", u.httpTimeout())
 }
 
 func (u *Updater) downloadFileWithToken(parent context.Context, url string, dst string, expectedSize int64, token string) error {
-	ctx, cancel := u.httpContext(parent)
+	ctx, cancel := u.downloadContext(parent)
 	defer cancel()
-	return DownloadFileWithOptions(ctx, url, dst, expectedSize, DownloadOptions{
+	err := DownloadFileWithOptions(ctx, url, dst, expectedSize, DownloadOptions{
 		BearerToken:    token,
 		GitHubProxyURL: u.config.GitHubProxyURL,
 		Progress:       u.logDownloadProgress,
 	})
+	return describeTimeout(parent, err, "download of "+filepath.Base(dst), u.downloadTimeout())
 }
 
 func (u *Updater) githubToken() string {
