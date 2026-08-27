@@ -95,36 +95,53 @@ FrameServiceStatus FrameCaptureManager::capture(uint32_t timeout_ms, CapturedFra
     return completed_status_;
 }
 
-void FrameCaptureManager::recover(int* backoff_ms, const char* error, bool count_failure) {
+void FrameCaptureManager::recover(int* backoff_ms,
+                                  int max_backoff_ms,
+                                  const char* error,
+                                  bool count_failure) {
     server_->record_recovery(error ? error : "", count_failure);
     source_->close();
-    std::unique_lock<std::mutex> lock(mutex_);
-    work_cv_.wait_for(lock, std::chrono::milliseconds(*backoff_ms), [&]() {
-        return !running_;
-    });
-    if (*backoff_ms < options_.recovery_max_backoff_ms) {
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        work_cv_.wait_for(lock, std::chrono::milliseconds(*backoff_ms), [&]() {
+            return !running_ || restart_requested_.load();
+        });
+    }
+    if (restart_requested_.exchange(false)) {
+        *backoff_ms = initial_backoff_ms();
+        return;
+    }
+    if (*backoff_ms < max_backoff_ms) {
         *backoff_ms *= 2;
-        if (*backoff_ms > options_.recovery_max_backoff_ms) {
-            *backoff_ms = options_.recovery_max_backoff_ms;
+        if (*backoff_ms > max_backoff_ms) {
+            *backoff_ms = max_backoff_ms;
         }
     }
 }
 
 void FrameCaptureManager::run() {
-    int backoff_ms = options_.recovery_initial_backoff_ms;
-    if (backoff_ms <= 0) backoff_ms = 1;
+    int backoff_ms = initial_backoff_ms();
     if (options_.recovery_max_backoff_ms <= 0) options_.recovery_max_backoff_ms = backoff_ms;
+    if (options_.recovery_idle_max_backoff_ms < options_.recovery_max_backoff_ms) {
+        options_.recovery_idle_max_backoff_ms = options_.recovery_max_backoff_ms;
+    }
 
     while (running_) {
+        bool captured_since_open = false;
         if (!source_->open()) {
-            recover(&backoff_ms, "open failed", true);
+            recover(&backoff_ms,
+                    options_.recovery_idle_max_backoff_ms,
+                    "open failed",
+                    true);
             continue;
         }
         if (!options_.keep_streamon && !source_->pause()) {
-            recover(&backoff_ms, "initial pause failed", true);
+            recover(&backoff_ms,
+                    options_.recovery_idle_max_backoff_ms,
+                    "initial pause failed",
+                    true);
             continue;
         }
-        backoff_ms = options_.recovery_initial_backoff_ms > 0 ? options_.recovery_initial_backoff_ms : 1;
 
         while (running_) {
             uint64_t generation = 0;
@@ -142,8 +159,16 @@ void FrameCaptureManager::run() {
                 }
             }
 
-            if (restart_requested_.exchange(false)) {
-                recover(&backoff_ms, "restart requested", false);
+            const int max_backoff_ms = captured_since_open
+                ? options_.recovery_max_backoff_ms
+                : options_.recovery_idle_max_backoff_ms;
+
+            if (restart_requested_.load()) {
+                backoff_ms = initial_backoff_ms();
+                recover(&backoff_ms,
+                        options_.recovery_max_backoff_ms,
+                        "restart requested",
+                        false);
                 break;
             }
 
@@ -175,9 +200,11 @@ void FrameCaptureManager::run() {
                                   : !warmed_up ? "warmup failed"
                                   : !captured ? "capture failed"
                                               : "pause failed";
-                recover(&backoff_ms, error, true);
+                recover(&backoff_ms, max_backoff_ms, error, true);
                 break;
             }
+            captured_since_open = true;
+            backoff_ms = initial_backoff_ms();
             server_->set_state("RUNNING");
         }
     }

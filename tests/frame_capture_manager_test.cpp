@@ -58,6 +58,7 @@ public:
     int discard_count = 0;
     int capture_delay_ms = 0;
     bool pause_failure = false;
+    bool pause_always_fails = false;
     bool resume_failure = false;
 
     bool open() override {
@@ -73,7 +74,7 @@ public:
     bool pause() override {
         std::lock_guard<std::mutex> lock(mutex_);
         ++pause_count;
-        if (pause_failure) {
+        if (pause_failure || pause_always_fails) {
             pause_failure = false;
             return false;
         }
@@ -349,6 +350,65 @@ TEST_CASE("FrameCaptureManager stop interrupts recovery backoff promptly") {
         std::chrono::steady_clock::now() - start).count();
 
     CHECK(elapsed < 250);
+    server.stop();
+}
+
+TEST_CASE("FrameCaptureManager slows retries before the first valid frame") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+
+    FakeCaptureSource source;
+    source.pause_always_fails = true;
+    FrameCaptureManagerOptions options;
+    options.recovery_initial_backoff_ms = 10;
+    options.recovery_max_backoff_ms = 10;
+    options.recovery_idle_max_backoff_ms = 160;
+    FrameCaptureManager manager(&source, &server, options);
+    REQUIRE(manager.start());
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    manager.stop();
+
+    CHECK(source.opened_count() >= 2);
+    CHECK(source.opened_count() <= 12);
+    server.stop();
+}
+
+TEST_CASE("FrameCaptureManager restart interrupts the idle HDMI backoff") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+
+    FakeCaptureSource source;
+    source.pause_always_fails = true;
+    FrameCaptureManagerOptions options;
+    options.recovery_initial_backoff_ms = 5000;
+    options.recovery_max_backoff_ms = 5000;
+    options.recovery_idle_max_backoff_ms = 5000;
+    FrameCaptureManager manager(&source, &server, options);
+    REQUIRE(manager.start());
+
+    int opens_before = 0;
+    for (int i = 0; i < 100 && opens_before == 0; ++i) {
+        opens_before = source.opened_count();
+        if (opens_before == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    REQUIRE(opens_before >= 1);
+
+    manager.request_restart();
+    bool reopened = false;
+    for (int i = 0; i < 50 && !reopened; ++i) {
+        reopened = source.opened_count() > opens_before;
+        if (!reopened) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    CHECK(reopened);
+
+    manager.stop();
     server.stop();
 }
 
