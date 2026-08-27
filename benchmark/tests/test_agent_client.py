@@ -5,7 +5,12 @@ from unittest.mock import patch
 
 import pytest
 
-from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
+from runner.agent_client import (
+    AgentClient,
+    AgentRequestError,
+    AgentSemanticError,
+    AgentTimeoutError,
+)
 
 
 class FakeResponse:
@@ -299,6 +304,64 @@ def test_process_episode_memory_sends_benchmark_token_header():
     assert json.loads(seen["body"]) == {"episode_id": "ep-1"}
     assert seen["timeout"] == 90
     assert result == response
+
+
+def test_seed_notification_sends_benchmark_token_header():
+    seen = {}
+    client = AgentClient(base_url="http://test", benchmark_token="notification-token")
+    events = [{"title": "Package", "message": "Tomorrow"}]
+    with patch(
+        "urllib.request.urlopen",
+        _captured(seen, body={"status": "seeded", "context_ids": ["1"]}),
+    ):
+        result = client.seed_notification(events)
+
+    assert seen["url"].endswith("/api/benchmark/seed_notification")
+    assert seen["headers"]["authorization"] == "Bearer notification-token"
+    assert '"events"' in seen["body"]
+    assert result == {"status": "seeded", "context_ids": ["1"]}
+
+
+def test_process_notification_memory_sends_benchmark_token_header():
+    seen = {}
+    client = AgentClient(base_url="http://test", benchmark_token="notification-token")
+    with patch(
+        "urllib.request.urlopen",
+        _captured(seen, body={"memory_cursor": "1", "memory_ids": ["tmp_notification_1"]}),
+    ):
+        result = client.process_notification_memory()
+
+    assert seen["url"].endswith("/api/benchmark/notification-memory/process")
+    assert seen["headers"]["authorization"] == "Bearer notification-token"
+    assert result["memory_cursor"] == "1"
+
+
+def test_http_422_raises_structured_semantic_error():
+    class SemanticHTTPErrorResponse:
+        def read(self):
+            return b"invalid proposal"
+
+        def close(self):
+            pass
+
+    def fail_urlopen(*args, **kwargs):
+        import urllib.error
+
+        raise urllib.error.HTTPError(
+            "http://test/api/benchmark/notification-memory/process",
+            422,
+            "Unprocessable Entity",
+            {},
+            SemanticHTTPErrorResponse(),
+        )
+
+    client = AgentClient(base_url="http://test", benchmark_token="token")
+    with patch("urllib.request.urlopen", fail_urlopen), pytest.raises(
+        AgentSemanticError
+    ) as exc_info:
+        client.process_notification_memory()
+
+    assert exc_info.value.status_code == 422
 
 
 def test_set_phone_bridge_state_sends_benchmark_token_header():

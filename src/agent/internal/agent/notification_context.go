@@ -32,17 +32,6 @@ const (
 // Production passes ble.RequestEvents; tests can provide a deterministic reader.
 type NotificationEventReader func(context.Context, string, string, int) (ble.EventPage, error)
 
-// NotificationQuery selects persisted notification records without touching
-// the producer or either consumer cursor. An empty Since value means "latest"
-// and returns the newest matching records up to Limit.
-type NotificationQuery struct {
-	Since         string
-	Limit         int
-	Date          string
-	AppIdentifier string
-	Text          string
-}
-
 // NotificationRecord is the durable envelope around the original BLE event.
 // ID remains the producer-local cursor; ContextID is monotonic across BLE
 // service generations and is therefore safe for Memory processing cursors.
@@ -81,14 +70,27 @@ type notificationFingerprintFile struct {
 }
 
 type NotificationContext struct {
-	mu           sync.Mutex
+	mu           *sync.Mutex
 	rootDir      string
 	eventsDir    string
 	statePath    string
 	fingerPath   string
 	reader       NotificationEventReader
+	storageGate  StorageWriteGate
 	state        NotificationContextState
 	fingerprints map[string]string
+	// consumeDisabled is used only by the benchmark fixture path. It lets a
+	// seeded durable log be processed without requiring a live BLE socket.
+	// Production ingestion always leaves this false.
+	consumeDisabled bool
+}
+
+var notificationContextMutexes sync.Map
+
+func notificationContextMutex(rootDir string) *sync.Mutex {
+	key := filepath.Clean(rootDir)
+	mutex, _ := notificationContextMutexes.LoadOrStore(key, &sync.Mutex{})
+	return mutex.(*sync.Mutex)
 }
 
 func NewNotificationContext(memoryDir string, reader NotificationEventReader) (*NotificationContext, error) {
@@ -102,6 +104,7 @@ func NewNotificationContext(memoryDir string, reader NotificationEventReader) (*
 	}
 	root := filepath.Join(memoryDir, "notifications")
 	c := &NotificationContext{
+		mu:           notificationContextMutex(root),
 		rootDir:      root,
 		eventsDir:    filepath.Join(root, "events"),
 		statePath:    filepath.Join(root, "state.json"),
@@ -125,6 +128,78 @@ func (c *NotificationContext) State() NotificationContextState {
 	return cloneNotificationContextState(c.state)
 }
 
+func (c *NotificationContext) SetStorageWriteGate(gate StorageWriteGate) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.storageGate = gate
+	c.mu.Unlock()
+}
+
+// seedForBenchmark appends deterministic notification fixtures directly to the
+// durable context log. It is intentionally package-private; the only caller
+// is the benchmark-token-protected HTTP endpoint.
+func (c *NotificationContext) seedForBenchmark(ctx context.Context, events []ble.NotificationEvent) ([]NotificationRecord, error) {
+	if c == nil || len(events) == 0 {
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ensureLoadedLocked(); err != nil {
+		return nil, err
+	}
+	accepted := make([]NotificationRecord, 0, len(events))
+	for _, event := range events {
+		if err := ctx.Err(); err != nil {
+			return accepted, err
+		}
+		event = sanitizeNotificationEvent(event)
+		fingerprint := notificationEventFingerprint(event)
+		if contextID, exists := c.fingerprints[fingerprint]; exists {
+			// Setup may be retried after the processor or HTTP response fails.
+			// Return the original identity so benchmark fixture injection is
+			// idempotent instead of reporting that zero events were persisted.
+			accepted = append(accepted, NotificationRecord{
+				NotificationEvent: event,
+				ContextID:         contextID,
+				Generation:        firstNonEmptyString([]string{c.state.Generation, "benchmark"}),
+			})
+			continue
+		}
+		contextID := parseCursorOrZero(c.state.StoredCursor) + 1
+		record := NotificationRecord{
+			NotificationEvent: event,
+			ContextID:         strconv.FormatUint(contextID, 10),
+			Generation:        firstNonEmptyString([]string{c.state.Generation, "benchmark"}),
+		}
+		if err := c.appendEventLocked(record); err != nil {
+			return accepted, err
+		}
+		c.fingerprints[fingerprint] = record.ContextID
+		pruneNotificationFingerprints(c.fingerprints)
+		c.state.StoredCursor = record.ContextID
+		c.state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		accepted = append(accepted, record)
+	}
+	if err := c.persistLocked(); err != nil {
+		return accepted, err
+	}
+	return accepted, nil
+}
+
+func (c *NotificationContext) setConsumeDisabledForBenchmark(disabled bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.consumeDisabled = disabled
+	c.mu.Unlock()
+}
+
 // Consume fetches a page from ble_service, appends accepted events durably,
 // and advances SourceCursor only after each event is synced to disk.
 func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]NotificationRecord, error) {
@@ -140,6 +215,12 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.consumeDisabled {
+		return nil, nil
+	}
+	if c.storageGate != nil && !c.storageGate.AllowWrite(StorageCapabilityNotificationContext) {
+		return nil, nil
+	}
 	if err := c.ensureLoadedLocked(); err != nil {
 		return nil, err
 	}
@@ -192,6 +273,7 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 			Generation:        c.state.Generation,
 		}
 		if err := c.appendEventLocked(record); err != nil {
+			c.handleWriteErrorLocked(err)
 			return accepted, err
 		}
 		c.fingerprints[fingerprint] = record.ContextID
@@ -214,123 +296,10 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 	return accepted, nil
 }
 
-// Query returns persisted notification records. It is intentionally separate
-// from Consume and ReadPending: shell/diagnostic callers can inspect the
-// original event log without contacting ble_service or advancing state.
-func (c *NotificationContext) Query(ctx context.Context, query NotificationQuery) ([]NotificationRecord, error) {
-	if c == nil {
-		return nil, nil
+func (c *NotificationContext) handleWriteErrorLocked(err error) {
+	if c.storageGate != nil {
+		c.storageGate.HandleWriteError(err)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return queryNotificationEvents(ctx, c.eventsDir, query)
-}
-
-// QueryNotificationRecords is the read-only entry point for diagnostics and
-// shell commands. memoryDir is the agent memory directory, not the data root.
-func QueryNotificationRecords(ctx context.Context, memoryDir string, query NotificationQuery) ([]NotificationRecord, error) {
-	if strings.TrimSpace(memoryDir) == "" {
-		return nil, fmt.Errorf("notification memory directory is required")
-	}
-	return queryNotificationEvents(ctx, filepath.Join(memoryDir, "notifications", "events"), query)
-}
-
-func queryNotificationEvents(ctx context.Context, eventsDir string, query NotificationQuery) ([]NotificationRecord, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if query.Limit <= 0 {
-		query.Limit = defaultNotificationConsumeLimit
-	}
-	if query.Limit > 1000 {
-		query.Limit = 1000
-	}
-	since := parseCursorOrZero(query.Since)
-	if strings.TrimSpace(query.Since) != "" {
-		if _, ok := parseNotificationCursor(query.Since); !ok {
-			return nil, fmt.Errorf("notification query since must be a non-negative decimal cursor")
-		}
-	}
-	date := strings.TrimSpace(query.Date)
-	if date != "" {
-		if _, err := time.Parse("2006-01-02", date); err != nil {
-			return nil, fmt.Errorf("notification query date must be YYYY-MM-DD: %w", err)
-		}
-	}
-	app := strings.ToLower(strings.TrimSpace(query.AppIdentifier))
-	textQuery := strings.ToLower(strings.TrimSpace(query.Text))
-
-	entries, err := os.ReadDir(eventsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	files := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
-			files = append(files, entry.Name())
-		}
-	}
-	sort.Strings(files)
-	all := make([]NotificationRecord, 0)
-	for _, name := range files {
-		records, err := readNotificationRecordFile(filepath.Join(eventsDir, name))
-		if err != nil {
-			return nil, err
-		}
-		for _, record := range records {
-			if err := ctx.Err(); err != nil {
-				return all, err
-			}
-			cursor, ok := parseNotificationCursor(record.ContextID)
-			if query.Since != "" && (!ok || cursor <= since) {
-				continue
-			}
-			if date != "" && notificationEventDate(record.NotificationEvent) != date {
-				continue
-			}
-			if app != "" && !strings.EqualFold(strings.TrimSpace(record.AppIdentifier), app) {
-				continue
-			}
-			if textQuery != "" && !notificationEventContains(record.NotificationEvent, textQuery) {
-				continue
-			}
-			all = append(all, record)
-		}
-	}
-	// Files are date-sharded, but cursor order is the source of truth.
-	sort.SliceStable(all, func(i, j int) bool {
-		left, lok := parseNotificationCursor(all[i].ContextID)
-		right, rok := parseNotificationCursor(all[j].ContextID)
-		if lok && rok && left != right {
-			return left < right
-		}
-		return all[i].ReceivedAt < all[j].ReceivedAt
-	})
-	if query.Since == "" && len(all) > query.Limit {
-		all = all[len(all)-query.Limit:]
-	} else if len(all) > query.Limit {
-		all = all[:query.Limit]
-	}
-	return all, nil
-}
-
-func notificationEventDate(event ble.NotificationEvent) string {
-	if ts, err := time.Parse(time.RFC3339Nano, event.ReceivedAt); err == nil {
-		return ts.UTC().Format("2006-01-02")
-	}
-	return ""
-}
-
-func notificationEventContains(event ble.NotificationEvent, query string) bool {
-	for _, value := range []string{event.Source, event.AppIdentifier, event.Title, event.Subtitle, event.Message, event.Category, event.Event} {
-		if strings.Contains(strings.ToLower(value), query) {
-			return true
-		}
-	}
-	return false
 }
 
 // ReadPending reads persisted events after MemoryCursor. It never contacts
@@ -351,6 +320,24 @@ func (c *NotificationContext) ReadPending(ctx context.Context, limit int) ([]Not
 		return nil, err
 	}
 	return c.readPendingLocked(ctx, parseCursorOrZero(c.state.MemoryCursor), limit)
+}
+
+// ReadPendingAll reads every persisted event after MemoryCursor. It is used by
+// control paths that need a complete provenance set rather than a processing
+// batch and therefore must not silently truncate at the normal batch limit.
+func (c *NotificationContext) ReadPendingAll(ctx context.Context) ([]NotificationRecord, error) {
+	if c == nil {
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ensureLoadedLocked(); err != nil {
+		return nil, err
+	}
+	return c.readPendingLocked(ctx, parseCursorOrZero(c.state.MemoryCursor), 0)
 }
 
 // CommitProcessed advances MemoryCursor after the corresponding Memory write
@@ -389,6 +376,130 @@ func (c *NotificationContext) CommitProcessed(ctx context.Context, events []Noti
 	return c.persistLocked()
 }
 
+// CleanupProcessedBefore removes only complete date shards whose records are
+// all at or before MemoryCursor. It owns the context lock so StorageMonitor
+// cannot race an append or cursor commit. A zero retention age means all
+// processed shards are eligible (used by emergency cleanup).
+func (c *NotificationContext) CleanupProcessedBefore(ctx context.Context, retentionAge time.Duration, now time.Time) (uint64, error) {
+	if c == nil {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ensureLoadedLocked(); err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(c.eventsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	cutoff := now.UTC().Add(-retentionAge)
+	memoryCursor := parseCursorOrZero(c.state.MemoryCursor)
+	var freed uint64
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return freed, err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if retentionAge > 0 && !notificationShardBeforeCutoff(entry.Name(), info.ModTime(), cutoff) {
+			continue
+		}
+		path := filepath.Join(c.eventsDir, entry.Name())
+		records, err := readNotificationRecordFile(path)
+		if err != nil {
+			return freed, err
+		}
+		processed := true
+		for _, record := range records {
+			cursor, ok := parseNotificationCursor(record.ContextID)
+			if !ok || cursor > memoryCursor {
+				processed = false
+				break
+			}
+		}
+		if !processed {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return freed, err
+		}
+		freed += uint64(info.Size())
+	}
+	return freed, nil
+}
+
+func (c *NotificationContext) EstimateCleanupProcessedBefore(ctx context.Context, retentionAge time.Duration, now time.Time) (uint64, error) {
+	if c == nil {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ensureLoadedLocked(); err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(c.eventsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	cutoff := now.UTC().Add(-retentionAge)
+	memoryCursor := parseCursorOrZero(c.state.MemoryCursor)
+	var total uint64
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || (retentionAge > 0 && !notificationShardBeforeCutoff(entry.Name(), info.ModTime(), cutoff)) {
+			continue
+		}
+		records, err := readNotificationRecordFileReadOnly(filepath.Join(c.eventsDir, entry.Name()))
+		if err != nil {
+			return total, err
+		}
+		processed := true
+		for _, record := range records {
+			cursor, ok := parseNotificationCursor(record.ContextID)
+			if !ok || cursor > memoryCursor {
+				processed = false
+				break
+			}
+		}
+		if processed {
+			total += uint64(info.Size())
+		}
+	}
+	return total, nil
+}
+
+func notificationShardBeforeCutoff(name string, modTime, cutoff time.Time) bool {
+	date := strings.TrimSuffix(name, ".jsonl")
+	if parsed, err := time.Parse("2006-01-02", date); err == nil {
+		return parsed.Before(time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, time.UTC))
+	}
+	return modTime.Before(cutoff)
+}
+
 func (c *NotificationContext) readPendingLocked(ctx context.Context, cursor uint64, limit int) ([]NotificationRecord, error) {
 	entries, err := os.ReadDir(c.eventsDir)
 	if err != nil {
@@ -404,7 +515,11 @@ func (c *NotificationContext) readPendingLocked(ctx context.Context, cursor uint
 		}
 	}
 	sort.Strings(files)
-	result := make([]NotificationRecord, 0, limit)
+	capacity := limit
+	if capacity < 0 {
+		capacity = 0
+	}
+	result := make([]NotificationRecord, 0, capacity)
 	for _, name := range files {
 		records, err := readNotificationRecordFile(filepath.Join(c.eventsDir, name))
 		if err != nil {
@@ -419,13 +534,18 @@ func (c *NotificationContext) readPendingLocked(ctx context.Context, cursor uint
 				continue
 			}
 			result = append(result, event)
-			if len(result) >= limit {
-				break
-			}
 		}
-		if len(result) >= limit {
-			break
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		left, lok := parseNotificationCursor(result[i].ContextID)
+		right, rok := parseNotificationCursor(result[j].ContextID)
+		if lok && rok && left != right {
+			return left < right
 		}
+		return result[i].ReceivedAt < result[j].ReceivedAt
+	})
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
 	}
 	return result, nil
 }
@@ -455,6 +575,14 @@ func (c *NotificationContext) appendEventLocked(event NotificationRecord) error 
 }
 
 func readNotificationRecordFile(path string) ([]NotificationRecord, error) {
+	return readNotificationRecordFileMode(path, true)
+}
+
+func readNotificationRecordFileReadOnly(path string) ([]NotificationRecord, error) {
+	return readNotificationRecordFileMode(path, false)
+}
+
+func readNotificationRecordFileMode(path string, repair bool) ([]NotificationRecord, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -467,15 +595,25 @@ func readNotificationRecordFile(path string) ([]NotificationRecord, error) {
 		tail := data[lastNewline+1:]
 		var record NotificationRecord
 		if err := json.Unmarshal(tail, &record); err != nil {
+			// A crash can leave only the final JSONL record incomplete. Keep
+			// complete records and repair the file before retrying reads.
+			if !repair {
+				return nil, fmt.Errorf("incomplete notification record %s", path)
+			}
 			if err := writeFileAtomic(path, data[:lastNewline+1], 0o644); err != nil {
 				return nil, fmt.Errorf("repair incomplete notification record %s: %w", path, err)
 			}
 			data = data[:lastNewline+1]
 		} else {
-			if err := appendNotificationRecordNewline(path); err != nil {
-				return nil, fmt.Errorf("repair notification record newline %s: %w", path, err)
-			}
+			// The final record is complete even without a newline. Keep the
+			// preceding records and normalize the in-memory input so the whole
+			// file is decoded below.
 			data = append(data, '\n')
+			if repair {
+				if err := appendNotificationRecordNewline(path); err != nil {
+					return nil, fmt.Errorf("repair notification record newline %s: %w", path, err)
+				}
+			}
 		}
 	}
 	lines := bytes.Split(data, []byte{'\n'})
@@ -556,8 +694,6 @@ func (c *NotificationContext) ensureLoadedLocked() error {
 	return nil
 }
 
-// recoverFromEventLogLocked rebuilds the dedupe window and durable cursors
-// from event shards after a process restart or partial state write.
 func (c *NotificationContext) recoverFromEventLogLocked() (bool, error) {
 	entries, err := os.ReadDir(c.eventsDir)
 	if err != nil {
@@ -604,7 +740,12 @@ func (c *NotificationContext) recoverFromEventLogLocked() (bool, error) {
 	return true, nil
 }
 
-func (c *NotificationContext) persistLocked() error {
+func (c *NotificationContext) persistLocked() (err error) {
+	defer func() {
+		if err != nil {
+			c.handleWriteErrorLocked(err)
+		}
+	}()
 	if err := os.MkdirAll(c.rootDir, 0o755); err != nil {
 		return err
 	}
@@ -641,19 +782,19 @@ func (c *NotificationContext) recordGapLocked(reason, generation, fromID, toID s
 
 func sanitizeNotificationEvent(event ble.NotificationEvent) ble.NotificationEvent {
 	event.ID = strings.TrimSpace(event.ID)
-	event.Source = truncateNotificationText(strings.TrimSpace(event.Source), maxNotificationStoredText)
-	event.SourceID = truncateNotificationText(strings.TrimSpace(event.SourceID), maxNotificationStoredText)
-	event.SourceEventID = truncateNotificationText(strings.TrimSpace(event.SourceEventID), maxNotificationStoredText)
-	event.DeviceID = truncateNotificationText(strings.TrimSpace(event.DeviceID), maxNotificationStoredText)
-	event.AppIdentifier = truncateNotificationText(strings.TrimSpace(event.AppIdentifier), maxNotificationStoredApp)
-	event.Title = truncateNotificationText(strings.TrimSpace(event.Title), maxNotificationStoredText)
-	event.Subtitle = truncateNotificationText(strings.TrimSpace(event.Subtitle), maxNotificationStoredText)
-	event.Message = truncateNotificationText(strings.TrimSpace(event.Message), maxNotificationStoredText)
-	event.Category = truncateNotificationText(strings.TrimSpace(event.Category), maxNotificationStoredText)
-	event.Date = truncateNotificationText(strings.TrimSpace(event.Date), maxNotificationStoredText)
-	event.MetadataError = truncateNotificationText(strings.TrimSpace(event.MetadataError), maxNotificationStoredText)
+	event.Source = truncateNotificationText(event.Source, maxNotificationStoredText)
+	event.SourceID = truncateNotificationText(event.SourceID, maxNotificationStoredText)
+	event.SourceEventID = truncateNotificationText(event.SourceEventID, maxNotificationStoredText)
+	event.DeviceID = truncateNotificationText(event.DeviceID, maxNotificationStoredText)
+	event.AppIdentifier = truncateNotificationText(event.AppIdentifier, maxNotificationStoredApp)
+	event.Title = truncateNotificationText(event.Title, maxNotificationStoredText)
+	event.Subtitle = truncateNotificationText(event.Subtitle, maxNotificationStoredText)
+	event.Message = truncateNotificationText(event.Message, maxNotificationStoredText)
+	event.Category = truncateNotificationText(event.Category, maxNotificationStoredText)
+	event.Date = truncateNotificationText(event.Date, maxNotificationStoredText)
+	event.MetadataError = truncateNotificationText(event.MetadataError, maxNotificationStoredText)
 	for i := range event.Flags {
-		event.Flags[i] = truncateNotificationText(strings.TrimSpace(event.Flags[i]), 128)
+		event.Flags[i] = truncateNotificationText(event.Flags[i], 128)
 	}
 	return event
 }
@@ -666,6 +807,25 @@ func truncateNotificationText(value string, limit int) string {
 	return string(runes[:limit])
 }
 
+func pruneNotificationFingerprints(fingerprints map[string]string) {
+	if len(fingerprints) <= maxNotificationFingerprints {
+		return
+	}
+	type fingerprintCursor struct {
+		fingerprint string
+		cursor      uint64
+	}
+	ordered := make([]fingerprintCursor, 0, len(fingerprints))
+	for fingerprint, contextID := range fingerprints {
+		ordered = append(ordered, fingerprintCursor{fingerprint: fingerprint, cursor: parseCursorOrZero(contextID)})
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].cursor < ordered[j].cursor })
+	removeCount := len(ordered) - trimNotificationFingerprintsTo
+	for _, item := range ordered[:removeCount] {
+		delete(fingerprints, item.fingerprint)
+	}
+}
+
 func notificationEventFingerprint(event ble.NotificationEvent) string {
 	key := strings.Join([]string{event.DeviceID, event.Source, event.SourceEventID}, "\x00")
 	if event.SourceEventID == "" {
@@ -673,6 +833,17 @@ func notificationEventFingerprint(event ble.NotificationEvent) string {
 	}
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:])
+}
+
+func notificationEventStableIdentityIDs(event ble.NotificationEvent) []string {
+	var ids []string
+	if value := strings.TrimSpace(event.SourceID); value != "" {
+		ids = append(ids, strings.Join([]string{"source_id", event.DeviceID, event.Source, value}, ":"))
+	}
+	if event.NotificationUID != 0 {
+		ids = append(ids, strings.Join([]string{"uid", event.DeviceID, event.Source, strconv.FormatUint(uint64(event.NotificationUID), 10)}, ":"))
+	}
+	return ids
 }
 
 func notificationEventFileName(event ble.NotificationEvent) string {
@@ -702,23 +873,4 @@ func normalizeCursor(value string) string {
 func cloneNotificationContextState(state NotificationContextState) NotificationContextState {
 	state.Gaps = append([]NotificationGap(nil), state.Gaps...)
 	return state
-}
-
-func pruneNotificationFingerprints(fingerprints map[string]string) {
-	if len(fingerprints) <= maxNotificationFingerprints {
-		return
-	}
-	type fingerprintCursor struct {
-		fingerprint string
-		cursor      uint64
-	}
-	ordered := make([]fingerprintCursor, 0, len(fingerprints))
-	for fingerprint, contextID := range fingerprints {
-		ordered = append(ordered, fingerprintCursor{fingerprint: fingerprint, cursor: parseCursorOrZero(contextID)})
-	}
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].cursor < ordered[j].cursor })
-	removeCount := len(ordered) - trimNotificationFingerprintsTo
-	for _, item := range ordered[:removeCount] {
-		delete(fingerprints, item.fingerprint)
-	}
 }

@@ -171,8 +171,103 @@ func TestUpdaterRejectsTarGzImageSHA256MismatchBeforeWriting(t *testing.T) {
 }
 
 func TestDefaultHTTPTimeoutAllowsLargeImageDownloads(t *testing.T) {
-	if DefaultHTTPRequestLimit < 30*time.Minute {
-		t.Fatalf("DefaultHTTPRequestLimit = %s, want at least 30m", DefaultHTTPRequestLimit)
+	if DefaultHTTPDownloadLimit < time.Hour {
+		t.Fatalf("DefaultHTTPDownloadLimit = %s, want at least 1h", DefaultHTTPDownloadLimit)
+	}
+	if DefaultHTTPRequestLimit != 30*time.Minute {
+		t.Fatalf("DefaultHTTPRequestLimit = %s, want 30m", DefaultHTTPRequestLimit)
+	}
+	if DefaultHTTPDownloadLimit <= DefaultHTTPRequestLimit {
+		t.Fatalf("DefaultHTTPDownloadLimit = %s, want more than metadata limit %s",
+			DefaultHTTPDownloadLimit, DefaultHTTPRequestLimit)
+	}
+}
+
+func TestUpdaterDownloadTimeoutFallsBackToDownloadLimit(t *testing.T) {
+	updater, err := NewUpdater(UpdaterConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewUpdater() error = %v", err)
+	}
+	// NewUpdater normalizes an unset HTTPTimeout to the metadata default, so
+	// the download budget must not silently inherit it.
+	if got := updater.downloadTimeout(); got != DefaultHTTPDownloadLimit {
+		t.Fatalf("downloadTimeout() = %s, want %s", got, DefaultHTTPDownloadLimit)
+	}
+	if got := updater.httpTimeout(); got != DefaultHTTPRequestLimit {
+		t.Fatalf("httpTimeout() = %s, want %s", got, DefaultHTTPRequestLimit)
+	}
+}
+
+func TestUpdaterExplicitHTTPTimeoutAppliesToDownloads(t *testing.T) {
+	updater, err := NewUpdater(UpdaterConfig{HTTPTimeout: 90 * time.Second}, nil)
+	if err != nil {
+		t.Fatalf("NewUpdater() error = %v", err)
+	}
+	if got := updater.downloadTimeout(); got != 90*time.Second {
+		t.Fatalf("downloadTimeout() = %s, want 90s", got)
+	}
+	if got := updater.httpTimeout(); got != 90*time.Second {
+		t.Fatalf("httpTimeout() = %s, want 90s", got)
+	}
+}
+
+func TestUpdaterDownloadTimeoutHonorsSecondsFields(t *testing.T) {
+	// http_timeout_seconds alone must still govern downloads.
+	updater, err := NewUpdater(UpdaterConfig{HTTPTimeoutSecs: 45}, nil)
+	if err != nil {
+		t.Fatalf("NewUpdater() error = %v", err)
+	}
+	if got := updater.downloadTimeout(); got != 45*time.Second {
+		t.Fatalf("downloadTimeout() = %s, want 45s", got)
+	}
+
+	// download_timeout_seconds wins over http_timeout_seconds for downloads.
+	updater, err = NewUpdater(UpdaterConfig{HTTPTimeoutSecs: 45, DownloadTimeoutSecs: 600}, nil)
+	if err != nil {
+		t.Fatalf("NewUpdater() error = %v", err)
+	}
+	if got := updater.downloadTimeout(); got != 600*time.Second {
+		t.Fatalf("downloadTimeout() = %s, want 600s", got)
+	}
+	if got := updater.httpTimeout(); got != 45*time.Second {
+		t.Fatalf("httpTimeout() = %s, want 45s", got)
+	}
+}
+
+func TestDescribeTimeoutNamesTheBudget(t *testing.T) {
+	err := describeTimeout(context.Background(), context.DeadlineExceeded, "download of rootfs.img", time.Hour)
+	if err == nil {
+		t.Fatal("describeTimeout() = nil, want error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("describeTimeout() lost DeadlineExceeded: %v", err)
+	}
+	for _, want := range []string{"timed out", "download of rootfs.img", "1h0m0s"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("describeTimeout() = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestDescribeTimeoutLeavesNonTimeoutErrorsAlone(t *testing.T) {
+	sentinel := errors.New("download status 404")
+	if got := describeTimeout(context.Background(), sentinel, "download", time.Hour); got != sentinel {
+		t.Fatalf("describeTimeout() = %v, want the original error", got)
+	}
+	if got := describeTimeout(context.Background(), nil, "download", time.Hour); got != nil {
+		t.Fatalf("describeTimeout(nil) = %v, want nil", got)
+	}
+}
+
+func TestDescribeTimeoutDoesNotBlameTimeoutOnCancellation(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	// A shutdown that cancels the parent surfaces DeadlineExceeded from the
+	// child context, but calling that a timeout would send the reader off to
+	// raise a limit that was never reached.
+	err := describeTimeout(parent, context.DeadlineExceeded, "download", time.Hour)
+	if strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("describeTimeout() = %q, want no timeout claim for a cancelled parent", err)
 	}
 }
 

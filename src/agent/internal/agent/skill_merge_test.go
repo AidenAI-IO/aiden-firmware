@@ -1,7 +1,16 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -310,7 +319,7 @@ func TestBundledSkillsReferenceKnownAllowedTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, skill := range index.All() {
-		if !allowedToolsExist(skill.AllowedTools) {
+		if !registeredToolsExist(skill.AllowedTools) {
 			t.Fatalf("bundled skill %q references unknown allowed_tools %v", skill.Name, skill.AllowedTools)
 		}
 	}
@@ -813,14 +822,14 @@ func TestSkillManageActionsDocumentedInSchema(t *testing.T) {
 	if props == nil {
 		t.Fatalf("skill_manage schema missing properties: %v", schema)
 	}
-	for _, field := range []string{"action", "name", "content", "old_string", "new_string", "file_path", "file_content", "reason"} {
+	for _, field := range []string{"action", "name", "content", "old_string", "new_string", "file_path", "file_content", "source_url", "reason"} {
 		if _, ok := props[field]; !ok {
 			t.Fatalf("skill_manage schema missing field %q: %v", field, props)
 		}
 	}
 	actionEnum, _ := props["action"].(map[string]any)["enum"].([]string)
 	wantActions := []string{
-		"create", "edit", "patch", "delete",
+		"create", "edit", "patch", "install", "delete",
 		"write_file", "remove_file", "mark_stale",
 		"archive", "restore_archive",
 	}
@@ -870,7 +879,6 @@ func TestBundledDeviceOperatorAllowedToolsCoverEmbeddedPlaybooks(t *testing.T) {
 	for _, tool := range []string{
 		"screenshot",
 		"wait_for_stable_screen",
-		"image_diff",
 		"quick_action",
 		"touch_gesture",
 		"mouse_move",
@@ -906,8 +914,15 @@ func TestSkillManageTool_CreateAndPatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "Created") {
-		t.Fatalf("unexpected result: %s", result)
+	for _, want := range []string{
+		`Created skill "foo"`,
+		"bytes=50",
+		"lines=6",
+		"sha256=65b5d4a35a9ec5a724b0feaa9e02012daf3e8bf07fad80a598b2cb361f486b02",
+	} {
+		if !strings.Contains(result, want) {
+			t.Fatalf("create result missing %q: %s", want, result)
+		}
 	}
 
 	got, _ := os.ReadFile(filepath.Join(dir, "foo", "SKILL.md"))
@@ -921,8 +936,17 @@ func TestSkillManageTool_CreateAndPatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "Patched") {
-		t.Fatalf("unexpected result: %s", result)
+	for _, want := range []string{
+		`Patched skill "foo"`,
+		"previous_bytes=50",
+		"changed_lines=6-6",
+		"bytes=57",
+		"lines=6",
+		"sha256=5a5b4520ed0300abcdf82f1433834636cc83deaedd07e5200a65edde34e374de",
+	} {
+		if !strings.Contains(result, want) {
+			t.Fatalf("patch result missing %q: %s", want, result)
+		}
 	}
 
 	got, _ = os.ReadFile(filepath.Join(dir, "foo", "SKILL.md"))
@@ -931,16 +955,456 @@ func TestSkillManageTool_CreateAndPatch(t *testing.T) {
 	}
 }
 
-func TestSkillManageTool_PatchAllowsEmptyReplacement(t *testing.T) {
+func TestSkillManageTool_CreateAndEditRejectUnknownAllowedTool(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewSkillManageTool(dir, "")
+	invalid := "---\nname: invalid\ndescription: Invalid skill\nmetadata:\n  allowed_tools: [not_a_real_tool]\n---\n\nDo invalid work.\n"
+	if _, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"create","name":"invalid","content":%q}`, invalid)); err == nil || !strings.Contains(err.Error(), "allowed_tools") {
+		t.Fatalf("create should reject unknown allowed tool, got %v", err)
+	}
+
+	valid := "---\nname: alpha\ndescription: Alpha skill\n---\n\nDo alpha work.\n"
+	if _, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"create","name":"alpha","content":%q}`, valid)); err != nil {
+		t.Fatal(err)
+	}
+	invalidEdit := strings.ReplaceAll(invalid, "name: invalid", "name: alpha")
+	if _, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"edit","name":"alpha","content":%q}`, invalidEdit)); err == nil || !strings.Contains(err.Error(), "allowed_tools") {
+		t.Fatalf("edit should reject unknown allowed tool, got %v", err)
+	}
+	if got := readSKILL(t, dir, "alpha"); got != valid {
+		t.Fatalf("rejected edit changed skill: %q", got)
+	}
+	invalidPatch := `{"action":"patch","name":"alpha","old_string":"description: Alpha skill","new_string":"description: Alpha skill\nmetadata:\n  allowed_tools: [not_a_real_tool]"}`
+	if _, err := tool.Call(context.Background(), invalidPatch); err == nil || !strings.Contains(err.Error(), "allowed_tools") {
+		t.Fatalf("patch should reject unknown allowed tool, got %v", err)
+	}
+	if got := readSKILL(t, dir, "alpha"); got != valid {
+		t.Fatalf("rejected patch changed skill: %q", got)
+	}
+}
+
+func TestSkillManageTool_CreateAllowsRegisteredTools(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewSkillManageTool(dir, "")
+	content := "---\nname: valid\ndescription: Valid skill\nmetadata:\n  allowed_tools: [bridge_calendar, recall_device_memory, inspect_episode, wait_for_wakeup]\n---\n\nDo valid work.\n"
+	if _, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"create","name":"valid","content":%q}`, content)); err != nil {
+		t.Fatalf("create rejected registered allowed tools: %v", err)
+	}
+}
+
+func TestSkillManageTool_CreateRejectsAgentHiddenTool(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewSkillManageTool(dir, "")
+	content := "---\nname: hidden\ndescription: Hidden tool skill\nmetadata:\n  allowed_tools: [list_scripts]\n---\n\nDo hidden work.\n"
+	if _, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"create","name":"hidden","content":%q}`, content)); err == nil || !strings.Contains(err.Error(), "allowed_tools") {
+		t.Fatalf("create should reject agent-hidden tool, got %v", err)
+	}
+}
+
+func TestSkillManageTool_ActionResultsExposeVerificationDetails(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	manifestPath := filepath.Join(configDir, "skill-state", ".bundled_manifest.json")
+	tool := NewSkillManageTool(skillsDir, manifestPath)
+	content := "---\nname: alpha\ndescription: Alpha skill\n---\n\nDo alpha.\n"
+
+	if _, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"create","name":"alpha","content":%q}`, content)); err != nil {
+		t.Fatal(err)
+	}
+
+	writeResult, err := tool.Call(context.Background(), `{"action":"write_file","name":"alpha","file_path":"references/info.md","file_content":"notes"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"created=true", "bytes=5", "lines=1", "sha256="} {
+		if !strings.Contains(writeResult, want) {
+			t.Fatalf("write_file result missing %q: %s", want, writeResult)
+		}
+	}
+
+	removeResult, err := tool.Call(context.Background(), `{"action":"remove_file","name":"alpha","file_path":"references/info.md"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(removeResult, `Removed references/info.md from skill "alpha"`) {
+		t.Fatalf("unexpected remove_file result: %s", removeResult)
+	}
+
+	for _, tc := range []struct {
+		action string
+	}{
+		{action: "mark_stale"},
+		{action: "archive"},
+		{action: "restore_archive"},
+	} {
+		result, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":%q,"name":"alpha"}`, tc.action))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(result, `skill "alpha"`) {
+			t.Fatalf("unexpected %s result: %s", tc.action, result)
+		}
+	}
+
+	deleteResult, err := tool.Call(context.Background(), `{"action":"delete","name":"alpha"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleteResult != `Deleted skill "alpha"` {
+		t.Fatalf("unexpected delete result: %s", deleteResult)
+	}
+}
+
+func TestSkillManageTool_InstallFromURL(t *testing.T) {
+	content := "---\nname: remote\ndescription: Remote skill\n---\n\nDo remote work.\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/SKILL.md" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		_, _ = w.Write([]byte(content))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	tool := NewSkillManageTool(dir, "")
+	tool.SetHTTPClient(server.Client())
+	out, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"install","source_url":%q,"reason":"test"}`, server.URL+"/SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHash := sha256.Sum256([]byte(content))
+	for _, want := range []string{
+		`Installed skill "remote"`,
+		"total_bytes=64",
+		"bytes=64",
+		"lines=6",
+		"sha256=" + hex.EncodeToString(wantHash[:]),
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("install result missing %q: %s", want, out)
+		}
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "remote", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Fatalf("installed content mismatch: %q", string(got))
+	}
+}
+
+func TestSkillManageTool_InstallInvalidContentLeavesNoSkill(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not a skill"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	tool := NewSkillManageTool(dir, "")
+	tool.SetHTTPClient(server.Client())
+	_, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"install","source_url":%q}`, server.URL+"/SKILL.md"))
+	if err == nil || !strings.Contains(err.Error(), "invalid SKILL.md") {
+		t.Fatalf("expected invalid SKILL.md error, got %v", err)
+	}
+	entries, readErr := os.ReadDir(dir)
+	if readErr == nil && len(entries) != 0 {
+		t.Fatalf("invalid install left files behind: %+v", entries)
+	}
+}
+
+func TestSkillManageTool_InstallGitHubDirectoryWithSupportingFiles(t *testing.T) {
+	content := "---\nname: remote\ndescription: Remote skill\n---\n\nRead references/guide.md.\n"
+	metadata := `{"files":[` +
+		`{"name":"/skills/remote/SKILL.md","size":77},` +
+		`{"name":"/skills/remote/references/guide.md","size":15},` +
+		`{"name":"/skills/other/SKILL.md","size":68},` +
+		`{"name":"/skills/remote/README.md","size":7}` +
+		`]}`
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body string
+		switch {
+		case req.URL.Host == "data.jsdelivr.com":
+			body = metadata
+		case req.URL.Path == "/gh/acme/skills@main/skills/remote/SKILL.md":
+			body = content
+		case req.URL.Path == "/gh/acme/skills@main/skills/remote/references/guide.md":
+			body = "Use the guide.\n"
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found")), Header: make(http.Header), Request: req}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: req}, nil
+	})}
+
+	dir := t.TempDir()
+	tool := NewSkillManageTool(dir, "")
+	tool.SetHTTPClient(client)
+	out, err := tool.Call(context.Background(), `{"action":"install","source_url":"https://github.com/acme/skills/tree/main/skills/remote"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "files=2") {
+		t.Fatalf("install result should report two files: %s", out)
+	}
+	gotSkill, err := os.ReadFile(filepath.Join(dir, "remote", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotSkill) != content {
+		t.Fatalf("SKILL.md mismatch: %q", string(gotSkill))
+	}
+	gotGuide, err := os.ReadFile(filepath.Join(dir, "remote", "references", "guide.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotGuide) != "Use the guide.\n" {
+		t.Fatalf("guide mismatch: %q", string(gotGuide))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "remote", "README.md")); !os.IsNotExist(err) {
+		t.Fatalf("unsupported README.md should not be installed, stat err=%v", err)
+	}
+}
+
+func TestSkillManageTool_InstallDownloadFailureKeepsExistingSkills(t *testing.T) {
 	dir := t.TempDir()
 	writeSKILL(t, dir, "alpha", testSkillA)
 	tool := NewSkillManageTool(dir, "")
+	tool.SetHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body:       io.NopCloser(bytes.NewBufferString("upstream unavailable")),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})})
 
-	if _, err := tool.Call(context.Background(), `{"action":"patch","name":"alpha","old_string":"Do alpha things.","new_string":"","reason":"remove obsolete instruction"}`); err != nil {
+	_, err := tool.Call(context.Background(), `{"action":"install","source_url":"https://example.test/SKILL.md"}`)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("expected download failure, got %v", err)
+	}
+	if strings.Contains(err.Error(), "upstream unavailable") {
+		t.Fatalf("download failure exposed response body: %v", err)
+	}
+	if got := readSKILL(t, dir, "alpha"); got != testSkillA {
+		t.Fatalf("existing skill changed after failed install: %q", got)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "alpha" {
+		t.Fatalf("failed install left partial entries: %+v", entries)
+	}
+}
+
+func TestSkillInstallClientRejectsPrivateTargetWhenProxyConfigured(t *testing.T) {
+	originalLookup := lookupSkillInstallHostIPs
+	lookupSkillInstallHostIPs = func(host string) ([]net.IP, error) {
+		if host != "internal.invalid" {
+			t.Fatalf("lookup host = %q, want internal.invalid", host)
+		}
+		return []net.IP{net.ParseIP("169.254.169.254")}, nil
+	}
+	defer func() { lookupSkillInstallHostIPs = originalLookup }()
+
+	client := newSkillInstallHTTPClient(ProxyConfig{HTTPProxy: "http://127.0.0.1:8888"})
+	_, err := client.Get("http://internal.invalid/SKILL.md")
+	if err == nil || !strings.Contains(err.Error(), "non-public address") {
+		t.Fatalf("proxied private target should be rejected before proxy transport, got %v", err)
+	}
+}
+
+func TestSkillInstallClientPinsGenericProxyTarget(t *testing.T) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	proxyURL, err := url.Parse("http://127.0.0.1:8888")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport.Proxy = http.ProxyURL(proxyURL)
+	req, err := http.NewRequest(http.MethodGet, "https://user-controlled.invalid/SKILL.md", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinnedReq, next, err := pinSkillInstallProxyTarget(req, transport, net.ParseIP("93.184.216.34"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := pinnedReq.URL.Host, "93.184.216.34:443"; got != want {
+		t.Fatalf("pinned URL host = %q, want %q", got, want)
+	}
+	if got, want := pinnedReq.Host, "user-controlled.invalid"; got != want {
+		t.Fatalf("request Host = %q, want %q", got, want)
+	}
+	pinnedTransport, ok := next.(*http.Transport)
+	if !ok {
+		t.Fatalf("pinned transport = %T, want *http.Transport", next)
+	}
+	if pinnedTransport.TLSClientConfig == nil {
+		t.Fatal("pinned transport has no TLS config")
+	}
+	if got := pinnedTransport.TLSClientConfig.ServerName; got != "user-controlled.invalid" {
+		t.Fatalf("TLS ServerName = %q, want user-controlled.invalid", got)
+	}
+	proxyURL, err = pinnedTransport.Proxy(pinnedReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proxyURL == nil || proxyURL.String() != "http://127.0.0.1:8888" {
+		t.Fatalf("generic public source proxy = %v", proxyURL)
+	}
+}
+
+func TestSkillInstallClientRejectsPrivateRedirectTarget(t *testing.T) {
+	originalLookup := lookupSkillInstallHostIPs
+	lookupSkillInstallHostIPs = func(host string) ([]net.IP, error) {
+		switch host {
+		case "public.invalid":
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
+		case "internal.invalid":
+			return []net.IP{net.ParseIP("10.0.0.8")}, nil
+		default:
+			t.Fatalf("unexpected lookup host %q", host)
+			return nil, nil
+		}
+	}
+	defer func() { lookupSkillInstallHostIPs = originalLookup }()
+
+	requests := 0
+	client := &http.Client{Transport: skillInstallTargetGuard{next: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"http://internal.invalid/SKILL.md"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	})}}
+	_, err := client.Get("http://public.invalid/SKILL.md")
+	if err == nil || !strings.Contains(err.Error(), "non-public address") {
+		t.Fatalf("private redirect target should be rejected, got %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("transport requests = %d, want only the public request", requests)
+	}
+}
+
+func TestSkillInstallClientRejectsDNSRebindingAtDialTime(t *testing.T) {
+	for _, env := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"} {
+		t.Setenv(env, "")
+	}
+	originalLookup := lookupSkillInstallHostIPs
+	lookupCalls := 0
+	lookupSkillInstallHostIPs = func(host string) ([]net.IP, error) {
+		if host != "rebind.invalid" {
+			t.Fatalf("lookup host = %q, want rebind.invalid", host)
+		}
+		lookupCalls++
+		if lookupCalls == 1 {
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
+		}
+		return []net.IP{net.ParseIP("127.0.0.1")}, nil
+	}
+	defer func() { lookupSkillInstallHostIPs = originalLookup }()
+
+	_, err := newSkillInstallHTTPClient(ProxyConfig{}).Get("http://rebind.invalid/SKILL.md")
+	if err == nil || !strings.Contains(err.Error(), "non-public address") {
+		t.Fatalf("DNS rebinding should be rejected at dial time, got %v", err)
+	}
+	if lookupCalls < 2 {
+		t.Fatalf("lookup calls = %d, want request-time and dial-time validation", lookupCalls)
+	}
+}
+
+func TestSkillManageTool_InstallRejectsUnknownAllowedTool(t *testing.T) {
+	content := "---\nname: remote\ndescription: Remote skill\nmetadata:\n  allowed_tools: [not_a_real_tool]\n---\n\nDo remote work.\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(content))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	tool := NewSkillManageTool(dir, "")
+	tool.SetHTTPClient(server.Client())
+	_, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"install","source_url":%q}`, server.URL+"/SKILL.md"))
+	if err == nil || !strings.Contains(err.Error(), "allowed_tools") {
+		t.Fatalf("expected allowed_tools validation error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "remote")); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid install should not create a skill, stat err=%v", statErr)
+	}
+}
+
+func TestSkillManageTool_InstallRejectsAgentHiddenTool(t *testing.T) {
+	content := "---\nname: remote-hidden\ndescription: Hidden tool skill\nmetadata:\n  allowed_tools: [list_scripts]\n---\n\nDo hidden work.\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/markdown")
+		_, _ = io.WriteString(w, content)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	tool := NewSkillManageTool(dir, "")
+	tool.SetHTTPClient(server.Client())
+	_, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"install","source_url":%q}`, server.URL+"/SKILL.md"))
+	if err == nil || !strings.Contains(err.Error(), "allowed_tools") {
+		t.Fatalf("install should reject agent-hidden tool, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "remote-hidden")); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected install left skill directory, stat error = %v", statErr)
+	}
+}
+
+func TestNormalizeSkillInstallURLGitHubTree(t *testing.T) {
+	got, err := normalizeSkillInstallURL("https://github.com/zerob13/skills/tree/master/skills/ai-slop-taste")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://raw.githubusercontent.com/zerob13/skills/master/skills/ai-slop-taste/SKILL.md"
+	if got != want {
+		t.Fatalf("normalized URL = %q, want %q", got, want)
+	}
+}
+
+func TestSkillManageTool_InstallQAGitHubURL(t *testing.T) {
+	if os.Getenv("AIDEN_E2E_SKILL_INSTALL") != "1" {
+		t.Skip("set AIDEN_E2E_SKILL_INSTALL=1 to run the live GitHub install check")
+	}
+
+	dir := t.TempDir()
+	out, err := NewSkillManageTool(dir, "").Call(context.Background(), `{"action":"install","source_url":"https://github.com/zerob13/skills/tree/master/skills/ai-slop-taste"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `Installed skill "ai-slop-taste"`) {
+		t.Fatalf("unexpected install result: %s", out)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "ai-slop-taste", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("bytes=%d", len(got)),
+		fmt.Sprintf("lines=%d", lineCount(got)),
+		"sha256=" + strings.TrimPrefix(hashContent(got), "sha256:"),
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("install result missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestSkillManageTool_PatchAllowsEmptyReplacement(t *testing.T) {
+	dir := t.TempDir()
+	content := "---\nname: alpha\ndescription: Alpha skill\n---\n\nKeep this instruction.\n\nRemove this instruction.\n"
+	writeSKILL(t, dir, "alpha", content)
+	tool := NewSkillManageTool(dir, "")
+
+	if _, err := tool.Call(context.Background(), `{"action":"patch","name":"alpha","old_string":"Remove this instruction.","new_string":"","reason":"remove obsolete instruction"}`); err != nil {
 		t.Fatal(err)
 	}
 	got := readSKILL(t, dir, "alpha")
-	if strings.Contains(got, "Do alpha things.") {
+	if strings.Contains(got, "Remove this instruction.") || !strings.Contains(got, "Keep this instruction.") {
 		t.Fatalf("expected patch to remove text, got %q", got)
 	}
 }

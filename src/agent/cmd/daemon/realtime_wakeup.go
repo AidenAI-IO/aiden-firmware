@@ -633,6 +633,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	var chatTranscript strings.Builder
 	var responseText strings.Builder
 	var responseTranscript strings.Builder
+	var realtimeResponseUsage messages.Usage
+	hasRealtimeResponseUsage := false
 	responseActive := false
 	inputSpeechActive := false
 	toolExecutor := newRealtimeVoiceToolExecutor(runtime, tasks)
@@ -709,8 +711,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			if err := session.SendFunctionOutput(ctx, call.CallID, result.output); err != nil {
 				return fmt.Errorf("send realtime tool result: %w", err)
 			}
-			if err := appendRealtimeToolResult(userContext, call, result.output); err != nil {
-				return fmt.Errorf("persist realtime tool result: %w", err)
+			if err := appendRealtimeToolExecution(userContext, call, result.output); err != nil {
+				return fmt.Errorf("persist realtime tool call and result: %w", err)
 			}
 			if toolTracker.complete(call.ResponseID) {
 				responseActive = true
@@ -901,15 +903,18 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 					return err
 				}
 				log.Printf("[realtime] Tool call: %s", call.Name)
-				if err := appendRealtimeToolCall(userContext, call); err != nil {
-					return fmt.Errorf("persist realtime tool call: %w", err)
-				}
 				toolTracker.start(call.ResponseID)
 				startRealtimeToolCall(ctx, toolExecutor, call, toolResults)
 			case "response.done":
 				var done rtclient.ResponseEvent
 				if err := event.Decode(&done); err != nil {
 					return err
+				}
+				if done.Response.Usage != nil {
+					realtimeResponseUsage.TotalTokens += done.Response.Usage.TotalTokens
+					realtimeResponseUsage.InputTokens += done.Response.Usage.InputTokens
+					realtimeResponseUsage.OutputTokens += done.Response.Usage.OutputTokens
+					hasRealtimeResponseUsage = true
 				}
 				if err := playback.finishResponse(playbackAudio); err != nil {
 					return fmt.Errorf("finish realtime playback response: %w", err)
@@ -930,11 +935,18 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 						assistantText = strings.TrimSpace(responseTranscript.String())
 					}
 					if assistantText != "" {
-						if err := appendRealtimeAssistantMessage(userContext, assistantText); err != nil {
+						var usage *messages.Usage
+						if hasRealtimeResponseUsage {
+							usageCopy := realtimeResponseUsage
+							usage = &usageCopy
+						}
+						if err := appendRealtimeAssistantMessage(userContext, assistantText, usage); err != nil {
 							return fmt.Errorf("persist realtime assistant response: %w", err)
 						}
 					}
 				}
+				realtimeResponseUsage = messages.Usage{}
+				hasRealtimeResponseUsage = false
 				responseActive = false
 				if activeChat != nil {
 					content := chatText.String()
@@ -1015,39 +1027,37 @@ func appendRealtimeNoticeMessage(manager *contextmanager.ContextManager, content
 	return manager.AppendMessage(messages.Message{Role: messages.MessageRoleNotice, Content: content})
 }
 
-func appendRealtimeAssistantMessage(manager *contextmanager.ContextManager, content string) error {
+func appendRealtimeAssistantMessage(manager *contextmanager.ContextManager, content string, usage *messages.Usage) error {
 	content = strings.TrimSpace(content)
 	if manager == nil || content == "" {
 		return nil
 	}
-	return manager.AppendMessage(messages.Message{Role: messages.MessageRoleAssistant, Content: content})
+	return manager.AppendMessage(messages.Message{Role: messages.MessageRoleAssistant, Content: content, Usage: usage})
 }
 
-func appendRealtimeToolCall(manager *contextmanager.ContextManager, call rtclient.FunctionCallEvent) error {
+// appendRealtimeToolExecution persists the protocol pair only after the tool
+// has produced an output, so an interrupted call cannot remain in user context.
+func appendRealtimeToolExecution(manager *contextmanager.ContextManager, call rtclient.FunctionCallEvent, output string) error {
 	if manager == nil {
 		return nil
 	}
-	return manager.AppendMessage(messages.Message{
-		Role: messages.MessageRoleToolCall,
-		ToolCalls: []messages.ToolCall{{
-			ID:        strings.TrimSpace(call.CallID),
-			Name:      strings.TrimSpace(call.Name),
-			Arguments: strings.TrimSpace(call.Arguments),
-		}},
-	})
-}
-
-func appendRealtimeToolResult(manager *contextmanager.ContextManager, call rtclient.FunctionCallEvent, output string) error {
-	if manager == nil {
-		return nil
-	}
-	return manager.AppendMessage(messages.Message{
-		Role: messages.MessageRoleToolResult,
-		ToolResults: []messages.ToolResult{{
-			ToolCallID: strings.TrimSpace(call.CallID),
-			Name:       strings.TrimSpace(call.Name),
-			Content:    output,
-		}},
+	return manager.AppendMessages([]messages.Message{
+		{
+			Role: messages.MessageRoleToolCall,
+			ToolCalls: []messages.ToolCall{{
+				ID:        strings.TrimSpace(call.CallID),
+				Name:      strings.TrimSpace(call.Name),
+				Arguments: strings.TrimSpace(call.Arguments),
+			}},
+		},
+		{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
+				ToolCallID: strings.TrimSpace(call.CallID),
+				Name:       strings.TrimSpace(call.Name),
+				Content:    output,
+			}},
+		},
 	})
 }
 

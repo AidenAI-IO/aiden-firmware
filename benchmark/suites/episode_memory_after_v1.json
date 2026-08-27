@@ -33,6 +33,12 @@
       "setup": {
         "type": "seed_episode",
         "consolidate": true,
+        "consolidation_expectation": {
+          "goal_result": "achieved",
+          "min_memory_ids": 1,
+          "max_memory_ids": 3,
+          "required_assessment_evidence": true
+        },
         "timeout_sec": 90,
         "episode": {
           "id": "ep_benchmark_qa_notes_title_save",
@@ -129,7 +135,9 @@
             }
           ]
         }
-      }
+      },
+      "expected_recall_from_consolidation": true,
+      "expected_recalled_memory_tool": "recall_device_memory"
     },
     {
       "id": "settings_ethernet_ipv4_from_episode",
@@ -154,6 +162,12 @@
       "setup": {
         "type": "seed_episode",
         "consolidate": true,
+        "consolidation_expectation": {
+          "goal_result": "achieved",
+          "min_memory_ids": 1,
+          "max_memory_ids": 3,
+          "required_assessment_evidence": true
+        },
         "timeout_sec": 90,
         "episode": {
           "id": "ep_benchmark_iphone_aiden_hid_ecm_ipv4_wifi_contrast_v2",

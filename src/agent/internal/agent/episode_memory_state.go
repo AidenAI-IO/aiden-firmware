@@ -16,6 +16,7 @@ const (
 	episodeMemoryStateVersion     = 3
 	legacyReflectionFailureTag    = "reflection:v1"
 	episodeMemoryBatchLimit       = 5
+	episodeMemoryBatchMaxTokens   = 8000
 	episodeMemoryRecentTerminals  = 64
 	episodeMemoryProcessingLease  = 15 * time.Minute
 	episodeMemoryRetryDelay       = 5 * time.Minute

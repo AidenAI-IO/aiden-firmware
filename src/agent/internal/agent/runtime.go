@@ -504,7 +504,10 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger, WithMemoryPlaneLongTermStore(longTermStore))
 		rt.markInterruptedEpisodesBestEffort()
 	}
-	rt.startEpisodeMemory(logger)
+	if plane, ok := rt.memoryPlane.(*FilesystemMemoryPlane); ok && plane != nil {
+		plane.SetStorageWriteGate(rt.storageMonitor)
+	}
+	rt.startMemoryWorker(logger)
 
 	// Start the SD/eMMC storage manager on every device. Missing or unusable
 	// card hardware degrades to eMMC-only operation.
@@ -629,7 +632,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, LoadMemoryExtractionConfig(cfg.ConfigDir), nil, WithMemoryPlaneLongTermStore(longTermStore))
 		rt.markInterruptedEpisodesBestEffort()
-		rt.startEpisodeMemory(nil)
+		rt.startMemoryWorker(nil)
 	}
 	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
 	skillManager.SetDeviceTypeFunc(rt.deviceTypeFromState)
@@ -641,7 +644,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	return rt
 }
 
-func (r *Runtime) startEpisodeMemory(runtimeLogger *Logger) {
+func (r *Runtime) startMemoryWorker(runtimeLogger *Logger) {
 	if r == nil {
 		return
 	}
@@ -653,16 +656,16 @@ func (r *Runtime) startEpisodeMemory(runtimeLogger *Logger) {
 	if runtimeLogger != nil {
 		plane.logger = runtimeLogger
 	}
-	err := plane.StartEpisodeMemory(r.models)
+	err := plane.StartMemoryWorker(r.models)
 	r.episodeMemoryInitErr = err
 	if err == nil {
 		return
 	}
 	if runtimeLogger != nil {
-		runtimeLogger.Warn("[episode-memory] worker disabled: %v", err)
+		runtimeLogger.Warn("[memory] worker disabled: %v", err)
 		return
 	}
-	log.Printf("[episode-memory] worker disabled: %v", err)
+	log.Printf("[memory] worker disabled: %v", err)
 }
 
 // EpisodeMemoryInitializationError reports why the background consolidation
@@ -840,8 +843,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		ctx = context.Background()
 	}
 	if plane, ok := r.memoryPlane.(*FilesystemMemoryPlane); ok {
-		plane.EpisodeMemoryTaskStarted()
-		defer plane.EpisodeMemoryTaskFinished()
+		plane.MemoryTaskStarted()
+		defer plane.MemoryTaskFinished()
 	}
 
 	// Preempt any currently active run and its resources.
@@ -1338,14 +1341,10 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 				Message: &message,
 			}
 		}
-		tagged := ""
-		if formated.Len() > 0 {
-			tagged = util.STag("state", formated.String())
-		}
 		// create a new StateMessage
 		stateMessage := messages.Message{
 			Role:    messages.MessageRoleState,
-			Content: tagged,
+			Content: formated.String(),
 		}
 		if attachment != nil {
 			stateMessage.Attachments = []messages.Attachment{*attachment}
@@ -2774,6 +2773,7 @@ func (r *Runtime) Close() error {
 	maintenanceCancel()
 	if plane, ok := r.memoryPlane.(*FilesystemMemoryPlane); ok {
 		plane.StopEpisodeMemory()
+		plane.StopNotificationMemory()
 	}
 	if r.storageMonitor != nil {
 		r.storageMonitor.Stop()

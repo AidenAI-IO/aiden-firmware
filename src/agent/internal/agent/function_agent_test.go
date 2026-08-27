@@ -1,8 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"strings"
 	"testing"
 
@@ -683,7 +688,7 @@ func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing
 
 	toolContent, followups := agent.observationMessagesForStep(step, true)
 
-	if !strings.Contains(toolContent, "No visible screen change was observed") {
+	if !strings.Contains(toolContent, "No meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot") {
 		t.Fatalf("toolContent missing screen_changed warning: %q", toolContent)
 	}
 	if !strings.Contains(toolContent, "Do not assume the action succeeded") {
@@ -695,4 +700,80 @@ func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing
 	if len(followups) != 1 {
 		t.Fatalf("expected one followup screenshot message, got %#v", followups)
 	}
+}
+
+func TestFunctionAgentWaitStableScreenDoesNotTreatMotionAsActionResult(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "wait_for_stable_screen", visual: true}},
+	}
+	observation := `{"ok":true,"stable":true,"elapsed_ms":250,"screen_changed":false,"width":800,"height":600,"format":"jpeg","size":4,"data":"` +
+		base64.StdEncoding.EncodeToString([]byte("img1")) + `"}`
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "wait_for_stable_screen"},
+		Observation: observation,
+	}
+
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+	if strings.Contains(toolContent, "between the pre-action baseline and the final settled screenshot") {
+		t.Fatalf("wait_for_stable_screen used post-action screen_changed wording: %q", toolContent)
+	}
+	if !strings.Contains(toolContent, "No frame-to-frame screen motion was observed during this wait window") {
+		t.Fatalf("toolContent missing wait-window motion wording: %q", toolContent)
+	}
+	if strings.Contains(toolContent, "Do not assume the action succeeded") {
+		t.Fatalf("standalone wait incorrectly warned about action success: %q", toolContent)
+	}
+	if len(followups) != 1 {
+		t.Fatalf("expected one followup screenshot message, got %#v", followups)
+	}
+}
+
+func TestFunctionAgentUsesMarkedTouchGestureScreenshotForModel(t *testing.T) {
+	raw := solidJPEG(t, 120, 80, color.RGBA{R: 24, G: 48, B: 72, A: 255})
+	marked, err := drawTouchGesturePostMarker(raw, touchGesturePostMarkerInfo{Type: "tap", X: 500, Y: 500})
+	if err != nil {
+		t.Fatalf("drawTouchGesturePostMarker() error = %v", err)
+	}
+	agent := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "touch_gesture", visual: true}}}
+	observation := fmt.Sprintf(`{"action_output":"ok","width":120,"height":80,"format":"jpeg","size":%d,"data":"%s"}`, len(marked), base64.StdEncoding.EncodeToString(marked))
+	step := schema.AgentStep{Action: schema.AgentAction{Tool: "touch_gesture"}, Observation: observation}
+
+	visual, ok := agent.visualScreenshotObservation(step)
+	if !ok {
+		t.Fatal("touch gesture screenshot was not recognized as visual")
+	}
+	if !bytes.Equal(visual.ImageBytes, marked) {
+		t.Fatal("model screenshot did not preserve the marked image")
+	}
+
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+	if strings.Contains(toolContent, "requested tap coordinate") {
+		t.Fatalf("tool content should not carry marker metadata: %s", toolContent)
+	}
+	if len(followups) != 1 || len(followups[0].Parts) != 2 {
+		t.Fatalf("visual followups = %#v", followups)
+	}
+	imagePart, ok := followups[0].Parts[1].(llms.ImageURLContent)
+	if !ok {
+		t.Fatalf("image part = %T", followups[0].Parts[1])
+	}
+	_, display, ok := telemetryDataURL(imagePart.URL)
+	if !ok || !bytes.Equal(display, marked) {
+		t.Fatal("model followup did not contain the marked screenshot")
+	}
+}
+
+func solidJPEG(t *testing.T, width, height int, fill color.Color) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, fill)
+		}
+	}
+	var output bytes.Buffer
+	if err := jpeg.Encode(&output, img, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatalf("encode jpeg: %v", err)
+	}
+	return output.Bytes()
 }

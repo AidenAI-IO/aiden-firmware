@@ -72,11 +72,11 @@ server\_vad / smart\_turn 模式下此事件被忽略。
 **说明**：显式触发一次模型推理。各模式下的行为如下：
 
 -   **push-to-talk 模式**：必须手动调用，需先通过 `input_audio_buffer.commit` 提交缓冲区音频或写入 `function_call_output` 后触发。当前有响应正在生成时不允许重复触发。
-    
+
 -   **server\_vad 模式**：通常由服务端自动触发。当前无响应正在生成时，客户端也允许手动调用；有响应正在生成时不允许重复触发。
-    
+
 -   **smart\_turn 模式**：等待用户下一轮输入时允许调用。当前处于一个 turn 内时（收到 `input_audio_buffer.speech_started` 到 `response.done` 期间）不允许重复触发。
-    
+
 
 `response` 字段可选，用于覆盖本轮推理的会话默认配置。Function Calling 场景下，客户端写入 `function_call_output` 后也通过该事件触发二轮推理。
 
@@ -96,4 +96,3 @@ server\_vad / smart\_turn 模式下，手动触发的推理仍可能被新语音
 
 | **type** `*string*`**（必选）** 事件类型，固定为 `response.cancel`。 | ``` { "type": "response.cancel" } ``` |
 | --- | --- |
-

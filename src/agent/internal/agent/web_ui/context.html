@@ -23,6 +23,8 @@
     .session { color:var(--muted); font:11px ui-monospace,SFMono-Regular,Menlo,monospace; }
     .message { margin:0 0 10px; padding:12px 14px; border:1px solid var(--line); border-radius:6px; background:var(--panel2); white-space:pre-wrap; overflow-wrap:anywhere; }
     .role { margin-bottom:6px; color:var(--muted); font:11px ui-monospace,SFMono-Regular,Menlo,monospace; text-transform:uppercase; }
+    .usage { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; padding-top:8px; border-top:1px solid var(--line); color:var(--muted); font:11px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .usage strong { color:var(--text); font-weight:600; }
     .user .message[data-role="user"] .role { color:var(--blue); } .message[data-role="assistant"] .role { color:var(--green); } .message[data-role="tool_call"] .role { color:var(--orange); } .message[data-role="tool_result"] .role { color:var(--purple); }
     .empty, .error { color:var(--muted); font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
     .attachments { display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; }
@@ -61,7 +63,8 @@
           const mime = String(a.mime_type || '');
           return `<button class="attachment" type="button" title="${esc(mime || 'attachment')}" data-role="${esc(role)}" data-attachment="${esc(name)}" data-mime="${esc(mime)}">${mime.startsWith('image/') ? '▧' : '↗'}</button>`;
         }).join('');
-        return `<article class="message" data-role="${esc(m.role)}"><div class="role">${esc(m.role)}</div><div>${esc(body)}</div>${attachments ? `<div class="attachments">${attachments}</div>` : ''}</article>`;
+        const usage = m.usage ? `<div class="usage"><span>Input <strong>${esc(m.usage.input_tokens ?? 0)}</strong></span><span>Output <strong>${esc(m.usage.output_tokens ?? 0)}</strong></span><span>Total <strong>${esc(m.usage.total_tokens ?? 0)}</strong></span></div>` : '';
+        return `<article class="message" data-role="${esc(m.role)}"><div class="role">${esc(m.role)}</div><div>${esc(body)}</div>${attachments ? `<div class="attachments">${attachments}</div>` : ''}${usage}</article>`;
       }).join('') : '<div class="empty">No messages in this context.</div>';
     }
     function loadContext() { document.getElementById('status').textContent = 'loading…'; fetch('/api/context').then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }).then(data => { currentData=data; render('userMessages','userSession',data.user || {},'user'); render('backendMessages','backendSession',data.backend || {},'backend'); document.getElementById('status').textContent = 'loaded'; }).catch(err => { document.getElementById('status').textContent = 'error'; document.getElementById('userMessages').innerHTML = `<div class="error">${esc(err.message)}</div>`; document.getElementById('backendMessages').innerHTML = ''; }); }

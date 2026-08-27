@@ -1,7 +1,7 @@
 {
   "name": "episode_memory_legacy_v1",
   "suite_category": "Memory & Cognition",
-  "description": "Legacy direct-memory control across natural recall and physical-iPhone execution. Deterministic Device Memory fixtures represent the removed synchronous Episode-to-Memory output before evaluation.",
+  "description": "Legacy direct-memory control across natural recall and physical-iPhone execution. Deterministic Device Memory fixtures represent the removed synchronous Episode-to-Memory output; use episode_reflection_v1 for reflection quality.",
   "global_reset": {},
   "tasks": [
     {
@@ -56,7 +56,9 @@
             ]
           }
         ]
-      }
+      },
+      "expected_recalled_memory_ids": ["legacy_qa_notes_title_save_procedure"],
+      "expected_recalled_memory_tool": "recall_device_memory"
     },
     {
       "id": "settings_ethernet_ipv4_from_episode",

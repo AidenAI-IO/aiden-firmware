@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"aiden-agent/internal/util"
+
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -32,7 +34,7 @@ func ConvertMessageList(messageList []Message) []llms.MessageContent {
 			standardMessageList[i] = newMessage
 			continue
 		}
-		if content := strings.TrimSpace(message.Content); content != "" {
+		if content := standardMessageContent(message); content != "" {
 			newMessage.Parts = append(newMessage.Parts, llms.TextPart(content))
 		}
 		for toolIndex, call := range message.ToolCalls {
@@ -75,6 +77,21 @@ func ConvertMessageList(messageList []Message) []llms.MessageContent {
 	return standardMessageList
 }
 
+func standardMessageContent(message Message) string {
+	content := strings.TrimSpace(message.Content)
+	if content == "" {
+		return content
+	}
+	switch message.Role {
+	case MessageRoleNotice:
+		return util.STag("notice", content)
+	case MessageRoleState:
+		return util.STag("state", content)
+	default:
+		return content
+	}
+}
+
 // ConvertChoiceToContextManagerMessage converts a content choice to a context manager message
 func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) Message {
 	role := MessageRoleAssistant
@@ -84,11 +101,57 @@ func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) Message {
 	return Message{
 		Role:                    role,
 		Content:                 contentChoiceText(choice),
+		Usage:                   UsageFromGenerationInfo(choice.GenerationInfo),
 		ToolCalls:               toolCallsFromContentChoice(choice),
 		ResponsesReasoningItems: responsesReasoningItemsFromGenerationInfo(choice.GenerationInfo),
 		ResponsesResponseID:     responsesResponseIDFromGenerationInfo(choice.GenerationInfo),
 		ResponsesOutputItems:    responsesOutputItemsFromGenerationInfo(choice.GenerationInfo),
 		ResponsesAssistantPhase: responsesAssistantPhaseFromGenerationInfo(choice.GenerationInfo),
+	}
+}
+
+// UsageFromGenerationInfo normalizes provider-specific generation metadata to
+// the compact usage shape persisted on messages. OpenAI-compatible providers
+// report prompt/completion tokens; Responses, Anthropic, and realtime paths
+// use input/output tokens. Both forms are accepted here.
+func UsageFromGenerationInfo(info map[string]any) *Usage {
+	if len(info) == 0 {
+		return nil
+	}
+	input, inputOK := usageMetricInt(info["input_tokens"])
+	if prompt, ok := usageMetricInt(info["prompt_tokens"]); ok {
+		input = prompt
+		inputOK = true
+	}
+	output, outputOK := usageMetricInt(info["output_tokens"])
+	if completion, ok := usageMetricInt(info["completion_tokens"]); ok {
+		output = completion
+		outputOK = true
+	}
+	total, totalOK := usageMetricInt(info["total_tokens"])
+	if !inputOK && !outputOK && !totalOK {
+		return nil
+	}
+	if !totalOK && (inputOK || outputOK) {
+		total = input + output
+	}
+	return &Usage{TotalTokens: total, InputTokens: input, OutputTokens: output}
+}
+
+func usageMetricInt(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int32:
+		return int(typed), true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case float32:
+		return int(typed), true
+	default:
+		return 0, false
 	}
 }
 

@@ -223,7 +223,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `locale`                    | `zh-CN` (default) / `en-US` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[stt].language`, which only controls speech recognition. |
 | `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
 | `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
-| `load_all_tools`            | `false`                     | When `true`, also send `list_scripts`, `read_script`, and `write_script` to the conversational model. This does not expose HTTP-blocked maintenance tools.                                                |
+| `load_all_tools`            | `false`                     | When `true`, also send the opt-in script-authoring tools (`list_scripts`, `read_script`, and `write_script`) to the conversational model. Diagnostic-only tools such as `image_diff` remain hidden; this does not expose HTTP-blocked maintenance tools. |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
@@ -234,7 +234,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | Field                           | Default                                                     | Description                                                                                                                                                                            |
 | ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `quick_capture.enabled`         | `true`                                                       | Enables GPIO-triggered Screen Memory capture; legacy GPIO32/GPIO33 wakeup remains independent                                                                                           |
-| `quick_capture.gpio_pin`        | `0`                                                         | Falling-edge GPIO for Quick Capture; supported values are `0` (disabled) and GPIO3 (physical pin 38), while GPIO32/GPIO33 remain reserved for legacy wakeup                          |
+| `quick_capture.gpio_pin`        | `3`                                                         | Falling-edge GPIO for Quick Capture; supported values are `3` (physical pin 38) and `0` (disabled), while GPIO32/GPIO33 remain reserved for legacy wakeup                          |
 | `quick_capture.screen_memory_ttl` | `90d`                                                    | Retention period for captured Screen Memory entries, or `forever`                                                                                                                       |
 
 ### Voice & VAD
@@ -485,7 +485,7 @@ This section is currently TOML-only and is not rendered by Config Web.
 | `region` | empty | `cn-beijing` or `ap-southeast-1`; endpoint is selected automatically. |
 | `endpoint` | empty | Optional `ws://` or `wss://` endpoint override. |
 | `voice` | `longanqian` | Realtime output voice. |
-| `instructions` | empty | Session instructions; falls back to `custom_instruction`. |
+| `instructions` | built-in voice model instruction | Session instructions. Leave empty to use the built-in default voice model instruction. |
 | `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
 | `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
 | `turn_detection` | `server_vad` | Server turn detector: `server_vad` or `smart_turn`. |

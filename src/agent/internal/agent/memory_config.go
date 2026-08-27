@@ -99,7 +99,7 @@ func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
 		SessionBoundaryEnabled:         true,
 		SessionBoundaryShortGapSeconds: DefaultBoundaryConfig().ShortGapSeconds,
 		SessionBoundaryLongGapSeconds:  DefaultBoundaryConfig().LongGapSeconds,
-		EpisodeMemoryIdleDelaySeconds:  int(defaultEpisodeMemoryIdleDelay / time.Second),
+		EpisodeMemoryIdleDelaySeconds:  int(defaultMemoryWorkerIdleDelay / time.Second),
 	}
 }
 
@@ -142,7 +142,7 @@ func normalizeMemoryExtractionConfig(cfg MemoryExtractionConfig) MemoryExtractio
 		cfg.SessionBoundaryLongGapSeconds = cfg.SessionBoundaryShortGapSeconds + defaultBoundary.LongGapSeconds
 	}
 	if cfg.EpisodeMemoryIdleDelaySeconds <= 0 {
-		cfg.EpisodeMemoryIdleDelaySeconds = int(defaultEpisodeMemoryIdleDelay / time.Second)
+		cfg.EpisodeMemoryIdleDelaySeconds = int(defaultMemoryWorkerIdleDelay / time.Second)
 	}
 	return cfg
 }

@@ -41,14 +41,14 @@ func (t *ImageDiffTool) Name() string { return "image_diff" }
 
 func (t *ImageDiffTool) Description() string {
 	return `Compare two JPEG screenshots and return pixel-level difference metrics. ` +
-		`For Agent calls, copy the screenshot_attachment_id shown beside each screenshot observation into before and after; never invent or modify attachment IDs. ` +
-		`Direct HTTP callers may also pass the Base64 JPEG data returned by the screenshot tool. ` +
+		`This is a diagnostic tool for Tool Lab and prepared-script callers, not a normal conversational Agent step. ` +
+		`Callers may pass screenshot_attachment_id values from the current context, or Base64 JPEG data returned by the screenshot tool. ` +
 		`"region" is optional normalized coordinates (0-1000) to restrict comparison to a sub-region — use this to focus on the scrollable area and ignore static UI chrome. ` +
 		`Returns: ` +
 		`"changed" (bool, true when diff_ratio > 0.01), ` +
 		`"diff_ratio" (0-1 fraction of pixels that changed significantly), ` +
 		`"primary_axis" ("horizontal", "vertical", or "none" — dominant direction of change). ` +
-		`Use this tool after a touch_gesture swipe to verify the gesture had an effect: ` +
+		`When a finer-grained diagnostic is needed after a touch_gesture swipe, use this tool to verify whether it had an effect: ` +
 		`diff_ratio < 0.03 means the content did not move (increase swipe distance or check target region); ` +
 		`primary_axis helps confirm the swipe direction matched the intended scroll axis.`
 }

@@ -678,9 +678,39 @@ HttpResponse http_request(int port, const std::string& method, const std::string
         sent += static_cast<size_t>(n);
     }
 
+    // Read exactly as much as the response declares via Content-Length rather
+    // than looping until the socket EOFs. The launch lock's supervisor process
+    // (see launch_ota_update_supervisor) never execs, so it keeps a duplicate
+    // of the accepted client fd open for as long as the launched `ota update`
+    // child runs; that keeps the socket's refcount above zero and its EOF
+    // pending well after the HTTP response bytes have all been sent. Real
+    // clients (browsers, curl) don't wait for EOF when Content-Length frames
+    // the body, so neither should this test helper.
     std::string buf;
     char chunk[4096];
+    size_t header_end = std::string::npos;
+    long content_length = -1;
     while (true) {
+        if (header_end == std::string::npos) {
+            header_end = buf.find("\r\n\r\n");
+            if (header_end != std::string::npos) {
+                std::string headers = buf.substr(0, header_end);
+                std::string lower = headers;
+                for (char& c : lower) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                size_t idx = lower.find("content-length:");
+                if (idx != std::string::npos) {
+                    content_length = std::atol(headers.c_str() + idx + strlen("content-length:"));
+                }
+            }
+        }
+        if (header_end != std::string::npos) {
+            size_t body_so_far = buf.size() - (header_end + 4);
+            if (content_length < 0 || body_so_far >= static_cast<size_t>(content_length)) {
+                break;
+            }
+        }
         ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
         if (n <= 0) break;
         buf.append(chunk, static_cast<size_t>(n));
@@ -3811,6 +3841,122 @@ TEST_CASE("config_web: manual OTA update appends update log and reports start si
     const std::string log = read_file(log_path);
     CHECK(log.find(previous_log) == 0);
     CHECK(log.find("new ota update output") != std::string::npos);
+}
+
+TEST_CASE("config_web: GET /api/ota/logs reports ota_update_running while an update holds the lock") {
+    // Regression test: the update log is append-only, so a stale
+    // "update_exited exit_code=1" line from an earlier failure stays in the
+    // file while a later update is still downloading. The frontend needs an
+    // authoritative "is it running right now" signal that does not depend on
+    // parsing that log, so it can ignore the stale exit code.
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+
+    const std::string env_run_path = tmp + "/aiden-env-run";
+    const std::string ota_path = tmp + "/ota";
+    const std::string lock_path = tmp + "/config_web_ota_update.lock";
+    const std::string log_path = tmp + "/config_web_ota_update.log";
+    const std::string release_path = tmp + "/release.txt";
+
+    // Seed the log with a failed run, mirroring the board: the exit line from
+    // an earlier attempt survives into the next one.
+    write_file(log_path,
+               "2026-08-26T02:40:13Z [ERROR] [config_web] [ota] update_exited exit_code=1\n");
+
+    write_file(env_run_path, "#!/bin/sh\nexec \"$@\"\n");
+    REQUIRE(::chmod(env_run_path.c_str(), 0755) == 0);
+
+    // The stub blocks until the test creates release.txt, so the update is
+    // observably in-flight while we poll the endpoint.
+    //
+    // The wait is bounded rather than a bare `while [ ! -f ... ]`: the
+    // supervisor calls setsid(), so this child outlives the ServerHandle
+    // teardown that only signals the config_web process. If an assertion above
+    // aborts the test before release.txt is written, the temp dir is removed and
+    // the sentinel can never appear -- an unbounded loop would leak a spinning
+    // shell for the rest of the machine's uptime and slow every later test.
+    write_file(ota_path,
+               "#!/bin/sh\n"
+               "if [ \"${1:-}\" = \"update\" ]; then\n"
+               "  echo 'download: in progress'\n"
+               "  i=0\n"
+               "  while [ ! -f '" + release_path + "' ] && [ \"$i\" -lt 300 ]; do\n"
+               "    sleep 0.05\n"
+               "    i=$((i+1))\n"
+               "  done\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 0\n");
+    REQUIRE(::chmod(ota_path.c_str(), 0755) == 0);
+
+    StubEnv env;
+    env.set("AIDEN_OTA_BIN", ota_path);
+    env.set("AIDEN_ENV_RUN_BIN", env_run_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", lock_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", log_path);
+    auto handle = start_server(env);
+
+    // Before any update runs the lock is free.
+    HttpResponse idle = http_request(handle->port, "GET", "/api/ota/logs");
+    REQUIRE(idle.status == 200);
+    cJSON* idle_parsed = cJSON_Parse(idle.body.c_str());
+    REQUIRE(idle_parsed != nullptr);
+    cJSON* idle_running = cJSON_GetObjectItem(idle_parsed, "ota_update_running");
+    REQUIRE(idle_running != nullptr);
+    CHECK((idle_running->type & 0xff) == cJSON_False);
+    cJSON_Delete(idle_parsed);
+
+    REQUIRE(http_request(handle->port, "POST", "/api/ota/update").status == 200);
+    REQUIRE(wait_for_file_contains(log_path, "download: in progress", 2000));
+
+    // While the child holds the lock the endpoint must report running=true,
+    // even though the newest update_exited line in the log says rc=1.
+    bool saw_running = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+    while (std::chrono::steady_clock::now() < deadline) {
+        HttpResponse busy = http_request(handle->port, "GET", "/api/ota/logs");
+        if (busy.status == 200) {
+            cJSON* parsed = cJSON_Parse(busy.body.c_str());
+            if (parsed != nullptr) {
+                cJSON* running = cJSON_GetObjectItem(parsed, "ota_update_running");
+                if (running != nullptr && (running->type & 0xff) == cJSON_True) {
+                    saw_running = true;
+                }
+                cJSON_Delete(parsed);
+            }
+        }
+        if (saw_running) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    CHECK(saw_running);
+
+    // Let the stub finish; the lock is released and running flips back.
+    write_file(release_path, "go\n");
+    bool saw_idle = false;
+    const auto idle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
+    while (std::chrono::steady_clock::now() < idle_deadline) {
+        HttpResponse done = http_request(handle->port, "GET", "/api/ota/logs");
+        if (done.status == 200) {
+            cJSON* parsed = cJSON_Parse(done.body.c_str());
+            if (parsed != nullptr) {
+                cJSON* running = cJSON_GetObjectItem(parsed, "ota_update_running");
+                if (running != nullptr && (running->type & 0xff) == cJSON_False) {
+                    saw_idle = true;
+                }
+                cJSON_Delete(parsed);
+            }
+        }
+        if (saw_idle) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    CHECK(saw_idle);
 }
 
 TEST_CASE("config_web: manual OTA update truncates oversized update log before appending") {

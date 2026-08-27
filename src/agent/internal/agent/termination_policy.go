@@ -392,7 +392,7 @@ func (p *TerminationPolicy) noticeForTier(tier InterventionTier) string {
 	case TierSoftNotice:
 		return "Loop guard: recent tool calls are repeating or not changing the screen. Change strategy, verify with observation tools, or call request_user_action if blocked."
 	case TierRestrictTools:
-		return "Loop guard: UI action tools are temporarily restricted because repeated actions produced no progress. Diagnose with screenshot/image_diff or ask the user to intervene."
+		return "Loop guard: UI action tools are temporarily restricted because repeated actions produced no progress. Diagnose with a fresh screenshot or wait_for_stable_screen, or ask the user to intervene."
 	default:
 		return ""
 	}

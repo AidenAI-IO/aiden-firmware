@@ -129,6 +129,7 @@ type Message struct {
 	OriginalText    string              `json:"original_text,omitempty"`
 	Transcript      string              `json:"transcript,omitempty"`
 	Content         string              `json:"content"`
+	Usage           *messages.Usage     `json:"usage,omitempty"`
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
@@ -512,6 +513,8 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
 		mux.HandleFunc("/api/benchmark/seed_episode", s.handleBenchmarkSeedEpisode)
 		mux.HandleFunc("/api/benchmark/episode-memory/process", s.handleBenchmarkProcessEpisodeMemory)
+		mux.HandleFunc("/api/benchmark/seed_notification", s.handleBenchmarkSeedNotification)
+		mux.HandleFunc("/api/benchmark/notification-memory/process", s.handleBenchmarkProcessNotificationMemory)
 		mux.HandleFunc("/api/benchmark/phone_bridge_state", s.handleBenchmarkPhoneBridgeState)
 	}
 	mux.HandleFunc("/api/clear", s.handleClear)
@@ -591,7 +594,7 @@ func newWettyReverseProxyForTarget(target *url.URL) *httputil.ReverseProxy {
 		}
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
-		req.Host = target.Host
+		req.Host = originalHost
 		req.Header.Set("X-Forwarded-Host", originalHost)
 		req.Header.Set("X-Forwarded-Proto", originalProto)
 		req.Header.Set("X-Forwarded-Prefix", "/wetty")
@@ -2455,15 +2458,18 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 type benchmarkSeedMemoryRequest struct {
-	Store    string   `json:"store"`
-	ID       string   `json:"id"`
-	Type     string   `json:"type"`
-	Title    string   `json:"title"`
-	Content  string   `json:"content"`
-	Tags     []string `json:"tags"`
-	Entities []string `json:"entities"`
-	Evidence []string `json:"evidence"`
-	Priority int      `json:"priority"`
+	Store        string            `json:"store"`
+	ID           string            `json:"id"`
+	Type         string            `json:"type"`
+	Title        string            `json:"title"`
+	Content      string            `json:"content"`
+	Tags         []string          `json:"tags"`
+	Entities     []string          `json:"entities"`
+	Evidence     []string          `json:"evidence"`
+	SourceRefs   []MemorySourceRef `json:"source_refs"`
+	EvidenceRefs []MemorySourceRef `json:"evidence_refs"`
+	ExpiresAt    string            `json:"expires_at"`
+	Priority     int               `json:"priority"`
 }
 
 func (s *Server) handleBenchmarkSeedEpisode(w http.ResponseWriter, r *http.Request) {
@@ -2531,6 +2537,100 @@ type benchmarkProcessEpisodeMemoryResponse struct {
 	MemoryIDs  []string                 `json:"memory_ids"`
 }
 
+type benchmarkSeedNotificationRequest struct {
+	Events []ble.NotificationEvent `json:"events"`
+}
+
+type benchmarkProcessNotificationMemoryResponse struct {
+	MemoryCursor string   `json:"memory_cursor"`
+	MemoryIDs    []string `json:"memory_ids"`
+}
+
+func (s *Server) handleBenchmarkSeedNotification(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req benchmarkSeedNotificationRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512*1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, "decode notification fixture: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		http.Error(w, "decode notification fixture: expected exactly one JSON object", http.StatusBadRequest)
+		return
+	}
+	if len(req.Events) == 0 || len(req.Events) > 100 {
+		http.Error(w, "events must contain between 1 and 100 entries", http.StatusBadRequest)
+		return
+	}
+	for index, event := range req.Events {
+		if strings.TrimSpace(event.Title) == "" && strings.TrimSpace(event.Message) == "" {
+			http.Error(w, fmt.Sprintf("events[%d] requires a title or message", index), http.StatusBadRequest)
+			return
+		}
+	}
+	plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane)
+	if !ok || plane == nil {
+		http.Error(w, "filesystem memory plane not configured", http.StatusServiceUnavailable)
+		return
+	}
+	records, err := plane.SeedNotificationMemoryForBenchmark(r.Context(), req.Events)
+	if err != nil {
+		http.Error(w, "seed notification: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		ids = append(ids, record.ContextID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":      "seeded",
+		"context_ids": ids,
+		"event_count": len(records),
+	})
+}
+
+func (s *Server) handleBenchmarkProcessNotificationMemory(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane)
+	if !ok || plane == nil {
+		http.Error(w, "filesystem memory plane not configured", http.StatusServiceUnavailable)
+		return
+	}
+	cursor, memoryIDs, err := plane.ProcessNotificationMemoryNow(r.Context())
+	if err != nil {
+		code := http.StatusInternalServerError
+		var proposalErr *notificationProposalError
+		if errors.As(err, &proposalErr) {
+			code = http.StatusUnprocessableEntity
+		} else if errors.Is(err, errMemoryWorkerBusy) {
+			code = http.StatusConflict
+		}
+		http.Error(w, "process notification memory: "+err.Error(), code)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(benchmarkProcessNotificationMemoryResponse{
+		MemoryCursor: cursor,
+		MemoryIDs:    memoryIDs,
+	})
+}
+
 func (s *Server) handleBenchmarkProcessEpisodeMemory(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeBenchmarkRequest(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -2558,7 +2658,7 @@ func (s *Server) handleBenchmarkProcessEpisodeMemory(w http.ResponseWriter, r *h
 	status, memoryIDs, err := plane.ProcessEpisodeMemoryNow(r.Context(), req.EpisodeID)
 	if err != nil {
 		code := http.StatusInternalServerError
-		if errors.Is(err, errEpisodeMemoryWorkerBusy) {
+		if errors.Is(err, errMemoryWorkerBusy) {
 			code = http.StatusConflict
 		}
 		http.Error(w, "process episode memory: "+err.Error(), code)
@@ -2610,8 +2710,8 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 	if storeName == "" {
 		storeName = "long_term"
 	}
-	if storeName != "long_term" && storeName != "device" {
-		http.Error(w, "store must be long_term or device", http.StatusBadRequest)
+	if storeName != "long_term" && storeName != "temporary" && storeName != "device" {
+		http.Error(w, "store must be long_term, temporary, or device", http.StatusBadRequest)
 		return
 	}
 	priority := req.Priority
@@ -2645,22 +2745,32 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 			Entities:   req.Entities,
 		})
 	} else {
-		if plane.LongTerm() == nil {
-			http.Error(w, "long-term memory not configured", http.StatusServiceUnavailable)
+		store := plane.LongTerm()
+		memoryScope := "long_term"
+		if storeName == "temporary" {
+			store = NewLongTermMemoryStore(filepath.Join(plane.memoryDir, "temporary"))
+			memoryScope = "temporary"
+		}
+		if store == nil {
+			http.Error(w, "memory store not configured", http.StatusServiceUnavailable)
 			return
 		}
 		item := MemoryItem{
 			ID:               req.ID,
 			Type:             req.Type,
+			TimeScope:        memoryScope,
 			Priority:         priority,
 			Confidence:       0.9,
 			Title:            req.Title,
 			Content:          req.Content,
 			Tags:             req.Tags,
 			Entities:         req.Entities,
+			SourceRefs:       req.SourceRefs,
+			EvidenceRefs:     req.EvidenceRefs,
+			ExpiresAt:        req.ExpiresAt,
 			EvidenceExcerpts: evidence,
 		}
-		id, err = plane.LongTerm().AddMemory(r.Context(), item)
+		id, err = store.AddMemory(r.Context(), item)
 	}
 	if err != nil {
 		if s.logger != nil {
@@ -3144,7 +3254,11 @@ func (s *Server) webHistorySnapshot() []Message {
 }
 
 func webMessageFromContextMessage(item messages.Message, contextRole string) (Message, bool) {
-	message := Message{Content: item.Content}
+	message := Message{Content: item.Content, Timestamp: item.Timestamp}
+	if item.Usage != nil {
+		usage := *item.Usage
+		message.Usage = &usage
+	}
 	switch item.Role {
 	case messages.MessageRoleSystem:
 		return Message{}, false

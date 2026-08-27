@@ -77,6 +77,10 @@ func (e *LLMExecutor) AppendMessage(message messages.Message) error {
 	return e.contextManager.AppendMessage(message)
 }
 
+func (e *LLMExecutor) AppendMessages(messagesToAppend []messages.Message) error {
+	return e.contextManager.AppendMessages(messagesToAppend)
+}
+
 func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	messageList := e.contextManager.CloneMessageList()
 	for _, transform := range e.transforms {
