@@ -78,6 +78,23 @@ func TestPhoneBridgeScreenCacheFollowsPhoneIDAcrossHTTPFallback(t *testing.T) {
 	}
 }
 
+func TestRegisterPhoneBridgeWrapsOpenURLWithPostActionScreenshot(t *testing.T) {
+	bridge := newTestPhoneBridge(t)
+	tools := &ToolSet{tools: map[string]langtools.Tool{
+		"screenshot": &stubTool{name: "screenshot", output: `{"width":1,"height":1,"format":"jpeg","size":1,"data":"YQ=="}`},
+	}}
+
+	tools.RegisterPhoneBridge(bridge)
+	openURL, ok := tools.tools[toolOpenURL]
+	if !ok || openURL == nil {
+		t.Fatal("open_url was not registered")
+	}
+	visual, ok := openURL.(visualObservationTool)
+	if !ok || !visual.ReturnsVisualObservation() {
+		t.Fatalf("open_url = %T, want post-action visual observation wrapper", openURL)
+	}
+}
+
 func TestPhoneBridgeScreenCacheFollowsPhysicalHIDConnection(t *testing.T) {
 	bridge := newTestPhoneBridge(t)
 	hidConnected := true
@@ -180,6 +197,19 @@ func TestOpenAppSchemaInfersPlatformFromDeviceState(t *testing.T) {
 	}
 	if _, found := props["platform"]; found {
 		t.Fatalf("open_app schema must infer fallback platform from runtime device state: %#v", props)
+	}
+}
+
+func TestOpenAppDescriptionDefersToClearlyVisibleTarget(t *testing.T) {
+	description := NewOpenAppTool(nil, nil, nil).Description()
+	for _, expected := range []string{
+		"not clearly and uniquely visible in the latest screenshot",
+		"use touch_gesture",
+		"instead of calling open_app",
+	} {
+		if !strings.Contains(description, expected) {
+			t.Fatalf("open_app description missing %q: %s", expected, description)
+		}
 	}
 }
 

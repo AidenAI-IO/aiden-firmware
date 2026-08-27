@@ -68,7 +68,7 @@ Device service:
 
 The conversational Agent receives every registered, currently available tool needed for memory, device operation, skill management, shell and web research, phone data, and prepared script execution (`run_script`).
 
-`current_time` and `calculator` are not registered built-in tools; the Agent uses `shell` for controller-local precise time, timezone, and deterministic calculations. The script-file authoring tools (`list_scripts`, `read_script`, and `write_script`) are omitted from the default LLM `tools` request and can be restored with `load_all_tools = true`. This switch does not change HTTP exposure: `skill_manage` and `skill_mark_used` remain unavailable through the HTTP Tool API.
+`current_time` and `calculator` are not registered built-in tools; the Agent uses `shell` for controller-local precise time, timezone, and deterministic calculations. The script-file authoring tools (`list_scripts`, `read_script`, and `write_script`) are omitted from the default LLM `tools` request and can be restored with `load_all_tools = true`. Diagnostic-only `image_diff` is never added to the conversational Agent catalog; it remains available through the HTTP Tool Lab and prepared scripts. This switch does not change HTTP exposure: `skill_manage` and `skill_mark_used` remain unavailable through the HTTP Tool API.
 
 For tool details and HTTP invocation methods, see [Tools HTTP API](tools-http-api.md).
 

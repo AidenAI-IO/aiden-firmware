@@ -58,6 +58,34 @@ func TestQuickActionExposedToAgentAndToolLab(t *testing.T) {
 	}
 }
 
+func TestImageDiffRemainsDiagnosticOnly(t *testing.T) {
+	spec := NewToolSpec(&stubTool{name: "image_diff", description: "image diff"})
+	if spec.AgentExposed {
+		t.Fatal("image_diff should not be exposed to the conversational Agent")
+	}
+	if spec.AgentLoadAll {
+		t.Fatal("image_diff should remain hidden when load_all_tools is enabled")
+	}
+	if !spec.HTTPExposed {
+		t.Fatal("image_diff should remain available to the HTTP Tool Lab")
+	}
+	runtime := newRuntimeWithTextEntryTools()
+	for _, tool := range runtime.availableTools() {
+		if tool != nil && tool.Name() == "image_diff" {
+			t.Fatal("image_diff should not be included in the default conversational Agent catalog")
+		}
+	}
+	runtime.config.LoadAllTools = true
+	for _, tool := range runtime.availableTools() {
+		if tool != nil && tool.Name() == "image_diff" {
+			t.Fatal("image_diff should not be included when load_all_tools is enabled")
+		}
+	}
+	if _, ok := runtime.ToolDescriptorByName("image_diff"); !ok {
+		t.Fatal("image_diff should remain in the HTTP Tool Lab catalog")
+	}
+}
+
 func TestWaitForWakeupExposedToAgentAndToolLab(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{},
@@ -142,6 +170,24 @@ func TestUnknownToolsDefaultToHTTPVisible(t *testing.T) {
 	}
 	if !spec.HTTPExposed {
 		t.Fatal("expected unregistered tool to remain HTTP-visible by default")
+	}
+}
+
+func TestHTTPToolSkillDocumentsOptionalPostActionScreenChanged(t *testing.T) {
+	markdown := buildHTTPToolSkillMarkdown(
+		"test-http-tools",
+		"Test HTTP tools.",
+		defaultHTTPToolSkillBaseURL,
+		[]ToolDescriptor{{Name: "touch_gesture", Category: "input"}},
+	)
+	for _, expected := range []string{
+		"optional `screen_changed`",
+		"When present, `screen_changed` reports meaningful structural change",
+		"an omitted field means comparison was unavailable, not that no change occurred",
+	} {
+		if !strings.Contains(markdown, expected) {
+			t.Fatalf("generated HTTP tool skill missing optional screen_changed guidance %q:\n%s", expected, markdown)
+		}
 	}
 }
 
@@ -260,7 +306,6 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
 	coreTools := []string{
 		"audio_volume",
-		"image_diff",
 		"inspect_episode",
 		"keyboard_tap",
 		"keyboard_text",
