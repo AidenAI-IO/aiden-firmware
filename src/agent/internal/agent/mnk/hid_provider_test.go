@@ -2,8 +2,31 @@ package mnk
 
 import (
 	"context"
+	"math"
 	"testing"
 )
+
+func TestDragActivationPointMovesExactlyFiftyWithinBounds(t *testing.T) {
+	for _, start := range []Point{
+		{X: 500, Y: 500},
+		{X: 0, Y: 0},
+		{X: 1000, Y: 500},
+		{X: 500, Y: 1000},
+		{X: 17, Y: 983},
+	} {
+		activation := dragActivationPoint(start)
+		distance := math.Hypot(activation.X-start.X, activation.Y-start.Y)
+		if distance != dragStartMoveDistance {
+			t.Errorf("dragActivationPoint(%+v) = %+v, distance %.2f; want %.2f", start, activation, distance, dragStartMoveDistance)
+		}
+		if activation.X < 0 || activation.X > 1000 || activation.Y < 0 || activation.Y > 1000 {
+			t.Errorf("dragActivationPoint(%+v) = %+v, want coordinates in [0,1000]", start, activation)
+		}
+		if activation.X != start.X && activation.Y != start.Y {
+			t.Errorf("dragActivationPoint(%+v) = %+v, want movement on one axis", start, activation)
+		}
+	}
+}
 
 func TestHIDProviderRejectsHorizontalScroll(t *testing.T) {
 	pointer := &layoutCaptureDevice{}

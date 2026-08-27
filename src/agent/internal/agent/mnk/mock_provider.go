@@ -6,8 +6,10 @@ import "context"
 type MockProvider struct {
 	clicks       []MockClick
 	doubleClicks []MockDoubleClick
-	swipes       []MockDrag
-	drags        []MockDrag
+	swipes       []MockSwipe
+	dragStarts   []MockClick
+	dragReleases []MockMove
+	dragActive   bool
 	keypresses   []MockKeypress
 	moves        []MockMove
 	scrolls      []MockScroll
@@ -25,7 +27,7 @@ type MockDoubleClick struct {
 	Button string
 }
 
-type MockDrag struct {
+type MockSwipe struct {
 	Path         [][2]float64
 	Button       string
 	DurationMs   int
@@ -78,7 +80,7 @@ func (m *MockProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, 
 	if options.Steps <= 0 {
 		options.Steps = defaultSwipeSteps
 	}
-	m.swipes = append(m.swipes, MockDrag{
+	m.swipes = append(m.swipes, MockSwipe{
 		Path:         path,
 		Button:       button,
 		DurationMs:   options.DurationMs,
@@ -89,9 +91,23 @@ func (m *MockProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, 
 	return nil
 }
 
-func (m *MockProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
+func (m *MockProvider) DragStart(ctx context.Context, x, y float64, button string) error {
 	_ = ctx
-	m.drags = append(m.drags, MockDrag{Path: path, Button: button})
+	if m.dragActive {
+		return InvalidArguments("drag_start is already active")
+	}
+	m.dragStarts = append(m.dragStarts, MockClick{X: x, Y: y, Button: button})
+	m.dragActive = true
+	return nil
+}
+
+func (m *MockProvider) DragRelease(ctx context.Context, x, y float64) error {
+	_ = ctx
+	if !m.dragActive {
+		return InvalidArguments("drag_release requires an active drag_start")
+	}
+	m.dragReleases = append(m.dragReleases, MockMove{X: x, Y: y})
+	m.dragActive = false
 	return nil
 }
 
@@ -130,7 +146,9 @@ func (m *MockProvider) Reset() {
 	m.clicks = nil
 	m.doubleClicks = nil
 	m.swipes = nil
-	m.drags = nil
+	m.dragStarts = nil
+	m.dragReleases = nil
+	m.dragActive = false
 	m.keypresses = nil
 	m.moves = nil
 	m.scrolls = nil

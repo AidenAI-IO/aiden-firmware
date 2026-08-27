@@ -134,52 +134,20 @@ func TestHTTPProvider(t *testing.T) {
 		}
 	})
 
-	t.Run("drag", func(t *testing.T) {
+	t.Run("drag_start_release", func(t *testing.T) {
 		mockProvider.Reset()
 
-		path := [][2]float64{{100, 500}, {900, 500}}
-		err := httpProvider.Drag(context.Background(), path, "left")
-		if err != nil {
-			t.Fatalf("Drag failed: %v", err)
+		if err := httpProvider.DragStart(context.Background(), 100, 500, "left"); err != nil {
+			t.Fatalf("DragStart failed: %v", err)
 		}
-
-		if len(mockProvider.drags) != 1 {
-			t.Fatalf("expected 1 drag, got %d", len(mockProvider.drags))
+		if len(mockProvider.dragStarts) != 1 || mockProvider.dragStarts[0].X != 100 || mockProvider.dragStarts[0].Y != 500 {
+			t.Fatalf("drag starts = %#v, want point 100,500", mockProvider.dragStarts)
 		}
-
-		drag := mockProvider.drags[0]
-		if len(drag.Path) != 2 {
-			t.Fatalf("expected path length 2, got %d", len(drag.Path))
+		if err := httpProvider.DragRelease(context.Background(), 900, 500); err != nil {
+			t.Fatalf("DragRelease failed: %v", err)
 		}
-		if drag.Path[0][0] != 100 || drag.Path[0][1] != 500 {
-			t.Errorf("expected start (100, 500), got (%.0f, %.0f)", drag.Path[0][0], drag.Path[0][1])
-		}
-		if drag.Path[1][0] != 900 || drag.Path[1][1] != 500 {
-			t.Errorf("expected end (900, 500), got (%.0f, %.0f)", drag.Path[1][0], drag.Path[1][1])
-		}
-	})
-
-	t.Run("multi_point_drag", func(t *testing.T) {
-		mockProvider.Reset()
-
-		path := [][2]float64{
-			{100, 500},
-			{300, 300},
-			{700, 300},
-			{900, 500},
-		}
-		err := httpProvider.Drag(context.Background(), path, "left")
-		if err != nil {
-			t.Fatalf("Multi-point drag failed: %v", err)
-		}
-
-		if len(mockProvider.drags) != 1 {
-			t.Fatalf("expected 1 drag, got %d", len(mockProvider.drags))
-		}
-
-		drag := mockProvider.drags[0]
-		if len(drag.Path) != 4 {
-			t.Fatalf("expected path length 4, got %d", len(drag.Path))
+		if len(mockProvider.dragReleases) != 1 || mockProvider.dragReleases[0].X != 900 || mockProvider.dragReleases[0].Y != 500 {
+			t.Fatalf("drag releases = %#v, want point 900,500", mockProvider.dragReleases)
 		}
 	})
 
@@ -266,23 +234,22 @@ func TestHTTPHandlerErrors(t *testing.T) {
 		BaseURL: server.URL,
 	})
 
-	t.Run("empty_path", func(t *testing.T) {
+	t.Run("drag_release_without_start", func(t *testing.T) {
 		mockProvider.Reset()
-
-		// Empty path should fail
-		err := httpProvider.Drag(context.Background(), [][2]float64{}, "left")
+		err := httpProvider.DragRelease(context.Background(), 500, 500)
 		if err == nil {
-			t.Error("expected error for empty path, got nil")
+			t.Error("expected error without drag_start, got nil")
 		}
 	})
 
-	t.Run("single_point_path", func(t *testing.T) {
+	t.Run("duplicate_drag_start", func(t *testing.T) {
 		mockProvider.Reset()
-
-		// Single point path should fail
-		err := httpProvider.Drag(context.Background(), [][2]float64{{500, 500}}, "left")
+		if err := httpProvider.DragStart(context.Background(), 500, 500, "left"); err != nil {
+			t.Fatalf("first DragStart failed: %v", err)
+		}
+		err := httpProvider.DragStart(context.Background(), 600, 600, "left")
 		if err == nil {
-			t.Error("expected error for single point path, got nil")
+			t.Error("expected error for duplicate drag_start, got nil")
 		}
 	})
 

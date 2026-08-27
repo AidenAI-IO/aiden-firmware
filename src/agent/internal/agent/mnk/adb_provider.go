@@ -46,6 +46,9 @@ type ADBProvider struct {
 	touchDeviceExpires time.Time
 	rawTouchBlockedTil time.Time
 	nextTrackingID     int
+	dragActive         bool
+	dragRaw            bool
+	dragDevice         adbTouchDevice
 }
 
 type adbCommandRunner func(context.Context, string, ...string) ([]byte, []byte, error)
@@ -130,6 +133,9 @@ func NewADBProvider(screen *screen.ScreenState, client *ADBScreenClient, runADB 
 // Click performs a tap at the specified position.
 // holdMs is used to determine if this is a tap (default) or long press (500+).
 func (p *ADBProvider) Click(ctx context.Context, x, y float64, button string, holdMs int) error {
+	if err := p.rejectActiveDrag("click"); err != nil {
+		return err
+	}
 
 	// Validate button (ADB only supports left/touch semantics)
 	if button != "" && button != ButtonLeft && button != "left" {
@@ -186,12 +192,6 @@ func (p *ADBProvider) Home(ctx context.Context) error {
 	return p.Keypress(ctx, []string{"keycode_home"})
 }
 
-// Drag performs a swipe gesture along a path.
-// ADB only supports 2-point swipes, so multi-point paths are broken into segments.
-func (p *ADBProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
-	return p.dragWithDuration(ctx, path, button, 700)
-}
-
 // Swipe performs a short gesture that avoids Android long-press recognition.
 func (p *ADBProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
 	return p.SwipeWithOptions(ctx, path, button, SwipeOptions{})
@@ -206,6 +206,9 @@ func (p *ADBProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, 
 // input primitive has no interpolation-step control; Steps is accepted for
 // protocol compatibility and is used by the HID provider.
 func (p *ADBProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
+	if err := p.rejectActiveDrag("swipe"); err != nil {
+		return err
+	}
 	if options.HoldBeforeMs < 0 || options.HoldAfterMs < 0 || options.Steps < 0 {
 		return InvalidArguments("swipe timing values must not be negative")
 	}
@@ -215,11 +218,106 @@ func (p *ADBProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, b
 			return err
 		}
 	}
-	if err := p.dragWithDuration(ctx, path, button, durationMs); err != nil {
+	if err := p.swipePathWithDuration(ctx, path, button, durationMs); err != nil {
 		return err
 	}
 	if options.HoldAfterMs > 0 {
 		return waitContext(ctx, options.HoldAfterMs)
+	}
+	return nil
+}
+
+// DragStart starts a persistent Android touch contact. Raw sendevent is used
+// whenever permitted so the contact survives the ADB command boundary.
+func (p *ADBProvider) DragStart(ctx context.Context, x, y float64, button string) error {
+	if button != "" && button != ButtonLeft && button != "left" {
+		return InvalidArgumentsf("adb only supports left-button touch semantics, got %q", button)
+	}
+	start := Point{X: x, Y: y}
+	if err := validateADBTouchPoint(start); err != nil {
+		return InvalidArguments(err.Error())
+	}
+	activation := dragActivationPoint(start)
+
+	p.touchMu.Lock()
+	defer p.touchMu.Unlock()
+	if p.dragActive {
+		return InvalidArguments("drag_start is already active; call drag_release before starting another drag")
+	}
+
+	if !time.Now().Before(p.rawTouchBlockedTil) {
+		device, err := p.adbTouchDevice(ctx)
+		if err == nil {
+			p.nextTrackingID++
+			if p.nextTrackingID <= 0 || p.nextTrackingID > 65535 {
+				p.nextTrackingID = 1
+			}
+			script := buildADBDragStartScript(device, start, activation, p.nextTrackingID)
+			_, runErr := p.runShellScriptWithTimeout(ctx, p.timeoutForDuration(dragStartHoldMs), script)
+			if runErr == nil {
+				p.dragActive = true
+				p.dragRaw = true
+				p.dragDevice = device
+				return nil
+			}
+			cleanupErr := p.bestEffortRawTouchUp(ctx, device)
+			lower := strings.ToLower(runErr.Error())
+			if !strings.Contains(lower, "permission denied") && !strings.Contains(lower, "operation not permitted") {
+				if cleanupErr != nil {
+					return fmt.Errorf("adb drag_start raw touch failed: %w; cleanup touch_up failed: %v", runErr, cleanupErr)
+				}
+				return fmt.Errorf("adb drag_start raw touch failed: %w", runErr)
+			}
+			p.cachedTouchDevice = adbTouchDevice{}
+			p.touchDeviceExpires = time.Time{}
+			p.rawTouchBlockedTil = time.Now().Add(adbTouchDeviceTTL)
+		}
+	}
+
+	if err := p.runADBInputDragStart(ctx, start, activation); err != nil {
+		return ModuleUnavailablef("adb drag_start is unavailable through sendevent and input motionevent: %v", err)
+	}
+	p.dragActive = true
+	p.dragRaw = false
+	p.dragDevice = adbTouchDevice{}
+	return nil
+}
+
+// DragRelease completes the persistent contact with a direct move, a 200ms
+// dwell, and an UP event. Failed releases remain active so callers can retry.
+func (p *ADBProvider) DragRelease(ctx context.Context, x, y float64) error {
+	target := Point{X: x, Y: y}
+	if err := validateADBTouchPoint(target); err != nil {
+		return InvalidArguments(err.Error())
+	}
+
+	p.touchMu.Lock()
+	defer p.touchMu.Unlock()
+	if !p.dragActive {
+		return InvalidArguments("drag_release requires an active drag_start")
+	}
+
+	var err error
+	if p.dragRaw {
+		script := buildADBDragReleaseScript(p.dragDevice, target)
+		_, err = p.runShellScriptWithTimeout(ctx, p.timeoutForDuration(dragReleaseHoldMs), script)
+	} else {
+		err = p.runADBInputDragRelease(ctx, target)
+	}
+	if err != nil {
+		return fmt.Errorf("adb drag_release failed: %w", err)
+	}
+	p.dragActive = false
+	p.dragRaw = false
+	p.dragDevice = adbTouchDevice{}
+	return nil
+}
+
+func (p *ADBProvider) rejectActiveDrag(operation string) error {
+	p.touchMu.Lock()
+	defer p.touchMu.Unlock()
+	if p.dragActive {
+		return InvalidArgumentsf("drag_start is active; call drag_release before %s", operation)
 	}
 	return nil
 }
@@ -250,6 +348,9 @@ func (p *ADBProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 
 	p.touchMu.Lock()
 	defer p.touchMu.Unlock()
+	if p.dragActive {
+		return InvalidArguments("drag_start is active; call drag_release before atomic touch actions")
+	}
 	if time.Now().Before(p.rawTouchBlockedTil) {
 		return p.runADBInputMotionActions(ctx, actions)
 	}
@@ -681,6 +782,38 @@ func appendADBTouchUp(script *strings.Builder, device adbTouchDevice) {
 	appendADBEvent(script, device.path, adbEventSyn, adbSynReport, 0)
 }
 
+func buildADBDragStartScript(device adbTouchDevice, start, activation Point, trackingID int) string {
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	startX, startY := adbTouchPointToDevice(device, start)
+	activationX, activationY := adbTouchPointToDevice(device, activation)
+	appendADBTouchDown(&script, device, startX, startY, trackingID)
+	appendADBSleep(&script, dragStartHoldMs)
+	appendADBTouchPosition(&script, device, activationX, activationY, true)
+	return script.String()
+}
+
+func buildADBDragReleaseScript(device adbTouchDevice, target Point) string {
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	x, y := adbTouchPointToDevice(device, target)
+	appendADBTouchPosition(&script, device, x, y, true)
+	appendADBSleep(&script, dragReleaseHoldMs)
+	appendADBTouchUp(&script, device)
+	return script.String()
+}
+
+func (p *ADBProvider) bestEffortRawTouchUp(ctx context.Context, device adbTouchDevice) error {
+	cleanupCtx := context.WithoutCancel(ctx)
+	cleanupCtx, cancel := context.WithTimeout(cleanupCtx, p.commandTimeout)
+	defer cancel()
+
+	var script strings.Builder
+	appendADBTouchUp(&script, device)
+	_, err := p.runShellScriptWithTimeout(cleanupCtx, p.commandTimeout, script.String())
+	return err
+}
+
 func appendADBSleep(script *strings.Builder, durationMs int) {
 	if durationMs <= 0 {
 		return
@@ -747,6 +880,37 @@ func buildADBInputMotionScript(actions []TouchAction, size adbInputScreenSize) (
 	return script.String(), totalDurationMs, nil
 }
 
+func (p *ADBProvider) runADBInputDragStart(ctx context.Context, start, activation Point) error {
+	size, err := p.screenSize(ctx)
+	if err != nil {
+		return err
+	}
+	startX, startY := adbInputPointToPixel(start, size)
+	activationX, activationY := adbInputPointToPixel(activation, size)
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	appendADBInputMotionEvent(&script, "DOWN", startX, startY)
+	appendADBSleep(&script, dragStartHoldMs)
+	appendADBInputMotionEvent(&script, "MOVE", activationX, activationY)
+	_, err = p.runShellScriptWithTimeout(ctx, p.timeoutForDuration(dragStartHoldMs), script.String())
+	return err
+}
+
+func (p *ADBProvider) runADBInputDragRelease(ctx context.Context, target Point) error {
+	size, err := p.screenSize(ctx)
+	if err != nil {
+		return err
+	}
+	x, y := adbInputPointToPixel(target, size)
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	appendADBInputMotionEvent(&script, "MOVE", x, y)
+	appendADBSleep(&script, dragReleaseHoldMs)
+	appendADBInputMotionEvent(&script, "UP", x, y)
+	_, err = p.runShellScriptWithTimeout(ctx, p.timeoutForDuration(dragReleaseHoldMs), script.String())
+	return err
+}
+
 func adbInputPointToPixel(point Point, size adbInputScreenSize) (int, int) {
 	return scaleNormalizedToDimension(point.X, size.width), scaleNormalizedToDimension(point.Y, size.height)
 }
@@ -775,9 +939,9 @@ func shellSingleQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
-func (p *ADBProvider) dragWithDuration(ctx context.Context, path [][2]float64, button string, totalDurationMs int) error {
+func (p *ADBProvider) swipePathWithDuration(ctx context.Context, path [][2]float64, button string, totalDurationMs int) error {
 	if len(path) < 2 {
-		return fmt.Errorf("drag path must contain at least 2 points, got %d", len(path))
+		return fmt.Errorf("swipe path must contain at least 2 points, got %d", len(path))
 	}
 
 	// Validate button
@@ -804,7 +968,7 @@ func (p *ADBProvider) dragWithDuration(ctx context.Context, path [][2]float64, b
 	}
 
 	if totalLength == 0 {
-		return InvalidArguments("drag requires distinct start and end points")
+		return InvalidArguments("swipe requires distinct start and end points")
 	}
 
 	// Execute each segment as a separate adb swipe
@@ -829,7 +993,7 @@ func (p *ADBProvider) dragWithDuration(ctx context.Context, path [][2]float64, b
 			strconv.Itoa(end[0]), strconv.Itoa(end[1]),
 			strconv.Itoa(segmentDurationMs),
 		); err != nil {
-			return fmt.Errorf("drag segment %d failed: %w", i, err)
+			return fmt.Errorf("swipe segment %d failed: %w", i, err)
 		}
 	}
 
@@ -878,11 +1042,14 @@ func (p *ADBProvider) Move(ctx context.Context, x, y float64) error {
 	_ = ctx
 	_ = x
 	_ = y
-	return ModuleUnavailable("adb mouse_move is unsupported because adb input has no hover/pointer move primitive; use touch_gesture for taps, swipes, or drags")
+	return ModuleUnavailable("adb mouse_move is unsupported because adb input has no hover/pointer move primitive; use touch_gesture for taps or swipes")
 }
 
 // Scroll converts scroll to swipe gestures (ADB has no wheel/scroll primitive).
 func (p *ADBProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
+	if err := p.rejectActiveDrag("mouse_scroll"); err != nil {
+		return err
+	}
 	// Convert scroll to directional swipe
 	centerX := 500.0
 	centerY := 500.0
@@ -903,13 +1070,13 @@ func (p *ADBProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 		// Vertical scroll
 		if scrollY < 0 {
 			// Scroll down -> swipe up
-			return p.dragWithDuration(ctx, [][2]float64{
+			return p.swipePathWithDuration(ctx, [][2]float64{
 				{centerX, centerY + distance/2},
 				{centerX, centerY - distance/2},
 			}, ButtonLeft, 650)
 		} else {
 			// Scroll up -> swipe down
-			return p.dragWithDuration(ctx, [][2]float64{
+			return p.swipePathWithDuration(ctx, [][2]float64{
 				{centerX, centerY - distance/2},
 				{centerX, centerY + distance/2},
 			}, ButtonLeft, 650)
@@ -918,13 +1085,13 @@ func (p *ADBProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 		// Horizontal scroll
 		if scrollX < 0 {
 			// Scroll left -> swipe right
-			return p.dragWithDuration(ctx, [][2]float64{
+			return p.swipePathWithDuration(ctx, [][2]float64{
 				{centerX - distance/2, centerY},
 				{centerX + distance/2, centerY},
 			}, ButtonLeft, 650)
 		} else {
 			// Scroll right -> swipe left
-			return p.dragWithDuration(ctx, [][2]float64{
+			return p.swipePathWithDuration(ctx, [][2]float64{
 				{centerX + distance/2, centerY},
 				{centerX - distance/2, centerY},
 			}, ButtonLeft, 650)

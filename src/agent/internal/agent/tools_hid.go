@@ -877,14 +877,15 @@ func (t *TouchGestureTool) platform() string {
 }
 
 func (t *TouchGestureTool) Description() string {
-	return `Perform a touch/pointer program via HID. Prefer the atomic actions form: {"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"wait","ms":100},{"action":"move_to","point":{"x":500,"y":300},"speed":2500},{"action":"touch_up"}]}. The actions execute in order and keep the contact pressed until touch_up; use them for precise taps, long presses, and drags. Atomic move_to accepts speed in normalized coordinate units per second; duration_ms overrides speed, and omitting both preserves immediate movement. The legacy type/point gesture form remains accepted for compatibility. ` +
+	return `Perform a touch/pointer program via HID. Prefer the atomic actions form: {"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"wait","ms":100},{"action":"move_to","point":{"x":500,"y":300},"speed":2500},{"action":"touch_up"}]}. The actions execute in order and keep the contact pressed until touch_up; use them for precise taps, long presses, and swipes. Atomic move_to accepts speed in normalized coordinate units per second; duration_ms overrides speed, and omitting both preserves immediate movement. The type/point gesture form remains accepted for compatibility. ` +
 		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Point, start, and end never accept screenshot pixels: convert a target measured at (pixel_x,pixel_y) in the latest image with x=pixel_x/max(image_width-1,1)*1000 and y=pixel_y/max(image_height-1,1)*1000 before calling. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
 		`For swipe, provide start and either end or direction (up/down/left/right). Speed is normalized coordinate units per second and defaults to 2500; duration_ms may be supplied to override the calculated duration. hold_before_ms and hold_after_ms optionally dwell after press and before release, and steps controls HID interpolation (provider default 24). A direction-only swipe travels toward the corresponding screen edge when duration_ms is omitted, or travels speed*duration_ms/1000 normalized units when duration_ms is supplied. ` +
+		`When moving a draggable target, always use exactly this observe-and-confirm sequence: call drag_start with the target's current point, inspect the returned screenshot to identify and confirm the final destination point, then call drag_release with that confirmed point. drag_start presses for 500ms, moves 50 normalized units in a bounded direction to activate dragging, and keeps the contact down across tool calls. drag_release moves directly to the destination, holds for 200ms, and releases. Never use the removed drag type or perform unrelated input while drag_start is active. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
-	typeDescription := "Gesture type. tap, double_tap, and long_press require point. drag requires start and end. swipe requires start and either end or direction."
+	typeDescription := "Gesture type. tap, double_tap, long_press, drag_start, and drag_release require point. swipe requires start and either end or direction."
 	speedSchema := numberArgSchema("Swipe speed in normalized coordinate units per second. Defaults to 2500.", 2500)
 	speedSchema["exclusiveMinimum"] = 0
 	schema := objectArgsSchema(map[string]any{
@@ -904,10 +905,10 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 				"button":      stringEnumArgSchema("Pointer button held during the contact.", "left", "right", "middle"),
 			}, "action"),
 		},
-		"type":           stringEnumArgSchema(typeDescription, "tap", "double_tap", "long_press", "drag", "swipe"),
-		"point":          pointSchema(`Required for tap, double_tap, and long_press. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"start":          pointSchema(`Required start point for swipe and drag. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"end":            pointSchema(`End point for swipe or drag. Swipe may provide direction instead of end.`),
+		"type":           stringEnumArgSchema(typeDescription, "tap", "double_tap", "long_press", "drag_start", "drag_release", "swipe"),
+		"point":          pointSchema(`Required for tap, double_tap, long_press, drag_start, and drag_release. drag_start uses the target's current point; drag_release uses the confirmed destination. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"start":          pointSchema(`Required start point for swipe. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"end":            pointSchema(`End point for swipe. Swipe may provide direction instead of end.`),
 		"direction":      stringEnumArgSchema("Swipe direction when end is omitted. The gesture starts at start and moves toward that direction.", "up", "down", "left", "right"),
 		"button":         stringEnumArgSchema("Mouse button for pointer gestures.", "left", "right", "middle"),
 		"hold_ms":        nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
@@ -921,9 +922,11 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		{"required": []string{"actions"}},
 		{"required": []string{"type"}},
 	}
-	schema["description"] = `JSON object for one gesture or atomic touch program. Prefer actions for exact contact timing; legacy type/point gestures remain accepted. Unknown fields are ignored. Coordinate fields point, start, and end use named objects containing both x and y. Swipe accepts either start+end or start+direction; speed defaults to 2500 normalized units per second and duration_ms overrides calculated timing. hold_before_ms, hold_after_ms, and steps are optional swipe timing controls.`
+	schema["description"] = `JSON object for one gesture or atomic touch program. Prefer actions for exact contact timing. To move a draggable target, call drag_start with its current point, confirm the destination from the returned screenshot, then call drag_release with that point. Unknown fields are ignored. Coordinate fields point, start, and end use named objects containing both x and y. Swipe accepts either start+end or start+direction; speed defaults to 2500 normalized units per second and duration_ms overrides calculated timing. hold_before_ms, hold_after_ms, and steps are optional swipe timing controls.`
 	schema["examples"] = []map[string]any{
 		{"type": "tap", "point": map[string]any{"x": 500, "y": 500}},
+		{"type": "drag_start", "point": map[string]any{"x": 400, "y": 500}},
+		{"type": "drag_release", "point": map[string]any{"x": 750, "y": 500}},
 		{"type": "swipe", "start": map[string]any{"x": 500, "y": 800}, "end": map[string]any{"x": 500, "y": 200}, "speed": 2500},
 		{"type": "swipe", "start": map[string]any{"x": 500, "y": 800}, "direction": "up", "speed": 2500, "duration_ms": 300},
 	}

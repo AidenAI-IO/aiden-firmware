@@ -486,10 +486,13 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 	gestureType := strings.ToLower(strings.TrimSpace(args.Type))
 	var points []*pointerPoint
 	switch gestureType {
-	case "tap", "double_tap", "long_press":
+	case "tap", "double_tap", "long_press", "drag_start":
 		points = []*pointerPoint{args.Point}
-	case "drag", "swipe":
+	case "swipe":
 		points = []*pointerPoint{args.Start, args.End}
+	case "drag_release":
+		// Never block release of an already-held contact.
+		return ToolResult{}, true
 	default:
 		return ToolResult{}, true
 	}

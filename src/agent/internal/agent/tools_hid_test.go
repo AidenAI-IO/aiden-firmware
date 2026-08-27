@@ -549,16 +549,19 @@ func TestWheelNudgeRejectsAdjacentTargetOutsideTightRowCenterTolerance(t *testin
 	}
 }
 
-func TestTouchGestureRejectsDistinctInputsResolvingToSameHIDPoint(t *testing.T) {
-	dev, _ := newTestHIDDevice(t)
+func TestTouchGestureRejectsRemovedDragType(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
 	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":500,"y":500},"end":{"x":500.001,"y":500.001}}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.Contains(out, "drag requires distinct start and end points") {
-		t.Fatalf("Call output = %q, want resolved zero-distance rejection", out)
+	if !strings.Contains(out, `unsupported gesture type: "drag"`) {
+		t.Fatalf("Call output = %q, want removed drag rejection", out)
+	}
+	if reports := readMouseReports(t, dev, path); len(reports) != 0 {
+		t.Fatalf("removed drag wrote %d HID reports", len(reports))
 	}
 }
 
@@ -839,6 +842,20 @@ func TestTouchGestureSchemaDoesNotExposeWheelMetadata(t *testing.T) {
 	}
 }
 
+func TestTouchGestureDescriptionRequiresObserveThenReleaseDragFlow(t *testing.T) {
+	description := (&TouchGestureTool{}).Description()
+	for _, want := range []string{
+		"call drag_start with the target's current point",
+		"inspect the returned screenshot",
+		"then call drag_release with that confirmed point",
+		"Never use the removed drag type",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("touch_gesture description missing %q: %s", want, description)
+		}
+	}
+}
+
 func TestWheelNudgeRejectsInputsThatWouldBypassGestureGuard(t *testing.T) {
 	invalidInputs := map[string]string{
 		`{"picker_id":"alarm-create","column_x":400,"current_value":15,"target_value":7,"cycle_size":24,"cycle_start":0,"row_spacing":40,"value_step":1}`: "center_y is required",
@@ -1020,29 +1037,25 @@ func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
 	}
 }
 
-func TestADBTouchGestureSwipeAndDragRejectSameResolvedPoint(t *testing.T) {
-	for _, gestureType := range []string{"swipe", "drag"} {
-		t.Run(gestureType, func(t *testing.T) {
-			screenState := &screen.ScreenState{}
-			screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
-			runner := &recordingADBRunner{}
-			tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
-			ctx, _ := WithToolError(context.Background())
+func TestADBTouchGestureSwipeRejectsSameResolvedPoint(t *testing.T) {
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+	runner := &recordingADBRunner{}
+	tool := testTouchGestureTool(t, testMNKOpts{screenState: screenState, adbRunner: runner})
+	ctx, _ := WithToolError(context.Background())
 
-			out, err := tool.Call(ctx, fmt.Sprintf(`{"type":%q,"start":{"x":500,"y":500},"end":{"x":500,"y":500}}`, gestureType))
-			if err != nil {
-				t.Fatalf("Call returned error: %v", err)
-			}
-			if !strings.Contains(out, gestureType+" requires distinct start and end points") {
-				t.Fatalf("Call output = %q, want same-point error", out)
-			}
-			if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
-				t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
-			}
-			if len(runner.commands) != 0 {
-				t.Fatalf("adb commands = %#v, want no swipe command for identical points", runner.commands)
-			}
-		})
+	out, err := tool.Call(ctx, `{"type":"swipe","start":{"x":500,"y":500},"end":{"x":500,"y":500}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "swipe requires distinct start and end points") {
+		t.Fatalf("Call output = %q, want same-point error", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("adb commands = %#v, want no swipe command for identical points", runner.commands)
 	}
 }
 
@@ -1619,7 +1632,7 @@ func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev, touchscreen: true})
 
-	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":200,"y":500},"end":{"x":800,"y":500}}`)
+	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500}}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -2962,8 +2975,8 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 	}
 
 	examples, ok := schema["examples"].([]map[string]any)
-	if !ok || len(examples) != 3 {
-		t.Fatalf("schema examples = %#v, want three complete examples", schema["examples"])
+	if !ok || len(examples) != 5 {
+		t.Fatalf("schema examples = %#v, want five complete examples", schema["examples"])
 	}
 	encoded, err := json.Marshal(examples)
 	if err != nil || !json.Valid(encoded) {
@@ -2971,6 +2984,8 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 	}
 	for _, want := range []string{
 		`{"point":{"x":500,"y":500},"type":"tap"}`,
+		`"type":"drag_start"`,
+		`"type":"drag_release"`,
 		`"start":{"x":500,"y":800}`,
 		`"end":{"x":500,"y":200}`,
 		`"direction":"up"`,
@@ -3019,12 +3034,12 @@ func TestTouchGestureSchemaUsesUnifiedTypesOnEveryPlatform(t *testing.T) {
 		tool := &TouchGestureTool{}
 		tool.SetDeviceTypeFunc(func() string { return deviceType })
 		types := stringEnumPropertyValues(t, tool.ArgsSchema(), "type")
-		for _, want := range []string{"tap", "double_tap", "long_press", "drag", "swipe"} {
+		for _, want := range []string{"tap", "double_tap", "long_press", "drag_start", "drag_release", "swipe"} {
 			if _, ok := types[want]; !ok {
 				t.Fatalf("%s touch_gesture schema missing %q: %v", deviceType, want, types)
 			}
 		}
-		for _, notWant := range []string{"swipe_up", "swipe_down", "swipe_left", "swipe_right", "back", "home"} {
+		for _, notWant := range []string{"drag", "swipe_up", "swipe_down", "swipe_left", "swipe_right", "back", "home"} {
 			if _, ok := types[notWant]; ok {
 				t.Fatalf("%s touch_gesture schema exposed retired type %q: %v", deviceType, notWant, types)
 			}
@@ -3102,25 +3117,41 @@ func TestMouseMoveIgnoresRetiredCoordSpaceField(t *testing.T) {
 	}
 }
 
-func TestTouchGestureDragUsesProviderDefaultTiming(t *testing.T) {
+func TestTouchGestureDragStartAndReleaseTiming(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":100,"y":100},"end":{"x":900,"y":900}}`)
+	out, err := tool.Call(context.Background(), `{"type":"drag_start","point":{"x":100,"y":100}}`)
 	if err != nil {
-		t.Fatalf("Call error: %v", err)
+		t.Fatalf("drag_start Call error: %v", err)
 	}
 	if out != "ok" {
-		t.Fatalf("output = %q, want ok", out)
+		t.Fatalf("drag_start output = %q, want ok", out)
 	}
 
 	times := w.writeTimes()
-	if len(times) != 2+defaultSwipeSteps+touchReleaseReportCount {
-		t.Fatalf("len(times) = %d, want provider default sequence", len(times))
+	if len(times) != 3 {
+		t.Fatalf("drag_start writes = %d, want settle, press, and activation move", len(times))
 	}
 	gap := times[2].Sub(times[1])
-	if gap < 30*time.Millisecond {
-		t.Fatalf("drag press-to-first-move gap = %v, want provider dwell", gap)
+	if gap < 450*time.Millisecond {
+		t.Fatalf("drag_start press-to-activation gap = %v, want about 500ms", gap)
+	}
+
+	out, err = tool.Call(context.Background(), `{"type":"drag_release","point":{"x":900,"y":900}}`)
+	if err != nil {
+		t.Fatalf("drag_release Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("drag_release output = %q, want ok", out)
+	}
+	times = w.writeTimes()
+	if len(times) != 4+touchReleaseReportCount {
+		t.Fatalf("total writes = %d, want direct target move plus repeated release", len(times))
+	}
+	firstRelease := len(times) - touchReleaseReportCount
+	if gap := times[firstRelease].Sub(times[firstRelease-1]); gap < 180*time.Millisecond {
+		t.Fatalf("drag_release target-to-release gap = %v, want about 200ms", gap)
 	}
 }
 
@@ -3209,16 +3240,16 @@ func TestTouchGestureSwipeRejectsPointInsteadOfStartEnd(t *testing.T) {
 	}
 }
 
-func TestTouchGestureRejectsZeroDistanceDrag(t *testing.T) {
+func TestTouchGestureRejectsDragReleaseWithoutStart(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
-	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":313,"y":513},"end":{"x":313,"y":513}}`)
+	out, err := tool.Call(context.Background(), `{"type":"drag_release","point":{"x":313,"y":513}}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.Contains(out, "drag requires distinct start and end points") {
-		t.Fatalf("output = %q, want zero-distance drag error", out)
+	if !strings.Contains(out, "drag_release requires an active drag_start") {
+		t.Fatalf("output = %q, want inactive drag error", out)
 	}
 
 	reports := readMouseReports(t, dev, path)

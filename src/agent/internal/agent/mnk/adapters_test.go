@@ -130,18 +130,14 @@ func TestTouchGestureToolAdapterIgnoresUnknownFields(t *testing.T) {
 }
 
 func TestTouchGestureToolAdapterRejectsZeroDistancePaths(t *testing.T) {
-	for _, gestureType := range []string{"swipe", "drag"} {
-		t.Run(gestureType, func(t *testing.T) {
-			mock := NewMockProvider()
-			adapter := NewTouchGestureToolAdapter(mock)
-			_, err := adapter.Call(context.Background(), `{"type":"`+gestureType+`","start":{"x":500,"y":500},"end":{"x":500,"y":500}}`)
-			if got := AsError(err); got == nil || got.Kind != ErrInvalidArguments {
-				t.Fatalf("Call() error = %v, want invalid arguments", err)
-			}
-			if len(mock.drags) != 0 || len(mock.swipes) != 0 {
-				t.Fatalf("drags = %d, swipes = %d; want none", len(mock.drags), len(mock.swipes))
-			}
-		})
+	mock := NewMockProvider()
+	adapter := NewTouchGestureToolAdapter(mock)
+	_, err := adapter.Call(context.Background(), `{"type":"swipe","start":{"x":500,"y":500},"end":{"x":500,"y":500}}`)
+	if got := AsError(err); got == nil || got.Kind != ErrInvalidArguments {
+		t.Fatalf("Call() error = %v, want invalid arguments", err)
+	}
+	if len(mock.swipes) != 0 {
+		t.Fatalf("swipes = %d, want none", len(mock.swipes))
 	}
 }
 
@@ -171,6 +167,7 @@ func TestTouchGestureToolAdapterSwipeForms(t *testing.T) {
 		`{"type":"swipe","start":{"x":500,"y":500},"direction":"up","speed":0.01}`,
 		`{"type":"swipe","start":{"x":500,"y":500},"direction":"up","duration_ms":0}`,
 		`{"type":"swipe_up","start":{"x":500,"y":800}}`,
+		`{"type":"drag","start":{"x":500,"y":500},"end":{"x":600,"y":600}}`,
 		`{"type":"back"}`,
 		`{"type":"home"}`,
 	} {
@@ -184,35 +181,35 @@ func TestTouchGestureToolAdapterSwipeForms(t *testing.T) {
 	}
 }
 
-func TestTouchGestureToolAdapterSeparatesSwipeFromDrag(t *testing.T) {
+func TestTouchGestureToolAdapterDragStartAndRelease(t *testing.T) {
 	provider := NewMockProvider()
 	adapter := NewTouchGestureToolAdapter(provider)
 
-	if _, err := adapter.Call(context.Background(), `{"type":"swipe","start":{"x":700,"y":500},"direction":"left","duration_ms":160}`); err != nil {
-		t.Fatalf("Call() error = %v", err)
+	if _, err := adapter.Call(context.Background(), `{"type":"drag_start","point":{"x":700,"y":500}}`); err != nil {
+		t.Fatalf("drag_start Call() error = %v", err)
 	}
-	if len(provider.swipes) != 1 {
-		t.Fatalf("swipes = %d, want 1", len(provider.swipes))
+	if len(provider.dragStarts) != 1 {
+		t.Fatalf("drag starts = %d, want 1", len(provider.dragStarts))
 	}
-	path := provider.swipes[0].Path
-	if path[0] != [2]float64{700, 500} || path[1] != [2]float64{300, 500} {
-		t.Fatalf("path = %#v, want [[700 500] [300 500]]", path)
+	start := provider.dragStarts[0]
+	if start.X != 700 || start.Y != 500 || start.Button != ButtonLeft {
+		t.Fatalf("drag start = %#v, want point 700,500 with left button", start)
+	}
+	if _, err := adapter.Call(context.Background(), `{"type":"drag_release","point":{"x":300,"y":400}}`); err != nil {
+		t.Fatalf("drag_release Call() error = %v", err)
+	}
+	if len(provider.dragReleases) != 1 || provider.dragReleases[0] != (MockMove{X: 300, Y: 400}) {
+		t.Fatalf("drag releases = %#v, want point 300,400", provider.dragReleases)
 	}
 
-	if _, err := adapter.Call(context.Background(), `{"type":"swipe","start":{"x":700,"y":500},"end":{"x":300,"y":500}}`); err != nil {
-		t.Fatalf("explicit swipe Call() error = %v", err)
+	if _, err := adapter.Call(context.Background(), `{"type":"drag_release","point":{"x":200,"y":200}}`); AsError(err) == nil {
+		t.Fatalf("second drag_release error = %v, want invalid arguments", err)
 	}
-	if len(provider.swipes) != 2 {
-		t.Fatalf("swipes after explicit swipe = %d, want 2", len(provider.swipes))
+	if _, err := adapter.Call(context.Background(), `{"type":"drag_start"}`); AsError(err) == nil {
+		t.Fatalf("drag_start without point error = %v, want invalid arguments", err)
 	}
-	if _, err := adapter.Call(context.Background(), `{"type":"drag","start":{"x":700,"y":500},"end":{"x":300,"y":500}}`); err != nil {
-		t.Fatalf("drag Call() error = %v", err)
-	}
-	if len(provider.drags) != 1 {
-		t.Fatalf("drags = %d, want 1", len(provider.drags))
-	}
-	if len(provider.swipes) != 2 {
-		t.Fatalf("swipes after drag = %d, want 2", len(provider.swipes))
+	if _, err := adapter.Call(context.Background(), `{"type":"drag_release"}`); AsError(err) == nil {
+		t.Fatalf("drag_release without point error = %v, want invalid arguments", err)
 	}
 }
 
@@ -469,52 +466,6 @@ func TestCoordinateValidation(t *testing.T) {
 			err := mock.Click(context.Background(), tt.x, tt.y, "left", 0)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Click(%.1f, %.1f) error = %v, wantErr %v", tt.x, tt.y, err, tt.wantErr)
-			}
-		})
-	}
-}
-
-// TestPathValidation 测试路径验证
-func TestPathValidation(t *testing.T) {
-	mock := NewMockProvider()
-
-	tests := []struct {
-		name    string
-		path    [][2]float64
-		wantErr bool
-	}{
-		{
-			name:    "valid_2_point",
-			path:    [][2]float64{{100, 500}, {900, 500}},
-			wantErr: false,
-		},
-		{
-			name:    "valid_3_point",
-			path:    [][2]float64{{100, 500}, {500, 300}, {900, 500}},
-			wantErr: false,
-		},
-		{
-			name:    "valid_4_point_curve",
-			path:    [][2]float64{{100, 500}, {300, 300}, {700, 300}, {900, 500}},
-			wantErr: false,
-		},
-		{
-			name:    "empty_path",
-			path:    [][2]float64{},
-			wantErr: false, // Mock doesn't validate
-		},
-		{
-			name:    "single_point",
-			path:    [][2]float64{{500, 500}},
-			wantErr: false, // Mock doesn't validate
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := mock.Drag(context.Background(), tt.path, "left")
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Drag() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}

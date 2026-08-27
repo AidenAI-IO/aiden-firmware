@@ -131,6 +131,21 @@ omitting both preserves the existing immediate-move behavior.
 The former one-object gesture syntax remains accepted for compatibility with
 existing quick actions and scripts.
 
+Moving a draggable target uses two `touch_gesture` calls so the Agent can
+observe the drag state before choosing the final destination:
+
+```json
+{"type":"drag_start","point":{"x":400,"y":500}}
+{"type":"drag_release","point":{"x":750,"y":500}}
+```
+
+`drag_start` presses the current target for 500ms, automatically moves exactly
+50 normalized units along the axis with the most available screen space, and
+keeps the contact down while the post-action screenshot is captured. The Agent
+must confirm the destination from that screenshot and then call `drag_release`.
+The release call moves directly to the confirmed point, holds for 200ms, and
+releases. The former one-call `type:"drag"` gesture is no longer supported.
+
 It is recommended to use normalized coordinates (`0..1000`, with center at `500,500`) to avoid click position shifts due to display resolution changes.
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
 `keyboard_layout` must match how the phone interprets the external USB HID keyboard. Supported values are `qwerty` (default), `azerty`, and `qwertz`. The visible soft-keyboard layout is not authoritative: a phone can display an AZERTY soft keyboard while still interpreting Aiden's USB HID reports as QWERTY. Both `keyboard_text` and standard text-like keys in `keyboard_tap` use this mapping. The mapping itself is loaded by the Agent and does not change USB descriptors, but Config Web requires a board restart after saving so the host starts a clean USB session.

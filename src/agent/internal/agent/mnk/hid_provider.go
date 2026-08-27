@@ -4,8 +4,10 @@ import (
 	"aiden-agent/internal/agent/screen"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -36,11 +38,16 @@ type HIDProvider struct {
 	// gate optionally wraps keyboard/pointer writes for iOS absolute isolation.
 	gate ProfileGate
 
+	// dragMu protects the contact intentionally held across drag_start and
+	// drag_release tool calls.
+	dragMu     sync.Mutex
+	dragActive bool
+	dragButton string
+	dragX      int
+	dragY      int
+
 	// Timing constants (internal, not exposed to callers)
 	tapHoldMs              int // Default tap hold duration (60ms for iOS)
-	swipeHoldBeforeMs      int // Dwell before swipe begins (80ms for iOS edge gestures)
-	swipeHoldAfterMs       int // Dwell at swipe end (0ms to avoid stuck state)
-	swipeDurationMs        int // Total swipe duration (700ms)
 	swipeSteps             int // Interpolation steps (24)
 	cursorSettleMs         int // Cursor settle delay for absolute mode (80ms)
 	releaseRepeatCount     int // Touch release repetition (3)
@@ -52,9 +59,6 @@ type HIDProvider struct {
 // Default timing values based on iOS/Android HID requirements
 const (
 	defaultTapHoldMs                = 60               // iOS drops faster events
-	defaultSwipeHoldBeforeMs        = 80               // iOS edge gesture recognition
-	defaultSwipeHoldAfterMs         = 0                // Avoid stuck dragged state
-	defaultSwipeDurationMs          = 700              // Low-inertia motion
 	defaultSwipeSteps               = 24               // Smooth interpolation
 	defaultSwipeGestureHoldBeforeMs = 0                // Start moving immediately to avoid long-press recognition
 	defaultCursorSettleMs           = 80               // iOS cursor animation
@@ -84,9 +88,6 @@ func NewHIDProvider(pointerDev, keyboardDev, androidKeyboardDev Device, screenSt
 		keyboardLayout:         keyboardLayout,
 		gate:                   gate,
 		tapHoldMs:              defaultTapHoldMs,
-		swipeHoldBeforeMs:      defaultSwipeHoldBeforeMs,
-		swipeHoldAfterMs:       defaultSwipeHoldAfterMs,
-		swipeDurationMs:        defaultSwipeDurationMs,
 		swipeSteps:             defaultSwipeSteps,
 		cursorSettleMs:         defaultCursorSettleMs,
 		releaseRepeatCount:     defaultReleaseRepeatCount,
@@ -98,6 +99,9 @@ func NewHIDProvider(pointerDev, keyboardDev, androidKeyboardDev Device, screenSt
 
 // Click performs a press-hold-release at the specified position.
 func (p *HIDProvider) Click(ctx context.Context, x, y float64, button string, holdMs int) error {
+	if err := p.rejectActiveDrag("click"); err != nil {
+		return err
+	}
 	return runPointerGate(p.gate, ctx, func() error {
 		return p.clickLocked(x, y, button, holdMs)
 	})
@@ -141,19 +145,15 @@ func (p *HIDProvider) clickLocked(x, y float64, button string, holdMs int) error
 
 // DoubleClick performs two clicks in rapid succession.
 func (p *HIDProvider) DoubleClick(ctx context.Context, x, y float64, button string) error {
+	if err := p.rejectActiveDrag("double_click"); err != nil {
+		return err
+	}
 	return runPointerGate(p.gate, ctx, func() error {
 		if err := p.clickLocked(x, y, button, 0); err != nil {
 			return err
 		}
 		time.Sleep(time.Duration(defaultDoubleClickPauseMs) * time.Millisecond)
 		return p.clickLocked(x, y, button, 0)
-	})
-}
-
-// Drag performs a gesture along a path of points.
-func (p *HIDProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
-	return runPointerGate(p.gate, ctx, func() error {
-		return p.dragLockedWithTiming(path, button, p.swipeDurationMs, p.swipeHoldBeforeMs)
 	})
 }
 
@@ -170,9 +170,138 @@ func (p *HIDProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, 
 // SwipeWithOptions performs a swipe with caller-selected timing and HID
 // interpolation settings.
 func (p *HIDProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
+	if err := p.rejectActiveDrag("swipe"); err != nil {
+		return err
+	}
 	return runPointerGate(p.gate, ctx, func() error {
-		return p.dragLockedWithSwipeOptions(path, button, options)
+		return p.swipeLockedWithOptions(path, button, options)
 	})
+}
+
+// DragStart presses, holds for long-press recognition, performs a bounded
+// 50-unit activation move, and deliberately leaves the contact down.
+func (p *HIDProvider) DragStart(ctx context.Context, x, y float64, button string) error {
+	p.dragMu.Lock()
+	defer p.dragMu.Unlock()
+	if p.dragActive {
+		return InvalidArguments("drag_start is already active; call drag_release before starting another drag")
+	}
+	if err := p.validateCoordinate(x, y); err != nil {
+		return err
+	}
+	start := Point{X: x, Y: y}
+	activation := dragActivationPoint(start)
+	startX, startY, err := p.normalizedToAbsolute(start.X, start.Y)
+	if err != nil {
+		return err
+	}
+	activationX, activationY, err := p.normalizedToAbsolute(activation.X, activation.Y)
+	if err != nil {
+		return err
+	}
+	if button == "" {
+		button = ButtonLeft
+	}
+
+	err = runPointerGate(p.gate, ctx, func() error {
+		if !p.touchscreen {
+			if settleErr := p.settlePointer(startX, startY); settleErr != nil {
+				return settleErr
+			}
+		}
+		buttonByte := p.mouseButtonByte(button)
+		if pressErr := p.pressPointer(startX, startY, buttonByte); pressErr != nil {
+			return pressErr
+		}
+		currentX, currentY := startX, startY
+		fail := func(cause error) error {
+			if releaseErr := p.releasePointerRepeated(currentX, currentY); releaseErr != nil {
+				p.dragActive = true
+				p.dragButton = button
+				p.dragX = currentX
+				p.dragY = currentY
+				return fmt.Errorf("%w; drag_start cleanup release failed: %v", cause, releaseErr)
+			}
+			return cause
+		}
+		if waitErr := waitForContext(ctx, dragStartHoldMs*time.Millisecond); waitErr != nil {
+			return fail(waitErr)
+		}
+		if moveErr := p.movePointer(activationX, activationY, buttonByte); moveErr != nil {
+			return fail(moveErr)
+		}
+		p.dragActive = true
+		p.dragButton = button
+		p.dragX = activationX
+		p.dragY = activationY
+		return nil
+	})
+	if err != nil && p.dragActive {
+		if releaseErr := p.releasePointerRepeated(p.dragX, p.dragY); releaseErr == nil {
+			p.clearDragLocked()
+		} else {
+			err = fmt.Errorf("%w; drag_start cleanup release failed: %v", err, releaseErr)
+		}
+	}
+	return err
+}
+
+// DragRelease completes the active drag with one direct move, a 200ms dwell,
+// and a repeated HID release sequence.
+func (p *HIDProvider) DragRelease(ctx context.Context, x, y float64) error {
+	p.dragMu.Lock()
+	defer p.dragMu.Unlock()
+	if !p.dragActive {
+		return InvalidArguments("drag_release requires an active drag_start")
+	}
+	if err := p.validateCoordinate(x, y); err != nil {
+		return err
+	}
+	targetX, targetY, err := p.normalizedToAbsolute(x, y)
+	if err != nil {
+		return err
+	}
+
+	return runPointerGate(p.gate, ctx, func() error {
+		buttonByte := p.mouseButtonByte(p.dragButton)
+		if moveErr := p.movePointer(targetX, targetY, buttonByte); moveErr != nil {
+			if releaseErr := p.releasePointerRepeated(p.dragX, p.dragY); releaseErr == nil {
+				p.clearDragLocked()
+			} else {
+				return fmt.Errorf("%w; drag_release cleanup release failed: %v", moveErr, releaseErr)
+			}
+			return moveErr
+		}
+		p.dragX, p.dragY = targetX, targetY
+		waitErr := waitForContext(ctx, dragReleaseHoldMs*time.Millisecond)
+		releaseErr := p.releasePointerRepeated(targetX, targetY)
+		if releaseErr == nil {
+			p.clearDragLocked()
+		}
+		if waitErr != nil {
+			if releaseErr != nil {
+				return fmt.Errorf("%w; drag_release release failed: %v", waitErr, releaseErr)
+			}
+			return waitErr
+		}
+		return releaseErr
+	})
+}
+
+func (p *HIDProvider) rejectActiveDrag(operation string) error {
+	p.dragMu.Lock()
+	defer p.dragMu.Unlock()
+	if p.dragActive {
+		return InvalidArgumentsf("drag_start is active; call drag_release before %s", operation)
+	}
+	return nil
+}
+
+func (p *HIDProvider) clearDragLocked() {
+	p.dragActive = false
+	p.dragButton = ""
+	p.dragX = 0
+	p.dragY = 0
 }
 
 // TouchActions executes a sequence of low-level pointer primitives without
@@ -180,6 +309,9 @@ func (p *HIDProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, b
 // the atomic touch_gesture syntax; callers control movement and dwell timing
 // explicitly with touch_down, move_to, wait, and touch_up actions.
 func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) error {
+	if err := p.rejectActiveDrag("atomic touch actions"); err != nil {
+		return err
+	}
 	return runPointerGate(p.gate, ctx, func() error {
 		if len(actions) == 0 {
 			return InvalidArguments("touch actions must not be empty")
@@ -341,18 +473,9 @@ func waitForContext(ctx context.Context, duration time.Duration) error {
 	}
 }
 
-func (p *HIDProvider) dragLockedWithTiming(path [][2]float64, button string, durationMs, holdBeforeMs int) error {
-	return p.dragLockedWithSwipeOptions(path, button, SwipeOptions{
-		DurationMs:   durationMs,
-		HoldBeforeMs: holdBeforeMs,
-		HoldAfterMs:  p.swipeHoldAfterMs,
-		Steps:        p.swipeSteps,
-	})
-}
-
-func (p *HIDProvider) dragLockedWithSwipeOptions(path [][2]float64, button string, options SwipeOptions) error {
+func (p *HIDProvider) swipeLockedWithOptions(path [][2]float64, button string, options SwipeOptions) error {
 	if len(path) < 2 {
-		return InvalidArgumentsf("drag path must contain at least 2 points, got %d", len(path))
+		return InvalidArgumentsf("swipe path must contain at least 2 points, got %d", len(path))
 	}
 	if options.DurationMs <= 0 {
 		options.DurationMs = defaultSwipeGestureDurationMs
@@ -390,7 +513,7 @@ func (p *HIDProvider) dragLockedWithSwipeOptions(path [][2]float64, button strin
 		absPath[i] = [2]int{absX, absY}
 	}
 	if pathLength(absPath) == 0 {
-		return InvalidArguments("drag requires distinct start and end points")
+		return InvalidArguments("swipe requires distinct start and end points")
 	}
 
 	buttonByte := p.mouseButtonByte(button)
@@ -413,8 +536,8 @@ func (p *HIDProvider) dragLockedWithSwipeOptions(path [][2]float64, button strin
 	}
 
 	// Interpolate and move through each segment
-	if err := p.dragAlongPathWithSteps(absPath, buttonByte, options.DurationMs, options.Steps); err != nil {
-		// Attempt to release even if drag failed
+	if err := p.moveAlongPathWithSteps(absPath, buttonByte, options.DurationMs, options.Steps); err != nil {
+		// Attempt to release even if movement failed.
 		_ = p.releasePointerRepeated(absPath[len(absPath)-1][0], absPath[len(absPath)-1][1])
 		return err
 	}
@@ -429,12 +552,7 @@ func (p *HIDProvider) dragLockedWithSwipeOptions(path [][2]float64, button strin
 	return p.releasePointerRepeated(endPoint[0], endPoint[1])
 }
 
-// dragAlongPath interpolates and moves through a multi-point path.
-func (p *HIDProvider) dragAlongPath(absPath [][2]int, buttonByte uint8, durationMs int) error {
-	return p.dragAlongPathWithSteps(absPath, buttonByte, durationMs, p.swipeSteps)
-}
-
-func (p *HIDProvider) dragAlongPathWithSteps(absPath [][2]int, buttonByte uint8, durationMs, steps int) error {
+func (p *HIDProvider) moveAlongPathWithSteps(absPath [][2]int, buttonByte uint8, durationMs, steps int) error {
 	// Calculate total path length for timing distribution
 	totalLength := pathLength(absPath)
 
@@ -515,6 +633,9 @@ func (p *HIDProvider) Keypress(ctx context.Context, keys []string) error {
 
 // Move positions the pointer without pressing any button.
 func (p *HIDProvider) Move(ctx context.Context, x, y float64) error {
+	if err := p.rejectActiveDrag("mouse_move"); err != nil {
+		return err
+	}
 	return runPointerGate(p.gate, ctx, func() error {
 		if err := p.validateCoordinate(x, y); err != nil {
 			return err
@@ -535,6 +656,9 @@ func (p *HIDProvider) Move(ctx context.Context, x, y float64) error {
 
 // Scroll sends wheel/scroll input.
 func (p *HIDProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
+	if err := p.rejectActiveDrag("mouse_scroll"); err != nil {
+		return err
+	}
 	if scrollX != 0 {
 		return InvalidArguments("horizontal scroll is unsupported by the absolute mouse HID descriptor; use scroll_y")
 	}

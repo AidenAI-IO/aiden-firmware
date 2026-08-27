@@ -601,11 +601,11 @@ func TestWheelGestureGuardBlocksTouchGestureOnActiveWheelColumn(t *testing.T) {
 	var guard wheelNudgeGuard
 	allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(validWheelGuardInput(632, 275, 48, 5, 60, 0)))
 
-	drag := ToolCall{
+	dragStart := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"drag","start":{"x":632,"y":275},"end":{"x":632,"y":300},"steps":20}`,
+		Input: `{"type":"drag_start","point":{"x":632,"y":275}}`,
 	}
-	result, allowed := guard.BeforeToolCall(context.Background(), drag)
+	result, allowed := guard.BeforeToolCall(context.Background(), dragStart)
 	if allowed {
 		t.Fatal("touch gesture on an active wheel column should be blocked")
 	}

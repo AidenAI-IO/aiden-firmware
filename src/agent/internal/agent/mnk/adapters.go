@@ -146,17 +146,23 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		}
 		return t.handleSwipe(ctx, start, end, button, options)
 
-	case "drag":
-		if args.Start == nil || args.End == nil {
-			return "", InvalidArguments("start and end are required for drag")
-		}
-		if samePointerPoint(args.Start, args.End) {
-			return "", InvalidArguments("drag requires distinct start and end points")
+	case "drag_start":
+		if args.Point == nil {
+			return "", InvalidArguments("point is required for drag_start")
 		}
 		if err := t.requireProvider(); err != nil {
 			return "", err
 		}
-		return t.handleDrag(ctx, args.Start, args.End, button)
+		return t.handleDragStart(ctx, args.Point, button)
+
+	case "drag_release":
+		if args.Point == nil {
+			return "", InvalidArguments("point is required for drag_release")
+		}
+		if err := t.requireProvider(); err != nil {
+			return "", err
+		}
+		return t.handleDragRelease(ctx, args.Point)
 
 	default:
 		return "", InvalidArgumentsf("unsupported gesture type: %q", args.Type)
@@ -331,12 +337,15 @@ func (t *TouchGestureToolAdapter) handleSwipe(ctx context.Context, start, end *p
 	return "ok", nil
 }
 
-func (t *TouchGestureToolAdapter) handleDrag(ctx context.Context, start, end *pointerPoint, button string) (string, error) {
-	path := [][2]float64{
-		{start.X.Float64(), start.Y.Float64()},
-		{end.X.Float64(), end.Y.Float64()},
+func (t *TouchGestureToolAdapter) handleDragStart(ctx context.Context, point *pointerPoint, button string) (string, error) {
+	if err := t.provider.DragStart(ctx, point.X.Float64(), point.Y.Float64(), button); err != nil {
+		return "", WrapExecutionFailed(err)
 	}
-	if err := t.provider.Drag(ctx, path, button); err != nil {
+	return "ok", nil
+}
+
+func (t *TouchGestureToolAdapter) handleDragRelease(ctx context.Context, point *pointerPoint) (string, error) {
+	if err := t.provider.DragRelease(ctx, point.X.Float64(), point.Y.Float64()); err != nil {
 		return "", WrapExecutionFailed(err)
 	}
 	return "ok", nil

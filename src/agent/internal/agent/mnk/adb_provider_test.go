@@ -134,41 +134,122 @@ func TestADBProviderScrollHorizontalDirection(t *testing.T) {
 	}
 }
 
-func TestADBProviderSeparatesSwipeAndDragDuration(t *testing.T) {
-	for _, test := range []struct {
-		name         string
-		perform      func(context.Context, *ADBProvider) error
-		wantDuration string
-	}{
-		{
-			name: "swipe",
-			perform: func(ctx context.Context, provider *ADBProvider) error {
-				return provider.Swipe(ctx, [][2]float64{{700, 500}, {300, 500}}, ButtonLeft)
-			},
-			wantDuration: "300",
-		},
-		{
-			name: "drag",
-			perform: func(ctx context.Context, provider *ADBProvider) error {
-				return provider.Drag(ctx, [][2]float64{{700, 500}, {300, 500}}, ButtonLeft)
-			},
-			wantDuration: "700",
-		},
+func TestADBProviderSwipeUsesDefaultDuration(t *testing.T) {
+	runner := &adbTestRunner{sdk: "31"}
+	provider := newTestADBProvider(t, runner)
+	if err := provider.Swipe(context.Background(), [][2]float64{{700, 500}, {300, 500}}, ButtonLeft); err != nil {
+		t.Fatalf("Swipe() error = %v", err)
+	}
+	if len(runner.commands) != 2 || runner.commands[1][len(runner.commands[1])-1] != "300" {
+		t.Fatalf("commands = %#v, want 300ms swipe", runner.commands)
+	}
+}
+
+func TestADBProviderDragStartAndReleaseUseSeparateRawPrograms(t *testing.T) {
+	getevent := `add device 1: /dev/input/event3
+  name:     "goodix_ts0"
+  events:
+    KEY (0001): BTN_TOOL_FINGER BTN_TOUCH
+    ABS (0003): ABS_X                 : value 0, min 0, max 999, fuzz 0, flat 0, resolution 0
+                ABS_Y                 : value 0, min 0, max 1999, fuzz 0, flat 0, resolution 0
+                ABS_MT_SLOT           : value 0, min 0, max 9, fuzz 0, flat 0, resolution 0
+                ABS_MT_POSITION_X     : value 0, min 0, max 999, fuzz 0, flat 0, resolution 0
+                ABS_MT_POSITION_Y     : value 0, min 0, max 1999, fuzz 0, flat 0, resolution 0
+                ABS_MT_TRACKING_ID    : value 0, min 0, max 65535, fuzz 0, flat 0, resolution 0
+  input props:
+    INPUT_PROP_DIRECT
+`
+	var commands [][]string
+	provider := NewADBProvider(nil, nil, func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		commands = append(commands, append([]string(nil), args...))
+		if strings.HasSuffix(strings.Join(args, " "), "shell getevent -lp") {
+			return []byte(getevent), nil, nil
+		}
+		return nil, nil, nil
+	})
+	t.Setenv("AIDEN_ADB_PATH", "/fake/adb")
+	t.Setenv("AIDEN_ADB_SERIAL", "serial-test")
+
+	if err := provider.DragStart(context.Background(), 500, 500, ButtonLeft); err != nil {
+		t.Fatalf("DragStart() error = %v", err)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("commands after start = %#v, want discovery and start program", commands)
+	}
+	startScript := commands[1][3]
+	for _, want := range []string{"sleep 0.500", "sendevent /dev/input/event3 3 53 549", "sendevent /dev/input/event3 1 330 1"} {
+		if !strings.Contains(startScript, want) {
+			t.Errorf("drag_start script missing %q:\n%s", want, startScript)
+		}
+	}
+	if strings.Contains(startScript, "sendevent /dev/input/event3 3 57 -1") {
+		t.Fatalf("drag_start released the contact:\n%s", startScript)
+	}
+	if err := provider.Click(context.Background(), 100, 100, ButtonLeft, 0); AsError(err) == nil {
+		t.Fatalf("Click while dragging error = %v, want invalid arguments", err)
+	}
+	if err := provider.DragRelease(context.Background(), 800, 200); err != nil {
+		t.Fatalf("DragRelease() error = %v", err)
+	}
+	if len(commands) != 3 {
+		t.Fatalf("commands after release = %#v, want one release program", commands)
+	}
+	releaseScript := commands[2][3]
+	for _, want := range []string{"sendevent /dev/input/event3 3 53 799", "sendevent /dev/input/event3 3 54 400", "sleep 0.200", "sendevent /dev/input/event3 3 57 -1"} {
+		if !strings.Contains(releaseScript, want) {
+			t.Errorf("drag_release script missing %q:\n%s", want, releaseScript)
+		}
+	}
+}
+
+func TestADBProviderDragStartFailureAttemptsRawTouchUp(t *testing.T) {
+	getevent := `add device 1: /dev/input/event3
+  name:     "goodix_ts0"
+  events:
+    KEY (0001): BTN_TOOL_FINGER BTN_TOUCH
+    ABS (0003): ABS_X                 : value 0, min 0, max 999, fuzz 0, flat 0, resolution 0
+                ABS_Y                 : value 0, min 0, max 1999, fuzz 0, flat 0, resolution 0
+                ABS_MT_SLOT           : value 0, min 0, max 9, fuzz 0, flat 0, resolution 0
+                ABS_MT_POSITION_X     : value 0, min 0, max 999, fuzz 0, flat 0, resolution 0
+                ABS_MT_POSITION_Y     : value 0, min 0, max 1999, fuzz 0, flat 0, resolution 0
+                ABS_MT_TRACKING_ID    : value 0, min 0, max 65535, fuzz 0, flat 0, resolution 0
+  input props:
+    INPUT_PROP_DIRECT
+`
+	var commands [][]string
+	provider := NewADBProvider(nil, nil, func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		commands = append(commands, append([]string(nil), args...))
+		joined := strings.Join(args, " ")
+		if strings.HasSuffix(joined, "shell getevent -lp") {
+			return []byte(getevent), nil, nil
+		}
+		if strings.Contains(joined, "sleep 0.500") {
+			return nil, nil, errors.New("simulated raw start failure")
+		}
+		return nil, nil, nil
+	})
+	t.Setenv("AIDEN_ADB_PATH", "/fake/adb")
+	t.Setenv("AIDEN_ADB_SERIAL", "serial-test")
+
+	err := provider.DragStart(context.Background(), 500, 500, ButtonLeft)
+	if err == nil || !strings.Contains(err.Error(), "simulated raw start failure") {
+		t.Fatalf("DragStart() error = %v, want raw start failure", err)
+	}
+	if len(commands) != 3 {
+		t.Fatalf("commands = %#v, want discovery, failed start, and cleanup", commands)
+	}
+	cleanupScript := commands[2][3]
+	for _, want := range []string{
+		"sendevent /dev/input/event3 3 57 -1",
+		"sendevent /dev/input/event3 1 330 0",
+		"sendevent /dev/input/event3 1 325 0",
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			runner := &adbTestRunner{sdk: "31"}
-			provider := newTestADBProvider(t, runner)
-			if err := test.perform(context.Background(), provider); err != nil {
-				t.Fatalf("gesture failed: %v", err)
-			}
-			if len(runner.commands) != 2 {
-				t.Fatalf("commands = %#v, want wm size and swipe", runner.commands)
-			}
-			command := runner.commands[1]
-			if got := command[len(command)-1]; got != test.wantDuration {
-				t.Fatalf("duration = %s, want %s; command = %#v", got, test.wantDuration, command)
-			}
-		})
+		if !strings.Contains(cleanupScript, want) {
+			t.Errorf("cleanup script missing %q:\n%s", want, cleanupScript)
+		}
+	}
+	if provider.dragActive {
+		t.Fatal("failed drag_start must not record an active drag after successful cleanup")
 	}
 }
 

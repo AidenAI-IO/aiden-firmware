@@ -2,7 +2,12 @@ package mnk
 
 import "context"
 
-const defaultSwipeGestureDurationMs = 300
+const (
+	defaultSwipeGestureDurationMs = 300
+	dragStartHoldMs               = 500
+	dragStartMoveDistance         = 50.0
+	dragReleaseHoldMs             = 200
+)
 
 // SwipeOptions controls the timing and interpolation of a swipe. A zero
 // duration uses the provider's default swipe duration; a zero Steps uses the
@@ -44,19 +49,13 @@ type Provider interface {
 	// enough to avoid triggering long-press behavior.
 	Swipe(ctx context.Context, path [][2]float64, button string) error
 
-	// Drag performs a gesture along a path of points.
-	// The path is interpolated smoothly with implementation-defined timing and steps.
-	//
-	// Parameters:
-	//   path: Sequence of (x,y) normalized coordinates. Must have at least 2 points.
-	//   button: "left" | "right" | "middle" (ignored in touchscreen mode)
-	//
-	// Implementation handles:
-	//   - Smooth interpolation between consecutive points
-	//   - Appropriate dwell before movement (for edge gesture recognition)
-	//   - Step count for motion smoothness
-	//   - Platform-specific timing requirements
-	Drag(ctx context.Context, path [][2]float64, button string) error
+	// DragStart presses at a normalized point, holds for 500ms, then moves 50
+	// normalized units in a bounded activation direction without releasing.
+	DragStart(ctx context.Context, x, y float64, button string) error
+
+	// DragRelease moves the active drag contact directly to a normalized point,
+	// holds for 200ms, then releases it.
+	DragRelease(ctx context.Context, x, y float64) error
 
 	// Keypress sends one or more keys simultaneously.
 	// Supports modifier+key combinations as a single chord.
@@ -118,6 +117,30 @@ type TouchActionProvider interface {
 type Point struct {
 	X float64 `json:"x"` // Normalized X coordinate (0-1000)
 	Y float64 `json:"y"` // Normalized Y coordinate (0-1000)
+}
+
+// dragActivationPoint picks the axis direction with the most room and moves
+// exactly 50 normalized units. This guarantees a real movement at every valid
+// start point without asking the caller to guess an activation coordinate.
+func dragActivationPoint(start Point) Point {
+	type candidate struct {
+		room float64
+		dx   float64
+		dy   float64
+	}
+	candidates := []candidate{
+		{room: 1000 - start.X, dx: dragStartMoveDistance},
+		{room: 1000 - start.Y, dy: dragStartMoveDistance},
+		{room: start.X, dx: -dragStartMoveDistance},
+		{room: start.Y, dy: -dragStartMoveDistance},
+	}
+	selected := candidates[0]
+	for _, current := range candidates[1:] {
+		if current.room > selected.room {
+			selected = current
+		}
+	}
+	return Point{X: start.X + selected.dx, Y: start.Y + selected.dy}
 }
 
 // Button constants for click/drag operations.
