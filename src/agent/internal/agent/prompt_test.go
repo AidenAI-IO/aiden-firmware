@@ -108,6 +108,9 @@ func TestStateHookDoesNotInjectResponseLocale(t *testing.T) {
 	if !strings.Contains(messageList[0].Content, "device_type") {
 		t.Fatalf("state message missing device state: %q", messageList[0].Content)
 	}
+	if strings.Contains(messageList[0].Content, "<state>") {
+		t.Fatalf("persisted state message must remain unwrapped: %q", messageList[0].Content)
+	}
 }
 
 func TestStateHookAttachesFreshScreenshotToUserTurn(t *testing.T) {
@@ -329,6 +332,45 @@ func TestRolePromptsGuideSkillCatalogAndPreloadedSkills(t *testing.T) {
 
 	if !strings.Contains(profile.SystemPrompt, "- planner: Plan before acting") {
 		t.Fatalf("system prompt missing configured skill summary:\n%s", profile.SystemPrompt)
+	}
+}
+
+func TestRolePromptPrioritizesClearlyVisibleAppTargetOverOpenApp(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, expected := range []string{
+		"inspect the latest screenshot first",
+		"you MUST call touch_gesture",
+		"overrides any general preference for open_app or system search",
+		"Call open_app with a semantic app name only when the target is not clearly and reliably tappable",
+	} {
+		if !strings.Contains(profile.SystemPrompt, expected) {
+			t.Fatalf("system prompt missing visible app-target rule %q:\n%s", expected, profile.SystemPrompt)
+		}
+	}
+	if strings.Contains(profile.SystemPrompt, "For app launch requests, call open_app with a semantic app name") {
+		t.Fatalf("system prompt retained unconditional open_app rule:\n%s", profile.SystemPrompt)
+	}
+}
+
+func TestRolePromptRequiresVerifiedAppLaunchCompletion(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, expected := range []string{
+		"report completion only after post-action verification",
+		"require screen_changed=true or equivalent visual confirmation",
+		"ok=true only confirms that the OS accepted the launch",
+		"screen_changed=false or an omitted screen_changed field without visual confirmation is not proof",
+	} {
+		if !strings.Contains(profile.SystemPrompt, expected) {
+			t.Fatalf("system prompt missing launch verification rule %q:\n%s", expected, profile.SystemPrompt)
+		}
+	}
+	for _, outdated := range []string{
+		"success from the matching direct tool is enough",
+		"treat the launch as complete unless the user requested additional actions",
+	} {
+		if strings.Contains(profile.SystemPrompt, outdated) {
+			t.Fatalf("system prompt retained unverified launch completion rule %q:\n%s", outdated, profile.SystemPrompt)
+		}
 	}
 }
 
