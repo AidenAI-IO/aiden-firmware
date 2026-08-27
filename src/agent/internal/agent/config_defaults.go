@@ -67,6 +67,10 @@ const (
 	defaultVoiceMaxTurns              = 0
 	defaultVoiceMaxResponseTokens     = 300
 	defaultMaxIterations              = -1
+	defaultVoiceModelProvider         = "qwen"
+	defaultVoiceModelModel            = "qwen-audio-3.0-realtime-plus"
+	defaultVoiceModelVoice            = "longanqian"
+	defaultVoiceModelTurnDetection    = "server_vad"
 
 	defaultTelemetryProvider    = "langfuse"
 	defaultTelemetryTimeoutSec  = 30
@@ -110,12 +114,13 @@ func DefaultConfig() Config {
 			Backend:    AudioBackendAuto,
 		},
 		VoiceModel: VoiceModelConfig{
-			Model:             "qwen-audio-3.0-realtime-plus",
-			Voice:             "longanqian",
+			Provider:          defaultVoiceModelProvider,
+			Model:             defaultVoiceModelModel,
+			Voice:             defaultVoiceModelVoice,
 			Instructions:      DefaultRealtimeVoiceInstructions,
 			InputAudioFormat:  "pcm",
 			OutputAudioFormat: "pcm",
-			TurnDetection:     "server_vad",
+			TurnDetection:     defaultVoiceModelTurnDetection,
 		},
 		AudioArchive: AudioArchiveConfig{
 			Enabled:     true,

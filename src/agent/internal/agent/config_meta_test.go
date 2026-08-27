@@ -128,6 +128,7 @@ func TestFieldMeta_DisplayFieldsJSONSchema(t *testing.T) {
 		Placeholder: "Leave empty to disable",
 		Layout:      "wide",
 		Widget:      WidgetText,
+		Advanced:    true,
 	})
 	if err != nil {
 		t.Fatalf("marshal FieldMeta: %v", err)
@@ -149,12 +150,15 @@ func TestFieldMeta_DisplayFieldsJSONSchema(t *testing.T) {
 			t.Errorf("FieldMeta JSON %s = %#v, want %q", key, got[key], want)
 		}
 	}
+	if got["advanced"] != true {
+		t.Errorf("FieldMeta JSON advanced = %#v, want true", got["advanced"])
+	}
 
 	minimal, err := json.Marshal(FieldMeta{Key: "enabled", Widget: WidgetBoolean})
 	if err != nil {
 		t.Fatalf("marshal minimal FieldMeta: %v", err)
 	}
-	for _, omitted := range []string{"label", "help", "placeholder", "layout"} {
+	for _, omitted := range []string{"label", "help", "placeholder", "layout", "advanced"} {
 		if strings.Contains(string(minimal), `"`+omitted+`"`) {
 			t.Errorf("empty %s must be omitted from FieldMeta JSON: %s", omitted, minimal)
 		}
@@ -424,9 +428,10 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio.channels", defaults.Audio.Channels},
 		{"audio.bit_width", defaults.Audio.BitWidth},
 		{"audio.backend", defaults.Audio.Backend},
-		{"voice_model.model", defaults.VoiceModel.Model},
-		{"voice_model.region", defaults.VoiceModel.Region},
-		{"voice_model.voice", defaults.VoiceModel.Voice},
+		{"voice_model.provider", defaults.VoiceModel.Provider},
+		{"voice_model_providers.model", defaults.VoiceModel.Model},
+		{"voice_model_providers.region", defaults.VoiceModel.Region},
+		{"voice_model_providers.voice", defaults.VoiceModel.Voice},
 		{"audio_archive.enabled", defaults.AudioArchive.Enabled},
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
@@ -789,35 +794,94 @@ func TestConfigMeta_AudioArchiveRequiresSTTInputMode(t *testing.T) {
 
 func TestConfigMeta_VoiceModelRequiresRealtimeInputMode(t *testing.T) {
 	idx := fieldIndex(t)
-	wantFields := []string{"api_key", "model", "region", "voice"}
 	for _, section := range ConfigMeta().Sections {
-		if section.Name == "voice_model" && len(section.Fields) != len(wantFields) {
-			t.Fatalf("voice_model exposes %d fields, want the %d common settings", len(section.Fields), len(wantFields))
+		if section.Name == "voice_model" && (len(section.Fields) != 1 || section.Fields[0].Key != "provider") {
+			t.Fatalf("voice_model fields = %#v, want only the provider reference", section.Fields)
 		}
 	}
 
-	for _, name := range wantFields {
-		path := "voice_model." + name
-		t.Run(path, func(t *testing.T) {
-			field, ok := idx[path]
-			if !ok {
-				t.Fatalf("missing metadata field %s", path)
-			}
-			if field.VisibleWhen == nil {
-				t.Fatalf("%s has no visibleWhen rule", path)
-			}
-			for _, cond := range field.VisibleWhen.All {
-				if cond.Field == "agent.input_mode" && cond.Op == "eq" && cond.Value == "realtime" {
+	provider := idx["voice_model.provider"]
+	if provider.VisibleWhen == nil {
+		t.Fatal("voice_model.provider has no visibleWhen rule")
+	}
+	for _, cond := range provider.VisibleWhen.All {
+		if cond.Field == "agent.input_mode" && cond.Op == "eq" && cond.Value == "realtime" {
+			goto providerVisible
+		}
+	}
+	t.Fatal("voice_model.provider must require realtime input mode")
+
+providerVisible:
+	for _, path := range []string{
+		"voice_model_providers.type", "voice_model_providers.upstream_provider",
+		"voice_model_providers.agent_id", "voice_model_providers.api_key",
+		"voice_model_providers.model", "voice_model_providers.workspace_id",
+		"voice_model_providers.region", "voice_model_providers.endpoint",
+		"voice_model_providers.base_url", "voice_model_providers.voice",
+	} {
+		if _, ok := idx[path]; !ok {
+			t.Errorf("missing metadata field %s", path)
+		}
+	}
+
+	apiKey := idx["voice_model_providers.api_key"]
+	if !apiKey.Secret {
+		t.Fatal("voice_model_providers.api_key must be a secret field")
+	}
+	upstream := idx["voice_model_providers.upstream_provider"]
+	if upstream.Widget != WidgetSelect {
+		t.Fatalf("voice_model_providers.upstream_provider widget = %q, want select", upstream.Widget)
+	}
+	wantUpstreams := []EnumOption{
+		{Value: "openai", Label: "OpenAI Realtime"},
+		{Value: "google", Label: "Google Gemini Live"},
+		{Value: "xai", Label: "xAI Grok Voice"},
+		{Value: "inworld", Label: "Inworld"},
+	}
+	if !reflect.DeepEqual(upstream.Enum, wantUpstreams) {
+		t.Fatalf("voice_model_providers.upstream_provider enum = %#v, want %#v", upstream.Enum, wantUpstreams)
+	}
+	for _, path := range []string{
+		"voice_model_providers.agent_id", "voice_model_providers.workspace_id",
+		"voice_model_providers.endpoint", "voice_model_providers.base_url",
+		"voice_model_providers.region",
+	} {
+		if !idx[path].Advanced {
+			t.Errorf("%s must be collapsed under advanced settings", path)
+		}
+	}
+	for _, path := range []string{
+		"voice_model_providers.type", "voice_model_providers.upstream_provider",
+		"voice_model_providers.api_key", "voice_model_providers.model",
+		"voice_model_providers.voice",
+	} {
+		if idx[path].Advanced {
+			t.Errorf("%s must remain in the primary provider form", path)
+		}
+	}
+
+	providerRule := func(providerType string) VisibleRule {
+		return VisibleRule{All: []Condition{{Field: "voice_model_providers.type", Op: "eq", Value: providerType}}}
+	}
+	for _, tt := range []struct {
+		path     string
+		provider string
+		value    interface{}
+	}{
+		{path: "voice_model_providers.model", provider: "qwen", value: DefaultConfig().VoiceModel.Model},
+		{path: "voice_model_providers.model", provider: "speko", value: "auto"},
+		{path: "voice_model_providers.voice", provider: "qwen", value: DefaultConfig().VoiceModel.Voice},
+		{path: "voice_model_providers.voice", provider: "speko", value: "auto"},
+	} {
+		t.Run(tt.path+"_"+tt.provider, func(t *testing.T) {
+			field := idx[tt.path]
+			for _, candidate := range field.PlaceholderWhen {
+				if reflect.DeepEqual(candidate.When, providerRule(tt.provider)) && reflect.DeepEqual(candidate.Value, tt.value) {
 					return
 				}
 			}
-			t.Fatalf("%s visibleWhen = %#v, want agent.input_mode == realtime", path, field.VisibleWhen)
+			t.Fatalf("%s missing %s placeholder %#v: %#v", tt.path, tt.provider, tt.value, field.PlaceholderWhen)
 		})
-	}
-
-	apiKey := idx["voice_model.api_key"]
-	if !apiKey.Secret {
-		t.Fatal("voice_model.api_key must be a secret field")
 	}
 }
 
@@ -911,6 +975,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"model_providers", reflect.TypeOf(ModelProvider{}), nil},
 		{"tts_providers", reflect.TypeOf(TTSProvider{}), nil},
 		{"stt_providers", reflect.TypeOf(STTProvider{}), nil},
+		{"voice_model_providers", reflect.TypeOf(VoiceModelProvider{}), nil},
 	}
 	for _, s := range recordSections {
 		for name := range tomlKeys(s.typ) {

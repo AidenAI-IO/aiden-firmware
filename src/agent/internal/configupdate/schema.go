@@ -14,28 +14,29 @@ import (
 //
 // Keep this struct in lockstep with the config web API.
 type Config struct {
-	ModelProviders     map[string]ModelProvider      `json:"model_providers,omitempty"`
-	TTSProviders       map[string]TTSProvider        `json:"tts_providers,omitempty"`
-	STTProviders       map[string]STTProvider        `json:"stt_providers,omitempty"`
-	Model              Model                         `json:"model"`
-	TTS                TTS                           `json:"tts"`
-	STT                STT                           `json:"stt"`
-	Audio              Audio                         `json:"audio"`
-	VoiceModel         VoiceModel                    `json:"voice_model"`
-	AudioArchive       AudioArchive                  `json:"audio_archive"`
-	FrameService       FrameService                  `json:"frame_service"`
-	QuickCapture       QuickCapture                  `json:"quick_capture"`
-	Storage            Storage                       `json:"storage"`
-	VoiceNotifications VoiceNotifications            `json:"voice_notifications"`
-	Device             Device                        `json:"device"`
-	Log                Log                           `json:"log"`
-	OTA                OTA                           `json:"ota"`
-	HID                HID                           `json:"hid"`
-	Search             Search                        `json:"search"`
-	Telemetry          Telemetry                     `json:"telemetry"`
-	LiveActivity       LiveActivity                  `json:"live_activity"`
-	TerminationPolicy  agent.TerminationPolicyConfig `json:"termination_policy"`
-	Agent              Agent                         `json:"agent"`
+	ModelProviders      map[string]ModelProvider      `json:"model_providers,omitempty"`
+	TTSProviders        map[string]TTSProvider        `json:"tts_providers,omitempty"`
+	STTProviders        map[string]STTProvider        `json:"stt_providers,omitempty"`
+	VoiceModelProviders map[string]VoiceModelProvider `json:"voice_model_providers,omitempty"`
+	Model               Model                         `json:"model"`
+	TTS                 TTS                           `json:"tts"`
+	STT                 STT                           `json:"stt"`
+	Audio               Audio                         `json:"audio"`
+	VoiceModel          VoiceModel                    `json:"voice_model"`
+	AudioArchive        AudioArchive                  `json:"audio_archive"`
+	FrameService        FrameService                  `json:"frame_service"`
+	QuickCapture        QuickCapture                  `json:"quick_capture"`
+	Storage             Storage                       `json:"storage"`
+	VoiceNotifications  VoiceNotifications            `json:"voice_notifications"`
+	Device              Device                        `json:"device"`
+	Log                 Log                           `json:"log"`
+	OTA                 OTA                           `json:"ota"`
+	HID                 HID                           `json:"hid"`
+	Search              Search                        `json:"search"`
+	Telemetry           Telemetry                     `json:"telemetry"`
+	LiveActivity        LiveActivity                  `json:"live_activity"`
+	TerminationPolicy   agent.TerminationPolicyConfig `json:"termination_policy"`
+	Agent               Agent                         `json:"agent"`
 }
 
 // UnmarshalJSON rejects the former top-level providers key so callers do not
@@ -184,6 +185,47 @@ type STTProvider struct {
 	EngineModelType string `json:"engine_model_type,omitempty"`
 }
 
+// VoiceModelProvider mirrors one [voice_model_providers.<name>] record. The
+// selected record name stays in voice_model.provider.
+type VoiceModelProvider struct {
+	Type             string `json:"type"`
+	UpstreamProvider string `json:"upstream_provider,omitempty"`
+	AgentID          string `json:"agent_id,omitempty"`
+	APIKey           string `json:"api_key,omitempty"`
+	HasAPIKey        bool   `json:"has_api_key,omitempty"`
+	Model            string `json:"model,omitempty"`
+	WorkspaceID      string `json:"workspace_id,omitempty"`
+	Region           string `json:"region,omitempty"`
+	Endpoint         string `json:"endpoint,omitempty"`
+	BaseURL          string `json:"base_url,omitempty"`
+	Voice            string `json:"voice,omitempty"`
+}
+
+func (d *VoiceModelProvider) UnmarshalJSON(data []byte) error {
+	type canonical VoiceModelProvider
+	var fields struct {
+		canonical
+		Type           *string `json:"type"`
+		LegacyProvider string  `json:"provider"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	typePresent, err := jsonFieldPresent(data, "type")
+	if err != nil {
+		return err
+	}
+	*d = VoiceModelProvider(fields.canonical)
+	if typePresent {
+		if fields.Type != nil {
+			d.Type = *fields.Type
+		}
+		return nil
+	}
+	d.Type = fields.LegacyProvider
+	return nil
+}
+
 func (d *STTProvider) UnmarshalJSON(data []byte) error {
 	type canonical STTProvider
 	var fields struct {
@@ -257,12 +299,16 @@ type STT struct {
 // VoiceModel mirrors the realtime voice model settings. The credential itself
 // is write-only; has_api_key reports whether one is already configured.
 type VoiceModel struct {
+	Provider               string   `json:"provider"`
+	UpstreamProvider       string   `json:"upstream_provider"`
+	AgentID                string   `json:"agent_id"`
 	APIKey                 string   `json:"api_key,omitempty"`
 	HasAPIKey              bool     `json:"has_api_key"`
 	Model                  string   `json:"model"`
 	WorkspaceID            string   `json:"workspace_id"`
 	Region                 string   `json:"region"`
 	Endpoint               string   `json:"endpoint"`
+	BaseURL                string   `json:"base_url"`
 	Voice                  string   `json:"voice"`
 	Instructions           string   `json:"instructions"`
 	EnableSpeechEmotion    *bool    `json:"enable_speech_emotion,omitempty"`
@@ -495,9 +541,10 @@ func (d Config) ToAgentConfig() agent.Config {
 		CleanupRetryIntervalSeconds:      d.Storage.Cleanup.CleanupRetryIntervalSeconds,
 	}
 	return agent.Config{
-		ModelProviders: d.modelProvidersToAgentConfig(),
-		TTSProviders:   d.ttsProvidersToAgentConfig(),
-		STTProviders:   d.sttProvidersToAgentConfig(),
+		ModelProviders:      d.modelProvidersToAgentConfig(),
+		TTSProviders:        d.ttsProvidersToAgentConfig(),
+		STTProviders:        d.sttProvidersToAgentConfig(),
+		VoiceModelProviders: d.voiceModelProvidersToAgentConfig(),
 		Model: agent.ModelConfig{
 			Provider:                          d.Model.Provider,
 			APIKey:                            d.Model.APIKey,
@@ -546,11 +593,15 @@ func (d Config) ToAgentConfig() agent.Config {
 			Backend:    d.Audio.backend(),
 		},
 		VoiceModel: agent.VoiceModelConfig{
+			Provider:               d.VoiceModel.Provider,
+			UpstreamProvider:       d.VoiceModel.UpstreamProvider,
+			AgentID:                d.VoiceModel.AgentID,
 			APIKey:                 voiceModelKey,
 			Model:                  d.VoiceModel.Model,
 			WorkspaceID:            d.VoiceModel.WorkspaceID,
 			Region:                 d.VoiceModel.Region,
 			Endpoint:               d.VoiceModel.Endpoint,
+			BaseURL:                d.VoiceModel.BaseURL,
 			Voice:                  d.VoiceModel.Voice,
 			Instructions:           d.VoiceModel.Instructions,
 			EnableSpeechEmotion:    d.VoiceModel.EnableSpeechEmotion,
@@ -785,14 +836,63 @@ func (d Config) sttProvidersToAgentConfig() map[string]agent.STTProvider {
 	return result
 }
 
+func voiceModelProvidersFromConfig(providers map[string]agent.VoiceModelProvider) map[string]VoiceModelProvider {
+	if len(providers) == 0 {
+		return nil
+	}
+	result := make(map[string]VoiceModelProvider, len(providers))
+	for name, provider := range providers {
+		result[name] = VoiceModelProvider{
+			Type:             provider.Type,
+			UpstreamProvider: provider.UpstreamProvider,
+			AgentID:          provider.AgentID,
+			HasAPIKey:        strings.TrimSpace(provider.APIKey) != "",
+			Model:            provider.Model,
+			WorkspaceID:      provider.WorkspaceID,
+			Region:           provider.Region,
+			Endpoint:         provider.Endpoint,
+			BaseURL:          provider.BaseURL,
+			Voice:            provider.Voice,
+		}
+	}
+	return result
+}
+
+func (d Config) voiceModelProvidersToAgentConfig() map[string]agent.VoiceModelProvider {
+	if len(d.VoiceModelProviders) == 0 {
+		return nil
+	}
+	result := make(map[string]agent.VoiceModelProvider, len(d.VoiceModelProviders))
+	for name, provider := range d.VoiceModelProviders {
+		mapped := agent.VoiceModelProvider{
+			Type:             provider.Type,
+			UpstreamProvider: provider.UpstreamProvider,
+			AgentID:          provider.AgentID,
+			APIKey:           provider.APIKey,
+			Model:            provider.Model,
+			WorkspaceID:      provider.WorkspaceID,
+			Region:           provider.Region,
+			Endpoint:         provider.Endpoint,
+			BaseURL:          provider.BaseURL,
+			Voice:            provider.Voice,
+		}
+		if mapped.APIKey == "" && provider.HasAPIKey {
+			mapped.APIKey = hasAPIKeyPlaceholder
+		}
+		result[name] = mapped
+	}
+	return result
+}
+
 func FromAgentConfig(cfg agent.Config) Config {
 	audioArchive := cfg.AudioArchive
 	migrateStartFreePct, migrateStopFreePct := cfg.Storage.MigrateWatermarksOrDefault()
 
 	return Config{
-		ModelProviders: modelProvidersFromConfig(cfg.ModelProviders),
-		TTSProviders:   ttsProvidersFromConfig(cfg.TTSProviders),
-		STTProviders:   sttProvidersFromConfig(cfg.STTProviders),
+		ModelProviders:      modelProvidersFromConfig(cfg.ModelProviders),
+		TTSProviders:        ttsProvidersFromConfig(cfg.TTSProviders),
+		STTProviders:        sttProvidersFromConfig(cfg.STTProviders),
+		VoiceModelProviders: voiceModelProvidersFromConfig(cfg.VoiceModelProviders),
 		Model: Model{
 			Provider:                          cfg.Model.Provider,
 			Model:                             cfg.Model.Model,
@@ -836,11 +936,15 @@ func FromAgentConfig(cfg agent.Config) Config {
 			Backend:    cfg.Audio.BackendOrDefault(),
 		},
 		VoiceModel: VoiceModel{
+			Provider:               cfg.VoiceModel.Provider,
+			UpstreamProvider:       cfg.VoiceModel.UpstreamProvider,
+			AgentID:                cfg.VoiceModel.AgentID,
 			HasAPIKey:              strings.TrimSpace(cfg.VoiceModel.APIKey) != "",
 			Model:                  cfg.VoiceModel.Model,
 			WorkspaceID:            cfg.VoiceModel.WorkspaceID,
 			Region:                 cfg.VoiceModel.Region,
 			Endpoint:               cfg.VoiceModel.Endpoint,
+			BaseURL:                cfg.VoiceModel.BaseURL,
 			Voice:                  cfg.VoiceModel.Voice,
 			Instructions:           cfg.VoiceModel.Instructions,
 			EnableSpeechEmotion:    cfg.VoiceModel.EnableSpeechEmotion,

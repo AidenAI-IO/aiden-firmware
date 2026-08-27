@@ -23,6 +23,7 @@ under `[device]` below.
 - [`[log]`](#log)
 - [`[audio]`](#audio)
 - [`[voice_model]`](#voice_model)
+- [`[voice_model_providers.<name>]`](#voice_model_providersname)
 - [`[frame_service]`](#frame_service)
 - [Quick Capture](#quick-capture)
 - [`[voice_notifications]`](#voice_notifications)
@@ -467,38 +468,63 @@ API key and base URL do not carry over to it.
 
 ## `[voice_model]`
 
-This section selects the realtime voice model used after a GPIO wakeup or an
-`/api/chat` request. It is active when `input_mode = "realtime"`; the mode,
-not API key presence, controls whether the daemon starts the realtime path. The
-daemon then streams 16 kHz PCM microphone data
-to `rtclient` continuously and plays the model's 24 kHz PCM response stream.
-When no session is active, `/api/chat` queues its text input, connects the
-realtime session, and sends that text as the first user message. This API
-activation remains available when host GPIO is unavailable.
+This section selects a named realtime provider record used after a GPIO wakeup.
+It is active when `input_mode = "realtime"`; the
+mode, not API key presence, controls whether the daemon starts the realtime
+path. The daemon streams microphone PCM to the selected adapter and plays its
+response PCM through the board audio path.
+For providers with text-input capability, currently Qwen, `/api/chat` can also
+start a session and send the queued text as its first user message. Speko S2S
+does not expose text injection and must receive microphone audio.
 Use `input_mode = "stt"` to select the existing VAD/STT/LLM/TTS wakeup loop.
-Config Web renders this section when `agent.input_mode = "realtime"` and keeps
-its saved values when another input mode is selected. It exposes only the four
-settings normally needed on the board: API key, model, region, and voice. The
-advanced fields below keep their TOML values and runtime defaults. The current
-runtime uses the DashScope Qwen realtime WebSocket protocol and automatically
-attaches Aiden's realtime tool catalog. An OpenAI, Gemini, Azure, or other
-provider model ID cannot be used here until its wire-protocol adapter is
-implemented.
+Config Web renders the selector when `agent.input_mode = "realtime"`. Provider
+credentials and model settings live in `[voice_model_providers.<name>]`, so
+switching the selector never overwrites another provider's saved configuration.
+The current adapters are Qwen and Speko S2S.
 
 | Field | Default | Description |
 | ----- | ------- | ----------- |
-| `api_key` | empty | DashScope API key; supports `$ENV_VAR` expansion. |
-| `model` | `qwen-audio-3.0-realtime-plus` | Realtime voice model name. |
-| `workspace_id` | empty | Optional DashScope workspace. |
-| `region` | empty | `cn-beijing` or `ap-southeast-1`; endpoint is selected automatically. |
-| `endpoint` | empty | Optional `ws://` or `wss://` endpoint override. |
-| `voice` | `longanqian` | Realtime output voice. |
+| `provider` | `qwen` | Named `[voice_model_providers.<name>]` record. A bare `qwen` or `speko` value remains accepted for legacy configs. |
 | `instructions` | built-in voice model instruction | Session instructions. Leave empty to use the built-in default voice model instruction. |
 | `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
 | `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
 | `turn_detection` | `server_vad` | Server turn detector: `server_vad` or `smart_turn`. |
 | `turn_detection_threshold` | empty | Optional server VAD threshold. |
 | `turn_detection_silence_ms` | `800` | Silence duration before a response is generated. |
+
+## `[voice_model_providers.<name>]`
+
+Realtime provider records follow the same named-record pattern as
+`[model_providers.<name>]`. Multiple Qwen and Speko configurations can coexist;
+`[voice_model].provider` selects one by name.
+
+```toml
+[voice_model_providers.qwen-main]
+type = "qwen"
+api_key = "$DASHSCOPE_API_KEY"
+model = "qwen-audio-3.0-realtime-plus"
+region = "cn-beijing"
+voice = "longanqian"
+
+[voice_model_providers.speko-main]
+type = "speko"
+api_key = "$SPEKO_API_KEY"
+upstream_provider = "openai"
+model = "gpt-realtime"
+voice = "alloy"
+
+[voice_model]
+provider = "speko-main"
+```
+
+| Field | Providers | Description |
+| ----- | --------- | ----------- |
+| `type` | all | Adapter type: `qwen` or `speko`. |
+| `api_key` | all | Provider credential; supports `$ENV_VAR` expansion. |
+| `model` / `voice` | all | Provider-specific model and voice. Speko may leave either empty for automatic selection. |
+| `workspace_id` / `region` / `endpoint` | Qwen | Optional DashScope routing settings. |
+| `upstream_provider` | Speko | Required S2S upstream, for example `openai`, `google`, `xai`, or `inworld`. |
+| `agent_id` / `base_url` | Speko | Optional Speko agent ID and API base URL override. |
 
 ## `[frame_service]`
 

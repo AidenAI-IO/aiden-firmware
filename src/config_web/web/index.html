@@ -128,8 +128,9 @@
               <button id="save-voice_model" class="button primary save-btn" data-action="save-section" data-section-target="voice_model" data-i18n="action.save">Save</button>
             </div>
           </div>
-          <div class="field-hint section-note" data-i18n="config.voice_model_qwen_only">Current firmware connects this section to DashScope Qwen Realtime and attaches Aiden's realtime tools automatically.</div>
-          <div class="grid" data-config-section="voice_model"></div>
+          <div class="grid" data-config-section="voice_model">
+            <div class="field wide" data-config-field="voice_model.provider"><label>provider</label><div class="provider-picker"><select id="voice_model_provider" data-section="voice_model"></select><div class="provider-picker-actions"><button id="addVoiceModelProviderBtn" type="button" class="button ghost" data-action="add-voice-model-provider" data-i18n="action.add">Add</button><button id="editVoiceModelProviderBtn" type="button" class="button ghost" data-action="edit-selected-provider" data-provider-kind="voice_model" data-i18n="action.edit">Edit</button><button id="deleteVoiceModelProviderBtn" type="button" class="button ghost error" data-action="delete-selected-provider" data-provider-kind="voice_model" data-i18n="action.delete">Delete</button></div></div></div>
+          </div>
         </div>
         <div class="section-card" id="section-model">
           <div class="card-head">

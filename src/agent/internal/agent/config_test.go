@@ -63,6 +63,121 @@ func TestVoiceModelConfigRejectsNonLoopbackPlaintextEndpoint(t *testing.T) {
 	}
 }
 
+func TestVoiceModelConfigValidatesRealtimeProvider(t *testing.T) {
+	if err := (VoiceModelConfig{Provider: "unknown", APIKey: "key"}).Validate(); err == nil {
+		t.Fatal("expected unsupported realtime provider error")
+	}
+	if err := (VoiceModelConfig{Provider: "speko", APIKey: "key"}).Validate(); err == nil || !strings.Contains(err.Error(), "upstream_provider") {
+		t.Fatalf("missing Speko upstream error = %v", err)
+	}
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "openai", APIKey: "key", BaseURL: "http://localhost:8080"}).Validate(); err != nil {
+		t.Fatalf("valid Speko config rejected: %v", err)
+	}
+}
+
+func TestVoiceModelConfigProviderFieldsLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(`[agent]
+input_mode = "realtime"
+
+[voice_model]
+provider = "speko"
+upstream_provider = "openai"
+agent_id = "agent-1"
+api_key = "secret"
+model = "gpt-realtime"
+base_url = "https://api.speko.dev"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VoiceModel.Provider != "speko" || cfg.VoiceModel.UpstreamProvider != "openai" || cfg.VoiceModel.AgentID != "agent-1" || cfg.VoiceModel.BaseURL != "https://api.speko.dev" {
+		t.Fatalf("voice model = %+v", cfg.VoiceModel)
+	}
+}
+
+func TestSpekoVoiceModelDoesNotInheritQwenDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(`[agent]
+input_mode = "realtime"
+
+[voice_model]
+provider = "speko"
+upstream_provider = "openai"
+api_key = "secret"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaders := map[string]func(string) (Config, error){
+		"runtime":  LoadRuntimeConfig,
+		"resolved": LoadResolvedConfig,
+	}
+	for name, load := range loaders {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.VoiceModel.Model != "" || cfg.VoiceModel.Voice != "" || cfg.VoiceModel.Region != "" || cfg.VoiceModel.TurnDetection != "" {
+				t.Fatalf("Speko inherited Qwen defaults: %+v", cfg.VoiceModel)
+			}
+		})
+	}
+}
+
+func TestVoiceModelProviderRecordsPreserveSettingsAcrossSwitches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(`[agent]
+input_mode = "realtime"
+
+[voice_model_providers.qwen-main]
+type = "qwen"
+api_key = "qwen-secret"
+model = "qwen-realtime"
+voice = "longanqian"
+region = "cn-beijing"
+
+[voice_model_providers.speko-main]
+type = "speko"
+api_key = "speko-secret"
+upstream_provider = "openai"
+model = "gpt-realtime"
+voice = "alloy"
+base_url = "https://api.speko.dev"
+
+[voice_model]
+provider = "speko-main"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.VoiceModel.Provider != "speko-main" {
+		t.Fatalf("resolved voice_model.provider = %q", resolved.VoiceModel.Provider)
+	}
+	if got := resolved.VoiceModelProviders["qwen-main"]; got.APIKey != "qwen-secret" || got.Model != "qwen-realtime" || got.Voice != "longanqian" {
+		t.Fatalf("saved Qwen record changed: %+v", got)
+	}
+	if got := resolved.VoiceModelProviders["speko-main"]; got.APIKey != "speko-secret" || got.Model != "gpt-realtime" || got.Voice != "alloy" {
+		t.Fatalf("saved Speko record changed: %+v", got)
+	}
+
+	runtime, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.VoiceModel; got.Provider != "speko" || got.APIKey != "speko-secret" || got.Model != "gpt-realtime" || got.Voice != "alloy" || got.UpstreamProvider != "openai" {
+		t.Fatalf("runtime did not resolve selected Speko record: %+v", got)
+	}
+}
+
 func TestConfigValidateRejectsRemovedAudioMode(t *testing.T) {
 	cfg := Config{
 		Model:     ModelConfig{Provider: "fake"},

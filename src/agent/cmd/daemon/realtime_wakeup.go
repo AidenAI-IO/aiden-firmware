@@ -15,6 +15,7 @@ import (
 	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/agent/realtimevoice"
 	"aiden-agent/internal/agent/rtclient"
 	"aiden-agent/internal/agent/tts"
 	"aiden-agent/internal/agenttask"
@@ -25,8 +26,6 @@ import (
 const (
 	realtimeAudioReadTimeoutMs = 200
 	realtimeConnectTimeout     = 15 * time.Second
-	realtimeEventTimeout       = 10 * time.Second
-	realtimeUpdateTimeout      = 5 * time.Second
 	realtimePlaybackKeepAlive  = 10 * time.Second
 	realtimeToolCallTimeout    = 30 * time.Second
 	realtimeTaskResultDebounce = 500 * time.Millisecond
@@ -44,7 +43,7 @@ type realtimeChatCommand struct {
 }
 
 type realtimeToolResult struct {
-	call   rtclient.FunctionCallEvent
+	call   realtimevoice.Event
 	output string
 }
 
@@ -256,7 +255,7 @@ func drainRealtimeWakeups(events <-chan struct{}) {
 func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
 	voice := cfg.VoiceModel.Voice
 	if voice == "" {
-		voice = rtclient.DefaultVoice
+		voice = "longanqian"
 	}
 	inputFormat := cfg.VoiceModel.InputAudioFormat
 	if inputFormat == "" {
@@ -270,10 +269,6 @@ func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
 	if turnType == "" {
 		turnType = "server_vad"
 	}
-	turn := &rtclient.TurnDetection{Type: turnType, Threshold: cfg.VoiceModel.TurnDetectionThreshold}
-	if cfg.VoiceModel.TurnDetectionSilenceMs > 0 {
-		turn.SilenceDurationMS = cfg.VoiceModel.TurnDetectionSilenceMs
-	}
 	instructions := strings.TrimSpace(cfg.VoiceModel.Instructions)
 	if instructions == "" {
 		instructions = agent.DefaultRealtimeVoiceInstructions
@@ -283,17 +278,23 @@ func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
 		v := true
 		enableEmotion = &v
 	}
-	return rtclient.SessionConfig{
-		Modalities:          []string{"audio", "text"},
-		Voice:               voice,
-		EnableSpeechEmotion: enableEmotion,
-		Instructions:        instructions,
-		InputAudioFormat:    inputFormat,
-		OutputAudioFormat:   outputFormat,
-		MaxHistoryTurns:     realtimeContextReplayTurns,
-		Tools:               realtimeVoiceToolDefinitions(),
-		TurnDetection:       turn,
+	turn := &rtclient.TurnDetection{Type: turnType, Threshold: cfg.VoiceModel.TurnDetectionThreshold, SilenceDurationMS: cfg.VoiceModel.TurnDetectionSilenceMs}
+	return rtclient.SessionConfig{Modalities: []string{"audio", "text"}, Voice: voice, EnableSpeechEmotion: enableEmotion,
+		Instructions: instructions, InputAudioFormat: inputFormat, OutputAudioFormat: outputFormat,
+		MaxHistoryTurns: realtimeContextReplayTurns, Tools: realtimeVoiceToolDefinitions(), TurnDetection: turn}
+}
+
+func realtimeProviderSessionConfig(cfg agent.Config) realtimevoice.SessionConfig {
+	legacy := realtimeSessionConfig(cfg)
+	tools := legacy.Tools
+	neutralTools := make([]realtimevoice.Tool, 0, len(tools))
+	for _, tool := range tools {
+		neutralTools = append(neutralTools, realtimevoice.Tool{Name: tool.Function.Name, Description: tool.Function.Description, Parameters: tool.Function.Parameters})
 	}
+	return realtimevoice.SessionConfig{APIKey: cfg.VoiceModel.APIKey, Model: cfg.VoiceModel.Model, Voice: legacy.Voice, Instructions: legacy.Instructions,
+		InputAudioFormat: legacy.InputAudioFormat, OutputAudioFormat: legacy.OutputAudioFormat, InputSampleRate: 16000, OutputSampleRate: 24000, MaxHistoryTurns: realtimeContextReplayTurns,
+		TurnDetection: legacy.TurnDetection.Type, TurnDetectionThresh: cfg.VoiceModel.TurnDetectionThreshold, TurnDetectionSilenceMs: cfg.VoiceModel.TurnDetectionSilenceMs,
+		EnableSpeechEmotion: legacy.EnableSpeechEmotion, Tools: neutralTools}
 }
 
 const (
@@ -371,14 +372,7 @@ func realtimeVoiceToolDefinition(name, description string, parameters map[string
 	if err != nil {
 		encoded = json.RawMessage(`{"type":"object","properties":{}}`)
 	}
-	return rtclient.Tool{
-		Type: "function",
-		Function: rtclient.FunctionDefinition{
-			Name:        name,
-			Description: description,
-			Parameters:  encoded,
-		},
-	}
+	return rtclient.Tool{Type: "function", Function: rtclient.FunctionDefinition{Name: name, Description: description, Parameters: encoded}}
 }
 
 type realtimeVoiceToolExecutor struct {
@@ -480,7 +474,7 @@ func realtimeToolJSON(value any) string {
 	return string(encoded)
 }
 
-func startRealtimeToolCall(ctx context.Context, executor realtimeVoiceToolExecutor, call rtclient.FunctionCallEvent, results chan<- realtimeToolResult) {
+func startRealtimeToolCall(ctx context.Context, executor realtimeVoiceToolExecutor, call realtimevoice.Event, results chan<- realtimeToolResult) {
 	go func() {
 		callCtx, cancel := context.WithTimeout(ctx, realtimeToolCallTimeout)
 		defer cancel()
@@ -523,47 +517,36 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 		return fmt.Errorf("initialize realtime user context: %w", err)
 	}
 
-	client, err := rtclient.New(rtclient.Config{
-		APIKey:      cfg.VoiceModel.APIKey,
-		Model:       cfg.VoiceModel.Model,
-		WorkspaceID: cfg.VoiceModel.WorkspaceID,
-		Region:      cfg.VoiceModel.Region,
-		Endpoint:    cfg.VoiceModel.Endpoint,
-	})
-	if err != nil {
-		return err
+	providerName := strings.ToLower(strings.TrimSpace(cfg.VoiceModel.Provider))
+	if providerName == "" {
+		providerName = "qwen"
 	}
-	log.Printf("[realtime] Connecting: model=%s region=%s workspace_configured=%t endpoint_override=%t",
-		cfg.VoiceModel.Model,
-		cfg.VoiceModel.Region,
-		cfg.VoiceModel.WorkspaceID != "",
-		cfg.VoiceModel.Endpoint != "",
-	)
+	var provider realtimevoice.Provider
+	switch providerName {
+	case "qwen":
+		provider = realtimevoice.QwenProvider{WorkspaceID: cfg.VoiceModel.WorkspaceID, Region: cfg.VoiceModel.Region, Endpoint: cfg.VoiceModel.Endpoint}
+	case "speko":
+		provider = realtimevoice.SpekoProvider{BaseURL: cfg.VoiceModel.BaseURL, AgentID: cfg.VoiceModel.AgentID, UpstreamProvider: cfg.VoiceModel.UpstreamProvider}
+	default:
+		return fmt.Errorf("unsupported realtime provider %q", providerName)
+	}
+	log.Printf("[realtime] Connecting: provider=%s model=%s region=%s workspace_configured=%t endpoint_override=%t",
+		providerName, cfg.VoiceModel.Model, cfg.VoiceModel.Region, cfg.VoiceModel.WorkspaceID != "", cfg.VoiceModel.Endpoint != "")
 	connectCtx, connectCancel := context.WithTimeout(ctx, realtimeConnectTimeout)
-	session, err := client.Connect(connectCtx)
+	session, err := provider.Open(connectCtx, realtimeProviderSessionConfig(cfg))
 	connectCancel()
 	if err != nil {
 		return fmt.Errorf("connect realtime voice model: %w", err)
 	}
 	defer session.Close()
-	log.Println("[realtime] WebSocket connected, waiting for session.created...")
-	if err := waitForRealtimeEvent(ctx, session, sigChan, "session.created", realtimeEventTimeout); err != nil {
-		return fmt.Errorf("initialize realtime session: %w", err)
+	info := session.Info()
+	textSession, supportsText := realtimeTextSession(session)
+	if supportsText && info.Capabilities.ContextReplay {
+		if err := replayRealtimeContext(ctx, textSession, userContext); err != nil {
+			return fmt.Errorf("restore realtime user context: %w", err)
+		}
 	}
-	log.Println("[realtime] session.created received, sending session.update...")
-	updateCtx, updateCancel := context.WithTimeout(ctx, realtimeUpdateTimeout)
-	err = session.Update(updateCtx, realtimeSessionConfig(cfg))
-	updateCancel()
-	if err != nil {
-		return fmt.Errorf("update realtime session: %w", err)
-	}
-	if err := waitForRealtimeEvent(ctx, session, sigChan, "session.updated", realtimeEventTimeout); err != nil {
-		return fmt.Errorf("apply realtime session config: %w", err)
-	}
-	if err := replayRealtimeContext(ctx, session, userContext); err != nil {
-		return fmt.Errorf("restore realtime user context: %w", err)
-	}
-	log.Println("[realtime] session.updated received, opening microphone...")
+	log.Printf("[realtime] Session ready: id=%s input_rate=%d output_rate=%d text_input=%t", info.ID, info.InputSampleRate, info.OutputSampleRate, supportsText)
 	if chatBridge != nil {
 		chatBridge.activate()
 		defer func() {
@@ -578,8 +561,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 		backend: agent.NewConfiguredAudioPlaybackBackend(cfg, audioService, nil),
 	}
 	inputFormat := agent.AudioFormat{
-		// Qwen realtime currently accepts only 16 kHz, 16-bit mono PCM.
-		SampleRate: 16000,
+		SampleRate: uint32(info.InputSampleRate),
 		Channels:   1,
 		BitWidth:   16,
 	}
@@ -588,17 +570,13 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 		return fmt.Errorf("start realtime recording: %w", err)
 	}
 	defer func() { _ = recordingAudio.StopRecording(recording.SessionID) }()
-	log.Printf("[realtime] Microphone opened: session_id=%d format=pcm/16000/mono/16", recording.SessionID)
+	log.Printf("[realtime] Microphone opened: session_id=%d format=pcm/%d/mono/16", recording.SessionID, inputFormat.SampleRate)
 
 	chunks := make(chan []byte, 8)
 	readErrs := make(chan error, 1)
 	go streamRealtimeAudio(ctx, recordingAudio, recording.SessionID, chunks, readErrs)
 
-	// Qwen realtime emits 24 kHz PCM16 mono, while the device playback
-	// hardware is commonly configured for audio.sample_rate (16 kHz on the
-	// target board). Resample before opening audio_service playback; passing
-	// 24 kHz directly makes tinyalsa reject hw_params with EINVAL.
-	realtimeOutputFormat := agent.AudioFormat{SampleRate: 24000, Channels: 1, BitWidth: 16}
+	realtimeOutputFormat := agent.AudioFormat{SampleRate: uint32(info.OutputSampleRate), Channels: 1, BitWidth: 16}
 	outputFormat := realtimePlaybackOutputFormat(cfg)
 	if outputFormat.SampleRate == 0 {
 		outputFormat = realtimeOutputFormat
@@ -633,6 +611,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	var chatTranscript strings.Builder
 	var responseText strings.Builder
 	var responseTranscript strings.Builder
+	assistantPersisted := false
 	var realtimeResponseUsage messages.Usage
 	hasRealtimeResponseUsage := false
 	responseActive := false
@@ -669,13 +648,16 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			return nil
 		}
 		message := formatRealtimeTaskUpdates(pendingTaskUpdates)
+		if !supportsText {
+			return nil
+		}
 		if err := appendRealtimeNoticeMessage(userContext, message); err != nil {
 			return fmt.Errorf("persist task update in realtime context: %w", err)
 		}
-		if err := session.SendText(ctx, message, ""); err != nil {
+		if err := textSession.SendText(ctx, message); err != nil {
 			return fmt.Errorf("inject background task update: %w", err)
 		}
-		if err := session.CreateResponse(ctx, nil); err != nil {
+		if err := textSession.CreateResponse(ctx); err != nil {
 			return fmt.Errorf("respond to background task update: %w", err)
 		}
 		pendingTaskUpdates = nil
@@ -690,15 +672,21 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 		}
 	}()
 
+	sessionErrors := session.Errors()
+	// The event stream is the authoritative completion signal. Providers may
+	// close Done before the final buffered transcript or response event is read.
+	sessionEvents := session.Events()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-sigChan:
 			return errRealtimeShutdown
-		case <-session.Done():
-			return nil
-		case err := <-session.Errors():
+		case err, ok := <-sessionErrors:
+			if !ok {
+				sessionErrors = nil
+				continue
+			}
 			if err != nil {
 				return err
 			}
@@ -708,15 +696,15 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			}
 		case result := <-toolResults:
 			call := result.call
-			if err := session.SendFunctionOutput(ctx, call.CallID, result.output); err != nil {
+			if err := session.SendToolResult(ctx, call.CallID, result.output); err != nil {
 				return fmt.Errorf("send realtime tool result: %w", err)
 			}
 			if err := appendRealtimeToolExecution(userContext, call, result.output); err != nil {
 				return fmt.Errorf("persist realtime tool call and result: %w", err)
 			}
-			if toolTracker.complete(call.ResponseID) {
+			if info.Capabilities.ExplicitToolContinuation && toolTracker.complete(call.ResponseID) {
 				responseActive = true
-				if err := session.CreateResponse(ctx, nil); err != nil {
+				if err := textSession.CreateResponse(ctx); err != nil {
 					return fmt.Errorf("continue realtime response after tool call: %w", err)
 				}
 			}
@@ -724,7 +712,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			if !ok {
 				return nil
 			}
-			if err := session.AppendAudio(ctx, pcm); err != nil {
+			if err := session.SendAudio(ctx, pcm); err != nil {
 				return err
 			}
 			if firstAudioChunk {
@@ -771,6 +759,11 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				return err
 			}
 		case command := <-chatBridgeCommands(chatBridge):
+			if !supportsText {
+				sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: fmt.Sprintf("realtime provider %s does not support text injection", providerName)})
+				close(command.events)
+				continue
+			}
 			if activeChat != nil || responseActive || inputSpeechActive {
 				sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "realtime response is busy"})
 				close(command.events)
@@ -780,7 +773,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			chatMode = ""
 			chatText.Reset()
 			chatTranscript.Reset()
-			if err := session.SendText(command.ctx, command.request.Message, ""); err != nil {
+			if err := textSession.SendText(command.ctx, command.request.Message); err != nil {
 				sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: err.Error()})
 				close(command.events)
 				activeChat = nil
@@ -793,48 +786,63 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				continue
 			}
 			responseActive = true
-			if err := session.CreateResponse(command.ctx, nil); err != nil {
+			if err := textSession.CreateResponse(command.ctx); err != nil {
 				responseActive = false
 				sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: err.Error()})
 				close(command.events)
 				activeChat = nil
 			}
 		case <-chatCommandDone(activeChat):
-			_ = session.CancelResponse(ctx)
+			_ = session.Interrupt(ctx)
 			sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "request canceled"})
 			close(activeChat.events)
 			activeChat = nil
-		case event, ok := <-session.Events():
+		case event, ok := <-sessionEvents:
 			if !ok {
+				if err := realtimeSessionTerminationError(sessionErrors); err != nil {
+					return err
+				}
 				return nil
 			}
-			switch event.Type {
-			case "input_audio_buffer.speech_started":
+			switch event.Kind {
+			case realtimevoice.EventReady:
+				// Providers may emit a ready frame after Open; negotiated rates
+				// are already available in Session.Info().
+			case realtimevoice.EventSpeechStarted:
 				inputSpeechActive = true
 				log.Println("[realtime] Speech started, interrupting local playback")
+				if info.Capabilities.Interrupt {
+					if err := session.Interrupt(ctx); err != nil {
+						return fmt.Errorf("interrupt realtime provider response: %w", err)
+					}
+				}
 				// Clear the queued response immediately, then reopen the speaker
 				// session so mic and speaker remain active for the next turn.
 				if err := playback.interrupt(playbackAudio, outputFormat); err != nil {
 					return fmt.Errorf("interrupt realtime playback: %w", err)
 				}
-			case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
+			case realtimevoice.EventSpeechStopped:
 				inputSpeechActive = false
 				if err := tryInjectTaskUpdates(); err != nil {
 					return err
 				}
-			case "conversation.item.input_audio_transcription.completed":
-				var transcript rtclient.TranscriptEvent
-				if err := event.Decode(&transcript); err != nil {
-					return err
+			case realtimevoice.EventTranscriptFinal:
+				if event.Role == "user" {
+					if err := appendRealtimeUserMessage(userContext, event.Text); err != nil {
+						return fmt.Errorf("persist realtime user transcript: %w", err)
+					}
+				} else if event.Role == "assistant" {
+					if recordRealtimeFinalTranscript(event.Text, &responseTranscript, &chatText, &chatTranscript) && activeChat != nil {
+						chatMode = "transcript"
+						sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventDelta, Delta: event.Text})
+					}
 				}
-				if err := appendRealtimeUserMessage(userContext, transcript.Transcript); err != nil {
-					return fmt.Errorf("persist realtime user transcript: %w", err)
-				}
-			case "response.created":
+			case realtimevoice.EventResponseStarted:
 				log.Println("[realtime] Response created")
 				responseActive = true
 				responseText.Reset()
 				responseTranscript.Reset()
+				assistantPersisted = false
 				if realtimeOutputFormat.SampleRate != outputFormat.SampleRate &&
 					realtimeOutputFormat.Channels == outputFormat.Channels &&
 					realtimeOutputFormat.BitWidth == outputFormat.BitWidth {
@@ -846,90 +854,86 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				if err := playback.beginResponse(playbackAudio, outputFormat); err != nil {
 					return fmt.Errorf("begin realtime playback response: %w", err)
 				}
-			case "response.text.delta":
-				var delta rtclient.ResponseDeltaEvent
-				if err := event.Decode(&delta); err != nil {
-					return err
+			case realtimevoice.EventTranscriptDelta:
+				if event.Role != "assistant" {
+					continue
 				}
-				responseText.WriteString(delta.Delta)
-				if activeChat != nil {
-					if chatMode == "" {
-						chatMode = "text"
-					}
-					if chatMode == "text" && delta.Delta != "" {
-						chatText.WriteString(delta.Delta)
-						sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventDelta, Delta: delta.Delta})
+				if !supportsText && (!responseActive || playback.suppressDeltas) {
+					if err := ensureImplicitRealtimeResponse(&responseActive, &assistantPersisted, &responseText, &responseTranscript, &playback, playbackAudio, outputFormat); err != nil {
+						return err
 					}
 				}
-			case "response.audio_transcript.delta":
-				var delta rtclient.ResponseDeltaEvent
-				if err := event.Decode(&delta); err != nil {
-					return err
-				}
-				responseTranscript.WriteString(delta.Delta)
-				if activeChat != nil {
-					if chatMode == "" {
-						chatMode = "transcript"
+				if event.TextSource == "text" {
+					responseText.WriteString(event.Text)
+					if activeChat != nil {
+						if chatMode == "" {
+							chatMode = "text"
+						}
+						if chatMode == "text" && event.Text != "" {
+							chatText.WriteString(event.Text)
+							sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventDelta, Delta: event.Text})
+						}
 					}
-					if chatMode == "transcript" && delta.Delta != "" {
-						chatTranscript.WriteString(delta.Delta)
-						sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventDelta, Delta: delta.Delta})
+				} else {
+					responseTranscript.WriteString(event.Text)
+					if activeChat != nil {
+						if chatMode == "" {
+							chatMode = "transcript"
+						}
+						if chatMode == "transcript" && event.Text != "" {
+							chatTranscript.WriteString(event.Text)
+							sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventDelta, Delta: event.Text})
+						}
 					}
 				}
-			case "response.audio.delta":
-				pcm, err := event.AudioDelta()
-				if err != nil {
-					return err
+			case realtimevoice.EventAudio:
+				if !supportsText {
+					if err := ensureImplicitRealtimeResponse(&responseActive, &assistantPersisted, &responseText, &responseTranscript, &playback, playbackAudio, outputFormat); err != nil {
+						return err
+					}
 				}
+				pcm := event.PCM
 				if outputResampler != nil {
 					pcm = outputResampler.Write(pcm)
 				}
 				if err := playback.append(playbackAudio, outputFormat, pcm); err != nil {
 					return err
 				}
-			case "response.audio_transcript.done":
-				var done rtclient.TranscriptEvent
-				if err := event.Decode(&done); err == nil && responseTranscript.Len() == 0 {
-					responseTranscript.WriteString(done.Transcript)
+			case realtimevoice.EventToolCall:
+				log.Printf("[realtime] Tool call: %s", event.Name)
+				if info.Capabilities.ExplicitToolContinuation {
+					toolTracker.start(event.ResponseID)
 				}
-				if activeChat != nil && chatTranscript.Len() == 0 {
-					if err := event.Decode(&done); err == nil && done.Transcript != "" {
-						chatTranscript.WriteString(done.Transcript)
-					}
-				}
-			case "response.function_call_arguments.done":
-				var call rtclient.FunctionCallEvent
-				if err := event.Decode(&call); err != nil {
-					return err
-				}
-				log.Printf("[realtime] Tool call: %s", call.Name)
-				toolTracker.start(call.ResponseID)
-				startRealtimeToolCall(ctx, toolExecutor, call, toolResults)
-			case "response.done":
-				var done rtclient.ResponseEvent
-				if err := event.Decode(&done); err != nil {
-					return err
-				}
-				if done.Response.Usage != nil {
-					realtimeResponseUsage.TotalTokens += done.Response.Usage.TotalTokens
-					realtimeResponseUsage.InputTokens += done.Response.Usage.InputTokens
-					realtimeResponseUsage.OutputTokens += done.Response.Usage.OutputTokens
+				startRealtimeToolCall(ctx, toolExecutor, event, toolResults)
+			case realtimevoice.EventUsage:
+				realtimeResponseUsage.TotalTokens += event.Usage.TotalTokens
+				realtimeResponseUsage.InputTokens += event.Usage.InputTokens
+				realtimeResponseUsage.OutputTokens += event.Usage.OutputTokens
+				hasRealtimeResponseUsage = true
+			case realtimevoice.EventResponseDone, realtimevoice.EventResponseCancelled:
+				if event.Usage.TotalTokens > 0 || event.Usage.InputTokens > 0 || event.Usage.OutputTokens > 0 {
+					realtimeResponseUsage.TotalTokens += event.Usage.TotalTokens
+					realtimeResponseUsage.InputTokens += event.Usage.InputTokens
+					realtimeResponseUsage.OutputTokens += event.Usage.OutputTokens
 					hasRealtimeResponseUsage = true
 				}
 				if err := playback.finishResponse(playbackAudio); err != nil {
 					return fmt.Errorf("finish realtime playback response: %w", err)
 				}
-				if hasTools, continueNow := toolTracker.done(done.Response.ID); hasTools {
+				if hasTools, continueNow := toolTracker.done(event.ResponseID); hasTools {
 					if !continueNow {
 						continue
 					}
 					responseActive = true
-					if err := session.CreateResponse(ctx, nil); err != nil {
+					if !supportsText {
+						continue
+					}
+					if err := textSession.CreateResponse(ctx); err != nil {
 						return fmt.Errorf("continue realtime response after tool call: %w", err)
 					}
 					continue
 				}
-				if done.Response.Status == "" || done.Response.Status == "completed" {
+				if !assistantPersisted && event.Kind != realtimevoice.EventResponseCancelled && (event.Status == "" || event.Status == "completed") {
 					assistantText := strings.TrimSpace(responseText.String())
 					if assistantText == "" {
 						assistantText = strings.TrimSpace(responseTranscript.String())
@@ -948,6 +952,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				realtimeResponseUsage = messages.Usage{}
 				hasRealtimeResponseUsage = false
 				responseActive = false
+				assistantPersisted = false
 				if activeChat != nil {
 					content := chatText.String()
 					if content == "" {
@@ -960,15 +965,76 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				if err := tryInjectTaskUpdates(); err != nil {
 					return err
 				}
-			case "error":
-				var serverErr rtclient.ErrorEvent
-				if err := event.Decode(&serverErr); err != nil {
+			case realtimevoice.EventInterruption:
+				responseActive = false
+				if err := playback.interrupt(playbackAudio, outputFormat); err != nil {
 					return err
 				}
-				return &realtimeServerError{message: serverErr.Error.Message}
+			case realtimevoice.EventError:
+				if event.Error != nil {
+					return event.Error
+				}
 			}
 		}
 	}
+}
+
+func realtimeTextSession(session realtimevoice.Session) (realtimevoice.TextSession, bool) {
+	textSession, ok := session.(realtimevoice.TextSession)
+	return textSession, ok && session.Info().Capabilities.TextInput
+}
+
+func realtimeSessionTerminationError(errs <-chan error) error {
+	if errs == nil {
+		return nil
+	}
+	select {
+	case err, ok := <-errs:
+		if ok && err != nil {
+			return err
+		}
+	default:
+	}
+	return nil
+}
+
+func ensureImplicitRealtimeResponse(
+	active *bool,
+	assistantPersisted *bool,
+	responseText *strings.Builder,
+	responseTranscript *strings.Builder,
+	playback *realtimePlaybackState,
+	audio realtimePlaybackAudio,
+	format agent.AudioFormat,
+) error {
+	if active == nil || assistantPersisted == nil || responseText == nil || responseTranscript == nil || playback == nil {
+		return errors.New("realtime response state is unavailable")
+	}
+	if *active && !playback.suppressDeltas {
+		return nil
+	}
+	*active = true
+	*assistantPersisted = false
+	responseText.Reset()
+	responseTranscript.Reset()
+	if err := playback.beginResponse(audio, format); err != nil {
+		return err
+	}
+	return nil
+}
+
+func recordRealtimeFinalTranscript(text string, responseTranscript, chatText, chatTranscript *strings.Builder) bool {
+	if responseTranscript == nil || chatText == nil || chatTranscript == nil {
+		return false
+	}
+	if responseTranscript.Len() == 0 {
+		responseTranscript.WriteString(text)
+	}
+	if chatText.Len() == 0 && chatTranscript.Len() == 0 && strings.TrimSpace(text) != "" {
+		chatTranscript.WriteString(text)
+		return true
+	}
+	return false
 }
 
 func agentTaskNotifications(tasks *agenttask.Manager) <-chan struct{} {
@@ -1037,7 +1103,7 @@ func appendRealtimeAssistantMessage(manager *contextmanager.ContextManager, cont
 
 // appendRealtimeToolExecution persists the protocol pair only after the tool
 // has produced an output, so an interrupted call cannot remain in user context.
-func appendRealtimeToolExecution(manager *contextmanager.ContextManager, call rtclient.FunctionCallEvent, output string) error {
+func appendRealtimeToolExecution(manager *contextmanager.ContextManager, call realtimevoice.Event, output string) error {
 	if manager == nil {
 		return nil
 	}
@@ -1061,11 +1127,11 @@ func appendRealtimeToolExecution(manager *contextmanager.ContextManager, call rt
 	})
 }
 
-func replayRealtimeContext(ctx context.Context, session *rtclient.Session, manager *contextmanager.ContextManager) error {
+func replayRealtimeContext(ctx context.Context, session realtimevoice.TextSession, manager *contextmanager.ContextManager) error {
 	if session == nil || manager == nil {
 		return nil
 	}
-	var previousID string
+	var items []realtimevoice.ContextItem
 	for _, message := range recentRealtimeContextMessages(manager.MessageListDump().Messages, realtimeContextReplayTurns) {
 		content := strings.TrimSpace(message.Content)
 		if message.Role == messages.MessageRoleSystem {
@@ -1073,26 +1139,13 @@ func replayRealtimeContext(ctx context.Context, session *rtclient.Session, manag
 		}
 		if message.Role == messages.MessageRoleToolCall {
 			for _, call := range message.ToolCalls {
-				if err := session.CreateItem(ctx, rtclient.ConversationItem{
-					Type:      "function_call",
-					CallID:    call.ID,
-					Name:      call.Name,
-					Arguments: call.Arguments,
-				}, previousID); err != nil {
-					return err
-				}
+				items = append(items, realtimevoice.ContextItem{Type: "function_call", CallID: call.ID, Name: call.Name, Arguments: call.Arguments})
 			}
 			continue
 		}
 		if message.Role == messages.MessageRoleToolResult {
 			for _, result := range message.ToolResults {
-				if err := session.CreateItem(ctx, rtclient.ConversationItem{
-					Type:   "function_call_output",
-					CallID: result.ToolCallID,
-					Output: result.Content,
-				}, previousID); err != nil {
-					return err
-				}
+				items = append(items, realtimevoice.ContextItem{Type: "function_call_output", CallID: result.ToolCallID, Output: result.Content})
 			}
 			continue
 		}
@@ -1100,24 +1153,12 @@ func replayRealtimeContext(ctx context.Context, session *rtclient.Session, manag
 			continue
 		}
 		role := "user"
-		contentType := "input_text"
 		if message.Role == messages.MessageRoleAssistant {
 			role = "assistant"
-			contentType = "output_text"
 		}
-		item := rtclient.ConversationItem{
-			Type: "message",
-			Role: role,
-			Content: []rtclient.ContentPart{{
-				Type: contentType,
-				Text: content,
-			}},
-		}
-		if err := session.CreateItem(ctx, item, previousID); err != nil {
-			return err
-		}
+		items = append(items, realtimevoice.ContextItem{Type: "message", Role: role, Content: content})
 	}
-	return nil
+	return session.ReplayContext(ctx, items)
 }
 
 func recentRealtimeContextMessages(all []messages.Message, maxTurns int) []messages.Message {
@@ -1159,47 +1200,6 @@ func limitRealtimeTaskField(value string, maxRunes int) string {
 		return string(runes)
 	}
 	return string(runes[:maxRunes]) + "…"
-}
-
-type realtimeEventSource interface {
-	Events() <-chan rtclient.Event
-	Errors() <-chan error
-	Done() <-chan struct{}
-}
-
-func waitForRealtimeEvent(ctx context.Context, session realtimeEventSource, sigChan <-chan os.Signal, want string, timeout time.Duration) error {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-sigChan:
-			return errRealtimeShutdown
-		case <-timer.C:
-			return fmt.Errorf("timed out after %s waiting for %s", timeout, want)
-		case <-session.Done():
-			return errors.New("WebSocket closed")
-		case err, ok := <-session.Errors():
-			if ok && err != nil {
-				return err
-			}
-		case event, ok := <-session.Events():
-			if !ok {
-				return errors.New("server event stream closed")
-			}
-			if event.Type == "error" {
-				var serverErr rtclient.ErrorEvent
-				if err := event.Decode(&serverErr); err != nil {
-					return err
-				}
-				return &realtimeServerError{message: serverErr.Error.Message}
-			}
-			if event.Type == want {
-				return nil
-			}
-		}
-	}
 }
 
 type realtimePlaybackAudio interface {
@@ -1316,10 +1316,6 @@ func (p *realtimePlaybackState) stop(audio realtimePlaybackAudio) error {
 	p.finalized = false
 	return audio.StopPlayback(sessionID)
 }
-
-type realtimeServerError struct{ message string }
-
-func (e *realtimeServerError) Error() string { return "rtclient: " + e.message }
 
 type realtimeRecordingAudio interface {
 	ReadRecordChunk(uint64, uint32) (*agent.AudioChunkResult, error)

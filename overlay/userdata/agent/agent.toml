@@ -17,8 +17,7 @@ locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification
 # Input mode controls the device-side audio loop:
 # - text: HTTP server and Web UI only
 # - stt: also run device audio -> STT -> LLM -> TTS
-# - realtime: run the realtime voice model directly; [voice_model] is selected
-#   by this mode rather than by whether voice_model.api_key is present
+# - realtime: run the realtime voice model selected by [voice_model].provider
 input_mode = "stt"
 
 # RKNN Silero VAD parameters
@@ -47,13 +46,17 @@ input_mode = "stt"
 # used when input_mode = "stt". In realtime mode, the voice model is
 # the non-blocking foreground agent; device and multi-step work is queued to
 # the legacy agent loop through create_agent_task.
-# [voice_model]
+# [voice_model_providers.qwen-main]
+# type = "qwen"
 # api_key = "$DASHSCOPE_API_KEY"
 # model = "qwen-audio-3.0-realtime-plus"
 # workspace_id = ""
 # region = "cn-beijing" # or "ap-southeast-1"
 # endpoint = ""         # optional ws/wss endpoint override
 # voice = "longanqian"
+#
+# [voice_model]
+# provider = "qwen-main"
 # instructions = ""    # optional override; defaults to a short conversation-only prompt
 # enable_speech_emotion = true
 # input_audio_format = "pcm"

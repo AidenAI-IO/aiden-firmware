@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
-	"syscall"
+	"strings"
 	"testing"
 	"time"
 
 	"aiden-agent/internal/agent"
-	"aiden-agent/internal/agent/rtclient"
+	"aiden-agent/internal/agent/realtimevoice"
 )
 
 type fakeRealtimePlaybackAudio struct {
@@ -118,6 +117,64 @@ func TestRealtimeLocalPlaybackFinalizesEachResponse(t *testing.T) {
 	}
 }
 
+func TestEnsureImplicitRealtimeResponseReopensPlaybackAfterInterruption(t *testing.T) {
+	audio := &fakeRealtimePlaybackAudio{}
+	playback := realtimePlaybackState{}
+	format := agent.AudioFormat{SampleRate: 24000, Channels: 1, BitWidth: 16}
+	if err := playback.open(audio, format); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.interrupt(audio, format); err != nil {
+		t.Fatal(err)
+	}
+	active := false
+	assistantPersisted := true
+	responseText := strings.Builder{}
+	responseText.WriteString("stale")
+	responseTranscript := strings.Builder{}
+	responseTranscript.WriteString("stale")
+	if err := ensureImplicitRealtimeResponse(
+		&active, &assistantPersisted, &responseText, &responseTranscript,
+		&playback, audio, format,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !active || assistantPersisted || playback.suppressDeltas {
+		t.Fatalf("response state = active:%t persisted:%t suppress:%t", active, assistantPersisted, playback.suppressDeltas)
+	}
+	if responseText.Len() != 0 || responseTranscript.Len() != 0 {
+		t.Fatalf("implicit response did not reset buffers: text=%q transcript=%q", responseText.String(), responseTranscript.String())
+	}
+	if err := playback.append(audio, format, []byte{5, 6}); err != nil {
+		t.Fatal(err)
+	}
+	if len(audio.writes) != 1 || string(audio.writes[0].data) != string([]byte{5, 6}) {
+		t.Fatalf("writes = %#v, want reopened response audio", audio.writes)
+	}
+}
+
+func TestRecordRealtimeFinalTranscriptPopulatesChatFallback(t *testing.T) {
+	var responseTranscript strings.Builder
+	var chatTranscript strings.Builder
+	var chatText strings.Builder
+	if !recordRealtimeFinalTranscript("final only", &responseTranscript, &chatText, &chatTranscript) {
+		t.Fatal("final transcript was not recorded for chat fallback")
+	}
+	if responseTranscript.String() != "final only" || chatTranscript.String() != "final only" {
+		t.Fatalf("transcripts = response:%q chat:%q", responseTranscript.String(), chatTranscript.String())
+	}
+}
+
+func TestRealtimeSessionTerminationPreservesBufferedError(t *testing.T) {
+	want := errors.New("transport failed")
+	errs := make(chan error, 1)
+	errs <- want
+	close(errs)
+	if got := realtimeSessionTerminationError(errs); !errors.Is(got, want) {
+		t.Fatalf("termination error = %v, want %v", got, want)
+	}
+}
+
 func TestRealtimePlaybackOutputFormatUsesConfiguredDeviceFormat(t *testing.T) {
 	format := realtimePlaybackOutputFormat(agent.Config{Audio: agent.AudioConfig{
 		SampleRate: 16000,
@@ -127,12 +184,6 @@ func TestRealtimePlaybackOutputFormatUsesConfiguredDeviceFormat(t *testing.T) {
 	if format.SampleRate != 16000 || format.Channels != 1 || format.BitWidth != 16 {
 		t.Fatalf("format = %+v, want pcm/16000/mono/16", format)
 	}
-}
-
-type fakeRealtimeEventSource struct {
-	events chan rtclient.Event
-	errs   chan error
-	done   chan struct{}
 }
 
 type blockingRealtimeTool struct {
@@ -152,53 +203,10 @@ func (t *blockingRealtimeTool) Call(ctx context.Context, _ string) (string, erro
 	}
 }
 
-func (f *fakeRealtimeEventSource) Events() <-chan rtclient.Event { return f.events }
-func (f *fakeRealtimeEventSource) Errors() <-chan error          { return f.errs }
-func (f *fakeRealtimeEventSource) Done() <-chan struct{}         { return f.done }
-
-func TestWaitForRealtimeEventIgnoresEarlierEvents(t *testing.T) {
-	source := &fakeRealtimeEventSource{
-		events: make(chan rtclient.Event, 2),
-		errs:   make(chan error),
-		done:   make(chan struct{}),
-	}
-	source.events <- rtclient.Event{Type: "session.created"}
-	source.events <- rtclient.Event{Type: "session.updated"}
-
-	if err := waitForRealtimeEvent(context.Background(), source, nil, "session.updated", time.Second); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestWaitForRealtimeEventTimesOut(t *testing.T) {
-	source := &fakeRealtimeEventSource{
-		events: make(chan rtclient.Event),
-		errs:   make(chan error),
-		done:   make(chan struct{}),
-	}
-
-	if err := waitForRealtimeEvent(context.Background(), source, nil, "session.updated", time.Millisecond); err == nil {
-		t.Fatal("expected timeout")
-	}
-}
-
-func TestWaitForRealtimeEventPropagatesShutdown(t *testing.T) {
-	source := &fakeRealtimeEventSource{
-		events: make(chan rtclient.Event),
-		errs:   make(chan error),
-		done:   make(chan struct{}),
-	}
-	signals := make(chan os.Signal, 1)
-	signals <- syscall.SIGTERM
-	if err := waitForRealtimeEvent(context.Background(), source, signals, "session.updated", time.Second); !errors.Is(err, errRealtimeShutdown) {
-		t.Fatalf("waitForRealtimeEvent() error = %v, want errRealtimeShutdown", err)
-	}
-}
-
 func TestStartRealtimeToolCallDoesNotBlockEventLoop(t *testing.T) {
 	tool := &blockingRealtimeTool{started: make(chan struct{}), release: make(chan struct{})}
 	results := make(chan realtimeToolResult, 1)
-	call := rtclient.FunctionCallEvent{ResponseID: "resp-1", CallID: "call-1", Name: realtimeRecallTool, Arguments: `{}`}
+	call := realtimevoice.Event{Kind: realtimevoice.EventToolCall, ResponseID: "resp-1", CallID: "call-1", Name: realtimeRecallTool, Arguments: `{}`}
 
 	startRealtimeToolCall(context.Background(), realtimeVoiceToolExecutor{recall: tool}, call, results)
 	select {

@@ -768,7 +768,7 @@ bool validate_config_field_type(cJSON* obj,
 
 bool is_provider_record_section(const std::string& section) {
     return section == "model_providers" || section == "tts_providers" ||
-           section == "stt_providers";
+           section == "stt_providers" || section == "voice_model_providers";
 }
 
 cJSON* add_object(cJSON* parent, const char* key) {
@@ -5577,7 +5577,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             const char* allowed[4];
         };
         Check enums[] = {
-            {"input_mode", {"text", "stt", NULL}},
+            {"input_mode", {"text", "stt", "realtime", NULL}},
         };
         for (size_t i = 0; i < sizeof(enums) / sizeof(enums[0]); ++i) {
             cJSON* item = cJSON_GetObjectItem(values, enums[i].key);

@@ -76,6 +76,7 @@ type FieldMeta struct {
 	Default         interface{}              `json:"default,omitempty"`
 	PlaceholderWhen []ConditionalPlaceholder `json:"placeholderWhen,omitempty"`
 	Secret          bool                     `json:"secret,omitempty"`
+	Advanced        bool                     `json:"advanced,omitempty"`
 	Nullable        bool                     `json:"nullable,omitempty"` // For number fields: empty input means unset (omit key), not 0
 	VisibleWhen     *VisibleRule             `json:"visibleWhen,omitempty"`
 	SelectWhen      *VisibleRule             `json:"selectWhen,omitempty"`
@@ -406,24 +407,62 @@ func ConfigMeta() ConfigMetadata {
 			{
 				Name: "voice_model",
 				Fields: []FieldMeta{
-					{Key: "api_key", Label: "DashScope API Key", Widget: WidgetText, Secret: true, Layout: "wide",
-						Help:        "DashScope credential for the Qwen realtime session. Use a literal key or $ENV_VAR.",
-						Placeholder: "$DASHSCOPE_API_KEY",
+					{Key: "provider", Label: "Realtime Provider", Widget: WidgetSelect,
+						Enum:        []EnumOption{{Value: "qwen", Label: "Qwen"}, {Value: "speko", Label: "Speko S2S"}},
+						Default:     defaults.VoiceModel.Provider,
 						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
+				},
+			},
+			{
+				Name: "voice_model_providers",
+				Fields: []FieldMeta{
+					{Key: "type", Label: "Realtime Provider Type", Widget: WidgetSelect,
+						Enum:    []EnumOption{{Value: "qwen", Label: "Qwen"}, {Value: "speko", Label: "Speko S2S"}},
+						Default: defaults.VoiceModel.Provider},
+					{Key: "upstream_provider", Label: "Realtime Engine", Widget: WidgetSelect,
+						Enum: []EnumOption{
+							{Value: "openai", Label: "OpenAI Realtime"},
+							{Value: "google", Label: "Google Gemini Live"},
+							{Value: "xai", Label: "xAI Grok Voice"},
+							{Value: "inworld", Label: "Inworld"},
+						},
+						Help:        "Realtime engine used behind Speko S2S. No separate engine API key is needed here.",
+						VisibleWhen: all(eq("voice_model_providers.type", "speko"))},
+					{Key: "agent_id", Label: "Speko Agent ID", Widget: WidgetText,
+						Help: "Optional Speko agent ID.", Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "speko"))},
+					{Key: "api_key", Label: "Realtime API Key", Widget: WidgetText, Secret: true, Layout: "wide",
+						Help:        "Credential for the selected realtime provider. Use a literal key or $ENV_VAR.",
+						Placeholder: "$REALTIME_API_KEY"},
 					{Key: "model", Label: "Realtime Model", Widget: WidgetText, Default: defaults.VoiceModel.Model, Layout: "wide",
-						Help:        "DashScope Qwen realtime model ID.",
-						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
+						Help: "Realtime model ID (provider-specific).",
+						PlaceholderWhen: []ConditionalPlaceholder{
+							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "qwen")}}, Value: defaults.VoiceModel.Model},
+							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "speko")}}, Value: "auto"},
+						}},
+					{Key: "workspace_id", Label: "DashScope Workspace ID", Widget: WidgetText,
+						Advanced:    true,
+						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
+					{Key: "endpoint", Label: "Qwen WebSocket Endpoint", Widget: WidgetText, Layout: "wide",
+						Advanced:    true,
+						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
+					{Key: "base_url", Label: "Provider Base URL", Widget: WidgetText, Layout: "wide",
+						Help: "Optional provider API base URL; useful for Speko-compatible deployments or tests.", Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "speko"))},
 					{Key: "region", Label: "Region", Widget: WidgetSelect,
 						Enum: []EnumOption{
 							{Value: "", Label: "Automatic"},
 							{Value: "cn-beijing", Label: "China (Beijing)"},
 							{Value: "ap-southeast-1", Label: "Singapore"},
 						},
-						Default:     defaults.VoiceModel.Region,
-						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
+						Default: defaults.VoiceModel.Region, Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
 					{Key: "voice", Label: "Voice", Widget: WidgetText, Default: defaults.VoiceModel.Voice,
-						Help:        "Qwen realtime system voice name or voice-clone ID.",
-						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
+						Help: "Realtime system voice name or voice-clone ID (provider-specific).",
+						PlaceholderWhen: []ConditionalPlaceholder{
+							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "qwen")}}, Value: defaults.VoiceModel.Voice},
+							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "speko")}}, Value: "auto"},
+						}},
 				},
 			},
 			{

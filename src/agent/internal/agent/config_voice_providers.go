@@ -189,6 +189,9 @@ func providerAPIKeyEnv(apiKey string) (string, bool) {
 // Only the referenced record is checked strictly. An unreferenced record is
 // user data parked for later and must not block unrelated config changes.
 func (c Config) ValidateVoiceProviders() error {
+	if err := validateVoiceModelProviderRecords(c); err != nil {
+		return err
+	}
 	names := make([]string, 0, len(c.TTSProviders))
 	for name := range c.TTSProviders {
 		names = append(names, name)
@@ -242,8 +245,8 @@ func (c Config) ValidateVoiceProviders() error {
 	return nil
 }
 
-// migrateLegacyVoiceProviders upgrades flat [tts]/[stt] credentials into named
-// records so the config page sees one shape.
+// migrateLegacyVoiceProviders upgrades flat realtime/TTS/STT credentials into
+// named records so the config page sees one shape.
 //
 // For a mixed config, an explicitly populated flat field keeps its historical
 // runtime precedence and overwrites the referenced record during migration.
@@ -252,6 +255,7 @@ func migrateLegacyVoiceProviders(cfg *Config, metadata toml.MetaData) {
 	if cfg == nil {
 		return
 	}
+	migrateLegacyVoiceModelProvider(cfg, metadata)
 	migrateLegacyTTSFlatFields(cfg, metadata)
 	migrateLegacySTTFlatFields(cfg, metadata)
 }

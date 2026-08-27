@@ -19,7 +19,7 @@ import (
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/messages"
-	"aiden-agent/internal/agent/rtclient"
+	"aiden-agent/internal/agent/realtimevoice"
 	"aiden-agent/internal/agenttask"
 )
 
@@ -175,7 +175,7 @@ func TestRealtimeToolCallAndResultPersistInUserContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := rtclient.FunctionCallEvent{CallID: "call_1", Name: realtimeCreateTaskTool, Arguments: `{"task":"打开微信"}`}
+	call := realtimevoice.Event{Kind: realtimevoice.EventToolCall, CallID: "call_1", Name: realtimeCreateTaskTool, Arguments: `{"task":"打开微信"}`}
 	if err := appendRealtimeToolExecution(manager, call, `{"id":"task_1","status":"queued"}`); err != nil {
 		t.Fatal(err)
 	}
