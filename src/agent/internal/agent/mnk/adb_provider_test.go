@@ -177,10 +177,13 @@ func TestADBProviderDragStartAndReleaseUseSeparateRawPrograms(t *testing.T) {
 		t.Fatalf("commands after start = %#v, want discovery and start program", commands)
 	}
 	startScript := commands[1][3]
-	for _, want := range []string{"sleep 0.500", "sendevent /dev/input/event3 3 53 549", "sendevent /dev/input/event3 1 330 1"} {
+	for _, want := range []string{"sleep 0.500", "sendevent /dev/input/event3 3 53 699", "sendevent /dev/input/event3 1 330 1"} {
 		if !strings.Contains(startScript, want) {
 			t.Errorf("drag_start script missing %q:\n%s", want, startScript)
 		}
+	}
+	if got := strings.Count(startScript, "sendevent /dev/input/event3 3 53 "); got != 1+adbTouchMoveSteps {
+		t.Errorf("drag_start X reports = %d, want touch-down plus %d interpolated moves", got, adbTouchMoveSteps)
 	}
 	if strings.Contains(startScript, "sendevent /dev/input/event3 3 57 -1") {
 		t.Fatalf("drag_start released the contact:\n%s", startScript)

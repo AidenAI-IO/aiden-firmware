@@ -5,7 +5,9 @@ import "context"
 const (
 	defaultSwipeGestureDurationMs = 300
 	dragStartHoldMs               = 500
-	dragStartMoveDistance         = 50.0
+	dragStartMoveDistance         = 200.0
+	dragStartMoveSpeed            = 500.0
+	dragStartMoveDurationMs       = int(dragStartMoveDistance / dragStartMoveSpeed * 1000)
 	dragReleaseHoldMs             = 200
 )
 
@@ -49,8 +51,9 @@ type Provider interface {
 	// enough to avoid triggering long-press behavior.
 	Swipe(ctx context.Context, path [][2]float64, button string) error
 
-	// DragStart presses at a normalized point, holds for 500ms, then moves 50
-	// normalized units in a bounded activation direction without releasing.
+	// DragStart presses at a normalized point, holds for 500ms, then moves 200
+	// normalized units at 500 units/second in a bounded activation direction
+	// without releasing.
 	DragStart(ctx context.Context, x, y float64, button string) error
 
 	// DragRelease moves the active drag contact directly to a normalized point,
@@ -120,7 +123,7 @@ type Point struct {
 }
 
 // dragActivationPoint picks the axis direction with the most room and moves
-// exactly 50 normalized units. This guarantees a real movement at every valid
+// exactly 200 normalized units. This guarantees a real movement at every valid
 // start point without asking the caller to guess an activation coordinate.
 func dragActivationPoint(start Point) Point {
 	type candidate struct {

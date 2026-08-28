@@ -21,7 +21,11 @@ JPEG noise, animation frames, and repeated content make exact pixel displacement
 
 ### `touch_gesture`
 
-`touch_gesture` accepts an atomic action program. Actions execute in order in one HID session, so a contact remains down across waits and moves:
+Use the standard `type` form for normal touch interaction, including taps, long
+presses, swipes, scrolling, and two-phase drags. Atomic `actions` are a
+low-frequency advanced option for an uninterrupted custom contact sequence
+that the standard gesture types cannot express. Actions execute in order in
+one input session, so a contact remains down across waits and moves:
 
 ```json
 {
@@ -41,32 +45,36 @@ The action vocabulary is deliberately small:
 - `wait`: waits for `ms` milliseconds without changing contact state.
 - `touch_up`: releases the current contact; `point` is optional.
 
-Coordinates use the normalized `0..1000` range. A program must contain at least one action and must end with `touch_up`; each wait is bounded to 30 seconds, cumulative wait time is bounded to 60 seconds, and programs are limited to 128 actions. Supported legacy one-object `type` forms remain accepted for existing scripts, except `type:"drag"`; new integrations should use the atomic form.
+Coordinates use the normalized `0..1000` range. A program must contain at least one action and must end with `touch_up`; each wait is bounded to 30 seconds, cumulative wait time is bounded to 60 seconds, and programs are limited to 128 actions. Supported one-object `type` forms remain the default for normal interactions; `type:"drag"` is not supported.
 
-Moving a draggable target is the exception that intentionally spans two tool
-calls. Always use this sequence:
+Moving a draggable target intentionally spans two tool calls. Never replace
+this flow with atomic `actions`. Always use this sequence:
 
 1. Call `{"type":"drag_start","point":{"x":400,"y":500}}` at the target's current center.
-2. Inspect the returned screenshot and confirm the final destination point.
+2. Let `drag_start` finish its internal screen-stability wait. When its result
+   reports `screen_stable=true`, inspect the returned stable screenshot and
+   confirm the final destination point. Do not choose a destination from an
+   intermediate or `screen_stable=false` result.
 3. Call `{"type":"drag_release","point":{"x":750,"y":500}}` with that confirmed point.
 
-`drag_start` presses for 500ms, moves exactly 50 normalized units in a bounded
-axis direction to activate dragging, and does not release. `drag_release` moves
+`drag_start` presses for 500ms, then moves exactly 200 normalized units at 500
+normalized units per second (a 400ms interpolated move) in a bounded axis
+direction to activate dragging, and does not release. `drag_release` moves
 directly to the destination, holds for 200ms, then releases. Do not issue an
-unrelated input action between the pair. The former one-call `type:"drag"`
+unrelated input action between the pair. The stable-screen wait and final
+screenshot capture are internal to `drag_start`; a separate
+`wait_for_stable_screen` call is not part of the normal flow. The former one-call `type:"drag"`
 gesture has been removed.
 
 On Android ADB backends, the provider discovers the physical touchscreen and its absolute coordinate range with `getevent -lp`, then emits `sendevent` programs that preserve contact across atomic waits/moves and across the `drag_start`/`drag_release` boundary. This requires the Android shell user to have write access to the selected `/dev/input/event*` device. When device permissions or SELinux prohibit raw injection, the provider falls back to Android's `input touchscreen motionevent DOWN|MOVE|UP` primitive; if that is also unavailable, atomic actions return `module_unavailable`. HID is a separately selected alternative through `input_backend=hid`; the ADB provider does not switch to HID automatically.
 
-Use the atomic form for ordinary lists, carousels, maps, and other free-scrolling surfaces:
+Use `type:"swipe"` for ordinary lists, carousels, maps, and other free-scrolling surfaces:
 
 ```json
 {
-  "actions": [
-    {"action": "touch_down", "point": {"x": 500, "y": 650}},
-    {"action": "move_to", "point": {"x": 500, "y": 350}},
-    {"action": "touch_up"}
-  ]
+  "type": "swipe",
+  "start": {"x": 500, "y": 650},
+  "end": {"x": 500, "y": 350}
 }
 ```
 

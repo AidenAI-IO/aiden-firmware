@@ -254,7 +254,7 @@ func (p *ADBProvider) DragStart(ctx context.Context, x, y float64, button string
 				p.nextTrackingID = 1
 			}
 			script := buildADBDragStartScript(device, start, activation, p.nextTrackingID)
-			_, runErr := p.runShellScriptWithTimeout(ctx, p.timeoutForDuration(dragStartHoldMs), script)
+			_, runErr := p.runShellScriptWithTimeout(ctx, p.timeoutForDuration(dragStartHoldMs+dragStartMoveDurationMs), script)
 			if runErr == nil {
 				p.dragActive = true
 				p.dragRaw = true
@@ -793,7 +793,15 @@ func buildADBDragStartScript(device adbTouchDevice, start, activation Point, tra
 	activationX, activationY := adbTouchPointToDevice(device, activation)
 	appendADBTouchDown(&script, device, startX, startY, trackingID)
 	appendADBSleep(&script, dragStartHoldMs)
-	appendADBTouchPosition(&script, device, activationX, activationY, true)
+	for step := 1; step <= adbTouchMoveSteps; step++ {
+		previousElapsed := dragStartMoveDurationMs * (step - 1) / adbTouchMoveSteps
+		elapsed := dragStartMoveDurationMs * step / adbTouchMoveSteps
+		appendADBSleep(&script, elapsed-previousElapsed)
+		progress := float64(step) / float64(adbTouchMoveSteps)
+		x := int(math.Round(float64(startX) + float64(activationX-startX)*progress))
+		y := int(math.Round(float64(startY) + float64(activationY-startY)*progress))
+		appendADBTouchPosition(&script, device, x, y, true)
+	}
 	return script.String()
 }
 
@@ -895,8 +903,16 @@ func (p *ADBProvider) runADBInputDragStart(ctx context.Context, start, activatio
 	script.WriteString("set -e\n")
 	appendADBInputMotionEvent(&script, "DOWN", startX, startY)
 	appendADBSleep(&script, dragStartHoldMs)
-	appendADBInputMotionEvent(&script, "MOVE", activationX, activationY)
-	_, err = p.runShellScriptWithTimeout(ctx, p.timeoutForDuration(dragStartHoldMs), script.String())
+	for step := 1; step <= adbTouchMoveSteps; step++ {
+		previousElapsed := dragStartMoveDurationMs * (step - 1) / adbTouchMoveSteps
+		elapsed := dragStartMoveDurationMs * step / adbTouchMoveSteps
+		appendADBSleep(&script, elapsed-previousElapsed)
+		progress := float64(step) / float64(adbTouchMoveSteps)
+		x := int(math.Round(float64(startX) + float64(activationX-startX)*progress))
+		y := int(math.Round(float64(startY) + float64(activationY-startY)*progress))
+		appendADBInputMotionEvent(&script, "MOVE", x, y)
+	}
+	_, err = p.runShellScriptWithTimeout(ctx, p.timeoutForDuration(dragStartHoldMs+dragStartMoveDurationMs), script.String())
 	return err
 }
 

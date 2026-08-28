@@ -2,12 +2,23 @@ package mnk
 
 import (
 	"context"
+	"encoding/binary"
 	"math"
 	"strings"
 	"testing"
 )
 
-func TestDragActivationPointMovesExactlyFiftyWithinBounds(t *testing.T) {
+func TestDragActivationPointMovesExactlyTwoHundredWithinBounds(t *testing.T) {
+	const wantDistance = 200.0
+	if dragStartMoveDistance != wantDistance {
+		t.Fatalf("dragStartMoveDistance = %.2f, want %.2f", dragStartMoveDistance, wantDistance)
+	}
+	if dragStartMoveSpeed != 500 {
+		t.Fatalf("dragStartMoveSpeed = %.2f, want 500", dragStartMoveSpeed)
+	}
+	if dragStartMoveDurationMs != 400 {
+		t.Fatalf("dragStartMoveDurationMs = %d, want 400", dragStartMoveDurationMs)
+	}
 	for _, start := range []Point{
 		{X: 500, Y: 500},
 		{X: 0, Y: 0},
@@ -17,8 +28,8 @@ func TestDragActivationPointMovesExactlyFiftyWithinBounds(t *testing.T) {
 	} {
 		activation := dragActivationPoint(start)
 		distance := math.Hypot(activation.X-start.X, activation.Y-start.Y)
-		if distance != dragStartMoveDistance {
-			t.Errorf("dragActivationPoint(%+v) = %+v, distance %.2f; want %.2f", start, activation, distance, dragStartMoveDistance)
+		if distance != wantDistance {
+			t.Errorf("dragActivationPoint(%+v) = %+v, distance %.2f; want %.2f", start, activation, distance, wantDistance)
 		}
 		if activation.X < 0 || activation.X > 1000 || activation.Y < 0 || activation.Y > 1000 {
 			t.Errorf("dragActivationPoint(%+v) = %+v, want coordinates in [0,1000]", start, activation)
@@ -26,6 +37,61 @@ func TestDragActivationPointMovesExactlyFiftyWithinBounds(t *testing.T) {
 		if activation.X != start.X && activation.Y != start.Y {
 			t.Errorf("dragActivationPoint(%+v) = %+v, want movement on one axis", start, activation)
 		}
+	}
+}
+
+func TestHIDProviderDragStartInterpolatesActivationMoveWithoutRelease(t *testing.T) {
+	pointer := &layoutCaptureDevice{}
+	provider := NewHIDProvider(pointer, nil, nil, nil, true, "qwerty", nil)
+	provider.swipeSteps = 4
+
+	if err := provider.DragStart(context.Background(), 600, 115, ButtonLeft); err != nil {
+		t.Fatalf("DragStart() error = %v", err)
+	}
+
+	reports := pointer.bytes()
+	const reportSize = 6
+	if got, want := len(reports), (1+provider.swipeSteps)*reportSize; got != want {
+		t.Fatalf("DragStart() wrote %d bytes, want %d", got, want)
+	}
+
+	startX, startY, err := provider.normalizedToAbsolute(600, 115)
+	if err != nil {
+		t.Fatalf("normalized start: %v", err)
+	}
+	activation := dragActivationPoint(Point{X: 600, Y: 115})
+	endX, endY, err := provider.normalizedToAbsolute(activation.X, activation.Y)
+	if err != nil {
+		t.Fatalf("normalized activation point: %v", err)
+	}
+
+	previousY := -1
+	for offset := 0; offset < len(reports); offset += reportSize {
+		report := reports[offset : offset+reportSize]
+		if report[0]&0x03 != 0x03 {
+			t.Fatalf("report %d flags = %#x, want contact held", offset/reportSize, report[0])
+		}
+		x := int(binary.LittleEndian.Uint16(report[2:4]))
+		y := int(binary.LittleEndian.Uint16(report[4:6]))
+		if x != startX {
+			t.Fatalf("report %d x = %d, want %d", offset/reportSize, x, startX)
+		}
+		if offset == 0 && y != startY {
+			t.Fatalf("initial y = %d, want %d", y, startY)
+		}
+		if previousY >= 0 && y <= previousY {
+			t.Fatalf("report %d y = %d, want greater than previous %d", offset/reportSize, y, previousY)
+		}
+		previousY = y
+	}
+	if gotX := int(binary.LittleEndian.Uint16(reports[len(reports)-4 : len(reports)-2])); gotX != endX {
+		t.Fatalf("final x = %d, want %d", gotX, endX)
+	}
+	if gotY := int(binary.LittleEndian.Uint16(reports[len(reports)-2:])); gotY != endY {
+		t.Fatalf("final y = %d, want %d", gotY, endY)
+	}
+	if !provider.dragActive {
+		t.Fatal("DragStart() did not preserve active contact state")
 	}
 }
 

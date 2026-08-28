@@ -179,7 +179,8 @@ func (p *HIDProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, b
 }
 
 // DragStart presses, holds for long-press recognition, performs a bounded
-// 50-unit activation move, and deliberately leaves the contact down.
+// 200-unit activation move at 500 normalized units/second, and deliberately
+// leaves the contact down.
 func (p *HIDProvider) DragStart(ctx context.Context, x, y float64, button string) error {
 	p.dragMu.Lock()
 	defer p.dragMu.Unlock()
@@ -227,7 +228,7 @@ func (p *HIDProvider) DragStart(ctx context.Context, x, y float64, button string
 		if waitErr := waitForContext(ctx, dragStartHoldMs*time.Millisecond); waitErr != nil {
 			return fail(waitErr)
 		}
-		if moveErr := p.movePointer(activationX, activationY, buttonByte); moveErr != nil {
+		if moveErr := p.movePointerInterpolated(ctx, startX, startY, activationX, activationY, buttonByte, dragStartMoveDurationMs); moveErr != nil {
 			return fail(moveErr)
 		}
 		p.dragActive = true
@@ -372,7 +373,7 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 				if active {
 					buttons = p.mouseButtonByte(activeButton)
 				}
-				if err := p.moveAtomicPointer(ctx, currentX, currentY, absX, absY, buttons, action.DurationMs); err != nil {
+				if err := p.movePointerInterpolated(ctx, currentX, currentY, absX, absY, buttons, action.DurationMs); err != nil {
 					return releaseOnError(err)
 				}
 				currentX, currentY = absX, absY
@@ -432,7 +433,7 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 	})
 }
 
-func (p *HIDProvider) moveAtomicPointer(ctx context.Context, fromX, fromY, toX, toY int, buttons uint8, durationMs int) error {
+func (p *HIDProvider) movePointerInterpolated(ctx context.Context, fromX, fromY, toX, toY int, buttons uint8, durationMs int) error {
 	if durationMs <= 0 || (fromX == toX && fromY == toY) {
 		return p.movePointer(toX, toY, buttons)
 	}
@@ -449,16 +450,14 @@ func (p *HIDProvider) moveAtomicPointer(ctx context.Context, fromX, fromY, toX, 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if err := waitForContext(ctx, stepDelay); err != nil {
+			return err
+		}
 		progress := float64(step) / float64(steps)
 		x := int(math.Round(float64(fromX) + float64(toX-fromX)*progress))
 		y := int(math.Round(float64(fromY) + float64(toY-fromY)*progress))
 		if err := p.movePointer(x, y, buttons); err != nil {
 			return err
-		}
-		if step < steps {
-			if err := waitForContext(ctx, stepDelay); err != nil {
-				return err
-			}
 		}
 	}
 	return nil

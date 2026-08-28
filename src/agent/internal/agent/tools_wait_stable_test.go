@@ -162,7 +162,7 @@ func TestWaitStableScreenToolWaitReportsScreenChangedWhenFramesDiffer(t *testing
 	}
 }
 
-func TestPostActionScreenshotToolUsesInternalStableWaitWithoutWaitScreenshot(t *testing.T) {
+func TestDragStartUsesInternalStableWaitBeforeReturningScreenshot(t *testing.T) {
 	events := make([]string, 0, 4)
 	action := &stubTool{name: "touch_gesture"}
 	action.callFn = func(context.Context, string) (string, error) {
@@ -188,7 +188,7 @@ func TestPostActionScreenshotToolUsesInternalStableWaitWithoutWaitScreenshot(t *
 	}
 	tool := newPostActionStableScreenshotTool(action, waitStable, screenshot, 0, ScreenStableDefaults{TimeoutMs: 50, StableMs: 1, DiffThreshold: 2})
 
-	out, err := tool.Call(context.Background(), `{"type":"tap"}`)
+	out, err := tool.Call(context.Background(), `{"type":"drag_start","point":{"x":400,"y":500}}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
@@ -200,6 +200,13 @@ func TestPostActionScreenshotToolUsesInternalStableWaitWithoutWaitScreenshot(t *
 	}
 	if waitStable.waitCount != 1 {
 		t.Fatalf("wait count = %d, want 1", waitStable.waitCount)
+	}
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result.ScreenStable == nil || !*result.ScreenStable {
+		t.Fatalf("drag_start ScreenStable = %#v, want true", result.ScreenStable)
 	}
 	if len(screenshot.inputs) != 2 {
 		t.Fatalf("post-action screenshot inputs = %#v, want baseline and final captures", screenshot.inputs)

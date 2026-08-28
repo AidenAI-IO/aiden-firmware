@@ -842,17 +842,60 @@ func TestTouchGestureSchemaDoesNotExposeWheelMetadata(t *testing.T) {
 	}
 }
 
-func TestTouchGestureDescriptionRequiresObserveThenReleaseDragFlow(t *testing.T) {
+func TestTouchGestureDescriptionRequiresInternalStableWaitThenReleaseDragFlow(t *testing.T) {
 	description := (&TouchGestureTool{}).Description()
 	for _, want := range []string{
+		"Atomic actions are a low-frequency advanced option",
+		"Do not use actions for ordinary taps, long presses, swipes, scrolling, or moving draggable UI targets",
+		"Decide whether the requested target is draggable before choosing a gesture form",
+		"When moving an app icon, card, widget, list item, or any other draggable UI target, never use actions",
 		"call drag_start with the target's current point",
-		"inspect the returned screenshot",
-		"then call drag_release with that confirmed point",
+		"drag_start internally waits for the screen to stabilize before returning its final screenshot",
+		"do not call wait_for_stable_screen separately in the normal drag flow",
+		"Confirm screen_stable=true",
+		"call drag_release with it",
+		"Never determine or guess the destination from an intermediate or screen_stable=false result",
+		"drag_start presses for 500ms, then moves 200 normalized units at 500 normalized units per second (a 400ms interpolated move)",
 		"Never use the removed drag type",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("touch_gesture description missing %q: %s", want, description)
 		}
+	}
+}
+
+func TestTouchGestureSchemaKeepsAtomicActionsExceptional(t *testing.T) {
+	schema := (&TouchGestureTool{}).ArgsSchema()
+	description, _ := schema["description"].(string)
+	for _, want := range []string{
+		"Use type for normal interaction",
+		"Reserve actions for uninterrupted custom contact timing",
+		"Never use actions to move a draggable target",
+		"let its internal stability wait finish",
+		"returned screen_stable=true screenshot",
+		"Do not call wait_for_stable_screen separately in the normal drag flow",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("touch_gesture schema description missing %q: %s", want, description)
+		}
+	}
+
+	properties := schema["properties"].(map[string]any)
+	actions := properties["actions"].(map[string]any)
+	actionsDescription, _ := actions["description"].(string)
+	for _, want := range []string{"Low-frequency advanced touch program", "Never use actions for a draggable UI target", "internally waits for screen stability", "returned screen_stable=true screenshot"} {
+		if !strings.Contains(actionsDescription, want) {
+			t.Fatalf("touch_gesture actions description missing %q: %s", want, actionsDescription)
+		}
+	}
+	if strings.Contains(actionsDescription, "Preferred atomic") {
+		t.Fatalf("touch_gesture actions must not be described as preferred: %s", actionsDescription)
+	}
+
+	point := properties["point"].(map[string]any)
+	pointDescription, _ := point["description"].(string)
+	if !strings.Contains(pointDescription, "screen_stable=true screenshot returned by drag_start after its internal stability wait") {
+		t.Fatalf("touch_gesture point description must require a stable drag destination: %s", pointDescription)
 	}
 }
 
@@ -3239,12 +3282,16 @@ func TestTouchGestureDragStartAndReleaseTiming(t *testing.T) {
 	}
 
 	times := w.writeTimes()
-	if len(times) != 3 {
-		t.Fatalf("drag_start writes = %d, want settle, press, and activation move", len(times))
+	dragStartWrites := 2 + defaultSwipeSteps // settle, press, then interpolated activation moves
+	if len(times) != dragStartWrites {
+		t.Fatalf("drag_start writes = %d, want %d", len(times), dragStartWrites)
 	}
 	gap := times[2].Sub(times[1])
 	if gap < 450*time.Millisecond {
-		t.Fatalf("drag_start press-to-activation gap = %v, want about 500ms", gap)
+		t.Fatalf("drag_start press-to-first-activation-move gap = %v, want about 500ms", gap)
+	}
+	if moveDuration := times[dragStartWrites-1].Sub(times[2]); moveDuration < 350*time.Millisecond {
+		t.Fatalf("drag_start activation move duration = %v, want interpolated motion over about 400ms", moveDuration)
 	}
 
 	out, err = tool.Call(context.Background(), `{"type":"drag_release","point":{"x":900,"y":900}}`)
@@ -3255,7 +3302,7 @@ func TestTouchGestureDragStartAndReleaseTiming(t *testing.T) {
 		t.Fatalf("drag_release output = %q, want ok", out)
 	}
 	times = w.writeTimes()
-	if len(times) != 4+touchReleaseReportCount {
+	if len(times) != dragStartWrites+1+touchReleaseReportCount {
 		t.Fatalf("total writes = %d, want direct target move plus repeated release", len(times))
 	}
 	firstRelease := len(times) - touchReleaseReportCount
