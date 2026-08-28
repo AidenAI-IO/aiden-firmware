@@ -1,0 +1,51 @@
+diff --git a/sysdrv/source/kernel/drivers/usb/gadget/configfs.c b/sysdrv/source/kernel/drivers/usb/gadget/configfs.c
+index 81f680852..6b00c9c2a 100644
+--- a/sysdrv/source/kernel/drivers/usb/gadget/configfs.c
++++ b/sysdrv/source/kernel/drivers/usb/gadget/configfs.c
+@@ -1549,10 +1549,11 @@ static int android_setup(struct usb_gadget *gadget,
+ 	int value = -EOPNOTSUPP;
+ 	struct usb_function_instance *fi;
+ 
+-	if (!android_device)
++	cdev = get_gadget_data(gadget);
++	if (!cdev)
+ 		return 0;
+ 
+-	gi = dev_get_drvdata(android_device);
++	gi = container_of(cdev, struct gadget_info, cdev);
+ 	spin_lock_irqsave(&gi->spinlock, flags);
+ 	cdev = get_gadget_data(gadget);
+ 	if (!cdev || gi->unbind) {
+@@ -1788,8 +1789,6 @@ static int android_device_create(struct gadget_info *gi)
+ 		return PTR_ERR(gi->dev);
+ 
+ 	dev_set_drvdata(gi->dev, gi);
+-	if (!android_device)
+-		android_device = gi->dev;
+ 
+ 	attrs = android_usb_attributes;
+ 	while ((attr = *attrs++)) {
+@@ -1802,6 +1801,8 @@ static int android_device_create(struct gadget_info *gi)
+ 			return err;
+ 		}
+ 	}
++	if (!android_device)
++		android_device = gi->dev;
+ 
+ 	return 0;
+ }
+@@ -1811,10 +1812,14 @@ static void android_device_destroy(struct gadget_info *gi)
+ 	struct device_attribute **attrs;
+ 	struct device_attribute *attr;
+ 
++	cancel_work_sync(&gi->work);
+ 	attrs = android_usb_attributes;
+ 	while ((attr = *attrs++))
+ 		device_remove_file(gi->dev, attr);
++	if (android_device == gi->dev)
++		android_device = NULL;
+ 	device_destroy(gi->dev->class, gi->dev->devt);
++	gi->dev = NULL;
+ }
+ #else
+ static inline int android_device_create(struct gadget_info *gi)

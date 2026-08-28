@@ -190,7 +190,9 @@ write_hashes() {
             scripts/debian-stage3/sdk-patches/0001-use-all-host-cpus.patch \
             scripts/debian-stage3/sdk-patches/0002-append-slot-kernel-cmdline.patch \
             scripts/debian-stage3/sdk-patches/0003-add-ab-images-action.patch \
-            scripts/debian-stage3/sdk-patches/0004-make-bsp-images-reproducible.patch
+            scripts/debian-stage3/sdk-patches/0004-make-bsp-images-reproducible.patch \
+            scripts/debian-stage3/sdk-patches/0005-improve-rv1106-usb2-hs-margin.patch \
+            scripts/debian-stage3/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch
     ) >"${OUTPUT_DIR}/bsp-inputs.sha256"
 }
 
