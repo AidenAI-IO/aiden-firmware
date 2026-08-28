@@ -320,7 +320,7 @@ mkdir -p "$RK_PROJECT_PACKAGE_OTA_DIR"
 echo "[6/6] Rebuilding Aiden-managed images..."
 
 echo "  → Rebuilding oem.img..."
-rebuild_ext4_image oem "$RK_PROJECT_PACKAGE_OEM_DIR"
+rebuild_ext4_image oem "$RK_PROJECT_PACKAGE_OEM_DIR" "$RK_PROJECT_OUTPUT_IMAGE"
 verify_oem_generated_binaries_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"
 verify_oem_config_web_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"
 
@@ -336,14 +336,14 @@ echo "  → Restaging rootfs CLI tools after SDK release strip..."
     --source-dir "$ROOTFS_CLI_BUILD_DIR" \
     --dest-overlay "$RK_PROJECT_PACKAGE_ROOTFS_DIR"
 echo "  → Rebuilding rootfs.img..."
-rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR"
+rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR" "$RK_PROJECT_OUTPUT_IMAGE"
 verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY" "$RK_PROJECT_PACKAGE_ROOTFS_DIR"
 
 echo "  → Rebuilding userdata.img..."
-rebuild_ext4_image userdata "$RK_PROJECT_PACKAGE_USERDATA_DIR"
+rebuild_ext4_image userdata "$RK_PROJECT_PACKAGE_USERDATA_DIR" "$RK_PROJECT_OUTPUT_IMAGE"
 
 echo "  → Rebuilding ota.img..."
-rebuild_ext4_image ota "$RK_PROJECT_PACKAGE_OTA_DIR"
+rebuild_ext4_image ota "$RK_PROJECT_PACKAGE_OTA_DIR" "$RK_PROJECT_OUTPUT_IMAGE"
 
 echo "  → Rebuilding update.img..."
 run_pico_sdk_project_build updateimg "$@"

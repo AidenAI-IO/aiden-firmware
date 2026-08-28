@@ -1,5 +1,20 @@
 #!/usr/bin/env bash
 # Shared ext4 image assembly and verification helpers for the firmware build.
+#
+# Required caller context:
+# - PICO_SDK: pico-sdk checkout used for the toolchain and e2fsprogs helpers.
+# - RK_PARTITION_FS_TYPE_CFG and RK_PARTITION_CMD_IN_ENV: board partition metadata.
+# - BUILD_BIN_DIR and GENERATED_BINARY_MANIFEST: generated-binary source and
+#   manifest used when rebuilding oem.img.
+# - ROOTFS_CLI_PRESERVE_TOOLS: initialized array of rootfs CLI names excluded
+#   from the release strip pass.
+# - ROOTFS_CLI_NAME_POLICY_RECORDS: catalog records consumed when verifying
+#   rootfs CLI tools (one "name|strip-policy" record per line).
+# - AIDEN_GENERATED_BINARIES, sha256_file, repair_generated_binaries_from_manifest,
+#   and log_generated_binaries_in_dir are provided by generated_binaries.sh.
+#
+# rebuild_ext4_image takes the output image directory as its third argument:
+#   rebuild_ext4_image <name> <staging-dir> <output-image-dir>
 
 partition_size_bytes() {
     local name="$1"
@@ -229,9 +244,15 @@ verify_rootfs_cli_tools_in_image() {
 rebuild_ext4_image() {
     local name="$1"
     local src_dir="$2"
-    local image_path="$RK_PROJECT_OUTPUT_IMAGE/${name}.img"
+    local output_image_dir="${3:-}"
+    local image_path
     local size_bytes fs_type
 
+    if [ -z "$output_image_dir" ]; then
+        echo "  ✗ Error: output image directory is required for ${name}.img" >&2
+        exit 1
+    fi
+    image_path="$output_image_dir/${name}.img"
     if [ ! -d "$src_dir" ]; then
         echo "  ✗ Error: missing staged content for ${name}.img: $src_dir" >&2
         exit 1
