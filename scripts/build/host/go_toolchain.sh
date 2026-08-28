@@ -31,11 +31,12 @@ go_binary_version() {
   local binary="$1"
   local version=""
 
-  if command -v go >/dev/null 2>&1; then
+  # Prefer the target binary: unlike `go version <path>`, executing it reports
+  # both the Go version and its target platform. This keeps validation working
+  # on Linux hosts that do not provide the optional `file` utility.
+  version="$("$binary" version 2>/dev/null || true)"
+  if [ -z "$version" ] && command -v go >/dev/null 2>&1; then
     version="$(go version "$binary" 2>/dev/null || true)"
-  fi
-  if [ -z "$version" ]; then
-    version="$("$binary" version 2>/dev/null || true)"
   fi
   printf '%s\n' "$version"
 }
@@ -178,7 +179,6 @@ ensure_go_toolchain() {
     case "$host_go_root" in
       /*) ;;
       '') host_go_root='' ;;
-      *) host_go_root="$repo_root/$host_go_root" ;;
     esac
     if [ -n "$host_go_root" ] && go_toolchain_valid "$host_go_root"; then
       AIDEN_GO_ROOT_RESOLVED="$(cd "$host_go_root" && pwd)"

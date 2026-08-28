@@ -329,6 +329,34 @@ grep -Fxq -- "$host_go_root_resolved:/usr/local/go:ro" "$docker_args_log" || \
 [ ! -s "$provision_log" ] || fail "valid host Go installation must not download a toolchain"
 [ ! -e "$host_go_cache" ] || fail "host Go reuse must not create the managed toolchain cache"
 
+# A Linux/amd64 target can report its platform by executing its own Go binary;
+# this must remain sufficient when the host has Go but no `file` utility.
+no_file_root="$test_dir/no-file-go"
+no_file_bin="$test_dir/no-file-bin"
+mkdir -p "$no_file_root/bin" "$no_file_bin"
+printf 'go1.26.0\n' > "$no_file_root/VERSION"
+cat > "$no_file_root/bin/go" <<'SH'
+#!/bin/sh
+printf '%s\n' 'go version go1.26.0 linux/amd64'
+SH
+chmod +x "$no_file_root/bin/go"
+cat > "$no_file_bin/go" <<'SH'
+#!/bin/sh
+if [ "${1:-}" = version ]; then
+  printf '%s: go1.26.0\n' "${2:-go}"
+fi
+SH
+chmod +x "$no_file_bin/go"
+ln -s "$(command -v grep)" "$no_file_bin/grep"
+set +e
+PATH="$no_file_bin" /bin/bash -c \
+  'source "$1"; go_toolchain_valid "$2"' _ \
+  "$ROOT_DIR/scripts/build/host/go_toolchain.sh" "$no_file_root"
+no_file_status=$?
+set -e
+[ "$no_file_status" -eq 0 ] || \
+  fail "a valid target Go binary must pass without host file utility"
+
 # The explicit exec form preserves command argument boundaries and uses the
 # requested profile instead of invoking the profile's default task.
 run_build 0 exec image -- bash ./scripts/repack_ota_update_image.sh \
