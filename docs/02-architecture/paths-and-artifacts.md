@@ -78,11 +78,11 @@ sidebar_position: 4
 
 ```bash
 # Build
-./build.sh
+./build.sh binaries
 make test
 
 # Full firmware
-./build_image.sh
+./build.sh image
 ./upgrade_tool/upgrade_tool uf ./update.img
 
 # Service status

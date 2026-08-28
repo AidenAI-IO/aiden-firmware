@@ -98,7 +98,7 @@ jobs:
           bash scripts/test_ota_manifest_generation.sh
           bash scripts/test_github_release_upload.sh
           bash scripts/test_reusable_rootfs_release_asset.sh
-          sh scripts/test_build_image_go_proxy.sh
+          bash scripts/test_build_cli.sh
       - name: Verify normalized UI coordinates
         run: |
           python3 scripts/check_normalized_coords.py
