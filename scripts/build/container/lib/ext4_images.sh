@@ -260,7 +260,7 @@ rebuild_ext4_image() {
     }
 
     if [ "$name" = "oem" ]; then
-        repair_generated_binaries_from_manifest "sdk-oem-before-strip" "$AIDEN_BUILD_BIN_DIR" "$src_dir/usr/bin" "$GENERATED_BINARY_MANIFEST"
+        repair_generated_binaries_from_manifest "sdk-oem-before-strip" "$BUILD_BIN_DIR" "$src_dir/usr/bin" "$GENERATED_BINARY_MANIFEST"
     fi
     strip_release_files "$src_dir"
     if [ "$name" = "oem" ]; then

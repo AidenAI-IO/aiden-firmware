@@ -149,7 +149,8 @@ ensure_go_toolchain() {
   local repo_root="$1"
   local cache_root="${AIDEN_GO_TOOLCHAIN_CACHE:-$repo_root/.toolchains}"
   local go_root
-  local tarball_path="$cache_root/$GO_TARBALL"
+  local host_go_root
+  local tarball_path
   local lock_dir
   local extract_dir
   local lock_status=0
@@ -167,6 +168,22 @@ ensure_go_toolchain() {
     fi
     AIDEN_GO_ROOT_RESOLVED="$(cd "$go_root" && pwd)"
     return 0
+  fi
+
+  # Reuse a verified host installation (for example, actions/setup-go) before
+  # falling back to the managed cache. This keeps CI builds offline when the
+  # runner already provides the pinned toolchain.
+  if command -v go >/dev/null 2>&1; then
+    host_go_root="$(go env GOROOT 2>/dev/null || true)"
+    case "$host_go_root" in
+      /*) ;;
+      '') host_go_root='' ;;
+      *) host_go_root="$repo_root/$host_go_root" ;;
+    esac
+    if [ -n "$host_go_root" ] && go_toolchain_valid "$host_go_root"; then
+      AIDEN_GO_ROOT_RESOLVED="$(cd "$host_go_root" && pwd)"
+      return 0
+    fi
   fi
 
   case "$cache_root" in

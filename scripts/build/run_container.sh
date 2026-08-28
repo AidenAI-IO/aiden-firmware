@@ -58,7 +58,7 @@ restore_image_output_ownership() {
   if [ "${#host_paths[@]}" -gt 0 ]; then
     if [ "$(id -u)" -eq 0 ]; then
       chown -hR "$owner" "${host_paths[@]}" || true
-    elif command -v sudo >/dev/null 2>&1 && sudo chown -R "$owner" "${host_paths[@]}"; then
+    elif command -v sudo >/dev/null 2>&1 && sudo chown -hR "$owner" "${host_paths[@]}"; then
       :
     else
       docker run --platform linux/amd64 --rm -u 0:0 \

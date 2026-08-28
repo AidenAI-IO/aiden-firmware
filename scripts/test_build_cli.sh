@@ -257,7 +257,7 @@ assert_arg --privileged
 assert_user 0:0
 assert_task image
 assert_no_task binaries
-grep -Eq '^sudo chown -R 1234:5678 .*build' "$cleanup_log" || \
+grep -Eq '^sudo chown -hR 1234:5678 .*build' "$cleanup_log" || \
   fail "image builds must restore output ownership after Docker exits"
 grep -Eq '^chmod -R u\+w .*\.cache/rootfs-cli-tools/go-mod' "$cleanup_log" || \
   fail "image builds must restore Go module cache write permission after Docker exits"
@@ -286,6 +286,48 @@ assert_no_task image
 [ ! -s "$cleanup_log" ] || fail "binary builds must not run image ownership cleanup"
 [ "$(wc -l < "$provision_log" | tr -d ' ')" -eq 1 ] || \
   fail "binary and image builds must reuse the same Go toolchain cache"
+
+# A pinned host Go installation, such as actions/setup-go, must be reused
+# before the runner considers downloading the managed toolchain cache.
+host_go_root="$test_dir/host-go"
+host_go_bin="$test_dir/host-go-bin"
+host_go_cache="$test_dir/host-go-cache"
+mkdir -p "$host_go_root/bin" "$host_go_bin"
+printf 'go1.26.0\n' > "$host_go_root/VERSION"
+cat > "$host_go_root/bin/go" <<'SH'
+#!/bin/sh
+printf '%s\n' 'go version go1.26.0 linux/amd64'
+SH
+chmod +x "$host_go_root/bin/go"
+cat > "$host_go_bin/go" <<SH
+#!/bin/sh
+case "\${1:-} \${2:-}" in
+  'env GOROOT') printf '%s\n' '$host_go_root' ;;
+  'version '*) printf '%s\n' 'go version go1.26.0 linux/amd64' ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$host_go_bin/go"
+host_go_root_resolved="$(cd "$host_go_root" && pwd)"
+: > "$docker_args_log"
+: > "$provision_log"
+set +e
+(
+  cd "$fixture_repo"
+  PATH="$host_go_bin:$fake_bin:/usr/bin:/bin" \
+    AIDEN_GO_TOOLCHAIN_CACHE="$host_go_cache" \
+    FAKE_DOCKER_ARGS_LOG="$docker_args_log" \
+    FAKE_DOCKER_EXIT_CODE=0 \
+    FAKE_PROVISION_LOG="$provision_log" \
+    ./build.sh binaries
+) > "$test_dir/host-go.log" 2>&1
+host_go_status=$?
+set -e
+[ "$host_go_status" -eq 0 ] || fail "a valid host Go installation must be accepted"
+grep -Fxq -- "$host_go_root_resolved:/usr/local/go:ro" "$docker_args_log" || \
+  fail "builds must mount the validated host Go installation"
+[ ! -s "$provision_log" ] || fail "valid host Go installation must not download a toolchain"
+[ ! -e "$host_go_cache" ] || fail "host Go reuse must not create the managed toolchain cache"
 
 # The explicit exec form preserves command argument boundaries and uses the
 # requested profile instead of invoking the profile's default task.

@@ -41,10 +41,7 @@ export GOPATH="/tmp/gopath"
 export GOTOOLCHAIN=local
 
 git config --global --add safe.directory "$REPO_ROOT" 2>/dev/null || true
-if ! AGENT_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null)"; then
-    echo "Unable to resolve the current Git commit for the agent build." >&2
-    exit 1
-fi
+AGENT_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 AGENT_BUILD_VERSION="$(date -u +"%Y%m%d-%H%M%S")-${AGENT_COMMIT}"
 AGENT_LDFLAGS="-X aiden-agent/internal/agent.buildCommit=${AGENT_COMMIT} -X aiden-agent/internal/agent.buildVersion=${AGENT_BUILD_VERSION}"
 

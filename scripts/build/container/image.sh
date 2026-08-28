@@ -17,7 +17,7 @@ ROOTFS_CLI_TOOL_CATALOG="$REPO_ROOT/scripts/rootfs_cli_tools.catalog"
 ROOTFS_CLI_CATALOG_LIB="$REPO_ROOT/scripts/rootfs_cli_tool_catalog.sh"
 ROOTFS_CLI_BUILD_DIR="$REPO_ROOT/build/rootfs-cli-tools"
 ROOTFS_CLI_CACHE_DIR="$REPO_ROOT/.cache/rootfs-cli-tools"
-AIDEN_BUILD_BIN_DIR="${AIDEN_BUILD_BIN_DIR:-$REPO_ROOT/build/bin}"
+BUILD_BIN_DIR="$REPO_ROOT/build/bin"
 GENERATED_BINARY_MANIFEST="$REPO_ROOT/build/aiden-generated-binaries.sha256"
 
 # shellcheck source=/dev/null
@@ -89,16 +89,16 @@ echo ""
 # Step 1: Build applications with the verified Go toolchain supplied by the container runner.
 echo "[1/6] Building applications..."
 "$CONTAINER_DIR/binaries.sh"
-log_generated_binaries_in_dir "build-bin" "$AIDEN_BUILD_BIN_DIR"
-write_generated_binary_manifest "$AIDEN_BUILD_BIN_DIR" "$GENERATED_BINARY_MANIFEST"
-check_generated_binaries_against_manifest "build-bin" "$AIDEN_BUILD_BIN_DIR" "$GENERATED_BINARY_MANIFEST" "$AIDEN_BUILD_BIN_DIR"
+log_generated_binaries_in_dir "build-bin" "$BUILD_BIN_DIR"
+write_generated_binary_manifest "$BUILD_BIN_DIR" "$GENERATED_BINARY_MANIFEST"
+check_generated_binaries_against_manifest "build-bin" "$BUILD_BIN_DIR" "$GENERATED_BINARY_MANIFEST" "$BUILD_BIN_DIR"
 
 # Step 2: Prepare overlay directories.
 echo "[2/6] Preparing overlay directories..."
 mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/usr/lib" "$OVERLAY/oem/etc"
-sync_generated_binaries_from_source "$AIDEN_BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin"
+sync_generated_binaries_from_source "$BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin"
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
-repair_generated_binaries_from_manifest "overlay-oem-usr-bin" "$AIDEN_BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
+repair_generated_binaries_from_manifest "overlay-oem-usr-bin" "$BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
 
 AGENT_TOOLS_DEST="$OVERLAY/userdata/agent_tools"
 mkdir -p "$AGENT_TOOLS_DEST"
@@ -174,13 +174,13 @@ fi
 
 # Step 4: Run pico-sdk build stages and base firmware packaging.
 echo "[4/6] Running pico-sdk build stages..."
-repair_generated_binaries_from_manifest "overlay-before-sdk-sysdrv" "$AIDEN_BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
+repair_generated_binaries_from_manifest "overlay-before-sdk-sysdrv" "$BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
 run_pico_sdk_build sysdrv "$@"
-repair_generated_binaries_from_manifest "overlay-after-sdk-sysdrv" "$AIDEN_BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
+repair_generated_binaries_from_manifest "overlay-after-sdk-sysdrv" "$BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
 run_pico_sdk_build media "$@"
-repair_generated_binaries_from_manifest "overlay-after-sdk-media" "$AIDEN_BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
+repair_generated_binaries_from_manifest "overlay-after-sdk-media" "$BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
 run_pico_sdk_build app "$@"
-repair_generated_binaries_from_manifest "overlay-after-sdk-app" "$AIDEN_BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
+repair_generated_binaries_from_manifest "overlay-after-sdk-app" "$BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
 
 # Step 5: Resolve output paths and inject OEM/userdata content.
 echo "[5/6] Injecting oem and userdata content..."
@@ -227,7 +227,7 @@ fi
 grep -E "(oem|userdata|update)" "$firmware_log" || true
 rm -f "$firmware_log"
 echo "  ✓ Base images packaged"
-repair_generated_binaries_from_manifest "overlay-after-sdk-firmware" "$AIDEN_BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
+repair_generated_binaries_from_manifest "overlay-after-sdk-firmware" "$BUILD_BIN_DIR" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
 
 # Copy OEM content.
 if [ -d "$OVERLAY/oem" ]; then
@@ -241,7 +241,7 @@ if [ -d "$OVERLAY/oem" ]; then
     clean_generated_binaries "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"
     rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"
     # Keep generated binaries anchored to build/bin; overlay/oem/usr/bin is only an intermediate staging copy.
-    repair_generated_binaries_from_manifest "sdk-oem-usr-bin" "$AIDEN_BUILD_BIN_DIR" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin" "$GENERATED_BINARY_MANIFEST"
+    repair_generated_binaries_from_manifest "sdk-oem-usr-bin" "$BUILD_BIN_DIR" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin" "$GENERATED_BINARY_MANIFEST"
     echo "  ✓ OEM content copied"
     log_generated_binaries_in_dir "sdk-oem-usr-bin" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"
 fi

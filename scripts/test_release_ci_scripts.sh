@@ -102,6 +102,20 @@ if ! grep -Fq 'source "$CONTAINER_DIR/lib/generated_binaries.sh"' "$IMAGE_TASK" 
     exit 1
 fi
 
+if grep -Fq 'AIDEN_BUILD_BIN_DIR' "$IMAGE_TASK" || \
+   grep -Fq 'AIDEN_BUILD_BIN_DIR' "$EXT4_IMAGES_LIB" || \
+   grep -Fq 'AIDEN_BUILD_BIN_DIR' "$CONTAINER_RUNNER" || \
+   ! grep -Fq 'BUILD_BIN_DIR="$REPO_ROOT/build/bin"' "$IMAGE_TASK"; then
+    echo "generated binaries must use the fixed repository build/bin directory" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown' \
+    "$ROOT_DIR/scripts/build/container/binaries.sh"; then
+    echo "binary builds must preserve unknown commit metadata when .git is unavailable" >&2
+    exit 1
+fi
+
 if ! grep -Fq 'run: ./build.sh image' "$WORKFLOW" || \
    ! grep -Fq 'run: ./build.sh exec image -- bash ./scripts/repack_ota_update_image.sh' "$WORKFLOW" || \
    grep -Fq 'build_image.sh' "$WORKFLOW"; then
@@ -217,7 +231,7 @@ if ! grep -q 'Compress OTA manifest images' "$WORKFLOW" || \
 fi
 
 oem_full_sync_line=$(grep -nF 'rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"' "$IMAGE_TASK" | sed 's/:.*//' | head -n 1)
-oem_repair_line=$(grep -nF 'repair_generated_binaries_from_manifest "sdk-oem-usr-bin" "$AIDEN_BUILD_BIN_DIR" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin" "$GENERATED_BINARY_MANIFEST"' "$IMAGE_TASK" | sed 's/:.*//' | head -n 1)
+oem_repair_line=$(grep -nF 'repair_generated_binaries_from_manifest "sdk-oem-usr-bin" "$BUILD_BIN_DIR" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin" "$GENERATED_BINARY_MANIFEST"' "$IMAGE_TASK" | sed 's/:.*//' | head -n 1)
 if [ -z "$oem_full_sync_line" ] || [ -z "$oem_repair_line" ] || [ "$oem_full_sync_line" -ge "$oem_repair_line" ]; then
     echo "image task must sync OEM overlay first, then restore generated usr/bin files from the build manifest source" >&2
     exit 1
