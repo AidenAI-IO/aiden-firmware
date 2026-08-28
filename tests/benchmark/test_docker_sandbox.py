@@ -240,6 +240,7 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertLess(config_source, settings)
         self.assertIn("${WETTY_BIN:-/usr/bin/ttyd}", init_script)
         self.assertIn("${WETTY_PORT:-3000}", init_script)
+        self.assertIn("${WETTY_FONT_SIZE:-24}", init_script)
         self.assertIn(': "${ENABLE_TTYD:=${ENABLE_WETTY:-1}}"', init_script)
 
         # ttyd 1.7.3 exposes --readonly; writable mode is the default and
@@ -257,7 +258,7 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn('--max-clients "$TTYD_MAX_CLIENTS"', init_script)
         self.assertIn('--max-clients="${TTYD_MAX_CLIENTS:-2}"', entrypoint)
         self.assertIn('rendererType=${TTYD_RENDERER:-canvas}', entrypoint)
-        self.assertIn('fontSize=${TTYD_FONT_SIZE:-16}', entrypoint)
+        self.assertIn('fontSize=${TTYD_FONT_SIZE:-24}', entrypoint)
         self.assertIn('scrollback=${TTYD_SCROLLBACK:-500}', entrypoint)
 
     def test_agent_supervisor_truncates_the_persistent_log(self):

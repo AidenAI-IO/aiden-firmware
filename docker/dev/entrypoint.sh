@@ -52,7 +52,7 @@ ttyd \
     --max-clients="${TTYD_MAX_CLIENTS:-2}" \
     --client-option "titleFixed=${TTYD_TITLE:-Aiden Shell}" \
     --client-option "rendererType=${TTYD_RENDERER:-canvas}" \
-    --client-option "fontSize=${TTYD_FONT_SIZE:-16}" \
+    --client-option "fontSize=${TTYD_FONT_SIZE:-24}" \
     --client-option "scrollback=${TTYD_SCROLLBACK:-500}" \
     --client-option "cursorStyle=${TTYD_CURSOR_STYLE:-bar}" \
     --client-option "disableResizeOverlay=${TTYD_DISABLE_RESIZE_OVERLAY:-true}" \

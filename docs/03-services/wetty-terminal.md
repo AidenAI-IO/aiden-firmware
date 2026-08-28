@@ -66,7 +66,7 @@ these defaults for the small touch screen and for lower-end mobile browsers:
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `rendererType` | `canvas` | Avoid requiring a WebGL context on mobile browsers |
-| `fontSize` | `16` | Keep text readable and avoid iOS input auto-zoom |
+| `fontSize` | `24` | Keep text readable and avoid iOS input auto-zoom |
 | `scrollback` | `500` | Bound the browser-side terminal buffer |
 | `cursorStyle` | `bar` | Make the insertion point easier to follow while typing |
 | `disableResizeOverlay` | `true` | Avoid transient overlays when mobile browser chrome resizes the viewport |
