@@ -310,7 +310,6 @@ type Config struct {
 	VoiceToolCallSpeech        *bool                    `toml:"voice_tool_call_speech,omitempty"`
 	VoiceProgressSpeechEnabled *bool                    `toml:"voice_progress_speech_enabled,omitempty"`
 	VoiceMaxResponseTokens     int                      `toml:"voice_max_response_tokens,omitempty"`
-	LoadAllTools               bool                     `toml:"load_all_tools,omitempty"`
 	MaxIterations              int                      `toml:"max_iterations,omitempty"`
 	TerminationPolicy          TerminationPolicyConfig  `toml:"termination_policy,omitempty"`
 	ForceSimpleLoop            bool                     `toml:"-"`
@@ -580,7 +579,8 @@ type HIDConfig struct {
 	// plus full hid.usb2 Android extension keys).
 	PointerMode string `toml:"pointer_mode,omitempty"`
 	// InputBackend selects the low-level input path for keyboard/touch tools:
-	// "hid" writes USB HID reports, "adb" sends Android adb shell input commands.
+	// "hid" writes USB HID reports; "adb" sends Android shell input commands
+	// and uses getevent/sendevent (with motionevent fallback) for atomic touch.
 	InputBackend string `toml:"input_backend,omitempty"`
 }
 

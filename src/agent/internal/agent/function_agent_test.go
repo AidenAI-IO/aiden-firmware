@@ -675,11 +675,35 @@ func TestFunctionAgentRejectsVisualObservationWithoutDimensions(t *testing.T) {
 	}
 }
 
-func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing.T) {
+func TestFunctionAgentUsesSharedActionOutputFlowForScreenshot(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("img1"))
+	observation := `{"action_output":"ok","width":800,"height":600,"format":"jpeg","size":4,"capture_backend":"frame_service","data":"` + encoded + `"}`
+
+	toolContent, followups := agent.observationMessagesForStep(schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "screenshot"},
+		Observation: observation,
+	}, true)
+
+	if toolContent != "ok" {
+		t.Fatalf("tool result = %q, want shared action_output", toolContent)
+	}
+	if len(followups) != 1 || len(followups[0].Parts) != 2 {
+		t.Fatalf("visual followups = %#v, want one captioned image", followups)
+	}
+	imagePart, ok := followups[0].Parts[1].(llms.ImageURLContent)
+	if !ok || !strings.Contains(imagePart.URL, encoded) {
+		t.Fatalf("follow-up image = %#v, want screenshot data", followups[0].Parts[1])
+	}
+}
+
+func TestFunctionAgentPostActionScreenshotPreservesActionOutput(t *testing.T) {
 	agent := &FunctionAgent{
 		Tools: []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}},
 	}
-	observation := `{"action_output":"ok","screen_changed":false,"screen_stable":true,"stable_wait_ms":250,"width":800,"height":600,"format":"jpeg","size":4,"data":"` +
+	observation := `{"action_output":"  ok\nwith details  ","screen_changed":false,"screen_stable":true,"stable_wait_ms":250,"width":800,"height":600,"format":"jpeg","size":4,"data":"` +
 		base64.StdEncoding.EncodeToString([]byte("img1")) + `"}`
 	step := schema.AgentStep{
 		Action:      schema.AgentAction{Tool: "keyboard_tap"},
@@ -688,14 +712,28 @@ func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing
 
 	toolContent, followups := agent.observationMessagesForStep(step, true)
 
-	if !strings.Contains(toolContent, "No meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot") {
-		t.Fatalf("toolContent missing screen_changed warning: %q", toolContent)
+	if toolContent != "  ok\nwith details  " {
+		t.Fatalf("toolContent = %q, want original action output", toolContent)
 	}
-	if !strings.Contains(toolContent, "Do not assume the action succeeded") {
-		t.Fatalf("toolContent missing success warning: %q", toolContent)
+	if len(followups) != 1 {
+		t.Fatalf("expected one followup screenshot message, got %#v", followups)
 	}
-	if !strings.Contains(toolContent, "The screen was stable when the screenshot was captured") {
-		t.Fatalf("toolContent missing stable summary: %q", toolContent)
+}
+
+func TestFunctionAgentPostActionScreenshotPreservesEmptyActionOutput(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}},
+	}
+	observation := `{"action_output":"","width":800,"height":600,"format":"jpeg","size":4,"data":"` +
+		base64.StdEncoding.EncodeToString([]byte("img1")) + `"}`
+
+	toolContent, followups := agent.observationMessagesForStep(schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "keyboard_tap"},
+		Observation: observation,
+	}, true)
+
+	if toolContent != "" {
+		t.Fatalf("toolContent = %q, want empty original action output", toolContent)
 	}
 	if len(followups) != 1 {
 		t.Fatalf("expected one followup screenshot message, got %#v", followups)
@@ -714,17 +752,21 @@ func TestFunctionAgentWaitStableScreenDoesNotTreatMotionAsActionResult(t *testin
 	}
 
 	toolContent, followups := agent.observationMessagesForStep(step, true)
-	if strings.Contains(toolContent, "between the pre-action baseline and the final settled screenshot") {
-		t.Fatalf("wait_for_stable_screen used post-action screen_changed wording: %q", toolContent)
-	}
-	if !strings.Contains(toolContent, "No frame-to-frame screen motion was observed during this wait window") {
-		t.Fatalf("toolContent missing wait-window motion wording: %q", toolContent)
-	}
-	if strings.Contains(toolContent, "Do not assume the action succeeded") {
-		t.Fatalf("standalone wait incorrectly warned about action success: %q", toolContent)
+	if toolContent != observation {
+		t.Fatalf("toolContent = %q, want original observation", toolContent)
 	}
 	if len(followups) != 1 {
 		t.Fatalf("expected one followup screenshot message, got %#v", followups)
+	}
+	caption, ok := followups[0].Parts[0].(llms.TextContent)
+	if !ok {
+		t.Fatalf("state message caption = %T, want text", followups[0].Parts[0])
+	}
+	if !strings.Contains(caption.Text, "No frame-to-frame screen motion was observed during this wait window") {
+		t.Fatalf("state message missing wait-window motion note: %q", caption.Text)
+	}
+	if strings.Contains(caption.Text, "Do not assume the action succeeded") {
+		t.Fatalf("standalone wait state message incorrectly warned about action success: %q", caption.Text)
 	}
 }
 

@@ -15,8 +15,8 @@ func ExampleHTTPProvider() {
 	factory := mnk.NewProviderFactory(&screen.ScreenState{})
 
 	provider, err := factory.CreateHTTPProvider(
-		"http://localhost:8080",  // Bridge server URL
-		"example-task-123",       // Task ID for tracking
+		"http://localhost:8080", // Bridge server URL
+		"example-task-123",      // Task ID for tracking
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -24,7 +24,8 @@ func ExampleHTTPProvider() {
 
 	// 使用 HTTP Provider（与本地 Provider 完全相同）
 	provider.Click(context.Background(), 500, 500, "left", 0)
-	provider.Drag(context.Background(), [][2]float64{{100, 500}, {900, 500}}, "left")
+	provider.DragStart(context.Background(), 100, 500, "left")
+	provider.DragRelease(context.Background(), 900, 500)
 	provider.Keypress(context.Background(), []string{"ctrl", "a"})
 }
 
@@ -140,8 +141,8 @@ func Example_remoteClient() {
 	factory := mnk.NewProviderFactory(&screen.ScreenState{})
 
 	provider, err := factory.CreateHTTPProvider(
-		"http://192.168.1.100:8080",  // Remote bridge server
-		"remote-test-001",            // Task ID
+		"http://192.168.1.100:8080", // Remote bridge server
+		"remote-test-001",           // Task ID
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -153,12 +154,11 @@ func Example_remoteClient() {
 		log.Printf("Click failed: %v", err)
 	}
 
-	log.Println("Swiping...")
-	if err := provider.Drag(context.Background(), [][2]float64{
-		{100, 500},
-		{900, 500},
-	}, "left"); err != nil {
-		log.Printf("Swipe failed: %v", err)
+	log.Println("Dragging...")
+	if err := provider.DragStart(context.Background(), 100, 500, "left"); err != nil {
+		log.Printf("Drag start failed: %v", err)
+	} else if err := provider.DragRelease(context.Background(), 900, 500); err != nil {
+		log.Printf("Drag release failed: %v", err)
 	}
 
 	log.Println("Typing...")
@@ -202,11 +202,12 @@ func Example_distributedTest() {
 				return
 			}
 
-			if err := provider.Drag(context.Background(), [][2]float64{
-				{100, 500},
-				{900, 500},
-			}, "left"); err != nil {
-				log.Printf("%s: Drag failed: %v", name, err)
+			if err := provider.DragStart(context.Background(), 100, 500, "left"); err != nil {
+				log.Printf("%s: Drag start failed: %v", name, err)
+				return
+			}
+			if err := provider.DragRelease(context.Background(), 900, 500); err != nil {
+				log.Printf("%s: Drag release failed: %v", name, err)
 				return
 			}
 
@@ -297,7 +298,7 @@ func Example_httpProviderConfig() {
 	// 高级配置
 	advancedProvider := mnk.NewHTTPProvider(mnk.HTTPProviderConfig{
 		BaseURL: "http://remote-device:8080",
-		Timeout: 60 * time.Second,  // 长超时（用于慢速网络）
+		Timeout: 60 * time.Second, // 长超时（用于慢速网络）
 		TaskID:  "benchmark-run-001",
 	})
 	_ = advancedProvider

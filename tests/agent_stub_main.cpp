@@ -122,7 +122,7 @@ const char* kDefaultConfig =
     "\"voice_followup_timeout_ms\":6000,\"voice_first_turn_timeout_ms\":10000,"
     "\"voice_max_turns\":0,\"voice_interrupt_on_wakeup\":true,"
     "\"voice_streaming_tts_enabled\":true,\"voice_tool_call_speech\":true,"
-    "\"voice_max_response_tokens\":300,\"load_all_tools\":false,\"max_iterations\":-1,"
+    "\"voice_max_response_tokens\":300,\"max_iterations\":-1,"
     "\"screenshot_keep_n\":3,"
     "\"screenshot_prune_interval\":2,\"screen_stable_timeout_ms\":3500,"
     "\"screen_stable_ms\":500,\"screen_stable_diff_threshold\":2}"

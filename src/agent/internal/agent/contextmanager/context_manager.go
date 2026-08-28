@@ -332,32 +332,12 @@ func (c *ContextManager) ReadAttachment(attachmentID string) ([]byte, error) {
 
 	data, err := os.ReadFile(candidate)
 	if err != nil {
-		return nil, fmt.Errorf("read screenshot attachment: %w", err)
+		return nil, fmt.Errorf("read attachment: %w", err)
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("screenshot attachment is empty")
+		return nil, fmt.Errorf("attachment is empty")
 	}
 	return data, nil
-}
-
-// ReadScreenshotAttachment is kept for callers that specifically request a
-// screenshot attachment.
-func (c *ContextManager) ReadScreenshotAttachment(attachmentID string) ([]byte, error) {
-	attachmentID = strings.TrimSpace(attachmentID)
-	if attachmentID == "" {
-		return nil, fmt.Errorf("invalid screenshot attachment ID")
-	}
-	c.mu.RLock()
-	for _, message := range c.messageList {
-		for _, attachment := range message.Attachments {
-			if attachment.Source == messages.AttachmentSourceScreenshotObservation && filepath.Base(attachment.FilePath) == attachmentID {
-				c.mu.RUnlock()
-				return c.ReadAttachment(attachmentID)
-			}
-		}
-	}
-	c.mu.RUnlock()
-	return nil, fmt.Errorf("attachment is not a registered screenshot")
 }
 
 func cloneMessages(messageList []messages.Message) []messages.Message {

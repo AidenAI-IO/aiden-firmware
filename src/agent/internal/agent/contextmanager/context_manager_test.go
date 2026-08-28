@@ -595,7 +595,7 @@ func TestStoreAttachmentPersistsMetadataOnly(t *testing.T) {
 	}
 }
 
-func TestScreenshotAttachmentIDIsExposedAndReadable(t *testing.T) {
+func TestScreenshotAttachmentIsExposed(t *testing.T) {
 	manager := newTestContextManager(t)
 	stored, err := manager.StoreAttachment("image/jpeg", []byte("jpeg-bytes"))
 	if err != nil {
@@ -610,38 +610,13 @@ func TestScreenshotAttachmentIDIsExposedAndReadable(t *testing.T) {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
-	attachmentID := filepath.Base(stored.FilePath)
 	messages := messages.ConvertMessageList(manager.CloneMessageList())
-	if len(messages) != 1 || len(messages[0].Parts) != 3 {
-		t.Fatalf("messages = %#v, want text + attachment ID + binary", messages)
+	if len(messages) != 1 || len(messages[0].Parts) != 2 {
+		t.Fatalf("messages = %#v, want text + binary", messages)
 	}
-	label, ok := messages[0].Parts[1].(llms.TextContent)
-	if !ok || label.Text != "[screenshot_attachment_id="+attachmentID+"]" {
-		t.Fatalf("attachment label = %#v", messages[0].Parts[1])
-	}
-	data, err := manager.ReadScreenshotAttachment(attachmentID)
-	if err != nil {
-		t.Fatalf("ReadScreenshotAttachment() error = %v", err)
-	}
-	if string(data) != "jpeg-bytes" {
-		t.Fatalf("attachment data = %q", data)
-	}
-}
-
-func TestReadScreenshotAttachmentRejectsUnregisteredReferences(t *testing.T) {
-	manager := newTestContextManager(t)
-	stored, err := manager.StoreAttachment("image/jpeg", []byte("user-image"))
-	if err != nil {
-		t.Fatalf("StoreAttachment() error = %v", err)
-	}
-	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Attachments: []messages.Attachment{stored}}); err != nil {
-		t.Fatalf("AppendMessage() error = %v", err)
-	}
-
-	for _, attachmentID := range []string{filepath.Base(stored.FilePath), "../outside.jpg", "missing.jpg"} {
-		if _, err := manager.ReadScreenshotAttachment(attachmentID); err == nil {
-			t.Fatalf("ReadScreenshotAttachment(%q) succeeded", attachmentID)
-		}
+	data, ok := messages[0].Parts[1].(llms.BinaryContent)
+	if !ok || string(data.Data) != "jpeg-bytes" {
+		t.Fatalf("attachment = %#v, want jpeg binary", messages[0].Parts[1])
 	}
 }
 

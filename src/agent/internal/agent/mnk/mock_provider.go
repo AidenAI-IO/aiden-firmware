@@ -6,11 +6,14 @@ import "context"
 type MockProvider struct {
 	clicks       []MockClick
 	doubleClicks []MockDoubleClick
-	swipes       []MockDrag
-	drags        []MockDrag
+	swipes       []MockSwipe
+	dragStarts   []MockClick
+	dragReleases []MockMove
+	dragActive   bool
 	keypresses   []MockKeypress
 	moves        []MockMove
 	scrolls      []MockScroll
+	touchActions []TouchAction
 }
 
 type MockClick struct {
@@ -24,9 +27,13 @@ type MockDoubleClick struct {
 	Button string
 }
 
-type MockDrag struct {
-	Path   [][2]float64
-	Button string
+type MockSwipe struct {
+	Path         [][2]float64
+	Button       string
+	DurationMs   int
+	HoldBeforeMs int
+	HoldAfterMs  int
+	Steps        int
 }
 
 type MockKeypress struct {
@@ -58,14 +65,49 @@ func (m *MockProvider) DoubleClick(ctx context.Context, x, y float64, button str
 }
 
 func (m *MockProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
+	return m.SwipeWithOptions(ctx, path, button, SwipeOptions{})
+}
+
+func (m *MockProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, button string, durationMs int) error {
+	return m.SwipeWithOptions(ctx, path, button, SwipeOptions{DurationMs: durationMs})
+}
+
+func (m *MockProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
 	_ = ctx
-	m.swipes = append(m.swipes, MockDrag{Path: path, Button: button})
+	if options.DurationMs <= 0 {
+		options.DurationMs = defaultSwipeGestureDurationMs
+	}
+	if options.Steps <= 0 {
+		options.Steps = defaultSwipeSteps
+	}
+	m.swipes = append(m.swipes, MockSwipe{
+		Path:         path,
+		Button:       button,
+		DurationMs:   options.DurationMs,
+		HoldBeforeMs: options.HoldBeforeMs,
+		HoldAfterMs:  options.HoldAfterMs,
+		Steps:        options.Steps,
+	})
 	return nil
 }
 
-func (m *MockProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
+func (m *MockProvider) DragStart(ctx context.Context, x, y float64, button string) error {
 	_ = ctx
-	m.drags = append(m.drags, MockDrag{Path: path, Button: button})
+	if m.dragActive {
+		return InvalidArguments("drag_start is already active")
+	}
+	m.dragStarts = append(m.dragStarts, MockClick{X: x, Y: y, Button: button})
+	m.dragActive = true
+	return nil
+}
+
+func (m *MockProvider) DragRelease(ctx context.Context, x, y float64) error {
+	_ = ctx
+	if !m.dragActive {
+		return InvalidArguments("drag_release requires an active drag_start")
+	}
+	m.dragReleases = append(m.dragReleases, MockMove{X: x, Y: y})
+	m.dragActive = false
 	return nil
 }
 
@@ -87,14 +129,45 @@ func (m *MockProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 	return nil
 }
 
+func (m *MockProvider) TouchActions(ctx context.Context, actions []TouchAction) error {
+	_ = ctx
+	m.touchActions = append(m.touchActions, cloneTouchActions(actions)...)
+	return nil
+}
+
+func (m *MockProvider) TouchActionCalls() []TouchAction {
+	if m == nil {
+		return nil
+	}
+	return cloneTouchActions(m.touchActions)
+}
+
 func (m *MockProvider) Reset() {
 	m.clicks = nil
 	m.doubleClicks = nil
 	m.swipes = nil
-	m.drags = nil
+	m.dragStarts = nil
+	m.dragReleases = nil
+	m.dragActive = false
 	m.keypresses = nil
 	m.moves = nil
 	m.scrolls = nil
+	m.touchActions = nil
+}
+
+func cloneTouchActions(actions []TouchAction) []TouchAction {
+	if actions == nil {
+		return nil
+	}
+	copyActions := make([]TouchAction, len(actions))
+	copy(copyActions, actions)
+	for i := range copyActions {
+		if actions[i].Point != nil {
+			point := *actions[i].Point
+			copyActions[i].Point = &point
+		}
+	}
+	return copyActions
 }
 
 func (m *MockProvider) KeypressCalls() []MockKeypress {

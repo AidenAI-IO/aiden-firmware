@@ -181,22 +181,6 @@ func (c *ADBInputController) ResolvePosition(ctx context.Context, x, y float64) 
 	return normalizedToADBPoint(size, x, y), nil
 }
 
-func (c *ADBInputController) DirectionalSwipeEndpoints(ctx context.Context, gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {
-	startX, startY, endX, endY, err := directionalSwipeNormalizedCoordinates(gestureType, distance, anchor, preset)
-	if err != nil {
-		return resolvedPointerPoint{}, resolvedPointerPoint{}, fmt.Errorf("%w: %v", errADBInputInvalidArgument, err)
-	}
-	start, err := c.ResolvePosition(ctx, startX, startY)
-	if err != nil {
-		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
-	}
-	end, err := c.ResolvePosition(ctx, endX, endY)
-	if err != nil {
-		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
-	}
-	return start, end, nil
-}
-
 func (c *ADBInputController) screenSize(ctx context.Context) (adbInputScreenSize, error) {
 	if c == nil {
 		return adbInputScreenSize{}, fmt.Errorf("%w: adb input controller is not configured", errADBInputUnsupported)

@@ -31,9 +31,9 @@ func TestAgentLoopSteerInterruptOnTermination(t *testing.T) {
 	}
 
 	model := &scriptedModel{responses: []*llms.ContentResponse{
-		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe_up"}`),
-		toolCallResponse("call-2", "touch_gesture", `{"type":"swipe_up"}`),
-		toolCallResponse("call-3", "touch_gesture", `{"type":"swipe_up"}`),
+		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-2", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-3", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
 		contentResponse("Stopped as requested."),
 	}}
 
@@ -77,7 +77,7 @@ func TestAgentLoopNoSteerProviderDoesNotBlock(t *testing.T) {
 
 	// Ensure loop works normally without SteerProvider
 	model := &scriptedModel{responses: []*llms.ContentResponse{
-		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe_up"}`),
+		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
 		contentResponse("Done"),
 	}}
 
@@ -112,7 +112,7 @@ func TestAgentLoopBudgetBoundarySteerStartsFreshIterationBudget(t *testing.T) {
 	t.Parallel()
 
 	model := &scriptedModel{responses: []*llms.ContentResponse{
-		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe_up"}`),
+		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
 		contentResponse("Changed direction after the budget boundary."),
 	}}
 	manager, err := freshNewContextManager("system", "task", nil, t.TempDir())

@@ -806,7 +806,7 @@ func TestRuntimeRunWaitForWakeupAppendsToolResultBeforeFinishing(t *testing.T) {
 	}}
 	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", LoadAllTools: true}),
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -3961,21 +3961,15 @@ func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
 
-	var foundToolResponse, foundImage bool
+	var foundToolResponse, foundImage, foundStateNote bool
 	for _, msg := range model.messages[1] {
 		for _, part := range msg.Parts {
 			switch p := part.(type) {
 			case llms.ToolCallResponse:
 				if p.ToolCallID == "call_1" {
 					foundToolResponse = true
-					if !strings.Contains(p.Content, "returned a screenshot observation") {
-						t.Fatalf("keyboard tool response = %q, want screenshot observation summary", p.Content)
-					}
-					if !strings.Contains(p.Content, "No meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot") {
-						t.Fatalf("keyboard tool response = %q, want screen_changed warning", p.Content)
-					}
-					if !strings.Contains(p.Content, "Do not assume the action succeeded") {
-						t.Fatalf("keyboard tool response = %q, want no-success warning", p.Content)
+					if p.Content != "ok" {
+						t.Fatalf("keyboard tool response = %q, want original action output", p.Content)
 					}
 					if strings.Contains(p.Content, base64.StdEncoding.EncodeToString(jpegBytes)) {
 						t.Fatalf("keyboard tool response should not inline screenshot payload: %q", p.Content)
@@ -3985,6 +3979,10 @@ func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {
 				if p.MIMEType == "image/jpeg" && string(p.Data) == string(jpegBytes) {
 					foundImage = true
 				}
+			case llms.TextContent:
+				if strings.Contains(p.Text, "No meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot") {
+					foundStateNote = true
+				}
 			}
 		}
 	}
@@ -3993,6 +3991,9 @@ func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {
 	}
 	if !foundImage {
 		t.Fatalf("expected keyboard post-action screenshot image in second model call")
+	}
+	if !foundStateNote {
+		t.Fatalf("expected keyboard post-action status in the following state message")
 	}
 }
 

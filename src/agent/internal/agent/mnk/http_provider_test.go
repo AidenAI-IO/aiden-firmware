@@ -96,54 +96,58 @@ func TestHTTPProvider(t *testing.T) {
 		if mockProvider.swipes[0].Path[0] != path[0] || mockProvider.swipes[0].Path[1] != path[1] {
 			t.Fatalf("swipe path = %#v, want %#v", mockProvider.swipes[0].Path, path)
 		}
-	})
-
-	t.Run("drag", func(t *testing.T) {
-		mockProvider.Reset()
-
-		path := [][2]float64{{100, 500}, {900, 500}}
-		err := httpProvider.Drag(context.Background(), path, "left")
-		if err != nil {
-			t.Fatalf("Drag failed: %v", err)
-		}
-
-		if len(mockProvider.drags) != 1 {
-			t.Fatalf("expected 1 drag, got %d", len(mockProvider.drags))
-		}
-
-		drag := mockProvider.drags[0]
-		if len(drag.Path) != 2 {
-			t.Fatalf("expected path length 2, got %d", len(drag.Path))
-		}
-		if drag.Path[0][0] != 100 || drag.Path[0][1] != 500 {
-			t.Errorf("expected start (100, 500), got (%.0f, %.0f)", drag.Path[0][0], drag.Path[0][1])
-		}
-		if drag.Path[1][0] != 900 || drag.Path[1][1] != 500 {
-			t.Errorf("expected end (900, 500), got (%.0f, %.0f)", drag.Path[1][0], drag.Path[1][1])
+		if mockProvider.swipes[0].DurationMs != defaultSwipeGestureDurationMs {
+			t.Fatalf("swipe duration = %d, want %d", mockProvider.swipes[0].DurationMs, defaultSwipeGestureDurationMs)
 		}
 	})
 
-	t.Run("multi_point_drag", func(t *testing.T) {
+	t.Run("timed_swipe", func(t *testing.T) {
 		mockProvider.Reset()
 
-		path := [][2]float64{
-			{100, 500},
-			{300, 300},
-			{700, 300},
-			{900, 500},
+		path := [][2]float64{{500, 800}, {500, 200}}
+		if err := httpProvider.SwipeWithDuration(context.Background(), path, "left", 240); err != nil {
+			t.Fatalf("SwipeWithDuration failed: %v", err)
 		}
-		err := httpProvider.Drag(context.Background(), path, "left")
-		if err != nil {
-			t.Fatalf("Multi-point drag failed: %v", err)
+		if len(mockProvider.swipes) != 1 || mockProvider.swipes[0].DurationMs != 240 {
+			t.Fatalf("swipes = %#v, want one 240ms swipe", mockProvider.swipes)
 		}
+	})
 
-		if len(mockProvider.drags) != 1 {
-			t.Fatalf("expected 1 drag, got %d", len(mockProvider.drags))
-		}
+	t.Run("swipe_options", func(t *testing.T) {
+		mockProvider.Reset()
 
-		drag := mockProvider.drags[0]
-		if len(drag.Path) != 4 {
-			t.Fatalf("expected path length 4, got %d", len(drag.Path))
+		path := [][2]float64{{500, 800}, {500, 200}}
+		if err := httpProvider.SwipeWithOptions(context.Background(), path, "left", SwipeOptions{
+			DurationMs:   240,
+			HoldBeforeMs: 120,
+			HoldAfterMs:  80,
+			Steps:        12,
+		}); err != nil {
+			t.Fatalf("SwipeWithOptions failed: %v", err)
+		}
+		if len(mockProvider.swipes) != 1 {
+			t.Fatalf("swipes = %#v, want one swipe", mockProvider.swipes)
+		}
+		swipe := mockProvider.swipes[0]
+		if swipe.DurationMs != 240 || swipe.HoldBeforeMs != 120 || swipe.HoldAfterMs != 80 || swipe.Steps != 12 {
+			t.Fatalf("swipe options = %+v, want duration=240 before=120 after=80 steps=12", swipe)
+		}
+	})
+
+	t.Run("drag_start_release", func(t *testing.T) {
+		mockProvider.Reset()
+
+		if err := httpProvider.DragStart(context.Background(), 100, 500, "left"); err != nil {
+			t.Fatalf("DragStart failed: %v", err)
+		}
+		if len(mockProvider.dragStarts) != 1 || mockProvider.dragStarts[0].X != 100 || mockProvider.dragStarts[0].Y != 500 {
+			t.Fatalf("drag starts = %#v, want point 100,500", mockProvider.dragStarts)
+		}
+		if err := httpProvider.DragRelease(context.Background(), 900, 500); err != nil {
+			t.Fatalf("DragRelease failed: %v", err)
+		}
+		if len(mockProvider.dragReleases) != 1 || mockProvider.dragReleases[0].X != 900 || mockProvider.dragReleases[0].Y != 500 {
+			t.Fatalf("drag releases = %#v, want point 900,500", mockProvider.dragReleases)
 		}
 	})
 
@@ -200,6 +204,23 @@ func TestHTTPProvider(t *testing.T) {
 			t.Errorf("expected (0, -3), got (%d, %d)", scroll.ScrollX, scroll.ScrollY)
 		}
 	})
+
+	t.Run("touch_actions", func(t *testing.T) {
+		mockProvider.Reset()
+		actions := []TouchAction{
+			{Type: "touch_down", Point: &Point{X: 500, Y: 700}},
+			{Type: "wait", DurationMs: 25},
+			{Type: "move_to", Point: &Point{X: 500, Y: 300}},
+			{Type: "touch_up"},
+		}
+		if err := httpProvider.TouchActions(context.Background(), actions); err != nil {
+			t.Fatalf("TouchActions failed: %v", err)
+		}
+		got := mockProvider.TouchActionCalls()
+		if len(got) != len(actions) || got[0].Type != "touch_down" || got[1].DurationMs != 25 || got[3].Type != "touch_up" {
+			t.Fatalf("touch actions = %#v, want %#v", got, actions)
+		}
+	})
 }
 
 // TestHTTPHandlerErrors tests error handling in HTTP handler
@@ -213,23 +234,22 @@ func TestHTTPHandlerErrors(t *testing.T) {
 		BaseURL: server.URL,
 	})
 
-	t.Run("empty_path", func(t *testing.T) {
+	t.Run("drag_release_without_start", func(t *testing.T) {
 		mockProvider.Reset()
-
-		// Empty path should fail
-		err := httpProvider.Drag(context.Background(), [][2]float64{}, "left")
+		err := httpProvider.DragRelease(context.Background(), 500, 500)
 		if err == nil {
-			t.Error("expected error for empty path, got nil")
+			t.Error("expected error without drag_start, got nil")
 		}
 	})
 
-	t.Run("single_point_path", func(t *testing.T) {
+	t.Run("duplicate_drag_start", func(t *testing.T) {
 		mockProvider.Reset()
-
-		// Single point path should fail
-		err := httpProvider.Drag(context.Background(), [][2]float64{{500, 500}}, "left")
+		if err := httpProvider.DragStart(context.Background(), 500, 500, "left"); err != nil {
+			t.Fatalf("first DragStart failed: %v", err)
+		}
+		err := httpProvider.DragStart(context.Background(), 600, 600, "left")
 		if err == nil {
-			t.Error("expected error for single point path, got nil")
+			t.Error("expected error for duplicate drag_start, got nil")
 		}
 	})
 
