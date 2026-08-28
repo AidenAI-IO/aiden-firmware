@@ -51,10 +51,12 @@ go_toolchain_valid() {
   grep -qx "go${GO_VERSION}" "$root/VERSION" || return 1
 
   version_report="$(go_binary_version "$binary")"
-  case "$version_report" in
-    "go version go${GO_VERSION} linux/amd64"|*": go${GO_VERSION}") ;;
-    *) return 1 ;;
-  esac
+  if [ -n "$version_report" ]; then
+    case "$version_report" in
+      "go version go${GO_VERSION} linux/amd64"|*": go${GO_VERSION}") ;;
+      *) return 1 ;;
+    esac
+  fi
 
   if command -v file >/dev/null 2>&1; then
     target_report="$(file -b "$binary" 2>/dev/null || true)"
@@ -116,8 +118,11 @@ acquire_go_toolchain_lock() {
 
     owner_host=""
     owner_pid=""
-    if [ ! -e "$lock_dir/owner" ] && rmdir "$lock_dir" 2>/dev/null; then
-      continue
+    if [ ! -e "$lock_dir/owner" ]; then
+      sleep 1
+      if [ ! -e "$lock_dir/owner" ] && rmdir "$lock_dir" 2>/dev/null; then
+        continue
+      fi
     fi
     if read -r owner_host owner_pid < "$lock_dir/owner" 2>/dev/null && \
        [ "$owner_host" = "$current_host" ] && \

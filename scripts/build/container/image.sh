@@ -129,7 +129,7 @@ if [ -n "$KEY_SOURCE" ]; then
         exit 1
     fi
 elif [ -f "$REPO_ROOT/keys/ota_pubkey.pem" ]; then
-    if grep -Eiq 'dev|test|placeholder' "$REPO_ROOT/keys/ota_pubkey.pem"; then
+    if grep -Eiq '^[[:space:]]*(#|-----).*(dev|test|placeholder)' "$REPO_ROOT/keys/ota_pubkey.pem"; then
         echo "  ✗ Error: keys/ota_pubkey.pem is marked dev/test/placeholder; refusing production image"
         exit 1
     fi
@@ -189,6 +189,10 @@ echo "[5/6] Injecting oem and userdata content..."
 if [ -f "$PICO_SDK/.BoardConfig.mk" ]; then
     source "$PICO_SDK/.BoardConfig.mk"
 fi
+if [ -z "${RK_PARTITION_FS_TYPE_CFG:-}" ] || [ -z "${RK_PARTITION_CMD_IN_ENV:-}" ]; then
+    echo "  ✗ Error: .BoardConfig.mk or both RK_PARTITION_FS_TYPE_CFG and RK_PARTITION_CMD_IN_ENV are required" >&2
+    exit 1
+fi
 
 # Set default project values.
 : ${RK_CHIP:=rv1106}
@@ -208,7 +212,18 @@ CONFIG_WEB_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/config-web"
 
 echo "  → Running base firmware packaging..."
 firmware_log="$(mktemp)"
-run_pico_sdk_project_build firmware "$@" > "$firmware_log" 2>&1
+firmware_status=0
+if run_pico_sdk_project_build firmware "$@" > "$firmware_log" 2>&1; then
+    :
+else
+    firmware_status=$?
+fi
+if [ "$firmware_status" -ne 0 ]; then
+    echo "  ✗ Error: base firmware packaging failed (exit $firmware_status)" >&2
+    cat "$firmware_log" >&2
+    rm -f "$firmware_log"
+    exit "$firmware_status"
+fi
 grep -E "(oem|userdata|update)" "$firmware_log" || true
 rm -f "$firmware_log"
 echo "  ✓ Base images packaged"

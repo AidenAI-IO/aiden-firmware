@@ -6,7 +6,7 @@ partition_size_bytes() {
     local entry size suffix number
     local -a entries
 
-    IFS=',' read -ra entries <<< "$RK_PARTITION_CMD_IN_ENV"
+    IFS=',' read -ra entries <<< "${RK_PARTITION_CMD_IN_ENV:-}"
     for entry in "${entries[@]}"; do
         case "$entry" in
             *"($name)")
@@ -44,7 +44,7 @@ partition_fs_type() {
     local entry part_name part_fs_type
     local -a entries
 
-    IFS=',' read -ra entries <<< "$RK_PARTITION_FS_TYPE_CFG"
+    IFS=',' read -ra entries <<< "${RK_PARTITION_FS_TYPE_CFG:-}"
     for entry in "${entries[@]}"; do
         part_name="${entry%%@*}"
         part_fs_type="${entry##*@}"
@@ -238,6 +238,10 @@ rebuild_ext4_image() {
     fi
     if [ "$name" != "ota" ] && [ -z "$(ls -A "$src_dir" 2>/dev/null)" ]; then
         echo "  ✗ Error: empty staged content for ${name}.img: $src_dir" >&2
+        exit 1
+    fi
+    if [ -z "${RK_PARTITION_FS_TYPE_CFG:-}" ] || [ -z "${RK_PARTITION_CMD_IN_ENV:-}" ]; then
+        echo "  ✗ Error: .BoardConfig.mk or both RK_PARTITION_FS_TYPE_CFG and RK_PARTITION_CMD_IN_ENV are required" >&2
         exit 1
     fi
 

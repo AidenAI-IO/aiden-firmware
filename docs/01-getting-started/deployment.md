@@ -29,7 +29,7 @@ The recommended production deployment method is to build or download a complete 
 
 ## Manual Binary Copy
 
-After `./build.sh binaries` completes, the main artifacts are in `build/bin/`. The ones directly related to device resident services are:
+After `./build.sh binaries` completes, the main artifacts are in `build/bin/`. The ones directly related to device-resident services are:
 
 - `build/bin/frame_service`
 - `build/bin/audio_service`
