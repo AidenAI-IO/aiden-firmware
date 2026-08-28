@@ -24,7 +24,7 @@ const postActionCompletedDetail = "action_completed"
 
 type postActionScreenshotResult struct {
 	screenshotResult
-	ActionOutput  string   `json:"action_output,omitempty"`
+	ActionOutput  string   `json:"action_output"`
 	ScreenStable  *bool    `json:"screen_stable,omitempty"`
 	StableWaitMs  *int64   `json:"stable_wait_ms,omitempty"`
 	ScreenChanged *bool    `json:"screen_changed,omitempty"`
@@ -55,7 +55,7 @@ func stripScreenshotData(content string) string {
 		"size":   result.Size,
 	}
 	if strings.TrimSpace(result.ActionOutput) != "" {
-		compact["action_output"] = strings.TrimSpace(result.ActionOutput)
+		compact["action_output"] = result.ActionOutput
 	}
 	if result.ScreenStable != nil {
 		compact["screen_stable"] = *result.ScreenStable

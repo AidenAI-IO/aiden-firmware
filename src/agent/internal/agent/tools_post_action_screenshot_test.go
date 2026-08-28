@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-func TestStripScreenshotDataPreservesStableScreenStatus(t *testing.T) {
+func TestStripScreenshotDataPreservesActionOutputAndStableScreenStatus(t *testing.T) {
 	content := `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":" completed ","screen_stable":false,"stable_wait_ms":0,"screen_changed":true,"last_diff":1.25}`
 
 	stripped := stripScreenshotData(content)
@@ -27,8 +27,8 @@ func TestStripScreenshotDataPreservesStableScreenStatus(t *testing.T) {
 	if result.Width != 320 || result.Height != 240 || result.Format != "jpeg" || result.Size != 4 {
 		t.Fatalf("screenshot metadata = %#v", result)
 	}
-	if result.ActionOutput != "completed" {
-		t.Fatalf("ActionOutput = %q, want completed", result.ActionOutput)
+	if result.ActionOutput != " completed " {
+		t.Fatalf("ActionOutput = %q, want original output", result.ActionOutput)
 	}
 	if result.ScreenStable == nil || *result.ScreenStable {
 		t.Fatalf("ScreenStable = %#v, want false", result.ScreenStable)

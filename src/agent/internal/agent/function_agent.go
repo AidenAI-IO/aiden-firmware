@@ -152,36 +152,14 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	}
 	result := visual.Result
 
-	imageAvailability := "The image is attached in the next message."
-	if !includeVisual {
-		imageAvailability = "The image is replaced with a placeholder in the next message."
-	}
-	toolContent := fmt.Sprintf(
-		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. %s",
-		step.Action.Tool,
-		result.Format,
-		result.Width,
-		result.Height,
-		result.Size,
-		imageAvailability,
-	)
-	if strings.TrimSpace(result.ActionOutput) != "" {
-		actionOutput := compactToolObservation(result.ActionOutput)
-		toolContent = fmt.Sprintf(
-			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. %s",
-			step.Action.Tool,
-			actionOutput,
-			result.Format,
-			result.Width,
-			result.Height,
-			result.Size,
-			imageAvailability,
-		)
-	}
-	if summary := screenshotObservationStatusSummary(step.Action.Tool, result); summary != "" {
-		toolContent += " " + summary
+	toolContent := step.Observation
+	if actionOutput, ok := actionOutputFromScreenshotObservation(step.Observation); ok {
+		toolContent = actionOutput
 	}
 	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)
+	if summary := screenshotObservationStatusSummary(step.Action.Tool, result); summary != "" {
+		caption += " " + summary
+	}
 	if !includeVisual {
 		return toolContent, []llms.MessageContent{{
 			Role: llms.ChatMessageTypeHuman,
