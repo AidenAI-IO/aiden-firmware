@@ -5,7 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_CONTAINER_IMAGE="luckfoxtech/luckfox_pico:1.0"
 
 usage() {
-  echo "Usage: run_container.sh <app|firmware> -- <command> [args...]" >&2
+  echo "Usage: run_container.sh <binaries|image> -- <command> [args...]" >&2
 }
 
 if [ "$#" -lt 3 ]; then
@@ -15,7 +15,7 @@ fi
 
 profile="$1"
 shift
-if { [ "$profile" != app ] && [ "$profile" != firmware ]; } || [ "$1" != -- ]; then
+if { [ "$profile" != binaries ] && [ "$profile" != image ]; } || [ "$1" != -- ]; then
   usage
   exit 2
 fi
@@ -39,8 +39,8 @@ for name in http_proxy https_proxy all_proxy no_proxy \
   fi
 done
 
-restore_firmware_output_ownership() {
-  if [ "$profile" != firmware ] || [ "$(uname -s)" != Linux ]; then
+restore_image_output_ownership() {
+  if [ "$profile" != image ] || [ "$(uname -s)" != Linux ]; then
     return 0
   fi
 
@@ -72,8 +72,8 @@ restore_firmware_output_ownership() {
   fi
 }
 
-if [ "$profile" = firmware ]; then
-  trap restore_firmware_output_ownership EXIT
+if [ "$profile" = image ]; then
+  trap restore_image_output_ownership EXIT
 fi
 
 docker_pid=""
@@ -101,7 +101,7 @@ docker_run_args=(
   -e AIDEN_BUILD_CONTEXT=container
 )
 
-if [ "$profile" = app ]; then
+if [ "$profile" = binaries ]; then
   docker_run_args+=(-u "$(id -u):$(id -g)")
 else
   if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then

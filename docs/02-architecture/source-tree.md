@@ -8,7 +8,7 @@ sidebar_position: 2
 aiden-firmware/
 ├── CMakeLists.txt                 # Main C/C++ build configuration
 ├── Makefile                       # Local build/test shortcut entry point
-├── build.sh                        # Public app, firmware, and firmware-exec CLI
+├── build.sh                        # Public binaries, image, and image-exec CLI
 ├── cmake/                         # Toolchain files
 ├── docs/                          # Structured documentation
 ├── edid/                          # HDMI EDID hex files
@@ -20,8 +20,8 @@ aiden-firmware/
 │       ├── host/
 │       │   └── go_toolchain.sh    # Pinned Go provisioning and verification
 │       └── container/
-│           ├── app.sh             # Application cross-build task
-│           ├── firmware.sh        # Firmware build orchestrator
+│           ├── binaries.sh        # Application binary cross-build task
+│           ├── image.sh           # Firmware image build orchestrator
 │           └── lib/
 │               ├── ext4_images.sh # ext4 image sizing and mutation helpers
 │               └── generated_binaries.sh # Generated-binary verification
@@ -78,4 +78,4 @@ overlay/
     └── wpa_supplicant.conf
 ```
 
-The build system has three explicit layers. `build.sh` is the only public CLI, `scripts/build/run_container.sh` owns host-side Docker lifecycle and the `app` and `firmware` profiles, and `scripts/build/container/` contains tasks that run only inside the selected container profile. The firmware task copies the application binaries to `overlay/oem/usr/bin/`, injects the VAD model into the OEM partition along with `overlay/oem/usr/model/`, and syncs/injects the overlay into the `pico-sdk` output image.
+The build system has three explicit layers. `build.sh` is the only public CLI, `scripts/build/run_container.sh` owns host-side Docker lifecycle and the `binaries` and `image` profiles, and `scripts/build/container/` contains tasks that run only inside the selected container profile. The image task copies the application binaries to `overlay/oem/usr/bin/`, injects the VAD model into the OEM partition along with `overlay/oem/usr/model/`, and syncs/injects the overlay into the `pico-sdk` output image.

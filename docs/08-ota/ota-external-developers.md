@@ -34,7 +34,7 @@ openssl pkey -in ota_private_key.pem -pubout -out ota_public_key.pem
 
 ```bash
 # Build firmware
-./build.sh firmware
+./build.sh image
 
 # Generate signed manifest with direct download URLs
 scripts/generate_ota_manifest.sh \
@@ -328,7 +328,7 @@ SIGN_KEY="./keys/ota_private_key.pem"
 
 # Build
 echo "Building firmware..."
-./build.sh firmware
+./build.sh image
 
 # Generate manifest with URLs
 echo "Generating signed manifest..."

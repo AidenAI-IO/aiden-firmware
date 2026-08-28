@@ -7,7 +7,7 @@ BUILD_DIR="$REPO_ROOT/build"
 TOOLCHAIN_FILE="$REPO_ROOT/cmake/toolchain-arm-rockchip830.cmake"
 
 if [ "${AIDEN_BUILD_CONTEXT:-}" != container ]; then
-    echo "Run this task through ./build.sh app." >&2
+    echo "Run this task through ./build.sh binaries." >&2
     exit 2
 fi
 
@@ -31,7 +31,7 @@ echo "Building Go binaries..."
 
 GO_VERSION="1.26.0"
 if ! command -v go >/dev/null 2>&1; then
-    echo "Go ${GO_VERSION} is required in PATH. Run this task through ./build.sh app." >&2
+    echo "Go ${GO_VERSION} is required in PATH. Run this task through ./build.sh binaries." >&2
     exit 1
 fi
 

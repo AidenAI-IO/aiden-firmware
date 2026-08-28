@@ -19,7 +19,7 @@ The SDK-provided Buildroot tree is `2023.02.6` and builds Node.js `16.20.0`. WeT
 Run the Linux/image build from an x86 host:
 
 ```bash
-./build.sh firmware
+./build.sh image
 ```
 
 The `sysdrv` stage builds Node.js and installs the pinned WeTTY npm module into the target rootfs.

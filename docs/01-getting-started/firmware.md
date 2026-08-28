@@ -31,15 +31,15 @@ The related low-level changes can be found in the `pico-sdk/` submodule.
 This requires an x86_64 Linux + Docker environment, or a compatible environment capable of running amd64 containers:
 
 ```bash
-./build.sh firmware
+./build.sh image
 ```
 
-The firmware command uses the privileged firmware container profile. Process overview:
+The image command uses the privileged image container profile. Process overview:
 
 1. Compile the application binaries;
 2. Copy `build/bin/` to `overlay/oem/usr/bin/`;
 3. Sync `overlay/etc/` to the `pico-sdk` Buildroot overlay;
-4. Run `pico-sdk/build.sh all`;
+4. Run the `pico-sdk` `sysdrv`, `media`, and `app` build stages, followed by project-level firmware packaging;
 5. Inject `overlay/oem` and `overlay/userdata` into the output directory; the VAD model is located in `overlay/oem/usr/model/` and is included in OTA along with the OEM partition;
 6. Generate the A/B partition images and the full USB first-flash package.
 

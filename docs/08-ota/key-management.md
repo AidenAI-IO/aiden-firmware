@@ -30,7 +30,7 @@ The script only accepts Ed25519 public keys. RSA, ECDSA, malformed keys, or miss
 Production firmware builds must provide a production public key. Set the key path when invoking the public build CLI:
 
 ```bash
-OTA_PUBLIC_KEY_PATH=/path/to/ota_pubkey.pem ./build.sh firmware
+OTA_PUBLIC_KEY_PATH=/path/to/ota_pubkey.pem ./build.sh image
 ```
 
 Or commit `keys/ota_pubkey.pem`, provided the file is not marked as dev/test/placeholder.

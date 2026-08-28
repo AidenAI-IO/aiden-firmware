@@ -130,13 +130,13 @@ cd aiden-firmware
 Build ARM binaries for the device:
 
 ```bash
-./build.sh app
+./build.sh binaries
 ```
 
 Build the full firmware image:
 
 ```bash
-./build.sh firmware
+./build.sh image
 ```
 
 Flash a prebuilt or locally built `update.img`:

@@ -243,73 +243,73 @@ assert_common_container_contract() {
   assert_no_arg 'GONOPROXY='
 }
 
-# Firmware builds use the privileged root profile, propagate Docker failures,
+# Image builds use the privileged root profile, propagate Docker failures,
 # and still restore ownership and cache write permission after a failed build.
 # It must also provision Go from an empty shared cache without requiring an
 # application build to have run first.
 mkdir -p "$fixture_repo/build" "$fixture_repo/.cache/rootfs-cli-tools/go-mod"
-run_build 37 firmware
+run_build 37 image
 [ "$build_status" -eq 37 ] || \
-  fail "build.sh firmware must return Docker status 37, got $build_status"
+  fail "build.sh image must return Docker status 37, got $build_status"
 resolved_go_root="$(cd "$go_root" && pwd)"
 assert_common_container_contract
 assert_arg --privileged
 assert_user 0:0
-assert_task firmware
-assert_no_task app
+assert_task image
+assert_no_task binaries
 grep -Eq '^sudo chown -R 1234:5678 .*build' "$cleanup_log" || \
-  fail "firmware builds must restore output ownership after Docker exits"
+  fail "image builds must restore output ownership after Docker exits"
 grep -Eq '^chmod -R u\+w .*\.cache/rootfs-cli-tools/go-mod' "$cleanup_log" || \
-  fail "firmware builds must restore Go module cache write permission after Docker exits"
+  fail "image builds must restore Go module cache write permission after Docker exits"
 [ "$(wc -l < "$provision_log" | tr -d ' ')" -eq 1 ] || \
-  fail "firmware builds must provision the pinned Go toolchain from an empty cache"
+  fail "image builds must provision the pinned Go toolchain from an empty cache"
 
 # If sudo is unavailable or unusable, the runner must retain ownership cleanup
 # by launching a short-lived root container against the same workspace mount.
 test_sudo_exit_code=1
-run_build 0 firmware
-[ "$build_status" -eq 0 ] || fail "cleanup fallback must not change a successful firmware status"
+run_build 0 image
+[ "$build_status" -eq 0 ] || fail "cleanup fallback must not change a successful image status"
 assert_arg_sequence luckfoxtech/luckfox_pico:1.0 chown -hR 1234:5678 /home/build \
   /home/.cache/rootfs-cli-tools
 test_sudo_exit_code=0
 
-# Application builds use the caller identity and map to the application task.
+# Binary builds use the caller identity and map to the binaries task.
 # They share the provisioned toolchain rather than maintaining another cache.
-run_build 0 app
-[ "$build_status" -eq 0 ] || fail "build.sh app failed with status $build_status"
+run_build 0 binaries
+[ "$build_status" -eq 0 ] || fail "build.sh binaries failed with status $build_status"
 assert_common_container_contract
 assert_user 1234:5678
 assert_no_arg --privileged
 assert_no_arg 0:0
-assert_task app
-assert_no_task firmware
-[ ! -s "$cleanup_log" ] || fail "application builds must not run firmware ownership cleanup"
+assert_task binaries
+assert_no_task image
+[ ! -s "$cleanup_log" ] || fail "binary builds must not run image ownership cleanup"
 [ "$(wc -l < "$provision_log" | tr -d ' ')" -eq 1 ] || \
-  fail "application and firmware builds must reuse the same Go toolchain cache"
+  fail "binary and image builds must reuse the same Go toolchain cache"
 
 # The explicit exec form preserves command argument boundaries and uses the
 # requested profile instead of invoking the profile's default task.
-run_build 0 exec firmware -- bash ./scripts/repack_ota_update_image.sh \
+run_build 0 exec image -- bash ./scripts/repack_ota_update_image.sh \
   '--label=release candidate'
-[ "$build_status" -eq 0 ] || fail "build.sh exec firmware failed with status $build_status"
+[ "$build_status" -eq 0 ] || fail "build.sh exec image failed with status $build_status"
 assert_common_container_contract
 assert_arg --privileged
 assert_user 0:0
 assert_arg_sequence bash ./scripts/repack_ota_update_image.sh \
   '--label=release candidate'
-assert_no_task firmware
-assert_no_task app
+assert_no_task image
+assert_no_task binaries
 
 # There is no implicit build target: callers must choose a stable public verb.
 run_build 0
 [ "$build_status" -ne 0 ] || fail "build.sh without a command must fail"
 [ ! -s "$docker_args_log" ] || fail "build.sh without a command must not start Docker"
 
-# Arbitrary container execution is intentionally limited to the firmware
-# profile used by release tooling; app has no public exec form.
-run_build 0 exec app -- true
-[ "$build_status" -ne 0 ] || fail "build.sh exec app must not be a public command"
-[ ! -s "$docker_args_log" ] || fail "build.sh exec app must not start Docker"
+# Arbitrary container execution is intentionally limited to the image
+# profile used by release tooling; binaries has no public exec form.
+run_build 0 exec binaries -- true
+[ "$build_status" -ne 0 ] || fail "build.sh exec binaries must not be a public command"
+[ ! -s "$docker_args_log" ] || fail "build.sh exec binaries must not start Docker"
 
 # AIDEN_GO_ROOT points at caller-owned state. An invalid override must fail
 # without deleting or replacing that directory.
@@ -318,8 +318,8 @@ mkdir -p "$external_go_root/bin"
 printf 'keep\n' > "$external_go_root/sentinel"
 printf 'go0.0.0\n' > "$external_go_root/VERSION"
 test_aiden_go_root="$external_go_root"
-run_build 0 app
-[ "$build_status" -ne 0 ] || fail "build.sh app must reject an invalid AIDEN_GO_ROOT"
+run_build 0 binaries
+[ "$build_status" -ne 0 ] || fail "build.sh binaries must reject an invalid AIDEN_GO_ROOT"
 [ ! -s "$docker_args_log" ] || fail "invalid AIDEN_GO_ROOT must fail before Docker starts"
 [ "$(cat "$external_go_root/sentinel")" = keep ] || \
   fail "invalid AIDEN_GO_ROOT must never replace caller-owned state"
@@ -339,7 +339,7 @@ relative_go_root_resolved="$(cd "$relative_go_root" && pwd)"
 relative_key_resolved="$(cd "$fixture_repo/keys" && pwd)/ota.pem"
 test_aiden_go_root=relative-go
 test_ota_public_key_path=keys/ota.pem
-run_build 0 firmware
+run_build 0 image
 [ "$build_status" -eq 0 ] || fail "relative host paths must be accepted from the repository root"
 assert_arg "$relative_go_root_resolved:/usr/local/go:ro"
 assert_arg 'OTA_PUBLIC_KEY_PATH=/run/aiden/ota_pubkey.pem'
@@ -350,7 +350,7 @@ test_ota_public_key_path=
 # CI historically passes repository paths in their container-visible /home
 # form. Keep that input compatible when it is not a real host path.
 test_ota_public_key_path=/home/keys/ota.pem
-run_build 0 firmware
+run_build 0 image
 [ "$build_status" -eq 0 ] || fail "container-visible OTA key paths must map back to the repository"
 assert_arg "$relative_key_resolved:/run/aiden/ota_pubkey.pem:ro"
 test_ota_public_key_path=
@@ -369,7 +369,7 @@ set +e
     FAKE_DOCKER_ARGS_LOG="$docker_args_log" \
     FAKE_DOCKER_EXIT_CODE=0 \
     FAKE_PROVISION_LOG="$provision_log" \
-    ./build.sh app
+    ./build.sh binaries
 ) > "$test_dir/corrupt-cache.log" 2>&1
 corrupt_cache_status=$?
 set -e
@@ -391,7 +391,7 @@ set +e
     FAKE_DOCKER_ARGS_LOG="$docker_args_log" \
     FAKE_DOCKER_EXIT_CODE=0 \
     FAKE_PROVISION_LOG="$provision_log" \
-    ./build.sh app
+    ./build.sh binaries
 ) > "$test_dir/stale-lock.log" 2>&1
 stale_lock_status=$?
 set -e
@@ -411,7 +411,7 @@ set +e
     FAKE_DOCKER_EXIT_CODE=0 \
     FAKE_PROVISION_LOG="$provision_log" \
     FAKE_TAR_SIGNAL_PARENT=1 \
-    ./build.sh app
+    ./build.sh binaries
 ) > "$test_dir/provision-signal.log" 2>&1
 provision_signal_status=$?
 set -e
@@ -436,7 +436,7 @@ run_concurrent_build() {
       FAKE_CLEANUP_LOG="$cleanup_log" \
       FAKE_PROVISION_LOG="$concurrent_provision_log" \
       FAKE_CURL_DELAY=1 \
-      ./build.sh app
+      ./build.sh binaries
   ) > "$test_dir/concurrent-$1.log" 2>&1
 }
 run_concurrent_build one &
@@ -468,7 +468,7 @@ signal_pid_file="$test_dir/docker-pid"
   export FAKE_DOCKER_WAIT_FILE="$signal_ready"
   export FAKE_DOCKER_SIGNAL_LOG="$signal_log"
   export FAKE_DOCKER_PID_FILE="$signal_pid_file"
-  exec ./build.sh app
+  exec ./build.sh binaries
 ) > "$test_dir/signal.log" 2>&1 &
 runner_pid=$!
 for _ in $(seq 1 50); do

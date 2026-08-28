@@ -37,10 +37,10 @@ Build artifacts location:
 
 ## Luckfox Docker Cross-Compilation
 
-The public build CLI starts the `luckfoxtech/luckfox_pico:1.0` container and runs the application cross-build task:
+The public build CLI starts the `luckfoxtech/luckfox_pico:1.0` container and runs the device-binary cross-build task:
 
 ```bash
-./build.sh app
+./build.sh binaries
 ```
 
 This workflow will:
@@ -50,10 +50,10 @@ This workflow will:
 3. Install/use Go 1.26.0;
 4. Cross-compile the Go Agent and BLE daemon: `build/bin/agent` and `build/bin/ble_service`, targeting `linux/arm GOARM=7`.
 
-Use `./build.sh firmware` for a full firmware image. Automation that needs to run a one-off command with the same privileged firmware container profile can use:
+Use `./build.sh image` for the complete firmware image set. Automation that needs to run a one-off command with the same privileged image container profile can use:
 
 ```bash
-./build.sh exec firmware -- bash ./scripts/repack_ota_update_image.sh
+./build.sh exec image -- bash ./scripts/repack_ota_update_image.sh
 ```
 
 ## macOS Apple Silicon + Colima
@@ -67,7 +67,7 @@ colima start --vm-type vz --vz-rosetta
 docker buildx version
 docker buildx ls
 
-./build.sh app
+./build.sh binaries
 ```
 
 Do not start a `--arch x86_64` Colima VM for this workflow; keep the native VM and let the container run as `linux/amd64`.

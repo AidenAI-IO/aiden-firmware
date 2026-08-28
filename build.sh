@@ -7,9 +7,9 @@ CONTAINER_RUNNER="$REPO_ROOT/scripts/build/run_container.sh"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ./build.sh app
-  ./build.sh firmware [sdk-build-args...]
-  ./build.sh exec firmware -- <command> [args...]
+  ./build.sh binaries
+  ./build.sh image [sdk-build-args...]
+  ./build.sh exec image -- <command> [args...]
 EOF
 }
 
@@ -22,15 +22,15 @@ command_name="$1"
 shift
 
 case "$command_name" in
-  app)
+  binaries)
     if [ "$#" -ne 0 ]; then
       usage
       exit 2
     fi
-    exec "$CONTAINER_RUNNER" app -- ./scripts/build/container/app.sh
+    exec "$CONTAINER_RUNNER" binaries -- ./scripts/build/container/binaries.sh
     ;;
-  firmware)
-    exec "$CONTAINER_RUNNER" firmware -- ./scripts/build/container/firmware.sh "$@"
+  image)
+    exec "$CONTAINER_RUNNER" image -- ./scripts/build/container/image.sh "$@"
     ;;
   exec)
     if [ "$#" -lt 3 ]; then
@@ -39,7 +39,7 @@ case "$command_name" in
     fi
     profile="$1"
     shift
-    if [ "$profile" != firmware ] || [ "$1" != -- ]; then
+    if [ "$profile" != image ] || [ "$1" != -- ]; then
       usage
       exit 2
     fi

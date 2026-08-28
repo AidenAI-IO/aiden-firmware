@@ -69,6 +69,6 @@ grep -Fq 'retaining $PID_FILE and $SOCKET_PATH' "$BLE_INIT"
 grep -Fq 'restart|reload) stop && start' "$BLE_INIT"
 grep -Fq 'pairing-window must be positive' "$BLE_MAIN"
 grep -Fq 'a1de0001-7c4b-4f52-8d9a-6b4f6e6f7469' "$BLE_CONSTANTS"
-grep -Fq './cmd/ble_service' "$ROOT_DIR/scripts/build/container/app.sh"
+grep -Fq './cmd/ble_service' "$ROOT_DIR/scripts/build/container/binaries.sh"
 
 echo "BLE init tests passed"

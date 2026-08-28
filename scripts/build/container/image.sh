@@ -5,7 +5,7 @@ CONTAINER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$CONTAINER_DIR/../../.." && pwd)"
 
 if [ "${AIDEN_BUILD_CONTEXT:-}" != container ]; then
-    echo "Run this task through ./build.sh firmware." >&2
+    echo "Run this task through ./build.sh image." >&2
     exit 2
 fi
 
@@ -88,7 +88,7 @@ echo ""
 
 # Step 1: Build applications with the verified Go toolchain supplied by the container runner.
 echo "[1/6] Building applications..."
-"$CONTAINER_DIR/app.sh"
+"$CONTAINER_DIR/binaries.sh"
 log_generated_binaries_in_dir "build-bin" "$AIDEN_BUILD_BIN_DIR"
 write_generated_binary_manifest "$AIDEN_BUILD_BIN_DIR" "$GENERATED_BINARY_MANIFEST"
 check_generated_binaries_against_manifest "build-bin" "$AIDEN_BUILD_BIN_DIR" "$GENERATED_BINARY_MANIFEST" "$AIDEN_BUILD_BIN_DIR"
