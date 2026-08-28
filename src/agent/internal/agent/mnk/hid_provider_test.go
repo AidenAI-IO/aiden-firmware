@@ -95,6 +95,61 @@ func TestHIDProviderDragStartInterpolatesActivationMoveWithoutRelease(t *testing
 	}
 }
 
+func TestHIDProviderDragStartCancellationReleasesAtLastActivationPosition(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	pointer := &cancelAfterWritesDevice{cancel: cancel, cancelAt: 2}
+	provider := NewHIDProvider(pointer, nil, nil, nil, true, "qwerty", nil)
+	provider.swipeSteps = 4
+
+	err := provider.DragStart(ctx, 600, 115, ButtonLeft)
+	if err != context.Canceled {
+		t.Fatalf("DragStart() error = %v, want context canceled", err)
+	}
+
+	reports := pointer.bytes()
+	const reportSize = 6
+	wantReports := 2 + provider.releaseRepeatCount // press, first move, repeated cleanup releases
+	if got := len(reports) / reportSize; got != wantReports {
+		t.Fatalf("DragStart() reports = %d, want %d", got, wantReports)
+	}
+	lastMove := reports[reportSize : 2*reportSize]
+	wantX := binary.LittleEndian.Uint16(lastMove[2:4])
+	wantY := binary.LittleEndian.Uint16(lastMove[4:6])
+	for offset := 2 * reportSize; offset < len(reports); offset += reportSize {
+		release := reports[offset : offset+reportSize]
+		if release[0]&0x03 != 0 {
+			t.Fatalf("cleanup report %d flags = %#x, want contact released", offset/reportSize, release[0])
+		}
+		if gotX := binary.LittleEndian.Uint16(release[2:4]); gotX != wantX {
+			t.Fatalf("cleanup report %d x = %d, want last emitted x %d", offset/reportSize, gotX, wantX)
+		}
+		if gotY := binary.LittleEndian.Uint16(release[4:6]); gotY != wantY {
+			t.Fatalf("cleanup report %d y = %d, want last emitted y %d", offset/reportSize, gotY, wantY)
+		}
+	}
+	if provider.dragActive {
+		t.Fatal("DragStart() left drag active after successful cancellation cleanup")
+	}
+}
+
+type cancelAfterWritesDevice struct {
+	layoutCaptureDevice
+	cancel   context.CancelFunc
+	cancelAt int
+	writes   int
+}
+
+func (d *cancelAfterWritesDevice) Write(report []byte) error {
+	if err := d.layoutCaptureDevice.Write(report); err != nil {
+		return err
+	}
+	d.writes++
+	if d.writes == d.cancelAt {
+		d.cancel()
+	}
+	return nil
+}
+
 func TestHIDProviderRejectsHorizontalScroll(t *testing.T) {
 	pointer := &layoutCaptureDevice{}
 	provider := NewHIDProvider(pointer, nil, nil, nil, false, "qwerty", nil)

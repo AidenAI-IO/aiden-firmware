@@ -228,7 +228,9 @@ func (p *HIDProvider) DragStart(ctx context.Context, x, y float64, button string
 		if waitErr := waitForContext(ctx, dragStartHoldMs*time.Millisecond); waitErr != nil {
 			return fail(waitErr)
 		}
-		if moveErr := p.movePointerInterpolated(ctx, startX, startY, activationX, activationY, buttonByte, dragStartMoveDurationMs); moveErr != nil {
+		var moveErr error
+		currentX, currentY, moveErr = p.movePointerInterpolated(ctx, startX, startY, activationX, activationY, buttonByte, dragStartMoveDurationMs)
+		if moveErr != nil {
 			return fail(moveErr)
 		}
 		p.dragActive = true
@@ -373,10 +375,11 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 				if active {
 					buttons = p.mouseButtonByte(activeButton)
 				}
-				if err := p.movePointerInterpolated(ctx, currentX, currentY, absX, absY, buttons, action.DurationMs); err != nil {
-					return releaseOnError(err)
+				var moveErr error
+				currentX, currentY, moveErr = p.movePointerInterpolated(ctx, currentX, currentY, absX, absY, buttons, action.DurationMs)
+				if moveErr != nil {
+					return releaseOnError(moveErr)
 				}
-				currentX, currentY = absX, absY
 
 			case "touch_down":
 				if active {
@@ -433,9 +436,13 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 	})
 }
 
-func (p *HIDProvider) movePointerInterpolated(ctx context.Context, fromX, fromY, toX, toY int, buttons uint8, durationMs int) error {
+func (p *HIDProvider) movePointerInterpolated(ctx context.Context, fromX, fromY, toX, toY int, buttons uint8, durationMs int) (int, int, error) {
+	lastX, lastY := fromX, fromY
 	if durationMs <= 0 || (fromX == toX && fromY == toY) {
-		return p.movePointer(toX, toY, buttons)
+		if err := p.movePointer(toX, toY, buttons); err != nil {
+			return lastX, lastY, err
+		}
+		return toX, toY, nil
 	}
 	steps := p.swipeSteps
 	if steps < 1 {
@@ -445,22 +452,31 @@ func (p *HIDProvider) movePointerInterpolated(ctx context.Context, fromX, fromY,
 	if distance < float64(steps) {
 		steps = int(math.Max(1, math.Round(distance)))
 	}
-	stepDelay := time.Duration(durationMs) * time.Millisecond / time.Duration(steps)
+	// Emit the first move immediately, then span the full requested duration
+	// across the remaining interpolation reports.
+	intervals := steps - 1
+	if intervals < 1 {
+		intervals = 1
+	}
+	stepDelay := time.Duration(durationMs) * time.Millisecond / time.Duration(intervals)
 	for step := 1; step <= steps; step++ {
 		if err := ctx.Err(); err != nil {
-			return err
+			return lastX, lastY, err
 		}
-		if err := waitForContext(ctx, stepDelay); err != nil {
-			return err
+		if (step > 1 || steps == 1) && stepDelay > 0 {
+			if err := waitForContext(ctx, stepDelay); err != nil {
+				return lastX, lastY, err
+			}
 		}
 		progress := float64(step) / float64(steps)
 		x := int(math.Round(float64(fromX) + float64(toX-fromX)*progress))
 		y := int(math.Round(float64(fromY) + float64(toY-fromY)*progress))
 		if err := p.movePointer(x, y, buttons); err != nil {
-			return err
+			return lastX, lastY, err
 		}
+		lastX, lastY = x, y
 	}
-	return nil
+	return lastX, lastY, nil
 }
 
 func waitForContext(ctx context.Context, duration time.Duration) error {

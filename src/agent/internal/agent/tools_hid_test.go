@@ -3290,7 +3290,7 @@ func TestTouchGestureDragStartAndReleaseTiming(t *testing.T) {
 	if gap < 450*time.Millisecond {
 		t.Fatalf("drag_start press-to-first-activation-move gap = %v, want about 500ms", gap)
 	}
-	if moveDuration := times[dragStartWrites-1].Sub(times[2]); moveDuration < 350*time.Millisecond {
+	if moveDuration := times[dragStartWrites-1].Sub(times[2]); moveDuration < 380*time.Millisecond {
 		t.Fatalf("drag_start activation move duration = %v, want interpolated motion over about 400ms", moveDuration)
 	}
 
