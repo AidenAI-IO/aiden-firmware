@@ -28,6 +28,9 @@ DEFAULT_SWIPE_SPEED = 2500.0
 MAX_SWIPE_DURATION_MS = 10_000
 MAX_SWIPE_HOLD_MS = 10_000
 MAX_SWIPE_STEPS = 1_000
+MAX_MOUSE_SCROLL_DELTA = 127
+MOUSE_SCROLL_BASE_DURATION_MS = 300
+MOUSE_SCROLL_DURATION_STEP_MS = 75
 US_KEYBOARD_TEXT_CHARS = set(
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -202,7 +205,7 @@ class ToolsAPIHandler:
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
-                    "properties": {"delta": {"type": "integer", "minimum": -127, "maximum": 127}},
+                    "properties": {"delta": {"type": "integer", "minimum": -MAX_MOUSE_SCROLL_DELTA, "maximum": MAX_MOUSE_SCROLL_DELTA}},
                     "required": ["delta"],
                 },
             },
@@ -523,11 +526,15 @@ class ToolsAPIHandler:
             return {"output": f"error: invalid delta: {exc}", "is_error": True}
         if delta == 0:
             return self._call_noop_with_screenshot(state, episode_id)
-        gesture_type = "swipe"
+        magnitude = abs(delta)
+        if magnitude > MAX_MOUSE_SCROLL_DELTA:
+            return {"output": f"error: delta must be in range [-{MAX_MOUSE_SCROLL_DELTA}, {MAX_MOUSE_SCROLL_DELTA}]", "is_error": True}
         start_y = 800 if delta < 0 else 200
+        end_y = 50 if delta < 0 else 950
+        duration_ms = MOUSE_SCROLL_BASE_DURATION_MS + (magnitude - 1) * MOUSE_SCROLL_DURATION_STEP_MS
         return self._call_touch_gesture(
             state,
-            {"type": gesture_type, "start": {"x": 500, "y": start_y}, "direction": "up" if delta < 0 else "down", "duration_ms": 300},
+            {"type": "swipe", "start": {"x": 500, "y": start_y}, "end": {"x": 500, "y": end_y}, "duration_ms": duration_ms},
             episode_id,
             log_tool_name="mouse_scroll",
             log_tool_input=tool_input,
@@ -841,7 +848,17 @@ def _resolve_swipe(
     if distance == 0:
         raise ValueError("swipe requires distinct start and end points")
     if duration_ms is None:
-        duration_ms = max(1, int(math.floor(distance / speed * 1000 + 0.5)))
+        try:
+            derived_duration_ms = distance / speed * 1000
+        except OverflowError as exc:
+            raise ValueError("speed is too low for this swipe; calculated duration is not finite") from exc
+        if not math.isfinite(derived_duration_ms):
+            raise ValueError("speed is too low for this swipe; calculated duration is not finite")
+        if derived_duration_ms >= MAX_SWIPE_DURATION_MS + 0.5:
+            raise ValueError(
+                f"speed is too low for this swipe; calculated duration exceeds {MAX_SWIPE_DURATION_MS} ms"
+            )
+        duration_ms = max(1, int(math.floor(derived_duration_ms + 0.5)))
         if duration_ms > MAX_SWIPE_DURATION_MS:
             raise ValueError(
                 f"speed is too low for this swipe; calculated duration_ms={duration_ms} exceeds {MAX_SWIPE_DURATION_MS}"
@@ -863,7 +880,10 @@ def _swipe_speed_arg(value: Any) -> float:
         return DEFAULT_SWIPE_SPEED
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("speed must be a positive finite number")
-    speed = float(value)
+    try:
+        speed = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("speed must be a positive finite number") from exc
     if not math.isfinite(speed) or speed <= 0:
         raise ValueError("speed must be a positive finite number")
     return speed

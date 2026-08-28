@@ -322,7 +322,6 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 
 		active := false
 		activeButton := ButtonLeft
-		totalWaitMs := 0
 		currentX, currentY := p.getCurrentPosition()
 		releaseOnError := func(err error) error {
 			if active {
@@ -331,13 +330,23 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 			}
 			return err
 		}
+		totalDurationMs := 0
+		for index, action := range actions {
+			if action.DurationMs < 0 || action.DurationMs > 30000 {
+				return releaseOnError(InvalidArgumentsf("touch action %d duration must be between 0 and 30000 ms", index))
+			}
+			switch strings.ToLower(strings.TrimSpace(action.Type)) {
+			case "wait", "move_to":
+				totalDurationMs += action.DurationMs
+				if totalDurationMs > 60000 {
+					return releaseOnError(InvalidArguments("total duration in touch actions must not exceed 60000 ms"))
+				}
+			}
+		}
 
 		for index, action := range actions {
 			if err := ctx.Err(); err != nil {
 				return releaseOnError(err)
-			}
-			if action.DurationMs < 0 || action.DurationMs > 30000 {
-				return releaseOnError(InvalidArgumentsf("touch action %d duration must be between 0 and 30000 ms", index))
 			}
 			actionType := strings.ToLower(strings.TrimSpace(action.Type))
 			button := action.Button
@@ -347,10 +356,6 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 
 			switch actionType {
 			case "wait":
-				totalWaitMs += action.DurationMs
-				if totalWaitMs > 60000 {
-					return releaseOnError(InvalidArguments("total wait time in touch actions must not exceed 60000 ms"))
-				}
 				if err := waitForContext(ctx, time.Duration(action.DurationMs)*time.Millisecond); err != nil {
 					return releaseOnError(err)
 				}

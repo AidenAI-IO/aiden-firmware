@@ -41,7 +41,7 @@ The action vocabulary is deliberately small:
 - `wait`: waits for `ms` milliseconds without changing contact state.
 - `touch_up`: releases the current contact; `point` is optional.
 
-Coordinates use the normalized `0..1000` range. A program must contain at least one action and must end with `touch_up`; each wait is bounded to 30 seconds, cumulative wait time is bounded to 60 seconds, and programs are limited to 128 actions. The legacy one-object `type` form remains accepted for existing scripts, but new integrations should use the atomic form.
+Coordinates use the normalized `0..1000` range. A program must contain at least one action and must end with `touch_up`; each wait is bounded to 30 seconds, cumulative wait time is bounded to 60 seconds, and programs are limited to 128 actions. Supported legacy one-object `type` forms remain accepted for existing scripts, except `type:"drag"`; new integrations should use the atomic form.
 
 Moving a draggable target is the exception that intentionally spans two tool
 calls. Always use this sequence:

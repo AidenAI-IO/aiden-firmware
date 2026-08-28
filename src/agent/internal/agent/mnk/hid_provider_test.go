@@ -3,6 +3,7 @@ package mnk
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -109,5 +110,25 @@ func TestHIDProviderTouchActionsRejectsInvalidDurationBeforeActionHandlers(t *te
 				t.Fatalf("invalid duration wrote %d bytes before validation", len(report))
 			}
 		})
+	}
+}
+
+func TestHIDProviderTouchActionsRejectsExcessiveTotalDurationBeforeWriting(t *testing.T) {
+	pointer := &layoutCaptureDevice{}
+	provider := NewHIDProvider(pointer, nil, nil, nil, true, "qwerty", nil)
+	actions := []TouchAction{
+		{Type: "touch_down", Point: &Point{X: 100, Y: 800}},
+		{Type: "move_to", Point: &Point{X: 100, Y: 600}, DurationMs: 30000},
+		{Type: "wait", DurationMs: 30000},
+		{Type: "move_to", Point: &Point{X: 100, Y: 200}, DurationMs: 1},
+		{Type: "touch_up"},
+	}
+
+	err := provider.TouchActions(context.Background(), actions)
+	if got := AsError(err); got == nil || got.Kind != ErrInvalidArguments || !strings.Contains(err.Error(), "total duration") {
+		t.Fatalf("TouchActions() error = %v, want total-duration invalid arguments", err)
+	}
+	if report := pointer.bytes(); len(report) != 0 {
+		t.Fatalf("excessive total duration wrote %d bytes before validation", len(report))
 	}
 }

@@ -130,8 +130,8 @@ omitting both preserves the existing immediate-move behavior.
 Each `wait` is limited to 30 seconds, and cumulative wait time across one
 atomic program is limited to 60 seconds.
 
-The former one-object gesture syntax remains accepted for compatibility with
-existing quick actions and scripts.
+Supported forms of the former one-object gesture syntax remain accepted for
+compatibility with existing quick actions and scripts; `type:"drag"` is not supported.
 
 Moving a draggable target uses two `touch_gesture` calls so the Agent can
 observe the drag state before choosing the final destination:

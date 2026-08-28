@@ -660,6 +660,71 @@ def test_touch_gesture_drag_rejects_out_of_range_duration(bridge_server, duratio
     assert state.env.last_action is None
 
 
+@pytest.mark.parametrize("speed", [1e-308, 10 ** 400])
+def test_touch_gesture_rejects_extreme_swipe_speed(bridge_server, speed):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-extreme-swipe-speed"
+
+    request_body = json.dumps({
+        "input": {
+            "type": "swipe",
+            "start": {"x": 100, "y": 800},
+            "end": {"x": 900, "y": 200},
+            "speed": speed,
+        },
+    }).encode()
+    req = Request(
+        f"{base_url}/api/tools/touch_gesture",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+    assert data["is_error"] is True
+    assert "speed" in data["output"]
+    assert state.env.last_action is None
+
+
+@pytest.mark.parametrize(
+    ("delta", "start_y", "end_y", "duration_ms"),
+    [
+        (-1, 800.0, 50.0, 300.0),
+        (-3, 800.0, 50.0, 450.0),
+        (3, 200.0, 950.0, 450.0),
+        (127, 200.0, 950.0, 9750.0),
+    ],
+)
+def test_mouse_scroll_preserves_delta_direction_and_magnitude(
+    bridge_server, delta, start_y, end_y, duration_ms
+):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-scroll-magnitude"
+
+    request_body = json.dumps({"input": {"delta": delta}}).encode()
+    req = Request(
+        f"{base_url}/api/tools/mouse_scroll",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "SWIPE",
+        "data": {
+            "point1": [500.0, start_y],
+            "point2": [500.0, end_y],
+            "duration": duration_ms,
+        },
+    }
+
+
 def test_invoke_without_token_still_works(bridge_server):
     """Test tool invocation without token still works (auth removed)."""
     server, base_url, state = bridge_server
