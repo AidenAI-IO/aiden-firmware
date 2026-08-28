@@ -517,7 +517,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.screenState = screenState
 	rt.phoneBridge = NewPhoneBridge(logger)
 	rt.phoneBridge.SetConfiguredPlatform(cfg.DevicePlatformOrDefault())
-	rt.stateManager.RegisterUpdater(screenState)
 	rt.stateManager.RegisterUpdater(rt.phoneBridge)
 
 	return rt, nil
