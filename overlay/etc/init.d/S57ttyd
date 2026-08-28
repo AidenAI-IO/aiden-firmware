@@ -18,6 +18,15 @@ TTYD_PORT=${TTYD_PORT:-${WETTY_PORT:-3000}}
 TTYD_BASE=${TTYD_BASE:-${WETTY_BASE:-/wetty/}}
 TTYD_TITLE=${TTYD_TITLE:-${WETTY_TITLE:-Aiden Shell}}
 TTYD_COMMAND=${TTYD_COMMAND:-${WETTY_COMMAND:-/bin/login}}
+# ttyd 1.7.3 exposes xterm.js settings through repeatable --client-option
+# arguments. These defaults keep the terminal legible and predictable on
+# touch browsers while allowing board-specific overrides from BOOT_CONF.
+TTYD_RENDERER=${TTYD_RENDERER:-${WETTY_RENDERER:-canvas}}
+TTYD_FONT_SIZE=${TTYD_FONT_SIZE:-${WETTY_FONT_SIZE:-16}}
+TTYD_SCROLLBACK=${TTYD_SCROLLBACK:-${WETTY_SCROLLBACK:-500}}
+TTYD_CURSOR_STYLE=${TTYD_CURSOR_STYLE:-${WETTY_CURSOR_STYLE:-bar}}
+TTYD_DISABLE_RESIZE_OVERLAY=${TTYD_DISABLE_RESIZE_OVERLAY:-${WETTY_DISABLE_RESIZE_OVERLAY:-true}}
+TTYD_MAX_CLIENTS=${TTYD_MAX_CLIENTS:-${WETTY_MAX_CLIENTS:-2}}
 : "${ENABLE_TTYD:=${ENABLE_WETTY:-1}}"
 
 is_running() {
@@ -71,8 +80,13 @@ start() {
     set -- \
         --port "$TTYD_PORT" \
         --base-path "$TTYD_BASE" \
-        --writable \
-        --client-option "titleFixed=$TTYD_TITLE"
+        --max-clients "$TTYD_MAX_CLIENTS" \
+        --client-option "titleFixed=$TTYD_TITLE" \
+        --client-option "rendererType=$TTYD_RENDERER" \
+        --client-option "fontSize=$TTYD_FONT_SIZE" \
+        --client-option "scrollback=$TTYD_SCROLLBACK" \
+        --client-option "cursorStyle=$TTYD_CURSOR_STYLE" \
+        --client-option "disableResizeOverlay=$TTYD_DISABLE_RESIZE_OVERLAY"
     if [ -n "$TTYD_INTERFACE" ]; then
         set -- "$@" --interface "$TTYD_INTERFACE"
     fi

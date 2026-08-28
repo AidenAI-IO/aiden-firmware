@@ -233,6 +233,7 @@ class DockerSandboxContractTest(unittest.TestCase):
 
     def test_ttyd_init_resolves_legacy_settings_after_boot_config(self):
         init_script = read_repo_file("overlay/etc/init.d/S57ttyd")
+        entrypoint = read_repo_file("docker/dev/entrypoint.sh")
 
         config_source = init_script.index('    . "$BOOT_CONF"')
         settings = init_script.index("TTYD_BIN=")
@@ -240,6 +241,24 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("${WETTY_BIN:-/usr/bin/ttyd}", init_script)
         self.assertIn("${WETTY_PORT:-3000}", init_script)
         self.assertIn(': "${ENABLE_TTYD:=${ENABLE_WETTY:-1}}"', init_script)
+
+        # ttyd 1.7.3 exposes --readonly; writable mode is the default and
+        # passing --writable makes the daemon fail option parsing.
+        self.assertNotIn("--writable", init_script)
+        self.assertNotIn("--writable", entrypoint)
+        for option in (
+            '"rendererType=$TTYD_RENDERER"',
+            '"fontSize=$TTYD_FONT_SIZE"',
+            '"scrollback=$TTYD_SCROLLBACK"',
+            '"cursorStyle=$TTYD_CURSOR_STYLE"',
+            '"disableResizeOverlay=$TTYD_DISABLE_RESIZE_OVERLAY"',
+        ):
+            self.assertIn(option, init_script)
+        self.assertIn('--max-clients "$TTYD_MAX_CLIENTS"', init_script)
+        self.assertIn('--max-clients="${TTYD_MAX_CLIENTS:-2}"', entrypoint)
+        self.assertIn('rendererType=${TTYD_RENDERER:-canvas}', entrypoint)
+        self.assertIn('fontSize=${TTYD_FONT_SIZE:-16}', entrypoint)
+        self.assertIn('scrollback=${TTYD_SCROLLBACK:-500}', entrypoint)
 
     def test_agent_supervisor_truncates_the_persistent_log(self):
         service = REPO_ROOT / "docker/dev/agent-service.sh"

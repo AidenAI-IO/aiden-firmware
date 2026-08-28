@@ -56,3 +56,23 @@ http://192.168.42.1:8080/wetty/
 ttyd itself still listens on port `3000`; the Agent Web service proxies `/wetty/` to it.
 
 The init script uses `/bin/login`, so authenticate with the board's Linux account credentials.
+
+## Mobile browser defaults
+
+ttyd 1.7.3 does not include a mobile virtual-keyboard toolbar, but its
+`--client-option` mechanism can tune the bundled xterm.js client. Aiden applies
+these defaults for the small touch screen and for lower-end mobile browsers:
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `rendererType` | `canvas` | Avoid requiring a WebGL context on mobile browsers |
+| `fontSize` | `16` | Keep text readable and avoid iOS input auto-zoom |
+| `scrollback` | `500` | Bound the browser-side terminal buffer |
+| `cursorStyle` | `bar` | Make the insertion point easier to follow while typing |
+| `disableResizeOverlay` | `true` | Avoid transient overlays when mobile browser chrome resizes the viewport |
+| `max-clients` | `2` | Bound concurrent shells on the memory-constrained board |
+
+Set the corresponding `TTYD_*` variables in `/etc/aiden_boot.conf` to adjust
+these values. The legacy `WETTY_*` names remain accepted for migration. The
+mobile toolbar and viewport metadata documented by newer ttyd releases are not
+available in the Buildroot-provided 1.7.3 client.
