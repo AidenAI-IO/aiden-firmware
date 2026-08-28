@@ -476,7 +476,8 @@ class ToolsAPIHandler:
                         x_key="end_x",
                         y_key="end_y",
                     )
-                    duration_ms = tool_input.get("duration_ms", 700)
+                    duration_value = tool_input.get("duration_ms")
+                    duration_ms = 700 if duration_value is None else _swipe_duration_arg(duration_value)
                 timing = _swipe_timing_options(tool_input)
                 action = build_action(
                     gesture_type,

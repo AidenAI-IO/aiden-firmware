@@ -2,6 +2,7 @@ package mnk
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -273,7 +274,7 @@ func TestTouchGestureToolAdapterAtomicActions(t *testing.T) {
 		t.Fatalf("first action = %#v", actions[0])
 	}
 	if actions[1].Type != "wait" || actions[1].DurationMs != 25 {
-		t.Fatalf("wait action = %#v", actions[2])
+		t.Fatalf("wait action = %#v", actions[1])
 	}
 	if actions[3].Type != "touch_up" {
 		t.Fatalf("last action = %#v", actions[3])
@@ -321,6 +322,14 @@ func TestTouchGestureToolAdapterAtomicActionsValidation(t *testing.T) {
 	}
 	if got := len(provider.TouchActionCalls()); got != 0 {
 		t.Fatalf("provider recorded %d actions after invalid calls, want 0", got)
+	}
+}
+
+func TestTouchGestureToolAdapterAtomicDurationErrorNamesAction(t *testing.T) {
+	adapter := NewTouchGestureToolAdapter(NewMockProvider())
+	_, err := adapter.Call(context.Background(), `{"actions":[{"action":"touch_down","point":{"x":500,"y":500},"duration_ms":30001},{"action":"touch_up"}]}`)
+	if err == nil || !strings.Contains(err.Error(), "touch_down duration must be between 0 and 30000 ms") {
+		t.Fatalf("Call() error = %v, want touch_down duration guidance", err)
 	}
 }
 

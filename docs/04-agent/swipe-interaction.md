@@ -41,7 +41,7 @@ The action vocabulary is deliberately small:
 - `wait`: waits for `ms` milliseconds without changing contact state.
 - `touch_up`: releases the current contact; `point` is optional.
 
-Coordinates use the normalized `0..1000` range. A program must contain at least one action and must end with `touch_up`; waits are bounded to 30 seconds and programs to 128 actions. The legacy one-object `type` form remains accepted for existing scripts, but new integrations should use the atomic form.
+Coordinates use the normalized `0..1000` range. A program must contain at least one action and must end with `touch_up`; each wait is bounded to 30 seconds, cumulative wait time is bounded to 60 seconds, and programs are limited to 128 actions. The legacy one-object `type` form remains accepted for existing scripts, but new integrations should use the atomic form.
 
 Moving a draggable target is the exception that intentionally spans two tool
 calls. Always use this sequence:
@@ -56,7 +56,7 @@ directly to the destination, holds for 200ms, then releases. Do not issue an
 unrelated input action between the pair. The former one-call `type:"drag"`
 gesture has been removed.
 
-On Android ADB backends, the provider discovers the physical touchscreen and its absolute coordinate range with `getevent -lp`, then emits `sendevent` programs that preserve contact across atomic waits/moves and across the `drag_start`/`drag_release` boundary. This requires the Android shell user to have write access to the selected `/dev/input/event*` device. When device permissions or SELinux prohibit raw injection, the provider falls back to Android's `input touchscreen motionevent DOWN|MOVE|UP` primitive; if that is also unavailable, atomic actions return `module_unavailable` and HID remains the fallback.
+On Android ADB backends, the provider discovers the physical touchscreen and its absolute coordinate range with `getevent -lp`, then emits `sendevent` programs that preserve contact across atomic waits/moves and across the `drag_start`/`drag_release` boundary. This requires the Android shell user to have write access to the selected `/dev/input/event*` device. When device permissions or SELinux prohibit raw injection, the provider falls back to Android's `input touchscreen motionevent DOWN|MOVE|UP` primitive; if that is also unavailable, atomic actions return `module_unavailable`. HID is a separately selected alternative through `input_backend=hid`; the ADB provider does not switch to HID automatically.
 
 Use the atomic form for ordinary lists, carousels, maps, and other free-scrolling surfaces:
 

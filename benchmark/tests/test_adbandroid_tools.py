@@ -443,7 +443,7 @@ def test_directional_swipe_duration_out_of_range_is_rejected(bridge):
     assert not [call for call in device.calls if call[0] == "swipe"]
 
 
-def test_invalid_duration_falls_back_to_default(bridge):
+def test_nonnumeric_duration_is_rejected(bridge):
     _, device, base_url = bridge
     status, body = _invoke(
         base_url,

@@ -72,6 +72,7 @@ const (
 	adbEventKey                   = 1
 	adbEventAbs                   = 3
 	adbSynReport                  = 0
+	adbSynMtReport                = 2
 	adbBtnTouch                   = 330
 	adbBtnToolFinger              = 325
 	adbAbsX                       = 0
@@ -717,6 +718,9 @@ func appendADBTouchPosition(script *strings.Builder, device adbTouchDevice, x, y
 		}
 		appendADBEvent(script, device.path, adbEventAbs, adbAbsMtPositionX, x)
 		appendADBEvent(script, device.path, adbEventAbs, adbAbsMtPositionY, y)
+		if !device.protocolB {
+			appendADBEvent(script, device.path, adbEventSyn, adbSynMtReport, 0)
+		}
 	}
 	if device.hasAbsXY {
 		appendADBEvent(script, device.path, adbEventAbs, adbAbsX, x)
@@ -756,7 +760,7 @@ func appendADBTouchDown(script *strings.Builder, device adbTouchDevice, x, y, tr
 		appendADBEvent(script, device.path, adbEventKey, adbBtnToolFinger, 1)
 	}
 	if device.mt && !device.protocolB {
-		appendADBEvent(script, device.path, adbEventSyn, 2, 0)
+		appendADBEvent(script, device.path, adbEventSyn, adbSynMtReport, 0)
 	}
 	appendADBEvent(script, device.path, adbEventSyn, adbSynReport, 0)
 }
@@ -770,7 +774,7 @@ func appendADBTouchUp(script *strings.Builder, device adbTouchDevice) {
 			appendADBEvent(script, device.path, adbEventAbs, adbAbsMtTrackingID, -1)
 		}
 		if !device.protocolB {
-			appendADBEvent(script, device.path, adbEventSyn, 2, 0)
+			appendADBEvent(script, device.path, adbEventSyn, adbSynMtReport, 0)
 		}
 	}
 	if device.hasBtnTouch {

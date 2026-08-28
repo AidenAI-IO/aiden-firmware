@@ -632,6 +632,34 @@ def test_touch_gesture_rejects_non_string_type(bridge_server):
     assert "type must be a string" in data["output"]
 
 
+@pytest.mark.parametrize("duration_ms", [0, 10_001])
+def test_touch_gesture_drag_rejects_out_of_range_duration(bridge_server, duration_ms):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-bad-drag-duration"
+
+    request_body = json.dumps({
+        "input": {
+            "type": "drag",
+            "start": {"x": 200, "y": 300},
+            "end": {"x": 700, "y": 600},
+            "duration_ms": duration_ms,
+        },
+    }).encode()
+    req = Request(
+        f"{base_url}/api/tools/touch_gesture",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+    assert data["is_error"] is True
+    assert "duration_ms must be in range" in data["output"]
+    assert state.env.last_action is None
+
+
 def test_invoke_without_token_still_works(bridge_server):
     """Test tool invocation without token still works (auth removed)."""
     server, base_url, state = bridge_server

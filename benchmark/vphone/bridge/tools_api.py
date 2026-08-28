@@ -104,7 +104,7 @@ class VPhoneToolsAPIHandler:
                         "hold_after_ms": {"type": "integer", "minimum": 0, "maximum": MAX_SWIPE_HOLD_MS, "description": "Optional dwell at the destination before release."},
                         "hold_ms": {"type": "integer", "minimum": 1, "maximum": MAX_ACTION_DURATION_MS},
                         "pause_ms": {"type": "integer", "minimum": 20, "maximum": 180},
-                        "steps": {"type": "integer", "minimum": 1, "maximum": MAX_SWIPE_STEPS, "description": "Number of movement steps for swipe or drag."},
+                        "steps": {"type": "integer", "minimum": 1, "maximum": MAX_SWIPE_STEPS, "description": "Accepted for compatibility but ignored by this backend; device.swipe uses duration-based movement."},
                         "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
                         "speed": {"type": "number", "exclusiveMinimum": 0, "description": "Optional swipe speed; defaults to 2500 normalized units/second"},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
@@ -362,7 +362,7 @@ class VPhoneToolsAPIHandler:
                         time.sleep(timing["hold_after_ms"] / 1000)
                 return self._execute_device(
                     swipe,
-                    log_name, log_input, f"swipe {x1} {y1} {x2} {y2} duration={duration} steps={timing.get('steps', 'default')}",
+                    log_name, log_input, f"swipe {x1} {y1} {x2} {y2} duration={duration}",
                 )
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}

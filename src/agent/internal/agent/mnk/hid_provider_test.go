@@ -86,3 +86,28 @@ func TestHIDProviderTouchActionsKeepsContactAcrossMoveAndWait(t *testing.T) {
 		}
 	}
 }
+
+func TestHIDProviderTouchActionsRejectsInvalidDurationBeforeActionHandlers(t *testing.T) {
+	tests := []struct {
+		name   string
+		action TouchAction
+	}{
+		{name: "touch down", action: TouchAction{Type: "touch_down", Point: &Point{X: 100, Y: 800}, DurationMs: 30001}},
+		{name: "move", action: TouchAction{Type: "move_to", Point: &Point{X: 100, Y: 200}, DurationMs: -1}},
+		{name: "touch up", action: TouchAction{Type: "touch_up", DurationMs: 30001}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pointer := &layoutCaptureDevice{}
+			provider := NewHIDProvider(pointer, nil, nil, nil, true, "qwerty", nil)
+			err := provider.TouchActions(context.Background(), []TouchAction{test.action})
+			if got := AsError(err); got == nil || got.Kind != ErrInvalidArguments {
+				t.Fatalf("TouchActions() error = %v, want invalid arguments", err)
+			}
+			if report := pointer.bytes(); len(report) != 0 {
+				t.Fatalf("invalid duration wrote %d bytes before validation", len(report))
+			}
+		})
+	}
+}

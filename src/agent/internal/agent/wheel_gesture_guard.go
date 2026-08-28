@@ -475,26 +475,51 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 		return ToolResult{}, true
 	}
 	var args struct {
-		Type  string        `json:"type"`
-		Point *pointerPoint `json:"point"`
-		Start *pointerPoint `json:"start"`
-		End   *pointerPoint `json:"end"`
+		Type    string        `json:"type"`
+		Point   *pointerPoint `json:"point"`
+		Start   *pointerPoint `json:"start"`
+		End     *pointerPoint `json:"end"`
+		Actions []struct {
+			Action string             `json:"action"`
+			Type   string             `json:"type"`
+			Point  *pointerPoint      `json:"point"`
+			X      *pointerCoordinate `json:"x"`
+			Y      *pointerCoordinate `json:"y"`
+		} `json:"actions"`
 	}
 	if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 		return ToolResult{}, true
 	}
 	gestureType := strings.ToLower(strings.TrimSpace(args.Type))
 	var points []*pointerPoint
-	switch gestureType {
-	case "tap", "double_tap", "long_press", "drag_start":
-		points = []*pointerPoint{args.Point}
-	case "swipe":
-		points = []*pointerPoint{args.Start, args.End}
-	case "drag_release":
-		// Never block release of an already-held contact.
-		return ToolResult{}, true
-	default:
-		return ToolResult{}, true
+	if len(args.Actions) > 0 {
+		gestureType = "actions"
+		for _, action := range args.Actions {
+			actionType := strings.ToLower(strings.TrimSpace(action.Action))
+			if actionType == "" {
+				actionType = strings.ToLower(strings.TrimSpace(action.Type))
+			}
+			switch actionType {
+			case "touch_down", "move_to", "touch_up":
+				point := action.Point
+				if point == nil && action.X != nil && action.Y != nil {
+					point = &pointerPoint{X: *action.X, Y: *action.Y}
+				}
+				points = append(points, point)
+			}
+		}
+	} else {
+		switch gestureType {
+		case "tap", "double_tap", "long_press", "drag_start":
+			points = []*pointerPoint{args.Point}
+		case "swipe":
+			points = []*pointerPoint{args.Start, args.End}
+		case "drag_release":
+			// Never block release of an already-held contact.
+			return ToolResult{}, true
+		default:
+			return ToolResult{}, true
+		}
 	}
 	navigationCandidate := false
 	for _, point := range points {

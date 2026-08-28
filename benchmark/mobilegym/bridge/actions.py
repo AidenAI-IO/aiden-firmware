@@ -121,11 +121,7 @@ def _motion_payload(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         point1 = _point(payload["start"])
         point2 = _point(payload["end"])
-    data = {"point1": point1, "point2": point2, "duration": _duration_milliseconds(payload)}
-    for key in ("hold_before_ms", "hold_after_ms", "steps"):
-        if key in payload:
-            data[key] = payload[key]
-    return data
+    return {"point1": point1, "point2": point2, "duration": _duration_milliseconds(payload)}
 
 
 def _duration_seconds(payload: dict[str, Any], ms_keys: tuple[str, ...] = ("duration_ms",)) -> float:

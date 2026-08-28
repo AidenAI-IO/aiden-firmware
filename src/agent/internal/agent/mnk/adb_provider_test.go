@@ -345,6 +345,21 @@ func TestBuildADBTouchScriptKeepsContactAcrossWaitAndMove(t *testing.T) {
 	}
 }
 
+func TestAppendADBTouchPositionProtocolAEmitsMTReportBeforeSynReport(t *testing.T) {
+	device := adbTouchDevice{path: "/dev/input/event4", mt: true}
+	var script strings.Builder
+
+	appendADBTouchPosition(&script, device, 123, 456, true)
+
+	want := "sendevent /dev/input/event4 3 53 123\n" +
+		"sendevent /dev/input/event4 3 54 456\n" +
+		"sendevent /dev/input/event4 0 2 0\n" +
+		"sendevent /dev/input/event4 0 0 0\n"
+	if got := script.String(); got != want {
+		t.Fatalf("protocol-A move script =\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestADBProviderTouchActionsDiscoversDeviceAndRunsSingleScript(t *testing.T) {
 	getevent := `add device 1: /dev/input/event3
   name:     "goodix_ts0"

@@ -222,7 +222,7 @@ func (t *TouchGestureToolAdapter) callAtomic(ctx context.Context, rawActions []j
 		}
 		if duration != nil {
 			if *duration < 0 || *duration > 30000 {
-				return "", InvalidArgumentsf("actions[%d] wait duration must be between 0 and 30000 ms", index)
+				return "", InvalidArgumentsf("actions[%d] %s duration must be between 0 and 30000 ms", index, actionType)
 			}
 			if strings.EqualFold(actionType, "wait") {
 				totalWaitMs += *duration

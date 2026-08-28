@@ -336,6 +336,9 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 			if err := ctx.Err(); err != nil {
 				return releaseOnError(err)
 			}
+			if action.DurationMs < 0 || action.DurationMs > 30000 {
+				return releaseOnError(InvalidArgumentsf("touch action %d duration must be between 0 and 30000 ms", index))
+			}
 			actionType := strings.ToLower(strings.TrimSpace(action.Type))
 			button := action.Button
 			if button == "" {
@@ -344,9 +347,6 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 
 			switch actionType {
 			case "wait":
-				if action.DurationMs < 0 || action.DurationMs > 30000 {
-					return releaseOnError(InvalidArgumentsf("touch action %d wait duration must be between 0 and 30000 ms", index))
-				}
 				totalWaitMs += action.DurationMs
 				if totalWaitMs > 60000 {
 					return releaseOnError(InvalidArguments("total wait time in touch actions must not exceed 60000 ms"))

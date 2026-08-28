@@ -146,7 +146,7 @@ class ADBToolsAPIHandler:
                         "hold_after_ms": {"type": "integer", "minimum": 0, "maximum": MAX_SWIPE_HOLD_MS, "description": "Optional dwell at the destination before release."},
                         "hold_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "description": "Tap or long-press hold duration in milliseconds."},
                         "pause_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "description": "Pause between taps for double_tap."},
-                        "steps": {"type": "integer", "minimum": 1, "maximum": MAX_SWIPE_STEPS, "description": "Number of movement steps for swipe or drag."},
+                        "steps": {"type": "integer", "minimum": 1, "maximum": MAX_SWIPE_STEPS, "description": "Accepted for compatibility but ignored by this backend; adb device.swipe uses duration-based movement."},
                         "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "description": "Swipe direction when end is omitted"},
                         "speed": {"type": "number", "exclusiveMinimum": 0, "description": "Optional swipe speed in normalized coordinate units per second; defaults to 2500"},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},

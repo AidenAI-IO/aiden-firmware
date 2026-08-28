@@ -614,6 +614,52 @@ func TestWheelGestureGuardBlocksTouchGestureOnActiveWheelColumn(t *testing.T) {
 	}
 }
 
+func TestWheelGestureGuardBlocksAtomicActionsOnActiveWheelColumn(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "nested move point",
+			input: `{"actions":[{"action":"touch_down","point":{"x":100,"y":275}},{"type":"move_to","point":{"x":632,"y":275}},{"action":"touch_up"}]}`,
+		},
+		{
+			name:  "legacy down coordinates",
+			input: `{"actions":[{"action":"touch_down","x":632,"y":275},{"action":"touch_up"}]}`,
+		},
+		{
+			name:  "explicit release point",
+			input: `{"actions":[{"action":"touch_down","point":{"x":100,"y":275}},{"action":"touch_up","x":632,"y":275}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var guard wheelNudgeGuard
+			allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(validWheelGuardInput(632, 275, 48, 5, 60, 0)))
+			call := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: test.input}
+			if result, allowed := guard.BeforeToolCall(context.Background(), call); allowed || result.Error == nil {
+				t.Fatalf("atomic touch on active wheel column should be blocked: allowed=%v result=%#v", allowed, result)
+			}
+		})
+	}
+}
+
+func TestWheelGestureGuardPreservesReleaseAndUnknownPayloadHandling(t *testing.T) {
+	var guard wheelNudgeGuard
+	allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(validWheelGuardInput(632, 275, 48, 5, 60, 0)))
+
+	for _, input := range []string{
+		`{"type":"drag_release","point":{"x":632,"y":275}}`,
+		`{"actions":[{"action":"unsupported","point":{"x":632,"y":275}}]}`,
+	} {
+		call := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: input}
+		if result, allowed := guard.BeforeToolCall(context.Background(), call); !allowed || result.Error != nil {
+			t.Fatalf("release or unknown payload should be left to the touch tool: input=%s allowed=%v result=%#v", input, allowed, result)
+		}
+	}
+}
+
 func TestWheelGestureGuardBlocksDirectionFormSwipeWhilePickerIsActive(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})

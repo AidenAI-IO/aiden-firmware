@@ -127,6 +127,8 @@ session and must release every contact before returning. Example:
 `move_to.speed` is optional and uses normalized coordinate units per second.
 When both `speed` and `duration_ms` are present, `duration_ms` takes precedence;
 omitting both preserves the existing immediate-move behavior.
+Each `wait` is limited to 30 seconds, and cumulative wait time across one
+atomic program is limited to 60 seconds.
 
 The former one-object gesture syntax remains accepted for compatibility with
 existing quick actions and scripts.
