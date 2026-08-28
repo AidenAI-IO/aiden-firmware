@@ -473,29 +473,31 @@ It is active when `input_mode = "realtime"`; the
 mode, not API key presence, controls whether the daemon starts the realtime
 path. The daemon streams microphone PCM to the selected adapter and plays its
 response PCM through the board audio path.
-For providers with text-input capability, currently Qwen, `/api/chat` can also
+For providers with text-input capability, currently Qwen, OpenAI Realtime, and Google Gemini Live, `/api/chat` can also
 start a session and send the queued text as its first user message. Speko S2S
-does not expose text injection and must receive microphone audio.
+does not expose text injection and must receive microphone audio. Speko turn
+boundaries are detected locally from PCM energy; `turn_detection_silence_ms`
+controls the silence interval before the adapter sends `commit()`.
 Use `input_mode = "stt"` to select the existing VAD/STT/LLM/TTS wakeup loop.
 Config Web renders the selector when `agent.input_mode = "realtime"`. Provider
 credentials and model settings live in `[voice_model_providers.<name>]`, so
 switching the selector never overwrites another provider's saved configuration.
-The current adapters are Qwen and Speko S2S.
+The current adapters are Qwen, Speko S2S, OpenAI Realtime, Google Gemini Live, and xAI Grok Voice.
 
 | Field | Default | Description |
 | ----- | ------- | ----------- |
-| `provider` | `qwen` | Named `[voice_model_providers.<name>]` record. A bare `qwen` or `speko` value remains accepted for legacy configs. |
+| `provider` | `qwen` | Named `[voice_model_providers.<name>]` record. Bare `qwen`, `speko`, `openai`, `gemini`, or `xai` values remain accepted for compatibility. |
 | `instructions` | built-in voice model instruction | Session instructions. Leave empty to use the built-in default voice model instruction. |
 | `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
 | `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
-| `turn_detection` | `server_vad` | Server turn detector: `server_vad` or `smart_turn`. |
-| `turn_detection_threshold` | empty | Optional server VAD threshold. |
-| `turn_detection_silence_ms` | `800` | Silence duration before a response is generated. |
+| `turn_detection` | `server_vad` | Qwen server turn detector: `server_vad` or `smart_turn`. Speko S2S uses a local PCM endpoint and does not use this selector. |
+| `turn_detection_threshold` | empty | Optional Qwen server VAD threshold; ignored by Speko S2S. |
+| `turn_detection_silence_ms` | `800` | Qwen silence duration before a response is generated. For Speko S2S, silence after detected speech triggers the S2S `commit()` call. |
 
 ## `[voice_model_providers.<name>]`
 
 Realtime provider records follow the same named-record pattern as
-`[model_providers.<name>]`. Multiple Qwen and Speko configurations can coexist;
+`[model_providers.<name>]`. Multiple configurations of each realtime provider can coexist;
 `[voice_model].provider` selects one by name.
 
 ```toml
@@ -519,10 +521,11 @@ provider = "speko-main"
 
 | Field | Providers | Description |
 | ----- | --------- | ----------- |
-| `type` | all | Adapter type: `qwen` or `speko`. |
+| `type` | all | Adapter type: `qwen`, `speko`, `openai`, `gemini`, or `xai`. |
 | `api_key` | all | Provider credential; supports `$ENV_VAR` expansion. |
 | `model` / `voice` | all | Provider-specific model and voice. Speko may leave either empty for automatic selection. |
-| `workspace_id` / `region` / `endpoint` | Qwen | Optional DashScope routing settings. |
+| `workspace_id` / `region` | Qwen | Optional DashScope routing settings. |
+| `endpoint` | Qwen, OpenAI, Gemini, xAI | Optional WebSocket endpoint override, primarily for regional gateways and protocol tests. |
 | `upstream_provider` | Speko | Required S2S upstream, for example `openai`, `google`, `xai`, or `inworld`. |
 | `agent_id` / `base_url` | Speko | Optional Speko agent ID and API base URL override. |
 

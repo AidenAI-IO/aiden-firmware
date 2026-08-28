@@ -408,7 +408,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "voice_model",
 				Fields: []FieldMeta{
 					{Key: "provider", Label: "Realtime Provider", Widget: WidgetSelect,
-						Enum:        []EnumOption{{Value: "qwen", Label: "Qwen"}, {Value: "speko", Label: "Speko S2S"}},
+						Enum:        []EnumOption{{Value: "qwen", Label: "Qwen"}, {Value: "speko", Label: "Speko S2S"}, {Value: "openai", Label: "OpenAI Realtime"}, {Value: "gemini", Label: "Google Gemini Live"}, {Value: "xai", Label: "xAI Grok Voice"}},
 						Default:     defaults.VoiceModel.Provider,
 						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
 				},
@@ -417,7 +417,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "voice_model_providers",
 				Fields: []FieldMeta{
 					{Key: "type", Label: "Realtime Provider Type", Widget: WidgetSelect,
-						Enum:    []EnumOption{{Value: "qwen", Label: "Qwen"}, {Value: "speko", Label: "Speko S2S"}},
+						Enum:    []EnumOption{{Value: "qwen", Label: "Qwen"}, {Value: "speko", Label: "Speko S2S"}, {Value: "openai", Label: "OpenAI Realtime"}, {Value: "gemini", Label: "Google Gemini Live"}, {Value: "xai", Label: "xAI Grok Voice"}},
 						Default: defaults.VoiceModel.Provider},
 					{Key: "upstream_provider", Label: "Realtime Engine", Widget: WidgetSelect,
 						Enum: []EnumOption{
@@ -439,13 +439,17 @@ func ConfigMeta() ConfigMetadata {
 						PlaceholderWhen: []ConditionalPlaceholder{
 							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "qwen")}}, Value: defaults.VoiceModel.Model},
 							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "speko")}}, Value: "auto"},
+							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "openai")}}, Value: "gpt-realtime"},
+							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "gemini")}}, Value: "gemini-3.1-flash-live-preview"},
+							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "xai")}}, Value: "grok-voice-latest"},
 						}},
 					{Key: "workspace_id", Label: "DashScope Workspace ID", Widget: WidgetText,
 						Advanced:    true,
 						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
-					{Key: "endpoint", Label: "Qwen WebSocket Endpoint", Widget: WidgetText, Layout: "wide",
+					{Key: "endpoint", Label: "WebSocket Endpoint", Widget: WidgetText, Layout: "wide",
+						Help:        "Optional provider WebSocket endpoint override. Leave empty to use the provider default.",
 						Advanced:    true,
-						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
+						VisibleWhen: all(in("voice_model_providers.type", "qwen", "openai", "gemini", "xai"))},
 					{Key: "base_url", Label: "Provider Base URL", Widget: WidgetText, Layout: "wide",
 						Help: "Optional provider API base URL; useful for Speko-compatible deployments or tests.", Advanced: true,
 						VisibleWhen: all(eq("voice_model_providers.type", "speko"))},
@@ -462,6 +466,9 @@ func ConfigMeta() ConfigMetadata {
 						PlaceholderWhen: []ConditionalPlaceholder{
 							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "qwen")}}, Value: defaults.VoiceModel.Voice},
 							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "speko")}}, Value: "auto"},
+							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "openai")}}, Value: "alloy"},
+							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "gemini")}}, Value: "Puck"},
+							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "xai")}}, Value: "eve"},
 						}},
 				},
 			},

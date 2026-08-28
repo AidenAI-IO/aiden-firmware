@@ -4,7 +4,7 @@ sidebar_position: 17
 
 # Realtime Voice Provider Research
 
-> Verified against first-party documentation on 2026-08-27. Provider contracts,
+> Verified against first-party documentation on 2026-08-28. Provider contracts,
 > model availability, and regional access change frequently; re-check the linked
 > source before implementation.
 
@@ -52,9 +52,119 @@ required by deployment policy, then Nova 2 Sonic only for an AWS/non-Chinese
 deployment. Consider ElevenLabs only when managed agent orchestration is an
 explicit product decision. Consider Speko after its account-visible S2S session
 contract has been verified; it adds a proxy/control-plane dependency rather than
-direct provider access. Do not mark Volcengine/Doubao or xAI as approved providers
+direct provider access. Do not mark Volcengine/Doubao as production-ready
 until an account-visible realtime voice API and tool-call contract have been
 verified.
+
+## Native-provider count and the Speko route
+
+There are two different counts, and they must not be represented by the same
+field:
+
+1. **Top-level Aiden adapters:** `qwen`, `speko`, `openai`, `gemini`, and `xai`
+   are five provider values with three native adapters plus the Speko proxy. Each
+   value owns its own endpoint, authentication, event mapping, audio format,
+   interruption semantics, and tool-result protocol.
+2. **Speko upstream routes:** `openai`, `google`, and `xai` are routing values in a
+   Speko S2S session. They all use the single Speko session-mint plus Speko binary
+   PCM WebSocket contract and one Speko credential. They are not additional Aiden
+   adapters and must not be treated as interchangeable endpoint aliases.
+
+The resulting configuration should therefore look like this. Native OpenAI, Gemini, and xAI records are available now:
+
+```toml
+[voice_model_providers.qwen]
+type = "qwen"
+
+[voice_model_providers.speko]
+type = "speko"
+upstream_provider = "google"
+
+[voice_model_providers.openai]
+type = "openai"
+
+[voice_model_providers.gemini]
+type = "gemini"
+
+[voice_model_providers.xai]
+type = "xai"
+
+[voice_model]
+provider = "openai"
+```
+
+The UI should only offer provider types whose adapters and credential validation
+are present. Selecting Speko and then changing `upstream_provider` must keep the
+native OpenAI/Gemini/xAI records and their keys untouched.
+
+### Native OpenAI Realtime: approved first adapter
+
+OpenAI's Realtime contract is a server-owned JSON WebSocket session. The client
+sends `input_audio_buffer.append` events and receives streamed audio deltas; the
+documented PCM16 format is 24 kHz, mono, little-endian. Server VAD and semantic VAD
+emit speech start/stop events; cancellation and conversation-item truncation are
+the mechanisms needed to stop already-buffered assistant audio on barge-in.
+[Realtime guide](https://platform.openai.com/docs/guides/realtime),
+[client events](https://platform.openai.com/docs/api-reference/realtime-client-events),
+[VAD guide](https://platform.openai.com/docs/guides/realtime-vad),
+[official SDK session schema](https://github.com/openai/openai-python/blob/main/src/openai/types/beta/realtime/session_create_params.py)
+
+The daemon can authenticate with a standard OpenAI API key in the WebSocket
+`Authorization: Bearer` header. Ephemeral client secrets are intended for
+untrusted client environments and are unnecessary when the Go agent owns the
+socket; the official SDK exposes the `/realtime/sessions` mint operation and
+labels those tokens as short-lived client credentials.
+[Realtime WebSocket authentication](https://platform.openai.com/docs/guides/realtime#connect-to-the-realtime-api),
+[official session-create implementation](https://github.com/openai/openai-python/blob/main/src/openai/resources/beta/realtime/sessions.py)
+
+Function tools are part of the same session: declare JSON-Schema functions in the
+session, collect `response.function_call_arguments.delta`/`done`, then send a
+`conversation.item.create` function output and `response.create` to continue the
+turn. This maps cleanly to Aiden's normalized tool lifecycle.
+[Realtime function calling](https://platform.openai.com/docs/guides/realtime#function-calling),
+[client event reference](https://platform.openai.com/docs/api-reference/realtime-client-events)
+
+The official SDK currently lists `gpt-realtime` alongside dated realtime preview
+IDs and exposes named audio voices. Model and voice availability is account and
+region dependent, so the adapter should accept a model/voice string and validate
+it at session creation rather than hard-code one preview ID.
+[official SDK model/voice fields](https://github.com/openai/openai-python/blob/main/src/openai/types/beta/realtime/session_create_params.py),
+[Realtime models](https://platform.openai.com/docs/models#realtime-models)
+
+### Native Gemini Live: approved second adapter
+
+Gemini Live is a separate bidirectional WebSocket protocol. A connection begins
+with a `setup` message, after which the client sends `realtimeInput` audio blobs
+and receives `serverContent` model turns. The Live API documents automatic VAD,
+server interruption notifications, and PCM audio (the standard examples use
+16 kHz input and 24 kHz model output). It is not wire-compatible with either
+Qwen or OpenAI even though the normalized semantics are similar.
+[Live API guide](https://ai.google.dev/gemini-api/docs/live),
+[Live API reference](https://ai.google.dev/api/live),
+[official Google Gen AI Live client](https://github.com/googleapis/python-genai/blob/main/google/genai/live.py)
+
+Gemini API sessions use a Google AI API key; Vertex AI uses a regional endpoint
+and Google credentials (OAuth/service account). The adapter must keep those
+credential modes distinct and must not reuse a Speko or OpenAI key.
+[Gemini API authentication](https://ai.google.dev/gemini-api/docs/api-key),
+[Vertex AI authentication](https://cloud.google.com/vertex-ai/generative-ai/docs/start/api-keys)
+
+The Live protocol has `toolCall` and `toolResponse` messages. Aiden can execute
+the calls locally and send the JSON result back over the same socket while the
+session remains active. The official client marks Live support as preview, and
+model IDs/voices change more frequently than the stable text API; discover or
+configure them per account instead of assuming that a Speko upstream model name
+is accepted by the native endpoint.
+[Live function calling](https://ai.google.dev/gemini-api/docs/live#function-calling),
+[Live API reference (`toolCall`/`toolResponse`)](https://ai.google.dev/api/live),
+[Google Gen AI SDK preview marker](https://github.com/googleapis/python-genai/blob/main/google/genai/live.py)
+
+### Native xAI Voice Agent: approved adapter
+
+xAI now publishes a complete first-party Speech to Speech WebSocket contract. The native adapter uses `wss://api.x.ai/v1/realtime?model=grok-voice-latest` with a server-side Bearer API key, JSON base64 PCM audio, server VAD, cancellation, and function-call events. xAI is OpenAI-Realtime compatible with documented differences: assistant audio uses `response.output_audio.delta`, and cumulative user transcription uses `conversation.item.input_audio_transcription.updated` when `grok-transcribe` is configured.
+[xAI Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech), [xAI realtime API reference](https://docs.x.ai/developers/rest-api-reference/inference/voice#realtime)
+
+The native adapter maps the common function-tool and PCM JSON path; xAI binary transport, resumption, and xAI-hosted tools remain optional extensions. Speko `upstream_provider = "xai"` remains a separate proxy route.
 
 ## Aiden's current constraints
 
@@ -71,7 +181,7 @@ WebSocket client:
   mono output before playback resampling.
 
 The implementation now exposes a provider-neutral realtime session interface
-with Qwen and Speko adapters. `[voice_model].provider` references a named
+with Qwen, Speko, OpenAI, Gemini, and xAI adapters. `[voice_model].provider` references a named
 `[voice_model_providers.<name>]` record, matching the existing LLM provider
 configuration pattern. Credentials, model, voice, and provider routing remain
 stored per record, so switching Qwen/Speko does not overwrite the inactive
@@ -90,7 +200,7 @@ implements the selected adapter's wire contract.
 | **ElevenLabs Agents** | Yes. Managed agent WebSocket supports live input/output, turn-taking, and interruption. | Yes. Client/server tools are supported by the agent protocol. | Managed conversational-agent WebSocket; the vendor owns orchestration, agent prompt, and more of the tool lifecycle. [Agents overview](https://elevenlabs.io/docs/eleven-agents/overview), [WebSocket API](https://elevenlabs.io/docs/eleven-agents/api-reference/eleven-agents/websocket) | **Separate product path.** Integrate only if vendor-managed agent behavior is acceptable; do not model it as a raw LLM adapter. |
 | **Speko Realtime S2S** | **Yes at the transport/proxy layer.** One WebSocket carries ongoing mic PCM uploads and streamed response PCM downloads; the wire includes `interrupt` and `interruption` frames. | **Yes.** `tool_call` frames carry `callId`, name, and JSON arguments; `sendToolResult` returns the result on the same socket. | Backend `POST /v1/sessions` with `mode: "s2s"` mints short-lived `wsUrl`/`wsToken`; token is sent as the first WebSocket subprotocol. Speko then proxies to a selected realtime provider. The SDK docs describe this S2S shape, while the current [published OpenAPI session schema](https://docs.speko.ai/openapi.json) still describes the cascade/WebRTC shape (`transportToken`/`transportUrl`) and omits `mode`/`wsUrl`/`wsToken`. [S2S SDK](https://docs.speko.ai/sdk/realtime), [browser helper](https://docs.speko.ai/client/realtime-voice-conversation) | **Possible, but separate adapter and account validation required.** No Go SDK appears in Speko's [public repositories](https://github.com/orgs/SpekoAI/repositories); implement the short-lived session mint plus binary-PCM WebSocket protocol in Go, or run the official async/Python/TypeScript SDK out of process. |
 | **Volcengine / Doubao** | **Unconfirmed for the repository account.** Public Ark text and existing Volcengine TTS endpoints do not prove a full-duplex audio model. | **Unconfirmed.** Require an account-visible realtime tool-call reference. | Existing repo integrations cover Ark text and WebSocket TTS, not a documented full-duplex voice session. [Ark](https://www.volcengine.com/product/ark), [Ark API docs](https://www.volcengine.com/docs/82379) | **Do not approve yet.** Run a provider spike only after the account exposes the required realtime API. |
-| **xAI Voice Agent** | Potentially yes, but the current public contract, codec, and interruption details must be pinned from the account's accessible docs. | Potentially yes, but do not assume the tool event schema. | Separate realtime voice API; no compatibility claim is made here without a versioned first-party reference. [Voice Agent guide](https://docs.x.ai/docs/guides/voice/voice-agent) | **Pending verification.** Keep out of the implementation order until access and event details are confirmed. |
+| **xAI Voice Agent** | Yes. Native Speech to Speech uses bidirectional WebSocket audio with server VAD and response cancellation. | Yes. Function call events and function_call_output continuation are documented. | WebSocket `wss://api.x.ai/v1/realtime?model=grok-voice-latest`; Bearer API key; JSON base64 PCM path implemented. [Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech), [realtime reference](https://docs.x.ai/developers/rest-api-reference/inference/voice#realtime) | **Implemented.** xAI-specific transcript and output-audio event aliases are normalized. |
 
 ## Speko Realtime S2S evidence and limits
 

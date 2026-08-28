@@ -145,6 +145,33 @@ func TestSpekoProviderWireProtocol(t *testing.T) {
 	}
 }
 
+func TestSpekoProviderRejectsUnsupportedSampleRate(t *testing.T) {
+	upgrader := websocket.Upgrader{Subprotocols: []string{"token"}, CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sessions" {
+			_ = json.NewEncoder(w).Encode(spekoCredentials{
+				WSURL:            "ws://" + r.Host + "/ws",
+				WSToken:          "token",
+				InputSampleRate:  8000,
+				OutputSampleRate: 24000,
+			})
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	defer server.Close()
+
+	_, err := (SpekoProvider{HTTPClient: server.Client(), BaseURL: server.URL, UpstreamProvider: "openai"}).Open(
+		context.Background(), SessionConfig{APIKey: "secret"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "unsupported input sample rate 8000") {
+		t.Fatalf("Open() error = %v, want unsupported input sample rate", err)
+	}
+}
+
 func TestSpekoSessionFramesInputAudioAtTwentyMilliseconds(t *testing.T) {
 	frameSizes := make(chan []int, 1)
 	upgrader := websocket.Upgrader{Subprotocols: []string{"token"}, CheckOrigin: func(*http.Request) bool { return true }}

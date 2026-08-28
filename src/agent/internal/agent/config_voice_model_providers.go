@@ -30,7 +30,7 @@ func normalizeVoiceModelProviderType(providerType string) string {
 
 func isKnownVoiceModelProviderType(providerType string) bool {
 	switch normalizeVoiceModelProviderType(providerType) {
-	case "qwen", "speko":
+	case "qwen", "speko", "openai", "gemini", "xai":
 		return true
 	default:
 		return false

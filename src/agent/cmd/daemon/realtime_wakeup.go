@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,12 +25,14 @@ import (
 )
 
 const (
-	realtimeAudioReadTimeoutMs = 200
-	realtimeConnectTimeout     = 15 * time.Second
-	realtimePlaybackKeepAlive  = 10 * time.Second
-	realtimeToolCallTimeout    = 30 * time.Second
-	realtimeTaskResultDebounce = 500 * time.Millisecond
-	realtimeContextReplayTurns = 10
+	realtimeAudioReadTimeoutMs   = 200
+	realtimeConnectTimeout       = 15 * time.Second
+	realtimePlaybackKeepAlive    = 10 * time.Second
+	realtimeToolCallTimeout      = 30 * time.Second
+	realtimeTaskResultDebounce   = 500 * time.Millisecond
+	realtimeContextReplayTurns   = 10
+	realtimeSpekoEndpointSilence = 800 * time.Millisecond
+	realtimeSpekoSpeechThreshold = 500
 )
 
 var errRealtimeShutdown = errors.New("realtime shutdown requested")
@@ -254,8 +257,9 @@ func drainRealtimeWakeups(events <-chan struct{}) {
 
 func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
 	voice := cfg.VoiceModel.Voice
-	if voice == "" {
-		voice = "longanqian"
+	provider := realtimeProviderType(cfg)
+	if voice == "" && provider == "qwen" {
+		voice = rtclient.DefaultVoice
 	}
 	inputFormat := cfg.VoiceModel.InputAudioFormat
 	if inputFormat == "" {
@@ -284,6 +288,17 @@ func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
 		MaxHistoryTurns: realtimeContextReplayTurns, Tools: realtimeVoiceToolDefinitions(), TurnDetection: turn}
 }
 
+func realtimeProviderType(cfg agent.Config) string {
+	provider := strings.ToLower(strings.TrimSpace(cfg.VoiceModel.Provider))
+	if record, ok := cfg.VoiceModelProviders[provider]; ok && strings.TrimSpace(record.Type) != "" {
+		provider = strings.ToLower(strings.TrimSpace(record.Type))
+	}
+	if provider == "" {
+		return "qwen"
+	}
+	return provider
+}
+
 func realtimeProviderSessionConfig(cfg agent.Config) realtimevoice.SessionConfig {
 	legacy := realtimeSessionConfig(cfg)
 	tools := legacy.Tools
@@ -295,6 +310,61 @@ func realtimeProviderSessionConfig(cfg agent.Config) realtimevoice.SessionConfig
 		InputAudioFormat: legacy.InputAudioFormat, OutputAudioFormat: legacy.OutputAudioFormat, InputSampleRate: 16000, OutputSampleRate: 24000, MaxHistoryTurns: realtimeContextReplayTurns,
 		TurnDetection: legacy.TurnDetection.Type, TurnDetectionThresh: cfg.VoiceModel.TurnDetectionThreshold, TurnDetectionSilenceMs: cfg.VoiceModel.TurnDetectionSilenceMs,
 		EnableSpeechEmotion: legacy.EnableSpeechEmotion, Tools: neutralTools}
+}
+
+// realtimeSpekoEndpoint tracks a local speech turn for Speko S2S. Speko's
+// S2S contract exposes commit() but does not expose a server VAD stream, so a
+// small client-side energy gate is needed to delimit turns on the hardware.
+type realtimeSpekoEndpoint struct {
+	silenceDuration time.Duration
+	speechActive    bool
+	lastSpeechAt    time.Time
+}
+
+func newRealtimeSpekoEndpoint(silenceMs int) *realtimeSpekoEndpoint {
+	silence := realtimeSpekoEndpointSilence
+	if silenceMs > 0 {
+		silence = time.Duration(silenceMs) * time.Millisecond
+	}
+	return &realtimeSpekoEndpoint{silenceDuration: silence}
+}
+
+func (e *realtimeSpekoEndpoint) Observe(pcm []byte, now time.Time) bool {
+	if e == nil || pcm16MeanAbs(pcm) < realtimeSpekoSpeechThreshold {
+		return false
+	}
+	e.speechActive = true
+	e.lastSpeechAt = now
+	return true
+}
+
+func (e *realtimeSpekoEndpoint) Due(now time.Time) bool {
+	return e != nil && e.speechActive && !e.lastSpeechAt.IsZero() && now.Sub(e.lastSpeechAt) >= e.silenceDuration
+}
+
+func (e *realtimeSpekoEndpoint) Reset() {
+	if e == nil {
+		return
+	}
+	e.speechActive = false
+	e.lastSpeechAt = time.Time{}
+}
+
+func pcm16MeanAbs(pcm []byte) int {
+	const sampleBytes = 2
+	if len(pcm) < sampleBytes {
+		return 0
+	}
+	var total uint64
+	samples := len(pcm) / sampleBytes
+	for i := 0; i < samples; i++ {
+		value := int64(int16(binary.LittleEndian.Uint16(pcm[i*sampleBytes:])))
+		if value < 0 {
+			value = -value
+		}
+		total += uint64(value)
+	}
+	return int(total / uint64(samples))
 }
 
 const (
@@ -517,16 +587,19 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 		return fmt.Errorf("initialize realtime user context: %w", err)
 	}
 
-	providerName := strings.ToLower(strings.TrimSpace(cfg.VoiceModel.Provider))
-	if providerName == "" {
-		providerName = "qwen"
-	}
+	providerName := realtimeProviderType(cfg)
 	var provider realtimevoice.Provider
 	switch providerName {
 	case "qwen":
 		provider = realtimevoice.QwenProvider{WorkspaceID: cfg.VoiceModel.WorkspaceID, Region: cfg.VoiceModel.Region, Endpoint: cfg.VoiceModel.Endpoint}
 	case "speko":
 		provider = realtimevoice.SpekoProvider{BaseURL: cfg.VoiceModel.BaseURL, AgentID: cfg.VoiceModel.AgentID, UpstreamProvider: cfg.VoiceModel.UpstreamProvider}
+	case "openai":
+		provider = realtimevoice.OpenAIProvider{Endpoint: cfg.VoiceModel.Endpoint}
+	case "gemini":
+		provider = realtimevoice.GeminiProvider{Endpoint: cfg.VoiceModel.Endpoint}
+	case "xai":
+		provider = realtimevoice.XAIProvider{Endpoint: cfg.VoiceModel.Endpoint}
 	default:
 		return fmt.Errorf("unsupported realtime provider %q", providerName)
 	}
@@ -604,6 +677,61 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	defer func() { _ = playback.stop(playbackAudio) }()
 	playbackKeepAlive := time.NewTicker(realtimePlaybackKeepAlive)
 	defer playbackKeepAlive.Stop()
+	var spekoEndpoint *realtimeSpekoEndpoint
+	var spekoCommitTimer *time.Timer
+	var spekoCommitTimerCh <-chan time.Time
+	if providerName == "speko" {
+		spekoEndpoint = newRealtimeSpekoEndpoint(cfg.VoiceModel.TurnDetectionSilenceMs)
+	}
+	stopSpekoCommitTimer := func() {
+		if spekoCommitTimer == nil {
+			spekoCommitTimerCh = nil
+			return
+		}
+		if !spekoCommitTimer.Stop() {
+			select {
+			case <-spekoCommitTimer.C:
+			default:
+			}
+		}
+		spekoCommitTimerCh = nil
+	}
+	defer stopSpekoCommitTimer()
+	armSpekoCommitTimer := func() {
+		if spekoEndpoint == nil || !spekoEndpoint.speechActive {
+			return
+		}
+		delay := spekoEndpoint.silenceDuration
+		if !spekoEndpoint.lastSpeechAt.IsZero() {
+			delay = spekoEndpoint.silenceDuration - time.Since(spekoEndpoint.lastSpeechAt)
+			if delay < 0 {
+				delay = 0
+			}
+		}
+		if spekoCommitTimer == nil {
+			spekoCommitTimer = time.NewTimer(delay)
+		} else {
+			if !spekoCommitTimer.Stop() {
+				select {
+				case <-spekoCommitTimer.C:
+				default:
+				}
+			}
+			spekoCommitTimer.Reset(delay)
+		}
+		spekoCommitTimerCh = spekoCommitTimer.C
+	}
+	commitSpekoTurn := func() error {
+		if spekoEndpoint == nil || !spekoEndpoint.speechActive {
+			return nil
+		}
+		stopSpekoCommitTimer()
+		if err := session.Commit(ctx); err != nil {
+			return fmt.Errorf("commit speko input turn: %w", err)
+		}
+		spekoEndpoint.Reset()
+		return nil
+	}
 	firstAudioChunk := true
 	var activeChat *realtimeChatCommand
 	var chatMode string
@@ -710,10 +838,16 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			}
 		case pcm, ok := <-chunks:
 			if !ok {
+				if err := commitSpekoTurn(); err != nil {
+					return err
+				}
 				return nil
 			}
 			if err := session.SendAudio(ctx, pcm); err != nil {
 				return err
+			}
+			if spekoEndpoint != nil && spekoEndpoint.Observe(pcm, time.Now()) {
+				armSpekoCommitTimer()
 			}
 			if firstAudioChunk {
 				firstAudioChunk = false
@@ -757,6 +891,14 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			taskUpdatesReady = true
 			if err := tryInjectTaskUpdates(); err != nil {
 				return err
+			}
+		case <-spekoCommitTimerCh:
+			if spekoEndpoint != nil && spekoEndpoint.Due(time.Now()) {
+				if err := commitSpekoTurn(); err != nil {
+					return err
+				}
+			} else if spekoEndpoint != nil && spekoEndpoint.speechActive {
+				armSpekoCommitTimer()
 			}
 		case command := <-chatBridgeCommands(chatBridge):
 			if !supportsText {
@@ -823,6 +965,11 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				}
 			case realtimevoice.EventSpeechStopped:
 				inputSpeechActive = false
+				if providerName == "speko" {
+					if err := commitSpekoTurn(); err != nil {
+						return err
+					}
+				}
 				if err := tryInjectTaskUpdates(); err != nil {
 					return err
 				}

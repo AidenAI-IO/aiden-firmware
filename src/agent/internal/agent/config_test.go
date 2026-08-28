@@ -73,6 +73,13 @@ func TestVoiceModelConfigValidatesRealtimeProvider(t *testing.T) {
 	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "openai", APIKey: "key", BaseURL: "http://localhost:8080"}).Validate(); err != nil {
 		t.Fatalf("valid Speko config rejected: %v", err)
 	}
+	for _, provider := range []string{"openai", "gemini", "xai"} {
+		t.Run(provider, func(t *testing.T) {
+			if err := (VoiceModelConfig{Provider: provider, APIKey: "key"}).Validate(); err != nil {
+				t.Fatalf("valid native realtime config rejected: %v", err)
+			}
+		})
+	}
 }
 
 func TestVoiceModelConfigProviderFieldsLoad(t *testing.T) {

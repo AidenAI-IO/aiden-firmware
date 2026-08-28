@@ -108,6 +108,14 @@ func (p SpekoProvider) Open(ctx context.Context, cfg SessionConfig) (Session, er
 	if cred.OutputSampleRate == 0 {
 		cred.OutputSampleRate = 24000
 	}
+	if !supportedSpekoSampleRate(cred.InputSampleRate) {
+		_ = conn.Close()
+		return nil, fmt.Errorf("speko session mint response has unsupported input sample rate %d", cred.InputSampleRate)
+	}
+	if !supportedSpekoSampleRate(cred.OutputSampleRate) {
+		_ = conn.Close()
+		return nil, fmt.Errorf("speko session mint response has unsupported output sample rate %d", cred.OutputSampleRate)
+	}
 	s := &spekoSession{
 		conn: conn,
 		info: SessionInfo{
@@ -125,6 +133,10 @@ func (p SpekoProvider) Open(ctx context.Context, cfg SessionConfig) (Session, er
 	s.writeGate <- struct{}{}
 	go s.readLoop()
 	return s, nil
+}
+
+func supportedSpekoSampleRate(rate int) bool {
+	return rate == 16000 || rate == 24000
 }
 
 func requestedRate(rate int, format string) int {

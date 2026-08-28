@@ -81,6 +81,59 @@ func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
 	}
 }
 
+func TestRealtimeSessionConfigPreservesSpekoAutomaticVoice(t *testing.T) {
+	cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "speko"}}
+	got := realtimeSessionConfig(cfg)
+	if got.Voice != "" {
+		t.Fatalf("Speko voice = %q, want empty automatic selection", got.Voice)
+	}
+}
+
+func TestRealtimeSessionConfigResolvesNamedSpekoProviderForDefaults(t *testing.T) {
+	cfg := agent.Config{
+		VoiceModel:          agent.VoiceModelConfig{Provider: "speko-main"},
+		VoiceModelProviders: map[string]agent.VoiceModelProvider{"speko-main": {Type: "speko"}},
+	}
+	got := realtimeSessionConfig(cfg)
+	if got.Voice != "" {
+		t.Fatalf("named Speko voice = %q, want empty automatic selection", got.Voice)
+	}
+}
+
+func TestRealtimeSessionConfigDoesNotApplyQwenVoiceToNativeProviders(t *testing.T) {
+	for _, provider := range []string{"openai", "gemini", "xai"} {
+		t.Run(provider, func(t *testing.T) {
+			cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: provider}}
+			got := realtimeSessionConfig(cfg)
+			if got.Voice != "" {
+				t.Fatalf("voice = %q, want native provider default", got.Voice)
+			}
+		})
+	}
+}
+
+func TestRealtimeSpekoEndpointDetectsSilenceAfterSpeech(t *testing.T) {
+	endpoint := newRealtimeSpekoEndpoint(100)
+	speech := make([]byte, 640)
+	for i := 0; i < len(speech); i += 2 {
+		binary.LittleEndian.PutUint16(speech[i:], uint16(1000))
+	}
+	start := time.Unix(0, 0)
+	if !endpoint.Observe(speech, start) {
+		t.Fatal("speech PCM was not detected")
+	}
+	if endpoint.Due(start.Add(99 * time.Millisecond)) {
+		t.Fatal("endpoint became due before the configured silence duration")
+	}
+	if !endpoint.Due(start.Add(100 * time.Millisecond)) {
+		t.Fatal("endpoint did not become due after the configured silence duration")
+	}
+	endpoint.Reset()
+	if endpoint.Due(start.Add(time.Second)) {
+		t.Fatal("reset endpoint remained active")
+	}
+}
+
 func TestRealtimeInstructionsRouteVisualRequestsToDeviceWork(t *testing.T) {
 	instructions := agent.DefaultRealtimeVoiceInstructions
 	for _, phrase := range []string{"cannot directly and reliably answer", "screen or page content", "Never refuse merely because"} {

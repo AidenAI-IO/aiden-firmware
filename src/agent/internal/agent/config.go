@@ -418,7 +418,7 @@ func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) !=
 
 func (c VoiceModelConfig) Validate() error {
 	provider := strings.ToLower(strings.TrimSpace(c.Provider))
-	if provider != "" && provider != "qwen" && provider != "speko" {
+	if provider != "" && provider != "qwen" && provider != "speko" && provider != "openai" && provider != "gemini" && provider != "xai" {
 		return fmt.Errorf("voice_model.provider: unsupported provider %q", c.Provider)
 	}
 	if provider == "speko" && strings.TrimSpace(c.UpstreamProvider) == "" {

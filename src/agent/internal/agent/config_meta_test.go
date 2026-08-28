@@ -870,8 +870,14 @@ providerVisible:
 	}{
 		{path: "voice_model_providers.model", provider: "qwen", value: DefaultConfig().VoiceModel.Model},
 		{path: "voice_model_providers.model", provider: "speko", value: "auto"},
+		{path: "voice_model_providers.model", provider: "openai", value: "gpt-realtime"},
+		{path: "voice_model_providers.model", provider: "gemini", value: "gemini-3.1-flash-live-preview"},
+		{path: "voice_model_providers.model", provider: "xai", value: "grok-voice-latest"},
 		{path: "voice_model_providers.voice", provider: "qwen", value: DefaultConfig().VoiceModel.Voice},
 		{path: "voice_model_providers.voice", provider: "speko", value: "auto"},
+		{path: "voice_model_providers.voice", provider: "openai", value: "alloy"},
+		{path: "voice_model_providers.voice", provider: "gemini", value: "Puck"},
+		{path: "voice_model_providers.voice", provider: "xai", value: "eve"},
 	} {
 		t.Run(tt.path+"_"+tt.provider, func(t *testing.T) {
 			field := idx[tt.path]
