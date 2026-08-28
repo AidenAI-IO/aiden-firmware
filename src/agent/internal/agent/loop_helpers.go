@@ -1,9 +1,7 @@
 package agent
 
 import (
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"strings"
 )
 
@@ -34,7 +32,23 @@ func compactPromptLine(value string, max int) string {
 	return truncateForLog(value, max)
 }
 
-func compactScreenshotObservation(toolName, observation string) (string, bool) {
+func actionOutputFromScreenshotObservation(observation string) (string, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(observation), &fields); err != nil {
+		return "", false
+	}
+	raw, ok := fields["action_output"]
+	if !ok {
+		return "", false
+	}
+	var output string
+	if err := json.Unmarshal(raw, &output); err != nil {
+		return "", false
+	}
+	return output, true
+}
+
+func compactScreenshotObservation(_ string, observation string) (string, bool) {
 	var result postActionScreenshotResult
 	if err := json.Unmarshal([]byte(observation), &result); err != nil {
 		return "", false
@@ -42,38 +56,10 @@ func compactScreenshotObservation(toolName, observation string) (string, bool) {
 	if (result.Data == "" && strings.TrimSpace(result.ScreenshotRef) == "") || result.Width <= 0 || result.Height <= 0 {
 		return "", false
 	}
-	if strings.TrimSpace(toolName) == "" {
-		toolName = "tool"
+	if actionOutput, ok := actionOutputFromScreenshotObservation(observation); ok {
+		return actionOutput, true
 	}
-	format := strings.TrimSpace(result.Format)
-	if format == "" {
-		format = "jpeg"
-	}
-	size := result.Size
-	if size <= 0 {
-		if imageBytes, err := base64.StdEncoding.DecodeString(result.Data); err == nil {
-			size = len(imageBytes)
-		}
-	}
-	if strings.TrimSpace(result.ActionOutput) != "" {
-		return fmt.Sprintf(
-			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. Image data omitted from text summary.",
-			toolName,
-			compactToolObservation(result.ActionOutput),
-			format,
-			result.Width,
-			result.Height,
-			size,
-		), true
-	}
-	return fmt.Sprintf(
-		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. Image data omitted from text summary.",
-		toolName,
-		format,
-		result.Width,
-		result.Height,
-		size,
-	), true
+	return observation, true
 }
 
 func (o observedWorldState) IsEmpty() bool {
