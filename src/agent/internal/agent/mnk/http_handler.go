@@ -61,14 +61,18 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		execErr = h.handleDoubleClick(reqCtx, req.DoubleClick)
 	case "swipe":
 		execErr = h.handleSwipe(reqCtx, req.Swipe)
-	case "drag":
-		execErr = h.handleDrag(reqCtx, req.Drag)
+	case "drag_start":
+		execErr = h.handleDragStart(reqCtx, req.DragStart)
+	case "drag_release":
+		execErr = h.handleDragRelease(reqCtx, req.DragRelease)
 	case "keypress":
 		execErr = h.handleKeypress(reqCtx, req.Keypress)
 	case "move":
 		execErr = h.handleMove(reqCtx, req.Move)
 	case "scroll":
 		execErr = h.handleScroll(reqCtx, req.Scroll)
+	case "touch_actions":
+		execErr = h.handleTouchActions(reqCtx, req.TouchActions)
 	default:
 		h.writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown operation: %q", req.Operation))
 		return
@@ -89,6 +93,17 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.writeSuccess(w)
 }
 
+func (h *HTTPHandler) handleTouchActions(ctx context.Context, actions []TouchAction) error {
+	if len(actions) == 0 {
+		return InvalidArguments("touch_actions must contain at least one action")
+	}
+	atomic, ok := h.provider.(TouchActionProvider)
+	if !ok {
+		return ModuleUnavailable("atomic touch actions are not supported by this provider")
+	}
+	return atomic.TouchActions(ctx, actions)
+}
+
 func (h *HTTPHandler) handleClick(ctx context.Context, params *ClickParams) error {
 	if params == nil {
 		return InvalidArguments("click params required")
@@ -103,24 +118,53 @@ func (h *HTTPHandler) handleDoubleClick(ctx context.Context, params *DoubleClick
 	return h.provider.DoubleClick(ctx, params.X, params.Y, params.Button)
 }
 
-func (h *HTTPHandler) handleSwipe(ctx context.Context, params *DragParams) error {
+func (h *HTTPHandler) handleSwipe(ctx context.Context, params *SwipeParams) error {
 	if params == nil {
 		return InvalidArguments("swipe params required")
 	}
 	if len(params.Path) < 2 {
 		return InvalidArguments("swipe path must contain at least 2 points")
 	}
-	return h.provider.Swipe(ctx, params.Path, params.Button)
+	options := SwipeOptions{
+		DurationMs:   params.DurationMs,
+		HoldBeforeMs: params.HoldBeforeMs,
+		HoldAfterMs:  params.HoldAfterMs,
+		Steps:        params.Steps,
+	}
+	if err := validateSwipeOptions(options); err != nil {
+		return err
+	}
+	return swipeWithOptions(ctx, h.provider, params.Path, params.Button, options)
 }
 
-func (h *HTTPHandler) handleDrag(ctx context.Context, params *DragParams) error {
+func validateSwipeOptions(options SwipeOptions) error {
+	if options.DurationMs < 0 || options.DurationMs > MaxSwipeDurationMs {
+		return InvalidArgumentsf("duration_ms must be in range [0, %d]", MaxSwipeDurationMs)
+	}
+	if options.HoldBeforeMs < 0 || options.HoldBeforeMs > MaxSwipeHoldMs {
+		return InvalidArgumentsf("hold_before_ms must be in range [0, %d]", MaxSwipeHoldMs)
+	}
+	if options.HoldAfterMs < 0 || options.HoldAfterMs > MaxSwipeHoldMs {
+		return InvalidArgumentsf("hold_after_ms must be in range [0, %d]", MaxSwipeHoldMs)
+	}
+	if options.Steps < 0 || options.Steps > MaxSwipeSteps {
+		return InvalidArgumentsf("steps must be in range [0, %d]", MaxSwipeSteps)
+	}
+	return nil
+}
+
+func (h *HTTPHandler) handleDragStart(ctx context.Context, params *DragPointParams) error {
 	if params == nil {
-		return InvalidArguments("drag params required")
+		return InvalidArguments("drag_start params required")
 	}
-	if len(params.Path) < 2 {
-		return InvalidArguments("drag path must contain at least 2 points")
+	return h.provider.DragStart(ctx, params.X, params.Y, params.Button)
+}
+
+func (h *HTTPHandler) handleDragRelease(ctx context.Context, params *DragPointParams) error {
+	if params == nil {
+		return InvalidArguments("drag_release params required")
 	}
-	return h.provider.Drag(ctx, params.Path, params.Button)
+	return h.provider.DragRelease(ctx, params.X, params.Y)
 }
 
 func (h *HTTPHandler) handleKeypress(ctx context.Context, params *KeypressParams) error {

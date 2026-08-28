@@ -36,7 +36,7 @@ After the header, each non-empty, non-comment line is exactly one JSON object �
 
 - Wait: `{"type":"wait","ms":500}` pauses for the given milliseconds. Short form: `{"wait":500}`.
 - Speak: `{"type":"tts","text":"正在打开设置"}` starts TTS playback asynchronously and immediately continues to the next line; it does not wait for speech to finish. Short form: `{"tts":"正在打开设置"}`.
-- Call a tool: `{"type":"call","tool":"touch_gesture","input":{"type":"tap","point":{"x":500,"y":500}}}` invokes an existing tool with the given input. Short form: `{"call":{"tool":"screenshot","input":{}}}`.
+- Call a tool: `{"type":"call","tool":"touch_gesture","input":{"actions":[{"action":"touch_down","point":{"x":500,"y":500}},{"action":"touch_up"}]}}` invokes an existing tool with the given input. Short form: `{"call":{"tool":"screenshot","input":{}}}`.
 
 The `tool` of a call step must be one of the script-callable device or utility tools, such as screenshot, touch/mouse/keyboard controls, quick_action, wait_for_stable_screen, image_diff, or audio_volume. `image_diff` is diagnostic-only and is not exposed as a normal conversational Agent step, but prepared scripts may still use it. `run_script` cannot call itself or administrative tools such as shell, memory, skill management, web, or script-file tools. Use the same input shape each allowed tool expects on its own.
 
@@ -47,7 +47,7 @@ The `tool` of a call step must be one of the script-callable device or utility t
 # 先提示用户，再点击设置图标
 {"type":"tts","text":"正在打开设置"}
 {"type":"wait","ms":800}
-{"type":"call","tool":"touch_gesture","input":{"type":"tap","point":{"x":500,"y":500}}}
+{"type":"call","tool":"touch_gesture","input":{"actions":[{"action":"touch_down","point":{"x":500,"y":500}},{"action":"touch_up"}]}}
 {"type":"wait","ms":1200}
 ```
 
