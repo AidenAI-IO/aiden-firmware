@@ -72,9 +72,9 @@ yq --version
 
 config_page="$(curl -fsS --max-time 10 "http://127.0.0.1:$config_port/")"
 agent_page="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/")"
-terminal_page="$(curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/wetty/")"
-terminal_headers="$(curl -fsSIL --max-time 10 "http://127.0.0.1:$agent_port/wetty/")"
-terminal_token="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/wetty/token")"
+terminal_page="$(curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/webtty/")"
+terminal_headers="$(curl -fsSIL --max-time 10 "http://127.0.0.1:$agent_port/webtty/")"
+terminal_token="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/webtty/token")"
 reported_agent_port="$(
     curl -fsS --max-time 10 "http://127.0.0.1:$config_port/api/config" \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["agent_status"]["public_port"])'
@@ -131,7 +131,7 @@ while [ "$attempt" -le 30 ]; do
 done
 test "$current_restart_count" -gt "$restart_count"
 wait_for_agent
-curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/wetty/" >/dev/null
+curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/webtty/" >/dev/null
 
 before_pid="$(agent_pid)"
 test -n "$before_pid"

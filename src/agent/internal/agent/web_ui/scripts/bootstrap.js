@@ -32,7 +32,7 @@ document.addEventListener('keydown', function(event) {
 });
 
 function configureTerminal() {
-    const terminalUrl = '/wetty/';
+    const terminalUrl = '/webtty/';
     terminalFrameEl.src = terminalUrl;
     terminalOpenLinkEl.href = terminalUrl;
 }

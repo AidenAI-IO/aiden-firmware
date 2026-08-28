@@ -564,8 +564,8 @@ func (s *Server) Handler() http.Handler {
 
 	// Static web UI
 	ttydProxy := newTerminalReverseProxy()
-	mux.Handle("/wetty", ttydProxy)
-	mux.Handle("/wetty/", ttydProxy)
+	mux.Handle("/webtty", ttydProxy)
+	mux.Handle("/webtty/", ttydProxy)
 	mux.Handle("/web-ui/", http.StripPrefix("/web-ui/", http.FileServer(http.FS(webUIFiles))))
 	mux.HandleFunc("/", s.handleIndex)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -597,7 +597,7 @@ func newTerminalReverseProxyForTarget(target *url.URL) *httputil.ReverseProxy {
 		req.Host = originalHost
 		req.Header.Set("X-Forwarded-Host", originalHost)
 		req.Header.Set("X-Forwarded-Proto", originalProto)
-		req.Header.Set("X-Forwarded-Prefix", "/wetty")
+		req.Header.Set("X-Forwarded-Prefix", "/webtty")
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		resp.Header.Del("X-Frame-Options")
@@ -612,9 +612,9 @@ func newTerminalReverseProxyForTarget(target *url.URL) *httputil.ReverseProxy {
 			if parsed, err := url.Parse(location); err == nil {
 				path := parsed.Path
 				if path == "" || path == "/" {
-					path = "/wetty/"
-				} else if !strings.HasPrefix(path, "/wetty") {
-					path = "/wetty" + path
+					path = "/webtty/"
+				} else if !strings.HasPrefix(path, "/webtty") {
+					path = "/webtty" + path
 				}
 				parsed.Scheme = ""
 				parsed.Host = ""

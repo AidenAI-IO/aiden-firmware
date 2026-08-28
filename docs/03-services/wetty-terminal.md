@@ -4,7 +4,7 @@ sidebar_position: 3
 
 # ttyd Browser Terminal
 
-The firmware image integrates ttyd as an optional browser terminal for board-side maintenance. The public `/wetty/` path is retained for compatibility with existing Agent Web links.
+The firmware image integrates ttyd as an optional browser terminal for board-side maintenance. The board-side public URL is `http://192.168.42.1:3000/webtty/`.
 
 ## Buildroot Integration
 
@@ -41,19 +41,19 @@ Default runtime values:
 | --- | --- |
 | Listen interface | all interfaces |
 | Port | `3000` |
-| Base path | `/wetty/` |
+| Base path | `/webtty/` |
 | Command | `/bin/login` |
 | Log | `/var/log/ttyd/ttyd.log` |
 
 ## Access
 
-The config web page at `http://192.168.42.1` includes a `Terminal` link. The link uses the Agent Web reverse proxy so the same page also works in the Docker sandbox:
+The config web page at `http://192.168.42.1` includes a `Terminal` link. On the board it opens ttyd directly:
 
 ```text
-http://192.168.42.1:8080/wetty/
+http://192.168.42.1:3000/webtty/
 ```
 
-ttyd itself still listens on port `3000`; the Agent Web service proxies `/wetty/` to it.
+Agent Web and the Docker sandbox also proxy `/webtty/` to ttyd on their published Agent Web port.
 
 The init script uses `/bin/login`, so authenticate with the board's Linux account credentials.
 

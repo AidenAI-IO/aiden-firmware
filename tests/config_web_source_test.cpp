@@ -360,10 +360,9 @@ TEST_CASE("config web links to ttyd browser terminal") {
     CHECK(html.find("Terminal") != std::string::npos);
     CHECK(html.find("function configureTerminalLink(port = 8080)") != std::string::npos);
     CHECK(html.find("new URL(window.location.href)") != std::string::npos);
-    CHECK(html.find("terminalUrl.port=String(port||8080)") != std::string::npos);
-    CHECK(html.find("terminalUrl.pathname='/wetty/'") != std::string::npos);
+    CHECK(html.find("terminalUrl.hostname==='192.168.42.1'?'3000':String(port||8080)") != std::string::npos);
+    CHECK(html.find("terminalUrl.pathname='/webtty/'") != std::string::npos);
     CHECK(html.find("configureTerminalLink(status.public_port||port)") != std::string::npos);
-    CHECK(html.find("http://192.168.42.1:3000/wetty/") == std::string::npos);
     CHECK(html.find("configureTerminalLink();") != std::string::npos);
     CHECK(html.find("let metaOk = true") != std::string::npos);
 }

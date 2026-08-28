@@ -15,7 +15,7 @@ PID_FILE=${TTYD_PID_FILE:-${WETTY_PID_FILE:-/run/ttyd.pid}}
 LOG_PATH=${TTYD_LOG_PATH:-${WETTY_LOG_PATH:-/var/log/ttyd/ttyd.log}}
 TTYD_INTERFACE=${TTYD_INTERFACE:-${WETTY_HOST:-}}
 TTYD_PORT=${TTYD_PORT:-${WETTY_PORT:-3000}}
-TTYD_BASE=${TTYD_BASE:-${WETTY_BASE:-/wetty/}}
+TTYD_BASE=${TTYD_BASE:-${WETTY_BASE:-/webtty/}}
 TTYD_TITLE=${TTYD_TITLE:-${WETTY_TITLE:-Aiden Shell}}
 TTYD_COMMAND=${TTYD_COMMAND:-${WETTY_COMMAND:-/bin/login}}
 # ttyd 1.7.3 exposes xterm.js settings through repeatable --client-option

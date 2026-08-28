@@ -48,7 +48,7 @@ trap shutdown INT TERM EXIT
 
 ttyd \
     --port=3000 \
-    --base-path=/wetty/ \
+    --base-path=/webtty/ \
     --max-clients="${TTYD_MAX_CLIENTS:-2}" \
     --client-option "titleFixed=${TTYD_TITLE:-Aiden Shell}" \
     --client-option "rendererType=${TTYD_RENDERER:-canvas}" \

@@ -2856,13 +2856,13 @@ func TestTerminalReverseProxyPreservesPublicHostAndRewritesFrameHeaders(t *testi
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "http://device.example:8080/wetty/", nil)
+	request := httptest.NewRequest(http.MethodGet, "http://device.example:8080/webtty/", nil)
 	newTerminalReverseProxyForTarget(target).ServeHTTP(recorder, request)
 
 	if gotHost != "device.example:8080" {
 		t.Fatalf("upstream Host = %q, want device.example:8080", gotHost)
 	}
-	if gotForwardedHost != "device.example:8080" || gotForwardedProto != "http" || gotForwardedPrefix != "/wetty" {
+	if gotForwardedHost != "device.example:8080" || gotForwardedProto != "http" || gotForwardedPrefix != "/webtty" {
 		t.Fatalf("forwarded headers = host %q proto %q prefix %q", gotForwardedHost, gotForwardedProto, gotForwardedPrefix)
 	}
 	if got := recorder.Header().Get("X-Frame-Options"); got != "" {
@@ -2871,8 +2871,8 @@ func TestTerminalReverseProxyPreservesPublicHostAndRewritesFrameHeaders(t *testi
 	if got := recorder.Header().Get("Content-Security-Policy"); got != "default-src 'self'; connect-src ws://device.example:8080; frame-ancestors 'self'" {
 		t.Fatalf("Content-Security-Policy = %q, want public WebSocket host plus same-origin framing", got)
 	}
-	if got := recorder.Header().Get("Location"); got != "/wetty/" {
-		t.Fatalf("Location = %q, want /wetty/", got)
+	if got := recorder.Header().Get("Location"); got != "/webtty/" {
+		t.Fatalf("Location = %q, want /webtty/", got)
 	}
 }
 

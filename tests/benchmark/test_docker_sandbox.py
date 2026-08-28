@@ -240,6 +240,7 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertLess(config_source, settings)
         self.assertIn("${WETTY_BIN:-/usr/bin/ttyd}", init_script)
         self.assertIn("${WETTY_PORT:-3000}", init_script)
+        self.assertIn("${WETTY_BASE:-/webtty/}", init_script)
         self.assertIn("${WETTY_FONT_SIZE:-24}", init_script)
         self.assertIn(': "${ENABLE_TTYD:=${ENABLE_WETTY:-1}}"', init_script)
 

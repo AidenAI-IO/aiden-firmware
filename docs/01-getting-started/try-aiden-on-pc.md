@@ -55,7 +55,7 @@ always matches the working tree. When the services are ready, open:
 | --- | --- | --- |
 | Config Web | [http://localhost:8000](http://localhost:8000) | Configure model, STT, TTS, Agent, and other supported settings |
 | Agent Web | [http://localhost:8080](http://localhost:8080) | Chat with and inspect the running Agent |
-| Terminal | [http://localhost:8080/wetty/](http://localhost:8080/wetty/) | Open a ttyd shell inside the sandbox container |
+| Terminal | [http://localhost:8080/webtty/](http://localhost:8080/webtty/) | Open a ttyd shell inside the sandbox container |
 
 Config Web writes changes into the sandbox's persistent named volume. Restarting
 or rebuilding the containers therefore does not discard the saved configuration

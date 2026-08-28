@@ -36,7 +36,7 @@ http://192.168.42.1
 ```
 
 The web interface allows:
-- Opening the browser terminal exposed by ttyd through the Agent Web proxy at `http://192.168.42.1:8080/wetty/`
+- Opening the browser terminal exposed by ttyd at `http://192.168.42.1:3000/webtty/`
 - Switching the device language between Simplified Chinese (`zh-CN`) and English (`en-US`); this also controls user-facing Agent responses and `<tts>` content
 - Switching among registered model provider types such as OpenAI, Anthropic, OpenRouter, Kimi, Volcengine, and Ollama; Google Gemini models are available through compatible providers such as OpenRouter
 - Configuring API keys and model names
