@@ -454,15 +454,6 @@ func NewServer(runtime *Runtime, addr string) *Server {
 			s.logger.Info("TTS enabled: provider=%s", manager.Current())
 		}
 	}
-	runtime.tools.SetRunScriptSpeaker(func(ctx context.Context, text string) error {
-		manager := s.currentTTSManager()
-		if manager == nil {
-			return fmt.Errorf("tts is not configured")
-		}
-		_, err := speakWithTTSManager(ctx, manager, s.currentTTSPlaybackBackend(), s.runtime.config, text)
-		return err
-	})
-
 	// Register preempt hook: when a new run starts, release WebUI audio resources.
 	runtime.RegisterPreemptHook(func() {
 		s.interruptAllActiveOutputs()
@@ -3211,7 +3202,7 @@ func httpToolExecutionSurvivesClientDisconnect(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
 	case "keyboard_tap", "quick_action", toolOpenApp, toolSearchLaunchApp, "enter_text",
 		"mouse_move",
-		"mouse_scroll", "run_script", "touch_gesture", "wheel_nudge":
+		"mouse_scroll", "touch_gesture", "wheel_nudge":
 		return true
 	default:
 		return false

@@ -806,7 +806,7 @@ func TestRuntimeRunWaitForWakeupAppendsToolResultBeforeFinishing(t *testing.T) {
 	}}
 	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", LoadAllTools: true}),
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{

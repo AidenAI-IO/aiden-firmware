@@ -114,33 +114,6 @@ func TestTerminationPolicyAcceptsLargePageChanges(t *testing.T) {
 	}
 }
 
-func TestComputeImageDiffUsesStrictOnePercentThreshold(t *testing.T) {
-	before := image.NewRGBA(image.Rect(0, 0, 100, 100))
-	after := image.NewRGBA(before.Bounds())
-	draw.Draw(after, after.Bounds(), before, before.Bounds().Min, draw.Src)
-	changed := color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	for x := 0; x < 100; x++ {
-		after.Set(x, 0, changed)
-	}
-
-	result, err := computeImageDiff(before, after, before.Bounds())
-	if err != nil {
-		t.Fatalf("computeImageDiff exact threshold: %v", err)
-	}
-	if result.Changed {
-		t.Fatalf("exactly 1%% changed pixels should remain unchanged: %#v", result)
-	}
-
-	after.Set(0, 1, changed)
-	result, err = computeImageDiff(before, after, before.Bounds())
-	if err != nil {
-		t.Fatalf("computeImageDiff above threshold: %v", err)
-	}
-	if !result.Changed {
-		t.Fatalf("more than 1%% changed pixels should count as changed: %#v", result)
-	}
-}
-
 func TestScreenshotProgressIgnoresDistributedPixelNoise(t *testing.T) {
 	before := image.NewRGBA(image.Rect(0, 0, 400, 800))
 	after := image.NewRGBA(before.Bounds())
@@ -154,13 +127,6 @@ func TestScreenshotProgressIgnoresDistributedPixelNoise(t *testing.T) {
 		}
 	}
 
-	result, err := computeImageDiff(before, after, bounds)
-	if err != nil {
-		t.Fatalf("compute raw image diff: %v", err)
-	}
-	if !result.Changed {
-		t.Fatalf("fixture should exceed raw image_diff 1%% threshold: %#v", result)
-	}
 	if progress, comparable := screenshotProgressChanged(before, after); !comparable || progress {
 		t.Fatalf("distributed one-pixel noise should not count as structural progress: progress=%v comparable=%v", progress, comparable)
 	}
