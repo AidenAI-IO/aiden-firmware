@@ -16,6 +16,8 @@ cleanup_log="$test_dir/cleanup.log"
 provision_log="$test_dir/provision.log"
 test_aiden_go_root=
 test_sudo_exit_code=0
+test_docker_fallback_exit_code=0
+test_chmod_exit_code=0
 test_ota_public_key_path=
 mkdir -p "$fixture_repo/scripts" "$fake_bin"
 cp "$ROOT_DIR/build.sh" "$fixture_repo/build.sh"
@@ -41,6 +43,11 @@ if [ -n "${FAKE_DOCKER_WAIT_FILE:-}" ]; then
   trap 'printf "TERM\n" > "$FAKE_DOCKER_SIGNAL_LOG"; exit 143' TERM
   while :; do sleep 1; done
 fi
+for arg in "$@"; do
+  if [ "$arg" = chown ]; then
+    exit "${FAKE_DOCKER_FALLBACK_EXIT_CODE:-0}"
+  fi
+done
 exit "${FAKE_DOCKER_EXIT_CODE:-0}"
 SH
 cat > "$fake_bin/id" <<'SH'
@@ -70,6 +77,7 @@ if [ "${1:-}" = -R ]; then
   printf 'chmod' >> "$FAKE_CLEANUP_LOG"
   printf ' %s' "$@" >> "$FAKE_CLEANUP_LOG"
   printf '\n' >> "$FAKE_CLEANUP_LOG"
+  exit "${FAKE_CHMOD_EXIT_CODE:-0}"
 fi
 exec /bin/chmod "$@"
 SH
@@ -87,6 +95,9 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$output" ] || exit 2
 printf 'download\n' >> "$FAKE_PROVISION_LOG"
+if [ -n "${FAKE_PROVISION_READY_FILE:-}" ]; then
+  : > "$FAKE_PROVISION_READY_FILE"
+fi
 sleep "${FAKE_CURL_DELAY:-0}"
 : > "$output"
 SH
@@ -221,6 +232,8 @@ run_build() {
     export FAKE_DOCKER_EXIT_CODE="$docker_exit_code"
     export FAKE_CLEANUP_LOG="$cleanup_log"
     export FAKE_SUDO_EXIT_CODE="$test_sudo_exit_code"
+    export FAKE_DOCKER_FALLBACK_EXIT_CODE="$test_docker_fallback_exit_code"
+    export FAKE_CHMOD_EXIT_CODE="$test_chmod_exit_code"
     export FAKE_PROVISION_LOG="$provision_log"
     export http_proxy="http://lower-proxy.example:8080"
     export HTTPS_PROXY="http://upper-proxy.example:8443"
@@ -257,8 +270,8 @@ assert_arg --privileged
 assert_user 0:0
 assert_task image
 assert_no_task binaries
-grep -Eq '^sudo chown -hR 1234:5678 .*build' "$cleanup_log" || \
-  fail "image builds must restore output ownership after Docker exits"
+grep -Eq '^sudo -n chown -hR 1234:5678 .*build' "$cleanup_log" || \
+  fail "image builds must restore output ownership with non-interactive sudo"
 grep -Eq '^chmod -R u\+w .*\.cache/rootfs-cli-tools/go-mod' "$cleanup_log" || \
   fail "image builds must restore Go module cache write permission after Docker exits"
 [ "$(wc -l < "$provision_log" | tr -d ' ')" -eq 1 ] || \
@@ -271,7 +284,25 @@ run_build 0 image
 [ "$build_status" -eq 0 ] || fail "cleanup fallback must not change a successful image status"
 assert_arg_sequence luckfoxtech/luckfox_pico:1.0 chown -hR 1234:5678 /home/build \
   /home/.cache/rootfs-cli-tools
+grep -Fq 'warning: non-interactive sudo ownership cleanup failed' "$test_dir/build-output.log" || \
+  fail "failed sudo cleanup must emit a warning"
 test_sudo_exit_code=0
+
+# Cleanup failures must remain diagnostics and must not replace the Docker
+# command's status.
+test_sudo_exit_code=1
+test_docker_fallback_exit_code=1
+test_chmod_exit_code=1
+run_build 37 image
+[ "$build_status" -eq 37 ] || \
+  fail "cleanup failures must not change Docker status 37"
+grep -Fq 'warning: Docker ownership fallback failed' "$test_dir/build-output.log" || \
+  fail "failed Docker ownership fallback must emit a warning"
+grep -Fq 'warning: failed to restore write permission' "$test_dir/build-output.log" || \
+  fail "failed Go module cache chmod must emit a warning"
+test_sudo_exit_code=0
+test_docker_fallback_exit_code=0
+test_chmod_exit_code=0
 
 # Binary builds use the caller identity and map to the binaries task.
 # They share the provisioned toolchain rather than maintaining another cache.
@@ -490,6 +521,38 @@ set -e
 [ ! -s "$docker_args_log" ] || fail "terminated provisioning must not start Docker"
 [ ! -e "$provision_signal_cache/.go1.26.0.linux-amd64.lock" ] || \
   fail "terminated provisioning must release its cache lock"
+
+# A signal delivered to the wrapper itself during provisioning must terminate
+# the provisioning child and release its lock before the wrapper exits.
+provision_parent_signal_cache="$test_dir/provision-parent-signal-cache"
+provision_parent_signal_ready="$test_dir/provision-parent-signal-ready"
+: > "$docker_args_log"
+set +e
+(
+  cd "$fixture_repo"
+  export PATH="$fake_bin:/usr/bin:/bin"
+  export AIDEN_GO_TOOLCHAIN_CACHE="$provision_parent_signal_cache"
+  export FAKE_PROVISION_READY_FILE="$provision_parent_signal_ready"
+  export FAKE_PROVISION_LOG="$provision_log"
+  export FAKE_DOCKER_ARGS_LOG="$docker_args_log"
+  export FAKE_CURL_DELAY=10
+  exec ./build.sh binaries
+) > "$test_dir/provision-parent-signal.log" 2>&1 &
+provision_parent_pid=$!
+for _ in $(seq 1 50); do
+  [ -e "$provision_parent_signal_ready" ] && break
+  sleep 0.1
+done
+[ -e "$provision_parent_signal_ready" ] || fail "fake Go download did not start for parent signal test"
+kill -TERM "$provision_parent_pid"
+wait "$provision_parent_pid"
+provision_parent_signal_status=$?
+set -e
+[ "$provision_parent_signal_status" -eq 143 ] || \
+  fail "TERM during parent provisioning must return status 143, got $provision_parent_signal_status"
+[ ! -s "$docker_args_log" ] || fail "parent-terminated provisioning must not start Docker"
+[ ! -e "$provision_parent_signal_cache/.go1.26.0.linux-amd64.lock" ] || \
+  fail "parent-terminated provisioning must release its cache lock"
 
 # Concurrent callers share one managed toolchain cache. Provisioning must be
 # serialized so one caller cannot remove the toolchain while another mounts it.

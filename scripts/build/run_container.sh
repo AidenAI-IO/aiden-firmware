@@ -26,8 +26,34 @@ if [ "$#" -eq 0 ]; then
 fi
 container_command=("$@")
 
+docker_pid=""
+
 # shellcheck source=host/go_toolchain.sh
 source "$REPO_ROOT/scripts/build/host/go_toolchain.sh"
+
+forward_signal_to_docker() {
+  local signal_name="$1"
+  local exit_status="$2"
+
+  trap - INT TERM HUP
+  if [ -n "${AIDEN_GO_TOOLCHAIN_PROVISION_PID:-}" ] && \
+     kill -0 "$AIDEN_GO_TOOLCHAIN_PROVISION_PID" 2>/dev/null; then
+    kill -s "$signal_name" "$AIDEN_GO_TOOLCHAIN_PROVISION_PID" 2>/dev/null || true
+    wait "$AIDEN_GO_TOOLCHAIN_PROVISION_PID" 2>/dev/null || true
+  fi
+  if declare -F cleanup_go_toolchain >/dev/null 2>&1; then
+    cleanup_go_toolchain || true
+  fi
+  if [ -n "$docker_pid" ] && kill -0 "$docker_pid" 2>/dev/null; then
+    kill -s "$signal_name" "$docker_pid" 2>/dev/null || true
+    wait "$docker_pid" 2>/dev/null || true
+  fi
+  exit "$exit_status"
+}
+trap 'forward_signal_to_docker INT 130' INT
+trap 'forward_signal_to_docker TERM 143' TERM
+trap 'forward_signal_to_docker HUP 129' HUP
+
 ensure_go_toolchain "$REPO_ROOT"
 
 docker_env_args=()
@@ -48,6 +74,7 @@ restore_image_output_ownership() {
   local container_paths=()
   local path
   local owner
+  local ownership_restored=0
   for path in build .cache/rootfs-cli-tools overlay/oem overlay/userdata pico-sdk/output; do
     if [ -e "$REPO_ROOT/$path" ]; then
       host_paths+=("$REPO_ROOT/$path")
@@ -57,40 +84,38 @@ restore_image_output_ownership() {
   owner="$(id -u):$(id -g)"
   if [ "${#host_paths[@]}" -gt 0 ]; then
     if [ "$(id -u)" -eq 0 ]; then
-      chown -hR "$owner" "${host_paths[@]}" || true
-    elif command -v sudo >/dev/null 2>&1 && sudo chown -hR "$owner" "${host_paths[@]}"; then
-      :
+      if chown -hR "$owner" "${host_paths[@]}"; then
+        ownership_restored=1
+      else
+        echo "warning: failed to restore image output ownership with chown" >&2
+      fi
+    elif command -v sudo >/dev/null 2>&1; then
+      if sudo -n chown -hR "$owner" "${host_paths[@]}"; then
+        ownership_restored=1
+      else
+        echo "warning: non-interactive sudo ownership cleanup failed; trying Docker ownership fallback" >&2
+      fi
     else
-      docker run --platform linux/amd64 --rm -u 0:0 \
+      echo "warning: sudo is unavailable; trying Docker ownership fallback" >&2
+    fi
+    if [ "$ownership_restored" -eq 0 ] && ! docker run --platform linux/amd64 --rm -u 0:0 \
         -v "$REPO_ROOT:/home" \
         "$BUILD_CONTAINER_IMAGE" \
-        chown -hR "$owner" "${container_paths[@]}" || true
+        chown -hR "$owner" "${container_paths[@]}"; then
+      echo "warning: Docker ownership fallback failed; image outputs may remain root-owned" >&2
     fi
   fi
   if [ -d "$REPO_ROOT/.cache/rootfs-cli-tools/go-mod" ]; then
-    chmod -R u+w "$REPO_ROOT/.cache/rootfs-cli-tools/go-mod" || true
+    if ! chmod -R u+w "$REPO_ROOT/.cache/rootfs-cli-tools/go-mod"; then
+      echo "warning: failed to restore write permission for the Go module cache" >&2
+    fi
   fi
+  return 0
 }
 
 if [ "$profile" = image ]; then
   trap restore_image_output_ownership EXIT
 fi
-
-docker_pid=""
-forward_signal_to_docker() {
-  local signal_name="$1"
-  local exit_status="$2"
-
-  trap - INT TERM HUP
-  if [ -n "$docker_pid" ] && kill -0 "$docker_pid" 2>/dev/null; then
-    kill -s "$signal_name" "$docker_pid" 2>/dev/null || true
-    wait "$docker_pid" 2>/dev/null || true
-  fi
-  exit "$exit_status"
-}
-trap 'forward_signal_to_docker INT 130' INT
-trap 'forward_signal_to_docker TERM 143' TERM
-trap 'forward_signal_to_docker HUP 129' HUP
 
 docker_run_args=(
   --platform linux/amd64

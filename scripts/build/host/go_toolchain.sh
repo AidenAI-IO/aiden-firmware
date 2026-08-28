@@ -5,6 +5,13 @@ GO_DIST="linux-amd64"
 GO_TARBALL="go${GO_VERSION}.${GO_DIST}.tar.gz"
 GO_TARBALL_SHA256="aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235"
 
+# These values let a caller which owns the provisioning lifecycle terminate an
+# in-flight transaction and release its lock when it receives a signal.
+AIDEN_GO_TOOLCHAIN_PROVISION_PID=""
+AIDEN_GO_TOOLCHAIN_LOCK_DIR=""
+AIDEN_GO_TOOLCHAIN_EXTRACT_DIR=""
+AIDEN_GO_TOOLCHAIN_ACTIVE_COMMAND_PID=""
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -25,6 +32,40 @@ verify_go_tarball() {
     echo "actual:   $actual" >&2
     return 1
   fi
+}
+
+cleanup_go_toolchain() {
+  local lock_dir="${AIDEN_GO_TOOLCHAIN_LOCK_DIR:-}"
+  local extract_dir="${AIDEN_GO_TOOLCHAIN_EXTRACT_DIR:-}"
+  local owner_host=""
+  local owner_pid=""
+
+  if [ -n "$extract_dir" ]; then
+    rm -rf "$extract_dir"
+  fi
+  if [ -z "$lock_dir" ] || [ ! -f "$lock_dir/owner" ]; then
+    return 0
+  fi
+
+  if ! read -r owner_host owner_pid < "$lock_dir/owner" 2>/dev/null || \
+     [ "$owner_host" != "$(hostname)" ] || [ "$owner_pid" != "$$" ]; then
+    return 0
+  fi
+  rm -f "$lock_dir/owner"
+  rmdir "$lock_dir" 2>/dev/null || true
+}
+
+run_go_toolchain_command() {
+  "$@" &
+  AIDEN_GO_TOOLCHAIN_ACTIVE_COMMAND_PID=$!
+  local command_status=0
+  if wait "$AIDEN_GO_TOOLCHAIN_ACTIVE_COMMAND_PID"; then
+    command_status=0
+  else
+    command_status=$?
+  fi
+  AIDEN_GO_TOOLCHAIN_ACTIVE_COMMAND_PID=""
+  return "$command_status"
 }
 
 go_binary_version() {
@@ -77,12 +118,12 @@ download_go_tarball() {
   rm -f "$tmp"
   echo "Downloading Go ${GO_VERSION} ${GO_DIST} toolchain..."
   if command -v curl >/dev/null 2>&1; then
-    if ! curl -fL --retry 3 --connect-timeout 20 -o "$tmp" "https://go.dev/dl/${GO_TARBALL}"; then
+    if ! run_go_toolchain_command curl -fL --retry 3 --connect-timeout 20 -o "$tmp" "https://go.dev/dl/${GO_TARBALL}"; then
       rm -f "$tmp"
       return 1
     fi
   elif command -v wget >/dev/null 2>&1; then
-    if ! wget -O "$tmp" "https://go.dev/dl/${GO_TARBALL}"; then
+    if ! run_go_toolchain_command wget -O "$tmp" "https://go.dev/dl/${GO_TARBALL}"; then
       rm -f "$tmp"
       return 1
     fi
@@ -157,6 +198,11 @@ ensure_go_toolchain() {
   local lock_status=0
   local provision_status=0
 
+  AIDEN_GO_TOOLCHAIN_PROVISION_PID=""
+  AIDEN_GO_TOOLCHAIN_ACTIVE_COMMAND_PID=""
+  AIDEN_GO_TOOLCHAIN_LOCK_DIR=""
+  AIDEN_GO_TOOLCHAIN_EXTRACT_DIR=""
+
   if [ -n "${AIDEN_GO_ROOT:-}" ]; then
     go_root="$AIDEN_GO_ROOT"
     case "$go_root" in
@@ -201,17 +247,21 @@ ensure_go_toolchain() {
   fi
 
   lock_dir="$cache_root/.go${GO_VERSION}.${GO_DIST}.lock"
+  AIDEN_GO_TOOLCHAIN_LOCK_DIR="$lock_dir"
   acquire_go_toolchain_lock "$lock_dir" "$go_root" || lock_status=$?
   if [ "$lock_status" -eq 2 ] && go_toolchain_valid "$go_root"; then
+    AIDEN_GO_TOOLCHAIN_LOCK_DIR=""
     AIDEN_GO_ROOT_RESOLVED="$go_root"
     return 0
   fi
   if [ "$lock_status" -ne 0 ]; then
+    AIDEN_GO_TOOLCHAIN_LOCK_DIR=""
     return "$lock_status"
   fi
 
+  extract_dir="$cache_root/.go${GO_VERSION}.${GO_DIST}.$$"
+  AIDEN_GO_TOOLCHAIN_EXTRACT_DIR="$extract_dir"
   (
-    extract_dir="$cache_root/.go${GO_VERSION}.${GO_DIST}.$$"
     cleanup_provisioning() {
       if [ -n "$extract_dir" ]; then
         rm -rf "$extract_dir"
@@ -219,10 +269,20 @@ ensure_go_toolchain() {
       rm -f "$lock_dir/owner"
       rmdir "$lock_dir" 2>/dev/null || true
     }
+    forward_provisioning_signal() {
+      local signal_name="$1"
+      local exit_status="$2"
+
+      trap - INT TERM HUP
+      if [ -n "${AIDEN_GO_TOOLCHAIN_ACTIVE_COMMAND_PID:-}" ]; then
+        kill -s "$signal_name" "$AIDEN_GO_TOOLCHAIN_ACTIVE_COMMAND_PID" 2>/dev/null || true
+      fi
+      exit "$exit_status"
+    }
     trap cleanup_provisioning EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    trap 'exit 129' HUP
+    trap 'forward_provisioning_signal INT 130' INT
+    trap 'forward_provisioning_signal TERM 143' TERM
+    trap 'forward_provisioning_signal HUP 129' HUP
 
     if go_toolchain_valid "$go_root"; then
       exit 0
@@ -236,18 +296,33 @@ ensure_go_toolchain() {
 
     rm -rf "$extract_dir"
     mkdir -p "$extract_dir"
-    tar -C "$extract_dir" -xzf "$tarball_path"
+    run_go_toolchain_command tar -C "$extract_dir" -xzf "$tarball_path"
     rm -rf "$go_root"
     mv "$extract_dir/go" "$go_root"
     extract_dir=""
-  ) || provision_status=$?
+  ) &
+  AIDEN_GO_TOOLCHAIN_PROVISION_PID=$!
+  if wait "$AIDEN_GO_TOOLCHAIN_PROVISION_PID"; then
+    provision_status=0
+  else
+    provision_status=$?
+  fi
+  AIDEN_GO_TOOLCHAIN_PROVISION_PID=""
   if [ "$provision_status" -ne 0 ]; then
+    cleanup_go_toolchain
+    AIDEN_GO_TOOLCHAIN_LOCK_DIR=""
+    AIDEN_GO_TOOLCHAIN_EXTRACT_DIR=""
     return "$provision_status"
   fi
 
   if ! go_toolchain_valid "$go_root"; then
     echo "Provisioned Go toolchain is not go${GO_VERSION} linux/amd64: $go_root" >&2
+    cleanup_go_toolchain
+    AIDEN_GO_TOOLCHAIN_LOCK_DIR=""
+    AIDEN_GO_TOOLCHAIN_EXTRACT_DIR=""
     return 1
   fi
+  AIDEN_GO_TOOLCHAIN_LOCK_DIR=""
+  AIDEN_GO_TOOLCHAIN_EXTRACT_DIR=""
   AIDEN_GO_ROOT_RESOLVED="$go_root"
 }
