@@ -129,6 +129,41 @@ func TestRealtimePlaybackOutputFormatUsesConfiguredDeviceFormat(t *testing.T) {
 	}
 }
 
+func TestDeliverPendingVoiceNotificationConfirmsSuccessfulFallback(t *testing.T) {
+	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	if err := runtime.VoiceNotificationSink().Publish(context.Background(), agent.VoiceNotificationEvent{
+		Code: "storage", Severity: agent.SeverityWarning, State: agent.VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var spoken string
+	deliverPendingVoiceNotification(context.Background(), runtime, func(_ context.Context, text string) error {
+		spoken = text
+		return nil
+	})
+	if spoken == "" {
+		t.Fatal("fallback speaker was not called")
+	}
+	if next := runtime.PrepareVoiceNotification(context.Background()); next.DeliveryToken != "" {
+		t.Fatalf("successful fallback left notification pending: %#v", next)
+	}
+}
+
+func TestDeliverPendingVoiceNotificationRetriesCanceledFallback(t *testing.T) {
+	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	if err := runtime.VoiceNotificationSink().Publish(context.Background(), agent.VoiceNotificationEvent{
+		Code: "storage", Severity: agent.SeverityWarning, State: agent.VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deliverPendingVoiceNotification(context.Background(), runtime, func(context.Context, string) error {
+		return context.Canceled
+	})
+	if next := runtime.PrepareVoiceNotification(context.Background()); next.DeliveryToken == "" {
+		t.Fatal("canceled fallback did not leave notification pending")
+	}
+}
+
 type fakeRealtimeEventSource struct {
 	events chan rtclient.Event
 	errs   chan error
