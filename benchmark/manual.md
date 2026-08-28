@@ -348,6 +348,9 @@ The suite separates ingestion/recall claims from explicit Memory action claims:
   temporary memory and is recalled with the original delivery fact.
 - `notification_noise_is_filtered` checks that OTP and marketing events remain
   in the raw log but do not become memory.
+- `notification_user_fact_beats_public_info` repeats the real-model
+  classification five times: public automotive news must be ignored while the
+  user's repayment amount and due date must be retained.
 - `notification_batch_cursor_drain` checks that a backlog larger than one batch
   is fully committed without producing memory for verification-code noise.
 - `notification_explicit_update` checks revision-guarded replacement of an

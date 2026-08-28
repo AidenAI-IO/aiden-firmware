@@ -330,6 +330,36 @@ func TestEpisodeMemoryStateKeepsOnlyRecentTerminalEpisodes(t *testing.T) {
 	}
 }
 
+func TestEpisodeMemoryStatePreservesExplicitZeroConfidence(t *testing.T) {
+	store := newEpisodeMemoryStateStore(filepath.Join(t.TempDir(), "episode-memory.yaml"), time.Now().UTC())
+	proposal := episodeMemoryProposal{Candidates: []episodeMemoryCandidate{{
+		LessonKey:  "explicit_zero",
+		Confidence: episodeMemoryConfidencePointer(0),
+	}}}
+	if err := store.SetEpisode("ep_zero", episodeMemoryEpisodeStatus{
+		Status:           episodeMemoryStatusProposed,
+		ExtractorVersion: episodeMemoryExtractorVersion,
+		Proposal:         &proposal,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := state.Episodes[episodeMemoryStateKey("ep_zero", episodeMemoryExtractorVersion)]
+	if status.Proposal == nil || len(status.Proposal.Candidates) != 1 {
+		t.Fatalf("reloaded proposal=%#v, want one candidate", status.Proposal)
+	}
+	confidence := status.Proposal.Candidates[0].Confidence
+	if confidence == nil || *confidence != 0 {
+		t.Fatalf("reloaded confidence=%v, want explicit zero preserved", confidence)
+	}
+	if _, err := normalizeEpisodeMemoryConfidence(confidence); err == nil {
+		t.Fatal("reloaded explicit zero confidence was accepted as omitted")
+	}
+}
+
 func TestNormalRecallHidesLegacyFailureMemories(t *testing.T) {
 	ctx := context.Background()
 	store := NewDeviceMemoryStore(t.TempDir())

@@ -57,11 +57,12 @@ type NotificationContextState struct {
 }
 
 type NotificationGap struct {
-	At         string `json:"at"`
-	Reason     string `json:"reason"`
-	Generation string `json:"generation,omitempty"`
-	FromID     string `json:"from_id,omitempty"`
-	ToID       string `json:"to_id,omitempty"`
+	At                 string `json:"at"`
+	Reason             string `json:"reason"`
+	Generation         string `json:"generation,omitempty"`
+	PreviousGeneration string `json:"previous_generation,omitempty"`
+	FromID             string `json:"from_id,omitempty"`
+	ToID               string `json:"to_id,omitempty"`
 }
 
 type notificationFingerprintFile struct {
@@ -231,20 +232,22 @@ func (c *NotificationContext) Consume(ctx context.Context, limit int) ([]Notific
 		return nil, err
 	}
 	if page.ResetRequired {
-		c.recordGapLocked("ble_generation_reset", generation, since, page.OldestID)
+		previousGeneration := generation
 		generation = page.Generation
+		c.recordGapLocked("ble_generation_reset", generation, previousGeneration, since, page.OldestID)
+		since = "0"
 		c.state.Generation = generation
-		c.state.SourceCursor = "0"
+		c.state.SourceCursor = since
 		if err := c.persistLocked(); err != nil {
 			return nil, err
 		}
-		page, err = c.reader(ctx, "0", generation, limit)
+		page, err = c.reader(ctx, since, generation, limit)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if page.Truncated {
-		c.recordGapLocked("ble_ring_truncated", generation, since, page.OldestID)
+		c.recordGapLocked("ble_ring_truncated", generation, "", since, page.OldestID)
 	}
 	if page.Generation != "" {
 		c.state.Generation = page.Generation
@@ -413,13 +416,13 @@ func (c *NotificationContext) CleanupProcessedBefore(ctx context.Context, retent
 		if err != nil {
 			continue
 		}
-		if retentionAge > 0 && !notificationShardBeforeCutoff(entry.Name(), info.ModTime(), cutoff) {
-			continue
-		}
 		path := filepath.Join(c.eventsDir, entry.Name())
 		records, err := readNotificationRecordFile(path)
 		if err != nil {
 			return freed, err
+		}
+		if retentionAge > 0 && !notificationShardBeforeCutoff(entry.Name(), info.ModTime(), cutoff, records) {
+			continue
 		}
 		processed := true
 		for _, record := range records {
@@ -470,12 +473,15 @@ func (c *NotificationContext) EstimateCleanupProcessedBefore(ctx context.Context
 			continue
 		}
 		info, err := entry.Info()
-		if err != nil || (retentionAge > 0 && !notificationShardBeforeCutoff(entry.Name(), info.ModTime(), cutoff)) {
+		if err != nil {
 			continue
 		}
 		records, err := readNotificationRecordFileReadOnly(filepath.Join(c.eventsDir, entry.Name()))
 		if err != nil {
 			return total, err
+		}
+		if retentionAge > 0 && !notificationShardBeforeCutoff(entry.Name(), info.ModTime(), cutoff, records) {
+			continue
 		}
 		processed := true
 		for _, record := range records {
@@ -492,12 +498,50 @@ func (c *NotificationContext) EstimateCleanupProcessedBefore(ctx context.Context
 	return total, nil
 }
 
-func notificationShardBeforeCutoff(name string, modTime, cutoff time.Time) bool {
+func notificationShardBeforeCutoff(name string, modTime, cutoff time.Time, records []NotificationRecord) bool {
+	cutoffDate := time.Date(cutoff.UTC().Year(), cutoff.UTC().Month(), cutoff.UTC().Day(), 0, 0, 0, 0, time.UTC)
+	if len(records) > 0 {
+		// A shard name is only a routing hint. Validate every record so a bad
+		// controller clock cannot make recent phone notifications look expired.
+		for _, record := range records {
+			ts, ok := notificationRecordTimestamp(record.NotificationEvent)
+			if !ok || !notificationDateBefore(ts, cutoffDate) {
+				return false
+			}
+		}
+		return true
+	}
 	date := strings.TrimSuffix(name, ".jsonl")
 	if parsed, err := time.Parse("2006-01-02", date); err == nil {
-		return parsed.Before(time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, time.UTC))
+		return parsed.Before(cutoffDate)
 	}
 	return modTime.Before(cutoff)
+}
+
+func notificationDateBefore(value, cutoff time.Time) bool {
+	date := value.UTC()
+	day := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
+	return day.Before(cutoff)
+}
+
+func notificationRecordTimestamp(event ble.NotificationEvent) (time.Time, bool) {
+	for _, value := range []string{event.Date, event.ReceivedAt} {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		for _, layout := range []string{
+			time.RFC3339Nano,
+			"20060102T150405",
+			"2006-01-02",
+			"20060102",
+		} {
+			if parsed, err := time.Parse(layout, value); err == nil {
+				return parsed.UTC(), true
+			}
+		}
+	}
+	return time.Time{}, false
 }
 
 func (c *NotificationContext) readPendingLocked(ctx context.Context, cursor uint64, limit int) ([]NotificationRecord, error) {
@@ -766,14 +810,15 @@ func (c *NotificationContext) persistLocked() (err error) {
 	return writeFileAtomic(c.fingerPath, append(fingerprints, '\n'), 0o644)
 }
 
-func (c *NotificationContext) recordGapLocked(reason, generation, fromID, toID string) {
+func (c *NotificationContext) recordGapLocked(reason, generation, previousGeneration, fromID, toID string) {
 	c.state.GapCount++
 	c.state.Gaps = append(c.state.Gaps, NotificationGap{
-		At:         time.Now().UTC().Format(time.RFC3339Nano),
-		Reason:     reason,
-		Generation: generation,
-		FromID:     fromID,
-		ToID:       toID,
+		At:                 time.Now().UTC().Format(time.RFC3339Nano),
+		Reason:             reason,
+		Generation:         generation,
+		PreviousGeneration: previousGeneration,
+		FromID:             fromID,
+		ToID:               toID,
 	})
 	if len(c.state.Gaps) > 32 {
 		c.state.Gaps = append([]NotificationGap(nil), c.state.Gaps[len(c.state.Gaps)-32:]...)
@@ -847,7 +892,7 @@ func notificationEventStableIdentityIDs(event ble.NotificationEvent) []string {
 }
 
 func notificationEventFileName(event ble.NotificationEvent) string {
-	if ts, err := time.Parse(time.RFC3339Nano, event.ReceivedAt); err == nil {
+	if ts, ok := notificationRecordTimestamp(event); ok {
 		return ts.UTC().Format("2006-01-02") + ".jsonl"
 	}
 	return "unknown.jsonl"
