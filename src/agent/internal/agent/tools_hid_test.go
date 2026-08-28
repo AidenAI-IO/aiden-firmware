@@ -84,15 +84,11 @@ func TestBuiltinToolSetRegistersExpectedTools(t *testing.T) {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
 	want := []string{
 		"audio_volume",
-		"image_diff",
 		"keyboard_tap",
-		"list_scripts",
 		"mouse_move",
 		"mouse_scroll",
 		"quick_action",
-		"read_script",
 		"request_user_action",
-		"run_script",
 		"screenshot",
 		"shell",
 		"touch_gesture",
@@ -102,7 +98,6 @@ func TestBuiltinToolSetRegistersExpectedTools(t *testing.T) {
 		"web_search",
 		"wheel_nudge",
 		"wikipedia",
-		"write_script",
 	}
 
 	if got := tools.Names(); !slices.Equal(got, want) {

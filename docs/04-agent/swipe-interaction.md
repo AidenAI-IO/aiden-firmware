@@ -84,32 +84,6 @@ Normalized coordinates use a `0..1000` range on each axis. HID action tools retu
 
 Do not use `touch_gesture`, mouse clicks, or keyboard input to change an active picker wheel. Use `wheel_nudge` for the entire picker interaction.
 
-### `image_diff`
-
-`image_diff` compares two JPEG screenshots. It remains available for Tool Lab, prepared scripts, and internal diagnostics; the conversational Agent relies on each post-action tool's automatic `screen_changed` result instead of calling it directly.
-
-```json
-{
-  "before": "<base64-jpeg-from-earlier-screenshot>",
-  "after": "<base64-jpeg-from-later-screenshot>",
-  "region": {"x": 100, "y": 150, "w": 800, "h": 700}
-}
-```
-
-When running inside an active Agent or prepared script context, `before` and `after` may instead be the exact `screenshot_attachment_id` values from the corresponding observations. Direct HTTP requests must send Base64 JPEG data because the server cannot resolve Agent-local attachment IDs for an unrelated request.
-
-Output fields:
-
-| Field | Meaning |
-| --- | --- |
-| `changed` | `true` when more than 1% of compared pixels changed significantly. |
-| `diff_ratio` | Fraction of compared pixels that changed, from `0` to `1`. |
-| `primary_axis` | Dominant change axis: `horizontal`, `vertical`, or `none`. |
-
-Use a region to exclude static navigation bars or overlays. A `diff_ratio` below about `0.03` is weak evidence of movement and should be followed by another visual check.
-
-`image_diff` deliberately does not report exact scroll distance. The screenshot artifacts that are acceptable for change detection are not reliable enough for precise displacement measurement.
-
 ### `wheel_nudge`
 
 `wheel_nudge` performs one bounded interaction inside a visible numeric picker column. It requires a fresh screenshot from the current Agent run.
@@ -160,7 +134,7 @@ The run-scoped safety policy:
 
 1. Prefer a visible search field over blind scrolling.
 2. Use a moderate swipe for exploration.
-3. Inspect the returned screenshot and `screen_changed`; use `image_diff` only for Tool Lab or prepared-script diagnostics when a finer-grained comparison is needed.
+3. Inspect the returned screenshot and `screen_changed`.
 4. Switch to a shorter swipe when the target approaches the viewport.
 5. Stop when the screen no longer changes or a visible boundary is reached.
 

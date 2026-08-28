@@ -379,12 +379,6 @@ func TestExecuteToolCallBuiltInStringErrorToolsReturnStructuredErrors(t *testing
 			wantCode: CodeInvalidArguments,
 		},
 		{
-			name:     "image diff missing after",
-			tool:     &ImageDiffTool{},
-			input:    `{"before":"x"}`,
-			wantCode: CodeInvalidArguments,
-		},
-		{
 			name:     "web search unconfigured",
 			tool:     &WebSearchTool{provider: "brave"},
 			input:    `{"query":"aiden"}`,
