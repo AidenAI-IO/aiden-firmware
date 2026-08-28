@@ -2836,7 +2836,7 @@ func TestServerServesEmbeddedWebUIAssets(t *testing.T) {
 	}
 }
 
-func TestWettyReverseProxyPreservesPublicHostAndRewritesFrameHeaders(t *testing.T) {
+func TestTerminalReverseProxyPreservesPublicHostAndRewritesFrameHeaders(t *testing.T) {
 	var gotHost, gotForwardedHost, gotForwardedProto, gotForwardedPrefix string
 	var upstream *httptest.Server
 	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2857,7 +2857,7 @@ func TestWettyReverseProxyPreservesPublicHostAndRewritesFrameHeaders(t *testing.
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "http://device.example:8080/wetty/", nil)
-	newWettyReverseProxyForTarget(target).ServeHTTP(recorder, request)
+	newTerminalReverseProxyForTarget(target).ServeHTTP(recorder, request)
 
 	if gotHost != "device.example:8080" {
 		t.Fatalf("upstream Host = %q, want device.example:8080", gotHost)

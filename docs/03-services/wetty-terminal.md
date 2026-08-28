@@ -2,19 +2,18 @@
 sidebar_position: 3
 ---
 
-# WeTTY Browser Terminal
+# ttyd Browser Terminal
 
-The firmware image integrates WeTTY as an optional browser terminal for board-side maintenance.
+The firmware image integrates ttyd as an optional browser terminal for board-side maintenance. The public `/wetty/` path is retained for compatibility with existing Agent Web links.
 
 ## Buildroot Integration
 
 The active Pico Zero Buildroot defconfig enables:
 
-- `BR2_PACKAGE_NODEJS=y`
+- `BR2_PACKAGE_TTYD=y`
 - `BR2_PACKAGE_OPENSSL=y`
-- `BR2_PACKAGE_NODEJS_MODULES_ADDITIONAL="--omit=optional wetty@2.5.0 sass@1.69.7"`
 
-The SDK-provided Buildroot tree is `2023.02.6` and builds Node.js `16.20.0`. WeTTY `2.5.0` is pinned because later WeTTY releases require Node.js `>=18`, and `sass@1.69.7` is pinned to avoid Node.js 20-only transitive releases. Optional npm dependencies are omitted so prebuilt non-ARM native addons are not copied into the target rootfs.
+The SDK-provided Buildroot tree is `2023.02.6` and includes ttyd `1.7.3`. Buildroot selects ttyd's `libuv`, `libwebsockets`, `json-c`, OpenSSL, and zlib dependencies. This replaces the Node.js runtime and npm module tree with a single native binary.
 
 Run the Linux/image build from an x86 host:
 
@@ -22,29 +21,29 @@ Run the Linux/image build from an x86 host:
 ./build_image.sh
 ```
 
-The `sysdrv` stage builds Node.js and installs the pinned WeTTY npm module into the target rootfs.
+The `sysdrv` stage builds and installs the ttyd package into the target rootfs.
 
 ## Startup
 
-WeTTY is managed by:
+ttyd is managed by:
 
 ```bash
-/etc/init.d/S57wetty start
-/etc/init.d/S57wetty status
-/etc/init.d/S57wetty restart
+/etc/init.d/S57ttyd start
+/etc/init.d/S57ttyd status
+/etc/init.d/S57ttyd restart
 ```
 
-The service reads `/etc/aiden_boot.conf`. Set `ENABLE_WETTY=0` to disable startup.
+The service reads `/etc/aiden_boot.conf`. Set `ENABLE_TTYD=0` to disable startup. Existing `ENABLE_WETTY`, `WETTY_*`, and `WETTY_COMMAND` overrides are accepted as migration fallbacks.
 
 Default runtime values:
 
 | Parameter | Default |
 | --- | --- |
-| Listen host | `0.0.0.0` |
+| Listen interface | all interfaces |
 | Port | `3000` |
 | Base path | `/wetty/` |
 | Command | `/bin/login` |
-| Log | `/var/log/wetty/wetty.log` |
+| Log | `/var/log/ttyd/ttyd.log` |
 
 ## Access
 
@@ -54,6 +53,6 @@ The config web page at `http://192.168.42.1` includes a `Terminal` link. The lin
 http://192.168.42.1:8080/wetty/
 ```
 
-WeTTY itself still listens on port `3000`; the Agent Web service proxies `/wetty/` to it.
+ttyd itself still listens on port `3000`; the Agent Web service proxies `/wetty/` to it.
 
 The init script uses `/bin/login`, so authenticate with the board's Linux account credentials.

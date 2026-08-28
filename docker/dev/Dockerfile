@@ -9,10 +9,37 @@ COPY src/agent/ ./
 RUN mkdir -p /out \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/agent ./cmd/daemon
 
-FROM node:16-bookworm AS wetty-builder
+FROM debian:bookworm-slim AS ttyd-builder
 
-RUN npm install --global --omit=optional wetty@2.5.0 sass@1.69.7 \
-    && npm cache clean --force
+ARG TARGETARCH
+ARG TTYD_VERSION=1.7.3
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && set -eux; \
+        architecture="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+        case "$architecture" in \
+            amd64) \
+                asset="ttyd.x86_64"; \
+                sha256="67cf926ddf157dcb089106c2aa6623b8613bb7f3b493048eeb6cc34423570b3c"; \
+                ;; \
+            arm64) \
+                asset="ttyd.aarch64"; \
+                sha256="c77fbb475a767c8f2d52c1fd28f167eb115a3b10ff114920d38c13f8ad4fcfbd"; \
+                ;; \
+            arm) \
+                asset="ttyd.armhf"; \
+                sha256="b0784080bd78f0a5916462672f461542c607f8ea7cee56b075e8cd04e1ffcc4d"; \
+                ;; \
+            *) echo "Unsupported ttyd Docker architecture: $architecture" >&2; exit 1 ;; \
+        esac; \
+        mkdir -p /out; \
+        curl -fsSL --retry 3 \
+            "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${asset}" \
+            -o /out/ttyd; \
+        echo "$sha256  /out/ttyd" | sha256sum -c -; \
+        chmod 0755 /out/ttyd
 
 FROM debian:bookworm-slim AS runtime-base
 
@@ -90,8 +117,7 @@ FROM runtime-base AS runtime
 
 COPY --from=agent-builder /out/agent /oem/usr/bin/agent
 COPY --from=config-web-builder /out/config_web /usr/local/bin/config_web
-COPY --from=wetty-builder /usr/local/bin/node /usr/local/bin/node
-COPY --from=wetty-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=ttyd-builder /out/ttyd /usr/local/bin/ttyd
 COPY --from=runtime-tools-builder /out/fq /usr/bin/fq
 COPY --from=runtime-tools-builder /out/rg /usr/bin/rg
 COPY --from=runtime-tools-builder /out/yq /usr/bin/yq
@@ -100,14 +126,13 @@ COPY src/agent/config/skills/ /oem/usr/share/aiden/skills/
 COPY docker/dev/agent.toml /opt/aiden/defaults/agent.toml
 COPY docker/dev/agent-service.sh /usr/local/bin/aiden-agent-service
 COPY docker/dev/entrypoint.sh /usr/local/bin/aiden-docker-entrypoint
-COPY docker/dev/wetty /usr/local/bin/wetty
 
 RUN chmod 0755 \
         /oem/usr/bin/agent \
         /usr/local/bin/config_web \
         /usr/local/bin/aiden-agent-service \
         /usr/local/bin/aiden-docker-entrypoint \
-        /usr/local/bin/wetty
+        /usr/local/bin/ttyd
 
 ENV AIDEN_AGENT_BIN=/oem/usr/bin/agent \
     AIDEN_AGENT_INIT_SCRIPT=/usr/local/bin/aiden-agent-service \

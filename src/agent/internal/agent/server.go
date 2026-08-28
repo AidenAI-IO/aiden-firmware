@@ -563,9 +563,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 
 	// Static web UI
-	wettyProxy := newWettyReverseProxy()
-	mux.Handle("/wetty", wettyProxy)
-	mux.Handle("/wetty/", wettyProxy)
+	ttydProxy := newTerminalReverseProxy()
+	mux.Handle("/wetty", ttydProxy)
+	mux.Handle("/wetty/", ttydProxy)
 	mux.Handle("/web-ui/", http.StripPrefix("/web-ui/", http.FileServer(http.FS(webUIFiles))))
 	mux.HandleFunc("/", s.handleIndex)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -577,12 +577,12 @@ func (s *Server) Handler() http.Handler {
 	})
 }
 
-func newWettyReverseProxy() *httputil.ReverseProxy {
+func newTerminalReverseProxy() *httputil.ReverseProxy {
 	target, _ := url.Parse("http://127.0.0.1:3000")
-	return newWettyReverseProxyForTarget(target)
+	return newTerminalReverseProxyForTarget(target)
 }
 
-func newWettyReverseProxyForTarget(target *url.URL) *httputil.ReverseProxy {
+func newTerminalReverseProxyForTarget(target *url.URL) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Director = func(req *http.Request) {
 		originalHost := req.Host

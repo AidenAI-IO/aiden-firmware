@@ -55,8 +55,9 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("./cmd/daemon", dockerfile)
         self.assertIn("src/config_web.cpp", dockerfile)
         self.assertIn("src/config_web/web/ /oem/usr/share/aiden/config-web/", dockerfile)
-        self.assertIn("wetty@2.5.0", dockerfile)
-        self.assertIn("sass@1.69.7", dockerfile)
+        self.assertIn("ttyd-builder", dockerfile)
+        self.assertIn("TTYD_VERSION=1.7.3", dockerfile)
+        self.assertNotIn("node:16-bookworm", dockerfile)
 
     def test_runtime_defaults_to_text_without_credentials(self):
         config = read_repo_file("docker/dev/agent.toml")
@@ -226,9 +227,19 @@ class DockerSandboxContractTest(unittest.TestCase):
 
         self.assertTrue(entrypoint.startswith("#!/bin/bash\n"))
         self.assertIn(
-            'wait -n "$config_web_pid" "$wetty_pid"',
+            'wait -n "$config_web_pid" "$ttyd_pid"',
             entrypoint,
         )
+
+    def test_ttyd_init_resolves_legacy_settings_after_boot_config(self):
+        init_script = read_repo_file("overlay/etc/init.d/S57ttyd")
+
+        config_source = init_script.index('    . "$BOOT_CONF"')
+        settings = init_script.index("TTYD_BIN=")
+        self.assertLess(config_source, settings)
+        self.assertIn("${WETTY_BIN:-/usr/bin/ttyd}", init_script)
+        self.assertIn("${WETTY_PORT:-3000}", init_script)
+        self.assertIn(': "${ENABLE_TTYD:=${ENABLE_WETTY:-1}}"', init_script)
 
     def test_agent_supervisor_truncates_the_persistent_log(self):
         service = REPO_ROOT / "docker/dev/agent-service.sh"

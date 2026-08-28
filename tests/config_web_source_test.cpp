@@ -353,7 +353,7 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("if(text.indexOf(' [ERROR] ')") == std::string::npos);
 }
 
-TEST_CASE("config web links to wetty browser terminal") {
+TEST_CASE("config web links to ttyd browser terminal") {
     const std::string html = read_config_web_asset_bundle();
 
     CHECK(html.find("id=\"terminalLink\"") != std::string::npos);
