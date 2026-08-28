@@ -96,6 +96,8 @@ ensure_sdk() {
     git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0002-append-slot-kernel-cmdline.patch"
     git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0003-add-ab-images-action.patch"
     git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0004-make-bsp-images-reproducible.patch"
+    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0005-improve-rv1106-usb2-hs-margin.patch"
+    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
 
     install -m 0755 \
         "${SCRIPT_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk" \
@@ -179,6 +181,7 @@ run_bsp() {
         --loader "${SDK_DIR}/output/image/download.bin"
 
     local kernel_config=${SDK_DIR}/sysdrv/source/objs_kernel/.config
+    local uboot_config=${SDK_DIR}/sysdrv/source/uboot/u-boot/.config
     local env_text=${SDK_DIR}/output/image/.env.txt
     local symbol
     for symbol in \
@@ -197,6 +200,23 @@ run_bsp() {
             exit 1
         }
     done
+    for symbol in \
+        CONFIG_CMD_ROCKUSB CONFIG_USB CONFIG_USB_GADGET \
+        CONFIG_USB_GADGET_DOWNLOAD CONFIG_USB_DWC3 \
+        CONFIG_USB_DWC3_GADGET; do
+        grep -qx "${symbol}=y" "${uboot_config}" || {
+            echo "Required production U-Boot setting is not enabled: ${symbol}" >&2
+            exit 1
+        }
+    done
+    grep -qx '# CONFIG_CMD_DFU is not set' "${uboot_config}" || {
+        echo "DFU must remain disabled in the production eMMC A/B U-Boot" >&2
+        exit 1
+    }
+    grep -qx '# CONFIG_FASTBOOT is not set' "${uboot_config}" || {
+        echo "Fastboot must remain disabled in the production RockUSB U-Boot" >&2
+        exit 1
+    }
     grep -qx \
         'blkdevparts=mmcblk0:32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)' \
         "${env_text}"

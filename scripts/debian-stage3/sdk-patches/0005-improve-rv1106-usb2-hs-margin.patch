@@ -1,0 +1,83 @@
+diff --git a/sysdrv/source/kernel/drivers/phy/rockchip/phy-rockchip-inno-usb2.c b/sysdrv/source/kernel/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+--- a/sysdrv/source/kernel/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
++++ b/sysdrv/source/kernel/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+@@ -2825,8 +2825,8 @@ static int rv1106_usb2phy_tuning(struct rockchip_usb2phy *rphy)
+ 	/* Turn off differential receiver by default to save power */
+ 	phy_clear_bits(rphy->phy_base + 0x100, BIT(6));
+ 
+-	/* Set 45ohm HS ODT value to 5'b10111 to increase driver strength */
+-	phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x17);
++	/* Set HS ODT compensation to 5'b11111 to improve signal margin */
++	phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x1f);
+ 
+ 	/* Set Tx HS eye height tuning to 3'b011(462 mV)*/
+ 	phy_update_bits(rphy->phy_base + 0x124, GENMASK(4, 2), (0x03 << 2));
+diff --git a/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c b/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c
+--- a/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c
++++ b/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c
+@@ -13,6 +13,8 @@ DECLARE_GLOBAL_DATA_PTR;
+ 
+ #define CRU_BASE		0xFF3B2000
+ #define CRU_SOFTRST_CON04	0x0A10
++#define USB2PHY_APB_BASE	0xFF3E0000
++#define USB2PHY_HS_ODT		0x011C
+ 
+ #ifdef CONFIG_USB_DWC3
+ static struct dwc3_device dwc3_device_data = {
+@@ -43,11 +45,18 @@ static void usb_reset_otg_controller(void)
+ 
+ int board_usb_init(int index, enum usb_init_type init)
+ {
++	u32 reg;
++
+ #ifdef CONFIG_SUPPORT_USBPLUG
+ 	usb_reset_otg_controller();
+ #endif
+ 	writel(0x01ff0000, 0xff000050); /* Resume usb2 phy to normal mode */
+ 
++	/* Match the Linux HS ODT compensation before gadget enumeration */
++	reg = readl(USB2PHY_APB_BASE + USB2PHY_HS_ODT);
++	reg = (reg & ~GENMASK(4, 0)) | 0x1f;
++	writel(reg, USB2PHY_APB_BASE + USB2PHY_HS_ODT);
++
+ 	return dwc3_uboot_init(&dwc3_device_data);
+ }
+ #endif
+diff --git a/sysdrv/source/uboot/u-boot/configs/aiden-rv1106-rockusb.config b/sysdrv/source/uboot/u-boot/configs/aiden-rv1106-rockusb.config
+new file mode 100644
+--- /dev/null
++++ b/sysdrv/source/uboot/u-boot/configs/aiden-rv1106-rockusb.config
+@@ -0,0 +1,33 @@
++# Keep the RV1106 loader on the board's non-DM DWC3 gadget path.
++CONFIG_CMD_ROCKUSB=y
++# CONFIG_CMD_DFU is not set
++# CONFIG_CMD_FASTBOOT is not set
++# CONFIG_FASTBOOT is not set
++# CONFIG_UDP_FUNCTION_FASTBOOT is not set
++# CONFIG_USB_FUNCTION_FASTBOOT is not set
++# CONFIG_DFU_MMC is not set
++# CONFIG_DFU_MTD is not set
++# CONFIG_DFU_NAND is not set
++# CONFIG_DFU_RAM is not set
++# CONFIG_DFU_SF is not set
++# CONFIG_DFU_TFTP is not set
++# CONFIG_DM_USB is not set
++# CONFIG_DM_USB_GADGET is not set
++# CONFIG_ROCKCHIP_USB_BOOT is not set
++# CONFIG_SPL_DM_USB is not set
++# CONFIG_SPL_DM_USB_GADGET is not set
++CONFIG_USB=y
++CONFIG_USB_DWC3=y
++CONFIG_USB_DWC3_GADGET=y
++# CONFIG_USB_DWC3_HOST is not set
++CONFIG_USB_GADGET=y
++CONFIG_USB_GADGET_DOWNLOAD=y
++CONFIG_USB_GADGET_DUALSPEED=y
++CONFIG_USB_GADGET_MANUFACTURER="Rockchip"
++CONFIG_USB_GADGET_PRODUCT_NUM=0x110c
++CONFIG_USB_GADGET_VBUS_DRAW=2
++CONFIG_USB_GADGET_VENDOR_NUM=0x2207
++# CONFIG_USB_ETHER is not set
++# CONFIG_USB_FUNCTION_DFU is not set
++# CONFIG_USB_FUNCTION_SDP is not set
++# CONFIG_USB_STORAGE is not set
