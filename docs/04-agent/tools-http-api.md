@@ -105,7 +105,7 @@ briefly re-enumerates the USB composite and may drop the HTTP connection, but th
 tool continues running and still performs its final HID profile restore. The
 caller may need to reconnect and observe the resulting screen if the response
 socket was lost. This applies to keyboard, pointer/touch, composite text/search,
-quick-action, and script tools that can participate in the serialized HID flow.
+and quick-action tools that can participate in the serialized HID flow.
 Within one HTTP invocation, consecutive modifier-bearing actions share one
 pointer-free phase; pointer/touch input restores the mouse before acting.
 Separate HTTP invocations each manage their own isolation scope. Other HTTP
