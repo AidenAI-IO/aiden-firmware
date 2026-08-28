@@ -1703,7 +1703,7 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	if r == nil || r.tools == nil {
 		return nil
 	}
-	tools := NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
+	tools := NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.devicePlatformFromState())
 	return r.filterPhoneBridgeAgentTools(tools)
 }
 

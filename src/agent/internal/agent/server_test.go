@@ -4108,7 +4108,6 @@ func TestHTTPToolExecutionSurvivesClientDisconnectForHIDTools(t *testing.T) {
 		"enter_text",
 		"mouse_move",
 		"mouse_scroll",
-		"run_script",
 		"touch_gesture",
 		"wheel_nudge",
 	} {

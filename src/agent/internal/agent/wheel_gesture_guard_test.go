@@ -805,12 +805,6 @@ func TestWheelNudgeGuardDoesNotCountSemanticallyInvalidCalls(t *testing.T) {
 	}
 }
 
-func TestWheelNudgeIsNotScriptCallable(t *testing.T) {
-	if isScriptCallableTool("wheel_nudge") {
-		t.Fatal("wheel_nudge must go through executor safety hooks, not run_script")
-	}
-}
-
 func wheelNudgeGuardCall(input string) ToolCall {
 	return ToolCall{
 		Spec:  ToolSpec{Name: "wheel_nudge"},

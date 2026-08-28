@@ -12,7 +12,7 @@ import (
 
 func TestBuiltinToolSetRegistersSystemTools(t *testing.T) {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	for _, name := range []string{"weather", "run_script", "shell"} {
+	for _, name := range []string{"weather", "shell"} {
 		if _, ok := tools.Get(name); !ok {
 			t.Fatalf("builtin tool %q was not registered", name)
 		}

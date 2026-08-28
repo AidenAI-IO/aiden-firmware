@@ -20,14 +20,11 @@ metadata:
       recall_memory,
       save_memory,
       skill_read,
-      run_script,
       shell,
     ]
 ---
 
 Use this skill when the task requires operating a visible connected device UI. This is the complete generic device-operation playbook; do not split routine app switching, text entry, scrolling, picker, or screenshot recovery work into child skills.
-
-Use `run_script` only when the user explicitly asks to run a prepared demo script; pass only a script file name from the config directory's `scripts/` folder. It executes JSONL script lines directly without LLM planning between steps, and `tts` lines start playback asynchronously without waiting for speech to finish. Script-file listing, reading, and writing require the opt-in `load_all_tools` catalog; when those tools are available, follow the script-author skill.
 
 ## Core Loop
 
@@ -161,7 +158,7 @@ Calibration loop:
 
 1. Start with an explicit start/end path and the default `speed:2500` from the latest screenshot.
 2. Read the gesture result's automatic post-action screenshot.
-3. Use the returned screenshot and its `screen_changed` field to confirm movement. If a finer-grained diagnostic is needed in Tool Lab or a prepared script, `image_diff` remains available there, but it is not a normal conversational Agent step.
+3. Use the returned screenshot and its `screen_changed` field to confirm movement.
    An omitted `screen_changed` means the baseline comparison was unavailable; judge the returned screenshot directly.
 4. If far from target, increase the start/end distance; if close, shorten it.
 5. If overshot, reverse the path and reduce its distance.

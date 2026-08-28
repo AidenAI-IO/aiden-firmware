@@ -674,9 +674,6 @@ func formatSteerInterruptMessage(steer RunSteerMessage) string {
 }
 
 func (l *AgentLoop) executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {
-	if l != nil && l.contextManager != nil {
-		ctx = withImageDiffAttachmentResolver(ctx, l.contextManager.ReadScreenshotAttachment)
-	}
 	interruptCh := (<-chan struct{})(nil)
 	if l != nil && l.SteerInterrupt != nil {
 		interruptCh = l.SteerInterrupt()
