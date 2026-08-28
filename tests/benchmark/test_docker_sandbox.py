@@ -56,7 +56,8 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("src/config_web.cpp", dockerfile)
         self.assertIn("src/config_web/web/ /oem/usr/share/aiden/config-web/", dockerfile)
         self.assertIn("ttyd-builder", dockerfile)
-        self.assertIn("TTYD_VERSION=1.7.3", dockerfile)
+        self.assertIn('ttyd_version="1.7.3"', dockerfile)
+        self.assertNotIn("ARG TTYD_VERSION", dockerfile)
         self.assertNotIn("node:16-bookworm", dockerfile)
 
     def test_runtime_defaults_to_text_without_credentials(self):

@@ -12,12 +12,12 @@ RUN mkdir -p /out \
 FROM debian:bookworm-slim AS ttyd-builder
 
 ARG TARGETARCH
-ARG TTYD_VERSION=1.7.3
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && set -eux; \
+        ttyd_version="1.7.3"; \
         architecture="${TARGETARCH:-$(dpkg --print-architecture)}"; \
         case "$architecture" in \
             amd64) \
@@ -36,7 +36,7 @@ RUN apt-get update \
         esac; \
         mkdir -p /out; \
         curl -fsSL --retry 3 \
-            "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${asset}" \
+            "https://github.com/tsl0922/ttyd/releases/download/${ttyd_version}/${asset}" \
             -o /out/ttyd; \
         echo "$sha256  /out/ttyd" | sha256sum -c -; \
         chmod 0755 /out/ttyd
