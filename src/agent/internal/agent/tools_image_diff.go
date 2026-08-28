@@ -32,17 +32,17 @@ func imageDiffAttachmentResolverFromContext(ctx context.Context) imageDiffAttach
 	return resolver
 }
 
-// ImageDiffTool compares two JPEG screenshots and returns pixel-level difference
+// ImageDiffTool compares two screenshots and returns pixel-level difference
 // metrics. Agent calls normally reference persisted screenshot attachments by
-// filename; direct HTTP callers may continue to pass Base64 JPEG data.
+// filename; direct HTTP callers may continue to pass Base64 image data.
 type ImageDiffTool struct{}
 
 func (t *ImageDiffTool) Name() string { return "image_diff" }
 
 func (t *ImageDiffTool) Description() string {
-	return `Compare two JPEG screenshots and return pixel-level difference metrics. ` +
+	return `Compare two screenshots and return pixel-level difference metrics. ` +
 		`This is a diagnostic tool for Tool Lab and prepared-script callers, not a normal conversational Agent step. ` +
-		`Callers may pass screenshot_attachment_id values from the current context, or Base64 JPEG data returned by the screenshot tool. ` +
+		`Callers may pass screenshot_attachment_id values from the current context, or Base64 image data returned by the screenshot tool. ` +
 		`"region" is optional normalized coordinates (0-1000) to restrict comparison to a sub-region — use this to focus on the scrollable area and ignore static UI chrome. ` +
 		`Returns: ` +
 		`"changed" (bool, true when diff_ratio > 0.01), ` +
@@ -63,8 +63,8 @@ func (t *ImageDiffTool) ArgsSchema() map[string]any {
 	regionSchema["examples"] = []map[string]any{{"x": 100, "y": 200, "w": 600, "h": 400}}
 
 	return objectArgsSchema(map[string]any{
-		"before": stringArgSchema("Earlier screenshot_attachment_id copied from the visual observation, or Base64 JPEG data for direct HTTP calls."),
-		"after":  stringArgSchema("Later screenshot_attachment_id copied from the visual observation, or Base64 JPEG data for direct HTTP calls."),
+		"before": stringArgSchema("Earlier screenshot_attachment_id copied from the visual observation, or Base64 image data for direct HTTP calls."),
+		"after":  stringArgSchema("Later screenshot_attachment_id copied from the visual observation, or Base64 image data for direct HTTP calls."),
 		"region": regionSchema,
 	}, "before", "after")
 }
@@ -95,19 +95,19 @@ func (t *ImageDiffTool) Call(ctx context.Context, input string) (string, error) 
 	}
 
 	if len(beforeData) < 2 || beforeData[0] != 0xFF || beforeData[1] != 0xD8 {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "before is not JPEG format (image_diff only supports JPEG). Use a screenshot_attachment_id or the 'data' field from screenshot tool results"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "before contains unsupported image data. Use a screenshot_attachment_id or the 'data' field from screenshot tool results"), nil
 	}
 	if len(afterData) < 2 || afterData[0] != 0xFF || afterData[1] != 0xD8 {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "after is not JPEG format (image_diff only supports JPEG). Use a screenshot_attachment_id or the 'data' field from screenshot tool results"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "after contains unsupported image data. Use a screenshot_attachment_id or the 'data' field from screenshot tool results"), nil
 	}
 
 	beforeImg, err := jpeg.Decode(bytes.NewReader(beforeData))
 	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "decode before JPEG: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "decode before image: %v", err), nil
 	}
 	afterImg, err := jpeg.Decode(bytes.NewReader(afterData))
 	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "decode after JPEG: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "decode after image: %v", err), nil
 	}
 
 	fullBounds := beforeImg.Bounds()
@@ -148,7 +148,7 @@ func resolveImageDiffInput(ctx context.Context, input string) ([]byte, error) {
 	}
 	data, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
-		return nil, fmt.Errorf("expected a screenshot_attachment_id or Base64 JPEG: %w", err)
+		return nil, fmt.Errorf("expected a screenshot_attachment_id or Base64 image data: %w", err)
 	}
 	return data, nil
 }

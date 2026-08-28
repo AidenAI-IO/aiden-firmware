@@ -203,9 +203,12 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 		t.Fatalf("Call() error = %v", err)
 	}
 
-	var result screenshotResult
+	var result postActionScreenshotResult
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("output is not valid screenshot JSON: %v", err)
+	}
+	if result.ActionOutput != "ok" {
+		t.Fatalf("action_output = %q, want ok", result.ActionOutput)
 	}
 	if result.Width != 2 || result.Height != 2 || result.Format != "jpeg" || result.Size != len(jpegData) {
 		t.Fatalf("unexpected screenshot metadata: %#v", result)

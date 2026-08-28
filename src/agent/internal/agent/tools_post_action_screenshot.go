@@ -327,7 +327,7 @@ func applyTouchGesturePostMarker(result *screenshotResult, marker touchGesturePo
 func drawTouchGesturePostMarker(jpegData []byte, marker touchGesturePostMarkerInfo) ([]byte, error) {
 	img, err := jpeg.Decode(bytes.NewReader(jpegData))
 	if err != nil {
-		return nil, fmt.Errorf("decode screenshot jpeg: %w", err)
+		return nil, fmt.Errorf("decode screenshot image: %w", err)
 	}
 	bounds := img.Bounds()
 	width := bounds.Dx()
@@ -344,7 +344,7 @@ func drawTouchGesturePostMarker(jpegData []byte, marker touchGesturePostMarkerIn
 
 	var output bytes.Buffer
 	if err := jpeg.Encode(&output, marked, &jpeg.Options{Quality: 90}); err != nil {
-		return nil, fmt.Errorf("encode marked screenshot jpeg: %w", err)
+		return nil, fmt.Errorf("encode marked screenshot image: %w", err)
 	}
 	return output.Bytes(), nil
 }

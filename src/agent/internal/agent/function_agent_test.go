@@ -675,6 +675,30 @@ func TestFunctionAgentRejectsVisualObservationWithoutDimensions(t *testing.T) {
 	}
 }
 
+func TestFunctionAgentUsesSharedActionOutputFlowForScreenshot(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("img1"))
+	observation := `{"action_output":"ok","width":800,"height":600,"format":"jpeg","size":4,"capture_backend":"frame_service","data":"` + encoded + `"}`
+
+	toolContent, followups := agent.observationMessagesForStep(schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "screenshot"},
+		Observation: observation,
+	}, true)
+
+	if toolContent != "ok" {
+		t.Fatalf("tool result = %q, want shared action_output", toolContent)
+	}
+	if len(followups) != 1 || len(followups[0].Parts) != 2 {
+		t.Fatalf("visual followups = %#v, want one captioned image", followups)
+	}
+	imagePart, ok := followups[0].Parts[1].(llms.ImageURLContent)
+	if !ok || !strings.Contains(imagePart.URL, encoded) {
+		t.Fatalf("follow-up image = %#v, want screenshot data", followups[0].Parts[1])
+	}
+}
+
 func TestFunctionAgentPostActionScreenshotPreservesActionOutput(t *testing.T) {
 	agent := &FunctionAgent{
 		Tools: []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}},
