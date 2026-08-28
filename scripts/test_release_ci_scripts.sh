@@ -5,8 +5,10 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
 SCHEDULED_WORKFLOW="$ROOT_DIR/.github/workflows/build-scheduled.yml"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
-BUILD_IMAGE_SCRIPT="$ROOT_DIR/_build_image.sh"
-DOCKER_BUILD_SCRIPT="$ROOT_DIR/build_image.sh"
+FIRMWARE_TASK="$ROOT_DIR/scripts/build/container/firmware.sh"
+CONTAINER_RUNNER="$ROOT_DIR/scripts/build/run_container.sh"
+GENERATED_BINARIES_LIB="$ROOT_DIR/scripts/build/container/lib/generated_binaries.sh"
+EXT4_IMAGES_LIB="$ROOT_DIR/scripts/build/container/lib/ext4_images.sh"
 CONFIG_WEB_INIT_SCRIPT="$ROOT_DIR/overlay/etc/init.d/S56config_web"
 
 if ! grep -q 'scripts/create_github_release.sh' "$WORKFLOW"; then
@@ -85,9 +87,24 @@ if ! grep -q 'GH_DEBUG' "$WORKFLOW"; then
     exit 1
 fi
 
-if ! grep -q 'SOURCE_DATE_EPOCH' "$DOCKER_BUILD_SCRIPT" || \
-   ! grep -q 'SOURCE_DATE_EPOCH' "$BUILD_IMAGE_SCRIPT"; then
+if ! grep -q 'SOURCE_DATE_EPOCH' "$CONTAINER_RUNNER" || \
+   ! grep -q 'SOURCE_DATE_EPOCH' "$FIRMWARE_TASK"; then
     echo "image build scripts must set and propagate SOURCE_DATE_EPOCH" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'source "$CONTAINER_DIR/lib/generated_binaries.sh"' "$FIRMWARE_TASK" || \
+   ! grep -Fq 'source "$CONTAINER_DIR/lib/ext4_images.sh"' "$FIRMWARE_TASK" || \
+   ! grep -Fq 'repair_generated_binaries_from_manifest()' "$GENERATED_BINARIES_LIB" || \
+   ! grep -Fq 'rebuild_ext4_image()' "$EXT4_IMAGES_LIB"; then
+    echo "firmware build responsibilities must remain split between the orchestrator and focused helper libraries" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'run: ./build.sh firmware' "$WORKFLOW" || \
+   ! grep -Fq 'run: ./build.sh exec firmware -- bash ./scripts/repack_ota_update_image.sh' "$WORKFLOW" || \
+   grep -Fq 'build_image.sh' "$WORKFLOW"; then
+    echo "build workflow must use the public build CLI for firmware and container exec tasks" >&2
     exit 1
 fi
 
@@ -112,13 +129,13 @@ if ! grep -Fq '"$GITHUB_WORKSPACE/.cache/rootfs-cli-tools/go-mod"' "$WORKFLOW" |
     exit 1
 fi
 
-if ! grep -Fq 'for path in build .cache/rootfs-cli-tools overlay/oem overlay/userdata pico-sdk/output' "$DOCKER_BUILD_SCRIPT" || \
-   ! grep -Fq 'chmod -R u+w .cache/rootfs-cli-tools/go-mod' "$DOCKER_BUILD_SCRIPT"; then
+if ! grep -Fq 'for path in build .cache/rootfs-cli-tools overlay/oem overlay/userdata pico-sdk/output' "$CONTAINER_RUNNER" || \
+   ! grep -Fq 'chmod -R u+w "$REPO_ROOT/.cache/rootfs-cli-tools/go-mod"' "$CONTAINER_RUNNER"; then
     echo "Docker image builds must restore ownership and write permission for the rootfs CLI cache" >&2
     exit 1
 fi
 
-if grep -q 'apply_pico_sdk_rootfs_reproducibility_patch.sh' "$BUILD_IMAGE_SCRIPT" || \
+if grep -q 'apply_pico_sdk_rootfs_reproducibility_patch.sh' "$FIRMWARE_TASK" || \
    [ -e "$ROOT_DIR/scripts/apply_pico_sdk_rootfs_reproducibility_patch.sh" ] || \
    [ -e "$ROOT_DIR/scripts/patches/pico-sdk-rootfs-reproducible-build.patch" ]; then
     echo "rootfs reproducibility support must live in the pico-sdk submodule, not a build-time patch" >&2
@@ -160,6 +177,7 @@ python3 "$ROOT_DIR/scripts/check_ci_policy_job.py"
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_build_cli.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_rootfs_cli_tool_catalog.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_build_rootfs_cli_tools.sh' "$CI_WORKFLOW" || \
@@ -197,14 +215,14 @@ if ! grep -q 'Compress OTA manifest images' "$WORKFLOW" || \
     exit 1
 fi
 
-oem_full_sync_line=$(grep -nF 'rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
-oem_repair_line=$(grep -nF 'repair_generated_binaries_from_manifest "sdk-oem-usr-bin" "$SCRIPT_DIR/build/bin" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin" "$GENERATED_BINARY_MANIFEST"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+oem_full_sync_line=$(grep -nF 'rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"' "$FIRMWARE_TASK" | sed 's/:.*//' | head -n 1)
+oem_repair_line=$(grep -nF 'repair_generated_binaries_from_manifest "sdk-oem-usr-bin" "$AIDEN_BUILD_BIN_DIR" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin" "$GENERATED_BINARY_MANIFEST"' "$FIRMWARE_TASK" | sed 's/:.*//' | head -n 1)
 if [ -z "$oem_full_sync_line" ] || [ -z "$oem_repair_line" ] || [ "$oem_full_sync_line" -ge "$oem_repair_line" ]; then
-    echo "_build_image.sh must sync OEM overlay first, then restore generated usr/bin files from the build manifest source" >&2
+    echo "firmware task must sync OEM overlay first, then restore generated usr/bin files from the build manifest source" >&2
     exit 1
 fi
-if grep -Fq 'rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"' "$ROOT_DIR/_build_image.sh"; then
-    echo "_build_image.sh must not trust overlay/oem/usr/bin as the final generated binary source" >&2
+if grep -Fq 'rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"' "$FIRMWARE_TASK"; then
+    echo "firmware task must not trust overlay/oem/usr/bin as the final generated binary source" >&2
     exit 1
 fi
 if ! grep -Fq 'WEB_ROOT=${WEB_ROOT:-/oem/usr/share/aiden/config-web}' "$CONFIG_WEB_INIT_SCRIPT" || \
@@ -212,56 +230,56 @@ if ! grep -Fq 'WEB_ROOT=${WEB_ROOT:-/oem/usr/share/aiden/config-web}' "$CONFIG_W
     echo "config_web init must pass the overridable OEM web root" >&2
     exit 1
 fi
-if ! grep -Fq 'CONFIG_WEB_SRC="$SCRIPT_DIR/src/config_web/web"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq 'CONFIG_WEB_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/config-web"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq 'rsync -a --delete "$CONFIG_WEB_SRC/" "$CONFIG_WEB_DEST/"' "$BUILD_IMAGE_SCRIPT"; then
-    echo "_build_image.sh must replace OEM config web assets from src/config_web/web" >&2
+if ! grep -Fq 'CONFIG_WEB_SRC="$REPO_ROOT/src/config_web/web"' "$FIRMWARE_TASK" || \
+   ! grep -Fq 'CONFIG_WEB_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/config-web"' "$FIRMWARE_TASK" || \
+   ! grep -Fq 'rsync -a --delete "$CONFIG_WEB_SRC/" "$CONFIG_WEB_DEST/"' "$FIRMWARE_TASK"; then
+    echo "firmware task must replace OEM config web assets from src/config_web/web" >&2
     exit 1
 fi
-if grep -Fq 'RK_PROJECT_PACKAGE_USERDATA_DIR/usr/share/aiden/config-web' "$BUILD_IMAGE_SCRIPT"; then
+if grep -Fq 'RK_PROJECT_PACKAGE_USERDATA_DIR/usr/share/aiden/config-web' "$FIRMWARE_TASK"; then
     echo "config web assets must not be staged in userdata" >&2
     exit 1
 fi
-if ! grep -Fq 'verify_oem_config_web_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq '"usr/share/aiden/config-web/index.html"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq '"usr/share/aiden/config-web/llm-logs.html"' "$BUILD_IMAGE_SCRIPT"; then
-    echo "_build_image.sh must verify both config web entry pages in the final OEM image" >&2
+if ! grep -Fq 'verify_oem_config_web_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"' "$FIRMWARE_TASK" || \
+   ! grep -Fq '"usr/share/aiden/config-web/index.html"' "$EXT4_IMAGES_LIB" || \
+   ! grep -Fq '"usr/share/aiden/config-web/llm-logs.html"' "$EXT4_IMAGES_LIB"; then
+    echo "firmware task must verify both config web entry pages in the final OEM image" >&2
     exit 1
 fi
-firmware_count=$(grep -cF './build.sh firmware "$@"' "$ROOT_DIR/_build_image.sh")
-firmware_line=$(grep -nF './build.sh firmware "$@"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+firmware_count=$(grep -cF 'run_pico_sdk_project_build firmware "$@"' "$FIRMWARE_TASK")
+firmware_line=$(grep -nF 'run_pico_sdk_project_build firmware "$@"' "$FIRMWARE_TASK" | sed 's/:.*//' | head -n 1)
 if [ "$firmware_count" -ne 1 ] || [ -z "$firmware_line" ] || [ "$firmware_line" -ge "$oem_full_sync_line" ]; then
-    echo "_build_image.sh must sync final OEM overlay after pico-sdk firmware packaging regenerates SDK-managed OEM files" >&2
+    echo "firmware task must sync final OEM overlay after pico-sdk firmware packaging regenerates SDK-managed OEM files" >&2
     exit 1
 fi
-if ! grep -Fq '"usr/ko/insmod_wifi.sh"' "$BUILD_IMAGE_SCRIPT" || \
-   grep -Fq '"usr/ko"' "$BUILD_IMAGE_SCRIPT"; then
-    echo "_build_image.sh must clean only Aiden-managed usr/ko overrides, not the SDK module directory" >&2
+if ! grep -Fq '"usr/ko/insmod_wifi.sh"' "$FIRMWARE_TASK" || \
+   grep -Fq '"usr/ko"' "$FIRMWARE_TASK"; then
+    echo "firmware task must clean only Aiden-managed usr/ko overrides, not the SDK module directory" >&2
     exit 1
 fi
 
-rootfs_cleanup_line=$(grep -nF 'scripts/clean_rootfs_overlay_staging.sh"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
-rootfs_cli_build_line=$(grep -nF 'scripts/build_rootfs_cli_tools.sh"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
-rootfs_cli_stage_line=$(grep -nF 'scripts/stage_rootfs_cli_tools.sh"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
-sysdrv_line=$(grep -nF './build.sh sysdrv "$@"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
+rootfs_cleanup_line=$(grep -nF 'scripts/clean_rootfs_overlay_staging.sh"' "$FIRMWARE_TASK" | sed 's/:.*//' | head -n 1)
+rootfs_cli_build_line=$(grep -nF 'scripts/build_rootfs_cli_tools.sh"' "$FIRMWARE_TASK" | sed 's/:.*//' | head -n 1)
+rootfs_cli_stage_line=$(grep -nF 'scripts/stage_rootfs_cli_tools.sh"' "$FIRMWARE_TASK" | sed 's/:.*//' | head -n 1)
+sysdrv_line=$(grep -nF 'run_pico_sdk_build sysdrv "$@"' "$FIRMWARE_TASK" | sed 's/:.*//' | head -n 1)
 if [ -z "$rootfs_cleanup_line" ] || [ -z "$rootfs_cli_build_line" ] || \
    [ -z "$rootfs_cli_stage_line" ] || [ -z "$sysdrv_line" ] || \
    [ "$rootfs_cleanup_line" -ge "$rootfs_cli_build_line" ] || \
    [ "$rootfs_cli_build_line" -ge "$rootfs_cli_stage_line" ] || \
    [ "$rootfs_cli_stage_line" -ge "$sysdrv_line" ]; then
-    echo "_build_image.sh must clean, build, and stage rootfs CLI tools before the Buildroot sysdrv build" >&2
+    echo "firmware task must clean, build, and stage rootfs CLI tools before the Buildroot sysdrv build" >&2
     exit 1
 fi
-if ! grep -Fq 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY" "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT"; then
-    echo "_build_image.sh must verify every catalog tool inside the final rootfs image" >&2
+if ! grep -Fq 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY" "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$FIRMWARE_TASK"; then
+    echo "firmware task must verify every catalog tool inside the final rootfs image" >&2
     exit 1
 fi
-rootfs_cli_restage_line=$(grep -nF -- '--dest-overlay "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | tail -n 1)
-firmware_package_line=$(grep -nF './build.sh firmware "$@"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
-rootfs_rebuild_line=$(grep -nF 'rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
-rootfs_cli_verify_line=$(grep -nF 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY" "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
-if ! grep -Fq 'RK_PROJECT_PACKAGE_ROOTFS_DIR="${RK_PROJECT_OUTPUT}/rootfs_${RK_LIBC_TPYE}_${RK_CHIP}"' "$BUILD_IMAGE_SCRIPT"; then
-    echo "_build_image.sh must define the SDK rootfs staging directory before restaging CLI tools" >&2
+rootfs_cli_restage_line=$(grep -nF -- '--dest-overlay "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$FIRMWARE_TASK" | sed 's/:.*//' | tail -n 1)
+firmware_package_line=$(grep -nF 'run_pico_sdk_project_build firmware "$@"' "$FIRMWARE_TASK" | sed 's/:.*//' | head -n 1)
+rootfs_rebuild_line=$(grep -nF 'rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$FIRMWARE_TASK" | sed 's/:.*//' | head -n 1)
+rootfs_cli_verify_line=$(grep -nF 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY" "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$FIRMWARE_TASK" | sed 's/:.*//' | head -n 1)
+if ! grep -Fq 'RK_PROJECT_PACKAGE_ROOTFS_DIR="${RK_PROJECT_OUTPUT}/rootfs_${RK_LIBC_TPYE}_${RK_CHIP}"' "$FIRMWARE_TASK"; then
+    echo "firmware task must define the SDK rootfs staging directory before restaging CLI tools" >&2
     exit 1
 fi
 if [ -z "$firmware_package_line" ] || [ -z "$rootfs_cli_restage_line" ] || \
@@ -270,30 +288,30 @@ if [ -z "$firmware_package_line" ] || [ -z "$rootfs_cli_restage_line" ] || \
    [ "$firmware_package_line" -ge "$rootfs_cli_restage_line" ] || \
    [ "$rootfs_cli_restage_line" -ge "$rootfs_rebuild_line" ] || \
    [ "$rootfs_rebuild_line" -ge "$rootfs_cli_verify_line" ]; then
-    echo "_build_image.sh must package firmware, restage CLI tools, rebuild rootfs.img, then verify it" >&2
+    echo "firmware task must package firmware, restage CLI tools, rebuild rootfs.img, then verify it" >&2
     exit 1
 fi
-if ! grep -Fq 'ROOTFS_CLI_TOOL_CATALOG="$SCRIPT_DIR/scripts/rootfs_cli_tools.catalog"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq 'rootfs_cli_catalog_name_policy_records "$ROOTFS_CLI_TOOL_CATALOG"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq 'for tool in "${ROOTFS_CLI_PRESERVE_TOOLS[@]}"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq -- '-path "$target_dir/usr/bin/$tool"' "$BUILD_IMAGE_SCRIPT"; then
+if ! grep -Fq 'ROOTFS_CLI_TOOL_CATALOG="$REPO_ROOT/scripts/rootfs_cli_tools.catalog"' "$FIRMWARE_TASK" || \
+   ! grep -Fq 'rootfs_cli_catalog_name_policy_records "$ROOTFS_CLI_TOOL_CATALOG"' "$FIRMWARE_TASK" || \
+   ! grep -Fq 'for tool in "${ROOTFS_CLI_PRESERVE_TOOLS[@]}"' "$EXT4_IMAGES_LIB" || \
+   ! grep -Fq -- '-path "$target_dir/usr/bin/$tool"' "$EXT4_IMAGES_LIB"; then
     echo "release builds must derive rootfs CLI tool and preserve lists from the shared catalog" >&2
     exit 1
 fi
-if grep -Fq 'ROOTFS_CLI_TOOLS=(fq yq rg)' "$BUILD_IMAGE_SCRIPT" || \
-   grep -Fq -- '-path "$target_dir/usr/bin/fq"' "$BUILD_IMAGE_SCRIPT"; then
+if grep -Fq 'ROOTFS_CLI_TOOLS=(fq yq rg)' "$FIRMWARE_TASK" "$EXT4_IMAGES_LIB" || \
+   grep -Fq -- '-path "$target_dir/usr/bin/fq"' "$EXT4_IMAGES_LIB"; then
     echo "release builds must not hardcode rootfs CLI tool names" >&2
     exit 1
 fi
-if ! grep -Fq -- '--catalog "$ROOTFS_CLI_TOOL_CATALOG"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq -- '--policy preserve' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq 'ROOTFS_CLI_MANAGED_STATE="${DEST_OVERLAY}.aiden-rootfs-cli-tools.list"' "$BUILD_IMAGE_SCRIPT" || \
-   ! grep -Fq -- '--managed-state "$ROOTFS_CLI_MANAGED_STATE"' "$BUILD_IMAGE_SCRIPT"; then
+if ! grep -Fq -- '--catalog "$ROOTFS_CLI_TOOL_CATALOG"' "$FIRMWARE_TASK" || \
+   ! grep -Fq -- '--policy preserve' "$FIRMWARE_TASK" || \
+   ! grep -Fq 'ROOTFS_CLI_MANAGED_STATE="${DEST_OVERLAY}.aiden-rootfs-cli-tools.list"' "$FIRMWARE_TASK" || \
+   ! grep -Fq -- '--managed-state "$ROOTFS_CLI_MANAGED_STATE"' "$FIRMWARE_TASK"; then
     echo "rootfs CLI build, staging, and post-strip restore must use the shared catalog policy" >&2
     exit 1
 fi
-if ! grep -Fq 'ROOTFS_CLI_CACHE_DIR="$SCRIPT_DIR/.cache/rootfs-cli-tools"' "$BUILD_IMAGE_SCRIPT"; then
-    echo "rootfs CLI cache must live outside build/, which _build.sh recreates on every image build" >&2
+if ! grep -Fq 'ROOTFS_CLI_CACHE_DIR="$REPO_ROOT/.cache/rootfs-cli-tools"' "$FIRMWARE_TASK"; then
+    echo "rootfs CLI cache must live outside build/, which the app task recreates on every image build" >&2
     exit 1
 fi
 

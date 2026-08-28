@@ -12,7 +12,7 @@ openssl genpkey -algorithm ed25519 -out ota_private_key.pem
 openssl pkey -in ota_private_key.pem -pubout -out ota_public_key.pem
 
 # 2. Build firmware
-./build_image.sh
+./build.sh firmware
 
 # 3. Generate manifest with GitHub direct URLs
 TAG="v1.0.0-custom"
@@ -45,7 +45,7 @@ ota update \
 
 ```bash
 # 1. Build firmware
-./build_image.sh
+./build.sh firmware
 
 # 2. Generate manifest with your server URLs
 scripts/generate_ota_manifest.sh \

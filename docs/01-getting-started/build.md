@@ -37,10 +37,10 @@ Build artifacts location:
 
 ## Luckfox Docker Cross-Compilation
 
-The project provides `build.sh`, which starts the `luckfoxtech/luckfox_pico:1.0` container and executes `_build.sh`:
+The public build CLI starts the `luckfoxtech/luckfox_pico:1.0` container and runs the application cross-build task:
 
 ```bash
-./build.sh
+./build.sh app
 ```
 
 This workflow will:
@@ -49,6 +49,12 @@ This workflow will:
 2. Generate `build/lib/libaiden.a` and `build/bin/*`;
 3. Install/use Go 1.26.0;
 4. Cross-compile the Go Agent and BLE daemon: `build/bin/agent` and `build/bin/ble_service`, targeting `linux/arm GOARM=7`.
+
+Use `./build.sh firmware` for a full firmware image. Automation that needs to run a one-off command with the same privileged firmware container profile can use:
+
+```bash
+./build.sh exec firmware -- bash ./scripts/repack_ota_update_image.sh
+```
 
 ## macOS Apple Silicon + Colima
 
@@ -61,7 +67,7 @@ colima start --vm-type vz --vz-rosetta
 docker buildx version
 docker buildx ls
 
-./build.sh
+./build.sh app
 ```
 
 Do not start a `--arch x86_64` Colima VM for this workflow; keep the native VM and let the container run as `linux/amd64`.
@@ -94,5 +100,5 @@ cd build-host && ctest --output-on-failure
 | `config_web` | Device configuration web service |
 | `image_process` | Image processing CLI |
 | `example_*` | Wake word, audio, camera, USB HID examples |
-| `agent` | Go Agent daemon, additionally built by `_build.sh` |
-| `ble_service` | Go BlueZ GATT/ANCS daemon, additionally built by `_build.sh` |
+| `agent` | Go Agent daemon, additionally built by the application cross-build task |
+| `ble_service` | Go BlueZ GATT/ANCS daemon, additionally built by the application cross-build task |

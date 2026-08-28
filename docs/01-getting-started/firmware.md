@@ -31,12 +31,12 @@ The related low-level changes can be found in the `pico-sdk/` submodule.
 This requires an x86_64 Linux + Docker environment, or a compatible environment capable of running amd64 containers:
 
 ```bash
-./build_image.sh
+./build.sh firmware
 ```
 
-`build_image.sh` launches the Luckfox Docker image in privileged mode and runs `_build_image.sh`. Process overview:
+The firmware command uses the privileged firmware container profile. Process overview:
 
-1. Compile the application: `./_build.sh`;
+1. Compile the application binaries;
 2. Copy `build/bin/` to `overlay/oem/usr/bin/`;
 3. Sync `overlay/etc/` to the `pico-sdk` Buildroot overlay;
 4. Run `pico-sdk/build.sh all`;

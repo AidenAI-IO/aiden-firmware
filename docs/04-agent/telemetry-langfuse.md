@@ -171,7 +171,7 @@ Field mapping:
 | Field | Description |
 | --- | --- |
 | `model` / `model_name` / `model_provider` | LLM used for this run (from `[model]` in `agent.toml`) |
-| `agent_commit` | Git commit when Agent binary was built (`_build.sh` ldflags injection) |
+| `agent_commit` | Git commit when Agent binary was built (application build task ldflags injection) |
 | `agent_build` | Agent build version number (`YYYYMMDD-HHMMSS-<commit>`) |
 | `firmware_version` | `current_version` from device OTA state `/userdata/ota/state.json` |
 | `session_boundary_decision` / `session_boundary_reason` | Session-boundary classifier output for the run. |

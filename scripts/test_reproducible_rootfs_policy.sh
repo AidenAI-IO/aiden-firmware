@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_IMAGE_SH="$ROOT_DIR/build_image.sh"
-INNER_BUILD_IMAGE_SH="$ROOT_DIR/_build_image.sh"
+CONTAINER_RUNNER="$ROOT_DIR/scripts/build/run_container.sh"
+FIRMWARE_TASK="$ROOT_DIR/scripts/build/container/firmware.sh"
 # Only sysdrv/Makefile and the two Buildroot defconfigs are read below, so PR
 # CI can point this at a sparse checkout of the pinned submodule commit instead
 # of cloning the ~1GB pico-sdk working tree.
@@ -14,7 +14,7 @@ if [ ! -f "$PICO_SDK/sysdrv/Makefile" ]; then
   exit 1
 fi
 
-for script in "$BUILD_IMAGE_SH" "$INNER_BUILD_IMAGE_SH"; do
+for script in "$CONTAINER_RUNNER" "$FIRMWARE_TASK"; do
   if ! grep -q 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH' "$script"; then
     echo "$(basename "$script") must use AIDEN_REPRODUCIBLE_IMAGE_EPOCH for the default reproducible image timestamp" >&2
     exit 1
@@ -26,18 +26,18 @@ for script in "$BUILD_IMAGE_SH" "$INNER_BUILD_IMAGE_SH"; do
   fi
 done
 
-if grep -Eq 'git .*log -1 --format=%ct|git .*log -1 .*%ct' "$BUILD_IMAGE_SH" "$INNER_BUILD_IMAGE_SH"; then
+if grep -Eq 'git .*log -1 --format=%ct|git .*log -1 .*%ct' "$CONTAINER_RUNNER" "$FIRMWARE_TASK"; then
   echo "image builds must not derive the default SOURCE_DATE_EPOCH from the current commit time" >&2
   exit 1
 fi
 
-if grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0' "$BUILD_IMAGE_SH" "$INNER_BUILD_IMAGE_SH"; then
+if grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0' "$CONTAINER_RUNNER" "$FIRMWARE_TASK"; then
   echo "image builds must use a non-zero default SOURCE_DATE_EPOCH so falsey-zero package bugs cannot affect releases" >&2
   exit 1
 fi
 
-if ! grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-[1-9][0-9]*' "$BUILD_IMAGE_SH" || \
-   ! grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-[1-9][0-9]*' "$INNER_BUILD_IMAGE_SH"; then
+if ! grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-[1-9][0-9]*' "$CONTAINER_RUNNER" || \
+   ! grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-[1-9][0-9]*' "$FIRMWARE_TASK"; then
   echo "image builds must keep a deterministic non-zero default SOURCE_DATE_EPOCH" >&2
   exit 1
 fi

@@ -140,7 +140,7 @@ Source layout is in [Source Tree](../02-architecture/source-tree.md); boot servi
 After development, build the firmware and upgrade the device:
 
 - Native / cross-compile dev environment: [Build & Development Environment](build.md);
-- Full firmware build (`./build_image.sh`) and flashing: [Firmware Build & Flashing](firmware.md);
+- Full firmware build (`./build.sh firmware`) and flashing: [Firmware Build & Flashing](firmware.md);
 - Over-the-air upgrade: [OTA Overview](../08-ota/README.md).
 
 ### OTA for non-main branch firmware

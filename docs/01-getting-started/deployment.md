@@ -29,7 +29,7 @@ The recommended production deployment method is to build or download a complete 
 
 ## Manual Binary Copy
 
-After `./build.sh` completes, the main artifacts are in `build/bin/`. The ones directly related to device resident services are:
+After `./build.sh app` completes, the main artifacts are in `build/bin/`. The ones directly related to device resident services are:
 
 - `build/bin/frame_service`
 - `build/bin/audio_service`
@@ -41,7 +41,7 @@ After `./build.sh` completes, the main artifacts are in `build/bin/`. The ones d
 If the target device has already been flashed with an Aiden firmware version, the init scripts and `/etc/*.conf` typically already exist. In this case, the minimal deployment set is the above runtime files:
 
 ```bash
-./build.sh
+./build.sh app
 
 scp build/bin/frame_service root@<device-ip>:/oem/usr/bin/
 scp build/bin/audio_service root@<device-ip>:/oem/usr/bin/
