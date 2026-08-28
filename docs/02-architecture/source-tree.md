@@ -8,7 +8,7 @@ sidebar_position: 2
 aiden-firmware/
 ├── CMakeLists.txt                 # Main C/C++ build configuration
 ├── Makefile                       # Local build/test shortcut entry point
-├── build.sh                        # Public binaries, image, and image-exec CLI
+├── build.sh                       # Public binaries, image, and image-exec CLI
 ├── cmake/                         # Toolchain files
 ├── docs/                          # Structured documentation
 ├── edid/                          # HDMI EDID hex files

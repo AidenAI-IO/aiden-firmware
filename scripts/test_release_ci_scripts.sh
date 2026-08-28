@@ -6,6 +6,7 @@ WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
 SCHEDULED_WORKFLOW="$ROOT_DIR/.github/workflows/build-scheduled.yml"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 IMAGE_TASK="$ROOT_DIR/scripts/build/container/image.sh"
+BINARIES_TASK="$ROOT_DIR/scripts/build/container/binaries.sh"
 CONTAINER_RUNNER="$ROOT_DIR/scripts/build/run_container.sh"
 GENERATED_BINARIES_LIB="$ROOT_DIR/scripts/build/container/lib/generated_binaries.sh"
 EXT4_IMAGES_LIB="$ROOT_DIR/scripts/build/container/lib/ext4_images.sh"
@@ -93,26 +94,72 @@ if ! grep -q 'SOURCE_DATE_EPOCH' "$CONTAINER_RUNNER" || \
     exit 1
 fi
 
-if ! grep -Fq 'source "$CONTAINER_DIR/lib/generated_binaries.sh"' "$IMAGE_TASK" || \
-   ! grep -Fq 'source "$CONTAINER_DIR/lib/ext4_images.sh"' "$IMAGE_TASK" || \
-   ! grep -Fq '"$CONTAINER_DIR/binaries.sh"' "$IMAGE_TASK" || \
-   ! grep -Fq 'repair_generated_binaries_from_manifest()' "$GENERATED_BINARIES_LIB" || \
-   ! grep -Fq 'rebuild_ext4_image()' "$EXT4_IMAGES_LIB"; then
-    echo "image build responsibilities must remain split between the orchestrator and focused helper libraries" >&2
+# Each helper library must stand on its own: sourceable in isolation and the
+# sole definer of the entry point the orchestrator calls. Asserting on the
+# resulting function ownership rather than on source lines keeps this checking
+# the split itself instead of the spelling of any one statement.
+for library_contract in \
+    "$GENERATED_BINARIES_LIB:repair_generated_binaries_from_manifest" \
+    "$EXT4_IMAGES_LIB:rebuild_ext4_image"; do
+    library_path="${library_contract%:*}"
+    library_function="${library_contract##*:}"
+    if ! bash -c 'source "$1" >/dev/null 2>&1 || exit 1; declare -F "$2" >/dev/null' \
+        _ "$library_path" "$library_function"; then
+        echo "$(basename "$library_path") must be sourceable on its own and define $library_function()" >&2
+        exit 1
+    fi
+    if grep -Eq "^[[:space:]]*(function[[:space:]]+)?${library_function}[[:space:]]*\(\)" "$IMAGE_TASK"; then
+        echo "image orchestrator must delegate $library_function() to $(basename "$library_path") instead of redefining it" >&2
+        exit 1
+    fi
+done
+
+# The orchestrator must keep delegating to both libraries and to the binaries
+# task. Matching filenames only leaves the wiring style free to change.
+for required_dependency in \
+    lib/generated_binaries.sh \
+    lib/ext4_images.sh \
+    binaries.sh; do
+    if ! grep -Fq "$required_dependency" "$IMAGE_TASK"; then
+        echo "image orchestrator must delegate to $required_dependency" >&2
+        exit 1
+    fi
+done
+
+# Generated binaries are anchored to the repository's build/bin. Evaluate the
+# real assignment with a hostile environment so an override knob reintroduced
+# under any name fails here rather than silently relocating release binaries.
+build_bin_dir_assignment=$(grep -E '^[[:space:]]*BUILD_BIN_DIR=' "$IMAGE_TASK") || {
+    echo "image orchestrator must define BUILD_BIN_DIR for generated binaries" >&2
+    exit 1
+}
+resolved_build_bin_dir=$(
+    REPO_ROOT=/fixture-repo \
+    BUILD_BIN_DIR=/hijacked-stale \
+    AIDEN_BUILD_BIN_DIR=/hijacked-knob \
+    sh -c 'eval "$1"; printf %s "$BUILD_BIN_DIR"' _ "$build_bin_dir_assignment"
+)
+if [ "$resolved_build_bin_dir" != /fixture-repo/build/bin ]; then
+    echo "generated binaries must resolve to the fixed repository build/bin directory, got $resolved_build_bin_dir" >&2
     exit 1
 fi
 
-if grep -Fq 'AIDEN_BUILD_BIN_DIR' "$IMAGE_TASK" || \
-   grep -Fq 'AIDEN_BUILD_BIN_DIR' "$EXT4_IMAGES_LIB" || \
-   grep -Fq 'AIDEN_BUILD_BIN_DIR' "$CONTAINER_RUNNER" || \
-   ! grep -Fq 'BUILD_BIN_DIR="$REPO_ROOT/build/bin"' "$IMAGE_TASK"; then
-    echo "generated binaries must use the fixed repository build/bin directory" >&2
+# Release binaries carry the build commit in their ldflags. Evaluate the real
+# assignment against a non-repository directory to prove it degrades to
+# "unknown" instead of aborting the build or embedding an empty commit.
+agent_commit_assignment=$(grep -E '^[[:space:]]*AGENT_COMMIT=' "$BINARIES_TASK") || {
+    echo "binaries task must define AGENT_COMMIT for build metadata" >&2
     exit 1
-fi
-
-if ! grep -Fq 'git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown' \
-    "$ROOT_DIR/scripts/build/container/binaries.sh"; then
-    echo "binary builds must preserve unknown commit metadata when .git is unavailable" >&2
+}
+non_repo_dir=$(mktemp -d "${TMPDIR:-/tmp}/aiden-release-ci-test.XXXXXX")
+resolved_agent_commit=$(
+    REPO_ROOT="$non_repo_dir" \
+    GIT_CEILING_DIRECTORIES="$non_repo_dir" \
+    sh -c 'eval "$1"; printf %s "$AGENT_COMMIT"' _ "$agent_commit_assignment"
+) || resolved_agent_commit='<failed>'
+rm -rf "$non_repo_dir"
+if [ "$resolved_agent_commit" != unknown ]; then
+    echo "binary builds must preserve unknown commit metadata when .git is unavailable, got $resolved_agent_commit" >&2
     exit 1
 fi
 
@@ -291,7 +338,7 @@ if ! grep -Fq 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs
 fi
 rootfs_cli_restage_line=$(grep -nF -- '--dest-overlay "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$IMAGE_TASK" | sed 's/:.*//' | tail -n 1)
 firmware_package_line=$(grep -nF 'run_pico_sdk_project_build firmware "$@"' "$IMAGE_TASK" | sed 's/:.*//' | head -n 1)
-rootfs_rebuild_line=$(grep -nF 'rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$IMAGE_TASK" | sed 's/:.*//' | head -n 1)
+rootfs_rebuild_line=$(grep -nF 'rebuild_ext4_image rootfs "$RK_PROJECT_PACKAGE_ROOTFS_DIR" "$RK_PROJECT_OUTPUT_IMAGE"' "$IMAGE_TASK" | sed 's/:.*//' | head -n 1)
 rootfs_cli_verify_line=$(grep -nF 'verify_rootfs_cli_tools_in_image "$RK_PROJECT_OUTPUT_IMAGE/rootfs.img" "$DEST_OVERLAY" "$RK_PROJECT_PACKAGE_ROOTFS_DIR"' "$IMAGE_TASK" | sed 's/:.*//' | head -n 1)
 if ! grep -Fq 'RK_PROJECT_PACKAGE_ROOTFS_DIR="${RK_PROJECT_OUTPUT}/rootfs_${RK_LIBC_TPYE}_${RK_CHIP}"' "$IMAGE_TASK"; then
     echo "image task must define the SDK rootfs staging directory before restaging CLI tools" >&2
