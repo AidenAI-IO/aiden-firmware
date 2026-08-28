@@ -105,7 +105,7 @@ func captureActiveAreaFrame(client screenshotFrameClient, screenState *screen.Sc
 		return capturedFrame{}, fmt.Errorf("frame service: STALE_FRAME")
 	}
 	if meta.PixelFormat != "jpeg" {
-		return capturedFrame{}, fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
+		return capturedFrame{}, fmt.Errorf("screen capture returned an unsupported frame")
 	}
 
 	active := screen.ScreenActiveArea{}
@@ -229,8 +229,7 @@ func (t *ScreenshotTool) ReturnsVisualObservation() bool { return true }
 
 func (t *ScreenshotTool) Description() string {
 	return `Capture a screenshot from the connected display. No input required (pass empty JSON {} or ""). ` +
-		`Returns a JSON object with width, height, and base64-encoded JPEG image data. ` +
-		`Use normalized 0-1000 coordinates for coordinate input tools. Convert visual measurements from this image before acting: x_normalized=x/max(width-1,1)*1000 and y_normalized=y/max(height-1,1)*1000; do not pass screenshot pixels directly.`
+		`Returns ok in the tool result and provides the image in a follow-up state message.`
 }
 
 func (t *ScreenshotTool) ArgsSchema() map[string]any {
@@ -248,7 +247,7 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		return "", fmt.Errorf("frame service: STALE_FRAME")
 	}
 	if meta.PixelFormat != "jpeg" {
-		return "", fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
+		return "", fmt.Errorf("screen capture returned an unsupported frame")
 	}
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf("screenshot frame meta=%s capture_backend=%q mapping_before={%s}", formatTouchscreenRCAMetadata(meta), captureInfo.Backend, t.screen.Format())
@@ -324,7 +323,10 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		)
 	}
 
-	out, _ := json.Marshal(result)
+	out, _ := json.Marshal(postActionScreenshotResult{
+		screenshotResult: result,
+		ActionOutput:     "ok",
+	})
 	return string(out), nil
 }
 

@@ -124,7 +124,7 @@ func (t *WaitStableScreenTool) Description() string {
 			`Use only while operating a visible target UI, after a UI action or known UI transition that may animate, navigate, or load; do not call for text-only reasoning, arithmetic, comparison, or memory lookup. `+
 			`Input: {} (empty JSON object). Configured timeouts: timeout_ms=%d, stable_ms=%d, diff_threshold=%g. `+
 			`The screen is stable when consecutive frames stay below diff_threshold for stable_ms. `+
-			`Returns {"ok":true,"stable":true/false,"elapsed_ms":N,"screen_changed":true/false,...} plus a screenshot observation with width, height, format, size, and base64 JPEG data. `+
+			`Returns {"ok":true,"stable":true/false,"elapsed_ms":N,"screen_changed":true/false,...} and provides the screenshot as a visual observation. `+
 			`screen_changed reports whether any frame-to-frame motion was observed during this wait window; it is not a before/after action-success signal. Inspect the returned screenshot to judge the preceding action. `+
 			`stable=false means the wait timed out while the screen was still changing (for example video playback); that is not an error and the screenshot is still captured as a best-effort observation.`,
 		resolved.TimeoutMs,
@@ -175,7 +175,7 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 		return screenshotResult{}, fmt.Errorf("frame service: STALE_FRAME")
 	}
 	if meta.PixelFormat != "jpeg" {
-		return screenshotResult{}, fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
+		return screenshotResult{}, fmt.Errorf("screen capture returned an unsupported frame")
 	}
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf("wait_stable.captureScreenshot frame meta=%s capture_backend=%q mapping_before={%s}", formatTouchscreenRCAMetadata(meta), captureInfo.Backend, t.screen.Format())

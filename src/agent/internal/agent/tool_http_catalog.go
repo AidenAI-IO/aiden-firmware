@@ -110,13 +110,13 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	for _, descriptor := range descriptors {
 		builder.WriteString(fmt.Sprintf("- `%s`: %s\n", descriptor.Name, descriptor.Description))
 		if descriptor.Name == "screenshot" {
-			builder.WriteString("  Successful output JSON includes `width`, `height`, `format`, `size`, and base64 JPEG `data`.\n")
+			builder.WriteString("  Successful output includes the captured screen image.\n")
 		} else if descriptor.Name == "wait_for_stable_screen" {
-			builder.WriteString("  Successful output JSON includes `ok`, `stable`, `elapsed_ms`, `screen_changed`, optional `last_diff`, plus `screen_stable`, `stable_wait_ms`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from the captured screenshot.\n")
+			builder.WriteString("  Successful output includes stability and screen-change metadata plus the captured screen image.\n")
 		} else if descriptor.Name == "enter_text" {
-			builder.WriteString("  `action_output` contains only `{\"ok\":true}` on success, or `{\"ok\":false,\"suggestion\":\"...\"}` on failure. The outer output also includes an optional `screen_changed` comparison, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a short-delay post-action screenshot; `enter_text` does not perform the stable-screen wait, so `screen_stable` and `stable_wait_ms` are not included.\n")
+			builder.WriteString("  `action_output` contains only `{\"ok\":true}` on success, or `{\"ok\":false,\"suggestion\":\"...\"}` on failure. The outer output also includes an optional `screen_changed` comparison and a short-delay post-action screenshot; `enter_text` does not perform the stable-screen wait, so `screen_stable` and `stable_wait_ms` are not included.\n")
 		} else if descriptor.Category == "input" {
-			builder.WriteString("  On successful execution, output JSON includes `action_output`, `screen_stable`, `stable_wait_ms`, optional `screen_changed`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a post-action screenshot. When present, `screen_changed` reports meaningful structural change between a pre-action baseline and the final settled screenshot while ignoring the top status area and minor image noise; `screen_stable=false` is not a failure.\n")
+			builder.WriteString("  On successful execution, output includes `action_output`, `screen_stable`, `stable_wait_ms`, optional `screen_changed`, and a post-action screenshot. When present, `screen_changed` reports meaningful structural change between a pre-action baseline and the final settled screenshot while ignoring the top status area and minor image noise; `screen_stable=false` is not a failure.\n")
 		}
 		if strings.TrimSpace(descriptor.ExampleInput) != "" {
 			builder.WriteString(fmt.Sprintf("  Example input: `%s`\n", descriptor.ExampleInput))
