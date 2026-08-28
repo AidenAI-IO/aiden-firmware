@@ -57,22 +57,37 @@ def canonicalize_fit(path: pathlib.Path, check: bool) -> None:
     if len(data) < FDT_HEADER_SIZE:
         raise ValueError(f"FIT is too small: {path}")
     header = struct.unpack_from(">10I", data)
-    magic, total_size, _, _, reserve_offset = header[:5]
+    magic, total_size, structure_offset, _, reserve_offset = header[:5]
     if magic != FDT_MAGIC:
         raise ValueError(f"FIT magic is invalid: {path}")
-    if total_size > len(data) or reserve_offset + 32 > total_size:
+    if (
+        total_size > len(data)
+        or reserve_offset < FDT_HEADER_SIZE
+        or reserve_offset > structure_offset
+        or structure_offset > total_size
+    ):
         raise ValueError(f"FIT reservation map is out of bounds: {path}")
 
-    address, size = struct.unpack_from(">QQ", data, reserve_offset)
-    next_address, next_size = struct.unpack_from(">QQ", data, reserve_offset + 16)
-    if address == 0 and size == 0:
+    reservations = []
+    offset = reserve_offset
+    while offset + 16 <= structure_offset:
+        address, size = struct.unpack_from(">QQ", data, offset)
+        if address == 0 and size == 0:
+            break
+        reservations.append((offset, address, size))
+        offset += 16
+    else:
+        raise ValueError(f"FIT reservation map is not terminated: {path}")
+
+    if not reservations:
         return
+    if any(address == 0 or size != total_size for _, address, size in reservations):
+        raise ValueError(f"FIT has an unexpected reservation map: {path}")
     if check:
         raise ValueError(f"FIT contains a host memory reservation: {path}")
-    if size != total_size or next_address != 0 or next_size != 0:
-        raise ValueError(f"FIT has an unexpected reservation map: {path}")
 
-    struct.pack_into(">QQ", data, reserve_offset, 0, 0)
+    for offset, _, _ in reservations:
+        struct.pack_into(">QQ", data, offset, 0, 0)
     write_atomic(path, data)
 
 

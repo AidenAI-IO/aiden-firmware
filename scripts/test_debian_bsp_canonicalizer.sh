@@ -7,20 +7,45 @@ readonly CRC_TABLE_SOURCE=${REPO_ROOT}/pico-sdk/sysdrv/source/uboot/u-boot/tools
 readonly TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "${TEST_ROOT}"' EXIT
 
-python3 - "${TEST_ROOT}/fit.img" "${TEST_ROOT}/loader.bin" "${CRC_TABLE_SOURCE}" <<'PY'
+python3 - \
+    "${TEST_ROOT}/fit-single.img" \
+    "${TEST_ROOT}/fit-multiple.img" \
+    "${TEST_ROOT}/fit-invalid.img" \
+    "${TEST_ROOT}/loader.bin" \
+    "${CRC_TABLE_SOURCE}" <<'PY'
 import pathlib
 import re
 import struct
 import sys
 
-fit_path = pathlib.Path(sys.argv[1])
-loader_path = pathlib.Path(sys.argv[2])
-crc_source = pathlib.Path(sys.argv[3]).read_text(encoding="utf-8")
+single_fit_path = pathlib.Path(sys.argv[1])
+multiple_fit_path = pathlib.Path(sys.argv[2])
+invalid_fit_path = pathlib.Path(sys.argv[3])
+loader_path = pathlib.Path(sys.argv[4])
+crc_source = pathlib.Path(sys.argv[5]).read_text(encoding="utf-8")
 
-fit = bytearray(128)
-struct.pack_into(">10I", fit, 0, 0xD00DFEED, 128, 72, 96, 40, 17, 16, 0, 16, 24)
-struct.pack_into(">QQ", fit, 40, 0x7F1234500000, 128)
-fit_path.write_bytes(fit)
+def write_fit(path, reservations):
+    total_size = 160
+    reserve_offset = 40
+    structure_offset = reserve_offset + 16 * (len(reservations) + 1)
+    fit = bytearray(total_size)
+    struct.pack_into(
+        ">10I", fit, 0, 0xD00DFEED, total_size, structure_offset,
+        144, reserve_offset, 17, 16, 0, 16, 24
+    )
+    for index, (address, size) in enumerate(reservations):
+        struct.pack_into(">QQ", fit, reserve_offset + index * 16, address, size)
+    path.write_bytes(fit)
+
+write_fit(single_fit_path, [(0x7F1234500000, 160)])
+write_fit(
+    multiple_fit_path,
+    [(0x7F1234500000, 160), (0x7F12344FF000, 160)],
+)
+write_fit(
+    invalid_fit_path,
+    [(0x7F1234500000, 160), (0x7F12344FF000, 159)],
+)
 
 loader = bytearray(128)
 loader[:4] = b"LDR "
@@ -45,40 +70,58 @@ PY
 
 "${CANONICALIZER}" \
     --source-date-epoch 1767360516 \
-    --fit "${TEST_ROOT}/fit.img" \
+    --fit "${TEST_ROOT}/fit-single.img" \
+    --fit "${TEST_ROOT}/fit-multiple.img" \
     --crc-table-source "${CRC_TABLE_SOURCE}" \
     --loader "${TEST_ROOT}/loader.bin"
-cp "${TEST_ROOT}/fit.img" "${TEST_ROOT}/fit.pass1"
+cp "${TEST_ROOT}/fit-single.img" "${TEST_ROOT}/fit-single.pass1"
+cp "${TEST_ROOT}/fit-multiple.img" "${TEST_ROOT}/fit-multiple.pass1"
 cp "${TEST_ROOT}/loader.bin" "${TEST_ROOT}/loader.pass1"
 "${CANONICALIZER}" \
     --check \
     --source-date-epoch 1767360516 \
-    --fit "${TEST_ROOT}/fit.img" \
+    --fit "${TEST_ROOT}/fit-single.img" \
+    --fit "${TEST_ROOT}/fit-multiple.img" \
     --crc-table-source "${CRC_TABLE_SOURCE}" \
     --loader "${TEST_ROOT}/loader.bin"
 "${CANONICALIZER}" \
     --source-date-epoch 1767360516 \
-    --fit "${TEST_ROOT}/fit.img" \
+    --fit "${TEST_ROOT}/fit-single.img" \
+    --fit "${TEST_ROOT}/fit-multiple.img" \
     --crc-table-source "${CRC_TABLE_SOURCE}" \
     --loader "${TEST_ROOT}/loader.bin"
-cmp "${TEST_ROOT}/fit.pass1" "${TEST_ROOT}/fit.img"
+cmp "${TEST_ROOT}/fit-single.pass1" "${TEST_ROOT}/fit-single.img"
+cmp "${TEST_ROOT}/fit-multiple.pass1" "${TEST_ROOT}/fit-multiple.img"
 cmp "${TEST_ROOT}/loader.pass1" "${TEST_ROOT}/loader.bin"
 
-python3 - "${TEST_ROOT}/fit.img" "${TEST_ROOT}/loader.bin" <<'PY'
+python3 - \
+    "${TEST_ROOT}/fit-single.img" \
+    "${TEST_ROOT}/fit-multiple.img" \
+    "${TEST_ROOT}/loader.bin" <<'PY'
 import datetime
 import pathlib
 import struct
 import sys
 
-fit = pathlib.Path(sys.argv[1]).read_bytes()
-loader = pathlib.Path(sys.argv[2]).read_bytes()
-assert struct.unpack_from(">QQ", fit, 40) == (0, 0)
+single_fit = pathlib.Path(sys.argv[1]).read_bytes()
+multiple_fit = pathlib.Path(sys.argv[2]).read_bytes()
+loader = pathlib.Path(sys.argv[3]).read_bytes()
+assert struct.unpack_from(">QQ", single_fit, 40) == (0, 0)
+assert struct.unpack_from(">QQ", multiple_fit, 40) == (0, 0)
+assert struct.unpack_from(">QQ", multiple_fit, 56) == (0, 0)
 timestamp = datetime.datetime.fromtimestamp(1767360516, datetime.timezone.utc)
 assert loader[14:21] == struct.pack(
     "<HBBBBB", timestamp.year, timestamp.month, timestamp.day,
     timestamp.hour, timestamp.minute, timestamp.second
 )
 PY
+
+if "${CANONICALIZER}" \
+    --source-date-epoch 1767360516 \
+    --fit "${TEST_ROOT}/fit-invalid.img" >/dev/null 2>&1; then
+    echo "BSP canonicalizer accepted an unexpected FIT reservation" >&2
+    exit 1
+fi
 
 cp "${TEST_ROOT}/loader.bin" "${TEST_ROOT}/bad-loader.bin"
 printf '\001' | dd of="${TEST_ROOT}/bad-loader.bin" bs=1 seek=32 conv=notrunc status=none
