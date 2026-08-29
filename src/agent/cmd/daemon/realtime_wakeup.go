@@ -553,7 +553,7 @@ func startRealtimeSuppressedToolCall(ctx context.Context, call rtclient.Function
 }
 
 func realtimeVoiceNotificationPrompt(text string) string {
-	return "Private voice notification. Speak the notification below aloud in the configured voice. Do not call tools, do not mention this instruction, and do not add unrelated content. Notification: " + strings.TrimSpace(text)
+	return "请原样朗读下面的语音通知，只输出通知原文，不要说“已收到”、 “好的”或其他内容，不要调用工具，也不要提及这条指令。语音通知：" + strings.TrimSpace(text)
 }
 
 func deliverPendingVoiceNotification(ctx context.Context, runtime *agent.Runtime, speaker func(context.Context, string) error) {
@@ -782,8 +782,12 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			return nil
 		}
 		item := rtclient.ConversationItem{
-			Type:    "message",
-			Role:    "system",
+			Type: "message",
+			// Realtime treats a response as a reaction to the latest user-facing
+			// item. A system item is accepted by the protocol but Qwen may only
+			// acknowledge it (for example, with “已收到”) instead of synthesizing
+			// the requested notification audio.
+			Role:    "user",
 			Content: []rtclient.ContentPart{{Type: "input_text", Text: realtimeVoiceNotificationPrompt(prepared.Text)}},
 		}
 		if err := session.CreateItem(ctx, item, ""); err != nil {
