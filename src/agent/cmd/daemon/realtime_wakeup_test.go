@@ -19,6 +19,8 @@ type fakeRealtimePlaybackAudio struct {
 	stops         []uint64
 }
 
+func (f *fakeRealtimePlaybackAudio) WaitForPlaybackDrain(context.Context) error { return nil }
+
 type fakeRealtimePlaybackWrite struct {
 	sessionID uint64
 	data      []byte
@@ -115,6 +117,56 @@ func TestRealtimeLocalPlaybackFinalizesEachResponse(t *testing.T) {
 	}
 	if len(audio.stops) != 1 || audio.starts != 2 {
 		t.Fatalf("after next response: starts=%d stops=%v, want starts=2 stops=[1]", audio.starts, audio.stops)
+	}
+}
+
+func TestRealtimePersistentPlaybackCanFinalizeNotification(t *testing.T) {
+	audio := &fakeRealtimePlaybackAudio{}
+	playback := realtimePlaybackState{}
+	format := agent.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}
+
+	if err := playback.open(audio, format); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.append(audio, format, []byte{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.finishResponse(audio, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(audio.writes) != 2 || !audio.writes[1].final {
+		t.Fatalf("writes = %#v, want PCM followed by a final write", audio.writes)
+	}
+	if !playback.finalized {
+		t.Fatal("notification finalization did not mark playback finalized")
+	}
+	playback.markDrained()
+	if playback.session != nil || playback.finalized {
+		t.Fatalf("drained playback state = %+v, want no active session", playback)
+	}
+}
+
+func TestSuppressedRealtimeNotificationResponseBindsAfterResponseCreated(t *testing.T) {
+	responses := make(map[string]struct{})
+	pending := false
+	markSuppressedRealtimeNotificationResponse("", &pending, responses)
+	if !pending || len(responses) != 0 {
+		t.Fatalf("pending suppression = %t, responses = %v", pending, responses)
+	}
+	if !bindSuppressedRealtimeNotificationResponse("resp-1", &pending, responses) {
+		t.Fatal("response.created did not bind pending suppression")
+	}
+	if pending || !hasSuppressedNotificationResponse(responses, "resp-1") {
+		t.Fatalf("bound suppression = pending:%t responses:%v", pending, responses)
+	}
+}
+
+func TestSuppressedRealtimeNotificationResponseMarksKnownResponse(t *testing.T) {
+	responses := make(map[string]struct{})
+	pending := false
+	markSuppressedRealtimeNotificationResponse("resp-1", &pending, responses)
+	if pending || !hasSuppressedNotificationResponse(responses, "resp-1") {
+		t.Fatalf("known suppression = pending:%t responses:%v", pending, responses)
 	}
 }
 
