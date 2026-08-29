@@ -221,6 +221,9 @@ def cli(argv: list[str] | None = None) -> int:
     if args.cmd == "start-adb-android-env":
         from runner.services import cmd_start_adb_android_env
         return cmd_start_adb_android_env(args)
+    if args.cmd == "start-desktop-env":
+        from runner.services import cmd_start_desktop_env
+        return cmd_start_desktop_env(args)
     return 2
 
 

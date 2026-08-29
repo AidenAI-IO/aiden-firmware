@@ -22,7 +22,7 @@ scoring can be re-run from saved artifacts.
        │ /api/tools/<tool> when environment bridge mode is enabled
        ▼
 ┌────────────────────┐
-│ Environment Bridge │  Go device bridge, MobileGym bridge, or custom bridge
+│ Environment Bridge │  Go device bridge, MobileGym/ADB bridge, desktop bridge, or custom bridge
 └────────────────────┘
 ```
 

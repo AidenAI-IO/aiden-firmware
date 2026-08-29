@@ -475,50 +475,51 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 		return ToolResult{}, true
 	}
 	var args struct {
-		Type   string        `json:"type"`
-		Point  *pointerPoint `json:"point"`
-		Start  *pointerPoint `json:"start"`
-		End    *pointerPoint `json:"end"`
-		Anchor *float64      `json:"anchor"`
+		Type    string        `json:"type"`
+		Point   *pointerPoint `json:"point"`
+		Start   *pointerPoint `json:"start"`
+		End     *pointerPoint `json:"end"`
+		Actions []struct {
+			Action string             `json:"action"`
+			Type   string             `json:"type"`
+			Point  *pointerPoint      `json:"point"`
+			X      *pointerCoordinate `json:"x"`
+			Y      *pointerCoordinate `json:"y"`
+		} `json:"actions"`
 	}
 	if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 		return ToolResult{}, true
 	}
 	gestureType := strings.ToLower(strings.TrimSpace(args.Type))
 	var points []*pointerPoint
-	switch gestureType {
-	case "tap", "double_tap", "long_press":
-		points = []*pointerPoint{args.Point}
-	case "drag", "swipe":
-		points = []*pointerPoint{args.Start, args.End}
-	case "swipe_up", "swipe_down":
-		anchor := 500.0
-		if args.Anchor != nil {
-			anchor = *args.Anchor
-		}
-		candidateAnchors := []float64{anchor}
-		for _, point := range []*pointerPoint{args.Start, args.End} {
-			if point != nil {
-				candidateAnchors = append(candidateAnchors, point.X.Float64())
+	if len(args.Actions) > 0 {
+		gestureType = "actions"
+		for _, action := range args.Actions {
+			actionType := strings.ToLower(strings.TrimSpace(action.Action))
+			if actionType == "" {
+				actionType = strings.ToLower(strings.TrimSpace(action.Type))
 			}
-		}
-		for _, candidate := range candidateAnchors {
-			for _, column := range g.columns {
-				x := clampFloat(candidate, 0, 1000)
-				if math.Abs(column.centerX-x) <= wheelNudgeColumnTolerance {
-					message := "active picker column is owned by wheel_nudge: refusing a directional swipe anchored on that column"
-					return invalidWheelResult(message, map[string]any{"column_x": column.centerX, "retry_same_column": true}), false
+			switch actionType {
+			case "touch_down", "move_to", "touch_up":
+				point := action.Point
+				if point == nil && action.X != nil && action.Y != nil {
+					point = &pointerPoint{X: *action.X, Y: *action.Y}
 				}
+				points = append(points, point)
 			}
 		}
-		return ToolResult{}, true
-	case "swipe_left", "swipe_right":
-		return ToolResult{}, true
-	case "back", "home":
-		g.pendingNavigation = wheelToolCallKey(call)
-		return ToolResult{}, true
-	default:
-		return ToolResult{}, true
+	} else {
+		switch gestureType {
+		case "tap", "double_tap", "long_press", "drag_start":
+			points = []*pointerPoint{args.Point}
+		case "swipe":
+			points = []*pointerPoint{args.Start, args.End}
+		case "drag_release":
+			// Never block release of an already-held contact.
+			return ToolResult{}, true
+		default:
+			return ToolResult{}, true
+		}
 	}
 	navigationCandidate := false
 	for _, point := range points {

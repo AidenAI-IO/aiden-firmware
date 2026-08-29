@@ -330,7 +330,7 @@ def test_release_semantics(bridge):
 
 def test_tool_call_requires_active_episode(bridge):
     _, _, base_url = bridge
-    status, body = _request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}})
+    status, body = _request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "tap", "point": {"x": 500, "y": 500}}})
     assert status == 409
     assert body["error"] == "no_active_episode"
 
@@ -340,10 +340,10 @@ def test_tool_call_with_empty_task_id_uses_single_state(bridge):
     # calls carry no benchmark-task-id header at all. Both must hit the state.
     _, device, base_url = bridge
     _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
-    status, body = _request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}})
+    status, body = _request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "tap", "point": {"x": 500, "y": 500}}})
     assert status == 200
     assert body["is_error"] is False
-    assert ("keyevent", "KEYCODE_HOME") in device.calls
+    assert ("tap", 540, 960) in device.calls
 
 
 def test_provider_screenshot_returns_frame_metadata(bridge):
@@ -439,7 +439,7 @@ def test_tool_call_with_mismatched_task_id_returns_429(bridge):
     _, _, base_url = bridge
     _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
     status, body = _request(
-        base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}}, task_id="suite:other"
+        base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "tap", "point": {"x": 500, "y": 500}}}, task_id="suite:other"
     )
     assert status == 429
     assert body["error"] == "no_bridge_env_available"

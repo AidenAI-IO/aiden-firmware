@@ -896,11 +896,6 @@ func TestBundledDeviceOperatorAllowedToolsCoverEmbeddedPlaybooks(t *testing.T) {
 			t.Fatalf("device-operator allowed_tools missing %q required by embedded playbooks", tool)
 		}
 	}
-	for _, tool := range []string{"list_scripts", "read_script", "write_script"} {
-		if _, ok := deviceTools[tool]; ok {
-			t.Fatalf("device-operator allowed_tools should not include opt-in script authoring tool %q", tool)
-		}
-	}
 }
 
 func TestSkillManageTool_CreateAndPatch(t *testing.T) {
@@ -995,7 +990,7 @@ func TestSkillManageTool_CreateAllowsRegisteredTools(t *testing.T) {
 func TestSkillManageTool_CreateRejectsAgentHiddenTool(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewSkillManageTool(dir, "")
-	content := "---\nname: hidden\ndescription: Hidden tool skill\nmetadata:\n  allowed_tools: [list_scripts]\n---\n\nDo hidden work.\n"
+	content := "---\nname: hidden\ndescription: Hidden tool skill\nmetadata:\n  allowed_tools: [search_launch_app]\n---\n\nDo hidden work.\n"
 	if _, err := tool.Call(context.Background(), fmt.Sprintf(`{"action":"create","name":"hidden","content":%q}`, content)); err == nil || !strings.Contains(err.Error(), "allowed_tools") {
 		t.Fatalf("create should reject agent-hidden tool, got %v", err)
 	}
@@ -1336,7 +1331,7 @@ func TestSkillManageTool_InstallRejectsUnknownAllowedTool(t *testing.T) {
 }
 
 func TestSkillManageTool_InstallRejectsAgentHiddenTool(t *testing.T) {
-	content := "---\nname: remote-hidden\ndescription: Hidden tool skill\nmetadata:\n  allowed_tools: [list_scripts]\n---\n\nDo hidden work.\n"
+	content := "---\nname: remote-hidden\ndescription: Hidden tool skill\nmetadata:\n  allowed_tools: [search_launch_app]\n---\n\nDo hidden work.\n"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/markdown")
 		_, _ = io.WriteString(w, content)

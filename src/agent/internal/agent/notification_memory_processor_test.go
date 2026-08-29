@@ -33,7 +33,6 @@ func TestNotificationMemoryProcessorFiltersNoiseAndWritesTemporaryMemory(t *test
   ]
 }`}}
 	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
-	processor.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
 	_, err = processor.ProcessBatch(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +171,6 @@ func TestNotificationMemoryProcessorUsesMergeEngineForAdd(t *testing.T) {
 	}
 	llm := &episodeMemoryScriptedModel{responses: []string{`{"actions":[{"action":"add","scope":"temporary","type":"fact","title":"包裹更新","content":"包裹明天送达","confidence":0.86,"expires_at":"2099-01-01T00:00:00Z","tags":["notification","com.delivery"]}]}`}}
 	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, llm)
-	processor.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
 	if _, err := processor.ProcessBatch(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +269,6 @@ func TestNotificationMemoryProcessorAddDoesNotSupersedeSimilarMemory(t *testing.
 	}
 	model := &episodeMemoryScriptedModel{responses: []string{`{"actions":[{"action":"add","scope":"temporary","type":"fact","title":"Delivery window","content":"The package arrives tomorrow at noon","expires_at":"2099-01-01T00:00:00Z","tags":["notification","com.delivery"],"entities":["com.delivery"]}]}`}}
 	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
-	processor.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
 	if _, err := processor.ProcessBatch(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}

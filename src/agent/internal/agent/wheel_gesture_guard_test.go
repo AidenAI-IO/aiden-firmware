@@ -590,7 +590,7 @@ func TestWheelGestureGuardIgnoresTouchGestureWithProviderPopulatedWheelMetadata(
 	var guard wheelNudgeGuard
 	swipe := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"swipe_down","start":{"x":500,"y":200},"end":{"x":500,"y":520},"wheel":{"is_picker_row":true,"picker_id":"bad","column_x":0,"center_y":0,"current_value":0,"tapped_value":0,"target_value":0,"cycle_size":0,"cycle_start":0,"row_offset":0,"row_spacing":0,"value_step":0}}`,
+		Input: `{"type":"swipe","start":{"x":500,"y":200},"end":{"x":500,"y":520},"wheel":{"is_picker_row":true,"picker_id":"bad","column_x":0,"center_y":0,"current_value":0,"tapped_value":0,"target_value":0,"cycle_size":0,"cycle_start":0,"row_offset":0,"row_spacing":0,"value_step":0}}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); !allowed || result.Error != nil {
 		t.Fatalf("generic touch gesture must not be inspected by wheel guard: allowed=%v result=%#v", allowed, result)
@@ -601,11 +601,11 @@ func TestWheelGestureGuardBlocksTouchGestureOnActiveWheelColumn(t *testing.T) {
 	var guard wheelNudgeGuard
 	allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(validWheelGuardInput(632, 275, 48, 5, 60, 0)))
 
-	drag := ToolCall{
+	dragStart := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"drag","start":{"x":632,"y":275},"end":{"x":632,"y":300},"steps":20}`,
+		Input: `{"type":"drag_start","point":{"x":632,"y":275}}`,
 	}
-	result, allowed := guard.BeforeToolCall(context.Background(), drag)
+	result, allowed := guard.BeforeToolCall(context.Background(), dragStart)
 	if allowed {
 		t.Fatal("touch gesture on an active wheel column should be blocked")
 	}
@@ -614,7 +614,53 @@ func TestWheelGestureGuardBlocksTouchGestureOnActiveWheelColumn(t *testing.T) {
 	}
 }
 
-func TestWheelGestureGuardBlocksDirectionalSwipeWhilePickerIsActive(t *testing.T) {
+func TestWheelGestureGuardBlocksAtomicActionsOnActiveWheelColumn(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "nested move point",
+			input: `{"actions":[{"action":"touch_down","point":{"x":100,"y":275}},{"type":"move_to","point":{"x":632,"y":275}},{"action":"touch_up"}]}`,
+		},
+		{
+			name:  "legacy down coordinates",
+			input: `{"actions":[{"action":"touch_down","x":632,"y":275},{"action":"touch_up"}]}`,
+		},
+		{
+			name:  "explicit release point",
+			input: `{"actions":[{"action":"touch_down","point":{"x":100,"y":275}},{"action":"touch_up","x":632,"y":275}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var guard wheelNudgeGuard
+			allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(validWheelGuardInput(632, 275, 48, 5, 60, 0)))
+			call := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: test.input}
+			if result, allowed := guard.BeforeToolCall(context.Background(), call); allowed || result.Error == nil {
+				t.Fatalf("atomic touch on active wheel column should be blocked: allowed=%v result=%#v", allowed, result)
+			}
+		})
+	}
+}
+
+func TestWheelGestureGuardPreservesReleaseAndUnknownPayloadHandling(t *testing.T) {
+	var guard wheelNudgeGuard
+	allowAndCommitWheel(t, &guard, wheelNudgeGuardCall(validWheelGuardInput(632, 275, 48, 5, 60, 0)))
+
+	for _, input := range []string{
+		`{"type":"drag_release","point":{"x":632,"y":275}}`,
+		`{"actions":[{"action":"unsupported","point":{"x":632,"y":275}}]}`,
+	} {
+		call := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: input}
+		if result, allowed := guard.BeforeToolCall(context.Background(), call); !allowed || result.Error != nil {
+			t.Fatalf("release or unknown payload should be left to the touch tool: input=%s allowed=%v result=%#v", input, allowed, result)
+		}
+	}
+}
+
+func TestWheelGestureGuardBlocksDirectionFormSwipeWhilePickerIsActive(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	guard := newWheelNudgeGuard(screenState)
@@ -623,39 +669,36 @@ func TestWheelGestureGuardBlocksDirectionalSwipeWhilePickerIsActive(t *testing.T
 
 	swipe := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"swipe_up","strength":"small","anchor":611}`,
+		Input: `{"type":"swipe","start":{"x":611,"y":500},"direction":"up","speed":2500,"duration_ms":80}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); allowed || result.Error == nil {
-		t.Fatalf("directional swipe should be blocked while picker is active: allowed=%v result=%#v", allowed, result)
+		t.Fatalf("direction-form swipe should be blocked while picker is active: allowed=%v result=%#v", allowed, result)
 	}
 }
 
-func TestWheelGestureGuardBlocksDirectionalSwipeWithExplicitWheelPoints(t *testing.T) {
+func TestWheelGestureGuardBlocksSwipeWithExplicitWheelPoints(t *testing.T) {
 	guard := newWheelNudgeGuard(nil)
 	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(400, 260, 15, 7, 24, 0)))
 
-	// This is the exact malformed fallback emitted after wheel_nudge failed on
-	// the alarm picker. Directional aliases ignore start/end at execution time,
-	// but those points still reveal an attempt to bypass the owned wheel column.
 	swipe := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"swipe_up","start":{"x":400,"y":300},"end":{"x":400,"y":600}}`,
+		Input: `{"type":"swipe","start":{"x":400,"y":300},"end":{"x":400,"y":600}}`,
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); allowed || result.Error == nil {
-		t.Fatalf("directional swipe with explicit wheel points should be blocked: allowed=%v result=%#v", allowed, result)
+		t.Fatalf("swipe with explicit wheel points should be blocked: allowed=%v result=%#v", allowed, result)
 	}
 }
 
-func TestWheelGestureGuardAllowsDirectionalSwipeOutsidePickerColumns(t *testing.T) {
+func TestWheelGestureGuardAllowsDirectionFormSwipeOutsidePickerColumns(t *testing.T) {
 	screenState := &screen.ScreenState{}
 	screenState.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	guard := newWheelNudgeGuard(screenState)
 	screenState.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 498, 1052), 498, 1052)
 	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(612, 275, 48, 5, 60, 0)))
 
-	swipe := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: `{"type":"swipe_up","strength":"small","anchor":150}`}
+	swipe := ToolCall{Spec: ToolSpec{Name: "touch_gesture"}, Input: `{"type":"swipe","start":{"x":150,"y":500},"direction":"up","speed":2500,"duration_ms":80}`}
 	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); !allowed || result.Error != nil {
-		t.Fatalf("directional swipe outside picker column should remain allowed: allowed=%v result=%#v", allowed, result)
+		t.Fatalf("direction-form swipe outside picker column should remain allowed: allowed=%v result=%#v", allowed, result)
 	}
 }
 
@@ -759,12 +802,6 @@ func TestWheelNudgeGuardDoesNotCountSemanticallyInvalidCalls(t *testing.T) {
 	}
 	if guard.total != 0 {
 		t.Fatalf("invalid calls changed total to %d", guard.total)
-	}
-}
-
-func TestWheelNudgeIsNotScriptCallable(t *testing.T) {
-	if isScriptCallableTool("wheel_nudge") {
-		t.Fatal("wheel_nudge must go through executor safety hooks, not run_script")
 	}
 }
 

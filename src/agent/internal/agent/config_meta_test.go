@@ -458,7 +458,6 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"agent.voice_tool_call_speech", defaults.VoiceToolCallSpeechOrDefault()},
 		{"agent.voice_progress_speech_enabled", defaults.VoiceProgressSpeechEnabledOrDefault()},
 		{"agent.voice_max_response_tokens", defaults.VoiceMaxResponseTokens},
-		{"agent.load_all_tools", defaults.LoadAllTools},
 		{"agent.max_iterations", defaults.MaxIterations},
 		{"agent.screenshot_keep_n", defaults.ScreenshotKeepN},
 		{"agent.screenshot_prune_interval", defaults.ScreenshotPruneInterval},

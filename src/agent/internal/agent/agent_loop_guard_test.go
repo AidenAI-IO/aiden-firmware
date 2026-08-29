@@ -94,8 +94,8 @@ func TestAgentLoopPersistsSoftNoticeInContext(t *testing.T) {
 	t.Parallel()
 
 	model := &scriptedModel{responses: []*llms.ContentResponse{
-		toolCallResponse("call-1", "touch_gesture", `{"gesture":"swipe_up"}`),
-		toolCallResponse("call-2", "touch_gesture", `{"gesture":"swipe_up"}`),
+		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-2", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
 		contentResponse("I will change strategy."),
 	}}
 	manager, err := freshNewContextManager("system", "swipe until done", nil, t.TempDir())
@@ -145,10 +145,10 @@ func TestAgentLoopEscalatesFromPersistedNoticeToRestrictionAndTermination(t *tes
 
 	screen := `{"width":100,"height":100,"format":"jpeg","data":"same-screen"}`
 	model := &scriptedModel{responses: []*llms.ContentResponse{
-		toolCallResponse("call-1", "touch_gesture", `{"gesture":"swipe_up"}`),
-		toolCallResponse("call-2", "touch_gesture", `{"gesture":"swipe_up"}`),
-		toolCallResponse("call-3", "touch_gesture", `{"gesture":"swipe_up"}`),
-		toolCallResponse("call-4", "touch_gesture", `{"gesture":"swipe_up"}`),
+		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-2", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-3", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-4", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
 	}}
 	manager, err := freshNewContextManager("system", "swipe until done", nil, t.TempDir())
 	if err != nil {
@@ -192,8 +192,8 @@ func TestAgentLoopBudgetExhaustionReturnsGracefulStop(t *testing.T) {
 	t.Parallel()
 
 	model := &scriptedModel{responses: []*llms.ContentResponse{
-		toolCallResponse("call-1", "touch_gesture", `{"gesture":"swipe_up"}`),
-		toolCallResponse("call-2", "touch_gesture", `{"gesture":"swipe_up"}`),
+		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-2", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
 	}}
 	screen := `{"width":100,"height":100,"format":"jpeg","data":"screen-1"}`
 	manager, err := freshNewContextManager("system", "keep going", nil, t.TempDir())

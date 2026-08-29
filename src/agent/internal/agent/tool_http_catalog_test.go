@@ -58,34 +58,6 @@ func TestQuickActionExposedToAgentAndToolLab(t *testing.T) {
 	}
 }
 
-func TestImageDiffRemainsDiagnosticOnly(t *testing.T) {
-	spec := NewToolSpec(&stubTool{name: "image_diff", description: "image diff"})
-	if spec.AgentExposed {
-		t.Fatal("image_diff should not be exposed to the conversational Agent")
-	}
-	if spec.AgentLoadAll {
-		t.Fatal("image_diff should remain hidden when load_all_tools is enabled")
-	}
-	if !spec.HTTPExposed {
-		t.Fatal("image_diff should remain available to the HTTP Tool Lab")
-	}
-	runtime := newRuntimeWithTextEntryTools()
-	for _, tool := range runtime.availableTools() {
-		if tool != nil && tool.Name() == "image_diff" {
-			t.Fatal("image_diff should not be included in the default conversational Agent catalog")
-		}
-	}
-	runtime.config.LoadAllTools = true
-	for _, tool := range runtime.availableTools() {
-		if tool != nil && tool.Name() == "image_diff" {
-			t.Fatal("image_diff should not be included when load_all_tools is enabled")
-		}
-	}
-	if _, ok := runtime.ToolDescriptorByName("image_diff"); !ok {
-		t.Fatal("image_diff should remain in the HTTP Tool Lab catalog")
-	}
-}
-
 func TestWaitForWakeupExposedToAgentAndToolLab(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{},
@@ -105,30 +77,6 @@ func TestWaitForWakeupExposedToAgentAndToolLab(t *testing.T) {
 	}
 	if !toolAgentExposed("wait_for_wakeup") {
 		t.Fatal("expected wait_for_wakeup available to conversational agent")
-	}
-}
-
-func TestRunScriptExposedToAgentAndToolLab(t *testing.T) {
-	runtime := NewRuntimeWithDeps(
-		Config{},
-		nil,
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-	for _, name := range []string{"run_script", "list_scripts", "read_script", "write_script"} {
-		if _, ok := runtime.ToolDescriptorByName(name); !ok {
-			t.Fatalf("expected %s in Tool Lab HTTP catalog", name)
-		}
-	}
-	if !toolAgentExposed("run_script") {
-		t.Fatal("expected run_script available to conversational agent")
-	}
-	for _, name := range []string{"list_scripts", "read_script", "write_script"} {
-		if !toolAgentExposed(name) {
-			continue
-		}
-		t.Fatalf("did not expect %s in the default conversational agent catalog", name)
 	}
 }
 
@@ -293,14 +241,6 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 			t.Fatalf("default catalog missing connected phone bridge tool %s: %v", want, defaultNames)
 		}
 	}
-
-	runtime.config.LoadAllTools = true
-	fullNames := toolNameSet(runtime.availableTools())
-	for _, want := range []string{"open_app", "open_url", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
-		if _, ok := fullNames[want]; !ok {
-			t.Fatalf("full catalog missing connected phone bridge tool %s: %v", want, fullNames)
-		}
-	}
 }
 
 func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
@@ -329,7 +269,6 @@ func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
 		"web_scraper",
 		"wikipedia",
 		"request_user_action",
-		"run_script",
 		"open_app",
 		"open_url",
 		"bridge_clipboard",
@@ -337,30 +276,12 @@ func TestToolSpecsAgentCatalogPolicy(t *testing.T) {
 		"bridge_contacts",
 		"bridge_notification",
 	}
-	omittedTools := []string{
-		"list_scripts",
-		"read_script",
-		"write_script",
-	}
-	allNames := append(append([]string{}, coreTools...), omittedTools...)
-	specs := toolSpecsForNames(allNames)
+	specs := toolSpecsForNames(coreTools)
 
-	defaultNames := toolNameSet(specs.AgentTools(false))
+	defaultNames := toolNameSet(specs.AgentTools())
 	for _, want := range coreTools {
 		if _, ok := defaultNames[want]; !ok {
 			t.Errorf("default catalog missing core tool %s", want)
-		}
-	}
-	for _, notWant := range omittedTools {
-		if _, ok := defaultNames[notWant]; ok {
-			t.Errorf("default catalog exposed omitted tool %s", notWant)
-		}
-	}
-
-	fullNames := toolNameSet(specs.AgentTools(true))
-	for _, want := range allNames {
-		if _, ok := fullNames[want]; !ok {
-			t.Errorf("full catalog missing tool %s", want)
 		}
 	}
 }
@@ -375,7 +296,6 @@ func TestAgentToolsForPlatformFiltersPlatformSpecificTools(t *testing.T) {
 		toolSearchLaunchApp,
 		toolBridgeOpenApp,
 		"bridge_clipboard",
-		"list_scripts",
 	})
 
 	tests := []struct {
@@ -417,7 +337,7 @@ func TestAgentToolsForPlatformFiltersPlatformSpecificTools(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			names := toolNameSet(specs.AgentToolsForPlatform(false, tc.platform))
+			names := toolNameSet(specs.AgentToolsForPlatform(tc.platform))
 			for _, want := range tc.want {
 				if _, ok := names[want]; !ok {
 					t.Errorf("catalog for %s missing %s: %v", tc.platform, want, names)
@@ -427,9 +347,6 @@ func TestAgentToolsForPlatformFiltersPlatformSpecificTools(t *testing.T) {
 				if _, ok := names[notWant]; ok {
 					t.Errorf("catalog for %s exposed %s: %v", tc.platform, notWant, names)
 				}
-			}
-			if _, ok := names["list_scripts"]; ok {
-				t.Errorf("catalog for %s exposed default-hidden script tool: %v", tc.platform, names)
 			}
 		})
 	}
@@ -459,17 +376,6 @@ func TestRuntimeAvailableToolsUsesDeviceTypePlatformFilter(t *testing.T) {
 	for _, httpWant := range []string{"quick_action", "enter_text", "open_app", "open_url", "bridge_clipboard"} {
 		if _, ok := runtime.ToolDescriptorByName(httpWant); !ok {
 			t.Fatalf("HTTP catalog hid %s while only model catalog should be platform-filtered", httpWant)
-		}
-	}
-
-	runtime.config.LoadAllTools = true
-	fullNames := toolNameSet(runtime.availableTools())
-	if _, ok := fullNames["list_scripts"]; !ok {
-		t.Fatalf("load_all_tools should still expose script authoring tools: %v", fullNames)
-	}
-	for _, notWant := range []string{"quick_action", "open_app", "open_url", "search_launch_app", "bridge_open_app", "bridge_clipboard"} {
-		if _, ok := fullNames[notWant]; ok {
-			t.Fatalf("load_all_tools bypassed platform filtering for %s: %v", notWant, fullNames)
 		}
 	}
 }
@@ -509,23 +415,6 @@ func TestRuntimeToolDescriptorsUseDeviceTypeSpecificSchemas(t *testing.T) {
 	for _, notWant := range []string{"back", "home"} {
 		if _, ok := windowsGestureTypes[notWant]; ok {
 			t.Fatalf("Windows touch_gesture schema exposed %q: %v", notWant, windowsGestureTypes)
-		}
-	}
-}
-
-func TestRuntimeLoadAllToolsIncludesScriptAuthoringTools(t *testing.T) {
-	runtime := NewRuntimeWithDeps(
-		Config{LoadAllTools: true},
-		nil,
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-
-	names := toolNameSet(runtime.availableTools())
-	for _, want := range []string{"list_scripts", "read_script", "write_script"} {
-		if _, ok := names[want]; !ok {
-			t.Fatalf("availableTools with load_all_tools missing %s: %v", want, names)
 		}
 	}
 }

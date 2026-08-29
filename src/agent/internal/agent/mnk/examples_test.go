@@ -49,45 +49,35 @@ func ExampleHIDProvider() {
 		log.Printf("双击失败: %v", err)
 	}
 
-	// 4. 简单滑动
-	err = provider.Drag(context.Background(), [][2]float64{
-		{100, 500}, // 起点
-		{900, 500}, // 终点
-	}, "left")
+	// 4. 跨截图确认目标的拖放
+	err = provider.DragStart(context.Background(), 100, 500, "left")
 	if err != nil {
-		log.Printf("滑动失败: %v", err)
+		log.Printf("开始拖动失败: %v", err)
+	}
+	err = provider.DragRelease(context.Background(), 900, 500)
+	if err != nil {
+		log.Printf("释放拖动失败: %v", err)
 	}
 
-	// 5. 曲线手势（多点路径）
-	err = provider.Drag(context.Background(), [][2]float64{
-		{100, 500},
-		{300, 300},
-		{700, 300},
-		{900, 500},
-	}, "left")
-	if err != nil {
-		log.Printf("曲线手势失败: %v", err)
-	}
-
-	// 6. 按键
+	// 5. 按键
 	err = provider.Keypress(context.Background(), []string{"enter"})
 	if err != nil {
 		log.Printf("按键失败: %v", err)
 	}
 
-	// 7. 组合键
+	// 6. 组合键
 	err = provider.Keypress(context.Background(), []string{"ctrl", "a"})
 	if err != nil {
 		log.Printf("组合键失败: %v", err)
 	}
 
-	// 8. 光标移动（仅 absolute mode）
+	// 7. 光标移动（仅 absolute mode）
 	err = provider.Move(context.Background(), 500, 300)
 	if err != nil {
 		log.Printf("移动失败: %v", err)
 	}
 
-	// 9. 滚动
+	// 8. 滚动
 	err = provider.Scroll(context.Background(), 0, -3)
 	if err != nil {
 		log.Printf("滚动失败: %v", err)
@@ -115,12 +105,12 @@ func ExampleADBProvider() {
 		log.Printf("点击失败: %v", err)
 	}
 
-	err = provider.Drag(context.Background(), [][2]float64{
-		{500, 800},
-		{500, 200},
-	}, "left")
+	err = provider.DragStart(context.Background(), 500, 800, "left")
+	if err == nil {
+		err = provider.DragRelease(context.Background(), 500, 200)
+	}
 	if err != nil {
-		log.Printf("滑动失败: %v", err)
+		log.Printf("拖动失败: %v", err)
 	}
 
 	err = provider.Keypress(context.Background(), []string{"android_back"})
@@ -210,61 +200,15 @@ func ExampleProviderFactory() {
 	_ = adbProvider
 }
 
-// ExampleAdvancedGestures 展示高级手势
+// ExampleAdvancedGestures 展示需要观察目标位置的拖放手势
 func Example_advancedGestures() {
 	screenState := &screen.ScreenState{}
 	factory := mnk.NewProviderFactory(screenState)
 	provider, _ := factory.CreateHIDProvider("/dev/hidg0", "/dev/hidg1", "", true, "qwerty")
 
-	// 1. L 型手势（向下再向右）
-	provider.Drag(context.Background(), [][2]float64{
-		{500, 200}, // 起点
-		{500, 800}, // 向下
-		{900, 800}, // 向右
-	}, "left")
-
-	// 2. Z 型手势
-	provider.Drag(context.Background(), [][2]float64{
-		{100, 200}, // 左上
-		{900, 200}, // 右上
-		{100, 800}, // 左下
-		{900, 800}, // 右下
-	}, "left")
-
-	// 3. 圆形手势（8 点近似）
-	centerX := 500.0
-	centerY := 500.0
-	radius := 200.0
-	steps := 8
-	path := make([][2]float64, steps+1)
-	for i := 0; i <= steps; i++ {
-		angle := float64(i) * 2.0 * 3.14159 / float64(steps)
-		x := centerX + radius*cosApprox(angle)
-		y := centerY + radius*sinApprox(angle)
-		path[i] = [2]float64{x, y}
-	}
-	provider.Drag(context.Background(), path, "left")
-
-	// 4. 星形手势（5 个点）
-	provider.Drag(context.Background(), [][2]float64{
-		{500, 200}, // 顶点
-		{300, 700}, // 左下
-		{800, 350}, // 右中
-		{200, 350}, // 左中
-		{700, 700}, // 右下
-		{500, 200}, // 回到顶点
-	}, "left")
-}
-
-// 简单的三角函数近似
-func cosApprox(angle float64) float64 {
-	// 简化实现
-	return 1.0
-}
-
-func sinApprox(angle float64) float64 {
-	// 简化实现
-	return 0.0
+	provider.DragStart(context.Background(), 500, 200, "left")
+	// 检查 drag_start 后的截图并确认最终目标，再释放。
+	provider.DragRelease(context.Background(), 900, 800)
 }
 
 // ExampleErrorHandling 展示错误处理
@@ -283,11 +227,10 @@ func Example_errorHandling() {
 		// 应该返回类似 "coordinates must be in range 0-1000" 的错误
 	}
 
-	// 处理空路径
-	err = provider.Drag(context.Background(), [][2]float64{}, "left")
+	// 处理没有活动拖动时的释放
+	err = provider.DragRelease(context.Background(), 500, 500)
 	if err != nil {
-		log.Printf("路径错误: %v", err)
-		// 应该返回 "path must contain at least 2 points" 的错误
+		log.Printf("拖动状态错误: %v", err)
 	}
 
 	// 处理无效按键
@@ -312,19 +255,9 @@ func Example_performanceOptimization() {
 	factory := mnk.NewProviderFactory(screenState)
 	provider, _ := factory.CreateHIDProvider("/dev/hidg0", "/dev/hidg1", "", true, "qwerty")
 
-	// 1. 批量操作 - 使用多点路径而不是多次调用
-	// 不好的做法：
-	// provider.Drag(context.Background(), [][2]float64{{100,500},{300,500}}, "left")
-	// provider.Drag(context.Background(), [][2]float64{{300,500},{500,500}}, "left")
-	// provider.Drag(context.Background(), [][2]float64{{500,500},{900,500}}, "left")
-
-	// 好的做法：
-	provider.Drag(context.Background(), [][2]float64{
-		{100, 500},
-		{300, 500},
-		{500, 500},
-		{900, 500},
-	}, "left")
+	// 1. 拖放只使用一次 start/release，并在两者之间确认目标。
+	provider.DragStart(context.Background(), 100, 500, "left")
+	provider.DragRelease(context.Background(), 900, 500)
 
 	// 2. 复用 Provider 实例
 	// 不要在每次调用时都创建新的 Provider

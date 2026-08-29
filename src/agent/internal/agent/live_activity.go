@@ -606,7 +606,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 
 func liveActivityToolResultPhase(tool string) string {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
-	case "screenshot", "wait_for_stable_screen", "image_diff":
+	case "screenshot", "wait_for_stable_screen":
 		return LiveActivityPhaseVerifying
 	case toolOpenURL, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
 		return LiveActivityPhasePhoneBridge
@@ -945,8 +945,6 @@ func liveActivityToolCallStep(tool string) string {
 		return "Searching"
 	case "audio_volume":
 		return "Adjusting audio"
-	case "image_diff":
-		return "Comparing screen changes"
 	case "weather":
 		return "Checking information"
 	case "recall_memory", "recall_session_chunks", "recall_device_memory", "inspect_episode":

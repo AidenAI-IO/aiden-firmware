@@ -83,10 +83,10 @@ def test_touch_rejects_non_left_mouse_buttons(bridge):
 
 def test_edge_and_directional_gestures(bridge):
     _, device, base_url = bridge
-    invoke(base_url, "touch_gesture", {"type": "back"})
-    back = [call for call in device.calls if call[0] == "swipe"][-1]
-    assert back[1] <= 2 and back[3] > back[1]
-    invoke(base_url, "touch_gesture", {"type": "swipe_up", "strength": "medium"})
+    for retired_type in ("back", "home", "swipe_up"):
+        status, body = invoke(base_url, "touch_gesture", {"type": retired_type})
+        assert status == 200 and body["is_error"] is True
+    invoke(base_url, "touch_gesture", {"type": "swipe", "start": {"x": 500, "y": 800}, "direction": "up", "duration_ms": 200})
     upward = [call for call in device.calls if call[0] == "swipe"][-1]
     assert upward[2] > upward[4]
 
@@ -170,7 +170,7 @@ def test_quick_actions(bridge):
     invoke(base_url, "quick_action", {"action": "home"})
     status, body = invoke(base_url, "quick_action", {"action": "open_settings"})
     invoke(base_url, "quick_action", {"action": "send"})
-    assert ("reset_home",) in device.calls
+    assert any(call[0] == "swipe" and call[1] == 645 and call[2] == 2793 for call in device.calls)
     assert ("launch_app", "com.apple.Preferences") in device.calls
     assert ("keyboard_key", "enter") in device.calls
     assert status == 200 and body["is_error"] is False
@@ -213,7 +213,7 @@ def test_quick_action_panels_and_app_switcher(bridge):
 
 def test_tool_response_contains_post_action_screenshot(bridge):
     _, _, base_url = bridge
-    _, body = invoke(base_url, "touch_gesture", {"type": "home"})
+    _, body = invoke(base_url, "touch_gesture", {"type": "tap", "point": {"x": 500, "y": 500}})
     output = json.loads(body["output"])
     assert output["action_output"] == "ok"
     assert output["width"] == 720

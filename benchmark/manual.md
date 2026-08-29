@@ -45,6 +45,7 @@ full trace and screenshots without re-operating the device.
 | Judge | `benchmark/runner/judge.py` | Calls an OpenAI-compatible endpoint; scores using pre/post screenshots and the trace |
 | MobileGym bridge | `benchmark/mobilegym/bridge/` | Wraps a MobileGym env as an environment bridge API |
 | ADB Android bridge | `benchmark/adbandroid/` | Wraps an Android emulator/physical device as an environment bridge API via adb (see its README) |
+| Desktop bridge | `benchmark/desktop/` | Wraps the host macOS/Linux/Windows desktop through pyautogui as an environment bridge API |
 | Docker daemon worker | `benchmark/docker/Dockerfile.agent-daemon` | The isolated agent daemon the WebUI starts when running a job |
 
 ### 1.3 Execution flow
