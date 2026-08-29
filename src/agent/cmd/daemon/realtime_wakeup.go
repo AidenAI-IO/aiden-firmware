@@ -1196,6 +1196,9 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 					}
 					if deliveryErr != nil || !activeNotificationAudioWritten {
 						runtime.ReportSpokenTextDelivery(activeNotificationToken, deliveryErr)
+						if stopErr := playback.stop(playbackAudio); stopErr != nil {
+							return fmt.Errorf("stop failed realtime notification playback: %w", stopErr)
+						}
 						activeNotificationToken = ""
 						activeNotificationResponseID = ""
 						activeNotificationAudioWritten = false

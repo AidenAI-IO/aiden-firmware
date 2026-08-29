@@ -146,6 +146,28 @@ func TestRealtimePersistentPlaybackCanFinalizeNotification(t *testing.T) {
 	}
 }
 
+func TestRealtimeFailedNotificationPlaybackStopsSession(t *testing.T) {
+	audio := &fakeRealtimePlaybackAudio{}
+	playback := realtimePlaybackState{}
+	format := agent.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}
+
+	if err := playback.open(audio, format); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.append(audio, format, []byte{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.stop(audio); err != nil {
+		t.Fatal(err)
+	}
+	if len(audio.stops) != 1 || audio.stops[0] != 1 {
+		t.Fatalf("stopped sessions = %v, want [1]", audio.stops)
+	}
+	if playback.session != nil {
+		t.Fatalf("failed notification left playback session active: %+v", playback)
+	}
+}
+
 func TestSuppressedRealtimeNotificationResponseBindsAfterResponseCreated(t *testing.T) {
 	responses := make(map[string]struct{})
 	pending := false
