@@ -23,7 +23,7 @@ const providerModelMetadataCacheVersion = 1
 
 func providerSupportsModelMetadata(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "openrouter", "ollama":
+	case "openrouter", "ollama", "anthropic", "openai", "volcengine", "kimi", "kimi-cn":
 		return true
 	default:
 		return false
@@ -51,8 +51,10 @@ func (m *ModelManager) needsProviderModelMetadataForSpec(spec model.ModelSpec) b
 	}
 	explicitContextWindow := m.config.ContextWindow > 0
 	explicitMaxOutput := m.config.ModelMaxOutputTokens > 0
+	needsThinking := spec.Thinking == nil && modelsDevProviderID(m.config.Provider) != "openrouter" &&
+		modelsDevProviderID(m.config.Provider) != "ollama"
 	return (!explicitContextWindow && spec.ContextWindow <= 0) ||
-		(!explicitMaxOutput && spec.MaxOutput <= 0)
+		(!explicitMaxOutput && spec.MaxOutput <= 0) || needsThinking
 }
 
 func (m *ModelManager) cachedProviderModelSpec() model.ModelSpec {
@@ -203,7 +205,7 @@ func (m *ModelManager) writeProviderModelSpecCache(spec model.ModelSpec) error {
 }
 
 func hasProviderModelSpecMetadata(spec model.ModelSpec) bool {
-	return spec.ContextWindow > 0 || spec.MaxOutput > 0
+	return spec.ContextWindow > 0 || spec.MaxOutput > 0 || spec.Thinking != nil
 }
 
 func (m *ModelManager) providerModelSpecCacheKey() string {
@@ -228,6 +230,11 @@ func (m *ModelManager) providerMetadataEndpoint() string {
 		return openRouterModelsURL(m.config.BaseURL)
 	case "ollama":
 		return ollamaShowURL(m.config.BaseURL)
+	case "anthropic", "openai", "volcengine", "kimi", "kimi-cn":
+		if strings.TrimSpace(m.modelsDevURL) != "" {
+			return strings.TrimSpace(m.modelsDevURL)
+		}
+		return defaultModelsDevURL
 	default:
 		return ""
 	}
@@ -247,9 +254,171 @@ func (m *ModelManager) fetchProviderModelSpec(ctx context.Context) (model.ModelS
 		return m.fetchOpenRouterModelSpec(ctx)
 	case "ollama":
 		return m.fetchOllamaModelSpec(ctx)
+	case "anthropic", "openai", "volcengine", "kimi", "kimi-cn":
+		return m.fetchModelsDevModelSpec(ctx)
 	default:
 		return model.ModelSpec{}, nil
 	}
+}
+
+const defaultModelsDevURL = "https://models.dev/api.json"
+
+type modelsDevProvider struct {
+	API    string                    `json:"api"`
+	Models map[string]modelsDevModel `json:"models"`
+}
+
+type modelsDevModel struct {
+	ID               string                     `json:"id"`
+	Reasoning        bool                       `json:"reasoning"`
+	ReasoningOptions []modelsDevReasoningOption `json:"reasoning_options"`
+	Temperature      *bool                      `json:"temperature"`
+	Limit            struct {
+		Context int `json:"context"`
+		Output  int `json:"output"`
+	} `json:"limit"`
+	Provider struct {
+		API   string `json:"api"`
+		Shape string `json:"shape"`
+	} `json:"provider"`
+}
+
+type modelsDevReasoningOption struct {
+	Type   string   `json:"type"`
+	Values []string `json:"values"`
+	Min    int      `json:"min"`
+	Max    int      `json:"max"`
+}
+
+func (m *ModelManager) fetchModelsDevModelSpec(ctx context.Context) (model.ModelSpec, error) {
+	endpoint := strings.TrimSpace(m.modelsDevURL)
+	if endpoint == "" {
+		endpoint = defaultModelsDevURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return model.ModelSpec{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := m.modelMetadataHTTPClient().Do(req)
+	if err != nil {
+		return model.ModelSpec{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return model.ModelSpec{}, fmt.Errorf("models.dev returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var catalog map[string]modelsDevProvider
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8*1024*1024)).Decode(&catalog); err != nil {
+		return model.ModelSpec{}, fmt.Errorf("decode models.dev catalog: %w", err)
+	}
+	providerID := modelsDevProviderID(m.config.Provider)
+	provider, ok := catalog[providerID]
+	if !ok {
+		return model.ModelSpec{}, nil
+	}
+	metadata, ok := lookupModelsDevModel(provider.Models, m.config.Model)
+	if !ok {
+		return model.ModelSpec{}, nil
+	}
+	spec := model.ModelSpec{
+		API:           provider.API,
+		APIShape:      metadata.Provider.Shape,
+		ContextWindow: metadata.Limit.Context,
+		MaxOutput:     metadata.Limit.Output,
+	}
+	if spec.API == "" {
+		spec.API = metadata.Provider.API
+	}
+	thinking := &model.ThinkingSpec{Supported: metadata.Reasoning}
+	for _, option := range metadata.ReasoningOptions {
+		switch strings.ToLower(strings.TrimSpace(option.Type)) {
+		case "toggle":
+			thinking.CanDisable = true
+			if thinking.Mode == "" {
+				thinking.Mode = "toggle"
+			}
+		case "effort":
+			thinking.Mode = "effort"
+			for _, value := range option.Values {
+				value = strings.ToLower(strings.TrimSpace(value))
+				if value == "" || value == "default" || containsStringFold(thinking.Efforts, value) {
+					continue
+				}
+				thinking.Efforts = append(thinking.Efforts, value)
+				if value == "none" {
+					thinking.CanDisable = true
+				}
+			}
+		case "budget_tokens":
+			if thinking.Mode == "" {
+				thinking.Mode = "budget_tokens"
+			}
+			thinking.BudgetTokensMin = option.Min
+			thinking.BudgetTokensMax = option.Max
+		}
+	}
+	// Native Anthropic thinking is disabled by omitting the thinking object,
+	// even when models.dev lists only effort or budget controls and no explicit
+	// toggle option.
+	if providerID == "anthropic" && thinking.Supported {
+		thinking.CanDisable = true
+	}
+	// A catalog hit is authoritative even when reasoning is false and no
+	// options are listed. Preserve that explicit unsupported declaration so the
+	// configuration UI does not fall back to generic effort choices.
+	spec.Thinking = thinking
+	return spec, nil
+}
+
+func modelsDevProviderID(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "kimi":
+		return "moonshotai"
+	case "kimi-cn":
+		return "moonshotai-cn"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+func lookupModelsDevModel(models map[string]modelsDevModel, name string) (modelsDevModel, bool) {
+	want := strings.ToLower(strings.TrimSpace(name))
+	candidates := []string{want, strings.TrimPrefix(want, "~")}
+	if i := strings.LastIndex(want, "/"); i >= 0 {
+		candidates = append(candidates, want[i+1:])
+	}
+	for _, candidate := range candidates {
+		if metadata, ok := models[candidate]; ok {
+			return metadata, true
+		}
+	}
+	for key, metadata := range models {
+		if strings.EqualFold(strings.TrimPrefix(key, "~"), strings.TrimPrefix(want, "~")) {
+			return metadata, true
+		}
+	}
+	return modelsDevModel{}, false
+}
+
+func mergeModelSpecs(primary, supplemental model.ModelSpec) model.ModelSpec {
+	if primary.ContextWindow <= 0 {
+		primary.ContextWindow = supplemental.ContextWindow
+	}
+	if primary.MaxOutput <= 0 {
+		primary.MaxOutput = supplemental.MaxOutput
+	}
+	if primary.API == "" {
+		primary.API = supplemental.API
+	}
+	if primary.APIShape == "" {
+		primary.APIShape = supplemental.APIShape
+	}
+	if primary.Thinking == nil {
+		primary.Thinking = supplemental.Thinking
+	}
+	return primary
 }
 
 func (m *ModelManager) modelMetadataHTTPClient() *http.Client {

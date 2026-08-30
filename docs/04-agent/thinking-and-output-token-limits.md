@@ -1,0 +1,190 @@
+---
+sidebar_position: 16
+---
+
+# Thinking and output token limits
+
+Research date: 2026-08-28
+
+This note separates the request output limit from the model capability limit and
+the reasoning control. It uses only first-party provider documentation. Provider
+documentation is mutable, so capability metadata still needs to be scoped to an
+exact model ID and refreshed over time.
+
+## Short answer
+
+`max_response_tokens` and `thinking_budget_tokens` are not alternative names for
+the same setting.
+
+- `max_response_tokens` is the per-request ceiling Aiden passes to the provider.
+  For Claude extended thinking and OpenAI reasoning, it covers the complete
+  generated response, including hidden reasoning/thinking tokens and visible
+  answer tokens.
+- `thinking_budget_tokens` is a ceiling for the reasoning portion only. It is a
+  Claude-style exact control, not an amount added on top of the response limit.
+- `reasoning_effort` is a qualitative hint, not an exact token reservation.
+- `model_max_output_tokens` is model capability metadata used for validation and
+  context planning. It does not request that many tokens and is not a second
+  runtime output control.
+
+Consequently, a reasoning model can stop with little or no visible answer when
+`max_response_tokens` is too small: hidden reasoning has consumed the same
+output allowance.
+
+## Provider comparison
+
+| Provider mode | Request fields | Do thinking tokens count toward the response/output limit? | Budget relationship |
+| --- | --- | --- | --- |
+| Anthropic manual extended thinking | `max_tokens`; `thinking.type=enabled`; `thinking.budget_tokens` | Yes | `budget_tokens >= 1024` and `budget_tokens < max_tokens`. It is a maximum, not guaranteed use. |
+| Anthropic adaptive thinking | `max_tokens`; `thinking.type=adaptive`; optional `output_config.effort` | Yes | No exact budget is sent. Effort controls depth/token use qualitatively. |
+| OpenAI reasoning, Responses API | `max_output_tokens`; `reasoning.effort` | Yes | No public exact reasoning budget field. Reasoning and visible output share `max_output_tokens`. |
+| OpenAI reasoning, Chat Completions | `max_completion_tokens`; `reasoning_effort` | Yes | Same shared-limit model; `max_tokens` is deprecated/incompatible for some reasoning models. |
+| Gemini thinking | `generationConfig.maxOutputTokens`; `thinkingConfig.thinkingBudget` or model-specific thinking level | Official docs define a separate thought-token count, but this review could not verify an unambiguous first-party statement that `maxOutputTokens` includes it. Treat as unknown until verified. | `thinkingBudget` is the maximum thinking-token budget where supported. Disable/default behavior is model-specific. Do not infer a Claude-style inequality. |
+
+## Anthropic Claude
+
+### Manual extended thinking
+
+The Messages API request has an overall `max_tokens` and a nested thinking
+configuration:
+
+```json
+{
+  "max_tokens": 8192,
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 4096
+  }
+}
+```
+
+Anthropic defines `budget_tokens` as the maximum number of tokens Claude may use
+for internal reasoning; the model may use less. Thinking tokens are part of the
+`max_tokens` allowance, so the visible answer receives what remains. The API
+requires a minimum thinking budget of 1024 and requires the budget to be
+strictly less than `max_tokens`.
+
+This means Aiden should validate:
+
+```text
+1024 <= thinking_budget_tokens < max_response_tokens
+```
+
+when both values are explicit. Silently raising `max_tokens` changes the user's
+explicit response/cost ceiling and should not be the long-term behavior; the UI
+should prevent the invalid combination and the backend should return a clear
+validation error.
+
+Sources (accessed 2026-08-28):
+
+- Anthropic, [Extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)
+- Anthropic, [Messages API](https://platform.claude.com/docs/en/api/messages)
+
+### Adaptive thinking
+
+Adaptive thinking uses `thinking.type=adaptive`. Claude decides whether and how
+much to think based on request complexity. `output_config.effort` influences the
+overall reasoning depth and token expenditure; it is not a precise budget and
+does not promise that a fixed number of tokens will be used.
+
+```json
+{
+  "max_tokens": 8192,
+  "thinking": { "type": "adaptive" },
+  "output_config": { "effort": "high" }
+}
+```
+
+An adaptive request does not also carry `budget_tokens`. In a unified UI,
+selecting an exact budget should therefore switch to the model's manual
+budget-based mode only when that exact model supports it; otherwise the budget
+control must be hidden.
+
+Sources (accessed 2026-08-28):
+
+- Anthropic, [Adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)
+- Anthropic, [Effort](https://platform.claude.com/docs/en/build-with-claude/effort)
+
+## OpenAI reasoning
+
+The Responses API defines `max_output_tokens` as the upper bound for all tokens
+generated by the response, explicitly including visible output tokens and
+reasoning tokens. The Chat Completions equivalent for current reasoning models
+is `max_completion_tokens`, which likewise includes visible completion and
+reasoning tokens. Usage reports reasoning as a component of output/completion
+token details rather than as an input-token category.
+
+OpenAI exposes qualitative `reasoning.effort` / `reasoning_effort`, with accepted
+values depending on the model. It does not expose a provider-native exact
+reasoning-token budget comparable to Anthropic's `budget_tokens`. Therefore
+`thinking_budget_tokens` must not be translated to an OpenAI request field.
+
+Sources (accessed 2026-08-28):
+
+- OpenAI, [Create a model response: `max_output_tokens`](https://platform.openai.com/docs/api-reference/responses/create#responses_create-max_output_tokens)
+- OpenAI, [Create chat completion: `max_completion_tokens`](https://platform.openai.com/docs/api-reference/chat/create#chat-create-max_completion_tokens)
+- OpenAI, [Reasoning models guide](https://platform.openai.com/docs/guides/reasoning)
+
+## Gemini status
+
+Gemini documents `thinkingConfig.thinkingBudget` as a maximum thinking-token
+budget for models that support numeric budgets. It also reports thought usage
+separately as `usageMetadata.thoughtsTokenCount`. Newer model families may use a
+thinking level instead of an exact budget, and zero/automatic/default behavior
+varies by model.
+
+The official pages reviewed for this note did not provide a sufficiently clear,
+stable statement about whether thought tokens consume
+`generationConfig.maxOutputTokens`. Until that is confirmed, Aiden should:
+
+- keep the relationship `unknown` in model metadata;
+- avoid enforcing Anthropic's `thinking_budget_tokens < max_response_tokens`
+  rule for Gemini;
+- expose only the controls explicitly advertised for the selected model;
+- test provider behavior before mapping Aiden's exact budget field to Gemini.
+
+Sources (accessed 2026-08-28):
+
+- Google, [Gemini thinking](https://ai.google.dev/gemini-api/docs/thinking)
+- Google, [`GenerationConfig`](https://ai.google.dev/api/generate-content#v1beta.GenerationConfig)
+- Google, [`UsageMetadata`](https://ai.google.dev/api/generate-content#v1beta.UsageMetadata)
+
+## Aiden configuration and UI recommendation
+
+Keep the three existing model-level fields because they represent different
+concepts:
+
+| Aiden field | User meaning | Runtime behavior |
+| --- | --- | --- |
+| `max_response_tokens` | Maximum tokens this request may generate | Map to provider request limit: Anthropic `max_tokens`, OpenAI Responses `max_output_tokens`, OpenAI Chat `max_completion_tokens`, and the verified provider equivalent. |
+| `reasoning_effort` | Automatic reasoning depth | Map only when the selected model advertises the effort values. Empty means provider/model default; show `none` only when disable is supported. |
+| `thinking_budget_tokens` | Advanced exact reasoning ceiling | Show only for models with a numeric budget API. `0` means no explicit override. Never send it to effort-only models. |
+| `model_max_output_tokens` | Model's advertised hard output capability | Use for validation and context planning. Normally populated from model metadata; keep it out of the primary generation controls. |
+
+Recommended presentation:
+
+1. Keep **Max response tokens** visible as the general advanced generation
+   limit. Its help text should say that reasoning/thinking may consume this
+   allowance on supported providers.
+2. After provider and model selection, show **Thinking effort** when supported.
+3. Show **Exact thinking budget** only for a model that advertises numeric
+   budgets, under an advanced disclosure. Explain that it is part of, not in
+   addition to, the response limit.
+4. Treat an explicit response limit as authoritative. Do not silently increase
+   it to accommodate a thinking budget. Validate provider-specific constraints
+   before save and again before sending the request.
+5. Keep `model_max_output_tokens` under metadata/override wording. Send an
+   explicit `max_response_tokens` unchanged; if it exceeds provider capability,
+   allow the provider to reject it rather than silently changing the request.
+
+For manual Claude thinking, a useful inline error is:
+
+> Thinking budget must be at least 1,024 tokens and smaller than Max response
+> tokens. Thinking tokens are included in the response limit.
+
+## Runtime behavior
+
+`max_response_tokens` is sent as configured and is never silently increased.
+For native Anthropic budget-based thinking, Aiden validates before sending that
+the derived or explicit `budget_tokens` is strictly smaller than
+`max_response_tokens`; invalid combinations return an actionable error.

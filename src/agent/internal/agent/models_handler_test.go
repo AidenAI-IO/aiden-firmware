@@ -283,3 +283,100 @@ func TestHandleModelsNilRuntime(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
 	}
 }
+
+func TestHandleModelsIncludesModelSpec(t *testing.T) {
+	server := newModelsTestServer(t, localeEnglishUS)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/models?provider=anthropic&model=claude-sonnet-4-6", nil)
+	w := httptest.NewRecorder()
+	server.handleModels(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+
+	var response struct {
+		Spec *struct {
+			Provider string `json:"provider"`
+			Name     string `json:"name"`
+			API      string `json:"api"`
+			APIShape string `json:"api_shape"`
+			Thinking *struct {
+				Supported  bool     `json:"supported"`
+				Mode       string   `json:"mode"`
+				Efforts    []string `json:"efforts"`
+				CanDisable bool     `json:"can_disable"`
+			} `json:"thinking"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Spec == nil {
+		t.Fatal("response missing spec for known model")
+	}
+	if response.Spec.Provider != "anthropic" || response.Spec.Name != "claude-sonnet-4-6" {
+		t.Fatalf("spec identity = %q/%q, want anthropic/claude-sonnet-4-6", response.Spec.Provider, response.Spec.Name)
+	}
+	if response.Spec.API == "" || response.Spec.APIShape != "messages" {
+		t.Fatalf("spec API = %q/%q, want non-empty messages endpoint", response.Spec.API, response.Spec.APIShape)
+	}
+	if response.Spec.Thinking == nil || !response.Spec.Thinking.Supported || response.Spec.Thinking.Mode != "effort" || !response.Spec.Thinking.CanDisable {
+		t.Fatalf("spec thinking = %+v, want supported effort with disable", response.Spec.Thinking)
+	}
+	for _, want := range []string{"low", "medium", "high", "max"} {
+		found := false
+		for _, effort := range response.Spec.Thinking.Efforts {
+			if effort == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("thinking efforts %v missing %q", response.Spec.Thinking.Efforts, want)
+		}
+	}
+}
+
+func TestHandleModelsFetchesCustomModelSpecFromModelsDev(t *testing.T) {
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		_, _ = w.Write([]byte(`{"anthropic":{"api":"https://api.anthropic.com/v1","models":{"claude-custom":{"reasoning":true,"reasoning_options":[{"type":"effort","values":["low","high"]}],"limit":{"context":200000,"output":64000}}}}}`))
+	}))
+	defer catalog.Close()
+
+	manager := NewModelManager(ModelConfig{Provider: "anthropic", Model: "claude-custom"}, ProxyConfig{},
+		WithModelsDevURL(catalog.URL), WithProviderMetadataHTTPClient(catalog.Client()))
+	server := &Server{
+		runtime: &Runtime{config: Config{Locale: localeEnglishUS}, models: manager},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/models?provider=anthropic&model=claude-custom", nil)
+	w := httptest.NewRecorder()
+	server.handleModels(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+	var response struct {
+		Spec *struct {
+			ContextWindow int `json:"context_window"`
+			MaxOutput     int `json:"max_output"`
+			Thinking      *struct {
+				Mode       string   `json:"mode"`
+				Efforts    []string `json:"efforts"`
+				CanDisable bool     `json:"can_disable"`
+			} `json:"thinking"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Spec == nil || response.Spec.ContextWindow != 200000 || response.Spec.MaxOutput != 64000 {
+		t.Fatalf("custom model spec = %+v, want models.dev limits", response.Spec)
+	}
+	if response.Spec.Thinking == nil || response.Spec.Thinking.Mode != "effort" || !response.Spec.Thinking.CanDisable {
+		t.Fatalf("custom thinking spec = %+v, want effort with disable", response.Spec.Thinking)
+	}
+}

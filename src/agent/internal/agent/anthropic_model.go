@@ -18,6 +18,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	agentmessages "aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/agent/model"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -41,6 +43,9 @@ type anthropicModel struct {
 	rawLogger        RawHTTPLogger
 	temperature      *float64
 	reasoningEffort  string
+	modelSpec        model.ModelSpec
+	modelSpecFn      func() model.ModelSpec
+	thinkingBudget   int
 	streamMaxRetries int
 	streamRetryDelay time.Duration
 	protocolRetries  int
@@ -63,6 +68,21 @@ func withAnthropicBearerAuth() anthropicModelOption {
 
 func withAnthropicReasoningEffort(effort string) anthropicModelOption {
 	return func(m *anthropicModel) { m.reasoningEffort = strings.TrimSpace(effort) }
+}
+
+func withAnthropicThinkingBudget(tokens int) anthropicModelOption {
+	return func(m *anthropicModel) {
+		if tokens > 0 {
+			m.thinkingBudget = tokens
+		}
+	}
+}
+
+// withAnthropicModelSpecFn supplies the live model spec. Thinking capability
+// and provider limits arrive asynchronously from metadata, so the request
+// builder reads the latest capability declaration when selecting controls.
+func withAnthropicModelSpecFn(fn func() model.ModelSpec) anthropicModelOption {
+	return func(m *anthropicModel) { m.modelSpecFn = fn }
 }
 
 func withAnthropicStreamRetry(maxRetries int, delay time.Duration) anthropicModelOption {
@@ -104,7 +124,8 @@ type anthropicRequest struct {
 }
 
 type anthropicThinking struct {
-	Type string `json:"type"`
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type anthropicOutputConfig struct {
@@ -200,6 +221,9 @@ func newAnthropicModel(baseURL, model, token string, httpClient *http.Client, op
 		streamRetryDelay: defaultAnthropicStreamRetryDelay,
 		protocolRetries:  defaultAnthropicProtocolRetries,
 	}
+	if spec, ok := LookupModelSpec("anthropic", model); ok {
+		result.modelSpec = spec
+	}
 	for _, option := range opts {
 		if option != nil {
 			option(result)
@@ -225,13 +249,29 @@ func (m *anthropicModel) Call(ctx context.Context, prompt string, options ...llm
 }
 
 func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	return m.generateContent(ctx, messages, nil, options...)
+}
+
+// GenerateContentFromMessageList preserves signed Anthropic thinking blocks
+// that are stored alongside the agent's provider-neutral message history.
+// The common LangChain message shape has no field for signatures, so native
+// Claude requests need this path to replay them after a tool result.
+func (m *anthropicModel) GenerateContentFromMessageList(ctx context.Context, contextMessages []agentmessages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	thinkingBlocks, err := decodeAnthropicThinkingBlocks(contextMessages)
+	if err != nil {
+		return nil, err
+	}
+	return m.generateContent(ctx, agentmessages.ConvertMessageList(contextMessages), thinkingBlocks, options...)
+}
+
+func (m *anthropicModel) generateContent(ctx context.Context, messages []llms.MessageContent, thinkingBlocks [][]anthropicContentBlock, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	callStarted := time.Now()
 	callOpts := llms.CallOptions{}
 	for _, option := range options {
 		option(&callOpts)
 	}
 
-	system, converted, err := convertAnthropicMessages(messages)
+	system, converted, err := convertAnthropicMessages(messages, thinkingBlocks)
 	if err != nil {
 		return nil, err
 	}
@@ -258,9 +298,12 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 	} else if callOpts.Temperature != 0 {
 		request.Temperature = &callOpts.Temperature
 	}
-	if effort := normalizeAnthropicReasoningEffort(m.reasoningEffort); effort != "" && len(request.Tools) == 0 {
-		request.Thinking = &anthropicThinking{Type: "adaptive"}
-		request.OutputConfig = &anthropicOutputConfig{Effort: effort}
+	if thinking, outputConfig, enabled := m.anthropicThinkingRequest(); enabled && (len(request.Tools) == 0 || m.thinkingSupportsTools()) {
+		if err := validateAnthropicThinkingLimit(request.MaxTokens, thinking); err != nil {
+			return nil, err
+		}
+		request.Thinking = thinking
+		request.OutputConfig = outputConfig
 	}
 
 	payload, err := json.Marshal(request)
@@ -364,6 +407,9 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 		}
 		normalized, recovery, protocolErr := normalizeAnthropicResponse(decoded, request.Thinking != nil)
 		if protocolErr != nil {
+			if isAnthropicOutputBudgetError(protocolErr) {
+				return nil, fail(protocolErr)
+			}
 			if protocolRetries >= m.protocolRetries {
 				return nil, fail(protocolErr)
 			}
@@ -392,6 +438,143 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, messages []llms.Me
 	}
 }
 
+func (m *anthropicModel) thinkingSupportsTools() bool {
+	spec := m.thinkingSpecValue()
+	return spec != nil && spec.Supported
+}
+
+func validateAnthropicThinkingLimit(maxTokens int, thinking *anthropicThinking) error {
+	if thinking == nil || thinking.BudgetTokens <= 0 {
+		return nil
+	}
+	if thinking.BudgetTokens >= maxTokens {
+		return fmt.Errorf("Anthropic thinking budget (%d) must be less than max_response_tokens (%d); thinking tokens are included in the response limit",
+			thinking.BudgetTokens, maxTokens)
+	}
+	return nil
+}
+
+func (m *anthropicModel) anthropicThinkingRequest() (*anthropicThinking, *anthropicOutputConfig, bool) {
+	effort := normalizeAnthropicReasoningEffort(m.reasoningEffort)
+	if effort == "none" {
+		return nil, nil, false
+	}
+	spec := m.thinkingSpecValue()
+	// An explicit unsupported declaration is authoritative: never send thinking
+	// to a model the catalog says has no reasoning controls. A nil spec only
+	// means unknown, which still falls through to the adaptive fallback below.
+	if spec != nil && !spec.Supported {
+		return nil, nil, false
+	}
+	// An explicit token budget is an advanced override. Models.dev may publish
+	// both effort and budget_tokens for newer Claude models; the effort selector
+	// remains the normal UI control, but an entered budget must still be honored.
+	if m.thinkingBudget > 0 && (spec == nil || spec.BudgetTokensMin > 0 || spec.Mode == "budget_tokens") {
+		budget := m.thinkingBudget
+		if spec != nil {
+			if spec.BudgetTokensMin > 0 && budget < spec.BudgetTokensMin {
+				budget = spec.BudgetTokensMin
+			}
+			if spec.BudgetTokensMax > 0 && budget > spec.BudgetTokensMax {
+				budget = spec.BudgetTokensMax
+			}
+		}
+		return &anthropicThinking{Type: "enabled", BudgetTokens: budget}, nil, true
+	}
+	if effort == "" {
+		return nil, nil, false
+	}
+	if spec != nil && len(spec.Efforts) == 0 && spec.BudgetTokensMin > 0 {
+		budget := anthropicReasoningBudget(effort, spec.BudgetTokensMin, spec.BudgetTokensMax)
+		if budget <= 0 {
+			return nil, nil, false
+		}
+		return &anthropicThinking{Type: "enabled", BudgetTokens: budget}, nil, true
+	}
+	if spec != nil && len(spec.Efforts) > 0 && !anthropicContainsStringFold(spec.Efforts, effort) {
+		return nil, nil, false
+	}
+	// Adaptive thinking is the current Claude 4.6+ request surface. For an
+	// unknown model keep the historical low/medium/high behavior as a
+	// best-effort fallback; known budget-only models take the branch above.
+	return &anthropicThinking{Type: "adaptive"}, &anthropicOutputConfig{Effort: effort}, true
+}
+
+func (m *anthropicModel) thinkingModelSpec() model.ModelSpec {
+	if m == nil {
+		return model.ModelSpec{}
+	}
+	if m.modelSpecFn != nil {
+		if spec := m.modelSpecFn(); spec.Thinking != nil || spec.MaxOutput > 0 {
+			return spec
+		}
+	}
+	return m.modelSpec
+}
+
+func (m *anthropicModel) thinkingSpecValue() *model.ThinkingSpec {
+	return m.thinkingModelSpec().Thinking
+}
+
+func anthropicReasoningBudget(effort string, min, max int) int {
+	if min <= 0 {
+		return 0
+	}
+	multipliers := map[string]int{"low": 1, "medium": 4, "high": 8, "xhigh": 16, "max": 32}
+	budget := min * multipliers[effort]
+	if budget == 0 {
+		budget = min
+	}
+	if max > 0 && budget > max {
+		budget = max
+	}
+	return budget
+}
+
+func anthropicContainsStringFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// decodeAnthropicThinkingBlocks decodes the stored thinking blocks into a slice
+// parallel to contextMessages. Position, not assistant ordinal, is the join key:
+// convertAnthropicMessages drops turns whose parts are empty, so counting
+// assistant messages in the converted output would silently shift every
+// subsequent signature onto the wrong turn.
+func decodeAnthropicThinkingBlocks(contextMessages []agentmessages.Message) ([][]anthropicContentBlock, error) {
+	decoded := make([][]anthropicContentBlock, len(contextMessages))
+	found := false
+	for index, message := range contextMessages {
+		if len(message.AnthropicThinkingBlocks) == 0 {
+			continue
+		}
+		if message.Role != agentmessages.MessageRoleAssistant && message.Role != agentmessages.MessageRoleToolCall {
+			continue
+		}
+		for _, raw := range message.AnthropicThinkingBlocks {
+			var block anthropicContentBlock
+			if err := json.Unmarshal(raw, &block); err != nil {
+				return nil, fmt.Errorf("decode stored Anthropic thinking block: %w", err)
+			}
+			// An unsigned block cannot be replayed; Anthropic rejects thinking
+			// content whose signature is missing.
+			if block.Type != "thinking" || strings.TrimSpace(block.Signature) == "" {
+				continue
+			}
+			decoded[index] = append(decoded[index], block)
+			found = true
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	return decoded, nil
+}
+
 func isAnthropicContextError(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
@@ -412,10 +595,14 @@ func emitAnthropicNonStreamingFallback(ctx context.Context, opts *llms.CallOptio
 	return nil
 }
 
-func convertAnthropicMessages(messages []llms.MessageContent) ([]anthropicContentBlock, []anthropicRequestMessage, error) {
+// convertAnthropicMessages converts the provider-neutral message shape to
+// Anthropic request messages. thinkingBlocks is indexed by position in
+// messages, so a signed thinking block stays bound to the exact assistant turn
+// it was produced on even when other turns are dropped for having no content.
+func convertAnthropicMessages(messages []llms.MessageContent, thinkingBlocks [][]anthropicContentBlock) ([]anthropicContentBlock, []anthropicRequestMessage, error) {
 	var system []anthropicContentBlock
 	converted := make([]anthropicRequestMessage, 0, len(messages))
-	for _, message := range messages {
+	for messageIndex, message := range messages {
 		switch message.Role {
 		case llms.ChatMessageTypeSystem:
 			blocks, err := convertAnthropicSystemParts(message.Parts)
@@ -436,7 +623,16 @@ func convertAnthropicMessages(messages []llms.MessageContent) ([]anthropicConten
 			if err != nil {
 				return nil, nil, err
 			}
+			// Thinking must precede the rest of the assistant content. Prepend
+			// here so the pairing is decided by original index, before any
+			// message is dropped or merged. A turn with no content of its own
+			// is dropped along with its thinking: a thinking-only assistant
+			// message carries no answer and no tool call, so replaying it would
+			// inject an empty turn between two user messages.
 			if len(blocks) > 0 {
+				if messageIndex < len(thinkingBlocks) && len(thinkingBlocks[messageIndex]) > 0 {
+					blocks = append(append([]anthropicContentBlock(nil), thinkingBlocks[messageIndex]...), blocks...)
+				}
 				converted = append(converted, anthropicRequestMessage{Role: "assistant", Content: blocks})
 			}
 		case llms.ChatMessageTypeTool, llms.ChatMessageTypeFunction:
@@ -581,12 +777,50 @@ func mergeConsecutiveAnthropicMessages(messages []anthropicRequestMessage) []ant
 	merged := make([]anthropicRequestMessage, 0, len(messages))
 	for _, message := range messages {
 		if len(merged) > 0 && merged[len(merged)-1].Role == message.Role {
-			merged[len(merged)-1].Content = append(merged[len(merged)-1].Content, message.Content...)
+			combined := append(merged[len(merged)-1].Content, message.Content...)
+			merged[len(merged)-1].Content = hoistAnthropicThinkingBlocks(combined)
 			continue
 		}
 		merged = append(merged, message)
 	}
 	return merged
+}
+
+// hoistAnthropicThinkingBlocks moves thinking blocks to the front of an
+// assistant content list, preserving their relative order. Merging consecutive
+// assistant turns concatenates their content, which would otherwise leave a
+// second turn's thinking block sitting after the first turn's text; Anthropic
+// requires all thinking to come first.
+func hoistAnthropicThinkingBlocks(blocks []anthropicContentBlock) []anthropicContentBlock {
+	firstNonThinking := -1
+	needsHoist := false
+	for index, block := range blocks {
+		if block.Type == "thinking" {
+			if firstNonThinking >= 0 {
+				needsHoist = true
+				break
+			}
+			continue
+		}
+		if firstNonThinking < 0 {
+			firstNonThinking = index
+		}
+	}
+	if !needsHoist {
+		return blocks
+	}
+	hoisted := make([]anthropicContentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == "thinking" {
+			hoisted = append(hoisted, block)
+		}
+	}
+	for _, block := range blocks {
+		if block.Type != "thinking" {
+			hoisted = append(hoisted, block)
+		}
+	}
+	return hoisted
 }
 
 func convertAnthropicTools(tools []llms.Tool, functions []llms.FunctionDefinition) []anthropicTool {
@@ -691,6 +925,31 @@ func isAnthropicEmptyEndTurnResponseError(err error) bool {
 	return errors.As(err, &protocolErr) && protocolErr.message == anthropicEmptyEndTurnMessage
 }
 
+// anthropicOutputBudgetError reports that max_tokens was exhausted before any
+// visible content. It is deliberately not an anthropicResponseProtocolError:
+// the response is well-formed, the configured limit is simply too small, so
+// retrying the identical request cannot succeed.
+type anthropicOutputBudgetError struct {
+	thinkingEnabled bool
+}
+
+func (e *anthropicOutputBudgetError) Error() string {
+	if e.thinkingEnabled {
+		return "Anthropic response hit max_tokens before producing visible output; " +
+			"thinking tokens are drawn from the same limit, so raise model.max_response_tokens or lower model.reasoning_effort"
+	}
+	return "Anthropic response hit max_tokens before producing visible output; raise model.max_response_tokens"
+}
+
+func newAnthropicOutputBudgetError(thinkingEnabled bool) error {
+	return &anthropicOutputBudgetError{thinkingEnabled: thinkingEnabled}
+}
+
+func isAnthropicOutputBudgetError(err error) bool {
+	var budgetErr *anthropicOutputBudgetError
+	return errors.As(err, &budgetErr)
+}
+
 func normalizeAnthropicResponse(response anthropicResponse, thinkingEnabled bool) (anthropicResponse, string, error) {
 	hasText := false
 	hasThinking := false
@@ -719,6 +978,15 @@ func normalizeAnthropicResponse(response anthropicResponse, thinkingEnabled bool
 		if !hasToolUse {
 			return response, "", newAnthropicResponseProtocolError("tool_use stop_reason has no valid tool_use content")
 		}
+	case "max_tokens":
+		if hasText || hasToolUse {
+			return response, "", nil
+		}
+		// The response limit was consumed before any visible output. With
+		// thinking enabled that is nearly always thinking spending the whole
+		// allowance. Retrying is pointless: the same limit produces the same
+		// truncation, so surface it as a terminal, actionable error.
+		return response, "", newAnthropicOutputBudgetError(thinkingEnabled)
 	case "end_turn":
 		if hasText || hasToolUse {
 			return response, "", nil
@@ -774,11 +1042,28 @@ func aggregateAnthropicResponseWithGenerationInfo(response anthropicResponse, ca
 	info["llm_tool_call_count"] = len(choice.ToolCalls)
 	info["llm_finish_reason"] = response.StopReason
 	info["llm_response_id"] = response.ID
+	if thinkingBlocks := signedAnthropicThinkingBlocks(response.Content); len(thinkingBlocks) > 0 {
+		info["anthropic_thinking_blocks"] = thinkingBlocks
+	}
 	for key, value := range generationInfo {
 		info[key] = value
 	}
 	choice.GenerationInfo = finalizeLLMGenerationInfo(info, callStarted)
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}
+}
+
+func signedAnthropicThinkingBlocks(content []anthropicContentBlock) []json.RawMessage {
+	var blocks []json.RawMessage
+	for _, block := range content {
+		if block.Type != "thinking" || strings.TrimSpace(block.Thinking) == "" || strings.TrimSpace(block.Signature) == "" {
+			continue
+		}
+		encoded, err := json.Marshal(block)
+		if err == nil {
+			blocks = append(blocks, encoded)
+		}
+	}
+	return blocks
 }
 
 type anthropicStreamBlock struct {
@@ -1294,7 +1579,8 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 	encodedResponse, encodeErr := json.Marshal(response)
 	normalized, recovery, protocolErr := normalizeAnthropicResponse(response, thinkingEnabled)
 	if protocolErr != nil {
-		return nil, &anthropicStreamError{err: protocolErr, outputDelivered: outputDelivered, retryable: true, protocol: true}
+		retryable := !isAnthropicOutputBudgetError(protocolErr)
+		return nil, &anthropicStreamError{err: protocolErr, outputDelivered: outputDelivered, retryable: retryable, protocol: retryable}
 	}
 	response = normalized
 	if recovery != "" {
@@ -1427,12 +1713,15 @@ func buildAnthropicModelOptions(ctx ModelBuildContext, cfg ModelConfig) []anthro
 	if cfg.ReasoningEffort != "" {
 		options = append(options, withAnthropicReasoningEffort(cfg.ReasoningEffort))
 	}
+	if cfg.ThinkingBudgetTokens > 0 {
+		options = append(options, withAnthropicThinkingBudget(cfg.ThinkingBudgetTokens))
+	}
 	return options
 }
 
 func normalizeAnthropicReasoningEffort(effort string) string {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "low", "medium", "high":
+	case "none", "low", "medium", "high", "xhigh", "max":
 		return strings.ToLower(strings.TrimSpace(effort))
 	default:
 		return ""

@@ -22,6 +22,7 @@ type ModelProviderTestRequest struct {
 	ResponsesInclude                  []string
 	Temperature                       *float64
 	ReasoningEffort                   string
+	ThinkingBudgetTokens              int
 }
 
 type ModelProviderTestResult struct {
@@ -83,6 +84,7 @@ func applyModelProviderTestRequest(cfg *Config, req ModelProviderTestRequest) er
 		cfg.Model.Temperature = &temperature
 	}
 	cfg.Model.ReasoningEffort = req.ReasoningEffort
+	cfg.Model.ThinkingBudgetTokens = req.ThinkingBudgetTokens
 
 	if err := resolveModelProvider(cfg, &cfg.Model); err != nil {
 		return err

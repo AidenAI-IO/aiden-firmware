@@ -104,7 +104,7 @@ device_type = "iOS"
 provider = "openrouter-main"
 model = "bytedance-seed/seed-2.0-lite"
 temperature = 0.2
-max_response_tokens = 1000
+max_response_tokens = 8192
 # OpenRouter supports stateless Responses only. This keeps ContextManager
 # history local and omits store and previous_response_id from every request.
 # api_mode = "responses"

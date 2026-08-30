@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"aiden-agent/internal/agent/messages"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 )
@@ -1541,6 +1542,184 @@ func TestAnthropicModelOmitsAdaptiveThinkingForToolRequests(t *testing.T) {
 	}
 	if captured.Thinking != nil || captured.OutputConfig != nil {
 		t.Fatalf("tool request sent adaptive thinking: %#v", captured)
+	}
+}
+
+func TestAnthropicModelSendsAdaptiveThinkingWithToolsForKnownClaude(t *testing.T) {
+	var captured struct {
+		Thinking     *anthropicThinking     `json:"thinking"`
+		OutputConfig *anthropicOutputConfig `json:"output_config"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		_, _ = w.Write([]byte(`{"content":[{"type":"tool_use","id":"call","name":"echo","input":{}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-sonnet-4-6", "test-token", server.Client(), withAnthropicReasoningEffort("high"))
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "echo"}}})); err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if captured.Thinking == nil || captured.Thinking.Type != "adaptive" {
+		t.Fatalf("thinking = %#v, want adaptive", captured.Thinking)
+	}
+	if captured.OutputConfig == nil || captured.OutputConfig.Effort != "high" {
+		t.Fatalf("output_config = %#v, want high", captured.OutputConfig)
+	}
+}
+
+func TestAnthropicModelMapsBudgetThinkingAndExactBudget(t *testing.T) {
+	var captured []struct {
+		Thinking     *anthropicThinking     `json:"thinking"`
+		OutputConfig *anthropicOutputConfig `json:"output_config"`
+		MaxTokens    int                    `json:"max_tokens"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Thinking     *anthropicThinking     `json:"thinking"`
+			OutputConfig *anthropicOutputConfig `json:"output_config"`
+			MaxTokens    int                    `json:"max_tokens"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		captured = append(captured, request)
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-haiku-4-5", "test-token", server.Client(), withAnthropicReasoningEffort("medium"))
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")}); err != nil {
+		t.Fatalf("preset GenerateContent() error = %v", err)
+	}
+	if len(captured) != 1 || captured[0].Thinking == nil || captured[0].Thinking.Type != "enabled" || captured[0].Thinking.BudgetTokens != 4096 || captured[0].OutputConfig != nil {
+		t.Fatalf("budget preset request = %#v", captured)
+	}
+	model = newAnthropicModel(server.URL, "claude-haiku-4-5", "test-token", server.Client(), withAnthropicThinkingBudget(512))
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")}); err != nil {
+		t.Fatalf("exact budget GenerateContent() error = %v", err)
+	}
+	if len(captured) != 2 || captured[1].Thinking == nil || captured[1].Thinking.BudgetTokens != 1024 || captured[1].MaxTokens <= 1024 {
+		t.Fatalf("exact budget request = %#v", captured)
+	}
+}
+
+func TestAnthropicModelUsesExactBudgetOverrideWithEffortModel(t *testing.T) {
+	var captured struct {
+		Thinking     *anthropicThinking     `json:"thinking"`
+		OutputConfig *anthropicOutputConfig `json:"output_config"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-sonnet-4-6", "test-token", server.Client(), withAnthropicThinkingBudget(4096))
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")}); err != nil {
+		t.Fatalf("exact budget GenerateContent() error = %v", err)
+	}
+	if captured.Thinking == nil || captured.Thinking.Type != "enabled" || captured.Thinking.BudgetTokens != 4096 || captured.OutputConfig != nil {
+		t.Fatalf("exact budget request = %#v, %#v", captured.Thinking, captured.OutputConfig)
+	}
+}
+
+func TestAnthropicModelReplaysSignedThinkingBlocksFromMessageList(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role    string           `json:"role"`
+			Content []map[string]any `json:"content"`
+		} `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"continued"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	model := newAnthropicModel(server.URL, "claude-sonnet-4-6", "test-token", server.Client(), withAnthropicReasoningEffort("low"))
+	contextMessages := []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "hello"},
+		{
+			Role:                    messages.MessageRoleToolCall,
+			ToolCalls:               []messages.ToolCall{{ID: "call", Name: "echo", Arguments: "{}"}},
+			AnthropicThinkingBlocks: []json.RawMessage{json.RawMessage(`{"type":"thinking","thinking":"private","signature":"sig"}`)},
+		},
+		{Role: messages.MessageRoleToolResult, ToolResults: []messages.ToolResult{{ToolCallID: "call", Name: "echo", Content: "ok"}}},
+		{Role: messages.MessageRoleUser, Content: "continue"},
+	}
+	contextModel, ok := model.(interface {
+		GenerateContentFromMessageList(context.Context, []messages.Message, ...llms.CallOption) (*llms.ContentResponse, error)
+	})
+	if !ok {
+		t.Fatalf("model = %T does not preserve message-list metadata", model)
+	}
+	if _, err := contextModel.GenerateContentFromMessageList(context.Background(), contextMessages, llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "echo"}}})); err != nil {
+		t.Fatalf("GenerateContentFromMessageList() error = %v", err)
+	}
+	if len(captured.Messages) < 2 {
+		t.Fatalf("messages = %#v", captured.Messages)
+	}
+	assistant := captured.Messages[1]
+	if assistant.Role != "assistant" || len(assistant.Content) != 2 || assistant.Content[0]["type"] != "thinking" || assistant.Content[0]["signature"] != "sig" {
+		t.Fatalf("assistant replay = %#v", assistant)
+	}
+}
+
+func TestAnthropicModelUsesAsynchronouslyFetchedThinkingSpec(t *testing.T) {
+	var captured struct {
+		Thinking     *anthropicThinking     `json:"thinking"`
+		OutputConfig *anthropicOutputConfig `json:"output_config"`
+	}
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("request path = %q, want /v1/messages", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		_, _ = w.Write([]byte(`{"content":[{"type":"tool_use","id":"call","name":"echo","input":{}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer apiServer.Close()
+	catalogServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"anthropic":{"models":{"claude-custom":{"reasoning":true,"reasoning_options":[{"type":"effort","values":["low","medium","high"]}],"tool_call":true}}}}`))
+	}))
+	defer catalogServer.Close()
+
+	mgr := NewModelManager(ModelConfig{
+		Provider: "anthropic", Model: "claude-custom", APIKey: "test-token", BaseURL: apiServer.URL, ReasoningEffort: "high",
+	}, ProxyConfig{}, WithModelsDevURL(catalogServer.URL), WithProviderMetadataHTTPClient(catalogServer.Client()))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if spec := mgr.Spec(); spec.Thinking != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("models.dev thinking metadata did not load")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := mgr.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	}, llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "echo"}}})); err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if captured.Thinking == nil || captured.Thinking.Type != "adaptive" || captured.OutputConfig == nil || captured.OutputConfig.Effort != "high" {
+		t.Fatalf("thinking request = %#v, %#v", captured.Thinking, captured.OutputConfig)
 	}
 }
 

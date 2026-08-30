@@ -781,6 +781,11 @@ type ModelConfig struct {
 	MaxResponseTokens int      `toml:"max_response_tokens,omitempty"`
 	LogRawHTTP        bool     `toml:"log_raw_http,omitempty"`
 	ReasoningEffort   string   `toml:"reasoning_effort,omitempty"`
+	// ThinkingBudgetTokens is an optional exact budget for models whose native
+	// thinking control is budget_tokens (for example older Claude models). A
+	// zero value delegates to the model's default or the reasoning effort
+	// preset; it is ignored by effort-only providers.
+	ThinkingBudgetTokens int `toml:"thinking_budget_tokens,omitempty"`
 	// These override static model metadata; zero means use the registry/fallback.
 	ContextWindow        int      `toml:"context_window,omitempty"`
 	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`
@@ -1393,6 +1398,26 @@ func (c Config) Validate() error {
 	}
 	if c.Model.ModelMaxOutputTokens < 0 {
 		return fmt.Errorf("model.model_max_output_tokens must be >= 0, got %d", c.Model.ModelMaxOutputTokens)
+	}
+	if c.Model.ThinkingBudgetTokens < 0 {
+		return fmt.Errorf("model.thinking_budget_tokens must be >= 0, got %d", c.Model.ThinkingBudgetTokens)
+	}
+	// thinking_budget_tokens is a native Anthropic control. Other providers may
+	// leave a stale value in config, but it must not be validated or translated
+	// as if their APIs used Anthropic's budget_tokens field.
+	if strings.EqualFold(strings.TrimSpace(c.Model.Provider), "anthropic") && c.Model.ThinkingBudgetTokens > 0 {
+		if c.Model.ThinkingBudgetTokens < minThinkingBudgetTokens {
+			return fmt.Errorf("model.thinking_budget_tokens must be 0 or >= %d, got %d",
+				minThinkingBudgetTokens, c.Model.ThinkingBudgetTokens)
+		}
+		if c.Model.MaxResponseTokens > 0 && c.Model.ThinkingBudgetTokens >= c.Model.MaxResponseTokens {
+			return fmt.Errorf("model.thinking_budget_tokens (%d) must be less than model.max_response_tokens (%d); thinking tokens are included in the response limit",
+				c.Model.ThinkingBudgetTokens, c.Model.MaxResponseTokens)
+		}
+		if c.Model.ModelMaxOutputTokens > 0 && c.Model.ThinkingBudgetTokens >= c.Model.ModelMaxOutputTokens {
+			return fmt.Errorf("model.thinking_budget_tokens (%d) must be less than model.model_max_output_tokens (%d)",
+				c.Model.ThinkingBudgetTokens, c.Model.ModelMaxOutputTokens)
+		}
 	}
 	// Validate input_mode
 	if strings.TrimSpace(c.InputMode) != "" {
