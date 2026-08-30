@@ -65,9 +65,9 @@ func TestGeminiProviderNormalizesLiveSession(t *testing.T) {
 			switch {
 			case event["realtimeInput"] != nil:
 				input := event["realtimeInput"].(map[string]any)
-				chunks := input["mediaChunks"].([]any)
-				if len(chunks) != 1 || chunks[0].(map[string]any)["mimeType"] != "audio/pcm;rate=16000" {
-					t.Errorf("realtime input = %#v", event)
+				audio := input["audio"].(map[string]any)
+				if audio["mimeType"] != "audio/pcm;rate=16000" {
+					t.Errorf("audio = %#v", audio)
 				}
 				_ = conn.WriteJSON(map[string]any{"serverContent": map[string]any{
 					"modelTurn":           map[string]any{"parts": []any{map[string]any{"inlineData": map[string]any{"mimeType": "audio/pcm;rate=24000", "data": base64.StdEncoding.EncodeToString([]byte{4, 5})}}}},
@@ -96,17 +96,17 @@ func TestGeminiProviderNormalizesLiveSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	if got := session.Info(); got.ID != "" || got.InputSampleRate != 16000 || got.OutputSampleRate != 24000 || !got.Capabilities.TextInput || got.Capabilities.Interrupt {
+	if got := session.Info(); got.ID != "" || got.InputSampleRate != 16000 || got.OutputSampleRate != 24000 || got.InputAudioFormat != (AudioFormat{Encoding: "pcm_s16le", SampleRate: 16000, Channels: 1, BitDepth: 16}) || got.OutputAudioFormat != (AudioFormat{Encoding: "pcm_s16le", SampleRate: 24000, Channels: 1, BitDepth: 16}) {
 		t.Fatalf("session info = %+v", got)
 	}
 	if err := session.SendAudio(context.Background(), []byte{1, 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.SendToolResult(context.Background(), "call_1", `{"ok":true}`); err != nil {
+	if err := session.(ToolResultSender).SendToolResult(context.Background(), "call_1", `{"ok":true}`); err != nil {
 		t.Fatal(err)
 	}
 
-	want := []EventKind{EventResponseStarted, EventTranscriptDelta, EventAudio, EventToolCall, EventResponseDone, EventUsage}
+	want := []EventKind{EventResponseStarted, EventTranscriptDelta, EventAudio, EventToolCall, EventUsage, EventResponseDone}
 	for _, kind := range want {
 		select {
 		case event := <-session.Events():
@@ -116,5 +116,16 @@ func TestGeminiProviderNormalizesLiveSession(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("timed out waiting for %s", kind)
 		}
+	}
+}
+
+func TestGeminiEndpointPreservesDelegatedAccessToken(t *testing.T) {
+	provider := GeminiProvider{Endpoint: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent", DelegatedCredential: true}
+	got, err := provider.endpoint("gemini-3.1-flash-live-preview", "delegated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "key=") || !strings.Contains(got, "access_token=delegated") || !strings.Contains(got, "BidiGenerateContentConstrained") {
+		t.Fatalf("endpoint = %q", got)
 	}
 }

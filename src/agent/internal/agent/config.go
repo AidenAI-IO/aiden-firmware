@@ -421,8 +421,19 @@ func (c VoiceModelConfig) Validate() error {
 	if provider != "" && provider != "qwen" && provider != "speko" && provider != "openai" && provider != "gemini" && provider != "xai" {
 		return fmt.Errorf("voice_model.provider: unsupported provider %q", c.Provider)
 	}
-	if provider == "speko" && strings.TrimSpace(c.UpstreamProvider) == "" {
-		return errors.New("voice_model.upstream_provider is required when provider=speko")
+	if provider == "speko" {
+		upstream := strings.TrimSpace(c.UpstreamProvider)
+		model := strings.TrimSpace(c.Model)
+		if (upstream == "") != (model == "") {
+			return errors.New("voice_model.upstream_provider and voice_model.model must either both be set or both be omitted for provider=speko")
+		}
+		if upstream != "" {
+			switch strings.ToLower(upstream) {
+			case "google", "gemini", "openai", "xai":
+			default:
+				return fmt.Errorf("voice_model.upstream_provider: unsupported provider %q (want google, openai, or xai)", c.UpstreamProvider)
+			}
+		}
 	}
 	if region := strings.TrimSpace(c.Region); provider != "speko" && region != "" && region != "cn-beijing" && region != "ap-southeast-1" {
 		return fmt.Errorf("voice_model.region: unsupported region %q", c.Region)

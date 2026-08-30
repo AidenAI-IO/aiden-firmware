@@ -102,14 +102,26 @@ void AudioRecordSession::join() {
     if (capture_thread_.joinable()) capture_thread_.join();
 }
 
-bool AudioRecordSession::start() {
-    // Open hardware with requested format; runtime loop will auto-correct
-    // channels/sample-rate based on real frame shape and timestamps.
+AudioConfig AudioRecordSession::hardware_capture_config() const {
     AudioConfig cfg;
-    cfg.sample_rate = static_cast<int>(fmt_.sample_rate);
+    // RV1106 VQE accepts 8/16/48 kHz, while realtime providers such as xAI
+    // require 24 kHz PCM. Capture at 16 kHz and use the existing conversion
+    // path to emit 24 kHz while keeping full-duplex playback at 16 kHz.
+    cfg.sample_rate = fmt_.sample_rate == 24000
+                          ? 16000
+                          : static_cast<int>(fmt_.sample_rate);
     cfg.channels    = static_cast<int>(fmt_.channels);
     cfg.bit_width   = static_cast<int>(fmt_.bit_width);
+    return cfg;
+}
 
+bool AudioRecordSession::start() {
+    AudioConfig cfg = hardware_capture_config();
+    if (cfg.sample_rate != static_cast<int>(fmt_.sample_rate)) {
+        AIDEN_LOG_INFO("recording", "capture_rate_resampled",
+                       "hardware_rate=%d target_rate=%u",
+                       cfg.sample_rate, fmt_.sample_rate);
+    }
     if (!capture_.init(cfg)) {
         AIDEN_LOG_ERROR("recording", "capture_init_failed", "session_id=%llu",
                         static_cast<unsigned long long>(session_id_));
@@ -189,10 +201,7 @@ void AudioRecordSession::capture_loop() {
                                static_cast<unsigned long long>(session_id_),
                                consecutive_failures);
                 capture_.stop();
-                AudioConfig cfg;
-                cfg.sample_rate = static_cast<int>(fmt_.sample_rate);
-                cfg.channels    = static_cast<int>(fmt_.channels);
-                cfg.bit_width   = static_cast<int>(fmt_.bit_width);
+                AudioConfig cfg = hardware_capture_config();
                 if (!capture_.init(cfg)) {
                     AIDEN_LOG_ERROR("recording", "capture_reinit_failed", "session_id=%llu",
                                     static_cast<unsigned long long>(session_id_));

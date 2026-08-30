@@ -27,6 +27,8 @@ type GeminiProvider struct {
 	Endpoint    string
 	Dialer      *websocket.Dialer
 	EventBuffer int
+	// DelegatedCredential makes the adapter pass the Speko-minted token as access_token.
+	DelegatedCredential bool
 }
 
 func (p GeminiProvider) Open(ctx context.Context, cfg SessionConfig) (Session, error) {
@@ -52,6 +54,14 @@ func (p GeminiProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 		}
 		return nil, fmt.Errorf("gemini live websocket connect: %w", err)
 	}
+	inputRate := cfg.InputSampleRate
+	if inputRate <= 0 {
+		inputRate = 16000
+	}
+	outputRate := cfg.OutputSampleRate
+	if outputRate <= 0 {
+		outputRate = 24000
+	}
 	s := &geminiSession{
 		conn:      conn,
 		events:    make(chan Event, buffer(p.EventBuffer)),
@@ -59,10 +69,8 @@ func (p GeminiProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 		done:      make(chan struct{}),
 		writeGate: make(chan struct{}, 1),
 		toolNames: make(map[string]string),
-		info: SessionInfo{
-			InputSampleRate: 16000, OutputSampleRate: 24000,
-			Capabilities: Capabilities{TextInput: true, ManualCommit: true, ToolCalls: true},
-		},
+		info:      newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{}),
+		inputRate: inputRate,
 	}
 	s.writeGate <- struct{}{}
 	go s.readLoop()
@@ -99,7 +107,17 @@ func (p GeminiProvider) endpoint(model, apiKey string) (string, error) {
 		u.Path = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 	}
 	q := u.Query()
-	q.Set("key", apiKey)
+	delegated := p.DelegatedCredential || q.Get("access_token") != ""
+	if delegated {
+		q.Del("key")
+		q.Set("access_token", apiKey)
+	} else if q.Get("key") == "" {
+		q.Set("key", apiKey)
+	}
+	// Speko delegated credentials are accepted by Gemini's constrained Live endpoint.
+	if delegated && strings.HasSuffix(u.Path, "BidiGenerateContent") && !strings.HasSuffix(u.Path, "BidiGenerateContentConstrained") {
+		u.Path += "Constrained"
+	}
 	_ = model // The Live API selects the model in the initial setup message.
 	u.RawQuery = q.Encode()
 	return u.String(), nil
@@ -190,6 +208,8 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 type geminiSession struct {
 	conn           *websocket.Conn
 	info           SessionInfo
+	inputRate      int
+	infoMu         sync.RWMutex
 	events         chan Event
 	errs           chan error
 	done           chan struct{}
@@ -201,7 +221,11 @@ type geminiSession struct {
 	toolNames      map[string]string
 }
 
-func (s *geminiSession) Info() SessionInfo     { return s.info }
+func (s *geminiSession) Info() SessionInfo {
+	s.infoMu.RLock()
+	defer s.infoMu.RUnlock()
+	return s.info
+}
 func (s *geminiSession) Events() <-chan Event  { return s.events }
 func (s *geminiSession) Errors() <-chan error  { return s.errs }
 func (s *geminiSession) Done() <-chan struct{} { return s.done }
@@ -209,15 +233,13 @@ func (s *geminiSession) SendAudio(ctx context.Context, pcm []byte) error {
 	if len(pcm) == 0 {
 		return nil
 	}
+	rate := s.inputRate
+	if rate <= 0 {
+		rate = 16000
+	}
 	return s.writeJSON(ctx, map[string]any{"realtimeInput": map[string]any{
-		"mediaChunks": []map[string]string{{"mimeType": "audio/pcm;rate=16000", "data": base64.StdEncoding.EncodeToString(pcm)}},
+		"audio": map[string]string{"mimeType": fmt.Sprintf("audio/pcm;rate=%d", rate), "data": base64.StdEncoding.EncodeToString(pcm)},
 	}})
-}
-func (s *geminiSession) Commit(ctx context.Context) error {
-	return s.writeJSON(ctx, map[string]any{"realtimeInput": map[string]any{"audioStreamEnd": true}})
-}
-func (s *geminiSession) Interrupt(context.Context) error {
-	return errors.New("gemini live: client interruption is provider-managed")
 }
 func (s *geminiSession) SendToolResult(ctx context.Context, id, output string) error {
 	response := any(output)
@@ -252,9 +274,6 @@ func (s *geminiSession) SendText(ctx context.Context, text string) error {
 }
 func (s *geminiSession) CreateResponse(ctx context.Context) error {
 	return s.writeJSON(ctx, map[string]any{"clientContent": map[string]any{"turnComplete": true}})
-}
-func (s *geminiSession) ReplayContext(context.Context, []ContextItem) error {
-	return errors.New("gemini live: context replay is not supported")
 }
 
 func (s *geminiSession) writeJSON(ctx context.Context, value any) error {
@@ -343,6 +362,12 @@ func waitGeminiReady(ctx context.Context, s *geminiSession) error {
 
 func (s *geminiSession) translate(body []byte) []Event {
 	var envelope struct {
+		ResponseID       string               `json:"responseId"`
+		ResponseIDSnake  string               `json:"response_id"`
+		ItemID           string               `json:"itemId"`
+		ItemIDSnake      string               `json:"item_id"`
+		Sequence         uint64               `json:"sequence"`
+		SequenceNumber   uint64               `json:"sequence_number"`
 		SetupComplete    json.RawMessage      `json:"setupComplete"`
 		ServerContent    *geminiServerContent `json:"serverContent"`
 		ToolCall         *geminiToolCall      `json:"toolCall"`
@@ -365,6 +390,7 @@ func (s *geminiSession) translate(body []byte) []Event {
 		return []Event{{Kind: EventError, Error: errors.New(envelope.Error.Message)}}
 	}
 	var events []Event
+	usageEmitted := false
 	if envelope.ServerContent != nil {
 		s.responseMu.Lock()
 		active := s.responseActive
@@ -396,7 +422,10 @@ func (s *geminiSession) translate(body []byte) []Event {
 						return append(events, Event{Kind: EventError, Error: fmt.Errorf("gemini live: decode audio delta: %w", err)})
 					}
 					if rate := pcmRate(part.InlineData.MIMEType); rate > 0 {
+						s.infoMu.Lock()
 						s.info.OutputSampleRate = rate
+						s.info.OutputAudioFormat.SampleRate = rate
+						s.infoMu.Unlock()
 					}
 					events = append(events, Event{Kind: EventAudio, PCM: pcm})
 				}
@@ -409,6 +438,10 @@ func (s *geminiSession) translate(body []byte) []Event {
 			events = append(events, Event{Kind: EventInterruption, At: "assistant"})
 		}
 		if content.TurnComplete {
+			if envelope.UsageMetadata != nil {
+				events = append(events, Event{Kind: EventUsage, Usage: Usage{InputTokens: envelope.UsageMetadata.PromptTokenCount, OutputTokens: envelope.UsageMetadata.ResponseTokenCount, TotalTokens: envelope.UsageMetadata.TotalTokenCount}})
+				usageEmitted = true
+			}
 			events = append(events, Event{Kind: EventResponseDone, Status: "completed"})
 			s.responseMu.Lock()
 			s.responseActive = false
@@ -437,11 +470,31 @@ func (s *geminiSession) translate(body []byte) []Event {
 	if len(envelope.ToolCancellation) > 0 {
 		events = append(events, Event{Kind: EventInterruption, At: "assistant"})
 	}
-	if envelope.UsageMetadata != nil {
+	if envelope.UsageMetadata != nil && !usageEmitted {
 		events = append(events, Event{Kind: EventUsage, Usage: Usage{InputTokens: envelope.UsageMetadata.PromptTokenCount, OutputTokens: envelope.UsageMetadata.ResponseTokenCount, TotalTokens: envelope.UsageMetadata.TotalTokenCount}})
 	}
 	if envelope.GoAway != nil {
 		events = append(events, Event{Kind: EventError, Error: fmt.Errorf("gemini live: server requested reconnect in %s", envelope.GoAway.TimeLeft)})
+	}
+	responseID := envelope.ResponseID
+	if responseID == "" {
+		responseID = envelope.ResponseIDSnake
+	}
+	itemID := envelope.ItemID
+	if itemID == "" {
+		itemID = envelope.ItemIDSnake
+	}
+	sequence := normalizedSequence(envelope.Sequence, envelope.SequenceNumber)
+	for index := range events {
+		if events[index].ResponseID == "" {
+			events[index].ResponseID = responseID
+		}
+		if events[index].ItemID == "" {
+			events[index].ItemID = itemID
+		}
+		if events[index].Sequence == 0 {
+			events[index].Sequence = sequence
+		}
 	}
 	return events
 }

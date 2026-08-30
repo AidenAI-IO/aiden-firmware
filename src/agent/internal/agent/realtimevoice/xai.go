@@ -25,6 +25,9 @@ type XAIProvider struct {
 	Endpoint    string
 	Dialer      *websocket.Dialer
 	EventBuffer int
+	// AuthSubprotocol is used for Speko-delegated xAI credentials. Native xAI API keys use the Authorization bearer header.
+	AuthSubprotocol       bool
+	AuthSubprotocolPrefix string
 }
 
 func (p XAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, error) {
@@ -44,6 +47,22 @@ func (p XAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, erro
 		d = websocket.DefaultDialer
 	}
 	header := make(map[string][]string, 1)
+	if p.AuthSubprotocol {
+		dialer := *d
+		prefix := p.AuthSubprotocolPrefix
+		if prefix == "" {
+			prefix = "xai-client-secret."
+		}
+		dialer.Subprotocols = append(append([]string(nil), dialer.Subprotocols...), prefix+cfg.APIKey)
+		conn, resp, err := dialer.DialContext(ctx, endpoint, nil)
+		if err != nil {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return nil, fmt.Errorf("xai realtime websocket connect: %w", err)
+		}
+		return p.openSession(ctx, cfg, model, conn)
+	}
 	header["Authorization"] = []string{bearer(cfg.APIKey)}
 	conn, resp, err := d.DialContext(ctx, endpoint, header)
 	if err != nil {
@@ -52,6 +71,18 @@ func (p XAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, erro
 		}
 		return nil, fmt.Errorf("xai realtime websocket connect: %w", err)
 	}
+	return p.openSession(ctx, cfg, model, conn)
+}
+
+func (p XAIProvider) openSession(ctx context.Context, cfg SessionConfig, model string, conn *websocket.Conn) (Session, error) {
+	inputRate := cfg.InputSampleRate
+	if inputRate <= 0 {
+		inputRate = 24000
+	}
+	outputRate := cfg.OutputSampleRate
+	if outputRate <= 0 {
+		outputRate = 24000
+	}
 	s := &xAISession{
 		conn:        conn,
 		events:      make(chan Event, buffer(p.EventBuffer)),
@@ -59,7 +90,7 @@ func (p XAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, erro
 		done:        make(chan struct{}),
 		writeGate:   make(chan struct{}, 1),
 		transcripts: make(map[string]string),
-		info:        SessionInfo{InputSampleRate: 16000, OutputSampleRate: 24000, Capabilities: Capabilities{TextInput: true, ContextReplay: true, ManualCommit: true, Interrupt: true, ToolCalls: true, ExplicitToolContinuation: true}},
+		info:        newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true}),
 	}
 	s.writeGate <- struct{}{}
 	go s.readLoop()
@@ -116,6 +147,8 @@ type xAISessionSettings struct {
 	Model            string           `json:"model,omitempty"`
 	OutputModalities []string         `json:"output_modalities,omitempty"`
 	Instructions     string           `json:"instructions,omitempty"`
+	Voice            string           `json:"voice,omitempty"`
+	TurnDetection    any              `json:"turn_detection,omitempty"`
 	Audio            xAIAudioSettings `json:"audio"`
 	Tools            []xAITool        `json:"tools,omitempty"`
 }
@@ -127,7 +160,6 @@ type xAIAudioSettings struct {
 
 type xAIAudioInput struct {
 	Format        xAIAudioFormat    `json:"format"`
-	TurnDetection any               `json:"turn_detection,omitempty"`
 	Transcription *xAITranscription `json:"transcription,omitempty"`
 }
 
@@ -137,7 +169,6 @@ type xAITranscription struct {
 
 type xAIAudioOutput struct {
 	Format xAIAudioFormat `json:"format"`
-	Voice  string         `json:"voice,omitempty"`
 }
 
 type xAIAudioFormat struct {
@@ -162,18 +193,20 @@ func buildXAISessionUpdate(cfg SessionConfig, model string) xAISessionUpdate {
 		outputRate = 24000
 	}
 	settings := xAISessionSettings{
-		Instructions: cfg.Instructions,
+		Type:             "realtime",
+		Model:            model,
+		OutputModalities: []string{"audio"},
+		Instructions:     cfg.Instructions,
+		Voice:            cfg.Voice,
 		Audio: xAIAudioSettings{
 			Input:  xAIAudioInput{Format: xAIAudioFormat{Type: "audio/pcm", Rate: inputRate}, Transcription: &xAITranscription{Model: "grok-transcribe"}},
-			Output: xAIAudioOutput{Format: xAIAudioFormat{Type: "audio/pcm", Rate: outputRate}, Voice: cfg.Voice},
+			Output: xAIAudioOutput{Format: xAIAudioFormat{Type: "audio/pcm", Rate: outputRate}},
 		},
 	}
 	if cfg.TurnDetection == "disabled" {
-		settings.Audio.Input.TurnDetection = json.RawMessage("null")
-	} else if cfg.TurnDetection != "" {
-		settings.Audio.Input.TurnDetection = map[string]any{
-			"type": cfg.TurnDetection, "threshold": cfg.TurnDetectionThresh, "silence_duration_ms": cfg.TurnDetectionSilenceMs,
-		}
+		settings.TurnDetection = json.RawMessage("null")
+	} else if turnDetection := turnDetectionConfig(cfg); turnDetection != nil {
+		settings.TurnDetection = turnDetection
 	}
 	for _, tool := range cfg.Tools {
 		settings.Tools = append(settings.Tools, xAITool{Type: "function", Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters})
@@ -184,6 +217,7 @@ func buildXAISessionUpdate(cfg SessionConfig, model string) xAISessionUpdate {
 type xAISession struct {
 	conn         *websocket.Conn
 	info         SessionInfo
+	infoMu       sync.RWMutex
 	events       chan Event
 	errs         chan error
 	done         chan struct{}
@@ -193,7 +227,11 @@ type xAISession struct {
 	transcripts  map[string]string
 }
 
-func (s *xAISession) Info() SessionInfo     { return s.info }
+func (s *xAISession) Info() SessionInfo {
+	s.infoMu.RLock()
+	defer s.infoMu.RUnlock()
+	return s.info
+}
 func (s *xAISession) Events() <-chan Event  { return s.events }
 func (s *xAISession) Errors() <-chan error  { return s.errs }
 func (s *xAISession) Done() <-chan struct{} { return s.done }
@@ -236,22 +274,20 @@ func (s *xAISession) SendText(ctx context.Context, text string) error {
 	})
 }
 func (s *xAISession) CreateResponse(ctx context.Context) error {
-	return s.writeJSON(ctx, map[string]any{"type": "response.create"})
+	return s.writeJSON(ctx, map[string]any{
+		"type": "response.create",
+		"response": map[string]any{
+			"output_modalities": []string{"audio"},
+			"metadata":          map[string]string{"client_event_id": fmt.Sprintf("aiden-%d", time.Now().UnixNano())},
+		},
+	})
 }
 func (s *xAISession) ReplayContext(ctx context.Context, items []ContextItem) error {
-	var previous string
+	// Items are replayed in slice order and the server appends each one to the
+	// conversation, so no explicit previous_item_id chaining is sent. Adding it
+	// would require tracking server-assigned ids from conversation.item.created.
 	for _, item := range items {
-		contentType := "input_text"
-		if item.Role == "assistant" {
-			contentType = "output_text"
-		}
-		message := map[string]any{"type": item.Type, "role": item.Role, "call_id": item.CallID, "name": item.Name, "arguments": item.Arguments, "output": item.Output}
-		if item.Type == "message" {
-			message["content"] = []map[string]string{{"type": contentType, "text": item.Content}}
-		}
-		if previous != "" {
-			message["previous_item_id"] = previous
-		}
+		message := contextItemPayload(item)
 		if err := s.writeJSON(ctx, map[string]any{"type": "conversation.item.create", "item": message}); err != nil {
 			return err
 		}
@@ -339,7 +375,9 @@ func waitXAIReady(ctx context.Context, s *xAISession, count int) error {
 			}
 			if event.Kind == EventReady {
 				if event.SessionID != "" {
+					s.infoMu.Lock()
 					s.info.ID = event.SessionID
+					s.infoMu.Unlock()
 				}
 				count--
 			}
@@ -356,36 +394,50 @@ func translateXAIEventBase(body []byte) (Event, bool) {
 		return Event{Kind: EventError, Error: fmt.Errorf("xai realtime: decode event: %w", err)}, true
 	}
 	switch envelope.Type {
-	case "session.created", "session.updated":
+	case "session.created", "session.updated", "conversation.created":
 		var event struct {
 			Session struct {
 				ID string `json:"id"`
 			} `json:"session"`
+			Conversation struct {
+				ID string `json:"id"`
+			} `json:"conversation"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventReady, SessionID: event.Session.ID}, true
+		id := event.Session.ID
+		if id == "" {
+			id = event.Conversation.ID
+		}
+		return Event{Kind: EventReady, SessionID: id}, true
 	case "input_audio_buffer.speech_started":
 		return Event{Kind: EventSpeechStarted}, true
 	case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
 		return Event{Kind: EventSpeechStopped}, true
 	case "conversation.item.input_audio_transcription.delta":
 		var event struct {
-			Delta string `json:"delta"`
+			Delta          string `json:"delta"`
+			ItemID         string `json:"item_id"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptDelta, Role: "user", Text: event.Delta, TextSource: "audio"}, true
+		return Event{Kind: EventTranscriptDelta, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "user", Text: event.Delta, TextSource: "audio"}, true
 	case "conversation.item.input_audio_transcription.completed":
-		var event struct {
-			Transcript string `json:"transcript"`
-		}
+		var event xAIInputTranscription
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptFinal, Role: "user", Text: event.Transcript, TextSource: "audio", Final: true}, true
+		// A non-terminal status means the transcript is still being refined.
+		// The session-scoped translator turns those into deltas; drop them here
+		// so this stateless path can never promote one to a final transcript.
+		if event.Status != "" && event.Status != "completed" {
+			return Event{}, false
+		}
+		return Event{Kind: EventTranscriptFinal, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "user", Text: event.Transcript, TextSource: "audio", Final: true}, true
 	case "response.created":
 		var event struct {
 			Response struct {
@@ -398,31 +450,47 @@ func translateXAIEventBase(body []byte) (Event, bool) {
 		return Event{Kind: EventResponseStarted, ResponseID: event.Response.ID}, true
 	case "response.text.delta":
 		var event struct {
-			Delta string `json:"delta"`
+			Delta          string `json:"delta"`
+			ResponseID     string `json:"response_id"`
+			ItemID         string `json:"item_id"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptDelta, Role: "assistant", Text: event.Delta, TextSource: "text"}, true
+		return Event{Kind: EventTranscriptDelta, ResponseID: event.ResponseID, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "assistant", Text: event.Delta, TextSource: "text"}, true
 	case "response.audio_transcript.delta":
 		var event struct {
-			Delta string `json:"delta"`
+			Delta          string `json:"delta"`
+			ResponseID     string `json:"response_id"`
+			ItemID         string `json:"item_id"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptDelta, Role: "assistant", Text: event.Delta, TextSource: "audio"}, true
+		return Event{Kind: EventTranscriptDelta, ResponseID: event.ResponseID, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "assistant", Text: event.Delta, TextSource: "audio"}, true
 	case "response.audio_transcript.done":
 		var event struct {
-			Transcript string `json:"transcript"`
+			Transcript     string `json:"transcript"`
+			ResponseID     string `json:"response_id"`
+			ItemID         string `json:"item_id"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptFinal, Role: "assistant", Text: event.Transcript, TextSource: "audio", Final: true}, true
+		return Event{Kind: EventTranscriptFinal, ResponseID: event.ResponseID, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "assistant", Text: event.Transcript, TextSource: "audio", Final: true}, true
 	case "response.audio.delta":
 		var event struct {
-			Delta string `json:"delta"`
+			Delta          string `json:"delta"`
+			ResponseID     string `json:"response_id"`
+			ItemID         string `json:"item_id"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
@@ -431,18 +499,21 @@ func translateXAIEventBase(body []byte) (Event, bool) {
 		if err != nil {
 			return Event{Kind: EventError, Error: fmt.Errorf("xai realtime: decode audio delta: %w", err)}, true
 		}
-		return Event{Kind: EventAudio, PCM: pcm}, true
+		return Event{Kind: EventAudio, ResponseID: event.ResponseID, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), PCM: pcm}, true
 	case "response.function_call_arguments.done":
 		var event struct {
-			ResponseID string `json:"response_id"`
-			CallID     string `json:"call_id"`
-			Name       string `json:"name"`
-			Arguments  string `json:"arguments"`
+			ResponseID     string `json:"response_id"`
+			ItemID         string `json:"item_id"`
+			CallID         string `json:"call_id"`
+			Name           string `json:"name"`
+			Arguments      string `json:"arguments"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventToolCall, ResponseID: event.ResponseID, CallID: event.CallID, Name: event.Name, Arguments: event.Arguments}, true
+		return Event{Kind: EventToolCall, ResponseID: event.ResponseID, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), CallID: event.CallID, Name: event.Name, Arguments: event.Arguments}, true
 	case "response.done":
 		var event struct {
 			Response struct {
@@ -465,7 +536,6 @@ func translateXAIEventBase(body []byte) (Event, bool) {
 		out := Event{Kind: kind, ResponseID: event.Response.ID, Status: event.Response.Status}
 		if event.Response.Usage != nil {
 			out.Usage = Usage{InputTokens: event.Response.Usage.InputTokens, OutputTokens: event.Response.Usage.OutputTokens, TotalTokens: event.Response.Usage.TotalTokens}
-			out.Usage.TotalTokens = event.Response.Usage.TotalTokens
 		}
 		return out, true
 	case "conversation.item.truncated", "response.cancelled":
@@ -473,16 +543,96 @@ func translateXAIEventBase(body []byte) (Event, bool) {
 	case "error":
 		var event struct {
 			Error struct {
+				Type    string `json:"type"`
+				Code    string `json:"code"`
 				Message string `json:"message"`
+				Param   string `json:"param"`
+				EventID string `json:"event_id"`
 			} `json:"error"`
 		}
+		raw := compactXAIEvent(body)
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventError, Error: errors.New(event.Error.Message)}, true
+		message := strings.TrimSpace(event.Error.Message)
+		if message == "" {
+			message = "xAI realtime server error"
+		}
+		if raw != "" {
+			message += " (raw=" + raw + ")"
+		}
+		var details []string
+		if event.Error.Type != "" {
+			details = append(details, "type="+event.Error.Type)
+		}
+		if event.Error.Code != "" {
+			details = append(details, "code="+event.Error.Code)
+		}
+		if event.Error.Param != "" {
+			details = append(details, "param="+event.Error.Param)
+		}
+		if event.Error.EventID != "" {
+			details = append(details, "event_id="+event.Error.EventID)
+		}
+		if len(details) > 0 {
+			message += " (" + strings.Join(details, ", ") + ")"
+		}
+		return Event{Kind: EventError, Error: errors.New(message)}, true
 	default:
 		return Event{}, false
 	}
+}
+
+func compactXAIEvent(body []byte) string {
+	const maxBytes = 2048
+	if len(body) > maxBytes {
+		body = body[:maxBytes]
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(string(body), "\n", ""), "\r", "")
+}
+
+// xAIInputTranscription is the shared shape of the .updated and .completed
+// input-transcription events. Status is only populated on .completed.
+type xAIInputTranscription struct {
+	ItemID         string `json:"item_id"`
+	Transcript     string `json:"transcript"`
+	Status         string `json:"status"`
+	Sequence       uint64 `json:"sequence"`
+	SequenceNumber uint64 `json:"sequence_number"`
+}
+
+// itemKey scopes accumulated transcript state. xAI has been observed to omit
+// item_id on some frames, so those share one bucket rather than each resetting
+// an empty key.
+func (t xAIInputTranscription) itemKey() string {
+	if t.ItemID == "" {
+		return "__default__"
+	}
+	return t.ItemID
+}
+
+// cumulativeUserTranscriptDelta converts a cumulative transcript into an
+// incremental delta. xAI's .updated event carries the full transcript so far
+// and may revise earlier text, so a shorter or diverging transcript yields no
+// delta instead of re-sending text the caller already has.
+func (s *xAISession) cumulativeUserTranscriptDelta(frame xAIInputTranscription) (Event, bool) {
+	key := frame.itemKey()
+	s.transcriptMu.Lock()
+	previous := s.transcripts[key]
+	s.transcripts[key] = frame.Transcript
+	s.transcriptMu.Unlock()
+	delta := frame.Transcript
+	if previous != "" {
+		if strings.HasPrefix(frame.Transcript, previous) {
+			delta = frame.Transcript[len(previous):]
+		} else {
+			delta = ""
+		}
+	}
+	if delta == "" {
+		return Event{}, false
+	}
+	return Event{Kind: EventTranscriptDelta, ItemID: frame.ItemID, Sequence: normalizedSequence(frame.Sequence, frame.SequenceNumber), Role: "user", Text: delta, TextSource: "audio"}, true
 }
 
 func (s *xAISession) translateXAIEventForSession(body []byte) (Event, bool) {
@@ -493,45 +643,29 @@ func (s *xAISession) translateXAIEventForSession(body []byte) (Event, bool) {
 		return Event{Kind: EventError, Error: fmt.Errorf("xai realtime: decode event: %w", err)}, true
 	}
 	if envelope.Type == "conversation.item.input_audio_transcription.updated" {
-		var update struct {
-			ItemID     string `json:"item_id"`
-			Transcript string `json:"transcript"`
-		}
+		var update xAIInputTranscription
 		if err := json.Unmarshal(body, &update); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		itemID := update.ItemID
-		if itemID == "" {
-			itemID = "__default__"
-		}
-		s.transcriptMu.Lock()
-		previous := s.transcripts[itemID]
-		s.transcripts[itemID] = update.Transcript
-		s.transcriptMu.Unlock()
-		delta := update.Transcript
-		if previous != "" {
-			if strings.HasPrefix(update.Transcript, previous) {
-				delta = update.Transcript[len(previous):]
-			} else {
-				delta = ""
-			}
-		}
-		if delta == "" {
-			return Event{}, false
-		}
-		return Event{Kind: EventTranscriptDelta, Role: "user", Text: delta, TextSource: "audio"}, true
+		return s.cumulativeUserTranscriptDelta(update)
 	}
 	if envelope.Type == "conversation.item.input_audio_transcription.completed" {
-		var completed struct {
-			ItemID string `json:"item_id"`
+		var completed xAIInputTranscription
+		if err := json.Unmarshal(body, &completed); err != nil {
+			return Event{Kind: EventError, Error: err}, true
 		}
-		_ = json.Unmarshal(body, &completed)
-		itemID := completed.ItemID
-		if itemID == "" {
-			itemID = "__default__"
+		// xAI re-emits .completed for the same item while the transcript is
+		// still being refined, marking the non-final ones status=in_progress.
+		// Its docs describe .completed as the single terminal event and never
+		// mention status, so the field is an undocumented narrowing: trust it
+		// when present and fall back to the documented contract when absent.
+		// Treating every .completed as terminal appends one user message per
+		// refinement, which is what duplicated voice turns in history were.
+		if completed.Status != "" && completed.Status != "completed" {
+			return s.cumulativeUserTranscriptDelta(completed)
 		}
 		s.transcriptMu.Lock()
-		delete(s.transcripts, itemID)
+		delete(s.transcripts, completed.itemKey())
 		s.transcriptMu.Unlock()
 	}
 	aliases := map[string]string{

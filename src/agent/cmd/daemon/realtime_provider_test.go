@@ -30,7 +30,7 @@ func (s *fakeRealtimeSession) SendToolResult(context.Context, string, string) er
 func (s *fakeRealtimeSession) Close() error                                         { return nil }
 
 func TestRealtimeProviderTextCapabilityIsExplicit(t *testing.T) {
-	session := &fakeRealtimeSession{info: realtimevoice.SessionInfo{Capabilities: realtimevoice.Capabilities{TextInput: false}}}
+	session := &fakeRealtimeSession{info: realtimevoice.SessionInfo{}}
 	if _, ok := realtimeTextSession(session); ok {
 		t.Fatal("core session unexpectedly exposed text injection")
 	}

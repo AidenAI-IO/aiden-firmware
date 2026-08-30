@@ -89,16 +89,16 @@ func TestOpenAIProviderNormalizesRealtimeSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	if got := session.Info(); got.ID != "sess_1" || got.InputSampleRate != 24000 || got.OutputSampleRate != 24000 || !got.Capabilities.TextInput {
+	if got := session.Info(); got.ID != "sess_1" || got.InputSampleRate != 24000 || got.OutputSampleRate != 24000 || got.InputAudioFormat != (AudioFormat{Encoding: "pcm_s16le", SampleRate: 24000, Channels: 1, BitDepth: 16}) || got.OutputAudioFormat != (AudioFormat{Encoding: "pcm_s16le", SampleRate: 24000, Channels: 1, BitDepth: 16}) {
 		t.Fatalf("session info = %+v", got)
 	}
 	if err := session.SendAudio(context.Background(), []byte{1, 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.Interrupt(context.Background()); err != nil {
+	if err := session.(ResponseInterrupter).Interrupt(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.SendToolResult(context.Background(), "call_1", `{"ok":true}`); err != nil {
+	if err := session.(ToolResultSender).SendToolResult(context.Background(), "call_1", `{"ok":true}`); err != nil {
 		t.Fatal(err)
 	}
 	textSession, ok := session.(TextSession)
@@ -134,5 +134,26 @@ func TestOpenAIEndpointAcceptsHTTPBaseURL(t *testing.T) {
 	}
 	if u.Scheme != "wss" || u.Query().Get("model") != "gpt-realtime" {
 		t.Fatalf("endpoint = %q", got)
+	}
+}
+
+func TestOpenAIOutputEventAliasesNormalize(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want EventKind
+	}{
+		{name: "text", raw: `{"type":"response.output_text.delta","delta":"hello"}`, want: EventTranscriptDelta},
+		{name: "audio transcript delta", raw: `{"type":"response.output_audio_transcript.delta","delta":"hello"}`, want: EventTranscriptDelta},
+		{name: "audio transcript done", raw: `{"type":"response.output_audio_transcript.done","transcript":"hello"}`, want: EventTranscriptFinal},
+		{name: "audio", raw: `{"type":"response.output_audio.delta","delta":"AQI="}`, want: EventAudio},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			event, ok := translateOpenAIEvent([]byte(tc.raw))
+			if !ok || event.Kind != tc.want {
+				t.Fatalf("event = %+v, ok=%t, want kind %s", event, ok, tc.want)
+			}
+		})
 	}
 }

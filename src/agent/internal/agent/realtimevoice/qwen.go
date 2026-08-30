@@ -42,13 +42,16 @@ func (p QwenProvider) Open(ctx context.Context, cfg SessionConfig) (Session, err
 	_ = created.Decode(&sessionEvent)
 	return &qwenSession{
 		ws:            ws,
-		info:          SessionInfo{ID: sessionEvent.Session.ID, InputSampleRate: 16000, OutputSampleRate: 24000, Capabilities: Capabilities{TextInput: true, ContextReplay: true, ManualCommit: true, ToolCalls: true, ExplicitToolContinuation: true}},
+		info:          newPCM16SessionInfo(sessionEvent.Session.ID, 16000, 24000, Capabilities{ExplicitToolContinuation: true}),
 		translateStop: make(chan struct{}),
 	}, nil
 }
 
 func qwenSessionConfig(cfg SessionConfig) rtclient.SessionConfig {
 	out := rtclient.SessionConfig{Modalities: []string{"audio", "text"}, Voice: cfg.Voice, Instructions: cfg.Instructions, InputAudioFormat: cfg.InputAudioFormat, OutputAudioFormat: cfg.OutputAudioFormat, MaxHistoryTurns: cfg.MaxHistoryTurns, Tools: make([]rtclient.Tool, 0, len(cfg.Tools))}
+	if out.Voice == "" {
+		out.Voice = rtclient.DefaultVoice
+	}
 	out.EnableSpeechEmotion = cfg.EnableSpeechEmotion
 	if cfg.TurnDetection != "" {
 		out.TurnDetection = &rtclient.TurnDetection{Type: cfg.TurnDetection, Threshold: cfg.TurnDetectionThresh, SilenceDurationMS: cfg.TurnDetectionSilenceMs}
@@ -185,7 +188,7 @@ func translateQwenEvent(ev rtclient.Event) (Event, bool) {
 		if err := ev.Decode(&x); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptFinal, Role: "user", Text: x.Transcript, Final: true}, true
+		return Event{Kind: EventTranscriptFinal, ItemID: x.ItemID, Role: "user", Text: x.Transcript, TextSource: "audio", Final: true}, true
 	case "response.created":
 		var x rtclient.ResponseEvent
 		_ = ev.Decode(&x)
@@ -195,31 +198,35 @@ func translateQwenEvent(ev rtclient.Event) (Event, bool) {
 		if err := ev.Decode(&x); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptDelta, Role: "assistant", Text: x.Delta, TextSource: "text"}, true
+		return Event{Kind: EventTranscriptDelta, ResponseID: x.ResponseID, ItemID: x.ItemID, Role: "assistant", Text: x.Delta, TextSource: "text"}, true
 	case "response.audio_transcript.delta":
 		var x rtclient.ResponseDeltaEvent
 		if err := ev.Decode(&x); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptDelta, Role: "assistant", Text: x.Delta, TextSource: "audio"}, true
+		return Event{Kind: EventTranscriptDelta, ResponseID: x.ResponseID, ItemID: x.ItemID, Role: "assistant", Text: x.Delta, TextSource: "audio"}, true
 	case "response.audio_transcript.done":
 		var x rtclient.TranscriptEvent
 		if err := ev.Decode(&x); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptFinal, Role: "assistant", Text: x.Transcript, TextSource: "audio", Final: true}, true
+		return Event{Kind: EventTranscriptFinal, ItemID: x.ItemID, Role: "assistant", Text: x.Transcript, TextSource: "audio", Final: true}, true
 	case "response.audio.delta":
-		pcm, err := ev.AudioDelta()
+		var x rtclient.ResponseDeltaEvent
+		if err := ev.Decode(&x); err != nil {
+			return Event{Kind: EventError, Error: err}, true
+		}
+		pcm, err := x.Audio()
 		if err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventAudio, PCM: pcm}, true
+		return Event{Kind: EventAudio, ResponseID: x.ResponseID, ItemID: x.ItemID, PCM: pcm}, true
 	case "response.function_call_arguments.done":
 		var x rtclient.FunctionCallEvent
 		if err := ev.Decode(&x); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventToolCall, ResponseID: x.ResponseID, CallID: x.CallID, Name: x.Name, Arguments: x.Arguments}, true
+		return Event{Kind: EventToolCall, ResponseID: x.ResponseID, ItemID: x.ItemID, CallID: x.CallID, Name: x.Name, Arguments: x.Arguments}, true
 	case "response.done":
 		var x rtclient.ResponseEvent
 		if err := ev.Decode(&x); err != nil {

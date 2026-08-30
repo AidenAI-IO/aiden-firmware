@@ -52,13 +52,21 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 		}
 		return nil, fmt.Errorf("openai realtime websocket connect: %w", err)
 	}
+	inputRate := cfg.InputSampleRate
+	if inputRate <= 0 {
+		inputRate = 24000
+	}
+	outputRate := cfg.OutputSampleRate
+	if outputRate <= 0 {
+		outputRate = 24000
+	}
 	s := &openAISession{
 		conn:      conn,
 		events:    make(chan Event, buffer(p.EventBuffer)),
 		errs:      make(chan error, 1),
 		done:      make(chan struct{}),
 		writeGate: make(chan struct{}, 1),
-		info:      SessionInfo{InputSampleRate: 24000, OutputSampleRate: 24000, Capabilities: Capabilities{TextInput: true, ContextReplay: true, ManualCommit: true, Interrupt: true, ToolCalls: true, ExplicitToolContinuation: true}},
+		info:      newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true}),
 	}
 	s.writeGate <- struct{}{}
 	go s.readLoop()
@@ -157,12 +165,8 @@ func buildOpenAISessionUpdate(cfg SessionConfig, model string) openAISessionUpda
 			Output: openAIAudioOutput{Format: openAIAudioFormat{Type: "audio/pcm", Rate: 24000}, Voice: cfg.Voice},
 		},
 	}
-	if cfg.TurnDetection != "" && cfg.TurnDetection != "disabled" {
-		settings.Audio.Input.TurnDetection = map[string]any{
-			"type":                cfg.TurnDetection,
-			"threshold":           cfg.TurnDetectionThresh,
-			"silence_duration_ms": cfg.TurnDetectionSilenceMs,
-		}
+	if turnDetection := turnDetectionConfig(cfg); turnDetection != nil {
+		settings.Audio.Input.TurnDetection = turnDetection
 	}
 	for _, tool := range cfg.Tools {
 		settings.Tools = append(settings.Tools, openAITool{Type: "function", Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters})
@@ -173,6 +177,7 @@ func buildOpenAISessionUpdate(cfg SessionConfig, model string) openAISessionUpda
 type openAISession struct {
 	conn      *websocket.Conn
 	info      SessionInfo
+	infoMu    sync.RWMutex
 	events    chan Event
 	errs      chan error
 	done      chan struct{}
@@ -180,7 +185,11 @@ type openAISession struct {
 	closeOnce sync.Once
 }
 
-func (s *openAISession) Info() SessionInfo     { return s.info }
+func (s *openAISession) Info() SessionInfo {
+	s.infoMu.RLock()
+	defer s.infoMu.RUnlock()
+	return s.info
+}
 func (s *openAISession) Events() <-chan Event  { return s.events }
 func (s *openAISession) Errors() <-chan error  { return s.errs }
 func (s *openAISession) Done() <-chan struct{} { return s.done }
@@ -226,19 +235,11 @@ func (s *openAISession) CreateResponse(ctx context.Context) error {
 	return s.writeJSON(ctx, map[string]any{"type": "response.create"})
 }
 func (s *openAISession) ReplayContext(ctx context.Context, items []ContextItem) error {
-	var previous string
+	// Items are replayed in slice order and the server appends each one to the
+	// conversation, so no explicit previous_item_id chaining is sent. Adding it
+	// would require tracking server-assigned ids from conversation.item.created.
 	for _, item := range items {
-		contentType := "input_text"
-		if item.Role == "assistant" {
-			contentType = "output_text"
-		}
-		message := map[string]any{"type": item.Type, "role": item.Role, "call_id": item.CallID, "name": item.Name, "arguments": item.Arguments, "output": item.Output}
-		if item.Type == "message" {
-			message["content"] = []map[string]string{{"type": contentType, "text": item.Content}}
-		}
-		if previous != "" {
-			message["previous_item_id"] = previous
-		}
+		message := contextItemPayload(item)
 		if err := s.writeJSON(ctx, map[string]any{"type": "conversation.item.create", "item": message}); err != nil {
 			return err
 		}
@@ -326,7 +327,9 @@ func waitOpenAIReady(ctx context.Context, s *openAISession, count int) error {
 			}
 			if event.Kind == EventReady {
 				if event.SessionID != "" {
+					s.infoMu.Lock()
 					s.info.ID = event.SessionID
+					s.infoMu.Unlock()
 				}
 				count--
 			}
@@ -341,6 +344,18 @@ func translateOpenAIEvent(body []byte) (Event, bool) {
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return Event{Kind: EventError, Error: fmt.Errorf("openai realtime: decode event: %w", err)}, true
+	}
+	// The GA Realtime API renamed assistant output events to response.output_*;
+	// retain the beta aliases so gateways and older models remain compatible.
+	switch envelope.Type {
+	case "response.output_text.delta":
+		envelope.Type = "response.text.delta"
+	case "response.output_audio_transcript.delta":
+		envelope.Type = "response.audio_transcript.delta"
+	case "response.output_audio_transcript.done":
+		envelope.Type = "response.audio_transcript.done"
+	case "response.output_audio.delta":
+		envelope.Type = "response.audio.delta"
 	}
 	switch envelope.Type {
 	case "session.created", "session.updated":
@@ -359,20 +374,26 @@ func translateOpenAIEvent(body []byte) (Event, bool) {
 		return Event{Kind: EventSpeechStopped}, true
 	case "conversation.item.input_audio_transcription.delta":
 		var event struct {
-			Delta string `json:"delta"`
+			Delta          string `json:"delta"`
+			ItemID         string `json:"item_id"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptDelta, Role: "user", Text: event.Delta, TextSource: "audio"}, true
+		return Event{Kind: EventTranscriptDelta, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "user", Text: event.Delta, TextSource: "audio"}, true
 	case "conversation.item.input_audio_transcription.completed":
 		var event struct {
-			Transcript string `json:"transcript"`
+			Transcript     string `json:"transcript"`
+			ItemID         string `json:"item_id"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptFinal, Role: "user", Text: event.Transcript, TextSource: "audio", Final: true}, true
+		return Event{Kind: EventTranscriptFinal, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "user", Text: event.Transcript, TextSource: "audio", Final: true}, true
 	case "response.created":
 		var event struct {
 			Response struct {
@@ -385,31 +406,47 @@ func translateOpenAIEvent(body []byte) (Event, bool) {
 		return Event{Kind: EventResponseStarted, ResponseID: event.Response.ID}, true
 	case "response.text.delta":
 		var event struct {
-			Delta string `json:"delta"`
+			Delta          string `json:"delta"`
+			ResponseID     string `json:"response_id"`
+			ItemID         string `json:"item_id"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptDelta, Role: "assistant", Text: event.Delta, TextSource: "text"}, true
+		return Event{Kind: EventTranscriptDelta, ResponseID: event.ResponseID, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "assistant", Text: event.Delta, TextSource: "text"}, true
 	case "response.audio_transcript.delta":
 		var event struct {
-			Delta string `json:"delta"`
+			Delta          string `json:"delta"`
+			ResponseID     string `json:"response_id"`
+			ItemID         string `json:"item_id"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptDelta, Role: "assistant", Text: event.Delta, TextSource: "audio"}, true
+		return Event{Kind: EventTranscriptDelta, ResponseID: event.ResponseID, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "assistant", Text: event.Delta, TextSource: "audio"}, true
 	case "response.audio_transcript.done":
 		var event struct {
-			Transcript string `json:"transcript"`
+			Transcript     string `json:"transcript"`
+			ResponseID     string `json:"response_id"`
+			ItemID         string `json:"item_id"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptFinal, Role: "assistant", Text: event.Transcript, TextSource: "audio", Final: true}, true
+		return Event{Kind: EventTranscriptFinal, ResponseID: event.ResponseID, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "assistant", Text: event.Transcript, TextSource: "audio", Final: true}, true
 	case "response.audio.delta":
 		var event struct {
-			Delta string `json:"delta"`
+			Delta          string `json:"delta"`
+			ResponseID     string `json:"response_id"`
+			ItemID         string `json:"item_id"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
@@ -418,18 +455,21 @@ func translateOpenAIEvent(body []byte) (Event, bool) {
 		if err != nil {
 			return Event{Kind: EventError, Error: fmt.Errorf("openai realtime: decode audio delta: %w", err)}, true
 		}
-		return Event{Kind: EventAudio, PCM: pcm}, true
+		return Event{Kind: EventAudio, ResponseID: event.ResponseID, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), PCM: pcm}, true
 	case "response.function_call_arguments.done":
 		var event struct {
-			ResponseID string `json:"response_id"`
-			CallID     string `json:"call_id"`
-			Name       string `json:"name"`
-			Arguments  string `json:"arguments"`
+			ResponseID     string `json:"response_id"`
+			ItemID         string `json:"item_id"`
+			CallID         string `json:"call_id"`
+			Name           string `json:"name"`
+			Arguments      string `json:"arguments"`
+			Sequence       uint64 `json:"sequence"`
+			SequenceNumber uint64 `json:"sequence_number"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventToolCall, ResponseID: event.ResponseID, CallID: event.CallID, Name: event.Name, Arguments: event.Arguments}, true
+		return Event{Kind: EventToolCall, ResponseID: event.ResponseID, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), CallID: event.CallID, Name: event.Name, Arguments: event.Arguments}, true
 	case "response.done":
 		var event struct {
 			Response struct {
@@ -452,7 +492,6 @@ func translateOpenAIEvent(body []byte) (Event, bool) {
 		out := Event{Kind: kind, ResponseID: event.Response.ID, Status: event.Response.Status}
 		if event.Response.Usage != nil {
 			out.Usage = Usage{InputTokens: event.Response.Usage.InputTokens, OutputTokens: event.Response.Usage.OutputTokens, TotalTokens: event.Response.Usage.TotalTokens}
-			out.Usage.TotalTokens = event.Response.Usage.TotalTokens
 		}
 		return out, true
 	case "conversation.item.truncated", "response.cancelled":

@@ -49,11 +49,11 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 			TurnDetectionSilenceMs: 900,
 		},
 	}
-	got := realtimeSessionConfig(cfg)
-	if got.Voice != "custom-voice" || got.Instructions != "speak naturally" || got.TurnDetection == nil {
+	got := realtimeProviderSessionConfig(cfg)
+	if got.Voice != "custom-voice" || got.Instructions != "speak naturally" || got.TurnDetection != "smart_turn" {
 		t.Fatalf("unexpected realtime session config: %+v", got)
 	}
-	if got.TurnDetection.Type != "smart_turn" || got.TurnDetection.SilenceDurationMS != 900 || got.TurnDetection.Threshold == nil || *got.TurnDetection.Threshold != 0.2 {
+	if got.TurnDetectionSilenceMs != 900 || got.TurnDetectionThresh == nil || *got.TurnDetectionThresh != 0.2 {
 		t.Fatalf("unexpected turn detection config: %+v", got.TurnDetection)
 	}
 	if got.EnableSpeechEmotion == nil || *got.EnableSpeechEmotion {
@@ -64,15 +64,15 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 		t.Fatalf("realtime tools = %#v, want %v", got.Tools, wantTools)
 	}
 	for i, want := range wantTools {
-		if got.Tools[i].Function.Name != want {
-			t.Fatalf("realtime tool[%d] = %q, want %q", i, got.Tools[i].Function.Name, want)
+		if got.Tools[i].Name != want {
+			t.Fatalf("realtime tool[%d] = %q, want %q", i, got.Tools[i].Name, want)
 		}
 	}
 }
 
 func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
 	cfg := agent.Config{Instruction: "legacy phone automation prompt"}
-	got := realtimeSessionConfig(cfg)
+	got := realtimeProviderSessionConfig(cfg)
 	if got.Instructions != agent.DefaultRealtimeVoiceInstructions {
 		t.Fatalf("instructions = %q, want realtime default", got.Instructions)
 	}
@@ -83,7 +83,7 @@ func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
 
 func TestRealtimeSessionConfigPreservesSpekoAutomaticVoice(t *testing.T) {
 	cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "speko"}}
-	got := realtimeSessionConfig(cfg)
+	got := realtimeProviderSessionConfig(cfg)
 	if got.Voice != "" {
 		t.Fatalf("Speko voice = %q, want empty automatic selection", got.Voice)
 	}
@@ -94,9 +94,32 @@ func TestRealtimeSessionConfigResolvesNamedSpekoProviderForDefaults(t *testing.T
 		VoiceModel:          agent.VoiceModelConfig{Provider: "speko-main"},
 		VoiceModelProviders: map[string]agent.VoiceModelProvider{"speko-main": {Type: "speko"}},
 	}
-	got := realtimeSessionConfig(cfg)
+	got := realtimeProviderSessionConfig(cfg)
 	if got.Voice != "" {
 		t.Fatalf("named Speko voice = %q, want empty automatic selection", got.Voice)
+	}
+}
+
+func TestRealtimeSessionConfigLeavesProviderNativeRatesToAdapters(t *testing.T) {
+	cases := []struct {
+		provider, upstream string
+	}{
+		{provider: "qwen"},
+		{provider: "gemini"},
+		{provider: "openai"},
+		{provider: "xai"},
+		{provider: "speko", upstream: "google"},
+		{provider: "speko", upstream: "xai"},
+		{provider: "speko"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider+"/"+tc.upstream, func(t *testing.T) {
+			cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: tc.provider, UpstreamProvider: tc.upstream}}
+			got := realtimeProviderSessionConfig(cfg)
+			if got.InputSampleRate != 0 || got.OutputSampleRate != 0 {
+				t.Fatalf("provider rates = %d/%d, want adapter-owned defaults", got.InputSampleRate, got.OutputSampleRate)
+			}
+		})
 	}
 }
 
@@ -104,7 +127,7 @@ func TestRealtimeSessionConfigDoesNotApplyQwenVoiceToNativeProviders(t *testing.
 	for _, provider := range []string{"openai", "gemini", "xai"} {
 		t.Run(provider, func(t *testing.T) {
 			cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: provider}}
-			got := realtimeSessionConfig(cfg)
+			got := realtimeProviderSessionConfig(cfg)
 			if got.Voice != "" {
 				t.Fatalf("voice = %q, want native provider default", got.Voice)
 			}
@@ -112,8 +135,8 @@ func TestRealtimeSessionConfigDoesNotApplyQwenVoiceToNativeProviders(t *testing.
 	}
 }
 
-func TestRealtimeSpekoEndpointDetectsSilenceAfterSpeech(t *testing.T) {
-	endpoint := newRealtimeSpekoEndpoint(100)
+func TestRealtimeClientTurnEndpointDetectsSilenceAfterSpeech(t *testing.T) {
+	endpoint := newRealtimeClientTurnEndpoint(100)
 	speech := make([]byte, 640)
 	for i := 0; i < len(speech); i += 2 {
 		binary.LittleEndian.PutUint16(speech[i:], uint16(1000))

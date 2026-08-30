@@ -24,6 +24,15 @@ type fakeRealtimePlaybackWrite struct {
 	final     bool
 }
 
+type fakeRealtimeResponseInterrupter struct {
+	calls int
+}
+
+func (f *fakeRealtimeResponseInterrupter) Interrupt(context.Context) error {
+	f.calls++
+	return nil
+}
+
 func (f *fakeRealtimePlaybackAudio) StartPlayback(agent.AudioFormat) (*agent.PlaybackStartResult, error) {
 	f.starts++
 	f.nextSessionID++
@@ -175,6 +184,22 @@ func TestRealtimeSessionTerminationPreservesBufferedError(t *testing.T) {
 	}
 }
 
+func TestInterruptRealtimeResponseSkipsIdleResponse(t *testing.T) {
+	interrupter := &fakeRealtimeResponseInterrupter{}
+	if err := interruptRealtimeResponse(context.Background(), false, interrupter); err != nil {
+		t.Fatal(err)
+	}
+	if interrupter.calls != 0 {
+		t.Fatalf("idle response interrupts = %d, want 0", interrupter.calls)
+	}
+	if err := interruptRealtimeResponse(context.Background(), true, interrupter); err != nil {
+		t.Fatal(err)
+	}
+	if interrupter.calls != 1 {
+		t.Fatalf("active response interrupts = %d, want 1", interrupter.calls)
+	}
+}
+
 func TestRealtimePlaybackOutputFormatUsesConfiguredDeviceFormat(t *testing.T) {
 	format := realtimePlaybackOutputFormat(agent.Config{Audio: agent.AudioConfig{
 		SampleRate: 16000,
@@ -183,6 +208,22 @@ func TestRealtimePlaybackOutputFormatUsesConfiguredDeviceFormat(t *testing.T) {
 	}})
 	if format.SampleRate != 16000 || format.Channels != 1 || format.BitWidth != 16 {
 		t.Fatalf("format = %+v, want pcm/16000/mono/16", format)
+	}
+}
+
+func TestRealtimeProviderAudioFormatPrefersNegotiatedFormat(t *testing.T) {
+	got := realtimeProviderAudioFormat(realtimevoice.AudioFormat{
+		Encoding: "pcm_s16le", SampleRate: 24000, Channels: 2, BitDepth: 24,
+	}, 16000, 8000)
+	if got.SampleRate != 24000 || got.Channels != 2 || got.BitWidth != 24 {
+		t.Fatalf("format = %+v, want negotiated pcm/24000/stereo/24", got)
+	}
+}
+
+func TestRealtimeProviderAudioFormatFallsBackToLegacyRate(t *testing.T) {
+	got := realtimeProviderAudioFormat(realtimevoice.AudioFormat{}, 16000, 24000)
+	if got.SampleRate != 16000 || got.Channels != 1 || got.BitWidth != 16 {
+		t.Fatalf("format = %+v, want legacy pcm/16000/mono/16", got)
 	}
 }
 

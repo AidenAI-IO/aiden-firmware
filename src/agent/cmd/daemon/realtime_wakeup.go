@@ -17,7 +17,6 @@ import (
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/realtimevoice"
-	"aiden-agent/internal/agent/rtclient"
 	"aiden-agent/internal/agent/tts"
 	"aiden-agent/internal/agenttask"
 
@@ -25,14 +24,14 @@ import (
 )
 
 const (
-	realtimeAudioReadTimeoutMs   = 200
-	realtimeConnectTimeout       = 15 * time.Second
-	realtimePlaybackKeepAlive    = 10 * time.Second
-	realtimeToolCallTimeout      = 30 * time.Second
-	realtimeTaskResultDebounce   = 500 * time.Millisecond
-	realtimeContextReplayTurns   = 10
-	realtimeSpekoEndpointSilence = 800 * time.Millisecond
-	realtimeSpekoSpeechThreshold = 500
+	realtimeAudioReadTimeoutMs        = 200
+	realtimeConnectTimeout            = 15 * time.Second
+	realtimePlaybackKeepAlive         = 10 * time.Second
+	realtimeToolCallTimeout           = 30 * time.Second
+	realtimeTaskResultDebounce        = 500 * time.Millisecond
+	realtimeContextReplayTurns        = 10
+	realtimeClientTurnEndpointSilence = 800 * time.Millisecond
+	realtimeClientTurnSpeechThreshold = 500
 )
 
 var errRealtimeShutdown = errors.New("realtime shutdown requested")
@@ -255,12 +254,19 @@ func drainRealtimeWakeups(events <-chan struct{}) {
 	}
 }
 
-func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
-	voice := cfg.VoiceModel.Voice
-	provider := realtimeProviderType(cfg)
-	if voice == "" && provider == "qwen" {
-		voice = rtclient.DefaultVoice
+func realtimeProviderType(cfg agent.Config) string {
+	provider := strings.ToLower(strings.TrimSpace(cfg.VoiceModel.Provider))
+	if record, ok := cfg.VoiceModelProviders[provider]; ok && strings.TrimSpace(record.Type) != "" {
+		provider = strings.ToLower(strings.TrimSpace(record.Type))
 	}
+	if provider == "" {
+		return "qwen"
+	}
+	return provider
+}
+
+func realtimeProviderSessionConfig(cfg agent.Config) realtimevoice.SessionConfig {
+	voice := cfg.VoiceModel.Voice
 	inputFormat := cfg.VoiceModel.InputAudioFormat
 	if inputFormat == "" {
 		inputFormat = "pcm"
@@ -282,55 +288,32 @@ func realtimeSessionConfig(cfg agent.Config) rtclient.SessionConfig {
 		v := true
 		enableEmotion = &v
 	}
-	turn := &rtclient.TurnDetection{Type: turnType, Threshold: cfg.VoiceModel.TurnDetectionThreshold, SilenceDurationMS: cfg.VoiceModel.TurnDetectionSilenceMs}
-	return rtclient.SessionConfig{Modalities: []string{"audio", "text"}, Voice: voice, EnableSpeechEmotion: enableEmotion,
-		Instructions: instructions, InputAudioFormat: inputFormat, OutputAudioFormat: outputFormat,
-		MaxHistoryTurns: realtimeContextReplayTurns, Tools: realtimeVoiceToolDefinitions(), TurnDetection: turn}
+	return realtimevoice.SessionConfig{APIKey: cfg.VoiceModel.APIKey, Model: cfg.VoiceModel.Model, Voice: voice, Instructions: instructions,
+		InputAudioFormat: inputFormat, OutputAudioFormat: outputFormat, MaxHistoryTurns: realtimeContextReplayTurns,
+		TurnDetection: turnType, TurnDetectionThresh: cfg.VoiceModel.TurnDetectionThreshold, TurnDetectionSilenceMs: cfg.VoiceModel.TurnDetectionSilenceMs,
+		EnableSpeechEmotion: enableEmotion, Tools: realtimeVoiceToolDefinitions()}
 }
 
-func realtimeProviderType(cfg agent.Config) string {
-	provider := strings.ToLower(strings.TrimSpace(cfg.VoiceModel.Provider))
-	if record, ok := cfg.VoiceModelProviders[provider]; ok && strings.TrimSpace(record.Type) != "" {
-		provider = strings.ToLower(strings.TrimSpace(record.Type))
-	}
-	if provider == "" {
-		return "qwen"
-	}
-	return provider
-}
-
-func realtimeProviderSessionConfig(cfg agent.Config) realtimevoice.SessionConfig {
-	legacy := realtimeSessionConfig(cfg)
-	tools := legacy.Tools
-	neutralTools := make([]realtimevoice.Tool, 0, len(tools))
-	for _, tool := range tools {
-		neutralTools = append(neutralTools, realtimevoice.Tool{Name: tool.Function.Name, Description: tool.Function.Description, Parameters: tool.Function.Parameters})
-	}
-	return realtimevoice.SessionConfig{APIKey: cfg.VoiceModel.APIKey, Model: cfg.VoiceModel.Model, Voice: legacy.Voice, Instructions: legacy.Instructions,
-		InputAudioFormat: legacy.InputAudioFormat, OutputAudioFormat: legacy.OutputAudioFormat, InputSampleRate: 16000, OutputSampleRate: 24000, MaxHistoryTurns: realtimeContextReplayTurns,
-		TurnDetection: legacy.TurnDetection.Type, TurnDetectionThresh: cfg.VoiceModel.TurnDetectionThreshold, TurnDetectionSilenceMs: cfg.VoiceModel.TurnDetectionSilenceMs,
-		EnableSpeechEmotion: legacy.EnableSpeechEmotion, Tools: neutralTools}
-}
-
-// realtimeSpekoEndpoint tracks a local speech turn for Speko S2S. Speko's
-// S2S contract exposes commit() but does not expose a server VAD stream, so a
-// small client-side energy gate is needed to delimit turns on the hardware.
-type realtimeSpekoEndpoint struct {
+// realtimeClientTurnEndpoint tracks a local speech turn when a provider
+// requires client-side endpointing. The provider contract exposes commit()
+// but does not expose a server VAD stream, so a small energy gate is needed
+// to delimit turns on the hardware.
+type realtimeClientTurnEndpoint struct {
 	silenceDuration time.Duration
 	speechActive    bool
 	lastSpeechAt    time.Time
 }
 
-func newRealtimeSpekoEndpoint(silenceMs int) *realtimeSpekoEndpoint {
-	silence := realtimeSpekoEndpointSilence
+func newRealtimeClientTurnEndpoint(silenceMs int) *realtimeClientTurnEndpoint {
+	silence := realtimeClientTurnEndpointSilence
 	if silenceMs > 0 {
 		silence = time.Duration(silenceMs) * time.Millisecond
 	}
-	return &realtimeSpekoEndpoint{silenceDuration: silence}
+	return &realtimeClientTurnEndpoint{silenceDuration: silence}
 }
 
-func (e *realtimeSpekoEndpoint) Observe(pcm []byte, now time.Time) bool {
-	if e == nil || pcm16MeanAbs(pcm) < realtimeSpekoSpeechThreshold {
+func (e *realtimeClientTurnEndpoint) Observe(pcm []byte, now time.Time) bool {
+	if e == nil || pcm16MeanAbs(pcm) < realtimeClientTurnSpeechThreshold {
 		return false
 	}
 	e.speechActive = true
@@ -338,11 +321,11 @@ func (e *realtimeSpekoEndpoint) Observe(pcm []byte, now time.Time) bool {
 	return true
 }
 
-func (e *realtimeSpekoEndpoint) Due(now time.Time) bool {
+func (e *realtimeClientTurnEndpoint) Due(now time.Time) bool {
 	return e != nil && e.speechActive && !e.lastSpeechAt.IsZero() && now.Sub(e.lastSpeechAt) >= e.silenceDuration
 }
 
-func (e *realtimeSpekoEndpoint) Reset() {
+func (e *realtimeClientTurnEndpoint) Reset() {
 	if e == nil {
 		return
 	}
@@ -376,8 +359,8 @@ const (
 	realtimeResponseUserActionTool = "response_user_action"
 )
 
-func realtimeVoiceToolDefinitions() []rtclient.Tool {
-	return []rtclient.Tool{
+func realtimeVoiceToolDefinitions() []realtimevoice.Tool {
+	return []realtimevoice.Tool{
 		realtimeVoiceToolDefinition(
 			realtimeCurrentTimeTool,
 			"Get the current local date, time, timezone, and UTC offset.",
@@ -437,12 +420,12 @@ func realtimeVoiceToolDefinitions() []rtclient.Tool {
 	}
 }
 
-func realtimeVoiceToolDefinition(name, description string, parameters map[string]any) rtclient.Tool {
+func realtimeVoiceToolDefinition(name, description string, parameters map[string]any) realtimevoice.Tool {
 	encoded, err := json.Marshal(parameters)
 	if err != nil {
 		encoded = json.RawMessage(`{"type":"object","properties":{}}`)
 	}
-	return rtclient.Tool{Type: "function", Function: rtclient.FunctionDefinition{Name: name, Description: description, Parameters: encoded}}
+	return realtimevoice.Tool{Name: name, Description: description, Parameters: encoded}
 }
 
 type realtimeVoiceToolExecutor struct {
@@ -567,19 +550,48 @@ func realtimePlaybackOutputFormat(cfg agent.Config) agent.AudioFormat {
 	}
 }
 
+func realtimeAgentAudioFormat(format realtimevoice.AudioFormat) agent.AudioFormat {
+	return agent.AudioFormat{SampleRate: uint32(format.SampleRate), Channels: uint32(format.Channels), BitWidth: uint32(format.BitDepth)}
+}
+
+func realtimeVoiceDeviceFormat(cfg agent.Config) realtimevoice.AudioFormat {
+	return realtimevoice.AudioFormat{
+		Encoding:   "pcm_s16le",
+		SampleRate: int(cfg.Audio.SampleRateOrDefault()),
+		Channels:   int(cfg.Audio.ChannelsOrDefault()),
+		BitDepth:   int(cfg.Audio.BitWidthOrDefault()),
+	}
+}
+
+func realtimeProviderAudioFormat(format realtimevoice.AudioFormat, legacyRate, defaultRate int) agent.AudioFormat {
+	return realtimeAgentAudioFormat(format.OrDefault(positiveRate(legacyRate, defaultRate)))
+}
+
+func positiveRate(primary, fallback int) int {
+	if primary > 0 {
+		return primary
+	}
+	return fallback
+}
+
 func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent.Runtime, tasks *agenttask.Manager, chatBridges ...*realtimeChatBridge) error {
+	return runRealtimeSessionWithRegistry(cfg, sigChan, runtime, tasks, realtimevoice.DefaultProviderRegistry(), chatBridges...)
+}
+
+func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, runtime *agent.Runtime, tasks *agenttask.Manager, registry *realtimevoice.ProviderRegistry, chatBridges ...*realtimeChatBridge) error {
 	var chatBridge *realtimeChatBridge
 	if len(chatBridges) > 0 {
 		chatBridge = chatBridges[0]
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	sessionConfig := realtimeProviderSessionConfig(cfg)
 	if runtime != nil {
 		unregisterReset := runtime.RegisterUserContextResetHook(cancel)
 		defer unregisterReset()
 	}
 	userContext, err := agent.InitializeContextManager(
-		realtimeSessionConfig(cfg).Instructions,
+		sessionConfig.Instructions,
 		agentpath.UserContextManagerSessionFolder(cfg.ConfigDir),
 		nil,
 	)
@@ -588,34 +600,27 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	}
 
 	providerName := realtimeProviderType(cfg)
-	var provider realtimevoice.Provider
-	switch providerName {
-	case "qwen":
-		provider = realtimevoice.QwenProvider{WorkspaceID: cfg.VoiceModel.WorkspaceID, Region: cfg.VoiceModel.Region, Endpoint: cfg.VoiceModel.Endpoint}
-	case "speko":
-		provider = realtimevoice.SpekoProvider{BaseURL: cfg.VoiceModel.BaseURL, AgentID: cfg.VoiceModel.AgentID, UpstreamProvider: cfg.VoiceModel.UpstreamProvider}
-	case "openai":
-		provider = realtimevoice.OpenAIProvider{Endpoint: cfg.VoiceModel.Endpoint}
-	case "gemini":
-		provider = realtimevoice.GeminiProvider{Endpoint: cfg.VoiceModel.Endpoint}
-	case "xai":
-		provider = realtimevoice.XAIProvider{Endpoint: cfg.VoiceModel.Endpoint}
-	default:
-		return fmt.Errorf("unsupported realtime provider %q", providerName)
-	}
 	log.Printf("[realtime] Connecting: provider=%s model=%s region=%s workspace_configured=%t endpoint_override=%t",
 		providerName, cfg.VoiceModel.Model, cfg.VoiceModel.Region, cfg.VoiceModel.WorkspaceID != "", cfg.VoiceModel.Endpoint != "")
 	connectCtx, connectCancel := context.WithTimeout(ctx, realtimeConnectTimeout)
-	session, err := provider.Open(connectCtx, realtimeProviderSessionConfig(cfg))
+	session, err := registry.Open(connectCtx, providerName, realtimevoice.ProviderConfig{Endpoint: cfg.VoiceModel.Endpoint, BaseURL: cfg.VoiceModel.BaseURL, AgentID: cfg.VoiceModel.AgentID, UpstreamProvider: cfg.VoiceModel.UpstreamProvider, WorkspaceID: cfg.VoiceModel.WorkspaceID, Region: cfg.VoiceModel.Region}, sessionConfig, realtimevoice.DeviceMediaConfig{Input: realtimeVoiceDeviceFormat(cfg), Output: realtimeVoiceDeviceFormat(cfg)})
 	connectCancel()
 	if err != nil {
 		return fmt.Errorf("connect realtime voice model: %w", err)
 	}
 	defer session.Close()
 	info := session.Info()
-	textSession, supportsText := realtimeTextSession(session)
-	if supportsText && info.Capabilities.ContextReplay {
-		if err := replayRealtimeContext(ctx, textSession, userContext); err != nil {
+	turnCommitter, _ := session.(realtimevoice.TurnCommitter)
+	responseInterrupter, _ := session.(realtimevoice.ResponseInterrupter)
+	canInterrupt := info.Capabilities.CanInterruptResponse
+	toolResultSender, _ := session.(realtimevoice.ToolResultSender)
+	canSendToolResult := info.Capabilities.CanSendToolResult
+	textSession, _ := realtimeTextSession(session)
+	supportsText := info.Capabilities.CanSendText
+	contextReplayer, _ := session.(realtimevoice.ContextReplayer)
+	canReplayContext := info.Capabilities.CanReplayContext
+	if supportsText && canReplayContext {
+		if err := replayRealtimeContext(ctx, contextReplayer, userContext); err != nil {
 			return fmt.Errorf("restore realtime user context: %w", err)
 		}
 	}
@@ -633,32 +638,22 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	playbackAudio := realtimePlaybackAudioAdapter{
 		backend: agent.NewConfiguredAudioPlaybackBackend(cfg, audioService, nil),
 	}
-	inputFormat := agent.AudioFormat{
-		SampleRate: uint32(info.InputSampleRate),
-		Channels:   1,
-		BitWidth:   16,
-	}
+	inputFormat := realtimeAgentAudioFormat(info.InputFormatOrDefault(16000))
 	recording, err := recordingAudio.StartRecording(inputFormat)
 	if err != nil {
 		return fmt.Errorf("start realtime recording: %w", err)
 	}
 	defer func() { _ = recordingAudio.StopRecording(recording.SessionID) }()
-	log.Printf("[realtime] Microphone opened: session_id=%d format=pcm/%d/mono/16", recording.SessionID, inputFormat.SampleRate)
+	log.Printf("[realtime] Microphone opened: session_id=%d format=pcm/%d/%d/%d", recording.SessionID, inputFormat.SampleRate, inputFormat.Channels, inputFormat.BitWidth)
 
 	chunks := make(chan []byte, 8)
 	readErrs := make(chan error, 1)
 	go streamRealtimeAudio(ctx, recordingAudio, recording.SessionID, chunks, readErrs)
 
-	realtimeOutputFormat := agent.AudioFormat{SampleRate: uint32(info.OutputSampleRate), Channels: 1, BitWidth: 16}
+	realtimeOutputFormat := realtimeAgentAudioFormat(info.OutputFormatOrDefault(24000))
 	outputFormat := realtimePlaybackOutputFormat(cfg)
 	if outputFormat.SampleRate == 0 {
 		outputFormat = realtimeOutputFormat
-	}
-	var outputResampler *tts.PCM16MonoResampler
-	if realtimeOutputFormat.Channels == outputFormat.Channels &&
-		realtimeOutputFormat.BitWidth == outputFormat.BitWidth &&
-		realtimeOutputFormat.SampleRate != outputFormat.SampleRate {
-		outputResampler = tts.NewPCM16MonoResampler(int(realtimeOutputFormat.SampleRate), int(outputFormat.SampleRate))
 	}
 	log.Printf("[realtime] Playback format: source=pcm/%d/%d/%d target=pcm/%d/%d/%d resample=%t",
 		realtimeOutputFormat.SampleRate,
@@ -667,7 +662,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 		outputFormat.SampleRate,
 		outputFormat.Channels,
 		outputFormat.BitWidth,
-		outputResampler != nil,
+		uint32(info.ProviderOutputAudioFormat.SampleRate) != outputFormat.SampleRate,
 	)
 	playback := realtimePlaybackState{finalizeResponses: cfg.AudioBackendOrDefault() == agent.AudioBackendLocal}
 	if err := playback.open(playbackAudio, outputFormat); err != nil {
@@ -677,59 +672,59 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	defer func() { _ = playback.stop(playbackAudio) }()
 	playbackKeepAlive := time.NewTicker(realtimePlaybackKeepAlive)
 	defer playbackKeepAlive.Stop()
-	var spekoEndpoint *realtimeSpekoEndpoint
-	var spekoCommitTimer *time.Timer
-	var spekoCommitTimerCh <-chan time.Time
-	if providerName == "speko" {
-		spekoEndpoint = newRealtimeSpekoEndpoint(cfg.VoiceModel.TurnDetectionSilenceMs)
+	var clientTurnEndpoint *realtimeClientTurnEndpoint
+	var clientTurnCommitTimer *time.Timer
+	var clientTurnCommitTimerCh <-chan time.Time
+	if info.Capabilities.ClientSideTurnDetection {
+		clientTurnEndpoint = newRealtimeClientTurnEndpoint(cfg.VoiceModel.TurnDetectionSilenceMs)
 	}
-	stopSpekoCommitTimer := func() {
-		if spekoCommitTimer == nil {
-			spekoCommitTimerCh = nil
+	stopClientTurnCommitTimer := func() {
+		if clientTurnCommitTimer == nil {
+			clientTurnCommitTimerCh = nil
 			return
 		}
-		if !spekoCommitTimer.Stop() {
+		if !clientTurnCommitTimer.Stop() {
 			select {
-			case <-spekoCommitTimer.C:
+			case <-clientTurnCommitTimer.C:
 			default:
 			}
 		}
-		spekoCommitTimerCh = nil
+		clientTurnCommitTimerCh = nil
 	}
-	defer stopSpekoCommitTimer()
-	armSpekoCommitTimer := func() {
-		if spekoEndpoint == nil || !spekoEndpoint.speechActive {
+	defer stopClientTurnCommitTimer()
+	armClientTurnCommitTimer := func() {
+		if clientTurnEndpoint == nil || !clientTurnEndpoint.speechActive {
 			return
 		}
-		delay := spekoEndpoint.silenceDuration
-		if !spekoEndpoint.lastSpeechAt.IsZero() {
-			delay = spekoEndpoint.silenceDuration - time.Since(spekoEndpoint.lastSpeechAt)
+		delay := clientTurnEndpoint.silenceDuration
+		if !clientTurnEndpoint.lastSpeechAt.IsZero() {
+			delay = clientTurnEndpoint.silenceDuration - time.Since(clientTurnEndpoint.lastSpeechAt)
 			if delay < 0 {
 				delay = 0
 			}
 		}
-		if spekoCommitTimer == nil {
-			spekoCommitTimer = time.NewTimer(delay)
+		if clientTurnCommitTimer == nil {
+			clientTurnCommitTimer = time.NewTimer(delay)
 		} else {
-			if !spekoCommitTimer.Stop() {
+			if !clientTurnCommitTimer.Stop() {
 				select {
-				case <-spekoCommitTimer.C:
+				case <-clientTurnCommitTimer.C:
 				default:
 				}
 			}
-			spekoCommitTimer.Reset(delay)
+			clientTurnCommitTimer.Reset(delay)
 		}
-		spekoCommitTimerCh = spekoCommitTimer.C
+		clientTurnCommitTimerCh = clientTurnCommitTimer.C
 	}
-	commitSpekoTurn := func() error {
-		if spekoEndpoint == nil || !spekoEndpoint.speechActive {
+	commitClientTurn := func() error {
+		if clientTurnEndpoint == nil || !clientTurnEndpoint.speechActive {
 			return nil
 		}
-		stopSpekoCommitTimer()
-		if err := session.Commit(ctx); err != nil {
-			return fmt.Errorf("commit speko input turn: %w", err)
+		stopClientTurnCommitTimer()
+		if err := turnCommitter.Commit(ctx); err != nil {
+			return fmt.Errorf("commit realtime input turn: %w", err)
 		}
-		spekoEndpoint.Reset()
+		clientTurnEndpoint.Reset()
 		return nil
 	}
 	firstAudioChunk := true
@@ -824,7 +819,10 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			}
 		case result := <-toolResults:
 			call := result.call
-			if err := session.SendToolResult(ctx, call.CallID, result.output); err != nil {
+			if !canSendToolResult {
+				return fmt.Errorf("realtime provider %s cannot send tool results", providerName)
+			}
+			if err := toolResultSender.SendToolResult(ctx, call.CallID, result.output); err != nil {
 				return fmt.Errorf("send realtime tool result: %w", err)
 			}
 			if err := appendRealtimeToolExecution(userContext, call, result.output); err != nil {
@@ -838,7 +836,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			}
 		case pcm, ok := <-chunks:
 			if !ok {
-				if err := commitSpekoTurn(); err != nil {
+				if err := commitClientTurn(); err != nil {
 					return err
 				}
 				return nil
@@ -846,8 +844,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			if err := session.SendAudio(ctx, pcm); err != nil {
 				return err
 			}
-			if spekoEndpoint != nil && spekoEndpoint.Observe(pcm, time.Now()) {
-				armSpekoCommitTimer()
+			if clientTurnEndpoint != nil && clientTurnEndpoint.Observe(pcm, time.Now()) {
+				armClientTurnCommitTimer()
 			}
 			if firstAudioChunk {
 				firstAudioChunk = false
@@ -892,13 +890,13 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			if err := tryInjectTaskUpdates(); err != nil {
 				return err
 			}
-		case <-spekoCommitTimerCh:
-			if spekoEndpoint != nil && spekoEndpoint.Due(time.Now()) {
-				if err := commitSpekoTurn(); err != nil {
+		case <-clientTurnCommitTimerCh:
+			if clientTurnEndpoint != nil && clientTurnEndpoint.Due(time.Now()) {
+				if err := commitClientTurn(); err != nil {
 					return err
 				}
-			} else if spekoEndpoint != nil && spekoEndpoint.speechActive {
-				armSpekoCommitTimer()
+			} else if clientTurnEndpoint != nil && clientTurnEndpoint.speechActive {
+				armClientTurnCommitTimer()
 			}
 		case command := <-chatBridgeCommands(chatBridge):
 			if !supportsText {
@@ -935,7 +933,9 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				activeChat = nil
 			}
 		case <-chatCommandDone(activeChat):
-			_ = session.Interrupt(ctx)
+			if canInterrupt {
+				_ = interruptRealtimeResponse(ctx, responseActive, responseInterrupter)
+			}
 			sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "request canceled"})
 			close(activeChat.events)
 			activeChat = nil
@@ -953,8 +953,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			case realtimevoice.EventSpeechStarted:
 				inputSpeechActive = true
 				log.Println("[realtime] Speech started, interrupting local playback")
-				if info.Capabilities.Interrupt {
-					if err := session.Interrupt(ctx); err != nil {
+				if canInterrupt {
+					if err := interruptRealtimeResponse(ctx, responseActive, responseInterrupter); err != nil {
 						return fmt.Errorf("interrupt realtime provider response: %w", err)
 					}
 				}
@@ -965,8 +965,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				}
 			case realtimevoice.EventSpeechStopped:
 				inputSpeechActive = false
-				if providerName == "speko" {
-					if err := commitSpekoTurn(); err != nil {
+				if clientTurnEndpoint != nil {
+					if err := commitClientTurn(); err != nil {
 						return err
 					}
 				}
@@ -990,11 +990,6 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				responseText.Reset()
 				responseTranscript.Reset()
 				assistantPersisted = false
-				if realtimeOutputFormat.SampleRate != outputFormat.SampleRate &&
-					realtimeOutputFormat.Channels == outputFormat.Channels &&
-					realtimeOutputFormat.BitWidth == outputFormat.BitWidth {
-					outputResampler = tts.NewPCM16MonoResampler(int(realtimeOutputFormat.SampleRate), int(outputFormat.SampleRate))
-				}
 				// Ignore any late deltas from the interrupted response until the
 				// server explicitly starts the next one. The speaker session stays
 				// open across responses.
@@ -1040,9 +1035,6 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 					}
 				}
 				pcm := event.PCM
-				if outputResampler != nil {
-					pcm = outputResampler.Write(pcm)
-				}
 				if err := playback.append(playbackAudio, outputFormat, pcm); err != nil {
 					return err
 				}
@@ -1128,7 +1120,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 
 func realtimeTextSession(session realtimevoice.Session) (realtimevoice.TextSession, bool) {
 	textSession, ok := session.(realtimevoice.TextSession)
-	return textSession, ok && session.Info().Capabilities.TextInput
+	return textSession, ok
 }
 
 func realtimeSessionTerminationError(errs <-chan error) error {
@@ -1143,6 +1135,13 @@ func realtimeSessionTerminationError(errs <-chan error) error {
 	default:
 	}
 	return nil
+}
+
+func interruptRealtimeResponse(ctx context.Context, responseActive bool, interrupter realtimevoice.ResponseInterrupter) error {
+	if !responseActive || interrupter == nil {
+		return nil
+	}
+	return interrupter.Interrupt(ctx)
 }
 
 func ensureImplicitRealtimeResponse(
@@ -1274,7 +1273,7 @@ func appendRealtimeToolExecution(manager *contextmanager.ContextManager, call re
 	})
 }
 
-func replayRealtimeContext(ctx context.Context, session realtimevoice.TextSession, manager *contextmanager.ContextManager) error {
+func replayRealtimeContext(ctx context.Context, session realtimevoice.ContextReplayer, manager *contextmanager.ContextManager) error {
 	if session == nil || manager == nil {
 		return nil
 	}

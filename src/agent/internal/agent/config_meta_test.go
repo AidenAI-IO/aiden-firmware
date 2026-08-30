@@ -836,7 +836,6 @@ providerVisible:
 		{Value: "openai", Label: "OpenAI Realtime"},
 		{Value: "google", Label: "Google Gemini Live"},
 		{Value: "xai", Label: "xAI Grok Voice"},
-		{Value: "inworld", Label: "Inworld"},
 	}
 	if !reflect.DeepEqual(upstream.Enum, wantUpstreams) {
 		t.Fatalf("voice_model_providers.upstream_provider enum = %#v, want %#v", upstream.Enum, wantUpstreams)

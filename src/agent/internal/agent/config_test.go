@@ -67,11 +67,20 @@ func TestVoiceModelConfigValidatesRealtimeProvider(t *testing.T) {
 	if err := (VoiceModelConfig{Provider: "unknown", APIKey: "key"}).Validate(); err == nil {
 		t.Fatal("expected unsupported realtime provider error")
 	}
-	if err := (VoiceModelConfig{Provider: "speko", APIKey: "key"}).Validate(); err == nil || !strings.Contains(err.Error(), "upstream_provider") {
-		t.Fatalf("missing Speko upstream error = %v", err)
+	if err := (VoiceModelConfig{Provider: "speko", APIKey: "key"}).Validate(); err != nil {
+		t.Fatalf("Speko auto-routing config rejected: %v", err)
 	}
-	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "openai", APIKey: "key", BaseURL: "http://localhost:8080"}).Validate(); err != nil {
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "openai", Model: "gpt-realtime", APIKey: "key", BaseURL: "http://localhost:8080"}).Validate(); err != nil {
 		t.Fatalf("valid Speko config rejected: %v", err)
+	}
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "inworld", Model: "model", APIKey: "key"}).Validate(); err == nil || !strings.Contains(err.Error(), "unsupported provider") {
+		t.Fatalf("unsupported Speko upstream accepted: %v", err)
+	}
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "gemini", Model: "gemini-live", APIKey: "key"}).Validate(); err != nil {
+		t.Fatalf("Gemini Speko alias rejected: %v", err)
+	}
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "google", APIKey: "key"}).Validate(); err == nil || !strings.Contains(err.Error(), "both be set") {
+		t.Fatalf("partial Speko routing config accepted: %v", err)
 	}
 	for _, provider := range []string{"openai", "gemini", "xai"} {
 		t.Run(provider, func(t *testing.T) {
@@ -113,7 +122,6 @@ input_mode = "realtime"
 
 [voice_model]
 provider = "speko"
-upstream_provider = "openai"
 api_key = "secret"
 `), 0o600); err != nil {
 		t.Fatal(err)
