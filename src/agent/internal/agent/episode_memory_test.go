@@ -400,6 +400,7 @@ func TestEpisodeMemoryProcessorUpdatesRevisionAndQuarantinesUnresolvedConflict(t
 		ExtractorVersion: episodeMemoryExtractorVersion, LessonKey: "settings_display_location",
 		Title: "Display is under Settings", Summary: "Open Display from Settings",
 		Content:  "Situation: In Settings\nGuidance: Open Display\nExpected effect: Display controls are visible",
+		Priority: 10, Confidence: 0.2,
 		DeviceID: "device_a", AppName: "Settings", Tags: []string{episodeMemoryTag, "settings", "display"},
 		Applicability: map[string]string{"device_id": "device_a", "app_name": "Settings"},
 		EvidenceRefs:  []MemorySourceRef{{Type: "episode", ID: "ep_original", EventIDs: []string{"evt_original"}}},
@@ -412,7 +413,7 @@ func TestEpisodeMemoryProcessorUpdatesRevisionAndQuarantinesUnresolvedConflict(t
   "episode_assessment":{"goal_result":"achieved","reason":"The Display entry opened the controls.","evidence_refs":["ep_update_result"]},
   "candidates":[{
     "lesson_key":"settings_display_location_update","type":"fact","action":"update","memory_id":"devmem_settings_fact","memory_revision":1,
-    "unresolved_conflict":false,"situation":"In Settings on device A","guidance":"Open the Display entry from the main list","expected_effect":"Display controls are visible",
+	    "unresolved_conflict":false,"situation":"In Settings on device A","guidance":"Open the Display entry from the main list","expected_effect":"Display controls are visible","confidence":0.84,
     "scope":{"device_id":"device_a","app_name":"Settings","page_name":"main"},"tags":["settings","display"],
     "evidence_refs":["ep_update_result"]
   }]
@@ -466,7 +467,7 @@ func TestEpisodeMemoryProcessorUpdatesRevisionAndQuarantinesUnresolvedConflict(t
 	if err != nil || !found {
 		t.Fatalf("Get(first batch) found=%v error=%v", found, err)
 	}
-	if updated.Status != "active" || updated.Revision != 2 {
+	if updated.Status != "active" || updated.Revision != 2 || updated.Priority != 60 || updated.Confidence != 0.84 {
 		t.Fatalf("first batch memory = %#v, want active revision 2", updated)
 	}
 	state, err := processor.state.Snapshot()
@@ -481,7 +482,7 @@ func TestEpisodeMemoryProcessorUpdatesRevisionAndQuarantinesUnresolvedConflict(t
   "candidates":[{
     "lesson_key":"settings_display_location_conflict","type":"fact","action":"update","memory_id":"devmem_settings_fact","memory_revision":2,
     "unresolved_conflict":true,"conflict_reason":"The same Settings scope showed an incompatible location without a distinguishing precondition.",
-    "situation":"In Settings on device A","guidance":"Do not rely on one fixed Display location until the differing UI states can be distinguished","expected_effect":"The agent avoids following an unsafe location rule",
+	    "situation":"In Settings on device A","guidance":"Do not rely on one fixed Display location until the differing UI states can be distinguished","expected_effect":"The agent avoids following an unsafe location rule","confidence":0.62,
     "scope":{"device_id":"device_a","app_name":"Settings"},"tags":["settings","display"],
     "evidence_refs":["ep_conflict_result"]
   }]
@@ -496,7 +497,7 @@ func TestEpisodeMemoryProcessorUpdatesRevisionAndQuarantinesUnresolvedConflict(t
 	if err != nil || !found {
 		t.Fatalf("Get(updated) found=%v error=%v", found, err)
 	}
-	if updated.Status != "disputed" || updated.Revision != 3 || len(updated.RevisionHistory) != 2 {
+	if updated.Status != "disputed" || updated.Revision != 3 || len(updated.RevisionHistory) != 2 || updated.Priority != 60 || updated.Confidence != 0.62 {
 		t.Fatalf("updated memory = %#v, want disputed revision 3 with two prior revisions", updated)
 	}
 	if distinctEpisodeEvidenceCount(updated.EvidenceRefs) != 3 {
@@ -997,6 +998,45 @@ func TestFailureCandidateMustReferenceNotAchievedEvidence(t *testing.T) {
 	}
 }
 
+func TestEpisodeMemoryCandidateUsesModelConfidenceWithExplicitDefault(t *testing.T) {
+	episode := TaskEpisode{Events: []TaskEpisodeEvent{{
+		EventID: "result", Type: "tool_result", ToolName: "touch_gesture", Observation: "Display controls are visible",
+	}}}
+	candidate := episodeMemoryCandidate{
+		LessonKey: "settings_display", Type: episodeMemoryTypeFact, Action: episodeMemoryActionCreate,
+		Retention: episodeMemoryRetentionDurable, Situation: "In Settings", Guidance: "Open Display",
+		ExpectedEffect: "Display controls are visible", Scope: map[string]string{"app_name": "Settings"},
+		EvidenceRefs: []string{"result"},
+	}
+	validated, ok := validateEpisodeMemoryCandidate(episode, episodeMemoryAssessment{GoalResult: episodeGoalAchieved}, candidate, map[string]bool{})
+	if !ok || validated.Confidence == nil || *validated.Confidence != 0.7 {
+		t.Fatalf("validated=%#v ok=%v, want omitted confidence default 0.7", validated, ok)
+	}
+	candidate.Confidence = episodeMemoryConfidencePointer(0.88)
+	validated, ok = validateEpisodeMemoryCandidate(episode, episodeMemoryAssessment{GoalResult: episodeGoalAchieved}, candidate, map[string]bool{})
+	if !ok || validated.Confidence == nil || *validated.Confidence != 0.88 {
+		t.Fatalf("validated=%#v ok=%v, want model confidence 0.88", validated, ok)
+	}
+	candidate.Confidence = episodeMemoryConfidencePointer(1.01)
+	if _, ok := validateEpisodeMemoryCandidate(episode, episodeMemoryAssessment{GoalResult: episodeGoalAchieved}, candidate, map[string]bool{}); ok {
+		t.Fatal("candidate with confidence above 1 was accepted")
+	}
+	candidate.Confidence = episodeMemoryConfidencePointer(0)
+	if _, ok := validateEpisodeMemoryCandidate(episode, episodeMemoryAssessment{GoalResult: episodeGoalAchieved}, candidate, map[string]bool{}); ok {
+		t.Fatal("candidate with explicit zero confidence was accepted")
+	}
+	var decoded episodeMemoryCandidate
+	if err := json.Unmarshal([]byte(`{"confidence":0}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Confidence == nil || *decoded.Confidence != 0 {
+		t.Fatalf("decoded confidence=%v, want explicit zero preserved", decoded.Confidence)
+	}
+	if err := json.Unmarshal([]byte(`{"confidence":null}`), &decoded); err == nil {
+		t.Fatal("explicit null confidence was accepted as omitted")
+	}
+}
+
 func TestEpisodeMemoryCandidatePreservesExplicitVersionScope(t *testing.T) {
 	episode := TaskEpisode{
 		DeviceScope: map[string]string{
@@ -1409,7 +1449,7 @@ func TestEpisodeMemoryCreatePreservesExplicitCreateAction(t *testing.T) {
 	candidate := episodeMemoryCandidate{
 		LessonKey: "different_wording", Type: episodeMemoryTypeFact, Action: episodeMemoryActionCreate,
 		Situation: "Different conclusion", Guidance: "Use a different rule", ExpectedEffect: "Different effect",
-		Scope: map[string]string{"device_id": "device_a", "app_name": "Settings"}, EvidenceRefs: []string{"evt"},
+		Scope: map[string]string{"device_id": "device_a", "app_name": "Settings"}, EvidenceRefs: []string{"evt"}, Confidence: episodeMemoryConfidencePointer(0.86),
 	}
 	id, err := processor.createMemory(ctx, episode, candidate)
 	if err != nil {
@@ -1417,6 +1457,10 @@ func TestEpisodeMemoryCreatePreservesExplicitCreateAction(t *testing.T) {
 	}
 	if id == "existing_scope" || !strings.HasPrefix(id, "devmem_") {
 		t.Fatalf("createMemory() id = %q, want a new deterministic memory", id)
+	}
+	created, found, err := plane.device.Get(ctx, id)
+	if err != nil || !found || created.Priority != 60 || created.Confidence != 0.86 {
+		t.Fatalf("created memory=%#v found=%v err=%v, want code priority 60 and model confidence 0.86", created, found, err)
 	}
 	items, err := plane.device.readAll()
 	if err != nil || len(items) != 2 {

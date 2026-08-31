@@ -107,6 +107,65 @@
       }
     },
     {
+      "id": "notification_user_fact_beats_public_info",
+      "category": "memory",
+      "description_for_judge": "General automotive news and public pricing must be ignored, while the user's own repayment amount and due date must be retained.",
+      "prompt": "Recall notification memory for com.ctrip.finance and tell me the repayment amount and due date. Do not call bridge_notification.",
+      "repeats": 5,
+      "rubric": [
+        {
+          "id": "recalls_user_bill",
+          "check": "The final answer says the user's Ctrip Finance repayment is CNY 291.50 and is due September 2."
+        },
+        {
+          "id": "does_not_retain_public_car_news",
+          "check": "The recalled memory and final answer do not treat the BMW iX3 public price as a fact about the user."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["recall_memory"],
+        "forbidden_tools": ["bridge_notification"]
+      },
+      "expected_recalled_memory_ids": ["tmp_notification_2"],
+      "setup": {
+        "type": "seed_notification",
+        "consolidate": true,
+        "timeout_sec": 120,
+        "expected_memory_count": 1,
+        "expected_memory_scope": "temporary",
+        "events": [
+          {
+            "source": "ios_ancs",
+            "source_id": "car-news-1",
+            "source_event_id": "car-news-event-1",
+            "device_id": "benchmark-device",
+            "notification_uid": 105,
+            "event": "added",
+            "app_identifier": "com.dongchedi",
+            "title": "Dongchedi",
+            "message": "The BMW iX3 public price is CNY 269,900",
+            "received_at": "2026-08-27T03:20:00Z"
+          },
+          {
+            "source": "ios_ancs",
+            "source_id": "bill-1",
+            "source_event_id": "bill-event-1",
+            "device_id": "benchmark-device",
+            "notification_uid": 106,
+            "event": "added",
+            "app_identifier": "com.ctrip.finance",
+            "title": "Ctrip Finance repayment",
+            "message": "Your repayment is CNY 291.50 and is due on September 2",
+            "received_at": "2026-08-27T03:21:00Z"
+          }
+        ]
+      }
+    },
+    {
       "id": "notification_batch_cursor_drain",
       "category": "memory",
       "description_for_judge": "A backlog larger than one processor batch must be fully drained, while verification-code noise remains absent from user memory.",
