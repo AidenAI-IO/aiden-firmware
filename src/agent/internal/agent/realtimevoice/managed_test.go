@@ -50,7 +50,7 @@ func (s *managedTestSession) Commit(context.Context) error {
 	s.commits++
 	return nil
 }
-func (s *managedTestSession) Interrupt(context.Context) error {
+func (s *managedTestSession) Interrupt(context.Context, ResponseInterruption) error {
 	s.interrupts++
 	return nil
 }
@@ -139,28 +139,29 @@ func TestManagedSessionHidesProviderMediaFormat(t *testing.T) {
 
 func TestManagedSessionNormalizesOperations(t *testing.T) {
 	raw := newManagedTestSession(16000)
-	session, err := newManagedSession(raw, DeviceMediaConfig{})
+	managed, err := newManagedSession(raw, DeviceMediaConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer managed.Close()
+	session := newConversation(managed, raw)
 	ctx := context.Background()
-	if err := session.Commit(ctx); err != nil {
+	if err := session.TurnCommitter.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.Interrupt(ctx); err != nil {
+	if err := session.ResponseInterrupter.Interrupt(ctx, ResponseInterruption{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.SendToolResult(ctx, "call-1", "ok"); err != nil {
+	if err := session.ToolResultSender.SendToolResult(ctx, "call-1", "ok"); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.SendText(ctx, "hello"); err != nil {
+	if err := session.TextSession.SendText(ctx, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.CreateResponse(ctx); err != nil {
+	if err := session.TextSession.CreateResponse(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.ReplayContext(ctx, []ContextItem{{Role: "user", Content: "prior"}}); err != nil {
+	if err := session.ContextReplayer.ReplayContext(ctx, []ContextItem{{Role: "user", Content: "prior"}}); err != nil {
 		t.Fatal(err)
 	}
 	if raw.commits != 1 || raw.interrupts != 1 || raw.toolCalls != 1 || raw.texts != 1 || raw.responses != 1 || raw.replays != 1 {
@@ -170,15 +171,19 @@ func TestManagedSessionNormalizesOperations(t *testing.T) {
 
 func TestManagedSessionReportsUnsupportedCapability(t *testing.T) {
 	raw := newManagedBaseSession()
-	session, err := newManagedSession(raw, DeviceMediaConfig{})
+	managed, err := newManagedSession(raw, DeviceMediaConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
-	if err := session.Interrupt(context.Background()); !errors.Is(err, ErrUnsupportedCapability) {
-		t.Fatalf("interrupt error = %v, want ErrUnsupportedCapability", err)
+	defer managed.Close()
+	conversation := newConversation(managed, raw)
+	if conversation.ResponseInterrupter != nil {
+		t.Fatalf("unsupported ResponseInterrupter = %T, want nil", conversation.ResponseInterrupter)
 	}
-	if session.Info().Capabilities.CanInterruptResponse {
+	if conversation.TextSession != nil || conversation.ContextReplayer != nil {
+		t.Fatalf("unsupported optional capabilities must stay nil: %+v", conversation)
+	}
+	if conversation.Info().Capabilities.CanInterruptResponse {
 		t.Fatal("base session unexpectedly reports interruption support")
 	}
 }
@@ -219,5 +224,51 @@ func TestManagedSessionCoalescesProgressiveUserTranscriptsPerTurn(t *testing.T) 
 	}
 	if events[1].Text != "今天是几号？" {
 		t.Fatalf("coalesced transcript = %q, want final progressive text", events[1].Text)
+	}
+}
+
+func TestManagedSessionFlushesFinalUserTranscriptBeforeResponseDone(t *testing.T) {
+	raw := newManagedTestSession(16000)
+	session, err := newManagedSession(raw, DeviceMediaConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	raw.events <- Event{Kind: EventResponseStarted, ResponseID: "response-1"}
+	raw.events <- Event{Kind: EventTranscriptFinal, Role: "user", ItemID: "item-1", Text: "late final"}
+	raw.events <- Event{Kind: EventResponseDone, ResponseID: "response-1", Status: "completed"}
+	close(raw.events)
+
+	var events []Event
+	for event := range session.Events() {
+		events = append(events, event)
+	}
+	if len(events) != 3 {
+		t.Fatalf("managed events = %+v, want response start, transcript, response done", events)
+	}
+	if events[0].Kind != EventResponseStarted || events[1].Kind != EventTranscriptFinal || events[2].Kind != EventResponseDone {
+		t.Fatalf("managed event order = %+v", events)
+	}
+}
+
+func TestManagedSessionFlushesFinalUserTranscriptBeforeAnyError(t *testing.T) {
+	raw := newManagedTestSession(16000)
+	session, err := newManagedSession(raw, DeviceMediaConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	raw.events <- Event{Kind: EventTranscriptFinal, Role: "user", Text: "late final"}
+	// Transport and provider errors do not always carry a response ID. The
+	// transcript must still be forwarded before the daemon terminates the session.
+	raw.events <- Event{Kind: EventError, Error: errors.New("provider failed")}
+	close(raw.events)
+
+	first := <-session.Events()
+	second := <-session.Events()
+	if first.Kind != EventTranscriptFinal || second.Kind != EventError {
+		t.Fatalf("managed event order = [%+v %+v]", first, second)
 	}
 }

@@ -16,6 +16,7 @@ import (
 
 func TestOpenAIProviderNormalizesRealtimeSession(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	interruptEvents := make(chan map[string]any, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer openai-key" {
 			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
@@ -48,6 +49,13 @@ func TestOpenAIProviderNormalizesRealtimeSession(t *testing.T) {
 		if update["type"] != "session.update" {
 			t.Errorf("first client event = %#v", update)
 		}
+		sessionSettings, _ := update["session"].(map[string]any)
+		audioSettings, _ := sessionSettings["audio"].(map[string]any)
+		inputSettings, _ := audioSettings["input"].(map[string]any)
+		transcription, _ := inputSettings["transcription"].(map[string]any)
+		if transcription["model"] != DefaultOpenAIInputTranscriptionModel {
+			t.Errorf("input transcription = %#v", inputSettings["transcription"])
+		}
 		write(map[string]any{"type": "session.updated", "session": map[string]any{"id": "sess_1"}})
 
 		for {
@@ -69,7 +77,10 @@ func TestOpenAIProviderNormalizesRealtimeSession(t *testing.T) {
 					t.Errorf("audio event = %#v", event)
 				}
 			case "response.cancel":
+				interruptEvents <- event
 				write(map[string]any{"type": "response.done", "response": map[string]any{"id": "resp_1", "status": "cancelled"}})
+			case "conversation.item.truncate":
+				interruptEvents <- event
 			case "conversation.item.create":
 				write(map[string]any{"type": "response.function_call_arguments.done", "response_id": "resp_1", "call_id": "call_1", "name": "clock", "arguments": `{"timezone":"UTC"}`})
 				write(map[string]any{"type": "response.audio.delta", "delta": base64.StdEncoding.EncodeToString([]byte{1, 2, 3})})
@@ -95,8 +106,23 @@ func TestOpenAIProviderNormalizesRealtimeSession(t *testing.T) {
 	if err := session.SendAudio(context.Background(), []byte{1, 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.(ResponseInterrupter).Interrupt(context.Background()); err != nil {
+	if err := session.(ResponseInterrupter).Interrupt(context.Background(), ResponseInterruption{ItemID: "item_1", AudioEndMS: 125}); err != nil {
 		t.Fatal(err)
+	}
+	for _, wantType := range []string{"response.cancel", "conversation.item.truncate"} {
+		select {
+		case event := <-interruptEvents:
+			if event["type"] != wantType {
+				t.Fatalf("interrupt event type = %q, want %q", event["type"], wantType)
+			}
+			if wantType == "conversation.item.truncate" {
+				if event["item_id"] != "item_1" || event["audio_end_ms"] != float64(125) || event["content_index"] != float64(0) {
+					t.Fatalf("truncate event = %#v", event)
+				}
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for %s", wantType)
+		}
 	}
 	if err := session.(ToolResultSender).SendToolResult(context.Background(), "call_1", `{"ok":true}`); err != nil {
 		t.Fatal(err)
@@ -153,6 +179,20 @@ func TestOpenAIOutputEventAliasesNormalize(t *testing.T) {
 			event, ok := translateOpenAIEvent([]byte(tc.raw))
 			if !ok || event.Kind != tc.want {
 				t.Fatalf("event = %+v, ok=%t, want kind %s", event, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponseDoneFailureIsError(t *testing.T) {
+	for _, status := range []string{"failed", "incomplete"} {
+		t.Run(status, func(t *testing.T) {
+			event, ok := translateOpenAIEvent([]byte(`{"type":"response.done","response":{"id":"resp_1","status":"` + status + `"}}`))
+			if !ok || event.Kind != EventError || event.Error == nil {
+				t.Fatalf("event = %+v, ok=%t; want provider failure", event, ok)
+			}
+			if !strings.Contains(event.Error.Error(), status) {
+				t.Fatalf("error = %v, want status %q", event.Error, status)
 			}
 		})
 	}

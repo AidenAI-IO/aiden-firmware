@@ -1,5 +1,7 @@
 package agent
 
+import "aiden-agent/internal/agent/realtimevoice"
+
 import "aiden-agent/internal/agent/constants"
 
 const (
@@ -67,9 +69,9 @@ const (
 	defaultVoiceMaxTurns              = 0
 	defaultVoiceMaxResponseTokens     = 300
 	defaultMaxIterations              = -1
-	defaultVoiceModelProvider         = "qwen"
-	defaultVoiceModelModel            = "qwen-audio-3.0-realtime-plus"
-	defaultVoiceModelVoice            = "longanqian"
+	defaultVoiceModelProvider         = realtimevoice.ProviderQwen
+	defaultVoiceModelModel            = realtimevoice.DefaultQwenRealtimeModel
+	defaultVoiceModelVoice            = realtimevoice.DefaultQwenRealtimeVoice
 	defaultVoiceModelTurnDetection    = "server_vad"
 
 	defaultTelemetryProvider    = "langfuse"

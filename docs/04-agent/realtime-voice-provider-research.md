@@ -61,10 +61,11 @@ field:
    are five provider values with four native adapters plus the Speko mint-and-delegate adapter. Each
    value owns its own endpoint, authentication, event mapping, audio format,
    interruption semantics, and tool-result protocol.
-2. **Speko upstream routes:** `openai`, `google`, and `xai` are routing values in a
-   Speko S2S session. They use the single Speko session-mint contract and then connect
-   directly to the selected native provider. They are not additional Aiden adapters;
-   each native transport and credential mode remains provider-specific.
+2. **Speko upstream routes used by Aiden:** `google` and `xai` are routing values in a
+	Speko S2S session. They use the single Speko session-mint contract and then connect
+	directly to the selected native provider. They are not additional Aiden adapters;
+	each native transport and credential mode remains provider-specific. Speko's
+	OpenAI/WebRTC route is intentionally outside the Aiden adapter.
 
 The resulting configuration should therefore look like this. Native OpenAI, Gemini, and xAI records are available now:
 
@@ -140,8 +141,10 @@ Qwen or OpenAI even though the normalized semantics are similar.
 [official Google Gen AI Live client](https://github.com/googleapis/python-genai/blob/main/google/genai/live.py)
 
 Gemini API sessions use a Google AI API key; Vertex AI uses a regional endpoint
-and Google credentials (OAuth/service account). The adapter must keep those
-credential modes distinct and must not reuse a Speko or OpenAI key.
+and an OAuth access token (which may be minted from a service account). The
+adapter keeps those credential modes distinct: Vertex uses a Bearer header and
+a fully qualified project/location model resource, while the Gemini API uses
+the `key` query parameter.
 [Gemini API authentication](https://ai.google.dev/gemini-api/docs/api-key),
 [Vertex AI authentication](https://cloud.google.com/vertex-ai/generative-ai/docs/start/api-keys)
 
@@ -194,7 +197,7 @@ implements the selected adapter's wire contract.
 | **Amazon Nova 2 Sonic** | Yes. Bidirectional speech, graceful interruption, and continued conversation while an async tool runs are documented. | Yes. Tools are declared in `promptStart`; `toolUse` and `toolResult` stay in the stream. | `InvokeModelWithBidirectionalStream` / AWS event stream, not WebSocket; use AWS SDK for Go v2 and IAM. Current Nova 2 docs list English variants, French, Italian, German, Spanish, Portuguese, and Hindi, but not Chinese; connections have an 8-minute limit and renewal flow. [Nova 2 speech](https://docs.aws.amazon.com/nova/latest/nova2-userguide/using-conversational-speech.html), [language support](https://docs.aws.amazon.com/nova/latest/nova2-userguide/sonic-language-support.html), [tool configuration](https://docs.aws.amazon.com/nova/latest/nova2-userguide/sonic-tool-configuration.html) | **Technically viable, largest adapter.** Reject for Chinese-first rollout. |
 | **Amazon Nova Sonic v1** | Yes. Bidirectional streaming and graceful interruption are documented. | Yes. The v1 stream exposes `toolUse` and accepts `toolResult`. | Same native Bedrock event stream; v1 currently lists only English, French, Italian, German, and Spanish. [Nova v1 speech](https://docs.aws.amazon.com/nova/latest/userguide/speech.html), [bidirectional API](https://docs.aws.amazon.com/nova/latest/userguide/speech-bidirection.html), [speech tools](https://docs.aws.amazon.com/nova/latest/userguide/speech-tools.html) | **Technically viable, but legacy/narrower.** Do not choose for Chinese-first rollout. |
 | **ElevenLabs Agents** | Yes. Managed agent WebSocket supports live input/output, turn-taking, and interruption. | Yes. Client/server tools are supported by the agent protocol. | Managed conversational-agent WebSocket; the vendor owns orchestration, agent prompt, and more of the tool lifecycle. [Agents overview](https://elevenlabs.io/docs/eleven-agents/overview), [WebSocket API](https://elevenlabs.io/docs/eleven-agents/api-reference/eleven-agents/websocket) | **Separate product path.** Integrate only if vendor-managed agent behavior is acceptable; do not model it as a raw LLM adapter. |
-| **Speko Realtime S2S** | **Yes, provider-direct.** Gemini Live and xAI use direct provider WebSockets; OpenAI uses its provider realtime transport. Speko does not receive PCM media. | **Yes.** Tool definitions are included in the mint request and tool results travel over the selected native provider session. | Backend `POST /v1/sessions` with `mode: "s2s"`, `Authorization: Bearer <SPEKO_API_KEY>`, and an `Idempotency-Key` mints a scoped credential plus endpoint, transport, reservation, telemetry, and rate metadata. Gemini puts the delegated token in the provider URL; xAI uses a WebSocket subprotocol; OpenAI uses a WebRTC SDP exchange. [Sessions API](https://docs.speko.ai/api-reference/sessions), [S2S SDK](https://docs.speko.ai/sdk/realtime), [browser helper](https://docs.speko.ai/client/realtime-voice-conversation) | **Mint-and-delegate adapter.** The board must validate the provider-direct response and then run the matching native adapter; a `wsUrl`/`wsToken` relay response is a different contract. |
+| **Speko Realtime S2S** | **Yes, provider-direct.** Aiden supports the Gemini Live and xAI direct provider WebSockets. Speko does not receive PCM media. | **Yes.** Tool definitions are included in the mint request and tool results travel over the selected native provider session. | Backend `POST /v1/sessions` with `mode: "s2s"`, `Authorization: Bearer <SPEKO_API_KEY>`, and an `Idempotency-Key` mints a scoped credential plus endpoint, transport, reservation, telemetry, and rate metadata. Gemini puts the delegated token in the provider URL and xAI uses a WebSocket subprotocol. Speko also documents an OpenAI WebRTC path, but Aiden intentionally does not expose it. [Sessions API](https://docs.speko.ai/api-reference/sessions), [S2S SDK](https://docs.speko.ai/sdk/realtime), [browser helper](https://docs.speko.ai/client/realtime-voice-conversation) | **Mint-and-delegate adapter.** The board validates the provider-direct response and runs the Google or xAI native adapter; OpenAI routes are rejected. |
 | **Volcengine / Doubao** | **Unconfirmed for the repository account.** Public Ark text and existing Volcengine TTS endpoints do not prove a full-duplex audio model. | **Unconfirmed.** Require an account-visible realtime tool-call reference. | Existing repo integrations cover Ark text and WebSocket TTS, not a documented full-duplex voice session. [Ark](https://www.volcengine.com/product/ark), [Ark API docs](https://www.volcengine.com/docs/82379) | **Do not approve yet.** Run a provider spike only after the account exposes the required realtime API. |
 | **xAI Voice Agent** | Yes. Native Speech to Speech uses bidirectional WebSocket audio with server VAD and response cancellation. | Yes. Function call events and function_call_output continuation are documented. | WebSocket `wss://api.x.ai/v1/realtime?model=grok-voice-latest`; Bearer API key; JSON base64 PCM path implemented. [Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech), [realtime reference](https://docs.x.ai/developers/rest-api-reference/inference/voice#realtime) | **Implemented.** xAI-specific transcript and output-audio event aliases are normalized. |
 
@@ -211,10 +214,11 @@ this path.
 
 ### Full-duplex audio and provider transports
 
-The S2S SDK supports `openai`, `google`, and `xai`. Gemini Live and xAI use
-provider WebSockets; OpenAI uses its provider realtime transport. Audio is sent
-as PCM16 chunks and response audio is returned by the selected provider. Aiden
-therefore reuses the native Gemini/OpenAI/xAI adapter after the Speko mint step,
+The S2S SDK documents `openai`, `google`, and `xai`. Aiden requires callers to
+pin Gemini Live or xAI so an automatic route cannot select OpenAI. OpenAI needs
+the WebRTC path that this client does not implement. Audio is sent as
+PCM16 chunks and response audio is returned by the selected provider. Aiden
+therefore reuses the native Gemini or xAI adapter after the Speko mint step,
 which keeps provider-specific framing and VAD semantics in one implementation.
 [Realtime SDK](https://docs.speko.ai/sdk/realtime),
 [client overview](https://docs.speko.ai/client/realtime-voice-conversation)
@@ -224,7 +228,7 @@ which keeps provider-specific framing and VAD semantics in one implementation.
 The backend calls `POST https://api.speko.dev/v1/sessions` with
 `Authorization: Bearer <SPEKO_API_KEY>`, `Content-Type: application/json`, and a
 stable `Idempotency-Key` (required for S2S). The JSON body sets `mode: "s2s"`
-and includes an optional `s2s` object with `provider` (`openai`, `google`, or `xai`) and `model` (set both together to pin an upstream; omit both to let Speko route), plus optional `voice`, `systemPrompt`, `temperature`, input/output sample
+and includes an optional `s2s` object with `provider` (`openai`, `google`, or `xai`) and `model`. Although Speko permits omitting both for automatic routing, Aiden requires both and accepts only `google` or `xai`, preventing selection of an unsupported OpenAI/WebRTC route. The object also accepts optional `voice`, `systemPrompt`, `temperature`, input/output sample
 rates, and `tools`. `agentId`, `webhookTags`, `metadata`, and `ttlSeconds` are
 optional top-level fields. Reuse the same idempotency key only when retrying an
 ambiguous bootstrap timeout. [Sessions API](https://docs.speko.ai/api-reference/sessions), [S2S SDK](https://docs.speko.ai/sdk/realtime)
@@ -297,7 +301,10 @@ session. Commit, interruption, transcripts, usage, and close/error events retain
 the semantics of the selected native adapter; Speko's entitlement and telemetry
 remain control-plane concerns. Speko's browser helper also documents delegated
 credential expiry and provider-specific renewal, so a long-running board process
-must reconnect before the returned lease expires.
+must reconnect before the earliest of the credential expiry, session expiry, and
+`reservation.leaseExpiresAt`. Aiden deliberately chooses a fresh mint plus local
+context replay rather than implementing the provider-specific
+`sessionResumptionUpdate.newHandle`/`renewalUrl` flow.
 
 ### Hardware implications
 

@@ -15,6 +15,13 @@ import (
 // SessionInfo.Capabilities to avoid unsupported operations.
 var ErrUnsupportedCapability = errors.New("realtime voice capability is unsupported")
 
+// ErrSessionRotated reports that the provider ended a healthy session on its
+// own schedule rather than failing. Gemini Live caps session lifetime and
+// announces the cutoff ahead of time, so a caller that wants continuous
+// conversation should open a new session instead of treating this as a fault.
+// Wrap it with errors.Is to distinguish rotation from a real error.
+var ErrSessionRotated = errors.New("realtime voice session was rotated by the provider")
+
 // DeviceMediaConfig is the PCM contract between Aiden's audio device and the
 // managed realtime session. Provider-native formats stay behind this seam.
 type DeviceMediaConfig struct {
@@ -22,16 +29,17 @@ type DeviceMediaConfig struct {
 	Output AudioFormat
 }
 
-// Conversation is Aiden's provider-neutral realtime interface. Optional wire
-// operations are represented by Capabilities and return
-// ErrUnsupportedCapability when unavailable.
-type Conversation interface {
+// Conversation is Aiden's provider-neutral realtime session plus the optional
+// operations actually implemented by the selected provider. Optional fields
+// remain nil when unavailable so callers cannot mistake a forwarding shim for
+// real protocol support.
+type Conversation struct {
 	Session
-	TurnCommitter
-	ResponseInterrupter
-	ToolResultSender
-	TextSession
-	ContextReplayer
+	TurnCommitter       TurnCommitter
+	ResponseInterrupter ResponseInterrupter
+	ToolResultSender    ToolResultSender
+	TextSession         TextSession
+	ContextReplayer     ContextReplayer
 }
 
 // Open constructs the selected provider adapter and wraps it with Aiden's
@@ -42,7 +50,7 @@ func (r *ProviderRegistry) Open(
 	providerConfig ProviderConfig,
 	sessionConfig SessionConfig,
 	media DeviceMediaConfig,
-) (Conversation, error) {
+) (*Conversation, error) {
 	provider, err := r.New(name, providerConfig)
 	if err != nil {
 		return nil, err
@@ -56,20 +64,31 @@ func (r *ProviderRegistry) Open(
 		_ = raw.Close()
 		return nil, err
 	}
-	capabilities := managed.Info().Capabilities
+	conversation := newConversation(managed, raw)
+	capabilities := conversation.Info().Capabilities
 	if capabilities.ClientSideTurnDetection && !capabilities.CanCommitInputTurn {
-		_ = managed.Close()
+		_ = conversation.Close()
 		return nil, fmt.Errorf("realtime provider %s requires client-side turn detection without input commit support", name)
 	}
 	if len(sessionConfig.Tools) > 0 && !capabilities.CanSendToolResult {
-		_ = managed.Close()
+		_ = conversation.Close()
 		return nil, fmt.Errorf("realtime provider %s cannot send configured tool results", name)
 	}
 	if capabilities.ExplicitToolContinuation && !capabilities.CanSendText {
-		_ = managed.Close()
+		_ = conversation.Close()
 		return nil, fmt.Errorf("realtime provider %s requires explicit response continuation without text response support", name)
 	}
-	return managed, nil
+	return conversation, nil
+}
+
+func newConversation(managed *managedSession, raw Session) *Conversation {
+	conversation := &Conversation{Session: managed}
+	conversation.TurnCommitter, _ = raw.(TurnCommitter)
+	conversation.ResponseInterrupter, _ = raw.(ResponseInterrupter)
+	conversation.ToolResultSender, _ = raw.(ToolResultSender)
+	conversation.TextSession, _ = raw.(TextSession)
+	conversation.ContextReplayer, _ = raw.(ContextReplayer)
+	return conversation
 }
 
 type managedSession struct {
@@ -217,58 +236,6 @@ func (s *managedSession) SendAudio(ctx context.Context, pcm []byte) error {
 	return s.raw.SendAudio(ctx, pcm)
 }
 
-func (s *managedSession) Commit(ctx context.Context) error {
-	capability, ok := s.raw.(TurnCommitter)
-	if !ok {
-		return unsupportedCapability("commit input turn")
-	}
-	return capability.Commit(ctx)
-}
-
-func (s *managedSession) Interrupt(ctx context.Context) error {
-	capability, ok := s.raw.(ResponseInterrupter)
-	if !ok {
-		return unsupportedCapability("interrupt response")
-	}
-	return capability.Interrupt(ctx)
-}
-
-func (s *managedSession) SendToolResult(ctx context.Context, id, output string) error {
-	capability, ok := s.raw.(ToolResultSender)
-	if !ok {
-		return unsupportedCapability("send tool result")
-	}
-	return capability.SendToolResult(ctx, id, output)
-}
-
-func (s *managedSession) SendText(ctx context.Context, text string) error {
-	capability, ok := s.raw.(TextSession)
-	if !ok {
-		return unsupportedCapability("send text")
-	}
-	return capability.SendText(ctx, text)
-}
-
-func (s *managedSession) CreateResponse(ctx context.Context) error {
-	capability, ok := s.raw.(TextSession)
-	if !ok {
-		return unsupportedCapability("create response")
-	}
-	return capability.CreateResponse(ctx)
-}
-
-func (s *managedSession) ReplayContext(ctx context.Context, items []ContextItem) error {
-	capability, ok := s.raw.(ContextReplayer)
-	if !ok {
-		return unsupportedCapability("replay context")
-	}
-	return capability.ReplayContext(ctx, items)
-}
-
-func unsupportedCapability(name string) error {
-	return fmt.Errorf("%w: %s", ErrUnsupportedCapability, name)
-}
-
 func (s *managedSession) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.stop)
@@ -294,7 +261,7 @@ func (s *managedSession) forwardEvents(source <-chan Event) {
 			pendingUserTranscript = coalesceUserTranscript(pendingUserTranscript, event)
 			continue
 		}
-		if event.Kind == EventResponseStarted || event.Kind == EventSpeechStarted || event.Kind == EventClosed {
+		if event.Kind == EventResponseStarted || event.Kind == EventResponseDone || event.Kind == EventResponseCancelled || event.Kind == EventError || event.Kind == EventSpeechStarted || event.Kind == EventClosed {
 			if !flushUserTranscript() {
 				return
 			}
@@ -347,4 +314,4 @@ func coalesceUserTranscript(pending *Event, next Event) *Event {
 	}
 }
 
-var _ Conversation = (*managedSession)(nil)
+var _ Session = (*managedSession)(nil)

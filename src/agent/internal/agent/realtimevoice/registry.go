@@ -17,6 +17,9 @@ type ProviderConfig struct {
 	UpstreamProvider string
 	WorkspaceID      string
 	Region           string
+	AuthMode         string
+	ProjectID        string
+	Location         string
 }
 
 // ProviderFactory constructs one provider implementation from its static
@@ -74,19 +77,19 @@ func (r *ProviderRegistry) New(name string, config ProviderConfig) (Provider, er
 // per-session options remain in SessionConfig.
 func DefaultProviderRegistry() *ProviderRegistry {
 	r := NewProviderRegistry()
-	r.Register("qwen", func(c ProviderConfig) Provider {
+	r.Register(ProviderQwen, func(c ProviderConfig) Provider {
 		return QwenProvider{WorkspaceID: c.WorkspaceID, Region: c.Region, Endpoint: c.Endpoint}
 	})
-	r.Register("speko", func(c ProviderConfig) Provider {
+	r.Register(ProviderSpeko, func(c ProviderConfig) Provider {
 		return SpekoProvider{BaseURL: c.BaseURL, AgentID: c.AgentID, UpstreamProvider: c.UpstreamProvider}
 	})
-	r.Register("openai", func(c ProviderConfig) Provider {
+	r.Register(ProviderOpenAI, func(c ProviderConfig) Provider {
 		return OpenAIProvider{Endpoint: c.Endpoint}
 	})
-	r.Register("gemini", func(c ProviderConfig) Provider {
-		return GeminiProvider{Endpoint: c.Endpoint}
+	r.Register(ProviderGemini, func(c ProviderConfig) Provider {
+		return GeminiProvider{Endpoint: c.Endpoint, AuthMode: c.AuthMode, ProjectID: c.ProjectID, Location: c.Location}
 	})
-	r.Register("xai", func(c ProviderConfig) Provider {
+	r.Register(ProviderXAI, func(c ProviderConfig) Provider {
 		return XAIProvider{Endpoint: c.Endpoint}
 	})
 	return r

@@ -19,19 +19,22 @@ type fakeRealtimeSession struct {
 	done   chan struct{}
 }
 
-func (s *fakeRealtimeSession) Info() realtimevoice.SessionInfo                      { return s.info }
-func (s *fakeRealtimeSession) Events() <-chan realtimevoice.Event                   { return s.events }
-func (s *fakeRealtimeSession) Errors() <-chan error                                 { return s.errors }
-func (s *fakeRealtimeSession) Done() <-chan struct{}                                { return s.done }
-func (s *fakeRealtimeSession) SendAudio(context.Context, []byte) error              { return nil }
-func (s *fakeRealtimeSession) Commit(context.Context) error                         { return nil }
-func (s *fakeRealtimeSession) Interrupt(context.Context) error                      { return nil }
+func (s *fakeRealtimeSession) Info() realtimevoice.SessionInfo         { return s.info }
+func (s *fakeRealtimeSession) Events() <-chan realtimevoice.Event      { return s.events }
+func (s *fakeRealtimeSession) Errors() <-chan error                    { return s.errors }
+func (s *fakeRealtimeSession) Done() <-chan struct{}                   { return s.done }
+func (s *fakeRealtimeSession) SendAudio(context.Context, []byte) error { return nil }
+func (s *fakeRealtimeSession) Commit(context.Context) error            { return nil }
+func (s *fakeRealtimeSession) Interrupt(context.Context, realtimevoice.ResponseInterruption) error {
+	return nil
+}
 func (s *fakeRealtimeSession) SendToolResult(context.Context, string, string) error { return nil }
 func (s *fakeRealtimeSession) Close() error                                         { return nil }
 
 func TestRealtimeProviderTextCapabilityIsExplicit(t *testing.T) {
 	session := &fakeRealtimeSession{info: realtimevoice.SessionInfo{}}
-	if _, ok := realtimeTextSession(session); ok {
+	conversation := &realtimevoice.Conversation{Session: session}
+	if conversation.TextSession != nil {
 		t.Fatal("core session unexpectedly exposed text injection")
 	}
 }

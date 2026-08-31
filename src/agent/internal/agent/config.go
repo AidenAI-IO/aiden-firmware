@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/realtimevoice"
 	"errors"
 	"fmt"
 	"net"
@@ -401,6 +402,9 @@ type VoiceModelConfig struct {
 	Model                  string   `toml:"model,omitempty"`
 	WorkspaceID            string   `toml:"workspace_id,omitempty"`
 	Region                 string   `toml:"region,omitempty"`
+	AuthMode               string   `toml:"auth_mode,omitempty"`
+	ProjectID              string   `toml:"project_id,omitempty"`
+	Location               string   `toml:"location,omitempty"`
 	Endpoint               string   `toml:"endpoint,omitempty"`
 	BaseURL                string   `toml:"base_url,omitempty"`
 	Voice                  string   `toml:"voice,omitempty"`
@@ -418,21 +422,30 @@ func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) !=
 
 func (c VoiceModelConfig) Validate() error {
 	provider := strings.ToLower(strings.TrimSpace(c.Provider))
-	if provider != "" && provider != "qwen" && provider != "speko" && provider != "openai" && provider != "gemini" && provider != "xai" {
+	if provider != "" && !realtimevoice.IsProvider(provider) {
 		return fmt.Errorf("voice_model.provider: unsupported provider %q", c.Provider)
 	}
 	if provider == "speko" {
 		upstream := strings.TrimSpace(c.UpstreamProvider)
 		model := strings.TrimSpace(c.Model)
-		if (upstream == "") != (model == "") {
-			return errors.New("voice_model.upstream_provider and voice_model.model must either both be set or both be omitted for provider=speko")
+		if upstream == "" || model == "" {
+			return errors.New("voice_model.upstream_provider and voice_model.model are required for provider=speko; automatic routing is disabled because it may select an unsupported WebRTC route")
 		}
-		if upstream != "" {
-			switch strings.ToLower(upstream) {
-			case "google", "gemini", "openai", "xai":
-			default:
-				return fmt.Errorf("voice_model.upstream_provider: unsupported provider %q (want google, openai, or xai)", c.UpstreamProvider)
+		switch strings.ToLower(upstream) {
+		case "google", "gemini", "xai":
+		default:
+			return fmt.Errorf("voice_model.upstream_provider: unsupported provider %q (want google or xai)", c.UpstreamProvider)
+		}
+	}
+	if provider == "gemini" {
+		switch authMode := strings.ToLower(strings.TrimSpace(c.AuthMode)); authMode {
+		case "", "api_key":
+		case "vertex":
+			if strings.TrimSpace(c.ProjectID) == "" || strings.TrimSpace(c.Location) == "" {
+				return errors.New("voice_model.project_id and voice_model.location are required for Gemini Vertex auth")
 			}
+		default:
+			return fmt.Errorf("voice_model.auth_mode: unsupported Gemini auth mode %q (want api_key or vertex)", c.AuthMode)
 		}
 	}
 	if region := strings.TrimSpace(c.Region); provider != "speko" && region != "" && region != "cn-beijing" && region != "ap-southeast-1" {

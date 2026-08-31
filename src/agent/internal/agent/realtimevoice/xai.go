@@ -83,17 +83,19 @@ func (p XAIProvider) openSession(ctx context.Context, cfg SessionConfig, model s
 	if outputRate <= 0 {
 		outputRate = 24000
 	}
+	transport := newJSONWebSocketTransport(conn, "xai realtime", p.EventBuffer)
 	s := &xAISession{
-		conn:        conn,
-		events:      make(chan Event, buffer(p.EventBuffer)),
-		errs:        make(chan error, 1),
-		done:        make(chan struct{}),
-		writeGate:   make(chan struct{}, 1),
-		transcripts: make(map[string]string),
-		info:        newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true}),
+		jsonWebSocketTransport: transport,
+		transcripts:            make(map[string]string),
+		info:                   newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true}),
 	}
-	s.writeGate <- struct{}{}
-	go s.readLoop()
+	transport.start(func(body []byte) []Event {
+		event, ok := s.translateXAIEventForSession(body)
+		if !ok {
+			return nil
+		}
+		return []Event{event}
+	})
 
 	if err := waitXAIReady(ctx, s, 1); err != nil {
 		_ = s.Close()
@@ -215,14 +217,9 @@ func buildXAISessionUpdate(cfg SessionConfig, model string) xAISessionUpdate {
 }
 
 type xAISession struct {
-	conn         *websocket.Conn
+	*jsonWebSocketTransport
 	info         SessionInfo
 	infoMu       sync.RWMutex
-	events       chan Event
-	errs         chan error
-	done         chan struct{}
-	writeGate    chan struct{}
-	closeOnce    sync.Once
 	transcriptMu sync.Mutex
 	transcripts  map[string]string
 }
@@ -232,9 +229,6 @@ func (s *xAISession) Info() SessionInfo {
 	defer s.infoMu.RUnlock()
 	return s.info
 }
-func (s *xAISession) Events() <-chan Event  { return s.events }
-func (s *xAISession) Errors() <-chan error  { return s.errs }
-func (s *xAISession) Done() <-chan struct{} { return s.done }
 func (s *xAISession) SendAudio(ctx context.Context, pcm []byte) error {
 	if len(pcm) == 0 {
 		return nil
@@ -247,7 +241,7 @@ func (s *xAISession) SendAudio(ctx context.Context, pcm []byte) error {
 func (s *xAISession) Commit(ctx context.Context) error {
 	return s.writeJSON(ctx, map[string]any{"type": "input_audio_buffer.commit"})
 }
-func (s *xAISession) Interrupt(ctx context.Context) error {
+func (s *xAISession) Interrupt(ctx context.Context, _ ResponseInterruption) error {
 	return s.writeJSON(ctx, map[string]any{"type": "response.cancel"})
 }
 func (s *xAISession) SendToolResult(ctx context.Context, id, output string) error {
@@ -255,14 +249,6 @@ func (s *xAISession) SendToolResult(ctx context.Context, id, output string) erro
 		"type": "conversation.item.create",
 		"item": map[string]any{"type": "function_call_output", "call_id": id, "output": output},
 	})
-}
-func (s *xAISession) Close() error {
-	var err error
-	s.closeOnce.Do(func() {
-		close(s.done)
-		err = s.conn.Close()
-	})
-	return err
 }
 func (s *xAISession) SendText(ctx context.Context, text string) error {
 	return s.writeJSON(ctx, map[string]any{
@@ -293,61 +279,6 @@ func (s *xAISession) ReplayContext(ctx context.Context, items []ContextItem) err
 		}
 	}
 	return nil
-}
-
-func (s *xAISession) writeJSON(ctx context.Context, value any) error {
-	if ctx == nil {
-		return errors.New("xai realtime: nil context")
-	}
-	b, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("xai realtime: marshal event: %w", err)
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-s.done:
-		return errors.New("xai realtime: session is closed")
-	case <-s.writeGate:
-	}
-	defer func() { s.writeGate <- struct{}{} }()
-	deadline := time.Now().Add(10 * time.Second)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
-	}
-	_ = s.conn.SetWriteDeadline(deadline)
-	defer s.conn.SetWriteDeadline(time.Time{})
-	if err := s.conn.WriteMessage(websocket.TextMessage, b); err != nil {
-		return fmt.Errorf("xai realtime websocket write: %w", err)
-	}
-	return nil
-}
-
-func (s *xAISession) readLoop() {
-	defer close(s.events)
-	defer close(s.errs)
-	defer s.closeOnce.Do(func() { close(s.done); _ = s.conn.Close() })
-	for {
-		_, body, err := s.conn.ReadMessage()
-		if err != nil {
-			if !normalClose(err) {
-				select {
-				case s.errs <- err:
-				default:
-				}
-			}
-			return
-		}
-		event, ok := s.translateXAIEventForSession(body)
-		if !ok {
-			continue
-		}
-		select {
-		case s.events <- event:
-		case <-s.done:
-			return
-		}
-	}
 }
 
 func waitXAIReady(ctx context.Context, s *xAISession, count int) error {
@@ -529,15 +460,11 @@ func translateXAIEventBase(body []byte) (Event, bool) {
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		kind := EventResponseDone
-		if event.Response.Status == "cancelled" || event.Response.Status == "canceled" {
-			kind = EventResponseCancelled
-		}
-		out := Event{Kind: kind, ResponseID: event.Response.ID, Status: event.Response.Status}
+		var usage Usage
 		if event.Response.Usage != nil {
-			out.Usage = Usage{InputTokens: event.Response.Usage.InputTokens, OutputTokens: event.Response.Usage.OutputTokens, TotalTokens: event.Response.Usage.TotalTokens}
+			usage = Usage{InputTokens: event.Response.Usage.InputTokens, OutputTokens: event.Response.Usage.OutputTokens, TotalTokens: event.Response.Usage.TotalTokens}
 		}
-		return out, true
+		return terminalResponseEvent("xai", event.Response.ID, event.Response.Status, usage), true
 	case "conversation.item.truncated", "response.cancelled":
 		return Event{Kind: EventInterruption, At: "assistant"}, true
 	case "error":

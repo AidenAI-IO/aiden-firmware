@@ -283,9 +283,9 @@ voice = "longanqian"
 [voice_model_providers.speko-main]
 type = "speko"
 api_key = "speko-secret"
-upstream_provider = "openai"
-model = "gpt-realtime"
-voice = "alloy"
+upstream_provider = "xai"
+model = "grok-voice-latest"
+voice = "eve"
 
 [voice_model]
 provider = "qwen-main"
@@ -309,7 +309,7 @@ provider = "qwen-main"
 	text := string(got)
 	for _, want := range []string{
 		`[voice_model_providers.qwen-main]`, `api_key = "qwen-secret"`, `model = "qwen-realtime"`,
-		`[voice_model_providers.speko-main]`, `api_key = "speko-secret"`, `model = "gpt-realtime"`,
+		`[voice_model_providers.speko-main]`, `api_key = "speko-secret"`, `model = "grok-voice-latest"`,
 		`provider = "speko-main"`,
 	} {
 		if !strings.Contains(text, want) {
@@ -1185,12 +1185,15 @@ func TestVoiceModelConfigRoundTripPreservesSettingsAndCredentialPresence(t *test
 	threshold := 0.72
 	want := agent.Config{VoiceModel: agent.VoiceModelConfig{
 		Provider:               "speko",
-		UpstreamProvider:       "openai",
+		UpstreamProvider:       "xai",
 		AgentID:                "agent-1",
 		APIKey:                 "voice-secret",
 		Model:                  "qwen-audio-3.0-realtime-plus",
 		WorkspaceID:            "workspace-1",
 		Region:                 "cn-beijing",
+		AuthMode:               "vertex",
+		ProjectID:              "project-1",
+		Location:               "us-central1",
 		Endpoint:               "wss://voice.example.test/realtime",
 		BaseURL:                "https://api.speko.dev",
 		Voice:                  "longanqian",

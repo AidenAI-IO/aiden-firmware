@@ -227,8 +227,16 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 			return
 		case <-events:
 			log.Println("\n[realtime] Activation requested, connecting realtime voice model...")
+			rotated := false
 			if err := runRealtimeSession(cfg, sigChan, runtime, tasks, bridge); errors.Is(err, errRealtimeShutdown) {
 				return
+			} else if errors.Is(err, realtimevoice.ErrSessionRotated) {
+				// The provider capped session lifetime rather than failing, so the
+				// conversation continues in a fresh session instead of dropping back
+				// to idle. Queued chat requests are kept: they remain answerable
+				// after the handover.
+				rotated = true
+				log.Printf("[realtime] session rotated by provider, reconnecting: %v", err)
 			} else if err != nil {
 				log.Printf("[realtime] session ended: %v", err)
 				bridge.failQueued(err.Error())
@@ -236,10 +244,12 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 			drainRealtimeWakeups(events)
 			// An API request can arrive while the previous session is tearing
 			// down. Preserve that activation after clearing stale GPIO events.
-			if chatBridgeHasPending(bridge) {
+			if rotated || chatBridgeHasPending(bridge) {
 				signalWakeupEvent(events)
 			}
-			log.Println("[ready] Waiting for realtime activation...")
+			if !rotated {
+				log.Println("[ready] Waiting for realtime activation...")
+			}
 		}
 	}
 }
@@ -578,7 +588,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	return runRealtimeSessionWithRegistry(cfg, sigChan, runtime, tasks, realtimevoice.DefaultProviderRegistry(), chatBridges...)
 }
 
-func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, runtime *agent.Runtime, tasks *agenttask.Manager, registry *realtimevoice.ProviderRegistry, chatBridges ...*realtimeChatBridge) error {
+func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, runtime *agent.Runtime, tasks *agenttask.Manager, registry *realtimevoice.ProviderRegistry, chatBridges ...*realtimeChatBridge) (returnErr error) {
 	var chatBridge *realtimeChatBridge
 	if len(chatBridges) > 0 {
 		chatBridge = chatBridges[0]
@@ -603,22 +613,22 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 	log.Printf("[realtime] Connecting: provider=%s model=%s region=%s workspace_configured=%t endpoint_override=%t",
 		providerName, cfg.VoiceModel.Model, cfg.VoiceModel.Region, cfg.VoiceModel.WorkspaceID != "", cfg.VoiceModel.Endpoint != "")
 	connectCtx, connectCancel := context.WithTimeout(ctx, realtimeConnectTimeout)
-	session, err := registry.Open(connectCtx, providerName, realtimevoice.ProviderConfig{Endpoint: cfg.VoiceModel.Endpoint, BaseURL: cfg.VoiceModel.BaseURL, AgentID: cfg.VoiceModel.AgentID, UpstreamProvider: cfg.VoiceModel.UpstreamProvider, WorkspaceID: cfg.VoiceModel.WorkspaceID, Region: cfg.VoiceModel.Region}, sessionConfig, realtimevoice.DeviceMediaConfig{Input: realtimeVoiceDeviceFormat(cfg), Output: realtimeVoiceDeviceFormat(cfg)})
+	session, err := registry.Open(connectCtx, providerName, realtimevoice.ProviderConfig{Endpoint: cfg.VoiceModel.Endpoint, BaseURL: cfg.VoiceModel.BaseURL, AgentID: cfg.VoiceModel.AgentID, UpstreamProvider: cfg.VoiceModel.UpstreamProvider, WorkspaceID: cfg.VoiceModel.WorkspaceID, Region: cfg.VoiceModel.Region, AuthMode: cfg.VoiceModel.AuthMode, ProjectID: cfg.VoiceModel.ProjectID, Location: cfg.VoiceModel.Location}, sessionConfig, realtimevoice.DeviceMediaConfig{Input: realtimeVoiceDeviceFormat(cfg), Output: realtimeVoiceDeviceFormat(cfg)})
 	connectCancel()
 	if err != nil {
 		return fmt.Errorf("connect realtime voice model: %w", err)
 	}
 	defer session.Close()
 	info := session.Info()
-	turnCommitter, _ := session.(realtimevoice.TurnCommitter)
-	responseInterrupter, _ := session.(realtimevoice.ResponseInterrupter)
-	canInterrupt := info.Capabilities.CanInterruptResponse
-	toolResultSender, _ := session.(realtimevoice.ToolResultSender)
-	canSendToolResult := info.Capabilities.CanSendToolResult
-	textSession, _ := realtimeTextSession(session)
-	supportsText := info.Capabilities.CanSendText
-	contextReplayer, _ := session.(realtimevoice.ContextReplayer)
-	canReplayContext := info.Capabilities.CanReplayContext
+	turnCommitter := session.TurnCommitter
+	responseInterrupter := session.ResponseInterrupter
+	canInterrupt := responseInterrupter != nil
+	toolResultSender := session.ToolResultSender
+	canSendToolResult := toolResultSender != nil
+	textSession := session.TextSession
+	supportsText := textSession != nil
+	contextReplayer := session.ContextReplayer
+	canReplayContext := contextReplayer != nil
 	if supportsText && canReplayContext {
 		if err := replayRealtimeContext(ctx, contextReplayer, userContext); err != nil {
 			return fmt.Errorf("restore realtime user context: %w", err)
@@ -629,7 +639,9 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 		chatBridge.activate()
 		defer func() {
 			chatBridge.deactivate()
-			chatBridge.failQueued("realtime voice session ended")
+			if shouldFailQueuedRealtimeChat(returnErr) {
+				chatBridge.failQueued("realtime voice session ended")
+			}
 		}()
 	}
 
@@ -729,6 +741,9 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 	}
 	firstAudioChunk := true
 	var activeChat *realtimeChatCommand
+	defer func() {
+		failActiveRealtimeChat(activeChat, returnErr)
+	}()
 	var chatMode string
 	var chatText strings.Builder
 	var chatTranscript strings.Builder
@@ -934,7 +949,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			}
 		case <-chatCommandDone(activeChat):
 			if canInterrupt {
-				_ = interruptRealtimeResponse(ctx, responseActive, responseInterrupter)
+				_ = interruptRealtimeResponse(ctx, responseActive, responseInterrupter, playback.responseInterruption(outputFormat))
 			}
 			sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "request canceled"})
 			close(activeChat.events)
@@ -954,7 +969,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				inputSpeechActive = true
 				log.Println("[realtime] Speech started, interrupting local playback")
 				if canInterrupt {
-					if err := interruptRealtimeResponse(ctx, responseActive, responseInterrupter); err != nil {
+					if err := interruptRealtimeResponse(ctx, responseActive, responseInterrupter, playback.responseInterruption(outputFormat)); err != nil {
 						return fmt.Errorf("interrupt realtime provider response: %w", err)
 					}
 				}
@@ -1035,7 +1050,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 					}
 				}
 				pcm := event.PCM
-				if err := playback.append(playbackAudio, outputFormat, pcm); err != nil {
+				if err := playback.appendItem(playbackAudio, outputFormat, event.ItemID, pcm); err != nil {
 					return err
 				}
 			case realtimevoice.EventToolCall:
@@ -1118,9 +1133,20 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 	}
 }
 
-func realtimeTextSession(session realtimevoice.Session) (realtimevoice.TextSession, bool) {
-	textSession, ok := session.(realtimevoice.TextSession)
-	return textSession, ok
+func shouldFailQueuedRealtimeChat(err error) bool {
+	return !errors.Is(err, realtimevoice.ErrSessionRotated)
+}
+
+func failActiveRealtimeChat(command *realtimeChatCommand, err error) {
+	if command == nil {
+		return
+	}
+	message := "realtime voice session ended"
+	if err != nil {
+		message = err.Error()
+	}
+	sendRealtimeChatEvent(*command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: message})
+	close(command.events)
 }
 
 func realtimeSessionTerminationError(errs <-chan error) error {
@@ -1137,11 +1163,11 @@ func realtimeSessionTerminationError(errs <-chan error) error {
 	return nil
 }
 
-func interruptRealtimeResponse(ctx context.Context, responseActive bool, interrupter realtimevoice.ResponseInterrupter) error {
+func interruptRealtimeResponse(ctx context.Context, responseActive bool, interrupter realtimevoice.ResponseInterrupter, interruption realtimevoice.ResponseInterruption) error {
 	if !responseActive || interrupter == nil {
 		return nil
 	}
-	return interrupter.Interrupt(ctx)
+	return interrupter.Interrupt(ctx, interruption)
 }
 
 func ensureImplicitRealtimeResponse(
@@ -1385,6 +1411,10 @@ type realtimePlaybackState struct {
 	session        *agent.PlaybackStartResult
 	suppressDeltas bool
 	finalized      bool
+	itemID         string
+	submittedBytes int64
+	itemStartedAt  time.Time
+	now            func() time.Time
 	// Host players consume a finalized WAV response, while audio_service keeps
 	// one low-latency PCM session open across responses.
 	finalizeResponses bool
@@ -1403,13 +1433,54 @@ func (p *realtimePlaybackState) open(audio realtimePlaybackAudio, format agent.A
 }
 
 func (p *realtimePlaybackState) append(audio realtimePlaybackAudio, format agent.AudioFormat, pcm []byte) error {
+	return p.appendItem(audio, format, "", pcm)
+}
+
+func (p *realtimePlaybackState) appendItem(audio realtimePlaybackAudio, format agent.AudioFormat, itemID string, pcm []byte) error {
 	if p.suppressDeltas || len(pcm) == 0 {
 		return nil
 	}
 	if err := p.open(audio, format); err != nil {
 		return err
 	}
-	return audio.WritePlayChunk(p.session.SessionID, pcm, false)
+	if err := audio.WritePlayChunk(p.session.SessionID, pcm, false); err != nil {
+		return err
+	}
+	if itemID != "" && p.itemID != itemID {
+		p.itemID = itemID
+		p.submittedBytes = 0
+		p.itemStartedAt = p.currentTime()
+	} else if itemID != "" && p.itemStartedAt.IsZero() {
+		p.itemStartedAt = p.currentTime()
+	}
+	p.submittedBytes += int64(len(pcm))
+	return nil
+}
+
+func (p *realtimePlaybackState) responseInterruption(format agent.AudioFormat) realtimevoice.ResponseInterruption {
+	bytesPerSecond := int64(format.SampleRate) * int64(format.Channels) * int64(format.BitWidth) / 8
+	submittedDuration := time.Duration(0)
+	if bytesPerSecond > 0 {
+		submittedDuration = time.Duration(p.submittedBytes) * time.Second / time.Duration(bytesPerSecond)
+	}
+	playedDuration := submittedDuration
+	if !p.itemStartedAt.IsZero() {
+		playedDuration = p.currentTime().Sub(p.itemStartedAt)
+		if playedDuration < 0 {
+			playedDuration = 0
+		}
+		if playedDuration > submittedDuration {
+			playedDuration = submittedDuration
+		}
+	}
+	return realtimevoice.ResponseInterruption{ItemID: p.itemID, AudioEndMS: int(playedDuration / time.Millisecond)}
+}
+
+func (p *realtimePlaybackState) currentTime() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now()
 }
 
 func (p *realtimePlaybackState) keepAlive(audio realtimePlaybackAudio, format agent.AudioFormat) error {
@@ -1428,11 +1499,17 @@ func (p *realtimePlaybackState) interrupt(audio realtimePlaybackAudio, format ag
 	if err := p.stop(audio); err != nil {
 		return err
 	}
+	p.itemID = ""
+	p.submittedBytes = 0
+	p.itemStartedAt = time.Time{}
 	return p.open(audio, format)
 }
 
 func (p *realtimePlaybackState) beginResponse(audio realtimePlaybackAudio, format agent.AudioFormat) error {
 	p.suppressDeltas = false
+	p.itemID = ""
+	p.submittedBytes = 0
+	p.itemStartedAt = time.Time{}
 	if p.finalized {
 		if err := p.stop(audio); err != nil {
 			return err
@@ -1460,6 +1537,9 @@ func (p *realtimePlaybackState) stop(audio realtimePlaybackAudio) error {
 	sessionID := p.session.SessionID
 	p.session = nil
 	p.finalized = false
+	p.itemID = ""
+	p.submittedBytes = 0
+	p.itemStartedAt = time.Time{}
 	return audio.StopPlayback(sessionID)
 }
 

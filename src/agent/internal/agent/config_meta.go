@@ -1,6 +1,9 @@
 package agent
 
-import "aiden-agent/internal/agent/tts"
+import (
+	"aiden-agent/internal/agent/realtimevoice"
+	"aiden-agent/internal/agent/tts"
+)
 
 // This file is the single source of truth for config field metadata consumed
 // by the config web UI (via the `agent config-meta` CLI subcommand). It
@@ -28,6 +31,34 @@ type EnumOption struct {
 	Value     string   `json:"value"`
 	Label     string   `json:"label,omitempty"`
 	Providers []string `json:"providers,omitempty"`
+}
+
+func realtimeProviderEnumOptions() []EnumOption {
+	descriptors := realtimevoice.ProviderDescriptors()
+	options := make([]EnumOption, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		options = append(options, EnumOption{Value: descriptor.Name, Label: descriptor.Label})
+	}
+	return options
+}
+
+func realtimeProviderPlaceholders(field string) []ConditionalPlaceholder {
+	descriptors := realtimevoice.ProviderDescriptors()
+	placeholders := make([]ConditionalPlaceholder, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		value := descriptor.ModelPlaceholder
+		if field == "voice" {
+			value = descriptor.VoicePlaceholder
+		}
+		if value == "" {
+			continue
+		}
+		placeholders = append(placeholders, ConditionalPlaceholder{
+			When:  VisibleRule{All: []Condition{eq("voice_model_providers.type", descriptor.Name)}},
+			Value: value,
+		})
+	}
+	return placeholders
 }
 
 // Range describes the bounds for a numeric field. When a number field also
@@ -408,7 +439,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "voice_model",
 				Fields: []FieldMeta{
 					{Key: "provider", Label: "Realtime Provider", Widget: WidgetSelect,
-						Enum:        []EnumOption{{Value: "qwen", Label: "Qwen"}, {Value: "speko", Label: "Speko S2S"}, {Value: "openai", Label: "OpenAI Realtime"}, {Value: "gemini", Label: "Google Gemini Live"}, {Value: "xai", Label: "xAI Grok Voice"}},
+						Enum:        realtimeProviderEnumOptions(),
 						Default:     defaults.VoiceModel.Provider,
 						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
 				},
@@ -417,31 +448,37 @@ func ConfigMeta() ConfigMetadata {
 				Name: "voice_model_providers",
 				Fields: []FieldMeta{
 					{Key: "type", Label: "Realtime Provider Type", Widget: WidgetSelect,
-						Enum:    []EnumOption{{Value: "qwen", Label: "Qwen"}, {Value: "speko", Label: "Speko S2S"}, {Value: "openai", Label: "OpenAI Realtime"}, {Value: "gemini", Label: "Google Gemini Live"}, {Value: "xai", Label: "xAI Grok Voice"}},
+						Enum:    realtimeProviderEnumOptions(),
 						Default: defaults.VoiceModel.Provider},
+					// OpenAI is absent on purpose: Speko serves that upstream over WebRTC
+					// and every adapter here speaks WebSocket, so the option could only
+					// fail after spending a mint request. Select the standalone "OpenAI
+					// Realtime" provider type for a direct WebSocket session instead.
 					{Key: "upstream_provider", Label: "Realtime Engine", Widget: WidgetSelect,
 						Enum: []EnumOption{
-							{Value: "openai", Label: "OpenAI Realtime"},
 							{Value: "google", Label: "Google Gemini Live"},
 							{Value: "xai", Label: "xAI Grok Voice"},
 						},
-						Help:        "Optional Speko S2S engine. Leave this and Model empty for automatic routing; set both together to pin Google or xAI. Speko OpenAI uses WebRTC and is not available in this Go adapter yet. No separate engine API key is needed here.",
+						Help:        "Required Speko S2S engine. Select Google or xAI and set its Model. Automatic routing is disabled because it may select an unsupported WebRTC route. For OpenAI Realtime, select it as the provider type instead. No separate engine API key is needed here.",
 						VisibleWhen: all(eq("voice_model_providers.type", "speko"))},
 					{Key: "agent_id", Label: "Speko Agent ID", Widget: WidgetText,
 						Help: "Optional Speko agent ID.", Advanced: true,
 						VisibleWhen: all(eq("voice_model_providers.type", "speko"))},
 					{Key: "api_key", Label: "Realtime API Key", Widget: WidgetText, Secret: true, Layout: "wide",
-						Help:        "Credential for the selected realtime provider. Use a literal key or $ENV_VAR.",
+						Help:        "Credential for the selected realtime provider. For Gemini Vertex, provide an OAuth access token. Use a literal value or $ENV_VAR.",
 						Placeholder: "$REALTIME_API_KEY"},
+					{Key: "auth_mode", Label: "Gemini Authentication", Widget: WidgetSelect,
+						Enum:        []EnumOption{{Value: "api_key", Label: "Gemini API key"}, {Value: "vertex", Label: "Vertex OAuth"}},
+						Default:     "api_key",
+						VisibleWhen: all(eq("voice_model_providers.type", "gemini"))},
+					{Key: "project_id", Label: "Google Cloud Project ID", Widget: WidgetText, Layout: "wide",
+						VisibleWhen: all(eq("voice_model_providers.type", "gemini"), eq("voice_model_providers.auth_mode", "vertex"))},
+					{Key: "location", Label: "Vertex Location", Widget: WidgetText,
+						Placeholder: "us-central1",
+						VisibleWhen: all(eq("voice_model_providers.type", "gemini"), eq("voice_model_providers.auth_mode", "vertex"))},
 					{Key: "model", Label: "Realtime Model", Widget: WidgetText, Default: defaults.VoiceModel.Model, Layout: "wide",
-						Help: "Realtime model ID (provider-specific).",
-						PlaceholderWhen: []ConditionalPlaceholder{
-							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "qwen")}}, Value: defaults.VoiceModel.Model},
-							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "speko")}}, Value: "auto"},
-							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "openai")}}, Value: "gpt-realtime"},
-							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "gemini")}}, Value: "gemini-3.1-flash-live-preview"},
-							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "xai")}}, Value: "grok-voice-latest"},
-						}},
+						Help:            "Realtime model ID (provider-specific).",
+						PlaceholderWhen: realtimeProviderPlaceholders("model")},
 					{Key: "workspace_id", Label: "DashScope Workspace ID", Widget: WidgetText,
 						Advanced:    true,
 						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
@@ -461,14 +498,8 @@ func ConfigMeta() ConfigMetadata {
 						Default: defaults.VoiceModel.Region, Advanced: true,
 						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
 					{Key: "voice", Label: "Voice", Widget: WidgetText, Default: defaults.VoiceModel.Voice,
-						Help: "Realtime system voice name or voice-clone ID (provider-specific).",
-						PlaceholderWhen: []ConditionalPlaceholder{
-							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "qwen")}}, Value: defaults.VoiceModel.Voice},
-							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "speko")}}, Value: "auto"},
-							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "openai")}}, Value: "alloy"},
-							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "gemini")}}, Value: "Puck"},
-							{When: VisibleRule{All: []Condition{eq("voice_model_providers.type", "xai")}}, Value: "eve"},
-						}},
+						Help:            "Realtime system voice name or voice-clone ID (provider-specific).",
+						PlaceholderWhen: realtimeProviderPlaceholders("voice")},
 				},
 			},
 			{

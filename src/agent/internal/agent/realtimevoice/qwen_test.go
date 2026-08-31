@@ -3,6 +3,7 @@ package realtimevoice
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"aiden-agent/internal/agent/rtclient"
@@ -94,5 +95,23 @@ func TestForwardQwenEventsStopsWhenSessionCloses(t *testing.T) {
 	forwardQwenEvents(raw, stop, out)
 	if len(out) != 1 {
 		t.Fatalf("buffered events = %d, want only the pre-existing event", len(out))
+	}
+}
+
+func TestQwenResponseDoneFailureIsError(t *testing.T) {
+	for _, status := range []string{"failed", "incomplete"} {
+		t.Run(status, func(t *testing.T) {
+			var wire rtclient.Event
+			if err := json.Unmarshal([]byte(`{"type":"response.done","response":{"id":"resp_1","status":"`+status+`"}}`), &wire); err != nil {
+				t.Fatal(err)
+			}
+			event, ok := translateQwenEvent(wire)
+			if !ok || event.Kind != EventError || event.Error == nil {
+				t.Fatalf("event = %+v, ok=%t; want provider failure", event, ok)
+			}
+			if !strings.Contains(event.Error.Error(), status) {
+				t.Fatalf("error = %v, want status %q", event.Error, status)
+			}
+		})
 	}
 }

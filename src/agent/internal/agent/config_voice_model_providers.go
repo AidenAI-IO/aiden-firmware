@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/realtimevoice"
 	"fmt"
 	"sort"
 	"strings"
@@ -19,6 +20,9 @@ type VoiceModelProvider struct {
 	Model            string `toml:"model,omitempty"`
 	WorkspaceID      string `toml:"workspace_id,omitempty"`
 	Region           string `toml:"region,omitempty"`
+	AuthMode         string `toml:"auth_mode,omitempty"`
+	ProjectID        string `toml:"project_id,omitempty"`
+	Location         string `toml:"location,omitempty"`
 	Endpoint         string `toml:"endpoint,omitempty"`
 	BaseURL          string `toml:"base_url,omitempty"`
 	Voice            string `toml:"voice,omitempty"`
@@ -29,12 +33,7 @@ func normalizeVoiceModelProviderType(providerType string) string {
 }
 
 func isKnownVoiceModelProviderType(providerType string) bool {
-	switch normalizeVoiceModelProviderType(providerType) {
-	case "qwen", "speko", "openai", "gemini", "xai":
-		return true
-	default:
-		return false
-	}
+	return realtimevoice.IsProvider(providerType)
 }
 
 func defaultVoiceModelProviderRecord(providerType string) VoiceModelProvider {
@@ -94,6 +93,15 @@ func copyDefinedLegacyVoiceModelFields(record *VoiceModelProvider, legacy VoiceM
 	if metadata.IsDefined("voice_model", "region") {
 		record.Region = legacy.Region
 	}
+	if metadata.IsDefined("voice_model", "auth_mode") {
+		record.AuthMode = legacy.AuthMode
+	}
+	if metadata.IsDefined("voice_model", "project_id") {
+		record.ProjectID = legacy.ProjectID
+	}
+	if metadata.IsDefined("voice_model", "location") {
+		record.Location = legacy.Location
+	}
 	if metadata.IsDefined("voice_model", "endpoint") {
 		record.Endpoint = legacy.Endpoint
 	}
@@ -112,6 +120,9 @@ func clearVoiceModelProviderFields(config *VoiceModelConfig) {
 	config.Model = ""
 	config.WorkspaceID = ""
 	config.Region = ""
+	config.AuthMode = ""
+	config.ProjectID = ""
+	config.Location = ""
 	config.Endpoint = ""
 	config.BaseURL = ""
 	config.Voice = ""
@@ -157,6 +168,15 @@ func fillVoiceModelProviderFields(config *VoiceModelConfig, record VoiceModelPro
 	}
 	if config.Region == "" {
 		config.Region = record.Region
+	}
+	if config.AuthMode == "" {
+		config.AuthMode = record.AuthMode
+	}
+	if config.ProjectID == "" {
+		config.ProjectID = record.ProjectID
+	}
+	if config.Location == "" {
+		config.Location = record.Location
 	}
 	if config.Endpoint == "" {
 		config.Endpoint = record.Endpoint

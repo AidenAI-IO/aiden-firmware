@@ -511,6 +511,15 @@ upstream_provider = "google"
 model = "gemini-3.1-flash-live-preview"
 voice = "Puck"
 
+[voice_model_providers.gemini-vertex]
+type = "gemini"
+auth_mode = "vertex"
+api_key = "$GOOGLE_OAUTH_ACCESS_TOKEN"
+project_id = "my-project"
+location = "us-central1"
+model = "gemini-live"
+voice = "Puck"
+
 [voice_model]
 provider = "speko-main"
 ```
@@ -518,11 +527,13 @@ provider = "speko-main"
 | Field | Providers | Description |
 | ----- | --------- | ----------- |
 | `type` | all | Adapter type: `qwen`, `speko`, `openai`, `gemini`, or `xai`. |
-| `api_key` | all | Provider credential; supports `$ENV_VAR` expansion. |
-| `model` / `voice` | all | Provider-specific model and voice. Speko may leave both empty for automatic selection; when one is set, set both. |
+| `api_key` | all | Provider credential; supports `$ENV_VAR` expansion. For Gemini Vertex, this is an OAuth access token. |
+| `model` / `voice` | all | Provider-specific model and voice. Speko requires an explicit model; voice may stay empty for the selected upstream default. |
 | `workspace_id` / `region` | Qwen | Optional DashScope routing settings. |
+| `auth_mode` | Gemini | `api_key` (default) for the Gemini Developer API, or `vertex` for Vertex OAuth. |
+| `project_id` / `location` | Gemini Vertex | Required Google Cloud project and Vertex region, for example `us-central1`. |
 | `endpoint` | Qwen, OpenAI, Gemini, xAI | Optional WebSocket endpoint override, primarily for regional gateways and protocol tests. |
-| `upstream_provider` | Speko | Optional S2S upstream: `google` (or `gemini`) or `xai`; Speko's OpenAI route is WebRTC and is rejected by this Go adapter until a WebRTC transport is added. Leave it and `model` empty to let Speko route; when selecting an upstream, set both fields. |
+| `upstream_provider` | Speko | Required S2S upstream: `google` (or `gemini`) or `xai`, paired with `model`. Automatic routing is disabled because it may select an unsupported WebRTC route. OpenAI is not a supported Speko route in Aiden; use the top-level `openai` provider instead. |
 | `agent_id` / `base_url` | Speko | Optional Speko agent ID and API base URL override. |
 
 ## `[frame_service]`

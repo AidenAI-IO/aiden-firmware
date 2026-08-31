@@ -197,7 +197,15 @@ type TurnCommitter interface {
 // ResponseInterrupter is an optional session capability. Providers that
 // perform interruption entirely on the server should not implement it.
 type ResponseInterrupter interface {
-	Interrupt(context.Context) error
+	Interrupt(context.Context, ResponseInterruption) error
+}
+
+// ResponseInterruption identifies how much of the current assistant audio was
+// submitted for playback. Providers that keep server-side conversation audio
+// can use it to remove the unheard tail after a barge-in.
+type ResponseInterruption struct {
+	ItemID     string
+	AudioEndMS int
 }
 
 // ToolResultSender is an optional session capability for sessions that expose

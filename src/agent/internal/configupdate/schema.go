@@ -196,6 +196,9 @@ type VoiceModelProvider struct {
 	Model            string `json:"model,omitempty"`
 	WorkspaceID      string `json:"workspace_id,omitempty"`
 	Region           string `json:"region,omitempty"`
+	AuthMode         string `json:"auth_mode,omitempty"`
+	ProjectID        string `json:"project_id,omitempty"`
+	Location         string `json:"location,omitempty"`
 	Endpoint         string `json:"endpoint,omitempty"`
 	BaseURL          string `json:"base_url,omitempty"`
 	Voice            string `json:"voice,omitempty"`
@@ -307,6 +310,9 @@ type VoiceModel struct {
 	Model                  string   `json:"model"`
 	WorkspaceID            string   `json:"workspace_id"`
 	Region                 string   `json:"region"`
+	AuthMode               string   `json:"auth_mode"`
+	ProjectID              string   `json:"project_id"`
+	Location               string   `json:"location"`
 	Endpoint               string   `json:"endpoint"`
 	BaseURL                string   `json:"base_url"`
 	Voice                  string   `json:"voice"`
@@ -600,6 +606,9 @@ func (d Config) ToAgentConfig() agent.Config {
 			Model:                  d.VoiceModel.Model,
 			WorkspaceID:            d.VoiceModel.WorkspaceID,
 			Region:                 d.VoiceModel.Region,
+			AuthMode:               d.VoiceModel.AuthMode,
+			ProjectID:              d.VoiceModel.ProjectID,
+			Location:               d.VoiceModel.Location,
 			Endpoint:               d.VoiceModel.Endpoint,
 			BaseURL:                d.VoiceModel.BaseURL,
 			Voice:                  d.VoiceModel.Voice,
@@ -850,6 +859,9 @@ func voiceModelProvidersFromConfig(providers map[string]agent.VoiceModelProvider
 			Model:            provider.Model,
 			WorkspaceID:      provider.WorkspaceID,
 			Region:           provider.Region,
+			AuthMode:         provider.AuthMode,
+			ProjectID:        provider.ProjectID,
+			Location:         provider.Location,
 			Endpoint:         provider.Endpoint,
 			BaseURL:          provider.BaseURL,
 			Voice:            provider.Voice,
@@ -872,6 +884,9 @@ func (d Config) voiceModelProvidersToAgentConfig() map[string]agent.VoiceModelPr
 			Model:            provider.Model,
 			WorkspaceID:      provider.WorkspaceID,
 			Region:           provider.Region,
+			AuthMode:         provider.AuthMode,
+			ProjectID:        provider.ProjectID,
+			Location:         provider.Location,
 			Endpoint:         provider.Endpoint,
 			BaseURL:          provider.BaseURL,
 			Voice:            provider.Voice,
@@ -943,6 +958,9 @@ func FromAgentConfig(cfg agent.Config) Config {
 			Model:                  cfg.VoiceModel.Model,
 			WorkspaceID:            cfg.VoiceModel.WorkspaceID,
 			Region:                 cfg.VoiceModel.Region,
+			AuthMode:               cfg.VoiceModel.AuthMode,
+			ProjectID:              cfg.VoiceModel.ProjectID,
+			Location:               cfg.VoiceModel.Location,
 			Endpoint:               cfg.VoiceModel.Endpoint,
 			BaseURL:                cfg.VoiceModel.BaseURL,
 			Voice:                  cfg.VoiceModel.Voice,

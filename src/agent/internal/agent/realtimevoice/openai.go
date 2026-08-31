@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	DefaultOpenAIRealtimeEndpoint = "wss://api.openai.com/v1/realtime"
-	DefaultOpenAIRealtimeModel    = "gpt-realtime"
+	DefaultOpenAIRealtimeEndpoint        = "wss://api.openai.com/v1/realtime"
+	DefaultOpenAIRealtimeModel           = "gpt-realtime"
+	DefaultOpenAIInputTranscriptionModel = "gpt-4o-mini-transcribe"
 )
 
 // OpenAIProvider is the native OpenAI Realtime adapter. Endpoint is optional
@@ -60,16 +61,18 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 	if outputRate <= 0 {
 		outputRate = 24000
 	}
+	transport := newJSONWebSocketTransport(conn, "openai realtime", p.EventBuffer)
 	s := &openAISession{
-		conn:      conn,
-		events:    make(chan Event, buffer(p.EventBuffer)),
-		errs:      make(chan error, 1),
-		done:      make(chan struct{}),
-		writeGate: make(chan struct{}, 1),
-		info:      newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true}),
+		jsonWebSocketTransport: transport,
+		info:                   newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true}),
 	}
-	s.writeGate <- struct{}{}
-	go s.readLoop()
+	transport.start(func(body []byte) []Event {
+		event, ok := translateOpenAIEvent(body)
+		if !ok {
+			return nil
+		}
+		return []Event{event}
+	})
 
 	if err := waitOpenAIReady(ctx, s, 1); err != nil {
 		_ = s.Close()
@@ -133,8 +136,13 @@ type openAIAudioSettings struct {
 }
 
 type openAIAudioInput struct {
-	Format        openAIAudioFormat `json:"format"`
-	TurnDetection any               `json:"turn_detection,omitempty"`
+	Format        openAIAudioFormat         `json:"format"`
+	Transcription openAITranscriptionConfig `json:"transcription"`
+	TurnDetection any                       `json:"turn_detection,omitempty"`
+}
+
+type openAITranscriptionConfig struct {
+	Model string `json:"model"`
 }
 
 type openAIAudioOutput struct {
@@ -161,7 +169,10 @@ func buildOpenAISessionUpdate(cfg SessionConfig, model string) openAISessionUpda
 		OutputModalities: []string{"audio"},
 		Instructions:     cfg.Instructions,
 		Audio: openAIAudioSettings{
-			Input:  openAIAudioInput{Format: openAIAudioFormat{Type: "audio/pcm", Rate: 24000}},
+			Input: openAIAudioInput{
+				Format:        openAIAudioFormat{Type: "audio/pcm", Rate: 24000},
+				Transcription: openAITranscriptionConfig{Model: DefaultOpenAIInputTranscriptionModel},
+			},
 			Output: openAIAudioOutput{Format: openAIAudioFormat{Type: "audio/pcm", Rate: 24000}, Voice: cfg.Voice},
 		},
 	}
@@ -175,14 +186,9 @@ func buildOpenAISessionUpdate(cfg SessionConfig, model string) openAISessionUpda
 }
 
 type openAISession struct {
-	conn      *websocket.Conn
-	info      SessionInfo
-	infoMu    sync.RWMutex
-	events    chan Event
-	errs      chan error
-	done      chan struct{}
-	writeGate chan struct{}
-	closeOnce sync.Once
+	*jsonWebSocketTransport
+	info   SessionInfo
+	infoMu sync.RWMutex
 }
 
 func (s *openAISession) Info() SessionInfo {
@@ -190,9 +196,6 @@ func (s *openAISession) Info() SessionInfo {
 	defer s.infoMu.RUnlock()
 	return s.info
 }
-func (s *openAISession) Events() <-chan Event  { return s.events }
-func (s *openAISession) Errors() <-chan error  { return s.errs }
-func (s *openAISession) Done() <-chan struct{} { return s.done }
 func (s *openAISession) SendAudio(ctx context.Context, pcm []byte) error {
 	if len(pcm) == 0 {
 		return nil
@@ -205,22 +208,28 @@ func (s *openAISession) SendAudio(ctx context.Context, pcm []byte) error {
 func (s *openAISession) Commit(ctx context.Context) error {
 	return s.writeJSON(ctx, map[string]any{"type": "input_audio_buffer.commit"})
 }
-func (s *openAISession) Interrupt(ctx context.Context) error {
-	return s.writeJSON(ctx, map[string]any{"type": "response.cancel"})
+func (s *openAISession) Interrupt(ctx context.Context, interruption ResponseInterruption) error {
+	if err := s.writeJSON(ctx, map[string]any{"type": "response.cancel"}); err != nil {
+		return err
+	}
+	if strings.TrimSpace(interruption.ItemID) == "" {
+		return nil
+	}
+	if interruption.AudioEndMS < 0 {
+		interruption.AudioEndMS = 0
+	}
+	return s.writeJSON(ctx, map[string]any{
+		"type":          "conversation.item.truncate",
+		"item_id":       interruption.ItemID,
+		"content_index": 0,
+		"audio_end_ms":  interruption.AudioEndMS,
+	})
 }
 func (s *openAISession) SendToolResult(ctx context.Context, id, output string) error {
 	return s.writeJSON(ctx, map[string]any{
 		"type": "conversation.item.create",
 		"item": map[string]any{"type": "function_call_output", "call_id": id, "output": output},
 	})
-}
-func (s *openAISession) Close() error {
-	var err error
-	s.closeOnce.Do(func() {
-		close(s.done)
-		err = s.conn.Close()
-	})
-	return err
 }
 func (s *openAISession) SendText(ctx context.Context, text string) error {
 	return s.writeJSON(ctx, map[string]any{
@@ -245,61 +254,6 @@ func (s *openAISession) ReplayContext(ctx context.Context, items []ContextItem) 
 		}
 	}
 	return nil
-}
-
-func (s *openAISession) writeJSON(ctx context.Context, value any) error {
-	if ctx == nil {
-		return errors.New("openai realtime: nil context")
-	}
-	b, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("openai realtime: marshal event: %w", err)
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-s.done:
-		return errors.New("openai realtime: session is closed")
-	case <-s.writeGate:
-	}
-	defer func() { s.writeGate <- struct{}{} }()
-	deadline := time.Now().Add(10 * time.Second)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
-	}
-	_ = s.conn.SetWriteDeadline(deadline)
-	defer s.conn.SetWriteDeadline(time.Time{})
-	if err := s.conn.WriteMessage(websocket.TextMessage, b); err != nil {
-		return fmt.Errorf("openai realtime websocket write: %w", err)
-	}
-	return nil
-}
-
-func (s *openAISession) readLoop() {
-	defer close(s.events)
-	defer close(s.errs)
-	defer s.closeOnce.Do(func() { close(s.done); _ = s.conn.Close() })
-	for {
-		_, body, err := s.conn.ReadMessage()
-		if err != nil {
-			if !normalClose(err) {
-				select {
-				case s.errs <- err:
-				default:
-				}
-			}
-			return
-		}
-		event, ok := translateOpenAIEvent(body)
-		if !ok {
-			continue
-		}
-		select {
-		case s.events <- event:
-		case <-s.done:
-			return
-		}
-	}
 }
 
 func waitOpenAIReady(ctx context.Context, s *openAISession, count int) error {
@@ -485,15 +439,11 @@ func translateOpenAIEvent(body []byte) (Event, bool) {
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		kind := EventResponseDone
-		if event.Response.Status == "cancelled" || event.Response.Status == "canceled" {
-			kind = EventResponseCancelled
-		}
-		out := Event{Kind: kind, ResponseID: event.Response.ID, Status: event.Response.Status}
+		var usage Usage
 		if event.Response.Usage != nil {
-			out.Usage = Usage{InputTokens: event.Response.Usage.InputTokens, OutputTokens: event.Response.Usage.OutputTokens, TotalTokens: event.Response.Usage.TotalTokens}
+			usage = Usage{InputTokens: event.Response.Usage.InputTokens, OutputTokens: event.Response.Usage.OutputTokens, TotalTokens: event.Response.Usage.TotalTokens}
 		}
-		return out, true
+		return terminalResponseEvent("openai", event.Response.ID, event.Response.Status, usage), true
 	case "conversation.item.truncated", "response.cancelled":
 		return Event{Kind: EventInterruption, At: "assistant"}, true
 	case "error":

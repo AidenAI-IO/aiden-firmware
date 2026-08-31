@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,6 +42,7 @@ func TestSpekoProviderMintsAndUsesProviderDirectGeminiCredential(t *testing.T) {
 				"expiresAt":       "2099-01-01T00:00:00Z",
 				"endpoint":        "ws://" + r.Host + "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
 				"credential":      map[string]any{"kind": "bearer", "value": "delegated-gemini", "expiresAt": "2099-01-01T00:00:00Z"},
+				"reservation":     map[string]any{"leaseExpiresAt": "2099-01-01T00:00:00Z"},
 				"inputSampleRate": 16000, "outputSampleRate": 24000,
 			})
 		case "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained":
@@ -176,36 +178,9 @@ func TestSpekoProviderRejectsRelayResponse(t *testing.T) {
 	}
 }
 
-func TestValidateSpekoMintResponseAllowsAutomaticProvider(t *testing.T) {
-	minted := spekoMintResponse{Mode: "s2s", Transport: "provider_direct", SessionID: "speko-session", Model: "gemini-3.1-flash-live-preview", Provider: "google", Adapter: "google.live.v1", ProviderTransport: "websocket", Endpoint: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent", Credential: json.RawMessage(`{"kind":"bearer","value":"token","expiresAt":"2099-01-01T00:00:00Z"}`), InputSampleRate: 16000, OutputSampleRate: 24000, ExpiresAt: "2099-01-01T00:00:00Z"}
-	if err := validateSpekoMintResponse(minted, ""); err != nil {
-		t.Fatalf("automatic provider response rejected: %v", err)
-	}
-}
-
-func TestSpekoProviderOmitsAutomaticRoutingHints(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decode request: %v", err)
-			return
-		}
-		s2s, ok := body["s2s"].(map[string]any)
-		if !ok {
-			t.Error("missing s2s request")
-			return
-		}
-		if _, ok := s2s["provider"]; ok {
-			t.Error("automatic routing request should omit s2s.provider")
-		}
-		if _, ok := s2s["model"]; ok {
-			t.Error("automatic routing request should omit s2s.model")
-		}
-		http.Error(w, "routing probe", http.StatusBadRequest)
-	}))
-	defer server.Close()
-	_, err := (SpekoProvider{HTTPClient: server.Client(), BaseURL: server.URL}).Open(context.Background(), SessionConfig{APIKey: "speko-key"})
-	if err == nil || !strings.Contains(err.Error(), "routing probe") {
+func TestSpekoProviderRejectsAutomaticRoutingBeforeMint(t *testing.T) {
+	_, err := (SpekoProvider{}).Open(context.Background(), SessionConfig{APIKey: "speko-key"})
+	if err == nil || !strings.Contains(err.Error(), "automatic routing is disabled") {
 		t.Fatalf("Open() error = %v", err)
 	}
 }
@@ -216,5 +191,96 @@ func TestNormalizeSpekoProvider(t *testing.T) {
 	}
 	if got, err := normalizeSpekoProvider(""); err != nil || got != "" {
 		t.Fatalf("empty upstream provider = %q, %v; want empty and nil", got, err)
+	}
+}
+
+func TestSpekoRejectsOpenAIRouteRegardlessOfTransport(t *testing.T) {
+	base := spekoMintResponse{
+		Mode: "s2s", Transport: "provider_direct", SessionID: "sess_1",
+		Model: "gpt-realtime", Provider: "openai", Adapter: "openai.realtime.v1",
+		ProviderTransport: "websocket", Endpoint: "wss://api.openai.com/v1/realtime",
+		InputSampleRate: 24000, OutputSampleRate: 24000,
+		ExpiresAt:  "2099-01-01T00:00:00Z",
+		Credential: json.RawMessage(`{"kind":"bearer","value":"ek_test","expiresAt":"2099-01-01T00:00:00Z"}`),
+	}
+	if err := validateSpekoMintResponse(base, ""); err == nil || !strings.Contains(err.Error(), "unsupported upstream provider") {
+		t.Fatalf("automatic OpenAI route must be rejected before adapter dispatch, got %v", err)
+	}
+
+	unknown := spekoMintResponse{
+		Mode: "s2s", Transport: "provider_direct", SessionID: "sess_1",
+		Model: "grok-voice-latest", Provider: "xai", Adapter: "xai.realtime.v1",
+		ProviderTransport: "quic", Endpoint: "wss://api.x.ai/v1/realtime",
+		InputSampleRate: 24000, OutputSampleRate: 24000,
+		ExpiresAt:  "2099-01-01T00:00:00Z",
+		Credential: json.RawMessage(`{"kind":"bearer","value":"token","expiresAt":"2099-01-01T00:00:00Z"}`),
+	}
+	unknown.ProviderTransport = "quic"
+	if err := validateSpekoMintResponse(unknown, "xai"); err == nil || !strings.Contains(err.Error(), "not recognized") {
+		t.Fatalf("an unknown transport must be refused distinctly, got %v", err)
+	}
+}
+
+func TestSpekoLeaseRotatesBeforeExpiry(t *testing.T) {
+	raw := newManagedBaseSession()
+	expiresAt := time.Now().Add(300 * time.Millisecond)
+	session := newLeasedSession(raw, expiresAt, 200*time.Millisecond)
+	defer session.Close()
+	select {
+	case event := <-session.Events():
+		if event.Kind != EventError || !errors.Is(event.Error, ErrSessionRotated) {
+			t.Fatalf("lease event = %+v, want rotation", event)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("lease did not rotate before expiry")
+	}
+}
+
+func TestSpekoLeaseExpiryUsesEarliestBoundary(t *testing.T) {
+	now := time.Now()
+	credentialExpiry := now.Add(2 * time.Hour)
+	credential, err := json.Marshal(map[string]any{
+		"kind": "bearer", "value": "token", "expiresAt": credentialExpiry.Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	minted := spekoMintResponse{
+		ExpiresAt:  now.Add(3 * time.Hour).Format(time.RFC3339Nano),
+		Credential: credential,
+	}
+	leaseExpiry := now.Add(time.Hour)
+	minted.Reservation.LeaseExpiresAt = leaseExpiry.Format(time.RFC3339Nano)
+	got, err := spekoLeaseExpiry(minted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(leaseExpiry) {
+		t.Fatalf("lease expiry = %s, want earliest reservation expiry %s", got, leaseExpiry)
+	}
+}
+
+func TestValidateSpekoEndpointRequiresSecureAllowlistedRoute(t *testing.T) {
+	geminiPath := "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained"
+	if err := validateSpekoEndpoint("wss://generativelanguage.googleapis.com"+geminiPath, "google", false); err != nil {
+		t.Fatalf("official Gemini route rejected: %v", err)
+	}
+	if err := validateSpekoEndpoint("wss://api.x.ai/v1/realtime?model=grok-voice-latest", "xai", false); err != nil {
+		t.Fatalf("official xAI route rejected: %v", err)
+	}
+	for name, raw := range map[string]string{
+		"plaintext production": "ws://generativelanguage.googleapis.com" + geminiPath,
+		"arbitrary path":       "wss://generativelanguage.googleapis.com/attacker-controlled",
+		"loopback production":  "ws://127.0.0.1:8080" + geminiPath,
+		"unexpected query":     "wss://generativelanguage.googleapis.com" + geminiPath + "?redirect=evil",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateSpekoEndpoint(raw, "google", false); err == nil {
+				t.Fatalf("endpoint %q accepted", raw)
+			}
+		})
+	}
+	if err := validateSpekoEndpoint("ws://127.0.0.1:8080"+geminiPath, "google", true); err != nil {
+		t.Fatalf("explicit loopback test route rejected: %v", err)
 	}
 }

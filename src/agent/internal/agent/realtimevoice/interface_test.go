@@ -8,14 +8,12 @@ func TestProviderInterfaceSeparatesCoreAndTextCapabilities(t *testing.T) {
 	var _ ContextReplayer = (*qwenSession)(nil)
 	var _ ContextReplayer = (*openAISession)(nil)
 	var _ ContextReplayer = (*xAISession)(nil)
+	var _ ContextReplayer = (*geminiSession)(nil)
 	if _, ok := any((*geminiSession)(nil)).(TurnCommitter); ok {
 		t.Fatal("Gemini Live must not advertise client-side commit")
 	}
 	if _, ok := any((*geminiSession)(nil)).(ResponseInterrupter); ok {
 		t.Fatal("Gemini Live must not advertise client interruption")
-	}
-	if _, ok := any((*geminiSession)(nil)).(ContextReplayer); ok {
-		t.Fatal("Gemini Live must not advertise context replay")
 	}
 }
 

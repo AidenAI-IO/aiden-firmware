@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -26,10 +27,12 @@ type fakeRealtimePlaybackWrite struct {
 
 type fakeRealtimeResponseInterrupter struct {
 	calls int
+	last  realtimevoice.ResponseInterruption
 }
 
-func (f *fakeRealtimeResponseInterrupter) Interrupt(context.Context) error {
+func (f *fakeRealtimeResponseInterrupter) Interrupt(_ context.Context, interruption realtimevoice.ResponseInterruption) error {
 	f.calls++
+	f.last = interruption
 	return nil
 }
 
@@ -186,17 +189,46 @@ func TestRealtimeSessionTerminationPreservesBufferedError(t *testing.T) {
 
 func TestInterruptRealtimeResponseSkipsIdleResponse(t *testing.T) {
 	interrupter := &fakeRealtimeResponseInterrupter{}
-	if err := interruptRealtimeResponse(context.Background(), false, interrupter); err != nil {
+	position := realtimevoice.ResponseInterruption{ItemID: "item_1", AudioEndMS: 250}
+	if err := interruptRealtimeResponse(context.Background(), false, interrupter, position); err != nil {
 		t.Fatal(err)
 	}
 	if interrupter.calls != 0 {
 		t.Fatalf("idle response interrupts = %d, want 0", interrupter.calls)
 	}
-	if err := interruptRealtimeResponse(context.Background(), true, interrupter); err != nil {
+	if err := interruptRealtimeResponse(context.Background(), true, interrupter, position); err != nil {
 		t.Fatal(err)
 	}
 	if interrupter.calls != 1 {
 		t.Fatalf("active response interrupts = %d, want 1", interrupter.calls)
+	}
+	if interrupter.last != position {
+		t.Fatalf("interrupt position = %+v, want %+v", interrupter.last, position)
+	}
+}
+
+func TestRealtimePlaybackCapsInterruptionAtEstimatedPlayedAudio(t *testing.T) {
+	audio := &fakeRealtimePlaybackAudio{}
+	format := agent.AudioFormat{SampleRate: 24000, Channels: 1, BitWidth: 16}
+	now := time.Unix(100, 0)
+	playback := realtimePlaybackState{now: func() time.Time { return now }}
+	if err := playback.appendItem(audio, format, "item_1", make([]byte, 12000)); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(100 * time.Millisecond)
+	got := playback.responseInterruption(format)
+	want := (realtimevoice.ResponseInterruption{ItemID: "item_1", AudioEndMS: 100})
+	if got != want {
+		t.Fatalf("interruption = %+v, want %+v", got, want)
+	}
+
+	// Wall-clock playback cannot exceed the PCM duration already accepted by the
+	// asynchronous audio queue.
+	now = now.Add(time.Second)
+	got = playback.responseInterruption(format)
+	want.AudioEndMS = 250
+	if got != want {
+		t.Fatalf("capped interruption = %+v, want %+v", got, want)
 	}
 }
 
@@ -365,5 +397,53 @@ func TestRealtimeChatBridgeActiveRequestDoesNotWakeSessionAgain(t *testing.T) {
 	bridge.deactivate()
 	if wakeups != 0 {
 		t.Fatalf("active request triggered %d extra wakeups", wakeups)
+	}
+}
+
+func TestRealtimeRotationSurvivesSessionErrorPath(t *testing.T) {
+	// Rotation is distinguished with errors.Is in the wakeup loop, so the
+	// sentinel has to reach it intact through the session error channel. A plain
+	// error must stay non-rotation so real failures still drop to idle.
+	rotated := fmt.Errorf("%w: gemini live ends this session in 50s", realtimevoice.ErrSessionRotated)
+	errs := make(chan error, 1)
+	errs <- rotated
+	close(errs)
+	got := realtimeSessionTerminationError(errs)
+	if !errors.Is(got, realtimevoice.ErrSessionRotated) {
+		t.Fatalf("rotation sentinel lost on the termination path: %v", got)
+	}
+	if !strings.Contains(got.Error(), "50s") {
+		t.Fatalf("announced budget lost: %v", got)
+	}
+
+	plain := make(chan error, 1)
+	plain <- errors.New("transport failed")
+	close(plain)
+	if errors.Is(realtimeSessionTerminationError(plain), realtimevoice.ErrSessionRotated) {
+		t.Fatal("a plain transport error must not be treated as rotation")
+	}
+	if shouldFailQueuedRealtimeChat(rotated) {
+		t.Fatal("queued chat must survive a scheduled session rotation")
+	}
+	if !shouldFailQueuedRealtimeChat(errors.New("transport failed")) {
+		t.Fatal("queued chat must fail when a session ends with a real error")
+	}
+}
+
+func TestFailActiveRealtimeChatReportsSessionError(t *testing.T) {
+	command := realtimeChatCommand{
+		ctx:    context.Background(),
+		events: make(chan agent.RealtimeChatEvent, 1),
+	}
+	failActiveRealtimeChat(&command, errors.New("provider response failed"))
+	event, ok := <-command.events
+	if !ok {
+		t.Fatal("active chat closed without an error event")
+	}
+	if event.Type != agent.RealtimeChatEventError || event.Error != "provider response failed" {
+		t.Fatalf("active chat event = %+v", event)
+	}
+	if _, ok := <-command.events; ok {
+		t.Fatal("active chat event channel remains open")
 	}
 }

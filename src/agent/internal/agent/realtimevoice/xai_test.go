@@ -123,7 +123,7 @@ func TestXAIProviderNormalizesRealtimeSession(t *testing.T) {
 	if err := session.SendAudio(context.Background(), []byte{1, 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.(ResponseInterrupter).Interrupt(context.Background()); err != nil {
+	if err := session.(ResponseInterrupter).Interrupt(context.Background(), ResponseInterruption{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := session.(ToolResultSender).SendToolResult(context.Background(), "call_1", `{"ok":true}`); err != nil {
@@ -271,5 +271,19 @@ func TestXAICompletedWithoutStatusStaysTerminal(t *testing.T) {
 	event, ok := translateXAIEventBase([]byte(`{"type":"conversation.item.input_audio_transcription.completed","item_id":"item_1","transcript":"hello"}`))
 	if !ok || event.Kind != EventTranscriptFinal || event.Text != "hello" || !event.Final {
 		t.Fatalf("event = %+v, ok=%t", event, ok)
+	}
+}
+
+func TestXAIResponseDoneFailureIsError(t *testing.T) {
+	for _, status := range []string{"failed", "incomplete"} {
+		t.Run(status, func(t *testing.T) {
+			event, ok := translateXAIEventBase([]byte(`{"type":"response.done","response":{"id":"resp_1","status":"` + status + `"}}`))
+			if !ok || event.Kind != EventError || event.Error == nil {
+				t.Fatalf("event = %+v, ok=%t; want provider failure", event, ok)
+			}
+			if !strings.Contains(event.Error.Error(), status) {
+				t.Fatalf("error = %v, want status %q", event.Error, status)
+			}
+		})
 	}
 }

@@ -816,7 +816,8 @@ providerVisible:
 		"voice_model_providers.type", "voice_model_providers.upstream_provider",
 		"voice_model_providers.agent_id", "voice_model_providers.api_key",
 		"voice_model_providers.model", "voice_model_providers.workspace_id",
-		"voice_model_providers.region", "voice_model_providers.endpoint",
+		"voice_model_providers.region", "voice_model_providers.auth_mode",
+		"voice_model_providers.project_id", "voice_model_providers.location", "voice_model_providers.endpoint",
 		"voice_model_providers.base_url", "voice_model_providers.voice",
 	} {
 		if _, ok := idx[path]; !ok {
@@ -832,8 +833,9 @@ providerVisible:
 	if upstream.Widget != WidgetSelect {
 		t.Fatalf("voice_model_providers.upstream_provider widget = %q, want select", upstream.Widget)
 	}
+	// openai is intentionally not offered here; see
+	// TestConfigMeta_SpekoUpstreamOmitsWebRTCOnlyEngines.
 	wantUpstreams := []EnumOption{
-		{Value: "openai", Label: "OpenAI Realtime"},
 		{Value: "google", Label: "Google Gemini Live"},
 		{Value: "xai", Label: "xAI Grok Voice"},
 	}
@@ -852,7 +854,8 @@ providerVisible:
 	for _, path := range []string{
 		"voice_model_providers.type", "voice_model_providers.upstream_provider",
 		"voice_model_providers.api_key", "voice_model_providers.model",
-		"voice_model_providers.voice",
+		"voice_model_providers.auth_mode", "voice_model_providers.project_id",
+		"voice_model_providers.location", "voice_model_providers.voice",
 	} {
 		if idx[path].Advanced {
 			t.Errorf("%s must remain in the primary provider form", path)
@@ -868,7 +871,6 @@ providerVisible:
 		value    interface{}
 	}{
 		{path: "voice_model_providers.model", provider: "qwen", value: DefaultConfig().VoiceModel.Model},
-		{path: "voice_model_providers.model", provider: "speko", value: "auto"},
 		{path: "voice_model_providers.model", provider: "openai", value: "gpt-realtime"},
 		{path: "voice_model_providers.model", provider: "gemini", value: "gemini-3.1-flash-live-preview"},
 		{path: "voice_model_providers.model", provider: "xai", value: "grok-voice-latest"},
@@ -1019,5 +1021,48 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		if _, ok := idx[path]; !ok {
 			t.Errorf("top-level config field %s has no metadata entry under agent section", path)
 		}
+	}
+}
+
+func TestConfigMeta_SpekoUpstreamOmitsWebRTCOnlyEngines(t *testing.T) {
+	// Speko serves OpenAI over WebRTC and every realtime adapter here speaks
+	// WebSocket, so offering it could only fail after spending a mint request.
+	// The standalone openai provider type stays available for a direct session.
+	idx := fieldIndex(t)
+	upstream, ok := idx["voice_model_providers.upstream_provider"]
+	if !ok {
+		t.Fatal("voice_model_providers.upstream_provider is missing from metadata")
+	}
+	values := make([]string, 0, len(upstream.Enum))
+	for _, option := range upstream.Enum {
+		if option.Value == "openai" {
+			t.Errorf("openai must not be selectable as a Speko upstream: it is WebRTC-only")
+		}
+		values = append(values, option.Value)
+	}
+	for _, want := range []string{"google", "xai"} {
+		found := false
+		for _, value := range values {
+			if value == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Speko upstream %q should remain selectable, got %v", want, values)
+		}
+	}
+
+	providerType, ok := idx["voice_model_providers.type"]
+	if !ok {
+		t.Fatal("voice_model_providers.type is missing from metadata")
+	}
+	direct := false
+	for _, option := range providerType.Enum {
+		if option.Value == "openai" {
+			direct = true
+		}
+	}
+	if !direct {
+		t.Error("openai must remain selectable as a provider type for direct WebSocket sessions")
 	}
 }

@@ -122,8 +122,10 @@ func (s *qwenSession) Done() <-chan struct{} { return s.ws.Done() }
 func (s *qwenSession) SendAudio(ctx context.Context, pcm []byte) error {
 	return s.ws.AppendAudio(ctx, pcm)
 }
-func (s *qwenSession) Commit(ctx context.Context) error    { return s.ws.CommitAudio(ctx) }
-func (s *qwenSession) Interrupt(ctx context.Context) error { return s.ws.CancelResponse(ctx) }
+func (s *qwenSession) Commit(ctx context.Context) error { return s.ws.CommitAudio(ctx) }
+func (s *qwenSession) Interrupt(ctx context.Context, _ ResponseInterruption) error {
+	return s.ws.CancelResponse(ctx)
+}
 func (s *qwenSession) SendToolResult(ctx context.Context, id, out string) error {
 	return s.ws.SendFunctionOutput(ctx, id, out)
 }
@@ -232,15 +234,11 @@ func translateQwenEvent(ev rtclient.Event) (Event, bool) {
 		if err := ev.Decode(&x); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		kind := EventResponseDone
-		if x.Response.Status == "cancelled" {
-			kind = EventResponseCancelled
-		}
-		out := Event{Kind: kind, ResponseID: x.Response.ID, Status: x.Response.Status}
+		var usage Usage
 		if x.Response.Usage != nil {
-			out.Usage = Usage{InputTokens: x.Response.Usage.InputTokens, OutputTokens: x.Response.Usage.OutputTokens, TotalTokens: x.Response.Usage.TotalTokens}
+			usage = Usage{InputTokens: x.Response.Usage.InputTokens, OutputTokens: x.Response.Usage.OutputTokens, TotalTokens: x.Response.Usage.TotalTokens}
 		}
-		return out, true
+		return terminalResponseEvent("qwen", x.Response.ID, x.Response.Status, usage), true
 	case "error":
 		var x rtclient.ErrorEvent
 		if err := ev.Decode(&x); err != nil {

@@ -24,7 +24,8 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 		},
 		VoiceModelProviders: map[string]agent.VoiceModelProvider{
 			"qwen-main":  {Type: "qwen", APIKey: "qwen-secret", Model: "qwen-realtime", Voice: "longanqian"},
-			"speko-main": {Type: "speko", APIKey: "$SPEKO_KEY", UpstreamProvider: "openai", Model: "gpt-realtime", Voice: "alloy"},
+			"speko-main": {Type: "speko", APIKey: "$SPEKO_KEY", UpstreamProvider: "xai", Model: "grok-voice-latest", Voice: "eve"},
+			"vertex":     {Type: "gemini", APIKey: "$VERTEX_TOKEN", AuthMode: "vertex", ProjectID: "project-1", Location: "us-central1"},
 		},
 		TTS:        agent.TTSConfig{Provider: "minimax-main", Speed: 1.2},
 		STT:        agent.STTConfig{Provider: "tencent", Language: "zh"},
@@ -39,8 +40,8 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	if len(dto.STTProviders) != 2 {
 		t.Fatalf("dto.STTProviders = %#v, want 2 entries", dto.STTProviders)
 	}
-	if len(dto.VoiceModelProviders) != 2 {
-		t.Fatalf("dto.VoiceModelProviders = %#v, want 2 entries", dto.VoiceModelProviders)
+	if len(dto.VoiceModelProviders) != 3 {
+		t.Fatalf("dto.VoiceModelProviders = %#v, want 3 entries", dto.VoiceModelProviders)
 	}
 	if got := dto.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" {
 		t.Errorf("dto.TTSProviders[fish] = %#v", got)
@@ -52,8 +53,11 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 		!got.HasSecretID || got.SecretKey != "" || !got.HasSecretKey {
 		t.Errorf("dto.STTProviders[tencent] = %#v", got)
 	}
-	if got := dto.VoiceModelProviders["speko-main"]; got.APIKey != "" || !got.HasAPIKey || got.UpstreamProvider != "openai" || got.Model != "gpt-realtime" {
+	if got := dto.VoiceModelProviders["speko-main"]; got.APIKey != "" || !got.HasAPIKey || got.UpstreamProvider != "xai" || got.Model != "grok-voice-latest" {
 		t.Errorf("dto.VoiceModelProviders[speko-main] = %#v", got)
+	}
+	if got := dto.VoiceModelProviders["vertex"]; got.AuthMode != "vertex" || got.ProjectID != "project-1" || got.Location != "us-central1" {
+		t.Errorf("dto.VoiceModelProviders[vertex] = %#v", got)
 	}
 
 	back := dto.ToAgentConfig()
@@ -64,8 +68,11 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 		got.SecretID != hasAPIKeyPlaceholder || got.SecretKey != hasAPIKeyPlaceholder {
 		t.Errorf("redacted stt_providers conversion = %#v", back.STTProviders)
 	}
-	if got := back.VoiceModelProviders["speko-main"]; got.Type != "speko" || got.APIKey != hasAPIKeyPlaceholder || got.UpstreamProvider != "openai" {
+	if got := back.VoiceModelProviders["speko-main"]; got.Type != "speko" || got.APIKey != hasAPIKeyPlaceholder || got.UpstreamProvider != "xai" {
 		t.Errorf("redacted voice_model_providers conversion = %#v", back.VoiceModelProviders)
+	}
+	if got := back.VoiceModelProviders["vertex"]; got.AuthMode != "vertex" || got.ProjectID != "project-1" || got.Location != "us-central1" {
+		t.Errorf("Vertex voice_model_providers conversion = %#v", back.VoiceModelProviders)
 	}
 	// The reference itself must not be resolved on the wire: the config page
 	// edits the reference, so it has to come back as the name it wrote.

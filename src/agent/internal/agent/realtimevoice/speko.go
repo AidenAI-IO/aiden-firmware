@@ -19,17 +19,20 @@ import (
 
 const DefaultSpekoBaseURL = "https://api.speko.dev"
 
+const defaultSpekoLeaseRefreshMargin = 30 * time.Second
+
 // SpekoProvider mints a provider-direct S2S entitlement. Speko is deliberately
 // absent from the media path: after minting, the selected native adapter opens
 // the provider connection with the short-lived delegated credential.
 type SpekoProvider struct {
-	HTTPClient       *http.Client
-	BaseURL          string
-	AgentID          string
-	UpstreamProvider string
-	Dialer           *websocket.Dialer
-	EventBuffer      int
-	IdempotencyKey   string
+	HTTPClient         *http.Client
+	BaseURL            string
+	AgentID            string
+	UpstreamProvider   string
+	Dialer             *websocket.Dialer
+	EventBuffer        int
+	IdempotencyKey     string
+	LeaseRefreshMargin time.Duration
 }
 
 type spekoSessionCreate struct {
@@ -68,6 +71,12 @@ type spekoMintResponse struct {
 	InputSampleRate   int             `json:"inputSampleRate"`
 	OutputSampleRate  int             `json:"outputSampleRate"`
 	ExpiresAt         string          `json:"expiresAt"`
+	Reservation       struct {
+		LeaseExpiresAt string `json:"leaseExpiresAt"`
+		Billing        struct {
+			RenewalURL string `json:"renewalUrl"`
+		} `json:"billing"`
+	} `json:"reservation"`
 }
 
 func (p SpekoProvider) Open(ctx context.Context, cfg SessionConfig) (Session, error) {
@@ -78,8 +87,8 @@ func (p SpekoProvider) Open(ctx context.Context, cfg SessionConfig) (Session, er
 	if err != nil {
 		return nil, err
 	}
-	if (upstream == "") != (strings.TrimSpace(cfg.Model) == "") {
-		return nil, errors.New("speko: upstream provider and model must either both be set or both be omitted")
+	if upstream == "" || strings.TrimSpace(cfg.Model) == "" {
+		return nil, errors.New("speko: upstream provider and model are required; automatic routing is disabled because it may select an unsupported WebRTC route")
 	}
 	base := strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
 	if base == "" {
@@ -129,7 +138,7 @@ func (p SpekoProvider) Open(ctx context.Context, cfg SessionConfig) (Session, er
 	if err := json.NewDecoder(resp.Body).Decode(&minted); err != nil {
 		return nil, fmt.Errorf("speko session mint response: %w", err)
 	}
-	if err := validateSpekoMintResponse(minted, upstream); err != nil {
+	if err := validateSpekoMintResponseForBaseURL(minted, upstream, base); err != nil {
 		return nil, err
 	}
 	token, err := spekoCredentialToken(minted.Credential)
@@ -169,19 +178,41 @@ func (p SpekoProvider) Open(ctx context.Context, cfg SessionConfig) (Session, er
 	cfg.InputSampleRate = inputRate
 	cfg.OutputSampleRate = outputRate
 	cfg.Model = strings.TrimSpace(cfg.Model)
+	leaseExpiry, err := spekoLeaseExpiry(minted)
+	if err != nil {
+		return nil, err
+	}
+	leaseMargin := p.LeaseRefreshMargin
+	if leaseMargin <= 0 {
+		leaseMargin = defaultSpekoLeaseRefreshMargin
+	}
 	switch selectedProvider {
 	case "google":
-		return (GeminiProvider{Endpoint: endpoint, Dialer: p.Dialer, EventBuffer: p.EventBuffer, DelegatedCredential: true}).Open(ctx, cfg)
-	case "openai":
-		return (OpenAIProvider{Endpoint: endpoint, Dialer: p.Dialer, EventBuffer: p.EventBuffer}).Open(ctx, cfg)
+		native, err := (GeminiProvider{Endpoint: endpoint, Dialer: p.Dialer, EventBuffer: p.EventBuffer, DelegatedCredential: true}).Open(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return newLeasedGeminiSession(native, leaseExpiry, leaseMargin), nil
 	case "xai":
-		return (XAIProvider{Endpoint: endpoint, Dialer: p.Dialer, EventBuffer: p.EventBuffer, AuthSubprotocol: true, AuthSubprotocolPrefix: "xai-client-secret."}).Open(ctx, cfg)
+		native, err := (XAIProvider{Endpoint: endpoint, Dialer: p.Dialer, EventBuffer: p.EventBuffer, AuthSubprotocol: true, AuthSubprotocolPrefix: "xai-client-secret."}).Open(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return newLeasedXAISession(native, leaseExpiry, leaseMargin), nil
 	default:
 		return nil, fmt.Errorf("speko: unsupported upstream provider %q", upstream)
 	}
 }
 
 func validateSpekoMintResponse(minted spekoMintResponse, upstream string) error {
+	return validateSpekoMintResponseWithLoopback(minted, upstream, false)
+}
+
+func validateSpekoMintResponseForBaseURL(minted spekoMintResponse, upstream, baseURL string) error {
+	return validateSpekoMintResponseWithLoopback(minted, upstream, spekoBaseURLIsLoopback(baseURL))
+}
+
+func validateSpekoMintResponseWithLoopback(minted spekoMintResponse, upstream string, allowLoopback bool) error {
 	if minted.Mode != "s2s" {
 		return fmt.Errorf("speko: session mode %q is not s2s", minted.Mode)
 	}
@@ -201,19 +232,22 @@ func validateSpekoMintResponse(minted spekoMintResponse, upstream string) error 
 	if upstream != "" && responseProvider != upstream {
 		return fmt.Errorf("speko: minted provider %q does not match requested upstream %q", responseProvider, upstream)
 	}
-	expectedAdapter := map[string]string{"google": "google.live.v1", "openai": "openai.realtime.v1", "xai": "xai.realtime.v1"}[responseProvider]
+	expectedAdapter := map[string]string{"google": "google.live.v1", "xai": "xai.realtime.v1"}[responseProvider]
 	if strings.TrimSpace(minted.Adapter) != expectedAdapter {
 		return fmt.Errorf("speko: adapter %q does not match %s", minted.Adapter, expectedAdapter)
 	}
 	transport := strings.ToLower(strings.TrimSpace(minted.ProviderTransport))
-	if (responseProvider == "openai" && transport != "webrtc") || (responseProvider != "openai" && transport != "websocket") {
-		return fmt.Errorf("speko: %s provider-direct transport %q is invalid", responseProvider, transport)
+	if transport != "websocket" && transport != "webrtc" {
+		return fmt.Errorf("speko: %s provider-direct transport %q is not recognized", responseProvider, transport)
+	}
+	if transport == "webrtc" {
+		return fmt.Errorf("speko: %s is routed over WebRTC, which this adapter cannot speak; select a Speko upstream served over WebSocket", responseProvider)
 	}
 	endpoint := strings.TrimSpace(minted.Endpoint)
 	if endpoint == "" {
 		endpoint = strings.TrimSpace(minted.ProviderEndpoint)
 	}
-	if err := validateSpekoEndpoint(endpoint, responseProvider, transport); err != nil {
+	if err := validateSpekoEndpoint(endpoint, responseProvider, allowLoopback); err != nil {
 		return err
 	}
 	if _, err := spekoCredentialExpiry(minted.Credential); err != nil {
@@ -225,6 +259,12 @@ func validateSpekoMintResponse(minted spekoMintResponse, upstream string) error 
 	if err := validateSpekoExpiry(minted.ExpiresAt, "expiresAt"); err != nil {
 		return err
 	}
+	if strings.TrimSpace(minted.Reservation.LeaseExpiresAt) == "" {
+		return errors.New("speko session mint response missing reservation.leaseExpiresAt")
+	}
+	if err := validateSpekoExpiry(minted.Reservation.LeaseExpiresAt, "reservation.leaseExpiresAt"); err != nil {
+		return err
+	}
 	if minted.InputSampleRate <= 0 || !supportedSpekoSampleRate(minted.InputSampleRate) {
 		return fmt.Errorf("speko session mint response has unsupported input sample rate %d", minted.InputSampleRate)
 	}
@@ -234,44 +274,71 @@ func validateSpekoMintResponse(minted spekoMintResponse, upstream string) error 
 	if strings.TrimSpace(minted.Model) == "" {
 		return errors.New("speko session mint response missing model")
 	}
-	if responseProvider == "openai" {
-		return errors.New("speko: OpenAI provider-direct transport is WebRTC; Go adapter does not implement WebRTC")
-	}
 	return nil
 }
 
-func validateSpekoEndpoint(raw, provider, transport string) error {
+func validateSpekoEndpoint(raw, provider string, allowLoopback bool) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return errors.New("speko session mint response missing provider endpoint")
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil {
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" {
 		return fmt.Errorf("speko: invalid provider endpoint %q", raw)
 	}
 	scheme := strings.ToLower(u.Scheme)
-	if transport == "websocket" {
-		if scheme != "ws" && scheme != "wss" {
-			return fmt.Errorf("speko: %s endpoint must use ws:// or wss://", provider)
-		}
-	} else if scheme != "http" && scheme != "https" {
-		return fmt.Errorf("speko: %s WebRTC endpoint must use http:// or https://", provider)
-	}
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
-	if isSpekoLoopbackHost(host) {
-		return nil
+	loopback := isSpekoLoopbackHost(host)
+	if scheme != "wss" && !(allowLoopback && loopback && scheme == "ws") {
+		return fmt.Errorf("speko: %s endpoint must use wss://", provider)
 	}
-	allowed := map[string][]string{
-		"google": {"googleapis.com"},
-		"xai":    {"x.ai"},
-		"openai": {"openai.com"},
-	}[provider]
-	for _, suffix := range allowed {
-		if host == suffix || strings.HasSuffix(host, "."+suffix) {
-			return nil
+	if port := u.Port(); port != "" && !(allowLoopback && loopback) && port != "443" {
+		return fmt.Errorf("speko: %s endpoint must use the default TLS port", provider)
+	}
+	if loopback {
+		if !allowLoopback {
+			return fmt.Errorf("speko: loopback provider endpoint %q is only allowed with a loopback Speko base URL", u.Hostname())
+		}
+	} else {
+		allowedHost := false
+		for _, suffix := range map[string][]string{
+			"google": {"googleapis.com"},
+			"xai":    {"x.ai"},
+		}[provider] {
+			if host == suffix || strings.HasSuffix(host, "."+suffix) {
+				allowedHost = true
+				break
+			}
+		}
+		if !allowedHost {
+			return fmt.Errorf("speko: provider endpoint host %q is not allowlisted for %s", u.Hostname(), provider)
 		}
 	}
-	return fmt.Errorf("speko: provider endpoint host %q is not allowlisted for %s", u.Hostname(), provider)
+	allowedPaths := map[string]map[string]bool{
+		"google": {
+			"/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent":            true,
+			"/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained": true,
+		},
+		"xai": {"/v1/realtime": true},
+	}[provider]
+	if !allowedPaths[u.EscapedPath()] {
+		return fmt.Errorf("speko: provider endpoint path %q is not allowlisted for %s", u.EscapedPath(), provider)
+	}
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return fmt.Errorf("speko: invalid provider endpoint query: %w", err)
+	}
+	for key := range query {
+		if provider != "xai" || key != "model" {
+			return fmt.Errorf("speko: provider endpoint query parameter %q is not allowlisted for %s", key, provider)
+		}
+	}
+	return nil
+}
+
+func spekoBaseURLIsLoopback(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && isSpekoLoopbackHost(strings.ToLower(strings.TrimSuffix(u.Hostname(), ".")))
 }
 
 func isSpekoLoopbackHost(host string) bool {
@@ -313,18 +380,42 @@ func validateSpekoExpiry(raw, field string) error {
 	return nil
 }
 
+func spekoLeaseExpiry(minted spekoMintResponse) (time.Time, error) {
+	sessionExpiry, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(minted.ExpiresAt))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("speko session mint response expiresAt: %w", err)
+	}
+	credentialRaw, err := spekoCredentialExpiry(minted.Credential)
+	if err != nil {
+		return time.Time{}, err
+	}
+	credentialExpiry, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(credentialRaw))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("speko session mint response credential expiresAt: %w", err)
+	}
+	leaseExpiry, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(minted.Reservation.LeaseExpiresAt))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("speko session mint response reservation.leaseExpiresAt: %w", err)
+	}
+	earliest := sessionExpiry
+	for _, candidate := range []time.Time{credentialExpiry, leaseExpiry} {
+		if candidate.Before(earliest) {
+			earliest = candidate
+		}
+	}
+	return earliest, nil
+}
+
 func normalizeSpekoProvider(provider string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "":
 		return "", nil
 	case "google", "gemini":
 		return "google", nil
-	case "openai":
-		return "openai", nil
 	case "xai":
 		return "xai", nil
 	default:
-		return "", fmt.Errorf("speko: unsupported upstream provider %q (want google, openai, or xai)", provider)
+		return "", fmt.Errorf("speko: unsupported upstream provider %q (want google or xai)", provider)
 	}
 }
 
@@ -336,7 +427,7 @@ func spekoRates(provider string, input, output, requestedInput, requestedOutput 
 		output = requestedOutput
 	}
 	if input <= 0 {
-		if provider == "openai" || provider == "xai" {
+		if provider == "xai" {
 			input = 24000
 		} else {
 			input = 16000

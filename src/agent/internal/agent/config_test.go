@@ -67,11 +67,14 @@ func TestVoiceModelConfigValidatesRealtimeProvider(t *testing.T) {
 	if err := (VoiceModelConfig{Provider: "unknown", APIKey: "key"}).Validate(); err == nil {
 		t.Fatal("expected unsupported realtime provider error")
 	}
-	if err := (VoiceModelConfig{Provider: "speko", APIKey: "key"}).Validate(); err != nil {
-		t.Fatalf("Speko auto-routing config rejected: %v", err)
+	if err := (VoiceModelConfig{Provider: "speko", APIKey: "key"}).Validate(); err == nil || !strings.Contains(err.Error(), "automatic routing is disabled") {
+		t.Fatalf("Speko auto-routing config accepted: %v", err)
 	}
-	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "openai", Model: "gpt-realtime", APIKey: "key", BaseURL: "http://localhost:8080"}).Validate(); err != nil {
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "xai", Model: "grok-voice-latest", APIKey: "key", BaseURL: "http://localhost:8080"}).Validate(); err != nil {
 		t.Fatalf("valid Speko config rejected: %v", err)
+	}
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "openai", Model: "gpt-realtime", APIKey: "key"}).Validate(); err == nil {
+		t.Fatal("Speko OpenAI route must be rejected")
 	}
 	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "inworld", Model: "model", APIKey: "key"}).Validate(); err == nil || !strings.Contains(err.Error(), "unsupported provider") {
 		t.Fatalf("unsupported Speko upstream accepted: %v", err)
@@ -79,7 +82,7 @@ func TestVoiceModelConfigValidatesRealtimeProvider(t *testing.T) {
 	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "gemini", Model: "gemini-live", APIKey: "key"}).Validate(); err != nil {
 		t.Fatalf("Gemini Speko alias rejected: %v", err)
 	}
-	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "google", APIKey: "key"}).Validate(); err == nil || !strings.Contains(err.Error(), "both be set") {
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "google", APIKey: "key"}).Validate(); err == nil || !strings.Contains(err.Error(), "are required") {
 		t.Fatalf("partial Speko routing config accepted: %v", err)
 	}
 	for _, provider := range []string{"openai", "gemini", "xai"} {
@@ -91,6 +94,22 @@ func TestVoiceModelConfigValidatesRealtimeProvider(t *testing.T) {
 	}
 }
 
+func TestVoiceModelConfigValidatesGeminiVertexAuth(t *testing.T) {
+	valid := VoiceModelConfig{Provider: "gemini", APIKey: "oauth-token", AuthMode: "vertex", ProjectID: "project-1", Location: "us-central1"}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid Vertex config rejected: %v", err)
+	}
+	for _, config := range []VoiceModelConfig{
+		{Provider: "gemini", APIKey: "oauth-token", AuthMode: "vertex", Location: "us-central1"},
+		{Provider: "gemini", APIKey: "oauth-token", AuthMode: "vertex", ProjectID: "project-1"},
+		{Provider: "gemini", APIKey: "key", AuthMode: "unknown"},
+	} {
+		if err := config.Validate(); err == nil {
+			t.Fatalf("invalid Vertex config accepted: %+v", config)
+		}
+	}
+}
+
 func TestVoiceModelConfigProviderFieldsLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	if err := os.WriteFile(path, []byte(`[agent]
@@ -98,10 +117,10 @@ input_mode = "realtime"
 
 [voice_model]
 provider = "speko"
-upstream_provider = "openai"
+upstream_provider = "xai"
 agent_id = "agent-1"
 api_key = "secret"
-model = "gpt-realtime"
+model = "grok-voice-latest"
 base_url = "https://api.speko.dev"
 `), 0o600); err != nil {
 		t.Fatal(err)
@@ -110,7 +129,7 @@ base_url = "https://api.speko.dev"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.VoiceModel.Provider != "speko" || cfg.VoiceModel.UpstreamProvider != "openai" || cfg.VoiceModel.AgentID != "agent-1" || cfg.VoiceModel.BaseURL != "https://api.speko.dev" {
+	if cfg.VoiceModel.Provider != "speko" || cfg.VoiceModel.UpstreamProvider != "xai" || cfg.VoiceModel.AgentID != "agent-1" || cfg.VoiceModel.BaseURL != "https://api.speko.dev" {
 		t.Fatalf("voice model = %+v", cfg.VoiceModel)
 	}
 }
@@ -123,24 +142,27 @@ input_mode = "realtime"
 [voice_model]
 provider = "speko"
 api_key = "secret"
+upstream_provider = "google"
+model = "gemini-live"
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	loaders := map[string]func(string) (Config, error){
-		"runtime":  LoadRuntimeConfig,
-		"resolved": LoadResolvedConfig,
+	runtime, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for name, load := range loaders {
-		t.Run(name, func(t *testing.T) {
-			cfg, err := load(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.VoiceModel.Model != "" || cfg.VoiceModel.Voice != "" || cfg.VoiceModel.Region != "" || cfg.VoiceModel.TurnDetection != "" {
-				t.Fatalf("Speko inherited Qwen defaults: %+v", cfg.VoiceModel)
-			}
-		})
+	if runtime.VoiceModel.Model != "gemini-live" || runtime.VoiceModel.Voice != "" || runtime.VoiceModel.Region != "" || runtime.VoiceModel.TurnDetection != "" {
+		t.Fatalf("runtime Speko inherited Qwen defaults: %+v", runtime.VoiceModel)
+	}
+
+	resolved, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := resolved.VoiceModelProviders["speko"]
+	if record.Model != "gemini-live" || record.Voice != "" || record.Region != "" || resolved.VoiceModel.Model != "" {
+		t.Fatalf("resolved Speko inherited Qwen defaults: selector=%+v record=%+v", resolved.VoiceModel, record)
 	}
 }
 
@@ -159,9 +181,9 @@ region = "cn-beijing"
 [voice_model_providers.speko-main]
 type = "speko"
 api_key = "speko-secret"
-upstream_provider = "openai"
-model = "gpt-realtime"
-voice = "alloy"
+upstream_provider = "xai"
+model = "grok-voice-latest"
+voice = "eve"
 base_url = "https://api.speko.dev"
 
 [voice_model]
@@ -180,7 +202,7 @@ provider = "speko-main"
 	if got := resolved.VoiceModelProviders["qwen-main"]; got.APIKey != "qwen-secret" || got.Model != "qwen-realtime" || got.Voice != "longanqian" {
 		t.Fatalf("saved Qwen record changed: %+v", got)
 	}
-	if got := resolved.VoiceModelProviders["speko-main"]; got.APIKey != "speko-secret" || got.Model != "gpt-realtime" || got.Voice != "alloy" {
+	if got := resolved.VoiceModelProviders["speko-main"]; got.APIKey != "speko-secret" || got.Model != "grok-voice-latest" || got.Voice != "eve" {
 		t.Fatalf("saved Speko record changed: %+v", got)
 	}
 
@@ -188,7 +210,7 @@ provider = "speko-main"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := runtime.VoiceModel; got.Provider != "speko" || got.APIKey != "speko-secret" || got.Model != "gpt-realtime" || got.Voice != "alloy" || got.UpstreamProvider != "openai" {
+	if got := runtime.VoiceModel; got.Provider != "speko" || got.APIKey != "speko-secret" || got.Model != "grok-voice-latest" || got.Voice != "eve" || got.UpstreamProvider != "xai" {
 		t.Fatalf("runtime did not resolve selected Speko record: %+v", got)
 	}
 }
