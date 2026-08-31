@@ -5309,6 +5309,43 @@ func TestRuntimeClearMemoryReplacesAndRemovesUserContextSession(t *testing.T) {
 	}
 }
 
+func TestRuntimeClearMemoryPreservesSessionsWhenUserContextCannotLoad(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	runtime, err := NewRuntime(Config{
+		ConfigDir: configDir,
+		Model:     ModelConfig{Provider: "fake"},
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	userFolder := agentpath.UserContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManager(userFolder, "realtime system prompt")
+	if err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
+	}
+	userSessionPath := filepath.Join(userFolder, manager.GetSessionID()+".jsonl")
+	if err := os.WriteFile(userSessionPath, []byte("{invalid json\n"), 0o644); err != nil {
+		t.Fatalf("corrupt user context session: %v", err)
+	}
+	backendFolder := agentpath.ContextManagerSessionFolder(configDir)
+	backendManager, err := contextmanager.NewContextManager(backendFolder, "backend system prompt")
+	if err != nil {
+		t.Fatalf("create backend context session: %v", err)
+	}
+	backendSessionPath := filepath.Join(backendFolder, backendManager.GetSessionID()+".jsonl")
+
+	if err := runtime.ClearMemory(context.Background()); err == nil {
+		t.Fatal("ClearMemory() error = nil, want user context load error")
+	}
+	for _, path := range []string{userSessionPath, backendSessionPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("session should remain after user context load failure, stat %s: %v", path, err)
+		}
+	}
+}
+
 func TestRuntimeClearMemoryResetsActiveUserContext(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
