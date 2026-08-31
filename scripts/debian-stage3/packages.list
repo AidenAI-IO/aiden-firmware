@@ -8,6 +8,8 @@ openssh-server
 sudo
 ca-certificates
 curl
+python3
+python3-pip
 adb
 android-sdk-platform-tools-common
 iproute2

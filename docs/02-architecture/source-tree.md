@@ -6,76 +6,103 @@ sidebar_position: 2
 
 ```text
 aiden-firmware/
-├── CMakeLists.txt                 # Main C/C++ build configuration
-├── Makefile                       # Local build/test shortcut entry point
-├── build.sh                       # Public binaries, image, and image-exec CLI
-├── cmake/                         # Toolchain files
+├── CMakeLists.txt                 # C/C++ targets; Debian/glibc is the device default
+├── Makefile                       # Host test shortcut
+├── debian_build.sh                # Complete Debian firmware build entry point
+├── cmake/
+│   ├── platforms/                 # Device userspace integration
+│   └── toolchains/                # Debian armhf cross-toolchain
 ├── docs/                          # Structured documentation
-├── edid/                          # HDMI EDID hex files
-├── overlay/                       # Firmware injection files: etc/oem/userdata
-├── pico-sdk/                      # Luckfox SDK submodule
-├── scripts/                       # Build, release, and device helper scripts
-│   └── build/
-│       ├── run_container.sh       # Host-side Docker lifecycle and profiles
-│       ├── host/
-│       │   └── go_toolchain.sh    # Pinned Go provisioning and verification
-│       └── container/
-│           ├── binaries.sh        # Application binary cross-build task
-│           ├── image.sh           # Firmware image build orchestrator
-│           └── lib/
-│               ├── ext4_images.sh # ext4 image sizing and mutation helpers
-│               └── generated_binaries.sh # Generated-binary verification
-├── src/                           # C/C++ SDK, services, tools
-├── src/agent/                     # Go Agent
-├── tests/                         # host-native unit tests
-├── third_party/                   # doctest, stb, opencv-mobile, etc.
-└── upgrade_tool/                  # Flashing tool
+├── edid/                          # HDMI EDID development assets
+├── overlay-debian/                # Debian rootfs files, helpers, and systemd units
+├── overlay-debian-oem/            # Debian OEM scripts, models, audio, and EDID assets
+├── pico-sdk/                      # Pinned Luckfox BSP SDK submodule
+├── scripts/
+│   ├── debian-stage2/             # Debian armhf application build and audit
+│   ├── debian-stage3/             # Rootfs, BSP, image assembly, and image audit
+│   └── debian/                    # Migration inventories and service maps
+├── src/                           # C/C++ SDK, services, tools, and protocols
+├── src/agent/                     # Go device Agent
+├── tests/                         # Host-native C++ tests
+├── third_party/                   # Vendored libraries and device runtimes
+└── upgrade_tool/                  # Rockchip flashing tool
 ```
 
-## Key files in `src/`
+## Key Files in `src/`
 
 | File / Module | Description |
 | --- | --- |
-| `aiden_sdk.*` | C++ SDK entry point, providing Wakeup, AudioCapture, AudioPlayer, CameraCapture |
-| `frame_*` | Frame Service, frame buffer, camera source, frame protocol and client |
-| `audio_*` | Audio Service, recording/playback session, protocol and client |
-| `uds_*` | Generic Unix domain socket transport layer |
+| `aiden_sdk.*` | C++ SDK entry point for wakeup, audio, camera, and HID capabilities |
+| `frame_*` | Frame service, capture lifecycle, JPEG encoding, protocol, and client |
+| `audio_*` | Audio service, recording/playback sessions, protocol, and client |
+| `uds_*` | Unix domain socket transport |
 | `service_status.*` | Common service status enums |
-| `image_process.*` | Image cropping, black border removal, scaling, rotation |
-| `hid_server.*`, `example_usb_hid.cpp` | USB HID gadget and HTTP example server |
-| `config_web.*` | Device configuration web service, maintaining Agent TOML and Wi-Fi configuration |
-| `agent_toml.*` | C++ side Agent TOML parsing/writing |
+| `image_process.*` | Image cropping, black-border removal, scaling, and rotation |
+| `hid_server.*`, `example_usb_hid.cpp` | USB HID diagnostics and example server |
+| `config_web.*` | Device configuration and recovery portal |
+| `system_env_*` | Strict persistent-to-runtime environment generation |
 
-## Key directories in `src/agent/`
+## Key Directories in `src/agent/`
 
 | Path | Description |
 | --- | --- |
-| `cmd/daemon` | Long-running Agent daemon providing the HTTP/Web UI in all input modes and an additional device voice loop in `stt` mode |
-| `cmd/abctl` | A/B partition control utility for OTA system |
+| `cmd/daemon` | Agent daemon, HTTP/Web UI, and optional device voice loop |
+| `cmd/abctl` | A/B metadata diagnostic utility |
 | `cmd/ota` | OTA update client |
 | `cmd/benchmark-http` | Standalone LLM endpoint latency probe |
 | `cmd/test-warmup` | Connection warmup measurement harness |
-| `internal/agent/runtime.go` | Agent runtime, model invocation and tool loop |
-| `internal/agent/server.go` | HTTP server / Web UI / tool API |
-| `internal/agent/tools*.go` | Built-in tools such as HID, screenshot, audio, shell |
-| `internal/agent/stt.go` / `internal/agent/tts/` / `vad.go` | STT, pluggable TTS providers, RKNN/CPU VAD orchestration |
-| `internal/agent/skills*.go` | Skill loading, activation and tool restrictions |
+| `internal/agent/runtime.go` | Model invocation, tool loop, and runtime lifecycle |
+| `internal/agent/server.go` | HTTP server, Web UI, and tool API |
+| `internal/agent/tools*.go` | HID, screenshot, audio, shell, and other tools |
+| `internal/agent/stt.go`, `internal/agent/tts/`, `vad.go` | Voice pipeline |
+| `internal/agent/skills*.go` | Skill loading, activation, and restrictions |
 | `config/agent.toml` | Agent configuration example |
 
-## `overlay/` structure
+## Debian Rootfs Overlay
 
 ```text
-overlay/
+overlay-debian/
 ├── etc/
-│   ├── aiden_audio_service.conf
-│   ├── aiden_frame_service.conf
-│   ├── dnsmasq.d/usb0.conf
-│   └── init.d/S*
-├── oem/usr/bin/
-├── oem/usr/model/
-└── userdata/
-    ├── agent/agent.toml
-    └── wpa_supplicant.conf
+│   ├── aiden_*.conf
+│   ├── systemd/system/aiden-*.service
+│   ├── systemd/system/aiden.target
+│   ├── systemd/network/
+│   └── profile.d/aiden-python.sh
+└── usr/lib/aiden/
+    ├── aiden-frame-start
+    ├── aiden-usb-gadget
+    ├── aiden-userdata-migrate
+    └── ...
 ```
 
-The build system has three explicit layers. `build.sh` is the only public CLI, `scripts/build/run_container.sh` owns host-side Docker lifecycle and the `binaries` and `image` profiles, and `scripts/build/container/` contains tasks that run only inside the selected container profile. The image task copies the application binaries to `overlay/oem/usr/bin/`, injects the VAD model into the OEM partition along with `overlay/oem/usr/model/`, and syncs/injects the overlay into the `pico-sdk` output image.
+These files are copied only into the Debian rootfs. Executable source files
+remain executable in the image; all other files and directories are normalized
+to deterministic modes and root ownership.
+
+## Debian OEM Overlay
+
+```text
+overlay-debian-oem/
+└── usr/
+    ├── bin/aiden-dynamic-keyboard
+    ├── lib/aiden-log.sh
+    ├── model/
+    └── share/aiden/
+        ├── audio/
+        └── edid/
+```
+
+Stage 3 combines this overlay with the audited Stage 2 production allowlist,
+vendor libraries, kernel modules, Config Web assets, bundled Agent skills, and
+the OTA public key. Development executables, static libraries, object files,
+maps, headers, and package metadata are rejected by the image audit.
+
+## Build Layers
+
+The production build has two explicit stages:
+
+1. `scripts/debian-stage2/build-apps.sh all` cross-compiles and audits C/C++ and Go applications for Debian armhf.
+2. `scripts/debian-stage3/build.sh` builds the Debian rootfs and pinned BSP, assembles A/B images, and audits their contents.
+
+`debian_build.sh` orchestrates both stages, creates local signed OTA metadata,
+and publishes the flashable result under `output/debian/image/`.

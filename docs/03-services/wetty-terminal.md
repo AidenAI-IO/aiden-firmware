@@ -6,41 +6,40 @@ sidebar_position: 3
 
 The firmware image integrates WeTTY as an optional browser terminal for board-side maintenance.
 
-## Buildroot Integration
+## Debian Integration
 
-The active Pico Zero Buildroot defconfig enables:
+The production Debian image deliberately does not install WeTTY or Node.js.
+It ships a disabled `aiden-wetty.service` so a separately reviewed diagnostic
+image can add `/usr/bin/wetty` without introducing another service definition.
+The unit also checks `ENABLE_WETTY` in `/etc/aiden_boot.conf`.
 
-- `BR2_PACKAGE_NODEJS=y`
-- `BR2_PACKAGE_OPENSSL=y`
-- `BR2_PACKAGE_NODEJS_MODULES_ADDITIONAL="--omit=optional wetty@2.5.0 sass@1.69.7"`
-
-The SDK-provided Buildroot tree is `2023.02.6` and builds Node.js `16.20.0`. WeTTY `2.5.0` is pinned because later WeTTY releases require Node.js `>=18`, and `sass@1.69.7` is pinned to avoid Node.js 20-only transitive releases. Optional npm dependencies are omitted so prebuilt non-ARM native addons are not copied into the target rootfs.
-
-Run the Linux/image build from an x86 host:
+Build the normal production image with:
 
 ```bash
-./build.sh image
+./debian_build.sh
 ```
 
-The `sysdrv` stage builds Node.js and installs the pinned WeTTY npm module into the target rootfs.
+That image will leave the optional unit inactive because `/usr/bin/wetty` is
+absent. A diagnostic image must install a Debian-compatible WeTTY executable,
+enable `aiden-wetty.service`, and pass its own security review.
 
 ## Startup
 
-WeTTY is managed by:
+On such a diagnostic image, WeTTY is managed by:
 
 ```bash
-/etc/init.d/S57wetty start
-/etc/init.d/S57wetty status
-/etc/init.d/S57wetty restart
+systemctl start aiden-wetty.service
+systemctl status aiden-wetty.service --no-pager
+systemctl restart aiden-wetty.service
 ```
 
-The service reads `/etc/aiden_boot.conf`. Set `ENABLE_WETTY=0` to disable startup.
+Set `ENABLE_WETTY=0` to prevent startup even when the unit is enabled.
 
 Default runtime values:
 
 | Parameter | Default |
 | --- | --- |
-| Listen host | `0.0.0.0` |
+| Listen host | `192.168.42.1` |
 | Port | `3000` |
 | Base path | `/wetty/` |
 | Command | `/bin/login` |
@@ -48,7 +47,7 @@ Default runtime values:
 
 ## Access
 
-The config web page at `http://192.168.42.1` includes a `Terminal` link. The link uses the Agent Web reverse proxy so the same page also works in the Docker sandbox:
+When installed, the Agent Web reverse proxy exposes the terminal at:
 
 ```text
 http://192.168.42.1:8080/wetty/

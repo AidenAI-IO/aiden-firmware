@@ -4,30 +4,42 @@ sidebar_position: 7
 
 # USB HID and Device Control
 
-The project configures the Luckfox Pico Zero's USB-C port through the Linux USB gadget framework. The firmware startup script creates a composite gadget with keyboard HID, pointer/touch HID, and CDC ECM networking; the HID nodes are used to simulate keyboard, mouse, and touch input.
+The project configures the Luckfox Pico Zero's USB-C port through the Linux USB
+gadget framework. `aiden-usb-gadget.service` creates a composite gadget with
+keyboard HID, pointer/touch HID, Consumer Control, and CDC ECM networking; the
+HID nodes are used to simulate keyboard, mouse, and touch input.
 
 ## Startup Method
 
-In the firmware, the gadget initialization is automatically completed by startup scripts; in the development environment, it can be executed manually:
+The Debian firmware owns gadget startup through systemd:
 
 ```bash
-sudo ./build/bin/example_usb_hid setup composite
+systemctl status aiden-usb-gadget.service --no-pager
+systemctl restart aiden-usb-gadget.service
 ```
 
-You can also use the helper script:
+The unit executes the Debian rootfs helper directly:
 
 ```bash
-scripts/setup_usb_gadget.sh
+/usr/lib/aiden/aiden-usb-gadget start
 ```
 
-This script will:
+It will:
 
 1. Mount configfs: `/sys/kernel/config`;
 2. Load the `dwc2` module;
 3. Load the `libcomposite` module;
-4. Call `example_usb_hid setup composite`.
+4. Create and bind the composite gadget.
 
-On the firmware image, `overlay/etc/init.d/S49usbhid` is the authoritative startup path. It also brings up `usb0` at `192.168.42.1` for the config page and local USB networking. The completed keyboard + pointer + Consumer Control + ECM composite is bound to the UDC exactly once. Do not add a same-identity startup unbind/rebind: while the cable remains attached, iOS can retain the physical USB session but rebuild the HID interfaces with inconsistent external-keyboard and AssistiveTouch pointer state, leaving the cursor operational while the on-screen keyboard stays suppressed. A physical unplug/replug fully tears down that host session, which is why it can recover the symptom.
+`aiden-usb-gadget.service` is the authoritative production startup path. It also
+brings up `usb0` at `192.168.42.1` for the config page and local USB networking.
+The completed keyboard + pointer + Consumer Control + ECM composite is bound to
+the UDC exactly once. Do not add a same-identity startup unbind/rebind: while the
+cable remains attached, iOS can retain the physical USB session but rebuild the
+HID interfaces with inconsistent external-keyboard and AssistiveTouch pointer
+state, leaving the cursor operational while the on-screen keyboard stays
+suppressed. A physical unplug/replug fully tears down that host session, which
+is why it can recover the symptom.
 
 ## example_usb_hid Usage
 
@@ -52,7 +64,7 @@ example_usb_hid [global options] server [PORT]
 The `server` command starts a simple HTTP server that accepts HID commands via POST requests. This is useful for remote control or integration testing.
 
 ```bash
-sudo ./build/bin/example_usb_hid server 8090
+sudo example_usb_hid server 8090
 ```
 
 The server listens on the specified port (default 8080 if not specified) and accepts JSON payloads with command specifications.
@@ -60,11 +72,11 @@ The server listens on the specified port (default 8080 if not specified) and acc
 Common examples:
 
 ```bash
-sudo ./build/bin/example_usb_hid keyboard tap ENTER
-sudo ./build/bin/example_usb_hid keyboard tap CTRL ALT DELETE
-sudo ./build/bin/example_usb_hid keyboard text "hello from pico"
-sudo ./build/bin/example_usb_hid touch click 16000 16000
-sudo ./build/bin/example_usb_hid cleanup
+sudo example_usb_hid keyboard tap ENTER
+sudo example_usb_hid keyboard tap CTRL ALT DELETE
+sudo example_usb_hid keyboard text "hello from pico"
+sudo example_usb_hid touch click 16000 16000
+sudo example_usb_hid cleanup
 ```
 
 ## Global Parameters

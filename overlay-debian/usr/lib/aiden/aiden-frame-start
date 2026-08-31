@@ -3,9 +3,12 @@ set -eu
 
 binary=${FRAME_SERVICE_BIN:-/oem/usr/bin/frame_service}
 socket=${SOCKET_PATH:-/run/frame_service/frame_service.sock}
+agent_config=${AGENT_CONFIG:-/userdata/agent/agent.toml}
 fps=${FRAME_SERVICE_FPS:-30}
 width=${FRAME_SERVICE_WIDTH:-1920}
 height=${FRAME_SERVICE_HEIGHT:-1080}
+warmup_frames=${FRAME_SERVICE_WARMUP_FRAMES:-}
+allow_uniform_frames=${FRAME_SERVICE_ALLOW_UNIFORM_FRAMES:-1}
 pixel_format=${FRAME_SERVICE_PIXEL_FORMAT:-nv12}
 requested_subdev=${FRAME_SERVICE_SUBDEV:-}
 requested_force=${FRAME_SERVICE_FORCE_TRIGGER:-auto}
@@ -23,6 +26,22 @@ detect_subdev() {
         esac
     done
     return 1
+}
+
+configured_keep_streamon() {
+    [ -r "${agent_config}" ] || {
+        echo 0
+        return
+    }
+    value=$(awk '
+        /^[[:space:]]*\[frame_service\][[:space:]]*$/ { in_section = 1; next }
+        /^[[:space:]]*\[/ { in_section = 0 }
+        in_section && $1 == "keep_streamon" && $2 == "=" { print $3; exit }
+    ' "${agent_config}")
+    case "${value}" in
+        true|1) echo 1 ;;
+        *) echo 0 ;;
+    esac
 }
 
 # Do not make the HDMI bridge a systemd start-up prerequisite.  A bridge can be
@@ -61,6 +80,18 @@ esac
 case "${pixel_format}" in
     nv12|nv16|uyvy|yuyv) ;;
     *) echo "Invalid FRAME_SERVICE_PIXEL_FORMAT=${pixel_format}" >&2; exit 1 ;;
+esac
+case "${allow_uniform_frames}" in
+    0|1) ;;
+    *) echo "Invalid FRAME_SERVICE_ALLOW_UNIFORM_FRAMES=${allow_uniform_frames}" >&2; exit 1 ;;
+esac
+case "${warmup_frames}" in
+    ''|*[!0-9]*)
+        [ -z "${warmup_frames}" ] || {
+            echo "Invalid FRAME_SERVICE_WARMUP_FRAMES=${warmup_frames}" >&2
+            exit 1
+        }
+        ;;
 esac
 case "${requested_edid}" in
     auto|'') case "${bridge_name}" in *tc358743*) edid=${tc_edid} ;; *) edid= ;; esac ;;
@@ -109,6 +140,17 @@ else
 fi
 [ -z "${width}" ] || set -- "$@" --width "${width}"
 [ -z "${height}" ] || set -- "$@" --height "${height}"
+[ -z "${warmup_frames}" ] || set -- "$@" --warmup-frames "${warmup_frames}"
+if [ "$(configured_keep_streamon)" = 1 ]; then
+    set -- "$@" --keep-streamon
+else
+    set -- "$@" --pause-between-captures
+fi
+if [ "${allow_uniform_frames}" = 1 ]; then
+    set -- "$@" --allow-uniform-frames
+else
+    set -- "$@" --reject-uniform-frames
+fi
 if [ "${auto_subdev}" = 1 ] || [ "${subdev}" = auto ]; then
     # The C++ auto-subdevice source performs a bounded bridge-aware trigger.
     # Keep the shell option read-only so a failed no-signal probe cannot turn

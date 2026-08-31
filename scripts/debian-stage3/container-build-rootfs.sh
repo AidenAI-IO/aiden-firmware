@@ -156,11 +156,6 @@ configure_rootfs() {
             chmod 0644 "${ROOTFS_DIR}/${path}"
         fi
     done < <(find "${REPO_ROOT}/overlay-debian" -type f -printf '%P\0')
-    install -m 0755 "${REPO_ROOT}/overlay/etc/init.d/S49usbhid" \
-        "${ROOTFS_DIR}/usr/lib/aiden/aiden-usb-gadget"
-    install -m 0755 "${REPO_ROOT}/overlay/etc/aiden_boot_timeline.sh" \
-        "${ROOTFS_DIR}/usr/lib/aiden/aiden-boot-timeline"
-
     install -d -m 0755 \
         "${ROOTFS_DIR}/oem" \
         "${ROOTFS_DIR}/userdata" \

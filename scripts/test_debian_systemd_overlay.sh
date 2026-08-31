@@ -3,6 +3,7 @@ set -euo pipefail
 
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly OVERLAY=${REPO_ROOT}/overlay-debian
+readonly OEM_OVERLAY=${REPO_ROOT}/overlay-debian-oem
 readonly UNIT_DIR=${OVERLAY}/etc/systemd/system
 readonly INIT_MAP=${REPO_ROOT}/scripts/debian/init-script-map.tsv
 readonly ENV_MAP=${REPO_ROOT}/scripts/debian/environment-service-map.tsv
@@ -103,10 +104,10 @@ grep -qx 'Address=192.168.42.1/24' "${OVERLAY}/etc/systemd/network/30-usb0.netwo
 grep -qx 'ConfigureWithoutCarrier=yes' "${OVERLAY}/etc/systemd/network/30-usb0.network"
 grep -qx 'RequiredForOnline=no' "${OVERLAY}/etc/systemd/network/30-usb0.network"
 if rg -n 'networkctl reconfigure (usb0|"?\$\{?interface\}?")' \
-    "${REPO_ROOT}/overlay/etc/init.d/S49usbhid" \
+    "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" \
     "${OVERLAY}/usr/lib/aiden/aiden-usb-ecm-watchdog" \
     "${OVERLAY}/usr/lib/aiden/aiden-wait-interface-ip" \
-    "${REPO_ROOT}/overlay/oem/usr/bin/aiden-dynamic-keyboard"; then
+    "${OEM_OVERLAY}/usr/bin/aiden-dynamic-keyboard"; then
     fail "USB helpers must not ask networkd to replace an address they just configured"
 fi
 grep -q '/userdata/debian/wifi/wpa_supplicant-wlan0.conf' \
@@ -120,6 +121,9 @@ grep -q 'watchdog=running pid=\$pid supervisor=systemd' \
 grep -q 'systemctl show aiden-agent.service -p MainPID --value' \
     "${OVERLAY}/usr/lib/aiden/aiden-agent-control"
 grep -q 'aiden-boot-timeline-init.service' "${UNIT_DIR}/aiden-agent.service"
+grep -q 'AIDEN_FRAME_SERVICE_INIT_SCRIPT=/usr/lib/aiden/aiden-frame-control' \
+    "${UNIT_DIR}/aiden-config-web.service"
+grep -q 'aiden-userdata-migrate.service' "${UNIT_DIR}/aiden-frame.service"
 grep -qx 'StartLimitIntervalSec=0' "${UNIT_DIR}/aiden-frame.service"
 grep -qx 'Restart=on-failure' "${UNIT_DIR}/aiden-frame.service"
 grep -qx 'RestartSec=2s' "${UNIT_DIR}/aiden-frame.service"
@@ -185,7 +189,11 @@ run_ecm_watchdog() {
     printf '%s\n' 1 >"${root}/net/carrier"
     printf '%s\n' '0 aa:bb:cc:dd:ee:ff 192.168.42.99 host *' >"${root}/leases"
     printf '#!/bin/sh\nexit 1\n' >"${root}/bin/arping"
-    chmod 0755 "${root}/bin/arping"
+    # The host logger may be unable to reach /dev/log in a container. Logging
+    # is not under test here, so keep that environmental failure out of the
+    # watchdog liveness fixture.
+    printf '#!/bin/sh\nexit 0\n' >"${root}/bin/logger"
+    chmod 0755 "${root}/bin/arping" "${root}/bin/logger"
     PATH="${root}/bin:${PATH}" \
     AIDEN_USB_UDC_FILE="${root}/UDC" \
     AIDEN_USB_UDC_STATE_FILE="${root}/state" \
@@ -255,7 +263,7 @@ grep -qx 'disable wpa_supplicant.service' \
 grep -qx 'enable aiden-boot-timeline.service' \
     "${OVERLAY}/etc/systemd/system-preset/90-aiden.preset"
 
-timeline_helper=${REPO_ROOT}/overlay/etc/aiden_boot_timeline.sh
+timeline_helper=${OVERLAY}/usr/lib/aiden/aiden-boot-timeline
 timeline_root=${TEST_ROOT}/boot-timeline
 mkdir -p "${timeline_root}/archive"
 printf '%s\n' '12.34 8.00' >"${timeline_root}/uptime"
@@ -330,5 +338,7 @@ fi
 "${REPO_ROOT}/scripts/test_debian_ota_health_aggregate.sh"
 "${REPO_ROOT}/scripts/test_debian_machine_id_provision.sh"
 "${REPO_ROOT}/scripts/test_debian_agent_control.sh"
+"${REPO_ROOT}/scripts/test_debian_frame_control.sh"
+"${REPO_ROOT}/scripts/test_debian_python_environment.sh"
 
 echo "Debian systemd overlay tests passed"
