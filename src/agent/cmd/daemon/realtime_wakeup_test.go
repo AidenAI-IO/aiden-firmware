@@ -19,6 +19,8 @@ type fakeRealtimePlaybackAudio struct {
 	stops         []uint64
 }
 
+func (f *fakeRealtimePlaybackAudio) WaitForPlaybackDrain(context.Context) error { return nil }
+
 type fakeRealtimePlaybackWrite struct {
 	sessionID uint64
 	data      []byte
@@ -118,6 +120,78 @@ func TestRealtimeLocalPlaybackFinalizesEachResponse(t *testing.T) {
 	}
 }
 
+func TestRealtimePersistentPlaybackCanFinalizeNotification(t *testing.T) {
+	audio := &fakeRealtimePlaybackAudio{}
+	playback := realtimePlaybackState{}
+	format := agent.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}
+
+	if err := playback.open(audio, format); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.append(audio, format, []byte{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.finishResponse(audio, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(audio.writes) != 2 || !audio.writes[1].final {
+		t.Fatalf("writes = %#v, want PCM followed by a final write", audio.writes)
+	}
+	if !playback.finalized {
+		t.Fatal("notification finalization did not mark playback finalized")
+	}
+	playback.markDrained()
+	if playback.session != nil || playback.finalized {
+		t.Fatalf("drained playback state = %+v, want no active session", playback)
+	}
+}
+
+func TestRealtimeFailedNotificationPlaybackStopsSession(t *testing.T) {
+	audio := &fakeRealtimePlaybackAudio{}
+	playback := realtimePlaybackState{}
+	format := agent.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}
+
+	if err := playback.open(audio, format); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.append(audio, format, []byte{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.stop(audio); err != nil {
+		t.Fatal(err)
+	}
+	if len(audio.stops) != 1 || audio.stops[0] != 1 {
+		t.Fatalf("stopped sessions = %v, want [1]", audio.stops)
+	}
+	if playback.session != nil {
+		t.Fatalf("failed notification left playback session active: %+v", playback)
+	}
+}
+
+func TestSuppressedRealtimeNotificationResponseBindsAfterResponseCreated(t *testing.T) {
+	responses := make(map[string]struct{})
+	pending := false
+	markSuppressedRealtimeNotificationResponse("", &pending, responses)
+	if !pending || len(responses) != 0 {
+		t.Fatalf("pending suppression = %t, responses = %v", pending, responses)
+	}
+	if !bindSuppressedRealtimeNotificationResponse("resp-1", &pending, responses) {
+		t.Fatal("response.created did not bind pending suppression")
+	}
+	if pending || !hasSuppressedNotificationResponse(responses, "resp-1") {
+		t.Fatalf("bound suppression = pending:%t responses:%v", pending, responses)
+	}
+}
+
+func TestSuppressedRealtimeNotificationResponseMarksKnownResponse(t *testing.T) {
+	responses := make(map[string]struct{})
+	pending := false
+	markSuppressedRealtimeNotificationResponse("resp-1", &pending, responses)
+	if pending || !hasSuppressedNotificationResponse(responses, "resp-1") {
+		t.Fatalf("known suppression = pending:%t responses:%v", pending, responses)
+	}
+}
+
 func TestRealtimePlaybackOutputFormatUsesConfiguredDeviceFormat(t *testing.T) {
 	format := realtimePlaybackOutputFormat(agent.Config{Audio: agent.AudioConfig{
 		SampleRate: 16000,
@@ -126,6 +200,41 @@ func TestRealtimePlaybackOutputFormatUsesConfiguredDeviceFormat(t *testing.T) {
 	}})
 	if format.SampleRate != 16000 || format.Channels != 1 || format.BitWidth != 16 {
 		t.Fatalf("format = %+v, want pcm/16000/mono/16", format)
+	}
+}
+
+func TestDeliverPendingVoiceNotificationConfirmsSuccessfulFallback(t *testing.T) {
+	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	if err := runtime.VoiceNotificationSink().Publish(context.Background(), agent.VoiceNotificationEvent{
+		Code: "storage", Severity: agent.SeverityWarning, State: agent.VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var spoken string
+	deliverPendingVoiceNotification(context.Background(), runtime, func(_ context.Context, text string) error {
+		spoken = text
+		return nil
+	})
+	if spoken == "" {
+		t.Fatal("fallback speaker was not called")
+	}
+	if next := runtime.PrepareVoiceNotification(context.Background()); next.DeliveryToken != "" {
+		t.Fatalf("successful fallback left notification pending: %#v", next)
+	}
+}
+
+func TestDeliverPendingVoiceNotificationRetriesCanceledFallback(t *testing.T) {
+	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	if err := runtime.VoiceNotificationSink().Publish(context.Background(), agent.VoiceNotificationEvent{
+		Code: "storage", Severity: agent.SeverityWarning, State: agent.VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deliverPendingVoiceNotification(context.Background(), runtime, func(context.Context, string) error {
+		return context.Canceled
+	})
+	if next := runtime.PrepareVoiceNotification(context.Background()); next.DeliveryToken == "" {
+		t.Fatal("canceled fallback did not leave notification pending")
 	}
 }
 

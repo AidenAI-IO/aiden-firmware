@@ -89,6 +89,10 @@ type stableScreenWaiter interface {
 	wait(context.Context, string) (waitStableScreenResult, error)
 }
 
+type unstableScreenRecoverer interface {
+	recoverAfterUnstableScreen(context.Context, string) error
+}
+
 func newPostActionScreenshotTool(inner langtools.Tool, screenshot langtools.Tool, delay time.Duration) langtools.Tool {
 	return newPostActionStableScreenshotTool(inner, nil, screenshot, delay, ScreenStableDefaults{})
 }
@@ -183,6 +187,13 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 		log.Printf("[INFO] stable-screen: tool=%s timeout_ms=%d elapsed_ms=%d stable=%v", t.inner.Name(), resolved.TimeoutMs, waitResult.ElapsedMs, waitResult.Stable)
 		if !waitResult.OK {
 			return postActionErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed", t.inner.Name(), actionOutput), nil
+		}
+		if !waitResult.Stable {
+			if recoverer, ok := t.inner.(unstableScreenRecoverer); ok {
+				if err := recoverer.recoverAfterUnstableScreen(ctx, input); err != nil {
+					return postActionErrorResultf(ctx, postActionErrorCode(err), "%s completed with output %q, but unstable-screen recovery failed: %v", t.inner.Name(), actionOutput, err), nil
+				}
+			}
 		}
 		touchscreenRCALogf(
 			"post_action wait_stable completed inner=%q stable=%v elapsed_ms=%d screen_changed=%v last_diff=%s",
