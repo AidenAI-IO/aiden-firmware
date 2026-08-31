@@ -96,6 +96,10 @@ tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/docker-args.txt"
 grep -qx 'DEBIAN_STAGE2_BUILD_IMAGE_ID=sha256:mock-builder-image' \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx "${mock_output}:/out" "${TEST_ROOT}/docker-args.txt"
+source_git_common_dir=$(git -C "${REPO_ROOT}" rev-parse \
+    --path-format=absolute --git-common-dir)
+grep -qx "${source_git_common_dir}:${source_git_common_dir}:ro" \
+    "${TEST_ROOT}/docker-args.txt"
 grep -qx "${TEST_ROOT}/go-root:/usr/local/go:ro" \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx "${TEST_ROOT}/go-build-cache:/go-build-cache" \
