@@ -70,7 +70,8 @@ http://192.168.42.1
 On the page, configure Wi-Fi first:
 
 - **Only 2.4GHz networks are supported**; 5GHz does not work;
-- Enter the SSID and password; on save it is written to `/userdata/wpa_supplicant.conf`.
+- Enter the SSID and password; on save it is written to
+  `/userdata/debian/wifi/wpa_supplicant-wlan0.conf`.
 
 The config page also maintains Agent configuration and system environment variables. See [Config Web](../04-agent/configuration.md#config-web-the-device-config-page) for details.
 
@@ -99,7 +100,8 @@ Field meanings, minimal working config examples, and TTS/STT provider values are
 
 ## 5. Bring the Board Up
 
-After the four steps above, the board is ready to run. The Agent is supervised by the `S53agent` watchdog and starts with the firmware.
+After the four steps above, the board is ready to run. The Agent is supervised
+by `aiden-agent.service` and starts with the firmware.
 
 **Configuration changes**: When you save settings in Config Web (`http://192.168.42.1/`), the system automatically restarts the Agent to apply them.
 
@@ -140,7 +142,7 @@ Source layout is in [Source Tree](../02-architecture/source-tree.md); boot servi
 After development, build the firmware and upgrade the device:
 
 - Native / cross-compile dev environment: [Build & Development Environment](build.md);
-- Full firmware build (`./build.sh image`) and flashing: [Firmware Build & Flashing](firmware.md);
+- Full Debian firmware build (`./debian_build.sh`) and flashing: [Firmware Build & Flashing](firmware.md);
 - Over-the-air upgrade: [OTA Overview](../08-ota/README.md).
 
 ### OTA for non-main branch firmware

@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+ensure_directory() {
+    path=$1
+    mode=$2
+    if [ -L "${path}" ] || { [ -e "${path}" ] && [ ! -d "${path}" ]; }; then
+        echo "Managed Python path is not a real directory: ${path}" >&2
+        return 1
+    fi
+    install -d -m "${mode}" "${path}"
+    if [ -L "${path}" ] || [ ! -d "${path}" ]; then
+        echo "Managed Python path changed during creation: ${path}" >&2
+        return 1
+    fi
+    chmod "${mode}" "${path}"
+}
+
+ensure_directory /userdata/agent 0755
+ensure_directory /userdata/agent/log 0755
+ensure_directory /userdata/agent/python 0755
+ensure_directory /userdata/tmp 1777

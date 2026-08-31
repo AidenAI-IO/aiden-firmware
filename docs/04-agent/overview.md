@@ -15,7 +15,7 @@ The Aiden Go Agent is located in `src/agent/` and is built on `github.com/tmc/la
 After cross-compilation, the daemon binary is:
 
 ```text
-build/bin/agent
+output/debian-stage2/apps/bin/agent
 ```
 
 In the firmware, it is installed by default to:

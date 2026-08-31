@@ -1,9 +1,9 @@
 [Unit]
 Description=Aiden frame capture service
-Requires=oem.mount aiden-environment.service aiden-media-modules.service
-After=oem.mount aiden-environment.service aiden-media-modules.service
-# HDMI input may appear well after boot. Match the Buildroot watchdog by
-# retrying indefinitely, with RestartSec providing the retry backoff.
+Requires=oem.mount aiden-userdata-migrate.service aiden-environment.service aiden-media-modules.service
+After=oem.mount aiden-userdata-migrate.service aiden-environment.service aiden-media-modules.service
+# HDMI input may appear well after boot. Retry indefinitely, with RestartSec
+# providing the retry backoff.
 StartLimitIntervalSec=0
 ConditionPathExists=/oem/usr/bin/frame_service
 

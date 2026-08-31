@@ -860,3 +860,20 @@ Debian-only 清理应作为一次架构变更执行，而不是逐个删除文�
 
 在上述工作完成前，保留 Buildroot 文件是为了支持旧固件回退、问题对比和现有 CI，
 不表示 Debian 迁移未完成。
+
+### 11.7 Debian-only 决策更新（2026-08-31）
+
+项目后续部署目标已确定为 Debian-only。该决定覆盖本节早期“双平台长期并存”的假设。
+当前已完成：
+
+1. CMake 默认及公开平台选项切换为 `rv1106-debian-glibc`。
+2. Debian rootfs helper 由 `overlay-debian/` 自身持有。
+3. Debian OEM 脚本、模型、音频与 EDID 资源迁至 `overlay-debian-oem/`。
+4. Debian Stage 2/3 构建和镜像审计不再读取根目录 `overlay/`。
+5. Agent、Frame Service、Config Web 和持久 Python 环境使用 systemd 原生控制链。
+
+旧 `build.sh`、Buildroot overlay、uClibc 平台文件及相关回归测试暂时保留，仅用于历史
+回退和迁移对比；它们不再是 Debian 生产镜像的运行时输入。删除这些遗留内容应作为后续
+独立清理提交完成，以免在本次 rebase 收尾中混入大范围、低关联删除。`pico-sdk` 内部的
+Buildroot 目录仍可能作为厂商 BSP 构建实现细节存在，不代表设备用户空间继续支持
+Buildroot。
