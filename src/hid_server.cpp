@@ -50,6 +50,8 @@ struct CaptureRequest {
           pixel_format("uyvy"),
           subdev_device("/dev/v4l-subdev2") {
         aiden_demo::set_default_camera_config(&config);
+        // The legacy direct-capture HTTP path remains explicitly UYVY. The
+        // frame_service path is the C1 NV12 owner and is configured separately.
         sync_strings();
     }
 

@@ -1,8 +1,10 @@
 #pragma once
 
+#include "frame_service_protocol.h"
+
 #include <cstdint>
-#include <vector>
 #include <string>
+#include <vector>
 
 namespace aiden {
 
@@ -57,6 +59,17 @@ bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width,
                             uint32_t minimal_width = 0, bool crop_black = true,
                             bool crop_by_aspect = false);
 
+// Metadata-aware entry point used by frame_service. NV12 can use Rockit VENC
+// when FRAME_SERVICE_JPEG_ENCODER=hardware; every other case falls back to the
+// software path while honoring the negotiated frame layout.
+bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data,
+                           const FrameMetadata& metadata,
+                           int quality,
+                           std::vector<uint8_t>* output,
+                           uint32_t* out_width = nullptr, uint32_t* out_height = nullptr,
+                           uint32_t* out_crop_x = nullptr, uint32_t* out_crop_y = nullptr,
+                           uint32_t minimal_width = 0, bool crop_black = true);
+
 // Encode a full packed UYVY/YUYV frame while applying the crop rectangle in
 // a persistent hardware JPEG channel. Returns false when RK VENC is unavailable
 // so the caller can use the existing OpenCV path. For packed 4:2:2, width,
@@ -71,5 +84,13 @@ bool encode_yuv_to_jpeg_hw_with_crop(const std::vector<uint8_t>& yuv_data,
 // Clear a sticky permanent RK VENC-unavailable result before a deliberate
 // periodic recovery attempt.
 void clear_yuv_jpeg_hw_unavailable();
+
+// Warm a hardware NV12 encoder after the first frame for a layout has been
+// captured. Requests racing the warm-up use software encoding rather than
+// waiting for the kernel-facing cold path.
+bool prepare_jpeg_encoder_warmup(const FrameMetadata& metadata);
+void cancel_jpeg_encoder_warmup();
+void warmup_jpeg_encoder(const FrameMetadata& metadata,
+                         const std::vector<uint8_t>& yuv_data);
 
 }  // namespace aiden
