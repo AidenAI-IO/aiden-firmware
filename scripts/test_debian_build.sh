@@ -43,6 +43,8 @@ grep -Fq 'key/id_25519.pem' <<<"${help_output}" \
     || fail "help does not describe the private PEM input"
 grep -Fq 'key/id_25519.pub.pem' <<<"${help_output}" \
     || fail "help does not describe the public PEM input"
+grep -Fq 'OTA_BASE_URL' <<<"${help_output}" \
+    || fail "help does not describe direct-download manifest support"
 
 grep -Fq 'scripts/debian-stage2/build-apps.sh" all' "${BUILD_SCRIPT}" \
     || fail "Stage 2 all build is missing"
@@ -54,6 +56,13 @@ grep -Fq 'scripts/generate_ota_manifest.sh' "${BUILD_SCRIPT}" \
     || fail "local signed manifest generation is missing"
 grep -Fq 'scripts/generate_ota_device_config.sh' "${BUILD_SCRIPT}" \
     || fail "factory OTA config generation is missing"
+grep -Fq 'aiden_ota_manifest_max_download_bytes' "${BUILD_SCRIPT}" \
+    || fail "signed manifests do not enforce the OTA partition download limit"
+grep -Fq 'scripts/debian-stage3/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk' \
+    "${BUILD_SCRIPT}" \
+    || fail "OTA partition limits do not derive from the Debian board config"
+grep -Fq -- '--base-url "${ota_base_url}"' "${BUILD_SCRIPT}" \
+    || fail "OTA_BASE_URL is not forwarded to manifest generation"
 grep -Fq 'find /target -mindepth 1 -delete' "${BUILD_SCRIPT}" \
     || fail "container-assisted cleanup for foreign-owned outputs is missing"
 grep -Fq 'refusing to clean a symlinked output directory' "${BUILD_SCRIPT}" \

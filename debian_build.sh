@@ -61,6 +61,8 @@ Environment overrides:
   OTA_REPO                  Local factory config repository label (default:
                             AidenAI-IO/aiden-firmware).
   OTA_CHANNEL               Local manifest channel (default: local).
+  OTA_BASE_URL              Optional HTTP(S) base URL embedded in manifest
+                            assets for non-GitHub distribution.
   OTA_BUILD_VERSION         Local manifest version (default: timestamp + Git SHA).
   OTA_BUILD_TIME            RFC3339 manifest time (default: current UTC time).
   SOURCE_DATE_EPOCH         Reproducible archive timestamp (default: 1767360516).
@@ -302,12 +304,22 @@ main() {
     local go_root=${DEBIAN_STAGE2_GO_ROOT:-${DEFAULT_GO_ROOT}}
     local ota_repo=${OTA_REPO:-AidenAI-IO/aiden-firmware}
     local ota_channel=${OTA_CHANNEL:-local}
+    local ota_base_url=${OTA_BASE_URL:-}
     local ota_build_time=${OTA_BUILD_TIME:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}
     local stage3_build_image=${DEBIAN_STAGE3_BUILD_IMAGE:-aiden-debian13-armhf-builder:stage3}
     local release_archive_epoch=${SOURCE_DATE_EPOCH:-${DEFAULT_SOURCE_DATE_EPOCH}}
     local git_revision ota_build_version
     git_revision=$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD)
     ota_build_version=${OTA_BUILD_VERSION:-local-$(date -u '+%Y%m%d-%H%M%S')-${git_revision}}
+
+    if [ -n "${ota_base_url}" ]; then
+        case "${ota_base_url}" in
+            http://* | https://*) ;;
+            *) die "OTA_BASE_URL must start with http:// or https://" ;;
+        esac
+        [[ ! "${ota_base_url}" =~ [[:space:]] ]] \
+            || die "OTA_BASE_URL must not contain whitespace"
+    fi
 
     [ -f "${agent_config}" ] \
         || die "external Agent configuration is missing: ${agent_config}"
@@ -362,6 +374,17 @@ main() {
         "${release_archive_epoch}"
 
     local device_config=${STAGE3_OUTPUT}/debian-ota-config.json
+    local max_download_bytes
+    local ota_board_config=${REPO_ROOT}/scripts/debian-stage3/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk
+    local -a manifest_location_args=()
+    export AIDEN_OTA_BOARD_CONFIG_PATH=${ota_board_config}
+    # shellcheck source=/dev/null
+    source "${REPO_ROOT}/scripts/ota_partition_layout.sh"
+    max_download_bytes=$(aiden_ota_manifest_max_download_bytes) \
+        || die "failed to resolve the OTA partition download limit"
+    if [ -n "${ota_base_url}" ]; then
+        manifest_location_args=(--base-url "${ota_base_url}")
+    fi
     log "Generating a locally signed OTA manifest"
     docker run --rm \
         -u "$(id -u):$(id -g)" \
@@ -376,6 +399,8 @@ main() {
         --build-time "${ota_build_time}" \
         --sign-key /run/secrets/ota_private.pem \
         --image-dir /out/image \
+        "${manifest_location_args[@]}" \
+        --max-download-bytes "${max_download_bytes}" \
         --output /out/image/manifest.json
 
     log "Generating the matching factory OTA configuration"

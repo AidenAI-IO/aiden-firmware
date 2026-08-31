@@ -45,6 +45,12 @@ func TestSplitCommandAndFlagsDefaultsToHealth(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigPathUsesDebianPersistentLayout(t *testing.T) {
+	if ota.DefaultOTAConfigPath != "/userdata/debian/ota/config.json" {
+		t.Fatalf("DefaultOTAConfigPath = %q, want Debian persistent config", ota.DefaultOTAConfigPath)
+	}
+}
+
 func TestSplitCommandAndFlagsConsumesFlagValuesBeforeCommand(t *testing.T) {
 	command, rest := splitCommandAndFlags([]string{"--manifest-url", "https://example.com/manifest.json", "update"})
 	if command != "update" {

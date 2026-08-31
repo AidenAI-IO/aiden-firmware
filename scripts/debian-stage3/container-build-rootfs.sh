@@ -10,6 +10,7 @@ readonly ROOTFS_IMPORT_DIR=${WORK_DIR}/rootfs-import
 readonly MOUNT_DIR=${WORK_DIR}/mnt
 readonly ROOTFS_IMAGE=${OUTPUT_DIR}/rootfs.ext4
 readonly ROOTFS_ARCHIVE=${OUTPUT_DIR}/rootfs.tar.zst
+readonly ROOTFS_CLI_TOOLS_DIR=/rootfs-cli-tools
 readonly SNAPSHOT=http://snapshot.debian.org/archive/debian/20260803T000000Z
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
 readonly ROOTFS_UUID=1d29a2d4-5488-4bea-a648-bf133c4b53d3
@@ -156,6 +157,14 @@ configure_rootfs() {
             chmod 0644 "${ROOTFS_DIR}/${path}"
         fi
     done < <(find "${REPO_ROOT}/overlay-debian" -type f -printf '%P\0')
+    "${REPO_ROOT}/scripts/stage_rootfs_cli_tools.sh" \
+        --catalog "${REPO_ROOT}/scripts/rootfs_cli_tools.catalog" \
+        --source-dir "${ROOTFS_CLI_TOOLS_DIR}" \
+        --dest-overlay "${ROOTFS_DIR}"
+    install -m 0644 "${ROOTFS_CLI_TOOLS_DIR}/manifest.sha256" \
+        "${OUTPUT_DIR}/rootfs-cli-tools.sha256"
+    install -m 0644 "${ROOTFS_CLI_TOOLS_DIR}/versions.txt" \
+        "${OUTPUT_DIR}/rootfs-cli-tools-versions.txt"
     install -d -m 0755 \
         "${ROOTFS_DIR}/oem" \
         "${ROOTFS_DIR}/userdata" \
@@ -312,9 +321,12 @@ create_ext4_image() {
 }
 
 write_metadata() {
-    local rootfs_sha packages_sha source_commit app_commit
+    local rootfs_sha packages_sha cli_manifest_sha cli_versions_sha
+    local source_commit app_commit
     rootfs_sha=$(sha256sum "${ROOTFS_IMAGE}" | awk '{print $1}')
     packages_sha=$(sha256sum "${OUTPUT_DIR}/packages.txt" | awk '{print $1}')
+    cli_manifest_sha=$(sha256sum "${OUTPUT_DIR}/rootfs-cli-tools.sha256" | awk '{print $1}')
+    cli_versions_sha=$(sha256sum "${OUTPUT_DIR}/rootfs-cli-tools-versions.txt" | awk '{print $1}')
     # The repository is mounted read-only from a non-root host user, while
     # this privileged builder runs as root. Trust only the two exact bind
     # mount paths needed for immutable build provenance.
@@ -330,6 +342,8 @@ write_metadata() {
   "hardware_demo_commit": "${app_commit}",
   "packages_sha256": "${packages_sha}",
   "pico_sdk_commit": "${source_commit}",
+  "rootfs_cli_tools_manifest_sha256": "${cli_manifest_sha}",
+  "rootfs_cli_tools_versions_sha256": "${cli_versions_sha}",
   "rootfs_sha256": "${rootfs_sha}",
   "source_date_epoch": ${BUILD_EPOCH},
   "suite": "trixie"
@@ -344,7 +358,8 @@ finalize() {
         debian.sources build-metadata.json filesystem-manifest.txt \
         capabilities.txt xattrs.txt setid-files.txt sbom.spdx.json \
         dpkg-audit.txt rootfs-dumpe2fs.txt rootfs-import-audit.txt \
-        rootfs-artifacts.sha256; do
+        rootfs-artifacts.sha256 rootfs-cli-tools.sha256 \
+        rootfs-cli-tools-versions.txt; do
         chown "${HOST_UID:-0}:${HOST_GID:-0}" "${OUTPUT_DIR}/${path}"
     done
     rm -rf "${WORK_DIR}"
