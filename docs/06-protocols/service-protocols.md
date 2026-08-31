@@ -11,7 +11,7 @@ This page outlines the application protocols based on UDS envelope. For the comm
 Default socket:
 
 - Direct development run: `/tmp/frame_service.sock`
-- Firmware service: `/run/frame_service/frame_service.sock`
+- Debian service: `/run/frame_service/frame_service.sock`
 
 ### Operations
 
@@ -51,7 +51,7 @@ Core fields:
 | `seq` | Frame sequence number |
 | `capture_ts_ns` | Capture timestamp in nanoseconds |
 | `width` / `height` | Resolution |
-| `pixel_format` | Pixel format, e.g., `uyvy` |
+| `pixel_format` | Pixel format, e.g., `nv12` (frame_service default) or `uyvy` |
 | `stride` | Row stride |
 | `bytes` | Payload byte count |
 | `planes` | Multi-plane metadata: offset / stride / bytes |

@@ -107,6 +107,12 @@ player.stop();
 
 ## CameraCapture
 
+`CameraCapture` preserves the historical direct-capture default of UYVY for
+compatibility. The frame_service executable selects NV12 explicitly. With
+NV12, the `capture_frame*` copy helpers remove V4L2 row padding and return a
+tight Y + interleaved UV payload. The returned `VideoFrame::stride` is the
+visible width and `size_image`/`length` are the compact payload size.
+
 Streaming capture:
 
 ```cpp
@@ -118,7 +124,8 @@ config.pixel_format = "uyvy";
 aiden::CameraCapture camera;
 camera.init(config);
 camera.start([](const aiden::VideoFrame& frame) {
-    printf("Frame: %ux%u, %u bytes\n", frame.width, frame.height, frame.length);
+    printf("Frame: %ux%u, %u bytes, stride=%u\n",
+           frame.width, frame.height, frame.length, frame.stride);
 });
 // ...
 camera.stop();
