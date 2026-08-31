@@ -96,7 +96,8 @@ ensure_sdk() {
     # Keep the container-facing clone independent of host worktree and
     # submodule object stores. Existing output from older builds is migrated
     # in place before the clone is mounted into the BSP container.
-    alternates_file=$(git -C "${SDK_DIR}" rev-parse --git-path objects/info/alternates)
+    alternates_file=$(git -C "${SDK_DIR}" rev-parse \
+        --path-format=absolute --git-path objects/info/alternates)
     if [ -e "${alternates_file}" ]; then
         if [ -s "${alternates_file}" ]; then
             git -C "${SDK_DIR}" repack -a -d
