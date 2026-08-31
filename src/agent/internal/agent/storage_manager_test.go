@@ -21,10 +21,12 @@ type fakeStorageOps struct {
 	prepareBlock   chan struct{}
 	prepareEntered chan struct{}
 	prepareOnce    sync.Once
+
 	free       int64
 	total      int64
 	spaceErr   error
 	formatErr  error
+	remountErr error
 	unmountErr error
 	blank      bool
 	// spaceFn, when set, answers SpaceInfo per path (used by migration
@@ -96,7 +98,7 @@ func (f *fakeStorageOps) FormatDisk(fs string) (string, error) {
 	}
 	// A freshly formatted card is no longer blank and mounts cleanly.
 	f.blank = false
-	f.prepareErr = nil
+	f.prepareErr = f.remountErr
 	return "/dev/mmcblk2p1", nil
 }
 
@@ -548,6 +550,30 @@ func TestStorageManagerFormatFailureReported(t *testing.T) {
 	}
 }
 
+func TestStorageManagerPostFormatMountFailureReported(t *testing.T) {
+	ops := &fakeStorageOps{
+		present: true, free: 1 << 30, total: 1 << 31, healthy: true,
+		remountErr: errors.New("mount: device unavailable"),
+	}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 2)
+
+	if err := m.StartFormat(StorageFormatFAT32, StorageFormatConfirmToken); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForFormatJob(t, m)
+	if job.Status != StorageFormatFailed || !strings.Contains(job.Error, "mount: device unavailable") {
+		t.Fatalf("job = %+v, want post-format mount failure", job)
+	}
+	status := m.Status()
+	if status.Card.Mounted {
+		t.Fatal("card reported mounted after post-format mount failure")
+	}
+	if !strings.Contains(status.Card.Reason, "mount: device unavailable") {
+		t.Fatalf("card reason = %q, want mount failure", status.Card.Reason)
+	}
+}
+
 func TestStorageManagerRejectsActionsDuringFormat(t *testing.T) {
 	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
 	m := newTestStorageManager(t, ops)
@@ -621,7 +647,7 @@ func TestStorageManagerNeverAutoFormatsUnreadableCard(t *testing.T) {
 
 func TestStorageManagerAutoFormatOncePerInsertion(t *testing.T) {
 	ops := &fakeStorageOps{
-		present: true, healthy: true,
+		present: true, healthy: true, free: 1 << 30, total: 1 << 31,
 		prepareErr: errors.New("no filesystem"), blank: true,
 		formatErr: errors.New("card yanked"),
 	}

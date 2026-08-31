@@ -370,6 +370,17 @@ func (m *StorageManager) runFormatJob(fs string) {
 	// let callers tear down resources that the mount attempt is still using.
 	m.tryMountLocked()
 	m.formatJob.FinishedAt = time.Now()
+	if !m.card.Mounted {
+		reason := m.card.Reason
+		if reason == "" {
+			reason = "card unavailable after format"
+			m.card.Reason = reason
+		}
+		m.formatJob.Status = StorageFormatFailed
+		m.formatJob.Error = fmt.Sprintf("post-format mount failed: %s", reason)
+		m.finishTransitionLocked()
+		return
+	}
 	m.formatJob.Status = StorageFormatSuccess
 	m.finishTransitionLocked()
 }
