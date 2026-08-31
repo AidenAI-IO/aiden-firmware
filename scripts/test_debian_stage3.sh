@@ -146,8 +146,16 @@ grep -Fq 'safe.directory="${REPO_ROOT}/pico-sdk"' \
 grep -Fq 'safe.directory="${REPO_ROOT}"' \
     "${STAGE3_DIR}/container-build-rootfs.sh"
 [ "$(grep -Fc -- '--path-format=absolute --git-common-dir' \
-    "${STAGE3_DIR}/build.sh")" -eq 2 ] \
-    || fail "rootfs and BSP containers do not both mount Git provenance metadata"
+    "${STAGE3_DIR}/build.sh")" -eq 1 ] \
+    || fail "rootfs container does not mount exactly one Git provenance directory"
+grep -Fq 'git -C "${SDK_DIR}" repack -a -d' "${STAGE3_DIR}/build.sh"
+grep -Fq 'rm -f -- "${alternates_file}"' "${STAGE3_DIR}/build.sh"
+grep -Fq 'git -C "${SDK_DIR}" fsck --connectivity-only --no-dangling' \
+    "${STAGE3_DIR}/build.sh"
+if sed -n '/^run_bsp()/,/^}/p' "${STAGE3_DIR}/build.sh" \
+    | grep -Fq 'source_git_common_dir'; then
+    fail "BSP container still depends on a host Git object directory"
+fi
 grep -Fq 'KBUILD_BUILD_USER=aiden' "${STAGE3_DIR}/build.sh"
 grep -Fq './build.sh abimages' "${STAGE3_DIR}/build.sh"
 grep -Fq '0004-make-bsp-images-reproducible.patch' "${STAGE3_DIR}/build.sh"
