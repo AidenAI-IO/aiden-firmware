@@ -1635,8 +1635,12 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 		return err
 	}
 
-	_ = contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
-	_ = contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir))
+	if err := contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear backend context sessions: %w", err)
+	}
+	if err := contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear user context sessions: %w", err)
+	}
 	if err := r.rotateContext(); err != nil {
 		return fmt.Errorf("create backend context session: %w", err)
 	}
