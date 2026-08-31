@@ -177,24 +177,3 @@ jobs:
           node-version: '22'
       - name: Run Agent Web UI tests
         run: make test-agent-webui
-
-  # Preserve the existing required-check name while making it represent every
-  # parallel test job. `always()` ensures a failed dependency produces a failed
-  # aggregate check instead of leaving the required check skipped.
-  run-tests:
-    if: always()
-    needs:
-      - script-tests
-      - docker-tests
-      - cpp-tests
-      - go-tests
-      - web-tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verify parallel test jobs
-        run: |
-          test '${{ needs.script-tests.result }}' = success
-          test '${{ needs.docker-tests.result }}' = success
-          test '${{ needs.cpp-tests.result }}' = success
-          test '${{ needs.go-tests.result }}' = success
-          test '${{ needs.web-tests.result }}' = success
