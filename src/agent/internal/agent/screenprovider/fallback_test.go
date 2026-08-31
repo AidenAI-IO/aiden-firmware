@@ -19,8 +19,22 @@ type fakeHealthyScreenCaptureSource struct {
 	health *HealthResult
 }
 
+type fakeReadyScreenCaptureSource struct {
+	*fakeScreenCaptureSource
+	health      *HealthResult
+	waitErr     error
+	waitCalls   int
+	waitTimeout time.Duration
+}
+
 func (f *fakeHealthyScreenCaptureSource) Health() (*HealthResult, error) {
 	return f.health, nil
+}
+
+func (f *fakeReadyScreenCaptureSource) WaitUntilReady(timeout time.Duration) (*HealthResult, error) {
+	f.waitCalls++
+	f.waitTimeout = timeout
+	return f.health, f.waitErr
 }
 
 func (f *fakeScreenCaptureSource) LatestFrame() (*FrameMetadata, []byte, error) {
@@ -41,6 +55,100 @@ func (f *fakeScreenCaptureSource) LatestFrameWithFormat(format string, quality i
 
 func (f *fakeScreenCaptureSource) LastCaptureInfo() CaptureInfo {
 	return CloneCaptureInfo(f.lastCaptureInfo)
+}
+
+func TestScreenCaptureClientWaitsForFrameServiceBeforeCapture(t *testing.T) {
+	primary := &fakeReadyScreenCaptureSource{
+		fakeScreenCaptureSource: &fakeScreenCaptureSource{
+			latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, error) {
+				return &FrameMetadata{Seq: 7, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("jpeg"), nil
+			},
+		},
+		health: &HealthResult{State: "RUNNING", CaptureMode: "buffered", LatestSeq: 7, FrameAgeMs: 10},
+	}
+
+	client := NewFallbackFromSources(primary, nil)
+	meta, frame, _, err := client.LatestFrameWithFormatWhenReady("jpeg", DefaultJPEGQuality, false, CropHint{})
+	if err != nil {
+		t.Fatalf("LatestFrameWithFormatWhenReady() error = %v", err)
+	}
+	if primary.waitCalls != 1 || primary.waitTimeout != frameServiceStartupWaitTimeout {
+		t.Fatalf("ready wait calls=%d timeout=%s, want 1 and %s", primary.waitCalls, primary.waitTimeout, frameServiceStartupWaitTimeout)
+	}
+	if primary.latestFrameWithFormatCalls != 1 || meta.Seq != 7 || string(frame) != "jpeg" {
+		t.Fatalf("unexpected capture: calls=%d meta=%#v frame=%q", primary.latestFrameWithFormatCalls, meta, frame)
+	}
+}
+
+func TestScreenCaptureClientCapturesOnDemandFrameFromStartingStateWhenReady(t *testing.T) {
+	primary := &fakeReadyScreenCaptureSource{
+		fakeScreenCaptureSource: &fakeScreenCaptureSource{
+			latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, error) {
+				return &FrameMetadata{Seq: 1, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("fresh"), nil
+			},
+		},
+		health: &HealthResult{State: "STARTING", CaptureMode: "on_demand", LatestSeq: 0},
+	}
+
+	client := NewFallbackFromSources(primary, nil)
+	meta, frame, _, err := client.LatestFrameWithFormatWhenReady("jpeg", DefaultJPEGQuality, false, CropHint{})
+	if err != nil {
+		t.Fatalf("LatestFrameWithFormatWhenReady() error = %v", err)
+	}
+	if meta.Seq != 1 || string(frame) != "fresh" || primary.latestFrameWithFormatCalls != 1 {
+		t.Fatalf("unexpected capture: calls=%d meta=%#v frame=%q", primary.latestFrameWithFormatCalls, meta, frame)
+	}
+}
+
+func TestScreenCaptureClientFastPathRejectsStartingOnDemandFrame(t *testing.T) {
+	primary := &fakeHealthyScreenCaptureSource{
+		fakeScreenCaptureSource: &fakeScreenCaptureSource{
+			latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, error) {
+				return &FrameMetadata{Seq: 1}, []byte("unexpected"), nil
+			},
+		},
+		health: &HealthResult{State: "STARTING", CaptureMode: "on_demand", LatestSeq: 0},
+	}
+	fallback := &fakeScreenCaptureSource{
+		latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, error) {
+			return &FrameMetadata{Seq: 1, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("fallback"), nil
+		},
+		lastCaptureInfo: CaptureInfo{Backend: "adb"},
+	}
+
+	client := NewFallbackFromSources(primary, fallback)
+	_, frame, info, err := client.LatestFrameWithFormat("jpeg", DefaultJPEGQuality, false, CropHint{})
+	if err != nil {
+		t.Fatalf("LatestFrameWithFormat() error = %v", err)
+	}
+	if primary.latestFrameWithFormatCalls != 0 || string(frame) != "fallback" || info.Backend != "adb" {
+		t.Fatalf("primary calls=%d frame=%q backend=%q, want fast adb fallback", primary.latestFrameWithFormatCalls, frame, info.Backend)
+	}
+}
+
+func TestScreenCaptureClientDoesNotCaptureWhenFrameServiceReadyWaitFails(t *testing.T) {
+	primary := &fakeReadyScreenCaptureSource{
+		fakeScreenCaptureSource: &fakeScreenCaptureSource{
+			latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, error) {
+				return &FrameMetadata{Seq: 7}, []byte("unexpected"), nil
+			},
+		},
+		waitErr: errors.New("startup timeout"),
+	}
+	fallback := &fakeScreenCaptureSource{
+		latestFrameWithFormatFn: func(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, error) {
+			return nil, nil, errors.New("no connected adb device")
+		},
+	}
+
+	client := NewFallbackFromSources(primary, fallback)
+	_, _, _, err := client.LatestFrameWithFormatWhenReady("jpeg", DefaultJPEGQuality, false, CropHint{})
+	if err == nil || err.Error() != "frame service health: startup timeout" {
+		t.Fatalf("error = %v, want wrapped startup timeout", err)
+	}
+	if primary.latestFrameWithFormatCalls != 0 {
+		t.Fatalf("capture calls = %d, want 0 before readiness", primary.latestFrameWithFormatCalls)
+	}
 }
 
 func TestScreenCaptureClientFallsBackWhenPrimaryFails(t *testing.T) {
