@@ -352,8 +352,8 @@ func (m *StorageManager) runFormatJob(fs string) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.formatJob.FinishedAt = time.Now()
 	if err != nil {
+		m.formatJob.FinishedAt = time.Now()
 		m.formatJob.Status = StorageFormatFailed
 		m.formatJob.Error = err.Error()
 		m.card.Reason = fmt.Sprintf("format failed: %v", err)
@@ -361,11 +361,16 @@ func (m *StorageManager) runFormatJob(fs string) {
 		m.finishTransitionLocked()
 		return
 	}
-	m.formatJob.Status = StorageFormatSuccess
 	m.card.Reason = ""
 	m.ejected = false
 	m.mountFailed = false
+	// Keep the job running until the post-format mount attempt has landed.
+	// tryMountLocked releases m.mu while Prepare runs, so publishing success
+	// first would let observers see a completed job with an unmounted card and
+	// let callers tear down resources that the mount attempt is still using.
 	m.tryMountLocked()
+	m.formatJob.FinishedAt = time.Now()
+	m.formatJob.Status = StorageFormatSuccess
 	m.finishTransitionLocked()
 }
 

@@ -479,6 +479,38 @@ func TestStorageManagerFormatExt4MountsAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestStorageManagerFormatRemainsRunningUntilRemountFinishes(t *testing.T) {
+	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 2)
+
+	// Block only the post-format Prepare call so the state exposed during the
+	// remount is deterministic.
+	ops.prepareBlock = make(chan struct{})
+	ops.prepareEntered = make(chan struct{})
+	if err := m.StartFormat(StorageFormatFAT32, StorageFormatConfirmToken); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ops.prepareEntered:
+	case <-time.After(time.Second):
+		t.Fatal("post-format mount did not start")
+	}
+
+	if status := m.Status(); status.FormatJob.Status != StorageFormatRunning {
+		t.Fatalf("format job published completion before remount finished: %+v", status)
+	}
+
+	close(ops.prepareBlock)
+	job := waitForFormatJob(t, m)
+	if job.Status != StorageFormatSuccess {
+		t.Fatalf("job = %+v, want success", job)
+	}
+	if status := m.Status(); !status.Card.Mounted || status.EffectiveMode != StorageModeDual {
+		t.Fatalf("status = %+v, want mounted dual storage after completed job", status)
+	}
+}
+
 func TestStorageManagerFormatExFATMountsAfterSuccess(t *testing.T) {
 	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
 	m := newTestStorageManager(t, ops)
