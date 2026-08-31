@@ -1146,7 +1146,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{}, err
 	}
 
-	compactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
+	contextCompactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
 	budgetContextWindow := contextWindow
 	if budgetContextWindow <= 0 {
 		budgetContextWindow = r.models.Spec().ContextWindow
@@ -1161,17 +1161,28 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
 	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
 	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
-	if !r.config.Model.ResponsesProviderCompactionEnabled() && compactionEnabled && tokenUsage > compactionTrigger {
+	if compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
-			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
+			r.logger.Info("Compaction: token usage reached the threshold, pruning historical state and tool results... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
 		}
-		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
+		newManager, compacted, err := contextCompactor.CompactWithOptions(ctx, r.contextManager, compactor.CompactionOptions{
+			TargetTokens: compactionTarget,
+			// Provider compaction remains responsible for general conversation
+			// compaction, but expired local state must still be removed.
+			SkipSummary: r.config.Model.ResponsesProviderCompactionEnabled(),
+		})
 		if episodeRecorder != nil {
+			stats := contextCompactor.LastStats()
 			episodeRecorder.RecordEvent(TaskEpisodeEvent{
 				Type: runEventHistoricalToolResultCompaction,
 				Metadata: map[string]interface{}{
-					"compacted": compacted,
-					"success":   err == nil,
+					"historical_states_dropped":      stats.HistoricalStatesDropped,
+					"historical_tool_results_pruned": stats.HistoricalToolResultsPruned,
+					"tokens_before":                  stats.TokensBefore,
+					"tokens_after":                   stats.TokensAfter,
+					"conversation_summary_required":  stats.ConversationSummaryRequired,
+					"compacted":                      compacted,
+					"success":                        err == nil,
 				},
 			})
 		}
@@ -1208,14 +1219,23 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Info("Compaction: provider rejected the request because the context window was exceeded; compacting and retrying")
 		}
-		newManager, compacted, compactErr := compactor.Compact(recoveryCtx, currentManager)
+		newManager, compacted, compactErr := contextCompactor.CompactWithOptions(recoveryCtx, currentManager, compactor.CompactionOptions{
+			TargetTokens: compactionTarget,
+			ForceSummary: true,
+		})
 		if episodeRecorder != nil {
+			stats := contextCompactor.LastStats()
 			episodeRecorder.RecordEvent(TaskEpisodeEvent{
 				Type: runEventHistoricalToolResultCompaction,
 				Metadata: map[string]interface{}{
-					"compacted": compacted,
-					"success":   compactErr == nil,
-					"reason":    "provider_context_exceeded",
+					"historical_states_dropped":      stats.HistoricalStatesDropped,
+					"historical_tool_results_pruned": stats.HistoricalToolResultsPruned,
+					"tokens_before":                  stats.TokensBefore,
+					"tokens_after":                   stats.TokensAfter,
+					"conversation_summary_required":  stats.ConversationSummaryRequired,
+					"compacted":                      compacted,
+					"success":                        compactErr == nil,
+					"reason":                         "provider_context_exceeded",
 				},
 			})
 		}

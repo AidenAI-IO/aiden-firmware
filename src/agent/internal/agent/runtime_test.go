@@ -2749,6 +2749,63 @@ func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunPrunesHistoricalStateWithProviderCompaction(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "Answer directly."},
+		{Role: messages.MessageRoleState, Content: strings.Repeat("stale-device-state ", 2_000)},
+		{Role: messages.MessageRoleUser, Content: "old question"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	originalSessionID := manager.GetSessionID()
+
+	llmModel := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("ok")}}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir: configDir,
+			Model: ModelConfig{
+				Provider:                   "openai",
+				APIMode:                    "responses",
+				ResponsesContextManagement: "compaction",
+			},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{ContextWindow: 8_192},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "new question"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+	if llmModel.callCount != 1 {
+		t.Fatalf("model call count = %d, want 1 planner call without local summary", llmModel.callCount)
+	}
+	if runtime.contextManager == nil || runtime.contextManager.GetSessionID() == originalSessionID {
+		t.Fatal("runtime did not switch to the state-pruned context revision")
+	}
+	for _, message := range runtime.contextManager.CloneMessageList() {
+		if message.Role == messages.MessageRoleState || strings.Contains(message.Content, "stale-device-state") {
+			t.Fatalf("pruned context retained historical state: %#v", message)
+		}
+	}
+}
+
 func TestRuntimeRunCompactsAndRetriesWhenProviderRejectsContextLength(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
