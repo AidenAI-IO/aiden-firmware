@@ -34,7 +34,7 @@ Allowing multiple processes to directly open `/dev/video0` can lead to resource 
 Development mode:
 
 ```bash
-./build/bin/frame_service --socket /tmp/frame_service.sock
+/oem/usr/bin/frame_service --socket /tmp/frame_service.sock
 ```
 
 The service initializes HDMI/V4L2 once, pauses the stream, and waits for a
@@ -179,11 +179,11 @@ frame_service_cli [--socket PATH] <health|latest-frame|screenshot|list-frames|re
 Examples:
 
 ```bash
-./build/bin/frame_service_cli --socket /tmp/frame_service.sock health
-./build/bin/frame_service_cli --socket /tmp/frame_service.sock screenshot --out /tmp/screenshot.bmp
-./build/bin/frame_service_cli --socket /tmp/frame_service.sock latest-frame --out /tmp/frame.raw
-./build/bin/frame_service_cli --socket /tmp/frame_service.sock list-frames
-./build/bin/frame_service_cli --socket /tmp/frame_service.sock restart
+frame_service_cli --socket /tmp/frame_service.sock health
+frame_service_cli --socket /tmp/frame_service.sock screenshot --out /tmp/screenshot.bmp
+frame_service_cli --socket /tmp/frame_service.sock latest-frame --out /tmp/frame.raw
+frame_service_cli --socket /tmp/frame_service.sock list-frames
+frame_service_cli --socket /tmp/frame_service.sock restart
 ```
 
 `list-frames` returns an empty list in on-demand mode. `get_frame` remains in
@@ -214,6 +214,6 @@ Screenshot interpretation requires the model/provider to support image input. Te
 
 ```bash
 systemctl stop aiden-frame.service
-./build/bin/example_camera_capture
+example_camera_capture
 systemctl start aiden-frame.service
 ```

@@ -148,9 +148,9 @@ camera.pause();
 
 `frame_service` uses this lifecycle for request-driven screenshots. Resume
 resets `skip_frames`, then the service performs additional zero-copy warm-up
-dequeues before the response frame is copied. The deployed default is 12
-warm-up frames because RK628D can briefly return uniform frames after every
-stream restart.
+dequeues before the response frame is copied. The deployed default is zero
+additional warm-up frames when streaming restarts per request and six when
+`keep_streamon` keeps the stream active.
 
 One-shot capture and copy to caller-owned buffer:
 

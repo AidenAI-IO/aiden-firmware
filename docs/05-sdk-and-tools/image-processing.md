@@ -29,25 +29,25 @@ image_process rotate -d DEG -i INPUT -o OUTPUT [-q JPEG quality]
 Crop top, right, bottom, left margins:
 
 ```bash
-./build/bin/image_process crop -b 10,20,10,20 -i input.jpg -o cropped.jpg -q 90
+image_process crop -b 10,20,10,20 -i input.jpg -o cropped.jpg -q 90
 ```
 
 Crop black bars:
 
 ```bash
-./build/bin/image_process crop_black_bars -i screenshot.jpg -o no-bars.jpg
+image_process crop_black_bars -i screenshot.jpg -o no-bars.jpg
 ```
 
 Scale to 50%:
 
 ```bash
-./build/bin/image_process scale -s 0.5 -i input.png -o small.jpg
+image_process scale -s 0.5 -i input.png -o small.jpg
 ```
 
 Rotate 90 degrees:
 
 ```bash
-./build/bin/image_process rotate -d 90 -i input.jpg -o rotated.jpg
+image_process rotate -d 90 -i input.jpg -o rotated.jpg
 ```
 
 ## Library Targets

@@ -15,10 +15,9 @@ if(AIDEN_TESTS)
     return()
 endif()
 
-set(AIDEN_TARGET_PLATFORM "rv1106-buildroot-uclibc" CACHE STRING
+set(AIDEN_TARGET_PLATFORM "rv1106-debian-glibc" CACHE STRING
     "Target userspace platform")
 set_property(CACHE AIDEN_TARGET_PLATFORM PROPERTY STRINGS
-    rv1106-buildroot-uclibc
     rv1106-debian-glibc
 )
 
@@ -31,7 +30,7 @@ endif()
 include("${_aiden_platform_file}")
 
 # Packaged executables live in /oem/usr/bin and vendor shared libraries in
-# /oem/usr/lib on both supported userspaces.
+# /oem/usr/lib on the Debian target.
 set(CMAKE_BUILD_RPATH "\$ORIGIN/../lib")
 set(CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
 set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)

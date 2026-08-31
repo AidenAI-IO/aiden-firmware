@@ -275,8 +275,9 @@ test ! -e "${flash_test_dir}/flash-called"
 rm -rf "${flash_test_dir}"
 trap - EXIT
 
-grep -q 'upgrade_tool ld' "${repo_root}/docs/debian-stage1.md"
-grep -q 'uf output/debian-stage1/image/update.img' \
-    "${repo_root}/docs/debian-stage1.md"
+test ! -e "${repo_root}/docs/debian-stage1.md" || {
+    echo "Obsolete Stage 1 deployment guide must not be published as a production path" >&2
+    exit 1
+}
 
 echo "Debian stage-1 static checks passed"

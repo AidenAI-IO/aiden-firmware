@@ -11,6 +11,17 @@ fail() {
     exit 1
 }
 
+active_docs=(
+    "${REPO_ROOT}/README.md"
+    "${REPO_ROOT}/docs/README.md"
+    "${REPO_ROOT}"/docs/[0-9][0-9]-*
+)
+if rg -n -i \
+    'buildroot|opkg|\./build\.sh (binaries|image)|/etc/init\.d|overlay/(etc|oem|userdata)|pico-sdk/output/image' \
+    "${active_docs[@]}"; then
+    fail "active documentation still publishes a legacy userspace workflow"
+fi
+
 bash -n \
     "${STAGE3_DIR}/build.sh" \
     "${STAGE3_DIR}/audit-bsp.sh" \
@@ -55,7 +66,7 @@ grep -Eq '^[[:space:]]*debootstrap \\' \
 for package in \
     systemd-sysv udev dbus kmod openssh-server sudo adb iproute2 iputils-arping \
     wpasupplicant bluez systemd-resolved systemd-timesyncd dnsmasq-base \
-    e2fsprogs v4l-utils libdrm2; do
+    e2fsprogs v4l-utils libdrm2 python3 python3-pip; do
     grep -qx "${package}" "${STAGE3_DIR}/packages.list" \
         || fail "production package list is missing ${package}"
 done
@@ -97,8 +108,15 @@ if grep -Eq 'chown[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(-R|--recursive)' \
     "${STAGE3_DIR}/container-build-rootfs.sh"; then
     fail "rootfs builder recursively chowns Debian package files"
 fi
-grep -Fq 'aiden-usb-gadget' "${STAGE3_DIR}/container-build-rootfs.sh"
-grep -Fq 'aiden-boot-timeline' "${STAGE3_DIR}/container-build-rootfs.sh"
+[ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-usb-gadget" ] \
+    || fail "Debian USB gadget helper is missing"
+[ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-boot-timeline" ] \
+    || fail "Debian boot timeline helper is missing"
+grep -Fq 'overlay-debian/" "${ROOTFS_DIR}/"' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+if grep -Fq '${REPO_ROOT}/overlay/' "${STAGE3_DIR}/container-build-rootfs.sh"; then
+    fail "Debian rootfs builder depends on the Buildroot overlay"
+fi
 grep -Fq 'aiden-boot-timeline.service' "${STAGE3_DIR}/container-build-rootfs.sh"
 grep -Fq 'aiden-machine-id.service' "${STAGE3_DIR}/container-build-rootfs.sh"
 grep -Fq 'useradd --uid 1000 --gid aiden --create-home' \
@@ -173,8 +191,19 @@ grep -Fq '${AGENT_CONFIG_PATH}:/run/secrets/agent.toml:ro' \
 grep -Fq 'apps/bin/agent" config-check --format=json' "${STAGE3_DIR}/build.sh"
 grep -Fq 'install -m 0600 "${AGENT_CONFIG}" "${USERDATA_ROOT}/agent/agent.toml"' \
     "${STAGE3_DIR}/container-assemble-images.sh"
-grep -Fq 'overlay/oem/usr/bin/aiden-dynamic-keyboard' \
+grep -Fq 'overlay-debian-oem/' \
     "${STAGE3_DIR}/container-assemble-images.sh"
+[ -x "${REPO_ROOT}/overlay-debian-oem/usr/bin/aiden-dynamic-keyboard" ] \
+    || fail "Debian OEM dynamic keyboard helper is missing"
+[ -s "${REPO_ROOT}/overlay-debian-oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn" ] \
+    || fail "Debian OEM VAD model is missing"
+[ -s "${REPO_ROOT}/overlay-debian-oem/usr/share/aiden/audio/config_aivqe.json" ] \
+    || fail "Debian OEM VQE configuration is missing"
+[ -s "${REPO_ROOT}/overlay-debian-oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex" ] \
+    || fail "Debian OEM EDID is missing"
+if grep -Fq '${REPO_ROOT}/overlay/' "${STAGE3_DIR}/container-assemble-images.sh"; then
+    fail "Debian OEM assembler depends on the Buildroot overlay"
+fi
 grep -Fq 'kernel_drv_ko/' "${STAGE3_DIR}/container-assemble-images.sh"
 grep -Fq '/userdata/debian/ota/config.json' "${STAGE3_DIR}/build.sh"
 grep -Fq 'factory_partition_hashes' "${STAGE3_DIR}/validate-ota-config.py"

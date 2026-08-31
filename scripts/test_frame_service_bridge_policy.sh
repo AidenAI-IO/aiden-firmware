@@ -13,8 +13,16 @@ frame_source="$repo_root/src/frame_camera_capture_source.cpp"
 grep -q '^FRAME_SERVICE_PIXEL_FORMAT=nv12$' "$debian_config"
 grep -q '^FRAME_SERVICE_JPEG_ENCODER=software$' "$debian_config"
 grep -q '^# FRAME_SERVICE_VENC_CHANNEL=63$' "$debian_config"
+grep -q '^FRAME_SERVICE_WARMUP_FRAMES=$' "$debian_config"
+grep -q '^FRAME_SERVICE_ALLOW_UNIFORM_FRAMES=1$' "$debian_config"
 grep -q -- 'FRAME_SERVICE_PIXEL_FORMAT:-nv12' "$debian_start"
 grep -q -- '--pixel-format "${pixel_format}"' "$debian_start"
+grep -q '^configured_keep_streamon() {' "$debian_start"
+grep -q -- '--keep-streamon' "$debian_start"
+grep -q -- '--pause-between-captures' "$debian_start"
+grep -q -- '--warmup-frames' "$debian_start"
+grep -q -- '--allow-uniform-frames' "$debian_start"
+grep -q -- '--reject-uniform-frames' "$debian_start"
 grep -q -- '--auto-subdev' "$debian_start"
 grep -q -- '--auto-subdev' "$frame_main"
 grep -q 'detect_hdmi_subdev' "$frame_source"
@@ -44,20 +52,29 @@ FRAME_SERVICE_PIXEL_FORMAT=nv12 \
 grep -q -- '--auto-subdev' "$mock_root/args"
 grep -q -- '--no-force-trigger' "$mock_root/args"
 grep -q -- '--pixel-format nv12' "$mock_root/args"
+grep -q -- '--pause-between-captures' "$mock_root/args"
+grep -q -- '--allow-uniform-frames' "$mock_root/args"
 
 # The explicit `auto` sentinel behaves identically to an empty subdevice, and
-# a compatibility pixel format is forwarded unchanged.
+# a compatibility pixel format and the Agent stream policy are forwarded.
+printf '[frame_service]\nkeep_streamon = true\n' >"$mock_root/agent.toml"
 FRAME_SERVICE_BIN="$mock_root/frame_service" \
 FRAME_SERVICE_TEST_ARGS="$mock_root/args-auto" \
 SOCKET_PATH="$mock_root/frame-auto.sock" \
+AGENT_CONFIG="$mock_root/agent.toml" \
 FRAME_SERVICE_SUBDEV=auto \
 FRAME_SERVICE_FORCE_TRIGGER=auto \
 FRAME_SERVICE_EDID=auto \
 FRAME_SERVICE_PIXEL_FORMAT=uyvy \
+FRAME_SERVICE_WARMUP_FRAMES=4 \
+FRAME_SERVICE_ALLOW_UNIFORM_FRAMES=0 \
     "$debian_start"
 grep -q -- '--auto-subdev' "$mock_root/args-auto"
 grep -q -- '--no-force-trigger' "$mock_root/args-auto"
 grep -q -- '--pixel-format uyvy' "$mock_root/args-auto"
+grep -q -- '--warmup-frames 4' "$mock_root/args-auto"
+grep -q -- '--keep-streamon' "$mock_root/args-auto"
+grep -q -- '--reject-uniform-frames' "$mock_root/args-auto"
 
 # Invalid formats fail closed before starting the service binary.
 if FRAME_SERVICE_BIN="$mock_root/frame_service" \
@@ -65,6 +82,22 @@ if FRAME_SERVICE_BIN="$mock_root/frame_service" \
     FRAME_SERVICE_PIXEL_FORMAT=rgb24 \
     "$debian_start"; then
     echo "FAIL: invalid FRAME_SERVICE_PIXEL_FORMAT was accepted" >&2
+    exit 1
+fi
+
+if FRAME_SERVICE_BIN="$mock_root/frame_service" \
+    FRAME_SERVICE_TEST_ARGS="$mock_root/args-invalid-warmup" \
+    FRAME_SERVICE_WARMUP_FRAMES=-1 \
+    "$debian_start"; then
+    echo "FAIL: invalid FRAME_SERVICE_WARMUP_FRAMES was accepted" >&2
+    exit 1
+fi
+
+if FRAME_SERVICE_BIN="$mock_root/frame_service" \
+    FRAME_SERVICE_TEST_ARGS="$mock_root/args-invalid-uniform" \
+    FRAME_SERVICE_ALLOW_UNIFORM_FRAMES=yes \
+    "$debian_start"; then
+    echo "FAIL: invalid FRAME_SERVICE_ALLOW_UNIFORM_FRAMES was accepted" >&2
     exit 1
 fi
 

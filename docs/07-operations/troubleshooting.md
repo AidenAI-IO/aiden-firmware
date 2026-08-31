@@ -12,7 +12,7 @@ Solution:
 
 ```bash
 systemctl stop aiden-frame.service
-./build/bin/example_camera_capture
+example_camera_capture
 systemctl start aiden-frame.service
 ```
 
@@ -83,9 +83,9 @@ If the matching `rk628-csi` or `tc358743` node was not selected, set
 Check:
 
 ```bash
-/etc/init.d/S53agent status
+systemctl status aiden-agent.service --no-pager
 tail -f /userdata/agent/log/agent.log
-netstat -lntp | grep 8080
+ss -lntp | grep 8080
 ```
 
 Verify:
@@ -107,7 +107,7 @@ Solution:
 Check:
 
 ```bash
-/etc/init.d/S53audio_service status
+systemctl status aiden-audio.service --no-pager
 audio_service_cli --socket /run/audio_service/audio_service.sock health
 audio_service_cli --socket /run/audio_service/audio_service.sock get-volume
 amixer sget 'DAC HPMIX'
@@ -149,8 +149,7 @@ lsmod | grep -E 'dwc2|libcomposite'
 Try reinitializing:
 
 ```bash
-sudo ./build/bin/example_usb_hid cleanup
-sudo ./build/bin/example_usb_hid setup composite
+systemctl restart aiden-usb-gadget.service
 ```
 
 For iOS target devices, confirm AssistiveTouch is enabled.
@@ -181,105 +180,23 @@ Solution:
   from `POST /api/tools/{tool_name}`;
 - Separate transport failure from tool failure judgement.
 
-## `opkg update` prints nothing, and no package can be found
+## A Python dependency is unavailable
 
-```text
-# opkg update
-# opkg install htop
-error: opkg_prepare_url_for_install: Couldn't find anything to satisfy 'htop'.
-```
-
-`opkg update` prints one `Downloading` line per configured source, so silence
-means no source is configured. Two different causes produce it:
+The Debian image does not use opkg or a mutable `/opt` package root. For an
+Agent-side Python dependency, first check storage health, then install one exact
+wheel into the persistent userbase and validate the environment:
 
 ```bash
-cat /etc/opkg/*.conf | grep -E '^\s*(src|dist)'   # any sources at all?
-/etc/init.d/S22opt status                          # is /opt actually bound?
+cat /run/agent/storage_level
+/usr/bin/python3 -m pip install --only-binary=:all: 'packaging==24.2'
+/usr/bin/python3 -m pip check
 ```
 
-Every `src` line lives in `/opt/etc/opkg/userfeeds.conf`, so an unbound `/opt`
-looks exactly like "no source was ever configured". Check both before writing a
-source into a file that cannot be read.
-
-Note this is *not* opkg refusing to start. `/etc/opkg/90-userfeeds.conf` is a
-symlink into `/opt`, and when it dangles uClibc-ng's `glob()` silently drops it —
-opkg never tries to open it and runs normally. The protection against installing
-into the A/B rootfs comes from the read-only seal `S22opt` applies to `/opt`,
-plus the fact that no source is reachable.
-
-### Recover the `/opt` mount
-
-`opt=bound` is the only healthy status. Other states require mount recovery
-before running opkg:
-
-- `opt=sealed`: `/userdata` was unavailable or the bind mount failed, so
-  `S22opt` protected the rootfs with a read-only tmpfs. Confirm that `/userdata`
-  is mounted, fix the reported cause, then run `/etc/init.d/S22opt restart`.
-- `opt=wrong-source`: something other than `/userdata/opt` is mounted at
-  `/opt`. Do not run opkg or unmount it blindly; stop processes using that mount,
-  remove the configuration that created it, and reboot.
-- `opt=unbound`: run `/etc/init.d/S22opt restart` and use its error output to
-  diagnose the missing `/userdata` mount, directory creation failure, or bind
-  failure.
-
-After recovery, require a successful status check before continuing:
-
-```bash
-/etc/init.d/S22opt status
-# opt=bound source=/userdata/opt
-```
-
-### Configure a package feed
-
-Package sources belong only in `/opt/etc/opkg/userfeeds.conf`. The init script
-seeds the Entware source when it creates this file for the first time, but it
-never changes an existing file, including an empty one. To enable or change a
-feed, first verify that `/opt` is bound, then edit the file so it contains one
-source declaration per feed:
-
-```text
-src/gz entware https://bin.entware.net/armv7sf-k3.2
-```
-
-Avoid declaring the same source more than once. After saving the file, refresh
-the package lists and confirm that packages are visible:
-
-```bash
-opkg update
-opkg list | head
-```
-
-Run plain `opkg` commands without `-f`; supplying a standalone configuration
-file bypasses the fixed fragments under `/etc/opkg` that keep package files,
-metadata, caches, and locks in their intended locations.
-
-### Recover opkg metadata
-
-If an interrupted `opkg update` leaves only the downloaded package lists or
-cache inconsistent, remove those regenerable files and download them again:
-
-```bash
-rm -f /opt/var/lib/opkg/lists/* /opt/var/cache/opkg/*
-opkg update
-```
-
-Do not use that procedure for a truncated `/opt/var/lib/opkg/status` file. The
-status file, `/opt/var/lib/opkg/info`, and the installed package files form one
-state and must come from the same backup. Stop programs running from `/opt`,
-unmount `/opt`, move the current `/userdata/opt` aside instead of overwriting
-it, restore the complete backed-up tree at `/userdata/opt`, and start `S22opt`
-again. Preserve file ownership, modes, and symlinks during the restore. The
-`S22opt stop` action deliberately leaves `/opt` mounted because package
-processes may still be running; it is not a substitute for stopping those
-processes and running `umount /opt` before the replacement.
-
-If no consistent backup exists, reset the whole package root rather than mixing
-old package files with a new database. Stop `/opt` programs, unmount `/opt`, move
-`/userdata/opt` to a recovery path, and run `/etc/init.d/S22opt start`. The init
-script creates a clean package layout and feed file; then run `opkg update` and
-reinstall the required packages. If `/opt` is busy, identify and stop its users
-or reboot into a maintenance state, then repeat the unmount check before
-replacing or restoring the package root.
+Packages are stored under `/userdata/agent/python` and survive reboot and A/B
+updates. Do not use pip to replace firmware-provided pip, setuptools, or wheel,
+and do not use `apt` to mutate the production A/B rootfs. See
+[Persistent Python Packages](../04-agent/python-packages.md) for cleanup and
+storage behavior.
 
 ## Docker build fails
 
@@ -294,7 +211,7 @@ Recommended for Apple Silicon:
 
 ```bash
 colima start --vm-type vz --vz-rosetta
-./build.sh binaries
+./debian_build.sh
 ```
 
 Confirm not using `--arch x86_64` to start Colima VM.
