@@ -1,5 +1,8 @@
 #include "frame_capture_manager.h"
+#include "aiden_log.h"
+#include "frame_jpeg_encoder.h"
 #include <chrono>
+#include <memory>
 #include <thread>
 
 namespace aiden {
@@ -12,6 +15,10 @@ FrameCaptureManager::FrameCaptureManager(FrameCaptureSource* source,
       options_(options),
       running_(false),
       restart_requested_(false),
+      jpeg_warmup_running_(false),
+      have_jpeg_warmup_key_(false),
+      jpeg_warmup_width_(0),
+      jpeg_warmup_height_(0),
       requested_generation_(0),
       completed_generation_(0),
       completed_status_(FrameServiceStatus::SERVICE_RECOVERING) {}
@@ -31,7 +38,7 @@ bool FrameCaptureManager::start() {
 }
 
 void FrameCaptureManager::stop() {
-    if (!running_ && !thread_.joinable()) {
+    if (!running_ && !thread_.joinable() && !jpeg_warmup_thread_.joinable()) {
         return;
     }
     running_ = false;
@@ -43,6 +50,9 @@ void FrameCaptureManager::stop() {
     if (source_) {
         source_->close();
     }
+    if (jpeg_warmup_thread_.joinable()) {
+        jpeg_warmup_thread_.join();
+    }
 }
 
 bool FrameCaptureManager::is_running() const {
@@ -52,6 +62,41 @@ bool FrameCaptureManager::is_running() const {
 void FrameCaptureManager::request_restart() {
     restart_requested_ = true;
     work_cv_.notify_all();
+}
+
+void FrameCaptureManager::maybe_start_jpeg_warmup(const CapturedFrame& frame) {
+    if (frame.metadata.pixel_format != "nv12" ||
+        (have_jpeg_warmup_key_ && frame.metadata.width == jpeg_warmup_width_ &&
+         frame.metadata.height == jpeg_warmup_height_)) {
+        return;
+    }
+    if (jpeg_warmup_thread_.joinable()) {
+        if (jpeg_warmup_running_.load()) {
+            return;
+        }
+        jpeg_warmup_thread_.join();
+    }
+    if (!prepare_jpeg_encoder_warmup(frame.metadata)) {
+        return;
+    }
+
+    std::shared_ptr<CapturedFrame> warmup_frame(new CapturedFrame(frame));
+    jpeg_warmup_running_ = true;
+    try {
+        jpeg_warmup_thread_ = std::thread([this, warmup_frame]() {
+            warmup_jpeg_encoder(warmup_frame->metadata, warmup_frame->data);
+            jpeg_warmup_running_ = false;
+        });
+        have_jpeg_warmup_key_ = true;
+        jpeg_warmup_width_ = frame.metadata.width;
+        jpeg_warmup_height_ = frame.metadata.height;
+    } catch (...) {
+        jpeg_warmup_running_ = false;
+        cancel_jpeg_encoder_warmup();
+        AIDEN_LOG_ERROR("jpeg", "venc_warmup_thread_failed",
+                        "width=%u height=%u", frame.metadata.width,
+                        frame.metadata.height);
+    }
 }
 
 FrameServiceStatus FrameCaptureManager::capture(uint32_t timeout_ms, CapturedFrame* frame) {
@@ -181,6 +226,10 @@ void FrameCaptureManager::run() {
             const bool captured = warmed_up && source_->capture(&frame);
             const bool paused = options_.keep_streamon || source_->pause();
             const bool ok = resumed && warmed_up && captured && paused;
+
+            if (ok) {
+                maybe_start_jpeg_warmup(frame);
+            }
 
             {
                 std::lock_guard<std::mutex> lock(mutex_);

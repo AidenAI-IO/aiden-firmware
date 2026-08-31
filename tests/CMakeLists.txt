@@ -22,6 +22,7 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/uds_server.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_ipc.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_capture_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/frame_layout.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_processing.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_client.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_server.cpp
@@ -136,6 +137,7 @@ add_executable(aiden_tests
     frame_service_server_test.cpp
     frame_capture_manager_test.cpp
     frame_processing_test.cpp
+    frame_layout_test.cpp
     frame_crop_bounds_test.cpp
     terminal_input_test.cpp
     service_status_test.cpp

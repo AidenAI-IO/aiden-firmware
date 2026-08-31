@@ -532,19 +532,17 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                         }
                     }
                     uint32_t encoder_crop_x = 0, encoder_crop_y = 0;
-                    if (!encode_yuv_to_jpeg_hw(*payload, transformed_metadata.width,
-                                               transformed_metadata.height,
-                                               transformed_metadata.pixel_format, quality,
+                    if (!encode_yuv_to_jpeg_hw(*payload, transformed_metadata, quality,
                                                &transformed_payload,
                                                &encoded_width, &encoded_height,
                                                &encoder_crop_x, &encoder_crop_y,
-                                               0, false, false)) {
+                                               0, false)) {
                         write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
                         cJSON_Delete(root);
                         return;
                     }
-                    crop_x = transformed_metadata.crop_x + encoder_crop_x;
-                    crop_y = transformed_metadata.crop_y + encoder_crop_y;
+                    crop_x = encoder_crop_x;
+                    crop_y = encoder_crop_y;
                 }
                 payload = &transformed_payload;
                 metadata.source_width = source_width;

@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits>
 #include <stdio.h>
 #include <string.h>
 #include <sys/file.h>
@@ -13,7 +14,7 @@ namespace aiden {
 FrameCameraCaptureSource::FrameCameraCaptureSource(const CameraConfig& config)
     : config_(config),
       device_name_(config.device_name ? config.device_name : "/dev/video0"),
-      pixel_format_(config.pixel_format ? config.pixel_format : "uyvy"),
+      pixel_format_(config.pixel_format ? config.pixel_format : "nv12"),
       subdev_device_(config.subdev_device && strcmp(config.subdev_device, "auto") != 0
                          ? config.subdev_device : ""),
       edid_path_(config.edid_path ? config.edid_path : ""),
@@ -211,15 +212,33 @@ bool FrameCameraCaptureSource::capture(CapturedFrame* frame) {
     frame->metadata.height = video_frame.height;
     frame->metadata.pixel_format = pixel_format_;
     frame->metadata.bytes = buffer.size();
-    if (pixel_format_ == "uyvy" || pixel_format_ == "yuyv" || pixel_format_ == "nv16") {
-        frame->metadata.stride = video_frame.width * 2;
+    if (pixel_format_ == "nv12") {
+        frame->metadata.stride = video_frame.width;
+    } else if (video_frame.stride > 0) {
+        frame->metadata.stride = video_frame.stride;
+    } else if (pixel_format_ == "uyvy" || pixel_format_ == "yuyv" || pixel_format_ == "nv16") {
+        frame->metadata.stride = video_frame.width * 2U;
     } else {
         frame->metadata.stride = video_frame.width;
     }
     frame->metadata.planes.clear();
     if (pixel_format_ == "nv12" || pixel_format_ == "nv16") {
-        const uint32_t y_bytes = video_frame.width * video_frame.height;
-        const uint32_t uv_bytes = pixel_format_ == "nv12" ? y_bytes / 2 : y_bytes;
+        const uint64_t y_bytes_u64 = static_cast<uint64_t>(video_frame.width) *
+            video_frame.height;
+        const uint64_t uv_bytes_u64 = pixel_format_ == "nv12"
+            ? y_bytes_u64 / 2U : y_bytes_u64;
+        if (y_bytes_u64 > std::numeric_limits<uint32_t>::max() ||
+            uv_bytes_u64 > std::numeric_limits<uint32_t>::max() ||
+            y_bytes_u64 + uv_bytes_u64 > buffer.size()) {
+            AIDEN_LOG_ERROR("camera", "frame_layout_incomplete",
+                            "format=%s width=%u height=%u bytes=%zu expected=%llu",
+                            pixel_format_.c_str(), video_frame.width, video_frame.height,
+                            buffer.size(),
+                            static_cast<unsigned long long>(y_bytes_u64 + uv_bytes_u64));
+            return false;
+        }
+        const uint32_t y_bytes = static_cast<uint32_t>(y_bytes_u64);
+        const uint32_t uv_bytes = static_cast<uint32_t>(uv_bytes_u64);
         FramePlaneMetadata y_plane;
         y_plane.offset = 0;
         y_plane.stride = video_frame.width;
