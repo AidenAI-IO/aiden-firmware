@@ -3,15 +3,25 @@
 #include "frame_crop_bounds.h"
 #include "frame_processing.h"
 #include "image_process.h"
-#include "rk_mpi_mb.h"
-#include "rk_mpi_sys.h"
-#include "rk_mpi_venc.h"
+#include "rockit_system.h"
+
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+
+extern "C" {
+#include "rk_mpi_cal.h"
+#include "rk_mpi_mb.h"
+#include "rk_mpi_sys.h"
+#include "rk_mpi_venc.h"
+}
 
 namespace aiden {
 
@@ -24,7 +34,7 @@ void crop_black_bars_bgr(const cv::Mat& bgr, cv::Mat& dst,
 class PersistentPacked422JpegEncoder {
 public:
     PersistentPacked422JpegEncoder()
-        : sys_initialized_(false),
+        : system_acquired_(false),
           channel_created_(false),
           receiving_(false),
           channel_(0),
@@ -50,8 +60,8 @@ public:
     ~PersistentPacked422JpegEncoder() {
         std::lock_guard<std::mutex> lock(mutex_);
         reset_resources();
-        if (sys_initialized_) {
-            RK_MPI_SYS_Exit();
+        if (system_acquired_) {
+            release_rockit_system();
         }
     }
 
@@ -155,18 +165,15 @@ public:
 
 private:
     bool ensure_sys_initialized() {
-        if (sys_initialized_) {
+        if (system_acquired_) {
             return true;
         }
-        const RK_S32 ret = RK_MPI_SYS_Init();
-        if (ret != RK_SUCCESS) {
-            if (ret == RK_ERR_SYS_NOT_SUPPORT) {
-                permanently_unavailable_ = true;
-            }
-            AIDEN_LOG_WARN("jpeg", "mpi_sys_init_failed", "ret=%#x", ret);
+        if (!acquire_rockit_system()) {
+            permanently_unavailable_ = true;
+            AIDEN_LOG_WARN("jpeg", "mpi_sys_init_failed", "acquire failed");
             return false;
         }
-        sys_initialized_ = true;
+        system_acquired_ = true;
         return true;
     }
 
@@ -350,7 +357,7 @@ private:
     }
 
     std::mutex mutex_;
-    bool sys_initialized_;
+    bool system_acquired_;
     bool channel_created_;
     bool receiving_;
     VENC_CHN channel_;
@@ -374,6 +381,388 @@ PersistentPacked422JpegEncoder* persistent_encoder() {
         new PersistentPacked422JpegEncoder();
     return encoder;
 }
+
+const int kNv12VencTimeoutMs = 750;
+const int kNv12VencRetryCooldownMs = 2000;
+
+std::vector<VENC_CHN> venc_channel_candidates() {
+    std::vector<VENC_CHN> candidates;
+    const char* configured = std::getenv("FRAME_SERVICE_VENC_CHANNEL");
+    if (configured && configured[0] != '\0') {
+        char* end = nullptr;
+        const long value = std::strtol(configured, &end, 10);
+        if (end && *end == '\0' && value >= 0 && value < VENC_MAX_CHN_NUM) {
+            candidates.push_back(static_cast<VENC_CHN>(value));
+        } else {
+            AIDEN_LOG_WARN("jpeg", "venc_channel_config_invalid",
+                           "value=%s valid_range=0..%d", configured,
+                           VENC_MAX_CHN_NUM - 1);
+        }
+    }
+    for (int channel = 0; channel < VENC_MAX_CHN_NUM; ++channel) {
+        if (candidates.empty() || candidates.front() != channel) {
+            candidates.push_back(static_cast<VENC_CHN>(channel));
+        }
+    }
+    return candidates;
+}
+
+bool hardware_jpeg_enabled() {
+    const char* mode = std::getenv("FRAME_SERVICE_JPEG_ENCODER");
+    // Debian defaults to software because the vendor VENC JPEG path is not
+    // reliable on every kernel/image combination.
+    return mode && std::strcmp(mode, "hardware") == 0;
+}
+
+class RockitNv12JpegEncoder {
+public:
+    ~RockitNv12JpegEncoder() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        reset_locked();
+    }
+
+    bool encode(const std::vector<uint8_t>& nv12,
+                uint32_t width,
+                uint32_t height,
+                uint64_t pts,
+                int quality,
+                std::vector<uint8_t>* output,
+                bool wait_for_lock) {
+        if (!wait_for_lock && warmup_pending_.load()) {
+            return false;
+        }
+        std::unique_lock<std::mutex> lock(mutex_, std::defer_lock);
+        if (wait_for_lock) {
+            lock.lock();
+        } else if (!lock.try_lock()) {
+            return false;
+        }
+        if (!output || nv12.empty() || width == 0 || height == 0 ||
+            (width & 1U) != 0 || (height & 1U) != 0) {
+            return false;
+        }
+        const uint64_t tight_size_u64 = static_cast<uint64_t>(width) * height * 3U / 2U;
+        if (tight_size_u64 > std::numeric_limits<size_t>::max() ||
+            nv12.size() < static_cast<size_t>(tight_size_u64) ||
+            std::chrono::steady_clock::now() < retry_after_) {
+            return false;
+        }
+
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            if (ensure_channel_locked(width, height) &&
+                encode_once_locked(nv12, width, height, pts, quality, output)) {
+                retry_after_ = std::chrono::steady_clock::time_point();
+                return true;
+            }
+            reset_locked();
+            if (attempt == 0) {
+                AIDEN_LOG_WARN("jpeg", "venc_retry", "width=%u height=%u", width, height);
+            }
+        }
+        retry_after_ = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(kNv12VencRetryCooldownMs);
+        AIDEN_LOG_ERROR("jpeg", "venc_cooldown",
+                        "retry_after_ms=%d", kNv12VencRetryCooldownMs);
+        return false;
+    }
+
+    void set_warmup_pending(bool pending) {
+        warmup_pending_.store(pending);
+    }
+
+private:
+    bool encode_once_locked(const std::vector<uint8_t>& nv12,
+                            uint32_t width,
+                            uint32_t height,
+                            uint64_t pts,
+                            int quality,
+                            std::vector<uint8_t>* output) {
+        uint8_t* destination = static_cast<uint8_t*>(RK_MPI_MB_Handle2VirAddr(input_block_));
+        if (!destination) {
+            AIDEN_LOG_ERROR("jpeg", "venc_input_mapping_failed", "channel=%d", channel_);
+            return false;
+        }
+        std::memset(destination, 0, input_size_);
+        const uint8_t* source_y = nv12.data();
+        const uint8_t* source_uv = source_y + static_cast<size_t>(width) * height;
+        for (uint32_t y = 0; y < height; ++y) {
+            std::memcpy(destination + static_cast<size_t>(y) * horizontal_stride_,
+                        source_y + static_cast<size_t>(y) * width, width);
+        }
+        uint8_t* destination_uv = destination +
+            static_cast<size_t>(horizontal_stride_) * virtual_height_;
+        for (uint32_t y = 0; y < height / 2U; ++y) {
+            std::memcpy(destination_uv + static_cast<size_t>(y) * horizontal_stride_,
+                        source_uv + static_cast<size_t>(y) * width, width);
+        }
+        if (RK_MPI_SYS_MmzFlushCache(input_block_, RK_FALSE) != RK_SUCCESS) {
+            AIDEN_LOG_ERROR("jpeg", "venc_input_cache_flush_failed", "channel=%d", channel_);
+            return false;
+        }
+
+        RK_S32 ret = RK_SUCCESS;
+        const int qfactor = std::max(1, std::min(99, quality));
+        if (qfactor != quality_) {
+            VENC_JPEG_PARAM_S jpeg_param{};
+            jpeg_param.u32Qfactor = static_cast<RK_U32>(qfactor);
+            ret = RK_MPI_VENC_SetJpegParam(channel_, &jpeg_param);
+            if (ret != RK_SUCCESS) {
+                AIDEN_LOG_ERROR("jpeg", "venc_quality_failed",
+                                "channel=%d quality=%d status=%#x", channel_, qfactor, ret);
+                return false;
+            }
+            quality_ = qfactor;
+        }
+
+        VENC_RECV_PIC_PARAM_S receive{};
+        receive.s32RecvPicNum = 1;
+        ret = RK_MPI_VENC_StartRecvFrame(channel_, &receive);
+        if (ret != RK_SUCCESS) {
+            AIDEN_LOG_ERROR("jpeg", "venc_start_failed",
+                            "channel=%d status=%#x", channel_, ret);
+            return false;
+        }
+
+        VIDEO_FRAME_INFO_S input_frame{};
+        input_frame.stVFrame.pMbBlk = input_block_;
+        input_frame.stVFrame.u32Width = width;
+        input_frame.stVFrame.u32Height = height;
+        input_frame.stVFrame.u32VirWidth = virtual_width_;
+        input_frame.stVFrame.u32VirHeight = virtual_height_;
+        input_frame.stVFrame.enPixelFormat = RK_FMT_YUV420SP;
+        input_frame.stVFrame.enCompressMode = COMPRESS_MODE_NONE;
+        input_frame.stVFrame.u64PTS = pts;
+
+        ret = RK_MPI_VENC_SendFrame(channel_, &input_frame, kNv12VencTimeoutMs);
+        if (ret != RK_SUCCESS) {
+            AIDEN_LOG_ERROR("jpeg", "venc_send_failed",
+                            "channel=%d status=%#x", channel_, ret);
+            return false;
+        }
+
+        VENC_PACK_S pack{};
+        VENC_STREAM_S stream{};
+        stream.pstPack = &pack;
+        stream.u32PackCount = 0;
+        ret = RK_MPI_VENC_GetStream(channel_, &stream, kNv12VencTimeoutMs);
+        if (ret != RK_SUCCESS) {
+            AIDEN_LOG_ERROR("jpeg", "venc_stream_failed",
+                            "channel=%d status=%#x", channel_, ret);
+            return false;
+        }
+
+        bool copied = false;
+        if (stream.u32PackCount != 1) {
+            AIDEN_LOG_ERROR("jpeg", "venc_stream_pack_count_invalid",
+                            "channel=%d pack_count=%u", channel_, stream.u32PackCount);
+        } else if (!pack.pMbBlk) {
+            AIDEN_LOG_ERROR("jpeg", "venc_stream_block_missing", "channel=%d", channel_);
+        } else if ((ret = RK_MPI_SYS_MmzFlushCache(pack.pMbBlk, RK_TRUE)) != RK_SUCCESS) {
+            AIDEN_LOG_ERROR("jpeg", "venc_output_cache_flush_failed",
+                            "channel=%d status=%#x", channel_, ret);
+        } else {
+            void* stream_address = RK_MPI_MB_Handle2VirAddr(pack.pMbBlk);
+            const RK_U64 stream_capacity = RK_MPI_MB_GetSize(pack.pMbBlk);
+            if (stream_address && pack.u32Len > 0 &&
+                (stream_capacity == 0 ||
+                 static_cast<RK_U64>(pack.u32Offset) + pack.u32Len <= stream_capacity)) {
+                const uint8_t* jpeg = static_cast<const uint8_t*>(stream_address) + pack.u32Offset;
+                output->assign(jpeg, jpeg + pack.u32Len);
+                copied = true;
+            } else {
+                AIDEN_LOG_ERROR("jpeg", "venc_stream_invalid",
+                                "channel=%d offset=%u length=%u capacity=%llu", channel_,
+                                pack.u32Offset, pack.u32Len,
+                                static_cast<unsigned long long>(stream_capacity));
+            }
+        }
+        ret = RK_MPI_VENC_ReleaseStream(channel_, &stream);
+        if (ret != RK_SUCCESS) {
+            AIDEN_LOG_ERROR("jpeg", "venc_release_stream_failed",
+                            "channel=%d status=%#x", channel_, ret);
+            copied = false;
+        }
+        return copied;
+    }
+
+    bool ensure_channel_locked(uint32_t width, uint32_t height) {
+        if (channel_ >= 0 && width_ == width && height_ == height) {
+            return true;
+        }
+        reset_locked();
+        if (!acquire_rockit_system()) {
+            return false;
+        }
+        system_acquired_ = true;
+
+        PIC_BUF_ATTR_S picture{};
+        picture.u32Width = width;
+        picture.u32Height = height;
+        picture.enPixelFormat = RK_FMT_YUV420SP;
+        picture.enCompMode = COMPRESS_MODE_NONE;
+        MB_PIC_CAL_S calculated{};
+        RK_S32 ret = RK_MPI_CAL_COMM_GetPicBufferSize(&picture, &calculated);
+        if (ret != RK_SUCCESS || calculated.u32MBSize == 0 ||
+            calculated.u32VirWidth == 0 || calculated.u32VirHeight == 0) {
+            AIDEN_LOG_ERROR("jpeg", "venc_buffer_calculation_failed",
+                            "width=%u height=%u status=%#x", width, height, ret);
+            reset_locked();
+            return false;
+        }
+
+        // Allocate the vendor-calculated backing size, but describe the
+        // visible frame dimensions to VENC as done by the RV1106 samples.
+        virtual_width_ = width;
+        virtual_height_ = height;
+        horizontal_stride_ = RK_MPI_CAL_COMM_GetHorStride(virtual_width_, RK_FMT_YUV420SP);
+        input_size_ = calculated.u32MBSize;
+        if (horizontal_stride_ < width ||
+            static_cast<size_t>(horizontal_stride_) * virtual_height_ * 3U / 2U > input_size_) {
+            AIDEN_LOG_ERROR("jpeg", "venc_buffer_layout_invalid",
+                            "width=%u height=%u vir_width=%u vir_height=%u stride=%u size=%u",
+                            width, height, virtual_width_, virtual_height_,
+                            horizontal_stride_, input_size_);
+            reset_locked();
+            return false;
+        }
+
+        MB_POOL_CONFIG_S pool_config{};
+        pool_config.u64MBSize = input_size_;
+        pool_config.u32MBCnt = 1;
+        pool_config.enAllocType = MB_ALLOC_TYPE_DMA;
+        pool_config.bPreAlloc = RK_TRUE;
+        input_pool_ = RK_MPI_MB_CreatePool(&pool_config);
+        if (input_pool_ == MB_INVALID_POOLID) {
+            AIDEN_LOG_ERROR("jpeg", "venc_input_pool_create_failed", "bytes=%u", input_size_);
+            reset_locked();
+            return false;
+        }
+        input_block_ = RK_MPI_MB_GetMB(input_pool_, input_size_, RK_TRUE);
+        if (!input_block_) {
+            AIDEN_LOG_ERROR("jpeg", "venc_input_alloc_failed", "bytes=%u", input_size_);
+            reset_locked();
+            return false;
+        }
+
+        VENC_CHN_ATTR_S attribute{};
+        attribute.stVencAttr.enType = RK_VIDEO_ID_JPEG;
+        attribute.stVencAttr.enPixelFormat = RK_FMT_YUV420SP;
+        attribute.stVencAttr.enMirror = MIRROR_NONE;
+        const uint64_t stream_size = static_cast<uint64_t>(width) * height * 3U / 2U;
+        if (stream_size > std::numeric_limits<RK_U32>::max()) {
+            AIDEN_LOG_ERROR("jpeg", "venc_stream_size_invalid",
+                            "width=%u height=%u", width, height);
+            reset_locked();
+            return false;
+        }
+        attribute.stVencAttr.u32BufSize = static_cast<RK_U32>(stream_size);
+        attribute.stVencAttr.u32MaxPicWidth = width;
+        attribute.stVencAttr.u32MaxPicHeight = height;
+        attribute.stVencAttr.u32PicWidth = width;
+        attribute.stVencAttr.u32PicHeight = height;
+        attribute.stVencAttr.u32VirWidth = virtual_width_;
+        attribute.stVencAttr.u32VirHeight = virtual_height_;
+        attribute.stVencAttr.u32StreamBufCnt = 2;
+        attribute.stVencAttr.stAttrJpege.bSupportDCF = RK_FALSE;
+        attribute.stVencAttr.stAttrJpege.stMPFCfg.u8LargeThumbNailNum = 0;
+        attribute.stVencAttr.stAttrJpege.enReceiveMode = VENC_PIC_RECEIVE_SINGLE;
+
+        const std::vector<VENC_CHN> candidates = venc_channel_candidates();
+        RK_S32 last_collision = RK_SUCCESS;
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            const VENC_CHN candidate = candidates[i];
+            ret = RK_MPI_VENC_CreateChn(candidate, &attribute);
+            if (ret == RK_SUCCESS) {
+                channel_ = candidate;
+                break;
+            }
+            if (ret == RK_ERR_VENC_EXIST || ret == RK_ERR_VENC_BUSY) {
+                last_collision = ret;
+                continue;
+            }
+            AIDEN_LOG_ERROR("jpeg", "venc_channel_create_failed",
+                            "channel=%d width=%u height=%u status=%#x",
+                            candidate, width, height, ret);
+            reset_locked();
+            return false;
+        }
+        if (channel_ < 0) {
+            AIDEN_LOG_ERROR("jpeg", "venc_channels_unavailable",
+                            "candidates=%zu status=%#x", candidates.size(), last_collision);
+            reset_locked();
+            return false;
+        }
+
+        VENC_CHN_PARAM_S channel_param{};
+        channel_param.stFrameRate.bEnable = RK_FALSE;
+        channel_param.stFrameRate.s32SrcFrmRateNum = 25;
+        channel_param.stFrameRate.s32SrcFrmRateDen = 1;
+        channel_param.stFrameRate.s32DstFrmRateNum = 10;
+        channel_param.stFrameRate.s32DstFrmRateDen = 1;
+        ret = RK_MPI_VENC_SetChnParam(channel_, &channel_param);
+        if (ret != RK_SUCCESS) {
+            AIDEN_LOG_ERROR("jpeg", "venc_channel_param_failed",
+                            "channel=%d status=%#x", channel_, ret);
+            reset_locked();
+            return false;
+        }
+        width_ = width;
+        height_ = height;
+        quality_ = 0;
+        AIDEN_LOG_INFO("jpeg", "venc_channel_ready",
+                       "channel=%d width=%u height=%u stride=%u",
+                       channel_, width_, height_, horizontal_stride_);
+        return true;
+    }
+
+    void reset_locked() {
+        if (channel_ >= 0) {
+            RK_MPI_VENC_StopRecvFrame(channel_);
+            RK_MPI_VENC_DestroyChn(channel_);
+            channel_ = -1;
+        }
+        if (input_block_) {
+            RK_MPI_MB_ReleaseMB(input_block_);
+            input_block_ = nullptr;
+        }
+        if (input_pool_ != MB_INVALID_POOLID) {
+            RK_MPI_MB_DestroyPool(input_pool_);
+            input_pool_ = MB_INVALID_POOLID;
+        }
+        if (system_acquired_) {
+            release_rockit_system();
+            system_acquired_ = false;
+        }
+        width_ = 0;
+        height_ = 0;
+        virtual_width_ = 0;
+        virtual_height_ = 0;
+        horizontal_stride_ = 0;
+        input_size_ = 0;
+        quality_ = 0;
+    }
+
+    std::mutex mutex_;
+    std::atomic<bool> warmup_pending_{false};
+    bool system_acquired_ = false;
+    std::chrono::steady_clock::time_point retry_after_;
+    VENC_CHN channel_ = -1;
+    MB_BLK input_block_ = nullptr;
+    MB_POOL input_pool_ = MB_INVALID_POOLID;
+    uint32_t width_ = 0;
+    uint32_t height_ = 0;
+    uint32_t virtual_width_ = 0;
+    uint32_t virtual_height_ = 0;
+    uint32_t horizontal_stride_ = 0;
+    uint32_t input_size_ = 0;
+    int quality_ = 0;
+};
+
+RockitNv12JpegEncoder& nv12_jpeg_encoder() {
+    static RockitNv12JpegEncoder encoder;
+    return encoder;
+}
+
 }
 
 bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t height,
@@ -634,6 +1023,59 @@ bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width,
     return cv::imencode(".jpg", cropped, *output, params);
 }
 
+bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data,
+                           const FrameMetadata& metadata,
+                           int quality,
+                           std::vector<uint8_t>* output,
+                           uint32_t* out_width, uint32_t* out_height,
+                           uint32_t* out_crop_x, uint32_t* out_crop_y,
+                           uint32_t minimal_width, bool crop_black) {
+    if (yuv_data.empty() || !output || metadata.width == 0 || metadata.height == 0) {
+        return false;
+    }
+
+    FrameMetadata encoded_metadata = metadata;
+    std::vector<uint8_t> cropped;
+    const std::vector<uint8_t>* input = &yuv_data;
+    if (crop_black) {
+        if (!crop_frame_horizontal_black_bars(metadata, yuv_data, minimal_width,
+                                              &encoded_metadata, &cropped)) {
+            return false;
+        }
+        input = &cropped;
+    }
+
+    if (out_width) *out_width = encoded_metadata.width;
+    if (out_height) *out_height = encoded_metadata.height;
+    if (out_crop_x) *out_crop_x = encoded_metadata.crop_x;
+    if (out_crop_y) *out_crop_y = encoded_metadata.crop_y;
+
+    const bool try_hardware = encoded_metadata.pixel_format == "nv12" &&
+                              hardware_jpeg_enabled();
+    if (try_hardware &&
+        nv12_jpeg_encoder().encode(*input, encoded_metadata.width,
+                                   encoded_metadata.height,
+                                   encoded_metadata.capture_ts_ns / 1000ULL,
+                                   quality, output, false)) {
+        return true;
+    }
+    if (try_hardware) {
+        AIDEN_LOG_WARN("jpeg", "software_fallback",
+                       "format=%s width=%u height=%u",
+                       encoded_metadata.pixel_format.c_str(),
+                       encoded_metadata.width, encoded_metadata.height);
+    }
+
+    std::vector<uint8_t> rgb;
+    if (!convert_frame_to_rgb(encoded_metadata, *input, &rgb)) {
+        return false;
+    }
+    return encode_frame_to_jpeg_hw(rgb.data(), encoded_metadata.width,
+                                   encoded_metadata.height, quality, output,
+                                   nullptr, nullptr, nullptr, nullptr,
+                                   0, false, false);
+}
+
 bool encode_yuv_to_jpeg_hw_with_crop(const std::vector<uint8_t>& yuv_data,
                                      uint32_t width, uint32_t height,
                                      const std::string& pixel_format, int quality,
@@ -661,6 +1103,38 @@ void clear_yuv_jpeg_hw_unavailable() {
     // caller that performs a periodic RK VENC recovery attempt can clear its
     // sticky permanent-failure result before retrying.
     persistent_encoder()->clear_permanent_failure();
+}
+
+void warmup_jpeg_encoder(const FrameMetadata& metadata,
+                         const std::vector<uint8_t>& yuv_data) {
+    if (!hardware_jpeg_enabled() || metadata.pixel_format != "nv12" || yuv_data.empty()) {
+        nv12_jpeg_encoder().set_warmup_pending(false);
+        return;
+    }
+    std::vector<uint8_t> discarded;
+    if (nv12_jpeg_encoder().encode(yuv_data, metadata.width, metadata.height,
+                                   metadata.capture_ts_ns / 1000ULL,
+                                   80, &discarded, true)) {
+        AIDEN_LOG_INFO("jpeg", "venc_warmup_complete",
+                       "width=%u height=%u bytes=%zu", metadata.width,
+                       metadata.height, discarded.size());
+    } else {
+        AIDEN_LOG_WARN("jpeg", "venc_warmup_failed",
+                       "width=%u height=%u", metadata.width, metadata.height);
+    }
+    nv12_jpeg_encoder().set_warmup_pending(false);
+}
+
+bool prepare_jpeg_encoder_warmup(const FrameMetadata& metadata) {
+    if (hardware_jpeg_enabled() && metadata.pixel_format == "nv12") {
+        nv12_jpeg_encoder().set_warmup_pending(true);
+        return true;
+    }
+    return false;
+}
+
+void cancel_jpeg_encoder_warmup() {
+    nv12_jpeg_encoder().set_warmup_pending(false);
 }
 
 }  // namespace aiden

@@ -93,6 +93,7 @@ endif()
 add_library(aiden STATIC
     src/aiden_log.cpp
     src/aiden_sdk.cpp
+    src/rockit_system.cpp
     src/service_status.cpp
     src/uds_message.cpp
     src/uds_client.cpp
@@ -100,6 +101,7 @@ add_library(aiden STATIC
     src/frame_ipc.cpp
     src/frame_capture_manager.cpp
     src/frame_camera_capture_source.cpp
+    src/frame_layout.cpp
     src/frame_processing.cpp
     src/frame_ring_buffer.cpp
     src/frame_service_client.cpp

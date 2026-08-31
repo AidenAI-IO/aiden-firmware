@@ -6,6 +6,7 @@ socket=${SOCKET_PATH:-/run/frame_service/frame_service.sock}
 fps=${FRAME_SERVICE_FPS:-30}
 width=${FRAME_SERVICE_WIDTH:-1920}
 height=${FRAME_SERVICE_HEIGHT:-1080}
+pixel_format=${FRAME_SERVICE_PIXEL_FORMAT:-nv12}
 requested_subdev=${FRAME_SERVICE_SUBDEV:-}
 requested_force=${FRAME_SERVICE_FORCE_TRIGGER:-auto}
 requested_edid=${FRAME_SERVICE_EDID:-auto}
@@ -57,6 +58,10 @@ case "${requested_force}" in
     auto|'') case "${bridge_name}" in *tc358743*) force=1 ;; *) force=0 ;; esac ;;
     *) echo "Invalid FRAME_SERVICE_FORCE_TRIGGER=${requested_force}" >&2; exit 1 ;;
 esac
+case "${pixel_format}" in
+    nv12|nv16|uyvy|yuyv) ;;
+    *) echo "Invalid FRAME_SERVICE_PIXEL_FORMAT=${pixel_format}" >&2; exit 1 ;;
+esac
 case "${requested_edid}" in
     auto|'') case "${bridge_name}" in *tc358743*) edid=${tc_edid} ;; *) edid= ;; esac ;;
     *) edid=${requested_edid} ;;
@@ -96,7 +101,7 @@ case "${bridge_name}" in
         ;;
 esac
 
-set -- --socket "${socket}" --fps "${fps}"
+set -- --socket "${socket}" --fps "${fps}" --pixel-format "${pixel_format}"
 if [ "${auto_subdev}" = 1 ] || [ "${subdev}" = auto ]; then
     set -- "$@" --auto-subdev
 else
