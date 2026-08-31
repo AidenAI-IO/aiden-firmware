@@ -147,20 +147,21 @@ After development, build the firmware and upgrade the device:
 
 ### OTA for a development build
 
-GitHub Actions publication is not part of the current Debian build scope. When a build is published manually, use `stable` for an official release and a `dev-*` channel plus GitHub prerelease status for development firmware. The default `ota update` uses `releases/latest`, which ignores prereleases.
-
-To install a manually published development build, point at that release's manifest explicitly with `--manifest-url`, bypassing the `releases/latest` lookup:
+GitHub Actions and GitHub Release publication are not part of the current
+Debian build scope. Serve the local artifacts from a development HTTP(S)
+endpoint and point the device at its manifest explicitly:
 
 ```bash
-TAG="20260604-120000-abc1234"
-REPO="AidenAI-IO/aiden-firmware"
+BASE_URL="http://192.168.1.100:8000"
 
 ota update \
-  --manifest-url "https://github.com/$REPO/releases/download/$TAG/manifest.json" \
-  --public-key /oem/etc/ota_pubkey.pem
+  --manifest-url "$BASE_URL/manifest.json" \
+  --public-key /oem/etc/ota_pubkey.pem \
+  --dry-run
 ```
 
-The official signing public key is already provisioned on the device at `/oem/etc/ota_pubkey.pem`, so official-repo builds need no extra public key. It is recommended to add `--dry-run` first to only download and verify without switching slots. See [OTA Release Channels](../08-ota/ota-release-channels.md) for details.
+The public key must match the key used by the local build. Use `--dry-run` first
+to verify downloads without switching slots. See [OTA for External Developers](../08-ota/ota-external-developers.md) for hosting details.
 
 ## 8. Troubleshooting
 

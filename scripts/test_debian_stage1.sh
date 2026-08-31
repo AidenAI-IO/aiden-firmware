@@ -275,9 +275,16 @@ test ! -e "${flash_test_dir}/flash-called"
 rm -rf "${flash_test_dir}"
 trap - EXIT
 
-test ! -e "${repo_root}/docs/debian-stage1.md" || {
+legacy_stage1_doc=docs/debian-stage1.md
+if git -C "${repo_root}" ls-files --error-unmatch "${legacy_stage1_doc}" \
+    >/dev/null 2>&1; then
     echo "Obsolete Stage 1 deployment guide must not be published as a production path" >&2
     exit 1
-}
+fi
+if test -e "${repo_root}/${legacy_stage1_doc}" &&
+    ! git -C "${repo_root}" check-ignore -q "${legacy_stage1_doc}"; then
+    echo "Local Stage 1 history must be ignored or removed from the documentation tree" >&2
+    exit 1
+fi
 
 echo "Debian stage-1 static checks passed"
