@@ -82,7 +82,7 @@ vary by device.
 
 ## Factory Image Flow
 
-`_build_image.sh` generates `ota.img` and includes it in `update.img`.
+The firmware build task generates `ota.img` and includes it in `update.img`.
 `userdata.img` contains only the empty `/userdata/ota` mount point.
 
 After the signed manifest is generated, CI writes the factory baseline to:

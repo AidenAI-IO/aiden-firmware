@@ -26,7 +26,7 @@ jobs:
     steps:
     - name: Reclaim workspace ownership (self-hosted)
       # The Docker build runs as root and a normal exit hands ownership back to
-      # the runner user via build_image.sh's EXIT trap. Trap handlers cannot run
+      # the runner user via the image container runner's EXIT trap. Trap handlers cannot run
       # if the previous build was killed by SIGKILL or the host crashed, leaving
       # root-owned files that block actions/checkout's clean phase with EACCES.
       # This step is a defence-in-depth no-op when the trap already ran.
@@ -182,7 +182,7 @@ jobs:
         echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
 
     - name: Run build script
-      run: ./build_image.sh
+      run: ./build.sh image
 
     - name: Resolve reusable rootfs release asset
       id: rootfs_asset
@@ -254,7 +254,7 @@ jobs:
           --output pico-sdk/output/out/ota/config.json
 
     - name: Repack update image with OTA config
-      run: ./build_image.sh bash ./scripts/repack_ota_update_image.sh
+      run: ./build.sh exec image -- bash ./scripts/repack_ota_update_image.sh
 
     - name: Compress release upload images
       id: release_upload_assets
