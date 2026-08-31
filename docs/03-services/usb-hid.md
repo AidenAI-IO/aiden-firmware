@@ -115,8 +115,9 @@ Built-in Agent tools:
 - `mouse_scroll`
 - `touch_gesture`
 
-`touch_gesture` supports an atomic `actions` program for contact-sensitive
-input. The program uses normalized `0..1000` points and the actions
+`touch_gesture` uses standard `type` gestures for normal interaction. It also
+supports a low-frequency atomic `actions` program for custom contact-sensitive
+input that the standard gestures cannot express. The program uses normalized `0..1000` points and the actions
 `touch_down`, `move_to`, `wait`, and `touch_up`; it executes in one HID pointer
 session and must release every contact before returning. Example:
 
@@ -130,10 +131,11 @@ omitting both preserves the existing immediate-move behavior.
 Each `wait` is limited to 30 seconds, and cumulative wait time across one
 atomic program is limited to 60 seconds.
 
-Supported forms of the former one-object gesture syntax remain accepted for
-compatibility with existing quick actions and scripts; `type:"drag"` is not supported.
+Supported one-object `type` forms are the default for normal quick actions and
+scripts; `type:"drag"` is not supported.
 
-Moving a draggable target uses two `touch_gesture` calls so the Agent can
+Moving a draggable target never uses atomic `actions`. It uses two
+`touch_gesture` calls so the Agent can
 observe the drag state before choosing the final destination:
 
 ```json
@@ -142,9 +144,17 @@ observe the drag state before choosing the final destination:
 ```
 
 `drag_start` presses the current target for 500ms, automatically moves exactly
-50 normalized units along the axis with the most available screen space, and
-keeps the contact down while the post-action screenshot is captured. The Agent
-must confirm the destination from that screenshot and then call `drag_release`.
+200 normalized units at 500 normalized units per second (a 400ms interpolated
+move) along the axis with the most available screen space, and keeps the
+contact down during its internal screen-stability wait. When the wait succeeds,
+contact remains down through final screenshot capture. The Agent confirms the
+destination from the returned screenshot only when the result reports
+`screen_stable=true`, then calls
+`drag_release`. When the result reports `screen_stable=false`, runtime moves
+back to the original `drag_start` point and releases the contact; the Agent
+inspects the returned screenshot and retries `drag_start` instead of calling
+`drag_release`. It does not call `wait_for_stable_screen` separately in the
+normal drag flow or choose a destination from a `screen_stable=false` result.
 The release call moves directly to the confirmed point, holds for 200ms, and
 releases. The former one-call `type:"drag"` gesture is no longer supported.
 

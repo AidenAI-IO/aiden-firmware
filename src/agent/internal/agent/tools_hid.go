@@ -877,10 +877,10 @@ func (t *TouchGestureTool) platform() string {
 }
 
 func (t *TouchGestureTool) Description() string {
-	return `Perform a touch/pointer program via HID. Prefer the atomic actions form: {"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"wait","ms":100},{"action":"move_to","point":{"x":500,"y":300},"speed":2500},{"action":"touch_up"}]}. The actions execute in order and keep the contact pressed until touch_up; use them for precise taps, long presses, and swipes. Atomic move_to accepts speed in normalized coordinate units per second; duration_ms overrides speed, and omitting both preserves immediate movement. The type/point gesture form remains accepted for compatibility. ` +
+	return `Perform touch/pointer gestures. Use the type form for normal interaction: tap, double_tap, long_press, swipe, drag_start, or drag_release. Atomic actions are a low-frequency advanced option only for an uninterrupted custom contact sequence that cannot be expressed by those standard gestures: {"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"wait","ms":100},{"action":"move_to","point":{"x":500,"y":300},"speed":2500},{"action":"touch_up"}]}. Do not use actions for ordinary taps, long presses, swipes, scrolling, or moving draggable UI targets. Atomic actions execute in order and keep the contact pressed until touch_up. Atomic move_to accepts speed in normalized coordinate units per second; duration_ms overrides speed, and omitting both preserves immediate movement. ` +
 		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Point, start, and end never accept screenshot pixels: convert a target measured at (pixel_x,pixel_y) in the latest image with x=pixel_x/max(image_width-1,1)*1000 and y=pixel_y/max(image_height-1,1)*1000 before calling. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
 		`For swipe, provide start and either end or direction (up/down/left/right). Speed is normalized coordinate units per second and defaults to 2500; duration_ms may be supplied to override the calculated duration. hold_before_ms and hold_after_ms optionally dwell after press and before release, and steps controls HID interpolation (provider default 24). A direction-only swipe travels toward the corresponding screen edge when duration_ms is omitted, or travels speed*duration_ms/1000 normalized units when duration_ms is supplied. ` +
-		`When moving a draggable target, always use exactly this observe-and-confirm sequence: call drag_start with the target's current point, inspect the returned screenshot to identify and confirm the final destination point, then call drag_release with that confirmed point. drag_start presses for 500ms, moves 50 normalized units in a bounded direction to activate dragging, and keeps the contact down across tool calls. drag_release moves directly to the destination, holds for 200ms, and releases. Never use the removed drag type or perform unrelated input while drag_start is active. ` +
+		`Decide whether the requested target is draggable before choosing a gesture form. When moving an app icon, card, widget, list item, or any other draggable UI target, never use actions; always use exactly this sequence: call drag_start with the target's current point. drag_start internally waits for the screen to stabilize before returning its final screenshot; do not call wait_for_stable_screen separately in the normal drag flow. Confirm screen_stable=true, then inspect that returned stable screenshot to identify and confirm the final destination point and call drag_release with it. Never determine or guess the destination from an intermediate or screen_stable=false result. When drag_start returns screen_stable=false, it has automatically moved back to the original point and released the contact; inspect the returned screenshot and retry the complete drag flow instead of calling drag_release. drag_start presses for 500ms, then moves 200 normalized units at 500 normalized units per second (a 400ms interpolated move) in a bounded direction to activate dragging, and keeps the contact down only when its internal wait succeeds. drag_release moves directly to the destination, holds for 200ms, and releases. Never use the removed drag type or perform unrelated input while drag_start is active. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
 }
 
@@ -893,7 +893,7 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 			"type":        "array",
 			"minItems":    1,
 			"maxItems":    128,
-			"description": "Preferred atomic touch program. Each action is one of touch_down, move_to, wait, or touch_up. move_to and touch_down require point; wait requires ms. move_to may use speed or duration_ms for interpolated movement, with duration_ms taking precedence. A program must end with touch_up.",
+			"description": "Low-frequency advanced touch program for an uninterrupted custom contact sequence that standard gesture types cannot express. Never use actions for a draggable UI target; use drag_start, which internally waits for screen stability, determine the destination from its returned screen_stable=true screenshot, then use drag_release. A screen_stable=false drag_start is automatically canceled at its original point and must be retried instead of released. Each action is one of touch_down, move_to, wait, or touch_up. move_to and touch_down require point; wait requires ms. move_to may use speed or duration_ms for interpolated movement, with duration_ms taking precedence. A program must end with touch_up.",
 			"items": objectArgsSchema(map[string]any{
 				"action":      stringEnumArgSchema("Atomic action to execute.", "touch_down", "move_to", "wait", "touch_up"),
 				"point":       pointSchema("Normalized point for move_to or touch_down."),
@@ -906,7 +906,7 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 			}, "action"),
 		},
 		"type":           stringEnumArgSchema(typeDescription, "tap", "double_tap", "long_press", "drag_start", "drag_release", "swipe"),
-		"point":          pointSchema(`Required for tap, double_tap, long_press, drag_start, and drag_release. drag_start uses the target's current point; drag_release uses the confirmed destination. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"point":          pointSchema(`Required for tap, double_tap, long_press, drag_start, and drag_release. drag_start uses the target's current point; drag_release uses the destination confirmed from the screen_stable=true screenshot returned by drag_start after its internal stability wait. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
 		"start":          pointSchema(`Required start point for swipe. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
 		"end":            pointSchema(`End point for swipe. Swipe may provide direction instead of end.`),
 		"direction":      stringEnumArgSchema("Swipe direction when end is omitted. The gesture starts at start and moves toward that direction.", "up", "down", "left", "right"),
@@ -922,7 +922,7 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		{"required": []string{"actions"}},
 		{"required": []string{"type"}},
 	}
-	schema["description"] = `JSON object for one gesture or atomic touch program. Prefer actions for exact contact timing. To move a draggable target, call drag_start with its current point, confirm the destination from the returned screenshot, then call drag_release with that point. Unknown fields are ignored. Coordinate fields point, start, and end use named objects containing both x and y. Swipe accepts either start+end or start+direction; speed defaults to 2500 normalized units per second and duration_ms overrides calculated timing. hold_before_ms, hold_after_ms, and steps are optional swipe timing controls.`
+	schema["description"] = `JSON object for one standard gesture or, rarely, an advanced atomic touch program. Use type for normal interaction. Reserve actions for uninterrupted custom contact timing that tap, double_tap, long_press, swipe, drag_start, or drag_release cannot express. Never use actions to move a draggable target: call drag_start at its current point, let its internal stability wait finish, determine the destination from its returned screen_stable=true screenshot, then call drag_release at the confirmed point. A screen_stable=false drag_start automatically returns to its original point and releases; inspect its screenshot and retry drag_start rather than calling drag_release. Do not call wait_for_stable_screen separately in the normal drag flow. Unknown fields are ignored. Coordinate fields point, start, and end use named objects containing both x and y. Swipe accepts either start+end or start+direction; speed defaults to 2500 normalized coordinate units per second and duration_ms overrides calculated timing. hold_before_ms, hold_after_ms, and steps are optional swipe timing controls.`
 	schema["examples"] = []map[string]any{
 		{"type": "tap", "point": map[string]any{"x": 500, "y": 500}},
 		{"type": "drag_start", "point": map[string]any{"x": 400, "y": 500}},
@@ -950,6 +950,28 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 	adapter := mnk.NewTouchGestureToolAdapter(t.mnkProvider)
 	output, err := adapter.Call(ctx, input)
 	return mapMNKAdapterResult(ctx, output, err)
+}
+
+func (t *TouchGestureTool) recoverAfterUnstableScreen(ctx context.Context, input string) error {
+	var args struct {
+		Type  string          `json:"type"`
+		Point json.RawMessage `json:"point"`
+	}
+	if err := json.Unmarshal([]byte(input), &args); err != nil || !strings.EqualFold(strings.TrimSpace(args.Type), "drag_start") {
+		return nil
+	}
+	if len(args.Point) == 0 || string(args.Point) == "null" {
+		return fmt.Errorf("drag_start recovery requires the original point")
+	}
+	releaseInput, err := json.Marshal(struct {
+		Type  string          `json:"type"`
+		Point json.RawMessage `json:"point"`
+	}{Type: "drag_release", Point: args.Point})
+	if err != nil {
+		return fmt.Errorf("encode drag_start recovery: %w", err)
+	}
+	_, err = mnk.NewTouchGestureToolAdapter(t.mnkProvider).Call(ctx, string(releaseInput))
+	return err
 }
 
 func (t *TouchGestureTool) ensureTouchscreenMapping(ctx context.Context) error {

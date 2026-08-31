@@ -2,12 +2,23 @@ package mnk
 
 import (
 	"context"
+	"encoding/binary"
 	"math"
 	"strings"
 	"testing"
 )
 
-func TestDragActivationPointMovesExactlyFiftyWithinBounds(t *testing.T) {
+func TestDragActivationPointMovesExactlyTwoHundredWithinBounds(t *testing.T) {
+	const wantDistance = 200.0
+	if dragStartMoveDistance != wantDistance {
+		t.Fatalf("dragStartMoveDistance = %.2f, want %.2f", dragStartMoveDistance, wantDistance)
+	}
+	if dragStartMoveSpeed != 500 {
+		t.Fatalf("dragStartMoveSpeed = %.2f, want 500", dragStartMoveSpeed)
+	}
+	if dragStartMoveDurationMs != 400 {
+		t.Fatalf("dragStartMoveDurationMs = %d, want 400", dragStartMoveDurationMs)
+	}
 	for _, start := range []Point{
 		{X: 500, Y: 500},
 		{X: 0, Y: 0},
@@ -17,8 +28,8 @@ func TestDragActivationPointMovesExactlyFiftyWithinBounds(t *testing.T) {
 	} {
 		activation := dragActivationPoint(start)
 		distance := math.Hypot(activation.X-start.X, activation.Y-start.Y)
-		if distance != dragStartMoveDistance {
-			t.Errorf("dragActivationPoint(%+v) = %+v, distance %.2f; want %.2f", start, activation, distance, dragStartMoveDistance)
+		if distance != wantDistance {
+			t.Errorf("dragActivationPoint(%+v) = %+v, distance %.2f; want %.2f", start, activation, distance, wantDistance)
 		}
 		if activation.X < 0 || activation.X > 1000 || activation.Y < 0 || activation.Y > 1000 {
 			t.Errorf("dragActivationPoint(%+v) = %+v, want coordinates in [0,1000]", start, activation)
@@ -27,6 +38,116 @@ func TestDragActivationPointMovesExactlyFiftyWithinBounds(t *testing.T) {
 			t.Errorf("dragActivationPoint(%+v) = %+v, want movement on one axis", start, activation)
 		}
 	}
+}
+
+func TestHIDProviderDragStartInterpolatesActivationMoveWithoutRelease(t *testing.T) {
+	pointer := &layoutCaptureDevice{}
+	provider := NewHIDProvider(pointer, nil, nil, nil, true, "qwerty", nil)
+	provider.swipeSteps = 4
+
+	if err := provider.DragStart(context.Background(), 600, 115, ButtonLeft); err != nil {
+		t.Fatalf("DragStart() error = %v", err)
+	}
+
+	reports := pointer.bytes()
+	const reportSize = 6
+	if got, want := len(reports), (1+provider.swipeSteps)*reportSize; got != want {
+		t.Fatalf("DragStart() wrote %d bytes, want %d", got, want)
+	}
+
+	startX, startY, err := provider.normalizedToAbsolute(600, 115)
+	if err != nil {
+		t.Fatalf("normalized start: %v", err)
+	}
+	activation := dragActivationPoint(Point{X: 600, Y: 115})
+	endX, endY, err := provider.normalizedToAbsolute(activation.X, activation.Y)
+	if err != nil {
+		t.Fatalf("normalized activation point: %v", err)
+	}
+
+	previousY := -1
+	for offset := 0; offset < len(reports); offset += reportSize {
+		report := reports[offset : offset+reportSize]
+		if report[0]&0x03 != 0x03 {
+			t.Fatalf("report %d flags = %#x, want contact held", offset/reportSize, report[0])
+		}
+		x := int(binary.LittleEndian.Uint16(report[2:4]))
+		y := int(binary.LittleEndian.Uint16(report[4:6]))
+		if x != startX {
+			t.Fatalf("report %d x = %d, want %d", offset/reportSize, x, startX)
+		}
+		if offset == 0 && y != startY {
+			t.Fatalf("initial y = %d, want %d", y, startY)
+		}
+		if previousY >= 0 && y <= previousY {
+			t.Fatalf("report %d y = %d, want greater than previous %d", offset/reportSize, y, previousY)
+		}
+		previousY = y
+	}
+	if gotX := int(binary.LittleEndian.Uint16(reports[len(reports)-4 : len(reports)-2])); gotX != endX {
+		t.Fatalf("final x = %d, want %d", gotX, endX)
+	}
+	if gotY := int(binary.LittleEndian.Uint16(reports[len(reports)-2:])); gotY != endY {
+		t.Fatalf("final y = %d, want %d", gotY, endY)
+	}
+	if !provider.dragActive {
+		t.Fatal("DragStart() did not preserve active contact state")
+	}
+}
+
+func TestHIDProviderDragStartCancellationReleasesAtLastActivationPosition(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	pointer := &cancelAfterWritesDevice{cancel: cancel, cancelAt: 2}
+	provider := NewHIDProvider(pointer, nil, nil, nil, true, "qwerty", nil)
+	provider.swipeSteps = 4
+
+	err := provider.DragStart(ctx, 600, 115, ButtonLeft)
+	if err != context.Canceled {
+		t.Fatalf("DragStart() error = %v, want context canceled", err)
+	}
+
+	reports := pointer.bytes()
+	const reportSize = 6
+	wantReports := 2 + provider.releaseRepeatCount // press, first move, repeated cleanup releases
+	if got := len(reports) / reportSize; got != wantReports {
+		t.Fatalf("DragStart() reports = %d, want %d", got, wantReports)
+	}
+	lastMove := reports[reportSize : 2*reportSize]
+	wantX := binary.LittleEndian.Uint16(lastMove[2:4])
+	wantY := binary.LittleEndian.Uint16(lastMove[4:6])
+	for offset := 2 * reportSize; offset < len(reports); offset += reportSize {
+		release := reports[offset : offset+reportSize]
+		if release[0]&0x03 != 0 {
+			t.Fatalf("cleanup report %d flags = %#x, want contact released", offset/reportSize, release[0])
+		}
+		if gotX := binary.LittleEndian.Uint16(release[2:4]); gotX != wantX {
+			t.Fatalf("cleanup report %d x = %d, want last emitted x %d", offset/reportSize, gotX, wantX)
+		}
+		if gotY := binary.LittleEndian.Uint16(release[4:6]); gotY != wantY {
+			t.Fatalf("cleanup report %d y = %d, want last emitted y %d", offset/reportSize, gotY, wantY)
+		}
+	}
+	if provider.dragActive {
+		t.Fatal("DragStart() left drag active after successful cancellation cleanup")
+	}
+}
+
+type cancelAfterWritesDevice struct {
+	layoutCaptureDevice
+	cancel   context.CancelFunc
+	cancelAt int
+	writes   int
+}
+
+func (d *cancelAfterWritesDevice) Write(report []byte) error {
+	if err := d.layoutCaptureDevice.Write(report); err != nil {
+		return err
+	}
+	d.writes++
+	if d.writes == d.cancelAt {
+		d.cancel()
+	}
+	return nil
 }
 
 func TestHIDProviderRejectsHorizontalScroll(t *testing.T) {
