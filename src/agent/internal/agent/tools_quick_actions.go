@@ -22,7 +22,7 @@ var defaultQuickActionsJSON []byte
 const QuickActionsFileName = "quick_actions.json"
 
 // BundledQuickActionsPath is the on-device OEM install path, populated by
-// _build_image.sh from src/agent/internal/agent/quick_actions.json.
+// scripts/build/container/image.sh from src/agent/internal/agent/quick_actions.json.
 const BundledQuickActionsPath = "/oem/usr/share/aiden/" + QuickActionsFileName
 
 const (

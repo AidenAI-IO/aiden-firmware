@@ -18,7 +18,7 @@ The SDK-provided Buildroot tree is `2023.02.6` and includes ttyd `1.7.3`. Buildr
 Run the Linux/image build from an x86 host:
 
 ```bash
-./build_image.sh
+./build.sh image
 ```
 
 The `sysdrv` stage builds and installs the ttyd package into the target rootfs.
