@@ -2,8 +2,160 @@ package screenprovider
 
 import (
 	"encoding/json"
+	"net"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestFrameServiceWaitUntilReadyRetriesUntilSocketExists(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "frame.sock")
+	serverDone := make(chan error, 1)
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		listener, err := net.Listen("unix", socketPath)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer listener.Close()
+		conn, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer conn.Close()
+		if _, _, err := ReadUDSMessage(conn); err != nil {
+			serverDone <- err
+			return
+		}
+		response := []byte(`{"type":"response","method":"health","status":"OK","state":"RUNNING","capture_mode":"buffered","latest_seq":1,"frame_age_ms":10}`)
+		serverDone <- WriteUDSMessage(conn, response, nil)
+	}()
+
+	started := time.Now()
+	health, err := NewFrameService(socketPath).WaitUntilReady(2 * time.Second)
+	if err != nil {
+		t.Fatalf("WaitUntilReady() error = %v", err)
+	}
+	if health == nil || health.State != "RUNNING" || health.LatestSeq != 1 {
+		t.Fatalf("unexpected health: %#v", health)
+	}
+	if elapsed := time.Since(started); elapsed < 100*time.Millisecond {
+		t.Fatalf("returned before delayed socket existed: %s", elapsed)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("fake frame service error: %v", err)
+	}
+}
+
+func TestFrameServiceWaitUntilReadyWaitsForFirstBufferedFrame(t *testing.T) {
+	var healthCalls atomic.Int32
+	socketPath := startFrameServiceTestSocket(t, func() string {
+		if healthCalls.Add(1) == 1 {
+			return `{"type":"response","method":"health","status":"OK","state":"RECOVERING","capture_mode":"buffered","latest_seq":0,"frame_age_ms":0}`
+		}
+		return `{"type":"response","method":"health","status":"OK","state":"RUNNING","capture_mode":"buffered","latest_seq":2,"frame_age_ms":12}`
+	})
+
+	health, err := NewFrameService(socketPath).WaitUntilReady(time.Second)
+	if err != nil {
+		t.Fatalf("WaitUntilReady() error = %v", err)
+	}
+	if healthCalls.Load() < 2 {
+		t.Fatalf("health calls = %d, want at least 2", healthCalls.Load())
+	}
+	if health.State != "RUNNING" || health.LatestSeq != 2 {
+		t.Fatalf("unexpected health: %#v", health)
+	}
+}
+
+func TestFrameServiceWaitUntilReadyDoesNotWaitForOnDemandFrame(t *testing.T) {
+	var healthCalls atomic.Int32
+	socketPath := startFrameServiceTestSocket(t, func() string {
+		healthCalls.Add(1)
+		return `{"type":"response","method":"health","status":"OK","state":"STARTING","capture_mode":"on_demand","latest_seq":0,"frame_age_ms":0}`
+	})
+
+	health, err := NewFrameService(socketPath).WaitUntilReady(time.Second)
+	if err != nil {
+		t.Fatalf("WaitUntilReady() error = %v", err)
+	}
+	if health == nil || health.CaptureMode != "on_demand" || health.State != "STARTING" {
+		t.Fatalf("unexpected health: %#v", health)
+	}
+	if healthCalls.Load() != 1 {
+		t.Fatalf("health calls = %d, want 1", healthCalls.Load())
+	}
+}
+
+func TestFrameServiceWaitUntilReadyReportsStateOnTimeout(t *testing.T) {
+	socketPath := startFrameServiceTestSocket(t, func() string {
+		return `{"type":"response","method":"health","status":"OK","state":"RECOVERING","capture_mode":"buffered","latest_seq":0,"frame_age_ms":0}`
+	})
+
+	_, err := NewFrameService(socketPath).WaitUntilReady(150 * time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	for _, want := range []string{"timed out", "state=RECOVERING", "latest_seq=0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
+	}
+}
+
+func TestFrameServiceWaitUntilReadyRejectsNonTransientError(t *testing.T) {
+	var healthCalls atomic.Int32
+	socketPath := startFrameServiceTestSocket(t, func() string {
+		healthCalls.Add(1)
+		return `{not-json`
+	})
+
+	_, err := NewFrameService(socketPath).WaitUntilReady(time.Second)
+	if err == nil || !strings.Contains(err.Error(), "parse response") {
+		t.Fatalf("error = %v, want parse response", err)
+	}
+	if healthCalls.Load() != 1 {
+		t.Fatalf("health calls = %d, want non-transient error to stop after 1", healthCalls.Load())
+	}
+}
+
+func startFrameServiceTestSocket(t *testing.T, response func() string) string {
+	t.Helper()
+	socketPath := filepath.Join(t.TempDir(), "frame.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on fake frame socket: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			if _, _, err := ReadUDSMessage(conn); err != nil {
+				t.Errorf("fake frame service read request: %v", err)
+				conn.Close()
+				continue
+			}
+			if err := WriteUDSMessage(conn, []byte(response()), nil); err != nil {
+				t.Errorf("fake frame service write response: %v", err)
+			}
+			conn.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		listener.Close()
+		<-done
+	})
+	return socketPath
+}
 
 func TestFrameMetadataUnmarshalSupportsStringNumbers(t *testing.T) {
 	input := []byte(`{

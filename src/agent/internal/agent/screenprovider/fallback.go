@@ -8,6 +8,7 @@ import (
 
 const adbFallbackStickyDuration = 10 * time.Second
 const frameServiceFreshFrameMaxAgeMs = 2000
+const frameServiceStartupWaitTimeout = 5 * time.Second
 
 type captureInfoProvider interface {
 	LastCaptureInfo() CaptureInfo
@@ -15,6 +16,10 @@ type captureInfoProvider interface {
 
 type healthSource interface {
 	Health() (*HealthResult, error)
+}
+
+type readySource interface {
+	WaitUntilReady(timeout time.Duration) (*HealthResult, error)
 }
 
 // Fallback prefers frame_service and falls back to adb when the frame socket
@@ -41,18 +46,24 @@ func NewFallbackFromSources(primary, fallback Source) *Fallback {
 }
 
 func (c *Fallback) LatestFrame() (*FrameMetadata, []byte, CaptureInfo, error) {
-	return c.captureWithFallback(func(source Source) (*FrameMetadata, []byte, error) {
+	return c.captureWithFallback(false, func(source Source) (*FrameMetadata, []byte, error) {
 		return source.LatestFrame()
 	})
 }
 
 func (c *Fallback) LatestFrameWithFormat(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, CaptureInfo, error) {
-	return c.captureWithFallback(func(source Source) (*FrameMetadata, []byte, error) {
+	return c.captureWithFallback(false, func(source Source) (*FrameMetadata, []byte, error) {
 		return source.LatestFrameWithFormat(format, quality, cropBlack, hint)
 	})
 }
 
-func (c *Fallback) captureWithFallback(call func(Source) (*FrameMetadata, []byte, error)) (*FrameMetadata, []byte, CaptureInfo, error) {
+func (c *Fallback) LatestFrameWithFormatWhenReady(format string, quality int, cropBlack bool, hint CropHint) (*FrameMetadata, []byte, CaptureInfo, error) {
+	return c.captureWithFallback(true, func(source Source) (*FrameMetadata, []byte, error) {
+		return source.LatestFrameWithFormat(format, quality, cropBlack, hint)
+	})
+}
+
+func (c *Fallback) captureWithFallback(waitForReady bool, call func(Source) (*FrameMetadata, []byte, error)) (*FrameMetadata, []byte, CaptureInfo, error) {
 	if c == nil {
 		return nil, nil, CaptureInfo{}, fmt.Errorf("screen capture client not configured")
 	}
@@ -65,7 +76,7 @@ func (c *Fallback) captureWithFallback(call func(Source) (*FrameMetadata, []byte
 	var fallbackErr error
 	fallbackTried := false
 	if c.shouldPreferFallback() {
-		fallbackMeta, fallbackFrame, fallbackInfo, fallbackErr = c.captureFromSource(c.fallback, call)
+		fallbackMeta, fallbackFrame, fallbackInfo, fallbackErr = c.captureFromSource(c.fallback, false, call)
 		fallbackTried = true
 		if fallbackErr == nil {
 			c.markFallbackPreferred()
@@ -73,14 +84,14 @@ func (c *Fallback) captureWithFallback(call func(Source) (*FrameMetadata, []byte
 		}
 	}
 
-	primaryMeta, primaryFrame, primaryInfo, primaryErr := c.captureFromSource(c.primary, call)
+	primaryMeta, primaryFrame, primaryInfo, primaryErr := c.captureFromSource(c.primary, waitForReady, call)
 	if primaryErr == nil {
 		c.clearFallbackPreference()
 		return primaryMeta, primaryFrame, primaryInfo, nil
 	}
 
 	if !fallbackTried {
-		fallbackMeta, fallbackFrame, fallbackInfo, fallbackErr = c.captureFromSource(c.fallback, call)
+		fallbackMeta, fallbackFrame, fallbackInfo, fallbackErr = c.captureFromSource(c.fallback, false, call)
 		fallbackTried = true
 	}
 	if fallbackTried && fallbackErr == nil {
@@ -91,29 +102,37 @@ func (c *Fallback) captureWithFallback(call func(Source) (*FrameMetadata, []byte
 	return nil, nil, CaptureInfo{}, primaryErr
 }
 
-func (c *Fallback) captureFromSource(source Source, call func(Source) (*FrameMetadata, []byte, error)) (*FrameMetadata, []byte, CaptureInfo, error) {
+func (c *Fallback) captureFromSource(source Source, waitForReady bool, call func(Source) (*FrameMetadata, []byte, error)) (*FrameMetadata, []byte, CaptureInfo, error) {
 	if source == nil {
 		return nil, nil, CaptureInfo{}, fmt.Errorf("screen capture source not configured")
 	}
 	var health *HealthResult
-	if hs, ok := source.(healthSource); ok {
+	if rs, ok := source.(readySource); waitForReady && ok {
+		var healthErr error
+		health, healthErr = rs.WaitUntilReady(frameServiceStartupWaitTimeout)
+		if healthErr != nil {
+			return nil, nil, CaptureInfo{}, fmt.Errorf("frame service health: %w", healthErr)
+		}
+	} else if hs, ok := source.(healthSource); ok {
 		var healthErr error
 		health, healthErr = hs.Health()
 		if healthErr != nil {
 			return nil, nil, CaptureInfo{}, fmt.Errorf("frame service health: %w", healthErr)
 		}
-		staleBufferedFrame := health != nil &&
-			health.CaptureMode != "on_demand" &&
-			health.FrameAgeMs > frameServiceFreshFrameMaxAgeMs
-		if health == nil || health.State != "RUNNING" || staleBufferedFrame {
-			state := "UNKNOWN"
-			var age uint64
-			if health != nil {
-				state = health.State
-				age = health.FrameAgeMs
-			}
-			return nil, nil, CaptureInfo{}, fmt.Errorf("frame service: STALE_FRAME (state=%s frame_age_ms=%d)", state, age)
+	}
+	if !frameServiceCaptureAllowed(health, waitForReady) {
+		state := "UNKNOWN"
+		captureMode := ""
+		var age uint64
+		if health != nil {
+			state = health.State
+			captureMode = health.CaptureMode
+			age = health.FrameAgeMs
 		}
+		return nil, nil, CaptureInfo{}, fmt.Errorf(
+			"frame service: STALE_FRAME (state=%s capture_mode=%s frame_age_ms=%d)",
+			state, captureMode, age,
+		)
 	}
 	meta, frame, err := call(source)
 	if err != nil {
@@ -129,6 +148,19 @@ func (c *Fallback) captureFromSource(source Source, call func(Source) (*FrameMet
 		return nil, nil, CaptureInfo{}, fmt.Errorf("frame service: STALE_FRAME (frame_seq=%d health_latest_seq=%d)", meta.Seq, health.LatestSeq)
 	}
 	return meta, frame, c.captureInfoForSource(source), nil
+}
+
+func frameServiceCaptureAllowed(health *HealthResult, waitForReady bool) bool {
+	if health == nil {
+		return true
+	}
+	if health.CaptureMode == "on_demand" {
+		if health.State == "RUNNING" {
+			return true
+		}
+		return waitForReady && (health.State == "STARTING" || health.State == "RECOVERING")
+	}
+	return health.State == "RUNNING" && health.FrameAgeMs <= frameServiceFreshFrameMaxAgeMs
 }
 
 func (c *Fallback) shouldPreferFallback() bool {
