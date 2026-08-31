@@ -129,3 +129,116 @@ func TestGeminiEndpointPreservesDelegatedAccessToken(t *testing.T) {
 		t.Fatalf("endpoint = %q", got)
 	}
 }
+
+func TestGeminiSetupRequestsBothTranscriptions(t *testing.T) {
+	// Gemini Live only returns transcripts when these keys are present, and the
+	// request for defaults is an empty object. With omitempty the empty map was
+	// dropped, so no inputTranscription ever arrived and spoken user turns were
+	// missing from history while assistant turns still worked.
+	encoded, err := json.Marshal(buildGeminiSetup(SessionConfig{}, "gemini-3.1-flash-live-preview"))
+	if err != nil {
+		t.Fatalf("marshal setup: %v", err)
+	}
+	var decoded struct {
+		Setup map[string]json.RawMessage `json:"setup"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode setup: %v", err)
+	}
+	for _, key := range []string{"inputAudioTranscription", "outputAudioTranscription"} {
+		raw, present := decoded.Setup[key]
+		if !present {
+			t.Fatalf("setup is missing %s: %s", key, encoded)
+		}
+		if string(raw) != "{}" {
+			t.Fatalf("%s = %s, want {}", key, raw)
+		}
+	}
+	if got := decoded.Setup["model"]; string(got) != `"models/gemini-3.1-flash-live-preview"` {
+		t.Fatalf("model = %s", got)
+	}
+}
+
+func TestGeminiFinalizesUserTranscriptAtTurnBoundary(t *testing.T) {
+	// Gemini Live never sets finished on inputTranscription, so a final user
+	// transcript can only be produced at the turn boundary. Frame shapes here
+	// match what api.google.com sent on hardware.
+	s := &geminiSession{toolNames: map[string]string{}}
+	for _, frame := range []string{
+		`{"serverContent":{"inputTranscription":{"text":"今天"}}}`,
+		`{"serverContent":{"inputTranscription":{"text":"是几号？"}}}`,
+	} {
+		for _, event := range s.translate([]byte(frame)) {
+			if event.Kind == EventTranscriptFinal {
+				t.Fatalf("no final transcript is possible before the turn ends: %+v", event)
+			}
+		}
+	}
+	events := s.translate([]byte(`{"serverContent":{"modelTurn":{"parts":[{"text":"hi"}]}}}`))
+	var finalAt, startedAt = -1, -1
+	for i, event := range events {
+		switch {
+		case event.Kind == EventTranscriptFinal && event.Role == "user":
+			if event.Text != "今天是几号？" {
+				t.Fatalf("final user transcript = %q, want the joined deltas", event.Text)
+			}
+			finalAt = i
+		case event.Kind == EventResponseStarted:
+			startedAt = i
+		}
+	}
+	if finalAt < 0 {
+		t.Fatalf("modelTurn did not finalize the user transcript: %+v", events)
+	}
+	if startedAt < 0 || finalAt > startedAt {
+		t.Fatalf("user transcript must precede EventResponseStarted, got final=%d started=%d", finalAt, startedAt)
+	}
+	if _, ok := s.finalUserTranscriptEvent(); ok {
+		t.Fatal("accumulated transcript must be cleared after finalizing")
+	}
+}
+
+func TestGeminiIgnoresLateTranscriptRefinementDuringResponse(t *testing.T) {
+	// modelTurn repeats per audio chunk and Gemini keeps refining the transcript
+	// after the answer starts. Observed on hardware: one spoken sentence produced
+	// two user records, the second a wrong-language re-transcription.
+	s := &geminiSession{toolNames: map[string]string{}}
+	finals := 0
+	countFinals := func(events []Event) {
+		for _, event := range events {
+			if event.Kind == EventTranscriptFinal && event.Role == "user" {
+				finals++
+				if event.Text != "我说的是中文" {
+					t.Fatalf("final user transcript = %q", event.Text)
+				}
+			}
+		}
+	}
+	countFinals(s.translate([]byte(`{"serverContent":{"inputTranscription":{"text":"我说的是中文"}}}`)))
+	countFinals(s.translate([]byte(`{"serverContent":{"modelTurn":{"parts":[{"text":"a"}]}}}`)))
+	countFinals(s.translate([]byte(`{"serverContent":{"inputTranscription":{"text":"o assunto é chinês"}}}`)))
+	countFinals(s.translate([]byte(`{"serverContent":{"modelTurn":{"parts":[{"text":"b"}]}}}`)))
+	countFinals(s.translate([]byte(`{"serverContent":{"turnComplete":true}}`)))
+	if finals != 1 {
+		t.Fatalf("got %d final user transcripts for one spoken turn, want 1", finals)
+	}
+}
+
+func TestGeminiInterruptionStartsNewUserTurn(t *testing.T) {
+	// Speech that cuts off the model must still be recorded, so an interruption
+	// has to clear the in-flight response and let accumulation resume.
+	s := &geminiSession{toolNames: map[string]string{}}
+	s.translate([]byte(`{"serverContent":{"inputTranscription":{"text":"first"}}}`))
+	s.translate([]byte(`{"serverContent":{"modelTurn":{"parts":[{"text":"answer"}]}}}`))
+	s.translate([]byte(`{"serverContent":{"interrupted":true}}`))
+	s.translate([]byte(`{"serverContent":{"inputTranscription":{"text":"cut in"}}}`))
+	var got string
+	for _, event := range s.translate([]byte(`{"serverContent":{"modelTurn":{"parts":[{"text":"next"}]}}}`)) {
+		if event.Kind == EventTranscriptFinal && event.Role == "user" {
+			got = event.Text
+		}
+	}
+	if got != "cut in" {
+		t.Fatalf("interrupting speech was not recorded as a new turn, got %q", got)
+	}
+}

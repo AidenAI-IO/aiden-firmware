@@ -128,12 +128,17 @@ type geminiSetupMessage struct {
 }
 
 type geminiSetup struct {
-	Model                    string                     `json:"model"`
-	GenerationConfig         geminiGenerationConfig     `json:"generationConfig"`
-	SystemInstruction        *geminiSystemInstruction   `json:"systemInstruction,omitempty"`
-	Tools                    []geminiTool               `json:"tools,omitempty"`
-	InputAudioTranscription  map[string]any             `json:"inputAudioTranscription,omitempty"`
-	OutputAudioTranscription map[string]any             `json:"outputAudioTranscription,omitempty"`
+	Model             string                   `json:"model"`
+	GenerationConfig  geminiGenerationConfig   `json:"generationConfig"`
+	SystemInstruction *geminiSystemInstruction `json:"systemInstruction,omitempty"`
+	Tools             []geminiTool             `json:"tools,omitempty"`
+	// Gemini Live enables transcription by the presence of these keys, and an
+	// empty object is the documented way to request it with default settings.
+	// omitempty would drop an empty map and silently disable transcription, so
+	// these are always serialized. A nil map still marshals as null, which the
+	// API treats as "not requested".
+	InputAudioTranscription  map[string]any             `json:"inputAudioTranscription"`
+	OutputAudioTranscription map[string]any             `json:"outputAudioTranscription"`
 	RealtimeInputConfig      *geminiRealtimeInputConfig `json:"realtimeInputConfig,omitempty"`
 }
 
@@ -219,6 +224,37 @@ type geminiSession struct {
 	responseActive bool
 	toolMu         sync.Mutex
 	toolNames      map[string]string
+	// userTranscript accumulates inputTranscription deltas for the current user
+	// turn. Gemini Live never marks an input transcript as finished, so the turn
+	// boundary is the only place a final transcript can be emitted.
+	userTranscriptMu sync.Mutex
+	userTranscript   strings.Builder
+}
+
+// takeUserTranscript returns the accumulated user transcript and clears it.
+func (s *geminiSession) takeUserTranscript() string {
+	s.userTranscriptMu.Lock()
+	defer s.userTranscriptMu.Unlock()
+	text := strings.TrimSpace(s.userTranscript.String())
+	s.userTranscript.Reset()
+	return text
+}
+
+// appendUserTranscript accumulates one inputTranscription delta.
+func (s *geminiSession) appendUserTranscript(text string) {
+	s.userTranscriptMu.Lock()
+	defer s.userTranscriptMu.Unlock()
+	s.userTranscript.WriteString(text)
+}
+
+// finalUserTranscriptEvent drains the accumulated user turn into a final
+// transcript event. It returns false when nothing has been accumulated.
+func (s *geminiSession) finalUserTranscriptEvent() (Event, bool) {
+	text := s.takeUserTranscript()
+	if text == "" {
+		return Event{}, false
+	}
+	return Event{Kind: EventTranscriptFinal, Role: "user", Text: text, TextSource: "audio", Final: true}, true
 }
 
 func (s *geminiSession) Info() SessionInfo {
@@ -392,20 +428,40 @@ func (s *geminiSession) translate(body []byte) []Event {
 	var events []Event
 	usageEmitted := false
 	if envelope.ServerContent != nil {
+		content := envelope.ServerContent
+		// Accumulate the user transcript before anything else so the final
+		// transcript can be emitted ahead of EventResponseStarted below. The
+		// daemon persists in event order, so flushing after the response starts
+		// would file the user turn behind the answer it prompted.
 		s.responseMu.Lock()
 		active := s.responseActive
-		if envelope.ServerContent.ModelTurn != nil && !active {
-			events = append(events, Event{Kind: EventResponseStarted})
-			s.responseActive = true
-		}
 		s.responseMu.Unlock()
-		content := envelope.ServerContent
-		if content.InputTranscription != nil && content.InputTranscription.Text != "" {
-			kind := EventTranscriptDelta
-			if content.InputTranscription.Finished {
-				kind = EventTranscriptFinal
+		// Accumulate the user transcript only while no response is in flight.
+		// Gemini keeps refining a transcript after the model has already started
+		// answering, and those late frames belong to the turn that was finalized
+		// when the response began. Accumulating them would file a second, usually
+		// worse, user message for the same speech.
+		if content.InputTranscription != nil && content.InputTranscription.Text != "" && !active {
+			s.appendUserTranscript(content.InputTranscription.Text)
+			events = append(events, Event{Kind: EventTranscriptDelta, Role: "user", Text: content.InputTranscription.Text, TextSource: "audio"})
+		}
+		// The user turn ends when the model starts answering it. modelTurn
+		// repeats for every audio chunk, so only the transition into a response
+		// may finalize; turnComplete covers a turn that produced no modelTurn.
+		startingResponse := content.ModelTurn != nil && !active
+		if startingResponse || content.TurnComplete {
+			// Emitted before EventResponseStarted below: the daemon persists in
+			// event order, so a later flush would file the user turn behind the
+			// answer it prompted.
+			if final, ok := s.finalUserTranscriptEvent(); ok {
+				events = append(events, final)
 			}
-			events = append(events, Event{Kind: kind, Role: "user", Text: content.InputTranscription.Text, TextSource: "audio", Final: content.InputTranscription.Finished})
+		}
+		if startingResponse {
+			events = append(events, Event{Kind: EventResponseStarted})
+			s.responseMu.Lock()
+			s.responseActive = true
+			s.responseMu.Unlock()
 		}
 		if content.OutputTranscription != nil && content.OutputTranscription.Text != "" {
 			kind := EventTranscriptDelta
@@ -436,6 +492,12 @@ func (s *geminiSession) translate(body []byte) []Event {
 		}
 		if content.Interrupted {
 			events = append(events, Event{Kind: EventInterruption, At: "assistant"})
+			// The response is over, so the speech that cut it off can accumulate
+			// as the next user turn. Without this the interrupting words would be
+			// dropped as late refinement of the turn already recorded.
+			s.responseMu.Lock()
+			s.responseActive = false
+			s.responseMu.Unlock()
 		}
 		if content.TurnComplete {
 			if envelope.UsageMetadata != nil {
