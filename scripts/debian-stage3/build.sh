@@ -71,6 +71,8 @@ validate_epoch() {
 }
 
 ensure_sdk() {
+    local alternates_file
+
     if [ ! -d "${SOURCE_SDK}/.git" ] && [ ! -f "${SOURCE_SDK}/.git" ]; then
         echo "Source Luckfox SDK is missing: ${SOURCE_SDK}" >&2
         exit 1
@@ -90,6 +92,19 @@ ensure_sdk() {
     if [ ! -d "${SDK_DIR}/.git" ]; then
         git clone --shared --no-checkout "${SOURCE_SDK}" "${SDK_DIR}"
     fi
+
+    # Keep the container-facing clone independent of host worktree and
+    # submodule object stores. Existing output from older builds is migrated
+    # in place before the clone is mounted into the BSP container.
+    alternates_file=$(git -C "${SDK_DIR}" rev-parse --git-path objects/info/alternates)
+    if [ -e "${alternates_file}" ]; then
+        if [ -s "${alternates_file}" ]; then
+            git -C "${SDK_DIR}" repack -a -d
+        fi
+        rm -f -- "${alternates_file}"
+        git -C "${SDK_DIR}" fsck --connectivity-only --no-dangling
+    fi
+
     git -C "${SDK_DIR}" checkout --detach --force "${SOURCE_SDK_COMMIT}"
     git -C "${SDK_DIR}" clean -ffd -e output/
     git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0001-use-all-host-cpus.patch"
@@ -155,10 +170,8 @@ run_rootfs() {
 }
 
 run_bsp() {
-    local source_git_common_dir build_timestamp
+    local build_timestamp
     ensure_sdk
-    source_git_common_dir=$(git -C "${SOURCE_SDK}" rev-parse \
-        --path-format=absolute --git-common-dir)
     build_timestamp=$(date -u -d "@${BUILD_EPOCH}" '+%Y-%m-%d %H:%M:%S UTC')
     docker image inspect "${BSP_BUILD_IMAGE}" --format '{{.Id}}' \
         >"${OUTPUT_DIR}/bsp-builder-image-id.txt"
@@ -170,7 +183,6 @@ run_bsp() {
         -e KBUILD_BUILD_USER=aiden \
         -e KBUILD_BUILD_HOST=stage3 \
         -v "${SDK_DIR}:/sdk" \
-        -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
         -w /sdk \
         "${BSP_BUILD_IMAGE}" \
         bash -lc './build.sh uboot && ./build.sh driver && ./build.sh env && ./build.sh abimages'
