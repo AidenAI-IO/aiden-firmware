@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # OTA Architecture and Runtime
 
-OTA is accomplished through three layers: `pico-sdk` generates A/B images and factory `misc.img`, GitHub Actions publishes signed releases, and the device-side `ota` completes download, write, and switching on manual trigger, with one-shot health handling at boot responsible for health commitment after startup.
+OTA is accomplished through three layers: `debian_build.sh` orchestrates the Debian Stage 2/3 images and signed local artifacts, the vendor SDK supplies BSP and image-packing internals, and the device-side `ota` completes download, write, and switching on manual trigger. One-shot systemd health handling commits a healthy slot after startup. Publication automation is outside the current scope.
 
 ## Partition Layout
 
@@ -33,13 +33,13 @@ Production images use A/B layout:
 3. SPL selects the slot with highest priority and bootable status, loading `boot_a` or `boot_b`.
 4. Slot-specific FIT boot image provides `root=PARTLABEL=rootfs_a|rootfs_b` and `aiden.slot_suffix=_a|_b`.
 5. Linux mounts the matching `rootfs_*`.
-6. SDK `S20linkmount` mounts `/dev/block/by-name/ota` at `/userdata/ota`.
-7. `S20oemslot` mounts `/dev/block/by-name/oem_a|oem_b` to `/oem` based on `aiden.slot_suffix`.
-8. `S54ota` verifies the dedicated OTA mount, runs `ota health` once, and exits.
+6. `aiden-slot-resolve.service` resolves stable partition paths for the active slot.
+7. `userdata.mount`, `userdata-ota.mount`, and `oem.mount` mount persistent data, the dedicated OTA workspace, and the active OEM slot.
+8. `aiden-ota-health-marker.service` aggregates application health, then `aiden-ota-health.service` processes pending OTA state once.
 
 ## Update Process
 
-1. `ota` reads `/userdata/ota/config.json` and `/oem/etc/ota_pubkey.pem`.
+1. `ota` reads `/userdata/debian/ota/config.json` and `/oem/etc/ota_pubkey.pem`.
 2. Fetch manifest: if `manifest_url` is configured, fetch that URL directly; otherwise query the GitHub Release `releases/latest` endpoint (i.e., `DefaultReleaseURL`, can be overridden by config's release URL), and retrieve `manifest.json` from release assets.
 3. Download `manifest.json`, remove `signature.value`, and perform canonical JSON Ed25519 signature verification.
 4. Reject downgrades with older `build_time` or different version with same build time.
@@ -82,7 +82,10 @@ For `.img.tar.gz` assets, `size` and `sha256` describe the downloaded archive. T
 
 ## Factory Baseline
 
-Release `update.img` must include `ota.img`, which provides `/userdata/ota/config.json` after mounting. After generating the signed manifest, CI calls `scripts/generate_ota_device_config.sh` to generate this file, then rebuilds only `ota.img` and `update.img` via `scripts/repack_ota_update_image.sh`.
+Release `update.img` must include the factory configuration in userdata at
+`/userdata/debian/ota/config.json`. The Debian build generates that configuration
+from the signed manifest, installs it through the Stage 3 image builder, and
+repacks `update.img` before the final mounted-image audit.
 
 `config.json` must contain at least:
 
@@ -99,11 +102,11 @@ Optional configuration fields:
 - `download_safety_margin_bytes` - free bytes retained beyond remaining downloads (default 16 MiB)
 
 The dedicated storage identity is not configurable: production OTA always
-requires `/dev/block/by-name/ota` mounted as an ext4 filesystem rooted at `/`
+requires `/dev/disk/by-partlabel/ota` mounted as an ext4 filesystem rooted at `/`
 on `/userdata/ota`. Test code can inject synthetic mount information without
 exposing a device-side configuration bypass.
 
-Release CI derives its target-slot download limit from the same layout contract.
+The Debian build derives its target-slot download limit from the same layout contract.
 The current 300 MiB partition reserves a conservative 30 MiB for ext4 metadata
 and reserved blocks plus the 16 MiB runtime safety margin, producing a 254 MiB
 maximum compressed download set.

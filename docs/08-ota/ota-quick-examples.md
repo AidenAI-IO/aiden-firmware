@@ -4,122 +4,102 @@ sidebar_position: 8
 
 # OTA Distribution Quick Examples
 
+All examples use the Debian production entrypoint. It builds and audits the
+complete firmware, signs `manifest.json`, and writes publishable artifacts to
+`output/debian/image/`.
+
 ## Example 1: GitHub Releases (Recommended)
 
 ```bash
-# 1. Generate signing keys
+# 1. Generate signing keys once.
 openssl genpkey -algorithm ed25519 -out ota_private_key.pem
 openssl pkey -in ota_private_key.pem -pubout -out ota_public_key.pem
 
-# 2. Build firmware
-./build.sh image
-
-# 3. Generate manifest with GitHub direct URLs
+# 2. Build a signed Debian release.
 TAG="v1.0.0-custom"
 REPO="YOUR_USERNAME/aiden-firmware"
-BASE_URL="https://github.com/$REPO/releases/download/$TAG"
+OTA_PRIVATE_KEY_PATH="$PWD/ota_private_key.pem" \
+OTA_PUBLIC_KEY_PATH="$PWD/ota_public_key.pem" \
+AGENT_CONFIG_PATH="$PWD/agent.toml" \
+OTA_REPO="$REPO" \
+OTA_CHANNEL=custom \
+OTA_BUILD_VERSION="$TAG" \
+OTA_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+./debian_build.sh
 
-scripts/generate_ota_manifest.sh \
-  --version "$TAG" \
-  --channel "custom" \
-  --build-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --sign-key ota_private_key.pem \
-  --image-dir pico-sdk/output/image \
-  --output pico-sdk/output/image/manifest.json \
-  --base-url "$BASE_URL"
-
-# 4. Create GitHub Release
+# 3. Publish only the signed manifest and compressed image assets.
 gh release create "$TAG" \
-  --title "Custom Firmware v1.0.0" \
-  pico-sdk/output/image/*.img \
-  pico-sdk/output/image/manifest.json
+  --title "Custom Firmware $TAG" \
+  output/debian/image/boot_a.img.tar.gz \
+  output/debian/image/boot_b.img.tar.gz \
+  output/debian/image/oem.img.tar.gz \
+  output/debian/image/rootfs.img.tar.gz \
+  output/debian/image/update.img.tar.gz \
+  output/debian/image/manifest.json
 
-# 5. Update device
-MANIFEST_URL="https://github.com/$REPO/releases/download/$TAG/manifest.json"
+# 4. Update a device that trusts this signing key.
 ota update \
-  --manifest-url "$MANIFEST_URL" \
-  --public-key /userdata/ota/your_pubkey.pem
+  --manifest-url "https://github.com/$REPO/releases/download/$TAG/manifest.json" \
+  --public-key /userdata/ota/custom_pubkey.pem
 ```
 
 ## Example 2: Self-Hosted Server
 
 ```bash
-# 1. Build firmware
-./build.sh image
+VERSION="v1.0.0"
+BASE_URL="https://firmware.mycompany.com/aiden/$VERSION"
 
-# 2. Generate manifest with your server URLs
-scripts/generate_ota_manifest.sh \
-  --version "v1.0.0" \
-  --channel "internal" \
-  --build-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --sign-key ota_private_key.pem \
-  --image-dir pico-sdk/output/image \
-  --output pico-sdk/output/image/manifest.json \
-  --base-url "https://firmware.mycompany.com/aiden/v1.0.0"
+OTA_PRIVATE_KEY_PATH="$PWD/ota_private_key.pem" \
+OTA_PUBLIC_KEY_PATH="$PWD/ota_public_key.pem" \
+AGENT_CONFIG_PATH="$PWD/agent.toml" \
+OTA_CHANNEL=internal \
+OTA_BUILD_VERSION="$VERSION" \
+OTA_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+OTA_BASE_URL="$BASE_URL" \
+./debian_build.sh
 
-# 3. Upload to server
-rsync -avz pico-sdk/output/image/*.img \
-  pico-sdk/output/image/manifest.json \
-  user@server:/var/www/firmware/aiden/v1.0.0/
+rsync -avz \
+  output/debian/image/*.img.tar.gz \
+  output/debian/image/manifest.json \
+  user@server:/var/www/firmware/aiden/$VERSION/
 
-# 4. Update device
 ota update \
-  --manifest-url "https://firmware.mycompany.com/aiden/v1.0.0/manifest.json" \
+  --manifest-url "$BASE_URL/manifest.json" \
   --public-key /userdata/ota/company_pubkey.pem
 ```
 
 ## Example 3: Local Development
 
 ```bash
-# 1. Generate manifest with localhost URLs
-scripts/generate_ota_manifest.sh \
-  --version "dev-$(date +%Y%m%d-%H%M%S)" \
-  --channel "dev" \
-  --build-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --sign-key ota_private_key.pem \
-  --image-dir pico-sdk/output/image \
-  --output pico-sdk/output/image/manifest.json \
-  --base-url "http://192.168.1.100:8000"
+VERSION="dev-$(date +%Y%m%d-%H%M%S)"
+BASE_URL="http://192.168.1.100:8000"
 
-# 2. Start local server
-cd pico-sdk/output/image && python3 -m http.server 8000
+OTA_PRIVATE_KEY_PATH="$PWD/ota_private_key.pem" \
+OTA_PUBLIC_KEY_PATH="$PWD/ota_public_key.pem" \
+AGENT_CONFIG_PATH="$PWD/agent.toml" \
+OTA_CHANNEL=dev \
+OTA_BUILD_VERSION="$VERSION" \
+OTA_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+OTA_BASE_URL="$BASE_URL" \
+./debian_build.sh
 
-# 3. Test on device (without flashing)
+cd output/debian/image
+python3 -m http.server 8000
+```
+
+On the device, verify downloads and signatures without switching slots:
+
+```bash
 ota update \
   --manifest-url "http://192.168.1.100:8000/manifest.json" \
   --public-key /userdata/ota/dev_pubkey.pem \
   --dry-run
 ```
 
-## Key Points
-
-**Single Parameter**: Just use `--manifest-url` to specify where to fetch the manifest.
-
-**Signing Required**: All manifests must be signed with your Ed25519 private key.
-
-**Trust Required**: Users must explicitly trust your public key with `--public-key`.
-
-**Any Hosting Works**: GitHub, self-hosted server, S3, CDN, localhost - anything that serves static files.
-
-## Persistent Configuration
-
-To avoid typing parameters every time:
-
-```bash
-# On device, create custom config
-cat > /userdata/ota/config.json << 'EOF'
-{
-  "manifest_url": "https://your-server.com/firmware/latest/manifest.json",
-  "public_key_path": "/userdata/ota/your_pubkey.pem"
-}
-EOF
-```
-
-Run `ota update` whenever you want the device to check and install from this source.
-
 ## Security Notes
 
-1. **Keep private key secure** - Never commit to git or share publicly
-2. **Use HTTPS in production** - HTTP is OK for local testing only
-3. **Users must trust your key** - They must explicitly specify `--public-key`
-4. **Signature is mandatory** - All manifests must be signed, no exceptions
+1. Keep the private key and `agent.toml` outside the repository.
+2. Use HTTPS outside an isolated development network.
+3. Distribute and verify the public key through a trusted channel.
+4. Publish the exact manifest and archives produced by the same build; changing
+   any asset after signing makes verification fail.

@@ -22,20 +22,21 @@ runtime paths while placing them on a separate filesystem.
 
 ## Boot and Fail-Closed Behavior
 
-The `aiden-sdk` board configuration defines:
+The Debian Stage 3 board configuration defines the dedicated partition, and
+systemd mounts it with `userdata-ota.mount`:
 
 ```text
 300M(ota)
-ota@/userdata/ota@ext4
+/dev/mmcblk0p12 -> /userdata/ota (ext4)
 ```
 
-The SDK-generated `S20linkmount` service mounts `/dev/block/by-name/ota` at
-`/userdata/ota`. `S54ota` waits for both `/userdata` and the dedicated OTA
-mount before running health processing.
+`aiden-slot-resolve.service` runs before `userdata.mount`,
+`userdata-ota.mount`, and `oem.mount`. `aiden-ota-health.service` requires the
+mounted userdata, OTA workspace, and active OEM image before processing health.
 
 The Go updater independently checks `/proc/self/mountinfo` before creating its
 lock, state, or download files. The mount must be the ext4 filesystem rooted at
-`/dev/block/by-name/ota`; a bind mount or unrelated filesystem at the same path
+`/dev/disk/by-partlabel/ota`; a bind mount or unrelated filesystem at the same path
 is rejected. If the expected mount is not active, `ota update`, `ota health`,
 and `ota status` fail instead of writing into the underlying userdata directory.
 
@@ -66,7 +67,7 @@ The default `download_safety_margin_bytes` is 16 MiB. It covers filesystem
 metadata, directory updates, and sync overhead; it is not a reserved file and
 does not reduce capacity while the device is idle.
 
-Release CI also rejects an impossible target-slot download set. Its limit is
+The Debian build also rejects an impossible target-slot download set. Its limit is
 derived from the shared partition layout:
 
 ```text
@@ -82,17 +83,19 @@ vary by device.
 
 ## Factory Image Flow
 
-The firmware build task generates `ota.img` and includes it in `update.img`.
-`userdata.img` contains only the empty `/userdata/ota` mount point.
+The firmware build generates an empty generic `ota.img` and includes it in
+`update.img`. Runtime state and downloads populate that filesystem only after
+the device boots.
 
-After the signed manifest is generated, CI writes the factory baseline to:
+After the signed manifest is generated, the Debian Stage 3 config action writes
+the factory baseline into `userdata.img` at:
 
 ```text
-pico-sdk/output/out/ota/config.json
+/debian/ota/config.json
 ```
 
-`scripts/repack_ota_update_image.sh` then rebuilds only `ota.img` and
-`update.img`. The OTA partition itself is not an online OTA target; online
+It then repacks `update.img` and audits the mounted userdata image against the
+signed manifest. The OTA partition itself is not an online OTA target; online
 updates continue to write only the inactive `boot`, `oem`, and `rootfs`
 partitions.
 
@@ -137,13 +140,14 @@ tail -n 100 /var/log/ota/ota.log
 Expected mount source:
 
 ```text
-/dev/block/by-name/ota on /userdata/ota type ext4
+/dev/disk/by-partlabel/ota on /userdata/ota type ext4
 ```
 
 ## Acceptance Criteria
 
 - Full image builds produce `ota.img` and package it in `update.img`.
-- `/userdata/ota/config.json` comes from `ota.img`, not `userdata.img`.
+- `/userdata/debian/ota/config.json` comes from the audited factory
+  `userdata.img`; `ota.img` starts empty.
 - OTA commands fail closed when the dedicated mount is missing.
 - Insufficient capacity is rejected before any partition asset request.
 - Valid partial downloads reduce the remaining required bytes.

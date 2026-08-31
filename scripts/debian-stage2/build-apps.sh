@@ -26,7 +26,7 @@ readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
 
 usage() {
     cat <<'EOF'
-Usage: scripts/debian-stage2/build-apps.sh [all|builder|opencv|apps|audit]
+Usage: scripts/debian-stage2/build-apps.sh [all|builder|opencv|apps|cli-tools|audit]
 
 Environment:
   DEBIAN_STAGE2_OUTPUT_DIR  Output directory (defaults to output/debian-stage2).
@@ -116,6 +116,10 @@ run_apps() {
     run_container_script scripts/debian-stage2/container-build-apps.sh
 }
 
+run_cli_tools() {
+    run_container_script scripts/debian-stage2/container-build-rootfs-cli-tools.sh
+}
+
 run_audit() {
     run_container_script scripts/debian-stage2/audit-apps.sh \
         /out/apps /out/apps-audit
@@ -128,7 +132,7 @@ main() {
         usage
         return
         ;;
-    all | builder | opencv | apps | audit)
+    all | builder | opencv | apps | cli-tools | audit)
         ;;
     *)
         usage >&2
@@ -147,6 +151,7 @@ main() {
         run_builder
         run_opencv
         run_apps
+        run_cli_tools
         run_audit
         ;;
     builder)
@@ -158,6 +163,9 @@ main() {
         ;;
     apps)
         run_apps
+        ;;
+    cli-tools)
+        run_cli_tools
         ;;
     audit)
         run_audit

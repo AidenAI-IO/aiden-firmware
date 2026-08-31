@@ -29,7 +29,7 @@ export RK_TOOLCHAIN_CROSS=arm-rockchip830-linux-uclibcgnueabihf
 export RK_MISC=wipe_all-misc.img
 export RK_UBOOT_DEFCONFIG=luckfox_rv1106_uboot_defconfig
 export RK_KERNEL_DEFCONFIG=luckfox_rv1106_linux_defconfig
-export RK_KERNEL_DEFCONFIG_FRAGMENT="aiden-zram.config rv1106-bt.config debian-stage3.config"
+export RK_KERNEL_DEFCONFIG_FRAGMENT="aiden-zram.config rv1106-bt.config aiden-rk628.config debian-stage3.config"
 
 export RK_CAMERA_SENSOR_IQFILES="mia1321_MIA1321_30IRC-F16.json imx415_CMK-OT2022-PX1_IR0147-36IRC-8M-F20.json"
 export RK_BUILD_APP_TO_OEM_PARTITION=y

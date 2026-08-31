@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	DefaultOTAConfigPath                = "/userdata/ota/config.json"
 	DefaultDebianOTAConfigPath          = "/userdata/debian/ota/config.json"
+	DefaultOTAConfigPath                = DefaultDebianOTAConfigPath
 	DefaultOTAStateDir                  = "/userdata/ota"
 	DefaultOTAStorageMountPoint         = "/userdata/ota"
 	DefaultOTAStorageDevicePath         = "/dev/disk/by-partlabel/ota"

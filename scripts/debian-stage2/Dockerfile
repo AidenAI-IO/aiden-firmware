@@ -8,8 +8,10 @@ RUN dpkg --add-architecture armhf \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         binutils-arm-linux-gnueabihf \
+        binutils \
         ca-certificates \
         cmake \
+        curl \
         file \
         g++-arm-linux-gnueabihf \
         gcc-arm-linux-gnueabihf \
