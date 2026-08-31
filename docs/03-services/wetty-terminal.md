@@ -4,36 +4,32 @@ sidebar_position: 3
 
 # ttyd Browser Terminal
 
-The firmware image integrates ttyd as an optional browser terminal for board-side maintenance. The board-side public URL is `http://192.168.42.1:3000/webtty/`.
+The Debian firmware image integrates ttyd as a browser terminal for board-side
+maintenance. The board-side public URL is
+`http://192.168.42.1:3000/webtty/`.
 
-## Buildroot Integration
+## Debian Integration
 
-The active Pico Zero Buildroot defconfig enables:
-
-- `BR2_PACKAGE_TTYD=y`
-- `BR2_PACKAGE_OPENSSL=y`
-
-The SDK-provided Buildroot tree is `2023.02.6` and includes ttyd `1.7.3`. Buildroot selects ttyd's `libuv`, `libwebsockets`, `json-c`, OpenSSL, and zlib dependencies. This replaces the Node.js runtime and npm module tree with a single native binary.
-
-Run the Linux/image build from an x86 host:
+The production image installs the native ttyd package without adding a Node.js
+runtime. Build it with:
 
 ```bash
-./build.sh image
+./debian_build.sh
 ```
-
-The `sysdrv` stage builds and installs the ttyd package into the target rootfs.
 
 ## Startup
 
-ttyd is managed by:
+ttyd is managed by systemd:
 
 ```bash
-/etc/init.d/S57ttyd start
-/etc/init.d/S57ttyd status
-/etc/init.d/S57ttyd restart
+systemctl start aiden-ttyd.service
+systemctl status aiden-ttyd.service --no-pager
+systemctl restart aiden-ttyd.service
 ```
 
-The service reads `/etc/aiden_boot.conf`. Set `ENABLE_TTYD=0` to disable startup. Existing `ENABLE_WETTY`, `WETTY_*`, and `WETTY_COMMAND` overrides are accepted as migration fallbacks.
+The service reads `/etc/aiden_boot.conf`. Set `ENABLE_TTYD=0` to disable
+startup. Existing `ENABLE_WETTY`, `WETTY_*`, and `WETTY_COMMAND` overrides are
+accepted as migration fallbacks.
 
 Default runtime values:
 
@@ -47,21 +43,24 @@ Default runtime values:
 
 ## Access
 
-The config web page at `http://192.168.42.1` includes a `Terminal` link. On the board it opens ttyd directly:
+The config web page at `http://192.168.42.1` includes a `Terminal` link. On the
+board it opens ttyd directly:
 
 ```text
 http://192.168.42.1:3000/webtty/
 ```
 
-Agent Web and the Docker sandbox also proxy `/webtty/` to ttyd on their published Agent Web port.
+Agent Web and the Docker sandbox also proxy `/webtty/` to ttyd on their
+published Agent Web port.
 
-The init script uses `/bin/login`, so authenticate with the board's Linux account credentials.
+The service uses `/bin/login`, so authenticate with the board's Linux account
+credentials.
 
 ## Mobile browser defaults
 
-ttyd 1.7.3 does not include a mobile virtual-keyboard toolbar, but its
-`--client-option` mechanism can tune the bundled xterm.js client. Aiden applies
-these defaults for the small touch screen and for lower-end mobile browsers:
+The `--client-option` mechanism tunes the bundled xterm.js client. Aiden
+applies these defaults for the small touch screen and for lower-end mobile
+browsers:
 
 | Option | Default | Purpose |
 | --- | --- | --- |
@@ -73,6 +72,4 @@ these defaults for the small touch screen and for lower-end mobile browsers:
 | `max-clients` | `2` | Bound concurrent shells on the memory-constrained board |
 
 Set the corresponding `TTYD_*` variables in `/etc/aiden_boot.conf` to adjust
-these values. The legacy `WETTY_*` names remain accepted for migration. The
-mobile toolbar and viewport metadata documented by newer ttyd releases are not
-available in the Buildroot-provided 1.7.3 client.
+these values. The legacy `WETTY_*` names remain accepted for migration.

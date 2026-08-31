@@ -27,46 +27,46 @@ Tests cover UDS messaging, Frame Service protocol, Audio Service protocol, Ring 
 After the service is running:
 
 ```bash
-./build/bin/frame_service_cli --socket /run/frame_service/frame_service.sock health
-./build/bin/frame_service_cli --socket /run/frame_service/frame_service.sock screenshot --out /tmp/screenshot.bmp
-./build/bin/frame_service_cli --socket /run/frame_service/frame_service.sock latest-frame --out /tmp/frame.raw
-./build/bin/frame_service_cli --socket /run/frame_service/frame_service.sock list-frames
+frame_service_cli --socket /run/frame_service/frame_service.sock health
+frame_service_cli --socket /run/frame_service/frame_service.sock screenshot --out /tmp/screenshot.bmp
+frame_service_cli --socket /run/frame_service/frame_service.sock latest-frame --out /tmp/frame.raw
+frame_service_cli --socket /run/frame_service/frame_service.sock list-frames
 ```
 
 For temporary service execution on development machines, the default socket is `/tmp/frame_service.sock`:
 
 ```bash
-./build/bin/frame_service --socket /tmp/frame_service.sock
-./build/bin/frame_service_cli --socket /tmp/frame_service.sock health
+/oem/usr/bin/frame_service --socket /tmp/frame_service.sock
+frame_service_cli --socket /tmp/frame_service.sock health
 ```
 
 ## Audio Service Validation
 
 ```bash
-./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock health
-./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock get-volume
-./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock set-volume --volume 80
+audio_service_cli --socket /run/audio_service/audio_service.sock health
+audio_service_cli --socket /run/audio_service/audio_service.sock get-volume
+audio_service_cli --socket /run/audio_service/audio_service.sock set-volume --volume 80
 ```
 
 Record to PCM:
 
 ```bash
-./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock record-stream --seconds 3 > /tmp/record.pcm
+audio_service_cli --socket /run/audio_service/audio_service.sock record-stream --seconds 3 > /tmp/record.pcm
 ```
 
 Play PCM:
 
 ```bash
-cat /tmp/record.pcm | ./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock play-stream --rate 16000 --ch 1 --bits 16
+cat /tmp/record.pcm | audio_service_cli --socket /run/audio_service/audio_service.sock play-stream --rate 16000 --ch 1 --bits 16
 ```
 
 ## USB HID Validation
 
 ```bash
-sudo ./build/bin/example_usb_hid setup composite
-sudo ./build/bin/example_usb_hid keyboard tap ENTER
-sudo ./build/bin/example_usb_hid keyboard text "hello from pico"
-sudo ./build/bin/example_usb_hid touch click 16000 16000
+sudo example_usb_hid setup composite
+sudo example_usb_hid keyboard tap ENTER
+sudo example_usb_hid keyboard text "hello from pico"
+sudo example_usb_hid touch click 16000 16000
 ```
 
 ## Agent Validation
@@ -74,7 +74,7 @@ sudo ./build/bin/example_usb_hid touch click 16000 16000
 Check the service on the device:
 
 ```bash
-/etc/init.d/S53agent status
+systemctl status aiden-agent.service --no-pager
 ```
 
 The Agent Web UI is available in every input mode. Open:

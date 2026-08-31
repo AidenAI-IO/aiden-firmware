@@ -29,16 +29,16 @@ audio_service [--socket PATH] [--volume-state PATH]
 When run directly during development, it also defaults to `/run/audio_service/audio_service.sock`, which can be overridden via a parameter or environment variable:
 
 ```bash
-AUDIO_SERVICE_SOCKET=/tmp/audio_service.sock ./build/bin/audio_service
-./build/bin/audio_service --socket /tmp/audio_service.sock
+AUDIO_SERVICE_SOCKET=/tmp/audio_service.sock /oem/usr/bin/audio_service
+/oem/usr/bin/audio_service --socket /tmp/audio_service.sock
 ```
 
 ## Startup
 
 ```bash
-/etc/init.d/S53audio_service start
-/etc/init.d/S53audio_service status
-/etc/init.d/S53audio_service restart
+systemctl start aiden-audio.service
+systemctl status aiden-audio.service --no-pager
+systemctl restart aiden-audio.service
 ```
 
 ## CLI
@@ -57,21 +57,21 @@ Commands:
 Examples:
 
 ```bash
-./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock health
-./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock get-volume
-./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock set-volume --volume 80
+audio_service_cli --socket /run/audio_service/audio_service.sock health
+audio_service_cli --socket /run/audio_service/audio_service.sock get-volume
+audio_service_cli --socket /run/audio_service/audio_service.sock set-volume --volume 80
 ```
 
 Recording:
 
 ```bash
-./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock record-stream --seconds 3 > /tmp/record.pcm
+audio_service_cli --socket /run/audio_service/audio_service.sock record-stream --seconds 3 > /tmp/record.pcm
 ```
 
 Playback:
 
 ```bash
-cat /tmp/record.pcm | ./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock play-stream --rate 16000 --ch 1 --bits 16
+cat /tmp/record.pcm | audio_service_cli --socket /run/audio_service/audio_service.sock play-stream --rate 16000 --ch 1 --bits 16
 ```
 
 ## Agent Configuration

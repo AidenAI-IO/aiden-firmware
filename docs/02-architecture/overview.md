@@ -47,14 +47,14 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
 | Hardware Services | `frame_service`, `audio_service`, `ble_service` | Centrally manage hardware resources and expose them to other processes |
 | Utility Programs | `*_cli`, `example_*`, `image_process` | Debugging, validation, and single-capability examples |
 | Go Agent | `src/agent` | LLM runtime, tool invocation, Web UI, HTTP Tool API, voice pipeline |
-| Firmware Integration | `overlay/`, `pico-sdk/` | Startup scripts, configuration files, userdata/oem injection |
+| Firmware Integration | `overlay-debian/`, `overlay-debian-oem/`, `pico-sdk/` | Debian systemd integration, rootfs/OEM assets, and RV1106 BSP |
 
 ## Key Design Principles
 
 1. **Single Hardware Resource Owner**: For example, `/dev/video0` is exclusively owned by `frame_service`, and other consumers read frames via UDS, avoiding conflicts from multiple processes opening the video device simultaneously.
 2. **Cross-Language Protocol**: UDS envelope uses JSON header + binary payload, allowing Go / C++ / other languages to implement clients.
 3. **Agent and Hardware Decoupling**: Agent does not directly depend on C++ ABI, completing observation/operation through sockets and HID devices.
-4. **Service Daemon**: Init scripts in overlay automatically restart services after they exit through a simple watchdog.
+4. **Systemd Supervision**: Debian units declare ordering, restart policy, and failure handling for each device service.
 
 ## Main Data Flows
 
