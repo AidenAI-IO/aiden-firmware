@@ -14,7 +14,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func TestNewContextManagerStoresArtifactsBySessionWithoutMetadataSidecar(t *testing.T) {
+func TestNewContextManagerStoresArtifactsBySessionAndWritesLineageSidecar(t *testing.T) {
 	sessionFolder := t.TempDir()
 	manager, err := NewContextManagerFromMessageList(sessionFolder, nil)
 	if err != nil {
@@ -23,8 +23,18 @@ func TestNewContextManagerStoresArtifactsBySessionWithoutMetadataSidecar(t *test
 	if filepath.Base(filepath.Dir(manager.artifactStore.root)) != manager.GetSessionID() {
 		t.Fatalf("artifact root = %q, want session %q", manager.artifactStore.root, manager.GetSessionID())
 	}
-	if _, err := os.Stat(sessionMetadataPath(sessionFolder, manager.GetSessionID())); !os.IsNotExist(err) {
-		t.Fatalf("new session metadata sidecar exists, stat error = %v", err)
+	metadata, found, err := loadSessionMetadata(sessionFolder, manager.GetSessionID())
+	if err != nil {
+		t.Fatalf("loadSessionMetadata() error = %v", err)
+	}
+	if !found {
+		t.Fatal("new session did not write a metadata sidecar")
+	}
+	if metadata.ParentSessionID != "" {
+		t.Fatalf("parent_session_id = %q, want empty for a root session", metadata.ParentSessionID)
+	}
+	if metadata.CreatedAt.IsZero() {
+		t.Fatal("created_at is zero")
 	}
 }
 
