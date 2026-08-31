@@ -983,9 +983,11 @@ func TestOpenAICompatibleModelSkipsRawHTTPLogWithoutContextMarker(t *testing.T) 
 }
 
 func TestOpenAICompatibleModelDoesNotBufferRawHTTPResponseWithoutContextMarker(t *testing.T) {
-	responseBody := &failOnSecondReadBody{
-		payload: []byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`),
-	}
+	// Decoder.Decode consumes the first JSON value, while buffering the entire
+	// body and calling json.Unmarshal would reject the trailing second value.
+	responseBody := io.NopCloser(strings.NewReader(
+		`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}` + "\n{}",
+	))
 	client := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -1014,9 +1016,6 @@ func TestOpenAICompatibleModelDoesNotBufferRawHTTPResponseWithoutContextMarker(t
 	}
 	if got := resp.Choices[0].Content; got != "ok" {
 		t.Fatalf("response content = %q, want ok", got)
-	}
-	if responseBody.reads != 1 {
-		t.Fatalf("response body reads = %d, want 1", responseBody.reads)
 	}
 }
 
@@ -1996,23 +1995,6 @@ func findLogLineContaining(logText, substring string) bool {
 		}
 	}
 	return false
-}
-
-type failOnSecondReadBody struct {
-	payload []byte
-	reads   int
-}
-
-func (b *failOnSecondReadBody) Read(p []byte) (int, error) {
-	b.reads++
-	if b.reads == 1 {
-		return copy(p, b.payload), nil
-	}
-	return 0, io.ErrUnexpectedEOF
-}
-
-func (b *failOnSecondReadBody) Close() error {
-	return nil
 }
 
 func TestModelManagerOpenRouterRetriesEOFInModelCall(t *testing.T) {
