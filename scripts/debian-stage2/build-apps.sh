@@ -73,9 +73,11 @@ run_builder() {
 
 run_container_script() {
     local script=$1
-    local image_id
+    local image_id source_git_common_dir
     shift
     image_id=$(docker image inspect "${BUILD_IMAGE}" --format '{{.Id}}')
+    source_git_common_dir=$(git -C "${REPO_ROOT}" rev-parse \
+        --path-format=absolute --git-common-dir)
     if [ ! -x "${GO_ROOT}/bin/go" ] || [ ! -f "${GO_ROOT}/VERSION" ] ||
         ! grep -qx 'go1.26.0' "${GO_ROOT}/VERSION"; then
         echo "Pinned Go 1.26.0 toolchain is missing: ${GO_ROOT}" >&2
@@ -95,6 +97,7 @@ run_container_script() {
         -e "RK_JOBS=${JOBS}" \
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
         -v "${REPO_ROOT}:/work" \
+        -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
         -v "${OUTPUT_DIR}:/out" \
         -v "${GO_ROOT}:/usr/local/go:ro" \
         -v "${GO_BUILD_CACHE}:/go-build-cache" \
@@ -134,6 +137,7 @@ main() {
     esac
 
     require_command docker
+    require_command git
     require_command sha256sum
     mkdir -p "${OUTPUT_DIR}"
 
