@@ -45,6 +45,10 @@ make_image() {
 make_source "${TEST_ROOT}/source-a" 100
 make_source "${TEST_ROOT}/source-b" 200
 make_image "${TEST_ROOT}/source-a" "${TEST_ROOT}/a.ext4"
+# Ensure the filesystem creation timestamp differs between the two mkfs calls;
+# the canonicalizer must normalize it along with the inode and superblock
+# access/write/check timestamps.
+sleep 2
 make_image "${TEST_ROOT}/source-b" "${TEST_ROOT}/b.ext4"
 cmp "${TEST_ROOT}/a.ext4" "${TEST_ROOT}/b.ext4"
 
