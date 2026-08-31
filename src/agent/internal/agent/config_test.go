@@ -1039,7 +1039,7 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 
 }
 
-func TestConfigValidateThinkingBudgetAgainstResponseLimit(t *testing.T) {
+func TestConfigValidateReasoningBudgetAgainstResponseLimit(t *testing.T) {
 	tests := []struct {
 		name    string
 		model   ModelConfig
@@ -1047,25 +1047,25 @@ func TestConfigValidateThinkingBudgetAgainstResponseLimit(t *testing.T) {
 	}{
 		{
 			name:    "below provider floor",
-			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ThinkingBudgetTokens: 512, MaxResponseTokens: 8_192},
-			wantErr: "model.thinking_budget_tokens must be 0 or >= 1024",
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 512, MaxResponseTokens: 8_192},
+			wantErr: "model.reasoning_budget_tokens must be 0 or >= 1024",
 		},
 		{
 			// A response limit smaller than the exact budget is invalid because
-			// thinking tokens are included in the response limit.
+			// reasoning tokens are included in the response limit.
 			// user hits first when enabling an exact budget.
 			name:    "budget exceeds response limit",
-			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ThinkingBudgetTokens: 4_096, MaxResponseTokens: 1_000},
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 4_096, MaxResponseTokens: 1_000},
 			wantErr: "must be less than model.max_response_tokens",
 		},
 		{
 			name:    "budget equals response limit",
-			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ThinkingBudgetTokens: 4_096, MaxResponseTokens: 4_096},
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 4_096, MaxResponseTokens: 4_096},
 			wantErr: "must be less than model.max_response_tokens",
 		},
 		{
 			name:    "budget exceeds model output capability",
-			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ThinkingBudgetTokens: 9_000, ModelMaxOutputTokens: 8_192, MaxResponseTokens: 64_000},
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 9_000, ModelMaxOutputTokens: 8_192, MaxResponseTokens: 64_000},
 			wantErr: "must be less than model.model_max_output_tokens",
 		},
 	}
@@ -1078,7 +1078,7 @@ func TestConfigValidateThinkingBudgetAgainstResponseLimit(t *testing.T) {
 		})
 	}
 
-	valid := Config{Model: ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ThinkingBudgetTokens: 4_096, MaxResponseTokens: 16_384}}
+	valid := Config{Model: ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 4_096, MaxResponseTokens: 16_384}}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("Validate() = %v, want a valid budget/limit pair accepted", err)
 	}

@@ -56,7 +56,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		} else {
 			spec, _ = LookupModelSpec(provider, modelName)
 		}
-		if spec.Provider != "" || spec.Name != "" || spec.Thinking != nil || spec.ContextWindow > 0 || spec.MaxOutput > 0 {
+		if spec.Provider != "" || spec.Name != "" || spec.Reasoning != nil || spec.ContextWindow > 0 || spec.MaxOutput > 0 {
 			response["spec"] = spec
 		}
 	}

@@ -51,10 +51,10 @@ func (m *ModelManager) needsProviderModelMetadataForSpec(spec model.ModelSpec) b
 	}
 	explicitContextWindow := m.config.ContextWindow > 0
 	explicitMaxOutput := m.config.ModelMaxOutputTokens > 0
-	needsThinking := spec.Thinking == nil && modelsDevProviderID(m.config.Provider) != "openrouter" &&
+	needsReasoning := spec.Reasoning == nil && modelsDevProviderID(m.config.Provider) != "openrouter" &&
 		modelsDevProviderID(m.config.Provider) != "ollama"
 	return (!explicitContextWindow && spec.ContextWindow <= 0) ||
-		(!explicitMaxOutput && spec.MaxOutput <= 0) || needsThinking
+		(!explicitMaxOutput && spec.MaxOutput <= 0) || needsReasoning
 }
 
 func (m *ModelManager) cachedProviderModelSpec() model.ModelSpec {
@@ -205,7 +205,7 @@ func (m *ModelManager) writeProviderModelSpecCache(spec model.ModelSpec) error {
 }
 
 func hasProviderModelSpecMetadata(spec model.ModelSpec) bool {
-	return spec.ContextWindow > 0 || spec.MaxOutput > 0 || spec.Thinking != nil
+	return spec.ContextWindow > 0 || spec.MaxOutput > 0 || spec.Reasoning != nil
 }
 
 func (m *ModelManager) providerModelSpecCacheKey() string {
@@ -331,44 +331,44 @@ func (m *ModelManager) fetchModelsDevModelSpec(ctx context.Context) (model.Model
 	if spec.API == "" {
 		spec.API = metadata.Provider.API
 	}
-	thinking := &model.ThinkingSpec{Supported: metadata.Reasoning}
+	reasoning := &model.ReasoningSpec{Supported: metadata.Reasoning}
 	for _, option := range metadata.ReasoningOptions {
 		switch strings.ToLower(strings.TrimSpace(option.Type)) {
 		case "toggle":
-			thinking.CanDisable = true
-			if thinking.Mode == "" {
-				thinking.Mode = "toggle"
+			reasoning.CanDisable = true
+			if reasoning.Mode == "" {
+				reasoning.Mode = "toggle"
 			}
 		case "effort":
-			thinking.Mode = "effort"
+			reasoning.Mode = "effort"
 			for _, value := range option.Values {
 				value = strings.ToLower(strings.TrimSpace(value))
-				if value == "" || value == "default" || containsStringFold(thinking.Efforts, value) {
+				if value == "" || value == "default" || containsStringFold(reasoning.Efforts, value) {
 					continue
 				}
-				thinking.Efforts = append(thinking.Efforts, value)
+				reasoning.Efforts = append(reasoning.Efforts, value)
 				if value == "none" {
-					thinking.CanDisable = true
+					reasoning.CanDisable = true
 				}
 			}
 		case "budget_tokens":
-			if thinking.Mode == "" {
-				thinking.Mode = "budget_tokens"
+			if reasoning.Mode == "" {
+				reasoning.Mode = "budget_tokens"
 			}
-			thinking.BudgetTokensMin = option.Min
-			thinking.BudgetTokensMax = option.Max
+			reasoning.BudgetTokensMin = option.Min
+			reasoning.BudgetTokensMax = option.Max
 		}
 	}
-	// Native Anthropic thinking is disabled by omitting the thinking object,
+	// Native Anthropic reasoning is disabled by omitting the reasoning object,
 	// even when models.dev lists only effort or budget controls and no explicit
 	// toggle option.
-	if providerID == "anthropic" && thinking.Supported {
-		thinking.CanDisable = true
+	if providerID == "anthropic" && reasoning.Supported {
+		reasoning.CanDisable = true
 	}
 	// A catalog hit is authoritative even when reasoning is false and no
 	// options are listed. Preserve that explicit unsupported declaration so the
 	// configuration UI does not fall back to generic effort choices.
-	spec.Thinking = thinking
+	spec.Reasoning = reasoning
 	return spec, nil
 }
 
@@ -415,8 +415,8 @@ func mergeModelSpecs(primary, supplemental model.ModelSpec) model.ModelSpec {
 	if primary.APIShape == "" {
 		primary.APIShape = supplemental.APIShape
 	}
-	if primary.Thinking == nil {
-		primary.Thinking = supplemental.Thinking
+	if primary.Reasoning == nil {
+		primary.Reasoning = supplemental.Reasoning
 	}
 	return primary
 }

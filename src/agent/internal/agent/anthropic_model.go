@@ -45,7 +45,7 @@ type anthropicModel struct {
 	reasoningEffort  string
 	modelSpec        model.ModelSpec
 	modelSpecFn      func() model.ModelSpec
-	thinkingBudget   int
+	reasoningBudget  int
 	streamMaxRetries int
 	streamRetryDelay time.Duration
 	protocolRetries  int
@@ -70,15 +70,15 @@ func withAnthropicReasoningEffort(effort string) anthropicModelOption {
 	return func(m *anthropicModel) { m.reasoningEffort = strings.TrimSpace(effort) }
 }
 
-func withAnthropicThinkingBudget(tokens int) anthropicModelOption {
+func withAnthropicReasoningBudget(tokens int) anthropicModelOption {
 	return func(m *anthropicModel) {
 		if tokens > 0 {
-			m.thinkingBudget = tokens
+			m.reasoningBudget = tokens
 		}
 	}
 }
 
-// withAnthropicModelSpecFn supplies the live model spec. Thinking capability
+// withAnthropicModelSpecFn supplies the live model spec. Reasoning capability
 // and provider limits arrive asynchronously from metadata, so the request
 // builder reads the latest capability declaration when selecting controls.
 func withAnthropicModelSpecFn(fn func() model.ModelSpec) anthropicModelOption {
@@ -298,7 +298,7 @@ func (m *anthropicModel) generateContent(ctx context.Context, messages []llms.Me
 	} else if callOpts.Temperature != 0 {
 		request.Temperature = &callOpts.Temperature
 	}
-	if thinking, outputConfig, enabled := m.anthropicThinkingRequest(); enabled && (len(request.Tools) == 0 || m.thinkingSupportsTools()) {
+	if thinking, outputConfig, enabled := m.anthropicThinkingRequest(); enabled && (len(request.Tools) == 0 || m.reasoningSupportsTools()) {
 		if err := validateAnthropicThinkingLimit(request.MaxTokens, thinking); err != nil {
 			return nil, err
 		}
@@ -438,8 +438,8 @@ func (m *anthropicModel) generateContent(ctx context.Context, messages []llms.Me
 	}
 }
 
-func (m *anthropicModel) thinkingSupportsTools() bool {
-	spec := m.thinkingSpecValue()
+func (m *anthropicModel) reasoningSupportsTools() bool {
+	spec := m.reasoningSpecValue()
 	return spec != nil && spec.Supported
 }
 
@@ -459,7 +459,7 @@ func (m *anthropicModel) anthropicThinkingRequest() (*anthropicThinking, *anthro
 	if effort == "none" {
 		return nil, nil, false
 	}
-	spec := m.thinkingSpecValue()
+	spec := m.reasoningSpecValue()
 	// An explicit unsupported declaration is authoritative: never send thinking
 	// to a model the catalog says has no reasoning controls. A nil spec only
 	// means unknown, which still falls through to the adaptive fallback below.
@@ -469,8 +469,8 @@ func (m *anthropicModel) anthropicThinkingRequest() (*anthropicThinking, *anthro
 	// An explicit token budget is an advanced override. Models.dev may publish
 	// both effort and budget_tokens for newer Claude models; the effort selector
 	// remains the normal UI control, but an entered budget must still be honored.
-	if m.thinkingBudget > 0 && (spec == nil || spec.BudgetTokensMin > 0 || spec.Mode == "budget_tokens") {
-		budget := m.thinkingBudget
+	if m.reasoningBudget > 0 && (spec == nil || spec.BudgetTokensMin > 0 || spec.Mode == "budget_tokens") {
+		budget := m.reasoningBudget
 		if spec != nil {
 			if spec.BudgetTokensMin > 0 && budget < spec.BudgetTokensMin {
 				budget = spec.BudgetTokensMin
@@ -500,20 +500,20 @@ func (m *anthropicModel) anthropicThinkingRequest() (*anthropicThinking, *anthro
 	return &anthropicThinking{Type: "adaptive"}, &anthropicOutputConfig{Effort: effort}, true
 }
 
-func (m *anthropicModel) thinkingModelSpec() model.ModelSpec {
+func (m *anthropicModel) reasoningModelSpec() model.ModelSpec {
 	if m == nil {
 		return model.ModelSpec{}
 	}
 	if m.modelSpecFn != nil {
-		if spec := m.modelSpecFn(); spec.Thinking != nil || spec.MaxOutput > 0 {
+		if spec := m.modelSpecFn(); spec.Reasoning != nil || spec.MaxOutput > 0 {
 			return spec
 		}
 	}
 	return m.modelSpec
 }
 
-func (m *anthropicModel) thinkingSpecValue() *model.ThinkingSpec {
-	return m.thinkingModelSpec().Thinking
+func (m *anthropicModel) reasoningSpecValue() *model.ReasoningSpec {
+	return m.reasoningModelSpec().Reasoning
 }
 
 func anthropicReasoningBudget(effort string, min, max int) int {
@@ -1713,8 +1713,8 @@ func buildAnthropicModelOptions(ctx ModelBuildContext, cfg ModelConfig) []anthro
 	if cfg.ReasoningEffort != "" {
 		options = append(options, withAnthropicReasoningEffort(cfg.ReasoningEffort))
 	}
-	if cfg.ThinkingBudgetTokens > 0 {
-		options = append(options, withAnthropicThinkingBudget(cfg.ThinkingBudgetTokens))
+	if cfg.ReasoningBudgetTokens > 0 {
+		options = append(options, withAnthropicReasoningBudget(cfg.ReasoningBudgetTokens))
 	}
 	return options
 }

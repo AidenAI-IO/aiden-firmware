@@ -134,10 +134,10 @@ func TestAnthropicModelUsesLiveSpecForBudgetMode(t *testing.T) {
 	// live spec rather than the value captured at construction time.
 	live := model.ModelSpec{
 		MaxOutput: 6_000,
-		Thinking:  &model.ThinkingSpec{Supported: true, Mode: "budget_tokens", BudgetTokensMin: 1024},
+		Reasoning: &model.ReasoningSpec{Supported: true, Mode: "budget_tokens", BudgetTokensMin: 1024},
 	}
 	m := newAnthropicModel(server.URL, "claude-late-metadata", "tok", server.Client(),
-		withAnthropicThinkingBudget(60_000),
+		withAnthropicReasoningBudget(60_000),
 		withAnthropicModelSpecFn(func() model.ModelSpec { return live }))
 	if _, err := m.GenerateContent(context.Background(),
 		[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hi")},

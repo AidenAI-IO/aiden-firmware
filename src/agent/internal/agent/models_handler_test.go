@@ -297,16 +297,16 @@ func TestHandleModelsIncludesModelSpec(t *testing.T) {
 
 	var response struct {
 		Spec *struct {
-			Provider string `json:"provider"`
-			Name     string `json:"name"`
-			API      string `json:"api"`
-			APIShape string `json:"api_shape"`
-			Thinking *struct {
+			Provider  string `json:"provider"`
+			Name      string `json:"name"`
+			API       string `json:"api"`
+			APIShape  string `json:"api_shape"`
+			Reasoning *struct {
 				Supported  bool     `json:"supported"`
 				Mode       string   `json:"mode"`
 				Efforts    []string `json:"efforts"`
 				CanDisable bool     `json:"can_disable"`
-			} `json:"thinking"`
+			} `json:"reasoning"`
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
@@ -321,19 +321,19 @@ func TestHandleModelsIncludesModelSpec(t *testing.T) {
 	if response.Spec.API == "" || response.Spec.APIShape != "messages" {
 		t.Fatalf("spec API = %q/%q, want non-empty messages endpoint", response.Spec.API, response.Spec.APIShape)
 	}
-	if response.Spec.Thinking == nil || !response.Spec.Thinking.Supported || response.Spec.Thinking.Mode != "effort" || !response.Spec.Thinking.CanDisable {
-		t.Fatalf("spec thinking = %+v, want supported effort with disable", response.Spec.Thinking)
+	if response.Spec.Reasoning == nil || !response.Spec.Reasoning.Supported || response.Spec.Reasoning.Mode != "effort" || !response.Spec.Reasoning.CanDisable {
+		t.Fatalf("spec reasoning = %+v, want supported effort with disable", response.Spec.Reasoning)
 	}
 	for _, want := range []string{"low", "medium", "high", "max"} {
 		found := false
-		for _, effort := range response.Spec.Thinking.Efforts {
+		for _, effort := range response.Spec.Reasoning.Efforts {
 			if effort == want {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Errorf("thinking efforts %v missing %q", response.Spec.Thinking.Efforts, want)
+			t.Errorf("reasoning efforts %v missing %q", response.Spec.Reasoning.Efforts, want)
 		}
 	}
 }
@@ -363,11 +363,11 @@ func TestHandleModelsFetchesCustomModelSpecFromModelsDev(t *testing.T) {
 		Spec *struct {
 			ContextWindow int `json:"context_window"`
 			MaxOutput     int `json:"max_output"`
-			Thinking      *struct {
+			Reasoning     *struct {
 				Mode       string   `json:"mode"`
 				Efforts    []string `json:"efforts"`
 				CanDisable bool     `json:"can_disable"`
-			} `json:"thinking"`
+			} `json:"reasoning"`
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
@@ -376,7 +376,7 @@ func TestHandleModelsFetchesCustomModelSpecFromModelsDev(t *testing.T) {
 	if response.Spec == nil || response.Spec.ContextWindow != 200000 || response.Spec.MaxOutput != 64000 {
 		t.Fatalf("custom model spec = %+v, want models.dev limits", response.Spec)
 	}
-	if response.Spec.Thinking == nil || response.Spec.Thinking.Mode != "effort" || !response.Spec.Thinking.CanDisable {
-		t.Fatalf("custom thinking spec = %+v, want effort with disable", response.Spec.Thinking)
+	if response.Spec.Reasoning == nil || response.Spec.Reasoning.Mode != "effort" || !response.Spec.Reasoning.CanDisable {
+		t.Fatalf("custom reasoning spec = %+v, want effort with disable", response.Spec.Reasoning)
 	}
 }

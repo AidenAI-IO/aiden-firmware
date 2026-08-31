@@ -205,8 +205,8 @@ func (m *ModelManager) Spec() model.ModelSpec {
 		if !explicitMaxOutput && spec.MaxOutput <= 0 && providerSpec.MaxOutput > 0 {
 			spec.MaxOutput = providerSpec.MaxOutput
 		}
-		if spec.Thinking == nil && providerSpec.Thinking != nil {
-			spec.Thinking = providerSpec.Thinking
+		if spec.Reasoning == nil && providerSpec.Reasoning != nil {
+			spec.Reasoning = providerSpec.Reasoning
 		}
 		if spec.API == "" {
 			spec.API = providerSpec.API

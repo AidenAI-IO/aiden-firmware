@@ -186,11 +186,12 @@ func TestConfigCheck_WireLocaleMapsToAgentConfig(t *testing.T) {
 	}
 }
 
-func TestConfigCheck_WireModelReasoningEffortRoundTrip(t *testing.T) {
+func TestConfigCheck_WireModelReasoningControlsRoundTrip(t *testing.T) {
 	cfg := agent.Config{Model: agent.ModelConfig{
-		Provider:        "openai",
-		Model:           "gpt-4",
-		ReasoningEffort: "high",
+		Provider:              "openai",
+		Model:                 "gpt-4",
+		ReasoningEffort:       "high",
+		ReasoningBudgetTokens: 4096,
 	}}
 	dto := webConfigDTOFromAgentConfig(cfg)
 	if dto.Model.ReasoningEffort != "high" {
@@ -199,6 +200,16 @@ func TestConfigCheck_WireModelReasoningEffortRoundTrip(t *testing.T) {
 	back := dto.ToAgentConfig()
 	if back.Model.ReasoningEffort != "high" {
 		t.Fatalf("round-trip reasoning_effort = %q, want high", back.Model.ReasoningEffort)
+	}
+	if back.Model.ReasoningBudgetTokens != 4096 {
+		t.Fatalf("round-trip reasoning_budget_tokens = %d, want 4096", back.Model.ReasoningBudgetTokens)
+	}
+	wire, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal DTO: %v", err)
+	}
+	if !strings.Contains(string(wire), `"reasoning_budget_tokens":4096`) {
+		t.Fatalf("wire config missing canonical reasoning budget: %s", wire)
 	}
 }
 

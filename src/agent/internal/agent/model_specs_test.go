@@ -76,11 +76,11 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 
 func TestLookupModelSpecClaudeEffortAndBudgetControls(t *testing.T) {
 	spec, ok := LookupModelSpec("anthropic", "claude-sonnet-4-6")
-	if !ok || spec.Thinking == nil {
-		t.Fatalf("expected Sonnet 4.6 thinking metadata, got %+v", spec)
+	if !ok || spec.Reasoning == nil {
+		t.Fatalf("expected Sonnet 4.6 reasoning metadata, got %+v", spec)
 	}
-	if spec.Thinking.Mode != "effort" || spec.Thinking.BudgetTokensMin != 1024 || !spec.Thinking.CanDisable {
-		t.Fatalf("Sonnet 4.6 thinking = %+v, want effort + budget override", spec.Thinking)
+	if spec.Reasoning.Mode != "effort" || spec.Reasoning.BudgetTokensMin != 1024 || !spec.Reasoning.CanDisable {
+		t.Fatalf("Sonnet 4.6 reasoning = %+v, want effort + budget override", spec.Reasoning)
 	}
 }
 
@@ -90,8 +90,8 @@ func TestLookupModelSpecMarksNonReasoningModelsExplicitly(t *testing.T) {
 		{"openrouter", "anthropic/claude-3.5-sonnet"},
 	} {
 		spec, ok := LookupModelSpec(test.provider, test.model)
-		if !ok || spec.Thinking == nil || spec.Thinking.Supported {
-			t.Fatalf("%s thinking = %+v, want explicit unsupported capability", test.model, spec.Thinking)
+		if !ok || spec.Reasoning == nil || spec.Reasoning.Supported {
+			t.Fatalf("%s reasoning = %+v, want explicit unsupported capability", test.model, spec.Reasoning)
 		}
 	}
 }
@@ -170,7 +170,7 @@ func TestLookupModelSpecUnknownModelReturnsNotOK(t *testing.T) {
 	}
 }
 
-func TestModelManagerSpecFetchesModelsDevThinkingMetadata(t *testing.T) {
+func TestModelManagerSpecFetchesModelsDevReasoningMetadata(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -187,9 +187,9 @@ func TestModelManagerSpecFetchesModelsDevThinkingMetadata(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		spec := mgr.Spec()
-		if spec.ContextWindow == 200_000 && spec.MaxOutput == 64_000 && spec.Thinking != nil {
-			if !spec.Thinking.Supported || spec.Thinking.Mode != "effort" || !spec.Thinking.CanDisable || len(spec.Thinking.Efforts) != 4 || spec.Thinking.BudgetTokensMin != 1024 {
-				t.Fatalf("thinking spec = %+v", spec.Thinking)
+		if spec.ContextWindow == 200_000 && spec.MaxOutput == 64_000 && spec.Reasoning != nil {
+			if !spec.Reasoning.Supported || spec.Reasoning.Mode != "effort" || !spec.Reasoning.CanDisable || len(spec.Reasoning.Efforts) != 4 || spec.Reasoning.BudgetTokensMin != 1024 {
+				t.Fatalf("reasoning spec = %+v", spec.Reasoning)
 			}
 			break
 		}
@@ -214,9 +214,9 @@ func TestModelManagerSpecPreservesModelsDevReasoningFalse(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		spec := mgr.Spec()
-		if spec.Thinking != nil {
-			if spec.Thinking.Supported {
-				t.Fatalf("thinking = %+v, want explicit unsupported", spec.Thinking)
+		if spec.Reasoning != nil {
+			if spec.Reasoning.Supported {
+				t.Fatalf("reasoning = %+v, want explicit unsupported", spec.Reasoning)
 			}
 			return
 		}

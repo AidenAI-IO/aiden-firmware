@@ -227,10 +227,10 @@ func ConfigMeta() ConfigMetadata {
 					// that accept it so the UI cannot save a value the endpoint
 					// rejects; auto plus low/medium/high stay unscoped.
 					{Key: "reasoning_effort", Widget: WidgetSelect,
-						Help: "Empty = auto. Options follow the selected model capability; off is shown only when the model supports disabling thinking.",
+						Help: "Empty = auto. Options follow the selected model capability; off is shown only when the model supports disabling reasoning.",
 						Enum: []EnumOption{
 							{Value: "", Label: "auto (default)"},
-							{Value: "minimal", Label: "minimal (no thinking)", Providers: []string{"openrouter", "volcengine"}},
+							{Value: "minimal", Label: "minimal (no reasoning)", Providers: []string{"openrouter", "volcengine"}},
 							{Value: "none", Label: "none", Providers: []string{"openrouter", "openai", "kimi", "kimi-cn", "ollama", "fake"}},
 							{Value: "low", Label: "low"},
 							{Value: "medium", Label: "medium"},
@@ -239,10 +239,10 @@ func ConfigMeta() ConfigMetadata {
 							{Value: "max", Label: "max", Providers: []string{"anthropic", "openrouter", "openai", "kimi", "kimi-cn", "volcengine"}},
 						},
 						Default: defaults.Model.ReasoningEffort},
-					{Key: "thinking_budget_tokens", Widget: WidgetNumber,
-						Label:       "Thinking budget (tokens)",
+					{Key: "reasoning_budget_tokens", Widget: WidgetNumber,
+						Label:       "Reasoning budget (tokens)",
 						Placeholder: "0 = auto",
-						Help:        "Optional exact thinking budget. Shown for models that expose budget_tokens; 0 uses the model default or effort preset. Thinking tokens are drawn from max_response_tokens, so this must be at least 1024 and smaller than that limit.",
+						Help:        "Optional exact reasoning budget. Shown for models that expose budget_tokens; 0 uses the model default or effort preset. Reasoning tokens are drawn from max_response_tokens, so this must be at least 1024 and smaller than that limit.",
 						Default:     0},
 					{Key: "context_window", Widget: WidgetNumber, Default: defaults.Model.ContextWindow,
 						Placeholder: "0 = auto", Help: "0 = auto: use provider metadata when available."},

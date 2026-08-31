@@ -1595,14 +1595,14 @@ func TestAnthropicModelMapsBudgetThinkingAndExactBudget(t *testing.T) {
 	defer server.Close()
 
 	model := newAnthropicModel(server.URL, "claude-haiku-4-5", "test-token", server.Client(), withAnthropicReasoningEffort("medium"))
-	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")}); err != nil {
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")}, llms.WithMaxTokens(8192)); err != nil {
 		t.Fatalf("preset GenerateContent() error = %v", err)
 	}
 	if len(captured) != 1 || captured[0].Thinking == nil || captured[0].Thinking.Type != "enabled" || captured[0].Thinking.BudgetTokens != 4096 || captured[0].OutputConfig != nil {
 		t.Fatalf("budget preset request = %#v", captured)
 	}
-	model = newAnthropicModel(server.URL, "claude-haiku-4-5", "test-token", server.Client(), withAnthropicThinkingBudget(512))
-	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")}); err != nil {
+	model = newAnthropicModel(server.URL, "claude-haiku-4-5", "test-token", server.Client(), withAnthropicReasoningBudget(512))
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")}, llms.WithMaxTokens(8192)); err != nil {
 		t.Fatalf("exact budget GenerateContent() error = %v", err)
 	}
 	if len(captured) != 2 || captured[1].Thinking == nil || captured[1].Thinking.BudgetTokens != 1024 || captured[1].MaxTokens <= 1024 {
@@ -1624,8 +1624,8 @@ func TestAnthropicModelUsesExactBudgetOverrideWithEffortModel(t *testing.T) {
 	}))
 	defer server.Close()
 
-	model := newAnthropicModel(server.URL, "claude-sonnet-4-6", "test-token", server.Client(), withAnthropicThinkingBudget(4096))
-	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")}); err != nil {
+	model := newAnthropicModel(server.URL, "claude-sonnet-4-6", "test-token", server.Client(), withAnthropicReasoningBudget(4096))
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")}, llms.WithMaxTokens(8192)); err != nil {
 		t.Fatalf("exact budget GenerateContent() error = %v", err)
 	}
 	if captured.Thinking == nil || captured.Thinking.Type != "enabled" || captured.Thinking.BudgetTokens != 4096 || captured.OutputConfig != nil {
@@ -1678,7 +1678,7 @@ func TestAnthropicModelReplaysSignedThinkingBlocksFromMessageList(t *testing.T) 
 	}
 }
 
-func TestAnthropicModelUsesAsynchronouslyFetchedThinkingSpec(t *testing.T) {
+func TestAnthropicModelUsesAsynchronouslyFetchedReasoningSpec(t *testing.T) {
 	var captured struct {
 		Thinking     *anthropicThinking     `json:"thinking"`
 		OutputConfig *anthropicOutputConfig `json:"output_config"`
@@ -1705,11 +1705,11 @@ func TestAnthropicModelUsesAsynchronouslyFetchedThinkingSpec(t *testing.T) {
 	}, ProxyConfig{}, WithModelsDevURL(catalogServer.URL), WithProviderMetadataHTTPClient(catalogServer.Client()))
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if spec := mgr.Spec(); spec.Thinking != nil {
+		if spec := mgr.Spec(); spec.Reasoning != nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("models.dev thinking metadata did not load")
+			t.Fatal("models.dev reasoning metadata did not load")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

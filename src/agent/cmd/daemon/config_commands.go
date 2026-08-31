@@ -487,11 +487,11 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "model.provider"
 	} else if strings.Contains(errMsg, "model.api_mode") {
 		field = "model.api_mode"
-		// The thinking-budget constraints name the limit they are compared
+		// The reasoning-budget constraints name the limit they are compared
 		// against, so this check must precede those fields to blame the value
 		// the user can actually change.
-	} else if strings.Contains(errMsg, "model.thinking_budget_tokens") {
-		field = "model.thinking_budget_tokens"
+	} else if strings.Contains(errMsg, "model.reasoning_budget_tokens") {
+		field = "model.reasoning_budget_tokens"
 	} else if strings.Contains(errMsg, "model.max_response_tokens") {
 		field = "model.max_response_tokens"
 	} else if strings.Contains(errMsg, "model.context_window") {

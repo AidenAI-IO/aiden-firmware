@@ -25,9 +25,9 @@ const (
 	// 8192 leaves room for hidden reasoning tokens while keeping a bounded
 	// default cost ceiling. Voice replies use their separate 300-token default.
 	defaultModelMaxResponseTokens = 8192
-	// minThinkingBudgetTokens is Anthropic's documented floor for
+	// minReasoningBudgetTokens is Anthropic's documented floor for
 	// thinking.budget_tokens; other budget-style APIs are at or below it.
-	minThinkingBudgetTokens        = 1024
+	minReasoningBudgetTokens       = 1024
 	defaultModelLogRawHTTP         = true
 	defaultModelReasoningEffort    = ""
 	defaultTTSProvider             = "minimax-cn"

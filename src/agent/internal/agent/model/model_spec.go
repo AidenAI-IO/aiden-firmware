@@ -31,21 +31,21 @@ type ModelSpec struct {
 	MaxOutput              int      `json:"max_output,omitempty"`
 	DefaultTemperature     *float64 `json:"default_temperature,omitempty"`
 	DefaultReasoningEffort *string  `json:"default_reasoning_effort,omitempty"`
-	// Thinking describes the model's native reasoning controls. A nil value
+	// Reasoning describes the model's native reasoning controls. A nil value
 	// means the capability is unknown; Supported=false is an explicit
-	// declaration that the model does not expose thinking.
-	Thinking *ThinkingSpec `json:"thinking,omitempty"`
+	// declaration that the model does not expose reasoning controls.
+	Reasoning *ReasoningSpec `json:"reasoning,omitempty"`
 }
 
-// ThinkingSpec is the provider/model-independent description of thinking
+// ReasoningSpec is the provider/model-independent description of reasoning
 // controls. Efforts are the values accepted by an effort-style API. Older
 // Claude models expose only a token budget, represented by BudgetTokensMin and
 // BudgetTokensMax. CanDisable is true when the API has an explicit off switch
-// or when omitting the thinking object disables it.
-type ThinkingSpec struct {
+// or when omitting the provider reasoning object disables it.
+type ReasoningSpec struct {
 	Supported bool `json:"supported"`
 	// Mode identifies the primary control exposed by the model. "effort" is
-	// an adaptive effort selector, "budget_tokens" is a numeric thinking
+	// an adaptive effort selector, "budget_tokens" is a numeric reasoning
 	// budget, and "toggle" is a boolean switch. A model may publish both
 	// efforts and budget limits; in that case effort remains the preferred UI
 	// control and the budget fields are available as an advanced override.
