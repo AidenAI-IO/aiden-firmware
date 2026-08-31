@@ -262,6 +262,11 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn('rendererType=${TTYD_RENDERER:-canvas}', entrypoint)
         self.assertIn('fontSize=${TTYD_FONT_SIZE:-24}', entrypoint)
         self.assertIn('scrollback=${TTYD_SCROLLBACK:-500}', entrypoint)
+        self.assertIn('cursorStyle=${TTYD_CURSOR_STYLE:-bar}', entrypoint)
+        self.assertIn(
+            'disableResizeOverlay=${TTYD_DISABLE_RESIZE_OVERLAY:-true}',
+            entrypoint,
+        )
 
     def test_agent_supervisor_truncates_the_persistent_log(self):
         service = REPO_ROOT / "docker/dev/agent-service.sh"
