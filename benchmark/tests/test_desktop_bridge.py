@@ -109,15 +109,16 @@ def test_desktop_device_clamps_normalized_screen_edges():
     assert device._pixels(1000, 1000) == (99, 49)
 
 
-def test_desktop_device_uses_discoverable_system_profiler_on_macos(monkeypatch):
+def test_desktop_device_uses_system_profiler_fallback_on_macos(monkeypatch):
     device = DesktopDevice.__new__(DesktopDevice)
     device.system = "darwin"
     device._pyautogui = None
     captured = {}
 
+    monkeypatch.setattr("desktop.bridge.device.shutil.which", lambda name: None)
     monkeypatch.setattr(
-        "desktop.bridge.device.shutil.which",
-        lambda name: "/usr/sbin/system_profiler" if name == "system_profiler" else None,
+        "desktop.bridge.device.os.path.exists",
+        lambda path: path == "/usr/sbin/system_profiler",
     )
 
     def fake_run(command, capture_output, text, timeout):
