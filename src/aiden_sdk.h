@@ -56,6 +56,10 @@ struct VideoFrame {
     uint32_t length;
     uint64_t timestamp;
     uint32_t sequence;
+    uint32_t stride;
+    uint32_t size_image;
+    uint32_t plane_count;
+    uint64_t buffer_capacity;
 };
 
 // Wakeup event callback

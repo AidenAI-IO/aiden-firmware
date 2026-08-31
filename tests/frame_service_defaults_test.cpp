@@ -1,6 +1,7 @@
 #include "doctest.h"
 #include "camera_frame_utils.h"
 #include "frame_service_defaults.h"
+#include <string>
 
 TEST_CASE("frame_service library defaults avoid unconditional EDID retriggering") {
     aiden::CameraConfig camera;
@@ -8,6 +9,7 @@ TEST_CASE("frame_service library defaults avoid unconditional EDID retriggering"
 
     CHECK(camera.width == 1920);
     CHECK(camera.height == 1080);
+    CHECK(std::string(camera.pixel_format) == "uyvy");
     CHECK(camera.edid_path == nullptr);
     CHECK(camera.force_trigger == false);
     CHECK(camera.allow_edid_fallback == true);
