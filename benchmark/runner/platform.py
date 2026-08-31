@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 from enum import Enum
 from typing import Any
@@ -125,13 +126,54 @@ def platform_from_environment_health(health: dict[str, Any]) -> str:
         return ""
 
 
-def read_environment_health(environment_url: str, *, timeout: float = 5.0) -> dict[str, Any]:
-    try:
-        url = EnvironmentEndpoint(environment_url).health
-    except ValueError:
-        return {}
+def _read_json(url: str, timeout: float) -> Any:
     with urllib.request.urlopen(url, timeout=timeout) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _unwrap_health_payload(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
         return payload["data"]
     return payload if isinstance(payload, dict) else {}
+
+
+def _read_legacy_device_health(
+    endpoint: EnvironmentEndpoint,
+    *,
+    timeout: float,
+) -> dict[str, Any]:
+    """Derive bridge health from an older Go agent that predates ``/health``.
+
+    Agents flashed before ``/health`` existed still report their effective
+    device type on ``/api/phone-bridge/status``, which is enough to resolve the
+    benchmark platform.
+    """
+    payload = _unwrap_health_payload(
+        _read_json(f"{endpoint.base}/api/phone-bridge/status", timeout)
+    )
+    device_type = str(payload.get("device_type") or "").strip()
+    if not device_type:
+        raise ValueError(
+            f"environment bridge at {endpoint.base} exposes neither /health nor a "
+            "device type on /api/phone-bridge/status; upgrade the device agent"
+        )
+    return {
+        "status": "ok",
+        "bridge_type": "go-agent",
+        "device_platform": device_type,
+        "concurrent": 1,
+    }
+
+
+def read_environment_health(environment_url: str, *, timeout: float = 5.0) -> dict[str, Any]:
+    try:
+        endpoint = EnvironmentEndpoint(environment_url)
+    except ValueError:
+        return {}
+    try:
+        payload = _read_json(endpoint.health, timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        return _read_legacy_device_health(endpoint, timeout=timeout)
+    return _unwrap_health_payload(payload)
