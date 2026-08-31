@@ -129,10 +129,12 @@ run_builder() {
 run_rootfs_container() {
     local script=$1
     shift
-    local image_id
+    local image_id source_git_common_dir
     local -a proxy_args=()
     while IFS= read -r -d '' item; do proxy_args+=("${item}"); done < <(docker_proxy_args)
     image_id=$(docker image inspect "${ROOTFS_BUILD_IMAGE}" --format '{{.Id}}')
+    source_git_common_dir=$(git -C "${REPO_ROOT}" rev-parse \
+        --path-format=absolute --git-common-dir)
     docker run --rm --privileged \
         "${proxy_args[@]}" \
         -e "HOST_UID=$(id -u)" \
@@ -140,6 +142,7 @@ run_rootfs_container() {
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
         -e "DEBIAN_STAGE3_BUILD_IMAGE_ID=${image_id}" \
         -v "${REPO_ROOT}:/work:ro" \
+        -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
         -v "${OUTPUT_DIR}:/out" \
         -w /work \
         "${ROOTFS_BUILD_IMAGE}" \
