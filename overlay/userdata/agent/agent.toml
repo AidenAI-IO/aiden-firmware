@@ -189,7 +189,8 @@ model = "gpt-5.5"
 # emergency_threshold_mb = 5
 # recovery_hysteresis_mb = 5
 
-# Voice notifications follow a normal Agent reply; they never announce independently.
+# Voice notifications follow a normal Agent reply, or use an idle Realtime
+# session for a private announcement.
 [voice_notifications]
 # enabled = true
 # max_pending = 8
