@@ -149,6 +149,8 @@ grep -Fq 'safe.directory="${REPO_ROOT}"' \
     "${STAGE3_DIR}/build.sh")" -eq 1 ] \
     || fail "rootfs container does not mount exactly one Git provenance directory"
 grep -Fq 'git -C "${SDK_DIR}" repack -a -d' "${STAGE3_DIR}/build.sh"
+grep -Fq -- '--path-format=absolute --git-path objects/info/alternates' \
+    "${STAGE3_DIR}/build.sh"
 grep -Fq 'rm -f -- "${alternates_file}"' "${STAGE3_DIR}/build.sh"
 grep -Fq 'git -C "${SDK_DIR}" fsck --connectivity-only --no-dangling' \
     "${STAGE3_DIR}/build.sh"
