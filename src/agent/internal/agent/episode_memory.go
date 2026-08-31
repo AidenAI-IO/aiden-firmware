@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,8 +17,9 @@ import (
 )
 
 const (
-	episodeMemoryExtractorVersion = 2
-	episodeMemoryTag              = "episode-memory:v1"
+	episodeMemoryExtractorVersion  = 2
+	episodeMemoryTag               = "episode-memory:v1"
+	episodeMemoryDefaultConfidence = 0.7
 
 	deviceMemoryStatusActive     deviceMemoryStatus = "active"
 	deviceMemoryStatusPending    deviceMemoryStatus = "pending"
@@ -82,10 +84,28 @@ type episodeMemoryCandidate struct {
 	Situation          string                 `json:"situation" yaml:"situation"`
 	Guidance           string                 `json:"guidance" yaml:"guidance"`
 	ExpectedEffect     string                 `json:"expected_effect" yaml:"expected_effect"`
+	Confidence         *float64               `json:"confidence,omitempty" yaml:"confidence,omitempty"`
 	Scope              map[string]string      `json:"scope" yaml:"scope"`
 	Tags               []string               `json:"tags" yaml:"tags"`
 	EvidenceRefs       []string               `json:"evidence_refs" yaml:"evidence_refs"`
 	SensitiveValues    []string               `json:"-" yaml:"-"`
+}
+
+func (c *episodeMemoryCandidate) UnmarshalJSON(data []byte) error {
+	type candidateAlias episodeMemoryCandidate
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if raw, ok := fields["confidence"]; ok && strings.TrimSpace(string(raw)) == "null" {
+		return fmt.Errorf("episode memory confidence must be a number")
+	}
+	var decoded candidateAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*c = episodeMemoryCandidate(decoded)
+	return nil
 }
 
 type episodeMemoryProposal struct {
@@ -139,6 +159,10 @@ func cloneEpisodeMemoryProposal(proposal episodeMemoryProposal) episodeMemoryPro
 		cloned.Candidates[i].Tags = append([]string(nil), candidate.Tags...)
 		cloned.Candidates[i].EvidenceRefs = append([]string(nil), candidate.EvidenceRefs...)
 		cloned.Candidates[i].SensitiveValues = append([]string(nil), candidate.SensitiveValues...)
+		if candidate.Confidence != nil {
+			confidence := *candidate.Confidence
+			cloned.Candidates[i].Confidence = &confidence
+		}
 	}
 	cloned.ExistingRevisions = make(map[string]int, len(proposal.ExistingRevisions))
 	for id, revision := range proposal.ExistingRevisions {
@@ -1202,6 +1226,11 @@ func validateEpisodeMemoryCandidate(episode TaskEpisode, assessment episodeMemor
 	if candidate.LessonKey == "" || seen[candidate.LessonKey] {
 		return episodeMemoryCandidate{}, false
 	}
+	confidence, err := normalizeEpisodeMemoryConfidence(candidate.Confidence)
+	if err != nil {
+		return episodeMemoryCandidate{}, false
+	}
+	candidate.Confidence = episodeMemoryConfidencePointer(confidence)
 	switch candidate.Type {
 	case episodeMemoryTypeProcedure, episodeMemoryTypeNavigation, episodeMemoryTypeCalibration, episodeMemoryTypeFailure, episodeMemoryTypeFact:
 	default:
@@ -1408,7 +1437,11 @@ func (p *episodeMemoryProcessor) createMemory(ctx context.Context, episode TaskE
 		return existing.ID, nil
 	}
 	deviceID := firstNonEmptyString([]string{candidate.Scope["device_id"], episode.DeviceScope["device_id"], defaultMemoryDeviceID})
-	priority, confidence, ttl := episodeMemoryDefaults(candidate.Type)
+	priority, ttl := episodeMemoryDefaults(candidate.Type)
+	confidence, err := normalizeEpisodeMemoryConfidence(candidate.Confidence)
+	if err != nil {
+		return "", err
+	}
 	item := DeviceMemoryItem{
 		ID:               "devmem_" + stableMemoryID(episode.ID, candidate.LessonKey),
 		Type:             string(candidate.Type),
@@ -1466,6 +1499,11 @@ func (p *episodeMemoryProcessor) updateMemory(ctx context.Context, episode TaskE
 	if existing.DeviceID != "" && deviceID != "" && !strings.EqualFold(existing.DeviceID, deviceID) {
 		return nil
 	}
+	priority, _ := episodeMemoryDefaults(candidate.Type)
+	confidence, err := normalizeEpisodeMemoryConfidence(candidate.Confidence)
+	if err != nil {
+		return err
+	}
 	newStatus := deviceMemoryStatusActive
 	if candidate.UnresolvedConflict {
 		newStatus = deviceMemoryStatusDisputed
@@ -1484,6 +1522,7 @@ func (p *episodeMemoryProcessor) updateMemory(ctx context.Context, episode TaskE
 		Title: newTitle, Summary: newSummary, Content: newContent, DeviceID: deviceID,
 		AppName: candidate.Scope["app_name"], PageName: candidate.Scope["page_name"],
 		Tags: normalizeEpisodeMemoryTags(candidate.Tags), Applicability: newScope,
+		Priority: priority, Confidence: confidence,
 		EvidenceRefs: []MemorySourceRef{episodeMemoryEvidenceRef(episode, candidate.EvidenceRefs)},
 		Steps:        newSteps,
 	}
@@ -1565,19 +1604,34 @@ func episodeMemoryRetrievalScope(episode TaskEpisode) map[string]string {
 	return scope
 }
 
-func episodeMemoryDefaults(memoryType episodeMemoryType) (priority int, confidence float64, ttl string) {
+func episodeMemoryDefaults(memoryType episodeMemoryType) (priority int, ttl string) {
 	switch memoryType {
 	case episodeMemoryTypeFailure:
-		return 80, 0.7, "60d"
+		return 80, "60d"
 	case episodeMemoryTypeProcedure:
-		return 70, 0.75, "45d"
+		return 70, "45d"
 	case episodeMemoryTypeCalibration:
-		return 75, 0.75, "30d"
+		return 75, "30d"
 	case episodeMemoryTypeNavigation:
-		return 65, 0.7, "30d"
+		return 65, "30d"
 	default:
-		return 60, 0.7, "45d"
+		return 60, "45d"
 	}
+}
+
+func normalizeEpisodeMemoryConfidence(confidence *float64) (float64, error) {
+	if confidence == nil {
+		return episodeMemoryDefaultConfidence, nil
+	}
+	value := *confidence
+	if value <= 0 || value > 1 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, fmt.Errorf("episode memory confidence must be greater than 0 and at most 1")
+	}
+	return value, nil
+}
+
+func episodeMemoryConfidencePointer(confidence float64) *float64 {
+	return &confidence
 }
 
 func renderEpisodeMemoryContent(candidate episodeMemoryCandidate) string {
@@ -1793,17 +1847,18 @@ const episodeMemoryProposalInstructions = `For each Episode, return a proposal o
     "retention": "durable | transient | sensitive",
     "memory_id": "required only for update",
     "unresolved_conflict": false,
-    "conflict_reason": "required only when unresolved_conflict is true",
-    "situation": "when this lesson applies",
-    "guidance": "what the future Agent should do or consider",
-    "expected_effect": "directly observable expected result",
-    "scope": {"device_id":"...", "app_name":"...", "app_version":"...", "page_name":"...", "goal_pattern":"...", "precondition":"..."},
+	    "conflict_reason": "required only when unresolved_conflict is true",
+	    "situation": "when this lesson applies",
+	    "guidance": "what the future Agent should do or consider",
+	    "expected_effect": "directly observable expected result",
+	    "confidence": 0.85,
+	    "scope": {"device_id":"...", "app_name":"...", "app_version":"...", "page_name":"...", "goal_pattern":"...", "precondition":"..."},
     "tags": ["short retrieval terms"],
     "evidence_refs": ["real Episode event ids"]
   }]
 }
 
-Return at most 3 independent candidates; an empty candidates array is correct when nothing is worth retaining. Every candidate must declare a retention class. Use durable only for reusable knowledge that remains safe and useful within the evidenced future scope. Use transient for Episode/session/runtime-bound observations and sensitive for secrets or values that must not be persisted. One-time verification codes, passwords, credentials, tokens, and other session-only values must never be durable; generalize a reusable workflow without the value. Only durable candidates are eligible for Device Memory and every non-empty proposal is independently audited before persistence. Every durable candidate must be reusable in future similar tasks, change future behavior or decisions, have explicit scope, add new knowledge or evidence, and be safer to recall than to omit. Do not retain greetings, task-specific prose, temporary values, OTPs, transient page contents, or information already explicitly saved through a Memory-management tool.
+Return at most 3 independent candidates; an empty candidates array is correct when nothing is worth retaining. Every candidate must declare a retention class and a confidence greater than 0 and at most 1 that reflects the semantic certainty of that specific conclusion from its evidence. Confidence is conclusion-specific; do not infer it from the memory type. Use durable only for reusable knowledge that remains safe and useful within the evidenced future scope. Use transient for Episode/session/runtime-bound observations and sensitive for secrets or values that must not be persisted. One-time verification codes, passwords, credentials, tokens, and other session-only values must never be durable; generalize a reusable workflow without the value. Only durable candidates are eligible for Device Memory and every non-empty proposal is independently audited before persistence. Every durable candidate must be reusable in future similar tasks, change future behavior or decisions, have explicit scope, add new knowledge or evidence, and be safer to recall than to omit. Do not retain greetings, task-specific prose, temporary values, OTPs, transient page contents, or information already explicitly saved through a Memory-management tool.
 When direct evidence verifies a non-obvious workaround, device-specific route, operational correction, stop condition, or stable fact that satisfies the type rules, you must emit at least one candidate. Do not return an empty candidates array merely because the Episode achieved its goal.
 
 Assess goal_result independently from the recorded success flag. achieved and not_achieved require direct result, final-state, screenshot, or user-correction evidence. Use unknown when final proof is missing and say what is missing. User steer is correction evidence, not an admission gate. Do not rely on verifier_decision or ObservedState; they are not part of this pipeline.

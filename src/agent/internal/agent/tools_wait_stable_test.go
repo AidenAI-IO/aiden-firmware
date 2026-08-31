@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/mnk"
 	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/screenprovider"
 	"bytes"
@@ -162,7 +163,7 @@ func TestWaitStableScreenToolWaitReportsScreenChangedWhenFramesDiffer(t *testing
 	}
 }
 
-func TestPostActionScreenshotToolUsesInternalStableWaitWithoutWaitScreenshot(t *testing.T) {
+func TestDragStartUsesInternalStableWaitBeforeReturningScreenshot(t *testing.T) {
 	events := make([]string, 0, 4)
 	action := &stubTool{name: "touch_gesture"}
 	action.callFn = func(context.Context, string) (string, error) {
@@ -188,7 +189,7 @@ func TestPostActionScreenshotToolUsesInternalStableWaitWithoutWaitScreenshot(t *
 	}
 	tool := newPostActionStableScreenshotTool(action, waitStable, screenshot, 0, ScreenStableDefaults{TimeoutMs: 50, StableMs: 1, DiffThreshold: 2})
 
-	out, err := tool.Call(context.Background(), `{"type":"tap"}`)
+	out, err := tool.Call(context.Background(), `{"type":"drag_start","point":{"x":400,"y":500}}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
@@ -201,12 +202,82 @@ func TestPostActionScreenshotToolUsesInternalStableWaitWithoutWaitScreenshot(t *
 	if waitStable.waitCount != 1 {
 		t.Fatalf("wait count = %d, want 1", waitStable.waitCount)
 	}
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result.ScreenStable == nil || !*result.ScreenStable {
+		t.Fatalf("drag_start ScreenStable = %#v, want true", result.ScreenStable)
+	}
 	if len(screenshot.inputs) != 2 {
 		t.Fatalf("post-action screenshot inputs = %#v, want baseline and final captures", screenshot.inputs)
 	}
 	if want := []string{"pre-action baseline", "action", "stable wait", "post-stable final"}; !slices.Equal(events, want) {
 		t.Fatalf("post-action call order = %#v, want %#v", events, want)
 	}
+}
+
+func TestDragStartUnstableWaitReturnsToStartAndReleasesContact(t *testing.T) {
+	provider := &dragRecoveryProvider{}
+	action := &TouchGestureTool{mnkProvider: provider}
+	waitStable := &fakeInternalWaitTool{
+		result: waitStableScreenResult{OK: true, Stable: false, ElapsedMs: 50},
+	}
+	screenshot := &stubTool{
+		name:   "screenshot",
+		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
+	}
+	tool := newPostActionStableScreenshotTool(action, waitStable, screenshot, 0, ScreenStableDefaults{TimeoutMs: 50, StableMs: 1, DiffThreshold: 2})
+
+	out, err := tool.Call(context.Background(), `{"type":"drag_start","point":{"x":400,"y":500}}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result.ScreenStable == nil || *result.ScreenStable {
+		t.Fatalf("ScreenStable = %#v, want false", result.ScreenStable)
+	}
+	if provider.dragActive {
+		t.Fatal("unstable drag_start left contact active")
+	}
+	if provider.releaseX != 400 || provider.releaseY != 500 {
+		t.Fatalf("unstable recovery released at (%v,%v), want original point (400,500)", provider.releaseX, provider.releaseY)
+	}
+
+	// A second start succeeds only if the unstable first drag was released.
+	if out, err := action.Call(context.Background(), `{"type":"drag_start","point":{"x":600,"y":500}}`); err != nil || out != "ok" {
+		t.Fatalf("second drag_start = %q, %v; unstable recovery left contact active", out, err)
+	}
+	if out, err := action.Call(context.Background(), `{"type":"drag_release","point":{"x":600,"y":500}}`); err != nil || out != "ok" {
+		t.Fatalf("cleanup drag_release = %q, %v", out, err)
+	}
+}
+
+type dragRecoveryProvider struct {
+	mnk.Provider
+	dragActive bool
+	releaseX   float64
+	releaseY   float64
+}
+
+func (p *dragRecoveryProvider) DragStart(context.Context, float64, float64, string) error {
+	if p.dragActive {
+		return errors.New("drag already active")
+	}
+	p.dragActive = true
+	return nil
+}
+
+func (p *dragRecoveryProvider) DragRelease(_ context.Context, x, y float64) error {
+	if !p.dragActive {
+		return errors.New("drag is not active")
+	}
+	p.releaseX, p.releaseY = x, y
+	p.dragActive = false
+	return nil
 }
 
 func TestWaitStableScreenToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) {

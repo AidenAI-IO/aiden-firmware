@@ -281,7 +281,7 @@ Recommended for Apple Silicon:
 
 ```bash
 colima start --vm-type vz --vz-rosetta
-./build.sh
+./build.sh binaries
 ```
 
 Confirm not using `--arch x86_64` to start Colima VM.

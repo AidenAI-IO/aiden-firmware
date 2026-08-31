@@ -66,7 +66,9 @@ CommitProcessed(batch)       Advance memory cursor after Memory write succeeds
 CleanupProcessedBefore(...)  Only clean processed date shards
 ```
 
-Persisted records retain BLE original fields and add an Agent-local monotonically increasing `context_id`. The memory cursor uses `context_id` and does not depend on BLE generation. Persistence uses UTC date-sharded JSONL; the source cursor advances only after write succeeds. On power recovery, completely written records are retained and the last incomplete JSON line is repaired.
+Persisted records retain BLE original fields and add an Agent-local monotonically increasing `context_id`. The memory cursor uses `context_id` and does not depend on BLE generation. The BLE `source_cursor` is generation-local, while `stored_cursor` and `memory_cursor` remain monotonic Agent cursors; after a BLE generation reset, `source_cursor=0` alongside a larger stored cursor is expected. Reset diagnostics retain both the new generation and `previous_generation`.
+
+Persistence uses UTC date-sharded JSONL. The shard date prefers the phone-provided notification `date` (including ANCS `YYYYMMDDTHHMMSS`) and falls back to board `received_at` only when the phone date is unavailable or invalid. Cleanup and reclaim estimation inspect each record before deleting an old-named shard. A recent or unparseable record protects the whole shard, which also protects historical records written under an incorrect board-clock filename. The source cursor advances only after write succeeds. On power recovery, completely written records are retained and the last incomplete JSON line is repaired.
 
 `CommitProcessed` requires passing in a contiguous batch starting from the current cursor. Cleaners must call `NotificationContext` cleanup methods and cannot bypass Context to delete JSONL directly, to avoid racing with append/commit.
 
@@ -78,15 +80,15 @@ The Processor owns the complete business flow for the notification scenario:
 
 1. `Consume` the current BLE ring, then `ReadPending` for this batch;
 2. Coalesce added/modified/removed changes for the same notification;
-3. Deterministically filter obvious noise like OTP, verification codes, marketing, and secrets;
+3. Structurally filter removed and empty notifications;
 4. For each notification in the batch, retrieve related Memory and merge into one `MemoryMergeEngine.Extract` call;
-5. Split by `context_id`, parse and validate notification-specific proposals; each notification produces at most one action;
+5. Classify each notification as user-specific fact, public information, marketing, secret, or one-off noise, then split by `context_id` and validate each proposal; each notification produces at most one action;
 6. Apply actions (add, update, remove, reinforce, or promote) in Temporary or Long-Term Store;
 7. Only `CommitProcessed` after all related Memory writes succeed; if backlog remains, continue next batch in the same idle window without waiting another 5 minutes.
 
-When no model is available, tests and offline scenarios can use a deterministic Temporary Memory fallback. The Processor does not place notification business rules into the Worker, nor does it require Episode and Notification to use the same action set or state machine.
+Only user-specific state, commitments, deadlines, reservations, deliveries, bills, preferences, and rules are eligible for memory. General news, product facts, and public prices are ignored even when factually true. Source domains such as banking, health, legal, and messaging are not rejection criteria by themselves. When no model is available, source ingestion and raw storage continue, but `memory_cursor` stays behind so a later run with a configured model can classify the pending context. The Processor does not place notification business rules into the Worker, nor does it require Episode and Notification to use the same action set or state machine.
 
-Notification proposal actions include `ignore`, `add`, `update`, `reinforce`, `remove`, and `promote`. Updating existing records requires accurate `memory_id` and `memory_revision`; invalid proposals do not advance the memory cursor.
+Notification proposal actions include `ignore`, `add`, `update`, `reinforce`, `remove`, and `promote`. Updating existing records requires accurate `memory_id` and `memory_revision`. Batch protocol violations such as missing, duplicate, or unknown `context_id` remain fatal and do not advance the memory cursor. A malformed proposal for one known notification is logged and treated as a no-op, valid siblings are still applied, and the completed source batch advances. Multiple redundant `ignore` actions normalize to one `ignore`.
 
 Explicit Processor actions are not reinterpreted by the Store. `add` creates the Processor-assigned ID without similarity search; `update`, `reinforce`, and `remove` operate only on the specified ID with revision validation. The separate `save_memory` candidate path continues to use Store-owned duplicate detection because it does not carry a prevalidated target action.
 
@@ -100,6 +102,8 @@ EpisodeProcessor retains existing Episode semantics:
 - Validates `goal_result`, candidate types, evidence references, and revisions itself;
 - Executes Device Memory add, update, and conflict resolution itself;
 - Uses the Episode processing ledger to save `processing → proposed → done/retry/ignored`, supporting crash recovery.
+
+For both Processors, priority is code-owned so cross-scenario recall has stable weights. Confidence is supplied per model conclusion, validated to `(0, 1]`, and defaults to `0.7` only when omitted; explicit zero is invalid. An `update` replaces both values with metadata for the current conclusion, while `reinforce` and Notification promotion preserve stronger accumulated metadata.
 
 ## Memory and Recall
 
@@ -125,7 +129,7 @@ Notification body content is sent to the currently configured LLM provider as ex
 ## Failure and Recovery
 
 - BLE consume failure: does not advance source cursor, retains pending, retries at next idle;
-- LLM, proposal validation, or Memory write failure: does not advance memory cursor;
+- LLM batch protocol failure or Memory write failure: does not advance memory cursor; a single record-level proposal validation failure is isolated as a no-op;
 - Single Processor failure: logs the scenario error and retains its pending, backs off by idle delay to avoid hot loops from persistent BLE/LLM/disk errors; other registered scenarios can still execute serially in the same round and do not share business transactions;
 - Foreground task starts: shared Worker cancels in-flight model call; Processor retains its own persistent state and continues at next idle;
 - Worker restart: Episode recovers from processing ledger, Notification recovers from source/memory cursors;

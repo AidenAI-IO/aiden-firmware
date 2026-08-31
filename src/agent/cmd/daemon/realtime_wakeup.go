@@ -29,6 +29,8 @@ const (
 	realtimeUpdateTimeout      = 5 * time.Second
 	realtimePlaybackKeepAlive  = 10 * time.Second
 	realtimeToolCallTimeout    = 30 * time.Second
+	realtimeNotificationPoll   = 500 * time.Millisecond
+	realtimeNotificationDrain  = 30 * time.Second
 	realtimeTaskResultDebounce = 500 * time.Millisecond
 	realtimeContextReplayTurns = 10
 )
@@ -204,6 +206,40 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 	bridge := newRealtimeChatBridge(func() {
 		signalWakeupEvent(events)
 	})
+	voiceNotificationTicker := time.NewTicker(realtimeNotificationPoll)
+	defer voiceNotificationTicker.Stop()
+	var notificationFallbackCancel context.CancelFunc
+	var notificationFallbackDone chan struct{}
+	stopNotificationFallback := func() {
+		if notificationFallbackCancel != nil {
+			notificationFallbackCancel()
+		}
+		if notificationFallbackDone != nil {
+			<-notificationFallbackDone
+		}
+		notificationFallbackCancel = nil
+		notificationFallbackDone = nil
+	}
+	defer stopNotificationFallback()
+	startNotificationFallback := func() {
+		if server == nil || runtime == nil || !server.CanSpeakVoiceNotification() || notificationFallbackDone != nil {
+			return
+		}
+		fallbackCtx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		notificationFallbackCancel = cancel
+		notificationFallbackDone = done
+		go func() {
+			defer close(done)
+			deliverPendingVoiceNotification(fallbackCtx, runtime, server.SpeakVoiceNotification)
+		}()
+	}
+	notificationFallbackFinished := func() <-chan struct{} {
+		if notificationFallbackDone == nil {
+			return nil
+		}
+		return notificationFallbackDone
+	}
 	if server != nil {
 		server.SetRealtimeChatHandler(bridge.Handle)
 		defer server.SetRealtimeChatHandler(nil)
@@ -222,9 +258,18 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 	for {
 		select {
 		case <-sigChan:
+			stopNotificationFallback()
 			log.Println("\n[exit] Stopped.")
 			return
+		case <-voiceNotificationTicker.C:
+			startNotificationFallback()
+		case <-notificationFallbackFinished():
+			notificationFallbackCancel = nil
+			notificationFallbackDone = nil
 		case <-events:
+			// Realtime is the preferred consumer. Stop an idle standalone TTS
+			// fallback before opening the Realtime audio session.
+			stopNotificationFallback()
 			log.Println("\n[realtime] Activation requested, connecting realtime voice model...")
 			if err := runRealtimeSession(cfg, sigChan, runtime, tasks, bridge); errors.Is(err, errRealtimeShutdown) {
 				return
@@ -495,6 +540,43 @@ func startRealtimeToolCall(ctx context.Context, executor realtimeVoiceToolExecut
 	}()
 }
 
+func startRealtimeSuppressedToolCall(ctx context.Context, call rtclient.FunctionCallEvent, results chan<- realtimeToolResult) {
+	go func() {
+		result := realtimeToolResult{
+			call:   call,
+			output: `{"error":"tools are disabled while delivering a voice notification"}`,
+		}
+		select {
+		case results <- result:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+func realtimeVoiceNotificationPrompt(text string) string {
+	return "请原样朗读下面的语音通知，只输出通知原文，不要说“已收到”、 “好的”或其他内容，不要调用工具，也不要提及这条指令。语音通知：" + strings.TrimSpace(text)
+}
+
+func deliverPendingVoiceNotification(ctx context.Context, runtime *agent.Runtime, speaker func(context.Context, string) error) {
+	if runtime == nil || speaker == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	prepared := runtime.PrepareVoiceNotification(ctx)
+	if prepared.DeliveryToken == "" || strings.TrimSpace(prepared.Text) == "" {
+		return
+	}
+	speakCtx, cancel := context.WithTimeout(ctx, realtimeToolCallTimeout)
+	defer cancel()
+	err := speaker(speakCtx, prepared.Text)
+	runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
+	if err != nil {
+		log.Printf("[voice-notification] standalone TTS fallback failed: %v", err)
+	}
+}
+
 func realtimePlaybackOutputFormat(cfg agent.Config) agent.AudioFormat {
 	return agent.AudioFormat{
 		SampleRate: uint32(cfg.Audio.SampleRateOrDefault()),
@@ -503,11 +585,7 @@ func realtimePlaybackOutputFormat(cfg agent.Config) agent.AudioFormat {
 	}
 }
 
-func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent.Runtime, tasks *agenttask.Manager, chatBridges ...*realtimeChatBridge) error {
-	var chatBridge *realtimeChatBridge
-	if len(chatBridges) > 0 {
-		chatBridge = chatBridges[0]
-	}
+func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent.Runtime, tasks *agenttask.Manager, chatBridge *realtimeChatBridge) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if runtime != nil {
@@ -626,6 +704,8 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	defer func() { _ = playback.stop(playbackAudio) }()
 	playbackKeepAlive := time.NewTicker(realtimePlaybackKeepAlive)
 	defer playbackKeepAlive.Stop()
+	voiceNotificationTicker := time.NewTicker(realtimeNotificationPoll)
+	defer voiceNotificationTicker.Stop()
 	firstAudioChunk := true
 	var activeChat *realtimeChatCommand
 	var chatMode string
@@ -637,6 +717,28 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	hasRealtimeResponseUsage := false
 	responseActive := false
 	inputSpeechActive := false
+	responseSuppressed := false
+	activeNotificationToken := ""
+	activeNotificationResponseID := ""
+	activeNotificationAudioWritten := false
+	// A notification can be interrupted before response.created supplies its
+	// response ID. Keep a marker so the eventual response is still suppressed.
+	suppressedNotificationResponsePending := false
+	suppressedNotificationResponseIDs := make(map[string]struct{})
+	var notificationDrainDone <-chan error
+	var notificationDrainCancel context.CancelFunc
+	defer func() {
+		if notificationDrainCancel != nil {
+			notificationDrainCancel()
+		}
+	}()
+	defer func() {
+		// A transport/session failure can happen before response.done. Return the
+		// lease so the outer TTS fallback can retry the notification.
+		if activeNotificationToken != "" && runtime != nil {
+			runtime.ReportSpokenTextDelivery(activeNotificationToken, context.Canceled)
+		}
+	}()
 	toolExecutor := newRealtimeVoiceToolExecutor(runtime, tasks)
 	toolResults := make(chan realtimeToolResult, 16)
 	toolTracker := newRealtimeToolTracker()
@@ -665,7 +767,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 		}
 	}()
 	tryInjectTaskUpdates := func() error {
-		if !taskUpdatesReady || len(pendingTaskUpdates) == 0 || responseActive || inputSpeechActive || activeChat != nil || chatBridgeHasPending(chatBridge) {
+		if !taskUpdatesReady || len(pendingTaskUpdates) == 0 || responseActive || inputSpeechActive || activeNotificationToken != "" || notificationDrainDone != nil || activeChat != nil || chatBridgeHasPending(chatBridge) {
 			return nil
 		}
 		message := formatRealtimeTaskUpdates(pendingTaskUpdates)
@@ -680,6 +782,37 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 		}
 		pendingTaskUpdates = nil
 		taskUpdatesReady = false
+		responseActive = true
+		return nil
+	}
+	tryInjectVoiceNotification := func() error {
+		if runtime == nil || activeNotificationToken != "" || notificationDrainDone != nil || responseActive || inputSpeechActive || activeChat != nil || chatBridgeHasPending(chatBridge) {
+			return nil
+		}
+		prepared := runtime.PrepareVoiceNotification(ctx)
+		if prepared.DeliveryToken == "" || strings.TrimSpace(prepared.Text) == "" {
+			return nil
+		}
+		item := rtclient.ConversationItem{
+			Type: "message",
+			// Realtime treats a response as a reaction to the latest user-facing
+			// item. A system item is accepted by the protocol but Qwen may only
+			// acknowledge it (for example, with “已收到”) instead of synthesizing
+			// the requested notification audio.
+			Role:    "user",
+			Content: []rtclient.ContentPart{{Type: "input_text", Text: realtimeVoiceNotificationPrompt(prepared.Text)}},
+		}
+		if err := session.CreateItem(ctx, item, ""); err != nil {
+			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
+			return fmt.Errorf("inject realtime voice notification: %w", err)
+		}
+		if err := session.CreateResponse(ctx, nil); err != nil {
+			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
+			return fmt.Errorf("respond to realtime voice notification: %w", err)
+		}
+		activeNotificationToken = prepared.DeliveryToken
+		activeNotificationResponseID = ""
+		activeNotificationAudioWritten = false
 		responseActive = true
 		return nil
 	}
@@ -706,13 +839,19 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			if err != nil {
 				return err
 			}
+		case <-voiceNotificationTicker.C:
+			if err := tryInjectVoiceNotification(); err != nil {
+				return err
+			}
 		case result := <-toolResults:
 			call := result.call
 			if err := session.SendFunctionOutput(ctx, call.CallID, result.output); err != nil {
 				return fmt.Errorf("send realtime tool result: %w", err)
 			}
-			if err := appendRealtimeToolExecution(userContext, call, result.output); err != nil {
-				return fmt.Errorf("persist realtime tool call and result: %w", err)
+			if activeNotificationToken == "" && !hasSuppressedNotificationResponse(suppressedNotificationResponseIDs, call.ResponseID) {
+				if err := appendRealtimeToolExecution(userContext, call, result.output); err != nil {
+					return fmt.Errorf("persist realtime tool call and result: %w", err)
+				}
 			}
 			if toolTracker.complete(call.ResponseID) {
 				responseActive = true
@@ -737,6 +876,34 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			// without adding audible silence to the playback queue.
 			if err := playback.keepAlive(playbackAudio, outputFormat); err != nil {
 				return fmt.Errorf("keep realtime playback alive: %w", err)
+			}
+		case err := <-notificationDrainDone:
+			notificationDrainDone = nil
+			if notificationDrainCancel != nil {
+				notificationDrainCancel()
+				notificationDrainCancel = nil
+			}
+			if activeNotificationToken == "" {
+				continue
+			}
+			if err != nil {
+				runtime.ReportSpokenTextDelivery(activeNotificationToken, err)
+				if stopErr := playback.stop(playbackAudio); stopErr != nil {
+					return fmt.Errorf("stop failed realtime notification playback: %w", stopErr)
+				}
+			} else {
+				runtime.ReportSpokenTextDelivery(activeNotificationToken, nil)
+				playback.markDrained()
+			}
+			activeNotificationToken = ""
+			activeNotificationResponseID = ""
+			activeNotificationAudioWritten = false
+			responseActive = false
+			if err := tryInjectVoiceNotification(); err != nil {
+				return err
+			}
+			if err := tryInjectTaskUpdates(); err != nil {
+				return err
 			}
 		case <-agentTaskNotifications(tasks):
 			pendingTaskUpdates = append(pendingTaskUpdates, tasks.DrainTerminalTasks()...)
@@ -771,7 +938,7 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				return err
 			}
 		case command := <-chatBridgeCommands(chatBridge):
-			if activeChat != nil || responseActive || inputSpeechActive {
+			if activeChat != nil || responseActive || inputSpeechActive || activeNotificationToken != "" || notificationDrainDone != nil {
 				sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "realtime response is busy"})
 				close(command.events)
 				continue
@@ -811,6 +978,24 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 			switch event.Type {
 			case "input_audio_buffer.speech_started":
 				inputSpeechActive = true
+				if activeNotificationToken != "" {
+					if notificationDrainDone == nil {
+						markSuppressedRealtimeNotificationResponse(activeNotificationResponseID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs)
+						responseSuppressed = activeNotificationResponseID != ""
+					}
+					if runtime != nil {
+						runtime.ReportSpokenTextDelivery(activeNotificationToken, context.Canceled)
+					}
+					if notificationDrainCancel != nil {
+						notificationDrainCancel()
+						notificationDrainCancel = nil
+						notificationDrainDone = nil
+						responseActive = false
+					}
+					activeNotificationToken = ""
+					activeNotificationResponseID = ""
+					activeNotificationAudioWritten = false
+				}
 				log.Println("[realtime] Speech started, interrupting local playback")
 				// Clear the queued response immediately, then reopen the speaker
 				// session so mic and speaker remain active for the next turn.
@@ -831,8 +1016,18 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 					return fmt.Errorf("persist realtime user transcript: %w", err)
 				}
 			case "response.created":
+				var created rtclient.ResponseEvent
+				if err := event.Decode(&created); err != nil {
+					return err
+				}
 				log.Println("[realtime] Response created")
 				responseActive = true
+				responseSuppressed = false
+				if bindSuppressedRealtimeNotificationResponse(created.Response.ID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs) {
+					responseSuppressed = true
+				} else if activeNotificationToken != "" && activeNotificationResponseID == "" {
+					activeNotificationResponseID = created.Response.ID
+				}
 				responseText.Reset()
 				responseTranscript.Reset()
 				if realtimeOutputFormat.SampleRate != outputFormat.SampleRate &&
@@ -845,6 +1040,9 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				// open across responses.
 				if err := playback.beginResponse(playbackAudio, outputFormat); err != nil {
 					return fmt.Errorf("begin realtime playback response: %w", err)
+				}
+				if responseSuppressed {
+					playback.suppressDeltas = true
 				}
 			case "response.text.delta":
 				var delta rtclient.ResponseDeltaEvent
@@ -884,8 +1082,14 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				if outputResampler != nil {
 					pcm = outputResampler.Write(pcm)
 				}
+				if responseSuppressed || suppressedNotificationResponsePending {
+					continue
+				}
 				if err := playback.append(playbackAudio, outputFormat, pcm); err != nil {
 					return err
+				}
+				if activeNotificationToken != "" && len(pcm) > 0 {
+					activeNotificationAudioWritten = true
 				}
 			case "response.audio_transcript.done":
 				var done rtclient.TranscriptEvent
@@ -904,7 +1108,11 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 				}
 				log.Printf("[realtime] Tool call: %s", call.Name)
 				toolTracker.start(call.ResponseID)
-				startRealtimeToolCall(ctx, toolExecutor, call, toolResults)
+				if activeNotificationToken != "" || suppressedNotificationResponsePending || hasSuppressedNotificationResponse(suppressedNotificationResponseIDs, call.ResponseID) {
+					startRealtimeSuppressedToolCall(ctx, call, toolResults)
+				} else {
+					startRealtimeToolCall(ctx, toolExecutor, call, toolResults)
+				}
 			case "response.done":
 				var done rtclient.ResponseEvent
 				if err := event.Decode(&done); err != nil {
@@ -916,20 +1124,37 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 					realtimeResponseUsage.OutputTokens += done.Response.Usage.OutputTokens
 					hasRealtimeResponseUsage = true
 				}
-				if err := playback.finishResponse(playbackAudio); err != nil {
-					return fmt.Errorf("finish realtime playback response: %w", err)
+				if suppressedNotificationResponsePending && done.Response.ID != "" {
+					bindSuppressedRealtimeNotificationResponse(done.Response.ID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs)
 				}
-				if hasTools, continueNow := toolTracker.done(done.Response.ID); hasTools {
-					if !continueNow {
+				_, suppressedResponse := suppressedNotificationResponseIDs[done.Response.ID]
+				notificationResponse := activeNotificationToken != "" &&
+					(activeNotificationResponseID == "" || activeNotificationResponseID == done.Response.ID)
+				if suppressedResponse {
+					delete(suppressedNotificationResponseIDs, done.Response.ID)
+					toolTracker.clear(done.Response.ID)
+				}
+				if !suppressedResponse && !notificationResponse {
+					if hasTools, continueNow := toolTracker.done(done.Response.ID); hasTools {
+						if !continueNow {
+							continue
+						}
+						responseActive = true
+						if err := session.CreateResponse(ctx, nil); err != nil {
+							return fmt.Errorf("continue realtime response after tool call: %w", err)
+						}
 						continue
 					}
-					responseActive = true
-					if err := session.CreateResponse(ctx, nil); err != nil {
-						return fmt.Errorf("continue realtime response after tool call: %w", err)
-					}
-					continue
 				}
-				if done.Response.Status == "" || done.Response.Status == "completed" {
+				if notificationResponse {
+					toolTracker.clear(done.Response.ID)
+				}
+				if !suppressedResponse {
+					if err := playback.finishResponse(playbackAudio, false); err != nil {
+						return fmt.Errorf("finish realtime playback response: %w", err)
+					}
+				}
+				if !notificationResponse && !suppressedResponse && (done.Response.Status == "" || done.Response.Status == "completed") {
 					assistantText := strings.TrimSpace(responseText.String())
 					if assistantText == "" {
 						assistantText = strings.TrimSpace(responseTranscript.String())
@@ -956,6 +1181,40 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 					sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventDone, Response: content})
 					close(activeChat.events)
 					activeChat = nil
+				}
+				if notificationResponse {
+					var deliveryErr error
+					if done.Response.Status != "" && done.Response.Status != "completed" {
+						deliveryErr = fmt.Errorf("realtime notification response ended with status %q", done.Response.Status)
+					} else if !activeNotificationAudioWritten {
+						deliveryErr = errors.New("realtime notification response produced no audio")
+					}
+					if deliveryErr == nil && activeNotificationAudioWritten {
+						if err := playback.finishResponse(playbackAudio, true); err != nil {
+							deliveryErr = fmt.Errorf("finish realtime notification playback: %w", err)
+						}
+					}
+					if deliveryErr != nil || !activeNotificationAudioWritten {
+						runtime.ReportSpokenTextDelivery(activeNotificationToken, deliveryErr)
+						if stopErr := playback.stop(playbackAudio); stopErr != nil {
+							return fmt.Errorf("stop failed realtime notification playback: %w", stopErr)
+						}
+						activeNotificationToken = ""
+						activeNotificationResponseID = ""
+						activeNotificationAudioWritten = false
+					} else {
+						drainCtx, cancel := context.WithTimeout(ctx, realtimeNotificationDrain)
+						notificationDrainCancel = cancel
+						doneCh := make(chan error, 1)
+						notificationDrainDone = doneCh
+						go func() {
+							doneCh <- playbackAudio.WaitForPlaybackDrain(drainCtx)
+						}()
+					}
+				}
+				responseSuppressed = false
+				if err := tryInjectVoiceNotification(); err != nil {
+					return err
 				}
 				if err := tryInjectTaskUpdates(); err != nil {
 					return err
@@ -987,6 +1246,33 @@ func agentTaskUserActionNotifications(tasks *agenttask.Manager) <-chan struct{} 
 
 func chatBridgeHasPending(bridge *realtimeChatBridge) bool {
 	return bridge != nil && len(bridge.commands) > 0
+}
+
+func hasSuppressedNotificationResponse(responses map[string]struct{}, responseID string) bool {
+	if responseID == "" {
+		return false
+	}
+	_, ok := responses[responseID]
+	return ok
+}
+
+func markSuppressedRealtimeNotificationResponse(responseID string, pending *bool, responses map[string]struct{}) {
+	if responseID != "" {
+		responses[responseID] = struct{}{}
+		return
+	}
+	if pending != nil {
+		*pending = true
+	}
+}
+
+func bindSuppressedRealtimeNotificationResponse(responseID string, pending *bool, responses map[string]struct{}) bool {
+	if pending != nil && *pending && responseID != "" {
+		responses[responseID] = struct{}{}
+		*pending = false
+		return true
+	}
+	return hasSuppressedNotificationResponse(responses, responseID)
 }
 
 func formatRealtimeTaskUpdates(tasks []agenttask.Task) string {
@@ -1212,6 +1498,10 @@ type realtimePlaybackAudioAdapter struct {
 	backend tts.AudioServiceBackend
 }
 
+type realtimePlaybackDrainWaiter interface {
+	WaitForPlaybackDrain(context.Context) error
+}
+
 func (a realtimePlaybackAudioAdapter) StartPlayback(format agent.AudioFormat) (*agent.PlaybackStartResult, error) {
 	if a.backend == nil {
 		return nil, errors.New("realtime playback backend is unavailable")
@@ -1232,7 +1522,23 @@ func (a realtimePlaybackAudioAdapter) WritePlayChunk(sessionID uint64, data []by
 }
 
 func (a realtimePlaybackAudioAdapter) StopPlayback(sessionID uint64) error {
-	return a.backend.StopPlayback(sessionID)
+	err := a.backend.StopPlayback(sessionID)
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "session_not_found") ||
+		strings.Contains(message, "session not found") {
+		return nil
+	}
+	return err
+}
+
+func (a realtimePlaybackAudioAdapter) WaitForPlaybackDrain(ctx context.Context) error {
+	if waiter, ok := a.backend.(realtimePlaybackDrainWaiter); ok {
+		return waiter.WaitForPlaybackDrain(ctx)
+	}
+	return errors.New("realtime playback backend cannot confirm drain")
 }
 
 type realtimePlaybackState struct {
@@ -1267,7 +1573,7 @@ func (p *realtimePlaybackState) append(audio realtimePlaybackAudio, format agent
 }
 
 func (p *realtimePlaybackState) keepAlive(audio realtimePlaybackAudio, format agent.AudioFormat) error {
-	if p.finalizeResponses {
+	if p.finalizeResponses || p.finalized {
 		return nil
 	}
 	if err := p.open(audio, format); err != nil {
@@ -1296,8 +1602,9 @@ func (p *realtimePlaybackState) beginResponse(audio realtimePlaybackAudio, forma
 	return p.open(audio, format)
 }
 
-func (p *realtimePlaybackState) finishResponse(audio realtimePlaybackAudio) error {
-	if !p.finalizeResponses || p.session == nil || p.finalized {
+func (p *realtimePlaybackState) finishResponse(audio realtimePlaybackAudio, forceOverride ...bool) error {
+	force := len(forceOverride) > 0 && forceOverride[0]
+	if (!p.finalizeResponses && !force) || p.session == nil || p.finalized {
 		return nil
 	}
 	if err := audio.WritePlayChunk(p.session.SessionID, nil, true); err != nil {
@@ -1305,6 +1612,12 @@ func (p *realtimePlaybackState) finishResponse(audio realtimePlaybackAudio) erro
 	}
 	p.finalized = true
 	return nil
+}
+
+func (p *realtimePlaybackState) markDrained() {
+	p.session = nil
+	p.finalized = false
+	p.suppressDeltas = false
 }
 
 func (p *realtimePlaybackState) stop(audio realtimePlaybackAudio) error {

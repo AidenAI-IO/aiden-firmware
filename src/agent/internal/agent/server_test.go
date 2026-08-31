@@ -4551,7 +4551,7 @@ func TestHandleBenchmarkSeedNotificationWritesDurableFixture(t *testing.T) {
 	}
 }
 
-func TestHandleBenchmarkProcessNotificationMemoryClassifiesInvalidProposal(t *testing.T) {
+func TestHandleBenchmarkProcessNotificationMemoryIsolatesInvalidProposal(t *testing.T) {
 	server, _ := newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{responses: []*llms.ContentResponse{
 		contentResponse(`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"add","scope":"temporary","type":"not-a-memory-type","content":"Package arrives tomorrow"}]}}]}`),
 	}})
@@ -4569,8 +4569,15 @@ func TestHandleBenchmarkProcessNotificationMemoryClassifiesInvalidProposal(t *te
 	processRec := httptest.NewRecorder()
 	server.handleBenchmarkProcessNotificationMemory(processRec, processReq)
 
-	if processRec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("process status=%d body=%s, want 422", processRec.Code, processRec.Body.String())
+	if processRec.Code != http.StatusOK {
+		t.Fatalf("process status=%d body=%s, want 200", processRec.Code, processRec.Body.String())
+	}
+	var response benchmarkProcessNotificationMemoryResponse
+	if err := json.NewDecoder(processRec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode process response: %v", err)
+	}
+	if response.MemoryCursor != "1" || len(response.MemoryIDs) != 0 {
+		t.Fatalf("process response=%#v, want cursor 1 with no memory", response)
 	}
 }
 
