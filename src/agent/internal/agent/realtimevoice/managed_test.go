@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type managedTestProvider struct {
@@ -197,37 +198,29 @@ func TestRegistryOpenRejectsMissingConfiguredToolCapability(t *testing.T) {
 	}
 }
 
-func TestManagedSessionCoalescesProgressiveUserTranscriptsPerTurn(t *testing.T) {
+func TestManagedSessionForwardsFinalUserTranscriptImmediately(t *testing.T) {
 	raw := newManagedTestSession(16000)
 	session, err := newManagedSession(raw, DeviceMediaConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer session.Close()
+	defer close(raw.events)
 
-	raw.events <- Event{Kind: EventSpeechStarted}
-	raw.events <- Event{Kind: EventTranscriptFinal, Role: "user", ItemID: "item-1", Text: "今天是几"}
-	raw.events <- Event{Kind: EventTranscriptFinal, Role: "user", ItemID: "item-1", Text: "今天是几号？"}
-	raw.events <- Event{Kind: EventTranscriptFinal, Role: "user", ItemID: "item-1", Text: "今天是几号？"}
-	raw.events <- Event{Kind: EventResponseStarted, ResponseID: "response-1"}
-	close(raw.events)
+	want := Event{Kind: EventTranscriptFinal, Role: "user", ItemID: "item-1", Text: "今天是几号？"}
+	raw.events <- want
 
-	var events []Event
-	for event := range session.Events() {
-		events = append(events, event)
-	}
-	if len(events) != 3 {
-		t.Fatalf("managed events = %+v, want speech, one transcript, response", events)
-	}
-	if events[0].Kind != EventSpeechStarted || events[1].Kind != EventTranscriptFinal || events[2].Kind != EventResponseStarted {
-		t.Fatalf("managed event order = %+v", events)
-	}
-	if events[1].Text != "今天是几号？" {
-		t.Fatalf("coalesced transcript = %q, want final progressive text", events[1].Text)
+	select {
+	case got := <-session.Events():
+		if got.Kind != want.Kind || got.Role != want.Role || got.ItemID != want.ItemID || got.Text != want.Text {
+			t.Fatalf("managed event = %+v, want immediate final transcript %+v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("final user transcript was held until a later boundary event")
 	}
 }
 
-func TestManagedSessionFlushesFinalUserTranscriptBeforeResponseDone(t *testing.T) {
+func TestManagedSessionForwardsFinalUserTranscriptBeforeResponseDone(t *testing.T) {
 	raw := newManagedTestSession(16000)
 	session, err := newManagedSession(raw, DeviceMediaConfig{})
 	if err != nil {
@@ -252,7 +245,7 @@ func TestManagedSessionFlushesFinalUserTranscriptBeforeResponseDone(t *testing.T
 	}
 }
 
-func TestManagedSessionFlushesFinalUserTranscriptBeforeAnyError(t *testing.T) {
+func TestManagedSessionForwardsFinalUserTranscriptBeforeError(t *testing.T) {
 	raw := newManagedTestSession(16000)
 	session, err := newManagedSession(raw, DeviceMediaConfig{})
 	if err != nil {

@@ -246,26 +246,7 @@ func (s *managedSession) Close() error {
 
 func (s *managedSession) forwardEvents(source <-chan Event) {
 	defer close(s.events)
-	var pendingUserTranscript *Event
-	flushUserTranscript := func() bool {
-		if pendingUserTranscript == nil {
-			return true
-		}
-		event := *pendingUserTranscript
-		pendingUserTranscript = nil
-		return s.forwardEvent(event)
-	}
-
 	for event := range source {
-		if event.Kind == EventTranscriptFinal && event.Role == "user" {
-			pendingUserTranscript = coalesceUserTranscript(pendingUserTranscript, event)
-			continue
-		}
-		if event.Kind == EventResponseStarted || event.Kind == EventResponseDone || event.Kind == EventResponseCancelled || event.Kind == EventError || event.Kind == EventSpeechStarted || event.Kind == EventClosed {
-			if !flushUserTranscript() {
-				return
-			}
-		}
 		if event.Kind == EventResponseStarted && s.outputSpec != nil {
 			s.outputResampler = s.outputSpec.newResampler()
 		}
@@ -279,7 +260,6 @@ func (s *managedSession) forwardEvents(source <-chan Event) {
 			return
 		}
 	}
-	flushUserTranscript()
 }
 
 func (s *managedSession) forwardEvent(event Event) bool {
@@ -288,29 +268,6 @@ func (s *managedSession) forwardEvent(event Event) bool {
 		return true
 	case <-s.stop:
 		return false
-	}
-}
-
-func coalesceUserTranscript(pending *Event, next Event) *Event {
-	next.Text = strings.TrimSpace(next.Text)
-	if next.Text == "" {
-		return pending
-	}
-	if pending == nil {
-		copy := next
-		return &copy
-	}
-	current := strings.TrimSpace(pending.Text)
-	switch {
-	case next.Text == current, strings.HasPrefix(current, next.Text):
-		return pending
-	case strings.HasPrefix(next.Text, current):
-		copy := next
-		return &copy
-	default:
-		copy := next
-		copy.Text = strings.TrimSpace(current + " " + next.Text)
-		return &copy
 	}
 }
 
