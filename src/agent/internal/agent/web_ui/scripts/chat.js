@@ -456,15 +456,6 @@ function closeClearMenu() {
     if (menu) menu.removeAttribute('open');
 }
 
-document.addEventListener('click', (event) => {
-    const menu = document.getElementById('clearMenu');
-    if (menu && menu.open && !menu.contains(event.target)) closeClearMenu();
-});
-
-document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeClearMenu();
-});
-
 async function clearSession() {
     closeClearMenu();
     if (!confirm('Clear the current session? This will remove the current conversation.')) return;
