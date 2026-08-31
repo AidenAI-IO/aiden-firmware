@@ -59,6 +59,13 @@ func (t *jsonWebSocketTransport) writeJSON(ctx context.Context, value any) error
 	case <-t.writeGate:
 	}
 	defer func() { t.writeGate <- struct{}{} }()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.done:
+		return fmt.Errorf("%s: session is closed", t.label)
+	default:
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
 		deadline = contextDeadline

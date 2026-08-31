@@ -1,16 +1,11 @@
 package realtimevoice
 
-import "aiden-agent/internal/agent/rtclient"
-
 const (
 	ProviderQwen   = "qwen"
 	ProviderSpeko  = "speko"
 	ProviderOpenAI = "openai"
 	ProviderGemini = "gemini"
 	ProviderXAI    = "xai"
-
-	DefaultQwenRealtimeModel = rtclient.DefaultModel
-	DefaultQwenRealtimeVoice = rtclient.DefaultVoice
 )
 
 type ProviderDescriptor struct {

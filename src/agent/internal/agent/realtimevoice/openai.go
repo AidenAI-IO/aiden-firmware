@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -63,8 +61,7 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 	}
 	transport := newJSONWebSocketTransport(conn, "openai realtime", p.EventBuffer)
 	s := &openAISession{
-		jsonWebSocketTransport: transport,
-		info:                   newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true}),
+		jsonRealtimeSession: newJSONRealtimeSession(transport, newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true})),
 	}
 	transport.start(func(body []byte) []Event {
 		event, ok := translateOpenAIEvent(body)
@@ -74,7 +71,7 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 		return []Event{event}
 	})
 
-	if err := waitOpenAIReady(ctx, s, 1); err != nil {
+	if err := s.waitReady(ctx, 1); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -82,7 +79,7 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 		_ = s.Close()
 		return nil, err
 	}
-	if err := waitOpenAIReady(ctx, s, 1); err != nil {
+	if err := s.waitReady(ctx, 1); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -186,30 +183,11 @@ func buildOpenAISessionUpdate(cfg SessionConfig, model string) openAISessionUpda
 }
 
 type openAISession struct {
-	*jsonWebSocketTransport
-	info   SessionInfo
-	infoMu sync.RWMutex
+	*jsonRealtimeSession
 }
 
-func (s *openAISession) Info() SessionInfo {
-	s.infoMu.RLock()
-	defer s.infoMu.RUnlock()
-	return s.info
-}
-func (s *openAISession) SendAudio(ctx context.Context, pcm []byte) error {
-	if len(pcm) == 0 {
-		return nil
-	}
-	return s.writeJSON(ctx, map[string]any{
-		"type":  "input_audio_buffer.append",
-		"audio": base64.StdEncoding.EncodeToString(pcm),
-	})
-}
-func (s *openAISession) Commit(ctx context.Context) error {
-	return s.writeJSON(ctx, map[string]any{"type": "input_audio_buffer.commit"})
-}
 func (s *openAISession) Interrupt(ctx context.Context, interruption ResponseInterruption) error {
-	if err := s.writeJSON(ctx, map[string]any{"type": "response.cancel"}); err != nil {
+	if err := s.cancelResponse(ctx); err != nil {
 		return err
 	}
 	if strings.TrimSpace(interruption.ItemID) == "" {
@@ -224,72 +202,6 @@ func (s *openAISession) Interrupt(ctx context.Context, interruption ResponseInte
 		"content_index": 0,
 		"audio_end_ms":  interruption.AudioEndMS,
 	})
-}
-func (s *openAISession) SendToolResult(ctx context.Context, id, output string) error {
-	return s.writeJSON(ctx, map[string]any{
-		"type": "conversation.item.create",
-		"item": map[string]any{"type": "function_call_output", "call_id": id, "output": output},
-	})
-}
-func (s *openAISession) SendText(ctx context.Context, text string) error {
-	return s.writeJSON(ctx, map[string]any{
-		"type": "conversation.item.create",
-		"item": map[string]any{
-			"type": "message", "role": "user",
-			"content": []map[string]string{{"type": "input_text", "text": text}},
-		},
-	})
-}
-func (s *openAISession) CreateResponse(ctx context.Context) error {
-	return s.writeJSON(ctx, map[string]any{"type": "response.create"})
-}
-func (s *openAISession) ReplayContext(ctx context.Context, items []ContextItem) error {
-	// Items are replayed in slice order and the server appends each one to the
-	// conversation, so no explicit previous_item_id chaining is sent. Adding it
-	// would require tracking server-assigned ids from conversation.item.created.
-	for _, item := range items {
-		message := contextItemPayload(item)
-		if err := s.writeJSON(ctx, map[string]any{"type": "conversation.item.create", "item": message}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func waitOpenAIReady(ctx context.Context, s *openAISession, count int) error {
-	timer := time.NewTimer(15 * time.Second)
-	defer timer.Stop()
-	for count > 0 {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			return errors.New("openai realtime: timed out waiting for session ready")
-		case err, ok := <-s.errs:
-			if !ok {
-				return errors.New("openai realtime: event stream closed")
-			}
-			if err != nil {
-				return err
-			}
-		case event, ok := <-s.events:
-			if !ok {
-				return errors.New("openai realtime: event stream closed")
-			}
-			if event.Kind == EventError {
-				return event.Error
-			}
-			if event.Kind == EventReady {
-				if event.SessionID != "" {
-					s.infoMu.Lock()
-					s.info.ID = event.SessionID
-					s.infoMu.Unlock()
-				}
-				count--
-			}
-		}
-	}
-	return nil
 }
 
 func translateOpenAIEvent(body []byte) (Event, bool) {

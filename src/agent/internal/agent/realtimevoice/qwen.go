@@ -2,252 +2,308 @@ package realtimevoice
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
-	"time"
+	"net/http"
+	"net/url"
+	"strings"
 
-	"aiden-agent/internal/agent/rtclient"
+	"github.com/gorilla/websocket"
+)
+
+const (
+	DefaultQwenRealtimeModel = "qwen-audio-3.0-realtime-plus"
+	DefaultQwenRealtimeVoice = "longanqian"
 )
 
 type QwenProvider struct {
 	WorkspaceID string
 	Region      string
 	Endpoint    string
+	Dialer      *websocket.Dialer
+	EventBuffer int
 }
 
 func (p QwenProvider) Open(ctx context.Context, cfg SessionConfig) (Session, error) {
-	client, err := rtclient.New(rtclient.Config{APIKey: cfg.APIKey, Model: cfg.Model, WorkspaceID: p.WorkspaceID, Region: p.Region, Endpoint: p.Endpoint})
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return nil, errors.New("qwen realtime: APIKey is required")
+	}
+	model := strings.TrimSpace(cfg.Model)
+	if model == "" {
+		model = DefaultQwenRealtimeModel
+	}
+	endpoint, err := p.endpoint(model)
 	if err != nil {
 		return nil, err
 	}
-	ws, err := client.Connect(ctx)
+	header := make(http.Header, 2)
+	header.Set("Authorization", bearer(cfg.APIKey))
+	if p.WorkspaceID != "" {
+		header.Set("X-DashScope-WorkSpace", p.WorkspaceID)
+	}
+	dialer := p.Dialer
+	if dialer == nil {
+		dialer = websocket.DefaultDialer
+	}
+	conn, resp, err := dialer.DialContext(ctx, endpoint, header)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, fmt.Errorf("qwen realtime websocket connect: %w", err)
+	}
+	transport := newJSONWebSocketTransport(conn, "qwen realtime", p.EventBuffer)
+	session := &qwenSession{
+		jsonRealtimeSession: newJSONRealtimeSession(transport, newPCM16SessionInfo(cfg.SessionID, 16000, 24000, Capabilities{ExplicitToolContinuation: true})),
+	}
+	transport.start(func(body []byte) []Event {
+		event, ok := translateQwenEvent(body)
+		if !ok {
+			return nil
+		}
+		return []Event{event}
+	})
+	if err := session.waitReady(ctx, 1); err != nil {
+		_ = session.Close()
 		return nil, err
 	}
-	created, err := waitQwenEvent(ctx, ws, "session.created")
-	if err != nil {
-		_ = ws.Close()
+	if err := session.writeJSON(ctx, buildQwenSessionUpdate(cfg)); err != nil {
+		_ = session.Close()
 		return nil, err
 	}
-	if err := ws.Update(ctx, qwenSessionConfig(cfg)); err != nil {
-		_ = ws.Close()
+	if err := session.waitReady(ctx, 1); err != nil {
+		_ = session.Close()
 		return nil, err
 	}
-	if _, err := waitQwenEvent(ctx, ws, "session.updated"); err != nil {
-		_ = ws.Close()
-		return nil, err
-	}
-	var sessionEvent rtclient.SessionEvent
-	_ = created.Decode(&sessionEvent)
-	return &qwenSession{
-		ws:            ws,
-		info:          newPCM16SessionInfo(sessionEvent.Session.ID, 16000, 24000, Capabilities{ExplicitToolContinuation: true}),
-		translateStop: make(chan struct{}),
-	}, nil
+	return session, nil
 }
 
-func qwenSessionConfig(cfg SessionConfig) rtclient.SessionConfig {
-	out := rtclient.SessionConfig{Modalities: []string{"audio", "text"}, Voice: cfg.Voice, Instructions: cfg.Instructions, InputAudioFormat: cfg.InputAudioFormat, OutputAudioFormat: cfg.OutputAudioFormat, MaxHistoryTurns: cfg.MaxHistoryTurns, Tools: make([]rtclient.Tool, 0, len(cfg.Tools))}
-	if out.Voice == "" {
-		out.Voice = rtclient.DefaultVoice
+func (p QwenProvider) endpoint(model string) (string, error) {
+	raw := strings.TrimSpace(p.Endpoint)
+	if raw == "" {
+		host := "dashscope.aliyuncs.com"
+		switch p.Region {
+		case "cn-beijing":
+			if p.WorkspaceID != "" {
+				host = p.WorkspaceID + ".cn-beijing.maas.aliyuncs.com"
+			}
+		case "ap-southeast-1":
+			if p.WorkspaceID != "" {
+				host = p.WorkspaceID + ".ap-southeast-1.maas.aliyuncs.com"
+			} else {
+				host = "dashscope-intl.aliyuncs.com"
+			}
+		case "":
+		default:
+			return "", fmt.Errorf("qwen realtime: unsupported region %q", p.Region)
+		}
+		raw = "wss://" + host + "/api-ws/v1/realtime"
 	}
-	out.EnableSpeechEmotion = cfg.EnableSpeechEmotion
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("qwen realtime: parse endpoint: %w", err)
+	}
+	query := u.Query()
+	query.Set("model", model)
+	u.RawQuery = query.Encode()
+	return u.String(), nil
+}
+
+type qwenSessionUpdate struct {
+	Type    string              `json:"type"`
+	Session qwenSessionSettings `json:"session"`
+}
+
+type qwenSessionSettings struct {
+	Modalities          []string           `json:"modalities,omitempty"`
+	Voice               string             `json:"voice,omitempty"`
+	EnableSpeechEmotion *bool              `json:"enable_speech_emotion,omitempty"`
+	Instructions        string             `json:"instructions,omitempty"`
+	InputAudioFormat    string             `json:"input_audio_format,omitempty"`
+	OutputAudioFormat   string             `json:"output_audio_format,omitempty"`
+	MaxHistoryTurns     int                `json:"max_history_turns,omitempty"`
+	Tools               []qwenTool         `json:"tools,omitempty"`
+	TurnDetection       *qwenTurnDetection `json:"turn_detection,omitempty"`
+}
+
+type qwenTurnDetection struct {
+	Type              string   `json:"type,omitempty"`
+	Threshold         *float64 `json:"threshold,omitempty"`
+	SilenceDurationMS int      `json:"silence_duration_ms,omitempty"`
+}
+
+type qwenTool struct {
+	Type     string                 `json:"type"`
+	Function qwenFunctionDefinition `json:"function"`
+}
+
+type qwenFunctionDefinition struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+func buildQwenSessionUpdate(cfg SessionConfig) qwenSessionUpdate {
+	settings := qwenSessionSettings{
+		Modalities:          []string{"audio", "text"},
+		Voice:               cfg.Voice,
+		EnableSpeechEmotion: cfg.EnableSpeechEmotion,
+		Instructions:        cfg.Instructions,
+		InputAudioFormat:    cfg.InputAudioFormat,
+		OutputAudioFormat:   cfg.OutputAudioFormat,
+		MaxHistoryTurns:     cfg.MaxHistoryTurns,
+		Tools:               make([]qwenTool, 0, len(cfg.Tools)),
+	}
+	if settings.Voice == "" {
+		settings.Voice = DefaultQwenRealtimeVoice
+	}
 	if cfg.TurnDetection != "" {
-		out.TurnDetection = &rtclient.TurnDetection{Type: cfg.TurnDetection, Threshold: cfg.TurnDetectionThresh, SilenceDurationMS: cfg.TurnDetectionSilenceMs}
-	}
-	for _, tool := range cfg.Tools {
-		out.Tools = append(out.Tools, rtclient.Tool{Type: "function", Function: rtclient.FunctionDefinition{Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters}})
-	}
-	return out
-}
-
-func waitQwenEvent(ctx context.Context, ws *rtclient.Session, want string) (rtclient.Event, error) {
-	timer := time.NewTimer(15 * time.Second)
-	defer timer.Stop()
-	errs := ws.Errors()
-	events := ws.Events()
-	for {
-		select {
-		case <-ctx.Done():
-			return rtclient.Event{}, ctx.Err()
-		case <-timer.C:
-			return rtclient.Event{}, fmt.Errorf("timed out waiting for %s", want)
-		case err, ok := <-errs:
-			if !ok {
-				errs = nil
-				continue
-			}
-			if err != nil {
-				return rtclient.Event{}, err
-			}
-		case ev, ok := <-events:
-			if !ok {
-				return rtclient.Event{}, errors.New("qwen realtime event stream closed")
-			}
-			if ev.Type == "error" {
-				var x rtclient.ErrorEvent
-				if err := ev.Decode(&x); err != nil {
-					return rtclient.Event{}, err
-				}
-				return rtclient.Event{}, errors.New(x.Error.Message)
-			}
-			if ev.Type == want {
-				return ev, nil
-			}
+		settings.TurnDetection = &qwenTurnDetection{
+			Type:              cfg.TurnDetection,
+			Threshold:         cfg.TurnDetectionThresh,
+			SilenceDurationMS: cfg.TurnDetectionSilenceMs,
 		}
 	}
+	for _, tool := range cfg.Tools {
+		settings.Tools = append(settings.Tools, qwenTool{
+			Type: "function",
+			Function: qwenFunctionDefinition{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.Parameters,
+			},
+		})
+	}
+	return qwenSessionUpdate{Type: "session.update", Session: settings}
 }
 
 type qwenSession struct {
-	ws            *rtclient.Session
-	info          SessionInfo
-	events        chan Event
-	translateStop chan struct{}
-	startOnce     sync.Once
-	closeOnce     sync.Once
-	closeErr      error
+	*jsonRealtimeSession
 }
 
-func (s *qwenSession) Info() SessionInfo { return s.info }
-func (s *qwenSession) Events() <-chan Event {
-	s.startOnce.Do(func() {
-		s.events = make(chan Event, 64)
-		go s.translate()
-	})
-	return s.events
-}
-func (s *qwenSession) Errors() <-chan error  { return s.ws.Errors() }
-func (s *qwenSession) Done() <-chan struct{} { return s.ws.Done() }
-func (s *qwenSession) SendAudio(ctx context.Context, pcm []byte) error {
-	return s.ws.AppendAudio(ctx, pcm)
-}
-func (s *qwenSession) Commit(ctx context.Context) error { return s.ws.CommitAudio(ctx) }
 func (s *qwenSession) Interrupt(ctx context.Context, _ ResponseInterruption) error {
-	return s.ws.CancelResponse(ctx)
-}
-func (s *qwenSession) SendToolResult(ctx context.Context, id, out string) error {
-	return s.ws.SendFunctionOutput(ctx, id, out)
-}
-func (s *qwenSession) Close() error {
-	s.closeOnce.Do(func() {
-		close(s.translateStop)
-		s.closeErr = s.ws.Close()
-	})
-	return s.closeErr
-}
-func (s *qwenSession) SendText(ctx context.Context, text string) error {
-	return s.ws.SendText(ctx, text, "")
-}
-func (s *qwenSession) CreateResponse(ctx context.Context) error { return s.ws.CreateResponse(ctx, nil) }
-func (s *qwenSession) ReplayContext(ctx context.Context, items []ContextItem) error {
-	var previous string
-	for _, item := range items {
-		contentType := "input_text"
-		if item.Role == "assistant" {
-			contentType = "output_text"
-		}
-		ci := rtclient.ConversationItem{Type: item.Type, Role: item.Role, Content: []rtclient.ContentPart{{Type: contentType, Text: item.Content}}, CallID: item.CallID, Name: item.Name, Arguments: item.Arguments, Output: item.Output}
-		if item.Type == "function_call" || item.Type == "function_call_output" {
-			ci.Content = nil
-		}
-		if err := s.ws.CreateItem(ctx, ci, previous); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-func (s *qwenSession) translate() {
-	forwardQwenEvents(s.ws.Events(), s.translateStop, s.events)
+	return s.cancelResponse(ctx)
 }
 
-func forwardQwenEvents(events <-chan rtclient.Event, stop <-chan struct{}, output chan<- Event) {
-	defer close(output)
-	for ev := range events {
-		out, ok := translateQwenEvent(ev)
-		if ok {
-			select {
-			case output <- out:
-			case <-stop:
-				return
-			}
-		}
+func translateQwenEvent(body []byte) (Event, bool) {
+	var envelope struct {
+		Type string `json:"type"`
 	}
-}
-
-func translateQwenEvent(ev rtclient.Event) (Event, bool) {
-	switch ev.Type {
-	case "session.created":
-		return Event{Kind: EventReady}, true
-	case "session.updated":
-		return Event{Kind: EventReady}, true
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return Event{Kind: EventError, Error: fmt.Errorf("qwen realtime: decode event: %w", err)}, true
+	}
+	switch envelope.Type {
+	case "session.created", "session.updated":
+		var event struct {
+			Session struct {
+				ID string `json:"id"`
+			} `json:"session"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
+			return Event{Kind: EventError, Error: err}, true
+		}
+		return Event{Kind: EventReady, SessionID: event.Session.ID}, true
 	case "input_audio_buffer.speech_started":
 		return Event{Kind: EventSpeechStarted}, true
 	case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
 		return Event{Kind: EventSpeechStopped}, true
 	case "conversation.item.input_audio_transcription.completed":
-		var x rtclient.TranscriptEvent
-		if err := ev.Decode(&x); err != nil {
+		var event struct {
+			ItemID     string `json:"item_id"`
+			Transcript string `json:"transcript"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptFinal, ItemID: x.ItemID, Role: "user", Text: x.Transcript, TextSource: "audio", Final: true}, true
+		return Event{Kind: EventTranscriptFinal, ItemID: event.ItemID, Role: "user", Text: event.Transcript, TextSource: "audio", Final: true}, true
 	case "response.created":
-		var x rtclient.ResponseEvent
-		_ = ev.Decode(&x)
-		return Event{Kind: EventResponseStarted, ResponseID: x.Response.ID}, true
-	case "response.text.delta":
-		var x rtclient.ResponseDeltaEvent
-		if err := ev.Decode(&x); err != nil {
+		var event struct {
+			Response struct {
+				ID string `json:"id"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptDelta, ResponseID: x.ResponseID, ItemID: x.ItemID, Role: "assistant", Text: x.Delta, TextSource: "text"}, true
-	case "response.audio_transcript.delta":
-		var x rtclient.ResponseDeltaEvent
-		if err := ev.Decode(&x); err != nil {
+		return Event{Kind: EventResponseStarted, ResponseID: event.Response.ID}, true
+	case "response.text.delta", "response.audio_transcript.delta", "response.audio.delta":
+		var event struct {
+			ResponseID string `json:"response_id"`
+			ItemID     string `json:"item_id"`
+			Delta      string `json:"delta"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptDelta, ResponseID: x.ResponseID, ItemID: x.ItemID, Role: "assistant", Text: x.Delta, TextSource: "audio"}, true
+		if envelope.Type == "response.audio.delta" {
+			pcm, err := base64.StdEncoding.DecodeString(event.Delta)
+			if err != nil {
+				return Event{Kind: EventError, Error: err}, true
+			}
+			return Event{Kind: EventAudio, ResponseID: event.ResponseID, ItemID: event.ItemID, PCM: pcm}, true
+		}
+		textSource := "text"
+		if envelope.Type == "response.audio_transcript.delta" {
+			textSource = "audio"
+		}
+		return Event{Kind: EventTranscriptDelta, ResponseID: event.ResponseID, ItemID: event.ItemID, Role: "assistant", Text: event.Delta, TextSource: textSource}, true
 	case "response.audio_transcript.done":
-		var x rtclient.TranscriptEvent
-		if err := ev.Decode(&x); err != nil {
+		var event struct {
+			ItemID     string `json:"item_id"`
+			Transcript string `json:"transcript"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptFinal, ItemID: x.ItemID, Role: "assistant", Text: x.Transcript, TextSource: "audio", Final: true}, true
-	case "response.audio.delta":
-		var x rtclient.ResponseDeltaEvent
-		if err := ev.Decode(&x); err != nil {
-			return Event{Kind: EventError, Error: err}, true
-		}
-		pcm, err := x.Audio()
-		if err != nil {
-			return Event{Kind: EventError, Error: err}, true
-		}
-		return Event{Kind: EventAudio, ResponseID: x.ResponseID, ItemID: x.ItemID, PCM: pcm}, true
+		return Event{Kind: EventTranscriptFinal, ItemID: event.ItemID, Role: "assistant", Text: event.Transcript, TextSource: "audio", Final: true}, true
 	case "response.function_call_arguments.done":
-		var x rtclient.FunctionCallEvent
-		if err := ev.Decode(&x); err != nil {
+		var event struct {
+			ResponseID string `json:"response_id"`
+			ItemID     string `json:"item_id"`
+			CallID     string `json:"call_id"`
+			Name       string `json:"name"`
+			Arguments  string `json:"arguments"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventToolCall, ResponseID: x.ResponseID, ItemID: x.ItemID, CallID: x.CallID, Name: x.Name, Arguments: x.Arguments}, true
+		return Event{Kind: EventToolCall, ResponseID: event.ResponseID, ItemID: event.ItemID, CallID: event.CallID, Name: event.Name, Arguments: event.Arguments}, true
 	case "response.done":
-		var x rtclient.ResponseEvent
-		if err := ev.Decode(&x); err != nil {
+		var event struct {
+			Response struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+				Usage  *struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+					TotalTokens  int `json:"total_tokens"`
+				} `json:"usage"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
 		var usage Usage
-		if x.Response.Usage != nil {
-			usage = Usage{InputTokens: x.Response.Usage.InputTokens, OutputTokens: x.Response.Usage.OutputTokens, TotalTokens: x.Response.Usage.TotalTokens}
+		if event.Response.Usage != nil {
+			usage = Usage{InputTokens: event.Response.Usage.InputTokens, OutputTokens: event.Response.Usage.OutputTokens, TotalTokens: event.Response.Usage.TotalTokens}
 		}
-		return terminalResponseEvent("qwen", x.Response.ID, x.Response.Status, usage), true
+		return terminalResponseEvent("qwen", event.Response.ID, event.Response.Status, usage), true
 	case "error":
-		var x rtclient.ErrorEvent
-		if err := ev.Decode(&x); err != nil {
+		var event struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventError, Error: errors.New(x.Error.Message)}, true
+		return Event{Kind: EventError, Error: errors.New(event.Error.Message)}, true
 	default:
 		return Event{}, false
 	}
 }
 
+var _ Provider = QwenProvider{}
 var _ TextSession = (*qwenSession)(nil)

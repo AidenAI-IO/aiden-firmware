@@ -167,8 +167,9 @@ The native adapter maps the common function-tool and PCM JSON path; xAI binary t
 
 ## Aiden's current constraints
 
-The current `src/agent/internal/agent/rtclient` is a Qwen-specific JSON-over-
-WebSocket client:
+The current `src/agent/internal/agent/realtimevoice/qwen.go` adapter uses the
+shared JSON-over-WebSocket realtime session module while retaining Qwen's
+provider-specific wire contract:
 
 - It builds `wss://.../api-ws/v1/realtime` and adds `model` as a query parameter.
 - It sends `Authorization: Bearer ...` and optionally

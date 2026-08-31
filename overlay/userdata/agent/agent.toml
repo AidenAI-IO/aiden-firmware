@@ -42,7 +42,7 @@ input_mode = "stt"
 # voice_max_response_tokens = 300
 
 # Realtime voice model. When input_mode = "realtime", GPIO wakeup opens a
-# continuous PCM duplex session with rtclient. The legacy STT/LLM/TTS loop is
+# continuous PCM duplex session through realtimevoice. The legacy STT/LLM/TTS loop is
 # used when input_mode = "stt". In realtime mode, the voice model is
 # the non-blocking foreground agent; device and multi-step work is queued to
 # the legacy agent loop through create_agent_task.

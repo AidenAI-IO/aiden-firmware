@@ -85,9 +85,8 @@ func (p XAIProvider) openSession(ctx context.Context, cfg SessionConfig, model s
 	}
 	transport := newJSONWebSocketTransport(conn, "xai realtime", p.EventBuffer)
 	s := &xAISession{
-		jsonWebSocketTransport: transport,
-		transcripts:            make(map[string]string),
-		info:                   newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true}),
+		jsonRealtimeSession: newJSONRealtimeSession(transport, newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true})),
+		transcripts:         make(map[string]string),
 	}
 	transport.start(func(body []byte) []Event {
 		event, ok := s.translateXAIEventForSession(body)
@@ -97,7 +96,7 @@ func (p XAIProvider) openSession(ctx context.Context, cfg SessionConfig, model s
 		return []Event{event}
 	})
 
-	if err := waitXAIReady(ctx, s, 1); err != nil {
+	if err := s.waitReady(ctx, 1); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -105,7 +104,7 @@ func (p XAIProvider) openSession(ctx context.Context, cfg SessionConfig, model s
 		_ = s.Close()
 		return nil, err
 	}
-	if err := waitXAIReady(ctx, s, 1); err != nil {
+	if err := s.waitReady(ctx, 1); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -217,47 +216,13 @@ func buildXAISessionUpdate(cfg SessionConfig, model string) xAISessionUpdate {
 }
 
 type xAISession struct {
-	*jsonWebSocketTransport
-	info         SessionInfo
-	infoMu       sync.RWMutex
+	*jsonRealtimeSession
 	transcriptMu sync.Mutex
 	transcripts  map[string]string
 }
 
-func (s *xAISession) Info() SessionInfo {
-	s.infoMu.RLock()
-	defer s.infoMu.RUnlock()
-	return s.info
-}
-func (s *xAISession) SendAudio(ctx context.Context, pcm []byte) error {
-	if len(pcm) == 0 {
-		return nil
-	}
-	return s.writeJSON(ctx, map[string]any{
-		"type":  "input_audio_buffer.append",
-		"audio": base64.StdEncoding.EncodeToString(pcm),
-	})
-}
-func (s *xAISession) Commit(ctx context.Context) error {
-	return s.writeJSON(ctx, map[string]any{"type": "input_audio_buffer.commit"})
-}
 func (s *xAISession) Interrupt(ctx context.Context, _ ResponseInterruption) error {
-	return s.writeJSON(ctx, map[string]any{"type": "response.cancel"})
-}
-func (s *xAISession) SendToolResult(ctx context.Context, id, output string) error {
-	return s.writeJSON(ctx, map[string]any{
-		"type": "conversation.item.create",
-		"item": map[string]any{"type": "function_call_output", "call_id": id, "output": output},
-	})
-}
-func (s *xAISession) SendText(ctx context.Context, text string) error {
-	return s.writeJSON(ctx, map[string]any{
-		"type": "conversation.item.create",
-		"item": map[string]any{
-			"type": "message", "role": "user",
-			"content": []map[string]string{{"type": "input_text", "text": text}},
-		},
-	})
+	return s.cancelResponse(ctx)
 }
 func (s *xAISession) CreateResponse(ctx context.Context) error {
 	return s.writeJSON(ctx, map[string]any{
@@ -268,55 +233,6 @@ func (s *xAISession) CreateResponse(ctx context.Context) error {
 		},
 	})
 }
-func (s *xAISession) ReplayContext(ctx context.Context, items []ContextItem) error {
-	// Items are replayed in slice order and the server appends each one to the
-	// conversation, so no explicit previous_item_id chaining is sent. Adding it
-	// would require tracking server-assigned ids from conversation.item.created.
-	for _, item := range items {
-		message := contextItemPayload(item)
-		if err := s.writeJSON(ctx, map[string]any{"type": "conversation.item.create", "item": message}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func waitXAIReady(ctx context.Context, s *xAISession, count int) error {
-	timer := time.NewTimer(15 * time.Second)
-	defer timer.Stop()
-	for count > 0 {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			return errors.New("xai realtime: timed out waiting for session ready")
-		case err, ok := <-s.errs:
-			if !ok {
-				return errors.New("xai realtime: event stream closed")
-			}
-			if err != nil {
-				return err
-			}
-		case event, ok := <-s.events:
-			if !ok {
-				return errors.New("xai realtime: event stream closed")
-			}
-			if event.Kind == EventError {
-				return event.Error
-			}
-			if event.Kind == EventReady {
-				if event.SessionID != "" {
-					s.infoMu.Lock()
-					s.info.ID = event.SessionID
-					s.infoMu.Unlock()
-				}
-				count--
-			}
-		}
-	}
-	return nil
-}
-
 func translateXAIEventBase(body []byte) (Event, bool) {
 	var envelope struct {
 		Type string `json:"type"`
