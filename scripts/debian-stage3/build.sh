@@ -147,6 +147,14 @@ run_rootfs_container() {
     shift
     local image_id source_git_common_dir
     local -a proxy_args=()
+    test -s "${STAGE2_OUTPUT}/rootfs-cli-tools/manifest.sha256" || {
+        echo "Missing Stage 2 rootfs CLI tools: ${STAGE2_OUTPUT}/rootfs-cli-tools" >&2
+        exit 1
+    }
+    test -s "${STAGE2_OUTPUT}/rootfs-cli-tools/versions.txt" || {
+        echo "Missing Stage 2 rootfs CLI version metadata" >&2
+        exit 1
+    }
     while IFS= read -r -d '' item; do proxy_args+=("${item}"); done < <(docker_proxy_args)
     image_id=$(docker image inspect "${ROOTFS_BUILD_IMAGE}" --format '{{.Id}}')
     source_git_common_dir=$(git -C "${REPO_ROOT}" rev-parse \
@@ -160,6 +168,7 @@ run_rootfs_container() {
         -v "${REPO_ROOT}:/work:ro" \
         -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
         -v "${OUTPUT_DIR}:/out" \
+        -v "${STAGE2_OUTPUT}/rootfs-cli-tools:/rootfs-cli-tools:ro" \
         -w /work \
         "${ROOTFS_BUILD_IMAGE}" \
         bash "${script}" "$@"
@@ -210,12 +219,18 @@ run_bsp() {
         CONFIG_TIMERFD CONFIG_FHANDLE CONFIG_ZSMALLOC CONFIG_ZRAM \
         CONFIG_RFKILL CONFIG_BT CONFIG_BT_BREDR CONFIG_BT_RFCOMM \
         CONFIG_BT_RFCOMM_TTY CONFIG_BT_LE CONFIG_BT_HCIUART \
-        CONFIG_BT_HCIUART_H4 CONFIG_CRYPTO_ECDH CONFIG_CRYPTO_CMAC; do
+        CONFIG_BT_HCIUART_H4 CONFIG_CRYPTO_ECDH CONFIG_CRYPTO_CMAC \
+        CONFIG_MEDIA_CONTROLLER CONFIG_VIDEO_V4L2_SUBDEV_API \
+        CONFIG_VIDEO_RK628_CSI CONFIG_VIDEO_TC358743; do
         grep -qx "${symbol}=y" "${kernel_config}" || {
             echo "Required production kernel setting is not enabled: ${symbol}" >&2
             exit 1
         }
     done
+    grep -qx '# CONFIG_VIDEO_TC358743_CEC is not set' "${kernel_config}" || {
+        echo "TC358743 CEC must remain disabled in the production kernel" >&2
+        exit 1
+    }
     for symbol in \
         CONFIG_CMD_ROCKUSB CONFIG_USB CONFIG_USB_GADGET \
         CONFIG_USB_GADGET_DOWNLOAD CONFIG_USB_DWC3 \

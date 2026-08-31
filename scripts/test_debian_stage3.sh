@@ -16,8 +16,8 @@ active_docs=(
     "${REPO_ROOT}/docs/README.md"
     "${REPO_ROOT}"/docs/[0-9][0-9]-*
 )
-if rg -n -i \
-    'buildroot|opkg|\./build\.sh (binaries|image)|/etc/init\.d|overlay/(etc|oem|userdata)|pico-sdk/output/image' \
+if rg --no-ignore -n -i \
+    '\./build\.sh (binaries|image)|/etc/init\.d/|overlay/(etc|oem|userdata)|pico-sdk/output/image|scripts/build/' \
     "${active_docs[@]}"; then
     fail "active documentation still publishes a legacy userspace workflow"
 fi
@@ -80,6 +80,14 @@ grep -Fq '1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)' \
     "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
 grep -Fq 'RK_UBOOT_DEFCONFIG_FRAGMENT="rk-emmc.config rv1106-ab.config aiden-rv1106-rockusb.config"' \
     "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
+grep -Fq 'RK_KERNEL_DEFCONFIG_FRAGMENT="aiden-zram.config rv1106-bt.config aiden-rk628.config debian-stage3.config"' \
+    "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
+for symbol in CONFIG_MEDIA_CONTROLLER CONFIG_VIDEO_V4L2_SUBDEV_API \
+    CONFIG_VIDEO_RK628_CSI CONFIG_VIDEO_TC358743 \
+    CONFIG_VIDEO_TC358743_CEC; do
+    grep -Fq "${symbol}" "${STAGE3_DIR}/build.sh" \
+        || fail "Stage 3 BSP verification does not enforce ${symbol}"
+done
 grep -Fq "RK_KERNEL_CMDLINE_EXTRA=net.ifnames\$'\\x3d'0" \
     "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
 grep -Fq 'root=PARTLABEL=$root_label' \
@@ -113,6 +121,12 @@ fi
 [ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-boot-timeline" ] \
     || fail "Debian boot timeline helper is missing"
 grep -Fq 'overlay-debian/" "${ROOTFS_DIR}/"' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'stage_rootfs_cli_tools.sh' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'rootfs-cli-tools-versions.txt' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'rootfs_cli_tools_manifest_sha256' \
     "${STAGE3_DIR}/container-build-rootfs.sh"
 if grep -Fq '${REPO_ROOT}/overlay/' "${STAGE3_DIR}/container-build-rootfs.sh"; then
     fail "Debian rootfs builder depends on the Buildroot overlay"
@@ -222,6 +236,14 @@ grep -Fq 'factory_partition_hashes' "${STAGE3_DIR}/validate-ota-config.py"
 grep -Fq 'debian/ota/config.json' "${STAGE3_DIR}/container-audit-images.sh"
 grep -Fq 'Agent configuration does not match the external build input' \
     "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'rootfs CLI tool checksum mismatch' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'rootfs CLI checksum manifest does not match the catalog' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'rootfs CLI version metadata does not match the catalog' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq '${STAGE2_OUTPUT}/rootfs-cli-tools:/rootfs-cli-tools:ro' \
+    "${STAGE3_DIR}/build.sh"
 
 grep -Fq 'root=PARTLABEL=${root_label}' "${STAGE3_DIR}/container-audit-images.sh"
 grep -Fq "net.ifnames=0" "${STAGE3_DIR}/container-audit-images.sh"
@@ -332,14 +354,22 @@ EOF
 chmod +x "${TEST_ROOT}/mock-bin/docker"
 mock_output=${TEST_ROOT}/mock-output
 mock_log=${TEST_ROOT}/docker-args
+mock_stage2=${TEST_ROOT}/mock-stage2
+mkdir -p "${mock_stage2}/rootfs-cli-tools"
+printf '%064d  fq\n' 0 >"${mock_stage2}/rootfs-cli-tools/manifest.sha256"
+printf 'fq v0.17.0 linux/arm/v7 preserve\n' \
+    >"${mock_stage2}/rootfs-cli-tools/versions.txt"
 MOCK_DOCKER_LOG="${mock_log}" \
 PATH="${TEST_ROOT}/mock-bin:${PATH}" \
 DEBIAN_STAGE3_OUTPUT_DIR="${mock_output}" \
+DEBIAN_STAGE2_OUTPUT_DIR="${mock_stage2}" \
     "${STAGE3_DIR}/build.sh" rootfs
 tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/docker-args.txt"
 grep -qx -- '--privileged' "${TEST_ROOT}/docker-args.txt"
 grep -qx "${mock_output}:/out" "${TEST_ROOT}/docker-args.txt"
 grep -qx "${REPO_ROOT}:/work:ro" "${TEST_ROOT}/docker-args.txt"
+grep -qx "${mock_stage2}/rootfs-cli-tools:/rootfs-cli-tools:ro" \
+    "${TEST_ROOT}/docker-args.txt"
 grep -qx 'scripts/debian-stage3/container-build-rootfs.sh' \
     "${TEST_ROOT}/docker-args.txt"
 

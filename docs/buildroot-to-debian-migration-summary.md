@@ -854,9 +854,10 @@ Debian-only 清理应作为一次架构变更执行，而不是逐个删除文�
 2. 修改 Debian stage1/stage2/stage3 脚本及所有相关审计和回归测试。
 3. 将 CMake 默认平台切换为 Debian，并移除 Buildroot 平台选择。
 4. 移除 Buildroot 构建入口、旧 overlay 和旧 runtime。
-5. 重写 GitHub Actions、发布脚本和 Buildroot 可重复构建测试。
-6. 使用裁剪后的独立 SDK fork 完成 BSP、镜像、USB、RKNN、音频、摄像头、OTA 和
+5. 使用裁剪后的独立 SDK fork 完成 BSP、镜像、USB、RKNN、音频、摄像头、OTA 和
    回滚回归。
+6. GitHub Actions 构建和 GitHub Release 自动发布另行规划，不作为本轮本地 Debian
+   构建收敛的完成条件。
 
 在上述工作完成前，保留 Buildroot 文件是为了支持旧固件回退、问题对比和现有 CI，
 不表示 Debian 迁移未完成。
@@ -871,9 +872,16 @@ Debian-only 清理应作为一次架构变更执行，而不是逐个删除文�
 3. Debian OEM 脚本、模型、音频与 EDID 资源迁至 `overlay-debian-oem/`。
 4. Debian Stage 2/3 构建和镜像审计不再读取根目录 `overlay/`。
 5. Agent、Frame Service、Config Web 和持久 Python 环境使用 systemd 原生控制链。
+6. `fq`、`yq`、`rg` 由 Debian Stage 2 构建，Stage 3 按 manifest 安装并对
+   最终 rootfs 逐文件复核校验和。
+7. Debian BSP 明确继承 `aiden-rk628.config`，避免切断旧 userspace 后丢失
+   RK628D/TC358743 内核能力；OTA CLI 默认配置路径也切换为
+   `/userdata/debian/ota/config.json`。
+8. GitHub Actions 构建和 GitHub Release 自动发布暂不纳入本轮范围，现有 workflow
+   保持不变；这不改变本地固件生产路径只支持 Debian 的决定。
 
-旧 `build.sh`、Buildroot overlay、uClibc 平台文件及相关回归测试暂时保留，仅用于历史
-回退和迁移对比；它们不再是 Debian 生产镜像的运行时输入。删除这些遗留内容应作为后续
-独立清理提交完成，以免在本次 rebase 收尾中混入大范围、低关联删除。`pico-sdk` 内部的
-Buildroot 目录仍可能作为厂商 BSP 构建实现细节存在，不代表设备用户空间继续支持
-Buildroot。
+旧 `build.sh`、根目录 Buildroot overlay、uClibc 平台文件及相关测试文件在本次 rebase
+收尾中仍作为历史对比材料保留，但不再属于本地 Debian 构建兼容承诺，也不得被活动文档
+或本地生产入口调用。后续可以独立删除这些遗留内容，而不需要再维持可构建性。`pico-sdk` 内部的
+Buildroot 目录和 uClibc 工具链仍可作为厂商 BSP 构建 U-Boot、kernel、modules 和打包
+镜像的实现细节存在；这不代表设备用户空间继续支持 Buildroot。

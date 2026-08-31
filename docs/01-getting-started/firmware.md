@@ -116,12 +116,12 @@ The production image uses an A/B partition layout:
 | `rootfs_a` | 1536 MB | Slot A root filesystem |
 | `rootfs_b` | 1536 MB | Slot B root filesystem |
 | `userdata` | 3 GB | Shared non-OTA persistent data |
-| `ota` | 300 MiB | Dedicated OTA configuration, state, health markers, and download cache |
+| `ota` | 300 MiB | Dedicated OTA state, health markers, and download cache |
 
 `upgrade_tool` supports updating individual partitions; a full upgrade generally uses `uf update.img`.
 
 The production image uses an A/B partition layout. Online OTA only writes to the inactive slot's `boot_*`, `oem_*`, and `rootfs_*` partitions; `env`, `idblock`, and `uboot` are used only for factory or USB recovery flashing and are not updated via OTA. The `misc` partition holds the Rockchip SPL A/B metadata, which is located at byte offset `2048`.
 
-The released `update.img` includes `ota.img`. When mounted at `/userdata/ota`, it provides `config.json` with `repo`, `channel`, `factory_version`, `factory_build_time`, and slot-aware `factory_partition_hashes`, so that after the device's first USB flash it can perform subsequent OTAs from GitHub Releases.
+The Debian `update.img` includes an initially empty `ota.img`. The generated factory configuration is stored in `userdata.img` at `/debian/ota/config.json` and appears at `/userdata/debian/ota/config.json` after boot. It contains `repo`, `channel`, `factory_version`, `factory_build_time`, and slot-aware `factory_partition_hashes`; `/userdata/ota` remains the dedicated workspace for state and downloads.
 
 For more OTA details, see [OTA Overview](../08-ota/README.md).
