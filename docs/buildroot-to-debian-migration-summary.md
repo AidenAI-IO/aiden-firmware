@@ -8,11 +8,10 @@
 > OTA。GitHub Actions 编译和 GitHub Release 发布暂不纳入本轮范围，本文中的相关旧段落
 > 均按历史背景阅读。
 
-本文以当前提交 `fe773f61` 以及 2026-08-21 完成的 USB HID/ECM 回归修复为准。
-该 USB 修复当前仍在工作区，需重新构建并刷写后才会永久进入固件。早期 Stage 2、Stage 3 验收文档记录的是
-2026-08-17 的中间状态；此后又完成了 RKNN mini runtime、无 HDMI 重试、`sudo`、
-SSH 身份初始化和本地完整固件产物等修复。因此，本文的“当前状态”优先于旧验收文档
-中的历史阻塞结论。
+本文以 `main` 的 `bb4aaf15` 为 rebase 基底，以 `c2f021f7` 为 2026-09-01 的代码验证
+基线。该基线已包含 USB HID/ECM 回归修复、Debian-only 收敛、linked worktree 支持和
+可重复构建修复。早期 Stage 2、Stage 3 验收文档记录的是 2026-08-17 的中间状态；
+本文的“当前状态”优先于其中的历史阻塞结论。
 
 ## 1. 迁移目标与最终结论
 
@@ -31,6 +30,11 @@ SSH 身份初始化和本地完整固件产物等修复。因此，本文的“�
 当前已经可以在 Linux x86_64 主机上，从应用到 rootfs、BSP、A/B 镜像和
 `update.img` 完整构建 Debian 固件。最终镜像审计通过，历史日志中也有多次
 `Upgrade firmware ok` 的刷写记录。
+
+2026-09-01 在 `c2f021f7` 上完成了一次 rebase 后的本地全量构建：Stage 2 应用审计
+为 `status=pass`、`elf_count=22`，Stage 3 最终报告为 `Audit passed`；生成的 manifest
+版本为 `rebase-audit-c2f021f7`，`output/debian/image/update.img` 的 SHA-256 为
+`fd6d5478348c89d3d8ab6c8c286426c9b9b58b14eef1cfc9c12bfe5092b727f0`。
 
 迁移尚不能等同于生产发布批准。HDMI 摄像头、RKNN 新 runtime 的完整板端推理、
 72 小时稳定性、OTA 断电矩阵和生产密钥治理仍需补充验证。
@@ -78,7 +82,8 @@ Stage 1 实机验收完成了首次启动、热重启和两次冷启动，结果
 
 - 新增 `cmake/toolchains/armhf-debian.cmake`。
 - 新增 `cmake/platforms/rv1106-debian-glibc.cmake`。
-- 将原平台参数整理到 `rv1106-buildroot-uclibc.cmake`，保留 Buildroot 构建路径。
+- 将原平台参数归档到 `rv1106-buildroot-uclibc.cmake` 供历史对照；该文件不再是受支持的
+  构建路径。
 - C/C++ 应用使用 Debian armhf GCC 14 交叉编译。
 - 固定使用 Go 1.26.0 构建 ARMv7 静态程序：
   - `agent`
@@ -120,7 +125,7 @@ elf_count=22
 - 生成 rootfs、OEM、userdata、OTA、boot A/B 和最终 `update.img`。
 - 对解包后的最终 `update.img` 再执行分区、文件系统、ELF、身份和配置审计。
 
-当前 `output/debian-stage3-local/audit-report.txt` 的最终结果为：
+当前 `output/debian-stage3/audit-report.txt` 的最终结果为：
 
 ```text
 Audit passed
@@ -599,13 +604,13 @@ http://192.168.42.1/: HTTP 200
 | rootfs 构建与导入审计 | 通过 | e2fsck、内容和属性审计通过 |
 | BSP 审计 | 通过 | 固定 SDK 提交、模块、固件和 A/B boot 检查通过 |
 | 可重复构建 | 通过两次独立验证 | rootfs 和 BSP 历史验收达到字节一致 |
-| 最终镜像审计 | 通过 | `output/debian-stage3-local/audit-report.txt` 为 `Audit passed` |
+| 最终镜像审计 | 通过 | `output/debian-stage3/audit-report.txt` 为 `Audit passed` |
 | 刷写工具链 | 通过 | 多份日志记录 `Upgrade firmware ok` |
 | 媒体/NPU 模块加载 | 通过 | 相关模块和 `/dev` 节点创建成功 |
 | 普通用户设备权限 | 通过修复 | `/dev/rknpu` 和 `/dev/mpi/*` 使用 `root:video` 0660 |
 | 音频采集与播放 | 通过 | 10 秒采集和播放测试成功 |
 | USB HID/ECM 恢复路径 | 通过代码和测试闭环 | Debian helper 替换 Buildroot 固定路径 |
-| USB HID+ECM 冷启动和重新枚举 | 通过临时部署验证 | `1d6b:0104`、3 个 HID 接口、ECM、`192.168.42.1` 和 HTTP 200 均通过；正式镜像需重新构建后再刷写 |
+| USB HID+ECM 冷启动和重新枚举 | 通过临时部署验证 | `1d6b:0104`、3 个 HID 接口、ECM、`192.168.42.1` 和 HTTP 200 均通过；修复已进入新镜像，仍需刷写后复验 |
 | 本地完整固件构建 | 通过 | 能生成并审计 `update.img` 和 OTA 产物 |
 
 ### 6.2 已实现但仍需补充板端闭环
@@ -616,7 +621,7 @@ http://192.168.42.1/: HTTP 200
 | SSH 身份可靠性 | `/run/sshd`、生成顺序和超时已修复 | 用最新镜像重新确认首次启动和密码登录时延 |
 | frame.service 无 HDMI 行为 | 已改为持续重试 | 接入 HDMI bridge 后确认自动恢复 |
 | Wi-Fi 自动配置 | networkd 后端已实现，手动连接可工作 | 配置网页写入、回滚和重连完整测试 |
-| USB HID/ECM 修复进入正式镜像 | 源码修复和板端临时部署已验证 | 重新运行 `./debian_build.sh`，刷写新 `update.img` 后做一次冷启动验收 |
+| USB HID/ECM 修复进入正式镜像 | 新镜像已构建并通过主机审计 | 刷写本次 `update.img` 后做一次冷启动验收 |
 | A/B OTA | 写入、个性化、健康标记和状态代码已实现 | 真机升级、失败回滚和断电矩阵 |
 
 ### 6.3 尚未完成的发布门禁
@@ -696,25 +701,29 @@ output/debian/image/update.img
 刷写后应至少检查 UART 启动日志、systemd failed units、USB 网络、SSH、存储挂载、
 媒体模块、音频和 NPU。未接 HDMI 时可以暂时忽略 frame service 的失败重试。
 
-USB 回归修复在重新刷写前也可以仅通过临时替换 helper 做诊断，但正式验证必须使用
-重新构建后的 `output/debian/image/update.img`，否则修复不会保留在下一次启动中。
+USB 回归修复已经进入本次重新构建并通过主机审计的 `output/debian/image/update.img`。
+正式板端验证仍必须刷写该镜像；本轮审计时未连接开发板，不能用旧固件的结果替代验收。
 
 ## 8. 关键提交索引
 
 | 提交 | 内容 |
 |---|---|
-| `a709faf6` | 新增 Debian 13 armhf Stage 1 rootfs、BSP、镜像、审计、刷写和实机验证链路 |
-| `03dffcf4` | 完成应用交叉编译、systemd overlay、A/B OTA、设备身份、Stage 2/3 构建和测试主体 |
-| `4e528c6b` | 使用静态 RKNN mini runtime 2.3.2 和 glibc 兼容层替换 full runtime |
-| `de785b84` | 修复无 HDMI 时 frame service 达到启动频率限制后不再重试的问题 |
-| `407ee8dc` | 安装 sudo，创建可密码登录和执行 sudo 的 `aiden` 用户 |
-| `d2a05d66` | 更新设备操作 skill 文档，与固件迁移主体关联较弱 |
-| `cd3be07e` | 修复 SSH runtime 目录、host key 生成顺序和身份初始化超时 |
-| `fe773f61` | 新增 `debian_build.sh` 和本地完整固件/OTA 发布产物 |
-| 工作区修复（2026-08-21，尚未提交） | 修复 Debian `dash` 下 HID descriptor 生成错误、usb0 无 carrier 地址丢失，并增加 USB 回归测试 |
+| `716fe9c4` | 新增 Debian 13 armhf Stage 1 rootfs、BSP、镜像、审计、刷写和实机验证链路 |
+| `6cc071aa` | 完成应用交叉编译、systemd overlay、A/B OTA、设备身份、Stage 2/3 构建和测试主体 |
+| `4a6e048d` | 使用静态 RKNN mini runtime 2.3.2 和 glibc 兼容层替换 full runtime |
+| `9ba3e160`、`9ebc7dfa` | 修复无 HDMI 重试和 SSH 身份初始化 |
+| `271cf55e` | 新增 `debian_build.sh` 和本地完整固件/OTA 产物 |
+| `109d218a` 至 `08696042` | 完成 USB HID/ECM、watchdog、HDMI 和 frame service 回归修复 |
+| `5bead20a`、`6312643d` | 等待 frame service 就绪并增加 Debian NV12 JPEG 路径 |
+| `21e5f620` | 将生产用户空间和本地生产入口收敛为 Debian-only |
+| `5d53b07c` 至 `e9cd9804` | 支持 linked worktree，并隔离 Stage 3 SDK 对象存储 |
+| `12d6b19d`、`a872ebfb` | 修复 ext4 时间戳并完成可重复的本地生产构建链 |
+| `90a3c6cb` | 保持 GitHub Actions/Release 发布流程在本轮范围之外 |
+| `bc17a91a`、`c2f021f7` | 修复 rebase 后的 Agent 和 Python 3.10 测试兼容性 |
 
-相对 `origin/main`，当前迁移分支共涉及约 218 个文件，新增约 14,601 行、删除
-211 行，改动主要集中在 `scripts/`、`overlay-debian/` 和 `src/`。
+在代码验证基线 `c2f021f7` 上，迁移分支相对 `main` 为 0 behind、29 ahead，共涉及
+302 个文件，新增 20,989 行、删除 1,625 行，改动主要集中在 `scripts/`、
+`overlay-debian/`、`overlay-debian-oem/`、`src/` 和测试代码。
 
 ## 9. 当前状态判断
 
@@ -727,14 +736,14 @@ USB 回归修复在重新刷写前也可以仅通过临时替换 helper 做诊�
 - 可以本地生成、审计和刷写完整 `update.img`。
 - 音频、网络、蓝牙、USB、媒体模块和基础 NPU 设备访问已经取得实机证据。
 - USB HID+ECM 已完成 Debian descriptor、networkd 无 carrier 和冷启动/解绑重绑回归验证；
-  修复代码尚未进入新的正式镜像。
+  修复代码已进入本次通过主机审计的新镜像，但该镜像尚未在板端重新验收。
 
 因此，该分支已经达到“可继续进行 Debian 固件开发和集成测试”的状态。
 
 但若目标是“生产发布”，当前仍应视为条件通过而不是最终通过。最重要的剩余工作是：
 
 1. 使用静态 mini runtime 在板端重新执行两份 VAD 模型的加载和推理回归。
-2. 重新构建并刷写包含 USB 回归修复的新镜像，完成一次正式冷启动验收。
+2. 刷写本次生成的 rebase 镜像，完成正式冷启动、USB HID/ECM 和基础服务验收。
 3. 接入 HDMI bridge 后完成摄像头和 frame service 验收。
 4. 完成 RKNN、摄像头、音频并发及 72 小时稳定性测试。
 5. 完成 A/B OTA 回滚和断电矩阵。
@@ -754,8 +763,8 @@ USB 回归修复在重新刷写前也可以仅通过临时替换 helper 做诊�
 - `scripts/debian/init-script-map.tsv`
 - `scripts/debian/environment-service-map.tsv`
 - `output/debian-stage2/apps-audit/summary.txt`
-- `output/debian-stage3-local/audit-report.txt`
-- `Falcom/debian` 相对 `origin/main` 的提交历史和代码差异
+- `output/debian-stage3/audit-report.txt`
+- `Falcom/debian` 相对 `main` 的提交历史和代码差异
 
 ## 11. Buildroot 残留审计与后续清理建议（2026-08-21）
 
@@ -782,7 +791,7 @@ cmake/platforms/rv1106-buildroot-uclibc.cmake
 `build_image.sh`/`_build_image.sh`，但这些自动化入口保持原样且不属于本轮范围；它们
 不能被 Debian 本地生产入口引用。
 
-### 11.2 `overlay/` 是共享资产，不应整体删除
+### 11.2 `overlay/` 是历史资产，不进入 Debian 生产镜像
 
 `overlay/` 原本是 Buildroot overlay。Debian stage2/stage3 已不再从根目录 overlay
 取用生产资源；仍存在的文件只用于历史对照：
@@ -798,9 +807,9 @@ overlay/oem/usr/share/aiden/audio/
 overlay/oem/usr/share/aiden/edid/
 ```
 
-因此不能在本次变更中直接删除整个 `overlay/`，但后续清理无需维持其可构建性。Debian
-生产资源已由 `overlay-debian/` 和 `overlay-debian-oem/` 持有；删除旧 overlay 前只需
-完成历史资料归档和引用审查。
+本次 rebase 没有删除整个 `overlay/`，但后续清理无需维持其可构建性。Debian 生产资源
+已由 `overlay-debian/` 和 `overlay-debian-oem/` 持有；删除旧 overlay 前只需完成历史
+资料归档和引用审查。
 
 ### 11.3 Debian-only 阶段的清理候选
 
@@ -883,6 +892,8 @@ Debian 生产迁移未完成。
    `/userdata/debian/ota/config.json`。
 8. GitHub Actions 构建和 GitHub Release 自动发布暂不纳入本轮范围，现有 workflow
    保持不变；这不改变本地固件生产路径只支持 Debian 的决定。
+9. 在 rebase 后代码基线 `c2f021f7` 上完成全量本地固件构建，Stage 2、BSP、rootfs
+   导入和最终镜像审计全部通过，并生成版本为 `rebase-audit-c2f021f7` 的签名 manifest。
 
 旧 `build.sh`、根目录 Buildroot overlay、uClibc 平台文件及相关测试文件在本次 rebase
 收尾中仍作为历史对比材料保留，但不再属于本地 Debian 构建兼容承诺，也不得被活动文档
