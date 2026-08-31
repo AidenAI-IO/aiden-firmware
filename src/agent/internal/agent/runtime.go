@@ -1375,7 +1375,15 @@ func (r *Runtime) captureStateScreenshot() *messages.Attachment {
 		return nil
 	}
 
-	output, err := screenshotTool.Call(context.Background(), "{}")
+	var output string
+	var err error
+	if fastTool, ok := screenshotTool.(interface {
+		CallWithoutStartupWait(context.Context, string) (string, error)
+	}); ok {
+		output, err = fastTool.CallWithoutStartupWait(context.Background(), "{}")
+	} else {
+		output, err = screenshotTool.Call(context.Background(), "{}")
+	}
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Debug("[state] screenshot unavailable: %v", err)

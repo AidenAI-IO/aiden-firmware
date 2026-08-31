@@ -3,12 +3,18 @@ package screenprovider
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
+	"syscall"
 	"time"
 )
+
+const frameServiceReadyPollInterval = 100 * time.Millisecond
+const frameServiceReadyProbeTimeout = 500 * time.Millisecond
 
 // FrameService communicates with the frame_service via Unix domain socket.
 type FrameService struct {
@@ -219,7 +225,11 @@ func (c *FrameService) LatestFrameWithFormat(format string, quality int, cropBla
 
 // Health queries the frame service health snapshot.
 func (c *FrameService) Health() (*HealthResult, error) {
-	headerJSON, _, err := c.doRequest(`{"type":"request","method":"health"}`, nil, 5*time.Second)
+	return c.healthWithTimeout(5 * time.Second)
+}
+
+func (c *FrameService) healthWithTimeout(timeout time.Duration) (*HealthResult, error) {
+	headerJSON, _, err := c.doRequest(`{"type":"request","method":"health"}`, nil, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -245,6 +255,95 @@ func (c *FrameService) Health() (*HealthResult, error) {
 		AvgFrameServeLatencyMs:  resp.AvgFrameServeLatencyMs,
 		AvgCaptureCopyLatencyMs: resp.AvgCaptureCopyLatencyMs,
 	}, nil
+}
+
+// WaitUntilReady covers the short service-restart window where the Unix
+// socket may not exist yet. Buffered capture also waits for a fresh frame;
+// on-demand capture cannot do that because the screenshot request creates it.
+func (c *FrameService) WaitUntilReady(timeout time.Duration) (*HealthResult, error) {
+	if timeout <= 0 {
+		return c.Health()
+	}
+
+	deadline := time.Now().Add(timeout)
+	var lastHealth *HealthResult
+	var lastErr error
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, frameServiceReadyTimeoutError(timeout, lastHealth, lastErr)
+		}
+
+		probeTimeout := remaining
+		if probeTimeout > frameServiceReadyProbeTimeout {
+			probeTimeout = frameServiceReadyProbeTimeout
+		}
+		health, err := c.healthWithTimeout(probeTimeout)
+		if err == nil {
+			lastHealth = health
+			lastErr = nil
+			if frameServiceHealthReady(health) {
+				return health, nil
+			}
+		} else {
+			lastErr = err
+			if !isTransientFrameServiceStartupError(err) {
+				return nil, err
+			}
+		}
+
+		remaining = time.Until(deadline)
+		if remaining <= 0 {
+			return nil, frameServiceReadyTimeoutError(timeout, lastHealth, lastErr)
+		}
+		wait := frameServiceReadyPollInterval
+		if wait > remaining {
+			wait = remaining
+		}
+		time.Sleep(wait)
+	}
+}
+
+func frameServiceHealthReady(health *HealthResult) bool {
+	if health == nil || health.State == "" {
+		return false
+	}
+	if health.CaptureMode == "on_demand" {
+		return true
+	}
+	return health.State == "RUNNING" &&
+		health.LatestSeq > 0 &&
+		health.FrameAgeMs <= frameServiceFreshFrameMaxAgeMs
+}
+
+func isTransientFrameServiceStartupError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ENOTCONN) ||
+		errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func frameServiceReadyTimeoutError(timeout time.Duration, health *HealthResult, lastErr error) error {
+	if lastErr != nil {
+		return fmt.Errorf("wait for frame service ready timed out after %s: %w", timeout, lastErr)
+	}
+	if health != nil {
+		return fmt.Errorf(
+			"wait for frame service ready timed out after %s (state=%s capture_mode=%s latest_seq=%d frame_age_ms=%d)",
+			timeout, health.State, health.CaptureMode, health.LatestSeq, health.FrameAgeMs,
+		)
+	}
+	return fmt.Errorf("wait for frame service ready timed out after %s", timeout)
 }
 
 func (c *FrameService) doRequest(requestJSON string, requestPayload []byte, timeout time.Duration) ([]byte, []byte, error) {
