@@ -1,5 +1,9 @@
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 from runner import config as runner_config
 from runner import agent_config
