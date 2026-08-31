@@ -1503,9 +1503,16 @@ func (r *Runtime) ClearMemory(ctx context.Context) error {
 	if err := r.memories.ClearSession(ctx, "default"); err != nil {
 		return err
 	}
-	r.rotateContext()
 	r.resetActiveUserContext()
-	if err := r.rotateUserContext(); err != nil {
+	userSystemPrompt := r.currentUserContextSystemPrompt()
+	if err := contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear backend context sessions: %w", err)
+	}
+	if err := contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear user context sessions: %w", err)
+	}
+	r.rotateContext()
+	if err := r.rotateUserContext(userSystemPrompt); err != nil {
 		return err
 	}
 	return nil
@@ -1544,23 +1551,29 @@ func (r *Runtime) resetActiveUserContext() {
 	}
 }
 
-func (r *Runtime) rotateUserContext() error {
+func (r *Runtime) currentUserContextSystemPrompt() string {
 	if r == nil || strings.TrimSpace(r.config.ConfigDir) == "" {
-		return nil
+		return ""
 	}
 	folder := agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
-	var systemPrompt string
 	if manager, err := contextmanager.LoadContextManagerFromCurrentSession(folder); err == nil && manager != nil {
 		for _, message := range manager.MessageListDump().Messages {
 			if message.Role == messages.MessageRoleSystem {
-				systemPrompt = message.Content
-				break
+				return message.Content
 			}
 		}
+	}
+	return ""
+}
+
+func (r *Runtime) rotateUserContext(systemPrompt string) error {
+	if r == nil || strings.TrimSpace(r.config.ConfigDir) == "" {
+		return nil
 	}
 	if strings.TrimSpace(systemPrompt) == "" {
 		return nil
 	}
+	folder := agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
 	if _, err := contextmanager.NewContextManager(folder, systemPrompt); err != nil {
 		return fmt.Errorf("create user context session: %w", err)
 	}

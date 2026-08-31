@@ -5228,6 +5228,7 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
+	oldBackendSessionID := runtime.ContextDump().SessionID
 
 	memoryDir := filepath.Join(configDir, "memory")
 	eventsPath := filepath.Join(memoryDir, "session", "events.jsonl")
@@ -5250,9 +5251,21 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
 		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
 	}
+	backendFolder := agentpath.ContextManagerSessionFolder(configDir)
+	oldBackendSessionPath := filepath.Join(backendFolder, oldBackendSessionID+".jsonl")
+	if _, err := os.Stat(oldBackendSessionPath); !os.IsNotExist(err) {
+		t.Fatalf("old backend context session file should be removed, stat err = %v", err)
+	}
+	newBackendSession := runtime.ContextDump()
+	if newBackendSession.SessionID == "" || newBackendSession.SessionID == oldBackendSessionID {
+		t.Fatalf("backend context session was not replaced: old=%q new=%q", oldBackendSessionID, newBackendSession.SessionID)
+	}
+	if newBackendSession.ParentSessionID != "" {
+		t.Fatalf("cleared backend context parent session = %q, want root session", newBackendSession.ParentSessionID)
+	}
 }
 
-func TestRuntimeClearMemoryRotatesUserContextSession(t *testing.T) {
+func TestRuntimeClearMemoryReplacesAndRemovesUserContextSession(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	runtime, err := NewRuntime(Config{
 		ConfigDir: configDir,
@@ -5283,8 +5296,12 @@ func TestRuntimeClearMemoryRotatesUserContextSession(t *testing.T) {
 	if rotated.GetSessionID() == oldSessionID {
 		t.Fatalf("user context session was not rotated: %q", oldSessionID)
 	}
-	if _, err := contextmanager.LoadContextManagerFromSessionID(folder, oldSessionID); err != nil {
-		t.Fatalf("old user context should remain archived and loadable: %v", err)
+	oldUserSessionPath := filepath.Join(folder, oldSessionID+".jsonl")
+	if _, err := os.Stat(oldUserSessionPath); !os.IsNotExist(err) {
+		t.Fatalf("old user context session file should be removed, stat err = %v", err)
+	}
+	if rotated.GetParentSessionID() != "" {
+		t.Fatalf("cleared user context parent session = %q, want root session", rotated.GetParentSessionID())
 	}
 	rotatedMessages := rotated.MessageListDump().Messages
 	if len(rotatedMessages) != 1 || rotatedMessages[0].Role != messages.MessageRoleSystem || rotatedMessages[0].Content != "realtime system prompt" {
