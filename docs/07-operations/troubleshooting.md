@@ -11,9 +11,9 @@ Cause: `frame_service` is exclusively using `/dev/video0`.
 Solution:
 
 ```bash
-/etc/init.d/S52frame_service stop
+systemctl stop aiden-frame.service
 ./build/bin/example_camera_capture
-/etc/init.d/S52frame_service start
+systemctl start aiden-frame.service
 ```
 
 For daily screenshots and frame testing, use:
@@ -27,7 +27,7 @@ frame_service_cli screenshot --out /tmp/screenshot.bmp
 Check:
 
 ```bash
-/etc/init.d/S52frame_service status
+systemctl status aiden-frame.service --no-pager
 frame_service_cli --socket /run/frame_service/frame_service.sock health
 ls -l /run/frame_service/frame_service.sock
 ```
@@ -76,7 +76,7 @@ for f in /sys/class/video4linux/v4l-subdev*/name; do echo "$f: $(cat "$f")"; don
 
 If the matching `rk628-csi` or `tc358743` node was not selected, set
 `FRAME_SERVICE_SUBDEV=/dev/v4l-subdevX` in
-`/etc/aiden_frame_service.conf` to that node and restart `S52frame_service`.
+`/etc/aiden_frame_service.conf` to that node and restart `aiden-frame.service`.
 
 ## Agent Web UI won't open
 
