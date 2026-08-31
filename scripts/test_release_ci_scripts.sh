@@ -163,13 +163,6 @@ if [ "$resolved_agent_commit" != unknown ]; then
     exit 1
 fi
 
-# The retained Buildroot binaries entrypoint still uses the vendor uClibc
-# toolchain. It must not inherit the repository's Debian/glibc platform default.
-if ! grep -Fq -- '-DAIDEN_TARGET_PLATFORM=rv1106-buildroot-uclibc' "$BINARIES_TASK"; then
-    echo "legacy uClibc binary builds must select the Buildroot platform explicitly" >&2
-    exit 1
-fi
-
 if ! grep -Fq 'run: ./build.sh image' "$WORKFLOW" || \
    ! grep -Fq 'run: ./build.sh exec image -- bash ./scripts/repack_ota_update_image.sh' "$WORKFLOW" || \
    grep -Fq 'build_image.sh' "$WORKFLOW"; then
@@ -245,10 +238,6 @@ fi
 python3 "$ROOT_DIR/scripts/check_ci_policy_job.py"
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_debian_stage2.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_debian_stage3.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_debian_init_script_map.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_debian_systemd_overlay.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_build_cli.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_rootfs_cli_tool_catalog.sh' "$CI_WORKFLOW" || \

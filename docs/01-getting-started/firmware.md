@@ -4,11 +4,11 @@ sidebar_position: 4
 
 # Firmware Build and Flashing
 
-## Getting Prebuilt Firmware
+## Getting Firmware
 
-If you don't want to compile the firmware locally from scratch, you can download a prebuilt image from Releases:
-
-- [Aiden Firmware Releases](https://github.com/AidenAI-IO/aiden-firmware/releases)
+The current scope does not provide an automated prebuilt-release download. Build
+the Debian image locally with `./debian_build.sh`, or obtain a reviewed
+`update.img` through the project's manual distribution process.
 
 When flashing the full firmware, you typically use `update.img`.
 

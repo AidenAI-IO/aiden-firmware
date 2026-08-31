@@ -9,7 +9,9 @@ Before enabling production OTA rollout, the following acceptance tests should be
 ## Prerequisites
 
 - The production image is built with the production Ed25519 public key.
-- GitHub Release contains `manifest.json` plus compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`, `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`.
+- A local or self-hosted HTTP(S) endpoint contains the signed `manifest.json`
+  and compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`,
+  `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`.
 - The `update.img` inside `update.img.tar.gz` contains the dedicated empty `ota` partition and the factory baseline in userdata at `/debian/ota/config.json`.
 - When UART is available, it is recommended to record SPL rollback logs simultaneously.
 
@@ -19,7 +21,7 @@ must be triggered via `ota update`.
 
 ## 1. USB Factory Flash Acceptance
 
-Download the release `update.img.tar.gz`, extract `update.img`, then flash it with the normal USB recovery flow:
+Download the local build's `update.img.tar.gz`, extract `update.img`, then flash it with the normal USB recovery flow:
 
 ```bash
 tar -xzf update.img.tar.gz update.img

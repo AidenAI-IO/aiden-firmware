@@ -3,6 +3,11 @@
 本文总结 `Falcom/debian` 分支将 Aiden Luckfox Pico Zero 固件从 Buildroot/uClibc
 迁移到 Debian 13 armhf/glibc 的实施过程、关键改动、问题处理、验证结果和遗留事项。
 
+> 当前交付决策：生产用户空间和本地生产构建路径均为 Debian-only。Buildroot 仅在厂商
+> SDK 的 BSP 实现、历史对照和恢复资料中保留；不提供 Buildroot bridge 或跨发行版在线
+> OTA。GitHub Actions 编译和 GitHub Release 发布暂不纳入本轮范围，本文中的相关旧段落
+> 均按历史背景阅读。
+
 本文以当前提交 `fe773f61` 以及 2026-08-21 完成的 USB HID/ECM 回归修复为准。
 该 USB 修复当前仍在工作区，需重新构建并刷写后才会永久进入固件。早期 Stage 2、Stage 3 验收文档记录的是
 2026-08-17 的中间状态；此后又完成了 RKNN mini runtime、无 HDMI 重试、`sudo`、
@@ -754,14 +759,14 @@ USB 回归修复在重新刷写前也可以仅通过临时替换 helper 做诊�
 
 ## 11. Buildroot 残留审计与后续清理建议（2026-08-21）
 
-本次审计确认，仓库中仍保留 Buildroot 相关文件和代码，但它们不是单一意义上的
-“误残留”。当前分支仍是 Buildroot 回退链与 Debian 新链并存的双平台结构。审计期间
-没有删除任何文件或代码。
+本次审计确认，仓库中仍保留 Buildroot 相关文件和代码，但它们不是 Debian 生产路径。
+这些文件仅用于厂商 SDK/BSP 构建、历史对照和恢复资料；生产分支不再承诺 Buildroot
+用户空间或跨发行版在线回退。审计期间没有删除任何文件或代码。
 
 ### 11.1 仍在使用的旧构建链
 
-以下文件仍构成旧 Buildroot 固件的构建入口或平台配置，不能在保持旧构建能力的前提下
-直接删除：
+以下文件仍是旧 Buildroot 固件的历史构建入口或平台配置，可在后续独立清理中删除；它们
+不属于 Debian 本地生产构建：
 
 ```text
 build.sh
@@ -772,15 +777,15 @@ cmake/toolchain-arm-rockchip830.cmake
 cmake/platforms/rv1106-buildroot-uclibc.cmake
 ```
 
-`CMakeLists.txt` 当前默认平台仍为 `rv1106-buildroot-uclibc`，同时提供
-`rv1106-debian-glibc`。GitHub Actions、发布脚本和回归测试仍调用
-`build_image.sh`/`_build_image.sh`，并检查 SDK 中的 Buildroot 可重复构建配置。
-删除这些入口会同时影响旧固件构建、CI 和现有对比验证。
+`CMakeLists.txt` 当前默认平台为 `rv1106-debian-glibc`，公开平台枚举不再列出
+`rv1106-buildroot-uclibc`。旧 GitHub Actions、发布脚本和回归测试仍可能调用
+`build_image.sh`/`_build_image.sh`，但这些自动化入口保持原样且不属于本轮范围；它们
+不能被 Debian 本地生产入口引用。
 
 ### 11.2 `overlay/` 是共享资产，不应整体删除
 
-`overlay/` 原本是 Buildroot overlay，但 Debian stage2/stage3 仍有意复用其中的部分
-文件，包括：
+`overlay/` 原本是 Buildroot overlay。Debian stage2/stage3 已不再从根目录 overlay
+取用生产资源；仍存在的文件只用于历史对照：
 
 ```text
 overlay/etc/init.d/S49usbhid
@@ -793,13 +798,13 @@ overlay/oem/usr/share/aiden/audio/
 overlay/oem/usr/share/aiden/edid/
 ```
 
-因此不能简单删除整个 `overlay/`。如果以后决定 Debian-only，应先将仍需使用的内容
-迁移到职责明确的目录（例如 `assets/oem/`、`assets/models/`、`assets/audio/`、
-`assets/edid/` 和 `assets/usb/`），再修改 Debian 构建脚本、审计脚本和测试。
+因此不能在本次变更中直接删除整个 `overlay/`，但后续清理无需维持其可构建性。Debian
+生产资源已由 `overlay-debian/` 和 `overlay-debian-oem/` 持有；删除旧 overlay 前只需
+完成历史资料归档和引用审查。
 
-### 11.3 可作为 Debian-only 阶段的清理候选
+### 11.3 Debian-only 阶段的清理候选
 
-在完成迁移和引用审查后，以下内容可以考虑清理：
+在完成历史资料归档和引用审查后，以下内容可以考虑清理：
 
 ```text
 cmake/platforms/rv1106-buildroot-uclibc.cmake
@@ -808,25 +813,26 @@ overlay/oem/usr/lib/librknnmrt.so
 ```
 
 `librknnmrt.so` 是旧 uClibc mini runtime；当前 Debian RKNN 方案使用
-`third_party/rknpu2/v2.3.2/lib/librknnmrt.a` 静态库和 glibc 兼容层。不过该 `.so`
-仍被旧 Buildroot CMake/镜像流程引用，所以当前不能直接删除。
+`third_party/rknpu2/v2.3.2/lib/librknnmrt.a` 静态库和 glibc 兼容层。它仍可能被旧
+Buildroot CMake/镜像流程引用，删除前应先确认历史资料不再需要。
 
 `overlay/etc/init.d/` 中部分脚本（例如 `S30dbus`、`S35wifidrv`、`S40network`、
 `S50telnet`、`S50usbdevice`、`S57wetty`、`S91smb` 和 `S99usb0config`）不会进入
 当前 Debian rootfs，但仍属于旧 Buildroot overlay。删除它们前必须先移除或重写
 旧镜像流程、相关测试和发布策略。
 
-### 11.4 双平台兼容代码和 SDK 子模块
+### 11.4 历史兼容代码和 SDK 子模块
 
 Agent 的 USB HID 恢复逻辑保留 Buildroot 默认命令
 `/etc/init.d/S60usb_ecm_watchdog`，Debian 通过环境变量切换到
-`/usr/lib/aiden/aiden-usb-ecm-watchdog`。这是有意的双平台兼容设计，不应当作无效代码
-直接删除。
+`/usr/lib/aiden/aiden-usb-ecm-watchdog`。这是为读取历史配置保留的兼容分支；Debian
+生产服务不会调用该 Buildroot 路径。删除前应完成旧源码取证，但不需要继续维护
+Buildroot 可构建性。
 
 `pico-sdk` 子模块内部仍包含 Buildroot defconfig、构建规则和 uClibc 工具链。Debian
-stage3 仍使用该 SDK 构建 U-Boot、驱动、环境和 A/B 镜像，当前测试也会读取 SDK 的
-Buildroot 配置。因此不能直接修改或删除子模块内部的 Buildroot 文件；若以后切换到
-Debian-only，应维护独立的裁剪 SDK fork。
+stage3 仍使用该 SDK 构建 U-Boot、驱动、环境和 A/B 镜像。因此不能在本仓库直接裁剪
+子模块内部的 Buildroot 文件；后续可维护独立的裁剪 SDK fork，而不改变 Debian 用户
+空间结论。
 
 ### 11.5 当前可安全处理的对象
 
@@ -846,21 +852,19 @@ pico-sdk/output/
 这些目录通常被 `.gitignore` 忽略，但 `output/` 可能包含固件、审计报告和刷写证据，
 清理前应确认不再需要。当前本次审计没有执行清理。
 
-### 11.6 若未来选择 Debian-only 的建议顺序
+### 11.6 Debian-only 收敛状态与后续清理
 
-Debian-only 清理应作为一次架构变更执行，而不是逐个删除文件：
+Debian-only 架构变更已经完成。后续清理应作为一次独立变更执行，而不是逐个删除文件：
 
-1. 迁移 Debian 仍使用的 overlay 共享资产。
-2. 修改 Debian stage1/stage2/stage3 脚本及所有相关审计和回归测试。
-3. 将 CMake 默认平台切换为 Debian，并移除 Buildroot 平台选择。
-4. 移除 Buildroot 构建入口、旧 overlay 和旧 runtime。
-5. 使用裁剪后的独立 SDK fork 完成 BSP、镜像、USB、RKNN、音频、摄像头、OTA 和
+1. 归档并确认 Debian 生产资源与旧 overlay 的引用关系。
+2. 在独立变更中移除 Buildroot 构建入口、旧 overlay 和旧 runtime。
+3. 使用裁剪后的独立 SDK fork 完成 BSP、镜像、USB、RKNN、音频、摄像头、OTA 和
    回滚回归。
-6. GitHub Actions 构建和 GitHub Release 自动发布另行规划，不作为本轮本地 Debian
+4. GitHub Actions 构建和 GitHub Release 自动发布另行规划，不作为本轮本地 Debian
    构建收敛的完成条件。
 
-在上述工作完成前，保留 Buildroot 文件是为了支持旧固件回退、问题对比和现有 CI，
-不表示 Debian 迁移未完成。
+在上述清理完成前，保留 Buildroot 文件是为了支持 SDK 构建取证和历史问题对比，不表示
+Debian 生产迁移未完成。
 
 ### 11.7 Debian-only 决策更新（2026-08-31）
 
