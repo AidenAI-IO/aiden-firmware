@@ -5228,6 +5228,7 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
+	oldBackendSessionID := runtime.ContextDump().SessionID
 
 	memoryDir := filepath.Join(configDir, "memory")
 	eventsPath := filepath.Join(memoryDir, "session", "events.jsonl")
@@ -5250,9 +5251,21 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
 		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
 	}
+	backendFolder := agentpath.ContextManagerSessionFolder(configDir)
+	oldBackendSessionPath := filepath.Join(backendFolder, oldBackendSessionID+".jsonl")
+	if _, err := os.Stat(oldBackendSessionPath); !os.IsNotExist(err) {
+		t.Fatalf("old backend context session file should be removed, stat err = %v", err)
+	}
+	newBackendSession := runtime.ContextDump()
+	if newBackendSession.SessionID == "" || newBackendSession.SessionID == oldBackendSessionID {
+		t.Fatalf("backend context session was not replaced: old=%q new=%q", oldBackendSessionID, newBackendSession.SessionID)
+	}
+	if newBackendSession.ParentSessionID != "" {
+		t.Fatalf("cleared backend context parent session = %q, want root session", newBackendSession.ParentSessionID)
+	}
 }
 
-func TestRuntimeClearMemoryRotatesUserContextSession(t *testing.T) {
+func TestRuntimeClearMemoryReplacesAndRemovesUserContextSession(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	runtime, err := NewRuntime(Config{
 		ConfigDir: configDir,
@@ -5283,12 +5296,53 @@ func TestRuntimeClearMemoryRotatesUserContextSession(t *testing.T) {
 	if rotated.GetSessionID() == oldSessionID {
 		t.Fatalf("user context session was not rotated: %q", oldSessionID)
 	}
-	if _, err := contextmanager.LoadContextManagerFromSessionID(folder, oldSessionID); err != nil {
-		t.Fatalf("old user context should remain archived and loadable: %v", err)
+	oldUserSessionPath := filepath.Join(folder, oldSessionID+".jsonl")
+	if _, err := os.Stat(oldUserSessionPath); !os.IsNotExist(err) {
+		t.Fatalf("old user context session file should be removed, stat err = %v", err)
+	}
+	if rotated.GetParentSessionID() != "" {
+		t.Fatalf("cleared user context parent session = %q, want root session", rotated.GetParentSessionID())
 	}
 	rotatedMessages := rotated.MessageListDump().Messages
 	if len(rotatedMessages) != 1 || rotatedMessages[0].Role != messages.MessageRoleSystem || rotatedMessages[0].Content != "realtime system prompt" {
 		t.Fatalf("rotated user context = %#v, want only preserved system prompt", rotatedMessages)
+	}
+}
+
+func TestRuntimeClearMemoryPreservesSessionsWhenUserContextCannotLoad(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	runtime, err := NewRuntime(Config{
+		ConfigDir: configDir,
+		Model:     ModelConfig{Provider: "fake"},
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	userFolder := agentpath.UserContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManager(userFolder, "realtime system prompt")
+	if err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
+	}
+	userSessionPath := filepath.Join(userFolder, manager.GetSessionID()+".jsonl")
+	if err := os.WriteFile(userSessionPath, []byte("{invalid json\n"), 0o644); err != nil {
+		t.Fatalf("corrupt user context session: %v", err)
+	}
+	backendFolder := agentpath.ContextManagerSessionFolder(configDir)
+	backendManager, err := contextmanager.NewContextManager(backendFolder, "backend system prompt")
+	if err != nil {
+		t.Fatalf("create backend context session: %v", err)
+	}
+	backendSessionPath := filepath.Join(backendFolder, backendManager.GetSessionID()+".jsonl")
+
+	if err := runtime.ClearMemory(context.Background()); err == nil {
+		t.Fatal("ClearMemory() error = nil, want user context load error")
+	}
+	for _, path := range []string{userSessionPath, backendSessionPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("session should remain after user context load failure, stat %s: %v", path, err)
+		}
 	}
 }
 
