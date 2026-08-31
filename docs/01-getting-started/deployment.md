@@ -4,167 +4,138 @@ sidebar_position: 6
 
 # Deployment to Device
 
-## Deploy via Complete Firmware
+## Complete Debian Firmware
 
-The recommended production deployment method is to build or download a complete firmware image with overlay and flash it to the device. The firmware will place the following content into the target filesystem:
+The production deployment path is a complete Debian image. Build the audited
+Stage 2 application bundle, Debian rootfs, BSP, A/B images, and signed local OTA
+metadata with:
+
+```bash
+./debian_build.sh
+```
+
+The directly flashable image is:
 
 ```text
-/oem/usr/bin/                  # Application binaries
-/etc/init.d/S39hciinit         # AIC8800 UART/HCI initialization
-/etc/init.d/S40bluetoothd      # BlueZ with persistent pairing state
-/etc/init.d/S41ble_service     # BLE Wake/ANCS service watchdog
-/etc/init.d/S43wlan_guard      # WLAN connectivity guard
-/etc/init.d/S49ntp             # ntpd daemon
-/etc/init.d/S49usbhid          # USB HID gadget initialization
-/etc/init.d/S50ntp_watchdog    # NTP sync periodic check, triggers step when not synced
-/etc/init.d/S52frame_service   # Frame Service watchdog
-/etc/init.d/S53adb_server      # Delayed adb host server bootstrap
-/etc/init.d/S53audio_service   # Audio Service watchdog
-/etc/init.d/S53agent           # Go Agent watchdog
-/etc/init.d/S56config_web      # Configuration web page
-/etc/init.d/S99rtcinit         # RTC default time calibration, overrides SDK default script
-/userdata/agent/agent.toml     # Agent default configuration
-/userdata/wpa_supplicant.conf  # Wi-Fi default configuration
+output/debian/image/update.img
 ```
 
-## Manual Binary Copy
-
-After `./build.sh binaries` completes, the main artifacts are in `build/bin/`. The ones directly related to device-resident services are:
-
-- `build/bin/frame_service`
-- `build/bin/audio_service`
-- `build/bin/ble_service`
-- `build/bin/config_web`
-- `build/bin/agent`
-- `overlay/oem/usr/bin/aiden-env-run`
-
-If the target device has already been flashed with an Aiden firmware version, the init scripts and `/etc/*.conf` typically already exist. In this case, the minimal deployment set is the above runtime files:
+Flash it with:
 
 ```bash
-./build.sh binaries
-
-scp build/bin/frame_service root@<device-ip>:/oem/usr/bin/
-scp build/bin/audio_service root@<device-ip>:/oem/usr/bin/
-scp build/bin/ble_service root@<device-ip>:/oem/usr/bin/
-scp build/bin/config_web root@<device-ip>:/oem/usr/bin/
-scp build/bin/agent root@<device-ip>:/oem/usr/bin/
-scp overlay/oem/usr/bin/aiden-env-run root@<device-ip>:/oem/usr/bin/
+./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
 ```
 
-If you also need device-side troubleshooting/debugging tools, optionally copy:
+The image installs these main runtime trees:
+
+```text
+/oem/usr/bin/                                  # Audited production applications
+/oem/usr/lib/                                  # Vendor and application libraries
+/oem/usr/model/                                # VAD model and weights
+/oem/usr/share/aiden/                          # Config Web, skills, audio, and EDID assets
+/usr/lib/aiden/                                # Debian rootfs service helpers
+/etc/systemd/system/aiden-*.service            # Product systemd units
+/userdata/agent/agent.toml                     # External build-time Agent configuration
+/userdata/debian/wifi/wpa_supplicant-wlan0.conf
+/userdata/debian/ota/config.json               # Debian OTA factory configuration
+```
+
+`overlay-debian/` owns the Debian rootfs additions. `overlay-debian-oem/`, the
+audited Stage 2 bundle, SDK kernel modules, and generated web assets form the OEM
+image. Neither Debian image stage consumes the legacy root overlay.
+
+## Development Binary Update
+
+Build and audit applications without rebuilding the firmware:
 
 ```bash
-scp build/bin/frame_service_cli root@<device-ip>:/oem/usr/bin/
-scp build/bin/audio_service_cli root@<device-ip>:/oem/usr/bin/
-scp build/bin/ota root@<device-ip>:/oem/usr/bin/
-scp build/bin/abctl root@<device-ip>:/oem/usr/bin/
+scripts/debian-stage2/build-apps.sh all
 ```
 
-If the target device is a more bare system lacking Aiden's init scripts and configuration files, you'll also need to copy these runtime files:
+Production binaries are under `output/debian-stage2/apps/bin/`. For a temporary
+device-side test, stop the owning systemd unit before replacing its binary:
 
 ```bash
-scp overlay/etc/init.d/S52frame_service root@<device-ip>:/etc/init.d/
-scp overlay/etc/init.d/S53adb_server root@<device-ip>:/etc/init.d/
-scp overlay/etc/init.d/S53audio_service root@<device-ip>:/etc/init.d/
-scp overlay/etc/init.d/S39hciinit root@<device-ip>:/etc/init.d/
-scp overlay/etc/init.d/S40bluetoothd root@<device-ip>:/etc/init.d/
-scp overlay/etc/init.d/S41ble_service root@<device-ip>:/etc/init.d/
-scp overlay/etc/init.d/S53agent root@<device-ip>:/etc/init.d/
-scp overlay/etc/init.d/S56config_web root@<device-ip>:/etc/init.d/
-
-scp overlay/etc/aiden_frame_service.conf root@<device-ip>:/etc/
-scp overlay/etc/aiden_audio_service.conf root@<device-ip>:/etc/
-scp overlay/etc/aiden_ble_service.conf root@<device-ip>:/etc/
-scp overlay/etc/bluetooth/main.conf root@<device-ip>:/etc/bluetooth/
+ssh root@<device-ip> 'systemctl stop aiden-frame.service'
+scp output/debian-stage2/apps/bin/frame_service root@<device-ip>:/oem/usr/bin/frame_service
+ssh root@<device-ip> 'chmod 0755 /oem/usr/bin/frame_service && systemctl start aiden-frame.service'
 ```
 
-First deployment typically also requires preparing the default configuration under `/userdata`:
+Use the same pattern for `audio_service`, `ble_service`, `agent`, or
+`config_web`. Copying a binary directly mutates only the active OEM slot and can
+invalidate the factory hash expected by OTA diagnostics, so use it for short
+development cycles only. Rebuild and flash a complete image for a reproducible
+deployment.
+
+Diagnostic executables such as `frame_service_cli`, `audio_service_cli`, and
+`example_*` are present in the Stage 2 output but excluded from the production
+OEM allowlist. Copy only the tool needed for a bounded test to a directory under
+`/userdata`, then remove it when the test is complete.
+
+Do not deploy service definitions by copying individual files into `/etc`.
+Rootfs helpers and systemd units are versioned with the Debian rootfs image and
+must move together.
+
+## Service Relationships
+
+`aiden.target` groups the product services. Important ordering is expressed by
+systemd dependencies rather than filename order:
+
+1. Slot resolution and rootfs growth expose the active OEM, userdata, and OTA partitions.
+2. Userdata migration, machine identity, OEM library registration, and strict environment generation complete.
+3. Media, Wi-Fi, Bluetooth, USB gadget, DHCP, and time services prepare hardware and networking.
+4. Frame, audio, BLE, Agent, Config Web, adb host, and WLAN recovery services start independently.
+5. The OTA health aggregator checks required local services before committing a pending slot.
+
+Inspect the dependency graph with:
 
 ```bash
-ssh root@<device-ip> "mkdir -p /userdata/agent /userdata/system"
-scp overlay/userdata/agent/agent.toml root@<device-ip>:/userdata/agent/
-scp overlay/userdata/system/env root@<device-ip>:/userdata/system/
-scp overlay/userdata/wpa_supplicant.conf root@<device-ip>:/userdata/
+systemctl list-dependencies aiden.target
+systemctl --failed
 ```
-
-Notes:
-
-- Config Web calls the `/oem/usr/bin/agent` `config`, `config-check`, and `config-meta` subcommands, so copy `agent` whenever copying `config_web`.
-- `S52frame_service`, `S53adb_server`, `S53audio_service`, `S53agent`, and `S56config_web` all launch the actual binaries or commands via `/oem/usr/bin/aiden-env-run` when available, so this wrapper must also be present on the device.
-- You can also copy binaries to `/root` or `/userdata` for temporary testing, but existing init scripts default to searching `/oem/usr/bin/`.
-- If only updating binaries, run `chmod +x /oem/usr/bin/*` once after copying.
-
-After copying, common restart commands:
-
-```bash
-ssh root@<device-ip> "chmod +x /etc/init.d/S39hciinit /etc/init.d/S40bluetoothd /etc/init.d/S41ble_service /etc/init.d/S52frame_service /etc/init.d/S53adb_server /etc/init.d/S53audio_service /etc/init.d/S53agent /etc/init.d/S56config_web /oem/usr/bin/frame_service /oem/usr/bin/audio_service /oem/usr/bin/ble_service /oem/usr/bin/config_web /oem/usr/bin/agent /oem/usr/bin/aiden-env-run"
-ssh root@<device-ip> "/etc/init.d/S52frame_service restart"
-ssh root@<device-ip> "/etc/init.d/S53audio_service restart"
-ssh root@<device-ip> "/etc/init.d/S53agent restart"
-ssh root@<device-ip> "/etc/init.d/S56config_web restart"
-```
-
-## Service Startup Order
-
-When starting with the firmware, the main service relationships are as follows:
-
-1. `S35wifidrv` loads the AIC8800 combo firmware;
-2. `S39hciinit` attaches `/dev/ttyS1` and brings up `hci0`;
-3. `S40bluetoothd` starts BlueZ with its pairing state under `/userdata`;
-4. `S41ble_service` registers the Wake GATT service and ANCS consumer;
-5. `S43wlan_guard` monitors WLAN connectivity and recovers automatically;
-6. `S49ntp` starts `ntpd` in daemon mode, using direct IP connection to NTP server (bypassing DNS startup order);
-7. `S50ntp_watchdog` periodically checks clock sync status, triggers `S49ntp step` to force sync when not synced, exits after sync;
-8. `S49usbhid` / `S50usbdevice` configures USB gadget;
-9. `S52frame_service` exclusively uses `/dev/video0` and provides screenshot/frame service;
-10. `S53adb_server` waits 3 seconds, then runs `adb start-server` once so adb-based Android capture is ready;
-11. `S53audio_service` provides audio recording/playback service;
-12. `S53agent` starts the Go Agent;
-13. `S55aiden_usb_dhcp` configures USB network DHCP / dnsmasq related capabilities;
-14. `S56config_web` provides the configuration page;
-15. `S99rtcinit` overrides the SDK default RTC script; when RTC is abnormal, only writes default time when system time is still earlier than baseline date, avoiding overwriting system time already calibrated by NTP.
-16. `S99usb0config` performs USB network interface post-configuration.
 
 ## Common Service Commands
 
 ```bash
-/etc/init.d/S52frame_service status
-/etc/init.d/S52frame_service restart
-/etc/init.d/S53adb_server status
-/etc/init.d/S53audio_service status
-/etc/init.d/S53audio_service restart
-/etc/init.d/S39hciinit status
-/etc/init.d/S40bluetoothd status
-/etc/init.d/S41ble_service status
-/etc/init.d/S53agent status
-/etc/init.d/S53agent restart
-/etc/init.d/S56config_web restart
+systemctl status aiden-frame.service --no-pager
+systemctl restart aiden-frame.service
+systemctl status aiden-audio.service --no-pager
+systemctl restart aiden-audio.service
+systemctl status aiden-ble.service --no-pager
+systemctl status aiden-agent.service --no-pager
+systemctl restart aiden-agent.service
+systemctl restart aiden-config-web.service
+systemctl status aiden-usb-gadget.service --no-pager
 ```
 
 ## Key Configuration Files
 
 | File | Description |
 | --- | --- |
-| `/etc/aiden_frame_service.conf` | frame service binary, socket, log, pid file paths |
-| `/etc/aiden_audio_service.conf` | audio service binary, socket, log, pid file paths |
-| `/etc/aiden_ble_service.conf` | BLE service binary, socket, log, device-name base, event capacity, and pairing-window duration |
-| `/userdata/agent/agent.toml` | Go Agent runtime configuration |
-| `/userdata/wpa_supplicant.conf` | Wi-Fi configuration |
+| `/etc/aiden_boot.conf` | Product feature gates loaded by systemd units |
+| `/etc/aiden_frame_service.conf` | Frame service launch and capture settings |
+| `/etc/aiden_audio_service.conf` | Audio service socket and volume-state settings |
+| `/etc/aiden_ble_service.conf` | BLE socket, name, event capacity, and pairing window |
+| `/userdata/agent/agent.toml` | Agent runtime configuration |
+| `/userdata/system/env` | Persistent device environment source |
+| `/run/aiden/system.env` | Validated, generated environment consumed by services |
+| `/userdata/debian/wifi/wpa_supplicant-wlan0.conf` | Wi-Fi configuration managed by Config Web |
+| `/userdata/debian/ota/config.json` | Debian OTA repository and factory baseline |
 
 ## Log Locations
 
 | Service | Log |
 | --- | --- |
 | Frame Service | `/var/log/frame_service/frame_service.log` |
-| adb delayed startup | `/var/log/adb/adb-startup.log` |
 | Audio Service | `/var/log/audio_service/audio_service.log` |
-| Bluetooth HCI | `/var/log/aiden-hciattach.log` |
-| BlueZ | `/var/log/bluetoothd/bluetoothd.log` |
 | BLE Service | `/var/log/ble_service/ble_service.log` |
+| adb host startup | `/var/log/adb/adb-startup.log` |
+| OTA health | `/var/log/ota/ota.log` |
 | Agent | `/userdata/agent/log/agent.log` |
 
-## Notes
+Use `journalctl -u <unit>` for systemd lifecycle and helper failures. Service
+stdout/stderr that is intentionally persisted remains in the files above.
 
-- While `frame_service` is running, it exclusively uses `/dev/video0`. Directly running `example_camera_capture` will result in `Device or resource busy`; the service must be stopped first.
-- The `agent`'s `screenshot` tool depends on `frame_service`; voice and volume tools depend on `audio_service`.
-- After modifying `/userdata/agent/agent.toml`, the Agent must be restarted.
+`frame_service` exclusively owns `/dev/video0`; stop `aiden-frame.service`
+before a direct camera diagnostic. The Agent screenshot tool depends on the
+frame service, while voice and volume tools depend on the audio service.

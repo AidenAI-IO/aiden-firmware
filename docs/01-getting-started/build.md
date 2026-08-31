@@ -18,42 +18,41 @@ git submodule sync --recursive
 git submodule update --init --recursive
 ```
 
-## Local CMake Build
+## Host Test Build
 
-Standard out-of-source build:
+Build the host-native test targets without Rockchip dependencies:
 
 ```bash
-cmake -S . -B build
-cmake --build build
+cmake -S . -B build-host -DAIDEN_TESTS=ON
+cmake --build build-host
+ctest --test-dir build-host --output-on-failure
 ```
 
-Build artifacts location:
+Full hardware targets depend on Rockchip/Luckfox armhf libraries. Use the Debian
+cross-compilation workflow for device-runnable artifacts.
 
-- `build/lib/`: Static libraries, e.g., `libaiden.a`, `libaiden_image.a`.
-- `build/bin/`: Executables, e.g., `frame_service`, `audio_service`, `config_web`, example tools, etc.
-- `build/CMakeFiles/`: CMake intermediate files.
+## Debian ARM Cross-Compilation
 
-> Note: Full hardware targets depend on Rockchip / Luckfox SDK libraries. Local native builds are mainly suitable for code checking, partial tools, and host testing; for device-runnable artifacts, use the cross-compilation workflow.
-
-## Luckfox Docker Cross-Compilation
-
-The public build CLI starts the `luckfoxtech/luckfox_pico:1.0` container and runs the device-binary cross-build task:
+Build and audit the Debian armhf application bundle with:
 
 ```bash
-./build.sh binaries
+scripts/debian-stage2/build-apps.sh all
 ```
 
 This workflow will:
 
-1. Compile C/C++ programs using `cmake/toolchain-arm-rockchip830.cmake`;
-2. Generate `build/lib/libaiden.a` and `build/bin/*`;
+1. Build the pinned Debian armhf toolchain container and opencv-mobile;
+2. Compile C/C++ programs using `cmake/toolchains/armhf-debian.cmake`;
 3. Install/use Go 1.26.0;
-4. Cross-compile the Go Agent and BLE daemon: `build/bin/agent` and `build/bin/ble_service`, targeting `linux/arm GOARM=7`.
+4. Cross-compile the Go Agent and BLE daemon for `linux/arm GOARM=7`;
+5. Audit the application and shared-library bundle under `output/debian-stage2/`.
 
-Use `./build.sh image` for the complete firmware image set. Automation that needs to run a one-off command with the same privileged image container profile can use:
+Use `./debian_build.sh` for the complete signed local firmware image set. It
+builds Stage 2 applications, the Debian rootfs, the RV1106 BSP, A/B images, and
+the local OTA manifest in one workflow.
 
 ```bash
-./build.sh exec image -- bash ./scripts/repack_ota_update_image.sh
+./debian_build.sh
 ```
 
 ## macOS Apple Silicon + Colima
@@ -67,7 +66,7 @@ colima start --vm-type vz --vz-rosetta
 docker buildx version
 docker buildx ls
 
-./build.sh binaries
+./debian_build.sh
 ```
 
 Do not start a `--arch x86_64` Colima VM for this workflow; keep the native VM and let the container run as `linux/amd64`.

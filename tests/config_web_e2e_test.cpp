@@ -1341,6 +1341,39 @@ TEST_CASE("config_web: POST /api/config does not restart the agent for an empty 
     CHECK(::access(restart_log.c_str(), F_OK) != 0);
 }
 
+TEST_CASE("config_web: POST /api/config restarts frame service after stream policy changes") {
+    const std::string tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string update_file = tmp + "/update.json";
+    const std::string restart_script = tmp + "/restart-frame.sh";
+    const std::string restart_log = tmp + "/restart.log";
+    write_file(update_file,
+               "{\"ok\":true,\"config\":{\"frame_service\":{\"keep_streamon\":true}},"
+               "\"changed_paths\":[\"frame_service.keep_streamon\"],"
+               "\"reboot_required\":false}\n");
+    write_file(restart_script,
+               "#!/bin/sh\n"
+               "printf '%s|%s\\n' \"$1\" \"$AGENT_CONFIG\" > \"$AIDEN_FRAME_RESTART_TEST_LOG\"\n");
+    REQUIRE(::chmod(restart_script.c_str(), 0755) == 0);
+
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_UPDATE_FILE", update_file);
+    env.set("AIDEN_FRAME_SERVICE_INIT_SCRIPT", restart_script);
+    env.set("AIDEN_FRAME_RESTART_TEST_LOG", restart_log);
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(
+        handle->port, "POST", "/api/config",
+        "{\"config\":{\"frame_service\":{\"keep_streamon\":true}},\"apply_wifi\":false}");
+    REQUIRE(resp.status == 200);
+    CHECK(resp.body.find("\"frame_service_restart_scheduled\":true") != std::string::npos);
+    REQUIRE(wait_for_file_contains(restart_log, "restart|", 1000));
+    CHECK(read_file(restart_log) == "restart|" + handle->tmp_dir + "/agent.toml\n");
+}
+
 TEST_CASE("config_web: POST /api/config writes and preserves quick_capture section") {
     const std::string tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(

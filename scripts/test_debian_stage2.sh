@@ -45,6 +45,16 @@ grep -q 'source-archive.sha256' \
     "${STAGE2_DIR}/container-build-opencv-mobile.sh"
 grep -q 'OPENCV_SOURCE_DATE_EPOCH=1767360516' \
     "${STAGE2_DIR}/container-build-opencv-mobile.sh"
+grep -Fq 'overlay-debian-oem/usr/model' "${STAGE2_DIR}/prepare-board-g0.sh"
+if grep -Fq '${REPO_ROOT}/overlay/oem' "${STAGE2_DIR}/prepare-board-g0.sh"; then
+    fail "Debian board bundle depends on the Buildroot OEM overlay"
+fi
+grep -Fq 'set(AIDEN_TARGET_PLATFORM "rv1106-debian-glibc"' \
+    "${REPO_ROOT}/CMakeLists.txt"
+if sed -n '/set_property(CACHE AIDEN_TARGET_PLATFORM PROPERTY STRINGS/,/)/p' \
+    "${REPO_ROOT}/CMakeLists.txt" | grep -q buildroot; then
+    fail "CMake still advertises Buildroot as a supported target platform"
+fi
 
 help_output=${TEST_ROOT}/help-output
 DEBIAN_STAGE2_OUTPUT_DIR="${help_output}" \

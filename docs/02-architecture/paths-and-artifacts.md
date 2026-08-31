@@ -8,87 +8,90 @@ sidebar_position: 4
 
 | Path | Description |
 | --- | --- |
-| `build/lib/libaiden.a` | C++ SDK static library |
-| `build/lib/libaiden_image.a` | Image processing static library |
-| `build/lib/libcjson.a` | cJSON static library |
-| `build/bin/` | Application binaries directory |
-| `build-host/tests/aiden_tests` | host-native unit test binary |
-| `pico-sdk/output/image/` | Full firmware build output directory |
+| `build-host/bin/aiden_tests` | Host-native C++ test binary |
+| `output/debian-stage2/apps/bin/` | Cross-compiled application and diagnostic binaries |
+| `output/debian-stage2/apps/lib/` | Runtime libraries staged for the OEM image |
+| `output/debian-stage2/apps-audit/` | ELF, dependency, and allowlist audit results |
+| `output/debian-stage3/rootfs.ext4` | Reproducible Debian armhf rootfs image |
+| `output/debian-stage3/image/` | Audited Stage 3 partition and factory images |
+| `output/debian/image/update.img` | Final directly flashable local firmware |
+| `output/debian/image/manifest.json` | Locally signed OTA manifest |
 
 ## Important Source Paths
 
 | Path | Description |
 | --- | --- |
 | `src/aiden_sdk.h` | C++ SDK API |
-| `src/frame_service_main.cpp` | Frame Service entry point |
-| `src/audio_service_main.cpp` | Audio Service entry point |
+| `src/frame_service_main.cpp` | Frame service entry point |
+| `src/audio_service_main.cpp` | Audio service entry point |
 | `src/config_web.cpp` | Config Web entry point |
 | `src/agent/cmd/daemon` | Go Agent daemon |
 | `src/agent/cmd/ota` | OTA CLI |
 | `src/agent/cmd/abctl` | A/B metadata diagnostic tool |
-| `src/agent/internal/agent` | Agent runtime and tool implementation |
-| `src/agent/internal/ota` | OTA manifest, download, slot, health and state machine |
-| `tests/` | Unit tests |
+| `src/agent/internal/agent` | Agent runtime and tools |
+| `src/agent/internal/ota` | OTA download, slot, health, and state machine |
+| `overlay-debian/` | Debian rootfs overlay and systemd integration |
+| `overlay-debian-oem/` | Debian OEM-owned scripts and assets |
+| `scripts/debian-stage2/` | Application cross-build and audit |
+| `scripts/debian-stage3/` | Rootfs, BSP, image assembly, and audit |
+| `tests/` | Host-native C++ tests |
 
 ## Device Default Paths
 
 | Path | Description |
 | --- | --- |
-| `/oem/usr/bin/` | Application binary installation directory |
-| `/oem/usr/model/` | VAD models and weights updated with OEM/OTA |
-| `/userdata/agent/agent.toml` | Agent main configuration |
-| `/userdata/agent/skills/` | Agent skills directory |
-| `/userdata/agent/memory/` | Agent memory persistence directory |
-| `/userdata/system/env` | Device-wide environment file loaded by service launchers and SSH login shells |
-| `/userdata/ota/` | Mount point for the dedicated OTA partition; configuration, state, download cache, and health marker |
+| `/oem/usr/bin/` | Audited production applications |
+| `/oem/usr/lib/` | Vendor and application runtime libraries |
+| `/oem/usr/model/` | VAD models and weights |
+| `/oem/usr/share/aiden/` | Web, skill, audio, and EDID assets |
+| `/usr/lib/aiden/` | Debian service helpers |
+| `/userdata/agent/agent.toml` | Agent configuration |
+| `/userdata/agent/python/` | Persistent pip userbase |
+| `/userdata/agent/skills/` | Agent skills |
+| `/userdata/agent/memory/` | Agent memory |
+| `/userdata/system/env` | Persistent device environment source |
+| `/run/aiden/system.env` | Validated runtime environment |
+| `/userdata/debian/wifi/wpa_supplicant-wlan0.conf` | Wi-Fi configuration |
+| `/userdata/debian/ota/config.json` | Debian OTA repository and factory baseline |
+| `/userdata/ota/` | Dedicated OTA state and download partition |
 | `/oem/etc/ota_pubkey.pem` | OTA manifest Ed25519 public key |
-| `/userdata/wpa_supplicant.conf` | Wi-Fi configuration |
-| `/run/frame_service/frame_service.sock` | Frame Service socket |
-| `/run/audio_service/audio_service.sock` | Audio Service socket |
-| `/var/log/frame_service/frame_service.log` | Frame Service log |
-| `/var/log/adb/adb-startup.log` | adb delayed startup log |
-| `/var/log/audio_service/audio_service.log` | Audio Service log |
-| `/userdata/agent/log/agent.log` | Agent log (includes init script and runtime output) |
-| `/userdata/agent/log/llm-http-YYYYMMDDHHMMSSmmm.log` | LLM HTTP request/response log (JSONL format, organized by session) |
-| `/run/agent/storage_level` | Current StorageMonitor level used by deployment-side log guards |
+| `/run/frame_service/frame_service.sock` | Frame service socket |
+| `/run/audio_service/audio_service.sock` | Audio service socket |
+| `/run/ble_service/ble_service.sock` | BLE service socket |
+| `/run/agent/storage_level` | Current StorageMonitor level |
 
-## Configuration Files
+## Configuration Sources
 
 | File | Description |
 | --- | --- |
-| `overlay/etc/aiden_boot.conf` | System boot behavior configuration (controls service startup order, network settings, debug flags) |
-| `overlay/etc/aiden_frame_service.conf` | Frame Service init configuration template |
-| `overlay/etc/aiden_audio_service.conf` | Audio Service init configuration template |
-| `overlay/etc/init.d/S20oemslot` | Slot-aware `/oem` mount script |
-| `overlay/etc/init.d/S49ntp` | ntpd daemon startup + `step` one-shot sync subcommand |
-| `overlay/etc/init.d/S50ntp_watchdog` | NTP sync periodic check, triggers `S49ntp step` when not synced |
-| `overlay/etc/init.d/S53adb_server` | Delayed one-shot `adb start-server` bootstrap |
-| `overlay/etc/init.d/S54ota` | Boot-time OTA health one-shot |
-| `overlay/etc/init.d/S99rtcinit` | RTC invalid-date calibration script replacing the SDK default |
-| `overlay/etc/profile.d/aiden-env.sh` | SSH/login shell environment loader snippet |
-| `overlay/oem/usr/bin/aiden-env-run` | Service environment launcher |
-| `overlay/oem/usr/lib/aiden-log.sh` | Shared UTC event logger for first-party init/watchdog scripts |
-| `overlay/oem/usr/model/` | VAD models and weights, updated with OEM partition |
-| `overlay/oem/usr/share/aiden/audio/voice-notifications/` | Bundled Chinese and English PCM WAV fallback played when final TTS is unavailable |
-| `overlay/userdata/agent/agent.toml` | Agent default configuration template |
-| `overlay/userdata/system/env` | Default system environment template |
-| `overlay/userdata/wpa_supplicant.conf` | Wi-Fi default configuration template |
+| `overlay-debian/etc/aiden_boot.conf` | Product feature gates |
+| `overlay-debian/etc/aiden_frame_service.conf` | Frame launch and capture policy |
+| `overlay-debian/etc/aiden_audio_service.conf` | Audio socket and volume state |
+| `overlay-debian/etc/aiden_ble_service.conf` | BLE service parameters |
+| `overlay-debian/etc/systemd/system/` | Debian service and mount units |
+| `overlay-debian/etc/systemd/network/` | systemd-networkd configuration |
+| `overlay-debian/etc/profile.d/aiden-python.sh` | Fixed persistent Python userbase |
+| `overlay-debian-oem/usr/model/` | OEM VAD models |
+| `overlay-debian-oem/usr/share/aiden/audio/` | VQE and fallback audio assets |
+| `AGENT_CONFIG_PATH` | External Agent configuration required by image assembly |
+| `OTA_PUBLIC_KEY_PATH` | External OTA verification key required by image assembly |
 
 ## Common Commands
 
 ```bash
-# Build
-./build.sh binaries
+# Build and test
 make test
+scripts/debian-stage2/build-apps.sh all
+./debian_build.sh
 
-# Full firmware
-./build.sh image
-./upgrade_tool/upgrade_tool uf ./update.img
+# Flash
+./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
 
 # Service status
-/etc/init.d/S52frame_service status
-/etc/init.d/S53audio_service status
-/etc/init.d/S53agent status
+systemctl status aiden-frame.service --no-pager
+systemctl status aiden-audio.service --no-pager
+systemctl status aiden-agent.service --no-pager
+systemctl --failed
 
 # Frame debugging
 frame_service_cli --socket /run/frame_service/frame_service.sock health
@@ -101,7 +104,6 @@ audio_service_cli --socket /run/audio_service/audio_service.sock get-volume
 # Agent API
 curl http://<device-ip>:8080/api/tools
 curl http://<device-ip>:8080/api/storage/status
-curl http://<device-ip>:8080/api/storage/monitor/status
 curl -X POST -H 'Content-Type: application/json' -d '{"force":false,"targets":[]}' http://<device-ip>:8080/api/storage/cleanup
 
 # OTA
@@ -109,67 +111,35 @@ curl -X POST -H 'Content-Type: application/json' -d '{"force":false,"targets":[]
 /oem/usr/bin/ota update
 /oem/usr/bin/abctl read /dev/block/by-name/misc
 
-# Log viewing
+# Logs
 tail -f /userdata/agent/log/agent.log
-jq . /userdata/agent/log/llm-http-$(date +%Y%m%d)*.log
+journalctl -u aiden-frame.service -u aiden-agent.service
 ```
 
-## Agent Logs
+The diagnostic CLIs are Stage 2 artifacts and are not part of the production OEM
+allowlist. Copy a required CLI to `/userdata` for a bounded device test.
 
-### /userdata/agent/log/agent.log
+## Persistent Logs
 
-Agent main log, contains all output from init script and runtime.
+| Path | Description |
+| --- | --- |
+| `/userdata/agent/log/agent.log` | Agent supervisor and runtime output |
+| `/userdata/agent/log/llm-http-*.log` | Session-partitioned LLM HTTP JSONL |
+| `/var/log/frame_service/frame_service.log` | Frame service output |
+| `/var/log/audio_service/audio_service.log` | Audio service output |
+| `/var/log/ble_service/ble_service.log` | BLE service output |
+| `/var/log/ota/ota.log` | OTA health output |
+| `/var/log/adb/adb-startup.log` | adb host startup output |
 
-The path follows the runtime config directory: `<CONFIG_DIR>/log/agent.log`. The default config directory is `/userdata/agent`. The former `/var/log/agent/agent.log` is not migrated or used as a fallback.
-
-When StorageMonitor reports `critical` or `emergency`, `S53agent` trims this file to the configured `storage.degraded_mode.max_agent_log_mb` limit while preserving the newest content.
-
-**Session start event**:
-```text
-2026-08-05T06:30:00Z [INFO] [agent] [session] session_started session_id=abc123def456 reason=time_gap_long
-```
-
-### `/userdata/agent/log/llm-http-{YYYYMMDDHHMMSSmmm}.log`
-
-LLM HTTP request/response log (JSONL format), separate file per session.
-
-**Format**:
-```json
-{"ts":"15:00:00","kind":"request","status":0,"body":"{\"model\":\"...\",\"messages\":[...]}"}
-{"ts":"15:00:00","kind":"response","status":200,"body":"{\"choices\":[...]}"}
-```
-
-**Fields**:
-- `ts` - Timestamp (HH:MM:SS)
-- `kind` - `request`, `response`, `stream`, `error`
-- `status` - HTTP status code (0 for requests)
-- `body` - Request/response body (JSON string)
-
-**Common queries**:
-```bash
-# View specific session
-jq . /userdata/agent/log/llm-http-20260620090405123.log
-
-# Only view responses
-jq 'select(.kind | test("response|stream"))' llm-http-*.log
-
-# Extract non-streaming response content
-jq -r 'select(.kind == "response") | .body | fromjson' llm-http-*.log
-
-# Count request types
-jq -r '.kind' llm-http-*.log | sort | uniq -c
-```
+When StorageMonitor reports `critical` or `emergency`, the Agent runtime
+trims managed logs and Python temporary data according to the configured
+storage policy.
 
 ## EDID Files
 
-`edid/` directory contains commonly used EDIDs:
+Development EDIDs live in `edid/`. The Debian OEM image installs its production
+TC358743 EDID at:
 
-- `1080p30.hex`
-- `720p30.hex`
-- `720p60.hex`
-- `hdmi_1080p30_cta.hex`
-- `hdmi_1080p60_cta.hex`
-- `hdmi_720p60_cta.hex`
-- `hdmi_720p60_1080p30_cta.hex`
-- `phone_vrt_552x1200p30.hex`
-- `phone_vrt_640x1200p30.hex`
+```text
+/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex
+```

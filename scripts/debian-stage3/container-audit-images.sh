@@ -139,6 +139,8 @@ audit_rootfs() {
         "${ROOTFS_MOUNT}/etc/ssh/sshd_config.d/20-aiden.conf" \
         || fail "root SSH password authentication is not prohibited"
     test -x "${ROOTFS_MOUNT}/usr/bin/adb" || fail "Debian adb is missing"
+    test -x "${ROOTFS_MOUNT}/usr/bin/python3" || fail "Debian Python is missing"
+    test -x "${ROOTFS_MOUNT}/usr/bin/pip3" || fail "Debian pip is missing"
     test -x "${ROOTFS_MOUNT}/usr/bin/hciattach" || fail "hciattach is missing"
     test -x "${ROOTFS_MOUNT}/usr/sbin/dnsmasq" || fail "dnsmasq-base is missing"
     test -x "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-usb-gadget" \
@@ -148,9 +150,9 @@ audit_rootfs() {
     test -x "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-machine-id-provision" \
         || fail "machine-ID provision helper was not installed"
     cmp "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-usb-gadget" \
-        "${REPO_ROOT}/overlay/etc/init.d/S49usbhid"
+        "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-usb-gadget"
     cmp "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-boot-timeline" \
-        "${REPO_ROOT}/overlay/etc/aiden_boot_timeline.sh"
+        "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-boot-timeline"
     test ! -s "${ROOTFS_MOUNT}/etc/machine-id" \
         || fail "generic rootfs contains a machine-id"
     test -L "${ROOTFS_MOUNT}/var/lib/dbus/machine-id" \

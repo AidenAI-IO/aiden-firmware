@@ -22,7 +22,8 @@ This project's firmware is built on `pico-sdk` and includes the following custom
 - Bridge-aware HDMI timing: RK628D keeps its 1080p60 EDID, while TC358743 automatically advertises 1080p30 to fit its two-lane CSI link;
 - USB-C port is configured as a composite gadget on boot: keyboard HID,
   pointer/touch HID, and CDC ECM networking (`usb0`, default `192.168.42.1`);
-- Injects startup scripts, configuration, and application binaries from `/overlay`.
+- Builds a Debian 13 rootfs from `overlay-debian/` and a separate OEM image from
+  `overlay-debian-oem/` plus the audited application bundle.
 
 The related low-level changes can be found in the `pico-sdk/` submodule.
 
@@ -31,34 +32,29 @@ The related low-level changes can be found in the `pico-sdk/` submodule.
 This requires an x86_64 Linux + Docker environment, or a compatible environment capable of running amd64 containers:
 
 ```bash
-./build.sh image
+./debian_build.sh
 ```
 
-The image command uses the privileged image container profile. Process overview:
+The command requires an external Agent configuration and matching Ed25519 OTA
+key pair (see `./debian_build.sh --help`). Process overview:
 
-1. Compile the application binaries;
-2. Copy `build/bin/` to `overlay/oem/usr/bin/`;
-3. Sync `overlay/etc/` to the `pico-sdk` Buildroot overlay;
-4. Run the `pico-sdk` `sysdrv`, `media`, and `app` build stages, followed by project-level firmware packaging;
-5. Inject `overlay/oem` and `overlay/userdata` into the output directory; the VAD model is located in `overlay/oem/usr/model/` and is included in OTA along with the OEM partition;
-6. Generate the A/B partition images and the full USB first-flash package.
+1. Build and audit the Debian armhf C/C++ and Go application bundle;
+2. Build the pinned Debian 13 rootfs and apply `overlay-debian/`;
+3. Build the RV1106 BSP, bootloader, kernel modules, and A/B boot images from the pinned SDK;
+4. Assemble the OEM image from `overlay-debian-oem/`, audited applications, vendor libraries, models, and web assets;
+5. Create rootfs, OEM, userdata, and OTA images and validate their contents;
+6. Generate the signed local OTA manifest and full USB first-flash package.
 
 After the build completes, the images are located in:
 
 ```text
-pico-sdk/output/image/
+output/debian/image/
 ```
 
 ## Firmware pip
 
-The pinned `pico-sdk` enables pip in both active Luckfox Buildroot defconfigs:
-
-```text
-BR2_PACKAGE_PYTHON_PIP=y
-```
-
-The root repository policy checks this contract. After building an image,
-verify the firmware package with:
+The Debian production package set includes `python3` and `python3-pip`. After
+building an image, verify the runtime with:
 
 ```bash
 /usr/bin/python3 -m pip --version
@@ -100,7 +96,7 @@ cd aiden-firmware
 If the image comes from a local build, the path is usually similar to:
 
 ```bash
-./upgrade_tool/upgrade_tool uf ./pico-sdk/output/image/update.img
+./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
 ```
 
 ## Partition Reference

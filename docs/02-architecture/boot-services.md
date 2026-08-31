@@ -4,127 +4,136 @@ sidebar_position: 3
 
 # Boot Services and Runtime Layout
 
-Firmware integration is done through scripts in `overlay/etc/init.d/`. Most long-running services come with a lightweight watchdog: the script itself starts a loop that waits 2 seconds and restarts the child process after it exits.
+Debian uses systemd as PID 1. Product services are grouped by `aiden.target`;
+ordering, restart policy, and failure propagation are declared in unit
+relationships rather than filename order.
 
-## Boot Scripts
+## Core Units
 
-| Script | Purpose |
+| Unit | Purpose |
 | --- | --- |
-| `S20oemslot` | Mount the slot-specific `/oem` based on `aiden.slot_suffix` |
-| `S43wlan_guard` | WLAN connectivity guard |
-| `S49ntp` | Start the `ntpd` daemon; periodic sync is triggered by `S50ntp_watchdog` |
-| `S49usbhid` | Initialize the USB HID gadget |
-| `S50ntp_watchdog` | Periodically check clock sync status, and trigger `S49ntp step` when not synced |
-| `S50usbdevice` | USB device related initialization |
-| `S52frame_service` | Start and supervise the HDMI frame service |
-| `S53adb_server` | Wait 3 seconds, then run `adb start-server` once |
-| `S53audio_service` | Start and supervise the audio service |
-| `S53agent` | Start and supervise the Go Agent |
-| `S54ota` | Run the OTA health handling once at boot |
-| `S55aiden_usb_dhcp` | USB network DHCP / dnsmasq related services |
-| `S56config_web` | Start the config web page |
-| `S57wetty` | Start the WeTTY browser terminal on the USB network |
-| `S99rtcinit` | Override the SDK default RTC script; write the default date when the RTC is abnormal and the system time is still earlier than the baseline |
-| `S99usb0config` | USB network interface post-configuration |
+| `aiden-slot-resolve.service` | Resolve A/B partition devices from the active slot |
+| `oem.mount`, `userdata.mount`, `userdata-ota.mount` | Mount product data partitions |
+| `aiden-rootfs-grow.service` | Grow first-boot ext4 filesystems to their partition size |
+| `aiden-userdata-migrate.service` | Validate and migrate persistent Debian userdata |
+| `aiden-machine-id.service` | Provision a stable machine identity |
+| `aiden-oem-ldconfig.service` | Register libraries from the active OEM slot |
+| `aiden-environment.service` | Generate the strict runtime environment |
+| `aiden-media-modules.service` | Load media modules and prepare video device access |
+| `aiden-wifi-driver.service` | Load AIC8800 Wi-Fi and Bluetooth firmware |
+| `aiden-bluetooth-attach.service` | Attach the AIC8800 UART transport |
+| `aiden-usb-gadget.service` | Create keyboard, pointer, Consumer Control, and ECM functions |
+| `aiden-usb-dnsmasq.service` | Serve DHCP only on `usb0` |
+| `aiden-usb-ecm-watchdog.service` | Recover confirmed stalled ECM sessions |
+| `aiden-wlan-guard.service` | Apply bounded Wi-Fi recovery |
+| `aiden-frame.service` | Run the HDMI frame service |
+| `aiden-audio.service` | Run audio capture and playback |
+| `aiden-ble.service` | Run BLE Wake and ANCS integration |
+| `aiden-agent.service` | Run the Go Agent |
+| `aiden-config-web.service` | Serve the local configuration portal |
+| `aiden-ota-health-marker.service` | Aggregate required local health |
+| `aiden-ota-health.service` | Process pending A/B OTA state |
+
+Use systemd to inspect the current dependency graph and failures:
+
+```bash
+systemctl list-dependencies aiden.target
+systemctl --failed
+```
 
 ## Frame Service
 
-Config file: `/etc/aiden_frame_service.conf`
+Configuration: `/etc/aiden_frame_service.conf`
 
-Default values:
-
-```sh
-FRAME_SERVICE_BIN=/oem/usr/bin/frame_service
-SOCKET_PATH=/run/frame_service/frame_service.sock
-LOG_PATH=/var/log/frame_service/frame_service.log
-PID_FILE=/run/frame_service/frame_service.pid
-WATCHDOG_PID_FILE=/run/frame_service/frame_service_watchdog.pid
-```
-
-Common commands:
+The unit starts `/usr/lib/aiden/aiden-frame-start`, which selects the HDMI
+bridge, applies EDID and trigger policy, reads
+`[frame_service].keep_streamon` from `/userdata/agent/agent.toml`, and
+executes `/oem/usr/bin/frame_service`.
 
 ```bash
-/etc/init.d/S52frame_service start
-/etc/init.d/S52frame_service stop
-/etc/init.d/S52frame_service restart
-/etc/init.d/S52frame_service status
+systemctl start aiden-frame.service
+systemctl stop aiden-frame.service
+systemctl restart aiden-frame.service
+systemctl status aiden-frame.service --no-pager
 ```
+
+The service retries indefinitely when HDMI is not ready. Its persistent output
+is `/var/log/frame_service/frame_service.log`.
 
 ## Audio Service
 
-Config file: `/etc/aiden_audio_service.conf`
+Configuration: `/etc/aiden_audio_service.conf`
 
-Default values:
+`aiden-audio.service` executes `/oem/usr/bin/audio_service` in the foreground
+and lets systemd own restart and stop behavior.
 
-```sh
-AUDIO_SERVICE_BIN=/oem/usr/bin/audio_service
-SOCKET_PATH=/run/audio_service/audio_service.sock
-LOG_PATH=/var/log/audio_service/audio_service.log
-PID_FILE=/run/audio_service/audio_service.pid
-WATCHDOG_PID_FILE=/run/audio_service/audio_service_watchdog.pid
+```bash
+systemctl restart aiden-audio.service
+systemctl status aiden-audio.service --no-pager
 ```
 
 ## Agent
 
-Default startup command:
+The Agent unit executes:
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -dir /userdata/agent -addr :8080
+/oem/usr/bin/agent -dir /userdata/agent -addr 0.0.0.0:8080
 ```
 
-Runtime directory:
+Before startup, `aiden-python-prepare` validates and prepares the persistent
+Python userbase. The unit loads `/run/aiden/system.env` and then fixes the pip
+environment to `/userdata/agent/python`.
 
 ```text
 /userdata/agent/
 ├── agent.toml
-├── skills/       # optional
-├── log/          # Agent runtime log directory, used by the program
-└── memory/       # conversation memory persistence directory
+├── python/
+├── skills/
+├── log/
+└── memory/
 ```
 
-Agent init script and runtime output: `/userdata/agent/log/agent.log`.
+Agent output is persisted at `/userdata/agent/log/agent.log`.
 
 ## OTA
 
-Default startup command:
+`aiden-ota-health-marker.service` waits for required local services and writes
+a transaction-bound health result. `aiden-ota-health.service` then executes:
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/ota health
+/oem/usr/bin/ota --config /userdata/debian/ota/config.json health
 ```
 
-Runtime directory:
+The persistent OTA partition is mounted at `/userdata/ota/` and contains state,
+downloads, pending-boot data, and health markers. The immutable factory
+repository and partition baseline live separately at
+`/userdata/debian/ota/config.json`.
 
-```text
-/userdata/ota/
-├── config.json          # repo/channel/factory baseline built into the first-flashed image
-├── state.json           # OTA state machine and per-slot partition hashes
-├── downloads/           # download cache
-├── pending_boot.json    # target slot health pending status
-└── health.ok            # health confirmation marker written after the app is ready
-```
-
-`/userdata/ota` is a dedicated 300 MiB ext4 partition mounted by the
-SDK-generated `S20linkmount` service. `S54ota` fails closed until that mount is
-active.
-
-For more details see [OTA Overview](../08-ota/README.md).
+See [OTA Overview](../08-ota/README.md) for the full state machine.
 
 ## Config Web
 
-Default startup command:
+The systemd unit executes:
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --bind=0.0.0.0 --port=80 --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
+/oem/usr/bin/config_web   --bind=0.0.0.0   --port=80   --config=/userdata/agent/agent.toml   --wifi-config=/userdata/debian/wifi/wpa_supplicant-wlan0.conf   --wifi-backend=systemd-networkd   --system-env=/userdata/system/env   --web-root=/oem/usr/share/aiden/config-web
 ```
 
-Purpose: maintain the Agent configuration and Wi-Fi configuration through a web page. For the default bind / port see [Config Web](../04-agent/configuration.md#config-web-the-device-config-page).
+Config Web uses Debian control helpers for Agent and frame-service restarts.
+It never invokes a SysV service script.
 
 ## System Environment
 
-`/userdata/system/env` is the device-wide environment file. `aiden-env-run` loads it before starting services, and SSH login shells load the same file through `/etc/profile.d/aiden-env.sh`. Proxy variables, API keys, and other shell-style environment values can live there instead of in `agent.toml`.
+`/userdata/system/env` is the persistent user-managed source.
+`aiden-environment.service` validates it and writes `/run/aiden/system.env`.
+Product units consume that generated file with `EnvironmentFile=`; invalid
+external settings cannot replace fixed service-critical values such as the
+managed Python userbase.
 
-## Development and Debugging Tips
+## Development and Debugging
 
-- After modifying a binary, you can directly replace `/oem/usr/bin/<name>` and restart the corresponding service.
-- If a service keeps restarting, first check `/var/log/<service>/<service>.log`.
-- If you need exclusive access to the camera for a one-shot test, stop `S52frame_service` first.
+- Replace a binary only after stopping its owning unit.
+- Use `journalctl -u <unit>` for unit and helper failures.
+- Use the service-specific persistent log for application output.
+- Stop `aiden-frame.service` before opening `/dev/video0` directly.
+- Rebuild the complete image when rootfs helpers or unit files change.

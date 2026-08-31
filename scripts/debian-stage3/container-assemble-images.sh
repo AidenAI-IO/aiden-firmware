@@ -65,26 +65,14 @@ stage_oem() {
         "${OEM_ROOT}/usr/ko" \
         "${OEM_ROOT}/usr/model" \
         "${OEM_ROOT}/usr/share/aiden"
+    rsync -aH --chown=0:0 "${REPO_ROOT}/overlay-debian-oem/" "${OEM_ROOT}/"
     local binary
     for binary in "${PRODUCTION_BINARIES[@]}"; do
         install -m 0755 "/apps/bin/${binary}" "${OEM_ROOT}/usr/bin/${binary}"
     done
-    install -m 0755 "${REPO_ROOT}/overlay/oem/usr/bin/aiden-dynamic-keyboard" \
-        "${OEM_ROOT}/usr/bin/aiden-dynamic-keyboard"
-    install -m 0644 "${REPO_ROOT}/overlay/oem/usr/lib/aiden-log.sh" \
-        "${OEM_ROOT}/usr/lib/aiden-log.sh"
-
     rsync -aH --chown=0:0 /apps/lib/ "${OEM_ROOT}/usr/lib/"
     rsync -aH --chown=0:0 \
         "${SDK_DIR}/output/out/sysdrv_out/kernel_drv_ko/" "${OEM_ROOT}/usr/ko/"
-    install -m 0644 "${REPO_ROOT}/overlay/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn" \
-        "${OEM_ROOT}/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
-    install -m 0644 "${REPO_ROOT}/overlay/oem/usr/model/silero_vad_6_2_lstm_decoder_weights.bin" \
-        "${OEM_ROOT}/usr/model/silero_vad_6_2_lstm_decoder_weights.bin"
-    rsync -aH --chown=0:0 "${REPO_ROOT}/overlay/oem/usr/share/aiden/audio/" \
-        "${OEM_ROOT}/usr/share/aiden/audio/"
-    rsync -aH --chown=0:0 "${REPO_ROOT}/overlay/oem/usr/share/aiden/edid/" \
-        "${OEM_ROOT}/usr/share/aiden/edid/"
     rsync -aH --chown=0:0 "${REPO_ROOT}/src/config_web/web/" \
         "${OEM_ROOT}/usr/share/aiden/config-web/"
     install -m 0644 "${REPO_ROOT}/src/agent/internal/agent/quick_actions.json" \

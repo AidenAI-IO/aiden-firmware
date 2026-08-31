@@ -17,7 +17,7 @@ It is not a final integrated hardware product.
 
 The current development setup centers on:
 
-- [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero), RV1106 / Rockchip platform running Buildroot Linux;
+- [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero), RV1106 / Rockchip platform running Debian 13;
 - [Firefly HDMI TO MIPI CSI RK628D](https://wiki.t-firefly.com/HDMI-TO-MIPI-CSI-RK628D/rk628d.html), four-lane HDMI-to-CSI bridge for external screen capture, or the legacy TC358743 two-lane bridge;
 - [ASRPRO 2.0](https://item.taobao.com/item.htm?id=676711841241) for voice recognition, connected to the Pico Zero alongside a 1 W / 8 Ω speaker connected directly to the Pico Zero speaker output;
 - A USB-C hub that provides HDMI output for capture and a USB data path back to the target device;
@@ -73,7 +73,7 @@ Most mobile agent projects are lab prototypes that require a laptop or desktop t
 
 ## Repository Scope
 
-- **Firmware integration**: Buildroot overlay, init scripts, USB gadget setup, Wi-Fi/config portal defaults, and full `update.img` generation.
+- **Firmware integration**: Debian rootfs/OEM overlays, systemd services, USB gadget setup, Wi-Fi/config portal defaults, and full `update.img` generation.
 - **C++ services**: `frame_service` owns HDMI capture and exposes screenshots over Unix domain sockets; `audio_service` owns recording/playback and volume state.
 - **Go Agent**: the device-side LLM runtime, voice loop, skills, memory, and built-in screenshot/HID/audio/shell tools.
 - **USB networking**: The board exposes `usb0` at `192.168.42.1` for the device config page and local board-to-phone communication.
@@ -127,16 +127,16 @@ git clone --recursive git@github.com:AidenAI-IO/aiden-firmware.git
 cd aiden-firmware
 ```
 
-Build ARM binaries for the device:
+Build and audit the Debian ARM application bundle:
 
 ```bash
-./build.sh binaries
+scripts/debian-stage2/build-apps.sh all
 ```
 
 Build the full firmware image:
 
 ```bash
-./build.sh image
+./debian_build.sh
 ```
 
 Flash a prebuilt or locally built `update.img`:
@@ -148,7 +148,7 @@ Flash a prebuilt or locally built `update.img`:
 For a locally built image, the usual output path is:
 
 ```bash
-./upgrade_tool/upgrade_tool uf ./pico-sdk/output/image/update.img
+./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
 ```
 
 ## Documentation
