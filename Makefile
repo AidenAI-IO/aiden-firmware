@@ -15,7 +15,7 @@ test-configure:
 	cmake -S . -B $(TEST_BUILD_DIR) -DAIDEN_TESTS=ON
 
 test-build: test-configure
-	cmake --build $(TEST_BUILD_DIR)
+	cmake --build $(TEST_BUILD_DIR) --parallel $$(getconf _NPROCESSORS_ONLN)
 
 test: test-build
 	cd $(TEST_BUILD_DIR) && ctest --output-on-failure
