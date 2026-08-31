@@ -14,6 +14,24 @@ trap 'rm -rf "$tmp_dir"' EXIT
 
 board_path="$tmp_dir/BoardConfig.mk"
 
+(
+  unset AIDEN_OTA_BOARD_CONFIG_PATH AIDEN_OTA_DEVICE_PATH
+  source "$layout_script"
+  expected_board_path="$repo_root/scripts/debian-stage3/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
+  if [ "$AIDEN_OTA_BOARD_CONFIG_PATH" != "$expected_board_path" ]; then
+    echo "default OTA layout must use the Debian Stage 3 board config" >&2
+    exit 1
+  fi
+  if [ "$AIDEN_OTA_DEVICE_PATH" != "/dev/disk/by-partlabel/ota" ]; then
+    echo "default OTA device path must use the Debian partlabel layout" >&2
+    exit 1
+  fi
+  if [ "$(aiden_ota_partition_size_mib)" != "300" ]; then
+    echo "Debian Stage 3 board config must define a 300 MiB OTA partition" >&2
+    exit 1
+  fi
+)
+
 printf '%s\n' \
   'export RK_PARTITION_CMD_IN_ENV="32K(env),3G(userdata),300M(ota)"' \
   'export RK_PARTITION_FS_TYPE_CFG=rootfs_a@IGNORE@ext4,userdata@/userdata@ext4,ota@/userdata/ota@ext4' \
@@ -23,7 +41,7 @@ AIDEN_OTA_BOARD_CONFIG_PATH="$board_path"
 source "$layout_script"
 
 if [ "$(aiden_ota_partition_size_mib)" != "300" ]; then
-  echo "OTA partition size must be read from the SDK board config" >&2
+  echo "OTA partition size must be read from the selected board config" >&2
   exit 1
 fi
 if [ "$(aiden_ota_partition_size_bytes)" != "314572800" ]; then

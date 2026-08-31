@@ -109,7 +109,7 @@ curl -X POST -H 'Content-Type: application/json' -d '{"force":false,"targets":[]
 # OTA
 /oem/usr/bin/ota status
 /oem/usr/bin/ota update
-/oem/usr/bin/abctl read /dev/block/by-name/misc
+/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
 
 # Logs
 tail -f /userdata/agent/log/agent.log

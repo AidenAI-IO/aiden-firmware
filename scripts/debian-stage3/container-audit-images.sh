@@ -13,6 +13,10 @@ readonly USERDATA_MOUNT=${WORK_DIR}/userdata
 readonly OTA_MOUNT=${WORK_DIR}/ota
 readonly UNPACK_DIR=${WORK_DIR}/unpacked
 readonly REPORT=${OUTPUT_DIR}/audit-report.txt
+readonly ROOTFS_CLI_TOOLS_DIR=/rootfs-cli-tools
+
+# shellcheck source=../rootfs_cli_tool_catalog.sh
+source "${REPO_ROOT}/scripts/rootfs_cli_tool_catalog.sh"
 
 readonly -a PRODUCTION_BINARIES=(
     abctl
@@ -101,6 +105,48 @@ audit_packages() {
     ' "${OUTPUT_DIR}/packages.txt"; then
         fail "banned production package is installed"
     fi
+}
+
+audit_rootfs_cli_tools() {
+    local actual_names expected_names actual_versions expected_versions
+    local expected_sha actual_sha name extra
+
+    cmp "${ROOTFS_CLI_TOOLS_DIR}/manifest.sha256" \
+        "${OUTPUT_DIR}/rootfs-cli-tools.sha256" \
+        || fail "rootfs CLI checksum metadata changed after rootfs assembly"
+    cmp "${ROOTFS_CLI_TOOLS_DIR}/versions.txt" \
+        "${OUTPUT_DIR}/rootfs-cli-tools-versions.txt" \
+        || fail "rootfs CLI version metadata changed after rootfs assembly"
+
+    expected_names=$(rootfs_cli_catalog_names \
+        "${REPO_ROOT}/scripts/rootfs_cli_tools.catalog" | LC_ALL=C sort)
+    actual_names=$(awk '
+        NF == 2 && $1 ~ /^[0-9a-f]{64}$/ && $2 ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/ {
+            print $2
+            next
+        }
+        { invalid = 1 }
+        END { if (invalid) exit 1 }
+    ' "${ROOTFS_CLI_TOOLS_DIR}/manifest.sha256" | LC_ALL=C sort) \
+        || fail "rootfs CLI checksum manifest is invalid"
+    [ "${actual_names}" = "${expected_names}" ] \
+        || fail "rootfs CLI checksum manifest does not match the catalog"
+
+    expected_versions=$(rootfs_cli_catalog_records \
+        "${REPO_ROOT}/scripts/rootfs_cli_tools.catalog" \
+        | awk -F '|' '{ print $1, $2, $5, $8 }')
+    actual_versions=$(cat "${ROOTFS_CLI_TOOLS_DIR}/versions.txt")
+    [ "${actual_versions}" = "${expected_versions}" ] \
+        || fail "rootfs CLI version metadata does not match the catalog"
+
+    while read -r expected_sha name extra; do
+        [ -z "${extra:-}" ] || fail "rootfs CLI checksum manifest has extra fields"
+        test -x "${ROOTFS_MOUNT}/usr/bin/${name}" \
+            || fail "rootfs CLI tool is missing or not executable: ${name}"
+        actual_sha=$(sha256sum "${ROOTFS_MOUNT}/usr/bin/${name}" | awk '{print $1}')
+        [ "${actual_sha}" = "${expected_sha}" ] \
+            || fail "rootfs CLI tool checksum mismatch: ${name}"
+    done <"${ROOTFS_CLI_TOOLS_DIR}/manifest.sha256"
 }
 
 audit_rootfs() {
@@ -386,6 +432,7 @@ main() {
     stage_oem_image
     mount_image "${IMAGE_DIR}/rootfs.img" "${ROOTFS_MOUNT}"
     audit_rootfs
+    audit_rootfs_cli_tools
     audit_oem_files
     audit_elf_closure
     unmount_mounts

@@ -15,6 +15,7 @@ stage2_scripts=(
     "${STAGE2_DIR}/build-apps.sh"
     "${STAGE2_DIR}/container-build-opencv-mobile.sh"
     "${STAGE2_DIR}/container-build-apps.sh"
+    "${STAGE2_DIR}/container-build-rootfs-cli-tools.sh"
     "${STAGE2_DIR}/audit-apps.sh"
     "${STAGE2_DIR}/prepare-board-g0.sh"
     "${STAGE2_DIR}/board-g0-remote.sh"
@@ -45,6 +46,12 @@ grep -q 'source-archive.sha256' \
     "${STAGE2_DIR}/container-build-opencv-mobile.sh"
 grep -q 'OPENCV_SOURCE_DATE_EPOCH=1767360516' \
     "${STAGE2_DIR}/container-build-opencv-mobile.sh"
+grep -qx '[[:space:]]*curl \\' "${STAGE2_DIR}/Dockerfile"
+grep -Fq -- '--output-dir "${OUTPUT_DIR}/rootfs-cli-tools"' \
+    "${STAGE2_DIR}/container-build-rootfs-cli-tools.sh"
+grep -Fq -- '--catalog "${REPO_ROOT}/scripts/rootfs_cli_tools.catalog"' \
+    "${STAGE2_DIR}/container-build-rootfs-cli-tools.sh"
+grep -Fq 'run_cli_tools' "${STAGE2_DIR}/build-apps.sh"
 grep -Fq 'overlay-debian-oem/usr/model' "${STAGE2_DIR}/prepare-board-g0.sh"
 if grep -Fq '${REPO_ROOT}/overlay/oem' "${STAGE2_DIR}/prepare-board-g0.sh"; then
     fail "Debian board bundle depends on the Buildroot OEM overlay"
@@ -108,6 +115,18 @@ grep -qx "${TEST_ROOT}/go-mod-cache:/go-mod-cache" \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx 'scripts/debian-stage2/container-build-apps.sh' \
     "${TEST_ROOT}/docker-args.txt"
+
+: >"${mock_log}"
+MOCK_DOCKER_LOG="${mock_log}" \
+PATH="${TEST_ROOT}/mock-bin:${PATH}" \
+DEBIAN_STAGE2_OUTPUT_DIR="${mock_output}" \
+DEBIAN_STAGE2_GO_ROOT="${TEST_ROOT}/go-root" \
+DEBIAN_STAGE2_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
+DEBIAN_STAGE2_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
+    "${STAGE2_DIR}/build-apps.sh" cli-tools
+tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/cli-tools-docker-args.txt"
+grep -qx 'scripts/debian-stage2/container-build-rootfs-cli-tools.sh' \
+    "${TEST_ROOT}/cli-tools-docker-args.txt"
 
 bad_source_output=${TEST_ROOT}/bad-source-output
 mkdir -p "${bad_source_output}/cache"
