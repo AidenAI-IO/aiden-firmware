@@ -25,7 +25,15 @@ inputEl.addEventListener('keydown', function(event) {
     }
 });
 
+document.addEventListener('click', function(event) {
+    const menu = document.getElementById('clearMenu');
+    if (menu && menu.open && !menu.contains(event.target)) closeClearMenu();
+});
+
 document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        closeClearMenu();
+    }
     if (event.key === 'Escape' && activeStateMessageKey) {
         closeStateDetails();
     }
