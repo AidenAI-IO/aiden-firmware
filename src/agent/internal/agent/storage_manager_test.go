@@ -26,9 +26,11 @@ type fakeStorageOps struct {
 	total      int64
 	spaceErr   error
 	formatErr  error
-	remountErr error
 	unmountErr error
 	blank      bool
+
+	remountErr     error
+	nextPrepareErr error
 	// spaceFn, when set, answers SpaceInfo per path (used by migration
 	// tests to model eMMC free space changing as files move).
 	spaceFn func(path string) (int64, int64, error)
@@ -57,6 +59,11 @@ func (f *fakeStorageOps) Prepare(dev, mountPoint string) error {
 	if f.prepareBlock != nil {
 		f.prepareOnce.Do(func() { close(f.prepareEntered) })
 		<-f.prepareBlock
+	}
+	if f.nextPrepareErr != nil {
+		err := f.nextPrepareErr
+		f.nextPrepareErr = nil
+		return err
 	}
 	if f.prepareErr != nil {
 		return f.prepareErr
@@ -98,7 +105,9 @@ func (f *fakeStorageOps) FormatDisk(fs string) (string, error) {
 	}
 	// A freshly formatted card is no longer blank and mounts cleanly.
 	f.blank = false
-	f.prepareErr = f.remountErr
+	f.prepareErr = nil
+	f.nextPrepareErr = f.remountErr
+	f.remountErr = nil
 	return "/dev/mmcblk2p1", nil
 }
 
@@ -571,6 +580,16 @@ func TestStorageManagerPostFormatMountFailureReported(t *testing.T) {
 	}
 	if !strings.Contains(status.Card.Reason, "mount: device unavailable") {
 		t.Fatalf("card reason = %q, want mount failure", status.Card.Reason)
+	}
+
+	// The injected remount failure is transient. A physical reinsertion should
+	// get a fresh mount attempt rather than inheriting the consumed error.
+	ops.present = false
+	tickN(m, 2)
+	ops.present = true
+	tickN(m, 2)
+	if status := m.Status(); !status.Card.Mounted {
+		t.Fatalf("card did not recover after reinsertion: %+v", status.Card)
 	}
 }
 
