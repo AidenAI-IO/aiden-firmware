@@ -91,7 +91,11 @@ class DesktopDevice:
             size = self._pyautogui.size()
             return int(size[0]), int(size[1])
         if self.system == "darwin":
-            result = subprocess.run(["/usr/bin/system_profiler", "SPDisplaysDataType"], capture_output=True, text=True, timeout=5)
+            system_profiler = shutil.which("system_profiler") or next(
+                (candidate for candidate in ("/usr/sbin/system_profiler", "/usr/bin/system_profiler") if os.path.exists(candidate)),
+                "system_profiler",
+            )
+            result = subprocess.run([system_profiler, "SPDisplaysDataType"], capture_output=True, text=True, timeout=5)
             import re
             match = re.search(r"Resolution:\s*(\d+) x (\d+)", result.stdout)
             if match:
