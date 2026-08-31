@@ -21,11 +21,12 @@ Allowing multiple processes to directly open `/dev/video0` can lead to resource 
 | Parameter | Default Value | Description |
 | --- | --- | --- |
 | Socket (development direct run) | `/tmp/frame_service.sock` | Default value in `frame_service_main.cpp` |
-| Socket (firmware service) | `/run/frame_service/frame_service.sock` | Default value in init configuration |
+| Socket (Debian service) | `/run/frame_service/frame_service.sock` | Default value in systemd configuration |
 | EDID | Bridge-aware | RK628D keeps its driver-provided 1080p60 EDID; TC358743 loads `/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex` |
 | Capture mode | `on_demand` | One fresh capture for each `latest_frame` / screenshot request |
 | Warm-up frames | Mode-aware | `6` with persistent STREAMON; `0` when streaming restarts per request |
 | Production ring usage | `0` | Health reports `ring_buffer_size=0`, `ring_buffer_used=0` |
+| Pixel format | `nv12` | Debian and direct frame_service defaults; set `FRAME_SERVICE_PIXEL_FORMAT=uyvy` for compatibility fallback |
 | Screenshot max edge | `960` | Related to Go screenshot tool default compression strategy |
 
 ## Startup
@@ -39,13 +40,16 @@ Development mode:
 The service initializes HDMI/V4L2 once, pauses the stream, and waits for a
 capture request.
 
-Firmware service:
+Debian service:
 
 ```bash
-/etc/init.d/S52frame_service start
+systemctl start aiden-frame.service
 ```
 
-The firmware service uses the same on-demand capture lifecycle.
+The Debian service uses the same on-demand capture lifecycle.
+`FRAME_SERVICE_PIXEL_FORMAT` in `/etc/aiden_frame_service.conf` accepts `nv12`,
+`nv16`, `uyvy`, or `yuyv` and defaults to `nv12`. `FRAME_SERVICE_FPS` remains
+accepted for configuration compatibility but is ignored in on-demand mode.
 
 ## Parameters
 
@@ -65,11 +69,11 @@ frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
 | `--socket PATH` | UDS socket path |
 | `--device PATH` | V4L2 capture device, defaults to `/dev/video0` |
 | `--width N` / `--height N` | Required HDMI resolution, defaults to 1920x1080 |
-| `--pixel-format FMT` | `nv12`, `nv16`, `uyvy`, `yuyv`, defaults to `uyvy` |
-| `--subdev PATH` | Explicit HDMI bridge subdev. The firmware normally uses `--auto-subdev` so the bridge can appear after boot and its `/dev/v4l-subdevX` index can change. |
-| `--auto-subdev` | Rediscover `rk628-csi` or `tc358743` on every capture recovery. This is the firmware service mode and keeps the IPC endpoint alive while HDMI is absent. |
-| `--edid PATH` | Custom EDID hex. The firmware init script automatically selects the 1080p30 CTA EDID for TC358743 and leaves RK628D on its 1080p60 driver EDID; an explicit path overrides this policy |
-| `--force-trigger` / `--no-force-trigger` | Enable or disable one-shot startup EDID/HPD renegotiation. The init script defaults to bridge-aware `auto`: disabled for RK628D and enabled for TC358743. Before starting capture on TC358743, the init script also holds HPD low for 2 seconds and allows 5 seconds for the HDMI source to settle on 1080p30 |
+| `--pixel-format FMT` | `nv12`, `nv16`, `uyvy`, `yuyv`, defaults to `nv12` for frame_service |
+| `--subdev PATH` | Explicit HDMI bridge subdev. The Debian service normally uses `--auto-subdev` so the bridge can appear after boot and its `/dev/v4l-subdevX` index can change. |
+| `--auto-subdev` | Rediscover `rk628-csi` or `tc358743` on every capture recovery. This is the Debian service mode and keeps the IPC endpoint alive while HDMI is absent. |
+| `--edid PATH` | Custom EDID hex. The Debian start helper automatically selects the 1080p30 CTA EDID for TC358743 and leaves RK628D on its 1080p60 driver EDID; an explicit path overrides this policy |
+| `--force-trigger` / `--no-force-trigger` | Enable or disable one-shot startup EDID/HPD renegotiation. The Debian start helper defaults to bridge-aware `auto`: disabled for RK628D and enabled for TC358743. Before starting capture on TC358743, the helper also holds HPD low for 2 seconds and allows 5 seconds for the HDMI source to settle on 1080p30 |
 | `--ring-size N` | Deprecated compatibility option; ignored by production on-demand capture |
 | `--fps N` | Deprecated compatibility option; ignored by production on-demand capture |
 | `--warmup-frames N` | Override frames dequeued/released before copying the response. Without an override, defaults to `6` with `--keep-streamon` and `0` with `--pause-between-captures` |
@@ -85,7 +89,7 @@ Environment variables can also be used:
 export FRAME_SERVICE_SOCKET=/tmp/frame_service.sock
 ```
 
-The firmware init script leaves `FRAME_SERVICE_SUBDEV` empty by default and
+The Debian start helper leaves `FRAME_SERVICE_SUBDEV` empty by default and
 discovers a subdevice whose sysfs name contains `rk628-csi` or `tc358743`.
 The service creates its Unix socket before capture initialization. If the
 bridge, video node, HDMI signal, EDID, or DV timings are unavailable, the
@@ -94,6 +98,27 @@ the socket and health endpoint remain available. Once a source is connected,
 the manager transitions to `RUNNING` without a systemd restart. Set an
 explicit path in `/etc/aiden_frame_service.conf` only when automatic discovery
 is not suitable.
+
+For capture, frame_service defaults to V4L2 single-plane NV12. The capture
+boundary removes any driver row padding (Y and UV rows are copied into a tight
+`width * height * 3 / 2` payload), so the existing IPC protocol and raw-frame
+consumers continue to see compact NV12. Configured `uyvy`, `yuyv`, and `nv16`
+formats remain available as compatibility fallbacks.
+
+JPEG requests use software JPEG by default on Debian. Hardware mode is an
+optional RV1106 Rockit MPI VENC path for compact NV12: the service copies the
+frame into an aligned MMZ buffer using the VENC horizontal and virtual
+strides, synchronizes caches, and retries once after transient channel errors.
+If VENC is unavailable or cooling down, software JPEG encoding is used. On the
+current RV1106 image, hardware VENC has returned `RK_ERR_VENC_BUF_EMPTY` and
+has triggered faults in the vendor `mpp_vcodec` module, so it is experimental
+and must be explicitly enabled with `FRAME_SERVICE_JPEG_ENCODER=hardware` only
+after board-specific validation. When hardware mode is enabled, a background
+warm-up runs after the first valid NV12 frame; a request racing that warm-up
+immediately uses software fallback instead of waiting on the cold VENC path. A
+resolution change schedules a new warm-up without blocking capture. Optionally
+set `FRAME_SERVICE_VENC_CHANNEL` to a preferred channel from 0 through 63; on
+a channel collision the service automatically tries another channel.
 
 
 ## On-Demand Capture Lifecycle
@@ -118,7 +143,7 @@ This avoids old completed buffers after a long idle interval and removes the
 continuous VI/DDR traffic caused by the previous drain loop. Requests are
 serialized, so multiple clients do not race the V4L2 queue.
 
-The firmware init script reads the persistent setting from
+The Debian start helper reads the persistent setting from
 `/userdata/agent/agent.toml`:
 
 ```toml
@@ -188,7 +213,7 @@ Screenshot interpretation requires the model/provider to support image input. Te
 `frame_service` exclusively owns `/dev/video0` while running. To run `example_camera_capture`:
 
 ```bash
-/etc/init.d/S52frame_service stop
+systemctl stop aiden-frame.service
 ./build/bin/example_camera_capture
-/etc/init.d/S52frame_service start
+systemctl start aiden-frame.service
 ```
