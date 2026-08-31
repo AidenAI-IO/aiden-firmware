@@ -135,6 +135,10 @@ def canonicalize(path, epoch):
             write_u32(handle, offset + 0x2C, epoch)
             write_u32(handle, offset + 0x30, epoch)
             write_u32(handle, offset + 0x40, epoch)
+            # e2fsprogs records the wall-clock filesystem creation time in
+            # s_mkfs_time.  It is outside the older timestamp fields above
+            # and otherwise makes identical images differ.
+            write_u32(handle, offset + 0x108, epoch)
 
         handle.flush()
         os.fsync(handle.fileno())
