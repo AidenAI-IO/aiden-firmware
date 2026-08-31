@@ -63,6 +63,34 @@ if(NOT OpenCV_FOUND)
     endif()
 endif()
 
+# Debian and Ubuntu keep OpenCVConfig.cmake in the all-module libopencv-dev
+# metapackage. Host tests need only core and imgproc, so discover those component
+# packages directly when the config file is intentionally not installed.
+if(NOT OpenCV_FOUND AND NOT CMAKE_CROSSCOMPILING)
+    find_path(OpenCV_COMPONENT_INCLUDE_DIR
+        NAMES opencv2/core.hpp
+        PATH_SUFFIXES opencv4
+    )
+    find_library(OpenCV_CORE_LIBRARY NAMES opencv_core)
+    find_library(OpenCV_IMGPROC_LIBRARY NAMES opencv_imgproc)
+    if(OpenCV_COMPONENT_INCLUDE_DIR AND OpenCV_CORE_LIBRARY AND OpenCV_IMGPROC_LIBRARY)
+        add_library(opencv_core UNKNOWN IMPORTED)
+        set_target_properties(opencv_core PROPERTIES
+            IMPORTED_LOCATION "${OpenCV_CORE_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${OpenCV_COMPONENT_INCLUDE_DIR}"
+        )
+        add_library(opencv_imgproc UNKNOWN IMPORTED)
+        set_target_properties(opencv_imgproc PROPERTIES
+            IMPORTED_LOCATION "${OpenCV_IMGPROC_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${OpenCV_COMPONENT_INCLUDE_DIR}"
+            INTERFACE_LINK_LIBRARIES opencv_core
+        )
+        set(OpenCV_FOUND TRUE)
+        set(OpenCV_INCLUDE_DIRS "${OpenCV_COMPONENT_INCLUDE_DIR}")
+        set(OpenCV_VERSION "system-components")
+    endif()
+endif()
+
 set(AIDEN_IMAGE_TEST_SOURCES "")
 if(OpenCV_FOUND)
     add_library(aiden_image STATIC ${CMAKE_SOURCE_DIR}/src/image_process.cpp)
