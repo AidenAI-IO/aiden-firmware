@@ -850,6 +850,8 @@ func TestTouchGestureDescriptionRequiresInternalStableWaitThenReleaseDragFlow(t 
 		"Confirm screen_stable=true",
 		"call drag_release with it",
 		"Never determine or guess the destination from an intermediate or screen_stable=false result",
+		"When drag_start returns screen_stable=false, it has automatically moved back to the original point and released the contact",
+		"retry the complete drag flow instead of calling drag_release",
 		"drag_start presses for 500ms, then moves 200 normalized units at 500 normalized units per second (a 400ms interpolated move)",
 		"Never use the removed drag type",
 	} {
@@ -868,6 +870,7 @@ func TestTouchGestureSchemaKeepsAtomicActionsExceptional(t *testing.T) {
 		"Never use actions to move a draggable target",
 		"let its internal stability wait finish",
 		"returned screen_stable=true screenshot",
+		"A screen_stable=false drag_start automatically returns to its original point and releases",
 		"Do not call wait_for_stable_screen separately in the normal drag flow",
 	} {
 		if !strings.Contains(description, want) {

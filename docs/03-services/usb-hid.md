@@ -145,11 +145,15 @@ observe the drag state before choosing the final destination:
 
 `drag_start` presses the current target for 500ms, automatically moves exactly
 200 normalized units at 500 normalized units per second (a 400ms interpolated
-move) along the axis with the most available screen space, and
-keeps the contact down while its internal screen-stability wait and final
-screenshot capture run. The Agent confirms the destination from the returned
-screenshot only when the result reports `screen_stable=true`, then calls
-`drag_release`; it does not call `wait_for_stable_screen` separately in the
+move) along the axis with the most available screen space, and keeps the
+contact down during its internal screen-stability wait. When the wait succeeds,
+contact remains down through final screenshot capture. The Agent confirms the
+destination from the returned screenshot only when the result reports
+`screen_stable=true`, then calls
+`drag_release`. When the result reports `screen_stable=false`, runtime moves
+back to the original `drag_start` point and releases the contact; the Agent
+inspects the returned screenshot and retries `drag_start` instead of calling
+`drag_release`. It does not call `wait_for_stable_screen` separately in the
 normal drag flow or choose a destination from a `screen_stable=false` result.
 The release call moves directly to the confirmed point, holds for 200ms, and
 releases. The former one-call `type:"drag"` gesture is no longer supported.

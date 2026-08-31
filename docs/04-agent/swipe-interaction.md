@@ -54,12 +54,16 @@ this flow with atomic `actions`. Always use this sequence:
 2. Let `drag_start` finish its internal screen-stability wait. When its result
    reports `screen_stable=true`, inspect the returned stable screenshot and
    confirm the final destination point. Do not choose a destination from an
-   intermediate or `screen_stable=false` result.
+   intermediate or `screen_stable=false` result. On `screen_stable=false`,
+   runtime automatically returns the contact to the original `drag_start`
+   point and releases it; inspect the returned screenshot and retry this flow
+   from step 1 instead of calling `drag_release`.
 3. Call `{"type":"drag_release","point":{"x":750,"y":500}}` with that confirmed point.
 
 `drag_start` presses for 500ms, then moves exactly 200 normalized units at 500
 normalized units per second (a 400ms interpolated move) in a bounded axis
-direction to activate dragging, and does not release. `drag_release` moves
+direction to activate dragging, and does not release when the screen becomes
+stable. `drag_release` moves
 directly to the destination, holds for 200ms, then releases. Do not issue an
 unrelated input action between the pair. The stable-screen wait and final
 screenshot capture are internal to `drag_start`; a separate
