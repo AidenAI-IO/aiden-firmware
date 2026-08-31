@@ -451,30 +451,49 @@ function assistantStreamKey(value) {
     return value.request_id || value.episode_id || currentChatRequestId || '';
 }
 
-async function clearHistory() {
-    if (!confirm('Start a new chat and clear the current conversation?')) return;
-
-    try {
-        await fetch('/api/clear', { method: 'POST' });
-        clearDraftAttachments();
-        renderHistory([]);
-    } catch (err) {
-        console.error('Failed to clear history:', err);
-    }
+function closeClearMenu() {
+    const menu = document.getElementById('clearMenu');
+    if (menu) menu.removeAttribute('open');
 }
 
-async function resetAllMemory() {
-    if (!confirm('This will permanently delete ALL memory including long-term memories and user profile. Continue?')) return;
+document.addEventListener('click', (event) => {
+    const menu = document.getElementById('clearMenu');
+    if (menu && menu.open && !menu.contains(event.target)) closeClearMenu();
+});
+
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeClearMenu();
+});
+
+async function clearSession() {
+    closeClearMenu();
+    if (!confirm('Clear the current session? This will remove the current conversation.')) return;
 
     try {
-        const res = await fetch('/api/clear-all', { method: 'POST' });
+        const res = await fetch('/api/clear', { method: 'POST' });
         if (!res.ok) {
-            throw new Error(await res.text() || 'Failed to reset all memory.');
+            throw new Error(await res.text() || 'Failed to clear the session.');
         }
         clearDraftAttachments();
         renderHistory([]);
     } catch (err) {
-        console.error('Failed to reset all memory:', err);
+        console.error('Failed to clear the session:', err);
+    }
+}
+
+async function clearSessionAndMemory() {
+    closeClearMenu();
+    if (!confirm('Clear the current session and permanently delete ALL memory, including long-term memories and the user profile?')) return;
+
+    try {
+        const res = await fetch('/api/clear-all', { method: 'POST' });
+        if (!res.ok) {
+            throw new Error(await res.text() || 'Failed to clear the session and memory.');
+        }
+        clearDraftAttachments();
+        renderHistory([]);
+    } catch (err) {
+        console.error('Failed to clear the session and memory:', err);
     }
 }
 

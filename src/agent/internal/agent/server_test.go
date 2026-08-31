@@ -2783,6 +2783,39 @@ func TestWebUISteerModeControlsArePresent(t *testing.T) {
 	}
 }
 
+func TestWebUIClearMenuUsesConfirmedSessionActions(t *testing.T) {
+	index := readWebUIResource(t, "index.html")
+	chatScript := readWebUIResource(t, "scripts/chat.js")
+
+	for _, want := range []string{
+		`id="clearMenu"`,
+		"Clear Session",
+		"Clear Session &amp; Memory",
+		`onclick="clearSession()"`,
+		`onclick="clearSessionAndMemory()"`,
+	} {
+		if !strings.Contains(index, want) {
+			t.Errorf("web UI clear menu missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"async function clearSession()",
+		"async function clearSessionAndMemory()",
+		"if (!confirm(",
+		"fetch('/api/clear', { method: 'POST' })",
+		"fetch('/api/clear-all', { method: 'POST' })",
+	} {
+		if !strings.Contains(chatScript, want) {
+			t.Errorf("web UI clear action missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{">New Chat</button>", ">Reset Memory</button>"} {
+		if strings.Contains(index, unwanted) {
+			t.Errorf("web UI still contains old action %q", unwanted)
+		}
+	}
+}
+
 func TestWebUIIsEmbeddedFromStaticResource(t *testing.T) {
 	want, err := os.ReadFile("web_ui/index.html")
 	if err != nil {

@@ -24,8 +24,13 @@
                         <a href="/web-ui/context.html" target="_blank" rel="noopener" class="new-chat-btn">Context</a>
                     </nav>
                     <div class="session-actions">
-                        <button type="button" class="new-chat-btn" onclick="clearHistory()">New Chat</button>
-                        <button type="button" class="new-chat-btn danger-btn" onclick="resetAllMemory()">Reset Memory</button>
+                        <details class="clear-menu" id="clearMenu">
+                            <summary class="new-chat-btn" aria-label="Open clear menu">Clear <span aria-hidden="true">▾</span></summary>
+                            <div class="clear-menu-items" role="menu">
+                                <button type="button" role="menuitem" onclick="clearSession()">Clear Session</button>
+                                <button type="button" role="menuitem" class="danger-btn" onclick="clearSessionAndMemory()">Clear Session &amp; Memory</button>
+                            </div>
+                        </details>
                     </div>
                 </div>
             </header>
