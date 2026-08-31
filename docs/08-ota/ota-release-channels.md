@@ -4,7 +4,10 @@ sidebar_position: 9
 
 # OTA Release Channels
 
-GitHub Actions publication is outside the current Debian build scope. This document defines the convention to use when releases are published manually, so that development builds do not interfere with production OTA updates.
+GitHub Actions publication is outside the current Debian build scope. This
+document is a deferred manual-reference convention only. Current local or
+self-hosted deployments should use an explicit `manifest_url`; they do not
+depend on GitHub release discovery.
 
 ## Channel Strategy
 

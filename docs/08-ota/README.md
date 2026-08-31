@@ -10,7 +10,11 @@ This project's production OTA uses A/B partitioning, signed manifests, and boot 
 ## Scope
 
 - Target hardware: Luckfox Pico Zero / RV1106 + eMMC.
-- Distribution: GitHub Releases. Published assets contain `manifest.json` plus compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`, `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`.
+- Distribution (current scope): local build artifacts or a manually hosted HTTP(S)
+  directory containing `manifest.json` and the compressed image archives
+  (`boot_a.img.tar.gz`, `boot_b.img.tar.gz`, `oem.img.tar.gz`, `rootfs.img.tar.gz`,
+  and `update.img.tar.gz`). GitHub Actions and GitHub Release publication are
+  deferred; the legacy GitHub lookup remains only for compatibility.
 - Update method: The device-side `/oem/usr/bin/ota` fetches the manifest, verifies signatures, validates SHA256, writes to the inactive slot, switches `misc`, and reboots.
 - Rollback method: Rockchip SPL A/B metadata controls boot tries; mark successful only after application health confirmation.
 

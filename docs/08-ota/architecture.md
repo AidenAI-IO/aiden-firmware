@@ -40,7 +40,10 @@ Production images use A/B layout:
 ## Update Process
 
 1. `ota` reads `/userdata/debian/ota/config.json` and `/oem/etc/ota_pubkey.pem`.
-2. Fetch manifest: if `manifest_url` is configured, fetch that URL directly; otherwise query the GitHub Release `releases/latest` endpoint (i.e., `DefaultReleaseURL`, can be overridden by config's release URL), and retrieve `manifest.json` from release assets.
+2. Fetch the manifest from the configured `manifest_url`. For older factory
+   configurations that have no direct URL, the client retains a GitHub
+   `releases/latest` fallback for compatibility; current local/self-hosted
+   deployments should use an explicit manifest URL.
 3. Download `manifest.json`, remove `signature.value`, and perform canonical JSON Ed25519 signature verification.
 4. Reject downgrades with older `build_time` or different version with same build time.
 5. Select inactive slot and parse corresponding slot assets from manifest.
@@ -96,7 +99,7 @@ repacks `update.img` before the final mounted-image audit.
 
 Optional configuration fields:
 
-- `manifest_url` - directly specify manifest URL (skip GitHub Release API)
+- `manifest_url` - directly specify the manifest URL (the current local/self-hosted path)
 - `public_key_path` - override default public key path (default `/oem/etc/ota_pubkey.pem`)
 - `github_token_path` - GitHub token file path (required for private repositories)
 - `download_safety_margin_bytes` - free bytes retained beyond remaining downloads (default 16 MiB)

@@ -35,8 +35,9 @@ OTA_BASE_URL="$BASE_URL" \
 ./debian_build.sh
 ```
 
-`OTA_BASE_URL` is optional. Set it for direct static hosting. Omit it for the
-normal GitHub Release API flow and set `OTA_REPO=OWNER/REPO` instead.
+`OTA_BASE_URL` is the current distribution path for direct static hosting. The
+GitHub Release API flow is retained only as a deferred manual compatibility
+option; omit `OTA_BASE_URL` and set `OTA_REPO=OWNER/REPO` only for that flow.
 
 The publishable directory contains:
 
@@ -56,10 +57,11 @@ not that extra local copy.
 
 ## Host the Assets
 
-### GitHub Releases
+### GitHub Releases (Deferred Manual Reference)
 
-Build without `OTA_BASE_URL`, set `OTA_REPO`, then upload the exact six release
-assets:
+GitHub Actions and automatic publication are outside the current scope. If a
+future manual process uses GitHub Releases, build without `OTA_BASE_URL`, set
+`OTA_REPO`, then upload the exact six assets:
 
 ```bash
 TAG="$VERSION"
