@@ -21,12 +21,16 @@ type fakeStorageOps struct {
 	prepareBlock   chan struct{}
 	prepareEntered chan struct{}
 	prepareOnce    sync.Once
+
 	free       int64
 	total      int64
 	spaceErr   error
 	formatErr  error
 	unmountErr error
 	blank      bool
+
+	remountErr     error
+	nextPrepareErr error
 	// spaceFn, when set, answers SpaceInfo per path (used by migration
 	// tests to model eMMC free space changing as files move).
 	spaceFn func(path string) (int64, int64, error)
@@ -55,6 +59,11 @@ func (f *fakeStorageOps) Prepare(dev, mountPoint string) error {
 	if f.prepareBlock != nil {
 		f.prepareOnce.Do(func() { close(f.prepareEntered) })
 		<-f.prepareBlock
+	}
+	if f.nextPrepareErr != nil {
+		err := f.nextPrepareErr
+		f.nextPrepareErr = nil
+		return err
 	}
 	if f.prepareErr != nil {
 		return f.prepareErr
@@ -97,6 +106,8 @@ func (f *fakeStorageOps) FormatDisk(fs string) (string, error) {
 	// A freshly formatted card is no longer blank and mounts cleanly.
 	f.blank = false
 	f.prepareErr = nil
+	f.nextPrepareErr = f.remountErr
+	f.remountErr = nil
 	return "/dev/mmcblk2p1", nil
 }
 
@@ -479,6 +490,38 @@ func TestStorageManagerFormatExt4MountsAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestStorageManagerFormatRemainsRunningUntilRemountFinishes(t *testing.T) {
+	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 2)
+
+	// Block only the post-format Prepare call so the state exposed during the
+	// remount is deterministic.
+	ops.prepareBlock = make(chan struct{})
+	ops.prepareEntered = make(chan struct{})
+	if err := m.StartFormat(StorageFormatFAT32, StorageFormatConfirmToken); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ops.prepareEntered:
+	case <-time.After(time.Second):
+		t.Fatal("post-format mount did not start")
+	}
+
+	if status := m.Status(); status.FormatJob.Status != StorageFormatRunning {
+		t.Fatalf("format job published completion before remount finished: %+v", status)
+	}
+
+	close(ops.prepareBlock)
+	job := waitForFormatJob(t, m)
+	if job.Status != StorageFormatSuccess {
+		t.Fatalf("job = %+v, want success", job)
+	}
+	if status := m.Status(); !status.Card.Mounted || status.EffectiveMode != StorageModeDual {
+		t.Fatalf("status = %+v, want mounted dual storage after completed job", status)
+	}
+}
+
 func TestStorageManagerFormatExFATMountsAfterSuccess(t *testing.T) {
 	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
 	m := newTestStorageManager(t, ops)
@@ -513,6 +556,40 @@ func TestStorageManagerFormatFailureReported(t *testing.T) {
 	}
 	if m.Status().Card.Mounted {
 		t.Fatal("card mounted after failed format")
+	}
+}
+
+func TestStorageManagerPostFormatMountFailureReported(t *testing.T) {
+	ops := &fakeStorageOps{
+		present: true, free: 1 << 30, total: 1 << 31, healthy: true,
+		remountErr: errors.New("mount: device unavailable"),
+	}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 2)
+
+	if err := m.StartFormat(StorageFormatFAT32, StorageFormatConfirmToken); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForFormatJob(t, m)
+	if job.Status != StorageFormatFailed || !strings.Contains(job.Error, "mount: device unavailable") {
+		t.Fatalf("job = %+v, want post-format mount failure", job)
+	}
+	status := m.Status()
+	if status.Card.Mounted {
+		t.Fatal("card reported mounted after post-format mount failure")
+	}
+	if !strings.Contains(status.Card.Reason, "mount: device unavailable") {
+		t.Fatalf("card reason = %q, want mount failure", status.Card.Reason)
+	}
+
+	// The injected remount failure is transient. A physical reinsertion should
+	// get a fresh mount attempt rather than inheriting the consumed error.
+	ops.present = false
+	tickN(m, 2)
+	ops.present = true
+	tickN(m, 2)
+	if status := m.Status(); !status.Card.Mounted {
+		t.Fatalf("card did not recover after reinsertion: %+v", status.Card)
 	}
 }
 
@@ -589,7 +666,7 @@ func TestStorageManagerNeverAutoFormatsUnreadableCard(t *testing.T) {
 
 func TestStorageManagerAutoFormatOncePerInsertion(t *testing.T) {
 	ops := &fakeStorageOps{
-		present: true, healthy: true,
+		present: true, healthy: true, free: 1 << 30, total: 1 << 31,
 		prepareErr: errors.New("no filesystem"), blank: true,
 		formatErr: errors.New("card yanked"),
 	}

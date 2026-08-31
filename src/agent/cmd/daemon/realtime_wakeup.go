@@ -600,6 +600,10 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 	if err != nil {
 		return fmt.Errorf("initialize realtime user context: %w", err)
 	}
+	userContext, err = rotateRealtimeContextForReplay(userContext, realtimeContextReplayTurns)
+	if err != nil {
+		return fmt.Errorf("rotate truncated realtime user context: %w", err)
+	}
 
 	client, err := rtclient.New(rtclient.Config{
 		APIKey:      cfg.VoiceModel.APIKey,
@@ -1404,6 +1408,37 @@ func replayRealtimeContext(ctx context.Context, session *rtclient.Session, manag
 		}
 	}
 	return nil
+}
+
+// rotateRealtimeContextForReplay makes the durable session match the context
+// restored into a new provider session. Keeping the shortened context under the
+// old session ID would violate the invariant that one session identifies one
+// conversation context.
+func rotateRealtimeContextForReplay(manager *contextmanager.ContextManager, maxTurns int) (*contextmanager.ContextManager, error) {
+	if manager == nil {
+		return nil, nil
+	}
+	all := manager.MessageListDump().Messages
+	recent := recentRealtimeContextMessages(all, maxTurns)
+	if len(recent) == len(all) {
+		return manager, nil
+	}
+
+	retained := make([]messages.Message, 0, len(recent)+1)
+	if len(all) > 0 && all[0].Role == messages.MessageRoleSystem {
+		retained = append(retained, all[0])
+	}
+	retained = append(retained, recent...)
+	revision, err := contextmanager.NewContextManagerRevisionFromMessageList(manager, retained)
+	if err != nil {
+		return nil, err
+	}
+	if err := contextmanager.SwitchSession(revision.GetSessionFolder(), revision.GetSessionID()); err != nil {
+		return nil, err
+	}
+	log.Printf("[realtime] Rotated user context after replay truncation: parent=%s session=%s retained_messages=%d",
+		manager.GetSessionID(), revision.GetSessionID(), len(retained))
+	return revision, nil
 }
 
 func recentRealtimeContextMessages(all []messages.Message, maxTurns int) []messages.Message {

@@ -1024,7 +1024,9 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	boundaryTelemetry = beginResult.Boundary
 	if boundaryTelemetry.Rotated {
-		r.rotateContext()
+		if err := r.rotateContext(); err != nil && r.logger != nil {
+			r.logger.Warn("[context] rotate after session boundary failed: %v", err)
+		}
 	}
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
@@ -1523,10 +1525,24 @@ func (r *Runtime) ClearMemory(ctx context.Context) error {
 	if err := r.memories.ClearSession(ctx, "default"); err != nil {
 		return err
 	}
-	r.rotateContext()
 	r.resetActiveUserContext()
-	if err := r.rotateUserContext(); err != nil {
+	userSystemPrompt, hasUserContext, err := r.currentUserContextSystemPrompt()
+	if err != nil {
 		return err
+	}
+	if err := contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear backend context sessions: %w", err)
+	}
+	if err := contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear user context sessions: %w", err)
+	}
+	if err := r.rotateContext(); err != nil {
+		return fmt.Errorf("create backend context session: %w", err)
+	}
+	if hasUserContext {
+		if err := r.rotateUserContext(userSystemPrompt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1564,23 +1580,35 @@ func (r *Runtime) resetActiveUserContext() {
 	}
 }
 
-func (r *Runtime) rotateUserContext() error {
+func (r *Runtime) currentUserContextSystemPrompt() (string, bool, error) {
+	if r == nil || strings.TrimSpace(r.config.ConfigDir) == "" {
+		return "", false, nil
+	}
+	folder := agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
+	currentSessionPath := filepath.Join(folder, ".current_session")
+	if _, err := os.Stat(currentSessionPath); err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("stat current user context session: %w", err)
+	}
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(folder)
+	if err != nil {
+		return "", false, fmt.Errorf("load current user context session: %w", err)
+	}
+	for _, message := range manager.MessageListDump().Messages {
+		if message.Role == messages.MessageRoleSystem {
+			return message.Content, true, nil
+		}
+	}
+	return "", false, fmt.Errorf("current user context session has no system prompt")
+}
+
+func (r *Runtime) rotateUserContext(systemPrompt string) error {
 	if r == nil || strings.TrimSpace(r.config.ConfigDir) == "" {
 		return nil
 	}
 	folder := agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
-	var systemPrompt string
-	if manager, err := contextmanager.LoadContextManagerFromCurrentSession(folder); err == nil && manager != nil {
-		for _, message := range manager.MessageListDump().Messages {
-			if message.Role == messages.MessageRoleSystem {
-				systemPrompt = message.Content
-				break
-			}
-		}
-	}
-	if strings.TrimSpace(systemPrompt) == "" {
-		return nil
-	}
 	if _, err := contextmanager.NewContextManager(folder, systemPrompt); err != nil {
 		return fmt.Errorf("create user context session: %w", err)
 	}
@@ -1627,9 +1655,15 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 		return err
 	}
 
-	_ = contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
-	_ = contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir))
-	r.rotateContext()
+	if err := contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear backend context sessions: %w", err)
+	}
+	if err := contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear user context sessions: %w", err)
+	}
+	if err := r.rotateContext(); err != nil {
+		return fmt.Errorf("create backend context session: %w", err)
+	}
 
 	return nil
 }
@@ -1710,13 +1744,14 @@ func (r *Runtime) ReadContextAttachment(role, attachmentID string) ([]byte, stri
 	return data, mimeType, nil
 }
 
-func (r *Runtime) rotateContext() {
+func (r *Runtime) rotateContext() error {
 	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), r.getSystemPrompt())
 	if err != nil {
-		return
+		return err
 	}
 	newContextManager.AddAppendMessageHooks([]contextmanager.AppendMessageHook{r.getStateHook()})
 	r.contextManager = newContextManager
+	return nil
 }
 
 func (r *Runtime) availableTools() []langtools.Tool {
