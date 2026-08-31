@@ -1,6 +1,10 @@
 package agent
 
-import "aiden-agent/internal/agent/tts"
+import (
+	"context"
+
+	"aiden-agent/internal/agent/tts"
+)
 
 // audioBackend bridges the internal *AudioServiceClient to the
 // tts.AudioServiceBackend interface used by the new pluggable TTS module.
@@ -28,4 +32,14 @@ func (a *audioBackend) WritePlayChunk(sessionID uint64, data []byte, isFinal boo
 
 func (a *audioBackend) StopPlayback(sessionID uint64) error {
 	return a.c.StopPlayback(sessionID)
+}
+
+// WaitForPlaybackDrain waits until audio_service has finished draining all
+// finalized playback sessions. Realtime uses this to distinguish submitted
+// audio from audio that was actually played.
+func (a *audioBackend) WaitForPlaybackDrain(ctx context.Context) error {
+	if a == nil || a.c == nil {
+		return nil
+	}
+	return waitForPlaybackDrain(ctx, a.c, playbackDrainTimeout)
 }

@@ -499,7 +499,7 @@ This section is currently TOML-only and is not rendered by Config Web.
 
 ## `[voice_notifications]`
 
-Voice notifications attach system reminders to a normal spoken reply or replace a final failed LLM turn with a fixed error message. They never start an independent background announcement. See [Voice Notifications](voice-notifications.md) for the lifecycle and delivery contract.
+Voice notifications attach system reminders to a normal spoken reply or replace a final failed LLM turn with a fixed error message. In Realtime mode, an idle session can also announce a pending reminder as a private speech response. See [Voice Notifications](voice-notifications.md) for the lifecycle and delivery contract.
 
 ```toml
 [voice_notifications]

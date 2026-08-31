@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
+	"time"
 
 	"aiden-agent/internal/agent/tts"
 )
@@ -159,6 +160,33 @@ func (b *localAudioPlaybackBackend) StopPlayback(sessionID uint64) error {
 		_ = os.Remove(path)
 	}
 	return nil
+}
+
+// WaitForPlaybackDrain waits for finalized local player processes to exit.
+// Realtime uses this to report notification delivery only after playback,
+// rather than file submission, has completed.
+func (b *localAudioPlaybackBackend) WaitForPlaybackDrain(ctx context.Context) error {
+	if b == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		b.mu.Lock()
+		pending := len(b.sessions)
+		b.mu.Unlock()
+		if pending == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *localAudioPlaybackSession) stateError(sessionID uint64) error {
