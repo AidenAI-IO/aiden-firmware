@@ -145,11 +145,11 @@ After development, build the firmware and upgrade the device:
 - Full Debian firmware build (`./debian_build.sh`) and flashing: [Firmware Build & Flashing](firmware.md);
 - Over-the-air upgrade: [OTA Overview](../08-ota/README.md).
 
-### OTA for non-main branch firmware
+### OTA for a development build
 
-CI assigns release channels by branch: `main` is the `stable` official release, while **other branches are published as prereleases**. The default `ota update` uses `releases/latest` and only picks up the latest official release, so it never accidentally installs dev-branch firmware.
+GitHub Actions publication is not part of the current Debian build scope. When a build is published manually, use `stable` for an official release and a `dev-*` channel plus GitHub prerelease status for development firmware. The default `ota update` uses `releases/latest`, which ignores prereleases.
 
-To flash a specific dev-branch build onto a device for testing, you must point at that dev release's manifest explicitly with `--manifest-url`, bypassing the `releases/latest` lookup:
+To install a manually published development build, point at that release's manifest explicitly with `--manifest-url`, bypassing the `releases/latest` lookup:
 
 ```bash
 TAG="20260604-120000-abc1234"

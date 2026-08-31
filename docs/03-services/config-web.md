@@ -17,15 +17,14 @@ sidebar_position: 2
 ## Startup
 
 ```bash
-/etc/init.d/S56config_web start
-/etc/init.d/S56config_web stop
-/etc/init.d/S56config_web restart
-/etc/init.d/S56config_web reload
+systemctl start aiden-config-web.service
+systemctl stop aiden-config-web.service
+systemctl restart aiden-config-web.service
+systemctl status aiden-config-web.service
 ```
 
-The init script supports `start`, `stop`, `restart`, and `reload`. It does not
-provide a `status` command; `reload` currently performs the same stop-and-start
-sequence as `restart`.
+The service is enabled through the Debian systemd preset and is also pulled in
+by `aiden.target`.
 
 ## Access
 
