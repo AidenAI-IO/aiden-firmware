@@ -37,10 +37,14 @@ sudo scripts/debian-stage1/flash.sh flash \
 ```
 
 The repository-root `upgrade_tool/upgrade_tool` is a macOS Mach-O binary; use
-the Linux tool from the Stage 3 SDK on Linux.
+the Linux tool from the Stage 3 SDK on Linux. On macOS, flash a locally built
+image with:
+
+```bash
+./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
+```
 
 The image installs these main runtime trees:
-
 ```text
 /oem/usr/bin/                                  # Audited production applications
 /oem/usr/lib/                                  # Vendor and application libraries

@@ -105,8 +105,14 @@ sudo scripts/debian-stage1/flash.sh flash \
 ```
 
 For a prebuilt image, replace `IMAGE` and provide its independently verified
-SHA-256. On macOS, the repository-root `upgrade_tool/upgrade_tool uf` command
-can be used instead; do not use that Mach-O binary from a Linux shell.
+SHA-256. On macOS, the repository-root `upgrade_tool/upgrade_tool` command can
+be used for a locally built image:
+
+```bash
+./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
+```
+
+Do not use that Mach-O binary from a Linux shell.
 
 ## Partition Reference
 
