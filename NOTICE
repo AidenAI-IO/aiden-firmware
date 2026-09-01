@@ -91,6 +91,17 @@ All are compatible with AGPL-3.0 for our use case.
 
 ---
 
+## Rockchip RKAUDIO VQE runtime
+
+- **License**: BSD-style terms; see `pico-sdk/media/common_algorithm/common_algorithm/LICENSE`
+- **Source**: Luckfox/Rockchip Pico SDK RKAUDIO algorithms
+- **Location**: `overlay-debian-oem/usr/lib/libaec_bf_process.so` and
+  `overlay-debian-oem/usr/lib/librkaudio_common.so`
+- **Description**: glibc armhf microphone beamforming/AEC runtime required by
+  Debian `audio_service` VQE initialization
+
+---
+
 ## Buildroot
 
 - **License**: GPL-2.0+
