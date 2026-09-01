@@ -68,8 +68,12 @@ func TestHistoricalPruneBudgetsUseConfiguredThresholdIndependently(t *testing.T)
 	}
 
 	trigger, target, ok = historicalPruneBudgets(10_000, 0)
-	if !ok || trigger != 8_000 || target != 7_000 {
-		t.Fatalf("historicalPruneBudgets(10000, 0) = %d, %d, %v; want automatic budgets", trigger, target, ok)
+	if !ok || trigger != 7_000 || target != 6_000 {
+		t.Fatalf("historicalPruneBudgets(10000, 0) = %d, %d, %v; want 7000, 6000, true", trigger, target, ok)
+	}
+	compactionTrigger, _, compactionOK := toolResultCompactionBudgets(10_000)
+	if !compactionOK || trigger >= compactionTrigger {
+		t.Fatalf("automatic historical prune trigger = %d, compaction trigger = %d; prune must run first", trigger, compactionTrigger)
 	}
 }
 
