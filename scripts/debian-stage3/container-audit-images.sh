@@ -32,6 +32,12 @@ readonly -a PRODUCTION_BINARIES=(
     rknn_vad
 )
 
+# These are the glibc/armhf VQE binaries shipped by the SDK's USE_32BIT
+# RKAUDIO build. Keep the exact digests here so an incompatible replacement
+# cannot silently enter the production OEM image.
+readonly VQE_AEC_SHA256=3427abaa4b2ab7917d079e6cba46a68a836069bcc7f6b9e94630353fcd8c1a9a
+readonly VQE_COMMON_SHA256=de8ff824dd1f2e5ec1074b84490d2836ed9dc61d59d6a90d9cdf19386097263c
+
 mounts=()
 unmount_mounts() {
     local index
@@ -268,7 +274,7 @@ audit_rootfs() {
 }
 
 audit_oem_files() {
-    local actual expected
+    local actual expected library expected_sha actual_sha
     actual=$(find "${OEM_MOUNT}/usr/bin" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
     expected=$(printf '%s\n' "${PRODUCTION_BINARIES[@]}" | LC_ALL=C sort)
     [ "${actual}" = "${expected}" ] || {
@@ -286,6 +292,21 @@ audit_oem_files() {
     test -L "${OEM_MOUNT}/usr/lib/librga.so.2" || fail "librga.so.2 symlink is missing"
     test "$(readlink "${OEM_MOUNT}/usr/lib/librga.so.2")" = librga.so.2.1.0 \
         || fail "librga.so.2 symlink is invalid"
+    for library in libaec_bf_process.so librkaudio_common.so; do
+        case "${library}" in
+            libaec_bf_process.so) expected_sha=${VQE_AEC_SHA256} ;;
+            librkaudio_common.so) expected_sha=${VQE_COMMON_SHA256} ;;
+            *) fail "unexpected VQE library name: ${library}"; continue ;;
+        esac
+        test -s "${OEM_MOUNT}/usr/lib/${library}" \
+            || fail "VQE runtime library is missing: ${library}"
+        cmp "${OEM_MOUNT}/usr/lib/${library}" \
+            "${REPO_ROOT}/overlay-debian-oem/usr/lib/${library}" \
+            || fail "VQE runtime library differs from the Debian OEM source: ${library}"
+        actual_sha=$(sha256sum "${OEM_MOUNT}/usr/lib/${library}" | awk '{print $1}')
+        [ "${actual_sha}" = "${expected_sha}" ] \
+            || fail "VQE runtime library checksum mismatch: ${library}"
+    done
     test ! -e "${OEM_MOUNT}/usr/lib/librknnrt.so" \
         || fail "obsolete dynamic librknnrt.so leaked into OEM"
     test -s "${OEM_MOUNT}/etc/ota_pubkey.pem" || fail "OTA public key is missing"
