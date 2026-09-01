@@ -92,6 +92,9 @@ sudo scripts/debian-stage1/flash.sh flash --tool "${FLASH_TOOL}" \
   --image "${IMAGE}" --sha256 "$(awk '{print $1}' "${IMAGE}.sha256")" \
   --confirm-erase-all-data
 
+# Flash on macOS
+./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
+
 # Service status
 systemctl status aiden-frame.service --no-pager
 systemctl status aiden-audio.service --no-pager
