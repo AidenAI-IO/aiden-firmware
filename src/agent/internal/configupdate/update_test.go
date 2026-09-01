@@ -82,6 +82,54 @@ log_raw_http = false
 	}
 }
 
+func TestUpdateConfigFileWritesIndependentContextPruneThreshold(t *testing.T) {
+	source := `[model]
+provider = "openai"
+model = "gpt-5.5"
+responses_compact_threshold = 32000
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"context_prune_threshold":12000}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.Agent.ContextPruneThreshold != 12000 {
+		t.Fatalf("resolved context_prune_threshold = %d, want 12000", result.Config.Agent.ContextPruneThreshold)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "context_prune_threshold = 12000") {
+		t.Fatalf("context_prune_threshold was not updated:\n%s", got)
+	}
+	if !strings.Contains(string(got), "responses_compact_threshold = 32000") {
+		t.Fatalf("provider compaction threshold changed while updating prune threshold:\n%s", got)
+	}
+
+	result, err = NewService().Update(path, []byte(`{"config":{"agent":{"context_prune_threshold":0}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.Agent.ContextPruneThreshold != 0 {
+		t.Fatalf("resolved context_prune_threshold = %d, want 0 automatic mode", result.Config.Agent.ContextPruneThreshold)
+	}
+	got, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "context_prune_threshold = 0") {
+		t.Fatalf("context_prune_threshold was not reset to automatic mode:\n%s", got)
+	}
+	if !strings.Contains(string(got), "responses_compact_threshold = 32000") {
+		t.Fatalf("provider compaction threshold changed while resetting prune threshold:\n%s", got)
+	}
+}
+
 func TestUpdateConfigFileAddsProviderToInlineTable(t *testing.T) {
 	source := `model_providers = { old = { type = "openai" } }
 

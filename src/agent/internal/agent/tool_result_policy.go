@@ -23,16 +23,18 @@ const (
 	ToolResultReasonContextLarge   = "context_large"
 	ToolResultReasonProcessingFail = "processing_failed"
 
-	toolResultInlineMaxBytes     = 8 * 1024
-	toolResultInlineMaxTokens    = 2_000
-	toolResultPreviewTargetToken = 1_200
-	toolResultMinimumObservation = 96
-	toolResultSoftLimitPercent   = 80
-	toolResultCompactionTarget   = 70
-	toolResultProjectionTopK     = 3
-	toolResultProjectionFields   = 24
-	toolResultProjectionDepth    = 5
-	toolResultProjectionRunes    = 256
+	toolResultInlineMaxBytes      = 8 * 1024
+	toolResultInlineMaxTokens     = 2_000
+	toolResultPreviewTargetToken  = 1_200
+	toolResultMinimumObservation  = 96
+	toolResultSoftLimitPercent    = 80
+	toolResultCompactionTarget    = 70
+	historicalPruneTriggerPercent = 80
+	historicalPruneTargetPercent  = 70
+	toolResultProjectionTopK      = 3
+	toolResultProjectionFields    = 24
+	toolResultProjectionDepth     = 5
+	toolResultProjectionRunes     = 256
 )
 
 var ErrToolResultRecoveryTextTooLarge = errors.New("tool result recovery text exceeds context budget")
@@ -250,6 +252,30 @@ func toolResultCompactionBudgets(usableInputBudget int) (trigger int, target int
 	}
 	return usableInputBudget * toolResultSoftLimitPercent / 100,
 		usableInputBudget * toolResultCompactionTarget / 100,
+		true
+}
+
+// historicalPruneBudgets returns the independent trigger and target for
+// deterministic cleanup of historical state and tool results. A configured
+// threshold is honored exactly; the automatic budget has its own constants so
+// this policy remains independent from conversation compaction.
+func historicalPruneBudgets(usableInputBudget, configuredThreshold int) (trigger int, target int, enabled bool) {
+	if configuredThreshold > 0 {
+		trigger = configuredThreshold
+		target = trigger * historicalPruneTargetPercent / historicalPruneTriggerPercent
+		if target <= 0 && trigger > 1 {
+			target = trigger - 1
+		}
+		if target <= 0 {
+			target = 1
+		}
+		return trigger, target, true
+	}
+	if usableInputBudget <= 0 {
+		return 0, 0, false
+	}
+	return usableInputBudget * historicalPruneTriggerPercent / 100,
+		usableInputBudget * historicalPruneTargetPercent / 100,
 		true
 }
 

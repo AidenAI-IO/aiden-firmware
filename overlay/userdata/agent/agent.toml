@@ -6,6 +6,9 @@
 # custom_instruction = ""
 # additional_prompt = ""
 # max_iterations = -1
+# Deterministic cleanup of expired state and historical tool results. Zero (or
+# an omitted value) derives the threshold from the active model input budget.
+# context_prune_threshold = 12000
 
 # Screenshot context pruning:
 # keep the latest N screenshots and batch-prune older screenshots every interval
