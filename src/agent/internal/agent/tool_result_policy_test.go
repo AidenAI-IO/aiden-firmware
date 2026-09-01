@@ -46,13 +46,13 @@ func TestToolResultPolicyKeepsSmallResultInline(t *testing.T) {
 	}
 }
 
-func TestToolResultCompactionBudgetsRequirePositiveUsableInput(t *testing.T) {
-	if trigger, target, ok := toolResultCompactionBudgets(0); ok || trigger != 0 || target != 0 {
-		t.Fatalf("toolResultCompactionBudgets(0) = %d, %d, %v; want disabled", trigger, target, ok)
+func TestConversationCompactionTriggerRequiresPositiveUsableInput(t *testing.T) {
+	if trigger, ok := conversationCompactionTrigger(0); ok || trigger != 0 {
+		t.Fatalf("conversationCompactionTrigger(0) = %d, %v; want disabled", trigger, ok)
 	}
-	trigger, target, ok := toolResultCompactionBudgets(10_000)
-	if !ok || trigger != 8_000 || target != 7_000 {
-		t.Fatalf("toolResultCompactionBudgets(10000) = %d, %d, %v; want 8000, 7000, true", trigger, target, ok)
+	trigger, ok := conversationCompactionTrigger(10_000)
+	if !ok || trigger != 8_000 {
+		t.Fatalf("conversationCompactionTrigger(10000) = %d, %v; want 8000, true", trigger, ok)
 	}
 }
 
@@ -71,7 +71,7 @@ func TestHistoricalPruneBudgetsUseConfiguredThresholdIndependently(t *testing.T)
 	if !ok || trigger != 7_000 || target != 6_000 {
 		t.Fatalf("historicalPruneBudgets(10000, 0) = %d, %d, %v; want 7000, 6000, true", trigger, target, ok)
 	}
-	compactionTrigger, _, compactionOK := toolResultCompactionBudgets(10_000)
+	compactionTrigger, compactionOK := conversationCompactionTrigger(10_000)
 	if !compactionOK || trigger >= compactionTrigger {
 		t.Fatalf("automatic historical prune trigger = %d, compaction trigger = %d; prune must run first", trigger, compactionTrigger)
 	}
