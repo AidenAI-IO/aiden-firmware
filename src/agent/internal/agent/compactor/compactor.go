@@ -7,10 +7,13 @@ import (
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/tokencounter"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"slices"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -25,9 +28,26 @@ var DefaultProtectRule = ProtectRule{
 	TailN: 3,
 }
 
+const historicalToolResultPruneReason = "historical_prune"
+
+type CompactionStats struct {
+	TokensBefore                int
+	TokensAfter                 int
+	ConversationSummaryRequired bool
+}
+
+type HistoricalPruneStats struct {
+	HistoricalStatesDropped     int
+	HistoricalToolResultsPruned int
+	TokensBefore                int
+	TokensAfter                 int
+}
+
 type Compactor struct {
-	ProtectRule ProtectRule
-	Model       model.Model
+	ProtectRule         ProtectRule
+	Model               model.Model
+	lastCompactionStats CompactionStats
+	lastPruneStats      HistoricalPruneStats
 }
 
 func NewCompactor(protectRule ProtectRule, model model.Model) *Compactor {
@@ -44,26 +64,22 @@ func validateProtectRule(protectRule ProtectRule) {
 	}
 }
 
-func estimateMessageListTokenUsage(messageList []messages.Message) int {
-	tokenUsage := 0
-	for _, msg := range messageList {
-		switch msg.Role {
-		case messages.MessageRoleToolCall:
-			for _, call := range msg.ToolCalls {
-				tokenUsage += tokencounter.EstimateTextTokens(call.Arguments)
-			}
-		case messages.MessageRoleToolResult:
-			for _, result := range msg.ToolResults {
-				tokenUsage += tokencounter.EstimateTextTokens(result.Content)
-			}
-		default:
-			tokenUsage += tokencounter.EstimateTextTokens(msg.Content)
-		}
-		if len(msg.Attachments) > 0 {
-			tokenUsage += len(msg.Attachments) * tokencounter.EstimateImageTokens
-		}
+func (c *Compactor) LastCompactionStats() CompactionStats {
+	if c == nil {
+		return CompactionStats{}
 	}
-	return tokenUsage
+	return c.lastCompactionStats
+}
+
+func (c *Compactor) LastPruneStats() HistoricalPruneStats {
+	if c == nil {
+		return HistoricalPruneStats{}
+	}
+	return c.lastPruneStats
+}
+
+func estimateMessageListTokenUsage(messageList []messages.Message) int {
+	return tokencounter.EstimateMessagesTokens(messageList)
 }
 
 func (c *Compactor) Compact(ctx context.Context, session *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
@@ -71,6 +87,8 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 		return nil, false, nil
 	}
 	messageList := session.CloneMessageList()
+	tokensBefore := estimateMessageListTokenUsage(messageList)
+	c.lastCompactionStats = CompactionStats{TokensBefore: tokensBefore, TokensAfter: tokensBefore}
 
 	HeadN := c.ProtectRule.HeadN
 	TailN := c.ProtectRule.TailN
@@ -108,6 +126,7 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	tails := messageList[len(messageList)-TailN:]
 	mids := messageList[HeadN : len(messageList)-TailN]
 	// compact mids into one single user message
+	c.lastCompactionStats.ConversationSummaryRequired = true
 	summary, err := c.generateSummary(ctx, mids)
 	if err != nil {
 		return nil, false, err
@@ -122,20 +141,220 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 		Content: formattedSummary,
 	})
 	newMessageList = append(newMessageList, tails...)
-	// A compaction revision starts a fresh provider conversation. Retaining an
-	// old Responses response ID here would make provider-managed mode chain the
-	// summarized local transcript onto a response whose context no longer
-	// matches it. The durable local transcript remains intact; only the provider
-	// anchor is reset.
-	for i := range newMessageList {
-		newMessageList[i].ResponsesResponseID = ""
+	c.lastCompactionStats.TokensAfter = estimateMessageListTokenUsage(newMessageList)
+	return newContextRevision(session, newMessageList)
+}
+
+// PruneHistorical removes expired state snapshots and bounds old tool results
+// without generating an LLM conversation summary. A changed context is written
+// as a new revision so provider response anchors cannot refer to the old shape.
+func (c *Compactor) PruneHistorical(session *contextmanager.ContextManager, targetTokens int) (*contextmanager.ContextManager, bool, error) {
+	if session == nil {
+		return nil, false, nil
 	}
-	// create new context manager
-	newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, newMessageList)
+	messageList := session.CloneMessageList()
+	tokensBefore := estimateMessageListTokenUsage(messageList)
+	c.lastPruneStats = HistoricalPruneStats{TokensBefore: tokensBefore, TokensAfter: tokensBefore}
+	if targetTokens <= 0 {
+		return nil, false, nil
+	}
+
+	var dropped int
+	messageList, dropped = pruneHistoricalStates(messageList)
+	c.lastPruneStats.HistoricalStatesDropped = dropped
+
+	var pruned int
+	messageList, pruned = compactHistoricalToolResults(messageList, targetTokens)
+	c.lastPruneStats.HistoricalToolResultsPruned = pruned
+	c.lastPruneStats.TokensAfter = estimateMessageListTokenUsage(messageList)
+	if dropped == 0 && pruned == 0 {
+		return nil, false, nil
+	}
+	return newContextRevision(session, messageList)
+}
+
+func newContextRevision(session *contextmanager.ContextManager, messageList []messages.Message) (*contextmanager.ContextManager, bool, error) {
+	// A revision starts a fresh provider conversation. Retaining a Responses
+	// response ID would chain the rewritten local transcript onto stale provider
+	// state. The original session remains on disk for audit and recovery.
+	for i := range messageList {
+		messageList[i].ResponsesResponseID = ""
+	}
+	newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, messageList)
 	if err != nil {
 		return nil, false, err
 	}
 	return newManager, true, nil
+}
+
+func pruneHistoricalStates(messageList []messages.Message) ([]messages.Message, int) {
+	latestUserIndex := lastMessageIndexWithRole(messageList, messages.MessageRoleUser)
+	if latestUserIndex < 0 {
+		return messageList, 0
+	}
+
+	// State messages injected immediately before the current user input belong
+	// to the active turn. State observations after that input do too. Every
+	// earlier state is an expired snapshot and must not enter a later summary.
+	currentTurnStart := latestUserIndex
+	for currentTurnStart > 0 && messageList[currentTurnStart-1].Role == messages.MessageRoleState {
+		currentTurnStart--
+	}
+
+	dropped := 0
+	pruned := make([]messages.Message, 0, len(messageList))
+	for i, message := range messageList {
+		if i < currentTurnStart && message.Role == messages.MessageRoleState {
+			dropped++
+			continue
+		}
+		pruned = append(pruned, message)
+	}
+	if dropped == 0 {
+		return messageList, 0
+	}
+	return pruned, dropped
+}
+
+func compactHistoricalToolResults(messageList []messages.Message, targetTokens int) ([]messages.Message, int) {
+	if targetTokens <= 0 || estimateMessageListTokenUsage(messageList) <= targetTokens {
+		return messageList, 0
+	}
+	latestUserIndex := lastMessageIndexWithRole(messageList, messages.MessageRoleUser)
+	if latestUserIndex <= 0 {
+		return messageList, 0
+	}
+
+	currentTokens := estimateMessageListTokenUsage(messageList)
+	pruned := 0
+	for messageIndex := 0; messageIndex < latestUserIndex; messageIndex++ {
+		message := &messageList[messageIndex]
+		if message.Role != messages.MessageRoleToolResult {
+			continue
+		}
+		for resultIndex := range message.ToolResults {
+			result := &message.ToolResults[resultIndex]
+			if result.Meta != nil && result.Meta.Reason == historicalToolResultPruneReason {
+				continue
+			}
+			call, _ := findHistoricalToolCall(messageList, result.ToolCallID, messageIndex)
+			content, summary := historicalToolResultPlaceholder(*result, call)
+			beforeTokens := tokencounter.EstimateTextTokens(result.Content)
+			afterTokens := tokencounter.EstimateTextTokens(content)
+			if afterTokens >= beforeTokens {
+				continue
+			}
+
+			meta := result.Meta
+			if meta == nil {
+				meta = &messages.ToolResultMeta{Complete: true, ObservationComplete: true}
+				result.Meta = meta
+			}
+			if meta.OriginalBytes == 0 {
+				meta.OriginalBytes = int64(len(result.Content))
+			}
+			if meta.OriginalChars == 0 {
+				meta.OriginalChars = utf8.RuneCountInString(result.Content)
+			}
+			if meta.EstimatedTokens == 0 {
+				meta.EstimatedTokens = beforeTokens
+			}
+			if strings.TrimSpace(meta.Summary) == "" {
+				meta.Summary = summary
+			}
+			meta.Complete = false
+			meta.Reason = historicalToolResultPruneReason
+			result.Content = content
+			currentTokens += afterTokens - beforeTokens
+			pruned++
+			if currentTokens <= targetTokens {
+				return messageList, pruned
+			}
+		}
+	}
+	return messageList, pruned
+}
+
+func lastMessageIndexWithRole(messageList []messages.Message, role messages.MessageRole) int {
+	for i := len(messageList) - 1; i >= 0; i-- {
+		if messageList[i].Role == role {
+			return i
+		}
+	}
+	return -1
+}
+
+func findHistoricalToolCall(messageList []messages.Message, toolCallID string, before int) (messages.ToolCall, bool) {
+	toolCallID = strings.TrimSpace(toolCallID)
+	if toolCallID == "" {
+		return messages.ToolCall{}, false
+	}
+	for i := before - 1; i >= 0; i-- {
+		for _, call := range messageList[i].ToolCalls {
+			if strings.TrimSpace(call.ID) == toolCallID {
+				return call, true
+			}
+		}
+	}
+	return messages.ToolCall{}, false
+}
+
+type historicalToolResultReference struct {
+	Status           string `json:"status"`
+	Tool             string `json:"tool"`
+	Summary          string `json:"summary,omitempty"`
+	ArtifactPath     string `json:"artifact_path,omitempty"`
+	ArtifactComplete bool   `json:"artifact_complete,omitempty"`
+}
+
+func historicalToolResultPlaceholder(result messages.ToolResult, call messages.ToolCall) (string, string) {
+	toolName := strings.TrimSpace(result.Name)
+	if toolName == "" {
+		toolName = strings.TrimSpace(call.Name)
+	}
+	if toolName == "" {
+		toolName = "tool"
+	}
+	summary := ""
+	if result.Meta != nil {
+		summary = strings.TrimSpace(result.Meta.Summary)
+	}
+	if summary == "" {
+		summary = compactHistoricalSummary(result.Content)
+	} else {
+		summary = truncateRunes(summary, 512)
+	}
+
+	reference := historicalToolResultReference{
+		Status:  historicalToolResultPruneReason,
+		Tool:    toolName,
+		Summary: summary,
+	}
+	if result.Meta != nil && contextmanager.ArtifactPathRecoverable(result.Meta.ArtifactPath, time.Now()) {
+		reference.ArtifactPath = strings.TrimSpace(result.Meta.ArtifactPath)
+		reference.ArtifactComplete = result.Meta.ArtifactComplete
+	}
+	data, _ := json.Marshal(reference)
+	return string(data), summary
+}
+
+func compactHistoricalSummary(content string) string {
+	const maxRunes = 512
+	runes := []rune(strings.TrimSpace(content))
+	if len(runes) <= maxRunes {
+		return string(runes)
+	}
+	head := maxRunes / 2
+	tail := maxRunes - head
+	return fmt.Sprintf("%s\n... %d chars omitted ...\n%s", string(runes[:head]), len(runes)-maxRunes, string(runes[len(runes)-tail:]))
+}
+
+func truncateRunes(value string, maxRunes int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return string(runes)
+	}
+	return string(runes[:maxRunes])
 }
 
 func (c *Compactor) generateSummary(ctx context.Context, messageList []messages.Message) (string, error) {

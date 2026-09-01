@@ -29,10 +29,17 @@ const (
 	toolResultMinimumObservation = 96
 	toolResultSoftLimitPercent   = 80
 	toolResultCompactionTarget   = 70
-	toolResultProjectionTopK     = 3
-	toolResultProjectionFields   = 24
-	toolResultProjectionDepth    = 5
-	toolResultProjectionRunes    = 256
+	// Automatic historical pruning runs before conversation compaction. Keep
+	// the configured-threshold hysteresis ratio independent from these budget
+	// percentages so an explicit threshold remains predictable.
+	historicalPruneAutomaticTriggerPercent = 70
+	historicalPruneAutomaticTargetPercent  = 60
+	historicalPruneConfiguredTriggerBase   = 80
+	historicalPruneConfiguredTargetPercent = 70
+	toolResultProjectionTopK               = 3
+	toolResultProjectionFields             = 24
+	toolResultProjectionDepth              = 5
+	toolResultProjectionRunes              = 256
 )
 
 var ErrToolResultRecoveryTextTooLarge = errors.New("tool result recovery text exceeds context budget")
@@ -250,6 +257,30 @@ func toolResultCompactionBudgets(usableInputBudget int) (trigger int, target int
 	}
 	return usableInputBudget * toolResultSoftLimitPercent / 100,
 		usableInputBudget * toolResultCompactionTarget / 100,
+		true
+}
+
+// historicalPruneBudgets returns the independent trigger and target for
+// deterministic cleanup of historical state and tool results. A configured
+// threshold is honored exactly; the automatic budget has its own constants so
+// this policy remains independent from conversation compaction.
+func historicalPruneBudgets(usableInputBudget, configuredThreshold int) (trigger int, target int, enabled bool) {
+	if configuredThreshold > 0 {
+		trigger = configuredThreshold
+		target = trigger * historicalPruneConfiguredTargetPercent / historicalPruneConfiguredTriggerBase
+		if target <= 0 && trigger > 1 {
+			target = trigger - 1
+		}
+		if target <= 0 {
+			target = 1
+		}
+		return trigger, target, true
+	}
+	if usableInputBudget <= 0 {
+		return 0, 0, false
+	}
+	return usableInputBudget * historicalPruneAutomaticTriggerPercent / 100,
+		usableInputBudget * historicalPruneAutomaticTargetPercent / 100,
 		true
 }
 

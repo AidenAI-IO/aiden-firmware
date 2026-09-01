@@ -56,6 +56,27 @@ func TestToolResultCompactionBudgetsRequirePositiveUsableInput(t *testing.T) {
 	}
 }
 
+func TestHistoricalPruneBudgetsUseConfiguredThresholdIndependently(t *testing.T) {
+	trigger, target, ok := historicalPruneBudgets(100_000, 12_000)
+	if !ok || trigger != 12_000 || target != 10_500 {
+		t.Fatalf("historicalPruneBudgets(100000, 12000) = %d, %d, %v; want 12000, 10500, true", trigger, target, ok)
+	}
+
+	trigger, target, ok = historicalPruneBudgets(8_000, 12_000)
+	if !ok || trigger != 12_000 || target != 10_500 {
+		t.Fatalf("historicalPruneBudgets(8000, 12000) = %d, %d, %v; want exact configured 12000, 10500, true", trigger, target, ok)
+	}
+
+	trigger, target, ok = historicalPruneBudgets(10_000, 0)
+	if !ok || trigger != 7_000 || target != 6_000 {
+		t.Fatalf("historicalPruneBudgets(10000, 0) = %d, %d, %v; want 7000, 6000, true", trigger, target, ok)
+	}
+	compactionTrigger, _, compactionOK := toolResultCompactionBudgets(10_000)
+	if !compactionOK || trigger >= compactionTrigger {
+		t.Fatalf("automatic historical prune trigger = %d, compaction trigger = %d; prune must run first", trigger, compactionTrigger)
+	}
+}
+
 func TestToolResultPolicyBoundsResultWhenCurrentContextIsFull(t *testing.T) {
 	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
 		{Role: messages.MessageRoleSystem, Content: strings.Repeat("context ", 3_650)},

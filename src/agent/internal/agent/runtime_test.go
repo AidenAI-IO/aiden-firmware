@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
 	speechtext "aiden-agent/internal/agent/speech"
@@ -1469,6 +1470,28 @@ func eventMetadataInt(event TaskEpisodeEvent, key string) int {
 	}
 }
 
+func TestContextCompactionEventsUseDistinctTelemetryType(t *testing.T) {
+	conversationEvent := contextCompactionEvent(compactor.CompactionStats{
+		TokensBefore:                100,
+		TokensAfter:                 40,
+		ConversationSummaryRequired: true,
+	}, true, nil, "threshold")
+	if conversationEvent.Type != runEventConversationCompaction {
+		t.Fatalf("conversation compaction event type = %q, want %q", conversationEvent.Type, runEventConversationCompaction)
+	}
+
+	historicalEvent := historicalPruneEvent(compactor.HistoricalPruneStats{
+		HistoricalStatesDropped:     1,
+		HistoricalToolResultsPruned: 2,
+	}, true, nil, "threshold")
+	if historicalEvent.Type != runEventHistoricalContextPrune {
+		t.Fatalf("historical prune event type = %q, want %q", historicalEvent.Type, runEventHistoricalContextPrune)
+	}
+	if conversationEvent.Type == historicalEvent.Type {
+		t.Fatal("conversation compaction and historical prune events must use distinct types")
+	}
+}
+
 func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses(
@@ -2719,6 +2742,64 @@ func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 	}
 	if len(llmModel.messages) != 2 {
 		t.Fatalf("model call count = %d, want 2 (summary + planner)", len(llmModel.messages))
+	}
+}
+
+func TestRuntimeRunPrunesHistoricalStateWithProviderCompaction(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "Answer directly."},
+		{Role: messages.MessageRoleState, Content: strings.Repeat("stale-device-state ", 2_000)},
+		{Role: messages.MessageRoleUser, Content: "old question"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	originalSessionID := manager.GetSessionID()
+
+	llmModel := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("ok")}}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:             configDir,
+			ContextPruneThreshold: 1_000,
+			Model: ModelConfig{
+				Provider:                   "openai",
+				APIMode:                    "responses",
+				ResponsesContextManagement: "compaction",
+			},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{ContextWindow: 8_192},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "new question"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+	if llmModel.callCount != 1 {
+		t.Fatalf("model call count = %d, want 1 planner call without local summary", llmModel.callCount)
+	}
+	if runtime.contextManager == nil || runtime.contextManager.GetSessionID() == originalSessionID {
+		t.Fatal("runtime did not switch to the state-pruned context revision")
+	}
+	for _, message := range runtime.contextManager.CloneMessageList() {
+		if message.Role == messages.MessageRoleState || strings.Contains(message.Content, "stale-device-state") {
+			t.Fatalf("pruned context retained historical state: %#v", message)
+		}
 	}
 }
 
