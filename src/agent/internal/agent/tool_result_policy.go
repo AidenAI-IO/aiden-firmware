@@ -23,18 +23,23 @@ const (
 	ToolResultReasonContextLarge   = "context_large"
 	ToolResultReasonProcessingFail = "processing_failed"
 
-	toolResultInlineMaxBytes      = 8 * 1024
-	toolResultInlineMaxTokens     = 2_000
-	toolResultPreviewTargetToken  = 1_200
-	toolResultMinimumObservation  = 96
-	toolResultSoftLimitPercent    = 80
-	toolResultCompactionTarget    = 70
-	historicalPruneTriggerPercent = 80
-	historicalPruneTargetPercent  = 70
-	toolResultProjectionTopK      = 3
-	toolResultProjectionFields    = 24
-	toolResultProjectionDepth     = 5
-	toolResultProjectionRunes     = 256
+	toolResultInlineMaxBytes     = 8 * 1024
+	toolResultInlineMaxTokens    = 2_000
+	toolResultPreviewTargetToken = 1_200
+	toolResultMinimumObservation = 96
+	toolResultSoftLimitPercent   = 80
+	toolResultCompactionTarget   = 70
+	// Automatic historical pruning runs before conversation compaction. Keep
+	// the configured-threshold hysteresis ratio independent from these budget
+	// percentages so an explicit threshold remains predictable.
+	historicalPruneAutomaticTriggerPercent = 70
+	historicalPruneAutomaticTargetPercent  = 60
+	historicalPruneConfiguredTriggerBase   = 80
+	historicalPruneConfiguredTargetPercent = 70
+	toolResultProjectionTopK               = 3
+	toolResultProjectionFields             = 24
+	toolResultProjectionDepth              = 5
+	toolResultProjectionRunes              = 256
 )
 
 var ErrToolResultRecoveryTextTooLarge = errors.New("tool result recovery text exceeds context budget")
@@ -262,7 +267,7 @@ func toolResultCompactionBudgets(usableInputBudget int) (trigger int, target int
 func historicalPruneBudgets(usableInputBudget, configuredThreshold int) (trigger int, target int, enabled bool) {
 	if configuredThreshold > 0 {
 		trigger = configuredThreshold
-		target = trigger * historicalPruneTargetPercent / historicalPruneTriggerPercent
+		target = trigger * historicalPruneConfiguredTargetPercent / historicalPruneConfiguredTriggerBase
 		if target <= 0 && trigger > 1 {
 			target = trigger - 1
 		}
@@ -274,8 +279,8 @@ func historicalPruneBudgets(usableInputBudget, configuredThreshold int) (trigger
 	if usableInputBudget <= 0 {
 		return 0, 0, false
 	}
-	return usableInputBudget * historicalPruneTriggerPercent / 100,
-		usableInputBudget * historicalPruneTargetPercent / 100,
+	return usableInputBudget * historicalPruneAutomaticTriggerPercent / 100,
+		usableInputBudget * historicalPruneAutomaticTargetPercent / 100,
 		true
 }
 

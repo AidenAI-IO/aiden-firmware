@@ -198,7 +198,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"agent.context_prune_threshold": {
 			label:       "Historical prune threshold (tokens)",
 			placeholder: "0 = automatic",
-			help:        "Estimated token count that triggers deterministic cleanup of old state and tool results. 0 derives a threshold from the active model budget.",
+			help:        "Estimated token count that triggers deterministic cleanup of old state and tool results. 0 triggers at 70% of the usable model input budget, before local conversation compaction at 80%.",
 		},
 		"model.responses_context_management": {
 			layout: "wide",

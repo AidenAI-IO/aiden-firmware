@@ -574,7 +574,7 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "max_iterations", Widget: WidgetNumber, Default: defaults.MaxIterations},
 					{Key: "context_prune_threshold", Label: "Historical prune threshold (tokens)", Widget: WidgetNumber,
-						Help:    "Estimated token count that triggers deterministic cleanup of old state and tool results. 0 derives a threshold from the active model budget.",
+						Help:    "Estimated token count that triggers deterministic cleanup of old state and tool results. 0 triggers at 70% of the usable model input budget, before local conversation compaction at 80%.",
 						Default: defaults.ContextPruneThreshold, Placeholder: "0 = automatic"},
 					{Key: "screenshot_keep_n", Widget: WidgetNumber, Default: defaults.ScreenshotKeepN},
 					{Key: "screenshot_prune_interval", Widget: WidgetNumber, Default: defaults.ScreenshotPruneInterval},
