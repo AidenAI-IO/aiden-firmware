@@ -1444,6 +1444,7 @@ func TestServerAsyncChatAppendsVoiceNotificationOnlyToFinalSpeech(t *testing.T) 
 	cfg := DefaultConfig()
 	cfg.Model = ModelConfig{Provider: "fake"}
 	cfg.Instruction = "Answer directly."
+	cfg.Locale = "zh-CN"
 	cfg.VoiceStreamingTTSEnabled = &streamingDisabled
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, cfg),
@@ -1516,6 +1517,7 @@ func TestServerAsyncChatSpeaksReplacementForFinalLLMFailure(t *testing.T) {
 		withTestConfigDir(t, Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Answer directly.",
+			Locale:                   "zh-CN",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 		}),
 		&testModelResolver{model: failingGenerateModel{err: errors.New("dial tcp: network is unreachable")}},

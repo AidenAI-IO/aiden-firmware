@@ -1170,7 +1170,7 @@ TEST_CASE("config_web: PUT /api/config/locale inserts a missing locale before se
     write_file(handle->tmp_dir + "/agent.toml", original);
 
     HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
-                                     "{\"locale\":\"en-US\"}");
+                                     "{\"locale\":\"zh-CN\"}");
     CHECK(resp.status == 200);
 
     CHECK(read_file(handle->tmp_dir + "/agent.toml") ==
@@ -1181,7 +1181,7 @@ TEST_CASE("config_web: PUT /api/config/locale inserts a missing locale before se
           "[not-a-real-section]\n"
           "\"\"\"\n"
           "\n"
-          "locale = \"en-US\"\n"
+          "locale = \"zh-CN\"\n"
           "[device]\n"
           "backend = \"hdmi\"\n");
 }

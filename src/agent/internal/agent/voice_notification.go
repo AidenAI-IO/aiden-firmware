@@ -735,7 +735,7 @@ func normalizeVoiceNotificationLocale(locale string) string {
 
 func voiceNotificationLocaleFallbacks(locale string) []string {
 	if locale == "" {
-		locale = "zh-cn"
+		locale = strings.ToLower(defaultLocale)
 	}
 	if locale == "zh-cn" {
 		return []string{"zh-cn"}

@@ -86,7 +86,7 @@ The page fields cover the following config sections (all detailed later on this 
 ### HTTP/Web UI without the device voice loop (`text`)
 
 ```toml
-locale = "zh-CN"
+locale = "en-US"
 custom_instruction = ""
 max_iterations = -1
 screenshot_keep_n = 3
@@ -150,7 +150,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ### STT voice mode
 
 ```toml
-locale = "zh-CN"
+locale = "en-US"
 custom_instruction = ""
 input_mode = "stt"
 vad_backend = "rknn"
@@ -220,7 +220,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 | Field                       | Default / allowed values    | Description                                                                                                                                                                                               |
 | --------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `locale`                    | `zh-CN` (default) / `en-US` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[stt].language`, which only controls speech recognition. |
+| `locale`                    | `en-US` (default) / `zh-CN` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[stt].language`, which only controls speech recognition. |
 | `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
 | `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
