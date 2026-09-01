@@ -2,7 +2,7 @@
 # Aiden config web portal. Runs after usb0 + dnsmasq are up.
 # Maintains the Go agent configuration and log viewer.
 
-BIN=/oem/usr/bin/config_web
+BIN=${CONFIG_WEB_BIN:-/oem/usr/bin/agent}
 ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 PID_FILE=/run/config_web.pid
 CONFIG_DIR=${CONFIG_DIR:-/userdata/agent}
@@ -29,6 +29,28 @@ is_running() {
     kill -0 "$pid" 2>/dev/null || return 1
     exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
     case "$exe" in
+        "$BIN")
+            case "$BIN" in
+                */agent|agent)
+                    # The Agent daemon and Config Web now share one
+                    # executable. Require the subcommand for the shared path.
+                    cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+                    case " $cmdline " in
+                        *" config-web "*) return 0 ;;
+                    esac
+                    ;;
+                *) return 0 ;;
+            esac
+            ;;
+        */agent)
+            # The Agent daemon and Config Web now share one executable. A
+            # stale/reused PID must not let the daemon satisfy this service's
+            # liveness check, so require the Config Web subcommand as well.
+            cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+            case " $cmdline " in
+                *" config-web "*) return 0 ;;
+            esac
+            ;;
         "$BIN"|*/config_web) return 0 ;;
     esac
     return 1
@@ -178,7 +200,13 @@ start() {
 
     mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SYSTEM_ENV_PATH")"
 
-    "$ENV_RUN_BIN" "$BIN" --bind=0.0.0.0 --port="$PORT" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" --web-root="$WEB_ROOT" &
+    set -- --bind=0.0.0.0 --port="$PORT" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" --web-root="$WEB_ROOT"
+    case "$BIN" in
+        */agent|agent)
+            set -- config-web "$@"
+            ;;
+    esac
+    "$ENV_RUN_BIN" "$BIN" "$@" &
     child_pid=$!
     echo "$child_pid" > "$PID_FILE"
 

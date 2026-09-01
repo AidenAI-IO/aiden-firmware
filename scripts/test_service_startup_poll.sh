@@ -64,6 +64,23 @@ probe_port 80 "$TCP_OTHER_PORT" && fail "port 80 matched a socket on port 8080"
 probe_port 8080 "$TCP_OTHER_PORT" || fail "port 8080 (0x1F90) not detected"
 probe_port 80 "$TMP_DIR/no-such-file" && fail "reported listening with no /proc/net/tcp"
 
+# The Agent daemon and Config Web share /oem/usr/bin/agent after the Go
+# migration. A stale config_web PID file that has been reused by the daemon
+# must not make S56config_web report the portal as running.
+cp /bin/sleep "$TMP_DIR/agent"
+"$TMP_DIR/agent" 30 &
+DAEMON_PID=$!
+if BIN="$TMP_DIR/agent" sh -c '
+        . "$1"
+        is_running "$2"
+    ' _ "$WEB_FUNCS" "$DAEMON_PID" 2>/dev/null; then
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+    fail "agent daemon without config-web subcommand passed config web liveness"
+fi
+kill "$DAEMON_PID" 2>/dev/null || true
+wait "$DAEMON_PID" 2>/dev/null || true
+
 # A listener that exists before launch belongs to another process. start() must
 # reject it without spawning config_web; otherwise the readiness poll could
 # mistake the unrelated socket for the portal's listener.

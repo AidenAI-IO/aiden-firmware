@@ -22,7 +22,7 @@ sidebar_position: 4
 | `src/aiden_sdk.h` | C++ SDK API |
 | `src/frame_service_main.cpp` | Frame Service entry point |
 | `src/audio_service_main.cpp` | Audio Service entry point |
-| `src/config_web.cpp` | Config Web entry point |
+| `src/agent/internal/configweb/` | Go Config Web implementation (served by `agent config-web`) |
 | `src/agent/cmd/daemon` | Go Agent daemon |
 | `src/agent/cmd/ota` | OTA CLI |
 | `src/agent/cmd/abctl` | A/B metadata diagnostic tool |

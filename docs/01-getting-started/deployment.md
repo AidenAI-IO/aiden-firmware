@@ -34,7 +34,6 @@ After `./build.sh binaries` completes, the main artifacts are in `build/bin/`. T
 - `build/bin/frame_service`
 - `build/bin/audio_service`
 - `build/bin/ble_service`
-- `build/bin/config_web`
 - `build/bin/agent`
 - `overlay/oem/usr/bin/aiden-env-run`
 
@@ -46,7 +45,6 @@ If the target device has already been flashed with an Aiden firmware version, th
 scp build/bin/frame_service root@<device-ip>:/oem/usr/bin/
 scp build/bin/audio_service root@<device-ip>:/oem/usr/bin/
 scp build/bin/ble_service root@<device-ip>:/oem/usr/bin/
-scp build/bin/config_web root@<device-ip>:/oem/usr/bin/
 scp build/bin/agent root@<device-ip>:/oem/usr/bin/
 scp overlay/oem/usr/bin/aiden-env-run root@<device-ip>:/oem/usr/bin/
 ```
@@ -89,7 +87,7 @@ scp overlay/userdata/wpa_supplicant.conf root@<device-ip>:/userdata/
 
 Notes:
 
-- Config Web calls the `/oem/usr/bin/agent` `config`, `config-check`, and `config-meta` subcommands, so copy `agent` whenever copying `config_web`.
+- Config Web is served by `/oem/usr/bin/agent config-web`; the same binary also handles the `config`, `config-check`, and `config-meta` subcommands.
 - `S52frame_service`, `S53adb_server`, `S53audio_service`, `S53agent`, and `S56config_web` all launch the actual binaries or commands via `/oem/usr/bin/aiden-env-run` when available, so this wrapper must also be present on the device.
 - You can also copy binaries to `/root` or `/userdata` for temporary testing, but existing init scripts default to searching `/oem/usr/bin/`.
 - If only updating binaries, run `chmod +x /oem/usr/bin/*` once after copying.
@@ -97,7 +95,7 @@ Notes:
 After copying, common restart commands:
 
 ```bash
-ssh root@<device-ip> "chmod +x /etc/init.d/S39hciinit /etc/init.d/S40bluetoothd /etc/init.d/S41ble_service /etc/init.d/S52frame_service /etc/init.d/S53adb_server /etc/init.d/S53audio_service /etc/init.d/S53agent /etc/init.d/S56config_web /oem/usr/bin/frame_service /oem/usr/bin/audio_service /oem/usr/bin/ble_service /oem/usr/bin/config_web /oem/usr/bin/agent /oem/usr/bin/aiden-env-run"
+ssh root@<device-ip> "chmod +x /etc/init.d/S39hciinit /etc/init.d/S40bluetoothd /etc/init.d/S41ble_service /etc/init.d/S52frame_service /etc/init.d/S53adb_server /etc/init.d/S53audio_service /etc/init.d/S53agent /etc/init.d/S56config_web /oem/usr/bin/frame_service /oem/usr/bin/audio_service /oem/usr/bin/ble_service /oem/usr/bin/agent /oem/usr/bin/aiden-env-run"
 ssh root@<device-ip> "/etc/init.d/S52frame_service restart"
 ssh root@<device-ip> "/etc/init.d/S53audio_service restart"
 ssh root@<device-ip> "/etc/init.d/S53agent restart"

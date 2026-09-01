@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # Config Web: Web-based Configuration Interface
 
-`config_web` is a lightweight HTTP service providing a web UI for configuring the Agent's LLM provider, API keys, STT/TTS settings, and other runtime parameters. Changes are persisted to `/userdata/agent/agent.toml` and can trigger Agent restart.
+Config Web is the `config-web` subcommand of the Go Agent binary (`/oem/usr/bin/agent`). It provides a lightweight HTTP service and web UI for configuring the Agent's LLM provider, API keys, STT/TTS settings, and other runtime parameters. Changes are persisted to `/userdata/agent/agent.toml` and can trigger Agent restart.
 
 ## Default Parameters
 
@@ -12,7 +12,7 @@ sidebar_position: 2
 | --- | --- |
 | Port | `80` |
 | Config | `/userdata/agent/agent.toml` |
-| Binary | `/oem/usr/bin/config_web` |
+| Binary | `/oem/usr/bin/agent config-web` |
 
 ## Startup
 

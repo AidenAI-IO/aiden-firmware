@@ -76,6 +76,6 @@ For more information, see [USB HID and Device Control](../03-services/usb-hid.md
 | `hello` | Basic C program verification |
 | `trigger` | GPIO / trigger-related utility |
 | `audio_stream` | Audio stream example tool |
-| `config_web` | Configuration web service |
+| `agent config-web` | Configuration web service |
 | `frame_service_cli` | Frame Service debugging CLI |
 | `audio_service_cli` | Audio Service debugging CLI |

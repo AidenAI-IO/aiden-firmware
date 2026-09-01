@@ -48,13 +48,14 @@ class DockerSandboxContractTest(unittest.TestCase):
         )
         self.assertIn("host.docker.internal:host-gateway", compose)
 
-    def test_sandbox_image_builds_real_agent_and_config_web_binaries(self):
+    def test_sandbox_image_builds_real_agent_with_config_web_subcommand(self):
         dockerfile = read_repo_file("docker/dev/Dockerfile")
 
         self.assertIn("go build", dockerfile)
         self.assertIn("./cmd/daemon", dockerfile)
-        self.assertIn("src/config_web.cpp", dockerfile)
+        self.assertNotIn("src/config_web.cpp", dockerfile)
         self.assertIn("src/config_web/web/ /oem/usr/share/aiden/config-web/", dockerfile)
+        self.assertIn("config-web", read_repo_file("docker/dev/entrypoint.sh"))
         self.assertIn("ttyd-builder", dockerfile)
         self.assertIn('ttyd_version="1.7.3"', dockerfile)
         self.assertNotIn("ARG TTYD_VERSION", dockerfile)
