@@ -3414,6 +3414,62 @@ func TestServerHandleSetupReturnsSuccess(t *testing.T) {
 	}
 }
 
+func TestServerHandleHealthReportsBridgePlatform(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	server.handleHealth(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Status     string `json:"status"`
+			BridgeType string `json:"bridge_type"`
+			Platform   string `json:"platform"`
+			DeviceType string `json:"device_type"`
+			Concurrent int    `json:"concurrent"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.OK || got.Data.Status != "ok" || got.Data.BridgeType != "go-agent" {
+		t.Fatalf("unexpected health envelope: %#v", got)
+	}
+	if got.Data.Platform != "ios" || got.Data.Concurrent != 1 {
+		t.Fatalf("unexpected health data: %#v", got)
+	}
+	if got.Data.DeviceType != defaultDeviceType {
+		t.Fatalf("unexpected device type: %#v", got)
+	}
+}
+
+func TestServerHandleHealthIsRoutedOnTheBridgePath(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected /health to be routed, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerHandleHealthRejectsNonGet(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	rec := httptest.NewRecorder()
+	server.handleHealth(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+}
+
 func TestServerHandleConcurrentReturnsSingleCapacity(t *testing.T) {
 	server := &Server{logger: newTestLogger()}
 
