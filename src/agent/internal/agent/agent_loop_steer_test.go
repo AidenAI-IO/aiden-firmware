@@ -45,7 +45,6 @@ func TestAgentLoopSteerInterruptOnTermination(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: screen}}},
-		nil,
 		10,
 		nil,
 		nil,
@@ -89,7 +88,6 @@ func TestAgentLoopNoSteerProviderDoesNotBlock(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: "ok"}}},
-		nil,
 		10,
 		nil,
 		nil,
@@ -124,7 +122,6 @@ func TestAgentLoopBudgetBoundarySteerStartsFreshIterationBudget(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: "ok"}}},
-		nil,
 		1,
 		nil,
 		nil,
@@ -179,7 +176,6 @@ func TestAgentLoopRetriesAfterCanceledSteerInterruptWithoutReplacementText(t *te
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{},
-		nil,
 		1,
 		nil,
 		nil,
@@ -233,7 +229,6 @@ func TestAgentLoopRetriesAfterCanceledSteerInterruptDuringToolWithoutReplacement
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{tool}},
-		nil,
 		1,
 		nil,
 		nil,
@@ -304,7 +299,6 @@ func TestAgentLoopPendingSteerBeforeFirstModelGetsFreshIterationBudget(t *testin
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{},
-		nil,
 		1,
 		nil,
 		nil,

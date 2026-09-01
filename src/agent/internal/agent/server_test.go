@@ -3347,17 +3347,10 @@ func TestWebUIShowsMessageTokenUsage(t *testing.T) {
 func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	storageDir := t.TempDir()
 	memoryManager := NewMemoryManager(storageDir)
-	handle, err := memoryManager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if err := handle.History.SetMessages(context.Background(), []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
+	if err := memoryManager.AppendMessages(context.Background(), "default", []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
 	}); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
-	}
-	if err := memoryManager.Save(context.Background(), "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+		t.Fatalf("AppendMessages() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(storageDir, "session", "events.jsonl")); err != nil {
 		t.Fatalf("expected session events before clear: %v", err)

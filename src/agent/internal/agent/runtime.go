@@ -133,12 +133,11 @@ type RunRequest struct {
 }
 
 type RunResult struct {
-	Output                 string          `json:"output"`
-	EpisodeID              string          `json:"episode_id,omitempty"`
-	Memory                 []MessageRecord `json:"memory,omitempty"`
-	Metrics                *RunMetrics     `json:"metrics,omitempty"`
-	WaitForWakeupRequested bool            `json:"wait_for_wakeup_requested,omitempty"`
-	WaitForWakeupReason    string          `json:"wait_for_wakeup_reason,omitempty"`
+	Output                 string      `json:"output"`
+	EpisodeID              string      `json:"episode_id,omitempty"`
+	Metrics                *RunMetrics `json:"metrics,omitempty"`
+	WaitForWakeupRequested bool        `json:"wait_for_wakeup_requested,omitempty"`
+	WaitForWakeupReason    string      `json:"wait_for_wakeup_reason,omitempty"`
 	// Deprecated: use WaitForWakeupRequested.
 	SleepRequested bool `json:"sleep_requested,omitempty"`
 	// Deprecated: use WaitForWakeupReason.
@@ -982,25 +981,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return model.ModelSpec{}
 	}}
 
-	memoryCfg := MemoryConfig{Type: "buffer"}
-	var memoryHandle *MemoryHandle
-	if r.memories != nil {
-		memoryHandle, err = r.memories.Get("default", memoryCfg)
-	} else {
-		memoryHandle, err = newMemoryHandle(memoryCfg)
-	}
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return RunResult{}, ctxErr
-		}
-		if r.logger != nil {
-			r.logger.Warn("[memory] load persisted memory failed; continuing with empty history: %v", err)
-		}
-		memoryHandle, err = newMemoryHandle(memoryCfg)
-		if err != nil {
-			return RunResult{}, err
-		}
-	}
 	sessionBeginStart := time.Now()
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
 		AgentName:    "default",
@@ -1118,13 +1098,12 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		executorHandler = streamCallbackHandler
 	}
 	profile := r.buildAgentProfile(r.skills, availableTools)
-	plannerMemory := memoryHandle.Memory
 	var steerStatus steerConversationStatus
+	var steerRecorder steerConversationRecorder
 	if req.SteerProvider != nil {
-		plannerMemory = newSteerConversationMemory(plannerMemory, memoryHandle.History)
-		if status, ok := plannerMemory.(steerConversationStatus); ok {
-			steerStatus = status
-		}
+		tracker := newSteerConversationTracker()
+		steerStatus = tracker
+		steerRecorder = tracker
 	}
 
 	// setup context manager if not initialized
@@ -1192,7 +1171,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	agentLoop := NewAgentLoop(m, profile, plannerMemory, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
+	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
+	agentLoop.SteerRecorder = steerRecorder
 	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
 		if r.tools == nil {
 			return newWheelNudgeGuard(nil)
@@ -1270,7 +1250,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		commitReq.Steers = steerStatus.SteerMessages()
 	}
 
-	commitResult, err := r.commitSession(ctx, commitReq)
+	_, err = r.commitSession(ctx, commitReq)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return RunResult{}, ctxErr
@@ -1278,7 +1258,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Warn("[memory] commit session failed; returning model output without memory snapshot: %v", err)
 		}
-		commitResult = SessionCommitResult{}
 	}
 	if streamCallbackHandler != nil {
 		streamCallbackHandler.HandleAssistantOutput(ctx, output)
@@ -1293,7 +1272,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	return RunResult{
 		Output:                 output,
 		EpisodeID:              episodeID,
-		Memory:                 commitResult.Memory,
 		Metrics:                metrics,
 		WaitForWakeupRequested: waitForWakeupRequested,
 		WaitForWakeupReason:    waitForWakeupReason,

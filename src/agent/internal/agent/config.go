@@ -801,13 +801,6 @@ type AgentConfig struct {
 	Locale           string
 }
 
-// MemoryConfig is used internally by the memory manager.
-type MemoryConfig struct {
-	Type       string
-	WindowSize int
-	MemoryKey  string
-}
-
 func LoadConfigFromDir(configDir string) (Config, error) {
 	return loadConfigFromDir(configDir, LoadConfig)
 }

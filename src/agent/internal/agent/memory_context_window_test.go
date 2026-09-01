@@ -269,68 +269,6 @@ func TestMaintainFilesystemMemoryUpdatesLastPromptTokens(t *testing.T) {
 	}
 }
 
-// TestColdStartSeedsLastPromptTokensFromHotWindow verifies that loading a
-// persisted session on a fresh MemoryManager (process restart) seeds
-// lastPromptTokens from the estimated size of the hot window read off disk.
-//
-// Without this, the first shouldCompress after a restart sees
-// lastPromptTokens == 0, skips the token-driven branch entirely, and falls
-// back to the coarse event-count heuristic — which treats a hot window of
-// large events the same as one of tiny events. Seeding restores token-driven
-// compaction precision on the very first turn after a cold start.
-func TestColdStartSeedsLastPromptTokensFromHotWindow(t *testing.T) {
-	ctx := context.Background()
-	storageDir := t.TempDir()
-
-	cfg := DefaultMemoryExtractionConfig()
-	cfg.ContextWindow = 10_000
-
-	// Phase 1: a prior session writes events to disk, then "shuts down".
-	sessionDir := filepath.Join(storageDir, "session")
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatalf("mkdir session: %v", err)
-	}
-	session := NewSessionMemoryStore(sessionDir)
-	now := time.Now().UTC()
-	for i := 0; i < 6; i++ {
-		if _, err := session.AppendEvent(ctx, SessionEvent{
-			EventID: fmt.Sprintf("evt_%d", i),
-			Ts:      now.Format(time.RFC3339Nano),
-			Type:    "user_input",
-			Role:    "user",
-			Content: tokenSizedContent(50), // ~50 tokens each
-		}); err != nil {
-			t.Fatalf("AppendEvent: %v", err)
-		}
-	}
-
-	events, err := session.readEvents(session.eventsPath())
-	if err != nil {
-		t.Fatalf("readEvents: %v", err)
-	}
-	wantTokens := sumSessionEventTokens(events)
-	if wantTokens <= 0 {
-		t.Fatalf("test setup: expected positive token estimate, got %d", wantTokens)
-	}
-
-	// Phase 2: cold start — a brand new manager loads the persisted session.
-	mgr := NewMemoryManager(storageDir,
-		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() model.ModelSpec { return model.ModelSpec{ContextWindow: 10_000} }),
-	)
-	if got := mgr.LastPromptTokens(); got != 0 {
-		t.Fatalf("precondition: fresh manager should start at 0 tokens, got %d", got)
-	}
-
-	if _, err := mgr.Get("default", MemoryConfig{Type: "window", WindowSize: 10}); err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-
-	if got := mgr.LastPromptTokens(); got != wantTokens {
-		t.Fatalf("cold start should seed lastPromptTokens from hot window estimate; got %d, want %d", got, wantTokens)
-	}
-}
-
 // TestShouldCompressReservesOutputTokens verifies that when a ModelSpec includes
 // a non-zero MaxOutput, shouldCompress uses inputBudget = ContextWindow - MaxOutput
 // instead of the full ContextWindow. This ensures the compression trigger accounts
