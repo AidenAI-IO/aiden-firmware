@@ -665,7 +665,7 @@ async function saveLocale(locale) {
   applyLocale(requested, false);
   if (selector) selector.disabled = true;
   try {
-    const payload = await request('/api/config/locale', {
+    const payload = await request('/api/v1/config/locale', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({locale: requested}),

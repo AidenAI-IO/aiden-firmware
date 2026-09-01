@@ -65,64 +65,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.startDeferredRestartIfIdle()
-
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		s.APIHandler().ServeHTTP(w, r)
+		return
+	}
 	if s.serveStatic(w, r) {
 		return
 	}
-
-	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/api/llm-logs":
-		s.handleLLMLogs(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/llm-logs/export/"):
-		s.handleLLMLogExport(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/llm-logs/import/"):
-		s.handleLLMLogImport(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/storage/status":
-		s.handleStorageStatus(w, r)
-	case r.Method == http.MethodPost && (r.URL.Path == "/api/storage/format" || r.URL.Path == "/api/storage/eject"):
-		s.proxyAgent(w, r, r.URL.RequestURI())
-	case r.Method == http.MethodGet && r.URL.Path == "/api/agent/status":
-		s.handleAgentStatus(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/agent/logs":
-		s.handleAgentLogs(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/logs/export":
-		s.handleSupportLogsExport(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/ota/logs":
-		s.handleOTALogs(w, r)
-	case r.Method == http.MethodPost && (r.URL.Path == "/api/ota/update" || r.URL.Path == "/api/ota/check-now"):
-		s.handleOTAUpdate(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/config":
-		s.handleGetConfig(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/models":
-		s.proxyAgent(w, r, r.URL.RequestURI())
-	case r.Method == http.MethodGet && (r.URL.Path == "/api/config-meta" || r.URL.Path == "/api/config/meta"):
-		s.handleConfigMeta(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/config":
-		s.handlePostConfig(w, r)
-	case r.Method == http.MethodPut && r.URL.Path == "/api/config/locale":
-		s.handlePutLocale(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/system/env":
-		s.handleSystemEnv(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/reboot":
-		s.handleReboot(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/wifi/scan":
-		s.handleWiFiScan(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/wifi/connect":
-		s.handleWiFiConnect(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/wifi/forget":
-		s.handleWiFiForget(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/config/test/stt/start":
-		s.handleSTTTestStart(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/config/test/stt/stop":
-		s.handleSTTTestStop(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/hid/usb-reenumerate":
-		s.handleUSBReenumerate(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/config/test":
-		s.handleConfigTest(w, r)
-	default:
-		http.Error(w, "Not Found", http.StatusNotFound)
-	}
+	http.Error(w, "Not Found", http.StatusNotFound)
 }
 
 func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) bool {

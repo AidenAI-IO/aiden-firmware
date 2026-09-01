@@ -4,7 +4,12 @@ sidebar_position: 2
 
 # Config Web: Web-based Configuration Interface
 
-Config Web is the `config-web` subcommand of the Go Agent binary (`/oem/usr/bin/agent`). It provides a lightweight HTTP service and web UI for configuring the Agent's LLM provider, API keys, STT/TTS settings, and other runtime parameters. Changes are persisted to `/userdata/agent/agent.toml` and can trigger Agent restart.
+Config Web is the bundled browser client served by the `config-web` subcommand
+of the Go Agent binary (`/oem/usr/bin/agent`). Device operations are exposed by
+the independently mountable [Device Management API](device-management-api.md),
+so the page can be replaced or removed without coupling those operations to the
+static UI. Configuration changes are persisted to
+`/userdata/agent/agent.toml` and can trigger Agent restart.
 
 ## Default Parameters
 
@@ -44,4 +49,10 @@ The web interface allows:
 - Testing voice recognition and synthesis
 - Restarting the Agent service
 
-The header switch saves only the top-level `locale` through `PUT /api/config/locale`. The UI updates immediately and rolls back if persistence fails. The last confirmed value is cached in `localStorage` for first paint, but `GET /api/config` remains authoritative. The Agent restart creates a new context session when the locale-specific system prompt changes; it does not rewrite the previous session. `locale` is intentionally separate from `[stt].language`, which only configures speech recognition.
+The header switch saves only the top-level `locale` through
+`PUT /api/v1/config/locale`. The UI updates immediately and rolls back if
+persistence fails. The last confirmed value is cached in `localStorage` for
+first paint, but `GET /api/v1/device/snapshot` remains authoritative. The Agent
+restart creates a new context session when the locale-specific system prompt
+changes; it does not rewrite the previous session. `locale` is intentionally
+separate from `[stt].language`, which only configures speech recognition.

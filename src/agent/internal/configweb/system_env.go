@@ -177,6 +177,23 @@ func atomicWriteFile(path string, content []byte, mode os.FileMode) error {
 	return os.Rename(temporaryPath, path)
 }
 
+func (s *Server) handleGetSystemEnv(w http.ResponseWriter, _ *http.Request) {
+	content := ""
+	data, err := readFileLimited(s.options.SystemEnvPath, maxSystemEnvSize)
+	if err != nil && !os.IsNotExist(err) {
+		writeJSONError(w, http.StatusServiceUnavailable, "system env file is unavailable")
+		return
+	}
+	if err == nil {
+		content = string(data)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"system_env": content,
+		"path":       s.options.SystemEnvPath,
+	})
+}
+
 func (s *Server) handleSystemEnv(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		SystemEnv *string `json:"system_env"`

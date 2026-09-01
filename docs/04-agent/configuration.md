@@ -54,7 +54,13 @@ is created on demand, so a directory holding only `agent.toml` is a valid start.
 
 ## Config Web: the device config page
 
-Config Web is the `config-web` subcommand of the Go Agent binary (`/oem/usr/bin/agent`). It maintains the device Agent configuration, system environment variables, and Wi-Fi configuration, and is the primary way to edit the fields documented on this page without manually editing `agent.toml`.
+Config Web is the browser client served by the `config-web` subcommand of the
+Go Agent binary (`/oem/usr/bin/agent`). It maintains the device Agent
+configuration, system environment variables, and Wi-Fi configuration, and is
+the primary way to edit the fields documented on this page without manually
+editing `agent.toml`. Its device operations use the versioned
+[Device Management API](../03-services/device-management-api.md), which is
+designed to remain usable if the bundled page is later replaced or removed.
 
 On a device, open the config page in a browser at the USB-network gateway address:
 
