@@ -8,9 +8,9 @@
 > OTA。GitHub Actions 编译和 GitHub Release 发布暂不纳入本轮范围，本文中的相关旧段落
 > 均按历史背景阅读。
 
-本文以 `main` 的 `bb4aaf15` 为 rebase 基底，以 `c2f021f7` 为 2026-09-01 的代码验证
-基线。该基线已包含 USB HID/ECM 回归修复、Debian-only 收敛、linked worktree 支持和
-可重复构建修复。早期 Stage 2、Stage 3 验收文档记录的是 2026-08-17 的中间状态；
+本文以 `main` 的 `bb4aaf15` 为 rebase 基底，以 `c2f021f7` 为 2026-09-01 的历史代码
+验证基线。该基线已包含 USB HID/ECM 回归修复、Debian-only 收敛、linked worktree 支持
+和可重复构建修复。早期 Stage 2、Stage 3 验收文档记录的是 2026-08-17 的中间状态；
 本文的“当前状态”优先于其中的历史阻塞结论。
 
 ## 1. 迁移目标与最终结论
@@ -31,10 +31,12 @@
 `update.img` 完整构建 Debian 固件。最终镜像审计通过，历史日志中也有多次
 `Upgrade firmware ok` 的刷写记录。
 
-2026-09-01 在 `c2f021f7` 上完成了一次 rebase 后的本地全量构建：Stage 2 应用审计
-为 `status=pass`、`elf_count=22`，Stage 3 最终报告为 `Audit passed`；生成的 manifest
-版本为 `rebase-audit-c2f021f7`，`output/debian/image/update.img` 的 SHA-256 为
-`fd6d5478348c89d3d8ab6c8c286426c9b9b58b14eef1cfc9c12bfe5092b727f0`。
+2026-09-01 在上述基线之上加入 VQE 运行库和 UDS 权限修复，并完成了一次本地全量构建：
+Stage 2 应用审计为 `status=pass`、`elf_count=22`，Stage 3 最终报告为 `Audit passed`。
+当前 manifest 版本为 `local-vqe-uds-20260901`，`output/debian/image/update.img` 的
+SHA-256 为 `e8971c7053f789f0e64a31c9f9f27df9322fbeb900684316c32a9cbc61871ae6`。
+此前版本 `rebase-audit-c2f021f7`（SHA-256 `fd6d5478348c89d3d8ab6c8c286426c9b9b58b14eef1cfc9c12bfe5092b727f0`）
+是修复前的历史产物。
 
 迁移尚不能等同于生产发布批准。HDMI 摄像头、RKNN 新 runtime 的完整板端推理、
 72 小时稳定性、OTA 断电矩阵和生产密钥治理仍需补充验证。
@@ -92,6 +94,7 @@ Stage 1 实机验收完成了首次启动、热重启和两次冷启动，结果
   - `abctl`
 - 静态构建 OpenCV-Mobile，避免在目标系统携带动态 OpenCV 依赖。
 - 对 Rockit、MPP、RGA、RKAIQ、RKRawStream 和 RKNN 逐项分析 ABI 与依赖。
+- 将 SDK 提供的 glibc/armhf RKAUDIO VQE 运行库纳入 Debian OEM，并固定校验和。
 - 新增 Stage 2 应用构建、ELF 审计、板端 G0 部署和硬件测试脚本。
 - 增加音频、摄像头、NPU、CMA、DMA-BUF、模块和设备节点的采集能力。
 
@@ -124,6 +127,8 @@ elf_count=22
 - 兼容旧 Buildroot userdata 布局并进行一次性迁移。
 - 生成 rootfs、OEM、userdata、OTA、boot A/B 和最终 `update.img`。
 - 对解包后的最终 `update.img` 再执行分区、文件系统、ELF、身份和配置审计。
+- 音频和 frame systemd 单元显式使用 `aiden` 组及 `audio`/`video` 补充组，配合 UDS
+  `0660` 权限，使普通用户能够访问服务接口。
 
 当前 `output/debian-stage3/audit-report.txt` 的最终结果为：
 
@@ -590,6 +595,77 @@ http://192.168.42.1/: HTTP 200
 属于更底层的 USB 控制传输失败，仍应在出现时结合线缆、供电、接口和 UART/内核日志
 单独排查，不能仅由 HID descriptor 修复解释。
 
+### 5.14 Debian 音频 VQE 运行库和 UDS 权限
+
+**表现**
+
+刷写到开发板的上一版 Debian 镜像能够启动 `aiden-audio.service`，但普通 `aiden`
+用户无法访问音频 socket，录音也无法初始化。板端记录为：
+
+```text
+/run/audio_service/audio_service.sock  root:root 0755
+audio_service_cli health             TRANSPORT_ERROR
+rkaudio_preprocess_init - failed to link to VQE Library
+```
+
+同一镜像中的 frame socket 为 `root:aiden 0660`，因此 frame health 和
+`latest-frame` 可以由普通用户调用；这不能推导出音频链路也已通过。
+
+**原因**
+
+`audio_service` 的 VQE 配置启用了 AEC/beamforming，但旧 OEM 镜像没有安装 SDK 的
+glibc armhf `libaec_bf_process.so` 和 `librkaudio_common.so`。此外，Unix socket 默认
+模式受进程 umask 影响，服务单元没有声明 `aiden` 组时会留下 `0755 root:root`，普通
+用户不能建立连接。
+
+**临时验证**
+
+将两份 SDK 库临时复制到板端用户目录并以隔离的 `audio_service` 进程启动后，VQE
+初始化、health 和 2 秒录音均成功，生成 `64512` 字节 PCM；日志出现
+`vqe_enabled` 以及 AEC/Beamform 初始化记录。临时文件和隔离进程随后已清理，系统
+服务恢复原状；该结果只证明运行库闭包可用，不代表旧镜像已经修复。
+
+**解决**
+
+- 将两份经过 ELF/ABI 检查的 glibc armhf 库放入
+  `overlay-debian-oem/usr/lib/`，由 `/etc/ld.so.conf.d/aiden-oem.conf` 和
+  `aiden-oem-ldconfig.service` 注册。
+- 在 Stage 3 镜像审计中同时检查来源文件、`cmp` 和 SHA-256：
+  `libaec_bf_process.so` 为
+  `3427abaa4b2ab7917d079e6cba46a68a836069bcc7f6b9e94630353fcd8c1a9a`，
+  `librkaudio_common.so` 为
+  `de8ff824dd1f2e5ec1074b84490d2836ed9dc61d59d6a90d9cdf19386097263c`。
+- 音频和 frame systemd 单元声明 `Group=aiden`、`SupplementaryGroups=audio video`；
+  `UdsServer` 在 bind/listen 后显式设置 socket 为 `0660`，失败时清理 socket。
+- 增加 UDS mode、systemd overlay、OEM 资源和最终镜像审计测试。
+
+**当前状态（2026-09-01）**
+
+上述修复已进入 manifest 版本 `local-vqe-uds-20260901` 的新镜像，Stage 2/Stage 3
+主机审计均通过。01:15 UTC 的刷写前复核确认设备仍运行旧产物：两个 VQE 库缺失、
+音频 socket 为 `root:root 0755`，且 `/userdata/debian/ota/config.json` 不存在；该记录
+解释了旧镜像的音频失败，不再代表当前板端状态。
+
+**正式刷写与板端复核（2026-09-01 01:44 UTC）**
+
+通过 SSH 执行 `sudo reboot loader` 后，Linux `upgrade_tool` 唯一枚举到
+`Vid=0x2207`、`Mode=Loader` 的目标设备。带 SHA-256 校验的刷写封装写入当前
+`update.img`，工具在 01:45:47 UTC 报告 `Download Firmware Success` 和
+`Upgrade firmware ok`，退出状态为 0。设备随后从 Loader 切回 `1d6b:0104` HID+ECM
+复合 gadget，并从 `rootfs_a` 启动 Debian 13.6。
+
+板端 `/userdata/debian/ota/config.json` 为 `root:root 0600`，其中
+`factory_version=local-vqe-uds-20260901`。三个应用和两份 VQE 库的 SHA-256 均与
+本地构建产物一致；音频和 frame socket 均为 `root:aiden 0660`。普通 `aiden` 用户
+通过音频 UDS 完成 health、音量和 2 秒录音，得到 `64512` 字节非空 PCM，服务日志明确
+记录 `vqe_enabled`。frame UDS 连续返回 1920x1080 NV12 帧，每帧 `3110400` 字节，
+并成功生成 `6220854` 字节 BMP。RKNN self-test 和 30 帧基准均通过，基准约 240 FPS。
+systemd 无 failed units，Agent HTTP、三个 HID 接口和 ECM `192.168.42.1` 均可用。
+
+独立摄像头测试程序直接打开 `/dev/video0` 时返回 `Device or resource busy`，因为活动的
+`aiden-frame.service` 正在占用设备；同一时段通过 frame UDS 取帧持续成功。该结果不应
+记为摄像头链路失败，但独占式采集和并发压力仍需单独安排维护窗口验证。
+
 ## 6. 验证与测试结果
 
 ### 6.1 已确认通过
@@ -604,24 +680,27 @@ http://192.168.42.1/: HTTP 200
 | rootfs 构建与导入审计 | 通过 | e2fsck、内容和属性审计通过 |
 | BSP 审计 | 通过 | 固定 SDK 提交、模块、固件和 A/B boot 检查通过 |
 | 可重复构建 | 通过两次独立验证 | rootfs 和 BSP 历史验收达到字节一致 |
-| 最终镜像审计 | 通过 | `output/debian-stage3/audit-report.txt` 为 `Audit passed` |
-| 刷写工具链 | 通过 | 多份日志记录 `Upgrade firmware ok` |
+| 最终镜像审计 | 通过 | `output/debian-stage3/audit-report.txt` 为 `Audit passed`；当前镜像 SHA-256 为 `e8971c7053f789f0e64a31c9f9f27df9322fbeb900684316c32a9cbc61871ae6` |
+| 刷写工具链 | 通过 | 当前镜像刷写达到 100%，记录 `Upgrade firmware ok` 和退出状态 0 |
 | 媒体/NPU 模块加载 | 通过 | 相关模块和 `/dev` 节点创建成功 |
 | 普通用户设备权限 | 通过修复 | `/dev/rknpu` 和 `/dev/mpi/*` 使用 `root:video` 0660 |
-| 音频采集与播放 | 通过 | 10 秒采集和播放测试成功 |
+| VQE 运行库 OEM 内容 | 通过主机审计 | 两份 glibc armhf 库已进入 OEM，来源、ELF 依赖和 SHA-256 均受门禁保护 |
 | USB HID/ECM 恢复路径 | 通过代码和测试闭环 | Debian helper 替换 Buildroot 固定路径 |
-| USB HID+ECM 冷启动和重新枚举 | 通过临时部署验证 | `1d6b:0104`、3 个 HID 接口、ECM、`192.168.42.1` 和 HTTP 200 均通过；修复已进入新镜像，仍需刷写后复验 |
+| 音频 VQE 和普通用户 UDS | 通过板端验收 | 两个 socket 均为 `root:aiden 0660`；VQE 初始化成功，2 秒录音产生 64512 字节 PCM |
+| USB HID+ECM 冷启动和重新枚举 | 通过正式镜像验证 | `1d6b:0104`、3 个 HID 接口、ECM、`192.168.42.1` 和 Agent HTTP 均通过 |
+| 当前板端 RKNN/Frame 基线 | 通过 | RKNN self-test/30 帧基准和 frame IPC 通过；`latest-frame` 返回 1920x1080 NV12、3110400 字节 |
 | 本地完整固件构建 | 通过 | 能生成并审计 `update.img` 和 OTA 产物 |
 
 ### 6.2 已实现但仍需补充板端闭环
 
 | 范围 | 当前状态 | 待补验证 |
 |---|---|---|
-| RKNN VAD | 静态 mini runtime 2.3.2 和 glibc shim 已构建、审计通过 | 两份模型加载、推理结果、资源和持续运行 |
-| SSH 身份可靠性 | `/run/sshd`、生成顺序和超时已修复 | 用最新镜像重新确认首次启动和密码登录时延 |
+| 音频播放 | VQE 采集已经通过正式镜像验证 | 扬声器物理播放和长时间录放并发 |
+| RKNN VAD | self-test 和 30 帧基准通过 | 推理准确性、资源预算和持续运行 |
+| 独占式摄像头采集 | frame UDS 连续取帧通过 | 停止 frame service 后验证直接采集，并补充摄像头/RKNN/音频并发 |
+| SSH 身份可靠性 | 新镜像密码登录和首次启动通过 | 再次重启后确认 host key 与设备身份持久性 |
 | frame.service 无 HDMI 行为 | 已改为持续重试 | 接入 HDMI bridge 后确认自动恢复 |
 | Wi-Fi 自动配置 | networkd 后端已实现，手动连接可工作 | 配置网页写入、回滚和重连完整测试 |
-| USB HID/ECM 修复进入正式镜像 | 新镜像已构建并通过主机审计 | 刷写本次 `update.img` 后做一次冷启动验收 |
 | A/B OTA | 写入、个性化、健康标记和状态代码已实现 | 真机升级、失败回滚和断电矩阵 |
 
 ### 6.3 尚未完成的发布门禁
@@ -692,17 +771,40 @@ output/debian/image/update.img
 
 ### 7.3 刷写
 
-开发板进入 Loader 或 Maskrom 刷写模式后执行：
+开发板进入 Loader 或 Maskrom 刷写模式后，在 Linux 主机上使用带校验的
+Stage 1 刷写封装：
 
 ```bash
-./upgrade_tool/upgrade_tool uf output/debian/image/update.img
+FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+IMAGE=output/debian/image/update.img
+SHA256=$(awk '{print $1}' "${IMAGE}.sha256")
+scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/debian-stage1/flash.sh flash \
+  --tool "${FLASH_TOOL}" \
+  --image "${IMAGE}" \
+  --sha256 "${SHA256}" \
+  --confirm-erase-all-data
 ```
+
+仓库根目录的 `upgrade_tool/upgrade_tool` 是 macOS Mach-O；Linux 主机必须使用
+Stage 3 SDK 内的 Linux 版工具。
 
 刷写后应至少检查 UART 启动日志、systemd failed units、USB 网络、SSH、存储挂载、
 媒体模块、音频和 NPU。未接 HDMI 时可以暂时忽略 frame service 的失败重试。
 
-USB 回归修复已经进入本次重新构建并通过主机审计的 `output/debian/image/update.img`。
-正式板端验证仍必须刷写该镜像；本轮审计时未连接开发板，不能用旧固件的结果替代验收。
+本轮已经刷写并核对以下本地产物：
+
+```text
+version: local-vqe-uds-20260901
+sha256:  e8971c7053f789f0e64a31c9f9f27df9322fbeb900684316c32a9cbc61871ae6
+file:    output/debian/image/update.img
+```
+
+2026-09-01 01:44 UTC 的板端验收使用上面的 SHA-256 进入 Loader 并完成全量刷写；
+`upgrade_tool` 返回成功，设备随后从 `rootfs_a` 启动 Debian 13.6。factory version、
+关键应用和 VQE 库哈希、UDS 权限、音频采集、frame IPC、RKNN、USB HID/ECM 和 Agent
+HTTP 均已核对。后续重复刷写仍应使用上述受保护流程；不要在板端正常运行 rootfs 时
+直接覆盖活动分区。
 
 ## 8. 关键提交索引
 
@@ -734,20 +836,21 @@ USB 回归修复已经进入本次重新构建并通过主机审计的 `output/d
 - Buildroot 的启动职责已经迁移为 systemd 服务或 Debian 原生服务。
 - A/B 分区、OTA 状态、设备身份和 userdata 迁移已纳入 Debian 设计。
 - 可以本地生成、审计和刷写完整 `update.img`。
-- 音频、网络、蓝牙、USB、媒体模块和基础 NPU 设备访问已经取得实机证据。
+- 网络、蓝牙、媒体模块、基础 NPU 设备访问、frame IPC 和音频 VQE 已取得实机证据。
+- 当前板端运行 `local-vqe-uds-20260901`，factory 配置、应用/VQE 哈希和两个
+  `root:aiden 0660` socket 均与构建产物一致；普通用户录音和取帧已经通过。
 - USB HID+ECM 已完成 Debian descriptor、networkd 无 carrier 和冷启动/解绑重绑回归验证；
-  修复代码已进入本次通过主机审计的新镜像，但该镜像尚未在板端重新验收。
+  修复代码已进入版本 `local-vqe-uds-20260901`，并在正式刷写后再次完成主机枚举和连通性验收。
 
 因此，该分支已经达到“可继续进行 Debian 固件开发和集成测试”的状态。
 
 但若目标是“生产发布”，当前仍应视为条件通过而不是最终通过。最重要的剩余工作是：
 
-1. 使用静态 mini runtime 在板端重新执行两份 VAD 模型的加载和推理回归。
-2. 刷写本次生成的 rebase 镜像，完成正式冷启动、USB HID/ECM 和基础服务验收。
-3. 接入 HDMI bridge 后完成摄像头和 frame service 验收。
-4. 完成 RKNN、摄像头、音频并发及 72 小时稳定性测试。
-5. 完成 A/B OTA 回滚和断电矩阵。
-6. 替换开发默认密码和本地签名身份，完成生产安全与发布治理。
+1. 完成 VAD 推理准确性、资源预算和长时间运行回归。
+2. 在维护窗口验证独占式摄像头采集和扬声器物理播放。
+3. 完成 RKNN、摄像头、音频并发及 72 小时稳定性测试。
+4. 完成 A/B OTA 回滚和断电矩阵。
+5. 替换开发默认密码和本地签名身份，完成生产安全与发布治理。
 
 ## 10. 资料来源
 
@@ -764,6 +867,9 @@ USB 回归修复已经进入本次重新构建并通过主机审计的 `output/d
 - `scripts/debian/environment-service-map.tsv`
 - `output/debian-stage2/apps-audit/summary.txt`
 - `output/debian-stage3/audit-report.txt`
+- `overlay-debian-oem/usr/lib/libaec_bf_process.so`
+- `overlay-debian-oem/usr/lib/librkaudio_common.so`
+- 板端 `/home/aiden/debian-stage2-g0/bundle-metadata.txt` 及其 `results/` 验收记录
 - `Falcom/debian` 相对 `main` 的提交历史和代码差异
 
 ## 11. Buildroot 残留审计与后续清理建议（2026-08-21）
@@ -875,7 +981,7 @@ Debian-only 架构变更已经完成。后续清理应作为一次独立变更�
 在上述清理完成前，保留 Buildroot 文件是为了支持 SDK 构建取证和历史问题对比，不表示
 Debian 生产迁移未完成。
 
-### 11.7 Debian-only 决策更新（2026-08-31）
+### 11.7 Debian-only 决策更新（2026-09-01）
 
 项目后续部署目标已确定为 Debian-only。该决定覆盖本节早期“双平台长期并存”的假设。
 当前已完成：
@@ -892,8 +998,12 @@ Debian 生产迁移未完成。
    `/userdata/debian/ota/config.json`。
 8. GitHub Actions 构建和 GitHub Release 自动发布暂不纳入本轮范围，现有 workflow
    保持不变；这不改变本地固件生产路径只支持 Debian 的决定。
-9. 在 rebase 后代码基线 `c2f021f7` 上完成全量本地固件构建，Stage 2、BSP、rootfs
-   导入和最终镜像审计全部通过，并生成版本为 `rebase-audit-c2f021f7` 的签名 manifest。
+9. 在 rebase 后代码基线之上完成全量本地固件构建，Stage 2、BSP、rootfs 导入和最终
+   镜像审计全部通过，并生成版本为 `local-vqe-uds-20260901` 的签名 manifest；
+   `update.img` SHA-256 为 `e8971c7053f789f0e64a31c9f9f27df9322fbeb900684316c32a9cbc61871ae6`。
+10. 将 glibc/armhf VQE 运行库纳入 Debian OEM，并为音频/frame UDS 服务补齐
+    `root:aiden 0660` 所需的 systemd 组和 socket mode 门禁；正式刷写后已确认两个
+    socket、VQE 初始化、普通用户录音和 frame IPC 均正常。
 
 旧 `build.sh`、根目录 Buildroot overlay、uClibc 平台文件及相关测试文件在本次 rebase
 收尾中仍作为历史对比材料保留，但不再属于本地 Debian 构建兼容承诺，也不得被活动文档

@@ -45,14 +45,25 @@ Connect the Pico Zero's USB-C port to a computer and flash the prebuilt `update.
 
 The core flow is to put the board into flashing (Maskrom / Loader) mode first, then write `update.img` with the flashing tool:
 
+On a Linux host, use the guarded flash helper so the image digest is checked
+before the factory overwrite:
+
 ```bash
-./upgrade_tool/upgrade_tool uf ./update.img
+FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+IMAGE=./update.img
+scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/debian-stage1/flash.sh flash --tool "${FLASH_TOOL}" \
+  --image "${IMAGE}" --sha256 "<verified-sha256>" \
+  --confirm-erase-all-data
 ```
 
-The most common way to enter flashing mode is to hold the BOOT button while plugging in USB-C. **If the BOOT button does not work reliably**, log in to the board over SSH on the USB network or a TTL serial console first and run:
+See [Firmware Build & Flashing](firmware.md) for the macOS command and the
+full local-build example.
+
+The most common way to enter flashing mode is to hold the BOOT button while plugging in USB-C. **If the BOOT button does not work reliably**, log in to the board over SSH on the USB network or a TTL serial console first and ask systemd to pass the loader argument:
 
 ```bash
-reboot loader
+systemctl reboot --reboot-argument=loader
 ```
 
 to enter flashing mode. Prebuilt firmware, local build paths, `upgrade_tool` usage, and the partition layout are covered in [Firmware Build & Flashing](firmware.md).
