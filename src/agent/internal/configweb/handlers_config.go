@@ -1,0 +1,421 @@
+package configweb
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type configTestRequest struct {
+	Section string          `json:"section"`
+	Values  json.RawMessage `json:"values"`
+	Text    string          `json:"text"`
+	Audio   string          `json:"audio_base64"`
+}
+
+// handleConfigTest keeps the device-only checks in the portal and delegates
+// provider checks to the agent command, which owns the runtime adapters.
+func (s *Server) handleConfigTest(w http.ResponseWriter, r *http.Request) {
+	var request configTestRequest
+	if !readJSONBody(w, r, &request) {
+		return
+	}
+	section := strings.TrimSpace(request.Section)
+	if section == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing 'section' field")
+		return
+	}
+	if len(request.Values) == 0 || string(request.Values) == "null" {
+		writeJSONError(w, http.StatusBadRequest, "missing 'values' object")
+		return
+	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(request.Values, &values); err != nil || values == nil {
+		writeJSONError(w, http.StatusBadRequest, "missing 'values' object")
+		return
+	}
+	if section == "model" || section == "tts" || section == "stt" {
+		s.handleProviderConfigTest(w, r, section, request)
+		return
+	}
+
+	results := make([]map[string]any, 0)
+	passed := true
+	add := func(check string, ok bool, detail string) {
+		results = append(results, map[string]any{"check": check, "passed": ok, "detail": detail})
+		if !ok {
+			passed = false
+		}
+	}
+	stringValue := func(key string) (string, bool) {
+		var value string
+		raw, ok := values[key]
+		if !ok || json.Unmarshal(raw, &value) != nil {
+			return "", false
+		}
+		return strings.TrimSpace(value), true
+	}
+	numberValue := func(key string) (float64, bool) {
+		raw, ok := values[key]
+		if !ok {
+			return 0, false
+		}
+		var value float64
+		if json.Unmarshal(raw, &value) != nil {
+			return 0, false
+		}
+		return value, true
+	}
+	boolValue := func(key string) (bool, bool) {
+		raw, ok := values[key]
+		if !ok {
+			return false, false
+		}
+		var value bool
+		if json.Unmarshal(raw, &value) != nil {
+			return false, false
+		}
+		return value, true
+	}
+
+	switch section {
+	case "audio":
+		path, _ := stringValue("socket")
+		if path == "" {
+			add("socket_exists", false, "socket path is empty")
+		} else {
+			info, err := os.Stat(path)
+			ok := err == nil && info.Mode()&os.ModeSocket != 0
+			detail := path + " not found"
+			if ok {
+				detail = path + " exists"
+			}
+			add("socket_exists", ok, detail)
+		}
+	case "log":
+		value, ok := numberValue("llm_http_retention_days")
+		if !ok {
+			add("llm_http_retention_days", false, "not a number")
+		} else if value < 0 || value != float64(int(value)) {
+			add("llm_http_retention_days", false, fmt.Sprintf("must be >= 0, got %s", formatNumber(value)))
+		} else {
+			detail := fmt.Sprintf("%d days", int(value))
+			if value == 0 {
+				detail = "0 (default 7 days)"
+			}
+			add("llm_http_retention_days", true, detail)
+		}
+	case "device":
+		_, present := values["device_type"]
+		value, ok := stringValue("device_type")
+		if !present {
+			value = "iOS"
+			ok = true
+		}
+		normalized := normalizeDeviceType(value)
+		valid := normalized == "iOS" || normalized == "Android" || normalized == "macOS" || normalized == "windows" || normalized == "linux"
+		detail := "must be iOS, Android, macOS, windows, or linux"
+		if present && !ok {
+			valid = false
+			detail = "must be a string"
+		}
+		if valid {
+			detail = "effective pointer_mode: " + pointerModeForDeviceType(normalized)
+		}
+		add("device_type", valid, detail)
+	case "hid":
+		backend, _ := stringValue("input_backend")
+		backend = normalizeInputBackend(backend)
+		for _, key := range []string{"keyboard_device", "mouse_device", "android_keyboard_device"} {
+			path, _ := stringValue(key)
+			if backend == "adb" {
+				add(key, true, "skipped when input_backend=adb")
+				continue
+			}
+			if path == "" {
+				add(key, false, "path is empty")
+				continue
+			}
+			info, err := os.Stat(path)
+			add(key, err == nil && info.Mode()&os.ModeCharDevice != 0, path+map[bool]string{true: " exists", false: " not found"}[err == nil && info.Mode()&os.ModeCharDevice != 0])
+		}
+		valid := backend == "hid" || backend == "adb"
+		add("input_backend", valid, "effective backend: "+backend)
+	case "agent":
+		mode, ok := stringValue("input_mode")
+		validMode := ok && (mode == "text" || mode == "stt")
+		if strings.EqualFold(mode, "audio") {
+			add("input_mode", false, "invalid input_mode: "+mode+" (audio mode has been removed; use stt instead)")
+		} else if !ok || mode == "" {
+			add("input_mode", false, "empty")
+		} else {
+			add("input_mode", validMode, fmt.Sprintf("got '%s', allowed: text/stt", mode))
+		}
+		if value, ok := numberValue("vad_speech_threshold"); !ok {
+			add("vad_speech_threshold", false, "not a number")
+		} else {
+			add("vad_speech_threshold", value >= 0 && value <= 1, fmt.Sprintf("must be in range [0.0, 1.0], got %s", formatNumber(value)))
+		}
+		if value, ok := numberValue("screen_stable_diff_threshold"); !ok {
+			add("screen_stable_diff_threshold", false, "not a number")
+		} else {
+			add("screen_stable_diff_threshold", value >= 0, fmt.Sprintf("must be >= 0, got %s", formatNumber(value)))
+		}
+		for _, key := range []string{"silence_ms", "min_speech_ms", "voice_followup_timeout_ms", "voice_first_turn_timeout_ms", "voice_max_turns", "voice_max_response_tokens", "screenshot_keep_n", "screenshot_prune_interval", "screen_stable_timeout_ms", "screen_stable_ms"} {
+			value, ok := numberValue(key)
+			add(key, ok && value >= 0, fmt.Sprintf("must be >= 0, got %s", formatNumber(value)))
+		}
+		value, ok := numberValue("max_iterations")
+		add("max_iterations", ok && value >= -1, fmt.Sprintf("must be >= -1, got %s", formatNumber(value)))
+	case "search":
+		provider, _ := stringValue("provider")
+		allowed := map[string]bool{"duckduckgo": true, "brave": true, "brave-free": true, "tavily": true}
+		providerOK := provider != "" && allowed[provider]
+		providerDetail := "unknown provider '" + provider + "', known: duckduckgo/brave/brave-free/tavily"
+		if provider == "" {
+			providerDetail = "provider is empty"
+		}
+		add("provider", providerOK, providerDetail)
+		var apiKey string
+		if raw, exists := values["api_key"]; exists {
+			_ = json.Unmarshal(raw, &apiKey)
+		}
+		hasKey := false
+		if raw, exists := values["has_api_key"]; exists {
+			_ = json.Unmarshal(raw, &hasKey)
+		}
+		if provider == "brave" || provider == "brave-free" || provider == "tavily" {
+			add("api_key", strings.TrimSpace(apiKey) != "" || hasKey, "required for "+provider)
+		} else {
+			add("api_key", true, "not required for "+provider)
+		}
+	case "telemetry":
+		enabled, _ := boolValue("enabled")
+		provider, _ := stringValue("provider")
+		providerDetail := provider
+		if provider == "" {
+			providerDetail = "empty; defaults to langfuse"
+		} else if !strings.EqualFold(provider, "langfuse") {
+			providerDetail = "got '" + provider + "', allowed: langfuse"
+		}
+		add("provider", provider == "" || strings.EqualFold(provider, "langfuse"), providerDetail)
+		baseURL, _ := stringValue("base_url")
+		baseDetail := baseURL
+		if enabled && baseURL == "" {
+			baseDetail = "required when telemetry.enabled is true"
+		} else if baseURL == "" {
+			baseDetail = "empty; telemetry disabled or not configured"
+		}
+		add("base_url", !enabled || baseURL != "", baseDetail)
+		if baseURL != "" {
+			env, envErr := s.agentCommandEnvironment()
+			if envErr != nil {
+				add("endpoint_reachable", false, envErr.Error())
+			} else {
+				result := runCommand(10*time.Second, env, nil, "curl", "-sI", "--max-time", "6", baseURL)
+				reachable := result.ExitCode == 0 && strings.Contains(string(result.Output), "HTTP")
+				add("endpoint_reachable", reachable, baseURL+" -> "+strings.TrimRight(string(result.Output), "\r\n"))
+			}
+		}
+		for _, key := range []string{"public_key", "secret_key"} {
+			present := false
+			if raw, exists := values[key]; exists {
+				var value string
+				if json.Unmarshal(raw, &value) == nil {
+					present = strings.TrimSpace(value) != ""
+				}
+			}
+			if raw, exists := values["has_"+key]; exists {
+				var has bool
+				if json.Unmarshal(raw, &has) == nil {
+					present = present || has
+				}
+			}
+			detail := "empty; telemetry disabled or not configured"
+			if enabled && !present {
+				detail = "required when telemetry.enabled is true"
+			} else if present {
+				detail = "set"
+			}
+			add(key, !enabled || present, detail)
+		}
+		for _, key := range []string{"upload_timeout_sec", "max_retry"} {
+			value, ok := numberValue(key)
+			add(key, ok && value >= 0, fmt.Sprintf("must be >= 0, got %s", formatNumber(value)))
+		}
+	default:
+		writeJSONError(w, http.StatusBadRequest, "unsupported section: "+section)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": passed, "results": results})
+}
+
+func (s *Server) handleProviderConfigTest(w http.ResponseWriter, _ *http.Request, section string, request configTestRequest) {
+	body, err := json.Marshal(request)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	env, err := s.agentCommandEnvironment()
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	result := runCommand(60*time.Second, env, body, s.options.AgentBinary, "config-test", "--format=json", "--stdin", "--section="+section, "--config="+s.options.AgentConfigPath)
+	if result.TimedOut {
+		writeJSONError(w, http.StatusServiceUnavailable, "agent config-test timed out")
+		return
+	}
+	var response map[string]any
+	if err := json.Unmarshal(result.Output, &response); err != nil || response == nil {
+		message := strings.TrimSpace(string(result.Output))
+		if message == "" {
+			message = "agent config-test returned an unexpected response"
+		}
+		writeJSONError(w, http.StatusServiceUnavailable, message)
+		return
+	}
+	status := http.StatusOK
+	if result.ExitCode != 0 && response["ok"] != true {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, response)
+}
+
+func (s *Server) agentCommandEnvironment() ([]string, error) {
+	data, err := readFileLimited(s.options.SystemEnvPath, maxSystemEnvSize)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.Environ(), nil
+		}
+		return nil, fmt.Errorf("system env file is unavailable")
+	}
+	assignments, err := parseSystemEnv(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("system env file is invalid")
+	}
+	env := mergeEnvironment(os.Environ(), assignments)
+	values := make(map[string]string, len(env))
+	for _, item := range env {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	proxyConfigured := values["HTTP_PROXY"] != "" || values["http_proxy"] != "" ||
+		values["HTTPS_PROXY"] != "" || values["https_proxy"] != "" ||
+		values["ALL_PROXY"] != "" || values["all_proxy"] != ""
+	if proxyConfigured && values["NO_PROXY"] == "" && values["no_proxy"] == "" {
+		const noProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+		env = mergeEnvironment(env, []EnvAssignment{{Key: "NO_PROXY", Value: noProxy}, {Key: "no_proxy", Value: noProxy}})
+	}
+	return env, nil
+}
+
+func normalizeDeviceType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "ios":
+		return "iOS"
+	case "android":
+		return "Android"
+	case "macos":
+		return "macOS"
+	case "windows":
+		return "windows"
+	case "linux":
+		return "linux"
+	default:
+		return strings.TrimSpace(value)
+	}
+}
+
+func pointerModeForDeviceType(value string) string {
+	if value == "windows" || value == "linux" {
+		return "relative"
+	}
+	return "absolute"
+}
+
+func normalizeInputBackend(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "hid"
+	}
+	return value
+}
+
+func formatNumber(value float64) string {
+	if value == float64(int(value)) {
+		return strconv.Itoa(int(value))
+	}
+	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+func (s *Server) handleSTTTestStart(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		STTValues   map[string]json.RawMessage `json:"stt_values"`
+		AudioValues map[string]json.RawMessage `json:"audio_values"`
+	}
+	if !readJSONBody(w, r, &request) {
+		return
+	}
+	if request.STTValues == nil {
+		writeJSONError(w, http.StatusBadRequest, "missing 'stt_values' object")
+		return
+	}
+	if request.AudioValues == nil {
+		writeJSONError(w, http.StatusBadRequest, "missing 'audio_values' object")
+		return
+	}
+	for _, key := range []string{"provider", "api_key", "model", "base_url", "language", "app_id", "secret_id", "secret_key", "region", "engine_model_type"} {
+		if raw, ok := request.STTValues[key]; ok {
+			var value string
+			if json.Unmarshal(raw, &value) != nil {
+				writeJSONError(w, http.StatusBadRequest, "stt_values."+key+" must be a string")
+				return
+			}
+		}
+	}
+	restartPending := s.agentRestartPending()
+	if err := s.waitForAgentRestart(15 * time.Second); err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	status := 0
+	if restartPending {
+		// A config-triggered restart can briefly take the Agent HTTP endpoint
+		// offline. Retry only in that case; a normal unavailable endpoint should
+		// fail promptly rather than turning every STT test into a 60s poll.
+		status = s.proxyAgentBytesRetry(w, r, "/api/config-test/stt/start", body, 15*time.Second)
+	} else {
+		status = s.proxyAgentBytes(w, r, "/api/config-test/stt/start", body)
+	}
+	if status >= 200 && status < 300 {
+		s.restartMu.Lock()
+		s.sttTestActive = true
+		s.restartMu.Unlock()
+	}
+}
+
+func (s *Server) handleSTTTestStop(w http.ResponseWriter, r *http.Request) {
+	body, err := readRequestBody(w, r)
+	if err != nil {
+		return
+	}
+	status := s.proxyAgentBytes(w, r, "/api/config-test/stt/stop", body)
+	if status >= 200 && status < 300 {
+		s.restartMu.Lock()
+		s.sttTestActive = false
+		s.restartMu.Unlock()
+		s.startDeferredRestartIfIdle()
+	}
+}

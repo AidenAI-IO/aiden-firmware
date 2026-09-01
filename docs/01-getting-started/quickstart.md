@@ -65,7 +65,7 @@ After flashing and the device boots, connect it to a computer over USB-C and ope
 http://192.168.42.1
 ```
 
-`192.168.42.1` is the gateway address of the USB network. The config page is served by the `config_web` service on the device (default port 80).
+`192.168.42.1` is the gateway address of the USB network. The config page is served by the Go Agent's `config-web` subcommand on the device (default port 80).
 
 On the page, configure Wi-Fi first:
 

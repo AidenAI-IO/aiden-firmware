@@ -4,6 +4,7 @@ set -eu
 agent_dir="${AIDEN_AGENT_DIR:-/userdata/agent}"
 system_env="${AIDEN_SYSTEM_ENV:-/userdata/system/env}"
 agent_service="${AIDEN_AGENT_INIT_SCRIPT:-/usr/local/bin/aiden-agent-service}"
+env_run_bin="${AIDEN_ENV_RUN_BIN:-/usr/local/bin/aiden-env-run}"
 config_web_pid=""
 wetty_pid=""
 
@@ -55,7 +56,7 @@ wetty \
     >>/userdata/agent/log/wetty.log 2>&1 &
 wetty_pid="$!"
 
-config_web \
+"$env_run_bin" "${AIDEN_AGENT_BIN:-/oem/usr/bin/agent}" config-web \
     --bind=0.0.0.0 \
     --port=80 \
     --config="$agent_dir/agent.toml" \

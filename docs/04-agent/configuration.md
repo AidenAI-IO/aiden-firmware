@@ -53,7 +53,7 @@ is created on demand, so a directory holding only `agent.toml` is a valid start.
 
 ## Config Web: the device config page
 
-`config_web` is a lightweight C++ web service for maintaining the device Agent configuration, system environment variables, and Wi-Fi configuration. It is the primary way to edit the fields documented on this page without manually editing `agent.toml`.
+Config Web is the `config-web` subcommand of the Go Agent binary (`/oem/usr/bin/agent`). It maintains the device Agent configuration, system environment variables, and Wi-Fi configuration, and is the primary way to edit the fields documented on this page without manually editing `agent.toml`.
 
 On a device, open the config page in a browser at the USB-network gateway address:
 
@@ -61,7 +61,7 @@ On a device, open the config page in a browser at the USB-network gateway addres
 http://192.168.42.1
 ```
 
-The firmware starts `config_web` on port 80.
+The firmware starts `agent config-web` on port 80.
 
 ### What the page can configure
 
