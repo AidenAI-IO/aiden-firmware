@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -164,6 +165,15 @@ func TestQwenProviderPreservesDashScopeProtocol(t *testing.T) {
 	})
 }
 
+func TestQwenServerDetectedBargeInDoesNotSendRedundantCancel(t *testing.T) {
+	// Any attempted client write on this transport-free session would fail the
+	// test; provider-managed barge-in must return without writing.
+	session := &qwenSession{}
+	if err := session.Interrupt(context.Background(), ResponseInterruption{ServerDetected: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestQwenProviderEndpoints(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -224,6 +234,11 @@ func TestTranslateQwenEvents(t *testing.T) {
 		check func(*testing.T, Event)
 	}{
 		{name: "speech", raw: `{"type":"input_audio_buffer.speech_started"}`, kind: EventSpeechStarted},
+		{name: "invalid speech", raw: `{"type":"input_audio_buffer.speech_stopped","reason":"turn_invalid"}`, kind: EventSpeechStopped, check: func(t *testing.T, e Event) {
+			if e.Status != "turn_invalid" {
+				t.Fatalf("speech status = %q, want turn_invalid", e.Status)
+			}
+		}},
 		{name: "audio", raw: `{"type":"response.audio.delta","delta":"` + base64.StdEncoding.EncodeToString([]byte{1, 2}) + `"}`, kind: EventAudio, check: func(t *testing.T, e Event) {
 			if string(e.PCM) != string([]byte{1, 2}) {
 				t.Fatalf("pcm = %v", e.PCM)
@@ -231,6 +246,11 @@ func TestTranslateQwenEvents(t *testing.T) {
 		}},
 		{name: "transcript", raw: `{"type":"response.audio_transcript.delta","delta":"hi"}`, kind: EventTranscriptDelta, check: func(t *testing.T, e Event) {
 			if e.Text != "hi" || e.TextSource != "audio" {
+				t.Fatalf("event = %+v", e)
+			}
+		}},
+		{name: "transcript done", raw: `{"type":"response.audio_transcript.done","response_id":"r1","item_id":"item-1","transcript":"hi"}`, kind: EventTranscriptFinal, check: func(t *testing.T, e Event) {
+			if e.ResponseID != "r1" || e.ItemID != "item-1" || e.Text != "hi" {
 				t.Fatalf("event = %+v", e)
 			}
 		}},
@@ -260,6 +280,37 @@ func TestTranslateQwenEvents(t *testing.T) {
 				tt.check(t, event)
 			}
 		})
+	}
+}
+
+func TestTranslateQwenTurnSequenceDoesNotDuplicateSpeechStopped(t *testing.T) {
+	raw := []string{
+		`{"type":"input_audio_buffer.speech_stopped"}`,
+		`{"type":"input_audio_buffer.committed"}`,
+		`{"type":"conversation.item.input_audio_transcription.completed","item_id":"item-1","transcript":"hello"}`,
+		`{"type":"response.created","response":{"id":"response-1"}}`,
+	}
+	var kinds []EventKind
+	for _, body := range raw {
+		if event, ok := translateQwenEvent([]byte(body)); ok {
+			kinds = append(kinds, event.Kind)
+		}
+	}
+	want := []EventKind{EventSpeechStopped, EventTranscriptFinal, EventResponseStarted}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("translated event kinds = %v, want %v", kinds, want)
+	}
+}
+
+func TestTranslateQwenIgnoresIdempotentCancelError(t *testing.T) {
+	event, ok := translateQwenEvent([]byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_value","message":"Conversation has no active response.","param":"response.cancel"}}`))
+	if ok {
+		t.Fatalf("idempotent cancel error was surfaced: %+v", event)
+	}
+
+	event, ok = translateQwenEvent([]byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_value","message":"Cannot create response while another response is in progress.","param":"response.create"}}`))
+	if !ok || event.Kind != EventError || event.Error == nil {
+		t.Fatalf("unrelated protocol error was suppressed: %+v, ok=%t", event, ok)
 	}
 }
 

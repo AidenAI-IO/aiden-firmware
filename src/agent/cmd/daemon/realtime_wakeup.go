@@ -26,12 +26,15 @@ import (
 const (
 	realtimeAudioReadTimeoutMs        = 200
 	realtimeConnectTimeout            = 15 * time.Second
+	realtimeNotificationPoll          = 500 * time.Millisecond
+	realtimeNotificationDrain         = 30 * time.Second
 	realtimePlaybackKeepAlive         = 10 * time.Second
 	realtimeToolCallTimeout           = 30 * time.Second
 	realtimeTaskResultDebounce        = 500 * time.Millisecond
 	realtimeContextReplayTurns        = 10
 	realtimeClientTurnEndpointSilence = 800 * time.Millisecond
 	realtimeClientTurnSpeechThreshold = 500
+	maxRetiredRealtimeResponseIDs     = 64
 )
 
 var errRealtimeShutdown = errors.New("realtime shutdown requested")
@@ -205,6 +208,40 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 	bridge := newRealtimeChatBridge(func() {
 		signalWakeupEvent(events)
 	})
+	voiceNotificationTicker := time.NewTicker(realtimeNotificationPoll)
+	defer voiceNotificationTicker.Stop()
+	var notificationFallbackCancel context.CancelFunc
+	var notificationFallbackDone chan struct{}
+	stopNotificationFallback := func() {
+		if notificationFallbackCancel != nil {
+			notificationFallbackCancel()
+		}
+		if notificationFallbackDone != nil {
+			<-notificationFallbackDone
+		}
+		notificationFallbackCancel = nil
+		notificationFallbackDone = nil
+	}
+	defer stopNotificationFallback()
+	startNotificationFallback := func() {
+		if server == nil || runtime == nil || !server.CanSpeakVoiceNotification() || notificationFallbackDone != nil {
+			return
+		}
+		fallbackCtx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		notificationFallbackCancel = cancel
+		notificationFallbackDone = done
+		go func() {
+			defer close(done)
+			deliverPendingVoiceNotification(fallbackCtx, runtime, server.SpeakVoiceNotification)
+		}()
+	}
+	notificationFallbackFinished := func() <-chan struct{} {
+		if notificationFallbackDone == nil {
+			return nil
+		}
+		return notificationFallbackDone
+	}
 	if server != nil {
 		server.SetRealtimeChatHandler(bridge.Handle)
 		defer server.SetRealtimeChatHandler(nil)
@@ -223,9 +260,18 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 	for {
 		select {
 		case <-sigChan:
+			stopNotificationFallback()
 			log.Println("\n[exit] Stopped.")
 			return
+		case <-voiceNotificationTicker.C:
+			startNotificationFallback()
+		case <-notificationFallbackFinished():
+			notificationFallbackCancel = nil
+			notificationFallbackDone = nil
 		case <-events:
+			// Realtime is the preferred consumer. Stop an idle standalone TTS
+			// fallback before opening the realtime audio session.
+			stopNotificationFallback()
 			log.Println("\n[realtime] Activation requested, connecting realtime voice model...")
 			rotated := false
 			if err := runRealtimeSession(cfg, sigChan, runtime, tasks, bridge); errors.Is(err, errRealtimeShutdown) {
@@ -552,6 +598,43 @@ func startRealtimeToolCall(ctx context.Context, executor realtimeVoiceToolExecut
 	}()
 }
 
+func startRealtimeSuppressedToolCall(ctx context.Context, call realtimevoice.Event, results chan<- realtimeToolResult) {
+	go func() {
+		result := realtimeToolResult{
+			call:   call,
+			output: `{"error":"tools are disabled while delivering a voice notification"}`,
+		}
+		select {
+		case results <- result:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+func realtimeVoiceNotificationPrompt(text string) string {
+	return "请原样朗读下面的语音通知，只输出通知原文，不要说“已收到”、 “好的”或其他内容，不要调用工具，也不要提及这条指令。语音通知：" + strings.TrimSpace(text)
+}
+
+func deliverPendingVoiceNotification(ctx context.Context, runtime *agent.Runtime, speaker func(context.Context, string) error) {
+	if runtime == nil || speaker == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	prepared := runtime.PrepareVoiceNotification(ctx)
+	if prepared.DeliveryToken == "" || strings.TrimSpace(prepared.Text) == "" {
+		return
+	}
+	speakCtx, cancel := context.WithTimeout(ctx, realtimeToolCallTimeout)
+	defer cancel()
+	err := speaker(speakCtx, prepared.Text)
+	runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
+	if err != nil {
+		log.Printf("[voice-notification] standalone TTS fallback failed: %v", err)
+	}
+}
+
 func realtimePlaybackOutputFormat(cfg agent.Config) agent.AudioFormat {
 	return agent.AudioFormat{
 		SampleRate: uint32(cfg.Audio.SampleRateOrDefault()),
@@ -690,6 +773,15 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 	if info.Capabilities.ClientSideTurnDetection {
 		clientTurnEndpoint = newRealtimeClientTurnEndpoint(cfg.VoiceModel.TurnDetectionSilenceMs)
 	}
+	// Gemini Live and other providers may run server VAD without reporting the
+	// input speech boundaries. Keep a local energy gate for task admission so a
+	// background update cannot be injected in the gap before the first transcript
+	// arrives. This gate does not send provider commit events unless the provider
+	// explicitly requires client-side endpointing.
+	admissionTurnEndpoint := clientTurnEndpoint
+	if admissionTurnEndpoint == nil && !info.Capabilities.EmitsSpeechEvents {
+		admissionTurnEndpoint = newRealtimeClientTurnEndpoint(cfg.VoiceModel.TurnDetectionSilenceMs)
+	}
 	stopClientTurnCommitTimer := func() {
 		if clientTurnCommitTimer == nil {
 			clientTurnCommitTimerCh = nil
@@ -752,8 +844,27 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 	assistantPersisted := false
 	var realtimeResponseUsage messages.Usage
 	hasRealtimeResponseUsage := false
-	responseActive := false
-	inputSpeechActive := false
+	turnState := realtimeTurnState{}
+	voiceNotificationTicker := time.NewTicker(realtimeNotificationPoll)
+	defer voiceNotificationTicker.Stop()
+	activeNotificationToken := ""
+	activeNotificationResponseID := ""
+	activeNotificationAudioWritten := false
+	responseSuppressed := false
+	suppressedNotificationResponsePending := false
+	suppressedNotificationResponseIDs := make(map[string]struct{})
+	var notificationDrainDone <-chan error
+	var notificationDrainCancel context.CancelFunc
+	defer func() {
+		if notificationDrainCancel != nil {
+			notificationDrainCancel()
+		}
+	}()
+	defer func() {
+		if activeNotificationToken != "" && runtime != nil {
+			runtime.ReportSpokenTextDelivery(activeNotificationToken, context.Canceled)
+		}
+	}()
 	toolExecutor := newRealtimeVoiceToolExecutor(runtime, tasks)
 	toolResults := make(chan realtimeToolResult, 16)
 	toolTracker := newRealtimeToolTracker()
@@ -782,7 +893,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 		}
 	}()
 	tryInjectTaskUpdates := func() error {
-		if !taskUpdatesReady || len(pendingTaskUpdates) == 0 || responseActive || inputSpeechActive || activeChat != nil || chatBridgeHasPending(chatBridge) {
+		if !taskUpdatesReady || len(pendingTaskUpdates) == 0 || !turnState.canInjectResponse() || activeNotificationToken != "" || notificationDrainDone != nil || activeChat != nil || chatBridgeHasPending(chatBridge) {
 			return nil
 		}
 		message := formatRealtimeTaskUpdates(pendingTaskUpdates)
@@ -800,7 +911,29 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 		}
 		pendingTaskUpdates = nil
 		taskUpdatesReady = false
-		responseActive = true
+		turnState.responseRequested()
+		return nil
+	}
+	tryInjectVoiceNotification := func() error {
+		if runtime == nil || !supportsText || activeNotificationToken != "" || notificationDrainDone != nil || !turnState.canInjectResponse() || activeChat != nil || chatBridgeHasPending(chatBridge) {
+			return nil
+		}
+		prepared := runtime.PrepareVoiceNotification(ctx)
+		if prepared.DeliveryToken == "" || strings.TrimSpace(prepared.Text) == "" {
+			return nil
+		}
+		if err := textSession.SendText(ctx, realtimeVoiceNotificationPrompt(prepared.Text)); err != nil {
+			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
+			return fmt.Errorf("inject realtime voice notification: %w", err)
+		}
+		if err := textSession.CreateResponse(ctx); err != nil {
+			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
+			return fmt.Errorf("respond to realtime voice notification: %w", err)
+		}
+		activeNotificationToken = prepared.DeliveryToken
+		activeNotificationResponseID = ""
+		activeNotificationAudioWritten = false
+		turnState.responseRequested()
 		return nil
 	}
 	defer func() {
@@ -832,6 +965,36 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			if err != nil {
 				return err
 			}
+		case <-voiceNotificationTicker.C:
+			if err := tryInjectVoiceNotification(); err != nil {
+				return err
+			}
+		case err := <-notificationDrainDone:
+			notificationDrainDone = nil
+			if notificationDrainCancel != nil {
+				notificationDrainCancel()
+				notificationDrainCancel = nil
+			}
+			if activeNotificationToken == "" {
+				continue
+			}
+			if err != nil {
+				runtime.ReportSpokenTextDelivery(activeNotificationToken, err)
+				if stopErr := playback.stop(playbackAudio); stopErr != nil {
+					return fmt.Errorf("stop failed realtime notification playback: %w", stopErr)
+				}
+			} else {
+				runtime.ReportSpokenTextDelivery(activeNotificationToken, nil)
+			}
+			activeNotificationToken = ""
+			activeNotificationResponseID = ""
+			activeNotificationAudioWritten = false
+			if err := tryInjectVoiceNotification(); err != nil {
+				return err
+			}
+			if err := tryInjectTaskUpdates(); err != nil {
+				return err
+			}
 		case result := <-toolResults:
 			call := result.call
 			if !canSendToolResult {
@@ -840,11 +1003,13 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			if err := toolResultSender.SendToolResult(ctx, call.CallID, result.output); err != nil {
 				return fmt.Errorf("send realtime tool result: %w", err)
 			}
-			if err := appendRealtimeToolExecution(userContext, call, result.output); err != nil {
-				return fmt.Errorf("persist realtime tool call and result: %w", err)
+			if activeNotificationToken == "" && !suppressedNotificationResponsePending && !hasSuppressedNotificationResponse(suppressedNotificationResponseIDs, call.ResponseID) {
+				if err := appendRealtimeToolExecution(userContext, call, result.output); err != nil {
+					return fmt.Errorf("persist realtime tool call and result: %w", err)
+				}
 			}
 			if info.Capabilities.ExplicitToolContinuation && toolTracker.complete(call.ResponseID) {
-				responseActive = true
+				turnState.responseRequested()
 				if err := textSession.CreateResponse(ctx); err != nil {
 					return fmt.Errorf("continue realtime response after tool call: %w", err)
 				}
@@ -859,8 +1024,23 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			if err := session.SendAudio(ctx, pcm); err != nil {
 				return err
 			}
-			if clientTurnEndpoint != nil && clientTurnEndpoint.Observe(pcm, time.Now()) {
-				armClientTurnCommitTimer()
+			if admissionTurnEndpoint != nil {
+				now := time.Now()
+				wasActive := admissionTurnEndpoint.speechActive
+				admissionTurnEndpoint.Observe(pcm, now)
+				if !wasActive && admissionTurnEndpoint.speechActive {
+					turnState.speechStarted()
+				}
+				if clientTurnEndpoint != nil && admissionTurnEndpoint.speechActive {
+					armClientTurnCommitTimer()
+				}
+				if clientTurnEndpoint == nil && admissionTurnEndpoint.speechActive && admissionTurnEndpoint.Due(now) {
+					admissionTurnEndpoint.Reset()
+					turnState.localSpeechStopped()
+					if err := tryInjectTaskUpdates(); err != nil {
+						return err
+					}
+				}
 			}
 			if firstAudioChunk {
 				firstAudioChunk = false
@@ -910,6 +1090,10 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				if err := commitClientTurn(); err != nil {
 					return err
 				}
+				turnState.localSpeechStopped()
+				if err := tryInjectTaskUpdates(); err != nil {
+					return err
+				}
 			} else if clientTurnEndpoint != nil && clientTurnEndpoint.speechActive {
 				armClientTurnCommitTimer()
 			}
@@ -919,7 +1103,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				close(command.events)
 				continue
 			}
-			if activeChat != nil || responseActive || inputSpeechActive {
+			if activeChat != nil || !turnState.canInjectResponse() {
 				sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "realtime response is busy"})
 				close(command.events)
 				continue
@@ -940,16 +1124,16 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				activeChat = nil
 				continue
 			}
-			responseActive = true
+			turnState.responseRequested()
 			if err := textSession.CreateResponse(command.ctx); err != nil {
-				responseActive = false
+				turnState.responseRequestFailed()
 				sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: err.Error()})
 				close(command.events)
 				activeChat = nil
 			}
 		case <-chatCommandDone(activeChat):
 			if canInterrupt {
-				_ = interruptRealtimeResponse(ctx, responseActive, responseInterrupter, playback.responseInterruption(outputFormat))
+				_ = interruptRealtimeResponse(ctx, turnState.responseActive, responseInterrupter, playback.responseInterruption(outputFormat))
 			}
 			sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "request canceled"})
 			close(activeChat.events)
@@ -966,10 +1150,26 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				// Providers may emit a ready frame after Open; negotiated rates
 				// are already available in Session.Info().
 			case realtimevoice.EventSpeechStarted:
-				inputSpeechActive = true
+				turnState.speechStarted()
+				if activeNotificationToken != "" {
+					if notificationDrainDone == nil {
+						markSuppressedRealtimeNotificationResponse(activeNotificationResponseID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs)
+					}
+					runtime.ReportSpokenTextDelivery(activeNotificationToken, context.Canceled)
+					if notificationDrainCancel != nil {
+						notificationDrainCancel()
+						notificationDrainCancel = nil
+					}
+					notificationDrainDone = nil
+					activeNotificationToken = ""
+					activeNotificationResponseID = ""
+					activeNotificationAudioWritten = false
+				}
 				log.Println("[realtime] Speech started, interrupting local playback")
 				if canInterrupt {
-					if err := interruptRealtimeResponse(ctx, responseActive, responseInterrupter, playback.responseInterruption(outputFormat)); err != nil {
+					interruption := playback.responseInterruption(outputFormat)
+					interruption.ServerDetected = providerName == realtimevoice.ProviderQwen
+					if err := interruptRealtimeResponse(ctx, turnState.responseActive, responseInterrupter, interruption); err != nil {
 						return fmt.Errorf("interrupt realtime provider response: %w", err)
 					}
 				}
@@ -979,7 +1179,12 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 					return fmt.Errorf("interrupt realtime playback: %w", err)
 				}
 			case realtimevoice.EventSpeechStopped:
-				inputSpeechActive = false
+				turnState.speechStopped(event.Status)
+				if event.Status == "turn_invalid" {
+					if err := restoreRealtimePlaybackAfterInvalidTurn(&turnState, &playback, playbackAudio, outputFormat); err != nil {
+						return fmt.Errorf("restore realtime playback after invalid turn: %w", err)
+					}
+				}
 				if clientTurnEndpoint != nil {
 					if err := commitClientTurn(); err != nil {
 						return err
@@ -990,10 +1195,15 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				}
 			case realtimevoice.EventTranscriptFinal:
 				if event.Role == "user" {
+					turnState.userTranscriptObserved()
 					if err := appendRealtimeUserMessage(userContext, event.Text); err != nil {
 						return fmt.Errorf("persist realtime user transcript: %w", err)
 					}
 				} else if event.Role == "assistant" {
+					if !turnState.acceptsResponseEvent(event.ResponseID) {
+						log.Printf("[realtime] Ignoring stale assistant transcript: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
+						continue
+					}
 					if recordRealtimeFinalTranscript(event.Text, &responseTranscript, &chatText, &chatTranscript) && activeChat != nil {
 						chatMode = "transcript"
 						sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventDelta, Delta: event.Text})
@@ -1001,7 +1211,14 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				}
 			case realtimevoice.EventResponseStarted:
 				log.Println("[realtime] Response created")
-				responseActive = true
+				if !turnState.responseStarted(event.ResponseID) {
+					log.Printf("[realtime] Ignoring stale response.created: response_id=%s input_turn=%d request_turn=%d", event.ResponseID, turnState.inputTurnSequence, turnState.responseRequestTurn)
+					continue
+				}
+				responseSuppressed = bindSuppressedRealtimeNotificationResponse(event.ResponseID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs)
+				if activeNotificationToken != "" && activeNotificationResponseID == "" && !responseSuppressed {
+					activeNotificationResponseID = event.ResponseID
+				}
 				responseText.Reset()
 				responseTranscript.Reset()
 				assistantPersisted = false
@@ -1013,12 +1230,20 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				}
 			case realtimevoice.EventTranscriptDelta:
 				if event.Role != "assistant" {
+					if event.Role == "user" {
+						turnState.userTranscriptObserved()
+					}
 					continue
 				}
-				if !supportsText && (!responseActive || playback.suppressDeltas) {
-					if err := ensureImplicitRealtimeResponse(&responseActive, &assistantPersisted, &responseText, &responseTranscript, &playback, playbackAudio, outputFormat); err != nil {
+				if !turnState.acceptsResponseEvent(event.ResponseID) {
+					log.Printf("[realtime] Ignoring stale assistant transcript delta: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
+					continue
+				}
+				if !supportsText && (!turnState.responseActive || playback.suppressDeltas) {
+					if err := ensureImplicitRealtimeResponse(&turnState.responseActive, &assistantPersisted, &responseText, &responseTranscript, &playback, playbackAudio, outputFormat); err != nil {
 						return err
 					}
+					turnState.responseOutputObserved(event.ResponseID)
 				}
 				if event.TextSource == "text" {
 					responseText.WriteString(event.Text)
@@ -1044,50 +1269,86 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 					}
 				}
 			case realtimevoice.EventAudio:
+				if !turnState.acceptsResponseEvent(event.ResponseID) {
+					log.Printf("[realtime] Ignoring stale response audio: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
+					continue
+				}
+				if responseSuppressed || suppressedNotificationResponsePending || hasSuppressedNotificationResponse(suppressedNotificationResponseIDs, event.ResponseID) {
+					continue
+				}
 				if !supportsText {
-					if err := ensureImplicitRealtimeResponse(&responseActive, &assistantPersisted, &responseText, &responseTranscript, &playback, playbackAudio, outputFormat); err != nil {
+					if err := ensureImplicitRealtimeResponse(&turnState.responseActive, &assistantPersisted, &responseText, &responseTranscript, &playback, playbackAudio, outputFormat); err != nil {
 						return err
 					}
+					turnState.responseOutputObserved(event.ResponseID)
 				}
 				pcm := event.PCM
 				if err := playback.appendItem(playbackAudio, outputFormat, event.ItemID, pcm); err != nil {
 					return err
 				}
+				if activeNotificationToken != "" {
+					activeNotificationAudioWritten = activeNotificationAudioWritten || len(pcm) > 0
+				}
 			case realtimevoice.EventToolCall:
+				if !turnState.acceptsResponseEvent(event.ResponseID) {
+					log.Printf("[realtime] Ignoring stale response tool call: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
+					continue
+				}
 				log.Printf("[realtime] Tool call: %s", event.Name)
 				if info.Capabilities.ExplicitToolContinuation {
 					toolTracker.start(event.ResponseID)
 				}
-				startRealtimeToolCall(ctx, toolExecutor, event, toolResults)
+				if activeNotificationToken != "" || suppressedNotificationResponsePending || hasSuppressedNotificationResponse(suppressedNotificationResponseIDs, event.ResponseID) {
+					startRealtimeSuppressedToolCall(ctx, event, toolResults)
+				} else {
+					startRealtimeToolCall(ctx, toolExecutor, event, toolResults)
+				}
 			case realtimevoice.EventUsage:
 				realtimeResponseUsage.TotalTokens += event.Usage.TotalTokens
 				realtimeResponseUsage.InputTokens += event.Usage.InputTokens
 				realtimeResponseUsage.OutputTokens += event.Usage.OutputTokens
 				hasRealtimeResponseUsage = true
 			case realtimevoice.EventResponseDone, realtimevoice.EventResponseCancelled:
+				if !turnState.responseFinished(event.ResponseID) {
+					log.Printf("[realtime] Ignoring stale terminal response event: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
+					continue
+				}
+				if suppressedNotificationResponsePending && event.ResponseID != "" {
+					bindSuppressedRealtimeNotificationResponse(event.ResponseID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs)
+				}
+				suppressedResponse := hasSuppressedNotificationResponse(suppressedNotificationResponseIDs, event.ResponseID)
+				notificationResponse := activeNotificationToken != "" && (activeNotificationResponseID == "" || activeNotificationResponseID == event.ResponseID)
+				if suppressedResponse {
+					delete(suppressedNotificationResponseIDs, event.ResponseID)
+					toolTracker.clear(event.ResponseID)
+				}
 				if event.Usage.TotalTokens > 0 || event.Usage.InputTokens > 0 || event.Usage.OutputTokens > 0 {
 					realtimeResponseUsage.TotalTokens += event.Usage.TotalTokens
 					realtimeResponseUsage.InputTokens += event.Usage.InputTokens
 					realtimeResponseUsage.OutputTokens += event.Usage.OutputTokens
 					hasRealtimeResponseUsage = true
 				}
-				if err := playback.finishResponse(playbackAudio); err != nil {
-					return fmt.Errorf("finish realtime playback response: %w", err)
+				if !suppressedResponse && !notificationResponse {
+					if err := playback.finishResponse(playbackAudio); err != nil {
+						return fmt.Errorf("finish realtime playback response: %w", err)
+					}
 				}
-				if hasTools, continueNow := toolTracker.done(event.ResponseID); hasTools {
-					if !continueNow {
+				if !suppressedResponse && !notificationResponse {
+					if hasTools, continueNow := toolTracker.done(event.ResponseID); hasTools {
+						if !continueNow {
+							continue
+						}
+						turnState.responseRequested()
+						if !supportsText {
+							continue
+						}
+						if err := textSession.CreateResponse(ctx); err != nil {
+							return fmt.Errorf("continue realtime response after tool call: %w", err)
+						}
 						continue
 					}
-					responseActive = true
-					if !supportsText {
-						continue
-					}
-					if err := textSession.CreateResponse(ctx); err != nil {
-						return fmt.Errorf("continue realtime response after tool call: %w", err)
-					}
-					continue
 				}
-				if !assistantPersisted && event.Kind != realtimevoice.EventResponseCancelled && (event.Status == "" || event.Status == "completed") {
+				if !notificationResponse && !suppressedResponse && !assistantPersisted && event.Kind != realtimevoice.EventResponseCancelled && (event.Status == "" || event.Status == "completed") {
 					assistantText := strings.TrimSpace(responseText.String())
 					if assistantText == "" {
 						assistantText = strings.TrimSpace(responseTranscript.String())
@@ -1105,7 +1366,6 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				}
 				realtimeResponseUsage = messages.Usage{}
 				hasRealtimeResponseUsage = false
-				responseActive = false
 				assistantPersisted = false
 				if activeChat != nil {
 					content := chatText.String()
@@ -1119,8 +1379,43 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				if err := tryInjectTaskUpdates(); err != nil {
 					return err
 				}
+				if notificationResponse {
+					var deliveryErr error
+					if event.Kind == realtimevoice.EventResponseCancelled || (event.Status != "" && event.Status != "completed") {
+						deliveryErr = fmt.Errorf("realtime notification response ended with status %q", event.Status)
+					} else if !activeNotificationAudioWritten {
+						deliveryErr = errors.New("realtime notification response produced no audio")
+					}
+					if deliveryErr == nil {
+						if err := playback.finishResponse(playbackAudio, true); err != nil {
+							deliveryErr = fmt.Errorf("finish realtime notification playback: %w", err)
+						}
+					}
+					if deliveryErr != nil {
+						runtime.ReportSpokenTextDelivery(activeNotificationToken, deliveryErr)
+						if stopErr := playback.stop(playbackAudio); stopErr != nil {
+							return fmt.Errorf("stop failed realtime notification playback: %w", stopErr)
+						}
+						activeNotificationToken = ""
+						activeNotificationResponseID = ""
+						activeNotificationAudioWritten = false
+					} else {
+						drainCtx, cancel := context.WithTimeout(ctx, realtimeNotificationDrain)
+						notificationDrainCancel = cancel
+						doneCh := make(chan error, 1)
+						notificationDrainDone = doneCh
+						go func() { doneCh <- playbackAudio.WaitForPlaybackDrain(drainCtx) }()
+					}
+				}
+				responseSuppressed = false
+				if err := tryInjectVoiceNotification(); err != nil {
+					return err
+				}
+				if err := tryInjectTaskUpdates(); err != nil {
+					return err
+				}
 			case realtimevoice.EventInterruption:
-				responseActive = false
+				turnState.responseInterrupted()
 				if err := playback.interrupt(playbackAudio, outputFormat); err != nil {
 					return err
 				}
@@ -1163,11 +1458,226 @@ func realtimeSessionTerminationError(errs <-chan error) error {
 	return nil
 }
 
+type realtimeTurnState struct {
+	responseActive          bool
+	responseID              string
+	responseRequestPending  bool
+	responseRequestTurn     uint64
+	anonymousResponseStale  bool
+	retiredResponseIDs      map[string]struct{}
+	retiredResponseOrder    []string
+	inputSpeechActive       bool
+	inputTurnPending        bool
+	inputTurnSequence       uint64
+	inputTurnTranscriptSeen bool
+}
+
+func (s *realtimeTurnState) canInjectResponse() bool {
+	return !s.responseActive && !s.inputSpeechActive && !s.inputTurnPending
+}
+
+func (s *realtimeTurnState) responseRequested() {
+	s.responseRequestPending = true
+	s.responseRequestTurn = s.inputTurnSequence
+	s.anonymousResponseStale = false
+	s.retireResponseID(s.responseID)
+	s.responseActive = true
+	s.responseID = ""
+}
+
+func (s *realtimeTurnState) responseRequestFailed() {
+	s.responseActive = false
+	s.responseID = ""
+	s.responseRequestPending = false
+	s.anonymousResponseStale = false
+}
+
+func (s *realtimeTurnState) speechStarted() {
+	if !s.inputSpeechActive {
+		s.inputTurnSequence++
+	}
+	s.inputSpeechActive = true
+	s.inputTurnPending = true
+	s.inputTurnTranscriptSeen = false
+}
+
+func (s *realtimeTurnState) speechStopped(status string) {
+	s.inputSpeechActive = false
+	if status == "turn_invalid" {
+		// The provider rejected this speech as a turn, so roll back the
+		// sequence and leave any response that was interrupted eligible to
+		// resume.
+		if s.inputTurnSequence > 0 {
+			s.inputTurnSequence--
+		}
+		s.inputTurnPending = false
+		return
+	}
+	s.inputTurnPending = status != "turn_invalid"
+}
+
+func (s *realtimeTurnState) localSpeechStopped() {
+	s.inputSpeechActive = false
+	// If a response already started while the local gate was active, that
+	// response consumed the input turn. Do not create a second pending turn when
+	// the trailing silence timer fires.
+	if !s.responseActive {
+		s.inputTurnPending = true
+	}
+}
+
+func (s *realtimeTurnState) userTranscriptObserved() {
+	if s.responseActive && !s.inputTurnPending {
+		// A provider may finish refining the input transcript after it has
+		// already started the answer. That refinement belongs to the turn that
+		// produced the current response, not to a new pending user turn.
+		return
+	}
+	// A transcript is the first provider-neutral marker of a new turn for
+	// adapters whose response events do not carry IDs (Gemini Live).
+	s.anonymousResponseStale = false
+	s.inputTurnTranscriptSeen = true
+	if !s.inputTurnPending {
+		s.inputTurnSequence++
+	}
+	s.inputTurnPending = true
+}
+
+// responseStarted returns false when the event belongs to a response request
+// that was superseded by a newer speech turn. The caller must discard that
+// response's output and wait for the response created for the current turn.
+func (s *realtimeTurnState) responseStarted(responseID string) bool {
+	if responseID != "" && responseID == s.responseID && !s.responseRequestPending {
+		// A duplicate response.created for an already identified response must
+		// not consume a newer input turn that arrived while this response was
+		// producing output.
+		return false
+	}
+	staleRequest := s.responseRequestPending && s.responseRequestTurn < s.inputTurnSequence
+	// Gemini Live does not attach a response ID to model turns. Once a
+	// transcript for the new input turn has arrived, an anonymous response is
+	// the provider's answer to that turn rather than the delayed old request.
+	if staleRequest && responseID == "" && s.inputTurnTranscriptSeen {
+		staleRequest = false
+	}
+	s.responseRequestPending = false
+	if staleRequest {
+		s.retireResponseID(responseID)
+		s.anonymousResponseStale = responseID == ""
+		s.responseActive = false
+		s.responseID = ""
+		return false
+	}
+	s.responseActive = true
+	s.responseID = responseID
+	s.anonymousResponseStale = false
+	s.inputTurnPending = false
+	return true
+}
+
+func (s *realtimeTurnState) responseOutputObserved(responseID string) {
+	s.responseActive = true
+	if responseID != "" {
+		s.responseID = responseID
+	}
+	s.inputTurnPending = false
+}
+
+func (s *realtimeTurnState) acceptsResponseEvent(responseID string) bool {
+	if responseID == "" {
+		return !s.anonymousResponseStale
+	}
+	if s.isRetiredResponseID(responseID) {
+		return false
+	}
+	if s.responseID != "" && s.responseID != responseID {
+		return false
+	}
+	// Once a new input turn has started, output carrying the previous response
+	// ID is late output from the interrupted answer. It must not leak into chat
+	// text or the assistant transcript while playback is suppressed.
+	if s.responseID == responseID && s.inputTurnPending {
+		return false
+	}
+	return true
+}
+
+func (s *realtimeTurnState) responseFinished(responseID string) bool {
+	if responseID == "" && s.anonymousResponseStale {
+		return false
+	}
+	if s.isRetiredResponseID(responseID) {
+		return false
+	}
+	if responseID == "" && !s.responseActive && s.responseID == "" && s.inputTurnPending {
+		// Gemini can complete an input turn without emitting a separate
+		// response.created event when no model output was produced.
+		s.inputTurnPending = false
+		return true
+	}
+	// An interrupted response may still deliver its terminal event. Keep that
+	// event eligible for the old response cleanup until another response is
+	// requested, which retires the old ID above.
+	if !s.responseActive && s.responseID == "" {
+		return false
+	}
+	if s.responseID != "" && responseID != "" && responseID != s.responseID {
+		return false
+	}
+	s.retireResponseID(s.responseID)
+	s.retireResponseID(responseID)
+	s.responseActive = false
+	s.responseID = ""
+	return true
+}
+
+func (s *realtimeTurnState) responseInterrupted() {
+	s.responseActive = false
+}
+
+func (s *realtimeTurnState) isRetiredResponseID(responseID string) bool {
+	if responseID == "" || len(s.retiredResponseIDs) == 0 {
+		return false
+	}
+	_, ok := s.retiredResponseIDs[responseID]
+	return ok
+}
+
+func (s *realtimeTurnState) retireResponseID(responseID string) {
+	if responseID == "" {
+		return
+	}
+	if s.retiredResponseIDs == nil {
+		s.retiredResponseIDs = make(map[string]struct{})
+	}
+	if _, exists := s.retiredResponseIDs[responseID]; exists {
+		return
+	}
+	if len(s.retiredResponseOrder) >= maxRetiredRealtimeResponseIDs {
+		oldest := s.retiredResponseOrder[0]
+		delete(s.retiredResponseIDs, oldest)
+		s.retiredResponseOrder = s.retiredResponseOrder[1:]
+	}
+	s.retiredResponseIDs[responseID] = struct{}{}
+	s.retiredResponseOrder = append(s.retiredResponseOrder, responseID)
+}
+
 func interruptRealtimeResponse(ctx context.Context, responseActive bool, interrupter realtimevoice.ResponseInterrupter, interruption realtimevoice.ResponseInterruption) error {
 	if !responseActive || interrupter == nil {
 		return nil
 	}
 	return interrupter.Interrupt(ctx, interruption)
+}
+
+// restoreRealtimePlaybackAfterInvalidTurn resumes an answer that server VAD
+// kept alive after rejecting a short interruption as turn_invalid. The daemon
+// has already stopped and suppressed playback on speech_started, so the next
+// audio delta must reopen the low-latency playback session.
+func restoreRealtimePlaybackAfterInvalidTurn(state *realtimeTurnState, playback *realtimePlaybackState, audio realtimePlaybackAudio, format agent.AudioFormat) error {
+	if state == nil || playback == nil || !state.responseActive || !playback.suppressDeltas {
+		return nil
+	}
+	return playback.beginResponse(audio, format)
 }
 
 func ensureImplicitRealtimeResponse(
@@ -1225,6 +1735,33 @@ func agentTaskUserActionNotifications(tasks *agenttask.Manager) <-chan struct{} 
 
 func chatBridgeHasPending(bridge *realtimeChatBridge) bool {
 	return bridge != nil && len(bridge.commands) > 0
+}
+
+func hasSuppressedNotificationResponse(responses map[string]struct{}, responseID string) bool {
+	if responseID == "" {
+		return false
+	}
+	_, ok := responses[responseID]
+	return ok
+}
+
+func markSuppressedRealtimeNotificationResponse(responseID string, pending *bool, responses map[string]struct{}) {
+	if responseID != "" {
+		responses[responseID] = struct{}{}
+		return
+	}
+	if pending != nil {
+		*pending = true
+	}
+}
+
+func bindSuppressedRealtimeNotificationResponse(responseID string, pending *bool, responses map[string]struct{}) bool {
+	if pending != nil && *pending && responseID != "" {
+		responses[responseID] = struct{}{}
+		*pending = false
+		return true
+	}
+	return hasSuppressedNotificationResponse(responses, responseID)
 }
 
 func formatRealtimeTaskUpdates(tasks []agenttask.Task) string {
@@ -1384,6 +1921,10 @@ type realtimePlaybackAudioAdapter struct {
 	backend tts.AudioServiceBackend
 }
 
+type realtimePlaybackDrainWaiter interface {
+	WaitForPlaybackDrain(context.Context) error
+}
+
 func (a realtimePlaybackAudioAdapter) StartPlayback(format agent.AudioFormat) (*agent.PlaybackStartResult, error) {
 	if a.backend == nil {
 		return nil, errors.New("realtime playback backend is unavailable")
@@ -1404,7 +1945,22 @@ func (a realtimePlaybackAudioAdapter) WritePlayChunk(sessionID uint64, data []by
 }
 
 func (a realtimePlaybackAudioAdapter) StopPlayback(sessionID uint64) error {
-	return a.backend.StopPlayback(sessionID)
+	err := a.backend.StopPlayback(sessionID)
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "session_not_found") || strings.Contains(message, "session not found") {
+		return nil
+	}
+	return err
+}
+
+func (a realtimePlaybackAudioAdapter) WaitForPlaybackDrain(ctx context.Context) error {
+	if waiter, ok := a.backend.(realtimePlaybackDrainWaiter); ok {
+		return waiter.WaitForPlaybackDrain(ctx)
+	}
+	return errors.New("realtime playback backend cannot confirm drain")
 }
 
 type realtimePlaybackState struct {
@@ -1519,8 +2075,12 @@ func (p *realtimePlaybackState) beginResponse(audio realtimePlaybackAudio, forma
 	return p.open(audio, format)
 }
 
-func (p *realtimePlaybackState) finishResponse(audio realtimePlaybackAudio) error {
-	if !p.finalizeResponses || p.session == nil || p.finalized {
+func (p *realtimePlaybackState) finishResponse(audio realtimePlaybackAudio, force ...bool) error {
+	finalize := p.finalizeResponses
+	if len(force) > 0 && force[0] {
+		finalize = true
+	}
+	if !finalize || p.session == nil || p.finalized {
 		return nil
 	}
 	if err := audio.WritePlayChunk(p.session.SessionID, nil, true); err != nil {

@@ -2189,6 +2189,22 @@ func (s *Server) canSpeakFinalText() bool {
 	return canPlayTTSUnavailableFallback(s.runtime.config)
 }
 
+// CanSpeakVoiceNotification reports whether standalone TTS is currently
+// available while no Realtime session is consuming notifications.
+func (s *Server) CanSpeakVoiceNotification() bool {
+	return s != nil && s.currentTTSManager() != nil && s.currentTTSPlaybackBackend() != nil
+}
+
+// SpeakVoiceNotification plays notification text through the configured
+// standalone TTS provider for an idle period without an active Realtime
+// session.
+func (s *Server) SpeakVoiceNotification(ctx context.Context, text string) error {
+	if !s.CanSpeakVoiceNotification() {
+		return errors.New("standalone TTS is unavailable")
+	}
+	return s.speakText(ctx, text, 0)
+}
+
 func (s *Server) speakFinalText(ctx context.Context, requestID string, prepared SpokenTextResult) {
 	if strings.TrimSpace(prepared.Text) == "" {
 		return

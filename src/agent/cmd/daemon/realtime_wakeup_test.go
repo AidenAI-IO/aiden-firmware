@@ -207,6 +207,228 @@ func TestInterruptRealtimeResponseSkipsIdleResponse(t *testing.T) {
 	}
 }
 
+func TestRealtimeTurnStateKeepsNewTurnPendingAcrossOldResponseDone(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("response-old")
+	state.speechStarted()
+	state.speechStopped("")
+
+	if !state.responseFinished("response-old") {
+		t.Fatal("old response terminal event was not accepted")
+	}
+	if state.canInjectResponse() {
+		t.Fatal("task response was admitted while the new user turn awaited response.started")
+	}
+
+	state.responseStarted("response-new")
+	if state.inputTurnPending {
+		t.Fatal("new response did not consume the pending user turn")
+	}
+	if !state.responseFinished("response-new") || !state.canInjectResponse() {
+		t.Fatal("turn state did not become idle after the new response completed")
+	}
+}
+
+func TestRealtimeTurnStateRejectsStaleResponseDone(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("response-new")
+	if state.responseFinished("response-old") {
+		t.Fatal("stale response terminal event was accepted")
+	}
+	if !state.responseActive || state.responseID != "response-new" {
+		t.Fatalf("stale terminal event changed active response state: %+v", state)
+	}
+}
+
+func TestRealtimeTurnStateDoesNotConsumeNewTurnForLateResponseCreated(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseRequested()
+	state.speechStarted()
+	state.speechStopped("")
+	if state.responseStarted("response-old") {
+		t.Fatal("late response.created was accepted as the current turn")
+	}
+
+	if !state.inputTurnPending {
+		t.Fatalf("late response.created consumed the new user turn: %+v", state)
+	}
+}
+
+func TestRealtimeTurnStateKeepsTranscriptFromInterruptedTurn(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("response-old")
+	state.speechStarted()
+	state.speechStopped("")
+	state.userTranscriptObserved()
+
+	if !state.inputTurnPending || state.inputTurnSequence != 1 {
+		t.Fatalf("user transcript was lost while old response was active: %+v", state)
+	}
+}
+
+func TestRealtimeTurnStateIgnoresLateTranscriptForActiveResponse(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("response-1")
+	state.userTranscriptObserved()
+	if state.inputTurnPending || state.inputTurnSequence != 0 {
+		t.Fatalf("late transcript opened a new input turn: %+v", state)
+	}
+}
+
+func TestRealtimeTurnStateRejectsStaleResponseOutput(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("response-old")
+	state.speechStarted()
+	state.speechStopped("")
+	state.responseRequested()
+
+	if state.acceptsResponseEvent("response-old") {
+		t.Fatal("retired response output was accepted after a new request")
+	}
+	if !state.acceptsResponseEvent("response-new") {
+		t.Fatal("current response output was rejected before response.created")
+	}
+}
+
+func TestRealtimeTurnStateSuppressesCurrentResponseAfterBargeIn(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("response-1")
+	state.speechStarted()
+	if state.acceptsResponseEvent("response-1") {
+		t.Fatal("response output was accepted after a new input turn started")
+	}
+	state.speechStopped("turn_invalid")
+	if !state.acceptsResponseEvent("response-1") {
+		t.Fatal("response output was not restored after turn_invalid")
+	}
+}
+
+func TestRealtimeTurnStateRejectsAnonymousStaleResponseUntilNewTranscript(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseRequested()
+	state.speechStarted()
+	state.speechStopped("")
+	if state.responseStarted("") {
+		t.Fatal("anonymous stale response.created was accepted")
+	}
+	if state.acceptsResponseEvent("") || state.responseFinished("") {
+		t.Fatal("anonymous stale response output was accepted")
+	}
+
+	state.userTranscriptObserved()
+	if !state.responseStarted("") {
+		t.Fatal("new anonymous response was rejected after its transcript arrived")
+	}
+}
+
+func TestRealtimeTurnStateRejectsDuplicateResponseCreated(t *testing.T) {
+	state := realtimeTurnState{}
+	if !state.responseStarted("response-1") {
+		t.Fatal("initial response.created was rejected")
+	}
+	state.speechStarted()
+	state.speechStopped("")
+	if state.responseStarted("response-1") {
+		t.Fatal("duplicate response.created consumed the new input turn")
+	}
+	if !state.inputTurnPending {
+		t.Fatal("duplicate response.created cleared the new input turn")
+	}
+}
+
+func TestRealtimeTurnStateLocalSpeechStopDoesNotReopenConsumedTurn(t *testing.T) {
+	state := realtimeTurnState{}
+	state.speechStarted()
+	state.responseStarted("")
+	state.localSpeechStopped()
+	if state.inputTurnPending || state.inputSpeechActive {
+		t.Fatalf("local speech stop reopened consumed turn: %+v", state)
+	}
+}
+
+func TestRealtimeTurnStateLocalSpeechStopKeepsUnansweredTurnPending(t *testing.T) {
+	state := realtimeTurnState{}
+	state.speechStarted()
+	state.localSpeechStopped()
+	if state.canInjectResponse() || !state.inputTurnPending {
+		t.Fatalf("local speech stop admitted unanswered turn: %+v", state)
+	}
+}
+
+func TestRealtimeTurnStateTracksTranscriptOnlyUserTurn(t *testing.T) {
+	state := realtimeTurnState{}
+	state.userTranscriptObserved()
+	if state.canInjectResponse() {
+		t.Fatal("task response was admitted while a transcript-only user turn was pending")
+	}
+	if !state.responseStarted("") {
+		t.Fatal("current transcript-only response was rejected")
+	}
+	if state.inputTurnPending {
+		t.Fatal("response start did not consume transcript-only user turn")
+	}
+}
+
+func TestRealtimeTurnStateCompletesTranscriptOnlyTurnWithoutResponse(t *testing.T) {
+	state := realtimeTurnState{}
+	state.userTranscriptObserved()
+	if !state.responseFinished("") || state.inputTurnPending {
+		t.Fatalf("transcript-only turn did not complete cleanly: %+v", state)
+	}
+}
+
+func TestRealtimeTurnStateAcceptsInterruptedResponseTerminalForCleanup(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("response-old")
+	state.responseInterrupted()
+
+	if !state.responseFinished("response-old") {
+		t.Fatal("terminal event for the interrupted response was not accepted for cleanup")
+	}
+	if state.responseActive || state.responseID != "" {
+		t.Fatalf("interrupted response terminal did not leave the state idle: %+v", state)
+	}
+}
+
+func TestRealtimeTurnStateRejectsInterruptedResponseTerminalAfterNewRequest(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("response-old")
+	state.responseInterrupted()
+	state.responseRequested()
+
+	if state.responseFinished("response-old") {
+		t.Fatal("terminal event from the interrupted response was accepted")
+	}
+	if !state.responseActive {
+		t.Fatalf("stale terminal event cleared the new requested response: %+v", state)
+	}
+}
+
+func TestRealtimeTurnStateRejectsCompletedResponseDuplicateAfterNewRequest(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("response-old")
+	if !state.responseFinished("response-old") {
+		t.Fatal("initial response terminal event was not accepted")
+	}
+	state.responseRequested()
+
+	if state.responseFinished("response-old") {
+		t.Fatal("duplicate terminal event from the completed response was accepted")
+	}
+	if !state.responseActive {
+		t.Fatalf("duplicate terminal event cleared the new requested response: %+v", state)
+	}
+}
+
+func TestRealtimeTurnStateLeavesInvalidTurnIdle(t *testing.T) {
+	state := realtimeTurnState{}
+	state.speechStarted()
+	state.speechStopped("turn_invalid")
+	if !state.canInjectResponse() {
+		t.Fatal("invalid speech turn left response admission blocked")
+	}
+}
+
 func TestRealtimePlaybackCapsInterruptionAtEstimatedPlayedAudio(t *testing.T) {
 	audio := &fakeRealtimePlaybackAudio{}
 	format := agent.AudioFormat{SampleRate: 24000, Channels: 1, BitWidth: 16}
@@ -229,6 +451,37 @@ func TestRealtimePlaybackCapsInterruptionAtEstimatedPlayedAudio(t *testing.T) {
 	want.AudioEndMS = 250
 	if got != want {
 		t.Fatalf("capped interruption = %+v, want %+v", got, want)
+	}
+}
+
+func TestRealtimePlaybackResumesResponseAfterInvalidTurn(t *testing.T) {
+	audio := &fakeRealtimePlaybackAudio{}
+	playback := realtimePlaybackState{}
+	state := realtimeTurnState{}
+	format := agent.AudioFormat{SampleRate: 24000, Channels: 1, BitWidth: 16}
+	state.responseStarted("response-1")
+	if err := playback.beginResponse(audio, format); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.append(audio, format, []byte{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.interrupt(audio, format); err != nil {
+		t.Fatal(err)
+	}
+	state.speechStarted()
+	state.speechStopped("turn_invalid")
+	if err := restoreRealtimePlaybackAfterInvalidTurn(&state, &playback, audio, format); err != nil {
+		t.Fatal(err)
+	}
+	if playback.suppressDeltas {
+		t.Fatal("invalid turn left response audio suppressed")
+	}
+	if err := playback.append(audio, format, []byte{3, 4}); err != nil {
+		t.Fatal(err)
+	}
+	if len(audio.writes) != 2 || string(audio.writes[1].data) != string([]byte{3, 4}) {
+		t.Fatalf("writes = %#v, want resumed response audio", audio.writes)
 	}
 }
 

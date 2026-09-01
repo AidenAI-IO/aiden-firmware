@@ -61,7 +61,7 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 	}
 	transport := newJSONWebSocketTransport(conn, "openai realtime", p.EventBuffer)
 	s := &openAISession{
-		jsonRealtimeSession: newJSONRealtimeSession(transport, newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true})),
+		jsonRealtimeSession: newJSONRealtimeSession(transport, newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{EmitsSpeechEvents: true, ExplicitToolContinuation: true})),
 	}
 	transport.start(func(body []byte) []Event {
 		event, ok := translateOpenAIEvent(body)

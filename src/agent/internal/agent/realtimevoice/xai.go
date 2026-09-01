@@ -85,7 +85,7 @@ func (p XAIProvider) openSession(ctx context.Context, cfg SessionConfig, model s
 	}
 	transport := newJSONWebSocketTransport(conn, "xai realtime", p.EventBuffer)
 	s := &xAISession{
-		jsonRealtimeSession: newJSONRealtimeSession(transport, newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{ExplicitToolContinuation: true})),
+		jsonRealtimeSession: newJSONRealtimeSession(transport, newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{EmitsSpeechEvents: true, ExplicitToolContinuation: true})),
 		transcripts:         make(map[string]string),
 	}
 	transport.start(func(body []byte) []Event {

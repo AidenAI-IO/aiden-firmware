@@ -89,6 +89,11 @@ type Tool struct {
 }
 
 type Capabilities struct {
+	// EmitsSpeechEvents means the provider emits EventSpeechStarted and
+	// EventSpeechStopped for input activity. Providers such as Gemini Live use
+	// server VAD without exposing those boundaries, so callers may need a local
+	// activity gate for admission decisions.
+	EmitsSpeechEvents bool
 	// ClientSideTurnDetection means the caller must detect the end of an
 	// input turn and invoke TurnCommitter. Provider-side VAD remains the
 	// default.
@@ -206,6 +211,10 @@ type ResponseInterrupter interface {
 type ResponseInterruption struct {
 	ItemID     string
 	AudioEndMS int
+	// ServerDetected is set when the provider's VAD reported the barge-in.
+	// Adapters use it only where that provider's protocol defines additional
+	// server-side interruption behavior.
+	ServerDetected bool
 }
 
 // ToolResultSender is an optional session capability for sessions that expose

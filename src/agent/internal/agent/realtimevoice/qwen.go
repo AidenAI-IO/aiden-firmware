@@ -56,7 +56,7 @@ func (p QwenProvider) Open(ctx context.Context, cfg SessionConfig) (Session, err
 	}
 	transport := newJSONWebSocketTransport(conn, "qwen realtime", p.EventBuffer)
 	session := &qwenSession{
-		jsonRealtimeSession: newJSONRealtimeSession(transport, newPCM16SessionInfo(cfg.SessionID, 16000, 24000, Capabilities{ExplicitToolContinuation: true})),
+		jsonRealtimeSession: newJSONRealtimeSession(transport, newPCM16SessionInfo(cfg.SessionID, 16000, 24000, Capabilities{EmitsSpeechEvents: true, ExplicitToolContinuation: true})),
 	}
 	transport.start(func(body []byte) []Event {
 		event, ok := translateQwenEvent(body)
@@ -183,7 +183,10 @@ type qwenSession struct {
 	*jsonRealtimeSession
 }
 
-func (s *qwenSession) Interrupt(ctx context.Context, _ ResponseInterruption) error {
+func (s *qwenSession) Interrupt(ctx context.Context, interruption ResponseInterruption) error {
+	if interruption.ServerDetected {
+		return nil
+	}
 	return s.cancelResponse(ctx)
 }
 
@@ -207,8 +210,18 @@ func translateQwenEvent(body []byte) (Event, bool) {
 		return Event{Kind: EventReady, SessionID: event.Session.ID}, true
 	case "input_audio_buffer.speech_started":
 		return Event{Kind: EventSpeechStarted}, true
-	case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
-		return Event{Kind: EventSpeechStopped}, true
+	case "input_audio_buffer.speech_stopped":
+		var event struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
+			return Event{Kind: EventError, Error: err}, true
+		}
+		return Event{Kind: EventSpeechStopped, Status: event.Reason}, true
+	case "input_audio_buffer.committed":
+		// speech_stopped owns the VAD turn boundary. committed only confirms
+		// that the same audio was stored and must not mutate turn state again.
+		return Event{}, false
 	case "conversation.item.input_audio_transcription.completed":
 		var event struct {
 			ItemID     string `json:"item_id"`
@@ -251,13 +264,14 @@ func translateQwenEvent(body []byte) (Event, bool) {
 		return Event{Kind: EventTranscriptDelta, ResponseID: event.ResponseID, ItemID: event.ItemID, Role: "assistant", Text: event.Delta, TextSource: textSource}, true
 	case "response.audio_transcript.done":
 		var event struct {
+			ResponseID string `json:"response_id"`
 			ItemID     string `json:"item_id"`
 			Transcript string `json:"transcript"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
-		return Event{Kind: EventTranscriptFinal, ItemID: event.ItemID, Role: "assistant", Text: event.Transcript, TextSource: "audio", Final: true}, true
+		return Event{Kind: EventTranscriptFinal, ResponseID: event.ResponseID, ItemID: event.ItemID, Role: "assistant", Text: event.Transcript, TextSource: "audio", Final: true}, true
 	case "response.function_call_arguments.done":
 		var event struct {
 			ResponseID string `json:"response_id"`
@@ -293,16 +307,33 @@ func translateQwenEvent(body []byte) (Event, bool) {
 	case "error":
 		var event struct {
 			Error struct {
+				Type    string `json:"type"`
+				Code    string `json:"code"`
 				Message string `json:"message"`
+				Param   string `json:"param"`
 			} `json:"error"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
+		if isQwenNoActiveResponseCancelError(event.Error.Type, event.Error.Param, event.Error.Message) {
+			return Event{}, false
+		}
 		return Event{Kind: EventError, Error: errors.New(event.Error.Message)}, true
 	default:
 		return Event{}, false
 	}
+}
+
+func isQwenNoActiveResponseCancelError(errorType, param, message string) bool {
+	if !strings.EqualFold(strings.TrimSpace(errorType), "invalid_request_error") {
+		return false
+	}
+	if param = strings.TrimSpace(param); param != "" && param != "response.cancel" {
+		return false
+	}
+	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(message)), ".")
+	return normalized == "conversation has no active response"
 }
 
 var _ Provider = QwenProvider{}
