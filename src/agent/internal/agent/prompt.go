@@ -86,8 +86,10 @@ func normalizeResponseLocale(locale string) string {
 	switch strings.ToLower(strings.TrimSpace(locale)) {
 	case "en-us":
 		return localeEnglishUS
-	default:
+	case "zh-cn":
 		return localeSimplifiedChinese
+	default:
+		return defaultLocale
 	}
 }
 

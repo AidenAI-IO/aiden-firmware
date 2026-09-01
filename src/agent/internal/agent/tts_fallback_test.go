@@ -39,7 +39,7 @@ func TestPlayTTSUnavailableFallbackStreamsBundledWAV(t *testing.T) {
 
 	ops := &recordedAudioOps{}
 	audio := NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, ops))
-	if err := playTTSUnavailableFallback(context.Background(), newAudioBackend(audio), Config{}); err != nil {
+	if err := playTTSUnavailableFallback(context.Background(), newAudioBackend(audio), Config{Locale: "zh-CN"}); err != nil {
 		t.Fatalf("playTTSUnavailableFallback() error = %v", err)
 	}
 	if got := ops.countOp("start_playback"); got != 1 {
@@ -58,7 +58,7 @@ func TestAttemptTTSUnavailableFallbackPreservesOriginalError(t *testing.T) {
 	ops := &recordedAudioOps{}
 	audio := NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, ops))
 	original := errors.New("dial tcp: connection refused")
-	played, err := attemptTTSUnavailableFallback(context.Background(), newAudioBackend(audio), Config{}, false, original)
+	played, err := attemptTTSUnavailableFallback(context.Background(), newAudioBackend(audio), Config{Locale: "zh-CN"}, false, original)
 	if !played {
 		t.Fatal("fallback played = false, want true")
 	}
@@ -156,7 +156,7 @@ func TestServerFinalSpeechStopsFailedPlaybackBeforeFallback(t *testing.T) {
 
 	ops := &recordedAudioOps{}
 	server := &Server{
-		runtime:     &Runtime{config: Config{Audio: AudioConfig{SampleRate: 16000}}},
+		runtime:     &Runtime{config: Config{Locale: "zh-CN", Audio: AudioConfig{SampleRate: 16000}}},
 		ttsManager:  ttsmodule.NewProviderManager(&recordingTTSProvider{name: "first-chunk-failure"}, nil),
 		audioClient: NewAudioServiceClient(startFirstChunkFailureThenFallbackAudioSocket(t, ops)),
 	}
