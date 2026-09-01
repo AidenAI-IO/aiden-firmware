@@ -411,7 +411,9 @@ func (s *Server) handleSTTTestStop(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	status := s.proxyAgentBytes(w, r, "/api/config-test/stt/stop", body)
+	upstreamRequest := r.Clone(r.Context())
+	upstreamRequest.Method = http.MethodPost
+	status := s.proxyAgentBytes(w, upstreamRequest, "/api/config-test/stt/stop", body)
 	if status >= 200 && status < 300 {
 		s.restartMu.Lock()
 		s.sttTestActive = false

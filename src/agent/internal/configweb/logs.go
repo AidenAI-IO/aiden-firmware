@@ -56,14 +56,9 @@ func (s *Server) handleLLMLogs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "files": files})
 }
 
-func decodedLogName(path, prefix string) (string, bool) {
-	name, err := urlPathUnescape(strings.TrimPrefix(path, prefix))
+func decodedLogSegment(encoded string) (string, bool) {
+	name, err := url.PathUnescape(encoded)
 	return name, err == nil && validLLMLogName(name)
-}
-
-func urlPathUnescape(value string) (string, error) {
-	// QueryUnescape intentionally keeps the old endpoint's '+' -> space behavior.
-	return url.QueryUnescape(value)
 }
 
 func openRegularNoSymlink(path string) (*os.File, os.FileInfo, error) {
@@ -89,8 +84,8 @@ func openRegularNoSymlink(path string) (*os.File, os.FileInfo, error) {
 	return file, info, nil
 }
 
-func (s *Server) handleLLMLogExport(w http.ResponseWriter, r *http.Request) {
-	name, ok := decodedLogName(r.URL.Path, "/api/llm-logs/export/")
+func (s *Server) handleLLMLogExportName(w http.ResponseWriter, encodedName string) {
+	name, ok := decodedLogSegment(encodedName)
 	if !ok {
 		writeJSONError(w, 400, "invalid log file name")
 		return
@@ -110,8 +105,8 @@ func (s *Server) handleLLMLogExport(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, file)
 }
 
-func (s *Server) handleLLMLogImport(w http.ResponseWriter, r *http.Request) {
-	name, ok := decodedLogName(r.URL.Path, "/api/llm-logs/import/")
+func (s *Server) handleLLMLogImportName(w http.ResponseWriter, r *http.Request, encodedName string) {
+	name, ok := decodedLogSegment(encodedName)
 	if !ok {
 		writeJSONError(w, 400, "invalid log file name")
 		return

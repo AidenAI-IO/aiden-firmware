@@ -13,7 +13,7 @@ async function exportLogs() {
   setBanner(t('logs.exporting'), false);
   setDetails('');
   try {
-    const res = await fetch('/api/logs/export');
+    const res = await fetch('/api/v1/support/archive');
     if (!res.ok) {
       const text = await res.text();
       let msg = text || ('HTTP ' + res.status);
@@ -190,7 +190,7 @@ async function refreshAgentLog(showBanner) {
   const btn = byId('refreshAgentLogBtn');
   if (btn) btn.disabled = true;
   try {
-    const payload = await request('/api/agent/logs', {method: 'GET'});
+    const payload = await request('/api/v1/agent/logs', {method: 'GET'});
     if (refreshId !== agentLogRefreshId) return;
     const snapshot = payload.agent_log || {};
     const recoveringFromFailure = !!appState.agentLogFailureView;
