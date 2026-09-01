@@ -1170,7 +1170,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		maxResponseTokens = req.MaxTokens
 	}
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
-	compactionTrigger, _, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
+	compactionTrigger, compactionEnabled := conversationCompactionTrigger(usableInputBudget)
 	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
 
 	// Historical state and tool-result pruning is deterministic and has its own
