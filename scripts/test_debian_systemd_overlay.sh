@@ -127,6 +127,10 @@ grep -q 'aiden-userdata-migrate.service' "${UNIT_DIR}/aiden-frame.service"
 grep -qx 'StartLimitIntervalSec=0' "${UNIT_DIR}/aiden-frame.service"
 grep -qx 'Restart=on-failure' "${UNIT_DIR}/aiden-frame.service"
 grep -qx 'RestartSec=2s' "${UNIT_DIR}/aiden-frame.service"
+grep -qx 'Group=aiden' "${UNIT_DIR}/aiden-frame.service"
+grep -qx 'SupplementaryGroups=audio video' "${UNIT_DIR}/aiden-frame.service"
+grep -qx 'Group=aiden' "${UNIT_DIR}/aiden-audio.service"
+grep -qx 'SupplementaryGroups=audio video' "${UNIT_DIR}/aiden-audio.service"
 grep -qx 'ExecStart=/usr/lib/aiden/aiden-boot-timeline init-systemd' \
     "${UNIT_DIR}/aiden-boot-timeline-init.service"
 grep -qx 'ExecStart=/usr/lib/aiden/aiden-boot-timeline finalize-systemd' \

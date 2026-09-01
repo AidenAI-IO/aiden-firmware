@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/un.h>
 #include <utility>
@@ -48,6 +49,18 @@ FrameServiceStatus UdsServer::start() {
         ::listen(server_fd_, 16) < 0) {
         ::close(server_fd_);
         server_fd_ = -1;
+        ::unlink(socket_path_.c_str());
+        return FrameServiceStatus::TRANSPORT_ERROR;
+    }
+
+    // UNIX sockets inherit the process umask (0755 with Debian's default),
+    // which prevents the non-root Aiden user from reaching the service.  Set
+    // the intended API mode explicitly; the systemd units provide the
+    // matching `aiden` group ownership.
+    if (::chmod(socket_path_.c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP) != 0) {
+        ::close(server_fd_);
+        server_fd_ = -1;
+        ::unlink(socket_path_.c_str());
         return FrameServiceStatus::TRANSPORT_ERROR;
     }
 

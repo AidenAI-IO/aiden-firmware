@@ -20,11 +20,24 @@ The directly flashable image is:
 output/debian/image/update.img
 ```
 
-Flash it with:
+On Linux, flash it with the guarded helper below. It checks the image digest,
+requires Loader/Maskrom mode, and makes the destructive userdata overwrite
+explicit:
 
 ```bash
-./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
+FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+IMAGE=output/debian/image/update.img
+SHA256=$(awk '{print $1}' "${IMAGE}.sha256")
+scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/debian-stage1/flash.sh flash \
+  --tool "${FLASH_TOOL}" \
+  --image "${IMAGE}" \
+  --sha256 "${SHA256}" \
+  --confirm-erase-all-data
 ```
+
+The repository-root `upgrade_tool/upgrade_tool` is a macOS Mach-O binary; use
+the Linux tool from the Stage 3 SDK on Linux.
 
 The image installs these main runtime trees:
 

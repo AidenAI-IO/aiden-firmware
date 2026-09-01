@@ -225,6 +225,18 @@ grep -Fq 'overlay-debian-oem/' \
     || fail "Debian OEM VAD model is missing"
 [ -s "${REPO_ROOT}/overlay-debian-oem/usr/share/aiden/audio/config_aivqe.json" ] \
     || fail "Debian OEM VQE configuration is missing"
+for library in libaec_bf_process.so librkaudio_common.so; do
+    [ -s "${REPO_ROOT}/overlay-debian-oem/usr/lib/${library}" ] \
+        || fail "Debian OEM VQE runtime library is missing: ${library}"
+done
+[ "$(sha256sum "${REPO_ROOT}/overlay-debian-oem/usr/lib/libaec_bf_process.so" | awk '{print $1}')" = \
+    3427abaa4b2ab7917d079e6cba46a68a836069bcc7f6b9e94630353fcd8c1a9a ] \
+    || fail "Debian OEM VQE AEC runtime checksum changed"
+[ "$(sha256sum "${REPO_ROOT}/overlay-debian-oem/usr/lib/librkaudio_common.so" | awk '{print $1}')" = \
+    de8ff824dd1f2e5ec1074b84490d2836ed9dc61d59d6a90d9cdf19386097263c ] \
+    || fail "Debian OEM RKAUDIO common runtime checksum changed"
+grep -Fq 'VQE runtime library checksum mismatch' \
+    "${STAGE3_DIR}/container-audit-images.sh"
 [ -s "${REPO_ROOT}/overlay-debian-oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex" ] \
     || fail "Debian OEM EDID is missing"
 if grep -Fq '${REPO_ROOT}/overlay/' "${STAGE3_DIR}/container-assemble-images.sh"; then
