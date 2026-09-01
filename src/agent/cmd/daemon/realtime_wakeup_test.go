@@ -10,6 +10,8 @@ import (
 
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/agent/rtclient"
+
+	langtools "github.com/tmc/langchaingo/tools"
 )
 
 type fakeRealtimePlaybackAudio struct {
@@ -309,7 +311,8 @@ func TestStartRealtimeToolCallDoesNotBlockEventLoop(t *testing.T) {
 	results := make(chan realtimeToolResult, 1)
 	call := rtclient.FunctionCallEvent{ResponseID: "resp-1", CallID: "call-1", Name: realtimeRecallTool, Arguments: `{}`}
 
-	startRealtimeToolCall(context.Background(), realtimeVoiceToolExecutor{recall: tool}, call, results)
+	executor := realtimeVoiceToolExecutor{delegated: map[string]langtools.Tool{realtimeRecallTool: tool}}
+	startRealtimeToolCall(context.Background(), executor, call, results)
 	select {
 	case <-tool.started:
 	case <-time.After(time.Second):
@@ -354,6 +357,91 @@ func TestRealtimeToolTrackerContinuesWhenResultsPrecedeResponseDone(t *testing.T
 	}
 	if hasTools, continueNow := tracker.done("resp-1"); !hasTools || !continueNow {
 		t.Fatalf("done() = (%t, %t), want immediate continuation", hasTools, continueNow)
+	}
+}
+
+func TestRealtimeChatAdmissionQueuesTextWhileFarewellResponseIsActive(t *testing.T) {
+	state := realtimeChatAdmissionState{responseActive: true, standbyPending: true}
+	if got := state.admission(); got != realtimeChatQueueAfterResponse {
+		t.Fatalf("admission() = %v, want queue after farewell response", got)
+	}
+
+	state.standbyPending = false
+	if got := state.admission(); got != realtimeChatRejectBusy {
+		t.Fatalf("admission without standby request = %v, want busy", got)
+	}
+}
+
+func TestRealtimeChatAdmissionStartsTextDuringFarewellDrain(t *testing.T) {
+	state := realtimeChatAdmissionState{standbyPending: true}
+	if got := state.admission(); got != realtimeChatStart {
+		t.Fatalf("admission() = %v, want immediate start", got)
+	}
+}
+
+func TestRealtimeSleepStateDefersStandbyUntilFarewellDrains(t *testing.T) {
+	var sleep realtimeSleepState
+	if sleep.pending() || sleep.shouldDrain() {
+		t.Fatal("fresh sleep state already requested standby")
+	}
+	sleep.request()
+	if !sleep.pending() {
+		t.Fatal("pending() = false after request()")
+	}
+	if !sleep.shouldDrain() {
+		t.Fatal("shouldDrain() = false before the drain started")
+	}
+
+	drain := make(chan error, 1)
+	sleep.startDrain(drain, func() {})
+	if sleep.shouldDrain() {
+		t.Fatal("shouldDrain() = true after the drain already started")
+	}
+	if sleep.draining() == nil {
+		t.Fatal("draining() = nil while the farewell is draining")
+	}
+
+	drain <- nil
+	select {
+	case <-sleep.draining():
+	case <-time.After(time.Second):
+		t.Fatal("drain completion was not observable through draining()")
+	}
+}
+
+func TestRealtimeSleepStateAbandonCancelsPendingStandby(t *testing.T) {
+	var sleep realtimeSleepState
+	if sleep.abandon() {
+		t.Fatal("abandon() = true without a pending request")
+	}
+
+	canceled := false
+	sleep.request()
+	sleep.startDrain(make(chan error, 1), func() { canceled = true })
+	if !sleep.abandon() {
+		t.Fatal("abandon() = false with a pending request")
+	}
+	if !canceled {
+		t.Fatal("abandon() did not cancel the drain context")
+	}
+	if sleep.pending() || sleep.draining() != nil {
+		t.Fatal("abandon() left standby state behind")
+	}
+	// A nil drain channel blocks forever in select, so the loop cannot fall
+	// into standby after the user re-engages.
+	select {
+	case <-sleep.draining():
+		t.Fatal("draining() is still ready after abandon()")
+	default:
+	}
+}
+
+func TestRealtimeSleepStateDrainIsNotReadyBeforeRequest(t *testing.T) {
+	var sleep realtimeSleepState
+	select {
+	case <-sleep.draining():
+		t.Fatal("draining() is ready without an end_conversation request")
+	default:
 	}
 }
 
