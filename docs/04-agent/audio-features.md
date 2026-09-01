@@ -59,10 +59,13 @@ Before final non-streaming TTS, the runtime passes the spoken reply through the 
 ### `input_mode = "realtime"`
 
 Runs the realtime voice session selected by `[voice_model].provider` from the
-named `[voice_model_providers]` records. Realtime
-activation is selected explicitly by `input_mode = "realtime"`; it is not
-controlled by whether a legacy flat `voice_model.api_key` is empty. The realtime session also
-supports `/api/chat` activation when GPIO is unavailable.
+named `[voice_model_providers]` records. Realtime activation is selected
+explicitly by `input_mode = "realtime"`; it is not controlled by API key
+presence. The realtime session also supports `/api/chat` activation when GPIO
+is unavailable.
+
+See [Realtime Voice Module](realtime-voice.md) for the adapter layers,
+provider capability differences, and event lifecycle.
 
 ## Wakeup Trigger
 

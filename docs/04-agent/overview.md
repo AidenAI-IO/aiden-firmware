@@ -35,7 +35,7 @@ In the firmware, it is installed by default to:
 - Device and Task Episode memory; see [Memory Plane](memory-plane.md)
 - Web UI: chat history, browser recording, attachments, Tool Lab, Skill Export
 - iOS Live Activity / Dynamic Island task status; see [Live Activity / Dynamic Island](live-activity.md)
-- Device-side voice pipeline: VAD / STT / TTS
+- Device-side voice pipeline: VAD / STT / TTS; [Realtime Voice](realtime-voice.md)
 
 ## Run Modes
 

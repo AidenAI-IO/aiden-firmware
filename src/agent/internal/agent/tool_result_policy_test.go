@@ -46,13 +46,34 @@ func TestToolResultPolicyKeepsSmallResultInline(t *testing.T) {
 	}
 }
 
-func TestToolResultCompactionBudgetsRequirePositiveUsableInput(t *testing.T) {
-	if trigger, target, ok := toolResultCompactionBudgets(0); ok || trigger != 0 || target != 0 {
-		t.Fatalf("toolResultCompactionBudgets(0) = %d, %d, %v; want disabled", trigger, target, ok)
+func TestConversationCompactionTriggerRequiresPositiveUsableInput(t *testing.T) {
+	if trigger, ok := conversationCompactionTrigger(0); ok || trigger != 0 {
+		t.Fatalf("conversationCompactionTrigger(0) = %d, %v; want disabled", trigger, ok)
 	}
-	trigger, target, ok := toolResultCompactionBudgets(10_000)
-	if !ok || trigger != 8_000 || target != 7_000 {
-		t.Fatalf("toolResultCompactionBudgets(10000) = %d, %d, %v; want 8000, 7000, true", trigger, target, ok)
+	trigger, ok := conversationCompactionTrigger(10_000)
+	if !ok || trigger != 8_000 {
+		t.Fatalf("conversationCompactionTrigger(10000) = %d, %v; want 8000, true", trigger, ok)
+	}
+}
+
+func TestHistoricalPruneBudgetsUseConfiguredThresholdIndependently(t *testing.T) {
+	trigger, target, ok := historicalPruneBudgets(100_000, 12_000)
+	if !ok || trigger != 12_000 || target != 10_500 {
+		t.Fatalf("historicalPruneBudgets(100000, 12000) = %d, %d, %v; want 12000, 10500, true", trigger, target, ok)
+	}
+
+	trigger, target, ok = historicalPruneBudgets(8_000, 12_000)
+	if !ok || trigger != 12_000 || target != 10_500 {
+		t.Fatalf("historicalPruneBudgets(8000, 12000) = %d, %d, %v; want exact configured 12000, 10500, true", trigger, target, ok)
+	}
+
+	trigger, target, ok = historicalPruneBudgets(10_000, 0)
+	if !ok || trigger != 7_000 || target != 6_000 {
+		t.Fatalf("historicalPruneBudgets(10000, 0) = %d, %d, %v; want 7000, 6000, true", trigger, target, ok)
+	}
+	compactionTrigger, compactionOK := conversationCompactionTrigger(10_000)
+	if !compactionOK || trigger >= compactionTrigger {
+		t.Fatalf("automatic historical prune trigger = %d, compaction trigger = %d; prune must run first", trigger, compactionTrigger)
 	}
 }
 

@@ -475,6 +475,7 @@ type Agent struct {
 	Locale                     string  `json:"locale"`
 	CustomInstruction          string  `json:"custom_instruction"`
 	AdditionalPrompt           string  `json:"additional_prompt"`
+	ContextPruneThreshold      int     `json:"context_prune_threshold,omitempty"`
 	InputMode                  string  `json:"input_mode"`
 	VADBackend                 string  `json:"vad_backend"`
 	VADModelPath               string  `json:"vad_model_path"`
@@ -689,6 +690,7 @@ func (d Config) ToAgentConfig() agent.Config {
 		Locale:                     d.Agent.Locale,
 		Instruction:                d.Agent.CustomInstruction,
 		AdditionalPrompt:           d.Agent.AdditionalPrompt,
+		ContextPruneThreshold:      d.Agent.ContextPruneThreshold,
 		InputMode:                  d.Agent.InputMode,
 		VADBackend:                 d.Agent.VADBackend,
 		VADModelPath:               d.Agent.VADModelPath,
@@ -1068,6 +1070,7 @@ func FromAgentConfig(cfg agent.Config) Config {
 			Locale:                     cfg.LocaleOrDefault(),
 			CustomInstruction:          customInstructionValue(cfg.Instruction),
 			AdditionalPrompt:           cfg.AdditionalPrompt,
+			ContextPruneThreshold:      cfg.ContextPruneThreshold,
 			InputMode:                  cfg.InputModeOrDefault(),
 			VADBackend:                 cfg.VADBackendOrDefault(),
 			VADModelPath:               cfg.VADModelPath,

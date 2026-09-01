@@ -1191,6 +1191,17 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 
 }
 
+func TestConfigValidateRejectsNegativeContextPruneThreshold(t *testing.T) {
+	cfg := Config{
+		Model:                 ModelConfig{Provider: "fake"},
+		ContextPruneThreshold: -1,
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "context_prune_threshold") {
+		t.Fatalf("expected context_prune_threshold validation error, got %v", err)
+	}
+}
+
 func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {
 	cfg := Config{
 		Model:                 ModelConfig{Provider: "fake"},

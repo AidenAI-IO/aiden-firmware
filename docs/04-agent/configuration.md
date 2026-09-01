@@ -68,7 +68,7 @@ The firmware starts `config_web` on port 80.
 
 The page fields cover the following config sections (all detailed later on this page). The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
-- `agent`: `locale`, `input_mode`, VAD params, `max_iterations`, `custom_instruction`, `additional_prompt`
+- `agent`: `locale`, `input_mode`, VAD params, `max_iterations`, `context_prune_threshold`, `custom_instruction`, `additional_prompt`
 - `model`: provider, model, api_key, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
@@ -91,6 +91,7 @@ The page fields cover the following config sections (all detailed later on this 
 locale = "en-US"
 custom_instruction = ""
 max_iterations = -1
+context_prune_threshold = 12000
 screenshot_keep_n = 3
 screenshot_prune_interval = 2
 input_mode = "text"
@@ -226,6 +227,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
 | `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
+| `context_prune_threshold`   | `0`                         | Estimated token count that independently triggers deterministic cleanup of expired state snapshots and historical tool results. `0` derives the trigger as 70% of the usable model input budget and cleans down to 60%, before local conversation compaction at 80%. A positive value is honored exactly; its cleanup target is 70/80 of the configured trigger. |
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
 | `input_mode`                | `text` / `stt` / `realtime` | Input mode: HTTP/Web UI only, legacy STT/TTS voice loop, or direct realtime voice model                                                                                                                                 |
@@ -356,7 +358,7 @@ built. When a section is named exactly like a provider type, the section wins.
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
 | `api_mode`                | Wire protocol. Omit it (or use `chat_completions`) for the existing Chat Completions path; `responses` sends full local context to OpenAI, OpenRouter, or Volcengine Ark. OpenAI and Ark receive `store=false`; OpenRouter omits both `store` and `previous_response_id` because its Responses endpoint is stateless. `responses_stateful` sends `store=true`, resends top-level `instructions`, and chains follow-up requests with `previous_response_id` while submitting only newly appended items. The local transcript remains authoritative for audit, compaction, session rotation, and recovery. Stateful mode is enabled for OpenAI and Volcengine Ark. Moonshot Kimi exposes Chat Completions rather than `/responses`; native Anthropic and Ollama transports also do not implement this protocol. Custom compatible gateways can use provider type `openai`. |
-| `responses_context_management` | Provider-side Responses context policy. `compaction` sends OpenAI's token-based compaction array; `ark_context_edit` sends Volcengine Ark's object-shaped `context_management.edits` policy; empty/`disabled` omits provider context management. |
+| `responses_context_management` | Provider-side Responses context policy. `compaction` sends OpenAI's token-based compaction array; `ark_context_edit` sends Volcengine Ark's object-shaped `context_management.edits` policy; empty/`disabled` omits provider context management. This policy is independent from local historical state/tool-result pruning. |
 | `responses_compact_threshold` | Optional token threshold sent with provider compaction. `0` lets the provider choose. |
 | `responses_context_edit_trigger` | Ark tool-call count that triggers `clear_tool_uses`; `0` uses the recommended value `10`. |
 | `responses_context_edit_keep` | Ark recent tool-call count to retain after cleanup; `0` uses the recommended value `3`. |

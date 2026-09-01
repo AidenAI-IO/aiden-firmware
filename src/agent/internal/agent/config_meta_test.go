@@ -199,6 +199,11 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 			label:  "Conversation API",
 			help:   "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
 		},
+		"agent.context_prune_threshold": {
+			label:       "Historical prune threshold (tokens)",
+			placeholder: "0 = automatic",
+			help:        "Token count that triggers cleanup of expired state and historical tool results. 0 automatically triggers at 70% of the usable model input budget, before conversation compaction at 80%.",
+		},
 		"model.responses_context_management": {
 			layout: "wide",
 			label:  "Provider compaction",
@@ -408,6 +413,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 	}{
 		{"model.provider", defaults.Model.Provider},
 		{"model.model", defaults.Model.Model},
+		{"agent.context_prune_threshold", defaults.ContextPruneThreshold},
 		// temperature's effective default is model-dependent and resolved at
 		// load time, so the metadata placeholder is the global fallback rather
 		// than the (now unset) DefaultConfig value.
@@ -689,6 +695,7 @@ func TestConfigMeta_ResponsesOptionsUsePlainLanguage(t *testing.T) {
 	idx := fieldIndex(t)
 	wantLabels := map[string]string{
 		"model.api_mode":                              "Conversation API",
+		"agent.context_prune_threshold":               "Historical prune threshold (tokens)",
 		"model.responses_context_management":          "Provider compaction",
 		"model.responses_compact_threshold":           "Compaction threshold (tokens)",
 		"model.responses_truncation":                  "Over-limit input",
