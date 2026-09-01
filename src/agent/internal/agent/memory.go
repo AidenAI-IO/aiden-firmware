@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"github.com/tmc/langchaingo/llms"
-	langmemory "github.com/tmc/langchaingo/memory"
-	"github.com/tmc/langchaingo/schema"
 )
 
 const (
@@ -32,12 +30,6 @@ type SessionRotationResult struct {
 	ArchiveDir      string
 	ClosedSessionID string
 	ActiveSessionID string
-}
-
-// MemoryHandle wraps a langchain memory instance and its chat history.
-type MemoryHandle struct {
-	Memory  schema.Memory
-	History *langmemory.ChatMessageHistory
 }
 
 // SummarizeFn generates a summary string from a list of session events.
@@ -61,7 +53,6 @@ type ContextWindowFn func() model.ModelSpec
 // and persistent filesystem storage.
 type MemoryManager struct {
 	mu                             sync.Mutex
-	handles                        map[string]*MemoryHandle
 	eventCount                     map[string]int
 	storageDir                     string
 	extraction                     MemoryExtractionConfig
@@ -245,7 +236,6 @@ func WithContextWindowFn(fn ContextWindowFn) MemoryManagerOption {
 // directory and options.
 func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryManager {
 	manager := &MemoryManager{
-		handles:              map[string]*MemoryHandle{},
 		eventCount:           map[string]int{},
 		pendingSessionEvents: map[string][]SessionEvent{},
 		extraction:           DefaultMemoryExtractionConfig(),
@@ -337,135 +327,20 @@ func (m *MemoryManager) ConsumePromptTokenFloor() int {
 	return tokens
 }
 
-// Get retrieves or creates a memory handle for the specified agent.
-func (m *MemoryManager) Get(agentName string, cfg MemoryConfig) (*MemoryHandle, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if handle, ok := m.handles[agentName]; ok {
-		return handle, nil
-	}
-
-	handle, err := newMemoryHandle(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := m.loadPersistedMessages(handle.History, agentName); err != nil {
-		return nil, err
-	}
-
-	m.handles[agentName] = handle
-	return handle, nil
-}
-
-func newMemoryHandle(cfg MemoryConfig) (*MemoryHandle, error) {
-	memoryKey := cfg.MemoryKey
-	if memoryKey == "" {
-		memoryKey = "history"
-	}
-
-	history := langmemory.NewChatMessageHistory()
-	options := []langmemory.ConversationBufferOption{
-		langmemory.WithChatHistory(history),
-		langmemory.WithInputKey("input"),
-		langmemory.WithOutputKey("output"),
-		langmemory.WithMemoryKey(memoryKey),
-	}
-
-	handle := &MemoryHandle{History: history}
-	switch cfg.Type {
-	case "", "buffer":
-		handle.Memory = langmemory.NewConversationBuffer(options...)
-	case "window":
-		windowSize := cfg.WindowSize
-		if windowSize <= 0 {
-			windowSize = 6
-		}
-		handle.Memory = langmemory.NewConversationWindowBuffer(windowSize, options...)
-	default:
-		return nil, fmt.Errorf("unsupported memory type %q", cfg.Type)
-	}
-	return handle, nil
-}
-
-// Snapshot returns the current conversation history as message records.
-func (m *MemoryManager) Snapshot(ctx context.Context, agentName string) ([]MessageRecord, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	handle, ok := m.handles[agentName]
-	if !ok {
-		return nil, nil
-	}
-
-	messages, err := handle.History.Messages(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]MessageRecord, 0, len(messages))
-	for _, message := range messages {
-		result = append(result, MessageRecord{
-			Role:    string(message.GetType()),
-			Content: message.GetContent(),
-		})
-	}
-	return result, nil
-}
-
 // ClearSession clears the in-memory session and removes persisted session data.
 func (m *MemoryManager) ClearSession(ctx context.Context, agentName string) error {
-	m.mu.Lock()
-	handle, ok := m.handles[agentName]
-	if ok {
-		if err := handle.Memory.Clear(ctx); err != nil {
-			m.mu.Unlock()
-			return err
-		}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	m.mu.Unlock()
-
 	return m.removeSessionPersisted(agentName)
 }
 
 // ClearAll clears all memory including session, long-term, and episodic data.
 func (m *MemoryManager) ClearAll(ctx context.Context, agentName string) error {
-	m.mu.Lock()
-	handle, ok := m.handles[agentName]
-	if ok {
-		if err := handle.Memory.Clear(ctx); err != nil {
-			m.mu.Unlock()
-			return err
-		}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	m.mu.Unlock()
-
 	return m.removeAllPersisted(agentName)
-}
-
-// Save persists the current memory state into session events and triggers maintenance.
-func (m *MemoryManager) Save(ctx context.Context, agentName string) (retErr error) {
-	defer func() { retErr = m.suppressStorageWriteError(retErr) }()
-	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
-		m.setPersistencePending(true)
-		return nil
-	}
-	if err := m.flushPendingSessionEvents(ctx, agentName, nil); err != nil {
-		return err
-	}
-	records, err := m.Snapshot(ctx, agentName)
-	if err != nil {
-		return err
-	}
-	if err := m.syncSessionRecords(agentName, records); err != nil {
-		return err
-	}
-	if err := m.maintainFilesystemMemory(ctx); err != nil {
-		return err
-	}
-	m.setPersistencePending(false)
-	return nil
 }
 
 // RequestMaintenance schedules asynchronous memory maintenance.
@@ -789,11 +664,6 @@ func (m *MemoryManager) RotateSessionEventsDetailed() (SessionRotationResult, er
 		}
 		m.lastPromptTokens = 0
 		m.pendingPromptTokenFloor = 0
-		for _, handle := range m.handles {
-			if handle != nil && handle.Memory != nil {
-				_ = handle.Memory.Clear(context.Background())
-			}
-		}
 		return SessionRotationResult{
 			ArchiveDir:      archiveDir,
 			ClosedSessionID: closedSessionID,
@@ -963,119 +833,6 @@ func newSessionID(now time.Time) string {
 	return utc.Format("20060102150405") + fmt.Sprintf("%03d", utc.Nanosecond()/int(time.Millisecond))
 }
 
-func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHistory, agentName string) error {
-	if m.storageDir == "" {
-		return nil
-	}
-	if records, hotWindowTokens, eventCount, ok, err := m.loadSessionMessageRecords(agentName); err != nil {
-		return err
-	} else if ok {
-		// Restore only real chat records into ChatMessageHistory. Snapshot()
-		// reads history verbatim and appendSessionEvents() writes records by
-		// index, so synthetic prompt text must not enter this history.
-		messages := make([]llms.ChatMessage, 0, len(records))
-		for _, record := range records {
-			messages = append(messages, messageFromRecord(record))
-		}
-		if err := history.SetMessages(context.Background(), messages); err != nil {
-			return fmt.Errorf("restore session events for %q: %w", agentName, err)
-		}
-		m.eventCount[agentName] = eventCount
-		// Cold-start seeding: a fresh process has lastPromptTokens == 0, which
-		// makes the first shouldCompress skip the token-driven branch and fall
-		// back to the coarse event-count heuristic. Seed it from the estimated
-		// size of the hot window just read off disk so token-driven compaction
-		// stays accurate on the very first turn after a restart. Only seed when
-		// no live prompt token count has been recorded yet, so we never clobber
-		// a value set by an in-flight turn. Caller holds m.mu, so assign the
-		// field directly rather than via SetLastPromptTokens (non-reentrant).
-		if m.lastPromptTokens == 0 {
-			m.lastPromptTokens = hotWindowTokens
-		}
-		return nil
-	}
-	return nil
-}
-
-func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRecord, int, int, bool, error) {
-	fl := NewFileLock(m.storageDir)
-	if err := fl.Lock(m.lockTimeout); err != nil {
-		return nil, 0, 0, false, fmt.Errorf("lock for loading session events %q: %w", agentName, err)
-	}
-	defer fl.Unlock()
-
-	if records, hotWindowTokens, eventCount, ok, err := m.loadSessionMessageRecordsLocked(agentName); err != nil {
-		return nil, 0, 0, false, err
-	} else if ok {
-		return records, hotWindowTokens, eventCount, true, nil
-	}
-
-	legacyRecords, ok, err := m.loadLegacyMessageRecordsLocked(agentName)
-	if err != nil {
-		return nil, 0, 0, false, err
-	}
-	if !ok {
-		return nil, 0, 0, false, nil
-	}
-	if len(legacyRecords) == 0 {
-		m.removeLegacySnapshotAfterMigration(agentName)
-		return nil, 0, 0, true, nil
-	}
-	if err := m.appendSessionEvents(agentName, legacyRecords); err != nil {
-		return nil, 0, 0, false, fmt.Errorf("migrate legacy persisted memory for %q: %w", agentName, err)
-	}
-	m.removeLegacySnapshotAfterMigration(agentName)
-	return m.loadSessionMessageRecordsLocked(agentName)
-}
-
-func (m *MemoryManager) loadSessionMessageRecordsLocked(agentName string) ([]MessageRecord, int, int, bool, error) {
-	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
-	result, err := session.readActiveEventsRepairingTruncatedTail()
-	if err != nil {
-		if isPathNotExistError(err) {
-			return nil, 0, 0, false, nil
-		}
-		return nil, 0, 0, false, fmt.Errorf("read session events for %q: %w", agentName, err)
-	}
-	m.logSessionEventsRepair(agentName, result)
-
-	records := make([]MessageRecord, 0, len(result.events))
-	hotWindowTokens := 0
-	for _, event := range result.events {
-		// Accumulate the token estimate over every persisted event (not just
-		// those that become message records) so the seeded value matches
-		// sumSessionEventTokens over the same on-disk hot window.
-		hotWindowTokens += estimateSessionEventTokens(event)
-		record, ok := messageRecordFromSessionEvent(event)
-		if ok {
-			records = append(records, record)
-		}
-	}
-	return records, hotWindowTokens, len(result.events), true, nil
-}
-
-func (m *MemoryManager) loadLegacyMessageRecordsLocked(agentName string) ([]MessageRecord, bool, error) {
-	data, err := os.ReadFile(legacyMemorySnapshotPath(m.storageDir, agentName))
-	if err != nil {
-		if isPathNotExistError(err) {
-			return nil, false, nil
-		}
-		return nil, false, fmt.Errorf("read legacy persisted memory for %q: %w", agentName, err)
-	}
-
-	var records []MessageRecord
-	if err := json.Unmarshal(data, &records); err != nil {
-		return nil, false, fmt.Errorf("decode legacy persisted memory for %q: %w", agentName, err)
-	}
-	return records, true, nil
-}
-
-func (m *MemoryManager) removeLegacySnapshotAfterMigration(agentName string) {
-	if err := os.Remove(legacyMemorySnapshotPath(m.storageDir, agentName)); err != nil && !os.IsNotExist(err) && m.logger != nil {
-		m.logger.Warn("[memory] remove migrated legacy snapshot for %q: %v", agentName, err)
-	}
-}
-
 func (m *MemoryManager) LoadActiveSessionEvents(ctx context.Context, limit int) ([]SessionEvent, error) {
 	if m == nil || strings.TrimSpace(m.storageDir) == "" {
 		return nil, nil
@@ -1118,30 +875,6 @@ func (m *MemoryManager) logSessionEventsRepair(agentName string, result sessionE
 	m.logger.Warn("[memory] repaired truncated session events for %q", agentName)
 }
 
-func (m *MemoryManager) syncSessionRecords(agentName string, records []MessageRecord) error {
-	if m.storageDir == "" {
-		return nil
-	}
-	if err := os.MkdirAll(m.storageDir, 0o755); err != nil {
-		return fmt.Errorf("create memory directory: %w", err)
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	fl := NewFileLock(m.storageDir)
-	if err := fl.Lock(m.lockTimeout); err != nil {
-		return fmt.Errorf("lock for persisting memory %q: %w", agentName, err)
-	}
-	defer fl.Unlock()
-
-	records = sanitizeMessageRecords(records)
-	if err := m.appendSessionEvents(agentName, records); err != nil {
-		return err
-	}
-	return nil
-}
-
 func sanitizeMessageRecords(records []MessageRecord) []MessageRecord {
 	out := make([]MessageRecord, len(records))
 	for i, record := range records {
@@ -1149,31 +882,6 @@ func sanitizeMessageRecords(records []MessageRecord) []MessageRecord {
 		out[i] = record
 	}
 	return out
-}
-
-func legacyMemorySnapshotPath(storageDir, agentName string) string {
-	agentName = strings.TrimSpace(agentName)
-	if agentName == "" {
-		agentName = "default"
-	}
-	safe := strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' {
-			return r
-		}
-		if r >= 'A' && r <= 'Z' {
-			return r
-		}
-		if r >= '0' && r <= '9' {
-			return r
-		}
-		switch r {
-		case '-', '_', '.':
-			return r
-		default:
-			return '_'
-		}
-	}, agentName)
-	return filepath.Join(storageDir, safe+".json")
 }
 
 func (m *MemoryManager) removeSessionPersisted(agentName string) error {
@@ -1189,9 +897,6 @@ func (m *MemoryManager) removeSessionPersisted(agentName string) error {
 	}
 	defer fl.Unlock()
 
-	if err := os.Remove(legacyMemorySnapshotPath(m.storageDir, agentName)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove legacy session memory for %q: %w", agentName, err)
-	}
 	if err := os.RemoveAll(filepath.Join(m.storageDir, "session")); err != nil {
 		return fmt.Errorf("remove session memory for %q: %w", agentName, err)
 	}
@@ -1217,9 +922,6 @@ func (m *MemoryManager) removeAllPersisted(agentName string) error {
 	}
 	defer fl.Unlock()
 
-	if err := os.Remove(legacyMemorySnapshotPath(m.storageDir, agentName)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove legacy memory for %q: %w", agentName, err)
-	}
 	for _, path := range []string{
 		filepath.Join(m.storageDir, "session"),
 		filepath.Join(m.storageDir, "long_term"),
@@ -1442,30 +1144,10 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	// checks maintenancePending and may run again immediately; if we left
 	// lastPromptTokens at the pre-compression high value, shouldCompress would
 	// continue returning true and trigger redundant compaction rounds.
-	// Sync in-memory state to match the compressed hot window on disk.
-	// Without this, eventCount and handle.History remain at pre-compression size,
-	// causing appendSessionEvents() to skip writes or use stale indices.
 	m.lastPromptTokens = cutMeta.KeptTokensEstimate
 	m.pendingPromptTokenFloor = 0
 	for agentName := range m.eventCount {
 		m.eventCount[agentName] = len(hotEvents)
-	}
-	for agentName, handle := range m.handles {
-		hotRecords := make([]MessageRecord, 0, len(hotEvents))
-		for _, event := range hotEvents {
-			if record, ok := messageRecordFromSessionEvent(event); ok {
-				hotRecords = append(hotRecords, record)
-			}
-		}
-		messages := make([]llms.ChatMessage, 0, len(hotRecords))
-		for _, record := range hotRecords {
-			messages = append(messages, messageFromRecord(record))
-		}
-		if err := handle.History.SetMessages(context.Background(), messages); err != nil {
-			fl.Unlock()
-			m.mu.Unlock()
-			return fmt.Errorf("sync in-memory history for %q after compaction: %w", agentName, err)
-		}
 	}
 	if err := fl.Unlock(); err != nil {
 		m.mu.Unlock()
@@ -1968,110 +1650,6 @@ func (m *MemoryManager) HasCompressedHistory() bool {
 	return m.hasCompressedHistory()
 }
 
-func (m *MemoryManager) appendSessionEvents(agentName string, records []MessageRecord) error {
-	path := m.sessionEventsPath()
-	var events []SessionEvent
-	if _, err := os.Stat(path); err == nil {
-		session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
-		result, err := session.readActiveEventsRepairingTruncatedTail()
-		if err != nil {
-			return fmt.Errorf("read session events for %q: %w", agentName, err)
-		}
-		m.logSessionEventsRepair(agentName, result)
-		events = result.events
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat session events for %q: %w", agentName, err)
-	}
-
-	existingRecords := conversationRecordsFromSessionEvents(events)
-	start := snapshotAppendStart(existingRecords, records)
-	hasSessionEvents := len(events) > 0 || start < len(records)
-	if hasSessionEvents {
-		sessionDir := filepath.Dir(path)
-		if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-			return fmt.Errorf("create session memory directory: %w", err)
-		}
-		if _, err := ensureActiveSessionMetadata(sessionDir, time.Now().UTC()); err != nil {
-			return fmt.Errorf("ensure active session metadata: %w", err)
-		}
-	}
-	if start >= len(records) {
-		m.eventCount[agentName] = len(events)
-		return nil
-	}
-
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("open session events for %q: %w", agentName, err)
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	now := time.Now().UTC()
-	sequenceOffset := len(events)
-	for i, record := range records[start:] {
-		event := sessionEventFromRecord(record, now, sequenceOffset+i)
-		if err := encoder.Encode(event); err != nil {
-			return fmt.Errorf("append session event for %q: %w", agentName, err)
-		}
-	}
-	m.eventCount[agentName] = sequenceOffset + len(records[start:])
-	return nil
-}
-
-func conversationRecordsFromSessionEvents(events []SessionEvent) []MessageRecord {
-	records := make([]MessageRecord, 0, len(events))
-	for _, event := range events {
-		if record, ok := messageRecordFromSessionEvent(event); ok {
-			records = append(records, record)
-		}
-	}
-	return records
-}
-
-func snapshotAppendStart(existingRecords, records []MessageRecord) int {
-	if messageRecordsHavePrefix(records, existingRecords) {
-		return len(existingRecords)
-	}
-	if messageRecordsHavePrefix(existingRecords, records) {
-		return len(records)
-	}
-	for overlap := min(len(existingRecords), len(records)); overlap > 0; overlap-- {
-		if messageRecordsEqualSlice(existingRecords[len(existingRecords)-overlap:], records[:overlap]) {
-			return overlap
-		}
-	}
-	return 0
-}
-
-func messageRecordsHavePrefix(records, prefix []MessageRecord) bool {
-	if len(prefix) > len(records) {
-		return false
-	}
-	for i, want := range prefix {
-		if !messageRecordsEqual(records[i], want) {
-			return false
-		}
-	}
-	return true
-}
-
-func messageRecordsEqualSlice(a, b []MessageRecord) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if !messageRecordsEqual(a[i], b[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func messageRecordsEqual(a, b MessageRecord) bool {
-	return a.Role == b.Role && a.Content == b.Content
-}
-
 func isTruncatedJSONLineError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "unexpected end of JSON input")
 }
@@ -2164,41 +1742,4 @@ func applySessionEventMetadata(event SessionEvent, meta SessionEventMetadata) Se
 		event.RunID = strings.TrimSpace(meta.RunID)
 	}
 	return event
-}
-
-func messageRecordFromSessionEvent(event SessionEvent) (MessageRecord, bool) {
-	switch event.Type {
-	case "assistant_output":
-		return MessageRecord{Role: string(llms.ChatMessageTypeAI), Content: event.Content}, true
-	case "user_input", "steer":
-		return MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: event.Content}, true
-	case "system_event":
-		return MessageRecord{Role: string(llms.ChatMessageTypeSystem), Content: event.Content}, true
-	case "tool_result":
-		if event.ToolName == "" && event.ToolInput == "" {
-			return MessageRecord{Role: string(llms.ChatMessageTypeTool), Content: event.Content}, true
-		}
-		return MessageRecord{}, false
-	default:
-		return MessageRecord{}, false
-	}
-}
-
-func messageFromRecord(record MessageRecord) llms.ChatMessage {
-	switch record.Role {
-	case string(llms.ChatMessageTypeAI):
-		return llms.AIChatMessage{Content: record.Content}
-	case string(llms.ChatMessageTypeSystem):
-		return llms.SystemChatMessage{Content: record.Content}
-	case string(llms.ChatMessageTypeFunction):
-		return llms.FunctionChatMessage{Content: record.Content}
-	case string(llms.ChatMessageTypeTool):
-		return llms.ToolChatMessage{Content: record.Content}
-	case string(llms.ChatMessageTypeGeneric):
-		return llms.GenericChatMessage{Content: record.Content, Role: record.Role}
-	case string(llms.ChatMessageTypeHuman):
-		fallthrough
-	default:
-		return llms.HumanChatMessage{Content: record.Content}
-	}
 }
