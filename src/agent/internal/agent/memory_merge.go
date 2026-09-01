@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,55 @@ import (
 	"aiden-agent/internal/agent/model"
 	"github.com/tmc/langchaingo/llms"
 )
+
+var (
+	// errMemoryMergeTruncated marks a response that stopped because the token
+	// budget ran out rather than because the model finished. The content is
+	// returned alongside it so callers can log where it stopped, but it is not
+	// parseable JSON and the call should be retried with a larger budget.
+	errMemoryMergeTruncated = errors.New("memory merge model response was truncated")
+	// errMemoryMergeEmpty marks a response with no usable content. Keep the
+	// message stable: it is matched against historical device logs.
+	errMemoryMergeEmpty = errors.New("memory merge model returned an empty response")
+)
+
+// isMemoryMergeTruncatedStopReason reports whether a finish reason means the
+// model hit its output ceiling. OpenAI-compatible APIs report "length",
+// Anthropic reports "max_tokens", and the Responses API reports "incomplete".
+func isMemoryMergeTruncatedStopReason(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "length", "max_tokens", "max_output_tokens", "incomplete":
+		return true
+	default:
+		return false
+	}
+}
+
+// memoryMergeTokenBudget sizes the output budget for a batch of itemCount items.
+//
+// It stays linear in the batch size up to maxTokens, so a larger batch never
+// leaves each item with less room than a smaller one -- a cap applied to a
+// per-item product inverts that, which is how a full batch ended up with a
+// smaller share than a single item.
+//
+// It also grows by half per retry attempt, so a batch that was truncated is
+// retried with more headroom instead of replaying the same failing call.
+func memoryMergeTokenBudget(perItem, itemCount, maxTokens, attempt int) int {
+	if itemCount < 1 {
+		itemCount = 1
+	}
+	if attempt < 0 {
+		attempt = 0
+	}
+	budget := perItem * itemCount
+	for range attempt {
+		if budget >= maxTokens {
+			break
+		}
+		budget += budget / 2
+	}
+	return min(budget, maxTokens)
+}
 
 // MemoryMergeReference is the normalized top-k context passed to the model.
 // The scenario processor chooses how to serialize its raw source records, but
@@ -84,8 +134,20 @@ func (e *MemoryMergeEngine) Extract(ctx context.Context, req MemoryMergeRequest)
 	if err != nil {
 		return references, "", fmt.Errorf("memory merge model call: %w", err)
 	}
-	if response == nil || len(response.Choices) == 0 || strings.TrimSpace(response.Choices[0].Content) == "" {
-		return references, "", fmt.Errorf("memory merge model returned an empty response")
+	if response == nil || len(response.Choices) == 0 {
+		return references, "", errMemoryMergeEmpty
 	}
-	return references, stripJSONFences(response.Choices[0].Content), nil
+	choice := response.Choices[0]
+	content := stripJSONFences(choice.Content)
+	// A budget-exhausted response is syntactically incomplete, so parsing it
+	// would only report a confusing "unexpected end of JSON input". Report the
+	// real cause instead, and hand back the partial content for logging.
+	if isMemoryMergeTruncatedStopReason(choice.StopReason) {
+		return references, content, fmt.Errorf("%w: stop_reason=%s max_tokens=%d output_chars=%d",
+			errMemoryMergeTruncated, strings.TrimSpace(choice.StopReason), maxTokens, len(choice.Content))
+	}
+	if strings.TrimSpace(content) == "" {
+		return references, "", errMemoryMergeEmpty
+	}
+	return references, content, nil
 }

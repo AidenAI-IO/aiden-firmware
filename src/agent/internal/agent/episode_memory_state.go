@@ -13,10 +13,27 @@ import (
 )
 
 const (
-	episodeMemoryStateVersion     = 3
-	legacyReflectionFailureTag    = "reflection:v1"
-	episodeMemoryBatchLimit       = 5
-	episodeMemoryBatchMaxTokens   = 8000
+	episodeMemoryStateVersion  = 3
+	legacyReflectionFailureTag = "reflection:v1"
+	// episodeMemoryBatchLimit bounds episodes per model call. It is also the
+	// blast radius of one unusable response: the whole batch fails together.
+	episodeMemoryBatchLimit = 3
+	// episodeMemoryBatchTokensPerEpisode is the output budget for one episode:
+	// an assessment plus up to 3 candidates, each carrying several prose fields.
+	// CJK content costs more tokens per character, so 2200 truncated in practice.
+	episodeMemoryBatchTokensPerEpisode = 2600
+	// episodeMemoryBatchMaxTokens is the absolute ceiling for one call. It stays
+	// at the value this path has always requested, because nothing here clamps
+	// max_tokens against the provider's real output ceiling -- raising it could
+	// turn truncation into outright rejection. batchLimit x perEpisode is kept
+	// under it so a full batch is never squeezed below a smaller batch's share.
+	episodeMemoryBatchMaxTokens = 8000
+	// episodeMemoryRetentionAuditMaxTokens is the output budget for the
+	// retention gate: one review per candidate, at most 3 candidates.
+	episodeMemoryRetentionAuditMaxTokens = 3200
+	// episodeMemoryRawBodyLogRunes bounds how much of an unusable response is
+	// logged. Rune-based so CJK output is not cut mid-character.
+	episodeMemoryRawBodyLogRunes  = 400
 	episodeMemoryRecentTerminals  = 64
 	episodeMemoryProcessingLease  = 15 * time.Minute
 	episodeMemoryRetryDelay       = 5 * time.Minute
@@ -24,6 +41,11 @@ const (
 	episodeMemoryModelCallTimeout = 60 * time.Second
 	episodeMemoryBatchLockTimeout = 100 * time.Millisecond
 )
+
+// Compile-time guard: a full batch must fit under the ceiling. If it does not,
+// the cap re-introduces the per-episode inversion it exists to prevent, and this
+// declaration fails to build with a uint overflow.
+const _ uint = episodeMemoryBatchMaxTokens - episodeMemoryBatchTokensPerEpisode*episodeMemoryBatchLimit
 
 type episodeMemoryProcessingStatus string
 
@@ -43,6 +65,7 @@ type episodeMemoryEpisodeStatus struct {
 	EndedAt             string                        `yaml:"ended_at,omitempty"`
 	LastError           string                        `yaml:"last_error,omitempty"`
 	AttemptCount        int                           `yaml:"attempt_count,omitempty"`
+	RetryBatchLimit     int                           `yaml:"retry_batch_limit,omitempty"`
 	Proposal            *episodeMemoryProposal        `yaml:"proposal,omitempty"`
 	Assessment          *episodeMemoryAssessment      `yaml:"assessment,omitempty"`
 }

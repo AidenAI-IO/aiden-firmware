@@ -113,7 +113,7 @@ from search, but StorageMonitor does not routinely delete their YAML files.
 The background pipeline is:
 
 ```text
-completed Episode batch (up to five)
+completed Episode batch (up to three)
   |
   v
 deterministic prefilter
@@ -204,9 +204,9 @@ processing/proposed -> ignored
 
 The proposal is persisted before Device Memory writes. Recovery can therefore apply an existing proposal without repeating the model call.
 
-Model generation errors, empty responses, and invalid JSON are terminal `ignored` results. A process crash after entering `processing` but before persisting a proposal is also ignored after its lease expires.
+Empty responses and invalid JSON from a normally finished model response are terminal `ignored` results. A response identified as output-token truncation is scheduled for retry; its Episodes are retried individually so the worker does not replay the same oversized batch. A process crash after entering `processing` but before persisting a proposal is ignored after its lease expires.
 
-If a target Memory revision changes before update, the stale proposal is discarded and the Episode is re-extracted against the latest revision. This is the only normal case that permits another model call for the same extractor version.
+If a target Memory revision changes before update, the stale proposal is discarded and the Episode is re-extracted against the latest revision. Output-token truncation and retention/omission review failures may also schedule another model call for the same extractor version.
 
 ## Latency Isolation
 
@@ -215,7 +215,7 @@ Episode consolidation does not add a synchronous LLM call, screenshot, OCR pass,
 The worker:
 
 - starts after an idle delay;
-- processes at most five Episodes per batch; each Processor batch uses one model call and applies returned results locally;
+- processes at most three Episodes per batch; a truncation retry lowers the batch to one Episode per model call; each Processor batch uses one model call and applies returned results locally;
 - has only one in-flight background model call;
 - cancels that call when a foreground task starts;
 - resumes scheduling after the foreground task finishes.

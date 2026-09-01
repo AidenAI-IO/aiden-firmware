@@ -755,7 +755,7 @@ func TestEpisodeMemoryModelInputUsesDirectEvidenceWithoutVerifierState(t *testin
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if _, errs, err := processor.proposeEpisodeBatch(ctx, []TaskEpisode{stored}); err != nil {
+	if _, errs, err := processor.proposeEpisodeBatch(ctx, []TaskEpisode{stored}, 0); err != nil {
 		t.Fatalf("proposeEpisodeBatch() error = %v", err)
 	} else if errs[stored.ID] != nil {
 		t.Fatalf("proposeEpisodeBatch() proposal error = %v", errs[stored.ID])
@@ -962,7 +962,7 @@ func TestEpisodeMemoryAssessmentRejectsIndirectEvidence(t *testing.T) {
 			{EventID: "ep_indirect_result", Type: "tool_result", ToolName: "launch_app", Content: "request accepted"},
 		},
 	}
-	if _, errs, err := processor.proposeEpisodeBatch(ctx, []TaskEpisode{episode}); err != nil || errs[episode.ID] == nil || !strings.Contains(errs[episode.ID].Error(), "requires direct evidence") {
+	if _, errs, err := processor.proposeEpisodeBatch(ctx, []TaskEpisode{episode}, 0); err != nil || errs[episode.ID] == nil || !strings.Contains(errs[episode.ID].Error(), "requires direct evidence") {
 		t.Fatalf("proposeEpisodeBatch() error = %v proposal error = %v, want direct-evidence rejection", err, errs[episode.ID])
 	}
 }
@@ -1314,6 +1314,143 @@ func TestEpisodeMemoryExtractionFailureIsNotRetried(t *testing.T) {
 	status := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)]
 	if status.Status != episodeMemoryStatusIgnored || status.AttemptCount != 1 {
 		t.Fatalf("state = %#v, want one terminal ignored attempt", status)
+	}
+}
+
+// Truncation is the one extraction failure that is retried: unlike malformed
+// output, it is caused by the output budget rather than by the model finishing
+// with garbage, so a retry with more headroom can succeed. Board logs showed
+// truncated batches being discarded on the first attempt.
+func TestEpisodeMemoryTruncatedBatchIsRetriedWithLargerBudget(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	partial := `{"results":[{"episode_id":"ep_truncated","proposal":{"candidates":[{"lesson_key":"k`
+	model := &episodeMemoryScriptedModel{responses: []string{partial}, stopReason: "length"}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	episode := TaskEpisode{
+		ID: "ep_truncated", Status: "active", StartedAt: "2026-08-14T10:30:00Z", EndedAt: "2026-08-14T10:30:01Z", UserGoal: "打开设置",
+		Events: []TaskEpisodeEvent{
+			{EventID: "ep_trunc_call", Type: runEventToolCall, ToolName: "launch_app"},
+			{EventID: "ep_trunc_result", Type: "tool_result", ToolName: "launch_app", Content: "Settings opened"},
+		},
+	}
+	if _, err := plane.episodes.AddEpisode(ctx, episode); err != nil {
+		t.Fatalf("AddEpisode() error = %v", err)
+	}
+	firstPass := time.Date(2026, 8, 14, 11, 0, 0, 0, time.UTC)
+	processor.now = func() time.Time { return firstPass }
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
+		t.Fatalf("ProcessBatch() error = %v", err)
+	}
+	stateKey := episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)
+	state, err := processor.state.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if status := state.Episodes[stateKey]; status.Status != episodeMemoryStatusRetry || status.AttemptCount != 1 {
+		t.Fatalf("state = %#v, want a scheduled retry after truncation", status)
+	}
+
+	// Let the next response finish normally, past the retry delay.
+	model.setStopReason("")
+	model.appendResponses(`{"episode_assessment":{"goal_result":"unknown","reason":"no durable lesson","evidence_refs":[]},"candidates":[]}`)
+	processor.now = func() time.Time { return firstPass.Add(episodeMemoryRetryDelay + time.Minute) }
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
+		t.Fatalf("ProcessBatch() second pass error = %v", err)
+	}
+	if got := model.callCount(); got != 2 {
+		t.Fatalf("model calls = %d, want a second extraction attempt", got)
+	}
+	// The retry must ask for more room, or it would replay the same failure.
+	first, second := model.batchMaxTokens(0), model.batchMaxTokens(1)
+	if first != episodeMemoryBatchTokensPerEpisode {
+		t.Fatalf("first attempt max_tokens = %d, want %d", first, episodeMemoryBatchTokensPerEpisode)
+	}
+	if second <= first {
+		t.Fatalf("retry max_tokens = %d, want more than the first attempt's %d", second, first)
+	}
+	if state, err = processor.state.Snapshot(); err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if status := state.Episodes[stateKey]; status.Status == episodeMemoryStatusIgnored {
+		t.Fatalf("state = %#v, want the retry to not be discarded", status)
+	}
+}
+
+func TestEpisodeMemoryTruncatedBatchRetriesEpisodesIndividually(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	partial := `{"results":[{"episode_id":"ep_split_0","proposal":{"candidates":[{"lesson_key":"k`
+	model := &episodeMemoryScriptedModel{responses: []string{partial}, stopReason: "length"}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	for index := 0; index < episodeMemoryBatchLimit; index++ {
+		endedAt := time.Date(2026, 8, 14, 12, 0, index+1, 0, time.UTC)
+		episodeID := fmt.Sprintf("ep_split_%d", index)
+		if _, err := plane.episodes.AddEpisode(ctx, TaskEpisode{
+			ID: episodeID, Status: "active", StartedAt: endedAt.Add(-time.Second).Format(time.RFC3339Nano),
+			EndedAt: endedAt.Format(time.RFC3339Nano), UserGoal: "打开设置",
+			Events: []TaskEpisodeEvent{
+				{EventID: episodeID + "_call", Type: runEventToolCall, ToolName: "launch_app"},
+				{EventID: episodeID + "_result", Type: "tool_result", ToolName: "launch_app", Content: "Settings opened"},
+			},
+		}); err != nil {
+			t.Fatalf("AddEpisode(%s) error = %v", episodeID, err)
+		}
+	}
+	firstPass := time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC)
+	processor.now = func() time.Time { return firstPass }
+	if _, err := processor.ProcessBatch(ctx, nil); err != nil {
+		t.Fatalf("ProcessBatch(first) error = %v", err)
+	}
+	if got := model.callCount(); got != 1 {
+		t.Fatalf("first-pass model calls = %d, want one full-batch call", got)
+	}
+	state, err := processor.state.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() after first pass: %v", err)
+	}
+	for index := 0; index < episodeMemoryBatchLimit; index++ {
+		key := episodeMemoryStateKey(fmt.Sprintf("ep_split_%d", index), episodeMemoryExtractorVersion)
+		status := state.Episodes[key]
+		if status.Status != episodeMemoryStatusRetry || status.RetryBatchLimit != 1 {
+			t.Fatalf("status[%s] = %#v, want retry_batch_limit=1", key, status)
+		}
+	}
+
+	model.setStopReason("")
+	for index := 0; index < episodeMemoryBatchLimit; index++ {
+		model.appendResponses(`{"episode_assessment":{"goal_result":"unknown","reason":"no durable lesson","evidence_refs":[]},"candidates":[]}`)
+	}
+	for pass := 0; pass < episodeMemoryBatchLimit; pass++ {
+		processor.now = func() time.Time {
+			return firstPass.Add(time.Duration(pass+1) * (episodeMemoryRetryDelay + time.Minute))
+		}
+		result, err := processor.ProcessBatch(ctx, nil)
+		if err != nil {
+			t.Fatalf("ProcessBatch(retry %d) error = %v", pass+1, err)
+		}
+		if pass < episodeMemoryBatchLimit-1 && !result.HasPending {
+			t.Fatalf("retry %d result = %#v, want pending episodes", pass+1, result)
+		}
+	}
+	if got := model.callCount(); got != 1+episodeMemoryBatchLimit {
+		t.Fatalf("total model calls = %d, want one batch plus %d single-episode retries", got, episodeMemoryBatchLimit)
+	}
+	if first, second := model.batchMaxTokens(0), model.batchMaxTokens(1); first != episodeMemoryBatchTokensPerEpisode*episodeMemoryBatchLimit || second <= episodeMemoryBatchTokensPerEpisode {
+		t.Fatalf("batch budgets = first %d, first retry %d; want %d then a larger single-episode retry", first, second, episodeMemoryBatchTokensPerEpisode*episodeMemoryBatchLimit)
+	}
+	for index := 1; index <= episodeMemoryBatchLimit; index++ {
+		if got := model.batchMaxTokens(index); got != memoryMergeTokenBudget(episodeMemoryBatchTokensPerEpisode, 1, episodeMemoryBatchMaxTokens, 1) {
+			t.Fatalf("single retry %d max_tokens = %d, want %d", index, got, memoryMergeTokenBudget(episodeMemoryBatchTokensPerEpisode, 1, episodeMemoryBatchMaxTokens, 1))
+		}
 	}
 }
 
