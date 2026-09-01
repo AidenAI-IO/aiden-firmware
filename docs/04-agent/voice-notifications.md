@@ -117,7 +117,7 @@ Final turn failures do not enter the persistent queue. They are classified as ne
 ## Configuration
 
 ```toml
-locale = "zh-CN"
+locale = "en-US"
 
 [voice_notifications]
 enabled = true

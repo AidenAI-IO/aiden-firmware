@@ -142,7 +142,6 @@ func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.
 	loop := NewAgentLoop(
 		tracked,
 		RoleProfile{Tools: []langtools.Tool{&staticTool{name: "shell", output: rawOutput}}},
-		nil,
 		4,
 		nil,
 		nil,
@@ -205,7 +204,6 @@ func TestAgentLoopTouchGestureInvalidJSONSelfCorrectsBeforeAction(t *testing.T) 
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{tool}},
-		nil,
 		4,
 		nil,
 		nil,
@@ -267,7 +265,6 @@ func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&staticTool{name: "shell", output: rawOutput}}},
-		nil,
 		4,
 		nil,
 		recorder,
@@ -346,7 +343,6 @@ func TestAgentLoopDoesNotRepeatCompletedActionWhenArtifactPersistenceFails(t *te
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{tool}},
-		nil,
 		4,
 		nil,
 		nil,
@@ -390,7 +386,6 @@ func TestAgentLoopPersistsBoundedToolResultWhenPolicyFails(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{tool}},
-		nil,
 		4,
 		nil,
 		nil,

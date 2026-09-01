@@ -516,6 +516,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/providers/screenshot", s.handleProviderScreenshot)
 	mux.HandleFunc("/api/providers/mnk", s.handleProviderMNK)
 	mux.HandleFunc("/api/concurrent", s.handleConcurrent)
+	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/config-test/stt/start", s.handleSTTConfigTestStart)
 	mux.HandleFunc("/api/config-test/stt/stop", s.handleSTTConfigTestStop)
@@ -2976,6 +2977,35 @@ func (s *Server) handleProviderMNK(w http.ResponseWriter, r *http.Request) {
 	}
 	mnk.NewHTTPHandler(provider).ServeHTTP(w, r)
 }
+
+// handleHealth serves GET /health, the environment-bridge readiness probe that
+// benchmark uses for environment discovery and platform resolution. The Go
+// agent is a fixed-concurrency bridge, so it reports the platform derived from
+// its effective device type.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	platform := "ios"
+	deviceType := defaultDeviceType
+	if s.runtime != nil {
+		platform = s.runtime.devicePlatformFromState()
+		deviceType = s.runtime.deviceTypeFromState()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok": true,
+		"data": map[string]any{
+			"status":      "ok",
+			"bridge_type": "go-agent",
+			"platform":    platform,
+			"device_type": deviceType,
+			"concurrent":  1,
+		},
+	})
+}
+
 func (s *Server) handleConcurrent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

@@ -54,10 +54,7 @@ type SessionCommitRequest struct {
 	RunID     string
 }
 
-// SessionCommitResult contains the session snapshot exposed on RunResult.
-type SessionCommitResult struct {
-	Memory []MessageRecord
-}
+type SessionCommitResult struct{}
 
 type memoryManagerSessionManager struct {
 	memories       *MemoryManager
@@ -203,12 +200,8 @@ func (m memoryManagerSessionManager) CommitRun(ctx context.Context, req SessionC
 		}
 	}
 
-	memorySnapshot, err := m.memories.Snapshot(ctx, agentName)
-	if err != nil {
-		return SessionCommitResult{}, err
-	}
 	m.memories.RequestMaintenance()
-	return SessionCommitResult{Memory: memorySnapshot}, nil
+	return SessionCommitResult{}, nil
 }
 
 func loadLastNSessionEvents(manager *MemoryManager, n int) ([]SessionEvent, error) {

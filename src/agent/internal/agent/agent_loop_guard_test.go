@@ -55,7 +55,6 @@ func TestAgentLoopCombinesTerminationPolicyWithToolExecutionHooks(t *testing.T) 
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: "ok"}}},
-		nil,
 		10,
 		nil,
 		nil,
@@ -105,7 +104,6 @@ func TestAgentLoopPersistsSoftNoticeInContext(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: "same"}}},
-		nil,
 		10,
 		nil,
 		nil,
@@ -157,7 +155,6 @@ func TestAgentLoopEscalatesFromPersistedNoticeToRestrictionAndTermination(t *tes
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: screen}}},
-		nil,
 		10,
 		nil,
 		nil,
@@ -204,7 +201,6 @@ func TestAgentLoopBudgetExhaustionReturnsGracefulStop(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: screen}}},
-		nil,
 		1,
 		nil,
 		nil,
@@ -236,7 +232,6 @@ func TestAgentLoopReturnsContextErrorBeforeGracefulStop(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{},
-		nil,
 		10,
 		nil,
 		nil,

@@ -1444,6 +1444,7 @@ func TestServerAsyncChatAppendsVoiceNotificationOnlyToFinalSpeech(t *testing.T) 
 	cfg := DefaultConfig()
 	cfg.Model = ModelConfig{Provider: "fake"}
 	cfg.Instruction = "Answer directly."
+	cfg.Locale = "zh-CN"
 	cfg.VoiceStreamingTTSEnabled = &streamingDisabled
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, cfg),
@@ -1516,6 +1517,7 @@ func TestServerAsyncChatSpeaksReplacementForFinalLLMFailure(t *testing.T) {
 		withTestConfigDir(t, Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Answer directly.",
+			Locale:                   "zh-CN",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 		}),
 		&testModelResolver{model: failingGenerateModel{err: errors.New("dial tcp: network is unreachable")}},
@@ -3347,17 +3349,10 @@ func TestWebUIShowsMessageTokenUsage(t *testing.T) {
 func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	storageDir := t.TempDir()
 	memoryManager := NewMemoryManager(storageDir)
-	handle, err := memoryManager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if err := handle.History.SetMessages(context.Background(), []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
+	if err := memoryManager.AppendMessages(context.Background(), "default", []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
 	}); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
-	}
-	if err := memoryManager.Save(context.Background(), "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+		t.Fatalf("AppendMessages() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(storageDir, "session", "events.jsonl")); err != nil {
 		t.Fatalf("expected session events before clear: %v", err)
@@ -3409,6 +3404,62 @@ func TestServerHandleSetupReturnsSuccess(t *testing.T) {
 	}
 	if got.Data.Setup {
 		t.Fatalf("expected setup=false for Go agent no-op response")
+	}
+}
+
+func TestServerHandleHealthReportsBridgePlatform(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	server.handleHealth(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Status     string `json:"status"`
+			BridgeType string `json:"bridge_type"`
+			Platform   string `json:"platform"`
+			DeviceType string `json:"device_type"`
+			Concurrent int    `json:"concurrent"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.OK || got.Data.Status != "ok" || got.Data.BridgeType != "go-agent" {
+		t.Fatalf("unexpected health envelope: %#v", got)
+	}
+	if got.Data.Platform != "ios" || got.Data.Concurrent != 1 {
+		t.Fatalf("unexpected health data: %#v", got)
+	}
+	if got.Data.DeviceType != defaultDeviceType {
+		t.Fatalf("unexpected device type: %#v", got)
+	}
+}
+
+func TestServerHandleHealthIsRoutedOnTheBridgePath(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected /health to be routed, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerHandleHealthRejectsNonGet(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	rec := httptest.NewRecorder()
+	server.handleHealth(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("unexpected status: %d", rec.Code)
 	}
 }
 
