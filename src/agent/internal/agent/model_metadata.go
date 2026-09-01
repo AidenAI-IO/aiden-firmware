@@ -15,11 +15,21 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const providerModelMetadataTimeout = 5 * time.Second
 const providerModelMetadataCacheVersion = 1
+const maxModelsDevCatalogBytes = 8 * 1024 * 1024
+
+type modelsDevCatalogCacheEntry struct {
+	ready   chan struct{}
+	catalog map[string]modelsDevProvider
+	err     error
+}
+
+var modelsDevCatalogCache sync.Map
 
 func providerSupportsModelMetadata(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
@@ -295,23 +305,9 @@ func (m *ModelManager) fetchModelsDevModelSpec(ctx context.Context) (model.Model
 	if endpoint == "" {
 		endpoint = defaultModelsDevURL
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	catalog, err := m.loadModelsDevCatalog(ctx, endpoint)
 	if err != nil {
 		return model.ModelSpec{}, err
-	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := m.modelMetadataHTTPClient().Do(req)
-	if err != nil {
-		return model.ModelSpec{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return model.ModelSpec{}, fmt.Errorf("models.dev returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var catalog map[string]modelsDevProvider
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8*1024*1024)).Decode(&catalog); err != nil {
-		return model.ModelSpec{}, fmt.Errorf("decode models.dev catalog: %w", err)
 	}
 	providerID := modelsDevProviderID(m.config.Provider)
 	provider, ok := catalog[providerID]
@@ -370,6 +366,56 @@ func (m *ModelManager) fetchModelsDevModelSpec(ctx context.Context) (model.Model
 	// configuration UI does not fall back to generic effort choices.
 	spec.Reasoning = reasoning
 	return spec, nil
+}
+
+func (m *ModelManager) loadModelsDevCatalog(ctx context.Context, endpoint string) (map[string]modelsDevProvider, error) {
+	pending := &modelsDevCatalogCacheEntry{ready: make(chan struct{})}
+	actual, loaded := modelsDevCatalogCache.LoadOrStore(endpoint, pending)
+	entry := actual.(*modelsDevCatalogCacheEntry)
+	if loaded {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-entry.ready:
+			return entry.catalog, entry.err
+		}
+	}
+
+	entry.catalog, entry.err = m.downloadModelsDevCatalog(ctx, endpoint)
+	if entry.err != nil {
+		modelsDevCatalogCache.Delete(endpoint)
+	}
+	close(entry.ready)
+	return entry.catalog, entry.err
+}
+
+func (m *ModelManager) downloadModelsDevCatalog(ctx context.Context, endpoint string) (map[string]modelsDevProvider, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := m.modelMetadataHTTPClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("models.dev returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxModelsDevCatalogBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read models.dev catalog: %w", err)
+	}
+	if len(body) > maxModelsDevCatalogBytes {
+		return nil, fmt.Errorf("models.dev catalog exceeds %d-byte limit", maxModelsDevCatalogBytes)
+	}
+	var catalog map[string]modelsDevProvider
+	if err := json.Unmarshal(body, &catalog); err != nil {
+		return nil, fmt.Errorf("decode models.dev catalog: %w", err)
+	}
+	return catalog, nil
 }
 
 func modelsDevProviderID(provider string) string {

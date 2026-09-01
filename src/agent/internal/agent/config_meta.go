@@ -227,7 +227,7 @@ func ConfigMeta() ConfigMetadata {
 					// that accept it so the UI cannot save a value the endpoint
 					// rejects; auto plus low/medium/high stay unscoped.
 					{Key: "reasoning_effort", Widget: WidgetSelect,
-						Help: "Empty = auto. Options follow the selected model capability; off is shown only when the model supports disabling reasoning.",
+						Help: "Empty = auto. Options follow the selected model capability; none is shown only when the model supports disabling reasoning.",
 						Enum: []EnumOption{
 							{Value: "", Label: "auto (default)"},
 							{Value: "minimal", Label: "minimal (no reasoning)", Providers: []string{"openrouter", "volcengine"}},

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/model"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -71,6 +72,21 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 				t.Errorf("MaxOutput = %d, want %d", spec.MaxOutput, tt.wantMaxOutput)
 			}
 		})
+	}
+}
+
+func TestLookupModelSpecScopesNativeBudgetToAnthropic(t *testing.T) {
+	native, ok := LookupModelSpec("anthropic", "claude-sonnet-4-6")
+	if !ok || native.Reasoning == nil || native.Reasoning.BudgetTokensMin != 1024 {
+		t.Fatalf("native spec = %+v, want Anthropic budget capability", native)
+	}
+
+	proxied, ok := LookupModelSpec("openrouter", "claude-sonnet-4-6")
+	if !ok || proxied.Reasoning == nil {
+		t.Fatalf("proxied spec = %+v, want effort capability", proxied)
+	}
+	if proxied.Reasoning.BudgetTokensMin != 0 || proxied.Reasoning.BudgetTokensMax != 0 || proxied.Reasoning.Mode != "effort" {
+		t.Fatalf("proxied reasoning = %+v, want effort without native Anthropic budget", proxied.Reasoning)
 	}
 }
 
@@ -224,6 +240,40 @@ func TestModelManagerSpecPreservesModelsDevReasoningFalse(t *testing.T) {
 			t.Fatal("models.dev reasoning=false metadata did not load")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestModelsDevCatalogCachedAcrossManagers(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"anthropic":{"models":{"claude-a":{"limit":{"context":1000,"output":100}},"claude-b":{"limit":{"context":2000,"output":200}}}}}`)
+	}))
+	defer server.Close()
+
+	for _, modelName := range []string{"claude-a", "claude-b"} {
+		mgr := NewModelManager(ModelConfig{Provider: "anthropic", Model: modelName}, ProxyConfig{},
+			WithModelsDevURL(server.URL), WithProviderMetadataHTTPClient(server.Client()))
+		if _, err := mgr.fetchModelsDevModelSpec(context.Background()); err != nil {
+			t.Fatalf("fetchModelsDevModelSpec(%s): %v", modelName, err)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("models.dev requests = %d, want one catalog fetch shared across managers", got)
+	}
+}
+
+func TestModelsDevCatalogReportsOversizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, strings.Repeat("x", maxModelsDevCatalogBytes+1))
+	}))
+	defer server.Close()
+
+	mgr := NewModelManager(ModelConfig{Provider: "anthropic", Model: "claude-test"}, ProxyConfig{},
+		WithModelsDevURL(server.URL), WithProviderMetadataHTTPClient(server.Client()))
+	_, err := mgr.fetchModelsDevModelSpec(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "catalog exceeds") {
+		t.Fatalf("fetchModelsDevModelSpec() error = %v, want explicit oversized catalog error", err)
 	}
 }
 

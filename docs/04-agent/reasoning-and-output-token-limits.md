@@ -185,6 +185,7 @@ For manual Claude thinking, a useful inline error is:
 ## Runtime behavior
 
 `max_response_tokens` is sent as configured and is never silently increased.
-For native Anthropic budget-based thinking, Aiden validates before sending that
-the derived or explicit `budget_tokens` is strictly smaller than
-`max_response_tokens`; invalid combinations return an actionable error.
+For native Anthropic budget-based thinking, an explicit `budget_tokens` value
+must be strictly smaller than `max_response_tokens`; invalid explicit
+combinations return an actionable error. Effort-derived budgets are reduced to
+fit the response limit, or omitted when the model's minimum budget cannot fit.

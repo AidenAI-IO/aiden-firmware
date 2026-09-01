@@ -108,6 +108,7 @@ function applyModelReasoningSpec(spec){
     if(baseModelReasoningOptions)fields.reasoning_effort=baseModelReasoningOptions.map(function(option){return Object.assign({},option);});
     if(effortField)effortField.classList.remove('hidden');
     if(budgetField)budgetField.classList.add('hidden');
+    if(budgetInput)budgetInput.dataset.reasoningBudgetSupport='unknown';
     if(effortInput)hydrateSelectField('model','reasoning_effort',effortInput.value,true);
     return;
   }
@@ -115,11 +116,11 @@ function applyModelReasoningSpec(spec){
     if(effortField)effortField.classList.add('hidden');
     if(budgetField)budgetField.classList.add('hidden');
     if(effortInput)effortInput.value='';
-    if(budgetInput)budgetInput.value='';
+    if(budgetInput){budgetInput.dataset.reasoningBudgetSupport='unsupported';budgetInput.value='';}
     return;
   }
   if(effortField)effortField.classList.remove('hidden');
-  const options=[{value:'',label:'auto (default)',providers:[]}];
+  const options=[{value:'',label:t('provider.auto_default'),providers:[]}];
   if(reasoning.can_disable)options.push({value:'none',label:'none',providers:[]});
   (reasoning.efforts||[]).forEach(function(value){const normalized=String(value||'').trim().toLowerCase();if(!normalized||normalized==='none'||options.some(function(option){return option.value===normalized;}))return;options.push({value:normalized,label:normalized,providers:[]});});
   fields.reasoning_effort=options;
@@ -130,12 +131,12 @@ function applyModelReasoningSpec(spec){
   // Keep effort as the primary selector while showing the advanced budget
   // field whenever the metadata advertises a minimum token budget.
   const hasBudget=budgetMin>0;
-  if(budgetInput&&hasBudget){
-    budgetInput.min=String(budgetMin);
-    if(budgetMax>0)budgetInput.max=String(budgetMax);else budgetInput.removeAttribute('max');
+  if(budgetInput){
+    budgetInput.dataset.reasoningBudgetSupport=hasBudget?'supported':'unsupported';
+    if(hasBudget){budgetInput.min=String(budgetMin);if(budgetMax>0)budgetInput.max=String(budgetMax);else budgetInput.removeAttribute('max');}
+    else budgetInput.value='';
   }
   if(budgetField)budgetField.classList.toggle('hidden',!hasBudget);
-  if(!hasBudget&&budgetInput)budgetInput.value='';
 }
 
 const ModelSelector = {

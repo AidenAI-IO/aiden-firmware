@@ -159,19 +159,38 @@ func LookupModelSpec(provider, modelName string) (model.ModelSpec, bool) {
 		return model.ModelSpec{}, false
 	}
 	if spec, ok := lookupModelSpecKey(key); ok {
-		return spec, true
+		return scopeModelSpecToProvider(provider, spec), true
 	}
 	if i := strings.LastIndex(key, "/"); i >= 0 && i+1 < len(key) {
 		if spec, ok := lookupModelSpecKey(key[i+1:]); ok {
-			return spec, true
+			return scopeModelSpecToProvider(provider, spec), true
 		}
 	}
 	// Provider-prefixed retry for entries registered without a provider.
 	if provider != "" {
 		full := strings.ToLower(strings.TrimSpace(provider)) + "/" + key
 		if spec, ok := lookupModelSpecKey(full); ok {
-			return spec, true
+			return scopeModelSpecToProvider(provider, spec), true
 		}
 	}
 	return model.ModelSpec{}, false
+}
+
+func scopeModelSpecToProvider(provider string, spec model.ModelSpec) model.ModelSpec {
+	if spec.Reasoning == nil || strings.TrimSpace(provider) == "" || strings.EqualFold(strings.TrimSpace(provider), "anthropic") {
+		return spec
+	}
+	if spec.Reasoning.BudgetTokensMin == 0 && spec.Reasoning.BudgetTokensMax == 0 && spec.Reasoning.Mode != "budget_tokens" {
+		return spec
+	}
+	if len(spec.Reasoning.Efforts) == 0 {
+		spec.Reasoning = unsupportedReasoning()
+		return spec
+	}
+	reasoning := *spec.Reasoning
+	reasoning.Mode = "effort"
+	reasoning.BudgetTokensMin = 0
+	reasoning.BudgetTokensMax = 0
+	spec.Reasoning = &reasoning
+	return spec
 }

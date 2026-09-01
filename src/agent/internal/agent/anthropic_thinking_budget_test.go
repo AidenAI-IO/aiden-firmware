@@ -75,22 +75,47 @@ func TestAnthropicModelKeepsMaxTokensAboveEffortFloor(t *testing.T) {
 	}
 }
 
-func TestAnthropicModelRejectsBudgetAboveConfiguredMaxTokens(t *testing.T) {
-	server, _ := newAnthropicThinkingProbe(t, anthropicThinkingProbeOK)
+func TestAnthropicModelOmitsDerivedBudgetWhenMinimumDoesNotFit(t *testing.T) {
+	server, captured := newAnthropicThinkingProbe(t, anthropicThinkingProbeOK)
 
-	// claude-3.7-sonnet is budget-only. A high-effort preset derives a budget
-	// larger than this request's explicit response limit and must be rejected.
+	// claude-3.7-sonnet is budget-only, but its 1024-token floor cannot fit below
+	// this response limit. The turn should continue without thinking.
 	m := newAnthropicModel(server.URL, "anthropic/claude-3.7-sonnet", "tok", server.Client(),
 		withAnthropicReasoningEffort("high"))
 	if _, err := m.GenerateContent(context.Background(),
 		[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hi")},
 		llms.WithMaxTokens(1000)); err != nil {
-		if !strings.Contains(err.Error(), "less than max_response_tokens") {
-			t.Fatalf("GenerateContent() error = %v, want response-limit validation", err)
-		}
-		return
+		t.Fatalf("GenerateContent() error = %v", err)
 	}
-	t.Fatal("GenerateContent() error = nil, want response-limit validation")
+	if got := (*captured)[0].Thinking; got != nil {
+		t.Fatalf("thinking = %#v, want omitted when the minimum budget cannot fit", got)
+	}
+}
+
+func TestAnthropicModelClampsDerivedBudgetBelowMaxTokens(t *testing.T) {
+	server, captured := newAnthropicThinkingProbe(t, anthropicThinkingProbeOK)
+	m := newAnthropicModel(server.URL, "anthropic/claude-3.7-sonnet", "tok", server.Client(),
+		withAnthropicReasoningEffort("high"))
+	if _, err := m.GenerateContent(context.Background(),
+		[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hi")},
+		llms.WithMaxTokens(2000)); err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if got := (*captured)[0].Thinking; got == nil || got.BudgetTokens != 1999 {
+		t.Fatalf("thinking = %#v, want derived budget clamped to 1999", got)
+	}
+}
+
+func TestAnthropicModelRejectsExplicitBudgetAboveMaxTokens(t *testing.T) {
+	server, _ := newAnthropicThinkingProbe(t, anthropicThinkingProbeOK)
+	m := newAnthropicModel(server.URL, "anthropic/claude-3.7-sonnet", "tok", server.Client(),
+		withAnthropicReasoningBudget(4096))
+	_, err := m.GenerateContent(context.Background(),
+		[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hi")},
+		llms.WithMaxTokens(2000))
+	if err == nil || !strings.Contains(err.Error(), "less than max_response_tokens") {
+		t.Fatalf("GenerateContent() error = %v, want response-limit validation", err)
+	}
 }
 
 func TestAnthropicModelOmitsThinkingWhenSpecSaysUnsupported(t *testing.T) {

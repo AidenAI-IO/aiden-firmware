@@ -1406,7 +1406,7 @@ func (c Config) Validate() error {
 	// Other providers may
 	// leave a stale value in config, but it must not be validated or translated
 	// as if their APIs used Anthropic's budget_tokens field.
-	if strings.EqualFold(strings.TrimSpace(c.Model.Provider), "anthropic") && c.Model.ReasoningBudgetTokens > 0 {
+	if c.modelProviderType() == "anthropic" && c.Model.ReasoningBudgetTokens > 0 {
 		if c.Model.ReasoningBudgetTokens < minReasoningBudgetTokens {
 			return fmt.Errorf("model.reasoning_budget_tokens must be 0 or >= %d, got %d",
 				minReasoningBudgetTokens, c.Model.ReasoningBudgetTokens)
@@ -1560,27 +1560,25 @@ func (c Config) Validate() error {
 // endpoints therefore remain valid, while native Anthropic and Ollama clients
 // are rejected before a configuration is persisted or used at startup.
 func (c Config) modelProviderSupportsResponses() bool {
-	providerType := strings.TrimSpace(c.Model.Provider)
-	baseURL := c.Model.BaseURL
-	if provider, ok := c.ModelProviders[providerType]; ok {
-		providerType = provider.Type
-		baseURL = provider.BaseURL
-	}
-	providerType = effectiveModelProviderType(providerType, baseURL)
+	providerType := c.modelProviderType()
 	definition, ok := lookupModelProviderDefinition(providerType)
 	return ok && definition.supportsResponses
 }
 
 func (c Config) modelProviderSupportsResponsesStateful() bool {
+	providerType := c.modelProviderType()
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsResponsesStateful
+}
+
+func (c Config) modelProviderType() string {
 	providerType := strings.TrimSpace(c.Model.Provider)
 	baseURL := c.Model.BaseURL
 	if provider, ok := c.ModelProviders[providerType]; ok {
 		providerType = provider.Type
 		baseURL = provider.BaseURL
 	}
-	providerType = effectiveModelProviderType(providerType, baseURL)
-	definition, ok := lookupModelProviderDefinition(providerType)
-	return ok && definition.supportsResponsesStateful
+	return effectiveModelProviderType(providerType, baseURL)
 }
 
 // effectiveModelProviderType recognizes well-known endpoints that were saved

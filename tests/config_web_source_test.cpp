@@ -1115,7 +1115,8 @@ TEST_CASE("config web tolerates metadata fields without rendered controls") {
     CHECK(html.find("if(!el)return;if(snap[item[0]]!==undefined)") != std::string::npos);
     CHECK(html.find("function readSection(section){const values=Object.assign({},(appState.config&&appState.config[section])||{});") != std::string::npos);
     CHECK(html.find("if(!el)return;const field=el.closest?el.closest('.field'):el.parentNode;") != std::string::npos);
-    CHECK(html.find("if(field&&field.classList.contains('hidden')){return;}") != std::string::npos);
+    CHECK(html.find("key==='reasoning_budget_tokens'&&el.dataset.reasoningBudgetSupport==='unsupported'") != std::string::npos);
+    CHECK(html.find("budgetInput.dataset.reasoningBudgetSupport='unknown'") != std::string::npos);
     CHECK(html.find("if(type==='number'){values[key]=0;}") == std::string::npos);
 }
 
@@ -1278,13 +1279,10 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
 TEST_CASE("config web documents provider-specific reasoning effort levels") {
     const std::string html = read_config_web_asset_bundle();
 
-    // The hint must mention that minimal is OpenRouter and Ark, and that Ark
-    // does not support none. The select options themselves come from config-meta
-    // and are filtered per provider.
+    // The hint must use the selector's `none` value for disabling reasoning.
+    // Provider/model-specific levels are hydrated from config metadata.
     const std::string hint =
-        "Empty = auto (disable reasoning only for no-tool requests). "
-        "Levels are provider-specific: minimal is OpenRouter and Volcengine Ark only, "
-        "none is not supported by Ark.";
+        "Empty = auto. Options follow the selected model capability; none is shown only when the model supports disabling reasoning.";
     CHECK(html.find(hint) != std::string::npos);
 
     CHECK(html.find("'config.fields.'+section+'.'+field.key+'.'+part") != std::string::npos);

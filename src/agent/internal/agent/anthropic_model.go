@@ -298,7 +298,7 @@ func (m *anthropicModel) generateContent(ctx context.Context, messages []llms.Me
 	} else if callOpts.Temperature != 0 {
 		request.Temperature = &callOpts.Temperature
 	}
-	if thinking, outputConfig, enabled := m.anthropicThinkingRequest(); enabled && (len(request.Tools) == 0 || m.reasoningSupportsTools()) {
+	if thinking, outputConfig, enabled := m.anthropicThinkingRequest(request.MaxTokens); enabled && (len(request.Tools) == 0 || m.reasoningSupportsTools()) {
 		if err := validateAnthropicThinkingLimit(request.MaxTokens, thinking); err != nil {
 			return nil, err
 		}
@@ -454,7 +454,7 @@ func validateAnthropicThinkingLimit(maxTokens int, thinking *anthropicThinking) 
 	return nil
 }
 
-func (m *anthropicModel) anthropicThinkingRequest() (*anthropicThinking, *anthropicOutputConfig, bool) {
+func (m *anthropicModel) anthropicThinkingRequest(maxTokens int) (*anthropicThinking, *anthropicOutputConfig, bool) {
 	effort := normalizeAnthropicReasoningEffort(m.reasoningEffort)
 	if effort == "none" {
 		return nil, nil, false
@@ -485,9 +485,15 @@ func (m *anthropicModel) anthropicThinkingRequest() (*anthropicThinking, *anthro
 		return nil, nil, false
 	}
 	if spec != nil && len(spec.Efforts) == 0 && spec.BudgetTokensMin > 0 {
+		if spec.BudgetTokensMin >= maxTokens {
+			return nil, nil, false
+		}
 		budget := anthropicReasoningBudget(effort, spec.BudgetTokensMin, spec.BudgetTokensMax)
 		if budget <= 0 {
 			return nil, nil, false
+		}
+		if budget >= maxTokens {
+			budget = maxTokens - 1
 		}
 		return &anthropicThinking{Type: "enabled", BudgetTokens: budget}, nil, true
 	}

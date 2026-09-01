@@ -1088,6 +1088,24 @@ func TestConfigValidateReasoningBudgetAgainstResponseLimit(t *testing.T) {
 	}
 }
 
+func TestConfigValidateReasoningBudgetForNamedAnthropicProvider(t *testing.T) {
+	cfg := Config{
+		ModelProviders: map[string]ModelProvider{
+			"claude": {Type: "anthropic"},
+		},
+		Model: ModelConfig{
+			Provider:              "claude",
+			Model:                 "claude-haiku-4-5",
+			ReasoningBudgetTokens: 512,
+			MaxResponseTokens:     8_192,
+		},
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model.reasoning_budget_tokens must be 0 or >= 1024") {
+		t.Fatalf("Validate() = %v, want named Anthropic provider budget validation", err)
+	}
+}
+
 func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {
 	cfg := Config{
 		Model:                 ModelConfig{Provider: "fake"},
