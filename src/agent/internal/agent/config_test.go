@@ -105,6 +105,27 @@ func TestConfigInputModeDefaultContract(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeConfigFallsBackFromUnconfiguredRealtime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	config := `input_mode = "realtime"
+
+[model]
+provider = "fake"
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if got, want := cfg.InputModeOrDefault(), "text"; got != want {
+		t.Fatalf("InputModeOrDefault() = %q, want runtime fallback %q", got, want)
+	}
+}
+
 func TestHIDKeyboardLayoutDefaultsToQWERTY(t *testing.T) {
 	if got := (HIDConfig{}).KeyboardLayoutOrDefault(); got != keyboardLayoutQWERTY {
 		t.Fatalf("KeyboardLayoutOrDefault() = %q, want %q", got, keyboardLayoutQWERTY)

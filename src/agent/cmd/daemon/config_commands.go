@@ -195,7 +195,11 @@ func runConfigMeta(args []string) int {
 }
 
 func resolvedWebConfigDTO(configPath string) (webConfigDTO, error) {
-	cfg, err := agent.LoadResolvedConfig(configPath)
+	// Keep the config page usable when a persisted config is invalid. The page
+	// must be able to display and repair the bad field (for example, stale
+	// input_mode=realtime without voice_model.api_key); config-update validates
+	// the resulting candidate before persisting it.
+	cfg, err := agent.LoadResolvedConfigForUpdate(configPath)
 	if err != nil {
 		return webConfigDTO{}, err
 	}

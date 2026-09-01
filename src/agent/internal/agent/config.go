@@ -913,6 +913,14 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	resolveTTSProvider(&cfg)
 	resolveSTTProvider(&cfg)
 	cfg.VoiceModel.APIKey = resolveProviderAPIKey(cfg.VoiceModel.APIKey)
+	// A stale persisted realtime mode must not brick the daemon when its
+	// credential was removed or never configured. Runtime startup falls back to
+	// text mode so Config Web can come up and repair the persisted value. The
+	// strict Config.Validate() path still rejects explicitly saved realtime
+	// configurations without a credential.
+	if strings.EqualFold(strings.TrimSpace(cfg.InputMode), "realtime") && !cfg.VoiceModel.Enabled() {
+		cfg.InputMode = defaultInputMode
+	}
 
 	// Apply provider references to model configurations. This must run before
 	// the base_url whitelist below: until the reference is expanded, Provider
@@ -1134,6 +1142,26 @@ func usesDefaultSTTModel(provider string) bool {
 // treated as "all defaults" so first-boot config pages can render before
 // agent.toml has been created.
 func LoadResolvedConfig(path string) (Config, error) {
+	cfg, err := loadResolvedConfig(path)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// LoadResolvedConfigForUpdate loads the config editor view without validating
+// the existing values. This is intentionally only for recovery updates: a
+// config web save may need to repair a persisted invalid field (for example,
+// an old input_mode=realtime without voice_model.api_key) before the candidate
+// config can be validated and persisted.
+func LoadResolvedConfigForUpdate(path string) (Config, error) {
+	return loadResolvedConfig(path)
+}
+
+func loadResolvedConfig(path string) (Config, error) {
 	exists, err := inspectConfigFilePath(path)
 	if err != nil {
 		return Config{}, err
@@ -1161,10 +1189,6 @@ func LoadResolvedConfig(path string) (Config, error) {
 	// References are deliberately NOT resolved here. The page edits the
 	// reference, so it must come back as the name it wrote.
 	migrateLegacyVoiceProviders(&cfg, metadata)
-
-	if err := cfg.Validate(); err != nil {
-		return Config{}, err
-	}
 
 	return cfg, nil
 }

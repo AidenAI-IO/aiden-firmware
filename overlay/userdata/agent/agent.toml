@@ -19,7 +19,7 @@
 # - stt: also run device audio -> STT -> LLM -> TTS
 # - realtime: run the realtime voice model directly; [voice_model] is selected
 #   by this mode rather than by whether voice_model.api_key is present
-input_mode = "stt"
+input_mode = "text"
 
 # RKNN Silero VAD parameters
 # Only used when input_mode is "stt"
