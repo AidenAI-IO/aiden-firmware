@@ -1566,7 +1566,9 @@ func TestRunVoiceSessionDoesNotRecordWhileSpeaking(t *testing.T) {
 }
 
 func TestRunVoiceTurnAppendsAndConfirmsVoiceNotificationTail(t *testing.T) {
-	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	config := agent.DefaultConfig()
+	config.Locale = "zh-CN"
+	runtime := agent.NewRuntimeWithDeps(config, nil, nil, nil, agent.NewSkillIndex())
 	if err := runtime.VoiceNotificationSink().Publish(context.Background(), agent.VoiceNotificationEvent{
 		Code: "storage", Severity: agent.SeverityWarning, State: agent.VoiceNotificationActive, DedupeKey: "storage:device",
 	}); err != nil {
@@ -1637,7 +1639,9 @@ func TestRunVoiceTurnKeepsVoiceNotificationPendingWhenSpeechIsUnavailable(t *tes
 }
 
 func TestRunVoiceTurnSpeaksReplacementForFinalLLMFailure(t *testing.T) {
-	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	config := agent.DefaultConfig()
+	config.Locale = "zh-CN"
+	runtime := agent.NewRuntimeWithDeps(config, nil, nil, nil, agent.NewSkillIndex())
 	dialog := &fakeAudioDialog{
 		runTurn: func(context.Context) (agent.RunResult, error) {
 			return agent.RunResult{TurnFailure: &agent.TurnFailure{Code: agent.TurnFailureNetworkUnavailable}}, errors.New("dial tcp: network is unreachable")
