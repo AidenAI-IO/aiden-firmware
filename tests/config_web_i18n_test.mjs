@@ -98,7 +98,7 @@ const localeSelect = new Element();
 const elements = [title, password];
 const elementsById = new Map([['localeSelect', localeSelect]]);
 const eventListeners = new Map();
-const stored = new Map([['aiden.config.locale', 'en-US']]);
+const stored = new Map();
 let selectionNode = null;
 let fetchImpl = async () => { throw new Error('fetch is not configured'); };
 const document = {
@@ -192,6 +192,12 @@ await i18nModule.evaluate();
 const {applyLocale, initI18n, t} = i18nModule.namespace;
 
 assert.equal(t('config.save_failed', {section: 'agent'}), 'Save [agent] failed.');
+initI18n();
+assert.equal(document.documentElement.lang, 'en-US');
+assert.equal(document.title, 'Aiden Setup');
+assert.equal(title.textContent, 'Configuration');
+assert.equal(password.getAttribute('placeholder'), 'Open network can leave empty');
+
 applyLocale('zh-CN', false);
 assert.equal(t('config.save_failed', {section: 'agent'}), '保存 [agent] 失败。');
 assert.equal(t('wifi.connected_to', {ssid: 'Aiden Lab'}), '已连接到“Aiden Lab”。');
@@ -208,12 +214,6 @@ assert.equal(t('config.fields.model.responses_include.label'), '额外返回字�
 assert.equal(t('logs.jump_to_bottom'), '跳到底部');
 assert.equal(t('system_env.saved'), 'env 已保存。');
 assert.equal(t('missing.translation.key'), 'missing.translation.key');
-
-initI18n();
-assert.equal(document.documentElement.lang, 'zh-CN');
-assert.equal(document.title, 'Aiden 设置');
-assert.equal(title.textContent, '配置');
-assert.equal(password.getAttribute('placeholder'), '开放网络可留空');
 
 applyLocale('en-US', true);
 assert.equal(document.documentElement.lang, 'en-US');

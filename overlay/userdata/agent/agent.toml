@@ -1,6 +1,6 @@
 # Device UI and Agent response language: "zh-CN" or "en-US".
 # This is independent from [stt].language, which only controls speech recognition.
-# locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification text
+# locale = "en-US"  # "zh-CN" or "en-US"; also selects built-in voice notification text
 
 # Agent instruction and behavior
 # custom_instruction = ""

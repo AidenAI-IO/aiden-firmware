@@ -902,7 +902,7 @@ func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 		t.Fatalf("expected model to receive planner prompt")
 	}
 	systemPrompt := messageText(model.messages[0][:1])
-	want := "Current date: 2026-06-15 (星期一)"
+	want := "Current date: 2026-06-15 (Monday)"
 	if !strings.Contains(systemPrompt, want) {
 		t.Fatalf("planner system prompt missing current date %q:\n%s", want, systemPrompt)
 	}

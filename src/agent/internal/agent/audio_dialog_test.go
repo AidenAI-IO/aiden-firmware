@@ -475,6 +475,7 @@ func TestProcessUtteranceAppendsVoiceNotificationOnlyToSpokenText(t *testing.T) 
 	cfg := DefaultConfig()
 	cfg.Model = ModelConfig{Provider: "fake"}
 	cfg.Instruction = "Answer directly."
+	cfg.Locale = "zh-CN"
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, cfg),
 		&testModelResolver{model: model},
