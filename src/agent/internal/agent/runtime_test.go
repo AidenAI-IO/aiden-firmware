@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
 	speechtext "aiden-agent/internal/agent/speech"
@@ -1466,6 +1467,28 @@ func eventMetadataInt(event TaskEpisodeEvent, key string) int {
 		return int(value)
 	default:
 		return 0
+	}
+}
+
+func TestContextCompactionEventsUseDistinctTelemetryType(t *testing.T) {
+	conversationEvent := contextCompactionEvent(compactor.CompactionStats{
+		TokensBefore:                100,
+		TokensAfter:                 40,
+		ConversationSummaryRequired: true,
+	}, true, nil, "threshold")
+	if conversationEvent.Type != runEventConversationCompaction {
+		t.Fatalf("conversation compaction event type = %q, want %q", conversationEvent.Type, runEventConversationCompaction)
+	}
+
+	historicalEvent := historicalPruneEvent(compactor.HistoricalPruneStats{
+		HistoricalStatesDropped:     1,
+		HistoricalToolResultsPruned: 2,
+	}, true, nil, "threshold")
+	if historicalEvent.Type != runEventHistoricalContextPrune {
+		t.Fatalf("historical prune event type = %q, want %q", historicalEvent.Type, runEventHistoricalContextPrune)
+	}
+	if conversationEvent.Type == historicalEvent.Type {
+		t.Fatal("conversation compaction and historical prune events must use distinct types")
 	}
 }
 

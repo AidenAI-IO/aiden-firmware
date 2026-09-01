@@ -243,20 +243,20 @@ func (m *RunMetrics) CacheHitRate() float64 {
 }
 
 const (
-	runEventToolCall                       = "tool_call"
-	runEventSTTTranscription               = "stt_transcription"
-	runEventVoicePromptSound               = "voice_prompt_sound"
-	runEventTTSStreamPreopen               = "tts_stream_preopen"
-	runEventMemoryRetrieve                 = "memory_retrieve"
-	runEventSessionBegin                   = "session_begin"
-	runEventIterationStart                 = "iteration_start"
-	runEventIterationEnd                   = "iteration_end"
-	runEventLoopGuardStop                  = "loop_guard_stop"
-	runEventToolResultContext              = "tool_result_context"
-	runEventContextBudget                  = "context_budget"
-	runEventHistoricalContextPrune         = "historical_context_prune"
-	runEventHistoricalToolResultCompaction = "historical_tool_result_compaction"
-	runEventModelRequestFailure            = "model_request_failure"
+	runEventToolCall               = "tool_call"
+	runEventSTTTranscription       = "stt_transcription"
+	runEventVoicePromptSound       = "voice_prompt_sound"
+	runEventTTSStreamPreopen       = "tts_stream_preopen"
+	runEventMemoryRetrieve         = "memory_retrieve"
+	runEventSessionBegin           = "session_begin"
+	runEventIterationStart         = "iteration_start"
+	runEventIterationEnd           = "iteration_end"
+	runEventLoopGuardStop          = "loop_guard_stop"
+	runEventToolResultContext      = "tool_result_context"
+	runEventContextBudget          = "context_budget"
+	runEventHistoricalContextPrune = "historical_context_prune"
+	runEventConversationCompaction = "conversation_compaction"
+	runEventModelRequestFailure    = "model_request_failure"
 )
 
 func historicalPruneEvent(stats compactor.HistoricalPruneStats, changed bool, err error, reason string) TaskEpisodeEvent {
@@ -285,7 +285,7 @@ func contextCompactionEvent(stats compactor.CompactionStats, compacted bool, err
 	if reason != "" {
 		metadata["reason"] = reason
 	}
-	return TaskEpisodeEvent{Type: runEventHistoricalToolResultCompaction, Metadata: metadata}
+	return TaskEpisodeEvent{Type: runEventConversationCompaction, Metadata: metadata}
 }
 
 type RunEvent struct {
