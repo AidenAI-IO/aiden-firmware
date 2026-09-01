@@ -600,6 +600,11 @@ func (l *AgentLoop) consumeAndPersistSteer(
 }
 
 func (l *AgentLoop) persistSteer(ctx context.Context, executor *executor.LLMExecutor, steer RunSteerMessage) error {
+	// Normalize once so the model context, the recorded steer, and the emitted
+	// event all carry the same text. Whitespace-only input would otherwise reach
+	// the model as an empty message while being recorded as the placeholder.
+	steer.Content = steerHumanMessageContent(steer)
+
 	// Step 1: Append to context manager
 	if executor != nil {
 		if err := executor.AppendMessage(messages.Message{

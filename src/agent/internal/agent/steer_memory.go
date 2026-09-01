@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"strings"
 	"sync"
 )
 
@@ -17,6 +16,9 @@ type steerConversationStatus interface {
 // steerConversationTracker records out-of-band steering metadata for the
 // session event stream. The steer's model-facing content is persisted
 // separately by ContextManager, which is the sole conversation context.
+//
+// Content arrives already normalized by persistSteer, so the recorded steer
+// matches the text appended to the model context verbatim.
 type steerConversationTracker struct {
 	mu     sync.Mutex
 	steers []RunSteerMessage
@@ -27,12 +29,6 @@ func newSteerConversationTracker() *steerConversationTracker {
 }
 
 func (t *steerConversationTracker) RecordSteer(steer RunSteerMessage) error {
-	content := strings.TrimSpace(steer.Content)
-	if content == "" {
-		content = "(empty steering message)"
-	}
-	steer.Content = content
-
 	t.mu.Lock()
 	t.steers = append(t.steers, steer)
 	t.mu.Unlock()
