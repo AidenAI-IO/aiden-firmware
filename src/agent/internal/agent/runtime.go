@@ -254,9 +254,39 @@ const (
 	runEventLoopGuardStop                  = "loop_guard_stop"
 	runEventToolResultContext              = "tool_result_context"
 	runEventContextBudget                  = "context_budget"
+	runEventHistoricalContextPrune         = "historical_context_prune"
 	runEventHistoricalToolResultCompaction = "historical_tool_result_compaction"
 	runEventModelRequestFailure            = "model_request_failure"
 )
+
+func historicalPruneEvent(stats compactor.HistoricalPruneStats, changed bool, err error, reason string) TaskEpisodeEvent {
+	metadata := map[string]interface{}{
+		"historical_states_dropped":      stats.HistoricalStatesDropped,
+		"historical_tool_results_pruned": stats.HistoricalToolResultsPruned,
+		"tokens_before":                  stats.TokensBefore,
+		"tokens_after":                   stats.TokensAfter,
+		"changed":                        changed,
+		"success":                        err == nil,
+	}
+	if reason != "" {
+		metadata["reason"] = reason
+	}
+	return TaskEpisodeEvent{Type: runEventHistoricalContextPrune, Metadata: metadata}
+}
+
+func contextCompactionEvent(stats compactor.CompactionStats, compacted bool, err error, reason string) TaskEpisodeEvent {
+	metadata := map[string]interface{}{
+		"tokens_before":                 stats.TokensBefore,
+		"tokens_after":                  stats.TokensAfter,
+		"conversation_summary_required": stats.ConversationSummaryRequired,
+		"compacted":                     compacted,
+		"success":                       err == nil,
+	}
+	if reason != "" {
+		metadata["reason"] = reason
+	}
+	return TaskEpisodeEvent{Type: runEventHistoricalToolResultCompaction, Metadata: metadata}
+}
 
 type RunEvent struct {
 	Type           string     `json:"type"`
@@ -1140,32 +1170,51 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		maxResponseTokens = req.MaxTokens
 	}
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
-	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
+	compactionTrigger, _, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
 	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
-	if compactionEnabled && tokenUsage > compactionTrigger {
+
+	// Historical state and tool-result pruning is deterministic and has its own
+	// configurable trigger. It is intentionally independent from conversation
+	// summarization and provider-managed Responses compaction.
+	pruneTrigger, pruneTarget, pruneEnabled := historicalPruneBudgets(usableInputBudget, r.config.ContextPruneThreshold)
+	if pruneEnabled && tokenUsage > pruneTrigger {
 		if r.logger != nil {
-			r.logger.Info("Compaction: token usage reached the threshold, pruning historical state and tool results... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
+			r.logger.Info("Historical context prune: token usage reached threshold; tokenUsage=%d trigger=%d target=%d", tokenUsage, pruneTrigger, pruneTarget)
 		}
-		newManager, compacted, err := contextCompactor.CompactWithOptions(ctx, r.contextManager, compactor.CompactionOptions{
-			TargetTokens: compactionTarget,
-			// Provider compaction remains responsible for general conversation
-			// compaction, but expired local state must still be removed.
-			SkipSummary: r.config.Model.ResponsesProviderCompactionEnabled(),
-		})
+		newManager, pruned, pruneErr := contextCompactor.PruneHistorical(r.contextManager, pruneTarget)
 		if episodeRecorder != nil {
-			stats := contextCompactor.LastStats()
-			episodeRecorder.RecordEvent(TaskEpisodeEvent{
-				Type: runEventHistoricalToolResultCompaction,
-				Metadata: map[string]interface{}{
-					"historical_states_dropped":      stats.HistoricalStatesDropped,
-					"historical_tool_results_pruned": stats.HistoricalToolResultsPruned,
-					"tokens_before":                  stats.TokensBefore,
-					"tokens_after":                   stats.TokensAfter,
-					"conversation_summary_required":  stats.ConversationSummaryRequired,
-					"compacted":                      compacted,
-					"success":                        err == nil,
-				},
-			})
+			episodeRecorder.RecordEvent(historicalPruneEvent(
+				contextCompactor.LastPruneStats(),
+				pruned,
+				pruneErr,
+				"threshold",
+			))
+		}
+		if pruneErr != nil {
+			return RunResult{}, pruneErr
+		}
+		if pruned {
+			newManager.AddAppendMessageHook(r.getStateHook())
+			if err = contextmanager.SwitchSession(newManager.GetSessionFolder(), newManager.GetSessionID()); err != nil {
+				return RunResult{}, err
+			}
+			r.contextManager = newManager
+			tokenUsage = tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
+		}
+	}
+
+	if !r.config.Model.ResponsesProviderCompactionEnabled() && compactionEnabled && tokenUsage > compactionTrigger {
+		if r.logger != nil {
+			r.logger.Info("Compaction: token usage reached the threshold, summarizing conversation... tokenUsage: %d, trigger: %d, contextWindow: %d", tokenUsage, compactionTrigger, contextWindow)
+		}
+		newManager, compacted, err := contextCompactor.Compact(ctx, r.contextManager)
+		if episodeRecorder != nil {
+			episodeRecorder.RecordEvent(contextCompactionEvent(
+				contextCompactor.LastCompactionStats(),
+				compacted,
+				err,
+				"threshold",
+			))
 		}
 		if err != nil {
 			return RunResult{}, err
@@ -1201,25 +1250,14 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Info("Compaction: provider rejected the request because the context window was exceeded; compacting and retrying")
 		}
-		newManager, compacted, compactErr := contextCompactor.CompactWithOptions(recoveryCtx, currentManager, compactor.CompactionOptions{
-			TargetTokens: compactionTarget,
-			ForceSummary: true,
-		})
+		newManager, compacted, compactErr := contextCompactor.Compact(recoveryCtx, currentManager)
 		if episodeRecorder != nil {
-			stats := contextCompactor.LastStats()
-			episodeRecorder.RecordEvent(TaskEpisodeEvent{
-				Type: runEventHistoricalToolResultCompaction,
-				Metadata: map[string]interface{}{
-					"historical_states_dropped":      stats.HistoricalStatesDropped,
-					"historical_tool_results_pruned": stats.HistoricalToolResultsPruned,
-					"tokens_before":                  stats.TokensBefore,
-					"tokens_after":                   stats.TokensAfter,
-					"conversation_summary_required":  stats.ConversationSummaryRequired,
-					"compacted":                      compacted,
-					"success":                        compactErr == nil,
-					"reason":                         "provider_context_exceeded",
-				},
-			})
+			episodeRecorder.RecordEvent(contextCompactionEvent(
+				contextCompactor.LastCompactionStats(),
+				compacted,
+				compactErr,
+				"provider_context_exceeded",
+			))
 		}
 		if compactErr != nil || !compacted {
 			return newManager, compacted, compactErr

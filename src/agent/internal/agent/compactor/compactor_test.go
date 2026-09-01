@@ -138,7 +138,7 @@ func TestCompactPreservesLLMFailureSource(t *testing.T) {
 	}
 }
 
-func TestCompactWithOptionsPrunesHistoricalStateAndToolResultsBeforeSummary(t *testing.T) {
+func TestPruneHistoricalRemovesStateAndBoundsToolResultsWithoutSummary(t *testing.T) {
 	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
 		{Role: messages.MessageRoleSystem, Content: "system"},
 		{
@@ -221,12 +221,12 @@ func TestCompactWithOptionsPrunesHistoricalStateAndToolResultsBeforeSummary(t *t
 	model := &promptCapturingModel{reply: "summary should not be called"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
 
-	newManager, compacted, err := compactor.CompactWithOptions(context.Background(), manager, CompactionOptions{TargetTokens: 3_000})
+	newManager, compacted, err := compactor.PruneHistorical(manager, 3_000)
 	if err != nil {
-		t.Fatalf("CompactWithOptions() error = %v", err)
+		t.Fatalf("PruneHistorical() error = %v", err)
 	}
 	if !compacted || newManager == nil {
-		t.Fatal("CompactWithOptions() did not create a pruned context revision")
+		t.Fatal("PruneHistorical() did not create a pruned context revision")
 	}
 	if len(model.prompts) != 0 {
 		t.Fatalf("summary model calls = %d, want 0 after deterministic prune reached target", len(model.prompts))
@@ -259,13 +259,13 @@ func TestCompactWithOptionsPrunesHistoricalStateAndToolResultsBeforeSummary(t *t
 	if current := results["current_call"]; current.Content != "current result" || current.Meta != nil {
 		t.Fatalf("current turn tool result changed: %#v", current)
 	}
-	stats := compactor.LastStats()
-	if stats.HistoricalStatesDropped != 2 || stats.HistoricalToolResultsPruned != 1 || stats.ConversationSummaryRequired || stats.TokensAfter > 3_000 || stats.TokensBefore <= stats.TokensAfter {
-		t.Fatalf("compaction stats = %#v", stats)
+	stats := compactor.LastPruneStats()
+	if stats.HistoricalStatesDropped != 2 || stats.HistoricalToolResultsPruned != 1 || stats.TokensAfter > 3_000 || stats.TokensBefore <= stats.TokensAfter {
+		t.Fatalf("prune stats = %#v", stats)
 	}
 }
 
-func TestCompactWithOptionsExcludesExpiredStateFromSummary(t *testing.T) {
+func TestPruneHistoricalAndCompactRunAsSeparateStages(t *testing.T) {
 	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
 		{Role: messages.MessageRoleSystem, Content: "system"},
 		{Role: messages.MessageRoleState, Content: "app: stale-old-app"},
@@ -281,12 +281,23 @@ func TestCompactWithOptionsExcludesExpiredStateFromSummary(t *testing.T) {
 	model := &promptCapturingModel{reply: "historical work summary"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
 
-	newManager, compacted, err := compactor.CompactWithOptions(context.Background(), manager, CompactionOptions{TargetTokens: 1})
+	prunedManager, pruned, err := compactor.PruneHistorical(manager, 1)
 	if err != nil {
-		t.Fatalf("CompactWithOptions() error = %v", err)
+		t.Fatalf("PruneHistorical() error = %v", err)
+	}
+	if !pruned || prunedManager == nil {
+		t.Fatal("PruneHistorical() did not create a pruned context revision")
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("prune summary model calls = %d, want 0", len(model.prompts))
+	}
+
+	newManager, compacted, err := compactor.Compact(context.Background(), prunedManager)
+	if err != nil {
+		t.Fatalf("Compact() error = %v", err)
 	}
 	if !compacted || newManager == nil {
-		t.Fatal("CompactWithOptions() did not create a summarized context revision")
+		t.Fatal("Compact() did not create a summarized context revision")
 	}
 	if len(model.prompts) != 1 {
 		t.Fatalf("summary model calls = %d, want 1", len(model.prompts))
@@ -307,13 +318,13 @@ func TestCompactWithOptionsExcludesExpiredStateFromSummary(t *testing.T) {
 	if len(stateContents) != 1 || stateContents[0] != "app: current-app" {
 		t.Fatalf("retained state messages = %#v, want current state", stateContents)
 	}
-	stats := compactor.LastStats()
-	if stats.HistoricalStatesDropped != 1 || !stats.ConversationSummaryRequired {
+	stats := compactor.LastCompactionStats()
+	if !stats.ConversationSummaryRequired {
 		t.Fatalf("compaction stats = %#v", stats)
 	}
 }
 
-func TestCompactWithOptionsProviderModeCommitsPruneWithoutSummary(t *testing.T) {
+func TestPruneHistoricalNeverCallsSummaryModel(t *testing.T) {
 	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
 		{Role: messages.MessageRoleSystem, Content: "system"},
 		{Role: messages.MessageRoleState, Content: "expired state"},
@@ -328,12 +339,9 @@ func TestCompactWithOptionsProviderModeCommitsPruneWithoutSummary(t *testing.T) 
 	model := &promptCapturingModel{reply: "summary should not be called"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
 
-	newManager, compacted, err := compactor.CompactWithOptions(context.Background(), manager, CompactionOptions{
-		TargetTokens: 1,
-		SkipSummary:  true,
-	})
+	newManager, compacted, err := compactor.PruneHistorical(manager, 1)
 	if err != nil {
-		t.Fatalf("CompactWithOptions() error = %v", err)
+		t.Fatalf("PruneHistorical() error = %v", err)
 	}
 	if !compacted || newManager == nil {
 		t.Fatal("provider mode discarded deterministic state prune")
@@ -344,13 +352,13 @@ func TestCompactWithOptionsProviderModeCommitsPruneWithoutSummary(t *testing.T) 
 	if messageListContains(newManager.CloneMessageList(), "expired state") {
 		t.Fatal("provider-mode context retained expired state")
 	}
-	stats := compactor.LastStats()
-	if stats.HistoricalStatesDropped != 1 || stats.ConversationSummaryRequired || stats.TokensAfter <= 1 {
-		t.Fatalf("compaction stats = %#v", stats)
+	stats := compactor.LastPruneStats()
+	if stats.HistoricalStatesDropped != 1 || stats.TokensAfter <= 1 {
+		t.Fatalf("prune stats = %#v", stats)
 	}
 }
 
-func TestCompactWithOptionsSkipsContextAlreadyWithinTarget(t *testing.T) {
+func TestPruneHistoricalSkipsContextWithoutHistoricalCandidates(t *testing.T) {
 	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
 		{Role: messages.MessageRoleSystem, Content: "system"},
 		{Role: messages.MessageRoleUser, Content: "current request"},
@@ -361,46 +369,15 @@ func TestCompactWithOptionsSkipsContextAlreadyWithinTarget(t *testing.T) {
 	model := &promptCapturingModel{reply: "summary should not be called"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
 
-	newManager, compacted, err := compactor.CompactWithOptions(context.Background(), manager, CompactionOptions{TargetTokens: 1_000})
+	newManager, compacted, err := compactor.PruneHistorical(manager, 1_000)
 	if err != nil {
-		t.Fatalf("CompactWithOptions() error = %v", err)
+		t.Fatalf("PruneHistorical() error = %v", err)
 	}
 	if compacted || newManager != nil {
 		t.Fatal("context already within target created an unnecessary revision")
 	}
 	if len(model.prompts) != 0 {
 		t.Fatalf("summary model calls = %d, want 0", len(model.prompts))
-	}
-}
-
-func TestCompactWithOptionsForceSummaryIgnoresEstimatedTarget(t *testing.T) {
-	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
-		{Role: messages.MessageRoleSystem, Content: "system"},
-		{Role: messages.MessageRoleUser, Content: "old request one"},
-		{Role: messages.MessageRoleAssistant, Content: "old answer one"},
-		{Role: messages.MessageRoleUser, Content: "old request two"},
-		{Role: messages.MessageRoleAssistant, Content: "old answer two"},
-		{Role: messages.MessageRoleUser, Content: "current request"},
-		{Role: messages.MessageRoleAssistant, Content: "current response"},
-	})
-	if err != nil {
-		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
-	}
-	model := &promptCapturingModel{reply: "forced summary"}
-	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
-
-	newManager, compacted, err := compactor.CompactWithOptions(context.Background(), manager, CompactionOptions{
-		TargetTokens: 1_000_000,
-		ForceSummary: true,
-	})
-	if err != nil {
-		t.Fatalf("CompactWithOptions() error = %v", err)
-	}
-	if !compacted || newManager == nil {
-		t.Fatal("forced summary trusted the local target estimate")
-	}
-	if len(model.prompts) != 1 {
-		t.Fatalf("summary model calls = %d, want 1", len(model.prompts))
 	}
 }
 

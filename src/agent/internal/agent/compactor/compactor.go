@@ -30,24 +30,24 @@ var DefaultProtectRule = ProtectRule{
 
 const historicalToolResultPruneReason = "historical_prune"
 
-type CompactionOptions struct {
-	TargetTokens int
-	SkipSummary  bool
-	ForceSummary bool
-}
-
 type CompactionStats struct {
-	HistoricalStatesDropped     int
-	HistoricalToolResultsPruned int
 	TokensBefore                int
 	TokensAfter                 int
 	ConversationSummaryRequired bool
 }
 
+type HistoricalPruneStats struct {
+	HistoricalStatesDropped     int
+	HistoricalToolResultsPruned int
+	TokensBefore                int
+	TokensAfter                 int
+}
+
 type Compactor struct {
-	ProtectRule ProtectRule
-	Model       model.Model
-	lastStats   CompactionStats
+	ProtectRule         ProtectRule
+	Model               model.Model
+	lastCompactionStats CompactionStats
+	lastPruneStats      HistoricalPruneStats
 }
 
 func NewCompactor(protectRule ProtectRule, model model.Model) *Compactor {
@@ -64,11 +64,18 @@ func validateProtectRule(protectRule ProtectRule) {
 	}
 }
 
-func (c *Compactor) LastStats() CompactionStats {
+func (c *Compactor) LastCompactionStats() CompactionStats {
 	if c == nil {
 		return CompactionStats{}
 	}
-	return c.lastStats
+	return c.lastCompactionStats
+}
+
+func (c *Compactor) LastPruneStats() HistoricalPruneStats {
+	if c == nil {
+		return HistoricalPruneStats{}
+	}
+	return c.lastPruneStats
 }
 
 func estimateMessageListTokenUsage(messageList []messages.Message) int {
@@ -76,42 +83,12 @@ func estimateMessageListTokenUsage(messageList []messages.Message) int {
 }
 
 func (c *Compactor) Compact(ctx context.Context, session *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
-	return c.CompactWithOptions(ctx, session, CompactionOptions{})
-}
-
-func (c *Compactor) CompactWithOptions(ctx context.Context, session *contextmanager.ContextManager, options CompactionOptions) (*contextmanager.ContextManager, bool, error) {
 	if session == nil {
 		return nil, false, nil
 	}
 	messageList := session.CloneMessageList()
 	tokensBefore := estimateMessageListTokenUsage(messageList)
-	c.lastStats = CompactionStats{TokensBefore: tokensBefore, TokensAfter: tokensBefore}
-
-	deterministicChanged := false
-	if options.TargetTokens > 0 {
-		var dropped int
-		messageList, dropped = pruneHistoricalStates(messageList)
-		c.lastStats.HistoricalStatesDropped = dropped
-		deterministicChanged = dropped > 0
-
-		var pruned int
-		messageList, pruned = compactHistoricalToolResults(messageList, options.TargetTokens)
-		c.lastStats.HistoricalToolResultsPruned = pruned
-		deterministicChanged = deterministicChanged || pruned > 0
-		c.lastStats.TokensAfter = estimateMessageListTokenUsage(messageList)
-		if c.lastStats.TokensAfter <= options.TargetTokens && !options.ForceSummary {
-			if deterministicChanged {
-				return newContextRevision(session, messageList)
-			}
-			return nil, false, nil
-		}
-		if deterministicChanged && options.SkipSummary {
-			return newContextRevision(session, messageList)
-		}
-	}
-	if options.SkipSummary {
-		return nil, false, nil
-	}
+	c.lastCompactionStats = CompactionStats{TokensBefore: tokensBefore, TokensAfter: tokensBefore}
 
 	HeadN := c.ProtectRule.HeadN
 	TailN := c.ProtectRule.TailN
@@ -142,9 +119,6 @@ func (c *Compactor) CompactWithOptions(ctx context.Context, session *contextmana
 	}
 
 	if HeadN+TailN >= len(messageList) {
-		if deterministicChanged {
-			return newContextRevision(session, messageList)
-		}
 		return nil, false, nil
 	}
 
@@ -152,18 +126,12 @@ func (c *Compactor) CompactWithOptions(ctx context.Context, session *contextmana
 	tails := messageList[len(messageList)-TailN:]
 	mids := messageList[HeadN : len(messageList)-TailN]
 	// compact mids into one single user message
-	c.lastStats.ConversationSummaryRequired = true
+	c.lastCompactionStats.ConversationSummaryRequired = true
 	summary, err := c.generateSummary(ctx, mids)
 	if err != nil {
-		if deterministicChanged {
-			return newContextRevision(session, messageList)
-		}
 		return nil, false, err
 	}
 	if summary == "" {
-		if deterministicChanged {
-			return newContextRevision(session, messageList)
-		}
 		return nil, false, fmt.Errorf("failed to generate summary")
 	}
 	// assemble
@@ -173,8 +141,36 @@ func (c *Compactor) CompactWithOptions(ctx context.Context, session *contextmana
 		Content: formattedSummary,
 	})
 	newMessageList = append(newMessageList, tails...)
-	c.lastStats.TokensAfter = estimateMessageListTokenUsage(newMessageList)
+	c.lastCompactionStats.TokensAfter = estimateMessageListTokenUsage(newMessageList)
 	return newContextRevision(session, newMessageList)
+}
+
+// PruneHistorical removes expired state snapshots and bounds old tool results
+// without generating an LLM conversation summary. A changed context is written
+// as a new revision so provider response anchors cannot refer to the old shape.
+func (c *Compactor) PruneHistorical(session *contextmanager.ContextManager, targetTokens int) (*contextmanager.ContextManager, bool, error) {
+	if session == nil {
+		return nil, false, nil
+	}
+	messageList := session.CloneMessageList()
+	tokensBefore := estimateMessageListTokenUsage(messageList)
+	c.lastPruneStats = HistoricalPruneStats{TokensBefore: tokensBefore, TokensAfter: tokensBefore}
+	if targetTokens <= 0 {
+		return nil, false, nil
+	}
+
+	var dropped int
+	messageList, dropped = pruneHistoricalStates(messageList)
+	c.lastPruneStats.HistoricalStatesDropped = dropped
+
+	var pruned int
+	messageList, pruned = compactHistoricalToolResults(messageList, targetTokens)
+	c.lastPruneStats.HistoricalToolResultsPruned = pruned
+	c.lastPruneStats.TokensAfter = estimateMessageListTokenUsage(messageList)
+	if dropped == 0 && pruned == 0 {
+		return nil, false, nil
+	}
+	return newContextRevision(session, messageList)
 }
 
 func newContextRevision(session *contextmanager.ContextManager, messageList []messages.Message) (*contextmanager.ContextManager, bool, error) {
