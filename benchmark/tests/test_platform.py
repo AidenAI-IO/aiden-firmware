@@ -1,5 +1,4 @@
 import json
-import urllib.error
 
 import pytest
 
@@ -56,58 +55,6 @@ def test_read_environment_health_treats_input_as_base_url(monkeypatch):
         "platform": "ios"
     }
     assert seen["url"] == "https://example.com/bridge/api/health"
-
-
-def _http_error(url, code):
-    return urllib.error.HTTPError(url, code, "error", {}, None)
-
-
-def test_read_environment_health_falls_back_to_device_status_on_404(monkeypatch):
-    seen = []
-
-    def fake_urlopen(url, timeout=None):
-        seen.append(url)
-        if url.endswith("/health"):
-            raise _http_error(url, 404)
-        return FakeResponse({"connected": True, "device_type": "macOS"})
-
-    monkeypatch.setattr("runner.platform.urllib.request.urlopen", fake_urlopen)
-
-    health = read_environment_health("http://device.local:8080")
-
-    assert health == {
-        "status": "ok",
-        "bridge_type": "go-agent",
-        "device_platform": "macOS",
-        "concurrent": 1,
-    }
-    assert resolve_environment_platform(health) is TargetPlatform.MAC
-    assert seen == [
-        "http://device.local:8080/health",
-        "http://device.local:8080/api/phone-bridge/status",
-    ]
-
-
-def test_read_environment_health_fallback_requires_a_device_type(monkeypatch):
-    def fake_urlopen(url, timeout=None):
-        if url.endswith("/health"):
-            raise _http_error(url, 404)
-        return FakeResponse({"connected": False})
-
-    monkeypatch.setattr("runner.platform.urllib.request.urlopen", fake_urlopen)
-
-    with pytest.raises(ValueError, match="exposes neither /health"):
-        read_environment_health("http://device.local:8080")
-
-
-def test_read_environment_health_propagates_non_404_errors(monkeypatch):
-    def fake_urlopen(url, timeout=None):
-        raise _http_error(url, 503)
-
-    monkeypatch.setattr("runner.platform.urllib.request.urlopen", fake_urlopen)
-
-    with pytest.raises(urllib.error.HTTPError):
-        read_environment_health("http://device.local:8080")
 
 
 def test_platform_from_environment_health_supports_windows_and_linux():

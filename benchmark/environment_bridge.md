@@ -41,11 +41,6 @@ value as `device_type`. A pre-started external daemon must receive the same
 option from its caller. For compatibility with older bridges, known
 `bridge_type` values may still be used as a fallback.
 
-The Go agent device bridge reports `bridge_type: "go-agent"` with the platform
-derived from its effective device type. Agents flashed before this endpoint
-existed return 404; benchmark then falls back to the `device_type` reported by
-`GET /api/phone-bridge/status`.
-
 ### `GET /api/tools` (compatibility)
 
 Returns the bridge's legacy tool catalog for benchmark/debug clients. The Go
@@ -58,7 +53,7 @@ below.
     {
       "name": "touch_gesture",
       "description": "Perform a touch gesture.",
-      "args_schema": { "type": "object" }
+      "args_schema": {"type": "object"}
     }
   ]
 }
@@ -71,14 +66,14 @@ or string `raw_input`. This endpoint is not the Go agent's EnvironmentBridge
 transport.
 
 ```json
-{ "input": { "type": "tap", "point": { "x": 500, "y": 800 } } }
+{"input": {"type": "tap", "point": {"x": 500, "y": 800}}}
 ```
 
 The response should follow the Go agent tool response shape:
 
 ```json
 {
-  "tool": { "name": "touch_gesture" },
+  "tool": {"name": "touch_gesture"},
   "raw_input": "{\"type\":\"tap\"}",
   "output": "{\"ok\":true}",
   "is_error": false,
@@ -147,13 +142,7 @@ Executes one mouse/keyboard provider operation. Requests use the normalized
 ```json
 {
   "operation": "drag",
-  "drag": {
-    "path": [
-      [100, 500],
-      [900, 500]
-    ],
-    "button": "left"
-  }
+  "drag": {"path": [[100, 500], [900, 500]], "button": "left"}
 }
 ```
 
@@ -197,7 +186,7 @@ old token no longer identifies an idempotent operation after release.
 Releases any resources claimed by a benchmark task.
 
 ```json
-{ "ok": true, "data": { "released": true } }
+{"ok": true, "data": {"released": true}}
 ```
 
 ### `GET /api/concurrent`
