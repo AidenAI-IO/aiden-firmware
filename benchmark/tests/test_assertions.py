@@ -267,6 +267,14 @@ def test_expected_option_answer_fails_for_wrong_answer():
     assert result.passed is False
     assert result.predicted_answer == "(b)"
 
+def test_expected_option_answer_ignores_bare_article_after_parenthesized_choice():
+    result = assertions.evaluate_expected_answer(
+        "**(b) not achieved with a guard**", "(b)", "option_letter"
+    )
+
+    assert result.passed is True
+    assert result.predicted_answer == "(b)"
+
 def test_expected_option_answer_rejects_invalid_expected_answer():
     result = assertions.evaluate_expected_answer("No option selected.", "z", "option_letter")
 
@@ -350,6 +358,33 @@ def test_expected_recalled_memory_ids_prefers_episode_over_compressed_history():
     assert result.passed is True
     assert result.recalled_memory_ids == ["personamem_music_expression"]
     assert result.evidence_source == "episode"
+
+
+def test_expected_recalled_memory_ids_does_not_use_episode_for_consolidation_gate():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_device_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_device_memory",
+            "content": "[Large tool result omitted from public history (8406 chars)]",
+        },
+    ]
+    episode = {
+        "id": "ep-consolidation",
+        "retrieved_memory_refs": ["memory-created-by-consolidation"],
+    }
+
+    result = assertions.evaluate_expected_recalled_memory_ids(
+        history,
+        ["memory-created-by-consolidation"],
+        episode=episode,
+        recall_tool="recall_device_memory",
+        require_inline_recall=True,
+    )
+
+    assert result.passed is None
+    assert result.recalled_memory_ids == []
+    assert result.evidence_source == "unavailable"
 
 
 def test_expected_recalled_memory_ids_episode_missing_expected_id_is_failure():

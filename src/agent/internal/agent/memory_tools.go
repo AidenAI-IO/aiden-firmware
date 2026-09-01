@@ -368,7 +368,7 @@ func (t *RecallDeviceMemoryTool) Name() string { return "recall_device_memory" }
 func (t *RecallDeviceMemoryTool) Description() string {
 	return strings.Join([]string{
 		"Recall device and UI memory by terms, tags, entities, types, or device id.",
-		"Use on demand when a task materially depends on saved device or app profiles, procedures, navigation, failure-prevention lessons, calibration notes, or facts; do not call merely because a device or app is mentioned.",
+		"Required when a task materially depends on saved device or app profiles, procedures, navigation, failure-prevention lessons, calibration notes, or facts, including natural-language references to previously learned behavior, prior device experience, or an earlier workaround; recall before answering even when the answer appears obvious, but do not call merely because a device or app is mentioned.",
 		`Input JSON: {"terms":["微信"],"tags":["登录"],"entities":["微信App"],"types":["procedure","failure"],"device_id":"default","limit":5}`,
 	}, " ")
 }
@@ -398,6 +398,19 @@ func (t *RecallDeviceMemoryTool) Call(ctx context.Context, input string) (string
 	results, err := t.store.Search(ctx, query)
 	if err != nil {
 		return "", err
+	}
+	if len(results) == 0 && len(query.Tags) > 0 && len(query.Terms) > 0 {
+		// LLMs often emit a useful free-text query together with an overly
+		// specific tag filter. Retry with tags as ranking terms while preserving
+		// hard entity, type, and device constraints. Entities can identify an app,
+		// account, or device boundary, so relaxing them risks cross-scope recall.
+		fallback := query
+		fallback.Terms = append(append([]string(nil), query.Terms...), query.Tags...)
+		fallback.Tags = nil
+		results, err = t.store.Search(ctx, fallback)
+		if err != nil {
+			return "", err
+		}
 	}
 	results = limitDeviceMemoryRecall(results, 4800)
 	recordRecalledMemoryIDs(ctx, results, func(h MemoryHit) string { return h.ID })

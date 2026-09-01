@@ -1,8 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"strings"
 	"testing"
 
@@ -670,11 +675,35 @@ func TestFunctionAgentRejectsVisualObservationWithoutDimensions(t *testing.T) {
 	}
 }
 
-func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing.T) {
+func TestFunctionAgentUsesSharedActionOutputFlowForScreenshot(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("img1"))
+	observation := `{"action_output":"ok","width":800,"height":600,"format":"jpeg","size":4,"capture_backend":"frame_service","data":"` + encoded + `"}`
+
+	toolContent, followups := agent.observationMessagesForStep(schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "screenshot"},
+		Observation: observation,
+	}, true)
+
+	if toolContent != "ok" {
+		t.Fatalf("tool result = %q, want shared action_output", toolContent)
+	}
+	if len(followups) != 1 || len(followups[0].Parts) != 2 {
+		t.Fatalf("visual followups = %#v, want one captioned image", followups)
+	}
+	imagePart, ok := followups[0].Parts[1].(llms.ImageURLContent)
+	if !ok || !strings.Contains(imagePart.URL, encoded) {
+		t.Fatalf("follow-up image = %#v, want screenshot data", followups[0].Parts[1])
+	}
+}
+
+func TestFunctionAgentPostActionScreenshotPreservesActionOutput(t *testing.T) {
 	agent := &FunctionAgent{
 		Tools: []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}},
 	}
-	observation := `{"action_output":"ok","screen_changed":false,"screen_stable":true,"stable_wait_ms":250,"width":800,"height":600,"format":"jpeg","size":4,"data":"` +
+	observation := `{"action_output":"  ok\nwith details  ","screen_changed":false,"screen_stable":true,"stable_wait_ms":250,"width":800,"height":600,"format":"jpeg","size":4,"data":"` +
 		base64.StdEncoding.EncodeToString([]byte("img1")) + `"}`
 	step := schema.AgentStep{
 		Action:      schema.AgentAction{Tool: "keyboard_tap"},
@@ -683,16 +712,110 @@ func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing
 
 	toolContent, followups := agent.observationMessagesForStep(step, true)
 
-	if !strings.Contains(toolContent, "No visible screen change was observed") {
-		t.Fatalf("toolContent missing screen_changed warning: %q", toolContent)
-	}
-	if !strings.Contains(toolContent, "Do not assume the action succeeded") {
-		t.Fatalf("toolContent missing success warning: %q", toolContent)
-	}
-	if !strings.Contains(toolContent, "The screen was stable when the screenshot was captured") {
-		t.Fatalf("toolContent missing stable summary: %q", toolContent)
+	if toolContent != "  ok\nwith details  " {
+		t.Fatalf("toolContent = %q, want original action output", toolContent)
 	}
 	if len(followups) != 1 {
 		t.Fatalf("expected one followup screenshot message, got %#v", followups)
 	}
+}
+
+func TestFunctionAgentPostActionScreenshotPreservesEmptyActionOutput(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}},
+	}
+	observation := `{"action_output":"","width":800,"height":600,"format":"jpeg","size":4,"data":"` +
+		base64.StdEncoding.EncodeToString([]byte("img1")) + `"}`
+
+	toolContent, followups := agent.observationMessagesForStep(schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "keyboard_tap"},
+		Observation: observation,
+	}, true)
+
+	if toolContent != "" {
+		t.Fatalf("toolContent = %q, want empty original action output", toolContent)
+	}
+	if len(followups) != 1 {
+		t.Fatalf("expected one followup screenshot message, got %#v", followups)
+	}
+}
+
+func TestFunctionAgentWaitStableScreenDoesNotTreatMotionAsActionResult(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "wait_for_stable_screen", visual: true}},
+	}
+	observation := `{"ok":true,"stable":true,"elapsed_ms":250,"screen_changed":false,"width":800,"height":600,"format":"jpeg","size":4,"data":"` +
+		base64.StdEncoding.EncodeToString([]byte("img1")) + `"}`
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "wait_for_stable_screen"},
+		Observation: observation,
+	}
+
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+	if toolContent != observation {
+		t.Fatalf("toolContent = %q, want original observation", toolContent)
+	}
+	if len(followups) != 1 {
+		t.Fatalf("expected one followup screenshot message, got %#v", followups)
+	}
+	caption, ok := followups[0].Parts[0].(llms.TextContent)
+	if !ok {
+		t.Fatalf("state message caption = %T, want text", followups[0].Parts[0])
+	}
+	if !strings.Contains(caption.Text, "No frame-to-frame screen motion was observed during this wait window") {
+		t.Fatalf("state message missing wait-window motion note: %q", caption.Text)
+	}
+	if strings.Contains(caption.Text, "Do not assume the action succeeded") {
+		t.Fatalf("standalone wait state message incorrectly warned about action success: %q", caption.Text)
+	}
+}
+
+func TestFunctionAgentUsesMarkedTouchGestureScreenshotForModel(t *testing.T) {
+	raw := solidJPEG(t, 120, 80, color.RGBA{R: 24, G: 48, B: 72, A: 255})
+	marked, err := drawTouchGesturePostMarker(raw, touchGesturePostMarkerInfo{Type: "tap", X: 500, Y: 500})
+	if err != nil {
+		t.Fatalf("drawTouchGesturePostMarker() error = %v", err)
+	}
+	agent := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "touch_gesture", visual: true}}}
+	observation := fmt.Sprintf(`{"action_output":"ok","width":120,"height":80,"format":"jpeg","size":%d,"data":"%s"}`, len(marked), base64.StdEncoding.EncodeToString(marked))
+	step := schema.AgentStep{Action: schema.AgentAction{Tool: "touch_gesture"}, Observation: observation}
+
+	visual, ok := agent.visualScreenshotObservation(step)
+	if !ok {
+		t.Fatal("touch gesture screenshot was not recognized as visual")
+	}
+	if !bytes.Equal(visual.ImageBytes, marked) {
+		t.Fatal("model screenshot did not preserve the marked image")
+	}
+
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+	if strings.Contains(toolContent, "requested tap coordinate") {
+		t.Fatalf("tool content should not carry marker metadata: %s", toolContent)
+	}
+	if len(followups) != 1 || len(followups[0].Parts) != 2 {
+		t.Fatalf("visual followups = %#v", followups)
+	}
+	imagePart, ok := followups[0].Parts[1].(llms.ImageURLContent)
+	if !ok {
+		t.Fatalf("image part = %T", followups[0].Parts[1])
+	}
+	_, display, ok := telemetryDataURL(imagePart.URL)
+	if !ok || !bytes.Equal(display, marked) {
+		t.Fatal("model followup did not contain the marked screenshot")
+	}
+}
+
+func solidJPEG(t *testing.T, width, height int, fill color.Color) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, fill)
+		}
+	}
+	var output bytes.Buffer
+	if err := jpeg.Encode(&output, img, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatalf("encode jpeg: %v", err)
+	}
+	return output.Bytes()
 }

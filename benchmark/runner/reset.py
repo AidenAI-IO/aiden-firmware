@@ -138,22 +138,56 @@ def per_task_setup(
     setup: dict[str, Any] | list[dict[str, Any]] | None,
     *,
     prompt_prefix: str = "",
-) -> None:
+    consolidation_expectation: Any = None,
+) -> dict[str, Any] | None:
     if setup is None:
         return
     if isinstance(setup, list):
         if not setup:
             raise ResetError("setup sequence must contain at least one setup")
+        expectation_indexes = [
+            index
+            for index, item in enumerate(setup)
+            if isinstance(item, dict)
+            and item.get("type") == "seed_episode"
+            and item.get("consolidation_expectation") is not None
+        ]
+        expectation_index = expectation_indexes[0] if expectation_indexes else None
+        if consolidation_expectation is not None and expectation_index is None:
+            seed_episode_indexes = [
+                index
+                for index, item in enumerate(setup)
+                if isinstance(item, dict) and item.get("type") == "seed_episode"
+            ]
+            if len(seed_episode_indexes) != 1:
+                raise ResetError(
+                    "task-level consolidation_expectation requires exactly one seed_episode setup"
+                )
+            expectation_index = seed_episode_indexes[0]
+        result: dict[str, Any] | None = None
         for index, item in enumerate(setup):
             if not isinstance(item, dict):
                 raise ResetError(f"setup[{index}] must be an object")
             try:
-                per_task_setup(client, item, prompt_prefix=prompt_prefix)
+                item_result = per_task_setup(
+                    client,
+                    item,
+                    prompt_prefix=prompt_prefix,
+                    consolidation_expectation=(
+                        consolidation_expectation
+                        if index == expectation_index
+                        else None
+                    ),
+                )
+                if item_result is not None and (
+                    result is None or index == expectation_index
+                ):
+                    result = item_result
             except SetupAssertionError as e:
                 raise SetupAssertionError(f"setup[{index}] failed: {e}") from e
             except ResetError as e:
                 raise ResetError(f"setup[{index}] failed: {e}") from e
-        return
+        return result
     if not isinstance(setup, dict):
         raise ResetError(f"setup must be an object or an array: {setup!r}")
     setup_type = setup.get("type")
@@ -172,8 +206,16 @@ def per_task_setup(
         _per_task_setup_seed_memory(client, setup)
         return
     if setup_type == "seed_episode":
-        _per_task_setup_seed_episode(client, setup)
-        return
+        if (
+            (setup.get("consolidation_expectation") is not None or consolidation_expectation is not None)
+            and setup.get("consolidate", False) is not True
+        ):
+            raise ResetError("seed_episode consolidation_expectation requires consolidate=true")
+        return _per_task_setup_seed_episode(
+            client,
+            setup,
+            consolidation_expectation=consolidation_expectation,
+        )
     if setup_type == "seed_notification":
         _per_task_setup_seed_notification(client, setup)
         return
@@ -248,7 +290,12 @@ def _per_task_setup_seed_memory(client: AgentClient, setup: dict[str, Any]) -> N
             raise ResetError(f"seed_memory clear_history failed: {e}") from e
 
 
-def _per_task_setup_seed_episode(client: AgentClient, setup: dict[str, Any]) -> None:
+def _per_task_setup_seed_episode(
+    client: AgentClient,
+    setup: dict[str, Any],
+    *,
+    consolidation_expectation: Any = None,
+) -> dict[str, Any]:
     episode = setup.get("episode")
     if not isinstance(episode, dict):
         raise ResetError(f"seed_episode setup requires an 'episode' object: {setup!r}")
@@ -271,25 +318,141 @@ def _per_task_setup_seed_episode(client: AgentClient, setup: dict[str, Any]) -> 
     except AgentRequestError as e:
         raise ResetError(f"seed_episode failed for {episode_id!r}: {e}") from e
     if not consolidate:
-        return
+        return {"type": "seed_episode", "episode_id": episode_id, "consolidated": False}
     try:
         result = client.process_episode_memory(episode_id, timeout=timeout)
     except AgentTimeoutError as e:
         raise ResetError(f"episode memory consolidation timed out for {episode_id!r}: {e}") from e
     except AgentRequestError as e:
         raise ResetError(f"episode memory consolidation failed for {episode_id!r}: {e}") from e
+    expectation = setup.get("consolidation_expectation")
+    if consolidation_expectation is not None:
+        expectation = vars(consolidation_expectation)
+
+    def fail(message: str) -> None:
+        error = ResetError(message)
+        error.consolidation = result
+        raise error
+
     status = str(result.get("status") or "").strip().lower()
+    expected_status = (expectation or {}).get("expected_status") if isinstance(expectation, dict) else None
+    if expected_status is not None and status != expected_status:
+        fail(f"episode memory consolidation for {episode_id!r} status mismatch: expected {expected_status!r}, got {status or 'missing'!r}")
+    if status == "ignored" and expected_status != "ignored":
+        fail(f"episode memory consolidation for {episode_id!r} was ignored by the worker")
     if status == "ignored":
-        raise ResetError(
-            f"episode memory consolidation for {episode_id!r} was ignored by the worker"
-        )
+        return {"type": "seed_episode", "episode_id": episode_id, "consolidated": True, "consolidation": result}
     if status != "done":
-        raise ResetError(
-            f"episode memory consolidation for {episode_id!r} did not reach a terminal status: {status or 'missing'}"
-        )
+        fail(f"episode memory consolidation for {episode_id!r} did not reach a terminal status: {status or 'missing'}")
+    _validate_consolidation_result(episode_id, result, expectation)
+    _validate_consolidated_memory_content(client, episode_id, result, expectation, timeout)
+    return {"type": "seed_episode", "episode_id": episode_id, "consolidated": True, "consolidation": result}
+
+
+def _validate_consolidation_result(
+    episode_id: str,
+    result: dict[str, Any],
+    expectation: dict[str, Any] | None,
+) -> None:
+    def fail(message: str) -> None:
+        error = ResetError(message)
+        error.consolidation = result
+        raise error
+
+    memory_ids = result.get("memory_ids")
+    if not isinstance(memory_ids, list) or not all(isinstance(item, str) and item.strip() for item in memory_ids):
+        fail(f"episode memory consolidation for {episode_id!r} returned invalid memory_ids")
+    memory_count = len(memory_ids)
+    if expectation is None:
+        if not memory_count:
+            fail(f"episode memory consolidation for {episode_id!r} produced no device memory")
+        return
+    if not isinstance(expectation, dict):
+        fail("seed_episode consolidation_expectation must be an object")
+    expected_goal = expectation.get("goal_result")
+    assessment = result.get("assessment")
+    if expected_goal is not None:
+        actual_goal = assessment.get("goal_result") if isinstance(assessment, dict) else None
+        if actual_goal != expected_goal:
+            fail(f"episode memory consolidation for {episode_id!r} goal_result mismatch: expected {expected_goal!r}, got {actual_goal or 'missing'!r}")
+    if expectation.get("required_assessment_evidence"):
+        refs = assessment.get("evidence_refs") if isinstance(assessment, dict) else None
+        if not isinstance(refs, list) or not refs:
+            fail(f"episode memory consolidation for {episode_id!r} returned no assessment evidence_refs")
+    min_memory_ids = int(expectation.get("min_memory_ids", 0))
+    max_memory_ids = expectation.get("max_memory_ids")
+    max_memory_ids = None if max_memory_ids is None else int(max_memory_ids)
+    if memory_count < min_memory_ids:
+        fail(f"episode memory consolidation for {episode_id!r} produced {memory_count} device memories, expected at least {min_memory_ids}")
+    if max_memory_ids is not None and memory_count > max_memory_ids:
+        fail(f"episode memory consolidation for {episode_id!r} produced {memory_count} device memories, expected at most {max_memory_ids}")
+    positive_contract = any(expectation.get(field) for field in ("required_memory_substrings", "required_memory_types", "required_memory_scope"))
+    if memory_count == 0 and (positive_contract or not expectation.get("allow_empty_memory", False)):
+        fail(f"episode memory consolidation for {episode_id!r} produced no device memory")
+
+
+def _validate_consolidated_memory_content(
+    client: AgentClient,
+    episode_id: str,
+    result: dict[str, Any],
+    expectation: dict[str, Any] | None,
+    timeout: int,
+) -> None:
+    if not isinstance(expectation, dict):
+        return
+    forbidden = expectation.get("forbidden_memory_substrings", [])
+    required_substrings = expectation.get("required_memory_substrings", [])
+    required_types = expectation.get("required_memory_types", [])
+    required_scope = expectation.get("required_memory_scope", {})
+    if not any((forbidden, required_substrings, required_types, required_scope)):
+        return
     memory_ids = result.get("memory_ids")
     if not isinstance(memory_ids, list) or not memory_ids:
-        raise ResetError(f"episode memory consolidation for {episode_id!r} produced no device memory")
+        if required_substrings or required_types or required_scope:
+            error = ResetError(f"episode memory consolidation for {episode_id!r} produced no device memory for the required content/type/scope contract")
+            error.consolidation = result
+            raise error
+        return
+
+    def fail(message: str) -> None:
+        error = ResetError(message)
+        error.consolidation = result
+        raise error
+
+    generated: list[dict[str, Any]] = []
+    for memory_id in memory_ids:
+        try:
+            recalled = client.invoke_tool("recall_device_memory", {"terms": [memory_id], "limit": 5}, timeout=timeout)
+        except (AgentTimeoutError, AgentRequestError) as exc:
+            fail(f"episode memory consolidation for {episode_id!r} could not inspect memory {memory_id!r}: {exc}")
+        if recalled.is_error:
+            fail(f"episode memory consolidation for {episode_id!r} could not inspect memory {memory_id!r}")
+        try:
+            payload = json.loads(recalled.output)
+        except (TypeError, json.JSONDecodeError) as exc:
+            fail(f"episode memory consolidation for {episode_id!r} returned invalid recall output for memory {memory_id!r}: {exc}")
+        matches = payload.get("results") if isinstance(payload, dict) else None
+        exact = next((item for item in matches or [] if isinstance(item, dict) and item.get("id") == memory_id), None)
+        if exact is None:
+            fail(f"episode memory consolidation for {episode_id!r} could not recall generated memory {memory_id!r}")
+        generated.append(exact)
+    serialized = json.dumps(generated, ensure_ascii=False).casefold()
+    leaked = [value for value in forbidden if value.casefold() in serialized]
+    if leaked:
+        fail(f"episode memory consolidation for {episode_id!r} persisted forbidden value(s): {', '.join(leaked)}")
+    required_type_set = {value.strip().casefold() for value in required_types}
+    def matches_required(item: dict[str, Any]) -> bool:
+        if required_type_set and str(item.get("type") or "").strip().casefold() not in required_type_set:
+            return False
+        serialized_item = json.dumps(item, ensure_ascii=False).casefold()
+        if any(value.casefold() not in serialized_item for value in required_substrings):
+            return False
+        applicability = item.get("applicability")
+        if required_scope and (not isinstance(applicability, dict) or any(str(applicability.get(key) or "") != value for key, value in required_scope.items())):
+            return False
+        return True
+    if (required_substrings or required_types or required_scope) and not any(matches_required(item) for item in generated):
+        fail(f"episode memory consolidation for {episode_id!r} produced no single memory matching required type/content/scope")
 
 
 def _per_task_setup_seed_notification(client: AgentClient, setup: dict[str, Any]) -> None:

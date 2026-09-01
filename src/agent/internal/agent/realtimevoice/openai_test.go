@@ -163,6 +163,13 @@ func TestOpenAIEndpointAcceptsHTTPBaseURL(t *testing.T) {
 	}
 }
 
+func TestOpenAISessionUpdateUsesNegotiatedRates(t *testing.T) {
+	update := buildOpenAISessionUpdate(SessionConfig{InputSampleRate: 16000, OutputSampleRate: 24000}, "gpt-realtime")
+	if update.Session.Audio.Input.Format.Rate != 16000 || update.Session.Audio.Output.Format.Rate != 24000 {
+		t.Fatalf("audio rates = %d/%d, want 16000/24000", update.Session.Audio.Input.Format.Rate, update.Session.Audio.Output.Format.Rate)
+	}
+}
+
 func TestOpenAIOutputEventAliasesNormalize(t *testing.T) {
 	cases := []struct {
 		name string

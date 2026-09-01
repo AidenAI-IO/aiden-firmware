@@ -55,7 +55,6 @@ func TestAgentLoopCombinesTerminationPolicyWithToolExecutionHooks(t *testing.T) 
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: "ok"}}},
-		nil,
 		10,
 		nil,
 		nil,
@@ -94,8 +93,8 @@ func TestAgentLoopPersistsSoftNoticeInContext(t *testing.T) {
 	t.Parallel()
 
 	model := &scriptedModel{responses: []*llms.ContentResponse{
-		toolCallResponse("call-1", "touch_gesture", `{"gesture":"swipe_up"}`),
-		toolCallResponse("call-2", "touch_gesture", `{"gesture":"swipe_up"}`),
+		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-2", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
 		contentResponse("I will change strategy."),
 	}}
 	manager, err := freshNewContextManager("system", "swipe until done", nil, t.TempDir())
@@ -105,7 +104,6 @@ func TestAgentLoopPersistsSoftNoticeInContext(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: "same"}}},
-		nil,
 		10,
 		nil,
 		nil,
@@ -135,7 +133,7 @@ func TestAgentLoopPersistsSoftNoticeInContext(t *testing.T) {
 	if len(notices) != 1 {
 		t.Fatalf("persisted notice count = %d, want 1; messages=%#v", len(notices), manager.MessageListDump().Messages)
 	}
-	if !strings.Contains(notices[0].Content, "Loop guard: recent tool calls are repeating or not changing the screen.") {
+	if strings.Contains(notices[0].Content, "<notice>") || !strings.Contains(notices[0].Content, "Loop guard: recent tool calls are repeating or not changing the screen.") {
 		t.Fatalf("persisted notice = %#v", notices[0])
 	}
 }
@@ -145,10 +143,10 @@ func TestAgentLoopEscalatesFromPersistedNoticeToRestrictionAndTermination(t *tes
 
 	screen := `{"width":100,"height":100,"format":"jpeg","data":"same-screen"}`
 	model := &scriptedModel{responses: []*llms.ContentResponse{
-		toolCallResponse("call-1", "touch_gesture", `{"gesture":"swipe_up"}`),
-		toolCallResponse("call-2", "touch_gesture", `{"gesture":"swipe_up"}`),
-		toolCallResponse("call-3", "touch_gesture", `{"gesture":"swipe_up"}`),
-		toolCallResponse("call-4", "touch_gesture", `{"gesture":"swipe_up"}`),
+		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-2", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-3", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-4", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
 	}}
 	manager, err := freshNewContextManager("system", "swipe until done", nil, t.TempDir())
 	if err != nil {
@@ -157,7 +155,6 @@ func TestAgentLoopEscalatesFromPersistedNoticeToRestrictionAndTermination(t *tes
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: screen}}},
-		nil,
 		10,
 		nil,
 		nil,
@@ -183,7 +180,7 @@ func TestAgentLoopEscalatesFromPersistedNoticeToRestrictionAndTermination(t *tes
 	if len(notices) != 1 {
 		t.Fatalf("persisted notice count = %d, want 1; messages=%#v", len(notices), manager.MessageListDump().Messages)
 	}
-	if !strings.Contains(notices[0].Content, "Loop guard: UI action tools are temporarily restricted because repeated actions produced no progress.") {
+	if strings.Contains(notices[0].Content, "<notice>") || !strings.Contains(notices[0].Content, "Loop guard: UI action tools are temporarily restricted because repeated actions produced no progress.") {
 		t.Fatalf("persisted notice = %#v", notices[0])
 	}
 }
@@ -192,8 +189,8 @@ func TestAgentLoopBudgetExhaustionReturnsGracefulStop(t *testing.T) {
 	t.Parallel()
 
 	model := &scriptedModel{responses: []*llms.ContentResponse{
-		toolCallResponse("call-1", "touch_gesture", `{"gesture":"swipe_up"}`),
-		toolCallResponse("call-2", "touch_gesture", `{"gesture":"swipe_up"}`),
+		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
+		toolCallResponse("call-2", "touch_gesture", `{"type":"swipe","start":{"x":500,"y":800},"direction":"up"}`),
 	}}
 	screen := `{"width":100,"height":100,"format":"jpeg","data":"screen-1"}`
 	manager, err := freshNewContextManager("system", "keep going", nil, t.TempDir())
@@ -204,7 +201,6 @@ func TestAgentLoopBudgetExhaustionReturnsGracefulStop(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: screen}}},
-		nil,
 		1,
 		nil,
 		nil,
@@ -236,7 +232,6 @@ func TestAgentLoopReturnsContextErrorBeforeGracefulStop(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{},
-		nil,
 		10,
 		nil,
 		nil,

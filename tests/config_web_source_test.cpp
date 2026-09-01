@@ -857,7 +857,6 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(html.find("{Key: \"screen_stable_timeout_ms\"") != std::string::npos);
     CHECK(html.find("{Key: \"screen_stable_ms\"") != std::string::npos);
     CHECK(html.find("{Key: \"screen_stable_diff_threshold\"") != std::string::npos);
-    CHECK(html.find("{Key: \"load_all_tools\"") != std::string::npos);
 }
 
 TEST_CASE("config web exposes model spec override fields") {

@@ -38,8 +38,8 @@ func TestQuickActionsResolveAliasAndPlatform(t *testing.T) {
 		t.Fatalf("expected previous-app alias to resolve to app_switch_back, got %q ok=%v", id, ok)
 	}
 	_, binding, ok := table.lookup("app_switch_back", "android")
-	if !ok || binding.Status != quickActionStatusActive || binding.Tool != "touch_gesture" {
-		t.Fatalf("Android app_switch_back binding = %#v, found=%v; want active touch_gesture", binding, ok)
+	if !ok || binding.Status != quickActionStatusReserved || binding.Tool != "" || len(binding.Steps) != 0 || len(binding.Input) != 0 {
+		t.Fatalf("Android app_switch_back binding = %#v, found=%v; want reserved binding without executable input", binding, ok)
 	}
 	if id, ok := table.resolveActionID("退格"); !ok || id != "delete_backward" {
 		t.Fatalf("expected delete-backward alias to resolve to delete_backward, got %q ok=%v", id, ok)

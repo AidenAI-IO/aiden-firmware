@@ -208,7 +208,7 @@ func (s *LongTermMemoryStore) applyMemoryWriteIntentLocked(ctx context.Context, 
 		if intent.Action == MemoryIntentActionReinforce {
 			reinforceMemoryItem(&parsed.Item, item, time.Now().UTC())
 		} else {
-			mergeMemoryItem(&parsed.Item, item, time.Now().UTC())
+			updateMemoryItem(&parsed.Item, item, time.Now().UTC())
 		}
 		if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err != nil {
 			return MemoryApplyResult{}, err
@@ -264,7 +264,13 @@ func memoryUpdateAlreadyApplied(existing, candidate MemoryItem) bool {
 	if candidate.TTL != "" && existing.TTL != candidate.TTL {
 		return false
 	}
-	return existing.Priority >= candidate.Priority && existing.Confidence >= candidate.Confidence
+	if candidate.Priority > 0 && existing.Priority != candidate.Priority {
+		return false
+	}
+	if candidate.Confidence > 0 && existing.Confidence != candidate.Confidence {
+		return false
+	}
+	return true
 }
 
 func memoryReinforceAlreadyApplied(existing, candidate MemoryItem) bool {
@@ -390,6 +396,16 @@ func mergeMemoryItem(existing *MemoryItem, candidate MemoryItem, now time.Time) 
 		existing.Revision = 1
 	} else {
 		existing.Revision++
+	}
+}
+
+func updateMemoryItem(existing *MemoryItem, candidate MemoryItem, now time.Time) {
+	mergeMemoryItem(existing, candidate, now)
+	if candidate.Priority > 0 {
+		existing.Priority = candidate.Priority
+	}
+	if candidate.Confidence > 0 {
+		existing.Confidence = candidate.Confidence
 	}
 }
 

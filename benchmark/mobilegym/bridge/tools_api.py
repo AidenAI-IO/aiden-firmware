@@ -24,15 +24,13 @@ from .episode import (
 from .protocol import encode_screenshot
 
 
-DEFAULT_DIRECTIONAL_SWIPE_DISTANCE = 500.0
-DIRECTIONAL_SWIPE_PRESETS = {
-    "": (DEFAULT_DIRECTIONAL_SWIPE_DISTANCE, 700),
-    "default": (DEFAULT_DIRECTIONAL_SWIPE_DISTANCE, 700),
-    "large": (700.0, 800),
-    "medium": (500.0, 650),
-    "small": (200.0, 420),
-    "tiny": (40.0, 320),
-}
+DEFAULT_SWIPE_SPEED = 2500.0
+MAX_SWIPE_DURATION_MS = 10_000
+MAX_SWIPE_HOLD_MS = 10_000
+MAX_SWIPE_STEPS = 1_000
+MAX_MOUSE_SCROLL_DELTA = 127
+MOUSE_SCROLL_BASE_DURATION_MS = 300
+MOUSE_SCROLL_DURATION_STEP_MS = 75
 US_KEYBOARD_TEXT_CHARS = set(
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -107,7 +105,7 @@ class ToolsAPIHandler:
                     "properties": {
                         "type": {
                             "type": "string",
-                            "enum": ["tap", "double_tap", "long_press", "swipe", "drag", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"],
+                            "enum": ["tap", "double_tap", "long_press", "swipe", "drag"],
                             "description": "Type of gesture to perform",
                         },
                         "point": {
@@ -131,20 +129,15 @@ class ToolsAPIHandler:
                             "required": ["x", "y"],
                             "description": "End point for swipe/drag",
                         },
-                        "duration_ms": {"type": "integer", "minimum": 0, "description": "Duration in milliseconds"},
-                        "hold_before_ms": {"type": "integer", "minimum": 0, "description": "Optional dwell after pressing before a swipe begins."},
-                        "hold_after_ms": {"type": "integer", "minimum": 0, "description": "Optional dwell at the destination before release."},
+                        "duration_ms": {"type": "integer", "minimum": 1, "maximum": MAX_SWIPE_DURATION_MS, "description": "Optional swipe duration in milliseconds"},
+                        "hold_before_ms": {"type": "integer", "minimum": 0, "maximum": MAX_SWIPE_HOLD_MS, "description": "Optional dwell after pressing before a swipe begins."},
+                        "hold_after_ms": {"type": "integer", "minimum": 0, "maximum": MAX_SWIPE_HOLD_MS, "description": "Optional dwell at the destination before release."},
                         "hold_ms": {"type": "integer", "minimum": 0, "description": "Tap or long-press hold duration in milliseconds."},
                         "pause_ms": {"type": "integer", "minimum": 0, "description": "Pause between taps for double_tap."},
-                        "steps": {"type": "integer", "minimum": 1, "description": "Number of movement steps for swipe or drag."},
-                        "distance": {"type": "number", "description": "Directional swipe travel in normalized 0-1000 units"},
-                        "anchor": {"type": "number", "description": "Directional swipe fixed-axis coordinate in normalized 0-1000 units"},
+                        "steps": {"type": "integer", "minimum": 1, "maximum": MAX_SWIPE_STEPS, "description": "Number of movement steps for swipe or drag."},
+                        "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "description": "Swipe direction when end is omitted"},
+                        "speed": {"type": "number", "exclusiveMinimum": 0, "description": "Optional swipe speed in normalized coordinate units per second; defaults to 2500"},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
-                        "strength": {
-                            "type": "string",
-                            "enum": ["large", "medium", "small", "tiny"],
-                            "description": "Directional swipe preset",
-                        },
                     },
                     "required": ["type"],
                 },
@@ -212,7 +205,7 @@ class ToolsAPIHandler:
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
-                    "properties": {"delta": {"type": "integer", "minimum": -127, "maximum": 127}},
+                    "properties": {"delta": {"type": "integer", "minimum": -MAX_MOUSE_SCROLL_DELTA, "maximum": MAX_MOUSE_SCROLL_DELTA}},
                     "required": ["delta"],
                 },
             },
@@ -477,12 +470,18 @@ class ToolsAPIHandler:
                     x_key="start_x",
                     y_key="start_y",
                 )
-                end = _normalized_point_arg(
-                    tool_input,
-                    field="end",
-                    x_key="end_x",
-                    y_key="end_y",
-                )
+                if gesture_type == "swipe":
+                    start, end, duration_ms = _resolve_swipe(start, tool_input)
+                else:
+                    end = _normalized_point_arg(
+                        tool_input,
+                        field="end",
+                        x_key="end_x",
+                        y_key="end_y",
+                    )
+                    duration_value = tool_input.get("duration_ms")
+                    duration_ms = 700 if duration_value is None else _swipe_duration_arg(duration_value)
+                timing = _swipe_timing_options(tool_input)
                 action = build_action(
                     gesture_type,
                     {
@@ -490,15 +489,10 @@ class ToolsAPIHandler:
                         "start_y": start["y"],
                         "end_x": end["x"],
                         "end_y": end["y"],
-                        "duration_ms": tool_input.get("duration_ms", 300 if gesture_type == "swipe" else 700),
+                        "duration_ms": duration_ms,
+                        **timing,
                     },
                 )
-            elif gesture_type in ("swipe_left", "swipe_right", "swipe_up", "swipe_down"):
-                action = build_action("swipe", _directional_swipe_payload(gesture_type, tool_input))
-            elif gesture_type == "back":
-                action = build_action("back", {})
-            elif gesture_type == "home":
-                action = build_action("home", {})
             else:
                 return {"output": f"error: unsupported gesture type: {gesture_type}", "is_error": True}
         except (TypeError, ValueError) as exc:
@@ -532,11 +526,15 @@ class ToolsAPIHandler:
             return {"output": f"error: invalid delta: {exc}", "is_error": True}
         if delta == 0:
             return self._call_noop_with_screenshot(state, episode_id)
-        strength = "medium" if abs(delta) >= 3 else "small"
-        gesture_type = "swipe_up" if delta < 0 else "swipe_down"
+        magnitude = abs(delta)
+        if magnitude > MAX_MOUSE_SCROLL_DELTA:
+            return {"output": f"error: delta must be in range [-{MAX_MOUSE_SCROLL_DELTA}, {MAX_MOUSE_SCROLL_DELTA}]", "is_error": True}
+        start_y = 800 if delta < 0 else 200
+        end_y = 50 if delta < 0 else 950
+        duration_ms = MOUSE_SCROLL_BASE_DURATION_MS + (magnitude - 1) * MOUSE_SCROLL_DURATION_STEP_MS
         return self._call_touch_gesture(
             state,
-            {"type": gesture_type, "strength": strength},
+            {"type": "swipe", "start": {"x": 500, "y": start_y}, "end": {"x": 500, "y": end_y}, "duration_ms": duration_ms},
             episode_id,
             log_tool_name="mouse_scroll",
             log_tool_input=tool_input,
@@ -556,7 +554,7 @@ class ToolsAPIHandler:
         if action == "back":
             return self._call_touch_gesture(
                 state,
-                {"type": "back"},
+                {"type": "swipe", "start": {"x": 1, "y": 500}, "end": {"x": 750, "y": 500}, "duration_ms": 700},
                 episode_id,
                 log_tool_name="quick_action",
                 log_tool_input=tool_input,
@@ -564,7 +562,7 @@ class ToolsAPIHandler:
         if action == "home":
             return self._call_touch_gesture(
                 state,
-                {"type": "home"},
+                {"type": "swipe", "start": {"x": 500, "y": 999}, "end": {"x": 500, "y": 180}, "duration_ms": 700},
                 episode_id,
                 log_tool_name="quick_action",
                 log_tool_input=tool_input,
@@ -575,7 +573,7 @@ class ToolsAPIHandler:
         if action == "spotlight_search":
             return self._call_touch_gesture(
                 state,
-                {"type": "swipe_down", "strength": "medium", "anchor": 500},
+                {"type": "swipe", "start": {"x": 500, "y": 250}, "end": {"x": 500, "y": 750}, "duration_ms": 300},
                 episode_id,
                 log_tool_name="quick_action",
                 log_tool_input=tool_input,
@@ -583,7 +581,7 @@ class ToolsAPIHandler:
         if action == "notification_center":
             return self._call_touch_gesture(
                 state,
-                {"type": "swipe_down", "strength": "medium", "anchor": 500},
+                {"type": "swipe", "start": {"x": 500, "y": 250}, "end": {"x": 500, "y": 750}, "duration_ms": 300},
                 episode_id,
                 log_tool_name="quick_action",
                 log_tool_input=tool_input,
@@ -597,7 +595,7 @@ class ToolsAPIHandler:
         if action == "dismiss_panel":
             return self._call_touch_gesture(
                 state,
-                {"type": "swipe_up", "strength": "medium", "anchor": 500},
+                {"type": "swipe", "start": {"x": 500, "y": 750}, "end": {"x": 500, "y": 250}, "duration_ms": 300},
                 episode_id,
                 log_tool_name="quick_action",
                 log_tool_input=tool_input,
@@ -820,52 +818,96 @@ def _encode_observation_screenshot(observation: Any) -> dict[str, Any]:
     return encode_screenshot(payload, mime_type=str(mime_type), width=width, height=height)
 
 
-def _directional_swipe_payload(gesture_type: str, tool_input: dict[str, Any]) -> dict[str, Any]:
-    strength = str(tool_input.get("strength", "")).strip().lower()
-    if strength not in DIRECTIONAL_SWIPE_PRESETS:
-        raise ValueError(f"unsupported strength: {strength!r}")
-    preset_distance, preset_duration = DIRECTIONAL_SWIPE_PRESETS[strength]
-    distance = _positive_float(tool_input.get("distance"), preset_distance)
-    distance = max(1.0, min(1000.0, distance))
-    anchor = _float_or_default(tool_input.get("anchor"), 500.0)
-    anchor = max(0.0, min(1000.0, anchor))
-    half = distance / 2.0
+def _resolve_swipe(
+    start: dict[str, float], tool_input: dict[str, Any]
+) -> tuple[dict[str, float], dict[str, float], int]:
+    has_end = "end" in tool_input or ("end_x" in tool_input and "end_y" in tool_input)
+    direction = str(tool_input.get("direction", "") or "").strip().lower()
+    if has_end and direction:
+        raise ValueError("swipe accepts either end or direction, not both")
 
-    if gesture_type == "swipe_left":
-        start_x, end_x = anchor + half, anchor - half
-        start_y = end_y = anchor
-    elif gesture_type == "swipe_right":
-        start_x, end_x = anchor - half, anchor + half
-        start_y = end_y = anchor
-    elif gesture_type == "swipe_up":
-        start_y, end_y = anchor + half, anchor - half
-        start_x = end_x = anchor
-    elif gesture_type == "swipe_down":
-        start_y, end_y = anchor - half, anchor + half
-        start_x = end_x = anchor
+    speed = _swipe_speed_arg(tool_input.get("speed"))
+    duration_value = tool_input.get("duration_ms")
+    duration_ms = None if duration_value is None else _swipe_duration_arg(duration_value)
+
+    if has_end:
+        end = _normalized_point_arg(tool_input, field="end", x_key="end_x", y_key="end_y")
     else:
-        raise ValueError(f"unsupported directional swipe: {gesture_type}")
+        if not direction:
+            raise ValueError("end or direction is required for swipe")
+        if direction not in {"up", "down", "left", "right"}:
+            raise ValueError(f"unsupported swipe direction: {direction!r}; use up, down, left, or right")
+        travel = _distance_to_edge(start, direction)
+        if duration_ms is not None:
+            travel = speed * duration_ms / 1000
+        end = _direction_end(start, direction, travel)
+        if not 0 <= end["x"] <= 1000 or not 0 <= end["y"] <= 1000:
+            raise ValueError("speed and duration_ms move the swipe past the screen edge")
 
+    distance = math.hypot(end["x"] - start["x"], end["y"] - start["y"])
+    if distance == 0:
+        raise ValueError("swipe requires distinct start and end points")
+    if duration_ms is None:
+        try:
+            derived_duration_ms = distance / speed * 1000
+        except OverflowError as exc:
+            raise ValueError("speed is too low for this swipe; calculated duration is not finite") from exc
+        if not math.isfinite(derived_duration_ms):
+            raise ValueError("speed is too low for this swipe; calculated duration is not finite")
+        if derived_duration_ms >= MAX_SWIPE_DURATION_MS + 0.5:
+            raise ValueError(
+                f"speed is too low for this swipe; calculated duration exceeds {MAX_SWIPE_DURATION_MS} ms"
+            )
+        duration_ms = max(1, int(math.floor(derived_duration_ms + 0.5)))
+        if duration_ms > MAX_SWIPE_DURATION_MS:
+            raise ValueError(
+                f"speed is too low for this swipe; calculated duration_ms={duration_ms} exceeds {MAX_SWIPE_DURATION_MS}"
+            )
+    return start, end, duration_ms
+
+
+def _swipe_duration_arg(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("duration_ms must be an integer")
+    duration_ms = value
+    if duration_ms < 1 or duration_ms > MAX_SWIPE_DURATION_MS:
+        raise ValueError(f"duration_ms must be in range [1, {MAX_SWIPE_DURATION_MS}]")
+    return duration_ms
+
+
+def _swipe_speed_arg(value: Any) -> float:
+    if value is None:
+        return DEFAULT_SWIPE_SPEED
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("speed must be a positive finite number")
+    try:
+        speed = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("speed must be a positive finite number") from exc
+    if not math.isfinite(speed) or speed <= 0:
+        raise ValueError("speed must be a positive finite number")
+    return speed
+
+
+def _distance_to_edge(start: dict[str, float], direction: str) -> float:
     return {
-        "start_x": max(0.0, min(1000.0, start_x)),
-        "start_y": max(0.0, min(1000.0, start_y)),
-        "end_x": max(0.0, min(1000.0, end_x)),
-        "end_y": max(0.0, min(1000.0, end_y)),
-        "duration_ms": int(tool_input.get("duration_ms") or preset_duration),
-    }
+        "up": start["y"],
+        "down": 1000 - start["y"],
+        "left": start["x"],
+        "right": 1000 - start["x"],
+    }[direction]
 
 
-def _positive_float(value: Any, default: float) -> float:
-    if value in (None, ""):
-        return default
-    parsed = float(value)
-    return parsed if parsed > 0 else default
-
-
-def _float_or_default(value: Any, default: float) -> float:
-    if value in (None, ""):
-        return default
-    return float(value)
+def _direction_end(start: dict[str, float], direction: str, travel: float) -> dict[str, float]:
+    end = dict(start)
+    axis, sign = {
+        "up": ("y", -1),
+        "down": ("y", 1),
+        "left": ("x", -1),
+        "right": ("x", 1),
+    }[direction]
+    end[axis] += sign * travel
+    return end
 
 
 def _point_arg(
@@ -911,13 +953,30 @@ def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str
     allowed = {
         "touch_gesture": {
             "type", "point", "start", "end", "x", "y", "start_x", "start_y",
-            "end_x", "end_y", "duration_ms", "hold_before_ms", "hold_after_ms",
-            "hold_ms", "pause_ms", "steps", "distance", "anchor", "button", "strength",
+            "end_x", "end_y", "direction", "speed", "duration_ms", "hold_before_ms", "hold_after_ms",
+            "hold_ms", "pause_ms", "steps", "button",
         },
         "mouse_move": {"x", "y"},
         "quick_action": {"action", "list", "alternative", "alternative_index"},
     }.get(tool_name)
     return [] if allowed is None else sorted(set(tool_input) - allowed)
+
+
+def _swipe_timing_options(tool_input: dict[str, Any]) -> dict[str, int]:
+    options: dict[str, int] = {}
+    for name in ("hold_before_ms", "hold_after_ms"):
+        value = tool_input.get(name)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_SWIPE_HOLD_MS:
+            raise ValueError(f"{name} must be an integer in range [0, {MAX_SWIPE_HOLD_MS}]")
+        options[name] = value
+    value = tool_input.get("steps")
+    if value is not None:
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_SWIPE_STEPS:
+            raise ValueError(f"steps must be an integer in range [1, {MAX_SWIPE_STEPS}]")
+        options["steps"] = value
+    return options
 
 
 def _finite_float(value: Any, name: str) -> float:
@@ -928,10 +987,6 @@ def _finite_float(value: Any, name: str) -> float:
     if math.isnan(parsed) or math.isinf(parsed):
         raise ValueError(f"{name} must be a finite number")
     return parsed
-
-
-def _clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
 
 
 def _unsupported_keyboard_text_chars(text: str) -> str:

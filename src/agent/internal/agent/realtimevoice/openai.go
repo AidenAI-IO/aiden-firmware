@@ -160,6 +160,14 @@ type openAITool struct {
 }
 
 func buildOpenAISessionUpdate(cfg SessionConfig, model string) openAISessionUpdate {
+	inputRate := cfg.InputSampleRate
+	if inputRate <= 0 {
+		inputRate = 24000
+	}
+	outputRate := cfg.OutputSampleRate
+	if outputRate <= 0 {
+		outputRate = 24000
+	}
 	settings := openAISessionSettings{
 		Type:             "realtime",
 		Model:            model,
@@ -167,10 +175,10 @@ func buildOpenAISessionUpdate(cfg SessionConfig, model string) openAISessionUpda
 		Instructions:     cfg.Instructions,
 		Audio: openAIAudioSettings{
 			Input: openAIAudioInput{
-				Format:        openAIAudioFormat{Type: "audio/pcm", Rate: 24000},
+				Format:        openAIAudioFormat{Type: "audio/pcm", Rate: inputRate},
 				Transcription: openAITranscriptionConfig{Model: DefaultOpenAIInputTranscriptionModel},
 			},
-			Output: openAIAudioOutput{Format: openAIAudioFormat{Type: "audio/pcm", Rate: 24000}, Voice: cfg.Voice},
+			Output: openAIAudioOutput{Format: openAIAudioFormat{Type: "audio/pcm", Rate: outputRate}, Voice: cfg.Voice},
 		},
 	}
 	if turnDetection := turnDetectionConfig(cfg); turnDetection != nil {

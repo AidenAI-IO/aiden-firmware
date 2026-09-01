@@ -1,13 +1,15 @@
 package agent
 
 import (
+	"net/http"
+	"path/filepath"
+	"sort"
+	"time"
+
 	"aiden-agent/internal/agent/mnk"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
 	"aiden-agent/internal/agent/screenprovider"
-	"path/filepath"
-	"sort"
-	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -23,6 +25,7 @@ type ToolSet struct {
 	textInputHW          *textInputHardwareDeps
 	iosKeyboardIsolation *iosKeyboardIsolationController
 	searchOpenTool       *appSearchOpenTool
+	skillInstallClient   *http.Client
 }
 
 type runtimeDeviceTypeConfigurable interface {
@@ -36,7 +39,6 @@ type BuiltinToolSetOption func(*builtinToolSetOptions)
 type builtinToolSetOptions struct {
 	waitForWakeupController *WaitForWakeupController
 	screenStable            ScreenStableDefaults
-	scriptsDir              string
 	screenState             *screen.ScreenState
 	screenProvider          screenprovider.Provider
 	mnkProvider             mnk.Provider
@@ -52,12 +54,6 @@ func WithWaitForWakeupController(controller *WaitForWakeupController) BuiltinToo
 func WithScreenStableDefaults(defaults ScreenStableDefaults) BuiltinToolSetOption {
 	return func(options *builtinToolSetOptions) {
 		options.screenStable = defaults
-	}
-}
-
-func WithRunScriptScriptsDir(dir string) BuiltinToolSetOption {
-	return func(options *builtinToolSetOptions) {
-		options.scriptsDir = dir
 	}
 }
 
@@ -94,9 +90,6 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 
 func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	defaultOptions := make([]BuiltinToolSetOption, 0, len(options)+2)
-	if cfg.ConfigDir != "" {
-		defaultOptions = append(defaultOptions, WithRunScriptScriptsDir(filepath.Join(cfg.ConfigDir, "scripts")))
-	}
 	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
 		defaultOptions = append(defaultOptions,
 			WithScreenProvider(screenprovider.NewHTTP(cfg.EnvironmentBridge.Endpoint, cfg.EnvironmentBridge.BenchmarkTaskID)),
@@ -121,26 +114,6 @@ func screenProviderFromRuntime(runtime *Runtime) screenprovider.Provider {
 		socketPath = runtime.config.HID.FrameSocketOrDefault()
 	}
 	return NewScreenCaptureClient(socketPath)
-}
-
-var scriptCallableToolNames = map[string]struct{}{
-	"audio_volume":           {},
-	"enter_text":             {},
-	"image_diff":             {},
-	"keyboard_tap":           {},
-	"mouse_move":             {},
-	"mouse_scroll":           {},
-	toolOpenApp:              {},
-	toolOpenURL:              {},
-	"quick_action":           {},
-	"screenshot":             {},
-	"touch_gesture":          {},
-	"wait_for_stable_screen": {},
-}
-
-func isScriptCallableTool(name string) bool {
-	_, ok := scriptCallableToolNames[name]
-	return ok
 }
 
 func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
@@ -231,7 +204,6 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"screenshot":             screenshot,
 		"wait_for_stable_screen": waitStable,
-		"image_diff":             &ImageDiffTool{},
 		"audio_volume":           NewAudioVolumeTool(audioCfg.SocketOrDefault()),
 		"shell": &ShellTool{execution: shellExecutionConfig{
 			proxy:              proxyCfg,
@@ -245,18 +217,6 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	if toolOptions.waitForWakeupController != nil {
 		tools[toolWaitForWakeup] = NewWaitForWakeupTool(toolOptions.waitForWakeupController)
 	}
-	runScript := NewRunScriptTool(toolOptions.scriptsDir, func(name string) (langtools.Tool, bool) {
-		if !isScriptCallableTool(name) {
-			return nil, false
-		}
-		tool, ok := tools[name]
-		return tool, ok
-	})
-	runScript.iosKeyboardIsolation = iosKeyboardIsolation
-	tools["run_script"] = runScript
-	tools["list_scripts"] = NewListScriptsTool(toolOptions.scriptsDir)
-	tools["read_script"] = NewReadScriptTool(toolOptions.scriptsDir)
-	tools["write_script"] = NewWriteScriptTool(toolOptions.scriptsDir)
 	// Always register human handoff tool - no callback needed for non-blocking version
 	tools["request_user_action"] = NewHumanHandoffTool()
 
@@ -268,6 +228,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		phoneBridgeRestorer:  NewPhoneBridgeRestorer(nil, pointer),
 		textInputHW:          textInputHW,
 		iosKeyboardIsolation: iosKeyboardIsolation,
+		skillInstallClient:   newSkillInstallHTTPClient(proxyCfg),
 	}
 	touchGesture.primeScreenMapping = toolSet.PrimeScreenMapping
 	return toolSet
@@ -301,19 +262,6 @@ func (s *ToolSet) RegisterEnterTextTool(models model.Model, deviceTypeFn func() 
 	s.searchOpenTool = searchOpenTool
 	s.refreshOpenAppTool()
 	s.tools["enter_text"] = newPostActionScreenshotTool(entryTool, s.textInputHW.screenshot, 300*time.Millisecond)
-}
-
-func (s *ToolSet) SetRunScriptSpeaker(speaker runScriptSpeaker) {
-	if s == nil {
-		return
-	}
-	tool, ok := s.tools["run_script"]
-	if !ok {
-		return
-	}
-	if runScript, ok := tool.(*RunScriptTool); ok {
-		runScript.SetSpeaker(speaker)
-	}
 }
 
 func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
@@ -436,7 +384,11 @@ func (s *ToolSet) registerSkillTools(skillsDir, manifestPath string, deviceTypeF
 	readTool.SetDeviceTypeFunc(deviceTypeFn)
 	s.tools["skill_list"] = listTool
 	s.tools["skill_read"] = readTool
-	s.tools["skill_manage"] = NewSkillManageTool(skillsDir, manifestPath, onModify...)
+	manageTool := NewSkillManageTool(skillsDir, manifestPath, onModify...)
+	if s.skillInstallClient != nil {
+		manageTool.SetHTTPClient(s.skillInstallClient)
+	}
+	s.tools["skill_manage"] = manageTool
 	s.tools["skill_mark_used"] = NewSkillMarkUsedTool(skillsDir, usagePath)
 }
 

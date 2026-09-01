@@ -1,11 +1,18 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/jpeg"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -17,11 +24,17 @@ const postActionCompletedDetail = "action_completed"
 
 type postActionScreenshotResult struct {
 	screenshotResult
-	ActionOutput  string   `json:"action_output,omitempty"`
+	ActionOutput  string   `json:"action_output"`
 	ScreenStable  *bool    `json:"screen_stable,omitempty"`
 	StableWaitMs  *int64   `json:"stable_wait_ms,omitempty"`
 	ScreenChanged *bool    `json:"screen_changed,omitempty"`
 	LastDiff      *float64 `json:"last_diff,omitempty"`
+}
+
+type touchGesturePostMarkerInfo struct {
+	Type string  `json:"type"`
+	X    float64 `json:"x"`
+	Y    float64 `json:"y"`
 }
 
 // stripScreenshotData removes the base64 payload while retaining metadata used
@@ -42,7 +55,7 @@ func stripScreenshotData(content string) string {
 		"size":   result.Size,
 	}
 	if strings.TrimSpace(result.ActionOutput) != "" {
-		compact["action_output"] = strings.TrimSpace(result.ActionOutput)
+		compact["action_output"] = result.ActionOutput
 	}
 	if result.ScreenStable != nil {
 		compact["screen_stable"] = *result.ScreenStable
@@ -76,6 +89,10 @@ type stableScreenWaiter interface {
 	wait(context.Context, string) (waitStableScreenResult, error)
 }
 
+type unstableScreenRecoverer interface {
+	recoverAfterUnstableScreen(context.Context, string) error
+}
+
 func newPostActionScreenshotTool(inner langtools.Tool, screenshot langtools.Tool, delay time.Duration) langtools.Tool {
 	return newPostActionStableScreenshotTool(inner, nil, screenshot, delay, ScreenStableDefaults{})
 }
@@ -97,10 +114,10 @@ func (t *postActionScreenshotTool) Name() string {
 
 func (t *postActionScreenshotTool) Description() string {
 	if t.waitStable != nil {
-		return t.inner.Description() + " On successful execution, waits for the screen to become stable (or until the configured timeout) and returns a post-action screenshot observation. screen_changed=false means no visible screen change was observed during the wait window; when the action was expected to change the UI, do not assume success and inspect the screenshot before answering or repeating. screen_stable=false means the screen was still changing (for example during video playback) but the screenshot was still captured."
+		return t.inner.Description() + " On successful execution, captures a pre-action baseline, waits for the screen to become stable (or until the configured timeout), and returns the final screenshot observation. screen_changed compares the pre-action baseline with the final stable screenshot using meaningful structural change detection; it ignores the top status area and minor image noise. When screen_changed=false and the action was expected to change the UI, do not assume success and inspect the screenshot before answering or repeating. screen_stable=false means the screen was still changing (for example during video playback) but the screenshot was still captured."
 	}
 	return fmt.Sprintf(
-		"%s On successful execution, waits %s and returns a post-action screenshot observation.",
+		"%s Captures a pre-action baseline and, on successful execution, waits %s before returning the final screenshot observation. screen_changed reports meaningful structural change between those screenshots while ignoring the top status area and minor image noise.",
 		t.inner.Description(),
 		t.delay,
 	)
@@ -120,6 +137,7 @@ func (t *postActionScreenshotTool) ArgsSchema() map[string]any {
 
 func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (string, error) {
 	touchscreenRCALogf("post_action start inner=%q input_len=%d", t.inner.Name(), len(input))
+	baselineImage := t.captureBaseline(ctx)
 	actionOutput, err := t.inner.Call(ctx, input)
 	if err != nil {
 		touchscreenRCALogf("post_action inner error inner=%q err_type=%T", t.inner.Name(), err)
@@ -170,6 +188,13 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 		if !waitResult.OK {
 			return postActionErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed", t.inner.Name(), actionOutput), nil
 		}
+		if !waitResult.Stable {
+			if recoverer, ok := t.inner.(unstableScreenRecoverer); ok {
+				if err := recoverer.recoverAfterUnstableScreen(ctx, input); err != nil {
+					return postActionErrorResultf(ctx, postActionErrorCode(err), "%s completed with output %q, but unstable-screen recovery failed: %v", t.inner.Name(), actionOutput, err), nil
+				}
+			}
+		}
 		touchscreenRCALogf(
 			"post_action wait_stable completed inner=%q stable=%v elapsed_ms=%d screen_changed=%v last_diff=%s",
 			t.inner.Name(),
@@ -202,17 +227,185 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 		screenshotResult: result,
 		ActionOutput:     actionOutput,
 	}
+	if finalImage, _ := extractScreenshotImage(screenshotOutput); baselineImage != nil && finalImage != nil {
+		if changed, comparable := screenshotProgressChanged(baselineImage, finalImage); comparable {
+			payload.ScreenChanged = &changed
+			touchscreenRCALogf("post_action progress_compare inner=%q screen_changed=%v", t.inner.Name(), changed)
+		}
+	}
 	if t.waitStable != nil {
 		stable := waitResult.Stable
 		elapsed := waitResult.ElapsedMs
 		payload.ScreenStable = &stable
 		payload.StableWaitMs = &elapsed
-		payload.ScreenChanged = waitResult.ScreenChanged
 		payload.LastDiff = waitResult.LastDiff
+	}
+	if t.inner.Name() == "touch_gesture" {
+		if marker, ok := parseTouchGesturePostMarker(input); ok {
+			applyTouchGesturePostMarker(&payload.screenshotResult, marker)
+		}
 	}
 
 	out, _ := json.Marshal(payload)
 	return string(out), nil
+}
+
+func parseTouchGesturePostMarker(input string) (touchGesturePostMarkerInfo, bool) {
+	var args struct {
+		Type  string          `json:"type"`
+		Point json.RawMessage `json:"point"`
+	}
+	if err := json.Unmarshal([]byte(input), &args); err != nil || len(args.Point) == 0 || string(args.Point) == "null" {
+		return touchGesturePostMarkerInfo{}, false
+	}
+	// The public schema asks for an object, while the low-level pointer parser
+	// also accepts [x,y] as a compatibility form. Keep marker parsing aligned
+	// with both accepted forms and require both coordinates when the point is
+	// present so an invalid action cannot receive a misleading marker.
+	trimmedPoint := strings.TrimSpace(string(args.Point))
+	if strings.HasPrefix(trimmedPoint, "[") {
+		var coordinates []json.RawMessage
+		if err := json.Unmarshal(args.Point, &coordinates); err != nil || len(coordinates) != 2 {
+			return touchGesturePostMarkerInfo{}, false
+		}
+		if !validTouchMarkerCoordinateJSON(coordinates[0]) || !validTouchMarkerCoordinateJSON(coordinates[1]) {
+			return touchGesturePostMarkerInfo{}, false
+		}
+	} else if strings.HasPrefix(trimmedPoint, "{") {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(args.Point, &object); err != nil || object["x"] == nil || object["y"] == nil {
+			return touchGesturePostMarkerInfo{}, false
+		}
+		if !validTouchMarkerCoordinateJSON(object["x"]) || !validTouchMarkerCoordinateJSON(object["y"]) {
+			return touchGesturePostMarkerInfo{}, false
+		}
+	} else {
+		return touchGesturePostMarkerInfo{}, false
+	}
+	var point pointerPoint
+	if err := json.Unmarshal(args.Point, &point); err != nil {
+		return touchGesturePostMarkerInfo{}, false
+	}
+	marker := touchGesturePostMarkerInfo{
+		Type: strings.ToLower(strings.TrimSpace(args.Type)),
+		X:    point.X.Float64(),
+		Y:    point.Y.Float64(),
+	}
+	if !validTouchGesturePostMarker(marker) {
+		return touchGesturePostMarkerInfo{}, false
+	}
+	return marker, true
+}
+
+func validTouchMarkerCoordinateJSON(value json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(value))
+	return trimmed != "" && trimmed != "null"
+}
+
+func validTouchGesturePostMarker(marker touchGesturePostMarkerInfo) bool {
+	switch marker.Type {
+	case "tap", "double_tap", "long_press":
+	default:
+		return false
+	}
+	return finiteNormalizedCoordinate(marker.X) && finiteNormalizedCoordinate(marker.Y)
+}
+
+func finiteNormalizedCoordinate(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1000
+}
+
+func applyTouchGesturePostMarker(result *screenshotResult, marker touchGesturePostMarkerInfo) {
+	if result == nil || strings.TrimSpace(result.Data) == "" {
+		return
+	}
+	format, ok := normalizeScreenshotFormat(result.Format)
+	if !ok || format != "jpeg" {
+		return
+	}
+	raw, err := base64.StdEncoding.DecodeString(result.Data)
+	if err != nil {
+		return
+	}
+	marked, err := drawTouchGesturePostMarker(raw, marker)
+	if err != nil {
+		return
+	}
+	result.Data = base64.StdEncoding.EncodeToString(marked)
+	result.Size = len(marked)
+}
+
+func drawTouchGesturePostMarker(jpegData []byte, marker touchGesturePostMarkerInfo) ([]byte, error) {
+	img, err := jpeg.Decode(bytes.NewReader(jpegData))
+	if err != nil {
+		return nil, fmt.Errorf("decode screenshot image: %w", err)
+	}
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("invalid screenshot dimensions %dx%d", width, height)
+	}
+
+	marked := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.Draw(marked, marked.Bounds(), img, bounds.Min, draw.Src)
+	x := int(math.Round(marker.X / 1000 * float64(max(width-1, 0))))
+	y := int(math.Round(marker.Y / 1000 * float64(max(height-1, 0))))
+	drawTouchMarker(marked, x, y)
+
+	var output bytes.Buffer
+	if err := jpeg.Encode(&output, marked, &jpeg.Options{Quality: 90}); err != nil {
+		return nil, fmt.Errorf("encode marked screenshot image: %w", err)
+	}
+	return output.Bytes(), nil
+}
+
+func drawTouchMarker(img *image.RGBA, x, y int) {
+	if img == nil {
+		return
+	}
+	minDimension := min(img.Bounds().Dx(), img.Bounds().Dy())
+	radius := max(10, min(24, minDimension/28))
+	outer := radius + 3
+	drawMarkerRing(img, x, y, outer, 3, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+	drawMarkerRing(img, x, y, radius, 3, color.RGBA{R: 255, G: 32, B: 32, A: 255})
+}
+
+func drawMarkerRing(img *image.RGBA, centerX, centerY, radius, thickness int, c color.Color) {
+	outerSquared := radius * radius
+	innerRadius := max(radius-thickness, 0)
+	innerSquared := innerRadius * innerRadius
+	for y := centerY - radius; y <= centerY+radius; y++ {
+		for x := centerX - radius; x <= centerX+radius; x++ {
+			dx := x - centerX
+			dy := y - centerY
+			distanceSquared := dx*dx + dy*dy
+			if distanceSquared <= outerSquared && distanceSquared >= innerSquared && image.Pt(x, y).In(img.Bounds()) {
+				img.Set(x, y, c)
+			}
+		}
+	}
+}
+
+func (t *postActionScreenshotTool) captureBaseline(ctx context.Context) image.Image {
+	baselineCtx, _ := WithToolError(ctx)
+	touchscreenRCALogf("post_action baseline start inner=%q", t.inner.Name())
+	output, err := t.screenshot.Call(baselineCtx, "{}")
+	if err != nil {
+		touchscreenRCALogf("post_action baseline unavailable inner=%q err_type=%T", t.inner.Name(), err)
+		return nil
+	}
+	if te := ToolErrorFromContext(baselineCtx); te != nil {
+		touchscreenRCALogf("post_action baseline unavailable inner=%q code=%q category=%q", t.inner.Name(), te.Code, te.Category)
+		return nil
+	}
+	img, _ := extractScreenshotImage(output)
+	if img == nil {
+		touchscreenRCALogf("post_action baseline unavailable inner=%q reason=invalid_screenshot", t.inner.Name())
+		return nil
+	}
+	touchscreenRCALogf("post_action baseline completed inner=%q", t.inner.Name())
+	return img
 }
 
 func wrapPostActionSubtoolError(ctx context.Context, te *ToolError, format string, args ...any) string {

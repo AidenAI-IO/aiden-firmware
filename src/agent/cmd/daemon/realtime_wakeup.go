@@ -1903,6 +1903,36 @@ func recentRealtimeContextMessages(all []messages.Message, maxTurns int) []messa
 	return all[start:]
 }
 
+// rotateRealtimeContextForReplay makes the durable session match the context
+// restored into a new provider session. Keeping the shortened context under
+// the old session ID would violate the invariant that one session identifies
+// one conversation context.
+func rotateRealtimeContextForReplay(manager *contextmanager.ContextManager, maxTurns int) (*contextmanager.ContextManager, error) {
+	if manager == nil {
+		return nil, nil
+	}
+	all := manager.MessageListDump().Messages
+	recent := recentRealtimeContextMessages(all, maxTurns)
+	if len(recent) == len(all) {
+		return manager, nil
+	}
+	retained := make([]messages.Message, 0, len(recent)+1)
+	if len(all) > 0 && all[0].Role == messages.MessageRoleSystem {
+		retained = append(retained, all[0])
+	}
+	retained = append(retained, recent...)
+	revision, err := contextmanager.NewContextManagerRevisionFromMessageList(manager, retained)
+	if err != nil {
+		return nil, err
+	}
+	if err := contextmanager.SwitchSession(revision.GetSessionFolder(), revision.GetSessionID()); err != nil {
+		return nil, err
+	}
+	log.Printf("[realtime] Rotated user context after replay truncation: parent=%s session=%s retained_messages=%d",
+		manager.GetSessionID(), revision.GetSessionID(), len(retained))
+	return revision, nil
+}
+
 func limitRealtimeTaskField(value string, maxRunes int) string {
 	runes := []rune(strings.TrimSpace(value))
 	if len(runes) <= maxRunes {

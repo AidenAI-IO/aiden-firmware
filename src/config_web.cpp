@@ -247,6 +247,7 @@ bool prepare_ota_update_log_file(const std::string& path,
                                  size_t max_size,
                                  unsigned long long* start_size_bytes,
                                  std::string* error);
+bool ota_update_is_running();
 bool set_fd_cloexec(int fd, std::string* error);
 bool create_temp_file_in_dir(const std::string& dir,
                              const std::string& prefix,
@@ -2631,6 +2632,37 @@ int acquire_ota_update_launch_lock(std::string* error) {
     return lock_fd;
 }
 
+// Probe whether a manual OTA update is in flight, by testing the same advisory
+// lock the launcher holds for the lifetime of the `ota update` child.
+//
+// The lock file is never unlinked (see acquire_ota_update_launch_lock): flock is
+// tied to the open file description, not the path, so the file existing tells us
+// nothing. Only trying to take the lock does. The kernel drops the lock when the
+// holder exits, including on a crash, so this cannot report a stale "running".
+//
+// We probe with LOCK_EX rather than LOCK_SH because a shared lock would succeed
+// against another reader's shared lock and misreport an idle updater as running.
+// The probe is immediately released; the launcher's own attempt is unaffected
+// because it retries on EWOULDBLOCK at the HTTP layer.
+bool ota_update_is_running() {
+    const std::string lock_path = ota_update_lock_path();
+    int fd = open(lock_path.c_str(), O_RDWR);
+    if (fd < 0) {
+        // No lock file yet means no update has ever been launched. Any other
+        // error leaves us unable to tell, and claiming "running" would suppress
+        // a real failure banner in the UI, so report not-running either way.
+        return false;
+    }
+    bool running = false;
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        running = (errno == EWOULDBLOCK || errno == EAGAIN);
+    } else {
+        flock(fd, LOCK_UN);
+    }
+    close(fd);
+    return running;
+}
+
 bool set_fd_cloexec(int fd, std::string* error) {
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags < 0) {
@@ -4956,6 +4988,7 @@ ApiResponse handle_export_support_logs(const Options& options) {
 ApiResponse handle_get_ota_log() {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddBoolToObject(root, "ota_update_running", ota_update_is_running() ? 1 : 0);
     cJSON_AddItemToObject(root, "ota_log", ota_log_to_json(read_ota_log_snapshot()));
     cJSON_AddItemToObject(root, "ota_health_log", ota_log_to_json(read_ota_health_log_snapshot()));
     return make_json_ok(root);

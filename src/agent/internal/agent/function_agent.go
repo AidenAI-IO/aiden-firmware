@@ -152,36 +152,14 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	}
 	result := visual.Result
 
-	imageAvailability := "The image is attached in the next message."
-	if !includeVisual {
-		imageAvailability = "The image is replaced with a placeholder in the next message."
-	}
-	toolContent := fmt.Sprintf(
-		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. %s",
-		step.Action.Tool,
-		result.Format,
-		result.Width,
-		result.Height,
-		result.Size,
-		imageAvailability,
-	)
-	if strings.TrimSpace(result.ActionOutput) != "" {
-		actionOutput := compactToolObservation(result.ActionOutput)
-		toolContent = fmt.Sprintf(
-			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. %s",
-			step.Action.Tool,
-			actionOutput,
-			result.Format,
-			result.Width,
-			result.Height,
-			result.Size,
-			imageAvailability,
-		)
-	}
-	if summary := screenshotObservationStatusSummary(result); summary != "" {
-		toolContent += " " + summary
+	toolContent := step.Observation
+	if actionOutput, ok := actionOutputFromScreenshotObservation(step.Observation); ok {
+		toolContent = actionOutput
 	}
 	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)
+	if summary := screenshotObservationStatusSummary(step.Action.Tool, result); summary != "" {
+		caption += " " + summary
+	}
 	if !includeVisual {
 		return toolContent, []llms.MessageContent{{
 			Role: llms.ChatMessageTypeHuman,
@@ -201,13 +179,19 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	}}
 }
 
-func screenshotObservationStatusSummary(result postActionScreenshotResult) string {
+func screenshotObservationStatusSummary(toolName string, result postActionScreenshotResult) string {
 	var notes []string
 	if result.ScreenChanged != nil {
-		if *result.ScreenChanged {
-			notes = append(notes, "Visible screen change was observed during the stable-screen wait.")
+		if strings.EqualFold(strings.TrimSpace(toolName), "wait_for_stable_screen") {
+			if *result.ScreenChanged {
+				notes = append(notes, "Screen motion was observed during this wait window; this does not by itself prove that the preceding action succeeded.")
+			} else {
+				notes = append(notes, "No frame-to-frame screen motion was observed during this wait window; this does not by itself prove that the preceding action had no effect.")
+			}
+		} else if *result.ScreenChanged {
+			notes = append(notes, "A meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot.")
 		} else {
-			notes = append(notes, "No visible screen change was observed during the stable-screen wait.")
+			notes = append(notes, "No meaningful visible UI change was detected between the pre-action baseline and the final settled screenshot.")
 			notes = append(notes, "Do not assume the action succeeded from tool output alone; inspect the screenshot and verify whether the expected UI change happened before answering or retrying.")
 		}
 	}

@@ -334,7 +334,7 @@ region = "cn-beijing"
 		t.Fatal(err)
 	}
 
-	if _, err := NewService().Update(path, []byte(`{"config":{"agent":{"locale":"en-US"}}}`)); err != nil {
+	if _, err := NewService().Update(path, []byte(`{"config":{"agent":{"locale":"zh-CN"}}}`)); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -723,7 +723,7 @@ model = "gpt-5.5"
 func TestUpdateConfigFileCreatesMissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
-	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"locale":"en-US"}}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"locale":"zh-CN"}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +734,7 @@ func TestUpdateConfigFileCreatesMissingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), `locale = "en-US"`) {
+	if !strings.Contains(string(got), `locale = "zh-CN"`) {
 		t.Fatalf("missing config was not created:\n%s", got)
 	}
 	info, err := os.Stat(path)

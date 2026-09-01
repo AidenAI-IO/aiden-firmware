@@ -292,11 +292,11 @@ def test_provider_screenshot_rejects_conflicting_task_id(bridge):
 
 def test_tool_requires_setup_and_enforces_task_id(bridge):
     _, _, base_url = bridge
-    status, body = request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}})
+    status, body = request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "tap", "point": {"x": 500, "y": 500}}})
     assert status == 409 and body["error"] == "no_active_episode"
     request(base_url, "/api/setup", method="POST", task_id="owner")
     status, body = request(
-        base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}}, task_id="other"
+        base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "tap", "point": {"x": 500, "y": 500}}}, task_id="other"
     )
     assert status == 429 and body["error"] == "no_bridge_env_available"
 
@@ -310,11 +310,11 @@ def test_anonymous_request_cannot_reset_or_use_owned_vm(bridge):
     assert status == 429 and body["error"]["code"] == "no_bridge_env_available"
     assert server.state.active_episode_id == "owner"
     # Tool calls without a task id are rejected against an owned VM.
-    status, body = request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}})
+    status, body = request(base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "tap", "point": {"x": 500, "y": 500}}})
     assert status == 429 and body["error"] == "no_bridge_env_available"
     # The owner is unaffected.
     status, body = request(
-        base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "home"}}, task_id="owner"
+        base_url, "/api/tools/touch_gesture", method="POST", payload={"input": {"type": "tap", "point": {"x": 500, "y": 500}}}, task_id="owner"
     )
     assert status == 200 and body["is_error"] is False
 
@@ -361,7 +361,7 @@ def test_mouse_scroll_labels_its_own_action_log_entry(bridge):
     assert len(entries) == 1
     assert entries[0]["tool"] == "mouse_scroll"
     assert entries[0]["input"] == {"delta": 5}
-    assert entries[0]["vphone"].startswith("swipe_down")
+    assert entries[0]["vphone"].startswith("swipe ")
 
 
 def test_concurrent_scroll_and_tap_keep_their_own_log_labels():
@@ -407,7 +407,7 @@ def test_concurrent_scroll_and_tap_keep_their_own_log_labels():
     for entry in entries:
         if entry["tool"] == "mouse_scroll":
             assert entry["input"] == {"delta": 3}, entry
-            assert entry["vphone"].startswith("swipe_"), entry
+            assert entry["vphone"].startswith("swipe "), entry
         else:
             assert entry["tool"] == "touch_gesture", entry
             assert entry["input"] == {"type": "tap", "point": {"x": 500, "y": 500}}, entry

@@ -68,12 +68,12 @@ The firmware starts `config_web` on port 80.
 
 The page fields cover the following config sections (all detailed later on this page). The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
-- `agent`: `locale`, `input_mode`, VAD params, `load_all_tools`, `max_iterations`, `custom_instruction`, `additional_prompt`
+- `agent`: `locale`, `input_mode`, VAD params, `max_iterations`, `custom_instruction`, `additional_prompt`
 - `model`: provider, model, api_key, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, backend
-- `voice_model`: DashScope API key, Qwen realtime model, region, and voice; shown when `agent.input_mode = "realtime"`
+- `voice_model`: selected realtime provider; shown when `agent.input_mode = "realtime"`. Provider-specific credentials and model settings are configured in `[voice_model_providers.<name>]`
 - `frame_service`: whether Frame Service keeps capture STREAMON between screenshots
 - `quick_capture`: enabled, GPIO trigger pin, Screen Memory retention period
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
@@ -88,7 +88,7 @@ The page fields cover the following config sections (all detailed later on this 
 ### HTTP/Web UI without the device voice loop (`text`)
 
 ```toml
-locale = "zh-CN"
+locale = "en-US"
 custom_instruction = ""
 max_iterations = -1
 screenshot_keep_n = 3
@@ -152,7 +152,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ### STT voice mode
 
 ```toml
-locale = "zh-CN"
+locale = "en-US"
 custom_instruction = ""
 input_mode = "stt"
 vad_backend = "rknn"
@@ -222,10 +222,9 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 | Field                       | Default / allowed values    | Description                                                                                                                                                                                               |
 | --------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `locale`                    | `zh-CN` (default) / `en-US` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[stt].language`, which only controls speech recognition. |
+| `locale`                    | `en-US` (default) / `zh-CN` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[stt].language`, which only controls speech recognition. |
 | `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
 | `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
-| `load_all_tools`            | `false`                     | When `true`, also send `list_scripts`, `read_script`, and `write_script` to the conversational model. This does not expose HTTP-blocked maintenance tools.                                                |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
@@ -236,7 +235,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | Field                           | Default                                                     | Description                                                                                                                                                                            |
 | ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `quick_capture.enabled`         | `true`                                                       | Enables GPIO-triggered Screen Memory capture; legacy GPIO32/GPIO33 wakeup remains independent                                                                                           |
-| `quick_capture.gpio_pin`        | `0`                                                         | Falling-edge GPIO for Quick Capture; supported values are `0` (disabled) and GPIO3 (physical pin 38), while GPIO32/GPIO33 remain reserved for legacy wakeup                          |
+| `quick_capture.gpio_pin`        | `3`                                                         | Falling-edge GPIO for Quick Capture; supported values are `3` (physical pin 38) and `0` (disabled), while GPIO32/GPIO33 remain reserved for legacy wakeup                          |
 | `quick_capture.screen_memory_ttl` | `90d`                                                    | Retention period for captured Screen Memory entries, or `forever`                                                                                                                       |
 
 ### Voice & VAD
@@ -544,7 +543,7 @@ provider = "speko-main"
 
 ## `[voice_notifications]`
 
-Voice notifications attach system reminders to a normal spoken reply or replace a final failed LLM turn with a fixed error message. They never start an independent background announcement. See [Voice Notifications](voice-notifications.md) for the lifecycle and delivery contract.
+Voice notifications attach system reminders to a normal spoken reply or replace a final failed LLM turn with a fixed error message. In Realtime mode, an idle session can also announce a pending reminder as a private speech response. See [Voice Notifications](voice-notifications.md) for the lifecycle and delivery contract.
 
 ```toml
 [voice_notifications]
@@ -590,7 +589,7 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 | `mouse_device`            | `/dev/hidg1`                            | Mouse/touch HID device                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `android_keyboard_device` | `/dev/hidg2`                            | Consumer Control HID device (`hid.usb2`) used for Android extension keys when `[device].device_type = "Android"` and media/volume/brightness/screenshot keys for other device types                                                                                                                                                                                                                                                                                                                                          |
 | `frame_socket`            | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `input_backend`           | `hid`                                   | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands.                                                                                                                                                                                                                                                                                                                                               |
+| `input_backend`           | `hid`                                   | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands. Atomic touch programs additionally try `getevent`/`sendevent`, then fall back to `input touchscreen motionevent` when raw event injection is blocked. |
 
 ## `[tts_providers.<name>]` and `[stt_providers.<name>]`
 

@@ -508,24 +508,24 @@ def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordi
             bridge.base_url,
             "POST",
             "/api/tools/touch_gesture",
-            {"input": {"type": "swipe_up", "strength": "small", "anchor": 600}},
+            {"input": {"type": "swipe", "start": {"x": 600, "y": 700}, "direction": "up", "speed": 1000, "duration_ms": 200}},
         )
         assert status == 200
         assert body["is_error"] is False
         assert action_to_dict(bridge.env.actions[-1]) == {
             "action_type": "SWIPE",
-            "data": {"point1": [600.0, 700.0], "point2": [600.0, 500.0], "duration": 420.0},
+            "data": {"point1": [600.0, 700.0], "point2": [600.0, 500.0], "duration": 200.0},
         }
 
         status, body = request_json(
             bridge.base_url,
             "POST",
             "/api/tools/touch_gesture",
-            {"input": {"type": "swipe_up", "strength": "extreme"}},
+            {"input": {"type": "swipe", "start": {"x": 500, "y": 500}, "direction": "diagonal"}},
         )
         assert status == 200
         assert body["is_error"] is True
-        assert "unsupported strength" in body["output"]
+        assert "unsupported swipe direction" in body["output"]
 
 
 def test_tools_api_actions_are_logged_on_episode_end():
@@ -613,7 +613,10 @@ def test_tools_api_pointer_and_quick_action_inputs_map_to_mobilegym_actions():
         )
         assert status == 200
         assert body["is_error"] is False
-        assert action_to_dict(bridge.env.actions[-1]) == {"action_type": "BACK", "data": {}}
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "SWIPE",
+            "data": {"point1": [1.0, 500.0], "point2": [750.0, 500.0], "duration": 700.0},
+        }
 
         before = len(bridge.env.actions)
         status, body = request_json(

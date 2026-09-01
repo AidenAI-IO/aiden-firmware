@@ -5,6 +5,7 @@ const setBanner = runtimeFunction('setBanner');
 const setDetails = runtimeFunction('setDetails');
 const loadAuthoritativeLocale = runtimeFunction('loadAuthoritativeLocale');
 const LOCALE_STORAGE_KEY = 'aiden.config.locale';
+const DEFAULT_LOCALE = 'en-US';
 
 const messages = {
   'en-US': {
@@ -588,14 +589,14 @@ let localeSaveId = 0;
 let localeSavePending = false;
 
 function normalizeLocale(locale) {
-  return locale === 'en-US' ? 'en-US' : 'zh-CN';
+  return locale === 'zh-CN' ? 'zh-CN' : DEFAULT_LOCALE;
 }
 
 function readStoredLocale() {
   try {
     return normalizeLocale(localStorage.getItem(LOCALE_STORAGE_KEY));
   } catch (_err) {
-    return 'zh-CN';
+    return DEFAULT_LOCALE;
   }
 }
 

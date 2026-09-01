@@ -69,13 +69,13 @@ func TestRunRealtimeSessionDoesNotTerminateOnSessionDone(t *testing.T) {
 	}
 	var run *ast.FuncDecl
 	for _, declaration := range file.Decls {
-		if function, ok := declaration.(*ast.FuncDecl); ok && function.Name.Name == "runRealtimeSession" {
+		if function, ok := declaration.(*ast.FuncDecl); ok && function.Name.Name == "runRealtimeSessionWithRegistry" {
 			run = function
 			break
 		}
 	}
 	if run == nil {
-		t.Fatal("runRealtimeSession declaration not found")
+		t.Fatal("runRealtimeSessionWithRegistry declaration not found")
 	}
 	var foundSessionDone bool
 	ast.Inspect(run.Body, func(node ast.Node) bool {

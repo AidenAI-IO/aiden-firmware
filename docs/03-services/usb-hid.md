@@ -115,6 +115,49 @@ Built-in Agent tools:
 - `mouse_scroll`
 - `touch_gesture`
 
+`touch_gesture` uses standard `type` gestures for normal interaction. It also
+supports a low-frequency atomic `actions` program for custom contact-sensitive
+input that the standard gestures cannot express. The program uses normalized `0..1000` points and the actions
+`touch_down`, `move_to`, `wait`, and `touch_up`; it executes in one HID pointer
+session and must release every contact before returning. Example:
+
+```json
+{"actions":[{"action":"touch_down","point":{"x":500,"y":700}},{"action":"wait","ms":80},{"action":"move_to","point":{"x":500,"y":300},"speed":2500},{"action":"touch_up"}]}
+```
+
+`move_to.speed` is optional and uses normalized coordinate units per second.
+When both `speed` and `duration_ms` are present, `duration_ms` takes precedence;
+omitting both preserves the existing immediate-move behavior.
+Each `wait` is limited to 30 seconds, and cumulative wait time across one
+atomic program is limited to 60 seconds.
+
+Supported one-object `type` forms are the default for normal quick actions and
+scripts; `type:"drag"` is not supported.
+
+Moving a draggable target never uses atomic `actions`. It uses two
+`touch_gesture` calls so the Agent can
+observe the drag state before choosing the final destination:
+
+```json
+{"type":"drag_start","point":{"x":400,"y":500}}
+{"type":"drag_release","point":{"x":750,"y":500}}
+```
+
+`drag_start` presses the current target for 500ms, automatically moves exactly
+200 normalized units at 500 normalized units per second (a 400ms interpolated
+move) along the axis with the most available screen space, and keeps the
+contact down during its internal screen-stability wait. When the wait succeeds,
+contact remains down through final screenshot capture. The Agent confirms the
+destination from the returned screenshot only when the result reports
+`screen_stable=true`, then calls
+`drag_release`. When the result reports `screen_stable=false`, runtime moves
+back to the original `drag_start` point and releases the contact; the Agent
+inspects the returned screenshot and retries `drag_start` instead of calling
+`drag_release`. It does not call `wait_for_stable_screen` separately in the
+normal drag flow or choose a destination from a `screen_stable=false` result.
+The release call moves directly to the confirmed point, holds for 200ms, and
+releases. The former one-call `type:"drag"` gesture is no longer supported.
+
 It is recommended to use normalized coordinates (`0..1000`, with center at `500,500`) to avoid click position shifts due to display resolution changes.
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
 `keyboard_layout` must match how the phone interprets the external USB HID keyboard. Supported values are `qwerty` (default), `azerty`, and `qwertz`. The visible soft-keyboard layout is not authoritative: a phone can display an AZERTY soft keyboard while still interpreting Aiden's USB HID reports as QWERTY. Both `keyboard_text` and standard text-like keys in `keyboard_tap` use this mapping. The mapping itself is loaded by the Agent and does not change USB descriptors, but Config Web requires a board restart after saving so the host starts a clean USB session.

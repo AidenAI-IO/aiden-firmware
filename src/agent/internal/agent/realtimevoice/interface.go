@@ -150,7 +150,9 @@ func newPCM16SessionInfo(id string, inputRate, outputRate int, capabilities Capa
 	output := (AudioFormat{Encoding: "pcm_s16le", SampleRate: outputRate}).OrDefault(24000)
 	return SessionInfo{
 		ID: id, InputSampleRate: input.SampleRate, OutputSampleRate: output.SampleRate,
-		InputAudioFormat: input, OutputAudioFormat: output, Capabilities: capabilities,
+		InputAudioFormat: input, OutputAudioFormat: output,
+		ProviderInputAudioFormat: input, ProviderOutputAudioFormat: output,
+		Capabilities: capabilities,
 	}
 }
 

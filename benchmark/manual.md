@@ -45,6 +45,7 @@ full trace and screenshots without re-operating the device.
 | Judge | `benchmark/runner/judge.py` | Calls an OpenAI-compatible endpoint; scores using pre/post screenshots and the trace |
 | MobileGym bridge | `benchmark/mobilegym/bridge/` | Wraps a MobileGym env as an environment bridge API |
 | ADB Android bridge | `benchmark/adbandroid/` | Wraps an Android emulator/physical device as an environment bridge API via adb (see its README) |
+| Desktop bridge | `benchmark/desktop/` | Wraps the host macOS/Linux/Windows desktop through pyautogui as an environment bridge API |
 | Docker daemon worker | `benchmark/docker/Dockerfile.agent-daemon` | The isolated agent daemon the WebUI starts when running a job |
 
 ### 1.3 Execution flow
@@ -348,6 +349,9 @@ The suite separates ingestion/recall claims from explicit Memory action claims:
   temporary memory and is recalled with the original delivery fact.
 - `notification_noise_is_filtered` checks that OTP and marketing events remain
   in the raw log but do not become memory.
+- `notification_user_fact_beats_public_info` repeats the real-model
+  classification five times: public automotive news must be ignored while the
+  user's repayment amount and due date must be retained.
 - `notification_batch_cursor_drain` checks that a backlog larger than one batch
   is fully committed without producing memory for verification-code noise.
 - `notification_explicit_update` checks revision-guarded replacement of an

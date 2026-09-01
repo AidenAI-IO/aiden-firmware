@@ -13,7 +13,6 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
-	"aiden-agent/internal/util"
 
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
@@ -37,7 +36,7 @@ const (
 type AgentLoop struct {
 	Model                    model.Model
 	Profile                  RoleProfile
-	Memory                   schema.Memory
+	SteerRecorder            steerConversationRecorder
 	CallbacksHandler         callbacks.Handler
 	MaxIterations            int
 	Recorder                 *EpisodeRecorder
@@ -58,7 +57,6 @@ type AgentLoop struct {
 func NewAgentLoop(
 	model model.Model,
 	profile RoleProfile,
-	memory schema.Memory,
 	maxIterations int,
 	callbacksHandler callbacks.Handler,
 	recorder *EpisodeRecorder,
@@ -71,7 +69,6 @@ func NewAgentLoop(
 	return &AgentLoop{
 		Model:             model,
 		Profile:           profile,
-		Memory:            memory,
 		CallbacksHandler:  callbacksHandler,
 		MaxIterations:     maxIterations,
 		Recorder:          recorder,
@@ -546,7 +543,7 @@ func (l *AgentLoop) applyLoopGuardDecision(decision TerminationDecision) {
 	}
 	if err := l.contextManager.AppendMessage(messages.Message{
 		Role:    messages.MessageRoleNotice,
-		Content: util.STag("notice", decision.Notice),
+		Content: decision.Notice,
 	}); err != nil {
 		log.Printf("[loop guard] failed to append notice message: %v", err)
 	}
@@ -578,33 +575,6 @@ func (l *AgentLoop) stopWithDecision(ctx context.Context, policy *TerminationPol
 	return l.finishRun(ctx, answer)
 }
 
-func loadAgentLoopInputs(ctx context.Context, memory schema.Memory, input string) (map[string]string, error) {
-	inputValues := map[string]any{"input": input}
-	if memory != nil {
-		variables, err := memory.LoadMemoryVariables(ctx, inputValues)
-		if err != nil {
-			return nil, err
-		}
-		for key, value := range variables {
-			if text, ok := value.(string); ok {
-				inputValues[key] = text
-			}
-		}
-	}
-	result := map[string]string{"input": input}
-	for _, key := range []string{"history"} {
-		if value, ok := inputValues[key].(string); ok {
-			result[key] = value
-		} else {
-			result[key] = ""
-		}
-	}
-	if strings.TrimSpace(result["input"]) == "" {
-		result["input"] = input
-	}
-	return result, nil
-}
-
 func (l *AgentLoop) checkPendingSteer(ctx context.Context) (RunSteerMessage, bool) {
 	if l == nil || l.SteerProvider == nil {
 		return RunSteerMessage{}, false
@@ -630,6 +600,11 @@ func (l *AgentLoop) consumeAndPersistSteer(
 }
 
 func (l *AgentLoop) persistSteer(ctx context.Context, executor *executor.LLMExecutor, steer RunSteerMessage) error {
+	// Normalize once so the model context, the recorded steer, and the emitted
+	// event all carry the same text. Whitespace-only input would otherwise reach
+	// the model as an empty message while being recorded as the placeholder.
+	steer.Content = steerHumanMessageContent(steer)
+
 	// Step 1: Append to context manager
 	if executor != nil {
 		if err := executor.AppendMessage(messages.Message{
@@ -647,9 +622,9 @@ func (l *AgentLoop) persistSteer(ctx context.Context, executor *executor.LLMExec
 		}
 	}
 
-	// Step 2: Persist to memory
-	if appender, ok := l.Memory.(steerConversationAppender); ok {
-		if err := appender.AppendSteerOnly(ctx, steer); err != nil {
+	// Step 2: Track the steer for session event persistence.
+	if l.SteerRecorder != nil {
+		if err := l.SteerRecorder.RecordSteer(steer); err != nil {
 			return err
 		}
 	}
@@ -675,9 +650,6 @@ func formatSteerInterruptMessage(steer RunSteerMessage) string {
 }
 
 func (l *AgentLoop) executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {
-	if l != nil && l.contextManager != nil {
-		ctx = withImageDiffAttachmentResolver(ctx, l.contextManager.ReadScreenshotAttachment)
-	}
 	interruptCh := (<-chan struct{})(nil)
 	if l != nil && l.SteerInterrupt != nil {
 		interruptCh = l.SteerInterrupt()

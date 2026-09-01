@@ -281,11 +281,11 @@ func TestConfigValidateKeyboardLayout(t *testing.T) {
 }
 
 func TestConfigLocaleContract(t *testing.T) {
-	if got := DefaultConfig().Locale; got != "zh-CN" {
-		t.Fatalf("DefaultConfig().Locale = %q, want zh-CN", got)
+	if got := DefaultConfig().Locale; got != "en-US" {
+		t.Fatalf("DefaultConfig().Locale = %q, want en-US", got)
 	}
-	if got := (Config{}).LocaleOrDefault(); got != "zh-CN" {
-		t.Fatalf("Config{}.LocaleOrDefault() = %q, want zh-CN", got)
+	if got := (Config{}).LocaleOrDefault(); got != "en-US" {
+		t.Fatalf("Config{}.LocaleOrDefault() = %q, want en-US", got)
 	}
 
 	english := Config{Model: ModelConfig{Provider: "fake"}, Locale: "en-US"}

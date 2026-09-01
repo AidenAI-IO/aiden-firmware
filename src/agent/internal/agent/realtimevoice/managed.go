@@ -98,6 +98,7 @@ type managedSession struct {
 	stop            chan struct{}
 	closeOnce       sync.Once
 	closeErr        error
+	infoMu          sync.RWMutex
 	inputMu         sync.Mutex
 	inputResampler  *tts.PCM16MonoResampler
 	outputResampler *tts.PCM16MonoResampler
@@ -217,7 +218,11 @@ func (s *pcmResamplerSpec) newResampler() *tts.PCM16MonoResampler {
 	return tts.NewPCM16MonoResampler(s.source.SampleRate, s.target.SampleRate)
 }
 
-func (s *managedSession) Info() SessionInfo     { return s.info }
+func (s *managedSession) Info() SessionInfo {
+	s.infoMu.RLock()
+	defer s.infoMu.RUnlock()
+	return s.info
+}
 func (s *managedSession) Events() <-chan Event  { return s.events }
 func (s *managedSession) Errors() <-chan error  { return s.raw.Errors() }
 func (s *managedSession) Done() <-chan struct{} { return s.raw.Done() }
@@ -250,16 +255,64 @@ func (s *managedSession) forwardEvents(source <-chan Event) {
 		if event.Kind == EventResponseStarted && s.outputSpec != nil {
 			s.outputResampler = s.outputSpec.newResampler()
 		}
-		if event.Kind == EventAudio && s.outputResampler != nil {
-			event.PCM = s.outputResampler.Write(event.PCM)
-			if len(event.PCM) == 0 {
+		if event.Kind == EventAudio {
+			if err := s.refreshOutputResampler(); err != nil {
+				if !s.forwardEvent(Event{Kind: EventError, Error: err}) {
+					return
+				}
 				continue
+			}
+			if s.outputResampler != nil {
+				event.PCM = s.outputResampler.Write(event.PCM)
+				if len(event.PCM) == 0 {
+					continue
+				}
 			}
 		}
 		if !s.forwardEvent(event) {
 			return
 		}
 	}
+}
+
+// refreshOutputResampler observes provider-side format renegotiation. Gemini
+// announces its actual PCM rate in the first audio MIME type, after the
+// managed session has already been created; rebuilding here keeps playback
+// speed and pitch correct without changing the device-side format contract.
+func (s *managedSession) refreshOutputResampler() error {
+	if s == nil || s.raw == nil {
+		return nil
+	}
+	rawInfo := s.raw.Info()
+	providerOutput := normalizedPCMFormat(rawInfo.OutputFormatOrDefault(24000))
+	s.infoMu.RLock()
+	deviceOutput := s.info.OutputAudioFormat
+	previousProviderOutput := s.info.ProviderOutputAudioFormat
+	s.infoMu.RUnlock()
+	if providerOutput == previousProviderOutput {
+		return nil
+	}
+	spec, err := mediaResamplerSpec("output", providerOutput, deviceOutput)
+	if err != nil {
+		return err
+	}
+	if s.outputSpec == nil && spec == nil {
+		return nil
+	}
+	if s.outputSpec != nil && spec != nil && s.outputSpec.source == spec.source && s.outputSpec.target == spec.target {
+		return nil
+	}
+	s.outputSpec = spec
+	s.infoMu.Lock()
+	s.info.ProviderOutputAudioFormat = providerOutput
+	s.info.OutputSampleRate = deviceOutput.SampleRate
+	s.infoMu.Unlock()
+	if spec == nil {
+		s.outputResampler = nil
+	} else {
+		s.outputResampler = spec.newResampler()
+	}
+	return nil
 }
 
 func (s *managedSession) forwardEvent(event Event) bool {

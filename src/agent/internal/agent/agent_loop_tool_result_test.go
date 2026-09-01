@@ -63,6 +63,49 @@ func TestAppendToolExecutionMessagesPersistsPreparedContentAndMetadata(t *testin
 	}
 }
 
+func TestAppendToolExecutionMessagesUsesSharedVisualActionFlowForScreenshot(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	llmExecutor := executor.NewLLMExecutor(nil, manager)
+	encoded := "aW1nMQ=="
+	observation := `{"action_output":"ok","width":800,"height":600,"format":"jpeg","size":4,"data":"` + encoded + `"}`
+	parser := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}}}
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{ToolID: "call_1", Tool: "screenshot"},
+		Observation: observation,
+	}
+	toolCall := messages.Message{
+		Role: messages.MessageRoleToolCall,
+		ToolCalls: []messages.ToolCall{{
+			ID: "call_1", Name: "screenshot", Arguments: `{}`,
+		}},
+	}
+
+	if err := appendToolExecutionMessages(llmExecutor, parser, toolCall, step, PreparedToolResult{Content: observation, Complete: true}); err != nil {
+		t.Fatalf("appendToolExecutionMessages() error = %v", err)
+	}
+
+	stored := manager.CloneMessageList()
+	if len(stored) != 3 {
+		t.Fatalf("stored messages = %#v, want tool call, tool result, and state", stored)
+	}
+	if stored[1].Role != messages.MessageRoleToolResult || len(stored[1].ToolResults) != 1 {
+		t.Fatalf("second message = %#v, want tool result", stored[1])
+	}
+	content := stored[1].ToolResults[0].Content
+	if content != "ok" {
+		t.Fatalf("tool result = %q, want shared action_output", content)
+	}
+	if stored[2].Role != messages.MessageRoleState || len(stored[2].Attachments) != 1 {
+		t.Fatalf("third message = %#v, want state with one image attachment", stored[2])
+	}
+	if stored[2].Attachments[0].Source != messages.AttachmentSourceScreenshotObservation {
+		t.Fatalf("state attachment source = %q", stored[2].Attachments[0].Source)
+	}
+}
+
 type largeContextScriptedModel struct {
 	*scriptedModel
 }
@@ -99,7 +142,6 @@ func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.
 	loop := NewAgentLoop(
 		tracked,
 		RoleProfile{Tools: []langtools.Tool{&staticTool{name: "shell", output: rawOutput}}},
-		nil,
 		4,
 		nil,
 		nil,
@@ -162,7 +204,6 @@ func TestAgentLoopTouchGestureInvalidJSONSelfCorrectsBeforeAction(t *testing.T) 
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{tool}},
-		nil,
 		4,
 		nil,
 		nil,
@@ -224,7 +265,6 @@ func TestAgentLoopStoresLargeToolResultAsBoundedArtifact(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&staticTool{name: "shell", output: rawOutput}}},
-		nil,
 		4,
 		nil,
 		recorder,
@@ -303,7 +343,6 @@ func TestAgentLoopDoesNotRepeatCompletedActionWhenArtifactPersistenceFails(t *te
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{tool}},
-		nil,
 		4,
 		nil,
 		nil,
@@ -347,7 +386,6 @@ func TestAgentLoopPersistsBoundedToolResultWhenPolicyFails(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{tool}},
-		nil,
 		4,
 		nil,
 		nil,

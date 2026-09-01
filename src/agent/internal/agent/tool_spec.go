@@ -144,11 +144,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
 	},
-	"image_diff": {
-		Category:     "observation",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"before":"<screenshot-attachment-id>","after":"<screenshot-attachment-id>"}`,
-	},
 	"shell": {
 		Category:     "system",
 		InputMode:    toolInputModeJSON,
@@ -210,29 +205,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "handoff",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"reason":"authentication","details":"Login screen requires password","suggested_action":"Please enter your credentials on the device"}`,
-	},
-	"run_script": {
-		Category:     "demo",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"file":"demo.jsonl"}`,
-	},
-	"list_scripts": {
-		Category:     "demo",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{}`,
-		AgentExposed: toolSpecBoolPtr(false),
-	},
-	"read_script": {
-		Category:     "demo",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"file":"demo.jsonl"}`,
-		AgentExposed: toolSpecBoolPtr(false),
-	},
-	"write_script": {
-		Category:     "demo",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"file":"demo.jsonl","content":"# 打开设置演示\n{\"type\":\"wait\",\"ms\":500}\n{\"type\":\"tts\",\"text\":\"正在打开设置\"}"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"skill_manage": {
 		Category:     "skills",
@@ -407,21 +379,20 @@ func (s *ToolSpecs) All() []ToolSpec {
 
 // AgentTools returns conversational tools without device platform filtering.
 // Runtime model callers should use AgentToolsForPlatform.
-func (s *ToolSpecs) AgentTools(loadAll bool) []langtools.Tool {
-	return s.AgentToolsForPlatform(loadAll, "")
+func (s *ToolSpecs) AgentTools() []langtools.Tool {
+	return s.AgentToolsForPlatform("")
 }
 
 // AgentToolsForPlatform returns conversational tools for the current
 // device_type-derived platform. Platform-specific tools must declare their
 // allowed platforms in builtInToolSpecMetadata; empty metadata means portable.
-// loadAll only bypasses AgentExposed, not HTTP or platform exposure policy.
-func (s *ToolSpecs) AgentToolsForPlatform(loadAll bool, platform string) []langtools.Tool {
+func (s *ToolSpecs) AgentToolsForPlatform(platform string) []langtools.Tool {
 	if s == nil {
 		return nil
 	}
 	tools := make([]langtools.Tool, 0, len(s.names))
 	for _, spec := range s.All() {
-		if !(loadAll || spec.AgentExposed) {
+		if !spec.AgentExposed {
 			continue
 		}
 		if !spec.AgentAvailableForPlatform(platform) {
@@ -527,6 +498,7 @@ func (spec ToolSpec) ValidateInput(input string) error {
 		if spec.Name == "touch_gesture" {
 			return fmt.Errorf(`touch_gesture arguments are invalid JSON, so no touch action was executed.
 Retry touch_gesture now with strict JSON.
+For atomic touch programs, use {"actions":[{"action":"touch_down","point":{"x":500,"y":500}},{"action":"touch_up"}]}.
 point/start/end must be JSON objects containing both named keys "x" and "y".
 Invalid: {"type":"tap","point":{"x":500,500}}
 Correct: {"type":"tap","point":{"x":500,"y":500}}

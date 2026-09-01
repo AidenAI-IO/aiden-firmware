@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+// handleRealtimeChatAsync starts a realtime run and retains its result for
+// polling after the run releases its cancellation state.
 func (s *Server) handleRealtimeChatAsync(w http.ResponseWriter, req ChatRequest, input TurnInput) {
 	requestID := req.RequestID
 	episodeID := s.runtime.NewEpisodeID()
@@ -122,6 +124,8 @@ func (s *Server) handleRealtimeChatAsync(w http.ResponseWriter, req ChatRequest,
 	}()
 }
 
+// handleRealtimeChatStream keeps a realtime run registered until the event
+// stream ends so cancellation can find and stop it.
 func (s *Server) handleRealtimeChatStream(w http.ResponseWriter, r *http.Request, req ChatRequest, input TurnInput) {
 	stream, ok := newChatStreamWriter(w)
 	if !ok {

@@ -138,6 +138,29 @@ func TestManagedSessionHidesProviderMediaFormat(t *testing.T) {
 	}
 }
 
+func TestManagedSessionRefreshesRuntimeProviderOutputRate(t *testing.T) {
+	raw := newManagedTestSession(24000)
+	managed, err := newManagedSession(raw, DeviceMediaConfig{
+		Output: AudioFormat{Encoding: "pcm_s16le", SampleRate: 16000, Channels: 1, BitDepth: 16},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer managed.Close()
+	raw.events <- Event{Kind: EventResponseStarted, ResponseID: "response-1"}
+	raw.info.OutputSampleRate = 16000
+	raw.info.OutputAudioFormat.SampleRate = 16000
+	raw.events <- Event{Kind: EventAudio, ResponseID: "response-1", PCM: make([]byte, 480)}
+	close(raw.events)
+	if event := <-managed.Events(); event.Kind != EventResponseStarted {
+		t.Fatalf("first event = %s, want response_started", event.Kind)
+	}
+	event := <-managed.Events()
+	if event.Kind != EventAudio || len(event.PCM) != 480 {
+		t.Fatalf("runtime-rate audio = kind:%s bytes:%d, want unresampled 480-byte PCM", event.Kind, len(event.PCM))
+	}
+}
+
 func TestManagedSessionNormalizesOperations(t *testing.T) {
 	raw := newManagedTestSession(16000)
 	managed, err := newManagedSession(raw, DeviceMediaConfig{})

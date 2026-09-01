@@ -72,26 +72,50 @@ func (p *HTTPProvider) DoubleClick(ctx context.Context, x, y float64, button str
 
 // Swipe performs a swipe operation via HTTP.
 func (p *HTTPProvider) Swipe(ctx context.Context, path [][2]float64, button string) error {
+	return p.SwipeWithOptions(ctx, path, button, SwipeOptions{})
+}
+
+// SwipeWithDuration performs a swipe operation via HTTP with explicit timing.
+func (p *HTTPProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, button string, durationMs int) error {
+	return p.SwipeWithOptions(ctx, path, button, SwipeOptions{DurationMs: durationMs})
+}
+
+// SwipeWithOptions performs a swipe operation via HTTP with explicit timing
+// and interpolation settings.
+func (p *HTTPProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
 	req := MNKRequest{
 		Operation: "swipe",
-		Swipe: &DragParams{
-			Path:   path,
+		Swipe: &SwipeParams{
+			Path:         path,
+			Button:       button,
+			DurationMs:   options.DurationMs,
+			HoldBeforeMs: options.HoldBeforeMs,
+			HoldAfterMs:  options.HoldAfterMs,
+			Steps:        options.Steps,
+		},
+	}
+	return p.sendRequest(ctx, req)
+}
+
+// DragStart starts a persistent drag contact via HTTP.
+func (p *HTTPProvider) DragStart(ctx context.Context, x, y float64, button string) error {
+	req := MNKRequest{
+		Operation: "drag_start",
+		DragStart: &DragPointParams{
+			X:      x,
+			Y:      y,
 			Button: button,
 		},
 	}
 	return p.sendRequest(ctx, req)
 }
 
-// Drag performs a drag operation via HTTP
-func (p *HTTPProvider) Drag(ctx context.Context, path [][2]float64, button string) error {
-	req := MNKRequest{
-		Operation: "drag",
-		Drag: &DragParams{
-			Path:   path,
-			Button: button,
-		},
-	}
-	return p.sendRequest(ctx, req)
+// DragRelease moves and releases the active drag contact via HTTP.
+func (p *HTTPProvider) DragRelease(ctx context.Context, x, y float64) error {
+	return p.sendRequest(ctx, MNKRequest{
+		Operation:   "drag_release",
+		DragRelease: &DragPointParams{X: x, Y: y},
+	})
 }
 
 // Keypress performs a keypress operation via HTTP
@@ -127,6 +151,18 @@ func (p *HTTPProvider) Scroll(ctx context.Context, scrollX, scrollY int) error {
 		},
 	}
 	return p.sendRequest(ctx, req)
+}
+
+// TouchActions forwards one atomic touch program so the remote provider can
+// preserve contact state and execute all waits in a single request.
+func (p *HTTPProvider) TouchActions(ctx context.Context, actions []TouchAction) error {
+	if len(actions) == 0 {
+		return InvalidArguments("touch actions must not be empty")
+	}
+	return p.sendRequest(ctx, MNKRequest{
+		Operation:    "touch_actions",
+		TouchActions: actions,
+	})
 }
 
 // sendRequest sends an MNK request to the HTTP server
@@ -191,14 +227,16 @@ func (p *HTTPProvider) sendRequest(ctx context.Context, req MNKRequest) error {
 
 // MNKRequest represents an MNK operation request
 type MNKRequest struct {
-	Operation   string             `json:"operation"`
-	Click       *ClickParams       `json:"click,omitempty"`
-	DoubleClick *DoubleClickParams `json:"double_click,omitempty"`
-	Swipe       *DragParams        `json:"swipe,omitempty"`
-	Drag        *DragParams        `json:"drag,omitempty"`
-	Keypress    *KeypressParams    `json:"keypress,omitempty"`
-	Move        *MoveParams        `json:"move,omitempty"`
-	Scroll      *ScrollParams      `json:"scroll,omitempty"`
+	Operation    string             `json:"operation"`
+	Click        *ClickParams       `json:"click,omitempty"`
+	DoubleClick  *DoubleClickParams `json:"double_click,omitempty"`
+	Swipe        *SwipeParams       `json:"swipe,omitempty"`
+	DragStart    *DragPointParams   `json:"drag_start,omitempty"`
+	DragRelease  *DragPointParams   `json:"drag_release,omitempty"`
+	Keypress     *KeypressParams    `json:"keypress,omitempty"`
+	Move         *MoveParams        `json:"move,omitempty"`
+	Scroll       *ScrollParams      `json:"scroll,omitempty"`
+	TouchActions []TouchAction      `json:"touch_actions,omitempty"`
 }
 
 // ClickParams parameters for click operation
@@ -216,10 +254,21 @@ type DoubleClickParams struct {
 	Button string  `json:"button"`
 }
 
-// DragParams parameters for drag operation
-type DragParams struct {
-	Path   [][2]float64 `json:"path"`
-	Button string       `json:"button"`
+// SwipeParams contains the path and timing options for a swipe operation.
+type SwipeParams struct {
+	Path         [][2]float64 `json:"path"`
+	Button       string       `json:"button"`
+	DurationMs   int          `json:"duration_ms,omitempty"`
+	HoldBeforeMs int          `json:"hold_before_ms,omitempty"`
+	HoldAfterMs  int          `json:"hold_after_ms,omitempty"`
+	Steps        int          `json:"steps,omitempty"`
+}
+
+// DragPointParams contains one endpoint for a persistent drag session.
+type DragPointParams struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Button string  `json:"button,omitempty"`
 }
 
 // KeypressParams parameters for keypress operation

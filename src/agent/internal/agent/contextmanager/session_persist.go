@@ -9,13 +9,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
-// sessionMetadata is read only for compatibility with builds that stored a
-// shared artifact_scope_id for compacted revisions. New sessions persist the
-// concrete artifact_path in their messages and do not create this sidecar.
+// sessionMetadata is the `<session_id>.meta.json` sidecar. It records session
+// lineage so a compaction revision can be traced back to the session it was
+// derived from, which the append-only transcript alone cannot express.
+//
+// Unknown fields are ignored on decode, so sidecars written by older builds
+// (which carried a shared artifact_scope_id) still load; those revisions keep
+// their artifacts through the concrete artifact_path persisted in messages.
 type sessionMetadata struct {
-	ArtifactScopeID string `json:"artifact_scope_id"`
+	// ParentSessionID is the session this one was derived from, for example the
+	// pre-compaction session of a revision. Empty for root sessions and for
+	// sessions created by builds that predate this sidecar.
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	// CreatedAt is when the session was created, in UTC.
+	CreatedAt time.Time `json:"created_at,omitempty"`
 }
 
 // fetchCurrentSession fetches the current session ID from the session folder, should be called when initializing the context manager.
@@ -33,12 +43,60 @@ func fetchCurrentSession(sessionFolder string) string {
 }
 
 func saveCurrentSession(sessionFolder string, sessionID string) error {
-	sessionIDFile := filepath.Join(sessionFolder, ".current_session")
-	return os.WriteFile(sessionIDFile, []byte(sessionID), 0o644)
+	return writeSessionFileAtomically(sessionFolder, ".current_session", []byte(sessionID))
+}
+
+// writeSessionFileAtomically installs fileName inside sessionFolder through a
+// temporary file and a rename, so readers never observe a partial file.
+func writeSessionFileAtomically(sessionFolder, fileName string, data []byte) error {
+	targetPath := filepath.Join(sessionFolder, fileName)
+	file, err := os.CreateTemp(sessionFolder, fileName+"-*")
+	if err != nil {
+		return fmt.Errorf("create %s temp file: %w", fileName, err)
+	}
+	tempPath := file.Name()
+	defer os.Remove(tempPath)
+
+	if err := file.Chmod(0o644); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("chmod %s temp file: %w", fileName, err)
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write %s temp file: %w", fileName, err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync %s temp file: %w", fileName, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close %s temp file: %w", fileName, err)
+	}
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		return fmt.Errorf("install %s file: %w", fileName, err)
+	}
+	return nil
+}
+
+func sessionMetadataFileName(sessionID string) string {
+	return sessionID + ".meta.json"
 }
 
 func sessionMetadataPath(sessionFolder, sessionID string) string {
-	return filepath.Join(sessionFolder, sessionID+".meta.json")
+	return filepath.Join(sessionFolder, sessionMetadataFileName(sessionID))
+}
+
+// saveSessionMetadata writes the sidecar for sessionID. The session ID is
+// validated first so a malformed ID cannot escape the session folder.
+func saveSessionMetadata(sessionFolder, sessionID string, metadata sessionMetadata) error {
+	if _, err := validateArtifactSessionID(sessionID); err != nil {
+		return fmt.Errorf("save session metadata: %w", err)
+	}
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("encode session metadata: %w", err)
+	}
+	return writeSessionFileAtomically(sessionFolder, sessionMetadataFileName(sessionID), data)
 }
 
 func loadSessionMetadata(sessionFolder, sessionID string) (sessionMetadata, bool, error) {

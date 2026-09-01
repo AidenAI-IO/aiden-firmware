@@ -1444,6 +1444,7 @@ func TestServerAsyncChatAppendsVoiceNotificationOnlyToFinalSpeech(t *testing.T) 
 	cfg := DefaultConfig()
 	cfg.Model = ModelConfig{Provider: "fake"}
 	cfg.Instruction = "Answer directly."
+	cfg.Locale = "zh-CN"
 	cfg.VoiceStreamingTTSEnabled = &streamingDisabled
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, cfg),
@@ -1516,6 +1517,7 @@ func TestServerAsyncChatSpeaksReplacementForFinalLLMFailure(t *testing.T) {
 		withTestConfigDir(t, Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Answer directly.",
+			Locale:                   "zh-CN",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 		}),
 		&testModelResolver{model: failingGenerateModel{err: errors.New("dial tcp: network is unreachable")}},
@@ -1844,7 +1846,11 @@ func TestServerShouldSpeakToolCallRequiresTTSTag(t *testing.T) {
 }
 
 func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
-	server := &Server{logger: newTestLogger(), activeRuns: make(map[string]context.CancelFunc)}
+	server := &Server{
+		logger:             newTestLogger(),
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	server.registerActiveRun("req-1", cancel)
 
@@ -1869,6 +1875,326 @@ func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
 	}
 	if resp.Status != "canceled" || resp.RequestID != "req-1" {
 		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	if !server.isRequestTerminated("req-1") {
+		t.Fatal("active request was not marked terminated")
+	}
+	server.unregisterActiveRun("req-1")
+	if server.isRequestTerminated("req-1") {
+		t.Fatal("termination marker remained after active run cleanup")
+	}
+}
+
+func TestServerHandleChatCancelUnknownRequestDoesNotRetainTermination(t *testing.T) {
+	server := &Server{
+		logger:             newTestLogger(),
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"req-unknown"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleChatCancel(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "not_running" || resp.RequestID != "req-unknown" {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	if server.isRequestTerminated("req-unknown") {
+		t.Fatal("unknown request left a termination marker")
+	}
+}
+
+func markRequestTerminatedForTest(server *Server, requestID string) {
+	server.terminatedRequestsMu.Lock()
+	defer server.terminatedRequestsMu.Unlock()
+	server.markRequestTerminatedLocked(requestID)
+}
+
+func TestServerUnregisterActiveRunClearsTermination(t *testing.T) {
+	server := &Server{
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+	}
+	_, cancel := context.WithCancel(context.Background())
+	if !server.registerActiveRun("req-finished", cancel) {
+		t.Fatal("registerActiveRun() failed")
+	}
+	markRequestTerminatedForTest(server, "req-finished")
+	server.unregisterActiveRun("req-finished")
+
+	if server.isRequestTerminated("req-finished") {
+		t.Fatal("finished request left a termination marker")
+	}
+}
+
+func TestServerUnregisterActiveOutputClearsTermination(t *testing.T) {
+	server := &Server{terminatedRequests: make(map[string]struct{})}
+	output := newActiveTTSOutput(nil)
+	unregister := server.registerActiveOutput("req-output-finished", output)
+	markRequestTerminatedForTest(server, "req-output-finished")
+	unregister()
+
+	if server.isRequestTerminated("req-output-finished") {
+		t.Fatal("finished output left a termination marker")
+	}
+}
+
+func TestServerRegisterActiveOutputRejectsTerminatedRequest(t *testing.T) {
+	requestID := "req-output-after-cancel"
+	server := &Server{terminatedRequests: make(map[string]struct{})}
+	markRequestTerminatedForTest(server, requestID)
+
+	outputCtx, cancelOutput := context.WithCancel(context.Background())
+	output := newActiveTTSOutput(cancelOutput)
+	unregister := server.registerActiveOutput(requestID, output)
+	defer unregister()
+
+	select {
+	case <-outputCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("terminated request output was not interrupted")
+	}
+	if outputs := server.snapshotActiveOutputs(requestID); len(outputs) != 0 {
+		t.Fatalf("terminated request registered %d active outputs, want 0", len(outputs))
+	}
+}
+
+func TestServerTerminationMarkerWaitsForAllRequestOwnedWork(t *testing.T) {
+	requestID := "req-multiple-resources"
+	server := &Server{
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+	}
+	_, cancel := context.WithCancel(context.Background())
+	if !server.registerActiveRun(requestID, cancel) {
+		t.Fatal("registerActiveRun() failed")
+	}
+	output := newActiveTTSOutput(nil)
+	unregisterOutput := server.registerActiveOutput(requestID, output)
+	markRequestTerminatedForTest(server, requestID)
+
+	server.unregisterActiveRun(requestID)
+	if !server.isRequestTerminated(requestID) {
+		t.Fatal("termination marker was cleared while output was still active")
+	}
+
+	unregisterOutput()
+	if server.isRequestTerminated(requestID) {
+		t.Fatal("termination marker remained after all request work finished")
+	}
+}
+
+func TestServerHandleChatCancelConcurrentRequests(t *testing.T) {
+	const requestCount = 256
+
+	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
+	requestIDs := make([]string, requestCount)
+	runDone := make([]<-chan struct{}, requestCount)
+	for i := range requestCount {
+		requestID := fmt.Sprintf("req-concurrent-cancel-%d", i)
+		ctx, cancel := context.WithCancel(context.Background())
+		if !server.registerActiveRun(requestID, cancel) {
+			t.Fatalf("registerActiveRun(%q) failed", requestID)
+		}
+		requestIDs[i] = requestID
+		runDone[i] = ctx.Done()
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, requestCount)
+	var wg sync.WaitGroup
+	for _, requestID := range requestIDs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+
+			req := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"`+requestID+`"}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.handleChatCancel(rec, req)
+			if rec.Code != http.StatusOK {
+				errs <- fmt.Errorf("cancel %q returned status %d: %s", requestID, rec.Code, rec.Body.String())
+				return
+			}
+			var resp ChatCancelResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				errs <- fmt.Errorf("decode cancel %q response: %w", requestID, err)
+				return
+			}
+			if resp.Status != "canceled" || resp.RequestID != requestID {
+				errs <- fmt.Errorf("cancel %q response = %#v", requestID, resp)
+				return
+			}
+			server.unregisterActiveRun(requestID)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if t.Failed() {
+		return
+	}
+
+	for i, done := range runDone {
+		select {
+		case <-done:
+		default:
+			t.Errorf("request %q was not canceled", requestIDs[i])
+		}
+	}
+	server.terminatedRequestsMu.RLock()
+	defer server.terminatedRequestsMu.RUnlock()
+	if server.terminatedRequests != nil {
+		t.Fatalf("termination marker map retained %d entries", len(server.terminatedRequests))
+	}
+}
+
+func TestServerReusedRequestTerminationSurvivesPreviousCleanup(t *testing.T) {
+	const requestID = "req-reused-during-cleanup"
+
+	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
+	if !server.registerActiveRun(requestID, func() {}) {
+		t.Fatal("registerActiveRun() failed for previous lifecycle")
+	}
+	if !server.cancelActiveRun(requestID) {
+		t.Fatal("cancelActiveRun() failed for previous lifecycle")
+	}
+
+	// Hold output inspection so the previous lifecycle cleanup overlaps the
+	// registration and cancellation of the reused request ID.
+	server.activeOutputsMu.Lock()
+	previousCleanupDone := make(chan struct{})
+	go func() {
+		server.unregisterActiveRun(requestID)
+		close(previousCleanupDone)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		server.activeRunsMu.Lock()
+		_, active := server.activeRuns[requestID]
+		server.activeRunsMu.Unlock()
+		if !active {
+			break
+		}
+		if time.Now().After(deadline) {
+			server.activeOutputsMu.Unlock()
+			t.Fatal("previous lifecycle did not release its active run")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Give cleanup time to reach the intentionally blocked output check.
+	time.Sleep(10 * time.Millisecond)
+
+	registered := make(chan bool, 1)
+	go func() {
+		registered <- server.registerActiveRun(requestID, func() {})
+	}()
+	newLifecycleCanceled := false
+	select {
+	case ok := <-registered:
+		if !ok {
+			server.activeOutputsMu.Unlock()
+			t.Fatal("registerActiveRun() failed for reused lifecycle")
+		}
+		if !server.cancelActiveRun(requestID) {
+			server.activeOutputsMu.Unlock()
+			t.Fatal("cancelActiveRun() failed for reused lifecycle")
+		}
+		newLifecycleCanceled = true
+	case <-time.After(20 * time.Millisecond):
+		// The current lock ordering blocks registration until cleanup finishes.
+	}
+	server.activeOutputsMu.Unlock()
+
+	select {
+	case <-previousCleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("previous lifecycle cleanup did not finish")
+	}
+	if !newLifecycleCanceled {
+		select {
+		case ok := <-registered:
+			if !ok {
+				t.Fatal("registerActiveRun() failed for reused lifecycle")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("reused lifecycle registration did not finish")
+		}
+		if !server.cancelActiveRun(requestID) {
+			t.Fatal("cancelActiveRun() failed for reused lifecycle")
+		}
+	}
+
+	if !server.isRequestTerminated(requestID) {
+		t.Fatal("previous lifecycle cleanup removed the reused lifecycle marker")
+	}
+	server.unregisterActiveRun(requestID)
+}
+
+func TestServerReleasesTerminationMarkerStorageAfterBurst(t *testing.T) {
+	const requestCount = 10_000
+
+	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
+	requestIDs := make([]string, requestCount)
+	for i := range requestCount {
+		requestID := fmt.Sprintf("req-marker-burst-%d", i)
+		if !server.registerActiveRun(requestID, func() {}) {
+			t.Fatalf("registerActiveRun(%q) failed", requestID)
+		}
+		if !server.cancelActiveRun(requestID) {
+			t.Fatalf("cancelActiveRun(%q) failed", requestID)
+		}
+		requestIDs[i] = requestID
+	}
+
+	server.terminatedRequestsMu.RLock()
+	markerCount := len(server.terminatedRequests)
+	server.terminatedRequestsMu.RUnlock()
+	if markerCount != requestCount {
+		t.Fatalf("termination marker count = %d, want %d", markerCount, requestCount)
+	}
+
+	for _, requestID := range requestIDs {
+		server.unregisterActiveRun(requestID)
+	}
+	server.terminatedRequestsMu.RLock()
+	defer server.terminatedRequestsMu.RUnlock()
+	if server.terminatedRequests != nil {
+		t.Fatalf("termination marker map retained %d entries after burst cleanup", len(server.terminatedRequests))
+	}
+}
+
+func TestServerCloseClearsTerminationMarkers(t *testing.T) {
+	server := &Server{
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+	}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if !server.registerActiveRun("req-closed", cancel) {
+		t.Fatal("registerActiveRun() failed")
+	}
+	markRequestTerminatedForTest(server, "req-closed")
+
+	server.Close()
+
+	server.terminatedRequestsMu.Lock()
+	count := len(server.terminatedRequests)
+	server.terminatedRequestsMu.Unlock()
+	if count != 0 {
+		t.Fatalf("termination marker count after Close() = %d, want 0", count)
 	}
 }
 
@@ -2157,7 +2483,7 @@ func TestSpeakTextForRequestRefusesTerminatedRequest(t *testing.T) {
 		ttsManager:         ttsmodule.NewProviderManager(provider, nil),
 		audioClient:        NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
 	}
-	server.markRequestTerminated(requestID)
+	markRequestTerminatedForTest(server, requestID)
 
 	err := server.speakTextForRequest(context.Background(), requestID, "should not play", 0)
 	if !errors.Is(err, context.Canceled) {
@@ -2459,6 +2785,39 @@ func TestWebUISteerModeControlsArePresent(t *testing.T) {
 	}
 }
 
+func TestWebUIClearMenuUsesConfirmedSessionActions(t *testing.T) {
+	index := readWebUIResource(t, "index.html")
+	chatScript := readWebUIResource(t, "scripts/chat.js")
+
+	for _, want := range []string{
+		`id="clearMenu"`,
+		"Clear Session",
+		"Clear Session &amp; Memory",
+		`onclick="clearSession()"`,
+		`onclick="clearSessionAndMemory()"`,
+	} {
+		if !strings.Contains(index, want) {
+			t.Errorf("web UI clear menu missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"async function clearSession()",
+		"async function clearSessionAndMemory()",
+		"if (!confirm(",
+		"fetch('/api/clear', { method: 'POST' })",
+		"fetch('/api/clear-all', { method: 'POST' })",
+	} {
+		if !strings.Contains(chatScript, want) {
+			t.Errorf("web UI clear action missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{">New Chat</button>", ">Reset Memory</button>"} {
+		if strings.Contains(index, unwanted) {
+			t.Errorf("web UI still contains old action %q", unwanted)
+		}
+	}
+}
+
 func TestWebUIIsEmbeddedFromStaticResource(t *testing.T) {
 	want, err := os.ReadFile("web_ui/index.html")
 	if err != nil {
@@ -2583,13 +2942,6 @@ func TestWebUIUsesContextRequestIDsForToolMessageIdentity(t *testing.T) {
 		if !strings.Contains(chatScript, want) {
 			t.Fatalf("web UI tool message identity missing %q", want)
 		}
-	}
-}
-
-func TestWebUIContextHistoryDeduplicatesMarkers(t *testing.T) {
-	chatScript := readWebUIResource(t, "scripts/chat.js")
-	if !strings.Contains(chatScript, "if (!renderedStateMessages.has(key))") {
-		t.Fatal("renderHistory does not guard duplicate context markers")
 	}
 }
 
@@ -2884,7 +3236,7 @@ func TestServerLoadsPersistedBackendContextBeforeFirstRun(t *testing.T) {
 func TestWebMessageFromContextMessagePreservesNoticeType(t *testing.T) {
 	message, ok := webMessageFromContextMessage(messages.Message{
 		Role:    messages.MessageRoleNotice,
-		Content: "<notice>change strategy</notice>",
+		Content: "change strategy",
 	}, "backend")
 	if !ok {
 		t.Fatal("webMessageFromContextMessage() rejected notice message")
@@ -2997,17 +3349,10 @@ func TestWebUIShowsMessageTokenUsage(t *testing.T) {
 func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	storageDir := t.TempDir()
 	memoryManager := NewMemoryManager(storageDir)
-	handle, err := memoryManager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if err := handle.History.SetMessages(context.Background(), []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
+	if err := memoryManager.AppendMessages(context.Background(), "default", []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
 	}); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
-	}
-	if err := memoryManager.Save(context.Background(), "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+		t.Fatalf("AppendMessages() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(storageDir, "session", "events.jsonl")); err != nil {
 		t.Fatalf("expected session events before clear: %v", err)
@@ -3059,6 +3404,62 @@ func TestServerHandleSetupReturnsSuccess(t *testing.T) {
 	}
 	if got.Data.Setup {
 		t.Fatalf("expected setup=false for Go agent no-op response")
+	}
+}
+
+func TestServerHandleHealthReportsBridgePlatform(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	server.handleHealth(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Status     string `json:"status"`
+			BridgeType string `json:"bridge_type"`
+			Platform   string `json:"platform"`
+			DeviceType string `json:"device_type"`
+			Concurrent int    `json:"concurrent"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.OK || got.Data.Status != "ok" || got.Data.BridgeType != "go-agent" {
+		t.Fatalf("unexpected health envelope: %#v", got)
+	}
+	if got.Data.Platform != "ios" || got.Data.Concurrent != 1 {
+		t.Fatalf("unexpected health data: %#v", got)
+	}
+	if got.Data.DeviceType != defaultDeviceType {
+		t.Fatalf("unexpected device type: %#v", got)
+	}
+}
+
+func TestServerHandleHealthIsRoutedOnTheBridgePath(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected /health to be routed, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerHandleHealthRejectsNonGet(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	rec := httptest.NewRecorder()
+	server.handleHealth(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("unexpected status: %d", rec.Code)
 	}
 }
 
@@ -3791,7 +4192,6 @@ func TestHTTPToolExecutionSurvivesClientDisconnectForHIDTools(t *testing.T) {
 		"enter_text",
 		"mouse_move",
 		"mouse_scroll",
-		"run_script",
 		"touch_gesture",
 		"wheel_nudge",
 	} {
@@ -4235,7 +4635,7 @@ func TestHandleBenchmarkSeedNotificationWritesDurableFixture(t *testing.T) {
 	}
 }
 
-func TestHandleBenchmarkProcessNotificationMemoryClassifiesInvalidProposal(t *testing.T) {
+func TestHandleBenchmarkProcessNotificationMemoryIsolatesInvalidProposal(t *testing.T) {
 	server, _ := newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{responses: []*llms.ContentResponse{
 		contentResponse(`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"add","scope":"temporary","type":"not-a-memory-type","content":"Package arrives tomorrow"}]}}]}`),
 	}})
@@ -4253,8 +4653,15 @@ func TestHandleBenchmarkProcessNotificationMemoryClassifiesInvalidProposal(t *te
 	processRec := httptest.NewRecorder()
 	server.handleBenchmarkProcessNotificationMemory(processRec, processReq)
 
-	if processRec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("process status=%d body=%s, want 422", processRec.Code, processRec.Body.String())
+	if processRec.Code != http.StatusOK {
+		t.Fatalf("process status=%d body=%s, want 200", processRec.Code, processRec.Body.String())
+	}
+	var response benchmarkProcessNotificationMemoryResponse
+	if err := json.NewDecoder(processRec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode process response: %v", err)
+	}
+	if response.MemoryCursor != "1" || len(response.MemoryIDs) != 0 {
+		t.Fatalf("process response=%#v, want cursor 1 with no memory", response)
 	}
 }
 
@@ -4434,6 +4841,7 @@ func TestBenchmarkProcessEpisodeMemoryConsolidatesSeededEpisode(t *testing.T) {
     "lesson_key":"qa_notes_v7_title_save_handshake",
     "type":"procedure",
     "action":"create",
+	"retention":"durable",
     "unresolved_conflict":false,
     "situation":"When saving an edited title in QA Notes build 7",
     "guidance":"Switch to Preview, return to Edit, and then tap Save",

@@ -133,12 +133,11 @@ type RunRequest struct {
 }
 
 type RunResult struct {
-	Output                 string          `json:"output"`
-	EpisodeID              string          `json:"episode_id,omitempty"`
-	Memory                 []MessageRecord `json:"memory,omitempty"`
-	Metrics                *RunMetrics     `json:"metrics,omitempty"`
-	WaitForWakeupRequested bool            `json:"wait_for_wakeup_requested,omitempty"`
-	WaitForWakeupReason    string          `json:"wait_for_wakeup_reason,omitempty"`
+	Output                 string      `json:"output"`
+	EpisodeID              string      `json:"episode_id,omitempty"`
+	Metrics                *RunMetrics `json:"metrics,omitempty"`
+	WaitForWakeupRequested bool        `json:"wait_for_wakeup_requested,omitempty"`
+	WaitForWakeupReason    string      `json:"wait_for_wakeup_reason,omitempty"`
 	// Deprecated: use WaitForWakeupRequested.
 	SleepRequested bool `json:"sleep_requested,omitempty"`
 	// Deprecated: use WaitForWakeupReason.
@@ -517,7 +516,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.screenState = screenState
 	rt.phoneBridge = NewPhoneBridge(logger)
 	rt.phoneBridge.SetConfiguredPlatform(cfg.DevicePlatformOrDefault())
-	rt.stateManager.RegisterUpdater(screenState)
 	rt.stateManager.RegisterUpdater(rt.phoneBridge)
 
 	return rt, nil
@@ -983,25 +981,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return model.ModelSpec{}
 	}}
 
-	memoryCfg := MemoryConfig{Type: "buffer"}
-	var memoryHandle *MemoryHandle
-	if r.memories != nil {
-		memoryHandle, err = r.memories.Get("default", memoryCfg)
-	} else {
-		memoryHandle, err = newMemoryHandle(memoryCfg)
-	}
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return RunResult{}, ctxErr
-		}
-		if r.logger != nil {
-			r.logger.Warn("[memory] load persisted memory failed; continuing with empty history: %v", err)
-		}
-		memoryHandle, err = newMemoryHandle(memoryCfg)
-		if err != nil {
-			return RunResult{}, err
-		}
-	}
 	sessionBeginStart := time.Now()
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
 		AgentName:    "default",
@@ -1025,7 +1004,9 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	boundaryTelemetry = beginResult.Boundary
 	if boundaryTelemetry.Rotated {
-		r.rotateContext()
+		if err := r.rotateContext(); err != nil && r.logger != nil {
+			r.logger.Warn("[context] rotate after session boundary failed: %v", err)
+		}
 	}
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
@@ -1117,13 +1098,12 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		executorHandler = streamCallbackHandler
 	}
 	profile := r.buildAgentProfile(r.skills, availableTools)
-	plannerMemory := memoryHandle.Memory
 	var steerStatus steerConversationStatus
+	var steerRecorder steerConversationRecorder
 	if req.SteerProvider != nil {
-		plannerMemory = newSteerConversationMemory(plannerMemory, memoryHandle.History)
-		if status, ok := plannerMemory.(steerConversationStatus); ok {
-			steerStatus = status
-		}
+		tracker := newSteerConversationTracker()
+		steerStatus = tracker
+		steerRecorder = tracker
 	}
 
 	// setup context manager if not initialized
@@ -1191,7 +1171,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	agentLoop := NewAgentLoop(m, profile, plannerMemory, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
+	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
+	agentLoop.SteerRecorder = steerRecorder
 	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
 		if r.tools == nil {
 			return newWheelNudgeGuard(nil)
@@ -1269,7 +1250,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		commitReq.Steers = steerStatus.SteerMessages()
 	}
 
-	commitResult, err := r.commitSession(ctx, commitReq)
+	_, err = r.commitSession(ctx, commitReq)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return RunResult{}, ctxErr
@@ -1277,7 +1258,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Warn("[memory] commit session failed; returning model output without memory snapshot: %v", err)
 		}
-		commitResult = SessionCommitResult{}
 	}
 	if streamCallbackHandler != nil {
 		streamCallbackHandler.HandleAssistantOutput(ctx, output)
@@ -1292,7 +1272,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	return RunResult{
 		Output:                 output,
 		EpisodeID:              episodeID,
-		Memory:                 commitResult.Memory,
 		Metrics:                metrics,
 		WaitForWakeupRequested: waitForWakeupRequested,
 		WaitForWakeupReason:    waitForWakeupReason,
@@ -1342,14 +1321,10 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 				Message: &message,
 			}
 		}
-		tagged := ""
-		if formated.Len() > 0 {
-			tagged = util.STag("state", formated.String())
-		}
 		// create a new StateMessage
 		stateMessage := messages.Message{
 			Role:    messages.MessageRoleState,
-			Content: tagged,
+			Content: formated.String(),
 		}
 		if attachment != nil {
 			stateMessage.Attachments = []messages.Attachment{*attachment}
@@ -1508,10 +1483,24 @@ func (r *Runtime) ClearMemory(ctx context.Context) error {
 	if err := r.memories.ClearSession(ctx, "default"); err != nil {
 		return err
 	}
-	r.rotateContext()
 	r.resetActiveUserContext()
-	if err := r.rotateUserContext(); err != nil {
+	userSystemPrompt, hasUserContext, err := r.currentUserContextSystemPrompt()
+	if err != nil {
 		return err
+	}
+	if err := contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear backend context sessions: %w", err)
+	}
+	if err := contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear user context sessions: %w", err)
+	}
+	if err := r.rotateContext(); err != nil {
+		return fmt.Errorf("create backend context session: %w", err)
+	}
+	if hasUserContext {
+		if err := r.rotateUserContext(userSystemPrompt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1549,23 +1538,35 @@ func (r *Runtime) resetActiveUserContext() {
 	}
 }
 
-func (r *Runtime) rotateUserContext() error {
+func (r *Runtime) currentUserContextSystemPrompt() (string, bool, error) {
+	if r == nil || strings.TrimSpace(r.config.ConfigDir) == "" {
+		return "", false, nil
+	}
+	folder := agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
+	currentSessionPath := filepath.Join(folder, ".current_session")
+	if _, err := os.Stat(currentSessionPath); err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("stat current user context session: %w", err)
+	}
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(folder)
+	if err != nil {
+		return "", false, fmt.Errorf("load current user context session: %w", err)
+	}
+	for _, message := range manager.MessageListDump().Messages {
+		if message.Role == messages.MessageRoleSystem {
+			return message.Content, true, nil
+		}
+	}
+	return "", false, fmt.Errorf("current user context session has no system prompt")
+}
+
+func (r *Runtime) rotateUserContext(systemPrompt string) error {
 	if r == nil || strings.TrimSpace(r.config.ConfigDir) == "" {
 		return nil
 	}
 	folder := agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
-	var systemPrompt string
-	if manager, err := contextmanager.LoadContextManagerFromCurrentSession(folder); err == nil && manager != nil {
-		for _, message := range manager.MessageListDump().Messages {
-			if message.Role == messages.MessageRoleSystem {
-				systemPrompt = message.Content
-				break
-			}
-		}
-	}
-	if strings.TrimSpace(systemPrompt) == "" {
-		return nil
-	}
 	if _, err := contextmanager.NewContextManager(folder, systemPrompt); err != nil {
 		return fmt.Errorf("create user context session: %w", err)
 	}
@@ -1612,9 +1613,15 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 		return err
 	}
 
-	_ = contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
-	_ = contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir))
-	r.rotateContext()
+	if err := contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear backend context sessions: %w", err)
+	}
+	if err := contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+		return fmt.Errorf("clear user context sessions: %w", err)
+	}
+	if err := r.rotateContext(); err != nil {
+		return fmt.Errorf("create backend context session: %w", err)
+	}
 
 	return nil
 }
@@ -1695,20 +1702,21 @@ func (r *Runtime) ReadContextAttachment(role, attachmentID string) ([]byte, stri
 	return data, mimeType, nil
 }
 
-func (r *Runtime) rotateContext() {
+func (r *Runtime) rotateContext() error {
 	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), r.getSystemPrompt())
 	if err != nil {
-		return
+		return err
 	}
 	newContextManager.AddAppendMessageHooks([]contextmanager.AppendMessageHook{r.getStateHook()})
 	r.contextManager = newContextManager
+	return nil
 }
 
 func (r *Runtime) availableTools() []langtools.Tool {
 	if r == nil || r.tools == nil {
 		return nil
 	}
-	tools := NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.config.LoadAllTools, r.devicePlatformFromState())
+	tools := NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.devicePlatformFromState())
 	return r.filterPhoneBridgeAgentTools(tools)
 }
 
