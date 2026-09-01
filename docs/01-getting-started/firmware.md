@@ -72,10 +72,10 @@ Runtime-installed packages stay under `/userdata`; see
 Available methods:
 
 - Hold down the board's BOOT button while plugging in USB-C;
-- If triggering flash mode with the BOOT button doesn't work well, you can first log in to the board via SSH on the USB network or the TTL serial port, then run:
+- If triggering flash mode with the BOOT button doesn't work well, you can first log in to the board via SSH on the USB network or the TTL serial port, then ask systemd to pass the loader argument on reboot:
 
 ```bash
-reboot loader
+systemctl reboot --reboot-argument=loader
 ```
 
 The firmware image includes the `adb` client on the board so it can act as an
@@ -86,18 +86,27 @@ version 1.0.41, so it speaks the current adb auth and pairing protocol.
 
 ### 2. Flash with upgrade_tool
 
-The project ships with an `upgrade_tool` that works on macOS. The Linux / Windows versions can be obtained from `pico-sdk/tools/`.
+On Linux, use the x86_64 tool generated in the pinned Stage 3 SDK. The
+repository-root `upgrade_tool/upgrade_tool` is a macOS Mach-O binary and will
+not run on Linux. The guarded flash helper verifies the image digest and
+requires an explicit confirmation because a full factory flash overwrites
+userdata:
 
 ```bash
-cd aiden-firmware
-./upgrade_tool/upgrade_tool uf ./update.img
+FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+IMAGE=output/debian/image/update.img
+SHA256=$(awk '{print $1}' "${IMAGE}.sha256")
+scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/debian-stage1/flash.sh flash \
+  --tool "${FLASH_TOOL}" \
+  --image "${IMAGE}" \
+  --sha256 "${SHA256}" \
+  --confirm-erase-all-data
 ```
 
-If the image comes from a local build, the path is usually similar to:
-
-```bash
-./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
-```
+For a prebuilt image, replace `IMAGE` and provide its independently verified
+SHA-256. On macOS, the repository-root `upgrade_tool/upgrade_tool uf` command
+can be used instead; do not use that Mach-O binary from a Linux shell.
 
 ## Partition Reference
 

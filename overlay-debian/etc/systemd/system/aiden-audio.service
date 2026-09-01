@@ -8,6 +8,8 @@ ConditionPathExists=/oem/usr/bin/audio_service
 
 [Service]
 Type=simple
+Group=aiden
+SupplementaryGroups=audio video
 EnvironmentFile=/etc/aiden_boot.conf
 EnvironmentFile=/etc/aiden_audio_service.conf
 EnvironmentFile=/run/aiden/system.env

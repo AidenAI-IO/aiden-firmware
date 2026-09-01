@@ -139,13 +139,26 @@ Build the full firmware image:
 ./debian_build.sh
 ```
 
-Flash a prebuilt or locally built `update.img`:
+Flash a prebuilt or locally built `update.img` on Linux. The guarded helper
+checks the digest and requires an explicit confirmation because a factory
+flash overwrites userdata:
 
 ```bash
-./upgrade_tool/upgrade_tool uf ./update.img
+FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+IMAGE=output/debian/image/update.img
+SHA256=$(awk '{print $1}' "${IMAGE}.sha256")
+scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/debian-stage1/flash.sh flash \
+  --tool "${FLASH_TOOL}" \
+  --image "${IMAGE}" \
+  --sha256 "${SHA256}" \
+  --confirm-erase-all-data
 ```
 
-For a locally built image, the usual output path is:
+The repository-root `upgrade_tool/upgrade_tool` is a macOS Mach-O binary and
+is not executable on Linux. For a locally built image, the Linux tool path and
+image path above are the usual defaults. On macOS, use the repository-root
+tool directly:
 
 ```bash
 ./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
