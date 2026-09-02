@@ -1917,6 +1917,18 @@ TEST_CASE("config web config form imports fieldValue from config metadata") {
     CHECK(source.find("function isAudioArchiveAvailable(){return fieldValue(") != std::string::npos);
 }
 
+TEST_CASE("config web manages realtime voice as persistent provider records") {
+    const std::string js = read_config_web_config_scripts();
+
+    CHECK(js.find("const VoiceModelProvidersManager=createProviderRecordsManager(VOICE_MODEL_PROVIDER_SPEC)") !=
+          std::string::npos);
+    CHECK(js.find("config.voice_model_providers||{}") != std::string::npos);
+    CHECK(js.find("injectProviderOptions(VOICE_MODEL_PROVIDER_SPEC)") != std::string::npos);
+    CHECK(js.find("bindVoiceProviderSelect(VOICE_MODEL_PROVIDER_SPEC)") != std::string::npos);
+    CHECK(js.find("resetVoiceModelProviderFields") == std::string::npos);
+    CHECK(js.find("clearOnSave") == std::string::npos);
+}
+
 // A stopped agent daemon makes the /api/models proxy return 503. That is a
 // normal state, not a configuration error, so the model selector degrades to
 // the custom-model input instead of a red failure box the user cannot act on.
@@ -2012,9 +2024,9 @@ TEST_CASE("config web html keeps provider credentials write only") {
     CHECK(js.find("alert(t('provider.env_required'))") != std::string::npos);
 
     // Reopening the dialog never renders a stored key or environment name.
-    const size_t fields_at = js.find("function providerRecordFieldsHtml(section,record)");
-    REQUIRE(fields_at != std::string::npos);
-    const size_t fields_end = js.find("function createProviderRecordsManager", fields_at);
+	const size_t fields_at = js.find("function providerRecordFieldHtml(section,record,item,opts)");
+	REQUIRE(fields_at != std::string::npos);
+	const size_t fields_end = js.find("function providerRecordFieldsHtml", fields_at);
     REQUIRE(fields_end != std::string::npos);
     const std::string fields_body = js.substr(fields_at, fields_end - fields_at);
     CHECK(fields_body.find("value=\"\"") != std::string::npos);
@@ -2125,13 +2137,22 @@ TEST_CASE("config web keeps model credentials in provider records") {
     const std::string html = read_config_web_asset_bundle();
 
     CHECK(html.find("id=\"model_api_key\"") == std::string::npos);
-    const size_t fields_at = html.find("function providerRecordFieldsHtml(section,record)");
+	const size_t fields_at = html.find("function providerRecordFieldHtml(section,record,item,opts)");
     REQUIRE(fields_at != std::string::npos);
     const size_t fields_end = html.find("function providerRecordOptions", fields_at);
     REQUIRE(fields_end != std::string::npos);
     const std::string fields_body = html.substr(fields_at, fields_end - fields_at);
     CHECK(fields_body.find("const id=section+'_'+key") != std::string::npos);
     CHECK(fields_body.find("recordSectionFields[section]") != std::string::npos);
+}
+
+TEST_CASE("config web collapses advanced provider fields without dropping them") {
+    const std::string js = read_config_web_config_scripts();
+
+    CHECK(js.find("!!field.advanced") != std::string::npos);
+    CHECK(js.find("if(item[3])advanced+=html") != std::string::npos);
+    CHECK(js.find("class=\"provider-advanced\"") != std::string::npos);
+    CHECK(js.find("providerRecordFieldHtml(section,record,item,opts)") != std::string::npos);
 }
 
 // The credentials moved onto records, so the flat [tts]/[stt] cards must not keep
@@ -2213,7 +2234,7 @@ TEST_CASE("config web hydrates the provider dialog type select from metadata") {
 TEST_CASE("config web dialog field ids drive the existing visibility engine") {
     const std::string html = read_config_web_asset_bundle();
 
-    const size_t fields_at = html.find("function providerRecordFieldsHtml(section,record)");
+	const size_t fields_at = html.find("function providerRecordFieldHtml(section,record,item,opts)");
     REQUIRE(fields_at != std::string::npos);
     const size_t fields_end = html.find("function createProviderRecordsManager", fields_at);
     REQUIRE(fields_end != std::string::npos);

@@ -469,6 +469,9 @@ func TestLocalAudioPlaybackHelper(t *testing.T) {
 	if os.Getenv("AIDEN_LOCAL_AUDIO_EXIT") == "1" {
 		return
 	}
+	if os.Getenv("AIDEN_LOCAL_AUDIO_FAIL") == "1" {
+		os.Exit(3)
+	}
 	if waitFile := os.Getenv("AIDEN_LOCAL_AUDIO_WAIT_FILE"); waitFile != "" {
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
@@ -481,4 +484,31 @@ func TestLocalAudioPlaybackHelper(t *testing.T) {
 	}
 	time.Sleep(5 * time.Second)
 	os.Exit(0)
+}
+
+func TestLocalAudioBackendDrainReportsPlayerFailure(t *testing.T) {
+	oldLookPath := localAudioLookPath
+	oldCommandContext := localAudioCommandContext
+	defer func() {
+		localAudioLookPath = oldLookPath
+		localAudioCommandContext = oldCommandContext
+	}()
+	localAudioLookPath = func(name string) (string, error) { return name, nil }
+	localAudioCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestLocalAudioPlaybackHelper")
+		cmd.Env = append(os.Environ(), "AIDEN_LOCAL_AUDIO_HELPER=1", "AIDEN_LOCAL_AUDIO_FAIL=1")
+		return cmd
+	}
+
+	backend := newLocalAudioPlaybackBackend(nil)
+	sessionID, err := backend.StartPlayback(tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WritePlayChunk(sessionID, []byte{1, 2}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WaitForPlaybackDrain(context.Background()); err == nil {
+		t.Fatal("WaitForPlaybackDrain() returned nil after player failure")
+	}
 }

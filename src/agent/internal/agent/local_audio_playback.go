@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,6 +33,7 @@ type localAudioPlaybackBackend struct {
 	sessions                 map[uint64]*localAudioPlaybackSession
 	player                   *localAudioPlayer
 	logger                   *Logger
+	completedErrs            []error
 }
 
 type localAudioPlaybackSession struct {
@@ -177,9 +179,14 @@ func (b *localAudioPlaybackBackend) WaitForPlaybackDrain(ctx context.Context) er
 	for {
 		b.mu.Lock()
 		pending := len(b.sessions)
+		var completedErr error
+		if pending == 0 && len(b.completedErrs) > 0 {
+			completedErr = errors.Join(b.completedErrs...)
+			b.completedErrs = nil
+		}
 		b.mu.Unlock()
 		if pending == 0 {
-			return nil
+			return completedErr
 		}
 		select {
 		case <-ctx.Done():
@@ -232,7 +239,16 @@ func (b *localAudioPlaybackBackend) finalizeLocalPlaybackSessionLocked(sessionID
 		err := cmd.Wait()
 		cancel()
 		_ = os.Remove(path)
+		session.mu.Lock()
+		stopped := session.stopped
+		if err != nil && !stopped {
+			session.failedErr = err
+		}
+		session.mu.Unlock()
 		b.mu.Lock()
+		if err != nil && !stopped {
+			b.completedErrs = append(b.completedErrs, err)
+		}
 		delete(b.sessions, id)
 		b.mu.Unlock()
 		done <- err

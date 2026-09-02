@@ -44,6 +44,7 @@ public:
 
 private:
     void capture_loop();
+    AudioConfig hardware_capture_config() const;
     void maybe_update_hw_sample_rate(uint64_t timestamp_us, size_t frame_samples_per_channel);
 
     uint64_t session_id_;
