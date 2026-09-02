@@ -13,7 +13,7 @@ export RK_KERNEL_CMDLINE_EXTRA=net.ifnames$'\x3d'0
 export RK_KERNEL_DTS=rv1106g-luckfox-pico-zero.dts
 
 export RK_BOOT_MEDIUM=emmc
-export RK_UBOOT_DEFCONFIG_FRAGMENT="rk-emmc.config rv1106-ab.config aiden-rv1106-rockusb.config"
+export RK_UBOOT_DEFCONFIG_FRAGMENT="rk-emmc.config rv1106-ab.config"
 
 # Production layout: never change this in a Debian migration maintenance
 # release without a separate data backup and factory recovery design.
