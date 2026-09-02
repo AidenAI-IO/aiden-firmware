@@ -520,6 +520,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/config-test/stt/start", s.handleSTTConfigTestStart)
 	mux.HandleFunc("/api/config-test/stt/stop", s.handleSTTConfigTestStop)
+	// Keep the historical Config Web STT paths while serving them directly
+	// from Agent; Config Web no longer proxies these requests on port 80.
+	mux.HandleFunc("/api/config/test/stt/start", s.handleSTTConfigTestStart)
+	mux.HandleFunc("/api/config/test/stt/stop", s.handleSTTConfigTestStop)
+	mux.HandleFunc("/api/internal/config/reload", s.handleInternalConfigReload)
 	mux.HandleFunc("/api/audio/", s.handleAudioFile)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
 	mux.HandleFunc("/api/models", s.handleModels)
@@ -563,6 +568,9 @@ func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.closing.Load() {
 			http.Error(w, "Server is shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		if handleConfigWebCORS(w, r) {
 			return
 		}
 		mux.ServeHTTP(w, r)

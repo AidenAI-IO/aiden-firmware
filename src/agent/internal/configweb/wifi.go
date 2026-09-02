@@ -428,8 +428,11 @@ func (s *Server) handleWiFiForget(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		SSID string `json:"ssid"`
 	}
-	if !readJSONBody(w, r, &request) {
-		return
+	request.SSID = strings.TrimSpace(r.URL.Query().Get("ssid"))
+	if request.SSID == "" && r.Body != nil {
+		if !readJSONBody(w, r, &request) {
+			return
+		}
 	}
 	if strings.TrimSpace(request.SSID) == "" {
 		writeJSONError(w, 400, "ssid is required")

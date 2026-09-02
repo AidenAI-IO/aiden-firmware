@@ -161,7 +161,11 @@ func (s *Server) handleOTAUpdate(w http.ResponseWriter, _ *http.Request) {
 		}
 		fmt.Fprintf(logFile, "%s [%s] [config_web] [ota] update_exited exit_code=%d\n", time.Now().UTC().Format(time.RFC3339), level, exitCode)
 	}()
-	writeJSON(w, 200, map[string]any{"ok": true, "ota_update_started": true, "message": "ota update started", "ota_log_start_size_bytes": startSize})
+	taskID := fmt.Sprintf("ota-%d", time.Now().UnixNano())
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"ok": true, "task_id": taskID, "status": "running", "ota_update_started": true,
+		"message": "ota update started", "ota_log_start_size_bytes": startSize,
+	})
 }
 
 func (s *Server) handleOTALogs(w http.ResponseWriter, _ *http.Request) {

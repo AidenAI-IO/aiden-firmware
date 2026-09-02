@@ -2,113 +2,75 @@
 sidebar_position: 3
 ---
 
-# Device Management API
+# Config Web 管理 API
 
-The Device Management API owns the device-side operations currently used by
-Config Web. Config Web is one client of this API, not the owner of its routing
-or business logic. A different UI or an automation client can use the same API,
-and the bundled static portal can be removed without removing device management
-capabilities.
+Config Web 是 Go Agent 二进制的 `config-web` 子命令。它与 Agent 运行时
+分别监听 80 和 8080，分别管理自己的 PID、日志和重启周期。两者只在配置
+保存后通过 `127.0.0.1` 的内部 reload 接口交互；Config Web 不代理 Agent
+的聊天、会话或 Phone Bridge 业务。
 
-## Current topology
+## 资源接口
 
-The firmware installs one `/oem/usr/bin/agent` executable and starts two
-independent processes from it:
+公开接口统一使用 `/api` 根路径，不增加版本前缀：
 
-- `S53agent` runs the Agent daemon and its tool API on port 8080.
-- `S56config_web` runs `agent config-web` and the Device Management API on port
-  80.
-
-Some management operations proxy to the Agent daemon, while configuration,
-Wi-Fi, OTA, log, and system operations remain owned by the management server.
-The Go implementation exposes `Server.APIHandler()` separately from the static
-portal handler so the API can be mounted without serving the page.
-
-## Version 1 routes
-
-All canonical routes are under `/api/v1`. Successful and handler-generated
-error responses retain the existing payload shapes during the v1 migration.
-This keeps the change focused on resource naming, HTTP methods, and ownership;
-response normalization that would break clients belongs in `/api/v2`.
-
-| Operation | Canonical route | Legacy alias |
+| 资源 | 方法与路径 | 说明 |
 | --- | --- | --- |
-| Read device bootstrap snapshot | `GET /api/v1/device/snapshot` | `GET /api/config` |
-| Read configuration schema | `GET /api/v1/config/schema` | `GET /api/config-meta`, `GET /api/config/meta` |
-| Apply configuration merge patch | `PATCH /api/v1/config` | `POST /api/config` |
-| Set device locale | `PUT /api/v1/config/locale` | `PUT /api/config/locale` |
-| Run a configuration test | `POST /api/v1/config/tests` | `POST /api/config/test` |
-| Start an STT test session | `POST /api/v1/config/tests/stt-session` | `POST /api/config/test/stt/start` |
-| Stop an STT test session | `DELETE /api/v1/config/tests/stt-session` | `POST /api/config/test/stt/stop` |
-| List provider models | `GET /api/v1/models` | `GET /api/models` |
-| Scan Wi-Fi networks | `POST /api/v1/wifi/scans` | `POST /api/wifi/scan` |
-| Connect Wi-Fi | `PUT /api/v1/wifi/connection` | `POST /api/wifi/connect` |
-| Forget a Wi-Fi connection | `DELETE /api/v1/wifi/connection` | `POST /api/wifi/forget` |
-| Read system environment | `GET /api/v1/system/environment` | None |
-| Replace system environment | `PUT /api/v1/system/environment` | `POST /api/system/env` |
-| Read Agent status | `GET /api/v1/agent/status` | `GET /api/agent/status` |
-| Read Agent logs | `GET /api/v1/agent/logs` | `GET /api/agent/logs` |
-| Read storage status | `GET /api/v1/storage/status` | `GET /api/storage/status` |
-| Start storage format | `POST /api/v1/storage/format` | `POST /api/storage/format` |
-| Eject storage | `POST /api/v1/storage/eject` | `POST /api/storage/eject` |
-| Read OTA status and logs | `GET /api/v1/ota/status` | `GET /api/ota/logs` |
-| Start an OTA update | `POST /api/v1/ota/updates` | `POST /api/ota/update`, `POST /api/ota/check-now` |
-| Reboot the device | `POST /api/v1/device/reboot` | `POST /api/reboot` |
-| Re-enumerate USB HID | `POST /api/v1/hid/usb-reenumeration` | `POST /api/hid/usb-reenumerate` |
-| Download a support archive | `GET /api/v1/support/archive` | `GET /api/logs/export` |
-| List LLM HTTP logs | `GET /api/v1/logs/llm` | `GET /api/llm-logs` |
-| Download an LLM HTTP log | `GET /api/v1/logs/llm/{name}` | `GET /api/llm-logs/export/{name}` |
-| Import an LLM HTTP log | `PUT /api/v1/logs/llm/{name}` | `POST /api/llm-logs/import/{name}` |
+| 配置 | `GET /api/config` | 读取 `agent.toml` 配置内容 |
+| 配置 | `PATCH /api/config` | 合并补丁 `{ "config": { ... } }` |
+| 配置 | `GET /api/config/schema` | 字段类型、默认值、可选值、敏感标记和重启提示 |
+| 配置 | `PUT /api/config/locale` | 页面语言快捷更新 |
+| 配置 | `POST /api/config/test` | 配置和设备环境校验，不保存 |
+| 设备 | `GET /api/device/snapshot` | 首屏聚合读模型（配置、Wi-Fi、设备、固件、存储摘要） |
+| 设备 | `GET /api/device/status` | 型号、固件、进程、USB/HID 和能力摘要 |
+| 设备 | `POST /api/device/reboot` | 重启设备 |
+| 设备 | `POST /api/device/usb/reenumerate` | 重新枚举 USB HID/ECM |
+| 网络 | `POST /api/network/wifi/scan` | 扫描附近 Wi-Fi |
+| 网络 | `PUT /api/network/wifi/connection` | 连接并保存网络，失败回滚 |
+| 网络 | `DELETE /api/network/wifi/connection?ssid=...` | 忘记网络，不依赖 DELETE 请求体 |
+| 系统 | `GET/PUT /api/system/environment` | 读取或原子替换系统环境变量 |
+| OTA | `GET /api/ota/status` | 当前状态、进度和日志摘要 |
+| OTA | `POST /api/ota/updates` | 创建 OTA 任务，返回 `task_id` |
+| 日志 | `GET /api/logs/agent` | Agent 日志摘要 |
+| 日志 | `GET/PUT /api/logs/llm/{name}` | 查看、导入 LLM HTTP 日志 |
+| 日志 | `GET /api/logs/support` | 导出诊断支持日志包 |
 
-The snapshot is intentionally a bootstrap aggregate for clients that need the
-configuration, Wi-Fi state, Agent state, firmware state, and system environment
-for their first render. Resource-specific endpoints should be used for later
-reads and writes.
+模型目录、STT 测试和存储接口仍由 Agent 8080 直接提供，路径和 JSON 协议
+保持现状（`/api/models`、`/api/config/test/stt/*`、`/api/storage/*`）。
+Config Web 页面通过同一主机的 8080 端口访问这些接口，并使用精确的 CORS
+来源；80 端口不新增代理层。
 
-## Request and response contract
+## 配置保存响应
 
-- JSON request bodies are limited to 64 KiB unless an endpoint explicitly
-  streams data, such as LLM log import.
-- Configuration updates use the existing merge-patch body:
-  `{"config": {"section": {"field": "value"}}}`. A `null` field deletes that
-  field where the configuration updater supports deletion.
-- Handler errors generally use `{"ok": false, "error": "..."}` with an
-  appropriate HTTP status. Proxied endpoints retain the Agent daemon response.
-- Every matched canonical or legacy route returns
-  `X-Aiden-API-Version: 1`.
-- URL path segments such as LLM log names must be percent-encoded.
+`PATCH /api/config` 成功响应包含：
 
-## Compatibility lifecycle
-
-Legacy `/api/...` routes remain aliases for one migration window. They return:
-
-```text
-Deprecation: true
-Link: </api/v1/...>; rel="successor-version"
+```json
+{
+  "ok": true,
+  "persisted": true,
+  "applied": true,
+  "revision": 123,
+  "changed_paths": ["model.model"],
+  "restart_required": false,
+  "restart_reasons": []
+}
 ```
 
-The bundled Config Web client uses only canonical v1 routes, so legacy aliases
-exist for older firmware clients and integration scripts rather than for the
-current page. Remove them only after those consumers have migrated. Add a v2
-route instead of silently changing an established v1 request or response
-contract.
+`persisted` 表示配置文件已经原子落盘，`applied` 表示 Agent 已接受并加载
+该 revision；两者必须分别展示。若 reload 失败，接口返回 HTTP 503，同时
+保留 `persisted=true`、`applied=false` 和错误信息，页面应提示“配置已保存但
+当前 Agent 未生效”。需要完整重启的字段会设置 `restart_required` 和
+`restart_reasons`。
 
-## Future extraction
+## 迁移兼容
 
-The API boundary allows these changes independently:
+旧的 `/api/wifi/*`、`/api/system/env`、`/api/ota/update`、`/api/reboot`、
+`/api/agent/*`、`/api/llm-logs/*` 等入口只做参数转换和响应适配，并返回
+`Deprecation: true` 及指向新资源的 `Link`。它们不复制 Agent 业务逻辑，
+迁移完成后可删除。`GET /api/config` 已采用纯配置语义，旧的聚合首屏统一
+使用 `/api/device/snapshot`。
 
-1. Replace or remove the bundled static portal while continuing to run the
-   management API.
-2. Mount `APIHandler()` in another Go HTTP server inside the Agent codebase.
-3. Move the management server into a separate binary if lifecycle, permissions,
-   or image size later justify it.
+## Agent 内部 reload
 
-Hardware and operating-system actions stay server-side. A client should not
-need filesystem paths, init-script knowledge, or direct access to device nodes.
-
-## Security boundary
-
-The API is currently intended for the trusted USB ECM/device network. It does
-not provide an authentication boundary suitable for exposure to a general LAN
-or the public Internet. Authentication, authorization, origin policy, and
-transport security must be designed before widening network access.
+`POST /api/internal/config/reload` 仅接受本机请求（或 Config Web 标记的
+内部请求），请求可携带 `revision`。Agent 会校验 revision、重新读取并
+替换运行时配置；过期 revision 返回 HTTP 409。此接口不是对外的管理 API。

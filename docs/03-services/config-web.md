@@ -50,9 +50,9 @@ The web interface allows:
 - Restarting the Agent service
 
 The header switch saves only the top-level `locale` through
-`PUT /api/v1/config/locale`. The UI updates immediately and rolls back if
+`PUT /api/config/locale`. The UI updates immediately and rolls back if
 persistence fails. The last confirmed value is cached in `localStorage` for
-first paint, but `GET /api/v1/device/snapshot` remains authoritative. The Agent
+first paint, but `GET /api/device/snapshot` remains authoritative. The Agent
 restart creates a new context session when the locale-specific system prompt
 changes; it does not rewrite the previous session. `locale` is intentionally
 separate from `[stt].language`, which only configures speech recognition.

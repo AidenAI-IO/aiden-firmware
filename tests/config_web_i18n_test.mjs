@@ -284,6 +284,11 @@ registerRuntime({
     if (requestError) throw requestError;
     return requestResult;
   },
+  agentRequest: async (...args) => {
+    if (requestImpl) return requestImpl(...args);
+    if (requestError) throw requestError;
+    return requestResult;
+  },
   setBanner: (message, failed) => { latestBanner = {message, failed}; },
   setDetails: (message) => { latestDetails = message; },
 });
@@ -471,7 +476,7 @@ assert.equal(appState.testToast.owner, 'stt');
 sttModule.namespace.setSTTTestButtonState(false, false);
 const supersededSectionRequest = deferred();
 const owningSTTRequest = deferred();
-requestImpl = (url) => url === '/api/v1/config/tests' ? supersededSectionRequest.promise : owningSTTRequest.promise;
+requestImpl = (url) => url === '/api/config/test' ? supersededSectionRequest.promise : owningSTTRequest.promise;
 const supersededSectionTest = configFormModule.namespace.testSection('agent');
 const owningSTTTest = sttModule.namespace.startSTTTest();
 assert.equal(appState.testToast.owner, 'stt');
@@ -486,7 +491,7 @@ assert.equal(testToastTitle.textContent, '[stt] 录音中');
 sttModule.namespace.setSTTTestButtonState(false, false);
 const supersededSTTRequest = deferred();
 const owningSectionRequest = deferred();
-requestImpl = (url) => url === '/api/v1/config/tests' ? owningSectionRequest.promise : supersededSTTRequest.promise;
+requestImpl = (url) => url === '/api/config/test' ? owningSectionRequest.promise : supersededSTTRequest.promise;
 const supersededSTTTest = sttModule.namespace.startSTTTest();
 const owningSectionTest = configFormModule.namespace.testSection('agent');
 assert.equal(appState.testToast.owner, 'section');

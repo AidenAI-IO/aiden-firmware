@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"math"
 	"os"
@@ -25,8 +26,16 @@ type Result struct {
 	Config         Config   `json:"config"`
 	ChangedPaths   []string `json:"changed_paths"`
 	RebootRequired bool     `json:"reboot_required"`
-	Error          string   `json:"error,omitempty"`
-	ErrorKind      string   `json:"error_kind,omitempty"`
+	// Persisted and Applied distinguish durable storage from runtime reload.
+	// The CLI updater sets Persisted=true once the atomic rename succeeds; the
+	// Config Web service fills Applied after notifying the Agent process.
+	Persisted       bool     `json:"persisted"`
+	Applied         bool     `json:"applied"`
+	Revision        uint64   `json:"revision"`
+	RestartRequired bool     `json:"restart_required"`
+	RestartReasons  []string `json:"restart_reasons,omitempty"`
+	Error           string   `json:"error,omitempty"`
+	ErrorKind       string   `json:"error_kind,omitempty"`
 }
 
 const (
@@ -142,7 +151,7 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 		if err != nil {
 			return Result{}, internalConfigUpdate(err)
 		}
-		return Result{OK: true, Config: FromAgentConfig(cfg), ChangedPaths: []string{}, RebootRequired: false}, nil
+		return Result{OK: true, Config: FromAgentConfig(cfg), ChangedPaths: []string{}, RebootRequired: false, Persisted: true, Applied: false, Revision: configRevisionFromFile(resolvedPath)}, nil
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(resolvedPath), ".agent.toml.config-update-*.toml")
 	if err != nil {
@@ -185,12 +194,35 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 	if err := directory.Sync(); err != nil {
 		return Result{}, internalConfigUpdate(fmt.Errorf("sync config directory: %w", err))
 	}
-	return Result{
-		OK:             true,
-		Config:         FromAgentConfig(candidate),
-		ChangedPaths:   changed,
-		RebootRequired: requiresConfigReboot(current, candidate),
-	}, nil
+	rebootRequired := requiresConfigReboot(current, candidate)
+	result := Result{
+		OK:              true,
+		Config:          FromAgentConfig(candidate),
+		ChangedPaths:    changed,
+		RebootRequired:  rebootRequired,
+		Persisted:       true,
+		Applied:         false,
+		Revision:        configRevision(updated),
+		RestartRequired: rebootRequired,
+	}
+	if rebootRequired {
+		result.RestartReasons = []string{"USB/HID identity or keyboard layout changed"}
+	}
+	return result, nil
+}
+
+func configRevision(data []byte) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write(data)
+	return h.Sum64()
+}
+
+func configRevisionFromFile(path string) uint64 {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	return configRevision(data)
 }
 
 func prepareConfigUpdateFile(path string) (string, []byte, os.FileMode, error) {

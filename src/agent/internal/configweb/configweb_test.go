@@ -2,7 +2,6 @@ package configweb
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +9,13 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestUint64ValuePreservesJSONNumber(t *testing.T) {
+	const value = "18446744073709551615"
+	if got := uint64Value(json.Number(value)); got != ^uint64(0) {
+		t.Fatalf("revision=%d, want %d", got, ^uint64(0))
+	}
+}
 
 func testOptions(t *testing.T) Options {
 	t.Helper()
@@ -86,7 +92,7 @@ func TestServerServesStaticAssetsAndRejectsTraversal(t *testing.T) {
 	}
 }
 
-func TestProxyForwardsQueryAndResponse(t *testing.T) {
+func TestRuntimeOwnedModelsAreNotProxiedByConfigWeb(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Upstream", "yes")
 		w.Header().Set("Content-Type", "application/json")
@@ -94,30 +100,19 @@ func TestProxyForwardsQueryAndResponse(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	options := testOptions(t)
-	options.AgentHTTPBaseURL = upstream.URL
-	server, err := NewServer(options)
+	server, err := NewServer(testOptions(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/models?provider=openai&locale=zh-CN", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/models?provider=openai&locale=zh-CN", nil)
 	resp := httptest.NewRecorder()
 	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("proxy status=%d body=%s", resp.Code, resp.Body.String())
-	}
-	if resp.Header().Get("X-Upstream") != "yes" || !strings.Contains(resp.Body.String(), "/api/models?provider=openai\\u0026locale=zh-CN") {
-		t.Fatalf("proxy did not preserve upstream response: headers=%v body=%s", resp.Header(), resp.Body.String())
-	}
-	if got := resp.Header().Get("X-Aiden-API-Version"); got != "1" {
-		t.Fatalf("API version header=%q", got)
-	}
-	if got := resp.Header().Get("Deprecation"); got != "" {
-		t.Fatalf("canonical route deprecation header=%q", got)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("runtime-owned models returned status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
 
-func TestAPIV1AndLegacyRouteHeaders(t *testing.T) {
+func TestAPIRouteHeaders(t *testing.T) {
 	server, err := NewServer(testOptions(t))
 	if err != nil {
 		t.Fatal(err)
@@ -129,8 +124,8 @@ func TestAPIV1AndLegacyRouteHeaders(t *testing.T) {
 		deprecated bool
 		successor  string
 	}{
-		{name: "canonical", path: "/api/v1/agent/status"},
-		{name: "legacy", path: "/api/agent/status", deprecated: true, successor: `</api/v1/agent/status>; rel="successor-version"`},
+		{name: "canonical", path: "/api/device/status"},
+		{name: "legacy", path: "/api/agent/status", deprecated: true, successor: `</api/device/status>; rel="successor-version"`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			resp := httptest.NewRecorder()
@@ -151,7 +146,34 @@ func TestAPIV1AndLegacyRouteHeaders(t *testing.T) {
 	}
 }
 
-func TestAPIV1ConfigPatchUsesUpdateHandler(t *testing.T) {
+func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
+	options := testOptions(t)
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{\"agent\":{\"locale\":\"en-US\"}},\"changed_paths\":[\"agent.locale\"],\"reboot_required\":false,\"persisted\":true,\"revision\":7}'\n"
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/internal/config/reload" || r.Method != http.MethodPost {
+			t.Fatalf("reload request=%s %s", r.Method, r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": true, "revision": 7})
+	}))
+	defer reload.Close()
+	options.AgentBinary = fakeAgent
+	options.AgentHTTPBaseURL = reload.URL
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{"agent":{"locale":"en-US"}}}`)))
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"applied":true`) {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestConfigPatchUsesUpdateHandler(t *testing.T) {
 	options := testOptions(t)
 	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
 	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{\"agent\":{\"locale\":\"en-US\"}},\"changed_paths\":[],\"reboot_required\":false}'\n"
@@ -166,13 +188,13 @@ func TestAPIV1ConfigPatchUsesUpdateHandler(t *testing.T) {
 
 	body := strings.NewReader(`{"config":{"agent":{"locale":"en-US"}}}`)
 	resp := httptest.NewRecorder()
-	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/v1/config", body))
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", body))
 	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"locale":"en-US"`) {
 		t.Fatalf("config patch: status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
 
-func TestAPIV1SystemEnvironmentGet(t *testing.T) {
+func TestSystemEnvironmentGet(t *testing.T) {
 	options := testOptions(t)
 	server, err := NewServer(options)
 	if err != nil {
@@ -182,7 +204,7 @@ func TestAPIV1SystemEnvironmentGet(t *testing.T) {
 	read := func() map[string]any {
 		t.Helper()
 		resp := httptest.NewRecorder()
-		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/v1/system/environment", nil))
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/system/environment", nil))
 		if resp.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 		}
@@ -204,36 +226,7 @@ func TestAPIV1SystemEnvironmentGet(t *testing.T) {
 	}
 }
 
-func TestAPIV1STTStopAdaptsDeleteToUpstreamPost(t *testing.T) {
-	var method string
-	var path string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		method = r.Method
-		path = r.URL.Path
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	}))
-	defer upstream.Close()
-
-	options := testOptions(t)
-	options.AgentHTTPBaseURL = upstream.URL
-	server, err := NewServer(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server.sttTestActive = true
-
-	resp := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodDelete, "/api/v1/config/tests/stt-session", strings.NewReader("{}"))
-	server.APIHandler().ServeHTTP(resp, request)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
-	}
-	if method != http.MethodPost || path != "/api/config-test/stt/stop" {
-		t.Fatalf("upstream request=%s %s", method, path)
-	}
-}
-
-func TestAPIV1LLMLogRoutesPreserveEncodedName(t *testing.T) {
+func TestLLMLogRoutesPreserveEncodedName(t *testing.T) {
 	options := testOptions(t)
 	server, err := NewServer(options)
 	if err != nil {
@@ -252,7 +245,7 @@ func TestAPIV1LLMLogRoutesPreserveEncodedName(t *testing.T) {
 		path       string
 		deprecated bool
 	}{
-		{name: "canonical", path: "/api/v1/logs/llm/llm-http-a%2Bb.log"},
+		{name: "canonical", path: "/api/logs/llm/llm-http-a%2Bb.log"},
 		{name: "legacy", path: "/api/llm-logs/export/llm-http-a%2Bb.log", deprecated: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -268,7 +261,7 @@ func TestAPIV1LLMLogRoutesPreserveEncodedName(t *testing.T) {
 	}
 
 	resp := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPut, "/api/v1/logs/llm/llm-http-upload%2B1.log", strings.NewReader("uploaded"))
+	request := httptest.NewRequest(http.MethodPut, "/api/logs/llm/llm-http-upload%2B1.log", strings.NewReader("uploaded"))
 	server.APIHandler().ServeHTTP(resp, request)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("import status=%d body=%s", resp.Code, resp.Body.String())
@@ -298,47 +291,37 @@ func TestUnknownAPIRouteReturnsNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp := httptest.NewRecorder()
-	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/v1/unknown", nil))
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/unknown", nil))
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
 
-func TestProxyRejectsOversizedRequestBody(t *testing.T) {
-	options := testOptions(t)
-	server, err := NewServer(options)
+func TestVersionedAndRetiredSchemaRoutesReturnNotFound(t *testing.T) {
+	server, err := NewServer(testOptions(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/storage/format", strings.NewReader(strings.Repeat("x", maxRequestBodySize+1)))
-	resp := httptest.NewRecorder()
-	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusRequestEntityTooLarge || !strings.Contains(resp.Body.String(), "request body too large") {
-		t.Fatalf("oversized proxy body: status=%d body=%s", resp.Code, resp.Body.String())
+	for _, path := range []string{"/api/v1/config", "/api/config-meta", "/api/config/meta"} {
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
+		if resp.Code != http.StatusNotFound {
+			t.Errorf("%s returned status=%d body=%s", path, resp.Code, resp.Body.String())
+		}
 	}
 }
 
-func TestStorageProxyNormalizesEmptyBody(t *testing.T) {
-	var received string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		received = string(body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer upstream.Close()
-
-	options := testOptions(t)
-	options.AgentHTTPBaseURL = upstream.URL
-	server, err := NewServer(options)
+func TestRuntimeOwnedStorageIsNotProxiedByConfigWeb(t *testing.T) {
+	server, err := NewServer(testOptions(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/storage/eject", nil)
-	resp := httptest.NewRecorder()
-	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK || received != "{}" {
-		t.Fatalf("storage proxy: status=%d received=%q", resp.Code, received)
+	for _, path := range []string{"/api/storage/status", "/api/storage/format", "/api/storage/eject"} {
+		resp := httptest.NewRecorder()
+		server.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
+		if resp.Code != http.StatusNotFound {
+			t.Errorf("%s returned status=%d", path, resp.Code)
+		}
 	}
 }
 

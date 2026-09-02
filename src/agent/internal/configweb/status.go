@@ -1,6 +1,7 @@
 package configweb
 
 import (
+	"aiden-agent/internal/agent"
 	"encoding/json"
 	"io"
 	"net"
@@ -192,7 +193,38 @@ func parseAgentAddr(addr string) (string, int) {
 }
 
 func (s *Server) handleAgentStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "agent_status": s.queryAgentStatus()})
+	status := s.queryAgentStatus()
+	deviceType := s.deviceType()
+	usb := map[string]any{
+		"keyboard": pathExists("/dev/hidg0"),
+		"pointer":  pathExists("/dev/hidg1"),
+		"ecm":      pathExists("/sys/class/net/usb0"),
+	}
+	capabilities := map[string]any{
+		"wifi": true, "ota": true, "storage": true,
+		"usb_hid": usb["keyboard"] == true || usb["pointer"] == true,
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "agent_status": status,
+		"device_type": deviceType, "firmware": s.firmwareInfo(),
+		"usb_hid": usb, "capabilities": capabilities,
+	})
+}
+
+// deviceType reads the resolved configuration directly so the device status
+// resource can report the same effective type as the Agent runtime without
+// depending on the status text emitted by an init script.
+func (s *Server) deviceType() string {
+	cfg, err := agent.LoadResolvedConfig(s.options.AgentConfigPath)
+	if err != nil {
+		return ""
+	}
+	return cfg.DeviceTypeOrDefault()
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func emptyFirmwareInfo() map[string]any {

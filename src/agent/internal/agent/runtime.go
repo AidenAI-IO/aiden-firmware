@@ -54,6 +54,7 @@ const (
 
 type Runtime struct {
 	config               Config
+	configReloadMu       sync.Mutex
 	models               model.Model
 	memories             *MemoryManager
 	tools                *ToolSet

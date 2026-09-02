@@ -177,6 +177,10 @@ func stateNumber(values map[string]string, key string) float64 {
 }
 
 func (s *Server) handleStorageStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, 200, s.storageStatusValue())
+}
+
+func (s *Server) storageStatusValue() map[string]any {
 	values := readStorageState(s.options.StorageStatePath)
 	available := values != nil
 	jobStatus := stateString(values, "FORMAT_STATUS")
@@ -187,7 +191,7 @@ func (s *Server) handleStorageStatus(w http.ResponseWriter, _ *http.Request) {
 	if migrationStatus == "" {
 		migrationStatus = "idle"
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "available": available, "sd_present": stateBool(values, "SD_PRESENT"), "sd_mounted": stateBool(values, "SD_MOUNTED"), "device": stateString(values, "SD_DEVICE"), "mount_point": stateString(values, "SD_MOUNTPOINT"), "effective_mode": stateInt(values, "EFFECTIVE_MODE", 1), "total_bytes": stateNumber(values, "SD_TOTAL_BYTES"), "free_bytes": stateNumber(values, "SD_FREE_BYTES"), "reason": stateString(values, "REASON"), "format_job": map[string]any{"status": jobStatus, "fs": stateString(values, "FORMAT_FS"), "auto": stateBool(values, "FORMAT_AUTO"), "error": stateString(values, "FORMAT_ERROR")}, "migration": map[string]any{"status": migrationStatus, "detail": stateString(values, "MIGRATE_DETAIL"), "error": stateString(values, "MIGRATE_ERROR"), "moved_files": stateInt(values, "MIGRATE_MOVED_FILES", 0), "moved_bytes": stateNumber(values, "MIGRATE_MOVED_BYTES")}})
+	return map[string]any{"ok": true, "available": available, "sd_present": stateBool(values, "SD_PRESENT"), "sd_mounted": stateBool(values, "SD_MOUNTED"), "device": stateString(values, "SD_DEVICE"), "mount_point": stateString(values, "SD_MOUNTPOINT"), "effective_mode": stateInt(values, "EFFECTIVE_MODE", 1), "total_bytes": stateNumber(values, "SD_TOTAL_BYTES"), "free_bytes": stateNumber(values, "SD_FREE_BYTES"), "reason": stateString(values, "REASON"), "format_job": map[string]any{"status": jobStatus, "fs": stateString(values, "FORMAT_FS"), "auto": stateBool(values, "FORMAT_AUTO"), "error": stateString(values, "FORMAT_ERROR")}, "migration": map[string]any{"status": migrationStatus, "detail": stateString(values, "MIGRATE_DETAIL"), "error": stateString(values, "MIGRATE_ERROR"), "moved_files": stateInt(values, "MIGRATE_MOVED_FILES", 0), "moved_bytes": stateNumber(values, "MIGRATE_MOVED_BYTES")}}
 }
 
 func tailFile(path string, limit int64) ([]byte, error) {

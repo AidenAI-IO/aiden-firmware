@@ -338,11 +338,11 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("agentLogText") != std::string::npos);
     CHECK(html.find("agentLogMeta") != std::string::npos);
     CHECK(html.find("refreshAgentLog") != std::string::npos);
-    CHECK(html.find("/api/v1/agent/logs") != std::string::npos);
+    CHECK(html.find("/api/logs/agent") != std::string::npos);
     CHECK(html.find("exportLogs") != std::string::npos);
-    CHECK(html.find("fetch('/api/v1/support/archive')") != std::string::npos);
+    CHECK(html.find("fetch('/api/logs/support')") != std::string::npos);
     CHECK(html.find("Failed to export logs.") != std::string::npos);
-    CHECK(html.find("/api/v1/support/archive") != std::string::npos);
+    CHECK(html.find("/api/logs/support") != std::string::npos);
     CHECK(html.find("aiden-logs.tar.gz") != std::string::npos);
     CHECK(html.find("setInterval(()=>refreshAgentLog(false),2000)") != std::string::npos);
     CHECK(html.find("text.match(/^\\d{4}-") != std::string::npos);
@@ -502,7 +502,7 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("substring(11, 19)") == std::string::npos);
     CHECK(llm_html.find("response.body.getReader()") != std::string::npos);
     CHECK(llm_html.find("new TextDecoder()") != std::string::npos);
-    CHECK(llm_html.find("fetch('/api/v1/logs/llm/' + encodeURIComponent(name))") != std::string::npos);
+    CHECK(llm_html.find("fetch('/api/logs/llm/' + encodeURIComponent(name))") != std::string::npos);
     CHECK(llm_html.find("request('/api/llm-logs/file/'") == std::string::npos);
     CHECK(llm_html.find("data.content") == std::string::npos);
     CHECK(llm_html.find("tool_calls") != std::string::npos);
@@ -789,9 +789,9 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("otaLogMeta") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate") != std::string::npos);
     CHECK(html.find("refreshOtaLog") != std::string::npos);
-    CHECK(html.find("/api/v1/ota/updates") != std::string::npos);
+    CHECK(html.find("/api/ota/updates") != std::string::npos);
     CHECK(html.find("/api/ota/check-now") == std::string::npos);
-    CHECK(html.find("/api/v1/ota/status") != std::string::npos);
+    CHECK(html.find("/api/ota/status") != std::string::npos);
     CHECK(html.find("setInterval(()=>refreshOtaLog(false),2000)") != std::string::npos);
 }
 
@@ -921,7 +921,7 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("let selectFieldOptions=") != std::string::npos);
     CHECK(html.find("function buildConfigMeta(meta)") != std::string::npos);
     CHECK(html.find("loadConfigMeta") != std::string::npos);
-    CHECK(html.find("'/api/v1/config/schema'") != std::string::npos);
+    CHECK(html.find("'/api/config/schema'") != std::string::npos);
     CHECK(html.find("hydrateSelectOptions") != std::string::npos);
     CHECK(html.find("filterSelectOptions") != std::string::npos);
     CHECK(html.find("option.providers") != std::string::npos);
@@ -1189,8 +1189,9 @@ TEST_CASE("config web uses board-side recording for STT tests") {
     CHECK(html.find("function toggleSTTTest()") != std::string::npos);
     CHECK(html.find("function startSTTTest()") != std::string::npos);
     CHECK(html.find("function stopSTTTest()") != std::string::npos);
-    CHECK(html.find("'/api/v1/config/tests/stt-session'") != std::string::npos);
-    CHECK(html.find("method: 'DELETE'") != std::string::npos);
+    CHECK(html.find("'/api/config/test/stt/start'") != std::string::npos);
+    CHECK(html.find("'/api/config/test/stt/stop'") != std::string::npos);
+    CHECK(html.find("method: 'POST'") != std::string::npos);
     CHECK(html.find("activate microphone") != std::string::npos);
     CHECK(html.find("recognition result") != std::string::npos);
 
@@ -1568,7 +1569,7 @@ TEST_CASE("config web requires reboot for USB HID configuration changes") {
     CHECK(html.find("Cancelled immediate reboot. Please reboot manually later, then verify USB HID after reboot") != std::string::npos);
     CHECK(html.find("USB will re-enumerate automatically") == std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
-    CHECK(html.find("/api/v1/device/reboot") != std::string::npos);
+    CHECK(html.find("/api/device/reboot") != std::string::npos);
     CHECK(html.find("reboot command sent") != std::string::npos);
 }
 
@@ -1940,7 +1941,7 @@ TEST_CASE("config web html degrades model selector when the agent is offline") {
     const size_t load_end = js.find("renderModelSelector:", load_at);
     REQUIRE(load_end != std::string::npos);
     const std::string load_body = js.substr(load_at, load_end - load_at);
-    CHECK(load_body.find("response.status===503") != std::string::npos);
+    CHECK(load_body.find("err.status===503") != std::string::npos);
     CHECK(load_body.find("this.renderModelSelector(true)") != std::string::npos);
     CHECK(load_body.find("const requestId=++this.requestId") != std::string::npos);
     CHECK(load_body.find("requestId!==this.requestId") != std::string::npos);

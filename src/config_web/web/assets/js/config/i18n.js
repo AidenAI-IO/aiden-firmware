@@ -102,6 +102,7 @@ const messages = {
     'page.initialization_failed': 'Page initialization failed.',
     'config.title': 'Agent Configuration',
     'config.save_failed': 'Save [{{section}}] failed.',
+    'config.saved_not_applied': 'Saved [{{section}}], but the Agent has not applied it yet.',
     'config.saved': '[{{section}}] saved.',
     'config.editing': 'Editing [{{section}}], click Save after changes.',
     'config.cancelled': 'Cancelled changes to [{{section}}].',
@@ -211,6 +212,7 @@ const messages = {
     'config.fields.agent.context_prune_threshold.placeholder': '0 = automatic (0.5)',
     'locale.saved': 'Language saved. Agent is restarting.',
     'locale.save_failed': 'Failed to save language.',
+    'locale.saved_not_applied': 'Language saved, but the Agent has not applied it yet.',
     'provider.add': 'Add Provider',
     'provider.edit': 'Edit Provider',
     'provider.none': 'No providers configured yet.',
@@ -391,6 +393,7 @@ const messages = {
     'page.initialization_failed': '页面初始化失败。',
     'config.title': 'Agent 配置',
     'config.save_failed': '保存 [{{section}}] 失败。',
+    'config.saved_not_applied': '[{{section}}] 已保存，但 Agent 当前尚未生效。',
     'config.saved': '[{{section}}] 已保存。',
     'config.editing': '正在编辑 [{{section}}]，修改后请点击保存。',
     'config.cancelled': '已取消 [{{section}}] 的修改。',
@@ -500,6 +503,7 @@ const messages = {
     'config.fields.agent.context_prune_threshold.placeholder': '0 = 自动（0.5）',
     'locale.saved': '语言已保存，Agent 正在重启。',
     'locale.save_failed': '保存语言失败。',
+    'locale.saved_not_applied': '语言已保存，但 Agent 当前尚未生效。',
     'provider.add': '添加提供商',
     'provider.edit': '编辑提供商',
     'provider.none': '尚未配置任何提供商。',
@@ -665,7 +669,7 @@ async function saveLocale(locale) {
   applyLocale(requested, false);
   if (selector) selector.disabled = true;
   try {
-    const payload = await request('/api/v1/config/locale', {
+    const payload = await request('/api/config/locale', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({locale: requested}),
@@ -681,14 +685,15 @@ async function saveLocale(locale) {
     setBanner(t('locale.saved'), false);
   } catch (err) {
     if (saveId !== localeSaveId) return;
-    applyLocale(previous, false);
+    const persisted = err && err.persisted === true;
+    applyLocale(persisted ? requested : previous, false);
     if (appState.config) {
       appState.config.agent = appState.config.agent || {};
-      appState.config.agent.locale = previous;
+      appState.config.agent.locale = persisted ? requested : previous;
     }
     localeSavePending = false;
     localeRevision++;
-    setBanner(t('locale.save_failed'), true);
+    setBanner(t(persisted && err.applied === false ? 'locale.saved_not_applied' : 'locale.save_failed'), true);
     setDetails(err.message);
     try {
       await loadAuthoritativeLocale();

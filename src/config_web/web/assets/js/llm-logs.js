@@ -85,8 +85,8 @@ function processLogChunk(parser, chunk, isFinal) {
 }
 async function streamLogEntries(name, onProgress, signal) {
   const response = signal
-    ? await fetch('/api/v1/logs/llm/' + encodeURIComponent(name), {signal: signal})
-    : await fetch('/api/v1/logs/llm/' + encodeURIComponent(name));
+    ? await fetch('/api/logs/llm/' + encodeURIComponent(name), {signal: signal})
+    : await fetch('/api/logs/llm/' + encodeURIComponent(name));
   if (!response.ok) throw new Error(await readErrorText(response));
   const parser = {groups: [], pendingGroup: null, buffer: '', invalidLines: 0};
   const totalBytes = parseInt(response.headers.get('Content-Length') || '0', 10) || 0;
@@ -120,7 +120,7 @@ async function streamLogEntries(name, onProgress, signal) {
 }
 async function loadFileList(preferredName) {
   try {
-    const data = await request('/api/v1/logs/llm');
+    const data = await request('/api/logs/llm');
     state.files = data.files || [];
     const targetName = preferredName || (state.selectedFile ? state.selectedFile.name : '');
     state.selectedFile = targetName ? (state.files.find(f => f.name === targetName) || null) : null;
@@ -165,7 +165,7 @@ async function handleImportSelection(event) {
       setActionStatus('Import cancelled for ' + file.name + '.', false);
       return;
     }
-    const payload = await request('/api/v1/logs/llm/' + encodeURIComponent(file.name), {method: 'PUT', headers: {'Content-Type': 'text/plain; charset=utf-8'}, body: file});
+    const payload = await request('/api/logs/llm/' + encodeURIComponent(file.name), {method: 'PUT', headers: {'Content-Type': 'text/plain; charset=utf-8'}, body: file});
     setActionStatus('Imported ' + (payload.name || file.name) + ' (' + (payload.size_bytes || file.size) + ' bytes).', false);
     await loadFileList(file.name);
   } catch(err) {
@@ -179,7 +179,7 @@ async function downloadSelectedFile() {
   try {
     const name = state.selectedFile.name;
     const link = document.createElement('a');
-    link.href = '/api/v1/logs/llm/' + encodeURIComponent(name);
+    link.href = '/api/logs/llm/' + encodeURIComponent(name);
     link.download = name;
     document.body.appendChild(link);
     link.click();
