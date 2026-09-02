@@ -163,7 +163,8 @@ The board is the Phone Bridge server; the Aiden companion app is the client. Pro
 uses the USB ECM network:
 
 ```text
-WebSocket: ws://192.168.42.1:8080/api/phone-bridge?platform=ios|android&phone_id=<stable-id>
+WebSocket (iOS):     ws://192.168.42.1:8080/api/phone-bridge?platform=ios&phone_id=<stable-id>
+WebSocket (Android): ws://192.168.42.1:8080/api/phone-bridge?platform=android&phone_id=<stable-id>
 HTTP API:  http://192.168.42.1:8080/api
 ```
 
@@ -293,7 +294,6 @@ Typical boot ordering is `S39hciinit`, `S40bluetoothd`, `S41ble_service`, USB ga
 /etc/init.d/S52frame_service status
 /etc/init.d/S53audio_service status
 /etc/init.d/S53agent status
-/etc/init.d/S56config_web restart
 ```
 
 Common logs are `/var/log/frame_service/frame_service.log`,
