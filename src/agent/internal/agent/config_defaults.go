@@ -1,5 +1,7 @@
 package agent
 
+import "aiden-agent/internal/agent/realtimevoice"
+
 import "aiden-agent/internal/agent/constants"
 
 const (
@@ -67,6 +69,18 @@ const (
 	defaultVoiceMaxTurns              = 0
 	defaultVoiceMaxResponseTokens     = 300
 	defaultMaxIterations              = -1
+	defaultVoiceModelProvider         = realtimevoice.ProviderQwen
+	defaultVoiceModelModel            = realtimevoice.DefaultQwenRealtimeModel
+	defaultVoiceModelVoice            = realtimevoice.DefaultQwenRealtimeVoice
+	defaultVoiceModelTurnDetection    = "server_vad"
+	// defaultContextCompactionThreshold is the fraction of the usable model
+	// input budget at which conversation compaction summarizes the transcript.
+	defaultContextCompactionThreshold = 0.8
+	// defaultContextPruneThreshold is the fraction of the usable model input
+	// budget at which deterministic pruning of expired state and historical tool
+	// results runs. It sits below the compaction threshold so the cheap
+	// deterministic pass gets a chance to free tokens before the LLM summary.
+	defaultContextPruneThreshold = 0.5
 	// GPIO 3 (physical pin 38) is the Quick Capture button on Luckfox Pico Zero.
 	// Zero disables the trigger; see QuickCaptureConfig.Validate.
 	defaultQuickCaptureGPIOPin = 3
@@ -113,12 +127,13 @@ func DefaultConfig() Config {
 			Backend:    AudioBackendAuto,
 		},
 		VoiceModel: VoiceModelConfig{
-			Model:             "qwen-audio-3.0-realtime-plus",
-			Voice:             "longanqian",
+			Provider:          defaultVoiceModelProvider,
+			Model:             defaultVoiceModelModel,
+			Voice:             defaultVoiceModelVoice,
 			Instructions:      DefaultRealtimeVoiceInstructions,
 			InputAudioFormat:  "pcm",
 			OutputAudioFormat: "pcm",
-			TurnDetection:     "server_vad",
+			TurnDetection:     defaultVoiceModelTurnDetection,
 		},
 		AudioArchive: AudioArchiveConfig{
 			Enabled:     true,
@@ -224,6 +239,8 @@ func DefaultConfig() Config {
 		VoiceMaxResponseTokens:     defaultVoiceMaxResponseTokens,
 		MaxIterations:              defaultMaxIterations,
 		TerminationPolicy:          DefaultTerminationPolicyConfig(),
+		ContextCompactionThreshold: defaultContextCompactionThreshold,
+		ContextPruneThreshold:      defaultContextPruneThreshold,
 		ScreenshotKeepN:            constants.DefaultScreenshotKeepN,
 		ScreenshotPruneInterval:    constants.DefaultScreenshotPruneInterval,
 		ScreenStableTimeoutMs:      defaultStableWaitTimeoutMs,

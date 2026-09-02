@@ -23,6 +23,7 @@ under `[device]` below.
 - [`[log]`](#log)
 - [`[audio]`](#audio)
 - [`[voice_model]`](#voice_model)
+- [`[voice_model_providers.<name>]`](#voice_model_providersname)
 - [`[frame_service]`](#frame_service)
 - [Quick Capture](#quick-capture)
 - [`[voice_notifications]`](#voice_notifications)
@@ -72,6 +73,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, backend
+- `voice_model`: selected realtime provider; shown when `agent.input_mode = "realtime"`. Provider-specific credentials and model settings are configured in `[voice_model_providers.<name>]`
 - `frame_service`: whether Frame Service keeps capture STREAMON between screenshots
 - `quick_capture`: enabled, GPIO trigger pin, Screen Memory retention period
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
@@ -89,7 +91,8 @@ The page fields cover the following config sections (all detailed later on this 
 locale = "en-US"
 custom_instruction = ""
 max_iterations = -1
-context_prune_threshold = 12000
+context_prune_threshold = 0.5
+context_compaction_threshold = 0.8
 screenshot_keep_n = 3
 screenshot_prune_interval = 2
 input_mode = "text"
@@ -225,7 +228,8 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
 | `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
-| `context_prune_threshold`   | `0`                         | Estimated token count that independently triggers deterministic cleanup of expired state snapshots and historical tool results. `0` derives the trigger as 70% of the usable model input budget and cleans down to 60%, before local conversation compaction at 80%. A positive value is honored exactly; its cleanup target is 70/80 of the configured trigger. |
+| `context_prune_threshold`   | `0.5`                       | Fraction of the usable model input budget that triggers deterministic cleanup of expired state snapshots and historical tool results, cleaning down to 6/7 of the trigger (so the default cleans from 50% to ~43%). Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.5`. The effective value is capped at `context_compaction_threshold`, so this cheap deterministic pass always gets a chance to free tokens before the LLM summary runs. A value of `1` or greater is rejected, as are `nan` and `inf`; a legacy absolute token count (for example `12000`) is detected on load, logged, and replaced by the default. |
+| `context_compaction_threshold` | `0.8`                    | Fraction of the usable model input budget at which the conversation is summarized into a compaction message. Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.8`. Values of `1` or greater, `nan`, and `inf` are rejected. Compaction itself has no token target: the transcript is reduced structurally by retaining head and tail messages and replacing the middle with one LLM summary, so the post-compaction size follows from the summary rather than from a budget. |
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
 | `input_mode`                | `text` / `stt` / `realtime` | Input mode: HTTP/Web UI only, legacy STT/TTS voice loop, or direct realtime voice model                                                                                                                                 |
@@ -467,31 +471,73 @@ API key and base URL do not carry over to it.
 
 ## `[voice_model]`
 
-This section selects the realtime voice model used after a GPIO wakeup or an
-`/api/chat` request. It is active when `input_mode = "realtime"`; the mode,
-not API key presence, controls whether the daemon starts the realtime path. The
-daemon then streams 16 kHz PCM microphone data
-to `rtclient` continuously and plays the model's 24 kHz PCM response stream.
-When no session is active, `/api/chat` queues its text input, connects the
-realtime session, and sends that text as the first user message. This API
-activation remains available when host GPIO is unavailable.
+This section selects a named realtime provider record used after a GPIO wakeup.
+It is active when `input_mode = "realtime"`; the
+mode, not API key presence, controls whether the daemon starts the realtime
+path. The daemon streams microphone PCM to the selected adapter and plays its
+response PCM through the board audio path.
+For providers with text-input capability, `/api/chat` can start a session and send the queued text as its first user message. Speko S2S is audio-first; its delegated native provider may expose optional text capabilities, but the board microphone path remains the canonical full-duplex path. The selected direct provider owns turn detection and interruption; Speko does not relay PCM or synthesize a separate VAD loop.
 Use `input_mode = "stt"` to select the existing VAD/STT/LLM/TTS wakeup loop.
-This section is currently TOML-only and is not rendered by Config Web.
+Config Web renders the selector when `agent.input_mode = "realtime"`. Provider
+credentials and model settings live in `[voice_model_providers.<name>]`, so
+switching the selector never overwrites another provider's saved configuration.
+The current adapters are Qwen, Speko S2S, OpenAI Realtime, Google Gemini Live, and xAI Grok Voice.
 
 | Field | Default | Description |
 | ----- | ------- | ----------- |
-| `api_key` | empty | DashScope API key; supports `$ENV_VAR` expansion. |
-| `model` | `qwen-audio-3.0-realtime-plus` | Realtime voice model name. |
-| `workspace_id` | empty | Optional DashScope workspace. |
-| `region` | empty | `cn-beijing` or `ap-southeast-1`; endpoint is selected automatically. |
-| `endpoint` | empty | Optional `ws://` or `wss://` endpoint override. |
-| `voice` | `longanqian` | Realtime output voice. |
+| `provider` | `qwen` | Named `[voice_model_providers.<name>]` record. Bare `qwen`, `speko`, `openai`, `gemini`, or `xai` values remain accepted for compatibility. |
 | `instructions` | built-in voice model instruction | Session instructions. Leave empty to use the built-in default voice model instruction. |
 | `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
 | `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
-| `turn_detection` | `server_vad` | Server turn detector: `server_vad` or `smart_turn`. |
-| `turn_detection_threshold` | empty | Optional server VAD threshold. |
-| `turn_detection_silence_ms` | `800` | Silence duration before a response is generated. |
+| `turn_detection` | `server_vad` | Qwen server turn detector: `server_vad` or `smart_turn`. Provider-direct Speko sessions use the selected provider VAD and do not use this selector. |
+| `turn_detection_threshold` | empty | Optional Qwen server VAD threshold; ignored by Speko S2S. |
+| `turn_detection_silence_ms` | `800` | Qwen silence duration before a response is generated. Ignored by provider-direct Speko sessions, which use the selected provider VAD. |
+
+## `[voice_model_providers.<name>]`
+
+Realtime provider records follow the same named-record pattern as
+`[model_providers.<name>]`. Multiple configurations of each realtime provider can coexist;
+`[voice_model].provider` selects one by name.
+
+```toml
+[voice_model_providers.qwen-main]
+type = "qwen"
+api_key = "$DASHSCOPE_API_KEY"
+model = "qwen-audio-3.0-realtime-plus"
+region = "cn-beijing"
+voice = "longanqian"
+
+[voice_model_providers.speko-main]
+type = "speko"
+api_key = "$SPEKO_API_KEY"
+upstream_provider = "google"
+model = "gemini-3.1-flash-live-preview"
+voice = "Puck"
+
+[voice_model_providers.gemini-vertex]
+type = "gemini"
+auth_mode = "vertex"
+api_key = "$GOOGLE_OAUTH_ACCESS_TOKEN"
+project_id = "my-project"
+location = "us-central1"
+model = "gemini-live"
+voice = "Puck"
+
+[voice_model]
+provider = "speko-main"
+```
+
+| Field | Providers | Description |
+| ----- | --------- | ----------- |
+| `type` | all | Adapter type: `qwen`, `speko`, `openai`, `gemini`, or `xai`. |
+| `api_key` | all | Provider credential; supports `$ENV_VAR` expansion. For Gemini Vertex, this is an OAuth access token. |
+| `model` / `voice` | all | Provider-specific model and voice. Speko requires an explicit model; voice may stay empty for the selected upstream default. |
+| `workspace_id` / `region` | Qwen | Optional DashScope routing settings. |
+| `auth_mode` | Gemini | `api_key` (default) for the Gemini Developer API, or `vertex` for Vertex OAuth. |
+| `project_id` / `location` | Gemini Vertex | Required Google Cloud project and Vertex region, for example `us-central1`. |
+| `endpoint` | Qwen, OpenAI, Gemini, xAI | Optional WebSocket endpoint override, primarily for regional gateways and protocol tests. |
+| `upstream_provider` | Speko | Required S2S upstream: `google` (or `gemini`) or `xai`, paired with `model`. Automatic routing is disabled because it may select an unsupported WebRTC route. OpenAI is not a supported Speko route in Aiden; use the top-level `openai` provider instead. |
+| `agent_id` / `base_url` | Speko | Optional Speko agent ID and API base URL override. |
 
 ## `[frame_service]`
 

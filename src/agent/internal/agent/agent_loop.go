@@ -542,19 +542,20 @@ func (l *AgentLoop) compactContextBeforeLLM(ctx context.Context, llmExecutor *ex
 	if promptTokens <= l.ContextCompactionTrigger {
 		return false, nil
 	}
-	// Wait for at least two more tool-call/result pairs before retrying if this
-	// context shape cannot be compacted further.
-	l.lastCompactionAttemptMessages = messageCount + 3
 	newManager, compacted, err := l.ContextThresholdCompaction(ctx, manager)
 	if err != nil {
 		return false, fmt.Errorf("compact context at agent-loop threshold: %w", err)
 	}
 	if !compacted {
+		// Wait for at least two more tool-call/result pairs before retrying if
+		// this context shape cannot be compacted further.
+		l.lastCompactionAttemptMessages = messageCount + 3
 		return false, nil
 	}
 	if newManager == nil {
 		return false, fmt.Errorf("compact context at agent-loop threshold: context manager is nil")
 	}
+	l.lastCompactionAttemptMessages = len(newManager.CloneMessageList()) + 3
 	l.contextManager = newManager
 	llmExecutor.ReplaceContextManager(newManager)
 	log.Printf("[context] agent-loop context reached %d tokens (trigger %d); compacted before next model call\n", promptTokens, l.ContextCompactionTrigger)

@@ -1,6 +1,9 @@
 package agent
 
-import "aiden-agent/internal/agent/tts"
+import (
+	"aiden-agent/internal/agent/realtimevoice"
+	"aiden-agent/internal/agent/tts"
+)
 
 // This file is the single source of truth for config field metadata consumed
 // by the config web UI (via the `agent config-meta` CLI subcommand). It
@@ -28,6 +31,34 @@ type EnumOption struct {
 	Value     string   `json:"value"`
 	Label     string   `json:"label,omitempty"`
 	Providers []string `json:"providers,omitempty"`
+}
+
+func realtimeProviderEnumOptions() []EnumOption {
+	descriptors := realtimevoice.ProviderDescriptors()
+	options := make([]EnumOption, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		options = append(options, EnumOption{Value: descriptor.Name, Label: descriptor.Label})
+	}
+	return options
+}
+
+func realtimeProviderPlaceholders(field string) []ConditionalPlaceholder {
+	descriptors := realtimevoice.ProviderDescriptors()
+	placeholders := make([]ConditionalPlaceholder, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		value := descriptor.ModelPlaceholder
+		if field == "voice" {
+			value = descriptor.VoicePlaceholder
+		}
+		if value == "" {
+			continue
+		}
+		placeholders = append(placeholders, ConditionalPlaceholder{
+			When:  VisibleRule{All: []Condition{eq("voice_model_providers.type", descriptor.Name)}},
+			Value: value,
+		})
+	}
+	return placeholders
 }
 
 // Range describes the bounds for a numeric field. When a number field also
@@ -76,6 +107,7 @@ type FieldMeta struct {
 	Default         interface{}              `json:"default,omitempty"`
 	PlaceholderWhen []ConditionalPlaceholder `json:"placeholderWhen,omitempty"`
 	Secret          bool                     `json:"secret,omitempty"`
+	Advanced        bool                     `json:"advanced,omitempty"`
 	Nullable        bool                     `json:"nullable,omitempty"` // For number fields: empty input means unset (omit key), not 0
 	VisibleWhen     *VisibleRule             `json:"visibleWhen,omitempty"`
 	SelectWhen      *VisibleRule             `json:"selectWhen,omitempty"`
@@ -404,6 +436,73 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
+				Name: "voice_model",
+				Fields: []FieldMeta{
+					{Key: "provider", Label: "Realtime Provider", Widget: WidgetSelect,
+						Enum:        realtimeProviderEnumOptions(),
+						Default:     defaults.VoiceModel.Provider,
+						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
+				},
+			},
+			{
+				Name: "voice_model_providers",
+				Fields: []FieldMeta{
+					{Key: "type", Label: "Realtime Provider Type", Widget: WidgetSelect,
+						Enum:    realtimeProviderEnumOptions(),
+						Default: defaults.VoiceModel.Provider},
+					// OpenAI is absent on purpose: Speko serves that upstream over WebRTC
+					// and every adapter here speaks WebSocket, so the option could only
+					// fail after spending a mint request. Select the standalone "OpenAI
+					// Realtime" provider type for a direct WebSocket session instead.
+					{Key: "upstream_provider", Label: "Realtime Engine", Widget: WidgetSelect,
+						Enum: []EnumOption{
+							{Value: "google", Label: "Google Gemini Live"},
+							{Value: "xai", Label: "xAI Grok Voice"},
+						},
+						Help:        "Required Speko S2S engine. Select Google or xAI and set its Model. Automatic routing is disabled because it may select an unsupported WebRTC route. For OpenAI Realtime, select it as the provider type instead. No separate engine API key is needed here.",
+						VisibleWhen: all(eq("voice_model_providers.type", "speko"))},
+					{Key: "agent_id", Label: "Speko Agent ID", Widget: WidgetText,
+						Help: "Optional Speko agent ID.", Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "speko"))},
+					{Key: "api_key", Label: "Realtime API Key", Widget: WidgetText, Secret: true, Layout: "wide",
+						Help:        "Credential for the selected realtime provider. For Gemini Vertex, provide an OAuth access token. Use a literal value or $ENV_VAR.",
+						Placeholder: "$REALTIME_API_KEY"},
+					{Key: "auth_mode", Label: "Gemini Authentication", Widget: WidgetSelect,
+						Enum:        []EnumOption{{Value: "api_key", Label: "Gemini API key"}, {Value: "vertex", Label: "Vertex OAuth"}},
+						Default:     "api_key",
+						VisibleWhen: all(eq("voice_model_providers.type", "gemini"))},
+					{Key: "project_id", Label: "Google Cloud Project ID", Widget: WidgetText, Layout: "wide",
+						VisibleWhen: all(eq("voice_model_providers.type", "gemini"), eq("voice_model_providers.auth_mode", "vertex"))},
+					{Key: "location", Label: "Vertex Location", Widget: WidgetText,
+						Placeholder: "us-central1",
+						VisibleWhen: all(eq("voice_model_providers.type", "gemini"), eq("voice_model_providers.auth_mode", "vertex"))},
+					{Key: "model", Label: "Realtime Model", Widget: WidgetText, Default: defaults.VoiceModel.Model, Layout: "wide",
+						Help:            "Realtime model ID (provider-specific).",
+						PlaceholderWhen: realtimeProviderPlaceholders("model")},
+					{Key: "workspace_id", Label: "DashScope Workspace ID", Widget: WidgetText,
+						Advanced:    true,
+						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
+					{Key: "endpoint", Label: "WebSocket Endpoint", Widget: WidgetText, Layout: "wide",
+						Help:        "Optional provider WebSocket endpoint override. Leave empty to use the provider default.",
+						Advanced:    true,
+						VisibleWhen: all(in("voice_model_providers.type", "qwen", "openai", "gemini", "xai"))},
+					{Key: "base_url", Label: "Provider Base URL", Widget: WidgetText, Layout: "wide",
+						Help: "Optional provider API base URL; useful for Speko-compatible deployments or tests.", Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "speko"))},
+					{Key: "region", Label: "Region", Widget: WidgetSelect,
+						Enum: []EnumOption{
+							{Value: "", Label: "Automatic"},
+							{Value: "cn-beijing", Label: "China (Beijing)"},
+							{Value: "ap-southeast-1", Label: "Singapore"},
+						},
+						Default: defaults.VoiceModel.Region, Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
+					{Key: "voice", Label: "Voice", Widget: WidgetText, Default: defaults.VoiceModel.Voice,
+						Help:            "Realtime system voice name or voice-clone ID (provider-specific).",
+						PlaceholderWhen: realtimeProviderPlaceholders("voice")},
+				},
+			},
+			{
 				Name: "audio_archive",
 				Fields: []FieldMeta{
 					{Key: "enabled", Widget: WidgetBoolean, Default: defaults.AudioArchive.Enabled,
@@ -573,9 +672,9 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "voice_max_response_tokens", Widget: WidgetNumber, Default: defaults.VoiceMaxResponseTokens,
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "max_iterations", Widget: WidgetNumber, Default: defaults.MaxIterations},
-					{Key: "context_prune_threshold", Label: "Historical prune threshold (tokens)", Widget: WidgetNumber,
-						Help:    "Token count that triggers cleanup of expired state and historical tool results. 0 automatically triggers at 70% of the usable model input budget, before conversation compaction at 80%.",
-						Default: defaults.ContextPruneThreshold, Placeholder: "0 = automatic"},
+					{Key: "context_prune_threshold", Label: "Historical prune threshold (fraction)", Widget: WidgetNumber,
+						Help:    "Fraction of the usable model input budget that triggers cleanup of expired state and historical tool results, cleaning down to 6/7 of the trigger. Must be 0 or greater than 0 and less than 1; 0 uses 0.5. Capped at context_compaction_threshold so this cheap pass runs before the conversation summary.",
+						Default: defaults.ContextPruneThreshold, Placeholder: "0 = automatic (0.5)"},
 					{Key: "screenshot_keep_n", Widget: WidgetNumber, Default: defaults.ScreenshotKeepN},
 					{Key: "screenshot_prune_interval", Widget: WidgetNumber, Default: defaults.ScreenshotPruneInterval},
 					{Key: "screen_stable_timeout_ms", Widget: WidgetNumber, Default: defaults.ScreenStableTimeoutMs},

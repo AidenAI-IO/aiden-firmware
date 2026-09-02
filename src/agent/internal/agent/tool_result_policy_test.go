@@ -47,33 +47,80 @@ func TestToolResultPolicyKeepsSmallResultInline(t *testing.T) {
 }
 
 func TestConversationCompactionTriggerRequiresPositiveUsableInput(t *testing.T) {
-	if trigger, ok := conversationCompactionTrigger(0); ok || trigger != 0 {
+	if trigger, ok := conversationCompactionTrigger(0, defaultContextCompactionThreshold); ok || trigger != 0 {
 		t.Fatalf("conversationCompactionTrigger(0) = %d, %v; want disabled", trigger, ok)
 	}
-	trigger, ok := conversationCompactionTrigger(10_000)
+	trigger, ok := conversationCompactionTrigger(10_000, defaultContextCompactionThreshold)
 	if !ok || trigger != 8_000 {
 		t.Fatalf("conversationCompactionTrigger(10000) = %d, %v; want 8000, true", trigger, ok)
 	}
 }
 
-func TestHistoricalPruneBudgetsUseConfiguredThresholdIndependently(t *testing.T) {
-	trigger, target, ok := historicalPruneBudgets(100_000, 12_000)
-	if !ok || trigger != 12_000 || target != 10_500 {
-		t.Fatalf("historicalPruneBudgets(100000, 12000) = %d, %d, %v; want 12000, 10500, true", trigger, target, ok)
+func TestConversationCompactionTriggerHonorsConfiguredThreshold(t *testing.T) {
+	trigger, ok := conversationCompactionTrigger(10_000, 0.5)
+	if !ok || trigger != 5_000 {
+		t.Fatalf("conversationCompactionTrigger(10000, 0.5) = %d, %v; want 5000, true", trigger, ok)
 	}
 
-	trigger, target, ok = historicalPruneBudgets(8_000, 12_000)
-	if !ok || trigger != 12_000 || target != 10_500 {
-		t.Fatalf("historicalPruneBudgets(8000, 12000) = %d, %d, %v; want exact configured 12000, 10500, true", trigger, target, ok)
+	// An unset threshold falls back to the default so callers that bypass
+	// Config.ContextCompactionThresholdOrDefault still behave sanely.
+	trigger, ok = conversationCompactionTrigger(10_000, 0)
+	if !ok || trigger != 8_000 {
+		t.Fatalf("conversationCompactionTrigger(10000, 0) = %d, %v; want default 8000, true", trigger, ok)
 	}
 
+	// A tiny budget combined with a small fraction rounds to zero; compaction
+	// must report disabled rather than trigger on every turn.
+	if trigger, ok = conversationCompactionTrigger(1, 0.1); ok || trigger != 0 {
+		t.Fatalf("conversationCompactionTrigger(1, 0.1) = %d, %v; want disabled", trigger, ok)
+	}
+}
+
+func TestHistoricalPruneBudgetsDeriveTokensFromFraction(t *testing.T) {
+	trigger, target, ok := historicalPruneBudgets(10_000, 0.5)
+	if !ok || trigger != 5_000 || target != 4_285 {
+		t.Fatalf("historicalPruneBudgets(10000, 0.5) = %d, %d, %v; want 5000, 4285, true", trigger, target, ok)
+	}
+
+	// The default fraction must still produce the long-standing budget fractions.
+	trigger, target, ok = historicalPruneBudgets(10_000, defaultContextPruneThreshold)
+	if !ok || trigger != 5_000 || target != 4_285 {
+		t.Fatalf("historicalPruneBudgets(10000, 0.5) = %d, %d, %v; want 5000, 4285, true", trigger, target, ok)
+	}
+
+	// An unset fraction falls back to the default for callers that bypass
+	// Config.ContextPruneThresholdOrDefault.
 	trigger, target, ok = historicalPruneBudgets(10_000, 0)
-	if !ok || trigger != 7_000 || target != 6_000 {
-		t.Fatalf("historicalPruneBudgets(10000, 0) = %d, %d, %v; want 7000, 6000, true", trigger, target, ok)
+	if !ok || trigger != 5_000 || target != 4_285 {
+		t.Fatalf("historicalPruneBudgets(10000, 0) = %d, %d, %v; want default 5000, 4285, true", trigger, target, ok)
 	}
-	compactionTrigger, compactionOK := conversationCompactionTrigger(10_000)
-	if !compactionOK || trigger >= compactionTrigger {
-		t.Fatalf("automatic historical prune trigger = %d, compaction trigger = %d; prune must run first", trigger, compactionTrigger)
+
+	if trigger, target, ok = historicalPruneBudgets(0, 0.7); ok || trigger != 0 || target != 0 {
+		t.Fatalf("historicalPruneBudgets(0, 0.7) = %d, %d, %v; want disabled", trigger, target, ok)
+	}
+
+	// Too small to leave hysteresis below the trigger: pruning cannot make
+	// progress, so it must report disabled instead of thrashing every turn.
+	if trigger, target, ok = historicalPruneBudgets(1, 0.7); ok || trigger != 0 || target != 0 {
+		t.Fatalf("historicalPruneBudgets(1, 0.7) = %d, %d, %v; want disabled", trigger, target, ok)
+	}
+}
+
+func TestHistoricalPruneRunsBeforeConversationCompaction(t *testing.T) {
+	const usableInputBudget = 10_000
+	pruneTrigger, _, pruneOK := historicalPruneBudgets(usableInputBudget, defaultContextPruneThreshold)
+	compactionTrigger, compactionOK := conversationCompactionTrigger(usableInputBudget, defaultContextCompactionThreshold)
+	if !pruneOK || !compactionOK || pruneTrigger >= compactionTrigger {
+		t.Fatalf("default prune trigger = %d, compaction trigger = %d; prune must run first", pruneTrigger, compactionTrigger)
+	}
+
+	// The clamp in ContextPruneThresholdOrDefault is what preserves this
+	// ordering when a config sets a prune fraction above the compaction one.
+	cfg := Config{ContextPruneThreshold: 0.95, ContextCompactionThreshold: 0.6}
+	pruneTrigger, _, pruneOK = historicalPruneBudgets(usableInputBudget, cfg.ContextPruneThresholdOrDefault())
+	compactionTrigger, compactionOK = conversationCompactionTrigger(usableInputBudget, cfg.ContextCompactionThresholdOrDefault())
+	if !pruneOK || !compactionOK || pruneTrigger > compactionTrigger {
+		t.Fatalf("clamped prune trigger = %d, compaction trigger = %d; prune must not exceed compaction", pruneTrigger, compactionTrigger)
 	}
 }
 

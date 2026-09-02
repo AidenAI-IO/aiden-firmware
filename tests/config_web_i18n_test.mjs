@@ -211,12 +211,12 @@ assert.equal(t('config.fields.model.api_mode.options.responses'), 'Responses（�
 assert.equal(t('config.fields.model.responses_context_management.label'), '服务端自动压缩');
 assert.equal(t('config.fields.model.responses_truncation.options.auto'), '自动丢弃最早输入');
 assert.equal(t('config.fields.model.responses_include.label'), '额外返回字段');
-assert.equal(t('config.fields.agent.context_prune_threshold.label'), '历史上下文清理阈值（token）');
+assert.equal(t('config.fields.agent.context_prune_threshold.label'), '历史上下文清理阈值（比例）');
 assert.equal(
   t('config.fields.agent.context_prune_threshold.help'),
-  '上下文 token 数达到该阈值时，清理过期 state 和历史工具结果。设为 0 时，按模型可用输入预算的 70% 自动触发，并早于 80% 的对话压缩。',
+  '上下文 token 数达到模型可用输入预算的该比例时，清理过期 state 和历史工具结果，并清理至触发值的 6/7。取值需为 0，或大于 0 且小于 1；设为 0 时使用 0.5。该值不会超过 context_compaction_threshold，以保证这个低成本清理先于对话压缩执行。',
 );
-assert.equal(t('config.fields.agent.context_prune_threshold.placeholder'), '0 = 自动');
+assert.equal(t('config.fields.agent.context_prune_threshold.placeholder'), '0 = 自动（0.5）');
 assert.equal(t('logs.jump_to_bottom'), '跳到底部');
 assert.equal(t('system_env.saved'), 'env 已保存。');
 assert.equal(t('missing.translation.key'), 'missing.translation.key');

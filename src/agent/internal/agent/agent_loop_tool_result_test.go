@@ -264,6 +264,40 @@ func TestAgentLoopCompactsWhenToolResultCrossesContextThreshold(t *testing.T) {
 	}
 }
 
+func TestAgentLoopCompactionWatermarkUsesReplacementManagerSize(t *testing.T) {
+	manager, err := freshNewContextManager("system", "run the tool", nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+	replacement, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "compacted summary"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	loop := NewAgentLoop(nil, RoleProfile{}, 1, nil, nil, executor.ScreenshotPruningConfig{}.WithDefaults(), manager)
+	loop.ContextCompactionTrigger = 1
+	loop.ContextThresholdCompaction = func(_ context.Context, _ *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
+		return replacement, true, nil
+	}
+	llmExecutor := executor.NewLLMExecutor(nil, manager)
+
+	compacted, err := loop.compactContextBeforeLLM(context.Background(), llmExecutor, nil)
+	if err != nil {
+		t.Fatalf("compactContextBeforeLLM() error = %v", err)
+	}
+	if !compacted {
+		t.Fatal("compactContextBeforeLLM() reported no compaction")
+	}
+	wantWatermark := len(replacement.CloneMessageList()) + 3
+	if loop.lastCompactionAttemptMessages != wantWatermark {
+		t.Fatalf("lastCompactionAttemptMessages = %d, want replacement size + 3 = %d", loop.lastCompactionAttemptMessages, wantWatermark)
+	}
+	if llmExecutor.ContextManager() != replacement || loop.contextManager != replacement {
+		t.Fatal("compaction did not install replacement context manager")
+	}
+}
+
 func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.T) {
 	rawOutput := strings.Repeat("0123456789", 736)
 	if len(rawOutput) >= toolResultInlineMaxBytes || estimateTextTokens(rawOutput) >= toolResultInlineMaxTokens {

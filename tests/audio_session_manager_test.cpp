@@ -4,6 +4,19 @@
 
 #include "doctest.h"
 
+TEST_CASE("AudioRecordSession captures at 16 kHz for a 24 kHz target") {
+    aiden::AudioFormat fmt;
+    fmt.sample_rate = 24000;
+    fmt.channels = 1;
+    fmt.bit_width = 16;
+
+    aiden::AudioRecordSession session(1, fmt);
+    REQUIRE(session.start());
+    CHECK(session.hw_sample_rate_ == 16000);
+    session.stop();
+    session.join();
+}
+
 TEST_CASE("AudioSessionManager keeps a stopped record session readable until EOF") {
     aiden::AudioSessionManager manager;
 

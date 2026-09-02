@@ -64,8 +64,7 @@ wait_for_agent
 compose exec -T aiden sh -ec '
 python3 --version
 python3 -m pip --version
-node --version
-wetty --version
+ttyd --version
 rg --version
 fq --version
 yq --version
@@ -73,9 +72,9 @@ yq --version
 
 config_page="$(curl -fsS --max-time 10 "http://127.0.0.1:$config_port/")"
 agent_page="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/")"
-terminal_page="$(curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/wetty/")"
-terminal_headers="$(curl -fsSIL --max-time 10 "http://127.0.0.1:$agent_port/wetty/")"
-terminal_socket="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/wetty/socket.io/?EIO=4&transport=polling")"
+terminal_page="$(curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/webtty/")"
+terminal_headers="$(curl -fsSIL --max-time 10 "http://127.0.0.1:$agent_port/webtty/")"
+terminal_token="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/webtty/token")"
 reported_agent_port="$(
     curl -fsS --max-time 10 "http://127.0.0.1:$config_port/api/config" \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["agent_status"]["public_port"])'
@@ -91,31 +90,35 @@ case "$agent_page" in
 esac
 case "$terminal_page" in
     *'<!doctype html>'*|*'<!DOCTYPE html>'*) ;;
-    *) printf 'WeTTY did not return HTML through Agent Web.\n' >&2; exit 1 ;;
+    *) printf 'ttyd did not return HTML through Agent Web.\n' >&2; exit 1 ;;
 esac
 case "$terminal_headers" in
-    *"connect-src 'self' ws://127.0.0.1:$agent_port"*) ;;
-    *) printf 'WeTTY did not advertise the Agent Web address for WebSocket connections.\n' >&2; exit 1 ;;
+    *'Server: ttyd/'*) ;;
+    *) printf 'ttyd response did not include its server header.\n' >&2; exit 1 ;;
 esac
-case "$terminal_socket" in
-    '0{'*'"upgrades":["websocket"]'*) ;;
-    *) printf 'WeTTY Socket.IO handshake failed through Agent Web.\n' >&2; exit 1 ;;
+case "$terminal_page" in
+    *'ttyd'*'xterm'*) ;;
+    *) printf 'ttyd did not return its terminal client page through Agent Web.\n' >&2; exit 1 ;;
+esac
+case "$terminal_token" in
+    *'"token"'*) ;;
+    *) printf 'ttyd token endpoint failed through Agent Web.\n' >&2; exit 1 ;;
 esac
 
 container_id="$(compose ps -q aiden)"
 restart_count="$(docker inspect --format '{{.RestartCount}}' "$container_id")"
-wetty_pid="$(compose exec -T aiden sh -ec '
+ttyd_pid="$(compose exec -T aiden sh -ec '
 for process in /proc/[0-9]*; do
     executable="$(readlink "$process/exe" 2>/dev/null || true)"
-    if [ "$executable" = /usr/local/bin/node ]; then
+    if [ "$executable" = /usr/local/bin/ttyd ]; then
         basename "$process"
         exit 0
     fi
 done
 exit 1
 ')"
-test -n "$wetty_pid"
-compose exec -T aiden sh -c 'kill "$1"' sh "$wetty_pid"
+test -n "$ttyd_pid"
+compose exec -T aiden sh -c 'kill "$1"' sh "$ttyd_pid"
 
 attempt=1
 while [ "$attempt" -le 30 ]; do
@@ -128,7 +131,7 @@ while [ "$attempt" -le 30 ]; do
 done
 test "$current_restart_count" -gt "$restart_count"
 wait_for_agent
-curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/wetty/" >/dev/null
+curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/webtty/" >/dev/null
 
 before_pid="$(agent_pid)"
 test -n "$before_pid"

@@ -202,6 +202,26 @@ func TestTerminationPolicyDoesNotCollapseOrdinaryShellPaths(t *testing.T) {
 	}
 }
 
+func TestTerminationPolicyNormalizesOnlyArtifactPathTokens(t *testing.T) {
+	artifactPath := "/userdata/agent/sessions/backend/tool-results/tr_result.data"
+	first := `{"command":"grep -F tr_a.data ` + artifactPath + `"}`
+	second := `{"command":"grep -F tr_b.data ` + artifactPath + `"}`
+	if toolCallSignature("shell", first) == toolCallSignature("shell", second) {
+		t.Fatal("distinct non-artifact command arguments were collapsed")
+	}
+
+	for _, command := range []string{
+		"grep -F tr_a.data /tmp/tool-results/nested/tr_result.data",
+		"grep -F tr_a.data " + artifactPath + ".bak",
+		"grep -F tr_a.data " + artifactPath + "-suffix",
+	} {
+		input := `{"command":"` + command + `"}`
+		if normalized := normalizeArtifactRecoveryInput(input); normalized != input {
+			t.Fatalf("non-direct or non-boundary artifact token was normalized: %q -> %q", input, normalized)
+		}
+	}
+}
+
 func TestTerminationPolicyExternalCancel(t *testing.T) {
 	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
 	ctx, cancel := context.WithCancel(context.Background())

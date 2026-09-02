@@ -6,9 +6,19 @@
 # custom_instruction = ""
 # additional_prompt = ""
 # max_iterations = -1
-# Deterministic cleanup of expired state and historical tool results. Zero (or
-# an omitted value) derives the threshold from the active model input budget.
-# context_prune_threshold = 12000
+# Context size management. Both values are fractions of the usable model input
+# budget: either 0 to select the default, or greater than 0 and less than 1.
+# Omitting a value uses the default shown.
+#
+# Deterministic cleanup of expired state and historical tool results, cleaning
+# down to 6/7 of the trigger. This is the cheap pass and runs first; its
+# effective value is capped at context_compaction_threshold below.
+# context_prune_threshold = 0.5
+#
+# Point at which the conversation is summarized into a compaction message by the
+# LLM. Lower it to summarize earlier and keep prompts smaller; raise it to keep
+# more raw transcript at the cost of larger prompts.
+# context_compaction_threshold = 0.8
 
 # Screenshot context pruning:
 # keep the latest N screenshots and batch-prune older screenshots every interval
@@ -20,8 +30,7 @@
 # Input mode controls the device-side audio loop:
 # - text: HTTP server and Web UI only
 # - stt: also run device audio -> STT -> LLM -> TTS
-# - realtime: run the realtime voice model directly; [voice_model] is selected
-#   by this mode rather than by whether voice_model.api_key is present
+# - realtime: run the realtime voice model selected by [voice_model].provider
 input_mode = "stt"
 
 # RKNN Silero VAD parameters
@@ -46,17 +55,21 @@ input_mode = "stt"
 # voice_max_response_tokens = 300
 
 # Realtime voice model. When input_mode = "realtime", GPIO wakeup opens a
-# continuous PCM duplex session with rtclient. The legacy STT/LLM/TTS loop is
+# continuous PCM duplex session through realtimevoice. The legacy STT/LLM/TTS loop is
 # used when input_mode = "stt". In realtime mode, the voice model is
 # the non-blocking foreground agent; device and multi-step work is queued to
 # the legacy agent loop through create_agent_task.
-# [voice_model]
+# [voice_model_providers.qwen-main]
+# type = "qwen"
 # api_key = "$DASHSCOPE_API_KEY"
 # model = "qwen-audio-3.0-realtime-plus"
 # workspace_id = ""
 # region = "cn-beijing" # or "ap-southeast-1"
 # endpoint = ""         # optional ws/wss endpoint override
 # voice = "longanqian"
+#
+# [voice_model]
+# provider = "qwen-main"
 # instructions = ""    # optional override; defaults to a short conversation-only prompt
 # enable_speech_emotion = true
 # input_audio_format = "pcm"

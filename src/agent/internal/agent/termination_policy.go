@@ -29,7 +29,7 @@ const (
 	screenshotProgressChangedBlockThreshold = 0.01
 )
 
-var toolResultArtifactFilePattern = regexp.MustCompile(`tr_[A-Za-z0-9][A-Za-z0-9_-]*\.data`)
+var toolResultArtifactFilePattern = regexp.MustCompile(`(^|[/\\])tool-results([/\\])tr_[A-Za-z0-9][A-Za-z0-9_-]*\.data([^A-Za-z0-9_.-]|$)`)
 
 // StopReason explains why the agent loop stopped or intervened.
 type StopReason string
@@ -453,10 +453,10 @@ func normalizeArtifactRecoveryInput(input string) string {
 		return input
 	}
 	command, ok := arguments["command"].(string)
-	if !ok || (!strings.Contains(command, "/tool-results/") && !strings.Contains(command, `\tool-results\`)) {
+	if !ok || !toolResultArtifactFilePattern.MatchString(command) {
 		return input
 	}
-	normalized := toolResultArtifactFilePattern.ReplaceAllString(command, "tr_<artifact>.data")
+	normalized := toolResultArtifactFilePattern.ReplaceAllString(command, "$1tool-results$2tr_<artifact>.data$3")
 	if normalized == command {
 		return input
 	}

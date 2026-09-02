@@ -5,7 +5,7 @@ agent_dir="${AIDEN_AGENT_DIR:-/userdata/agent}"
 system_env="${AIDEN_SYSTEM_ENV:-/userdata/system/env}"
 agent_service="${AIDEN_AGENT_INIT_SCRIPT:-/usr/local/bin/aiden-agent-service}"
 config_web_pid=""
-wetty_pid=""
+ttyd_pid=""
 
 mkdir -p \
     "$agent_dir/log" \
@@ -31,9 +31,9 @@ fi
 
 shutdown() {
     trap - INT TERM EXIT
-    if [ -n "$wetty_pid" ]; then
-        kill "$wetty_pid" 2>/dev/null || true
-        wait "$wetty_pid" 2>/dev/null || true
+    if [ -n "$ttyd_pid" ]; then
+        kill "$ttyd_pid" 2>/dev/null || true
+        wait "$ttyd_pid" 2>/dev/null || true
     fi
     if [ -n "$config_web_pid" ]; then
         kill "$config_web_pid" 2>/dev/null || true
@@ -46,14 +46,19 @@ trap shutdown INT TERM EXIT
 
 "$agent_service" start
 
-wetty \
-    --host=0.0.0.0 \
+ttyd \
     --port=3000 \
-    --base=/wetty/ \
-    --title="Aiden Shell" \
-    --command=/bin/bash \
-    >>/userdata/agent/log/wetty.log 2>&1 &
-wetty_pid="$!"
+    --base-path=/webtty/ \
+    --max-clients="${TTYD_MAX_CLIENTS:-2}" \
+    --client-option "titleFixed=${TTYD_TITLE:-Aiden Shell}" \
+    --client-option "rendererType=${TTYD_RENDERER:-canvas}" \
+    --client-option "fontSize=${TTYD_FONT_SIZE:-24}" \
+    --client-option "scrollback=${TTYD_SCROLLBACK:-500}" \
+    --client-option "cursorStyle=${TTYD_CURSOR_STYLE:-bar}" \
+    --client-option "disableResizeOverlay=${TTYD_DISABLE_RESIZE_OVERLAY:-true}" \
+    /bin/bash \
+    >>/userdata/agent/log/ttyd.log 2>&1 &
+ttyd_pid="$!"
 
 config_web \
     --bind=0.0.0.0 \
@@ -68,7 +73,7 @@ config_web_pid="$!"
 
 set +e
 # Keep both web frontends tied to the container lifecycle so Compose can restart them together.
-wait -n "$config_web_pid" "$wetty_pid"
+wait -n "$config_web_pid" "$ttyd_pid"
 status="$?"
 set -e
 exit "$status"

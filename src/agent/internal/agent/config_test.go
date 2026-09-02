@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -60,6 +61,158 @@ func TestVoiceModelConfigRejectsNonLoopbackPlaintextEndpoint(t *testing.T) {
 		if err := (VoiceModelConfig{APIKey: "key", Endpoint: endpoint}).Validate(); err != nil {
 			t.Errorf("Validate(%q) error = %v", endpoint, err)
 		}
+	}
+}
+
+func TestVoiceModelConfigValidatesRealtimeProvider(t *testing.T) {
+	if err := (VoiceModelConfig{Provider: "unknown", APIKey: "key"}).Validate(); err == nil {
+		t.Fatal("expected unsupported realtime provider error")
+	}
+	if err := (VoiceModelConfig{Provider: "speko", APIKey: "key"}).Validate(); err == nil || !strings.Contains(err.Error(), "automatic routing is disabled") {
+		t.Fatalf("Speko auto-routing config accepted: %v", err)
+	}
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "xai", Model: "grok-voice-latest", APIKey: "key", BaseURL: "http://localhost:8080"}).Validate(); err != nil {
+		t.Fatalf("valid Speko config rejected: %v", err)
+	}
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "openai", Model: "gpt-realtime", APIKey: "key"}).Validate(); err == nil {
+		t.Fatal("Speko OpenAI route must be rejected")
+	}
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "inworld", Model: "model", APIKey: "key"}).Validate(); err == nil || !strings.Contains(err.Error(), "unsupported provider") {
+		t.Fatalf("unsupported Speko upstream accepted: %v", err)
+	}
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "gemini", Model: "gemini-live", APIKey: "key"}).Validate(); err != nil {
+		t.Fatalf("Gemini Speko alias rejected: %v", err)
+	}
+	if err := (VoiceModelConfig{Provider: "speko", UpstreamProvider: "google", APIKey: "key"}).Validate(); err == nil || !strings.Contains(err.Error(), "are required") {
+		t.Fatalf("partial Speko routing config accepted: %v", err)
+	}
+	for _, provider := range []string{"openai", "gemini", "xai"} {
+		t.Run(provider, func(t *testing.T) {
+			if err := (VoiceModelConfig{Provider: provider, APIKey: "key"}).Validate(); err != nil {
+				t.Fatalf("valid native realtime config rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestVoiceModelConfigValidatesGeminiVertexAuth(t *testing.T) {
+	valid := VoiceModelConfig{Provider: "gemini", APIKey: "oauth-token", AuthMode: "vertex", ProjectID: "project-1", Location: "us-central1"}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid Vertex config rejected: %v", err)
+	}
+	for _, config := range []VoiceModelConfig{
+		{Provider: "gemini", APIKey: "oauth-token", AuthMode: "vertex", Location: "us-central1"},
+		{Provider: "gemini", APIKey: "oauth-token", AuthMode: "vertex", ProjectID: "project-1"},
+		{Provider: "gemini", APIKey: "key", AuthMode: "unknown"},
+	} {
+		if err := config.Validate(); err == nil {
+			t.Fatalf("invalid Vertex config accepted: %+v", config)
+		}
+	}
+}
+
+func TestVoiceModelConfigProviderFieldsLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(`[agent]
+input_mode = "realtime"
+
+[voice_model]
+provider = "speko"
+upstream_provider = "xai"
+agent_id = "agent-1"
+api_key = "secret"
+model = "grok-voice-latest"
+base_url = "https://api.speko.dev"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VoiceModel.Provider != "speko" || cfg.VoiceModel.UpstreamProvider != "xai" || cfg.VoiceModel.AgentID != "agent-1" || cfg.VoiceModel.BaseURL != "https://api.speko.dev" {
+		t.Fatalf("voice model = %+v", cfg.VoiceModel)
+	}
+}
+
+func TestSpekoVoiceModelDoesNotInheritQwenDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(`[agent]
+input_mode = "realtime"
+
+[voice_model]
+provider = "speko"
+api_key = "secret"
+upstream_provider = "google"
+model = "gemini-live"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.VoiceModel.Model != "gemini-live" || runtime.VoiceModel.Voice != "" || runtime.VoiceModel.Region != "" || runtime.VoiceModel.TurnDetection != "" {
+		t.Fatalf("runtime Speko inherited Qwen defaults: %+v", runtime.VoiceModel)
+	}
+
+	resolved, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := resolved.VoiceModelProviders["speko"]
+	if record.Model != "gemini-live" || record.Voice != "" || record.Region != "" || resolved.VoiceModel.Model != "" {
+		t.Fatalf("resolved Speko inherited Qwen defaults: selector=%+v record=%+v", resolved.VoiceModel, record)
+	}
+}
+
+func TestVoiceModelProviderRecordsPreserveSettingsAcrossSwitches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(`[agent]
+input_mode = "realtime"
+
+[voice_model_providers.qwen-main]
+type = "qwen"
+api_key = "qwen-secret"
+model = "qwen-realtime"
+voice = "longanqian"
+region = "cn-beijing"
+
+[voice_model_providers.speko-main]
+type = "speko"
+api_key = "speko-secret"
+upstream_provider = "xai"
+model = "grok-voice-latest"
+voice = "eve"
+base_url = "https://api.speko.dev"
+
+[voice_model]
+provider = "speko-main"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.VoiceModel.Provider != "speko-main" {
+		t.Fatalf("resolved voice_model.provider = %q", resolved.VoiceModel.Provider)
+	}
+	if got := resolved.VoiceModelProviders["qwen-main"]; got.APIKey != "qwen-secret" || got.Model != "qwen-realtime" || got.Voice != "longanqian" {
+		t.Fatalf("saved Qwen record changed: %+v", got)
+	}
+	if got := resolved.VoiceModelProviders["speko-main"]; got.APIKey != "speko-secret" || got.Model != "grok-voice-latest" || got.Voice != "eve" {
+		t.Fatalf("saved Speko record changed: %+v", got)
+	}
+
+	runtime, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.VoiceModel; got.Provider != "speko" || got.APIKey != "speko-secret" || got.Model != "grok-voice-latest" || got.Voice != "eve" || got.UpstreamProvider != "xai" {
+		t.Fatalf("runtime did not resolve selected Speko record: %+v", got)
 	}
 }
 
@@ -812,6 +965,126 @@ llm_http_retention_days = 14
 	}
 }
 
+func TestLoadRuntimeConfigCanOverrideContextCompactionThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+context_compaction_threshold = 0.6
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	got := cfg.ContextCompactionThresholdOrDefault()
+	if got != 0.6 {
+		t.Fatalf("ContextCompactionThresholdOrDefault() = %g, want 0.6", got)
+	}
+	usableInputBudget := 10_000
+	trigger, enabled := conversationCompactionTrigger(usableInputBudget, got)
+	if !enabled || trigger != 6_000 {
+		t.Fatalf("conversationCompactionTrigger(10000, %g) = %d, %v; want 6000, true", got, trigger, enabled)
+	}
+}
+
+func TestLoadRuntimeConfigMigratesLegacyAbsoluteContextPruneThreshold(t *testing.T) {
+	// Devices configured before the field became a fraction hold an absolute
+	// token count. TOML decodes it into the float64 field without error, so the
+	// loader has to migrate it or the agent would fail Validate and not start.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+context_prune_threshold = 12000
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() with legacy absolute threshold must still load, got error = %v", err)
+	}
+	if got := cfg.ContextPruneThresholdOrDefault(); got != defaultContextPruneThreshold {
+		t.Fatalf("migrated prune threshold = %g, want default %g", got, defaultContextPruneThreshold)
+	}
+}
+
+func TestLoadRuntimeConfigCanOverrideContextPruneThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	// Deliberately not defaultContextPruneThreshold: an override equal to the
+	// default would pass this test even if the configured value were ignored.
+	if err := os.WriteFile(path, []byte(`
+context_prune_threshold = 0.4
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	got := cfg.ContextPruneThresholdOrDefault()
+	if got != 0.4 {
+		t.Fatalf("ContextPruneThresholdOrDefault() = %g, want 0.4", got)
+	}
+	trigger, target, enabled := historicalPruneBudgets(10_000, got)
+	if !enabled || trigger != 4_000 {
+		t.Fatalf("historicalPruneBudgets(10000, %g) = %d, %d, %v; want trigger 4000", got, trigger, target, enabled)
+	}
+}
+
+func TestLoadRuntimeConfigCapsPruneThresholdAtCompactionThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+context_prune_threshold = 0.9
+context_compaction_threshold = 0.6
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if got := cfg.ContextPruneThresholdOrDefault(); got != 0.6 {
+		t.Fatalf("ContextPruneThresholdOrDefault() = %g, want capped 0.6", got)
+	}
+}
+
+func TestLoadRuntimeConfigDefaultsContextCompactionThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if got := cfg.ContextCompactionThresholdOrDefault(); got != defaultContextCompactionThreshold {
+		t.Fatalf("ContextCompactionThresholdOrDefault() = %g, want %g", got, defaultContextCompactionThreshold)
+	}
+}
+
 func TestConfigValidateRejectsNegativeLLMHTTPRetentionDays(t *testing.T) {
 	cfg := Config{
 		Model: ModelConfig{Provider: "fake"},
@@ -1039,14 +1312,111 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 
 }
 
-func TestConfigValidateRejectsNegativeContextPruneThreshold(t *testing.T) {
+func TestConfigValidateRejectsOutOfRangeContextPruneThreshold(t *testing.T) {
+	// NaN and the infinities are included because TOML accepts those literals
+	// into a float64 field, and NaN passes every ordered comparison.
+	for _, threshold := range []float64{-0.1, 1, 1.5, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		cfg := Config{
+			Model:                 ModelConfig{Provider: "fake"},
+			ContextPruneThreshold: threshold,
+		}
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "context_prune_threshold") {
+			t.Fatalf("threshold %g: expected context_prune_threshold validation error, got %v", threshold, err)
+		}
+	}
+
 	cfg := Config{
 		Model:                 ModelConfig{Provider: "fake"},
-		ContextPruneThreshold: -1,
+		ContextPruneThreshold: 0,
 	}
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "context_prune_threshold") {
-		t.Fatalf("expected context_prune_threshold validation error, got %v", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("threshold 0 must be accepted as automatic, got %v", err)
+	}
+}
+
+// TestLoadRuntimeConfigRejectsNonFiniteContextThresholds covers the decode path
+// rather than a hand-built Config: TOML's nan and inf literals decode into the
+// float64 fields, so a hand-edited config can reach validation with values that
+// no amount of arithmetic can make sensible. Neither may be silently migrated to
+// the default, and neither may reach the budget helpers.
+func TestLoadRuntimeConfigRejectsNonFiniteContextThresholds(t *testing.T) {
+	for _, body := range []string{
+		"context_prune_threshold = nan",
+		"context_prune_threshold = inf",
+		"context_prune_threshold = -inf",
+		"context_compaction_threshold = nan",
+		"context_compaction_threshold = inf",
+		"context_compaction_threshold = -inf",
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "agent.toml")
+		if err := os.WriteFile(path, []byte("\n"+body+"\n\n[model]\nprovider = \"fake\"\n"), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		if _, err := LoadRuntimeConfig(path); err == nil {
+			t.Fatalf("%s: LoadRuntimeConfig() must reject a non-finite threshold", body)
+		}
+	}
+}
+
+func TestContextPruneThresholdOrDefaultIsCappedAtCompaction(t *testing.T) {
+	if got := (Config{}).ContextPruneThresholdOrDefault(); got != defaultContextPruneThreshold {
+		t.Fatalf("unset prune threshold = %g, want default %g", got, defaultContextPruneThreshold)
+	}
+	if got := (Config{ContextPruneThreshold: 0.5}).ContextPruneThresholdOrDefault(); got != 0.5 {
+		t.Fatalf("configured prune threshold = %g, want 0.5", got)
+	}
+
+	// A prune fraction above the compaction fraction is capped, so the cheap
+	// deterministic pass still runs before the LLM summary.
+	cfg := Config{ContextPruneThreshold: 0.95, ContextCompactionThreshold: 0.6}
+	if got := cfg.ContextPruneThresholdOrDefault(); got != 0.6 {
+		t.Fatalf("prune threshold above compaction = %g, want capped 0.6", got)
+	}
+
+	// The cap also applies to the default when compaction is configured below it.
+	cfg = Config{ContextCompactionThreshold: 0.5}
+	if got := cfg.ContextPruneThresholdOrDefault(); got != 0.5 {
+		t.Fatalf("default prune threshold with compaction 0.5 = %g, want capped 0.5", got)
+	}
+
+	if got := DefaultConfig().ContextPruneThresholdOrDefault(); got != defaultContextPruneThreshold {
+		t.Fatalf("DefaultConfig prune threshold = %g, want %g", got, defaultContextPruneThreshold)
+	}
+}
+
+func TestConfigValidateRejectsOutOfRangeContextCompactionThreshold(t *testing.T) {
+	for _, threshold := range []float64{-0.1, 1, 1.5, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		cfg := Config{
+			Model:                      ModelConfig{Provider: "fake"},
+			ContextCompactionThreshold: threshold,
+		}
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "context_compaction_threshold") {
+			t.Fatalf("threshold %g: expected context_compaction_threshold validation error, got %v", threshold, err)
+		}
+	}
+
+	// Zero means "use the default" and must stay valid.
+	cfg := Config{
+		Model:                      ModelConfig{Provider: "fake"},
+		ContextCompactionThreshold: 0,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("threshold 0 must be accepted as automatic, got %v", err)
+	}
+}
+
+func TestContextCompactionThresholdOrDefault(t *testing.T) {
+	if got := (Config{}).ContextCompactionThresholdOrDefault(); got != defaultContextCompactionThreshold {
+		t.Fatalf("unset threshold = %g, want default %g", got, defaultContextCompactionThreshold)
+	}
+	if got := (Config{ContextCompactionThreshold: 0.5}).ContextCompactionThresholdOrDefault(); got != 0.5 {
+		t.Fatalf("configured threshold = %g, want 0.5", got)
+	}
+	if got := DefaultConfig().ContextCompactionThresholdOrDefault(); got != defaultContextCompactionThreshold {
+		t.Fatalf("DefaultConfig threshold = %g, want %g", got, defaultContextCompactionThreshold)
 	}
 }
 

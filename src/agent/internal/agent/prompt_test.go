@@ -76,8 +76,13 @@ func TestRolePromptConstrainsArtifactRecoveryReads(t *testing.T) {
 	for _, want := range []string{
 		"Never use cat",
 		"print the entire artifact file",
-		"grep, sed -n, dd, jq, or fq",
-		"explicit range or filter",
+		"explicit output bound",
+		"grep -m 20",
+		"sed -n",
+		"dd if=FILE",
+		"jq",
+		"fq",
+		"do not emit unbounded",
 	} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("system prompt missing artifact recovery guidance %q:\n%s", want, profile.SystemPrompt)

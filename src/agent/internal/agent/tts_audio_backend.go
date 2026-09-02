@@ -35,8 +35,8 @@ func (a *audioBackend) StopPlayback(sessionID uint64) error {
 }
 
 // WaitForPlaybackDrain waits until audio_service has finished draining all
-// finalized playback sessions. Realtime uses this to distinguish submitted
-// audio from audio that was actually played.
+// finalized playback sessions. Realtime uses this to report notification
+// delivery only after playback, rather than file submission, has completed.
 func (a *audioBackend) WaitForPlaybackDrain(ctx context.Context) error {
 	if a == nil || a.c == nil {
 		return nil
