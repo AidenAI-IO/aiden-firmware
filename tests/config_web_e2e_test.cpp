@@ -1287,6 +1287,32 @@ TEST_CASE("config_web: POST /api/system/env saves env without OTA restart") {
     CHECK(saved_buffer.str() == "HTTP_PROXY=http://proxy.example:18080\n");
 }
 
+TEST_CASE("config_web: POST /api/system/env refuses keys the generator would drop") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    // Operator-named provider credentials are the supported api_key syntax and
+    // must still save.
+    REQUIRE(http_request(handle->port, "POST", "/api/system/env",
+                         "{\"system_env\":\"DASHSCOPE_API_KEY=secret\\n\"}")
+                .status == 200);
+
+    // aiden-environment would skip this one, so accepting it here would leave a
+    // saved value that no service ever receives.
+    HttpResponse loader = http_request(handle->port, "POST", "/api/system/env",
+                                       "{\"system_env\":\"LD_PRELOAD=/tmp/inject.so\\n\"}");
+    REQUIRE(loader.status == 400);
+    CHECK(loader.body.find("not approved") != std::string::npos);
+    CHECK(loader.body.find("LD_PRELOAD") != std::string::npos);
+
+    // A refused save leaves the previously saved file untouched.
+    std::ifstream saved_in((handle->tmp_dir + "/system_env").c_str());
+    REQUIRE(saved_in.good());
+    std::ostringstream saved_buffer;
+    saved_buffer << saved_in.rdbuf();
+    CHECK(saved_buffer.str() == "DASHSCOPE_API_KEY=secret\n");
+}
+
 TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     StubEnv env;
     auto handle = start_server(env);

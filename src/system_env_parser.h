@@ -19,6 +19,12 @@ struct SystemEnvProxy {
 
 std::string validate_system_proxy_url(const std::string& url);
 
+// Keys that may reach the systemd services through /run/aiden/system.env.
+// The file is loaded as root by every aiden service, and its source is
+// writable through the config portal, so names that steer the dynamic
+// loader or an interpreter must never be approved.
+bool is_allowed_system_env_key(const std::string& key);
+
 bool parse_system_env_content(const std::string& content,
                               std::vector<EnvAssignment>* assignments,
                               SystemEnvProxy* proxy,

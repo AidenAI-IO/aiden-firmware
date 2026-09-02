@@ -1,3 +1,36 @@
+usb: gadget: configfs: fix use-after-free on gadget teardown
+
+CONFIG_USB_CONFIGFS_UEVENT keeps a single global `android_device` that is
+assigned by android_device_create() and never cleared. Three defects follow
+from that, all reachable on this board because aiden-usb-gadget removes the
+gadget directory and recreates it whenever the unit is restarted (an explicit
+`systemctl restart`, or a systemd retry within StartLimitBurst). The ECM
+watchdog is not a trigger: it only rewrites the UDC attribute and never drops
+the configfs group.
+
+  1. After the first gadget is destroyed, `android_device` still points at the
+     device that device_destroy() freed. The next control transfer runs
+     android_setup(), which does dev_get_drvdata(android_device) on that freed
+     pointer. Derive the gadget_info from the gadget instead, which is what
+     mainline does. The unsynchronised get_gadget_data() before the lock is
+     only used to reach gadget_info; the second read inside gi->spinlock is
+     kept because configfs_composite_unbind() clears the gadget data under
+     that same lock, so it remains the race-safe check.
+
+  2. gi->work (android_work) dereferences gi->dev->kobj. A work item still
+     queued when the device is destroyed touches freed memory, so cancel it
+     before device_destroy() and clear gi->dev afterwards.
+
+  3. create_function_device() also parents new function devices to the stale
+     `android_device`. Clearing the global on teardown turns that into a clean
+     -EINVAL instead of a second use-after-free. Only f_midi and
+     f_audio_source call it, and the Aiden composite instantiates neither, but
+     CONFIG_USB_CONFIGFS_F_MIDI is enabled in the production kernel.
+
+Assigning `android_device` after the attribute loop closes a smaller hole in
+the same family: the previous order published the pointer before
+device_create_file() could fail and destroy the device it points at.
+
 diff --git a/sysdrv/source/kernel/drivers/usb/gadget/configfs.c b/sysdrv/source/kernel/drivers/usb/gadget/configfs.c
 index 81f680852..6b00c9c2a 100644
 --- a/sysdrv/source/kernel/drivers/usb/gadget/configfs.c

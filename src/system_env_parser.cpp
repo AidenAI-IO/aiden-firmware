@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -507,6 +508,35 @@ std::string validate_proxy_authority(const std::string& trimmed, size_t scheme_e
 }
 
 }  // namespace
+
+bool is_allowed_system_env_key(const std::string& key) {
+    static const std::set<std::string> allowed = {
+        "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY",
+        "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY",
+        "ANTHROPIC_BASE_URL", "ANDROID_SERIAL", "AIDEN_ADB_SERIAL",
+        "AIDEN_POINTER_MODE",
+    };
+    if (allowed.find(key) != allowed.end()) {
+        return true;
+    }
+
+    // Provider credentials reach the agent as `api_key = "$NAME"`, where the
+    // operator names the variable per provider record, so an exact list cannot
+    // cover them and goes stale every time a provider is added. Approve
+    // credential-shaped names instead: the names that matter for the loader or
+    // an interpreter (LD_*, PATH, PYTHONPATH, BASH_ENV, GLIBC_TUNABLES) do not
+    // end in any of these suffixes. Only api_key supports this syntax, so no
+    // other field needs widening here.
+    static const std::string suffixes[] = {"_KEY", "_TOKEN", "_SECRET"};
+    for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
+        const std::string& suffix = suffixes[i];
+        if (key.size() > suffix.size() &&
+            key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
 
 std::string validate_system_proxy_url(const std::string& url) {
     if (url.empty()) {

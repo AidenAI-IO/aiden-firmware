@@ -3267,6 +3267,29 @@ bool validate_system_env_content(const std::string& content, std::string* error)
     return validate_system_proxy_values(proxy, error);
 }
 
+// Rejects keys that aiden-environment would drop when it builds
+// /run/aiden/system.env. Without this the portal accepts the key and the
+// operator only finds out at the next boot, by way of a service that silently
+// never received it. The wording matches the generator so both report the same
+// phrase. Syntax errors are left to validate_system_env_content.
+bool validate_system_env_keys(const std::string& content, std::string* error) {
+    std::vector<aiden::EnvAssignment> assignments;
+    SystemProxy proxy;
+    std::string parse_error;
+    if (!aiden::parse_system_env_content(content, &assignments, &proxy, &parse_error)) {
+        return true;
+    }
+    for (size_t i = 0; i < assignments.size(); ++i) {
+        if (!aiden::is_allowed_system_env_key(assignments[i].key)) {
+            if (error) {
+                *error = "environment variable is not approved: " + assignments[i].key;
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 bool atomic_write_file(const std::string& path,
                        const std::string& content,
                        mode_t mode,
@@ -3561,6 +3584,9 @@ bool save_system_env_content(const std::string& path,
         return false;
     }
     if (!validate_system_env_content(content, error)) {
+        return false;
+    }
+    if (!validate_system_env_keys(content, error)) {
         return false;
     }
     return atomic_write_file(path, content, 0600, error);
