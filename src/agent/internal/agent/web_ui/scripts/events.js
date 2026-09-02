@@ -48,7 +48,18 @@ function connectSSE() {
 function handleServerEvent(data) {
     if (!data || data.type === 'connected') return;
     if (data.type === 'assistant' && data.status === 'streaming') {
-        addMessage(data);
+        const key = assistantStreamKey(data);
+        let draft = streamingAssistantDrafts[key];
+        if (!draft) {
+            draft = Object.assign({}, data, {content: data.content || '', reasoning_content: data.reasoning_content || ''});
+            streamingAssistantDrafts[key] = draft;
+        } else {
+            if (data.content) draft.content = data.content;
+            if (data.reasoning_content) draft.reasoning_content = data.reasoning_content;
+            draft.source = data.source || draft.source;
+            draft.timestamp = data.timestamp || draft.timestamp;
+        }
+        addMessage(draft);
         return;
     }
     if (data.type) refreshHistoryFromContext();

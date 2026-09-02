@@ -1468,6 +1468,8 @@ func (s *Server) handleChatAsync(
 			if event.Type == runEventReasoningDelta || event.Type == runEventReasoningReset {
 				msg := messageFromReasoningEvent(event, userMsg.EpisodeID, requestID)
 				pending.mu.Lock()
+				// Reasoning events contain deltas, not accumulated prefixes. The
+				// polling client appends them to its in-memory draft.
 				pending.history = append(pending.history, msg)
 				pending.messages = append(pending.messages, msg)
 				pending.mu.Unlock()
@@ -1880,9 +1882,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		EventHandler: func(event RunEvent) {
 			if event.Type == runEventReasoningDelta || event.Type == runEventReasoningReset {
 				stream.Write(ChatStreamEvent{
-					Type:             map[string]string{runEventReasoningDelta: "assistant_reasoning_delta", runEventReasoningReset: "assistant_reasoning_reset"}[event.Type],
-					RequestID:        req.RequestID,
-					EpisodeID:        episodeID,
+					Type:      map[string]string{runEventReasoningDelta: "assistant_reasoning_delta", runEventReasoningReset: "assistant_reasoning_reset"}[event.Type],
+					RequestID: req.RequestID,
+					EpisodeID: episodeID,
+					// Reasoning delta events carry only the newly received chunk;
+					// clients append it to their streaming draft.
 					ReasoningContent: event.ReasoningContent,
 				})
 				if s.liveActivity != nil {

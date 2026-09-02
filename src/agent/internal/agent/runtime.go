@@ -2444,13 +2444,14 @@ func (h *runtimeCallbackHandler) HandleStreamingReasoning(ctx context.Context, c
 	}
 	h.mu.Lock()
 	h.reasoningContent.Write(chunk)
-	content := h.reasoningContent.String()
 	h.mu.Unlock()
 	h.emitRunEventWithPersistence(RunEvent{
-		Type:             runEventReasoningDelta,
-		Role:             "assistant",
-		EpisodeID:        h.episodeID,
-		ReasoningContent: content,
+		Type:      runEventReasoningDelta,
+		Role:      "assistant",
+		EpisodeID: h.episodeID,
+		// Delta events carry only the newly received chunk. The accumulated
+		// reasoning is retained in reasoningContent for the final assistant event.
+		ReasoningContent: string(chunk),
 		Timestamp:        time.Now(),
 	}, false)
 }

@@ -66,17 +66,20 @@ func indexFold(source, needle string) int {
 type taggedThinkingStream struct {
 	downstream      func([]byte) error
 	reasoningStream func([]byte) error
+	// forwardUntagged keeps ordinary responses incremental in auto mode. Once
+	// an opening tag is observed, the stream switches to strict filtering.
+	forwardUntagged bool
 	pending         bytes.Buffer
 	inThinking      bool
 	foundTag        bool
 }
 
-func newTaggedThinkingStream(downstream func([]byte) error, reasoning ...func([]byte) error) *taggedThinkingStream {
-	var reasoningStream func([]byte) error
-	if len(reasoning) > 0 {
-		reasoningStream = reasoning[0]
+func newTaggedThinkingStream(downstream func([]byte) error, reasoningStream func([]byte) error, forwardUntagged bool) *taggedThinkingStream {
+	return &taggedThinkingStream{
+		downstream:      downstream,
+		reasoningStream: reasoningStream,
+		forwardUntagged: forwardUntagged,
 	}
-	return &taggedThinkingStream{downstream: downstream, reasoningStream: reasoningStream}
 }
 
 func (s *taggedThinkingStream) Write(chunk []byte) error {
@@ -179,6 +182,24 @@ func (s *taggedThinkingStream) process(final bool) error {
 				}
 				s.pending.Reset()
 			}
+		case s.forwardUntagged:
+			// A partial closing tag is ambiguous: it may be an orphan closing
+			// tag, so do not forward the preceding text speculatively. This
+			// prevents reasoning from reaching the visible callback before the
+			// provider completes a close tag split across chunks.
+			if maxThinkingTagPrefixLen(text, thinkingCloseTags) > 0 {
+				return nil
+			}
+			// Keep only a possible partial opening-tag suffix. Ordinary text is
+			// delivered as soon as it is no longer a tag prefix.
+			safe := len(text) - maxThinkingTagPrefixLen(text, thinkingOpenTags)
+			if safe > 0 {
+				if err := s.emit(s.pending.Bytes()[:safe]); err != nil {
+					return err
+				}
+				s.pending.Next(safe)
+			}
+			return nil
 		case final:
 			if s.pending.Len() > 0 {
 				if err := s.emit(s.pending.Bytes()); err != nil {
@@ -217,8 +238,11 @@ func maxThinkingTagPrefixLen(source string, tags []string) int {
 	max := 0
 	for _, tag := range tags {
 		limit := len(tag) - 1
-		if limit <= 0 || limit > len(source) {
+		if limit <= 0 {
 			continue
+		}
+		if limit > len(source) {
+			limit = len(source)
 		}
 		for n := 1; n <= limit; n++ {
 			if strings.EqualFold(source[len(source)-n:], tag[:n]) && n > max {

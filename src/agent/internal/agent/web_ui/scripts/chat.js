@@ -428,7 +428,7 @@ function appendAssistantReasoningDelta(event) {
         };
         streamingAssistantDrafts[key] = msg;
     }
-    msg.reasoning_content = event.reasoning_content || '';
+    msg.reasoning_content += event.reasoning_content || '';
     addMessage(msg);
 }
 

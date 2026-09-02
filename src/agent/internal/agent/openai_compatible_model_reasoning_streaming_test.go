@@ -90,3 +90,93 @@ func TestReasoningContentStreaming(t *testing.T) {
 		t.Errorf("Expected llm_stream_reasoning_chunks=3, got %v", reasoningChunks)
 	}
 }
+
+func TestOpenAICompatibleAutoModeFiltersTaggedThinkingIncrementally(t *testing.T) {
+	streamEvents := []string{
+		`data: {"id":"1","choices":[{"delta":{"content":"ordinary "}}]}`,
+		`data: {"id":"1","choices":[{"delta":{"content":"text"}}]}`,
+		`data: {"id":"1","choices":[{"delta":{"content":"<thi"}}]}`,
+		`data: {"id":"1","choices":[{"delta":{"content":"nk>private"}}]}`,
+		`data: {"id":"1","choices":[{"delta":{"content":" reasoning</thin"}}]}`,
+		`data: {"id":"1","choices":[{"delta":{"content":"king>visible"}}]}`,
+		`data: {"id":"1","choices":[{"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range streamEvents {
+			_, _ = w.Write([]byte(event + "\n"))
+		}
+	}))
+	defer server.Close()
+
+	// Empty effort means auto mode. Tagged thinking must still be removed from
+	// the visible stream, while ordinary untagged content remains incremental.
+	model := newOpenAICompatibleModel(server.URL, "test-model", "token", server.Client())
+	var visible []string
+	var reasoning []string
+	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "test"),
+	}, llms.WithStreamingFunc(func(_ context.Context, chunk []byte) error {
+		visible = append(visible, string(chunk))
+		return nil
+	}), llms.WithStreamingReasoningFunc(func(_ context.Context, chunk, _ []byte) error {
+		reasoning = append(reasoning, string(chunk))
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("GenerateContent failed: %v", err)
+	}
+	if got := resp.Choices[0].Content; got != "ordinary textvisible" {
+		t.Fatalf("content = %q, want ordinary textvisible", got)
+	}
+	if got := resp.Choices[0].ReasoningContent; got != "private reasoning" {
+		t.Fatalf("reasoning content = %q, want private reasoning", got)
+	}
+	if got := strings.Join(visible, ""); got != "ordinary textvisible" {
+		t.Fatalf("visible stream = %#v (%q), want ordinary textvisible", visible, got)
+	}
+	if len(visible) < 2 {
+		t.Fatalf("visible stream = %#v, want incremental ordinary output", visible)
+	}
+	if got := strings.Join(reasoning, ""); got != "private reasoning" {
+		t.Fatalf("reasoning stream = %q, want private reasoning", got)
+	}
+}
+
+func TestOpenAICompatibleAutoModeHandlesSplitOrphanClosingTag(t *testing.T) {
+	streamEvents := []string{
+		`data: {"id":"1","choices":[{"delta":{"content":"private plan</thi"}}]}`,
+		`data: {"id":"1","choices":[{"delta":{"content":"nk>final answer"}}]}`,
+		`data: {"id":"1","choices":[{"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range streamEvents {
+			_, _ = w.Write([]byte(event + "\n"))
+		}
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "token", server.Client())
+	var reasoning strings.Builder
+	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "test"),
+	}, llms.WithStreamingReasoningFunc(func(_ context.Context, chunk, _ []byte) error {
+		reasoning.Write(chunk)
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("GenerateContent failed: %v", err)
+	}
+	if got := resp.Choices[0].Content; got != "final answer" {
+		t.Fatalf("content = %q, want final answer", got)
+	}
+	if got := resp.Choices[0].ReasoningContent; got != "private plan" {
+		t.Fatalf("reasoning content = %q, want private plan", got)
+	}
+	if got := strings.TrimSpace(reasoning.String()); got != "private plan" {
+		t.Fatalf("reasoning stream = %q, want private plan", got)
+	}
+}

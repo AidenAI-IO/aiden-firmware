@@ -2679,7 +2679,7 @@ func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.Mes
 				}
 			}
 		}
-		if m.streamChunks != nil && m.callCount < len(m.streamChunks) {
+		if callOptions.StreamingFunc != nil && m.streamChunks != nil && m.callCount < len(m.streamChunks) {
 			for _, chunk := range m.streamChunks[m.callCount] {
 				if err := callOptions.StreamingFunc(ctx, []byte(chunk)); err != nil {
 					return nil, err
