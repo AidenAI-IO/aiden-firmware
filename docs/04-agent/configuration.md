@@ -91,7 +91,8 @@ The page fields cover the following config sections (all detailed later on this 
 locale = "en-US"
 custom_instruction = ""
 max_iterations = -1
-context_prune_threshold = 12000
+context_prune_threshold = 0.5
+context_compaction_threshold = 0.8
 screenshot_keep_n = 3
 screenshot_prune_interval = 2
 input_mode = "text"
@@ -227,7 +228,8 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
 | `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
-| `context_prune_threshold`   | `0`                         | Estimated token count that independently triggers deterministic cleanup of expired state snapshots and historical tool results. `0` derives the trigger as 70% of the usable model input budget and cleans down to 60%, before local conversation compaction at 80%. A positive value is honored exactly; its cleanup target is 70/80 of the configured trigger. |
+| `context_prune_threshold`   | `0.5`                       | Fraction of the usable model input budget that triggers deterministic cleanup of expired state snapshots and historical tool results, cleaning down to 6/7 of the trigger (so the default cleans from 50% to ~43%). Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.5`. The effective value is capped at `context_compaction_threshold`, so this cheap deterministic pass always gets a chance to free tokens before the LLM summary runs. A value of `1` or greater is rejected, as are `nan` and `inf`; a legacy absolute token count (for example `12000`) is detected on load, logged, and replaced by the default. |
+| `context_compaction_threshold` | `0.8`                    | Fraction of the usable model input budget at which the conversation is summarized into a compaction message. Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.8`. Values of `1` or greater, `nan`, and `inf` are rejected. Compaction itself has no token target: the transcript is reduced structurally by retaining head and tail messages and replacing the middle with one LLM summary, so the post-compaction size follows from the summary rather than from a budget. |
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
 | `input_mode`                | `text` / `stt` / `realtime` | Input mode: HTTP/Web UI only, legacy STT/TTS voice loop, or direct realtime voice model                                                                                                                                 |

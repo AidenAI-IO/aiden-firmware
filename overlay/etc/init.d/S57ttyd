@@ -1,0 +1,141 @@
+#!/bin/sh
+# Browser terminal powered by ttyd.
+
+BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
+ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
+
+if [ -f "$BOOT_CONF" ]; then
+    . "$BOOT_CONF"
+fi
+
+# Resolve ttyd settings after loading the boot configuration so both the new
+# names and the legacy WETTY_* migration fallbacks can override defaults.
+TTYD_BIN=${TTYD_BIN:-${WETTY_BIN:-/usr/bin/ttyd}}
+PID_FILE=${TTYD_PID_FILE:-${WETTY_PID_FILE:-/run/ttyd.pid}}
+LOG_PATH=${TTYD_LOG_PATH:-${WETTY_LOG_PATH:-/var/log/ttyd/ttyd.log}}
+TTYD_INTERFACE=${TTYD_INTERFACE:-${WETTY_HOST:-}}
+TTYD_PORT=${TTYD_PORT:-${WETTY_PORT:-3000}}
+TTYD_BASE=${TTYD_BASE:-${WETTY_BASE:-/webtty/}}
+TTYD_TITLE=${TTYD_TITLE:-${WETTY_TITLE:-Aiden Shell}}
+TTYD_COMMAND=${TTYD_COMMAND:-${WETTY_COMMAND:-/bin/login}}
+# ttyd 1.7.3 exposes xterm.js settings through repeatable --client-option
+# arguments. These defaults keep the terminal legible and predictable on
+# touch browsers while allowing board-specific overrides from BOOT_CONF.
+TTYD_RENDERER=${TTYD_RENDERER:-${WETTY_RENDERER:-canvas}}
+TTYD_FONT_SIZE=${TTYD_FONT_SIZE:-${WETTY_FONT_SIZE:-24}}
+TTYD_SCROLLBACK=${TTYD_SCROLLBACK:-${WETTY_SCROLLBACK:-500}}
+TTYD_CURSOR_STYLE=${TTYD_CURSOR_STYLE:-${WETTY_CURSOR_STYLE:-bar}}
+TTYD_DISABLE_RESIZE_OVERLAY=${TTYD_DISABLE_RESIZE_OVERLAY:-${WETTY_DISABLE_RESIZE_OVERLAY:-true}}
+TTYD_MAX_CLIENTS=${TTYD_MAX_CLIENTS:-${WETTY_MAX_CLIENTS:-2}}
+: "${ENABLE_TTYD:=${ENABLE_WETTY:-1}}"
+
+is_running() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    case "$cmd" in
+        *ttyd*) return 0 ;;
+    esac
+    return 1
+}
+
+current_pid() {
+    [ -f "$PID_FILE" ] || return
+    pid="$(cat "$PID_FILE" 2>/dev/null)"
+    case "$pid" in
+        ''|*[!0-9]*) return ;;
+    esac
+    echo "$pid"
+}
+
+start() {
+    if [ "$ENABLE_TTYD" != "1" ]; then
+        echo "ttyd disabled by config (ENABLE_TTYD=$ENABLE_TTYD)"
+        return 0
+    fi
+
+    pid="$(current_pid)"
+    if is_running "$pid"; then
+        echo "ttyd already running (pid $pid)"
+        return 0
+    fi
+
+    if [ ! -x "$TTYD_BIN" ]; then
+        echo "ttyd not found at $TTYD_BIN"
+        return 1
+    fi
+    if [ ! -x "$ENV_RUN_BIN" ]; then
+        echo "Environment wrapper not found at $ENV_RUN_BIN"
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$PID_FILE")" "$(dirname "$LOG_PATH")"
+    chmod 0755 "$(dirname "$PID_FILE")" "$(dirname "$LOG_PATH")" 2>/dev/null || true
+
+    # ttyd accepts the command as trailing arguments and uses --interface for
+    # an optional bind address. Keep the old WETTY_HOST override working for
+    # devices that already carry a customized boot configuration.
+    set -- \
+        --port "$TTYD_PORT" \
+        --base-path "$TTYD_BASE" \
+        --max-clients "$TTYD_MAX_CLIENTS" \
+        --client-option "titleFixed=$TTYD_TITLE" \
+        --client-option "rendererType=$TTYD_RENDERER" \
+        --client-option "fontSize=$TTYD_FONT_SIZE" \
+        --client-option "scrollback=$TTYD_SCROLLBACK" \
+        --client-option "cursorStyle=$TTYD_CURSOR_STYLE" \
+        --client-option "disableResizeOverlay=$TTYD_DISABLE_RESIZE_OVERLAY"
+    if [ -n "$TTYD_INTERFACE" ]; then
+        set -- "$@" --interface "$TTYD_INTERFACE"
+    fi
+    set -- "$@" "$TTYD_COMMAND"
+    "$ENV_RUN_BIN" "$TTYD_BIN" "$@" \
+        >> "$LOG_PATH" 2>&1 &
+    child_pid=$!
+    echo "$child_pid" > "$PID_FILE"
+    sleep 1
+
+    pid="$(current_pid)"
+    if ! is_running "$pid"; then
+        rm -f "$PID_FILE"
+        echo "Failed to start ttyd; see $LOG_PATH"
+        return 1
+    fi
+
+    echo "Started ttyd (pid $pid, http://${TTYD_INTERFACE:-0.0.0.0}:$TTYD_PORT$TTYD_BASE)"
+}
+
+stop() {
+    pid="$(current_pid)"
+    if is_running "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        i=0
+        while is_running "$pid" && [ "$i" -lt 5 ]; do
+            sleep 1
+            i="$((i + 1))"
+        done
+        is_running "$pid" && kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE"
+    echo "Stopped ttyd"
+}
+
+status() {
+    pid="$(current_pid)"
+    echo "log_path=$LOG_PATH"
+    if is_running "$pid"; then
+        echo "ttyd=running pid=$pid addr=${TTYD_INTERFACE:-0.0.0.0}:$TTYD_PORT base=$TTYD_BASE"
+    else
+        echo "ttyd=stopped"
+    fi
+}
+
+case "${1:-}" in
+    start)          start ;;
+    stop)           stop ;;
+    restart|reload) stop; start ;;
+    status)         status ;;
+    *) echo "Usage: $0 {start|stop|restart|reload|status}" >&2; exit 1 ;;
+esac

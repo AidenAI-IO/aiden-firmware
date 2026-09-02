@@ -2762,8 +2762,10 @@ func TestRuntimeRunPrunesHistoricalStateWithProviderCompaction(t *testing.T) {
 	llmModel := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("ok")}}
 	runtime := NewRuntimeWithDeps(
 		Config{
-			ConfigDir:             configDir,
-			ContextPruneThreshold: 1_000,
+			ConfigDir: configDir,
+			// A deliberately low fraction so the oversized state message is well
+			// past the prune trigger regardless of the model's budget.
+			ContextPruneThreshold: 0.1,
 			Model: ModelConfig{
 				Provider:                   "openai",
 				APIMode:                    "responses",
