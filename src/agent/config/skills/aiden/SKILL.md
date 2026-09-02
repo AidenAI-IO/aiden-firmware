@@ -37,8 +37,9 @@ health, screen contents, connection state, and permissions must always be checke
 
 - Use this skill when reasoning about Aiden itself, its board services, the Phone Bridge, phone
   setup, system configuration, or recovery boundaries.
-- Treat repository documentation and the running board as authoritative for current behavior. This
-  document describes intended contracts and safe decisions, not guessed device state.
+- Treat the running board and this bundled skill as the operational authority. Repository
+  documentation may explain implementation history during development, but it is not assumed to be
+  available to the board Agent.
 - Separate three levels of completion: a command was accepted, the companion app returned a result,
   and the phone UI or structured data was actually verified. Report the highest level that was
   observed; never promote an acknowledgement to a verified result.
@@ -440,18 +441,3 @@ reporting progress, distinguish **queued**, **phone acknowledged**, and **UI/dat
   work around unlock, login, permission, payment, or verification-code boundaries.
 - Secrets and personal data stay out of skills, logs, memory, and user-facing diagnostics unless
   explicitly requested and authorized by the tool contract.
-
-## Further Reading
-
-Read only the documents relevant to the current task:
-
-- Architecture and service ownership: `docs/02-architecture/overview.md`,
-  `docs/03-services/frame-service.md`, `docs/03-services/audio-service.md`, and
-  `docs/03-services/usb-hid.md`.
-- Agent configuration and lifecycle: `docs/04-agent/overview.md`,
-  `docs/04-agent/configuration.md`, `docs/04-agent/skills.md`, and
-  `docs/04-agent/context-lifecycle.md`.
-- Phone Bridge behavior and wire schema: `docs/04-agent/phone-bridge.md` and
-  `docs/04-agent/phone-bridge-protocol.md`.
-- BLE pairing, wake, ANCS, and Android notifications: `docs/03-services/ble-service.md`.
-- Unix socket framing: `docs/06-protocols/uds-protocol.md`.
