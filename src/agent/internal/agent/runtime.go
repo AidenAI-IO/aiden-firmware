@@ -302,6 +302,12 @@ type RunEvent struct {
 	ToolError      *ToolError `json:"tool_error,omitempty"`
 }
 
+// ContextWindowFn returns the active model's spec. It is called on demand so a
+// model swap takes effect without a restart. Implementations return a zero
+// ContextWindow when the window is unknown; callers then fall back to the
+// yaml-configured default.
+type ContextWindowFn func() model.ModelSpec
+
 type usageTrackingModel struct {
 	inner           model.Model
 	metrics         *RunMetrics
@@ -472,10 +478,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 	modelManager := NewModelManager(cfg.Model, proxy, modelManagerOptions...)
 	modelManager.prefetchProviderModelSpecIfNeeded()
-	summarizeFn := buildLLMSummarizeFn(modelManager)
-	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager, logger)
 	profileFn := buildLLMProfileFn(modelManager)
-	contextWindowFn := func() model.ModelSpec { return modelManager.Spec() }
 
 	longTermDir := ""
 	if memoryDir != "" {
@@ -489,10 +492,10 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		longTermStore.setProfileDebouncer(debouncer)
 	}
 
-	toolSet.RegisterMemoryTools(memoryDir, extractionCfg.SummaryMaxChunks, longTermStore)
+	toolSet.RegisterMemoryTools(cfg.ConfigDir, memoryDir, longTermStore)
 	toolSet.RegisterEnterTextTool(modelManager, nil) // deviceTypeFn set after runtime construction
 
-	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithStructuredSummarizeFn(structuredSummarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithLongTermMemoryStore(longTermStore), WithMemoryLogger(logger)), toolSet, skillIndex)
+	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithProfileFn(profileFn), WithMemoryProfileDebouncer(debouncer), WithLongTermMemoryStore(longTermStore), WithMemoryLogger(logger)), toolSet, skillIndex)
 
 	// Register skill tools after the runtime exists so skill_manage can mark the
 	// skill index dirty. The updated index is reloaded at the start of the next run.
@@ -504,7 +507,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
 	rt.waitForWakeup = waitForWakeupController
-	rt.storageMonitor = newRuntimeStorageMonitor(cfg, logger, rt.memories)
+	rt.storageMonitor = newRuntimeStorageMonitor(cfg, logger)
 	rt.SetVoiceNotificationSink(rt.VoiceNotificationSink())
 	modelManager.SetStorageMonitor(rt.storageMonitor)
 	if rt.memories != nil {
@@ -608,24 +611,14 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		memoryDir = filepath.Join(cfg.ConfigDir, "memory")
 		if memories != nil {
 			// Use sync.Once to ensure exactly one goroutine creates the fallback store
-			memories.longTermOnce.Do(func() {
-				if memories.longTerm == nil {
-					storeOpts := []LongTermMemoryOption{WithLifecycleDir(filepath.Join(memoryDir, "lifecycle"))}
-					storeOpts = append(storeOpts, WithStoreProfileFn(memories.profileFn))
-					store := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), storeOpts...)
-					store.setProfileDebouncer(memories.profileDebouncer)
-					memories.longTerm = store
-				}
-			})
-			longTermStore = memories.longTerm
+			longTermStore = memories.EnsureLongTermStore(memoryDir)
 		} else {
 			// No manager provided, create a standalone store
 			storeOpts := []LongTermMemoryOption{WithLifecycleDir(filepath.Join(memoryDir, "lifecycle"))}
 			longTermStore = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), storeOpts...)
 		}
 		if tools != nil {
-			extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
-			tools.RegisterMemoryTools(memoryDir, extractionCfg.SummaryMaxChunks, longTermStore)
+			tools.RegisterMemoryTools(cfg.ConfigDir, memoryDir, longTermStore)
 		}
 	}
 
@@ -645,17 +638,14 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		telemetrySessionID: uuid.NewString(),
 		stateManager:       statemanager.NewStateManager(),
 	}
-	// Use the active memory session ID for raw HTTP log partitioning.
+	// Partition raw HTTP logs by the live conversation, which is the current
+	// ContextManager session.
 	if modelManager, ok := models.(*ModelManager); ok {
 		modelManager.SetSessionIDProvider(func() string {
-			if memories == nil {
+			if cfg.ConfigDir == "" {
 				return ""
 			}
-			sessionID, err := memories.ActiveSessionID()
-			if err != nil {
-				return ""
-			}
-			return sessionID
+			return contextmanager.CurrentSessionID(agentpath.ContextManagerSessionFolder(cfg.ConfigDir))
 		})
 	}
 	if cfg.ConfigDir != "" {
@@ -666,9 +656,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
 	skillManager.SetDeviceTypeFunc(rt.deviceTypeFromState)
 	rt.tools.SetRuntimeDeviceTypeFn(rt.deviceTypeFromState)
-	rt.sessionManager = newMemoryManagerSessionManager(memories, func() BoundaryEpisodeContext {
-		return recentEpisodeContext(rt.memoryPlane)
-	})
+	rt.sessionManager = newMemoryManagerSessionManager(memories)
 	rt.initRunGate()
 	return rt
 }
@@ -955,7 +943,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
 	var episodeRecorder *EpisodeRecorder
 	var availableTools []langtools.Tool
-	var boundaryTelemetry sessionBoundaryTelemetry
+	chunkRecalls := &atomic.Int64{}
 	var output string
 	episodeCommitted := false
 	defer func() {
@@ -988,8 +976,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			return
 		}
 		episodeID = episodeRecorder.ID()
-		r.persistRunStatusBestEffort(episodeID, req.RequestID, runID, runErr)
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, runErr, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, runErr, promptCapture, chunkRecalls, req.AsyncEpisodeMaintenance)
 		episodeCommitted = true
 	}()
 
@@ -1032,28 +1019,17 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		beginResult = SessionBeginResult{}
 	}
-	boundaryTelemetry = beginResult.Boundary
-	if boundaryTelemetry.Rotated {
-		if err := r.rotateContext(); err != nil && r.logger != nil {
-			r.logger.Warn("[context] rotate after session boundary failed: %v", err)
-		}
-	}
-	if boundaryTelemetry.PendingRecallCounter == nil {
-		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
+	if beginResult.PendingRecallCounter != nil {
+		chunkRecalls = beginResult.PendingRecallCounter
 	}
 	sessionBeginEvent := TaskEpisodeEvent{
 		Type:       runEventSessionBegin,
 		Ts:         sessionBeginStart.Format(time.RFC3339Nano),
 		DurationMs: &sessionBeginDuration,
-		Metadata: map[string]interface{}{
-			"rotated":  beginResult.Boundary.Rotated,
-			"decision": beginResult.Boundary.Decision,
-			"reason":   beginResult.Boundary.Reason,
-		},
 	}
 
 	availableTools = r.availableTools()
-	availableTools = wrapSessionRecallTelemetry(availableTools, boundaryTelemetry.PendingRecallCounter)
+	availableTools = wrapSessionRecallTelemetry(availableTools, chunkRecalls)
 	retrieveReq := MemoryRetrieveRequest{
 		Input:        normalizedInput,
 		Attachments:  turnInput.Attachments,
@@ -1091,8 +1067,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		callOptions = append(callOptions, chains.WithMaxTokens(req.MaxTokens))
 	}
 	var streamCallbackHandler *runtimeCallbackHandler
-	persistRuntimeSessionEvents := r.memories != nil && strings.TrimSpace(r.memories.storageDir) != ""
-	if req.StreamWriter != nil || req.EventHandler != nil || req.SteerProvider != nil || r.logger != nil || persistRuntimeSessionEvents {
+	if req.StreamWriter != nil || req.EventHandler != nil || req.SteerProvider != nil || r.logger != nil {
 		streamCallbackHandler = &runtimeCallbackHandler{
 			writer:       req.StreamWriter,
 			metrics:      metrics,
@@ -1104,16 +1079,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			requestID:    req.RequestID,
 			runID:        runID,
 			episode:      episodeRecorder,
-		}
-		if persistRuntimeSessionEvents {
-			streamCallbackHandler.sessionEventAppender = func(ctx context.Context, event SessionEvent) error {
-				return r.appendRuntimeSessionEvent(ctx, "default", event, SessionEventMetadata{
-					RuntimeID: r.runtimeID,
-					EpisodeID: episodeID,
-					RequestID: req.RequestID,
-					RunID:     runID,
-				})
-			}
 		}
 	}
 	if streamCallbackHandler != nil && req.StreamWriter != nil {
@@ -1207,7 +1172,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, summarizing conversation... tokenUsage: %d, trigger: %d, contextWindow: %d", tokenUsage, compactionTrigger, contextWindow)
 		}
-		newManager, compacted, err := contextCompactor.Compact(ctx, r.contextManager)
+		chunkWriter := NewSessionChunkWriter(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+		newManager, compacted, err := contextCompactor.Compact(ctx, r.contextManager, chunkWriter)
 		if episodeRecorder != nil {
 			episodeRecorder.RecordEvent(contextCompactionEvent(
 				contextCompactor.LastCompactionStats(),
@@ -1250,7 +1216,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Info("Compaction: provider rejected the request because the context window was exceeded; compacting and retrying")
 		}
-		newManager, compacted, compactErr := contextCompactor.Compact(recoveryCtx, currentManager)
+		chunkWriter := NewSessionChunkWriter(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+		newManager, compacted, compactErr := contextCompactor.Compact(recoveryCtx, currentManager, chunkWriter)
 		if episodeRecorder != nil {
 			episodeRecorder.RecordEvent(contextCompactionEvent(
 				contextCompactor.LastCompactionStats(),
@@ -1314,13 +1281,13 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			return RunResult{}, ctxErr
 		}
 		if r.logger != nil {
-			r.logger.Warn("[memory] commit session failed; returning model output without memory snapshot: %v", err)
+			r.logger.Warn("[memory] commit session failed; returning model output anyway: %v", err)
 		}
 	}
 	if streamCallbackHandler != nil {
 		streamCallbackHandler.HandleAssistantOutput(ctx, output)
 	}
-	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
+	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, chunkRecalls, req.AsyncEpisodeMaintenance)
 	episodeCommitted = true
 
 	waitForWakeupRequested, waitForWakeupReason := false, ""
@@ -1452,55 +1419,6 @@ func (r *Runtime) commitSession(ctx context.Context, req SessionCommitRequest) (
 	return r.sessionManager.CommitRun(ctx, req)
 }
 
-func (r *Runtime) appendRuntimeSessionEvent(ctx context.Context, agentName string, event SessionEvent, meta SessionEventMetadata) error {
-	if r == nil || r.memories == nil {
-		return nil
-	}
-	return r.memories.AppendSessionEvent(ctx, agentName, event, meta)
-}
-
-func (r *Runtime) persistRunStatusBestEffort(episodeID, requestID, runID string, runErr error) {
-	if r == nil || r.memories == nil || runErr == nil {
-		return
-	}
-	status := "failed"
-	if errors.Is(runErr, context.Canceled) {
-		status = "interrupted"
-	}
-	content := "Agent run " + status + ": " + runErr.Error()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	err := r.memories.AppendSessionEvent(ctx, "default", SessionEvent{
-		Type:      "episode_status",
-		Role:      "system",
-		Status:    status,
-		Content:   content,
-		IsError:   true,
-		EpisodeID: episodeID,
-		RequestID: requestID,
-		RunID:     runID,
-		RuntimeID: r.runtimeID,
-	}, SessionEventMetadata{
-		RuntimeID: r.runtimeID,
-		EpisodeID: episodeID,
-		RequestID: requestID,
-		RunID:     runID,
-	})
-	if err != nil && r.logger != nil {
-		r.logger.Warn("[memory] persist run status failed: %v", err)
-	}
-}
-
-func steeredExchangeRecords(input string, steers []RunSteerMessage, output string) []MessageRecord {
-	records := make([]MessageRecord, 0, len(steers)+2)
-	records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: input})
-	for _, steer := range steers {
-		records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: steerHumanMessageContent(steer)})
-	}
-	records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeAI), Content: output})
-	return records
-}
-
 func (r *Runtime) currentEnvironmentHints() CurrentEnvironmentHints {
 	if r.tools != nil {
 		return r.tools.CurrentEnvironmentHints(currentEnvironmentHintMaxAge)
@@ -1523,22 +1441,8 @@ func (r *Runtime) effectiveContextWindow() int {
 	return 0
 }
 
-func (r *Runtime) activeConversationHistoryTokenBudget(contextWindow int) int {
-	if contextWindow <= 0 {
-		return 0
-	}
-	reserveTokens := defaultReserveTokens
-	keepRecentTokens := defaultKeepRecentTokens
-	if r != nil && r.memories != nil {
-		reserveTokens = r.memories.reserveTokens()
-		keepRecentTokens = r.memories.keepRecentTokens()
-	}
-	_, keepRecent := clampTokenBudgets(reserveTokens, keepRecentTokens, contextWindow)
-	return keepRecent
-}
-
 func (r *Runtime) ClearMemory(ctx context.Context) error {
-	if err := r.memories.ClearSession(ctx, "default"); err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	r.resetActiveUserContext()
@@ -1896,7 +1800,7 @@ func (t *sessionRecallTelemetryTool) Call(ctx context.Context, input string) (st
 		return "", err
 	}
 	if t.counter != nil {
-		t.counter.Add(int64(countPendingRecallResults(output)))
+		t.counter.Add(int64(countRecalledChunks(output)))
 	}
 	return output, nil
 }
@@ -1908,18 +1812,25 @@ func (t *sessionRecallTelemetryTool) ReturnsVisualObservation() bool {
 	return false
 }
 
-func countPendingRecallResults(output string) int {
+// countRecalledChunks reports how many conversation chunks a recall_session_chunks
+// call returned. Chunks only exist for spans already compacted out of the live
+// transcript, so a non-zero count means the run consulted history it could no
+// longer see directly.
+func countRecalledChunks(output string) int {
 	var payload struct {
 		Results []struct {
-			Source string `json:"source"`
+			ChunkID string `json:"chunk_id"`
+			Source  string `json:"source,omitempty"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
 		return 0
 	}
+	// Only count results recalled from pending (in-flight) chunks; active chunks
+	// from the current session are already in the model's context.
 	count := 0
 	for _, result := range payload.Results {
-		if strings.EqualFold(strings.TrimSpace(result.Source), chunkRecallSourcePending) {
+		if result.Source == "pending" {
 			count++
 		}
 	}
@@ -1932,7 +1843,7 @@ type episodeMaintenancePlane interface {
 	commitEpisodeMaintenance(ctx context.Context, episode TaskEpisode)
 }
 
-func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture, boundary sessionBoundaryTelemetry, asyncMaintenance bool) {
+func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture, chunkRecalls *atomic.Int64, asyncMaintenance bool) {
 	if recorder == nil || r.memoryPlane == nil {
 		return
 	}
@@ -1947,7 +1858,7 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	episode := recorder.Finish(output, metrics, runErr, tags, entities)
 	enrichEpisodeTelemetry(&episode, r.config)
 	r.enrichEpisodeRuntimeTelemetry(&episode)
-	enrichEpisodeSessionBoundaryTelemetry(&episode, boundary)
+	enrichEpisodeChunkRecallTelemetry(&episode, chunkRecalls)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if asyncMaintenance {
@@ -2018,21 +1929,17 @@ func (m *asyncEpisodeMaintenance) closeAndWait(ctx context.Context) error {
 	}
 }
 
-func enrichEpisodeSessionBoundaryTelemetry(episode *TaskEpisode, boundary sessionBoundaryTelemetry) {
-	if episode == nil || boundary.Decision == "" {
+// enrichEpisodeChunkRecallTelemetry records how many times the run consulted
+// compressed conversation history, so a run that answered from stale context
+// can be told apart from one that recalled a chunk.
+func enrichEpisodeChunkRecallTelemetry(episode *TaskEpisode, chunkRecalls *atomic.Int64) {
+	if episode == nil || chunkRecalls == nil {
 		return
 	}
 	if episode.Extra == nil {
 		episode.Extra = map[string]interface{}{}
 	}
-	episode.Extra["session_boundary_decision"] = boundary.Decision
-	episode.Extra["session_boundary_reason"] = boundary.Reason
-	episode.Extra["session_rotated"] = boundary.Rotated
-	pendingRecalled := int64(0)
-	if boundary.PendingRecallCounter != nil {
-		pendingRecalled = boundary.PendingRecallCounter.Load()
-	}
-	episode.Extra["pending_chunks_recalled"] = pendingRecalled
+	episode.Extra["session_chunks_recalled"] = chunkRecalls.Load()
 }
 
 func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
@@ -2129,7 +2036,6 @@ type runtimeCallbackHandler struct {
 	requestID            string
 	runID                string
 	episode              *EpisodeRecorder
-	sessionEventAppender func(context.Context, SessionEvent) error
 	mu                   sync.Mutex
 	pendingActions       []schema.AgentAction
 }
@@ -2192,33 +2098,18 @@ func (h *runtimeCallbackHandler) HandleChainError(ctx context.Context, err error
 
 func (h *runtimeCallbackHandler) HandleToolStart(ctx context.Context, input string) {}
 
+// emitRunEvent forwards a run event to the subscribed handler. Run events are
+// live UI/telemetry signals; the durable record of a run is the Episode trace
+// plus the ContextManager transcript.
 func (h *runtimeCallbackHandler) emitRunEvent(event RunEvent) {
-	h.emitRunEventWithPersistence(event, true)
-}
-
-func (h *runtimeCallbackHandler) emitRunEventWithPersistence(event RunEvent, persist bool) {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()
 	}
 	if event.EpisodeID == "" {
 		event.EpisodeID = h.episodeID
 	}
-	if persist {
-		h.persistSessionEventBestEffort(sessionEventFromRunEvent(event, h), "[memory] persist runtime session event failed")
-	}
 	if h.eventHandler != nil {
 		h.eventHandler(event)
-	}
-}
-
-func (h *runtimeCallbackHandler) persistSessionEventBestEffort(event SessionEvent, warnMessage string) {
-	if h.sessionEventAppender == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), runtimeSessionEventPersistTimeout)
-	defer cancel()
-	if err := h.sessionEventAppender(ctx, event); err != nil && h.logger != nil {
-		h.logger.Warn("%s: %v", warnMessage, err)
 	}
 }
 
@@ -2230,13 +2121,13 @@ func (h *runtimeCallbackHandler) HandleAssistantOutput(ctx context.Context, cont
 	if h.logger != nil {
 		h.logger.Info("Assistant output: %s", truncateForLog(content, 1000))
 	}
-	h.emitRunEventWithPersistence(RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:      "assistant_output",
 		Role:      "assistant",
 		EpisodeID: h.episodeID,
 		Content:   content,
 		Timestamp: time.Now(),
-	}, false)
+	})
 }
 
 func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output string) {
@@ -2443,42 +2334,6 @@ func (h *runtimeCallbackHandler) HandleSteerMessage(ctx context.Context, steer R
 	})
 }
 
-func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) SessionEvent {
-	role := strings.TrimSpace(event.Role)
-	if role == "" {
-		switch event.Type {
-		case "tool_result":
-			role = "tool"
-		case runEventToolCall:
-			role = string(llms.ChatMessageTypeAI)
-		case "steer":
-			role = "user"
-		default:
-			role = "system"
-		}
-	}
-	ts := event.Timestamp
-	if ts.IsZero() {
-		ts = time.Now()
-	}
-	sessionEvent := SessionEvent{
-		Ts:         ts.UTC().Format(time.RFC3339Nano),
-		Type:       event.Type,
-		Role:       role,
-		RuntimeID:  h.runtimeID,
-		EpisodeID:  firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
-		RequestID:  h.requestID,
-		RunID:      h.runID,
-		Content:    event.Content,
-		ToolCallID: event.ToolCallID,
-		ToolName:   event.ToolName,
-		ToolInput:  event.ToolInput,
-		IsError:    event.IsError,
-		ToolError:  cloneToolError(event.ToolError),
-	}
-	return sessionEvent
-}
-
 func (h *runtimeCallbackHandler) HandleRetrieverStart(ctx context.Context, query string) {}
 
 func (h *runtimeCallbackHandler) HandleRetrieverEnd(ctx context.Context, query string, documents []schema.Document) {
@@ -2675,135 +2530,6 @@ func truncateForLog(text string, max int) string {
 	return string(runes[:max]) + "..."
 }
 
-func buildLLMSummarizeFn(models model.Model) SummarizeFn {
-	return func(ctx context.Context, events []SessionEvent) string {
-		var transcript strings.Builder
-		for _, evt := range events {
-			if evt.Content == "" {
-				continue
-			}
-			transcript.WriteString(fmt.Sprintf("[%s] %s\n", evt.Role, evt.Content))
-		}
-		if transcript.Len() == 0 {
-			return ""
-		}
-		prompt := "Summarize this conversation in 2-3 concise sentences. Focus on what was discussed, decided, or requested. Write in the same language as the conversation.\n\n" + transcript.String()
-		result, err := llms.GenerateFromSinglePrompt(ctx, models, prompt, llms.WithMaxTokens(200))
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(result)
-	}
-}
-
-const structuredSummarizerPrompt = `Summarize this conversation chunk as STRICT JSON only. Do not wrap in markdown.
-Schema:
-{
-  "summary": "1 concise sentence in the same language as the conversation",
-  "user_goals": [],
-  "confirmed_facts": [],
-  "decisions": [],
-  "proposals": [],
-  "open_tasks": [],
-  "risks_or_pitfalls": [],
-  "memory_candidates": []
-}
-Rules:
-- Distinguish implemented/verified facts from proposals.
-- Put assistant suggestions or unimplemented designs in proposals, not confirmed_facts.
-- Put only explicit user-approved choices or clearly completed outcomes in decisions.
-- Put unfinished work in open_tasks.
-- memory_candidates must be durable user/project facts worth future recall; omit transient todos and assistant speculation.
-- Keep each list item short. Empty lists are allowed.
-
-Transcript:
-`
-
-const (
-	structuredSummaryMaxItems       = 16
-	structuredSummaryMaxItemRunes   = 240
-	structuredSummaryMaxSummaryRune = 480
-)
-
-func buildLLMStructuredSummarizeFn(models model.Model, logger *Logger) StructuredSummarizeFn {
-	return func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
-		var transcript strings.Builder
-		for _, evt := range events {
-			content := strings.TrimSpace(evt.Content)
-			if content == "" {
-				continue
-			}
-			transcript.WriteString(fmt.Sprintf("[%s:%s] %s\n", evt.Role, evt.Type, content))
-		}
-		if transcript.Len() == 0 {
-			return ChunkStructuredSummary{}
-		}
-		result, err := llms.GenerateFromSinglePrompt(ctx, models, structuredSummarizerPrompt+transcript.String(), llms.WithMaxTokens(800))
-		if err != nil {
-			if logger != nil {
-				logger.Warn("[memory] structured summary: LLM generation failed: %v", err)
-			}
-			return ChunkStructuredSummary{}
-		}
-		structured, err := parseChunkStructuredSummaryJSON(result)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("[memory] structured summary: JSON parse failed: %v", err)
-			}
-			return ChunkStructuredSummary{}
-		}
-		return structured
-	}
-}
-
-func parseChunkStructuredSummaryJSON(text string) (ChunkStructuredSummary, error) {
-	jsonText := strings.TrimSpace(text)
-	var structured ChunkStructuredSummary
-	decoder := json.NewDecoder(strings.NewReader(jsonText))
-	if err := decoder.Decode(&structured); err != nil {
-		return ChunkStructuredSummary{}, err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		return ChunkStructuredSummary{}, fmt.Errorf("structured summary must contain a single JSON object")
-	}
-	structured.Summary = capRunes(strings.TrimSpace(structured.Summary), structuredSummaryMaxSummaryRune)
-	structured.UserGoals = cleanStringList(structured.UserGoals)
-	structured.ConfirmedFacts = cleanStringList(structured.ConfirmedFacts)
-	structured.Decisions = cleanStringList(structured.Decisions)
-	structured.Proposals = cleanStringList(structured.Proposals)
-	structured.OpenTasks = cleanStringList(structured.OpenTasks)
-	structured.RisksOrPitfalls = cleanStringList(structured.RisksOrPitfalls)
-	structured.MemoryCandidates = cleanStringList(structured.MemoryCandidates)
-	return structured, nil
-}
-
-func cleanStringList(values []string) []string {
-	cleaned := make([]string, 0, len(values))
-	for _, value := range values {
-		value = capRunes(strings.TrimSpace(value), structuredSummaryMaxItemRunes)
-		if value == "" {
-			continue
-		}
-		cleaned = append(cleaned, value)
-		if len(cleaned) >= structuredSummaryMaxItems {
-			break
-		}
-	}
-	return cleaned
-}
-
-func capRunes(text string, max int) string {
-	if max <= 0 || text == "" {
-		return text
-	}
-	if utf8.RuneCountInString(text) <= max {
-		return text
-	}
-	runes := []rune(text)
-	return string(runes[:max])
-}
-
 func buildLLMProfileFn(models model.Model) ProfileFn {
 	return func(ctx context.Context, entries []ProfileEntry) string {
 		var input strings.Builder
@@ -2854,13 +2580,6 @@ func (r *Runtime) Close() error {
 	}
 	if r.mergeWorker != nil {
 		r.mergeWorker.Stop()
-	}
-	if r.memories != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := r.memories.WaitMaintenance(ctx); err != nil && r.logger != nil {
-			r.logger.Error("memory maintenance drain on close: %v", err)
-		}
-		cancel()
 	}
 	if r.profileDebouncer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

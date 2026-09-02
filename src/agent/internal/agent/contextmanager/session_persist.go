@@ -28,6 +28,14 @@ type sessionMetadata struct {
 	CreatedAt time.Time `json:"created_at,omitempty"`
 }
 
+// CurrentSessionID returns the session ID recorded as current for the given
+// session folder, or an empty string when no session has been created yet.
+// It is the single source of truth for "which conversation is live", used for
+// log partitioning and storage bookkeeping outside this package.
+func CurrentSessionID(sessionFolder string) string {
+	return fetchCurrentSession(sessionFolder)
+}
+
 // fetchCurrentSession fetches the current session ID from the session folder, should be called when initializing the context manager.
 func fetchCurrentSession(sessionFolder string) string {
 	// sessionFolder/.current_session content is the session ID

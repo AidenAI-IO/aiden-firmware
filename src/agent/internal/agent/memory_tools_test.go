@@ -1,41 +1,67 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/messages"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
-func TestRecallSessionChunksToolReturnsMatchingEvidence(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	session := NewSessionMemoryStore(filepath.Join(root, "session"))
-	if _, err := session.AppendEvent(ctx, SessionEvent{EventID: "evt_1", Type: "user_input", Role: "user", Content: "登录失败", AppName: "某政务App"}); err != nil {
-		t.Fatalf("AppendEvent() error = %v", err)
+// writeTestChunk persists one conversation chunk for sessionID the same way
+// compaction does, so recall tests exercise the real on-disk layout.
+func writeTestChunk(t *testing.T, sessionFolder, sessionID string, msgs []messages.Message, summary string, tags, entities []string) {
+	t.Helper()
+	writer := NewSessionChunkWriter(sessionFolder)
+	if err := writer.WriteChunk(context.Background(), sessionID, msgs, summary); err != nil {
+		t.Fatalf("WriteChunk() error = %v", err)
 	}
-	if _, err := session.AppendEvent(ctx, SessionEvent{EventID: "evt_2", Type: "screen_context", Role: "screen", Content: "验证码已过期", AppName: "某政务App"}); err != nil {
-		t.Fatalf("AppendEvent() error = %v", err)
+	if len(tags) == 0 && len(entities) == 0 {
+		return
 	}
-	if _, err := session.Compress(ctx, CompressOption{Tags: []string{"登录", "验证码"}, Entities: []string{"某政务App"}, Summary: "验证码过期登录场景"}); err != nil {
-		t.Fatalf("Compress() error = %v", err)
+	// Tags and entities are searchable index fields; set them on the entry the
+	// writer just appended.
+	indexPath := filepath.Join(sessionFolder, sessionID, "chunks", "index.yaml")
+	index, err := loadChunkIndexFromPath(indexPath)
+	if err != nil {
+		t.Fatalf("loadChunkIndexFromPath() error = %v", err)
 	}
+	if len(index.Chunks) == 0 {
+		t.Fatal("expected the written chunk in the index")
+	}
+	index.Chunks[len(index.Chunks)-1].Tags = tags
+	index.Chunks[len(index.Chunks)-1].Entities = entities
+	data, err := yaml.Marshal(index)
+	if err != nil {
+		t.Fatalf("marshal chunk index: %v", err)
+	}
+	if err := os.WriteFile(indexPath, data, 0o644); err != nil {
+		t.Fatalf("write chunk index: %v", err)
+	}
+}
 
-	tool := NewRecallSessionChunksTool(session, nil)
-	out, err := tool.Call(ctx, `{"tags":["验证码"],"app_name":"某政务App","limit":1}`)
+func TestRecallSessionChunksToolReturnsMatchingChunk(t *testing.T) {
+	ctx := context.Background()
+	sessionFolder := t.TempDir()
+	writeTestChunk(t, sessionFolder, "s_login", []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "登录失败"},
+		{Role: messages.MessageRoleAssistant, Content: "验证码已过期"},
+	}, "验证码过期登录场景", []string{"登录", "验证码"}, []string{"某政务App"})
+
+	tool := NewRecallSessionChunksTool(NewMultiSessionChunkStore(sessionFolder))
+	out, err := tool.Call(ctx, `{"tags":["验证码"],"limit":1}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
 
 	var decoded struct {
-		Results []struct {
-			ChunkID  string         `json:"chunk_id"`
-			Summary  string         `json:"summary"`
-			Evidence []SessionEvent `json:"evidence"`
-		} `json:"results"`
+		Results []ChunkRecallResult `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
 		t.Fatalf("decode output %q: %v", out, err)
@@ -43,51 +69,51 @@ func TestRecallSessionChunksToolReturnsMatchingEvidence(t *testing.T) {
 	if len(decoded.Results) != 1 {
 		t.Fatalf("expected 1 result, got %#v", decoded.Results)
 	}
-	if !strings.HasPrefix(decoded.Results[0].ChunkID, "chunk_") || len(decoded.Results[0].Evidence) != 2 {
-		t.Fatalf("unexpected recall result: %#v", decoded.Results[0])
+	got := decoded.Results[0]
+	if !strings.HasPrefix(got.ChunkID, "chunk_") {
+		t.Fatalf("chunk_id = %q, want chunk_ prefix", got.ChunkID)
 	}
-	if decoded.Results[0].Evidence[1].Content != "验证码已过期" {
-		t.Fatalf("expected screen evidence, got %#v", decoded.Results[0].Evidence)
+	if got.Summary != "验证码过期登录场景" {
+		t.Fatalf("summary = %q, want the persisted summary", got.Summary)
+	}
+	if got.SessionID != "s_login" {
+		t.Fatalf("session_id = %q, want s_login", got.SessionID)
 	}
 }
 
-func TestRecallSessionChunksToolIgnoresAppNameInput(t *testing.T) {
+// Recall spans every session folder, so history compacted before the current
+// session revision stays reachable.
+func TestRecallSessionChunksToolSearchesAllSessions(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	session := NewSessionMemoryStore(filepath.Join(root, "session"))
+	sessionFolder := t.TempDir()
+	writeTestChunk(t, sessionFolder, "s_first", []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "打开邮件"},
+	}, "Mail navigation", []string{"navigation"}, nil)
+	writeTestChunk(t, sessionFolder, "s_second", []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "打开日历"},
+	}, "Calendar navigation", []string{"navigation"}, nil)
 
-	if _, err := session.AppendEvent(ctx, SessionEvent{EventID: "evt_mail", Type: "user_input", Role: "user", Content: "打开邮件", AppName: "Mail"}); err != nil {
-		t.Fatalf("AppendEvent() mail error = %v", err)
-	}
-	if _, err := session.Compress(ctx, CompressOption{ChunkID: "chunk_mail", Tags: []string{"navigation"}, Summary: "Mail navigation"}); err != nil {
-		t.Fatalf("Compress() mail error = %v", err)
-	}
-	if err := session.replaceEvents(nil); err != nil {
-		t.Fatalf("replaceEvents() after mail error = %v", err)
-	}
-	if _, err := session.AppendEvent(ctx, SessionEvent{EventID: "evt_calendar", Type: "user_input", Role: "user", Content: "打开日历", AppName: "Calendar"}); err != nil {
-		t.Fatalf("AppendEvent() calendar error = %v", err)
-	}
-	if _, err := session.Compress(ctx, CompressOption{ChunkID: "chunk_calendar", Tags: []string{"navigation"}, Summary: "Calendar navigation"}); err != nil {
-		t.Fatalf("Compress() calendar error = %v", err)
-	}
-
-	tool := NewRecallSessionChunksTool(session, nil)
-	out, err := tool.Call(ctx, `{"app_name":"Mail","limit":10}`)
+	tool := NewRecallSessionChunksTool(NewMultiSessionChunkStore(sessionFolder))
+	out, err := tool.Call(ctx, `{"tags":["navigation"],"limit":10}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
 
 	var decoded struct {
-		Results []struct {
-			ChunkID string `json:"chunk_id"`
-		} `json:"results"`
+		Results []ChunkRecallResult `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
 		t.Fatalf("decode output %q: %v", out, err)
 	}
 	if len(decoded.Results) != 2 {
-		t.Fatalf("app_name input should not filter session chunks, got %#v", decoded.Results)
+		t.Fatalf("expected chunks from both sessions, got %#v", decoded.Results)
+	}
+	sessions := map[string]bool{}
+	for _, result := range decoded.Results {
+		sessions[result.SessionID] = true
+	}
+	if !sessions["s_first"] || !sessions["s_second"] {
+		t.Fatalf("expected both sessions represented, got %#v", sessions)
 	}
 }
 
@@ -177,7 +203,7 @@ func TestSaveMemoryToolExcludesScreenSnapshotType(t *testing.T) {
 
 func TestToolSetRegistersMemoryRecallTools(t *testing.T) {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	tools.RegisterMemoryTools(t.TempDir(), 0, nil)
+	tools.RegisterMemoryTools(t.TempDir(), filepath.Join(t.TempDir(), "memory"), nil)
 	if _, ok := tools.Get("recall_session_chunks"); !ok {
 		t.Fatalf("expected recall_session_chunks tool to be registered")
 	}

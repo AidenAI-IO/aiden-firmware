@@ -194,7 +194,7 @@ func (m *SkillManager) CatalogSummary() string {
 	names := m.index.Names()
 	sort.Strings(names)
 	deviceType := m.deviceTypeLocked()
-	lines := make([]string, 0, minInt(maxSkillCatalogEntries, len(names)))
+	lines := make([]string, 0, min(maxSkillCatalogEntries, len(names)))
 	hidden := 0
 	for _, name := range names {
 		if normalizeSkillUsageState(usage[name].State) == SkillUsageStateArchived {

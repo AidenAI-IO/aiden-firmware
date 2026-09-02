@@ -8,11 +8,6 @@ import (
 	"strings"
 )
 
-type RecallSessionChunksTool struct {
-	store    *SessionMemoryStore
-	archived *ArchivedSessionStore
-}
-
 type RecallMemoryTool struct {
 	store     *LongTermMemoryStore
 	temporary *LongTermMemoryStore
@@ -35,8 +30,14 @@ type InspectEpisodeTool struct {
 	store *TaskEpisodeStore
 }
 
-func NewRecallSessionChunksTool(store *SessionMemoryStore, archived *ArchivedSessionStore) *RecallSessionChunksTool {
-	return &RecallSessionChunksTool{store: store, archived: archived}
+// RecallSessionChunksTool searches conversation chunks written at compaction
+// time across every ContextManager session.
+type RecallSessionChunksTool struct {
+	store *MultiSessionChunkStore
+}
+
+func NewRecallSessionChunksTool(store *MultiSessionChunkStore) *RecallSessionChunksTool {
+	return &RecallSessionChunksTool{store: store}
 }
 
 func (t *RecallSessionChunksTool) Name() string { return "recall_session_chunks" }
@@ -45,7 +46,7 @@ func (t *RecallSessionChunksTool) Description() string {
 	return strings.Join([]string{
 		"Recall compressed session history chunks from this conversation and prior sessions.",
 		"Call this tool whenever the user references or asks about prior conversation content that is not present in your visible context — including denials such as 'we never discussed X'. The visible context is only the recent hot window; older turns are compressed into archived chunks invisible until recalled.",
-		"The tool automatically searches both the active session and the archive in a single call, so do not retry with different parameters.",
+		"The tool automatically searches all sessions in a single call, so do not retry with different parameters.",
 		"Prefer chunk_ids when known; otherwise pass tags (topic keywords from the user's question) and use empty tags [] for recent history.",
 		"For remembered preferences, rules, procedures, or facts, use recall_memory instead.",
 	}, " ")
@@ -62,7 +63,7 @@ func (t *RecallSessionChunksTool) ArgsSchema() map[string]any {
 
 func (t *RecallSessionChunksTool) Call(ctx context.Context, input string) (string, error) {
 	if t.store == nil {
-		return "", fmt.Errorf("session memory store is not configured")
+		return "", fmt.Errorf("session chunk store is not configured")
 	}
 	query, err := decodeChunkRecallQuery(input)
 	if err != nil {
@@ -71,35 +72,6 @@ func (t *RecallSessionChunksTool) Call(ctx context.Context, input string) (strin
 	results, err := t.store.RecallChunks(ctx, query)
 	if err != nil {
 		return "", err
-	}
-	for i := range results {
-		if results[i].Source == "" {
-			results[i].Source = chunkRecallSourceActive
-		}
-	}
-
-	if t.archived != nil {
-		remaining := query.Limit
-		if remaining > 0 {
-			remaining -= len(results)
-		}
-		if query.Limit <= 0 || remaining > 0 {
-			archiveQuery := query
-			if query.Limit > 0 {
-				archiveQuery.Limit = remaining
-			} else {
-				// Apply the same default cap used by active recall (3) to
-				// prevent unbounded archived chunk scanning.
-				archiveQuery.Limit = 3
-			}
-			archived, err := t.archived.RecallChunks(ctx, archiveQuery)
-			if err == nil {
-				results = append(results, archived...)
-			}
-			// Archive search failures are non-fatal: a missing or partial
-			// archive directory shouldn't prevent the agent from getting
-			// active-session results back.
-		}
 	}
 
 	return encodeToolJSON(map[string]any{"results": results})

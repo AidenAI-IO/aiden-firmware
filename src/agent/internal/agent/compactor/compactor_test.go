@@ -128,7 +128,7 @@ func TestCompactPreservesLLMFailureSource(t *testing.T) {
 		Model: failingSummaryModel{err: errors.New("API error 429: insufficient_quota")},
 	})
 
-	_, _, err = compactor.Compact(context.Background(), manager)
+	_, _, err = compactor.Compact(context.Background(), manager, nil)
 	if err == nil {
 		t.Fatal("Compact() error = nil, want LLM failure")
 	}
@@ -292,7 +292,7 @@ func TestPruneHistoricalAndCompactRunAsSeparateStages(t *testing.T) {
 		t.Fatalf("prune summary model calls = %d, want 0", len(model.prompts))
 	}
 
-	newManager, compacted, err := compactor.Compact(context.Background(), prunedManager)
+	newManager, compacted, err := compactor.Compact(context.Background(), prunedManager, nil)
 	if err != nil {
 		t.Fatalf("Compact() error = %v", err)
 	}
@@ -472,7 +472,7 @@ func TestCompactSummarizesHistoricalToolResults(t *testing.T) {
 	model := &promptCapturingModel{reply: "historical work summary"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
 
-	newManager, compacted, err := compactor.Compact(context.Background(), manager)
+	newManager, compacted, err := compactor.Compact(context.Background(), manager, nil)
 	if err != nil {
 		t.Fatalf("Compact() error = %v", err)
 	}
@@ -536,7 +536,7 @@ func TestCompactSkipsFullyProtectedConversation(t *testing.T) {
 	model := &promptCapturingModel{reply: "summary should not be called"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
 
-	newManager, compacted, err := compactor.Compact(context.Background(), manager)
+	newManager, compacted, err := compactor.Compact(context.Background(), manager, nil)
 	if err != nil {
 		t.Fatalf("Compact() error = %v", err)
 	}
@@ -567,7 +567,7 @@ func TestCompactLeavesProtectedOrphanedToolResultUnchanged(t *testing.T) {
 	}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{})
 
-	newManager, compacted, err := compactor.Compact(context.Background(), manager)
+	newManager, compacted, err := compactor.Compact(context.Background(), manager, nil)
 	if err != nil {
 		t.Fatalf("Compact() error = %v", err)
 	}
@@ -643,7 +643,7 @@ func TestCompactDropsDeletedRecoverableToolResultMode(t *testing.T) {
 	model := &promptCapturingModel{reply: "summary deliberately omits every artifact reference"}
 	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
 
-	newManager, compacted, err := compactor.Compact(context.Background(), manager)
+	newManager, compacted, err := compactor.Compact(context.Background(), manager, nil)
 	if err != nil {
 		t.Fatalf("Compact() error = %v", err)
 	}

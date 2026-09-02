@@ -15,7 +15,7 @@ func TestRuntimeMemorySubsystemsShareLongTermStore(t *testing.T) {
 	store := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")))
 	manager := NewMemoryManager(memoryDir, WithLongTermMemoryStore(store))
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	tools.RegisterMemoryTools(memoryDir, 0, store)
+	tools.RegisterMemoryTools(configDir, memoryDir, store)
 
 	runtime := NewRuntimeWithDeps(Config{ConfigDir: configDir}, nil, manager, tools, nil)
 	plane, ok := runtime.memoryPlane.(*FilesystemMemoryPlane)
@@ -43,7 +43,7 @@ func TestRuntimeMemorySubsystemsCreateSharedLongTermStoreFallback(t *testing.T) 
 	memoryDir := filepath.Join(configDir, "memory")
 	manager := NewMemoryManager(memoryDir)
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	tools.RegisterMemoryTools(memoryDir, 0, nil)
+	tools.RegisterMemoryTools(configDir, memoryDir, nil)
 
 	runtime := NewRuntimeWithDeps(Config{ConfigDir: configDir}, nil, manager, tools, nil)
 	plane, ok := runtime.memoryPlane.(*FilesystemMemoryPlane)
@@ -80,7 +80,7 @@ func TestRuntimeSharedStoreConcurrentAccess(t *testing.T) {
 
 	manager := NewMemoryManager(memoryDir, WithLongTermMemoryStore(store))
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	tools.RegisterMemoryTools(memoryDir, 0, store)
+	tools.RegisterMemoryTools(configDir, memoryDir, store)
 
 	runtime := NewRuntimeWithDeps(Config{ConfigDir: configDir}, nil, manager, tools, nil)
 	_ = runtime // Keep alive for test setup
@@ -173,7 +173,7 @@ func TestRuntimeFallbackStoreProfileFnWiring(t *testing.T) {
 	)
 
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	tools.RegisterMemoryTools(memoryDir, 0, nil)
+	tools.RegisterMemoryTools(configDir, memoryDir, nil)
 
 	runtime := NewRuntimeWithDeps(Config{ConfigDir: configDir}, nil, manager, tools, nil)
 
@@ -251,7 +251,7 @@ func TestRuntimeFallbackStoreCacheIsolation(t *testing.T) {
 	// Create runtime with fallback (should create NEW store)
 	manager := NewMemoryManager(memoryDir)
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	tools.RegisterMemoryTools(memoryDir, 0, nil)
+	tools.RegisterMemoryTools(configDir, memoryDir, nil)
 
 	runtime := NewRuntimeWithDeps(Config{ConfigDir: configDir}, nil, manager, tools, nil)
 
@@ -312,7 +312,7 @@ func TestRuntimeFallbackStoreIdempotency(t *testing.T) {
 
 	manager := NewMemoryManager(memoryDir)
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	tools.RegisterMemoryTools(memoryDir, 0, nil)
+	tools.RegisterMemoryTools(configDir, memoryDir, nil)
 
 	runtime1 := NewRuntimeWithDeps(Config{ConfigDir: configDir}, nil, manager, tools, nil)
 	store1 := manager.longTerm
@@ -321,7 +321,7 @@ func TestRuntimeFallbackStoreIdempotency(t *testing.T) {
 	}
 
 	tools2 := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	tools2.RegisterMemoryTools(memoryDir, 0, nil)
+	tools2.RegisterMemoryTools(configDir, memoryDir, nil)
 	runtime2 := NewRuntimeWithDeps(Config{ConfigDir: configDir}, nil, manager, tools2, nil)
 	store2 := manager.longTerm
 
@@ -360,7 +360,7 @@ func TestRuntimeConcurrentFallbackStoreInitialization(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-			tools.RegisterMemoryTools(memoryDir, 0, nil)
+			tools.RegisterMemoryTools(configDir, memoryDir, nil)
 			rt := NewRuntimeWithDeps(Config{ConfigDir: configDir}, nil, manager, tools, nil)
 			runtimes[idx] = rt
 		}(i)

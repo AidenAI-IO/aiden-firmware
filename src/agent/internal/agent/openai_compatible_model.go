@@ -239,10 +239,8 @@ func (l *llmRawHTTPLogger) Log(ctx context.Context, entry RawHTTPLogEntry) error
 	}
 
 	fileName := "llm-http-" + fileTime.Format("200601021504") + ".log"
-	if sid := strings.TrimSpace(sessionID); sid != "" {
-		if err := validateSessionIDPathComponent(sid); err == nil {
-			fileName = "llm-http-" + sid + ".log"
-		}
+	if sid := strings.TrimSpace(sessionID); sid != "" && safeLogPathComponent(sid) {
+		fileName = "llm-http-" + sid + ".log"
 	}
 
 	path := filepath.Join(l.dir, fileName)
@@ -259,6 +257,20 @@ func (l *llmRawHTTPLogger) Log(ctx context.Context, entry RawHTTPLogEntry) error
 		return nil
 	}
 	return err
+}
+
+// safeLogPathComponent reports whether id can be used verbatim as a single log
+// file name component, rejecting separators, traversal, and control characters.
+func safeLogPathComponent(id string) bool {
+	if id == "" || id == "." || id != filepath.Base(id) || strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if ch := id[i]; ch < 0x20 || ch == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func (l *llmRawHTTPLogger) currentTime() time.Time {
