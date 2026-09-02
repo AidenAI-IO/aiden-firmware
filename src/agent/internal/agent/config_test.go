@@ -1018,8 +1018,10 @@ provider = "fake"
 func TestLoadRuntimeConfigCanOverrideContextPruneThreshold(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
+	// Deliberately not defaultContextPruneThreshold: an override equal to the
+	// default would pass this test even if the configured value were ignored.
 	if err := os.WriteFile(path, []byte(`
-context_prune_threshold = 0.5
+context_prune_threshold = 0.4
 
 [model]
 provider = "fake"
@@ -1032,12 +1034,12 @@ provider = "fake"
 		t.Fatalf("LoadRuntimeConfig() error = %v", err)
 	}
 	got := cfg.ContextPruneThresholdOrDefault()
-	if got != 0.5 {
-		t.Fatalf("ContextPruneThresholdOrDefault() = %g, want 0.5", got)
+	if got != 0.4 {
+		t.Fatalf("ContextPruneThresholdOrDefault() = %g, want 0.4", got)
 	}
 	trigger, target, enabled := historicalPruneBudgets(10_000, got)
-	if !enabled || trigger != 5_000 {
-		t.Fatalf("historicalPruneBudgets(10000, %g) = %d, %d, %v; want trigger 5000", got, trigger, target, enabled)
+	if !enabled || trigger != 4_000 {
+		t.Fatalf("historicalPruneBudgets(10000, %g) = %d, %d, %v; want trigger 4000", got, trigger, target, enabled)
 	}
 }
 
