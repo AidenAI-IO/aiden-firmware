@@ -378,8 +378,9 @@ type compatibleChatResponse struct {
 	ID      string `json:"id,omitempty"`
 	Choices []struct {
 		Message struct {
-			Content   any                  `json:"content"`
-			ToolCalls []compatibleToolCall `json:"tool_calls,omitempty"`
+			Content          any                  `json:"content"`
+			ReasoningContent any                  `json:"reasoning_content,omitempty"`
+			ToolCalls        []compatibleToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -612,11 +613,17 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 	choice := decoded.Choices[0]
 	content := flattenResponseContent(choice.Message.Content)
+	providerReasoning := flattenResponseContent(choice.Message.ReasoningContent)
+	visibleContent, taggedReasoning, taggedThinking := normalizeTaggedThinkingText(content)
+	if taggedThinking {
+		content = visibleContent
+	}
 	result := &llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
-			Content:    content,
-			StopReason: choice.FinishReason,
-			ToolCalls:  convertResponseToolCalls(choice.Message.ToolCalls),
+			Content:          content,
+			ReasoningContent: strings.TrimSpace(strings.Trim(strings.Join([]string{providerReasoning, taggedReasoning}, "\n"), "\n")),
+			StopReason:       choice.FinishReason,
+			ToolCalls:        convertResponseToolCalls(choice.Message.ToolCalls),
 		}},
 	}
 	if len(result.Choices[0].ToolCalls) > 0 {
@@ -648,6 +655,16 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	stopReason := ""
 	toolCalls := map[int]*compatibleToolCall{}
 	var usageInfo map[string]any
+	filteredStream := stream
+	var taggedStream *taggedThinkingStream
+	if stream != nil && m.reasoningEffort != "" {
+		taggedStream = newTaggedThinkingStream(func(chunk []byte) error {
+			return stream(ctx, chunk)
+		})
+		filteredStream = func(_ context.Context, chunk []byte) error {
+			return taggedStream.Write(chunk)
+		}
+	}
 	var rawStream strings.Builder
 	hasRawStream := false
 	streamDone := false
@@ -659,6 +676,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	contentChunks := 0
 	reasoningChunks := 0
 	commentCount := 0
+	rawContentForLog := ""
 	rawLoggingEnabled := m.rawLogger != nil && rawHTTPLogEnabled(ctx)
 	logRawStream := func(scanErr error) {
 		if !rawLoggingEnabled {
@@ -677,7 +695,11 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 				rawSSE = rawStream.String()
 			}
 		}
-		body := formatStreamingRawHTTPLogBody(content.String(), reasoningContent.String(), stopReason, orderedCompatibleToolCalls(toolCalls), usageInfo, streamDone, scanErr, rawSSE)
+		loggedContent := content.String()
+		if rawContentForLog != "" {
+			loggedContent = rawContentForLog
+		}
+		body := formatStreamingRawHTTPLogBody(loggedContent, reasoningContent.String(), stopReason, orderedCompatibleToolCalls(toolCalls), usageInfo, streamDone, scanErr, rawSSE)
 		_ = m.logRawHTTP(ctx, requestModel, "response", logStatusCode, body)
 	}
 	var scanErr error
@@ -743,6 +765,14 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 			}
 			reasoningChunks++
 			reasoningContent.WriteString(reasoningChunk)
+			if taggedStream != nil {
+				if err := taggedStream.FlushVisible(); err != nil {
+					scanErr = err
+					return nil, err
+				}
+				taggedStream = nil
+				filteredStream = stream
+			}
 			// TODO: Emit "thinking" audio cue or progress indicator for voice interaction
 			// During reasoning phase, TTS is silent which causes poor UX in voice mode
 		}
@@ -755,8 +785,8 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 			}
 			contentChunks++
 			content.WriteString(chunk)
-			if stream != nil {
-				if err := stream(ctx, []byte(chunk)); err != nil {
+			if filteredStream != nil {
+				if err := filteredStream(ctx, []byte(chunk)); err != nil {
 					scanErr = err
 					return nil, scanErr
 				}
@@ -792,6 +822,13 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	generationInfo["llm_stream_content_chunks"] = contentChunks
 	generationInfo["llm_stream_reasoning_chunks"] = reasoningChunks
 	generationInfo["llm_stream_comment_count"] = commentCount
+	if taggedStream != nil {
+		if err := taggedStream.Finish(); err != nil {
+			scanErr = err
+			return nil, err
+		}
+	}
+	rawContentForLog = content.String()
 	if err := scanner.Err(); err != nil {
 		scanErr = err
 		return nil, fmt.Errorf("read stream response: %w", err)
@@ -799,6 +836,14 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 
 	orderedToolCalls := orderedCompatibleToolCalls(toolCalls)
 
+	visibleContent, taggedReasoning, taggedThinking := normalizeTaggedThinkingText(content.String())
+	if taggedThinking {
+		content.Reset()
+		content.WriteString(visibleContent)
+		if taggedReasoning != "" {
+			reasoningContent.WriteString(taggedReasoning)
+		}
+	}
 	choice := &llms.ContentChoice{
 		Content:          content.String(),
 		ReasoningContent: reasoningContent.String(),
