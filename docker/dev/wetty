@@ -1,4 +1,0 @@
-#!/bin/sh
-set -eu
-
-exec /usr/local/bin/node /usr/local/lib/node_modules/wetty/build/main.js "$@"
