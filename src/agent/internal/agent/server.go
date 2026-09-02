@@ -120,27 +120,28 @@ type MessageAttachment struct {
 
 // Message represents a public chat or tool event.
 type Message struct {
-	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result"
-	Role            string              `json:"role,omitempty"`
-	EpisodeID       string              `json:"episode_id,omitempty"`
-	RequestID       string              `json:"request_id,omitempty"`
-	Status          string              `json:"status,omitempty"`
-	Modality        string              `json:"modality,omitempty"`
-	OriginalText    string              `json:"original_text,omitempty"`
-	Transcript      string              `json:"transcript,omitempty"`
-	Content         string              `json:"content"`
-	Usage           *messages.Usage     `json:"usage,omitempty"`
-	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
-	ToolName        string              `json:"tool_name,omitempty"`
-	ToolInput       string              `json:"tool_input,omitempty"`
-	ToolError       *ToolError          `json:"tool_error,omitempty"`
-	Attachments     []MessageAttachment `json:"attachments,omitempty"`
-	Artifacts       []InputArtifact     `json:"artifacts,omitempty"`
-	Source          string              `json:"source,omitempty"`
-	AudioFile       string              `json:"audio_file,omitempty"`
-	AudioDurationMs int64               `json:"audio_duration_ms,omitempty"`
-	Timestamp       time.Time           `json:"timestamp"`
-	IsError         bool                `json:"is_error,omitempty"`
+	Type             string              `json:"type"` // "user", "assistant", "tool_call", "tool_result"
+	Role             string              `json:"role,omitempty"`
+	EpisodeID        string              `json:"episode_id,omitempty"`
+	RequestID        string              `json:"request_id,omitempty"`
+	Status           string              `json:"status,omitempty"`
+	Modality         string              `json:"modality,omitempty"`
+	OriginalText     string              `json:"original_text,omitempty"`
+	Transcript       string              `json:"transcript,omitempty"`
+	Content          string              `json:"content"`
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	Usage            *messages.Usage     `json:"usage,omitempty"`
+	SpeechEligible   bool                `json:"speech_eligible,omitempty"`
+	ToolName         string              `json:"tool_name,omitempty"`
+	ToolInput        string              `json:"tool_input,omitempty"`
+	ToolError        *ToolError          `json:"tool_error,omitempty"`
+	Attachments      []MessageAttachment `json:"attachments,omitempty"`
+	Artifacts        []InputArtifact     `json:"artifacts,omitempty"`
+	Source           string              `json:"source,omitempty"`
+	AudioFile        string              `json:"audio_file,omitempty"`
+	AudioDurationMs  int64               `json:"audio_duration_ms,omitempty"`
+	Timestamp        time.Time           `json:"timestamp"`
+	IsError          bool                `json:"is_error,omitempty"`
 }
 
 func normalizePublicMessage(message Message) (Message, bool) {
@@ -169,23 +170,39 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		episodeID = fallbackEpisodeID
 	}
 	message := Message{
-		Type:           event.Type,
-		Role:           event.Role,
-		EpisodeID:      episodeID,
-		RequestID:      requestID,
-		Content:        event.Content,
-		SpeechEligible: event.SpeechEligible,
-		ToolName:       event.ToolName,
-		ToolInput:      event.ToolInput,
-		ToolError:      cloneToolError(event.ToolError),
-		Timestamp:      event.Timestamp,
-		IsError:        event.IsError,
+		Type:             event.Type,
+		Role:             event.Role,
+		EpisodeID:        episodeID,
+		RequestID:        requestID,
+		Content:          event.Content,
+		ReasoningContent: event.ReasoningContent,
+		SpeechEligible:   event.SpeechEligible,
+		ToolName:         event.ToolName,
+		ToolInput:        event.ToolInput,
+		ToolError:        cloneToolError(event.ToolError),
+		Timestamp:        event.Timestamp,
+		IsError:          event.IsError,
 	}
 	message, ok := normalizePublicMessage(message)
 	if !ok {
 		return Message{}
 	}
 	return message
+}
+
+func messageFromReasoningEvent(event RunEvent, fallbackEpisodeID, requestID string) Message {
+	episodeID := event.EpisodeID
+	if episodeID == "" {
+		episodeID = fallbackEpisodeID
+	}
+	return Message{
+		Type:             "assistant",
+		Status:           "streaming",
+		EpisodeID:        episodeID,
+		RequestID:        requestID,
+		ReasoningContent: event.ReasoningContent,
+		Timestamp:        event.Timestamp,
+	}
 }
 
 func messageFromTurnInput(input TurnInput, episodeID, requestID string, attachments []MessageAttachment, timestamp time.Time) Message {
@@ -277,10 +294,11 @@ type RealtimeChatRequest struct {
 // streamed to clients; done contains the complete response; error terminates
 // the request with an error message.
 type RealtimeChatEvent struct {
-	Type     string
-	Delta    string
-	Response string
-	Error    string
+	Type             string
+	Delta            string
+	Response         string
+	ReasoningContent string
+	Error            string
 }
 
 const (
@@ -349,14 +367,15 @@ type ChatResultResponse struct {
 }
 
 type ChatStreamEvent struct {
-	Type      string    `json:"type"`
-	Message   *Message  `json:"message,omitempty"`
-	RequestID string    `json:"request_id,omitempty"`
-	EpisodeID string    `json:"episode_id,omitempty"`
-	Delta     string    `json:"delta,omitempty"`
-	Response  string    `json:"response,omitempty"`
-	History   []Message `json:"history,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	Type             string    `json:"type"`
+	Message          *Message  `json:"message,omitempty"`
+	RequestID        string    `json:"request_id,omitempty"`
+	EpisodeID        string    `json:"episode_id,omitempty"`
+	Delta            string    `json:"delta,omitempty"`
+	ReasoningContent string    `json:"reasoning_content,omitempty"`
+	Response         string    `json:"response,omitempty"`
+	History          []Message `json:"history,omitempty"`
+	Error            string    `json:"error,omitempty"`
 }
 
 type EpisodeResponse struct {
@@ -1446,6 +1465,14 @@ func (s *Server) handleChatAsync(
 		// Event handler pushes intermediate messages into the pending result
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
+			if event.Type == runEventReasoningDelta || event.Type == runEventReasoningReset {
+				msg := messageFromReasoningEvent(event, userMsg.EpisodeID, requestID)
+				pending.mu.Lock()
+				pending.history = append(pending.history, msg)
+				pending.messages = append(pending.messages, msg)
+				pending.mu.Unlock()
+				return
+			}
 			msg := messageFromRunEvent(event, userMsg.EpisodeID, requestID)
 			if msg.Type != "" {
 				if msg, ok := s.publishMessage(msg); ok {
@@ -1851,6 +1878,18 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		SteerProvider:           steerProvider,
 		SteerInterrupt:          steerInterrupt,
 		EventHandler: func(event RunEvent) {
+			if event.Type == runEventReasoningDelta || event.Type == runEventReasoningReset {
+				stream.Write(ChatStreamEvent{
+					Type:             map[string]string{runEventReasoningDelta: "assistant_reasoning_delta", runEventReasoningReset: "assistant_reasoning_reset"}[event.Type],
+					RequestID:        req.RequestID,
+					EpisodeID:        episodeID,
+					ReasoningContent: event.ReasoningContent,
+				})
+				if s.liveActivity != nil {
+					s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
+				}
+				return
+			}
 			message := messageFromRunEvent(event, episodeID, req.RequestID)
 			if message.Type != "" {
 				if message, ok := s.publishMessage(message); ok {
@@ -3365,7 +3404,10 @@ func (s *Server) publishMessage(message Message) (Message, bool) {
 	if !ok {
 		return Message{}, false
 	}
-	if s.eventBroadcaster != nil {
+	// Streaming reasoning is delivered through the request's NDJSON/polling
+	// channel. It is not persisted and should not cause every SSE subscriber to
+	// reload the full history for each token.
+	if message.Status != "streaming" && s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(message)
 	}
 	return message, true
@@ -3378,7 +3420,9 @@ func (s *Server) BroadcastMessage(msg Message) {
 	if !ok {
 		return
 	}
-	if s.eventBroadcaster != nil {
+	// Voice/STT runs have no request-scoped NDJSON connection, so their
+	// transient reasoning updates must use the shared SSE channel.
+	if (msg.Status != "streaming" || msg.Source == "voice") && s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(msg)
 	}
 }
@@ -3404,7 +3448,7 @@ func (s *Server) webHistorySnapshot() []Message {
 }
 
 func webMessageFromContextMessage(item messages.Message, contextRole string) (Message, bool) {
-	message := Message{Content: item.Content, Timestamp: item.Timestamp}
+	message := Message{Content: item.Content, ReasoningContent: item.ReasoningContent, Timestamp: item.Timestamp}
 	if item.Usage != nil {
 		usage := *item.Usage
 		message.Usage = &usage

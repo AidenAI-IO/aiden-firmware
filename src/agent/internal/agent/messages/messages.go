@@ -45,6 +45,7 @@ func (r MessageRole) ToStandardRole() llms.ChatMessageType {
 type Message struct {
 	Role                   MessageRole             `json:"role"`
 	Content                string                  `json:"content"`
+	ReasoningContent       string                  `json:"reasoning_content,omitempty"`
 	Timestamp              time.Time               `json:"timestamp"`
 	Usage                  *Usage                  `json:"usage,omitempty"`
 	ToolCalls              []ToolCall              `json:"tool_calls,omitempty"`

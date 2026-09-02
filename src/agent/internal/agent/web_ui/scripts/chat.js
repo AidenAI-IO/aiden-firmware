@@ -362,6 +362,14 @@ function handleChatStreamEvent(event) {
         appendAssistantDelta(event);
         return false;
     }
+    if (event.type === 'assistant_reasoning_delta') {
+        appendAssistantReasoningDelta(event);
+        return false;
+    }
+    if (event.type === 'assistant_reasoning_reset') {
+        resetAssistantReasoning(event);
+        return false;
+    }
     if (event.type === 'assistant_delta_reset') {
         resetAssistantDelta(event);
         return false;
@@ -402,6 +410,34 @@ function appendAssistantDelta(event) {
         streamingAssistantDrafts[key] = msg;
     }
     msg.content += event.delta || '';
+    addMessage(msg);
+}
+
+function appendAssistantReasoningDelta(event) {
+    const key = assistantStreamKey(event);
+    if (!key) return;
+    let msg = streamingAssistantDrafts[key];
+    if (!msg) {
+        msg = {
+            type: 'assistant',
+            request_id: event.request_id || '',
+            episode_id: event.episode_id || '',
+            content: '',
+            reasoning_content: '',
+            timestamp: new Date().toISOString()
+        };
+        streamingAssistantDrafts[key] = msg;
+    }
+    msg.reasoning_content = event.reasoning_content || '';
+    addMessage(msg);
+}
+
+function resetAssistantReasoning(event) {
+    const key = assistantStreamKey(event);
+    if (!key) return;
+    const msg = streamingAssistantDrafts[key];
+    if (!msg) return;
+    msg.reasoning_content = '';
     addMessage(msg);
 }
 

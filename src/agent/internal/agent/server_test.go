@@ -420,7 +420,10 @@ func TestServerPersistsContextBackedChatHistory(t *testing.T) {
 
 func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"Let me read the current volume."}`, "The current audio volume is 42."),
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "audio_volume", `{"__arg1":"{}","description":"Let me read the current volume."}`),
+			&llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "The current audio volume is 42.", ReasoningContent: "read the volume"}}},
+		},
 	}
 	configDir, err := os.MkdirTemp("", "aiden-server-chat-stream-*")
 	if err != nil {
@@ -476,8 +479,13 @@ func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 		t.Fatalf("scan stream: %v", err)
 	}
 
-	var sawToolCall, sawToolResult, sawAssistant, sawDone bool
-	for _, event := range events {
+	var sawToolCall, sawToolResult, sawAssistant, sawDone, sawReasoning bool
+	reasoningIndex, assistantIndex := -1, -1
+	for eventIndex, event := range events {
+		if event.Type == "assistant_reasoning_delta" && event.ReasoningContent == "read the volume" {
+			sawReasoning = true
+			reasoningIndex = eventIndex
+		}
 		if event.Type == "message" && event.Message != nil {
 			switch event.Message.Type {
 			case runEventToolCall:
@@ -485,16 +493,19 @@ func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 			case "tool_result":
 				sawToolResult = event.Message.ToolName == "audio_volume" && event.Message.Content == `{"volume":42}`
 			case "assistant":
-				sawAssistant = event.Message.Content == "The current audio volume is 42."
+				sawAssistant = event.Message.Content == "The current audio volume is 42." && event.Message.ReasoningContent == "read the volume"
+				if assistantIndex < 0 {
+					assistantIndex = eventIndex
+				}
 			}
 		}
 		if event.Type == "done" && event.Response == "The current audio volume is 42." {
 			sawDone = true
 		}
 	}
-	if !sawToolCall || !sawToolResult || !sawAssistant || !sawDone {
-		t.Fatalf("missing expected stream events: tool_call=%v tool_result=%v assistant=%v done=%v events=%#v",
-			sawToolCall, sawToolResult, sawAssistant, sawDone, events)
+	if !sawToolCall || !sawToolResult || !sawAssistant || !sawDone || !sawReasoning || reasoningIndex >= assistantIndex {
+		t.Fatalf("missing expected stream events: tool_call=%v tool_result=%v assistant=%v reasoning=%v done=%v events=%#v",
+			sawToolCall, sawToolResult, sawAssistant, sawReasoning, sawDone, events)
 	}
 }
 
@@ -2243,6 +2254,29 @@ func TestServerCloseCancelsActiveRunsAndOutputs(t *testing.T) {
 	}
 }
 
+func TestServerBroadcastsStreamingReasoningForVoiceRuns(t *testing.T) {
+	server := &Server{eventBroadcaster: NewEventBroadcaster()}
+	events := server.eventBroadcaster.Subscribe()
+	defer server.eventBroadcaster.Unsubscribe(events)
+
+	server.BroadcastMessage(Message{
+		Type:             "assistant",
+		Status:           "streaming",
+		Source:           "voice",
+		RequestID:        "voice-request",
+		ReasoningContent: "first thought",
+	})
+
+	select {
+	case message := <-events:
+		if message.ReasoningContent != "first thought" || message.RequestID != "voice-request" {
+			t.Fatalf("broadcast message = %#v", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("streaming voice reasoning was not broadcast")
+	}
+}
+
 func TestServerCloseStopsAcceptingAndDrainsActiveHTTPHandlers(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -3249,9 +3283,10 @@ func TestWebMessageFromContextMessagePreservesNoticeType(t *testing.T) {
 func TestWebMessageFromContextMessagePreservesUsage(t *testing.T) {
 	usage := &messages.Usage{InputTokens: 336, OutputTokens: 41, TotalTokens: 377}
 	message, ok := webMessageFromContextMessage(messages.Message{
-		Role:    messages.MessageRoleAssistant,
-		Content: "done",
-		Usage:   usage,
+		Role:             messages.MessageRoleAssistant,
+		Content:          "done",
+		ReasoningContent: "plan",
+		Usage:            usage,
 	}, "backend")
 	if !ok {
 		t.Fatal("webMessageFromContextMessage() rejected assistant message")
@@ -3261,6 +3296,9 @@ func TestWebMessageFromContextMessagePreservesUsage(t *testing.T) {
 	}
 	if message.Usage == usage {
 		t.Fatal("web message usage should not share the context message pointer")
+	}
+	if message.ReasoningContent != "plan" {
+		t.Fatalf("reasoning_content = %q, want plan", message.ReasoningContent)
 	}
 }
 

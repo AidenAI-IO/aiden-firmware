@@ -33,6 +33,7 @@ func TestReasoningContentStreaming(t *testing.T) {
 	model := newOpenAICompatibleModel(server.URL, "test-model", "token", server.Client())
 
 	var streamedContent strings.Builder
+	var streamedReasoning strings.Builder
 	resp, err := model.GenerateContent(
 		context.Background(),
 		[]llms.MessageContent{
@@ -40,6 +41,10 @@ func TestReasoningContentStreaming(t *testing.T) {
 		},
 		llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
 			streamedContent.Write(chunk)
+			return nil
+		}),
+		llms.WithStreamingReasoningFunc(func(_ context.Context, reasoning, _ []byte) error {
+			streamedReasoning.Write(reasoning)
 			return nil
 		}),
 	)
@@ -60,6 +65,9 @@ func TestReasoningContentStreaming(t *testing.T) {
 	// Verify only content (not reasoning) was streamed to TTS
 	if streamedContent.String() != "The answer is 42" {
 		t.Errorf("Expected streamed content='The answer is 42', got %q", streamedContent.String())
+	}
+	if streamedReasoning.String() != "Let me think about this..." {
+		t.Errorf("Expected streamed reasoning='Let me think about this...', got %q", streamedReasoning.String())
 	}
 
 	// Verify reasoning tokens are captured in generation info

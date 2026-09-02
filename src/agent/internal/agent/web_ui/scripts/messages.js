@@ -38,6 +38,20 @@ function createMessageNode(msg) {
             body.appendChild(attachmentsEl);
         }
 
+        if (msg.reasoning_content) {
+            const reasoningDiv = document.createElement('div');
+            reasoningDiv.className = 'message-reasoning';
+            const reasoningLabel = document.createElement('div');
+            reasoningLabel.className = 'reasoning-label';
+            reasoningLabel.textContent = 'Reasoning';
+            reasoningDiv.appendChild(reasoningLabel);
+            const reasoningText = document.createElement('div');
+            reasoningText.className = 'reasoning-text';
+            reasoningText.textContent = msg.reasoning_content;
+            reasoningDiv.appendChild(reasoningText);
+            body.appendChild(reasoningDiv);
+        }
+
         if (msg.content) {
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-copy';

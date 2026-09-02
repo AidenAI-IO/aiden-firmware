@@ -257,6 +257,8 @@ const (
 	runEventHistoricalContextPrune = "historical_context_prune"
 	runEventConversationCompaction = "conversation_compaction"
 	runEventModelRequestFailure    = "model_request_failure"
+	runEventReasoningDelta         = "reasoning_delta"
+	runEventReasoningReset         = "reasoning_reset"
 )
 
 func historicalPruneEvent(stats compactor.HistoricalPruneStats, changed bool, err error, reason string) TaskEpisodeEvent {
@@ -289,17 +291,18 @@ func contextCompactionEvent(stats compactor.CompactionStats, compacted bool, err
 }
 
 type RunEvent struct {
-	Type           string     `json:"type"`
-	Role           string     `json:"role,omitempty"`
-	EpisodeID      string     `json:"episode_id,omitempty"`
-	ToolCallID     string     `json:"tool_call_id,omitempty"`
-	ToolName       string     `json:"tool_name,omitempty"`
-	ToolInput      string     `json:"tool_input,omitempty"`
-	Content        string     `json:"content,omitempty"`
-	SpeechEligible bool       `json:"speech_eligible,omitempty"`
-	Timestamp      time.Time  `json:"timestamp"`
-	IsError        bool       `json:"is_error,omitempty"`
-	ToolError      *ToolError `json:"tool_error,omitempty"`
+	Type             string     `json:"type"`
+	Role             string     `json:"role,omitempty"`
+	EpisodeID        string     `json:"episode_id,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	ToolName         string     `json:"tool_name,omitempty"`
+	ToolInput        string     `json:"tool_input,omitempty"`
+	Content          string     `json:"content,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	SpeechEligible   bool       `json:"speech_eligible,omitempty"`
+	Timestamp        time.Time  `json:"timestamp"`
+	IsError          bool       `json:"is_error,omitempty"`
+	ToolError        *ToolError `json:"tool_error,omitempty"`
 }
 
 type usageTrackingModel struct {
@@ -2132,6 +2135,7 @@ type runtimeCallbackHandler struct {
 	sessionEventAppender func(context.Context, SessionEvent) error
 	mu                   sync.Mutex
 	pendingActions       []schema.AgentAction
+	reasoningContent     strings.Builder
 }
 
 func (h *runtimeCallbackHandler) HandleText(ctx context.Context, text string) {
@@ -2227,15 +2231,17 @@ func (h *runtimeCallbackHandler) HandleAssistantOutput(ctx context.Context, cont
 	if content == "" {
 		return
 	}
+	reasoning := h.ReasoningContent()
 	if h.logger != nil {
 		h.logger.Info("Assistant output: %s", truncateForLog(content, 1000))
 	}
 	h.emitRunEventWithPersistence(RunEvent{
-		Type:      "assistant_output",
-		Role:      "assistant",
-		EpisodeID: h.episodeID,
-		Content:   content,
-		Timestamp: time.Now(),
+		Type:             "assistant_output",
+		Role:             "assistant",
+		EpisodeID:        h.episodeID,
+		Content:          content,
+		ReasoningContent: reasoning,
+		Timestamp:        time.Now(),
 	}, false)
 }
 
@@ -2409,18 +2415,84 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 
 func (h *runtimeCallbackHandler) HandleAgentFinish(ctx context.Context, finish schema.AgentFinish) {}
 
-func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, content string) {
+func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, content, reasoning string) {
 	content = strings.TrimSpace(content)
+	reasoning = strings.TrimSpace(reasoning)
 	if h.logger != nil {
-		h.logger.Info("Role output: role=%s content=%s", role, truncateForLog(content, 1000))
+		debugText := content
+		if reasoning != "" {
+			debugText = reasoning + "\n" + content
+		}
+		h.logger.Info("Role output: role=%s content=%s", role, truncateForLog(debugText, 1000))
+	}
+	if reasoning != "" {
+		h.setReasoningContent(reasoning)
 	}
 	h.emitRunEvent(RunEvent{
-		Type:      "role_output",
-		Role:      role,
-		EpisodeID: h.episodeID,
-		Content:   content,
-		Timestamp: time.Now(),
+		Type:             "role_output",
+		Role:             role,
+		EpisodeID:        h.episodeID,
+		Content:          content,
+		ReasoningContent: reasoning,
+		Timestamp:        time.Now(),
 	})
+}
+
+func (h *runtimeCallbackHandler) HandleStreamingReasoning(ctx context.Context, chunk []byte) {
+	if h == nil || len(chunk) == 0 {
+		return
+	}
+	h.mu.Lock()
+	h.reasoningContent.Write(chunk)
+	content := h.reasoningContent.String()
+	h.mu.Unlock()
+	h.emitRunEventWithPersistence(RunEvent{
+		Type:             runEventReasoningDelta,
+		Role:             "assistant",
+		EpisodeID:        h.episodeID,
+		ReasoningContent: content,
+		Timestamp:        time.Now(),
+	}, false)
+}
+
+func (h *runtimeCallbackHandler) StreamingReasoningEnabled() bool {
+	return h != nil && h.eventHandler != nil
+}
+
+func (h *runtimeCallbackHandler) ResetStreamingReasoning(ctx context.Context) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	hadReasoning := h.reasoningContent.Len() > 0
+	h.reasoningContent.Reset()
+	h.mu.Unlock()
+	if hadReasoning {
+		h.emitRunEventWithPersistence(RunEvent{
+			Type:      runEventReasoningReset,
+			EpisodeID: h.episodeID,
+			Timestamp: time.Now(),
+		}, false)
+	}
+}
+
+func (h *runtimeCallbackHandler) ReasoningContent() string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return strings.TrimSpace(h.reasoningContent.String())
+}
+
+func (h *runtimeCallbackHandler) setReasoningContent(reasoning string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.reasoningContent.Reset()
+	h.reasoningContent.WriteString(reasoning)
+	h.mu.Unlock()
 }
 
 func (h *runtimeCallbackHandler) HandleSteerMessage(ctx context.Context, steer RunSteerMessage) {
@@ -2462,19 +2534,20 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 		ts = time.Now()
 	}
 	sessionEvent := SessionEvent{
-		Ts:         ts.UTC().Format(time.RFC3339Nano),
-		Type:       event.Type,
-		Role:       role,
-		RuntimeID:  h.runtimeID,
-		EpisodeID:  firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
-		RequestID:  h.requestID,
-		RunID:      h.runID,
-		Content:    event.Content,
-		ToolCallID: event.ToolCallID,
-		ToolName:   event.ToolName,
-		ToolInput:  event.ToolInput,
-		IsError:    event.IsError,
-		ToolError:  cloneToolError(event.ToolError),
+		Ts:               ts.UTC().Format(time.RFC3339Nano),
+		Type:             event.Type,
+		Role:             role,
+		RuntimeID:        h.runtimeID,
+		EpisodeID:        firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
+		RequestID:        h.requestID,
+		RunID:            h.runID,
+		Content:          event.Content,
+		ReasoningContent: event.ReasoningContent,
+		ToolCallID:       event.ToolCallID,
+		ToolName:         event.ToolName,
+		ToolInput:        event.ToolInput,
+		IsError:          event.IsError,
+		ToolError:        cloneToolError(event.ToolError),
 	}
 	return sessionEvent
 }

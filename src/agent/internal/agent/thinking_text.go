@@ -64,21 +64,26 @@ func indexFold(source, needle string) int {
 // delivery after a thinking block closes. Text before an orphan closing tag is
 // buffered because it cannot be known to be visible until the response ends.
 type taggedThinkingStream struct {
-	downstream func([]byte) error
-	pending    bytes.Buffer
-	inThinking bool
-	foundTag   bool
+	downstream      func([]byte) error
+	reasoningStream func([]byte) error
+	pending         bytes.Buffer
+	inThinking      bool
+	foundTag        bool
 }
 
-func newTaggedThinkingStream(downstream func([]byte) error) *taggedThinkingStream {
-	return &taggedThinkingStream{downstream: downstream}
+func newTaggedThinkingStream(downstream func([]byte) error, reasoning ...func([]byte) error) *taggedThinkingStream {
+	var reasoningStream func([]byte) error
+	if len(reasoning) > 0 {
+		reasoningStream = reasoning[0]
+	}
+	return &taggedThinkingStream{downstream: downstream, reasoningStream: reasoningStream}
 }
 
 func (s *taggedThinkingStream) Write(chunk []byte) error {
 	if s == nil || len(chunk) == 0 {
 		return nil
 	}
-	if s.downstream == nil {
+	if s.downstream == nil && s.reasoningStream == nil {
 		return nil
 	}
 	s.pending.Write(chunk)
@@ -86,12 +91,18 @@ func (s *taggedThinkingStream) Write(chunk []byte) error {
 }
 
 func (s *taggedThinkingStream) Finish() error {
-	if s == nil || s.downstream == nil {
+	if s == nil || (s.downstream == nil && s.reasoningStream == nil) {
+		return nil
+	}
+	if s.inThinking {
+		if err := s.emitReasoning(s.pending.Bytes()); err != nil {
+			return err
+		}
+		s.pending.Reset()
 		return nil
 	}
 	// If no tag appeared, the whole response was ordinary visible content.
-	// An unclosed explicit block remains hidden rather than leaking reasoning.
-	if !s.inThinking && !s.foundTag && s.pending.Len() > 0 {
+	if !s.foundTag && s.pending.Len() > 0 {
 		return s.emit(s.pending.Bytes())
 	}
 	return nil
@@ -118,7 +129,19 @@ func (s *taggedThinkingStream) process(final bool) error {
 		if s.inThinking {
 			at, tag := indexFoldAny(text, thinkingCloseTags)
 			if at < 0 {
+				// An explicit opening tag makes the pending text unambiguously
+				// reasoning. Keep only a possible partial closing tag buffered.
+				safe := len(text) - maxThinkingTagPrefixLen(text, thinkingCloseTags)
+				if safe > 0 {
+					if err := s.emitReasoning([]byte(text[:safe])); err != nil {
+						return err
+					}
+					s.pending.Next(safe)
+				}
 				return nil
+			}
+			if err := s.emitReasoning([]byte(text[:at])); err != nil {
+				return err
 			}
 			s.pending.Next(at + len(tag))
 			s.pending = *bytes.NewBuffer(bytes.TrimLeft(s.pending.Bytes(), " \t\r\n"))
@@ -141,7 +164,10 @@ func (s *taggedThinkingStream) process(final bool) error {
 			s.foundTag = true
 		case closeAt >= 0:
 			// No opening tag: this is the malformed gateway format observed in
-			// production. Discard the prefix and resume visible streaming.
+			// production. Everything before the close is reasoning.
+			if err := s.emitReasoning([]byte(text[:closeAt])); err != nil {
+				return err
+			}
 			s.pending.Next(closeAt + len(closeTag))
 			s.pending = *bytes.NewBuffer(bytes.TrimLeft(s.pending.Bytes(), " \t\r\n"))
 			s.inThinking = false
@@ -178,4 +204,27 @@ func (s *taggedThinkingStream) emit(chunk []byte) error {
 		return nil
 	}
 	return s.downstream(chunk)
+}
+
+func (s *taggedThinkingStream) emitReasoning(chunk []byte) error {
+	if len(chunk) == 0 || s.reasoningStream == nil {
+		return nil
+	}
+	return s.reasoningStream(chunk)
+}
+
+func maxThinkingTagPrefixLen(source string, tags []string) int {
+	max := 0
+	for _, tag := range tags {
+		limit := len(tag) - 1
+		if limit <= 0 || limit > len(source) {
+			continue
+		}
+		for n := 1; n <= limit; n++ {
+			if strings.EqualFold(source[len(source)-n:], tag[:n]) && n > max {
+				max = n
+			}
+		}
+	}
+	return max
 }

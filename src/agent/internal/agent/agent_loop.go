@@ -99,6 +99,12 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 		OutputKey: agentLoopOutputKey,
 	}
 	callOptions := chains.GetLLMCallOptions(options...)
+	if handler, ok := l.CallbacksHandler.(streamingReasoningHandler); ok && handler.StreamingReasoningEnabled() {
+		callOptions = append(callOptions, llms.WithStreamingReasoningFunc(func(ctx context.Context, reasoningChunk, _ []byte) error {
+			handler.HandleStreamingReasoning(ctx, reasoningChunk)
+			return nil
+		}))
+	}
 	var toolExecutionHooks toolExecutionHookHandler
 	if l.toolExecutionHookFactory != nil {
 		toolExecutionHooks = l.toolExecutionHookFactory()
@@ -220,6 +226,9 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	turnOptions := append([]llms.CallOption{}, callOptions...)
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
+	if handler, ok := l.CallbacksHandler.(streamingReasoningHandler); ok && handler.StreamingReasoningEnabled() {
+		handler.ResetStreamingReasoning(ctx)
+	}
 
 	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
 	if err != nil {
@@ -273,7 +282,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		return "", iterationContinue, err
 	}
 	l.finishStreamingResponse(ctx)
-	l.emitRoleOutput(ctx, roleResponseDebugText(contentResp))
+	l.emitRoleOutputWithReasoning(ctx, contentResp)
 	if answer := l.touchPointerModeMismatchContentFinalAnswer(contentResp); answer != "" {
 		if l.Recorder != nil {
 			l.Recorder.RecordDefaultFinish(answer)
@@ -697,13 +706,18 @@ func (l *AgentLoop) finishRun(ctx context.Context, finalAnswer string) (string, 
 	return finalAnswer, nil
 }
 
-func (l *AgentLoop) emitRoleOutput(ctx context.Context, content string) {
-	content = strings.TrimSpace(content)
-	if content == "" || l.CallbacksHandler == nil {
+func (l *AgentLoop) emitRoleOutputWithReasoning(ctx context.Context, contentResp *llms.ContentResponse) {
+	if contentResp == nil || len(contentResp.Choices) == 0 || contentResp.Choices[0] == nil || l.CallbacksHandler == nil {
+		return
+	}
+	choice := contentResp.Choices[0]
+	content := strings.TrimSpace(choice.Content)
+	reasoning := strings.TrimSpace(choice.ReasoningContent)
+	if content == "" && reasoning == "" {
 		return
 	}
 	if handler, ok := l.CallbacksHandler.(roleOutputHandler); ok {
-		handler.HandleRoleOutput(ctx, "agent", content)
+		handler.HandleRoleOutput(ctx, "agent", content, reasoning)
 	}
 }
 
@@ -731,7 +745,13 @@ func (l *AgentLoop) abortStreamingResponse(ctx context.Context) {
 }
 
 type roleOutputHandler interface {
-	HandleRoleOutput(ctx context.Context, role, content string)
+	HandleRoleOutput(ctx context.Context, role, content, reasoning string)
+}
+
+type streamingReasoningHandler interface {
+	HandleStreamingReasoning(ctx context.Context, chunk []byte)
+	ResetStreamingReasoning(ctx context.Context)
+	StreamingReasoningEnabled() bool
 }
 
 func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.ContentChoice {
@@ -777,32 +797,6 @@ type roleExecutionResult struct {
 	ToolError       *ToolError
 	CandidateAnswer string
 	ToolDuration    time.Duration
-}
-
-func roleResponseDebugText(res *llms.ContentResponse) string {
-	if res == nil || len(res.Choices) == 0 || res.Choices[0] == nil {
-		return ""
-	}
-	choice := res.Choices[0]
-	parts := make([]string, 0, 2)
-	if reasoning := strings.TrimSpace(choice.ReasoningContent); reasoning != "" {
-		parts = append(parts, reasoning)
-	}
-	if content := strings.TrimSpace(choice.Content); content != "" {
-		parts = append(parts, content)
-	}
-	if len(choice.ToolCalls) > 0 {
-		names := make([]string, 0, len(choice.ToolCalls))
-		for _, call := range choice.ToolCalls {
-			if call.FunctionCall != nil && strings.TrimSpace(call.FunctionCall.Name) != "" {
-				names = append(names, call.FunctionCall.Name)
-			}
-		}
-		if len(names) > 0 {
-			parts = append(parts, "tool_calls="+strings.Join(names, ","))
-		}
-	}
-	return strings.Join(parts, "\n")
 }
 
 func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolCall messages.Message, step schema.AgentStep, prepared PreparedToolResult) error {

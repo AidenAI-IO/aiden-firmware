@@ -94,6 +94,7 @@ func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) Message {
 	return Message{
 		Role:                    role,
 		Content:                 contentChoiceText(choice),
+		ReasoningContent:        strings.TrimSpace(choice.ReasoningContent),
 		Usage:                   UsageFromGenerationInfo(choice.GenerationInfo),
 		ToolCalls:               toolCallsFromContentChoice(choice),
 		ResponsesReasoningItems: responsesReasoningItemsFromGenerationInfo(choice.GenerationInfo),

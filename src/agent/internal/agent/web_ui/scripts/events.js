@@ -34,13 +34,7 @@ function connectSSE() {
 
     eventSource.onmessage = function(e) {
         try {
-            const data = JSON.parse(e.data);
-
-            if (data.type === 'connected') {
-                return;
-            }
-
-            if (data.type) refreshHistoryFromContext();
+            handleServerEvent(JSON.parse(e.data));
         } catch (err) {
             console.error('[SSE] Parse error:', err);
         }
@@ -49,6 +43,15 @@ function connectSSE() {
     eventSource.onerror = function(e) {
         console.error('[SSE] Connection error, will retry...');
     };
+}
+
+function handleServerEvent(data) {
+    if (!data || data.type === 'connected') return;
+    if (data.type === 'assistant' && data.status === 'streaming') {
+        addMessage(data);
+        return;
+    }
+    if (data.type) refreshHistoryFromContext();
 }
 
 document.addEventListener('visibilitychange', function() {

@@ -118,6 +118,7 @@ type SessionEvent struct {
 	Transcript         string          `json:"transcript,omitempty"`
 	Artifacts          []InputArtifact `json:"artifacts,omitempty"`
 	Content            string          `json:"content"`
+	ReasoningContent   string          `json:"reasoning_content,omitempty"`
 	AppName            string          `json:"app_name,omitempty"`
 	RiskLevel          string          `json:"risk_level,omitempty"`
 	ToolCallID         string          `json:"tool_call_id,omitempty"`

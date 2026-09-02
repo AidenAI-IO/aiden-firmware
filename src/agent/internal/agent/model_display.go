@@ -249,6 +249,14 @@ func GetLocalizedModelsForProvider(providerType, locale string) []LocalizedModel
 	result := make([]LocalizedModelInfo, len(models))
 	for i, m := range models {
 		result[i] = m.Localized(locale)
+		// Some registry entries only exist under a provider-qualified key (for
+		// example openai/gpt-4o). Resolve again with the selected provider so the
+		// config UI receives explicit reasoning support, including "unsupported".
+		if resolved, ok := LookupModelSpec(providerType, m.ID); ok {
+			resolved.Provider = normalizedProviderName(providerType)
+			resolved.Name = m.ID
+			result[i].Spec = &resolved
+		}
 		if result[i].Spec != nil {
 			result[i].Spec.Provider = normalizedProviderName(providerType)
 			result[i].Spec.API = modelAPIEndpoint(providerType, "")
