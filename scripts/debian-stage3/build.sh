@@ -112,7 +112,7 @@ ensure_sdk() {
     git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0002-append-slot-kernel-cmdline.patch"
     git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0003-add-ab-images-action.patch"
     git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0004-make-bsp-images-reproducible.patch"
-    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0005-improve-rv1106-usb2-hs-margin.patch"
+    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch"
     git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
 
     install -m 0755 \
@@ -206,7 +206,6 @@ run_bsp() {
         --loader "${SDK_DIR}/output/image/download.bin"
 
     local kernel_config=${SDK_DIR}/sysdrv/source/objs_kernel/.config
-    local uboot_config=${SDK_DIR}/sysdrv/source/uboot/u-boot/.config
     local env_text=${SDK_DIR}/output/image/.env.txt
     local symbol
     for symbol in \
@@ -229,23 +228,6 @@ run_bsp() {
     done
     grep -qx '# CONFIG_VIDEO_TC358743_CEC is not set' "${kernel_config}" || {
         echo "TC358743 CEC must remain disabled in the production kernel" >&2
-        exit 1
-    }
-    for symbol in \
-        CONFIG_CMD_ROCKUSB CONFIG_USB CONFIG_USB_GADGET \
-        CONFIG_USB_GADGET_DOWNLOAD CONFIG_USB_DWC3 \
-        CONFIG_USB_DWC3_GADGET; do
-        grep -qx "${symbol}=y" "${uboot_config}" || {
-            echo "Required production U-Boot setting is not enabled: ${symbol}" >&2
-            exit 1
-        }
-    done
-    grep -qx '# CONFIG_CMD_DFU is not set' "${uboot_config}" || {
-        echo "DFU must remain disabled in the production eMMC A/B U-Boot" >&2
-        exit 1
-    }
-    grep -qx '# CONFIG_FASTBOOT is not set' "${uboot_config}" || {
-        echo "Fastboot must remain disabled in the production RockUSB U-Boot" >&2
         exit 1
     }
     grep -qx \

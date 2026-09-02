@@ -687,6 +687,30 @@ func TestSystemEnvironmentGet(t *testing.T) {
 	}
 }
 
+func TestSystemEnvironmentRejectsVariablesDroppedByDebianGenerator(t *testing.T) {
+	options := testOptions(t)
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/system/environment", strings.NewReader(`{"system_env":"OPENAI_API_KEY=live\nLD_PRELOAD=/tmp/inject.so\n"}`)))
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "environment variable is not approved: LD_PRELOAD") {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if _, err := os.Stat(options.SystemEnvPath); !os.IsNotExist(err) {
+		t.Fatalf("rejected environment was persisted: %v", err)
+	}
+}
+
+func TestSystemEnvironmentAllowsProviderCredentialsAndWiFiProxyBypass(t *testing.T) {
+	for _, key := range []string{"DASHSCOPE_API_KEY", "SPEKO_KEY", "VERTEX_TOKEN", "CUSTOM_SECRET", "AIDEN_WIFI_PROXY_ENABLED"} {
+		if !isAllowedSystemEnvKey(key) {
+			t.Fatalf("expected %s to be allowed", key)
+		}
+	}
+}
+
 func TestSystemEnvironmentWriteFailureReturnsServerError(t *testing.T) {
 	options := testOptions(t)
 	blockedParent := filepath.Join(t.TempDir(), "not-a-directory")

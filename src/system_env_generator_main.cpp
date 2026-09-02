@@ -13,6 +13,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -101,6 +102,15 @@ bool atomic_write(const std::string& path,
     return fsync_dir(path, error);
 }
 
+std::string join_keys(const std::vector<std::string>& keys) {
+    std::string joined;
+    for (size_t i = 0; i < keys.size(); ++i) {
+        if (i) joined += ", ";
+        joined += keys[i];
+    }
+    return joined;
+}
+
 void usage() {
     std::cerr << "Usage: aiden-environment [--input PATH] [--output PATH] "
                  "[--invalid-marker PATH]\n";
@@ -149,7 +159,7 @@ int main(int argc, char** argv) {
         std::cerr << error << "\n";
         return 1;
     }
-    if (generated.valid) {
+    if (generated.valid && generated.dropped_keys.empty()) {
         if (unlink(invalid_marker.c_str()) != 0 && errno != ENOENT) {
             std::cerr << "cannot remove " << invalid_marker << ": " << strerror(errno) << "\n";
             return 1;
@@ -161,10 +171,20 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    if (!atomic_write(invalid_marker, generated.error + "\n", 0600, &error)) {
+    // A dropped key leaves the rest of the environment usable, so this reports a
+    // degraded environment rather than an unusable one. Both land in the marker
+    // because it is the only place an operator can see why a key went missing.
+    std::string report;
+    if (generated.valid) {
+        report = "ignored unapproved environment variables: " +
+                 join_keys(generated.dropped_keys);
+    } else {
+        report = "invalid system environment: " + generated.error;
+    }
+    if (!atomic_write(invalid_marker, report + "\n", 0600, &error)) {
         std::cerr << error << "\n";
         return 1;
     }
-    std::cerr << "invalid system environment: " << generated.error << "\n";
+    std::cerr << report << "\n";
     return 0;
 }

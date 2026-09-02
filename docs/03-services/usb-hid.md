@@ -41,6 +41,14 @@ state, leaving the cursor operational while the on-screen keyboard stays
 suppressed. A physical unplug/replug fully tears down that host session, which
 is why it can recover the symptom.
 
+Restarting the unit does drop the configfs group and recreate it. The vendor
+kernel mishandled that path: `CONFIG_USB_CONFIGFS_UEVENT` kept a global
+`android_device` that was never cleared on teardown, so the next control
+transfer dereferenced a freed `struct device`. The production kernel carries
+`scripts/debian-stage3/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch`,
+whose header records the three defects and why each fix is shaped the way it
+is. Read it before touching the gadget teardown sequence.
+
 ## example_usb_hid Usage
 
 ```text
