@@ -2745,6 +2745,62 @@ func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunCompactionTriggerIncludesToolSchema(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "Answer directly."},
+		{Role: messages.MessageRoleUser, Content: strings.Repeat("u", 8_000)},
+		{Role: messages.MessageRoleAssistant, Content: strings.Repeat("a", 8_000)},
+		{Role: messages.MessageRoleUser, Content: strings.Repeat("q", 4_000)},
+		{Role: messages.MessageRoleAssistant, Content: strings.Repeat("r", 400)},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	largeSchemaTool := &structuredStubTool{
+		stubTool: stubTool{name: "large_schema", description: strings.Repeat("schema ", 1_000)},
+		schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string", "description": strings.Repeat("field ", 500)},
+			},
+		},
+	}
+	llmModel := &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse("compacted summary"),
+		contentResponse("ok"),
+	}}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{ContextWindow: 8_192},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{largeSchemaTool.Name(): largeSchemaTool}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want planner response after schema-aware compaction", result.Output)
+	}
+	if len(llmModel.messages) != 2 {
+		t.Fatalf("model call count = %d, want summary + planner", len(llmModel.messages))
+	}
+}
+
 func TestRuntimeRunPrunesHistoricalStateWithProviderCompaction(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)

@@ -217,11 +217,22 @@ func availableToolResultTokens(input ToolResultPrepareInput) int {
 	if softLimit <= 0 {
 		return 0
 	}
-	currentTokens := tokencounter.EstimateToolSchemaTokens(options)
-	if input.ContextManager != nil {
-		currentTokens += tokencounter.EstimateMessagesTokens(input.ContextManager.CloneMessageList())
-	}
+	currentTokens := estimateActivePromptTokens(input.ContextManager, input.CallOptions)
 	return max(0, softLimit-currentTokens)
+}
+
+func estimateActivePromptTokens(manager *contextmanager.ContextManager, options []llms.CallOption) int {
+	var callOptions llms.CallOptions
+	for _, option := range options {
+		if option != nil {
+			option(&callOptions)
+		}
+	}
+	tokens := tokencounter.EstimateToolSchemaTokens(callOptions)
+	if manager != nil {
+		tokens += tokencounter.EstimateMessagesTokens(manager.CloneMessageList())
+	}
+	return tokens
 }
 
 func inputContextBudget(contextWindow, maxResponseTokens int) int {

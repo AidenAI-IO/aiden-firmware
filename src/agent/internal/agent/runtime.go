@@ -1171,15 +1171,19 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
 	compactionTrigger, compactionEnabled := conversationCompactionTrigger(usableInputBudget)
-	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
+	contextBudgetOptions := chains.GetLLMCallOptions(callOptions...)
+	contextBudgetOptions = append(contextBudgetOptions, llms.WithTools((&FunctionAgent{Tools: profile.Tools}).toolsAsLLM()))
+	tokenUsage := estimateActivePromptTokens(r.contextManager, contextBudgetOptions)
+	messageTokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
+	compactedBeforeAgentLoop := false
 
 	// Historical state and tool-result pruning is deterministic and has its own
 	// configurable trigger. It is intentionally independent from conversation
 	// summarization and provider-managed Responses compaction.
 	pruneTrigger, pruneTarget, pruneEnabled := historicalPruneBudgets(usableInputBudget, r.config.ContextPruneThreshold)
-	if pruneEnabled && tokenUsage > pruneTrigger {
+	if pruneEnabled && messageTokenUsage > pruneTrigger {
 		if r.logger != nil {
-			r.logger.Info("Historical context prune: token usage reached threshold; tokenUsage=%d trigger=%d target=%d", tokenUsage, pruneTrigger, pruneTarget)
+			r.logger.Info("Historical context prune: token usage reached threshold; tokenUsage=%d trigger=%d target=%d", messageTokenUsage, pruneTrigger, pruneTarget)
 		}
 		newManager, pruned, pruneErr := contextCompactor.PruneHistorical(r.contextManager, pruneTarget)
 		if episodeRecorder != nil {
@@ -1199,7 +1203,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 				return RunResult{}, err
 			}
 			r.contextManager = newManager
-			tokenUsage = tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
+			messageTokenUsage = tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
+			tokenUsage = estimateActivePromptTokens(r.contextManager, contextBudgetOptions)
 		}
 	}
 
@@ -1228,10 +1233,14 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 				return RunResult{}, err
 			}
 			r.contextManager = newManager
+			compactedBeforeAgentLoop = true
 		}
 	}
 
 	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
+	if compactedBeforeAgentLoop {
+		agentLoop.lastCompactionAttemptMessages = len(r.contextManager.CloneMessageList()) + 3
+	}
 	agentLoop.SteerRecorder = steerRecorder
 	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
 		if r.tools == nil {
@@ -1246,17 +1255,14 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.TerminationPolicy = NewTerminationPolicy(r.config.TerminationPolicy)
 	agentLoop.DevicePlatform = r.devicePlatformFromState()
 	agentLoop.PointerMode = r.devicePointerModeFromState()
-	agentLoop.ContextOverflowRecovery = func(recoveryCtx context.Context, currentManager *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
-		if r.logger != nil {
-			r.logger.Info("Compaction: provider rejected the request because the context window was exceeded; compacting and retrying")
-		}
+	compactAgentContext := func(recoveryCtx context.Context, currentManager *contextmanager.ContextManager, triggerReason string) (*contextmanager.ContextManager, bool, error) {
 		newManager, compacted, compactErr := contextCompactor.Compact(recoveryCtx, currentManager)
 		if episodeRecorder != nil {
 			episodeRecorder.RecordEvent(contextCompactionEvent(
 				contextCompactor.LastCompactionStats(),
 				compacted,
 				compactErr,
-				"provider_context_exceeded",
+				triggerReason,
 			))
 		}
 		if compactErr != nil || !compacted {
@@ -1268,6 +1274,21 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		r.contextManager = newManager
 		return newManager, true, nil
+	}
+	if !r.config.Model.ResponsesProviderCompactionEnabled() && compactionEnabled {
+		agentLoop.ContextCompactionTrigger = compactionTrigger
+		agentLoop.ContextThresholdCompaction = func(recoveryCtx context.Context, currentManager *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
+			if r.logger != nil {
+				r.logger.Info("Compaction: context reached the threshold inside the agent loop; compacting before the next model call")
+			}
+			return compactAgentContext(recoveryCtx, currentManager, "agent_loop_threshold")
+		}
+	}
+	agentLoop.ContextOverflowRecovery = func(recoveryCtx context.Context, currentManager *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
+		if r.logger != nil {
+			r.logger.Info("Compaction: provider rejected the request because the context window was exceeded; compacting and retrying")
+		}
+		return compactAgentContext(recoveryCtx, currentManager, "provider_context_exceeded")
 	}
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)

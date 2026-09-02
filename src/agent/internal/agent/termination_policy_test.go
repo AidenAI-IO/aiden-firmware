@@ -172,6 +172,36 @@ func TestTerminationPolicySameResultRequiresSameSignature(t *testing.T) {
 	}
 }
 
+func TestTerminationPolicyDetectsRotatingArtifactRecoveryPaths(t *testing.T) {
+	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
+	observation := "same recovered artifact content"
+	paths := []string{
+		"/userdata/agent/sessions/backend/s_1/tool-results/tr_11111111-1111-1111-1111-111111111111.data",
+		"/userdata/agent/sessions/backend/s_1/tool-results/tr_22222222-2222-2222-2222-222222222222.data",
+		"/userdata/agent/sessions/backend/s_1/tool-results/tr_33333333-3333-3333-3333-333333333333.data",
+	}
+	for index, path := range paths {
+		input := `{"command":"cat ` + path + `"}`
+		decision := policy.AfterToolCall("shell", input, observation, false)
+		if index < len(paths)-1 && decision.Stop {
+			t.Fatalf("artifact read %d stopped too early: %#v", index+1, decision)
+		}
+		if index == len(paths)-1 && (!decision.Stop || decision.Reason != StopReasonLoopDetected) {
+			t.Fatalf("rotating artifact reads were not terminated: %#v", decision)
+		}
+	}
+}
+
+func TestTerminationPolicyDoesNotCollapseOrdinaryShellPaths(t *testing.T) {
+	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
+	for _, path := range []string{"/tmp/a", "/tmp/b", "/tmp/c"} {
+		decision := policy.AfterToolCall("shell", `{"command":"cat `+path+`"}`, "same output", false)
+		if decision.Stop || policy.sameResultStreak != 1 {
+			t.Fatalf("ordinary shell path %q counted as the same action: %#v, streak=%d", path, decision, policy.sameResultStreak)
+		}
+	}
+}
+
 func TestTerminationPolicyExternalCancel(t *testing.T) {
 	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
 	ctx, cancel := context.WithCancel(context.Background())

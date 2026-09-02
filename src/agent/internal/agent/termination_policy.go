@@ -12,6 +12,7 @@ import (
 	"image"
 	"image/jpeg"
 	"math"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -27,6 +28,8 @@ const (
 	screenshotProgressBlockChannelThreshold = 8
 	screenshotProgressChangedBlockThreshold = 0.01
 )
+
+var toolResultArtifactFilePattern = regexp.MustCompile(`tr_[A-Za-z0-9][A-Za-z0-9_-]*\.data`)
 
 // StopReason explains why the agent loop stopped or intervened.
 type StopReason string
@@ -434,11 +437,35 @@ func formatLoopGuardStopMessage(decision TerminationDecision, lastTool string) s
 func toolCallSignature(toolName, input string) string {
 	toolName = strings.ToLower(strings.TrimSpace(toolName))
 	input = strings.TrimSpace(input)
+	if toolName == "shell" {
+		input = normalizeArtifactRecoveryInput(input)
+	}
 	if input == "" {
 		return toolName
 	}
 	sum := sha256.Sum256([]byte(input))
 	return toolName + ":" + hex.EncodeToString(sum[:8])
+}
+
+func normalizeArtifactRecoveryInput(input string) string {
+	var arguments map[string]any
+	if err := json.Unmarshal([]byte(input), &arguments); err != nil {
+		return input
+	}
+	command, ok := arguments["command"].(string)
+	if !ok || (!strings.Contains(command, "/tool-results/") && !strings.Contains(command, `\tool-results\`)) {
+		return input
+	}
+	normalized := toolResultArtifactFilePattern.ReplaceAllString(command, "tr_<artifact>.data")
+	if normalized == command {
+		return input
+	}
+	arguments["command"] = normalized
+	encoded, err := json.Marshal(arguments)
+	if err != nil {
+		return input
+	}
+	return string(encoded)
 }
 
 func observationProgressHash(toolName, observation string) string {
