@@ -34,17 +34,61 @@ on PC and other hosts without board GPIO.
 
 The realtime model receives this focused catalog:
 
-| Tool | Purpose |
-| --- | --- |
-| `get_current_time` | Return controller-local date, time, timezone, and UTC offset. |
-| `recall_memory` | Recall long-term user preferences, facts, rules, and procedures. |
-| `create_agent_task` | Queue background work and return immediately with a task ID. |
-| `cancel_agent_task` | Cancel queued work or request cancellation of running work. |
-| `query_agent_task` | Read the latest task state and terminal result. |
-| `response_user_action` | Resume a background task after the user completes the requested device action. |
+| Tool                    | Purpose                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------ |
+| `get_current_time`      | Return controller-local date, time, timezone, and UTC offset.                  |
+| `recall_memory`         | Recall long-term user preferences, facts, rules, and procedures.               |
+| `save_memory`           | Save a long-term memory without waiting for a background task.                 |
+| `forget_memory`         | Delete a saved memory by the ID returned from `recall_memory`.                 |
+| `recall_session_chunks` | Recall compressed history older than the replayed window.                      |
+| `audio_volume`          | Read or set the realtime playback volume.                                      |
+| `create_agent_task`     | Queue background work and return immediately with a task ID.                   |
+| `cancel_agent_task`     | Cancel queued work or request cancellation of running work.                    |
+| `query_agent_task`      | Read the latest task state and terminal result.                                |
+| `response_user_action`  | Resume a background task after the user completes the requested device action. |
+| `end_conversation`      | Return to standby after the farewell finishes playing.                         |
 
 `create_agent_task` only enqueues work. The foreground response never waits for
 the background agent to start or finish.
+
+The memory tools reuse the same registrations and stores as the background
+agent, so both agents read and write one memory plane. Their foreground
+descriptions are trimmed to the foreground catalog: the background
+`recall_memory` description points at `shell` for raw notification records,
+which the realtime model cannot call.
+
+`recall_session_chunks` exists because a new websocket session replays only the
+latest 10 user turns. Older turns stay on disk but are invisible to the
+foreground until recalled.
+
+## Ending a conversation
+
+`end_conversation` puts the session back into standby. It does not introduce a
+new state: `runRealtimeSession` returns, and the outer loop waits for the next
+GPIO wakeup or `/api/chat` activation, exactly as it does after any other
+session ends.
+
+Teardown is deferred rather than immediate, because cancelling the session as
+soon as the tool returns would cut off the farewell mid-sentence:
+
+1. The tool result only records the request; the session loop owns teardown.
+2. On `response.done` for the farewell, playback is finalized and a drain
+   starts, bounded by a 30 s timeout.
+3. Standby begins once the drain reports the speaker is empty.
+
+The request is abandoned if the user re-engages first, via either
+`input_audio_buffer.speech_started` or a text request through the chat bridge.
+Both keep the session open and answer the new input instead. A text request that
+arrives while the farewell response is still active is queued until its
+`response.done`; during playback drain it starts immediately. While a request
+is pending, task updates and voice notifications are not injected, so a queued
+result cannot start a new response during the goodbye.
+
+Background work is unaffected by standby. The existing session teardown returns
+undelivered task updates and pending user actions to the manager, so they are
+delivered in the next session. A task still running therefore reports its result
+only after the user starts talking again, which is why `end_conversation`
+instructs the model to mention in-progress work before ending.
 
 ## Task lifecycle
 
