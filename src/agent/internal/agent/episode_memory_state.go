@@ -28,18 +28,16 @@ const (
 	// turn truncation into outright rejection. batchLimit x perEpisode is kept
 	// under it so a full batch is never squeezed below a smaller batch's share.
 	episodeMemoryBatchMaxTokens = 8000
-	// episodeMemoryRetentionAuditMaxTokens is the output budget for the
-	// retention gate: one review per candidate, at most 3 candidates.
-	episodeMemoryRetentionAuditMaxTokens = 3200
-	// episodeMemoryRawBodyLogRunes bounds how much of an unusable response is
-	// logged. Rune-based so CJK output is not cut mid-character.
-	episodeMemoryRawBodyLogRunes  = 400
-	episodeMemoryRecentTerminals  = 64
-	episodeMemoryProcessingLease  = 15 * time.Minute
-	episodeMemoryRetryDelay       = 5 * time.Minute
-	episodeMemoryMaxAttempts      = 3
-	episodeMemoryModelCallTimeout = 60 * time.Second
-	episodeMemoryBatchLockTimeout = 100 * time.Millisecond
+	// episodeMemoryRetentionAuditBaseTokens is the first-attempt output budget
+	// for the retention gate: one review per candidate, at most 3 candidates.
+	// Retries grow this budget up to episodeMemoryBatchMaxTokens.
+	episodeMemoryRetentionAuditBaseTokens = 3200
+	episodeMemoryRecentTerminals          = 64
+	episodeMemoryProcessingLease          = 15 * time.Minute
+	episodeMemoryRetryDelay               = 5 * time.Minute
+	episodeMemoryMaxAttempts              = 3
+	episodeMemoryModelCallTimeout         = 60 * time.Second
+	episodeMemoryBatchLockTimeout         = 100 * time.Millisecond
 )
 
 // Compile-time guard: a full batch must fit under the ceiling. If it does not,

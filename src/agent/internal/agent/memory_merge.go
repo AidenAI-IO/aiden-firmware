@@ -134,20 +134,29 @@ func (e *MemoryMergeEngine) Extract(ctx context.Context, req MemoryMergeRequest)
 	if err != nil {
 		return references, "", fmt.Errorf("memory merge model call: %w", err)
 	}
+	content, err := memoryMergeResponseContent(response, maxTokens)
+	return references, content, err
+}
+
+// memoryMergeResponseContent consistently classifies model responses used by
+// memory extraction and its review gates. Keeping stop-reason handling here
+// prevents one call site from parsing a known-truncated response as malformed
+// JSON while another schedules the intended retry.
+func memoryMergeResponseContent(response *llms.ContentResponse, maxTokens int) (string, error) {
 	if response == nil || len(response.Choices) == 0 {
-		return references, "", errMemoryMergeEmpty
+		return "", errMemoryMergeEmpty
 	}
 	choice := response.Choices[0]
 	content := stripJSONFences(choice.Content)
 	// A budget-exhausted response is syntactically incomplete, so parsing it
 	// would only report a confusing "unexpected end of JSON input". Report the
-	// real cause instead, and hand back the partial content for logging.
+	// real cause instead, and hand back the partial content for diagnostics.
 	if isMemoryMergeTruncatedStopReason(choice.StopReason) {
-		return references, content, fmt.Errorf("%w: stop_reason=%s max_tokens=%d output_chars=%d",
+		return content, fmt.Errorf("%w: stop_reason=%s max_tokens=%d output_bytes=%d",
 			errMemoryMergeTruncated, strings.TrimSpace(choice.StopReason), maxTokens, len(choice.Content))
 	}
 	if strings.TrimSpace(content) == "" {
-		return references, "", errMemoryMergeEmpty
+		return "", errMemoryMergeEmpty
 	}
-	return references, content, nil
+	return content, nil
 }

@@ -1,15 +1,19 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tmc/langchaingo/llms"
 )
 
 type panickingEpisodeMemoryBatchProcessor struct{}
@@ -1450,6 +1454,68 @@ func TestEpisodeMemoryTruncatedBatchRetriesEpisodesIndividually(t *testing.T) {
 	for index := 1; index <= episodeMemoryBatchLimit; index++ {
 		if got := model.batchMaxTokens(index); got != memoryMergeTokenBudget(episodeMemoryBatchTokensPerEpisode, 1, episodeMemoryBatchMaxTokens, 1) {
 			t.Fatalf("single retry %d max_tokens = %d, want %d", index, got, memoryMergeTokenBudget(episodeMemoryBatchTokensPerEpisode, 1, episodeMemoryBatchMaxTokens, 1))
+		}
+	}
+}
+
+func TestEpisodeMemoryOmissionReviewTruncationUsesLargerRetryBudget(t *testing.T) {
+	partial := `{"episode_assessment":{"goal_result":"achieved","reason":"partial`
+	model := &episodeMemoryScriptedModel{responses: []string{partial, partial}, stopReason: "length"}
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{ID: "ep_omission_truncated"}
+	parts := []llms.ContentPart{llms.TextPart("Review this episode for an omitted memory.")}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		_, err := processor.generateEpisodeMemoryProposal(context.Background(), episode, nil, parts, attempt)
+		if !errors.Is(err, errMemoryMergeTruncated) {
+			t.Fatalf("attempt %d error = %v, want errMemoryMergeTruncated", attempt, err)
+		}
+	}
+	first, second := model.batchMaxTokens(0), model.batchMaxTokens(1)
+	if first != episodeMemoryBatchTokenBudget(1, 0) || second != episodeMemoryBatchTokenBudget(1, 1) || second <= first {
+		t.Fatalf("omission review budgets = (%d, %d), want (%d, %d)", first, second, episodeMemoryBatchTokenBudget(1, 0), episodeMemoryBatchTokenBudget(1, 1))
+	}
+}
+
+func TestEpisodeMemoryRetentionAuditTruncationUsesLargerRetryBudget(t *testing.T) {
+	partial := `{"reviews":[{"lesson_key":"safe_path","decision":"retain"`
+	model := &episodeMemoryScriptedModel{auditResponses: []string{partial, partial}, stopReason: "max_tokens"}
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	processor := newEpisodeMemoryProcessor(plane, model)
+	episode := TaskEpisode{ID: "ep_audit_truncated"}
+	proposal := episodeMemoryProposal{Candidates: []episodeMemoryCandidate{{LessonKey: "safe_path"}}}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		_, err := processor.generateEpisodeMemoryRetentionAudit(context.Background(), episode, proposal, nil, attempt)
+		if !errors.Is(err, errMemoryMergeTruncated) {
+			t.Fatalf("attempt %d error = %v, want errMemoryMergeTruncated", attempt, err)
+		}
+	}
+	first, second := model.auditMaxTokens(0), model.auditMaxTokens(1)
+	if first != episodeMemoryRetentionAuditTokenBudget(0) || second != episodeMemoryRetentionAuditTokenBudget(1) || second <= first {
+		t.Fatalf("retention audit budgets = (%d, %d), want (%d, %d)", first, second, episodeMemoryRetentionAuditTokenBudget(0), episodeMemoryRetentionAuditTokenBudget(1))
+	}
+}
+
+func TestEpisodeMemoryFailureLogDoesNotPersistResponseBody(t *testing.T) {
+	var output bytes.Buffer
+	logger := &Logger{logger: log.New(&output, "", 0)}
+	processor := &episodeMemoryProcessor{plane: &FilesystemMemoryPlane{logger: logger}}
+	raw := `{"sensitive_values":["otp-123456"],"说明":"不要记录"}`
+
+	processor.logEpisodeMemoryResponseFailure("retention audit truncated", raw)
+
+	logged := output.String()
+	if strings.Contains(logged, "otp-123456") || strings.Contains(logged, "不要记录") {
+		t.Fatalf("failure log persisted model response body: %q", logged)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("response_bytes=%d", len(raw)),
+		fmt.Sprintf("response_runes=%d", len([]rune(raw))),
+	} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("failure log = %q, want %q", logged, want)
 		}
 	}
 }

@@ -217,24 +217,25 @@ func (p *episodeMemoryProcessor) logBatchError(err error) {
 	}
 }
 
-// logEpisodeMemoryRawBody records the tail of a model response that could not be
-// used. The tail is what matters: a truncated object is only broken at its end,
-// and the head is the schema we already know. Without this, a parse failure
-// leaves nothing in the log to diagnose from.
-func (p *episodeMemoryProcessor) logEpisodeMemoryRawBody(reason, raw string) {
+// logEpisodeMemoryResponseFailure records only response size metadata. Model
+// output can repeat credentials or one-time values from an Episode, so the raw
+// body must not be copied into the persistent agent log.
+func (p *episodeMemoryProcessor) logEpisodeMemoryResponseFailure(reason, raw string) {
 	if p == nil || p.plane == nil || p.plane.logger == nil {
 		return
 	}
-	tail := raw
-	if runes := []rune(tail); len(runes) > episodeMemoryRawBodyLogRunes {
-		tail = "…" + string(runes[len(runes)-episodeMemoryRawBodyLogRunes:])
-	}
-	p.plane.logger.Warn("[episode-memory] %s: response_chars=%d response_tail=%q", reason, len(raw), tail)
+	p.plane.logger.Warn("[episode-memory] %s: response_bytes=%d response_runes=%d", reason, len(raw), len([]rune(raw)))
 }
 
 // episodeMemoryBatchTokenBudget sizes the output budget for an episode batch.
 func episodeMemoryBatchTokenBudget(episodeCount, attempt int) int {
 	return memoryMergeTokenBudget(episodeMemoryBatchTokensPerEpisode, episodeCount, episodeMemoryBatchMaxTokens, attempt)
+}
+
+// episodeMemoryRetentionAuditTokenBudget grows review output headroom after a
+// truncation instead of replaying the same fixed-size request.
+func episodeMemoryRetentionAuditTokenBudget(attempt int) int {
+	return memoryMergeTokenBudget(episodeMemoryRetentionAuditBaseTokens, 1, episodeMemoryBatchMaxTokens, attempt)
 }
 
 func (p *episodeMemoryProcessor) NextRunAt(ctx context.Context) (time.Time, error) {
@@ -667,19 +668,20 @@ func (p *episodeMemoryProcessor) proposeEpisodeBatch(ctx context.Context, episod
 		Timeout:   episodeMemoryModelCallTimeout,
 	})
 	if err != nil {
-		// Extract returns the partial content with a truncation error. Log where
-		// it stopped: without this the failure is undiagnosable after the fact.
+		// Extract returns partial content with a truncation error. Record its size
+		// for diagnosis without copying potentially sensitive model output into
+		// the persistent agent log.
 		if errors.Is(err, errMemoryMergeTruncated) {
-			p.logEpisodeMemoryRawBody("batch proposal truncated", raw)
+			p.logEpisodeMemoryResponseFailure("batch proposal truncated", raw)
 		}
 		return nil, nil, fmt.Errorf("extract episode memory batch: %w", err)
 	}
 	var response episodeMemoryBatchResponse
 	if err := json.Unmarshal([]byte(raw), &response); err != nil {
-		// Terminal per isEpisodeMemoryProposalRetryable, so this log is the only
-		// record of what the model actually returned. Without it the failure is
-		// undiagnosable after the episode is discarded.
-		p.logEpisodeMemoryRawBody("batch proposal parse failed", raw)
+		// Terminal per isEpisodeMemoryProposalRetryable. Keep enough metadata to
+		// distinguish empty and substantial malformed responses without logging
+		// the response body.
+		p.logEpisodeMemoryResponseFailure("batch proposal parse failed", raw)
 		return nil, nil, fmt.Errorf("parse episode memory batch proposal: %w", err)
 	}
 	if len(response.Results) != len(episodes) {
@@ -708,7 +710,7 @@ func (p *episodeMemoryProcessor) proposeEpisodeBatch(ctx context.Context, episod
 			proposalErrors[episode.ID] = fmt.Errorf("episode %s: %w", episode.ID, err)
 			continue
 		}
-		proposal, err = p.postProcessEpisodeMemoryProposal(ctx, episode, proposal, existingByID[episode.ID])
+		proposal, err = p.postProcessEpisodeMemoryProposal(ctx, episode, proposal, existingByID[episode.ID], attempt)
 		if err != nil {
 			proposalErrors[episode.ID] = fmt.Errorf("episode %s: %w", episode.ID, err)
 			continue
@@ -740,13 +742,13 @@ func validateEpisodeMemoryProposal(episode TaskEpisode, proposal episodeMemoryPr
 	return proposal, nil
 }
 
-func (p *episodeMemoryProcessor) postProcessEpisodeMemoryProposal(ctx context.Context, episode TaskEpisode, proposal episodeMemoryProposal, existing []DeviceMemoryItem) (episodeMemoryProposal, error) {
+func (p *episodeMemoryProcessor) postProcessEpisodeMemoryProposal(ctx context.Context, episode TaskEpisode, proposal episodeMemoryProposal, existing []DeviceMemoryItem, attempt int) (episodeMemoryProposal, error) {
 	proposal, err := normalizeEpisodeMemoryAssessment(episode, proposal, existing)
 	if err != nil {
 		return episodeMemoryProposal{}, err
 	}
 	if shouldReviewEpisodeMemoryProposal(episode, proposal) {
-		reviewed, reviewErr := p.reviewEpisodeMemoryOmission(ctx, episode, proposal, existing)
+		reviewed, reviewErr := p.reviewEpisodeMemoryOmission(ctx, episode, proposal, existing, attempt)
 		if reviewErr != nil {
 			return episodeMemoryProposal{}, fmt.Errorf("%w: %w", errEpisodeMemoryOmissionReview, reviewErr)
 		}
@@ -763,7 +765,7 @@ func (p *episodeMemoryProcessor) postProcessEpisodeMemoryProposal(ctx context.Co
 		return proposal, nil
 	}
 	p.logEpisodeMemoryRetentionAudit("started", len(proposal.Candidates), 0, 0)
-	audit, auditErr := p.generateEpisodeMemoryRetentionAudit(ctx, episode, proposal, existing)
+	audit, auditErr := p.generateEpisodeMemoryRetentionAudit(ctx, episode, proposal, existing, attempt)
 	if auditErr != nil {
 		p.logEpisodeMemoryRetentionAudit("failed", len(proposal.Candidates), 0, 0)
 		// The counters line above carries no cause, which made audit failures
@@ -818,7 +820,7 @@ func normalizeEpisodeMemoryAssessment(episode TaskEpisode, proposal episodeMemor
 	return proposal, nil
 }
 
-func (p *episodeMemoryProcessor) reviewEpisodeMemoryOmission(ctx context.Context, episode TaskEpisode, proposal episodeMemoryProposal, existing []DeviceMemoryItem) (episodeMemoryProposal, error) {
+func (p *episodeMemoryProcessor) reviewEpisodeMemoryOmission(ctx context.Context, episode TaskEpisode, proposal episodeMemoryProposal, existing []DeviceMemoryItem, attempt int) (episodeMemoryProposal, error) {
 	payload, err := json.MarshalIndent(episodeMemoryPayload(episode), "", "  ")
 	if err != nil {
 		return episodeMemoryProposal{}, err
@@ -830,10 +832,10 @@ func (p *episodeMemoryProcessor) reviewEpisodeMemoryOmission(ctx context.Context
 		parts = append(parts, llms.TextPart("Attached screenshot evidence for Episode event id: "+screenshot.EventID))
 		parts = append(parts, llms.BinaryContent{MIMEType: screenshot.MIMEType, Data: screenshot.Data})
 	}
-	return p.generateEpisodeMemoryProposal(ctx, episode, existing, parts)
+	return p.generateEpisodeMemoryProposal(ctx, episode, existing, parts, attempt)
 }
 
-func (p *episodeMemoryProcessor) generateEpisodeMemoryRetentionAudit(ctx context.Context, episode TaskEpisode, proposal episodeMemoryProposal, existing []DeviceMemoryItem) (episodeMemoryRetentionAudit, error) {
+func (p *episodeMemoryProcessor) generateEpisodeMemoryRetentionAudit(ctx context.Context, episode TaskEpisode, proposal episodeMemoryProposal, existing []DeviceMemoryItem, attempt int) (episodeMemoryRetentionAudit, error) {
 	payload, err := json.MarshalIndent(episodeMemoryPayload(episode), "", "  ")
 	if err != nil {
 		return episodeMemoryRetentionAudit{}, err
@@ -849,22 +851,21 @@ func (p *episodeMemoryProcessor) generateEpisodeMemoryRetentionAudit(ctx context
 	}
 	callCtx, cancel := context.WithTimeout(ctx, episodeMemoryModelCallTimeout)
 	defer cancel()
-	response, err := p.model.GenerateContent(callCtx, messages, llms.WithJSONMode(), llms.WithMaxTokens(episodeMemoryRetentionAuditMaxTokens))
+	maxTokens := episodeMemoryRetentionAuditTokenBudget(attempt)
+	response, err := p.model.GenerateContent(callCtx, messages, llms.WithJSONMode(), llms.WithMaxTokens(maxTokens))
 	if err != nil {
 		return episodeMemoryRetentionAudit{}, fmt.Errorf("audit episode memory retention: %w", err)
 	}
-	if response == nil || len(response.Choices) == 0 {
-		return episodeMemoryRetentionAudit{}, fmt.Errorf("audit episode memory retention: empty response")
-	}
-	content := stripJSONFences(response.Choices[0].Content)
-	if isMemoryMergeTruncatedStopReason(response.Choices[0].StopReason) {
-		p.logEpisodeMemoryRawBody("retention audit truncated", content)
-		return episodeMemoryRetentionAudit{}, fmt.Errorf("audit episode memory retention: %w: stop_reason=%s max_tokens=%d",
-			errMemoryMergeTruncated, strings.TrimSpace(response.Choices[0].StopReason), episodeMemoryRetentionAuditMaxTokens)
+	content, responseErr := memoryMergeResponseContent(response, maxTokens)
+	if responseErr != nil {
+		if errors.Is(responseErr, errMemoryMergeTruncated) {
+			p.logEpisodeMemoryResponseFailure("retention audit truncated", content)
+		}
+		return episodeMemoryRetentionAudit{}, fmt.Errorf("audit episode memory retention: %w", responseErr)
 	}
 	var audit episodeMemoryRetentionAudit
 	if err := json.Unmarshal([]byte(content), &audit); err != nil {
-		p.logEpisodeMemoryRawBody("retention audit parse failed", content)
+		p.logEpisodeMemoryResponseFailure("retention audit parse failed", content)
 		return episodeMemoryRetentionAudit{}, fmt.Errorf("parse episode memory retention audit: %w", err)
 	}
 	return audit, nil
@@ -1149,7 +1150,7 @@ func shouldReviewEpisodeMemoryProposal(episode TaskEpisode, proposal episodeMemo
 	return (deviceCalls >= 2 && deviceResults >= 2) || (hasProblem && deviceCalls >= 1 && deviceResults >= 1)
 }
 
-func (p *episodeMemoryProcessor) generateEpisodeMemoryProposal(ctx context.Context, episode TaskEpisode, existing []DeviceMemoryItem, parts []llms.ContentPart) (episodeMemoryProposal, error) {
+func (p *episodeMemoryProcessor) generateEpisodeMemoryProposal(ctx context.Context, episode TaskEpisode, existing []DeviceMemoryItem, parts []llms.ContentPart, attempt int) (episodeMemoryProposal, error) {
 	if p == nil || p.model == nil {
 		return episodeMemoryProposal{}, fmt.Errorf("episode memory model is not configured")
 	}
@@ -1159,15 +1160,21 @@ func (p *episodeMemoryProcessor) generateEpisodeMemoryProposal(ctx context.Conte
 	}
 	callCtx, cancel := context.WithTimeout(ctx, episodeMemoryModelCallTimeout)
 	defer cancel()
-	response, err := p.model.GenerateContent(callCtx, messages, llms.WithJSONMode(), llms.WithMaxTokens(2200))
+	maxTokens := episodeMemoryBatchTokenBudget(1, attempt)
+	response, err := p.model.GenerateContent(callCtx, messages, llms.WithJSONMode(), llms.WithMaxTokens(maxTokens))
 	if err != nil {
 		return episodeMemoryProposal{}, fmt.Errorf("extract episode memory: %w", err)
 	}
-	if response == nil || len(response.Choices) == 0 {
-		return episodeMemoryProposal{}, fmt.Errorf("extract episode memory: empty response")
+	content, responseErr := memoryMergeResponseContent(response, maxTokens)
+	if responseErr != nil {
+		if errors.Is(responseErr, errMemoryMergeTruncated) {
+			p.logEpisodeMemoryResponseFailure("omission review truncated", content)
+		}
+		return episodeMemoryProposal{}, fmt.Errorf("extract episode memory: %w", responseErr)
 	}
 	var proposal episodeMemoryProposal
-	if err := json.Unmarshal([]byte(stripJSONFences(response.Choices[0].Content)), &proposal); err != nil {
+	if err := json.Unmarshal([]byte(content), &proposal); err != nil {
+		p.logEpisodeMemoryResponseFailure("omission review parse failed", content)
 		return episodeMemoryProposal{}, fmt.Errorf("parse episode memory proposal: %w", err)
 	}
 	proposal.ExistingRevisions = make(map[string]int, len(existing))
