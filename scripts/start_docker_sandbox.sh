@@ -61,5 +61,5 @@ fi
 echo "Aiden Docker sandbox is ready."
 echo "Config Web: http://localhost:${CONFIG_WEB_PORT}"
 echo "Agent Web:  http://localhost:${AGENT_WEB_PORT}"
-echo "Terminal:   http://localhost:${AGENT_WEB_PORT}/wetty/"
+echo "Terminal:   http://localhost:${AGENT_WEB_PORT}/webtty/ (ttyd)"
 echo "Logs:       docker compose logs -f aiden"

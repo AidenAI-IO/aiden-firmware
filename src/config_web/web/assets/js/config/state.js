@@ -8,8 +8,8 @@ export function configureTerminalLink(port = 8080) {
   const link = byId('terminalLink');
   if (!link) return;
   const terminalUrl = new URL(window.location.href);
-  terminalUrl.port = String(port || 8080);
-  terminalUrl.pathname = '/wetty/';
+  terminalUrl.port = terminalUrl.hostname === '192.168.42.1' ? '3000' : String(port || 8080);
+  terminalUrl.pathname = '/webtty/';
   terminalUrl.search = '';
   terminalUrl.hash = '';
   link.href = terminalUrl.toString();
