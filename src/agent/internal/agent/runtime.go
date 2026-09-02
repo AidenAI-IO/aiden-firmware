@@ -1170,13 +1170,13 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		maxResponseTokens = req.MaxTokens
 	}
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
-	compactionTrigger, compactionEnabled := conversationCompactionTrigger(usableInputBudget)
+	compactionTrigger, compactionEnabled := conversationCompactionTrigger(usableInputBudget, r.config.ContextCompactionThresholdOrDefault())
 	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
 
 	// Historical state and tool-result pruning is deterministic and has its own
 	// configurable trigger. It is intentionally independent from conversation
 	// summarization and provider-managed Responses compaction.
-	pruneTrigger, pruneTarget, pruneEnabled := historicalPruneBudgets(usableInputBudget, r.config.ContextPruneThreshold)
+	pruneTrigger, pruneTarget, pruneEnabled := historicalPruneBudgets(usableInputBudget, r.config.ContextPruneThresholdOrDefault())
 	if pruneEnabled && tokenUsage > pruneTrigger {
 		if r.logger != nil {
 			r.logger.Info("Historical context prune: token usage reached threshold; tokenUsage=%d trigger=%d target=%d", tokenUsage, pruneTrigger, pruneTarget)

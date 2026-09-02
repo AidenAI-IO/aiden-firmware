@@ -93,18 +93,20 @@ responses_compact_threshold = 32000
 		t.Fatal(err)
 	}
 
-	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"context_prune_threshold":12000}}}`))
+	// Deliberately not the default fraction: a patch equal to the resolved
+	// current value is filtered as a no-op and never reaches the file.
+	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"context_prune_threshold":0.4}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Config.Agent.ContextPruneThreshold != 12000 {
-		t.Fatalf("resolved context_prune_threshold = %d, want 12000", result.Config.Agent.ContextPruneThreshold)
+	if result.Config.Agent.ContextPruneThreshold != 0.4 {
+		t.Fatalf("resolved context_prune_threshold = %g, want 0.4", result.Config.Agent.ContextPruneThreshold)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "context_prune_threshold = 12000") {
+	if !strings.Contains(string(got), "context_prune_threshold = 0.4") {
 		t.Fatalf("context_prune_threshold was not updated:\n%s", got)
 	}
 	if !strings.Contains(string(got), "responses_compact_threshold = 32000") {
@@ -116,7 +118,7 @@ responses_compact_threshold = 32000
 		t.Fatal(err)
 	}
 	if result.Config.Agent.ContextPruneThreshold != 0 {
-		t.Fatalf("resolved context_prune_threshold = %d, want 0 automatic mode", result.Config.Agent.ContextPruneThreshold)
+		t.Fatalf("resolved context_prune_threshold = %g, want 0 automatic mode", result.Config.Agent.ContextPruneThreshold)
 	}
 	got, err = os.ReadFile(path)
 	if err != nil {

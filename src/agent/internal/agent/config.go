@@ -5,6 +5,8 @@ import (
 	"aiden-agent/internal/agent/realtimevoice"
 	"errors"
 	"fmt"
+	"log"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -315,20 +317,29 @@ type Config struct {
 	MaxIterations              int                           `toml:"max_iterations,omitempty"`
 	TerminationPolicy          TerminationPolicyConfig       `toml:"termination_policy,omitempty"`
 	ForceSimpleLoop            bool                          `toml:"-"`
-	// ContextPruneThreshold is the estimated token count that triggers
-	// deterministic cleanup of historical state and tool results. Zero uses an
-	// automatic model-budget-derived trigger.
-	ContextPruneThreshold     int             `toml:"context_prune_threshold,omitempty"`
-	ScreenshotKeepN           int             `toml:"screenshot_keep_n,omitempty"`
-	ScreenshotPruneInterval   int             `toml:"screenshot_prune_interval,omitempty"`
-	ScreenStableTimeoutMs     int             `toml:"screen_stable_timeout_ms,omitempty"`
-	ScreenStableMs            int             `toml:"screen_stable_ms,omitempty"`
-	ScreenStableDiffThreshold float64         `toml:"screen_stable_diff_threshold,omitempty"`
-	SkillsDirs                []string        `toml:"skills_dirs"`
-	BundledSkillsDir          string          `toml:"bundled_skills_dir,omitempty"`
-	SkillMergeModel           SkillMergeModel `toml:"-"`
-	Telemetry                 TelemetryConfig `toml:"telemetry,omitempty"`
-	ConfigDir                 string          `toml:"-"`
+	// ContextPruneThreshold is the fraction of the usable model input budget at
+	// which deterministic cleanup of expired state and historical tool results
+	// runs. Zero uses defaultContextPruneThreshold. Pruning is meant to run
+	// before conversation compaction, so the effective value is capped at
+	// ContextCompactionThreshold; read it through
+	// ContextPruneThresholdOrDefault rather than directly.
+	ContextPruneThreshold float64 `toml:"context_prune_threshold,omitempty"`
+	// ContextCompactionThreshold is the fraction of the usable model input
+	// budget at which conversation compaction summarizes the transcript. Zero
+	// uses defaultContextCompactionThreshold. Read it through
+	// ContextCompactionThresholdOrDefault rather than directly, so loaders that
+	// do not start from DefaultConfig still get the default.
+	ContextCompactionThreshold float64         `toml:"context_compaction_threshold,omitempty"`
+	ScreenshotKeepN            int             `toml:"screenshot_keep_n,omitempty"`
+	ScreenshotPruneInterval    int             `toml:"screenshot_prune_interval,omitempty"`
+	ScreenStableTimeoutMs      int             `toml:"screen_stable_timeout_ms,omitempty"`
+	ScreenStableMs             int             `toml:"screen_stable_ms,omitempty"`
+	ScreenStableDiffThreshold  float64         `toml:"screen_stable_diff_threshold,omitempty"`
+	SkillsDirs                 []string        `toml:"skills_dirs"`
+	BundledSkillsDir           string          `toml:"bundled_skills_dir,omitempty"`
+	SkillMergeModel            SkillMergeModel `toml:"-"`
+	Telemetry                  TelemetryConfig `toml:"telemetry,omitempty"`
+	ConfigDir                  string          `toml:"-"`
 }
 
 func (c Config) TerminationPolicyOrDefault() TerminationPolicyConfig {
@@ -1300,7 +1311,56 @@ func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 	if err := applyLegacyAudioBackend(path, metadata, cfg); err != nil {
 		return toml.MetaData{}, err
 	}
+	applyLegacyContextPruneThreshold(cfg)
 	return metadata, nil
+}
+
+// applyLegacyContextPruneThreshold migrates context_prune_threshold from its
+// original absolute-token form to the current fraction-of-budget form. The old
+// field accepted values like 12000; the new one is a fraction in (0, 1), and
+// TOML decodes an integer literal into the float64 field without complaint. A
+// device upgrading with the old value would otherwise fail Validate and refuse
+// to start.
+//
+// The old absolute value cannot be converted: it was compared against a token
+// count derived from the active model's budget, which is unknown at config load
+// time. Falling back to the default fraction reproduces the behaviour such a
+// device had before it set the field, which is the closest safe outcome.
+// validateContextThresholdFraction enforces the shared bounds for the context
+// size thresholds: 0 selects the default, and any other value must lie strictly
+// between 0 and 1. A value at or above 1.0 would let the transcript reach the
+// whole usable budget before acting, defeating the purpose.
+//
+// NaN needs its own check because every comparison against it is false, so it
+// would otherwise pass both the lower and upper bound and be stored raw. TOML
+// accepts nan and inf literals into a float64 field, so this is reachable from a
+// hand-edited config rather than only from code.
+func validateContextThresholdFraction(field string, value float64) error {
+	if math.IsNaN(value) {
+		return fmt.Errorf("%s must be a number, got NaN", field)
+	}
+	if value < 0 || value >= 1 {
+		return fmt.Errorf("%s must be 0 or in (0, 1), got %g", field, value)
+	}
+	return nil
+}
+
+func applyLegacyContextPruneThreshold(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	// Only a finite value >= 1 is a plausible legacy token count. NaN and +Inf
+	// are not, so they are left alone for Validate to reject rather than being
+	// silently replaced by the default, which would hide a malformed config.
+	if math.IsNaN(cfg.ContextPruneThreshold) || math.IsInf(cfg.ContextPruneThreshold, 0) {
+		return
+	}
+	if cfg.ContextPruneThreshold < 1 {
+		return
+	}
+	log.Printf("[config] context_prune_threshold = %g looks like a token count; it is now a fraction of the usable input budget. Using the default %g. Set a value in (0, 1) to silence this.\n",
+		cfg.ContextPruneThreshold, defaultContextPruneThreshold)
+	cfg.ContextPruneThreshold = defaultContextPruneThreshold
 }
 
 func applyLegacyAudioBackend(path string, metadata toml.MetaData, cfg *Config) error {
@@ -1422,8 +1482,11 @@ func (c Config) Validate() error {
 	if threshold := c.Model.ResponsesCompactThreshold; threshold != 0 && threshold < 1000 {
 		return fmt.Errorf("model.responses_compact_threshold must be 0 or >= 1000, got %d", threshold)
 	}
-	if c.ContextPruneThreshold < 0 {
-		return fmt.Errorf("context_prune_threshold must be >= 0, got %d", c.ContextPruneThreshold)
+	if err := validateContextThresholdFraction("context_prune_threshold", c.ContextPruneThreshold); err != nil {
+		return err
+	}
+	if err := validateContextThresholdFraction("context_compaction_threshold", c.ContextCompactionThreshold); err != nil {
+		return err
 	}
 	if c.Model.ResponsesContextEditTrigger < 0 {
 		return fmt.Errorf("model.responses_context_edit_trigger must be >= 0, got %d", c.Model.ResponsesContextEditTrigger)
@@ -1866,6 +1929,29 @@ func (c Config) VoiceMaxResponseTokensOrDefault() int {
 		return c.VoiceMaxResponseTokens
 	}
 	return defaultVoiceMaxResponseTokens
+}
+
+// ContextCompactionThresholdOrDefault returns the fraction of the usable input
+// budget at which conversation compaction runs, falling back to the default
+// when unset.
+func (c Config) ContextCompactionThresholdOrDefault() float64 {
+	if c.ContextCompactionThreshold > 0 {
+		return c.ContextCompactionThreshold
+	}
+	return defaultContextCompactionThreshold
+}
+
+// ContextPruneThresholdOrDefault returns the fraction of the usable input
+// budget at which deterministic pruning runs. Deterministic pruning is the
+// cheap pass that must get a chance to free tokens before the LLM summary, so
+// the result never exceeds the compaction threshold even if the file configures
+// a larger value.
+func (c Config) ContextPruneThresholdOrDefault() float64 {
+	threshold := c.ContextPruneThreshold
+	if threshold <= 0 {
+		threshold = defaultContextPruneThreshold
+	}
+	return min(threshold, c.ContextCompactionThresholdOrDefault())
 }
 
 func (c Config) ScreenshotPruningOrDefault() executor.ScreenshotPruningConfig {

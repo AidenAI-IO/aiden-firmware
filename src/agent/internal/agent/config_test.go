@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -964,6 +965,126 @@ llm_http_retention_days = 14
 	}
 }
 
+func TestLoadRuntimeConfigCanOverrideContextCompactionThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+context_compaction_threshold = 0.6
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	got := cfg.ContextCompactionThresholdOrDefault()
+	if got != 0.6 {
+		t.Fatalf("ContextCompactionThresholdOrDefault() = %g, want 0.6", got)
+	}
+	usableInputBudget := 10_000
+	trigger, enabled := conversationCompactionTrigger(usableInputBudget, got)
+	if !enabled || trigger != 6_000 {
+		t.Fatalf("conversationCompactionTrigger(10000, %g) = %d, %v; want 6000, true", got, trigger, enabled)
+	}
+}
+
+func TestLoadRuntimeConfigMigratesLegacyAbsoluteContextPruneThreshold(t *testing.T) {
+	// Devices configured before the field became a fraction hold an absolute
+	// token count. TOML decodes it into the float64 field without error, so the
+	// loader has to migrate it or the agent would fail Validate and not start.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+context_prune_threshold = 12000
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() with legacy absolute threshold must still load, got error = %v", err)
+	}
+	if got := cfg.ContextPruneThresholdOrDefault(); got != defaultContextPruneThreshold {
+		t.Fatalf("migrated prune threshold = %g, want default %g", got, defaultContextPruneThreshold)
+	}
+}
+
+func TestLoadRuntimeConfigCanOverrideContextPruneThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	// Deliberately not defaultContextPruneThreshold: an override equal to the
+	// default would pass this test even if the configured value were ignored.
+	if err := os.WriteFile(path, []byte(`
+context_prune_threshold = 0.4
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	got := cfg.ContextPruneThresholdOrDefault()
+	if got != 0.4 {
+		t.Fatalf("ContextPruneThresholdOrDefault() = %g, want 0.4", got)
+	}
+	trigger, target, enabled := historicalPruneBudgets(10_000, got)
+	if !enabled || trigger != 4_000 {
+		t.Fatalf("historicalPruneBudgets(10000, %g) = %d, %d, %v; want trigger 4000", got, trigger, target, enabled)
+	}
+}
+
+func TestLoadRuntimeConfigCapsPruneThresholdAtCompactionThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+context_prune_threshold = 0.9
+context_compaction_threshold = 0.6
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if got := cfg.ContextPruneThresholdOrDefault(); got != 0.6 {
+		t.Fatalf("ContextPruneThresholdOrDefault() = %g, want capped 0.6", got)
+	}
+}
+
+func TestLoadRuntimeConfigDefaultsContextCompactionThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if got := cfg.ContextCompactionThresholdOrDefault(); got != defaultContextCompactionThreshold {
+		t.Fatalf("ContextCompactionThresholdOrDefault() = %g, want %g", got, defaultContextCompactionThreshold)
+	}
+}
+
 func TestConfigValidateRejectsNegativeLLMHTTPRetentionDays(t *testing.T) {
 	cfg := Config{
 		Model: ModelConfig{Provider: "fake"},
@@ -1191,14 +1312,111 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 
 }
 
-func TestConfigValidateRejectsNegativeContextPruneThreshold(t *testing.T) {
+func TestConfigValidateRejectsOutOfRangeContextPruneThreshold(t *testing.T) {
+	// NaN and the infinities are included because TOML accepts those literals
+	// into a float64 field, and NaN passes every ordered comparison.
+	for _, threshold := range []float64{-0.1, 1, 1.5, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		cfg := Config{
+			Model:                 ModelConfig{Provider: "fake"},
+			ContextPruneThreshold: threshold,
+		}
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "context_prune_threshold") {
+			t.Fatalf("threshold %g: expected context_prune_threshold validation error, got %v", threshold, err)
+		}
+	}
+
 	cfg := Config{
 		Model:                 ModelConfig{Provider: "fake"},
-		ContextPruneThreshold: -1,
+		ContextPruneThreshold: 0,
 	}
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "context_prune_threshold") {
-		t.Fatalf("expected context_prune_threshold validation error, got %v", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("threshold 0 must be accepted as automatic, got %v", err)
+	}
+}
+
+// TestLoadRuntimeConfigRejectsNonFiniteContextThresholds covers the decode path
+// rather than a hand-built Config: TOML's nan and inf literals decode into the
+// float64 fields, so a hand-edited config can reach validation with values that
+// no amount of arithmetic can make sensible. Neither may be silently migrated to
+// the default, and neither may reach the budget helpers.
+func TestLoadRuntimeConfigRejectsNonFiniteContextThresholds(t *testing.T) {
+	for _, body := range []string{
+		"context_prune_threshold = nan",
+		"context_prune_threshold = inf",
+		"context_prune_threshold = -inf",
+		"context_compaction_threshold = nan",
+		"context_compaction_threshold = inf",
+		"context_compaction_threshold = -inf",
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "agent.toml")
+		if err := os.WriteFile(path, []byte("\n"+body+"\n\n[model]\nprovider = \"fake\"\n"), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		if _, err := LoadRuntimeConfig(path); err == nil {
+			t.Fatalf("%s: LoadRuntimeConfig() must reject a non-finite threshold", body)
+		}
+	}
+}
+
+func TestContextPruneThresholdOrDefaultIsCappedAtCompaction(t *testing.T) {
+	if got := (Config{}).ContextPruneThresholdOrDefault(); got != defaultContextPruneThreshold {
+		t.Fatalf("unset prune threshold = %g, want default %g", got, defaultContextPruneThreshold)
+	}
+	if got := (Config{ContextPruneThreshold: 0.5}).ContextPruneThresholdOrDefault(); got != 0.5 {
+		t.Fatalf("configured prune threshold = %g, want 0.5", got)
+	}
+
+	// A prune fraction above the compaction fraction is capped, so the cheap
+	// deterministic pass still runs before the LLM summary.
+	cfg := Config{ContextPruneThreshold: 0.95, ContextCompactionThreshold: 0.6}
+	if got := cfg.ContextPruneThresholdOrDefault(); got != 0.6 {
+		t.Fatalf("prune threshold above compaction = %g, want capped 0.6", got)
+	}
+
+	// The cap also applies to the default when compaction is configured below it.
+	cfg = Config{ContextCompactionThreshold: 0.5}
+	if got := cfg.ContextPruneThresholdOrDefault(); got != 0.5 {
+		t.Fatalf("default prune threshold with compaction 0.5 = %g, want capped 0.5", got)
+	}
+
+	if got := DefaultConfig().ContextPruneThresholdOrDefault(); got != defaultContextPruneThreshold {
+		t.Fatalf("DefaultConfig prune threshold = %g, want %g", got, defaultContextPruneThreshold)
+	}
+}
+
+func TestConfigValidateRejectsOutOfRangeContextCompactionThreshold(t *testing.T) {
+	for _, threshold := range []float64{-0.1, 1, 1.5, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		cfg := Config{
+			Model:                      ModelConfig{Provider: "fake"},
+			ContextCompactionThreshold: threshold,
+		}
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "context_compaction_threshold") {
+			t.Fatalf("threshold %g: expected context_compaction_threshold validation error, got %v", threshold, err)
+		}
+	}
+
+	// Zero means "use the default" and must stay valid.
+	cfg := Config{
+		Model:                      ModelConfig{Provider: "fake"},
+		ContextCompactionThreshold: 0,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("threshold 0 must be accepted as automatic, got %v", err)
+	}
+}
+
+func TestContextCompactionThresholdOrDefault(t *testing.T) {
+	if got := (Config{}).ContextCompactionThresholdOrDefault(); got != defaultContextCompactionThreshold {
+		t.Fatalf("unset threshold = %g, want default %g", got, defaultContextCompactionThreshold)
+	}
+	if got := (Config{ContextCompactionThreshold: 0.5}).ContextCompactionThresholdOrDefault(); got != 0.5 {
+		t.Fatalf("configured threshold = %g, want 0.5", got)
+	}
+	if got := DefaultConfig().ContextCompactionThresholdOrDefault(); got != defaultContextCompactionThreshold {
+		t.Fatalf("DefaultConfig threshold = %g, want %g", got, defaultContextCompactionThreshold)
 	}
 }
 
