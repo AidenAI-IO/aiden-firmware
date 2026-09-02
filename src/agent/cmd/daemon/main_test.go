@@ -82,7 +82,7 @@ func TestRealtimeDelegatedToolSchemasMatchRuntimeTools(t *testing.T) {
 		agent.NewRecallMemoryTool(nil),
 		agent.NewSaveMemoryTool(nil),
 		agent.NewForgetMemoryTool(nil),
-		agent.NewRecallSessionChunksTool(nil, nil),
+		agent.NewRecallSessionChunksTool(nil),
 		agent.NewAudioVolumeTool(""),
 	}
 	definitions := make(map[string]realtimevoice.Tool)
