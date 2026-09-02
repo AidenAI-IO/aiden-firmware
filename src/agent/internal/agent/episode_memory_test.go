@@ -1520,6 +1520,50 @@ func TestEpisodeMemoryFailureLogDoesNotPersistResponseBody(t *testing.T) {
 	}
 }
 
+func TestEpisodeMemoryErrorPersistenceSanitizesProviderText(t *testing.T) {
+	var output bytes.Buffer
+	logger := &Logger{logger: log.New(&output, "", 0)}
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), logger)
+	processor := newEpisodeMemoryProcessor(plane, &episodeMemoryScriptedModel{})
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	endedAt := time.Date(2026, 8, 14, 10, 0, 1, 0, time.UTC)
+	episode := TaskEpisode{ID: "ep_sanitized_error", Status: "active", StartedAt: endedAt.Add(-time.Second).Format(time.RFC3339Nano), EndedAt: endedAt.Format(time.RFC3339Nano)}
+	work := &episodeMemoryWork{
+		episode:        episode,
+		originalStatus: episodeMemoryEpisodeStatus{},
+		status:         episodeMemoryEpisodeStatus{},
+	}
+	result := &MemoryBatchResult{}
+	providerErr := fmt.Errorf("provider response contains otp-123456")
+	cause := fmt.Errorf("%w: %w", errEpisodeMemoryRetentionAudit, providerErr)
+	if err := processor.retryEpisodeMemoryWork(&episodeMemoryStateFile{Episodes: map[string]episodeMemoryEpisodeStatus{}}, work, cause, result); err != nil {
+		t.Fatalf("retryEpisodeMemoryWork() error = %v", err)
+	}
+	state, err := processor.state.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	status := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)]
+	if status.LastError != errEpisodeMemoryRetentionAudit.Error() {
+		t.Fatalf("LastError = %q, want stable retention-audit error", status.LastError)
+	}
+	if strings.Contains(status.LastError, "otp-123456") || strings.Contains(output.String(), "otp-123456") {
+		t.Fatalf("provider error text was persisted: state=%q log=%q", status.LastError, output.String())
+	}
+
+	truncatedCause := fmt.Errorf("%w: %w", errEpisodeMemoryRetentionAudit, fmt.Errorf("%w: provider response contains otp-654321", errMemoryMergeTruncated))
+	safeErr := safeEpisodeMemoryError(truncatedCause)
+	if !errors.Is(safeErr, errEpisodeMemoryRetentionAudit) || !errors.Is(safeErr, errMemoryMergeTruncated) {
+		t.Fatalf("safe error = %v, want retention and truncation sentinels", safeErr)
+	}
+	if strings.Contains(safeErr.Error(), "otp-654321") {
+		t.Fatalf("safe error retained provider text: %q", safeErr)
+	}
+}
+
 func TestEpisodeMemoryProposalRetryStopsAtMaximumAttempts(t *testing.T) {
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
 	processor := newEpisodeMemoryProcessor(plane, &episodeMemoryScriptedModel{})

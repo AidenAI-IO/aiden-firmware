@@ -28,9 +28,10 @@ const (
 )
 
 var (
-	errEpisodeMemoryRevisionChanged = errors.New("episode memory revision changed")
-	errEpisodeMemoryOmissionReview  = errors.New("episode memory omission review failed")
-	errEpisodeMemoryRetentionAudit  = errors.New("episode memory retention audit failed")
+	errEpisodeMemoryRevisionChanged  = errors.New("episode memory revision changed")
+	errEpisodeMemoryOmissionReview   = errors.New("episode memory omission review failed")
+	errEpisodeMemoryRetentionAudit   = errors.New("episode memory retention audit failed")
+	errEpisodeMemoryProcessingFailed = errors.New("episode memory processing failed")
 )
 
 type episodeGoalResult string
@@ -479,7 +480,32 @@ func isEpisodeMemoryProposalRetryable(err error) bool {
 		errors.Is(err, errMemoryMergeTruncated)
 }
 
+// safeEpisodeMemoryError removes provider-generated text before an error is
+// logged or persisted. Preserve the sentinels that drive retry decisions, but
+// never retain a wrapped provider error or model response body.
+func safeEpisodeMemoryError(err error) error {
+	switch {
+	case errors.Is(err, errEpisodeMemoryRetentionAudit):
+		if errors.Is(err, errMemoryMergeTruncated) {
+			return fmt.Errorf("%w: %w", errEpisodeMemoryRetentionAudit, errMemoryMergeTruncated)
+		}
+		return errEpisodeMemoryRetentionAudit
+	case errors.Is(err, errEpisodeMemoryOmissionReview):
+		if errors.Is(err, errMemoryMergeTruncated) {
+			return fmt.Errorf("%w: %w", errEpisodeMemoryOmissionReview, errMemoryMergeTruncated)
+		}
+		return errEpisodeMemoryOmissionReview
+	case errors.Is(err, errMemoryMergeTruncated):
+		return errMemoryMergeTruncated
+	case errors.Is(err, errMemoryMergeEmpty):
+		return errMemoryMergeEmpty
+	default:
+		return errEpisodeMemoryProcessingFailed
+	}
+}
+
 func (p *episodeMemoryProcessor) retryEpisodeMemoryWork(state *episodeMemoryStateFile, work *episodeMemoryWork, cause error, result *MemoryBatchResult) error {
+	cause = safeEpisodeMemoryError(cause)
 	attemptCount := max(work.originalStatus.AttemptCount, work.status.AttemptCount) + 1
 	if attemptCount >= episodeMemoryMaxAttempts {
 		return p.ignoreEpisodeMemoryWork(state, work, cause)
@@ -558,6 +584,7 @@ func (p *episodeMemoryProcessor) applyEpisodeMemoryWork(ctx context.Context, sta
 }
 
 func (p *episodeMemoryProcessor) ignoreEpisodeMemoryWork(state *episodeMemoryStateFile, work *episodeMemoryWork, cause error) error {
+	cause = safeEpisodeMemoryError(cause)
 	endedAt, err := episodeMemoryEpisodeEndedAt(work.episode)
 	if err != nil {
 		return err
@@ -750,7 +777,7 @@ func (p *episodeMemoryProcessor) postProcessEpisodeMemoryProposal(ctx context.Co
 	if shouldReviewEpisodeMemoryProposal(episode, proposal) {
 		reviewed, reviewErr := p.reviewEpisodeMemoryOmission(ctx, episode, proposal, existing, attempt)
 		if reviewErr != nil {
-			return episodeMemoryProposal{}, fmt.Errorf("%w: %w", errEpisodeMemoryOmissionReview, reviewErr)
+			return episodeMemoryProposal{}, safeEpisodeMemoryError(fmt.Errorf("%w: %w", errEpisodeMemoryOmissionReview, reviewErr))
 		}
 		proposal, err = normalizeEpisodeMemoryAssessment(episode, reviewed, existing)
 		if err != nil {
@@ -768,14 +795,12 @@ func (p *episodeMemoryProcessor) postProcessEpisodeMemoryProposal(ctx context.Co
 	audit, auditErr := p.generateEpisodeMemoryRetentionAudit(ctx, episode, proposal, existing, attempt)
 	if auditErr != nil {
 		p.logEpisodeMemoryRetentionAudit("failed", len(proposal.Candidates), 0, 0)
-		// The counters line above carries no cause, which made audit failures
-		// undiagnosable on device. Log the error itself.
+		safeErr := safeEpisodeMemoryError(fmt.Errorf("%w: %w", errEpisodeMemoryRetentionAudit, auditErr))
 		if p.plane != nil && p.plane.logger != nil {
-			p.plane.logger.Warn("[episode-memory] retention audit failed: episode_id=%s error=%s",
-				episode.ID, truncateForLog(auditErr.Error(), 500))
+			p.plane.logger.Warn("[episode-memory] retention audit failed: episode_id=%s error_class=%s",
+				episode.ID, safeErr.Error())
 		}
-		// %w keeps a wrapped truncation sentinel reachable via errors.Is.
-		return episodeMemoryProposal{}, fmt.Errorf("%w: %w", errEpisodeMemoryRetentionAudit, auditErr)
+		return episodeMemoryProposal{}, safeErr
 	}
 	originalCount := len(proposal.Candidates)
 	stats := summarizeEpisodeMemoryRetentionAudit(proposal.Candidates, audit)
