@@ -252,6 +252,7 @@ await stateModule.evaluate();
 stateModule.namespace.runtime.t = (key, params = {}) => String(params.defaultValue ?? key).replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (_match, name) => params[name] ?? '');
 stateModule.namespace.runtime.applyAudioArchiveAvailability = () => {};
 stateModule.namespace.runtime.rememberModelProvider = () => {};
+stateModule.namespace.runtime.refreshCurrentModelReasoningSpec = () => {};
 stateModule.namespace.runtime.syncModelSelectorSummary = () => {};
 stateModule.namespace.runtime.updateAllProviderActionStates = () => {};
 const configMetaModule = await loadModule(path.join(webRoot, 'assets/js/config/config-meta.js'));
