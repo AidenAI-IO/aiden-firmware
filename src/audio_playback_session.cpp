@@ -31,6 +31,15 @@ bool AudioPlaybackSession::start() {
 
 void AudioPlaybackSession::stop() {
     if (stopped_.exchange(true)) return;
+    {
+        // Publish the stop through mutex_ before notifying. playback_loop()
+        // evaluates its wait predicate while holding mutex_, and only releases
+        // it atomically once it is enqueued on cv_. Without this barrier a
+        // notify_all() can land after the predicate read but before the
+        // enqueue, where it is dropped -- leaving the loop asleep forever and
+        // the join() below blocked for good.
+        std::lock_guard<std::mutex> lock(mutex_);
+    }
     cv_.notify_all();
     std::lock_guard<std::mutex> lock(join_mutex_);
     if (!joined_ && playback_thread_.joinable()) {

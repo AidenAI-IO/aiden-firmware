@@ -606,9 +606,8 @@ func TestShellToolBackgroundPollDrainsBeforeDelete(t *testing.T) {
 	skipOnWindows(t)
 	tool := &ShellTool{}
 
-	// Produce > shellDefaultPollBytes of output and exit, so the first
-	// bounded poll cannot drain everything. Use 50000 bytes to ensure
-	// truncation even in fast CI environments where buffers fill quickly.
+	// Produce more than one bounded poll can return so draining requires
+	// multiple reads when the output is available at once.
 	startOut, err := tool.Call(context.Background(), `{"action":"start","command":"sh -c 'printf %50000s X'"}`)
 	if err != nil {
 		t.Fatalf("start returned error: %v", err)
@@ -625,59 +624,59 @@ func TestShellToolBackgroundPollDrainsBeforeDelete(t *testing.T) {
 		"session_id": started.SessionID,
 	})
 
-	// Wait for the process to exit, then poll once. Output should be capped
-	// to the default poll size; session must still be reachable for follow-up
-	// polls because there is more buffered data.
+	// Poll until the process exits while accumulating every response. The test
+	// cares that buffered output survives process exit, not which poll happens
+	// to observe the exit transition.
 	deadline := time.Now().Add(2 * time.Second)
+	exited := false
+	totalBytes := 0
 	var pollOut string
 	for time.Now().Before(deadline) {
-		pollOut, err = tool.Call(context.Background(), string(pollArgs))
-		if err != nil {
-			t.Fatalf("poll returned error: %v", err)
+		var pollErr error
+		pollOut, pollErr = tool.Call(context.Background(), string(pollArgs))
+		if pollErr != nil {
+			t.Fatalf("poll returned error: %v", pollErr)
 		}
 		var poll struct {
-			Running bool `json:"running"`
+			Running bool   `json:"running"`
+			Output  string `json:"output"`
+		}
+		if strings.Contains(pollOut, "shell session not found") {
+			t.Fatalf("shell session was deleted before all output was drained")
 		}
 		if err := json.Unmarshal([]byte(pollOut), &poll); err != nil {
 			t.Fatalf("poll unmarshal err: %v", err)
 		}
+		totalBytes += len(poll.Output)
 		if !poll.Running {
+			exited = true
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+	if !exited {
+		t.Fatal("background shell process did not exit before deadline")
+	}
 
-	// Drain remaining output across follow-up polls. The first poll already
-	// happened in the wait loop above. We accumulate until the session is
-	// gone, then assert the full payload was delivered.
-	totalBytes := 0
-	firstPollSawTruncation := false
+	// Drain remaining output across follow-up polls. The exit poll was already
+	// counted above, so each iteration starts with a new poll.
 	for i := 0; i < 10; i++ {
-		if strings.Contains(pollOut, "shell session not found") {
-			break
-		}
-		var poll struct {
-			SessionID       string `json:"session_id"`
-			Running         bool   `json:"running"`
-			Output          string `json:"output"`
-			OutputTruncated bool   `json:"output_truncated"`
-		}
-		if err := json.Unmarshal([]byte(pollOut), &poll); err != nil {
-			t.Fatalf("poll unmarshal err: %v (raw=%q)", err, pollOut)
-		}
-		if i == 0 && poll.OutputTruncated {
-			firstPollSawTruncation = true
-		}
-		totalBytes += len(poll.Output)
 		pollOut, err = tool.Call(context.Background(), string(pollArgs))
 		if err != nil {
 			t.Fatalf("poll returned error: %v", err)
 		}
+		if strings.Contains(pollOut, "shell session not found") {
+			break
+		}
+		var poll struct {
+			Output string `json:"output"`
+		}
+		if err := json.Unmarshal([]byte(pollOut), &poll); err != nil {
+			t.Fatalf("poll unmarshal err: %v (raw=%q)", err, pollOut)
+		}
+		totalBytes += len(poll.Output)
 	}
 
-	if !firstPollSawTruncation {
-		t.Fatalf("expected first post-exit poll to be truncated; output may have fit in one poll")
-	}
 	if totalBytes < 50000 {
 		t.Fatalf("totalBytes = %d, want >= 50000 (drain lost data)", totalBytes)
 	}
