@@ -7,7 +7,7 @@ import (
 )
 
 // shippedConfigPaths are the agent.toml files published with the firmware.
-// overlay/userdata is what _build_image.sh rsyncs onto the device;
+// overlay/userdata is what the firmware container task rsyncs onto the device;
 // src/agent/config/agent.toml is a symlink to it, so this one path covers both
 // the device config and the documented example. Users read it as a statement
 // about the defaults, so it may not contradict DefaultConfig().

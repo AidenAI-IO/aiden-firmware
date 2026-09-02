@@ -8,14 +8,23 @@ sidebar_position: 2
 aiden-firmware/
 ├── CMakeLists.txt                 # Main C/C++ build configuration
 ├── Makefile                       # Local build/test shortcut entry point
-├── build.sh / _build.sh           # Docker cross-compile the application
-├── build_image.sh / _build_image.sh # Full firmware build entry point
+├── build.sh                       # Public binaries, image, and image-exec CLI
 ├── cmake/                         # Toolchain files
 ├── docs/                          # Structured documentation
 ├── edid/                          # HDMI EDID hex files
 ├── overlay/                       # Firmware injection files: etc/oem/userdata
 ├── pico-sdk/                      # Luckfox SDK submodule
-├── scripts/                       # Device helper scripts
+├── scripts/                       # Build, release, and device helper scripts
+│   └── build/
+│       ├── run_container.sh       # Host-side Docker lifecycle and profiles
+│       ├── host/
+│       │   └── go_toolchain.sh    # Pinned Go provisioning and verification
+│       └── container/
+│           ├── binaries.sh        # Application binary cross-build task
+│           ├── image.sh           # Firmware image build orchestrator
+│           └── lib/
+│               ├── ext4_images.sh # ext4 image sizing and mutation helpers
+│               └── generated_binaries.sh # Generated-binary verification
 ├── src/                           # C/C++ SDK, services, tools
 ├── src/agent/                     # Go Agent
 ├── tests/                         # host-native unit tests
@@ -41,12 +50,13 @@ aiden-firmware/
 
 | Path | Description |
 | --- | --- |
-| `cmd/daemon` | Long-running Agent daemon providing the HTTP/Web UI in all input modes and an additional device voice loop in `stt` mode |
+| `cmd/daemon` | Long-running Agent daemon providing the HTTP/Web UI in all input modes and the legacy `stt` or provider-backed `realtime` voice loop |
 | `cmd/abctl` | A/B partition control utility for OTA system |
 | `cmd/ota` | OTA update client |
 | `cmd/benchmark-http` | Standalone LLM endpoint latency probe |
 | `cmd/test-warmup` | Connection warmup measurement harness |
 | `internal/agent/runtime.go` | Agent runtime, model invocation and tool loop |
+| `internal/agent/realtimevoice` | Provider-neutral realtime voice session seam and native Qwen, OpenAI, xAI, Gemini, and Speko adapters |
 | `internal/agent/server.go` | HTTP server / Web UI / tool API |
 | `internal/agent/tools*.go` | Built-in tools such as HID, screenshot, audio, shell |
 | `internal/agent/stt.go` / `internal/agent/tts/` / `vad.go` | STT, pluggable TTS providers, RKNN/CPU VAD orchestration |
@@ -69,4 +79,4 @@ overlay/
     └── wpa_supplicant.conf
 ```
 
-`_build_image.sh` copies the application binaries to `overlay/oem/usr/bin/`, injects the VAD model into the OEM partition along with `overlay/oem/usr/model/`, and syncs/injects the overlay into the `pico-sdk` output image.
+The build system has three explicit layers. `build.sh` is the only public CLI, `scripts/build/run_container.sh` owns host-side Docker lifecycle and the `binaries` and `image` profiles, and `scripts/build/container/` contains tasks that run only inside the selected container profile. The image task copies the application binaries to `overlay/oem/usr/bin/`, injects the VAD model into the OEM partition along with `overlay/oem/usr/model/`, and syncs/injects the overlay into the `pico-sdk` output image.

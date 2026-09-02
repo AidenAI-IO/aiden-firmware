@@ -109,6 +109,54 @@ log_raw_http = false
 	}
 }
 
+func TestUpdateConfigFileWritesIndependentContextPruneThreshold(t *testing.T) {
+	source := `[model]
+provider = "openai"
+model = "gpt-5.5"
+responses_compact_threshold = 32000
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"context_prune_threshold":12000}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.Agent.ContextPruneThreshold != 12000 {
+		t.Fatalf("resolved context_prune_threshold = %d, want 12000", result.Config.Agent.ContextPruneThreshold)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "context_prune_threshold = 12000") {
+		t.Fatalf("context_prune_threshold was not updated:\n%s", got)
+	}
+	if !strings.Contains(string(got), "responses_compact_threshold = 32000") {
+		t.Fatalf("provider compaction threshold changed while updating prune threshold:\n%s", got)
+	}
+
+	result, err = NewService().Update(path, []byte(`{"config":{"agent":{"context_prune_threshold":0}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.Agent.ContextPruneThreshold != 0 {
+		t.Fatalf("resolved context_prune_threshold = %d, want 0 automatic mode", result.Config.Agent.ContextPruneThreshold)
+	}
+	got, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "context_prune_threshold = 0") {
+		t.Fatalf("context_prune_threshold was not reset to automatic mode:\n%s", got)
+	}
+	if !strings.Contains(string(got), "responses_compact_threshold = 32000") {
+		t.Fatalf("provider compaction threshold changed while resetting prune threshold:\n%s", got)
+	}
+}
+
 func TestUpdateConfigFileAddsProviderToInlineTable(t *testing.T) {
 	source := `model_providers = { old = { type = "openai" } }
 
@@ -294,6 +342,101 @@ func TestConfigPatchOperationsUseRecordDeletesAndExplicitZero(t *testing.T) {
 	}
 	if !sawDelete || !sawZero || !sawFalse {
 		t.Fatalf("record delete/explicit values missing: %+v", ops)
+	}
+}
+
+func TestUpdateVoiceModelProviderSelectionPreservesOtherRecords(t *testing.T) {
+	source := `[agent]
+input_mode = "realtime"
+
+[voice_model_providers.qwen-main]
+type = "qwen"
+api_key = "qwen-secret"
+model = "qwen-realtime"
+voice = "longanqian"
+
+[voice_model_providers.speko-main]
+type = "speko"
+api_key = "speko-secret"
+upstream_provider = "xai"
+model = "grok-voice-latest"
+voice = "eve"
+
+[voice_model]
+provider = "qwen-main"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewService().Update(path, []byte(`{"config":{"voice_model":{"provider":"speko-main"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.VoiceModel.Provider != "speko-main" {
+		t.Fatalf("voice_model.provider = %q", result.Config.VoiceModel.Provider)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`[voice_model_providers.qwen-main]`, `api_key = "qwen-secret"`, `model = "qwen-realtime"`,
+		`[voice_model_providers.speko-main]`, `api_key = "speko-secret"`, `model = "grok-voice-latest"`,
+		`provider = "speko-main"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("provider switch lost %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestUpdateMigratesLegacyFlatVoiceModelWithoutLosingCredential(t *testing.T) {
+	source := `[agent]
+input_mode = "realtime"
+
+[voice_model]
+provider = "qwen"
+api_key = "qwen-secret"
+model = "qwen-realtime"
+voice = "longanqian"
+region = "cn-beijing"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewService().Update(path, []byte(`{"config":{"agent":{"locale":"zh-CN"}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`[voice_model_providers.qwen]`, `type = "qwen"`, `api_key = "qwen-secret"`,
+		`model = "qwen-realtime"`, `voice = "longanqian"`, `region = "cn-beijing"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("legacy voice model migration lost %q:\n%s", want, text)
+		}
+	}
+	start := strings.Index(text, "[voice_model]")
+	if start < 0 {
+		t.Fatalf("missing [voice_model] after migration:\n%s", text)
+	}
+	voiceModelTable := text[start:]
+	if next := strings.Index(voiceModelTable[1:], "\n["); next >= 0 {
+		voiceModelTable = voiceModelTable[:next+1]
+	}
+	for _, legacy := range []string{"api_key =", "model =", "voice =", "region ="} {
+		if strings.Contains(voiceModelTable, legacy) {
+			t.Fatalf("legacy field %q remains in [voice_model]:\n%s", legacy, text)
+		}
 	}
 }
 
@@ -655,7 +798,7 @@ model = "gpt-5.5"
 func TestUpdateConfigFileCreatesMissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
-	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"locale":"en-US"}}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"locale":"zh-CN"}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +809,7 @@ func TestUpdateConfigFileCreatesMissingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), `locale = "en-US"`) {
+	if !strings.Contains(string(got), `locale = "zh-CN"`) {
 		t.Fatalf("missing config was not created:\n%s", got)
 	}
 	info, err := os.Stat(path)
@@ -1116,11 +1259,18 @@ func TestVoiceModelConfigRoundTripPreservesSettingsAndCredentialPresence(t *test
 	emotion := true
 	threshold := 0.72
 	want := agent.Config{VoiceModel: agent.VoiceModelConfig{
+		Provider:               "speko",
+		UpstreamProvider:       "xai",
+		AgentID:                "agent-1",
 		APIKey:                 "voice-secret",
 		Model:                  "qwen-audio-3.0-realtime-plus",
 		WorkspaceID:            "workspace-1",
 		Region:                 "cn-beijing",
+		AuthMode:               "vertex",
+		ProjectID:              "project-1",
+		Location:               "us-central1",
 		Endpoint:               "wss://voice.example.test/realtime",
+		BaseURL:                "https://api.speko.dev",
 		Voice:                  "longanqian",
 		Instructions:           "be concise",
 		EnableSpeechEmotion:    &emotion,

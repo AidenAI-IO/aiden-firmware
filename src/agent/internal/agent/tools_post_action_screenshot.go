@@ -24,7 +24,7 @@ const postActionCompletedDetail = "action_completed"
 
 type postActionScreenshotResult struct {
 	screenshotResult
-	ActionOutput  string   `json:"action_output,omitempty"`
+	ActionOutput  string   `json:"action_output"`
 	ScreenStable  *bool    `json:"screen_stable,omitempty"`
 	StableWaitMs  *int64   `json:"stable_wait_ms,omitempty"`
 	ScreenChanged *bool    `json:"screen_changed,omitempty"`
@@ -55,7 +55,7 @@ func stripScreenshotData(content string) string {
 		"size":   result.Size,
 	}
 	if strings.TrimSpace(result.ActionOutput) != "" {
-		compact["action_output"] = strings.TrimSpace(result.ActionOutput)
+		compact["action_output"] = result.ActionOutput
 	}
 	if result.ScreenStable != nil {
 		compact["screen_stable"] = *result.ScreenStable
@@ -87,6 +87,10 @@ type postActionScreenshotTool struct {
 
 type stableScreenWaiter interface {
 	wait(context.Context, string) (waitStableScreenResult, error)
+}
+
+type unstableScreenRecoverer interface {
+	recoverAfterUnstableScreen(context.Context, string) error
 }
 
 func newPostActionScreenshotTool(inner langtools.Tool, screenshot langtools.Tool, delay time.Duration) langtools.Tool {
@@ -183,6 +187,13 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 		log.Printf("[INFO] stable-screen: tool=%s timeout_ms=%d elapsed_ms=%d stable=%v", t.inner.Name(), resolved.TimeoutMs, waitResult.ElapsedMs, waitResult.Stable)
 		if !waitResult.OK {
 			return postActionErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed", t.inner.Name(), actionOutput), nil
+		}
+		if !waitResult.Stable {
+			if recoverer, ok := t.inner.(unstableScreenRecoverer); ok {
+				if err := recoverer.recoverAfterUnstableScreen(ctx, input); err != nil {
+					return postActionErrorResultf(ctx, postActionErrorCode(err), "%s completed with output %q, but unstable-screen recovery failed: %v", t.inner.Name(), actionOutput, err), nil
+				}
+			}
 		}
 		touchscreenRCALogf(
 			"post_action wait_stable completed inner=%q stable=%v elapsed_ms=%d screen_changed=%v last_diff=%s",
@@ -327,7 +338,7 @@ func applyTouchGesturePostMarker(result *screenshotResult, marker touchGesturePo
 func drawTouchGesturePostMarker(jpegData []byte, marker touchGesturePostMarkerInfo) ([]byte, error) {
 	img, err := jpeg.Decode(bytes.NewReader(jpegData))
 	if err != nil {
-		return nil, fmt.Errorf("decode screenshot jpeg: %w", err)
+		return nil, fmt.Errorf("decode screenshot image: %w", err)
 	}
 	bounds := img.Bounds()
 	width := bounds.Dx()
@@ -344,7 +355,7 @@ func drawTouchGesturePostMarker(jpegData []byte, marker touchGesturePostMarkerIn
 
 	var output bytes.Buffer
 	if err := jpeg.Encode(&output, marked, &jpeg.Options{Quality: 90}); err != nil {
-		return nil, fmt.Errorf("encode marked screenshot jpeg: %w", err)
+		return nil, fmt.Errorf("encode marked screenshot image: %w", err)
 	}
 	return output.Bytes(), nil
 }

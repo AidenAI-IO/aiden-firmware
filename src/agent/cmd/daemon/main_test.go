@@ -19,7 +19,7 @@ import (
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/messages"
-	"aiden-agent/internal/agent/rtclient"
+	"aiden-agent/internal/agent/realtimevoice"
 	"aiden-agent/internal/agenttask"
 )
 
@@ -49,11 +49,11 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 			TurnDetectionSilenceMs: 900,
 		},
 	}
-	got := realtimeSessionConfig(cfg)
-	if got.Voice != "custom-voice" || got.Instructions != "speak naturally" || got.TurnDetection == nil {
+	got := realtimeProviderSessionConfig(cfg)
+	if got.Voice != "custom-voice" || got.Instructions != "speak naturally" || got.TurnDetection != "smart_turn" {
 		t.Fatalf("unexpected realtime session config: %+v", got)
 	}
-	if got.TurnDetection.Type != "smart_turn" || got.TurnDetection.SilenceDurationMS != 900 || got.TurnDetection.Threshold == nil || *got.TurnDetection.Threshold != 0.2 {
+	if got.TurnDetectionSilenceMs != 900 || got.TurnDetectionThresh == nil || *got.TurnDetectionThresh != 0.2 {
 		t.Fatalf("unexpected turn detection config: %+v", got.TurnDetection)
 	}
 	if got.EnableSpeechEmotion == nil || *got.EnableSpeechEmotion {
@@ -64,20 +64,96 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 		t.Fatalf("realtime tools = %#v, want %v", got.Tools, wantTools)
 	}
 	for i, want := range wantTools {
-		if got.Tools[i].Function.Name != want {
-			t.Fatalf("realtime tool[%d] = %q, want %q", i, got.Tools[i].Function.Name, want)
+		if got.Tools[i].Name != want {
+			t.Fatalf("realtime tool[%d] = %q, want %q", i, got.Tools[i].Name, want)
 		}
 	}
 }
 
 func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
 	cfg := agent.Config{Instruction: "legacy phone automation prompt"}
-	got := realtimeSessionConfig(cfg)
+	got := realtimeProviderSessionConfig(cfg)
 	if got.Instructions != agent.DefaultRealtimeVoiceInstructions {
 		t.Fatalf("instructions = %q, want realtime default", got.Instructions)
 	}
 	if got.Instructions == cfg.Instruction {
 		t.Fatal("realtime session reused the legacy agent instruction")
+	}
+}
+
+func TestRealtimeSessionConfigPreservesSpekoAutomaticVoice(t *testing.T) {
+	cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "speko"}}
+	got := realtimeProviderSessionConfig(cfg)
+	if got.Voice != "" {
+		t.Fatalf("Speko voice = %q, want empty automatic selection", got.Voice)
+	}
+}
+
+func TestRealtimeSessionConfigResolvesNamedSpekoProviderForDefaults(t *testing.T) {
+	cfg := agent.Config{
+		VoiceModel:          agent.VoiceModelConfig{Provider: "speko-main"},
+		VoiceModelProviders: map[string]agent.VoiceModelProvider{"speko-main": {Type: "speko"}},
+	}
+	got := realtimeProviderSessionConfig(cfg)
+	if got.Voice != "" {
+		t.Fatalf("named Speko voice = %q, want empty automatic selection", got.Voice)
+	}
+}
+
+func TestRealtimeSessionConfigLeavesProviderNativeRatesToAdapters(t *testing.T) {
+	cases := []struct {
+		provider, upstream string
+	}{
+		{provider: "qwen"},
+		{provider: "gemini"},
+		{provider: "openai"},
+		{provider: "xai"},
+		{provider: "speko", upstream: "google"},
+		{provider: "speko", upstream: "xai"},
+		{provider: "speko"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider+"/"+tc.upstream, func(t *testing.T) {
+			cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: tc.provider, UpstreamProvider: tc.upstream}}
+			got := realtimeProviderSessionConfig(cfg)
+			if got.InputSampleRate != 0 || got.OutputSampleRate != 0 {
+				t.Fatalf("provider rates = %d/%d, want adapter-owned defaults", got.InputSampleRate, got.OutputSampleRate)
+			}
+		})
+	}
+}
+
+func TestRealtimeSessionConfigDoesNotApplyQwenVoiceToNativeProviders(t *testing.T) {
+	for _, provider := range []string{"openai", "gemini", "xai"} {
+		t.Run(provider, func(t *testing.T) {
+			cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: provider}}
+			got := realtimeProviderSessionConfig(cfg)
+			if got.Voice != "" {
+				t.Fatalf("voice = %q, want native provider default", got.Voice)
+			}
+		})
+	}
+}
+
+func TestRealtimeClientTurnEndpointDetectsSilenceAfterSpeech(t *testing.T) {
+	endpoint := newRealtimeClientTurnEndpoint(100)
+	speech := make([]byte, 640)
+	for i := 0; i < len(speech); i += 2 {
+		binary.LittleEndian.PutUint16(speech[i:], uint16(1000))
+	}
+	start := time.Unix(0, 0)
+	if !endpoint.Observe(speech, start) {
+		t.Fatal("speech PCM was not detected")
+	}
+	if endpoint.Due(start.Add(99 * time.Millisecond)) {
+		t.Fatal("endpoint became due before the configured silence duration")
+	}
+	if !endpoint.Due(start.Add(100 * time.Millisecond)) {
+		t.Fatal("endpoint did not become due after the configured silence duration")
+	}
+	endpoint.Reset()
+	if endpoint.Due(start.Add(time.Second)) {
+		t.Fatal("reset endpoint remained active")
 	}
 }
 
@@ -175,7 +251,7 @@ func TestRealtimeToolCallAndResultPersistInUserContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := rtclient.FunctionCallEvent{CallID: "call_1", Name: realtimeCreateTaskTool, Arguments: `{"task":"打开微信"}`}
+	call := realtimevoice.Event{Kind: realtimevoice.EventToolCall, CallID: "call_1", Name: realtimeCreateTaskTool, Arguments: `{"task":"打开微信"}`}
 	if err := appendRealtimeToolExecution(manager, call, `{"id":"task_1","status":"queued"}`); err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +300,66 @@ func TestRecentRealtimeContextMessagesKeepsLatestTenUserTurns(t *testing.T) {
 			got[i].ToolCalls[0].ID != got[i+1].ToolResults[0].ToolCallID {
 			t.Fatalf("tool exchange was split: %+v", got[i:])
 		}
+	}
+}
+
+func TestRotateRealtimeContextForReplayStartsRevisionWhenTruncated(t *testing.T) {
+	sessionFolder := t.TempDir()
+	manager, err := contextmanager.NewContextManager(sessionFolder, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		if err := manager.AppendMessages([]messages.Message{
+			{Role: messages.MessageRoleUser, Content: fmt.Sprintf("user-%d", i)},
+			{Role: messages.MessageRoleAssistant, Content: fmt.Sprintf("assistant-%d", i)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	originalSessionID := manager.GetSessionID()
+
+	rotated, err := rotateRealtimeContextForReplay(manager, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.GetSessionID() == originalSessionID {
+		t.Fatal("truncated context reused the original session")
+	}
+	dump := rotated.MessageListDump()
+	if dump.ParentSessionID != originalSessionID {
+		t.Fatalf("parent session = %q, want %q", dump.ParentSessionID, originalSessionID)
+	}
+	if len(dump.Messages) != 5 ||
+		dump.Messages[0].Role != messages.MessageRoleSystem ||
+		dump.Messages[1].Content != "user-2" ||
+		dump.Messages[4].Content != "assistant-3" {
+		t.Fatalf("rotated messages = %+v", dump.Messages)
+	}
+	current, err := contextmanager.LoadContextManagerFromCurrentSession(sessionFolder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.GetSessionID() != rotated.GetSessionID() {
+		t.Fatalf("current session = %q, want %q", current.GetSessionID(), rotated.GetSessionID())
+	}
+}
+
+func TestRotateRealtimeContextForReplayReusesSessionWithoutTruncation(t *testing.T) {
+	manager, err := contextmanager.NewContextManager(t.TempDir(), "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := rotateRealtimeContextForReplay(manager, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetSessionID() != manager.GetSessionID() {
+		t.Fatal("untruncated context started a new session")
 	}
 }
 
@@ -1506,7 +1642,9 @@ func TestRunVoiceSessionDoesNotRecordWhileSpeaking(t *testing.T) {
 }
 
 func TestRunVoiceTurnAppendsAndConfirmsVoiceNotificationTail(t *testing.T) {
-	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	config := agent.DefaultConfig()
+	config.Locale = "zh-CN"
+	runtime := agent.NewRuntimeWithDeps(config, nil, nil, nil, agent.NewSkillIndex())
 	if err := runtime.VoiceNotificationSink().Publish(context.Background(), agent.VoiceNotificationEvent{
 		Code: "storage", Severity: agent.SeverityWarning, State: agent.VoiceNotificationActive, DedupeKey: "storage:device",
 	}); err != nil {
@@ -1577,7 +1715,9 @@ func TestRunVoiceTurnKeepsVoiceNotificationPendingWhenSpeechIsUnavailable(t *tes
 }
 
 func TestRunVoiceTurnSpeaksReplacementForFinalLLMFailure(t *testing.T) {
-	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	config := agent.DefaultConfig()
+	config.Locale = "zh-CN"
+	runtime := agent.NewRuntimeWithDeps(config, nil, nil, nil, agent.NewSkillIndex())
 	dialog := &fakeAudioDialog{
 		runTurn: func(context.Context) (agent.RunResult, error) {
 			return agent.RunResult{TurnFailure: &agent.TurnFailure{Code: agent.TurnFailureNetworkUnavailable}}, errors.New("dial tcp: network is unreachable")

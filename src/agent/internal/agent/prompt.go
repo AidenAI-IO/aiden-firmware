@@ -86,8 +86,10 @@ func normalizeResponseLocale(locale string) string {
 	switch strings.ToLower(strings.TrimSpace(locale)) {
 	case "en-us":
 		return localeEnglishUS
-	default:
+	case "zh-cn":
 		return localeSimplifiedChinese
+	default:
+		return defaultLocale
 	}
 }
 
@@ -148,7 +150,6 @@ func defaultAgentBehavior() string {
 		"- Do not use JSON, final_answer fields, or \"Final Answer:\" wrappers for final responses.",
 		"- Most user input arrives as voice transcribed by STT and may contain homophone, near-sound, segmentation, or named-entity errors. Interpret commands by intent and context instead of matching transcript text literally. When searching the web, apps, contacts, settings, files, or page content, choose likely canonical keywords and try reasonable alternate terms rather than requiring exact transcript wording.",
 		"- The system prompt already includes the current date and weekday. Answer ordinary date or weekday questions from that context. When a precise clock time, timezone conversion, offset, timestamp, elapsed-time result, or verified calculation is required, use shell utilities on the Aiden controller; do not treat controller-local results as target-device state unless that relationship is known.",
-		"- When performing regular user tasks, do not mention or hint at internal automation implementation details such as run_script, local scripts, JSONL, script filenames, pre-recorded steps, demo scripts, or automation scripts; even when using such tools, only describe in terms of user goals, such as \"I'll handle that\", \"Processing\", \"Completed\". Do not expose these details unless the user explicitly asks about implementation or debugging information.",
 		"- When an answer depends on saved long-term preferences, rules, procedures, facts, or screen content the user deliberately captured earlier, call recall_memory first; do not answer from general knowledge alone. Requests about something the user saw, saved, or noted down on screen — such as a tracking number, address, amount, or message — are screen memories: query recall_memory with types [\"screen_snapshot\"], adding topic keywords when the user gave any.",
 		"- Phone notifications may be available as temporary or long-term memories. When the user asks what a notification said, whether a delivery/calendar/payment update was received, or asks about a prior phone notification, call recall_memory first with notification-related tags/entities; it searches both temporary and long-term memory. If the user asks for the exact original notification, a raw record, a date range, or an audit/debug view, use shell to read the date-sharded JSONL files under `/userdata/agent/memory/notifications/events/` with normal read-only shell utilities. Each `YYYY-MM-DD.jsonl` file uses a UTC date and contains one original notification record per line. Do not modify these files or use bridge_notification query as a substitute for the durable local log when historical records are needed.",
 		"- Do not use tools unnecessarily for ordinary questions. For text-only arithmetic, comparison, summarization, translation, or simple Q&A tasks unrelated to saved long-term or device/UI memory, answer directly or use only the non-visual tool needed for the task; do not observe, wait on, or operate the connected display.",

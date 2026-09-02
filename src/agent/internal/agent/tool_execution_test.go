@@ -379,12 +379,6 @@ func TestExecuteToolCallBuiltInStringErrorToolsReturnStructuredErrors(t *testing
 			wantCode: CodeInvalidArguments,
 		},
 		{
-			name:     "image diff missing after",
-			tool:     &ImageDiffTool{},
-			input:    `{"before":"x"}`,
-			wantCode: CodeInvalidArguments,
-		},
-		{
 			name:     "web search unconfigured",
 			tool:     &WebSearchTool{provider: "brave"},
 			input:    `{"query":"aiden"}`,
@@ -516,7 +510,7 @@ func TestExecuteToolCallPropagatesParentCancellation(t *testing.T) {
 	}
 }
 
-func TestDefaultAfterToolCallSummarizesScreenshotAndMarksTerminate(t *testing.T) {
+func TestDefaultAfterToolCallPreservesScreenshotActionOutputAndMarksTerminate(t *testing.T) {
 	image := []byte("jpeg")
 	output := `{"action_output":"ok","width":320,"height":240,"format":"jpeg","size":4,"data":"` +
 		base64.StdEncoding.EncodeToString(image) + `"}`
@@ -541,11 +535,8 @@ func TestDefaultAfterToolCallSummarizesScreenshotAndMarksTerminate(t *testing.T)
 	if result.Result.Output != output {
 		t.Fatalf("raw screenshot output should remain available to the agent")
 	}
-	if strings.Contains(result.Result.Summary, base64.StdEncoding.EncodeToString(image)) {
-		t.Fatalf("after hook should summarize screenshot data, got raw output")
-	}
-	if !strings.Contains(result.Result.Summary, "screenshot observation") {
-		t.Fatalf("unexpected screenshot summary: %q", result.Result.Summary)
+	if result.Result.Summary != "ok" {
+		t.Fatalf("screenshot summary = %q, want original action output", result.Result.Summary)
 	}
 	if result.Step.Observation != result.Result.Output {
 		t.Fatalf("step observation should preserve raw output")

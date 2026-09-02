@@ -2,7 +2,25 @@ package mnk
 
 import "context"
 
-const defaultSwipeGestureDurationMs = 300
+const (
+	defaultSwipeGestureDurationMs = 300
+	dragStartHoldMs               = 500
+	dragStartMoveDistance         = 200.0
+	dragStartMoveSpeed            = 500.0
+	dragStartMoveDurationMs       = int(dragStartMoveDistance / dragStartMoveSpeed * 1000)
+	dragReleaseHoldMs             = 200
+)
+
+// SwipeOptions controls the timing and interpolation of a swipe. A zero
+// duration uses the provider's default swipe duration; a zero Steps uses the
+// provider's default interpolation step count. Hold durations are optional
+// and default to zero.
+type SwipeOptions struct {
+	DurationMs   int
+	HoldBeforeMs int
+	HoldAfterMs  int
+	Steps        int
+}
 
 // Provider defines a minimal set of mouse/keyboard primitives for device input.
 // This interface isolates tools from device-specific implementations (HID, ADB, etc).
@@ -33,19 +51,14 @@ type Provider interface {
 	// enough to avoid triggering long-press behavior.
 	Swipe(ctx context.Context, path [][2]float64, button string) error
 
-	// Drag performs a gesture along a path of points.
-	// The path is interpolated smoothly with implementation-defined timing and steps.
-	//
-	// Parameters:
-	//   path: Sequence of (x,y) normalized coordinates. Must have at least 2 points.
-	//   button: "left" | "right" | "middle" (ignored in touchscreen mode)
-	//
-	// Implementation handles:
-	//   - Smooth interpolation between consecutive points
-	//   - Appropriate dwell before movement (for edge gesture recognition)
-	//   - Step count for motion smoothness
-	//   - Platform-specific timing requirements
-	Drag(ctx context.Context, path [][2]float64, button string) error
+	// DragStart presses at a normalized point, holds for 500ms, then moves 200
+	// normalized units at 500 units/second in a bounded activation direction
+	// without releasing.
+	DragStart(ctx context.Context, x, y float64, button string) error
+
+	// DragRelease moves the active drag contact directly to a normalized point,
+	// holds for 200ms, then releases it.
+	DragRelease(ctx context.Context, x, y float64) error
 
 	// Keypress sends one or more keys simultaneously.
 	// Supports modifier+key combinations as a single chord.
@@ -84,10 +97,53 @@ type Provider interface {
 	Scroll(ctx context.Context, scrollX, scrollY int) error
 }
 
+// TouchAction is one low-level pointer/touch primitive. Coordinates use the
+// same normalized 0-1000 space as Provider. A point is optional for
+// touch_up (the current contact position is used) and required for the other
+// coordinate-bearing actions by the tool parser.
+type TouchAction struct {
+	Type       string `json:"action"`
+	Point      *Point `json:"point,omitempty"`
+	DurationMs int    `json:"ms,omitempty"`
+	Button     string `json:"button,omitempty"`
+}
+
+// TouchActionProvider executes a validated sequence of atomic touch actions
+// while keeping the pointer profile and contact state alive for the whole
+// sequence. Providers should return ModuleUnavailable when the selected
+// backend or device cannot represent an independent touch contact.
+type TouchActionProvider interface {
+	TouchActions(ctx context.Context, actions []TouchAction) error
+}
+
 // Point represents a normalized coordinate point.
 type Point struct {
-	X float64 // Normalized X coordinate (0-1000)
-	Y float64 // Normalized Y coordinate (0-1000)
+	X float64 `json:"x"` // Normalized X coordinate (0-1000)
+	Y float64 `json:"y"` // Normalized Y coordinate (0-1000)
+}
+
+// dragActivationPoint picks the axis direction with the most room and moves
+// exactly 200 normalized units. This guarantees a real movement at every valid
+// start point without asking the caller to guess an activation coordinate.
+func dragActivationPoint(start Point) Point {
+	type candidate struct {
+		room float64
+		dx   float64
+		dy   float64
+	}
+	candidates := []candidate{
+		{room: 1000 - start.X, dx: dragStartMoveDistance},
+		{room: 1000 - start.Y, dy: dragStartMoveDistance},
+		{room: start.X, dx: -dragStartMoveDistance},
+		{room: start.Y, dy: -dragStartMoveDistance},
+	}
+	selected := candidates[0]
+	for _, current := range candidates[1:] {
+		if current.room > selected.room {
+			selected = current
+		}
+	}
+	return Point{X: start.X + selected.dx, Y: start.Y + selected.dy}
 }
 
 // Button constants for click/drag operations.

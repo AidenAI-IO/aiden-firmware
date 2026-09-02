@@ -318,14 +318,3 @@ func (ps *PhoneScreenInfo) Format() string {
 func (saa *ScreenActiveArea) Format() string {
 	return fmt.Sprintf("{x:%d y:%d w:%d h:%d valid:%v}", saa.X, saa.Y, saa.Width, saa.Height, saa.Valid)
 }
-
-func (s *ScreenState) UpdateState() map[string]string {
-	_, _, active, _, ok := s.ActiveAreaWithAge()
-	if !ok {
-		return map[string]string{}
-	}
-	return map[string]string{
-		"screen_width":  fmt.Sprintf("%d", active.Width),
-		"screen_height": fmt.Sprintf("%d", active.Height),
-	}
-}

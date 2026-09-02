@@ -18,23 +18,13 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func TestMemoryManagerSaveWritesSessionEvents(t *testing.T) {
+func TestMemoryManagerAppendWritesSessionEvents(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	manager := NewMemoryManager(storageDir)
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
 
-	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "hello"},
-		llms.AIChatMessage{Content: "hi"},
-	}); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
-	}
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+	if err := manager.AppendExchange(ctx, "default", "hello", "hi"); err != nil {
+		t.Fatalf("AppendExchange() error = %v", err)
 	}
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
@@ -49,23 +39,13 @@ func TestMemoryManagerSaveWritesSessionEvents(t *testing.T) {
 	}
 }
 
-func TestMemoryManagerSaveCreatesSessionMetadataOnFirstWrite(t *testing.T) {
+func TestMemoryManagerAppendCreatesSessionMetadataOnFirstWrite(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	manager := NewMemoryManager(storageDir)
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "hello"},
-		llms.AIChatMessage{Content: "hi"},
-	}); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
-	}
 
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+	if err := manager.AppendExchange(ctx, "default", "hello", "hi"); err != nil {
+		t.Fatalf("AppendExchange() error = %v", err)
 	}
 
 	metadata := readSessionMetadataForTest(t, filepath.Join(storageDir, "session", sessionMetadataFileName))
@@ -173,23 +153,13 @@ func TestMemoryManagerActiveSessionIDRejectsUnsafeMetadata(t *testing.T) {
 	}
 }
 
-func TestMemoryManagerSaveKeepsMemoryRootSessionOnly(t *testing.T) {
+func TestMemoryManagerAppendKeepsMemoryRootSessionOnly(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	manager := NewMemoryManager(storageDir)
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
 
-	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "hello"},
-		llms.AIChatMessage{Content: "hi"},
-	}); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
-	}
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+	if err := manager.AppendExchange(ctx, "default", "hello", "hi"); err != nil {
+		t.Fatalf("AppendExchange() error = %v", err)
 	}
 
 	metadata := readSessionMetadataForTest(t, filepath.Join(storageDir, "session", sessionMetadataFileName))
@@ -203,80 +173,18 @@ func TestMemoryManagerSaveKeepsMemoryRootSessionOnly(t *testing.T) {
 	}
 }
 
-func TestSnapshotAppendStartFindsExistingSuffixOverlap(t *testing.T) {
-	human := func(content string) MessageRecord {
-		return MessageRecord{Role: "human", Content: content}
-	}
-	ai := func(content string) MessageRecord {
-		return MessageRecord{Role: "ai", Content: content}
-	}
-
-	tests := []struct {
-		name     string
-		existing []MessageRecord
-		records  []MessageRecord
-		want     int
-	}{
-		{
-			name:     "existing prefix of snapshot",
-			existing: []MessageRecord{human("first"), ai("first answer")},
-			records:  []MessageRecord{human("first"), ai("first answer"), human("second")},
-			want:     2,
-		},
-		{
-			name:     "snapshot prefix already persisted",
-			existing: []MessageRecord{human("first"), ai("first answer"), human("second")},
-			records:  []MessageRecord{human("first"), ai("first answer")},
-			want:     2,
-		},
-		{
-			name:     "existing suffix overlaps snapshot prefix",
-			existing: []MessageRecord{human("failed request"), human("current request"), ai("current answer")},
-			records:  []MessageRecord{human("current request"), ai("current answer")},
-			want:     2,
-		},
-		{
-			name:     "partial overlap appends only new tail",
-			existing: []MessageRecord{human("old"), human("current request"), ai("current answer")},
-			records:  []MessageRecord{human("current request"), ai("current answer"), human("next request")},
-			want:     2,
-		},
-		{
-			name:     "no overlap",
-			existing: []MessageRecord{human("old")},
-			records:  []MessageRecord{human("new")},
-			want:     0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := snapshotAppendStart(tt.existing, tt.records); got != tt.want {
-				t.Fatalf("snapshotAppendStart() = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestSessionEventsStripScreenshotData(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	manager := NewMemoryManager(storageDir)
-	handle, err := manager.Get("default", MemoryConfig{Type: "buffer"})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
 
 	screenshotJSON := `{"width":1080,"height":2400,"format":"jpeg","size":54321,"data":"dGVzdC1iYXNlNjQtc2NyZWVuc2hvdC1wYXlsb2FkCg=="}`
-	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "take screenshot"},
-		llms.ToolChatMessage{Content: screenshotJSON},
-		llms.AIChatMessage{Content: "screenshot taken"},
+	if err := manager.AppendMessages(ctx, "default", []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: "take screenshot"},
+		{Role: string(llms.ChatMessageTypeTool), Content: screenshotJSON},
+		{Role: string(llms.ChatMessageTypeAI), Content: "screenshot taken"},
 	}); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
-	}
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+		t.Fatalf("AppendMessages() error = %v", err)
 	}
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
@@ -342,168 +250,10 @@ func TestSessionMemoryAppendEventStripsScreenshotData(t *testing.T) {
 	}
 }
 
-func TestMemoryManagerRestoresFromSessionEvents(t *testing.T) {
+func TestMemoryManagerAppendDoesNotRegressEventCountWithRuntimeEvents(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	manager := NewMemoryManager(storageDir)
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-
-	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "remember this"},
-		llms.AIChatMessage{Content: "stored"},
-	}); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
-	}
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
-	}
-
-	reloaded := NewMemoryManager(storageDir)
-	reloadedHandle, err := reloaded.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() reload error = %v", err)
-	}
-	messages, err := reloadedHandle.History.Messages(ctx)
-	if err != nil {
-		t.Fatalf("Messages() error = %v", err)
-	}
-	if len(messages) != 2 {
-		t.Fatalf("expected 2 restored messages, got %d", len(messages))
-	}
-	if messages[0].GetContent() != "remember this" || messages[1].GetContent() != "stored" {
-		t.Fatalf("unexpected restored messages: %#v", messages)
-	}
-}
-
-func TestMemoryManagerMigratesLegacySnapshotWhenSessionEventsMissing(t *testing.T) {
-	ctx := context.Background()
-	storageDir := t.TempDir()
-	legacyPath := legacyMemorySnapshotPath(storageDir, "default")
-	legacyRecords := []MessageRecord{
-		{Role: string(llms.ChatMessageTypeHuman), Content: "legacy user"},
-		{Role: string(llms.ChatMessageTypeAI), Content: "legacy answer"},
-	}
-	data, err := json.Marshal(legacyRecords)
-	if err != nil {
-		t.Fatalf("marshal legacy snapshot: %v", err)
-	}
-	if err := os.WriteFile(legacyPath, data, 0o644); err != nil {
-		t.Fatalf("write legacy snapshot: %v", err)
-	}
-
-	manager := NewMemoryManager(storageDir)
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	messages, err := handle.History.Messages(ctx)
-	if err != nil {
-		t.Fatalf("Messages() error = %v", err)
-	}
-	if len(messages) != 2 {
-		t.Fatalf("expected 2 migrated messages, got %d", len(messages))
-	}
-	if messages[0].GetContent() != "legacy user" || messages[1].GetContent() != "legacy answer" {
-		t.Fatalf("unexpected migrated messages: %#v", messages)
-	}
-
-	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if len(events) != 2 {
-		t.Fatalf("expected 2 migrated session events, got %d: %#v", len(events), events)
-	}
-	if events[0].Type != "user_input" || events[0].Content != "legacy user" {
-		t.Fatalf("unexpected migrated first event: %#v", events[0])
-	}
-	if events[1].Type != "assistant_output" || events[1].Content != "legacy answer" {
-		t.Fatalf("unexpected migrated second event: %#v", events[1])
-	}
-	metadata := readSessionMetadataForTest(t, filepath.Join(storageDir, "session", sessionMetadataFileName))
-	if metadata.SessionID == "" {
-		t.Fatal("expected migrated session metadata to contain a session_id")
-	}
-	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy snapshot to be removed after migration, stat err = %v", err)
-	}
-	assertNoTopLevelJSONFiles(t, storageDir)
-}
-
-func TestMemoryManagerIgnoresRootJSONFilesWithoutSessionData(t *testing.T) {
-	ctx := context.Background()
-	storageDir := t.TempDir()
-	orphanPath := filepath.Join(storageDir, "orphan-history.json")
-	data, err := json.Marshal([]MessageRecord{
-		{Role: "human", Content: "orphan user"},
-		{Role: "ai", Content: "orphan answer"},
-	})
-	if err != nil {
-		t.Fatalf("marshal orphan root file: %v", err)
-	}
-	if err := os.WriteFile(orphanPath, data, 0o644); err != nil {
-		t.Fatalf("write orphan root file: %v", err)
-	}
-
-	manager := NewMemoryManager(storageDir)
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	messages, err := handle.History.Messages(ctx)
-	if err != nil {
-		t.Fatalf("Messages() error = %v", err)
-	}
-	if len(messages) != 0 {
-		t.Fatalf("root-level JSON files should be ignored without session data, got %#v", messages)
-	}
-}
-
-func TestMemoryManagerRestoresOnlyConversationEventsFromRuntimeSession(t *testing.T) {
-	ctx := context.Background()
-	storageDir := t.TempDir()
-	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	events := []SessionEvent{
-		{Type: "user_input", Role: "user", Content: "original request"},
-		{Type: runEventToolCall, Role: "tool", ToolName: "tap", ToolInput: `{"x":10}`, Content: "tap button"},
-		{Type: "tool_result", Role: "tool", ToolName: "tap", ToolInput: `{"x":10}`, Content: "tap ok"},
-		{Type: "todo_update", Role: "system", Content: "current todo"},
-		{Type: "steer", Role: "user", Content: "updated instruction"},
-		{Type: "assistant_output", Role: "assistant", Content: "done"},
-	}
-	for _, event := range events {
-		if _, err := session.AppendEvent(ctx, event); err != nil {
-			t.Fatalf("AppendEvent(%s) error = %v", event.Type, err)
-		}
-	}
-
-	manager := NewMemoryManager(storageDir)
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	messages, err := handle.History.Messages(ctx)
-	if err != nil {
-		t.Fatalf("Messages() error = %v", err)
-	}
-	if len(messages) != 3 {
-		t.Fatalf("expected 3 restored conversation messages, got %d: %#v", len(messages), messages)
-	}
-	if messages[0].GetContent() != "original request" ||
-		messages[1].GetContent() != "updated instruction" ||
-		messages[2].GetContent() != "done" {
-		t.Fatalf("unexpected restored conversation messages: %#v", messages)
-	}
-}
-
-func TestMemoryManagerSaveDoesNotRegressEventCountWithRuntimeEvents(t *testing.T) {
-	ctx := context.Background()
-	storageDir := t.TempDir()
-	manager := NewMemoryManager(storageDir)
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
 
 	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
 		Type:    "user_input",
@@ -523,16 +273,6 @@ func TestMemoryManagerSaveDoesNotRegressEventCountWithRuntimeEvents(t *testing.T
 		{Role: string(llms.ChatMessageTypeAI), Content: "first answer"},
 	}, SessionEventMetadata{}); err != nil {
 		t.Fatalf("AppendMessagesWithMetadata(ai) error = %v", err)
-	}
-	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "first request"},
-		llms.AIChatMessage{Content: "first answer"},
-	}); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
-	}
-
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
 	}
 	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
 		Type:    "user_input",
@@ -676,19 +416,15 @@ func TestMemoryManagerRepairsTruncatedSessionEventTail(t *testing.T) {
 	}
 
 	manager := NewMemoryManager(storageDir)
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	loaded, err := manager.LoadActiveSessionEvents(ctx, 0)
 	if err != nil {
-		t.Fatalf("Get() error = %v", err)
+		t.Fatalf("LoadActiveSessionEvents() error = %v", err)
 	}
-	messages, err := handle.History.Messages(ctx)
-	if err != nil {
-		t.Fatalf("Messages() error = %v", err)
+	if len(loaded) != 2 {
+		t.Fatalf("loaded events = %d, want 2", len(loaded))
 	}
-	if len(messages) != 2 {
-		t.Fatalf("messages = %d, want 2", len(messages))
-	}
-	if messages[0].GetContent() != "hello" || messages[1].GetContent() != "hi" {
-		t.Fatalf("unexpected restored messages: %#v", messages)
+	if loaded[0].Content != "hello" || loaded[1].Content != "hi" {
+		t.Fatalf("unexpected loaded events: %#v", loaded)
 	}
 
 	repaired, err := os.ReadFile(eventsPath)
@@ -739,31 +475,27 @@ func TestSessionMemoryRecallRejectsTruncatedChunkEvidence(t *testing.T) {
 	}
 }
 
-func TestMemoryManagerSaveCompactsHotWindow(t *testing.T) {
+func TestMemoryManagerMaintenanceCompactsHotWindow(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.HotWindowEvents = 20
 	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
 
-	messages := []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "我是硬件产品经理，平时用中文沟通，关注开发板 agent 端到端行为。"},
-		llms.AIChatMessage{Content: "我会按这个背景回答。"},
-		llms.HumanChatMessage{Content: "记一下，以后处理蓝海报销App超过100元的提交或付款动作，必须先给风险摘要并等我确认。"},
-		llms.AIChatMessage{Content: "已记录这个高风险操作规则。"},
+	records := []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: "我是硬件产品经理，平时用中文沟通，关注开发板 agent 端到端行为。"},
+		{Role: string(llms.ChatMessageTypeAI), Content: "我会按这个背景回答。"},
+		{Role: string(llms.ChatMessageTypeHuman), Content: "记一下，以后处理蓝海报销App超过100元的提交或付款动作，必须先给风险摘要并等我确认。"},
+		{Role: string(llms.ChatMessageTypeAI), Content: "已记录这个高风险操作规则。"},
 	}
 	for i := 0; i < 39; i++ {
-		messages = append(messages, llms.HumanChatMessage{Content: "填充对话轮次"})
+		records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: "填充对话轮次"})
 	}
-	if err := handle.History.SetMessages(ctx, messages); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
+	if err := manager.AppendMessages(ctx, "default", records); err != nil {
+		t.Fatalf("AppendMessages() error = %v", err)
 	}
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
 	}
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
@@ -841,19 +573,15 @@ func TestMaintainFilesystemMemoryUsesStructuredSummarizerAndFallsBackToPlain(t *
 		}
 	}))
 
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	var msgs []llms.ChatMessage
+	var msgs []MessageRecord
 	for i := 0; i < 9; i++ {
-		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
+		msgs = append(msgs, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: fmt.Sprintf("message %d", i)})
 	}
-	if err := handle.History.SetMessages(ctx, msgs); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
+	if err := manager.AppendMessages(ctx, "default", msgs); err != nil {
+		t.Fatalf("AppendMessages() error = %v", err)
 	}
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
 	}
 
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
@@ -885,19 +613,15 @@ func TestMaintainFilesystemMemoryFallsBackWhenStructuredSummaryIsMissing(t *test
 		return "plain fallback summary"
 	}))
 
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	var msgs []llms.ChatMessage
+	var msgs []MessageRecord
 	for i := 0; i < 9; i++ {
-		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
+		msgs = append(msgs, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: fmt.Sprintf("message %d", i)})
 	}
-	if err := handle.History.SetMessages(ctx, msgs); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
+	if err := manager.AppendMessages(ctx, "default", msgs); err != nil {
+		t.Fatalf("AppendMessages() error = %v", err)
 	}
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
 	}
 	if !plainCalled {
 		t.Fatalf("expected SummarizeFn to be called when structured summary text is missing")
@@ -929,19 +653,15 @@ func TestMaintainFilesystemMemoryUsesLLMSummary(t *testing.T) {
 		return "LLM generated summary of " + fmt.Sprintf("%d", len(events)) + " events"
 	}))
 
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	var msgs []llms.ChatMessage
+	var msgs []MessageRecord
 	for i := 0; i < 41; i++ {
-		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
+		msgs = append(msgs, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: fmt.Sprintf("message %d", i)})
 	}
-	if err := handle.History.SetMessages(ctx, msgs); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
+	if err := manager.AppendMessages(ctx, "default", msgs); err != nil {
+		t.Fatalf("AppendMessages() error = %v", err)
 	}
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
 	}
 
 	if !called {
@@ -1152,28 +872,20 @@ func TestMemoryManagerClearAllRemovesFilesystemMemoryArtifacts(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.HotWindowEvents = 20
 	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	messages := []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "记一下，以后处理蓝海报销App超过100元必须先确认。"},
+	records := []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: "记一下，以后处理蓝海报销App超过100元必须先确认。"},
 	}
 	for i := 0; i < 40; i++ {
-		messages = append(messages, llms.HumanChatMessage{Content: "填充对话轮次"})
+		records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: "填充对话轮次"})
 	}
-	if err := handle.History.SetMessages(ctx, messages); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
+	if err := manager.AppendMessages(ctx, "default", records); err != nil {
+		t.Fatalf("AppendMessages() error = %v", err)
 	}
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(storageDir, "session", "chunks", "index.yaml")); err != nil {
 		t.Fatalf("expected session chunk index before clear: %v", err)
-	}
-	legacyPath := legacyMemorySnapshotPath(storageDir, "default")
-	if err := os.WriteFile(legacyPath, []byte("[]\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile legacy snapshot: %v", err)
 	}
 
 	if err := manager.ClearAll(ctx, "default"); err != nil {
@@ -1188,19 +900,12 @@ func TestMemoryManagerClearAllRemovesFilesystemMemoryArtifacts(t *testing.T) {
 			t.Fatalf("expected %s to be removed, stat err = %v", path, err)
 		}
 	}
-	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
-	}
 }
 
 func TestMemoryManagerClearSessionPreservesLongTermMemory(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	manager := NewMemoryManager(storageDir)
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
 
 	// Create long_term and lifecycle directories with content
 	longTermDir := filepath.Join(storageDir, "long_term")
@@ -1220,26 +925,19 @@ func TestMemoryManagerClearSessionPreservesLongTermMemory(t *testing.T) {
 		t.Fatalf("WriteFile tombstones.jsonl: %v", err)
 	}
 
-	// Create session data via Save
-	messages := []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "hello"},
+	// Create session data through the event stream.
+	records := []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: "hello"},
 	}
 	for i := 0; i < 22; i++ {
-		messages = append(messages, llms.HumanChatMessage{Content: "filler"})
+		records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: "filler"})
 	}
-	if err := handle.History.SetMessages(ctx, messages); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
-	}
-	if err := manager.Save(ctx, "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+	if err := manager.AppendMessages(ctx, "default", records); err != nil {
+		t.Fatalf("AppendMessages() error = %v", err)
 	}
 	sessionDir := filepath.Join(storageDir, "session")
 	if _, err := os.Stat(sessionDir); err != nil {
 		t.Fatalf("expected session dir to exist before clear: %v", err)
-	}
-	legacyPath := legacyMemorySnapshotPath(storageDir, "default")
-	if err := os.WriteFile(legacyPath, []byte("[]\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile legacy snapshot: %v", err)
 	}
 
 	// ClearSession should remove session but preserve long_term and lifecycle
@@ -1249,9 +947,6 @@ func TestMemoryManagerClearSessionPreservesLongTermMemory(t *testing.T) {
 
 	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
 		t.Fatalf("expected session dir to be removed, stat err = %v", err)
-	}
-	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
 	}
 	if _, err := os.Stat(profilePath); err != nil {
 		t.Fatalf("expected long_term/profile.md to be preserved: %v", err)
@@ -1566,10 +1261,6 @@ func TestSessionRotationArchivesActiveSessionDirectory(t *testing.T) {
 	if !manager.HasCompressedHistory() {
 		t.Fatal("expected active session to report compressed history before rotation")
 	}
-	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
 
 	archiveDir, err := manager.RotateSessionEvents()
 	if err != nil {
@@ -1611,13 +1302,6 @@ func TestSessionRotationArchivesActiveSessionDirectory(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Fatalf("archived chunks must not be recalled from active session, got %#v", results)
-	}
-	messages, err := handle.History.Messages(ctx)
-	if err != nil {
-		t.Fatalf("Messages() error = %v", err)
-	}
-	if len(messages) != 0 {
-		t.Fatalf("conversation window should be empty after rotation, got %#v", messages)
 	}
 }
 
@@ -1925,7 +1609,7 @@ func TestSessionRotationDoesNotDeadlockWithMemoryLoad(t *testing.T) {
 		done <- err
 	}()
 	go func() {
-		_, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+		_, err := manager.LoadActiveSessionEvents(context.Background(), 0)
 		done <- err
 	}()
 
@@ -1936,7 +1620,7 @@ func TestSessionRotationDoesNotDeadlockWithMemoryLoad(t *testing.T) {
 				t.Fatalf("concurrent operation error = %v", err)
 			}
 		case <-time.After(2 * time.Second):
-			t.Fatal("RotateSessionEvents and Get appear to be deadlocked")
+			t.Fatal("RotateSessionEvents and LoadActiveSessionEvents appear to be deadlocked")
 		}
 	}
 	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)

@@ -97,11 +97,15 @@ def test_get_tools_catalog(bridge_server):
     assert touch_props["point"]["required"] == ["x", "y"]
     assert "coord_space" not in touch_props
     assert touch_props["button"]["enum"] == ["left", "right", "middle"]
-    assert touch_props["strength"]["enum"] == ["large", "medium", "small", "tiny"]
-    assert "hold_before_ms" in touch_props
-    assert "hold_after_ms" in touch_props
+    assert touch_props["type"]["enum"] == ["tap", "double_tap", "long_press", "swipe", "drag"]
+    assert touch_props["direction"]["enum"] == ["up", "down", "left", "right"]
+    assert touch_props["speed"]["exclusiveMinimum"] == 0
     assert "hold_ms" in touch_props
     assert "pause_ms" in touch_props
+    for removed in ("strength", "distance", "anchor"):
+        assert removed not in touch_props
+    assert "hold_before_ms" in touch_props
+    assert "hold_after_ms" in touch_props
     assert "steps" in touch_props
 
     keyboard_tap_props = tools["keyboard_tap"]["args_schema"]["properties"]
@@ -564,7 +568,7 @@ def test_invoke_without_episode_returns_error(bridge_server):
 
     server, base_url, state = bridge_server
 
-    request_body = json.dumps({"input": {"type": "home"}}).encode()
+    request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
     req = Request(
         f"{base_url}/api/tools/touch_gesture",
         data=request_body,
@@ -594,7 +598,7 @@ def test_invoke_stale_episode_returns_conflict(bridge_server, monkeypatch):
         raise StaleEpisodeError("stale episode_id")
 
     monkeypatch.setattr(state, "require_active", fail_require_active)
-    request_body = json.dumps({"input": {"type": "home"}}).encode()
+    request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
     req = Request(
         f"{base_url}/api/tools/touch_gesture",
         data=request_body,
@@ -628,12 +632,105 @@ def test_touch_gesture_rejects_non_string_type(bridge_server):
     assert "type must be a string" in data["output"]
 
 
+@pytest.mark.parametrize("duration_ms", [0, 10_001])
+def test_touch_gesture_drag_rejects_out_of_range_duration(bridge_server, duration_ms):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-bad-drag-duration"
+
+    request_body = json.dumps({
+        "input": {
+            "type": "drag",
+            "start": {"x": 200, "y": 300},
+            "end": {"x": 700, "y": 600},
+            "duration_ms": duration_ms,
+        },
+    }).encode()
+    req = Request(
+        f"{base_url}/api/tools/touch_gesture",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+    assert data["is_error"] is True
+    assert "duration_ms must be in range" in data["output"]
+    assert state.env.last_action is None
+
+
+@pytest.mark.parametrize("speed", [1e-308, 10 ** 400])
+def test_touch_gesture_rejects_extreme_swipe_speed(bridge_server, speed):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-extreme-swipe-speed"
+
+    request_body = json.dumps({
+        "input": {
+            "type": "swipe",
+            "start": {"x": 100, "y": 800},
+            "end": {"x": 900, "y": 200},
+            "speed": speed,
+        },
+    }).encode()
+    req = Request(
+        f"{base_url}/api/tools/touch_gesture",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+    assert data["is_error"] is True
+    assert "speed" in data["output"]
+    assert state.env.last_action is None
+
+
+@pytest.mark.parametrize(
+    ("delta", "start_y", "end_y", "duration_ms"),
+    [
+        (-1, 800.0, 50.0, 300.0),
+        (-3, 800.0, 50.0, 450.0),
+        (3, 200.0, 950.0, 450.0),
+        (127, 200.0, 950.0, 9750.0),
+    ],
+)
+def test_mouse_scroll_preserves_delta_direction_and_magnitude(
+    bridge_server, delta, start_y, end_y, duration_ms
+):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-scroll-magnitude"
+
+    request_body = json.dumps({"input": {"delta": delta}}).encode()
+    req = Request(
+        f"{base_url}/api/tools/mouse_scroll",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "SWIPE",
+        "data": {
+            "point1": [500.0, start_y],
+            "point2": [500.0, end_y],
+            "duration": duration_ms,
+        },
+    }
+
+
 def test_invoke_without_token_still_works(bridge_server):
     """Test tool invocation without token still works (auth removed)."""
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-004"
 
-    request_body = json.dumps({"input": {"type": "home"}}).encode()
+    request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
     req = Request(
         f"{base_url}/api/tools/touch_gesture",
         data=request_body,
@@ -652,7 +749,7 @@ def test_invoke_unknown_tool_returns_error(bridge_server):
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-005"
 
-    request_body = json.dumps({"input": {"type": "home"}}).encode()
+    request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
     req = Request(
         f"{base_url}/api/tools/unknown_tool",
         data=request_body,
@@ -732,7 +829,7 @@ def test_multi_env_tools_require_benchmark_task_id_header():
     server = BridgeServer(BridgeTaskRouter(states), host="127.0.0.1", port=0)
     base_url = server.start()
     try:
-        request_body = json.dumps({"input": {"type": "home"}}).encode()
+        request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
         req = Request(
             f"{base_url}/api/tools/touch_gesture",
             data=request_body,
@@ -1251,7 +1348,7 @@ def test_multi_env_tools_return_capacity_error_until_task_released():
     base_url = server.start()
     try:
         for task_id in ("task.alpha", "task.beta"):
-            request_body = json.dumps({"input": {"type": "home"}}).encode()
+            request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
             req = Request(
                 f"{base_url}/api/tools/touch_gesture",
                 data=request_body,
@@ -1277,7 +1374,7 @@ def test_multi_env_tools_return_capacity_error_until_task_released():
         with urlopen(release_req, timeout=5) as resp:
             assert resp.status == 200
 
-        request_body = json.dumps({"input": {"type": "home"}}).encode()
+        request_body = json.dumps({"input": {"type": "tap", "point": {"x": 500, "y": 500}}}).encode()
         req = Request(
             f"{base_url}/api/tools/touch_gesture",
             data=request_body,

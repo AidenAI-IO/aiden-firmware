@@ -534,6 +534,7 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 		"tts",
 		"tts_providers",
 		"voice_model",
+		"voice_model_providers",
 		"voice_notifications",
 	}
 

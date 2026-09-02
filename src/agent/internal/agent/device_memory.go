@@ -307,7 +307,7 @@ func (s *DeviceMemoryStore) applyDeviceMemoryIntentLocked(items []DeviceMemoryIt
 				reinforceDeviceMemoryItem(existing, &candidate)
 			} else {
 				appendDeviceMemoryRevision(existing, &candidate)
-				mergeDeviceMemoryItem(existing, candidate)
+				updateDeviceMemoryItem(existing, candidate)
 			}
 			if _, err := s.upsertLocked(*existing); err != nil {
 				return MemoryApplyResult{}, err
@@ -387,6 +387,12 @@ func deviceMemoryUpdateAlreadyApplied(existing, candidate DeviceMemoryItem) bool
 		return false
 	}
 	if candidate.Status != "" && existing.Status != candidate.Status {
+		return false
+	}
+	if candidate.Priority > 0 && existing.Priority != candidate.Priority {
+		return false
+	}
+	if candidate.Confidence > 0 && existing.Confidence != candidate.Confidence {
 		return false
 	}
 	return true
@@ -529,6 +535,16 @@ func mergeDeviceMemoryItem(existing *DeviceMemoryItem, candidate DeviceMemoryIte
 	}
 	existing.Revision = effectiveDeviceMemoryRevision(*existing) + 1
 	existing.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+func updateDeviceMemoryItem(existing *DeviceMemoryItem, candidate DeviceMemoryItem) {
+	mergeDeviceMemoryItem(existing, candidate)
+	if candidate.Priority > 0 {
+		existing.Priority = candidate.Priority
+	}
+	if candidate.Confidence > 0 {
+		existing.Confidence = candidate.Confidence
+	}
 }
 
 func (s *DeviceMemoryStore) upsertLocked(item DeviceMemoryItem) (string, error) {

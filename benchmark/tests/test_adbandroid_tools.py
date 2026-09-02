@@ -99,23 +99,27 @@ def test_touch_gesture_swipe(bridge):
 
 def test_touch_gesture_directional_swipe(bridge):
     _, device, base_url = bridge
-    status, body = _invoke(base_url, "touch_gesture", {"type": "swipe_up", "strength": "medium"})
+    status, body = _invoke(
+        base_url,
+        "touch_gesture",
+        {"type": "swipe", "start": {"x": 500, "y": 800}, "direction": "up", "speed": 2500, "duration_ms": 200},
+    )
     assert status == 200
     assert body["is_error"] is False
     swipes = [call for call in device.calls if call[0] == "swipe"]
     assert len(swipes) == 1
     _, x1, y1, x2, y2, duration = swipes[0]
-    assert x1 == x2 == 540  # anchor 500 normalized
+    assert x1 == x2 == 540  # start.x 500 normalized
     assert y1 > y2  # upward
-    assert duration == 650
+    assert duration == 200
 
 
-def test_touch_gesture_home_and_back(bridge):
+def test_touch_gesture_rejects_retired_navigation_types(bridge):
     _, device, base_url = bridge
-    _invoke(base_url, "touch_gesture", {"type": "home"})
-    _invoke(base_url, "touch_gesture", {"type": "back"})
-    assert ("keyevent", "KEYCODE_HOME") in device.calls
-    assert ("keyevent", "KEYCODE_BACK") in device.calls
+    for gesture_type in ("home", "back", "swipe_up"):
+        status, body = _invoke(base_url, "touch_gesture", {"type": gesture_type})
+        assert status == 200 and body["is_error"] is True
+    assert all(call[0] != "keyevent" for call in device.calls)
 
 
 def test_touch_gesture_out_of_range_is_error(bridge):
@@ -396,7 +400,7 @@ def test_screenshot_output_shape(bridge):
 
 def test_tool_response_envelope_matches_mobilegym(bridge):
     _, _, base_url = bridge
-    status, body = _invoke(base_url, "touch_gesture", {"type": "home"})
+    status, body = _invoke(base_url, "touch_gesture", {"type": "tap", "point": {"x": 500, "y": 500}})
     assert status == 200
     assert set(body) >= {"tool", "raw_input", "output", "is_error", "duration_ms"}
     assert body["tool"] == {"name": "touch_gesture"}
@@ -405,16 +409,15 @@ def test_tool_response_envelope_matches_mobilegym(bridge):
 # ---- duration clamping ---------------------------------------------------------
 
 
-def test_swipe_duration_is_clamped(bridge):
+def test_swipe_duration_out_of_range_is_rejected(bridge):
     _, device, base_url = bridge
     status, body = _invoke(
         base_url,
         "touch_gesture",
         {"type": "swipe", "start": {"x": 500, "y": 800}, "end": {"x": 500, "y": 200}, "duration_ms": 99999999},
     )
-    assert status == 200 and body["is_error"] is False
-    swipes = [call for call in device.calls if call[0] == "swipe"]
-    assert swipes[0][5] == 10000  # MAX_ACTION_DURATION_MS
+    assert status == 200 and body["is_error"] is True
+    assert not [call for call in device.calls if call[0] == "swipe"]
 
 
 def test_long_press_duration_is_clamped(bridge):
@@ -429,29 +432,26 @@ def test_long_press_duration_is_clamped(bridge):
     assert swipes[0][5] == 10000
 
 
-def test_directional_swipe_duration_is_clamped(bridge):
+def test_directional_swipe_duration_out_of_range_is_rejected(bridge):
     _, device, base_url = bridge
     status, body = _invoke(
         base_url,
         "touch_gesture",
-        {"type": "swipe_up", "strength": "medium", "duration_ms": -5},
+        {"type": "swipe", "start": {"x": 500, "y": 800}, "direction": "up", "duration_ms": -5},
     )
-    assert status == 200 and body["is_error"] is False
-    swipes = [call for call in device.calls if call[0] == "swipe"]
-    # Negative/garbage durations floor at 1ms instead of erroring.
-    assert swipes[0][5] == 1
+    assert status == 200 and body["is_error"] is True
+    assert not [call for call in device.calls if call[0] == "swipe"]
 
 
-def test_invalid_duration_falls_back_to_default(bridge):
+def test_nonnumeric_duration_is_rejected(bridge):
     _, device, base_url = bridge
     status, body = _invoke(
         base_url,
         "touch_gesture",
         {"type": "swipe", "start": {"x": 500, "y": 800}, "end": {"x": 500, "y": 200}, "duration_ms": "abc"},
     )
-    assert status == 200 and body["is_error"] is False
-    swipes = [call for call in device.calls if call[0] == "swipe"]
-    assert swipes[0][5] == 300  # default swipe duration
+    assert status == 200 and body["is_error"] is True
+    assert not [call for call in device.calls if call[0] == "swipe"]
 
 
 def test_keyboard_tap_rejects_ctrl_alt_shift_combos(bridge):

@@ -156,9 +156,10 @@ type SpokenTextResult struct {
 }
 
 const (
-	SpokenTextModeNormal      = "normal"
-	SpokenTextModeReplacement = "replacement"
-	SpokenTextModeTail        = "tail"
+	SpokenTextModeNormal       = "normal"
+	SpokenTextModeReplacement  = "replacement"
+	SpokenTextModeTail         = "tail"
+	SpokenTextModeNotification = "notification"
 )
 
 type DeliveryStatus string
@@ -363,6 +364,89 @@ func (r *Runtime) ReportSpokenTextDelivery(token string, err error) {
 		return
 	}
 	r.voiceNotifications.ReportDelivery(token, DeliveryStatusFromError(err))
+}
+
+// PrepareNotification claims one pending persistent notification for a
+// standalone speech response. Unlike PrepareSpokenText, it does not append the
+// notification to an existing assistant response.
+func (m *VoiceNotificationManager) PrepareNotification(_ context.Context) SpokenTextResult {
+	result := SpokenTextResult{Mode: SpokenTextModeNormal}
+	if m == nil || !m.config.EnabledOrDefault() {
+		return result
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneExpiredLocked(m.now())
+	text, token := m.claimPendingNotificationLocked()
+	if text == "" || token == "" {
+		return result
+	}
+	result.Text = text
+	result.Mode = SpokenTextModeNotification
+	result.DeliveryToken = token
+	return result
+}
+
+func (m *VoiceNotificationManager) pendingNotificationRecordsLocked(relatedCodesInput []string) []*voiceNotificationRecord {
+	pending := make([]*voiceNotificationRecord, 0, len(m.records))
+	for _, record := range m.records {
+		if record.deliveryState == "pending" {
+			pending = append(pending, record)
+		}
+	}
+	relatedCodes := make(map[string]struct{}, len(relatedCodesInput))
+	for _, code := range relatedCodesInput {
+		if code = strings.TrimSpace(code); code != "" {
+			relatedCodes[code] = struct{}{}
+		}
+	}
+	sort.Slice(pending, func(i, j int) bool {
+		_, iRelated := relatedCodes[pending[i].code]
+		_, jRelated := relatedCodes[pending[j].code]
+		if iRelated != jRelated {
+			return iRelated
+		}
+		if pending[i].currentSeverity != pending[j].currentSeverity {
+			return pending[i].currentSeverity > pending[j].currentSeverity
+		}
+		if !pending[i].severityChangedAt.Equal(pending[j].severityChangedAt) {
+			return pending[i].severityChangedAt.After(pending[j].severityChangedAt)
+		}
+		if !pending[i].firstSeenAt.Equal(pending[j].firstSeenAt) {
+			return pending[i].firstSeenAt.Before(pending[j].firstSeenAt)
+		}
+		return pending[i].dedupeKey < pending[j].dedupeKey
+	})
+	return pending
+}
+
+func (m *VoiceNotificationManager) claimPendingNotificationLocked() (string, string) {
+	for _, record := range m.pendingNotificationRecordsLocked(nil) {
+		text := m.persistentTextLocked(record)
+		if text == "" {
+			continue
+		}
+		text = limitVoiceNotificationText(text, m.config.ResponseTail.MaxTextCharsOrDefault())
+		m.nextToken++
+		token := fmt.Sprintf("voice-notification-%d", m.nextToken)
+		m.deliveries[token] = voiceNotificationDelivery{
+			dedupeKey:        record.dedupeKey,
+			cycleID:          record.cycleID,
+			severitySnapshot: record.currentSeverity,
+		}
+		record.deliveryState = "in_flight"
+		return text, token
+	}
+	return "", ""
+}
+
+// PrepareVoiceNotification is the runtime-level entry point used by realtime
+// and other foreground speech consumers.
+func (r *Runtime) PrepareVoiceNotification(ctx context.Context) SpokenTextResult {
+	if r == nil || r.voiceNotifications == nil {
+		return SpokenTextResult{Mode: SpokenTextModeNormal}
+	}
+	return r.voiceNotifications.PrepareNotification(ctx)
 }
 
 func (m *VoiceNotificationManager) Publish(_ context.Context, event VoiceNotificationEvent) error {

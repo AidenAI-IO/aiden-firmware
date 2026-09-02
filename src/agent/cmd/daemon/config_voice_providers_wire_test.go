@@ -22,9 +22,15 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 			"tencent": {Type: "tencent-asr", AppID: "123", SecretID: "AKID", SecretKey: "sec", Region: "ap-shanghai"},
 			"whisper": {Type: "openai-whisper", APIKey: "sk-w", BaseURL: "https://api.openai.com/v1", Model: "whisper-1"},
 		},
-		TTS:   agent.TTSConfig{Provider: "minimax-main", Speed: 1.2},
-		STT:   agent.STTConfig{Provider: "tencent", Language: "zh"},
-		Model: agent.ModelConfig{Provider: "openai", Model: "gpt-4o"},
+		VoiceModelProviders: map[string]agent.VoiceModelProvider{
+			"qwen-main":  {Type: "qwen", APIKey: "qwen-secret", Model: "qwen-realtime", Voice: "longanqian"},
+			"speko-main": {Type: "speko", APIKey: "$SPEKO_KEY", UpstreamProvider: "xai", Model: "grok-voice-latest", Voice: "eve"},
+			"vertex":     {Type: "gemini", APIKey: "$VERTEX_TOKEN", AuthMode: "vertex", ProjectID: "project-1", Location: "us-central1"},
+		},
+		TTS:        agent.TTSConfig{Provider: "minimax-main", Speed: 1.2},
+		STT:        agent.STTConfig{Provider: "tencent", Language: "zh"},
+		VoiceModel: agent.VoiceModelConfig{Provider: "speko-main"},
+		Model:      agent.ModelConfig{Provider: "openai", Model: "gpt-4o"},
 	}
 
 	dto := webConfigDTOFromAgentConfig(cfg)
@@ -33,6 +39,9 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	}
 	if len(dto.STTProviders) != 2 {
 		t.Fatalf("dto.STTProviders = %#v, want 2 entries", dto.STTProviders)
+	}
+	if len(dto.VoiceModelProviders) != 3 {
+		t.Fatalf("dto.VoiceModelProviders = %#v, want 3 entries", dto.VoiceModelProviders)
 	}
 	if got := dto.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" {
 		t.Errorf("dto.TTSProviders[fish] = %#v", got)
@@ -44,6 +53,12 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 		!got.HasSecretID || got.SecretKey != "" || !got.HasSecretKey {
 		t.Errorf("dto.STTProviders[tencent] = %#v", got)
 	}
+	if got := dto.VoiceModelProviders["speko-main"]; got.APIKey != "" || !got.HasAPIKey || got.UpstreamProvider != "xai" || got.Model != "grok-voice-latest" {
+		t.Errorf("dto.VoiceModelProviders[speko-main] = %#v", got)
+	}
+	if got := dto.VoiceModelProviders["vertex"]; got.AuthMode != "vertex" || got.ProjectID != "project-1" || got.Location != "us-central1" {
+		t.Errorf("dto.VoiceModelProviders[vertex] = %#v", got)
+	}
 
 	back := dto.ToAgentConfig()
 	if got := back.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" || got.APIKey != hasAPIKeyPlaceholder {
@@ -53,6 +68,12 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 		got.SecretID != hasAPIKeyPlaceholder || got.SecretKey != hasAPIKeyPlaceholder {
 		t.Errorf("redacted stt_providers conversion = %#v", back.STTProviders)
 	}
+	if got := back.VoiceModelProviders["speko-main"]; got.Type != "speko" || got.APIKey != hasAPIKeyPlaceholder || got.UpstreamProvider != "xai" {
+		t.Errorf("redacted voice_model_providers conversion = %#v", back.VoiceModelProviders)
+	}
+	if got := back.VoiceModelProviders["vertex"]; got.AuthMode != "vertex" || got.ProjectID != "project-1" || got.Location != "us-central1" {
+		t.Errorf("Vertex voice_model_providers conversion = %#v", back.VoiceModelProviders)
+	}
 	// The reference itself must not be resolved on the wire: the config page
 	// edits the reference, so it has to come back as the name it wrote.
 	if back.TTS.Provider != "minimax-main" {
@@ -60,6 +81,9 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	}
 	if back.STT.Provider != "tencent" {
 		t.Errorf("stt.provider = %q, want the unresolved ref %q", back.STT.Provider, "tencent")
+	}
+	if back.VoiceModel.Provider != "speko-main" {
+		t.Errorf("voice_model.provider = %q, want the unresolved ref %q", back.VoiceModel.Provider, "speko-main")
 	}
 }
 
@@ -146,9 +170,13 @@ func TestConfigWire_VoiceProvidersOmittedWhenEmpty(t *testing.T) {
 	if strings.Contains(string(payload), `"stt_providers"`) {
 		t.Errorf("expected stt_providers omitted when empty, got: %s", payload)
 	}
+	if strings.Contains(string(payload), `"voice_model_providers"`) {
+		t.Errorf("expected voice_model_providers omitted when empty, got: %s", payload)
+	}
 
 	cfg.TTSProviders = map[string]agent.TTSProvider{"fish": {Type: "fish-audio"}}
 	cfg.STTProviders = map[string]agent.STTProvider{"w": {Type: "openai-whisper"}}
+	cfg.VoiceModelProviders = map[string]agent.VoiceModelProvider{"realtime": {Type: "qwen"}}
 	payload, err = json.Marshal(webConfigDTOFromAgentConfig(cfg))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -158,6 +186,9 @@ func TestConfigWire_VoiceProvidersOmittedWhenEmpty(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), `"stt_providers"`) {
 		t.Errorf("expected stt_providers in payload, got: %s", payload)
+	}
+	if !strings.Contains(string(payload), `"voice_model_providers"`) {
+		t.Errorf("expected voice_model_providers in payload, got: %s", payload)
 	}
 }
 

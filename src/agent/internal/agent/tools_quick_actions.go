@@ -22,7 +22,7 @@ var defaultQuickActionsJSON []byte
 const QuickActionsFileName = "quick_actions.json"
 
 // BundledQuickActionsPath is the on-device OEM install path, populated by
-// _build_image.sh from src/agent/internal/agent/quick_actions.json.
+// scripts/build/container/image.sh from src/agent/internal/agent/quick_actions.json.
 const BundledQuickActionsPath = "/oem/usr/share/aiden/" + QuickActionsFileName
 
 const (
@@ -371,7 +371,7 @@ func (t *QuickActionTool) SetDeviceTypeFunc(fn func() string) {
 
 func (t *QuickActionTool) Description() string {
 	return strings.TrimSpace(`Execute a predefined, platform-aware shortcut from quick_actions.json. Cataloged semantic actions MUST use quick_action instead of manually constructed modifier chords. Explicit physical-key requests and uncataloged app-specific shortcuts may use keyboard_tap; a cataloged chord fallback requires a quick_action result in the current run that explicitly reports reserved/unavailable before execution. ` +
-		`For go-home/home-screen requests such as 回到桌面, call {"action":"home"} first; on Android this delegates to keyboard_tap {"keys":["KEYCODE_HOME"]}, while touch_gesture {"type":"home"} remains a fallback alternative. ` +
+		`For go-home/home-screen requests such as 回到桌面, call {"action":"home"} first; on Android this delegates to keyboard_tap {"keys":["KEYCODE_HOME"]}, while gesture fallbacks use touch_gesture type=swipe with explicit edge coordinates. ` +
 		`The runtime selects device-specific bindings from global device_type state. Use {"action":"list"} to inspect actions for the configured device_type.`)
 }
 

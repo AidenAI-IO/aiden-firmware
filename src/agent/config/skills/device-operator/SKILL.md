@@ -20,14 +20,11 @@ metadata:
       recall_memory,
       save_memory,
       skill_read,
-      run_script,
       shell,
     ]
 ---
 
 Use this skill when the task requires operating a visible connected device UI. This is the complete generic device-operation playbook; do not split routine app switching, text entry, scrolling, picker, or screenshot recovery work into child skills.
-
-Use `run_script` only when the user explicitly asks to run a prepared demo script; pass only a script file name from the config directory's `scripts/` folder. It executes JSONL script lines directly without LLM planning between steps, and `tts` lines start playback asynchronously without waiting for speech to finish. Script-file listing, reading, and writing require the opt-in `load_all_tools` catalog; when those tools are available, follow the script-author skill.
 
 ## Core Loop
 
@@ -57,7 +54,8 @@ Prefer the highest-level reliable tool for the job:
   - If an active quick action executed but returned failure or produced no visible effect, use a listed alternative or a non-shortcut UI strategy. Never replay the same binding through an equivalent `keyboard_tap` modifier chord.
   - If `ok=true` but the screenshot shows no expected change, treat it as ineffective: try `alternative=true` once when alternatives are listed, otherwise switch tools. Never loop on the same binding.
 - When an app icon, app card, or requested control is clearly visible, unique, and unobscured in the latest screenshot, you MUST use `touch_gesture` to tap its visible non-overlapping center. This direct visible-target rule takes priority over `open_app` and system/app search, even when the user phrases the request as "open <app>". Do not call `open_app` merely because it is semantically available.
-- Use `touch_gesture` for taps, swipes, and drags on mobile or desktop targets, and as a listed or non-shortcut fallback for back/home gestures.
+- Use the standard `touch_gesture` `type` forms for normal taps, long presses, swipes, and drags on mobile or desktop targets, and as a listed or non-shortcut fallback for back/home gestures. Back/home gesture fallbacks are ordinary `type:"swipe"` calls with explicit edge coordinates. Atomic `actions` are a low-frequency advanced option only for an uninterrupted custom contact sequence that no standard gesture type can express; do not use them for ordinary taps, long presses, swipes, scrolling, or draggable targets.
+  - Decide whether the request moves a draggable target before selecting the gesture form. Moving an app icon, card, widget, list item, or other draggable UI target MUST use this sequence: call `drag_start` at its current center and let its internal screen-stability wait finish. `drag_start` presses for 500ms, then moves 200 normalized units at 500 normalized units per second (a 400ms interpolated move) in a bounded direction and keeps the contact down only when the wait succeeds. Do not call `wait_for_stable_screen` separately in the normal drag flow. Only when the `drag_start` result reports `screen_stable=true`, inspect its returned stable screenshot and confirm the final destination, then call `drag_release` at that confirmed point. When it reports `screen_stable=false`, runtime has automatically moved back to the original point and released the contact; inspect the returned screenshot and retry the complete `drag_start` flow instead of calling `drag_release`. Never determine or guess the destination from an intermediate or `screen_stable=false` result, translate this sequence into atomic `actions`, use the removed one-call `drag` type, or perform another input action while the contact remains down.
 - For a numeric picker, use `wheel_nudge` directly from the latest screenshot. Do not tap the selected row to probe for keyboard/edit mode, do not use `enter_text` for picker values, and do not drag picker columns with `touch_gesture`. After a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
 - Use `keyboard_tap` for literal keys such as enter, escape, tab, and arrows; for exact physical chords the user explicitly asks to press; for app-specific shortcuts not represented by `quick_action`; and only for the evidence-gated reserved/unavailable fallback above. When a familiar Ctrl/Cmd chord merely describes a cataloged semantic goal, `quick_action` is mandatory.
@@ -145,10 +143,10 @@ On iOS, if Phone Bridge context says the companion app is backgrounded/inactive 
 
 ## Scrolling and Picker Controls
 
-Directional swipe names describe finger movement, not content direction:
+Swipe `direction` describes finger movement, not content direction:
 
-- `swipe_up`: finger moves up → viewport scrolls down → reveals content below.
-- `swipe_down`: finger moves down → viewport scrolls up → reveals content above.
+- `direction:"up"`: finger moves up → viewport scrolls down → reveals content below.
+- `direction:"down"`: finger moves down → viewport scrolls up → reveals content above.
 
 Scrollable region discipline:
 
@@ -158,13 +156,13 @@ Scrollable region discipline:
 
 Calibration loop:
 
-1. Start with medium strength from the latest screenshot.
+1. Start with an explicit start/end path and the default `speed:2500` from the latest screenshot.
 2. Read the gesture result's automatic post-action screenshot.
-3. Use the returned screenshot and its `screen_changed` field to confirm movement. If a finer-grained diagnostic is needed in Tool Lab or a prepared script, `image_diff` remains available there, but it is not a normal conversational Agent step.
+3. Use the returned screenshot and its `screen_changed` field to confirm movement.
    An omitted `screen_changed` means the baseline comparison was unavailable; judge the returned screenshot directly.
-4. If far from target, increase strength; if close, use small/tiny.
-5. If overshot, reverse direction and reduce strength.
-6. Do not repeat the same strength/distance after a failed attempt.
+4. If far from target, increase the start/end distance; if close, shorten it.
+5. If overshot, reverse the path and reduce its distance.
+6. Do not repeat the same path and speed after a failed attempt.
 
 If the same list boundary appears again, stop searching in that direction. Try search/filter, a different tab, or ask the user.
 

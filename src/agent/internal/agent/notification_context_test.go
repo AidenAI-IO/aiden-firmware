@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"aiden-agent/internal/ble"
@@ -194,6 +195,10 @@ func TestNotificationContextUsesMonotonicContextCursorAcrossBLEGenerationReset(t
 	if got := c.State().MemoryCursor; got != "2" {
 		t.Fatalf("MemoryCursor=%q, want 2", got)
 	}
+	state := c.State()
+	if len(state.Gaps) != 1 || state.Gaps[0].Reason != "ble_generation_reset" || state.Gaps[0].Generation != "g2" || state.Gaps[0].PreviousGeneration != "g1" {
+		t.Fatalf("generation reset gap=%#v, want old generation g1 and current generation g2", state.Gaps)
+	}
 }
 
 func TestNotificationContextRecordsRingGapAndResetsGeneration(t *testing.T) {
@@ -231,7 +236,7 @@ func TestNotificationContextPersistsGenerationResetBeforeRetry(t *testing.T) {
 	reader := func(_ context.Context, since, generation string, _ int) (ble.EventPage, error) {
 		calls++
 		if calls == 1 {
-			if since != "0" || generation != "" {
+			if since != "295" || generation != "old" {
 				t.Fatalf("initial request since=%q generation=%q", since, generation)
 			}
 			return ble.EventPage{Generation: "new", ResetRequired: true, OldestID: "9"}, nil
@@ -245,19 +250,31 @@ func TestNotificationContextPersistsGenerationResetBeforeRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.mu.Lock()
+	c.state.Generation = "old"
+	c.state.SourceCursor = "295"
+	c.state.StoredCursor = "295"
+	if err := c.persistLocked(); err != nil {
+		c.mu.Unlock()
+		t.Fatal(err)
+	}
+	c.mu.Unlock()
 	if _, err := c.Consume(context.Background(), 10); err != context.Canceled {
 		t.Fatalf("Consume() err=%v, want context canceled", err)
 	}
 	state := c.State()
-	if state.Generation != "new" || state.SourceCursor != "0" {
-		t.Fatalf("reset state=%#v, want generation new and source cursor 0", state)
+	if state.Generation != "new" || state.SourceCursor != "0" || state.StoredCursor != "295" {
+		t.Fatalf("reset state=%#v, want generation new, source cursor 0, and stored cursor 295", state)
+	}
+	if len(state.Gaps) != 1 || state.Gaps[0].Generation != "new" || state.Gaps[0].PreviousGeneration != "old" || state.Gaps[0].FromID != "295" {
+		t.Fatalf("reset gap=%#v, want explicit old-to-new generation diagnostics", state.Gaps)
 	}
 	reloaded, err := NewNotificationContext(root, reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state := reloaded.State(); state.Generation != "new" || state.SourceCursor != "0" {
-		t.Fatalf("persisted reset state=%#v, want generation new and source cursor 0", state)
+	if state := reloaded.State(); state.Generation != "new" || state.SourceCursor != "0" || state.StoredCursor != "295" {
+		t.Fatalf("persisted reset state=%#v, want generation new, source cursor 0, and stored cursor 295", state)
 	}
 }
 
@@ -350,6 +367,59 @@ func TestNotificationContextReadPendingAllDoesNotApplyDefaultLimit(t *testing.T)
 	}
 	if got[0].ContextID != "1" || got[len(got)-1].ContextID != "125" {
 		t.Fatalf("ReadPendingAll() cursors=%q..%q", got[0].ContextID, got[len(got)-1].ContextID)
+	}
+}
+
+func TestNotificationEventFileNamePrefersPhoneDateOverReceivedAt(t *testing.T) {
+	event := ble.NotificationEvent{
+		Date:       "20260827T112215",
+		ReceivedAt: "2021-01-01T00:00:00Z",
+	}
+	if got := notificationEventFileName(event); got != "2026-08-27.jsonl" {
+		t.Fatalf("notificationEventFileName()=%q, want 2026-08-27.jsonl", got)
+	}
+}
+
+func TestNotificationContextCleanerProtectsRecentRecordsInOldShard(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "notifications", "events", "2021-01-01.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	record := NotificationRecord{
+		ContextID: "1",
+		NotificationEvent: ble.NotificationEvent{
+			Date:       "20260827T112215",
+			ReceivedAt: "2021-01-01T00:00:00Z",
+		},
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitProcessed(context.Background(), []NotificationRecord{record}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	freed, err := store.CleanupProcessedBefore(context.Background(), 14*24*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freed != 0 {
+		t.Fatalf("CleanupProcessedBefore freed %d bytes from a recent record", freed)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("recent record in old shard was removed: %v", err)
 	}
 }
 

@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
 	"sync"
+	"time"
 
 	"aiden-agent/internal/agent/tts"
 )
@@ -31,6 +33,7 @@ type localAudioPlaybackBackend struct {
 	sessions                 map[uint64]*localAudioPlaybackSession
 	player                   *localAudioPlayer
 	logger                   *Logger
+	completedErrs            []error
 }
 
 type localAudioPlaybackSession struct {
@@ -161,6 +164,38 @@ func (b *localAudioPlaybackBackend) StopPlayback(sessionID uint64) error {
 	return nil
 }
 
+// WaitForPlaybackDrain waits for finalized local player processes to exit.
+// Realtime uses this to report notification delivery only after playback,
+// rather than file submission, has completed.
+func (b *localAudioPlaybackBackend) WaitForPlaybackDrain(ctx context.Context) error {
+	if b == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		b.mu.Lock()
+		pending := len(b.sessions)
+		var completedErr error
+		if pending == 0 && len(b.completedErrs) > 0 {
+			completedErr = errors.Join(b.completedErrs...)
+			b.completedErrs = nil
+		}
+		b.mu.Unlock()
+		if pending == 0 {
+			return completedErr
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (s *localAudioPlaybackSession) stateError(sessionID uint64) error {
 	if s.failedErr != nil {
 		return fmt.Errorf("local playback session failed: %w", s.failedErr)
@@ -204,7 +239,16 @@ func (b *localAudioPlaybackBackend) finalizeLocalPlaybackSessionLocked(sessionID
 		err := cmd.Wait()
 		cancel()
 		_ = os.Remove(path)
+		session.mu.Lock()
+		stopped := session.stopped
+		if err != nil && !stopped {
+			session.failedErr = err
+		}
+		session.mu.Unlock()
 		b.mu.Lock()
+		if err != nil && !stopped {
+			b.completedErrs = append(b.completedErrs, err)
+		}
 		delete(b.sessions, id)
 		b.mu.Unlock()
 		done <- err

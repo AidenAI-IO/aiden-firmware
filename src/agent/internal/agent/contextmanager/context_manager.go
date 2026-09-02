@@ -24,8 +24,11 @@ type AppendMessageHookResult struct {
 // ContextManager is a manager for the context of the agent, it is used to manage the context of the agent, it is used to append messages to the context and to fork the context.
 // It is thread safe and can be used concurrently by multiple goroutines.
 // SessionID is the id of the session, it is used to identify the session of the agent. Conversation in a same session are shared the same context.
+// ParentSessionID records the session this one was derived from, for example the
+// pre-compaction session of a compaction revision. It is empty for root sessions.
 type ContextManager struct {
 	sessionID       string
+	parentSessionID string
 	messageList     []messages.Message
 	appendHooks     []AppendMessageHook
 	attachmentStore *attachmentStore
@@ -54,8 +57,20 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 		return nil, err
 	}
 
+	// A missing or unreadable sidecar leaves lineage unknown rather than failing
+	// the load: sessions written before the sidecar existed remain usable.
+	parentSessionID := ""
+	metadata, found, err := loadSessionMetadata(sessionFolder, sessionID)
+	switch {
+	case err != nil:
+		log.Printf("[CM] Failed to load session metadata for %s: %v\n", sessionID, err)
+	case found:
+		parentSessionID = strings.TrimSpace(metadata.ParentSessionID)
+	}
+
 	return &ContextManager{
 		sessionID:       sessionID,
+		parentSessionID: parentSessionID,
 		messageList:     messageList,
 		mu:              sync.RWMutex{},
 		sessionFolder:   sessionFolder,
@@ -78,6 +93,11 @@ func NewContextManager(sessionFolder string, systemPrompt string) (*ContextManag
 	if err := saveCurrentSession(sessionFolder, newSessionID); err != nil {
 		return nil, err
 	}
+	if err := saveSessionMetadata(sessionFolder, newSessionID, sessionMetadata{
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		return nil, err
+	}
 
 	manager, err := LoadContextManagerFromSessionID(sessionFolder, newSessionID)
 	if err != nil {
@@ -96,18 +116,20 @@ func NewContextManager(sessionFolder string, systemPrompt string) (*ContextManag
 }
 
 func NewContextManagerFromMessageList(sessionFolder string, messageList []messages.Message) (*ContextManager, error) {
-	newSessionID := newSessionID()
-	return newContextManagerFromMessageList(sessionFolder, newSessionID, messageList)
+	return newContextManagerFromMessageList(sessionFolder, newSessionID(), "", messageList)
 }
 
+// NewContextManagerRevisionFromMessageList creates a new session that continues
+// parent's conversation, for example after compaction. The revision records
+// parent's session ID in its metadata sidecar so the lineage stays traceable.
 func NewContextManagerRevisionFromMessageList(parent *ContextManager, messageList []messages.Message) (*ContextManager, error) {
 	if parent == nil {
 		return nil, fmt.Errorf("parent context manager is nil")
 	}
-	return newContextManagerFromMessageList(parent.GetSessionFolder(), newSessionID(), messageList)
+	return newContextManagerFromMessageList(parent.GetSessionFolder(), newSessionID(), parent.GetSessionID(), messageList)
 }
 
-func newContextManagerFromMessageList(sessionFolder, sessionID string, messageList []messages.Message) (*ContextManager, error) {
+func newContextManagerFromMessageList(sessionFolder, sessionID, parentSessionID string, messageList []messages.Message) (*ContextManager, error) {
 	attachmentStore, err := newAttachmentStore(sessionFolder, sessionID)
 	if err != nil {
 		return nil, err
@@ -116,15 +138,23 @@ func newContextManagerFromMessageList(sessionFolder, sessionID string, messageLi
 	if err != nil {
 		return nil, err
 	}
+	parentSessionID = strings.TrimSpace(parentSessionID)
+	now := time.Now().UTC()
+	if err := saveSessionMetadata(sessionFolder, sessionID, sessionMetadata{
+		ParentSessionID: parentSessionID,
+		CreatedAt:       now,
+	}); err != nil {
+		return nil, err
+	}
 	manager := &ContextManager{
 		sessionFolder:   sessionFolder,
 		sessionID:       sessionID,
+		parentSessionID: parentSessionID,
 		messageList:     cloneMessages(messageList),
 		mu:              sync.RWMutex{},
 		attachmentStore: attachmentStore,
 		artifactStore:   artifactStore,
 	}
-	now := time.Now().UTC()
 	for i := range manager.messageList {
 		if manager.messageList[i].Timestamp.IsZero() {
 			manager.messageList[i].Timestamp = now
@@ -160,6 +190,14 @@ func (c *ContextManager) GetSessionFolder() string {
 
 func (c *ContextManager) GetSessionID() string {
 	return c.sessionID
+}
+
+// GetParentSessionID returns the session this context was derived from, or an
+// empty string for a root session or a session with no recorded lineage.
+func (c *ContextManager) GetParentSessionID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.parentSessionID
 }
 
 func (c *ContextManager) StoreArtifact(mimeType string, data []byte, metadata ArtifactMetadata) (ArtifactFile, error) {
@@ -262,16 +300,18 @@ func (c *ContextManager) IsEmpty() bool {
 }
 
 type MessageListDump struct {
-	SessionID string             `json:"session_id"`
-	Messages  []messages.Message `json:"messages"`
+	SessionID       string             `json:"session_id"`
+	ParentSessionID string             `json:"parent_session_id,omitempty"`
+	Messages        []messages.Message `json:"messages"`
 }
 
 func (c *ContextManager) MessageListDump() MessageListDump {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return MessageListDump{
-		SessionID: c.sessionID,
-		Messages:  cloneMessages(c.messageList),
+		SessionID:       c.sessionID,
+		ParentSessionID: c.parentSessionID,
+		Messages:        cloneMessages(c.messageList),
 	}
 }
 
@@ -332,32 +372,12 @@ func (c *ContextManager) ReadAttachment(attachmentID string) ([]byte, error) {
 
 	data, err := os.ReadFile(candidate)
 	if err != nil {
-		return nil, fmt.Errorf("read screenshot attachment: %w", err)
+		return nil, fmt.Errorf("read attachment: %w", err)
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("screenshot attachment is empty")
+		return nil, fmt.Errorf("attachment is empty")
 	}
 	return data, nil
-}
-
-// ReadScreenshotAttachment is kept for callers that specifically request a
-// screenshot attachment.
-func (c *ContextManager) ReadScreenshotAttachment(attachmentID string) ([]byte, error) {
-	attachmentID = strings.TrimSpace(attachmentID)
-	if attachmentID == "" {
-		return nil, fmt.Errorf("invalid screenshot attachment ID")
-	}
-	c.mu.RLock()
-	for _, message := range c.messageList {
-		for _, attachment := range message.Attachments {
-			if attachment.Source == messages.AttachmentSourceScreenshotObservation && filepath.Base(attachment.FilePath) == attachmentID {
-				c.mu.RUnlock()
-				return c.ReadAttachment(attachmentID)
-			}
-		}
-	}
-	c.mu.RUnlock()
-	return nil, fmt.Errorf("attachment is not a registered screenshot")
 }
 
 func cloneMessages(messageList []messages.Message) []messages.Message {

@@ -509,7 +509,7 @@ func TestStorageMonitorPublishesToVoiceNotificationManager(t *testing.T) {
 	}}
 	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{
 		ResponseTail: VoiceNotificationResponseTailConfig{MaxItems: 1},
-	})
+	}, WithVoiceNotificationLocale("zh-CN"))
 	config := DefaultStorageConfig()
 	config.Cleanup.Enabled = false
 	monitor := NewStorageMonitor(config, sampler, nil, nil, manager)

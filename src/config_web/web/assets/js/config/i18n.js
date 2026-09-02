@@ -5,6 +5,7 @@ const setBanner = runtimeFunction('setBanner');
 const setDetails = runtimeFunction('setDetails');
 const loadAuthoritativeLocale = runtimeFunction('loadAuthoritativeLocale');
 const LOCALE_STORAGE_KEY = 'aiden.config.locale';
+const DEFAULT_LOCALE = 'en-US';
 
 const messages = {
   'en-US': {
@@ -168,6 +169,33 @@ const messages = {
     'config.fields.model.context_window.help': '0 = auto: use provider metadata when available.',
     'config.fields.model.model_max_output_tokens.placeholder': '0 = auto',
     'config.fields.model.model_max_output_tokens.help': '0 = auto: use provider metadata when available.',
+    'config.fields.voice_model.provider.label': 'Realtime provider record',
+    'config.fields.voice_model_providers.type.label': 'Provider type',
+    'config.fields.voice_model_providers.type.options.qwen': 'Qwen',
+    'config.fields.voice_model_providers.type.options.speko': 'Speko S2S',
+    'config.fields.voice_model_providers.type.options.openai': 'OpenAI Realtime',
+    'config.fields.voice_model_providers.type.options.gemini': 'Google Gemini Live',
+    'config.fields.voice_model_providers.type.options.xai': 'xAI Grok Voice',
+    'config.fields.voice_model_providers.upstream_provider.label': 'Realtime engine',
+    'config.fields.voice_model_providers.upstream_provider.options.google': 'Google Gemini Live',
+    'config.fields.voice_model_providers.upstream_provider.options.xai': 'xAI Grok Voice',
+    'config.fields.voice_model_providers.upstream_provider.options.inworld': 'Inworld',
+    'config.fields.voice_model_providers.agent_id.label': 'Speko Agent ID',
+    'config.fields.voice_model_providers.api_key.label': 'Realtime API Key',
+    'config.fields.voice_model_providers.auth_mode.label': 'Gemini authentication',
+    'config.fields.voice_model_providers.auth_mode.options.api_key': 'Gemini API key',
+    'config.fields.voice_model_providers.auth_mode.options.vertex': 'Vertex OAuth',
+    'config.fields.voice_model_providers.project_id.label': 'Google Cloud project ID',
+    'config.fields.voice_model_providers.location.label': 'Vertex location',
+    'config.fields.voice_model_providers.model.label': 'Realtime model',
+    'config.fields.voice_model_providers.workspace_id.label': 'DashScope Workspace ID',
+    'config.fields.voice_model_providers.endpoint.label': 'WebSocket endpoint',
+    'config.fields.voice_model_providers.base_url.label': 'Provider Base URL',
+    'config.fields.voice_model_providers.region.label': 'Region',
+    'config.fields.voice_model_providers.region.options.default': 'Automatic',
+    'config.fields.voice_model_providers.region.options.cn_beijing': 'China (Beijing)',
+    'config.fields.voice_model_providers.region.options.ap_southeast_1': 'Singapore',
+    'config.fields.voice_model_providers.voice.label': 'Voice',
     'config.fields.audio_archive.enabled.help': 'After enabling, save STT voice recording WAV for Web UI playback; Automatically delete old files when exceeding quantity or capacity limit.',
     'config.fields.frame_service.keep_streamon.label': 'Keep STREAMON',
     'config.fields.frame_service.keep_streamon.help': 'Keep the RK628 CSI capture stream enabled between screenshots. This reduces screenshot latency but increases idle power consumption.',
@@ -181,6 +209,9 @@ const messages = {
     'config.fields.ota.github_proxy_url.placeholder': 'Leave empty to disable',
     'config.fields.ota.github_proxy_url.help': 'Optional proxy to accelerate GitHub downloads (e.g., https://gh-proxy.com/ or https://ghfast.top/)',
     'config.fields.hid.keyboard_layout.help': 'How the phone interprets the USB keyboard. Keep qwerty unless typed text comes out transposed; then switch the phone input language to match, save, and reboot the board.',
+    'config.fields.agent.context_prune_threshold.label': 'Historical prune threshold (tokens)',
+    'config.fields.agent.context_prune_threshold.help': 'Token count that triggers cleanup of expired state and historical tool results. 0 automatically triggers at 70% of the usable model input budget, before conversation compaction at 80%.',
+    'config.fields.agent.context_prune_threshold.placeholder': '0 = automatic',
     'locale.saved': 'Language saved. Agent is restarting.',
     'locale.save_failed': 'Failed to save language.',
     'provider.add': 'Add Provider',
@@ -224,6 +255,7 @@ const messages = {
     'provider.anthropic_api_key_help': 'Leave empty to keep the saved value. ANTHROPIC_AUTH_TOKEN uses Bearer auth; ANTHROPIC_API_KEY and literal keys use x-api-key.',
     'provider.name_help_model': 'Identifies this entry in the model provider list. Auto-filled; edit to override.',
     'provider.name_help': 'Identifies this entry in the provider list. Auto-filled; edit to override.',
+    'provider.advanced': 'Advanced',
     'provider.save_changes': 'Save Changes',
     'provider.auto': 'auto',
     'ota.update_request_sent': 'OTA update request sent, waiting for server confirmation...',
@@ -430,6 +462,33 @@ const messages = {
     'config.fields.model.context_window.help': '0 = 自动：可用时使用提供商元数据。',
     'config.fields.model.model_max_output_tokens.placeholder': '0 = 自动',
     'config.fields.model.model_max_output_tokens.help': '0 = 自动：可用时使用提供商元数据。',
+    'config.fields.voice_model.provider.label': '实时语音 Provider 配置',
+    'config.fields.voice_model_providers.type.label': 'Provider 类型',
+    'config.fields.voice_model_providers.type.options.qwen': 'Qwen',
+    'config.fields.voice_model_providers.type.options.speko': 'Speko S2S',
+    'config.fields.voice_model_providers.type.options.openai': 'OpenAI Realtime',
+    'config.fields.voice_model_providers.type.options.gemini': 'Google Gemini Live',
+    'config.fields.voice_model_providers.type.options.xai': 'xAI Grok Voice',
+    'config.fields.voice_model_providers.upstream_provider.label': '实时语音引擎',
+    'config.fields.voice_model_providers.upstream_provider.options.google': 'Google Gemini Live',
+    'config.fields.voice_model_providers.upstream_provider.options.xai': 'xAI Grok Voice',
+    'config.fields.voice_model_providers.upstream_provider.options.inworld': 'Inworld',
+    'config.fields.voice_model_providers.agent_id.label': 'Speko Agent ID',
+    'config.fields.voice_model_providers.api_key.label': '实时语音 API 密钥',
+    'config.fields.voice_model_providers.auth_mode.label': 'Gemini 认证方式',
+    'config.fields.voice_model_providers.auth_mode.options.api_key': 'Gemini API 密钥',
+    'config.fields.voice_model_providers.auth_mode.options.vertex': 'Vertex OAuth',
+    'config.fields.voice_model_providers.project_id.label': 'Google Cloud 项目 ID',
+    'config.fields.voice_model_providers.location.label': 'Vertex 地域',
+    'config.fields.voice_model_providers.model.label': '实时模型',
+    'config.fields.voice_model_providers.workspace_id.label': 'DashScope Workspace ID',
+    'config.fields.voice_model_providers.endpoint.label': 'WebSocket 地址',
+    'config.fields.voice_model_providers.base_url.label': 'Provider Base URL',
+    'config.fields.voice_model_providers.region.label': '地域',
+    'config.fields.voice_model_providers.region.options.default': '自动',
+    'config.fields.voice_model_providers.region.options.cn_beijing': '中国（北京）',
+    'config.fields.voice_model_providers.region.options.ap_southeast_1': '新加坡',
+    'config.fields.voice_model_providers.voice.label': '音色',
     'config.fields.audio_archive.enabled.help': '启用后保存 STT 语音录音 WAV，供 Web UI 回放；超过数量或容量限制时自动删除旧文件。',
     'config.fields.frame_service.keep_streamon.label': '永久保持 STREAMON',
     'config.fields.frame_service.keep_streamon.help': '在两次截图之间保持 RK628 CSI 采集流开启。可降低截图延迟，但会增加空闲功耗。',
@@ -443,6 +502,9 @@ const messages = {
     'config.fields.ota.github_proxy_url.placeholder': '留空则禁用',
     'config.fields.ota.github_proxy_url.help': '用于加速 GitHub 下载的可选代理（例如 https://gh-proxy.com/ 或 https://ghfast.top/）',
     'config.fields.hid.keyboard_layout.help': '手机如何解释 USB 键盘。除非输入的文本出现错位，否则保持 qwerty；如出现错位，请先将手机输入语言切换为匹配的语言，再保存并重启板子。',
+    'config.fields.agent.context_prune_threshold.label': '历史上下文清理阈值（token）',
+    'config.fields.agent.context_prune_threshold.help': '上下文 token 数达到该阈值时，清理过期 state 和历史工具结果。设为 0 时，按模型可用输入预算的 70% 自动触发，并早于 80% 的对话压缩。',
+    'config.fields.agent.context_prune_threshold.placeholder': '0 = 自动',
     'locale.saved': '语言已保存，Agent 正在重启。',
     'locale.save_failed': '保存语言失败。',
     'provider.add': '添加提供商',
@@ -486,6 +548,7 @@ const messages = {
     'provider.anthropic_api_key_help': '留空保持已保存的值不变；ANTHROPIC_AUTH_TOKEN 使用 Bearer 鉴权，ANTHROPIC_API_KEY 和直接填写的密钥使用 x-api-key。',
     'provider.name_help_model': '用于在模型提供商列表中标识此项。自动填充，可自行修改。',
     'provider.name_help': '用于在提供商列表中标识此项。自动填充，可自行修改。',
+    'provider.advanced': '高级设置',
     'provider.save_changes': '保存更改',
     'provider.auto': '自动',
     'ota.update_request_sent': 'OTA 更新请求已发送，正在等待服务器确认…',
@@ -540,14 +603,14 @@ let localeSaveId = 0;
 let localeSavePending = false;
 
 function normalizeLocale(locale) {
-  return locale === 'en-US' ? 'en-US' : 'zh-CN';
+  return locale === 'zh-CN' ? 'zh-CN' : DEFAULT_LOCALE;
 }
 
 function readStoredLocale() {
   try {
     return normalizeLocale(localStorage.getItem(LOCALE_STORAGE_KEY));
   } catch (_err) {
-    return 'zh-CN';
+    return DEFAULT_LOCALE;
   }
 }
 

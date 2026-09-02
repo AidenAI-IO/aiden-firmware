@@ -4,21 +4,22 @@ sidebar_position: 6
 
 # Voice Notifications
 
-Voice notifications let the Agent attach short system reminders to its normal spoken reply without starting an independent announcement. The implementation lives in `internal/agent/voice_notification.go` and is shared by every final TTS reply path through the Agent runtime.
+Voice notifications let the Agent attach short system reminders to a normal spoken reply or announce a pending reminder through an active Realtime voice session. The implementation lives in `internal/agent/voice_notification.go` and is shared by every speech path through the Agent runtime.
 
 ## Delivery modes
 
-The manager produces one of three spoken-text modes:
+The manager produces one of four spoken-text modes:
 
 | Mode | When it is used | Effect |
 | --- | --- | --- |
 | `normal` | The turn succeeded and no persistent reminder is eligible | Speak the normal Agent reply unchanged |
 | `tail` | The turn succeeded and an active persistent condition is pending | Append at most one short reminder before TTS |
 | `replacement` | The final LLM request failed | Replace the missing reply with a fixed network, quota, or service-error message |
+| `notification` | Realtime is idle and an active persistent condition is pending | Send the reminder to Realtime as a private speech response |
 
 A response tail changes only the text sent to TTS. It does not change the LLM output, assistant history, session summary, or response shown by the Web UI or companion app.
 
-Notifications are never spoken while the device is idle, before recording, or after a conversation ends. If no appendable normal reply occurs, a persistent reminder stays pending until it expires, resolves, or a later reply can carry it.
+In `input_mode = "realtime"`, pending notifications are consumed when the Realtime session is idle. Realtime is the primary speech path; when no Realtime session is active, a configured standalone TTS provider is used as a fallback. If neither path is available, the reminder stays pending until it expires, resolves, or a later speech path can carry it.
 
 ## Publishing persistent conditions
 
@@ -75,6 +76,8 @@ runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 
 Only completed playback records a reminder as delivered. Failed or canceled playback makes the current condition eligible again. Delivery tokens include the active cycle and selected severity snapshot, so a delayed callback cannot acknowledge a newer cycle or a severity upgrade that occurred during playback.
 
+Realtime notification consumers call `PrepareNotification` when the session is idle. The returned text is sent as a private Realtime item and the consumer reports the Realtime response status with the same delivery token after playback completes. Notification responses do not enter local user history or execute tools. A user interruption or a non-completed Realtime response leaves the notification pending for retry.
+
 Streaming replies that have already emitted speech are not modified. Their pending reminder remains available for the next non-streamed, appendable reply.
 
 ## Local TTS-unavailable fallback
@@ -114,7 +117,7 @@ Final turn failures do not enter the persistent queue. They are classified as ne
 ## Configuration
 
 ```toml
-locale = "zh-CN"
+locale = "en-US"
 
 [voice_notifications]
 enabled = true
@@ -141,3 +144,4 @@ The Config Web service preserves these sections when saving other settings. The 
 - The manager does not detect storage conditions; StorageMonitor or another producer must publish them.
 - Network and quota failures are derived only from the current turn's final error, not background health checks.
 - A tail is not injected after streaming TTS has already produced audio.
+- Realtime notifications are consumed by an active Realtime session; when no session is active, standalone TTS is used when configured.
