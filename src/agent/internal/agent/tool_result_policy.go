@@ -28,17 +28,19 @@ const (
 	toolResultPreviewTargetToken = 1_200
 	toolResultMinimumObservation = 96
 	toolResultSoftLimitPercent   = 80
-	// Automatic historical pruning runs before conversation compaction. Keep
-	// the configured-threshold hysteresis ratio independent from these budget
-	// percentages so an explicit threshold remains predictable.
-	historicalPruneAutomaticTriggerPercent = 70
-	historicalPruneAutomaticTargetPercent  = 60
-	historicalPruneConfiguredTriggerBase   = 80
-	historicalPruneConfiguredTargetPercent = 70
-	toolResultProjectionTopK               = 3
-	toolResultProjectionFields             = 24
-	toolResultProjectionDepth              = 5
-	toolResultProjectionRunes              = 256
+	// Deterministic pruning cleans to historicalPruneTargetNum /
+	// historicalPruneTargetDen of its own trigger. The gap is hysteresis:
+	// cleaning down to the trigger itself would re-trigger next turn. 6/7 keeps
+	// the default 0.7 trigger cleaning down to 0.6 of the usable budget, matching
+	// the long-standing 70%/60% behaviour now that the trigger is configurable.
+	// Kept as an integer ratio so that default lands on exactly 0.6 instead of
+	// truncating a float product one token low.
+	historicalPruneTargetNum   = 6
+	historicalPruneTargetDen   = 7
+	toolResultProjectionTopK   = 3
+	toolResultProjectionFields = 24
+	toolResultProjectionDepth  = 5
+	toolResultProjectionRunes  = 256
 )
 
 var ErrToolResultRecoveryTextTooLarge = errors.New("tool result recovery text exceeds context budget")
@@ -251,39 +253,55 @@ func toolResultSoftInputLimit(contextWindow, maxResponseTokens int) int {
 }
 
 // conversationCompactionTrigger returns the token usage at which conversation
-// compaction runs. Compaction has no token target: Compactor.Compact reduces
-// the transcript structurally via ProtectRule (head/tail retention plus an LLM
-// summary of the middle), so the resulting size follows from the summary rather
-// than from a budget.
-func conversationCompactionTrigger(usableInputBudget int) (trigger int, enabled bool) {
+// compaction runs, as the given fraction of the usable input budget. The
+// fraction comes from agent.context_compaction_threshold; callers should pass
+// Config.ContextCompactionThresholdOrDefault so an unset value still gets the
+// default.
+//
+// Compaction has no token target: Compactor.Compact reduces the transcript
+// structurally via ProtectRule (head/tail retention plus an LLM summary of the
+// middle), so the resulting size follows from the summary rather than a budget.
+func conversationCompactionTrigger(usableInputBudget int, threshold float64) (trigger int, enabled bool) {
 	if usableInputBudget <= 0 {
 		return 0, false
 	}
-	return usableInputBudget * toolResultSoftLimitPercent / 100, true
+	if threshold <= 0 {
+		threshold = defaultContextCompactionThreshold
+	}
+	trigger = int(float64(usableInputBudget) * threshold)
+	if trigger <= 0 {
+		return 0, false
+	}
+	return trigger, true
 }
 
-// historicalPruneBudgets returns the independent trigger and target for
-// deterministic cleanup of historical state and tool results. A configured
-// threshold is honored exactly; the automatic budget has its own constants so
-// this policy remains independent from conversation compaction.
-func historicalPruneBudgets(usableInputBudget, configuredThreshold int) (trigger int, target int, enabled bool) {
-	if configuredThreshold > 0 {
-		trigger = configuredThreshold
-		target = trigger * historicalPruneConfiguredTargetPercent / historicalPruneConfiguredTriggerBase
-		if target <= 0 && trigger > 1 {
-			target = trigger - 1
-		}
-		if target <= 0 {
-			target = 1
-		}
-		return trigger, target, true
-	}
+// historicalPruneBudgets returns the trigger and target for deterministic
+// cleanup of expired state and historical tool results, both as token counts
+// derived from the given fraction of the usable input budget. The fraction comes
+// from agent.context_prune_threshold; callers should pass
+// Config.ContextPruneThresholdOrDefault, which also caps it at the compaction
+// threshold so this cheap pass runs first.
+//
+// Unlike compaction, pruning does have a real target: PruneHistorical bounds
+// tool results until the transcript fits it.
+func historicalPruneBudgets(usableInputBudget int, threshold float64) (trigger int, target int, enabled bool) {
 	if usableInputBudget <= 0 {
 		return 0, 0, false
 	}
-	return usableInputBudget * historicalPruneAutomaticTriggerPercent / 100,
-		usableInputBudget * historicalPruneAutomaticTargetPercent / 100,
-		true
+	if threshold <= 0 {
+		threshold = defaultContextPruneThreshold
+	}
+	trigger = int(float64(usableInputBudget) * threshold)
+	if trigger <= 0 {
+		return 0, 0, false
+	}
+	target = trigger * historicalPruneTargetNum / historicalPruneTargetDen
+	if target <= 0 {
+		// A trigger of 1 token leaves no room for hysteresis below it; pruning
+		// cannot make progress, so report disabled rather than thrash.
+		return 0, 0, false
+	}
+	return trigger, target, true
 }
 
 func boundedToolResultObservation(call ToolCall, prepared PreparedToolResult, preview string, contentTokens int) string {
