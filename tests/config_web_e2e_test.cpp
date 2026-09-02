@@ -244,14 +244,16 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"context_window\":0,\"model_max_output_tokens\":0},"
         "\"tts_providers\":{\"minimax-cn\":{\"type\":\"minimax-cn\"}},"
         "\"stt_providers\":{\"openai-whisper\":{\"type\":\"openai-whisper\"}},"
+        "\"voice_model_providers\":{\"qwen\":{\"type\":\"qwen\","
+        "\"model\":\"qwen-audio-3.0-realtime-plus\",\"voice\":\"longanqian\"}},"
         "\"tts\":{\"provider\":\"minimax-cn\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
         "\"emotion\":\"happy\",\"speed\":1},"
         "\"stt\":{\"provider\":\"openai-whisper\",\"api_key\":\"\",\"model\":\"whisper-1\",\"base_url\":\"\","
         "\"app_id\":\"\",\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"
         "\"audio\":{\"socket\":\"/run/audio_service/audio_service.sock\",\"sample_rate\":16000,"
         "\"channels\":1,\"bit_width\":16,\"backend\":\"audio_service\"},"
-        "\"voice_model\":{\"has_api_key\":false,\"model\":\"qwen-audio-3.0-realtime-plus\","
-        "\"workspace_id\":\"\",\"region\":\"\",\"endpoint\":\"\",\"voice\":\"longanqian\","
+        "\"voice_model\":{\"provider\":\"qwen\",\"has_api_key\":false,\"model\":\"\","
+        "\"workspace_id\":\"\",\"region\":\"\",\"endpoint\":\"\",\"voice\":\"\","
         "\"instructions\":\"\",\"input_audio_format\":\"pcm\",\"output_audio_format\":\"pcm\","
         "\"turn_detection\":\"server_vad\",\"turn_detection_silence_ms\":0},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
@@ -1170,7 +1172,7 @@ TEST_CASE("config_web: PUT /api/config/locale inserts a missing locale before se
     write_file(handle->tmp_dir + "/agent.toml", original);
 
     HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
-                                     "{\"locale\":\"en-US\"}");
+                                     "{\"locale\":\"zh-CN\"}");
     CHECK(resp.status == 200);
 
     CHECK(read_file(handle->tmp_dir + "/agent.toml") ==
@@ -1181,7 +1183,7 @@ TEST_CASE("config_web: PUT /api/config/locale inserts a missing locale before se
           "[not-a-real-section]\n"
           "\"\"\"\n"
           "\n"
-          "locale = \"en-US\"\n"
+          "locale = \"zh-CN\"\n"
           "[device]\n"
           "backend = \"hdmi\"\n");
 }
@@ -2470,7 +2472,7 @@ TEST_CASE("config_web: POST /api/config preserves stored search api key when GET
     cJSON_Delete(parsed);
 
     HttpResponse post_resp = http_request(handle->port, "POST", "/api/config", post_body);
-    CHECK(post_resp.status == 200);
+    CHECK_MESSAGE(post_resp.status == 200, post_resp.body);
     std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
     REQUIRE(saved_in.good());
     std::ostringstream saved_buffer;
@@ -2778,6 +2780,43 @@ TEST_CASE("config_web: config test reports removed audio input mode hint") {
     CHECK(test_resp.body.find("\"ok\":false") != std::string::npos);
     CHECK(test_resp.body.find("\"check\":\"input_mode\"") != std::string::npos);
     CHECK(test_resp.body.find("audio mode has been removed; use stt instead") != std::string::npos);
+}
+
+TEST_CASE("config_web: config test accepts realtime input mode") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config");
+    REQUIRE(get_resp.status == 200);
+    cJSON* parsed = cJSON_Parse(get_resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* agent = cJSON_GetObjectItem(config, "agent");
+    REQUIRE(agent != nullptr);
+    cJSON_DeleteItemFromObject(agent, "input_mode");
+    cJSON_AddStringToObject(agent, "input_mode", "realtime");
+
+    char* agent_text = cJSON_PrintUnformatted(agent);
+    REQUIRE(agent_text != nullptr);
+    std::string test_body = std::string("{\"section\":\"agent\",\"values\":") + agent_text + "}";
+    free(agent_text);
+    cJSON_Delete(parsed);
+
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(test_resp.status == 200);
+    cJSON* test_json = cJSON_Parse(test_resp.body.c_str());
+    REQUIRE(test_json != nullptr);
+    cJSON* ok = cJSON_GetObjectItem(test_json, "ok");
+    REQUIRE(ok != nullptr);
+    CHECK((ok->type & 0xff) == cJSON_True);
+    cJSON* input_mode = required_test_result(test_json, "input_mode");
+    REQUIRE(input_mode != nullptr);
+    cJSON* passed = cJSON_GetObjectItem(input_mode, "passed");
+    REQUIRE(passed != nullptr);
+    CHECK((passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(input_mode, "detail") == "realtime");
+    cJSON_Delete(test_json);
 }
 
 TEST_CASE("config_web: tts config test invokes the agent runtime") {

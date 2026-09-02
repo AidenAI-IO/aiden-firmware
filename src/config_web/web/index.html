@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en-US">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -25,8 +25,8 @@
       <div class="locale-control">
         <label for="localeSelect" data-i18n="page.language">Language</label>
         <select id="localeSelect" aria-label="Language" data-i18n-aria-label="page.language" data-action="save-locale">
-          <option value="zh-CN">中文</option>
           <option value="en-US">English</option>
+          <option value="zh-CN">中文</option>
         </select>
       </div>
     </div>
@@ -118,6 +118,19 @@
             </div>
           </div>
           <div class="grid" data-config-section="agent"></div>
+        </div>
+        <div class="section-card" id="section-voice_model" data-hide-when-empty>
+          <div class="card-head">
+            <h3>[voice_model]</h3>
+            <div class="section-actions">
+              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="voice_model" data-i18n="action.edit">Edit</button>
+              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="voice_model" data-i18n="action.cancel">Cancel</button>
+              <button id="save-voice_model" class="button primary save-btn" data-action="save-section" data-section-target="voice_model" data-i18n="action.save">Save</button>
+            </div>
+          </div>
+          <div class="grid" data-config-section="voice_model">
+            <div class="field wide" data-config-field="voice_model.provider"><label>provider</label><div class="provider-picker"><select id="voice_model_provider" data-section="voice_model"></select><div class="provider-picker-actions"><button id="addVoiceModelProviderBtn" type="button" class="button ghost" data-action="add-voice-model-provider" data-i18n="action.add">Add</button><button id="editVoiceModelProviderBtn" type="button" class="button ghost" data-action="edit-selected-provider" data-provider-kind="voice_model" data-i18n="action.edit">Edit</button><button id="deleteVoiceModelProviderBtn" type="button" class="button ghost error" data-action="delete-selected-provider" data-provider-kind="voice_model" data-i18n="action.delete">Delete</button></div></div></div>
+          </div>
         </div>
         <div class="section-card" id="section-model">
           <div class="card-head">

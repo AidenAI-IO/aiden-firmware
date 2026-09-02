@@ -387,6 +387,59 @@ func (m *VoiceNotificationManager) PrepareNotification(_ context.Context) Spoken
 	return result
 }
 
+func (m *VoiceNotificationManager) pendingNotificationRecordsLocked(relatedCodesInput []string) []*voiceNotificationRecord {
+	pending := make([]*voiceNotificationRecord, 0, len(m.records))
+	for _, record := range m.records {
+		if record.deliveryState == "pending" {
+			pending = append(pending, record)
+		}
+	}
+	relatedCodes := make(map[string]struct{}, len(relatedCodesInput))
+	for _, code := range relatedCodesInput {
+		if code = strings.TrimSpace(code); code != "" {
+			relatedCodes[code] = struct{}{}
+		}
+	}
+	sort.Slice(pending, func(i, j int) bool {
+		_, iRelated := relatedCodes[pending[i].code]
+		_, jRelated := relatedCodes[pending[j].code]
+		if iRelated != jRelated {
+			return iRelated
+		}
+		if pending[i].currentSeverity != pending[j].currentSeverity {
+			return pending[i].currentSeverity > pending[j].currentSeverity
+		}
+		if !pending[i].severityChangedAt.Equal(pending[j].severityChangedAt) {
+			return pending[i].severityChangedAt.After(pending[j].severityChangedAt)
+		}
+		if !pending[i].firstSeenAt.Equal(pending[j].firstSeenAt) {
+			return pending[i].firstSeenAt.Before(pending[j].firstSeenAt)
+		}
+		return pending[i].dedupeKey < pending[j].dedupeKey
+	})
+	return pending
+}
+
+func (m *VoiceNotificationManager) claimPendingNotificationLocked() (string, string) {
+	for _, record := range m.pendingNotificationRecordsLocked(nil) {
+		text := m.persistentTextLocked(record)
+		if text == "" {
+			continue
+		}
+		text = limitVoiceNotificationText(text, m.config.ResponseTail.MaxTextCharsOrDefault())
+		m.nextToken++
+		token := fmt.Sprintf("voice-notification-%d", m.nextToken)
+		m.deliveries[token] = voiceNotificationDelivery{
+			dedupeKey:        record.dedupeKey,
+			cycleID:          record.cycleID,
+			severitySnapshot: record.currentSeverity,
+		}
+		record.deliveryState = "in_flight"
+		return text, token
+	}
+	return "", ""
+}
+
 // PrepareVoiceNotification is the runtime-level entry point used by realtime
 // and other foreground speech consumers.
 func (r *Runtime) PrepareVoiceNotification(ctx context.Context) SpokenTextResult {
@@ -504,38 +557,15 @@ func (m *VoiceNotificationManager) PrepareSpokenText(_ context.Context, input Sp
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pruneExpiredLocked(m.now())
-	pending := m.pendingNotificationRecordsLocked(input.RelatedCodes)
-	for _, record := range pending {
-		tail := m.persistentTextLocked(record)
-		if tail == "" {
-			continue
-		}
-		tail = limitVoiceNotificationText(tail, m.config.ResponseTail.MaxTextCharsOrDefault())
-		m.nextToken++
-		token := fmt.Sprintf("voice-notification-%d", m.nextToken)
-		m.deliveries[token] = voiceNotificationDelivery{
-			dedupeKey:        record.dedupeKey,
-			cycleID:          record.cycleID,
-			severitySnapshot: record.currentSeverity,
-		}
-		record.deliveryState = "in_flight"
-		result.Text = appendVoiceNotificationTail(input.ResponseText, tail, m.locale)
-		result.Mode = SpokenTextModeTail
-		result.DeliveryToken = token
-		return result
-	}
-	return result
-}
-
-func (m *VoiceNotificationManager) pendingNotificationRecordsLocked(relatedCodesInput []string) []*voiceNotificationRecord {
 	pending := make([]*voiceNotificationRecord, 0, len(m.records))
 	for _, record := range m.records {
-		if record.deliveryState == "pending" {
-			pending = append(pending, record)
+		if record.deliveryState != "pending" {
+			continue
 		}
+		pending = append(pending, record)
 	}
-	relatedCodes := make(map[string]struct{}, len(relatedCodesInput))
-	for _, code := range relatedCodesInput {
+	relatedCodes := make(map[string]struct{}, len(input.RelatedCodes))
+	for _, code := range input.RelatedCodes {
 		if code = strings.TrimSpace(code); code != "" {
 			relatedCodes[code] = struct{}{}
 		}
@@ -557,16 +587,12 @@ func (m *VoiceNotificationManager) pendingNotificationRecordsLocked(relatedCodes
 		}
 		return pending[i].dedupeKey < pending[j].dedupeKey
 	})
-	return pending
-}
-
-func (m *VoiceNotificationManager) claimPendingNotificationLocked() (string, string) {
-	for _, record := range m.pendingNotificationRecordsLocked(nil) {
-		text := m.persistentTextLocked(record)
-		if text == "" {
+	for _, record := range pending {
+		tail := m.persistentTextLocked(record)
+		if tail == "" {
 			continue
 		}
-		text = limitVoiceNotificationText(text, m.config.ResponseTail.MaxTextCharsOrDefault())
+		tail = limitVoiceNotificationText(tail, m.config.ResponseTail.MaxTextCharsOrDefault())
 		m.nextToken++
 		token := fmt.Sprintf("voice-notification-%d", m.nextToken)
 		m.deliveries[token] = voiceNotificationDelivery{
@@ -575,9 +601,12 @@ func (m *VoiceNotificationManager) claimPendingNotificationLocked() (string, str
 			severitySnapshot: record.currentSeverity,
 		}
 		record.deliveryState = "in_flight"
-		return text, token
+		result.Text = appendVoiceNotificationTail(input.ResponseText, tail, m.locale)
+		result.Mode = SpokenTextModeTail
+		result.DeliveryToken = token
+		return result
 	}
-	return "", ""
+	return result
 }
 
 func (m *VoiceNotificationManager) leaseExpiration(code string, now time.Time) time.Time {

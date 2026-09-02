@@ -84,7 +84,7 @@ func TestMemoryManagerConcurrentGoroutines(t *testing.T) {
 					{Role: "human", Content: fmt.Sprintf("goroutine-%d-iter-%d", id, i)},
 					{Role: "ai", Content: fmt.Sprintf("response-%d-%d", id, i)},
 				}
-				if err := mgr.syncSessionRecords("shared", records); err != nil {
+				if err := mgr.AppendMessages(context.Background(), "shared", records); err != nil {
 					errs <- fmt.Errorf("goroutine %d iter %d persist: %w", id, i, err)
 					return
 				}
@@ -166,7 +166,7 @@ func runChildProcess() {
 			{Role: "human", Content: fmt.Sprintf("proc-%s-write-%d", id, i)},
 			{Role: "ai", Content: fmt.Sprintf("reply-%s-%d", id, i)},
 		}
-		if err := mgr.syncSessionRecords("shared", records); err != nil {
+		if err := mgr.AppendMessages(context.Background(), "shared", records); err != nil {
 			fmt.Fprintf(os.Stderr, "persist error: %v\n", err)
 			os.Exit(1)
 		}
@@ -186,13 +186,8 @@ func TestMemoryManagerNoDeadlockMultipleAgents(t *testing.T) {
 			defer wg.Done()
 			mgr := NewMemoryManager(dir)
 			agentName := fmt.Sprintf("agent-%d", id)
-			_, err := mgr.Get(agentName, MemoryConfig{Type: "buffer"})
-			if err != nil {
-				t.Errorf("Get for %s: %v", agentName, err)
-				return
-			}
-			if err := mgr.Save(context.Background(), agentName); err != nil {
-				t.Errorf("Save for %s: %v", agentName, err)
+			if err := mgr.AppendMessages(context.Background(), agentName, []MessageRecord{{Role: "human", Content: agentName}}); err != nil {
+				t.Errorf("AppendMessages for %s: %v", agentName, err)
 				return
 			}
 			if err := mgr.ClearSession(context.Background(), agentName); err != nil {
@@ -223,7 +218,7 @@ func TestMemoryManagerConcurrentReadWrite(t *testing.T) {
 		{Role: "human", Content: "seed"},
 		{Role: "ai", Content: "seed-reply"},
 	}
-	if err := mgr.syncSessionRecords("default", records); err != nil {
+	if err := mgr.AppendMessages(context.Background(), "default", records); err != nil {
 		t.Fatalf("seed persist: %v", err)
 	}
 
@@ -241,12 +236,12 @@ func TestMemoryManagerConcurrentReadWrite(t *testing.T) {
 						{Role: "human", Content: fmt.Sprintf("w-%d-%d", id, i)},
 						{Role: "ai", Content: fmt.Sprintf("wr-%d-%d", id, i)},
 					}
-					if err := m.syncSessionRecords("default", r); err != nil {
+					if err := m.AppendMessages(context.Background(), "default", r); err != nil {
 						errs <- fmt.Errorf("write g%d i%d: %w", id, i, err)
 						return
 					}
 				} else {
-					if _, err := m.Get("default", MemoryConfig{Type: "buffer"}); err != nil {
+					if _, err := m.LoadActiveSessionEvents(context.Background(), 0); err != nil {
 						errs <- fmt.Errorf("read g%d i%d: %w", id, i, err)
 						return
 					}

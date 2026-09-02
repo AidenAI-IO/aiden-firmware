@@ -112,7 +112,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		t.Errorf("expected device section first, got %q", ConfigMeta().Sections[0].Name)
 	}
 
-	for _, name := range []string{"device", "model", "tts", "stt", "audio", "audio_archive", "frame_service", "quick_capture", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
+	for _, name := range []string{"device", "model", "tts", "stt", "audio", "voice_model", "audio_archive", "frame_service", "quick_capture", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -128,6 +128,7 @@ func TestFieldMeta_DisplayFieldsJSONSchema(t *testing.T) {
 		Placeholder: "Leave empty to disable",
 		Layout:      "wide",
 		Widget:      WidgetText,
+		Advanced:    true,
 	})
 	if err != nil {
 		t.Fatalf("marshal FieldMeta: %v", err)
@@ -149,12 +150,15 @@ func TestFieldMeta_DisplayFieldsJSONSchema(t *testing.T) {
 			t.Errorf("FieldMeta JSON %s = %#v, want %q", key, got[key], want)
 		}
 	}
+	if got["advanced"] != true {
+		t.Errorf("FieldMeta JSON advanced = %#v, want true", got["advanced"])
+	}
 
 	minimal, err := json.Marshal(FieldMeta{Key: "enabled", Widget: WidgetBoolean})
 	if err != nil {
 		t.Fatalf("marshal minimal FieldMeta: %v", err)
 	}
-	for _, omitted := range []string{"label", "help", "placeholder", "layout"} {
+	for _, omitted := range []string{"label", "help", "placeholder", "layout", "advanced"} {
 		if strings.Contains(string(minimal), `"`+omitted+`"`) {
 			t.Errorf("empty %s must be omitted from FieldMeta JSON: %s", omitted, minimal)
 		}
@@ -194,6 +198,11 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 			layout: "wide",
 			label:  "Conversation API",
 			help:   "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
+		},
+		"agent.context_prune_threshold": {
+			label:       "Historical prune threshold (tokens)",
+			placeholder: "0 = automatic",
+			help:        "Token count that triggers cleanup of expired state and historical tool results. 0 automatically triggers at 70% of the usable model input budget, before conversation compaction at 80%.",
 		},
 		"model.responses_context_management": {
 			layout: "wide",
@@ -404,6 +413,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 	}{
 		{"model.provider", defaults.Model.Provider},
 		{"model.model", defaults.Model.Model},
+		{"agent.context_prune_threshold", defaults.ContextPruneThreshold},
 		// temperature's effective default is model-dependent and resolved at
 		// load time, so the metadata placeholder is the global fallback rather
 		// than the (now unset) DefaultConfig value.
@@ -424,6 +434,10 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio.channels", defaults.Audio.Channels},
 		{"audio.bit_width", defaults.Audio.BitWidth},
 		{"audio.backend", defaults.Audio.Backend},
+		{"voice_model.provider", defaults.VoiceModel.Provider},
+		{"voice_model_providers.model", defaults.VoiceModel.Model},
+		{"voice_model_providers.region", defaults.VoiceModel.Region},
+		{"voice_model_providers.voice", defaults.VoiceModel.Voice},
 		{"audio_archive.enabled", defaults.AudioArchive.Enabled},
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
@@ -681,6 +695,7 @@ func TestConfigMeta_ResponsesOptionsUsePlainLanguage(t *testing.T) {
 	idx := fieldIndex(t)
 	wantLabels := map[string]string{
 		"model.api_mode":                              "Conversation API",
+		"agent.context_prune_threshold":               "Historical prune threshold (tokens)",
 		"model.responses_context_management":          "Provider compaction",
 		"model.responses_compact_threshold":           "Compaction threshold (tokens)",
 		"model.responses_truncation":                  "Over-limit input",
@@ -783,6 +798,106 @@ func TestConfigMeta_AudioArchiveRequiresSTTInputMode(t *testing.T) {
 	}
 }
 
+func TestConfigMeta_VoiceModelRequiresRealtimeInputMode(t *testing.T) {
+	idx := fieldIndex(t)
+	for _, section := range ConfigMeta().Sections {
+		if section.Name == "voice_model" && (len(section.Fields) != 1 || section.Fields[0].Key != "provider") {
+			t.Fatalf("voice_model fields = %#v, want only the provider reference", section.Fields)
+		}
+	}
+
+	provider := idx["voice_model.provider"]
+	if provider.VisibleWhen == nil {
+		t.Fatal("voice_model.provider has no visibleWhen rule")
+	}
+	for _, cond := range provider.VisibleWhen.All {
+		if cond.Field == "agent.input_mode" && cond.Op == "eq" && cond.Value == "realtime" {
+			goto providerVisible
+		}
+	}
+	t.Fatal("voice_model.provider must require realtime input mode")
+
+providerVisible:
+	for _, path := range []string{
+		"voice_model_providers.type", "voice_model_providers.upstream_provider",
+		"voice_model_providers.agent_id", "voice_model_providers.api_key",
+		"voice_model_providers.model", "voice_model_providers.workspace_id",
+		"voice_model_providers.region", "voice_model_providers.auth_mode",
+		"voice_model_providers.project_id", "voice_model_providers.location", "voice_model_providers.endpoint",
+		"voice_model_providers.base_url", "voice_model_providers.voice",
+	} {
+		if _, ok := idx[path]; !ok {
+			t.Errorf("missing metadata field %s", path)
+		}
+	}
+
+	apiKey := idx["voice_model_providers.api_key"]
+	if !apiKey.Secret {
+		t.Fatal("voice_model_providers.api_key must be a secret field")
+	}
+	upstream := idx["voice_model_providers.upstream_provider"]
+	if upstream.Widget != WidgetSelect {
+		t.Fatalf("voice_model_providers.upstream_provider widget = %q, want select", upstream.Widget)
+	}
+	// openai is intentionally not offered here; see
+	// TestConfigMeta_SpekoUpstreamOmitsWebRTCOnlyEngines.
+	wantUpstreams := []EnumOption{
+		{Value: "google", Label: "Google Gemini Live"},
+		{Value: "xai", Label: "xAI Grok Voice"},
+	}
+	if !reflect.DeepEqual(upstream.Enum, wantUpstreams) {
+		t.Fatalf("voice_model_providers.upstream_provider enum = %#v, want %#v", upstream.Enum, wantUpstreams)
+	}
+	for _, path := range []string{
+		"voice_model_providers.agent_id", "voice_model_providers.workspace_id",
+		"voice_model_providers.endpoint", "voice_model_providers.base_url",
+		"voice_model_providers.region",
+	} {
+		if !idx[path].Advanced {
+			t.Errorf("%s must be collapsed under advanced settings", path)
+		}
+	}
+	for _, path := range []string{
+		"voice_model_providers.type", "voice_model_providers.upstream_provider",
+		"voice_model_providers.api_key", "voice_model_providers.model",
+		"voice_model_providers.auth_mode", "voice_model_providers.project_id",
+		"voice_model_providers.location", "voice_model_providers.voice",
+	} {
+		if idx[path].Advanced {
+			t.Errorf("%s must remain in the primary provider form", path)
+		}
+	}
+
+	providerRule := func(providerType string) VisibleRule {
+		return VisibleRule{All: []Condition{{Field: "voice_model_providers.type", Op: "eq", Value: providerType}}}
+	}
+	for _, tt := range []struct {
+		path     string
+		provider string
+		value    interface{}
+	}{
+		{path: "voice_model_providers.model", provider: "qwen", value: DefaultConfig().VoiceModel.Model},
+		{path: "voice_model_providers.model", provider: "openai", value: "gpt-realtime"},
+		{path: "voice_model_providers.model", provider: "gemini", value: "gemini-3.1-flash-live-preview"},
+		{path: "voice_model_providers.model", provider: "xai", value: "grok-voice-latest"},
+		{path: "voice_model_providers.voice", provider: "qwen", value: DefaultConfig().VoiceModel.Voice},
+		{path: "voice_model_providers.voice", provider: "speko", value: "auto"},
+		{path: "voice_model_providers.voice", provider: "openai", value: "alloy"},
+		{path: "voice_model_providers.voice", provider: "gemini", value: "Puck"},
+		{path: "voice_model_providers.voice", provider: "xai", value: "eve"},
+	} {
+		t.Run(tt.path+"_"+tt.provider, func(t *testing.T) {
+			field := idx[tt.path]
+			for _, candidate := range field.PlaceholderWhen {
+				if reflect.DeepEqual(candidate.When, providerRule(tt.provider)) && reflect.DeepEqual(candidate.Value, tt.value) {
+					return
+				}
+			}
+			t.Fatalf("%s missing %s placeholder %#v: %#v", tt.path, tt.provider, tt.value, field.PlaceholderWhen)
+		})
+	}
+}
+
 func TestConfigMeta_ModelAPIKeyOwnedByProvider(t *testing.T) {
 	idx := fieldIndex(t)
 	if _, ok := idx["model.api_key"]; ok {
@@ -873,6 +988,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"model_providers", reflect.TypeOf(ModelProvider{}), nil},
 		{"tts_providers", reflect.TypeOf(TTSProvider{}), nil},
 		{"stt_providers", reflect.TypeOf(STTProvider{}), nil},
+		{"voice_model_providers", reflect.TypeOf(VoiceModelProvider{}), nil},
 	}
 	for _, s := range recordSections {
 		for name := range tomlKeys(s.typ) {
@@ -911,5 +1027,48 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		if _, ok := idx[path]; !ok {
 			t.Errorf("top-level config field %s has no metadata entry under agent section", path)
 		}
+	}
+}
+
+func TestConfigMeta_SpekoUpstreamOmitsWebRTCOnlyEngines(t *testing.T) {
+	// Speko serves OpenAI over WebRTC and every realtime adapter here speaks
+	// WebSocket, so offering it could only fail after spending a mint request.
+	// The standalone openai provider type stays available for a direct session.
+	idx := fieldIndex(t)
+	upstream, ok := idx["voice_model_providers.upstream_provider"]
+	if !ok {
+		t.Fatal("voice_model_providers.upstream_provider is missing from metadata")
+	}
+	values := make([]string, 0, len(upstream.Enum))
+	for _, option := range upstream.Enum {
+		if option.Value == "openai" {
+			t.Errorf("openai must not be selectable as a Speko upstream: it is WebRTC-only")
+		}
+		values = append(values, option.Value)
+	}
+	for _, want := range []string{"google", "xai"} {
+		found := false
+		for _, value := range values {
+			if value == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Speko upstream %q should remain selectable, got %v", want, values)
+		}
+	}
+
+	providerType, ok := idx["voice_model_providers.type"]
+	if !ok {
+		t.Fatal("voice_model_providers.type is missing from metadata")
+	}
+	direct := false
+	for _, option := range providerType.Enum {
+		if option.Value == "openai" {
+			direct = true
+		}
+	}
+	if !direct {
+		t.Error("openai must remain selectable as a provider type for direct WebSocket sessions")
 	}
 }

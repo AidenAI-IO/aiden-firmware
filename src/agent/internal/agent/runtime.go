@@ -133,12 +133,11 @@ type RunRequest struct {
 }
 
 type RunResult struct {
-	Output                 string          `json:"output"`
-	EpisodeID              string          `json:"episode_id,omitempty"`
-	Memory                 []MessageRecord `json:"memory,omitempty"`
-	Metrics                *RunMetrics     `json:"metrics,omitempty"`
-	WaitForWakeupRequested bool            `json:"wait_for_wakeup_requested,omitempty"`
-	WaitForWakeupReason    string          `json:"wait_for_wakeup_reason,omitempty"`
+	Output                 string      `json:"output"`
+	EpisodeID              string      `json:"episode_id,omitempty"`
+	Metrics                *RunMetrics `json:"metrics,omitempty"`
+	WaitForWakeupRequested bool        `json:"wait_for_wakeup_requested,omitempty"`
+	WaitForWakeupReason    string      `json:"wait_for_wakeup_reason,omitempty"`
 	// Deprecated: use WaitForWakeupRequested.
 	SleepRequested bool `json:"sleep_requested,omitempty"`
 	// Deprecated: use WaitForWakeupReason.
@@ -244,20 +243,50 @@ func (m *RunMetrics) CacheHitRate() float64 {
 }
 
 const (
-	runEventToolCall                       = "tool_call"
-	runEventSTTTranscription               = "stt_transcription"
-	runEventVoicePromptSound               = "voice_prompt_sound"
-	runEventTTSStreamPreopen               = "tts_stream_preopen"
-	runEventMemoryRetrieve                 = "memory_retrieve"
-	runEventSessionBegin                   = "session_begin"
-	runEventIterationStart                 = "iteration_start"
-	runEventIterationEnd                   = "iteration_end"
-	runEventLoopGuardStop                  = "loop_guard_stop"
-	runEventToolResultContext              = "tool_result_context"
-	runEventContextBudget                  = "context_budget"
-	runEventHistoricalToolResultCompaction = "historical_tool_result_compaction"
-	runEventModelRequestFailure            = "model_request_failure"
+	runEventToolCall               = "tool_call"
+	runEventSTTTranscription       = "stt_transcription"
+	runEventVoicePromptSound       = "voice_prompt_sound"
+	runEventTTSStreamPreopen       = "tts_stream_preopen"
+	runEventMemoryRetrieve         = "memory_retrieve"
+	runEventSessionBegin           = "session_begin"
+	runEventIterationStart         = "iteration_start"
+	runEventIterationEnd           = "iteration_end"
+	runEventLoopGuardStop          = "loop_guard_stop"
+	runEventToolResultContext      = "tool_result_context"
+	runEventContextBudget          = "context_budget"
+	runEventHistoricalContextPrune = "historical_context_prune"
+	runEventConversationCompaction = "conversation_compaction"
+	runEventModelRequestFailure    = "model_request_failure"
 )
+
+func historicalPruneEvent(stats compactor.HistoricalPruneStats, changed bool, err error, reason string) TaskEpisodeEvent {
+	metadata := map[string]interface{}{
+		"historical_states_dropped":      stats.HistoricalStatesDropped,
+		"historical_tool_results_pruned": stats.HistoricalToolResultsPruned,
+		"tokens_before":                  stats.TokensBefore,
+		"tokens_after":                   stats.TokensAfter,
+		"changed":                        changed,
+		"success":                        err == nil,
+	}
+	if reason != "" {
+		metadata["reason"] = reason
+	}
+	return TaskEpisodeEvent{Type: runEventHistoricalContextPrune, Metadata: metadata}
+}
+
+func contextCompactionEvent(stats compactor.CompactionStats, compacted bool, err error, reason string) TaskEpisodeEvent {
+	metadata := map[string]interface{}{
+		"tokens_before":                 stats.TokensBefore,
+		"tokens_after":                  stats.TokensAfter,
+		"conversation_summary_required": stats.ConversationSummaryRequired,
+		"compacted":                     compacted,
+		"success":                       err == nil,
+	}
+	if reason != "" {
+		metadata["reason"] = reason
+	}
+	return TaskEpisodeEvent{Type: runEventConversationCompaction, Metadata: metadata}
+}
 
 type RunEvent struct {
 	Type           string     `json:"type"`
@@ -982,25 +1011,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return model.ModelSpec{}
 	}}
 
-	memoryCfg := MemoryConfig{Type: "buffer"}
-	var memoryHandle *MemoryHandle
-	if r.memories != nil {
-		memoryHandle, err = r.memories.Get("default", memoryCfg)
-	} else {
-		memoryHandle, err = newMemoryHandle(memoryCfg)
-	}
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return RunResult{}, ctxErr
-		}
-		if r.logger != nil {
-			r.logger.Warn("[memory] load persisted memory failed; continuing with empty history: %v", err)
-		}
-		memoryHandle, err = newMemoryHandle(memoryCfg)
-		if err != nil {
-			return RunResult{}, err
-		}
-	}
 	sessionBeginStart := time.Now()
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
 		AgentName:    "default",
@@ -1118,13 +1128,12 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		executorHandler = streamCallbackHandler
 	}
 	profile := r.buildAgentProfile(r.skills, availableTools)
-	plannerMemory := memoryHandle.Memory
 	var steerStatus steerConversationStatus
+	var steerRecorder steerConversationRecorder
 	if req.SteerProvider != nil {
-		plannerMemory = newSteerConversationMemory(plannerMemory, memoryHandle.History)
-		if status, ok := plannerMemory.(steerConversationStatus); ok {
-			steerStatus = status
-		}
+		tracker := newSteerConversationTracker()
+		steerStatus = tracker
+		steerRecorder = tracker
 	}
 
 	// setup context manager if not initialized
@@ -1148,7 +1157,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{}, err
 	}
 
-	compactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
+	contextCompactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
 	budgetContextWindow := contextWindow
 	if budgetContextWindow <= 0 {
 		budgetContextWindow = r.models.Spec().ContextWindow
@@ -1161,21 +1170,51 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		maxResponseTokens = req.MaxTokens
 	}
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
-	compactionTrigger, compactionTarget, compactionEnabled := toolResultCompactionBudgets(usableInputBudget)
+	compactionTrigger, compactionEnabled := conversationCompactionTrigger(usableInputBudget)
 	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
+
+	// Historical state and tool-result pruning is deterministic and has its own
+	// configurable trigger. It is intentionally independent from conversation
+	// summarization and provider-managed Responses compaction.
+	pruneTrigger, pruneTarget, pruneEnabled := historicalPruneBudgets(usableInputBudget, r.config.ContextPruneThreshold)
+	if pruneEnabled && tokenUsage > pruneTrigger {
+		if r.logger != nil {
+			r.logger.Info("Historical context prune: token usage reached threshold; tokenUsage=%d trigger=%d target=%d", tokenUsage, pruneTrigger, pruneTarget)
+		}
+		newManager, pruned, pruneErr := contextCompactor.PruneHistorical(r.contextManager, pruneTarget)
+		if episodeRecorder != nil {
+			episodeRecorder.RecordEvent(historicalPruneEvent(
+				contextCompactor.LastPruneStats(),
+				pruned,
+				pruneErr,
+				"threshold",
+			))
+		}
+		if pruneErr != nil {
+			return RunResult{}, pruneErr
+		}
+		if pruned {
+			newManager.AddAppendMessageHook(r.getStateHook())
+			if err = contextmanager.SwitchSession(newManager.GetSessionFolder(), newManager.GetSessionID()); err != nil {
+				return RunResult{}, err
+			}
+			r.contextManager = newManager
+			tokenUsage = tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
+		}
+	}
+
 	if !r.config.Model.ResponsesProviderCompactionEnabled() && compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
-			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, trigger: %d, target: %d, contextWindow: %d", tokenUsage, compactionTrigger, compactionTarget, contextWindow)
+			r.logger.Info("Compaction: token usage reached the threshold, summarizing conversation... tokenUsage: %d, trigger: %d, contextWindow: %d", tokenUsage, compactionTrigger, contextWindow)
 		}
-		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
+		newManager, compacted, err := contextCompactor.Compact(ctx, r.contextManager)
 		if episodeRecorder != nil {
-			episodeRecorder.RecordEvent(TaskEpisodeEvent{
-				Type: runEventHistoricalToolResultCompaction,
-				Metadata: map[string]interface{}{
-					"compacted": compacted,
-					"success":   err == nil,
-				},
-			})
+			episodeRecorder.RecordEvent(contextCompactionEvent(
+				contextCompactor.LastCompactionStats(),
+				compacted,
+				err,
+				"threshold",
+			))
 		}
 		if err != nil {
 			return RunResult{}, err
@@ -1192,7 +1231,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	agentLoop := NewAgentLoop(m, profile, plannerMemory, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
+	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
+	agentLoop.SteerRecorder = steerRecorder
 	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
 		if r.tools == nil {
 			return newWheelNudgeGuard(nil)
@@ -1210,16 +1250,14 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Info("Compaction: provider rejected the request because the context window was exceeded; compacting and retrying")
 		}
-		newManager, compacted, compactErr := compactor.Compact(recoveryCtx, currentManager)
+		newManager, compacted, compactErr := contextCompactor.Compact(recoveryCtx, currentManager)
 		if episodeRecorder != nil {
-			episodeRecorder.RecordEvent(TaskEpisodeEvent{
-				Type: runEventHistoricalToolResultCompaction,
-				Metadata: map[string]interface{}{
-					"compacted": compacted,
-					"success":   compactErr == nil,
-					"reason":    "provider_context_exceeded",
-				},
-			})
+			episodeRecorder.RecordEvent(contextCompactionEvent(
+				contextCompactor.LastCompactionStats(),
+				compacted,
+				compactErr,
+				"provider_context_exceeded",
+			))
 		}
 		if compactErr != nil || !compacted {
 			return newManager, compacted, compactErr
@@ -1270,7 +1308,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		commitReq.Steers = steerStatus.SteerMessages()
 	}
 
-	commitResult, err := r.commitSession(ctx, commitReq)
+	_, err = r.commitSession(ctx, commitReq)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return RunResult{}, ctxErr
@@ -1278,7 +1316,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Warn("[memory] commit session failed; returning model output without memory snapshot: %v", err)
 		}
-		commitResult = SessionCommitResult{}
 	}
 	if streamCallbackHandler != nil {
 		streamCallbackHandler.HandleAssistantOutput(ctx, output)
@@ -1293,7 +1330,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	return RunResult{
 		Output:                 output,
 		EpisodeID:              episodeID,
-		Memory:                 commitResult.Memory,
 		Metrics:                metrics,
 		WaitForWakeupRequested: waitForWakeupRequested,
 		WaitForWakeupReason:    waitForWakeupReason,

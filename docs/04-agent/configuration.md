@@ -23,6 +23,7 @@ under `[device]` below.
 - [`[log]`](#log)
 - [`[audio]`](#audio)
 - [`[voice_model]`](#voice_model)
+- [`[voice_model_providers.<name>]`](#voice_model_providersname)
 - [`[frame_service]`](#frame_service)
 - [Quick Capture](#quick-capture)
 - [`[voice_notifications]`](#voice_notifications)
@@ -67,11 +68,12 @@ The firmware starts `config_web` on port 80.
 
 The page fields cover the following config sections (all detailed later on this page). The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
-- `agent`: `locale`, `input_mode`, VAD params, `max_iterations`, `custom_instruction`, `additional_prompt`
+- `agent`: `locale`, `input_mode`, VAD params, `max_iterations`, `context_prune_threshold`, `custom_instruction`, `additional_prompt`
 - `model`: provider, model, api_key, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, backend
+- `voice_model`: selected realtime provider; shown when `agent.input_mode = "realtime"`. Provider-specific credentials and model settings are configured in `[voice_model_providers.<name>]`
 - `frame_service`: whether Frame Service keeps capture STREAMON between screenshots
 - `quick_capture`: enabled, GPIO trigger pin, Screen Memory retention period
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
@@ -86,9 +88,10 @@ The page fields cover the following config sections (all detailed later on this 
 ### HTTP/Web UI without the device voice loop (`text`)
 
 ```toml
-locale = "zh-CN"
+locale = "en-US"
 custom_instruction = ""
 max_iterations = -1
+context_prune_threshold = 12000
 screenshot_keep_n = 3
 screenshot_prune_interval = 2
 input_mode = "text"
@@ -150,7 +153,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ### STT voice mode
 
 ```toml
-locale = "zh-CN"
+locale = "en-US"
 custom_instruction = ""
 input_mode = "stt"
 vad_backend = "rknn"
@@ -220,10 +223,11 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 | Field                       | Default / allowed values    | Description                                                                                                                                                                                               |
 | --------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `locale`                    | `zh-CN` (default) / `en-US` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[stt].language`, which only controls speech recognition. |
+| `locale`                    | `en-US` (default) / `zh-CN` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[stt].language`, which only controls speech recognition. |
 | `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
 | `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
+| `context_prune_threshold`   | `0`                         | Estimated token count that independently triggers deterministic cleanup of expired state snapshots and historical tool results. `0` derives the trigger as 70% of the usable model input budget and cleans down to 60%, before local conversation compaction at 80%. A positive value is honored exactly; its cleanup target is 70/80 of the configured trigger. |
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
 | `input_mode`                | `text` / `stt` / `realtime` | Input mode: HTTP/Web UI only, legacy STT/TTS voice loop, or direct realtime voice model                                                                                                                                 |
@@ -354,7 +358,7 @@ built. When a section is named exactly like a provider type, the section wins.
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
 | `api_mode`                | Wire protocol. Omit it (or use `chat_completions`) for the existing Chat Completions path; `responses` sends full local context to OpenAI, OpenRouter, or Volcengine Ark. OpenAI and Ark receive `store=false`; OpenRouter omits both `store` and `previous_response_id` because its Responses endpoint is stateless. `responses_stateful` sends `store=true`, resends top-level `instructions`, and chains follow-up requests with `previous_response_id` while submitting only newly appended items. The local transcript remains authoritative for audit, compaction, session rotation, and recovery. Stateful mode is enabled for OpenAI and Volcengine Ark. Moonshot Kimi exposes Chat Completions rather than `/responses`; native Anthropic and Ollama transports also do not implement this protocol. Custom compatible gateways can use provider type `openai`. |
-| `responses_context_management` | Provider-side Responses context policy. `compaction` sends OpenAI's token-based compaction array; `ark_context_edit` sends Volcengine Ark's object-shaped `context_management.edits` policy; empty/`disabled` omits provider context management. |
+| `responses_context_management` | Provider-side Responses context policy. `compaction` sends OpenAI's token-based compaction array; `ark_context_edit` sends Volcengine Ark's object-shaped `context_management.edits` policy; empty/`disabled` omits provider context management. This policy is independent from local historical state/tool-result pruning. |
 | `responses_compact_threshold` | Optional token threshold sent with provider compaction. `0` lets the provider choose. |
 | `responses_context_edit_trigger` | Ark tool-call count that triggers `clear_tool_uses`; `0` uses the recommended value `10`. |
 | `responses_context_edit_keep` | Ark recent tool-call count to retain after cleanup; `0` uses the recommended value `3`. |
@@ -465,31 +469,73 @@ API key and base URL do not carry over to it.
 
 ## `[voice_model]`
 
-This section selects the realtime voice model used after a GPIO wakeup or an
-`/api/chat` request. It is active when `input_mode = "realtime"`; the mode,
-not API key presence, controls whether the daemon starts the realtime path. The
-daemon then streams 16 kHz PCM microphone data
-to `rtclient` continuously and plays the model's 24 kHz PCM response stream.
-When no session is active, `/api/chat` queues its text input, connects the
-realtime session, and sends that text as the first user message. This API
-activation remains available when host GPIO is unavailable.
+This section selects a named realtime provider record used after a GPIO wakeup.
+It is active when `input_mode = "realtime"`; the
+mode, not API key presence, controls whether the daemon starts the realtime
+path. The daemon streams microphone PCM to the selected adapter and plays its
+response PCM through the board audio path.
+For providers with text-input capability, `/api/chat` can start a session and send the queued text as its first user message. Speko S2S is audio-first; its delegated native provider may expose optional text capabilities, but the board microphone path remains the canonical full-duplex path. The selected direct provider owns turn detection and interruption; Speko does not relay PCM or synthesize a separate VAD loop.
 Use `input_mode = "stt"` to select the existing VAD/STT/LLM/TTS wakeup loop.
-This section is currently TOML-only and is not rendered by Config Web.
+Config Web renders the selector when `agent.input_mode = "realtime"`. Provider
+credentials and model settings live in `[voice_model_providers.<name>]`, so
+switching the selector never overwrites another provider's saved configuration.
+The current adapters are Qwen, Speko S2S, OpenAI Realtime, Google Gemini Live, and xAI Grok Voice.
 
 | Field | Default | Description |
 | ----- | ------- | ----------- |
-| `api_key` | empty | DashScope API key; supports `$ENV_VAR` expansion. |
-| `model` | `qwen-audio-3.0-realtime-plus` | Realtime voice model name. |
-| `workspace_id` | empty | Optional DashScope workspace. |
-| `region` | empty | `cn-beijing` or `ap-southeast-1`; endpoint is selected automatically. |
-| `endpoint` | empty | Optional `ws://` or `wss://` endpoint override. |
-| `voice` | `longanqian` | Realtime output voice. |
+| `provider` | `qwen` | Named `[voice_model_providers.<name>]` record. Bare `qwen`, `speko`, `openai`, `gemini`, or `xai` values remain accepted for compatibility. |
 | `instructions` | built-in voice model instruction | Session instructions. Leave empty to use the built-in default voice model instruction. |
 | `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
 | `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
-| `turn_detection` | `server_vad` | Server turn detector: `server_vad` or `smart_turn`. |
-| `turn_detection_threshold` | empty | Optional server VAD threshold. |
-| `turn_detection_silence_ms` | `800` | Silence duration before a response is generated. |
+| `turn_detection` | `server_vad` | Qwen server turn detector: `server_vad` or `smart_turn`. Provider-direct Speko sessions use the selected provider VAD and do not use this selector. |
+| `turn_detection_threshold` | empty | Optional Qwen server VAD threshold; ignored by Speko S2S. |
+| `turn_detection_silence_ms` | `800` | Qwen silence duration before a response is generated. Ignored by provider-direct Speko sessions, which use the selected provider VAD. |
+
+## `[voice_model_providers.<name>]`
+
+Realtime provider records follow the same named-record pattern as
+`[model_providers.<name>]`. Multiple configurations of each realtime provider can coexist;
+`[voice_model].provider` selects one by name.
+
+```toml
+[voice_model_providers.qwen-main]
+type = "qwen"
+api_key = "$DASHSCOPE_API_KEY"
+model = "qwen-audio-3.0-realtime-plus"
+region = "cn-beijing"
+voice = "longanqian"
+
+[voice_model_providers.speko-main]
+type = "speko"
+api_key = "$SPEKO_API_KEY"
+upstream_provider = "google"
+model = "gemini-3.1-flash-live-preview"
+voice = "Puck"
+
+[voice_model_providers.gemini-vertex]
+type = "gemini"
+auth_mode = "vertex"
+api_key = "$GOOGLE_OAUTH_ACCESS_TOKEN"
+project_id = "my-project"
+location = "us-central1"
+model = "gemini-live"
+voice = "Puck"
+
+[voice_model]
+provider = "speko-main"
+```
+
+| Field | Providers | Description |
+| ----- | --------- | ----------- |
+| `type` | all | Adapter type: `qwen`, `speko`, `openai`, `gemini`, or `xai`. |
+| `api_key` | all | Provider credential; supports `$ENV_VAR` expansion. For Gemini Vertex, this is an OAuth access token. |
+| `model` / `voice` | all | Provider-specific model and voice. Speko requires an explicit model; voice may stay empty for the selected upstream default. |
+| `workspace_id` / `region` | Qwen | Optional DashScope routing settings. |
+| `auth_mode` | Gemini | `api_key` (default) for the Gemini Developer API, or `vertex` for Vertex OAuth. |
+| `project_id` / `location` | Gemini Vertex | Required Google Cloud project and Vertex region, for example `us-central1`. |
+| `endpoint` | Qwen, OpenAI, Gemini, xAI | Optional WebSocket endpoint override, primarily for regional gateways and protocol tests. |
+| `upstream_provider` | Speko | Required S2S upstream: `google` (or `gemini`) or `xai`, paired with `model`. Automatic routing is disabled because it may select an unsupported WebRTC route. OpenAI is not a supported Speko route in Aiden; use the top-level `openai` provider instead. |
+| `agent_id` / `base_url` | Speko | Optional Speko agent ID and API base URL override. |
 
 ## `[frame_service]`
 

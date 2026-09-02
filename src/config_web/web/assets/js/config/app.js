@@ -10,7 +10,7 @@ import {refreshAgentStatus} from './agent-status.js';
 import {refreshOtaLog, triggerOtaUpdate} from './ota.js';
 import {
   deleteSelectedProvider, editSelectedProvider, handleProviderAction, initProviders,
-  ModelProvidersManager, SttProvidersManager, TtsProvidersManager
+  ModelProvidersManager, SttProvidersManager, TtsProvidersManager, VoiceModelProvidersManager
 } from './providers.js';
 import {byId, configureTerminalLink} from './state.js';
 import {ejectStorageCard, refreshStorage, startStorageFormat} from './storage.js';
@@ -41,7 +41,8 @@ const simpleActions = {
   'toggle-wifi-list': toggleWifiListExpanded,
   'add-model-provider': () => ModelProvidersManager.addRecord(),
   'add-tts-provider': () => TtsProvidersManager.addRecord(),
-  'add-stt-provider': () => SttProvidersManager.addRecord()
+  'add-stt-provider': () => SttProvidersManager.addRecord(),
+  'add-voice-model-provider': () => VoiceModelProvidersManager.addRecord()
 };
 
 document.addEventListener('click', function(event) {

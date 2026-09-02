@@ -52,7 +52,6 @@ func TestAgentLoopCompactsAndRetriesProviderContextExceededError(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{},
-		nil,
 		1,
 		nil,
 		nil,

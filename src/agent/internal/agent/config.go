@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/realtimevoice"
 	"errors"
 	"fmt"
 	"net"
@@ -270,59 +271,64 @@ type ModelProvider struct {
 }
 
 type Config struct {
-	ModelProviders             map[string]ModelProvider `toml:"model_providers,omitempty"` // Named model provider configurations
-	TTSProviders               map[string]TTSProvider   `toml:"tts_providers,omitempty"`   // Named TTS provider configurations
-	STTProviders               map[string]STTProvider   `toml:"stt_providers,omitempty"`   // Named STT provider configurations
-	Model                      ModelConfig              `toml:"model"`
-	TTS                        TTSConfig                `toml:"tts,omitempty"`
-	STT                        STTConfig                `toml:"stt,omitempty"`
-	HID                        HIDConfig                `toml:"hid"`
-	Device                     DeviceConfig             `toml:"device,omitempty"`
-	Audio                      AudioConfig              `toml:"audio,omitempty"`
-	VoiceModel                 VoiceModelConfig         `toml:"voice_model,omitempty"`
-	AudioArchive               AudioArchiveConfig       `toml:"audio_archive,omitempty"`
-	FrameService               FrameServiceConfig       `toml:"frame_service,omitempty"`
-	Storage                    StorageConfig            `toml:"storage,omitempty"`
-	VoiceNotifications         VoiceNotificationsConfig `toml:"voice_notifications,omitempty"`
-	QuickCapture               QuickCaptureConfig       `toml:"quick_capture,omitempty"`
-	Log                        LogConfig                `toml:"log,omitempty"`
-	OTA                        OTAConfig                `toml:"ota,omitempty"`
-	Search                     SearchConfig             `toml:"search,omitempty"`
-	EnvironmentBridge          EnvironmentBridgeConfig  `toml:"-"` // Only set via CLI flags, never from config file
-	Benchmark                  BenchmarkConfig          `toml:"-"` // Only set via CLI flags, never from config file
-	LiveActivity               LiveActivityConfig       `toml:"live_activity,omitempty"`
-	Locale                     string                   `toml:"locale,omitempty"`
-	Instruction                string                   `toml:"custom_instruction,omitempty"`
-	AdditionalPrompt           string                   `toml:"additional_prompt,omitempty"`
-	InputMode                  string                   `toml:"input_mode,omitempty"`  // "text", "stt", or "realtime"
-	VADBackend                 string                   `toml:"vad_backend,omitempty"` // "rknn", "cpu"
-	VADModelPath               string                   `toml:"vad_model_path,omitempty"`
-	VADHelperPath              string                   `toml:"vad_helper_path,omitempty"`
-	VADSpeechThreshold         float64                  `toml:"vad_speech_threshold,omitempty"`
-	SilenceMs                  int                      `toml:"silence_ms,omitempty"`
-	MinSpeechMs                int                      `toml:"min_speech_ms,omitempty"`
-	VoiceFollowupEnabled       *bool                    `toml:"voice_followup_enabled,omitempty"`
-	VoiceFollowupTimeoutMs     int                      `toml:"voice_followup_timeout_ms,omitempty"`
-	VoiceFirstTurnTimeoutMs    int                      `toml:"voice_first_turn_timeout_ms,omitempty"`
-	VoiceMaxTurns              int                      `toml:"voice_max_turns,omitempty"`
-	VoiceInterruptOnWakeup     *bool                    `toml:"voice_interrupt_on_wakeup,omitempty"`
-	VoiceStreamingTTSEnabled   *bool                    `toml:"voice_streaming_tts_enabled,omitempty"`
-	VoiceToolCallSpeech        *bool                    `toml:"voice_tool_call_speech,omitempty"`
-	VoiceProgressSpeechEnabled *bool                    `toml:"voice_progress_speech_enabled,omitempty"`
-	VoiceMaxResponseTokens     int                      `toml:"voice_max_response_tokens,omitempty"`
-	MaxIterations              int                      `toml:"max_iterations,omitempty"`
-	TerminationPolicy          TerminationPolicyConfig  `toml:"termination_policy,omitempty"`
-	ForceSimpleLoop            bool                     `toml:"-"`
-	ScreenshotKeepN            int                      `toml:"screenshot_keep_n,omitempty"`
-	ScreenshotPruneInterval    int                      `toml:"screenshot_prune_interval,omitempty"`
-	ScreenStableTimeoutMs      int                      `toml:"screen_stable_timeout_ms,omitempty"`
-	ScreenStableMs             int                      `toml:"screen_stable_ms,omitempty"`
-	ScreenStableDiffThreshold  float64                  `toml:"screen_stable_diff_threshold,omitempty"`
-	SkillsDirs                 []string                 `toml:"skills_dirs"`
-	BundledSkillsDir           string                   `toml:"bundled_skills_dir,omitempty"`
-	SkillMergeModel            SkillMergeModel          `toml:"-"`
-	Telemetry                  TelemetryConfig          `toml:"telemetry,omitempty"`
-	ConfigDir                  string                   `toml:"-"`
+	ModelProviders             map[string]ModelProvider      `toml:"model_providers,omitempty"` // Named model provider configurations
+	TTSProviders               map[string]TTSProvider        `toml:"tts_providers,omitempty"`   // Named TTS provider configurations
+	STTProviders               map[string]STTProvider        `toml:"stt_providers,omitempty"`   // Named STT provider configurations
+	VoiceModelProviders        map[string]VoiceModelProvider `toml:"voice_model_providers,omitempty"`
+	Model                      ModelConfig                   `toml:"model"`
+	TTS                        TTSConfig                     `toml:"tts,omitempty"`
+	STT                        STTConfig                     `toml:"stt,omitempty"`
+	HID                        HIDConfig                     `toml:"hid"`
+	Device                     DeviceConfig                  `toml:"device,omitempty"`
+	Audio                      AudioConfig                   `toml:"audio,omitempty"`
+	VoiceModel                 VoiceModelConfig              `toml:"voice_model,omitempty"`
+	AudioArchive               AudioArchiveConfig            `toml:"audio_archive,omitempty"`
+	FrameService               FrameServiceConfig            `toml:"frame_service,omitempty"`
+	Storage                    StorageConfig                 `toml:"storage,omitempty"`
+	VoiceNotifications         VoiceNotificationsConfig      `toml:"voice_notifications,omitempty"`
+	QuickCapture               QuickCaptureConfig            `toml:"quick_capture,omitempty"`
+	Log                        LogConfig                     `toml:"log,omitempty"`
+	OTA                        OTAConfig                     `toml:"ota,omitempty"`
+	Search                     SearchConfig                  `toml:"search,omitempty"`
+	EnvironmentBridge          EnvironmentBridgeConfig       `toml:"-"` // Only set via CLI flags, never from config file
+	Benchmark                  BenchmarkConfig               `toml:"-"` // Only set via CLI flags, never from config file
+	LiveActivity               LiveActivityConfig            `toml:"live_activity,omitempty"`
+	Locale                     string                        `toml:"locale,omitempty"`
+	Instruction                string                        `toml:"custom_instruction,omitempty"`
+	AdditionalPrompt           string                        `toml:"additional_prompt,omitempty"`
+	InputMode                  string                        `toml:"input_mode,omitempty"`  // "text", "stt", or "realtime"
+	VADBackend                 string                        `toml:"vad_backend,omitempty"` // "rknn", "cpu"
+	VADModelPath               string                        `toml:"vad_model_path,omitempty"`
+	VADHelperPath              string                        `toml:"vad_helper_path,omitempty"`
+	VADSpeechThreshold         float64                       `toml:"vad_speech_threshold,omitempty"`
+	SilenceMs                  int                           `toml:"silence_ms,omitempty"`
+	MinSpeechMs                int                           `toml:"min_speech_ms,omitempty"`
+	VoiceFollowupEnabled       *bool                         `toml:"voice_followup_enabled,omitempty"`
+	VoiceFollowupTimeoutMs     int                           `toml:"voice_followup_timeout_ms,omitempty"`
+	VoiceFirstTurnTimeoutMs    int                           `toml:"voice_first_turn_timeout_ms,omitempty"`
+	VoiceMaxTurns              int                           `toml:"voice_max_turns,omitempty"`
+	VoiceInterruptOnWakeup     *bool                         `toml:"voice_interrupt_on_wakeup,omitempty"`
+	VoiceStreamingTTSEnabled   *bool                         `toml:"voice_streaming_tts_enabled,omitempty"`
+	VoiceToolCallSpeech        *bool                         `toml:"voice_tool_call_speech,omitempty"`
+	VoiceProgressSpeechEnabled *bool                         `toml:"voice_progress_speech_enabled,omitempty"`
+	VoiceMaxResponseTokens     int                           `toml:"voice_max_response_tokens,omitempty"`
+	MaxIterations              int                           `toml:"max_iterations,omitempty"`
+	TerminationPolicy          TerminationPolicyConfig       `toml:"termination_policy,omitempty"`
+	ForceSimpleLoop            bool                          `toml:"-"`
+	// ContextPruneThreshold is the estimated token count that triggers
+	// deterministic cleanup of historical state and tool results. Zero uses an
+	// automatic model-budget-derived trigger.
+	ContextPruneThreshold     int             `toml:"context_prune_threshold,omitempty"`
+	ScreenshotKeepN           int             `toml:"screenshot_keep_n,omitempty"`
+	ScreenshotPruneInterval   int             `toml:"screenshot_prune_interval,omitempty"`
+	ScreenStableTimeoutMs     int             `toml:"screen_stable_timeout_ms,omitempty"`
+	ScreenStableMs            int             `toml:"screen_stable_ms,omitempty"`
+	ScreenStableDiffThreshold float64         `toml:"screen_stable_diff_threshold,omitempty"`
+	SkillsDirs                []string        `toml:"skills_dirs"`
+	BundledSkillsDir          string          `toml:"bundled_skills_dir,omitempty"`
+	SkillMergeModel           SkillMergeModel `toml:"-"`
+	Telemetry                 TelemetryConfig `toml:"telemetry,omitempty"`
+	ConfigDir                 string          `toml:"-"`
 }
 
 func (c Config) TerminationPolicyOrDefault() TerminationPolicyConfig {
@@ -392,11 +398,18 @@ type AudioConfig struct {
 // VoiceModelConfig configures the realtime audio model used by the realtime
 // voice path. The path is selected by agent.input_mode, not by API key presence.
 type VoiceModelConfig struct {
+	Provider               string   `toml:"provider,omitempty"`
+	UpstreamProvider       string   `toml:"upstream_provider,omitempty"`
+	AgentID                string   `toml:"agent_id,omitempty"`
 	APIKey                 string   `toml:"api_key,omitempty"`
 	Model                  string   `toml:"model,omitempty"`
 	WorkspaceID            string   `toml:"workspace_id,omitempty"`
 	Region                 string   `toml:"region,omitempty"`
+	AuthMode               string   `toml:"auth_mode,omitempty"`
+	ProjectID              string   `toml:"project_id,omitempty"`
+	Location               string   `toml:"location,omitempty"`
 	Endpoint               string   `toml:"endpoint,omitempty"`
+	BaseURL                string   `toml:"base_url,omitempty"`
 	Voice                  string   `toml:"voice,omitempty"`
 	Instructions           string   `toml:"instructions,omitempty"`
 	EnableSpeechEmotion    *bool    `toml:"enable_speech_emotion,omitempty"`
@@ -405,22 +418,56 @@ type VoiceModelConfig struct {
 	TurnDetection          string   `toml:"turn_detection,omitempty"`
 	TurnDetectionThreshold *float64 `toml:"turn_detection_threshold,omitempty"`
 	TurnDetectionSilenceMs int      `toml:"turn_detection_silence_ms,omitempty"`
+	ActiveProviderRecord   string   `toml:"-"`
 }
 
 func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) != "" }
 
 func (c VoiceModelConfig) Validate() error {
-	if region := strings.TrimSpace(c.Region); region != "" && region != "cn-beijing" && region != "ap-southeast-1" {
+	provider := strings.ToLower(strings.TrimSpace(c.Provider))
+	if provider != "" && !realtimevoice.IsProvider(provider) {
+		return fmt.Errorf("voice_model.provider: unsupported provider %q", c.Provider)
+	}
+	if provider == "speko" {
+		upstream := strings.TrimSpace(c.UpstreamProvider)
+		model := strings.TrimSpace(c.Model)
+		if upstream == "" || model == "" {
+			return errors.New("voice_model.upstream_provider and voice_model.model are required for provider=speko; automatic routing is disabled because it may select an unsupported WebRTC route")
+		}
+		switch strings.ToLower(upstream) {
+		case "google", "gemini", "xai":
+		default:
+			return fmt.Errorf("voice_model.upstream_provider: unsupported provider %q (want google or xai)", c.UpstreamProvider)
+		}
+	}
+	if provider == "gemini" {
+		switch authMode := strings.ToLower(strings.TrimSpace(c.AuthMode)); authMode {
+		case "", "api_key":
+		case "vertex":
+			if strings.TrimSpace(c.ProjectID) == "" || strings.TrimSpace(c.Location) == "" {
+				return errors.New("voice_model.project_id and voice_model.location are required for Gemini Vertex auth")
+			}
+		default:
+			return fmt.Errorf("voice_model.auth_mode: unsupported Gemini auth mode %q (want api_key or vertex)", c.AuthMode)
+		}
+	}
+	if region := strings.TrimSpace(c.Region); provider != "speko" && region != "" && region != "cn-beijing" && region != "ap-southeast-1" {
 		return fmt.Errorf("voice_model.region: unsupported region %q", c.Region)
 	}
-	if endpoint := strings.TrimSpace(c.Endpoint); endpoint != "" {
+	if endpoint := strings.TrimSpace(c.Endpoint); provider != "speko" && endpoint != "" {
 		u, err := url.Parse(endpoint)
 		if err != nil || u.Host == "" || (u.Scheme != "wss" &&
 			!(u.Scheme == "ws" && isLoopbackHost(u.Hostname()))) {
 			return fmt.Errorf("voice_model.endpoint: invalid websocket URL %q", c.Endpoint)
 		}
 	}
-	if c.TurnDetection != "" && c.TurnDetection != "server_vad" && c.TurnDetection != "smart_turn" {
+	if base := strings.TrimSpace(c.BaseURL); base != "" {
+		u, err := url.Parse(base)
+		if err != nil || u.Host == "" || (u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname()))) {
+			return fmt.Errorf("voice_model.base_url: invalid HTTP URL %q", c.BaseURL)
+		}
+	}
+	if provider != "speko" && c.TurnDetection != "" && c.TurnDetection != "server_vad" && c.TurnDetection != "smart_turn" {
 		return fmt.Errorf("voice_model.turn_detection: unsupported type %q", c.TurnDetection)
 	}
 	if c.TurnDetectionSilenceMs < 0 {
@@ -579,8 +626,7 @@ type HIDConfig struct {
 	// plus full hid.usb2 Android extension keys).
 	PointerMode string `toml:"pointer_mode,omitempty"`
 	// InputBackend selects the low-level input path for keyboard/touch tools:
-	// "hid" writes USB HID reports; "adb" sends Android shell input commands
-	// and uses getevent/sendevent (with motionevent fallback) for atomic touch.
+	// "hid" writes USB HID reports, "adb" sends Android adb shell input commands.
 	InputBackend string `toml:"input_backend,omitempty"`
 }
 
@@ -893,6 +939,7 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	}
 
 	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
+	applyVoiceModelProviderDefaults(&cfg, metadata)
 	applyDeviceConfigDefaults(&cfg, metadata)
 
 	// Upgrade the legacy voice shapes to named records. This must run after the
@@ -907,6 +954,7 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	// config page runs Config.ValidateVoiceProviders on save for strict checks.
 	resolveTTSProvider(&cfg)
 	resolveSTTProvider(&cfg)
+	resolveVoiceModelProvider(&cfg)
 	cfg.VoiceModel.APIKey = resolveProviderAPIKey(cfg.VoiceModel.APIKey)
 
 	// Apply provider references to model configurations. This must run before
@@ -1081,6 +1129,26 @@ func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 	}
 }
 
+// applyVoiceModelProviderDefaults prevents Qwen defaults from leaking into a
+// different realtime provider when those fields were not explicitly set.
+func applyVoiceModelProviderDefaults(cfg *Config, metadata toml.MetaData) {
+	if cfg == nil || strings.EqualFold(strings.TrimSpace(cfg.VoiceModel.Provider), "qwen") {
+		return
+	}
+	if !metadata.IsDefined("voice_model", "model") {
+		cfg.VoiceModel.Model = ""
+	}
+	if !metadata.IsDefined("voice_model", "voice") {
+		cfg.VoiceModel.Voice = ""
+	}
+	if !metadata.IsDefined("voice_model", "region") {
+		cfg.VoiceModel.Region = ""
+	}
+	if !metadata.IsDefined("voice_model", "turn_detection") {
+		cfg.VoiceModel.TurnDetection = ""
+	}
+}
+
 func clearNonAllowedModelBaseURL(m *ModelConfig) {
 	if m == nil {
 		return
@@ -1144,6 +1212,7 @@ func LoadResolvedConfig(path string) (Config, error) {
 	} else {
 		cfg.HID.PointerMode = cfg.PointerModeOrDefault()
 	}
+	applyVoiceModelProviderDefaults(&cfg, metadata)
 
 	applyRuntimeInstructionDefault(&cfg)
 
@@ -1353,6 +1422,9 @@ func (c Config) Validate() error {
 	if threshold := c.Model.ResponsesCompactThreshold; threshold != 0 && threshold < 1000 {
 		return fmt.Errorf("model.responses_compact_threshold must be 0 or >= 1000, got %d", threshold)
 	}
+	if c.ContextPruneThreshold < 0 {
+		return fmt.Errorf("context_prune_threshold must be >= 0, got %d", c.ContextPruneThreshold)
+	}
 	if c.Model.ResponsesContextEditTrigger < 0 {
 		return fmt.Errorf("model.responses_context_edit_trigger must be >= 0, got %d", c.Model.ResponsesContextEditTrigger)
 	}
@@ -1382,6 +1454,7 @@ func (c Config) Validate() error {
 	if _, err := normalizeAudioBackend(c.Audio.Backend); err != nil {
 		return err
 	}
+	resolveVoiceModelProvider(&c)
 	if err := c.VoiceModel.Validate(); err != nil {
 		return err
 	}

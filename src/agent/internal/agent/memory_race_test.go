@@ -11,11 +11,11 @@ import (
 
 // TestMaintenanceDoesNotClobberConcurrentAppends verifies that when maintenance
 // (triggered by RequestMaintenance) runs compression asynchronously, any events
-// appended via AppendExchange or syncSessionRecords during the compression window
+// appended via AppendExchange or AppendMessages during the compression window
 // are not lost. This is a regression test for the race condition where:
 // 1. maintenance reads events snapshot
 // 2. maintenance runs LLM summary (slow, releases lock)
-// 3. turn N+1 appends new events via syncSessionRecords
+// 3. turn N+1 appends new events via AppendMessages
 // 4. maintenance replaceEvents with old snapshot → new events clobbered
 func TestMaintenanceDoesNotClobberConcurrentAppends(t *testing.T) {
 	ctx := context.Background()
@@ -69,7 +69,7 @@ func TestMaintenanceDoesNotClobberConcurrentAppends(t *testing.T) {
 		mgr.RequestMaintenance()
 	}()
 
-	// Goroutine 2: Wait for summary to start, then append via syncSessionRecords.
+	// Goroutine 2: Wait for summary to start, then append via AppendMessages.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -80,8 +80,8 @@ func TestMaintenanceDoesNotClobberConcurrentAppends(t *testing.T) {
 			{Role: "user", Content: "injected during compression window"},
 			{Role: "assistant", Content: "response during compression window"},
 		}
-		if err := mgr.syncSessionRecords("default", records); err != nil {
-			t.Errorf("syncSessionRecords during maintenance: %v", err)
+		if err := mgr.AppendMessages(context.Background(), "default", records); err != nil {
+			t.Errorf("AppendMessages during maintenance: %v", err)
 		}
 	}()
 
@@ -115,7 +115,7 @@ func TestMaintenanceDoesNotClobberConcurrentAppends(t *testing.T) {
 	}
 }
 
-// TestAppendAndMaintenanceFileLockSerialization verifies that syncSessionRecords
+// TestAppendAndMaintenanceFileLockSerialization verifies that AppendMessages
 // and maintainFilesystemMemory properly serialize access to events.jsonl via
 // FileLock, preventing torn reads/writes.
 func TestAppendAndMaintenanceFileLockSerialization(t *testing.T) {
@@ -153,8 +153,8 @@ func TestAppendAndMaintenanceFileLockSerialization(t *testing.T) {
 			records := []MessageRecord{
 				{Role: "user", Content: fmt.Sprintf("concurrent append %d", id)},
 			}
-			if err := mgr.syncSessionRecords("default", records); err != nil {
-				t.Errorf("goroutine %d syncSessionRecords: %v", id, err)
+			if err := mgr.AppendMessages(context.Background(), "default", records); err != nil {
+				t.Errorf("goroutine %d AppendMessages: %v", id, err)
 			}
 		}(i)
 	}
