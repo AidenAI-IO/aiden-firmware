@@ -23,7 +23,7 @@ Firmware integration is done through scripts in `overlay/etc/init.d/`. Most long
 | `S54ota` | Run the OTA health handling once at boot |
 | `S55aiden_usb_dhcp` | USB network DHCP / dnsmasq related services |
 | `S56config_web` | Start the config web page |
-| `S57wetty` | Start the WeTTY browser terminal on the USB network |
+| `S57ttyd` | Start the ttyd browser terminal on the USB network |
 | `S99rtcinit` | Override the SDK default RTC script; write the default date when the RTC is abnormal and the system time is still earlier than the baseline |
 | `S99usb0config` | USB network interface post-configuration |
 

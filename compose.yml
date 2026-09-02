@@ -29,7 +29,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/ >/dev/null && curl -fsS http://127.0.0.1:8080/api/tools >/dev/null && curl -fsSL http://127.0.0.1:8080/wetty/ >/dev/null"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/ >/dev/null && curl -fsS http://127.0.0.1:8080/api/tools >/dev/null && curl -fsSL http://127.0.0.1:8080/webtty/ >/dev/null"]
       interval: 5s
       timeout: 3s
       retries: 12
