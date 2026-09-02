@@ -42,7 +42,7 @@ health, screen contents, connection state, and permissions must always be checke
   available to the board Agent.
 - Separate three levels of completion: a command was accepted, the companion app returned a result,
   and the phone UI or structured data was actually verified. Report the highest level that was
-  observed; never promote an acknowledgement to a verified result.
+  observed; Do not treat an acknowledgement as proof that the result has been verified.
 - For visible UI work, use `device-operator` as well. Read that skill when it is not active because
   it owns screenshot timing, coordinate calibration, gestures, text entry, and capture recovery.
 - Keep phone companion implementation private. Refer to the Aiden companion app, public operating
@@ -113,9 +113,6 @@ Use the existing Unix domain socket helpers for service IPC. The common frame ha
 header and payload lengths, a UTF-8 JSON header, and an optional binary payload; keep screens and
 PCM binary at this boundary instead of adding ad hoc base64 wrappers.
 
-`frame_service` owns `/dev/video0` while it is running. Do not run direct camera-capture examples
-beside it unless the service is intentionally stopped and the ownership change is understood.
-
 ## Runtime Execution Model
 
 A normal task follows this loop:
@@ -142,7 +139,7 @@ A normal task follows this loop:
 - `hid_connection_id` identifies the current physical USB HID session. A WebSocket reconnect does
   not invalidate screen-size caches; a real USB host detach does.
 - `frame_service` captures on demand. If capture fails, pause UI input and follow the frame-service
-  recovery procedure before acting on an old image.
+  recovery procedure instead of acting on an old image.
 
 ### Tool Routing Quick Reference
 
