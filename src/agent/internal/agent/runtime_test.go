@@ -3709,40 +3709,43 @@ func numericExtraValue(v interface{}) int64 {
 	}
 }
 
-func TestSessionRecallTelemetryCountsPendingResults(t *testing.T) {
-	counter := &atomic.Int64{}
-	tool := &sessionRecallTelemetryTool{
-		inner: &staticTool{
-			name:   "recall_session_chunks",
-			output: `{"results":[{"chunk_id":"chunk_001"},{"chunk_id":"pending-123","source":"pending"}]}`,
+// Every chunk returned by recall came from a span already compacted out of the
+// live transcript, so all of them count as consulting compressed history.
+func TestSessionRecallTelemetryCountsEveryRecalledChunk(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+		want   int64
+	}{
+		{
+			name:   "chunks from several sessions",
+			output: `{"results":[{"chunk_id":"chunk_001","source":"session_abc"},{"chunk_id":"chunk_002","source":"session_def"}]}`,
+			want:   2,
 		},
-		counter: counter,
-	}
-	if _, err := tool.Call(context.Background(), `{}`); err != nil {
-		t.Fatalf("Call() error = %v", err)
-	}
-	if got := counter.Load(); got != 1 {
-		t.Fatalf("pending recall count = %d, want 1", got)
-	}
-}
-
-func TestSessionRecallTelemetryIgnoresActiveChunksWithPendingPrefix(t *testing.T) {
-	counter := &atomic.Int64{}
-	tool := &sessionRecallTelemetryTool{
-		inner: &staticTool{
-			name: "recall_session_chunks",
-			output: `{"results":[` +
-				`{"chunk_id":"pending-archived","source":"active"},` +
-				`{"chunk_id":"pending-live","source":"pending"}` +
-				`]}`,
+		{
+			name:   "no matching chunks",
+			output: `{"results":[]}`,
+			want:   0,
 		},
-		counter: counter,
-	}
-	if _, err := tool.Call(context.Background(), `{}`); err != nil {
-		t.Fatalf("Call() error = %v", err)
-	}
-	if got := counter.Load(); got != 1 {
-		t.Fatalf("pending recall count = %d, want 1", got)
+		{
+			name:   "unparseable output is not counted",
+			output: `not json`,
+			want:   0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			counter := &atomic.Int64{}
+			tool := &sessionRecallTelemetryTool{
+				inner:   &staticTool{name: "recall_session_chunks", output: tc.output},
+				counter: counter,
+			}
+			if _, err := tool.Call(context.Background(), `{}`); err != nil {
+				t.Fatalf("Call() error = %v", err)
+			}
+			if got := counter.Load(); got != tc.want {
+				t.Fatalf("recall count = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

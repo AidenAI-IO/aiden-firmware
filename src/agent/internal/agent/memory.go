@@ -110,14 +110,9 @@ func (m *MemoryManager) RequestProfileRebuild() {
 	if m == nil || m.storageDir == "" {
 		return
 	}
-	longTerm := m.longTerm
+	longTerm := m.EnsureLongTermStore(m.storageDir)
 	if longTerm == nil {
-		longTerm = NewLongTermMemoryStore(
-			filepath.Join(m.storageDir, "long_term"),
-			WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")),
-			WithStoreProfileFn(m.profileFn),
-		)
-		longTerm.setProfileDebouncer(m.profileDebouncer)
+		return
 	}
 	longTerm.RequestProfileRebuild()
 }

@@ -115,6 +115,9 @@ func (cfg MemoryExtractionConfig) extractTagsFromText(content string) []string {
 func (cfg MemoryExtractionConfig) extractEntitiesFromText(content string) []string {
 	var entities []string
 	for _, suffix := range cfg.EntitySuffixes {
+		if suffix == "" {
+			continue
+		}
 		searchStart := 0
 		for {
 			idx := strings.Index(content[searchStart:], suffix)

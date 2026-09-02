@@ -1172,8 +1172,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, summarizing conversation... tokenUsage: %d, trigger: %d, contextWindow: %d", tokenUsage, compactionTrigger, contextWindow)
 		}
-		chunkWriter := NewSessionChunkWriter(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
-		newManager, compacted, err := contextCompactor.Compact(ctx, r.contextManager, chunkWriter)
+		newManager, compacted, err := contextCompactor.Compact(ctx, r.contextManager, r.sessionChunkWriter())
 		if episodeRecorder != nil {
 			episodeRecorder.RecordEvent(contextCompactionEvent(
 				contextCompactor.LastCompactionStats(),
@@ -1216,8 +1215,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Info("Compaction: provider rejected the request because the context window was exceeded; compacting and retrying")
 		}
-		chunkWriter := NewSessionChunkWriter(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
-		newManager, compacted, compactErr := contextCompactor.Compact(recoveryCtx, currentManager, chunkWriter)
+		newManager, compacted, compactErr := contextCompactor.Compact(recoveryCtx, currentManager, r.sessionChunkWriter())
 		if episodeRecorder != nil {
 			episodeRecorder.RecordEvent(contextCompactionEvent(
 				contextCompactor.LastCompactionStats(),
@@ -1308,6 +1306,20 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 func (r *Runtime) getSystemPrompt() string {
 	profile := r.buildAgentProfile(r.skills, r.availableTools())
 	return profile.SystemPrompt
+}
+
+// sessionChunkWriter builds the writer that persists a compacted conversation
+// span as a searchable chunk. Compaction is the only producer of chunks, so both
+// the threshold and overflow-recovery paths share this one construction.
+func (r *Runtime) sessionChunkWriter() *SessionChunkWriter {
+	if r == nil || r.config.ConfigDir == "" {
+		return nil
+	}
+	extraction := DefaultMemoryExtractionConfig()
+	if r.memories != nil {
+		extraction = r.memories.extraction
+	}
+	return NewSessionChunkWriter(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), extraction)
 }
 
 func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
@@ -1820,21 +1832,12 @@ func countRecalledChunks(output string) int {
 	var payload struct {
 		Results []struct {
 			ChunkID string `json:"chunk_id"`
-			Source  string `json:"source,omitempty"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
 		return 0
 	}
-	// Only count results recalled from pending (in-flight) chunks; active chunks
-	// from the current session are already in the model's context.
-	count := 0
-	for _, result := range payload.Results {
-		if result.Source == "pending" {
-			count++
-		}
-	}
-	return count
+	return len(payload.Results)
 }
 
 type episodeMaintenancePlane interface {

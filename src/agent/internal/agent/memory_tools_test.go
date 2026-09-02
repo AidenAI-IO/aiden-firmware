@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,57 @@ func writeTestChunk(t *testing.T, sessionFolder, sessionID string, msgs []messag
 	}
 	if err := os.WriteFile(indexPath, data, 0o644); err != nil {
 		t.Fatalf("write chunk index: %v", err)
+	}
+}
+
+// Compaction hands WriteChunk only the messages and a plain-text summary, so
+// the writer must derive the tags and entities recall filters on. Without this,
+// a compacted span would be reachable only by chunk_id.
+func TestSessionChunkWriterDerivesSearchTermsFromContent(t *testing.T) {
+	ctx := context.Background()
+	sessionFolder := t.TempDir()
+	extraction := DefaultMemoryExtractionConfig()
+
+	writer := NewSessionChunkWriter(sessionFolder, extraction)
+	if err := writer.WriteChunk(ctx, "s_expense", []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "帮我在蓝海报销App提交这笔报销"},
+		{Role: messages.MessageRoleAssistant, Content: "已提交，需要你确认金额"},
+	}, "报销提交流程"); err != nil {
+		t.Fatalf("WriteChunk() error = %v", err)
+	}
+
+	index, err := loadChunkIndexFromPath(filepath.Join(sessionFolder, "s_expense", "chunks", "index.yaml"))
+	if err != nil {
+		t.Fatalf("loadChunkIndexFromPath() error = %v", err)
+	}
+	if len(index.Chunks) != 1 {
+		t.Fatalf("expected 1 indexed chunk, got %d", len(index.Chunks))
+	}
+	entry := index.Chunks[0]
+	if len(entry.Tags) == 0 {
+		t.Fatalf("expected derived tags on the chunk entry, got %#v", entry)
+	}
+	if !slices.Contains(entry.Tags, "报销") || !slices.Contains(entry.Tags, "提交") {
+		t.Fatalf("tags = %#v, want the configured candidates present in the text", entry.Tags)
+	}
+	if !slices.Contains(entry.Entities, "蓝海报销App") {
+		t.Fatalf("entities = %#v, want 蓝海报销App", entry.Entities)
+	}
+
+	// The derived terms must actually drive recall.
+	tool := NewRecallSessionChunksTool(NewMultiSessionChunkStore(sessionFolder))
+	out, err := tool.Call(ctx, `{"tags":["报销"],"limit":5}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	var decoded struct {
+		Results []ChunkRecallResult `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("decode output %q: %v", out, err)
+	}
+	if len(decoded.Results) != 1 {
+		t.Fatalf("expected the chunk to be recallable by a derived tag, got %#v", decoded.Results)
 	}
 }
 
