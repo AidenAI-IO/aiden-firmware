@@ -275,6 +275,55 @@ func chatCommandDone(command *realtimeChatCommand) <-chan struct{} {
 	return command.ctx.Done()
 }
 
+// relayRealtimeSessionEvents marks user re-engagement before forwarding its
+// event, so farewell drain completion cannot win a select race and close the
+// session while speech is already waiting to be handled.
+func relayRealtimeSessionEvents(ctx context.Context, source <-chan realtimevoice.Event) (<-chan realtimevoice.Event, <-chan struct{}) {
+	events := make(chan realtimevoice.Event, 16)
+	reengagement := make(chan struct{}, 1)
+	go func() {
+		defer close(events)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-source:
+				if !ok {
+					return
+				}
+				if event.Kind == realtimevoice.EventSpeechStarted || event.Kind == realtimevoice.EventInterruption {
+					select {
+					case reengagement <- struct{}{}:
+					default:
+					}
+				}
+				select {
+				case events <- event:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return events, reengagement
+}
+
+func consumeRealtimeReengagement(reengagement <-chan struct{}) bool {
+	select {
+	case <-reengagement:
+		return true
+	default:
+		return false
+	}
+}
+
+func abandonSleepForPendingRealtimeReengagement(sleep *realtimeSleepState, reengagement <-chan struct{}) bool {
+	if !consumeRealtimeReengagement(reengagement) {
+		return false
+	}
+	return sleep.abandon()
+}
+
 func runRealtimeWakeupMode(cfg agent.Config, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
 	runRealtimeWakeupModeWithServer(cfg, sigChan, nil, nil, nil, newWatcher)
 }
@@ -1061,13 +1110,13 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 		chatMode = ""
 		chatText.Reset()
 		chatTranscript.Reset()
-		if err := textSession.SendText(command.ctx, command.request.Message); err != nil {
+		if err := appendRealtimeUserMessage(userContext, command.request.Message); err != nil {
 			sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: err.Error()})
 			close(command.events)
 			activeChat = nil
 			return
 		}
-		if err := appendRealtimeUserMessage(userContext, command.request.Message); err != nil {
+		if err := textSession.SendText(command.ctx, command.request.Message); err != nil {
 			sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: err.Error()})
 			close(command.events)
 			activeChat = nil
@@ -1085,7 +1134,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 	sessionErrors := session.Errors()
 	// The event stream is the authoritative completion signal. Providers may
 	// close Done before the final buffered transcript or response event is read.
-	sessionEvents := session.Events()
+	sessionEvents, realtimeReengagement := relayRealtimeSessionEvents(ctx, session.Events())
 	for {
 		select {
 		case <-ctx.Done():
@@ -1110,6 +1159,10 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			}
 		case err := <-sleep.draining():
 			sleep.stopDrain()
+			if abandonSleepForPendingRealtimeReengagement(&sleep, realtimeReengagement) {
+				log.Println("[realtime] Standby canceled by pending user re-engagement")
+				continue
+			}
 			if err != nil {
 				log.Printf("[realtime] farewell playback drain: %v", err)
 			}
@@ -1300,6 +1353,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				// Providers may emit a ready frame after Open; negotiated rates
 				// are already available in Session.Info().
 			case realtimevoice.EventSpeechStarted:
+				consumeRealtimeReengagement(realtimeReengagement)
 				turnState.speechStarted()
 				if sleep.abandon() {
 					log.Println("[realtime] Standby canceled by new user speech")
@@ -1584,6 +1638,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 					return err
 				}
 			case realtimevoice.EventInterruption:
+				consumeRealtimeReengagement(realtimeReengagement)
 				sleep.abandon()
 				turnState.responseInterrupted()
 				if err := playback.interrupt(playbackAudio, outputFormat); err != nil {

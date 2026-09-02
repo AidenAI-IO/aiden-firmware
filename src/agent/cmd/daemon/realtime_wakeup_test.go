@@ -640,6 +640,47 @@ func TestRealtimeSleepStateAbandonCancelsPendingStandby(t *testing.T) {
 	}
 }
 
+func TestRealtimeFarewellDrainYieldsToReadySpeechEvent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	source := make(chan realtimevoice.Event, 1)
+	events, reengagement := relayRealtimeSessionEvents(ctx, source)
+	source <- realtimevoice.Event{Kind: realtimevoice.EventSpeechStarted}
+
+	deadline := time.Now().Add(time.Second)
+	for len(events) == 0 || len(reengagement) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("speech event was not relayed with its re-engagement marker")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var sleep realtimeSleepState
+	sleep.request()
+	drain := make(chan error, 1)
+	drain <- nil
+	select {
+	case <-drain:
+		if !abandonSleepForPendingRealtimeReengagement(&sleep, reengagement) {
+			t.Fatal("ready speech event did not override farewell drain completion")
+		}
+	default:
+		t.Fatal("drain completion was not ready")
+	}
+	if sleep.pending() {
+		t.Fatal("standby remained pending after user re-engagement")
+	}
+	select {
+	case event := <-events:
+		if event.Kind != realtimevoice.EventSpeechStarted {
+			t.Fatalf("relayed event = %s, want speech_started", event.Kind)
+		}
+	default:
+		t.Fatal("speech event was consumed while prioritizing re-engagement")
+	}
+}
+
 func TestRealtimeChatBridgeInactiveRequestQueuesAndWakesSession(t *testing.T) {
 	wakeup := make(chan struct{}, 1)
 	bridge := newRealtimeChatBridge(func() { wakeup <- struct{}{} })
