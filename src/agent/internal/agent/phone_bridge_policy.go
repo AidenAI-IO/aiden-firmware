@@ -223,9 +223,6 @@ func phoneBridgeCanRestoreFromReturnEntry(status PhoneBridgeStatus) bool {
 	if platform != "" && platform != "ios" {
 		return false
 	}
-	if phoneBridgePiPBackgroundEnabled(status) {
-		return false
-	}
 	if status.ReturnEntryAvailable == nil || !*status.ReturnEntryAvailable {
 		return false
 	}
@@ -239,9 +236,6 @@ func phoneBridgeAppNeedsForeground(status PhoneBridgeStatus) bool {
 }
 
 func phoneBridgeHasReturnEntry(status PhoneBridgeStatus) bool {
-	if phoneBridgePiPBackgroundEnabled(status) {
-		return false
-	}
 	if status.ReturnEntryAvailable != nil {
 		return *status.ReturnEntryAvailable
 	}

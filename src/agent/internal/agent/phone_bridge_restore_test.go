@@ -396,7 +396,7 @@ func TestSendRoutedBridgeCommandRejectsUnsupportedBLEWakeCommands(t *testing.T) 
 	}
 }
 
-func TestPhoneBridgeCannotRestoreFromDynamicIslandWhenPiPBackgroundEnabled(t *testing.T) {
+func TestPhoneBridgeCanRestoreFromDynamicIslandAlongsidePiPBackground(t *testing.T) {
 	enabled := true
 	available := true
 	status := PhoneBridgeStatus{
@@ -406,8 +406,8 @@ func TestPhoneBridgeCannotRestoreFromDynamicIslandWhenPiPBackgroundEnabled(t *te
 		ReturnEntryAvailable: &available,
 		PipBridgeEnabled:     &enabled,
 	}
-	if phoneBridgeCanRestoreFromReturnEntry(status) {
-		t.Fatal("PiP background bridge mode hides Dynamic Island and must block restore")
+	if !phoneBridgeCanRestoreFromReturnEntry(status) {
+		t.Fatal("Dynamic Island entry should remain usable alongside PiP background bridge")
 	}
 
 	enabled = false

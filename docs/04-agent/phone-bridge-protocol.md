@@ -33,7 +33,16 @@ so the phone must remain connected to the board's USB ECM network while using
 BLE Wake. Clipboard read/write and contacts update are not supported by this
 route.
 
-PiP Bridge is a narrow background queue mode. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. In that state, the public `open_app` tool selects visible system search instead of its internal Phone Bridge route; only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) backed by command types (`clipboard_*`, `calendar_*`, `contacts_*`, `notification_send`) may use the HTTP queue.
+PiP Bridge is a narrow background queue mode. The app starts its invisible PiP
+source while foregrounded, then creates or refreshes the Live Activity only after
+PiP reports `didStartPictureInPicture`. When the app reports both
+`pip_bridge_enabled=true` and `return_entry=dynamic_island` while backgrounded,
+the two routes are available together: background-safe data tools
+(`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`,
+`bridge_notification`) use the HTTP queue, while foreground-only actions can
+restore the app through the Dynamic Island entry. During the short PiP startup
+transition, Activity creation is deferred so SpringBoard does not suppress the
+new Activity.
 
 Android FGS Bridge is also an HTTP queue mode. The foreground service polls `/api/phone-bridge/commands?platform=android&phone_id=<stable>&app_state=background&fgs_bridge_enabled=true&limit=10`; the board treats that as a background queue consumer for background-safe data commands only. It does not treat WebSocket as a reliable Android background transport, and it does not expose `open_app` through the FGS queue.
 

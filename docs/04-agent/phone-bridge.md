@@ -35,7 +35,15 @@ The board is the WebSocket server, so it does not need to discover the phone's D
 
 The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native JS, WebSocket, and polling timers in the iOS background must not be treated as a general tool execution path. On iOS, Phone Bridge is normally a foreground fast path: if the Aiden App is backgrounded and the app has reported `return_entry=dynamic_island`, Agent restores the Aiden App through Dynamic Island, waits for foreground WebSocket bridge reconnection, then executes the requested tool command. Lock-screen Live Activity entries require visual confirmation rather than fixed-coordinate tapping.
 
-PiP Bridge is a narrow exception. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. The HTTP/Tool Lab catalog remains complete for direct diagnostics, while the conversational Agent catalog is filtered from live runtime capabilities before each run. `open_app` remains exposed because it can fall back to SearchLaunchApp; only executable background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) are exposed through the HTTP queue, and unavailable App actions are omitted.
+PiP Bridge is a narrow exception. The app starts the invisible PiP source while
+foregrounded and waits for the real `didStartPictureInPicture` callback before
+creating or refreshing its Live Activity. Once backgrounded, PiP keeps the HTTP
+queue alive for executable background-safe data tools
+(`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`,
+`bridge_notification`) while the Dynamic Island remains available as the
+foreground return entry for actions that need the app UI. The HTTP/Tool Lab
+catalog remains complete for direct diagnostics, while the conversational Agent
+catalog is filtered from live runtime capabilities before each run.
 
 BLE Wake provides an on-demand iOS background route for a narrower command set: calendar create/query/delete, contacts query/create, and local notification send. Clipboard read/write is not reliable in the iOS background, and contacts update is not exposed through BLE Wake; those calls return an explicit `app_backgrounded` error unless foreground Phone Bridge, PiP, or Dynamic Island restoration provides another executable route. Before each Agent run, runtime capability filtering checks whether `ble_service` reports a connected Wake subscriber and exposes only executable tools and actions. The command is then placed in the existing HTTP queue and the board makes a best-effort `wake` call. BLE carries only the wake hint: the app polls with its `phone_id`, executes the native module, and posts the structured result over HTTP. The phone must therefore remain connected to the board's USB ECM network; BLE is not a replacement command transport. If BLE is unavailable, those App-only tools are omitted unless another route such as foreground Phone Bridge, PiP/FGS polling, or Dynamic Island restoration is usable; a failed Wake notify never removes an already queued command.
 
