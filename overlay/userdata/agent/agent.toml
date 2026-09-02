@@ -7,7 +7,8 @@
 # additional_prompt = ""
 # max_iterations = -1
 # Context size management. Both values are fractions of the usable model input
-# budget, must be in (0, 1), and may be omitted to use the defaults shown.
+# budget: either 0 to select the default, or greater than 0 and less than 1.
+# Omitting a value uses the default shown.
 #
 # Deterministic cleanup of expired state and historical tool results, cleaning
 # down to 6/7 of the trigger. This is the cheap pass and runs first; its

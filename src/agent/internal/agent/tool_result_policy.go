@@ -30,11 +30,10 @@ const (
 	toolResultSoftLimitPercent   = 80
 	// Deterministic pruning cleans to historicalPruneTargetNum /
 	// historicalPruneTargetDen of its own trigger. The gap is hysteresis:
-	// cleaning down to the trigger itself would re-trigger next turn. 6/7 keeps
-	// the default 0.7 trigger cleaning down to 0.6 of the usable budget, matching
-	// the long-standing 70%/60% behaviour now that the trigger is configurable.
-	// Kept as an integer ratio so that default lands on exactly 0.6 instead of
-	// truncating a float product one token low.
+	// cleaning down to the trigger itself would re-trigger next turn. With the
+	// default 0.5 trigger, a 10,000-token usable budget prunes at 5,000 and
+	// cleans to 4,285. Kept as an integer ratio rather than a float so the
+	// product is not truncated a token low.
 	historicalPruneTargetNum   = 6
 	historicalPruneTargetDen   = 7
 	toolResultProjectionTopK   = 3

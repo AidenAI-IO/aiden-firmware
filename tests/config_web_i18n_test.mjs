@@ -214,7 +214,7 @@ assert.equal(t('config.fields.model.responses_include.label'), '额外返回字�
 assert.equal(t('config.fields.agent.context_prune_threshold.label'), '历史上下文清理阈值（比例）');
 assert.equal(
   t('config.fields.agent.context_prune_threshold.help'),
-  '上下文 token 数达到模型可用输入预算的该比例时，清理过期 state 和历史工具结果，并清理至触发值的 6/7。取值需在 0 到 1 之间，设为 0 时使用 0.5。该值不会超过 context_compaction_threshold，以保证这个低成本清理先于对话压缩执行。',
+  '上下文 token 数达到模型可用输入预算的该比例时，清理过期 state 和历史工具结果，并清理至触发值的 6/7。取值需为 0，或大于 0 且小于 1；设为 0 时使用 0.5。该值不会超过 context_compaction_threshold，以保证这个低成本清理先于对话压缩执行。',
 );
 assert.equal(t('config.fields.agent.context_prune_threshold.placeholder'), '0 = 自动（0.5）');
 assert.equal(t('logs.jump_to_bottom'), '跳到底部');

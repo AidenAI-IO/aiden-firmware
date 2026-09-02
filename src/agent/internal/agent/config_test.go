@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -1312,7 +1313,9 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 }
 
 func TestConfigValidateRejectsOutOfRangeContextPruneThreshold(t *testing.T) {
-	for _, threshold := range []float64{-0.1, 1, 1.5} {
+	// NaN and the infinities are included because TOML accepts those literals
+	// into a float64 field, and NaN passes every ordered comparison.
+	for _, threshold := range []float64{-0.1, 1, 1.5, math.NaN(), math.Inf(1), math.Inf(-1)} {
 		cfg := Config{
 			Model:                 ModelConfig{Provider: "fake"},
 			ContextPruneThreshold: threshold,
@@ -1329,6 +1332,31 @@ func TestConfigValidateRejectsOutOfRangeContextPruneThreshold(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("threshold 0 must be accepted as automatic, got %v", err)
+	}
+}
+
+// TestLoadRuntimeConfigRejectsNonFiniteContextThresholds covers the decode path
+// rather than a hand-built Config: TOML's nan and inf literals decode into the
+// float64 fields, so a hand-edited config can reach validation with values that
+// no amount of arithmetic can make sensible. Neither may be silently migrated to
+// the default, and neither may reach the budget helpers.
+func TestLoadRuntimeConfigRejectsNonFiniteContextThresholds(t *testing.T) {
+	for _, body := range []string{
+		"context_prune_threshold = nan",
+		"context_prune_threshold = inf",
+		"context_prune_threshold = -inf",
+		"context_compaction_threshold = nan",
+		"context_compaction_threshold = inf",
+		"context_compaction_threshold = -inf",
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "agent.toml")
+		if err := os.WriteFile(path, []byte("\n"+body+"\n\n[model]\nprovider = \"fake\"\n"), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		if _, err := LoadRuntimeConfig(path); err == nil {
+			t.Fatalf("%s: LoadRuntimeConfig() must reject a non-finite threshold", body)
+		}
 	}
 }
 
@@ -1359,7 +1387,7 @@ func TestContextPruneThresholdOrDefaultIsCappedAtCompaction(t *testing.T) {
 }
 
 func TestConfigValidateRejectsOutOfRangeContextCompactionThreshold(t *testing.T) {
-	for _, threshold := range []float64{-0.1, 1, 1.5} {
+	for _, threshold := range []float64{-0.1, 1, 1.5, math.NaN(), math.Inf(1), math.Inf(-1)} {
 		cfg := Config{
 			Model:                      ModelConfig{Provider: "fake"},
 			ContextCompactionThreshold: threshold,

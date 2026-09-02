@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -1325,8 +1326,36 @@ func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 // count derived from the active model's budget, which is unknown at config load
 // time. Falling back to the default fraction reproduces the behaviour such a
 // device had before it set the field, which is the closest safe outcome.
+// validateContextThresholdFraction enforces the shared bounds for the context
+// size thresholds: 0 selects the default, and any other value must lie strictly
+// between 0 and 1. A value at or above 1.0 would let the transcript reach the
+// whole usable budget before acting, defeating the purpose.
+//
+// NaN needs its own check because every comparison against it is false, so it
+// would otherwise pass both the lower and upper bound and be stored raw. TOML
+// accepts nan and inf literals into a float64 field, so this is reachable from a
+// hand-edited config rather than only from code.
+func validateContextThresholdFraction(field string, value float64) error {
+	if math.IsNaN(value) {
+		return fmt.Errorf("%s must be a number, got NaN", field)
+	}
+	if value < 0 || value >= 1 {
+		return fmt.Errorf("%s must be 0 or in (0, 1), got %g", field, value)
+	}
+	return nil
+}
+
 func applyLegacyContextPruneThreshold(cfg *Config) {
-	if cfg == nil || cfg.ContextPruneThreshold < 1 {
+	if cfg == nil {
+		return
+	}
+	// Only a finite value >= 1 is a plausible legacy token count. NaN and +Inf
+	// are not, so they are left alone for Validate to reject rather than being
+	// silently replaced by the default, which would hide a malformed config.
+	if math.IsNaN(cfg.ContextPruneThreshold) || math.IsInf(cfg.ContextPruneThreshold, 0) {
+		return
+	}
+	if cfg.ContextPruneThreshold < 1 {
 		return
 	}
 	log.Printf("[config] context_prune_threshold = %g looks like a token count; it is now a fraction of the usable input budget. Using the default %g. Set a value in (0, 1) to silence this.\n",
@@ -1453,14 +1482,11 @@ func (c Config) Validate() error {
 	if threshold := c.Model.ResponsesCompactThreshold; threshold != 0 && threshold < 1000 {
 		return fmt.Errorf("model.responses_compact_threshold must be 0 or >= 1000, got %d", threshold)
 	}
-	// Both context thresholds are fractions of the usable model input budget.
-	// A value at or above 1.0 would let the transcript reach the whole budget
-	// before acting, defeating the purpose. Zero means "use the default".
-	if c.ContextPruneThreshold < 0 || c.ContextPruneThreshold >= 1 {
-		return fmt.Errorf("context_prune_threshold must be 0 or in (0, 1), got %g", c.ContextPruneThreshold)
+	if err := validateContextThresholdFraction("context_prune_threshold", c.ContextPruneThreshold); err != nil {
+		return err
 	}
-	if c.ContextCompactionThreshold < 0 || c.ContextCompactionThreshold >= 1 {
-		return fmt.Errorf("context_compaction_threshold must be 0 or in (0, 1), got %g", c.ContextCompactionThreshold)
+	if err := validateContextThresholdFraction("context_compaction_threshold", c.ContextCompactionThreshold); err != nil {
+		return err
 	}
 	if c.Model.ResponsesContextEditTrigger < 0 {
 		return fmt.Errorf("model.responses_context_edit_trigger must be >= 0, got %d", c.Model.ResponsesContextEditTrigger)

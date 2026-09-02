@@ -673,7 +673,7 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "max_iterations", Widget: WidgetNumber, Default: defaults.MaxIterations},
 					{Key: "context_prune_threshold", Label: "Historical prune threshold (fraction)", Widget: WidgetNumber,
-						Help:    "Fraction of the usable model input budget that triggers cleanup of expired state and historical tool results, cleaning down to 6/7 of the trigger. Must be between 0 and 1; 0 uses 0.5. Capped at context_compaction_threshold so this cheap pass runs before the conversation summary.",
+						Help:    "Fraction of the usable model input budget that triggers cleanup of expired state and historical tool results, cleaning down to 6/7 of the trigger. Must be 0 or greater than 0 and less than 1; 0 uses 0.5. Capped at context_compaction_threshold so this cheap pass runs before the conversation summary.",
 						Default: defaults.ContextPruneThreshold, Placeholder: "0 = automatic (0.5)"},
 					{Key: "screenshot_keep_n", Widget: WidgetNumber, Default: defaults.ScreenshotKeepN},
 					{Key: "screenshot_prune_interval", Widget: WidgetNumber, Default: defaults.ScreenshotPruneInterval},

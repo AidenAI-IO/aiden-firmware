@@ -202,7 +202,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"agent.context_prune_threshold": {
 			label:       "Historical prune threshold (fraction)",
 			placeholder: "0 = automatic (0.5)",
-			help:        "Fraction of the usable model input budget that triggers cleanup of expired state and historical tool results, cleaning down to 6/7 of the trigger. Must be between 0 and 1; 0 uses 0.5. Capped at context_compaction_threshold so this cheap pass runs before the conversation summary.",
+			help:        "Fraction of the usable model input budget that triggers cleanup of expired state and historical tool results, cleaning down to 6/7 of the trigger. Must be 0 or greater than 0 and less than 1; 0 uses 0.5. Capped at context_compaction_threshold so this cheap pass runs before the conversation summary.",
 		},
 		"model.responses_context_management": {
 			layout: "wide",
