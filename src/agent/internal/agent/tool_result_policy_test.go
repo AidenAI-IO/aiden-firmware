@@ -270,8 +270,14 @@ func TestToolResultPolicyPersistsLargeResultAsArtifact(t *testing.T) {
 	if !strings.Contains(prepared.Content, "Full result file: "+prepared.ArtifactPath) {
 		t.Fatalf("Prepare() content missing artifact path: %s", prepared.Content)
 	}
-	if !strings.Contains(prepared.Content, "Use shell") {
-		t.Fatalf("Prepare() content missing shell recovery guidance: %s", prepared.Content)
+	for _, want := range []string{
+		"Use bounded",
+		"never use cat",
+		"whole artifact file",
+	} {
+		if !strings.Contains(prepared.Content, want) {
+			t.Fatalf("Prepare() content missing shell recovery guidance %q: %s", want, prepared.Content)
+		}
 	}
 	data, err := os.ReadFile(prepared.ArtifactPath)
 	if err != nil {
