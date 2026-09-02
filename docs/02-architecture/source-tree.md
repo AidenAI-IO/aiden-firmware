@@ -50,12 +50,13 @@ aiden-firmware/
 
 | Path | Description |
 | --- | --- |
-| `cmd/daemon` | Long-running Agent daemon providing the HTTP/Web UI in all input modes and an additional device voice loop in `stt` mode |
+| `cmd/daemon` | Long-running Agent daemon providing the HTTP/Web UI in all input modes and the legacy `stt` or provider-backed `realtime` voice loop |
 | `cmd/abctl` | A/B partition control utility for OTA system |
 | `cmd/ota` | OTA update client |
 | `cmd/benchmark-http` | Standalone LLM endpoint latency probe |
 | `cmd/test-warmup` | Connection warmup measurement harness |
 | `internal/agent/runtime.go` | Agent runtime, model invocation and tool loop |
+| `internal/agent/realtimevoice` | Provider-neutral realtime voice session seam and native Qwen, OpenAI, xAI, Gemini, and Speko adapters |
 | `internal/agent/server.go` | HTTP server / Web UI / tool API |
 | `internal/agent/tools*.go` | Built-in tools such as HID, screenshot, audio, shell |
 | `internal/agent/stt.go` / `internal/agent/tts/` / `vad.go` | STT, pluggable TTS providers, RKNN/CPU VAD orchestration |

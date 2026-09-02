@@ -61,6 +61,13 @@ func ErrorKind(err error) string {
 
 type providerRenames map[string]map[string]string
 
+var providerRecordSections = []string{
+	"model_providers",
+	"tts_providers",
+	"stt_providers",
+	"voice_model_providers",
+}
+
 // Service applies validated config updates independently of any transport.
 type Service struct{}
 
@@ -265,7 +272,7 @@ func stripMatchingReadOnlyStatusFields(values, current map[string]json.RawMessag
 }
 
 func normalizeLegacyWebConfigPatch(patch map[string]json.RawMessage, current agent.Config) error {
-	for _, section := range []string{"model_providers", "tts_providers", "stt_providers"} {
+	for _, section := range providerRecordSections {
 		raw, ok := patch[section]
 		if !ok {
 			continue
@@ -399,7 +406,7 @@ type providerFieldEdits map[string]map[string]map[string]bool
 
 func explicitProviderCredentialEdits(patch map[string]json.RawMessage, renames providerRenames, current agent.Config) providerFieldEdits {
 	edits := make(providerFieldEdits)
-	for _, section := range []string{"model_providers", "tts_providers", "stt_providers"} {
+	for _, section := range providerRecordSections {
 		var records map[string]json.RawMessage
 		if raw, ok := patch[section]; !ok || json.Unmarshal(raw, &records) != nil {
 			continue
@@ -507,6 +514,35 @@ func persistLegacyProviderFields(
 					return err
 				}
 				if err := addLegacyFieldDeletes(patch, "stt", mapKeys(values)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if provider := current.VoiceModel.Provider; strings.TrimSpace(provider) != "" {
+		if record, ok := current.VoiceModelProviders[provider]; ok {
+			values := definedLegacyValues(metadata, "voice_model", map[string]string{
+				"upstream_provider": record.UpstreamProvider,
+				"agent_id":          record.AgentID,
+				"api_key":           record.APIKey,
+				"model":             record.Model,
+				"workspace_id":      record.WorkspaceID,
+				"region":            record.Region,
+				"auth_mode":         record.AuthMode,
+				"project_id":        record.ProjectID,
+				"location":          record.Location,
+				"endpoint":          record.Endpoint,
+				"base_url":          record.BaseURL,
+				"voice":             record.Voice,
+			})
+			if len(values) > 0 {
+				if err := persistLegacyProviderRecord(patch, metadata, renames, explicitCredentials,
+					"voice_model_providers", provider, record.Type, values,
+					map[string]bool{"api_key": true}); err != nil {
+					return err
+				}
+				if err := addLegacyFieldDeletes(patch, "voice_model", mapKeys(values)); err != nil {
 					return err
 				}
 			}
@@ -626,7 +662,7 @@ func takeProviderRenames(patch map[string]json.RawMessage) (providerRenames, err
 		return nil, fmt.Errorf("_provider_renames must be an object")
 	}
 	for section, renames := range sections {
-		if section != "model_providers" && section != "tts_providers" && section != "stt_providers" {
+		if !isProviderRecordSection(section) {
 			return nil, fmt.Errorf("_provider_renames has unsupported section %s", section)
 		}
 		if renames == nil {
@@ -714,13 +750,16 @@ func providerRecordExists(config agent.Config, section, name string) bool {
 	case "stt_providers":
 		_, ok := config.STTProviders[name]
 		return ok
+	case "voice_model_providers":
+		_, ok := config.VoiceModelProviders[name]
+		return ok
 	default:
 		return false
 	}
 }
 
 func preserveProviderCredentials(patch map[string]json.RawMessage, current agent.Config) error {
-	for _, section := range []string{"model_providers", "tts_providers", "stt_providers"} {
+	for _, section := range providerRecordSections {
 		rawSection, ok := patch[section]
 		if !ok {
 			continue
@@ -793,9 +832,20 @@ func providerCredentialValues(config agent.Config, section, name string) map[str
 			"secret_id":  provider.SecretID,
 			"secret_key": provider.SecretKey,
 		}
+	case "voice_model_providers":
+		return map[string]string{"api_key": config.VoiceModelProviders[name].APIKey}
 	default:
 		return nil
 	}
+}
+
+func isProviderRecordSection(section string) bool {
+	for _, candidate := range providerRecordSections {
+		if section == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func filterNoopWebConfigPatch(patch map[string]json.RawMessage, current Config) (map[string]json.RawMessage, error) {
