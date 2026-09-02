@@ -48,9 +48,8 @@ func NewTouchGestureToolAdapter(provider Provider) *TouchGestureToolAdapter {
 // 参数/配置类失败返回 *Error（InvalidArguments / ModuleUnavailable）；
 // Provider 执行失败返回 ExecutionFailed。调用方应映射为 structured ToolError 并返回 (msg, nil)。
 func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (string, error) {
-	// The preferred form is an explicit atomic program. Keeping the dispatch
-	// here (before the legacy gesture decoder) lets existing scripts continue
-	// to work while new callers get exact touch contact/timing control.
+	// Detect the optional advanced atomic program before decoding the standard
+	// gesture form so both envelopes remain unambiguous.
 	var envelope struct {
 		Actions json.RawMessage `json:"actions"`
 	}

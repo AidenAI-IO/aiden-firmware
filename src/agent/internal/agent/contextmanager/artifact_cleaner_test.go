@@ -68,7 +68,7 @@ func TestArtifactStoreCleanerRemovesExpiredAndOrphanedArtifacts(t *testing.T) {
 	}
 }
 
-func TestArtifactStoreCleanerExpiresArtifactsButKeepsOrphansWhenMetadataIsInvalid(t *testing.T) {
+func TestArtifactStoreCleanerExpiresArtifactsButKeepsOrphansWhenTranscriptIsInvalid(t *testing.T) {
 	sessionFolder := t.TempDir()
 	manager, err := NewContextManagerFromMessageList(sessionFolder, nil)
 	if err != nil {
@@ -92,14 +92,17 @@ func TestArtifactStoreCleanerExpiresArtifactsButKeepsOrphansWhenMetadataIsInvali
 	if err := os.Chtimes(orphanStore.root, old, old); err != nil {
 		t.Fatalf("Chtimes(orphan root) error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(sessionFolder, "broken.meta.json"), []byte("{"), 0o600); err != nil {
-		t.Fatalf("WriteFile(invalid metadata) error = %v", err)
+	// An unreadable transcript makes the reference set incomplete, so the cleaner
+	// must still expire artifacts but must not delete directories it cannot prove
+	// are unreferenced.
+	if err := os.WriteFile(filepath.Join(sessionFolder, "s_broken.jsonl"), []byte("{not json\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(invalid transcript) error = %v", err)
 	}
 
 	cleaner := NewArtifactStoreCleaner(sessionFolder, 1)
 	freed, err := cleaner.Clean(context.Background())
 	if err == nil {
-		t.Fatal("Clean() error = nil, want invalid metadata reported")
+		t.Fatal("Clean() error = nil, want invalid transcript reported")
 	}
 	if freed < uint64(len("expired-result")) {
 		t.Fatalf("Clean() freed = %d, want expired artifact bytes", freed)

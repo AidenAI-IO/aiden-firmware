@@ -69,6 +69,7 @@ def test_notification_memory_suite_uses_benchmark_seed_setup():
     assert [task.id for task in suite.tasks] == [
         "delivery_notification_recall",
         "notification_noise_is_filtered",
+        "notification_user_fact_beats_public_info",
         "notification_batch_cursor_drain",
         "notification_explicit_update",
         "notification_explicit_reinforce",
@@ -79,7 +80,9 @@ def test_notification_memory_suite_uses_benchmark_seed_setup():
     assert suite.tasks[0].setup["expected_memory_scope"] == "temporary"
     assert suite.tasks[1].setup["consolidate"] is True
     assert suite.tasks[1].setup["expected_memory_count"] == 0
-    assert [step["type"] for step in suite.tasks[3].setup] == [
+    assert suite.tasks[2].repeats == 5
+    assert suite.tasks[2].setup["expected_memory_count"] == 1
+    assert [step["type"] for step in suite.tasks[4].setup] == [
         "seed_memory",
         "seed_notification",
         "assert_memory",

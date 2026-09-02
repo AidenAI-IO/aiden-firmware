@@ -1444,6 +1444,7 @@ func TestServerAsyncChatAppendsVoiceNotificationOnlyToFinalSpeech(t *testing.T) 
 	cfg := DefaultConfig()
 	cfg.Model = ModelConfig{Provider: "fake"}
 	cfg.Instruction = "Answer directly."
+	cfg.Locale = "zh-CN"
 	cfg.VoiceStreamingTTSEnabled = &streamingDisabled
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, cfg),
@@ -1516,6 +1517,7 @@ func TestServerAsyncChatSpeaksReplacementForFinalLLMFailure(t *testing.T) {
 		withTestConfigDir(t, Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Answer directly.",
+			Locale:                   "zh-CN",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 		}),
 		&testModelResolver{model: failingGenerateModel{err: errors.New("dial tcp: network is unreachable")}},
@@ -2783,6 +2785,39 @@ func TestWebUISteerModeControlsArePresent(t *testing.T) {
 	}
 }
 
+func TestWebUIClearMenuUsesConfirmedSessionActions(t *testing.T) {
+	index := readWebUIResource(t, "index.html")
+	chatScript := readWebUIResource(t, "scripts/chat.js")
+
+	for _, want := range []string{
+		`id="clearMenu"`,
+		"Clear Session",
+		"Clear Session &amp; Memory",
+		`onclick="clearSession()"`,
+		`onclick="clearSessionAndMemory()"`,
+	} {
+		if !strings.Contains(index, want) {
+			t.Errorf("web UI clear menu missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"async function clearSession()",
+		"async function clearSessionAndMemory()",
+		"if (!confirm(",
+		"fetch('/api/clear', { method: 'POST' })",
+		"fetch('/api/clear-all', { method: 'POST' })",
+	} {
+		if !strings.Contains(chatScript, want) {
+			t.Errorf("web UI clear action missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{">New Chat</button>", ">Reset Memory</button>"} {
+		if strings.Contains(index, unwanted) {
+			t.Errorf("web UI still contains old action %q", unwanted)
+		}
+	}
+}
+
 func TestWebUIIsEmbeddedFromStaticResource(t *testing.T) {
 	want, err := os.ReadFile("web_ui/index.html")
 	if err != nil {
@@ -3314,17 +3349,10 @@ func TestWebUIShowsMessageTokenUsage(t *testing.T) {
 func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	storageDir := t.TempDir()
 	memoryManager := NewMemoryManager(storageDir)
-	handle, err := memoryManager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if err := handle.History.SetMessages(context.Background(), []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
+	if err := memoryManager.AppendMessages(context.Background(), "default", []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
 	}); err != nil {
-		t.Fatalf("SetMessages() error = %v", err)
-	}
-	if err := memoryManager.Save(context.Background(), "default"); err != nil {
-		t.Fatalf("Save() error = %v", err)
+		t.Fatalf("AppendMessages() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(storageDir, "session", "events.jsonl")); err != nil {
 		t.Fatalf("expected session events before clear: %v", err)
@@ -3376,6 +3404,62 @@ func TestServerHandleSetupReturnsSuccess(t *testing.T) {
 	}
 	if got.Data.Setup {
 		t.Fatalf("expected setup=false for Go agent no-op response")
+	}
+}
+
+func TestServerHandleHealthReportsBridgePlatform(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	server.handleHealth(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Status     string `json:"status"`
+			BridgeType string `json:"bridge_type"`
+			Platform   string `json:"platform"`
+			DeviceType string `json:"device_type"`
+			Concurrent int    `json:"concurrent"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.OK || got.Data.Status != "ok" || got.Data.BridgeType != "go-agent" {
+		t.Fatalf("unexpected health envelope: %#v", got)
+	}
+	if got.Data.Platform != "ios" || got.Data.Concurrent != 1 {
+		t.Fatalf("unexpected health data: %#v", got)
+	}
+	if got.Data.DeviceType != defaultDeviceType {
+		t.Fatalf("unexpected device type: %#v", got)
+	}
+}
+
+func TestServerHandleHealthIsRoutedOnTheBridgePath(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected /health to be routed, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerHandleHealthRejectsNonGet(t *testing.T) {
+	server := &Server{logger: newTestLogger()}
+
+	rec := httptest.NewRecorder()
+	server.handleHealth(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("unexpected status: %d", rec.Code)
 	}
 }
 
@@ -4551,7 +4635,7 @@ func TestHandleBenchmarkSeedNotificationWritesDurableFixture(t *testing.T) {
 	}
 }
 
-func TestHandleBenchmarkProcessNotificationMemoryClassifiesInvalidProposal(t *testing.T) {
+func TestHandleBenchmarkProcessNotificationMemoryIsolatesInvalidProposal(t *testing.T) {
 	server, _ := newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{responses: []*llms.ContentResponse{
 		contentResponse(`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"add","scope":"temporary","type":"not-a-memory-type","content":"Package arrives tomorrow"}]}}]}`),
 	}})
@@ -4569,8 +4653,15 @@ func TestHandleBenchmarkProcessNotificationMemoryClassifiesInvalidProposal(t *te
 	processRec := httptest.NewRecorder()
 	server.handleBenchmarkProcessNotificationMemory(processRec, processReq)
 
-	if processRec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("process status=%d body=%s, want 422", processRec.Code, processRec.Body.String())
+	if processRec.Code != http.StatusOK {
+		t.Fatalf("process status=%d body=%s, want 200", processRec.Code, processRec.Body.String())
+	}
+	var response benchmarkProcessNotificationMemoryResponse
+	if err := json.NewDecoder(processRec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode process response: %v", err)
+	}
+	if response.MemoryCursor != "1" || len(response.MemoryIDs) != 0 {
+		t.Fatalf("process response=%#v, want cursor 1 with no memory", response)
 	}
 }
 

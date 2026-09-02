@@ -5,7 +5,7 @@ import "aiden-agent/internal/agent/constants"
 const (
 	localeSimplifiedChinese = "zh-CN"
 	localeEnglishUS         = "en-US"
-	defaultLocale           = localeSimplifiedChinese
+	defaultLocale           = localeEnglishUS
 	defaultInstruction      = "Keep the tone natural, concise, and suitable for TTS playback. " +
 		"Use tools whenever reading or changing phone, external-device, or service state; combine multiple tools when needed. " +
 		"After every visual observation or input-tool result, inspect the latest screen to verify the previous action, focus, and navigation state before continuing; do not blindly repeat the same click, gesture, or key. " +

@@ -227,6 +227,66 @@ func TestRecentRealtimeContextMessagesKeepsLatestTenUserTurns(t *testing.T) {
 	}
 }
 
+func TestRotateRealtimeContextForReplayStartsRevisionWhenTruncated(t *testing.T) {
+	sessionFolder := t.TempDir()
+	manager, err := contextmanager.NewContextManager(sessionFolder, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		if err := manager.AppendMessages([]messages.Message{
+			{Role: messages.MessageRoleUser, Content: fmt.Sprintf("user-%d", i)},
+			{Role: messages.MessageRoleAssistant, Content: fmt.Sprintf("assistant-%d", i)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	originalSessionID := manager.GetSessionID()
+
+	rotated, err := rotateRealtimeContextForReplay(manager, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.GetSessionID() == originalSessionID {
+		t.Fatal("truncated context reused the original session")
+	}
+	dump := rotated.MessageListDump()
+	if dump.ParentSessionID != originalSessionID {
+		t.Fatalf("parent session = %q, want %q", dump.ParentSessionID, originalSessionID)
+	}
+	if len(dump.Messages) != 5 ||
+		dump.Messages[0].Role != messages.MessageRoleSystem ||
+		dump.Messages[1].Content != "user-2" ||
+		dump.Messages[4].Content != "assistant-3" {
+		t.Fatalf("rotated messages = %+v", dump.Messages)
+	}
+	current, err := contextmanager.LoadContextManagerFromCurrentSession(sessionFolder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.GetSessionID() != rotated.GetSessionID() {
+		t.Fatalf("current session = %q, want %q", current.GetSessionID(), rotated.GetSessionID())
+	}
+}
+
+func TestRotateRealtimeContextForReplayReusesSessionWithoutTruncation(t *testing.T) {
+	manager, err := contextmanager.NewContextManager(t.TempDir(), "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := rotateRealtimeContextForReplay(manager, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetSessionID() != manager.GetSessionID() {
+		t.Fatal("untruncated context started a new session")
+	}
+}
+
 type fakeBackgroundTaskRunner struct {
 	started chan string
 	release chan struct{}
@@ -1506,7 +1566,9 @@ func TestRunVoiceSessionDoesNotRecordWhileSpeaking(t *testing.T) {
 }
 
 func TestRunVoiceTurnAppendsAndConfirmsVoiceNotificationTail(t *testing.T) {
-	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	config := agent.DefaultConfig()
+	config.Locale = "zh-CN"
+	runtime := agent.NewRuntimeWithDeps(config, nil, nil, nil, agent.NewSkillIndex())
 	if err := runtime.VoiceNotificationSink().Publish(context.Background(), agent.VoiceNotificationEvent{
 		Code: "storage", Severity: agent.SeverityWarning, State: agent.VoiceNotificationActive, DedupeKey: "storage:device",
 	}); err != nil {
@@ -1577,7 +1639,9 @@ func TestRunVoiceTurnKeepsVoiceNotificationPendingWhenSpeechIsUnavailable(t *tes
 }
 
 func TestRunVoiceTurnSpeaksReplacementForFinalLLMFailure(t *testing.T) {
-	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	config := agent.DefaultConfig()
+	config.Locale = "zh-CN"
+	runtime := agent.NewRuntimeWithDeps(config, nil, nil, nil, agent.NewSkillIndex())
 	dialog := &fakeAudioDialog{
 		runTurn: func(context.Context) (agent.RunResult, error) {
 			return agent.RunResult{TurnFailure: &agent.TurnFailure{Code: agent.TurnFailureNetworkUnavailable}}, errors.New("dial tcp: network is unreachable")

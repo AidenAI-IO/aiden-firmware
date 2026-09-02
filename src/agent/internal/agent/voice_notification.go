@@ -156,9 +156,10 @@ type SpokenTextResult struct {
 }
 
 const (
-	SpokenTextModeNormal      = "normal"
-	SpokenTextModeReplacement = "replacement"
-	SpokenTextModeTail        = "tail"
+	SpokenTextModeNormal       = "normal"
+	SpokenTextModeReplacement  = "replacement"
+	SpokenTextModeTail         = "tail"
+	SpokenTextModeNotification = "notification"
 )
 
 type DeliveryStatus string
@@ -365,6 +366,36 @@ func (r *Runtime) ReportSpokenTextDelivery(token string, err error) {
 	r.voiceNotifications.ReportDelivery(token, DeliveryStatusFromError(err))
 }
 
+// PrepareNotification claims one pending persistent notification for a
+// standalone speech response. Unlike PrepareSpokenText, it does not append the
+// notification to an existing assistant response.
+func (m *VoiceNotificationManager) PrepareNotification(_ context.Context) SpokenTextResult {
+	result := SpokenTextResult{Mode: SpokenTextModeNormal}
+	if m == nil || !m.config.EnabledOrDefault() {
+		return result
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneExpiredLocked(m.now())
+	text, token := m.claimPendingNotificationLocked()
+	if text == "" || token == "" {
+		return result
+	}
+	result.Text = text
+	result.Mode = SpokenTextModeNotification
+	result.DeliveryToken = token
+	return result
+}
+
+// PrepareVoiceNotification is the runtime-level entry point used by realtime
+// and other foreground speech consumers.
+func (r *Runtime) PrepareVoiceNotification(ctx context.Context) SpokenTextResult {
+	if r == nil || r.voiceNotifications == nil {
+		return SpokenTextResult{Mode: SpokenTextModeNormal}
+	}
+	return r.voiceNotifications.PrepareNotification(ctx)
+}
+
 func (m *VoiceNotificationManager) Publish(_ context.Context, event VoiceNotificationEvent) error {
 	if m == nil || !m.config.EnabledOrDefault() {
 		return nil
@@ -473,15 +504,38 @@ func (m *VoiceNotificationManager) PrepareSpokenText(_ context.Context, input Sp
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pruneExpiredLocked(m.now())
-	pending := make([]*voiceNotificationRecord, 0, len(m.records))
-	for _, record := range m.records {
-		if record.deliveryState != "pending" {
+	pending := m.pendingNotificationRecordsLocked(input.RelatedCodes)
+	for _, record := range pending {
+		tail := m.persistentTextLocked(record)
+		if tail == "" {
 			continue
 		}
-		pending = append(pending, record)
+		tail = limitVoiceNotificationText(tail, m.config.ResponseTail.MaxTextCharsOrDefault())
+		m.nextToken++
+		token := fmt.Sprintf("voice-notification-%d", m.nextToken)
+		m.deliveries[token] = voiceNotificationDelivery{
+			dedupeKey:        record.dedupeKey,
+			cycleID:          record.cycleID,
+			severitySnapshot: record.currentSeverity,
+		}
+		record.deliveryState = "in_flight"
+		result.Text = appendVoiceNotificationTail(input.ResponseText, tail, m.locale)
+		result.Mode = SpokenTextModeTail
+		result.DeliveryToken = token
+		return result
 	}
-	relatedCodes := make(map[string]struct{}, len(input.RelatedCodes))
-	for _, code := range input.RelatedCodes {
+	return result
+}
+
+func (m *VoiceNotificationManager) pendingNotificationRecordsLocked(relatedCodesInput []string) []*voiceNotificationRecord {
+	pending := make([]*voiceNotificationRecord, 0, len(m.records))
+	for _, record := range m.records {
+		if record.deliveryState == "pending" {
+			pending = append(pending, record)
+		}
+	}
+	relatedCodes := make(map[string]struct{}, len(relatedCodesInput))
+	for _, code := range relatedCodesInput {
 		if code = strings.TrimSpace(code); code != "" {
 			relatedCodes[code] = struct{}{}
 		}
@@ -503,12 +557,16 @@ func (m *VoiceNotificationManager) PrepareSpokenText(_ context.Context, input Sp
 		}
 		return pending[i].dedupeKey < pending[j].dedupeKey
 	})
-	for _, record := range pending {
-		tail := m.persistentTextLocked(record)
-		if tail == "" {
+	return pending
+}
+
+func (m *VoiceNotificationManager) claimPendingNotificationLocked() (string, string) {
+	for _, record := range m.pendingNotificationRecordsLocked(nil) {
+		text := m.persistentTextLocked(record)
+		if text == "" {
 			continue
 		}
-		tail = limitVoiceNotificationText(tail, m.config.ResponseTail.MaxTextCharsOrDefault())
+		text = limitVoiceNotificationText(text, m.config.ResponseTail.MaxTextCharsOrDefault())
 		m.nextToken++
 		token := fmt.Sprintf("voice-notification-%d", m.nextToken)
 		m.deliveries[token] = voiceNotificationDelivery{
@@ -517,12 +575,9 @@ func (m *VoiceNotificationManager) PrepareSpokenText(_ context.Context, input Sp
 			severitySnapshot: record.currentSeverity,
 		}
 		record.deliveryState = "in_flight"
-		result.Text = appendVoiceNotificationTail(input.ResponseText, tail, m.locale)
-		result.Mode = SpokenTextModeTail
-		result.DeliveryToken = token
-		return result
+		return text, token
 	}
-	return result
+	return "", ""
 }
 
 func (m *VoiceNotificationManager) leaseExpiration(code string, now time.Time) time.Time {
@@ -680,7 +735,7 @@ func normalizeVoiceNotificationLocale(locale string) string {
 
 func voiceNotificationLocaleFallbacks(locale string) []string {
 	if locale == "" {
-		locale = "zh-cn"
+		locale = strings.ToLower(defaultLocale)
 	}
 	if locale == "zh-cn" {
 		return []string{"zh-cn"}

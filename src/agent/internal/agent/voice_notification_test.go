@@ -14,6 +14,7 @@ func TestVoiceNotificationManagerDeliversPersistentTailOncePerSeverity(t *testin
 	manager := NewVoiceNotificationManager(
 		DefaultConfig().VoiceNotifications,
 		WithVoiceNotificationClock(func() time.Time { return now }),
+		WithVoiceNotificationLocale("zh-CN"),
 	)
 
 	err := manager.Publish(context.Background(), VoiceNotificationEvent{
@@ -51,6 +52,61 @@ func TestVoiceNotificationManagerDeliversPersistentTailOncePerSeverity(t *testin
 	}
 	if repeated.DeliveryToken != "" {
 		t.Fatalf("repeated delivery token = %q, want empty", repeated.DeliveryToken)
+	}
+}
+
+func TestVoiceNotificationManagerPreparesStandaloneNotification(t *testing.T) {
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications, WithVoiceNotificationLocale("zh-CN"))
+	ctx := context.Background()
+	if err := manager.Publish(ctx, VoiceNotificationEvent{
+		Code:      "storage",
+		Severity:  SeverityWarning,
+		State:     VoiceNotificationActive,
+		DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	prepared := manager.PrepareNotification(ctx)
+	if prepared.Mode != SpokenTextModeNotification {
+		t.Fatalf("PrepareNotification() mode = %q, want %q", prepared.Mode, SpokenTextModeNotification)
+	}
+	if prepared.Text != "另外提醒一下，设备存储空间不足。" {
+		t.Fatalf("PrepareNotification() text = %q", prepared.Text)
+	}
+	if prepared.DeliveryToken == "" {
+		t.Fatal("PrepareNotification() delivery token is empty")
+	}
+
+	if repeated := manager.PrepareNotification(ctx); repeated.DeliveryToken != "" {
+		t.Fatalf("PrepareNotification() claimed in-flight notification twice: %#v", repeated)
+	}
+	manager.ReportDelivery(prepared.DeliveryToken, DeliveryCompleted)
+	if repeated := manager.PrepareNotification(ctx); repeated.DeliveryToken != "" {
+		t.Fatalf("PrepareNotification() repeated delivered notification: %#v", repeated)
+	}
+}
+
+func TestVoiceNotificationManagerRetriesCanceledStandaloneNotification(t *testing.T) {
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
+	ctx := context.Background()
+	if err := manager.Publish(ctx, VoiceNotificationEvent{
+		Code:      "storage",
+		Severity:  SeverityCritical,
+		State:     VoiceNotificationActive,
+		DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	first := manager.PrepareNotification(ctx)
+	if first.DeliveryToken == "" {
+		t.Fatal("first notification delivery token is empty")
+	}
+	manager.ReportDelivery(first.DeliveryToken, DeliveryCanceled)
+	second := manager.PrepareNotification(ctx)
+	if second.DeliveryToken == "" || second.DeliveryToken == first.DeliveryToken {
+		t.Fatalf("canceled notification was not retried: %#v", second)
 	}
 }
 
@@ -123,7 +179,7 @@ func TestVoiceNotificationManagerPublishValidatesEventIdentity(t *testing.T) {
 }
 
 func TestVoiceNotificationManagerKeepsSeverityUpgradePendingDuringPlayback(t *testing.T) {
-	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications, WithVoiceNotificationLocale("zh-CN"))
 	ctx := context.Background()
 
 	if err := manager.Publish(ctx, VoiceNotificationEvent{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device"}); err != nil {
@@ -215,7 +271,7 @@ func TestVoiceNotificationManagerRetriesFailedOrCanceledDeliveryButNotHeartbeat(
 }
 
 func TestVoiceNotificationManagerTurnFailureReplacesResponseWithoutConsumingPending(t *testing.T) {
-	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications, WithVoiceNotificationLocale("zh-CN"))
 	ctx := context.Background()
 	if err := manager.Publish(ctx, VoiceNotificationEvent{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device"}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
@@ -283,7 +339,7 @@ func TestVoiceNotificationManagerLeaseExpiresAndHeartbeatRenewsIt(t *testing.T) 
 }
 
 func TestVoiceNotificationManagerSelectsAtMostOneHighestSeverityPending(t *testing.T) {
-	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications, WithVoiceNotificationLocale("zh-CN"))
 	ctx := context.Background()
 	for _, event := range []VoiceNotificationEvent{
 		{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:secondary"},
@@ -577,7 +633,7 @@ func TestRuntimePrepareSpokenTextPreservesRelatedCodes(t *testing.T) {
 }
 
 func TestVoiceNotificationManagerPrefersTaskRelatedPolicy(t *testing.T) {
-	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications, WithVoiceNotificationLocale("zh-CN"))
 	if err := manager.RegisterPersistentText("battery", SeverityWarning, "zh-CN", "另外提醒一下，设备电量较低。"); err != nil {
 		t.Fatalf("RegisterPersistentText() error = %v", err)
 	}

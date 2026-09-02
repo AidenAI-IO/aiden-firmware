@@ -45,7 +45,6 @@ func TestAgentLoopSteerInterruptOnTermination(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: screen}}},
-		nil,
 		10,
 		nil,
 		nil,
@@ -89,7 +88,6 @@ func TestAgentLoopNoSteerProviderDoesNotBlock(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: "ok"}}},
-		nil,
 		10,
 		nil,
 		nil,
@@ -105,6 +103,48 @@ func TestAgentLoopNoSteerProviderDoesNotBlock(t *testing.T) {
 
 	if output != "Done" {
 		t.Fatalf("output = %q, want 'Done'", output)
+	}
+}
+
+// A whitespace-only steer must reach the model context and the recorded steer
+// as the same text. Normalizing in only one of the two paths would send an
+// empty user message to the model while recording the placeholder.
+func TestAgentLoopPersistSteerNormalizesContentForContextAndRecorder(t *testing.T) {
+	t.Parallel()
+
+	manager, err := freshNewContextManager("system", "task", nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+
+	loop := NewAgentLoop(
+		&scriptedModel{},
+		RoleProfile{},
+		1,
+		nil,
+		nil,
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
+		manager,
+	)
+	tracker := newSteerConversationTracker()
+	loop.SteerRecorder = tracker
+
+	if err := loop.persistSteer(context.Background(), nil, RunSteerMessage{Content: "   \n\t "}); err != nil {
+		t.Fatalf("persistSteer() error = %v", err)
+	}
+
+	recorded := tracker.SteerMessages()
+	if len(recorded) != 1 {
+		t.Fatalf("recorded steers = %d, want 1", len(recorded))
+	}
+	if recorded[0].Content != "(empty steering message)" {
+		t.Fatalf("recorded steer content = %q, want the placeholder", recorded[0].Content)
+	}
+
+	contextMessages := manager.CloneMessageList()
+	last := contextMessages[len(contextMessages)-1]
+	if last.Content != recorded[0].Content {
+		t.Fatalf("context content = %q, recorded content = %q; want identical text", last.Content, recorded[0].Content)
 	}
 }
 
@@ -124,7 +164,6 @@ func TestAgentLoopBudgetBoundarySteerStartsFreshIterationBudget(t *testing.T) {
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: "ok"}}},
-		nil,
 		1,
 		nil,
 		nil,
@@ -179,7 +218,6 @@ func TestAgentLoopRetriesAfterCanceledSteerInterruptWithoutReplacementText(t *te
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{},
-		nil,
 		1,
 		nil,
 		nil,
@@ -233,7 +271,6 @@ func TestAgentLoopRetriesAfterCanceledSteerInterruptDuringToolWithoutReplacement
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{Tools: []langtools.Tool{tool}},
-		nil,
 		1,
 		nil,
 		nil,
@@ -304,7 +341,6 @@ func TestAgentLoopPendingSteerBeforeFirstModelGetsFreshIterationBudget(t *testin
 	loop := NewAgentLoop(
 		model,
 		RoleProfile{},
-		nil,
 		1,
 		nil,
 		nil,

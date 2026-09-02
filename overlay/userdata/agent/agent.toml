@@ -1,11 +1,14 @@
 # Device UI and Agent response language: "zh-CN" or "en-US".
 # This is independent from [stt].language, which only controls speech recognition.
-# locale = "zh-CN"  # "zh-CN" or "en-US"; also selects built-in voice notification text
+# locale = "en-US"  # "zh-CN" or "en-US"; also selects built-in voice notification text
 
 # Agent instruction and behavior
 # custom_instruction = ""
 # additional_prompt = ""
 # max_iterations = -1
+# Deterministic cleanup of expired state and historical tool results. Zero (or
+# an omitted value) derives the threshold from the active model input budget.
+# context_prune_threshold = 12000
 
 # Screenshot context pruning:
 # keep the latest N screenshots and batch-prune older screenshots every interval
@@ -189,7 +192,8 @@ model = "gpt-5.5"
 # emergency_threshold_mb = 5
 # recovery_hysteresis_mb = 5
 
-# Voice notifications follow a normal Agent reply; they never announce independently.
+# Voice notifications follow a normal Agent reply, or use an idle Realtime
+# session for a private announcement.
 [voice_notifications]
 # enabled = true
 # max_pending = 8

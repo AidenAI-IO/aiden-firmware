@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
 	speechtext "aiden-agent/internal/agent/speech"
@@ -158,9 +159,6 @@ func TestRuntimeRun(t *testing.T) {
 
 	if result.Output != "completed" {
 		t.Fatalf("unexpected output: %q", result.Output)
-	}
-	if len(result.Memory) != 0 {
-		t.Fatalf("expected empty memory snapshot without a storage dir, got %#v", result.Memory)
 	}
 }
 
@@ -905,7 +903,7 @@ func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 		t.Fatalf("expected model to receive planner prompt")
 	}
 	systemPrompt := messageText(model.messages[0][:1])
-	want := "Current date: 2026-06-15 (星期一)"
+	want := "Current date: 2026-06-15 (Monday)"
 	if !strings.Contains(systemPrompt, want) {
 		t.Fatalf("planner system prompt missing current date %q:\n%s", want, systemPrompt)
 	}
@@ -968,9 +966,7 @@ func TestRuntimeRunUsesSessionManager(t *testing.T) {
 		beginResult: SessionBeginResult{
 			Boundary: sessionBoundaryTelemetry{Decision: BoundaryContinue, Reason: BoundaryReasonTimeGapShort},
 		},
-		result: SessionCommitResult{
-			Memory: []MessageRecord{{Role: "human", Content: "committed snapshot"}},
-		},
+		result: SessionCommitResult{},
 	}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
@@ -984,6 +980,9 @@ func TestRuntimeRunUsesSessionManager(t *testing.T) {
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "original request"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "Old answer." {
+		t.Fatalf("output = %q, want \"Old answer.\"", result.Output)
 	}
 
 	if manager.beginCalls != 1 {
@@ -1010,7 +1009,6 @@ func TestRuntimeRunUsesSessionManager(t *testing.T) {
 	if manager.commitReq.Metrics == nil || manager.commitReq.Metrics.LastPromptTokens != 321 {
 		t.Fatalf("commit metrics missing prompt tokens: %#v", manager.commitReq.Metrics)
 	}
-	assertMemoryRecords(t, result.Memory, manager.result.Memory)
 }
 
 func TestRuntimeRunContinuesWhenSessionBeginFails(t *testing.T) {
@@ -1472,6 +1470,28 @@ func eventMetadataInt(event TaskEpisodeEvent, key string) int {
 	}
 }
 
+func TestContextCompactionEventsUseDistinctTelemetryType(t *testing.T) {
+	conversationEvent := contextCompactionEvent(compactor.CompactionStats{
+		TokensBefore:                100,
+		TokensAfter:                 40,
+		ConversationSummaryRequired: true,
+	}, true, nil, "threshold")
+	if conversationEvent.Type != runEventConversationCompaction {
+		t.Fatalf("conversation compaction event type = %q, want %q", conversationEvent.Type, runEventConversationCompaction)
+	}
+
+	historicalEvent := historicalPruneEvent(compactor.HistoricalPruneStats{
+		HistoricalStatesDropped:     1,
+		HistoricalToolResultsPruned: 2,
+	}, true, nil, "threshold")
+	if historicalEvent.Type != runEventHistoricalContextPrune {
+		t.Fatalf("historical prune event type = %q, want %q", historicalEvent.Type, runEventHistoricalContextPrune)
+	}
+	if conversationEvent.Type == historicalEvent.Type {
+		t.Fatal("conversation compaction and historical prune events must use distinct types")
+	}
+}
+
 func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses(
@@ -1541,7 +1561,6 @@ func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	if !runtimeModelCallToolResponseContains(model.messages[1], "tool output") {
 		t.Fatalf("second LLM call missing tool result: %#v", model.messages[1])
 	}
-	assertMemoryRecords(t, result.Memory, []MessageRecord{{Role: "human", Content: "Use the updated instruction instead."}})
 }
 
 func TestRuntimeRunSteerInterruptDoesNotPauseAfterNonCancelableTool(t *testing.T) {
@@ -1868,7 +1887,6 @@ func TestRuntimeRunConsumesPendingSteerBeforeFinalAnswer(t *testing.T) {
 	if len(model.messages) != 1 {
 		t.Fatalf("model calls = %d, want direct final answer in one call", len(model.messages))
 	}
-	assertMemoryRecords(t, result.Memory, []MessageRecord{{Role: "human", Content: "Actually change direction before answering."}})
 }
 
 func TestRuntimeRunPersistsConsumedSteerAsConversationMessage(t *testing.T) {
@@ -1909,7 +1927,6 @@ func TestRuntimeRunPersistsConsumedSteerAsConversationMessage(t *testing.T) {
 	if steerCalls == 0 {
 		t.Fatal("SteerProvider was not polled")
 	}
-	assertMemoryRecords(t, result.Memory, []MessageRecord{{Role: "human", Content: "persist this steering message"}})
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
 	if !sessionEventsContain(events, func(event SessionEvent) bool {
@@ -2459,18 +2476,6 @@ func runtimeLastMessageText(messages []llms.MessageContent) (llms.ChatMessageTyp
 	return last.Role, builder.String(), true
 }
 
-func assertMemoryRecords(t *testing.T, got []MessageRecord, want []MessageRecord) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("memory records length = %d, want %d: %#v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("memory record %d = %#v, want %#v; all records: %#v", i, got[i], want[i], got)
-		}
-	}
-}
-
 func sessionEventsContain(events []SessionEvent, predicate func(SessionEvent) bool) bool {
 	for _, event := range events {
 		if predicate(event) {
@@ -2499,15 +2504,6 @@ func sessionEventCount(events []SessionEvent, typ, role, content string) int {
 		count++
 	}
 	return count
-}
-
-func messageRecordExists(records []MessageRecord, role, content string) bool {
-	for _, record := range records {
-		if record.Role == role && record.Content == content {
-			return true
-		}
-	}
-	return false
 }
 
 func readSessionEventObjects(t *testing.T, path string) []map[string]any {
@@ -2746,6 +2742,64 @@ func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 	}
 	if len(llmModel.messages) != 2 {
 		t.Fatalf("model call count = %d, want 2 (summary + planner)", len(llmModel.messages))
+	}
+}
+
+func TestRuntimeRunPrunesHistoricalStateWithProviderCompaction(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "Answer directly."},
+		{Role: messages.MessageRoleState, Content: strings.Repeat("stale-device-state ", 2_000)},
+		{Role: messages.MessageRoleUser, Content: "old question"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	originalSessionID := manager.GetSessionID()
+
+	llmModel := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("ok")}}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:             configDir,
+			ContextPruneThreshold: 1_000,
+			Model: ModelConfig{
+				Provider:                   "openai",
+				APIMode:                    "responses",
+				ResponsesContextManagement: "compaction",
+			},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{ContextWindow: 8_192},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "new question"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+	if llmModel.callCount != 1 {
+		t.Fatalf("model call count = %d, want 1 planner call without local summary", llmModel.callCount)
+	}
+	if runtime.contextManager == nil || runtime.contextManager.GetSessionID() == originalSessionID {
+		t.Fatal("runtime did not switch to the state-pruned context revision")
+	}
+	for _, message := range runtime.contextManager.CloneMessageList() {
+		if message.Role == messages.MessageRoleState || strings.Contains(message.Content, "stale-device-state") {
+			t.Fatalf("pruned context retained historical state: %#v", message)
+		}
 	}
 }
 
@@ -4119,12 +4173,8 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 		model: &scriptedModel{responses: roleDirectResponses("first")},
 	}
 
-	firstResult, err := firstRuntime.Run(context.Background(), RunRequest{Input: "hello"})
-	if err != nil {
+	if _, err := firstRuntime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
 		t.Fatalf("first Run() error = %v", err)
-	}
-	if len(firstResult.Memory) != 0 {
-		t.Fatalf("first run memory snapshot = %#v, want empty pre-run snapshot", firstResult.Memory)
 	}
 
 	memoryDir := filepath.Join(configDir, "memory")
@@ -4150,18 +4200,21 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 		model: &scriptedModel{responses: roleDirectResponses("second")},
 	}
 
-	secondResult, err := secondRuntime.Run(context.Background(), RunRequest{Input: "again"})
-	if err != nil {
+	if _, err := secondRuntime.Run(context.Background(), RunRequest{Input: "again"}); err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
-	if len(secondResult.Memory) < 2 {
-		t.Fatalf("expected restored memory entries after reload, got %d: %#v", len(secondResult.Memory), secondResult.Memory)
+
+	// The prior turn stays in the same active session file, so the second
+	// process appends to the events persisted before the restart.
+	events := readSessionEvents(t, eventsPath)
+	if !sessionEventExists(events, "user_input", "user", "hello") {
+		t.Fatalf("expected first user input to survive the restart, got %#v", events)
 	}
-	if secondResult.Memory[0].Role != "human" || secondResult.Memory[0].Content != "hello" {
-		t.Fatalf("expected first persisted message to be restored, got %#v", secondResult.Memory[0])
+	if !sessionEventExists(events, "assistant_output", "assistant", "first") {
+		t.Fatalf("expected first assistant output to survive the restart, got %#v", events)
 	}
-	if !messageRecordExists(secondResult.Memory, "ai", "first") {
-		t.Fatalf("expected first assistant message to be restored, got %#v", secondResult.Memory)
+	if !sessionEventExists(events, "user_input", "user", "again") {
+		t.Fatalf("expected second user input to be appended, got %#v", events)
 	}
 }
 
@@ -4288,9 +4341,6 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(result.Memory) != 0 {
-		t.Fatalf("new task memory snapshot = %#v, want empty pre-run snapshot after rotation", result.Memory)
-	}
 
 	active := readSessionEvents(t, session.eventsPath())
 	activeChat := sessionEventsOfTypes(active, "user_input", "assistant_output")
@@ -4386,9 +4436,6 @@ func TestRuntimeRunShortGapKeepsActiveSessionWithoutForcedContinuation(t *testin
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(result.Memory) != DefaultBoundaryConfig().SmallSessionEventThreshold+1 {
-		t.Fatalf("short gap should keep previous context, got %#v", result.Memory)
-	}
 
 	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
 	if err != nil {
@@ -4462,12 +4509,8 @@ func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
 	t.Cleanup(func() { _ = runtime.Close() })
 
-	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
-	if err != nil {
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
-	}
-	if len(result.Memory) != 0 {
-		t.Fatalf("new task memory snapshot = %#v, want empty pre-run snapshot after rotation", result.Memory)
 	}
 
 	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
@@ -4527,9 +4570,6 @@ func TestRuntimeRunKeepsSmallSessionOnUnrelatedInput(t *testing.T) {
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
-	}
-	if len(result.Memory) != DefaultBoundaryConfig().SmallSessionEventThreshold {
-		t.Fatalf("small session should keep previous context, got %#v", result.Memory)
 	}
 
 	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
@@ -5228,6 +5268,7 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
+	oldBackendSessionID := runtime.ContextDump().SessionID
 
 	memoryDir := filepath.Join(configDir, "memory")
 	eventsPath := filepath.Join(memoryDir, "session", "events.jsonl")
@@ -5235,10 +5276,6 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 		t.Fatalf("expected persisted session events at %s: %v", eventsPath, err)
 	}
 	assertNoTopLevelJSONFiles(t, memoryDir)
-	legacyPath := legacyMemorySnapshotPath(memoryDir, "default")
-	if err := os.WriteFile(legacyPath, []byte("[]\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile legacy snapshot: %v", err)
-	}
 
 	if err := runtime.ClearMemory(context.Background()); err != nil {
 		t.Fatalf("ClearMemory() error = %v", err)
@@ -5247,12 +5284,21 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	if _, err := os.Stat(eventsPath); !os.IsNotExist(err) {
 		t.Fatalf("expected session events to be removed, stat err = %v", err)
 	}
-	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
+	backendFolder := agentpath.ContextManagerSessionFolder(configDir)
+	oldBackendSessionPath := filepath.Join(backendFolder, oldBackendSessionID+".jsonl")
+	if _, err := os.Stat(oldBackendSessionPath); !os.IsNotExist(err) {
+		t.Fatalf("old backend context session file should be removed, stat err = %v", err)
+	}
+	newBackendSession := runtime.ContextDump()
+	if newBackendSession.SessionID == "" || newBackendSession.SessionID == oldBackendSessionID {
+		t.Fatalf("backend context session was not replaced: old=%q new=%q", oldBackendSessionID, newBackendSession.SessionID)
+	}
+	if newBackendSession.ParentSessionID != "" {
+		t.Fatalf("cleared backend context parent session = %q, want root session", newBackendSession.ParentSessionID)
 	}
 }
 
-func TestRuntimeClearMemoryRotatesUserContextSession(t *testing.T) {
+func TestRuntimeClearMemoryReplacesAndRemovesUserContextSession(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	runtime, err := NewRuntime(Config{
 		ConfigDir: configDir,
@@ -5283,12 +5329,53 @@ func TestRuntimeClearMemoryRotatesUserContextSession(t *testing.T) {
 	if rotated.GetSessionID() == oldSessionID {
 		t.Fatalf("user context session was not rotated: %q", oldSessionID)
 	}
-	if _, err := contextmanager.LoadContextManagerFromSessionID(folder, oldSessionID); err != nil {
-		t.Fatalf("old user context should remain archived and loadable: %v", err)
+	oldUserSessionPath := filepath.Join(folder, oldSessionID+".jsonl")
+	if _, err := os.Stat(oldUserSessionPath); !os.IsNotExist(err) {
+		t.Fatalf("old user context session file should be removed, stat err = %v", err)
+	}
+	if rotated.GetParentSessionID() != "" {
+		t.Fatalf("cleared user context parent session = %q, want root session", rotated.GetParentSessionID())
 	}
 	rotatedMessages := rotated.MessageListDump().Messages
 	if len(rotatedMessages) != 1 || rotatedMessages[0].Role != messages.MessageRoleSystem || rotatedMessages[0].Content != "realtime system prompt" {
 		t.Fatalf("rotated user context = %#v, want only preserved system prompt", rotatedMessages)
+	}
+}
+
+func TestRuntimeClearMemoryPreservesSessionsWhenUserContextCannotLoad(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	runtime, err := NewRuntime(Config{
+		ConfigDir: configDir,
+		Model:     ModelConfig{Provider: "fake"},
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	userFolder := agentpath.UserContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManager(userFolder, "realtime system prompt")
+	if err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
+	}
+	userSessionPath := filepath.Join(userFolder, manager.GetSessionID()+".jsonl")
+	if err := os.WriteFile(userSessionPath, []byte("{invalid json\n"), 0o644); err != nil {
+		t.Fatalf("corrupt user context session: %v", err)
+	}
+	backendFolder := agentpath.ContextManagerSessionFolder(configDir)
+	backendManager, err := contextmanager.NewContextManager(backendFolder, "backend system prompt")
+	if err != nil {
+		t.Fatalf("create backend context session: %v", err)
+	}
+	backendSessionPath := filepath.Join(backendFolder, backendManager.GetSessionID()+".jsonl")
+
+	if err := runtime.ClearMemory(context.Background()); err == nil {
+		t.Fatal("ClearMemory() error = nil, want user context load error")
+	}
+	for _, path := range []string{userSessionPath, backendSessionPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("session should remain after user context load failure, stat %s: %v", path, err)
+		}
 	}
 }
 

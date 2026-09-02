@@ -67,7 +67,7 @@ jobs:
           PICO_SDK_DIR: ${{ steps.sdk.outputs.dir }}
         run: bash scripts/test_reproducible_rootfs_policy.sh
 
-  run-tests:
+  script-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,21 +103,28 @@ jobs:
         run: |
           python3 scripts/check_normalized_coords.py
           bash scripts/test_check_normalized_coords.sh
+      - name: Verify swap initialization
+        run: sh scripts/test_swap_init.sh
+
+  docker-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Verify Docker sandbox contract
         timeout-minutes: 25
         run: |
           python3 -m unittest tests.benchmark.test_docker_sandbox
           docker compose config --quiet
           sh scripts/test_docker_sandbox.sh
-      - name: Verify swap initialization
-        run: sh scripts/test_swap_init.sh
-      # dnsmasq-base gives the test a real parser for the config S55 generates
-      # at runtime; without it that syntax check downgrades to a skip.
-      - name: Verify usb0 DHCP options
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y dnsmasq-base
-          sh scripts/test_usb0_dhcp_options.sh
+
+  cpp-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -132,10 +139,41 @@ jobs:
       - name: Run C++ unit tests
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libopencv-dev
+          # The host tests only use OpenCV core and imgproc. Installing the
+          # libopencv-dev metapackage pulled 199 MB of unrelated modules into
+          # every clean runner (Java, stitching, video, contrib, and more).
+          # dnsmasq-base keeps the usb0 CTest syntax check from downgrading to
+          # a skip, so that contract needs no separate duplicate test step.
+          sudo apt-get install -y --no-install-recommends \
+            dnsmasq-base \
+            libopencv-core-dev \
+            libopencv-imgproc-dev
           make test
+
+  go-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/agent/go.mod
+          cache-dependency-path: src/agent/go.sum
       - name: Run Go unit tests
         working-directory: src/agent
         run: go test ./...
+
+  web-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Run Agent Web UI tests
         run: make test-agent-webui

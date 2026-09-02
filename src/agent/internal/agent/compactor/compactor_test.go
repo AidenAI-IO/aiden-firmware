@@ -14,6 +14,7 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/tokencounter"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -134,6 +135,278 @@ func TestCompactPreservesLLMFailureSource(t *testing.T) {
 	var llmErr *executor.LLMCallError
 	if !errors.As(err, &llmErr) {
 		t.Fatalf("Compact() error = %T %v, want LLMCallError", err, err)
+	}
+}
+
+func TestPruneHistoricalRemovesStateAndBoundsToolResultsWithoutSummary(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+		{
+			Role:    messages.MessageRoleState,
+			Content: "app: stale-old-app",
+			Attachments: []messages.Attachment{{
+				Source: messages.AttachmentSourceScreenshotObservation,
+			}},
+		},
+		{Role: messages.MessageRoleUser, Content: "old request"},
+		{
+			Role:                messages.MessageRoleToolCall,
+			ResponsesResponseID: "resp_old_tool",
+			ToolCalls: []messages.ToolCall{{
+				ID:        "old_call",
+				Name:      "shell",
+				Arguments: `{"command":"go test ./..."}`,
+			}},
+		},
+		{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
+				ToolCallID: "old_call",
+				Name:       "shell",
+				Content:    strings.Repeat("large historical output ", 1_000),
+				Meta: &messages.ToolResultMeta{
+					Complete:            true,
+					ObservationComplete: true,
+					Summary:             "128 passed, 2 failed",
+				},
+			}},
+		},
+		{
+			Role:    messages.MessageRoleState,
+			Content: "historical visual observation",
+			Attachments: []messages.Attachment{{
+				Source: messages.AttachmentSourceScreenshotObservation,
+			}},
+		},
+		{Role: messages.MessageRoleAssistant, Content: "old work completed", ResponsesResponseID: "resp_old_answer"},
+		{
+			Role:    messages.MessageRoleState,
+			Content: "app: current-app",
+			Attachments: []messages.Attachment{{
+				Source:   messages.AttachmentSourceScreenshotObservation,
+				FilePath: "/tmp/current-state.jpg",
+			}},
+		},
+		{Role: messages.MessageRoleUser, Content: "current request"},
+		{
+			Role:                messages.MessageRoleToolCall,
+			ResponsesResponseID: "resp_current_tool",
+			ToolCalls: []messages.ToolCall{{
+				ID:        "current_call",
+				Name:      "shell",
+				Arguments: `{"command":"pwd"}`,
+			}},
+		},
+		{
+			Role: messages.MessageRoleToolResult,
+			ToolResults: []messages.ToolResult{{
+				ToolCallID: "current_call",
+				Name:       "shell",
+				Content:    "current result",
+			}},
+		},
+		{
+			Role:    messages.MessageRoleState,
+			Content: "current visual observation",
+			Attachments: []messages.Attachment{{
+				Source:   messages.AttachmentSourceScreenshotObservation,
+				FilePath: "/tmp/current-visual.jpg",
+			}},
+		},
+		{Role: messages.MessageRoleAssistant, Content: "current response", ResponsesResponseID: "resp_current_answer"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	model := &promptCapturingModel{reply: "summary should not be called"}
+	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
+
+	newManager, compacted, err := compactor.PruneHistorical(manager, 3_000)
+	if err != nil {
+		t.Fatalf("PruneHistorical() error = %v", err)
+	}
+	if !compacted || newManager == nil {
+		t.Fatal("PruneHistorical() did not create a pruned context revision")
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("summary model calls = %d, want 0 after deterministic prune reached target", len(model.prompts))
+	}
+
+	got := newManager.CloneMessageList()
+	stateContents := make([]string, 0, 2)
+	results := make(map[string]messages.ToolResult)
+	for _, message := range got {
+		if message.Role == messages.MessageRoleState {
+			stateContents = append(stateContents, message.Content)
+		}
+		if message.ResponsesResponseID != "" {
+			t.Fatalf("pruned revision retained provider response ID: %#v", message)
+		}
+		for _, result := range message.ToolResults {
+			results[result.ToolCallID] = result
+		}
+	}
+	if len(stateContents) != 2 || stateContents[0] != "app: current-app" || stateContents[1] != "current visual observation" {
+		t.Fatalf("retained state messages = %#v, want only current turn state", stateContents)
+	}
+	oldResult := results["old_call"]
+	if !strings.Contains(oldResult.Content, `"status":"historical_prune"`) || !strings.Contains(oldResult.Content, "128 passed, 2 failed") || strings.Contains(oldResult.Content, "large historical output") {
+		t.Fatalf("historical result placeholder = %q", oldResult.Content)
+	}
+	if oldResult.Meta == nil || oldResult.Meta.Complete || oldResult.Meta.Reason != historicalToolResultPruneReason {
+		t.Fatalf("historical result metadata = %#v", oldResult.Meta)
+	}
+	if current := results["current_call"]; current.Content != "current result" || current.Meta != nil {
+		t.Fatalf("current turn tool result changed: %#v", current)
+	}
+	stats := compactor.LastPruneStats()
+	if stats.HistoricalStatesDropped != 2 || stats.HistoricalToolResultsPruned != 1 || stats.TokensAfter > 3_000 || stats.TokensBefore <= stats.TokensAfter {
+		t.Fatalf("prune stats = %#v", stats)
+	}
+}
+
+func TestPruneHistoricalAndCompactRunAsSeparateStages(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+		{Role: messages.MessageRoleState, Content: "app: stale-old-app"},
+		{Role: messages.MessageRoleUser, Content: "old request"},
+		{Role: messages.MessageRoleAssistant, Content: strings.Repeat("old progress ", 500)},
+		{Role: messages.MessageRoleState, Content: "app: current-app"},
+		{Role: messages.MessageRoleUser, Content: "current request"},
+		{Role: messages.MessageRoleAssistant, Content: "current response"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	model := &promptCapturingModel{reply: "historical work summary"}
+	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
+
+	prunedManager, pruned, err := compactor.PruneHistorical(manager, 1)
+	if err != nil {
+		t.Fatalf("PruneHistorical() error = %v", err)
+	}
+	if !pruned || prunedManager == nil {
+		t.Fatal("PruneHistorical() did not create a pruned context revision")
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("prune summary model calls = %d, want 0", len(model.prompts))
+	}
+
+	newManager, compacted, err := compactor.Compact(context.Background(), prunedManager)
+	if err != nil {
+		t.Fatalf("Compact() error = %v", err)
+	}
+	if !compacted || newManager == nil {
+		t.Fatal("Compact() did not create a summarized context revision")
+	}
+	if len(model.prompts) != 1 {
+		t.Fatalf("summary model calls = %d, want 1", len(model.prompts))
+	}
+	if strings.Contains(model.prompts[0], "stale-old-app") {
+		t.Fatalf("summary prompt retained expired state:\n%s", model.prompts[0])
+	}
+	if !strings.Contains(model.prompts[0], "old progress") {
+		t.Fatalf("summary prompt omitted historical conversation:\n%s", model.prompts[0])
+	}
+
+	stateContents := make([]string, 0, 1)
+	for _, message := range newManager.CloneMessageList() {
+		if message.Role == messages.MessageRoleState {
+			stateContents = append(stateContents, message.Content)
+		}
+	}
+	if len(stateContents) != 1 || stateContents[0] != "app: current-app" {
+		t.Fatalf("retained state messages = %#v, want current state", stateContents)
+	}
+	stats := compactor.LastCompactionStats()
+	if !stats.ConversationSummaryRequired {
+		t.Fatalf("compaction stats = %#v", stats)
+	}
+}
+
+func TestPruneHistoricalNeverCallsSummaryModel(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+		{Role: messages.MessageRoleState, Content: "expired state"},
+		{Role: messages.MessageRoleUser, Content: "old request"},
+		{Role: messages.MessageRoleAssistant, Content: strings.Repeat("large historical answer ", 500)},
+		{Role: messages.MessageRoleState, Content: "current state"},
+		{Role: messages.MessageRoleUser, Content: strings.Repeat("large current request ", 500)},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	model := &promptCapturingModel{reply: "summary should not be called"}
+	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
+
+	newManager, compacted, err := compactor.PruneHistorical(manager, 1)
+	if err != nil {
+		t.Fatalf("PruneHistorical() error = %v", err)
+	}
+	if !compacted || newManager == nil {
+		t.Fatal("provider mode discarded deterministic state prune")
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("summary model calls = %d, want 0 in provider mode", len(model.prompts))
+	}
+	if messageListContains(newManager.CloneMessageList(), "expired state") {
+		t.Fatal("provider-mode context retained expired state")
+	}
+	stats := compactor.LastPruneStats()
+	if stats.HistoricalStatesDropped != 1 || stats.TokensAfter <= 1 {
+		t.Fatalf("prune stats = %#v", stats)
+	}
+}
+
+func TestPruneHistoricalSkipsContextWithoutHistoricalCandidates(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+		{Role: messages.MessageRoleUser, Content: "current request"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	model := &promptCapturingModel{reply: "summary should not be called"}
+	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
+
+	newManager, compacted, err := compactor.PruneHistorical(manager, 1_000)
+	if err != nil {
+		t.Fatalf("PruneHistorical() error = %v", err)
+	}
+	if compacted || newManager != nil {
+		t.Fatal("context already within target created an unnecessary revision")
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("summary model calls = %d, want 0", len(model.prompts))
+	}
+}
+
+func TestCompactHistoricalToolResultsPrunesOldestUntilTarget(t *testing.T) {
+	first := messages.ToolResult{ToolCallID: "first", Name: "shell", Content: strings.Repeat("first output ", 500)}
+	second := messages.ToolResult{ToolCallID: "second", Name: "shell", Content: strings.Repeat("second output ", 500)}
+	messageList := []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+		{Role: messages.MessageRoleUser, Content: "old request"},
+		{Role: messages.MessageRoleToolCall, ToolCalls: []messages.ToolCall{{ID: "first", Name: "shell", Arguments: `{}`}}},
+		{Role: messages.MessageRoleToolResult, ToolResults: []messages.ToolResult{first}},
+		{Role: messages.MessageRoleAssistant, Content: "continue"},
+		{Role: messages.MessageRoleToolCall, ToolCalls: []messages.ToolCall{{ID: "second", Name: "shell", Arguments: `{}`}}},
+		{Role: messages.MessageRoleToolResult, ToolResults: []messages.ToolResult{second}},
+		{Role: messages.MessageRoleAssistant, Content: "done"},
+		{Role: messages.MessageRoleUser, Content: "current request"},
+	}
+	firstPlaceholder, _ := historicalToolResultPlaceholder(first, messageList[2].ToolCalls[0])
+	target := estimateMessageListTokenUsage(messageList) - tokencounter.EstimateTextTokens(first.Content) + tokencounter.EstimateTextTokens(firstPlaceholder)
+
+	got, pruned := compactHistoricalToolResults(messageList, target)
+	if pruned != 1 {
+		t.Fatalf("pruned tool results = %d, want 1", pruned)
+	}
+	if got[3].ToolResults[0].Meta == nil || got[3].ToolResults[0].Meta.Reason != historicalToolResultPruneReason {
+		t.Fatalf("oldest result was not pruned: %#v", got[3].ToolResults[0])
+	}
+	if got[6].ToolResults[0].Content != second.Content || got[6].ToolResults[0].Meta != nil {
+		t.Fatalf("newer historical result changed after reaching target: %#v", got[6].ToolResults[0])
 	}
 }
 

@@ -129,11 +129,11 @@ func TestConfigValidateKeyboardLayout(t *testing.T) {
 }
 
 func TestConfigLocaleContract(t *testing.T) {
-	if got := DefaultConfig().Locale; got != "zh-CN" {
-		t.Fatalf("DefaultConfig().Locale = %q, want zh-CN", got)
+	if got := DefaultConfig().Locale; got != "en-US" {
+		t.Fatalf("DefaultConfig().Locale = %q, want en-US", got)
 	}
-	if got := (Config{}).LocaleOrDefault(); got != "zh-CN" {
-		t.Fatalf("Config{}.LocaleOrDefault() = %q, want zh-CN", got)
+	if got := (Config{}).LocaleOrDefault(); got != "en-US" {
+		t.Fatalf("Config{}.LocaleOrDefault() = %q, want en-US", got)
 	}
 
 	english := Config{Model: ModelConfig{Provider: "fake"}, Locale: "en-US"}
@@ -1037,6 +1037,17 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 		t.Fatalf("expected model.model_max_output_tokens validation error, got %v", err)
 	}
 
+}
+
+func TestConfigValidateRejectsNegativeContextPruneThreshold(t *testing.T) {
+	cfg := Config{
+		Model:                 ModelConfig{Provider: "fake"},
+		ContextPruneThreshold: -1,
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "context_prune_threshold") {
+		t.Fatalf("expected context_prune_threshold validation error, got %v", err)
+	}
 }
 
 func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {

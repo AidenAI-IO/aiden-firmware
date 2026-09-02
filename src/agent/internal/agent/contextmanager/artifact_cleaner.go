@@ -130,42 +130,15 @@ func (c *ArtifactStoreCleaner) reclaim(ctx context.Context, remove bool) (uint64
 	return reclaimed, errors.Join(cleanupErrors...)
 }
 
+// referencedArtifactSessions reports which per-session artifact directories are
+// still reachable. A live transcript owns its own directory, and it can also
+// reference directories owned by earlier sessions through the absolute
+// artifact paths persisted in its tool-result metadata. The `.meta.json`
+// sidecars carry session lineage only and never pin an artifact directory.
 func referencedArtifactSessions(sessionFolder string) (map[string]struct{}, bool, error) {
 	referenced := make(map[string]struct{})
 	referencesComplete := true
 	var referenceErrors []error
-
-	// Keep compatibility with revisions created by older builds that shared an
-	// artifact directory through an artifact_scope_id sidecar.
-	metadataFiles, err := filepath.Glob(filepath.Join(sessionFolder, "*.meta.json"))
-	if err != nil {
-		return nil, false, fmt.Errorf("list context session metadata: %w", err)
-	}
-	for _, metadataPath := range metadataFiles {
-		data, err := os.ReadFile(metadataPath)
-		if err != nil {
-			referencesComplete = false
-			referenceErrors = append(referenceErrors, fmt.Errorf("read context session metadata %s: %w", filepath.Base(metadataPath), err))
-			continue
-		}
-		var metadata sessionMetadata
-		if err := json.Unmarshal(data, &metadata); err != nil {
-			referencesComplete = false
-			referenceErrors = append(referenceErrors, fmt.Errorf("decode context session metadata %s: %w", filepath.Base(metadataPath), err))
-			continue
-		}
-		sessionID := strings.TrimSuffix(filepath.Base(metadataPath), ".meta.json")
-		scopeID := strings.TrimSpace(metadata.ArtifactScopeID)
-		if scopeID == "" {
-			scopeID = sessionID
-		}
-		if _, err := validateArtifactSessionID(scopeID); err != nil {
-			referencesComplete = false
-			referenceErrors = append(referenceErrors, fmt.Errorf("invalid artifact scope ID %q in %s", scopeID, filepath.Base(metadataPath)))
-			continue
-		}
-		referenced[scopeID] = struct{}{}
-	}
 
 	transcripts, err := filepath.Glob(filepath.Join(sessionFolder, "*.jsonl"))
 	if err != nil {
@@ -178,9 +151,6 @@ func referencedArtifactSessions(sessionFolder string) (map[string]struct{}, bool
 			referenceErrors = append(referenceErrors, fmt.Errorf("invalid context session ID %q", sessionID))
 			continue
 		}
-		// A live transcript owns its own artifact directory. Compacted child
-		// sessions can additionally reference older directories through the
-		// absolute paths persisted in tool-result metadata.
 		referenced[sessionID] = struct{}{}
 		messages, err := loadSession(sessionFolder, sessionID)
 		if err != nil {

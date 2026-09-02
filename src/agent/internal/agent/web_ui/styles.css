@@ -350,6 +350,56 @@ textarea:focus-visible {
     border-left: 1px solid var(--line);
 }
 
+.clear-menu {
+    position: relative;
+}
+
+.clear-menu > summary {
+    gap: 6px;
+    list-style: none;
+    user-select: none;
+}
+
+.clear-menu > summary::-webkit-details-marker {
+    display: none;
+}
+
+.clear-menu-items {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 6px);
+    right: 0;
+    display: grid;
+    min-width: 220px;
+    padding: 5px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--panel);
+    box-shadow: var(--shadow-soft);
+}
+
+.clear-menu-items button {
+    width: 100%;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text);
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-align: left;
+    cursor: pointer;
+}
+
+.clear-menu-items button:hover,
+.clear-menu-items button:focus-visible {
+    background: var(--surface-soft);
+    outline: none;
+}
+
+.clear-menu-items .danger-btn {
+    color: var(--tool-error-text);
+}
+
 .danger-btn {
     border-color: #e0b0aa;
     color: #a0382a;

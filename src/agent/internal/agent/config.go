@@ -313,16 +313,20 @@ type Config struct {
 	MaxIterations              int                      `toml:"max_iterations,omitempty"`
 	TerminationPolicy          TerminationPolicyConfig  `toml:"termination_policy,omitempty"`
 	ForceSimpleLoop            bool                     `toml:"-"`
-	ScreenshotKeepN            int                      `toml:"screenshot_keep_n,omitempty"`
-	ScreenshotPruneInterval    int                      `toml:"screenshot_prune_interval,omitempty"`
-	ScreenStableTimeoutMs      int                      `toml:"screen_stable_timeout_ms,omitempty"`
-	ScreenStableMs             int                      `toml:"screen_stable_ms,omitempty"`
-	ScreenStableDiffThreshold  float64                  `toml:"screen_stable_diff_threshold,omitempty"`
-	SkillsDirs                 []string                 `toml:"skills_dirs"`
-	BundledSkillsDir           string                   `toml:"bundled_skills_dir,omitempty"`
-	SkillMergeModel            SkillMergeModel          `toml:"-"`
-	Telemetry                  TelemetryConfig          `toml:"telemetry,omitempty"`
-	ConfigDir                  string                   `toml:"-"`
+	// ContextPruneThreshold is the estimated token count that triggers
+	// deterministic cleanup of historical state and tool results. Zero uses an
+	// automatic model-budget-derived trigger.
+	ContextPruneThreshold     int             `toml:"context_prune_threshold,omitempty"`
+	ScreenshotKeepN           int             `toml:"screenshot_keep_n,omitempty"`
+	ScreenshotPruneInterval   int             `toml:"screenshot_prune_interval,omitempty"`
+	ScreenStableTimeoutMs     int             `toml:"screen_stable_timeout_ms,omitempty"`
+	ScreenStableMs            int             `toml:"screen_stable_ms,omitempty"`
+	ScreenStableDiffThreshold float64         `toml:"screen_stable_diff_threshold,omitempty"`
+	SkillsDirs                []string        `toml:"skills_dirs"`
+	BundledSkillsDir          string          `toml:"bundled_skills_dir,omitempty"`
+	SkillMergeModel           SkillMergeModel `toml:"-"`
+	Telemetry                 TelemetryConfig `toml:"telemetry,omitempty"`
+	ConfigDir                 string          `toml:"-"`
 }
 
 func (c Config) TerminationPolicyOrDefault() TerminationPolicyConfig {
@@ -799,13 +803,6 @@ type AgentConfig struct {
 	Instruction      string
 	AdditionalPrompt string
 	Locale           string
-}
-
-// MemoryConfig is used internally by the memory manager.
-type MemoryConfig struct {
-	Type       string
-	WindowSize int
-	MemoryKey  string
 }
 
 func LoadConfigFromDir(configDir string) (Config, error) {
@@ -1352,6 +1349,9 @@ func (c Config) Validate() error {
 	}
 	if threshold := c.Model.ResponsesCompactThreshold; threshold != 0 && threshold < 1000 {
 		return fmt.Errorf("model.responses_compact_threshold must be 0 or >= 1000, got %d", threshold)
+	}
+	if c.ContextPruneThreshold < 0 {
+		return fmt.Errorf("context_prune_threshold must be >= 0, got %d", c.ContextPruneThreshold)
 	}
 	if c.Model.ResponsesContextEditTrigger < 0 {
 		return fmt.Errorf("model.responses_context_edit_trigger must be >= 0, got %d", c.Model.ResponsesContextEditTrigger)
