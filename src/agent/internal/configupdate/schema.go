@@ -475,7 +475,7 @@ type Agent struct {
 	Locale                     string  `json:"locale"`
 	CustomInstruction          string  `json:"custom_instruction"`
 	AdditionalPrompt           string  `json:"additional_prompt"`
-	ContextPruneThreshold      int     `json:"context_prune_threshold,omitempty"`
+	ContextPruneThreshold      float64 `json:"context_prune_threshold,omitempty"`
 	InputMode                  string  `json:"input_mode"`
 	VADBackend                 string  `json:"vad_backend"`
 	VADModelPath               string  `json:"vad_model_path"`

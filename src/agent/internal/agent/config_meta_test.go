@@ -200,9 +200,9 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 			help:   "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
 		},
 		"agent.context_prune_threshold": {
-			label:       "Historical prune threshold (tokens)",
-			placeholder: "0 = automatic",
-			help:        "Token count that triggers cleanup of expired state and historical tool results. 0 automatically triggers at 70% of the usable model input budget, before conversation compaction at 80%.",
+			label:       "Historical prune threshold (fraction)",
+			placeholder: "0 = automatic (0.5)",
+			help:        "Fraction of the usable model input budget that triggers cleanup of expired state and historical tool results, cleaning down to 6/7 of the trigger. Must be 0 or greater than 0 and less than 1; 0 uses 0.5. Capped at context_compaction_threshold so this cheap pass runs before the conversation summary.",
 		},
 		"model.responses_context_management": {
 			layout: "wide",
@@ -695,7 +695,7 @@ func TestConfigMeta_ResponsesOptionsUsePlainLanguage(t *testing.T) {
 	idx := fieldIndex(t)
 	wantLabels := map[string]string{
 		"model.api_mode":                              "Conversation API",
-		"agent.context_prune_threshold":               "Historical prune threshold (tokens)",
+		"agent.context_prune_threshold":               "Historical prune threshold (fraction)",
 		"model.responses_context_management":          "Provider compaction",
 		"model.responses_compact_threshold":           "Compaction threshold (tokens)",
 		"model.responses_truncation":                  "Over-limit input",
@@ -1009,6 +1009,9 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		"model": true, "tts": true, "stt": true, "device": true, "hid": true,
 		"audio": true, "search": true, "log": true, "telemetry": true, "termination_policy": true, "live_activity": true,
 		"skills_dirs": true, "bundled_skills_dir": true,
+		// Deliberately file-only: conversation compaction tuning is an expert
+		// knob edited in agent.toml, not exposed in the web form.
+		"context_compaction_threshold": true,
 	}
 	cfgType := reflect.TypeOf(Config{})
 	for name, f := range tomlKeys(cfgType) {
