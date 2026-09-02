@@ -3,7 +3,6 @@
 #include "system_env_parser.h"
 
 #include <map>
-#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -13,19 +12,6 @@ namespace {
 
 const char kDefaultNoProxy[] =
     "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
-
-bool is_allowed_key(const std::string& key) {
-    static const std::set<std::string> allowed = {
-        "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY",
-        "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY",
-        "OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "MOONSHOT_API_KEY",
-        "ARK_API_KEY", "MINIMAX_API_KEY", "TAVILY_API_KEY",
-        "BRAVE_API_KEY", "ANDROID_SERIAL", "AIDEN_ADB_SERIAL",
-        "AIDEN_POINTER_MODE",
-    };
-    return allowed.find(key) != allowed.end();
-}
 
 void set_pair(std::map<std::string, std::string>* values,
               const char* lower,
@@ -64,6 +50,7 @@ bool invalid(GeneratedSystemEnv* generated, const std::string& error) {
     generated->valid = false;
     generated->content = render_minimal_environment();
     generated->error = error;
+    generated->dropped_keys.clear();
     return true;
 }
 
@@ -77,6 +64,7 @@ bool generate_systemd_environment(const std::string& input,
     generated->valid = false;
     generated->content.clear();
     generated->error.clear();
+    generated->dropped_keys.clear();
 
     if (input.size() > 64 * 1024) {
         return invalid(generated, "system environment input exceeds 64 KiB");
@@ -92,9 +80,11 @@ bool generate_systemd_environment(const std::string& input,
     std::map<std::string, std::string> values;
     for (size_t i = 0; i < assignments.size(); ++i) {
         const EnvAssignment& assignment = assignments[i];
-        if (!is_allowed_key(assignment.key)) {
-            return invalid(generated,
-                           "environment variable is not approved: " + assignment.key);
+        if (!is_allowed_system_env_key(assignment.key)) {
+            // Dropping just this key keeps every approved credential in place.
+            // Discarding the whole file here used to strip them all silently.
+            generated->dropped_keys.push_back(assignment.key);
+            continue;
         }
         if (assignment.value.size() > 8192) {
             return invalid(generated,
