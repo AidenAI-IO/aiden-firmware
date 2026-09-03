@@ -2548,8 +2548,10 @@ func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	store := s.episodeStore
-	if store == nil && s.runtime != nil && s.runtime.ConfigSnapshot().ConfigDir != "" {
-		store = NewTaskEpisodeStore(filepath.Join(s.runtime.ConfigSnapshot().ConfigDir, "memory", "episodes"))
+	if store == nil && s.runtime != nil {
+		if configDir := s.runtime.ConfigSnapshot().ConfigDir; configDir != "" {
+			store = NewTaskEpisodeStore(filepath.Join(configDir, "memory", "episodes"))
+		}
 	}
 	if store == nil {
 		http.Error(w, "Episode store is not configured", http.StatusNotFound)

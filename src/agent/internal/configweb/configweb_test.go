@@ -2,6 +2,7 @@ package configweb
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -151,6 +152,19 @@ func TestConfigTestAcceptsRealtimeInputMode(t *testing.T) {
 		}
 	}
 	t.Fatalf("input_mode result missing: %+v", payload.Results)
+}
+
+func TestConfigTestRejectsInvalidTelemetryURL(t *testing.T) {
+	server, err := NewServer(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := `{"section":"telemetry","values":{"enabled":true,"base_url":"--output=/tmp/leak","public_key":"pk","secret_key":"sk","upload_timeout_sec":1,"max_retry":1}}`
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/config/test", strings.NewReader(request)))
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), "base_url must be an http:// or https:// URL with a host") {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
 }
 
 func TestModelsAreProxiedByConfigWeb(t *testing.T) {
@@ -324,6 +338,38 @@ func TestSystemEnvironmentGet(t *testing.T) {
 	}
 }
 
+func TestSystemEnvironmentWriteFailureReturnsServerError(t *testing.T) {
+	options := testOptions(t)
+	blockedParent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockedParent, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	options.SystemEnvPath = filepath.Join(blockedParent, "system.env")
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/system/environment", strings.NewReader(`{"system_env":"A=1\n"}`)))
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestSystemEnvironmentReportsRestartLaunchFailure(t *testing.T) {
+	options := testOptions(t)
+	options.AgentInitScript = ""
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/system/environment", strings.NewReader(`{"system_env":"A=1\n"}`)))
+	if resp.Code != http.StatusServiceUnavailable || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"agent_restart_scheduled":false`) {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestLLMLogRoutesPreserveEncodedName(t *testing.T) {
 	options := testOptions(t)
 	server, err := NewServer(options)
@@ -367,6 +413,67 @@ func TestLLMLogRoutesPreserveEncodedName(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(server.llmLogDir(), "llm-http-upload+1.log"))
 	if err != nil || string(data) != "uploaded" {
 		t.Fatalf("imported data=%q err=%v", data, err)
+	}
+}
+
+func TestLLMLogImportRejectsOversizedBody(t *testing.T) {
+	options := testOptions(t)
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/logs/llm/llm-http-oversized.log", strings.NewReader(strings.Repeat("x", maxRequestBodySize+1)))
+	server.APIHandler().ServeHTTP(resp, request)
+	if resp.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(server.llmLogDir(), "llm-http-oversized.log")); !os.IsNotExist(err) {
+		t.Fatalf("oversized target exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestProxyResponseReadFailureIsNotRetryable(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "10")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("short"))
+	}))
+	defer upstream.Close()
+	options := testOptions(t)
+	options.AgentHTTPBaseURL = upstream.URL
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.doProxyAgent(httptest.NewRequest(http.MethodGet, "/", nil), "/api/test", nil)
+	var proxyErr *proxyError
+	if !errors.As(err, &proxyErr) {
+		t.Fatalf("error=%v, want proxyError", err)
+	}
+	if proxyErr.retryable {
+		t.Fatalf("response read error is retryable: %v", proxyErr)
+	}
+}
+
+func TestWriteProxyResponseStripsHopByHopHeaders(t *testing.T) {
+	header := http.Header{
+		"Connection":        []string{"keep-alive, X-Internal-Hop"},
+		"Keep-Alive":        []string{"timeout=5"},
+		"Transfer-Encoding": []string{"chunked"},
+		"Upgrade":           []string{"websocket"},
+		"X-Internal-Hop":    []string{"secret"},
+		"X-End-To-End":      []string{"preserved"},
+	}
+	resp := httptest.NewRecorder()
+	writeProxyResponse(resp, proxyResponse{status: http.StatusOK, header: header, body: []byte("ok")})
+	for _, key := range []string{"Connection", "Keep-Alive", "Transfer-Encoding", "Upgrade", "X-Internal-Hop"} {
+		if value := resp.Header().Get(key); value != "" {
+			t.Errorf("%s=%q, want stripped", key, value)
+		}
+	}
+	if value := resp.Header().Get("X-End-To-End"); value != "preserved" {
+		t.Fatalf("X-End-To-End=%q", value)
 	}
 }
 
@@ -462,5 +569,43 @@ func TestSystemEnvParserAndWiFiConfigDefaults(t *testing.T) {
 	config, err := loadWiFiConfig(path)
 	if err != nil || len(config.Networks) != 1 || config.Networks[0].SSID != "demo" || !config.Networks[0].ScanSSID {
 		t.Fatalf("wifi config=%#v err=%v", config, err)
+	}
+}
+
+func TestWiFiCountryValidation(t *testing.T) {
+	for input, want := range map[string]string{
+		"us":            "US",
+		" CN ":          "CN",
+		"USA":           "CN",
+		"U1":            "CN",
+		"US\nnetwork={": "CN",
+	} {
+		if got := normalizeWiFiCountry(input); got != want {
+			t.Errorf("normalizeWiFiCountry(%q)=%q, want %q", input, got, want)
+		}
+	}
+	if rendered := renderWiFiConfig(wiFiConfig{Country: "US\nnetwork={"}); !strings.Contains(rendered, "country=CN\n") {
+		t.Fatalf("rendered invalid country: %q", rendered)
+	}
+}
+
+func TestEmptyFirmwareInfoMatchesSuccessShape(t *testing.T) {
+	info := emptyFirmwareInfo()
+	for _, key := range []string{"version", "build_time", "current_version", "current_build_time", "target_version", "target_build_time", "previous_version", "previous_build_time", "phase", "running_slot", "target_slot", "health_status", "health_error"} {
+		if value, exists := info[key]; !exists || value != "" {
+			t.Errorf("%s=%#v exists=%v", key, value, exists)
+		}
+	}
+}
+
+func TestRunHelpReturnsSuccess(t *testing.T) {
+	if code := Run([]string{"--help"}); code != 0 {
+		t.Fatalf("Run(--help)=%d, want 0", code)
+	}
+}
+
+func TestRunRejectsRetiredWiFiIfaceFlag(t *testing.T) {
+	if code := Run([]string{"--wifi-iface", "wlan1"}); code != 1 {
+		t.Fatalf("Run(--wifi-iface)=%d, want 1", code)
 	}
 }

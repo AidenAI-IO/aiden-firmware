@@ -54,16 +54,20 @@ func commandExists(name string) bool {
 	return err == nil
 }
 
-func (s *Server) scheduleAgentRestart() {
+func (s *Server) scheduleAgentRestart() error {
 	s.restartMu.Lock()
 	defer s.restartMu.Unlock()
 	s.reapRestartLocked()
 	if s.sttTestActive || s.restartCommand != nil {
 		s.restartDeferred = true
 		s.restartReadinessPending = true
-		return
+		return nil
 	}
-	s.launchRestartLocked()
+	err := s.launchRestartLocked()
+	if err != nil {
+		s.restartError = err
+	}
+	return err
 }
 
 func (s *Server) startDeferredRestartIfIdle() {
@@ -73,7 +77,10 @@ func (s *Server) startDeferredRestartIfIdle() {
 	if !s.sttTestActive && s.restartDeferred && s.restartCommand == nil {
 		s.restartDeferred = false
 		s.restartReadinessPending = true
-		s.launchRestartLocked()
+		if err := s.launchRestartLocked(); err != nil {
+			s.restartReadinessPending = false
+			s.restartError = err
+		}
 	}
 }
 
@@ -83,7 +90,11 @@ func (s *Server) waitForAgentRestart(timeout time.Duration) error {
 		s.restartMu.Lock()
 		s.reapRestartLocked()
 		pending := s.restartCommand != nil
+		restartErr := s.restartError
 		s.restartMu.Unlock()
+		if restartErr != nil {
+			return restartErr
+		}
 		if !pending {
 			return nil
 		}
@@ -98,20 +109,20 @@ func (s *Server) agentRestartPending() bool {
 	s.restartMu.Lock()
 	defer s.restartMu.Unlock()
 	s.reapRestartLocked()
-	return s.restartReadinessPending || s.restartCommand != nil || s.restartDeferred
+	return s.restartReadinessPending || s.restartCommand != nil || s.restartDeferred || s.restartError != nil
 }
 
 func (s *Server) clearAgentRestartReadiness() {
 	s.restartMu.Lock()
 	s.restartReadinessPending = false
+	s.restartError = nil
 	s.restartMu.Unlock()
 }
 
-func (s *Server) launchRestartLocked() {
+func (s *Server) launchRestartLocked() error {
 	path := strings.TrimSpace(s.options.AgentInitScript)
 	if path == "" {
-		logConfigWebError("agent restart script path is empty")
-		return
+		return errors.New("agent restart script path is empty")
 	}
 	cmd := exec.Command(path, "restart")
 	cmd.Stdin = nil
@@ -122,15 +133,16 @@ func (s *Server) launchRestartLocked() {
 		cmd = exec.Command("/bin/sh", path, "restart")
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		if shellErr := cmd.Start(); shellErr != nil {
-			logConfigWebError("launch agent restart: " + shellErr.Error())
-			return
+			return fmt.Errorf("launch agent restart: %w", shellErr)
 		}
 	}
+	s.restartError = nil
 	s.restartCommand = cmd
 	s.restartDone = make(chan error, 1)
 	s.restartReadinessPending = true
 	done := s.restartDone
 	go func() { done <- cmd.Wait() }()
+	return nil
 }
 
 func (s *Server) reapRestartLocked() {
@@ -138,9 +150,13 @@ func (s *Server) reapRestartLocked() {
 		return
 	}
 	select {
-	case <-s.restartDone:
+	case err := <-s.restartDone:
 		s.restartCommand = nil
 		s.restartDone = nil
+		if err != nil {
+			s.restartReadinessPending = false
+			s.restartError = fmt.Errorf("agent restart failed: %w", err)
+		}
 	default:
 	}
 }

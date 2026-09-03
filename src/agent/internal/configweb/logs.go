@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -122,9 +123,15 @@ func (s *Server) handleLLMLogImportName(w http.ResponseWriter, r *http.Request, 
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	size, copyErr := io.Copy(temporary, r.Body)
+	body := http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	size, copyErr := io.Copy(temporary, body)
 	syncErr := temporary.Sync()
 	closeErr := temporary.Close()
+	var maxErr *http.MaxBytesError
+	if errors.As(copyErr, &maxErr) {
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "log file is too large")
+		return
+	}
 	if copyErr != nil || syncErr != nil || closeErr != nil {
 		if copyErr == nil {
 			copyErr = syncErr
@@ -182,10 +189,6 @@ func stateInt64(values map[string]string, key string) int64 {
 		return 0
 	}
 	return value
-}
-
-func (s *Server) handleStorageStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, 200, s.storageStatusValue())
 }
 
 func (s *Server) storageStatusValue() map[string]any {

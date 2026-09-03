@@ -101,10 +101,16 @@ func loadWiFiConfig(path string) (wiFiConfig, error) {
 		return wiFiConfig{}, err
 	}
 	normalizeWiFiPriorities(&config)
-	if config.Country == "" {
-		config.Country = "CN"
-	}
+	config.Country = normalizeWiFiCountry(config.Country)
 	return config, nil
+}
+
+func normalizeWiFiCountry(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if len(value) != 2 || value[0] < 'A' || value[0] > 'Z' || value[1] < 'A' || value[1] > 'Z' {
+		return "CN"
+	}
+	return value
 }
 
 func decodeWiFiValue(value string, rawPSK bool) string {
@@ -127,11 +133,7 @@ func decodeWiFiValue(value string, rawPSK bool) string {
 func renderWiFiConfig(config wiFiConfig) string {
 	var output strings.Builder
 	output.WriteString("ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\ncountry=")
-	if config.Country == "" {
-		output.WriteString("CN")
-	} else {
-		output.WriteString(config.Country)
-	}
+	output.WriteString(normalizeWiFiCountry(config.Country))
 	output.WriteByte('\n')
 	for _, network := range config.Networks {
 		if network.SSID == "" {
@@ -357,10 +359,9 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	attempt := original
 	if strings.TrimSpace(request.Country) != "" {
-		attempt.Country = strings.TrimSpace(request.Country)
-	}
-	if attempt.Country == "" {
-		attempt.Country = "CN"
+		attempt.Country = normalizeWiFiCountry(request.Country)
+	} else {
+		attempt.Country = normalizeWiFiCountry(attempt.Country)
 	}
 	index := findWiFiNetwork(attempt, request.SSID)
 	network := wiFiNetwork{SSID: request.SSID, ScanSSID: true}
@@ -380,7 +381,12 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, 500, err.Error())
 		return
 	}
-	defer os.Remove(candidate)
+	removeCandidate := true
+	defer func() {
+		if removeCandidate {
+			_ = os.Remove(candidate)
+		}
+	}()
 	apply := s.applyWiFi(candidate, true)
 	status := s.queryWiFiStatus()
 	connected := apply.ExitCode == 0 && status["connected"] == true && status["ssid"] == request.SSID && status["ip_address"] != ""
@@ -390,12 +396,11 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, 500, err.Error())
 			return
 		}
-		finalApply := s.applyWiFi(s.options.WiFiConfigPath, true)
-		status = s.queryWiFiStatus()
-		connected = finalApply.ExitCode == 0 && status["connected"] == true && status["ssid"] == request.SSID && status["ip_address"] != ""
-		if connected {
-			responseConfig = attempt
-		}
+		// The running wpa_supplicant retains the path supplied with -c for
+		// future reconfigure/save operations. Keep the verified candidate file
+		// until the next connection attempt or service restart.
+		removeCandidate = false
+		responseConfig = attempt
 	}
 	if !connected {
 		if originalErr == nil {

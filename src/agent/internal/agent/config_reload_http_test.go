@@ -63,6 +63,21 @@ func TestInternalConfigReloadRejectsRemoteRequest(t *testing.T) {
 	}
 }
 
+func TestInternalConfigReloadRejectsTruncatedJSON(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[agent]\nlocale=\"en-US\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{runtime: &Runtime{config: Config{ConfigDir: dir}}}
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(`{"revision":1`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	server.handleInternalConfigReload(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAgentHandlerAllowsExactConfigWebOrigin(t *testing.T) {
 	t.Setenv("AIDEN_CONFIG_WEB_ORIGINS", "http://example.invalid")
 	server := &Server{}

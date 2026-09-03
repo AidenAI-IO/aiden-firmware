@@ -686,7 +686,7 @@ async function saveLocale(locale) {
   } catch (err) {
     if (saveId !== localeSaveId) return;
     const persisted = err && err.persisted === true;
-    applyLocale(persisted ? requested : previous, false);
+    applyLocale(persisted ? requested : previous, persisted);
     if (appState.config) {
       appState.config.agent = appState.config.agent || {};
       appState.config.agent.locale = persisted ? requested : previous;
@@ -695,9 +695,11 @@ async function saveLocale(locale) {
     localeRevision++;
     setBanner(t(persisted && err.applied === false ? 'locale.saved_not_applied' : 'locale.save_failed'), true);
     setDetails(err.message);
-    try {
-      await loadAuthoritativeLocale();
-    } catch (_refreshErr) {
+    if (!(persisted && err.applied === false)) {
+      try {
+        await loadAuthoritativeLocale();
+      } catch (_refreshErr) {
+      }
     }
   } finally {
     if (saveId === localeSaveId && selector) selector.disabled = false;

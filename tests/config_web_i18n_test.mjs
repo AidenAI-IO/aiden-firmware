@@ -189,7 +189,7 @@ async function loadModule(filePath) {
 
 const i18nModule = await loadModule(i18nPath);
 await i18nModule.evaluate();
-const {applyLocale, initI18n, t} = i18nModule.namespace;
+const {applyLocale, getActiveLocale, getPersistedLocale, initI18n, saveLocale, t} = i18nModule.namespace;
 
 assert.equal(t('config.save_failed', {section: 'agent'}), 'Save [agent] failed.');
 initI18n();
@@ -276,6 +276,7 @@ let latestDetails = null;
 let requestResult = {};
 let requestError = null;
 let requestImpl = null;
+let authoritativeLocaleLoads = 0;
 registerRuntime({
   readSection: () => ({}),
   refreshAgentStatus: () => {},
@@ -291,7 +292,20 @@ registerRuntime({
   },
   setBanner: (message, failed) => { latestBanner = {message, failed}; },
   setDetails: (message) => { latestDetails = message; },
+  loadAuthoritativeLocale: async () => { authoritativeLocaleLoads++; },
 });
+
+appState.config = {agent: {locale: 'en-US'}};
+requestError = Object.assign(new Error('saved but pending restart'), {persisted: true, applied: false});
+await saveLocale('zh-CN');
+assert.equal(getActiveLocale(), 'zh-CN');
+assert.equal(getPersistedLocale(), 'zh-CN');
+assert.equal(stored.get('aiden.config.locale'), 'zh-CN');
+assert.equal(appState.config.agent.locale, 'zh-CN');
+assert.equal(authoritativeLocaleLoads, 0);
+requestError = null;
+appState.config = null;
+applyLocale('en-US', true);
 
 const testButton = new Element({'data-i18n': 'action.test'});
 const testToast = new Element();

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -212,13 +213,15 @@ func (s *Server) handleConfigTest(w http.ResponseWriter, r *http.Request) {
 		}
 		add("base_url", !enabled || baseURL != "", baseDetail)
 		if baseURL != "" {
-			env, envErr := s.agentCommandEnvironment()
-			if envErr != nil {
+			validatedURL, validationErr := validateHTTPURL(baseURL)
+			if validationErr != nil {
+				add("endpoint_reachable", false, validationErr.Error())
+			} else if env, envErr := s.agentCommandEnvironment(); envErr != nil {
 				add("endpoint_reachable", false, envErr.Error())
 			} else {
-				result := runCommand(10*time.Second, env, nil, "curl", "-sI", "--max-time", "6", baseURL)
+				result := runCommand(10*time.Second, env, nil, "curl", "-sI", "--max-time", "6", "--", validatedURL)
 				reachable := result.ExitCode == 0 && strings.Contains(string(result.Output), "HTTP")
-				add("endpoint_reachable", reachable, baseURL+" -> "+strings.TrimRight(string(result.Output), "\r\n"))
+				add("endpoint_reachable", reachable, validatedURL+" -> "+strings.TrimRight(string(result.Output), "\r\n"))
 			}
 		}
 		for _, key := range []string{"public_key", "secret_key"} {
@@ -279,11 +282,15 @@ func (s *Server) handleProviderConfigTest(w http.ResponseWriter, _ *http.Request
 		writeJSONError(w, http.StatusServiceUnavailable, message)
 		return
 	}
-	status := http.StatusOK
-	if result.ExitCode != 0 && response["ok"] != true {
-		status = http.StatusOK
+	writeJSON(w, http.StatusOK, response)
+}
+
+func validateHTTPURL(value string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+		return "", fmt.Errorf("base_url must be an http:// or https:// URL with a host")
 	}
-	writeJSON(w, status, response)
+	return parsed.String(), nil
 }
 
 func (s *Server) agentCommandEnvironment() ([]string, error) {

@@ -131,10 +131,10 @@ assert.equal(elements.get('storageFormatBtn').disabled, true);
 assert.equal(elements.get('storageEjectBtn').disabled, true);
 assert.match(elements.get('storageJobStatus').textContent, /auto-formatting as ext4/);
 
-const legacy = normalizeStorageStatus({available: true, sd_present: true, sd_mounted: true, total_bytes: 8, free_bytes: 3});
-assert.equal(JSON.stringify(legacy), JSON.stringify({
-  available: true, present: true, mounted: true, device: '', mountPoint: '',
-  totalBytes: 8, freeBytes: 3, reason: '', effectiveMode: undefined,
+const retiredShape = normalizeStorageStatus({available: true, sd_present: true, sd_mounted: true, total_bytes: 8, free_bytes: 3});
+assert.equal(JSON.stringify(retiredShape), JSON.stringify({
+  available: false, present: false, mounted: false, device: '', mountPoint: '',
+  reason: '', effectiveMode: undefined,
   formatJob: {}, migration: {},
 }));
 

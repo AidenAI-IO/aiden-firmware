@@ -230,6 +230,7 @@ func pathExists(path string) bool {
 func emptyFirmwareInfo() map[string]any {
 	return map[string]any{
 		"version": "", "build_time": "", "phase": "", "health_status": "", "health_error": "",
+		"current_version": "", "current_build_time": "", "target_version": "", "target_build_time": "",
 		"previous_version": "", "previous_build_time": "", "running_slot": "", "target_slot": "",
 	}
 }

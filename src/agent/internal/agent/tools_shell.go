@@ -546,7 +546,11 @@ func shellStartPTYBackground(ctx context.Context, session *shellSession, argumen
 	session.pty = ptmx
 	session.ptyCmd = ptyCmd
 	session.stdin = ptmx
-	go session.capture(ptmx)
+	session.captureDone = make(chan struct{})
+	go func() {
+		defer close(session.captureDone)
+		session.capture(ptmx)
+	}()
 	return nil
 }
 

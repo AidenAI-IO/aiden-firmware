@@ -2,6 +2,7 @@ package configweb
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -20,13 +21,15 @@ func Run(args []string) int {
 	fs.StringVar(&options.AgentConfigPath, "config", options.AgentConfigPath, "agent TOML path")
 	fs.StringVar(&options.WiFiConfigPath, "wifi-config", options.WiFiConfigPath, "wpa_supplicant config path")
 	fs.StringVar(&options.WiFiInterface, "wifi-interface", options.WiFiInterface, "Wi-Fi interface")
-	fs.StringVar(&options.WiFiInterface, "wifi-iface", options.WiFiInterface, "Wi-Fi interface (compatibility alias)")
 	fs.StringVar(&options.OTAStatePath, "ota-state", options.OTAStatePath, "OTA state JSON path")
 	fs.StringVar(&options.CmdlinePath, "cmdline", options.CmdlinePath, "kernel command line path")
 	fs.StringVar(&options.SystemEnvPath, "system-env", options.SystemEnvPath, "system environment file path")
 	fs.StringVar(&options.StorageStatePath, "storage-state", options.StorageStatePath, "storage state path")
 	fs.StringVar(&options.WebRoot, "web-root", options.WebRoot, "config web static asset root")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 1
 	}
 	if fs.NArg() != 0 {

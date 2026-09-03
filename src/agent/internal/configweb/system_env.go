@@ -214,10 +214,16 @@ func (s *Server) handleSystemEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := atomicWriteFile(s.options.SystemEnvPath, []byte(*request.SystemEnv), 0o600); err != nil {
-		writeJSONError(w, 400, err.Error())
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.scheduleAgentRestart()
+	if err := s.scheduleAgentRestart(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok": false, "persisted": true, "agent_restart_scheduled": false,
+			"system_env": *request.SystemEnv, "error": err.Error(),
+		})
+		return
+	}
 	writeJSON(w, 200, map[string]any{
 		"ok":                      true,
 		"message":                 "system env saved; agent restarting",

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -57,7 +58,7 @@ func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Reque
 	var request configReloadRequest
 	if r.Body != nil {
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024))
-		if err := decoder.Decode(&request); err != nil && !strings.Contains(err.Error(), "EOF") {
+		if err := decoder.Decode(&request); err != nil && err != io.EOF {
 			writeAgentJSONError(w, http.StatusBadRequest, "invalid reload request")
 			return
 		}

@@ -151,9 +151,9 @@ endif()
 
 add_test(NAME aiden_tests COMMAND $<TARGET_FILE:aiden_tests>)
 
-# Config Web is implemented by the Go Agent binary. Keep its HTTP contract in
-# the CTest suite by running the package tests directly; the retired C++ server
-# is intentionally not built as a test target.
+# Config Web is implemented by the Go Agent binary. Its Go package tests replace
+# the legacy E2E driver that launched the retired C++ server. Focused Node tests
+# cover the modular frontend instead of retaining source checks for that server.
 find_program(GO_EXECUTABLE go)
 if(GO_EXECUTABLE)
     add_test(NAME config_web_go
@@ -181,6 +181,12 @@ if(NODE_EXECUTABLE)
     )
     add_test(NAME config_web_i18n
         COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_i18n_test.mjs
+    )
+    add_test(NAME config_web_api
+        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_api_test.mjs
+    )
+    add_test(NAME config_web_routes
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/config_web_routes_test.mjs
     )
     add_test(NAME config_web_providers
         COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_providers_test.mjs

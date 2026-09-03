@@ -8,7 +8,7 @@ function setBanner(message,isError){const el=byId('actionBanner');el.textContent
     // intentionally not reachable from the portal.
     function agentURL(path){const current=new URL(window.location.href);const target=new URL(path,current.href);current.pathname=target.pathname;current.search=target.search;current.hash=target.hash;return current.toString();}
     async function agentRequest(path,options){return request(path,options);}
-    async function request(url,options){const res=await fetch(url,options);const text=await res.text();let body={};try{body=text?JSON.parse(text):{}}catch(err){body={ok:false,error:text||err.message}}if(!res.ok){const error=new Error(body.error||('HTTP '+res.status));error.status=res.status;if(body&&typeof body==='object')Object.keys(body).forEach(function(key){error[key]=body[key];});throw error;}return body;}
+    async function request(url,options){const res=await fetch(url,options);const text=await res.text();let body={};try{body=text?(JSON.parse(text)??{}):{}}catch(err){body={ok:false,error:text||err.message}}if(!res.ok){const error=new Error(body.error||('HTTP '+res.status));if(body&&typeof body==='object')Object.keys(body).forEach(function(key){error[key]=body[key];});error.status=res.status;throw error;}return body;}
 
 export { request, agentRequest, agentURL, setBanner, setDetails, updateActionDetailsVisibility };
 registerRuntime({ request, agentRequest, agentURL, setBanner, setDetails, updateActionDetailsVisibility });

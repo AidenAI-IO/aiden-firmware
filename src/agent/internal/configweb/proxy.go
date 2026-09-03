@@ -19,6 +19,16 @@ type proxyResponse struct {
 	body   []byte
 }
 
+var agentProxyClient = &http.Client{
+	Timeout: 60 * time.Second,
+	Transport: &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		MaxIdleConns:        8,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     30 * time.Second,
+	},
+}
+
 func (s *Server) proxyAgent(w http.ResponseWriter, r *http.Request, targetPath string) {
 	body, err := readRequestBody(w, r)
 	if err != nil {
@@ -91,14 +101,14 @@ func (s *Server) doProxyAgent(r *http.Request, targetPath string, body []byte) (
 	if contentType := r.Header.Get("Content-Type"); contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	response, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	response, err := agentProxyClient.Do(req)
 	if err != nil {
 		return proxyResponse{}, &proxyError{status: http.StatusServiceUnavailable, message: "agent HTTP request failed: " + err.Error(), retryable: true}
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxRequestBodySize+1))
 	if err != nil {
-		return proxyResponse{}, &proxyError{status: http.StatusServiceUnavailable, message: "agent HTTP response failed: " + err.Error(), retryable: true}
+		return proxyResponse{}, &proxyError{status: http.StatusServiceUnavailable, message: "agent HTTP response failed: " + err.Error()}
 	}
 	if len(data) > maxRequestBodySize {
 		return proxyResponse{}, &proxyError{status: http.StatusServiceUnavailable, message: "agent HTTP response body too large"}
@@ -115,7 +125,20 @@ type proxyError struct {
 func (e *proxyError) Error() string { return e.message }
 
 func writeProxyResponse(w http.ResponseWriter, response proxyResponse) {
+	hopByHop := map[string]bool{
+		"Connection": true, "Keep-Alive": true, "Proxy-Authenticate": true,
+		"Proxy-Authorization": true, "Te": true, "Trailer": true,
+		"Transfer-Encoding": true, "Upgrade": true,
+	}
+	for _, value := range response.header.Values("Connection") {
+		for _, key := range strings.Split(value, ",") {
+			hopByHop[http.CanonicalHeaderKey(strings.TrimSpace(key))] = true
+		}
+	}
 	for key, values := range response.header {
+		if hopByHop[http.CanonicalHeaderKey(key)] {
+			continue
+		}
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}

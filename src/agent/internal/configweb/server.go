@@ -32,6 +32,7 @@ type Server struct {
 	restartDone             chan error
 	restartDeferred         bool
 	restartReadinessPending bool
+	restartError            error
 	sttTestActive           bool
 }
 

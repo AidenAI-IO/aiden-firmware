@@ -30,6 +30,7 @@ type shellSession struct {
 	stdin        io.WriteCloser
 	pty          gopty.Pty
 	output       *shellRingBuffer
+	captureDone  chan struct{}
 	done         chan struct{}
 	cancel       context.CancelFunc
 	startedAt    time.Time
@@ -144,8 +145,11 @@ func (s *shellSession) wait() {
 			code := s.ptyCmd.ProcessState.ExitCode()
 			exitCode = &code
 		}
-		s.setExitState(exitErr, exitCode)
 		s.closeInput()
+		if s.captureDone != nil {
+			<-s.captureDone
+		}
+		s.setExitState(exitErr, exitCode)
 		return
 	}
 

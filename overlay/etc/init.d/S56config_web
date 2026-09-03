@@ -29,29 +29,14 @@ is_running() {
     kill -0 "$pid" 2>/dev/null || return 1
     exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
     case "$exe" in
-        "$BIN")
-            case "$BIN" in
-                */agent|agent)
-                    # The Agent daemon and Config Web now share one
-                    # executable. Require the subcommand for the shared path.
-                    cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
-                    case " $cmdline " in
-                        *" config-web "*) return 0 ;;
-                    esac
-                    ;;
-                *) return 0 ;;
-            esac
-            ;;
-        */agent)
-            # The Agent daemon and Config Web now share one executable. A
-            # stale/reused PID must not let the daemon satisfy this service's
-            # liveness check, so require the Config Web subcommand as well.
-            cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
-            case " $cmdline " in
-                *" config-web "*) return 0 ;;
-            esac
-            ;;
-        "$BIN"|*/config_web) return 0 ;;
+        "$BIN"|*/agent) ;;
+        *) return 1 ;;
+    esac
+    # The Agent daemon and Config Web share one executable. A stale/reused PID
+    # must not let the daemon satisfy this service's liveness check.
+    cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    case " $cmdline " in
+        *" config-web "*) return 0 ;;
     esac
     return 1
 }
@@ -135,9 +120,9 @@ terminate_child() {
 }
 
 # Poll until the portal is actually accepting connections rather than sleeping a
-# flat second. config_web binds before its accept loop, so this normally returns
-# in tens of milliseconds — and unlike a sleep it verifies the socket is really
-# up, not merely that the process has not exited yet.
+# flat second. The Agent config-web subcommand binds before its accept loop, so
+# this normally returns in tens of milliseconds — and unlike a sleep it verifies
+# the socket is really up, not merely that the process has not exited yet.
 #
 # Exit status:
 #   0 - listening on $PORT, confirmed
@@ -205,13 +190,7 @@ start() {
 
     mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SYSTEM_ENV_PATH")"
 
-    set -- --bind=0.0.0.0 --port="$PORT" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" --web-root="$WEB_ROOT"
-    case "$BIN" in
-        */agent|agent)
-            set -- config-web "$@"
-            ;;
-    esac
-    "$ENV_RUN_BIN" "$BIN" "$@" &
+    "$ENV_RUN_BIN" "$BIN" config-web --bind=0.0.0.0 --port="$PORT" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" --web-root="$WEB_ROOT" &
     child_pid=$!
     echo "$child_pid" > "$PID_FILE"
 
