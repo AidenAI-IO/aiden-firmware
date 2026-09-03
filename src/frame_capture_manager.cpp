@@ -188,6 +188,15 @@ void FrameCaptureManager::run() {
             continue;
         }
 
+        // Publish readiness as soon as the source is open. On-demand clients
+        // gate their first capture on this state, so leaving it at STARTING or
+        // RECOVERING until a capture succeeds deadlocks them: no request is
+        // sent, so no capture can succeed, so the state never advances. open()
+        // already synced HDMI timings and ran the warmup, so the pipeline is
+        // genuinely ready here. Losing the link still fails open() and keeps
+        // the service in RECOVERING on the idle backoff.
+        server_->set_state("RUNNING");
+
         while (running_) {
             uint64_t generation = 0;
             {
