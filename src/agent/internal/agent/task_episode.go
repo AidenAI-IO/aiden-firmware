@@ -1071,6 +1071,12 @@ func compactMaterializedScreenshotObservation(result postActionScreenshotResult)
 	return string(data)
 }
 
+// isTruncatedJSONLineError reports whether err came from decoding a JSONL line
+// that was cut short, which happens when a crash interrupts an append.
+func isTruncatedJSONLineError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unexpected end of JSON input")
+}
+
 func writeEpisodeEventsJSONL(path string, events []TaskEpisodeEvent) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
