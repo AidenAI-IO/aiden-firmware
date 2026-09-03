@@ -547,7 +547,20 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.storage.Start()
 
 	rt.screenState = screenState
-	rt.phoneBridge = NewPhoneBridge(logger)
+	
+	// Create PhoneBridge in proxy mode if environment bridge is enabled
+	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
+		rt.phoneBridge = NewPhoneBridgeProxy(
+			cfg.EnvironmentBridge.Endpoint,
+			cfg.EnvironmentBridge.BenchmarkTaskID,
+			logger,
+		)
+		if logger != nil {
+			logger.Info("phone-bridge: proxy mode enabled, endpoint=%s", cfg.EnvironmentBridge.Endpoint)
+		}
+	} else {
+		rt.phoneBridge = NewPhoneBridge(logger)
+	}
 	rt.phoneBridge.SetConfiguredPlatform(cfg.DevicePlatformOrDefault())
 	rt.stateManager.RegisterUpdater(rt.phoneBridge)
 

@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,6 +55,12 @@ type GetResultResponse struct {
 func (pb *PhoneBridge) handleEnqueueCommand(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Proxy mode: forward to remote agent
+	if pb.proxyMode {
+		pb.proxyHTTPRequest(w, r, "/api/phone-bridge/commands")
 		return
 	}
 
@@ -130,6 +138,12 @@ func (pb *PhoneBridge) handleEnqueueCommand(w http.ResponseWriter, r *http.Reque
 func (pb *PhoneBridge) handlePollCommands(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Proxy mode: forward to remote agent
+	if pb.proxyMode {
+		pb.proxyHTTPRequest(w, r, "/api/phone-bridge/commands")
 		return
 	}
 
@@ -252,6 +266,12 @@ func (pb *PhoneBridge) handleSubmitResult(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Proxy mode: forward to remote agent
+	if pb.proxyMode {
+		pb.proxyHTTPRequest(w, r, "/api/phone-bridge/results")
+		return
+	}
+
 	var req SubmitResultRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		if pb.logger != nil {
@@ -300,6 +320,12 @@ func (pb *PhoneBridge) handleQueryResult(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Proxy mode: forward to remote agent
+	if pb.proxyMode {
+		pb.proxyHTTPRequest(w, r, r.URL.Path)
+		return
+	}
+
 	// Extract command_id from path: /api/phone-bridge/results/:command_id
 	path := strings.TrimPrefix(r.URL.Path, "/api/phone-bridge/results/")
 	commandID := strings.TrimSpace(path)
@@ -328,4 +354,61 @@ func (pb *PhoneBridge) handleQueryResult(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// proxyHTTPRequest forwards an HTTP request to the remote agent in proxy mode.
+func (pb *PhoneBridge) proxyHTTPRequest(w http.ResponseWriter, r *http.Request, path string) {
+	// Build remote URL
+	remoteURL := pb.proxyEndpoint + path
+	if r.URL.RawQuery != "" {
+		remoteURL = remoteURL + "?" + r.URL.RawQuery
+	}
+
+	// Read request body if present
+	var body io.Reader
+	if r.Body != nil {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			if pb.logger != nil {
+				pb.logger.Error("phone-bridge-proxy: read request body failed: %v", err)
+			}
+			http.Error(w, fmt.Sprintf(`{"error":"read request body: %v"}`, err), http.StatusBadGateway)
+			return
+		}
+		body = bytes.NewReader(bodyBytes)
+	}
+
+	// Create proxied request
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, remoteURL, body)
+	if err != nil {
+		if pb.logger != nil {
+			pb.logger.Error("phone-bridge-proxy: create request failed: %v", err)
+		}
+		http.Error(w, fmt.Sprintf(`{"error":"create request: %v"}`, err), http.StatusBadGateway)
+		return
+	}
+
+	// Copy relevant headers
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
+	}
+	if pb.proxyTaskID != "" {
+		req.Header.Set("benchmark-task-id", pb.proxyTaskID)
+	}
+
+	// Send request
+	resp, err := pb.proxyClient.Do(req)
+	if err != nil {
+		if pb.logger != nil {
+			pb.logger.Error("phone-bridge-proxy: send request failed: %v", err)
+		}
+		http.Error(w, fmt.Sprintf(`{"error":"send request: %v"}`, err), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
