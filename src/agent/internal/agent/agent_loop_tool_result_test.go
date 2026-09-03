@@ -13,6 +13,7 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/tokencounter"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -124,7 +125,7 @@ func (m *unknownContextScriptedModel) Spec() model.ModelSpec {
 
 func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.T) {
 	rawOutput := strings.Repeat("0123456789", 736)
-	if len(rawOutput) >= toolResultInlineMaxBytes || estimateTextTokens(rawOutput) >= toolResultInlineMaxTokens {
+	if len(rawOutput) >= toolResultInlineMaxBytes || tokencounter.EstimateTextTokens(rawOutput) >= toolResultInlineMaxTokens {
 		t.Fatal("test setup output must be intrinsically small")
 	}
 	inner := &unknownContextScriptedModel{scriptedModel: &scriptedModel{responses: []*llms.ContentResponse{
@@ -412,7 +413,7 @@ func TestAgentLoopPersistsBoundedToolResultWhenPolicyFails(t *testing.T) {
 	if stored.ToolCallID != "call_1" || stored.Meta == nil || stored.Meta.ProcessingErrorCode != "tool_result_processing_failed" {
 		t.Fatalf("stored fallback result = %#v", stored)
 	}
-	if strings.Contains(stored.Content, "raw-secret-") || estimateTextTokens(stored.Content) > toolResultMinimumObservation {
+	if strings.Contains(stored.Content, "raw-secret-") || tokencounter.EstimateTextTokens(stored.Content) > toolResultMinimumObservation {
 		t.Fatalf("stored fallback was not bounded: %q", stored.Content)
 	}
 }

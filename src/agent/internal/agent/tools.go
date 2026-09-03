@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/mnk"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
@@ -348,19 +349,23 @@ func (s *ToolSet) UpdateDeviceEnvironment(env *PhoneEnvironment) {
 	s.screen.UpdatePhoneScreenInfo(env.Screen)
 }
 
-func (s *ToolSet) RegisterMemoryTools(memoryDir string, summaryMaxChunks int, longTermStore *LongTermMemoryStore) {
+// RegisterMemoryTools wires the memory recall/write tools. configDir locates the
+// ContextManager session folder that holds conversation chunks; memoryDir is the
+// filesystem memory root for the long-term, device, and episode planes.
+func (s *ToolSet) RegisterMemoryTools(configDir, memoryDir string, longTermStore *LongTermMemoryStore) {
 	if memoryDir == "" {
 		return
 	}
-	sessionStore := NewSessionMemoryStore(filepath.Join(memoryDir, "session"), summaryMaxChunks)
-	archivedStore := NewArchivedSessionStore(filepath.Join(memoryDir, "session_archive"))
+	// Conversation chunks are written per ContextManager session at compaction
+	// time; recall scans every session folder, so no session lineage is needed.
+	multiSessionStore := NewMultiSessionChunkStore(agentpath.ContextManagerSessionFolder(configDir))
 	if longTermStore == nil {
 		longTermStore = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")))
 	}
 	temporaryStore := NewLongTermMemoryStore(filepath.Join(memoryDir, "temporary"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")))
 	deviceStore := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
 	episodeStore := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
-	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore, archivedStore)
+	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(multiSessionStore)
 	s.tools["recall_memory"] = NewRecallMemoryToolWithTemporary(longTermStore, temporaryStore)
 	s.tools["save_memory"] = NewSaveMemoryTool(longTermStore)
 	s.tools["forget_memory"] = NewForgetMemoryToolWithTemporary(longTermStore, temporaryStore)
