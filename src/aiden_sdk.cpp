@@ -380,10 +380,21 @@ static int push_edid(int subdev_fd, const CameraConfig& config) {
     edid.blocks = blocks;
     edid.edid = normalized_data.data();
 
-    if (push_edid_with_v4l2ctl(config, normalized_data.data(), blocks) < 0 &&
-        xioctl(subdev_fd, VIDIOC_SUBDEV_S_EDID, &edid) < 0) {
-        free(heap_edid);
-        return -1;
+    // Program the bridge in-process first. VIDIOC_SUBDEV_S_EDID needs no
+    // external binary and is what actually sets the EDID on current images;
+    // running v4l2-ctl first meant forking a child on every push and, whenever
+    // the installed v4l-utils disagreed about the command line, logging
+    // edid_fallback_failed on a push that then succeeded through the ioctl
+    // anyway. Keep v4l2-ctl for kernels or bridges that reject the ioctl.
+    if (xioctl(subdev_fd, VIDIOC_SUBDEV_S_EDID, &edid) < 0) {
+        AIDEN_LOG_WARN("hdmi", "edid_ioctl_failed",
+                       "device=%s error=%s trying=v4l2-ctl",
+                       config.subdev_device ? config.subdev_device : "",
+                       strerror(errno));
+        if (push_edid_with_v4l2ctl(config, normalized_data.data(), blocks) < 0) {
+            free(heap_edid);
+            return -1;
+        }
     }
 
     free(heap_edid);
