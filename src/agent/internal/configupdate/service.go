@@ -534,6 +534,7 @@ func persistLegacyProviderFields(
 				"location":          record.Location,
 				"endpoint":          record.Endpoint,
 				"base_url":          record.BaseURL,
+				"realtime_protocol": record.RealtimeProtocol,
 				"voice":             record.Voice,
 			})
 			if len(values) > 0 {
