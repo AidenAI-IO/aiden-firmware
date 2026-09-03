@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,9 +33,19 @@ func TestBluetoothHTTPStatus(t *testing.T) {
 }
 
 func TestBluetoothHTTPPairingActions(t *testing.T) {
+	var logs bytes.Buffer
 	server := &Server{
+		logger: &Logger{logger: log.New(&logs, "", 0)},
 		blePairingStartRequest: func(context.Context, string) (ble.RuntimeStatus, error) {
-			return ble.RuntimeStatus{PairingOpen: true}, nil
+			return ble.RuntimeStatus{
+				BackendAvailable:  true,
+				DeviceName:        "Aiden-1234",
+				AdapterPowered:    true,
+				GattRegistered:    true,
+				Advertising:       true,
+				PairingOpen:       true,
+				BondedDeviceCount: 1,
+			}, nil
 		},
 	}
 
@@ -42,6 +53,35 @@ func TestBluetoothHTTPPairingActions(t *testing.T) {
 	server.handleBluetoothPairingStart(recorder, bluetoothControlRequest(http.MethodPost))
 	if recorder.Code != http.StatusOK || !containsAll(recorder.Body.String(), `"pairing_open":true`) {
 		t.Fatalf("start code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !containsAll(logs.String(),
+		"pairing_start_requested",
+		"pairing_start_succeeded",
+		"backend_available=true",
+		"device_name=Aiden-1234",
+		"pairing_open=true",
+		"bonded_device_count=1",
+	) {
+		t.Fatalf("pairing logs = %s", logs.String())
+	}
+}
+
+func TestBluetoothHTTPPairingStartLogsFailure(t *testing.T) {
+	var logs bytes.Buffer
+	server := &Server{
+		logger: &Logger{logger: log.New(&logs, "", 0)},
+		blePairingStartRequest: func(context.Context, string) (ble.RuntimeStatus, error) {
+			return ble.RuntimeStatus{}, &ble.RequestError{Status: "SERVICE_UNAVAILABLE", Message: "adapter unavailable"}
+		},
+	}
+
+	recorder := httptest.NewRecorder()
+	server.handleBluetoothPairingStart(recorder, bluetoothControlRequest(http.MethodPost))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("start code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !containsAll(logs.String(), "pairing_start_requested", "pairing_start_failed", "adapter unavailable") {
+		t.Fatalf("pairing failure logs = %s", logs.String())
 	}
 }
 
