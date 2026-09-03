@@ -84,7 +84,8 @@ func (w *SessionChunkWriter) WriteChunk(ctx context.Context, sessionID string, m
 		return err
 	}
 
-	chunksDir := filepath.Join(w.sessionFolder, sessionID, "chunks")
+	// All chunks go into a shared flat directory
+	chunksDir := filepath.Join(w.sessionFolder, "chunks")
 	if err := os.MkdirAll(chunksDir, 0o755); err != nil {
 		return fmt.Errorf("create chunks directory: %w", err)
 	}
@@ -159,9 +160,11 @@ func (w *SessionChunkWriter) WriteChunk(ctx context.Context, sessionID string, m
 	// chunk written without them would be reachable only by chunk_id.
 	tags, entities := w.chunkSearchTerms(msgs, summary)
 
-	// Create index entry
+	// Create index entry with session_id and created_at
+	now := time.Now().UTC().Format(time.RFC3339)
 	entry := chunkIndexEntry{
 		ID:         chunkID,
+		SessionID:  sessionID,
 		File:       chunkID + ".jsonl",
 		Status:     "active",
 		Summary:    summary,
@@ -169,10 +172,11 @@ func (w *SessionChunkWriter) WriteChunk(ctx context.Context, sessionID string, m
 		Entities:   entities,
 		EventCount: len(msgs),
 		Checksum:   checksum,
+		CreatedAt:  now,
 	}
 
 	index.Version = 1
-	index.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	index.UpdatedAt = now
 	index.Chunks = append(index.Chunks, entry)
 
 	// Write index as YAML
