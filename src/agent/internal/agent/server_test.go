@@ -3385,20 +3385,21 @@ func TestWebUIShowsMessageTokenUsage(t *testing.T) {
 }
 
 func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
-	storageDir := t.TempDir()
-	memoryManager := NewMemoryManager(storageDir)
-	if err := memoryManager.AppendMessages(context.Background(), "default", []MessageRecord{
-		{Role: string(llms.ChatMessageTypeHuman), Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
-	}); err != nil {
-		t.Fatalf("AppendMessages() error = %v", err)
+	configDir := t.TempDir()
+	memoryManager := NewMemoryManager(configDir)
+	// ClearMemory rotates the user context, so verify a context exists to rotate.
+	userFolder := agentpath.UserContextManagerSessionFolder(configDir)
+	if _, err := contextmanager.NewContextManager(userFolder, "system"); err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(storageDir, "session", "events.jsonl")); err != nil {
-		t.Fatalf("expected session events before clear: %v", err)
+	oldSessionID := contextmanager.CurrentSessionID(userFolder)
+	if oldSessionID == "" {
+		t.Fatal("expected a current session before clear")
 	}
 
 	server := &Server{logger: newTestLogger(),
 		runtime: NewRuntimeWithDeps(
-			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
+			withTestConfigDir(t, Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
 			memoryManager,
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -3413,8 +3414,9 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
-	if _, err := os.Stat(filepath.Join(storageDir, "session")); !os.IsNotExist(err) {
-		t.Fatalf("expected session memory to be removed, stat err = %v", err)
+	newSessionID := contextmanager.CurrentSessionID(userFolder)
+	if newSessionID == "" || newSessionID == oldSessionID {
+		t.Fatalf("user context session not rotated: old=%q new=%q", oldSessionID, newSessionID)
 	}
 }
 

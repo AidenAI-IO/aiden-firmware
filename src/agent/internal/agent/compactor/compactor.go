@@ -18,6 +18,11 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+// ChunkWriter handles writing conversation chunks during compaction.
+type ChunkWriter interface {
+	WriteChunk(ctx context.Context, sessionID string, messages []messages.Message, summary string) error
+}
+
 type ProtectRule struct {
 	HeadN int
 	TailN int
@@ -82,7 +87,7 @@ func estimateMessageListTokenUsage(messageList []messages.Message) int {
 	return tokencounter.EstimateMessagesTokens(messageList)
 }
 
-func (c *Compactor) Compact(ctx context.Context, session *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
+func (c *Compactor) Compact(ctx context.Context, session *contextmanager.ContextManager, chunkWriter ChunkWriter) (*contextmanager.ContextManager, bool, error) {
 	if session == nil {
 		return nil, false, nil
 	}
@@ -134,6 +139,14 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	if summary == "" {
 		return nil, false, fmt.Errorf("failed to generate summary")
 	}
+
+	// Write chunk for the compacted messages before creating revision
+	if chunkWriter != nil {
+		if err := chunkWriter.WriteChunk(ctx, session.GetSessionID(), mids, summary); err != nil {
+			return nil, false, fmt.Errorf("write chunk: %w", err)
+		}
+	}
+
 	// assemble
 	formattedSummary := c.formatSummary(summary)
 	newMessageList := append(append([]messages.Message(nil), heads...), messages.Message{

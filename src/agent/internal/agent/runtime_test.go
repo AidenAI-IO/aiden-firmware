@@ -963,10 +963,8 @@ func TestRuntimeRunUsesSessionManager(t *testing.T) {
 		},
 	}
 	manager := &recordingSessionManager{
-		beginResult: SessionBeginResult{
-			Boundary: sessionBoundaryTelemetry{Decision: BoundaryContinue, Reason: BoundaryReasonTimeGapShort},
-		},
-		result: SessionCommitResult{},
+		beginResult: SessionBeginResult{},
+		result:      SessionCommitResult{},
 	}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
@@ -1889,95 +1887,6 @@ func TestRuntimeRunConsumesPendingSteerBeforeFinalAnswer(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunPersistsConsumedSteerAsConversationMessage(t *testing.T) {
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			contentResponse("Old answer."),
-		},
-	}
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
-		&testModelResolver{model: model},
-		NewMemoryManager(storageDir),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	var steerCalls int32
-	result, err := runtime.Run(context.Background(), RunRequest{
-		Input: "original persisted request",
-		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
-			if atomic.AddInt32(&steerCalls, 1) != 1 {
-				return RunSteerMessage{}, false
-			}
-			return RunSteerMessage{
-				ID:      "steer-1",
-				Content: "persist this steering message",
-			}, true
-		},
-	})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if result.Output != "Old answer." {
-		t.Fatalf("output = %q, want Old answer.", result.Output)
-	}
-	if steerCalls == 0 {
-		t.Fatal("SteerProvider was not polled")
-	}
-
-	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if !sessionEventsContain(events, func(event SessionEvent) bool {
-		return event.Type == "role_output" && event.Role == "agent" && event.Content == "Old answer."
-	}) {
-		t.Fatalf("expected agent role_output to be persisted in session events: %#v", events)
-	}
-	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
-	if sessionEventCount(chatEvents, "steer", "", "") != 1 {
-		t.Fatalf("expected one persisted steer event: %#v", events)
-	}
-	if !sessionEventExists(chatEvents, "user_input", "user", "original persisted request") {
-		t.Fatalf("expected original user input to be persisted; all events: %#v", events)
-	}
-	if !sessionEventExists(chatEvents, "assistant_output", "assistant", "Old answer.") {
-		t.Fatalf("expected assistant output to be persisted; all events: %#v", events)
-	}
-}
-
-func TestRuntimeRunPersistsAssistantOutputOnce(t *testing.T) {
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	memoryManager := NewMemoryManager(storageDir)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := memoryManager.WaitMaintenance(ctx); err != nil {
-			t.Fatalf("wait memory maintenance cleanup: %v", err)
-		}
-	})
-	ctx := context.Background()
-
-	model := &scriptedModel{responses: roleDirectResponses("hello answer")}
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer."}),
-		&testModelResolver{model: model},
-		memoryManager,
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	if _, err := runtime.Run(ctx, RunRequest{Input: "hi"}); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-
-	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if got := sessionEventCount(events, "assistant_output", "assistant", "hello answer"); got != 1 {
-		t.Fatalf("assistant_output count = %d, want 1; events=%#v", got, events)
-	}
-}
-
 func TestRuntimeRunPublishesReasoningWithFinalAssistantOutput(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{{
 		Choices: []*llms.ContentChoice{{Content: "final answer", ReasoningContent: "short plan"}},
@@ -2015,114 +1924,6 @@ func TestRuntimeRunPublishesReasoningWithFinalAssistantOutput(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunKeepsCurrentExchangeWhenSnapshotWindowIsFull(t *testing.T) {
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	memoryManager := NewMemoryManager(storageDir)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := memoryManager.WaitMaintenance(ctx); err != nil {
-			t.Fatalf("wait memory maintenance cleanup: %v", err)
-		}
-	})
-	ctx := context.Background()
-	for i := 0; i < 10; i++ {
-		if err := memoryManager.AppendExchange(ctx, "default", fmt.Sprintf("prior user %02d", i), fmt.Sprintf("prior assistant %02d", i)); err != nil {
-			t.Fatalf("AppendExchange(%d) error = %v", i, err)
-		}
-	}
-
-	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			contentResponse("Old answer."),
-		},
-	}
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
-		&testModelResolver{model: model},
-		memoryManager,
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-
-	var steerCalls int32
-	result, err := runtime.Run(ctx, RunRequest{
-		Input: "windowed request",
-		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
-			if atomic.AddInt32(&steerCalls, 1) != 1 {
-				return RunSteerMessage{}, false
-			}
-			return RunSteerMessage{
-				ID:      "steer-1",
-				Content: "persist even when the hot window is full",
-			}, true
-		},
-	})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if result.Output != "Old answer." {
-		t.Fatalf("output = %q, want Old answer.", result.Output)
-	}
-	if steerCalls == 0 {
-		t.Fatal("SteerProvider was not polled")
-	}
-
-	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
-	if sessionEventCount(chatEvents, "steer", "", "") != 1 {
-		t.Fatalf("expected one persisted steer event: %#v", events)
-	}
-	if len(chatEvents) < 22 {
-		t.Fatalf("expected at least 22 chat-like session events, got %d: %#v", len(chatEvents), events)
-	}
-	if !sessionEventExists(chatEvents, "user_input", "user", "windowed request") {
-		t.Fatalf("expected current user input in session events: %#v", events)
-	}
-	if !sessionEventExists(chatEvents, "assistant_output", "assistant", "Old answer.") {
-		t.Fatalf("expected current assistant output in session events: %#v", events)
-	}
-}
-
-func TestRuntimeRunPersistsRootInputBeforeModelFailure(t *testing.T) {
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
-		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
-		NewMemoryManager(storageDir),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	result, err := runtime.Run(context.Background(), RunRequest{
-		Input:     "打开微信，进入 den 群，发送100块钱红包",
-		EpisodeID: "ep_red_packet_failure",
-		RequestID: "req-red-packet-failure",
-	})
-	if err == nil {
-		t.Fatalf("Run() error = nil, want model failure")
-	}
-	if result.TurnFailure == nil || result.TurnFailure.Code != TurnFailureLLMUnavailable {
-		t.Fatalf("Run() TurnFailure = %#v, want %q", result.TurnFailure, TurnFailureLLMUnavailable)
-	}
-
-	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if len(events) == 0 {
-		t.Fatalf("expected root user_input to be persisted before model failure")
-	}
-	root := events[0]
-	if root.Type != "user_input" || root.Role != "user" || root.Content != "打开微信，进入 den 群，发送100块钱红包" {
-		t.Fatalf("first session event = %#v", root)
-	}
-	if root.Modality != "text" || root.OriginalText != "打开微信，进入 den 群，发送100块钱红包" {
-		t.Fatalf("root event missing text modality/original text: %#v", root)
-	}
-	if root.EpisodeID != "ep_red_packet_failure" || root.RequestID != "req-red-packet-failure" {
-		t.Fatalf("root event missing episode/request metadata: %#v", root)
-	}
-}
-
 func TestRuntimeRunDoesNotMarkLocalValidationErrorAsTurnFailure(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
@@ -2141,116 +1942,6 @@ func TestRuntimeRunDoesNotMarkLocalValidationErrorAsTurnFailure(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunPersistsCanonicalVoiceInputBeforeModelFailure(t *testing.T) {
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
-		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
-		NewMemoryManager(storageDir),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	_, err := runtime.Run(context.Background(), RunRequest{
-		Turn: TurnInput{
-			InputText:    "打开微信发消息",
-			OriginalText: "按住说话",
-			Modality:     "stt",
-			Source:       "voice",
-			Transcript:   "打开微信发消息",
-			Artifacts: []InputArtifact{{
-				Kind:       AttachmentKindAudio,
-				MIMEType:   "audio/wav",
-				Path:       "/userdata/agent/audio/msg_123.wav",
-				DurationMS: 3200,
-				Size:       102400,
-			}},
-		},
-		EpisodeID: "ep_voice_failure",
-		RequestID: "req-voice-failure",
-	})
-	if err == nil {
-		t.Fatalf("Run() error = nil, want model failure")
-	}
-
-	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if len(events) == 0 {
-		t.Fatalf("expected canonical user_input to be persisted before model failure")
-	}
-	root := events[0]
-	if root.Type != "user_input" || root.Role != "user" || root.Content != "打开微信发消息" {
-		t.Fatalf("first session event = %#v", root)
-	}
-	if root.Modality != "stt" || root.Source != "voice" || root.OriginalText != "按住说话" || root.Transcript != "打开微信发消息" {
-		t.Fatalf("root event missing voice metadata: %#v", root)
-	}
-	if len(root.Artifacts) != 1 {
-		t.Fatalf("root artifacts = %#v, want one audio artifact", root.Artifacts)
-	}
-	artifact := root.Artifacts[0]
-	if artifact.Kind != AttachmentKindAudio || artifact.MIMEType != "audio/wav" || artifact.Path == "" {
-		t.Fatalf("audio artifact metadata = %#v", artifact)
-	}
-	if artifact.DurationMS != 3200 || artifact.Size != 102400 {
-		t.Fatalf("audio artifact size/duration = %#v", artifact)
-	}
-	if len(artifact.Data) != 0 {
-		t.Fatalf("session artifact must not contain binary data: %#v", artifact)
-	}
-	if root.EpisodeID != "ep_voice_failure" || root.RequestID != "req-voice-failure" {
-		t.Fatalf("root event missing episode/request metadata: %#v", root)
-	}
-}
-
-func TestRuntimeRunPersistsAttachmentArtifactsWithoutBinary(t *testing.T) {
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
-		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
-		NewMemoryManager(storageDir),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	_, err := runtime.Run(context.Background(), RunRequest{
-		Input: "Describe the uploaded image.",
-		Attachments: []InputAttachment{{
-			Kind:     AttachmentKindImage,
-			Name:     "screen.png",
-			MIMEType: "image/png",
-			Data:     []byte{0x89, 0x50, 0x4e, 0x47},
-		}},
-		EpisodeID: "ep_image_failure",
-		RequestID: "req-image-failure",
-	})
-	if err == nil {
-		t.Fatalf("Run() error = nil, want model failure")
-	}
-
-	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if len(events) == 0 {
-		t.Fatalf("expected user_input to be persisted before model failure")
-	}
-	root := events[0]
-	if root.Type != "user_input" || root.Content != "Describe the uploaded image." || root.Modality != "text" {
-		t.Fatalf("first session event = %#v", root)
-	}
-	if root.OriginalText != "Describe the uploaded image." {
-		t.Fatalf("root original_text = %q", root.OriginalText)
-	}
-	if len(root.Artifacts) != 1 {
-		t.Fatalf("root artifacts = %#v, want one image artifact", root.Artifacts)
-	}
-	artifact := root.Artifacts[0]
-	if artifact.Kind != AttachmentKindImage || artifact.Name != "screen.png" || artifact.MIMEType != "image/png" || artifact.Size != 4 {
-		t.Fatalf("image artifact metadata = %#v", artifact)
-	}
-	if len(artifact.Data) != 0 {
-		t.Fatalf("session artifact must not contain binary data: %#v", artifact)
-	}
-}
 func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 	index := NewSkillIndex()
 	index.skills["planner"] = &SkillDefinition{
@@ -2368,17 +2059,9 @@ func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 	}
 }
 
-func TestParseChunkStructuredSummaryJSONRejectsProseWrappedJSON(t *testing.T) {
-	_, err := parseChunkStructuredSummaryJSON(`Here is the JSON:
-{"summary":"summary","decisions":["decision"]}`)
-	if err == nil {
-		t.Fatalf("expected prose-wrapped structured summary JSON to be rejected")
-	}
-}
-
 func TestToolDescriptorsIncludeMemoryToolMetadata(t *testing.T) {
 	tools := &ToolSet{tools: map[string]langtools.Tool{}}
-	tools.RegisterMemoryTools(t.TempDir(), 3, nil)
+	tools.RegisterMemoryTools(t.TempDir(), filepath.Join(t.TempDir(), "memory"), nil)
 	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
 
 	for _, name := range []string{"recall_device_memory", "inspect_episode"} {
@@ -2513,95 +2196,6 @@ func runtimeLastMessageText(messages []llms.MessageContent) (llms.ChatMessageTyp
 	return last.Role, builder.String(), true
 }
 
-func sessionEventsContain(events []SessionEvent, predicate func(SessionEvent) bool) bool {
-	for _, event := range events {
-		if predicate(event) {
-			return true
-		}
-	}
-	return false
-}
-
-func sessionEventExists(events []SessionEvent, typ, role, content string) bool {
-	return sessionEventCount(events, typ, role, content) > 0
-}
-
-func sessionEventCount(events []SessionEvent, typ, role, content string) int {
-	count := 0
-	for _, event := range events {
-		if typ != "" && event.Type != typ {
-			continue
-		}
-		if role != "" && event.Role != role {
-			continue
-		}
-		if content != "" && event.Content != content {
-			continue
-		}
-		count++
-	}
-	return count
-}
-
-func readSessionEventObjects(t *testing.T, path string) []map[string]any {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile session events: %v", err)
-	}
-	var events []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		var event map[string]any
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			t.Fatalf("decode raw session event: %v", err)
-		}
-		events = append(events, event)
-	}
-	return events
-}
-
-func sessionEventsOfTypes(events []SessionEvent, types ...string) []SessionEvent {
-	wanted := map[string]bool{}
-	for _, typ := range types {
-		wanted[typ] = true
-	}
-	var filtered []SessionEvent
-	for _, event := range events {
-		if wanted[event.Type] {
-			filtered = append(filtered, event)
-		}
-	}
-	return filtered
-}
-
-type scriptedModel struct {
-	responses         []*llms.ContentResponse
-	streamChunks      [][]string
-	callCount         int
-	sawStreaming      []bool
-	messages          [][]llms.MessageContent
-	tools             [][]llms.Tool
-	toolChoices       []any
-	rawHTTPLogEnabled []bool
-}
-
-type blockingFinalWriter struct {
-	started     chan struct{}
-	release     chan struct{}
-	startedOnce atomic.Bool
-}
-
-func (w *blockingFinalWriter) Write(p []byte) (int, error) {
-	if w.startedOnce.CompareAndSwap(false, true) {
-		close(w.started)
-	}
-	<-w.release
-	return len(p), nil
-}
-
 type staticTool struct {
 	name   string
 	output string
@@ -2657,6 +2251,19 @@ func (m failingGenerateModel) Call(context.Context, string, ...llms.CallOption) 
 		return "", m.err
 	}
 	return "", errors.New("call failed")
+}
+
+// scriptedModel replays a fixed sequence of responses and records what it was
+// asked, so tests can assert on the prompt, tools, and streaming mode.
+type scriptedModel struct {
+	responses         []*llms.ContentResponse
+	streamChunks      [][]string
+	callCount         int
+	sawStreaming      []bool
+	messages          [][]llms.MessageContent
+	tools             [][]llms.Tool
+	toolChoices       []any
+	rawHTTPLogEnabled []bool
 }
 
 func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -3045,7 +2652,6 @@ func firstRunEventOfType(events []RunEvent, eventType string) (RunEvent, bool) {
 func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 	toolErr := NewToolErrorWithDetails(CodePermissionDenied, "contacts permission denied", map[string]any{"scope": "contacts"})
 	var gotRunEvent RunEvent
-	var gotSessionEvent SessionEvent
 	handler := &runtimeCallbackHandler{
 		episodeID: "ep-1",
 		runtimeID: "runtime-1",
@@ -3053,10 +2659,6 @@ func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 		runID:     "run-1",
 		eventHandler: func(event RunEvent) {
 			gotRunEvent = event
-		},
-		sessionEventAppender: func(ctx context.Context, event SessionEvent) error {
-			gotSessionEvent = event
-			return nil
 		},
 	}
 	call := ToolCall{
@@ -3077,12 +2679,6 @@ func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 	if gotRunEvent.ToolError.Details["scope"] != "contacts" {
 		t.Fatalf("RunEvent.ToolError.Details = %+v, want scope=contacts", gotRunEvent.ToolError.Details)
 	}
-	if gotSessionEvent.ToolError == nil || gotSessionEvent.ToolError.Code != CodePermissionDenied {
-		t.Fatalf("SessionEvent.ToolError = %+v, want permission_denied", gotSessionEvent.ToolError)
-	}
-	if gotSessionEvent.ToolError.Details["scope"] != "contacts" {
-		t.Fatalf("SessionEvent.ToolError.Details = %+v, want scope=contacts", gotSessionEvent.ToolError.Details)
-	}
 	message := messageFromRunEvent(gotRunEvent, "", "req-1")
 	if message.ToolError == nil || message.ToolError.Code != CodePermissionDenied {
 		t.Fatalf("Message.ToolError = %+v, want permission_denied", message.ToolError)
@@ -3092,26 +2688,6 @@ func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 	}
 	if gotRunEvent.Content != toolErr.Message || message.Content != toolErr.Message {
 		t.Fatalf("error message content mismatch: run=%q message=%q want=%q", gotRunEvent.Content, message.Content, toolErr.Message)
-	}
-}
-
-func TestRuntimeCallbackPersistsSessionEventWithCanceledRunContext(t *testing.T) {
-	var appenderCtxErr error
-	handler := &runtimeCallbackHandler{
-		episodeID: "ep-1",
-		runtimeID: "runtime-1",
-		requestID: "req-1",
-		runID:     "run-1",
-		sessionEventAppender: func(ctx context.Context, event SessionEvent) error {
-			appenderCtxErr = ctx.Err()
-			return appenderCtxErr
-		},
-	}
-
-	handler.emitRunEvent(RunEvent{Type: "tool_result", Content: "ok"})
-
-	if appenderCtxErr != nil {
-		t.Fatalf("sessionEventAppender ctx.Err() = %v, want nil", appenderCtxErr)
 	}
 }
 
@@ -3222,36 +2798,6 @@ func (t *blockingTool) Call(ctx context.Context, input string) (string, error) {
 		return "", ctx.Err()
 	case <-t.release:
 		return t.output, nil
-	}
-}
-
-func TestBuildLLMStructuredSummarizeFnParsesStrictJSON(t *testing.T) {
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: `{
-		"summary":"讨论 MiniCPM 局域网 VLM",
-		"user_goals":["测试局域网 VLM"],
-		"confirmed_facts":["主模型负责语音链路"],
-		"decisions":["VLM 使用 model_vision"],
-		"proposals":["screen_memory_summarizer 优先读取 model_vision"],
-		"open_tasks":["实现配置解析"],
-		"risks_or_pitfalls":["不要替换主模型"],
-		"memory_candidates":["语音模型和 VLM 分离配置"]
-	}`}}}}}
-	fn := buildLLMStructuredSummarizeFn(&testModelResolver{model: model}, nil)
-	got := fn(context.Background(), []SessionEvent{{Role: "user", Content: "测试 MiniCPM"}})
-	if got.Summary != "讨论 MiniCPM 局域网 VLM" {
-		t.Fatalf("summary = %q", got.Summary)
-	}
-	if got.Decisions[0] != "VLM 使用 model_vision" || got.OpenTasks[0] != "实现配置解析" {
-		t.Fatalf("unexpected structured summary: %#v", got)
-	}
-}
-
-func TestBuildLLMStructuredSummarizeFnFallsBackOnInvalidJSON(t *testing.T) {
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: `not json`}}}}}
-	fn := buildLLMStructuredSummarizeFn(&testModelResolver{model: model}, nil)
-	got := fn(context.Background(), []SessionEvent{{Role: "user", Content: "hello"}})
-	if !got.Empty() {
-		t.Fatalf("expected empty structured summary on invalid JSON, got %#v", got)
 	}
 }
 
@@ -4145,39 +3691,6 @@ func TestRuntimeRunCapturesUsageMetricsFromDirectModelCall(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunResetsPromptTokensWhenUsageUnavailable(t *testing.T) {
-	manager := NewMemoryManager("")
-	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			contentResponseWithInfo("with usage", map[string]any{
-				"prompt_tokens": 600,
-			}),
-			contentResponse("without usage"),
-		},
-	}
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
-		&testModelResolver{model: model},
-		manager,
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-
-	if _, err := runtime.Run(context.Background(), RunRequest{Input: "first"}); err != nil {
-		t.Fatalf("first Run() error = %v", err)
-	}
-	if got := manager.LastPromptTokens(); got != 600 {
-		t.Fatalf("expected first run prompt tokens 600, got %d", got)
-	}
-
-	if _, err := runtime.Run(context.Background(), RunRequest{Input: "second"}); err != nil {
-		t.Fatalf("second Run() error = %v", err)
-	}
-	if got := manager.LastPromptTokens(); got != 0 {
-		t.Fatalf("expected missing usage to reset prompt tokens, got %d", got)
-	}
-}
-
 func TestRuntimeCloseStopsStoragePoller(t *testing.T) {
 	rt, err := NewRuntime(Config{
 		ConfigDir:     ensureTestConfigDir(t, t.TempDir()),
@@ -4198,70 +3711,6 @@ func TestRuntimeCloseStopsStoragePoller(t *testing.T) {
 	case <-rt.storage.stop:
 	default:
 		t.Fatal("Close() did not stop the storage poller")
-	}
-}
-
-func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
-	configDir := ensureTestConfigDir(t, t.TempDir())
-
-	firstRuntime, err := NewRuntime(Config{
-		ConfigDir:     configDir,
-		Model:         ModelConfig{Provider: "fake"},
-		Instruction:   "Answer directly.",
-		SkillsDirs:    []string{},
-		MaxIterations: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewRuntime() error = %v", err)
-	}
-	defer firstRuntime.Close()
-
-	firstRuntime.models = &testModelResolver{
-		model: &scriptedModel{responses: roleDirectResponses("first")},
-	}
-
-	if _, err := firstRuntime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
-		t.Fatalf("first Run() error = %v", err)
-	}
-
-	memoryDir := filepath.Join(configDir, "memory")
-	eventsPath := filepath.Join(memoryDir, "session", "events.jsonl")
-	if _, err := os.Stat(eventsPath); err != nil {
-		t.Fatalf("expected persisted session events at %s: %v", eventsPath, err)
-	}
-	assertNoTopLevelJSONFiles(t, memoryDir)
-
-	secondRuntime, err := NewRuntime(Config{
-		ConfigDir:     configDir,
-		Model:         ModelConfig{Provider: "fake"},
-		Instruction:   "Answer directly.",
-		SkillsDirs:    []string{},
-		MaxIterations: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewRuntime() second error = %v", err)
-	}
-	defer secondRuntime.Close()
-
-	secondRuntime.models = &testModelResolver{
-		model: &scriptedModel{responses: roleDirectResponses("second")},
-	}
-
-	if _, err := secondRuntime.Run(context.Background(), RunRequest{Input: "again"}); err != nil {
-		t.Fatalf("second Run() error = %v", err)
-	}
-
-	// The prior turn stays in the same active session file, so the second
-	// process appends to the events persisted before the restart.
-	events := readSessionEvents(t, eventsPath)
-	if !sessionEventExists(events, "user_input", "user", "hello") {
-		t.Fatalf("expected first user input to survive the restart, got %#v", events)
-	}
-	if !sessionEventExists(events, "assistant_output", "assistant", "first") {
-		t.Fatalf("expected first assistant output to survive the restart, got %#v", events)
-	}
-	if !sessionEventExists(events, "user_input", "user", "again") {
-		t.Fatalf("expected second user input to be appended, got %#v", events)
 	}
 }
 
@@ -4288,624 +3737,6 @@ func TestNewRuntimeLoadsBundledSkillsSeededOnFirstStartup(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
-	configDir := ensureTestConfigDir(t, t.TempDir())
-	memDir := filepath.Join(configDir, "memory")
-	os.MkdirAll(memDir, 0o755)
-	os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte("hot_window_events: 20\ncount_compress_after_events: 24\n"), 0o644)
-
-	response := "ok\n<tts>ok</tts>"
-	responses := make([]string, 90)
-	for i := range responses {
-		responses[i] = response
-	}
-	runtime, err := NewRuntime(Config{
-		ConfigDir:     configDir,
-		Model:         ModelConfig{Provider: "fake", Responses: responses},
-		Instruction:   "Answer directly.",
-		SkillsDirs:    []string{},
-		MaxIterations: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewRuntime() error = %v", err)
-	}
-	defer runtime.Close()
-	runtime.tools = nil
-
-	inputs := []string{
-		"我是硬件产品经理，平时用中文沟通，关注开发板 agent 端到端行为。",
-		"记一下，以后处理蓝海报销App超过100元的提交或付款动作，必须先给风险摘要并等我确认。",
-	}
-	for i := 0; i < 19; i++ {
-		inputs = append(inputs, "填充对话轮次")
-	}
-	for _, input := range inputs {
-		if _, err := runtime.Run(context.Background(), RunRequest{Input: input}); err != nil {
-			t.Fatalf("Run(%q) error = %v", input, err)
-		}
-	}
-
-	waitForSessionCompaction(t, configDir, runtime.memories)
-}
-
-func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
-	configDir := ensureTestConfigDir(t, t.TempDir())
-	storageDir := filepath.Join(configDir, "memory")
-	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	oldSummary := "OLD SESSION SUMMARY MUST NOT ENTER NEW PROMPT"
-	now := time.Now().UTC().Add(-6 * time.Minute)
-	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
-		if _, err := session.AppendEvent(context.Background(), SessionEvent{
-			EventID: fmt.Sprintf("evt_old_%d", i),
-			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
-			Type:    "user_input",
-			Role:    "user",
-			Content: fmt.Sprintf("查天气旧任务 %d", i),
-		}); err != nil {
-			t.Fatalf("AppendEvent() error = %v", err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(storageDir, "session", "summary.md"), []byte(oldSummary), 0o644); err != nil {
-		t.Fatalf("WriteFile old summary.md: %v", err)
-	}
-
-	releaseMaintenance := make(chan struct{})
-	manager := NewMemoryManager(storageDir,
-		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
-			select {
-			case <-ctx.Done():
-				return ""
-			case <-releaseMaintenance:
-				return "old task summary"
-			}
-		}),
-	)
-	defer func() {
-		close(releaseMaintenance)
-		waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := manager.WaitMaintenance(waitCtx); err != nil {
-			t.Fatalf("WaitMaintenance() error = %v", err)
-		}
-	}()
-	model := &scriptedModel{responses: roleDirectResponses("ok")}
-	runtime := NewRuntimeWithDeps(
-		Config{
-			ConfigDir:     configDir,
-			Model:         ModelConfig{Provider: "fake"},
-			Instruction:   "Answer directly.",
-			MaxIterations: 1,
-		},
-		&testModelResolver{model: model},
-		manager,
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-
-	active := readSessionEvents(t, session.eventsPath())
-	activeChat := sessionEventsOfTypes(active, "user_input", "assistant_output")
-	if !sessionEventExists(activeChat, "user_input", "user", "打开微信") ||
-		!sessionEventExists(activeChat, "assistant_output", "assistant", "ok") {
-		t.Fatalf("expected active events to contain only current exchange, got %#v", active)
-	}
-	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
-	if err != nil {
-		t.Fatalf("Glob archived sessions: %v", err)
-	}
-	if len(archiveDirs) != 1 {
-		t.Fatalf("expected one archived rotated session, got %v", archiveDirs)
-	}
-	archived := readSessionEvents(t, filepath.Join(archiveDirs[0], "events.jsonl"))
-	if len(archived) != DefaultBoundaryConfig().SmallSessionEventThreshold+1 || archived[0].EventID != "evt_old_0" {
-		t.Fatalf("unexpected archived events: %#v", archived)
-	}
-	if _, err := os.Stat(filepath.Join(storageDir, "session", "summary.md")); !os.IsNotExist(err) {
-		t.Fatalf("active summary.md should be absent after rotation, stat err = %v", err)
-	}
-	archivedSummary, err := os.ReadFile(filepath.Join(archiveDirs[0], "summary.md"))
-	if err != nil {
-		t.Fatalf("ReadFile archived summary.md: %v", err)
-	}
-	if string(archivedSummary) != oldSummary {
-		t.Fatalf("old summary not preserved in archive: %q", archivedSummary)
-	}
-	var promptText strings.Builder
-	for _, call := range model.messages {
-		for _, message := range call {
-			for _, part := range message.Parts {
-				if text, ok := part.(llms.TextContent); ok {
-					promptText.WriteString(text.Text)
-				}
-			}
-		}
-	}
-	if strings.Contains(promptText.String(), oldSummary) {
-		t.Fatalf("new-session prompt leaked archived summary:\n%s", promptText.String())
-	}
-
-	episode, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).Get(context.Background(), result.EpisodeID)
-	if err != nil {
-		t.Fatalf("Get episode: %v", err)
-	}
-	if got := episode.Extra["session_boundary_decision"]; got != BoundaryNew {
-		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryNew)
-	}
-	if got := episode.Extra["session_rotated"]; got != true {
-		t.Fatalf("session_rotated = %#v, want true", got)
-	}
-	if got := numericExtraValue(episode.Extra["pending_chunks_recalled"]); got != 0 {
-		t.Fatalf("pending_chunks_recalled = %#v, want 0 without recall tool call", got)
-	}
-}
-
-func TestRuntimeRunShortGapKeepsActiveSessionWithoutForcedContinuation(t *testing.T) {
-	configDir := ensureTestConfigDir(t, t.TempDir())
-	storageDir := filepath.Join(configDir, "memory")
-	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-45 * time.Second)
-	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
-		if _, err := session.AppendEvent(context.Background(), SessionEvent{
-			EventID: fmt.Sprintf("evt_old_%d", i),
-			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
-			Type:    "user_input",
-			Role:    "user",
-			Content: fmt.Sprintf("查天气旧任务 %d", i),
-		}); err != nil {
-			t.Fatalf("AppendEvent() error = %v", err)
-		}
-	}
-
-	manager := NewMemoryManager(storageDir)
-	model := &scriptedModel{responses: roleDirectResponses("ok")}
-	runtime := NewRuntimeWithDeps(
-		Config{
-			ConfigDir:     configDir,
-			Model:         ModelConfig{Provider: "fake"},
-			Instruction:   "Answer directly.",
-			MaxIterations: 1,
-		},
-		&testModelResolver{model: model},
-		manager,
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-
-	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
-	if err != nil {
-		t.Fatalf("Glob archived sessions: %v", err)
-	}
-	if len(archiveDirs) != 0 {
-		t.Fatalf("short gap rotated session: %v", archiveDirs)
-	}
-	for _, event := range readSessionEventObjects(t, session.eventsPath()) {
-		if _, ok := event["relation"]; ok {
-			t.Fatalf("session event should not persist relation: %#v", event)
-		}
-	}
-
-	episode, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).Get(context.Background(), result.EpisodeID)
-	if err != nil {
-		t.Fatalf("Get episode: %v", err)
-	}
-	if got := episode.Extra["session_boundary_decision"]; got != BoundaryContinue {
-		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryContinue)
-	}
-	if got := episode.Extra["session_boundary_reason"]; got != BoundaryReasonTimeGapShort {
-		t.Fatalf("session_boundary_reason = %#v, want %q", got, BoundaryReasonTimeGapShort)
-	}
-	if _, ok := episode.Extra["session_continuation_reason"]; ok {
-		t.Fatalf("session_continuation_reason should not be recorded: %#v", episode.Extra)
-	}
-}
-
-func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.T) {
-	configDir := ensureTestConfigDir(t, t.TempDir())
-	storageDir := filepath.Join(configDir, "memory")
-	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-6 * time.Minute)
-	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
-		if _, err := session.AppendEvent(context.Background(), SessionEvent{
-			EventID: fmt.Sprintf("evt_old_%d", i),
-			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
-			Type:    "user_input",
-			Role:    "user",
-			Content: fmt.Sprintf("查天气旧任务 %d", i),
-		}); err != nil {
-			t.Fatalf("AppendEvent() error = %v", err)
-		}
-	}
-	file, err := os.OpenFile(session.eventsPath(), os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		t.Fatalf("OpenFile events.jsonl: %v", err)
-	}
-	if _, err := file.WriteString(`{"event_id":"partial_crash_tail","type":"assistant_output","role":"assistant","content":"cut`); err != nil {
-		file.Close()
-		t.Fatalf("write truncated event tail: %v", err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatalf("close events.jsonl: %v", err)
-	}
-
-	manager := NewMemoryManager(storageDir)
-	runtime := NewRuntimeWithDeps(
-		Config{
-			ConfigDir:     configDir,
-			Model:         ModelConfig{Provider: "fake"},
-			Instruction:   "Answer directly.",
-			MaxIterations: 1,
-		},
-		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
-		manager,
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	if _, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"}); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-
-	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
-	if err != nil {
-		t.Fatalf("Glob archived sessions: %v", err)
-	}
-	if len(archiveDirs) != 1 {
-		t.Fatalf("expected one archived rotated session, got %v", archiveDirs)
-	}
-	archivedPath := filepath.Join(archiveDirs[0], "events.jsonl")
-	archivedRaw, err := os.ReadFile(archivedPath)
-	if err != nil {
-		t.Fatalf("ReadFile archived events: %v", err)
-	}
-	if strings.Contains(string(archivedRaw), "partial_crash_tail") {
-		t.Fatalf("runtime boundary rotation archived unrepaired truncated tail: %q", archivedRaw)
-	}
-	archived := readSessionEvents(t, archivedPath)
-	if len(archived) != DefaultBoundaryConfig().SmallSessionEventThreshold+1 {
-		t.Fatalf("unexpected archived events after repair: %#v", archived)
-	}
-}
-
-func TestRuntimeRunKeepsSmallSessionOnUnrelatedInput(t *testing.T) {
-	configDir := ensureTestConfigDir(t, t.TempDir())
-	storageDir := filepath.Join(configDir, "memory")
-	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-6 * time.Minute)
-	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold; i++ {
-		if _, err := session.AppendEvent(context.Background(), SessionEvent{
-			EventID: fmt.Sprintf("evt_small_%d", i),
-			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
-			Type:    "user_input",
-			Role:    "user",
-			Content: fmt.Sprintf("查天气小会话 %d", i),
-		}); err != nil {
-			t.Fatalf("AppendEvent() error = %v", err)
-		}
-	}
-
-	manager := NewMemoryManager(storageDir)
-	model := &scriptedModel{responses: roleDirectResponses("ok")}
-	runtime := NewRuntimeWithDeps(
-		Config{
-			ConfigDir:     configDir,
-			Model:         ModelConfig{Provider: "fake"},
-			Instruction:   "Answer directly.",
-			MaxIterations: 1,
-		},
-		&testModelResolver{model: model},
-		manager,
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
-
-	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-
-	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
-	if err != nil {
-		t.Fatalf("Glob archived sessions: %v", err)
-	}
-	if len(archiveDirs) != 0 {
-		t.Fatalf("small session with unrelated input rotated session: %v", archiveDirs)
-	}
-
-	episode, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).Get(context.Background(), result.EpisodeID)
-	if err != nil {
-		t.Fatalf("Get episode: %v", err)
-	}
-	if got := episode.Extra["session_boundary_decision"]; got != BoundaryContinue {
-		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryContinue)
-	}
-	if got := episode.Extra["session_boundary_reason"]; got != BoundaryReasonSmallSession {
-		t.Fatalf("session_boundary_reason = %#v, want %q", got, BoundaryReasonSmallSession)
-	}
-}
-
-func TestRuntimeRunRotatesNeutralFollowUpAfterFinishedEpisode(t *testing.T) {
-	// A finished (non-running) episode must not, on its own, keep a stale
-	// session alive across a mid-range gap. The session here is large enough to
-	// defeat the small-session bias, and the input is neutral with no
-	// continuation marker, so the only thing that could force "continue" is a
-	// recently-finished episode — which is exactly the signal we removed.
-	configDir := ensureTestConfigDir(t, t.TempDir())
-	storageDir := filepath.Join(configDir, "memory")
-	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-8 * time.Minute)
-	const prevEventCount = 18 // > SmallSessionEventThreshold (16)
-	for i := 0; i < prevEventCount; i++ {
-		role := "user"
-		eventType := "user_input"
-		content := "查一下今天天气"
-		if i%2 == 1 {
-			role = "assistant"
-			eventType = "assistant_output"
-			content = "今天多云"
-		}
-		if _, err := session.AppendEvent(context.Background(), SessionEvent{
-			EventID: fmt.Sprintf("evt_prev_%d", i),
-			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
-			Type:    eventType,
-			Role:    role,
-			Content: content,
-		}); err != nil {
-			t.Fatalf("AppendEvent() error = %v", err)
-		}
-	}
-
-	episodeStore := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes"))
-	if _, err := episodeStore.AddEpisode(context.Background(), TaskEpisode{
-		ID:        "ep_weather_done",
-		Status:    "active",
-		StartedAt: now.Add(-30 * time.Second).Format(time.RFC3339Nano),
-		EndedAt:   now.Add(prevEventCount * time.Second).Format(time.RFC3339Nano),
-		UserGoal:  "查一下今天天气",
-		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "今天多云"},
-	}); err != nil {
-		t.Fatalf("AddEpisode() error = %v", err)
-	}
-
-	manager := NewMemoryManager(storageDir)
-	model := &scriptedModel{responses: roleDirectResponses("ok")}
-	runtime := NewRuntimeWithDeps(
-		Config{
-			ConfigDir:     configDir,
-			Model:         ModelConfig{Provider: "fake"},
-			Instruction:   "Answer directly.",
-			MaxIterations: 1,
-		},
-		&testModelResolver{model: model},
-		manager,
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	result, err := runtime.Run(context.Background(), RunRequest{Input: "你有什么爱好？"})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-
-	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
-	if err != nil {
-		t.Fatalf("Glob archived sessions: %v", err)
-	}
-	if len(archiveDirs) != 1 {
-		t.Fatalf("neutral follow-up after a finished episode should rotate the session, got %d archives: %v", len(archiveDirs), archiveDirs)
-	}
-
-	episode, err := episodeStore.Get(context.Background(), result.EpisodeID)
-	if err != nil {
-		t.Fatalf("Get episode: %v", err)
-	}
-	if got := episode.Extra["session_boundary_decision"]; got != BoundaryNew {
-		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryNew)
-	}
-}
-
-func TestRecentEpisodeContextDetectsRunningEpisode(t *testing.T) {
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	store := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes"))
-	now := time.Now().UTC()
-
-	if _, err := store.StartEpisode(context.Background(), TaskEpisode{
-		ID:        "ep_running",
-		StartedAt: now.Add(-time.Minute).Format(time.RFC3339Nano),
-		UserGoal:  "继续处理天气",
-	}); err != nil {
-		t.Fatalf("StartEpisode() error = %v", err)
-	}
-	// A finished episode alongside the running one must not disturb detection.
-	if _, err := store.AddEpisode(context.Background(), TaskEpisode{
-		ID:        "ep_active_recent",
-		Status:    "active",
-		StartedAt: now.Add(-3 * time.Minute).Format(time.RFC3339Nano),
-		EndedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
-		UserGoal:  "查天气",
-		Outcome:   TaskEpisodeOutcome{Success: true},
-	}); err != nil {
-		t.Fatalf("AddEpisode() error = %v", err)
-	}
-
-	plane := NewFilesystemMemoryPlane(storageDir, DefaultMemoryExtractionConfig(), nil)
-	ctx := recentEpisodeContext(plane)
-	if !ctx.HasRunning {
-		t.Fatalf("expected running episode context")
-	}
-}
-
-func TestRecentEpisodeContextFinishedEpisodeIsNotASignal(t *testing.T) {
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	store := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes"))
-	now := time.Now().UTC()
-
-	if _, err := store.AddEpisode(context.Background(), TaskEpisode{
-		ID:        "ep_active_recent",
-		Status:    "active",
-		StartedAt: now.Add(-3 * time.Minute).Format(time.RFC3339Nano),
-		EndedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
-		UserGoal:  "查天气",
-		Outcome:   TaskEpisodeOutcome{Success: true},
-	}); err != nil {
-		t.Fatalf("AddEpisode() error = %v", err)
-	}
-
-	plane := NewFilesystemMemoryPlane(storageDir, DefaultMemoryExtractionConfig(), nil)
-	ctx := recentEpisodeContext(plane)
-	if ctx.HasRunning {
-		t.Fatalf("a finished episode must not produce a running-episode signal")
-	}
-}
-
-func TestRuntimeRunCanceledWhileQueuedDoesNotRotateSessionOrStartEpisode(t *testing.T) {
-	configDir := ensureTestConfigDir(t, t.TempDir())
-	storageDir := filepath.Join(configDir, "memory")
-	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-2 * time.Minute)
-	for i := 0; i < 2; i++ {
-		if _, err := session.AppendEvent(context.Background(), SessionEvent{
-			EventID: fmt.Sprintf("evt_old_%d", i),
-			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
-			Type:    "user_input",
-			Role:    "user",
-			Content: fmt.Sprintf("查天气旧任务 %d", i),
-		}); err != nil {
-			t.Fatalf("AppendEvent() error = %v", err)
-		}
-	}
-
-	model := &queuedCancelModel{
-		firstStarted: make(chan struct{}),
-		releaseFirst: make(chan struct{}),
-	}
-	manager := NewMemoryManager(storageDir)
-	runtime := NewRuntimeWithDeps(
-		Config{
-			ConfigDir:     configDir,
-			Model:         ModelConfig{Provider: "fake"},
-			Instruction:   "Answer directly.",
-			MaxIterations: 1,
-		},
-		&testModelResolver{model: model},
-		manager,
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
-
-	firstDone := make(chan error, 1)
-	go func() {
-		_, err := runtime.Run(context.Background(), RunRequest{Input: "继续查天气"})
-		firstDone <- err
-	}()
-	select {
-	case <-model.firstStarted:
-	case <-time.After(time.Second):
-		t.Fatal("first run did not reach model call")
-	}
-
-	queuedCtx, cancelQueued := context.WithCancel(context.Background())
-	secondDone := make(chan error, 1)
-	go func() {
-		_, err := runtime.Run(queuedCtx, RunRequest{Input: "打开微信"})
-		secondDone <- err
-	}()
-	cancelQueued()
-	close(model.releaseFirst)
-
-	if err := <-firstDone; err == nil || !strings.Contains(err.Error(), "first run stopped") {
-		t.Fatalf("first Run() error = %v, want first run stopped", err)
-	}
-	select {
-	case err := <-secondDone:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("queued Run() error = %v, want context.Canceled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("queued Run() did not return after cancellation")
-	}
-
-	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
-	if err != nil {
-		t.Fatalf("Glob archived sessions: %v", err)
-	}
-	if len(archiveDirs) != 0 {
-		t.Fatalf("canceled queued run rotated session: %v", archiveDirs)
-	}
-	active := readSessionEvents(t, session.eventsPath())
-	if len(active) < 2 || active[0].EventID != "evt_old_0" {
-		t.Fatalf("active session lost original events: %#v", active)
-	}
-	if sessionEventsContain(active, func(event SessionEvent) bool {
-		return event.Type == "user_input" && event.Content == "打开微信"
-	}) {
-		t.Fatalf("canceled queued run wrote its input to active session events: %#v", active)
-	}
-	if !sessionEventsContain(active, func(event SessionEvent) bool {
-		return event.Type == "user_input" && event.Content == "继续查天气"
-	}) {
-		t.Fatalf("started first run should persist its root input: %#v", active)
-	}
-
-	index, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).loadIndex()
-	if err != nil {
-		t.Fatalf("load episode index: %v", err)
-	}
-	if len(index.Episodes) != 1 {
-		t.Fatalf("episode index contains %d entries, want only the first run: %#v", len(index.Episodes), index.Episodes)
-	}
-	if index.Episodes[0].UserGoal != "继续查天气" {
-		t.Fatalf("unexpected episode goal: %#v", index.Episodes[0])
-	}
-}
-
-type queuedCancelModel struct {
-	firstStarted     chan struct{}
-	releaseFirst     chan struct{}
-	firstStartedOnce atomic.Bool
-	callCount        atomic.Int64
-}
-
-func (m *queuedCancelModel) GenerateContent(ctx context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
-	if m.callCount.Add(1) == 1 {
-		if m.firstStartedOnce.CompareAndSwap(false, true) {
-			close(m.firstStarted)
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-m.releaseFirst:
-			return nil, errors.New("first run stopped")
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return nil, errors.New("queued run reached model")
-}
-
-func (m *queuedCancelModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
-	panic("unexpected Call invocation")
-}
-
 func numericExtraValue(v interface{}) int64 {
 	switch n := v.(type) {
 	case int:
@@ -4923,130 +3754,44 @@ func numericExtraValue(v interface{}) int64 {
 	}
 }
 
-func TestSessionRecallTelemetryCountsPendingResults(t *testing.T) {
-	counter := &atomic.Int64{}
-	tool := &sessionRecallTelemetryTool{
-		inner: &staticTool{
-			name:   "recall_session_chunks",
-			output: `{"results":[{"chunk_id":"chunk_001"},{"chunk_id":"pending-123","source":"pending"}]}`,
+// Every chunk returned by recall came from a span already compacted out of the
+// live transcript, so all of them count as consulting compressed history.
+func TestSessionRecallTelemetryCountsEveryRecalledChunk(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+		want   int64
+	}{
+		{
+			name:   "chunks from several sessions",
+			output: `{"results":[{"chunk_id":"chunk_001","source":"session_abc"},{"chunk_id":"chunk_002","source":"session_def"}]}`,
+			want:   2,
 		},
-		counter: counter,
-	}
-	if _, err := tool.Call(context.Background(), `{}`); err != nil {
-		t.Fatalf("Call() error = %v", err)
-	}
-	if got := counter.Load(); got != 1 {
-		t.Fatalf("pending recall count = %d, want 1", got)
-	}
-}
-
-func TestSessionRecallTelemetryIgnoresActiveChunksWithPendingPrefix(t *testing.T) {
-	counter := &atomic.Int64{}
-	tool := &sessionRecallTelemetryTool{
-		inner: &staticTool{
-			name: "recall_session_chunks",
-			output: `{"results":[` +
-				`{"chunk_id":"pending-archived","source":"active"},` +
-				`{"chunk_id":"pending-live","source":"pending"}` +
-				`]}`,
+		{
+			name:   "no matching chunks",
+			output: `{"results":[]}`,
+			want:   0,
 		},
-		counter: counter,
+		{
+			name:   "unparseable output is not counted",
+			output: `not json`,
+			want:   0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			counter := &atomic.Int64{}
+			tool := &sessionRecallTelemetryTool{
+				inner:   &staticTool{name: "recall_session_chunks", output: tc.output},
+				counter: counter,
+			}
+			if _, err := tool.Call(context.Background(), `{}`); err != nil {
+				t.Fatalf("Call() error = %v", err)
+			}
+			if got := counter.Load(); got != tc.want {
+				t.Fatalf("recall count = %d, want %d", got, tc.want)
+			}
+		})
 	}
-	if _, err := tool.Call(context.Background(), `{}`); err != nil {
-		t.Fatalf("Call() error = %v", err)
-	}
-	if got := counter.Load(); got != 1 {
-		t.Fatalf("pending recall count = %d, want 1", got)
-	}
-}
-
-func TestSessionRecallTelemetryIgnoresCompressedChunkWithPendingPrefix(t *testing.T) {
-	ctx := context.Background()
-	session := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
-	if _, err := session.AppendEvent(ctx, SessionEvent{
-		EventID: "evt_pending_consumed",
-		Type:    "user_input",
-		Role:    "user",
-		Content: "already compressed from pending file",
-	}); err != nil {
-		t.Fatalf("AppendEvent() error = %v", err)
-	}
-	if _, err := session.Compress(ctx, CompressOption{
-		ChunkID: "pending-consumed",
-		Summary: "already compressed pending file",
-	}); err != nil {
-		t.Fatalf("Compress() error = %v", err)
-	}
-
-	counter := &atomic.Int64{}
-	tool := &sessionRecallTelemetryTool{
-		inner:   NewRecallSessionChunksTool(session, nil),
-		counter: counter,
-	}
-	output, err := tool.Call(ctx, `{"chunk_ids":["pending-consumed"]}`)
-	if err != nil {
-		t.Fatalf("Call() error = %v", err)
-	}
-	var decoded struct {
-		Results []struct {
-			ChunkID string `json:"chunk_id"`
-			Source  string `json:"source"`
-		} `json:"results"`
-	}
-	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
-		t.Fatalf("decode output %q: %v", output, err)
-	}
-	if len(decoded.Results) != 1 {
-		t.Fatalf("expected 1 result, got %#v", decoded.Results)
-	}
-	if decoded.Results[0].ChunkID != "pending-consumed" || decoded.Results[0].Source != chunkRecallSourceActive {
-		t.Fatalf("unexpected recall source: %#v", decoded.Results[0])
-	}
-	if got := counter.Load(); got != 0 {
-		t.Fatalf("pending recall count = %d, want 0 for active compressed chunk", got)
-	}
-}
-
-func waitForSessionCompaction(t *testing.T, configDir string, manager *MemoryManager) {
-	t.Helper()
-	if manager != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := manager.WaitMaintenance(ctx); err != nil {
-			t.Fatalf("wait memory maintenance: %v", err)
-		}
-	}
-	session := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session"))
-	deadline := time.Now().Add(3 * time.Second)
-	var lastEventCount int
-	var lastChunkCount int
-	var lastErr error
-
-	for time.Now().Before(deadline) {
-		events, err := session.readEvents(session.eventsPath())
-		if err != nil {
-			lastErr = err
-			time.Sleep(20 * time.Millisecond)
-			continue
-		}
-		chunks, err := session.RecallChunks(context.Background(), ChunkRecallQuery{Entities: []string{"蓝海报销App"}, Limit: 1})
-		if err != nil {
-			lastErr = err
-			time.Sleep(20 * time.Millisecond)
-			continue
-		}
-		lastEventCount = len(events)
-		lastChunkCount = len(chunks)
-		if lastEventCount <= 26 && lastChunkCount == 1 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	if lastErr != nil {
-		t.Fatalf("waiting for session compaction: %v", lastErr)
-	}
-	t.Fatalf("expected compacted chunk and hot window events <= 26 including persisted role and assistant outputs, got chunks=%d events=%d", lastChunkCount, lastEventCount)
 }
 
 func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {
@@ -5317,20 +4062,10 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	}
 	oldBackendSessionID := runtime.ContextDump().SessionID
 
-	memoryDir := filepath.Join(configDir, "memory")
-	eventsPath := filepath.Join(memoryDir, "session", "events.jsonl")
-	if _, err := os.Stat(eventsPath); err != nil {
-		t.Fatalf("expected persisted session events at %s: %v", eventsPath, err)
-	}
-	assertNoTopLevelJSONFiles(t, memoryDir)
-
 	if err := runtime.ClearMemory(context.Background()); err != nil {
 		t.Fatalf("ClearMemory() error = %v", err)
 	}
 
-	if _, err := os.Stat(eventsPath); !os.IsNotExist(err) {
-		t.Fatalf("expected session events to be removed, stat err = %v", err)
-	}
 	backendFolder := agentpath.ContextManagerSessionFolder(configDir)
 	oldBackendSessionPath := filepath.Join(backendFolder, oldBackendSessionID+".jsonl")
 	if _, err := os.Stat(oldBackendSessionPath); !os.IsNotExist(err) {

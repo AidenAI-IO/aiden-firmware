@@ -573,7 +573,7 @@ func realtimeVoiceToolDefinitions() []realtimevoice.Tool {
 			"Delete a saved memory when the user asks you to forget it. First call recall_memory to find the memory id, then pass that id here. Never expose the id to the user.",
 		),
 		realtimeDelegatedVoiceToolDefinition(
-			agent.NewRecallSessionChunksTool(nil, nil),
+			agent.NewRecallSessionChunksTool(nil),
 			"Recall compressed history from earlier in this conversation and from prior conversations. Only the most recent turns stay in your visible context; older turns are compressed and invisible until recalled. Call this whenever the user refers to something discussed earlier that you cannot see, including when they claim something was or was not said. Pass known chunk ids as chunk_ids, topic keywords as tags, or empty tags for the most recent history. For saved preferences, rules, or facts, use recall_memory instead.",
 		),
 		realtimeDelegatedVoiceToolDefinition(
