@@ -110,6 +110,67 @@ func TestProcessEpisodeMemoryNowContinuesAcrossBoundedBatches(t *testing.T) {
 	}
 }
 
+func TestEpisodeMemoryProcessorSeparatesDifferentRetryAttempts(t *testing.T) {
+	ctx := context.Background()
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	model := &episodeMemoryScriptedModel{responses: []string{
+		`{"results":[{"episode_id":"ep_attempt_zero","proposal":{"episode_assessment":{"goal_result":"achieved","reason":"First attempt completed.","evidence_refs":["ep_attempt_zero_result"]},"candidates":[]}}]}`,
+		`{"results":[{"episode_id":"ep_attempt_two","proposal":{"episode_assessment":{"goal_result":"achieved","reason":"Retry completed.","evidence_refs":["ep_attempt_two_result"]},"candidates":[]}}]}`,
+	}}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	episode := func(id string) TaskEpisode {
+		return TaskEpisode{
+			ID: id, Status: "active", StartedAt: "2026-08-14T00:00:00Z", EndedAt: "2026-08-14T00:01:00Z", UserGoal: "Complete task",
+			Events: []TaskEpisodeEvent{
+				{EventID: id + "_call", Type: runEventToolCall, ToolName: "open_app"},
+				{EventID: id + "_result", Type: "tool_result", ToolName: "open_app", Observation: "Task completed"},
+			},
+		}
+	}
+	works := []episodeMemoryWork{
+		{episode: episode("ep_attempt_zero"), needsModel: true, status: episodeMemoryEpisodeStatus{AttemptCount: 0}},
+		{episode: episode("ep_attempt_two"), needsModel: true, status: episodeMemoryEpisodeStatus{AttemptCount: 2}},
+	}
+	state := &episodeMemoryStateFile{Episodes: map[string]episodeMemoryEpisodeStatus{}}
+	result := &MemoryBatchResult{}
+	if stopped, err := processor.extractEpisodeMemoryWork(ctx, state, works, result); err != nil || stopped {
+		t.Fatalf("extractEpisodeMemoryWork() = stopped %v, error %v", stopped, err)
+	}
+	if got := model.callCount(); got != 2 {
+		t.Fatalf("model calls = %d, want one call per retry attempt", got)
+	}
+	if got, want := model.batchMaxTokens(0), episodeMemoryBatchTokenBudget(1, 0); got != want {
+		t.Fatalf("attempt-zero budget = %d, want %d", got, want)
+	}
+	if got, want := model.batchMaxTokens(1), episodeMemoryBatchTokenBudget(1, 2); got != want {
+		t.Fatalf("attempt-two budget = %d, want %d", got, want)
+	}
+}
+
+func TestEpisodeMemoryProcessorRejectsNegativeRetryBatchLimit(t *testing.T) {
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	processor := newEpisodeMemoryProcessor(plane, &episodeMemoryScriptedModel{})
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	episode := TaskEpisode{ID: "ep_invalid_retry_limit", Status: "active", StartedAt: "2026-08-14T00:00:00Z", EndedAt: "2026-08-14T00:01:00Z"}
+	state := &episodeMemoryStateFile{Episodes: map[string]episodeMemoryEpisodeStatus{
+		episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion): {
+			Status:          episodeMemoryStatusRetry,
+			RetryBatchLimit: -1,
+		},
+	}}
+	_, _, err := processor.collectEpisodeMemoryWork(state, []TaskEpisode{episode}, 3, nil)
+	if !errors.Is(err, errEpisodeMemoryInvalidRetryLimit) {
+		t.Fatalf("collectEpisodeMemoryWork() error = %v, want errEpisodeMemoryInvalidRetryLimit", err)
+	}
+}
+
 func TestEpisodeMemoryProcessorBatchesEligibleEpisodesIntoOneModelCall(t *testing.T) {
 	ctx := context.Background()
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)

@@ -28,10 +28,11 @@ const (
 )
 
 var (
-	errEpisodeMemoryRevisionChanged  = errors.New("episode memory revision changed")
-	errEpisodeMemoryOmissionReview   = errors.New("episode memory omission review failed")
-	errEpisodeMemoryRetentionAudit   = errors.New("episode memory retention audit failed")
-	errEpisodeMemoryProcessingFailed = errors.New("episode memory processing failed")
+	errEpisodeMemoryRevisionChanged   = errors.New("episode memory revision changed")
+	errEpisodeMemoryOmissionReview    = errors.New("episode memory omission review failed")
+	errEpisodeMemoryRetentionAudit    = errors.New("episode memory retention audit failed")
+	errEpisodeMemoryProcessingFailed  = errors.New("episode memory processing failed")
+	errEpisodeMemoryInvalidRetryLimit = errors.New("episode memory has invalid retry batch limit")
 )
 
 type episodeGoalResult string
@@ -306,7 +307,10 @@ func (p *episodeMemoryProcessor) collectEpisodeMemoryWork(state *episodeMemorySt
 	// the configured batch limit.
 	for _, episode := range episodes {
 		status := state.Episodes[episodeMemoryStateKey(episode.ID, episodeMemoryExtractorVersion)]
-		if status.Status != episodeMemoryStatusRetry || status.RetryBatchLimit <= 0 {
+		if status.RetryBatchLimit < 0 {
+			return nil, MemoryBatchResult{}, fmt.Errorf("%w: episode_id=%s retry_batch_limit=%d", errEpisodeMemoryInvalidRetryLimit, episode.ID, status.RetryBatchLimit)
+		}
+		if status.Status != episodeMemoryStatusRetry || status.RetryBatchLimit == 0 {
 			continue
 		}
 		eligible, _ := episodeMemoryEpisodeDue(status, p.now())
@@ -384,19 +388,44 @@ func (p *episodeMemoryProcessor) collectEpisodeMemoryWork(state *episodeMemorySt
 }
 
 func (p *episodeMemoryProcessor) extractEpisodeMemoryWork(ctx context.Context, state *episodeMemoryStateFile, works []episodeMemoryWork, result *MemoryBatchResult) (bool, error) {
-	indexes := make([]int, 0, len(works))
-	episodes := make([]TaskEpisode, 0, len(works))
-	attempt := 0
+	groups := make(map[int][]int)
+	groupOrder := make([]int, 0, len(works))
 	for index := range works {
-		if works[index].needsModel {
-			indexes = append(indexes, index)
+		if !works[index].needsModel {
+			continue
+		}
+		attempt := max(works[index].originalStatus.AttemptCount, works[index].status.AttemptCount)
+		if _, ok := groups[attempt]; !ok {
+			groupOrder = append(groupOrder, attempt)
+		}
+		groups[attempt] = append(groups[attempt], index)
+	}
+	for groupIndex, attempt := range groupOrder {
+		indexes := groups[attempt]
+		episodes := make([]TaskEpisode, 0, len(indexes))
+		for _, index := range indexes {
 			episodes = append(episodes, works[index].episode)
-			attempt = max(attempt, works[index].originalStatus.AttemptCount, works[index].status.AttemptCount)
+		}
+		stopped, err := p.extractEpisodeMemoryWorkGroup(ctx, state, works, indexes, episodes, attempt, result)
+		if err != nil || stopped {
+			// Later groups were marked processing during collection but have not
+			// reached the model yet. Restore them so a failed earlier group does
+			// not make the next worker mistake them for a crashed extraction.
+			for _, laterAttempt := range groupOrder[groupIndex+1:] {
+				for _, index := range groups[laterAttempt] {
+					work := &works[index]
+					if restoreErr := p.state.SetEpisode(work.episode.ID, work.originalStatus); restoreErr != nil {
+						return false, restoreErr
+					}
+				}
+			}
+			return stopped, err
 		}
 	}
-	if len(episodes) == 0 {
-		return false, nil
-	}
+	return false, nil
+}
+
+func (p *episodeMemoryProcessor) extractEpisodeMemoryWorkGroup(ctx context.Context, state *episodeMemoryStateFile, works []episodeMemoryWork, indexes []int, episodes []TaskEpisode, attempt int, result *MemoryBatchResult) (bool, error) {
 	proposals, proposalErrors, err := p.proposeEpisodeBatch(ctx, episodes, attempt)
 	if err != nil {
 		if ctx.Err() != nil {
