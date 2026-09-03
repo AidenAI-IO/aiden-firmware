@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 	"unicode"
@@ -318,11 +319,55 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 		return textInputModeUnknown, vlmCalls, fmt.Errorf("input mode probe: type a: %w", err)
 	}
 	defer func() {
+		// Send undo keys
 		undoErr := e.tapKeys(ctx, undoKeys)
 		if undoErr == nil {
 			undoErr = e.sleepFor(ctx, textInputKeystrokeGap)
 		}
-		err = errors.Join(err, undoErr)
+		if undoErr != nil {
+			err = errors.Join(err, undoErr)
+			return
+		}
+
+		// Secondary verification: check if probe character still exists
+		probeVision, ok := e.vision.(textInputProbeVision)
+		if !ok {
+			return
+		}
+
+		// Wait for undo to take effect
+		if waitErr := e.sleepFor(ctx, textInputProbeSettleDelay); waitErr != nil {
+			err = errors.Join(err, waitErr)
+			return
+		}
+
+		// Capture screenshot for verification
+		verifyShot, captureErr := e.captureScreenshot(ctx)
+		if captureErr != nil {
+			log.Printf("[text-input] probe cleanup verification screenshot failed: %v", captureErr)
+			return
+		}
+
+		// Ask LLM to verify if probe character is still visible
+		probeStillVisible, verifyErr := probeVision.VerifyProbeCleanup(ctx, verifyShot, platform, focus)
+		vlmCalls++
+		if verifyErr != nil {
+			log.Printf("[text-input] probe cleanup verification failed: %v", verifyErr)
+			return
+		}
+
+		if probeStillVisible {
+			log.Printf("[text-input] probe character still visible after undo, sending backspace")
+			if backspaceErr := e.tapKeys(ctx, []string{"backspace"}); backspaceErr != nil {
+				err = errors.Join(err, fmt.Errorf("probe cleanup backspace: %w", backspaceErr))
+				return
+			}
+			if waitErr := e.sleepFor(ctx, textInputKeystrokeGap); waitErr != nil {
+				err = errors.Join(err, waitErr)
+			}
+		} else {
+			log.Printf("[text-input] probe character successfully removed by undo")
+		}
 	}()
 	if err = e.sleepFor(ctx, textInputProbeSettleDelay); err != nil {
 		return textInputModeUnknown, vlmCalls, err

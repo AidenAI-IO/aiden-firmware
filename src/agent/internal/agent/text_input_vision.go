@@ -67,6 +67,7 @@ type textInputProbeAnalysis struct {
 
 type textInputProbeVision interface {
 	ProbeInputMode(ctx context.Context, screenshot screenshotResult, platform string, focus focusPointArgs) (textInputProbeAnalysis, error)
+	VerifyProbeCleanup(ctx context.Context, screenshot screenshotResult, platform string, focus focusPointArgs) (bool, error)
 }
 
 type llmTextInputVision struct {
@@ -196,6 +197,38 @@ Classification rules:
 - The absence of an underline does not prove ASCII mode. Candidate popup evidence takes priority.
 - Keyboard autocorrect suggestions for already committed English text are not an IME composition state.
 - When a keyboard is visible, distinguish ordinary autocorrect suggestions from an active IME candidate state by also checking the focused input position.`, platform, focus.X, focus.Y))
+}
+
+func (v *llmTextInputVision) VerifyProbeCleanup(ctx context.Context, screenshot screenshotResult, platform string, focus focusPointArgs) (bool, error) {
+	prompt := buildTextInputProbeCleanupPrompt(platform, focus)
+	raw, err := v.visionJSON(ctx, "probe_cleanup", prompt, screenshot)
+	if err != nil {
+		return false, err
+	}
+	var parsed struct {
+		ProbeCharacterVisible bool   `json:"probe_character_visible"`
+		Evidence              string `json:"evidence"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return false, fmt.Errorf("parse probe cleanup verification: %w", err)
+	}
+	return parsed.ProbeCharacterVisible, nil
+}
+
+func buildTextInputProbeCleanupPrompt(platform string, focus focusPointArgs) string {
+	return strings.TrimSpace(fmt.Sprintf(`Verify whether the probe character "a" has been successfully removed from the input field after the undo operation.
+Platform: %q
+Focused field location (normalized 0-1000): (%.0f, %.0f)
+
+Return JSON only using exactly this shape:
+{"probe_character_visible":false,"evidence":"short visual reason"}
+
+Verification rules:
+- Inspect the focused input field at the specified coordinates.
+- Set probe_character_visible=true if the lowercase letter "a" is still visible in the field as either committed text or uncommitted preedit text.
+- Set probe_character_visible=false if the field is empty or the "a" has been successfully removed.
+- Ignore any "a" characters that were already in the field before the probe operation.
+- Focus on the cursor position and immediate surrounding text.`, platform, focus.X, focus.Y))
 }
 
 // PartitionComposition splits one long IME run at natural language boundaries.
@@ -543,4 +576,9 @@ func (s *stubTextInputVision) DecideCandidateAction(_ context.Context, _ screens
 	action := s.actions[0]
 	s.actions = s.actions[1:]
 	return action, nil
+}
+
+func (s *stubTextInputVision) VerifyProbeCleanup(_ context.Context, _ screenshotResult, _ string, _ focusPointArgs) (bool, error) {
+	// Stub always returns false (probe character successfully removed)
+	return false, nil
 }
