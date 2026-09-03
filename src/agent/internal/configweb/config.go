@@ -204,12 +204,19 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if frameServiceError != "" {
 			reloadError += "; frame service: " + frameServiceError
 		}
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+		response := map[string]any{
 			"ok": false, "persisted": persisted, "applied": false,
 			"revision": revision, "changed_paths": changed,
 			"restart_required": rebootRequired, "restart_reasons": update["restart_reasons"],
 			"error": reloadError,
-		})
+		}
+		if rebootRequired == false {
+			// Agent reload can reject a field whose dependency is initialized
+			// only at process startup. Surface that fact to the UI even when the
+			// config-update CLI did not classify the field as restart-required.
+			response["restart_required"] = true
+		}
+		writeJSON(w, http.StatusServiceUnavailable, response)
 		return
 	}
 	if frameServiceError != "" {
@@ -267,7 +274,11 @@ func (s *Server) handlePutLocale(w http.ResponseWriter, r *http.Request) {
 	}
 	revision := uint64Value(update["revision"])
 	if _, err := s.reloadAgentConfig(r.Context(), revision); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "persisted": true, "applied": false, "locale": *request.Locale, "revision": revision, "error": err.Error()})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok": false, "persisted": true, "applied": false,
+			"restart_required": true, "locale": *request.Locale,
+			"revision": revision, "error": err.Error(),
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

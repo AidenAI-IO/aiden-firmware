@@ -300,7 +300,7 @@ func (s *Server) handleSTTConfigTestStop(w http.ResponseWriter, r *http.Request)
 
 	provider := firstNonEmptyString([]string{
 		strings.TrimSpace(capture.provider),
-		strings.TrimSpace(s.runtime.config.STT.Provider),
+		strings.TrimSpace(s.runtime.ConfigSnapshot().STT.Provider),
 		"configured STT provider",
 	})
 	s.writeSTTConfigTestLiveResponse(
@@ -325,7 +325,7 @@ func (s *Server) writeSTTConfigTestLiveResponse(w http.ResponseWriter, ok bool, 
 }
 
 func (s *Server) newSTTConfigTestLiveSession(req sttConfigTestLiveStartRequest) (*sttConfigTestLiveSession, error) {
-	cfg, err := req.appliedConfig(s.runtime.config)
+	cfg, err := req.appliedConfig(s.runtime.ConfigSnapshot())
 	if err != nil {
 		return nil, newSTTConfigTestStatusError(http.StatusBadRequest, err)
 	}

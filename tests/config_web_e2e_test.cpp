@@ -3225,12 +3225,13 @@ TEST_CASE("config_web: GET /api/storage/status parses the agent state mirror") {
     REQUIRE(resp.status == 200);
     cJSON* parsed = cJSON_Parse(resp.body.c_str());
     REQUIRE(parsed != nullptr);
-    CHECK((cJSON_GetObjectItem(parsed, "available")->type & 0xff) == cJSON_True);
-    CHECK((cJSON_GetObjectItem(parsed, "sd_present")->type & 0xff) == cJSON_True);
-    CHECK((cJSON_GetObjectItem(parsed, "sd_mounted")->type & 0xff) == cJSON_True);
+    cJSON* card = cJSON_GetObjectItem(parsed, "card");
+    REQUIRE(card != nullptr);
+    CHECK((cJSON_GetObjectItem(card, "present")->type & 0xff) == cJSON_True);
+    CHECK((cJSON_GetObjectItem(card, "mounted")->type & 0xff) == cJSON_True);
     CHECK(required_json_string(parsed, "mount_point") == "/mnt/sdcard");
     CHECK(cJSON_GetObjectItem(parsed, "effective_mode")->valueint == 2);
-    CHECK(cJSON_GetObjectItem(parsed, "total_bytes")->valuedouble == doctest::Approx(31914983424.0));
+    CHECK(cJSON_GetObjectItem(card, "total_bytes")->valuedouble == doctest::Approx(31914983424.0));
     cJSON* job = cJSON_GetObjectItem(parsed, "format_job");
     REQUIRE(job != nullptr);
     CHECK(required_json_string(job, "status") == "idle");
@@ -3250,8 +3251,10 @@ TEST_CASE("config_web: GET /api/storage/status reports unavailable without a sta
     REQUIRE(resp.status == 200);
     cJSON* parsed = cJSON_Parse(resp.body.c_str());
     REQUIRE(parsed != nullptr);
-    CHECK((cJSON_GetObjectItem(parsed, "available")->type & 0xff) == cJSON_False);
-    CHECK((cJSON_GetObjectItem(parsed, "sd_present")->type & 0xff) == cJSON_False);
+    cJSON* card = cJSON_GetObjectItem(parsed, "card");
+    REQUIRE(card != nullptr);
+    CHECK((cJSON_GetObjectItem(card, "present")->type & 0xff) == cJSON_False);
+    CHECK((cJSON_GetObjectItem(card, "mounted")->type & 0xff) == cJSON_False);
     CHECK(cJSON_GetObjectItem(parsed, "effective_mode")->valueint == 1);
     cJSON_Delete(parsed);
 }

@@ -100,7 +100,7 @@ audio_service_cli --socket /run/audio_service/audio_service.sock get-volume
 
 # Agent API
 curl http://<device-ip>:8080/api/tools
-curl http://<device-ip>:8080/api/storage/status
+curl http://<device-ip>/api/storage/status
 curl http://<device-ip>:8080/api/storage/monitor/status
 curl -X POST -H 'Content-Type: application/json' -d '{"force":false,"targets":[]}' http://<device-ip>:8080/api/storage/cleanup
 

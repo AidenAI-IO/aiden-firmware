@@ -25,7 +25,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		// Fall back to the configured locale. s.runtime is nil in some server
 		// constructions, so guard it rather than risk a nil deref here.
 		if s.runtime != nil {
-			locale = s.runtime.config.LocaleOrDefault()
+			locale = s.runtime.ConfigSnapshot().LocaleOrDefault()
 		} else {
 			locale = defaultLocale
 		}

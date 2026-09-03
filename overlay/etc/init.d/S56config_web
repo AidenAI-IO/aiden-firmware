@@ -100,13 +100,18 @@ pid_alive() {
 
 # /proc/net/tcp lists local_address as HEX_IP:HEX_PORT and state 0A = LISTEN.
 port_is_listening() {
-    [ -r "$PROC_NET_TCP" ] || return 1
     port_hex="$(printf '%04X' "$PORT" 2>/dev/null)" || return 1
-    awk -v ph="$port_hex" '
+    for tcp_table in "$PROC_NET_TCP" "${PROC_NET_TCP6:-/proc/net/tcp6}"; do
+        [ -r "$tcp_table" ] || continue
+        if awk -v ph="$port_hex" '
         BEGIN { pat = ":" ph "$" }
         $4 == "0A" && $2 ~ pat { found = 1 }
         END { exit found ? 0 : 1 }
-    ' "$PROC_NET_TCP" 2>/dev/null
+        ' "$tcp_table" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 # Reap the process we launched before dropping its PID file, otherwise the only

@@ -92,7 +92,68 @@ func TestServerServesStaticAssetsAndRejectsTraversal(t *testing.T) {
 	}
 }
 
-func TestRuntimeOwnedModelsAreNotProxiedByConfigWeb(t *testing.T) {
+func TestStorageStatusUsesAgentResponseContract(t *testing.T) {
+	options := testOptions(t)
+	if err := os.WriteFile(options.StorageStatePath, []byte("SD_PRESENT=1\nSD_MOUNTED=1\nSD_DEVICE=/dev/mmcblk2p1\nSD_MOUNTPOINT=/mnt/sdcard\nEFFECTIVE_MODE=2\nSD_TOTAL_BYTES=100\nSD_FREE_BYTES=40\nFORMAT_STATUS=running\nFORMAT_FS=ext4\nFORMAT_AUTO=1\nMIGRATE_STATUS=failed\nMIGRATE_ERROR=copy failed\nMIGRATE_MOVED_FILES=2\nMIGRATE_MOVED_BYTES=80\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := server.storageStatusValue()
+	if _, legacy := payload["sd_present"]; legacy {
+		t.Fatalf("storage response still exposes legacy top-level fields: %#v", payload)
+	}
+	card, ok := payload["card"].(map[string]any)
+	if !ok || card["present"] != true || card["mounted"] != true || card["total_bytes"] != int64(100) || card["free_bytes"] != int64(40) {
+		t.Fatalf("card=%#v", payload["card"])
+	}
+	job, ok := payload["format_job"].(map[string]any)
+	if !ok || job["status"] != "running" || job["fs"] != "ext4" || job["auto"] != true {
+		t.Fatalf("format_job=%#v", payload["format_job"])
+	}
+	migration, ok := payload["migration"].(map[string]any)
+	if !ok || migration["status"] != "failed" || migration["moved_files"] != 2 {
+		t.Fatalf("migration=%#v", payload["migration"])
+	}
+}
+
+func TestConfigTestAcceptsRealtimeInputMode(t *testing.T) {
+	options := testOptions(t)
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := `{"section":"agent","values":{"input_mode":"realtime","vad_speech_threshold":0.5,"screen_stable_diff_threshold":6,"silence_ms":550,"min_speech_ms":300,"voice_followup_timeout_ms":1000,"voice_first_turn_timeout_ms":1000,"voice_max_turns":2,"voice_max_response_tokens":100,"screenshot_keep_n":3,"screenshot_prune_interval":2,"screen_stable_timeout_ms":2000,"screen_stable_ms":250,"max_iterations":-1}}`
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/config/test", strings.NewReader(request)))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		OK      bool `json:"ok"`
+		Results []struct {
+			Check  string `json:"check"`
+			Passed bool   `json:"passed"`
+			Detail string `json:"detail"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range payload.Results {
+		if result.Check == "input_mode" {
+			if !result.Passed || result.Detail != "got 'realtime', allowed: text/stt/realtime" {
+				t.Fatalf("input_mode result=%+v", result)
+			}
+			return
+		}
+	}
+	t.Fatalf("input_mode result missing: %+v", payload.Results)
+}
+
+func TestModelsAreProxiedByConfigWeb(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Upstream", "yes")
 		w.Header().Set("Content-Type", "application/json")
@@ -100,15 +161,45 @@ func TestRuntimeOwnedModelsAreNotProxiedByConfigWeb(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	server, err := NewServer(testOptions(t))
+	options := testOptions(t)
+	options.AgentHTTPBaseURL = upstream.URL
+	server, err := NewServer(options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/models?provider=openai&locale=zh-CN", nil)
 	resp := httptest.NewRecorder()
 	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusNotFound {
-		t.Fatalf("runtime-owned models returned status=%d body=%s", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusOK || resp.Header().Get("X-Upstream") != "yes" {
+		t.Fatalf("models proxy status=%d headers=%v body=%s", resp.Code, resp.Header(), resp.Body.String())
+	}
+}
+
+func TestSTTTestRoutesAreServedByConfigWeb(t *testing.T) {
+	var requests []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "recording"})
+	}))
+	defer upstream.Close()
+	options := testOptions(t)
+	options.AgentHTTPBaseURL = upstream.URL
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := httptest.NewRecorder()
+	server.ServeHTTP(start, httptest.NewRequest(http.MethodPost, "/api/config/test/stt/start", strings.NewReader(`{"stt_values":{},"audio_values":{}}`)))
+	if start.Code != http.StatusOK {
+		t.Fatalf("STT start status=%d body=%s", start.Code, start.Body.String())
+	}
+	stop := httptest.NewRecorder()
+	server.ServeHTTP(stop, httptest.NewRequest(http.MethodPost, "/api/config/test/stt/stop", strings.NewReader(`{}`)))
+	if stop.Code != http.StatusOK {
+		t.Fatalf("STT stop status=%d body=%s", stop.Code, stop.Body.String())
+	}
+	if strings.Join(requests, ",") != "POST /api/config-test/stt/start,POST /api/config-test/stt/stop" {
+		t.Fatalf("upstream requests=%v", requests)
 	}
 }
 
@@ -119,13 +210,10 @@ func TestAPIRouteHeaders(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name       string
-		path       string
-		deprecated bool
-		successor  string
+		name string
+		path string
 	}{
 		{name: "canonical", path: "/api/device/status"},
-		{name: "legacy", path: "/api/agent/status", deprecated: true, successor: `</api/device/status>; rel="successor-version"`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			resp := httptest.NewRecorder()
@@ -136,13 +224,23 @@ func TestAPIRouteHeaders(t *testing.T) {
 			if got := resp.Header().Get("X-Aiden-API-Version"); got != "1" {
 				t.Fatalf("API version header=%q", got)
 			}
-			if got := resp.Header().Get("Deprecation"); (got == "true") != test.deprecated {
-				t.Fatalf("deprecation header=%q", got)
-			}
-			if got := resp.Header().Get("Link"); got != test.successor {
-				t.Fatalf("successor link=%q want=%q", got, test.successor)
-			}
 		})
+	}
+	for _, test := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/agent/status"},
+		{http.MethodPost, "/api/config"},
+		{http.MethodPost, "/api/wifi/scan"},
+		{http.MethodPost, "/api/ota/update"},
+		{http.MethodGet, "/api/llm-logs"},
+	} {
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(test.method, test.path, nil))
+		if resp.Code != http.StatusNotFound {
+			t.Errorf("retired route %s %s returned status=%d", test.method, test.path, resp.Code)
+		}
 	}
 }
 
@@ -241,12 +339,10 @@ func TestLLMLogRoutesPreserveEncodedName(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name       string
-		path       string
-		deprecated bool
+		name string
+		path string
 	}{
 		{name: "canonical", path: "/api/logs/llm/llm-http-a%2Bb.log"},
-		{name: "legacy", path: "/api/llm-logs/export/llm-http-a%2Bb.log", deprecated: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			resp := httptest.NewRecorder()
@@ -254,13 +350,15 @@ func TestLLMLogRoutesPreserveEncodedName(t *testing.T) {
 			if resp.Code != http.StatusOK || resp.Body.String() != "entry" {
 				t.Fatalf("status=%d body=%q", resp.Code, resp.Body.String())
 			}
-			if got := resp.Header().Get("Deprecation"); (got == "true") != test.deprecated {
-				t.Fatalf("deprecation header=%q", got)
-			}
 		})
 	}
-
 	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/llm-logs/export/llm-http-a%2Bb.log", nil))
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("legacy LLM log route returned status=%d", resp.Code)
+	}
+
+	resp = httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/api/logs/llm/llm-http-upload%2B1.log", strings.NewReader("uploaded"))
 	server.APIHandler().ServeHTTP(resp, request)
 	if resp.Code != http.StatusOK {
@@ -275,13 +373,10 @@ func TestLLMLogRoutesPreserveEncodedName(t *testing.T) {
 func TestAPIRouteCatalogHasNoDuplicates(t *testing.T) {
 	seen := map[routeVariant]apiEndpoint{}
 	for _, route := range apiRoutes {
-		variants := append([]routeVariant{route.canonical}, route.legacy...)
-		for _, variant := range variants {
-			if previous, exists := seen[variant]; exists {
-				t.Fatalf("duplicate route %s %s for endpoints %d and %d", variant.method, variant.path, previous, route.endpoint)
-			}
-			seen[variant] = route.endpoint
+		if previous, exists := seen[route.canonical]; exists {
+			t.Fatalf("duplicate route %s %s for endpoints %d and %d", route.canonical.method, route.canonical.path, previous, route.endpoint)
 		}
+		seen[route.canonical] = route.endpoint
 	}
 }
 
@@ -311,16 +406,27 @@ func TestVersionedAndRetiredSchemaRoutesReturnNotFound(t *testing.T) {
 	}
 }
 
-func TestRuntimeOwnedStorageIsNotProxiedByConfigWeb(t *testing.T) {
-	server, err := NewServer(testOptions(t))
+func TestStorageIsProxiedByConfigWeb(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Upstream", "yes")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "path": r.URL.Path})
+	}))
+	defer upstream.Close()
+	options := testOptions(t)
+	options.AgentHTTPBaseURL = upstream.URL
+	server, err := NewServer(options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/api/storage/status", "/api/storage/format", "/api/storage/eject"} {
+	for _, test := range []struct{ method, path string }{
+		{http.MethodGet, "/api/storage/status"},
+		{http.MethodPost, "/api/storage/format"},
+		{http.MethodPost, "/api/storage/eject"},
+	} {
 		resp := httptest.NewRecorder()
-		server.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
-		if resp.Code != http.StatusNotFound {
-			t.Errorf("%s returned status=%d", path, resp.Code)
+		server.ServeHTTP(resp, httptest.NewRequest(test.method, test.path, strings.NewReader(`{}`)))
+		if resp.Code != http.StatusOK || resp.Header().Get("X-Upstream") != "yes" {
+			t.Errorf("%s %s returned status=%d headers=%v", test.method, test.path, resp.Code, resp.Header())
 		}
 	}
 }

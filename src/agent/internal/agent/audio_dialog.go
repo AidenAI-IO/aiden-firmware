@@ -150,7 +150,7 @@ func NewAudioDialog(runtime *Runtime) (*AudioDialog, error) {
 	if runtime == nil {
 		return nil, fmt.Errorf("runtime is required")
 	}
-	cfg := runtime.config
+	cfg := runtime.ConfigSnapshot()
 
 	// Create audio client
 	audioClient := NewAudioServiceClient(cfg.Audio.SocketOrDefault())

@@ -55,7 +55,6 @@ func (s *Server) reloadAgentConfig(ctx context.Context, revision uint64) (map[st
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Aiden-Internal", "config-web")
 	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("agent config reload request failed: %w", err)

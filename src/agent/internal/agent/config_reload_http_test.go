@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -33,10 +34,28 @@ func TestInternalConfigReloadAppliesLoopbackRevision(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigSnapshotIsSafeDuringReload(t *testing.T) {
+	runtime := &Runtime{config: Config{ConfigDir: t.TempDir()}}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				cfg := runtime.ConfigSnapshot()
+				cfg.Locale = []string{"en-US", "zh-CN"}[index%2]
+				_ = runtime.ApplyConfigSnapshot(cfg)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
 func TestInternalConfigReloadRejectsRemoteRequest(t *testing.T) {
 	server := &Server{runtime: &Runtime{config: Config{ConfigDir: t.TempDir()}}}
 	req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(`{}`))
 	req.RemoteAddr = "192.0.2.10:1234"
+	req.Header.Set("X-Aiden-Internal", "config-web")
 	rec := httptest.NewRecorder()
 	server.handleInternalConfigReload(rec, req)
 	if rec.Code != http.StatusNotFound {

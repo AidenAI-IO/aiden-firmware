@@ -20,6 +20,9 @@ Config Web 是 Go Agent 二进制的 `config-web` 子命令。它与 Agent 运�
 | 配置 | `GET /api/config/schema` | 字段类型、默认值、可选值、敏感标记和重启提示 |
 | 配置 | `PUT /api/config/locale` | 页面语言快捷更新 |
 | 配置 | `POST /api/config/test` | 配置和设备环境校验，不保存 |
+| 模型 | `GET /api/models?provider=...&locale=...` | 模型目录查询，由 Config Web 代理至 Agent 运行时 |
+| STT 测试 | `POST /api/config/test/stt/start` | 启动麦克风录音测试 |
+| STT 测试 | `POST /api/config/test/stt/stop` | 结束录音并返回识别结果 |
 | 设备 | `GET /api/device/snapshot` | 首屏聚合读模型（配置、Wi-Fi、设备、固件、存储摘要） |
 | 设备 | `GET /api/device/status` | 型号、固件、进程、USB/HID 和能力摘要 |
 | 设备 | `POST /api/device/reboot` | 重启设备 |
@@ -33,11 +36,38 @@ Config Web 是 Go Agent 二进制的 `config-web` 子命令。它与 Agent 运�
 | 日志 | `GET /api/logs/agent` | Agent 日志摘要 |
 | 日志 | `GET/PUT /api/logs/llm/{name}` | 查看、导入 LLM HTTP 日志 |
 | 日志 | `GET /api/logs/support` | 导出诊断支持日志包 |
+| 存储 | `GET /api/storage/status` | SD/eMMC 状态和格式化任务 |
+| 存储 | `POST /api/storage/format` | 异步格式化 SD 卡 |
+| 存储 | `POST /api/storage/eject` | 同步并安全弹出 SD 卡 |
 
-模型目录、STT 测试和存储接口仍由 Agent 8080 直接提供，路径和 JSON 协议
-保持现状（`/api/models`、`/api/config/test/stt/*`、`/api/storage/*`）。
-Config Web 页面通过同一主机的 8080 端口访问这些接口，并使用精确的 CORS
-来源；80 端口不新增代理层。
+上述接口的公开入口全部由 Config Web 80 端口提供。Config Web 可在本机通过
+受控 HTTP facade 调用 Agent 运行时实现，但前端和外部客户端不应直接访问
+Agent 8080 的模型、STT 或存储路径。
+
+存储状态响应由 `GET /api/storage/status` 和
+`GET /api/device/snapshot` 中的 `storage` 字段共用：
+
+```json
+{
+  "effective_mode": 1,
+  "card": {
+    "present": false,
+    "mounted": false,
+    "device": "",
+    "total_bytes": 0,
+    "free_bytes": 0,
+    "reason": ""
+  },
+  "mount_point": "/mnt/sdcard",
+  "format_job": {"status": "idle"},
+  "migration": {"status": "idle"}
+}
+```
+
+`format_job` 是异步任务，状态可以是 `idle`、`running`、`success` 或
+`failed`；`migration` 表示 eMMC 到 SD 的后台迁移并使用相同的状态值。
+存储卡可能已插入但尚未挂载，客户端应分别使用 `card.present` 和
+`card.mounted` 决定格式化和弹出按钮是否可用。
 
 ## 配置保存响应
 
@@ -61,16 +91,15 @@ Config Web 页面通过同一主机的 8080 端口访问这些接口，并使用
 当前 Agent 未生效”。需要完整重启的字段会设置 `restart_required` 和
 `restart_reasons`。
 
-## 迁移兼容
+## API 边界
 
 旧的 `/api/wifi/*`、`/api/system/env`、`/api/ota/update`、`/api/reboot`、
-`/api/agent/*`、`/api/llm-logs/*` 等入口只做参数转换和响应适配，并返回
-`Deprecation: true` 及指向新资源的 `Link`。它们不复制 Agent 业务逻辑，
-迁移完成后可删除。`GET /api/config` 已采用纯配置语义，旧的聚合首屏统一
-使用 `/api/device/snapshot`。
+`/api/agent/*`、`/api/llm-logs/*` 等兼容入口已删除，不再返回
+`Deprecation` 适配响应。客户端必须使用上表中的 canonical 资源；`GET
+/api/config` 是纯配置语义，聚合首屏使用 `/api/device/snapshot`。
 
 ## Agent 内部 reload
 
-`POST /api/internal/config/reload` 仅接受本机请求（或 Config Web 标记的
-内部请求），请求可携带 `revision`。Agent 会校验 revision、重新读取并
-替换运行时配置；过期 revision 返回 HTTP 409。此接口不是对外的管理 API。
+`POST /api/internal/config/reload` 仅接受 loopback 请求，请求可携带
+`revision`。Agent 会校验 revision，并在所有受影响的运行时依赖成功重建后
+才报告 `applied=true`；过期 revision 返回 HTTP 409。此接口不是对外的管理 API。

@@ -26,10 +26,7 @@ func configFileRevision(path string) uint64 {
 	return h.Sum64()
 }
 
-func isLoopbackOrConfigWeb(r *http.Request) bool {
-	if strings.TrimSpace(r.Header.Get("X-Aiden-Internal")) == "config-web" {
-		return true
-	}
+func isLoopbackRequest(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
 	if err != nil {
 		host = strings.TrimSpace(r.RemoteAddr)
@@ -46,7 +43,7 @@ func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !isLoopbackOrConfigWeb(r) {
+	if !isLoopbackRequest(r) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
@@ -56,6 +53,7 @@ func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Reque
 	}
 	s.runtime.configReloadMu.Lock()
 	defer s.runtime.configReloadMu.Unlock()
+	current := s.runtime.ConfigSnapshot()
 	var request configReloadRequest
 	if r.Body != nil {
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024))
@@ -64,7 +62,7 @@ func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	configPath := filepath.Join(s.runtime.config.ConfigDir, "agent.toml")
+	configPath := filepath.Join(current.ConfigDir, "agent.toml")
 	revision := configFileRevision(configPath)
 	if revision == 0 {
 		writeAgentJSONError(w, http.StatusServiceUnavailable, "config file unavailable")
@@ -74,15 +72,27 @@ func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Reque
 		writeAgentJSONError(w, http.StatusConflict, fmt.Sprintf("stale config revision %d (current %d)", request.Revision, revision))
 		return
 	}
-	cfg, err := LoadRuntimeConfigFromDir(s.runtime.config.ConfigDir)
+	cfg, err := LoadRuntimeConfigFromDir(current.ConfigDir)
 	if err != nil {
 		writeAgentJSONError(w, http.StatusServiceUnavailable, "reload config: "+err.Error())
 		return
 	}
-	// Skill merge models and other runtime-only dependencies are not persisted
-	// in TOML; retain the initialized dependency while replacing config values.
-	cfg.SkillMergeModel = s.runtime.config.SkillMergeModel
-	s.runtime.config = cfg
+	// Preserve command-line-only runtime fields before asking Runtime to apply the
+	// snapshot. Runtime rejects changes once its provider/audio/storage
+	// dependencies are initialized, so a failed apply leaves the old snapshot
+	// active and tells Config Web that a restart is required.
+	cfg.SkillMergeModel = current.SkillMergeModel
+	cfg.EnvironmentBridge = current.EnvironmentBridge
+	cfg.Benchmark = current.Benchmark
+	cfg.ForceSimpleLoop = current.ForceSimpleLoop
+	if err := s.runtime.ApplyConfigSnapshot(cfg); err != nil {
+		writeAgentJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok": false, "applied": false, "restart_required": true,
+			"persisted": true, "revision": revision,
+			"error": "apply config: " + err.Error(),
+		})
+		return
+	}
 	writeAgentJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "applied": true, "persisted": true, "revision": revision,
 	})
@@ -136,7 +146,7 @@ func handleConfigWebCORS(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Add("Vary", "Origin")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Aiden-Internal")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return true
