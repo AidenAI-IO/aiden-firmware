@@ -9,6 +9,15 @@ system_date_before_default() {
 	[ "$current_date" -lt "$default_date" ] 2>/dev/null
 }
 
+rtc_needs_calibration() {
+	rtc_year="$(printf '%s\n' "$rtc_time" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9][0-9][0-9][0-9]$/) {print $i; exit}}')"
+	baseline_year="${RTC_DEFAULT_DATE%%-*}"
+	case "$rtc_year:$baseline_year" in
+		*:*[!0-9]*|:*) return 0 ;;
+	esac
+	[ "$rtc_year" -lt "$baseline_year" ] 2>/dev/null
+}
+
 start() {
 	if ! command -v hwclock >/dev/null 2>&1; then
 		echo "hwclock binary not found"
@@ -16,23 +25,20 @@ start() {
 	fi
 
 	rtc_time="$(hwclock 2>/dev/null || true)"
-	case "$rtc_time" in
-		*1969*|*1970*)
-			if system_date_before_default; then
-				echo "RTC time calibration to $RTC_DEFAULT_DATE"
-				date -s "$RTC_DEFAULT_DATE" >/dev/null 2>&1 || return 1
-			else
-				echo "RTC invalid; preserving current system time"
-			fi
-			if ! hwclock -w >/dev/null 2>&1; then
-				echo "RTC write-back failed"
-				return 1
-			fi
-			;;
-		*)
-			echo "RTC does not require time calibration"
-			;;
-	esac
+	if rtc_needs_calibration; then
+		if system_date_before_default; then
+			echo "RTC time calibration to $RTC_DEFAULT_DATE"
+			date -s "$RTC_DEFAULT_DATE" >/dev/null 2>&1 || return 1
+		else
+			echo "RTC is stale; preserving current system time"
+		fi
+		if ! hwclock -w >/dev/null 2>&1; then
+			echo "RTC write-back failed"
+			return 1
+		fi
+	else
+		echo "RTC does not require time calibration"
+	fi
 }
 
 case "$1" in

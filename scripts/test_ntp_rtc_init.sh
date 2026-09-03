@@ -151,6 +151,21 @@ if ! grep -q 'RTC_DEFAULT_DATE:=2026-06-09' "$RTC_INIT"; then
     exit 1
 fi
 
+if ! grep -q 'baseline_year="${RTC_DEFAULT_DATE%%-*}"' "$RTC_INIT"; then
+    echo "S99rtcinit must derive the stale RTC threshold from RTC_DEFAULT_DATE" >&2
+    exit 1
+fi
+
+if grep -q 'RTC_MIN_YEAR' "$RTC_INIT"; then
+    echo "S99rtcinit must not duplicate the RTC baseline year" >&2
+    exit 1
+fi
+
+if ! grep -q 'rtc_needs_calibration' "$RTC_INIT"; then
+    echo "S99rtcinit must validate the RTC year against its baseline" >&2
+    exit 1
+fi
+
 if ! grep -q 'system_date_before_default' "$RTC_INIT"; then
     echo "S99rtcinit must not clobber an already-sane system clock" >&2
     exit 1
