@@ -157,6 +157,7 @@ A normal task follows this loop:
 | Open an app or URL | `open_app` or `open_url` | Fresh screenshot of the destination |
 | Use an app's visible screen | `screenshot` plus HID/UI tools | Screenshot before and after the action |
 | Read phone notifications | `bridge_notification` with `action=query` | Notification ring generation and event IDs |
+| Recall notification-derived conclusions | `recall_memory` | Memory result; distinguish a derived conclusion from the exact source notification |
 
 ## Phone Bridge
 
@@ -233,11 +234,12 @@ Android USB notification ingestion and iOS ANCS ingestion both feed this board r
 the background notification memory worker may persist accepted raw events when its storage gate
 allows writes, then extract temporary or long-term memories subject to worker availability, model
 policy, and retention. Do not tell the user that notifications are never stored. For remembered
-  notification conclusions use `recall_memory`. Reading an exact original notification or audit is
-  access to personal data: do it only with the user's explicit authorization, and scope the
-  read-only `shell` query to the explicitly requested event ID or time range under
-  `/userdata/agent/memory/notifications/events/`. Exclude unrelated records before returning any
-  result; never dump the whole directory or an unbounded JSONL shard.
+notification conclusions use `recall_memory`. Reading an exact original notification or audit is
+access to personal data: do it only with the user's explicit authorization, and scope the read-only
+`shell` query to the explicitly requested event ID or time range under
+`<CONFIG_DIR>/memory/notifications/events/`, where the production default is
+`/userdata/agent/memory/notifications/events/`. Exclude unrelated records before returning any
+result; never dump the whole directory or an unbounded JSONL shard.
 
 ### Launch Semantics And Evidence
 
@@ -245,8 +247,8 @@ policy, and retention. Do not tell the user that notifications are never stored.
   companion app owns the platform-specific launch mapping; the Agent should not hard-code private
   schemes or package details.
 - `open_url` accepts `http`, `https`, `sms`, `mailto`, and `tel` URLs. Validate the scheme before
-  sending it to the bridge. On the wire it is still `type: "open_app"` with the `url` field set and
-  no semantic `app` field.
+  sending it to the bridge. Use the Supported Operations table as the canonical wire mapping and
+  do not combine a URL with a semantic app target.
 - An `open_app` success only means that the operating system accepted a launch request. Wait for a
   stable screen and take a screenshot before claiming that the app or destination is ready.
 - On iOS, URL preflight is limited by the system's allowed-query configuration and is not a complete
@@ -296,7 +298,7 @@ the actual error category, such as `permission_denied`, `app_backgrounded`, `app
 | --- | --- |
 | Agent binary | `/oem/usr/bin/agent` |
 | Environment wrapper | `/oem/usr/bin/aiden-env-run` |
-| Agent config and data | `/userdata/agent/agent.toml`, user skills, memory, and logs |
+| Agent config and data | `<CONFIG_DIR>/agent.toml`, user skills, memory, and logs (production default: `/userdata/agent/`) |
 | Bundled skills | `/oem/usr/share/aiden/skills/`, synchronized to the user skill directory at startup |
 | Config Web | `http://192.168.42.1`, normally port 80 |
 | Agent Web/API | `http://192.168.42.1:8080` |
