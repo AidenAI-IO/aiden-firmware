@@ -1,17 +1,19 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 )
+
+const phoneBridgeProxyMaxBodyBytes = 1 << 20 // 1 MiB
 
 // EnqueueCommandRequest is the request body for POST /api/phone-bridge/commands
 type EnqueueCommandRequest struct {
@@ -322,7 +324,20 @@ func (pb *PhoneBridge) handleQueryResult(w http.ResponseWriter, r *http.Request)
 
 	// Proxy mode: forward to remote agent
 	if pb.proxyMode {
-		pb.proxyHTTPRequest(w, r, r.URL.Path)
+		// Extract and validate command ID to prevent path traversal
+		path := strings.TrimPrefix(r.URL.Path, "/api/phone-bridge/results/")
+		commandID := strings.TrimSpace(path)
+		
+		// Reject path separators and dot segments
+		if commandID == "" || strings.Contains(commandID, "/") || strings.Contains(commandID, "\\") || 
+			commandID == "." || commandID == ".." || strings.Contains(commandID, ".") {
+			http.Error(w, `{"error":"Invalid command ID"}`, http.StatusBadRequest)
+			return
+		}
+		
+		// Build safe path with validated ID
+		safePath := "/api/phone-bridge/results/" + url.PathEscape(commandID)
+		pb.proxyHTTPRequest(w, r, safePath)
 		return
 	}
 
@@ -364,18 +379,10 @@ func (pb *PhoneBridge) proxyHTTPRequest(w http.ResponseWriter, r *http.Request, 
 		remoteURL = remoteURL + "?" + r.URL.RawQuery
 	}
 
-	// Read request body if present
+	// Forward the request body without buffering it in memory
 	var body io.Reader
 	if r.Body != nil {
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err != nil {
-			if pb.logger != nil {
-				pb.logger.Error("phone-bridge-proxy: read request body failed: %v", err)
-			}
-			http.Error(w, fmt.Sprintf(`{"error":"read request body: %v"}`, err), http.StatusBadGateway)
-			return
-		}
-		body = bytes.NewReader(bodyBytes)
+		body = http.MaxBytesReader(w, r.Body, phoneBridgeProxyMaxBodyBytes)
 	}
 
 	// Create proxied request
