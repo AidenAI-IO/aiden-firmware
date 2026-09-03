@@ -371,15 +371,15 @@ func (p *episodeMemoryProcessor) collectEpisodeMemoryWork(state *episodeMemorySt
 		if status.Proposal != nil {
 			work.proposal = cloneEpisodeMemoryProposal(*status.Proposal)
 		} else {
+			// Keep this transition in memory until the work's retry-attempt group
+			// is about to call the model. Persisting it here would mark later,
+			// unstarted groups as processing if an earlier group fails.
 			work.needsModel = true
 			work.status = episodeMemoryEpisodeStatus{
 				Status:              episodeMemoryStatusProcessing,
 				ExtractorVersion:    episodeMemoryExtractorVersion,
 				ProcessingStartedAt: p.now().Format(time.RFC3339Nano),
 				AttemptCount:        status.AttemptCount,
-			}
-			if err := p.state.SetEpisode(episode.ID, work.status); err != nil {
-				return nil, result, err
 			}
 		}
 		works = append(works, work)
@@ -400,7 +400,7 @@ func (p *episodeMemoryProcessor) extractEpisodeMemoryWork(ctx context.Context, s
 		}
 		groups[attempt] = append(groups[attempt], index)
 	}
-	for groupIndex, attempt := range groupOrder {
+	for _, attempt := range groupOrder {
 		indexes := groups[attempt]
 		episodes := make([]TaskEpisode, 0, len(indexes))
 		for _, index := range indexes {
@@ -408,17 +408,6 @@ func (p *episodeMemoryProcessor) extractEpisodeMemoryWork(ctx context.Context, s
 		}
 		stopped, err := p.extractEpisodeMemoryWorkGroup(ctx, state, works, indexes, episodes, attempt, result)
 		if err != nil || stopped {
-			// Later groups were marked processing during collection but have not
-			// reached the model yet. Restore them so a failed earlier group does
-			// not make the next worker mistake them for a crashed extraction.
-			for _, laterAttempt := range groupOrder[groupIndex+1:] {
-				for _, index := range groups[laterAttempt] {
-					work := &works[index]
-					if restoreErr := p.state.SetEpisode(work.episode.ID, work.originalStatus); restoreErr != nil {
-						return false, restoreErr
-					}
-				}
-			}
 			return stopped, err
 		}
 	}
@@ -426,6 +415,16 @@ func (p *episodeMemoryProcessor) extractEpisodeMemoryWork(ctx context.Context, s
 }
 
 func (p *episodeMemoryProcessor) extractEpisodeMemoryWorkGroup(ctx context.Context, state *episodeMemoryStateFile, works []episodeMemoryWork, indexes []int, episodes []TaskEpisode, attempt int, result *MemoryBatchResult) (bool, error) {
+	processing := make(map[string]episodeMemoryEpisodeStatus, len(indexes))
+	for _, index := range indexes {
+		processing[works[index].episode.ID] = works[index].status
+	}
+	if err := p.state.SetEpisodes(processing); err != nil {
+		return false, err
+	}
+	for _, index := range indexes {
+		state.Episodes[episodeMemoryStateKey(works[index].episode.ID, episodeMemoryExtractorVersion)] = works[index].status
+	}
 	proposals, proposalErrors, err := p.proposeEpisodeBatch(ctx, episodes, attempt)
 	if err != nil {
 		if ctx.Err() != nil {

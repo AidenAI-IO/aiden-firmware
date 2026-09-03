@@ -103,8 +103,20 @@ func (s *episodeMemoryStateStore) Snapshot() (episodeMemoryStateFile, error) {
 }
 
 func (s *episodeMemoryStateStore) SetEpisode(id string, status episodeMemoryEpisodeStatus) error {
-	id = strings.TrimSpace(id)
-	if id == "" {
+	return s.SetEpisodes(map[string]episodeMemoryEpisodeStatus{id: status})
+}
+
+// SetEpisodes applies a group of status changes in one state-file write. This
+// keeps a model-call group atomic: a failed write cannot leave only part of the
+// group marked processing.
+func (s *episodeMemoryStateStore) SetEpisodes(statuses map[string]episodeMemoryEpisodeStatus) error {
+	updates := make(map[string]episodeMemoryEpisodeStatus, len(statuses))
+	for id, status := range statuses {
+		if id = strings.TrimSpace(id); id != "" {
+			updates[id] = status
+		}
+	}
+	if len(updates) == 0 {
 		return nil
 	}
 	s.mu.Lock()
@@ -116,11 +128,13 @@ func (s *episodeMemoryStateStore) SetEpisode(id string, status episodeMemoryEpis
 	if state.Episodes == nil {
 		state.Episodes = map[string]episodeMemoryEpisodeStatus{}
 	}
-	key := episodeMemoryStateKey(id, status.ExtractorVersion)
-	if status == (episodeMemoryEpisodeStatus{}) {
-		delete(state.Episodes, key)
-	} else {
-		state.Episodes[key] = status
+	for id, status := range updates {
+		key := episodeMemoryStateKey(id, status.ExtractorVersion)
+		if status == (episodeMemoryEpisodeStatus{}) {
+			delete(state.Episodes, key)
+		} else {
+			state.Episodes[key] = status
+		}
 	}
 	return writeYAMLAtomic(s.path, state)
 }

@@ -151,6 +151,77 @@ func TestEpisodeMemoryProcessorSeparatesDifferentRetryAttempts(t *testing.T) {
 	}
 }
 
+func TestEpisodeMemoryProcessorDoesNotMarkLaterAttemptGroupsProcessing(t *testing.T) {
+	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
+	inner := &episodeMemoryScriptedModel{}
+	model := &episodeMemoryBlockingModel{inner: inner, started: make(chan struct{}), release: make(chan struct{})}
+	processor := newEpisodeMemoryProcessor(plane, model)
+	processor.state.bootstrapAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	if err := processor.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	episode := func(id string) TaskEpisode {
+		return TaskEpisode{ID: id, Status: "active", StartedAt: "2026-08-14T00:00:00Z", EndedAt: "2026-08-14T00:01:00Z"}
+	}
+	laterOriginal := episodeMemoryEpisodeStatus{Status: episodeMemoryStatusRetry, ExtractorVersion: episodeMemoryExtractorVersion, AttemptCount: 2}
+	if err := processor.state.SetEpisode("ep_later_group", laterOriginal); err != nil {
+		t.Fatalf("SetEpisode(later group) error = %v", err)
+	}
+	works := []episodeMemoryWork{
+		{
+			episode:    episode("ep_first_group"),
+			needsModel: true,
+			status: episodeMemoryEpisodeStatus{
+				Status: episodeMemoryStatusProcessing, ExtractorVersion: episodeMemoryExtractorVersion, AttemptCount: 0,
+			},
+		},
+		{
+			episode:        episode("ep_later_group"),
+			needsModel:     true,
+			originalStatus: laterOriginal,
+			status: episodeMemoryEpisodeStatus{
+				Status: episodeMemoryStatusProcessing, ExtractorVersion: episodeMemoryExtractorVersion, AttemptCount: 2,
+			},
+		},
+	}
+	state := &episodeMemoryStateFile{Episodes: map[string]episodeMemoryEpisodeStatus{
+		episodeMemoryStateKey("ep_later_group", episodeMemoryExtractorVersion): laterOriginal,
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := processor.extractEpisodeMemoryWork(ctx, state, works, &MemoryBatchResult{})
+		done <- err
+	}()
+	<-model.started
+
+	snapshot, err := processor.state.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if got := snapshot.Episodes[episodeMemoryStateKey("ep_first_group", episodeMemoryExtractorVersion)].Status; got != episodeMemoryStatusProcessing {
+		t.Fatalf("first group status = %q, want processing", got)
+	}
+	if got := snapshot.Episodes[episodeMemoryStateKey("ep_later_group", episodeMemoryExtractorVersion)]; got != laterOriginal {
+		t.Fatalf("later group status = %#v, want unchanged %#v", got, laterOriginal)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("extractEpisodeMemoryWork() error = %v", err)
+	}
+	snapshot, err = processor.state.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot(after cancel) error = %v", err)
+	}
+	if _, ok := snapshot.Episodes[episodeMemoryStateKey("ep_first_group", episodeMemoryExtractorVersion)]; ok {
+		t.Fatal("canceled first group was not restored to its empty original state")
+	}
+	if got := snapshot.Episodes[episodeMemoryStateKey("ep_later_group", episodeMemoryExtractorVersion)]; got != laterOriginal {
+		t.Fatalf("later group status after cancel = %#v, want unchanged %#v", got, laterOriginal)
+	}
+}
+
 func TestEpisodeMemoryProcessorRejectsNegativeRetryBatchLimit(t *testing.T) {
 	plane := NewFilesystemMemoryPlane(filepath.Join(t.TempDir(), "memory"), DefaultMemoryExtractionConfig(), nil)
 	processor := newEpisodeMemoryProcessor(plane, &episodeMemoryScriptedModel{})
