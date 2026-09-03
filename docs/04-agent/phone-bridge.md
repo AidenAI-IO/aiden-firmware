@@ -170,7 +170,9 @@ WebSocket's core value:
 1. The relay app connects to `ws://192.168.42.1:8080/api/phone-bridge`
    after startup and sends periodic heartbeats.
 2. The app reports `phone_environment` after connection and foreground return,
-   plus `phone_app_state` whenever its visible lifecycle changes. Android FGS
+   plus `phone_app_state` whenever its visible lifecycle changes. PiP and other
+   app diagnostics are forwarded as one-way `phone_log` events and are written
+   to the Agent log; they are not command responses. Android FGS
    Bridge reports `fgs_bridge_enabled` through HTTP queue polling.
 3. The board maintains `bridge_connected`, `platform`, `last_heartbeat_at`,
    `app_state`, return-entry and background-bridge fields, plus the latest
@@ -266,6 +268,9 @@ Failure example:
 ```
 
 `phone_environment` does not correspond to board command ID; board only updates bridge status, won't treat it as tool call acknowledgment.
+`phone_log` likewise does not correspond to a board command ID. The Agent
+consumes it before pending-command matching and writes the sanitized source,
+level, timestamp, and message to `agent.log`.
 `system_apps` is system built-in app/capability list; `third_party_apps` is installation/openability probe result. `available_apps` retained only as legacy field for old boards.
 
 #### Command Types

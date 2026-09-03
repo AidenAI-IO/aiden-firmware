@@ -4,8 +4,8 @@ sidebar_position: 12
 
 # Phone Bridge Protocol Contract
 
-**Version**: 1.2
-**Date**: 2026-08-13
+**Version**: 1.3
+**Date**: 2026-09-03
 
 This document defines the WebSocket command protocol between the hardware board (aiden-firmware) and phone app (aiden-app).
 
@@ -103,6 +103,7 @@ Current events:
 
 - `phone_environment`: App reports phone environment snapshot upon WebSocket connection success and returning from background to foreground.
 - `phone_app_state`: App reports the last visible app lifecycle state when it changes among `active`, `background`, and `inactive`, plus whether a Live Activity / Dynamic Island entry is available to return to the Aiden App and whether PiP Bridge mode is enabled. This state is for diagnostics and strategy decisions; it does not mean the app can execute permanently in iOS background.
+- `phone_log`: App forwards diagnostic logs, including native PiP events, to the Agent. This is a one-way diagnostic event; it is not a response to a board command and is never matched against pending commands.
 
 Example:
 
@@ -187,6 +188,21 @@ Island recovery.
     "return_entry_available": true,
     "pip_bridge_enabled": true,
     "reported_at": "2026-06-10T03:20:05Z"
+  }
+}
+```
+
+`phone_log` example:
+
+```json
+{
+  "id": "phone_log_1720000000000_1",
+  "method": "phone_log",
+  "data": {
+    "source": "aiden-app",
+    "level": "info",
+    "timestamp": "2026-06-10T03:20:06Z",
+    "message": "[PhoneBridge][PiPDiag] 2026-06-10T03:20:06Z native delegate failedToStart ..."
   }
 }
 ```

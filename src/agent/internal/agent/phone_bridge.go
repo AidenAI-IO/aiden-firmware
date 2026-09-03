@@ -72,6 +72,16 @@ type PhoneEnvironment struct {
 	AvailableApps    []AvailableAppInfo     `json:"available_apps,omitempty"`
 }
 
+// PhoneLogEvent is a one-way diagnostic event emitted by the companion app.
+// It is intentionally separate from command responses so it cannot complete a
+// pending Phone Bridge command.
+type PhoneLogEvent struct {
+	Timestamp string `json:"timestamp,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Level     string `json:"level,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
 type PhoneBatteryInfo struct {
 	Level    *float64 `json:"level,omitempty"`
 	Charging *bool    `json:"charging,omitempty"`
@@ -441,9 +451,81 @@ func (pb *PhoneBridge) handleAppEvent(resp BridgeCommandResponse) bool {
 		return pb.handleEnvironmentEvent(resp)
 	case resp.ID == "phone_app_state" || resp.Method == "phone_app_state":
 		return pb.handleAppStateEvent(resp)
+	case resp.ID == "phone_log" || resp.Method == "phone_log":
+		return pb.handlePhoneLogEvent(resp)
 	default:
 		return false
 	}
+}
+
+func (pb *PhoneBridge) handlePhoneLogEvent(resp BridgeCommandResponse) bool {
+	if resp.Error != nil {
+		if pb.logger != nil {
+			pb.logger.Warn("phone-bridge: phone log event failed: code=%s msg=%s",
+				resp.Error.Code, resp.Error.Message)
+		}
+		return true
+	}
+	if len(resp.Data) == 0 {
+		if pb.logger != nil {
+			pb.logger.Warn("phone-bridge: phone log event missing data")
+		}
+		return true
+	}
+
+	var event PhoneLogEvent
+	if err := json.Unmarshal(resp.Data, &event); err != nil {
+		if pb.logger != nil {
+			pb.logger.Error("phone-bridge: decode phone log event failed: %v", err)
+		}
+		return true
+	}
+	message := sanitizePhoneLogField(event.Message, 8192)
+	if message == "" {
+		if pb.logger != nil {
+			pb.logger.Warn("phone-bridge: phone log event missing message")
+		}
+		return true
+	}
+	source := sanitizePhoneLogField(event.Source, 128)
+	if source == "" {
+		source = "unknown"
+	}
+	level := strings.ToLower(sanitizePhoneLogField(event.Level, 32))
+	if level == "" {
+		level = "info"
+	}
+	timestamp := sanitizePhoneLogField(event.Timestamp, 64)
+	if timestamp != "" {
+		if _, err := time.Parse(time.RFC3339, timestamp); err != nil && pb.logger != nil {
+			pb.logger.Warn("phone-bridge: phone log event invalid timestamp=%q: %v", timestamp, err)
+		}
+	}
+
+	if pb.logger == nil {
+		return true
+	}
+	format := "phone-bridge: phone log source=%s level=%s timestamp=%s message=%s"
+	switch level {
+	case "error":
+		pb.logger.Error(format, source, level, timestamp, message)
+	case "warn", "warning":
+		pb.logger.Warn(format, source, level, timestamp, message)
+	case "debug":
+		pb.logger.Debug(format, source, level, timestamp, message)
+	default:
+		pb.logger.Info(format, source, level, timestamp, message)
+	}
+	return true
+}
+
+func sanitizePhoneLogField(value string, maxLen int) string {
+	value = strings.TrimSpace(value)
+	value = strings.NewReplacer("\r", "\\r", "\n", "\\n", "\t", "\\t").Replace(value)
+	if len(value) > maxLen {
+		return value[:maxLen] + "..."
+	}
+	return value
 }
 
 func (pb *PhoneBridge) handleEnvironmentEvent(resp BridgeCommandResponse) bool {

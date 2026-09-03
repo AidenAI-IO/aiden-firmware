@@ -2,8 +2,10 @@ package agent
 
 import (
 	"aiden-agent/internal/ble"
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -226,6 +228,49 @@ func TestPhoneBridgeHandlesAppStateEvent(t *testing.T) {
 	}
 	if status.ReturnEntryAvailable == nil || !*status.ReturnEntryAvailable {
 		t.Fatalf("return_entry_available = %#v, want true", status.ReturnEntryAvailable)
+	}
+}
+
+func TestPhoneBridgeHandlesPhoneLogEvent(t *testing.T) {
+	var output bytes.Buffer
+	bridge := NewPhoneBridge(&Logger{logger: log.New(&output, "", 0)})
+	defer bridge.queue.Stop()
+
+	const eventID = "phone_log_1720000000000_1"
+	bridge.mu.Lock()
+	bridge.pendingCmds[eventID] = make(chan BridgeCommandResponse, 1)
+	bridge.mu.Unlock()
+	handled := bridge.handleAppEvent(BridgeCommandResponse{
+		ID:     eventID,
+		Method: "phone_log",
+		Data: json.RawMessage(`{
+			"timestamp":"2026-09-03T06:30:00Z",
+			"source":"aiden-app",
+			"level":"info",
+			"message":"[PhoneBridge][PiPDiag] delegate failedToStart\nAVKit status=2"
+		}`),
+	})
+	if !handled {
+		t.Fatal("phone log event was not handled")
+	}
+
+	got := output.String()
+	for _, want := range []string{
+		"phone_log message=",
+		"phone log source=aiden-app level=info",
+		"timestamp=2026-09-03T06:30:00Z",
+		"delegate failedToStart",
+		"AVKit status=2",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("phone log output %q does not contain %q", got, want)
+		}
+	}
+	bridge.mu.Lock()
+	_, pendingStillExists := bridge.pendingCmds[eventID]
+	bridge.mu.Unlock()
+	if !pendingStillExists {
+		t.Fatal("phone log event should not consume pending command responses")
 	}
 }
 
