@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,10 +24,6 @@ import (
 type SessionChunkWriter struct {
 	sessionFolder string
 	extraction    MemoryExtractionConfig
-
-	// mu serializes the read-modify-write of a session's chunk index so two
-	// concurrent writers cannot drop each other's entries.
-	mu sync.Mutex
 }
 
 // NewSessionChunkWriter creates a chunk writer for the given session folder.
@@ -86,15 +81,22 @@ func (w *SessionChunkWriter) WriteChunk(ctx context.Context, sessionID string, m
 		return nil
 	}
 
-	// One writer at a time per process: the index below is a read-modify-write,
-	// so concurrent compactions would otherwise drop each other's entries.
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	chunksDir := filepath.Join(w.sessionFolder, sessionID, "chunks")
 	if err := os.MkdirAll(chunksDir, 0o755); err != nil {
 		return fmt.Errorf("create chunks directory: %w", err)
 	}
+
+	// Appending to the index is a read-modify-write, so serialize it on the
+	// index itself. The lock cannot live on SessionChunkWriter: compaction builds
+	// a fresh writer per run, so a per-instance mutex would hand concurrent
+	// compactions distinct locks and serialize nothing. flock is held per open
+	// file description, so this also covers two goroutines in this process, not
+	// just a second process sharing the config dir.
+	fl := NewFileLock(chunksDir)
+	if err := fl.Lock(defaultLockTimeout); err != nil {
+		return fmt.Errorf("lock chunk index: %w", err)
+	}
+	defer fl.Unlock()
 
 	// Generate chunk ID
 	chunkID := "chunk_" + uuid.New().String()

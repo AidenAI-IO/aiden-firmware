@@ -4,11 +4,13 @@ import (
 	"aiden-agent/internal/agent/messages"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -95,6 +97,53 @@ func TestSessionChunkWriterDerivesSearchTermsFromContent(t *testing.T) {
 	}
 	if len(decoded.Results) != 1 {
 		t.Fatalf("expected the chunk to be recallable by a derived tag, got %#v", decoded.Results)
+	}
+}
+
+// Compaction builds a fresh writer per run, so serialization has to key on the
+// index rather than the writer instance. Separate writers appending to one
+// session must not drop each other's entries.
+func TestSessionChunkWriterSerializesConcurrentWritersOnSameIndex(t *testing.T) {
+	ctx := context.Background()
+	sessionFolder := t.TempDir()
+	const writers = 8
+
+	var wg sync.WaitGroup
+	errs := make([]error, writers)
+	for i := range writers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// A distinct writer per goroutine, matching how each compaction
+			// constructs its own.
+			errs[i] = NewSessionChunkWriter(sessionFolder).WriteChunk(ctx, "s_shared", []messages.Message{
+				{Role: messages.MessageRoleUser, Content: fmt.Sprintf("turn %d", i)},
+			}, fmt.Sprintf("summary %d", i))
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("WriteChunk() writer %d error = %v", i, err)
+		}
+	}
+
+	index, err := loadChunkIndexFromPath(filepath.Join(sessionFolder, "s_shared", "chunks", "index.yaml"))
+	if err != nil {
+		t.Fatalf("loadChunkIndexFromPath() error = %v", err)
+	}
+	if len(index.Chunks) != writers {
+		t.Fatalf("index has %d chunks, want %d: concurrent writers dropped entries", len(index.Chunks), writers)
+	}
+	ids := make(map[string]bool, writers)
+	for _, chunk := range index.Chunks {
+		if ids[chunk.ID] {
+			t.Fatalf("duplicate chunk id %q in index", chunk.ID)
+		}
+		ids[chunk.ID] = true
+		if _, err := os.Stat(filepath.Join(sessionFolder, "s_shared", "chunks", chunk.File)); err != nil {
+			t.Fatalf("indexed chunk %q has no file: %v", chunk.ID, err)
+		}
 	}
 }
 
