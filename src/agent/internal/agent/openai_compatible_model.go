@@ -670,7 +670,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 				return stream(ctx, chunk)
 			}
 		}
-		taggedStream = newTaggedThinkingStream(taggedVisible, taggedReasoning, m.reasoningEffort == "" && stream != nil)
+		taggedStream = newTaggedThinkingStream(taggedVisible, taggedReasoning)
 		filteredStream = func(_ context.Context, chunk []byte) error {
 			return taggedStream.Write(chunk)
 		}
@@ -781,7 +781,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 					return nil, err
 				}
 			}
-			if taggedStream != nil {
+			if taggedStream != nil && !taggedStream.inThinking {
 				if err := taggedStream.FlushVisible(); err != nil {
 					scanErr = err
 					return nil, err

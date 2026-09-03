@@ -91,6 +91,44 @@ func TestReasoningContentStreaming(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleConfiguredEffortStreamsUntaggedContent(t *testing.T) {
+	streamEvents := []string{
+		`data: {"id":"1","choices":[{"delta":{"content":"Hello "}}]}`,
+		`data: {"id":"1","choices":[{"delta":{"content":"there, "}}]}`,
+		`data: {"id":"1","choices":[{"delta":{"content":"how are you?"}}]}`,
+		`data: {"id":"1","choices":[{"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range streamEvents {
+			_, _ = w.Write([]byte(event + "\n"))
+		}
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "token", server.Client(), withOpenAICompatibleReasoningEffort("medium"))
+	var visible []string
+	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "test"),
+	}, llms.WithStreamingFunc(func(_ context.Context, chunk []byte) error {
+		visible = append(visible, string(chunk))
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("GenerateContent failed: %v", err)
+	}
+	if got := resp.Choices[0].Content; got != "Hello there, how are you?" {
+		t.Fatalf("content = %q", got)
+	}
+	if got := strings.Join(visible, ""); got != "Hello there, how are you?" {
+		t.Fatalf("visible stream = %#v (%q)", visible, got)
+	}
+	if len(visible) < 2 {
+		t.Fatalf("visible stream = %#v, want incremental chunks before completion", visible)
+	}
+}
+
 func TestOpenAICompatibleAutoModeFiltersTaggedThinkingIncrementally(t *testing.T) {
 	streamEvents := []string{
 		`data: {"id":"1","choices":[{"delta":{"content":"ordinary "}}]}`,

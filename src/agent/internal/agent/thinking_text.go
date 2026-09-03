@@ -13,7 +13,9 @@ var (
 // normalizeTaggedThinkingText separates provider text that is wrapped in
 // think tags. Some OpenAI-compatible gateways omit the opening tag and send
 // only the closing tag, so everything before an orphan close is treated as
-// reasoning as well.
+// reasoning as well. An unclosed opening tag is preserved as visible content
+// because the response may have been truncated before its classification was
+// certain.
 func normalizeTaggedThinkingText(source string) (visible, reasoning string, found bool) {
 	var visibleParts, reasoningParts []string
 	remaining := source
@@ -34,7 +36,9 @@ func normalizeTaggedThinkingText(source string) (visible, reasoning string, foun
 			found = true
 			closeAt, closeTag = indexFoldAny(remaining, thinkingCloseTags)
 			if closeAt < 0 {
-				reasoningParts = append(reasoningParts, remaining)
+				// Do not hide a truncated response. Keep the opening tag because
+				// callers must be able to inspect the original visible text.
+				visibleParts = append(visibleParts, openTag, remaining)
 				remaining = ""
 				continue
 			}
@@ -66,19 +70,16 @@ func indexFold(source, needle string) int {
 type taggedThinkingStream struct {
 	downstream      func([]byte) error
 	reasoningStream func([]byte) error
-	// forwardUntagged keeps ordinary responses incremental in auto mode. Once
-	// an opening tag is observed, the stream switches to strict filtering.
-	forwardUntagged bool
 	pending         bytes.Buffer
 	inThinking      bool
+	openingTag      string
 	foundTag        bool
 }
 
-func newTaggedThinkingStream(downstream func([]byte) error, reasoningStream func([]byte) error, forwardUntagged bool) *taggedThinkingStream {
+func newTaggedThinkingStream(downstream func([]byte) error, reasoningStream func([]byte) error) *taggedThinkingStream {
 	return &taggedThinkingStream{
 		downstream:      downstream,
 		reasoningStream: reasoningStream,
-		forwardUntagged: forwardUntagged,
 	}
 }
 
@@ -89,8 +90,9 @@ func (s *taggedThinkingStream) Write(chunk []byte) error {
 	if s.downstream == nil && s.reasoningStream == nil {
 		return nil
 	}
+	previousPendingLen := s.pending.Len()
 	s.pending.Write(chunk)
-	return s.process(false)
+	return s.process(previousPendingLen)
 }
 
 func (s *taggedThinkingStream) Finish() error {
@@ -98,15 +100,27 @@ func (s *taggedThinkingStream) Finish() error {
 		return nil
 	}
 	if s.inThinking {
-		if err := s.emitReasoning(s.pending.Bytes()); err != nil {
+		// A missing close means the response may be truncated. The complete
+		// block was deliberately held back so it can remain visible rather than
+		// being emitted as reasoning.
+		if err := s.emit([]byte(s.openingTag)); err != nil {
+			return err
+		}
+		if err := s.emit(s.pending.Bytes()); err != nil {
 			return err
 		}
 		s.pending.Reset()
+		s.inThinking = false
+		s.openingTag = ""
 		return nil
 	}
-	// If no tag appeared, the whole response was ordinary visible content.
-	if !s.foundTag && s.pending.Len() > 0 {
-		return s.emit(s.pending.Bytes())
+	// Any remaining bytes are ordinary visible content. This includes a
+	// partial tag suffix that never became a complete tag.
+	if s.pending.Len() > 0 {
+		if err := s.emit(s.pending.Bytes()); err != nil {
+			return err
+		}
+		s.pending.Reset()
 	}
 	return nil
 }
@@ -116,31 +130,23 @@ func (s *taggedThinkingStream) Finish() error {
 // delaying correctly separated visible deltas just because reasoning was
 // enabled for the request.
 func (s *taggedThinkingStream) FlushVisible() error {
-	if s == nil || s.downstream == nil || s.pending.Len() == 0 {
+	if s == nil || s.inThinking || s.downstream == nil || s.pending.Len() == 0 {
 		return nil
 	}
 	err := s.emit(s.pending.Bytes())
 	s.pending.Reset()
-	s.inThinking = false
 	s.foundTag = true
 	return err
 }
 
-func (s *taggedThinkingStream) process(final bool) error {
+func (s *taggedThinkingStream) process(previousPendingLen int) error {
 	for s.pending.Len() > 0 {
 		text := s.pending.String()
 		if s.inThinking {
 			at, tag := indexFoldAny(text, thinkingCloseTags)
 			if at < 0 {
-				// An explicit opening tag makes the pending text unambiguously
-				// reasoning. Keep only a possible partial closing tag buffered.
-				safe := len(text) - maxThinkingTagPrefixLen(text, thinkingCloseTags)
-				if safe > 0 {
-					if err := s.emitReasoning([]byte(text[:safe])); err != nil {
-						return err
-					}
-					s.pending.Next(safe)
-				}
+				// Hold the complete block until its closing tag arrives. This lets
+				// Finish preserve an unclosed block as visible content.
 				return nil
 			}
 			if err := s.emitReasoning([]byte(text[:at])); err != nil {
@@ -149,6 +155,7 @@ func (s *taggedThinkingStream) process(final bool) error {
 			s.pending.Next(at + len(tag))
 			s.pending = *bytes.NewBuffer(bytes.TrimLeft(s.pending.Bytes(), " \t\r\n"))
 			s.inThinking = false
+			s.openingTag = ""
 			s.foundTag = true
 			continue
 		}
@@ -164,6 +171,7 @@ func (s *taggedThinkingStream) process(final bool) error {
 			}
 			s.pending.Next(openAt + len(openTag))
 			s.inThinking = true
+			s.openingTag = openTag
 			s.foundTag = true
 		case closeAt >= 0:
 			// No opening tag: this is the malformed gateway format observed in
@@ -182,31 +190,23 @@ func (s *taggedThinkingStream) process(final bool) error {
 				}
 				s.pending.Reset()
 			}
-		case s.forwardUntagged:
-			// A partial closing tag is ambiguous: it may be an orphan closing
-			// tag, so do not forward the preceding text speculatively. This
-			// prevents reasoning from reaching the visible callback before the
-			// provider completes a close tag split across chunks.
-			if maxThinkingTagPrefixLen(text, thinkingCloseTags) > 0 {
+		case s.downstream != nil:
+			// A partial tag is ambiguous: it may be split across provider
+			// chunks, so do not forward text before it speculatively. Once the
+			// next chunk contains no tag prefix, release the previous chunk as
+			// ordinary visible text. This keeps configured-effort streams
+			// incremental without leaking an orphan closing tag to TTS.
+			if maxThinkingTagPrefixLen(text, thinkingCloseTags) > 0 || maxThinkingTagPrefixLen(text, thinkingOpenTags) > 0 {
 				return nil
 			}
-			// Keep only a possible partial opening-tag suffix. Ordinary text is
-			// delivered as soon as it is no longer a tag prefix.
-			safe := len(text) - maxThinkingTagPrefixLen(text, thinkingOpenTags)
-			if safe > 0 {
-				if err := s.emit(s.pending.Bytes()[:safe]); err != nil {
+			if previousPendingLen > 0 {
+				if err := s.emit(s.pending.Bytes()[:previousPendingLen]); err != nil {
 					return err
 				}
-				s.pending.Next(safe)
+				s.pending.Next(previousPendingLen)
+				return nil
 			}
 			return nil
-		case final:
-			if s.pending.Len() > 0 {
-				if err := s.emit(s.pending.Bytes()); err != nil {
-					return err
-				}
-				s.pending.Reset()
-			}
 		default:
 			return nil
 		}
