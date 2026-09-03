@@ -330,7 +330,7 @@ func (pb *PhoneBridge) handleQueryResult(w http.ResponseWriter, r *http.Request)
 		
 		// Reject path separators and dot segments
 		if commandID == "" || strings.Contains(commandID, "/") || strings.Contains(commandID, "\\") || 
-			commandID == "." || commandID == ".." || strings.Contains(commandID, ".") {
+			commandID == "." || commandID == ".." {
 			http.Error(w, `{"error":"Invalid command ID"}`, http.StatusBadRequest)
 			return
 		}
