@@ -379,6 +379,53 @@ TEST_CASE("FrameCaptureManager stays paused while idle and captures once per req
     server.stop();
 }
 
+TEST_CASE("FrameCaptureManager reports RUNNING before the first capture request") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+
+    FakeCaptureSource source;
+    source.repeat_last = true;
+    source.open_failures_remaining = 1;
+    source.frames.push_back(CapturedFrame{metadata(10), std::vector<uint8_t>{1, 2}});
+    FrameCaptureManagerOptions options;
+    options.recovery_initial_backoff_ms = 1;
+    options.recovery_max_backoff_ms = 1;
+    options.recovery_idle_max_backoff_ms = 1;
+    FrameCaptureManager manager(&source, &server, options);
+    connect_on_demand_capture(&server, &manager);
+    REQUIRE(manager.start());
+    REQUIRE(wait_for_source_ready(&source));
+
+    // An on-demand client gates its first capture on this state. It has to
+    // reach RUNNING from the open alone, with no request ever sent, otherwise
+    // client and service deadlock.
+    FrameServiceClient client(socket_path.path.c_str());
+    HealthResult health;
+    bool running = false;
+    for (int i = 0; i < 50 && !running; ++i) {
+        REQUIRE(client.health(&health) == FrameServiceStatus::OK);
+        running = health.state == "RUNNING";
+        if (!running) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    CHECK(running);
+    CHECK(health.capture_mode == "on_demand");
+    CHECK(health.latest_seq == 0);
+    CHECK(source.capture_count() == 0);
+    // The failed first open still counted, so RUNNING is published by the
+    // reopen rather than by clearing the failure.
+    CHECK(health.consecutive_failures == 1);
+
+    FrameResult frame;
+    REQUIRE(client.latest_frame(0, 0, &frame) == FrameServiceStatus::OK);
+    CHECK(frame.data == std::vector<uint8_t>{1, 2});
+
+    manager.stop();
+    server.stop();
+}
+
 TEST_CASE("FrameCaptureManager reopens source after capture failure") {
     TempSocketPath socket_path;
     FrameServiceServer server(socket_path.path.c_str(), 4);

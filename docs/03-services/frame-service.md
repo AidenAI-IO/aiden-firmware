@@ -95,7 +95,10 @@ The service creates its Unix socket before capture initialization. If the
 bridge, video node, HDMI signal, EDID, or DV timings are unavailable, the
 capture manager remains in `RECOVERING` and retries with a bounded backoff;
 the socket and health endpoint remain available. Once a source is connected,
-the manager transitions to `RUNNING` without a systemd restart. Set an
+the manager transitions to `RUNNING` without a systemd restart. `RUNNING` is
+published as soon as the source opens, not after the first frame is served:
+on-demand clients gate their first `latest_frame` on this state, so a service
+that waited for a capture before advancing would never receive one. Set an
 explicit path in `/etc/aiden_frame_service.conf` only when automatic discovery
 is not suitable.
 
