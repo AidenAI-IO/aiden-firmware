@@ -147,6 +147,51 @@ func TestSessionChunkWriterSerializesConcurrentWritersOnSameIndex(t *testing.T) 
 	}
 }
 
+// If the context is canceled after the chunk file is written but before the
+// index is updated, the chunk file must be removed: recall expects every .jsonl
+// to have a matching index entry.
+func TestSessionChunkWriterCleansUpOrphanedChunkOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sessionFolder := t.TempDir()
+	writer := NewSessionChunkWriter(sessionFolder)
+
+	// Cancel immediately to force the context check to fail.
+	cancel()
+
+	err := writer.WriteChunk(ctx, "s_canceled", []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "this should be cleaned up"},
+	}, "canceled summary")
+	if err == nil || err != context.Canceled {
+		t.Fatalf("WriteChunk() error = %v, want context.Canceled", err)
+	}
+
+	// The chunks directory may not exist if context was checked before MkdirAll,
+	// or it may exist but must contain no .jsonl files if checked after.
+	chunksDir := filepath.Join(sessionFolder, "s_canceled", "chunks")
+	entries, err := os.ReadDir(chunksDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			t.Fatalf("ReadDir(%q) error = %v", chunksDir, err)
+		}
+		return // directory doesn't exist, so no orphaned file
+	}
+
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".jsonl") {
+			t.Fatalf("found orphaned chunk file %q after context cancel", entry.Name())
+		}
+	}
+
+	// The index should not exist or should be empty.
+	indexPath := filepath.Join(chunksDir, "index.yaml")
+	if _, err := os.Stat(indexPath); err == nil {
+		index, _ := loadChunkIndexFromPath(indexPath)
+		if len(index.Chunks) > 0 {
+			t.Fatalf("index has %d chunks after context cancel, want 0", len(index.Chunks))
+		}
+	}
+}
+
 func TestRecallSessionChunksToolReturnsMatchingChunk(t *testing.T) {
 	ctx := context.Background()
 	sessionFolder := t.TempDir()

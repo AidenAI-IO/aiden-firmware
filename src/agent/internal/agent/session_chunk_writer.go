@@ -80,6 +80,9 @@ func (w *SessionChunkWriter) WriteChunk(ctx context.Context, sessionID string, m
 	if len(msgs) == 0 {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	chunksDir := filepath.Join(w.sessionFolder, sessionID, "chunks")
 	if err := os.MkdirAll(chunksDir, 0o755); err != nil {
@@ -107,7 +110,16 @@ func (w *SessionChunkWriter) WriteChunk(ctx context.Context, sessionID string, m
 	if err != nil {
 		return fmt.Errorf("create chunk file: %w", err)
 	}
-	defer file.Close()
+	var chunkComplete bool
+	defer func() {
+		file.Close()
+		// If context was canceled or another error prevented us from updating the
+		// index, remove the orphaned chunk file: recall expects every .jsonl file
+		// to have a matching index entry, and a partial file could be corrupt.
+		if !chunkComplete {
+			os.Remove(chunkFile)
+		}
+	}()
 
 	for _, msg := range msgs {
 		data, err := json.Marshal(msg)
@@ -124,6 +136,13 @@ func (w *SessionChunkWriter) WriteChunk(ctx context.Context, sessionID string, m
 
 	if err := file.Sync(); err != nil {
 		return fmt.Errorf("sync chunk file: %w", err)
+	}
+
+	// Check context before the index update: if canceled here, the deferred
+	// cleanup removes the chunk file we just wrote, preserving the invariant
+	// that every .jsonl has an index entry.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	// Update index
@@ -166,6 +185,8 @@ func (w *SessionChunkWriter) WriteChunk(ctx context.Context, sessionID string, m
 		return fmt.Errorf("write chunk index: %w", err)
 	}
 
+	// Mark complete so the deferred cleanup doesn't remove the file.
+	chunkComplete = true
 	return nil
 }
 
