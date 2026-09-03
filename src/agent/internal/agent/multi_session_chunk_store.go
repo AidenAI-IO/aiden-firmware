@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,7 +56,10 @@ func (s *MultiSessionChunkStore) RecallChunks(ctx context.Context, query ChunkRe
 		// Load and search this session's chunks
 		index, err := loadChunkIndexFromPath(indexPath)
 		if err != nil {
-			continue // Skip sessions with corrupt indices
+			// A corrupt index means this session's chunks are unreachable. Log it
+			// so the problem is visible rather than silently dropping history.
+			log.Printf("[WARN] [agent] [chunk_store] failed to load chunk index for session %q: %v", sessionID, err)
+			continue
 		}
 
 		for _, chunk := range index.Chunks {

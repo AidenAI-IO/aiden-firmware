@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -189,6 +190,57 @@ func TestSessionChunkWriterCleansUpOrphanedChunkOnContextCancel(t *testing.T) {
 		if len(index.Chunks) > 0 {
 			t.Fatalf("index has %d chunks after context cancel, want 0", len(index.Chunks))
 		}
+	}
+}
+
+// A corrupt chunk index should be logged and skipped, not silently dropped.
+func TestMultiSessionChunkStoreLogsCorruptIndex(t *testing.T) {
+	ctx := context.Background()
+	sessionFolder := t.TempDir()
+
+	// Write one valid session with chunks.
+	writeTestChunk(t, sessionFolder, "s_valid", []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "valid chunk"},
+	}, "valid summary", []string{"valid"}, nil)
+
+	// Write a corrupt index for another session.
+	corruptDir := filepath.Join(sessionFolder, "s_corrupt", "chunks")
+	if err := os.MkdirAll(corruptDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(corruptDir, "index.yaml"), []byte("not: [valid: yaml"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// Capture log output.
+	var logBuf strings.Builder
+	oldFlags := log.Flags()
+	oldOutput := log.Writer()
+	log.SetFlags(0)
+	log.SetOutput(&logBuf)
+	defer func() {
+		log.SetFlags(oldFlags)
+		log.SetOutput(oldOutput)
+	}()
+
+	store := NewMultiSessionChunkStore(sessionFolder)
+	results, err := store.RecallChunks(ctx, ChunkRecallQuery{Tags: []string{"valid"}, Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+
+	// Should return the valid session's chunk.
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result from valid session, got %d", len(results))
+	}
+	if results[0].SessionID != "s_valid" {
+		t.Fatalf("result session_id = %q, want s_valid", results[0].SessionID)
+	}
+
+	// Should have logged a warning about the corrupt index.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "s_corrupt") || !strings.Contains(logOutput, "failed to load chunk index") {
+		t.Fatalf("expected warning about corrupt index for s_corrupt, got log output:\n%s", logOutput)
 	}
 }
 
