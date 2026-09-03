@@ -514,6 +514,17 @@ func (e *realtimeClientTurnEndpoint) Reset() {
 	e.lastSpeechAt = time.Time{}
 }
 
+// shouldTrackRealtimeAdmissionSpeech prevents the local energy gate from
+// racing an explicit text response during session startup. The first audio
+// chunk can be microphone startup noise (or audio already buffered before the
+// chat command is selected); treating it as a new turn retires the pending
+// anonymous response before Gemini emits response.created. Provider VAD and
+// interruption events remain authoritative once the explicit response has
+// started.
+func shouldTrackRealtimeAdmissionSpeech(state *realtimeTurnState, chatPending bool) bool {
+	return state != nil && !chatPending && !state.responseRequestPending
+}
+
 func pcm16MeanAbs(pcm []byte) int {
 	const sampleBytes = 2
 	if len(pcm) < sampleBytes {
@@ -1130,7 +1141,6 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			activeChat = nil
 		}
 	}
-
 	sessionErrors := session.Errors()
 	// The event stream is the authoritative completion signal. Providers may
 	// close Done before the final buffered transcript or response event is read.
@@ -1226,7 +1236,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			if err := session.SendAudio(ctx, pcm); err != nil {
 				return err
 			}
-			if admissionTurnEndpoint != nil {
+			if admissionTurnEndpoint != nil && shouldTrackRealtimeAdmissionSpeech(&turnState, chatBridgeHasPending(chatBridge)) {
 				now := time.Now()
 				wasActive := admissionTurnEndpoint.speechActive
 				admissionTurnEndpoint.Observe(pcm, now)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -346,6 +347,44 @@ func TestRealtimeTurnStateLocalSpeechStopDoesNotReopenConsumedTurn(t *testing.T)
 	if state.inputTurnPending || state.inputSpeechActive {
 		t.Fatalf("local speech stop reopened consumed turn: %+v", state)
 	}
+}
+
+func TestRealtimeAdmissionSpeechWaitsForPendingTextResponse(t *testing.T) {
+	state := realtimeTurnState{responseRequestPending: true}
+	endpoint := newRealtimeClientTurnEndpoint(800)
+	if !endpoint.Observe(loudPCMFrame(), time.Now()) || !endpoint.speechActive {
+		t.Fatal("test endpoint did not detect its loud frame")
+	}
+	endpoint.Reset()
+	if shouldTrackRealtimeAdmissionSpeech(&state, false) {
+		endpoint.Observe(loudPCMFrame(), time.Now())
+	}
+	if endpoint.speechActive {
+		t.Fatal("test endpoint should not be consulted while a text response is pending")
+	}
+	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, true) {
+		t.Fatal("local admission gate tracked microphone audio while a chat command was queued")
+	}
+	if !shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, false) {
+		t.Fatal("local admission gate did not track audio for an idle realtime session")
+	}
+
+	state = realtimeTurnState{}
+	state.responseRequested()
+	if shouldTrackRealtimeAdmissionSpeech(&state, false) {
+		t.Fatal("local admission gate tracked microphone audio after startChat requested a response")
+	}
+	if !state.responseStarted("") {
+		t.Fatal("explicit text response was incorrectly treated as stale")
+	}
+}
+
+func loudPCMFrame() []byte {
+	frame := make([]byte, 320)
+	for i := 0; i+1 < len(frame); i += 2 {
+		binary.LittleEndian.PutUint16(frame[i:i+2], 2000)
+	}
+	return frame
 }
 
 func TestRealtimeTurnStateLocalSpeechStopKeepsUnansweredTurnPending(t *testing.T) {
