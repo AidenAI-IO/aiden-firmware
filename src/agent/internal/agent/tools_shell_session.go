@@ -49,6 +49,17 @@ type shellRingBuffer struct {
 	truncated bool
 }
 
+// shellSessionOutputWriter lets os/exec own the output-copy lifecycle. Cmd.Wait
+// waits for writers like this one before closing the session's done channel.
+type shellSessionOutputWriter struct {
+	output *shellRingBuffer
+}
+
+func (w shellSessionOutputWriter) Write(chunk []byte) (int, error) {
+	w.output.write(chunk)
+	return len(chunk), nil
+}
+
 type shellSessionManager struct {
 	mu          sync.Mutex
 	sessions    map[string]*shellSession

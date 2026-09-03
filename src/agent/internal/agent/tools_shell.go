@@ -184,31 +184,20 @@ func shellStartBackground(ctx context.Context, arguments map[string]interface{},
 			cancel()
 			return toolErrorResultString(ctx, CodeToolExecutionFailed, pipeErr.Error()), nil
 		}
-		stdoutPipe, pipeErr := cmd.StdoutPipe()
-		if pipeErr != nil {
-			cancel()
-			_ = stdin.Close()
-			return toolErrorResultString(ctx, CodeToolExecutionFailed, pipeErr.Error()), nil
-		}
-		stderrPipe, pipeErr := cmd.StderrPipe()
-		if pipeErr != nil {
-			cancel()
-			_ = stdin.Close()
-			_ = stdoutPipe.Close()
-			return toolErrorResultString(ctx, CodeToolExecutionFailed, pipeErr.Error()), nil
-		}
+		// Give os/exec writers instead of StdoutPipe/StderrPipe. When a command
+		// exits, Cmd.Wait waits for these internal copy goroutines to finish,
+		// so the session cannot be reported as done before all output reaches
+		// the ring buffer.
+		cmd.Stdout = shellSessionOutputWriter{output: session.output}
+		cmd.Stderr = shellSessionOutputWriter{output: session.output}
 
 		if pipeErr = cmd.Start(); pipeErr != nil {
 			cancel()
 			_ = stdin.Close()
-			_ = stdoutPipe.Close()
-			_ = stderrPipe.Close()
 			return toolErrorResultString(ctx, CodeToolExecutionFailed, pipeErr.Error()), nil
 		}
 
 		session.stdin = stdin
-		go session.capture(stdoutPipe)
-		go session.capture(stderrPipe)
 	}
 
 	go session.wait()
