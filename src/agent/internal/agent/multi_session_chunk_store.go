@@ -2,10 +2,10 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -19,66 +19,59 @@ func NewMultiSessionChunkStore(sessionFolder string) *MultiSessionChunkStore {
 	return &MultiSessionChunkStore{sessionFolder: sessionFolder}
 }
 
-// RecallChunks searches for chunks across all session directories.
+// RecallChunks searches for chunks in the global flat index.
 func (s *MultiSessionChunkStore) RecallChunks(ctx context.Context, query ChunkRecallQuery) ([]ChunkRecallResult, error) {
 	if s.sessionFolder == "" {
 		return nil, nil
 	}
 
-	// List all session directories
-	entries, err := os.ReadDir(s.sessionFolder)
+	// Load the global index from the flat chunks directory
+	chunksDir := filepath.Join(s.sessionFolder, "chunks")
+	indexPath := filepath.Join(chunksDir, "index.yaml")
+
+	// Skip if no chunks directory or index
+	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	// Load the global index
+	index, err := loadChunkIndexFromPath(indexPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read session folder: %w", err)
+		log.Printf("[WARN] [agent] [chunk_store] failed to load global chunk index: %v", err)
+		return nil, nil
+	}
+
+	// Build a map of chunk ID to created_at for efficient sorting
+	chunkCreatedAt := make(map[string]string, len(index.Chunks))
+	for _, chunk := range index.Chunks {
+		chunkCreatedAt[chunk.ID] = chunk.CreatedAt
 	}
 
 	var allResults []ChunkRecallResult
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		// Skip hidden directories and files
-		if strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-
-		sessionID := entry.Name()
-		chunksDir := filepath.Join(s.sessionFolder, sessionID, "chunks")
-		indexPath := filepath.Join(chunksDir, "index.yaml")
-
-		// Skip if no chunks directory or index
-		if _, err := os.Stat(indexPath); os.IsNotExist(err) {
-			continue
-		}
-
-		// Load and search this session's chunks
-		index, err := loadChunkIndexFromPath(indexPath)
-		if err != nil {
-			// A corrupt index means this session's chunks are unreachable. Log it
-			// so the problem is visible rather than silently dropping history.
-			log.Printf("[WARN] [agent] [chunk_store] failed to load chunk index for session %q: %v", sessionID, err)
-			continue
-		}
-
-		for _, chunk := range index.Chunks {
-			if matchesChunkQuery(chunk, query) {
-				result := ChunkRecallResult{
-					ChunkID:   chunk.ID,
-					Source:    "session_" + sessionID,
-					SessionID: sessionID,
-					Summary:   chunk.Summary,
-				}
-				if chunk.Structured != nil {
-					result.Structured = chunk.Structured
-				}
-				allResults = append(allResults, result)
+	for _, chunk := range index.Chunks {
+		if matchesChunkQuery(chunk, query) {
+			result := ChunkRecallResult{
+				ChunkID:   chunk.ID,
+				Source:    "session_" + chunk.SessionID,
+				SessionID: chunk.SessionID,
+				Summary:   chunk.Summary,
 			}
+			if chunk.Structured != nil {
+				result.Structured = chunk.Structured
+			}
+			allResults = append(allResults, result)
 		}
 	}
 
-	// Apply limit
+	// Sort by created_at descending (newest first)
+	sort.Slice(allResults, func(i, j int) bool {
+		iCreatedAt := chunkCreatedAt[allResults[i].ChunkID]
+		jCreatedAt := chunkCreatedAt[allResults[j].ChunkID]
+		// Descending order: newer timestamps come first
+		return iCreatedAt > jCreatedAt
+	})
+
+	// Apply limit after sorting
 	if query.Limit > 0 && len(allResults) > query.Limit {
 		allResults = allResults[:query.Limit]
 	}

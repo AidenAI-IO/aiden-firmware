@@ -47,7 +47,7 @@ type ChunkRecallResult struct {
 	Structured *ChunkStructuredSummary `json:"structured,omitempty"`
 }
 
-// chunkIndex is the on-disk `chunks/index.yaml` for one ContextManager session.
+// chunkIndex is the on-disk global `chunks/index.yaml` for all sessions.
 type chunkIndex struct {
 	Version   int               `yaml:"version"`
 	UpdatedAt string            `yaml:"updated_at"`
@@ -56,6 +56,7 @@ type chunkIndex struct {
 
 type chunkIndexEntry struct {
 	ID         string                  `yaml:"id"`
+	SessionID  string                  `yaml:"session_id"`
 	File       string                  `yaml:"file"`
 	Status     string                  `yaml:"status"`
 	Summary    string                  `yaml:"summary"`
@@ -64,4 +65,5 @@ type chunkIndexEntry struct {
 	Entities   []string                `yaml:"entities,omitempty"`
 	EventCount int                     `yaml:"event_count"`
 	Checksum   string                  `yaml:"checksum"`
+	CreatedAt  string                  `yaml:"created_at"`
 }
