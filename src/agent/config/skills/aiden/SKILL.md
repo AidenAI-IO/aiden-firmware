@@ -233,8 +233,11 @@ Android USB notification ingestion and iOS ANCS ingestion both feed this board r
 the background notification memory worker may persist accepted raw events when its storage gate
 allows writes, then extract temporary or long-term memories subject to worker availability, model
 policy, and retention. Do not tell the user that notifications are never stored. For remembered
-notification conclusions use `recall_memory`; for an exact original record or audit, use read-only
-`shell` on `/userdata/agent/memory/notifications/events/*.jsonl`.
+  notification conclusions use `recall_memory`. Reading an exact original notification or audit is
+  access to personal data: do it only with the user's explicit authorization, and scope the
+  read-only `shell` query to the explicitly requested event ID or time range under
+  `/userdata/agent/memory/notifications/events/`. Exclude unrelated records before returning any
+  result; never dump the whole directory or an unbounded JSONL shard.
 
 ### Launch Semantics And Evidence
 
