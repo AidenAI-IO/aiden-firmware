@@ -455,7 +455,7 @@ func addPromptShapeMetadata(meta map[string]interface{}, messages []llms.Message
 			case llms.TextContent:
 				textPartCount++
 				textChars += len(typed.Text)
-				tokens := estimateTextTokens(typed.Text)
+				tokens := tokencounter.EstimateTextTokens(typed.Text)
 				if message.Role == llms.ChatMessageTypeSystem {
 					systemTextTokens += tokens
 				} else {

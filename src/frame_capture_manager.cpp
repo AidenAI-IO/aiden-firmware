@@ -34,7 +34,17 @@ void FrameCaptureManager::stop() {
     if (!running_ && !thread_.joinable()) {
         return;
     }
-    running_ = false;
+    {
+        // Publish the stop through mutex_ before notifying. run()'s inner loop
+        // evaluates its wait predicate while holding mutex_, and only releases
+        // it atomically once it is enqueued on work_cv_. Without this barrier a
+        // notify_all() can land after the predicate read but before the
+        // enqueue, where it is dropped -- leaving the worker asleep forever and
+        // the join() below blocked for good. FrameServiceServer::stop()
+        // publishes running_ the same way.
+        std::lock_guard<std::mutex> lock(mutex_);
+        running_ = false;
+    }
     work_cv_.notify_all();
     capture_cv_.notify_all();
     if (thread_.joinable()) {

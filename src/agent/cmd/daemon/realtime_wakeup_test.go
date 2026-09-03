@@ -10,6 +10,8 @@ import (
 
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/agent/realtimevoice"
+
+	langtools "github.com/tmc/langchaingo/tools"
 )
 
 type fakeRealtimePlaybackAudio struct {
@@ -534,7 +536,8 @@ func TestStartRealtimeToolCallDoesNotBlockEventLoop(t *testing.T) {
 	results := make(chan realtimeToolResult, 1)
 	call := realtimevoice.Event{Kind: realtimevoice.EventToolCall, ResponseID: "resp-1", CallID: "call-1", Name: realtimeRecallTool, Arguments: `{}`}
 
-	startRealtimeToolCall(context.Background(), realtimeVoiceToolExecutor{recall: tool}, call, results)
+	executor := realtimeVoiceToolExecutor{delegated: map[string]langtools.Tool{realtimeRecallTool: tool}}
+	startRealtimeToolCall(context.Background(), executor, call, results)
 	select {
 	case <-tool.started:
 	case <-time.After(time.Second):
@@ -579,6 +582,102 @@ func TestRealtimeToolTrackerContinuesWhenResultsPrecedeResponseDone(t *testing.T
 	}
 	if hasTools, continueNow := tracker.done("resp-1"); !hasTools || !continueNow {
 		t.Fatalf("done() = (%t, %t), want immediate continuation", hasTools, continueNow)
+	}
+}
+
+func TestRealtimeChatAdmissionQueuesTextWhileFarewellResponseIsActive(t *testing.T) {
+	state := realtimeChatAdmissionState{responseActive: true, turnBlocked: true, standbyPending: true}
+	if got := state.admission(); got != realtimeChatQueueAfterResponse {
+		t.Fatalf("admission() = %v, want queue after farewell response", got)
+	}
+
+	state.standbyPending = false
+	if got := state.admission(); got != realtimeChatRejectBusy {
+		t.Fatalf("admission without standby request = %v, want busy", got)
+	}
+}
+
+func TestRealtimeChatAdmissionStartsTextDuringFarewellDrain(t *testing.T) {
+	state := realtimeChatAdmissionState{standbyPending: true}
+	if got := state.admission(); got != realtimeChatStart {
+		t.Fatalf("admission() = %v, want immediate start", got)
+	}
+}
+
+func TestRealtimeSleepStateDefersStandbyUntilFarewellDrains(t *testing.T) {
+	var sleep realtimeSleepState
+	if sleep.pending() || sleep.shouldDrain() {
+		t.Fatal("fresh sleep state already requested standby")
+	}
+	sleep.request()
+	if !sleep.pending() || !sleep.shouldDrain() {
+		t.Fatal("standby request did not become drainable")
+	}
+
+	drain := make(chan error, 1)
+	sleep.startDrain(drain, func() {})
+	if sleep.shouldDrain() || sleep.draining() == nil {
+		t.Fatal("standby drain did not start")
+	}
+	drain <- nil
+	select {
+	case <-sleep.draining():
+	case <-time.After(time.Second):
+		t.Fatal("drain completion was not observable")
+	}
+}
+
+func TestRealtimeSleepStateAbandonCancelsPendingStandby(t *testing.T) {
+	var sleep realtimeSleepState
+	canceled := false
+	sleep.request()
+	sleep.startDrain(make(chan error, 1), func() { canceled = true })
+	if !sleep.abandon() {
+		t.Fatal("abandon() = false with a pending request")
+	}
+	if !canceled || sleep.pending() || sleep.draining() != nil {
+		t.Fatalf("abandoned standby state = pending:%t drain:%v canceled:%t", sleep.pending(), sleep.draining(), canceled)
+	}
+}
+
+func TestRealtimeFarewellDrainYieldsToReadySpeechEvent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	source := make(chan realtimevoice.Event, 1)
+	events, reengagement := relayRealtimeSessionEvents(ctx, source)
+	source <- realtimevoice.Event{Kind: realtimevoice.EventSpeechStarted}
+
+	deadline := time.Now().Add(time.Second)
+	for len(events) == 0 || len(reengagement) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("speech event was not relayed with its re-engagement marker")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var sleep realtimeSleepState
+	sleep.request()
+	drain := make(chan error, 1)
+	drain <- nil
+	select {
+	case <-drain:
+		if !abandonSleepForPendingRealtimeReengagement(&sleep, reengagement) {
+			t.Fatal("ready speech event did not override farewell drain completion")
+		}
+	default:
+		t.Fatal("drain completion was not ready")
+	}
+	if sleep.pending() {
+		t.Fatal("standby remained pending after user re-engagement")
+	}
+	select {
+	case event := <-events:
+		if event.Kind != realtimevoice.EventSpeechStarted {
+			t.Fatalf("relayed event = %s, want speech_started", event.Kind)
+		}
+	default:
+		t.Fatal("speech event was consumed while prioritizing re-engagement")
 	}
 }
 

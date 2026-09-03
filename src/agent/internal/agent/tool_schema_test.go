@@ -11,7 +11,7 @@ func TestAgentExposedToolsDoNotExposeLegacyArg1Schema(t *testing.T) {
 	toolSet := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
 	tools := append([]langtools.Tool{}, toolSet.All()...)
 	tools = append(tools,
-		NewRecallSessionChunksTool(nil, nil),
+		NewRecallSessionChunksTool(nil),
 		NewRecallMemoryTool(nil),
 		NewSaveMemoryTool(nil),
 		NewForgetMemoryTool(nil),
@@ -54,7 +54,7 @@ func TestAgentExposedToolsDoNotExposeLegacyArg1Schema(t *testing.T) {
 }
 
 func TestSessionRecallTelemetryToolForwardsStructuredSchema(t *testing.T) {
-	inner := NewRecallSessionChunksTool(nil, nil)
+	inner := NewRecallSessionChunksTool(nil)
 	wrapped := &sessionRecallTelemetryTool{inner: inner}
 	schema := wrapped.ArgsSchema()
 	props, ok := schema["properties"].(map[string]any)
