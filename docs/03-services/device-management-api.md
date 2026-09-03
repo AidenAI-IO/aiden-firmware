@@ -21,9 +21,6 @@ All public endpoints use the `/api` root without an additional version prefix:
 | Configuration | `GET /api/config/schema` | Read field types, defaults, choices, secret markers, and restart hints |
 | Configuration | `PUT /api/config/locale` | Update the page language |
 | Configuration | `POST /api/config/test` | Validate configuration and the device environment without saving |
-| Models | `GET /api/models?provider=...&locale=...` | Query the model catalog through the Agent runtime |
-| STT test | `POST /api/config/test/stt/start` | Start a microphone recording test |
-| STT test | `POST /api/config/test/stt/stop` | Stop recording and return the transcription result |
 | Device | `GET /api/device/snapshot` | Read the aggregated initial-page model: configuration, Wi-Fi, device, firmware, and storage summaries |
 | Device | `GET /api/device/status` | Read the model, firmware, process, USB/HID, and capability summary |
 | Device | `POST /api/device/reboot` | Reboot the device |
@@ -37,14 +34,29 @@ All public endpoints use the `/api` root without an additional version prefix:
 | Logs | `GET /api/logs/agent` | Read the Agent log summary |
 | Logs | `GET/PUT /api/logs/llm/{name}` | View or import an LLM HTTP log |
 | Logs | `GET /api/logs/support` | Export a diagnostic support-log archive |
+
+All endpoints above are served by Config Web on port 80. Config Web does not
+proxy Agent runtime capabilities. The page uses the Agent API on port 8080 for
+the runtime endpoints below.
+
+## Agent Runtime Endpoints
+
+These endpoints remain owned by the Agent process and are not part of the
+Config Web management API:
+
+| Resource | Method and path | Description |
+| --- | --- | --- |
+| Models | `GET /api/models?provider=...&locale=...` | Return the localized model catalog |
+| STT test | `POST /api/config-test/stt/start` | Start a microphone recording test |
+| STT test | `POST /api/config-test/stt/stop` | Stop recording and return the transcription result |
 | Storage | `GET /api/storage/status` | Read SD/eMMC state and formatting tasks |
 | Storage | `POST /api/storage/format` | Format the SD card asynchronously |
 | Storage | `POST /api/storage/eject` | Sync and safely eject the SD card |
 
-All public endpoints above are served by Config Web on port 80. Config Web may
-call the Agent runtime locally through its controlled HTTP facade, but the
-frontend and external clients must not access the Agent's model, STT, or
-storage endpoints directly on port 8080.
+The Config Web page builds these URLs from its own host and port `8080`; it
+does not duplicate or adapt the runtime handlers. The Agent allows only the
+exact Config Web origin through its CORS policy (configured with
+`AIDEN_CONFIG_WEB_ORIGINS`, or the same device host on the portal port).
 
 `GET /api/storage/status` and the `storage` field of
 `GET /api/device/snapshot` share the following response shape:
@@ -99,21 +111,19 @@ current Agent process. Fields that require a full restart set
 ## Agent Restart Lifecycle
 
 Updating `/api/system/environment` persists the environment file and schedules
-an Agent restart. If an STT configuration test is recording, Config Web defers
-the restart until the test stops successfully so recording is not interrupted.
-A subsequent STT start waits for an already scheduled restart to finish and
-briefly retries the Agent connection while the runtime becomes ready. Restart
-launch failures are returned to the caller instead of being reported as a
-successfully scheduled restart.
+an Agent restart. STT configuration tests run in the Agent process; if a test
+is requested while that process is restarting, the Agent endpoint reports its
+normal unavailable state. Restart launch failures are returned to the caller
+instead of being reported as a successfully scheduled restart.
 
 ## API Boundary
 
 Retired routes such as `/api/wifi/*`, `/api/system/env`,
 `/api/ota/update`, `/api/reboot`, `/api/agent/*`, and `/api/llm-logs/*` have
-been removed and no longer return `Deprecation` adapter responses. Clients must
-use the canonical resources in the table above. `GET /api/config` has only
-configuration semantics; use `/api/device/snapshot` for the aggregated initial
-page load.
+been removed and return `404 Not Found`; no compatibility adapters are
+provided. Clients must use the canonical resources in the table above.
+`GET /api/config` has only configuration semantics; use
+`/api/device/snapshot` for the aggregated initial page load.
 
 ## Internal Agent Reload
 

@@ -150,11 +150,11 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if _, exists := request["wifi"]; exists {
-		writeJSONError(w, http.StatusBadRequest, "wifi updates are not supported by /api/config; use /api/wifi/connect or /api/wifi/forget")
+		writeJSONError(w, http.StatusBadRequest, "wifi updates are not supported by /api/config; use /api/network/wifi/connection")
 		return
 	}
 	if raw, exists := request["apply_wifi"]; exists && !bytes.Equal(bytes.TrimSpace(raw), []byte("false")) {
-		writeJSONError(w, http.StatusBadRequest, "wifi updates are not supported by /api/config; use /api/wifi/connect or /api/wifi/forget")
+		writeJSONError(w, http.StatusBadRequest, "wifi updates are not supported by /api/config; use /api/network/wifi/connection")
 		return
 	}
 	config := request["config"]
@@ -175,11 +175,11 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	changed := stringSlice(update["changed_paths"])
 	rebootRequired, _ := update["reboot_required"].(bool)
 	revision := uint64Value(update["revision"])
-	persisted, _ := update["persisted"].(bool)
-	if !persisted {
-		// Older agent binaries may not emit the new field. A successful
-		// config-update still means the atomic rename completed.
-		persisted = true
+	persisted, persistedField := update["persisted"].(bool)
+	if !persistedField {
+		// The current config-update contract must report persistence explicitly.
+		writeJSONError(w, http.StatusServiceUnavailable, "agent config update omitted persisted state")
+		return
 	}
 	frameServiceChanged := containsString(changed, "frame_service.keep_streamon")
 	var frameServiceError string

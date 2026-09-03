@@ -25,8 +25,6 @@ for (const route of [
   '/api/config/schema',
   '/api/config/locale',
   '/api/config/test',
-  '/api/config/test/stt/start',
-  '/api/config/test/stt/stop',
   '/api/device/snapshot',
   '/api/device/status',
   '/api/device/reboot',
@@ -38,12 +36,23 @@ for (const route of [
   '/api/logs/agent',
   '/api/logs/llm',
   '/api/logs/support',
+]) {
+  assert.ok(bundle.includes(route), `missing canonical frontend route: ${route}`);
+}
+
+for (const runtimeRoute of [
+  '/api/models?provider=',
+  '/api/config-test/stt/start',
+  '/api/config-test/stt/stop',
   '/api/storage/status',
   '/api/storage/format',
   '/api/storage/eject',
-  '/api/models?provider=',
 ]) {
-  assert.ok(bundle.includes(route), `missing canonical frontend route: ${route}`);
+  const usesAgent = runtimeRoute.startsWith('/api/models?')
+    ? bundle.includes('agentRequest(`/api/models?provider=')
+    : bundle.includes(`agentRequest('${runtimeRoute}'`);
+  assert.ok(usesAgent,
+    `runtime route must use the Agent base URL: ${runtimeRoute}`);
 }
 
 for (const retiredRoute of [

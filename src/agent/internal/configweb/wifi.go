@@ -25,21 +25,7 @@ type wiFiConfig struct {
 	Networks []wiFiNetwork
 }
 
-func (c wiFiConfig) legacy() (string, string) {
-	if len(c.Networks) == 0 {
-		return "", ""
-	}
-	best := c.Networks[0]
-	for _, network := range c.Networks[1:] {
-		if network.Priority > best.Priority {
-			best = network
-		}
-	}
-	return best.SSID, best.PSK
-}
-
 func (c wiFiConfig) publicValue() map[string]any {
-	ssid, psk := c.legacy()
 	networks := make([]map[string]any, 0, len(c.Networks))
 	for _, network := range c.Networks {
 		networks = append(networks, map[string]any{
@@ -47,7 +33,7 @@ func (c wiFiConfig) publicValue() map[string]any {
 			"scan_ssid": network.ScanSSID, "disabled": network.Disabled,
 		})
 	}
-	return map[string]any{"ssid": ssid, "has_psk": psk != "", "country": c.Country, "networks": networks}
+	return map[string]any{"country": c.Country, "networks": networks}
 }
 
 func loadWiFiConfig(path string) (wiFiConfig, error) {

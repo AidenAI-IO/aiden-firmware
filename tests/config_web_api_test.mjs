@@ -34,7 +34,12 @@ async function loadModule(filePath) {
 
 const apiModule = await loadModule(path.join(moduleRoot, 'api.js'));
 await apiModule.evaluate();
-const {request} = apiModule.namespace;
+const {request, agentURL, agentRequest} = apiModule.namespace;
+
+assert.equal(
+  agentURL('/api/models?provider=openai&locale=zh-CN'),
+  'http://192.168.42.1:8080/api/models?provider=openai&locale=zh-CN',
+);
 
 fetchImpl = async () => ({ok: true, status: 200, text: async () => 'null'});
 assert.deepEqual(JSON.parse(JSON.stringify(await request('/api/test'))), {});
@@ -44,6 +49,14 @@ await assert.rejects(
   request('/api/test'),
   (error) => error.message === 'HTTP 503' && error.status === 503,
 );
+
+let runtimeURL = '';
+fetchImpl = async (url) => {
+  runtimeURL = String(url);
+  return {ok: true, status: 200, text: async () => '{"ok":true}'};
+};
+await agentRequest('/api/storage/status');
+assert.equal(runtimeURL, 'http://192.168.42.1:8080/api/storage/status');
 
 fetchImpl = async () => ({
   ok: false,

@@ -111,8 +111,8 @@ func writeAgentJSONError(w http.ResponseWriter, status int, message string) {
 
 // handleConfigWebCORS applies a narrow CORS policy for the page hosted by the
 // separate Config Web process. It echoes only an explicitly configured origin
-// or the same device host on the well-known local portal ports; no wildcard is
-// ever emitted. It returns true when an OPTIONS preflight was answered.
+// or the same device host on the configured portal port; no wildcard is ever
+// emitted. It returns true when an OPTIONS preflight was answered.
 func handleConfigWebCORS(w http.ResponseWriter, r *http.Request) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
@@ -137,7 +137,7 @@ func handleConfigWebCORS(w http.ResponseWriter, r *http.Request) bool {
 			if parsed.Hostname() == host {
 				port := parsed.Port()
 				configuredPort := strings.TrimSpace(os.Getenv("AIDEN_CONFIG_WEB_PORT"))
-				allowed = port == "" || port == "80" || port == "8000" || (configuredPort != "" && port == configuredPort)
+				allowed = port == "" || port == "80" || (configuredPort != "" && port == configuredPort)
 			}
 		}
 	}

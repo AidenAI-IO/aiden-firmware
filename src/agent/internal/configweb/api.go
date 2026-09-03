@@ -19,9 +19,6 @@ const (
 	apiConfigUpdate
 	apiConfigLocale
 	apiConfigTest
-	apiSTTTestStart
-	apiSTTTestStop
-	apiModels
 	apiWiFiScan
 	apiWiFiConnect
 	apiWiFiForget
@@ -29,9 +26,6 @@ const (
 	apiSystemEnvironmentPut
 	apiDeviceStatus
 	apiAgentLogs
-	apiStorageStatus
-	apiStorageFormat
-	apiStorageEject
 	apiOTAStatus
 	apiOTAUpdate
 	apiDeviceReboot
@@ -56,9 +50,6 @@ var apiRoutes = []apiRoute{
 	{apiConfigUpdate, routeVariant{http.MethodPatch, apiPrefix + "/config"}},
 	{apiConfigLocale, routeVariant{http.MethodPut, apiPrefix + "/config/locale"}},
 	{apiConfigTest, routeVariant{http.MethodPost, apiPrefix + "/config/test"}},
-	{apiSTTTestStart, routeVariant{http.MethodPost, apiPrefix + "/config/test/stt/start"}},
-	{apiSTTTestStop, routeVariant{http.MethodPost, apiPrefix + "/config/test/stt/stop"}},
-	{apiModels, routeVariant{http.MethodGet, apiPrefix + "/models"}},
 	{apiWiFiScan, routeVariant{http.MethodPost, apiPrefix + "/network/wifi/scan"}},
 	{apiWiFiConnect, routeVariant{http.MethodPut, apiPrefix + "/network/wifi/connection"}},
 	{apiWiFiForget, routeVariant{http.MethodDelete, apiPrefix + "/network/wifi/connection"}},
@@ -66,9 +57,6 @@ var apiRoutes = []apiRoute{
 	{apiSystemEnvironmentPut, routeVariant{http.MethodPut, apiPrefix + "/system/environment"}},
 	{apiDeviceStatus, routeVariant{http.MethodGet, apiPrefix + "/device/status"}},
 	{apiAgentLogs, routeVariant{http.MethodGet, apiPrefix + "/logs/agent"}},
-	{apiStorageStatus, routeVariant{http.MethodGet, apiPrefix + "/storage/status"}},
-	{apiStorageFormat, routeVariant{http.MethodPost, apiPrefix + "/storage/format"}},
-	{apiStorageEject, routeVariant{http.MethodPost, apiPrefix + "/storage/eject"}},
 	{apiOTAStatus, routeVariant{http.MethodGet, apiPrefix + "/ota/status"}},
 	{apiOTAUpdate, routeVariant{http.MethodPost, apiPrefix + "/ota/updates"}},
 	{apiDeviceReboot, routeVariant{http.MethodPost, apiPrefix + "/device/reboot"}},
@@ -125,16 +113,6 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handlePutLocale(w, r)
 	case apiConfigTest:
 		s.handleConfigTest(w, r)
-	case apiSTTTestStart:
-		s.handleSTTTestStart(w, r)
-	case apiSTTTestStop:
-		s.handleSTTTestStop(w, r)
-	case apiModels:
-		target := apiPrefix + "/models"
-		if r.URL.RawQuery != "" {
-			target += "?" + r.URL.RawQuery
-		}
-		s.proxyAgent(w, r, target)
 	case apiWiFiScan:
 		s.handleWiFiScan(w, r)
 	case apiWiFiConnect:
@@ -149,12 +127,6 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleAgentStatus(w, r)
 	case apiAgentLogs:
 		s.handleAgentLogs(w, r)
-	case apiStorageStatus:
-		s.proxyAgent(w, r, apiPrefix+"/storage/status")
-	case apiStorageFormat:
-		s.proxyAgent(w, r, apiPrefix+"/storage/format")
-	case apiStorageEject:
-		s.proxyAgent(w, r, apiPrefix+"/storage/eject")
 	case apiOTAStatus:
 		s.handleOTALogs(w, r)
 	case apiOTAUpdate:

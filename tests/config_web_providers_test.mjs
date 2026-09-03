@@ -148,7 +148,10 @@ registerRuntime({
     if (String(url).startsWith('/api/models')) return (await fetchModels(url, options)).json();
     return requestImpl(url, options);
   },
-  agentRequest: (...args) => requestImpl(...args),
+  agentRequest: async (url, options) => {
+    if (String(url).startsWith('/api/models')) return (await fetchModels(url, options)).json();
+    return requestImpl(url, options);
+  },
   resolveModelProviderType: (providerRef) => {
     const manager = stateModule.namespace.runtime.ModelProvidersManager;
     const record = manager && manager.records ? manager.records[providerRef] : null;

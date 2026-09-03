@@ -33,7 +33,6 @@ type Server struct {
 	restartDeferred         bool
 	restartReadinessPending bool
 	restartError            error
-	sttTestActive           bool
 }
 
 func NewServer(options Options) (*Server, error) {

@@ -58,7 +58,7 @@ func (s *Server) scheduleAgentRestart() error {
 	s.restartMu.Lock()
 	defer s.restartMu.Unlock()
 	s.reapRestartLocked()
-	if s.sttTestActive || s.restartCommand != nil {
+	if s.restartCommand != nil {
 		s.restartDeferred = true
 		s.restartReadinessPending = true
 		return nil
@@ -74,7 +74,7 @@ func (s *Server) startDeferredRestartIfIdle() {
 	s.restartMu.Lock()
 	defer s.restartMu.Unlock()
 	s.reapRestartLocked()
-	if !s.sttTestActive && s.restartDeferred && s.restartCommand == nil {
+	if s.restartDeferred && s.restartCommand == nil {
 		s.restartDeferred = false
 		s.restartReadinessPending = true
 		if err := s.launchRestartLocked(); err != nil {

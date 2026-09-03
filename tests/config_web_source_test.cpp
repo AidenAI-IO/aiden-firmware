@@ -1189,13 +1189,13 @@ TEST_CASE("config web uses board-side recording for STT tests") {
     CHECK(html.find("function toggleSTTTest()") != std::string::npos);
     CHECK(html.find("function startSTTTest()") != std::string::npos);
     CHECK(html.find("function stopSTTTest()") != std::string::npos);
-    CHECK(html.find("'/api/config/test/stt/start'") != std::string::npos);
-    CHECK(html.find("'/api/config/test/stt/stop'") != std::string::npos);
+    CHECK(html.find("agentRequest('/api/config-test/stt/start'") != std::string::npos);
+    CHECK(html.find("agentRequest('/api/config-test/stt/stop'") != std::string::npos);
     CHECK(html.find("activate microphone") != std::string::npos);
     CHECK(html.find("recognition result") != std::string::npos);
 
-    CHECK(source.find("/api/config/test/stt/start") != std::string::npos);
-    CHECK(source.find("/api/config/test/stt/stop") != std::string::npos);
+    CHECK(source.find("/api/config-test/stt/start") == std::string::npos);
+    CHECK(source.find("/api/config-test/stt/stop") == std::string::npos);
 }
 
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
@@ -1929,9 +1929,10 @@ TEST_CASE("config web manages realtime voice as persistent provider records") {
     CHECK(js.find("clearOnSave") == std::string::npos);
 }
 
-// A stopped agent daemon makes the /api/models proxy return 503. That is a
-// normal state, not a configuration error, so the model selector degrades to
-// the custom-model input instead of a red failure box the user cannot act on.
+// A stopped agent daemon makes the direct /api/models request return 503. That
+// is a normal state, not a configuration error, so the model selector degrades
+// to the custom-model input instead of a red failure box the user cannot act
+// on.
 TEST_CASE("config web html degrades model selector when the agent is offline") {
     const std::string js = read_config_web_config_scripts();
 
@@ -1940,7 +1941,7 @@ TEST_CASE("config web html degrades model selector when the agent is offline") {
     const size_t load_end = js.find("renderModelSelector:", load_at);
     REQUIRE(load_end != std::string::npos);
     const std::string load_body = js.substr(load_at, load_end - load_at);
-    CHECK(load_body.find("response.status===503") != std::string::npos);
+    CHECK(load_body.find("err&&err.status===503") != std::string::npos);
     CHECK(load_body.find("this.renderModelSelector(true)") != std::string::npos);
     CHECK(load_body.find("const requestId=++this.requestId") != std::string::npos);
     CHECK(load_body.find("requestId!==this.requestId") != std::string::npos);

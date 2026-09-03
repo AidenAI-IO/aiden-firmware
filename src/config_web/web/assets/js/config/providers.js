@@ -7,6 +7,7 @@ const hydrateSelectField=runtimeFunction('hydrateSelectField');
 const applyFieldVisibility=runtimeFunction('applyFieldVisibility');
 const ensureSelectOption=runtimeFunction('ensureSelectOption');
 const request=runtimeFunction('request');
+const agentRequest=runtimeFunction('agentRequest');
 const setBanner=runtimeFunction('setBanner');
 const setDetails=runtimeFunction('setDetails');
 const t=runtimeFunction('t');
@@ -103,7 +104,7 @@ const ModelSelector = {
   init:function(){this.setupEventListeners();},
   onProviderChange:async function(providerRef){this.currentProvider=providerRef;if(!providerRef){this.requestId++;setCurrentModelValue('');this.clearModelSelector();return;}const providerType=this.resolveProviderType(providerRef);if(!providerType){this.requestId++;setCurrentModelValue('');this.clearModelSelector();return;}await this.loadModels(providerType);},
   resolveProviderType:function(providerRef){return resolveModelProviderType(providerRef);},
-  loadModels:async function(providerType){const requestId=++this.requestId;const container=byId('modelSelectorContainer');if(!container)return;container.innerHTML='<div class="model-selector-loading">'+this.escapeHtml(t('provider.loading_models'))+'</div>';try{const locale=getActiveLocale()||'zh-CN';const data=await request(`/api/models?provider=${encodeURIComponent(providerType)}&locale=${encodeURIComponent(locale)}`);if(requestId!==this.requestId)return;this.availableModels=data.models||[];this.renderModelSelector();}catch(err){if(requestId!==this.requestId)return;this.availableModels=[];if(err&&err.status===503){this.renderModelSelector(true);return;}this.applyProviderModelChoice(true);container.innerHTML=`<div class="model-selector-error">${t('provider.load_models_failed')}: ${this.escapeHtml(err.message)}</div>`;}},
+  loadModels:async function(providerType){const requestId=++this.requestId;const container=byId('modelSelectorContainer');if(!container)return;container.innerHTML='<div class="model-selector-loading">'+this.escapeHtml(t('provider.loading_models'))+'</div>';try{const locale=getActiveLocale()||'zh-CN';const data=await agentRequest(`/api/models?provider=${encodeURIComponent(providerType)}&locale=${encodeURIComponent(locale)}`);if(requestId!==this.requestId)return;this.availableModels=data.models||[];this.renderModelSelector();}catch(err){if(requestId!==this.requestId)return;this.availableModels=[];if(err&&err.status===503){this.renderModelSelector(true);return;}this.applyProviderModelChoice(true);container.innerHTML=`<div class="model-selector-error">${t('provider.load_models_failed')}: ${this.escapeHtml(err.message)}</div>`; }},
   defaultModelId:function(){const models=this.availableModels||[];const model=models.find(function(item){return item&&(item.default||item.is_default||item.recommended);})||models[0];return model&&model.id?String(model.id):'';},
   providerModelChoice:function(providerRef,agentOffline){const remembered=lastModelByProvider[String(providerRef||'')]||'';if(remembered)return remembered;return agentOffline?'':this.defaultModelId();},
   applyProviderModelChoice:function(agentOffline){setCurrentModelValue(this.providerModelChoice(this.currentProvider,agentOffline));},

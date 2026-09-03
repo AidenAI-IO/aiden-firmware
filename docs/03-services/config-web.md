@@ -11,6 +11,11 @@ so the page can be replaced or removed without coupling those operations to the
 static UI. Configuration changes are persisted to
 `/userdata/agent/agent.toml` and can trigger Agent restart.
 
+The page talks to the Agent runtime on port `8080` for model discovery, STT
+configuration tests, and storage operations. Those runtime endpoints are not
+proxied through Config Web on port `80`; the Agent applies a narrow CORS policy
+for the Config Web origin.
+
 ## Default Parameters
 
 | Parameter | Default Value |

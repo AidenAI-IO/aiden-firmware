@@ -2,7 +2,6 @@ package configweb
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -167,53 +166,24 @@ func TestConfigTestRejectsInvalidTelemetryURL(t *testing.T) {
 	}
 }
 
-func TestModelsAreProxiedByConfigWeb(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Upstream", "yes")
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"target": r.URL.RequestURI()})
-	}))
-	defer upstream.Close()
-
-	options := testOptions(t)
-	options.AgentHTTPBaseURL = upstream.URL
-	server, err := NewServer(options)
+func TestModelsAndRuntimeRoutesAreNotServedByConfigWeb(t *testing.T) {
+	server, err := NewServer(testOptions(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/models?provider=openai&locale=zh-CN", nil)
-	resp := httptest.NewRecorder()
-	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK || resp.Header().Get("X-Upstream") != "yes" {
-		t.Fatalf("models proxy status=%d headers=%v body=%s", resp.Code, resp.Header(), resp.Body.String())
-	}
-}
-
-func TestSTTTestRoutesAreServedByConfigWeb(t *testing.T) {
-	var requests []string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests = append(requests, r.Method+" "+r.URL.Path)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "recording"})
-	}))
-	defer upstream.Close()
-	options := testOptions(t)
-	options.AgentHTTPBaseURL = upstream.URL
-	server, err := NewServer(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := httptest.NewRecorder()
-	server.ServeHTTP(start, httptest.NewRequest(http.MethodPost, "/api/config/test/stt/start", strings.NewReader(`{"stt_values":{},"audio_values":{}}`)))
-	if start.Code != http.StatusOK {
-		t.Fatalf("STT start status=%d body=%s", start.Code, start.Body.String())
-	}
-	stop := httptest.NewRecorder()
-	server.ServeHTTP(stop, httptest.NewRequest(http.MethodPost, "/api/config/test/stt/stop", strings.NewReader(`{}`)))
-	if stop.Code != http.StatusOK {
-		t.Fatalf("STT stop status=%d body=%s", stop.Code, stop.Body.String())
-	}
-	if strings.Join(requests, ",") != "POST /api/config-test/stt/start,POST /api/config-test/stt/stop" {
-		t.Fatalf("upstream requests=%v", requests)
+	for _, test := range []struct{ method, path string }{
+		{http.MethodGet, "/api/models?provider=openai&locale=zh-CN"},
+		{http.MethodPost, "/api/config/test/stt/start"},
+		{http.MethodPost, "/api/config/test/stt/stop"},
+		{http.MethodGet, "/api/storage/status"},
+		{http.MethodPost, "/api/storage/format"},
+		{http.MethodPost, "/api/storage/eject"},
+	} {
+		resp := httptest.NewRecorder()
+		server.ServeHTTP(resp, httptest.NewRequest(test.method, test.path, strings.NewReader(`{}`)))
+		if resp.Code != http.StatusNotFound {
+			t.Errorf("runtime route %s %s returned status=%d", test.method, test.path, resp.Code)
+		}
 	}
 }
 
@@ -288,7 +258,7 @@ func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
 func TestConfigPatchUsesUpdateHandler(t *testing.T) {
 	options := testOptions(t)
 	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
-	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{\"agent\":{\"locale\":\"en-US\"}},\"changed_paths\":[],\"reboot_required\":false}'\n"
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{\"agent\":{\"locale\":\"en-US\"}},\"changed_paths\":[],\"reboot_required\":false,\"persisted\":true}'\n"
 	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -303,6 +273,25 @@ func TestConfigPatchUsesUpdateHandler(t *testing.T) {
 	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", body))
 	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"locale":"en-US"`) {
 		t.Fatalf("config patch: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestConfigPatchRejectsMissingPersistenceState(t *testing.T) {
+	options := testOptions(t)
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[],\"reboot_required\":false}'\n"
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	options.AgentBinary = fakeAgent
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{}}`)))
+	if resp.Code != http.StatusServiceUnavailable || !strings.Contains(resp.Body.String(), "omitted persisted state") {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
 
@@ -433,50 +422,6 @@ func TestLLMLogImportRejectsOversizedBody(t *testing.T) {
 	}
 }
 
-func TestProxyResponseReadFailureIsNotRetryable(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Length", "10")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("short"))
-	}))
-	defer upstream.Close()
-	options := testOptions(t)
-	options.AgentHTTPBaseURL = upstream.URL
-	server, err := NewServer(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = server.doProxyAgent(httptest.NewRequest(http.MethodGet, "/", nil), "/api/test", nil)
-	var proxyErr *proxyError
-	if !errors.As(err, &proxyErr) {
-		t.Fatalf("error=%v, want proxyError", err)
-	}
-	if proxyErr.retryable {
-		t.Fatalf("response read error is retryable: %v", proxyErr)
-	}
-}
-
-func TestWriteProxyResponseStripsHopByHopHeaders(t *testing.T) {
-	header := http.Header{
-		"Connection":        []string{"keep-alive, X-Internal-Hop"},
-		"Keep-Alive":        []string{"timeout=5"},
-		"Transfer-Encoding": []string{"chunked"},
-		"Upgrade":           []string{"websocket"},
-		"X-Internal-Hop":    []string{"secret"},
-		"X-End-To-End":      []string{"preserved"},
-	}
-	resp := httptest.NewRecorder()
-	writeProxyResponse(resp, proxyResponse{status: http.StatusOK, header: header, body: []byte("ok")})
-	for _, key := range []string{"Connection", "Keep-Alive", "Transfer-Encoding", "Upgrade", "X-Internal-Hop"} {
-		if value := resp.Header().Get(key); value != "" {
-			t.Errorf("%s=%q, want stripped", key, value)
-		}
-	}
-	if value := resp.Header().Get("X-End-To-End"); value != "preserved" {
-		t.Fatalf("X-End-To-End=%q", value)
-	}
-}
-
 func TestAPIRouteCatalogHasNoDuplicates(t *testing.T) {
 	seen := map[routeVariant]apiEndpoint{}
 	for _, route := range apiRoutes {
@@ -513,31 +458,6 @@ func TestVersionedAndRetiredSchemaRoutesReturnNotFound(t *testing.T) {
 	}
 }
 
-func TestStorageIsProxiedByConfigWeb(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Upstream", "yes")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "path": r.URL.Path})
-	}))
-	defer upstream.Close()
-	options := testOptions(t)
-	options.AgentHTTPBaseURL = upstream.URL
-	server, err := NewServer(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct{ method, path string }{
-		{http.MethodGet, "/api/storage/status"},
-		{http.MethodPost, "/api/storage/format"},
-		{http.MethodPost, "/api/storage/eject"},
-	} {
-		resp := httptest.NewRecorder()
-		server.ServeHTTP(resp, httptest.NewRequest(test.method, test.path, strings.NewReader(`{}`)))
-		if resp.Code != http.StatusOK || resp.Header().Get("X-Upstream") != "yes" {
-			t.Errorf("%s %s returned status=%d headers=%v", test.method, test.path, resp.Code, resp.Header())
-		}
-	}
-}
-
 func TestReadFileLimitedRejectsOversizedFiles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "large")
 	if err := os.WriteFile(path, []byte("12345"), 0o600); err != nil {
@@ -569,6 +489,19 @@ func TestSystemEnvParserAndWiFiConfigDefaults(t *testing.T) {
 	config, err := loadWiFiConfig(path)
 	if err != nil || len(config.Networks) != 1 || config.Networks[0].SSID != "demo" || !config.Networks[0].ScanSSID {
 		t.Fatalf("wifi config=%#v err=%v", config, err)
+	}
+}
+
+func TestWiFiPublicValueUsesNetworkCollectionOnly(t *testing.T) {
+	payload := (wiFiConfig{Country: "US", Networks: []wiFiNetwork{{SSID: "demo", PSK: "secret", Priority: 1}}}).publicValue()
+	if _, exists := payload["ssid"]; exists {
+		t.Fatalf("flat ssid field remains: %#v", payload)
+	}
+	if _, exists := payload["has_psk"]; exists {
+		t.Fatalf("flat has_psk field remains: %#v", payload)
+	}
+	if _, exists := payload["networks"]; !exists {
+		t.Fatalf("network collection missing: %#v", payload)
 	}
 }
 
