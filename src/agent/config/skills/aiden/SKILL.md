@@ -18,6 +18,7 @@ metadata:
     - keyboard_tap
     - enter_text
     - audio_volume
+    - recall_memory
     - bridge_clipboard
     - bridge_calendar
     - bridge_contacts
@@ -42,14 +43,17 @@ health, screen contents, connection state, and permissions must always be checke
   available to the board Agent.
 - Separate three levels of completion: a command was accepted, the companion app returned a result,
   and the phone UI or structured data was actually verified. Report the highest level that was
-  observed; Do not treat an acknowledgement as proof that the result has been verified.
+  observed. Do not treat an acknowledgement as proof that the result has been verified.
 - For visible UI work, use `device-operator` as well. Read that skill when it is not active because
   it owns screenshot timing, coordinate calibration, gestures, text entry, and capture recovery.
 - Keep phone companion implementation private. Refer to the Aiden companion app, public operating
   system APIs, and bridge behavior; do not depend on its source files, classes, modules, or private
   implementation names.
-- Do not place one-off coordinates, raw logs, API keys, personal contacts, notification bodies, or
-  temporary task progress in this skill or in persistent memory.
+- Do not place one-off coordinates, raw logs, API keys, personal contacts, or temporary task
+  progress in this skill or in persistent memory. Notification bodies are not automatically promoted
+  to long-term memory; the background notification worker may persist accepted raw events when its
+  storage gate allows writes and may derive temporary or long-term memories under its policy and
+  retention rules.
 
 ## Identity And Responsibilities
 
@@ -135,7 +139,8 @@ A normal task follows this loop:
   target is not visible in a current frame.
 - `[device].device_type` is the platform authority and selects the pointer mode: `Android` uses
   touchscreen semantics; `iOS`, `macOS`, `windows`, and `linux` normally use absolute pointer
-  semantics. Changing it requires a restart so the USB descriptor can be enumerated again.
+  semantics. Changing it requires a full board reboot so the USB descriptor is re-enumerated; a
+  process or hot gadget restart is not sufficient.
 - `hid_connection_id` identifies the current physical USB HID session. A WebSocket reconnect does
   not invalidate screen-size caches; a real USB host detach does.
 - `frame_service` captures on demand. If capture fails, pause UI input and follow the frame-service
@@ -172,9 +177,13 @@ five seconds; the board closes a half-open connection after roughly 60 seconds w
 the phone process, or a requested system permission is healthy.
 
 When WebSocket is unavailable, the client can poll the HTTP command queue and submit results. Queue
-delivery is at-least-once from Aiden's point of view: every logical operation needs a unique command
-ID, and a retry may reuse that ID so the phone can de-duplicate it. Never reuse an old ID for a
-different operation.
+delivery is at-least-once only while the Agent process and queue remain alive and the command is
+still queued or in flight. A queue wait timeout cancels the command, and submitting a result removes
+it from the active queue. Public bridge tools generate command IDs internally and do not expose an
+ID argument. After a user grants a permission, repeat the same logical operation; the public tool
+will create a new underlying ID. Reuse a wire ID only when the transport outcome is uncertain and
+the command is confirmed to still be queued or in flight, and never reuse it for a different
+operation.
 
 ### Public Status And Queue Endpoints
 
@@ -182,7 +191,8 @@ Use these endpoints for diagnostics and supported integrations:
 
 ```text
 GET  /api/phone-bridge/status
-GET  /api/phone-bridge/commands?platform=<ios|android>&phone_id=<id>&limit=10
+POST /api/phone-bridge/commands
+GET  /api/phone-bridge/commands?platform=<platform>&phone_id=<id>&limit=10
 POST /api/phone-bridge/results
 GET  /api/phone-bridge/results/<command_id>
 POST /api/phone-notifications/events
@@ -210,16 +220,21 @@ boolean unless the tool contract explicitly supplies one.
 | Wire command | Payload purpose | Agent tool |
 | --- | --- | --- |
 | `open_app` | Semantic app name; the phone maps it to an installed launch target | `open_app` |
+| `open_app` with `url` | A validated HTTP, HTTPS, SMS, mailto, or tel URL; this is the wire form of public `open_url` | `open_url` |
 | `clipboard_read`, `clipboard_write` | Write uses `{ "text": "..." }` | `bridge_clipboard` with `action=read/write` |
 | `calendar_create`, `calendar_query`, `calendar_delete` | RFC3339 times; query uses `from`/`to`, delete uses `event_id` | `bridge_calendar` |
 | `contacts_query`, `contacts_create`, `contacts_update` | Search/limit or contact fields; update requires `contact_id` | `bridge_contacts` |
 | `notification_send` | Title/body plus optional schedule, sound, and badge | `bridge_notification` with `action=send` |
 
-`bridge_notification` with `action=query` reads the board's BLE notification event ring. It does
-not ask the phone to send a new notification. Keep the last `generation` and `last_id` for
+`bridge_notification` with `action=query` is read-only: it reads the board notification event ring
+and does not ask the phone to send a new notification. Keep the last `generation` and `last_id` for
 incremental reads. If the service restarts and returns `reset_required`, restart from `since=0`.
-The ring is not automatically written to memory; notification-memory policy is a separate Agent
-decision.
+Android USB notification ingestion and iOS ANCS ingestion both feed this board ring. Independently,
+the background notification memory worker may persist accepted raw events when its storage gate
+allows writes, then extract temporary or long-term memories subject to worker availability, model
+policy, and retention. Do not tell the user that notifications are never stored. For remembered
+notification conclusions use `recall_memory`; for an exact original record or audit, use read-only
+`shell` on `/userdata/agent/memory/notifications/events/*.jsonl`.
 
 ### Launch Semantics And Evidence
 
@@ -227,7 +242,8 @@ decision.
   companion app owns the platform-specific launch mapping; the Agent should not hard-code private
   schemes or package details.
 - `open_url` accepts `http`, `https`, `sms`, `mailto`, and `tel` URLs. Validate the scheme before
-  sending it to the bridge.
+  sending it to the bridge. On the wire it is still `type: "open_app"` with the `url` field set and
+  no semantic `app` field.
 - An `open_app` success only means that the operating system accepted a launch request. Wait for a
   stable screen and take a screenshot before claiming that the app or destination is ready.
 - On iOS, URL preflight is limited by the system's allowed-query configuration and is not a complete
@@ -302,8 +318,9 @@ checks.
 
 ### `agent.toml` Essentials
 
-Config Web persists changes to `/userdata/agent/agent.toml`. After manual edits, restart the Agent.
-These are the first fields to check:
+Config Web persists changes to `/userdata/agent/agent.toml`. After manual edits, restart the Agent
+to reload configuration. Changes to `device_type` or `keyboard_layout` additionally require the
+full-board USB re-enumeration procedure described below. These are the first fields to check:
 
 ```toml
 input_mode = "text"          # text | stt | realtime
@@ -331,11 +348,12 @@ backend = "auto"              # board audio_service
 ```
 
 - `device_type` is global. It must match the phone platform reported by the companion app. A
-  mismatch can make pointer semantics or bridge routing appear broken; restart Agent and USB after
-  correcting it.
+  mismatch can make pointer semantics or bridge routing appear broken. After correcting it, reboot
+  the entire board, wait for the USB host to detach and the HID descriptors to re-enumerate, then
+  verify the new `hid_connection_id`, a fresh screenshot, and a small test input before continuing.
 - `keyboard_layout` supports `qwerty`, `azerty`, and `qwertz`. iOS can retain a layout at USB
-  enumeration time, so change the phone input language before changing the board layout and
-  re-enumerate as instructed.
+  enumeration time, so change the phone input language before changing the board layout and perform
+  a full board reboot to re-enumerate the USB keyboard descriptor.
 - `model_providers.<name>`, `stt_providers.<name>`, and `tts_providers.<name>` hold provider
   records. The `[model]`, `[stt]`, and `[tts]` sections select a record; they do not duplicate its
   credentials.
@@ -354,8 +372,9 @@ backend = "auto"              # board audio_service
    cannot replace USB ECM for commands or results.
 2. Install and open the Aiden companion app. Wait for its connected state and its first environment
    report, which supplies platform, locale, timezone, battery, and screen dimensions.
-3. Make `[device].device_type` match the phone platform. If it changes, restart the Agent or gadget
-   and wait for HID re-enumeration before sending input.
+3. Make `[device].device_type` match the phone platform. If it changes, reboot the entire board,
+   wait for USB host detach and HID re-enumeration, then verify the new HID session before sending
+   input. Restarting only the Agent or gadget is insufficient.
 4. Grant only the permissions required for the requested capability. On denial, explain the missing
    permission and wait for the user rather than retrying indefinitely.
 
@@ -390,7 +409,8 @@ backend = "auto"              # board audio_service
   foreground path uses WebSocket; the background path polls the HTTP queue. Background `open_app`
   is not supported through this service.
 - To read system notifications, enable the app under Settings > Notifications > Notification access.
-  Events are filtered and de-duplicated before being sent to the board over USB.
+  Events are filtered and de-duplicated before being sent to the board over USB, where Android
+  ingestion enters the same board notification event ring as iOS ANCS ingestion.
 ## Recovery And Failure Boundaries
 
 Classify the failing layer before changing the route:
@@ -401,10 +421,10 @@ Classify the failing layer before changing the route:
 | WebSocket lost but USB responds | `app_state`, queue result, BLE/PiP/FGS flags | Use an allowed queue or visible recovery path; do not equate WebSocket loss with USB loss |
 | iOS reports `app_backgrounded` | Return-entry and PiP state, BLE subscriber | Use a visible Dynamic Island entry or allowlisted wake; otherwise use HID or request user action |
 | Android background tool unavailable | FGS running state and USB network binding | Start the connected-device service or bring the app forward; never use background `open_app` |
-| `permission_denied` | Corresponding system permission page | Ask the user to grant it, then retry the same logical command ID |
+| `permission_denied` | Corresponding system permission page | Ask the user to grant it, then repeat the same logical operation; public tools generate a new command ID |
 | Launch acknowledged but screen unchanged | Fresh screenshot and app state | Treat as unverified; wait, search, or use visible UI fallback |
-| Pointer/touch is offset | `device_type`, `pointer_mode`, `hid_connection_id` | Correct platform, restart for USB re-enumeration, then recalibrate; do not blind-click repeatedly |
-| Screenshot fails or returns `SERVICE_RECOVERING` | Frame-service health, socket, and log | Pause all UI input, recover frame service, and obtain a new screenshot |
+| Pointer/touch is offset | `device_type`, `pointer_mode`, `hid_connection_id` | Correct platform, reboot the entire board, wait for USB detach and HID re-enumeration, verify the new session and screenshot, then recalibrate; do not blind-click repeatedly |
+| Screenshot fails or returns `SERVICE_RECOVERING` | Frame-service health, socket, and log | Pause all UI input; run `frame_service_cli --socket /run/frame_service/frame_service.sock restart`, fall back to `/etc/init.d/S52frame_service restart` when needed, and obtain a new screenshot |
 | BLE connected but no background result | Wake subscriber, USB ECM, queue result | Remember BLE is only a hint; verify the phone can reach `192.168.42.1:8080` and wait or return foreground |
 
 Useful non-destructive checks include:
@@ -417,6 +437,22 @@ frame_service_cli --socket /run/frame_service/frame_service.sock health
 ls -l /run/frame_service/frame_service.sock /run/audio_service/audio_service.sock /run/ble_service/ble_service.sock
 ```
 
+If a screenshot still fails after the read-only checks, recover the owning frame service before
+sending any UI input:
+
+```sh
+frame_service_cli --socket /run/frame_service/frame_service.sock restart
+```
+
+If that command fails, the socket is absent, or the service is not running, use:
+
+```sh
+/etc/init.d/S52frame_service restart
+```
+
+After recovery, verify service status, socket health, and a fresh screenshot in that order. Do not
+resume UI input until all three checks pass.
+
 For login, payment, verification codes, sensitive permissions, or device unlock, verify the page
 with a screenshot and then request user takeover. Never bypass a system security surface. When
 reporting progress, distinguish **queued**, **phone acknowledged**, and **UI/data verified**.
@@ -427,8 +463,11 @@ reporting progress, distinguish **queued**, **phone acknowledged**, and **UI/dat
   tool results before making claims.
 - The owner service remains the sole owner of each hardware device. Do not bypass it with a second
   capture, audio, or device process.
-- Phone Bridge commands use unique IDs and are retried only with the same ID for the same logical
-  operation.
+- Public Phone Bridge tools generate unique command IDs internally. Repeat a logical operation with
+  a new ID after permission changes; reuse a wire ID only for an uncertain transport outcome while
+  the original command is confirmed queued or in flight, and never for a different operation.
+- Changing `device_type` requires a full board reboot and USB host detach/re-enumeration; an Agent
+  restart or hot HID/gadget restart cannot replace that cycle.
 - BLE wake hints never carry sensitive Phone Bridge payloads and never count as command completion.
 - Background routes are capability-filtered. iOS background limitations and Android activity/FGS
   restrictions are part of the contract, not transient errors to brute-force.
