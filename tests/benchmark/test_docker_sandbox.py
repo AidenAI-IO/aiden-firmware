@@ -48,6 +48,13 @@ class DockerSandboxContractTest(unittest.TestCase):
         )
         self.assertIn("host.docker.internal:host-gateway", compose)
 
+    def test_smoke_uses_canonical_config_web_routes(self):
+        smoke_script = read_repo_file("scripts/test_docker_sandbox.sh")
+
+        self.assertIn('/api/device/status', smoke_script)
+        self.assertIn('/api/system/environment', smoke_script)
+        self.assertNotIn('/api/system/env"', smoke_script)
+
     def test_sandbox_image_builds_real_agent_with_config_web_subcommand(self):
         dockerfile = read_repo_file("docker/dev/Dockerfile")
 

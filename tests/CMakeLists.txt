@@ -11,6 +11,7 @@ target_include_directories(doctest INTERFACE
 )
 
 set(AIDEN_TEST_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/aiden_log.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_playback_session.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_record_session.cpp
     ${CMAKE_SOURCE_DIR}/src/wifi_config.cpp
