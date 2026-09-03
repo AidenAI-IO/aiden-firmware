@@ -379,6 +379,32 @@ func TestRealtimeAdmissionSpeechWaitsForPendingTextResponse(t *testing.T) {
 	}
 }
 
+func TestRealtimeChatPendingCoversQueuedCommand(t *testing.T) {
+	bridge := newRealtimeChatBridge()
+	if realtimeChatPending(bridge, nil) {
+		t.Fatal("idle bridge reported a pending chat request")
+	}
+
+	bridge.commands <- realtimeChatCommand{}
+	if !realtimeChatPending(bridge, nil) {
+		t.Fatal("unread bridge command was not reported as pending")
+	}
+
+	// The event loop selects the command off the bridge and parks it in
+	// queuedChat until the active response finishes. The request is still
+	// pending during that window even though the bridge is now empty.
+	command := <-bridge.commands
+	if realtimeChatPending(bridge, nil) {
+		t.Fatal("drained bridge reported a pending chat request")
+	}
+	if !realtimeChatPending(bridge, &command) {
+		t.Fatal("queued chat command was not reported as pending")
+	}
+	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, realtimeChatPending(bridge, &command)) {
+		t.Fatal("local admission gate tracked microphone audio while a chat command was parked in queuedChat")
+	}
+}
+
 func loudPCMFrame() []byte {
 	frame := make([]byte, 320)
 	for i := 0; i+1 < len(frame); i += 2 {

@@ -1236,7 +1236,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			if err := session.SendAudio(ctx, pcm); err != nil {
 				return err
 			}
-			if admissionTurnEndpoint != nil && shouldTrackRealtimeAdmissionSpeech(&turnState, chatBridgeHasPending(chatBridge)) {
+			if admissionTurnEndpoint != nil && shouldTrackRealtimeAdmissionSpeech(&turnState, realtimeChatPending(chatBridge, queuedChat)) {
 				now := time.Now()
 				wasActive := admissionTurnEndpoint.speechActive
 				admissionTurnEndpoint.Observe(pcm, now)
@@ -1970,6 +1970,13 @@ func agentTaskUserActionNotifications(tasks *agenttask.Manager) <-chan struct{} 
 
 func chatBridgeHasPending(bridge *realtimeChatBridge) bool {
 	return bridge != nil && len(bridge.commands) > 0
+}
+
+// realtimeChatPending reports whether an explicit /api/chat request is waiting
+// to start: either still unread on the bridge, or already selected off the
+// bridge and parked in queuedChat until the active response completes.
+func realtimeChatPending(bridge *realtimeChatBridge, queued *realtimeChatCommand) bool {
+	return chatBridgeHasPending(bridge) || queued != nil
 }
 
 func hasSuppressedNotificationResponse(responses map[string]struct{}, responseID string) bool {
