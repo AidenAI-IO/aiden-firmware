@@ -39,10 +39,14 @@ func (c *ArtifactStoreCleaner) Priority() int {
 }
 
 func (c *ArtifactStoreCleaner) EstimateReclaimable(ctx context.Context) (uint64, error) {
+	artifactFilesystemMu.RLock()
+	defer artifactFilesystemMu.RUnlock()
 	return c.reclaim(ctx, false)
 }
 
 func (c *ArtifactStoreCleaner) Clean(ctx context.Context) (uint64, error) {
+	artifactFilesystemMu.Lock()
+	defer artifactFilesystemMu.Unlock()
 	return c.reclaim(ctx, true)
 }
 

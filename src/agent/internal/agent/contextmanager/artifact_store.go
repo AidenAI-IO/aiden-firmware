@@ -28,6 +28,10 @@ const (
 var (
 	ErrArtifactTooLarge    = errors.New("artifact exceeds single-artifact size limit")
 	ErrArtifactSessionFull = errors.New("session artifact size limit exceeded")
+
+	// artifactFilesystemMu coordinates stores with the cleaner, which operates
+	// through a separate object and therefore cannot use artifactStore.mu.
+	artifactFilesystemMu sync.RWMutex
 )
 
 type ArtifactMetadata struct {
@@ -58,6 +62,9 @@ type artifactStore struct {
 // readable, unexpired metadata pair. Missing, malformed, or expired metadata
 // fails closed so compaction does not keep advertising an unusable path.
 func ArtifactPathRecoverable(dataPath string, now time.Time) bool {
+	artifactFilesystemMu.RLock()
+	defer artifactFilesystemMu.RUnlock()
+
 	dataPath = strings.TrimSpace(dataPath)
 	if dataPath == "" || !strings.HasSuffix(dataPath, ".data") {
 		return false
@@ -136,6 +143,8 @@ func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMet
 		return ArtifactFile{}, ErrArtifactTooLarge
 	}
 
+	artifactFilesystemMu.Lock()
+	defer artifactFilesystemMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
