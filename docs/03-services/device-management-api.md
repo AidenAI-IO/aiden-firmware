@@ -6,10 +6,10 @@ sidebar_position: 3
 
 Config Web is the `config-web` subcommand of the Go Agent binary. Config Web
 and the Agent runtime listen on ports 80 and 8080 respectively, and each owns
-its own PID, logs, and restart lifecycle. Config Web calls the Agent's
-loopback-only reload endpoint after configuration is saved, while the Agent
-reads Config Web's storage-state mirror for archive lookup. Config Web does not
-proxy Agent chat, session, or Phone Bridge traffic.
+its own PID and service lifecycle. Config Web calls the Agent's loopback-only
+reload endpoint after configuration is saved, while the Agent reads Config
+Web's storage-state mirror for archive lookup. Config Web does not proxy Agent
+chat, session, or Phone Bridge traffic.
 
 ## Resource Endpoints
 
@@ -29,7 +29,7 @@ All public endpoints use the `/api` root without an additional version prefix:
 | Storage | `POST /api/storage/format` | Format the SD card asynchronously |
 | Storage | `POST /api/storage/eject` | Sync and safely eject the SD card |
 | Device | `GET /api/device/snapshot` | Read the aggregated initial-page model: configuration, Wi-Fi, device, firmware, and storage summaries |
-| Device | `GET /api/device/status` | Read the model, firmware, process, USB/HID, and capability summary |
+| Device | `GET /api/device/status` | Read the device, firmware, Agent process, USB/HID, and capability summary |
 | Device | `POST /api/device/reboot` | Reboot the device |
 | Device | `POST /api/device/usb/reenumerate` | Re-enumerate USB HID/ECM |
 | Network | `POST /api/network/wifi/scan` | Scan for nearby Wi-Fi networks |
@@ -40,7 +40,8 @@ All public endpoints use the `/api` root without an additional version prefix:
 | OTA | `GET /api/ota/status` | Read the current state, progress, and log summary |
 | OTA | `POST /api/ota/updates` | Create an OTA task and return its `task_id` |
 | Logs | `GET /api/logs/agent` | Read the Agent log summary |
-| Logs | `GET/PUT /api/logs/llm/{name}` | View or import an LLM HTTP log |
+| Logs | `GET /api/logs/llm` | List available LLM HTTP log files |
+| Logs | `GET/PUT /api/logs/llm/{name}` | Export a raw LLM HTTP log or import one with the same name |
 | Logs | `GET /api/logs/support` | Export a diagnostic support-log archive |
 
 All endpoints above are served by Config Web on port 80. The page uses only
@@ -85,8 +86,10 @@ A successful `PATCH /api/config` response includes:
   "applied": true,
   "revision": 123,
   "changed_paths": ["model.model"],
+  "reboot_required": false,
   "restart_required": false,
-  "restart_reasons": []
+  "restart_reasons": [],
+  "agent_restart_scheduled": false
 }
 ```
 
@@ -96,8 +99,11 @@ states separately. If reload fails, the endpoint returns HTTP 503 while
 retaining `persisted=true`, `applied=false`, and the error details. Config Web
 then schedules an Agent restart and reports `agent_restart_scheduled=true`; a
 restart launch failure is reported instead of leaving the saved revision with
-no recovery path. Fields that require a full restart set `restart_required`
-and `restart_reasons`.
+no recovery path. On a successful response, `restart_required` mirrors
+`reboot_required`: HID changes that need a clean USB session set both fields and
+the page offers to reboot the board. `restart_reasons` explains why that reboot
+is required. `agent_restart_scheduled` instead describes the fallback process
+restart used when the running Agent rejects an in-place reload.
 
 ## Agent Restart Lifecycle
 

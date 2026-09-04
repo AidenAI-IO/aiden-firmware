@@ -23,6 +23,7 @@ and USB-ECM access use the same API behavior.
 | Port | `80` |
 | Config | `/userdata/agent/agent.toml` |
 | Binary | `/oem/usr/bin/agent config-web` |
+| Web root | `/oem/usr/share/aiden/config-web` |
 
 ## Startup
 
@@ -52,7 +53,7 @@ The web interface allows:
 - Configuring API keys and model names
 - Selecting STT/TTS providers
 - Testing voice recognition and synthesis
-- Restarting the Agent service
+- Applying saved settings, with an automatic Agent restart when the running Agent cannot accept the new configuration in place
 
 The header switch saves only the top-level `locale` through
 `PUT /api/config/locale`. The UI updates immediately and rolls back if

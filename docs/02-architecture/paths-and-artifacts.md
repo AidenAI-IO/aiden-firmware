@@ -23,6 +23,7 @@ sidebar_position: 4
 | `src/frame_service_main.cpp` | Frame Service entry point |
 | `src/audio_service_main.cpp` | Audio Service entry point |
 | `src/agent/internal/configweb/` | Go Config Web implementation (served by `agent config-web`) |
+| `src/config_web/web/` | Config Web HTML, CSS, and JavaScript assets |
 | `src/agent/cmd/daemon` | Go Agent daemon |
 | `src/agent/cmd/ota` | OTA CLI |
 | `src/agent/cmd/abctl` | A/B metadata diagnostic tool |
@@ -36,6 +37,7 @@ sidebar_position: 4
 | --- | --- |
 | `/oem/usr/bin/` | Application binary installation directory |
 | `/oem/usr/model/` | VAD models and weights updated with OEM/OTA |
+| `/oem/usr/share/aiden/config-web/` | Config Web static assets served by `agent config-web` |
 | `/userdata/agent/agent.toml` | Agent main configuration |
 | `/userdata/agent/skills/` | Agent skills directory |
 | `/userdata/agent/memory/` | Agent memory persistence directory |

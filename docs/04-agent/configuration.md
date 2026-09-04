@@ -72,20 +72,25 @@ The firmware starts `agent config-web` on port 80.
 
 ### What the page can configure
 
-The page fields cover the following config sections (all detailed later on this page). The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
+The page renders the following config sections. The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
 - `agent`: `locale`, `input_mode`, VAD params, `max_iterations`, `context_prune_threshold`, `custom_instruction`, `additional_prompt`
 - `model`: provider, model, api_key, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width, backend
+- `audio_archive`: optional STT recording archive, storage path, file limit, and size limit; controls are enabled only in `stt` input mode
 - `voice_model`: selected realtime provider; shown when `agent.input_mode = "realtime"`. Provider-specific credentials and model settings are configured in `[voice_model_providers.<name>]`
 - `frame_service`: whether Frame Service keeps capture STREAMON between screenshots
 - `quick_capture`: enabled, GPIO trigger pin, Screen Memory retention period
 - `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
 - `log`: LLM HTTP log retention
+- `ota`: optional GitHub download proxy URL
 - `device`: device_type
 - `hid`: keyboard_device, keyboard_layout, mouse_device, android_keyboard_device, frame_socket, input_backend
+- `search`: web-search provider and provider credential
+- `telemetry`: Langfuse enablement, endpoint, credentials, upload policy, environment, and tags
+- `live_activity`: Phone Bridge Live Activity enablement
 - `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
 - Wi-Fi: SSID / PSK etc. (written to `/userdata/wpa_supplicant.conf`)
 
