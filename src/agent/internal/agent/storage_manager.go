@@ -265,6 +265,69 @@ func (m *StorageManager) Stop() {
 	m.stopOnce.Do(func() { close(m.stop) })
 }
 
+// Reconfigure applies persisted storage settings without replacing the
+// hardware-owning manager. Replacing the manager would briefly leave two
+// pollers able to mount or format the same card.
+func (m *StorageManager) Reconfigure(cfg StorageConfig) error {
+	if m == nil || m.mirrorOnly || m.ops == nil {
+		return fmt.Errorf("storage hardware is owned by Config Web")
+	}
+	for {
+		if err := m.cancelMigrationAndWait("storage reconfiguration"); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		// A poll tick may have started a new migration between the completed
+		// cancellation and this lock acquisition. Cancel that run as well so
+		// the configuration cannot change underneath a migration worker.
+		if m.migrationDone == nil {
+			break
+		}
+		m.mu.Unlock()
+	}
+
+	oldMountPoint := m.cfg.MountPointOrDefault()
+	oldDevice := m.cfg.DeviceOrDefault()
+	newMountPoint := cfg.MountPointOrDefault()
+	newDevice := cfg.DeviceOrDefault()
+	identityChanged := oldMountPoint != newMountPoint || oldDevice != newDevice
+	if identityChanged && m.formatJob.Status == StorageFormatRunning {
+		m.mu.Unlock()
+		return fmt.Errorf("cannot change the storage device or mount point while a format job is running")
+	}
+	if identityChanged && m.mounting {
+		m.mu.Unlock()
+		return fmt.Errorf("cannot change the storage device or mount point while a mount attempt is in progress")
+	}
+	if identityChanged && m.card.Mounted {
+		if err := m.unmountLocked(false, ""); err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("cannot apply storage config: %w", err)
+		}
+	}
+
+	m.cfg = cfg
+	if identityChanged {
+		if configurable, ok := m.ops.(interface{ setDevice(string) }); ok {
+			configurable.setDevice(newDevice)
+		}
+		m.card = StorageCardStatus{}
+		m.ejected = false
+		m.mountFailed = false
+		m.presenceRaw = false
+		m.presenceCount = 0
+		m.autoFormatDone = false
+		m.finishTransitionLocked()
+	} else {
+		m.writeStateFileLocked()
+	}
+	m.mu.Unlock()
+
+	// Reconcile promptly instead of waiting for the next polling interval.
+	m.tick()
+	return nil
+}
+
 // deriveEffectiveMode is the single rule from which all boot and hot-plug
 // behavior follows.
 func deriveEffectiveMode(cardMounted bool) StorageMode {
@@ -921,10 +984,9 @@ func (m *StorageManager) tick() {
 	if m == nil || m.mirrorOnly || m.ops == nil {
 		return
 	}
-	dev, present := m.ops.CardDevice()
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	dev, present := m.ops.CardDevice()
 
 	// A running format owns the card exclusively; skip reconciliation.
 	if m.formatJob.Status == StorageFormatRunning {
@@ -1178,21 +1240,35 @@ func (m *StorageManager) warnf(format string, args ...interface{}) {
 
 // realStorageOps implements storageSysOps against the device.
 type realStorageOps struct {
+	mu     sync.RWMutex
 	device string // block device base name, e.g. "mmcblk2"
+}
+
+func (o *realStorageOps) currentDevice() string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.device
+}
+
+func (o *realStorageOps) setDevice(device string) {
+	o.mu.Lock()
+	o.device = device
+	o.mu.Unlock()
 }
 
 // CardDevice checks /sys/block for the controller and prefers the first
 // partition; cards formatted without a partition table use the whole device.
 func (o *realStorageOps) CardDevice() (string, bool) {
-	sysPath := filepath.Join("/sys/block", o.device)
+	device := o.currentDevice()
+	sysPath := filepath.Join("/sys/block", device)
 	if _, err := os.Stat(sysPath); err != nil {
 		return "", false
 	}
-	part := o.device + "p1"
+	part := device + "p1"
 	if _, err := os.Stat(filepath.Join(sysPath, part)); err == nil {
 		return "/dev/" + part, true
 	}
-	return "/dev/" + o.device, true
+	return "/dev/" + device, true
 }
 
 // CardIsBlank reports whether the card carries no recognizable content.
@@ -1201,11 +1277,12 @@ func (o *realStorageOps) CardDevice() (string, bool) {
 // or any failure to verify means NOT blank — we only ever auto-format a card
 // we could positively identify as empty.
 func (o *realStorageOps) CardIsBlank() bool {
-	sysPath := filepath.Join("/sys/block", o.device)
-	if _, err := os.Stat(filepath.Join(sysPath, o.device+"p1")); err == nil {
+	device := o.currentDevice()
+	sysPath := filepath.Join("/sys/block", device)
+	if _, err := os.Stat(filepath.Join(sysPath, device+"p1")); err == nil {
 		return false // kernel sees a partition table
 	}
-	dev := "/dev/" + o.device
+	dev := "/dev/" + device
 	if fs, pt := probeBlkid(dev); fs != "" || pt != "" {
 		return false // a filesystem or partition-table signature exists
 	}
@@ -1377,6 +1454,7 @@ func mbrPartitionType(fs string) (byte, error) {
 // FormatDisk rewrites the MBR with a single partition and creates the
 // filesystem on it. Erases the entire card.
 func (o *realStorageOps) FormatDisk(fs string) (string, error) {
+	device := o.currentDevice()
 	partType, err := mbrPartitionType(fs)
 	if err != nil {
 		return "", err
@@ -1390,7 +1468,7 @@ func (o *realStorageOps) FormatDisk(fs string) (string, error) {
 		return "", err
 	}
 
-	base := "/dev/" + o.device
+	base := "/dev/" + device
 
 	// BLKRRPART fails EBUSY while ANY partition of the device is still held:
 	// umount returning does not mean the kernel has released the bdev (journal
@@ -1526,7 +1604,7 @@ func kernelSupportsFilesystem(fsType string) bool {
 // waitNoMounts blocks until no partition of the card appears in the mount
 // table (a lazy umount detaches asynchronously), or fails naming the mount.
 func (o *realStorageOps) waitNoMounts(timeout time.Duration) error {
-	prefix := "/dev/" + o.device
+	prefix := "/dev/" + o.currentDevice()
 	deadline := time.Now().Add(timeout)
 	for {
 		mounted := ""
@@ -1553,13 +1631,14 @@ func (o *realStorageOps) waitNoMounts(timeout time.Duration) error {
 // so the error message names the culprit instead of a bare EBUSY: lingering
 // mounts of any partition, and processes holding the device nodes open.
 func (o *realStorageOps) deviceHolders() string {
+	device := o.currentDevice()
 	var findings []string
 
 	// Any partition of the card still mounted?
 	if data, err := os.ReadFile("/proc/self/mounts"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			fields := strings.Fields(line)
-			if len(fields) >= 2 && strings.HasPrefix(fields[0], "/dev/"+o.device) {
+			if len(fields) >= 2 && strings.HasPrefix(fields[0], "/dev/"+device) {
 				findings = append(findings, fmt.Sprintf("%s mounted at %s", fields[0], fields[1]))
 			}
 		}
@@ -1567,7 +1646,7 @@ func (o *realStorageOps) deviceHolders() string {
 
 	// Any process with an open fd on the device or a partition? (busybox has
 	// no fuser/lsof; scan /proc/*/fd directly.)
-	prefix := "/dev/" + o.device
+	prefix := "/dev/" + device
 	if procs, err := os.ReadDir("/proc"); err == nil {
 		for _, proc := range procs {
 			pid := proc.Name()
@@ -1599,7 +1678,7 @@ func (o *realStorageOps) deviceHolders() string {
 
 // deviceSectors reads the card size in 512-byte sectors from sysfs.
 func (o *realStorageOps) deviceSectors() (uint64, error) {
-	data, err := os.ReadFile(filepath.Join("/sys/block", o.device, "size"))
+	data, err := os.ReadFile(filepath.Join("/sys/block", o.currentDevice(), "size"))
 	if err != nil {
 		return 0, fmt.Errorf("read device size: %w", err)
 	}

@@ -32,6 +32,8 @@ type Server struct {
 	sttTest   *agent.STTConfigTestAPI
 	closeMu   sync.Once
 	storageMu sync.RWMutex
+	configMu  sync.Mutex
+	wifiOpMu  sync.Mutex
 	wifiMu    sync.Mutex
 	wifiJob   *wifiConnectionJob
 

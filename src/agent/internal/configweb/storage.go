@@ -10,6 +10,7 @@ import (
 
 type storageController interface {
 	Status() agent.StorageStatus
+	Reconfigure(agent.StorageConfig) error
 	SafeEject() error
 	StartFormat(fs, confirm string) error
 	Stop()
@@ -36,6 +37,21 @@ func (s *Server) currentStorage() storageController {
 	s.storageMu.RLock()
 	defer s.storageMu.RUnlock()
 	return s.storage
+}
+
+func (s *Server) reconfigureStorage() error {
+	cfg, err := agent.LoadRuntimeConfig(s.options.AgentConfigPath)
+	if err != nil {
+		return fmt.Errorf("load Agent config: %w", err)
+	}
+	storage := s.currentStorage()
+	if storage == nil {
+		return s.initializeStorageManager()
+	}
+	if err := storage.Reconfigure(cfg.Storage); err != nil {
+		return fmt.Errorf("apply storage config: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) handleStorageStatus(w http.ResponseWriter, _ *http.Request) {

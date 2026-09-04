@@ -361,16 +361,20 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, 400, "ssid is required")
 		return
 	}
-	s.wifiMu.Lock()
-	if s.wifiJob != nil && s.wifiJob.Status == "running" {
-		taskID := s.wifiJob.TaskID
+	if !s.wifiOpMu.TryLock() {
+		response := map[string]any{
+			"ok": false, "error": "another Wi-Fi configuration operation is already running",
+			"status": "running",
+		}
+		s.wifiMu.Lock()
+		if s.wifiJob != nil && s.wifiJob.Status == "running" {
+			response["task_id"] = s.wifiJob.TaskID
+		}
 		s.wifiMu.Unlock()
-		writeJSON(w, http.StatusConflict, map[string]any{
-			"ok": false, "error": "a Wi-Fi connection task is already running",
-			"task_id": taskID, "status": "running",
-		})
+		writeJSON(w, http.StatusConflict, response)
 		return
 	}
+	s.wifiMu.Lock()
 	job := &wifiConnectionJob{
 		TaskID:    fmt.Sprintf("wifi-%d", time.Now().UnixNano()),
 		Status:    "running",
@@ -380,6 +384,7 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 	s.wifiMu.Unlock()
 
 	go func() {
+		defer s.wifiOpMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), wifiConnectionTaskTimeout)
 		defer cancel()
 		result := s.runWiFiConnection(ctx, request)
@@ -397,7 +402,7 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"ok": true, "task_id": job.TaskID, "status": job.Status,
+		"ok": true, "task_id": job.TaskID, "status": "running",
 		"deadline_seconds": int(wifiConnectionTaskTimeout / time.Second),
 	})
 }
@@ -539,6 +544,13 @@ func (s *Server) handleWiFiForget(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, 400, "ssid is required")
 		return
 	}
+	if !s.wifiOpMu.TryLock() {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"ok": false, "error": "another Wi-Fi configuration operation is already running",
+		})
+		return
+	}
+	defer s.wifiOpMu.Unlock()
 	config, err := loadWiFiConfig(s.options.WiFiConfigPath)
 	if err != nil {
 		if os.IsNotExist(err) {

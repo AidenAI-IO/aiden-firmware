@@ -115,6 +115,19 @@ func (s *Server) otaUpdateRunning() bool {
 	return false
 }
 
+const otaUpdateSupervisorScript = `
+"$@"
+exit_code=$?
+if [ "$exit_code" -eq 0 ]; then
+  level=INFO
+else
+  level=ERROR
+fi
+timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"
+printf '%s [%s] [config_web] [ota] update_exited exit_code=%s\n' "$timestamp" "$level" "$exit_code"
+exit "$exit_code"
+`
+
 func (s *Server) handleOTAUpdate(w http.ResponseWriter, _ *http.Request) {
 	lock, err := s.acquireOTALock()
 	if err != nil {
@@ -128,39 +141,43 @@ func (s *Server) handleOTAUpdate(w http.ResponseWriter, _ *http.Request) {
 		writeJSONError(w, 500, err.Error())
 		return
 	}
-	logPath := s.options.OTAUpdateLogPath
+	logFile, err := os.OpenFile(s.options.OTAUpdateLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		lock.Close()
+		writeJSONError(w, 500, err.Error())
+		return
+	}
 	otaBinary := s.options.OTABinary
 	envRun := s.options.EnvRunBinary
-	go func() {
-		defer lock.Close()
-		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return
-		}
-		defer logFile.Close()
-		name := otaBinary
-		args := []string{"update"}
-		if info, statErr := os.Stat(envRun); statErr == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
-			name = envRun
-			args = []string{otaBinary, "update"}
-		}
-		cmd := exec.Command(name, args...)
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
-		runErr := cmd.Run()
-		exitCode := 0
-		if runErr != nil {
-			exitCode = 1
-			if exitErr, ok := runErr.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
-			}
-		}
-		level := "INFO"
-		if exitCode != 0 {
-			level = "ERROR"
-		}
-		fmt.Fprintf(logFile, "%s [%s] [config_web] [ota] update_exited exit_code=%d\n", time.Now().UTC().Format(time.RFC3339), level, exitCode)
-	}()
+	name := otaBinary
+	args := []string{"update"}
+	if info, statErr := os.Stat(envRun); statErr == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+		name = envRun
+		args = []string{otaBinary, "update"}
+	}
+	supervisorArgs := []string{"-c", otaUpdateSupervisorScript, "aiden-ota-supervisor", name}
+	supervisorArgs = append(supervisorArgs, args...)
+	cmd := exec.Command("/bin/sh", supervisorArgs...)
+	cmd.Stdin = nil
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	// fd 3 carries the flock into the detached supervisor. The lock therefore
+	// stays held even if Config Web restarts while the OTA command is running.
+	cmd.ExtraFiles = []*os.File{lock}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		lock.Close()
+		writeJSONError(w, http.StatusServiceUnavailable, "failed to start ota update: "+err.Error())
+		return
+	}
+	// The child now owns inherited descriptors for both the lock and log.
+	// Closing the parent copies is what makes this survive a service restart.
+	lock.Close()
+	logFile.Close()
+	go func() { _ = cmd.Wait() }()
 	taskID := fmt.Sprintf("ota-%d", time.Now().UnixNano())
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"ok": true, "task_id": taskID, "status": "running", "ota_update_started": true,

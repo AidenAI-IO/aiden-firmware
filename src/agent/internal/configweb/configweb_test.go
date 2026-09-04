@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,10 +15,18 @@ import (
 )
 
 type fakeStorageController struct {
-	status agent.StorageStatus
+	status           agent.StorageStatus
+	reconfigured     agent.StorageConfig
+	reconfigureCalls int
+	reconfigureError error
 }
 
 func (f *fakeStorageController) Status() agent.StorageStatus { return f.status }
+func (f *fakeStorageController) Reconfigure(cfg agent.StorageConfig) error {
+	f.reconfigured = cfg
+	f.reconfigureCalls++
+	return f.reconfigureError
+}
 func (f *fakeStorageController) SafeEject() error {
 	f.status.Card.Mounted = false
 	return nil
@@ -270,6 +279,16 @@ func TestWiFiConnectionRunsAsBoundedBackgroundTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	taskID, _ := started["task_id"].(string)
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodPut, "/api/network/wifi/connection", strings.NewReader(`{"ssid":"another-network","psk":"secret"}`)),
+		httptest.NewRequest(http.MethodDelete, "/api/network/wifi/connection?ssid=test-network", nil),
+	} {
+		conflict := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(conflict, request)
+		if conflict.Code != http.StatusConflict {
+			t.Fatalf("concurrent Wi-Fi operation: status=%d body=%s", conflict.Code, conflict.Body.String())
+		}
+	}
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		statusResp := httptest.NewRecorder()
@@ -289,6 +308,133 @@ func TestWiFiConnectionRunsAsBoundedBackgroundTask(t *testing.T) {
 			t.Fatalf("Wi-Fi task did not finish: %#v", status)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestConfigUpdatesAreSerialized(t *testing.T) {
+	options := testOptions(t)
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	guardDir := filepath.Join(t.TempDir(), "active")
+	overlapPath := filepath.Join(t.TempDir(), "overlap")
+	t.Setenv("AIDEN_TEST_CONFIG_GUARD", guardDir)
+	t.Setenv("AIDEN_TEST_CONFIG_OVERLAP", overlapPath)
+	script := `#!/bin/sh
+cat >/dev/null
+if mkdir "$AIDEN_TEST_CONFIG_GUARD" 2>/dev/null; then
+  /bin/sleep 0.15
+  rmdir "$AIDEN_TEST_CONFIG_GUARD"
+else
+  : > "$AIDEN_TEST_CONFIG_OVERLAP"
+fi
+printf '%s\n' '{"ok":true,"config":{},"changed_paths":[],"reboot_required":false,"persisted":true}'
+`
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	options.AgentBinary = fakeAgent
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			resp := httptest.NewRecorder()
+			server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{"agent":{"locale":"en-US"}}}`)))
+			responses <- resp
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(responses)
+	for resp := range responses {
+		if resp.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+		}
+	}
+	if _, err := os.Stat(overlapPath); !os.IsNotExist(err) {
+		t.Fatalf("config-update commands overlapped: %v", err)
+	}
+}
+
+func TestConfigPatchReconfiguresStorageOwner(t *testing.T) {
+	options := testOptions(t)
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"storage.mount_point\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": true, "revision": 11})
+	}))
+	defer reload.Close()
+	options.AgentBinary = fakeAgent
+	options.AgentHTTPBaseURL = reload.URL
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage := &fakeStorageController{}
+	server.storage = storage
+	config := "[storage]\nmount_point = \"/mnt/new-card\"\ndevice = \"mmcblk9\"\nmin_card_free_mb = 128\n"
+	if err := os.WriteFile(options.AgentConfigPath, []byte(config), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{"storage":{"mount_point":"/mnt/new-card"}}}`)))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if storage.reconfigureCalls != 1 || storage.reconfigured.MountPointOrDefault() != "/mnt/new-card" || storage.reconfigured.DeviceOrDefault() != "mmcblk9" || storage.reconfigured.MinCardFreeMBOrDefault() != 128 {
+		t.Fatalf("storage reconfigure calls=%d config=%+v", storage.reconfigureCalls, storage.reconfigured)
+	}
+}
+
+func TestOTAUpdateChildKeepsLockAcrossParentDescriptorClose(t *testing.T) {
+	options := testOptions(t)
+	root := t.TempDir()
+	ota := filepath.Join(root, "fake-ota")
+	if err := os.WriteFile(ota, []byte("#!/bin/sh\n/bin/sleep 0.4\nexit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	options.OTABinary = ota
+	options.EnvRunBinary = filepath.Join(root, "missing-env-run")
+	options.OTAUpdateLockPath = filepath.Join(root, "ota.lock")
+	options.OTAUpdateLogPath = filepath.Join(root, "ota.log")
+	options.OTAHealthLogPath = filepath.Join(root, "health.log")
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/ota/updates", nil))
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !server.otaUpdateRunning() {
+		t.Fatal("OTA lock was released after the parent closed its descriptor")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for server.otaUpdateRunning() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if server.otaUpdateRunning() {
+		t.Fatal("OTA lock remained held after the supervisor exited")
+	}
+	logData, err := os.ReadFile(options.OTAUpdateLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "update_exited exit_code=7") {
+		t.Fatalf("OTA log missing exit marker: %q", logData)
 	}
 }
 

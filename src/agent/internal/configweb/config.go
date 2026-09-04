@@ -166,6 +166,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "config patch must be an object")
 		return
 	}
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	update, status, err := s.updateConfig(config)
 	if err != nil {
 		writeJSONError(w, status, err.Error())
@@ -186,6 +188,14 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	if frameServiceChanged {
 		if err := s.restartFrameService(); err != nil {
 			frameServiceError = err.Error()
+		}
+	}
+	storageChanged := hasConfigPathPrefix(changed, "storage")
+	_, storageRequested := object["storage"]
+	var storageError string
+	if storageChanged || storageRequested {
+		if err := s.reconfigureStorage(); err != nil {
+			storageError = err.Error()
 		}
 	}
 	applied := false
@@ -210,6 +220,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if frameServiceError != "" {
 			reloadError += "; frame service: " + frameServiceError
 		}
+		if storageError != "" {
+			reloadError += "; storage: " + storageError
+		}
 		response := map[string]any{
 			"ok": false, "persisted": persisted, "applied": false,
 			"revision": revision, "changed_paths": changed,
@@ -225,12 +238,21 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, response)
 		return
 	}
-	if frameServiceError != "" {
+	if frameServiceError != "" || storageError != "" {
+		errorMessage := frameServiceError
+		if storageError != "" {
+			if errorMessage != "" {
+				errorMessage += "; "
+			}
+			errorMessage += storageError
+		}
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"ok": false, "config": update["config"], "persisted": persisted, "applied": applied,
+			"ok": false, "config": update["config"], "persisted": persisted, "applied": false,
 			"revision": revision, "changed_paths": changed,
 			"restart_required": rebootRequired, "restart_reasons": update["restart_reasons"],
-			"frame_service_restart_scheduled": false, "error": frameServiceError,
+			"frame_service_restart_scheduled": frameServiceChanged && frameServiceError == "",
+			"storage_reconfigured":            (storageChanged || storageRequested) && storageError == "",
+			"error":                           errorMessage,
 		})
 		return
 	}
@@ -272,6 +294,8 @@ func (s *Server) handlePutLocale(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "unsupported locale; expected zh-CN or en-US")
 		return
 	}
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	config, _ := json.Marshal(map[string]any{"agent": map[string]string{"locale": *request.Locale}})
 	update, status, err := s.updateConfig(config)
 	if err != nil {
@@ -353,6 +377,15 @@ func uint64Value(value any) uint64 {
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func hasConfigPathPrefix(values []string, prefix string) bool {
+	for _, value := range values {
+		if value == prefix || strings.HasPrefix(value, prefix+".") {
 			return true
 		}
 	}
