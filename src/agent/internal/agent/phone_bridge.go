@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -161,6 +162,12 @@ type PhoneBridge struct {
 	bleCapabilityMu    sync.Mutex
 	bleCapabilityCache phoneBridgeBLECapabilities
 	bleCapabilityAt    time.Time
+
+	// Proxy mode fields
+	proxyMode     bool
+	proxyEndpoint string
+	proxyTaskID   string
+	proxyClient   *http.Client
 }
 
 func NewPhoneBridge(logger *Logger) *PhoneBridge {
@@ -173,7 +180,19 @@ func NewPhoneBridge(logger *Logger) *PhoneBridge {
 		hidConnectionState: readHIDConnectionState,
 		hidMonitorEnabled:  true,
 		hidMonitorStop:     make(chan struct{}),
+		proxyClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
+}
+
+// NewPhoneBridgeProxy creates a PhoneBridge in proxy mode that forwards to a remote agent.
+func NewPhoneBridgeProxy(endpoint, taskID string, logger *Logger) *PhoneBridge {
+	pb := NewPhoneBridge(logger)
+	pb.proxyMode = true
+	pb.proxyEndpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	pb.proxyTaskID = strings.TrimSpace(taskID)
+	return pb
 }
 
 // Close stops background Phone Bridge monitoring. It is safe to call more than
@@ -290,6 +309,13 @@ func (pb *PhoneBridge) notifyBLEWake(cmd BridgeCommand) {
 }
 
 func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Proxy mode: forward WebSocket to remote agent
+	if pb.proxyMode {
+		pb.handleWebSocketProxy(w, r)
+		return
+	}
+
+	// Local mode: handle WebSocket directly
 	// Leave origin verification on (the library default): a request with an
 	// empty Origin header — i.e. the native companion app — is accepted, while
 	// a cross-origin browser handshake is rejected. This blocks cross-site
@@ -791,6 +817,11 @@ func (pb *PhoneBridge) UpdateState() map[string]string {
 }
 
 func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
+	// Proxy mode: fetch status from remote agent
+	if pb.proxyMode {
+		return pb.getProxyStatus()
+	}
+
 	pb.refreshHIDConnection()
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
@@ -1191,4 +1222,166 @@ func availableAppNames(apps []AvailableAppInfo, limit int) []string {
 		}
 	}
 	return names
+}
+
+// handleWebSocketProxy forwards WebSocket connection to remote agent in proxy mode.
+func (pb *PhoneBridge) handleWebSocketProxy(w http.ResponseWriter, r *http.Request) {
+	// Accept connection from aiden app
+	appConn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		if pb.logger != nil {
+			pb.logger.Error("phone-bridge-proxy: accept app connection failed: %v", err)
+		}
+		return
+	}
+
+	platform := r.URL.Query().Get("platform")
+	phoneID := r.URL.Query().Get("phone_id")
+
+	if pb.logger != nil {
+		pb.logger.Info("phone-bridge-proxy: app connected (platform=%s phone_id=%s)", platform, phoneID)
+	}
+
+	// Build remote agent WebSocket URL
+	remoteURL := pb.proxyEndpoint + "/api/phone-bridge"
+	if strings.HasPrefix(remoteURL, "http://") {
+		remoteURL = "ws://" + strings.TrimPrefix(remoteURL, "http://")
+	} else if strings.HasPrefix(remoteURL, "https://") {
+		remoteURL = "wss://" + strings.TrimPrefix(remoteURL, "https://")
+	}
+
+	// Add query parameters
+	if platform != "" || phoneID != "" {
+		params := url.Values{}
+		if platform != "" {
+			params.Set("platform", platform)
+		}
+		if phoneID != "" {
+			params.Set("phone_id", phoneID)
+		}
+		remoteURL = remoteURL + "?" + params.Encode()
+	}
+
+	// Connect to remote agent
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	agentConn, _, err := websocket.Dial(ctx, remoteURL, nil)
+	cancel()
+	if err != nil {
+		if pb.logger != nil {
+			pb.logger.Error("phone-bridge-proxy: connect to remote agent failed: %v", err)
+		}
+		appConn.Close(websocket.StatusInternalError, "failed to connect to remote agent")
+		return
+	}
+
+	if pb.logger != nil {
+		pb.logger.Info("phone-bridge-proxy: connected to remote agent %s", remoteURL)
+	}
+
+	// Bidirectional message forwarding
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	proxyCtx, proxyCancel := context.WithCancel(context.Background())
+	defer proxyCancel()
+
+	// Forward: app -> agent
+	go func() {
+		defer wg.Done()
+		pb.forwardWebSocketMessages(proxyCtx, "app->agent", appConn, agentConn)
+		proxyCancel()
+	}()
+
+	// Forward: agent -> app
+	go func() {
+		defer wg.Done()
+		pb.forwardWebSocketMessages(proxyCtx, "agent->app", agentConn, appConn)
+		proxyCancel()
+	}()
+
+	wg.Wait()
+
+	appConn.Close(websocket.StatusNormalClosure, "")
+	agentConn.Close(websocket.StatusNormalClosure, "")
+
+	if pb.logger != nil {
+		pb.logger.Info("phone-bridge-proxy: connection closed")
+	}
+}
+
+func (pb *PhoneBridge) forwardWebSocketMessages(ctx context.Context, direction string, from, to *websocket.Conn) {
+	defer to.Close(websocket.StatusNormalClosure, "forwarding stopped")
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Read message from source
+		msgType, data, err := from.Read(ctx)
+		if err != nil {
+			if websocket.CloseStatus(err) == -1 && pb.logger != nil {
+				pb.logger.Error("phone-bridge-proxy: [%s] read error: %v", direction, err)
+			}
+			return
+		}
+
+		// Forward message to destination
+		if err := to.Write(ctx, msgType, data); err != nil {
+			if pb.logger != nil {
+				pb.logger.Error("phone-bridge-proxy: [%s] write error: %v", direction, err)
+			}
+			return
+		}
+
+		if pb.logger != nil {
+			pb.logger.Info("phone-bridge-proxy: [%s] forwarded %d bytes (type=%v)", direction, len(data), msgType)
+		}
+	}
+}
+
+// getProxyStatus fetches status from remote agent in proxy mode.
+func (pb *PhoneBridge) getProxyStatus() PhoneBridgeStatus {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pb.proxyEndpoint+"/api/phone-bridge/status", nil)
+	if err != nil {
+		if pb.logger != nil {
+			pb.logger.Error("phone-bridge-proxy: create status request failed: %v", err)
+		}
+		return PhoneBridgeStatus{Connected: false}
+	}
+
+	if pb.proxyTaskID != "" {
+		req.Header.Set("benchmark-task-id", pb.proxyTaskID)
+	}
+
+	resp, err := pb.proxyClient.Do(req)
+	if err != nil {
+		if pb.logger != nil {
+			pb.logger.Error("phone-bridge-proxy: status request failed: %v", err)
+		}
+		return PhoneBridgeStatus{Connected: false}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if pb.logger != nil {
+			pb.logger.Error("phone-bridge-proxy: status request returned %d", resp.StatusCode)
+		}
+		return PhoneBridgeStatus{Connected: false}
+	}
+
+	var status PhoneBridgeStatus
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		if pb.logger != nil {
+			pb.logger.Error("phone-bridge-proxy: decode status failed: %v", err)
+		}
+		return PhoneBridgeStatus{Connected: false}
+	}
+
+	return status
 }
