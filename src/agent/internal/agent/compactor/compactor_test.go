@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -378,6 +379,173 @@ func TestPruneHistoricalSkipsContextWithoutHistoricalCandidates(t *testing.T) {
 	}
 	if len(model.prompts) != 0 {
 		t.Fatalf("summary model calls = %d, want 0", len(model.prompts))
+	}
+}
+
+func TestPruneForBudgetBoundsCurrentTurnToolExchangesAndStates(t *testing.T) {
+	messageList := []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+		{Role: messages.MessageRoleState, Content: "state before current user"},
+		{Role: messages.MessageRoleUser, Content: "finish the long task"},
+	}
+	for i := 1; i <= 6; i++ {
+		id := fmt.Sprintf("call_%d", i)
+		messageList = append(messageList,
+			messages.Message{
+				Role:                    messages.MessageRoleToolCall,
+				Content:                 fmt.Sprintf("working on step %d", i),
+				ResponsesResponseID:     fmt.Sprintf("resp_%d", i),
+				ResponsesReasoningItems: []json.RawMessage{json.RawMessage(`{"type":"reasoning"}`)},
+				ResponsesOutputItems:    []json.RawMessage{json.RawMessage(`{"type":"function_call"}`)},
+				ResponsesAssistantPhase: "commentary",
+				ToolCalls: []messages.ToolCall{{
+					ID:        id,
+					Name:      "shell",
+					Arguments: fmt.Sprintf(`{"command":"step-%d %s"}`, i, strings.Repeat("x", 1_000)),
+				}},
+			},
+			messages.Message{
+				Role: messages.MessageRoleToolResult,
+				ToolResults: []messages.ToolResult{{
+					ToolCallID: id,
+					Name:       "shell",
+					Content:    fmt.Sprintf("step %d result %s", i, strings.Repeat("y", 1_000)),
+				}},
+			},
+			messages.Message{Role: messages.MessageRoleState, Content: fmt.Sprintf("state after step %d", i)},
+		)
+	}
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), messageList)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	model := &promptCapturingModel{reply: "summary should not be called"}
+	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
+	targetMessages, _ := pruneCurrentTurnStates(manager.CloneMessageList())
+	compactedExchanges := 0
+	for i := lastMessageIndexWithRole(targetMessages, messages.MessageRoleUser) + 1; i+1 < len(targetMessages) && compactedExchanges < 3; i++ {
+		if !isCompletedToolExchange(targetMessages[i], targetMessages[i+1]) {
+			continue
+		}
+		targetMessages[i], targetMessages[i+1], _ = compactCurrentTurnToolExchange(targetMessages[i], targetMessages[i+1])
+		compactedExchanges++
+		i++
+	}
+	targetTokens := estimateMessageListTokenUsage(targetMessages)
+
+	newManager, pruned, err := compactor.PruneForBudget(manager, targetTokens)
+	if err != nil {
+		t.Fatalf("PruneForBudget() error = %v", err)
+	}
+	if !pruned || newManager == nil {
+		t.Fatal("PruneForBudget() did not create a context revision")
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("summary model calls = %d, want 0", len(model.prompts))
+	}
+
+	got := newManager.CloneMessageList()
+	states := make([]string, 0, 2)
+	calls := make(map[string]messages.Message)
+	results := make(map[string]messages.ToolResult)
+	for _, message := range got {
+		if message.Role == messages.MessageRoleState {
+			states = append(states, message.Content)
+		}
+		if message.ResponsesResponseID != "" {
+			t.Fatalf("pruned revision retained provider response ID: %#v", message)
+		}
+		for _, call := range message.ToolCalls {
+			calls[call.ID] = message
+		}
+		for _, result := range message.ToolResults {
+			results[result.ToolCallID] = result
+		}
+	}
+	if len(states) != 2 || states[0] != "state before current user" || states[1] != "state after step 6" {
+		t.Fatalf("retained current-turn states = %#v", states)
+	}
+	for i := 1; i <= 3; i++ {
+		id := fmt.Sprintf("call_%d", i)
+		call := calls[id]
+		if call.ToolCalls[0].Arguments != `{}` || call.Content != "" || len(call.ResponsesReasoningItems) != 0 || len(call.ResponsesOutputItems) != 0 || call.ResponsesAssistantPhase != "" {
+			t.Fatalf("old current-turn call %s was not compacted safely: %#v", id, call)
+		}
+		result := results[id]
+		if result.Meta == nil || result.Meta.Reason != currentTurnToolExchangePruneReason || result.Meta.Complete ||
+			!strings.Contains(result.Content, `"status":"current_turn_prune"`) || strings.Contains(result.Content, strings.Repeat("y", 200)) {
+			t.Fatalf("old current-turn result %s was not compacted: %#v", id, result)
+		}
+	}
+	for i := 4; i <= 6; i++ {
+		id := fmt.Sprintf("call_%d", i)
+		call := calls[id]
+		if !strings.Contains(call.ToolCalls[0].Arguments, strings.Repeat("x", 100)) || len(call.ResponsesOutputItems) != 1 {
+			t.Fatalf("recent protected call %s changed: %#v", id, call)
+		}
+		if result := results[id]; result.Meta != nil || !strings.Contains(result.Content, strings.Repeat("y", 100)) {
+			t.Fatalf("recent protected result %s changed: %#v", id, result)
+		}
+	}
+	for id := range calls {
+		if _, ok := results[id]; !ok {
+			t.Fatalf("tool call %s has no matching result after pruning", id)
+		}
+	}
+	if standard := messages.ConvertMessageList(got); len(standard) != len(got) {
+		t.Fatalf("standard message count = %d, want %d", len(standard), len(got))
+	}
+	stats := compactor.LastPruneStats()
+	if stats.HistoricalStatesDropped != 0 || stats.HistoricalToolResultsPruned != 0 ||
+		stats.CurrentTurnStatesDropped != 5 || stats.CurrentTurnToolExchangesPruned != 3 ||
+		stats.TokensAfter >= stats.TokensBefore {
+		t.Fatalf("prune stats = %#v", stats)
+	}
+
+	boundedManager, pruned, err := compactor.PruneForBudget(newManager, 1)
+	if err != nil {
+		t.Fatalf("second PruneForBudget() error = %v", err)
+	}
+	if !pruned || boundedManager == nil {
+		t.Fatal("second PruneForBudget() did not drop old compacted exchanges")
+	}
+	boundedCalls := make(map[string]bool)
+	boundedResults := make(map[string]bool)
+	for _, message := range boundedManager.CloneMessageList() {
+		for _, call := range message.ToolCalls {
+			boundedCalls[call.ID] = true
+		}
+		for _, result := range message.ToolResults {
+			boundedResults[result.ToolCallID] = true
+		}
+	}
+	for i := 1; i <= 3; i++ {
+		id := fmt.Sprintf("call_%d", i)
+		if boundedCalls[id] || boundedResults[id] {
+			t.Fatalf("old compacted exchange %s was retained past the hard target", id)
+		}
+	}
+	for i := 4; i <= 6; i++ {
+		id := fmt.Sprintf("call_%d", i)
+		if !boundedCalls[id] || !boundedResults[id] {
+			t.Fatalf("recent protected exchange %s was dropped", id)
+		}
+	}
+	if boundedManager.GetParentSessionID() != newManager.GetSessionID() {
+		t.Fatalf("bounded revision parent = %q, want %q", boundedManager.GetParentSessionID(), newManager.GetSessionID())
+	}
+
+	hardBudgetManager, pruned, err := compactor.PruneForHardBudget(boundedManager, 1)
+	if err != nil {
+		t.Fatalf("PruneForHardBudget() error = %v", err)
+	}
+	if !pruned || hardBudgetManager == nil {
+		t.Fatal("PruneForHardBudget() did not prune protected exchanges")
+	}
+	for _, message := range hardBudgetManager.CloneMessageList() {
+		if len(message.ToolCalls) != 0 || len(message.ToolResults) != 0 {
+			t.Fatalf("hard-budget revision retained a protected tool exchange: %#v", message)
+		}
 	}
 }
 

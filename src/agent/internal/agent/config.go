@@ -318,10 +318,11 @@ type Config struct {
 	TerminationPolicy          TerminationPolicyConfig       `toml:"termination_policy,omitempty"`
 	ForceSimpleLoop            bool                          `toml:"-"`
 	// ContextPruneThreshold is the fraction of the usable model input budget at
-	// which deterministic cleanup of expired state and historical tool results
-	// runs. Zero uses defaultContextPruneThreshold. Pruning is meant to run
-	// before conversation compaction, so the effective value is capped at
-	// ContextCompactionThreshold; read it through
+	// which deterministic cleanup of stale state and older tool exchanges runs,
+	// including during a long-running tool loop. Zero uses
+	// defaultContextPruneThreshold. Pruning is meant to run before conversation
+	// compaction, so the effective value is capped at ContextCompactionThreshold;
+	// read it through
 	// ContextPruneThresholdOrDefault rather than directly.
 	ContextPruneThreshold float64 `toml:"context_prune_threshold,omitempty"`
 	// ContextCompactionThreshold is the fraction of the usable model input

@@ -275,7 +275,7 @@ func conversationCompactionTrigger(usableInputBudget int, threshold float64) (tr
 }
 
 // historicalPruneBudgets returns the trigger and target for deterministic
-// cleanup of expired state and historical tool results, both as token counts
+// cleanup of stale state and older tool exchanges, both as token counts
 // derived from the given fraction of the usable input budget. The fraction comes
 // from agent.context_prune_threshold; callers should pass
 // Config.ContextPruneThresholdOrDefault, which also caps it at the compaction
