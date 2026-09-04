@@ -71,14 +71,82 @@ func (s *Server) handleBluetoothPairingStart(w http.ResponseWriter, r *http.Requ
 		writeBluetoothError(w, http.StatusForbidden, "Bluetooth pairing control is available only over USB")
 		return
 	}
+	startedAt := time.Now()
+	if s.logger != nil {
+		s.logger.InfoEvent("bluetooth", "pairing_start_requested", bluetoothPairingRequestFields(r)...)
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
 	defer cancel()
 	status, err := s.bluetoothPairingStartRequest()(ctx, s.bluetoothServiceSocketPath())
 	if err != nil {
+		if s.logger != nil {
+			fields := bluetoothPairingRequestFields(r)
+			fields = append(fields,
+				LogField{Key: "duration_ms", Value: time.Since(startedAt).Milliseconds()},
+				LogField{Key: "error", Value: err},
+			)
+			s.logger.WarnEvent("bluetooth", "pairing_start_failed", fields...)
+		}
 		writeBluetoothRequestError(w, err)
 		return
 	}
+	if s.logger != nil {
+		fields := bluetoothPairingStatusFields(status)
+		fields = append(fields, LogField{Key: "duration_ms", Value: time.Since(startedAt).Milliseconds()})
+		s.logger.InfoEvent("bluetooth", "pairing_start_succeeded", fields...)
+	}
 	writeBluetoothJSON(w, http.StatusOK, bluetoothStatusResponse{OK: true, Bluetooth: status})
+}
+
+func bluetoothPairingRequestFields(r *http.Request) []LogField {
+	fields := []LogField{{Key: "transport", Value: "usb"}}
+	if r == nil {
+		return fields
+	}
+	if remoteIP, ok := addressIP(r.RemoteAddr); ok {
+		fields = append(fields, LogField{Key: "remote_ip", Value: remoteIP.String()})
+	}
+	return fields
+}
+
+func bluetoothPairingStatusFields(status ble.RuntimeStatus) []LogField {
+	fields := []LogField{
+		{Key: "backend_available", Value: status.BackendAvailable},
+		{Key: "adapter_powered", Value: status.AdapterPowered},
+		{Key: "gatt_registered", Value: status.GattRegistered},
+		{Key: "advertising", Value: status.Advertising},
+		{Key: "pairing_open", Value: status.PairingOpen},
+		{Key: "bonded_device_count", Value: status.BondedDeviceCount},
+		{Key: "connected", Value: status.Connected},
+		{Key: "paired", Value: status.Paired},
+		{Key: "services_resolved", Value: status.ServicesResolved},
+		{Key: "ancs_subscribed", Value: status.ANCSSubscribed},
+	}
+	if status.DeviceName != "" {
+		fields = append(fields, LogField{Key: "device_name", Value: status.DeviceName})
+	}
+	if status.BoardIdentity != "" {
+		fields = append(fields, LogField{Key: "board_identity", Value: status.BoardIdentity})
+	}
+	if status.PairingDeadline != "" {
+		fields = append(fields, LogField{Key: "pairing_deadline", Value: status.PairingDeadline})
+	}
+	if status.TrustedDeviceName != "" {
+		fields = append(fields, LogField{Key: "trusted_device_name", Value: status.TrustedDeviceName})
+	}
+	if status.TrustedDeviceAddr != "" {
+		fields = append(fields, LogField{Key: "trusted_device_address", Value: status.TrustedDeviceAddr})
+	}
+	if status.ConnectedDeviceName != "" {
+		fields = append(fields, LogField{Key: "connected_device_name", Value: status.ConnectedDeviceName})
+	}
+	if status.ConnectedDeviceAddr != "" {
+		fields = append(fields, LogField{Key: "connected_device_address", Value: status.ConnectedDeviceAddr})
+	}
+	if status.LastError != "" {
+		fields = append(fields, LogField{Key: "last_error", Value: status.LastError})
+	}
+	return fields
 }
 
 func (s *Server) handleBluetoothPairingReset(w http.ResponseWriter, r *http.Request) {
