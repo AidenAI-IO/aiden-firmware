@@ -36,6 +36,7 @@ readonly -a APP_PAYLOAD=(
     bin/hello
     bin/image_process
     bin/rknn_vad
+    bin/ttyd
     bin/trigger
     lib/librga.so.2.1.0
 )

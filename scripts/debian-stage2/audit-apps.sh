@@ -35,6 +35,7 @@ readonly MPP_SYMBOLS=(
 
 readonly READELF=${READELF:-arm-linux-gnueabihf-readelf}
 readonly GO_EXECUTABLES=(abctl agent ble_service ota)
+readonly STATIC_EXECUTABLES=(ttyd)
 readonly RKNN_RUNTIME_VERSION='librknnmrt version: 2.3.2 (429f97ae6b@2025-04-09T09:11:49)'
 readonly RKNN_STATIC_SYMBOLS=(
     __ctype_b
@@ -82,21 +83,27 @@ while IFS= read -r -d '' elf; do
             break
         fi
     done
+    for static_executable in "${STATIC_EXECUTABLES[@]}"; do
+        if [ "${relative}" = "bin/${static_executable}" ]; then
+            kind=static
+            break
+        fi
+    done
     hard_float=no
     if grep -q 'hard-float ABI' <<<"${flags}"; then
         hard_float=yes
     fi
 
     [ "${machine}" = ARM ] || fail "${relative} is not ARM (${machine})"
-    if [ "${kind}" = static-go ]; then
+    if [ "${kind}" = static-go ] || [ "${kind}" = static ]; then
         grep -q 'Version5 EABI' <<<"${flags}" \
             || fail "${relative} is not ARM EABI5 (${flags})"
         [ -z "${interpreter}" ] \
-            || fail "${relative} static Go binary has interpreter '${interpreter}'"
+            || fail "${relative} static binary has interpreter '${interpreter}'"
         [ -z "${needed}" ] \
-            || fail "${relative} static Go binary has dynamic dependencies '${needed}'"
+            || fail "${relative} static binary has dynamic dependencies '${needed}'"
         [ -z "${runpath}" ] \
-            || fail "${relative} static Go binary has RUNPATH '${runpath}'"
+            || fail "${relative} static binary has RUNPATH '${runpath}'"
     elif [ "${kind}" = executable ]; then
         [ "${hard_float}" = yes ] || fail "${relative} is not marked hard-float"
         [ "${interpreter}" = /lib/ld-linux-armhf.so.3 ] \
@@ -131,6 +138,11 @@ while IFS= read -r -d '' elf; do
         "${needed}" \
         "${relative}" >>"${REPORT}"
 done < <(find "${APPS_DIR}/bin" "${APPS_DIR}/lib" -type f -print0 | sort -z)
+
+for static_executable in "${STATIC_EXECUTABLES[@]}"; do
+    [ -x "${APPS_DIR}/bin/${static_executable}" ] \
+        || fail "missing static executable: bin/${static_executable}"
+done
 
 for go_executable in "${GO_EXECUTABLES[@]}"; do
     [ -x "${APPS_DIR}/bin/${go_executable}" ] \
