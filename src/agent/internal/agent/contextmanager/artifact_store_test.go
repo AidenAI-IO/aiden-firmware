@@ -65,6 +65,65 @@ func TestContextManagerReturnsReadableArtifactFilePath(t *testing.T) {
 	}
 }
 
+func TestContextManagerReusesArtifactWithSameContent(t *testing.T) {
+	manager, err := NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	content := []byte("same tool result")
+	first, err := manager.StoreArtifact("text/plain", content, ArtifactMetadata{
+		ToolName:   "web_search",
+		ToolCallID: "call_search",
+	})
+	if err != nil {
+		t.Fatalf("first StoreArtifact() error = %v", err)
+	}
+	second, err := manager.StoreArtifact("text/plain", content, ArtifactMetadata{
+		ToolName:   "shell",
+		ToolCallID: "call_cat",
+	})
+	if err != nil {
+		t.Fatalf("second StoreArtifact() error = %v", err)
+	}
+	if second.Path != first.Path {
+		t.Fatalf("duplicate artifact paths = %q and %q, want content-addressed reuse", first.Path, second.Path)
+	}
+	if second.SHA256 == "" || second.SHA256 != first.SHA256 {
+		t.Fatalf("duplicate artifact hashes = %q and %q", first.SHA256, second.SHA256)
+	}
+
+	entries, err := os.ReadDir(manager.artifactStore.root)
+	if err != nil {
+		t.Fatalf("ReadDir(%s) error = %v", manager.artifactStore.root, err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("artifact store entries = %d, want one data/metadata pair", len(entries))
+	}
+}
+
+func TestContextManagerDoesNotReuseArtifactAcrossStoragePolicies(t *testing.T) {
+	manager, err := NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	content := []byte("same bytes with different storage policy")
+	plain, err := manager.StoreArtifact("text/plain", content, ArtifactMetadata{})
+	if err != nil {
+		t.Fatalf("plain StoreArtifact() error = %v", err)
+	}
+	structured, err := manager.StoreArtifact("application/json", content, ArtifactMetadata{})
+	if err != nil {
+		t.Fatalf("structured StoreArtifact() error = %v", err)
+	}
+	sensitive, err := manager.StoreArtifact("text/plain", content, ArtifactMetadata{Sensitive: true})
+	if err != nil {
+		t.Fatalf("sensitive StoreArtifact() error = %v", err)
+	}
+	if plain.Path == structured.Path || plain.Path == sensitive.Path || structured.Path == sensitive.Path {
+		t.Fatalf("artifacts with different storage policies were merged: plain=%q structured=%q sensitive=%q", plain.Path, structured.Path, sensitive.Path)
+	}
+}
+
 func TestContextManagerReturnsAbsoluteArtifactPathForRelativeSessionFolder(t *testing.T) {
 	t.Chdir(t.TempDir())
 	if err := os.MkdirAll("sessions", 0o700); err != nil {

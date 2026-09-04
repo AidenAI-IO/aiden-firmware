@@ -218,11 +218,22 @@ func availableToolResultTokens(input ToolResultPrepareInput) int {
 	if softLimit <= 0 {
 		return 0
 	}
-	currentTokens := tokencounter.EstimateToolSchemaTokens(options)
-	if input.ContextManager != nil {
-		currentTokens += tokencounter.EstimateMessagesTokens(input.ContextManager.CloneMessageList())
-	}
+	currentTokens := estimateActivePromptTokens(input.ContextManager, input.CallOptions)
 	return max(0, softLimit-currentTokens)
+}
+
+func estimateActivePromptTokens(manager *contextmanager.ContextManager, options []llms.CallOption) int {
+	var callOptions llms.CallOptions
+	for _, option := range options {
+		if option != nil {
+			option(&callOptions)
+		}
+	}
+	tokens := tokencounter.EstimateToolSchemaTokens(callOptions)
+	if manager != nil {
+		tokens += tokencounter.EstimateMessagesTokens(manager.CloneMessageList())
+	}
+	return tokens
 }
 
 func inputContextBudget(contextWindow, maxResponseTokens int) int {
@@ -344,7 +355,7 @@ func boundedToolResultObservation(call ToolCall, prepared PreparedToolResult, pr
 		} else {
 			fmt.Fprintf(&recovery, "Saved partial result file: %s\n", prepared.ArtifactPath)
 		}
-		recovery.WriteString("Use shell commands such as grep, sed, dd, jq, or fq to read only the needed ranges or fields.\n")
+		recovery.WriteString("Use bounded grep/sed/dd/jq/fq reads; never use cat or print the whole artifact file.\n")
 	} else {
 		optional.WriteString("Full result is unavailable; output was bounded before entering active context.\n")
 	}

@@ -172,6 +172,175 @@ func (m *unknownContextScriptedModel) Spec() model.ModelSpec {
 	return model.ModelSpec{Provider: "openai", Name: "qwen3.6-35b"}
 }
 
+type artifactRecoveryLoopModel struct {
+	callCount     int
+	artifactPaths []string
+}
+
+func (m *artifactRecoveryLoopModel) GenerateContent(_ context.Context, messageList []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	callID := fmt.Sprintf("call_%d", m.callCount+1)
+	if m.callCount == 0 {
+		m.callCount++
+		return toolCallResponse(callID, "shell", `{"command":"produce-search-result"}`), nil
+	}
+
+	path := latestToolResultArtifactPath(messageList)
+	if path == "" {
+		return nil, errors.New("model did not receive an artifact recovery path")
+	}
+	m.artifactPaths = append(m.artifactPaths, path)
+	m.callCount++
+	input, err := json.Marshal(map[string]string{"command": "cat " + path})
+	if err != nil {
+		return nil, err
+	}
+	return toolCallResponse(callID, "shell", string(input)), nil
+}
+
+func (m *artifactRecoveryLoopModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
+func (m *artifactRecoveryLoopModel) Spec() model.ModelSpec {
+	return model.ModelSpec{Provider: "fake", Name: "artifact-recovery-loop", ContextWindow: 32_000, MaxOutput: 1_000}
+}
+
+func (m *artifactRecoveryLoopModel) CallOptions() []chains.ChainCallOption { return nil }
+
+func latestToolResultArtifactPath(messageList []llms.MessageContent) string {
+	const marker = "Full result file: "
+	for messageIndex := len(messageList) - 1; messageIndex >= 0; messageIndex-- {
+		parts := messageList[messageIndex].Parts
+		for partIndex := len(parts) - 1; partIndex >= 0; partIndex-- {
+			response, ok := parts[partIndex].(llms.ToolCallResponse)
+			if !ok {
+				continue
+			}
+			for _, line := range strings.Split(response.Content, "\n") {
+				if path := strings.TrimSpace(strings.TrimPrefix(line, marker)); strings.HasPrefix(line, marker) && path != "" {
+					return path
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func TestAgentLoopTerminatesRecursiveArtifactRecovery(t *testing.T) {
+	rawOutput := strings.Repeat("Guangzhou attraction result ", 100)
+	if len(rawOutput) >= toolResultInlineMaxBytes || tokencounter.EstimateTextTokens(rawOutput) >= toolResultInlineMaxTokens {
+		t.Fatal("test result must be context-large rather than intrinsically large")
+	}
+	model := &artifactRecoveryLoopModel{}
+	tool := &countingLargeResultTool{name: "shell", output: rawOutput}
+	manager, err := freshNewContextManager(strings.Repeat("context ", 12_000), "find attractions", nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+	loop := NewAgentLoop(
+		model,
+		RoleProfile{Tools: []langtools.Tool{tool}},
+		8,
+		nil,
+		nil,
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
+		manager,
+	)
+
+	answer, err := loop.Run(context.Background(), "find attractions", chains.WithMaxTokens(1_000))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(answer, string(StopReasonLoopDetected)) {
+		t.Fatalf("Run() answer = %q, want loop_detected stop", answer)
+	}
+	if tool.calls > 4 {
+		t.Fatalf("shell calls = %d, want recursive recovery stopped by the fourth call", tool.calls)
+	}
+	if len(model.artifactPaths) < 2 {
+		t.Fatalf("artifact recovery paths = %#v, want repeated recovery attempts", model.artifactPaths)
+	}
+	for _, path := range model.artifactPaths[1:] {
+		if path != model.artifactPaths[0] {
+			t.Fatalf("artifact recovery paths rotated: %#v", model.artifactPaths)
+		}
+	}
+}
+
+func TestAgentLoopCompactsWhenToolResultCrossesContextThreshold(t *testing.T) {
+	tool := &countingLargeResultTool{name: "shell", output: strings.Repeat("x", 4_000)}
+	model := &largeContextScriptedModel{scriptedModel: &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("call_1", "shell", `{"command":"produce"}`),
+		contentResponse("Done after in-loop compaction"),
+	}}}
+	manager, err := freshNewContextManager("system", "run the tool", nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+	loop := NewAgentLoop(
+		model,
+		RoleProfile{Tools: []langtools.Tool{tool}},
+		4,
+		nil,
+		nil,
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
+		manager,
+	)
+	turnOptions := []llms.CallOption{
+		llms.WithMaxTokens(1_000),
+		llms.WithTools((&FunctionAgent{Tools: loop.Profile.Tools}).toolsAsLLM()),
+	}
+	initialTokens := estimateActivePromptTokens(manager, turnOptions)
+	loop.ContextCompactionTrigger = initialTokens + 500
+	compactionCalls := 0
+	loop.ContextThresholdCompaction = func(_ context.Context, current *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
+		compactionCalls++
+		return current, true, nil
+	}
+
+	answer, err := loop.Run(context.Background(), "run the tool", chains.WithMaxTokens(1_000))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if answer != "Done after in-loop compaction" {
+		t.Fatalf("Run() answer = %q", answer)
+	}
+	if compactionCalls != 1 {
+		t.Fatalf("in-loop compaction calls = %d, want 1", compactionCalls)
+	}
+	if tool.calls != 1 {
+		t.Fatalf("tool calls = %d, want completed tool action preserved across compaction", tool.calls)
+	}
+}
+
+func TestAgentLoopCompactionCanRetryWhenManagerIsUnchanged(t *testing.T) {
+	manager, err := freshNewContextManager("system", "run the tool", nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+	loop := NewAgentLoop(nil, RoleProfile{}, 1, nil, nil, executor.ScreenshotPruningConfig{}.WithDefaults(), manager)
+	loop.ContextCompactionTrigger = 1
+	compactionCalls := 0
+	loop.ContextThresholdCompaction = func(_ context.Context, current *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
+		compactionCalls++
+		return current, false, nil
+	}
+	llmExecutor := executor.NewLLMExecutor(nil, manager)
+
+	for attempt := 0; attempt < 2; attempt++ {
+		compacted, err := loop.compactContextBeforeLLM(context.Background(), llmExecutor, nil)
+		if err != nil {
+			t.Fatalf("compactContextBeforeLLM() error = %v", err)
+		}
+		if compacted {
+			t.Fatal("compactContextBeforeLLM() reported compaction for unchanged manager")
+		}
+	}
+	if compactionCalls != 2 {
+		t.Fatalf("compaction calls = %d, want retry on every threshold crossing", compactionCalls)
+	}
+}
+
 func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.T) {
 	rawOutput := strings.Repeat("0123456789", 736)
 	if len(rawOutput) >= toolResultInlineMaxBytes || tokencounter.EstimateTextTokens(rawOutput) >= toolResultInlineMaxTokens {

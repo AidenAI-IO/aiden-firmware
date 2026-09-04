@@ -71,6 +71,25 @@ func TestRolePromptDirectsRemoteSkillURLsToInstallAction(t *testing.T) {
 	}
 }
 
+func TestRolePromptConstrainsArtifactRecoveryReads(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, want := range []string{
+		"Never use cat",
+		"print the entire artifact file",
+		"explicit output bound",
+		"grep -m 20",
+		"sed -n",
+		"dd if=FILE",
+		"jq",
+		"fq",
+		"do not emit unbounded",
+	} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing artifact recovery guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
 func TestRolePromptIncludesConfiguredResponseLocaleInSystemPrompt(t *testing.T) {
 	manager := NewSkillManager(NewSkillIndex())
 	zh := buildProfile(AgentConfig{Locale: "zh-CN"}, manager, nil, agentRoleRules())
