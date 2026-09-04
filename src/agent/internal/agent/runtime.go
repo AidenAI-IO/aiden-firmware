@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +55,8 @@ const (
 
 type Runtime struct {
 	config               Config
+	configReloadMu       sync.Mutex
+	configMu             sync.RWMutex
 	models               model.Model
 	memories             *MemoryManager
 	tools                *ToolSet
@@ -89,6 +92,48 @@ type Runtime struct {
 	ttsManagerOnce       sync.Once
 	episodeMaintenance   asyncEpisodeMaintenance
 	episodeMemoryInitErr error
+}
+
+// ConfigSnapshot returns an immutable copy of the currently active runtime
+// configuration. Callers must use this accessor instead of reading config
+// directly so an internal reload cannot race request goroutines.
+func (r *Runtime) ConfigSnapshot() Config {
+	if r == nil {
+		return Config{}
+	}
+	r.configMu.RLock()
+	defer r.configMu.RUnlock()
+	return r.config
+}
+
+// ApplyConfigSnapshot applies changes that are safe for the existing runtime.
+// Provider, audio, storage, HID and voice backend changes are intentionally
+// rejected: those components cache resources at construction time and need a
+// process restart to avoid serving a mixed configuration.
+func (r *Runtime) ApplyConfigSnapshot(cfg Config) error {
+	if r == nil {
+		return fmt.Errorf("runtime unavailable")
+	}
+	r.configMu.Lock()
+	defer r.configMu.Unlock()
+	current := r.config
+	if current.ConfigDir != cfg.ConfigDir {
+		return fmt.Errorf("config directory cannot be reloaded")
+	}
+	if r.models == nil && r.storage == nil && r.phoneBridge == nil {
+		r.config = cfg
+		return nil
+	}
+	// Components that own provider clients, audio sockets, storage mounts, HID
+	// devices, and context state cache configuration at construction time. A
+	// production runtime therefore cannot safely hot-swap any changed config;
+	// reject it so Config Web reports persisted=true/applied=false and asks for
+	// a coordinated Agent restart.
+	if !reflect.DeepEqual(current, cfg) {
+		return fmt.Errorf("configuration changes require an Agent restart")
+	}
+	r.config = cfg
+	return nil
 }
 
 type asyncEpisodeMaintenance struct {
@@ -546,10 +591,10 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 	rt.startMemoryWorker(logger)
 
-	// Start the SD/eMMC storage manager on every device. Missing or unusable
-	// card hardware degrades to eMMC-only operation.
-	rt.storage = NewStorageManager(cfg.Storage, logger)
-	rt.storage.Start()
+	// Config Web owns SD-card hardware and publishes a state mirror. Agent only
+	// consumes that mirror for read-path routing, so the two processes never
+	// race mounts, formats, ejections, or migrations.
+	rt.storage = NewStorageStateView(cfg.Storage, defaultStorageStatePath, logger)
 
 	rt.screenState = screenState
 
@@ -594,7 +639,7 @@ func (r *Runtime) ttsProviderManager() *tts.ProviderManager {
 		if r.ttsManager != nil {
 			return
 		}
-		manager, err := newTTSProviderManagerFromConfig(r.config, r.logger)
+		manager, err := newTTSProviderManagerFromConfig(r.ConfigSnapshot(), r.logger)
 		if err != nil {
 			if r.logger != nil {
 				r.logger.Warn("TTS init failed: %v", err)
@@ -735,7 +780,7 @@ func (r *Runtime) deviceTypeFromState() string {
 		}
 	}
 	if r != nil {
-		return r.config.DeviceTypeOrDefault()
+		return r.ConfigSnapshot().DeviceTypeOrDefault()
 	}
 	return defaultDeviceType
 }
@@ -859,7 +904,7 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 		return
 	}
 	for _, episode := range episodes {
-		enrichEpisodeTelemetry(&episode, r.config)
+		enrichEpisodeTelemetry(&episode, r.ConfigSnapshot())
 		r.enrichEpisodeRuntimeTelemetry(&episode)
 		if episode.Extra == nil {
 			episode.Extra = map[string]interface{}{}
@@ -959,7 +1004,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		episodeID = newTaskEpisodeID(startTime.UTC())
 	}
 	currentHints := r.currentEnvironmentHints()
-	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
+	promptCapture := newTelemetryPromptCapture(r.ConfigSnapshot().Telemetry.EnabledOrDefault())
 	var episodeRecorder *EpisodeRecorder
 	var availableTools []langtools.Tool
 	chunkRecalls := &atomic.Int64{}
@@ -1076,7 +1121,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		episodeID = episodeRecorder.ID()
 	}
 
-	maxIterations := effectiveMaxIterations(r.config.MaxIterations)
+	cfg := r.ConfigSnapshot()
+	maxIterations := effectiveMaxIterations(cfg.MaxIterations)
 
 	// Record tool count in metrics for observability
 	metrics.ToolCount = len(availableTools)
@@ -1122,7 +1168,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	// setup context manager if not initialized
 	if r.contextManager == nil {
-		r.contextManager, err = InitializeContextManager(profile.SystemPrompt, agentpath.ContextManagerSessionFolder(r.config.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
+		r.contextManager, err = InitializeContextManager(profile.SystemPrompt, agentpath.ContextManagerSessionFolder(cfg.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -1147,20 +1193,20 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		budgetContextWindow = r.models.Spec().ContextWindow
 	}
 	maxResponseTokens := r.models.Spec().MaxOutput
-	if r.config.Model.MaxResponseTokens > 0 {
-		maxResponseTokens = r.config.Model.MaxResponseTokens
+	if cfg.Model.MaxResponseTokens > 0 {
+		maxResponseTokens = cfg.Model.MaxResponseTokens
 	}
 	if req.MaxTokens > 0 {
 		maxResponseTokens = req.MaxTokens
 	}
 	usableInputBudget := toolResultUsableInputBudget(budgetContextWindow, maxResponseTokens)
-	compactionTrigger, compactionEnabled := conversationCompactionTrigger(usableInputBudget, r.config.ContextCompactionThresholdOrDefault())
+	compactionTrigger, compactionEnabled := conversationCompactionTrigger(usableInputBudget, cfg.ContextCompactionThresholdOrDefault())
 	tokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
 
 	// Historical state and tool-result pruning is deterministic and has its own
 	// configurable trigger. It is intentionally independent from conversation
 	// summarization and provider-managed Responses compaction.
-	pruneTrigger, pruneTarget, pruneEnabled := historicalPruneBudgets(usableInputBudget, r.config.ContextPruneThresholdOrDefault())
+	pruneTrigger, pruneTarget, pruneEnabled := historicalPruneBudgets(usableInputBudget, cfg.ContextPruneThresholdOrDefault())
 	if pruneEnabled && tokenUsage > pruneTrigger {
 		if r.logger != nil {
 			r.logger.Info("Historical context prune: token usage reached threshold; tokenUsage=%d trigger=%d target=%d", tokenUsage, pruneTrigger, pruneTarget)
@@ -1187,7 +1233,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	if !r.config.Model.ResponsesProviderCompactionEnabled() && compactionEnabled && tokenUsage > compactionTrigger {
+	if !cfg.Model.ResponsesProviderCompactionEnabled() && compactionEnabled && tokenUsage > compactionTrigger {
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, summarizing conversation... tokenUsage: %d, trigger: %d, contextWindow: %d", tokenUsage, compactionTrigger, contextWindow)
 		}
@@ -1215,7 +1261,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
+	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, cfg.ScreenshotPruningOrDefault(), r.contextManager)
 	agentLoop.SteerRecorder = steerRecorder
 	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
 		if r.tools == nil {
@@ -1227,7 +1273,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.SteerInterrupt = req.SteerInterrupt
 	agentLoop.SteerProvider = req.SteerProvider
 	agentLoop.SteerWaiter = req.SteerWaiter
-	agentLoop.TerminationPolicy = NewTerminationPolicy(r.config.TerminationPolicy)
+	agentLoop.TerminationPolicy = NewTerminationPolicy(cfg.TerminationPolicy)
 	agentLoop.DevicePlatform = r.devicePlatformFromState()
 	agentLoop.PointerMode = r.devicePointerModeFromState()
 	agentLoop.ContextBudgetGuard = func(_ context.Context, currentManager *contextmanager.ContextManager, options llms.CallOptions) (*contextmanager.ContextManager, bool, error) {
@@ -1409,14 +1455,18 @@ func (r *Runtime) getSystemPrompt() string {
 // span as a searchable chunk. Compaction is the only producer of chunks, so both
 // the threshold and overflow-recovery paths share this one construction.
 func (r *Runtime) sessionChunkWriter() *SessionChunkWriter {
-	if r == nil || r.config.ConfigDir == "" {
+	if r == nil {
+		return nil
+	}
+	configDir := r.ConfigSnapshot().ConfigDir
+	if configDir == "" {
 		return nil
 	}
 	extraction := DefaultMemoryExtractionConfig()
 	if r.memories != nil {
 		extraction = r.memories.extraction
 	}
-	return NewSessionChunkWriter(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), extraction)
+	return NewSessionChunkWriter(agentpath.ContextManagerSessionFolder(configDir), extraction)
 }
 
 func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
@@ -1559,10 +1609,10 @@ func (r *Runtime) ClearMemory(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+	if err := contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir)); err != nil {
 		return fmt.Errorf("clear backend context sessions: %w", err)
 	}
-	if err := contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+	if err := contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir)); err != nil {
 		return fmt.Errorf("clear user context sessions: %w", err)
 	}
 	if err := r.rotateContext(); err != nil {
@@ -1610,10 +1660,10 @@ func (r *Runtime) resetActiveUserContext() {
 }
 
 func (r *Runtime) currentUserContextSystemPrompt() (string, bool, error) {
-	if r == nil || strings.TrimSpace(r.config.ConfigDir) == "" {
+	if r == nil || strings.TrimSpace(r.ConfigSnapshot().ConfigDir) == "" {
 		return "", false, nil
 	}
-	folder := agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
+	folder := agentpath.UserContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir)
 	currentSessionPath := filepath.Join(folder, ".current_session")
 	if _, err := os.Stat(currentSessionPath); err != nil {
 		if os.IsNotExist(err) {
@@ -1634,10 +1684,10 @@ func (r *Runtime) currentUserContextSystemPrompt() (string, bool, error) {
 }
 
 func (r *Runtime) rotateUserContext(systemPrompt string) error {
-	if r == nil || strings.TrimSpace(r.config.ConfigDir) == "" {
+	if r == nil || strings.TrimSpace(r.ConfigSnapshot().ConfigDir) == "" {
 		return nil
 	}
-	folder := agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
+	folder := agentpath.UserContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir)
 	if _, err := contextmanager.NewContextManager(folder, systemPrompt); err != nil {
 		return fmt.Errorf("create user context session: %w", err)
 	}
@@ -1657,12 +1707,12 @@ func (r *Runtime) reloadSkillsIfDirty() error {
 	if !r.skillsDirty {
 		return nil
 	}
-	if len(r.config.SkillsDirs) == 0 {
+	if len(r.ConfigSnapshot().SkillsDirs) == 0 {
 		r.skillsDirty = false
 		return nil
 	}
 
-	index, err := LoadSkillsFromDirs(r.config.SkillsDirs)
+	index, err := LoadSkillsFromDirs(r.ConfigSnapshot().SkillsDirs)
 	if err != nil {
 		return fmt.Errorf("reload skills: %w", err)
 	}
@@ -1684,10 +1734,10 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 		return err
 	}
 
-	if err := contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+	if err := contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir)); err != nil {
 		return fmt.Errorf("clear backend context sessions: %w", err)
 	}
-	if err := contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)); err != nil {
+	if err := contextmanager.ClearAllSessions(agentpath.UserContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir)); err != nil {
 		return fmt.Errorf("clear user context sessions: %w", err)
 	}
 	if err := r.rotateContext(); err != nil {
@@ -1704,10 +1754,10 @@ func (r *Runtime) ContextDump() contextmanager.MessageListDump {
 	if r.contextManager != nil {
 		return r.contextManager.MessageListDump()
 	}
-	if strings.TrimSpace(r.config.ConfigDir) == "" {
+	if strings.TrimSpace(r.ConfigSnapshot().ConfigDir) == "" {
 		return contextmanager.MessageListDump{}
 	}
-	manager, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.ContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir))
 	if err != nil || manager == nil {
 		return contextmanager.MessageListDump{}
 	}
@@ -1719,7 +1769,7 @@ func (r *Runtime) UserContextDump() contextmanager.MessageListDump {
 	if r == nil {
 		return contextmanager.MessageListDump{}
 	}
-	manager, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.UserContextManagerSessionFolder(r.config.ConfigDir))
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.UserContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir))
 	if err != nil || manager == nil {
 		return contextmanager.MessageListDump{}
 	}
@@ -1732,7 +1782,7 @@ func (r *Runtime) WebContextDump() contextmanager.MessageListDump {
 	if r == nil {
 		return contextmanager.MessageListDump{}
 	}
-	if r.config.InputModeOrDefault() == "realtime" {
+	if r.ConfigSnapshot().InputModeOrDefault() == "realtime" {
 		return r.UserContextDump()
 	}
 	return r.ContextDump()
@@ -1747,9 +1797,9 @@ func (r *Runtime) ReadContextAttachment(role, attachmentID string) ([]byte, stri
 	var folder string
 	switch strings.ToLower(strings.TrimSpace(role)) {
 	case "user":
-		folder = agentpath.UserContextManagerSessionFolder(r.config.ConfigDir)
+		folder = agentpath.UserContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir)
 	case "backend":
-		folder = agentpath.ContextManagerSessionFolder(r.config.ConfigDir)
+		folder = agentpath.ContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir)
 	default:
 		return nil, "", fmt.Errorf("invalid context role")
 	}
@@ -1774,7 +1824,7 @@ func (r *Runtime) ReadContextAttachment(role, attachmentID string) ([]byte, stri
 }
 
 func (r *Runtime) rotateContext() error {
-	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), r.getSystemPrompt())
+	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir), r.getSystemPrompt())
 	if err != nil {
 		return err
 	}
@@ -1950,13 +2000,13 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	cfg := DefaultMemoryExtractionConfig()
 	if r.memories != nil {
 		cfg = r.memories.extraction
-	} else if r.config.ConfigDir != "" {
-		cfg = LoadMemoryExtractionConfig(r.config.ConfigDir)
+	} else if r.ConfigSnapshot().ConfigDir != "" {
+		cfg = LoadMemoryExtractionConfig(r.ConfigSnapshot().ConfigDir)
 	}
 	tags := cfg.extractTagsFromText(input)
 	entities := cfg.extractEntitiesFromText(input)
 	episode := recorder.Finish(output, metrics, runErr, tags, entities)
-	enrichEpisodeTelemetry(&episode, r.config)
+	enrichEpisodeTelemetry(&episode, r.ConfigSnapshot())
 	r.enrichEpisodeRuntimeTelemetry(&episode)
 	enrichEpisodeChunkRecallTelemetry(&episode, chunkRecalls)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2058,7 +2108,7 @@ func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
 	}
 	params, _ := episode.Extra["model_parameters"].(map[string]interface{})
 	if len(params) == 0 {
-		params = telemetryModelParametersFromModelConfig(r.config.Model)
+		params = telemetryModelParametersFromModelConfig(r.ConfigSnapshot().Model)
 	}
 	if contextWindow > 0 {
 		if params == nil {
@@ -2086,17 +2136,17 @@ func telemetryModelParametersFromModelConfig(cfg ModelConfig) map[string]interfa
 }
 
 func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *telemetryPromptCapture) {
-	if !r.config.Telemetry.EnabledOrDefault() || strings.TrimSpace(episode.UserGoal) == "" {
+	if !r.ConfigSnapshot().Telemetry.EnabledOrDefault() || strings.TrimSpace(episode.UserGoal) == "" {
 		return
 	}
-	if r.config.ConfigDir == "" {
+	if r.ConfigSnapshot().ConfigDir == "" {
 		return
 	}
-	exporter := NewEpisodeExporter(r.config.Telemetry, r.logger)
+	exporter := NewEpisodeExporter(r.ConfigSnapshot().Telemetry, r.logger)
 	promptCalls := promptCapture.Snapshot()
-	episodesRoot := filepath.Join(r.config.ConfigDir, "memory", "episodes")
+	episodesRoot := filepath.Join(r.ConfigSnapshot().ConfigDir, "memory", "episodes")
 	episodeDir := EpisodeDirectory(episodesRoot, episode)
-	timeout := r.config.Telemetry.UploadTimeoutOrDefault()
+	timeout := r.ConfigSnapshot().Telemetry.UploadTimeoutOrDefault()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
@@ -2109,9 +2159,9 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langtools.Tool) RoleProfile {
 	return buildProfile(
 		AgentConfig{
-			Instruction:      r.config.Instruction,
-			AdditionalPrompt: r.config.AdditionalPrompt,
-			Locale:           r.config.LocaleOrDefault(),
+			Instruction:      r.ConfigSnapshot().Instruction,
+			AdditionalPrompt: r.ConfigSnapshot().AdditionalPrompt,
+			Locale:           r.ConfigSnapshot().LocaleOrDefault(),
 		},
 		skills,
 		availableTools,

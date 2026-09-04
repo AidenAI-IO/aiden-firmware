@@ -1,7 +1,7 @@
 package agent
 
 func newServerQuickCapture(runtime *Runtime, frameClient screenshotFrameClient) *QuickCaptureController {
-	if runtime == nil || !runtime.config.QuickCapture.EnabledOrDefault() || frameClient == nil || runtime.models == nil || runtime.memories == nil || runtime.memories.longTerm == nil {
+	if runtime == nil || !runtime.ConfigSnapshot().QuickCapture.EnabledOrDefault() || frameClient == nil || runtime.models == nil || runtime.memories == nil || runtime.memories.longTerm == nil {
 		return nil
 	}
 	pipeline := NewScreenMemoryPipeline(
@@ -9,7 +9,7 @@ func newServerQuickCapture(runtime *Runtime, frameClient screenshotFrameClient) 
 		runtime.screenState,
 		runtime.models,
 		runtime.memories.longTerm,
-		ScreenMemoryOptions{TTL: runtime.config.QuickCapture.ScreenMemoryTTLOrDefault()},
+		ScreenMemoryOptions{TTL: runtime.ConfigSnapshot().QuickCapture.ScreenMemoryTTLOrDefault()},
 	)
 	return NewQuickCaptureController(pipeline, runtime.logger)
 }

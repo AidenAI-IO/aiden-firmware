@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -160,6 +161,7 @@ type StorageManager struct {
 	logger       *Logger
 	ops          storageSysOps
 	statePath    string // "" disables the state mirror
+	mirrorOnly   bool   // read state written by the Config Web owner; never touch hardware
 	emmcRoot     string
 	pollInterval time.Duration
 
@@ -193,6 +195,12 @@ const storageEMMCRootEnv = "AIDEN_STORAGE_EMMC_ROOT"
 
 // NewStorageManager builds a manager with real platform operations.
 func NewStorageManager(cfg StorageConfig, logger *Logger) *StorageManager {
+	return NewStorageManagerWithStatePath(cfg, defaultStorageStatePath, logger)
+}
+
+// NewStorageManagerWithStatePath builds the hardware-owning storage manager
+// and mirrors its state at statePath for read-only consumers such as Agent.
+func NewStorageManagerWithStatePath(cfg StorageConfig, statePath string, logger *Logger) *StorageManager {
 	emmcRoot := "/userdata"
 	if override := strings.TrimSpace(os.Getenv(storageEMMCRootEnv)); override != "" {
 		emmcRoot = override
@@ -201,7 +209,17 @@ func NewStorageManager(cfg StorageConfig, logger *Logger) *StorageManager {
 				storageEMMCRootEnv, override)
 		}
 	}
-	return newStorageManagerWithOps(cfg, &realStorageOps{device: cfg.DeviceOrDefault()}, defaultStorageStatePath, emmcRoot, logger)
+	return newStorageManagerWithOps(cfg, &realStorageOps{device: cfg.DeviceOrDefault()}, statePath, emmcRoot, logger)
+}
+
+// NewStorageStateView builds a read-only view for processes that need storage
+// routing but must not mount, format, eject, or migrate the card. Config Web is
+// the sole hardware owner and publishes the state mirror consumed here.
+func NewStorageStateView(cfg StorageConfig, statePath string, logger *Logger) *StorageManager {
+	m := NewStorageManagerWithStatePath(cfg, statePath, logger)
+	m.ops = nil
+	m.mirrorOnly = true
+	return m
 }
 
 func newStorageManagerWithOps(cfg StorageConfig, ops storageSysOps, statePath, emmcRoot string, logger *Logger) *StorageManager {
@@ -221,6 +239,9 @@ func newStorageManagerWithOps(cfg StorageConfig, ops storageSysOps, statePath, e
 
 // Start launches the polling loop. Safe to call once.
 func (m *StorageManager) Start() {
+	if m == nil || m.mirrorOnly || m.ops == nil {
+		return
+	}
 	go func() {
 		m.tick()
 		ticker := time.NewTicker(m.pollInterval)
@@ -238,7 +259,73 @@ func (m *StorageManager) Start() {
 
 // Stop terminates the polling loop.
 func (m *StorageManager) Stop() {
+	if m == nil {
+		return
+	}
 	m.stopOnce.Do(func() { close(m.stop) })
+}
+
+// Reconfigure applies persisted storage settings without replacing the
+// hardware-owning manager. Replacing the manager would briefly leave two
+// pollers able to mount or format the same card.
+func (m *StorageManager) Reconfigure(cfg StorageConfig) error {
+	if m == nil || m.mirrorOnly || m.ops == nil {
+		return fmt.Errorf("storage hardware is owned by Config Web")
+	}
+	for {
+		if err := m.cancelMigrationAndWait("storage reconfiguration"); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		// A poll tick may have started a new migration between the completed
+		// cancellation and this lock acquisition. Cancel that run as well so
+		// the configuration cannot change underneath a migration worker.
+		if m.migrationDone == nil {
+			break
+		}
+		m.mu.Unlock()
+	}
+
+	oldMountPoint := m.cfg.MountPointOrDefault()
+	oldDevice := m.cfg.DeviceOrDefault()
+	newMountPoint := cfg.MountPointOrDefault()
+	newDevice := cfg.DeviceOrDefault()
+	identityChanged := oldMountPoint != newMountPoint || oldDevice != newDevice
+	if identityChanged && m.formatJob.Status == StorageFormatRunning {
+		m.mu.Unlock()
+		return fmt.Errorf("cannot change the storage device or mount point while a format job is running")
+	}
+	if identityChanged && m.mounting {
+		m.mu.Unlock()
+		return fmt.Errorf("cannot change the storage device or mount point while a mount attempt is in progress")
+	}
+	if identityChanged && m.card.Mounted {
+		if err := m.unmountLocked(false, ""); err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("cannot apply storage config: %w", err)
+		}
+	}
+
+	m.cfg = cfg
+	if identityChanged {
+		if configurable, ok := m.ops.(interface{ setDevice(string) }); ok {
+			configurable.setDevice(newDevice)
+		}
+		m.card = StorageCardStatus{}
+		m.ejected = false
+		m.mountFailed = false
+		m.presenceRaw = false
+		m.presenceCount = 0
+		m.autoFormatDone = false
+		m.finishTransitionLocked()
+	} else {
+		m.writeStateFileLocked()
+	}
+	m.mu.Unlock()
+
+	// Reconcile promptly instead of waiting for the next polling interval.
+	m.tick()
+	return nil
 }
 
 // deriveEffectiveMode is the single rule from which all boot and hot-plug
@@ -254,6 +341,7 @@ func deriveEffectiveMode(cardMounted bool) StorageMode {
 func (m *StorageManager) EffectiveMode() StorageMode {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.refreshStateMirrorLocked()
 	return deriveEffectiveMode(m.card.Mounted)
 }
 
@@ -261,6 +349,7 @@ func (m *StorageManager) EffectiveMode() StorageMode {
 func (m *StorageManager) Status() StorageStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.refreshStateMirrorLocked()
 	return StorageStatus{
 		EffectiveMode: deriveEffectiveMode(m.card.Mounted),
 		Card:          m.card,
@@ -273,6 +362,9 @@ func (m *StorageManager) Status() StorageStatus {
 // SafeEject syncs and unmounts the card so it can be pulled. The card is not
 // remounted until it is physically removed and reinserted.
 func (m *StorageManager) SafeEject() error {
+	if m == nil || m.mirrorOnly {
+		return fmt.Errorf("storage hardware is owned by Config Web")
+	}
 	// Ejecting invalidates the migration target; stop the worker first.
 	if err := m.cancelMigrationAndWait("eject"); err != nil {
 		return err
@@ -305,6 +397,9 @@ func (m *StorageManager) SafeEject() error {
 // StorageFormatConfirmToken. Progress is polled via Status().FormatJob.
 // After a successful format the card is mounted and dual storage resumes.
 func (m *StorageManager) StartFormat(fs, confirm string) error {
+	if m == nil || m.mirrorOnly {
+		return fmt.Errorf("storage hardware is owned by Config Web")
+	}
 	if confirm != StorageFormatConfirmToken {
 		return fmt.Errorf("format not confirmed")
 	}
@@ -772,6 +867,7 @@ func (m *StorageManager) ResolveDir(class StorageDataClass) (string, error) {
 // duplicates correctly.
 func (m *StorageManager) ReadRoots(class StorageDataClass) []string {
 	m.mu.Lock()
+	m.refreshStateMirrorLocked()
 	mounted := m.card.Mounted
 	mountPoint := m.cfg.MountPointOrDefault()
 	m.mu.Unlock()
@@ -791,6 +887,7 @@ func (m *StorageManager) ReadRoots(class StorageDataClass) []string {
 // accumulate, which the archive cleanup logs.
 func (m *StorageManager) CleanupRoots(class StorageDataClass) []string {
 	m.mu.Lock()
+	m.refreshStateMirrorLocked()
 	mounted := m.card.Mounted
 	mountPoint := m.cfg.MountPointOrDefault()
 	m.mu.Unlock()
@@ -816,12 +913,80 @@ func (m *StorageManager) emmcClassDir(class StorageDataClass) string {
 	}
 }
 
+func (m *StorageManager) refreshStateMirrorLocked() {
+	if m == nil || !m.mirrorOnly {
+		return
+	}
+	data, err := os.ReadFile(m.statePath)
+	if err != nil {
+		m.card = StorageCardStatus{}
+		m.formatJob = StorageFormatJob{Status: StorageFormatIdle}
+		m.migration = StorageMigrationJob{Status: StorageFormatIdle}
+		return
+	}
+	values := make(map[string]string)
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	parseInt64 := func(key string) int64 {
+		value, parseErr := strconv.ParseInt(strings.TrimSpace(values[key]), 10, 64)
+		if parseErr != nil || value < 0 {
+			return 0
+		}
+		return value
+	}
+	parseInt := func(key string) int {
+		value, parseErr := strconv.Atoi(strings.TrimSpace(values[key]))
+		if parseErr != nil || value < 0 {
+			return 0
+		}
+		return value
+	}
+	m.card = StorageCardStatus{
+		Present:    values["SD_PRESENT"] == "1",
+		Mounted:    values["SD_MOUNTED"] == "1",
+		Device:     values["SD_DEVICE"],
+		TotalBytes: parseInt64("SD_TOTAL_BYTES"),
+		FreeBytes:  parseInt64("SD_FREE_BYTES"),
+		Reason:     values["REASON"],
+	}
+	if mountPoint := strings.TrimSpace(values["SD_MOUNTPOINT"]); mountPoint != "" {
+		m.cfg.MountPoint = mountPoint
+	}
+	formatStatus := values["FORMAT_STATUS"]
+	if formatStatus == "" {
+		formatStatus = StorageFormatIdle
+	}
+	m.formatJob = StorageFormatJob{
+		Status: formatStatus,
+		FS:     values["FORMAT_FS"],
+		Auto:   values["FORMAT_AUTO"] == "1",
+		Error:  values["FORMAT_ERROR"],
+	}
+	migrationStatus := values["MIGRATE_STATUS"]
+	if migrationStatus == "" {
+		migrationStatus = StorageFormatIdle
+	}
+	m.migration = StorageMigrationJob{
+		Status:     migrationStatus,
+		Detail:     values["MIGRATE_DETAIL"],
+		Error:      values["MIGRATE_ERROR"],
+		MovedFiles: parseInt("MIGRATE_MOVED_FILES"),
+		MovedBytes: parseInt64("MIGRATE_MOVED_BYTES"),
+	}
+}
+
 // tick is one poll cycle: debounce presence, then reconcile mount state.
 func (m *StorageManager) tick() {
-	dev, present := m.ops.CardDevice()
-
+	if m == nil || m.mirrorOnly || m.ops == nil {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	dev, present := m.ops.CardDevice()
 
 	// A running format owns the card exclusively; skip reconciliation.
 	if m.formatJob.Status == StorageFormatRunning {
@@ -1075,21 +1240,35 @@ func (m *StorageManager) warnf(format string, args ...interface{}) {
 
 // realStorageOps implements storageSysOps against the device.
 type realStorageOps struct {
+	mu     sync.RWMutex
 	device string // block device base name, e.g. "mmcblk2"
+}
+
+func (o *realStorageOps) currentDevice() string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.device
+}
+
+func (o *realStorageOps) setDevice(device string) {
+	o.mu.Lock()
+	o.device = device
+	o.mu.Unlock()
 }
 
 // CardDevice checks /sys/block for the controller and prefers the first
 // partition; cards formatted without a partition table use the whole device.
 func (o *realStorageOps) CardDevice() (string, bool) {
-	sysPath := filepath.Join("/sys/block", o.device)
+	device := o.currentDevice()
+	sysPath := filepath.Join("/sys/block", device)
 	if _, err := os.Stat(sysPath); err != nil {
 		return "", false
 	}
-	part := o.device + "p1"
+	part := device + "p1"
 	if _, err := os.Stat(filepath.Join(sysPath, part)); err == nil {
 		return "/dev/" + part, true
 	}
-	return "/dev/" + o.device, true
+	return "/dev/" + device, true
 }
 
 // CardIsBlank reports whether the card carries no recognizable content.
@@ -1098,11 +1277,12 @@ func (o *realStorageOps) CardDevice() (string, bool) {
 // or any failure to verify means NOT blank — we only ever auto-format a card
 // we could positively identify as empty.
 func (o *realStorageOps) CardIsBlank() bool {
-	sysPath := filepath.Join("/sys/block", o.device)
-	if _, err := os.Stat(filepath.Join(sysPath, o.device+"p1")); err == nil {
+	device := o.currentDevice()
+	sysPath := filepath.Join("/sys/block", device)
+	if _, err := os.Stat(filepath.Join(sysPath, device+"p1")); err == nil {
 		return false // kernel sees a partition table
 	}
-	dev := "/dev/" + o.device
+	dev := "/dev/" + device
 	if fs, pt := probeBlkid(dev); fs != "" || pt != "" {
 		return false // a filesystem or partition-table signature exists
 	}
@@ -1274,6 +1454,7 @@ func mbrPartitionType(fs string) (byte, error) {
 // FormatDisk rewrites the MBR with a single partition and creates the
 // filesystem on it. Erases the entire card.
 func (o *realStorageOps) FormatDisk(fs string) (string, error) {
+	device := o.currentDevice()
 	partType, err := mbrPartitionType(fs)
 	if err != nil {
 		return "", err
@@ -1287,7 +1468,7 @@ func (o *realStorageOps) FormatDisk(fs string) (string, error) {
 		return "", err
 	}
 
-	base := "/dev/" + o.device
+	base := "/dev/" + device
 
 	// BLKRRPART fails EBUSY while ANY partition of the device is still held:
 	// umount returning does not mean the kernel has released the bdev (journal
@@ -1423,7 +1604,7 @@ func kernelSupportsFilesystem(fsType string) bool {
 // waitNoMounts blocks until no partition of the card appears in the mount
 // table (a lazy umount detaches asynchronously), or fails naming the mount.
 func (o *realStorageOps) waitNoMounts(timeout time.Duration) error {
-	prefix := "/dev/" + o.device
+	prefix := "/dev/" + o.currentDevice()
 	deadline := time.Now().Add(timeout)
 	for {
 		mounted := ""
@@ -1450,13 +1631,14 @@ func (o *realStorageOps) waitNoMounts(timeout time.Duration) error {
 // so the error message names the culprit instead of a bare EBUSY: lingering
 // mounts of any partition, and processes holding the device nodes open.
 func (o *realStorageOps) deviceHolders() string {
+	device := o.currentDevice()
 	var findings []string
 
 	// Any partition of the card still mounted?
 	if data, err := os.ReadFile("/proc/self/mounts"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			fields := strings.Fields(line)
-			if len(fields) >= 2 && strings.HasPrefix(fields[0], "/dev/"+o.device) {
+			if len(fields) >= 2 && strings.HasPrefix(fields[0], "/dev/"+device) {
 				findings = append(findings, fmt.Sprintf("%s mounted at %s", fields[0], fields[1]))
 			}
 		}
@@ -1464,7 +1646,7 @@ func (o *realStorageOps) deviceHolders() string {
 
 	// Any process with an open fd on the device or a partition? (busybox has
 	// no fuser/lsof; scan /proc/*/fd directly.)
-	prefix := "/dev/" + o.device
+	prefix := "/dev/" + device
 	if procs, err := os.ReadDir("/proc"); err == nil {
 		for _, proc := range procs {
 			pid := proc.Name()
@@ -1496,7 +1678,7 @@ func (o *realStorageOps) deviceHolders() string {
 
 // deviceSectors reads the card size in 512-byte sectors from sysfs.
 func (o *realStorageOps) deviceSectors() (uint64, error) {
-	data, err := os.ReadFile(filepath.Join("/sys/block", o.device, "size"))
+	data, err := os.ReadFile(filepath.Join("/sys/block", o.currentDevice(), "size"))
 	if err != nil {
 		return 0, fmt.Errorf("read device size: %w", err)
 	}

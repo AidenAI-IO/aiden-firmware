@@ -36,14 +36,14 @@ References: 1
   - episode: ep_1780625339372268063_07145689
 ```
 
-### 3. Web 路由（待编译）⏳
+### 3. Agent Web 路由 ✅
 
-已在 `config_web.cpp` 中添加路由：
+路由由 Go Agent 提供：
 
 - `/user_files` - 查看报告
 - `/user_files/regenerate` - 重新生成报告
 
-**注意**: 需要重新编译 `config_web` 二进制才能生效
+实现位于 `src/agent/internal/agent/user_files.go`，通过 Agent Web 的 8080 端口访问。
 
 ## 使用方法
 
@@ -120,17 +120,17 @@ fail_pattern = r'fail_[a-f0-9]+'           # Failure IDs
 - 脚本: `scripts/generate_agent_files_report.py`
 - 模板: `scripts/agent_files_template.html`
 - 部署脚本: `scripts/deploy_to_device.sh`
-- Web 路由: `src/config_web.cpp` (已修改，待编译)
+- Web 路由: `src/agent/internal/agent/user_files.go`
 
 ## 下一步
 
-### 需要编译的功能
+### 部署更新
 
 要启用 Web 访问，需要：
 
-1. 交叉编译 `config_web.cpp`
-2. 部署到设备 `/oem/usr/bin/config_web`
-3. 重启 config_web 服务
+1. 交叉编译 Go Agent
+2. 部署到设备 `/oem/usr/bin/agent`
+3. 重启 Agent 服务
 4. 访问 `http://<DEVICE_IP>/user_files`
 
 ### 可能的增强

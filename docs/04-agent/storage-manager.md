@@ -6,13 +6,13 @@ sidebar_position: 10
 
 ## Overview
 
-The Agent has two separate storage components. They share the `[storage]`
-configuration section, but they solve different problems and expose different
-HTTP APIs.
+The device has two separate storage components. They share the `[storage]`
+configuration section, but run in different service owners and solve different
+problems.
 
 | Component | Responsibility | Primary HTTP API |
 | --- | --- | --- |
-| `StorageManager` | Detects and mounts the SD card, derives eMMC-only or dual-storage mode, routes governed data, migrates older data, safely ejects the card, and formats the card | `/api/storage/status`, `/api/storage/eject`, `/api/storage/format` |
+| `StorageManager` (Config Web) | Detects and mounts the SD card, derives eMMC-only or dual-storage mode, routes governed data, migrates older data, safely ejects the card, and formats the card | Config Web `/api/storage/status`, `/api/storage/eject`, `/api/storage/format` |
 | `StorageMonitor` | Samples persistent-storage capacity, classifies pressure levels, runs cleanup, and degrades non-essential writes when space is low | `/api/storage/monitor/status`, `/api/storage/cleanup` |
 
 `StorageManager` does not replace `StorageMonitor`. Adding an SD card provides a
@@ -27,9 +27,11 @@ Related documentation:
 
 ## StorageManager: SD Card and Dual-Storage Routing
 
-The production Agent runtime creates and starts `StorageManager` unconditionally.
-Missing, removed, rejected, or unusable card hardware falls back to eMMC-only
-operation; there is no user preference that forces a storage mode.
+The production Config Web process creates and starts `StorageManager`
+unconditionally. Missing, removed, rejected, or unusable card hardware falls
+back to eMMC-only operation; there is no user preference that forces a storage
+mode. The Agent creates only a read-only view of the state mirror and never
+touches SD-card hardware.
 
 ### Card Lifecycle and Effective Mode
 
@@ -61,8 +63,9 @@ insertion. Cards with an existing but unsupported, damaged, or otherwise
 unmountable filesystem are never automatically erased.
 
 The manager mirrors card, format, migration, and effective-mode state to
-`/run/aiden/storage.state` for other device services. This state file is
-separate from the StorageMonitor level file at `/run/agent/storage_level`.
+`/run/aiden/storage.state` for the Agent and other device services. This state
+file is separate from the StorageMonitor level file at
+`/run/agent/storage_level`.
 
 ### Data Routing and Migration
 

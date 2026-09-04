@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -177,11 +178,18 @@ func TestCompositionCanReturnToFirstCandidateRow(t *testing.T) {
 	}
 }
 
-func TestCompletedCandidateSelectionSkipsPostActionVerification(t *testing.T) {
-	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
-		ObservedMode:       textInputModeComposition,
-		CompositionPending: true,
-	}}, actions: []textInputCandidateAction{{
+func TestCompletedCandidateSelectionRequiresPostActionVerification(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
+		{
+			ObservedMode:       textInputModeComposition,
+			CompositionPending: true,
+		},
+		{
+			ObservedMode:  textInputModeComposition,
+			FieldText:     "把自己",
+			TargetMatched: true,
+		},
+	}, actions: []textInputCandidateAction{{
 		Action:        textInputCandidateActionSelect,
 		Text:          "把自己",
 		CompletesPart: true,
@@ -206,20 +214,61 @@ func TestCompletedCandidateSelectionSkipsPostActionVerification(t *testing.T) {
 	if err != nil || !committed {
 		t.Fatalf("typeCompositionWithCandidateSelection() committed=%v err=%v", committed, err)
 	}
-	if vlmCalls != 2 {
-		t.Fatalf("vlmCalls=%d, want initial analysis plus candidate decision only", vlmCalls)
+	if vlmCalls != 3 {
+		t.Fatalf("vlmCalls=%d, want initial analysis, candidate decision, and post-selection verification", vlmCalls)
 	}
-	if len(screenshot.calls) != 2 {
-		t.Fatalf("screenshot calls=%d, want no post-selection verification screenshot", len(screenshot.calls))
+	if len(screenshot.calls) != 3 {
+		t.Fatalf("screenshot calls=%d, want post-selection verification screenshot", len(screenshot.calls))
 	}
-	initialCandidateSettleCount := 0
-	for _, delay := range sleeps {
-		if delay == textInputInitialCandidateDelay {
-			initialCandidateSettleCount++
-		}
+	if len(sleeps) < 2 {
+		t.Fatalf("delays=%v, want initial and post-selection candidate delays", sleeps)
 	}
-	if initialCandidateSettleCount != 1 {
-		t.Fatalf("initial candidate settle count=%d, want one pre-candidate settle and none after final selection; sleeps=%v", initialCandidateSettleCount, sleeps)
+	candidateDelays := sleeps[len(sleeps)-2:]
+	wantCandidateDelays := []time.Duration{
+		textInputInitialCandidateDelay,
+		textInputCandidateSettleDelay,
+	}
+	if !reflect.DeepEqual(candidateDelays, wantCandidateDelays) {
+		t.Fatalf("candidate delays=%v, want initial then post-selection delays %v; all sleeps=%v", candidateDelays, wantCandidateDelays, sleeps)
+	}
+}
+
+func TestCompletedCandidateSelectionDoesNotTrustModelPrediction(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
+		{
+			ObservedMode:       textInputModeComposition,
+			CompositionPending: true,
+		},
+		{
+			ObservedMode:       textInputModeComposition,
+			FieldText:          "ba zi ji",
+			CompositionPending: true,
+		},
+	}, actions: []textInputCandidateAction{
+		{
+			Action:        textInputCandidateActionSelect,
+			Text:          "把自己",
+			CompletesPart: true,
+		},
+		{Action: textInputCandidateActionNone},
+	}}
+	engine := newFastTextInputEngine(textInputHardwareDeps{
+		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+
+	committed, _, _, _, err := engine.typeCompositionWithCandidateSelection(
+		context.Background(),
+		"ios",
+		textInputArgs{Text: "把自己", CurrentIMEPart: "把自己"},
+		[]string{"ba", "zi", "ji"},
+	)
+	if err != nil {
+		t.Fatalf("typeCompositionWithCandidateSelection() error=%v", err)
+	}
+	if committed {
+		t.Fatal("committed=true, want failure when post-selection analysis still shows a pending uncommitted candidate")
 	}
 }
 

@@ -112,7 +112,7 @@ func screenProviderFromRuntime(runtime *Runtime) screenprovider.Provider {
 	}
 	socketPath := ""
 	if runtime != nil {
-		socketPath = runtime.config.HID.FrameSocketOrDefault()
+		socketPath = runtime.ConfigSnapshot().HID.FrameSocketOrDefault()
 	}
 	return NewScreenCaptureClient(socketPath)
 }
