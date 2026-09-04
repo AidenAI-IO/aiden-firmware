@@ -34,27 +34,26 @@ const (
 )
 
 type AgentLoop struct {
-	Model                         model.Model
-	Profile                       RoleProfile
-	SteerRecorder                 steerConversationRecorder
-	CallbacksHandler              callbacks.Handler
-	MaxIterations                 int
-	Recorder                      *EpisodeRecorder
-	ScreenshotPruning             executor.ScreenshotPruningConfig
-	SteerInterrupt                func() <-chan struct{}
-	SteerProvider                 func(context.Context) (RunSteerMessage, bool)
-	SteerWaiter                   func(context.Context) (RunSteerMessage, bool, error)
-	TerminationPolicy             *TerminationPolicy
-	DevicePlatform                string
-	PointerMode                   string
-	ToolResultObserver            ToolResultObserver
-	ToolResultPolicy              ToolResultPolicy
-	ContextCompactionTrigger      int
-	ContextThresholdCompaction    func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
-	ContextOverflowRecovery       func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
-	toolExecutionHookFactory      func() toolExecutionHookHandler
-	contextManager                *contextmanager.ContextManager
-	lastCompactionAttemptMessages int
+	Model                      model.Model
+	Profile                    RoleProfile
+	SteerRecorder              steerConversationRecorder
+	CallbacksHandler           callbacks.Handler
+	MaxIterations              int
+	Recorder                   *EpisodeRecorder
+	ScreenshotPruning          executor.ScreenshotPruningConfig
+	SteerInterrupt             func() <-chan struct{}
+	SteerProvider              func(context.Context) (RunSteerMessage, bool)
+	SteerWaiter                func(context.Context) (RunSteerMessage, bool, error)
+	TerminationPolicy          *TerminationPolicy
+	DevicePlatform             string
+	PointerMode                string
+	ToolResultObserver         ToolResultObserver
+	ToolResultPolicy           ToolResultPolicy
+	ContextCompactionTrigger   int
+	ContextThresholdCompaction func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
+	ContextOverflowRecovery    func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
+	toolExecutionHookFactory   func() toolExecutionHookHandler
+	contextManager             *contextmanager.ContextManager
 }
 
 func NewAgentLoop(
@@ -534,10 +533,6 @@ func (l *AgentLoop) compactContextBeforeLLM(ctx context.Context, llmExecutor *ex
 	if manager == nil {
 		return false, nil
 	}
-	messageCount := len(manager.CloneMessageList())
-	if messageCount <= l.lastCompactionAttemptMessages {
-		return false, nil
-	}
 	promptTokens := estimateActivePromptTokens(manager, options)
 	if promptTokens <= l.ContextCompactionTrigger {
 		return false, nil
@@ -547,15 +542,11 @@ func (l *AgentLoop) compactContextBeforeLLM(ctx context.Context, llmExecutor *ex
 		return false, fmt.Errorf("compact context at agent-loop threshold: %w", err)
 	}
 	if !compacted {
-		// Wait for at least two more tool-call/result pairs before retrying if
-		// this context shape cannot be compacted further.
-		l.lastCompactionAttemptMessages = messageCount + 3
 		return false, nil
 	}
 	if newManager == nil {
 		return false, fmt.Errorf("compact context at agent-loop threshold: context manager is nil")
 	}
-	l.lastCompactionAttemptMessages = len(newManager.CloneMessageList()) + 3
 	l.contextManager = newManager
 	llmExecutor.ReplaceContextManager(newManager)
 	log.Printf("[context] agent-loop context reached %d tokens (trigger %d); compacted before next model call\n", promptTokens, l.ContextCompactionTrigger)

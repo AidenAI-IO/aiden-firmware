@@ -2769,6 +2769,7 @@ func TestRuntimeRunCompactionTriggerIncludesToolSchema(t *testing.T) {
 	}
 	llmModel := &scriptedModel{responses: []*llms.ContentResponse{
 		contentResponse("compacted summary"),
+		contentResponse("compacted summary after retry"),
 		contentResponse("ok"),
 	}}
 	runtime := NewRuntimeWithDeps(
@@ -2796,8 +2797,8 @@ func TestRuntimeRunCompactionTriggerIncludesToolSchema(t *testing.T) {
 	if result.Output != "ok" {
 		t.Fatalf("output = %q, want planner response after schema-aware compaction", result.Output)
 	}
-	if len(llmModel.messages) != 2 {
-		t.Fatalf("model call count = %d, want summary + planner", len(llmModel.messages))
+	if len(llmModel.messages) != 3 {
+		t.Fatalf("model call count = %d, want two summaries + planner", len(llmModel.messages))
 	}
 }
 

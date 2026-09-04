@@ -264,37 +264,31 @@ func TestAgentLoopCompactsWhenToolResultCrossesContextThreshold(t *testing.T) {
 	}
 }
 
-func TestAgentLoopCompactionWatermarkUsesReplacementManagerSize(t *testing.T) {
+func TestAgentLoopCompactionCanRetryWhenManagerIsUnchanged(t *testing.T) {
 	manager, err := freshNewContextManager("system", "run the tool", nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}
-	replacement, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
-		{Role: messages.MessageRoleSystem, Content: "compacted summary"},
-	})
-	if err != nil {
-		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
-	}
 	loop := NewAgentLoop(nil, RoleProfile{}, 1, nil, nil, executor.ScreenshotPruningConfig{}.WithDefaults(), manager)
 	loop.ContextCompactionTrigger = 1
-	loop.ContextThresholdCompaction = func(_ context.Context, _ *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
-		return replacement, true, nil
+	compactionCalls := 0
+	loop.ContextThresholdCompaction = func(_ context.Context, current *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
+		compactionCalls++
+		return current, false, nil
 	}
 	llmExecutor := executor.NewLLMExecutor(nil, manager)
 
-	compacted, err := loop.compactContextBeforeLLM(context.Background(), llmExecutor, nil)
-	if err != nil {
-		t.Fatalf("compactContextBeforeLLM() error = %v", err)
+	for attempt := 0; attempt < 2; attempt++ {
+		compacted, err := loop.compactContextBeforeLLM(context.Background(), llmExecutor, nil)
+		if err != nil {
+			t.Fatalf("compactContextBeforeLLM() error = %v", err)
+		}
+		if compacted {
+			t.Fatal("compactContextBeforeLLM() reported compaction for unchanged manager")
+		}
 	}
-	if !compacted {
-		t.Fatal("compactContextBeforeLLM() reported no compaction")
-	}
-	wantWatermark := len(replacement.CloneMessageList()) + 3
-	if loop.lastCompactionAttemptMessages != wantWatermark {
-		t.Fatalf("lastCompactionAttemptMessages = %d, want replacement size + 3 = %d", loop.lastCompactionAttemptMessages, wantWatermark)
-	}
-	if llmExecutor.ContextManager() != replacement || loop.contextManager != replacement {
-		t.Fatal("compaction did not install replacement context manager")
+	if compactionCalls != 2 {
+		t.Fatalf("compaction calls = %d, want retry on every threshold crossing", compactionCalls)
 	}
 }
 

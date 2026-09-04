@@ -1175,7 +1175,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	contextBudgetOptions = append(contextBudgetOptions, llms.WithTools((&FunctionAgent{Tools: profile.Tools}).toolsAsLLM()))
 	tokenUsage := estimateActivePromptTokens(r.contextManager, contextBudgetOptions)
 	messageTokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
-	compactedBeforeAgentLoop := false
 
 	// Historical state and tool-result pruning is deterministic and has its own
 	// configurable trigger. It is intentionally independent from conversation
@@ -1233,14 +1232,10 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 				return RunResult{}, err
 			}
 			r.contextManager = newManager
-			compactedBeforeAgentLoop = true
 		}
 	}
 
 	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
-	if compactedBeforeAgentLoop {
-		agentLoop.lastCompactionAttemptMessages = len(r.contextManager.CloneMessageList()) + 3
-	}
 	agentLoop.SteerRecorder = steerRecorder
 	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
 		if r.tools == nil {
