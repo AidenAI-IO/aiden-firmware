@@ -25,6 +25,7 @@ type VoiceModelProvider struct {
 	Location         string `toml:"location,omitempty"`
 	Endpoint         string `toml:"endpoint,omitempty"`
 	BaseURL          string `toml:"base_url,omitempty"`
+	RealtimeProtocol string `toml:"realtime_protocol,omitempty"`
 	Voice            string `toml:"voice,omitempty"`
 }
 
@@ -108,6 +109,9 @@ func copyDefinedLegacyVoiceModelFields(record *VoiceModelProvider, legacy VoiceM
 	if metadata.IsDefined("voice_model", "base_url") {
 		record.BaseURL = legacy.BaseURL
 	}
+	if metadata.IsDefined("voice_model", "realtime_protocol") {
+		record.RealtimeProtocol = legacy.RealtimeProtocol
+	}
 	if metadata.IsDefined("voice_model", "voice") {
 		record.Voice = legacy.Voice
 	}
@@ -125,6 +129,7 @@ func clearVoiceModelProviderFields(config *VoiceModelConfig) {
 	config.Location = ""
 	config.Endpoint = ""
 	config.BaseURL = ""
+	config.RealtimeProtocol = ""
 	config.Voice = ""
 }
 
@@ -184,6 +189,9 @@ func fillVoiceModelProviderFields(config *VoiceModelConfig, record VoiceModelPro
 	if config.BaseURL == "" {
 		config.BaseURL = record.BaseURL
 	}
+	if config.RealtimeProtocol == "" {
+		config.RealtimeProtocol = record.RealtimeProtocol
+	}
 	if config.Voice == "" {
 		config.Voice = record.Voice
 	}
@@ -228,10 +236,26 @@ func validateVoiceModelProviderRecords(cfg Config) error {
 		if !isKnownVoiceModelProviderType(providerType) {
 			return fmt.Errorf("voice_model_providers.%s: unsupported provider type %q", ref, record.Type)
 		}
+		if err := validateVoiceModelRealtimeProtocol(record.RealtimeProtocol, providerType, fmt.Sprintf("voice_model_providers.%s.realtime_protocol", ref)); err != nil {
+			return err
+		}
 		return nil
 	}
 	if !isKnownVoiceModelProviderType(ref) {
 		return fmt.Errorf("voice_model.provider %q is neither a [voice_model_providers] record nor a known realtime provider type", ref)
+	}
+	return nil
+}
+
+func validateVoiceModelRealtimeProtocol(protocol, providerType, field string) error {
+	normalized := strings.ToLower(strings.TrimSpace(protocol))
+	switch normalized {
+	case "", "ga", "legacy", "beta":
+	default:
+		return fmt.Errorf("%s: unsupported protocol %q (expected ga or legacy)", field, protocol)
+	}
+	if normalized != "" && normalizeVoiceModelProviderType(providerType) != "openai" {
+		return fmt.Errorf("%s is only supported for provider=openai", field)
 	}
 	return nil
 }

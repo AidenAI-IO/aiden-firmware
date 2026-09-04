@@ -218,6 +218,35 @@ func TestGeminiVertexUsesOAuthHeaderAndVertexModelResource(t *testing.T) {
 	}
 }
 
+func TestGeminiSetupUsesJSONSchemaToolParameterField(t *testing.T) {
+	inputSchema := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"point":{"type":"object","additionalProperties":false,"properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]}},"required":["point"]}`)
+	setup := buildGeminiSetup(SessionConfig{Tools: []Tool{{Name: "touch", Parameters: inputSchema}}}, "gemini-3.1-flash-live-preview")
+	encoded, err := json.Marshal(setup)
+	if err != nil {
+		t.Fatalf("marshal setup: %v", err)
+	}
+	var decoded struct {
+		Setup struct {
+			Tools []struct {
+				FunctionDeclarations []struct {
+					Parameters           json.RawMessage `json:"parameters"`
+					ParametersJSONSchema json.RawMessage `json:"parametersJsonSchema"`
+				} `json:"functionDeclarations"`
+			} `json:"tools"`
+		} `json:"setup"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode setup: %v", err)
+	}
+	declaration := decoded.Setup.Tools[0].FunctionDeclarations[0]
+	if len(declaration.Parameters) != 0 {
+		t.Fatalf("restricted parameters field must not be used: %s", declaration.Parameters)
+	}
+	if string(declaration.ParametersJSONSchema) != string(inputSchema) {
+		t.Fatalf("parametersJsonSchema = %s, want %s", declaration.ParametersJSONSchema, inputSchema)
+	}
+}
+
 func TestGeminiSetupRequestsBothTranscriptions(t *testing.T) {
 	// Gemini Live only returns transcripts when these keys are present, and the
 	// request for defaults is an empty object. With omitempty the empty map was
