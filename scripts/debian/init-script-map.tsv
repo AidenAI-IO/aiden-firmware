@@ -25,7 +25,7 @@ S53audio_service	migrate	aiden-audio.service	G2-audio-service	Run the foreground
 S54ota	migrate	aiden-ota-health-marker.service,aiden-ota-health.service	G2-ota-health	Aggregate required local health, write a transaction-bound marker, then process pending A/B state.
 S55aiden_usb_dhcp	migrate	aiden-usb-dnsmasq.service	G2-usb-dhcp	Serve DHCP only on the configured usb0 gadget interface.
 S56config_web	migrate	aiden-config-web.service	G2-config-web	Keep the local recovery portal available while using the Debian network backend.
-S57wetty	migrate	aiden-wetty.service	G2-diagnostic-image	Install the browser terminal only in explicitly enabled diagnostic images.
+S57ttyd	migrate	aiden-ttyd.service	G2-browser-terminal	Run the native ttyd terminal through systemd with the mobile client defaults.
 S60usb_ecm_watchdog	migrate	aiden-usb-ecm-watchdog.service	G2-usb-ecm-recovery	Use ip-based state checks and bounded gadget recovery.
 S91smb	retire	none	G2-no-smb	Exclude Samba from production images unless a separate security review approves it.
 S99rtcinit	migrate	aiden-rtc.service	G2-rtc	Restore a bounded fallback clock without blocking offline local startup.

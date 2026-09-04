@@ -41,6 +41,9 @@ grep -q '^Check-Valid-Until: no$' "${STAGE2_DIR}/debian.sources"
 grep -q 'builder-packages.txt' "${STAGE2_DIR}/container-build-apps.sh"
 grep -q 'GOOS=linux GOARCH=arm GOARM=7' \
     "${STAGE2_DIR}/container-build-apps.sh"
+grep -Fq 'ttyd.armhf' "${STAGE2_DIR}/container-build-apps.sh"
+grep -Fq 'b0784080bd78f0a5916462672f461542c607f8ea7cee56b075e8cd04e1ffcc4d' \
+    "${STAGE2_DIR}/container-build-apps.sh"
 grep -q -- '-buildid=' "${STAGE2_DIR}/container-build-apps.sh"
 grep -q 'source-archive.sha256' \
     "${STAGE2_DIR}/container-build-opencv-mobile.sh"
@@ -53,6 +56,7 @@ grep -Fq -- '--catalog "${REPO_ROOT}/scripts/rootfs_cli_tools.catalog"' \
     "${STAGE2_DIR}/container-build-rootfs-cli-tools.sh"
 grep -Fq 'run_cli_tools' "${STAGE2_DIR}/build-apps.sh"
 grep -Fq 'overlay-debian-oem/usr/model' "${STAGE2_DIR}/prepare-board-g0.sh"
+grep -Fq 'bin/ttyd' "${STAGE2_DIR}/prepare-board-g0.sh"
 if grep -Fq '${REPO_ROOT}/overlay/oem' "${STAGE2_DIR}/prepare-board-g0.sh"; then
     fail "Debian board bundle depends on the Buildroot OEM overlay"
 fi
@@ -151,12 +155,14 @@ touch \
     "${apps_dir}/bin/frame_service" \
     "${apps_dir}/bin/ota" \
     "${apps_dir}/bin/rknn_vad" \
+    "${apps_dir}/bin/ttyd" \
     "${apps_dir}/lib/librga.so.2.1.0"
 chmod +x \
     "${apps_dir}/bin/abctl" \
     "${apps_dir}/bin/agent" \
     "${apps_dir}/bin/ble_service" \
     "${apps_dir}/bin/ota"
+chmod +x "${apps_dir}/bin/ttyd"
 printf '%s\n' \
     'librknnmrt version: 2.3.2 (429f97ae6b@2025-04-09T09:11:49)' \
     >"${apps_dir}/bin/rknn_vad"
@@ -170,7 +176,7 @@ mode=${1:-}
 file=${!#}
 is_go=no
 case "${file}" in
-*/bin/abctl | */bin/agent | */bin/ble_service | */bin/ota) is_go=yes ;;
+*/bin/abctl | */bin/agent | */bin/ble_service | */bin/ota | */bin/ttyd) is_go=yes ;;
 esac
 case "${mode}" in
 -hW)
@@ -278,7 +284,7 @@ expect_audit_failure() {
 
 run_audit "${TEST_ROOT}/report-pass"
 grep -qx 'status=pass' "${TEST_ROOT}/report-pass/summary.txt"
-grep -qx 'elf_count=7' "${TEST_ROOT}/report-pass/summary.txt"
+grep -qx 'elf_count=8' "${TEST_ROOT}/report-pass/summary.txt"
 
 expect_audit_failure bad-runpath MOCK_BAD_RUNPATH=1
 expect_audit_failure opencv-needed MOCK_OPENCV_NEEDED=1
@@ -316,6 +322,7 @@ bundle_payload=(
     bin/hello
     bin/image_process
     bin/rknn_vad
+    bin/ttyd
     bin/trigger
     lib/librga.so.2.1.0
 )
@@ -332,7 +339,7 @@ done
 chmod +x "${bundle_apps}/bin/"*
 ln -s librga.so.2.1.0 "${bundle_apps}/lib/librga.so.2"
 ln -s librga.so.2 "${bundle_apps}/lib/librga.so"
-printf 'status=pass\nelf_count=18\n' >"${bundle_audit}/summary.txt"
+printf 'status=pass\nelf_count=19\n' >"${bundle_audit}/summary.txt"
 
 help_bundle_dir=${TEST_ROOT}/bundle-help
 DEBIAN_STAGE2_OUTPUT_DIR="${bundle_output}" \

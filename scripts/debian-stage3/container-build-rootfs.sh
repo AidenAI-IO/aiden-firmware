@@ -198,7 +198,7 @@ EOF
         bluetooth.service aiden-rtc.service aiden-boot-timeline.service aiden.target
     local unit
     for unit in \
-        aiden-wetty.service dnsmasq.service wpa_supplicant.service \
+        dnsmasq.service wpa_supplicant.service \
         ssh.socket rsync.service systemd-networkd-wait-online.service \
         e2scrub_all.timer e2scrub_reap.service \
         apt-daily.service apt-daily.timer \

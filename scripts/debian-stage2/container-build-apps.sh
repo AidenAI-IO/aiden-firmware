@@ -13,6 +13,10 @@ readonly RKNN_MICRO_ARCHIVE=${RKNN_ROOT}/lib/librknnmrt.a
 readonly RKNN_MICRO_ARCHIVE_SHA256=2cc37ceb72648411970b74d70918d09a337c8463ff8ecbc627691c974c9d9362
 readonly GO_VERSION=go1.26.0
 readonly SOURCE_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
+readonly TTYD_VERSION=1.7.3
+readonly TTYD_ASSET=ttyd.armhf
+readonly TTYD_SHA256=b0784080bd78f0a5916462672f461542c607f8ea7cee56b075e8cd04e1ffcc4d
+readonly TTYD_URL=https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${TTYD_ASSET}
 
 if [ ! -f "${OPENCV_DIR}/OpenCVConfig.cmake" ]; then
     echo "Missing Debian OpenCV-Mobile build: ${OPENCV_DIR}" >&2
@@ -41,6 +45,14 @@ grep -aF \
 rm -rf "${BUILD_DIR}" "${DIST_DIR}"
 mkdir -p "${BUILD_DIR}" "${DIST_DIR}/bin" "${DIST_DIR}/lib" \
     "${DIST_DIR}/maps" "${DIST_DIR}/metadata"
+
+ttyd_download=${BUILD_DIR}/${TTYD_ASSET}
+curl -fL --retry 3 --connect-timeout 20 -o "${ttyd_download}" "${TTYD_URL}"
+echo "${TTYD_SHA256}  ${ttyd_download}" | sha256sum -c -
+install -m 0755 "${ttyd_download}" "${DIST_DIR}/bin/ttyd"
+printf 'version=%s\nasset=%s\nsha256=%s\nurl=%s\n' \
+    "${TTYD_VERSION}" "${TTYD_ASSET}" "${TTYD_SHA256}" "${TTYD_URL}" \
+    >"${DIST_DIR}/metadata/ttyd.txt"
 
 cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \

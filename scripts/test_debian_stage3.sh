@@ -11,11 +11,11 @@ fail() {
     exit 1
 }
 
-active_docs=(
-    "${REPO_ROOT}/README.md"
-    "${REPO_ROOT}/docs/README.md"
-    "${REPO_ROOT}"/docs/[0-9][0-9]-*
-)
+active_docs=()
+while IFS= read -r tracked_doc; do
+    active_docs+=("${REPO_ROOT}/${tracked_doc}")
+done < <(git -C "${REPO_ROOT}" ls-files -- \
+    README.md docs/README.md 'docs/[0-9][0-9]-*')
 if rg --no-ignore -n -i \
     '\./build\.sh (binaries|image)|/etc/init\.d/|overlay/(etc|oem|userdata)|pico-sdk/output/image|scripts/build/' \
     "${active_docs[@]}"; then
@@ -122,6 +122,12 @@ fi
     || fail "Debian USB gadget helper is missing"
 [ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-boot-timeline" ] \
     || fail "Debian boot timeline helper is missing"
+[ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-ttyd-start" ] \
+    || fail "Debian ttyd helper is missing"
+grep -Fq 'aiden-ttyd.service' \
+    "${REPO_ROOT}/overlay-debian/etc/systemd/system/aiden.target"
+grep -Fq 'd1a279cbb7e29aa0801943cdf21f0575db69eed5' \
+    "${STAGE3_DIR}/build.sh"
 grep -Fq 'overlay-debian/" "${ROOTFS_DIR}/"' \
     "${STAGE3_DIR}/container-build-rootfs.sh"
 grep -Fq 'stage_rootfs_cli_tools.sh' \
@@ -206,7 +212,7 @@ grep -Fq -- '--check' "${STAGE3_DIR}/audit-bsp.sh"
 
 for binary in \
     abctl agent aiden-environment audio_service ble_service config_web cpu_vad \
-    frame_service ota rknn_vad; do
+    frame_service ota rknn_vad ttyd; do
     grep -qx "    ${binary}" "${STAGE3_DIR}/container-assemble-images.sh" \
         || fail "production OEM allowlist is missing ${binary}"
 done

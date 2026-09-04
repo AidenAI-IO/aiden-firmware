@@ -27,6 +27,7 @@ readonly -a PRODUCTION_BINARIES=(
     frame_service
     ota
     rknn_vad
+    ttyd
 )
 
 mounts=()

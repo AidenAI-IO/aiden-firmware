@@ -6,4 +6,4 @@ S53agent	aiden-agent.service	/run/aiden/system.env	disable-external
 S53audio_service	aiden-audio.service	/run/aiden/system.env	start-local-recovery
 S54ota	aiden-ota-health.service	/run/aiden/system.env	disable-external
 S56config_web	aiden-config-web.service	/run/aiden/system.env	start-local-recovery
-S57wetty	aiden-wetty.service	/run/aiden/system.env	diagnostic-only
+S57ttyd	aiden-ttyd.service	/run/aiden/system.env	start-local-recovery

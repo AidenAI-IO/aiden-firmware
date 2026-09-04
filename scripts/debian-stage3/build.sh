@@ -17,7 +17,7 @@ readonly OUTPUT_DIR
 readonly SDK_DIR=${OUTPUT_DIR}/luckfox-pico-sdk
 readonly IMAGE_DIR=${OUTPUT_DIR}/image
 readonly SOURCE_SDK=${DEBIAN_STAGE3_SOURCE_SDK:-${REPO_ROOT}/pico-sdk}
-readonly SOURCE_SDK_COMMIT=${DEBIAN_STAGE3_SOURCE_SDK_COMMIT:-a290a4345685e3c711d86ed78a39579e1e735328}
+readonly SOURCE_SDK_COMMIT=${DEBIAN_STAGE3_SOURCE_SDK_COMMIT:-d1a279cbb7e29aa0801943cdf21f0575db69eed5}
 readonly STAGE2_OUTPUT=${DEBIAN_STAGE2_OUTPUT_DIR:-${REPO_ROOT}/output/debian-stage2}
 readonly ROOTFS_BUILD_IMAGE=${DEBIAN_STAGE3_BUILD_IMAGE:-aiden-debian13-armhf-builder:stage3}
 readonly BSP_BUILD_IMAGE=${DEBIAN_STAGE3_BSP_BUILD_IMAGE:-luckfoxtech/luckfox_pico:1.0}
@@ -161,7 +161,7 @@ run_rootfs_container() {
     source_git_common_dir=$(git -C "${REPO_ROOT}" rev-parse \
         --path-format=absolute --git-common-dir)
     docker run --rm --privileged \
-        "${proxy_args[@]}" \
+        ${proxy_args[@]+"${proxy_args[@]}"} \
         -e "HOST_UID=$(id -u)" \
         -e "HOST_GID=$(id -g)" \
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \

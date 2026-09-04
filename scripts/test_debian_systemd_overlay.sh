@@ -258,8 +258,25 @@ if rg -n 'WriteHealthMarkerIfPending' "${REPO_ROOT}/src/agent/cmd/daemon"; then
     fail "Agent daemon still writes an early OTA health marker"
 fi
 
-grep -qx 'disable aiden-wetty.service' \
-    "${OVERLAY}/etc/systemd/system-preset/90-aiden.preset"
+grep -Fq 'Wants=aiden-ttyd.service' "${UNIT_DIR}/aiden.target"
+grep -Fq 'ExecStart=/usr/lib/aiden/aiden-ttyd-start' \
+    "${UNIT_DIR}/aiden-ttyd.service"
+grep -Fq 'ENABLE_TTYD=1' "${OVERLAY}/etc/aiden_boot.conf"
+ttyd_mock=${TEST_ROOT}/ttyd-mock
+ttyd_args=${TEST_ROOT}/ttyd-args
+cat >"${ttyd_mock}" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >"${TTYD_ARGS_OUTPUT}"
+EOF
+chmod +x "${ttyd_mock}"
+TTYD_BIN="${ttyd_mock}" TTYD_ARGS_OUTPUT="${ttyd_args}" \
+WETTY_PORT=4000 WETTY_FONT_SIZE=20 \
+    "${OVERLAY}/usr/lib/aiden/aiden-ttyd-start"
+grep -Fxq -- '--base-path' "${ttyd_args}"
+grep -Fxq -- '/webtty/' "${ttyd_args}"
+grep -Fxq -- '4000' "${ttyd_args}"
+grep -Fxq -- 'fontSize=20' "${ttyd_args}"
+grep -Fxq -- '/bin/login' "${ttyd_args}"
 grep -qx 'disable dnsmasq.service' \
     "${OVERLAY}/etc/systemd/system-preset/90-aiden.preset"
 grep -qx 'disable wpa_supplicant.service' \
