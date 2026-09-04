@@ -20,10 +20,39 @@ package model
 // auto mode (field omitted from the request). It is only a default: an explicit
 // model.reasoning_effort always wins.
 type ModelSpec struct {
-	Provider               string
-	Name                   string
-	ContextWindow          int
-	MaxOutput              int
-	DefaultTemperature     *float64
-	DefaultReasoningEffort *string
+	Provider string `json:"provider,omitempty"`
+	Name     string `json:"name,omitempty"`
+	// API is the provider API endpoint when the metadata source publishes one.
+	// APIShape identifies the wire shape (for example "responses" or
+	// "completions") when that distinction is available.
+	API                    string   `json:"api,omitempty"`
+	APIShape               string   `json:"api_shape,omitempty"`
+	ContextWindow          int      `json:"context_window,omitempty"`
+	MaxOutput              int      `json:"max_output,omitempty"`
+	DefaultTemperature     *float64 `json:"default_temperature,omitempty"`
+	DefaultReasoningEffort *string  `json:"default_reasoning_effort,omitempty"`
+	// Reasoning describes the model's native reasoning controls. A nil value
+	// means the capability is unknown; Supported=false is an explicit
+	// declaration that the model does not expose reasoning controls.
+	Reasoning *ReasoningSpec `json:"reasoning,omitempty"`
+}
+
+// ReasoningSpec is the provider/model-independent description of reasoning
+// controls. Efforts are the values accepted by an effort-style API. Older
+// Claude models expose only a token budget, represented by BudgetTokensMin and
+// BudgetTokensMax. CanDisable is true when the API has an explicit off switch
+// or when omitting the provider reasoning object disables it.
+type ReasoningSpec struct {
+	Supported bool `json:"supported"`
+	// Mode identifies the primary control exposed by the model. "effort" is
+	// an adaptive effort selector, "budget_tokens" is a numeric reasoning
+	// budget, and "toggle" is a boolean switch. A model may publish both
+	// efforts and budget limits; in that case effort remains the preferred UI
+	// control and the budget fields are available as an advanced override.
+	Mode            string   `json:"mode,omitempty"`
+	Efforts         []string `json:"efforts,omitempty"`
+	DefaultEffort   string   `json:"default_effort,omitempty"`
+	CanDisable      bool     `json:"can_disable"`
+	BudgetTokensMin int      `json:"budget_tokens_min,omitempty"`
+	BudgetTokensMax int      `json:"budget_tokens_max,omitempty"`
 }

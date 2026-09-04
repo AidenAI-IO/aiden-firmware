@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"aiden-agent/internal/agent/model"
 	"github.com/tmc/langchaingo/llms"
 	fakellm "github.com/tmc/langchaingo/llms/fake"
 	"github.com/tmc/langchaingo/llms/ollama"
@@ -16,6 +17,7 @@ type ModelBuildContext struct {
 	RawHTTPLogger     RawHTTPLogger
 	SessionIDProvider func() string
 	PromptCachePolicy PromptCachePolicy
+	ModelSpec         func() model.ModelSpec
 }
 
 type ModelProviderBuilder func(ModelBuildContext, ModelConfig) (llms.Model, error)
@@ -175,6 +177,9 @@ func buildAnthropicModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, er
 		return nil, fmt.Errorf("missing the Anthropic API key, set api_key on the provider record, ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY")
 	}
 	options := buildAnthropicModelOptions(ctx, cfg)
+	if ctx.ModelSpec != nil {
+		options = append(options, withAnthropicModelSpecFn(ctx.ModelSpec))
+	}
 	if useBearerAuth {
 		options = append(options, withAnthropicBearerAuth())
 	}

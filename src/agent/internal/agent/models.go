@@ -47,6 +47,7 @@ type ModelManager struct {
 	providerSpecFetchStarted  bool
 	metadataHTTPClient        *http.Client
 	providerMetadataCachePath string
+	modelsDevURL              string
 	rawHTTPLogDir             string
 }
 
@@ -66,6 +67,23 @@ type ModelManagerOption func(*ModelManager)
 func WithProviderModelMetadataCachePath(path string) ModelManagerOption {
 	return func(m *ModelManager) {
 		m.providerMetadataCachePath = strings.TrimSpace(path)
+	}
+}
+
+// WithModelsDevURL overrides the public models.dev catalog endpoint. It is
+// primarily useful for deployments that proxy public metadata or tests that
+// provide a deterministic catalog fixture.
+func WithModelsDevURL(url string) ModelManagerOption {
+	return func(m *ModelManager) {
+		m.modelsDevURL = strings.TrimSpace(url)
+	}
+}
+
+// WithProviderMetadataHTTPClient injects the HTTP client used for provider and
+// models.dev metadata requests.
+func WithProviderMetadataHTTPClient(client *http.Client) ModelManagerOption {
+	return func(m *ModelManager) {
+		m.metadataHTTPClient = client
 	}
 }
 
@@ -187,12 +205,128 @@ func (m *ModelManager) Spec() model.ModelSpec {
 		if !explicitMaxOutput && spec.MaxOutput <= 0 && providerSpec.MaxOutput > 0 {
 			spec.MaxOutput = providerSpec.MaxOutput
 		}
+		if spec.Reasoning == nil && providerSpec.Reasoning != nil {
+			spec.Reasoning = providerSpec.Reasoning
+		}
+		if spec.API == "" {
+			spec.API = providerSpec.API
+		}
+		if spec.APIShape == "" {
+			spec.APIShape = providerSpec.APIShape
+		}
 	}
 
 	spec.Provider = m.config.Provider
 	spec.Name = m.config.Model
+	if spec.API == "" {
+		spec.API = modelAPIEndpoint(m.config.Provider, m.config.BaseURL)
+	}
+	if spec.APIShape == "" {
+		spec.APIShape = modelAPIShape(m.config.Provider, m.config.APIMode)
+	}
 
 	return spec
+}
+
+// SpecForModel resolves the capability metadata for an arbitrary model name.
+// It is used by the configuration API for custom model entries; the active
+// manager's context/output overrides are deliberately not carried over to the
+// queried model. Local registry data remains available when the public catalog
+// is unreachable.
+func (m *ModelManager) SpecForModel(ctx context.Context, provider, modelName string) model.ModelSpec {
+	provider = strings.TrimSpace(provider)
+	modelName = strings.TrimSpace(modelName)
+	if provider == "" || modelName == "" {
+		return model.ModelSpec{}
+	}
+
+	cfg := ModelConfig{Provider: provider, Model: modelName}
+	if m != nil {
+		cfg.APIKey = m.config.APIKey
+		cfg.BaseURL = m.config.BaseURL
+	}
+	// A named provider can be switched in the editor before the runtime is
+	// reloaded. Do not accidentally use the previous provider's credentials or
+	// endpoint when resolving public metadata for the new selection.
+	if m == nil || !strings.EqualFold(strings.TrimSpace(m.config.Provider), provider) {
+		cfg.APIKey = ""
+		cfg.BaseURL = ""
+	}
+
+	proxy := ProxyConfig{}
+	var opts []ModelManagerOption
+	if m != nil {
+		proxy = m.proxy
+		opts = append(opts,
+			WithModelsDevURL(m.modelsDevURL),
+			WithProviderMetadataHTTPClient(m.metadataHTTPClient),
+			WithProviderModelMetadataCachePath(m.providerMetadataCachePath),
+		)
+	}
+	candidate := NewModelManager(cfg, proxy, opts...)
+	spec, _ := LookupModelSpec(provider, modelName)
+	if candidate.needsProviderModelMetadataForSpec(spec) {
+		if cached, ok := candidate.readProviderModelSpecCache(); ok {
+			spec = mergeModelSpecs(spec, cached)
+		} else {
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			remote, err := candidate.fetchProviderModelSpec(ctx)
+			if err == nil {
+				spec = mergeModelSpecs(spec, remote)
+				if hasProviderModelSpecMetadata(remote) {
+					_ = candidate.writeProviderModelSpecCache(remote)
+				}
+			}
+		}
+	}
+	spec.Provider = provider
+	spec.Name = modelName
+	if spec.API == "" {
+		spec.API = modelAPIEndpoint(provider, cfg.BaseURL)
+	}
+	if spec.APIShape == "" {
+		spec.APIShape = modelAPIShape(provider, cfg.APIMode)
+	}
+	return spec
+}
+
+func modelAPIEndpoint(provider, baseURL string) string {
+	if configured := strings.TrimRight(strings.TrimSpace(baseURL), "/"); configured != "" {
+		return configured
+	}
+	switch normalizedProviderName(provider) {
+	case "anthropic":
+		return defaultAnthropicBaseURL
+	case "openrouter":
+		return "https://openrouter.ai/api/v1"
+	case "openai":
+		return "https://api.openai.com/v1"
+	case "kimi":
+		return moonshotGlobalBaseURL
+	case "kimi-cn":
+		return moonshotCNBaseURL
+	case "volcengine":
+		return arkBeijingBaseURL
+	case "ollama":
+		return "http://localhost:11434"
+	default:
+		return ""
+	}
+}
+
+func modelAPIShape(provider, apiMode string) string {
+	switch normalizedProviderName(provider) {
+	case "anthropic":
+		return "messages"
+	case "ollama":
+		return "ollama"
+	}
+	if normalized := normalizeModelAPIMode(apiMode); normalized == modelAPIModeResponses || normalized == modelAPIModeResponsesStateful {
+		return "responses"
+	}
+	return "completions"
 }
 
 func (m *ModelManager) build() (llms.Model, error) {
@@ -215,6 +349,7 @@ func (m *ModelManager) buildContext() ModelBuildContext {
 		RawHTTPLogger:     logger,
 		SessionIDProvider: m.bindings().CurrentSessionID,
 		PromptCachePolicy: m.cachedOpenRouterPromptCachePolicy(),
+		ModelSpec:         m.Spec,
 	}
 }
 

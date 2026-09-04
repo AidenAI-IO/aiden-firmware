@@ -104,7 +104,14 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 	}
 	current, err := agent.LoadResolvedConfig(resolvedPath)
 	if err != nil {
-		return Result{}, internalConfigUpdate(fmt.Errorf("load config: %w", err))
+		// A persisted config can be invalid before this update (for example,
+		// input_mode=realtime without a voice credential). Load the raw resolved
+		// values so a config-web patch can repair the invalid field; the candidate
+		// is still validated below before it is written.
+		current, err = agent.LoadResolvedConfigForUpdate(resolvedPath)
+		if err != nil {
+			return Result{}, internalConfigUpdate(fmt.Errorf("load config: %w", err))
+		}
 	}
 	currentDTO := FromAgentConfig(current)
 	if err := normalizeLegacyWebConfigPatch(patch, current); err != nil {

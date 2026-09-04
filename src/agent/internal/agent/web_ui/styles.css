@@ -19,6 +19,10 @@
     --tool-ok-text: #155646;
     --tool-error: rgba(190, 67, 52, 0.14);
     --tool-error-text: #a0382a;
+    --reasoning-bg: #fef9e7;
+    --reasoning-border: #f39c12;
+    --reasoning-label: #8a5200;
+    --reasoning-text: #7d6608;
     --shadow: 0 24px 48px rgba(43, 47, 40, 0.14);
     --shadow-soft: 0 12px 26px rgba(43, 47, 40, 0.08);
     --radius-xl: 26px;
@@ -781,6 +785,30 @@ textarea:focus-visible {
     font-size: 0.95rem;
 }
 
+.message-reasoning {
+    background: var(--reasoning-bg);
+    border-left: 3px solid var(--reasoning-border);
+    padding: 10px 14px;
+    margin: 0 0 8px 0;
+    border-radius: 4px;
+}
+
+.message-reasoning .reasoning-label {
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--reasoning-label);
+    margin-bottom: 6px;
+}
+
+.message-reasoning .reasoning-text {
+    font-size: 0.88rem;
+    line-height: 1.5;
+    color: var(--reasoning-text);
+    white-space: pre-wrap;
+}
+
 .message.assistant .message-copy {
     font-size: 0.96rem;
 }
@@ -1446,6 +1474,10 @@ details.tool-details summary {
     --tool-ok-text: #9bd6a8;
     --tool-error: rgba(241, 133, 133, 0.14);
     --tool-error-text: #f18a8a;
+    --reasoning-bg: rgba(218, 171, 93, 0.12);
+    --reasoning-border: #d8a45f;
+    --reasoning-label: #e0b878;
+    --reasoning-text: #e2d0a8;
     --shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
     --shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.2);
     --radius-xl: 8px;

@@ -1056,6 +1056,35 @@ func TestAudioDialogPublishesVoiceMessages(t *testing.T) {
 	}
 }
 
+func TestAudioDialogPublishesStreamingReasoningForVoiceRun(t *testing.T) {
+	dialog := &AudioDialog{}
+	var published []Message
+	dialog.SetMessagePublisher(func(message Message) {
+		published = append(published, message)
+	})
+	if !dialog.beginVoiceRunControl("voice-request") {
+		t.Fatal("beginVoiceRunControl returned false")
+	}
+	defer dialog.endVoiceRunControl("voice-request")
+
+	dialog.publishVoiceRunEvent(RunEvent{
+		Type:             runEventReasoningDelta,
+		EpisodeID:        "episode-1",
+		ReasoningContent: "first thought",
+	}, "voice-request")
+
+	if len(published) != 1 {
+		t.Fatalf("published messages = %#v, want one streaming reasoning message", published)
+	}
+	message := published[0]
+	if message.Type != "assistant" || message.Status != "streaming" || message.Source != "voice" {
+		t.Fatalf("streaming reasoning message = %#v", message)
+	}
+	if message.RequestID != "voice-request" || message.EpisodeID != "episode-1" || message.ReasoningContent != "first thought" {
+		t.Fatalf("streaming reasoning payload = %#v", message)
+	}
+}
+
 func TestAudioDialogEnsureVoiceInputAudioArtifactSavesAudioFile(t *testing.T) {
 	tmpDir := t.TempDir()
 

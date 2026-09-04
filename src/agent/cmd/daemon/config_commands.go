@@ -195,7 +195,11 @@ func runConfigMeta(args []string) int {
 }
 
 func resolvedWebConfigDTO(configPath string) (webConfigDTO, error) {
-	cfg, err := agent.LoadResolvedConfig(configPath)
+	// Keep the config page usable when a persisted config is invalid. The page
+	// must be able to display and repair the bad field (for example, stale
+	// input_mode=realtime without voice_model.api_key); config-update validates
+	// the resulting candidate before persisting it.
+	cfg, err := agent.LoadResolvedConfigForUpdate(configPath)
 	if err != nil {
 		return webConfigDTO{}, err
 	}
@@ -487,6 +491,11 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "model.provider"
 	} else if strings.Contains(errMsg, "model.api_mode") {
 		field = "model.api_mode"
+		// The reasoning-budget constraints name the limit they are compared
+		// against, so this check must precede those fields to blame the value
+		// the user can actually change.
+	} else if strings.Contains(errMsg, "model.reasoning_budget_tokens") {
+		field = "model.reasoning_budget_tokens"
 	} else if strings.Contains(errMsg, "model.max_response_tokens") {
 		field = "model.max_response_tokens"
 	} else if strings.Contains(errMsg, "model.context_window") {
