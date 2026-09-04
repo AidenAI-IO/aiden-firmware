@@ -47,7 +47,7 @@ api_key = "$OPENAI_API_KEY"
 provider = "openai-main"
 model = "gpt-5.5"
 # temperature = 0.2
-# max_response_tokens = 1000
+# max_response_tokens = 8192
 
 [audio]
 # socket = "/run/audio_service/audio_service.sock"

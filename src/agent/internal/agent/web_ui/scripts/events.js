@@ -34,13 +34,7 @@ function connectSSE() {
 
     eventSource.onmessage = function(e) {
         try {
-            const data = JSON.parse(e.data);
-
-            if (data.type === 'connected') {
-                return;
-            }
-
-            if (data.type) refreshHistoryFromContext();
+            handleServerEvent(JSON.parse(e.data));
         } catch (err) {
             console.error('[SSE] Parse error:', err);
         }
@@ -49,6 +43,26 @@ function connectSSE() {
     eventSource.onerror = function(e) {
         console.error('[SSE] Connection error, will retry...');
     };
+}
+
+function handleServerEvent(data) {
+    if (!data || data.type === 'connected') return;
+    if (data.type === 'assistant' && data.status === 'streaming') {
+        const key = assistantStreamKey(data);
+        let draft = streamingAssistantDrafts[key];
+        if (!draft) {
+            draft = Object.assign({}, data, {content: data.content || '', reasoning_content: data.reasoning_content || ''});
+            streamingAssistantDrafts[key] = draft;
+        } else {
+            if (data.content) draft.content = data.content;
+            if (data.reasoning_content) draft.reasoning_content = data.reasoning_content;
+            draft.source = data.source || draft.source;
+            draft.timestamp = data.timestamp || draft.timestamp;
+        }
+        addMessage(draft);
+        return;
+    }
+    if (data.type) refreshHistoryFromContext();
 }
 
 document.addEventListener('visibilitychange', function() {

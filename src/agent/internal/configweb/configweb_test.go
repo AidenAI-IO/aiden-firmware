@@ -254,6 +254,47 @@ func TestModelsEndpointReturnsLocalizedCatalog(t *testing.T) {
 	if len(zh) == 0 || len(en) == 0 || zh[0].ID != en[0].ID || zh[0].Description == en[0].Description {
 		t.Fatalf("zh=%+v en=%+v", zh, en)
 	}
+	if zh[0].Spec == nil || zh[0].Spec.Reasoning == nil {
+		t.Fatalf("catalog model is missing capability metadata: %+v", zh[0])
+	}
+}
+
+func TestModelsEndpointReturnsRequestedModelSpec(t *testing.T) {
+	options := testOptions(t)
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(options.AgentConfigPath, []byte("[model]\nprovider = \"anthropic\"\nmodel = \"claude-sonnet-4-6\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet,
+		"/api/models?provider=anthropic&model=claude-sonnet-4-6&locale=en-US", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		Spec *struct {
+			Provider  string `json:"provider"`
+			Name      string `json:"name"`
+			APIShape  string `json:"api_shape"`
+			Reasoning *struct {
+				Supported bool     `json:"supported"`
+				Mode      string   `json:"mode"`
+				Efforts   []string `json:"efforts"`
+			} `json:"reasoning"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Spec == nil || payload.Spec.Provider != "anthropic" || payload.Spec.Name != "claude-sonnet-4-6" || payload.Spec.APIShape != "messages" {
+		t.Fatalf("spec=%+v", payload.Spec)
+	}
+	if payload.Spec.Reasoning == nil || !payload.Spec.Reasoning.Supported || payload.Spec.Reasoning.Mode != "effort" || len(payload.Spec.Reasoning.Efforts) == 0 {
+		t.Fatalf("reasoning=%+v", payload.Spec.Reasoning)
+	}
 }
 
 func TestWiFiConnectionRunsAsBoundedBackgroundTask(t *testing.T) {

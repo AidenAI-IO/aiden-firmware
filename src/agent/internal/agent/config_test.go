@@ -280,6 +280,27 @@ func TestConfigInputModeDefaultContract(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeConfigFallsBackFromUnconfiguredRealtime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	config := `input_mode = "realtime"
+
+[model]
+provider = "fake"
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if got, want := cfg.InputModeOrDefault(), "text"; got != want {
+		t.Fatalf("InputModeOrDefault() = %q, want runtime fallback %q", got, want)
+	}
+}
+
 func TestHIDKeyboardLayoutDefaultsToQWERTY(t *testing.T) {
 	if got := (HIDConfig{}).KeyboardLayoutOrDefault(); got != keyboardLayoutQWERTY {
 		t.Fatalf("KeyboardLayoutOrDefault() = %q, want %q", got, keyboardLayoutQWERTY)
@@ -1332,6 +1353,73 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 		t.Fatalf("expected model.model_max_output_tokens validation error, got %v", err)
 	}
 
+}
+
+func TestConfigValidateReasoningBudgetAgainstResponseLimit(t *testing.T) {
+	tests := []struct {
+		name    string
+		model   ModelConfig
+		wantErr string
+	}{
+		{
+			name:    "below provider floor",
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 512, MaxResponseTokens: 8_192},
+			wantErr: "model.reasoning_budget_tokens must be 0 or >= 1024",
+		},
+		{
+			// A response limit smaller than the exact budget is invalid because
+			// reasoning tokens are included in the response limit.
+			// user hits first when enabling an exact budget.
+			name:    "budget exceeds response limit",
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 4_096, MaxResponseTokens: 1_000},
+			wantErr: "must be less than model.max_response_tokens",
+		},
+		{
+			name:    "budget equals response limit",
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 4_096, MaxResponseTokens: 4_096},
+			wantErr: "must be less than model.max_response_tokens",
+		},
+		{
+			name:    "budget exceeds model output capability",
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 9_000, ModelMaxOutputTokens: 8_192, MaxResponseTokens: 64_000},
+			wantErr: "must be less than model.model_max_output_tokens",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Config{Model: tt.model}.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() = %v, want an error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	valid := Config{Model: ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 4_096, MaxResponseTokens: 16_384}}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want a valid budget/limit pair accepted", err)
+	}
+	unset := Config{Model: ModelConfig{Provider: "fake", MaxResponseTokens: 500}}
+	if err := unset.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want budget 0 to stay unconstrained", err)
+	}
+}
+
+func TestConfigValidateReasoningBudgetForNamedAnthropicProvider(t *testing.T) {
+	cfg := Config{
+		ModelProviders: map[string]ModelProvider{
+			"claude": {Type: "anthropic"},
+		},
+		Model: ModelConfig{
+			Provider:              "claude",
+			Model:                 "claude-haiku-4-5",
+			ReasoningBudgetTokens: 512,
+			MaxResponseTokens:     8_192,
+		},
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model.reasoning_budget_tokens must be 0 or >= 1024") {
+		t.Fatalf("Validate() = %v, want named Anthropic provider budget validation", err)
+	}
 }
 
 func TestConfigValidateRejectsOutOfRangeContextPruneThreshold(t *testing.T) {

@@ -706,7 +706,12 @@ func (d *AudioDialog) publishVoiceRunEvent(event RunEvent, requestID string) {
 	if d.messagePublish == nil || !d.runControl.isActiveRequest(requestID) {
 		return
 	}
-	message := messageFromRunEvent(event, event.EpisodeID, requestID)
+	var message Message
+	if event.Type == runEventReasoningDelta || event.Type == runEventReasoningReset {
+		message = messageFromReasoningEvent(event, event.EpisodeID, requestID)
+	} else {
+		message = messageFromRunEvent(event, event.EpisodeID, requestID)
+	}
 	if message.Type == "" {
 		return
 	}

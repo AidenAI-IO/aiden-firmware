@@ -45,6 +45,7 @@ func (r MessageRole) ToStandardRole() llms.ChatMessageType {
 type Message struct {
 	Role                   MessageRole             `json:"role"`
 	Content                string                  `json:"content"`
+	ReasoningContent       string                  `json:"reasoning_content,omitempty"`
 	Timestamp              time.Time               `json:"timestamp"`
 	Usage                  *Usage                  `json:"usage,omitempty"`
 	ToolCalls              []ToolCall              `json:"tool_calls,omitempty"`
@@ -66,6 +67,11 @@ type Message struct {
 	// ResponsesAssistantPhase preserves the Responses assistant phase when a
 	// raw output item is unavailable or a gateway omits it from persisted data.
 	ResponsesAssistantPhase string `json:"responses_assistant_phase,omitempty"`
+	// AnthropicThinkingBlocks preserves signed thinking blocks returned by the
+	// native Messages API. Claude requires the signature to be replayed on the
+	// next assistant turn when a tool result follows, so storing only the
+	// human-readable reasoning text is insufficient.
+	AnthropicThinkingBlocks []json.RawMessage `json:"anthropic_thinking_blocks,omitempty"`
 }
 
 // Usage is the provider-neutral token usage recorded for an LLM response.
@@ -112,6 +118,12 @@ func (msg Message) Clone() Message {
 		cloned.ResponsesOutputItems = make([]json.RawMessage, len(msg.ResponsesOutputItems))
 		for i := range msg.ResponsesOutputItems {
 			cloned.ResponsesOutputItems[i] = append(json.RawMessage(nil), msg.ResponsesOutputItems[i]...)
+		}
+	}
+	if len(msg.AnthropicThinkingBlocks) > 0 {
+		cloned.AnthropicThinkingBlocks = make([]json.RawMessage, len(msg.AnthropicThinkingBlocks))
+		for i := range msg.AnthropicThinkingBlocks {
+			cloned.AnthropicThinkingBlocks[i] = append(json.RawMessage(nil), msg.AnthropicThinkingBlocks[i]...)
 		}
 	}
 	return cloned
