@@ -209,17 +209,20 @@ func (v *llmTextInputVision) VerifyProbeCleanup(ctx context.Context, before, aft
 		return false, err
 	}
 	var parsed struct {
-		ProbeCharacterVisible bool   `json:"probe_character_visible"`
+		ProbeCharacterVisible *bool  `json:"probe_character_visible"`
 		CleanupSafe           bool   `json:"cleanup_safe"`
 		Evidence              string `json:"evidence"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		return false, fmt.Errorf("parse probe cleanup verification: %w", err)
 	}
-	if parsed.ProbeCharacterVisible && !parsed.CleanupSafe {
+	if parsed.ProbeCharacterVisible == nil {
+		return false, fmt.Errorf("parse probe cleanup verification: missing probe_character_visible")
+	}
+	if *parsed.ProbeCharacterVisible && !parsed.CleanupSafe {
 		return false, fmt.Errorf("probe character remains visible but cleanup is unsafe")
 	}
-	return parsed.ProbeCharacterVisible, nil
+	return *parsed.ProbeCharacterVisible, nil
 }
 
 func buildTextInputProbeCleanupPrompt(platform string, focus focusPointArgs) string {

@@ -347,22 +347,22 @@ func TestTextInputProbeVerificationSendsBackspaceWhenCharacterStillVisible(t *te
 	}
 
 	// Verify that backspace was sent after undo
-	undoIndex, backspaceIndex := -1, -1
+	undoIndex, firstBackspaceIndex := -1, -1
 	for index, call := range keyboardTap.calls {
 		if strings.Contains(call, "meta") && strings.Contains(call, "z") {
 			undoIndex = index
 		}
-		if strings.Contains(call, "backspace") {
-			backspaceIndex = index
+		if strings.Contains(call, "backspace") && firstBackspaceIndex < 0 {
+			firstBackspaceIndex = index
 		}
 	}
 	if undoIndex < 0 {
 		t.Fatal("expected undo keys to be sent")
 	}
-	if backspaceIndex < 0 {
+	if firstBackspaceIndex < 0 {
 		t.Fatal("expected backspace to be sent when probe character is still visible")
 	}
-	if undoIndex > backspaceIndex {
+	if undoIndex > firstBackspaceIndex {
 		t.Fatal("expected undo keys before backspace")
 	}
 }

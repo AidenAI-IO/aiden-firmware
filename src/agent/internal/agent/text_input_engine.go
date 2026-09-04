@@ -354,6 +354,7 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 		verifyShot, captureErr := e.captureScreenshot(ctx)
 		if captureErr != nil {
 			log.Printf("[text-input] probe cleanup verification screenshot failed: %v", captureErr)
+			err = errors.Join(err, fmt.Errorf("probe cleanup verification screenshot: %w", captureErr))
 			return
 		}
 

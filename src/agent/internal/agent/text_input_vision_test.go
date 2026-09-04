@@ -173,6 +173,21 @@ func TestTextInputProbeCleanupRejectsUnsafeVisibleCharacter(t *testing.T) {
 	}
 }
 
+func TestTextInputProbeCleanupRejectsMissingVisibilityDecision(t *testing.T) {
+	model := &textInputVisionRecordingModel{content: `{"cleanup_safe":true}`}
+	vision := &llmTextInputVision{models: model}
+	_, err := vision.VerifyProbeCleanup(
+		context.Background(),
+		screenshotResult{Data: "YmVmb3Jl"},
+		screenshotResult{Data: "YWZ0ZXI"},
+		"ios",
+		focusPointArgs{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "missing probe_character_visible") {
+		t.Fatalf("VerifyProbeCleanup() error=%v, want missing decision error", err)
+	}
+}
+
 func TestTextInputPartitionParsesExactResponse(t *testing.T) {
 	model := &textInputVisionRecordingModel{content: `{"parts":["经理","不是","技术","出身","的"]}`}
 	vision := &llmTextInputVision{models: model}
