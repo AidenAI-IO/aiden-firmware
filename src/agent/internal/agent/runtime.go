@@ -257,6 +257,8 @@ const (
 	runEventHistoricalContextPrune = "historical_context_prune"
 	runEventConversationCompaction = "conversation_compaction"
 	runEventModelRequestFailure    = "model_request_failure"
+	runEventReasoningDelta         = "reasoning_delta"
+	runEventReasoningReset         = "reasoning_reset"
 )
 
 func historicalPruneEvent(stats compactor.HistoricalPruneStats, changed bool, err error, reason string) TaskEpisodeEvent {
@@ -291,17 +293,18 @@ func contextCompactionEvent(stats compactor.CompactionStats, compacted bool, err
 }
 
 type RunEvent struct {
-	Type           string     `json:"type"`
-	Role           string     `json:"role,omitempty"`
-	EpisodeID      string     `json:"episode_id,omitempty"`
-	ToolCallID     string     `json:"tool_call_id,omitempty"`
-	ToolName       string     `json:"tool_name,omitempty"`
-	ToolInput      string     `json:"tool_input,omitempty"`
-	Content        string     `json:"content,omitempty"`
-	SpeechEligible bool       `json:"speech_eligible,omitempty"`
-	Timestamp      time.Time  `json:"timestamp"`
-	IsError        bool       `json:"is_error,omitempty"`
-	ToolError      *ToolError `json:"tool_error,omitempty"`
+	Type             string     `json:"type"`
+	Role             string     `json:"role,omitempty"`
+	EpisodeID        string     `json:"episode_id,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	ToolName         string     `json:"tool_name,omitempty"`
+	ToolInput        string     `json:"tool_input,omitempty"`
+	Content          string     `json:"content,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	SpeechEligible   bool       `json:"speech_eligible,omitempty"`
+	Timestamp        time.Time  `json:"timestamp"`
+	IsError          bool       `json:"is_error,omitempty"`
+	ToolError        *ToolError `json:"tool_error,omitempty"`
 }
 
 // ContextWindowFn returns the active model's spec. It is called on demand so a
@@ -2119,22 +2122,23 @@ func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langt
 // runtimeCallbackHandler implements callbacks.Handler for streaming output and
 // tool/agent observability.
 type runtimeCallbackHandler struct {
-	writer               io.Writer
-	metrics              *RunMetrics
-	startTime            time.Time
-	firstTokenSeen       bool
-	streamTokenSeen      bool
-	streamLogEmitted     bool
-	streamErr            error
-	logger               *Logger
-	eventHandler         func(RunEvent)
-	episodeID            string
-	runtimeID            string
-	requestID            string
-	runID                string
-	episode              *EpisodeRecorder
-	mu                   sync.Mutex
-	pendingActions       []schema.AgentAction
+	writer           io.Writer
+	metrics          *RunMetrics
+	startTime        time.Time
+	firstTokenSeen   bool
+	streamTokenSeen  bool
+	streamLogEmitted bool
+	streamErr        error
+	logger           *Logger
+	eventHandler     func(RunEvent)
+	episodeID        string
+	runtimeID        string
+	requestID        string
+	runID            string
+	episode          *EpisodeRecorder
+	mu               sync.Mutex
+	pendingActions   []schema.AgentAction
+	reasoningContent strings.Builder
 }
 
 func (h *runtimeCallbackHandler) HandleText(ctx context.Context, text string) {
@@ -2215,15 +2219,17 @@ func (h *runtimeCallbackHandler) HandleAssistantOutput(ctx context.Context, cont
 	if content == "" {
 		return
 	}
+	reasoning := h.ReasoningContent()
 	if h.logger != nil {
 		h.logger.Info("Assistant output: %s", truncateForLog(content, 1000))
 	}
 	h.emitRunEvent(RunEvent{
-		Type:      "assistant_output",
-		Role:      "assistant",
-		EpisodeID: h.episodeID,
-		Content:   content,
-		Timestamp: time.Now(),
+		Type:             "assistant_output",
+		Role:             "assistant",
+		EpisodeID:        h.episodeID,
+		Content:          content,
+		ReasoningContent: reasoning,
+		Timestamp:        time.Now(),
 	})
 }
 
@@ -2397,18 +2403,85 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 
 func (h *runtimeCallbackHandler) HandleAgentFinish(ctx context.Context, finish schema.AgentFinish) {}
 
-func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, content string) {
+func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, content, reasoning string) {
 	content = strings.TrimSpace(content)
+	reasoning = strings.TrimSpace(reasoning)
 	if h.logger != nil {
-		h.logger.Info("Role output: role=%s content=%s", role, truncateForLog(content, 1000))
+		debugText := content
+		if reasoning != "" {
+			debugText = reasoning + "\n" + content
+		}
+		h.logger.Info("Role output: role=%s content=%s", role, truncateForLog(debugText, 1000))
+	}
+	if reasoning != "" {
+		h.setReasoningContent(reasoning)
 	}
 	h.emitRunEvent(RunEvent{
-		Type:      "role_output",
-		Role:      role,
-		EpisodeID: h.episodeID,
-		Content:   content,
-		Timestamp: time.Now(),
+		Type:             "role_output",
+		Role:             role,
+		EpisodeID:        h.episodeID,
+		Content:          content,
+		ReasoningContent: reasoning,
+		Timestamp:        time.Now(),
 	})
+}
+
+func (h *runtimeCallbackHandler) HandleStreamingReasoning(ctx context.Context, chunk []byte) {
+	if h == nil || len(chunk) == 0 {
+		return
+	}
+	h.mu.Lock()
+	h.reasoningContent.Write(chunk)
+	h.mu.Unlock()
+	h.emitRunEvent(RunEvent{
+		Type:      runEventReasoningDelta,
+		Role:      "assistant",
+		EpisodeID: h.episodeID,
+		// Delta events carry only the newly received chunk. The accumulated
+		// reasoning is retained in reasoningContent for the final assistant event.
+		ReasoningContent: string(chunk),
+		Timestamp:        time.Now(),
+	})
+}
+
+func (h *runtimeCallbackHandler) StreamingReasoningEnabled() bool {
+	return h != nil && h.eventHandler != nil
+}
+
+func (h *runtimeCallbackHandler) ResetStreamingReasoning(ctx context.Context) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	hadReasoning := h.reasoningContent.Len() > 0
+	h.reasoningContent.Reset()
+	h.mu.Unlock()
+	if hadReasoning {
+		h.emitRunEvent(RunEvent{
+			Type:      runEventReasoningReset,
+			EpisodeID: h.episodeID,
+			Timestamp: time.Now(),
+		})
+	}
+}
+
+func (h *runtimeCallbackHandler) ReasoningContent() string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return strings.TrimSpace(h.reasoningContent.String())
+}
+
+func (h *runtimeCallbackHandler) setReasoningContent(reasoning string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.reasoningContent.Reset()
+	h.reasoningContent.WriteString(reasoning)
+	h.mu.Unlock()
 }
 
 func (h *runtimeCallbackHandler) HandleSteerMessage(ctx context.Context, steer RunSteerMessage) {

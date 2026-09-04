@@ -25,10 +25,15 @@ const (
 		"When work is still in progress, briefly say that you are handling it and continue the conversation without exposing internal state. When work finishes, report the outcome as your own work. " +
 		"If you cannot directly and reliably answer or complete a request with the realtime conversation tools, use the work-management tool to have the device-capable assistant handle it before saying that you cannot. This includes device state, screen or page content, apps, images, photos, external actions, information that requires observation or lookup, and any longer or multi-step operation. Never refuse merely because the realtime voice session lacks direct access; delegate the request and report the result as your own work. Do not delegate simple conversation, current-time requests, or relevant memory lookups that you can answer directly. " +
 		"If a user action is required, clearly explain what the user should do on the device and ask them to tell you when it is complete, without mentioning why an internal handoff is needed."
-	defaultModelProvider           = "openrouter"
-	defaultModelName               = "bytedance-seed/seed-2.0-lite"
-	defaultModelTemperature        = 0.2
-	defaultModelMaxResponseTokens  = 1000
+	defaultModelProvider    = "openrouter"
+	defaultModelName        = "bytedance-seed/seed-2.0-lite"
+	defaultModelTemperature = 0.2
+	// 8192 leaves room for hidden reasoning tokens while keeping a bounded
+	// default cost ceiling. Voice replies use their separate 300-token default.
+	defaultModelMaxResponseTokens = 8192
+	// minReasoningBudgetTokens is Anthropic's documented floor for
+	// thinking.budget_tokens; other budget-style APIs are at or below it.
+	minReasoningBudgetTokens       = 1024
 	defaultModelLogRawHTTP         = true
 	defaultModelReasoningEffort    = ""
 	defaultTTSProvider             = "minimax-cn"

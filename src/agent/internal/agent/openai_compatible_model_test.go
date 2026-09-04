@@ -941,7 +941,7 @@ func TestOpenAICompatibleModelSkipsRawHTTPLogWithoutContextMarker(t *testing.T) 
 }
 
 func TestOpenAICompatibleModelDoesNotBufferRawHTTPResponseWithoutContextMarker(t *testing.T) {
-	responseBody := &failOnSecondReadBody{
+	responseBody := &failAfterPayloadReadBody{
 		payload: []byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`),
 	}
 	client := &http.Client{
@@ -973,8 +973,8 @@ func TestOpenAICompatibleModelDoesNotBufferRawHTTPResponseWithoutContextMarker(t
 	if got := resp.Choices[0].Content; got != "ok" {
 		t.Fatalf("response content = %q, want ok", got)
 	}
-	if responseBody.reads != 1 {
-		t.Fatalf("response body reads = %d, want 1", responseBody.reads)
+	if responseBody.readPastPayload {
+		t.Fatal("response body was read past the complete JSON payload")
 	}
 }
 
@@ -1959,20 +1959,23 @@ func findLogLineContaining(logText, substring string) bool {
 	return false
 }
 
-type failOnSecondReadBody struct {
-	payload []byte
-	reads   int
+type failAfterPayloadReadBody struct {
+	payload         []byte
+	offset          int
+	readPastPayload bool
 }
 
-func (b *failOnSecondReadBody) Read(p []byte) (int, error) {
-	b.reads++
-	if b.reads == 1 {
-		return copy(p, b.payload), nil
+func (b *failAfterPayloadReadBody) Read(p []byte) (int, error) {
+	if b.offset >= len(b.payload) {
+		b.readPastPayload = true
+		return 0, io.ErrUnexpectedEOF
 	}
-	return 0, io.ErrUnexpectedEOF
+	n := copy(p, b.payload[b.offset:])
+	b.offset += n
+	return n, nil
 }
 
-func (b *failOnSecondReadBody) Close() error {
+func (b *failAfterPayloadReadBody) Close() error {
 	return nil
 }
 

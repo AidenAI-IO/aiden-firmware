@@ -384,10 +384,14 @@ function renderToolCalls(m) {
 }
 function renderMessageContent(m) {
   if (!m) return '';
-  if (typeof m.content === 'string') return '<div class="msg-part msg-text">' + esc(m.content) + '</div>';
-  if (Array.isArray(m.content)) return m.content.map((p, i) => renderContentPart(p, i)).join('');
-  if (m.content == null) return '';
-  return '<div class="msg-part msg-text">' + esc(JSON.stringify(m.content, null, 2)) + '</div>';
+  let html = '';
+  if (m.reasoning_content) {
+    html += '<div class="msg-part msg-reasoning"><div class="msg-part-label">Reasoning</div><div class="msg-text">' + esc(m.reasoning_content) + '</div></div>';
+  }
+  if (typeof m.content === 'string') return html + '<div class="msg-part msg-text">' + esc(m.content) + '</div>';
+  if (Array.isArray(m.content)) return html + m.content.map((p, i) => renderContentPart(p, i)).join('');
+  if (m.content == null) return html;
+  return html + '<div class="msg-part msg-text">' + esc(JSON.stringify(m.content, null, 2)) + '</div>';
 }
 function renderContentPart(p, index) {
   const url = imageUrlFromPart(p);
@@ -414,12 +418,15 @@ function renderMessageHead(headClass, role, index, marker, collapseUid) {
 }
 function messageText(m) {
   let contentText = '';
+  if (m && m.reasoning_content) contentText = '[Reasoning]\n' + String(m.reasoning_content);
   if (typeof m.content === 'string') {
-    contentText = m.content;
+    contentText += (contentText ? '\n' : '') + m.content;
   } else if (Array.isArray(m.content)) {
-    contentText = m.content.map(contentPartText).filter(t => t !== '').join('\n');
+    const parts = m.content.map(contentPartText).filter(t => t !== '').join('\n');
+    contentText += (contentText && parts ? '\n' : '') + parts;
   } else if (m.content != null) {
-    contentText = JSON.stringify(m.content, null, 2);
+    const value = JSON.stringify(m.content, null, 2);
+    contentText += (contentText && value ? '\n' : '') + value;
   }
   return contentText;
 }
@@ -471,7 +478,12 @@ function normalizeAnthropicMessage(message) {
   if (!message || !Array.isArray(message.content)) return message;
   const content = [];
   const toolCalls = [];
+  let reasoning = '';
   for (const part of message.content) {
+    if (part && part.type === 'thinking') {
+      reasoning += typeof part.thinking === 'string' ? part.thinking : '';
+      continue;
+    }
     if (part && part.type === 'tool_use') {
       toolCalls.push({id: part.id, type: 'function', function: {
         name: part.name || '', arguments: JSON.stringify(part.input || {})
@@ -481,6 +493,7 @@ function normalizeAnthropicMessage(message) {
     content.push(normalizeAnthropicContentPart(part));
   }
   const normalized = {role: message.role || 'unknown', content: content};
+  if (reasoning) normalized.reasoning_content = reasoning;
   if (toolCalls.length > 0) normalized.tool_calls = toolCalls;
   return normalized;
 }
@@ -598,7 +611,8 @@ function extractResponseMessage(body) {
     const obj = JSON.parse(text);
     if (obj && Array.isArray(obj.choices) && obj.choices.length > 0) {
       const m = obj.choices[0].message || {};
-      return {role: m.role || 'assistant', content: m.content || '', tool_calls: m.tool_calls || []};
+      const result = {role: m.role || 'assistant', content: m.content || '', tool_calls: m.tool_calls || []};
+      return addReasoningContent(result, m.reasoning_content);
     }
     if (obj && obj.error) {
       const errStr = typeof obj.error === 'string' ? obj.error : JSON.stringify(obj.error, null, 2);
@@ -611,23 +625,31 @@ function extractResponseMessage(body) {
     );
     if (isAnthropicMessage) {
       let content = '';
+      let reasoning = '';
       const toolCalls = [];
       for (const block of obj.content) {
         if (!block) continue;
         if (block.type === 'text' && typeof block.text === 'string') content += block.text;
+        if (block.type === 'thinking' && typeof block.thinking === 'string') reasoning += block.thinking;
         if (block.type === 'tool_use') {
           toolCalls.push({id: block.id, type: 'function', function: {
             name: block.name || '', arguments: JSON.stringify(block.input || {})
           }});
         }
       }
-      return {role: obj.role || 'assistant', content: content, tool_calls: toolCalls};
+      return addReasoningContent({role: obj.role || 'assistant', content: content, tool_calls: toolCalls}, reasoning);
+    }
+    if (obj && Array.isArray(obj.output)) {
+      return extractResponsesMessage(obj);
     }
   } catch(e) {}
   // Try SSE stream — accumulate content and tool_calls across `data:` events.
   const lines = text.split('\n');
   let hasData = false;
   let content = '';
+  let reasoning = '';
+  let sawResponsesContentDelta = false;
+  let sawResponsesReasoningDelta = false;
   const toolCalls = {};
   for (const rawLine of lines) {
     const line = rawLine.trim();
@@ -647,8 +669,29 @@ function extractResponseMessage(body) {
       toolCalls[event.index] = {id: block.id, type: 'function', function: {name: block.name || '', arguments: ''}};
       continue;
     }
+    if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
+      content += event.delta;
+      sawResponsesContentDelta = true;
+      continue;
+    }
+    if ((event.type === 'response.reasoning_summary_text.delta' || event.type === 'response.reasoning_text.delta') && typeof event.delta === 'string') {
+      reasoning += event.delta;
+      sawResponsesReasoningDelta = true;
+      continue;
+    }
+    if (event.type === 'response.output_item.done' && event.item) {
+      const item = event.item;
+      if (item.type === 'reasoning' && !sawResponsesReasoningDelta) reasoning += responseItemText(item.summary || item.content || item.text);
+      if (item.type === 'message' && !sawResponsesContentDelta) content += responseItemText(item.content);
+      if (item.type === 'function_call') {
+        const k = item.call_id || item.id || Object.keys(toolCalls).length;
+        toolCalls[k] = {id: item.call_id || item.id, type: 'function', function: {name: item.name || '', arguments: item.arguments || '{}'}};
+      }
+      continue;
+    }
     if (event.type === 'content_block_delta' && event.delta) {
       if (event.delta.type === 'text_delta' && typeof event.delta.text === 'string') content += event.delta.text;
+      if ((event.delta.type === 'thinking_delta' || event.delta.type === 'reasoning_delta') && typeof event.delta.thinking === 'string') reasoning += event.delta.thinking;
       if (event.delta.type === 'input_json_delta') {
         const k = event.index;
         if (toolCalls[k]) toolCalls[k].function.arguments += event.delta.partial_json || '';
@@ -658,6 +701,7 @@ function extractResponseMessage(body) {
     const choice = (event.choices && event.choices[0]) || null;
     if (!choice) continue;
     const delta = choice.delta || choice.message || {};
+    if (typeof delta.reasoning_content === 'string') reasoning += delta.reasoning_content;
     if (typeof delta.content === 'string') content += delta.content;
     else if (Array.isArray(delta.content)) {
       for (const p of delta.content) {
@@ -678,7 +722,85 @@ function extractResponseMessage(body) {
   }
   if (!hasData) return null;
   const tcArr = Object.keys(toolCalls).sort((a, b) => (+a) - (+b)).map(k => toolCalls[k]);
-  return {role: 'assistant', content: content, tool_calls: tcArr};
+  return addReasoningContent({role: 'assistant', content: content, tool_calls: tcArr}, reasoning);
+}
+function responseItemText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(responseItemText).join('');
+  if (typeof value === 'object') {
+    if (typeof value.text === 'string') return value.text;
+    if (typeof value.thinking === 'string') return value.thinking;
+    if (value.content != null) return responseItemText(value.content);
+    if (value.summary != null) return responseItemText(value.summary);
+  }
+  return '';
+}
+function addReasoningContent(message, value) {
+  let reasoning = responseItemText(value);
+  if (!reasoning && message && typeof message.content === 'string') {
+    const tagged = splitTaggedThinking(message.content);
+    if (tagged) {
+      reasoning = tagged.reasoning;
+      message.content = tagged.content;
+    }
+  }
+  if (reasoning) message.reasoning_content = reasoning;
+  return message;
+}
+function splitTaggedThinking(content) {
+  let remaining = String(content || '');
+  const visible = [];
+  const reasoning = [];
+  let found = false;
+  const openPattern = /<(think|thinking)>/i;
+  const closePattern = /<\/(think|thinking)>/i;
+  while (remaining) {
+    const open = remaining.match(openPattern);
+    const close = remaining.match(closePattern);
+    const openAt = open ? open.index : -1;
+    const closeAt = close ? close.index : -1;
+    if (openAt < 0 && closeAt < 0) {
+      visible.push(remaining);
+      break;
+    }
+    if (closeAt >= 0 && (openAt < 0 || closeAt < openAt)) {
+      reasoning.push(remaining.slice(0, closeAt));
+      remaining = remaining.slice(closeAt + close[0].length);
+      found = true;
+      continue;
+    }
+    const afterOpen = remaining.slice(openAt + open[0].length);
+    const end = afterOpen.match(closePattern);
+    if (!end) {
+      // An unclosed block cannot be split. Keep the raw text — including the
+      // open tag — visible so a truncated response stays readable in the
+      // viewer. The runtime does the opposite and hides it, because there a
+      // leaked partial thought would reach TTS.
+      visible.push(remaining);
+      break;
+    }
+    visible.push(remaining.slice(0, openAt));
+    found = true;
+    reasoning.push(afterOpen.slice(0, end.index));
+    remaining = afterOpen.slice(end.index + end[0].length);
+  }
+  if (!found) return null;
+  return {reasoning: reasoning.map(function(part) { return part.trim(); }).filter(Boolean).join('\n'), content: visible.join('').trim()};
+}
+function extractResponsesMessage(obj) {
+  let content = '';
+  let reasoning = '';
+  const toolCalls = [];
+  for (const item of obj.output || []) {
+    if (!item) continue;
+    if (item.type === 'reasoning') reasoning += responseItemText(item.summary || item.content || item.text);
+    else if (item.type === 'message') content += responseItemText(item.content);
+    else if (item.type === 'function_call') {
+      toolCalls.push({id: item.call_id || item.id, type: 'function', function: {name: item.name || '', arguments: item.arguments || '{}'}});
+    }
+  }
+  return addReasoningContent({role: 'assistant', content, tool_calls: toolCalls}, reasoning);
 }
 function renderDiff(oldMsgs, newMsgs) {
   const ops = buildMessageDiffOps(oldMsgs, newMsgs);

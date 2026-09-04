@@ -744,7 +744,8 @@ func TestFunctionAgentWaitStableScreenDoesNotTreatMotionAsActionResult(t *testin
 	agent := &FunctionAgent{
 		Tools: []langtools.Tool{&stubTool{name: "wait_for_stable_screen", visual: true}},
 	}
-	observation := `{"ok":true,"stable":true,"elapsed_ms":250,"screen_changed":false,"width":800,"height":600,"format":"jpeg","size":4,"data":"` +
+	actionOutput := `{"ok":true,"stable":true,"elapsed_ms":250,"screen_changed":false}`
+	observation := fmt.Sprintf(`{"action_output":%q,"ok":true,"stable":true,"elapsed_ms":250,"screen_changed":false,"width":800,"height":600,"format":"jpeg","size":4,"data":"`, actionOutput) +
 		base64.StdEncoding.EncodeToString([]byte("img1")) + `"}`
 	step := schema.AgentStep{
 		Action:      schema.AgentAction{Tool: "wait_for_stable_screen"},
@@ -752,8 +753,11 @@ func TestFunctionAgentWaitStableScreenDoesNotTreatMotionAsActionResult(t *testin
 	}
 
 	toolContent, followups := agent.observationMessagesForStep(step, true)
-	if toolContent != observation {
-		t.Fatalf("toolContent = %q, want original observation", toolContent)
+	if toolContent != actionOutput {
+		t.Fatalf("toolContent = %q, want stable-screen action_output %q", toolContent, actionOutput)
+	}
+	if strings.Contains(toolContent, base64.StdEncoding.EncodeToString([]byte("img1"))) {
+		t.Fatalf("toolContent contains screenshot base64: %q", toolContent)
 	}
 	if len(followups) != 1 {
 		t.Fatalf("expected one followup screenshot message, got %#v", followups)

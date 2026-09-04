@@ -840,6 +840,11 @@ type ModelConfig struct {
 	MaxResponseTokens int      `toml:"max_response_tokens,omitempty"`
 	LogRawHTTP        bool     `toml:"log_raw_http,omitempty"`
 	ReasoningEffort   string   `toml:"reasoning_effort,omitempty"`
+	// ReasoningBudgetTokens is an optional exact budget for models whose native
+	// reasoning control is budget_tokens (for example older Claude models). A
+	// zero value delegates to the model's default or the reasoning effort
+	// preset; it is ignored by effort-only providers.
+	ReasoningBudgetTokens int `toml:"reasoning_budget_tokens,omitempty"`
 	// These override static model metadata; zero means use the registry/fallback.
 	ContextWindow        int      `toml:"context_window,omitempty"`
 	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`
@@ -969,6 +974,14 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	resolveSTTProvider(&cfg)
 	resolveVoiceModelProvider(&cfg)
 	cfg.VoiceModel.APIKey = resolveProviderAPIKey(cfg.VoiceModel.APIKey)
+	// A stale persisted realtime mode must not brick the daemon when its
+	// credential was removed or never configured. Runtime startup falls back to
+	// text mode so Config Web can come up and repair the persisted value. The
+	// strict Config.Validate() path still rejects explicitly saved realtime
+	// configurations without a credential.
+	if strings.EqualFold(strings.TrimSpace(cfg.InputMode), "realtime") && !cfg.VoiceModel.Enabled() {
+		cfg.InputMode = defaultInputMode
+	}
 
 	// Apply provider references to model configurations. This must run before
 	// the base_url whitelist below: until the reference is expanded, Provider
@@ -1210,6 +1223,26 @@ func usesDefaultSTTModel(provider string) bool {
 // treated as "all defaults" so first-boot config pages can render before
 // agent.toml has been created.
 func LoadResolvedConfig(path string) (Config, error) {
+	cfg, err := loadResolvedConfig(path)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// LoadResolvedConfigForUpdate loads the config editor view without validating
+// the existing values. This is intentionally only for recovery updates: a
+// config web save may need to repair a persisted invalid field (for example,
+// an old input_mode=realtime without voice_model.api_key) before the candidate
+// config can be validated and persisted.
+func LoadResolvedConfigForUpdate(path string) (Config, error) {
+	return loadResolvedConfig(path)
+}
+
+func loadResolvedConfig(path string) (Config, error) {
 	exists, err := inspectConfigFilePath(path)
 	if err != nil {
 		return Config{}, err
@@ -1238,10 +1271,6 @@ func LoadResolvedConfig(path string) (Config, error) {
 	// References are deliberately NOT resolved here. The page edits the
 	// reference, so it must come back as the name it wrote.
 	migrateLegacyVoiceProviders(&cfg, metadata)
-
-	if err := cfg.Validate(); err != nil {
-		return Config{}, err
-	}
 
 	return cfg, nil
 }
@@ -1532,6 +1561,27 @@ func (c Config) Validate() error {
 	if c.Model.ModelMaxOutputTokens < 0 {
 		return fmt.Errorf("model.model_max_output_tokens must be >= 0, got %d", c.Model.ModelMaxOutputTokens)
 	}
+	if c.Model.ReasoningBudgetTokens < 0 {
+		return fmt.Errorf("model.reasoning_budget_tokens must be >= 0, got %d", c.Model.ReasoningBudgetTokens)
+	}
+	// reasoning_budget_tokens maps to Anthropic's native budget_tokens control.
+	// Other providers may
+	// leave a stale value in config, but it must not be validated or translated
+	// as if their APIs used Anthropic's budget_tokens field.
+	if c.modelProviderType() == "anthropic" && c.Model.ReasoningBudgetTokens > 0 {
+		if c.Model.ReasoningBudgetTokens < minReasoningBudgetTokens {
+			return fmt.Errorf("model.reasoning_budget_tokens must be 0 or >= %d, got %d",
+				minReasoningBudgetTokens, c.Model.ReasoningBudgetTokens)
+		}
+		if c.Model.MaxResponseTokens > 0 && c.Model.ReasoningBudgetTokens >= c.Model.MaxResponseTokens {
+			return fmt.Errorf("model.reasoning_budget_tokens (%d) must be less than model.max_response_tokens (%d); reasoning tokens are included in the response limit",
+				c.Model.ReasoningBudgetTokens, c.Model.MaxResponseTokens)
+		}
+		if c.Model.ModelMaxOutputTokens > 0 && c.Model.ReasoningBudgetTokens >= c.Model.ModelMaxOutputTokens {
+			return fmt.Errorf("model.reasoning_budget_tokens (%d) must be less than model.model_max_output_tokens (%d)",
+				c.Model.ReasoningBudgetTokens, c.Model.ModelMaxOutputTokens)
+		}
+	}
 	// Validate input_mode
 	if strings.TrimSpace(c.InputMode) != "" {
 		mode := strings.ToLower(strings.TrimSpace(c.InputMode))
@@ -1672,27 +1722,25 @@ func (c Config) Validate() error {
 // endpoints therefore remain valid, while native Anthropic and Ollama clients
 // are rejected before a configuration is persisted or used at startup.
 func (c Config) modelProviderSupportsResponses() bool {
-	providerType := strings.TrimSpace(c.Model.Provider)
-	baseURL := c.Model.BaseURL
-	if provider, ok := c.ModelProviders[providerType]; ok {
-		providerType = provider.Type
-		baseURL = provider.BaseURL
-	}
-	providerType = effectiveModelProviderType(providerType, baseURL)
+	providerType := c.modelProviderType()
 	definition, ok := lookupModelProviderDefinition(providerType)
 	return ok && definition.supportsResponses
 }
 
 func (c Config) modelProviderSupportsResponsesStateful() bool {
+	providerType := c.modelProviderType()
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsResponsesStateful
+}
+
+func (c Config) modelProviderType() string {
 	providerType := strings.TrimSpace(c.Model.Provider)
 	baseURL := c.Model.BaseURL
 	if provider, ok := c.ModelProviders[providerType]; ok {
 		providerType = provider.Type
 		baseURL = provider.BaseURL
 	}
-	providerType = effectiveModelProviderType(providerType, baseURL)
-	definition, ok := lookupModelProviderDefinition(providerType)
-	return ok && definition.supportsResponsesStateful
+	return effectiveModelProviderType(providerType, baseURL)
 }
 
 // effectiveModelProviderType recognizes well-known endpoints that were saved
