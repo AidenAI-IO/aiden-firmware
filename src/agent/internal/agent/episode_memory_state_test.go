@@ -23,6 +23,16 @@ type episodeMemoryScriptedModel struct {
 	auditResponses []string
 	lastResponse   string
 	calls          [][]llms.MessageContent
+	// stopReason, when set, is reported on batch proposal responses so tests can
+	// drive budget-exhaustion handling. Empty by default, so existing scripted
+	// responses read as normally-finished.
+	stopReason string
+	// batchOptions records the call options of each proposal call, so tests can
+	// assert the requested output budget.
+	batchOptions [][]llms.CallOption
+	// auditOptions records retention-gate options separately because audit calls
+	// are intentionally excluded from calls and batchOptions.
+	auditOptions [][]llms.CallOption
 }
 
 type episodeMemoryBlockingModel struct {
@@ -60,22 +70,24 @@ func (m *episodeMemoryBlockingModel) Spec() modelpkg.ModelSpec {
 	return m.inner.Spec()
 }
 
-func (m *episodeMemoryScriptedModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+func (m *episodeMemoryScriptedModel) GenerateContent(_ context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if episodeMemoryMessagesContain(messages, "mandatory retention gate") {
+		m.auditOptions = append(m.auditOptions, options)
 		if len(m.auditResponses) > 0 {
 			response := m.auditResponses[0]
 			m.auditResponses = m.auditResponses[1:]
 			m.lastResponse = response
-			return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: response}}}, nil
+			return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: response, StopReason: m.stopReason}}}, nil
 		}
 		if response := defaultEpisodeMemoryRetentionAudit(messages); response != "" {
 			m.lastResponse = response
-			return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: response}}}, nil
+			return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: response, StopReason: m.stopReason}}}, nil
 		}
 	}
 	m.calls = append(m.calls, messages)
+	m.batchOptions = append(m.batchOptions, options)
 	if len(m.responses) == 0 {
 		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: `{}`}}}, nil
 	}
@@ -88,7 +100,40 @@ func (m *episodeMemoryScriptedModel) GenerateContent(_ context.Context, messages
 		}
 	}
 	m.lastResponse = response
-	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: response}}}, nil
+	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: response, StopReason: m.stopReason}}}, nil
+}
+
+// setStopReason changes the reported stop reason between calls, so a test can
+// truncate one response and let the next one finish normally.
+func (m *episodeMemoryScriptedModel) setStopReason(reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopReason = reason
+}
+
+// batchMaxTokens returns the output budget requested on batch proposal call
+// index, or 0 if that call was never made.
+func (m *episodeMemoryScriptedModel) batchMaxTokens(index int) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return episodeMemoryRecordedMaxTokens(m.batchOptions, index)
+}
+
+func (m *episodeMemoryScriptedModel) auditMaxTokens(index int) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return episodeMemoryRecordedMaxTokens(m.auditOptions, index)
+}
+
+func episodeMemoryRecordedMaxTokens(options [][]llms.CallOption, index int) int {
+	if index < 0 || index >= len(options) {
+		return 0
+	}
+	resolved := llms.CallOptions{}
+	for _, option := range options[index] {
+		option(&resolved)
+	}
+	return resolved.MaxTokens
 }
 
 func normalizeEpisodeMemoryScriptedResponse(response string) string {

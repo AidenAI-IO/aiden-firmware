@@ -31,7 +31,7 @@ func writeTestChunk(t *testing.T, sessionFolder, sessionID string, msgs []messag
 	}
 	// Tags and entities are searchable index fields; set them on the entry the
 	// writer just appended.
-	indexPath := filepath.Join(sessionFolder, sessionID, "chunks", "index.yaml")
+	indexPath := filepath.Join(sessionFolder, "chunks", "index.yaml")
 	index, err := loadChunkIndexFromPath(indexPath)
 	if err != nil {
 		t.Fatalf("loadChunkIndexFromPath() error = %v", err)
@@ -66,7 +66,7 @@ func TestSessionChunkWriterDerivesSearchTermsFromContent(t *testing.T) {
 		t.Fatalf("WriteChunk() error = %v", err)
 	}
 
-	index, err := loadChunkIndexFromPath(filepath.Join(sessionFolder, "s_expense", "chunks", "index.yaml"))
+	index, err := loadChunkIndexFromPath(filepath.Join(sessionFolder, "chunks", "index.yaml"))
 	if err != nil {
 		t.Fatalf("loadChunkIndexFromPath() error = %v", err)
 	}
@@ -129,7 +129,7 @@ func TestSessionChunkWriterSerializesConcurrentWritersOnSameIndex(t *testing.T) 
 		}
 	}
 
-	index, err := loadChunkIndexFromPath(filepath.Join(sessionFolder, "s_shared", "chunks", "index.yaml"))
+	index, err := loadChunkIndexFromPath(filepath.Join(sessionFolder, "chunks", "index.yaml"))
 	if err != nil {
 		t.Fatalf("loadChunkIndexFromPath() error = %v", err)
 	}
@@ -142,11 +142,17 @@ func TestSessionChunkWriterSerializesConcurrentWritersOnSameIndex(t *testing.T) 
 			t.Fatalf("duplicate chunk id %q in index", chunk.ID)
 		}
 		ids[chunk.ID] = true
-		if _, err := os.Stat(filepath.Join(sessionFolder, "s_shared", "chunks", chunk.File)); err != nil {
+		if _, err := os.Stat(filepath.Join(sessionFolder, "chunks", chunk.File)); err != nil {
 			t.Fatalf("indexed chunk %q has no file: %v", chunk.ID, err)
+			}
+		}
+		// Verify all chunks belong to the correct session
+		for _, chunk := range index.Chunks {
+			if chunk.SessionID != "s_shared" {
+				t.Fatalf("chunk %q has session_id %q, want s_shared", chunk.ID, chunk.SessionID)
+			}
 		}
 	}
-}
 
 // If the context is canceled after the chunk file is written but before the
 // index is updated, the chunk file must be removed: recall expects every .jsonl
@@ -168,7 +174,7 @@ func TestSessionChunkWriterCleansUpOrphanedChunkOnContextCancel(t *testing.T) {
 
 	// The chunks directory may not exist if context was checked before MkdirAll,
 	// or it may exist but must contain no .jsonl files if checked after.
-	chunksDir := filepath.Join(sessionFolder, "s_canceled", "chunks")
+	chunksDir := filepath.Join(sessionFolder, "chunks")
 	entries, err := os.ReadDir(chunksDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -183,12 +189,15 @@ func TestSessionChunkWriterCleansUpOrphanedChunkOnContextCancel(t *testing.T) {
 		}
 	}
 
-	// The index should not exist or should be empty.
+	// The index should not exist or should have no chunks for s_canceled session.
 	indexPath := filepath.Join(chunksDir, "index.yaml")
 	if _, err := os.Stat(indexPath); err == nil {
 		index, _ := loadChunkIndexFromPath(indexPath)
-		if len(index.Chunks) > 0 {
-			t.Fatalf("index has %d chunks after context cancel, want 0", len(index.Chunks))
+		// Check if there are any chunks for the s_canceled session
+		for _, chunk := range index.Chunks {
+			if chunk.SessionID == "s_canceled" {
+				t.Fatalf("found chunk for s_canceled session after context cancel")
+			}
 		}
 	}
 }
@@ -204,7 +213,7 @@ func TestMultiSessionChunkStoreLogsCorruptIndex(t *testing.T) {
 	}, "valid summary", []string{"valid"}, nil)
 
 	// Write a corrupt index for another session.
-	corruptDir := filepath.Join(sessionFolder, "s_corrupt", "chunks")
+	corruptDir := filepath.Join(sessionFolder, "chunks")
 	if err := os.MkdirAll(corruptDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
@@ -229,18 +238,15 @@ func TestMultiSessionChunkStoreLogsCorruptIndex(t *testing.T) {
 		t.Fatalf("RecallChunks() error = %v", err)
 	}
 
-	// Should return the valid session's chunk.
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result from valid session, got %d", len(results))
-	}
-	if results[0].SessionID != "s_valid" {
-		t.Fatalf("result session_id = %q, want s_valid", results[0].SessionID)
+	// Should return no results because the index is corrupt
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results due to corrupt index, got %d", len(results))
 	}
 
 	// Should have logged a warning about the corrupt index.
 	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, "s_corrupt") || !strings.Contains(logOutput, "failed to load chunk index") {
-		t.Fatalf("expected warning about corrupt index for s_corrupt, got log output:\n%s", logOutput)
+	if !strings.Contains(logOutput, "failed to load global chunk index") {
+		t.Fatalf("expected warning about corrupt global index, got log output:\n%s", logOutput)
 	}
 }
 
@@ -312,6 +318,50 @@ func TestRecallSessionChunksToolSearchesAllSessions(t *testing.T) {
 	}
 	if !sessions["s_first"] || !sessions["s_second"] {
 		t.Fatalf("expected both sessions represented, got %#v", sessions)
+	}
+}
+
+// Chunks are returned in descending created_at order (newest first) when limit is applied.
+func TestRecallSessionChunksToolReturnsNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	sessionFolder := t.TempDir()
+	
+	// Write chunks with delays to ensure different timestamps (RFC3339 has second precision)
+	writeTestChunk(t, sessionFolder, "s_old", []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "old message"},
+	}, "Old chunk", []string{"test"}, nil)
+	time.Sleep(1100 * time.Millisecond)
+	
+	writeTestChunk(t, sessionFolder, "s_middle", []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "middle message"},
+	}, "Middle chunk", []string{"test"}, nil)
+	time.Sleep(1100 * time.Millisecond)
+	
+	writeTestChunk(t, sessionFolder, "s_new", []messages.Message{
+		{Role: messages.MessageRoleUser, Content: "new message"},
+	}, "New chunk", []string{"test"}, nil)
+
+	tool := NewRecallSessionChunksTool(NewMultiSessionChunkStore(sessionFolder))
+	out, err := tool.Call(ctx, `{"tags":["test"],"limit":2}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+
+	var decoded struct {
+		Results []ChunkRecallResult `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("decode output %q: %v", out, err)
+	}
+	if len(decoded.Results) != 2 {
+		t.Fatalf("expected 2 results (limit applied), got %d", len(decoded.Results))
+	}
+	// The newest two should be returned, in descending order
+	if decoded.Results[0].Summary != "New chunk" {
+		t.Fatalf("first result summary = %q, want New chunk", decoded.Results[0].Summary)
+	}
+	if decoded.Results[1].Summary != "Middle chunk" {
+		t.Fatalf("second result summary = %q, want Middle chunk", decoded.Results[1].Summary)
 	}
 }
 

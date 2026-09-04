@@ -13,17 +13,37 @@ import (
 )
 
 const (
-	episodeMemoryStateVersion     = 3
-	legacyReflectionFailureTag    = "reflection:v1"
-	episodeMemoryBatchLimit       = 5
-	episodeMemoryBatchMaxTokens   = 8000
-	episodeMemoryRecentTerminals  = 64
-	episodeMemoryProcessingLease  = 15 * time.Minute
-	episodeMemoryRetryDelay       = 5 * time.Minute
-	episodeMemoryMaxAttempts      = 3
-	episodeMemoryModelCallTimeout = 60 * time.Second
-	episodeMemoryBatchLockTimeout = 100 * time.Millisecond
+	episodeMemoryStateVersion  = 3
+	legacyReflectionFailureTag = "reflection:v1"
+	// episodeMemoryBatchLimit bounds episodes per model call. It is also the
+	// blast radius of one unusable response: the whole batch fails together.
+	episodeMemoryBatchLimit = 3
+	// episodeMemoryBatchTokensPerEpisode is the output budget for one episode:
+	// an assessment plus up to 3 candidates, each carrying several prose fields.
+	// CJK content costs more tokens per character, so 2200 truncated in practice.
+	episodeMemoryBatchTokensPerEpisode = 2600
+	// episodeMemoryBatchMaxTokens is the absolute ceiling for one call. It stays
+	// at the value this path has always requested, because nothing here clamps
+	// max_tokens against the provider's real output ceiling -- raising it could
+	// turn truncation into outright rejection. batchLimit x perEpisode is kept
+	// under it so a full batch is never squeezed below a smaller batch's share.
+	episodeMemoryBatchMaxTokens = 8000
+	// episodeMemoryRetentionAuditBaseTokens is the first-attempt output budget
+	// for the retention gate: one review per candidate, at most 3 candidates.
+	// Retries grow this budget up to episodeMemoryBatchMaxTokens.
+	episodeMemoryRetentionAuditBaseTokens = 3200
+	episodeMemoryRecentTerminals          = 64
+	episodeMemoryProcessingLease          = 15 * time.Minute
+	episodeMemoryRetryDelay               = 5 * time.Minute
+	episodeMemoryMaxAttempts              = 3
+	episodeMemoryModelCallTimeout         = 60 * time.Second
+	episodeMemoryBatchLockTimeout         = 100 * time.Millisecond
 )
+
+// Compile-time guard: a full batch must fit under the ceiling. If it does not,
+// the cap re-introduces the per-episode inversion it exists to prevent, and this
+// declaration fails to build with a uint overflow.
+const _ uint = episodeMemoryBatchMaxTokens - episodeMemoryBatchTokensPerEpisode*episodeMemoryBatchLimit
 
 type episodeMemoryProcessingStatus string
 
@@ -43,6 +63,7 @@ type episodeMemoryEpisodeStatus struct {
 	EndedAt             string                        `yaml:"ended_at,omitempty"`
 	LastError           string                        `yaml:"last_error,omitempty"`
 	AttemptCount        int                           `yaml:"attempt_count,omitempty"`
+	RetryBatchLimit     int                           `yaml:"retry_batch_limit,omitempty"`
 	Proposal            *episodeMemoryProposal        `yaml:"proposal,omitempty"`
 	Assessment          *episodeMemoryAssessment      `yaml:"assessment,omitempty"`
 }
@@ -82,8 +103,20 @@ func (s *episodeMemoryStateStore) Snapshot() (episodeMemoryStateFile, error) {
 }
 
 func (s *episodeMemoryStateStore) SetEpisode(id string, status episodeMemoryEpisodeStatus) error {
-	id = strings.TrimSpace(id)
-	if id == "" {
+	return s.SetEpisodes(map[string]episodeMemoryEpisodeStatus{id: status})
+}
+
+// SetEpisodes applies a group of status changes in one state-file write. This
+// keeps a model-call group atomic: a failed write cannot leave only part of the
+// group marked processing.
+func (s *episodeMemoryStateStore) SetEpisodes(statuses map[string]episodeMemoryEpisodeStatus) error {
+	updates := make(map[string]episodeMemoryEpisodeStatus, len(statuses))
+	for id, status := range statuses {
+		if id = strings.TrimSpace(id); id != "" {
+			updates[id] = status
+		}
+	}
+	if len(updates) == 0 {
 		return nil
 	}
 	s.mu.Lock()
@@ -95,11 +128,13 @@ func (s *episodeMemoryStateStore) SetEpisode(id string, status episodeMemoryEpis
 	if state.Episodes == nil {
 		state.Episodes = map[string]episodeMemoryEpisodeStatus{}
 	}
-	key := episodeMemoryStateKey(id, status.ExtractorVersion)
-	if status == (episodeMemoryEpisodeStatus{}) {
-		delete(state.Episodes, key)
-	} else {
-		state.Episodes[key] = status
+	for id, status := range updates {
+		key := episodeMemoryStateKey(id, status.ExtractorVersion)
+		if status == (episodeMemoryEpisodeStatus{}) {
+			delete(state.Episodes, key)
+		} else {
+			state.Episodes[key] = status
+		}
 	}
 	return writeYAMLAtomic(s.path, state)
 }
