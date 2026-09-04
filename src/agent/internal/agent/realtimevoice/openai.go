@@ -21,9 +21,10 @@ const (
 // OpenAIProvider is the native OpenAI Realtime adapter. Endpoint is optional
 // and is primarily useful for a compatible gateway or protocol tests.
 type OpenAIProvider struct {
-	Endpoint    string
-	Dialer      *websocket.Dialer
-	EventBuffer int
+	Endpoint         string
+	RealtimeProtocol string
+	Dialer           *websocket.Dialer
+	EventBuffer      int
 }
 
 func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, error) {
@@ -54,6 +55,9 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 	inputRate := cfg.InputSampleRate
 	if inputRate <= 0 {
 		inputRate = 24000
+		if normalizeRealtimeProtocol(p.RealtimeProtocol) == "legacy" {
+			inputRate = 16000
+		}
 	}
 	outputRate := cfg.OutputSampleRate
 	if outputRate <= 0 {
@@ -62,6 +66,7 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 	transport := newJSONWebSocketTransport(conn, "openai realtime", p.EventBuffer)
 	s := &openAISession{
 		jsonRealtimeSession: newJSONRealtimeSession(transport, newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{EmitsSpeechEvents: true, ExplicitToolContinuation: true})),
+		realtimeProtocol:    p.RealtimeProtocol,
 	}
 	transport.start(func(body []byte) []Event {
 		event, ok := translateOpenAIEvent(body)
@@ -75,7 +80,7 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 		_ = s.Close()
 		return nil, err
 	}
-	if err := s.writeJSON(ctx, buildOpenAISessionUpdate(cfg, model)); err != nil {
+	if err := s.writeJSON(ctx, buildOpenAISessionUpdateForProtocol(cfg, model, p.RealtimeProtocol)); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -159,6 +164,51 @@ type openAITool struct {
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 
+func buildOpenAISessionUpdateForProtocol(cfg SessionConfig, model, protocol string) any {
+	if normalizeRealtimeProtocol(protocol) == "legacy" {
+		return buildOpenAILegacySessionUpdate(cfg)
+	}
+	return buildOpenAISessionUpdate(cfg, model)
+}
+
+func normalizeRealtimeProtocol(protocol string) string {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "beta", "legacy":
+		return "legacy"
+	default:
+		return "ga"
+	}
+}
+
+type openAILegacySessionUpdate struct {
+	Type    string                      `json:"type"`
+	Session openAILegacySessionSettings `json:"session"`
+}
+
+type openAILegacySessionSettings struct {
+	Modalities              []string                   `json:"modalities,omitempty"`
+	Instructions            string                     `json:"instructions,omitempty"`
+	Voice                   string                     `json:"voice,omitempty"`
+	InputAudioFormat        string                     `json:"input_audio_format,omitempty"`
+	OutputAudioFormat       string                     `json:"output_audio_format,omitempty"`
+	InputAudioTranscription *openAITranscriptionConfig `json:"input_audio_transcription,omitempty"`
+	TurnDetection           map[string]any             `json:"turn_detection,omitempty"`
+	Tools                   []openAITool               `json:"tools,omitempty"`
+}
+
+func buildOpenAILegacySessionUpdate(cfg SessionConfig) openAILegacySessionUpdate {
+	settings := openAILegacySessionSettings{
+		Modalities: []string{"audio", "text"}, Instructions: cfg.Instructions,
+		Voice: cfg.Voice, InputAudioFormat: "pcm16", OutputAudioFormat: "pcm16",
+		InputAudioTranscription: &openAITranscriptionConfig{Model: "whisper-1"},
+		TurnDetection:           turnDetectionConfig(cfg),
+	}
+	for _, tool := range cfg.Tools {
+		settings.Tools = append(settings.Tools, openAITool{Type: "function", Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters})
+	}
+	return openAILegacySessionUpdate{Type: "session.update", Session: settings}
+}
+
 func buildOpenAISessionUpdate(cfg SessionConfig, model string) openAISessionUpdate {
 	inputRate := cfg.InputSampleRate
 	if inputRate <= 0 {
@@ -192,6 +242,30 @@ func buildOpenAISessionUpdate(cfg SessionConfig, model string) openAISessionUpda
 
 type openAISession struct {
 	*jsonRealtimeSession
+	realtimeProtocol string
+}
+
+func (s *openAISession) ReplayContext(ctx context.Context, items []ContextItem) error {
+	for _, item := range items {
+		if err := s.writeJSON(ctx, map[string]any{
+			"type": "conversation.item.create",
+			"item": openAIContextItemPayload(item, s.realtimeProtocol),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func openAIContextItemPayload(item ContextItem, protocol string) map[string]any {
+	payload := contextItemPayload(item)
+	if normalizeRealtimeProtocol(protocol) == "legacy" && item.Type == "message" && item.Role == "assistant" {
+		// OpenAI GA renamed assistant message content from text to output_text.
+		// Legacy/Beta-compatible gateways such as MixRoute still reject
+		// output_text and require the original text content type.
+		payload["content"] = []map[string]string{{"type": "text", "text": item.Content}}
+	}
+	return payload
 }
 
 func (s *openAISession) Interrupt(ctx context.Context, interruption ResponseInterruption) error {

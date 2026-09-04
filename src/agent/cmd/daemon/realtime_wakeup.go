@@ -514,6 +514,17 @@ func (e *realtimeClientTurnEndpoint) Reset() {
 	e.lastSpeechAt = time.Time{}
 }
 
+// shouldTrackRealtimeAdmissionSpeech prevents the local energy gate from
+// racing an explicit text response during session startup. The first audio
+// chunk can be microphone startup noise (or audio already buffered before the
+// chat command is selected); treating it as a new turn retires the pending
+// anonymous response before Gemini emits response.created. Provider VAD and
+// interruption events remain authoritative once the explicit response has
+// started.
+func shouldTrackRealtimeAdmissionSpeech(state *realtimeTurnState, chatPending bool) bool {
+	return state != nil && !chatPending && !state.responseRequestPending
+}
+
 func pcm16MeanAbs(pcm []byte) int {
 	const sampleBytes = 2
 	if len(pcm) < sampleBytes {
@@ -861,7 +872,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 	log.Printf("[realtime] Connecting: provider=%s model=%s region=%s workspace_configured=%t endpoint_override=%t",
 		providerName, cfg.VoiceModel.Model, cfg.VoiceModel.Region, cfg.VoiceModel.WorkspaceID != "", cfg.VoiceModel.Endpoint != "")
 	connectCtx, connectCancel := context.WithTimeout(ctx, realtimeConnectTimeout)
-	session, err := registry.Open(connectCtx, providerName, realtimevoice.ProviderConfig{Endpoint: cfg.VoiceModel.Endpoint, BaseURL: cfg.VoiceModel.BaseURL, AgentID: cfg.VoiceModel.AgentID, UpstreamProvider: cfg.VoiceModel.UpstreamProvider, WorkspaceID: cfg.VoiceModel.WorkspaceID, Region: cfg.VoiceModel.Region, AuthMode: cfg.VoiceModel.AuthMode, ProjectID: cfg.VoiceModel.ProjectID, Location: cfg.VoiceModel.Location}, sessionConfig, realtimevoice.DeviceMediaConfig{Input: realtimeVoiceDeviceFormat(cfg), Output: realtimeVoiceDeviceFormat(cfg)})
+	session, err := registry.Open(connectCtx, providerName, realtimevoice.ProviderConfig{Endpoint: cfg.VoiceModel.Endpoint, BaseURL: cfg.VoiceModel.BaseURL, AgentID: cfg.VoiceModel.AgentID, UpstreamProvider: cfg.VoiceModel.UpstreamProvider, WorkspaceID: cfg.VoiceModel.WorkspaceID, Region: cfg.VoiceModel.Region, AuthMode: cfg.VoiceModel.AuthMode, ProjectID: cfg.VoiceModel.ProjectID, Location: cfg.VoiceModel.Location, RealtimeProtocol: cfg.VoiceModel.RealtimeProtocol}, sessionConfig, realtimevoice.DeviceMediaConfig{Input: realtimeVoiceDeviceFormat(cfg), Output: realtimeVoiceDeviceFormat(cfg)})
 	connectCancel()
 	if err != nil {
 		return fmt.Errorf("connect realtime voice model: %w", err)
@@ -1130,7 +1141,6 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			activeChat = nil
 		}
 	}
-
 	sessionErrors := session.Errors()
 	// The event stream is the authoritative completion signal. Providers may
 	// close Done before the final buffered transcript or response event is read.
@@ -1226,7 +1236,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			if err := session.SendAudio(ctx, pcm); err != nil {
 				return err
 			}
-			if admissionTurnEndpoint != nil {
+			if admissionTurnEndpoint != nil && shouldTrackRealtimeAdmissionSpeech(&turnState, realtimeChatPending(chatBridge, queuedChat)) {
 				now := time.Now()
 				wasActive := admissionTurnEndpoint.speechActive
 				admissionTurnEndpoint.Observe(pcm, now)
@@ -1960,6 +1970,13 @@ func agentTaskUserActionNotifications(tasks *agenttask.Manager) <-chan struct{} 
 
 func chatBridgeHasPending(bridge *realtimeChatBridge) bool {
 	return bridge != nil && len(bridge.commands) > 0
+}
+
+// realtimeChatPending reports whether an explicit /api/chat request is waiting
+// to start: either still unread on the bridge, or already selected off the
+// bridge and parked in queuedChat until the active response completes.
+func realtimeChatPending(bridge *realtimeChatBridge, queued *realtimeChatCommand) bool {
+	return chatBridgeHasPending(bridge) || queued != nil
 }
 
 func hasSuppressedNotificationResponse(responses map[string]struct{}, responseID string) bool {

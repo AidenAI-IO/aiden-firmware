@@ -170,6 +170,81 @@ func TestOpenAISessionUpdateUsesNegotiatedRates(t *testing.T) {
 	}
 }
 
+func TestOpenAILegacySessionUpdateUsesBetaFields(t *testing.T) {
+	provider := OpenAIProvider{Endpoint: "wss://api.mixroute.ai/v1/realtime"}
+	endpoint, err := provider.endpoint("gpt-realtime-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := u.Query().Get("model"); got != "gpt-realtime-2" {
+		t.Fatalf("model query = %q, want gpt-realtime-2", got)
+	}
+
+	threshold := 0.5
+	update := buildOpenAISessionUpdateForProtocol(SessionConfig{
+		Instructions: "be concise", Voice: "alloy", InputSampleRate: 16000, OutputSampleRate: 24000,
+		TurnDetection: "server_vad", TurnDetectionThresh: &threshold, TurnDetectionSilenceMs: 550,
+	}, "gpt-realtime-2", "legacy")
+	body, err := json.Marshal(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Session map[string]any `json:"session"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if model, ok := payload.Session["model"]; ok {
+		t.Fatalf("legacy session update must select the model only through the URL, got model=%v: %s", model, body)
+	}
+	text := string(body)
+	for _, forbidden := range []string{"output_modalities", `"audio":`, `"type":"realtime"`} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("legacy payload contains GA field %q: %s", forbidden, text)
+		}
+	}
+	for _, required := range []string{`"modalities":["audio","text"]`, `"input_audio_format":"pcm16"`, `"output_audio_format":"pcm16"`, `"input_audio_transcription":{"model":"whisper-1"}`, `"silence_duration_ms":550`} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("legacy payload missing %q: %s", required, text)
+		}
+	}
+}
+
+func TestOpenAIProtocolAliases(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"", "ga"}, {"ga", "ga"}, {"legacy", "legacy"}, {"beta", "legacy"}, {" LEGACY ", "legacy"},
+	} {
+		if got := normalizeRealtimeProtocol(tc.input); got != tc.want {
+			t.Errorf("normalizeRealtimeProtocol(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestOpenAIContextReplayUsesProtocolSpecificAssistantContentType(t *testing.T) {
+	item := ContextItem{Type: "message", Role: "assistant", Content: "prior answer"}
+	for _, tc := range []struct {
+		name     string
+		protocol string
+		want     string
+	}{
+		{name: "GA", protocol: "", want: "output_text"},
+		{name: "legacy", protocol: "legacy", want: "text"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := openAIContextItemPayload(item, tc.protocol)
+			content, ok := payload["content"].([]map[string]string)
+			if !ok || len(content) != 1 || content[0]["type"] != tc.want || content[0]["text"] != item.Content {
+				t.Fatalf("content = %#v, want type %q and text %q", payload["content"], tc.want, item.Content)
+			}
+		})
+	}
+}
+
 func TestOpenAIOutputEventAliasesNormalize(t *testing.T) {
 	cases := []struct {
 		name string

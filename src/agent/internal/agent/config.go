@@ -421,6 +421,7 @@ type VoiceModelConfig struct {
 	Location               string   `toml:"location,omitempty"`
 	Endpoint               string   `toml:"endpoint,omitempty"`
 	BaseURL                string   `toml:"base_url,omitempty"`
+	RealtimeProtocol       string   `toml:"realtime_protocol,omitempty"`
 	Voice                  string   `toml:"voice,omitempty"`
 	Instructions           string   `toml:"instructions,omitempty"`
 	EnableSpeechEmotion    *bool    `toml:"enable_speech_emotion,omitempty"`
