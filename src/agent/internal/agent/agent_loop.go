@@ -25,6 +25,8 @@ const agentLoopOutputKey = "output"
 
 var errSteerInterruptToolCancel = errors.New("steer interrupt tool cancel")
 
+type ContextBudgetGuard func(context.Context, *contextmanager.ContextManager, llms.CallOptions) (*contextmanager.ContextManager, bool, error)
+
 type iterationOutcome uint8
 
 const (
@@ -49,6 +51,7 @@ type AgentLoop struct {
 	PointerMode              string
 	ToolResultObserver       ToolResultObserver
 	ToolResultPolicy         ToolResultPolicy
+	ContextBudgetGuard       ContextBudgetGuard
 	ContextOverflowRecovery  func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
 	toolExecutionHookFactory func() toolExecutionHookHandler
 	contextManager           *contextmanager.ContextManager
@@ -198,6 +201,28 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		return "", iterationRestartBudget, nil
 	}
 
+	turnOptions := append([]llms.CallOption{}, callOptions...)
+	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
+	if l.ContextBudgetGuard != nil {
+		var resolvedOptions llms.CallOptions
+		for _, option := range turnOptions {
+			if option != nil {
+				option(&resolvedOptions)
+			}
+		}
+		newManager, changed, err := l.ContextBudgetGuard(ctx, llmExecutor.ContextManager(), resolvedOptions)
+		if err != nil {
+			return "", iterationContinue, fmt.Errorf("guard context budget before model request: %w", err)
+		}
+		if changed {
+			if newManager == nil {
+				return "", iterationContinue, fmt.Errorf("guard context budget before model request: context manager is nil")
+			}
+			l.contextManager = newManager
+			llmExecutor.ReplaceContextManager(newManager)
+		}
+	}
+
 	// Problem 4: Support interrupting LLM call during generation
 	llmCtx, llmCancel := context.WithCancelCause(ctx)
 	defer llmCancel(nil)
@@ -217,9 +242,6 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			defer close(done)
 		}
 	}
-
-	turnOptions := append([]llms.CallOption{}, callOptions...)
-	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
 
 	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
 	if err != nil {

@@ -1479,14 +1479,22 @@ func TestContextCompactionEventsUseDistinctTelemetryType(t *testing.T) {
 	}
 
 	historicalEvent := historicalPruneEvent(compactor.HistoricalPruneStats{
-		HistoricalStatesDropped:     1,
-		HistoricalToolResultsPruned: 2,
+		HistoricalStatesDropped:        1,
+		HistoricalToolResultsPruned:    2,
+		CurrentTurnStatesDropped:       3,
+		CurrentTurnToolExchangesPruned: 4,
 	}, true, nil, "threshold")
 	if historicalEvent.Type != runEventHistoricalContextPrune {
 		t.Fatalf("historical prune event type = %q, want %q", historicalEvent.Type, runEventHistoricalContextPrune)
 	}
 	if conversationEvent.Type == historicalEvent.Type {
 		t.Fatal("conversation compaction and historical prune events must use distinct types")
+	}
+	if got := eventMetadataInt(historicalEvent, "current_turn_states_dropped"); got != 3 {
+		t.Fatalf("current-turn states metadata = %d, want 3", got)
+	}
+	if got := eventMetadataInt(historicalEvent, "current_turn_tool_exchanges_pruned"); got != 4 {
+		t.Fatalf("current-turn tool exchanges metadata = %d, want 4", got)
 	}
 }
 
@@ -2408,6 +2416,93 @@ func TestRuntimeRunPrunesHistoricalStateWithProviderCompaction(t *testing.T) {
 	for _, message := range runtime.contextManager.CloneMessageList() {
 		if message.Role == messages.MessageRoleState || strings.Contains(message.Content, "stale-device-state") {
 			t.Fatalf("pruned context retained historical state: %#v", message)
+		}
+	}
+}
+
+func TestRuntimeRunPrunesContextDuringSingleLongToolRun(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	responses := make([]*llms.ContentResponse, 0, 7)
+	for i := 1; i <= 6; i++ {
+		responses = append(responses, toolCallResponse(
+			fmt.Sprintf("call_%d", i),
+			"echo",
+			fmt.Sprintf(`{"input":"step-%d-%s"}`, i, strings.Repeat("x", 2_400)),
+		))
+	}
+	responses = append(responses, contentResponse("long task complete"))
+	llmModel := &scriptedModel{responses: responses}
+	tool := &stubTool{
+		name:        "echo",
+		description: "Echo input.",
+		output:      strings.Repeat("bounded tool result ", 20),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:             configDir,
+			ContextPruneThreshold: 0.2,
+			Model:                 ModelConfig{Provider: "fake", MaxResponseTokens: 256},
+			Instruction:           "Complete every requested step.",
+			MaxIterations:         7,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec: model.ModelSpec{
+				Provider:      "fake",
+				Name:          "long-tool-run",
+				ContextWindow: 12_000,
+				MaxOutput:     256,
+			},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"echo": tool}},
+		NewSkillIndex(),
+	)
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "run all six steps"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "long task complete" || llmModel.callCount != 7 {
+		t.Fatalf("output/calls = %q/%d, want long task complete/7", result.Output, llmModel.callCount)
+	}
+	if runtime.contextManager == nil || runtime.contextManager.GetParentSessionID() == "" {
+		t.Fatal("runtime did not switch to a pruned context revision during the run")
+	}
+	loaded, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.ContextManagerSessionFolder(configDir))
+	if err != nil {
+		t.Fatalf("LoadContextManagerFromCurrentSession() error = %v", err)
+	}
+	if loaded.GetSessionID() != runtime.contextManager.GetSessionID() {
+		t.Fatalf("current session = %q, want %q", loaded.GetSessionID(), runtime.contextManager.GetSessionID())
+	}
+
+	finalRequest := llmModel.messages[len(llmModel.messages)-1]
+	argumentsByID := make(map[string]string)
+	resultsByID := make(map[string]string)
+	for _, message := range finalRequest {
+		for _, part := range message.Parts {
+			switch part := part.(type) {
+			case llms.ToolCall:
+				if part.FunctionCall != nil {
+					argumentsByID[part.ID] = part.FunctionCall.Arguments
+				}
+			case llms.ToolCallResponse:
+				resultsByID[part.ToolCallID] = part.Content
+			}
+		}
+	}
+	if _, callRetained := argumentsByID["call_1"]; callRetained {
+		t.Fatalf("oldest tool call was retained before final request: %q", argumentsByID["call_1"])
+	}
+	if _, resultRetained := resultsByID["call_1"]; resultRetained {
+		t.Fatalf("oldest tool result was retained before final request: %q", resultsByID["call_1"])
+	}
+	for i := 4; i <= 6; i++ {
+		id := fmt.Sprintf("call_%d", i)
+		if !strings.Contains(argumentsByID[id], fmt.Sprintf("step-%d-", i)) {
+			t.Fatalf("recent tool exchange %s was unexpectedly pruned: %q", id, argumentsByID[id])
 		}
 	}
 }

@@ -261,12 +261,14 @@ const (
 
 func historicalPruneEvent(stats compactor.HistoricalPruneStats, changed bool, err error, reason string) TaskEpisodeEvent {
 	metadata := map[string]interface{}{
-		"historical_states_dropped":      stats.HistoricalStatesDropped,
-		"historical_tool_results_pruned": stats.HistoricalToolResultsPruned,
-		"tokens_before":                  stats.TokensBefore,
-		"tokens_after":                   stats.TokensAfter,
-		"changed":                        changed,
-		"success":                        err == nil,
+		"historical_states_dropped":          stats.HistoricalStatesDropped,
+		"historical_tool_results_pruned":     stats.HistoricalToolResultsPruned,
+		"current_turn_states_dropped":        stats.CurrentTurnStatesDropped,
+		"current_turn_tool_exchanges_pruned": stats.CurrentTurnToolExchangesPruned,
+		"tokens_before":                      stats.TokensBefore,
+		"tokens_after":                       stats.TokensAfter,
+		"changed":                            changed,
+		"success":                            err == nil,
 	}
 	if reason != "" {
 		metadata["reason"] = reason
@@ -1225,6 +1227,56 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.TerminationPolicy = NewTerminationPolicy(r.config.TerminationPolicy)
 	agentLoop.DevicePlatform = r.devicePlatformFromState()
 	agentLoop.PointerMode = r.devicePointerModeFromState()
+	agentLoop.ContextBudgetGuard = func(_ context.Context, currentManager *contextmanager.ContextManager, options llms.CallOptions) (*contextmanager.ContextManager, bool, error) {
+		if currentManager == nil {
+			return nil, false, nil
+		}
+		messageTokens := tokencounter.EstimateMessagesTokens(currentManager.CloneMessageList())
+		toolSchemaTokens := tokencounter.EstimateToolSchemaTokens(options)
+		targetTokens := 0
+		reason := ""
+		if pruneEnabled && messageTokens > pruneTrigger {
+			targetTokens = pruneTarget
+			reason = "active_turn_threshold"
+		}
+		if usableInputBudget > 0 && messageTokens+toolSchemaTokens > usableInputBudget {
+			hardTarget := max(1, usableInputBudget-toolSchemaTokens)
+			if targetTokens == 0 || hardTarget < targetTokens {
+				targetTokens = hardTarget
+			}
+			if reason == "" {
+				reason = "active_turn_input_budget"
+			} else {
+				reason = "active_turn_threshold_and_input_budget"
+			}
+		}
+		if targetTokens == 0 {
+			return currentManager, false, nil
+		}
+
+		if r.logger != nil {
+			r.logger.Info("Context prune: model request reached budget during active run; messageTokens=%d toolSchemaTokens=%d trigger=%d target=%d usableInputBudget=%d reason=%s",
+				messageTokens, toolSchemaTokens, pruneTrigger, targetTokens, usableInputBudget, reason)
+		}
+		newManager, pruned, pruneErr := contextCompactor.PruneForBudget(currentManager, targetTokens)
+		if episodeRecorder != nil {
+			episodeRecorder.RecordEvent(historicalPruneEvent(
+				contextCompactor.LastPruneStats(),
+				pruned,
+				pruneErr,
+				reason,
+			))
+		}
+		if pruneErr != nil || !pruned {
+			return newManager, pruned, pruneErr
+		}
+		newManager.AddAppendMessageHook(r.getStateHook())
+		if switchErr := contextmanager.SwitchSession(newManager.GetSessionFolder(), newManager.GetSessionID()); switchErr != nil {
+			return nil, false, switchErr
+		}
+		r.contextManager = newManager
+		return newManager, true, nil
+	}
 	agentLoop.ContextOverflowRecovery = func(recoveryCtx context.Context, currentManager *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
 		if r.logger != nil {
 			r.logger.Info("Compaction: provider rejected the request because the context window was exceeded; compacting and retrying")
