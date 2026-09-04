@@ -295,6 +295,111 @@ func TestTextInputProbeSupportsWindowsAndLinuxPlatforms(t *testing.T) {
 	}
 }
 
+type probeVerifyingVision struct {
+	analyses          []textInputScreenAnalysis
+	probeStillVisible bool
+}
+
+func (v *probeVerifyingVision) ProbeInputMode(_ context.Context, _ screenshotResult, _ string, _ focusPointArgs) (textInputProbeAnalysis, error) {
+	if len(v.analyses) == 0 {
+		return textInputProbeAnalysis{Mode: textInputModeASCII, Evidence: "stub default"}, nil
+	}
+	out := v.analyses[0]
+	v.analyses = v.analyses[1:]
+	return textInputProbeAnalysis{Mode: out.ObservedMode, Evidence: "stub analysis"}, nil
+}
+
+func (v *probeVerifyingVision) VerifyProbeCleanup(_ context.Context, _, _ screenshotResult, _ string, _ focusPointArgs) (bool, error) {
+	return v.probeStillVisible, nil
+}
+
+func (v *probeVerifyingVision) PartitionComposition(_ context.Context, text string) ([]string, error) {
+	return []string{text}, nil
+}
+
+func (v *probeVerifyingVision) AnalyzeScreen(_ context.Context, _ screenshotResult, _ textInputScreenAnalysisRequest) (textInputScreenAnalysis, error) {
+	return textInputScreenAnalysis{ObservedMode: textInputModeASCII}, nil
+}
+
+func (v *probeVerifyingVision) DecideCandidateAction(_ context.Context, _ screenshotResult, _ textInputScreenAnalysisRequest) (textInputCandidateAction, error) {
+	return textInputCandidateAction{Action: textInputCandidateActionNone}, nil
+}
+
+func TestTextInputProbeVerificationSendsBackspaceWhenCharacterStillVisible(t *testing.T) {
+	// Create a vision that reports probe character is still visible
+	vision := &probeVerifyingVision{
+		analyses:          []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}},
+		probeStillVisible: true,
+	}
+
+	keyboardTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
+		keyboardTap:  keyboardTap,
+		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision, func(_ context.Context, _ time.Duration) error {
+		return nil
+	})
+
+	mode, _, err := engine.probeTextInputMode(context.Background(), "ios", focusPointArgs{})
+	if err != nil || mode != textInputModeASCII {
+		t.Fatalf("probeTextInputMode() mode=%s err=%v", mode, err)
+	}
+
+	// Verify that backspace was sent after undo
+	undoIndex, firstBackspaceIndex := -1, -1
+	for index, call := range keyboardTap.calls {
+		if strings.Contains(call, "meta") && strings.Contains(call, "z") {
+			undoIndex = index
+		}
+		if strings.Contains(call, "backspace") && firstBackspaceIndex < 0 {
+			firstBackspaceIndex = index
+		}
+	}
+	if undoIndex < 0 {
+		t.Fatal("expected undo keys to be sent")
+	}
+	if firstBackspaceIndex < 0 {
+		t.Fatal("expected backspace to be sent when probe character is still visible")
+	}
+	if undoIndex > firstBackspaceIndex {
+		t.Fatal("expected undo keys before backspace")
+	}
+}
+
+func TestTextInputProbeVerificationSkipsBackspaceWhenCharacterRemoved(t *testing.T) {
+	// Create a vision that reports probe character was successfully removed
+	vision := &probeVerifyingVision{
+		analyses:          []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}},
+		probeStillVisible: false,
+	}
+
+	keyboardTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
+		keyboardTap:  keyboardTap,
+		keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision, func(_ context.Context, _ time.Duration) error {
+		return nil
+	})
+
+	mode, _, err := engine.probeTextInputMode(context.Background(), "ios", focusPointArgs{})
+	if err != nil || mode != textInputModeASCII {
+		t.Fatalf("probeTextInputMode() mode=%s err=%v", mode, err)
+	}
+
+	// Verify that backspace was NOT sent
+	var foundBackspace bool
+	for _, call := range keyboardTap.calls {
+		if strings.Contains(call, "backspace") {
+			foundBackspace = true
+		}
+	}
+	if foundBackspace {
+		t.Fatal("backspace should not be sent when probe character is successfully removed")
+	}
+}
+
 func TestTextInputKeyboardKeysForPlatforms(t *testing.T) {
 	tests := []struct {
 		platform  string

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 	"unicode"
@@ -314,15 +315,70 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 	if err != nil {
 		return textInputModeUnknown, vlmCalls, err
 	}
+	var probeBeforeScreenshot screenshotResult
+	cleanupVision, cleanupSupported := e.vision.(textInputProbeCleanupVision)
+	if cleanupSupported {
+		probeBeforeScreenshot, err = e.captureScreenshot(ctx)
+		if err != nil {
+			log.Printf("[text-input] probe cleanup baseline screenshot failed: %v", err)
+			cleanupSupported = false
+		}
+	}
 	if err = e.typeASCIIChunk(ctx, "a"); err != nil {
 		return textInputModeUnknown, vlmCalls, fmt.Errorf("input mode probe: type a: %w", err)
 	}
 	defer func() {
+		// Send undo keys
 		undoErr := e.tapKeys(ctx, undoKeys)
 		if undoErr == nil {
 			undoErr = e.sleepFor(ctx, textInputKeystrokeGap)
 		}
-		err = errors.Join(err, undoErr)
+		if undoErr != nil {
+			err = errors.Join(err, undoErr)
+			return
+		}
+
+		// Secondary verification is optional so probe-only vision
+		// implementations can still complete mode analysis.
+		if !cleanupSupported {
+			return
+		}
+
+		// Wait for undo to take effect
+		if waitErr := e.sleepFor(ctx, textInputProbeSettleDelay); waitErr != nil {
+			err = errors.Join(err, waitErr)
+			return
+		}
+
+		// Capture screenshot for verification
+		verifyShot, captureErr := e.captureScreenshot(ctx)
+		if captureErr != nil {
+			log.Printf("[text-input] probe cleanup verification screenshot failed: %v", captureErr)
+			err = errors.Join(err, fmt.Errorf("probe cleanup verification screenshot: %w", captureErr))
+			return
+		}
+
+		// Ask LLM to verify if probe character is still visible
+		probeStillVisible, verifyErr := cleanupVision.VerifyProbeCleanup(ctx, probeBeforeScreenshot, verifyShot, platform, focus)
+		vlmCalls++
+		if verifyErr != nil {
+			log.Printf("[text-input] probe cleanup verification failed: %v", verifyErr)
+			err = errors.Join(err, fmt.Errorf("probe cleanup verification: %w", verifyErr))
+			return
+		}
+
+		if probeStillVisible {
+			log.Printf("[text-input] probe character still visible after undo, sending backspace")
+			if backspaceErr := e.tapKeys(ctx, []string{"backspace"}); backspaceErr != nil {
+				err = errors.Join(err, fmt.Errorf("probe cleanup backspace: %w", backspaceErr))
+				return
+			}
+			if waitErr := e.sleepFor(ctx, textInputKeystrokeGap); waitErr != nil {
+				err = errors.Join(err, waitErr)
+			}
+		} else {
+			log.Printf("[text-input] probe character successfully removed by undo")
+		}
 	}()
 	if err = e.sleepFor(ctx, textInputProbeSettleDelay); err != nil {
 		return textInputModeUnknown, vlmCalls, err
