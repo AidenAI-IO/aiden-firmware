@@ -1,0 +1,166 @@
+rockchip: rv1106: serve the BOOT-key download from U-Boot instead of the BootROM
+
+Holding BOOT and plugging USB currently ends in MaskROM: setup_download_mode()
+runs "download", CMD_ROCKUSB is off, and cmd/download.c falls through to rbrom,
+which writes BOOT_BROM_DOWNLOAD and resets the SoC. The BootROM then serves USB
+with the PHY at power-on defaults, and nothing we ship runs in that mode. On a
+host whose xHCI is marginal for this board that trim never trains the link:
+
+    usb usb5-port3: Cannot enable. Maybe the USB cable is bad?
+    usb usb5-port3: attempt power cycle
+    usb usb5-port3: unable to enumerate USB device
+
+The same port enumerates the board fine once Linux is up and has applied the
+0x1f HS ODT trim, so the link is capable and only the trim differs. The BootROM
+cannot be given that trim - rbrom resets the chip first - so the only way to
+control the PHY during flashing is to not return to the BootROM at all.
+
+Enable RockUSB so U-Boot serves the download itself, with three pieces:
+
+  - aiden-rv1106-rockusb.config turns on CMD_ROCKUSB and the non-DM DWC3 gadget
+    the board file already implements, and keeps DFU, fastboot and DM USB off.
+
+  - setup_download_mode() no longer treats a missing VBUS detector as "no
+    cable". rockchip_u2phy_vbus_detect() resolves to the -ENOSYS stub unless a
+    u2phy driver is built in, and the previous attempt at this change enabled
+    CMD_ROCKUSB without one: vbus was never positive, download never ran, and
+    the BOOT key stopped entering flash mode at all. Restore the documented
+    "assumed 1" behaviour when no detector is present.
+
+  - board_usb_init() programs the same 45ohm HS ODT trim Linux uses before
+    starting the gadget, which is the point of the exercise.
+
+Including <g_dnl.h> pulls in linux/usb/gadget.h, which declares
+usb_gadget_handle_interrupts(int index) while this board file defined it as
+(void). The build fails on the conflict. Match the header, which is what
+evb_rk3528, evb_rk3576 and evb_rk3588 already do; nothing calls the no-argument
+form.
+
+Also implement g_dnl_board_usb_cable_connected(). The weak default returns
+-EOPNOTSUPP, which sleep_thread() reads as "cable present", so a host that
+never enumerates leaves rockusb serving forever with no way back. Reporting the
+dwc3 connection state instead makes sleep_thread() return -EIO after the 3s
+connect timeout, rockusb exits, and cmd/download.c falls through to rbrom - so
+a board this does not help still reaches MaskROM exactly as it does today.
+
+diff --git a/sysdrv/source/uboot/u-boot/arch/arm/mach-rockchip/boot_rkimg.c b/sysdrv/source/uboot/u-boot/arch/arm/mach-rockchip/boot_rkimg.c
+--- a/sysdrv/source/uboot/u-boot/arch/arm/mach-rockchip/boot_rkimg.c
++++ b/sysdrv/source/uboot/u-boot/arch/arm/mach-rockchip/boot_rkimg.c
+@@ -337,6 +337,16 @@ void setup_download_mode(void)
+ 		       is_hotkey(HK_ROCKUSB_DNL) ? "hot" : "");
+ #ifdef CONFIG_CMD_ROCKUSB
+ 		vbus = rockchip_u2phy_vbus_detect();
++		if (vbus < 0) {
++			/*
++			 * No VBUS detector is built in, i.e. no u2phy driver.
++			 * That says nothing about the cable, so keep the
++			 * "assumed 1" behaviour documented above instead of
++			 * silently skipping download mode.
++			 */
++			printf("no vbus detector, assuming attached... ");
++			vbus = 1;
++		}
+ #endif
+ 		if (vbus > 0) {
+ 			printf("%sentering download mode...\n",
+diff --git a/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c b/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c
+--- a/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c
++++ b/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c
+@@ -7,12 +7,16 @@
+ #include <common.h>
+ #include <asm/io.h>
+ #include <dwc3-uboot.h>
++#include <g_dnl.h>
++#include <rockusb.h>
+ #include <usb.h>
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+ #define CRU_BASE		0xFF3B2000
+ #define CRU_SOFTRST_CON04	0x0A10
++#define USB2PHY_APB_BASE	0xFF3E0000
++#define USB2PHY_HS_ODT		0x011C
+ 
+ #ifdef CONFIG_USB_DWC3
+ static struct dwc3_device dwc3_device_data = {
+@@ -24,7 +28,7 @@ static struct dwc3_device dwc3_device_data = {
+ 	.usb2_phyif_utmi_width = 16,
+ };
+ 
+-int usb_gadget_handle_interrupts(void)
++int usb_gadget_handle_interrupts(int index)
+ {
+ 	dwc3_uboot_handle_interrupt(0);
+ 	return 0;
+@@ -43,11 +47,39 @@ static void usb_reset_otg_controller(void)
+ 
+ int board_usb_init(int index, enum usb_init_type init)
+ {
++	u32 reg;
++
+ #ifdef CONFIG_SUPPORT_USBPLUG
+ 	usb_reset_otg_controller();
+ #endif
+ 	writel(0x01ff0000, 0xff000050); /* Resume usb2 phy to normal mode */
+ 
++	/*
++	 * Match the 45ohm HS ODT trim rv1106_usb2phy_tuning() applies under
++	 * Linux. The stock value does not train the link on every host, and a
++	 * loader that enumerates differently from the running system is a trap
++	 * when the two are compared during a USB fault.
++	 */
++	reg = readl(USB2PHY_APB_BASE + USB2PHY_HS_ODT);
++	reg = (reg & ~GENMASK(4, 0)) | 0x1f;
++	writel(reg, USB2PHY_APB_BASE + USB2PHY_HS_ODT);
++
+ 	return dwc3_uboot_init(&dwc3_device_data);
+ }
++
++#ifdef CONFIG_USB_GADGET_DOWNLOAD
++int g_dnl_board_usb_cable_connected(void)
++{
++	/*
++	 * sleep_thread() in f_mass_storage.c aborts with -EIO when this reports
++	 * no cable, which is what lets do_download() fall through to rbrom. The
++	 * weak default returns -EOPNOTSUPP, which reads as "connected", so a
++	 * host that never enumerates would leave rockusb serving forever with
++	 * no path back to the BootROM. dwc3_gadget_is_connected() stays true
++	 * until the 3s connect timeout expires and once the host has actually
++	 * set a speed, so a working session is never cut short.
++	 */
++	return dwc3_gadget_is_connected() ? 1 : 0;
++}
++#endif
+ #endif
+diff --git a/sysdrv/source/uboot/u-boot/configs/aiden-rv1106-rockusb.config b/sysdrv/source/uboot/u-boot/configs/aiden-rv1106-rockusb.config
+new file mode 100644
+--- /dev/null
++++ b/sysdrv/source/uboot/u-boot/configs/aiden-rv1106-rockusb.config
+@@ -0,0 +1,27 @@
++# Serve the BOOT-key download from U-Boot's RockUSB gadget instead of falling
++# back to the BootROM, so the HS PHY trim is under our control while flashing.
++# Keep the board's non-DM DWC3 gadget path: board_usb_init() drives dwc3 directly.
++CONFIG_CMD_ROCKUSB=y
++CONFIG_USB=y
++CONFIG_USB_GADGET=y
++CONFIG_USB_GADGET_DOWNLOAD=y
++CONFIG_USB_GADGET_DUALSPEED=y
++CONFIG_USB_GADGET_MANUFACTURER="Rockchip"
++CONFIG_USB_GADGET_PRODUCT_NUM=0x110c
++CONFIG_USB_GADGET_VENDOR_NUM=0x2207
++CONFIG_USB_GADGET_VBUS_DRAW=2
++CONFIG_USB_DWC3=y
++CONFIG_USB_DWC3_GADGET=y
++# CONFIG_USB_DWC3_HOST is not set
++# DM_USB returns via Kconfig once CONFIG_USB=y; the gadget path stays non-DM.
++# CONFIG_DM_USB_GADGET is not set
++# CONFIG_SPL_DM_USB is not set
++# CONFIG_SPL_DM_USB_GADGET is not set
++# CONFIG_CMD_DFU is not set
++# CONFIG_CMD_FASTBOOT is not set
++# CONFIG_FASTBOOT is not set
++# CONFIG_USB_FUNCTION_FASTBOOT is not set
++# CONFIG_UDP_FUNCTION_FASTBOOT is not set
++# CONFIG_USB_FUNCTION_DFU is not set
++# CONFIG_USB_FUNCTION_SDP is not set
++# CONFIG_USB_ETHER is not set
