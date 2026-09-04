@@ -64,6 +64,17 @@ func TestVoiceModelConfigRejectsNonLoopbackPlaintextEndpoint(t *testing.T) {
 	}
 }
 
+func TestVoiceModelConfigDoesNotStrictlyValidateRealtimeProtocolAtBoot(t *testing.T) {
+	for _, cfg := range []VoiceModelConfig{
+		{Provider: "openai", APIKey: "key", RealtimeProtocol: "v2"},
+		{Provider: "gemini", APIKey: "key", RealtimeProtocol: "legacy"},
+	} {
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("voice protocol compatibility should be validated on config save, not boot: %v", err)
+		}
+	}
+}
+
 func TestVoiceModelConfigValidatesRealtimeProvider(t *testing.T) {
 	if err := (VoiceModelConfig{Provider: "unknown", APIKey: "key"}).Validate(); err == nil {
 		t.Fatal("expected unsupported realtime provider error")
@@ -187,6 +198,14 @@ model = "grok-voice-latest"
 voice = "eve"
 base_url = "https://api.speko.dev"
 
+[voice_model_providers.openai-gateway]
+type = "openai"
+api_key = "openai-secret"
+model = "gpt-realtime-2"
+endpoint = "wss://gateway.example/v1/realtime"
+realtime_protocol = "legacy"
+voice = "alloy"
+
 [voice_model]
 provider = "speko-main"
 `), 0o600); err != nil {
@@ -205,6 +224,9 @@ provider = "speko-main"
 	}
 	if got := resolved.VoiceModelProviders["speko-main"]; got.APIKey != "speko-secret" || got.Model != "grok-voice-latest" || got.Voice != "eve" {
 		t.Fatalf("saved Speko record changed: %+v", got)
+	}
+	if got := resolved.VoiceModelProviders["openai-gateway"]; got.RealtimeProtocol != "legacy" || got.Endpoint != "wss://gateway.example/v1/realtime" {
+		t.Fatalf("saved OpenAI compatibility record changed: %+v", got)
 	}
 
 	runtime, err := LoadRuntimeConfig(path)
@@ -255,6 +277,27 @@ func TestConfigInputModeDefaultContract(t *testing.T) {
 	}
 	if metaDefault != want {
 		t.Fatalf("ConfigMeta agent.input_mode default = %#v, want %q", metaDefault, want)
+	}
+}
+
+func TestLoadRuntimeConfigFallsBackFromUnconfiguredRealtime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	config := `input_mode = "realtime"
+
+[model]
+provider = "fake"
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if got, want := cfg.InputModeOrDefault(), "text"; got != want {
+		t.Fatalf("InputModeOrDefault() = %q, want runtime fallback %q", got, want)
 	}
 }
 
@@ -1310,6 +1353,73 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 		t.Fatalf("expected model.model_max_output_tokens validation error, got %v", err)
 	}
 
+}
+
+func TestConfigValidateReasoningBudgetAgainstResponseLimit(t *testing.T) {
+	tests := []struct {
+		name    string
+		model   ModelConfig
+		wantErr string
+	}{
+		{
+			name:    "below provider floor",
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 512, MaxResponseTokens: 8_192},
+			wantErr: "model.reasoning_budget_tokens must be 0 or >= 1024",
+		},
+		{
+			// A response limit smaller than the exact budget is invalid because
+			// reasoning tokens are included in the response limit.
+			// user hits first when enabling an exact budget.
+			name:    "budget exceeds response limit",
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 4_096, MaxResponseTokens: 1_000},
+			wantErr: "must be less than model.max_response_tokens",
+		},
+		{
+			name:    "budget equals response limit",
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 4_096, MaxResponseTokens: 4_096},
+			wantErr: "must be less than model.max_response_tokens",
+		},
+		{
+			name:    "budget exceeds model output capability",
+			model:   ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 9_000, ModelMaxOutputTokens: 8_192, MaxResponseTokens: 64_000},
+			wantErr: "must be less than model.model_max_output_tokens",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Config{Model: tt.model}.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() = %v, want an error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	valid := Config{Model: ModelConfig{Provider: "anthropic", Model: "claude-haiku-4-5", ReasoningBudgetTokens: 4_096, MaxResponseTokens: 16_384}}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want a valid budget/limit pair accepted", err)
+	}
+	unset := Config{Model: ModelConfig{Provider: "fake", MaxResponseTokens: 500}}
+	if err := unset.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want budget 0 to stay unconstrained", err)
+	}
+}
+
+func TestConfigValidateReasoningBudgetForNamedAnthropicProvider(t *testing.T) {
+	cfg := Config{
+		ModelProviders: map[string]ModelProvider{
+			"claude": {Type: "anthropic"},
+		},
+		Model: ModelConfig{
+			Provider:              "claude",
+			Model:                 "claude-haiku-4-5",
+			ReasoningBudgetTokens: 512,
+			MaxResponseTokens:     8_192,
+		},
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model.reasoning_budget_tokens must be 0 or >= 1024") {
+		t.Fatalf("Validate() = %v, want named Anthropic provider budget validation", err)
+	}
 }
 
 func TestConfigValidateRejectsOutOfRangeContextPruneThreshold(t *testing.T) {

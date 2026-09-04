@@ -50,6 +50,20 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 		return nil, nil, fmt.Errorf("no choices in response")
 	}
 	choice := contentResp.Choices[0]
+	if choice == nil {
+		return nil, nil, fmt.Errorf("nil choice in response")
+	}
+	if len(choice.ToolCalls) == 0 && choice.FuncCall == nil {
+		if visible, reasoning, found := normalizeTaggedThinkingText(choice.Content); found {
+			choice.Content = visible
+			if reasoning != "" {
+				if choice.ReasoningContent != "" {
+					choice.ReasoningContent += "\n"
+				}
+				choice.ReasoningContent += reasoning
+			}
+		}
+	}
 
 	if len(choice.ToolCalls) > 0 {
 		for _, toolCall := range choice.ToolCalls {

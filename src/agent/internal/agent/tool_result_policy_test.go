@@ -13,6 +13,7 @@ import (
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/tokencounter"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
@@ -132,7 +133,7 @@ func TestToolResultPolicyBoundsResultWhenCurrentContextIsFull(t *testing.T) {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
 	output := strings.Repeat("result ", 400)
-	if len(output) >= toolResultInlineMaxBytes || estimateTextTokens(output) >= toolResultInlineMaxTokens {
+	if len(output) >= toolResultInlineMaxBytes || tokencounter.EstimateTextTokens(output) >= toolResultInlineMaxTokens {
 		t.Fatal("test setup output must be intrinsically small")
 	}
 
@@ -156,7 +157,7 @@ func TestToolResultPolicyBoundsResultWhenCurrentContextIsFull(t *testing.T) {
 	if prepared.Complete {
 		t.Fatal("Prepare() complete = true, want false")
 	}
-	if got := estimateTextTokens(prepared.Content); got >= estimateTextTokens(output) {
+	if got := tokencounter.EstimateTextTokens(prepared.Content); got >= tokencounter.EstimateTextTokens(output) {
 		t.Fatalf("Prepare() content tokens = %d, want less than raw result", got)
 	}
 }
@@ -190,7 +191,7 @@ func TestToolResultPolicyBoundsIntrinsicallyLargeResult(t *testing.T) {
 	if strings.Contains(prepared.Content, "tool result omitted") {
 		t.Fatalf("Prepare() used opaque omission text: %s", prepared.Content)
 	}
-	if got := estimateTextTokens(prepared.Content); got > toolResultInlineMaxTokens {
+	if got := tokencounter.EstimateTextTokens(prepared.Content); got > toolResultInlineMaxTokens {
 		t.Fatalf("Prepare() tokens = %d, want <= %d", got, toolResultInlineMaxTokens)
 	}
 }
@@ -218,7 +219,7 @@ func TestToolResultPolicyShrinksIntrinsicResultToCurrentBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}
-	if got := estimateTextTokens(prepared.Content); got > available {
+	if got := tokencounter.EstimateTextTokens(prepared.Content); got > available {
 		t.Fatalf("Prepare() content tokens = %d, want <= available %d", got, available)
 	}
 	if prepared.ArtifactPath == "" || !strings.Contains(prepared.Content, prepared.ArtifactPath) {
@@ -377,7 +378,7 @@ func TestToolResultPolicyReportsArtifactPersistenceFailureWithoutRepeatingAction
 	if strings.Contains(prepared.Content, `"ok":false`) {
 		t.Fatalf("persistence failure incorrectly reported the tool action as failed:\n%s", prepared.Content)
 	}
-	if got := estimateTextTokens(prepared.Content); got > toolResultInlineMaxTokens {
+	if got := tokencounter.EstimateTextTokens(prepared.Content); got > toolResultInlineMaxTokens {
 		t.Fatalf("Prepare() tokens = %d, want <= %d", got, toolResultInlineMaxTokens)
 	}
 

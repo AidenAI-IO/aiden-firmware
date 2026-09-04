@@ -69,6 +69,7 @@ type Model struct {
 	ResponsesTruncation               string   `json:"responses_truncation,omitempty"`
 	ResponsesInclude                  []string `json:"responses_include,omitempty"`
 	ReasoningEffort                   string   `json:"reasoning_effort"`
+	ReasoningBudgetTokens             int      `json:"reasoning_budget_tokens"`
 	Temperature                       *float64 `json:"temperature,omitempty"`
 	MaxResponseTokens                 int      `json:"max_response_tokens"`
 	LogRawHTTP                        bool     `json:"log_raw_http"`
@@ -91,6 +92,7 @@ func (d Model) ProviderTestRequest() agent.ModelProviderTestRequest {
 		ResponsesInclude:                  append([]string(nil), d.ResponsesInclude...),
 		Temperature:                       d.Temperature,
 		ReasoningEffort:                   d.ReasoningEffort,
+		ReasoningBudgetTokens:             d.ReasoningBudgetTokens,
 	}
 }
 
@@ -201,6 +203,7 @@ type VoiceModelProvider struct {
 	Location         string `json:"location,omitempty"`
 	Endpoint         string `json:"endpoint,omitempty"`
 	BaseURL          string `json:"base_url,omitempty"`
+	RealtimeProtocol string `json:"realtime_protocol,omitempty"`
 	Voice            string `json:"voice,omitempty"`
 }
 
@@ -315,6 +318,7 @@ type VoiceModel struct {
 	Location               string   `json:"location"`
 	Endpoint               string   `json:"endpoint"`
 	BaseURL                string   `json:"base_url"`
+	RealtimeProtocol       string   `json:"realtime_protocol,omitempty"`
 	Voice                  string   `json:"voice"`
 	Instructions           string   `json:"instructions"`
 	EnableSpeechEmotion    *bool    `json:"enable_speech_emotion,omitempty"`
@@ -564,6 +568,7 @@ func (d Config) ToAgentConfig() agent.Config {
 			ResponsesTruncation:               d.Model.ResponsesTruncation,
 			ResponsesInclude:                  append([]string(nil), d.Model.ResponsesInclude...),
 			ReasoningEffort:                   d.Model.ReasoningEffort,
+			ReasoningBudgetTokens:             d.Model.ReasoningBudgetTokens,
 			Temperature:                       d.Model.Temperature,
 			MaxResponseTokens:                 d.Model.MaxResponseTokens,
 			LogRawHTTP:                        d.Model.LogRawHTTP,
@@ -611,6 +616,7 @@ func (d Config) ToAgentConfig() agent.Config {
 			Location:               d.VoiceModel.Location,
 			Endpoint:               d.VoiceModel.Endpoint,
 			BaseURL:                d.VoiceModel.BaseURL,
+			RealtimeProtocol:       d.VoiceModel.RealtimeProtocol,
 			Voice:                  d.VoiceModel.Voice,
 			Instructions:           d.VoiceModel.Instructions,
 			EnableSpeechEmotion:    d.VoiceModel.EnableSpeechEmotion,
@@ -864,6 +870,7 @@ func voiceModelProvidersFromConfig(providers map[string]agent.VoiceModelProvider
 			Location:         provider.Location,
 			Endpoint:         provider.Endpoint,
 			BaseURL:          provider.BaseURL,
+			RealtimeProtocol: provider.RealtimeProtocol,
 			Voice:            provider.Voice,
 		}
 	}
@@ -889,6 +896,7 @@ func (d Config) voiceModelProvidersToAgentConfig() map[string]agent.VoiceModelPr
 			Location:         provider.Location,
 			Endpoint:         provider.Endpoint,
 			BaseURL:          provider.BaseURL,
+			RealtimeProtocol: provider.RealtimeProtocol,
 			Voice:            provider.Voice,
 		}
 		if mapped.APIKey == "" && provider.HasAPIKey {
@@ -920,6 +928,7 @@ func FromAgentConfig(cfg agent.Config) Config {
 			ResponsesTruncation:               cfg.Model.ResponsesTruncation,
 			ResponsesInclude:                  append([]string(nil), cfg.Model.ResponsesInclude...),
 			ReasoningEffort:                   cfg.Model.ReasoningEffort,
+			ReasoningBudgetTokens:             cfg.Model.ReasoningBudgetTokens,
 			Temperature:                       cfg.Model.Temperature,
 			MaxResponseTokens:                 cfg.Model.MaxResponseTokens,
 			LogRawHTTP:                        cfg.Model.LogRawHTTP,
@@ -963,6 +972,7 @@ func FromAgentConfig(cfg agent.Config) Config {
 			Location:               cfg.VoiceModel.Location,
 			Endpoint:               cfg.VoiceModel.Endpoint,
 			BaseURL:                cfg.VoiceModel.BaseURL,
+			RealtimeProtocol:       cfg.VoiceModel.RealtimeProtocol,
 			Voice:                  cfg.VoiceModel.Voice,
 			Instructions:           cfg.VoiceModel.Instructions,
 			EnableSpeechEmotion:    cfg.VoiceModel.EnableSpeechEmotion,

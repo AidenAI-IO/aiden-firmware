@@ -23,9 +23,10 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 			"whisper": {Type: "openai-whisper", APIKey: "sk-w", BaseURL: "https://api.openai.com/v1", Model: "whisper-1"},
 		},
 		VoiceModelProviders: map[string]agent.VoiceModelProvider{
-			"qwen-main":  {Type: "qwen", APIKey: "qwen-secret", Model: "qwen-realtime", Voice: "longanqian"},
-			"speko-main": {Type: "speko", APIKey: "$SPEKO_KEY", UpstreamProvider: "xai", Model: "grok-voice-latest", Voice: "eve"},
-			"vertex":     {Type: "gemini", APIKey: "$VERTEX_TOKEN", AuthMode: "vertex", ProjectID: "project-1", Location: "us-central1"},
+			"qwen-main":    {Type: "qwen", APIKey: "qwen-secret", Model: "qwen-realtime", Voice: "longanqian"},
+			"openai-proxy": {Type: "openai", APIKey: "openai-secret", Endpoint: "wss://gateway.example/realtime", RealtimeProtocol: "legacy"},
+			"speko-main":   {Type: "speko", APIKey: "$SPEKO_KEY", UpstreamProvider: "xai", Model: "grok-voice-latest", Voice: "eve"},
+			"vertex":       {Type: "gemini", APIKey: "$VERTEX_TOKEN", AuthMode: "vertex", ProjectID: "project-1", Location: "us-central1"},
 		},
 		TTS:        agent.TTSConfig{Provider: "minimax-main", Speed: 1.2},
 		STT:        agent.STTConfig{Provider: "tencent", Language: "zh"},
@@ -40,8 +41,8 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	if len(dto.STTProviders) != 2 {
 		t.Fatalf("dto.STTProviders = %#v, want 2 entries", dto.STTProviders)
 	}
-	if len(dto.VoiceModelProviders) != 3 {
-		t.Fatalf("dto.VoiceModelProviders = %#v, want 3 entries", dto.VoiceModelProviders)
+	if len(dto.VoiceModelProviders) != 4 {
+		t.Fatalf("dto.VoiceModelProviders = %#v, want 4 entries", dto.VoiceModelProviders)
 	}
 	if got := dto.TTSProviders["fish"]; got.Type != "fish-audio" || got.ReferenceID != "ref-abc" {
 		t.Errorf("dto.TTSProviders[fish] = %#v", got)
@@ -55,6 +56,9 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	}
 	if got := dto.VoiceModelProviders["speko-main"]; got.APIKey != "" || !got.HasAPIKey || got.UpstreamProvider != "xai" || got.Model != "grok-voice-latest" {
 		t.Errorf("dto.VoiceModelProviders[speko-main] = %#v", got)
+	}
+	if got := dto.VoiceModelProviders["openai-proxy"]; got.RealtimeProtocol != "legacy" || got.Endpoint != "wss://gateway.example/realtime" {
+		t.Errorf("dto.VoiceModelProviders[openai-proxy] = %#v", got)
 	}
 	if got := dto.VoiceModelProviders["vertex"]; got.AuthMode != "vertex" || got.ProjectID != "project-1" || got.Location != "us-central1" {
 		t.Errorf("dto.VoiceModelProviders[vertex] = %#v", got)
@@ -70,6 +74,9 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 	}
 	if got := back.VoiceModelProviders["speko-main"]; got.Type != "speko" || got.APIKey != hasAPIKeyPlaceholder || got.UpstreamProvider != "xai" {
 		t.Errorf("redacted voice_model_providers conversion = %#v", back.VoiceModelProviders)
+	}
+	if got := back.VoiceModelProviders["openai-proxy"]; got.RealtimeProtocol != "legacy" || got.Endpoint != "wss://gateway.example/realtime" {
+		t.Errorf("OpenAI compatibility fields conversion = %#v", got)
 	}
 	if got := back.VoiceModelProviders["vertex"]; got.AuthMode != "vertex" || got.ProjectID != "project-1" || got.Location != "us-central1" {
 		t.Errorf("Vertex voice_model_providers conversion = %#v", back.VoiceModelProviders)

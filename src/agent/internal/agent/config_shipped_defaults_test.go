@@ -54,5 +54,8 @@ func TestShippedConfigsAgreeWithDefaults(t *testing.T) {
 		if got, want := shipped.QuickCapture.ScreenMemoryTTLOrDefault(), defaults.QuickCapture.ScreenMemoryTTLOrDefault(); got != want {
 			t.Errorf("%s: quick_capture.screen_memory_ttl = %q, DefaultConfig() = %q", relative, got, want)
 		}
+		if got, want := shipped.InputModeOrDefault(), defaults.InputModeOrDefault(); got != want {
+			t.Errorf("%s: input_mode = %q, DefaultConfig() = %q", relative, got, want)
+		}
 	}
 }

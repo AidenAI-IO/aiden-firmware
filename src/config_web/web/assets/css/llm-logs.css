@@ -45,6 +45,8 @@ body{margin:0;background:#f9fafb;color:#111827;font-family:-apple-system,BlinkMa
     .msg-content.collapsed{max-height:10em;overflow:hidden;position:relative}
     .msg-content.collapsed::after{content:'';position:absolute;bottom:0;left:0;right:0;height:3em;background:linear-gradient(transparent,#fff)}
     .msg-part{margin:0 0 8px}.msg-part:last-child{margin-bottom:0}.msg-text{white-space:pre-wrap;word-break:break-word}
+    .msg-reasoning{padding:8px 10px;background:#fffbeb;border-left:3px solid #d97706;color:#78350f}
+    .msg-part-label{margin-bottom:4px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:#92400e}
     .msg-image{display:block;max-width:100%;max-height:460px;object-fit:contain;border:1px solid #d1d5db;border-radius:6px;background:#111827}
     .msg-image-meta{margin-top:4px;color:#6b7280;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:11px;line-height:1.3;text-transform:none;letter-spacing:0}
     .diff-stats{display:flex;gap:12px;font-size:12px;align-items:center}

@@ -21,6 +21,8 @@ import (
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/realtimevoice"
 	"aiden-agent/internal/agenttask"
+
+	langtools "github.com/tmc/langchaingo/tools"
 )
 
 func TestDaemonDeviceTypeFlag(t *testing.T) {
@@ -59,7 +61,12 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 	if got.EnableSpeechEmotion == nil || *got.EnableSpeechEmotion {
 		t.Fatalf("enable_speech_emotion = %#v, want false", got.EnableSpeechEmotion)
 	}
-	wantTools := []string{"get_current_time", "recall_memory", "create_agent_task", "cancel_agent_task", "query_agent_task", "response_user_action"}
+	wantTools := []string{
+		"get_current_time", "recall_memory", "save_memory", "forget_memory",
+		"recall_session_chunks", "audio_volume", "create_agent_task",
+		"cancel_agent_task", "query_agent_task", "response_user_action",
+		"end_conversation",
+	}
 	if len(got.Tools) != len(wantTools) {
 		t.Fatalf("realtime tools = %#v, want %v", got.Tools, wantTools)
 	}
@@ -67,6 +74,35 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 		if got.Tools[i].Name != want {
 			t.Fatalf("realtime tool[%d] = %q, want %q", i, got.Tools[i].Name, want)
 		}
+	}
+}
+
+func TestRealtimeDelegatedToolSchemasMatchRuntimeTools(t *testing.T) {
+	canonical := []langtools.Tool{
+		agent.NewRecallMemoryTool(nil),
+		agent.NewSaveMemoryTool(nil),
+		agent.NewForgetMemoryTool(nil),
+		agent.NewRecallSessionChunksTool(nil),
+		agent.NewAudioVolumeTool(""),
+	}
+	definitions := make(map[string]realtimevoice.Tool)
+	for _, definition := range realtimeVoiceToolDefinitions() {
+		definitions[definition.Name] = definition
+	}
+	for _, tool := range canonical {
+		t.Run(tool.Name(), func(t *testing.T) {
+			definition, ok := definitions[tool.Name()]
+			if !ok {
+				t.Fatalf("realtime tool definition missing %q", tool.Name())
+			}
+			want, err := json.Marshal(agent.NewToolSpec(tool).LLMSchema())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(definition.Parameters, want) {
+				t.Fatalf("realtime schema for %s = %s, want %s", tool.Name(), definition.Parameters, want)
+			}
+		})
 	}
 }
 
@@ -185,13 +221,82 @@ func TestRealtimeCurrentTimeTool(t *testing.T) {
 
 func TestRealtimeRecallToolDelegatesToRuntimeTool(t *testing.T) {
 	recall := &fakeRealtimeTool{output: `{"results":[{"content":"likes concise replies"}]}`}
-	executor := realtimeVoiceToolExecutor{recall: recall, now: time.Now}
+	executor := realtimeVoiceToolExecutor{
+		delegated: map[string]langtools.Tool{realtimeRecallTool: recall},
+		now:       time.Now,
+	}
 	input := `{"tags":["preference"],"limit":3}`
 	if got := executor.call(context.Background(), realtimeRecallTool, input); got != recall.output {
 		t.Fatalf("recall output = %q, want %q", got, recall.output)
 	}
 	if recall.input != input {
 		t.Fatalf("recall input = %q, want %q", recall.input, input)
+	}
+}
+
+func TestRealtimeDelegatedToolsReuseRuntimeImplementations(t *testing.T) {
+	for _, name := range []string{
+		realtimeSaveMemoryTool,
+		realtimeForgetMemoryTool,
+		realtimeRecallChunksTool,
+		realtimeAudioVolumeTool,
+	} {
+		t.Run(name, func(t *testing.T) {
+			tool := &fakeRealtimeTool{output: `{"status":"saved"}`}
+			executor := realtimeVoiceToolExecutor{
+				delegated: map[string]langtools.Tool{name: tool},
+				now:       time.Now,
+			}
+			input := `{"content":"prefers metric units"}`
+			if got := executor.call(context.Background(), name, input); got != tool.output {
+				t.Fatalf("%s output = %q, want %q", name, got, tool.output)
+			}
+			if tool.input != input {
+				t.Fatalf("%s input = %q, want %q", name, tool.input, input)
+			}
+		})
+	}
+}
+
+func TestRealtimeDelegatedToolReportsUnavailableWithoutRuntime(t *testing.T) {
+	executor := realtimeVoiceToolExecutor{now: time.Now}
+	for _, name := range realtimeDelegatedTools {
+		output := executor.call(context.Background(), name, `{}`)
+		var got struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(output), &got); err != nil {
+			t.Fatalf("decode %s output: %v", name, err)
+		}
+		if !strings.Contains(got.Error, name) {
+			t.Fatalf("%s error = %q, want it to name the tool", name, got.Error)
+		}
+	}
+}
+
+func TestRealtimeEndConversationToolDefersTeardownToSessionLoop(t *testing.T) {
+	executor := realtimeVoiceToolExecutor{now: time.Now}
+	output := executor.call(context.Background(), realtimeEndConversationTool, `{}`)
+	var got struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	// The tool must succeed without a runtime or task manager: the session
+	// loop performs the teardown after the farewell finishes speaking.
+	if got.Status != "ending" || got.Error != "" {
+		t.Fatalf("end_conversation output = %+v", got)
+	}
+}
+
+func TestRealtimeInstructionsCoverMemoryWritesAndStandby(t *testing.T) {
+	instructions := agent.DefaultRealtimeVoiceInstructions
+	for _, phrase := range []string{"save_memory", "forget_memory", "recall_session_chunks", "audio_volume", "end_conversation"} {
+		if !strings.Contains(instructions, phrase) {
+			t.Fatalf("realtime instructions missing guidance for %q: %s", phrase, instructions)
+		}
 	}
 }
 

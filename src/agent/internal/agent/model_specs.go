@@ -1,8 +1,9 @@
 package agent
 
 import (
-	"aiden-agent/internal/agent/model"
 	"strings"
+
+	"aiden-agent/internal/agent/model"
 )
 
 // modelSpecRegistry covers the chat models referenced from this repo (overlay
@@ -20,34 +21,36 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	// OpenAI GPT-5.x family (vision + tool calling). ContextWindow is the total
 	// advertised window; compaction logic uses (ContextWindow - MaxOutput) for
 	// the actual input budget.
-	"openai/gpt-5.5":      {ContextWindow: 1_050_000, MaxOutput: 128_000},
-	"gpt-5.5":             {ContextWindow: 1_050_000, MaxOutput: 128_000},
-	"openai/gpt-5.5-pro":  {ContextWindow: 1_050_000, MaxOutput: 128_000},
-	"gpt-5.5-pro":         {ContextWindow: 1_050_000, MaxOutput: 128_000},
-	"openai/gpt-5.4":      {ContextWindow: 1_050_000, MaxOutput: 128_000},
-	"gpt-5.4":             {ContextWindow: 1_050_000, MaxOutput: 128_000},
-	"openai/gpt-5.4-mini": {ContextWindow: 400_000, MaxOutput: 128_000},
-	"gpt-5.4-mini":        {ContextWindow: 400_000, MaxOutput: 128_000},
-	"openai/gpt-5.4-nano": {ContextWindow: 400_000, MaxOutput: 128_000},
-	"gpt-5.4-nano":        {ContextWindow: 400_000, MaxOutput: 128_000},
+	"openai/gpt-5.5":      {ContextWindow: 1_050_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"none", "low", "medium", "high", "xhigh"}, true)},
+	"gpt-5.5":             {ContextWindow: 1_050_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"none", "low", "medium", "high", "xhigh"}, true)},
+	"openai/gpt-5.5-pro":  {ContextWindow: 1_050_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"medium", "high", "xhigh"}, true)},
+	"gpt-5.5-pro":         {ContextWindow: 1_050_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"medium", "high", "xhigh"}, true)},
+	"openai/gpt-5.4":      {ContextWindow: 1_050_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"none", "low", "medium", "high", "xhigh"}, true)},
+	"gpt-5.4":             {ContextWindow: 1_050_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"none", "low", "medium", "high", "xhigh"}, true)},
+	"openai/gpt-5.4-mini": {ContextWindow: 400_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"none", "low", "medium", "high", "xhigh"}, true)},
+	"gpt-5.4-mini":        {ContextWindow: 400_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"none", "low", "medium", "high", "xhigh"}, true)},
+	"openai/gpt-5.4-nano": {ContextWindow: 400_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"none", "low", "medium", "high", "xhigh"}, true)},
+	"gpt-5.4-nano":        {ContextWindow: 400_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"none", "low", "medium", "high", "xhigh"}, true)},
 
 	// Anthropic Claude family (vision + tool calling).
-	"anthropic/claude-fable-5":    {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"claude-fable-5":              {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"anthropic/claude-opus-5":     {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"claude-opus-5":               {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"anthropic/claude-opus-4-8":   {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"claude-opus-4-8":             {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"anthropic/claude-sonnet-4-6": {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"claude-sonnet-4-6":           {ContextWindow: 1_000_000, MaxOutput: 64_000},
-	"anthropic/claude-haiku-4-5":  {ContextWindow: 200_000, MaxOutput: 64_000},
-	"claude-haiku-4-5":            {ContextWindow: 200_000, MaxOutput: 64_000},
+	"anthropic/claude-fable-5":  {ContextWindow: 1_000_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"low", "medium", "high", "xhigh", "max"}, true)},
+	"claude-fable-5":            {ContextWindow: 1_000_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"low", "medium", "high", "xhigh", "max"}, true)},
+	"anthropic/claude-opus-5":   {ContextWindow: 1_000_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"low", "medium", "high", "xhigh", "max"}, true)},
+	"claude-opus-5":             {ContextWindow: 1_000_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"low", "medium", "high", "xhigh", "max"}, true)},
+	"anthropic/claude-opus-4-8": {ContextWindow: 1_000_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"low", "medium", "high", "xhigh", "max"}, true)},
+	"claude-opus-4-8":           {ContextWindow: 1_000_000, MaxOutput: 128_000, Reasoning: effortReasoning([]string{"low", "medium", "high", "xhigh", "max"}, true)},
+	// Sonnet 4.6 exposes adaptive effort as the primary control and retains
+	// the exact budget_tokens override for callers that need a hard ceiling.
+	"anthropic/claude-sonnet-4-6": {ContextWindow: 1_000_000, MaxOutput: 128_000, Reasoning: effortBudgetReasoning([]string{"low", "medium", "high", "max"}, 1024, 0, true)},
+	"claude-sonnet-4-6":           {ContextWindow: 1_000_000, MaxOutput: 128_000, Reasoning: effortBudgetReasoning([]string{"low", "medium", "high", "max"}, 1024, 0, true)},
+	"anthropic/claude-haiku-4-5":  {ContextWindow: 200_000, MaxOutput: 64_000, Reasoning: budgetReasoning(1024, 0, true)},
+	"claude-haiku-4-5":            {ContextWindow: 200_000, MaxOutput: 64_000, Reasoning: budgetReasoning(1024, 0, true)},
 
 	// Google Gemini 3.5 family (vision + tool calling).
 	"google/gemini-3.5-pro":   {ContextWindow: 1_048_576, MaxOutput: 65_536},
 	"gemini-3.5-pro":          {ContextWindow: 1_048_576, MaxOutput: 65_536},
-	"google/gemini-3.5-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536},
-	"gemini-3.5-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536},
+	"google/gemini-3.5-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
+	"gemini-3.5-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
 
 	// Moonshot Kimi K3 (vision + tool calling). Reached via the Moonshot
 	// OpenAI-compatible endpoint (bare model name) or the OpenRouter route.
@@ -56,8 +59,8 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	// "max" effort, which stalls streaming for several seconds before any content
 	// arrives; pin "low" as the default to keep voice interactions responsive. A
 	// user-set model.reasoning_effort still overrides.
-	"moonshotai/kimi-k3": {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low")},
-	"kimi-k3":            {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low")},
+	"moonshotai/kimi-k3": {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "high", "max"}, false)},
+	"kimi-k3":            {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "high", "max"}, false)},
 
 	// ByteDance Doubao Seed 2.1 Pro on Volcengine Ark (vision + tool calling),
 	// reached through Ark's OpenAI-compatible endpoint. The window and output cap
@@ -69,21 +72,37 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	// voice interactions stay responsive. A user-set model.reasoning_effort still
 	// overrides. Ark places no constraint on temperature, so no default is set.
 	// Other dated releases need their own entry, keyed by the exact Ark model id.
-	"doubao-seed-2-1-pro-260628": {ContextWindow: 262_144, MaxOutput: 131_072, DefaultReasoningEffort: stringPtr("low")},
+	"doubao-seed-2-1-pro-260628": {ContextWindow: 262_144, MaxOutput: 131_072, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}, true)},
 
 	// Qwen3.8-27B on OpenRouter (vision + tool calling). Context window is
 	// 256K per the Qwen3 published model card. Default reasoning_effort is
 	// "medium" because Qwen3.8 includes native reasoning and performs best
 	// with medium-level reasoning effort out of the box.
-	"qwen/qwen3.8-27b": {ContextWindow: 262_144, MaxOutput: 32_768, DefaultReasoningEffort: stringPtr("medium")},
-	"qwen3.8-27b":      {ContextWindow: 262_144, MaxOutput: 32_768, DefaultReasoningEffort: stringPtr("medium")},
+	"qwen/qwen3.8-27b": {ContextWindow: 262_144, MaxOutput: 32_768, DefaultReasoningEffort: stringPtr("medium"), Reasoning: effortReasoning([]string{"none", "low", "medium", "high"}, true)},
+	"qwen3.8-27b":      {ContextWindow: 262_144, MaxOutput: 32_768, DefaultReasoningEffort: stringPtr("medium"), Reasoning: effortReasoning([]string{"none", "low", "medium", "high"}, true)},
 
 	// Existing entries retained for back-compat with dev/staging configs.
-	"anthropic/claude-3.5-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},
-	"anthropic/claude-3.7-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},
+	"anthropic/claude-3.5-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192, Reasoning: unsupportedReasoning()},
+	"anthropic/claude-3.7-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192, Reasoning: budgetReasoning(1024, 0, true)},
 	"bytedance-seed/seed-2.0-lite": {ContextWindow: 128_000, MaxOutput: 8_192},
-	"openai/gpt-4o":                {ContextWindow: 128_000, MaxOutput: 16_384},
-	"openai/gpt-4o-mini":           {ContextWindow: 128_000, MaxOutput: 16_384},
+	"openai/gpt-4o":                {ContextWindow: 128_000, MaxOutput: 16_384, Reasoning: unsupportedReasoning()},
+	"openai/gpt-4o-mini":           {ContextWindow: 128_000, MaxOutput: 16_384, Reasoning: unsupportedReasoning()},
+}
+
+func effortReasoning(efforts []string, canDisable bool) *model.ReasoningSpec {
+	return &model.ReasoningSpec{Supported: true, Mode: "effort", Efforts: efforts, CanDisable: canDisable}
+}
+
+func unsupportedReasoning() *model.ReasoningSpec {
+	return &model.ReasoningSpec{Supported: false}
+}
+
+func budgetReasoning(min, max int, canDisable bool) *model.ReasoningSpec {
+	return &model.ReasoningSpec{Supported: true, Mode: "budget_tokens", CanDisable: canDisable, BudgetTokensMin: min, BudgetTokensMax: max}
+}
+
+func effortBudgetReasoning(efforts []string, min, max int, canDisable bool) *model.ReasoningSpec {
+	return &model.ReasoningSpec{Supported: true, Mode: "effort", Efforts: efforts, CanDisable: canDisable, BudgetTokensMin: min, BudgetTokensMax: max}
 }
 
 // floatPtr returns a pointer to v, letting map-literal ModelSpec entries set
@@ -100,7 +119,7 @@ func stringPtr(v string) *string {
 
 func lookupModelSpecKey(key string) (model.ModelSpec, bool) {
 	if spec, ok := modelSpecRegistry[key]; ok {
-		return spec, true
+		return cloneModelSpec(spec), true
 	}
 
 	// Claude 4 model IDs are also commonly written with a dotted version
@@ -109,12 +128,24 @@ func lookupModelSpecKey(key string) (model.ModelSpec, bool) {
 	if strings.Contains(key, "claude-") {
 		if hyphenated := strings.Replace(key, "-4.", "-4-", 1); hyphenated != key {
 			if spec, ok := modelSpecRegistry[hyphenated]; ok {
-				return spec, true
+				return cloneModelSpec(spec), true
 			}
 		}
 	}
 
 	return model.ModelSpec{}, false
+}
+
+func cloneModelSpec(spec model.ModelSpec) model.ModelSpec {
+	if spec.Reasoning != nil {
+		reasoning := *spec.Reasoning
+		reasoning.Efforts = append([]string(nil), spec.Reasoning.Efforts...)
+		if reasoning.DefaultEffort == "" && spec.DefaultReasoningEffort != nil {
+			reasoning.DefaultEffort = *spec.DefaultReasoningEffort
+		}
+		spec.Reasoning = &reasoning
+	}
+	return spec
 }
 
 // LookupModelSpec returns the spec for the given (provider, model). It tries
@@ -128,19 +159,38 @@ func LookupModelSpec(provider, modelName string) (model.ModelSpec, bool) {
 		return model.ModelSpec{}, false
 	}
 	if spec, ok := lookupModelSpecKey(key); ok {
-		return spec, true
+		return scopeModelSpecToProvider(provider, spec), true
 	}
 	if i := strings.LastIndex(key, "/"); i >= 0 && i+1 < len(key) {
 		if spec, ok := lookupModelSpecKey(key[i+1:]); ok {
-			return spec, true
+			return scopeModelSpecToProvider(provider, spec), true
 		}
 	}
 	// Provider-prefixed retry for entries registered without a provider.
 	if provider != "" {
 		full := strings.ToLower(strings.TrimSpace(provider)) + "/" + key
 		if spec, ok := lookupModelSpecKey(full); ok {
-			return spec, true
+			return scopeModelSpecToProvider(provider, spec), true
 		}
 	}
 	return model.ModelSpec{}, false
+}
+
+func scopeModelSpecToProvider(provider string, spec model.ModelSpec) model.ModelSpec {
+	if spec.Reasoning == nil || strings.TrimSpace(provider) == "" || strings.EqualFold(strings.TrimSpace(provider), "anthropic") {
+		return spec
+	}
+	if spec.Reasoning.BudgetTokensMin == 0 && spec.Reasoning.BudgetTokensMax == 0 && spec.Reasoning.Mode != "budget_tokens" {
+		return spec
+	}
+	if len(spec.Reasoning.Efforts) == 0 {
+		spec.Reasoning = unsupportedReasoning()
+		return spec
+	}
+	reasoning := *spec.Reasoning
+	reasoning.Mode = "effort"
+	reasoning.BudgetTokensMin = 0
+	reasoning.BudgetTokensMax = 0
+	spec.Reasoning = &reasoning
+	return spec
 }

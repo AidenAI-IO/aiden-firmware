@@ -227,7 +227,8 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"model.responses_context_edit_trigger":        {label: "Ark tool-call trigger", placeholder: "10 = recommended", help: "After this many tool calls, Ark clears old tool inputs. 0 uses the recommended value 10."},
 		"model.responses_context_edit_keep":           {label: "Ark tool calls to keep", placeholder: "3 = recommended", help: "Number of recent tool calls Ark keeps after cleanup. 0 uses the recommended value 3."},
 		"model.responses_context_edit_clear_thinking": {label: "Clear old thinking", help: "Ask Ark to remove previous thinking turns when it applies the context edit."},
-		"model.reasoning_effort":                      {help: "Empty = auto. For no-tool requests, Anthropic maps low/medium/high to adaptive thinking; tool requests use Claude's default reasoning because thinking signatures are not persisted. Minimal is OpenRouter and Volcengine Ark only; none is not supported by Anthropic or Ark."},
+		"model.reasoning_effort":                      {help: "Empty = auto. Options follow the selected model capability; none is shown only when the model supports disabling reasoning."},
+		"model.reasoning_budget_tokens":               {label: "Reasoning budget (tokens)", placeholder: "0 = auto", help: "Optional exact reasoning budget. Shown for models that expose budget_tokens; 0 uses the model default or effort preset. Reasoning tokens are drawn from max_response_tokens, so this must be at least 1024 and smaller than that limit."},
 		"model.context_window":                        {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
 		"model.model_max_output_tokens":               {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
 		"tts.provider":                                {layout: "wide"},
@@ -824,7 +825,7 @@ providerVisible:
 		"voice_model_providers.model", "voice_model_providers.workspace_id",
 		"voice_model_providers.region", "voice_model_providers.auth_mode",
 		"voice_model_providers.project_id", "voice_model_providers.location", "voice_model_providers.endpoint",
-		"voice_model_providers.base_url", "voice_model_providers.voice",
+		"voice_model_providers.realtime_protocol", "voice_model_providers.base_url", "voice_model_providers.voice",
 	} {
 		if _, ok := idx[path]; !ok {
 			t.Errorf("missing metadata field %s", path)
@@ -851,7 +852,7 @@ providerVisible:
 	for _, path := range []string{
 		"voice_model_providers.agent_id", "voice_model_providers.workspace_id",
 		"voice_model_providers.endpoint", "voice_model_providers.base_url",
-		"voice_model_providers.region",
+		"voice_model_providers.region", "voice_model_providers.realtime_protocol",
 	} {
 		if !idx[path].Advanced {
 			t.Errorf("%s must be collapsed under advanced settings", path)

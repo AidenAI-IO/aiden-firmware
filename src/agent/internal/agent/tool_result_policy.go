@@ -86,7 +86,7 @@ func (defaultToolResultPolicy) Prepare(_ context.Context, input ToolResultPrepar
 	startedAt := time.Now()
 	defer func() {
 		prepared.ContextBytes = len(prepared.Content)
-		prepared.ContextTokens = estimateTextTokens(prepared.Content)
+		prepared.ContextTokens = tokencounter.EstimateTextTokens(prepared.Content)
 		prepared.ProcessingDurationMs = time.Since(startedAt).Milliseconds()
 	}()
 	output := input.Result.Output
@@ -94,7 +94,7 @@ func (defaultToolResultPolicy) Prepare(_ context.Context, input ToolResultPrepar
 		Content:             output,
 		OriginalBytes:       int64(len(output)),
 		OriginalChars:       utf8.RuneCountInString(output),
-		EstimatedTokens:     estimateTextTokens(output),
+		EstimatedTokens:     tokencounter.EstimateTextTokens(output),
 		Complete:            true,
 		ActionCompleted:     input.ActionCompleted || input.Result.Error == nil,
 		ObservationComplete: true,
@@ -141,7 +141,7 @@ func (defaultToolResultPolicy) Prepare(_ context.Context, input ToolResultPrepar
 		}
 	}
 	content := boundedToolResultObservation(input.Call, prepared, preview, contentBudget)
-	if estimateTextTokens(content) > contentBudget {
+	if tokencounter.EstimateTextTokens(content) > contentBudget {
 		prepared.Content = ""
 		return prepared, fmt.Errorf("%w: budget=%d", ErrToolResultRecoveryTextTooLarge, contentBudget)
 	}
@@ -171,7 +171,7 @@ func failedPreparedToolResult(result ToolResult, actionCompleted bool) PreparedT
 		Content:             content,
 		OriginalBytes:       int64(len(result.Output)),
 		OriginalChars:       utf8.RuneCountInString(result.Output),
-		EstimatedTokens:     estimateTextTokens(result.Output),
+		EstimatedTokens:     tokencounter.EstimateTextTokens(result.Output),
 		Complete:            false,
 		Reason:              ToolResultReasonProcessingFail,
 		Summary:             "tool result preparation failed",
@@ -179,7 +179,7 @@ func failedPreparedToolResult(result ToolResult, actionCompleted bool) PreparedT
 		ObservationComplete: false,
 		ProcessingErrorCode: "tool_result_processing_failed",
 		ContextBytes:        len(content),
-		ContextTokens:       estimateTextTokens(content),
+		ContextTokens:       tokencounter.EstimateTextTokens(content),
 	}
 }
 
@@ -382,7 +382,7 @@ func combineMandatoryToolResultText(mandatory, optional string, maxTokens int) s
 		}
 		return boundTextToTokens(optional, maxTokens)
 	}
-	if maxTokens <= 0 || estimateTextTokens(mandatory) >= maxTokens {
+	if maxTokens <= 0 || tokencounter.EstimateTextTokens(mandatory) >= maxTokens {
 		return mandatory
 	}
 
@@ -391,7 +391,7 @@ func combineMandatoryToolResultText(mandatory, optional string, maxTokens int) s
 	for low < high {
 		mid := (low + high + 1) / 2
 		candidate := mandatory + "\n" + string(runes[:mid])
-		if estimateTextTokens(candidate) <= maxTokens {
+		if tokencounter.EstimateTextTokens(candidate) <= maxTokens {
 			low = mid
 		} else {
 			high = mid - 1
@@ -947,7 +947,7 @@ func truncateToolResultRunes(text string, maxRunes int) string {
 }
 
 func boundTextToTokens(text string, maxTokens int) string {
-	if maxTokens <= 0 || estimateTextTokens(text) <= maxTokens {
+	if maxTokens <= 0 || tokencounter.EstimateTextTokens(text) <= maxTokens {
 		return text
 	}
 	runes := []rune(text)
@@ -955,7 +955,7 @@ func boundTextToTokens(text string, maxTokens int) string {
 	for low < high {
 		mid := (low + high + 1) / 2
 		candidate := string(runes[:mid])
-		if estimateTextTokens(candidate) <= maxTokens {
+		if tokencounter.EstimateTextTokens(candidate) <= maxTokens {
 			low = mid
 		} else {
 			high = mid - 1

@@ -14,6 +14,7 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/tokencounter"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -107,6 +108,54 @@ func TestAppendToolExecutionMessagesUsesSharedVisualActionFlowForScreenshot(t *t
 	}
 }
 
+func TestAppendToolExecutionMessagesKeepsWaitStableScreenshotOutOfToolResult(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	llmExecutor := executor.NewLLMExecutor(nil, manager)
+	encoded := "aW1nMQ=="
+	actionOutput := `{"ok":true,"stable":true,"elapsed_ms":250,"screen_changed":false}`
+	observation := fmt.Sprintf(
+		`{"action_output":%q,"ok":true,"stable":true,"elapsed_ms":250,"screen_changed":false,"width":800,"height":600,"format":"jpeg","size":4,"data":"%s"}`,
+		actionOutput,
+		encoded,
+	)
+	parser := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "wait_for_stable_screen", visual: true}}}
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{ToolID: "call_1", Tool: "wait_for_stable_screen"},
+		Observation: observation,
+	}
+	toolCall := messages.Message{
+		Role: messages.MessageRoleToolCall,
+		ToolCalls: []messages.ToolCall{{
+			ID: "call_1", Name: "wait_for_stable_screen", Arguments: `{}`,
+		}},
+	}
+
+	if err := appendToolExecutionMessages(llmExecutor, parser, toolCall, step, PreparedToolResult{Content: observation, Complete: true}); err != nil {
+		t.Fatalf("appendToolExecutionMessages() error = %v", err)
+	}
+
+	stored := manager.CloneMessageList()
+	if len(stored) != 3 {
+		t.Fatalf("stored messages = %#v, want tool call, tool result, and state", stored)
+	}
+	content := stored[1].ToolResults[0].Content
+	if content != actionOutput {
+		t.Fatalf("tool result = %q, want stable-screen action_output %q", content, actionOutput)
+	}
+	if strings.Contains(content, encoded) {
+		t.Fatalf("tool result contains screenshot base64: %q", content)
+	}
+	if stored[2].Role != messages.MessageRoleState || len(stored[2].Attachments) != 1 {
+		t.Fatalf("third message = %#v, want state with one image attachment", stored[2])
+	}
+	if stored[2].Attachments[0].Source != messages.AttachmentSourceScreenshotObservation {
+		t.Fatalf("state attachment source = %q", stored[2].Attachments[0].Source)
+	}
+}
+
 type largeContextScriptedModel struct {
 	*scriptedModel
 }
@@ -179,7 +228,7 @@ func latestToolResultArtifactPath(messageList []llms.MessageContent) string {
 
 func TestAgentLoopTerminatesRecursiveArtifactRecovery(t *testing.T) {
 	rawOutput := strings.Repeat("Guangzhou attraction result ", 100)
-	if len(rawOutput) >= toolResultInlineMaxBytes || estimateTextTokens(rawOutput) >= toolResultInlineMaxTokens {
+	if len(rawOutput) >= toolResultInlineMaxBytes || tokencounter.EstimateTextTokens(rawOutput) >= toolResultInlineMaxTokens {
 		t.Fatal("test result must be context-large rather than intrinsically large")
 	}
 	model := &artifactRecoveryLoopModel{}
@@ -294,7 +343,7 @@ func TestAgentLoopCompactionCanRetryWhenManagerIsUnchanged(t *testing.T) {
 
 func TestAgentLoopUsesRuntimeFallbackWindowForCurrentToolResultGuard(t *testing.T) {
 	rawOutput := strings.Repeat("0123456789", 736)
-	if len(rawOutput) >= toolResultInlineMaxBytes || estimateTextTokens(rawOutput) >= toolResultInlineMaxTokens {
+	if len(rawOutput) >= toolResultInlineMaxBytes || tokencounter.EstimateTextTokens(rawOutput) >= toolResultInlineMaxTokens {
 		t.Fatal("test setup output must be intrinsically small")
 	}
 	inner := &unknownContextScriptedModel{scriptedModel: &scriptedModel{responses: []*llms.ContentResponse{
@@ -582,7 +631,7 @@ func TestAgentLoopPersistsBoundedToolResultWhenPolicyFails(t *testing.T) {
 	if stored.ToolCallID != "call_1" || stored.Meta == nil || stored.Meta.ProcessingErrorCode != "tool_result_processing_failed" {
 		t.Fatalf("stored fallback result = %#v", stored)
 	}
-	if strings.Contains(stored.Content, "raw-secret-") || estimateTextTokens(stored.Content) > toolResultMinimumObservation {
+	if strings.Contains(stored.Content, "raw-secret-") || tokencounter.EstimateTextTokens(stored.Content) > toolResultMinimumObservation {
 		t.Fatalf("stored fallback was not bounded: %q", stored.Content)
 	}
 }

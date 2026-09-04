@@ -242,6 +242,23 @@ func TestGetLocalizedModelsForProvider(t *testing.T) {
 	}
 }
 
+func TestLocalizedProviderModelsIncludeProviderScopedReasoningCapability(t *testing.T) {
+	models := GetLocalizedModelsForProvider("openai", localeEnglishUS)
+	for _, item := range models {
+		if item.ID != "gpt-4o" {
+			continue
+		}
+		if item.Spec == nil || item.Spec.Reasoning == nil {
+			t.Fatalf("gpt-4o spec = %#v, want explicit unsupported reasoning capability", item.Spec)
+		}
+		if item.Spec.Reasoning.Supported {
+			t.Fatalf("gpt-4o reasoning = %#v, want unsupported", item.Spec.Reasoning)
+		}
+		return
+	}
+	t.Fatal("openai display models do not include gpt-4o")
+}
+
 func TestAllDisplayModelsHaveDescriptions(t *testing.T) {
 	// Verify all models have at least English descriptions
 	for provider, models := range displayModelsByProvider {

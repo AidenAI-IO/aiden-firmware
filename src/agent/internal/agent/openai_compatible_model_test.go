@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/util"
 	"context"
 	"encoding/base64"
@@ -666,7 +668,33 @@ func TestLLMRawHTTPLoggerFallsBackToTimestampForUnsafeSessionID(t *testing.T) {
 	}
 }
 
-func TestRuntimeConfiguresRawHTTPLogWithActiveMemorySessionID(t *testing.T) {
+// newRawHTTPLogTestRuntime wires a runtime whose raw HTTP log is partitioned by
+// the live ContextManager session, and returns the model plus its log clock.
+func newRawHTTPLogTestRuntime(t *testing.T, configDir, logDir, serverURL string) *openAICompatibleModel {
+	t.Helper()
+	manager := NewModelManager(ModelConfig{
+		Provider:   "openai",
+		BaseURL:    serverURL,
+		Model:      "test-model",
+		LogRawHTTP: true,
+	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
+	NewRuntimeWithDeps(Config{ConfigDir: configDir}, manager, NewMemoryManager(filepath.Join(configDir, "memory")), nil, nil)
+
+	resolved, err := manager.get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	compatible, ok := resolved.(*openAICompatibleModel)
+	if !ok {
+		t.Fatalf("model = %T, want *openAICompatibleModel", resolved)
+	}
+	compatible.rawLogger.(*llmRawHTTPLogger).now = func() time.Time {
+		return time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
+	}
+	return compatible
+}
+
+func TestRuntimeConfiguresRawHTTPLogWithCurrentContextSessionID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
@@ -675,37 +703,19 @@ func TestRuntimeConfiguresRawHTTPLogWithActiveMemorySessionID(t *testing.T) {
 
 	rootDir := t.TempDir()
 	logDir := filepath.Join(rootDir, "log")
-	memoryDir := filepath.Join(rootDir, "memory")
-	manager := NewModelManager(ModelConfig{
-		Provider:   "openai",
-		BaseURL:    server.URL,
-		Model:      "test-model",
-		LogRawHTTP: true,
-	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
-	memories := NewMemoryManager(memoryDir)
-	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
-
-	model, err := manager.get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	compatible, ok := model.(*openAICompatibleModel)
-	if !ok {
-		t.Fatalf("model = %T, want *openAICompatibleModel", model)
-	}
-	compatible.rawLogger.(*llmRawHTTPLogger).now = func() time.Time {
-		return time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
+	sessionFolder := agentpath.ContextManagerSessionFolder(rootDir)
+	if _, err := contextmanager.NewContextManager(sessionFolder, "system"); err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
 	}
 
-	_, err = model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+	model := newRawHTTPLogTestRuntime(t, rootDir, logDir, server.URL)
+	if _, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
-	}})
-	if err != nil {
+	}}); err != nil {
 		t.Fatalf("GenerateContent() error = %v", err)
 	}
 
-	metadata := readSessionMetadataForTest(t, filepath.Join(memoryDir, "session", sessionMetadataFileName))
 	matches, err := filepath.Glob(filepath.Join(logDir, "llm-http-*.log"))
 	if err != nil {
 		t.Fatalf("glob raw HTTP logs: %v", err)
@@ -713,13 +723,13 @@ func TestRuntimeConfiguresRawHTTPLogWithActiveMemorySessionID(t *testing.T) {
 	if len(matches) != 1 {
 		t.Fatalf("expected one raw HTTP log file, got %d: %#v", len(matches), matches)
 	}
-	wantName := rawHTTPLogNameForSessionMetadata(t, metadata)
+	wantName := rawHTTPLogNameForCurrentSession(t, rootDir)
 	if filepath.Base(matches[0]) != wantName {
 		t.Fatalf("raw HTTP file = %q, want %q", filepath.Base(matches[0]), wantName)
 	}
 }
 
-func TestRuntimeRawHTTPLogUsesSessionIDForFileName(t *testing.T) {
+func TestRuntimeRawHTTPLogKeepsOneFilePerSession(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
@@ -728,56 +738,28 @@ func TestRuntimeRawHTTPLogUsesSessionIDForFileName(t *testing.T) {
 
 	rootDir := t.TempDir()
 	logDir := filepath.Join(rootDir, "log")
-	memoryDir := filepath.Join(rootDir, "memory")
-	sessionDir := filepath.Join(memoryDir, "session")
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatalf("create session dir: %v", err)
-	}
-	createdAt := time.Date(2026, 6, 20, 8, 3, 42, 0, time.UTC)
-	meta := sessionMetadata{
-		SessionID: "20260620080342123",
-		CreatedAt: createdAt.Format(time.RFC3339Nano),
-	}
-	metaBytes, err := json.Marshal(meta)
-	if err != nil {
-		t.Fatalf("marshal metadata: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sessionDir, sessionMetadataFileName), append(metaBytes, '\n'), 0o644); err != nil {
-		t.Fatalf("write metadata: %v", err)
+	sessionFolder := agentpath.ContextManagerSessionFolder(rootDir)
+	if _, err := contextmanager.NewContextManager(sessionFolder, "system"); err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
 	}
 
-	manager := NewModelManager(ModelConfig{
-		Provider:   "openai",
-		BaseURL:    server.URL,
-		Model:      "test-model",
-		LogRawHTTP: true,
-	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
-	memories := NewMemoryManager(memoryDir)
-	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
-
-	model, err := manager.get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	compatible, ok := model.(*openAICompatibleModel)
-	if !ok {
-		t.Fatalf("model = %T, want *openAICompatibleModel", model)
-	}
+	model := newRawHTTPLogTestRuntime(t, rootDir, logDir, server.URL)
 	current := time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
-	compatible.rawLogger.(*llmRawHTTPLogger).now = func() time.Time { return current }
+	model.rawLogger.(*llmRawHTTPLogger).now = func() time.Time { return current }
 
 	runLLM := func(prompt string) {
 		t.Helper()
-		_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+		if _, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart(prompt)},
-		}})
-		if err != nil {
+		}}); err != nil {
 			t.Fatalf("GenerateContent(%q) error = %v", prompt, err)
 		}
 	}
 
 	runLLM("first")
+	// Advancing the clock must not split the log: partitioning follows the
+	// session, not wall-clock minutes.
 	current = time.Date(2026, 6, 21, 9, 5, 1, 0, time.UTC)
 	runLLM("second")
 
@@ -788,7 +770,7 @@ func TestRuntimeRawHTTPLogUsesSessionIDForFileName(t *testing.T) {
 	if len(matches) != 1 {
 		t.Fatalf("same session should stay in one raw HTTP log file, got %d: %#v", len(matches), matches)
 	}
-	wantName := "llm-http-20260620080342123.log"
+	wantName := rawHTTPLogNameForCurrentSession(t, rootDir)
 	if filepath.Base(matches[0]) != wantName {
 		t.Fatalf("raw HTTP file = %q, want %q", filepath.Base(matches[0]), wantName)
 	}
@@ -799,7 +781,9 @@ func TestRuntimeRawHTTPLogUsesSessionIDForFileName(t *testing.T) {
 	}
 }
 
-func TestRuntimeRawHTTPLogSwitchesSessionFileAfterRotation(t *testing.T) {
+// A compaction revision starts a new ContextManager session, so subsequent LLM
+// traffic must land in a new log partition.
+func TestRuntimeRawHTTPLogSwitchesFileAfterSessionRevision(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
@@ -808,81 +792,55 @@ func TestRuntimeRawHTTPLogSwitchesSessionFileAfterRotation(t *testing.T) {
 
 	rootDir := t.TempDir()
 	logDir := filepath.Join(rootDir, "log")
-	memoryDir := filepath.Join(rootDir, "memory")
-	manager := NewModelManager(ModelConfig{
-		Provider:   "openai",
-		BaseURL:    server.URL,
-		Model:      "test-model",
-		LogRawHTTP: true,
-	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
-	memories := NewMemoryManager(memoryDir)
-	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
-
-	model, err := manager.get()
+	sessionFolder := agentpath.ContextManagerSessionFolder(rootDir)
+	first, err := contextmanager.NewContextManager(sessionFolder, "system")
 	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	compatible, ok := model.(*openAICompatibleModel)
-	if !ok {
-		t.Fatalf("model = %T, want *openAICompatibleModel", model)
-	}
-	compatible.rawLogger.(*llmRawHTTPLogger).now = func() time.Time {
-		return time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
+		t.Fatalf("NewContextManager() error = %v", err)
 	}
 
+	model := newRawHTTPLogTestRuntime(t, rootDir, logDir, server.URL)
 	runLLM := func(prompt string) {
 		t.Helper()
-		_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+		if _, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart(prompt)},
-		}})
-		if err != nil {
+		}}); err != nil {
 			t.Fatalf("GenerateContent(%q) error = %v", prompt, err)
 		}
 	}
 
-	runLLM("before rotation")
-	firstMeta := readSessionMetadataForTest(t, filepath.Join(memoryDir, "session", sessionMetadataFileName))
+	runLLM("before revision")
+	firstName := rawHTTPLogNameForCurrentSession(t, rootDir)
 
-	session := NewSessionMemoryStore(filepath.Join(memoryDir, "session"))
-	if _, err := session.AppendEvent(context.Background(), SessionEvent{
-		EventID: "evt_before_rotation",
-		Ts:      time.Date(2026, 6, 21, 9, 5, 0, 0, time.UTC).Format(time.RFC3339Nano),
-		Type:    "user_input",
-		Role:    "user",
-		Content: "old task",
-	}); err != nil {
-		t.Fatalf("AppendEvent() before rotation error = %v", err)
-	}
-	rotation, err := memories.RotateSessionEventsDetailed()
+	revision, err := contextmanager.NewContextManagerRevisionFromMessageList(first, first.CloneMessageList())
 	if err != nil {
-		t.Fatalf("RotateSessionEventsDetailed() error = %v", err)
+		t.Fatalf("NewContextManagerRevisionFromMessageList() error = %v", err)
 	}
-	if rotation.ActiveSessionID == "" || rotation.ActiveSessionID == firstMeta.SessionID {
-		t.Fatalf("ActiveSessionID after rotation = %q, first session = %q", rotation.ActiveSessionID, firstMeta.SessionID)
+	if err := contextmanager.SwitchSession(sessionFolder, revision.GetSessionID()); err != nil {
+		t.Fatalf("SwitchSession() error = %v", err)
 	}
 
-	runLLM("after rotation")
-	activeMeta := readSessionMetadataForTest(t, filepath.Join(memoryDir, "session", sessionMetadataFileName))
+	runLLM("after revision")
+	revisionName := rawHTTPLogNameForCurrentSession(t, rootDir)
+	if revisionName == firstName {
+		t.Fatalf("revision session reused the first log name %q", firstName)
+	}
 
 	matches, err := filepath.Glob(filepath.Join(logDir, "llm-http-*.log"))
 	if err != nil {
 		t.Fatalf("glob raw HTTP logs: %v", err)
 	}
 	if len(matches) != 2 {
-		t.Fatalf("expected two raw HTTP log files after rotation, got %d: %#v", len(matches), matches)
+		t.Fatalf("expected two raw HTTP log files after the revision, got %d: %#v", len(matches), matches)
 	}
-	wantNames := map[string]bool{
-		rawHTTPLogNameForSessionMetadata(t, firstMeta):  false,
-		rawHTTPLogNameForSessionMetadata(t, activeMeta): false,
-	}
+	found := map[string]bool{firstName: false, revisionName: false}
 	for _, match := range matches {
-		if _, ok := wantNames[filepath.Base(match)]; ok {
-			wantNames[filepath.Base(match)] = true
+		if _, ok := found[filepath.Base(match)]; ok {
+			found[filepath.Base(match)] = true
 		}
 	}
-	for name, found := range wantNames {
-		if !found {
+	for name, ok := range found {
+		if !ok {
 			t.Fatalf("missing raw HTTP log file %q; got %#v", name, matches)
 		}
 	}
@@ -983,7 +941,7 @@ func TestOpenAICompatibleModelSkipsRawHTTPLogWithoutContextMarker(t *testing.T) 
 }
 
 func TestOpenAICompatibleModelDoesNotBufferRawHTTPResponseWithoutContextMarker(t *testing.T) {
-	responseBody := &failOnSecondReadBody{
+	responseBody := &failAfterPayloadReadBody{
 		payload: []byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`),
 	}
 	client := &http.Client{
@@ -1015,8 +973,8 @@ func TestOpenAICompatibleModelDoesNotBufferRawHTTPResponseWithoutContextMarker(t
 	if got := resp.Choices[0].Content; got != "ok" {
 		t.Fatalf("response content = %q, want ok", got)
 	}
-	if responseBody.reads != 1 {
-		t.Fatalf("response body reads = %d, want 1", responseBody.reads)
+	if responseBody.readPastPayload {
+		t.Fatal("response body was read past the complete JSON payload")
 	}
 }
 
@@ -1941,12 +1899,15 @@ func rawHTTPLogPath(logDir string) string {
 	return filepath.Join(logDir, "llm-http-"+time.Now().Format("200601021504")+".log")
 }
 
-func rawHTTPLogNameForSessionMetadata(t *testing.T, meta sessionMetadata) string {
+// rawHTTPLogNameForCurrentSession returns the log file name expected for the
+// live ContextManager session under configDir.
+func rawHTTPLogNameForCurrentSession(t *testing.T, configDir string) string {
 	t.Helper()
-	if meta.SessionID == "" {
-		t.Fatal("session_id is empty")
+	sessionID := contextmanager.CurrentSessionID(agentpath.ContextManagerSessionFolder(configDir))
+	if sessionID == "" {
+		t.Fatal("current session id is empty")
 	}
-	return "llm-http-" + meta.SessionID + ".log"
+	return "llm-http-" + sessionID + ".log"
 }
 
 func assertRawHTTPLogIsValidJSONL(t *testing.T, logText string) {
@@ -1998,20 +1959,23 @@ func findLogLineContaining(logText, substring string) bool {
 	return false
 }
 
-type failOnSecondReadBody struct {
-	payload []byte
-	reads   int
+type failAfterPayloadReadBody struct {
+	payload         []byte
+	offset          int
+	readPastPayload bool
 }
 
-func (b *failOnSecondReadBody) Read(p []byte) (int, error) {
-	b.reads++
-	if b.reads == 1 {
-		return copy(p, b.payload), nil
+func (b *failAfterPayloadReadBody) Read(p []byte) (int, error) {
+	if b.offset >= len(b.payload) {
+		b.readPastPayload = true
+		return 0, io.ErrUnexpectedEOF
 	}
-	return 0, io.ErrUnexpectedEOF
+	n := copy(p, b.payload[b.offset:])
+	b.offset += n
+	return n, nil
 }
 
-func (b *failOnSecondReadBody) Close() error {
+func (b *failAfterPayloadReadBody) Close() error {
 	return nil
 }
 

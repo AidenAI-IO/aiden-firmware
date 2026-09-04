@@ -239,6 +239,20 @@ func TestResolvedWebConfigDTO_MissingFileUsesDefaults(t *testing.T) {
 	}
 }
 
+func TestResolvedWebConfigDTOReadsInvalidConfigForRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte("input_mode = \"realtime\"\n[model]\nprovider = \"fake\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	dto, err := resolvedWebConfigDTO(path)
+	if err != nil {
+		t.Fatalf("resolvedWebConfigDTO() error = %v", err)
+	}
+	if dto.Agent.InputMode != "realtime" {
+		t.Fatalf("agent.input_mode = %q, want realtime", dto.Agent.InputMode)
+	}
+}
+
 func TestResolvedWebConfigDTO_PreservesCustomInstruction(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")

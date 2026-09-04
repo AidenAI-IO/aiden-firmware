@@ -69,6 +69,10 @@ type textInputProbeVision interface {
 	ProbeInputMode(ctx context.Context, screenshot screenshotResult, platform string, focus focusPointArgs) (textInputProbeAnalysis, error)
 }
 
+type textInputProbeCleanupVision interface {
+	VerifyProbeCleanup(ctx context.Context, before, after screenshotResult, platform string, focus focusPointArgs) (bool, error)
+}
+
 type llmTextInputVision struct {
 	models model.Model
 }
@@ -196,6 +200,47 @@ Classification rules:
 - The absence of an underline does not prove ASCII mode. Candidate popup evidence takes priority.
 - Keyboard autocorrect suggestions for already committed English text are not an IME composition state.
 - When a keyboard is visible, distinguish ordinary autocorrect suggestions from an active IME candidate state by also checking the focused input position.`, platform, focus.X, focus.Y))
+}
+
+func (v *llmTextInputVision) VerifyProbeCleanup(ctx context.Context, before, after screenshotResult, platform string, focus focusPointArgs) (bool, error) {
+	prompt := buildTextInputProbeCleanupPrompt(platform, focus)
+	raw, err := v.visionJSONWithScreenshots(ctx, "probe_cleanup", prompt, before, after)
+	if err != nil {
+		return false, err
+	}
+	var parsed struct {
+		ProbeCharacterVisible *bool  `json:"probe_character_visible"`
+		CleanupSafe           bool   `json:"cleanup_safe"`
+		Evidence              string `json:"evidence"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return false, fmt.Errorf("parse probe cleanup verification: %w", err)
+	}
+	if parsed.ProbeCharacterVisible == nil {
+		return false, fmt.Errorf("parse probe cleanup verification: missing probe_character_visible")
+	}
+	if *parsed.ProbeCharacterVisible && !parsed.CleanupSafe {
+		return false, fmt.Errorf("probe character remains visible but cleanup is unsafe")
+	}
+	return *parsed.ProbeCharacterVisible, nil
+}
+
+func buildTextInputProbeCleanupPrompt(platform string, focus focusPointArgs) string {
+	return strings.TrimSpace(fmt.Sprintf(`Compare these two screenshots to verify whether the probe character "a" remains in the input field after the undo operation.
+The first screenshot was captured immediately before automation typed the probe character. The second screenshot was captured after automation sent undo.
+Platform: %q
+Focused field location (normalized 0-1000): (%.0f, %.0f)
+
+Return JSON only using exactly this shape:
+{"probe_character_visible":false,"cleanup_safe":false,"evidence":"short visual reason"}
+
+Verification rules:
+- Inspect the focused input field at the specified coordinates in both screenshots.
+- Set probe_character_visible=true only if the second screenshot shows the lowercase letter "a" at the probe insertion position as committed text or uncommitted preedit text.
+- Set cleanup_safe=true only if the comparison confirms that this visible "a" was injected by this probe and a single Backspace will remove that probe character without deleting pre-existing user text.
+- Set both fields false when the probe character was removed by undo.
+- If the before screenshot is unclear, the insertion position cannot be identified, or the identity of the visible "a" is ambiguous, set cleanup_safe=false. A destructive cleanup must never be recommended based on the after screenshot alone.
+- Focus on the cursor position and immediate surrounding text; ignore any "a" characters already present in the first screenshot.`, platform, focus.X, focus.Y))
 }
 
 // PartitionComposition splits one long IME run at natural language boundaries.
@@ -446,19 +491,26 @@ Rules:
 }
 
 func (v *llmTextInputVision) visionJSON(ctx context.Context, operation, prompt string, screenshot screenshotResult) (string, error) {
-	if strings.TrimSpace(screenshot.Data) == "" {
+	return v.visionJSONWithScreenshots(ctx, operation, prompt, screenshot)
+}
+
+func (v *llmTextInputVision) visionJSONWithScreenshots(ctx context.Context, operation, prompt string, screenshots ...screenshotResult) (string, error) {
+	if len(screenshots) == 0 {
 		return "", fmt.Errorf("screenshot data missing")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	imgURL := "data:image/jpeg;base64," + screenshot.Data
 	msgs := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You analyze device screenshots for text input automation. Output JSON only."),
-		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{
-			llms.TextPart(prompt),
-			llms.ImageURLPart(imgURL),
-		}},
 	}
+	parts := []llms.ContentPart{llms.TextPart(prompt)}
+	for _, screenshot := range screenshots {
+		if strings.TrimSpace(screenshot.Data) == "" {
+			return "", fmt.Errorf("screenshot data missing")
+		}
+		parts = append(parts, llms.ImageURLPart("data:image/jpeg;base64,"+screenshot.Data))
+	}
+	msgs = append(msgs, llms.MessageContent{Role: llms.ChatMessageTypeHuman, Parts: parts})
 	// Use the model's configured temperature for vision analysis. Previously
 	// hardcoded to 0 for determinism, but that breaks kimi-k3 (requires temp=1)
 	// and the temperature difference has minimal impact on vision text extraction.
@@ -543,4 +595,9 @@ func (s *stubTextInputVision) DecideCandidateAction(_ context.Context, _ screens
 	action := s.actions[0]
 	s.actions = s.actions[1:]
 	return action, nil
+}
+
+func (s *stubTextInputVision) VerifyProbeCleanup(_ context.Context, _, _ screenshotResult, _ string, _ focusPointArgs) (bool, error) {
+	// Stub always returns false (probe character successfully removed)
+	return false, nil
 }

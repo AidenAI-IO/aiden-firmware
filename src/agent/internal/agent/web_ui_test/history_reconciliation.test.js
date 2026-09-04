@@ -94,6 +94,8 @@ class FakeDocument {
         if (!this.elements.has(id)) this.elements.set(id, new FakeElement());
         return this.elements.get(id);
     }
+
+    addEventListener() {}
 }
 
 const document = new FakeDocument();
@@ -139,6 +141,7 @@ const sourceDir = path.join(__dirname, '..', 'web_ui');
 const source = [
     fs.readFileSync(path.join(sourceDir, 'scripts', 'state.js'), 'utf8'),
     fs.readFileSync(path.join(sourceDir, 'scripts', 'chat.js'), 'utf8'),
+    fs.readFileSync(path.join(sourceDir, 'scripts', 'events.js'), 'utf8'),
     `
 const historyA = [
     {type: 'user', request_id: 'user-1', content: 'hello', timestamp: 't1'},
@@ -169,6 +172,22 @@ const thirdNodes = Array.from(messagesDiv.children);
 assert.strictEqual(thirdNodes[0], secondNodes[0]);
 assert.strictEqual(thirdNodes[1], secondNodes[1]);
 assert.strictEqual(thirdNodes[2], secondNodes[2]);
+
+handleServerEvent({
+    type: 'assistant', status: 'streaming', source: 'voice',
+    request_id: 'voice-1', reasoning_content: 'first thought'
+});
+const firstVoiceReasoningNode = Array.from(messagesDiv.children)[3];
+assert.equal(firstVoiceReasoningNode._message.reasoning_content, 'first thought');
+
+handleServerEvent({
+    type: 'assistant', status: 'streaming', source: 'voice',
+    request_id: 'voice-1', reasoning_content: 'first thought, then another'
+});
+const updatedVoiceReasoningNode = Array.from(messagesDiv.children)[3];
+assert.notStrictEqual(updatedVoiceReasoningNode, firstVoiceReasoningNode);
+assert.equal(updatedVoiceReasoningNode._message.reasoning_content, 'first thought, then another');
+assert.equal(messagesDiv.children.length, 4, 'reasoning deltas should update one draft');
 `
 ].join('\n');
 
