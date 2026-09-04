@@ -329,8 +329,9 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 			return
 		}
 
-		// Secondary verification: check if probe character still exists
-		probeVision, ok := e.vision.(textInputProbeVision)
+		// Secondary verification is optional so probe-only vision
+		// implementations can still complete mode analysis.
+		probeVision, ok := e.vision.(textInputProbeCleanupVision)
 		if !ok {
 			return
 		}

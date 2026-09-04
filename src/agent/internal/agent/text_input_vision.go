@@ -67,6 +67,9 @@ type textInputProbeAnalysis struct {
 
 type textInputProbeVision interface {
 	ProbeInputMode(ctx context.Context, screenshot screenshotResult, platform string, focus focusPointArgs) (textInputProbeAnalysis, error)
+}
+
+type textInputProbeCleanupVision interface {
 	VerifyProbeCleanup(ctx context.Context, screenshot screenshotResult, platform string, focus focusPointArgs) (bool, error)
 }
 
