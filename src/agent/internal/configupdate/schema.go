@@ -201,6 +201,7 @@ type VoiceModelProvider struct {
 	Location         string `json:"location,omitempty"`
 	Endpoint         string `json:"endpoint,omitempty"`
 	BaseURL          string `json:"base_url,omitempty"`
+	RealtimeProtocol string `json:"realtime_protocol,omitempty"`
 	Voice            string `json:"voice,omitempty"`
 }
 
@@ -315,6 +316,7 @@ type VoiceModel struct {
 	Location               string   `json:"location"`
 	Endpoint               string   `json:"endpoint"`
 	BaseURL                string   `json:"base_url"`
+	RealtimeProtocol       string   `json:"realtime_protocol,omitempty"`
 	Voice                  string   `json:"voice"`
 	Instructions           string   `json:"instructions"`
 	EnableSpeechEmotion    *bool    `json:"enable_speech_emotion,omitempty"`
@@ -611,6 +613,7 @@ func (d Config) ToAgentConfig() agent.Config {
 			Location:               d.VoiceModel.Location,
 			Endpoint:               d.VoiceModel.Endpoint,
 			BaseURL:                d.VoiceModel.BaseURL,
+			RealtimeProtocol:       d.VoiceModel.RealtimeProtocol,
 			Voice:                  d.VoiceModel.Voice,
 			Instructions:           d.VoiceModel.Instructions,
 			EnableSpeechEmotion:    d.VoiceModel.EnableSpeechEmotion,
@@ -864,6 +867,7 @@ func voiceModelProvidersFromConfig(providers map[string]agent.VoiceModelProvider
 			Location:         provider.Location,
 			Endpoint:         provider.Endpoint,
 			BaseURL:          provider.BaseURL,
+			RealtimeProtocol: provider.RealtimeProtocol,
 			Voice:            provider.Voice,
 		}
 	}
@@ -889,6 +893,7 @@ func (d Config) voiceModelProvidersToAgentConfig() map[string]agent.VoiceModelPr
 			Location:         provider.Location,
 			Endpoint:         provider.Endpoint,
 			BaseURL:          provider.BaseURL,
+			RealtimeProtocol: provider.RealtimeProtocol,
 			Voice:            provider.Voice,
 		}
 		if mapped.APIKey == "" && provider.HasAPIKey {
@@ -963,6 +968,7 @@ func FromAgentConfig(cfg agent.Config) Config {
 			Location:               cfg.VoiceModel.Location,
 			Endpoint:               cfg.VoiceModel.Endpoint,
 			BaseURL:                cfg.VoiceModel.BaseURL,
+			RealtimeProtocol:       cfg.VoiceModel.RealtimeProtocol,
 			Voice:                  cfg.VoiceModel.Voice,
 			Instructions:           cfg.VoiceModel.Instructions,
 			EnableSpeechEmotion:    cfg.VoiceModel.EnableSpeechEmotion,

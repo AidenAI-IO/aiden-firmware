@@ -373,11 +373,12 @@ func TestUpdateMigratesLegacyFlatVoiceModelWithoutLosingCredential(t *testing.T)
 input_mode = "realtime"
 
 [voice_model]
-provider = "qwen"
-api_key = "qwen-secret"
-model = "qwen-realtime"
-voice = "longanqian"
-region = "cn-beijing"
+provider = "openai"
+api_key = "openai-secret"
+model = "gpt-realtime-2"
+voice = "alloy"
+endpoint = "wss://gateway.example/v1/realtime"
+realtime_protocol = "legacy"
 `
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
@@ -393,8 +394,9 @@ region = "cn-beijing"
 	}
 	text := string(got)
 	for _, want := range []string{
-		`[voice_model_providers.qwen]`, `type = "qwen"`, `api_key = "qwen-secret"`,
-		`model = "qwen-realtime"`, `voice = "longanqian"`, `region = "cn-beijing"`,
+		`[voice_model_providers.openai]`, `type = "openai"`, `api_key = "openai-secret"`,
+		`model = "gpt-realtime-2"`, `voice = "alloy"`, `endpoint = "wss://gateway.example/v1/realtime"`,
+		`realtime_protocol = "legacy"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("legacy voice model migration lost %q:\n%s", want, text)
@@ -408,7 +410,7 @@ region = "cn-beijing"
 	if next := strings.Index(voiceModelTable[1:], "\n["); next >= 0 {
 		voiceModelTable = voiceModelTable[:next+1]
 	}
-	for _, legacy := range []string{"api_key =", "model =", "voice =", "region ="} {
+	for _, legacy := range []string{"api_key =", "model =", "voice =", "endpoint =", "realtime_protocol ="} {
 		if strings.Contains(voiceModelTable, legacy) {
 			t.Fatalf("legacy field %q remains in [voice_model]:\n%s", legacy, text)
 		}
@@ -1246,6 +1248,7 @@ func TestVoiceModelConfigRoundTripPreservesSettingsAndCredentialPresence(t *test
 		Location:               "us-central1",
 		Endpoint:               "wss://voice.example.test/realtime",
 		BaseURL:                "https://api.speko.dev",
+		RealtimeProtocol:       "legacy",
 		Voice:                  "longanqian",
 		Instructions:           "be concise",
 		EnableSpeechEmotion:    &emotion,
