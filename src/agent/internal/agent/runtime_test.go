@@ -27,6 +27,7 @@ import (
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
 	speechtext "aiden-agent/internal/agent/speech"
+	"aiden-agent/internal/agent/tokencounter"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -2504,6 +2505,115 @@ func TestRuntimeRunPrunesContextDuringSingleLongToolRun(t *testing.T) {
 		if !strings.Contains(argumentsByID[id], fmt.Sprintf("step-%d-", i)) {
 			t.Fatalf("recent tool exchange %s was unexpectedly pruned: %q", id, argumentsByID[id])
 		}
+	}
+}
+
+func TestRuntimeRunPrunesProtectedExchangesForHardInputBudget(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	responses := make([]*llms.ContentResponse, 0, 4)
+	for i := 1; i <= 3; i++ {
+		responses = append(responses, toolCallResponse(
+			fmt.Sprintf("call_%d", i),
+			"echo",
+			fmt.Sprintf(`{"input":"step-%d-%s"}`, i, strings.Repeat("x", 5_000)),
+		))
+	}
+	responses = append(responses, contentResponse("hard budget handled"))
+	llmModel := &scriptedModel{responses: responses}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:             configDir,
+			ContextPruneThreshold: 0.8,
+			Model:                 ModelConfig{Provider: "fake", MaxResponseTokens: 256},
+			Instruction:           "Complete every requested step.",
+			MaxIterations:         4,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec: model.ModelSpec{
+				Provider:      "fake",
+				Name:          "hard-budget-tool-run",
+				ContextWindow: 5_000,
+				MaxOutput:     256,
+			},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"echo": &stubTool{name: "echo", description: "Echo input.", output: "ok"}}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "run all three steps"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "hard budget handled" || llmModel.callCount != 4 {
+		t.Fatalf("output/calls = %q/%d, want hard budget handled/4", result.Output, llmModel.callCount)
+	}
+	finalRequest := llmModel.messages[len(llmModel.messages)-1]
+	fullArguments := 0
+	for _, message := range finalRequest {
+		for _, part := range message.Parts {
+			call, ok := part.(llms.ToolCall)
+			if ok && call.FunctionCall != nil && strings.Contains(call.FunctionCall.Arguments, strings.Repeat("x", 1_000)) {
+				fullArguments++
+			}
+		}
+	}
+	if fullArguments >= 3 {
+		t.Fatal("hard-budget pruning preserved all three oversized recent exchanges")
+	}
+	var finalOptions llms.CallOptions
+	finalOptions.Tools = llmModel.tools[len(llmModel.tools)-1]
+	requestTokens := tokencounter.EstimateLLMMessageListTokens(finalRequest) + tokencounter.EstimateToolSchemaTokens(finalOptions)
+	if usable := toolResultUsableInputBudget(5_000, 256); requestTokens > usable {
+		t.Fatalf("final request tokens = %d, want <= usable input budget %d", requestTokens, usable)
+	}
+}
+
+func TestRuntimeRunStopsLocallyWhenHardInputBudgetCannotFit(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: strings.Repeat("s", 8_000)},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	llmModel := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("must not be called")}}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:             configDir,
+			ContextPruneThreshold: 0.8,
+			Model:                 ModelConfig{Provider: "fake", MaxResponseTokens: 256},
+			Instruction:           "Answer directly.",
+			MaxIterations:         1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{Provider: "fake", Name: "hard-budget-local-stop", ContextWindow: 5_000, MaxOutput: 256},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	_, err = runtime.Run(context.Background(), RunRequest{Input: strings.Repeat("u", 8_000)})
+	if err == nil || !strings.Contains(err.Error(), "context remains over usable input budget after pruning") {
+		t.Fatalf("Run() error = %v, want local hard-budget error", err)
+	}
+	if llmModel.callCount != 0 {
+		t.Fatalf("model call count = %d, want 0 for a request that cannot fit locally", llmModel.callCount)
 	}
 }
 

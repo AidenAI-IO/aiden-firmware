@@ -168,17 +168,24 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 // without generating an LLM conversation summary. A changed context is written
 // as a new revision so provider response anchors cannot refer to the old shape.
 func (c *Compactor) PruneHistorical(session *contextmanager.ContextManager, targetTokens int) (*contextmanager.ContextManager, bool, error) {
-	return c.pruneForBudget(session, targetTokens, false)
+	return c.pruneForBudget(session, targetTokens, false, currentTurnToolExchangeProtectN)
 }
 
 // PruneForBudget performs the historical cleanup and also bounds the active
 // user turn. It is intended for checks made between tool iterations, where a
 // single run may otherwise grow indefinitely without another user message.
 func (c *Compactor) PruneForBudget(session *contextmanager.ContextManager, targetTokens int) (*contextmanager.ContextManager, bool, error) {
-	return c.pruneForBudget(session, targetTokens, true)
+	return c.pruneForBudget(session, targetTokens, true, currentTurnToolExchangeProtectN)
 }
 
-func (c *Compactor) pruneForBudget(session *contextmanager.ContextManager, targetTokens int, includeCurrentTurn bool) (*contextmanager.ContextManager, bool, error) {
+// PruneForHardBudget is the emergency variant used when the next request would
+// exceed the provider input budget. Unlike normal pruning, no completed tool
+// exchange remains protected if removing it is required to fit.
+func (c *Compactor) PruneForHardBudget(session *contextmanager.ContextManager, targetTokens int) (*contextmanager.ContextManager, bool, error) {
+	return c.pruneForBudget(session, targetTokens, true, 0)
+}
+
+func (c *Compactor) pruneForBudget(session *contextmanager.ContextManager, targetTokens int, includeCurrentTurn bool, protectRecent int) (*contextmanager.ContextManager, bool, error) {
 	if session == nil {
 		return nil, false, nil
 	}
@@ -201,7 +208,7 @@ func (c *Compactor) pruneForBudget(session *contextmanager.ContextManager, targe
 	messageList, pruned = compactHistoricalToolResults(messageList, targetTokens)
 	c.lastPruneStats.HistoricalToolResultsPruned = pruned
 	if includeCurrentTurn {
-		messageList, pruned = compactCurrentTurnToolExchanges(messageList, targetTokens, currentTurnToolExchangeProtectN)
+		messageList, pruned = compactCurrentTurnToolExchanges(messageList, targetTokens, protectRecent)
 		c.lastPruneStats.CurrentTurnToolExchangesPruned = pruned
 	}
 	c.lastPruneStats.TokensAfter = estimateMessageListTokenUsage(messageList)

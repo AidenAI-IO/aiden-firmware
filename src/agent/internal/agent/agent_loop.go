@@ -211,15 +211,15 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			}
 		}
 		newManager, changed, err := l.ContextBudgetGuard(ctx, llmExecutor.ContextManager(), resolvedOptions)
-		if err != nil {
-			return "", iterationContinue, fmt.Errorf("guard context budget before model request: %w", err)
-		}
 		if changed {
 			if newManager == nil {
 				return "", iterationContinue, fmt.Errorf("guard context budget before model request: context manager is nil")
 			}
 			l.contextManager = newManager
 			llmExecutor.ReplaceContextManager(newManager)
+		}
+		if err != nil {
+			return "", iterationContinue, fmt.Errorf("guard context budget before model request: %w", err)
 		}
 	}
 

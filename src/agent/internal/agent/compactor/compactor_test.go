@@ -534,6 +534,19 @@ func TestPruneForBudgetBoundsCurrentTurnToolExchangesAndStates(t *testing.T) {
 	if boundedManager.GetParentSessionID() != newManager.GetSessionID() {
 		t.Fatalf("bounded revision parent = %q, want %q", boundedManager.GetParentSessionID(), newManager.GetSessionID())
 	}
+
+	hardBudgetManager, pruned, err := compactor.PruneForHardBudget(boundedManager, 1)
+	if err != nil {
+		t.Fatalf("PruneForHardBudget() error = %v", err)
+	}
+	if !pruned || hardBudgetManager == nil {
+		t.Fatal("PruneForHardBudget() did not prune protected exchanges")
+	}
+	for _, message := range hardBudgetManager.CloneMessageList() {
+		if len(message.ToolCalls) != 0 || len(message.ToolResults) != 0 {
+			t.Fatalf("hard-budget revision retained a protected tool exchange: %#v", message)
+		}
+	}
 }
 
 func TestCompactHistoricalToolResultsPrunesOldestUntilTarget(t *testing.T) {
