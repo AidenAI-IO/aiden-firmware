@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -98,6 +99,54 @@ func TestAppendToolExecutionMessagesUsesSharedVisualActionFlowForScreenshot(t *t
 	content := stored[1].ToolResults[0].Content
 	if content != "ok" {
 		t.Fatalf("tool result = %q, want shared action_output", content)
+	}
+	if stored[2].Role != messages.MessageRoleState || len(stored[2].Attachments) != 1 {
+		t.Fatalf("third message = %#v, want state with one image attachment", stored[2])
+	}
+	if stored[2].Attachments[0].Source != messages.AttachmentSourceScreenshotObservation {
+		t.Fatalf("state attachment source = %q", stored[2].Attachments[0].Source)
+	}
+}
+
+func TestAppendToolExecutionMessagesKeepsWaitStableScreenshotOutOfToolResult(t *testing.T) {
+	manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	llmExecutor := executor.NewLLMExecutor(nil, manager)
+	encoded := "aW1nMQ=="
+	actionOutput := `{"ok":true,"stable":true,"elapsed_ms":250,"screen_changed":false}`
+	observation := fmt.Sprintf(
+		`{"action_output":%q,"ok":true,"stable":true,"elapsed_ms":250,"screen_changed":false,"width":800,"height":600,"format":"jpeg","size":4,"data":"%s"}`,
+		actionOutput,
+		encoded,
+	)
+	parser := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "wait_for_stable_screen", visual: true}}}
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{ToolID: "call_1", Tool: "wait_for_stable_screen"},
+		Observation: observation,
+	}
+	toolCall := messages.Message{
+		Role: messages.MessageRoleToolCall,
+		ToolCalls: []messages.ToolCall{{
+			ID: "call_1", Name: "wait_for_stable_screen", Arguments: `{}`,
+		}},
+	}
+
+	if err := appendToolExecutionMessages(llmExecutor, parser, toolCall, step, PreparedToolResult{Content: observation, Complete: true}); err != nil {
+		t.Fatalf("appendToolExecutionMessages() error = %v", err)
+	}
+
+	stored := manager.CloneMessageList()
+	if len(stored) != 3 {
+		t.Fatalf("stored messages = %#v, want tool call, tool result, and state", stored)
+	}
+	content := stored[1].ToolResults[0].Content
+	if content != actionOutput {
+		t.Fatalf("tool result = %q, want stable-screen action_output %q", content, actionOutput)
+	}
+	if strings.Contains(content, encoded) {
+		t.Fatalf("tool result contains screenshot base64: %q", content)
 	}
 	if stored[2].Role != messages.MessageRoleState || len(stored[2].Attachments) != 1 {
 		t.Fatalf("third message = %#v, want state with one image attachment", stored[2])
