@@ -362,6 +362,7 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 		vlmCalls++
 		if verifyErr != nil {
 			log.Printf("[text-input] probe cleanup verification failed: %v", verifyErr)
+			err = errors.Join(err, fmt.Errorf("probe cleanup verification: %w", verifyErr))
 			return
 		}
 
