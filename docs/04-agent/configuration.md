@@ -108,7 +108,7 @@ device_type = "iOS"
 provider = "openrouter-main"
 model = "bytedance-seed/seed-2.0-lite"
 temperature = 0.2
-max_response_tokens = 1000
+max_response_tokens = 8192
 # OpenRouter supports stateless Responses only. This keeps ContextManager
 # history local and omits store and previous_response_id from every request.
 # api_mode = "responses"
@@ -368,7 +368,8 @@ built. When a section is named exactly like a provider type, the section wins.
 | `responses_truncation` | OpenAI-compatible Responses truncation policy. Empty/`disabled` preserves the API default; `auto` lets OpenAI or OpenRouter discard the oldest input. This field is not sent to Ark. |
 | `responses_include` | Optional array of provider-supported Responses include values. In stateless reasoning mode, use `reasoning.encrypted_content` when supported so Aiden can replay the complete opaque reasoning item. Aiden uses `previous_response_id` for provider-managed chaining and intentionally does not expose the separate `conversation` resource ID: the local session transcript remains authoritative and must not be shared across sessions accidentally. |
 | `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
-| `reasoning_effort`        | Thinking effort. Unset is auto. For no-tool requests, native Anthropic maps `low`/`medium`/`high` to adaptive thinking `output_config.effort`; tool requests retain Claude's default reasoning because Aiden does not persist Anthropic thinking signatures. `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, Ollama, and the fake provider, but not by native Anthropic or Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
+| `reasoning_effort`        | Reasoning effort. Unset is auto. Native Anthropic maps supported effort values to adaptive thinking `output_config.effort` and preserves signed thinking blocks across tool-call turns. `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, Ollama, and the fake provider, but not by native Anthropic or Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
+| `reasoning_budget_tokens` | Optional exact reasoning-token budget for models that expose a numeric budget. `0` uses the model default or effort preset. It is currently translated only to Anthropic's native `thinking.budget_tokens` field. |
 | `max_response_tokens`     | Maximum output tokens passed to the model on request                                                                                                                                                                                                 |
 | `context_window`          | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback.                                                                        |
 | `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry.                                                                                                                     |
@@ -437,7 +438,7 @@ model = "doubao-seed-2-1-pro-260628"
 Ark also exposes an Anthropic-protocol endpoint at `/api/compatible`. This agent
 always speaks the OpenAI-compatible protocol, so use the `/api/v3` path above.
 
-`reasoning_effort` accepts `minimal` (no thinking), `low`, `medium`, and `high`.
+`reasoning_effort` accepts `minimal` (no reasoning), `low`, `medium`, and `high`.
 Ark treats an omitted value as `high`, which delays the first streamed token by
 several seconds; the built-in registry therefore pins `low` as the default for
 `doubao-seed-2-1-pro-260628` so voice replies stay responsive. Set the field

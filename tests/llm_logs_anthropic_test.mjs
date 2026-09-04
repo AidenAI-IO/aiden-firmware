@@ -59,6 +59,7 @@ const anthropicRequest = {
     {
       role: 'assistant',
       content: [
+        {type: 'thinking', thinking: 'Inspect before calling.', signature: 'sig'},
         {type: 'text', text: 'I will inspect it.'},
         {type: 'tool_use', id: 'tool-1', name: 'inspect_screen', input: {detail: 'high'}},
       ],
@@ -86,6 +87,7 @@ assert.deepEqual(
     {
       role: 'assistant',
       content: [{type: 'text', text: 'I will inspect it.'}],
+      reasoning_content: 'Inspect before calling.',
       tool_calls: [
         {
           id: 'tool-1',
@@ -160,6 +162,7 @@ assert.deepEqual(
     type: 'message',
     role: 'assistant',
     content: [
+      {type: 'thinking', thinking: 'Plan the answer.', signature: 'sig'},
       {type: 'text', text: 'Hello '},
       {type: 'tool_use', id: 'tool-1', name: 'echo', input: {value: 'test'}},
       {type: 'text', text: 'world'},
@@ -168,6 +171,7 @@ assert.deepEqual(
   {
     role: 'assistant',
     content: 'Hello world',
+    reasoning_content: 'Plan the answer.',
     tool_calls: [
       {
         id: 'tool-1',
@@ -217,6 +221,71 @@ assert.deepEqual(
   'Error responses should take precedence over content arrays',
 );
 
+assert.deepEqual(
+  extract(JSON.stringify({
+    choices: [{message: {role: 'assistant', content: 'Answer', reasoning_content: 'Think first.'}}],
+  })),
+  {role: 'assistant', content: 'Answer', reasoning_content: 'Think first.', tool_calls: []},
+  'OpenAI-compatible responses should preserve reasoning_content',
+);
+
+assert.deepEqual(
+  extract(JSON.stringify({
+    id: 'resp_1',
+    output: [
+      {type: 'reasoning', summary: [{type: 'summary_text', text: 'Compare the options.'}]},
+      {type: 'message', content: [{type: 'output_text', text: 'Choose option A.'}]},
+    ],
+  })),
+  {role: 'assistant', content: 'Choose option A.', reasoning_content: 'Compare the options.', tool_calls: []},
+  'Responses API output should expose reasoning summaries',
+);
+
+assert.deepEqual(
+  extract([
+    'data: {"choices":[{"delta":{"reasoning_content":"Think "}}]}',
+    'data: {"choices":[{"delta":{"reasoning_content":"first.","content":"Answer"}}]}',
+    'data: [DONE]',
+    '',
+  ].join('\n')),
+  {role: 'assistant', content: 'Answer', reasoning_content: 'Think first.', tool_calls: []},
+  'OpenAI-compatible SSE should aggregate reasoning_content and visible content independently',
+);
+
+assert.deepEqual(
+  extract(JSON.stringify({
+    choices: [{message: {role: 'assistant', content: '<think>Check the premise.</think>\nVisible answer.'}}],
+  })),
+  {role: 'assistant', content: 'Visible answer.', reasoning_content: 'Check the premise.', tool_calls: []},
+  'Complete think tags should render separately from visible content',
+);
+
+assert.deepEqual(
+  extract(JSON.stringify({
+    choices: [{message: {role: 'assistant', content: '<think>unfinished'}}],
+  })),
+  {role: 'assistant', content: '<think>unfinished', tool_calls: []},
+  'Incomplete think tags should remain intact for diagnostics',
+);
+
+assert.deepEqual(
+  extract([
+    'data: {"type":"response.reasoning_summary_text.delta","delta":"Check "}',
+    'data: {"type":"response.reasoning_summary_text.delta","delta":"facts."}',
+    'data: {"type":"response.output_text.delta","delta":"Done"}',
+    '',
+  ].join('\n')),
+  {role: 'assistant', content: 'Done', reasoning_content: 'Check facts.', tool_calls: []},
+  'Responses API SSE should aggregate reasoning summary and output text deltas',
+);
+
+const reasoningHtml = context.renderMessages([
+  {role: 'assistant', content: 'Answer', reasoning_content: '<private reasoning>'},
+], false, 'reasoning-response');
+assert.match(reasoningHtml, /msg-reasoning/);
+assert.match(reasoningHtml, />Reasoning</);
+assert.match(reasoningHtml, /&lt;private reasoning&gt;/);
+
 assert.equal(
   context.extractResponseMessage(JSON.stringify({
     content: [{type: 'text', text: 'Provider diagnostic'}],
@@ -233,6 +302,9 @@ assert.equal(context.formatLogTimestamp(''), '');
 const anthropicSse = [
   'event: message_start',
   'data: {"type":"message_start","message":{"role":"assistant"}}',
+  '',
+  'event: content_block_delta',
+  'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Inspect the request."}}',
   '',
   'event: content_block_delta',
   'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello "}}',
@@ -259,6 +331,7 @@ assert.deepEqual(
   {
     role: 'assistant',
     content: 'Hello stream',
+    reasoning_content: 'Inspect the request.',
     tool_calls: [
       {
         id: 'tool-2',

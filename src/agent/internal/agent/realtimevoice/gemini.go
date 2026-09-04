@@ -250,9 +250,9 @@ type geminiTool struct {
 }
 
 type geminiFunctionDeclaration struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Name                 string          `json:"name"`
+	Description          string          `json:"description,omitempty"`
+	ParametersJSONSchema json.RawMessage `json:"parametersJsonSchema,omitempty"`
 }
 
 type geminiRealtimeInputConfig struct {
@@ -280,7 +280,10 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 		setup.SystemInstruction = &geminiSystemInstruction{Parts: []geminiTextPart{{Text: cfg.Instructions}}}
 	}
 	for _, tool := range cfg.Tools {
-		setup.Tools = append(setup.Tools, geminiTool{FunctionDeclarations: []geminiFunctionDeclaration{{Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters}}})
+		// Shared tool definitions use JSON Schema. Gemini's parameters field is
+		// a restricted OpenAPI Schema protobuf and rejects JSON Schema keywords
+		// such as additionalProperties; parametersJsonSchema accepts them.
+		setup.Tools = append(setup.Tools, geminiTool{FunctionDeclarations: []geminiFunctionDeclaration{{Name: tool.Name, Description: tool.Description, ParametersJSONSchema: tool.Parameters}}})
 	}
 	if cfg.TurnDetection == "disabled" {
 		setup.RealtimeInputConfig = &geminiRealtimeInputConfig{AutomaticActivityDetection: &geminiAutomaticActivityDetection{Disabled: true}}

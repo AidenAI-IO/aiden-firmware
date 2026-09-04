@@ -55,6 +55,33 @@ future_key = "preserve me"
 	}
 }
 
+func TestUpdateConfigFileRepairsInvalidInputMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	source := `input_mode = "realtime"
+
+[model]
+provider = "fake"
+`
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"input_mode":"text"}}}`))
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !result.OK || strings.Join(result.ChangedPaths, ",") != "input_mode" {
+		t.Fatalf("result = %+v", result)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `input_mode = "text"`) {
+		t.Fatalf("input_mode was not repaired:\n%s", got)
+	}
+}
+
 func TestUpdateConfigFileWritesModelLogRawHTTP(t *testing.T) {
 	source := `[model]
 provider = "openai"

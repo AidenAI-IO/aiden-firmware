@@ -94,13 +94,32 @@ func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) Message {
 	return Message{
 		Role:                    role,
 		Content:                 contentChoiceText(choice),
+		ReasoningContent:        strings.TrimSpace(choice.ReasoningContent),
 		Usage:                   UsageFromGenerationInfo(choice.GenerationInfo),
 		ToolCalls:               toolCallsFromContentChoice(choice),
 		ResponsesReasoningItems: responsesReasoningItemsFromGenerationInfo(choice.GenerationInfo),
 		ResponsesResponseID:     responsesResponseIDFromGenerationInfo(choice.GenerationInfo),
 		ResponsesOutputItems:    responsesOutputItemsFromGenerationInfo(choice.GenerationInfo),
 		ResponsesAssistantPhase: responsesAssistantPhaseFromGenerationInfo(choice.GenerationInfo),
+		AnthropicThinkingBlocks: anthropicThinkingBlocksFromGenerationInfo(choice.GenerationInfo),
 	}
+}
+
+func anthropicThinkingBlocksFromGenerationInfo(info map[string]any) []json.RawMessage {
+	if len(info) == 0 {
+		return nil
+	}
+	items, ok := info["anthropic_thinking_blocks"].([]json.RawMessage)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+	cloned := make([]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		if len(item) != 0 {
+			cloned = append(cloned, append(json.RawMessage(nil), item...))
+		}
+	}
+	return cloned
 }
 
 // UsageFromGenerationInfo normalizes provider-specific generation metadata to

@@ -69,6 +69,7 @@ type Model struct {
 	ResponsesTruncation               string   `json:"responses_truncation,omitempty"`
 	ResponsesInclude                  []string `json:"responses_include,omitempty"`
 	ReasoningEffort                   string   `json:"reasoning_effort"`
+	ReasoningBudgetTokens             int      `json:"reasoning_budget_tokens"`
 	Temperature                       *float64 `json:"temperature,omitempty"`
 	MaxResponseTokens                 int      `json:"max_response_tokens"`
 	LogRawHTTP                        bool     `json:"log_raw_http"`
@@ -91,6 +92,7 @@ func (d Model) ProviderTestRequest() agent.ModelProviderTestRequest {
 		ResponsesInclude:                  append([]string(nil), d.ResponsesInclude...),
 		Temperature:                       d.Temperature,
 		ReasoningEffort:                   d.ReasoningEffort,
+		ReasoningBudgetTokens:             d.ReasoningBudgetTokens,
 	}
 }
 
@@ -566,6 +568,7 @@ func (d Config) ToAgentConfig() agent.Config {
 			ResponsesTruncation:               d.Model.ResponsesTruncation,
 			ResponsesInclude:                  append([]string(nil), d.Model.ResponsesInclude...),
 			ReasoningEffort:                   d.Model.ReasoningEffort,
+			ReasoningBudgetTokens:             d.Model.ReasoningBudgetTokens,
 			Temperature:                       d.Model.Temperature,
 			MaxResponseTokens:                 d.Model.MaxResponseTokens,
 			LogRawHTTP:                        d.Model.LogRawHTTP,
@@ -925,6 +928,7 @@ func FromAgentConfig(cfg agent.Config) Config {
 			ResponsesTruncation:               cfg.Model.ResponsesTruncation,
 			ResponsesInclude:                  append([]string(nil), cfg.Model.ResponsesInclude...),
 			ReasoningEffort:                   cfg.Model.ReasoningEffort,
+			ReasoningBudgetTokens:             cfg.Model.ReasoningBudgetTokens,
 			Temperature:                       cfg.Model.Temperature,
 			MaxResponseTokens:                 cfg.Model.MaxResponseTokens,
 			LogRawHTTP:                        cfg.Model.LogRawHTTP,

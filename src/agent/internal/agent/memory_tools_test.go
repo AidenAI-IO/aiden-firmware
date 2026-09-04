@@ -144,15 +144,15 @@ func TestSessionChunkWriterSerializesConcurrentWritersOnSameIndex(t *testing.T) 
 		ids[chunk.ID] = true
 		if _, err := os.Stat(filepath.Join(sessionFolder, "chunks", chunk.File)); err != nil {
 			t.Fatalf("indexed chunk %q has no file: %v", chunk.ID, err)
-			}
-		}
-		// Verify all chunks belong to the correct session
-		for _, chunk := range index.Chunks {
-			if chunk.SessionID != "s_shared" {
-				t.Fatalf("chunk %q has session_id %q, want s_shared", chunk.ID, chunk.SessionID)
-			}
 		}
 	}
+	// Verify all chunks belong to the correct session
+	for _, chunk := range index.Chunks {
+		if chunk.SessionID != "s_shared" {
+			t.Fatalf("chunk %q has session_id %q, want s_shared", chunk.ID, chunk.SessionID)
+		}
+	}
+}
 
 // If the context is canceled after the chunk file is written but before the
 // index is updated, the chunk file must be removed: recall expects every .jsonl
@@ -325,18 +325,18 @@ func TestRecallSessionChunksToolSearchesAllSessions(t *testing.T) {
 func TestRecallSessionChunksToolReturnsNewestFirst(t *testing.T) {
 	ctx := context.Background()
 	sessionFolder := t.TempDir()
-	
+
 	// Write chunks with delays to ensure different timestamps (RFC3339 has second precision)
 	writeTestChunk(t, sessionFolder, "s_old", []messages.Message{
 		{Role: messages.MessageRoleUser, Content: "old message"},
 	}, "Old chunk", []string{"test"}, nil)
 	time.Sleep(1100 * time.Millisecond)
-	
+
 	writeTestChunk(t, sessionFolder, "s_middle", []messages.Message{
 		{Role: messages.MessageRoleUser, Content: "middle message"},
 	}, "Middle chunk", []string{"test"}, nil)
 	time.Sleep(1100 * time.Millisecond)
-	
+
 	writeTestChunk(t, sessionFolder, "s_new", []messages.Message{
 		{Role: messages.MessageRoleUser, Content: "new message"},
 	}, "New chunk", []string{"test"}, nil)
