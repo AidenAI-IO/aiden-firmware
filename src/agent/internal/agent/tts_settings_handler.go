@@ -37,7 +37,7 @@ func (s *Server) handleTTSSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) respondTTSSettings(w http.ResponseWriter) {
-	resp := TTSSettingsResponse{Available: availableTTSProviderNames(s.runtime.config)}
+	resp := TTSSettingsResponse{Available: availableTTSProviderNames(s.runtime.ConfigSnapshot())}
 	manager := s.currentTTSManager()
 	if manager != nil {
 		resp.Provider = manager.Current()
@@ -60,7 +60,7 @@ func (s *Server) handleTTSSwitch(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the config for the *target* provider, so per-provider credentials
 	// in agent.toml are picked up automatically.
-	cfg := s.runtime.config
+	cfg := s.runtime.ConfigSnapshot()
 	ttsCfg := buildTTSProviderConfigFor(cfg, req.Provider)
 
 	// Request body fields override the resolved config.
@@ -103,6 +103,6 @@ func (s *Server) handleTTSProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"providers": availableTTSProviderNames(s.runtime.config),
+		"providers": availableTTSProviderNames(s.runtime.ConfigSnapshot()),
 	})
 }

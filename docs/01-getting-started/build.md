@@ -30,7 +30,7 @@ cmake --build build
 Build artifacts location:
 
 - `build/lib/`: Static libraries, e.g., `libaiden.a`, `libaiden_image.a`.
-- `build/bin/`: Executables, e.g., `frame_service`, `audio_service`, `config_web`, example tools, etc.
+- `build/bin/`: Executables, e.g., `frame_service`, `audio_service`, `agent`, example tools, etc.
 - `build/CMakeFiles/`: CMake intermediate files.
 
 > Note: Full hardware targets depend on Rockchip / Luckfox SDK libraries. Local native builds are mainly suitable for code checking, partial tools, and host testing; for device-runnable artifacts, use the cross-compilation workflow.
@@ -97,8 +97,7 @@ cd build-host && ctest --output-on-failure
 | `libaiden_image.a` | Image processing library |
 | `frame_service` / `frame_service_cli` | HDMI frame capture service and CLI |
 | `audio_service` / `audio_service_cli` | Audio recording/playback service and CLI |
-| `config_web` | Device configuration web service |
 | `image_process` | Image processing CLI |
 | `example_*` | Wake word, audio, camera, USB HID examples |
-| `agent` | Go Agent daemon, additionally built by the application cross-build task |
+| `agent` | Go Agent daemon, including the runtime `config-web` subcommand; additionally built by the application cross-build task |
 | `ble_service` | Go BlueZ GATT/ANCS daemon, additionally built by the application cross-build task |

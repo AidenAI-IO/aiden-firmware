@@ -38,7 +38,7 @@ func (r *Runtime) PrimeScreenMappingOnStartup(ctx context.Context) error {
 	if r == nil || r.tools == nil {
 		return nil
 	}
-	if !r.config.HID.PointerTouchscreen() {
+	if !r.ConfigSnapshot().HID.PointerTouchscreen() {
 		return nil
 	}
 

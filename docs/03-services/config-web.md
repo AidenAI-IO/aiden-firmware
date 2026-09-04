@@ -4,7 +4,17 @@ sidebar_position: 2
 
 # Config Web: Web-based Configuration Interface
 
-`config_web` is a lightweight HTTP service providing a web UI for configuring the Agent's LLM provider, API keys, STT/TTS settings, and other runtime parameters. Changes are persisted to `/userdata/agent/agent.toml` and can trigger Agent restart.
+Config Web is the bundled browser client served by the `config-web` subcommand
+of the Go Agent binary (`/oem/usr/bin/agent`). Device operations are exposed by
+the independently mountable [Device Management API](device-management-api.md),
+so the page can be replaced or removed without coupling those operations to the
+static UI. Configuration changes are persisted to
+`/userdata/agent/agent.toml` and can trigger Agent restart.
+
+Model discovery, STT configuration tests, storage operations, and all other
+device-management calls are served directly by Config Web on port `80`. The
+page does not construct cross-port Agent URLs, so Docker host-port overrides
+and USB-ECM access use the same API behavior.
 
 ## Default Parameters
 
@@ -12,7 +22,8 @@ sidebar_position: 2
 | --- | --- |
 | Port | `80` |
 | Config | `/userdata/agent/agent.toml` |
-| Binary | `/oem/usr/bin/config_web` |
+| Binary | `/oem/usr/bin/agent config-web` |
+| Web root | `/oem/usr/share/aiden/config-web` |
 
 ## Startup
 
@@ -42,6 +53,12 @@ The web interface allows:
 - Configuring API keys and model names
 - Selecting STT/TTS providers
 - Testing voice recognition and synthesis
-- Restarting the Agent service
+- Applying saved settings, with an automatic Agent restart when the running Agent cannot accept the new configuration in place
 
-The header switch saves only the top-level `locale` through `PUT /api/config/locale`. The UI updates immediately and rolls back if persistence fails. The last confirmed value is cached in `localStorage` for first paint, but `GET /api/config` remains authoritative. The Agent restart creates a new context session when the locale-specific system prompt changes; it does not rewrite the previous session. `locale` is intentionally separate from `[stt].language`, which only configures speech recognition.
+The header switch saves only the top-level `locale` through
+`PUT /api/config/locale`. The UI updates immediately and rolls back if
+persistence fails. The last confirmed value is cached in `localStorage` for
+first paint, but `GET /api/device/snapshot` remains authoritative. The Agent
+restart creates a new context session when the locale-specific system prompt
+changes; it does not rewrite the previous session. `locale` is intentionally
+separate from `[stt].language`, which only configures speech recognition.

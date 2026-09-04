@@ -408,7 +408,7 @@ type ToolInvokeResponse struct {
 
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
-	userFilesBaseDir := strings.TrimSpace(runtime.config.ConfigDir)
+	userFilesBaseDir := strings.TrimSpace(runtime.ConfigSnapshot().ConfigDir)
 	if userFilesBaseDir == "" {
 		userFilesBaseDir = "/userdata/agent"
 	}
@@ -430,8 +430,8 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		bleDisconnectRequest:    ble.RequestDisconnect,
 		bleNotifyRequest:        ble.RequestPublishNotifications,
 		bleWakeRequest:          defaultBLEWake,
-		androidADB:              NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
-		liveActivity:            NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
+		androidADB:              NewAndroidADBManager(runtime.ConfigSnapshot().HID.FrameSocketOrDefault(), runtime.logger),
+		liveActivity:            NewLiveActivityManager(runtime.ConfigSnapshot().LiveActivity, runtime.logger),
 		pendingResults:          make(map[string]*chatPendingResult),
 		activeRuns:              make(map[string]context.CancelFunc),
 		terminatedRequests:      make(map[string]struct{}),
@@ -449,11 +449,11 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	if s.userFilesMemoryDir != "" {
 		s.episodeStore = NewTaskEpisodeStore(filepath.Join(s.userFilesMemoryDir, "episodes"))
 	}
-	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
+	loadQuickActionsForConfig(runtime.ConfigSnapshot().ConfigDir, runtime.logger)
 	s.quickCapture = newServerQuickCapture(runtime, s.screenCaptureClient)
 	runtime.tools.RegisterPhoneBridge(s.bridge)
 	// Initialize speech clients if configured.
-	cfg := runtime.config
+	cfg := runtime.ConfigSnapshot()
 	s.audioClient = NewAudioServiceClient(cfg.Audio.SocketOrDefault())
 	s.ttsPlaybackBackend = newTTSPlaybackBackendFromConfig(cfg, s.audioClient, s.logger)
 
@@ -537,14 +537,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/concurrent", s.handleConcurrent)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
-	mux.HandleFunc("/api/config-test/stt/start", s.handleSTTConfigTestStart)
-	mux.HandleFunc("/api/config-test/stt/stop", s.handleSTTConfigTestStop)
+	mux.HandleFunc("/api/internal/config/reload", s.handleInternalConfigReload)
 	mux.HandleFunc("/api/audio/", s.handleAudioFile)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
-	mux.HandleFunc("/api/models", s.handleModels)
-	mux.HandleFunc("/api/storage/status", s.handleStorageStatus)
-	mux.HandleFunc("/api/storage/eject", s.handleStorageEject)
-	mux.HandleFunc("/api/storage/format", s.handleStorageFormat)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
 	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
 	mux.HandleFunc("/api/phone-bridge/status", s.handleBridgeStatus)
@@ -1513,10 +1508,11 @@ func (s *Server) handleChatAsync(
 		var newStream *streamSessionWriter
 		unregisterStreamOutput := func() {}
 		ttsManager := s.currentTTSManager()
+		cfg := s.runtime.ConfigSnapshot()
 
-		if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.currentTTSPlaybackBackend() != nil {
+		if cfg.VoiceStreamingTTSEnabledOrDefault() && s.currentTTSPlaybackBackend() != nil {
 			if ttsManager != nil {
-				stream, err := beginManagedTTSStream(runCtx, ttsManager, s.currentTTSPlaybackBackend(), s.runtime.config)
+				stream, err := beginManagedTTSStream(runCtx, ttsManager, s.currentTTSPlaybackBackend(), cfg)
 				if err != nil {
 					if s.logger != nil {
 						s.logger.Warn("TTS BeginStream failed: %v", err)
@@ -1606,7 +1602,7 @@ func (s *Server) handleChatAsync(
 
 		// Keep request-scoped final TTS inside the async run goroutine so Stop can
 		// still see the active run/output and interrupt it reliably.
-		speechText := result.SpokenTextForConfig(s.runtime.config)
+		speechText := result.SpokenTextForConfig(s.runtime.ConfigSnapshot())
 		if s.canSpeakFinalText() && speechText != "" && !result.SpeechStreamed {
 			prepared := s.runtime.PrepareSpokenText(runCtx, SpokenTextInput{ResponseText: speechText, TailAppendable: true})
 			s.speakFinalText(runCtx, requestID, prepared)
@@ -1916,13 +1912,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var newStream *streamSessionWriter
 	unregisterStreamOutput := func() {}
 	ttsManager := s.currentTTSManager()
+	cfg := s.runtime.ConfigSnapshot()
 	streamWriters := []io.Writer{
 		newChatAssistantStreamWriter(stream, episodeID, req.RequestID),
 	}
-	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.currentTTSPlaybackBackend() != nil {
+	if cfg.VoiceStreamingTTSEnabledOrDefault() && s.currentTTSPlaybackBackend() != nil {
 		s.logger.Info("Starting TTS stream")
 		if ttsManager != nil {
-			streamSession, err := beginManagedTTSStream(ctx, ttsManager, s.currentTTSPlaybackBackend(), s.runtime.config)
+			streamSession, err := beginManagedTTSStream(ctx, ttsManager, s.currentTTSPlaybackBackend(), cfg)
 			if err != nil {
 				if s.logger != nil {
 					s.logger.Warn("TTS BeginStream failed: %v", err)
@@ -1999,7 +1996,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		s.liveActivity.CompleteTask(req.RequestID, result.Output)
 	}
 
-	speechText := result.SpokenTextForConfig(s.runtime.config)
+	speechText := result.SpokenTextForConfig(s.runtime.ConfigSnapshot())
 	if s.canSpeakFinalText() && speechText != "" && !result.SpeechStreamed {
 		prepared := s.runtime.PrepareSpokenText(ctx, SpokenTextInput{ResponseText: speechText, TailAppendable: true})
 		// Let request-scoped final TTS outlive the streaming handler while
@@ -2286,7 +2283,7 @@ func (s *Server) toolCallSpeechText(event RunEvent) string {
 	if event.Type != runEventToolCall || event.ToolName == toolWaitForWakeup {
 		return ""
 	}
-	if s.runtime == nil || !s.runtime.config.VoiceToolCallSpeechOrDefault() {
+	if s.runtime == nil || !s.runtime.ConfigSnapshot().VoiceToolCallSpeechOrDefault() {
 		return ""
 	}
 	return speech.BuildText(event.Content)
@@ -2334,7 +2331,7 @@ func (s *Server) canSpeakFinalText() bool {
 	if s.runtime == nil {
 		return false
 	}
-	return canPlayTTSUnavailableFallback(s.runtime.config)
+	return canPlayTTSUnavailableFallback(s.runtime.ConfigSnapshot())
 }
 
 // CanSpeakVoiceNotification reports whether standalone TTS is currently
@@ -2386,7 +2383,7 @@ func (s *Server) speakTextObservedMode(ctx context.Context, requestID, text stri
 	}
 	cfg := Config{}
 	if s.runtime != nil {
-		cfg = s.runtime.config
+		cfg = s.runtime.ConfigSnapshot()
 	}
 	outputCtx, cancelOutput := context.WithCancel(ctx)
 	output := newActiveTTSOutput(cancelOutput)
@@ -2585,8 +2582,10 @@ func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	store := s.episodeStore
-	if store == nil && s.runtime != nil && s.runtime.config.ConfigDir != "" {
-		store = NewTaskEpisodeStore(filepath.Join(s.runtime.config.ConfigDir, "memory", "episodes"))
+	if store == nil && s.runtime != nil {
+		if configDir := s.runtime.ConfigSnapshot().ConfigDir; configDir != "" {
+			store = NewTaskEpisodeStore(filepath.Join(configDir, "memory", "episodes"))
+		}
 	}
 	if store == nil {
 		http.Error(w, "Episode store is not configured", http.StatusNotFound)
@@ -2985,7 +2984,7 @@ func (s *Server) benchmarkToken() string {
 	if s == nil || s.runtime == nil {
 		return ""
 	}
-	return strings.TrimSpace(s.runtime.config.Benchmark.Token)
+	return strings.TrimSpace(s.runtime.ConfigSnapshot().Benchmark.Token)
 }
 
 func (s *Server) authorizeBenchmarkRequest(r *http.Request) bool {
@@ -3156,12 +3155,14 @@ func (s *Server) handleAudioFile(w http.ResponseWriter, r *http.Request) {
 // audioReadRoots lists every directory that may hold archived recordings.
 // A non-default storage_path bypasses the storage-mode machinery.
 func (s *Server) audioReadRoots() []string {
-	archive := s.runtime.config.AudioArchive
+	archive := s.runtime.ConfigSnapshot().AudioArchive
 	if path := archive.ExplicitStoragePath(); path != "" {
 		return []string{path}
 	}
-	if sm := s.storageManager(); sm != nil {
-		return sm.ReadRoots(StorageClassAudio)
+	if s.runtime != nil {
+		if sm := s.runtime.Storage(); sm != nil {
+			return sm.ReadRoots(StorageClassAudio)
+		}
 	}
 	return []string{archive.StoragePathOrDefault()}
 }
@@ -3438,7 +3439,7 @@ func (s *Server) webHistorySnapshot() []Message {
 	dump := s.runtime.WebContextDump()
 	result := make([]Message, 0, len(dump.Messages))
 	role := "backend"
-	if s.runtime.config.InputModeOrDefault() == "realtime" {
+	if s.runtime.ConfigSnapshot().InputModeOrDefault() == "realtime" {
 		role = "user"
 	}
 	for i, item := range dump.Messages {
@@ -3548,7 +3549,7 @@ func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttac
 }
 
 func (s *Server) webAudioInputMode() string {
-	switch s.runtime.config.InputModeOrDefault() {
+	switch s.runtime.ConfigSnapshot().InputModeOrDefault() {
 	case "stt":
 		return "stt"
 	case "realtime":

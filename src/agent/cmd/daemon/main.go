@@ -17,6 +17,7 @@ import (
 
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/agenttask"
+	"aiden-agent/internal/configweb"
 	"aiden-agent/internal/logging"
 	"aiden-agent/internal/ota"
 )
@@ -53,6 +54,8 @@ func main() {
 			os.Exit(runConfigUpdate(os.Args[2:]))
 		case "config-test":
 			os.Exit(runConfigTest(os.Args[2:]))
+		case "config-web":
+			os.Exit(configweb.Run(os.Args[2:]))
 		}
 	}
 	logging.InstallStandard("agent", os.Stderr)

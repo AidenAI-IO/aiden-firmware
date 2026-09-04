@@ -7,7 +7,6 @@ NTP_WATCHDOG="$ROOT_DIR/overlay/etc/init.d/S50ntp_watchdog"
 RTC_INIT="$ROOT_DIR/overlay/etc/init.d/S99rtcinit"
 BOOT_CONF="$ROOT_DIR/overlay/etc/aiden_boot.conf"
 NTP_CONF="$ROOT_DIR/overlay/etc/ntp.conf"
-CONFIG_WEB="$ROOT_DIR/src/config_web.cpp"
 IPV4_OCTET='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
 IPV4_RE="${IPV4_OCTET}(\\.${IPV4_OCTET}){3}"
 
@@ -80,17 +79,6 @@ fi
 
 if ! grep -q 'NTP_WATCHDOG_TIMEOUT' "$NTP_WATCHDOG"; then
     echo "S50ntp_watchdog must respect NTP_WATCHDOG_TIMEOUT from boot config" >&2
-    exit 1
-fi
-
-# config_web must NOT use the aiden.script hook (it no longer exists).
-if grep -q -- '-s /etc/udhcpc/aiden.script' "$CONFIG_WEB"; then
-    echo "config_web must not reference removed aiden.script hook" >&2
-    exit 1
-fi
-
-if ! grep -q 'udhcpc -i .* -n -q' "$CONFIG_WEB"; then
-    echo "config_web must still invoke udhcpc for DHCP (without hook)" >&2
     exit 1
 fi
 

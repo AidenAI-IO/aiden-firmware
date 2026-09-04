@@ -76,7 +76,7 @@ terminal_page="$(curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/webtty/"
 terminal_headers="$(curl -fsSIL --max-time 10 "http://127.0.0.1:$agent_port/webtty/")"
 terminal_token="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/webtty/token")"
 reported_agent_port="$(
-    curl -fsS --max-time 10 "http://127.0.0.1:$config_port/api/config" \
+    curl -fsS --max-time 10 "http://127.0.0.1:$config_port/api/device/status" \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["agent_status"]["public_port"])'
 )"
 test "$reported_agent_port" -eq "$agent_port"
@@ -136,10 +136,10 @@ curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/webtty/" >/dev/null
 before_pid="$(agent_pid)"
 test -n "$before_pid"
 
-curl -fsS --max-time 15 -X POST \
+curl -fsS --max-time 15 -X PUT \
     -H 'Content-Type: application/json' \
     --data '{"system_env":"AIDEN_DOCKER_SANDBOX_SMOKE=1\n"}' \
-    "http://127.0.0.1:$config_port/api/system/env" \
+    "http://127.0.0.1:$config_port/api/system/environment" \
     | grep -q '"agent_restart_scheduled":true'
 
 attempt=1
@@ -159,7 +159,7 @@ test "$after_pid" != "$before_pid"
 compose down
 compose up -d
 wait_for_agent
-curl -fsS --max-time 10 "http://127.0.0.1:$config_port/api/config" \
+curl -fsS --max-time 10 "http://127.0.0.1:$config_port/api/system/environment" \
     | grep -q 'AIDEN_DOCKER_SANDBOX_SMOKE=1'
 
 printf 'Docker sandbox smoke test passed (agent pid %s -> %s).\n' "$before_pid" "$after_pid"
@@ -229,10 +229,10 @@ grep -q 'POST /api/setup docker-sandbox-smoke' "$bridge_log"
 setup_count="$(grep -c 'POST /api/setup docker-sandbox-smoke' "$bridge_log" || true)"
 test "$setup_count" -eq 1
 
-curl -fsS --max-time 15 -X POST \
+curl -fsS --max-time 15 -X PUT \
     -H 'Content-Type: application/json' \
     --data '{"system_env":"AIDEN_DOCKER_SANDBOX_RACE=1\n"}' \
-    "http://127.0.0.1:$config_port/api/system/env" >/dev/null
+    "http://127.0.0.1:$config_port/api/system/environment" >/dev/null
 wait_for_agent
 
 compose exec -T aiden sh -c '
@@ -240,6 +240,10 @@ count=0
 for process in /proc/[0-9]*; do
     executable="$(readlink "$process/exe" 2>/dev/null || true)"
     if [ "$executable" = /oem/usr/bin/agent ]; then
+        command_line="$(tr "\000" " " < "$process/cmdline" 2>/dev/null || true)"
+        case "$command_line" in
+            */oem/usr/bin/agent\ config-web\ *) continue ;;
+        esac
         count="$((count + 1))"
     fi
 done

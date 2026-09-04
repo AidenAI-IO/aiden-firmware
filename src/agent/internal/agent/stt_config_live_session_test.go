@@ -2,9 +2,26 @@ package agent
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestStandaloneSTTConfigTestAPILoadsConfigWithoutAgentRuntime(t *testing.T) {
+	dir := ensureTestConfigDir(t, t.TempDir())
+	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[model]\nprovider = \"fake\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	api := NewSTTConfigTestAPI(filepath.Join(dir, "agent.toml"))
+	resp := httptest.NewRecorder()
+	api.HandleStart(resp, httptest.NewRequest(http.MethodPost, "/api/config-test/stt/start", strings.NewReader(`{}`)))
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "missing stt_values") {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
 
 func TestSTTConfigTestLiveRequestAppliesUnsavedAudioBackend(t *testing.T) {
 	var req sttConfigTestLiveStartRequest
