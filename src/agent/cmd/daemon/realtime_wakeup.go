@@ -1492,7 +1492,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			activeChat = nil
 		case event, ok := <-sessionEvents:
 			if !ok {
-				if err := realtimeSessionTerminationError(sessionErrors); err != nil {
+				if err := realtimeSessionEventClosureError(sessionErrors); err != nil {
 					return err
 				}
 				return nil
@@ -1816,6 +1816,14 @@ func failActiveRealtimeChat(command *realtimeChatCommand, err error) {
 	}
 	sendRealtimeChatEvent(*command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: message})
 	close(command.events)
+}
+
+func realtimeSessionEventClosureError(errs <-chan error) error {
+	err := realtimeSessionTerminationError(errs)
+	if err == nil {
+		return nil
+	}
+	return markRealtimeProviderFailure(err)
 }
 
 func realtimeSessionTerminationError(errs <-chan error) error {

@@ -190,6 +190,33 @@ func TestRealtimeSessionTerminationPreservesBufferedError(t *testing.T) {
 	}
 }
 
+func TestRealtimeSessionEventClosureMarksBufferedProviderError(t *testing.T) {
+	want := errors.New("transport failed")
+	errs := make(chan error, 1)
+	errs <- want
+	close(errs)
+
+	got := realtimeSessionEventClosureError(errs)
+	if !errors.Is(got, want) {
+		t.Fatalf("event closure error = %v, want %v", got, want)
+	}
+	if !shouldAnnounceRealtimeSessionFailure(got) {
+		t.Fatal("buffered provider error was not eligible for failure announcement")
+	}
+}
+
+func TestRealtimeSessionEventClosurePreservesRotation(t *testing.T) {
+	rotated := fmt.Errorf("%w: provider budget exhausted", realtimevoice.ErrSessionRotated)
+	errs := make(chan error, 1)
+	errs <- rotated
+	close(errs)
+
+	got := realtimeSessionEventClosureError(errs)
+	if !errors.Is(got, realtimevoice.ErrSessionRotated) {
+		t.Fatalf("rotation sentinel lost on event closure: %v", got)
+	}
+}
+
 func TestRealtimeFailureAnnouncementOnlyAcceptsProviderFailures(t *testing.T) {
 	original := errors.New("websocket closed")
 	providerErr := markRealtimeProviderFailure(original)
