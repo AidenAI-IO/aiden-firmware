@@ -204,7 +204,6 @@ func TestNotificationMemoryProcessorRetainsUserBillAndIgnoresPublicProductNews(t
   ]
 }`}}
 	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
-	processor.now = func() time.Time { return time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC) }
 	if _, err := processor.ProcessBatch(context.Background(), nil); err != nil {
 		t.Fatalf("ProcessBatch() error = %v", err)
 	}
