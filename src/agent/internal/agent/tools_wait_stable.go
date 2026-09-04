@@ -88,6 +88,7 @@ type waitStableScreenResult struct {
 
 type waitStableScreenObservationResult struct {
 	screenshotResult
+	ActionOutput  string   `json:"action_output"`
 	OK            bool     `json:"ok"`
 	Stable        bool     `json:"stable"`
 	ElapsedMs     int64    `json:"elapsed_ms"`
@@ -152,8 +153,13 @@ func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, 
 	}
 	stable := result.Stable
 	elapsed := result.ElapsedMs
-	out, _ := json.Marshal(waitStableScreenObservationResult{
+	actionOutput, err := json.Marshal(result)
+	if err != nil {
+		return "", fmt.Errorf("marshal stable-screen result: %w", err)
+	}
+	out, err := json.Marshal(waitStableScreenObservationResult{
 		screenshotResult: screenshot,
+		ActionOutput:     string(actionOutput),
 		OK:               result.OK,
 		Stable:           result.Stable,
 		ElapsedMs:        result.ElapsedMs,
@@ -162,6 +168,9 @@ func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, 
 		ScreenChanged:    result.ScreenChanged,
 		LastDiff:         result.LastDiff,
 	})
+	if err != nil {
+		return "", fmt.Errorf("marshal stable-screen screenshot observation: %w", err)
+	}
 	return string(out), nil
 }
 
