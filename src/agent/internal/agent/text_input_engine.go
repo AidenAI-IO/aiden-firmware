@@ -537,9 +537,11 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 				selectedCandidateText += action.Text
 				candidateActions++
 				pageAttempts = 0
-				if action.CompletesPart {
-					return true, analysis.FieldText, false, vlmCalls, nil
-				}
+				// completes_part is the model's prediction, not proof that the
+				// keyboard committed the candidate. Always settle and inspect the
+				// field again, especially when this is the final IME part: an
+				// early return here bubbles up as enter_text success without
+				// verifying that the selection actually took effect.
 				if err := e.sleepFor(ctx, textInputCandidateSettleDelay); err != nil {
 					return false, analysis.FieldText, false, vlmCalls, err
 				}
@@ -750,7 +752,7 @@ func (e *textInputEngine) typeCompositionWithCandidateSelection(ctx context.Cont
 	}
 	// Do not commit the IME's default candidate blindly. Analyze the live
 	// candidate list first; analyzeActVerify will execute the model-selected
-	// candidate action. A selection that completes the part returns immediately.
+	// candidate action and verify the resulting committed field.
 	if err := e.sleepFor(ctx, textInputInitialCandidateDelay); err != nil {
 		return false, fieldText, false, vlmCalls, err
 	}
