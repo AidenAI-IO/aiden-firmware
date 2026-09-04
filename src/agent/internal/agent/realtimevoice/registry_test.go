@@ -34,6 +34,20 @@ func TestDefaultProviderRegistryContainsRealtimeProviders(t *testing.T) {
 	}
 }
 
+func TestDefaultProviderRegistryPropagatesOpenAIRealtimeProtocol(t *testing.T) {
+	provider, err := DefaultProviderRegistry().New("openai", ProviderConfig{RealtimeProtocol: "legacy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	openAI, ok := provider.(OpenAIProvider)
+	if !ok {
+		t.Fatalf("provider = %T, want OpenAIProvider", provider)
+	}
+	if openAI.RealtimeProtocol != "legacy" {
+		t.Fatalf("RealtimeProtocol = %q, want legacy", openAI.RealtimeProtocol)
+	}
+}
+
 type testProvider struct{}
 
 func (testProvider) Open(context.Context, SessionConfig) (Session, error) { return nil, nil }

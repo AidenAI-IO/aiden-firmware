@@ -97,6 +97,35 @@ func TestSTTProviderTypeWhitelist(t *testing.T) {
 	}
 }
 
+func TestVoiceModelProviderRealtimeProtocolValidation(t *testing.T) {
+	for _, protocol := range []string{"", "ga", "legacy", "beta"} {
+		cfg := Config{
+			VoiceModelProviders: map[string]VoiceModelProvider{"gateway": {Type: "openai", RealtimeProtocol: protocol}},
+			VoiceModel:          VoiceModelConfig{Provider: "gateway"},
+		}
+		if err := cfg.ValidateVoiceProviders(); err != nil {
+			t.Errorf("protocol %q rejected: %v", protocol, err)
+		}
+	}
+	for _, tc := range []struct {
+		name, provider, protocol, want string
+	}{
+		{name: "unsupported protocol", provider: "openai", protocol: "v2", want: "unsupported protocol"},
+		{name: "non-openai provider", provider: "gemini", protocol: "legacy", want: "only supported for provider=openai"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{
+				VoiceModelProviders: map[string]VoiceModelProvider{"gateway": {Type: tc.provider, RealtimeProtocol: tc.protocol}},
+				VoiceModel:          VoiceModelConfig{Provider: "gateway"},
+			}
+			err := cfg.ValidateVoiceProviders()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateVoiceProviders() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestVoiceProviderRecordRequiresType(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{"empty": {APIKey: "sk-xxx"}},
