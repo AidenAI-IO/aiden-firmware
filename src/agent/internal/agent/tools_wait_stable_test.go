@@ -95,6 +95,20 @@ func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 	if result.StableWaitMs == nil || *result.StableWaitMs != result.ElapsedMs {
 		t.Fatalf("StableWaitMs = %#v, elapsed_ms=%d", result.StableWaitMs, result.ElapsedMs)
 	}
+	var toolResult map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(result.ActionOutput), &toolResult); err != nil {
+		t.Fatalf("action_output is not valid stable-screen result JSON: %v", err)
+	}
+	if _, ok := toolResult["data"]; ok {
+		t.Fatalf("action_output contains screenshot data: %s", result.ActionOutput)
+	}
+	var stableResult waitStableScreenResult
+	if err := json.Unmarshal([]byte(result.ActionOutput), &stableResult); err != nil {
+		t.Fatalf("decode action_output: %v", err)
+	}
+	if !stableResult.OK || !stableResult.Stable || stableResult.ElapsedMs != result.ElapsedMs {
+		t.Fatalf("action_output stable result = %#v, want top-level stable result", stableResult)
+	}
 	if result.Width != 2 || result.Height != 2 || result.Format != "jpeg" || result.Size != len(jpegData) {
 		t.Fatalf("unexpected screenshot metadata: %#v", result.screenshotResult)
 	}
