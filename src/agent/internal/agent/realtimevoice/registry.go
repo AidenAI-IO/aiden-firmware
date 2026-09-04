@@ -20,6 +20,7 @@ type ProviderConfig struct {
 	AuthMode         string
 	ProjectID        string
 	Location         string
+	RealtimeProtocol string
 }
 
 // ProviderFactory constructs one provider implementation from its static
@@ -84,7 +85,7 @@ func DefaultProviderRegistry() *ProviderRegistry {
 		return SpekoProvider{BaseURL: c.BaseURL, AgentID: c.AgentID, UpstreamProvider: c.UpstreamProvider}
 	})
 	r.Register(ProviderOpenAI, func(c ProviderConfig) Provider {
-		return OpenAIProvider{Endpoint: c.Endpoint}
+		return OpenAIProvider{Endpoint: c.Endpoint, RealtimeProtocol: c.RealtimeProtocol}
 	})
 	r.Register(ProviderGemini, func(c ProviderConfig) Provider {
 		return GeminiProvider{Endpoint: c.Endpoint, AuthMode: c.AuthMode, ProjectID: c.ProjectID, Location: c.Location}

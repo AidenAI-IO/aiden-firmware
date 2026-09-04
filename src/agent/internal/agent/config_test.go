@@ -64,6 +64,17 @@ func TestVoiceModelConfigRejectsNonLoopbackPlaintextEndpoint(t *testing.T) {
 	}
 }
 
+func TestVoiceModelConfigDoesNotStrictlyValidateRealtimeProtocolAtBoot(t *testing.T) {
+	for _, cfg := range []VoiceModelConfig{
+		{Provider: "openai", APIKey: "key", RealtimeProtocol: "v2"},
+		{Provider: "gemini", APIKey: "key", RealtimeProtocol: "legacy"},
+	} {
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("voice protocol compatibility should be validated on config save, not boot: %v", err)
+		}
+	}
+}
+
 func TestVoiceModelConfigValidatesRealtimeProvider(t *testing.T) {
 	if err := (VoiceModelConfig{Provider: "unknown", APIKey: "key"}).Validate(); err == nil {
 		t.Fatal("expected unsupported realtime provider error")
@@ -187,6 +198,14 @@ model = "grok-voice-latest"
 voice = "eve"
 base_url = "https://api.speko.dev"
 
+[voice_model_providers.openai-gateway]
+type = "openai"
+api_key = "openai-secret"
+model = "gpt-realtime-2"
+endpoint = "wss://gateway.example/v1/realtime"
+realtime_protocol = "legacy"
+voice = "alloy"
+
 [voice_model]
 provider = "speko-main"
 `), 0o600); err != nil {
@@ -205,6 +224,9 @@ provider = "speko-main"
 	}
 	if got := resolved.VoiceModelProviders["speko-main"]; got.APIKey != "speko-secret" || got.Model != "grok-voice-latest" || got.Voice != "eve" {
 		t.Fatalf("saved Speko record changed: %+v", got)
+	}
+	if got := resolved.VoiceModelProviders["openai-gateway"]; got.RealtimeProtocol != "legacy" || got.Endpoint != "wss://gateway.example/v1/realtime" {
+		t.Fatalf("saved OpenAI compatibility record changed: %+v", got)
 	}
 
 	runtime, err := LoadRuntimeConfig(path)
