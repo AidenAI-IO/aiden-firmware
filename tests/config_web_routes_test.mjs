@@ -5,6 +5,32 @@ import {fileURLToPath} from 'node:url';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const configRoot = path.join(repositoryRoot, 'src/config_web/web/assets/js/config');
+
+for (const retiredPath of [
+  'src/config_web.cpp',
+  'src/config_web_static_assets.cpp',
+  'src/config_web_static_assets.h',
+  'src/system_env_parser.cpp',
+  'src/system_env_parser.h',
+  'src/wifi_config.cpp',
+  'src/wifi_config.h',
+  'tests/agent_stub_main.cpp',
+  'tests/config_web_e2e_test.cpp',
+  'tests/config_web_source_test.cpp',
+  'tests/config_web_test_assets.h',
+  'tests/system_env_parser_test.cpp',
+  'tests/wifi_config_test.cpp',
+]) {
+  await assert.rejects(
+    fs.access(path.join(repositoryRoot, retiredPath)),
+    (error) => error?.code === 'ENOENT',
+    `retired C++ Config Web file still exists: ${retiredPath}`,
+  );
+}
+
+const rootCMake = await fs.readFile(path.join(repositoryRoot, 'CMakeLists.txt'), 'utf8');
+assert.equal(rootCMake.includes('add_executable(config_web'), false, 'legacy C++ config_web target returned');
+
 const sources = await Promise.all([
   'agent-status.js',
   'config-form.js',

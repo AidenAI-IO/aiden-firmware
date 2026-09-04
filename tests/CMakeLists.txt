@@ -14,7 +14,6 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/aiden_log.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_playback_session.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_record_session.cpp
-    ${CMAKE_SOURCE_DIR}/src/wifi_config.cpp
     ${CMAKE_SOURCE_DIR}/src/service_status.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_ring_buffer.cpp
@@ -105,7 +104,6 @@ list(APPEND AIDEN_IMAGE_TEST_SOURCES aiden_sdk_audio_stub.cpp)
 add_executable(aiden_tests
     test_main.cpp
     aiden_log_test.cpp
-    wifi_config_test.cpp
     frame_service_protocol_test.cpp
     frame_service_defaults_test.cpp
     uds_message_test.cpp
@@ -120,13 +118,11 @@ add_executable(aiden_tests
     terminal_input_test.cpp
     service_status_test.cpp
     vad_common_test.cpp
-    system_env_parser_test.cpp
     audio_service_protocol_test.cpp
     audio_service_client_test.cpp
     audio_playback_session_test.cpp
     audio_session_manager_test.cpp
     audio_volume_state_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
     ${AIDEN_IMAGE_TEST_SOURCES}
     ${AIDEN_TEST_SOURCES}
 )
