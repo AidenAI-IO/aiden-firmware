@@ -10,8 +10,9 @@ maintenance. The board-side public URL is
 
 ## Debian Integration
 
-The production image installs the native ttyd package without adding a Node.js
-runtime. Build it with:
+The production build downloads the pinned static ttyd 1.7.3 armhf binary,
+verifies its SHA-256 digest, and installs it in the OEM image without adding a
+Node.js runtime. Build it with:
 
 ```bash
 ./debian_build.sh
@@ -58,9 +59,9 @@ credentials.
 
 ## Mobile browser defaults
 
-The `--client-option` mechanism tunes the bundled xterm.js client. Aiden
-applies these defaults for the small touch screen and for lower-end mobile
-browsers:
+ttyd 1.7.3 does not include a mobile virtual-keyboard toolbar, but its
+`--client-option` mechanism tunes the bundled xterm.js client. Aiden applies
+these defaults for the small touch screen and for lower-end mobile browsers:
 
 | Option | Default | Purpose |
 | --- | --- | --- |
@@ -72,4 +73,6 @@ browsers:
 | `max-clients` | `2` | Bound concurrent shells on the memory-constrained board |
 
 Set the corresponding `TTYD_*` variables in `/etc/aiden_boot.conf` to adjust
-these values. The legacy `WETTY_*` names remain accepted for migration.
+these values. The legacy `WETTY_*` names remain accepted for migration. The
+mobile toolbar and viewport metadata documented by newer ttyd releases are not
+available in the pinned 1.7.3 client.

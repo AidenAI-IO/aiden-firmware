@@ -17,7 +17,7 @@ readonly GO_DIST=linux-amd64
 readonly GO_TARBALL=go${GO_VERSION}.${GO_DIST}.tar.gz
 readonly GO_TARBALL_SHA256=aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235
 readonly DEFAULT_SOURCE_DATE_EPOCH=1767360516
-readonly EXPECTED_PICO_SDK_COMMIT=a290a4345685e3c711d86ed78a39579e1e735328
+readonly EXPECTED_PICO_SDK_COMMIT=d1a279cbb7e29aa0801943cdf21f0575db69eed5
 readonly CLEANUP_IMAGE=debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 readonly -a MANIFEST_IMAGE_ASSETS=(boot_a.img boot_b.img oem.img rootfs.img)
 readonly -a RELEASE_IMAGE_ASSETS=(boot_a.img boot_b.img oem.img rootfs.img update.img)
@@ -399,7 +399,7 @@ main() {
         --build-time "${ota_build_time}" \
         --sign-key /run/secrets/ota_private.pem \
         --image-dir /out/image \
-        "${manifest_location_args[@]}" \
+        ${manifest_location_args[@]+"${manifest_location_args[@]}"} \
         --max-download-bytes "${max_download_bytes}" \
         --output /out/image/manifest.json
 

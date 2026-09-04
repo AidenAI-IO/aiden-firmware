@@ -30,7 +30,10 @@ readonly -a PRODUCTION_BINARIES=(
     frame_service
     ota
     rknn_vad
+    ttyd
 )
+
+readonly TTYD_SHA256=b0784080bd78f0a5916462672f461542c607f8ea7cee56b075e8cd04e1ffcc4d
 
 # These are the glibc/armhf VQE binaries shipped by the SDK's USE_32BIT
 # RKAUDIO build. Keep the exact digests here so an incompatible replacement
@@ -265,7 +268,7 @@ audit_rootfs() {
     mounts+=("${ROOTFS_MOUNT}/oem")
     systemd-analyze --root="${ROOTFS_MOUNT}" verify \
         aiden.target aiden-machine-id.service aiden-agent.service aiden-config-web.service \
-        aiden-usb-gadget.service aiden-boot-timeline-init.service \
+        aiden-ttyd.service aiden-usb-gadget.service aiden-boot-timeline-init.service \
         aiden-boot-timeline.service oem.mount userdata.mount userdata-ota.mount \
         >"${OUTPUT_DIR}/systemd-unit-audit.txt" 2>&1 || {
             cat "${OUTPUT_DIR}/systemd-unit-audit.txt" >&2
@@ -281,6 +284,9 @@ audit_oem_files() {
         diff -u <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}") >&2 || true
         fail "OEM executable allowlist mismatch"
     }
+    actual_sha=$(sha256sum "${OEM_MOUNT}/usr/bin/ttyd" | awk '{print $1}')
+    [ "${actual_sha}" = "${TTYD_SHA256}" ] \
+        || fail "ttyd checksum mismatch"
     if find "${OEM_MOUNT}" \( -name '*.a' -o -name '*.la' -o -name '*.o' \
         -o -name '*.map' -o -name '*.pc' -o -name CMakeFiles \
         -o -name pkgconfig -o -name include \) -print -quit | grep -q .; then

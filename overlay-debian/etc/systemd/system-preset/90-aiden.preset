@@ -27,7 +27,6 @@ enable aiden-boot-timeline.service
 enable aiden-ota-health-marker.service
 enable aiden-ota-health.service
 enable aiden.target
-disable aiden-wetty.service
 disable dnsmasq.service
 disable wpa_supplicant.service
 disable ssh.socket
