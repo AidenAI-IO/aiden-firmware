@@ -1887,6 +1887,43 @@ func TestRuntimeRunConsumesPendingSteerBeforeFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunPublishesReasoningWithFinalAssistantOutput(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{{
+		Choices: []*llms.ContentChoice{{Content: "final answer", ReasoningContent: "short plan"}},
+	}}}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer."}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "hi",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	var final []RunEvent
+	for _, event := range events {
+		if event.Type == "assistant_output" {
+			final = append(final, event)
+		}
+	}
+	if len(final) != 1 {
+		t.Fatalf("assistant_output events = %d, want 1; events=%#v", len(final), events)
+	}
+	if final[0].Content != "final answer" || final[0].ReasoningContent != "short plan" {
+		t.Fatalf("assistant_output = %#v, want final answer plus reasoning", final[0])
+	}
+}
+
 func TestRuntimeRunDoesNotMarkLocalValidationErrorAsTurnFailure(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
@@ -2240,14 +2277,22 @@ func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.Mes
 	m.toolChoices = append(m.toolChoices, callOptions.ToolChoice)
 	m.rawHTTPLogEnabled = append(m.rawHTTPLogEnabled, rawHTTPLogEnabled(ctx))
 
-	if callOptions.StreamingFunc != nil && m.callCount < len(m.responses) {
-		if m.streamChunks != nil && m.callCount < len(m.streamChunks) {
+	if (callOptions.StreamingFunc != nil || callOptions.StreamingReasoningFunc != nil) && m.callCount < len(m.responses) {
+		if callOptions.StreamingReasoningFunc != nil {
+			reasoning := m.responses[m.callCount].Choices[0].ReasoningContent
+			if reasoning != "" {
+				if err := callOptions.StreamingReasoningFunc(ctx, []byte(reasoning), nil); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if callOptions.StreamingFunc != nil && m.streamChunks != nil && m.callCount < len(m.streamChunks) {
 			for _, chunk := range m.streamChunks[m.callCount] {
 				if err := callOptions.StreamingFunc(ctx, []byte(chunk)); err != nil {
 					return nil, err
 				}
 			}
-		} else {
+		} else if callOptions.StreamingFunc != nil {
 			content := m.responses[m.callCount].Choices[0].Content
 			if content != "" {
 				if err := callOptions.StreamingFunc(ctx, []byte("chunk:"+content)); err != nil {

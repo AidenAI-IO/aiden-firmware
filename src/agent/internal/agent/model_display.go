@@ -1,6 +1,10 @@
 package agent
 
-import "strings"
+import (
+	"strings"
+
+	"aiden-agent/internal/agent/model"
+)
 
 // ModelDisplayInfo represents UI display information for a model.
 // The ID serves as both the model identifier and the display name to reduce
@@ -27,17 +31,25 @@ func (m ModelDisplayInfo) GetDescription(locale string) string {
 
 // LocalizedModelInfo represents a model's display information after localization.
 type LocalizedModelInfo struct {
-	ID          string `json:"id"`
-	Description string `json:"description"`
-	Recommended bool   `json:"recommended"`
+	ID          string           `json:"id"`
+	Description string           `json:"description"`
+	Recommended bool             `json:"recommended"`
+	Spec        *model.ModelSpec `json:"spec,omitempty"`
 }
 
 // Localized returns the model information localized for the given locale.
 func (m ModelDisplayInfo) Localized(locale string) LocalizedModelInfo {
+	var spec *model.ModelSpec
+	if resolved, ok := LookupModelSpec("", m.ID); ok {
+		resolved.Provider = ""
+		resolved.Name = m.ID
+		spec = &resolved
+	}
 	return LocalizedModelInfo{
 		ID:          m.ID,
 		Description: m.GetDescription(locale),
 		Recommended: m.Recommended,
+		Spec:        spec,
 	}
 }
 
@@ -237,6 +249,19 @@ func GetLocalizedModelsForProvider(providerType, locale string) []LocalizedModel
 	result := make([]LocalizedModelInfo, len(models))
 	for i, m := range models {
 		result[i] = m.Localized(locale)
+		// Some registry entries only exist under a provider-qualified key (for
+		// example openai/gpt-4o). Resolve again with the selected provider so the
+		// config UI receives explicit reasoning support, including "unsupported".
+		if resolved, ok := LookupModelSpec(providerType, m.ID); ok {
+			resolved.Provider = normalizedProviderName(providerType)
+			resolved.Name = m.ID
+			result[i].Spec = &resolved
+		}
+		if result[i].Spec != nil {
+			result[i].Spec.Provider = normalizedProviderName(providerType)
+			result[i].Spec.API = modelAPIEndpoint(providerType, "")
+			result[i].Spec.APIShape = modelAPIShape(providerType, "")
+		}
 	}
 	return result
 }

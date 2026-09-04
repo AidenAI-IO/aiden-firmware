@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
+
+	"aiden-agent/internal/agent/model"
 )
 
 // handleModels returns the list of available models for a given provider.
@@ -32,11 +36,29 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	models := GetLocalizedModelsForProvider(provider, locale)
+	modelName := strings.TrimSpace(r.URL.Query().Get("model"))
 
 	w.Header().Set("Content-Type", "application/json")
 	response := map[string]interface{}{
 		"provider": provider,
 		"models":   models,
+	}
+	if modelName != "" {
+		var spec model.ModelSpec
+		if s.runtime != nil {
+			if manager, ok := s.runtime.models.(*ModelManager); ok {
+				ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+				spec = manager.SpecForModel(ctx, provider, modelName)
+				cancel()
+			} else {
+				spec, _ = LookupModelSpec(provider, modelName)
+			}
+		} else {
+			spec, _ = LookupModelSpec(provider, modelName)
+		}
+		if spec.Provider != "" || spec.Name != "" || spec.Reasoning != nil || spec.ContextWindow > 0 || spec.MaxOutput > 0 {
+			response["spec"] = spec
+		}
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {

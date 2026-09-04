@@ -464,6 +464,9 @@ func TestConvertStandardMessageToContextManagerMessage_ReasoningContent(t *testi
 	if message.Content != want {
 		t.Fatalf("content = %q, want %q", message.Content, want)
 	}
+	if message.ReasoningContent != "thinking" {
+		t.Fatalf("reasoning_content = %q, want thinking", message.ReasoningContent)
+	}
 }
 
 func TestContextManagerAppendMessageHookModifiesMessage(t *testing.T) {

@@ -327,14 +327,14 @@ func (pb *PhoneBridge) handleQueryResult(w http.ResponseWriter, r *http.Request)
 		// Extract and validate command ID to prevent path traversal
 		path := strings.TrimPrefix(r.URL.Path, "/api/phone-bridge/results/")
 		commandID := strings.TrimSpace(path)
-		
+
 		// Reject path separators and dot segments
-		if commandID == "" || strings.Contains(commandID, "/") || strings.Contains(commandID, "\\") || 
+		if commandID == "" || strings.Contains(commandID, "/") || strings.Contains(commandID, "\\") ||
 			commandID == "." || commandID == ".." {
 			http.Error(w, `{"error":"Invalid command ID"}`, http.StatusBadRequest)
 			return
 		}
-		
+
 		// Build safe path with validated ID
 		safePath := "/api/phone-bridge/results/" + url.PathEscape(commandID)
 		pb.proxyHTTPRequest(w, r, safePath)

@@ -390,8 +390,9 @@ type compatibleChatResponse struct {
 	ID      string `json:"id,omitempty"`
 	Choices []struct {
 		Message struct {
-			Content   any                  `json:"content"`
-			ToolCalls []compatibleToolCall `json:"tool_calls,omitempty"`
+			Content          any                  `json:"content"`
+			ReasoningContent any                  `json:"reasoning_content,omitempty"`
+			ToolCalls        []compatibleToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -492,7 +493,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		Seed:             callOpts.Seed,
 		Tools:            convertTools(callOpts.Tools, callOpts.Functions),
 		ToolChoice:       normalizeToolChoice(callOpts.ToolChoice, callOpts.FunctionCallBehavior),
-		Stream:           callOpts.StreamingFunc != nil,
+		Stream:           callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil,
 	}
 	// Temperature precedence: model field (set at construction via
 	// withOpenAICompatibleTemperature, lets explicit 0 through) > callOpts
@@ -587,7 +588,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	}
 
 	if reqPayload.Stream {
-		return m.decodeStreamingResponse(ctx, resp.Body, callOpts.StreamingFunc, reqPayload.Model, resp.StatusCode, callStarted, generationInfo)
+		return m.decodeStreamingResponse(ctx, resp.Body, callOpts.StreamingFunc, callOpts.StreamingReasoningFunc, reqPayload.Model, resp.StatusCode, callStarted, generationInfo)
 	}
 
 	var decoded compatibleChatResponse
@@ -624,11 +625,17 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 	choice := decoded.Choices[0]
 	content := flattenResponseContent(choice.Message.Content)
+	providerReasoning := flattenResponseContent(choice.Message.ReasoningContent)
+	visibleContent, taggedReasoning, taggedThinking := normalizeTaggedThinkingText(content)
+	if taggedThinking {
+		content = visibleContent
+	}
 	result := &llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
-			Content:    content,
-			StopReason: choice.FinishReason,
-			ToolCalls:  convertResponseToolCalls(choice.Message.ToolCalls),
+			Content:          content,
+			ReasoningContent: strings.TrimSpace(strings.Trim(strings.Join([]string{providerReasoning, taggedReasoning}, "\n"), "\n")),
+			StopReason:       choice.FinishReason,
+			ToolCalls:        convertResponseToolCalls(choice.Message.ToolCalls),
 		}},
 	}
 	if len(result.Choices[0].ToolCalls) > 0 {
@@ -648,7 +655,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	return result, nil
 }
 
-func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, body io.Reader, stream func(context.Context, []byte) error, requestModel string, statusCode int, callStarted time.Time, generationInfo map[string]any) (*llms.ContentResponse, error) {
+func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, body io.Reader, stream func(context.Context, []byte) error, reasoningStream func(context.Context, []byte, []byte) error, requestModel string, statusCode int, callStarted time.Time, generationInfo map[string]any) (*llms.ContentResponse, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -660,6 +667,26 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	stopReason := ""
 	toolCalls := map[int]*compatibleToolCall{}
 	var usageInfo map[string]any
+	filteredStream := stream
+	var taggedStream *taggedThinkingStream
+	if stream != nil || reasoningStream != nil {
+		var taggedReasoning func([]byte) error
+		if reasoningStream != nil {
+			taggedReasoning = func(chunk []byte) error {
+				return reasoningStream(ctx, chunk, nil)
+			}
+		}
+		var taggedVisible func([]byte) error
+		if stream != nil {
+			taggedVisible = func(chunk []byte) error {
+				return stream(ctx, chunk)
+			}
+		}
+		taggedStream = newTaggedThinkingStream(taggedVisible, taggedReasoning)
+		filteredStream = func(_ context.Context, chunk []byte) error {
+			return taggedStream.Write(chunk)
+		}
+	}
 	var rawStream strings.Builder
 	hasRawStream := false
 	streamDone := false
@@ -671,6 +698,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	contentChunks := 0
 	reasoningChunks := 0
 	commentCount := 0
+	rawContentForLog := ""
 	rawLoggingEnabled := m.rawLogger != nil && rawHTTPLogEnabled(ctx)
 	logRawStream := func(scanErr error) {
 		if !rawLoggingEnabled {
@@ -689,7 +717,11 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 				rawSSE = rawStream.String()
 			}
 		}
-		body := formatStreamingRawHTTPLogBody(content.String(), reasoningContent.String(), stopReason, orderedCompatibleToolCalls(toolCalls), usageInfo, streamDone, scanErr, rawSSE)
+		loggedContent := content.String()
+		if rawContentForLog != "" {
+			loggedContent = rawContentForLog
+		}
+		body := formatStreamingRawHTTPLogBody(loggedContent, reasoningContent.String(), stopReason, orderedCompatibleToolCalls(toolCalls), usageInfo, streamDone, scanErr, rawSSE)
 		_ = m.logRawHTTP(ctx, requestModel, "response", logStatusCode, body)
 	}
 	var scanErr error
@@ -755,6 +787,20 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 			}
 			reasoningChunks++
 			reasoningContent.WriteString(reasoningChunk)
+			if reasoningStream != nil {
+				if err := reasoningStream(ctx, []byte(reasoningChunk), nil); err != nil {
+					scanErr = err
+					return nil, err
+				}
+			}
+			if taggedStream != nil && !taggedStream.inThinking {
+				if err := taggedStream.FlushVisible(); err != nil {
+					scanErr = err
+					return nil, err
+				}
+				taggedStream = nil
+				filteredStream = stream
+			}
 			// TODO: Emit "thinking" audio cue or progress indicator for voice interaction
 			// During reasoning phase, TTS is silent which causes poor UX in voice mode
 		}
@@ -767,8 +813,8 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 			}
 			contentChunks++
 			content.WriteString(chunk)
-			if stream != nil {
-				if err := stream(ctx, []byte(chunk)); err != nil {
+			if filteredStream != nil {
+				if err := filteredStream(ctx, []byte(chunk)); err != nil {
 					scanErr = err
 					return nil, scanErr
 				}
@@ -804,13 +850,28 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	generationInfo["llm_stream_content_chunks"] = contentChunks
 	generationInfo["llm_stream_reasoning_chunks"] = reasoningChunks
 	generationInfo["llm_stream_comment_count"] = commentCount
+	if taggedStream != nil {
+		if err := taggedStream.Finish(); err != nil {
+			scanErr = err
+			return nil, err
+		}
+	}
 	if err := scanner.Err(); err != nil {
 		scanErr = err
 		return nil, fmt.Errorf("read stream response: %w", err)
 	}
 
 	orderedToolCalls := orderedCompatibleToolCalls(toolCalls)
+	rawContentForLog = content.String()
 
+	visibleContent, taggedReasoning, taggedThinking := normalizeTaggedThinkingText(content.String())
+	if taggedThinking {
+		content.Reset()
+		content.WriteString(visibleContent)
+		if taggedReasoning != "" {
+			reasoningContent.WriteString(taggedReasoning)
+		}
+	}
 	choice := &llms.ContentChoice{
 		Content:          content.String(),
 		ReasoningContent: reasoningContent.String(),

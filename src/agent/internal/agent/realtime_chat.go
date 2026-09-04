@@ -61,7 +61,14 @@ func (s *Server) handleRealtimeChatAsync(w http.ResponseWriter, req ChatRequest,
 				response.WriteString(event.Response)
 			}
 			content := response.String()
-			assistant := Message{Type: "assistant", EpisodeID: episodeID, RequestID: requestID, Content: content, Timestamp: time.Now()}
+			assistant := Message{
+				Type:             "assistant",
+				EpisodeID:        episodeID,
+				RequestID:        requestID,
+				Content:          content,
+				ReasoningContent: event.ReasoningContent,
+				Timestamp:        time.Now(),
+			}
 			if normalized, ok := s.publishMessage(assistant); ok {
 				pending.mu.Lock()
 				pending.history = append(pending.history, normalized)
@@ -73,6 +80,7 @@ func (s *Server) handleRealtimeChatAsync(w http.ResponseWriter, req ChatRequest,
 				pending.done = true
 				pending.mu.Unlock()
 			}
+
 			if s.liveActivity != nil {
 				s.liveActivity.CompleteTask(requestID, content)
 			}
@@ -160,6 +168,7 @@ func (s *Server) handleRealtimeChatStream(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var response strings.Builder
+	var reasoningContent string
 	for {
 		select {
 		case <-runCtx.Done():
@@ -179,7 +188,17 @@ func (s *Server) handleRealtimeChatStream(w http.ResponseWriter, r *http.Request
 					response.Reset()
 					response.WriteString(event.Response)
 				}
-				assistant := Message{Type: "assistant", EpisodeID: episodeID, RequestID: req.RequestID, Content: response.String(), Timestamp: time.Now()}
+				if event.ReasoningContent != "" {
+					reasoningContent = event.ReasoningContent
+				}
+				assistant := Message{
+					Type:             "assistant",
+					EpisodeID:        episodeID,
+					RequestID:        req.RequestID,
+					Content:          response.String(),
+					ReasoningContent: reasoningContent,
+					Timestamp:        time.Now(),
+				}
 				if normalized, ok := s.publishMessage(assistant); ok {
 					history := s.webHistorySnapshot()
 					if s.liveActivity != nil {

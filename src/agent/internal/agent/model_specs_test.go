@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/model"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -48,10 +49,10 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 		{"gpt-5.4 bare", "openai", "gpt-5.4", 1_050_000, 128_000},
 		{"gpt-5.4 mini bare", "openai", "gpt-5.4-mini", 400_000, 128_000},
 		{"gpt-5.4 nano bare", "openai", "gpt-5.4-nano", 400_000, 128_000},
-		{"claude fable 5 bare", "anthropic", "claude-fable-5", 1_000_000, 64_000},
-		{"claude opus 5 prefixed", "openrouter", "anthropic/claude-opus-5", 1_000_000, 64_000},
-		{"claude opus 4.8 bare", "anthropic", "claude-opus-4-8", 1_000_000, 64_000},
-		{"claude sonnet 4.6 prefixed", "openrouter", "anthropic/claude-sonnet-4-6", 1_000_000, 64_000},
+		{"claude fable 5 bare", "anthropic", "claude-fable-5", 1_000_000, 128_000},
+		{"claude opus 5 prefixed", "openrouter", "anthropic/claude-opus-5", 1_000_000, 128_000},
+		{"claude opus 4.8 bare", "anthropic", "claude-opus-4-8", 1_000_000, 128_000},
+		{"claude sonnet 4.6 prefixed", "openrouter", "anthropic/claude-sonnet-4-6", 1_000_000, 128_000},
 		{"claude haiku 4.5 bare", "anthropic", "claude-haiku-4-5", 200_000, 64_000},
 		{"gemini 3.5 pro bare", "google", "gemini-3.5-pro", 1_048_576, 65_536},
 		{"kimi k3 bare", "openai", "kimi-k3", 1_048_576, 131_072},
@@ -74,22 +75,60 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 	}
 }
 
+func TestLookupModelSpecScopesNativeBudgetToAnthropic(t *testing.T) {
+	native, ok := LookupModelSpec("anthropic", "claude-sonnet-4-6")
+	if !ok || native.Reasoning == nil || native.Reasoning.BudgetTokensMin != 1024 {
+		t.Fatalf("native spec = %+v, want Anthropic budget capability", native)
+	}
+
+	proxied, ok := LookupModelSpec("openrouter", "claude-sonnet-4-6")
+	if !ok || proxied.Reasoning == nil {
+		t.Fatalf("proxied spec = %+v, want effort capability", proxied)
+	}
+	if proxied.Reasoning.BudgetTokensMin != 0 || proxied.Reasoning.BudgetTokensMax != 0 || proxied.Reasoning.Mode != "effort" {
+		t.Fatalf("proxied reasoning = %+v, want effort without native Anthropic budget", proxied.Reasoning)
+	}
+}
+
+func TestLookupModelSpecClaudeEffortAndBudgetControls(t *testing.T) {
+	spec, ok := LookupModelSpec("anthropic", "claude-sonnet-4-6")
+	if !ok || spec.Reasoning == nil {
+		t.Fatalf("expected Sonnet 4.6 reasoning metadata, got %+v", spec)
+	}
+	if spec.Reasoning.Mode != "effort" || spec.Reasoning.BudgetTokensMin != 1024 || !spec.Reasoning.CanDisable {
+		t.Fatalf("Sonnet 4.6 reasoning = %+v, want effort + budget override", spec.Reasoning)
+	}
+}
+
+func TestLookupModelSpecMarksNonReasoningModelsExplicitly(t *testing.T) {
+	for _, test := range []struct{ provider, model string }{
+		{"openai", "openai/gpt-4o"},
+		{"openrouter", "anthropic/claude-3.5-sonnet"},
+	} {
+		spec, ok := LookupModelSpec(test.provider, test.model)
+		if !ok || spec.Reasoning == nil || spec.Reasoning.Supported {
+			t.Fatalf("%s reasoning = %+v, want explicit unsupported capability", test.model, spec.Reasoning)
+		}
+	}
+}
+
 func TestLookupModelSpecClaude4VersionSeparators(t *testing.T) {
 	tests := []struct {
 		name        string
 		provider    string
 		model       string
 		wantContext int
+		wantOutput  int
 	}{
-		{"opus dotted bare", "anthropic", "claude-opus-4.8", 1_000_000},
-		{"opus dotted provider-prefixed", "openrouter", "anthropic/claude-opus-4.8", 1_000_000},
-		{"sonnet dotted bare", "anthropic", "claude-sonnet-4.6", 1_000_000},
-		{"sonnet dotted provider-prefixed", "openrouter", "anthropic/claude-sonnet-4.6", 1_000_000},
-		{"haiku dotted bare", "anthropic", "claude-haiku-4.5", 200_000},
-		{"haiku dotted provider-prefixed", "openrouter", "anthropic/claude-haiku-4.5", 200_000},
-		{"opus hyphenated bare", "anthropic", "claude-opus-4-8", 1_000_000},
-		{"sonnet hyphenated provider-prefixed", "openrouter", "anthropic/claude-sonnet-4-6", 1_000_000},
-		{"haiku hyphenated bare", "anthropic", "claude-haiku-4-5", 200_000},
+		{"opus dotted bare", "anthropic", "claude-opus-4.8", 1_000_000, 128_000},
+		{"opus dotted provider-prefixed", "openrouter", "anthropic/claude-opus-4.8", 1_000_000, 128_000},
+		{"sonnet dotted bare", "anthropic", "claude-sonnet-4.6", 1_000_000, 128_000},
+		{"sonnet dotted provider-prefixed", "openrouter", "anthropic/claude-sonnet-4.6", 1_000_000, 128_000},
+		{"haiku dotted bare", "anthropic", "claude-haiku-4.5", 200_000, 64_000},
+		{"haiku dotted provider-prefixed", "openrouter", "anthropic/claude-haiku-4.5", 200_000, 64_000},
+		{"opus hyphenated bare", "anthropic", "claude-opus-4-8", 1_000_000, 128_000},
+		{"sonnet hyphenated provider-prefixed", "openrouter", "anthropic/claude-sonnet-4-6", 1_000_000, 128_000},
+		{"haiku hyphenated bare", "anthropic", "claude-haiku-4-5", 200_000, 64_000},
 	}
 
 	for _, tt := range tests {
@@ -101,8 +140,8 @@ func TestLookupModelSpecClaude4VersionSeparators(t *testing.T) {
 			if spec.ContextWindow != tt.wantContext {
 				t.Errorf("ContextWindow = %d, want %d", spec.ContextWindow, tt.wantContext)
 			}
-			if spec.MaxOutput != 64_000 {
-				t.Errorf("MaxOutput = %d, want 64_000", spec.MaxOutput)
+			if spec.MaxOutput != tt.wantOutput {
+				t.Errorf("MaxOutput = %d, want %d", spec.MaxOutput, tt.wantOutput)
 			}
 		})
 	}
@@ -144,6 +183,97 @@ func TestLookupModelSpecUnknownModelReturnsNotOK(t *testing.T) {
 	}
 	if spec, ok := LookupModelSpec("openai", ""); ok {
 		t.Fatalf("expected !ok for empty model, got spec=%+v", spec)
+	}
+}
+
+func TestModelManagerSpecFetchesModelsDevReasoningMetadata(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"anthropic":{"api":null,"models":{"claude-custom":{"id":"claude-custom","reasoning":true,"reasoning_options":[{"type":"effort","values":["low","medium","high","max"]},{"type":"budget_tokens","min":1024}],"limit":{"context":200000,"output":64000}}}}}`)
+	}))
+	defer server.Close()
+
+	mgr := NewModelManager(ModelConfig{Provider: "anthropic", Model: "claude-custom"}, ProxyConfig{},
+		WithModelsDevURL(server.URL), WithProviderMetadataHTTPClient(server.Client()))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		spec := mgr.Spec()
+		if spec.ContextWindow == 200_000 && spec.MaxOutput == 64_000 && spec.Reasoning != nil {
+			if !spec.Reasoning.Supported || spec.Reasoning.Mode != "effort" || !spec.Reasoning.CanDisable || len(spec.Reasoning.Efforts) != 4 || spec.Reasoning.BudgetTokensMin != 1024 {
+				t.Fatalf("reasoning spec = %+v", spec.Reasoning)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Spec() = %+v, want models.dev metadata", spec)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("models.dev requests = %d, want 1", got)
+	}
+}
+
+func TestModelManagerSpecPreservesModelsDevReasoningFalse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"openai":{"models":{"custom-chat":{"reasoning":false,"limit":{"context":128000,"output":4096}}}}}`)
+	}))
+	defer server.Close()
+
+	mgr := NewModelManager(ModelConfig{Provider: "openai", Model: "custom-chat"}, ProxyConfig{},
+		WithModelsDevURL(server.URL), WithProviderMetadataHTTPClient(server.Client()))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		spec := mgr.Spec()
+		if spec.Reasoning != nil {
+			if spec.Reasoning.Supported {
+				t.Fatalf("reasoning = %+v, want explicit unsupported", spec.Reasoning)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("models.dev reasoning=false metadata did not load")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestModelsDevCatalogCachedAcrossManagers(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"anthropic":{"models":{"claude-a":{"limit":{"context":1000,"output":100}},"claude-b":{"limit":{"context":2000,"output":200}}}}}`)
+	}))
+	defer server.Close()
+
+	for _, modelName := range []string{"claude-a", "claude-b"} {
+		mgr := NewModelManager(ModelConfig{Provider: "anthropic", Model: modelName}, ProxyConfig{},
+			WithModelsDevURL(server.URL), WithProviderMetadataHTTPClient(server.Client()))
+		if _, err := mgr.fetchModelsDevModelSpec(context.Background()); err != nil {
+			t.Fatalf("fetchModelsDevModelSpec(%s): %v", modelName, err)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("models.dev requests = %d, want one catalog fetch shared across managers", got)
+	}
+}
+
+func TestModelsDevCatalogReportsOversizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, strings.Repeat("x", maxModelsDevCatalogBytes+1))
+	}))
+	defer server.Close()
+
+	mgr := NewModelManager(ModelConfig{Provider: "anthropic", Model: "claude-test"}, ProxyConfig{},
+		WithModelsDevURL(server.URL), WithProviderMetadataHTTPClient(server.Client()))
+	_, err := mgr.fetchModelsDevModelSpec(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "catalog exceeds") {
+		t.Fatalf("fetchModelsDevModelSpec() error = %v, want explicit oversized catalog error", err)
 	}
 }
 
