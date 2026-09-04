@@ -19,7 +19,11 @@ type commandResult struct {
 }
 
 func runCommand(timeout time.Duration, env []string, input []byte, name string, args ...string) commandResult {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return runCommandContext(context.Background(), timeout, env, input, name, args...)
+}
+
+func runCommandContext(parent context.Context, timeout time.Duration, env []string, input []byte, name string, args ...string) commandResult {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = env
@@ -29,7 +33,7 @@ func runCommand(timeout time.Duration, env []string, input []byte, name string, 
 	cmd.Stdin = bytes.NewReader(input)
 	output, err := cmd.CombinedOutput()
 	result := commandResult{Output: output, ExitCode: 0}
-	if ctx.Err() == context.DeadlineExceeded {
+	if ctx.Err() != nil {
 		result.TimedOut = true
 		result.ExitCode = -1
 		return result

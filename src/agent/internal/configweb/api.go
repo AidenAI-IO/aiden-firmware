@@ -19,8 +19,15 @@ const (
 	apiConfigUpdate
 	apiConfigLocale
 	apiConfigTest
+	apiModels
+	apiSTTTestStart
+	apiSTTTestStop
+	apiStorageStatus
+	apiStorageFormat
+	apiStorageEject
 	apiWiFiScan
 	apiWiFiConnect
+	apiWiFiConnectStatus
 	apiWiFiForget
 	apiSystemEnvironmentGet
 	apiSystemEnvironmentPut
@@ -50,8 +57,15 @@ var apiRoutes = []apiRoute{
 	{apiConfigUpdate, routeVariant{http.MethodPatch, apiPrefix + "/config"}},
 	{apiConfigLocale, routeVariant{http.MethodPut, apiPrefix + "/config/locale"}},
 	{apiConfigTest, routeVariant{http.MethodPost, apiPrefix + "/config/test"}},
+	{apiModels, routeVariant{http.MethodGet, apiPrefix + "/models"}},
+	{apiSTTTestStart, routeVariant{http.MethodPost, apiPrefix + "/config-test/stt/start"}},
+	{apiSTTTestStop, routeVariant{http.MethodPost, apiPrefix + "/config-test/stt/stop"}},
+	{apiStorageStatus, routeVariant{http.MethodGet, apiPrefix + "/storage/status"}},
+	{apiStorageFormat, routeVariant{http.MethodPost, apiPrefix + "/storage/format"}},
+	{apiStorageEject, routeVariant{http.MethodPost, apiPrefix + "/storage/eject"}},
 	{apiWiFiScan, routeVariant{http.MethodPost, apiPrefix + "/network/wifi/scan"}},
 	{apiWiFiConnect, routeVariant{http.MethodPut, apiPrefix + "/network/wifi/connection"}},
+	{apiWiFiConnectStatus, routeVariant{http.MethodGet, apiPrefix + "/network/wifi/connection"}},
 	{apiWiFiForget, routeVariant{http.MethodDelete, apiPrefix + "/network/wifi/connection"}},
 	{apiSystemEnvironmentGet, routeVariant{http.MethodGet, apiPrefix + "/system/environment"}},
 	{apiSystemEnvironmentPut, routeVariant{http.MethodPut, apiPrefix + "/system/environment"}},
@@ -113,10 +127,24 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handlePutLocale(w, r)
 	case apiConfigTest:
 		s.handleConfigTest(w, r)
+	case apiModels:
+		s.handleModels(w, r)
+	case apiSTTTestStart:
+		s.sttTest.HandleStart(w, r)
+	case apiSTTTestStop:
+		s.sttTest.HandleStop(w, r)
+	case apiStorageStatus:
+		s.handleStorageStatus(w, r)
+	case apiStorageFormat:
+		s.handleStorageFormat(w, r)
+	case apiStorageEject:
+		s.handleStorageEject(w, r)
 	case apiWiFiScan:
 		s.handleWiFiScan(w, r)
 	case apiWiFiConnect:
 		s.handleWiFiConnect(w, r)
+	case apiWiFiConnectStatus:
+		s.handleWiFiConnectStatus(w, r)
 	case apiWiFiForget:
 		s.handleWiFiForget(w, r)
 	case apiSystemEnvironmentGet:

@@ -201,6 +201,12 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		reloadError = reloadErr.Error()
 	}
 	if reloadError != "" {
+		restartScheduled := false
+		if err := s.scheduleAgentRestart(); err != nil {
+			reloadError += "; schedule Agent restart: " + err.Error()
+		} else {
+			restartScheduled = true
+		}
 		if frameServiceError != "" {
 			reloadError += "; frame service: " + frameServiceError
 		}
@@ -208,7 +214,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 			"ok": false, "persisted": persisted, "applied": false,
 			"revision": revision, "changed_paths": changed,
 			"restart_required": rebootRequired, "restart_reasons": update["restart_reasons"],
-			"error": reloadError,
+			"agent_restart_scheduled": restartScheduled, "error": reloadError,
 		}
 		if rebootRequired == false {
 			// Agent reload can reject a field whose dependency is initialized
@@ -274,10 +280,18 @@ func (s *Server) handlePutLocale(w http.ResponseWriter, r *http.Request) {
 	}
 	revision := uint64Value(update["revision"])
 	if _, err := s.reloadAgentConfig(r.Context(), revision); err != nil {
+		restartScheduled := false
+		errorMessage := err.Error()
+		if restartErr := s.scheduleAgentRestart(); restartErr != nil {
+			errorMessage += "; schedule Agent restart: " + restartErr.Error()
+		} else {
+			restartScheduled = true
+		}
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "persisted": true, "applied": false,
 			"restart_required": true, "locale": *request.Locale,
-			"revision": revision, "error": err.Error(),
+			"agent_restart_scheduled": restartScheduled,
+			"revision":                revision, "error": errorMessage,
 		})
 		return
 	}

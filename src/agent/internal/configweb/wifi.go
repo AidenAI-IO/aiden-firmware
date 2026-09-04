@@ -2,6 +2,7 @@ package configweb
 
 import (
 	"bufio"
+	"context"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -10,6 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+)
+
+const (
+	wifiConnectionTaskTimeout = 2 * time.Minute
+	wifiCandidateApplyTimeout = 75 * time.Second
 )
 
 type wiFiNetwork struct {
@@ -207,9 +213,13 @@ func promoteWiFiNetwork(config *wiFiConfig, ssid string) {
 }
 
 func (s *Server) queryWiFiStatus() map[string]any {
+	return s.queryWiFiStatusContext(context.Background())
+}
+
+func (s *Server) queryWiFiStatusContext(ctx context.Context) map[string]any {
 	status := map[string]any{"connected": false, "ssid": "", "ip_address": "", "state": "DISCONNECTED", "detail": ""}
 	if commandExists("wpa_cli") {
-		result := runCommand(5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "status")
+		result := runCommandContext(ctx, 5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "status")
 		if result.ExitCode == 0 {
 			detail := strings.TrimRight(string(result.Output), "\r\n")
 			status["detail"] = detail
@@ -217,7 +227,7 @@ func (s *Server) queryWiFiStatus() map[string]any {
 			status["state"], status["ssid"], status["ip_address"] = values["wpa_state"], values["ssid"], values["ip_address"]
 			status["connected"] = values["wpa_state"] == "COMPLETED" && values["ssid"] != ""
 			if status["connected"] == true && status["ip_address"] == "" {
-				status["ip_address"] = interfaceIPv4(s.options.WiFiInterface)
+				status["ip_address"] = interfaceIPv4Context(ctx, s.options.WiFiInterface)
 			}
 			if values["wpa_state"] != "" || values["ssid"] != "" {
 				return status
@@ -225,7 +235,7 @@ func (s *Server) queryWiFiStatus() map[string]any {
 		}
 	}
 	if commandExists("iw") {
-		result := runCommand(5*time.Second, nil, nil, "iw", "dev", s.options.WiFiInterface, "link")
+		result := runCommandContext(ctx, 5*time.Second, nil, nil, "iw", "dev", s.options.WiFiInterface, "link")
 		detail := strings.TrimRight(string(result.Output), "\r\n")
 		status["detail"] = detail
 		for _, line := range strings.Split(detail, "\n") {
@@ -233,7 +243,7 @@ func (s *Server) queryWiFiStatus() map[string]any {
 			if strings.HasPrefix(line, "SSID:") {
 				status["ssid"] = strings.TrimSpace(strings.TrimPrefix(line, "SSID:"))
 				status["connected"], status["state"] = true, "COMPLETED"
-				status["ip_address"] = interfaceIPv4(s.options.WiFiInterface)
+				status["ip_address"] = interfaceIPv4Context(ctx, s.options.WiFiInterface)
 			}
 		}
 	}
@@ -241,10 +251,14 @@ func (s *Server) queryWiFiStatus() map[string]any {
 }
 
 func interfaceIPv4(interfaceName string) string {
+	return interfaceIPv4Context(context.Background(), interfaceName)
+}
+
+func interfaceIPv4Context(ctx context.Context, interfaceName string) string {
 	if !commandExists("ifconfig") {
 		return ""
 	}
-	result := runCommand(5*time.Second, nil, nil, "ifconfig", interfaceName)
+	result := runCommandContext(ctx, 5*time.Second, nil, nil, "ifconfig", interfaceName)
 	if result.ExitCode != 0 {
 		return ""
 	}
@@ -324,12 +338,22 @@ func (s *Server) handleWiFiScan(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": result.ExitCode == 0, "exit_code": result.ExitCode, "output": text, "networks": parseWiFiScanOutput(text)})
 }
 
+type wifiConnectionRequest struct {
+	SSID    string  `json:"ssid"`
+	PSK     *string `json:"psk"`
+	Country string  `json:"country"`
+}
+
+type wifiConnectionJob struct {
+	TaskID     string
+	Status     string
+	StartedAt  time.Time
+	FinishedAt time.Time
+	Result     map[string]any
+}
+
 func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		SSID    string  `json:"ssid"`
-		PSK     *string `json:"psk"`
-		Country string  `json:"country"`
-	}
+	var request wifiConnectionRequest
 	if !readJSONBody(w, r, &request) {
 		return
 	}
@@ -337,11 +361,77 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, 400, "ssid is required")
 		return
 	}
+	s.wifiMu.Lock()
+	if s.wifiJob != nil && s.wifiJob.Status == "running" {
+		taskID := s.wifiJob.TaskID
+		s.wifiMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"ok": false, "error": "a Wi-Fi connection task is already running",
+			"task_id": taskID, "status": "running",
+		})
+		return
+	}
+	job := &wifiConnectionJob{
+		TaskID:    fmt.Sprintf("wifi-%d", time.Now().UnixNano()),
+		Status:    "running",
+		StartedAt: time.Now().UTC(),
+	}
+	s.wifiJob = job
+	s.wifiMu.Unlock()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), wifiConnectionTaskTimeout)
+		defer cancel()
+		result := s.runWiFiConnection(ctx, request)
+		status := "failed"
+		if result["ok"] == true {
+			status = "succeeded"
+		}
+		s.wifiMu.Lock()
+		if s.wifiJob == job {
+			job.Status = status
+			job.FinishedAt = time.Now().UTC()
+			job.Result = result
+		}
+		s.wifiMu.Unlock()
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"ok": true, "task_id": job.TaskID, "status": job.Status,
+		"deadline_seconds": int(wifiConnectionTaskTimeout / time.Second),
+	})
+}
+
+func (s *Server) handleWiFiConnectStatus(w http.ResponseWriter, r *http.Request) {
+	taskID := strings.TrimSpace(r.URL.Query().Get("task_id"))
+	s.wifiMu.Lock()
+	job := s.wifiJob
+	if job == nil || (taskID != "" && taskID != job.TaskID) {
+		s.wifiMu.Unlock()
+		writeJSONError(w, http.StatusNotFound, "Wi-Fi connection task not found")
+		return
+	}
+	response := map[string]any{
+		"ok":         true,
+		"task_id":    job.TaskID,
+		"status":     job.Status,
+		"started_at": job.StartedAt,
+	}
+	if !job.FinishedAt.IsZero() {
+		response["finished_at"] = job.FinishedAt
+	}
+	for key, value := range job.Result {
+		response[key] = value
+	}
+	s.wifiMu.Unlock()
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRequest) map[string]any {
 	originalData, originalErr := readFileLimited(s.options.WiFiConfigPath, maxAgentConfigSize)
 	original, loadErr := loadWiFiConfig(s.options.WiFiConfigPath)
 	if loadErr != nil && !os.IsNotExist(loadErr) {
-		writeJSONError(w, 500, loadErr.Error())
-		return
+		return map[string]any{"ok": false, "error": loadErr.Error()}
 	}
 	attempt := original
 	if strings.TrimSpace(request.Country) != "" {
@@ -364,8 +454,7 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 	promoteWiFiNetwork(&attempt, request.SSID)
 	candidate := s.options.WiFiConfigPath + ".candidate"
 	if err := saveWiFiConfig(candidate, attempt); err != nil {
-		writeJSONError(w, 500, err.Error())
-		return
+		return map[string]any{"ok": false, "error": err.Error()}
 	}
 	removeCandidate := true
 	defer func() {
@@ -373,21 +462,26 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 			_ = os.Remove(candidate)
 		}
 	}()
-	apply := s.applyWiFi(candidate, true)
-	status := s.queryWiFiStatus()
+	candidateCtx, cancelCandidate := context.WithTimeout(ctx, wifiCandidateApplyTimeout)
+	apply := s.applyWiFi(candidateCtx, candidate, true)
+	cancelCandidate()
+	status := s.queryWiFiStatusContext(ctx)
 	connected := apply.ExitCode == 0 && status["connected"] == true && status["ssid"] == request.SSID && status["ip_address"] != ""
 	responseConfig := original
+	persistError := ""
 	if connected {
 		if err := saveWiFiConfig(s.options.WiFiConfigPath, attempt); err != nil {
-			writeJSONError(w, 500, err.Error())
-			return
+			persistError = err.Error()
+			connected = false
+		} else {
+			// The running wpa_supplicant retains the path supplied with -c for
+			// future reconfigure/save operations. Keep the verified candidate file
+			// until the next connection attempt or service restart.
+			removeCandidate = false
+			responseConfig = attempt
 		}
-		// The running wpa_supplicant retains the path supplied with -c for
-		// future reconfigure/save operations. Keep the verified candidate file
-		// until the next connection attempt or service restart.
-		removeCandidate = false
-		responseConfig = attempt
 	}
+	rollback := commandResult{ExitCode: 0}
 	if !connected {
 		if originalErr == nil {
 			_ = atomicWriteFile(s.options.WiFiConfigPath, originalData, 0o600)
@@ -395,24 +489,40 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 			_ = os.Remove(s.options.WiFiConfigPath)
 		}
 		if len(original.Networks) > 0 {
-			_ = s.applyWiFi(s.options.WiFiConfigPath, true)
+			rollback = s.applyWiFi(ctx, s.options.WiFiConfigPath, true)
 		} else if commandExists("wpa_cli") {
-			_ = runCommand(5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "disconnect")
+			rollback = runCommandContext(ctx, 5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "disconnect")
 		}
 		if apply.ExitCode == 0 {
 			apply.ExitCode = 1
 		}
-		status = s.queryWiFiStatus()
+		status = s.queryWiFiStatusContext(ctx)
 	}
 	message := "wifi connected and saved"
 	if !connected {
 		message = "wifi connect failed; config restored"
+		if rollback.ExitCode != 0 {
+			message = "wifi connect failed; config restored on disk but runtime rollback failed"
+		}
 	}
 	applyValue := map[string]any{"ok": connected, "exit_code": apply.ExitCode, "output": strings.TrimRight(string(apply.Output), "\r\n")}
 	if !connected {
 		applyValue["error"] = "failed to apply wifi config"
 	}
-	writeJSON(w, 200, map[string]any{"ok": connected, "wifi": responseConfig.publicValue(), "wifi_status": status, "message": message, "wifi_apply": applyValue})
+	response := map[string]any{"ok": connected, "wifi": responseConfig.publicValue(), "wifi_status": status, "message": message, "wifi_apply": applyValue}
+	if persistError != "" {
+		response["error"] = "persist Wi-Fi config: " + persistError
+	}
+	if !connected {
+		response["wifi_rollback"] = map[string]any{
+			"ok": rollback.ExitCode == 0, "exit_code": rollback.ExitCode,
+			"timed_out": rollback.TimedOut, "output": strings.TrimRight(string(rollback.Output), "\r\n"),
+		}
+	}
+	if ctx.Err() != nil {
+		response["error"] = "Wi-Fi connection task exceeded its deadline"
+	}
+	return response
 }
 
 func (s *Server) handleWiFiForget(w http.ResponseWriter, r *http.Request) {
@@ -451,7 +561,7 @@ func (s *Server) handleWiFiForget(w http.ResponseWriter, r *http.Request) {
 	}
 	apply := commandResult{ExitCode: 0}
 	if len(config.Networks) > 0 {
-		apply = s.applyWiFi(s.options.WiFiConfigPath, false)
+		apply = s.applyWiFi(r.Context(), s.options.WiFiConfigPath, false)
 	} else if commandExists("wpa_cli") {
 		apply = runCommand(5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "disconnect")
 	}
@@ -467,45 +577,47 @@ func (s *Server) handleWiFiForget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": applied, "wifi": config.publicValue(), "wifi_status": s.queryWiFiStatus(), "message": message, "wifi_apply": applyValue})
 }
 
-func (s *Server) applyWiFi(configPath string, force bool) commandResult {
+func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) commandResult {
 	var output strings.Builder
 	associated := false
 	result := commandResult{ExitCode: 0}
 	if commandExists("ifconfig") {
-		up := runCommand(10*time.Second, nil, nil, "ifconfig", s.options.WiFiInterface, "up")
+		up := runCommandContext(ctx, 10*time.Second, nil, nil, "ifconfig", s.options.WiFiInterface, "up")
 		fmt.Fprintf(&output, "$ ifconfig %s up\n%s", s.options.WiFiInterface, up.Output)
 		if up.ExitCode != 0 {
 			result.ExitCode = up.ExitCode
 		}
 	}
 	if !force && commandExists("wpa_cli") {
-		ping := runCommand(5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "ping")
+		ping := runCommandContext(ctx, 5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "ping")
 		if ping.ExitCode == 0 && strings.Contains(string(ping.Output), "PONG") {
-			reconfigure := runCommand(5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "reconfigure")
+			reconfigure := runCommandContext(ctx, 5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "reconfigure")
 			if reconfigure.ExitCode == 0 && !strings.Contains(string(reconfigure.Output), "FAIL") {
-				associated = s.waitForWiFiState(&output, 8)
+				associated = s.waitForWiFiState(ctx, &output, 8)
 			}
 		}
 	}
 	if !associated && commandExists("wpa_supplicant") {
 		if commandExists("killall") {
-			_ = runCommand(5*time.Second, nil, nil, "killall", "wpa_supplicant")
+			_ = runCommandContext(ctx, 5*time.Second, nil, nil, "killall", "wpa_supplicant")
 		}
-		time.Sleep(time.Second)
-		start := runCommand(10*time.Second, nil, nil, "wpa_supplicant", "-B", "-i", s.options.WiFiInterface, "-c", configPath)
+		if !waitContext(ctx, time.Second) {
+			return commandResult{Output: []byte(output.String()), ExitCode: -1, TimedOut: true}
+		}
+		start := runCommandContext(ctx, 10*time.Second, nil, nil, "wpa_supplicant", "-B", "-i", s.options.WiFiInterface, "-c", configPath)
 		fmt.Fprintf(&output, "$ wpa_supplicant -B -i %s -c %s\n%s", s.options.WiFiInterface, configPath, start.Output)
-		associated = s.waitForWiFiState(&output, 10)
+		associated = s.waitForWiFiState(ctx, &output, 10)
 	}
 	dhcpOK := false
 	if associated && commandExists("dhcpcd") {
-		dhcp := runCommand(10*time.Second, nil, nil, "dhcpcd", "-n", s.options.WiFiInterface)
-		dhcpOK = dhcp.ExitCode == 0 && s.waitForWiFiIP(&output, 15)
+		dhcp := runCommandContext(ctx, 10*time.Second, nil, nil, "dhcpcd", "-n", s.options.WiFiInterface)
+		dhcpOK = dhcp.ExitCode == 0 && s.waitForWiFiIP(ctx, &output, 15)
 		if !dhcpOK {
 			result.ExitCode = 1
 		}
 	} else if associated && commandExists("dhclient") {
-		dhcp := runCommand(30*time.Second, nil, nil, "dhclient", s.options.WiFiInterface)
-		dhcpOK = dhcp.ExitCode == 0 && s.waitForWiFiIP(&output, 15)
+		dhcp := runCommandContext(ctx, 30*time.Second, nil, nil, "dhclient", s.options.WiFiInterface)
+		dhcpOK = dhcp.ExitCode == 0 && s.waitForWiFiIP(ctx, &output, 15)
 		if !dhcpOK {
 			result.ExitCode = 1
 		}
@@ -519,14 +631,20 @@ func (s *Server) applyWiFi(configPath string, force bool) commandResult {
 	if associated && dhcpOK {
 		result.ExitCode = 0
 	}
+	if ctx.Err() != nil {
+		result.ExitCode = -1
+		result.TimedOut = true
+	}
 	result.Output = []byte(output.String())
 	return result
 }
 
-func (s *Server) waitForWiFiState(output *strings.Builder, seconds int) bool {
+func (s *Server) waitForWiFiState(ctx context.Context, output *strings.Builder, seconds int) bool {
 	for index := 0; index < seconds; index++ {
-		time.Sleep(time.Second)
-		status := runCommand(5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "status")
+		if !waitContext(ctx, time.Second) {
+			return false
+		}
+		status := runCommandContext(ctx, 5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "status")
 		if status.ExitCode == 0 && strings.Contains(string(status.Output), "wpa_state=COMPLETED") {
 			fmt.Fprintf(output, "$ wpa_cli status -> COMPLETED after %ds\n", index+1)
 			return true
@@ -534,14 +652,27 @@ func (s *Server) waitForWiFiState(output *strings.Builder, seconds int) bool {
 	}
 	return false
 }
-func (s *Server) waitForWiFiIP(output *strings.Builder, seconds int) bool {
+func (s *Server) waitForWiFiIP(ctx context.Context, output *strings.Builder, seconds int) bool {
 	for index := 0; index < seconds; index++ {
-		status := runCommand(5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "status")
-		if keyValueLines(string(status.Output))["ip_address"] != "" || interfaceIPv4(s.options.WiFiInterface) != "" {
+		status := runCommandContext(ctx, 5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "status")
+		if keyValueLines(string(status.Output))["ip_address"] != "" || interfaceIPv4Context(ctx, s.options.WiFiInterface) != "" {
 			return true
 		}
-		time.Sleep(time.Second)
+		if !waitContext(ctx, time.Second) {
+			return false
+		}
 	}
 	fmt.Fprintf(output, "$ no IPv4 address obtained within %ds\n", seconds)
 	return false
+}
+
+func waitContext(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }

@@ -1057,3 +1057,22 @@ func TestStorageManagerStateFileMirrorsStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestStorageStateViewReadsConfigWebMirrorWithoutStartingHardwarePoller(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "storage.state")
+	if err := os.WriteFile(statePath, []byte("SD_PRESENT=1\nSD_MOUNTED=1\nSD_DEVICE=/dev/mmcblk2p1\nSD_MOUNTPOINT=/media/card\nSD_TOTAL_BYTES=100\nSD_FREE_BYTES=40\nFORMAT_STATUS=idle\nMIGRATE_STATUS=success\nMIGRATE_MOVED_FILES=3\nMIGRATE_MOVED_BYTES=64\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	view := NewStorageStateView(StorageConfig{}, statePath, nil)
+	view.Start()
+	status := view.Status()
+	if !status.Card.Present || !status.Card.Mounted || status.MountPoint != "/media/card" || status.Migration.MovedFiles != 3 {
+		t.Fatalf("status=%+v", status)
+	}
+	roots := view.ReadRoots(StorageClassAudio)
+	if len(roots) != 2 || roots[1] != "/media/card/aiden/audio" {
+		t.Fatalf("roots=%v", roots)
+	}
+	view.Stop()
+}

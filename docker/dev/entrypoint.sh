@@ -69,7 +69,7 @@ ttyd_pid="$!"
     --ota-state=/userdata/ota/state.json \
     --cmdline=/proc/cmdline \
     --system-env="$system_env" \
-    --storage-state=/run/agent/storage_state &
+    --storage-state=/run/aiden/storage.state &
 config_web_pid="$!"
 
 set +e

@@ -285,11 +285,6 @@ registerRuntime({
     if (requestError) throw requestError;
     return requestResult;
   },
-  agentRequest: async (...args) => {
-    if (requestImpl) return requestImpl(...args);
-    if (requestError) throw requestError;
-    return requestResult;
-  },
   setBanner: (message, failed) => { latestBanner = {message, failed}; },
   setDetails: (message) => { latestDetails = message; },
   loadAuthoritativeLocale: async () => { authoritativeLocaleLoads++; },

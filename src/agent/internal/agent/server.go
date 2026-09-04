@@ -518,15 +518,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/concurrent", s.handleConcurrent)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
-	mux.HandleFunc("/api/config-test/stt/start", s.handleSTTConfigTestStart)
-	mux.HandleFunc("/api/config-test/stt/stop", s.handleSTTConfigTestStop)
 	mux.HandleFunc("/api/internal/config/reload", s.handleInternalConfigReload)
 	mux.HandleFunc("/api/audio/", s.handleAudioFile)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
-	mux.HandleFunc("/api/models", s.handleModels)
-	mux.HandleFunc("/api/storage/status", s.handleStorageStatus)
-	mux.HandleFunc("/api/storage/eject", s.handleStorageEject)
-	mux.HandleFunc("/api/storage/format", s.handleStorageFormat)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
 	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
 	mux.HandleFunc("/api/phone-bridge/status", s.handleBridgeStatus)
@@ -564,9 +558,6 @@ func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.closing.Load() {
 			http.Error(w, "Server is shutting down", http.StatusServiceUnavailable)
-			return
-		}
-		if handleConfigWebCORS(w, r) {
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -3125,8 +3116,10 @@ func (s *Server) audioReadRoots() []string {
 	if path := archive.ExplicitStoragePath(); path != "" {
 		return []string{path}
 	}
-	if sm := s.storageManager(); sm != nil {
-		return sm.ReadRoots(StorageClassAudio)
+	if s.runtime != nil {
+		if sm := s.runtime.Storage(); sm != nil {
+			return sm.ReadRoots(StorageClassAudio)
+		}
 	}
 	return []string{archive.StoragePathOrDefault()}
 }

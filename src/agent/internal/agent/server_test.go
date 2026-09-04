@@ -2830,7 +2830,6 @@ func TestWebUIIsEmbeddedFromStaticResource(t *testing.T) {
 	for _, asset := range []string{
 		"/web-ui/styles.css",
 		"/web-ui/scripts/state.js",
-		"/web-ui/scripts/storage.js",
 		"/web-ui/scripts/events.js",
 		"/web-ui/scripts/tools.js",
 		"/web-ui/scripts/chat.js",

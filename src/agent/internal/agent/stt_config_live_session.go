@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -123,6 +124,56 @@ type sttConfigTestLiveCapture struct {
 	sttClient      STTClient
 	transcriptHint string
 	samples        []int16
+}
+
+// STTConfigTestAPI is the standalone configuration-test controller hosted by
+// Config Web. It intentionally builds only the narrow recording/transcription
+// dependencies required by these two endpoints; it does not start an Agent
+// runtime, HTTP server, storage manager, or conversation state.
+type STTConfigTestAPI struct {
+	configPath string
+	server     *Server
+	configMu   sync.Mutex
+}
+
+func NewSTTConfigTestAPI(configPath string) *STTConfigTestAPI {
+	runtime := &Runtime{config: Config{ConfigDir: filepath.Dir(configPath)}}
+	return &STTConfigTestAPI{
+		configPath: configPath,
+		server:     &Server{runtime: runtime},
+	}
+}
+
+func (a *STTConfigTestAPI) HandleStart(w http.ResponseWriter, r *http.Request) {
+	if a == nil || a.server == nil || a.server.runtime == nil {
+		http.Error(w, "STT config test unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodPost {
+		a.server.handleSTTConfigTestStart(w, r)
+		return
+	}
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+	cfg, err := LoadRuntimeConfig(a.configPath)
+	if err != nil {
+		http.Error(w, "load Agent config: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	cfg.ConfigDir = filepath.Dir(a.configPath)
+	if err := a.server.runtime.ApplyConfigSnapshot(cfg); err != nil {
+		http.Error(w, "load Agent config: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	a.server.handleSTTConfigTestStart(w, r)
+}
+
+func (a *STTConfigTestAPI) HandleStop(w http.ResponseWriter, r *http.Request) {
+	if a == nil || a.server == nil {
+		http.Error(w, "STT config test unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	a.server.handleSTTConfigTestStop(w, r)
 }
 
 func (v sttConfigTestSTTValues) transcriptionTestRequest() STTTranscriptionTestRequest {

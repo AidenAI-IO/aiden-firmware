@@ -103,6 +103,7 @@ const messages = {
     'config.title': 'Agent Configuration',
     'config.save_failed': 'Save [{{section}}] failed.',
     'config.saved_not_applied': 'Saved [{{section}}], but the Agent has not applied it yet.',
+    'config.saved_restarting': 'Saved [{{section}}]. Agent is restarting to apply it.',
     'config.saved': '[{{section}}] saved.',
     'config.editing': 'Editing [{{section}}], click Save after changes.',
     'config.cancelled': 'Cancelled changes to [{{section}}].',
@@ -394,6 +395,7 @@ const messages = {
     'config.title': 'Agent 配置',
     'config.save_failed': '保存 [{{section}}] 失败。',
     'config.saved_not_applied': '[{{section}}] 已保存，但 Agent 当前尚未生效。',
+    'config.saved_restarting': '[{{section}}] 已保存，Agent 正在重启以应用配置。',
     'config.saved': '[{{section}}] 已保存。',
     'config.editing': '正在编辑 [{{section}}]，修改后请点击保存。',
     'config.cancelled': '已取消 [{{section}}] 的修改。',
@@ -693,8 +695,9 @@ async function saveLocale(locale) {
     }
     localeSavePending = false;
     localeRevision++;
-    setBanner(t(persisted && err.applied === false ? 'locale.saved_not_applied' : 'locale.save_failed'), true);
-    setDetails(err.message);
+    const restarting = persisted && err.applied === false && err.agent_restart_scheduled === true;
+    setBanner(t(restarting ? 'locale.saved' : (persisted && err.applied === false ? 'locale.saved_not_applied' : 'locale.save_failed')), !restarting);
+    setDetails(restarting ? '' : err.message);
     if (!(persisted && err.applied === false)) {
       try {
         await loadAuthoritativeLocale();

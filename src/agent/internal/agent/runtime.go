@@ -586,10 +586,10 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 	rt.startMemoryWorker(logger)
 
-	// Start the SD/eMMC storage manager on every device. Missing or unusable
-	// card hardware degrades to eMMC-only operation.
-	rt.storage = NewStorageManager(cfg.Storage, logger)
-	rt.storage.Start()
+	// Config Web owns SD-card hardware and publishes a state mirror. Agent only
+	// consumes that mirror for read-path routing, so the two processes never
+	// race mounts, formats, ejections, or migrations.
+	rt.storage = NewStorageStateView(cfg.Storage, defaultStorageStatePath, logger)
 
 	rt.screenState = screenState
 	rt.phoneBridge = NewPhoneBridge(logger)
@@ -1358,14 +1358,18 @@ func (r *Runtime) getSystemPrompt() string {
 // span as a searchable chunk. Compaction is the only producer of chunks, so both
 // the threshold and overflow-recovery paths share this one construction.
 func (r *Runtime) sessionChunkWriter() *SessionChunkWriter {
-	if r == nil || r.config.ConfigDir == "" {
+	if r == nil {
+		return nil
+	}
+	configDir := r.ConfigSnapshot().ConfigDir
+	if configDir == "" {
 		return nil
 	}
 	extraction := DefaultMemoryExtractionConfig()
 	if r.memories != nil {
 		extraction = r.memories.extraction
 	}
-	return NewSessionChunkWriter(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), extraction)
+	return NewSessionChunkWriter(agentpath.ContextManagerSessionFolder(configDir), extraction)
 }
 
 func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {

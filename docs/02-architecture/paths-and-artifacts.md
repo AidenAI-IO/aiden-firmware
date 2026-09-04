@@ -45,6 +45,7 @@ sidebar_position: 4
 | `/userdata/wpa_supplicant.conf` | Wi-Fi configuration |
 | `/run/frame_service/frame_service.sock` | Frame Service socket |
 | `/run/audio_service/audio_service.sock` | Audio Service socket |
+| `/run/aiden/storage.state` | StorageManager state written by Config Web and consumed read-only by Agent |
 | `/var/log/frame_service/frame_service.log` | Frame Service log |
 | `/var/log/adb/adb-startup.log` | adb delayed startup log |
 | `/var/log/audio_service/audio_service.log` | Audio Service log |
@@ -98,9 +99,11 @@ frame_service_cli --socket /run/frame_service/frame_service.sock screenshot --ou
 audio_service_cli --socket /run/audio_service/audio_service.sock health
 audio_service_cli --socket /run/audio_service/audio_service.sock get-volume
 
-# Agent API
+# Config Web management API
+curl http://<device-ip>/api/storage/status
+
+# Agent runtime API
 curl http://<device-ip>:8080/api/tools
-curl http://<device-ip>:8080/api/storage/status
 curl http://<device-ip>:8080/api/storage/monitor/status
 curl -X POST -H 'Content-Type: application/json' -d '{"force":false,"targets":[]}' http://<device-ip>:8080/api/storage/cleanup
 

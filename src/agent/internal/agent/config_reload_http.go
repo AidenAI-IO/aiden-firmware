@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,50 +106,4 @@ func writeAgentJSON(w http.ResponseWriter, status int, value any) {
 
 func writeAgentJSONError(w http.ResponseWriter, status int, message string) {
 	writeAgentJSON(w, status, map[string]any{"ok": false, "applied": false, "error": message})
-}
-
-// handleConfigWebCORS applies a narrow CORS policy for the page hosted by the
-// separate Config Web process. It echoes only an explicitly configured origin
-// or the same device host on the configured portal port; no wildcard is ever
-// emitted. It returns true when an OPTIONS preflight was answered.
-func handleConfigWebCORS(w http.ResponseWriter, r *http.Request) bool {
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin == "" {
-		return false
-	}
-	allowed := false
-	for _, configured := range strings.Split(os.Getenv("AIDEN_CONFIG_WEB_ORIGINS"), ",") {
-		if strings.TrimSpace(configured) == origin {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		parsed, err := url.Parse(origin)
-		if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != "" {
-			host := r.Host
-			if value, _, err := net.SplitHostPort(host); err == nil {
-				host = value
-			} else {
-				host = strings.Trim(host, "[]")
-			}
-			if parsed.Hostname() == host {
-				port := parsed.Port()
-				configuredPort := strings.TrimSpace(os.Getenv("AIDEN_CONFIG_WEB_PORT"))
-				allowed = port == "" || port == "80" || (configuredPort != "" && port == configuredPort)
-			}
-		}
-	}
-	if !allowed {
-		return false
-	}
-	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Add("Vary", "Origin")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
-		return true
-	}
-	return false
 }

@@ -1189,8 +1189,8 @@ TEST_CASE("config web uses board-side recording for STT tests") {
     CHECK(html.find("function toggleSTTTest()") != std::string::npos);
     CHECK(html.find("function startSTTTest()") != std::string::npos);
     CHECK(html.find("function stopSTTTest()") != std::string::npos);
-    CHECK(html.find("agentRequest('/api/config-test/stt/start'") != std::string::npos);
-    CHECK(html.find("agentRequest('/api/config-test/stt/stop'") != std::string::npos);
+    CHECK(html.find("request('/api/config-test/stt/start'") != std::string::npos);
+    CHECK(html.find("request('/api/config-test/stt/stop'") != std::string::npos);
     CHECK(html.find("activate microphone") != std::string::npos);
     CHECK(html.find("recognition result") != std::string::npos);
 
@@ -1929,11 +1929,9 @@ TEST_CASE("config web manages realtime voice as persistent provider records") {
     CHECK(js.find("clearOnSave") == std::string::npos);
 }
 
-// A stopped agent daemon makes the direct /api/models request return 503. That
-// is a normal state, not a configuration error, so the model selector degrades
-// to the custom-model input instead of a red failure box the user cannot act
-// on.
-TEST_CASE("config web html degrades model selector when the agent is offline") {
+// A temporarily unavailable Config Web capability should not prevent custom
+// model input while the management service is recovering.
+TEST_CASE("config web html degrades model selector when model discovery is unavailable") {
     const std::string js = read_config_web_config_scripts();
 
     const size_t load_at = js.find("loadModels:");

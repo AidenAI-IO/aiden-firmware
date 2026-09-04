@@ -25,6 +25,12 @@ for (const route of [
   '/api/config/schema',
   '/api/config/locale',
   '/api/config/test',
+  '/api/models?provider=',
+  '/api/config-test/stt/start',
+  '/api/config-test/stt/stop',
+  '/api/storage/status',
+  '/api/storage/format',
+  '/api/storage/eject',
   '/api/device/snapshot',
   '/api/device/status',
   '/api/device/reboot',
@@ -40,20 +46,8 @@ for (const route of [
   assert.ok(bundle.includes(route), `missing canonical frontend route: ${route}`);
 }
 
-for (const runtimeRoute of [
-  '/api/models?provider=',
-  '/api/config-test/stt/start',
-  '/api/config-test/stt/stop',
-  '/api/storage/status',
-  '/api/storage/format',
-  '/api/storage/eject',
-]) {
-  const usesAgent = runtimeRoute.startsWith('/api/models?')
-    ? bundle.includes('agentRequest(`/api/models?provider=')
-    : bundle.includes(`agentRequest('${runtimeRoute}'`);
-  assert.ok(usesAgent,
-    `runtime route must use the Agent base URL: ${runtimeRoute}`);
-}
+assert.equal(bundle.includes('agentRequest'), false, 'Config Web still contains Agent cross-port requests');
+assert.equal(bundle.includes("port='8080'"), false, 'Config Web still hard-codes the Agent port');
 
 for (const retiredRoute of [
   "'/api/config/meta'",

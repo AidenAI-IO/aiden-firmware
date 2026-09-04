@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"aiden-agent/internal/agent"
 )
 
 const (
@@ -24,8 +26,14 @@ const (
 )
 
 type Server struct {
-	options Options
-	http    *http.Server
+	options   Options
+	http      *http.Server
+	storage   storageController
+	sttTest   *agent.STTConfigTestAPI
+	closeMu   sync.Once
+	storageMu sync.RWMutex
+	wifiMu    sync.Mutex
+	wifiJob   *wifiConnectionJob
 
 	restartMu               sync.Mutex
 	restartCommand          *exec.Cmd
@@ -39,7 +47,17 @@ func NewServer(options Options) (*Server, error) {
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
-	s := &Server{options: options}
+	s := &Server{
+		options: options,
+		sttTest: agent.NewSTTConfigTestAPI(options.AgentConfigPath),
+	}
+	if _, err := os.Stat(options.AgentConfigPath); err == nil {
+		if err := s.initializeStorageManager(); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat Agent config: %w", err)
+	}
 	s.http = &http.Server{
 		Addr:              options.Addr(),
 		Handler:           s,
@@ -52,6 +70,11 @@ func NewServer(options Options) (*Server, error) {
 }
 
 func (s *Server) ListenAndServe() error {
+	if s.storage == nil {
+		if err := s.initializeStorageManager(); err != nil {
+			return fmt.Errorf("initialize storage manager: %w", err)
+		}
+	}
 	log.Printf("[config_web] listening on %s", s.options.Addr())
 	err := s.http.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
@@ -61,7 +84,13 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.http.Shutdown(ctx)
+	err := s.http.Shutdown(ctx)
+	s.closeMu.Do(func() {
+		if storage := s.currentStorage(); storage != nil {
+			storage.Stop()
+		}
+	})
+	return err
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

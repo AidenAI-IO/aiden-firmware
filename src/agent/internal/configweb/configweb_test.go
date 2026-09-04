@@ -8,7 +8,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"aiden-agent/internal/agent"
 )
+
+type fakeStorageController struct {
+	status agent.StorageStatus
+}
+
+func (f *fakeStorageController) Status() agent.StorageStatus { return f.status }
+func (f *fakeStorageController) SafeEject() error {
+	f.status.Card.Mounted = false
+	return nil
+}
+func (f *fakeStorageController) StartFormat(fs, confirm string) error {
+	if confirm != agent.StorageFormatConfirmToken {
+		return os.ErrPermission
+	}
+	f.status.FormatJob = agent.StorageFormatJob{Status: agent.StorageFormatRunning, FS: fs}
+	return nil
+}
+func (f *fakeStorageController) Stop() {}
 
 func TestUint64ValuePreservesJSONNumber(t *testing.T) {
 	const value = "18446744073709551615"
@@ -166,24 +187,108 @@ func TestConfigTestRejectsInvalidTelemetryURL(t *testing.T) {
 	}
 }
 
-func TestModelsAndRuntimeRoutesAreNotServedByConfigWeb(t *testing.T) {
+func TestModelsSTTAndStorageAreOwnedByConfigWeb(t *testing.T) {
 	server, err := NewServer(testOptions(t))
 	if err != nil {
 		t.Fatal(err)
 	}
+	server.storage = &fakeStorageController{status: agent.StorageStatus{
+		EffectiveMode: agent.StorageModeDual,
+		Card:          agent.StorageCardStatus{Present: true, Mounted: true},
+		MountPoint:    "/mnt/sdcard",
+		FormatJob:     agent.StorageFormatJob{Status: agent.StorageFormatIdle},
+		Migration:     agent.StorageMigrationJob{Status: agent.StorageFormatIdle},
+	}}
 	for _, test := range []struct{ method, path string }{
 		{http.MethodGet, "/api/models?provider=openai&locale=zh-CN"},
-		{http.MethodPost, "/api/config/test/stt/start"},
-		{http.MethodPost, "/api/config/test/stt/stop"},
+		{http.MethodPost, "/api/config-test/stt/start"},
+		{http.MethodPost, "/api/config-test/stt/stop"},
 		{http.MethodGet, "/api/storage/status"},
 		{http.MethodPost, "/api/storage/format"},
 		{http.MethodPost, "/api/storage/eject"},
 	} {
 		resp := httptest.NewRecorder()
-		server.ServeHTTP(resp, httptest.NewRequest(test.method, test.path, strings.NewReader(`{}`)))
-		if resp.Code != http.StatusNotFound {
-			t.Errorf("runtime route %s %s returned status=%d", test.method, test.path, resp.Code)
+		body := `{}`
+		if test.path == "/api/storage/format" {
+			body = `{"fs":"ext4","confirm":"format-sd-card"}`
 		}
+		server.ServeHTTP(resp, httptest.NewRequest(test.method, test.path, strings.NewReader(body)))
+		if resp.Code == http.StatusNotFound {
+			t.Errorf("Config Web route %s %s returned 404", test.method, test.path)
+		}
+	}
+}
+
+func TestModelsEndpointReturnsLocalizedCatalog(t *testing.T) {
+	server, err := NewServer(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetch := func(locale string) []agent.LocalizedModelInfo {
+		t.Helper()
+		resp := httptest.NewRecorder()
+		path := "/api/models?provider=openai&locale=" + locale
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
+		if resp.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+		}
+		var payload struct {
+			Models []agent.LocalizedModelInfo `json:"models"`
+		}
+		if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.Models
+	}
+	zh := fetch("zh-CN")
+	en := fetch("en-US")
+	if len(zh) == 0 || len(en) == 0 || zh[0].ID != en[0].ID || zh[0].Description == en[0].Description {
+		t.Fatalf("zh=%+v en=%+v", zh, en)
+	}
+}
+
+func TestWiFiConnectionRunsAsBoundedBackgroundTask(t *testing.T) {
+	options := testOptions(t)
+	binDir := t.TempDir()
+	ifconfig := filepath.Join(binDir, "ifconfig")
+	if err := os.WriteFile(ifconfig, []byte("#!/bin/sh\n/bin/sleep 1\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Now()
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/network/wifi/connection", strings.NewReader(`{"ssid":"test-network","psk":"secret"}`)))
+	if resp.Code != http.StatusAccepted || time.Since(startedAt) > 500*time.Millisecond {
+		t.Fatalf("status=%d elapsed=%s body=%s", resp.Code, time.Since(startedAt), resp.Body.String())
+	}
+	var started map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	taskID, _ := started["task_id"].(string)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		statusResp := httptest.NewRecorder()
+		path := "/api/network/wifi/connection?task_id=" + taskID
+		server.APIHandler().ServeHTTP(statusResp, httptest.NewRequest(http.MethodGet, path, nil))
+		var status map[string]any
+		if err := json.Unmarshal(statusResp.Body.Bytes(), &status); err != nil {
+			t.Fatal(err)
+		}
+		if status["status"] != "running" {
+			if status["status"] != "failed" || status["wifi_rollback"] == nil {
+				t.Fatalf("status payload=%#v", status)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Wi-Fi task did not finish: %#v", status)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -251,6 +356,37 @@ func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
 	resp := httptest.NewRecorder()
 	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{"agent":{"locale":"en-US"}}}`)))
 	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"applied":true`) {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestConfigPatchSchedulesRestartWhenRuntimeReloadRejectsChange(t *testing.T) {
+	options := testOptions(t)
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{\"agent\":{\"locale\":\"zh-CN\"}},\"changed_paths\":[\"agent.locale\"],\"reboot_required\":false,\"persisted\":true,\"revision\":9}'\n"
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok": false, "applied": false, "restart_required": true,
+			"error": "configuration changes require an Agent restart",
+		})
+	}))
+	defer reload.Close()
+	options.AgentBinary = fakeAgent
+	options.AgentHTTPBaseURL = reload.URL
+	options.AgentInitScript = "/bin/true"
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{"agent":{"locale":"zh-CN"}}}`)))
+	if resp.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(resp.Body.String(), `"persisted":true`) ||
+		!strings.Contains(resp.Body.String(), `"applied":false`) ||
+		!strings.Contains(resp.Body.String(), `"agent_restart_scheduled":true`) {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }

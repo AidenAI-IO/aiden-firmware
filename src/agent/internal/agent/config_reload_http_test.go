@@ -78,16 +78,21 @@ func TestInternalConfigReloadRejectsTruncatedJSON(t *testing.T) {
 	}
 }
 
-func TestAgentHandlerAllowsExactConfigWebOrigin(t *testing.T) {
-	t.Setenv("AIDEN_CONFIG_WEB_ORIGINS", "http://example.invalid")
+func TestAgentHandlerDoesNotExposeConfigWebCapabilities(t *testing.T) {
 	server := &Server{}
 	h := server.Handler()
-	req := httptest.NewRequest(http.MethodOptions, "/api/models", nil)
-	req.Host = "example.invalid:8080"
-	req.Header.Set("Origin", "http://example.invalid")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent || rec.Header().Get("Access-Control-Allow-Origin") != "http://example.invalid" {
-		t.Fatalf("status=%d headers=%v", rec.Code, rec.Header())
+	for _, path := range []string{
+		"/api/models?provider=openai",
+		"/api/config-test/stt/start",
+		"/api/config-test/stt/stop",
+		"/api/storage/status",
+		"/api/storage/format",
+		"/api/storage/eject",
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("path %s returned status=%d", path, rec.Code)
+		}
 	}
 }

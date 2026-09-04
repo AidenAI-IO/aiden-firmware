@@ -192,6 +192,11 @@ func stateInt64(values map[string]string, key string) int64 {
 }
 
 func (s *Server) storageStatusValue() map[string]any {
+	if storage := s.currentStorage(); storage != nil {
+		if status := storageStatusMap(storage.Status()); status != nil {
+			return status
+		}
+	}
 	values := readStorageState(s.options.StorageStatePath)
 	jobStatus := stateString(values, "FORMAT_STATUS")
 	if jobStatus == "" {
