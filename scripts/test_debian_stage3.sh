@@ -78,7 +78,7 @@ grep -q 'Pin-Priority: -1' "${STAGE3_DIR}/aiden-production.pref"
 
 grep -Fq '1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)' \
     "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
-grep -Fq 'RK_UBOOT_DEFCONFIG_FRAGMENT="rk-emmc.config rv1106-ab.config"' \
+grep -Fq 'RK_UBOOT_DEFCONFIG_FRAGMENT="rk-emmc.config rv1106-ab.config aiden-rv1106-rockusb.config"' \
     "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
 grep -Fq 'RK_KERNEL_DEFCONFIG_FRAGMENT="aiden-zram.config rv1106-bt.config aiden-rk628.config debian-stage3.config"' \
     "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
@@ -108,6 +108,8 @@ if [ -e "${REPO_ROOT}/pico-sdk/project/build.sh" ]; then
         "${STAGE3_DIR}/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch"
     git -C "${REPO_ROOT}/pico-sdk" apply --check \
         "${STAGE3_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
+    git -C "${REPO_ROOT}/pico-sdk" apply --check \
+        "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
 fi
 
 grep -Fq 'rsync -aHAX --numeric-ids --chown=0:0' \
@@ -177,6 +179,15 @@ grep -Fq './build.sh abimages' "${STAGE3_DIR}/build.sh"
 grep -Fq '0004-make-bsp-images-reproducible.patch' "${STAGE3_DIR}/build.sh"
 grep -Fq '0005-set-rv1106-usb2-hs-odt.patch' "${STAGE3_DIR}/build.sh"
 grep -Fq '0006-fix-configfs-uevent-rebind-uaf.patch' "${STAGE3_DIR}/build.sh"
+grep -Fq '0007-enable-rv1106-uboot-rockusb.patch' "${STAGE3_DIR}/build.sh"
+grep -Fq 'CONFIG_CMD_ROCKUSB=y' \
+    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
+grep -Fq 'writel(reg, USB2PHY_APB_BASE + USB2PHY_HS_ODT);' \
+    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
+grep -Fq 'return dwc3_gadget_is_connected() ? 1 : 0;' \
+    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
+grep -Fq 'no vbus detector, assuming attached' \
+    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
 grep -Fq 'phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x1f);' \
     "${STAGE3_DIR}/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch"
 grep -Fq 'gi = container_of(cdev, struct gadget_info, cdev);' \

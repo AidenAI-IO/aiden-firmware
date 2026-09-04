@@ -192,7 +192,8 @@ write_hashes() {
             scripts/debian-stage3/sdk-patches/0003-add-ab-images-action.patch \
             scripts/debian-stage3/sdk-patches/0004-make-bsp-images-reproducible.patch \
             scripts/debian-stage3/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch \
-            scripts/debian-stage3/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch
+            scripts/debian-stage3/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch \
+            scripts/debian-stage3/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch
     ) >"${OUTPUT_DIR}/bsp-inputs.sha256"
 }
 
