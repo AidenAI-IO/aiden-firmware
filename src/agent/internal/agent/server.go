@@ -2294,20 +2294,54 @@ func (s *Server) canSpeakFinalText() bool {
 	return canPlayTTSUnavailableFallback(s.runtime.config)
 }
 
-// CanSpeakVoiceNotification reports whether standalone TTS is currently
-// available while no Realtime session is consuming notifications.
-func (s *Server) CanSpeakVoiceNotification() bool {
-	return s != nil && s.currentTTSManager() != nil && s.currentTTSPlaybackBackend() != nil
+// CanSpeakVoiceNotification reports whether a standalone speech path is
+// available while no Realtime session is consuming notifications. When
+// allowFallbackClip is set, the prerecorded TTS-unavailable clip also counts:
+// it is the only audible signal left once the TTS provider cannot be used.
+func (s *Server) CanSpeakVoiceNotification(allowFallbackClip bool) bool {
+	if s == nil || s.currentTTSPlaybackBackend() == nil {
+		return false
+	}
+	if s.currentTTSManager() != nil {
+		return true
+	}
+	return allowFallbackClip && s.runtime != nil && canPlayTTSUnavailableFallback(s.runtime.config)
 }
 
 // SpeakVoiceNotification plays notification text through the configured
 // standalone TTS provider for an idle period without an active Realtime
-// session.
-func (s *Server) SpeakVoiceNotification(ctx context.Context, text string) error {
-	if !s.CanSpeakVoiceNotification() {
-		return errors.New("standalone TTS is unavailable")
+// session. When TTS is unavailable and allowFallbackClip is set, the
+// prerecorded clip plays instead and the first return value reports that. The
+// clip only announces the failure and does not carry the notification text, so
+// the returned error stays non-nil and callers must not count it as delivery.
+func (s *Server) SpeakVoiceNotification(ctx context.Context, text string, allowFallbackClip bool) (bool, error) {
+	if !s.CanSpeakVoiceNotification(allowFallbackClip) {
+		return false, errStandaloneTTSUnavailable
 	}
-	return s.speakText(ctx, text, 0)
+	return s.speakTextObservedMode(ctx, "", text, 0, false, allowFallbackClip)
+}
+
+// SpeakTurnFailure announces a failed turn through the standalone speech path,
+// mirroring what the stt dialog does with SpokenTextModeReplacement. A Realtime
+// session that failed cannot report its own failure, so this is the only
+// audible signal left; when TTS is also unavailable the prerecorded clip plays
+// and the first return value reports that.
+func (s *Server) SpeakTurnFailure(ctx context.Context, failure *TurnFailure) (bool, error) {
+	if s == nil || failure == nil || s.runtime == nil {
+		return false, nil
+	}
+	if !s.CanSpeakVoiceNotification(true) {
+		return false, errStandaloneTTSUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	prepared := s.runtime.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: failure})
+	text := strings.TrimSpace(prepared.Text)
+	if text == "" {
+		return false, nil
+	}
+	return s.speakTextObservedMode(ctx, "", text, 0, false, true)
 }
 
 func (s *Server) speakFinalText(ctx context.Context, requestID string, prepared SpokenTextResult) {

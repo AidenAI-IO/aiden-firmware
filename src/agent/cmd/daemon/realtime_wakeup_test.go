@@ -190,6 +190,20 @@ func TestRealtimeSessionTerminationPreservesBufferedError(t *testing.T) {
 	}
 }
 
+func TestRealtimeFailureAnnouncementOnlyAcceptsProviderFailures(t *testing.T) {
+	original := errors.New("websocket closed")
+	providerErr := markRealtimeProviderFailure(original)
+	if !shouldAnnounceRealtimeSessionFailure(providerErr) {
+		t.Fatal("provider failure was not eligible for announcement")
+	}
+	if shouldAnnounceRealtimeSessionFailure(errors.New("audio backend failed")) {
+		t.Fatal("local failure was eligible for announcement")
+	}
+	if !errors.Is(providerErr, original) {
+		t.Fatal("provider failure did not unwrap to the original error")
+	}
+}
+
 func TestInterruptRealtimeResponseSkipsIdleResponse(t *testing.T) {
 	interrupter := &fakeRealtimeResponseInterrupter{}
 	position := realtimevoice.ResponseInterruption{ItemID: "item_1", AudioEndMS: 250}

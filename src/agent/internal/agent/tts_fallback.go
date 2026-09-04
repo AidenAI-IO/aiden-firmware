@@ -21,6 +21,8 @@ const (
 var (
 	errTTSNotConfigured = errors.New("tts is not configured")
 	errTTSNoAudio       = errors.New("tts completed without writing audio")
+
+	errStandaloneTTSUnavailable = errors.New("standalone TTS is unavailable")
 )
 
 func ttsUnavailableFallbackPath(cfg Config) string {

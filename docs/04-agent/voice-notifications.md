@@ -19,7 +19,9 @@ The manager produces one of four spoken-text modes:
 
 A response tail changes only the text sent to TTS. It does not change the LLM output, assistant history, session summary, or response shown by the Web UI or companion app.
 
-In `input_mode = "realtime"`, pending notifications are consumed when the Realtime session is idle. Realtime is the primary speech path; when no Realtime session is active, a configured standalone TTS provider is used as a fallback. If neither path is available, the reminder stays pending until it expires, resolves, or a later speech path can carry it.
+In `input_mode = "realtime"`, pending notifications are consumed when the Realtime session is idle. Realtime is the primary speech path; when no Realtime session is active, a configured standalone TTS provider is used as a fallback. When that provider is also unavailable — the common case, because `input_mode = "realtime"` does not require `tts.provider` — the prerecorded TTS-unavailable clip plays instead, so the failure is still audible. The clip only announces that speech is unavailable and does not carry the notification text, so the reminder stays pending and the clip plays at most once per standby period. If no path is available at all, the reminder stays pending until it expires, resolves, or a later speech path can carry it.
+
+A Realtime provider session that fails outright (network loss, rejected credentials) cannot voice its own error, so the Agent announces the turn failure through the same standalone path, falling back to the prerecorded clip. Local audio, persistence, and other daemon failures are not presented as model failures. This matches what `input_mode = "stt"` does with a replacement-mode turn failure.
 
 ## Publishing persistent conditions
 
@@ -93,7 +95,8 @@ When a final reply cannot use the configured TTS provider, the Agent bypasses TT
 
 The fallback is deliberately limited:
 
-- it runs only for final reply speech, not tool-progress speech;
+- it runs for final reply speech, standalone voice notifications, and Realtime session failures — never for tool-progress speech;
+- for standalone voice notifications it plays at most once per standby period, because the clip does not carry the notification text and therefore leaves the reminder pending;
 - it runs only before any PCM from the failed TTS attempt has started playing;
 - cancellation and preemption never trigger it;
 - playing the fallback does not acknowledge a pending response-tail notification, because the original reply and reminder were not spoken;
