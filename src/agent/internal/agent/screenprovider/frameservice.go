@@ -16,6 +16,17 @@ import (
 const frameServiceReadyPollInterval = 100 * time.Millisecond
 const frameServiceReadyProbeTimeout = 500 * time.Millisecond
 
+// frameServiceCaptureTimeout bounds one latest_frame round trip: connect,
+// request, the service's own capture wait, JPEG encode and payload transfer.
+// It has to outlast the service-side bound (request_timeout_ms, 4s by default)
+// by enough to cover encode and transfer, or a capture that the service
+// completes normally still surfaces to the caller as
+// "read prefix: ... i/o timeout". The first capture after a board boot was
+// measured at 5.2s on a loaded RV1106, against captures that settle near 1s
+// once the system is idle, so the previous 5s deadline failed exactly one
+// request per boot.
+const frameServiceCaptureTimeout = 15 * time.Second
+
 // FrameService communicates with the frame_service via Unix domain socket.
 type FrameService struct {
 	socketPath string
@@ -204,7 +215,7 @@ func (c *FrameService) LatestFrameWithFormat(format string, quality int, cropBla
 		return nil, nil, fmt.Errorf("marshal latest_frame request: %w", err)
 	}
 
-	headerJSON, payload, err := c.doRequest(request, nil, 5*time.Second)
+	headerJSON, payload, err := c.doRequest(request, nil, frameServiceCaptureTimeout)
 	if err != nil {
 		return nil, nil, err
 	}
