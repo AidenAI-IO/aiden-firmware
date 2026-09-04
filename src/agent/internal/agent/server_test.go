@@ -2870,6 +2870,37 @@ func TestServerServesEmbeddedWebUIAssets(t *testing.T) {
 	}
 }
 
+func TestWebUIBootstrapDoesNotReferenceRemovedStoragePanel(t *testing.T) {
+	index := readWebUIResource(t, "index.html")
+	for _, unwanted := range []string{
+		"scripts/storage.js",
+		"TOOLS · TERMINAL · STORAGE",
+	} {
+		if strings.Contains(index, unwanted) {
+			t.Fatalf("web UI index still references removed storage panel %q", unwanted)
+		}
+	}
+
+	bootstrapScript := readWebUIResource(t, "scripts/bootstrap.js")
+	for _, unwanted := range []string{
+		"loadStorageStatus()",
+		"setInterval(loadStorageStatus",
+	} {
+		if strings.Contains(bootstrapScript, unwanted) {
+			t.Fatalf("web UI bootstrap still references removed storage function %q", unwanted)
+		}
+	}
+	for _, required := range []string{
+		"connectSSE();",
+		"configureTerminal();",
+		"toolSelectEl.addEventListener('change', syncSelectedTool);",
+	} {
+		if !strings.Contains(bootstrapScript, required) {
+			t.Fatalf("web UI bootstrap missing required initialization %q", required)
+		}
+	}
+}
+
 func TestTerminalReverseProxyPreservesPublicHostAndRewritesFrameHeaders(t *testing.T) {
 	var gotHost, gotForwardedHost, gotForwardedProto, gotForwardedPrefix string
 	var upstream *httptest.Server

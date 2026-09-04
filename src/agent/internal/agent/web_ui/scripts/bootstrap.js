@@ -4,8 +4,6 @@ setInterval(loadHistory, 2000);
 refreshCurrentLiveActivity();
 setInterval(refreshCurrentLiveActivity, 2000);
 loadToolCatalog();
-loadStorageStatus();
-setInterval(loadStorageStatus, 5000);
 autoResizeInput();
 connectSSE();
 configureTerminal();
