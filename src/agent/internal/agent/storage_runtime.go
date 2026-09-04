@@ -38,7 +38,7 @@ func withMinimumStorageLevel(cleaner StorageCleaner, level StorageLevel) Storage
 	return leveled
 }
 
-func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManager) *StorageMonitor {
+func newRuntimeStorageMonitor(cfg Config, logger *Logger) *StorageMonitor {
 	storageConfig := cfg.Storage.MonitorConfig()
 	cleaners := make([]StorageCleaner, 0)
 	priority := 1
@@ -51,17 +51,23 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 		cleaners = append(cleaners, withMinimumStorageLevel(artifactCleaner, StorageLevelNormal))
 	}
 
+	// The live conversation is the current ContextManager session; log cleaners
+	// use it to avoid deleting the log partition still being written.
 	currentSessionID := func() (string, error) {
-		if memories == nil {
+		if cfg.ConfigDir == "" {
 			return "", nil
 		}
-		return memories.ActiveSessionID()
+		return contextmanager.CurrentSessionID(agentpath.ContextManagerSessionFolder(cfg.ConfigDir)), nil
 	}
 	logDir := ""
-	sessionArchiveDir := ""
+	// memory/session_archive/ is no longer written: conversation history now lives
+	// in ContextManager transcripts and compaction chunks. Devices upgraded from a
+	// build that wrote archives still have them on disk, so the cleaner stays
+	// wired to reclaim that space.
+	legacySessionArchiveDir := ""
 	if cfg.ConfigDir != "" {
 		logDir = filepath.Join(cfg.ConfigDir, "log")
-		sessionArchiveDir = filepath.Join(cfg.ConfigDir, "memory", "session_archive")
+		legacySessionArchiveDir = filepath.Join(cfg.ConfigDir, "memory", "session_archive")
 	}
 
 	regularLLM, aggressiveLLMDays := splitStorageRetentionDays(storageConfig.Cleanup.LLMHTTPLogRetentionDays)
@@ -95,7 +101,7 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 	}
 
 	for _, retentionDays := range regularSessions {
-		cleaner := NewSessionArchiveCleaner(sessionArchiveDir, retentionDays, 0, priority)
+		cleaner := NewSessionArchiveCleaner(legacySessionArchiveDir, retentionDays, 0, priority)
 		priority++
 		cleaners = append(cleaners, withMinimumStorageLevel(cleaner, StorageLevelWarning))
 	}
@@ -130,7 +136,7 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 		cleaners = append(cleaners, withMinimumStorageLevel(cleaner, StorageLevelEmergency))
 	}
 	for range aggressiveSessionDays {
-		cleaner := NewSessionArchiveCleaner(sessionArchiveDir, 0, 0, priority)
+		cleaner := NewSessionArchiveCleaner(legacySessionArchiveDir, 0, 0, priority)
 		priority++
 		cleaners = append(cleaners, withMinimumStorageLevel(cleaner, StorageLevelEmergency))
 	}

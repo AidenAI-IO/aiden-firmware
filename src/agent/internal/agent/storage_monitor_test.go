@@ -629,7 +629,7 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ConfigDir = t.TempDir()
 	cfg.AudioArchive.StoragePath = t.TempDir()
-	monitor := newRuntimeStorageMonitor(cfg, nil, NewMemoryManager(filepath.Join(cfg.ConfigDir, "memory")))
+	monitor := newRuntimeStorageMonitor(cfg, nil)
 
 	wantNames := []string{
 		"python_userbase",
@@ -695,7 +695,7 @@ func TestRuntimeStorageMonitorSkipsArtifactCleanerWithoutConfigDir(t *testing.T)
 	cfg := DefaultConfig()
 	cfg.ConfigDir = ""
 	cfg.AudioArchive.StoragePath = t.TempDir()
-	monitor := newRuntimeStorageMonitor(cfg, nil, nil)
+	monitor := newRuntimeStorageMonitor(cfg, nil)
 
 	for _, cleaner := range monitor.cleaners {
 		if cleaner.Name() == "tool_result_artifacts" {

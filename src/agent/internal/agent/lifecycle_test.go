@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -19,64 +18,6 @@ func TestStrconvTimeIDUniqueness(t *testing.T) {
 			t.Fatalf("duplicate ID generated at iteration %d: %s", i, id)
 		}
 		seen[id] = true
-	}
-}
-
-func TestAppendEventConcurrentSafety(t *testing.T) {
-	ctx := context.Background()
-	store := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
-
-	var wg sync.WaitGroup
-	goroutines := 10
-	eventsPerGoroutine := 10
-	wg.Add(goroutines)
-	for g := 0; g < goroutines; g++ {
-		go func(gid int) {
-			defer wg.Done()
-			for i := 0; i < eventsPerGoroutine; i++ {
-				_, err := store.AppendEvent(ctx, SessionEvent{
-					Type:    "user_input",
-					Role:    "user",
-					Content: "concurrent event",
-				})
-				if err != nil {
-					t.Errorf("goroutine %d event %d: %v", gid, i, err)
-				}
-			}
-		}(g)
-	}
-	wg.Wait()
-
-	events, err := store.readEvents(store.eventsPath())
-	if err != nil {
-		t.Fatalf("readEvents() error = %v", err)
-	}
-	expected := goroutines * eventsPerGoroutine
-	if len(events) != expected {
-		t.Fatalf("expected %d events, got %d", expected, len(events))
-	}
-}
-
-func TestReadEventsHandlesLargeLines(t *testing.T) {
-	ctx := context.Background()
-	store := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
-
-	largeContent := strings.Repeat("大", 70000)
-	_, err := store.AppendEvent(ctx, SessionEvent{
-		Type:    "screen_context",
-		Role:    "screen",
-		Content: largeContent,
-	})
-	if err != nil {
-		t.Fatalf("AppendEvent() large content error = %v", err)
-	}
-
-	events, err := store.readEvents(store.eventsPath())
-	if err != nil {
-		t.Fatalf("readEvents() error = %v", err)
-	}
-	if len(events) != 1 || events[0].Content != largeContent {
-		t.Fatalf("expected large content to round-trip, got len=%d content_len=%d", len(events), len(events[0].Content))
 	}
 }
 
@@ -295,39 +236,6 @@ func TestRegenerateProfileMD(t *testing.T) {
 	}
 	if strings.Contains(content, "不重要") {
 		t.Fatalf("expected profile to exclude non-profile/rule/preference type memory, got:\n%s", content)
-	}
-}
-
-func TestSummaryAccumulatesChunks(t *testing.T) {
-	ctx := context.Background()
-	store := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
-
-	for i := 0; i < 5; i++ {
-		_, _ = store.AppendEvent(ctx, SessionEvent{Type: "user_input", Role: "user", Content: "event batch 1"})
-	}
-	_, err := store.Compress(ctx, CompressOption{Summary: "第一次压缩摘要", Tags: []string{"t1"}})
-	if err != nil {
-		t.Fatalf("first Compress() error = %v", err)
-	}
-
-	for i := 0; i < 5; i++ {
-		_, _ = store.AppendEvent(ctx, SessionEvent{Type: "user_input", Role: "user", Content: "event batch 2"})
-	}
-	_, err = store.Compress(ctx, CompressOption{Summary: "第二次压缩摘要", Tags: []string{"t2"}})
-	if err != nil {
-		t.Fatalf("second Compress() error = %v", err)
-	}
-
-	data, err := os.ReadFile(store.summaryPath())
-	if err != nil {
-		t.Fatalf("read summary.md: %v", err)
-	}
-	content := string(data)
-	if !strings.Contains(content, "第二次压缩摘要") {
-		t.Fatalf("expected latest summary in content, got:\n%s", content)
-	}
-	if strings.Count(content, "- **chunk_") < 2 {
-		t.Fatalf("expected at least 2 chunk entries in summary, got:\n%s", content)
 	}
 }
 
@@ -575,13 +483,10 @@ func TestVerifyPrunesOldUnreferencedEpisodeTrace(t *testing.T) {
 	}
 }
 
-func TestMemoryExtractionConfigCompressThresholds(t *testing.T) {
+func TestMemoryExtractionConfigDefaults(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	if cfg.ContextWindow != 32000 {
 		t.Fatalf("expected default ContextWindow=32000, got %d", cfg.ContextWindow)
-	}
-	if cfg.CompressAtPercent != 50 {
-		t.Fatalf("expected default CompressAtPercent=50, got %d", cfg.CompressAtPercent)
 	}
 	if got := cfg.EpisodeMemoryIdleDelayOrDefault(); got != 5*time.Minute {
 		t.Fatalf("expected default Episode Memory idle delay=5m, got %s", got)
@@ -597,7 +502,7 @@ tag_candidates:
   - "自定义标签"
 entity_suffixes:
   - "System"
-hot_window_events: 30
+context_window: 8000
 episode_memory_idle_delay_seconds: 7
 `), 0o644)
 
@@ -608,93 +513,37 @@ episode_memory_idle_delay_seconds: 7
 	if len(cfg.EntitySuffixes) != 1 || cfg.EntitySuffixes[0] != "System" {
 		t.Fatalf("expected custom entity suffixes, got %v", cfg.EntitySuffixes)
 	}
-	if cfg.HotWindowEvents != 30 {
-		t.Fatalf("expected hot_window_events=30, got %d", cfg.HotWindowEvents)
-	}
-	if cfg.CountCompressAfterEvents != 60 {
-		t.Fatalf("expected default count_compress_after_events to follow hot_window_events*2, got %d", cfg.CountCompressAfterEvents)
+	if cfg.ContextWindow != 8000 {
+		t.Fatalf("expected context_window=8000, got %d", cfg.ContextWindow)
 	}
 	if got := cfg.EpisodeMemoryIdleDelayOrDefault(); got != 7*time.Second {
 		t.Fatalf("expected episode_memory_idle_delay_seconds=7, got %s", got)
 	}
 }
 
-func TestMemoryExtractionConfigDerivesCountThresholdFromCustomHotWindow(t *testing.T) {
-	dir := t.TempDir()
-	memDir := filepath.Join(dir, "memory")
-	os.MkdirAll(memDir, 0o755)
-	os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte("hot_window_events: 20\n"), 0o644)
-
-	cfg := LoadMemoryExtractionConfig(dir)
-	if cfg.HotWindowEvents != 20 {
-		t.Fatalf("expected hot_window_events=20, got %d", cfg.HotWindowEvents)
-	}
-	if cfg.CountCompressAfterEvents != 40 {
-		t.Fatalf("expected implicit count_compress_after_events=40, got %d", cfg.CountCompressAfterEvents)
-	}
-}
-
-func TestMemoryExtractionConfigKeepsExplicitCountThreshold(t *testing.T) {
+// Configs written by builds that carried session-compaction knobs must still
+// load: the removed keys are ignored rather than failing the whole file.
+func TestMemoryExtractionConfigIgnoresRemovedSessionCompactionKeys(t *testing.T) {
 	dir := t.TempDir()
 	memDir := filepath.Join(dir, "memory")
 	os.MkdirAll(memDir, 0o755)
 	os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte(`
 hot_window_events: 20
 count_compress_after_events: 75
+compress_at_percent: 40
+reserve_tokens: 4096
+keep_recent_tokens: 9000
+summary_max_chunks: 5
+session_boundary_enabled: false
+session_boundary_short_gap_seconds: 30
+episode_memory_idle_delay_seconds: 11
 `), 0o644)
 
 	cfg := LoadMemoryExtractionConfig(dir)
-	if cfg.HotWindowEvents != 20 {
-		t.Fatalf("expected hot_window_events=20, got %d", cfg.HotWindowEvents)
+	if got := cfg.EpisodeMemoryIdleDelayOrDefault(); got != 11*time.Second {
+		t.Fatalf("live key should still apply alongside removed keys, got %s", got)
 	}
-	if cfg.CountCompressAfterEvents != 75 {
-		t.Fatalf("expected explicit count_compress_after_events=75, got %d", cfg.CountCompressAfterEvents)
-	}
-}
-
-func TestMaintainFilesystemMemoryOnlyArchivesNoAutoExtract(t *testing.T) {
-	ctx := context.Background()
-	storageDir := t.TempDir()
-	cfg := DefaultMemoryExtractionConfig()
-	cfg.HotWindowEvents = 20 // Count fallback derives a 40-event trigger.
-	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
-
-	sessionDir := filepath.Join(storageDir, "session")
-	os.MkdirAll(sessionDir, 0o755)
-
-	var msgs []MessageRecord
-	msgs = append(msgs, MessageRecord{Role: "human", Content: "记一下，以后处理蓝海报销App超过100元的提交必须先确认。"})
-	msgs = append(msgs, MessageRecord{Role: "ai", Content: "已记录。"})
-	for i := 0; i < 39; i++ {
-		msgs = append(msgs, MessageRecord{Role: "human", Content: "填充"})
-	}
-
-	now := time.Now().UTC()
-	session := NewSessionMemoryStore(sessionDir)
-	for i, msg := range msgs {
-		evt := sessionEventFromRecord(msg, now, i)
-		if _, err := session.AppendEvent(ctx, evt); err != nil {
-			t.Fatalf("AppendEvent() error = %v", err)
-		}
-	}
-
-	if err := manager.maintainFilesystemMemory(ctx); err != nil {
-		t.Fatalf("maintainFilesystemMemory() error = %v", err)
-	}
-
-	// Compaction should NOT auto-extract long-term memories — that's the LLM's job via save_memory tool
-	longTerm := NewLongTermMemoryStore(filepath.Join(storageDir, "long_term"))
-	results, _ := longTerm.Search(ctx, MemoryQuery{Limit: 20})
-	if len(results) != 0 {
-		t.Fatalf("expected no auto-extracted memories (LLM decides via tool), got %d", len(results))
-	}
-
-	// But chunks should exist
-	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
-	if err != nil {
-		t.Fatalf("RecallChunks() error = %v", err)
-	}
-	if len(chunks) == 0 {
-		t.Fatalf("expected at least one chunk after compaction")
+	if cfg.ContextWindow != 32000 {
+		t.Fatalf("expected default ContextWindow when unset, got %d", cfg.ContextWindow)
 	}
 }
