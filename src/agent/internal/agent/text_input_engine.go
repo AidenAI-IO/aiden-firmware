@@ -315,6 +315,15 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 	if err != nil {
 		return textInputModeUnknown, vlmCalls, err
 	}
+	var probeBeforeScreenshot screenshotResult
+	cleanupVision, cleanupSupported := e.vision.(textInputProbeCleanupVision)
+	if cleanupSupported {
+		probeBeforeScreenshot, err = e.captureScreenshot(ctx)
+		if err != nil {
+			log.Printf("[text-input] probe cleanup baseline screenshot failed: %v", err)
+			cleanupSupported = false
+		}
+	}
 	if err = e.typeASCIIChunk(ctx, "a"); err != nil {
 		return textInputModeUnknown, vlmCalls, fmt.Errorf("input mode probe: type a: %w", err)
 	}
@@ -331,8 +340,7 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 
 		// Secondary verification is optional so probe-only vision
 		// implementations can still complete mode analysis.
-		probeVision, ok := e.vision.(textInputProbeCleanupVision)
-		if !ok {
+		if !cleanupSupported {
 			return
 		}
 
@@ -350,7 +358,7 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 		}
 
 		// Ask LLM to verify if probe character is still visible
-		probeStillVisible, verifyErr := probeVision.VerifyProbeCleanup(ctx, verifyShot, platform, focus)
+		probeStillVisible, verifyErr := cleanupVision.VerifyProbeCleanup(ctx, probeBeforeScreenshot, verifyShot, platform, focus)
 		vlmCalls++
 		if verifyErr != nil {
 			log.Printf("[text-input] probe cleanup verification failed: %v", verifyErr)

@@ -309,7 +309,7 @@ func (v *probeVerifyingVision) ProbeInputMode(_ context.Context, _ screenshotRes
 	return textInputProbeAnalysis{Mode: out.ObservedMode, Evidence: "stub analysis"}, nil
 }
 
-func (v *probeVerifyingVision) VerifyProbeCleanup(_ context.Context, _ screenshotResult, _ string, _ focusPointArgs) (bool, error) {
+func (v *probeVerifyingVision) VerifyProbeCleanup(_ context.Context, _, _ screenshotResult, _ string, _ focusPointArgs) (bool, error) {
 	return v.probeStillVisible, nil
 }
 
@@ -347,20 +347,23 @@ func TestTextInputProbeVerificationSendsBackspaceWhenCharacterStillVisible(t *te
 	}
 
 	// Verify that backspace was sent after undo
-	var foundUndo, foundBackspace bool
-	for _, call := range keyboardTap.calls {
+	undoIndex, backspaceIndex := -1, -1
+	for index, call := range keyboardTap.calls {
 		if strings.Contains(call, "meta") && strings.Contains(call, "z") {
-			foundUndo = true
+			undoIndex = index
 		}
 		if strings.Contains(call, "backspace") {
-			foundBackspace = true
+			backspaceIndex = index
 		}
 	}
-	if !foundUndo {
+	if undoIndex < 0 {
 		t.Fatal("expected undo keys to be sent")
 	}
-	if !foundBackspace {
+	if backspaceIndex < 0 {
 		t.Fatal("expected backspace to be sent when probe character is still visible")
+	}
+	if undoIndex > backspaceIndex {
+		t.Fatal("expected undo keys before backspace")
 	}
 }
 
