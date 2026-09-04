@@ -157,6 +157,34 @@ func startFrameServiceTestSocket(t *testing.T, response func() string) string {
 	return socketPath
 }
 
+func TestFrameServiceLatestFrameOutlastsASlowCapture(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out a capture slower than the previous 5s deadline")
+	}
+	// The first capture after a board boot took 5.2s on a loaded RV1106, which
+	// the old hard-coded 5s deadline cut off as "read prefix: i/o timeout"
+	// even though the service went on to answer normally.
+	const slowCapture = 5500 * time.Millisecond
+	if frameServiceCaptureTimeout <= slowCapture {
+		t.Fatalf("frameServiceCaptureTimeout = %s, too tight for a %s capture",
+			frameServiceCaptureTimeout, slowCapture)
+	}
+
+	socketPath := startFrameServiceTestSocket(t, func() string {
+		time.Sleep(slowCapture)
+		return `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"jpeg","bytes":0}}`
+	})
+
+	client := NewFrameService(socketPath)
+	meta, _, err := client.LatestFrameWithFormat("jpeg", DefaultJPEGQuality, false, CropHint{})
+	if err != nil {
+		t.Fatalf("LatestFrameWithFormat() error = %v, want a completed capture", err)
+	}
+	if meta.Seq != 1 {
+		t.Fatalf("meta.Seq = %d, want 1", meta.Seq)
+	}
+}
+
 func TestFrameMetadataUnmarshalSupportsStringNumbers(t *testing.T) {
 	input := []byte(`{
 		"seq":"123",
