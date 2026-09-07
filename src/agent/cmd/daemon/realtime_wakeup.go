@@ -1212,7 +1212,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	// close Done before the final buffered transcript or response event is read.
 	sessionEvents, realtimeReengagement := relayRealtimeSessionEvents(ctx, session.Events())
 	for {
-		watchdog.setBusy(cancelPending || activeChat != nil || turnState.responseActive || turnState.responseTerminalPending || len(foregroundTools) > 0 ||
+		watchdog.setBusy(cancelPending || activeChat != nil || turnState.responseActive || turnState.responseRequestPending || turnState.responseTerminalPending || len(foregroundTools) > 0 ||
 			(turnState.inputTurnPending && !turnState.inputSpeechActive))
 		select {
 		case <-watchdog.deadline:
@@ -2002,6 +2002,7 @@ func (s *realtimeTurnState) responseFinished(responseID string) bool {
 	s.retireResponseID(responseID)
 	s.responseActive = false
 	s.responseTerminalPending = false
+	s.responseRequestPending = false
 	s.responseID = ""
 	return true
 }
