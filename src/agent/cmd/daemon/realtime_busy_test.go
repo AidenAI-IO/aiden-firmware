@@ -600,10 +600,14 @@ func TestRealtimeRequestedInterruptionRemainsBusyWithoutChat(t *testing.T) {
 
 func TestRealtimeBusyInterruptionClearsExplicitToolContinuation(t *testing.T) {
 	started := make(chan struct{})
+	canceled := make(chan struct{})
 	oldStarter := realtimeToolCallStarter
 	realtimeToolCallStarter = func(ctx context.Context, _ realtimeVoiceToolExecutor, _ realtimevoice.Event, _ chan<- realtimeToolResult) {
 		close(started)
-		go func() { <-ctx.Done() }()
+		go func() {
+			<-ctx.Done()
+			close(canceled)
+		}()
 	}
 	defer func() { realtimeToolCallStarter = oldStarter }()
 
@@ -619,6 +623,11 @@ func TestRealtimeBusyInterruptionClearsExplicitToolContinuation(t *testing.T) {
 	// Providers may omit the response ID on interruption; that still cancels
 	// every foreground tool owned by the one active response.
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventInterruption}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("interruption did not cancel the foreground tool")
+	}
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, ResponseID: "r", Status: "completed"}
 	requireBusyEvent(t, events, agent.RealtimeChatEventDone)
 }
