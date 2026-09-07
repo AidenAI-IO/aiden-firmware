@@ -3,6 +3,7 @@ package realtimevoice
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // Provider opens provider-neutral realtime voice sessions. Implementations
@@ -205,6 +206,14 @@ type TurnCommitter interface {
 // perform interruption entirely on the server should not implement it.
 type ResponseInterrupter interface {
 	Interrupt(context.Context, ResponseInterruption) error
+}
+
+// InterruptionAckTimeoutProvider lets a provider bound how long its session
+// can safely wait for the terminal acknowledgement after Interrupt succeeds.
+// Providers without this capability continue using the daemon's response
+// watchdog.
+type InterruptionAckTimeoutProvider interface {
+	InterruptionAckTimeout() time.Duration
 }
 
 // ResponseInterruption identifies how much of the current assistant audio was

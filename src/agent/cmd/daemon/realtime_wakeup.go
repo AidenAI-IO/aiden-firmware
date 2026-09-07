@@ -100,6 +100,12 @@ func (t *realtimeToolTracker) done(responseID string) (hasTools bool, continueNo
 }
 
 func (t *realtimeToolTracker) clear(responseID string) {
+	if responseID == "" {
+		clear(t.pending)
+		clear(t.seen)
+		clear(t.responseDone)
+		return
+	}
 	delete(t.pending, responseID)
 	delete(t.seen, responseID)
 	delete(t.responseDone, responseID)
@@ -774,6 +780,10 @@ func startRealtimeToolCall(ctx context.Context, executor realtimeVoiceToolExecut
 	}()
 }
 
+// realtimeToolCallStarter is a test seam for holding a foreground tool in
+// flight while the real session loop processes an interruption.
+var realtimeToolCallStarter = startRealtimeToolCall
+
 func startRealtimeSuppressedToolCall(ctx context.Context, call realtimevoice.Event, results chan<- realtimeToolResult) {
 	go func() {
 		result := realtimeToolResult{
@@ -1015,6 +1025,37 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	var activeChat *realtimeChatCommand
 	var queuedChat *realtimeChatCommand
 	cancelPending := false
+	var cancelAckTimer *time.Timer
+	var cancelAckDeadline <-chan time.Time
+	stopCancelAckTimer := func() {
+		if cancelAckTimer != nil {
+			if !cancelAckTimer.Stop() {
+				select {
+				case <-cancelAckTimer.C:
+				default:
+				}
+			}
+		}
+		cancelAckDeadline = nil
+	}
+	defer stopCancelAckTimer()
+	startCancelAckTimer := func() {
+		provider := session.InterruptionAckTimeoutProvider
+		if provider == nil {
+			return
+		}
+		timeout := provider.InterruptionAckTimeout()
+		if timeout <= 0 {
+			return
+		}
+		stopCancelAckTimer()
+		if cancelAckTimer == nil {
+			cancelAckTimer = time.NewTimer(timeout)
+		} else {
+			cancelAckTimer.Reset(timeout)
+		}
+		cancelAckDeadline = cancelAckTimer.C
+	}
 	defer func() {
 		failActiveRealtimeChat(activeChat, returnErr)
 		failActiveRealtimeChat(queuedChat, returnErr)
@@ -1179,6 +1220,8 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				realtimeChatRequestID(activeChat), turnState.responseID, watchdog.age().Milliseconds(), time.Since(watchdog.lastProgress).Milliseconds(),
 				activeChat != nil, turnState.responseActive, turnState.inputTurnPending, len(foregroundTools))
 			return fmt.Errorf("realtime response timed out: no progress for %s; session closed", idleTimeout)
+		case <-cancelAckDeadline:
+			return fmt.Errorf("realtime interruption acknowledgement timed out; session closed")
 		case <-ctx.Done():
 			return nil
 		case <-sigChan:
@@ -1404,6 +1447,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			}
 			log.Printf("[realtime] Chat canceled: request_id=%s response_id=%s; awaiting terminal acknowledgement", realtimeChatRequestID(activeChat), turnState.responseID)
 			cancelPending = true
+			startCancelAckTimer()
 			cancelForegroundTools(turnState.responseID)
 			turnState.responseInterrupted()
 			turnState.responseTerminalPending = true
@@ -1595,7 +1639,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				if activeNotificationToken != "" || suppressedNotificationResponsePending || hasSuppressedNotificationResponse(suppressedNotificationResponseIDs, event.ResponseID) {
 					startRealtimeSuppressedToolCall(toolCtx, event, toolResults)
 				} else {
-					startRealtimeToolCall(toolCtx, toolExecutor, event, toolResults)
+					realtimeToolCallStarter(toolCtx, toolExecutor, event, toolResults)
 				}
 			case realtimevoice.EventUsage:
 				realtimeResponseUsage.TotalTokens += event.Usage.TotalTokens
@@ -1609,6 +1653,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				}
 				wasCanceled := cancelPending || event.Kind == realtimevoice.EventResponseCancelled
 				cancelPending = false
+				stopCancelAckTimer()
 				if wasCanceled {
 					cancelForegroundTools(event.ResponseID)
 					toolTracker.clear(event.ResponseID)
@@ -1740,6 +1785,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				sleep.abandon()
 				turnState.responseInterrupted()
 				cancelForegroundTools(event.ResponseID)
+				toolTracker.clear(event.ResponseID)
 				if err := playback.interrupt(playbackAudio, outputFormat); err != nil {
 					return err
 				}

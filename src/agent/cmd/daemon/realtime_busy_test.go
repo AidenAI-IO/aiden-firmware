@@ -18,19 +18,20 @@ import (
 )
 
 // Exercise the real daemon select loop, including its audio traffic and chat
-// admission. This provider deliberately has no ResponseInterrupter, like Gemini.
+// admission. The base provider deliberately has no ResponseInterrupter.
 type busyTestSession struct {
-	events      chan realtimevoice.Event
-	created     chan struct{}
-	closed      chan struct{}
-	toolResults chan struct{}
-	interrupted chan struct{}
-	blockCreate bool
+	events                   chan realtimevoice.Event
+	created                  chan struct{}
+	closed                   chan struct{}
+	toolResults              chan struct{}
+	interrupted              chan struct{}
+	blockCreate              bool
+	explicitToolContinuation bool
 }
 
 func (s *busyTestSession) Info() realtimevoice.SessionInfo {
 	return realtimevoice.SessionInfo{InputSampleRate: 16000, OutputSampleRate: 16000,
-		Capabilities: realtimevoice.Capabilities{EmitsSpeechEvents: true}}
+		Capabilities: realtimevoice.Capabilities{EmitsSpeechEvents: true, ExplicitToolContinuation: s.explicitToolContinuation}}
 }
 func (s *busyTestSession) Events() <-chan realtimevoice.Event      { return s.events }
 func (s *busyTestSession) Errors() <-chan error                    { return nil }
@@ -54,12 +55,15 @@ func (s *busyTestSession) Close() error { close(s.closed); return nil }
 type busyInterruptSession struct {
 	*busyTestSession
 	interruptErr error
+	ackTimeout   time.Duration
 }
 
 func (s *busyInterruptSession) Interrupt(context.Context, realtimevoice.ResponseInterruption) error {
 	s.interrupted <- struct{}{}
 	return s.interruptErr
 }
+
+func (s *busyInterruptSession) InterruptionAckTimeout() time.Duration { return s.ackTimeout }
 
 type busyTestProvider struct{ session realtimevoice.Session }
 
@@ -130,17 +134,18 @@ func startBusyTestSession(t *testing.T, timeout time.Duration, bridges ...*realt
 }
 
 func startBusyTestSessionWithBlockedCreate(t *testing.T, timeout time.Duration, blockCreate bool, bridges ...*realtimeChatBridge) (*busyTestSession, *realtimeChatBridge, <-chan error) {
-	return startBusyTestSessionConfigured(t, timeout, blockCreate, nil, bridges...)
+	return startBusyTestSessionConfigured(t, timeout, blockCreate, nil, 0, false, bridges...)
 }
 
-func startBusyTestSessionConfigured(t *testing.T, timeout time.Duration, blockCreate bool, interruptErr *error, bridges ...*realtimeChatBridge) (*busyTestSession, *realtimeChatBridge, <-chan error) {
+func startBusyTestSessionConfigured(t *testing.T, timeout time.Duration, blockCreate bool, interruptErr *error, ackTimeout time.Duration, explicitTools bool, bridges ...*realtimeChatBridge) (*busyTestSession, *realtimeChatBridge, <-chan error) {
 	t.Helper()
 	s := &busyTestSession{events: make(chan realtimevoice.Event, 32), created: make(chan struct{}, 32), closed: make(chan struct{}), toolResults: make(chan struct{}, 32)}
 	s.blockCreate = blockCreate
+	s.explicitToolContinuation = explicitTools
 	s.interrupted = make(chan struct{}, 8)
 	var raw realtimevoice.Session = s
 	if interruptErr != nil {
-		raw = &busyInterruptSession{s, *interruptErr}
+		raw = &busyInterruptSession{busyTestSession: s, interruptErr: *interruptErr, ackTimeout: ackTimeout}
 	}
 	registry := realtimevoice.NewProviderRegistry()
 	registry.Register("gemini", func(realtimevoice.ProviderConfig) realtimevoice.Provider { return busyTestProvider{raw} })
@@ -185,8 +190,7 @@ func TestRealtimeBusyCancelClosesUninterruptibleSession(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("canceled Gemini-like request still owns the session; following requests can remain busy")
 	}
-	for range events {
-	}
+	drainBusyEvents(t, events)
 	bridge.mu.RLock()
 	active := bridge.active
 	bridge.mu.RUnlock()
@@ -311,8 +315,7 @@ func TestRealtimeBusyStreamingRenewsDeadlineAndCompletionDisarmsIt(t *testing.T)
 	// Late output from the retired response must not complete the new request.
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, ResponseID: "r1", Status: "completed"}
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseStarted, ResponseID: "r2"}
-	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, ResponseID: "r2", Status: "completed"}
-	requireBusyEvent(t, next, agent.RealtimeChatEventDone)
+	requireBusyTimeout(t, next)
 }
 
 func TestRealtimeBusyNoiseDoesNotKeepStalledResponseAlive(t *testing.T) {
@@ -425,7 +428,7 @@ func TestRealtimeTurnStateInterruptedAnonymousTerminalPreservesNewInput(t *testi
 
 func TestRealtimeBusySupportedCancelWaitsForAckAndKeepsSession(t *testing.T) {
 	var interruptErr error
-	s, bridge, done := startBusyTestSessionConfigured(t, time.Second, false, &interruptErr)
+	s, bridge, done := startBusyTestSessionConfigured(t, time.Second, false, &interruptErr, 0, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events, err := bridge.Handle(ctx, agent.RealtimeChatRequest{RequestID: "cancel", Message: "hello"})
@@ -446,8 +449,7 @@ func TestRealtimeBusySupportedCancelWaitsForAckAndKeepsSession(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("provider interrupt not called")
 	}
-	for range events {
-	}
+	drainBusyEvents(t, events)
 	probe, err := bridge.Handle(t.Context(), agent.RealtimeChatRequest{RequestID: "before-ack", Message: "hello"})
 	if err != nil {
 		t.Fatal(err)
@@ -485,7 +487,7 @@ func TestRealtimeBusySupportedCancelWaitsForAckAndKeepsSession(t *testing.T) {
 
 func TestRealtimeBusyCancelFailureClosesSession(t *testing.T) {
 	failure := errors.New("interrupt write failed")
-	s, bridge, done := startBusyTestSessionConfigured(t, time.Second, false, &failure)
+	s, bridge, done := startBusyTestSessionConfigured(t, time.Second, false, &failure, 0, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	bridge.Handle(ctx, agent.RealtimeChatRequest{RequestID: "cancel-failure", Message: "hello"})
@@ -505,9 +507,9 @@ func TestRealtimeBusyCancelFailureClosesSession(t *testing.T) {
 	}
 }
 
-func TestRealtimeBusyCancelMissingAckTimesOut(t *testing.T) {
+func TestRealtimeBusyCancelMissingAckUsesProviderTimeout(t *testing.T) {
 	var interruptErr error
-	s, bridge, done := startBusyTestSessionConfigured(t, 100*time.Millisecond, false, &interruptErr)
+	s, bridge, done := startBusyTestSessionConfigured(t, time.Second, false, &interruptErr, 100*time.Millisecond, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	bridge.Handle(ctx, agent.RealtimeChatRequest{RequestID: "no-ack", Message: "hello"})
@@ -524,10 +526,99 @@ func TestRealtimeBusyCancelMissingAckTimesOut(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "no progress") {
+		if err == nil || !strings.Contains(err.Error(), "acknowledgement timed out") {
 			t.Fatalf("exit=%v", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("missing acknowledgement never timed out")
 	}
+}
+
+func TestRealtimeBusyCancelMissingAckUsesWatchdogWithoutProviderTimeout(t *testing.T) {
+	var interruptErr error
+	s, bridge, done := startBusyTestSessionConfigured(t, 100*time.Millisecond, false, &interruptErr, 0, false)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := bridge.Handle(ctx, agent.RealtimeChatRequest{RequestID: "no-provider-timeout", Message: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.created:
+	case <-time.After(time.Second):
+		t.Fatal("no request")
+	}
+	cancel()
+	select {
+	case <-s.interrupted:
+	case <-time.After(time.Second):
+		t.Fatal("no cancel")
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "no progress") {
+			t.Fatalf("exit=%v, want watchdog timeout", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal-pending cancellation disarmed watchdog")
+	}
+}
+
+func drainBusyEvents(t *testing.T, events <-chan agent.RealtimeChatEvent) {
+	t.Helper()
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case _, ok := <-events:
+			if !ok {
+				return
+			}
+		case <-timer.C:
+			t.Fatal("chat events did not close")
+		}
+	}
+}
+
+func TestRealtimeBusyInterruptedBeforeStartStillTimesOut(t *testing.T) {
+	s, bridge, done := startBusyTestSession(t, 100*time.Millisecond)
+	events := busyTestRequest(t, s, bridge, done, "pre-start-interrupt")
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventInterruption}
+	requireBusyTimeout(t, events)
+}
+
+func TestRealtimeRequestedInterruptionRemainsBusyWithoutChat(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseRequested()
+	state.responseInterrupted()
+	if !state.responseTerminalPending || state.canInjectResponse() {
+		t.Fatal("pre-start interrupted request lost terminal ownership")
+	}
+	if !state.responseFinished("") || !state.canInjectResponse() {
+		t.Fatal("terminal did not release interrupted request")
+	}
+}
+
+func TestRealtimeBusyInterruptionClearsExplicitToolContinuation(t *testing.T) {
+	started := make(chan struct{})
+	oldStarter := realtimeToolCallStarter
+	realtimeToolCallStarter = func(ctx context.Context, _ realtimeVoiceToolExecutor, _ realtimevoice.Event, _ chan<- realtimeToolResult) {
+		close(started)
+		go func() { <-ctx.Done() }()
+	}
+	defer func() { realtimeToolCallStarter = oldStarter }()
+
+	s, bridge, done := startBusyTestSessionConfigured(t, time.Second, false, nil, 0, true)
+	events := busyTestRequest(t, s, bridge, done, "interrupted-tool")
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseStarted, ResponseID: "r"}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventToolCall, ResponseID: "r", CallID: "tool", Name: "unknown_tool", Arguments: "{}"}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	// Providers may omit the response ID on interruption; that still cancels
+	// every foreground tool owned by the one active response.
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventInterruption}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, ResponseID: "r", Status: "completed"}
+	requireBusyEvent(t, events, agent.RealtimeChatEventDone)
 }

@@ -15,6 +15,9 @@ func TestProviderInterfaceSeparatesCoreAndTextCapabilities(t *testing.T) {
 	if _, ok := any((*geminiSession)(nil)).(ResponseInterrupter); !ok {
 		t.Fatal("Gemini Live must expose clientContent interruption")
 	}
+	if _, ok := any((*geminiSession)(nil)).(InterruptionAckTimeoutProvider); !ok {
+		t.Fatal("Gemini Live must bound missing interruption acknowledgements")
+	}
 }
 
 func TestTurnDetectionConfigOmitsUnsetValues(t *testing.T) {

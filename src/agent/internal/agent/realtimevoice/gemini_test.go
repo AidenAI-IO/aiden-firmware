@@ -466,6 +466,9 @@ func TestGeminiInterruptSendsClientContentWithoutStartingNewTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
+	if timeout := session.(InterruptionAckTimeoutProvider).InterruptionAckTimeout(); timeout != 3*time.Second {
+		t.Fatalf("interruption acknowledgement timeout=%s, want 3s", timeout)
+	}
 	if err := session.(ResponseInterrupter).Interrupt(ctx, ResponseInterruption{}); err != nil {
 		t.Fatal(err)
 	}

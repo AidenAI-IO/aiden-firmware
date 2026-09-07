@@ -386,6 +386,10 @@ func (s *geminiSession) Interrupt(ctx context.Context, _ ResponseInterruption) e
 	return s.writeJSON(ctx, map[string]any{"clientContent": map[string]any{"turnComplete": false}})
 }
 
+func (s *geminiSession) InterruptionAckTimeout() time.Duration {
+	return 3 * time.Second
+}
+
 func (s *geminiSession) ReplayContext(ctx context.Context, items []ContextItem) error {
 	if len(items) == 0 {
 		return nil
