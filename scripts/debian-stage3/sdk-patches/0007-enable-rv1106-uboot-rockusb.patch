@@ -20,12 +20,11 @@ Enable RockUSB so U-Boot serves the download itself, with three pieces:
   - aiden-rv1106-rockusb.config turns on CMD_ROCKUSB and the non-DM DWC3 gadget
     the board file already implements, and keeps DFU, fastboot and DM USB off.
 
-  - setup_download_mode() no longer treats a missing VBUS detector as "no
-    cable". rockchip_u2phy_vbus_detect() resolves to the -ENOSYS stub unless a
-    u2phy driver is built in, and the previous attempt at this change enabled
-    CMD_ROCKUSB without one: vbus was never positive, download never ran, and
-    the BOOT key stopped entering flash mode at all. Restore the documented
-    "assumed 1" behaviour when no detector is present.
+  - setup_download_mode() no longer treats the VBUS detector as a prerequisite.
+    This is a device port, and the RV1106 U-Boot tree either has no detector
+    (-ENOSYS) or can sample 0 while VBUS is still settling. In both cases the
+    BOOT key must start RockUSB; otherwise the code silently skips it and falls
+    back to BootROM, whose untrimmed PHY is the failure this patch fixes.
 
   - board_usb_init() programs the same 45ohm HS ODT trim Linux uses before
     starting the gadget, which is the point of the exercise.
@@ -36,30 +35,28 @@ usb_gadget_handle_interrupts(int index) while this board file defined it as
 evb_rk3528, evb_rk3576 and evb_rk3588 already do; nothing calls the no-argument
 form.
 
-Also implement g_dnl_board_usb_cable_connected(). The weak default returns
--EOPNOTSUPP, which sleep_thread() reads as "cable present", so a host that
-never enumerates leaves rockusb serving forever with no way back. Reporting the
-dwc3 connection state instead makes sleep_thread() return -EIO after the 3s
-connect timeout, rockusb exits, and cmd/download.c falls through to rbrom - so
-a board this does not help still reaches MaskROM exactly as it does today.
+Keep the RockUSB session alive while the download key is held. The weak
+g_dnl_board_usb_cable_connected() result is treated as connected by the gadget
+core; using dwc3_gadget_is_connected() here would turn a slow or marginal
+initial enumeration into a RockUSB exit after 3 seconds. cmd/download.c would
+then fall through to rbrom, losing the PHY trim and reproducing the same
+non-enumerating MaskROM failure. There is no useful cable-removal recovery at
+this stage: the operator can release the key and reset the board.
 
 diff --git a/sysdrv/source/uboot/u-boot/arch/arm/mach-rockchip/boot_rkimg.c b/sysdrv/source/uboot/u-boot/arch/arm/mach-rockchip/boot_rkimg.c
 --- a/sysdrv/source/uboot/u-boot/arch/arm/mach-rockchip/boot_rkimg.c
 +++ b/sysdrv/source/uboot/u-boot/arch/arm/mach-rockchip/boot_rkimg.c
-@@ -337,6 +337,16 @@ void setup_download_mode(void)
+@@ -337,6 +337,12 @@ void setup_download_mode(void)
  		       is_hotkey(HK_ROCKUSB_DNL) ? "hot" : "");
  #ifdef CONFIG_CMD_ROCKUSB
- 		vbus = rockchip_u2phy_vbus_detect();
-+		if (vbus < 0) {
-+			/*
-+			 * No VBUS detector is built in, i.e. no u2phy driver.
-+			 * That says nothing about the cable, so keep the
-+			 * "assumed 1" behaviour documented above instead of
-+			 * silently skipping download mode.
-+			 */
-+			printf("no vbus detector, assuming attached... ");
-+			vbus = 1;
-+		}
+-		vbus = rockchip_u2phy_vbus_detect();
++		/*
++		 * This is the USB device port. VBUS detection is absent or races
++		 * cable insertion on RV1106, so a pressed download key is the
++		 * authoritative indication that RockUSB should be started.
++		 */
++		printf("USB device port, assuming attached... ");
++		vbus = 1;
  #endif
  		if (vbus > 0) {
  			printf("%sentering download mode...\n",
@@ -92,7 +89,7 @@ diff --git a/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c b
  {
  	dwc3_uboot_handle_interrupt(0);
  	return 0;
-@@ -43,11 +47,39 @@ static void usb_reset_otg_controller(void)
+@@ -43,11 +47,36 @@ static void usb_reset_otg_controller(void)
  
  int board_usb_init(int index, enum usb_init_type init)
  {
@@ -120,15 +117,12 @@ diff --git a/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c b
 +int g_dnl_board_usb_cable_connected(void)
 +{
 +	/*
-+	 * sleep_thread() in f_mass_storage.c aborts with -EIO when this reports
-+	 * no cable, which is what lets do_download() fall through to rbrom. The
-+	 * weak default returns -EOPNOTSUPP, which reads as "connected", so a
-+	 * host that never enumerates would leave rockusb serving forever with
-+	 * no path back to the BootROM. dwc3_gadget_is_connected() stays true
-+	 * until the 3s connect timeout expires and once the host has actually
-+	 * set a speed, so a working session is never cut short.
++	 * This is a USB device port and the download key is the operator's
++	 * cable-present signal. Keeping this true prevents a transient host
++	 * reset or slow enumeration from falling through to BootROM, which
++	 * would discard the tuned PHY setting.
 +	 */
-+	return dwc3_gadget_is_connected() ? 1 : 0;
++	return 1;
 +}
 +#endif
  #endif

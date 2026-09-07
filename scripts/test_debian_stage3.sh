@@ -190,9 +190,9 @@ grep -Fq 'CONFIG_CMD_ROCKUSB=y' \
     "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
 grep -Fq 'writel(reg, USB2PHY_APB_BASE + USB2PHY_HS_ODT);' \
     "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
-grep -Fq 'return dwc3_gadget_is_connected() ? 1 : 0;' \
+grep -Fq 'return 1;' \
     "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
-grep -Fq 'no vbus detector, assuming attached' \
+grep -Fq 'USB device port, assuming attached' \
     "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
 grep -Fq 'phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x1f);' \
     "${STAGE3_DIR}/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch"
