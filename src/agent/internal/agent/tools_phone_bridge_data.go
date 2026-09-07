@@ -64,13 +64,13 @@ func (t *ClipboardTool) Description() string {
 func (t *ClipboardTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"action": stringEnumArgSchema("Clipboard action.", "read", "write"),
-		"text":   stringArgSchema("Text to write when action is write."),
+		"text":   stringArgSchema("Required when action is write. Use an explicit empty string to clear the clipboard."),
 	}, "action")
 }
 
 type clipboardArgs struct {
-	Action string `json:"action"`
-	Text   string `json:"text"`
+	Action string  `json:"action"`
+	Text   *string `json:"text"`
 }
 
 func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) {
@@ -86,7 +86,12 @@ func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) 
 	case "read":
 		return t.read(ctx)
 	case "write":
-		return t.write(ctx, args.Text)
+		if args.Text == nil {
+			te := NewToolError(CodeInvalidArguments, `clipboard write requires a "text" string`)
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
+		}
+		return t.write(ctx, *args.Text)
 	default:
 		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("unknown action %q, expected \"read\" or \"write\"", args.Action))
 		SetToolError(ctx, te)
