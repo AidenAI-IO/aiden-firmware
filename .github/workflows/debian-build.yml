@@ -149,14 +149,29 @@ jobs:
       # Seconds here, versus discovering the same drift an hour into the build.
       shell: bash
       run: |
-        set -euo pipefail
-        bash scripts/test_debian_stage2.sh
-        bash scripts/test_debian_stage3.sh
-        if command -v jq >/dev/null 2>&1; then
-          bash scripts/test_debian_build.sh
-        else
-          echo "::warning::Skipping scripts/test_debian_build.sh because jq is not installed on this runner"
-        fi
+        set -uo pipefail
+        status=0
+        for policy_test in test_debian_stage2 test_debian_stage3 test_debian_build; do
+          script="scripts/${policy_test}.sh"
+          if [ "$policy_test" = test_debian_build ] && ! command -v jq >/dev/null 2>&1; then
+            echo "::warning::Skipping ${script} because jq is not installed on this runner"
+            continue
+          fi
+          if bash "$script"; then
+            echo "${script}: passed"
+            continue
+          fi
+          # These suites assert with bare `grep -q`, which exits 1 without
+          # printing anything, so a plain failure here says only "exit 1".
+          # Re-run under xtrace: the last traced line is the assertion that
+          # failed, with its arguments already expanded.
+          echo "::error::${script} failed; re-running under xtrace to identify the failing assertion"
+          echo "::group::${script} (xtrace)"
+          bash -x "$script" || true
+          echo "::endgroup::"
+          status=1
+        done
+        exit "$status"
 
     - name: Verify build host prerequisites
       # The same host tools debian_build.sh requires. Checking them here also
