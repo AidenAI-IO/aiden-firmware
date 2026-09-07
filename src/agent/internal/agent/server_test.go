@@ -149,7 +149,7 @@ func TestChatResultPollingPreservesReasoningReset(t *testing.T) {
 		{Type: runEventReasoningReset},
 		{Type: runEventReasoningDelta, ReasoningContent: "replacement thought"},
 	} {
-		pending.messages = append(pending.messages, messageFromReasoningEvent(event, "episode-1", requestID))
+		pending.messages = append(pending.messages, pollingMessageFromReasoningEvent(event, "episode-1", requestID))
 	}
 	server := &Server{pendingResults: map[string]*chatPendingResult{requestID: pending}}
 

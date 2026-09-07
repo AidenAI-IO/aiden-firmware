@@ -196,13 +196,24 @@ func messageFromReasoningEvent(event RunEvent, fallbackEpisodeID, requestID stri
 		episodeID = fallbackEpisodeID
 	}
 	return Message{
-		Type:             map[string]string{runEventReasoningDelta: "assistant_reasoning_delta", runEventReasoningReset: "assistant_reasoning_reset"}[event.Type],
+		Type:             "assistant",
 		Status:           "streaming",
 		EpisodeID:        episodeID,
 		RequestID:        requestID,
 		ReasoningContent: event.ReasoningContent,
 		Timestamp:        event.Timestamp,
 	}
+}
+
+// pollingMessageFromReasoningEvent preserves reset boundaries in the polling
+// payload while voice SSE continues to use a normal streaming assistant message.
+func pollingMessageFromReasoningEvent(event RunEvent, fallbackEpisodeID, requestID string) Message {
+	message := messageFromReasoningEvent(event, fallbackEpisodeID, requestID)
+	message.Type = map[string]string{
+		runEventReasoningDelta: "assistant_reasoning_delta",
+		runEventReasoningReset: "assistant_reasoning_reset",
+	}[event.Type]
+	return message
 }
 
 func messageFromTurnInput(input TurnInput, episodeID, requestID string, attachments []MessageAttachment, timestamp time.Time) Message {
@@ -1461,7 +1472,7 @@ func (s *Server) handleChatAsync(
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
 			if event.Type == runEventReasoningDelta || event.Type == runEventReasoningReset {
-				msg := messageFromReasoningEvent(event, userMsg.EpisodeID, requestID)
+				msg := pollingMessageFromReasoningEvent(event, userMsg.EpisodeID, requestID)
 				pending.mu.Lock()
 				// Reasoning events contain deltas, not accumulated prefixes. The
 				// polling client appends them to its in-memory draft.
