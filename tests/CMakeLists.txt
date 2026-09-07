@@ -11,9 +11,9 @@ target_include_directories(doctest INTERFACE
 )
 
 set(AIDEN_TEST_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/aiden_log.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_playback_session.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_record_session.cpp
-    ${CMAKE_SOURCE_DIR}/src/wifi_config.cpp
     ${CMAKE_SOURCE_DIR}/src/service_status.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_ring_buffer.cpp
@@ -30,27 +30,6 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/audio_session_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_volume_state.cpp
     ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c
-)
-
-# config_web.cpp is a 4000-line all-in-one source for the on-device HTTP
-# server. It is not unit-testable directly (anonymous namespace + main), but
-# we still want host-side compilation to catch header/signature regressions
-# in PR CI -- the firmware cross-compile only runs in scheduled / manual
-# workflows, which is how PR #165 shipped a pre-existing fail-closed status
-# bug undetected. Wrap it in an OBJECT library so we can compile it once
-# with AIDEN_CONFIG_WEB_NO_MAIN for aiden_tests, while a separate
-# config_web_for_tests executable below builds it WITHOUT the macro for the
-# E2E test driver to spawn.
-add_library(config_web_no_main OBJECT
-    ${CMAKE_SOURCE_DIR}/src/aiden_log.cpp
-    ${CMAKE_SOURCE_DIR}/src/config_web.cpp
-    ${CMAKE_SOURCE_DIR}/src/config_web_static_assets.cpp
-)
-target_include_directories(config_web_no_main PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
-target_compile_definitions(config_web_no_main PRIVATE
-    AIDEN_CONFIG_WEB_NO_MAIN
 )
 
 # Prefer system OpenCV for normal host tests. Bundled opencv-mobile is ARM/RV1106 only: use it
@@ -125,7 +104,6 @@ list(APPEND AIDEN_IMAGE_TEST_SOURCES aiden_sdk_audio_stub.cpp)
 add_executable(aiden_tests
     test_main.cpp
     aiden_log_test.cpp
-    wifi_config_test.cpp
     frame_service_protocol_test.cpp
     frame_service_defaults_test.cpp
     uds_message_test.cpp
@@ -140,71 +118,14 @@ add_executable(aiden_tests
     terminal_input_test.cpp
     service_status_test.cpp
     vad_common_test.cpp
-    config_web_source_test.cpp
-    config_web_e2e_test.cpp
-    system_env_parser_test.cpp
     audio_service_protocol_test.cpp
     audio_service_client_test.cpp
     audio_playback_session_test.cpp
     audio_session_manager_test.cpp
     audio_volume_state_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
     ${AIDEN_IMAGE_TEST_SOURCES}
     ${AIDEN_TEST_SOURCES}
 )
-
-# config_web E2E tests spawn the real config_web binary against a stubbed
-# agent CLI to verify HTTP-level contracts (status codes, JSON shape) that
-# in-process unit tests can't see. These targets must be built before
-# aiden_tests runs; ctest's DEPENDS lacks file-level granularity but the
-# binary path is resolved at runtime, so we just declare a target-level
-# dependency for sequencing and pass the resolved paths via
-# target_compile_definitions.
-add_executable(config_web_for_tests
-    ${CMAKE_SOURCE_DIR}/src/aiden_log.cpp
-    ${CMAKE_SOURCE_DIR}/src/config_web.cpp
-    ${CMAKE_SOURCE_DIR}/src/config_web_static_assets.cpp
-    ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
-    ${CMAKE_SOURCE_DIR}/src/service_status.cpp
-    ${CMAKE_SOURCE_DIR}/src/uds_client.cpp
-    ${CMAKE_SOURCE_DIR}/src/uds_message.cpp
-    ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
-    ${CMAKE_SOURCE_DIR}/src/wifi_config.cpp
-    ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c
-)
-target_include_directories(config_web_for_tests PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
-set_target_properties(config_web_for_tests PROPERTIES
-    OUTPUT_NAME config_web
-)
-
-find_program(GO_EXECUTABLE go REQUIRED)
-set(AIDEN_AGENT_FOR_TESTS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/agent_for_tests)
-file(GLOB_RECURSE AIDEN_AGENT_GO_SOURCES CONFIGURE_DEPENDS
-    ${CMAKE_SOURCE_DIR}/src/agent/*.go
-)
-add_custom_command(
-    OUTPUT ${AIDEN_AGENT_FOR_TESTS}
-    COMMAND ${GO_EXECUTABLE} build -o ${AIDEN_AGENT_FOR_TESTS} ./cmd/daemon
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/src/agent
-    DEPENDS ${AIDEN_AGENT_GO_SOURCES} ${CMAKE_SOURCE_DIR}/src/agent/go.mod ${CMAKE_SOURCE_DIR}/src/agent/go.sum
-    VERBATIM
-)
-add_custom_target(agent_for_tests DEPENDS ${AIDEN_AGENT_FOR_TESTS})
-
-add_executable(agent_stub agent_stub_main.cpp)
-add_dependencies(agent_stub agent_for_tests)
-target_include_directories(agent_stub PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_sources(agent_stub PRIVATE ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c)
-target_compile_definitions(agent_stub PRIVATE
-    AIDEN_REAL_AGENT_BIN="${AIDEN_AGENT_FOR_TESTS}"
-)
-if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.12)
-    target_compile_features(agent_stub PRIVATE cxx_std_11)
-endif()
-
-add_dependencies(aiden_tests config_web_for_tests agent_stub)
 
 target_include_directories(aiden_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -212,12 +133,9 @@ target_include_directories(aiden_tests PRIVATE
 
 target_compile_definitions(aiden_tests PRIVATE
     AIDEN_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-    AIDEN_CONFIG_WEB_BIN="$<TARGET_FILE:config_web_for_tests>"
-    AIDEN_AGENT_STUB_BIN="$<TARGET_FILE:agent_stub>"
 )
 
 target_link_libraries(aiden_tests PRIVATE doctest)
-target_sources(aiden_tests PRIVATE $<TARGET_OBJECTS:config_web_no_main>)
 if(OpenCV_FOUND)
     target_link_libraries(aiden_tests PRIVATE aiden_image)
 endif()
@@ -228,6 +146,18 @@ if(UTIL_LIBRARY)
 endif()
 
 add_test(NAME aiden_tests COMMAND $<TARGET_FILE:aiden_tests>)
+
+# Config Web is implemented by the Go Agent binary. Its Go package tests replace
+# the legacy E2E driver that launched the retired C++ server. Focused Node tests
+# cover the modular frontend instead of retaining source checks for that server.
+find_program(GO_EXECUTABLE go)
+if(GO_EXECUTABLE)
+    add_test(NAME config_web_go
+        COMMAND ${GO_EXECUTABLE} test ./internal/configweb
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/src/agent
+    )
+endif()
+
 add_test(NAME logger_shell_format
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_logger_format.sh
 )
@@ -248,8 +178,17 @@ if(NODE_EXECUTABLE)
     add_test(NAME config_web_i18n
         COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_i18n_test.mjs
     )
+    add_test(NAME config_web_api
+        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_api_test.mjs
+    )
+    add_test(NAME config_web_routes
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/config_web_routes_test.mjs
+    )
     add_test(NAME config_web_providers
         COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_providers_test.mjs
+    )
+    add_test(NAME config_web_storage
+        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_storage_test.mjs
     )
     add_test(NAME llm_logs_anthropic
         COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/llm_logs_anthropic_test.mjs

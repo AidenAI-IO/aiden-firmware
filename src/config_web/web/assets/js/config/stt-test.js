@@ -38,7 +38,7 @@ async function startSTTTest() {
     body: {key: 'stt.start_speaking'},
   });
   try {
-    const payload = await request('/api/config/test/stt/start', {
+    const payload = await request('/api/config-test/stt/start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({stt_values: readSection('stt'), audio_values: readSection('audio')}),
@@ -71,7 +71,7 @@ async function stopSTTTest() {
     body: {key: 'stt.waiting_result'},
   });
   try {
-    const payload = await request('/api/config/test/stt/stop', {
+    const payload = await request('/api/config-test/stt/stop', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: '{}',

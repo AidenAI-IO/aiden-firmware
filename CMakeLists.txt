@@ -178,16 +178,3 @@ foreach(_vad_target rknn_vad cpu_vad)
         )
     endif()
 endforeach()
-
-add_executable(config_web
-    src/aiden_log.cpp
-    src/config_web.cpp
-    src/config_web_static_assets.cpp
-    src/frame_service_protocol.cpp
-    src/service_status.cpp
-    src/uds_client.cpp
-    src/uds_message.cpp
-    src/system_env_parser.cpp
-    src/wifi_config.cpp
-)
-target_link_libraries(config_web PRIVATE cjson pthread)

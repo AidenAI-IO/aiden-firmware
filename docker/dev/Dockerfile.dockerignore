@@ -4,3 +4,8 @@
 !docker/
 !docker/dev/
 !docker/dev/**
+!overlay/
+!overlay/oem/
+!overlay/oem/usr/
+!overlay/oem/usr/bin/
+!overlay/oem/usr/bin/aiden-env-run
