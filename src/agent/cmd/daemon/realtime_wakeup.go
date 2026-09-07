@@ -505,7 +505,7 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 				// a new activation cancels this speech first.
 				startFailureAnnouncement(err)
 			}
-			drainRealtimeWakeups(events)
+			drainRealtimeWakeups(events, failureAnnouncementDone != nil)
 			// An API request can arrive while the previous session is tearing
 			// down. Preserve that activation after clearing stale GPIO events.
 			if rotated || chatBridgeHasPending(bridge) {
@@ -521,7 +521,13 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 	}
 }
 
-func drainRealtimeWakeups(events <-chan struct{}) {
+func drainRealtimeWakeups(events <-chan struct{}, failureAnnouncementPending bool) {
+	// A wakeup queued while failure speech starts is a new activation. Leave
+	// it for the event loop to cancel the announcement and set pendingActivation.
+	// The channel already coalesces GPIO/API wakeups into one pending event.
+	if failureAnnouncementPending {
+		return
+	}
 	for {
 		select {
 		case <-events:

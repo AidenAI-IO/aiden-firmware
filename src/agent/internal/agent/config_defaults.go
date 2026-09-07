@@ -86,8 +86,8 @@ const (
 	// input budget at which conversation compaction summarizes the transcript.
 	defaultContextCompactionThreshold = 0.8
 	// defaultContextPruneThreshold is the fraction of the usable model input
-	// budget at which deterministic pruning of expired state and historical tool
-	// results runs. It sits below the compaction threshold so the cheap
+	// budget at which deterministic pruning of stale state and older tool
+	// exchanges runs. It sits below the compaction threshold so the cheap
 	// deterministic pass gets a chance to free tokens before the LLM summary.
 	defaultContextPruneThreshold = 0.5
 	// GPIO 3 (physical pin 38) is the Quick Capture button on Luckfox Pico Zero.
