@@ -45,6 +45,10 @@ grep -Fq 'ttyd.armhf' "${STAGE2_DIR}/container-build-apps.sh"
 grep -Fq 'b0784080bd78f0a5916462672f461542c607f8ea7cee56b075e8cd04e1ffcc4d' \
     "${STAGE2_DIR}/container-build-apps.sh"
 grep -q -- '-buildid=' "${STAGE2_DIR}/container-build-apps.sh"
+grep -Fq 'getenv("FRAME_SERVICE_JPEG_ENCODER")' \
+    "${STAGE2_DIR}/opencv-mobile-rk-mpp-main-program.patch"
+grep -Fq 'strcmp(encoder, "software") == 0' \
+    "${STAGE2_DIR}/opencv-mobile-rk-mpp-main-program.patch"
 grep -q 'source-archive.sha256' \
     "${STAGE2_DIR}/container-build-opencv-mobile.sh"
 grep -q 'OPENCV_SOURCE_DATE_EPOCH=1767360516' \
