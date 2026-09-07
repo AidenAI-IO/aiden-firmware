@@ -47,6 +47,12 @@ retry-safe event batches to `/api/phone-notifications/events` over USB ECM. The
 Agent forwards them to the same `ble_service` event ring used by iOS ANCS;
 Android does not need BLE pairing for this path.
 
+## Queue And Clipboard Contract
+
+`GET /api/phone-bridge/commands` returns `commands: []` when there are no eligible commands, including when platform, phone identity, or background capability filters exclude all queued commands. Clients can distinguish an empty queue from an invalid response without treating HTTP 200 as a schema failure.
+
+For `bridge_clipboard`, `action: "write"` requires a `text` string. Missing, null, or non-string text is rejected before sending a phone command. An explicit empty string remains valid and clears the clipboard; `action: "read"` does not require text.
+
 ## Desktop Agent With ADB Reverse
 
 When running the Agent on a development computer instead of the Luckfox board, the phone cannot reach `192.168.42.1` because the USB ECM board network does not exist. For Android development, use the ADB input backend and let the phone app connect through ADB reverse:
