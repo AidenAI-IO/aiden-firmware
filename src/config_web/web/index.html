@@ -32,6 +32,11 @@
     </div>
     <div class="card action-card">
       <div id="actionBanner" class="banner" data-i18n="action.ready">Ready.</div>
+      <div id="configApplication" class="banner" style="display:none" role="status">
+        <span id="configApplicationText"></span>
+        <button id="configApplyRetry" class="button ghost" data-action="retry-config-apply" style="display:none" data-i18n="config.apply_retry">Retry apply</button>
+        <button id="configReboot" class="button primary" data-action="reboot-device" style="display:none" data-i18n="config.reboot_action">Restart device</button>
+      </div>
       <div id="actionDetails" class="details">
         <pre id="actionDetailsText" class="action-detail-text"></pre>
         <div id="otaLogPanel" class="ota-log-panel">

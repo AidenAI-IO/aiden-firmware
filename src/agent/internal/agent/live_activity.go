@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"aiden-agent/internal/agent/speech"
@@ -54,6 +55,7 @@ type LiveActivityState struct {
 }
 
 type LiveActivityManager struct {
+	disabled           atomic.Bool
 	mu                 sync.Mutex
 	states             map[string]LiveActivityState
 	activeRequestID    string
@@ -68,10 +70,15 @@ func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivit
 	if !cfg.EnabledOrDefault() {
 		return nil
 	}
+	return newReloadableLiveActivityManager(cfg, logger)
+}
+
+func newReloadableLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivityManager {
 	manager := &LiveActivityManager{
 		states: make(map[string]LiveActivityState),
 		logger: logger,
 	}
+	manager.disabled.Store(!cfg.EnabledOrDefault())
 	return manager
 }
 
@@ -142,7 +149,7 @@ func (m *LiveActivityManager) runLocalUpdateNotifier(queue <-chan struct{}) {
 }
 
 func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...string) *LiveActivityState {
-	if m == nil || strings.TrimSpace(requestID) == "" {
+	if m == nil || m.disabled.Load() || strings.TrimSpace(requestID) == "" {
 		return nil
 	}
 	m.logger.Info("Starting live activity task: %s, %s", requestID, title)
@@ -1038,5 +1045,17 @@ func isCancelableLiveActivityStatus(status string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (m *LiveActivityManager) Reconfigure(cfg LiveActivityConfig) {
+	if m == nil {
+		return
+	}
+	m.disabled.Store(!cfg.EnabledOrDefault())
+	if !cfg.EnabledOrDefault() {
+		if state := m.SnapshotActive(); state != nil {
+			m.CancelTask(state.RequestID)
+		}
 	}
 }

@@ -18,6 +18,7 @@ const (
 	apiConfigSchema
 	apiConfigUpdate
 	apiConfigLocale
+	apiConfigApplication
 	apiConfigTest
 	apiModels
 	apiSTTTestStart
@@ -52,6 +53,7 @@ type apiRoute struct {
 
 var apiRoutes = []apiRoute{
 	{apiDeviceSnapshot, routeVariant{http.MethodGet, apiPrefix + "/device/snapshot"}},
+	{apiConfigApplication, routeVariant{http.MethodGet, apiPrefix + "/config/application"}},
 	{apiConfigGet, routeVariant{http.MethodGet, apiPrefix + "/config"}},
 	{apiConfigSchema, routeVariant{http.MethodGet, apiPrefix + "/config/schema"}},
 	{apiConfigUpdate, routeVariant{http.MethodPatch, apiPrefix + "/config"}},
@@ -117,6 +119,8 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 	switch match.endpoint {
 	case apiDeviceSnapshot:
 		s.handleGetDeviceSnapshot(w, r)
+	case apiConfigApplication:
+		s.handleConfigApplication(w, r)
 	case apiConfigGet:
 		s.handleGetConfig(w, r)
 	case apiConfigSchema:

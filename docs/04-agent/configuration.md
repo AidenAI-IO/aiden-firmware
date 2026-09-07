@@ -35,6 +35,18 @@ under `[device]` below.
 - [`memory/extraction.yaml`](#memoryextractionyaml)
 - [Known limitations](#known-limitations)
 
+## Applying Changes Online
+
+Saving through Config Web queues runtime application. See the
+[application policy](../03-services/config-web.md#configuration-application-policy)
+and [status API](../03-services/device-management-api.md#configuration-save-response).
+Mode, model/provider, audio/VAD, and hardware-client changes rebuild the affected
+components after current work drains. Ordinary limits and policies apply to
+subsequent work. USB pointer descriptor and keyboard layout changes remain
+pending until an explicit board reboot; changing `frame_service.keep_streamon`
+restarts only the frame service. Editing the TOML outside Config Web requires
+an explicit reload request or service restart; there is no file watcher.
+
 ## Directory layout
 
 Passed to the daemon as `-dir /userdata/agent`. Everything except `agent.toml`
@@ -603,7 +615,7 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 
 | Field         | Default | Description |
 | ------------- | ------- | ----------- |
-| `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Changing it requires a reboot so USB descriptors are re-enumerated. |
+| `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Switching between Android and a non-Android type requires a reboot so USB descriptors are re-enumerated; changes among non-Android types apply online. |
 
 ## `[hid]`
 

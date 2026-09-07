@@ -10,7 +10,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,44 +53,56 @@ const (
 )
 
 type Runtime struct {
-	config               Config
-	configReloadMu       sync.Mutex
-	configMu             sync.RWMutex
-	models               model.Model
-	memories             *MemoryManager
-	tools                *ToolSet
-	skills               *SkillManager
-	skillsLoaded         bool
-	skillsReloadMu       sync.Mutex
-	skillsDirty          bool
-	runGateInit          sync.Once
-	mergeWorker          *MergeWorker
-	logger               *Logger
-	profileDebouncer     *ProfileDebouncer
-	waitForWakeup        *WaitForWakeupController
-	voiceNotifications   *VoiceNotificationManager
-	memoryPlane          MemoryPlane
-	sessionManager       SessionManager
-	contextManager       *contextmanager.ContextManager
-	stateManager         *statemanager.StateManager
-	runtimeID            string
-	telemetrySessionID   string
-	runGate              chan struct{}
-	preemptMu            sync.Mutex
-	activeCancel         context.CancelFunc
-	preemptHooks         []func()
-	lastPreemptTime      time.Time
-	userContextResetMu   sync.Mutex
-	userContextResetHook func()
-	userContextResetGen  uint64
-	storage              *StorageManager
-	screenState          *screen.ScreenState
-	phoneBridge          *PhoneBridge
-	storageMonitor       *StorageMonitor
-	ttsManager           *tts.ProviderManager
-	ttsManagerOnce       sync.Once
-	episodeMaintenance   asyncEpisodeMaintenance
-	episodeMemoryInitErr error
+	config                  Config
+	configReloadMu          sync.Mutex
+	configOperations        sync.RWMutex
+	configPrepare           ConfigPrepareFunc
+	configContextRotate     atomic.Bool
+	configUserContextRotate atomic.Bool
+	configStatusMu          sync.Mutex
+	configStatus            ConfigApplyStatus
+	configPending           *Config
+	configSequence          uint64
+	configWorkerRunning     bool
+	configClosed            bool
+	configWorkerWG          sync.WaitGroup
+	configWorkerCancel      context.CancelFunc
+	configMu                sync.RWMutex
+	models                  model.Model
+	memories                *MemoryManager
+	tools                   *ToolSet
+	skills                  *SkillManager
+	skillsLoaded            bool
+	skillsReloadMu          sync.Mutex
+	skillsDirty             bool
+	runGateInit             sync.Once
+	mergeWorker             *MergeWorker
+	logger                  *Logger
+	profileDebouncer        *ProfileDebouncer
+	waitForWakeup           *WaitForWakeupController
+	voiceNotifications      *VoiceNotificationManager
+	memoryPlane             MemoryPlane
+	sessionManager          SessionManager
+	contextManager          *contextmanager.ContextManager
+	stateManager            *statemanager.StateManager
+	runtimeID               string
+	telemetrySessionID      string
+	runGate                 chan struct{}
+	preemptMu               sync.Mutex
+	activeCancel            context.CancelFunc
+	preemptHooks            []func()
+	lastPreemptTime         time.Time
+	userContextResetMu      sync.Mutex
+	userContextResetHook    func()
+	userContextResetGen     uint64
+	storage                 *StorageManager
+	screenState             *screen.ScreenState
+	phoneBridge             *PhoneBridge
+	storageMonitor          *StorageMonitor
+	ttsManager              *tts.ProviderManager
+	ttsManagerOnce          sync.Once
+	episodeMaintenance      asyncEpisodeMaintenance
+	episodeMemoryInitErr    error
 }
 
 // ConfigSnapshot returns an immutable copy of the currently active runtime
@@ -104,36 +115,6 @@ func (r *Runtime) ConfigSnapshot() Config {
 	r.configMu.RLock()
 	defer r.configMu.RUnlock()
 	return r.config
-}
-
-// ApplyConfigSnapshot applies changes that are safe for the existing runtime.
-// Provider, audio, storage, HID and voice backend changes are intentionally
-// rejected: those components cache resources at construction time and need a
-// process restart to avoid serving a mixed configuration.
-func (r *Runtime) ApplyConfigSnapshot(cfg Config) error {
-	if r == nil {
-		return fmt.Errorf("runtime unavailable")
-	}
-	r.configMu.Lock()
-	defer r.configMu.Unlock()
-	current := r.config
-	if current.ConfigDir != cfg.ConfigDir {
-		return fmt.Errorf("config directory cannot be reloaded")
-	}
-	if r.models == nil && r.storage == nil && r.phoneBridge == nil {
-		r.config = cfg
-		return nil
-	}
-	// Components that own provider clients, audio sockets, storage mounts, HID
-	// devices, and context state cache configuration at construction time. A
-	// production runtime therefore cannot safely hot-swap any changed config;
-	// reject it so Config Web reports persisted=true/applied=false and asks for
-	// a coordinated Agent restart.
-	if !reflect.DeepEqual(current, cfg) {
-		return fmt.Errorf("configuration changes require an Agent restart")
-	}
-	r.config = cfg
-	return nil
 }
 
 type asyncEpisodeMaintenance struct {
@@ -715,7 +696,7 @@ func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager,
 		rt.markInterruptedEpisodesBestEffort()
 		rt.startMemoryWorker(nil)
 	}
-	rt.stateManager.RegisterUpdater(newDeviceStateUpdater(cfg))
+	rt.stateManager.RegisterUpdater(&deviceStateUpdater{snapshot: rt.ConfigSnapshot})
 	skillManager.SetDeviceTypeFunc(rt.deviceTypeFromState)
 	rt.tools.SetRuntimeDeviceTypeFn(rt.deviceTypeFromState)
 	rt.sessionManager = newMemoryManagerSessionManager(memories)
@@ -934,6 +915,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{}, err
 	}
 	defer unlockRun()
+	r.configOperations.RLock()
+	defer r.configOperations.RUnlock()
 
 	// Register this run's cancel so future callers can preempt us.
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -966,10 +949,10 @@ func (r *Runtime) withIOSKeyboardIsolationRun(
 	ctx context.Context,
 	action func(context.Context) (RunResult, error),
 ) (result RunResult, runErr error) {
-	if r == nil || r.tools == nil || r.tools.iosKeyboardIsolation == nil {
+	if r == nil || r.toolSnapshot() == nil || r.toolSnapshot().iosKeyboardIsolation == nil {
 		return action(ctx)
 	}
-	runErr = r.tools.iosKeyboardIsolation.withBatch(ctx, func(batchCtx context.Context) error {
+	runErr = r.toolSnapshot().iosKeyboardIsolation.withBatch(ctx, func(batchCtx context.Context) error {
 		result, runErr = action(batchCtx)
 		return runErr
 	})
@@ -1164,6 +1147,17 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		steerRecorder = tracker
 	}
 
+	// Configuration changes rotate at the next task boundary, preserving the
+	// complete old transcript and provider-specific continuation metadata.
+	if r.configContextRotate.Load() {
+		manager, resetErr := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(cfg.ConfigDir), profile.SystemPrompt)
+		if resetErr != nil {
+			return RunResult{}, resetErr
+		}
+		manager.AddAppendMessageHooks([]contextmanager.AppendMessageHook{r.getStateHook()})
+		r.contextManager = manager
+		r.configContextRotate.Store(false)
+	}
 	// setup context manager if not initialized
 	if r.contextManager == nil {
 		r.contextManager, err = InitializeContextManager(profile.SystemPrompt, agentpath.ContextManagerSessionFolder(cfg.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
@@ -1266,10 +1260,10 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, cfg.ScreenshotPruningOrDefault(), r.contextManager)
 	agentLoop.SteerRecorder = steerRecorder
 	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
-		if r.tools == nil {
+		if r.toolSnapshot() == nil {
 			return newWheelNudgeGuard(nil)
 		}
-		return newWheelNudgeGuard(r.tools.screen)
+		return newWheelNudgeGuard(r.toolSnapshot().screen)
 	}
 	agentLoop.ToolResultObserver = newScreenToolResultObserver(r.screenState)
 	agentLoop.SteerInterrupt = req.SteerInterrupt
@@ -1467,10 +1461,10 @@ func messageHasImageAttachment(message messages.Message) bool {
 }
 
 func (r *Runtime) captureStateScreenshot() *messages.Attachment {
-	if r == nil || r.tools == nil || r.contextManager == nil {
+	if r == nil || r.toolSnapshot() == nil || r.contextManager == nil {
 		return nil
 	}
-	screenshotTool, ok := r.tools.Get("screenshot")
+	screenshotTool, ok := r.toolSnapshot().Get("screenshot")
 	if !ok || screenshotTool == nil {
 		return nil
 	}
@@ -1515,8 +1509,8 @@ func (r *Runtime) commitSession(ctx context.Context, req SessionCommitRequest) (
 }
 
 func (r *Runtime) currentEnvironmentHints() CurrentEnvironmentHints {
-	if r.tools != nil {
-		return r.tools.CurrentEnvironmentHints(currentEnvironmentHintMaxAge)
+	if r.toolSnapshot() != nil {
+		return r.toolSnapshot().CurrentEnvironmentHints(currentEnvironmentHintMaxAge)
 	}
 	return CurrentEnvironmentHints{}
 }
@@ -1770,10 +1764,10 @@ func (r *Runtime) rotateContext() error {
 }
 
 func (r *Runtime) availableTools() []langtools.Tool {
-	if r == nil || r.tools == nil {
+	if r == nil || r.toolSnapshot() == nil {
 		return nil
 	}
-	tools := NewToolSpecs(r.tools.All()).AgentToolsForPlatform(r.devicePlatformFromState())
+	tools := NewToolSpecs(r.toolSnapshot().All()).AgentToolsForPlatform(r.devicePlatformFromState())
 	return r.filterPhoneBridgeAgentTools(tools)
 }
 
@@ -1781,17 +1775,17 @@ func (r *Runtime) availableTools() []langtools.Tool {
 // reuse the same recall_memory implementation and long-term store as the
 // legacy agent while exposing its own smaller model-facing tool catalog.
 func (r *Runtime) Tool(name string) (langtools.Tool, bool) {
-	if r == nil || r.tools == nil {
+	if r == nil || r.toolSnapshot() == nil {
 		return nil, false
 	}
-	return r.tools.Get(name)
+	return r.toolSnapshot().Get(name)
 }
 
 func (r *Runtime) filterPhoneBridgeAgentTools(tools []langtools.Tool) []langtools.Tool {
-	if r == nil || r.tools == nil || r.tools.phoneBridge == nil {
+	if r == nil || r.toolSnapshot() == nil || r.toolSnapshot().phoneBridge == nil {
 		return tools
 	}
-	bridge := r.tools.phoneBridge
+	bridge := r.toolSnapshot().phoneBridge
 	bridge.SetConfiguredPlatform(r.devicePlatformFromState())
 	status := bridge.getStatus()
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -2716,6 +2710,7 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	r.StopConfigReloads()
 	if r.phoneBridge != nil {
 		r.phoneBridge.Close()
 	}

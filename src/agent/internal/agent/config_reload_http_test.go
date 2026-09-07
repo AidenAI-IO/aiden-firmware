@@ -22,15 +22,16 @@ func TestInternalConfigReloadAppliesLoopbackRevision(t *testing.T) {
 	req.RemoteAddr = "127.0.0.1:1234"
 	rec := httptest.NewRecorder()
 	server.handleInternalConfigReload(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil || payload["applied"] != true {
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil || payload["pending"] != true {
 		t.Fatalf("payload=%s", rec.Body.String())
 	}
-	if runtime.config.LocaleOrDefault() != "en-US" {
-		t.Fatalf("runtime locale=%q", runtime.config.LocaleOrDefault())
+	waitForConfigApplied(t, runtime)
+	if runtime.ConfigSnapshot().LocaleOrDefault() != "en-US" {
+		t.Fatalf("runtime locale=%q", runtime.ConfigSnapshot().LocaleOrDefault())
 	}
 }
 
@@ -94,5 +95,31 @@ func TestAgentHandlerDoesNotExposeConfigWebCapabilities(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("path %s returned status=%d", path, rec.Code)
 		}
+	}
+}
+
+func TestInternalConfigReloadPreservesDeviceCLIOverride(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[device]\ndevice_type=\"Android\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	cfg.ConfigDir = dir
+	if err := cfg.OverrideDeviceType("macOS"); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{config: cfg}
+	defer runtime.Close()
+	server := &Server{runtime: runtime}
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(`{}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	server.handleInternalConfigReload(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	status := waitForConfigApplied(t, runtime)
+	if status.RebootRequired || runtime.ConfigSnapshot().DeviceTypeOrDefault() != "macOS" {
+		t.Fatalf("lost CLI override: %+v", status)
 	}
 }

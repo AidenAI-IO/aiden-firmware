@@ -372,6 +372,11 @@ printf '%s\n' '{"ok":true,"config":{},"changed_paths":[],"reboot_required":false
 	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true})
+	}))
+	defer reload.Close()
+	options.AgentHTTPBaseURL = reload.URL
 	options.AgentBinary = fakeAgent
 	server, err := NewServer(options)
 	if err != nil {
@@ -547,7 +552,7 @@ func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
 	}
 }
 
-func TestConfigPatchSchedulesRestartWhenRuntimeReloadRejectsChange(t *testing.T) {
+func TestConfigPatchDoesNotRestartWhenRuntimeReloadRejectsChange(t *testing.T) {
 	options := testOptions(t)
 	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
 	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{\"agent\":{\"locale\":\"zh-CN\"}},\"changed_paths\":[\"agent.locale\"],\"reboot_required\":false,\"persisted\":true,\"revision\":9}'\n"
@@ -573,7 +578,7 @@ func TestConfigPatchSchedulesRestartWhenRuntimeReloadRejectsChange(t *testing.T)
 	if resp.Code != http.StatusServiceUnavailable ||
 		!strings.Contains(resp.Body.String(), `"persisted":true`) ||
 		!strings.Contains(resp.Body.String(), `"applied":false`) ||
-		!strings.Contains(resp.Body.String(), `"agent_restart_scheduled":true`) {
+		!strings.Contains(resp.Body.String(), `"agent_restart_scheduled":false`) {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
@@ -585,6 +590,11 @@ func TestConfigPatchUsesUpdateHandler(t *testing.T) {
 	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true})
+	}))
+	defer reload.Close()
+	options.AgentHTTPBaseURL = reload.URL
 	options.AgentBinary = fakeAgent
 	server, err := NewServer(options)
 	if err != nil {
@@ -863,5 +873,61 @@ func TestRunHelpReturnsSuccess(t *testing.T) {
 func TestRunRejectsRetiredWiFiIfaceFlag(t *testing.T) {
 	if code := Run([]string{"--wifi-iface", "wlan1"}); code != 1 {
 		t.Fatalf("Run(--wifi-iface)=%d, want 1", code)
+	}
+}
+
+func TestFrameConfigRestartsOnlyFrameServiceAndRetriesFailures(t *testing.T) {
+	options := testOptions(t)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "restart")
+	fakeAgent := filepath.Join(dir, "agent")
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"frame_service.keep_streamon\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
+	if err := os.WriteFile(fakeAgent, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	init := filepath.Join(dir, "frame-init")
+	t.Setenv("AIDEN_CONFIG_TEST_RESTART_MARKER", marker)
+	if err := os.WriteFile(init, []byte("#!/bin/sh\nprintf '%s' frame >\"$AIDEN_CONFIG_TEST_RESTART_MARKER\"\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reloads := 0
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reloads++
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true})
+	}))
+	defer reload.Close()
+	options.AgentBinary = fakeAgent
+	options.AgentHTTPBaseURL = reload.URL
+	options.FrameServiceInitScript = init
+	options.AgentInitScript = "/must-not-execute"
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := func() *httptest.ResponseRecorder {
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{"frame_service":{"keep_streamon":true}}}`)))
+		return resp
+	}
+	failed := save()
+	if failed.Code != http.StatusServiceUnavailable || reloads != 0 {
+		t.Fatalf("failed service restart was applied: %d %s", failed.Code, failed.Body.String())
+	}
+	if err := os.WriteFile(init, []byte("#!/bin/sh\nprintf '%s' frame >\"$AIDEN_CONFIG_TEST_RESTART_MARKER\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// An unchanged retry still has to finish the failed frame restart.
+	if err := os.WriteFile(fakeAgent, []byte(strings.ReplaceAll(script, `["frame_service.keep_streamon"]`, `[]`)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	applied := save()
+	if applied.Code != http.StatusOK || !strings.Contains(applied.Body.String(), `"pending":true`) || !strings.Contains(applied.Body.String(), `"agent_restart_scheduled":false`) {
+		t.Fatalf("status=%d body=%s", applied.Code, applied.Body.String())
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "frame" {
+		t.Fatalf("frame restart missing: %s %v", data, err)
+	}
+	if server.agentRestartPending() {
+		t.Fatal("Agent restart was scheduled")
 	}
 }

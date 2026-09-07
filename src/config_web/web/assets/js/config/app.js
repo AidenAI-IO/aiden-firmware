@@ -1,8 +1,9 @@
+import {refreshConfigApplication, retryConfigApplication} from './config-application.js';
 import {setBanner, setDetails} from './api.js';
 import {bindFieldVisibility, hydrateSelectOptions} from './config-meta.js';
 import {
   cancelEditSection, closeTestToast, disableAgentConfigEditing, enterEditSection,
-  initialReadyMessage, loadConfig, loadConfigMeta, lockAllSections, saveSection, testSection
+  initialReadyMessage, loadConfig, rebootDevice, loadConfigMeta, lockAllSections, saveSection, testSection
 } from './config-form.js';
 import {initI18n, saveLocale, t} from './i18n.js';
 import {applyPendingAgentLogSnapshotIfIdle, exportLogs, refreshAgentLog, setAgentLogAutoScroll, syncAgentLogAutoScroll, toggleAgentLogAutoScroll} from './logs.js';
@@ -23,6 +24,8 @@ const simpleActions = {
   'ota-update': triggerOtaUpdate,
   'refresh-ota-log': () => refreshOtaLog(true),
   'reload-all': reloadAll,
+ 'retry-config-apply': retryConfigApplication,
+ 'reboot-device': rebootDevice,
   'scan-wifi': () => scanWifi(false),
   'refresh-agent-status': () => refreshAgentStatus(true),
   'toggle-agent-log-auto-scroll': toggleAgentLogAutoScroll,
@@ -124,6 +127,8 @@ async function init() {
     setDetails(err.message);
   }
   if (!metaOk) disableAgentConfigEditing();
+  refreshConfigApplication();
+  setInterval(refreshConfigApplication, 3000);
   refreshStorage(false);
   setInterval(() => refreshAgentStatus(false), 5000);
   setInterval(() => refreshAgentLog(false), 2000);

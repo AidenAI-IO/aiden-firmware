@@ -1,0 +1,307 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"reflect"
+	"time"
+)
+
+// ConfigPrepareFunc drains input sessions and prepares replacement components.
+// finish(true) publishes them after Runtime commits; finish(false) resumes the
+// old components on failure. It must not mutate the active config itself.
+type ConfigPrepareFunc func(context.Context, Config) (finish func(bool), err error)
+
+type ConfigApplyStatus struct {
+	Revision        uint64 `json:"revision"`
+	AppliedRevision uint64 `json:"applied_revision"`
+	State           string `json:"state"`
+	Applied         bool   `json:"applied"`
+	Pending         bool   `json:"pending"`
+	RebootRequired  bool   `json:"reboot_required"`
+	RestartRequired bool   `json:"restart_required"`
+	Error           string `json:"error,omitempty"`
+}
+
+func (r *Runtime) SetConfigPreparer(prepare ConfigPrepareFunc) {
+	r.configReloadMu.Lock()
+	defer r.configReloadMu.Unlock()
+	r.configPrepare = prepare
+}
+
+func (r *Runtime) toolSnapshot() *ToolSet {
+	if r == nil {
+		return nil
+	}
+	r.configMu.RLock()
+	defer r.configMu.RUnlock()
+	return r.tools
+}
+
+func (r *Runtime) ConfigApplyStatus() ConfigApplyStatus {
+	r.configStatusMu.Lock()
+	defer r.configStatusMu.Unlock()
+	return r.configStatus
+}
+
+// QueueConfig coalesces saves while a voice session or tool operation drains.
+// The HTTP request never has to outlive the running user task.
+func (r *Runtime) QueueConfig(cfg Config, revision uint64) ConfigApplyStatus {
+	r.configStatusMu.Lock()
+	defer r.configStatusMu.Unlock()
+	if r.configClosed {
+		return ConfigApplyStatus{State: "failed", Error: "runtime is closing"}
+	}
+	r.configPending = &cfg
+	r.configSequence++
+	r.configStatus.Revision = revision
+	r.configStatus.State = "pending"
+	r.configStatus.Pending = true
+	r.configStatus.Applied = false
+	r.configStatus.Error = ""
+	r.configStatus.RebootRequired = configRequiresReboot(r.ConfigSnapshot(), cfg)
+	r.configStatus.RestartRequired = r.configStatus.RebootRequired
+	if !r.configWorkerRunning {
+		r.configWorkerRunning = true
+		r.configWorkerWG.Add(1)
+		go r.applyConfigWorker()
+	}
+	return r.configStatus
+}
+
+func (r *Runtime) applyConfigWorker() {
+	defer r.configWorkerWG.Done()
+	for {
+		r.configStatusMu.Lock()
+		if r.configPending == nil || r.configClosed {
+			r.configWorkerRunning = false
+			r.configStatusMu.Unlock()
+			return
+		}
+		cfg, revision, sequence := *r.configPending, r.configStatus.Revision, r.configSequence
+		r.configPending = nil
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		r.configWorkerCancel = cancel
+		r.configStatusMu.Unlock()
+		err := r.applyConfig(ctx, cfg)
+		cancel()
+		r.configStatusMu.Lock()
+		r.configWorkerCancel = nil
+		if err == nil && !configRequiresReboot(r.ConfigSnapshot(), cfg) {
+			r.configStatus.AppliedRevision = revision
+		}
+		if r.configSequence == sequence {
+			r.configStatus.Pending = false
+			r.configStatus.Applied = err == nil
+			r.configStatus.State = "applied"
+			if err != nil {
+				r.configStatus.State = "failed"
+				r.configStatus.Error = err.Error()
+			}
+			active := r.ConfigSnapshot()
+			r.configStatus.RebootRequired = configRequiresReboot(active, cfg)
+			r.configStatus.RestartRequired = r.configStatus.RebootRequired
+			if err == nil && r.configStatus.RebootRequired {
+				r.configStatus.State = "reboot_required"
+				r.configStatus.Applied = false
+			}
+		}
+		r.configStatusMu.Unlock()
+	}
+}
+
+func configRequiresReboot(current, next Config) bool {
+	return current.PointerModeOrDefault() != next.PointerModeOrDefault() || current.HID.KeyboardLayoutOrDefault() != next.HID.KeyboardLayoutOrDefault()
+}
+
+// ApplyConfigSnapshot is synchronous for embedders. HTTP callers use QueueConfig.
+func (r *Runtime) ApplyConfigSnapshot(cfg Config) error {
+	return r.applyConfig(context.Background(), cfg)
+}
+
+func (r *Runtime) applyConfig(ctx context.Context, cfg Config) error {
+	if r == nil {
+		return fmt.Errorf("runtime unavailable")
+	}
+	r.configReloadMu.Lock()
+	defer r.configReloadMu.Unlock()
+	current := r.ConfigSnapshot()
+	if current.ConfigDir != cfg.ConfigDir {
+		return fmt.Errorf("config directory cannot be reloaded")
+	}
+	// Keep the host USB session consistent until reboot; unrelated fields can apply.
+	if current.PointerModeOrDefault() != cfg.PointerModeOrDefault() {
+		cfg.Device = current.Device
+		cfg.HID.PointerMode = current.HID.PointerMode
+	}
+	if current.HID.KeyboardLayoutOrDefault() != cfg.HID.KeyboardLayoutOrDefault() {
+		cfg.HID.KeyboardLayout = current.HID.KeyboardLayout
+	}
+	if reflect.DeepEqual(current, cfg) {
+		return nil
+	}
+	var finish func(bool)
+	if r.configPrepare != nil {
+		var err error
+		finish, err = r.configPrepare(ctx, cfg)
+		if err != nil {
+			return err
+		}
+	}
+	committed := false
+	if finish != nil {
+		defer func() {
+			if !committed {
+				finish(false)
+			}
+		}()
+	}
+	unlock, err := r.lockRun(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	r.configOperations.Lock()
+	defer r.configOperations.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	oldTools := r.toolSnapshot()
+	tools := oldTools
+	hardwareChanged := !reflect.DeepEqual(current.HID, cfg.HID) || current.Device != cfg.Device || current.Audio != cfg.Audio || current.Search != cfg.Search || current.ScreenStableDefaults() != cfg.ScreenStableDefaults()
+	if hardwareChanged && oldTools != nil {
+		tools = NewBuiltinToolSetFromConfig(cfg, ProxyConfigFromEnvironment(), WithScreenState(r.screenState), WithWaitForWakeupController(r.waitForWakeup), WithScreenStableDefaults(cfg.ScreenStableDefaults()), WithShellTemporaryDirectory(managedPythonTmp))
+		defer func() {
+			if !committed {
+				tools.closeInputDevices()
+			}
+		}()
+		tools.RegisterEnterTextTool(r.models, r.deviceTypeFromState)
+		tools.SetRuntimeDeviceTypeFn(r.deviceTypeFromState)
+		// Preserve registered memory/skill tools and their live state.
+		for name, tool := range oldTools.tools {
+			if _, exists := tools.tools[name]; !exists {
+				tools.tools[name] = tool
+			}
+		}
+		// These tools have no reloadable hardware dependencies; shell in
+		// particular owns background sessions that must survive a HID change.
+		for _, name := range []string{"shell", "weather", "wikipedia", "web_scraper", "request_user_action"} {
+			if tool, ok := oldTools.tools[name]; ok {
+				tools.tools[name] = tool
+			}
+		}
+	}
+	var modelCommit func()
+	if !reflect.DeepEqual(current.Model, cfg.Model) {
+		if manager, ok := r.models.(*ModelManager); ok {
+			modelCommit, err = manager.prepareReplacement(cfg.Model, cfg.ConfigDir)
+			if err != nil {
+				return fmt.Errorf("configure model: %w", err)
+			}
+		}
+	}
+	if hardwareChanged && oldTools != nil {
+		if guard, ok := oldTools.mnkProvider.(interface{ CheckConfigReload() error }); ok {
+			if err := guard.CheckConfigReload(); err != nil {
+				return err
+			}
+		}
+	}
+	if !reflect.DeepEqual(buildTTSProviderConfig(current), buildTTSProviderConfig(cfg)) {
+		manager := r.ttsProviderManager()
+		if cfg.TTS.Provider == "" {
+			err = manager.Disable()
+		} else {
+			err = manager.SwitchTo(buildTTSProviderConfig(cfg))
+		}
+		if err != nil {
+			return fmt.Errorf("configure TTS: %w", err)
+		}
+	}
+	if modelCommit != nil {
+		modelCommit()
+	}
+	if !reflect.DeepEqual(current.Model, cfg.Model) {
+		if merge, ok := current.SkillMergeModel.(*LLMSkillMergeModel); ok {
+			if manager, ok := merge.model.(*ModelManager); ok && manager != r.models {
+				manager.replaceConfig(cfg.Model, cfg.ConfigDir)
+			}
+		}
+	}
+	if r.storageMonitor != nil && (!reflect.DeepEqual(current.Storage, cfg.Storage) || current.AudioArchive != cfg.AudioArchive) {
+		next := newRuntimeStorageMonitor(cfg, nil)
+		r.storageMonitor.Reconfigure(next.config, next.cleaners)
+	}
+	if r.storage != nil {
+		r.storage.reconfigureStateView(cfg.Storage)
+	}
+	if r.voiceNotifications != nil {
+		r.voiceNotifications.Reconfigure(cfg.VoiceNotifications, resolvedVoiceNotificationLocale(cfg))
+	}
+	if current.Log != cfg.Log && cfg.ConfigDir != "" {
+		if err := cleanupOldLogFiles(filepath.Join(cfg.ConfigDir, "log"), time.Now(), cfg.Log.LLMHTTPRetentionDaysOrDefault()); err != nil && r.logger != nil {
+			r.logger.Warn("apply log retention: %v", err)
+		}
+	}
+	if tools != oldTools && r.phoneBridge != nil {
+		tools.RegisterPhoneBridge(r.phoneBridge)
+	}
+	r.configMu.Lock()
+	r.config = cfg
+	r.tools = tools
+	r.configMu.Unlock()
+	if current.HID != cfg.HID || current.Device != cfg.Device {
+		r.screenState.InvalidateCapture()
+	}
+	if !reflect.DeepEqual(current.SkillsDirs, cfg.SkillsDirs) {
+		r.MarkSkillsDirty()
+	}
+	if r.phoneBridge != nil {
+		r.phoneBridge.SetConfiguredPlatform(cfg.DevicePlatformOrDefault())
+	}
+	if tools != oldTools && oldTools != nil {
+		oldTools.closeInputDevices()
+	}
+	// InitializeContextManager rotates the append-only session when its system
+	// prompt changes. Model/provider changes also drop provider-specific chaining.
+	if current.Locale != cfg.Locale || current.Instruction != cfg.Instruction || current.AdditionalPrompt != cfg.AdditionalPrompt || current.Model.Provider != cfg.Model.Provider || current.Model.Model != cfg.Model.Model || current.Model.APIMode != cfg.Model.APIMode || current.Model.BaseURL != cfg.Model.BaseURL {
+		r.configContextRotate.Store(true)
+		r.configUserContextRotate.Store(true)
+	}
+	if !reflect.DeepEqual(current.VoiceModel, cfg.VoiceModel) {
+		r.configUserContextRotate.Store(true)
+	}
+	committed = true
+	if finish != nil {
+		finish(true)
+	}
+	return nil
+}
+
+// StopConfigReloads cancels an application waiting for an idle input session.
+// Call before stopping the input lifecycle, whose preparation hook may be active.
+func (r *Runtime) StopConfigReloads() {
+	r.configStatusMu.Lock()
+	r.configClosed = true
+	r.configPending = nil
+	if r.configWorkerCancel != nil {
+		r.configWorkerCancel()
+	}
+	r.configStatusMu.Unlock()
+	r.configWorkerWG.Wait()
+}
+
+// PrepareUserContext preserves old realtime transcripts when the provider or
+// system prompt changes and prevents replaying incompatible continuation data.
+func (r *Runtime) PrepareUserContext(systemPrompt string) error {
+	if r == nil || !r.configUserContextRotate.Load() {
+		return nil
+	}
+	if err := r.rotateUserContext(systemPrompt); err != nil {
+		return err
+	}
+	r.configUserContextRotate.Store(false)
+	return nil
+}

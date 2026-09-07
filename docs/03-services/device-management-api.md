@@ -18,7 +18,8 @@ All public endpoints use the `/api` root without an additional version prefix:
 | Resource | Method and path | Description |
 | --- | --- | --- |
 | Configuration | `GET /api/config` | Read the resolved `agent.toml` configuration |
-| Configuration | `PATCH /api/config` | Apply the merge patch `{ "config": { ... } }` |
+| Configuration | `PATCH /api/config` | Persist a merge patch and queue application |
+| Configuration | `GET /api/config/application` | Read pending, applied, failed, or reboot-required state |
 | Configuration | `GET /api/config/schema` | Read field types, defaults, choices, secret markers, and restart hints |
 | Configuration | `PUT /api/config/locale` | Update the page language |
 | Configuration | `POST /api/config/test` | Validate configuration and the device environment without saving |
@@ -77,13 +78,15 @@ when enabling the format and eject actions.
 
 ## Configuration Save Response
 
-A successful `PATCH /api/config` response includes:
+A successful `PATCH /api/config` persists the file and queues runtime application:
 
 ```json
 {
   "ok": true,
   "persisted": true,
-  "applied": true,
+  "applied": false,
+  "pending": true,
+  "state": "pending",
   "revision": 123,
   "changed_paths": ["model.model"],
   "reboot_required": false,
@@ -93,25 +96,40 @@ A successful `PATCH /api/config` response includes:
 }
 ```
 
-`persisted` means the configuration file was written atomically. `applied`
-means the Agent accepted and loaded that revision. Clients must present these
-states separately. If reload fails, the endpoint returns HTTP 503 while
-retaining `persisted=true`, `applied=false`, and the error details. Config Web
-then schedules an Agent restart and reports `agent_restart_scheduled=true`; a
-restart launch failure is reported instead of leaving the saved revision with
-no recovery path. On a successful response, `restart_required` mirrors
-`reboot_required`: HID changes that need a clean USB session set both fields and
-the page offers to reboot the board. `restart_reasons` explains why that reboot
-is required. `agent_restart_scheduled` instead describes the fallback process
-restart used when the running Agent rejects an in-place reload.
+Poll `GET /api/config/application` for `state`, `pending`, `applied`,
+`reboot_required`, `revision`, `applied_revision`, and optional `error`.
+`persisted` confirms the atomic file write; `applied` confirms all settings in
+that revision are active. Revisions are opaque 64-bit values; browser clients
+should use the returned state rather than perform numeric revision arithmetic.
+
+| State | Meaning |
+| --- | --- |
+| `pending` | Waiting for the current task, tool operation, or affected voice session to finish |
+| `applied` | The saved revision is active |
+| `reboot_required` | Online settings are active; USB identity/layout changes await an explicit device reboot (`applied=false`) |
+| `failed` | Application failed; inspect `error`, correct the configuration, and retry |
+
+The initial status can have an empty state before any save in this Agent process.
+The UI keeps persisted values after an application failure and offers **Retry
+apply** (`PATCH /api/config` with `{"config":{}}`). Synchronous persistence,
+service, or reload-request failures return an error HTTP status; asynchronous
+component failures are reported by the status endpoint. Neither schedules an
+Agent restart. Frame/storage application may have completed before a later
+component fails. Failed frame/storage work is retried on the next save.
+
+`restart_required` mirrors `reboot_required` for USB descriptor changes
+(Android versus non-Android device type) and `hid.keyboard_layout`. The runtime
+keeps the current USB settings until reboot and remembers the exception across
+subsequent saves; reverting those settings clears it. Reboot is an explicit
+user action and is never triggered by saving. CLI `--device-type` continues to
+override the file for the current process.
 
 ## Agent Restart Lifecycle
 
-Updating `/api/system/environment` persists the environment file and schedules
-an Agent restart. A rejected hot reload follows the same restart lifecycle.
-STT configuration tests are owned by Config Web and remain available while the
-Agent restarts. Restart launch failures are returned to the caller instead of
-being reported as a successfully scheduled restart.
+Updating `/api/system/environment` still persists the environment file and
+schedules an Agent restart. Config changes use the online application lifecycle
+above. STT configuration tests remain owned by Config Web. Restart launch
+failures are returned to the caller instead of reporting success.
 
 ## Storage Ownership
 
@@ -141,7 +159,8 @@ provided. Clients must use the canonical resources in the table above.
 ## Internal Agent Reload
 
 `POST /api/internal/config/reload` accepts loopback requests only and may carry
-a `revision`. The Agent validates that revision and reports `applied=true` only
-after every affected runtime dependency has been rebuilt successfully. A stale
-revision returns HTTP 409. This endpoint is not part of the public management
-API.
+a `revision`. The Agent validates the saved file revision, queues application,
+and returns HTTP 202 with `pending=true`. `GET` on the same loopback-only route
+returns application status. A stale revision returns HTTP 409. Pending saves
+are coalesced; the latest queued snapshot wins after the current application.
+These endpoints are not part of the public management API.

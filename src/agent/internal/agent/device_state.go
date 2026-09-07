@@ -1,7 +1,8 @@
 package agent
 
 type deviceStateUpdater struct {
-	config Config
+	config   Config
+	snapshot func() Config
 }
 
 func newDeviceStateUpdater(config Config) *deviceStateUpdater {
@@ -12,9 +13,13 @@ func (u *deviceStateUpdater) UpdateState() map[string]string {
 	if u == nil {
 		return nil
 	}
+	cfg := u.config
+	if u.snapshot != nil {
+		cfg = u.snapshot()
+	}
 	return map[string]string{
-		"device_type":         u.config.DeviceTypeOrDefault(),
-		"device_platform":     u.config.DevicePlatformOrDefault(),
-		"device_pointer_mode": u.config.PointerModeOrDefault(),
+		"device_type":         cfg.DeviceTypeOrDefault(),
+		"device_platform":     cfg.DevicePlatformOrDefault(),
+		"device_pointer_mode": cfg.PointerModeOrDefault(),
 	}
 }

@@ -68,7 +68,7 @@ func (s *Server) reloadAgentConfig(ctx context.Context, revision uint64) (map[st
 	if len(data) > maxRequestBodySize || json.Unmarshal(data, &payload) != nil || payload == nil {
 		return nil, fmt.Errorf("agent config reload returned invalid JSON")
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 || payload["ok"] != true || payload["applied"] == false {
+	if response.StatusCode < 200 || response.StatusCode >= 300 || payload["ok"] != true || (payload["applied"] == false && payload["pending"] != true) {
 		message, _ := payload["error"].(string)
 		if message == "" {
 			message = fmt.Sprintf("agent config reload failed (HTTP %d)", response.StatusCode)
@@ -76,4 +76,41 @@ func (s *Server) reloadAgentConfig(ctx context.Context, revision uint64) (map[st
 		return payload, errors.New(message)
 	}
 	return payload, nil
+}
+
+// handleConfigApplication exposes runtime application state without secrets.
+func (s *Server) handleConfigApplication(w http.ResponseWriter, r *http.Request) {
+	s.configMu.Lock()
+	applyError := s.configApplyError
+	s.configMu.Unlock()
+	if applyError != "" {
+		writeJSON(w, http.StatusOK, map[string]any{"state": "failed", "applied": false, "pending": false, "error": applyError})
+		return
+	}
+	base, err := s.agentBaseURL()
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + "/api/internal/config/reload"
+	base.RawQuery = ""
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, base.String(), nil)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	response, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "Agent configuration status unavailable")
+		return
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxRequestBodySize+1))
+	if err != nil || len(data) > maxRequestBodySize || !json.Valid(data) {
+		writeJSONError(w, http.StatusServiceUnavailable, "invalid Agent configuration status")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, _ = w.Write(data)
 }

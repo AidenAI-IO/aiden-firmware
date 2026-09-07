@@ -39,7 +39,7 @@ func isLoopbackRequest(r *http.Request) bool {
 // API. Config Web persists agent.toml and calls this loopback-only endpoint to
 // make the new revision visible to the running runtime.
 func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -51,8 +51,10 @@ func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Reque
 		writeAgentJSONError(w, http.StatusServiceUnavailable, "runtime unavailable")
 		return
 	}
-	s.runtime.configReloadMu.Lock()
-	defer s.runtime.configReloadMu.Unlock()
+	if r.Method == http.MethodGet {
+		writeAgentJSON(w, http.StatusOK, s.runtime.ConfigApplyStatus())
+		return
+	}
 	current := s.runtime.ConfigSnapshot()
 	var request configReloadRequest
 	if r.Body != nil {
@@ -77,24 +79,23 @@ func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Reque
 		writeAgentJSONError(w, http.StatusServiceUnavailable, "reload config: "+err.Error())
 		return
 	}
-	// Preserve command-line-only runtime fields before asking Runtime to apply the
-	// snapshot. Runtime rejects changes once its provider/audio/storage
-	// dependencies are initialized, so a failed apply leaves the old snapshot
-	// active and tells Config Web that a restart is required.
+	if configFileRevision(configPath) != revision {
+		writeAgentJSONError(w, http.StatusConflict, "config changed while loading; retry latest revision")
+		return
+	}
+	// Preserve process-only fields; the persisted config cannot overwrite CLI overrides.
 	cfg.SkillMergeModel = current.SkillMergeModel
 	cfg.EnvironmentBridge = current.EnvironmentBridge
 	cfg.Benchmark = current.Benchmark
 	cfg.ForceSimpleLoop = current.ForceSimpleLoop
-	if err := s.runtime.ApplyConfigSnapshot(cfg); err != nil {
-		writeAgentJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"ok": false, "applied": false, "restart_required": true,
-			"persisted": true, "revision": revision,
-			"error": "apply config: " + err.Error(),
-		})
-		return
+	if current.DeviceTypeOverride != "" {
+		_ = cfg.OverrideDeviceType(current.DeviceTypeOverride)
 	}
-	writeAgentJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "applied": true, "persisted": true, "revision": revision,
+	status := s.runtime.QueueConfig(cfg, revision)
+	writeAgentJSON(w, http.StatusAccepted, map[string]any{
+		"ok": status.Error == "", "applied": false, "pending": status.Pending,
+		"persisted": true, "revision": revision, "state": status.State, "error": status.Error,
+		"reboot_required": status.RebootRequired,
 	})
 }
 

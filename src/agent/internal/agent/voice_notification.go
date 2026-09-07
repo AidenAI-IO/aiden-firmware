@@ -371,11 +371,14 @@ func (r *Runtime) ReportSpokenTextDelivery(token string, err error) {
 // notification to an existing assistant response.
 func (m *VoiceNotificationManager) PrepareNotification(_ context.Context) SpokenTextResult {
 	result := SpokenTextResult{Mode: SpokenTextModeNormal}
-	if m == nil || !m.config.EnabledOrDefault() {
+	if m == nil {
 		return result
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if !m.config.EnabledOrDefault() {
+		return result
+	}
 	m.pruneExpiredLocked(m.now())
 	text, token := m.claimPendingNotificationLocked()
 	if text == "" || token == "" {
@@ -450,7 +453,7 @@ func (r *Runtime) PrepareVoiceNotification(ctx context.Context) SpokenTextResult
 }
 
 func (m *VoiceNotificationManager) Publish(_ context.Context, event VoiceNotificationEvent) error {
-	if m == nil || !m.config.EnabledOrDefault() {
+	if m == nil {
 		return nil
 	}
 	event.Code = strings.TrimSpace(event.Code)
@@ -461,6 +464,9 @@ func (m *VoiceNotificationManager) Publish(_ context.Context, event VoiceNotific
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if !m.config.EnabledOrDefault() {
+		return nil
+	}
 	m.pruneExpiredLocked(m.now())
 
 	if event.State == VoiceNotificationResolved {
@@ -540,13 +546,16 @@ func validateVoiceNotificationEvent(event VoiceNotificationEvent) error {
 
 func (m *VoiceNotificationManager) PrepareSpokenText(_ context.Context, input SpokenTextInput) SpokenTextResult {
 	result := SpokenTextResult{Text: input.ResponseText, Mode: SpokenTextModeNormal}
-	if m == nil || !m.config.EnabledOrDefault() {
+	if m == nil {
+		return result
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.config.EnabledOrDefault() {
 		return result
 	}
 	if input.TurnFailure != nil {
-		m.mu.Lock()
 		result.Text = m.turnFailureTextLocked(input.TurnFailure)
-		m.mu.Unlock()
 		result.Mode = SpokenTextModeReplacement
 		return result
 	}
@@ -554,8 +563,6 @@ func (m *VoiceNotificationManager) PrepareSpokenText(_ context.Context, input Sp
 		return result
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.pruneExpiredLocked(m.now())
 	pending := make([]*voiceNotificationRecord, 0, len(m.records))
 	for _, record := range m.records {
@@ -820,4 +827,11 @@ func cloneVoiceNotificationParams(params map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func (m *VoiceNotificationManager) Reconfigure(cfg VoiceNotificationsConfig, locale string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.config = cfg
+	m.locale = locale
 }
