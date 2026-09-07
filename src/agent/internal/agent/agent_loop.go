@@ -34,24 +34,26 @@ const (
 )
 
 type AgentLoop struct {
-	Model                    model.Model
-	Profile                  RoleProfile
-	SteerRecorder            steerConversationRecorder
-	CallbacksHandler         callbacks.Handler
-	MaxIterations            int
-	Recorder                 *EpisodeRecorder
-	ScreenshotPruning        executor.ScreenshotPruningConfig
-	SteerInterrupt           func() <-chan struct{}
-	SteerProvider            func(context.Context) (RunSteerMessage, bool)
-	SteerWaiter              func(context.Context) (RunSteerMessage, bool, error)
-	TerminationPolicy        *TerminationPolicy
-	DevicePlatform           string
-	PointerMode              string
-	ToolResultObserver       ToolResultObserver
-	ToolResultPolicy         ToolResultPolicy
-	ContextOverflowRecovery  func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
-	toolExecutionHookFactory func() toolExecutionHookHandler
-	contextManager           *contextmanager.ContextManager
+	Model                      model.Model
+	Profile                    RoleProfile
+	SteerRecorder              steerConversationRecorder
+	CallbacksHandler           callbacks.Handler
+	MaxIterations              int
+	Recorder                   *EpisodeRecorder
+	ScreenshotPruning          executor.ScreenshotPruningConfig
+	SteerInterrupt             func() <-chan struct{}
+	SteerProvider              func(context.Context) (RunSteerMessage, bool)
+	SteerWaiter                func(context.Context) (RunSteerMessage, bool, error)
+	TerminationPolicy          *TerminationPolicy
+	DevicePlatform             string
+	PointerMode                string
+	ToolResultObserver         ToolResultObserver
+	ToolResultPolicy           ToolResultPolicy
+	ContextCompactionTrigger   int
+	ContextThresholdCompaction func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
+	ContextOverflowRecovery    func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
+	toolExecutionHookFactory   func() toolExecutionHookHandler
+	contextManager             *contextmanager.ContextManager
 }
 
 func NewAgentLoop(
@@ -228,6 +230,10 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
 	if handler, ok := l.CallbacksHandler.(streamingReasoningHandler); ok && handler.StreamingReasoningEnabled() {
 		handler.ResetStreamingReasoning(ctx)
+	}
+	_, compactErr := l.compactContextBeforeLLM(ctx, llmExecutor, turnOptions)
+	if compactErr != nil {
+		return "", iterationContinue, compactErr
 	}
 
 	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
@@ -526,6 +532,34 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	l.applyLoopGuardDecision(decision)
 
 	return "", iterationContinue, nil
+}
+
+func (l *AgentLoop) compactContextBeforeLLM(ctx context.Context, llmExecutor *executor.LLMExecutor, options []llms.CallOption) (bool, error) {
+	if l == nil || llmExecutor == nil || l.ContextCompactionTrigger <= 0 || l.ContextThresholdCompaction == nil {
+		return false, nil
+	}
+	manager := llmExecutor.ContextManager()
+	if manager == nil {
+		return false, nil
+	}
+	promptTokens := estimateActivePromptTokens(manager, options)
+	if promptTokens <= l.ContextCompactionTrigger {
+		return false, nil
+	}
+	newManager, compacted, err := l.ContextThresholdCompaction(ctx, manager)
+	if err != nil {
+		return false, fmt.Errorf("compact context at agent-loop threshold: %w", err)
+	}
+	if !compacted {
+		return false, nil
+	}
+	if newManager == nil {
+		return false, fmt.Errorf("compact context at agent-loop threshold: context manager is nil")
+	}
+	l.contextManager = newManager
+	llmExecutor.ReplaceContextManager(newManager)
+	log.Printf("[context] agent-loop context reached %d tokens (trigger %d); compacted before next model call\n", promptTokens, l.ContextCompactionTrigger)
+	return true, nil
 }
 
 func (l *AgentLoop) finishStopDecision(ctx context.Context, policy *TerminationPolicy, decision TerminationDecision) (string, iterationOutcome, error) {
