@@ -217,24 +217,24 @@ AidenServiceStatus AudioSessionManager::write_play_chunk(uint64_t session_id,
         // Move the session into a draining set so no further writes are
         // accepted, but stop_playback() can still interrupt the tail drain.
         std::shared_ptr<AudioPlaybackSession> owned;
-        std::shared_ptr<DrainingPlaybackState> draining_state;
+        const std::shared_ptr<DrainingPlaybackState> draining_state =
+            draining_playback_state_;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             auto it = playback_sessions_.find(session_id);
             if (it != playback_sessions_.end()) {
                 owned = it->second;
+                // Publish the draining state before removing the active
+                // entry. start_playback() and stop_playback() both serialize
+                // on mutex_, so they cannot observe a partially moved session.
+                std::lock_guard<std::mutex> draining_lock(draining_state->mutex);
+                draining_state->sessions[session_id] = owned;
+                draining_state->count.fetch_add(1, std::memory_order_release);
                 playback_sessions_.erase(it);
-                draining_state = draining_playback_state_;
             }
             playback_last_active_.erase(session_id);
         }
         if (owned && draining_state) {
-            {
-                std::lock_guard<std::mutex> draining_lock(draining_state->mutex);
-                draining_state->sessions[session_id] = owned;
-            }
-            draining_state->count.fetch_add(1, std::memory_order_release);
-
             // Keep the draining session alive on a detached thread until the
             // playback thread exits or stop_playback() interrupts it.
             std::thread([session_id, owned, draining_state]() {
