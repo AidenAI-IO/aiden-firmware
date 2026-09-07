@@ -196,7 +196,7 @@ func messageFromReasoningEvent(event RunEvent, fallbackEpisodeID, requestID stri
 		episodeID = fallbackEpisodeID
 	}
 	return Message{
-		Type:             "assistant",
+		Type:             map[string]string{runEventReasoningDelta: "assistant_reasoning_delta", runEventReasoningReset: "assistant_reasoning_reset"}[event.Type],
 		Status:           "streaming",
 		EpisodeID:        episodeID,
 		RequestID:        requestID,
