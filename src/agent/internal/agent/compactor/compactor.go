@@ -33,7 +33,11 @@ var DefaultProtectRule = ProtectRule{
 	TailN: 3,
 }
 
-const historicalToolResultPruneReason = "historical_prune"
+const (
+	historicalToolResultPruneReason    = "historical_prune"
+	currentTurnToolExchangePruneReason = "current_turn_prune"
+	currentTurnToolExchangeProtectN    = 3
+)
 
 type CompactionStats struct {
 	TokensBefore                int
@@ -42,10 +46,12 @@ type CompactionStats struct {
 }
 
 type HistoricalPruneStats struct {
-	HistoricalStatesDropped     int
-	HistoricalToolResultsPruned int
-	TokensBefore                int
-	TokensAfter                 int
+	HistoricalStatesDropped        int
+	HistoricalToolResultsPruned    int
+	CurrentTurnStatesDropped       int
+	CurrentTurnToolExchangesPruned int
+	TokensBefore                   int
+	TokensAfter                    int
 }
 
 type Compactor struct {
@@ -162,6 +168,24 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 // without generating an LLM conversation summary. A changed context is written
 // as a new revision so provider response anchors cannot refer to the old shape.
 func (c *Compactor) PruneHistorical(session *contextmanager.ContextManager, targetTokens int) (*contextmanager.ContextManager, bool, error) {
+	return c.pruneForBudget(session, targetTokens, false, currentTurnToolExchangeProtectN)
+}
+
+// PruneForBudget performs the historical cleanup and also bounds the active
+// user turn. It is intended for checks made between tool iterations, where a
+// single run may otherwise grow indefinitely without another user message.
+func (c *Compactor) PruneForBudget(session *contextmanager.ContextManager, targetTokens int) (*contextmanager.ContextManager, bool, error) {
+	return c.pruneForBudget(session, targetTokens, true, currentTurnToolExchangeProtectN)
+}
+
+// PruneForHardBudget is the emergency variant used when the next request would
+// exceed the provider input budget. Unlike normal pruning, no completed tool
+// exchange remains protected if removing it is required to fit.
+func (c *Compactor) PruneForHardBudget(session *contextmanager.ContextManager, targetTokens int) (*contextmanager.ContextManager, bool, error) {
+	return c.pruneForBudget(session, targetTokens, true, 0)
+}
+
+func (c *Compactor) pruneForBudget(session *contextmanager.ContextManager, targetTokens int, includeCurrentTurn bool, protectRecent int) (*contextmanager.ContextManager, bool, error) {
 	if session == nil {
 		return nil, false, nil
 	}
@@ -175,12 +199,23 @@ func (c *Compactor) PruneHistorical(session *contextmanager.ContextManager, targ
 	var dropped int
 	messageList, dropped = pruneHistoricalStates(messageList)
 	c.lastPruneStats.HistoricalStatesDropped = dropped
+	if includeCurrentTurn {
+		messageList, dropped = pruneCurrentTurnStates(messageList)
+		c.lastPruneStats.CurrentTurnStatesDropped = dropped
+	}
 
 	var pruned int
 	messageList, pruned = compactHistoricalToolResults(messageList, targetTokens)
 	c.lastPruneStats.HistoricalToolResultsPruned = pruned
+	if includeCurrentTurn {
+		messageList, pruned = compactCurrentTurnToolExchanges(messageList, targetTokens, protectRecent)
+		c.lastPruneStats.CurrentTurnToolExchangesPruned = pruned
+	}
 	c.lastPruneStats.TokensAfter = estimateMessageListTokenUsage(messageList)
-	if dropped == 0 && pruned == 0 {
+	if c.lastPruneStats.HistoricalStatesDropped == 0 &&
+		c.lastPruneStats.HistoricalToolResultsPruned == 0 &&
+		c.lastPruneStats.CurrentTurnStatesDropped == 0 &&
+		c.lastPruneStats.CurrentTurnToolExchangesPruned == 0 {
 		return nil, false, nil
 	}
 	return newContextRevision(session, messageList)
@@ -218,6 +253,38 @@ func pruneHistoricalStates(messageList []messages.Message) ([]messages.Message, 
 	pruned := make([]messages.Message, 0, len(messageList))
 	for i, message := range messageList {
 		if i < currentTurnStart && message.Role == messages.MessageRoleState {
+			dropped++
+			continue
+		}
+		pruned = append(pruned, message)
+	}
+	if dropped == 0 {
+		return messageList, 0
+	}
+	return pruned, dropped
+}
+
+func pruneCurrentTurnStates(messageList []messages.Message) ([]messages.Message, int) {
+	latestUserIndex := lastMessageIndexWithRole(messageList, messages.MessageRoleUser)
+	if latestUserIndex < 0 {
+		return messageList, 0
+	}
+
+	latestStateIndex := -1
+	for i := len(messageList) - 1; i > latestUserIndex; i-- {
+		if messageList[i].Role == messages.MessageRoleState {
+			latestStateIndex = i
+			break
+		}
+	}
+	if latestStateIndex < 0 {
+		return messageList, 0
+	}
+
+	dropped := 0
+	pruned := make([]messages.Message, 0, len(messageList))
+	for i, message := range messageList {
+		if i > latestUserIndex && i != latestStateIndex && message.Role == messages.MessageRoleState {
 			dropped++
 			continue
 		}
@@ -286,6 +353,198 @@ func compactHistoricalToolResults(messageList []messages.Message, targetTokens i
 		}
 	}
 	return messageList, pruned
+}
+
+type completedToolExchange struct {
+	callIndex   int
+	resultIndex int
+}
+
+func compactCurrentTurnToolExchanges(messageList []messages.Message, targetTokens, protectRecent int) ([]messages.Message, int) {
+	if targetTokens <= 0 || estimateMessageListTokenUsage(messageList) <= targetTokens {
+		return messageList, 0
+	}
+	latestUserIndex := lastMessageIndexWithRole(messageList, messages.MessageRoleUser)
+	if latestUserIndex < 0 {
+		return messageList, 0
+	}
+
+	exchanges := make([]completedToolExchange, 0)
+	for i := latestUserIndex + 1; i+1 < len(messageList); i++ {
+		if !isCompletedToolExchange(messageList[i], messageList[i+1]) {
+			continue
+		}
+		exchanges = append(exchanges, completedToolExchange{callIndex: i, resultIndex: i + 1})
+		i++
+	}
+	prunableCount := len(exchanges) - max(0, protectRecent)
+	if prunableCount <= 0 {
+		return messageList, 0
+	}
+
+	currentTokens := estimateMessageListTokenUsage(messageList)
+	changedExchanges := make(map[int]struct{}, prunableCount)
+	for _, exchange := range exchanges[:prunableCount] {
+		if currentTokens <= targetTokens {
+			break
+		}
+		callMessage := messageList[exchange.callIndex]
+		resultMessage := messageList[exchange.resultIndex]
+		compactedCall, compactedResult, changed := compactCurrentTurnToolExchange(callMessage, resultMessage)
+		if !changed {
+			continue
+		}
+		beforeTokens := tokencounter.EstimateMessageTokens(callMessage) + tokencounter.EstimateMessageTokens(resultMessage)
+		afterTokens := tokencounter.EstimateMessageTokens(compactedCall) + tokencounter.EstimateMessageTokens(compactedResult)
+		if afterTokens >= beforeTokens {
+			continue
+		}
+		messageList[exchange.callIndex] = compactedCall
+		messageList[exchange.resultIndex] = compactedResult
+		currentTokens += afterTokens - beforeTokens
+		changedExchanges[exchange.callIndex] = struct{}{}
+	}
+
+	// A tiny placeholder per exchange would still grow without bound in an
+	// unlimited run. If compacting every eligible pair cannot reach the target,
+	// remove the oldest completed pairs entirely. The parent revision keeps the
+	// full transcript for audit, while the active revision remains bounded.
+	dropIndexes := make(map[int]struct{})
+	for _, exchange := range exchanges[:prunableCount] {
+		if currentTokens <= targetTokens {
+			break
+		}
+		callTokens := tokencounter.EstimateMessageTokens(messageList[exchange.callIndex])
+		resultTokens := tokencounter.EstimateMessageTokens(messageList[exchange.resultIndex])
+		dropIndexes[exchange.callIndex] = struct{}{}
+		dropIndexes[exchange.resultIndex] = struct{}{}
+		currentTokens -= callTokens + resultTokens
+		changedExchanges[exchange.callIndex] = struct{}{}
+	}
+	if len(dropIndexes) == 0 {
+		return messageList, len(changedExchanges)
+	}
+	prunedMessages := make([]messages.Message, 0, len(messageList)-len(dropIndexes))
+	for i, message := range messageList {
+		if _, drop := dropIndexes[i]; drop {
+			continue
+		}
+		prunedMessages = append(prunedMessages, message)
+	}
+	return prunedMessages, len(changedExchanges)
+}
+
+func isCompletedToolExchange(callMessage, resultMessage messages.Message) bool {
+	if callMessage.Role != messages.MessageRoleToolCall || resultMessage.Role != messages.MessageRoleToolResult ||
+		len(callMessage.ToolCalls) == 0 || len(callMessage.ToolCalls) != len(resultMessage.ToolResults) {
+		return false
+	}
+	callIDs := make(map[string]struct{}, len(callMessage.ToolCalls))
+	for _, call := range callMessage.ToolCalls {
+		id := strings.TrimSpace(call.ID)
+		if id == "" {
+			return false
+		}
+		callIDs[id] = struct{}{}
+	}
+	for _, result := range resultMessage.ToolResults {
+		id := strings.TrimSpace(result.ToolCallID)
+		if _, ok := callIDs[id]; !ok {
+			return false
+		}
+		delete(callIDs, id)
+	}
+	return len(callIDs) == 0
+}
+
+func compactCurrentTurnToolExchange(callMessage, resultMessage messages.Message) (messages.Message, messages.Message, bool) {
+	for _, result := range resultMessage.ToolResults {
+		if result.Meta != nil && result.Meta.Reason == currentTurnToolExchangePruneReason {
+			return callMessage, resultMessage, false
+		}
+	}
+
+	compactedCall := callMessage.Clone()
+	compactedCall.Content = ""
+	compactedCall.ResponsesReasoningItems = nil
+	compactedCall.ResponsesResponseID = ""
+	compactedCall.ResponsesOutputItems = nil
+	compactedCall.ResponsesAssistantPhase = ""
+	for i := range compactedCall.ToolCalls {
+		compactedCall.ToolCalls[i].Arguments = `{}`
+	}
+
+	compactedResult := resultMessage.Clone()
+	compactedResult.Content = ""
+	compactedResult.ResponsesReasoningItems = nil
+	compactedResult.ResponsesResponseID = ""
+	compactedResult.ResponsesOutputItems = nil
+	compactedResult.ResponsesAssistantPhase = ""
+	for i := range compactedResult.ToolResults {
+		result := &compactedResult.ToolResults[i]
+		call, _ := toolCallByID(compactedCall.ToolCalls, result.ToolCallID)
+		content, summary := currentTurnToolResultPlaceholder(*result, call)
+		beforeTokens := tokencounter.EstimateTextTokens(result.Content)
+		meta := result.Meta
+		if meta == nil {
+			meta = &messages.ToolResultMeta{ObservationComplete: true}
+			result.Meta = meta
+		}
+		if meta.OriginalBytes == 0 {
+			meta.OriginalBytes = int64(len(result.Content))
+		}
+		if meta.OriginalChars == 0 {
+			meta.OriginalChars = utf8.RuneCountInString(result.Content)
+		}
+		if meta.EstimatedTokens == 0 {
+			meta.EstimatedTokens = beforeTokens
+		}
+		if strings.TrimSpace(meta.Summary) == "" {
+			meta.Summary = summary
+		}
+		meta.Complete = false
+		meta.Reason = currentTurnToolExchangePruneReason
+		result.Content = content
+	}
+	return compactedCall, compactedResult, true
+}
+
+func toolCallByID(calls []messages.ToolCall, id string) (messages.ToolCall, bool) {
+	id = strings.TrimSpace(id)
+	for _, call := range calls {
+		if strings.TrimSpace(call.ID) == id {
+			return call, true
+		}
+	}
+	return messages.ToolCall{}, false
+}
+
+func currentTurnToolResultPlaceholder(result messages.ToolResult, call messages.ToolCall) (string, string) {
+	toolName := strings.TrimSpace(result.Name)
+	if toolName == "" {
+		toolName = strings.TrimSpace(call.Name)
+	}
+	if toolName == "" {
+		toolName = "tool"
+	}
+	summary := ""
+	if result.Meta != nil {
+		summary = truncateRunes(result.Meta.Summary, 160)
+	}
+	if summary == "" {
+		summary = truncateRunes(result.Content, 160)
+	}
+	reference := historicalToolResultReference{
+		Status:  currentTurnToolExchangePruneReason,
+		Tool:    toolName,
+		Summary: summary,
+	}
+	if result.Meta != nil && contextmanager.ArtifactPathRecoverable(result.Meta.ArtifactPath, time.Now()) {
+		reference.ArtifactPath = strings.TrimSpace(result.Meta.ArtifactPath)
+		reference.ArtifactComplete = result.Meta.ArtifactComplete
+	}
+	data, _ := json.Marshal(reference)
+	return string(data), summary
 }
 
 func lastMessageIndexWithRole(messageList []messages.Message, role messages.MessageRole) int {
