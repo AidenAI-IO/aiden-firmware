@@ -139,9 +139,30 @@ jobs:
       run: |
         set -euo pipefail
         git submodule update --init --depth=1 pico-sdk
-        # The metadata repair above writes an untracked .gitmodules that the
-        # pinned SDK commit does not carry; the clean-tree check would trip on it.
-        git -C pico-sdk clean -f -- .gitmodules
+
+        # Both debian_build.sh and Stage 3 refuse to build unless this worktree
+        # is pristine, and actions/checkout cannot deliver that: its
+        # `git clean -ffdx` does not descend into an initialised submodule, so
+        # whatever a previous job left here survives. Restore tracked files and
+        # drop untracked ones, but leave ignored paths alone -- pico-sdk/output
+        # is the Buildroot builds' incremental tree and they share this
+        # checkout. This also removes the untracked .gitmodules that the
+        # metadata repair step writes for older SDK commits.
+        dirty="$(git -C pico-sdk status --porcelain)"
+        if [ -n "$dirty" ]; then
+          echo "::group::pico-sdk worktree was dirty; restoring it"
+          printf '%s\n' "$dirty" | head -50
+          echo "::endgroup::"
+          git -C pico-sdk clean -ffd
+          git -C pico-sdk checkout --force -- .
+        fi
+
+        remaining="$(git -C pico-sdk status --porcelain)"
+        if [ -n "$remaining" ]; then
+          echo "pico-sdk is still not clean after restore:" >&2
+          printf '%s\n' "$remaining" | head -50 >&2
+          exit 1
+        fi
         git -C pico-sdk rev-parse HEAD
 
     - name: Verify Debian build script policies
