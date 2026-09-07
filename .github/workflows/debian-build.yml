@@ -128,19 +128,20 @@ jobs:
         persist-credentials: false
 
     - name: Fetch pico-sdk submodule
-      # debian_build.sh refuses to build unless pico-sdk is checked out at the
-      # pinned Stage 3 commit with a clean worktree, and Stage 3 makes a local
-      # --shared clone of it, so fetch full history rather than --depth=1.
+      # Depth 1 is enough even though Stage 3 makes a local --shared clone of
+      # this checkout: git declines to use alternates when the source is
+      # shallow and copies the objects instead, so its repack/fsck path is
+      # skipped and the detached checkout still resolves. debian_build.sh
+      # asserts HEAD equals the pinned Stage 3 commit, which is exactly the
+      # commit a depth-1 fetch lands on. Deepening instead means pulling ~1 GB
+      # from github.com on every fresh runner.
       shell: bash
       run: |
         set -euo pipefail
-        git submodule update --init pico-sdk
+        git submodule update --init --depth=1 pico-sdk
         # The metadata repair above writes an untracked .gitmodules that the
         # pinned SDK commit does not carry; the clean-tree check would trip on it.
         git -C pico-sdk clean -f -- .gitmodules
-        if [ "$(git -C pico-sdk rev-parse --is-shallow-repository)" = "true" ]; then
-          git -C pico-sdk fetch --unshallow origin
-        fi
         git -C pico-sdk rev-parse HEAD
 
     - name: Verify Debian build script policies
