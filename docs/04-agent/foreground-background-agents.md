@@ -54,6 +54,9 @@ retains the interrupted response's terminal ownership even when it has no ID,
 without consuming the new user's pending input. See the [official protocol](https://github.com/googleapis/googleapis/blob/64aa30b277168edd20efee0c9ceb4ca01248931d/google/ai/generativelanguage/v1beta/generative_service.proto#L1589).
 The empty-content cancel payload is covered by a local WebSocket protocol test;
 its behavior against the deployed Gemini service still requires live validation.
+Gemini tool-call cancellation is scoped to the listed call IDs: it cancels those
+foreground invocations and drops their late results while preserving other
+parallel calls and the response lifecycle.
 
 Chat admission logs include the incoming and active request IDs, response ID,
 occupancy duration, and each admission guard. Response completion, cancellation,

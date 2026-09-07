@@ -1641,6 +1641,21 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				} else {
 					realtimeToolCallStarter(toolCtx, toolExecutor, event, toolResults)
 				}
+			case realtimevoice.EventToolCallCancelled:
+				tool, pending := foregroundTools[event.CallID]
+				if !pending {
+					continue
+				}
+				tool.cancel()
+				delete(foregroundTools, event.CallID)
+				// A tool-level cancellation does not interrupt the response or
+				// discard other tools that the provider is still waiting for.
+				if info.Capabilities.ExplicitToolContinuation && toolTracker.complete(tool.responseID) {
+					requestResponse()
+					if err := textSession.CreateResponse(ctx); err != nil {
+						return fmt.Errorf("continue realtime response after tool cancellation: %w", err)
+					}
+				}
 			case realtimevoice.EventUsage:
 				realtimeResponseUsage.TotalTokens += event.Usage.TotalTokens
 				realtimeResponseUsage.InputTokens += event.Usage.InputTokens

@@ -275,6 +275,8 @@ const (
 	EventResponseCancelled EventKind = "response_cancelled"
 	EventInterruption      EventKind = "interruption"
 	EventToolCall          EventKind = "tool_call"
+	// EventToolCallCancelled cancels only the invocation identified by CallID.
+	EventToolCallCancelled EventKind = "tool_call_cancelled"
 	EventUsage             EventKind = "usage"
 	EventError             EventKind = "error"
 	EventClosed            EventKind = "closed"

@@ -390,6 +390,22 @@ func TestGeminiToolCallFlushesUserTranscriptFirst(t *testing.T) {
 	}
 }
 
+func TestGeminiToolCancellationPreservesCallIDsAndResponse(t *testing.T) {
+	s := &geminiSession{responseActive: true, toolNames: map[string]string{"a": "clock", "b": "search", "c": "clock"}}
+	events := s.translate([]byte(`{"toolCallCancellation":{"ids":["a","c"]}}`))
+	if len(events) != 2 || events[0].Kind != EventToolCallCancelled || events[0].CallID != "a" || events[1].Kind != EventToolCallCancelled || events[1].CallID != "c" {
+		t.Fatalf("cancellation events = %+v", events)
+	}
+	if !s.responseActive || len(s.toolNames) != 1 || s.toolNames["b"] != "search" {
+		t.Fatalf("cancellation changed unrelated state: active=%t tools=%v", s.responseActive, s.toolNames)
+	}
+	for _, payload := range []string{`{"toolCallCancellation":{}}`, `{"toolCallCancellation":{"ids":[""]}}`} {
+		if events := s.translate([]byte(payload)); len(events) != 0 {
+			t.Fatalf("empty cancellation emitted events: %+v", events)
+		}
+	}
+}
+
 func TestGeminiGoAwayReportsRotationNotFailure(t *testing.T) {
 	// Gemini Live caps session lifetime and announces the cutoff. Reporting a
 	// generic error made a scheduled handover look like a fault, so long

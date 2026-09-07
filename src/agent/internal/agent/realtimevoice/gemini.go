@@ -483,9 +483,11 @@ func (s *geminiSession) translate(body []byte) []Event {
 		SetupComplete    json.RawMessage      `json:"setupComplete"`
 		ServerContent    *geminiServerContent `json:"serverContent"`
 		ToolCall         *geminiToolCall      `json:"toolCall"`
-		ToolCancellation json.RawMessage      `json:"toolCallCancellation"`
-		UsageMetadata    *geminiUsageMetadata `json:"usageMetadata"`
-		GoAway           *struct {
+		ToolCancellation *struct {
+			IDs []string `json:"ids"`
+		} `json:"toolCallCancellation"`
+		UsageMetadata *geminiUsageMetadata `json:"usageMetadata"`
+		GoAway        *struct {
 			TimeLeft string `json:"timeLeft"`
 		} `json:"goAway"`
 		Error *struct {
@@ -613,8 +615,16 @@ func (s *geminiSession) translate(body []byte) []Event {
 			events = append(events, Event{Kind: EventToolCall, CallID: call.ID, Name: call.Name, Arguments: string(args)})
 		}
 	}
-	if len(envelope.ToolCancellation) > 0 {
-		events = append(events, Event{Kind: EventInterruption, At: "assistant"})
+	if envelope.ToolCancellation != nil {
+		for _, id := range envelope.ToolCancellation.IDs {
+			if id == "" {
+				continue
+			}
+			s.toolMu.Lock()
+			delete(s.toolNames, id)
+			s.toolMu.Unlock()
+			events = append(events, Event{Kind: EventToolCallCancelled, CallID: id})
+		}
 	}
 	if envelope.UsageMetadata != nil && !usageEmitted {
 		events = append(events, Event{Kind: EventUsage, Usage: Usage{InputTokens: envelope.UsageMetadata.PromptTokenCount, OutputTokens: envelope.UsageMetadata.ResponseTokenCount, TotalTokens: envelope.UsageMetadata.TotalTokenCount}})

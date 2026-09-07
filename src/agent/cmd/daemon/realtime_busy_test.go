@@ -631,3 +631,60 @@ func TestRealtimeBusyInterruptionClearsExplicitToolContinuation(t *testing.T) {
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, ResponseID: "r", Status: "completed"}
 	requireBusyEvent(t, events, agent.RealtimeChatEventDone)
 }
+
+func TestRealtimeBusyToolCancellationPreservesParallelCall(t *testing.T) {
+	type heldTool struct {
+		ctx     context.Context
+		call    realtimevoice.Event
+		results chan<- realtimeToolResult
+	}
+	started := make(chan heldTool, 2)
+	oldStarter := realtimeToolCallStarter
+	realtimeToolCallStarter = func(ctx context.Context, _ realtimeVoiceToolExecutor, call realtimevoice.Event, results chan<- realtimeToolResult) {
+		started <- heldTool{ctx, call, results}
+	}
+	defer func() { realtimeToolCallStarter = oldStarter }()
+	s, bridge, done := startBusyTestSession(t, time.Second)
+	events := busyTestRequest(t, s, bridge, done, "partial-tool-cancel")
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseStarted}
+	for _, id := range []string{"a", "b"} {
+		s.events <- realtimevoice.Event{Kind: realtimevoice.EventToolCall, CallID: id, Name: "unknown_tool", Arguments: "{}"}
+	}
+	tools := make(map[string]heldTool)
+	for range 2 {
+		select {
+		case tool := <-started:
+			tools[tool.call.CallID] = tool
+		case <-time.After(time.Second):
+			t.Fatal("parallel tools did not start")
+		}
+	}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventToolCallCancelled, CallID: "a"}
+	select {
+	case <-tools["a"].ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("selected tool was not canceled")
+	}
+	if err := tools["b"].ctx.Err(); err != nil {
+		t.Fatalf("unselected tool was canceled: %v", err)
+	}
+	// Queue a racing result from the canceled tool before the valid result.
+	for _, id := range []string{"a", "b"} {
+		tool := tools[id]
+		tool.results <- realtimeToolResult{call: tool.call, output: "{}"}
+	}
+	select {
+	case <-s.toolResults:
+	case <-time.After(time.Second):
+		t.Fatal("remaining tool result was not sent")
+	}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventTranscriptDelta, Role: "assistant", TextSource: "text", Text: "finished"}
+	requireBusyEvent(t, events, agent.RealtimeChatEventDelta)
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, Status: "completed"}
+	requireBusyEvent(t, events, agent.RealtimeChatEventDone)
+	select {
+	case <-s.toolResults:
+		t.Fatal("canceled tool result was sent")
+	default:
+	}
+}
