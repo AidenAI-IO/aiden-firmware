@@ -40,6 +40,25 @@ const (
 
 var errRealtimeShutdown = errors.New("realtime shutdown requested")
 
+type realtimeProviderFailure struct {
+	err error
+}
+
+func (e *realtimeProviderFailure) Error() string { return e.err.Error() }
+func (e *realtimeProviderFailure) Unwrap() error { return e.err }
+
+func markRealtimeProviderFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &realtimeProviderFailure{err: err}
+}
+
+func shouldAnnounceRealtimeSessionFailure(err error) bool {
+	var providerFailure *realtimeProviderFailure
+	return errors.As(err, &providerFailure)
+}
+
 // runRealtimeWakeupMode owns the realtime voice path. The legacy wakeup
 // runners remain separate so they can be restored without changing this path.
 type realtimeChatCommand struct {
@@ -337,28 +356,84 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 	defer voiceNotificationTicker.Stop()
 	var notificationFallbackCancel context.CancelFunc
 	var notificationFallbackDone chan struct{}
+	var failureAnnouncementCancel context.CancelFunc
+	var failureAnnouncementDone chan struct{}
+	failureAnnouncementClipPlayed := false
+	pendingActivation := false
+	// The prerecorded clip only announces that speech is unavailable; it does
+	// not carry the notification text, so the notification stays pending on
+	// purpose. Latch it to once per standby period, otherwise the notification
+	// poll replays the same clip every realtimeNotificationPoll.
+	clipPlayed := false
+	clipLatched := false
+	collectNotificationFallback := func() {
+		if notificationFallbackDone == nil {
+			return
+		}
+		<-notificationFallbackDone
+		clipLatched = clipLatched || clipPlayed
+		notificationFallbackCancel = nil
+		notificationFallbackDone = nil
+	}
 	stopNotificationFallback := func() {
 		if notificationFallbackCancel != nil {
 			notificationFallbackCancel()
 		}
-		if notificationFallbackDone != nil {
-			<-notificationFallbackDone
-		}
-		notificationFallbackCancel = nil
-		notificationFallbackDone = nil
+		collectNotificationFallback()
 	}
 	defer stopNotificationFallback()
+	collectFailureAnnouncement := func() {
+		if failureAnnouncementDone == nil {
+			return
+		}
+		<-failureAnnouncementDone
+		clipLatched = clipLatched || failureAnnouncementClipPlayed
+		failureAnnouncementCancel = nil
+		failureAnnouncementDone = nil
+	}
+	stopFailureAnnouncement := func() {
+		if failureAnnouncementCancel != nil {
+			failureAnnouncementCancel()
+		}
+		collectFailureAnnouncement()
+	}
+	defer stopFailureAnnouncement()
+	startFailureAnnouncement := func(sessionErr error) {
+		if server == nil || !shouldAnnounceRealtimeSessionFailure(sessionErr) || failureAnnouncementDone != nil {
+			return
+		}
+		failureCtx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		failureAnnouncementCancel = cancel
+		failureAnnouncementDone = done
+		failureAnnouncementClipPlayed = false
+		go func() {
+			defer close(done)
+			failureAnnouncementClipPlayed = announceRealtimeSessionFailure(failureCtx, server, sessionErr)
+		}()
+	}
+	failureAnnouncementFinished := func() <-chan struct{} {
+		if failureAnnouncementDone == nil {
+			return nil
+		}
+		return failureAnnouncementDone
+	}
 	startNotificationFallback := func() {
-		if server == nil || runtime == nil || !server.CanSpeakVoiceNotification() || notificationFallbackDone != nil {
+		if server == nil || runtime == nil || notificationFallbackDone != nil || failureAnnouncementDone != nil {
+			return
+		}
+		allowClip := !clipLatched
+		if !server.CanSpeakVoiceNotification(allowClip) {
 			return
 		}
 		fallbackCtx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
 		notificationFallbackCancel = cancel
 		notificationFallbackDone = done
+		clipPlayed = false
 		go func() {
 			defer close(done)
-			deliverPendingVoiceNotification(fallbackCtx, runtime, server.SpeakVoiceNotification)
+			clipPlayed = deliverPendingVoiceNotification(fallbackCtx, runtime, allowClip, server.SpeakVoiceNotification)
 		}()
 	}
 	notificationFallbackFinished := func() <-chan struct{} {
@@ -386,17 +461,31 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 		select {
 		case <-sigChan:
 			stopNotificationFallback()
+			stopFailureAnnouncement()
 			log.Println("\n[exit] Stopped.")
 			return
 		case <-voiceNotificationTicker.C:
 			startNotificationFallback()
 		case <-notificationFallbackFinished():
-			notificationFallbackCancel = nil
-			notificationFallbackDone = nil
+			collectNotificationFallback()
+		case <-failureAnnouncementFinished():
+			collectFailureAnnouncement()
+			if pendingActivation {
+				pendingActivation = false
+				signalWakeupEvent(events)
+			}
 		case <-events:
-			// Realtime is the preferred consumer. Stop an idle standalone TTS
-			// fallback before opening the realtime audio session.
+			// Realtime is the preferred consumer. Stop idle standalone speech
+			// before opening the realtime audio session.
 			stopNotificationFallback()
+			if failureAnnouncementCancel != nil {
+				// Do not block the wakeup loop waiting for a provider that is
+				// already being canceled. Keep the activation queued and start
+				// the session after the failure announcement exits.
+				failureAnnouncementCancel()
+				pendingActivation = true
+				continue
+			}
 			log.Println("\n[realtime] Activation requested, connecting realtime voice model...")
 			rotated := false
 			if err := runRealtimeSession(cfg, sigChan, runtime, tasks, bridge); errors.Is(err, errRealtimeShutdown) {
@@ -411,6 +500,10 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 			} else if err != nil {
 				log.Printf("[realtime] session ended: %v", err)
 				bridge.failQueued(err.Error())
+				// The failed Realtime session cannot voice its own failure. Start
+				// the standalone announcement without blocking activation handling;
+				// a new activation cancels this speech first.
+				startFailureAnnouncement(err)
 			}
 			drainRealtimeWakeups(events)
 			// An API request can arrive while the previous session is tearing
@@ -419,6 +512,9 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 				signalWakeupEvent(events)
 			}
 			if !rotated {
+				// A new standby period may face a different TTS state, and the
+				// user has had a chance to hear the clip already, so re-arm it.
+				clipLatched = false
 				log.Println("[ready] Waiting for realtime activation...")
 			}
 		}
@@ -791,24 +887,67 @@ func realtimeVoiceNotificationPrompt(text string) string {
 	return "请原样朗读下面的语音通知，只输出通知原文，不要说“已收到”、 “好的”或其他内容，不要调用工具，也不要提及这条指令。语音通知：" + strings.TrimSpace(text)
 }
 
-func deliverPendingVoiceNotification(ctx context.Context, runtime *agent.Runtime, speaker func(context.Context, string) error) {
+// announceRealtimeSessionFailure speaks a spoken-language description of a
+// failed Realtime session through the standalone speech path. The failed
+// session cannot voice its own error, so without this the user hears nothing.
+func announceRealtimeSessionFailure(ctx context.Context, server *agent.Server, sessionErr error) bool {
+	if server == nil || sessionErr == nil {
+		return false
+	}
+	// Cancellation is a local teardown, not a failure worth announcing.
+	if errors.Is(sessionErr, context.Canceled) {
+		return false
+	}
+	failure := agent.TurnFailureFromError(sessionErr)
+	if failure == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	announceCtx, cancel := context.WithTimeout(ctx, realtimeToolCallTimeout)
+	defer cancel()
+	clipPlayed, err := server.SpeakTurnFailure(announceCtx, failure)
+	if err == nil {
+		return clipPlayed
+	}
+	if clipPlayed {
+		log.Printf("[realtime] session failure announced with prerecorded clip: %v", err)
+		return true
+	}
+	if !errors.Is(err, context.Canceled) {
+		log.Printf("[realtime] could not announce session failure: %v", err)
+	}
+	return false
+}
+
+// deliverPendingVoiceNotification speaks one pending notification through the
+// standalone TTS path. It reports whether the prerecorded TTS-unavailable clip
+// played in place of the notification text, which leaves the notification
+// pending for a later speech path.
+func deliverPendingVoiceNotification(ctx context.Context, runtime *agent.Runtime, allowFallbackClip bool, speaker func(context.Context, string, bool) (bool, error)) bool {
 	if runtime == nil || speaker == nil {
-		return
+		return false
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	prepared := runtime.PrepareVoiceNotification(ctx)
 	if prepared.DeliveryToken == "" || strings.TrimSpace(prepared.Text) == "" {
-		return
+		return false
 	}
 	speakCtx, cancel := context.WithTimeout(ctx, realtimeToolCallTimeout)
 	defer cancel()
-	err := speaker(speakCtx, prepared.Text)
+	clipPlayed, err := speaker(speakCtx, prepared.Text, allowFallbackClip)
 	runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 	if err != nil {
-		log.Printf("[voice-notification] standalone TTS fallback failed: %v", err)
+		if clipPlayed {
+			log.Printf("[voice-notification] standalone TTS unavailable, played prerecorded clip; notification stays pending: %v", err)
+		} else {
+			log.Printf("[voice-notification] standalone TTS fallback failed: %v", err)
+		}
 	}
+	return clipPlayed
 }
 
 func realtimePlaybackOutputFormat(cfg agent.Config) agent.AudioFormat {
@@ -875,7 +1014,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 	session, err := registry.Open(connectCtx, providerName, realtimevoice.ProviderConfig{Endpoint: cfg.VoiceModel.Endpoint, BaseURL: cfg.VoiceModel.BaseURL, AgentID: cfg.VoiceModel.AgentID, UpstreamProvider: cfg.VoiceModel.UpstreamProvider, WorkspaceID: cfg.VoiceModel.WorkspaceID, Region: cfg.VoiceModel.Region, AuthMode: cfg.VoiceModel.AuthMode, ProjectID: cfg.VoiceModel.ProjectID, Location: cfg.VoiceModel.Location, RealtimeProtocol: cfg.VoiceModel.RealtimeProtocol}, sessionConfig, realtimevoice.DeviceMediaConfig{Input: realtimeVoiceDeviceFormat(cfg), Output: realtimeVoiceDeviceFormat(cfg)})
 	connectCancel()
 	if err != nil {
-		return fmt.Errorf("connect realtime voice model: %w", err)
+		return markRealtimeProviderFailure(fmt.Errorf("connect realtime voice model: %w", err))
 	}
 	defer session.Close()
 	info := session.Info()
@@ -890,7 +1029,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 	canReplayContext := contextReplayer != nil
 	if supportsText && canReplayContext {
 		if err := replayRealtimeContext(ctx, contextReplayer, userContext); err != nil {
-			return fmt.Errorf("restore realtime user context: %w", err)
+			return markRealtimeProviderFailure(fmt.Errorf("restore realtime user context: %w", err))
 		}
 	}
 	log.Printf("[realtime] Session ready: id=%s input_rate=%d output_rate=%d text_input=%t", info.ID, info.InputSampleRate, info.OutputSampleRate, supportsText)
@@ -1002,7 +1141,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 		}
 		stopClientTurnCommitTimer()
 		if err := turnCommitter.Commit(ctx); err != nil {
-			return fmt.Errorf("commit realtime input turn: %w", err)
+			return markRealtimeProviderFailure(fmt.Errorf("commit realtime input turn: %w", err))
 		}
 		clientTurnEndpoint.Reset()
 		return nil
@@ -1084,10 +1223,10 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			return fmt.Errorf("persist task update in realtime context: %w", err)
 		}
 		if err := textSession.SendText(ctx, message); err != nil {
-			return fmt.Errorf("inject background task update: %w", err)
+			return markRealtimeProviderFailure(fmt.Errorf("inject background task update: %w", err))
 		}
 		if err := textSession.CreateResponse(ctx); err != nil {
-			return fmt.Errorf("respond to background task update: %w", err)
+			return markRealtimeProviderFailure(fmt.Errorf("respond to background task update: %w", err))
 		}
 		pendingTaskUpdates = nil
 		taskUpdatesReady = false
@@ -1104,11 +1243,11 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 		}
 		if err := textSession.SendText(ctx, realtimeVoiceNotificationPrompt(prepared.Text)); err != nil {
 			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
-			return fmt.Errorf("inject realtime voice notification: %w", err)
+			return markRealtimeProviderFailure(fmt.Errorf("inject realtime voice notification: %w", err))
 		}
 		if err := textSession.CreateResponse(ctx); err != nil {
 			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
-			return fmt.Errorf("respond to realtime voice notification: %w", err)
+			return markRealtimeProviderFailure(fmt.Errorf("respond to realtime voice notification: %w", err))
 		}
 		activeNotificationToken = prepared.DeliveryToken
 		activeNotificationResponseID = ""
@@ -1157,7 +1296,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				continue
 			}
 			if err != nil {
-				return err
+				return markRealtimeProviderFailure(err)
 			}
 		case err := <-readErrs:
 			if err != nil {
@@ -1210,7 +1349,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				return fmt.Errorf("realtime provider %s cannot send tool results", providerName)
 			}
 			if err := toolResultSender.SendToolResult(ctx, call.CallID, result.output); err != nil {
-				return fmt.Errorf("send realtime tool result: %w", err)
+				return markRealtimeProviderFailure(fmt.Errorf("send realtime tool result: %w", err))
 			}
 			if activeNotificationToken == "" && !suppressedNotificationResponsePending && !hasSuppressedNotificationResponse(suppressedNotificationResponseIDs, call.ResponseID) {
 				if err := appendRealtimeToolExecution(userContext, call, result.output); err != nil {
@@ -1223,7 +1362,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			if info.Capabilities.ExplicitToolContinuation && toolTracker.complete(call.ResponseID) {
 				turnState.responseRequested()
 				if err := textSession.CreateResponse(ctx); err != nil {
-					return fmt.Errorf("continue realtime response after tool call: %w", err)
+					return markRealtimeProviderFailure(fmt.Errorf("continue realtime response after tool call: %w", err))
 				}
 			}
 		case pcm, ok := <-chunks:
@@ -1234,7 +1373,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				return nil
 			}
 			if err := session.SendAudio(ctx, pcm); err != nil {
-				return err
+				return markRealtimeProviderFailure(err)
 			}
 			if admissionTurnEndpoint != nil && shouldTrackRealtimeAdmissionSpeech(&turnState, realtimeChatPending(chatBridge, queuedChat)) {
 				now := time.Now()
@@ -1353,7 +1492,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			activeChat = nil
 		case event, ok := <-sessionEvents:
 			if !ok {
-				if err := realtimeSessionTerminationError(sessionErrors); err != nil {
+				if err := realtimeSessionEventClosureError(sessionErrors); err != nil {
 					return err
 				}
 				return nil
@@ -1387,7 +1526,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 					interruption := playback.responseInterruption(outputFormat)
 					interruption.ServerDetected = providerName == realtimevoice.ProviderQwen
 					if err := interruptRealtimeResponse(ctx, turnState.responseActive, responseInterrupter, interruption); err != nil {
-						return fmt.Errorf("interrupt realtime provider response: %w", err)
+						return markRealtimeProviderFailure(fmt.Errorf("interrupt realtime provider response: %w", err))
 					}
 				}
 				// Clear the queued response immediately, then reopen the speaker
@@ -1560,7 +1699,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 							continue
 						}
 						if err := textSession.CreateResponse(ctx); err != nil {
-							return fmt.Errorf("continue realtime response after tool call: %w", err)
+							return markRealtimeProviderFailure(fmt.Errorf("continue realtime response after tool call: %w", err))
 						}
 						continue
 					}
@@ -1656,7 +1795,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				}
 			case realtimevoice.EventError:
 				if event.Error != nil {
-					return event.Error
+					return markRealtimeProviderFailure(event.Error)
 				}
 			}
 		}
@@ -1677,6 +1816,14 @@ func failActiveRealtimeChat(command *realtimeChatCommand, err error) {
 	}
 	sendRealtimeChatEvent(*command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: message})
 	close(command.events)
+}
+
+func realtimeSessionEventClosureError(errs <-chan error) error {
+	err := realtimeSessionTerminationError(errs)
+	if err == nil {
+		return nil
+	}
+	return markRealtimeProviderFailure(err)
 }
 
 func realtimeSessionTerminationError(errs <-chan error) error {
