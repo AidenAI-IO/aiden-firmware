@@ -141,6 +141,43 @@ func firstMessageOfType(messages []Message, messageType string) (Message, bool) 
 	return Message{}, false
 }
 
+func TestChatResultPollingPreservesReasoningReset(t *testing.T) {
+	const requestID = "reasoning-reset"
+	pending := &chatPendingResult{}
+	for _, event := range []RunEvent{
+		{Type: runEventReasoningDelta, ReasoningContent: "stale thought"},
+		{Type: runEventReasoningReset},
+		{Type: runEventReasoningDelta, ReasoningContent: "replacement thought"},
+	} {
+		pending.messages = append(pending.messages, pollingMessageFromReasoningEvent(event, "episode-1", requestID))
+	}
+	server := &Server{pendingResults: map[string]*chatPendingResult{requestID: pending}}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+	rec := httptest.NewRecorder()
+	server.handleChatResult(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("poll status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var response ChatResultResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode poll response: %v", err)
+	}
+	wantTypes := []string{"assistant_reasoning_delta", "assistant_reasoning_reset", "assistant_reasoning_delta"}
+	if len(response.Messages) != len(wantTypes) {
+		t.Fatalf("poll messages = %#v, want %d reasoning events", response.Messages, len(wantTypes))
+	}
+	for index, wantType := range wantTypes {
+		if response.Messages[index].Type != wantType {
+			t.Fatalf("poll message %d type = %q, want %q", index, response.Messages[index].Type, wantType)
+		}
+	}
+	if response.Messages[1].ReasoningContent != "" {
+		t.Fatalf("reset reasoning content = %q, want empty reset marker", response.Messages[1].ReasoningContent)
+	}
+}
+
 func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
