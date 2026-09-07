@@ -36,12 +36,24 @@ deadline; microphone traffic, input transcript refinements, usage reports, and
 stale response events do not. Foreground tools retain their separate 30-second
 execution timeout. An idle conversation with no pending turn is not timed out.
 Timeouts fail the pending text request and close the realtime session, including
-its playback and foreground tool context. Explicit cancellation of an active
-text request also closes the session rather than just clearing chat ownership:
-a provider may not support interruption, and a successful cancel write does not
-acknowledge response completion. The next request opens a fresh session and
-restores conversation history. Background tasks have their own lifecycle and
-are not canceled by closing the foreground session.
+its playback and foreground tool context. Explicit cancellation uses the
+provider's ResponseInterrupter when available, stops playback and foreground
+tools, and retains admission ownership until the terminal acknowledgement.
+Late output cannot renew the cancellation deadline. Unsupported interruption,
+a failed write, or a missing acknowledgement closes the session; the next
+request then reconnects and restores history. Successful cancellation keeps
+supported provider sessions connected. Background tasks have their own
+lifecycle and are not canceled by canceling a foreground response.
+
+Gemini interrupts through clientContent with turnComplete=false, leaving the
+server waiting for input rather than requesting another answer. This follows
+Google's ClientContent interruption semantics without switching off automatic
+VAD (manual activityStart requires that switch). Gemini's interrupted followed
+by turnComplete is normalized to a canceled terminal response; the daemon
+retains the interrupted response's terminal ownership even when it has no ID,
+without consuming the new user's pending input. See the [official protocol](https://github.com/googleapis/googleapis/blob/64aa30b277168edd20efee0c9ceb4ca01248931d/google/ai/generativelanguage/v1beta/generative_service.proto#L1589).
+The empty-content cancel payload is covered by a local WebSocket protocol test;
+its behavior against the deployed Gemini service still requires live validation.
 
 Chat admission logs include the incoming and active request IDs, response ID,
 occupancy duration, and each admission guard. Response completion, cancellation,

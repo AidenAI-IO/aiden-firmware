@@ -24,6 +24,7 @@ type busyTestSession struct {
 	created     chan struct{}
 	closed      chan struct{}
 	toolResults chan struct{}
+	interrupted chan struct{}
 	blockCreate bool
 }
 
@@ -50,7 +51,17 @@ func (s *busyTestSession) CreateResponse(ctx context.Context) error {
 }
 func (s *busyTestSession) Close() error { close(s.closed); return nil }
 
-type busyTestProvider struct{ session *busyTestSession }
+type busyInterruptSession struct {
+	*busyTestSession
+	interruptErr error
+}
+
+func (s *busyInterruptSession) Interrupt(context.Context, realtimevoice.ResponseInterruption) error {
+	s.interrupted <- struct{}{}
+	return s.interruptErr
+}
+
+type busyTestProvider struct{ session realtimevoice.Session }
 
 func (p busyTestProvider) Open(context.Context, realtimevoice.SessionConfig) (realtimevoice.Session, error) {
 	return p.session, nil
@@ -119,11 +130,20 @@ func startBusyTestSession(t *testing.T, timeout time.Duration, bridges ...*realt
 }
 
 func startBusyTestSessionWithBlockedCreate(t *testing.T, timeout time.Duration, blockCreate bool, bridges ...*realtimeChatBridge) (*busyTestSession, *realtimeChatBridge, <-chan error) {
+	return startBusyTestSessionConfigured(t, timeout, blockCreate, nil, bridges...)
+}
+
+func startBusyTestSessionConfigured(t *testing.T, timeout time.Duration, blockCreate bool, interruptErr *error, bridges ...*realtimeChatBridge) (*busyTestSession, *realtimeChatBridge, <-chan error) {
 	t.Helper()
 	s := &busyTestSession{events: make(chan realtimevoice.Event, 32), created: make(chan struct{}, 32), closed: make(chan struct{}), toolResults: make(chan struct{}, 32)}
 	s.blockCreate = blockCreate
+	s.interrupted = make(chan struct{}, 8)
+	var raw realtimevoice.Session = s
+	if interruptErr != nil {
+		raw = &busyInterruptSession{s, *interruptErr}
+	}
 	registry := realtimevoice.NewProviderRegistry()
-	registry.Register("gemini", func(realtimevoice.ProviderConfig) realtimevoice.Provider { return busyTestProvider{s} })
+	registry.Register("gemini", func(realtimevoice.ProviderConfig) realtimevoice.Provider { return busyTestProvider{raw} })
 	cfg := agent.Config{ConfigDir: t.TempDir(), VoiceModel: agent.VoiceModelConfig{Provider: "gemini"},
 		Audio: agent.AudioConfig{Backend: "audio_service", Socket: busyTestAudio(t), SampleRate: 16000, Channels: 1, BitWidth: 16}}
 	bridge := newRealtimeChatBridge()
@@ -366,5 +386,148 @@ func TestRealtimeBusyUnansweredVoiceTurnTimesOut(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("pending voice turn permanently blocks text admission")
+	}
+}
+
+func TestRealtimeBusyGeminiInterruptionTerminalReleasesChat(t *testing.T) {
+	s, bridge, done := startBusyTestSession(t, time.Second)
+	events := busyTestRequest(t, s, bridge, done, "interrupted")
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseStarted}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventInterruption, At: "assistant"}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseCancelled, Status: "cancelled"}
+	requireBusyEvent(t, events, agent.RealtimeChatEventDone)
+	next := busyTestRequest(t, s, bridge, done, "after-interruption")
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, Status: "completed"}
+	requireBusyEvent(t, next, agent.RealtimeChatEventDone)
+}
+
+func TestRealtimeTurnStateInterruptedAnonymousTerminalPreservesNewInput(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("")
+	state.responseInterrupted()
+	if state.canInjectResponse() {
+		t.Fatal("interrupted response admitted another request before terminal acknowledgement")
+	}
+	state.userTranscriptObserved()
+	if !state.responseFinished("") {
+		t.Fatal("Gemini turn_complete was rejected after interrupted")
+	}
+	if !state.inputTurnPending {
+		t.Fatal("old terminal consumed the interrupting user's new input")
+	}
+	if !state.responseStarted("") || !state.responseFinished("") || !state.canInjectResponse() {
+		t.Fatal("new turn did not finish cleanly")
+	}
+	if state.responseFinished("") {
+		t.Fatal("duplicate terminal was accepted")
+	}
+}
+
+func TestRealtimeBusySupportedCancelWaitsForAckAndKeepsSession(t *testing.T) {
+	var interruptErr error
+	s, bridge, done := startBusyTestSessionConfigured(t, time.Second, false, &interruptErr)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events, err := bridge.Handle(ctx, agent.RealtimeChatRequest{RequestID: "cancel", Message: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.created:
+	case err := <-done:
+		t.Fatal(err)
+	case <-time.After(time.Second):
+		t.Fatal("no request")
+	}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseStarted, ResponseID: "old"}
+	cancel()
+	select {
+	case <-s.interrupted:
+	case <-time.After(time.Second):
+		t.Fatal("provider interrupt not called")
+	}
+	for range events {
+	}
+	probe, err := bridge.Handle(t.Context(), agent.RealtimeChatRequest{RequestID: "before-ack", Message: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireBusyEvent(t, probe, agent.RealtimeChatEventError)
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventInterruption, ResponseID: "old"}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseCancelled, ResponseID: "old", Status: "cancelled"}
+	// Observe processing via a subsequent queued event, not a timing sleep.
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventTranscriptDelta, Role: "assistant", ResponseID: "old", Text: "late"}
+	deadline := time.After(time.Second)
+	for {
+		reply, err := bridge.Handle(t.Context(), agent.RealtimeChatRequest{RequestID: "after-ack", Message: "hello"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-s.created:
+			s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, Status: "completed"}
+			requireBusyEvent(t, reply, agent.RealtimeChatEventDone)
+			select {
+			case <-s.closed:
+				t.Fatal("supported cancellation closed session")
+			default:
+			}
+			return
+		case e := <-reply:
+			if e.Type != agent.RealtimeChatEventError || e.Error != "realtime response is busy" {
+				t.Fatalf("unexpected event=%+v", e)
+			}
+		case <-deadline:
+			t.Fatal("terminal acknowledgement did not release admission")
+		}
+	}
+}
+
+func TestRealtimeBusyCancelFailureClosesSession(t *testing.T) {
+	failure := errors.New("interrupt write failed")
+	s, bridge, done := startBusyTestSessionConfigured(t, time.Second, false, &failure)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bridge.Handle(ctx, agent.RealtimeChatRequest{RequestID: "cancel-failure", Message: "hello"})
+	select {
+	case <-s.created:
+	case <-time.After(time.Second):
+		t.Fatal("no request")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, failure) {
+			t.Fatalf("exit=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed cancel kept session")
+	}
+}
+
+func TestRealtimeBusyCancelMissingAckTimesOut(t *testing.T) {
+	var interruptErr error
+	s, bridge, done := startBusyTestSessionConfigured(t, 100*time.Millisecond, false, &interruptErr)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bridge.Handle(ctx, agent.RealtimeChatRequest{RequestID: "no-ack", Message: "hello"})
+	select {
+	case <-s.created:
+	case <-time.After(time.Second):
+		t.Fatal("no request")
+	}
+	cancel()
+	select {
+	case <-s.interrupted:
+	case <-time.After(time.Second):
+		t.Fatal("no cancel")
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "no progress") {
+			t.Fatalf("exit=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing acknowledgement never timed out")
 	}
 }

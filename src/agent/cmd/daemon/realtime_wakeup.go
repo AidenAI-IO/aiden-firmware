@@ -1014,6 +1014,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	firstAudioChunk := true
 	var activeChat *realtimeChatCommand
 	var queuedChat *realtimeChatCommand
+	cancelPending := false
 	defer func() {
 		failActiveRealtimeChat(activeChat, returnErr)
 		failActiveRealtimeChat(queuedChat, returnErr)
@@ -1029,7 +1030,20 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	turnState := realtimeTurnState{}
 	watchdog := realtimeResponseWatchdog{timeout: idleTimeout}
 	defer watchdog.stop()
-	foregroundTools := 0
+	type foregroundTool struct {
+		responseID string
+		cancel     context.CancelFunc
+	}
+	foregroundTools := make(map[string]foregroundTool)
+	cancelForegroundTools := func(responseID string) {
+		for id, tool := range foregroundTools {
+			if responseID == "" || tool.responseID == responseID {
+				tool.cancel()
+				delete(foregroundTools, id)
+			}
+		}
+	}
+	defer cancelForegroundTools("")
 	requestResponse := func() {
 		turnState.responseRequested()
 		watchdog.progress()
@@ -1157,13 +1171,13 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	// close Done before the final buffered transcript or response event is read.
 	sessionEvents, realtimeReengagement := relayRealtimeSessionEvents(ctx, session.Events())
 	for {
-		watchdog.setBusy(activeChat != nil || turnState.responseActive || foregroundTools > 0 ||
+		watchdog.setBusy(cancelPending || activeChat != nil || turnState.responseActive || turnState.responseTerminalPending || len(foregroundTools) > 0 ||
 			(turnState.inputTurnPending && !turnState.inputSpeechActive))
 		select {
 		case <-watchdog.deadline:
 			log.Printf("[realtime] Response timeout: active_request_id=%s response_id=%s occupied_ms=%d idle_ms=%d active_chat=%t response_active=%t input_pending=%t tools=%d",
 				realtimeChatRequestID(activeChat), turnState.responseID, watchdog.age().Milliseconds(), time.Since(watchdog.lastProgress).Milliseconds(),
-				activeChat != nil, turnState.responseActive, turnState.inputTurnPending, foregroundTools)
+				activeChat != nil, turnState.responseActive, turnState.inputTurnPending, len(foregroundTools))
 			return fmt.Errorf("realtime response timed out: no progress for %s; session closed", idleTimeout)
 		case <-ctx.Done():
 			return nil
@@ -1224,9 +1238,14 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			}
 		case result := <-toolResults:
 			call := result.call
-			if foregroundTools > 0 {
-				foregroundTools--
+			tool, pending := foregroundTools[call.CallID]
+			if !pending {
+				// A canceled tool may race its result into the channel. Do not
+				// send it to the provider or renew the next response's deadline.
+				continue
 			}
+			delete(foregroundTools, call.CallID)
+			tool.cancel()
 			if !canSendToolResult {
 				return fmt.Errorf("realtime provider %s cannot send tool results", providerName)
 			}
@@ -1349,9 +1368,9 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				notificationDraining: notificationDrainDone != nil,
 				standbyPending:       sleep.pending(),
 			}).admission()
-			log.Printf("[realtime] Chat admission: request_id=%s active_request_id=%s response_id=%s occupied_ms=%d active_chat=%t queued_chat=%t response_active=%t can_inject=%t input_speech=%t input_pending=%t notification=%t draining=%t standby=%t admission=%d",
+			log.Printf("[realtime] Chat admission: request_id=%s active_request_id=%s response_id=%s occupied_ms=%d active_chat=%t queued_chat=%t response_active=%t terminal_pending=%t can_inject=%t input_speech=%t input_pending=%t notification=%t draining=%t standby=%t admission=%d",
 				command.request.RequestID, realtimeChatRequestID(activeChat), turnState.responseID, watchdog.age().Milliseconds(),
-				activeChat != nil, queuedChat != nil, turnState.responseActive, turnState.canInjectResponse(),
+				activeChat != nil, queuedChat != nil, turnState.responseActive, turnState.responseTerminalPending, turnState.canInjectResponse(),
 				turnState.inputSpeechActive, turnState.inputTurnPending, activeNotificationToken != "", notificationDrainDone != nil, sleep.pending(), admission)
 			if admission == realtimeChatRejectBusy {
 				log.Printf("[realtime] Chat rejected busy: request_id=%s active_request_id=%s", command.request.RequestID, realtimeChatRequestID(activeChat))
@@ -1374,17 +1393,35 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			close(queuedChat.events)
 			queuedChat = nil
 		case <-chatCommandDone(activeChat):
-			// Explicit cancellation ends this conversation, including tools and
-			// playback. Clearing only activeChat leaves Gemini's response in flight;
-			// even a successful cancel write is not a terminal acknowledgement.
-			log.Printf("[realtime] Chat canceled: request_id=%s response_id=%s; closing session", realtimeChatRequestID(activeChat), turnState.responseID)
-			return fmt.Errorf("realtime request canceled: %w", context.Canceled)
+			if !canInterrupt {
+				return fmt.Errorf("realtime provider %s cannot cancel response; session closed: %w", providerName, context.Canceled)
+			}
+			if err := responseInterrupter.Interrupt(ctx, playback.responseInterruption(outputFormat)); err != nil {
+				return fmt.Errorf("cancel realtime response; session closed: %w", err)
+			}
+			if err := playback.interrupt(playbackAudio, outputFormat); err != nil {
+				return fmt.Errorf("stop canceled realtime playback: %w", err)
+			}
+			log.Printf("[realtime] Chat canceled: request_id=%s response_id=%s; awaiting terminal acknowledgement", realtimeChatRequestID(activeChat), turnState.responseID)
+			cancelPending = true
+			cancelForegroundTools(turnState.responseID)
+			turnState.responseInterrupted()
+			turnState.responseTerminalPending = true
+			watchdog.progress()
+			close(activeChat.events)
+			activeChat = nil
 		case event, ok := <-sessionEvents:
 			if !ok {
 				if err := realtimeSessionTerminationError(sessionErrors); err != nil {
 					return err
 				}
 				return nil
+			}
+			// Late output must neither resurrect a canceled request nor keep its
+			// acknowledgement deadline alive. Input events remain observable.
+			if cancelPending && (event.Kind == realtimevoice.EventResponseStarted || event.Kind == realtimevoice.EventAudio || event.Kind == realtimevoice.EventToolCall ||
+				((event.Kind == realtimevoice.EventTranscriptDelta || event.Kind == realtimevoice.EventTranscriptFinal) && event.Role == "assistant")) {
+				continue
 			}
 			switch event.Kind {
 			case realtimevoice.EventReady:
@@ -1549,15 +1586,16 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 					continue
 				}
 				log.Printf("[realtime] Tool call: %s", event.Name)
-				foregroundTools++
+				toolCtx, cancelTool := context.WithCancel(ctx)
+				foregroundTools[event.CallID] = foregroundTool{responseID: event.ResponseID, cancel: cancelTool}
 				watchdog.progress()
 				if info.Capabilities.ExplicitToolContinuation {
 					toolTracker.start(event.ResponseID)
 				}
 				if activeNotificationToken != "" || suppressedNotificationResponsePending || hasSuppressedNotificationResponse(suppressedNotificationResponseIDs, event.ResponseID) {
-					startRealtimeSuppressedToolCall(ctx, event, toolResults)
+					startRealtimeSuppressedToolCall(toolCtx, event, toolResults)
 				} else {
-					startRealtimeToolCall(ctx, toolExecutor, event, toolResults)
+					startRealtimeToolCall(toolCtx, toolExecutor, event, toolResults)
 				}
 			case realtimevoice.EventUsage:
 				realtimeResponseUsage.TotalTokens += event.Usage.TotalTokens
@@ -1568,6 +1606,12 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				if !turnState.responseFinished(event.ResponseID) {
 					log.Printf("[realtime] Ignoring stale terminal response event: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
 					continue
+				}
+				wasCanceled := cancelPending || event.Kind == realtimevoice.EventResponseCancelled
+				cancelPending = false
+				if wasCanceled {
+					cancelForegroundTools(event.ResponseID)
+					toolTracker.clear(event.ResponseID)
 				}
 				log.Printf("[realtime] Response terminal: request_id=%s response_id=%s kind=%s status=%s occupied_ms=%d",
 					realtimeChatRequestID(activeChat), event.ResponseID, event.Kind, event.Status, watchdog.age().Milliseconds())
@@ -1591,7 +1635,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 						return fmt.Errorf("finish realtime playback response: %w", err)
 					}
 				}
-				if !suppressedResponse && !notificationResponse {
+				if !suppressedResponse && !notificationResponse && !wasCanceled {
 					if hasTools, continueNow := toolTracker.done(event.ResponseID); hasTools {
 						if !continueNow {
 							continue
@@ -1606,7 +1650,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 						continue
 					}
 				}
-				if !notificationResponse && !suppressedResponse && !assistantPersisted && event.Kind != realtimevoice.EventResponseCancelled && (event.Status == "" || event.Status == "completed") {
+				if !notificationResponse && !suppressedResponse && !assistantPersisted && !wasCanceled && (event.Status == "" || event.Status == "completed") {
 					assistantText := strings.TrimSpace(responseText.String())
 					if assistantText == "" {
 						assistantText = strings.TrimSpace(responseTranscript.String())
@@ -1695,6 +1739,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				consumeRealtimeReengagement(realtimeReengagement)
 				sleep.abandon()
 				turnState.responseInterrupted()
+				cancelForegroundTools(event.ResponseID)
 				if err := playback.interrupt(playbackAudio, outputFormat); err != nil {
 					return err
 				}
@@ -1739,6 +1784,7 @@ func realtimeSessionTerminationError(errs <-chan error) error {
 
 type realtimeTurnState struct {
 	responseActive          bool
+	responseTerminalPending bool
 	responseID              string
 	responseRequestPending  bool
 	responseRequestTurn     uint64
@@ -1752,10 +1798,11 @@ type realtimeTurnState struct {
 }
 
 func (s *realtimeTurnState) canInjectResponse() bool {
-	return !s.responseActive && !s.inputSpeechActive && !s.inputTurnPending
+	return !s.responseActive && !s.responseTerminalPending && !s.inputSpeechActive && !s.inputTurnPending
 }
 
 func (s *realtimeTurnState) responseRequested() {
+	s.responseTerminalPending = false
 	s.responseRequestPending = true
 	s.responseRequestTurn = s.inputTurnSequence
 	s.anonymousResponseStale = false
@@ -1765,6 +1812,7 @@ func (s *realtimeTurnState) responseRequested() {
 }
 
 func (s *realtimeTurnState) responseRequestFailed() {
+	s.responseTerminalPending = false
 	s.responseActive = false
 	s.responseID = ""
 	s.responseRequestPending = false
@@ -1840,6 +1888,7 @@ func (s *realtimeTurnState) responseStarted(responseID string) bool {
 		staleRequest = false
 	}
 	s.responseRequestPending = false
+	s.responseTerminalPending = false
 	if staleRequest {
 		s.retireResponseID(responseID)
 		s.anonymousResponseStale = responseID == ""
@@ -1888,7 +1937,7 @@ func (s *realtimeTurnState) responseFinished(responseID string) bool {
 	if s.isRetiredResponseID(responseID) {
 		return false
 	}
-	if responseID == "" && !s.responseActive && s.responseID == "" && s.inputTurnPending {
+	if responseID == "" && !s.responseActive && !s.responseTerminalPending && s.responseID == "" && s.inputTurnPending {
 		// Gemini can complete an input turn without emitting a separate
 		// response.created event when no model output was produced.
 		s.inputTurnPending = false
@@ -1897,7 +1946,7 @@ func (s *realtimeTurnState) responseFinished(responseID string) bool {
 	// An interrupted response may still deliver its terminal event. Keep that
 	// event eligible for the old response cleanup until another response is
 	// requested, which retires the old ID above.
-	if !s.responseActive && s.responseID == "" {
+	if !s.responseActive && !s.responseTerminalPending && s.responseID == "" {
 		return false
 	}
 	if s.responseID != "" && responseID != "" && responseID != s.responseID {
@@ -1906,11 +1955,13 @@ func (s *realtimeTurnState) responseFinished(responseID string) bool {
 	s.retireResponseID(s.responseID)
 	s.retireResponseID(responseID)
 	s.responseActive = false
+	s.responseTerminalPending = false
 	s.responseID = ""
 	return true
 }
 
 func (s *realtimeTurnState) responseInterrupted() {
+	s.responseTerminalPending = s.responseTerminalPending || s.responseActive || s.responseID != ""
 	s.responseActive = false
 }
 

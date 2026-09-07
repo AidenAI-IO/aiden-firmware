@@ -293,13 +293,14 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 
 type geminiSession struct {
 	*jsonWebSocketTransport
-	info           SessionInfo
-	inputRate      int
-	infoMu         sync.RWMutex
-	responseMu     sync.Mutex
-	responseActive bool
-	toolMu         sync.Mutex
-	toolNames      map[string]string
+	info                SessionInfo
+	inputRate           int
+	infoMu              sync.RWMutex
+	responseMu          sync.Mutex
+	responseActive      bool
+	responseInterrupted bool
+	toolMu              sync.Mutex
+	toolNames           map[string]string
 	// userTranscript accumulates inputTranscription deltas for the current user
 	// turn. Gemini Live never marks an input transcript as finished, so the turn
 	// boundary is the only place a final transcript can be emitted.
@@ -375,6 +376,14 @@ func (s *geminiSession) SendText(ctx context.Context, text string) error {
 }
 func (s *geminiSession) CreateResponse(ctx context.Context) error {
 	return s.writeJSON(ctx, map[string]any{"clientContent": map[string]any{"turnComplete": true}})
+}
+
+// ClientContent interrupts current generation; turnComplete=false asks the
+// server to wait for further input instead of generating a new answer. Unlike
+// activityStart, this does not require disabling automatic activity detection.
+// Completion is acknowledged asynchronously by interrupted -> turnComplete.
+func (s *geminiSession) Interrupt(ctx context.Context, _ ResponseInterruption) error {
+	return s.writeJSON(ctx, map[string]any{"clientContent": map[string]any{"turnComplete": false}})
 }
 
 func (s *geminiSession) ReplayContext(ctx context.Context, items []ContextItem) error {
@@ -502,6 +511,7 @@ func (s *geminiSession) translate(body []byte) []Event {
 			events = append(events, Event{Kind: EventInterruption, At: "assistant"})
 			s.responseMu.Lock()
 			s.responseActive = false
+			s.responseInterrupted = true
 			s.responseMu.Unlock()
 			active = false
 		}
@@ -530,6 +540,7 @@ func (s *geminiSession) translate(body []byte) []Event {
 			events = append(events, Event{Kind: EventResponseStarted})
 			s.responseMu.Lock()
 			s.responseActive = true
+			s.responseInterrupted = false
 			s.responseMu.Unlock()
 		}
 		if content.OutputTranscription != nil && content.OutputTranscription.Text != "" {
@@ -564,9 +575,14 @@ func (s *geminiSession) translate(body []byte) []Event {
 				events = append(events, Event{Kind: EventUsage, Usage: Usage{InputTokens: envelope.UsageMetadata.PromptTokenCount, OutputTokens: envelope.UsageMetadata.ResponseTokenCount, TotalTokens: envelope.UsageMetadata.TotalTokenCount}})
 				usageEmitted = true
 			}
-			events = append(events, Event{Kind: EventResponseDone, Status: "completed"})
 			s.responseMu.Lock()
+			if s.responseInterrupted {
+				events = append(events, Event{Kind: EventResponseCancelled, Status: "cancelled"})
+			} else {
+				events = append(events, Event{Kind: EventResponseDone, Status: "completed"})
+			}
 			s.responseActive = false
+			s.responseInterrupted = false
 			s.responseMu.Unlock()
 		}
 	}
@@ -578,6 +594,7 @@ func (s *geminiSession) translate(body []byte) []Event {
 			}
 			events = append(events, Event{Kind: EventResponseStarted})
 			s.responseActive = true
+			s.responseInterrupted = false
 		}
 		s.responseMu.Unlock()
 		for _, call := range envelope.ToolCall.FunctionCalls {
@@ -686,4 +703,5 @@ func pcmRate(mime string) int {
 
 var _ Provider = GeminiProvider{}
 var _ TextSession = (*geminiSession)(nil)
+var _ ResponseInterrupter = (*geminiSession)(nil)
 var _ ContextReplayer = (*geminiSession)(nil)

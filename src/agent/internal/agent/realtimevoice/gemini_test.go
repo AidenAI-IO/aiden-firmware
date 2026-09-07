@@ -407,3 +407,85 @@ func TestGeminiGoAwayReportsRotationNotFailure(t *testing.T) {
 		t.Fatalf("error should keep the announced budget, got %v", err)
 	}
 }
+
+func TestGeminiInterruptedTurnCompleteIsCancelled(t *testing.T) {
+	for _, sameFrame := range []bool{false, true} {
+		s := &geminiSession{toolNames: map[string]string{}}
+		s.translate([]byte(`{"serverContent":{"modelTurn":{"parts":[{"text":"answer"}]}}}`))
+		var events []Event
+		if sameFrame {
+			events = s.translate([]byte(`{"serverContent":{"interrupted":true,"turnComplete":true}}`))
+		} else {
+			s.translate([]byte(`{"serverContent":{"interrupted":true}}`))
+			events = s.translate([]byte(`{"serverContent":{"turnComplete":true}}`))
+		}
+		last := events[len(events)-1]
+		if last.Kind != EventResponseCancelled || last.Status != "cancelled" {
+			t.Fatalf("sameFrame=%t: terminal=%+v", sameFrame, last)
+		}
+		s.translate([]byte(`{"serverContent":{"modelTurn":{"parts":[{"text":"next"}]}}}`))
+		events = s.translate([]byte(`{"serverContent":{"turnComplete":true}}`))
+		if events[len(events)-1].Kind != EventResponseDone {
+			t.Fatal("cancellation leaked into next turn")
+		}
+	}
+}
+
+func TestGeminiInterruptSendsClientContentWithoutStartingNewTurn(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var setup map[string]any
+		if conn.ReadJSON(&setup) != nil {
+			return
+		}
+		conn.WriteJSON(map[string]any{"setupComplete": map[string]any{}})
+		var message map[string]any
+		if conn.ReadJSON(&message) != nil {
+			return
+		}
+		received <- message
+		conn.WriteJSON(map[string]any{"serverContent": map[string]any{"interrupted": true}})
+		conn.WriteJSON(map[string]any{"serverContent": map[string]any{"turnComplete": true}})
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	session, err := (GeminiProvider{Endpoint: server.URL}).Open(ctx, SessionConfig{APIKey: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if err := session.(ResponseInterrupter).Interrupt(ctx, ResponseInterruption{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-received:
+		data, _ := json.Marshal(message)
+		if string(data) != `{"clientContent":{"turnComplete":false}}` {
+			t.Fatalf("interrupt wire payload=%s", data)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	for _, want := range []EventKind{EventInterruption, EventResponseCancelled} {
+		select {
+		case event := <-session.Events():
+			if event.Kind != want {
+				t.Fatalf("event=%+v want=%s", event, want)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}
