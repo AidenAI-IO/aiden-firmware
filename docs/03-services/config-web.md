@@ -69,7 +69,7 @@ separate from `[stt].language`, which only configures speech recognition.
 | --- | --- |
 | Ordinary settings: locale/prompts, iteration and context limits, screenshot retention, telemetry, log retention, notifications, Live Activity, quick-capture TTL | Published online for subsequent tasks/operations; shared managers keep their identity |
 | Components: input mode, selected models/provider credentials, STT/TTS/realtime voice, audio/VAD, HID clients, capture backend, search, quick-capture GPIO, storage policies | Drain affected work, prepare replacements, and switch components without restarting Agent; HTTP and Phone Bridge remain alive |
-| `frame_service.keep_streamon` | Restart only `frame_service`, check its exit status, then queue the Agent snapshot; capture is briefly unavailable |
+| `frame_service.keep_streamon` | Restart only `frame_service`, wait for its listening socket, then queue the Agent snapshot; capture is briefly unavailable |
 
 Existing exceptions remain: Android/non-Android USB pointer descriptor changes
 and `hid.keyboard_layout` need a device reboot. Other device-type changes can

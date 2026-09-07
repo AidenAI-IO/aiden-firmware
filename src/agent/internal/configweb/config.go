@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"aiden-agent/internal/agent"
 )
 
 func (s *Server) runAgentCLI(timeout time.Duration, input []byte, args ...string) commandResult {
@@ -328,7 +331,30 @@ func (s *Server) restartFrameService() error {
 			return fmt.Errorf("frame service restart: %w", err)
 		}
 	}
-	return nil
+	cfg, err := agent.LoadRuntimeConfig(s.options.AgentConfigPath)
+	if err != nil {
+		return fmt.Errorf("read frame service config: %w", err)
+	}
+	return waitForFrameService(ctx, cfg.HID.FrameSocketOrDefault())
+}
+
+func waitForFrameService(ctx context.Context, socket string) error {
+	// The init script launches a watchdog before the HDMI service starts.
+	// TC358743 EDID negotiation alone takes several seconds.
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		conn, err := (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext(ctx, "unix", socket)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("frame service not ready: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func stringSlice(value any) []string {

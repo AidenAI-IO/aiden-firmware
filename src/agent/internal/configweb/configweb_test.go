@@ -1,11 +1,14 @@
 package configweb
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -878,6 +881,20 @@ func TestRunRejectsRetiredWiFiIfaceFlag(t *testing.T) {
 
 func TestFrameConfigRestartsOnlyFrameServiceAndRetriesFailures(t *testing.T) {
 	options := testOptions(t)
+	socketDir, err := os.MkdirTemp("", "frame-ready-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(socketDir)
+	socket := filepath.Join(socketDir, "f.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := os.WriteFile(options.AgentConfigPath, []byte("[hid]\nframe_socket = "+strconv.Quote(socket)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "restart")
 	fakeAgent := filepath.Join(dir, "agent")
@@ -929,5 +946,36 @@ func TestFrameConfigRestartsOnlyFrameServiceAndRetriesFailures(t *testing.T) {
 	}
 	if server.agentRestartPending() {
 		t.Fatal("Agent restart was scheduled")
+	}
+}
+
+func TestFrameServiceReadinessWaitsForListener(t *testing.T) {
+	dir, err := os.MkdirTemp("", "frame-start-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "f.sock")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- waitForFrameService(ctx, socket) }()
+	select {
+	case err := <-done:
+		t.Fatalf("returned before listener: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	canceled, stop := context.WithCancel(context.Background())
+	stop()
+	if err := waitForFrameService(canceled, filepath.Join(dir, "missing.sock")); err == nil {
+		t.Fatal("missing service reported ready")
 	}
 }
