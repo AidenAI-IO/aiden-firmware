@@ -996,8 +996,10 @@ Debian 生产迁移未完成。
 7. Debian BSP 明确继承 `aiden-rk628.config`，避免切断旧 userspace 后丢失
    RK628D/TC358743 内核能力；OTA CLI 默认配置路径也切换为
    `/userdata/debian/ota/config.json`。
-8. GitHub Actions 构建和 GitHub Release 自动发布暂不纳入本轮范围，现有 workflow
-   保持不变；这不改变本地固件生产路径只支持 Debian 的决定。
+8. GitHub Actions 构建由 `.github/workflows/debian-build.yml` 承担：手动
+   `workflow_dispatch` 触发，在自托管 runner 上执行 `debian_build.sh`，产物以
+   workflow artifacts 形式上传。Buildroot 的 `build*.yml` 保持不变，GitHub
+   Release 自动发布仍不在范围内。
 9. 在 rebase 后代码基线之上完成全量本地固件构建，Stage 2、BSP、rootfs 导入和最终
    镜像审计全部通过，并生成版本为 `local-vqe-uds-20260901` 的签名 manifest；
    `update.img` SHA-256 为 `e8971c7053f789f0e64a31c9f9f27df9322fbeb900684316c32a9cbc61871ae6`。
