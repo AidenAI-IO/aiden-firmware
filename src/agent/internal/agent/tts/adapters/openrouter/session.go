@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"aiden-agent/internal/agent/tts"
 )
@@ -39,9 +40,11 @@ func (s *session) WriteText(text string) error {
 
 	s.textBuffer.WriteString(text)
 
-	// Find sentence boundary and synthesize only up to it, retaining remainder
-	if idx := lastSentenceBoundary(s.textBuffer.String()); idx >= 0 {
-		return s.synthesizeUpTo(idx + 1) // +1 to include the boundary char
+	// Find sentence boundary and synthesize only up to it, retaining remainder.
+	bufferedText := s.textBuffer.String()
+	if idx := lastSentenceBoundary(bufferedText); idx >= 0 {
+		_, boundarySize := utf8.DecodeRuneInString(bufferedText[idx:])
+		return s.synthesizeUpTo(idx + boundarySize)
 	}
 	return nil
 }
@@ -194,15 +197,17 @@ func containsSentenceBoundary(text string) bool {
 	return false
 }
 
-// lastSentenceBoundary returns the index of the last sentence boundary char in text, or -1 if none.
+// lastSentenceBoundary returns the byte index of the last sentence boundary
+// rune in text, or -1 if none.
 func lastSentenceBoundary(text string) int {
-	for i := len(text) - 1; i >= 0; i-- {
-		switch rune(text[i]) {
+	last := -1
+	for i, r := range text {
+		switch r {
 		case '.', '!', '?', '\n', '。', '！', '？', '；':
-			return i
+			last = i
 		}
 	}
-	return -1
+	return last
 }
 
 type speechRequest struct {
