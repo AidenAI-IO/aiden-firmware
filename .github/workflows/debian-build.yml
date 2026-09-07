@@ -1,0 +1,364 @@
+name: Debian Build (manual / self-hosted)
+
+# Manual Debian armhf firmware build.
+#
+# The Buildroot workflows (build*.yml) are untouched. This one drives
+# ./debian_build.sh end to end -- Stage 2 applications, Stage 3 rootfs/BSP,
+# A/B factory images, a locally signed OTA manifest and the final audit -- and
+# publishes output/debian/image as workflow artifacts. It deliberately does not
+# create a tag or a GitHub Release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Self-hosted runner label to build on'
+        type: choice
+        default: aiden-hosted-01
+        options:
+          - aiden-hosted-01
+          - aiden-hosted-02
+      rk_jobs:
+        description: 'Requested parallel build jobs (capped at the runner CPU count)'
+        type: string
+        default: '24'
+      ota_channel:
+        description: 'OTA manifest channel (default: debian-stable on main, debian-dev-<branch> elsewhere)'
+        type: string
+        default: ''
+      ota_base_url:
+        description: 'Optional http(s) base URL embedded in the manifest asset locations'
+        type: string
+        default: ''
+      retention_days:
+        description: 'Artifact retention in days'
+        type: string
+        default: '14'
+      dry_run:
+        description: 'Preflight only: check the runner, secrets and toolchain, then stop before the firmware build'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # The Debian build owns the whole runner workspace and the Docker daemon on
+  # it. Queue dispatches instead of letting two builds share the tree.
+  group: debian-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Every runner this job can land on is self-hosted, so the repo-branch guard
+    # applies unconditionally: never execute pull request code on one.
+    # scripts/test_github_actions_self_hosted_safety.sh enforces that a job with
+    # a dynamic runs-on carries this expression. The empty-runner arm keeps the
+    # guard correct if a trigger without an inputs context (push, schedule) is
+    # ever added, since inputs.runner is null there.
+    if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && (inputs.runner == '' || startsWith(inputs.runner, 'aiden-hosted-')) }}
+    runs-on: ${{ inputs.runner || 'aiden-hosted-01' }}
+    timeout-minutes: 300
+
+    steps:
+    - name: Reclaim workspace ownership
+      # Stage 3 assembles images in privileged containers, so output/ is left
+      # owned by root. actions/checkout's clean phase then fails with EACCES,
+      # and Go's module cache adds read-only directories it cannot remove
+      # either. Both are cleared before checkout touches the tree.
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -z "${GITHUB_WORKSPACE:-}" ] || [ ! -d "$GITHUB_WORKSPACE" ]; then
+          exit 0
+        fi
+        owner="$(id -u):$(id -g)"
+        if command -v sudo >/dev/null 2>&1; then
+          sudo chown -R "$owner" "$GITHUB_WORKSPACE"
+        elif [ "$(id -u)" -eq 0 ]; then
+          chown -R "$owner" "$GITHUB_WORKSPACE"
+        else
+          echo "::warning::Skipping workspace ownership reclaim because sudo is unavailable and the current user is not root"
+        fi
+        for go_mod_cache in \
+          "$GITHUB_WORKSPACE/.cache" \
+          "$GITHUB_WORKSPACE/build/.cache/go-mod"; do
+          if [ -d "$go_mod_cache" ]; then
+            chmod -R u+w "$go_mod_cache" || \
+              echo "::warning::Skipping stale Go module cache unlock because chmod failed: $go_mod_cache"
+          fi
+        done
+
+    - name: Remove unusable pico-sdk submodule checkout
+      shell: bash
+      run: |
+        set -euo pipefail
+        sdk_dir="$GITHUB_WORKSPACE/pico-sdk"
+        sdk_git_dir="$GITHUB_WORKSPACE/.git/modules/pico-sdk"
+        if [ ! -e "$sdk_dir" ] && [ ! -e "$sdk_git_dir" ]; then
+          exit 0
+        fi
+
+        if [ -d "$sdk_dir" ] && git -C "$sdk_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+          exit 0
+        fi
+
+        rm -rf -- "$sdk_dir" "$sdk_git_dir"
+
+    - name: Repair stale pico-sdk submodule metadata
+      shell: bash
+      run: |
+        set -euo pipefail
+        sdk_dir="$GITHUB_WORKSPACE/pico-sdk"
+        if [ ! -d "$sdk_dir" ]; then
+          exit 0
+        fi
+
+        if git -C "$sdk_dir" ls-files -s sysdrv/tools/board/ubuntu 2>/dev/null | grep -q '^160000 '; then
+          git -C "$sdk_dir" config -f .gitmodules submodule.ubuntu.path sysdrv/tools/board/ubuntu
+          git -C "$sdk_dir" config -f .gitmodules submodule.ubuntu.url https://github.com/luckfox-eng33/pico_ubuntu.git
+        fi
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: false
+
+    - name: Fetch pico-sdk submodule
+      # debian_build.sh refuses to build unless pico-sdk is checked out at the
+      # pinned Stage 3 commit with a clean worktree, and Stage 3 makes a local
+      # --shared clone of it, so fetch full history rather than --depth=1.
+      shell: bash
+      run: |
+        set -euo pipefail
+        git submodule update --init pico-sdk
+        # The metadata repair above writes an untracked .gitmodules that the
+        # pinned SDK commit does not carry; the clean-tree check would trip on it.
+        git -C pico-sdk clean -f -- .gitmodules
+        if [ "$(git -C pico-sdk rev-parse --is-shallow-repository)" = "true" ]; then
+          git -C pico-sdk fetch --unshallow origin
+        fi
+        git -C pico-sdk rev-parse HEAD
+
+    - name: Verify Debian build script policies
+      # Static contract checks over debian_build.sh and the Stage 2/3 scripts.
+      # Seconds here, versus discovering the same drift an hour into the build.
+      shell: bash
+      run: |
+        set -euo pipefail
+        bash scripts/test_debian_stage2.sh
+        bash scripts/test_debian_stage3.sh
+        if command -v jq >/dev/null 2>&1; then
+          bash scripts/test_debian_build.sh
+        else
+          echo "::warning::Skipping scripts/test_debian_build.sh because jq is not installed on this runner"
+        fi
+
+    - name: Verify build host prerequisites
+      # The same host tools debian_build.sh requires. Checking them here also
+      # gives the dry run something to report, since it never reaches the
+      # script's own check.
+      shell: bash
+      run: |
+        set -euo pipefail
+        missing=()
+        for command in awk cmp curl date docker getconf git grep id install \
+          openssl python3 readlink sha256sum tar; do
+          command -v "$command" >/dev/null 2>&1 || missing+=("$command")
+        done
+        if [ ${#missing[@]} -gt 0 ]; then
+          echo "Missing required build host commands: ${missing[*]}" >&2
+          exit 1
+        fi
+        docker info >/dev/null 2>&1 || {
+          echo "Docker is unavailable; the runner user must be able to reach the daemon" >&2
+          exit 1
+        }
+        echo "All required build host commands are present"
+
+    - name: Report available disk space
+      shell: bash
+      run: df -h "$GITHUB_WORKSPACE" /var/lib/docker 2>/dev/null || df -h
+
+    - name: Configure Go proxy
+      run: echo "GOPROXY=https://goproxy.cn" >> "$GITHUB_ENV"
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: src/agent/go.mod
+        cache-dependency-path: src/agent/go.sum
+
+    - name: Prepare agent configuration
+      # Stage 3 installs an external agent.toml into userdata.img and never
+      # copies one out of the source tree. Validate it here so a bad secret
+      # fails in seconds instead of an hour into the image assembly step.
+      env:
+        AGENT_CONFIG_TOML: ${{ secrets.AGENT_CONFIG_TOML }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        agent_config="$RUNNER_TEMP/agent.toml"
+        if [ -n "${AGENT_CONFIG_TOML:-}" ]; then
+          printf '%s\n' "$AGENT_CONFIG_TOML" > "$agent_config"
+          echo "Using the AGENT_CONFIG_TOML repository secret"
+        else
+          cp src/agent/config/agent.toml "$agent_config"
+          echo "::warning::AGENT_CONFIG_TOML secret is unset; building with the src/agent/config/agent.toml template, which carries no provider credentials"
+        fi
+        chmod 600 "$agent_config"
+        (cd src/agent && go run ./cmd/daemon config-check --format=json --config="$agent_config")
+        echo "AGENT_CONFIG_PATH=$agent_config" >> "$GITHUB_ENV"
+
+    - name: Prepare OTA signing keys
+      env:
+        OTA_ED25519_PRIVATE_KEY: ${{ secrets.OTA_ED25519_PRIVATE_KEY }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -z "${OTA_ED25519_PRIVATE_KEY:-}" ]; then
+          echo "OTA_ED25519_PRIVATE_KEY secret is required to sign the Debian OTA manifest" >&2
+          exit 1
+        fi
+        private_key="$RUNNER_TEMP/ota_ed25519_private_key.pem"
+        public_key="$RUNNER_TEMP/ota_ed25519_public_key.pem"
+        printf '%s\n' "$OTA_ED25519_PRIVATE_KEY" > "$private_key"
+        chmod 600 "$private_key"
+        openssl pkey -in "$private_key" -pubout -out "$public_key"
+        scripts/validate_ota_pubkey.sh "$public_key"
+        echo "OTA_PRIVATE_KEY_PATH=$private_key" >> "$GITHUB_ENV"
+        echo "OTA_PUBLIC_KEY_PATH=$public_key" >> "$GITHUB_ENV"
+
+    - name: Ensure armhf binfmt registration
+      # Stage 3 runs the freshly built armhf agent on the host to validate
+      # agent.toml, so the kernel needs an arm interpreter. The rootfs builder
+      # registers one for its own chroot, but only after that point.
+      shell: bash
+      run: |
+        set -euo pipefail
+        binfmt_dir=/proc/sys/fs/binfmt_misc
+        if [ -r "$binfmt_dir/qemu-arm" ] && grep -qx enabled "$binfmt_dir/qemu-arm"; then
+          echo "qemu-arm binfmt handler is already registered"
+          exit 0
+        fi
+        docker run --privileged --rm \
+          tonistiigi/binfmt@sha256:1b804311fe87047a4c96d38b4b3ef6f62fca8cd125265917a9e3dc3c996c39e6 \
+          --install arm
+        if [ ! -r "$binfmt_dir/qemu-arm" ] || ! grep -qx enabled "$binfmt_dir/qemu-arm"; then
+          echo "qemu-arm binfmt registration failed; the host cannot execute armhf binaries" >&2
+          exit 1
+        fi
+
+    - name: Resolve build metadata
+      id: meta
+      env:
+        GITHUB_REF_NAME: ${{ github.ref_name }}
+        CHANNEL_INPUT: ${{ inputs.ota_channel }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        commit=$(git rev-parse --short=12 HEAD)
+        timestamp=$(date -u +'%Y%m%d-%H%M%S')
+        build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+        branch=$(printf '%s' "$GITHUB_REF_NAME" | sed 's#/#-#g; s#[^a-zA-Z0-9._-]#-#g')
+
+        if [ -n "${CHANNEL_INPUT:-}" ]; then
+          channel="$CHANNEL_INPUT"
+        elif [ "$GITHUB_REF_NAME" = "main" ]; then
+          channel="debian-stable"
+        else
+          channel="debian-dev-${branch}"
+        fi
+
+        {
+          echo "version=debian-${timestamp}-${commit}"
+          echo "channel=${channel}"
+          echo "build_time=${build_time}"
+          echo "artifact_name=debian-firmware-${branch}-${timestamp}-${commit}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Run Debian firmware build
+      if: ${{ !inputs.dry_run }}
+      env:
+        RK_JOBS: ${{ inputs.rk_jobs }}
+        OTA_REPO: ${{ github.repository }}
+        OTA_CHANNEL: ${{ steps.meta.outputs.channel }}
+        OTA_BUILD_VERSION: ${{ steps.meta.outputs.version }}
+        OTA_BUILD_TIME: ${{ steps.meta.outputs.build_time }}
+        OTA_BASE_URL: ${{ inputs.ota_base_url }}
+      run: ./debian_build.sh
+
+    - name: Summarize firmware output
+      if: ${{ !inputs.dry_run }}
+      shell: bash
+      env:
+        VERSION: ${{ steps.meta.outputs.version }}
+        CHANNEL: ${{ steps.meta.outputs.channel }}
+      run: |
+        set -euo pipefail
+        image_dir=output/debian/image
+        {
+          echo "## Debian firmware"
+          echo
+          echo "| Field | Value |"
+          echo "| --- | --- |"
+          echo "| Version | \`${VERSION}\` |"
+          echo "| Channel | \`${CHANNEL}\` |"
+          echo "| Commit | \`${GITHUB_SHA}\` |"
+          echo "| update.img SHA-256 | \`$(awk '{print $1}' "${image_dir}/update.img.sha256")\` |"
+          echo
+          echo "| Artifact | Size |"
+          echo "| --- | ---: |"
+          for artifact in "${image_dir}"/*.tar.gz "${image_dir}"/manifest.json; do
+            [ -f "$artifact" ] || continue
+            echo "| $(basename "$artifact") | $(du -h "$artifact" | cut -f1) |"
+          done
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload Debian firmware artifacts
+      if: ${{ !inputs.dry_run }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.meta.outputs.artifact_name }}
+        # update.img itself ships as update.img.tar.gz: uploading the raw copy
+        # too would double an already large transfer for no extra content.
+        path: |
+          output/debian/image/*.tar.gz
+          output/debian/image/manifest.json
+          output/debian/image/update.img.sha256
+        if-no-files-found: error
+        retention-days: ${{ inputs.retention_days }}
+        compression-level: 0
+
+    - name: Upload Debian build reports
+      if: ${{ always() && !inputs.dry_run }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: debian-build-reports-${{ steps.meta.outputs.artifact_name || github.run_id }}
+        path: |
+          output/debian-stage2/apps-audit/summary.txt
+          output/debian-stage3/audit-report.txt
+        if-no-files-found: ignore
+        retention-days: ${{ inputs.retention_days }}
+
+    - name: Remove build secrets from the runner
+      if: always()
+      shell: bash
+      run: |
+        rm -f \
+          "$RUNNER_TEMP/agent.toml" \
+          "$RUNNER_TEMP/ota_ed25519_private_key.pem" \
+          "$RUNNER_TEMP/ota_ed25519_public_key.pem"
+
+    - name: Leave the workspace cleanable
+      # Stage 2 fills .cache/debian-stage2/go-mod with read-only module
+      # directories. They outlive this job and would block the clean phase of
+      # the next checkout here -- including a Buildroot build sharing this
+      # workspace -- so unlock them before handing the runner back.
+      if: always()
+      shell: bash
+      run: |
+        if [ -d "$GITHUB_WORKSPACE/.cache" ]; then
+          chmod -R u+w "$GITHUB_WORKSPACE/.cache" || \
+            echo "::warning::Could not unlock $GITHUB_WORKSPACE/.cache for the next checkout"
+        fi
