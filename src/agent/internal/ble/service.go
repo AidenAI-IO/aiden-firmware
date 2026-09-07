@@ -34,9 +34,6 @@ type RuntimeStatus struct {
 	Paired                 bool   `json:"paired"`
 	ServicesResolved       bool   `json:"services_resolved"`
 	ANCSSubscribed         bool   `json:"ancs_subscribed"`
-	ANCSState              string `json:"ancs_state,omitempty"`
-	ANCSRetryAttempt       int    `json:"ancs_retry_attempt"`
-	ANCSLastError          string `json:"ancs_last_error,omitempty"`
 	LastWakeID             string `json:"last_wake_id"`
 	LastWakeReason         string `json:"last_wake_reason,omitempty"`
 	LastWakeDelivered      bool   `json:"last_wake_delivered"`

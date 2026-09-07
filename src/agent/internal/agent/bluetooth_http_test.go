@@ -21,20 +21,12 @@ import (
 func TestBluetoothHTTPStatus(t *testing.T) {
 	server := &Server{
 		bleStatusRequest: func(context.Context, string) (ble.RuntimeStatus, error) {
-			return ble.RuntimeStatus{
-				DeviceName: "Aiden-1234", BackendAvailable: true,
-				WakeSubscriber: true, ANCSState: "retry_exhausted", ANCSRetryAttempt: 5,
-				ANCSLastError: "ANCS service is not available yet",
-			}, nil
+			return ble.RuntimeStatus{DeviceName: "Aiden-1234", BackendAvailable: true}, nil
 		},
 	}
 	recorder := httptest.NewRecorder()
 	server.handleBluetoothStatus(recorder, httptest.NewRequest(http.MethodGet, "/api/bluetooth/status", nil))
-	if recorder.Code != http.StatusOK || !containsAll(recorder.Body.String(),
-		`"ok":true`, `"device_name":"Aiden-1234"`, `"wake_subscriber":true`, `"ancs_subscribed":false`,
-		`"ancs_state":"retry_exhausted"`, `"ancs_retry_attempt":5`,
-		`"ancs_last_error":"ANCS service is not available yet"`,
-	) {
+	if recorder.Code != http.StatusOK || !containsAll(recorder.Body.String(), `"ok":true`, `"device_name":"Aiden-1234"`) {
 		t.Fatalf("status code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

@@ -202,7 +202,6 @@ func (b *blueZBackend) ForgetPairing() (int, error) {
 	b.trustedDevice = ""
 	b.stateMu.Unlock()
 	b.clearANCS("Bluetooth pairing removed")
-	b.resetANCSRecovery()
 	b.service.consumer.ResetConnection("Bluetooth pairing removed")
 	b.service.status.update(func(status *RuntimeStatus) {
 		status.BondedDeviceCount = 0
@@ -302,9 +301,6 @@ func (b *blueZBackend) setConnectionEnabled(enabled bool) {
 	b.stateMu.Lock()
 	b.connectionEnabled = enabled
 	b.stateMu.Unlock()
-	if !enabled {
-		b.resetANCSRecovery()
-	}
 }
 
 func (b *blueZBackend) connectionsEnabled() bool {

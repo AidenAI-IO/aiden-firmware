@@ -52,6 +52,63 @@ func TestANCSControlPointUsesWriteRequest(t *testing.T) {
 	}
 }
 
+func TestANCSRescanRetryBudget(t *testing.T) {
+	var retry ancsRescanRetry
+	status := RuntimeStatus{Connected: true, ConnectedDevicePath: "/org/bluez/hci0/dev_phone", WakeSubscriber: true}
+	for i := 0; i < 5; i++ {
+		if !retry.due(status, true) {
+			t.Fatalf("missing ANCS services did not trigger retry %d", i+1)
+		}
+		// Repeated signals, including ServicesResolved, must not refill budget.
+		status.ServicesResolved = true
+		retry.observe(status)
+	}
+	if retry.due(status, true) {
+		t.Fatal("unchanged connected link retried beyond its budget")
+	}
+	status.Connected = false
+	if retry.due(status, true) {
+		t.Fatal("disconnected device triggered a retry")
+	}
+	status.Connected = true
+	if !retry.due(status, true) {
+		t.Fatal("reconnect did not get a new retry budget")
+	}
+	if retry.due(status, false) {
+		t.Fatal("user-disabled Bluetooth triggered a retry")
+	}
+	status.ANCSSubscribed = true
+	if retry.due(status, true) {
+		t.Fatal("successful subscription kept retrying")
+	}
+}
+
+func TestANCSLateDiscoverySucceedsWithoutWakeSubscription(t *testing.T) {
+	service := NewService(4)
+	backend := newBlueZBackend(service, "Aiden", 0)
+	device := dbus.ObjectPath("/org/bluez/hci0/dev_phone")
+	servicePath := dbus.ObjectPath(string(device) + "/ancs")
+	objects := managedObjects{device: {blueZDeviceInterface: {
+		"Connected": dbus.MakeVariant(true), "ServicesResolved": dbus.MakeVariant(true),
+	}}}
+	if err := backend.rescanANCS(objects, device); err != nil || service.Status().ANCSSubscribed {
+		t.Fatalf("missing ANCS service: err=%v status=%+v", err, service.Status())
+	}
+	objects[servicePath] = map[string]map[string]dbus.Variant{blueZGattServiceInterface: {
+		"UUID": dbus.MakeVariant(ANCSServiceUUID), "Device": dbus.MakeVariant(device),
+	}}
+	for name, uuid := range map[string]string{
+		"notification": ANCSNotificationSourceUUID, "control": ANCSControlPointUUID, "data": ANCSDataSourceUUID,
+	} {
+		objects[dbus.ObjectPath(string(servicePath)+"/"+name)] = map[string]map[string]dbus.Variant{blueZGattCharInterface: {
+			"UUID": dbus.MakeVariant(uuid), "Service": dbus.MakeVariant(servicePath), "Notifying": dbus.MakeVariant(true),
+		}}
+	}
+	if err := backend.rescanANCS(objects, device); err != nil || !service.Status().ANCSSubscribed {
+		t.Fatalf("late ANCS discovery: err=%v status=%+v", err, service.Status())
+	}
+}
+
 func TestANCSRescanDoesNotWaitForWakeSubscriber(t *testing.T) {
 	service := NewService(4)
 	service.consumer.SetControlPointWriter(func([]byte) error { return nil })
