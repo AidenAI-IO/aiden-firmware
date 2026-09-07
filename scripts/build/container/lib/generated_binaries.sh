@@ -8,7 +8,6 @@ AIDEN_GENERATED_BINARIES=(
     audio_service
     audio_service_cli
     audio_stream
-    config_web
     cpu_vad
     example_audio_capture
     example_audio_play
@@ -32,6 +31,9 @@ clean_generated_binaries() {
     for binary in "${AIDEN_GENERATED_BINARIES[@]}"; do
         rm -f "$bin_dir/$binary"
     done
+    # Config Web moved into the Go Agent binary; remove stale artifacts from
+    # workspaces produced before the migration so they cannot be packaged.
+    rm -f "$bin_dir/config_web"
 }
 
 sha256_file() {

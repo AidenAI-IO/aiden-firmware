@@ -22,7 +22,8 @@ sidebar_position: 4
 | `src/aiden_sdk.h` | C++ SDK API |
 | `src/frame_service_main.cpp` | Frame Service entry point |
 | `src/audio_service_main.cpp` | Audio Service entry point |
-| `src/config_web.cpp` | Config Web entry point |
+| `src/agent/internal/configweb/` | Go Config Web implementation (served by `agent config-web`) |
+| `src/config_web/web/` | Config Web HTML, CSS, and JavaScript assets |
 | `src/agent/cmd/daemon` | Go Agent daemon |
 | `src/agent/cmd/ota` | OTA CLI |
 | `src/agent/cmd/abctl` | A/B metadata diagnostic tool |
@@ -36,6 +37,7 @@ sidebar_position: 4
 | --- | --- |
 | `/oem/usr/bin/` | Application binary installation directory |
 | `/oem/usr/model/` | VAD models and weights updated with OEM/OTA |
+| `/oem/usr/share/aiden/config-web/` | Config Web static assets served by `agent config-web` |
 | `/userdata/agent/agent.toml` | Agent main configuration |
 | `/userdata/agent/skills/` | Agent skills directory |
 | `/userdata/agent/memory/` | Agent memory persistence directory |
@@ -45,6 +47,7 @@ sidebar_position: 4
 | `/userdata/wpa_supplicant.conf` | Wi-Fi configuration |
 | `/run/frame_service/frame_service.sock` | Frame Service socket |
 | `/run/audio_service/audio_service.sock` | Audio Service socket |
+| `/run/aiden/storage.state` | StorageManager state written by Config Web and consumed read-only by Agent |
 | `/var/log/frame_service/frame_service.log` | Frame Service log |
 | `/var/log/adb/adb-startup.log` | adb delayed startup log |
 | `/var/log/audio_service/audio_service.log` | Audio Service log |
@@ -98,9 +101,11 @@ frame_service_cli --socket /run/frame_service/frame_service.sock screenshot --ou
 audio_service_cli --socket /run/audio_service/audio_service.sock health
 audio_service_cli --socket /run/audio_service/audio_service.sock get-volume
 
-# Agent API
+# Config Web management API
+curl http://<device-ip>/api/storage/status
+
+# Agent runtime API
 curl http://<device-ip>:8080/api/tools
-curl http://<device-ip>:8080/api/storage/status
 curl http://<device-ip>:8080/api/storage/monitor/status
 curl -X POST -H 'Content-Type: application/json' -d '{"force":false,"targets":[]}' http://<device-ip>:8080/api/storage/cleanup
 

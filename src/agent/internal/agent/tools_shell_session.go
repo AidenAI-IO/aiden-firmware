@@ -30,6 +30,7 @@ type shellSession struct {
 	stdin        io.WriteCloser
 	pty          gopty.Pty
 	output       *shellRingBuffer
+	captureDone  chan struct{}
 	done         chan struct{}
 	cancel       context.CancelFunc
 	startedAt    time.Time
@@ -47,6 +48,17 @@ type shellRingBuffer struct {
 	readPos   int
 	maxBytes  int
 	truncated bool
+}
+
+// shellSessionOutputWriter lets os/exec own the output-copy lifecycle. Cmd.Wait
+// waits for writers like this one before closing the session's done channel.
+type shellSessionOutputWriter struct {
+	output *shellRingBuffer
+}
+
+func (w shellSessionOutputWriter) Write(chunk []byte) (int, error) {
+	w.output.write(chunk)
+	return len(chunk), nil
 }
 
 type shellSessionManager struct {
@@ -133,8 +145,11 @@ func (s *shellSession) wait() {
 			code := s.ptyCmd.ProcessState.ExitCode()
 			exitCode = &code
 		}
-		s.setExitState(exitErr, exitCode)
 		s.closeInput()
+		if s.captureDone != nil {
+			<-s.captureDone
+		}
+		s.setExitState(exitErr, exitCode)
 		return
 	}
 

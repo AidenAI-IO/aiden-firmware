@@ -35,12 +35,14 @@ type fakeStorageOps struct {
 	// tests to model eMMC free space changing as files move).
 	spaceFn func(path string) (int64, int64, error)
 
-	mounted      bool
-	prepares     int
-	unmounts     int
-	lazyUnmnts   int
-	formats      int
-	lastFormatFS string
+	mounted          bool
+	prepares         int
+	unmounts         int
+	lazyUnmnts       int
+	configuredDevice string
+	lastUnmountPoint string
+	formats          int
+	lastFormatFS     string
 }
 
 func (f *fakeStorageOps) CardDevice() (string, bool) {
@@ -53,6 +55,8 @@ func (f *fakeStorageOps) CardDevice() (string, bool) {
 	}
 	return dev, true
 }
+
+func (f *fakeStorageOps) setDevice(device string) { f.configuredDevice = device }
 
 func (f *fakeStorageOps) Prepare(dev, mountPoint string) error {
 	f.prepares++
@@ -74,6 +78,7 @@ func (f *fakeStorageOps) Prepare(dev, mountPoint string) error {
 
 func (f *fakeStorageOps) Unmount(mountPoint string, lazy bool) error {
 	f.unmounts++
+	f.lastUnmountPoint = mountPoint
 	if lazy {
 		f.lazyUnmnts++
 	}
@@ -145,6 +150,62 @@ func TestDeriveEffectiveMode(t *testing.T) {
 	}
 	if got := deriveEffectiveMode(true); got != StorageModeDual {
 		t.Fatalf("deriveEffectiveMode(true) = %d, want dual", got)
+	}
+}
+
+func TestStorageManagerReconfigureKeepsSingleHardwareOwner(t *testing.T) {
+	ops := &fakeStorageOps{mounted: true}
+	m := newTestStorageManager(t, ops)
+	oldMountPoint := m.cfg.MountPointOrDefault()
+	m.card = StorageCardStatus{Present: true, Mounted: true, Device: "/dev/mmcblk2p1"}
+	m.lastEffective = StorageModeDual
+	events := m.Subscribe()
+
+	newMountPoint := filepath.Join(t.TempDir(), "new-card")
+	newConfig := m.cfg
+	newConfig.MountPoint = newMountPoint
+	newConfig.Device = "mmcblk9"
+	newConfig.MinCardFreeMB = 128
+	if err := m.Reconfigure(newConfig); err != nil {
+		t.Fatal(err)
+	}
+	status := m.Status()
+	if status.MountPoint != newMountPoint || status.Card.Present || status.Card.Mounted {
+		t.Fatalf("status after reconfigure=%+v", status)
+	}
+	if ops.unmounts != 1 || ops.lastUnmountPoint != oldMountPoint {
+		t.Fatalf("unmounts=%d mount_point=%q, want old mount %q", ops.unmounts, ops.lastUnmountPoint, oldMountPoint)
+	}
+	if ops.configuredDevice != "mmcblk9" {
+		t.Fatalf("configured device=%q", ops.configuredDevice)
+	}
+	select {
+	case event := <-events:
+		if event.EffectiveMode != StorageModeEMMCOnly {
+			t.Fatalf("effective mode event=%d", event.EffectiveMode)
+		}
+	default:
+		t.Fatal("storage fallback event was not published")
+	}
+}
+
+func TestStorageManagerReconfigureKeepsOldConfigWhenUnmountFails(t *testing.T) {
+	ops := &fakeStorageOps{mounted: true, unmountErr: errors.New("busy")}
+	m := newTestStorageManager(t, ops)
+	oldMountPoint := m.cfg.MountPointOrDefault()
+	m.card = StorageCardStatus{Present: true, Mounted: true, Device: "/dev/mmcblk2p1"}
+
+	newConfig := m.cfg
+	newConfig.MountPoint = filepath.Join(t.TempDir(), "new-card")
+	newConfig.Device = "mmcblk9"
+	if err := m.Reconfigure(newConfig); err == nil {
+		t.Fatal("Reconfigure succeeded after the old mount refused to detach")
+	}
+	if got := m.Status().MountPoint; got != oldMountPoint {
+		t.Fatalf("mount point=%q, want unchanged %q", got, oldMountPoint)
+	}
+	if ops.configuredDevice != "" {
+		t.Fatalf("device changed to %q after failed unmount", ops.configuredDevice)
 	}
 }
 
@@ -1056,4 +1117,23 @@ func TestStorageManagerStateFileMirrorsStatus(t *testing.T) {
 			t.Fatalf("state file missing %q:\n%s", want, content)
 		}
 	}
+}
+
+func TestStorageStateViewReadsConfigWebMirrorWithoutStartingHardwarePoller(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "storage.state")
+	if err := os.WriteFile(statePath, []byte("SD_PRESENT=1\nSD_MOUNTED=1\nSD_DEVICE=/dev/mmcblk2p1\nSD_MOUNTPOINT=/media/card\nSD_TOTAL_BYTES=100\nSD_FREE_BYTES=40\nFORMAT_STATUS=idle\nMIGRATE_STATUS=success\nMIGRATE_MOVED_FILES=3\nMIGRATE_MOVED_BYTES=64\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	view := NewStorageStateView(StorageConfig{}, statePath, nil)
+	view.Start()
+	status := view.Status()
+	if !status.Card.Present || !status.Card.Mounted || status.MountPoint != "/media/card" || status.Migration.MovedFiles != 3 {
+		t.Fatalf("status=%+v", status)
+	}
+	roots := view.ReadRoots(StorageClassAudio)
+	if len(roots) != 2 || roots[1] != "/media/card/aiden/audio" {
+		t.Fatalf("roots=%v", roots)
+	}
+	view.Stop()
 }

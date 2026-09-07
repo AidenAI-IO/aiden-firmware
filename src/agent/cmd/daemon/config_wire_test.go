@@ -543,7 +543,7 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 	for i := 0; i < dtoType.NumField(); i++ {
 		tag := dtoType.Field(i).Tag.Get("json")
 		if tag == "" || tag == "-" {
-			t.Errorf("field %s has no json tag; the C++ side keys off these names",
+			t.Errorf("field %s has no json tag; the Config Web wire contract keys off these names",
 				dtoType.Field(i).Name)
 			continue
 		}
@@ -553,8 +553,7 @@ func TestWebConfigDTOTopLevelSectionsAreCovered(t *testing.T) {
 	sort.Strings(got)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("webConfigDTO top-level sections drifted.\n got: %v\nwant: %v\n"+
-			"If this is intentional, update this list and the E2E override fixtures in "+
-			"tests/agent_stub_main.cpp and tests/config_web_e2e_test.cpp.", got, want)
+			"If this is intentional, update this list and the Config Web contract tests.", got, want)
 	}
 }
 
