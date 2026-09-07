@@ -848,6 +848,10 @@ func runRealtimeSession(cfg agent.Config, sigChan chan os.Signal, runtime *agent
 }
 
 func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, runtime *agent.Runtime, tasks *agenttask.Manager, registry *realtimevoice.ProviderRegistry, chatBridges ...*realtimeChatBridge) (returnErr error) {
+	return runRealtimeSessionWithIdleTimeout(cfg, sigChan, runtime, tasks, registry, realtimeResponseIdleTimeout, chatBridges...)
+}
+
+func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal, runtime *agent.Runtime, tasks *agenttask.Manager, registry *realtimevoice.ProviderRegistry, idleTimeout time.Duration, chatBridges ...*realtimeChatBridge) (returnErr error) {
 	var chatBridge *realtimeChatBridge
 	if len(chatBridges) > 0 {
 		chatBridge = chatBridges[0]
@@ -1023,6 +1027,17 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 	var realtimeResponseUsage messages.Usage
 	hasRealtimeResponseUsage := false
 	turnState := realtimeTurnState{}
+	watchdog := realtimeResponseWatchdog{timeout: idleTimeout}
+	defer watchdog.stop()
+	foregroundTools := 0
+	requestResponse := func() {
+		turnState.responseRequested()
+		watchdog.progress()
+	}
+	defer func() {
+		log.Printf("[realtime] Session released: active_request_id=%s response_id=%s occupied_ms=%d error=%v",
+			realtimeChatRequestID(activeChat), turnState.responseID, watchdog.age().Milliseconds(), returnErr)
+	}()
 	voiceNotificationTicker := time.NewTicker(realtimeNotificationPoll)
 	defer voiceNotificationTicker.Stop()
 	activeNotificationToken := ""
@@ -1091,7 +1106,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 		}
 		pendingTaskUpdates = nil
 		taskUpdatesReady = false
-		turnState.responseRequested()
+		requestResponse()
 		return nil
 	}
 	tryInjectVoiceNotification := func() error {
@@ -1113,40 +1128,43 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 		activeNotificationToken = prepared.DeliveryToken
 		activeNotificationResponseID = ""
 		activeNotificationAudioWritten = false
-		turnState.responseRequested()
+		requestResponse()
 		return nil
 	}
-	startChat := func(command realtimeChatCommand) {
+	startChat := func(command realtimeChatCommand) error {
 		activeChat = &command
+		watchdog.stop()
+		log.Printf("[realtime] Chat started: request_id=%s", command.request.RequestID)
 		chatMode = ""
 		chatText.Reset()
 		chatTranscript.Reset()
 		if err := appendRealtimeUserMessage(userContext, command.request.Message); err != nil {
-			sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: err.Error()})
-			close(command.events)
-			activeChat = nil
-			return
+			return fmt.Errorf("persist realtime chat: %w", err)
 		}
 		if err := textSession.SendText(command.ctx, command.request.Message); err != nil {
-			sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: err.Error()})
-			close(command.events)
-			activeChat = nil
-			return
+			return fmt.Errorf("send realtime chat: %w", err)
 		}
-		turnState.responseRequested()
+		requestResponse()
 		if err := textSession.CreateResponse(command.ctx); err != nil {
-			turnState.responseRequestFailed()
-			sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: err.Error()})
-			close(command.events)
-			activeChat = nil
+			// The write may have partially reached the provider. Only closing
+			// the session prevents a delayed answer from owning the next chat.
+			return fmt.Errorf("create realtime chat response: %w", err)
 		}
+		return nil
 	}
 	sessionErrors := session.Errors()
 	// The event stream is the authoritative completion signal. Providers may
 	// close Done before the final buffered transcript or response event is read.
 	sessionEvents, realtimeReengagement := relayRealtimeSessionEvents(ctx, session.Events())
 	for {
+		watchdog.setBusy(activeChat != nil || turnState.responseActive || foregroundTools > 0 ||
+			(turnState.inputTurnPending && !turnState.inputSpeechActive))
 		select {
+		case <-watchdog.deadline:
+			log.Printf("[realtime] Response timeout: active_request_id=%s response_id=%s occupied_ms=%d idle_ms=%d active_chat=%t response_active=%t input_pending=%t tools=%d",
+				realtimeChatRequestID(activeChat), turnState.responseID, watchdog.age().Milliseconds(), time.Since(watchdog.lastProgress).Milliseconds(),
+				activeChat != nil, turnState.responseActive, turnState.inputTurnPending, foregroundTools)
+			return fmt.Errorf("realtime response timed out: no progress for %s; session closed", idleTimeout)
 		case <-ctx.Done():
 			return nil
 		case <-sigChan:
@@ -1206,12 +1224,16 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 			}
 		case result := <-toolResults:
 			call := result.call
+			if foregroundTools > 0 {
+				foregroundTools--
+			}
 			if !canSendToolResult {
 				return fmt.Errorf("realtime provider %s cannot send tool results", providerName)
 			}
 			if err := toolResultSender.SendToolResult(ctx, call.CallID, result.output); err != nil {
 				return fmt.Errorf("send realtime tool result: %w", err)
 			}
+			watchdog.progress()
 			if activeNotificationToken == "" && !suppressedNotificationResponsePending && !hasSuppressedNotificationResponse(suppressedNotificationResponseIDs, call.ResponseID) {
 				if err := appendRealtimeToolExecution(userContext, call, result.output); err != nil {
 					return fmt.Errorf("persist realtime tool call and result: %w", err)
@@ -1221,7 +1243,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				}
 			}
 			if info.Capabilities.ExplicitToolContinuation && toolTracker.complete(call.ResponseID) {
-				turnState.responseRequested()
+				requestResponse()
 				if err := textSession.CreateResponse(ctx); err != nil {
 					return fmt.Errorf("continue realtime response after tool call: %w", err)
 				}
@@ -1327,7 +1349,12 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				notificationDraining: notificationDrainDone != nil,
 				standbyPending:       sleep.pending(),
 			}).admission()
+			log.Printf("[realtime] Chat admission: request_id=%s active_request_id=%s response_id=%s occupied_ms=%d active_chat=%t queued_chat=%t response_active=%t can_inject=%t input_speech=%t input_pending=%t notification=%t draining=%t standby=%t admission=%d",
+				command.request.RequestID, realtimeChatRequestID(activeChat), turnState.responseID, watchdog.age().Milliseconds(),
+				activeChat != nil, queuedChat != nil, turnState.responseActive, turnState.canInjectResponse(),
+				turnState.inputSpeechActive, turnState.inputTurnPending, activeNotificationToken != "", notificationDrainDone != nil, sleep.pending(), admission)
 			if admission == realtimeChatRejectBusy {
+				log.Printf("[realtime] Chat rejected busy: request_id=%s active_request_id=%s", command.request.RequestID, realtimeChatRequestID(activeChat))
 				sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "realtime response is busy"})
 				close(command.events)
 				continue
@@ -1339,18 +1366,19 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				queuedChat = &command
 				continue
 			}
-			startChat(command)
+			if err := startChat(command); err != nil {
+				return err
+			}
 		case <-chatCommandDone(queuedChat):
 			sendRealtimeChatEvent(*queuedChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "request canceled"})
 			close(queuedChat.events)
 			queuedChat = nil
 		case <-chatCommandDone(activeChat):
-			if canInterrupt {
-				_ = interruptRealtimeResponse(ctx, turnState.responseActive, responseInterrupter, playback.responseInterruption(outputFormat))
-			}
-			sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "request canceled"})
-			close(activeChat.events)
-			activeChat = nil
+			// Explicit cancellation ends this conversation, including tools and
+			// playback. Clearing only activeChat leaves Gemini's response in flight;
+			// even a successful cancel write is not a terminal acknowledgement.
+			log.Printf("[realtime] Chat canceled: request_id=%s response_id=%s; closing session", realtimeChatRequestID(activeChat), turnState.responseID)
+			return fmt.Errorf("realtime request canceled: %w", context.Canceled)
 		case event, ok := <-sessionEvents:
 			if !ok {
 				if err := realtimeSessionTerminationError(sessionErrors); err != nil {
@@ -1421,6 +1449,9 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 						log.Printf("[realtime] Ignoring stale assistant transcript: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
 						continue
 					}
+					if event.Text != "" {
+						watchdog.progress()
+					}
 					if recordRealtimeFinalTranscript(event.Text, &responseTranscript, &chatText, &chatTranscript) && activeChat != nil {
 						chatMode = "transcript"
 						sendRealtimeChatEvent(*activeChat, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventDelta, Delta: event.Text})
@@ -1455,6 +1486,9 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				if !turnState.acceptsResponseEvent(event.ResponseID) {
 					log.Printf("[realtime] Ignoring stale assistant transcript delta: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
 					continue
+				}
+				if event.Text != "" {
+					watchdog.progress()
 				}
 				if !supportsText && (!turnState.responseActive || playback.suppressDeltas) {
 					if err := ensureImplicitRealtimeResponse(&turnState.responseActive, &assistantPersisted, &responseText, &responseTranscript, &playback, playbackAudio, outputFormat); err != nil {
@@ -1500,6 +1534,9 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 					turnState.responseOutputObserved(event.ResponseID)
 				}
 				pcm := event.PCM
+				if len(pcm) > 0 {
+					watchdog.progress()
+				}
 				if err := playback.appendItem(playbackAudio, outputFormat, event.ItemID, pcm); err != nil {
 					return err
 				}
@@ -1512,6 +1549,8 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 					continue
 				}
 				log.Printf("[realtime] Tool call: %s", event.Name)
+				foregroundTools++
+				watchdog.progress()
 				if info.Capabilities.ExplicitToolContinuation {
 					toolTracker.start(event.ResponseID)
 				}
@@ -1530,6 +1569,8 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 					log.Printf("[realtime] Ignoring stale terminal response event: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
 					continue
 				}
+				log.Printf("[realtime] Response terminal: request_id=%s response_id=%s kind=%s status=%s occupied_ms=%d",
+					realtimeChatRequestID(activeChat), event.ResponseID, event.Kind, event.Status, watchdog.age().Milliseconds())
 				if suppressedNotificationResponsePending && event.ResponseID != "" {
 					bindSuppressedRealtimeNotificationResponse(event.ResponseID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs)
 				}
@@ -1555,7 +1596,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 						if !continueNow {
 							continue
 						}
-						turnState.responseRequested()
+						requestResponse()
 						if !supportsText {
 							continue
 						}
@@ -1585,6 +1626,7 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				hasRealtimeResponseUsage = false
 				assistantPersisted = false
 				if activeChat != nil {
+					log.Printf("[realtime] Chat completed: request_id=%s occupied_ms=%d", activeChat.request.RequestID, watchdog.age().Milliseconds())
 					content := chatText.String()
 					if content == "" {
 						content = chatTranscript.String()
@@ -1596,7 +1638,9 @@ func runRealtimeSessionWithRegistry(cfg agent.Config, sigChan chan os.Signal, ru
 				if queuedChat != nil {
 					command := *queuedChat
 					queuedChat = nil
-					startChat(command)
+					if err := startChat(command); err != nil {
+						return err
+					}
 				}
 				if err := tryInjectTaskUpdates(); err != nil {
 					return err

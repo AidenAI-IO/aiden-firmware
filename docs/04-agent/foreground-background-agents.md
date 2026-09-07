@@ -30,6 +30,23 @@ becomes the first user message in that session. GPIO initialization failure does
 not disable `/api/chat` activation, which keeps the same foreground path usable
 on PC and other hosts without board GPIO.
 
+An outstanding foreground response has a 60-second no-progress timeout.
+Accepted assistant text/audio and foreground tool calls/results renew that
+deadline; microphone traffic, input transcript refinements, usage reports, and
+stale response events do not. Foreground tools retain their separate 30-second
+execution timeout. An idle conversation with no pending turn is not timed out.
+Timeouts fail the pending text request and close the realtime session, including
+its playback and foreground tool context. Explicit cancellation of an active
+text request also closes the session rather than just clearing chat ownership:
+a provider may not support interruption, and a successful cancel write does not
+acknowledge response completion. The next request opens a fresh session and
+restores conversation history. Background tasks have their own lifecycle and
+are not canceled by closing the foreground session.
+
+Chat admission logs include the incoming and active request IDs, response ID,
+occupancy duration, and each admission guard. Response completion, cancellation,
+timeout, and session release are logged separately for diagnosing busy reports.
+
 ## Foreground tools
 
 The realtime model receives this focused catalog:
