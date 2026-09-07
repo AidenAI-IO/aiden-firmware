@@ -123,6 +123,9 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: false
+        # Nothing after checkout needs the job token: pico-sdk is a public
+        # repository and the build makes no API calls.
+        persist-credentials: false
 
     - name: Fetch pico-sdk submodule
       # debian_build.sh refuses to build unless pico-sdk is checked out at the
@@ -263,6 +266,16 @@ jobs:
         branch=$(printf '%s' "$GITHUB_REF_NAME" | sed 's#/#-#g; s#[^a-zA-Z0-9._-]#-#g')
 
         if [ -n "${CHANNEL_INPUT:-}" ]; then
+          # The channel is free-form dispatch input that reaches $GITHUB_OUTPUT,
+          # the signed manifest and the device OTA config. Hold it to the same
+          # character set the derived channels use, so a newline cannot forge a
+          # second output line.
+          case "$CHANNEL_INPUT" in
+            *[!A-Za-z0-9._-]*)
+              echo "ota_channel may only contain letters, digits, '.', '_' and '-'" >&2
+              exit 1
+              ;;
+          esac
           channel="$CHANNEL_INPUT"
         elif [ "$GITHUB_REF_NAME" = "main" ]; then
           channel="debian-stable"
