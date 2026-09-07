@@ -95,7 +95,7 @@ TEST_CASE("AudioSessionManager stops draining playback sessions") {
     CHECK(manager.stop_playback(session_id) == aiden::AidenServiceStatus::SESSION_NOT_FOUND);
 }
 
-TEST_CASE("AudioSessionManager publishes draining before removing active playback") {
+TEST_CASE("AudioSessionManager publishes draining before manager operations resume") {
     aiden::AudioSessionManager manager;
 
     aiden::AudioFormat fmt;
@@ -169,17 +169,33 @@ TEST_CASE("AudioSessionManager publishes draining before removing active playbac
         return;
     }
 
-    auto start_future = std::async(std::launch::async, [&manager, &fmt]() {
-        aiden::PlaybackStartResult out;
-        return manager.start_playback(fmt, &out);
-    });
-    CHECK(start_future.wait_for(std::chrono::milliseconds(50)) ==
-          std::future_status::timeout);
+    SUBCASE("start observes the draining session") {
+        auto start_future = std::async(std::launch::async, [&manager, &fmt]() {
+            aiden::PlaybackStartResult out;
+            return manager.start_playback(fmt, &out);
+        });
+        CHECK(start_future.wait_for(std::chrono::milliseconds(50)) ==
+              std::future_status::timeout);
 
-    draining_lock.unlock();
-    REQUIRE(final_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
-    CHECK(final_future.get() == aiden::AidenServiceStatus::OK);
-    REQUIRE(start_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
-    CHECK(start_future.get() == aiden::AidenServiceStatus::SERVICE_RECOVERING);
-    CHECK(manager.stop_playback(session_id) == aiden::AidenServiceStatus::OK);
+        draining_lock.unlock();
+        REQUIRE(final_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        CHECK(final_future.get() == aiden::AidenServiceStatus::OK);
+        REQUIRE(start_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        CHECK(start_future.get() == aiden::AidenServiceStatus::SERVICE_RECOVERING);
+        CHECK(manager.stop_playback(session_id) == aiden::AidenServiceStatus::OK);
+    }
+
+    SUBCASE("stop finds the draining session") {
+        auto stop_future = std::async(std::launch::async, [&manager, session_id]() {
+            return manager.stop_playback(session_id);
+        });
+        CHECK(stop_future.wait_for(std::chrono::milliseconds(50)) ==
+              std::future_status::timeout);
+
+        draining_lock.unlock();
+        REQUIRE(final_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        CHECK(final_future.get() == aiden::AidenServiceStatus::OK);
+        REQUIRE(stop_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        CHECK(stop_future.get() == aiden::AidenServiceStatus::OK);
+    }
 }

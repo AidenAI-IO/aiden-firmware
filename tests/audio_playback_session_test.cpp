@@ -57,15 +57,17 @@ TEST_CASE("backpressure writers fail when final state is published") {
 
     const size_t writer_count = 8;
     std::atomic<size_t> ready(0);
+    std::atomic<size_t> completed(0);
     std::vector<aiden::AidenServiceStatus> statuses(
         writer_count, aiden::AidenServiceStatus::INTERNAL_ERROR);
     std::unique_lock<std::mutex> session_lock(session.mutex_);
     std::vector<std::thread> writers;
     writers.reserve(writer_count);
     for (size_t i = 0; i < writer_count; ++i) {
-        writers.push_back(std::thread([&session, &chunk, &ready, &statuses, i]() {
+        writers.push_back(std::thread([&session, &chunk, &ready, &completed, &statuses, i]() {
             ready.fetch_add(1, std::memory_order_release);
             statuses[i] = session.push_chunk(chunk, sizeof(chunk), false);
+            completed.fetch_add(1, std::memory_order_release);
         }));
     }
     while (ready.load(std::memory_order_acquire) != writer_count) {
@@ -74,15 +76,27 @@ TEST_CASE("backpressure writers fail when final state is published") {
     session_lock.unlock();
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
-    // Publish the final state under the same mutex as push_chunk(). Removing
-    // one queued chunk models playback making room for the final chunk.
+    // Make room without notifying the waiting writers, then let a real final
+    // push publish final_received_ and wake them all.
     session_lock.lock();
     CHECK(session.queue_.size() == max_queue_chunks);
-    session.queue_.pop();
-    session.queue_.push(std::vector<uint8_t>(chunk, chunk + sizeof(chunk)));
-    session.final_received_ = true;
+    while (session.queue_.size() >= max_queue_chunks / 2) session.queue_.pop();
+    aiden::AidenServiceStatus final_status = aiden::AidenServiceStatus::INTERNAL_ERROR;
+    std::thread final_writer([&session, &chunk, &final_status]() {
+        final_status = session.push_chunk(chunk, sizeof(chunk), true);
+    });
     session_lock.unlock();
-    session.cv_.notify_all();
+
+    final_writer.join();
+    CHECK(final_status == aiden::AidenServiceStatus::OK);
+
+    const auto wake_deadline = std::chrono::steady_clock::now() +
+                               std::chrono::milliseconds(100);
+    while (completed.load(std::memory_order_acquire) != writer_count &&
+           std::chrono::steady_clock::now() < wake_deadline) {
+        std::this_thread::yield();
+    }
+    CHECK(completed.load(std::memory_order_acquire) == writer_count);
 
     for (size_t i = 0; i < writers.size(); ++i) writers[i].join();
 
