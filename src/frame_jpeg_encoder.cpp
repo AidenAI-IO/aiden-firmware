@@ -227,6 +227,15 @@ private:
         attr.stVencAttr.stAttrJpege.stMPFCfg.u8LargeThumbNailNum = 0;
         attr.stVencAttr.stAttrJpege.enReceiveMode = VENC_PIC_RECEIVE_SINGLE;
 
+        // Configure explicit fixed-QP MJPEG rate control for the direct
+        // Rockit encoder path. A zero-initialized mode is invalid.
+        attr.stRcAttr.enRcMode = VENC_RC_MODE_MJPEGFIXQP;
+        attr.stRcAttr.stMjpegFixQp.u32SrcFrameRateNum = 1;
+        attr.stRcAttr.stMjpegFixQp.u32SrcFrameRateDen = 1;
+        attr.stRcAttr.stMjpegFixQp.fr32DstFrameRateNum = 1;
+        attr.stRcAttr.stMjpegFixQp.fr32DstFrameRateDen = 1;
+        attr.stRcAttr.stMjpegFixQp.u32Qfactor = static_cast<RK_U32>(quality);
+
         RK_S32 ret = RK_MPI_VENC_CreateChn(channel_, &attr);
         if (ret != RK_SUCCESS) {
             if (ret == RK_ERR_VENC_NOT_SUPPORT) {
