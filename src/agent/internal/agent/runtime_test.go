@@ -2723,11 +2723,13 @@ func TestRuntimeRunStopsLocallyWhenHardInputBudgetCannotFit(t *testing.T) {
 
 func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		summary string
-		wantErr string
+		name            string
+		summary         string
+		wantErr         string
+		chunkWriteFails bool
 	}{
 		{name: "fits", summary: "old work summarized"},
+		{name: "chunk persistence fails", summary: "old work summarized", chunkWriteFails: true},
 		{name: "summary fails", wantErr: "empty summary"},
 		{name: "summary still too large", summary: strings.Repeat("s", 16_000), wantErr: "context remains over usable input budget"},
 	} {
@@ -2747,6 +2749,13 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 			}
 			if err := contextmanager.SwitchSession(sessionFolder, manager.GetSessionID()); err != nil {
 				t.Fatal(err)
+			}
+			if tc.chunkWriteFails {
+				// A file where the chunk directory belongs makes persistence fail
+				// without preventing creation or activation of the context revision.
+				if err := os.WriteFile(filepath.Join(sessionFolder, "chunks"), []byte("blocked"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			llmModel := &scriptedModel{responses: []*llms.ContentResponse{
 				contentResponse(tc.summary), contentResponse("done after recovery"),
@@ -2772,6 +2781,10 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 			if loadErr != nil {
 				t.Fatal(loadErr)
 			}
+			index, indexErr := loadChunkIndexFromPath(filepath.Join(sessionFolder, "chunks", "index.yaml"))
+			if indexErr != nil && !tc.chunkWriteFails {
+				t.Fatal(indexErr)
+			}
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("Run() error = %v, want %q", err, tc.wantErr)
@@ -2781,6 +2794,20 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 				}
 				if llmModel.callCount != 1 || len(llmModel.tools[0]) != 0 {
 					t.Fatal("failed budget preparation should only call the summary model")
+				}
+				if len(index.Chunks) != 0 {
+					t.Fatalf("rejected budget recovery persisted %d chunks", len(index.Chunks))
+				}
+				if tc.name == "summary still too large" {
+					llmModel.responses[1] = contentResponse(tc.summary)
+					_, retryErr := runtime.Run(context.Background(), RunRequest{Input: "retry"})
+					if retryErr == nil || !strings.Contains(retryErr.Error(), tc.wantErr) {
+						t.Fatalf("retry error = %v, want budget rejection", retryErr)
+					}
+					retryIndex, err := loadChunkIndexFromPath(filepath.Join(sessionFolder, "chunks", "index.yaml"))
+					if err != nil || len(retryIndex.Chunks) != 0 {
+						t.Fatalf("rejected retry persisted chunks: count=%d error=%v", len(retryIndex.Chunks), err)
+					}
 				}
 				return
 			}
@@ -2792,6 +2819,15 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 			}
 			if runtime.contextManager == manager || loaded.GetSessionID() != runtime.contextManager.GetSessionID() {
 				t.Fatal("successful recovery did not activate the prepared revision")
+			}
+			if !tc.chunkWriteFails {
+				if len(index.Chunks) != 1 || index.Chunks[0].Summary != tc.summary || index.Chunks[0].EventCount != 1 {
+					t.Fatalf("accepted recovery chunks = %#v, want one summarized history span", index.Chunks)
+				}
+				data, readErr := os.ReadFile(filepath.Join(sessionFolder, "chunks", index.Chunks[0].File))
+				if readErr != nil || !strings.Contains(string(data), strings.Repeat("h", 14_000)) {
+					t.Fatalf("accepted chunk did not retain the original history: %v", readErr)
+				}
 			}
 			if requestTokens := estimateActivePromptTokens(runtime.contextManager, []llms.CallOption{llms.WithTools(llmModel.tools[1])}); requestTokens > toolResultUsableInputBudget(6_000, 256) {
 				t.Fatalf("recovered request still exceeds budget: %d", requestTokens)

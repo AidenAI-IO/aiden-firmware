@@ -1347,11 +1347,12 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			return nil, false, pruneErr
 		}
 		changed := pruned
+		var pendingChunk pendingSessionChunk
 		if budgetErr != nil {
 			// Deterministic pruning cannot shrink historical user/assistant text.
 			// Try the existing summary recovery before failing locally, including
 			// when provider-managed compaction disables threshold summaries.
-			compactedManager, compacted, compactErr := contextCompactor.Compact(guardCtx, activeManager, r.sessionChunkWriter())
+			compactedManager, compacted, compactErr := contextCompactor.Compact(guardCtx, activeManager, &pendingChunk)
 			if episodeRecorder != nil {
 				episodeRecorder.RecordEvent(contextCompactionEvent(
 					contextCompactor.LastCompactionStats(), compacted, compactErr, "active_turn_input_budget",
@@ -1377,6 +1378,14 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 				return nil, false, switchErr
 			}
 			r.contextManager = activeManager
+			// Rejected candidates must not become searchable history. Once the
+			// revision is active, a chunk write failure must not roll back the
+			// loop's manager; the parent transcript still retains the full span.
+			if chunkErr := pendingChunk.persist(guardCtx, r.sessionChunkWriter()); chunkErr != nil {
+				if r.logger != nil {
+					r.logger.Warn("Context budget recovery: failed to persist accepted summary chunk: %v", chunkErr)
+				}
+			}
 		}
 		return activeManager, changed, nil
 	}

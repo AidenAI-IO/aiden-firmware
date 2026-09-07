@@ -253,6 +253,10 @@ protected exchanges if necessary. If deterministic pruning is insufficient, it
 attempts a conversation summary even when provider-managed compaction is enabled.
 If the request still cannot fit, the run returns a local budget error; a failed
 hard-budget preparation does not activate its candidate session revision.
+Its summary chunk is staged in memory and only persisted after the revision is
+accepted and activated, so rejected recovery attempts do not create duplicate
+searchable history. A chunk persistence failure is logged without undoing the
+accepted revision; the full history remains in the parent transcript.
 Successful revisions preserve the original transcript on disk and reset provider
 response anchors.
 

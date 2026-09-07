@@ -26,6 +26,34 @@ type SessionChunkWriter struct {
 	extraction    MemoryExtractionConfig
 }
 
+// pendingSessionChunk stages a speculative summary's history in memory until
+// the caller has validated and activated the corresponding context revision.
+type pendingSessionChunk struct {
+	sessionID string
+	messages  []messages.Message
+	summary   string
+}
+
+func (p *pendingSessionChunk) WriteChunk(ctx context.Context, sessionID string, msgs []messages.Message, summary string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p.sessionID = sessionID
+	p.messages = make([]messages.Message, len(msgs))
+	for i, msg := range msgs {
+		p.messages[i] = msg.Clone()
+	}
+	p.summary = summary
+	return nil
+}
+
+func (p *pendingSessionChunk) persist(ctx context.Context, writer *SessionChunkWriter) error {
+	if p.sessionID == "" {
+		return nil
+	}
+	return writer.WriteChunk(ctx, p.sessionID, p.messages, p.summary)
+}
+
 // NewSessionChunkWriter creates a chunk writer for the given session folder.
 func NewSessionChunkWriter(sessionFolder string, extraction ...MemoryExtractionConfig) *SessionChunkWriter {
 	cfg := DefaultMemoryExtractionConfig()
