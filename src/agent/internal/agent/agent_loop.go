@@ -25,6 +25,8 @@ const agentLoopOutputKey = "output"
 
 var errSteerInterruptToolCancel = errors.New("steer interrupt tool cancel")
 
+type ContextBudgetGuard func(context.Context, *contextmanager.ContextManager, llms.CallOptions) (*contextmanager.ContextManager, bool, error)
+
 type iterationOutcome uint8
 
 const (
@@ -51,6 +53,7 @@ type AgentLoop struct {
 	ToolResultPolicy           ToolResultPolicy
 	ContextCompactionTrigger   int
 	ContextThresholdCompaction func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
+	ContextBudgetGuard         ContextBudgetGuard
 	ContextOverflowRecovery    func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
 	toolExecutionHookFactory   func() toolExecutionHookHandler
 	contextManager             *contextmanager.ContextManager
@@ -206,6 +209,23 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		return "", iterationRestartBudget, nil
 	}
 
+	turnOptions := append([]llms.CallOption{}, callOptions...)
+	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
+	if err := l.guardContextBudgetBeforeLLM(ctx, llmExecutor, turnOptions); err != nil {
+		return "", iterationContinue, err
+	}
+	compacted, compactErr := l.compactContextBeforeLLM(ctx, llmExecutor, turnOptions)
+	if compactErr != nil {
+		return "", iterationContinue, compactErr
+	}
+	if compacted {
+		// The summary changes the request; validate its budget again before
+		// generation instead of assuming that every summary makes it smaller.
+		if err := l.guardContextBudgetBeforeLLM(ctx, llmExecutor, turnOptions); err != nil {
+			return "", iterationContinue, err
+		}
+	}
+
 	// Problem 4: Support interrupting LLM call during generation
 	llmCtx, llmCancel := context.WithCancelCause(ctx)
 	defer llmCancel(nil)
@@ -225,17 +245,9 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			defer close(done)
 		}
 	}
-
-	turnOptions := append([]llms.CallOption{}, callOptions...)
-	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
 	if handler, ok := l.CallbacksHandler.(streamingReasoningHandler); ok && handler.StreamingReasoningEnabled() {
 		handler.ResetStreamingReasoning(ctx)
 	}
-	_, compactErr := l.compactContextBeforeLLM(ctx, llmExecutor, turnOptions)
-	if compactErr != nil {
-		return "", iterationContinue, compactErr
-	}
-
 	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
 	if err != nil {
 		l.abortStreamingResponse(ctx)
@@ -532,6 +544,30 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	l.applyLoopGuardDecision(decision)
 
 	return "", iterationContinue, nil
+}
+
+func (l *AgentLoop) guardContextBudgetBeforeLLM(ctx context.Context, llmExecutor *executor.LLMExecutor, options []llms.CallOption) error {
+	if l.ContextBudgetGuard == nil {
+		return nil
+	}
+	var resolvedOptions llms.CallOptions
+	for _, option := range options {
+		if option != nil {
+			option(&resolvedOptions)
+		}
+	}
+	newManager, changed, err := l.ContextBudgetGuard(ctx, llmExecutor.ContextManager(), resolvedOptions)
+	if err != nil {
+		return fmt.Errorf("guard context budget before model request: %w", err)
+	}
+	if changed {
+		if newManager == nil {
+			return fmt.Errorf("guard context budget before model request: context manager is nil")
+		}
+		l.contextManager = newManager
+		llmExecutor.ReplaceContextManager(newManager)
+	}
+	return nil
 }
 
 func (l *AgentLoop) compactContextBeforeLLM(ctx context.Context, llmExecutor *executor.LLMExecutor, options []llms.CallOption) (bool, error) {

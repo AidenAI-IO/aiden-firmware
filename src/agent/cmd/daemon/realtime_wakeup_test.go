@@ -231,6 +231,44 @@ func TestRealtimeFailureAnnouncementOnlyAcceptsProviderFailures(t *testing.T) {
 	}
 }
 
+func TestRealtimeTeardownPreservesWakeupDuringFailureAnnouncement(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		announcementPending bool
+		activate            bool
+		wantWakeup          bool
+	}{
+		{name: "failure announcement startup", announcementPending: true, activate: true, wantWakeup: true},
+		{name: "failure announcement without activation", announcementPending: true},
+		{name: "normal teardown clears stale activation", activate: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := make(chan struct{}, 1)
+			if tc.activate {
+				signalWakeupEvent(events)
+			}
+			drainRealtimeWakeups(events, tc.announcementPending)
+			select {
+			case <-events:
+				if !tc.wantWakeup {
+					t.Fatal("teardown retained a stale activation")
+				}
+			default:
+				if tc.wantWakeup {
+					t.Fatal("teardown lost the activation needed to cancel failure speech and reconnect")
+				}
+			}
+			// Later activations must still reach the normal event-loop path.
+			signalWakeupEvent(events)
+			select {
+			case <-events:
+			default:
+				t.Fatal("activation after teardown was lost")
+			}
+		})
+	}
+}
+
 func TestInterruptRealtimeResponseSkipsIdleResponse(t *testing.T) {
 	interrupter := &fakeRealtimeResponseInterrupter{}
 	position := realtimevoice.ResponseInterruption{ItemID: "item_1", AudioEndMS: 250}
