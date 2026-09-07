@@ -19,10 +19,13 @@ bool AudioPlaybackSession::start() {
     cfg.channels    = static_cast<int>(fmt_.channels);
     cfg.bit_width   = static_cast<int>(fmt_.bit_width);
 
-    if (!player_.init(cfg)) {
-        AIDEN_LOG_ERROR("playback", "player_init_failed", "session_id=%llu",
-                        static_cast<unsigned long long>(session_id_));
-        return false;
+    {
+        std::lock_guard<std::mutex> player_lock(player_mutex_);
+        if (!player_.init(cfg)) {
+            AIDEN_LOG_ERROR("playback", "player_init_failed", "session_id=%llu",
+                            static_cast<unsigned long long>(session_id_));
+            return false;
+        }
     }
 
     playback_thread_ = std::thread(&AudioPlaybackSession::playback_loop, this);
@@ -50,10 +53,13 @@ void AudioPlaybackSession::stop() {
 
 bool AudioPlaybackSession::set_volume(int volume) {
     if (stopped_.load()) return false;
+    std::lock_guard<std::mutex> player_lock(player_mutex_);
+    if (stopped_.load()) return false;
     return player_.set_volume(volume);
 }
 
 int AudioPlaybackSession::get_volume() const {
+    std::lock_guard<std::mutex> player_lock(player_mutex_);
     return player_.get_volume();
 }
 
@@ -99,6 +105,7 @@ void AudioPlaybackSession::playback_loop() {
             if (stopped_.load()) {
                 AIDEN_LOG_INFO("playback", "interrupted_before_drain", "session_id=%llu",
                                static_cast<unsigned long long>(session_id_));
+                std::lock_guard<std::mutex> player_lock(player_mutex_);
                 player_.stop();
                 return;
             }
@@ -122,6 +129,7 @@ void AudioPlaybackSession::playback_loop() {
             if (stopped_.load()) {
                 AIDEN_LOG_INFO("playback", "interrupted_during_final_drain", "session_id=%llu",
                                static_cast<unsigned long long>(session_id_));
+                std::lock_guard<std::mutex> player_lock(player_mutex_);
                 player_.stop();
                 return;
             }
@@ -132,6 +140,8 @@ void AudioPlaybackSession::playback_loop() {
 
         if (!chunk.empty()) {
             while (!stopped_.load()) {
+                std::lock_guard<std::mutex> player_lock(player_mutex_);
+                if (stopped_.load()) break;
                 if (player_.play(chunk.data(), static_cast<uint32_t>(chunk.size()))) {
                     last_played_chunk_bytes = chunk.size();
                     break;
@@ -147,7 +157,10 @@ void AudioPlaybackSession::playback_loop() {
     }
 
     // Tear down hardware from the same thread that called SendFrame — safe.
-    player_.stop();
+    {
+        std::lock_guard<std::mutex> player_lock(player_mutex_);
+        player_.stop();
+    }
 }
 
 }  // namespace aiden
