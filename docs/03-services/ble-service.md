@@ -148,6 +148,39 @@ it must not delay Notification Source or Data Source subscription because that
 changes the iOS/BlueZ GATT initialization order and can leave attribute reads
 without Data Source responses.
 
+On a first connection, the trusted iPhone can be connected before BlueZ exposes
+the ANCS service and all three characteristics. The service retries discovery
+and transient subscription failures with delays of 1, 2, 4, 8, and 15 seconds
+(plus D-Bus call time and up to one second of scheduler delay per retry).
+Each discovery/subscription stage has a bounded budget. Progress to a new stage
+gets a fresh budget; repeated signals in the same stage do not bypass backoff.
+Disconnect, bond removal, and backend shutdown cancel pending recovery.
+`StartNotify` returning `InProgress` remains pending. Explicit authorization,
+permission, and unsupported errors stop retrying rather than repeatedly asking
+for authorization. Recovery does not disconnect a working Wake link.
+
+The status API adds `ancs_state`, `ancs_retry_attempt` (0 for the initial
+attempt, 1–5 for retries), and `ancs_last_error`. States are `disconnected`,
+`waiting_services`, `waiting_characteristics`, `subscribing`, `subscribed`,
+`subscription_rejected`, and `retry_exhausted`. An exhausted stage stops timed
+polling, but later service discovery or confirmed active notifications can
+still recover from a BlueZ signal. State transitions are logged as `BLE ANCS` in
+`/var/log/ble_service/ble_service.log`.
+
+Deploy **both** `ble_service` and `agent` when adding these fields: the Agent
+decodes the UDS response into `RuntimeStatus` before re-encoding the HTTP reply,
+so an old Agent drops the new diagnostics. Restart `S41ble_service` and
+`S53agent` after installing the binaries under `/oem/usr/bin/`.
+
+For first-pairing acceptance, connect the affected iPhone once and remain on
+the app's Bluetooth status page. Confirm discovery/subscription reaches
+`subscribed` without manually disconnecting; then generate a real test
+notification. Also test rejecting notification authorization, disconnecting
+during recovery, and reconnecting with a saved bond. If recovery exhausts,
+export the app diagnostics before using its reconnect button, and capture the
+same window from `ble_service`, `bluetoothd`, and kernel logs. Absence of the
+Settings notification-sharing switch alone does not identify the failed stage.
+
 On Android, the companion app uses `NotificationListenerService` after the
 user grants Notification Access. It filters the Aiden app's own notifications
 and group summaries, queues added/modified/removed events locally, and posts

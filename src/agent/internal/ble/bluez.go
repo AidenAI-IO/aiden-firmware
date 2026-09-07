@@ -82,6 +82,8 @@ type blueZBackend struct {
 
 	ancsMu              sync.Mutex
 	ancs                ancsPaths
+	ancsRecoveryMu      sync.Mutex
+	ancsRetry           ancsRetryState
 	advertisementMu     sync.Mutex
 	advertising         bool
 	wakeMu              sync.Mutex
@@ -239,16 +241,26 @@ func (b *blueZBackend) run(ctx context.Context) error {
 }
 
 func (b *blueZBackend) runRescans(ctx context.Context) {
+	retries := time.NewTicker(time.Second)
+	defer retries.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-b.rescanRequests:
-			if err := b.rescanBluetoothState(); err != nil {
-				b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
-				if errors.Is(err, errPairingModeState) {
-					b.reportFatal(err)
-				}
+		case now := <-retries.C:
+			if !b.ancsRetryDue(now) {
+				continue
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if err := b.rescanBluetoothState(); err != nil {
+			b.retryANCSScanFailure(err)
+			b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
+			if errors.Is(err, errPairingModeState) {
+				b.reportFatal(err)
 			}
 		}
 	}
@@ -732,8 +744,21 @@ func (b *blueZBackend) rescanBluetoothState() error {
 }
 
 func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.ObjectPath) error {
+	// Serialize recovery with explicit disconnect/reset; signal handling remains
+	// free to deliver ANCS values while D-Bus subscription calls are in flight.
+	b.ancsRecoveryMu.Lock()
+	defer b.ancsRecoveryMu.Unlock()
 	if !b.connectionsEnabled() {
+		b.ancsRetry = ancsRetryState{}
+		b.recordANCSState("disconnected", "")
 		b.clearANCS("Bluetooth disconnected by user")
+		return nil
+	}
+	deviceProps := objects[trustedDevice][blueZDeviceInterface]
+	if !trustedDevice.IsValid() || !variantBool(deviceProps, "Connected") {
+		b.ancsRetry = ancsRetryState{}
+		b.recordANCSState("disconnected", "")
+		b.clearANCS("ANCS device disconnected")
 		return nil
 	}
 	type candidate struct {
@@ -782,23 +807,40 @@ func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.Obj
 	}
 
 	if selected == nil {
-		b.clearANCS("ANCS device disconnected")
+		reason := "ANCS service is not available yet"
+		if !variantBool(deviceProps, "ServicesResolved") {
+			reason = "Bluetooth services are not resolved yet"
+		}
+		b.clearANCS(reason)
+		if b.ancsRetry.begin(trustedDevice, "waiting_services", time.Now()) {
+			b.failANCSAttempt(reason, false)
+		}
 		return nil
 	}
 	if !selected.paths.complete() {
 		b.clearANCS("ANCS characteristics are incomplete")
+		if b.ancsRetry.begin(trustedDevice, "waiting_characteristics", time.Now()) {
+			b.failANCSAttempt("ANCS characteristics are incomplete", false)
+		}
 		return nil
 	}
 
 	b.ancsMu.Lock()
 	current := b.ancs
 	b.ancsMu.Unlock()
-	if current == selected.paths {
+	notifying := variantBool(objects[selected.paths.notificationSource][blueZGattCharInterface], "Notifying") &&
+		variantBool(objects[selected.paths.dataSource][blueZGattCharInterface], "Notifying")
+	if current == selected.paths && notifying {
+		return nil
+	}
+	if !b.ancsRetry.begin(trustedDevice, "subscribing", time.Now()) && !notifying {
 		return nil
 	}
 	b.clearANCS("ANCS connection changed")
+	b.recordANCSState("subscribing", "")
 
 	if err := b.startNotify(objects, selected.paths.notificationSource); err != nil {
+		b.failANCSAttempt("subscribe ANCS Notification Source: "+err.Error(), terminalANCSSubscribeError(err))
 		return fmt.Errorf("subscribe ANCS Notification Source: %w", err)
 	}
 	if err := b.startNotify(objects, selected.paths.dataSource); err != nil {
@@ -806,7 +848,13 @@ func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.Obj
 			b.conn.Object(BlueZBusName, selected.paths.notificationSource),
 			blueZGattCharInterface+".StopNotify",
 		).Err
+		b.failANCSAttempt("subscribe ANCS Data Source: "+err.Error(), terminalANCSSubscribeError(err))
 		return fmt.Errorf("subscribe ANCS Data Source: %w", err)
+	}
+	if !b.connectionsEnabled() {
+		b.ancsRetry = ancsRetryState{}
+		b.recordANCSState("disconnected", "")
+		return nil
 	}
 
 	b.ancsMu.Lock()
@@ -840,6 +888,8 @@ func (b *blueZBackend) rescanANCS(objects managedObjects, trustedDevice dbus.Obj
 		status.ANCSSubscribed = true
 		status.LastError = ""
 	})
+	b.recordANCSState("subscribed", "")
+	b.ancsRetry = ancsRetryState{}
 	return nil
 }
 
@@ -855,11 +905,8 @@ func (b *blueZBackend) startNotify(objects managedObjects, path dbus.ObjectPath)
 	if variantBool(properties, "Notifying") {
 		return nil
 	}
-	err := callWithTimeout(b.conn.Object(BlueZBusName, path), blueZGattCharInterface+".StartNotify").Err
-	if isDBusErrorNamed(err, "org.bluez.Error.InProgress") {
-		return nil
-	}
-	return err
+	// InProgress is still pending, not evidence of an active subscription.
+	return callWithTimeout(b.conn.Object(BlueZBusName, path), blueZGattCharInterface+".StartNotify").Err
 }
 
 func (b *blueZBackend) clearANCS(reason string) {
