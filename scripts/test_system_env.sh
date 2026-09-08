@@ -6,6 +6,7 @@ ENV_RUN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run"
 PROFILE_SNIPPET="$ROOT_DIR/overlay/etc/profile.d/aiden-env.sh"
 PYTHON_PROFILE_SNIPPET="$ROOT_DIR/overlay/etc/profile.d/aiden-python.sh"
 AGENT_INIT="$ROOT_DIR/overlay/etc/init.d/S53agent"
+WIFI_PROXY_INIT="$ROOT_DIR/overlay/etc/init.d/S51wifi_proxy"
 
 if [ ! -x "$ENV_RUN" ]; then
     echo "missing executable aiden-env-run" >&2
@@ -27,7 +28,7 @@ if grep -Eq '^[[:space:]]*(mkdir|chmod)[[:space:]]' "$PYTHON_PROFILE_SNIPPET"; t
     exit 1
 fi
 
-for script in S52frame_service S53audio_service S53agent S54ota S56config_web; do
+for script in S51wifi_proxy S52frame_service S53audio_service S53agent S54ota S56config_web S57ttyd; do
     path="$ROOT_DIR/overlay/etc/init.d/$script"
     if ! grep -q 'aiden-env-run' "$path"; then
         echo "$script must launch through aiden-env-run" >&2
@@ -78,6 +79,7 @@ if AIDEN_LOG_HELPER="$ROOT_DIR/overlay/oem/usr/lib/aiden-log.sh" \
 fi
 
 ENV_FILE="$TMP_DIR/system.env"
+PROXY_ENV_FILE="$TMP_DIR/proxy.env"
 cat > "$ENV_FILE" <<'EOF'
 AIDEN_TEST_VALUE=from-system-env
 HTTP_PROXY=http://proxy.example:18080
@@ -86,17 +88,52 @@ PIP_USER=0
 PIP_NO_CACHE_DIR=0
 PIP_DISABLE_PIP_VERSION_CHECK=0
 EOF
+cat > "$PROXY_ENV_FILE" <<'EOF'
+HTTP_PROXY=socks5h://127.0.0.1:18080
+HTTPS_PROXY=socks5h://127.0.0.1:18080
+ALL_PROXY=socks5h://127.0.0.1:18080
+NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+no_proxy=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+AIDEN_WIFI_PROXY_NO_PROXY_SET=1
+EOF
 
 output=$(
-    AIDEN_SYSTEM_ENV="$ENV_FILE" \
+    AIDEN_SYSTEM_ENV="$ENV_FILE" AIDEN_WIFI_PROXY_ENVIRONMENT="$PROXY_ENV_FILE" \
         "$TEST_ENV_RUN" sh -c 'printf "%s|%s|%s|%s|%s|%s|%s|%s" "$AIDEN_TEST_VALUE" "$HTTP_PROXY" "$NO_PROXY" "$no_proxy" "$PYTHONUSERBASE" "$PIP_USER" "$PIP_NO_CACHE_DIR" "$PIP_DISABLE_PIP_VERSION_CHECK"'
 )
 
 expected_no_proxy='localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'
 expected_python='/userdata/agent/python|1|1|1'
-if [ "$output" != "from-system-env|http://proxy.example:18080|$expected_no_proxy|$expected_no_proxy|$expected_python" ]; then
+if [ "$output" != "from-system-env|socks5h://127.0.0.1:18080|$expected_no_proxy|$expected_no_proxy|$expected_python" ]; then
     echo "aiden-env-run did not apply system env and fixed Python environment" >&2
     echo "got: $output" >&2
+    exit 1
+fi
+
+bypass_output=$(
+    AIDEN_SYSTEM_ENV="$ENV_FILE" AIDEN_WIFI_PROXY_BYPASS=1 \
+        "$TEST_ENV_RUN" sh -c 'printf "%s|%s" "$HTTP_PROXY" "$http_proxy"'
+)
+if [ "$bypass_output" != "http://proxy.example:18080|" ]; then
+    echo "aiden-env-run did not expose the configured upstream to the proxy daemon" >&2
+    echo "got: $bypass_output" >&2
+    exit 1
+fi
+
+if ! grep -q 'AIDEN_WIFI_PROXY_BYPASS=1' "$WIFI_PROXY_INIT"; then
+    echo "wifi_proxy must bypass its own local proxy endpoint" >&2
+    exit 1
+fi
+
+NO_UPSTREAM_ENV_FILE="$TMP_DIR/no-upstream.env"
+: > "$NO_UPSTREAM_ENV_FILE"
+no_upstream_output=$(
+    AIDEN_SYSTEM_ENV="$NO_UPSTREAM_ENV_FILE" AIDEN_WIFI_PROXY_ENVIRONMENT="$PROXY_ENV_FILE" \
+        "$TEST_ENV_RUN" sh -c 'printf "%s|%s" "$HTTP_PROXY" "$NO_PROXY"'
+)
+if [ "$no_upstream_output" != "socks5h://127.0.0.1:18080|$expected_no_proxy" ]; then
+    echo "aiden-env-run did not preserve the private-network bypass for the local proxy" >&2
+    echo "got: $no_upstream_output" >&2
     exit 1
 fi
 

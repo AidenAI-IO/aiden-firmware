@@ -18,6 +18,7 @@ The recommended production deployment method is to build or download a complete 
 /etc/init.d/S49ntp             # ntpd daemon
 /etc/init.d/S49usbhid          # USB HID gadget initialization
 /etc/init.d/S50ntp_watchdog    # NTP sync periodic check, triggers step when not synced
+/etc/init.d/S51wifi_proxy      # Fixed local proxy with per-Wi-Fi upstream selection
 /etc/init.d/S52frame_service   # Frame Service watchdog
 /etc/init.d/S53adb_server      # Delayed adb host server bootstrap
 /etc/init.d/S53audio_service   # Audio Service watchdog
@@ -49,6 +50,7 @@ scp build/bin/audio_service root@<device-ip>:/oem/usr/bin/
 scp build/bin/ble_service root@<device-ip>:/oem/usr/bin/
 scp build/bin/agent root@<device-ip>:/oem/usr/bin/
 scp overlay/oem/usr/bin/aiden-env-run root@<device-ip>:/oem/usr/bin/
+scp overlay/etc/init.d/S51wifi_proxy root@<device-ip>:/etc/init.d/
 ssh root@<device-ip> "mkdir -p /oem/usr/share/aiden/config-web"
 scp -r src/config_web/web/. root@<device-ip>:/oem/usr/share/aiden/config-web/
 ```
@@ -66,6 +68,7 @@ If the target device is a more bare system lacking Aiden's init scripts and conf
 
 ```bash
 scp overlay/etc/init.d/S52frame_service root@<device-ip>:/etc/init.d/
+scp overlay/etc/init.d/S51wifi_proxy root@<device-ip>:/etc/init.d/
 scp overlay/etc/init.d/S53adb_server root@<device-ip>:/etc/init.d/
 scp overlay/etc/init.d/S53audio_service root@<device-ip>:/etc/init.d/
 scp overlay/etc/init.d/S39hciinit root@<device-ip>:/etc/init.d/
@@ -93,14 +96,15 @@ Notes:
 
 - Config Web is served by `/oem/usr/bin/agent config-web`; the same binary also handles the `config`, `config-check`, and `config-meta` subcommands.
 - Config Web serves static files from `/oem/usr/share/aiden/config-web` by default. Keep these assets in sync with the deployed `agent` binary; full firmware-image builds package them automatically.
-- `S52frame_service`, `S53adb_server`, `S53audio_service`, `S53agent`, and `S56config_web` all launch the actual binaries or commands via `/oem/usr/bin/aiden-env-run` when available, so this wrapper must also be present on the device.
+- `S51wifi_proxy`, `S52frame_service`, `S53adb_server`, `S53audio_service`, `S53agent`, and `S56config_web` all launch the actual binaries or commands via `/oem/usr/bin/aiden-env-run` when available, so this wrapper must also be present on the device.
 - You can also copy binaries to `/root` or `/userdata` for temporary testing, but existing init scripts default to searching `/oem/usr/bin/`.
 - If only updating binaries, run `chmod +x /oem/usr/bin/*` once after copying.
 
 After copying, common restart commands:
 
 ```bash
-ssh root@<device-ip> "chmod +x /etc/init.d/S39hciinit /etc/init.d/S40bluetoothd /etc/init.d/S41ble_service /etc/init.d/S52frame_service /etc/init.d/S53adb_server /etc/init.d/S53audio_service /etc/init.d/S53agent /etc/init.d/S56config_web /oem/usr/bin/frame_service /oem/usr/bin/audio_service /oem/usr/bin/ble_service /oem/usr/bin/agent /oem/usr/bin/aiden-env-run"
+ssh root@<device-ip> "chmod +x /etc/init.d/S39hciinit /etc/init.d/S40bluetoothd /etc/init.d/S41ble_service /etc/init.d/S51wifi_proxy /etc/init.d/S52frame_service /etc/init.d/S53adb_server /etc/init.d/S53audio_service /etc/init.d/S53agent /etc/init.d/S56config_web /oem/usr/bin/frame_service /oem/usr/bin/audio_service /oem/usr/bin/ble_service /oem/usr/bin/agent /oem/usr/bin/aiden-env-run"
+ssh root@<device-ip> "/etc/init.d/S51wifi_proxy restart"
 ssh root@<device-ip> "/etc/init.d/S52frame_service restart"
 ssh root@<device-ip> "/etc/init.d/S53audio_service restart"
 ssh root@<device-ip> "/etc/init.d/S53agent restart"
@@ -119,19 +123,21 @@ When starting with the firmware, the main service relationships are as follows:
 6. `S49ntp` starts `ntpd` in daemon mode, using direct IP connection to NTP server (bypassing DNS startup order);
 7. `S50ntp_watchdog` periodically checks clock sync status, triggers `S49ntp step` to force sync when not synced, exits after sync;
 8. `S49usbhid` / `S50usbdevice` configures USB gadget;
-9. `S52frame_service` exclusively uses `/dev/video0` and provides screenshot/frame service;
-10. `S53adb_server` waits 3 seconds, then runs `adb start-server` once so adb-based Android capture is ready;
-11. `S53audio_service` provides audio recording/playback service;
-12. `S53agent` starts the Go Agent;
-13. `S55aiden_usb_dhcp` configures USB network DHCP / dnsmasq related capabilities;
-14. `S56config_web` provides the configuration page;
-15. `S99rtcinit` overrides the SDK default RTC script; when RTC is abnormal, only writes default time when system time is still earlier than baseline date, avoiding overwriting system time already calibrated by NTP.
-16. `S99usb0config` performs USB network interface post-configuration.
+9. `S51wifi_proxy` starts the fixed loopback proxy used by managed programs and selects an upstream for the active Wi-Fi;
+10. `S52frame_service` exclusively uses `/dev/video0` and provides screenshot/frame service;
+11. `S53adb_server` waits 3 seconds, then runs `adb start-server` once so adb-based Android capture is ready;
+12. `S53audio_service` provides audio recording/playback service;
+13. `S53agent` starts the Go Agent;
+14. `S55aiden_usb_dhcp` configures USB network DHCP / dnsmasq related capabilities;
+15. `S56config_web` provides the configuration page;
+16. `S99rtcinit` overrides the SDK default RTC script; when RTC is abnormal, only writes default time when system time is still earlier than baseline date, avoiding overwriting system time already calibrated by NTP.
+17. `S99usb0config` performs USB network interface post-configuration.
 
 ## Common Service Commands
 
 ```bash
 /etc/init.d/S52frame_service status
+/etc/init.d/S51wifi_proxy status
 /etc/init.d/S52frame_service restart
 /etc/init.d/S53adb_server status
 /etc/init.d/S53audio_service status
@@ -153,6 +159,7 @@ When starting with the firmware, the main service relationships are as follows:
 | `/etc/aiden_ble_service.conf` | BLE service binary, socket, log, device-name base, event capacity, and pairing-window duration |
 | `/userdata/agent/agent.toml` | Go Agent runtime configuration |
 | `/userdata/wpa_supplicant.conf` | Wi-Fi configuration |
+| `/userdata/system/wifi-proxies.json` | Per-SSID proxy mode and optional upstream URL |
 
 ## Log Locations
 
@@ -165,6 +172,7 @@ When starting with the firmware, the main service relationships are as follows:
 | BlueZ | `/var/log/bluetoothd/bluetoothd.log` |
 | BLE Service | `/var/log/ble_service/ble_service.log` |
 | Agent | `/userdata/agent/log/agent.log` |
+| Wi-Fi Proxy | `/var/log/wifi_proxy/wifi_proxy.log` |
 
 ## Notes
 

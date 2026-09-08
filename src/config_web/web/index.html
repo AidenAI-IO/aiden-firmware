@@ -340,6 +340,22 @@
         <label data-i18n="wifi.password">Password</label>
         <input id="wifiPasswordInput" type="password" placeholder="Open network can leave empty" data-i18n-placeholder="wifi.password_optional">
       </div>
+      <div class="field wifi-modal-field">
+        <label for="wifiProxyMode" data-i18n="wifi.proxy_mode">Proxy</label>
+        <select id="wifiProxyMode" data-action="wifi-proxy-mode">
+          <option value="system" data-i18n="wifi.proxy_system">Use system default</option>
+          <option value="direct" data-i18n="wifi.proxy_direct">Direct connection</option>
+          <option value="proxy" data-i18n="wifi.proxy_custom">Custom proxy</option>
+        </select>
+      </div>
+      <div id="wifiProxyUrlField" class="field wifi-modal-field hidden">
+        <label for="wifiProxyUrl" data-i18n="wifi.proxy_url">Proxy URL</label>
+        <input id="wifiProxyUrl" type="url" autocomplete="off" spellcheck="false" placeholder="http://user:password@proxy.example:7890" data-i18n-placeholder="wifi.proxy_url_placeholder">
+      </div>
+      <div id="wifiNoProxyField" class="field wifi-modal-field hidden">
+        <label for="wifiNoProxy" data-i18n="wifi.no_proxy">NO_PROXY</label>
+        <input id="wifiNoProxy" type="text" autocomplete="off" spellcheck="false" placeholder="localhost,127.0.0.1,.example.com" data-i18n-placeholder="wifi.no_proxy_placeholder">
+      </div>
       <div class="modal-actions">
         <button class="button ghost" data-action="close-wifi-modal" data-i18n="action.cancel">Cancel</button>
         <button id="connectWifiBtn" class="button primary" data-action="connect-selected-wifi" data-i18n="action.connect">Connect</button>

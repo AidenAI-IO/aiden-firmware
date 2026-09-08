@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/wifiproxy"
 )
 
 type fakeStorageController struct {
@@ -61,19 +62,23 @@ func testOptions(t *testing.T) Options {
 		t.Fatal(err)
 	}
 	return Options{
-		BindAddress:      "127.0.0.1",
-		Port:             8081,
-		AgentConfigPath:  filepath.Join(root, "agent.toml"),
-		WiFiConfigPath:   filepath.Join(root, "wpa_supplicant.conf"),
-		WiFiInterface:    "wlan0",
-		OTAStatePath:     filepath.Join(root, "ota-state.json"),
-		CmdlinePath:      filepath.Join(root, "cmdline"),
-		SystemEnvPath:    filepath.Join(root, "system.env"),
-		StorageStatePath: filepath.Join(root, "storage.state"),
-		WebRoot:          webRoot,
-		AgentBinary:      "/bin/true",
-		AgentHTTPBaseURL: "http://127.0.0.1:1",
-		AgentInitScript:  filepath.Join(root, "missing-init"),
+		BindAddress:               "127.0.0.1",
+		Port:                      8081,
+		AgentConfigPath:           filepath.Join(root, "agent.toml"),
+		WiFiConfigPath:            filepath.Join(root, "wpa_supplicant.conf"),
+		WiFiInterface:             "wlan0",
+		OTAStatePath:              filepath.Join(root, "ota-state.json"),
+		CmdlinePath:               filepath.Join(root, "cmdline"),
+		SystemEnvPath:             filepath.Join(root, "system.env"),
+		WiFiProxyConfigPath:       filepath.Join(root, "wifi-proxies.json"),
+		LocalProxyAddress:         wifiproxy.DefaultListenAddress,
+		LocalProxyEnvironmentPath: filepath.Join(root, "proxy-env"),
+		StorageStatePath:          filepath.Join(root, "storage.state"),
+		WebRoot:                   webRoot,
+		AgentBinary:               "/bin/true",
+		AgentHTTPBaseURL:          "http://127.0.0.1:1",
+		AgentInitScript:           filepath.Join(root, "missing-init"),
+		WiFiProxyInitScript:       "/bin/true",
 	}
 }
 
@@ -815,6 +820,71 @@ func TestSystemEnvParserAndWiFiConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestAgentCommandEnvironmentUsesStableLocalProxy(t *testing.T) {
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(key, "")
+	}
+	options := testOptions(t)
+	if err := os.WriteFile(options.SystemEnvPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := server.agentCommandEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make(map[string]string)
+	for _, item := range environment {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if values["HTTP_PROXY"] != "http://127.0.0.1:18080" || values["HTTPS_PROXY"] != "http://127.0.0.1:18080" {
+		t.Fatalf("proxy environment=%#v", values)
+	}
+	if values["NO_PROXY"] != agent.DefaultNoProxy || values["no_proxy"] != agent.DefaultNoProxy {
+		t.Fatalf("NO_PROXY=%q no_proxy=%q", values["NO_PROXY"], values["no_proxy"])
+	}
+}
+
+func TestAgentCommandEnvironmentPreservesSOCKS5LocalProxyScheme(t *testing.T) {
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(key, "")
+	}
+	options := testOptions(t)
+	if err := os.WriteFile(options.SystemEnvPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	generated := "HTTP_PROXY=socks5h://127.0.0.1:18080\nHTTPS_PROXY=socks5h://127.0.0.1:18080\nALL_PROXY=socks5h://127.0.0.1:18080\nNO_PROXY=\nno_proxy=\n"
+	if err := os.WriteFile(options.LocalProxyEnvironmentPath, []byte(generated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := server.agentCommandEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make(map[string]string)
+	for _, item := range environment {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
+		if values[key] != "socks5h://127.0.0.1:18080" {
+			t.Fatalf("%s=%q, want SOCKS5 local proxy", key, values[key])
+		}
+	}
+}
+
 func TestWiFiPublicValueUsesNetworkCollectionOnly(t *testing.T) {
 	payload := (wiFiConfig{Country: "US", Networks: []wiFiNetwork{{SSID: "demo", PSK: "secret", Priority: 1}}}).publicValue()
 	if _, exists := payload["ssid"]; exists {
@@ -825,6 +895,94 @@ func TestWiFiPublicValueUsesNetworkCollectionOnly(t *testing.T) {
 	}
 	if _, exists := payload["networks"]; !exists {
 		t.Fatalf("network collection missing: %#v", payload)
+	}
+}
+
+func TestWiFiProxyRequestValidationAndPasswordRedaction(t *testing.T) {
+	customURL := "http://alice:secret@proxy.example:7890"
+	noProxy := "localhost,.example.com"
+	request := wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &customURL, NoProxy: &noProxy}
+	if err := validateWiFiProxyRequest(request); err != nil {
+		t.Fatal(err)
+	}
+	config := wifiproxy.EmptyConfig()
+	if err := applyWiFiProxyRequest(&config, request); err != nil {
+		t.Fatal(err)
+	}
+	public := (wiFiConfig{Networks: []wiFiNetwork{{SSID: "Office"}}}).publicValue(config)
+	network := public["networks"].([]map[string]any)[0]
+	if network["proxy_mode"] != "proxy" || network["proxy_url"] != "http://alice:xxxxx@proxy.example:7890" || network["no_proxy"] != noProxy {
+		t.Fatalf("public proxy=%#v", network)
+	}
+
+	blank := ""
+	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &blank}); err != nil {
+		t.Fatalf("blank saved proxy should preserve existing value: %v", err)
+	}
+	if got := config.Networks["Office"].ProxyURL; got != customURL {
+		t.Fatalf("preserved proxy=%q, want %q", got, customURL)
+	}
+	emptyNoProxy := ""
+	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &blank, NoProxy: &emptyNoProxy}); err != nil {
+		t.Fatalf("clear NO_PROXY: %v", err)
+	}
+	if got := config.Networks["Office"].NoProxy; got != "" {
+		t.Fatalf("NO_PROXY was not cleared: %q", got)
+	}
+	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "New", ProxyMode: "proxy", ProxyURL: &blank}); err == nil {
+		t.Fatal("blank proxy URL was accepted for a new custom proxy")
+	}
+
+	invalidURL := "ftp://proxy.example:21"
+	if err := validateWiFiProxyRequest(wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &invalidURL}); err == nil {
+		t.Fatal("unsupported proxy scheme was accepted")
+	}
+	if err := validateWiFiProxyRequest(wifiConnectionRequest{SSID: "Office", ProxyMode: "unknown"}); err == nil {
+		t.Fatal("unsupported proxy mode was accepted")
+	}
+	if err := validateWiFiProxyRequest(wifiConnectionRequest{SSID: "Office", ProxyMode: "system", NoProxy: &noProxy}); err == nil {
+		t.Fatal("Wi-Fi NO_PROXY was accepted for the system-default proxy")
+	}
+	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "Office", ProxyMode: "system"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := config.Networks["Office"]; ok {
+		t.Fatalf("system-default proxy retained Wi-Fi-specific settings: %#v", config.Networks["Office"])
+	}
+}
+
+func TestWiFiForgetRemovesProxyMapping(t *testing.T) {
+	options := testOptions(t)
+	wifi := wiFiConfig{Country: "US", Networks: []wiFiNetwork{{SSID: "Office", PSK: "secret", Priority: 1}}}
+	if err := saveWiFiConfig(options.WiFiConfigPath, wifi); err != nil {
+		t.Fatal(err)
+	}
+	proxy := wifiproxy.EmptyConfig()
+	proxy.Networks["Office"] = wifiproxy.Network{Mode: wifiproxy.ModeProxy, ProxyURL: "http://proxy.example:7890"}
+	if err := wifiproxy.Save(options.WiFiProxyConfigPath, proxy); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/network/wifi/connection?ssid=Office", nil)
+	server.APIHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	savedWiFi, err := loadWiFiConfig(options.WiFiConfigPath)
+	if err != nil || len(savedWiFi.Networks) != 0 {
+		t.Fatalf("saved Wi-Fi=%#v err=%v", savedWiFi, err)
+	}
+	savedProxy, err := wifiproxy.Load(options.WiFiProxyConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := savedProxy.Networks["Office"]; exists {
+		t.Fatalf("forgotten proxy mapping remains: %#v", savedProxy)
 	}
 }
 

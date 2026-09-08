@@ -24,6 +24,9 @@ func Run(args []string) int {
 	fs.StringVar(&options.OTAStatePath, "ota-state", options.OTAStatePath, "OTA state JSON path")
 	fs.StringVar(&options.CmdlinePath, "cmdline", options.CmdlinePath, "kernel command line path")
 	fs.StringVar(&options.SystemEnvPath, "system-env", options.SystemEnvPath, "system environment file path")
+	fs.StringVar(&options.WiFiProxyConfigPath, "wifi-proxy-config", options.WiFiProxyConfigPath, "per-Wi-Fi proxy configuration path")
+	fs.StringVar(&options.LocalProxyAddress, "local-proxy-address", options.LocalProxyAddress, "fixed loopback proxy address used by managed commands")
+	fs.StringVar(&options.LocalProxyEnvironmentPath, "local-proxy-environment", options.LocalProxyEnvironmentPath, "generated local proxy environment path")
 	fs.StringVar(&options.StorageStatePath, "storage-state", options.StorageStatePath, "storage state path")
 	fs.StringVar(&options.WebRoot, "web-root", options.WebRoot, "config web static asset root")
 	if err := fs.Parse(args); err != nil {

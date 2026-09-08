@@ -25,11 +25,33 @@ if [ -r "$AIDEN_ENV_FILE" ]; then
     fi
 fi
 
+if [ "${AIDEN_WIFI_PROXY_ENABLED:-1}" != "0" ]; then
+    AIDEN_ENV_WIFI_PROXY_ENVIRONMENT="${AIDEN_WIFI_PROXY_ENVIRONMENT:-/run/wifi_proxy/proxy-env}"
+    if [ -n "${AIDEN_WIFI_PROXY_URL:-}" ]; then
+        HTTP_PROXY="$AIDEN_WIFI_PROXY_URL"
+        HTTPS_PROXY="$AIDEN_WIFI_PROXY_URL"
+        ALL_PROXY="$AIDEN_WIFI_PROXY_URL"
+    elif [ -r "$AIDEN_ENV_WIFI_PROXY_ENVIRONMENT" ]; then
+        . "$AIDEN_ENV_WIFI_PROXY_ENVIRONMENT"
+    else
+        HTTP_PROXY=http://127.0.0.1:18080
+        HTTPS_PROXY=http://127.0.0.1:18080
+        ALL_PROXY=http://127.0.0.1:18080
+    fi
+    http_proxy="$HTTP_PROXY"
+    https_proxy="$HTTPS_PROXY"
+    all_proxy="$ALL_PROXY"
+    export HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+fi
+
 if [ -n "${HTTP_PROXY:-}${http_proxy:-}${HTTPS_PROXY:-}${https_proxy:-}${ALL_PROXY:-}${all_proxy:-}" ] &&
+   [ "${AIDEN_WIFI_PROXY_NO_PROXY_SET:-0}" != "1" ] &&
    [ -z "${NO_PROXY:-}" ] && [ -z "${no_proxy:-}" ]; then
     NO_PROXY="$AIDEN_ENV_DEFAULT_NO_PROXY"
     no_proxy="$AIDEN_ENV_DEFAULT_NO_PROXY"
     export NO_PROXY no_proxy
 fi
+export NO_PROXY no_proxy 2>/dev/null || true
 
-unset AIDEN_ENV_DEFAULT_NO_PROXY AIDEN_ENV_FILE AIDEN_ENV_RESTORE_ALLEXPORT AIDEN_ENV_RESTORE_ERREXIT
+unset AIDEN_ENV_DEFAULT_NO_PROXY AIDEN_ENV_FILE AIDEN_ENV_WIFI_PROXY_ENVIRONMENT AIDEN_WIFI_PROXY_NO_PROXY_SET
+unset AIDEN_ENV_RESTORE_ALLEXPORT AIDEN_ENV_RESTORE_ERREXIT

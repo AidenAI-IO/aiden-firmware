@@ -42,6 +42,7 @@ sidebar_position: 4
 | `/userdata/agent/skills/` | Agent skills directory |
 | `/userdata/agent/memory/` | Agent memory persistence directory |
 | `/userdata/system/env` | Device-wide environment file loaded by service launchers and SSH login shells |
+| `/userdata/system/wifi-proxies.json` | Mode and optional upstream proxy URL selected per saved Wi-Fi SSID |
 | `/userdata/ota/` | Mount point for the dedicated OTA partition; configuration, state, download cache, and health marker |
 | `/oem/etc/ota_pubkey.pem` | OTA manifest Ed25519 public key |
 | `/userdata/wpa_supplicant.conf` | Wi-Fi configuration |
@@ -65,6 +66,7 @@ sidebar_position: 4
 | `overlay/etc/init.d/S20oemslot` | Slot-aware `/oem` mount script |
 | `overlay/etc/init.d/S49ntp` | ntpd daemon startup + `step` one-shot sync subcommand |
 | `overlay/etc/init.d/S50ntp_watchdog` | NTP sync periodic check, triggers `S49ntp step` when not synced |
+| `overlay/etc/init.d/S51wifi_proxy` | Fixed loopback proxy watchdog and per-SSID upstream selector |
 | `overlay/etc/init.d/S53adb_server` | Delayed one-shot `adb start-server` bootstrap |
 | `overlay/etc/init.d/S54ota` | Boot-time OTA health one-shot |
 | `overlay/etc/init.d/S99rtcinit` | RTC invalid-date calibration script replacing the SDK default |
@@ -91,6 +93,7 @@ make test
 # Service status
 /etc/init.d/S52frame_service status
 /etc/init.d/S53audio_service status
+/etc/init.d/S51wifi_proxy status
 /etc/init.d/S53agent status
 
 # Frame debugging

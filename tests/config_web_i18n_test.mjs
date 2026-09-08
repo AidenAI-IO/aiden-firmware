@@ -237,6 +237,10 @@ const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
 assert.match(indexHtml, /data-i18n="page\.title"/);
 assert.match(indexHtml, /data-i18n="action\.ready"/);
 assert.match(indexHtml, /data-i18n-placeholder="wifi\.password_optional"/);
+assert.match(indexHtml, /id="wifiProxyMode"/);
+assert.match(indexHtml, /data-i18n-placeholder="wifi\.proxy_url_placeholder"/);
+assert.match(indexHtml, /id="wifiNoProxy"/);
+assert.match(indexHtml, /data-i18n-placeholder="wifi\.no_proxy_placeholder"/);
 
 const configForm = await fs.readFile(path.join(webRoot, 'assets/js/config/config-form.js'), 'utf8');
 const wifi = await fs.readFile(path.join(webRoot, 'assets/js/config/wifi.js'), 'utf8');
@@ -250,6 +254,16 @@ const app = await fs.readFile(path.join(webRoot, 'assets/js/config/app.js'), 'ut
 assert.match(configForm, /t\('config\.save_failed',\{section:/);
 assert.match(wifi, /t\('wifi\.connected_to',\s*\{ssid\s*:/);
 assert.match(wifi, /t\('wifi\.no_networks'\)/);
+assert.match(wifi, /proxy_mode:proxyMode/);
+assert.match(wifi, /if\(proxyMode==='proxy'\)/);
+assert.match(wifi, /if\(proxyUrl\)requestBody\.proxy_url=proxyUrl/);
+assert.match(wifi, /saved\.proxy_mode==='proxy'/);
+assert.match(wifi, /proxyUrl\.value=saved&&saved\.proxy_mode==='proxy'\?saved\.proxy_url:''/);
+assert.match(wifi, /enteredProxyUrl===saved\.proxy_url\?'':enteredProxyUrl/);
+assert.match(wifi, /no_proxy:network\.no_proxy\|\|''/);
+assert.match(wifi, /saved&&saved\.proxy_mode==='proxy'\?saved\.no_proxy:''/);
+assert.match(wifi, /requestBody\.no_proxy=noProxy/);
+assert.match(wifi, /wifi\.proxy_state_/);
 assert.match(wifi, /aiden:locale-changed/);
 assert.doesNotMatch(wifi, /runtimeFunction\('localizedText'\)/);
 assert.match(providers, /t\('provider\.choose_model'\)/);
