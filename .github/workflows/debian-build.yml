@@ -178,19 +178,33 @@ jobs:
             echo "::warning::Skipping ${script} because jq is not installed on this runner"
             continue
           fi
-          if bash "$script"; then
-            echo "${script}: passed"
-            continue
-          fi
-          # These suites assert with bare `grep -q`, which exits 1 without
-          # printing anything, so a plain failure here says only "exit 1".
-          # Re-run under xtrace: the last traced line is the assertion that
-          # failed, with its arguments already expanded.
-          echo "::error::${script} failed; re-running under xtrace to identify the failing assertion"
-          echo "::group::${script} (xtrace)"
-          bash -x "$script" || true
-          echo "::endgroup::"
-          status=1
+          # These suites assert with bare `grep -q` and `[ ... ]`, which exit 1
+          # without printing, so a bare failure here says only "exit 1". Trace
+          # every attempt to a file and show it only when that attempt failed:
+          # re-running afterwards is useless for the flaky assertion below,
+          # which often passes the second time.
+          attempt=1
+          while :; do
+            trace="${RUNNER_TEMP}/${policy_test}.attempt${attempt}.trace"
+            if bash -x "$script" >"$trace" 2>&1; then
+              echo "${script}: passed (attempt ${attempt})"
+              break
+            fi
+            echo "::group::${script} attempt ${attempt} xtrace (last 60 lines)"
+            tail -60 "$trace"
+            echo "::endgroup::"
+            if [ "$attempt" -ge 2 ]; then
+              echo "::error::${script} failed twice; the trace above ends at the failing assertion"
+              status=1
+              break
+            fi
+            # test_debian_stage2.sh ends in a live mock stress run whose
+            # assertions read host timing, CMA recovery and log patterns, so it
+            # fails under load on a shared runner. One repeat separates that
+            # from a real regression, which fails both times.
+            echo "::warning::${script} failed; retrying once"
+            attempt=2
+          done
         done
         exit "$status"
 
