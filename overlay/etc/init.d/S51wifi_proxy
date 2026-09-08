@@ -19,24 +19,43 @@ read_pid() {
     [ -f "$1" ] && cat "$1" 2>/dev/null
 }
 
-pid_matches() {
+pid_starts_with() {
     pid="$1"
+    expected_program="$2"
+    expected_action="$3"
     [ -r "/proc/$pid/cmdline" ] || return 1
-    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
-    case "$cmd" in
-        *"$AGENT_BIN"*"wifi-proxy"*) return 0 ;;
+    arguments="$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null)" || return 1
+    first=
+    second=
+    third=
+    index=0
+    while IFS= read -r argument; do
+        case "$index" in
+            0) first="$argument" ;;
+            1) second="$argument" ;;
+            2) third="$argument"; break ;;
+        esac
+        index=$((index + 1))
+    done <<EOF
+$arguments
+EOF
+    if [ "$first" = "$expected_program" ] && [ "$second" = "$expected_action" ]; then
+        return 0
+    fi
+    case "$first" in
+        sh|*/sh|ash|*/ash|dash|*/dash|bash|*/bash)
+            [ "$second" = "$expected_program" ] && [ "$third" = "$expected_action" ]
+            ;;
         *) return 1 ;;
     esac
 }
 
+pid_matches() {
+    pid_starts_with "$1" "$AGENT_BIN" wifi-proxy
+}
+
 pid_matches_watchdog() {
-    pid="$1"
-    [ -r "/proc/$pid/cmdline" ] || return 1
-    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
-    case "$cmd" in
-        *"$0"*|*"S51wifi_proxy"*) return 0 ;;
-        *) return 1 ;;
-    esac
+    pid_starts_with "$1" "$0" start
 }
 
 proxy_pid() {

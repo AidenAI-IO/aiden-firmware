@@ -13,6 +13,7 @@ fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/wifi-proxy-init.XXXXXX")"
 watchdog_pid=
 proxy_pid=
 unrelated_pid=
+false_positive_pid=
 
 run_init() {
     AGENT_BIN="$fixture_dir/agent" \
@@ -30,7 +31,7 @@ run_init() {
 
 cleanup() {
     run_init stop >/dev/null 2>&1 || true
-    for pid in "$proxy_pid" "$watchdog_pid" "$unrelated_pid"; do
+    for pid in "$proxy_pid" "$watchdog_pid" "$unrelated_pid" "$false_positive_pid"; do
         [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     done
     rm -rf "$fixture_dir"
@@ -80,6 +81,11 @@ wait_for_exit() {
     ! kill -0 "$pid" 2>/dev/null
 }
 
+# A stale proxy PID can point at a process whose free-form argument contains
+# both identifying strings. It must not satisfy the exact argv-prefix check.
+sh -c 'sleep 30; :' "$fixture_dir/agent wifi-proxy is starting" &
+false_positive_pid="$!"
+printf '%s\n' "$false_positive_pid" > "$fixture_dir/proxy.pid"
 run_init start >/dev/null
 wait_for_pid_file "$fixture_dir/watchdog.pid"
 wait_for_pid_file "$fixture_dir/proxy.pid"
@@ -87,6 +93,13 @@ watchdog_pid="$(cat "$fixture_dir/watchdog.pid")"
 proxy_pid="$(cat "$fixture_dir/proxy.pid")"
 kill -0 "$watchdog_pid"
 kill -0 "$proxy_pid"
+kill -0 "$false_positive_pid" || {
+    echo "FAIL: start killed a process that only contained matching substrings" >&2
+    exit 1
+}
+kill "$false_positive_pid"
+wait "$false_positive_pid" 2>/dev/null || true
+false_positive_pid=
 
 # Simulate an unclean watchdog crash. The child proxy stays alive and its PID
 # file remains, exactly as it would after the supervisor is killed abruptly.

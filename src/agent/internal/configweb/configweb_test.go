@@ -946,7 +946,13 @@ func TestRestoreWiFiPersistenceRestoresBothSnapshots(t *testing.T) {
 	if err := os.WriteFile(wifiPath, []byte("old wifi"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(wifiPath, 0o640); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(proxyPath, []byte("old proxy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(proxyPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	wifiSnapshot, err := captureFileSnapshot(wifiPath)
@@ -963,6 +969,12 @@ func TestRestoreWiFiPersistenceRestoresBothSnapshots(t *testing.T) {
 	if err := os.WriteFile(proxyPath, []byte("new proxy"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(wifiPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(proxyPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := restoreWiFiPersistence(wifiSnapshot, proxySnapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -971,6 +983,15 @@ func TestRestoreWiFiPersistenceRestoresBothSnapshots(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(proxyPath); string(data) != "old proxy" {
 		t.Fatalf("proxy config=%q", data)
+	}
+	for path, want := range map[string]os.FileMode{wifiPath: 0o640, proxyPath: 0o644} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode=%#o, want %#o", filepath.Base(path), got, want)
+		}
 	}
 }
 
@@ -984,8 +1005,8 @@ func TestRestoreWiFiPersistenceReportsIncompleteRecoveryAndContinues(t *testing.
 	if err := os.WriteFile(proxyPath, []byte("new proxy"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	wifiSnapshot := fileSnapshot{path: filepath.Join(blockingPath, "wifi.conf"), data: []byte("old wifi"), existed: true}
-	proxySnapshot := fileSnapshot{path: proxyPath, data: []byte("old proxy"), existed: true}
+	wifiSnapshot := fileSnapshot{path: filepath.Join(blockingPath, "wifi.conf"), data: []byte("old wifi"), mode: 0o600, existed: true}
+	proxySnapshot := fileSnapshot{path: proxyPath, data: []byte("old proxy"), mode: 0o600, existed: true}
 	err := restoreWiFiPersistence(wifiSnapshot, proxySnapshot)
 	if err == nil || !strings.Contains(err.Error(), "restore Wi-Fi config") {
 		t.Fatalf("restore error=%v", err)

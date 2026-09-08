@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -182,23 +183,33 @@ func saveWiFiConfig(path string, config wiFiConfig) error {
 type fileSnapshot struct {
 	path    string
 	data    []byte
+	mode    os.FileMode
 	existed bool
 }
 
 func captureFileSnapshot(path string) (fileSnapshot, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return fileSnapshot{path: path}, nil
 	}
 	if err != nil {
 		return fileSnapshot{}, err
 	}
-	return fileSnapshot{path: path, data: data, existed: true}, nil
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return fileSnapshot{}, err
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return fileSnapshot{}, err
+	}
+	return fileSnapshot{path: path, data: data, mode: info.Mode().Perm(), existed: true}, nil
 }
 
 func restoreFileSnapshot(snapshot fileSnapshot) error {
 	if snapshot.existed {
-		return atomicWriteFile(snapshot.path, snapshot.data, 0o600)
+		return atomicWriteFile(snapshot.path, snapshot.data, snapshot.mode)
 	}
 	if err := os.Remove(snapshot.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
