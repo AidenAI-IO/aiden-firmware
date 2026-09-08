@@ -76,6 +76,40 @@ func (e *ProviderHTTPError) ProviderErrorCode() string {
 	return e.ProviderCode
 }
 
+// ProviderFinishError reports a model response that arrived over a successful
+// HTTP 200 but finished with an in-band error status and produced no usable
+// output. OpenRouter, for example, streams finish_reason "error" with empty
+// content when the upstream model call fails after the response headers were
+// already sent. Without this type such replies parse as ordinary empty
+// responses and the run fails with a misleading "no actions or finish" error.
+type ProviderFinishError struct {
+	FinishReason string
+	Model        string
+	ResponseID   string
+}
+
+func (e *ProviderFinishError) Error() string {
+	if e == nil {
+		return ""
+	}
+	detail := fmt.Sprintf("finish_reason=%q", e.FinishReason)
+	if strings.TrimSpace(e.Model) != "" {
+		detail += fmt.Sprintf(" model=%q", e.Model)
+	}
+	if strings.TrimSpace(e.ResponseID) != "" {
+		detail += fmt.Sprintf(" response_id=%q", e.ResponseID)
+	}
+	return "provider returned error finish with empty response: " + detail
+}
+
+// isProviderFinishError reports whether a model call failed because the
+// provider finished the response with an in-band error status instead of an
+// HTTP error.
+func isProviderFinishError(err error) bool {
+	var finishErr *ProviderFinishError
+	return errors.As(err, &finishErr)
+}
+
 // isProviderContextExceededError reports whether a model request was rejected
 // because its input no longer fits in the provider's context window. Providers
 // use different status codes and payload shapes for this condition, so prefer a

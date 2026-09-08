@@ -652,6 +652,14 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	addOpenRouterMetadataGenerationInfo(generationInfo, decoded.OpenRouterMetadata)
 	result.Choices[0].GenerationInfo = finalizeLLMGenerationInfo(mergeGenerationInfo(decoded.Usage.generationInfo(), generationInfo), callStarted)
 
+	if isErrorFinishReason(choice.FinishReason) && result.Choices[0].Content == "" && len(result.Choices[0].ToolCalls) == 0 {
+		return nil, &ProviderFinishError{
+			FinishReason: choice.FinishReason,
+			Model:        reqPayload.Model,
+			ResponseID:   decoded.ID,
+		}
+	}
+
 	return result, nil
 }
 
@@ -887,7 +895,23 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 		generationInfo["llm_finish_reason"] = stopReason
 	}
 	choice.GenerationInfo = finalizeLLMGenerationInfo(mergeGenerationInfo(usageInfo, generationInfo), callStarted)
+	if isErrorFinishReason(stopReason) && choice.Content == "" && len(choice.ToolCalls) == 0 {
+		responseID, _ := generationInfo["llm_response_id"].(string)
+		return nil, &ProviderFinishError{
+			FinishReason: stopReason,
+			Model:        requestModel,
+			ResponseID:   responseID,
+		}
+	}
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}, nil
+}
+
+// isErrorFinishReason reports whether a chat-completions finish reason marks
+// the whole response as failed. OpenRouter reports upstream failures in-band
+// this way — HTTP 200, finish_reason "error", and no content — instead of an
+// HTTP error status, so the finish reason is the only failure signal.
+func isErrorFinishReason(reason string) bool {
+	return strings.EqualFold(strings.TrimSpace(reason), "error")
 }
 
 func mergeGenerationInfo(base map[string]any, extras map[string]any) map[string]any {

@@ -116,6 +116,7 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 	}
 	policy := l.loopGuardPolicy()
 	contextOverflowRecoveryUsed := false
+	providerFinishRetryUsed := false
 
 restartBudget:
 	for {
@@ -130,7 +131,7 @@ restartBudget:
 				}
 				continue restartBudget
 			}
-			answer, outcome, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, toolExecutionHooks, policy, &contextOverflowRecoveryUsed)
+			answer, outcome, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, toolExecutionHooks, policy, &contextOverflowRecoveryUsed, &providerFinishRetryUsed)
 			if err != nil {
 				return "", err
 			}
@@ -176,7 +177,7 @@ func (l *AgentLoop) stopWithSteerCheck(ctx context.Context, executor *executor.L
 	return answer, true, err
 }
 
-func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, toolExecutionHooks toolExecutionHookHandler, policy *TerminationPolicy, contextOverflowRecoveryUsed *bool) (string, iterationOutcome, error) {
+func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, toolExecutionHooks toolExecutionHookHandler, policy *TerminationPolicy, contextOverflowRecoveryUsed *bool, providerFinishRetryUsed *bool) (string, iterationOutcome, error) {
 	iterationStartTime := time.Now()
 	toolCallsInIteration := 0
 	if l.Recorder != nil {
@@ -267,6 +268,14 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 				return "", iterationRestartBudget, nil
 			}
 		}
+		if providerFinishRetryUsed != nil && !*providerFinishRetryUsed && isProviderFinishError(err) {
+			// In-band provider failures (HTTP 200, finish_reason "error", no
+			// content) are frequently transient upstream blips. Retry the
+			// unchanged request once before failing the whole run.
+			*providerFinishRetryUsed = true
+			log.Printf("[llm] provider finished with an error status; retrying once: %v\n", err)
+			return "", iterationContinue, nil
+		}
 		// If LLM was canceled due to interrupt, check for pending steer
 		if errors.Is(err, context.Canceled) || errors.Is(err, errSteerInterruptToolCancel) {
 			steerInterrupted := errors.Is(context.Cause(llmCtx), errSteerInterruptToolCancel)
@@ -346,7 +355,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		answer, _ := finish.ReturnValues[agentLoopOutputKey].(string)
 		answer = strings.TrimSpace(answer)
 		if answer == "" {
-			return "", iterationContinue, agents.ErrAgentNoReturn
+			return "", iterationContinue, fmt.Errorf("%w: %s", agents.ErrAgentNoReturn, noReturnResponseDetail(contentResp))
 		}
 		if l.Recorder != nil {
 			l.Recorder.RecordDefaultFinish(answer)
@@ -355,7 +364,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		return answer, iterationDone, err
 	}
 	if len(actions) == 0 {
-		return "", iterationContinue, agents.ErrAgentNoReturn
+		return "", iterationContinue, fmt.Errorf("%w: %s", agents.ErrAgentNoReturn, noReturnResponseDetail(contentResp))
 	}
 
 	// Problem 4: Check for pending steer after LLM returns actions (before tool execution)
@@ -568,6 +577,22 @@ func (l *AgentLoop) guardContextBudgetBeforeLLM(ctx context.Context, llmExecutor
 		llmExecutor.ReplaceContextManager(newManager)
 	}
 	return nil
+}
+
+// noReturnResponseDetail describes the model response that produced neither
+// tool calls nor a final answer. It is appended to agents.ErrAgentNoReturn so
+// run failures name the actual provider outcome (finish reason, content size,
+// tool-call count) instead of only the generic agent error.
+func noReturnResponseDetail(resp *llms.ContentResponse) string {
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
+		return "model returned no choices"
+	}
+	choice := resp.Choices[0]
+	finishReason := strings.TrimSpace(choice.StopReason)
+	if finishReason == "" {
+		finishReason = "unknown"
+	}
+	return fmt.Sprintf("finish_reason=%q content_chars=%d tool_calls=%d", finishReason, len(choice.Content), len(choice.ToolCalls))
 }
 
 func (l *AgentLoop) compactContextBeforeLLM(ctx context.Context, llmExecutor *executor.LLMExecutor, options []llms.CallOption) (bool, error) {
