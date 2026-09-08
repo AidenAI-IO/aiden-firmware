@@ -2,8 +2,14 @@ package realtimevoice
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestJSONWebSocketTransportWriteHonorsCanceledContext(t *testing.T) {
@@ -34,4 +40,45 @@ func writeStateTestTransport() *jsonWebSocketTransport {
 	}
 	transport.writeGate <- struct{}{}
 	return transport
+}
+
+func TestJSONWebSocketTransportCancelBlockedWrite(t *testing.T) {
+	connected := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		close(connected)
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := newJSONWebSocketTransport(conn, "test", 1)
+	defer transport.Close()
+	<-connected
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- transport.writeJSON(ctx, strings.Repeat("x", 32<<20)) }()
+	select {
+	case err := <-done:
+		t.Fatalf("write did not block: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("write error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel did not unblock websocket write")
+	}
 }

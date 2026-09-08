@@ -66,6 +66,12 @@ func (t *jsonWebSocketTransport) writeJSON(ctx context.Context, value any) error
 		return fmt.Errorf("%s: session is closed", t.label)
 	default:
 	}
+	// A websocket write is a blocking syscall. Closing the connection from a
+	// cancellation callback is the only reliable way to interrupt it; the
+	// resulting transport shutdown also prevents a partially written request
+	// from leaving the session reusable.
+	stopCancel := context.AfterFunc(ctx, func() { _ = t.conn.Close() })
+	defer stopCancel()
 	deadline := time.Now().Add(10 * time.Second)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
 		deadline = contextDeadline
@@ -73,6 +79,9 @@ func (t *jsonWebSocketTransport) writeJSON(ctx context.Context, value any) error
 	_ = t.conn.SetWriteDeadline(deadline)
 	defer t.conn.SetWriteDeadline(time.Time{})
 	if err := t.conn.WriteMessage(websocket.TextMessage, body); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf("%s websocket write: %w", t.label, err)
 	}
 	return nil
