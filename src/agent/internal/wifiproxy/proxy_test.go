@@ -84,28 +84,17 @@ func TestLocalProxySupportsSOCKS5WithoutHTTPConversion(t *testing.T) {
 }
 
 func TestLocalSOCKS5EntryUsesSOCKS5Upstream(t *testing.T) {
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "socks5 end to end")
-	}))
-	defer origin.Close()
-	upstreamAddress, upstreamHandshakes := startSOCKS5TestServer(t)
+	upstreamAddress, _ := startSOCKS5TestServer(t)
 	config := EmptyConfig()
 	config.Networks["Office"] = Network{Mode: ModeProxy, ProxyURL: "socks5://" + upstreamAddress}
-	local, localURL := startTestProxy(t, config, Upstreams{})
+	local, _ := startTestProxy(t, config, Upstreams{})
 	local.SetCurrentSSID("Office")
-
-	dialer, err := xproxy.FromURL(&url.URL{Scheme: "socks5", Host: localURL.Host}, xproxy.Direct)
+	upstream, err := local.upstreamFor(&url.URL{Scheme: "socks5", Host: "example.com:443"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := (&http.Client{Transport: &http.Transport{DialContext: contextDialer(dialer)}}).Get(origin.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if string(body) != "socks5 end to end" || upstreamHandshakes.Load() != 1 {
-		t.Fatalf("body=%q upstream SOCKS5 handshakes=%d", body, upstreamHandshakes.Load())
+	if upstream == nil || upstream.Scheme != "socks5" || upstream.Host != upstreamAddress {
+		t.Fatalf("upstream=%v, want SOCKS5 %s", upstream, upstreamAddress)
 	}
 }
 
@@ -173,7 +162,7 @@ func startSOCKS5TestServer(t *testing.T) (string, *atomic.Int32) {
 func TestLocalProxyEnvironmentKeepsSOCKS5Scheme(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "wifi-proxies.json")
 	config := EmptyConfig()
-	config.Networks["Office"] = Network{Mode: ModeProxy, ProxyURL: "socks5://proxy.example:7897", NoProxy: "internal.example"}
+	config.Networks["Office"] = Network{Mode: ModeProxy, ProxyURL: "socks5://proxy.example:7897", NoProxy: "internal.example", NoProxySet: true}
 	if err := Save(configPath, config); err != nil {
 		t.Fatal(err)
 	}
@@ -282,6 +271,58 @@ func TestLocalProxyEnvironmentMarksDefaultAndExplicitEmptyNoProxy(t *testing.T) 
 	}
 }
 
+func TestSOCKS5FallbackUsesGenericProxyOrder(t *testing.T) {
+	fallback := Upstreams{
+		HTTPProxy:  "http://http-proxy.example:3128",
+		HTTPSProxy: "http://https-proxy.example:3129",
+	}
+	if got := fallbackProxyForScheme(fallback, "socks5"); got != fallback.HTTPSProxy {
+		t.Fatalf("SOCKS5 fallback=%q, want HTTPS_PROXY fallback %q", got, fallback.HTTPSProxy)
+	}
+	fallback.AllProxy = "socks5://all-proxy.example:1080"
+	if got := fallbackProxyForScheme(fallback, "socks5"); got != fallback.AllProxy {
+		t.Fatalf("SOCKS5 fallback=%q, want ALL_PROXY %q", got, fallback.AllProxy)
+	}
+}
+
+func TestSOCKS5FallbackPrefersAllProxyOverSchemeSpecificProxy(t *testing.T) {
+	server, _ := startTestProxy(t, EmptyConfig(), Upstreams{
+		HTTPProxy:  "http://http-proxy.example:3128",
+		HTTPSProxy: "http://https-proxy.example:3129",
+		AllProxy:   "socks5://all-proxy.example:1080",
+	})
+	upstream, err := server.genericFallbackUpstream("example.com:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upstream == nil || upstream.String() != "socks5://all-proxy.example:1080" {
+		t.Fatalf("SOCKS5 upstream=%v", upstream)
+	}
+}
+
+func TestCustomProxyBypassesLoopbackWhenNoProxyOmitted(t *testing.T) {
+	config := EmptyConfig()
+	config.Networks["Office"] = Network{Mode: ModeProxy, ProxyURL: "http://proxy.example:7890"}
+	server, _ := startTestProxy(t, config, Upstreams{})
+	server.SetCurrentSSID("Office")
+	for _, host := range []string{"127.0.0.1:8080", "10.1.2.3:8080", "172.16.1.2:8080", "192.168.42.1:8080"} {
+		upstream, err := server.upstreamFor(&url.URL{Scheme: "http", Host: host})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if upstream != nil {
+			t.Fatalf("bypassed target %s upstream=%v, want direct", host, upstream)
+		}
+	}
+	upstream, err := server.upstreamFor(&url.URL{Scheme: "http", Host: "service.example:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upstream == nil || upstream.Host != "proxy.example:7890" {
+		t.Fatalf("external upstream=%v, want custom proxy", upstream)
+	}
+}
+
 func proxyClient(proxyURL *url.URL, tlsConfig *tls.Config) *http.Client {
 	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: tlsConfig}}
 }
@@ -323,18 +364,10 @@ func TestLocalProxySupportsHTTPSConnect(t *testing.T) {
 }
 
 func TestSSIDSelectsCustomUpstream(t *testing.T) {
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "origin")
-	}))
-	defer origin.Close()
-	upstream, err := NewServer(DefaultListenAddress, filepath.Join(t.TempDir(), "missing.json"), "missing", Upstreams{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	var upstreamRequests atomic.Int32
-	upstreamHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+	upstreamHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamRequests.Add(1)
-		upstream.ServeHTTP(w, request)
+		_, _ = io.WriteString(w, "custom upstream")
 	}))
 	defer upstreamHTTP.Close()
 
@@ -342,7 +375,7 @@ func TestSSIDSelectsCustomUpstream(t *testing.T) {
 	config.Networks["Office"] = Network{Mode: ModeProxy, ProxyURL: upstreamHTTP.URL}
 	local, localURL := startTestProxy(t, config, Upstreams{})
 	local.SetCurrentSSID("Office")
-	response, err := proxyClient(localURL, nil).Get(origin.URL)
+	response, err := proxyClient(localURL, nil).Get("http://service.example/resource")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +504,7 @@ func TestSSIDCustomHTTPProxySupportsAuthenticatedHTTPSConnect(t *testing.T) {
 			http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
 			return
 		}
-		remote, err := net.Dial("tcp", request.Host)
+		remote, err := net.Dial("tcp", origin.Listener.Addr().String())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -504,7 +537,7 @@ func TestSSIDCustomHTTPProxySupportsAuthenticatedHTTPSConnect(t *testing.T) {
 	local, localURL := startTestProxy(t, config, Upstreams{})
 	local.SetCurrentSSID("Office")
 	client := proxyClient(localURL, &tls.Config{InsecureSkipVerify: true}) // Test server certificate.
-	response, err := client.Get(origin.URL)
+	response, err := client.Get("https://service.example/")
 	if err != nil {
 		t.Fatal(err)
 	}

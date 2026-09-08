@@ -29,9 +29,10 @@ const (
 )
 
 type Network struct {
-	Mode     Mode   `json:"mode"`
-	ProxyURL string `json:"proxy_url,omitempty"`
-	NoProxy  string `json:"no_proxy,omitempty"`
+	Mode       Mode   `json:"mode"`
+	ProxyURL   string `json:"proxy_url,omitempty"`
+	NoProxy    string `json:"no_proxy,omitempty"`
+	NoProxySet bool   `json:"no_proxy_set,omitempty"`
 }
 
 type Config struct {
@@ -149,7 +150,11 @@ func NormalizeNetwork(network Network) (Network, error) {
 		if err != nil {
 			return Network{}, err
 		}
-		return Network{Mode: ModeProxy, ProxyURL: parsed.String(), NoProxy: noProxy}, nil
+		noProxySet := network.NoProxySet
+		if noProxy == "" && !noProxySet {
+			noProxy = DefaultNoProxy
+		}
+		return Network{Mode: ModeProxy, ProxyURL: parsed.String(), NoProxy: noProxy, NoProxySet: noProxySet}, nil
 	default:
 		return Network{}, fmt.Errorf("unsupported mode %q", network.Mode)
 	}

@@ -703,8 +703,10 @@ func applyWiFiProxyRequest(config *wifiproxy.Config, request wifiConnectionReque
 		}
 		if request.NoProxy != nil {
 			network.NoProxy = *request.NoProxy
+			network.NoProxySet = true
 		} else if hasExisting && existing.Mode == wifiproxy.ModeProxy {
 			network.NoProxy = existing.NoProxy
+			network.NoProxySet = existing.NoProxySet
 		}
 		network, err := wifiproxy.NormalizeNetwork(network)
 		if err != nil {

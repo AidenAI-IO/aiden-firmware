@@ -360,11 +360,10 @@ func (s *Server) handleSOCKS5(client net.Conn) {
 	}
 	targetPort := int(binary.BigEndian.Uint16(portBytes[:]))
 	targetAddress := net.JoinHostPort(targetHost, fmt.Sprintf("%d", targetPort))
-	targetScheme := "https"
-	if targetPort == 80 {
-		targetScheme = "http"
-	}
-	upstream, err := s.upstreamFor(&url.URL{Scheme: targetScheme, Host: targetAddress})
+	// SOCKS5 does not carry an application-layer scheme. Use the generic
+	// fallback order (ALL_PROXY, then HTTPS_PROXY, then HTTP_PROXY) instead of
+	// guessing from the destination port.
+	upstream, err := s.genericFallbackUpstream(targetAddress)
 	if err != nil {
 		writeSOCKS5Reply(client, 0x01)
 		return
@@ -439,7 +438,7 @@ func (s *Server) writeLocalProxyEnvironment() error {
 			scheme := localSchemeForUpstream(network.ProxyURL)
 			httpScheme, httpsScheme, allScheme = scheme, scheme, scheme
 			noProxy = network.NoProxy
-			noProxySet = true
+			noProxySet = network.NoProxySet
 		}
 	}
 	normalizedNoProxy, err := NormalizeNoProxy(noProxy)
@@ -544,6 +543,9 @@ func (s *Server) upstreamFor(target *url.URL) (*url.URL, error) {
 	if target == nil {
 		return nil, nil
 	}
+	if bypassLocalhostOrLoopback(target.Hostname()) {
+		return nil, nil
+	}
 	s.mu.RLock()
 	ssid := s.currentSSID
 	network, configured := s.config.Networks[ssid]
@@ -564,8 +566,16 @@ func (s *Server) upstreamFor(target *url.URL) (*url.URL, error) {
 	if netproxy.Bypass(target.Hostname(), target.Port(), fallback.NoProxy) {
 		return nil, nil
 	}
+	raw := fallbackProxyForScheme(fallback, target.Scheme)
+	if raw == "" {
+		return nil, nil
+	}
+	return netproxy.Parse(raw, "http", "https", "socks5", "socks5h")
+}
+
+func fallbackProxyForScheme(fallback Upstreams, scheme string) string {
 	raw := fallback.AllProxy
-	switch strings.ToLower(target.Scheme) {
+	switch strings.ToLower(scheme) {
 	case "http", "ws":
 		if fallback.HTTPProxy != "" {
 			raw = fallback.HTTPProxy
@@ -574,11 +584,64 @@ func (s *Server) upstreamFor(target *url.URL) (*url.URL, error) {
 		if fallback.HTTPSProxy != "" {
 			raw = fallback.HTTPSProxy
 		}
+	default:
+		if raw == "" {
+			raw = fallback.HTTPSProxy
+		}
+		if raw == "" {
+			raw = fallback.HTTPProxy
+		}
 	}
+	return raw
+}
+
+func bypassLocalhostOrLoopback(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func (s *Server) genericFallbackUpstream(targetAddress string) (*url.URL, error) {
+	host, port := splitTargetAddress(targetAddress)
+	if bypassLocalhostOrLoopback(host) {
+		return nil, nil
+	}
+	s.mu.RLock()
+	ssid := s.currentSSID
+	network, configured := s.config.Networks[ssid]
+	fallback := s.fallback
+	s.mu.RUnlock()
+
+	if configured {
+		switch network.Mode {
+		case ModeDirect:
+			return nil, nil
+		case ModeProxy:
+			if netproxy.Bypass(host, port, network.NoProxy) {
+				return nil, nil
+			}
+			return netproxy.Parse(network.ProxyURL, "http", "https", "socks5", "socks5h")
+		}
+	}
+	if netproxy.Bypass(host, port, fallback.NoProxy) {
+		return nil, nil
+	}
+	raw := fallbackProxyForScheme(fallback, "socks5")
 	if raw == "" {
 		return nil, nil
 	}
 	return netproxy.Parse(raw, "http", "https", "socks5", "socks5h")
+}
+
+func splitTargetAddress(address string) (string, string) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return strings.Trim(address, "[]"), ""
+	}
+	return host, port
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, request *http.Request) {

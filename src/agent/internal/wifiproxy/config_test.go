@@ -64,3 +64,39 @@ func TestConfigRejectsInvalidProxy(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeNetworkDefaultsNoProxyWhenEmpty(t *testing.T) {
+	network, err := NormalizeNetwork(Network{Mode: ModeProxy, ProxyURL: "http://proxy.example:7890"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if network.NoProxy != DefaultNoProxy || network.NoProxySet {
+		t.Fatalf("omitted NO_PROXY produced %#v", network)
+	}
+
+	network, err = NormalizeNetwork(Network{
+		Mode: ModeProxy, ProxyURL: "http://proxy.example:7890", NoProxySet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if network.NoProxy != "" || !network.NoProxySet {
+		t.Fatalf("explicit empty NO_PROXY produced %#v", network)
+	}
+}
+
+func TestConfigRoundTripPersistsDefaultNoProxy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wifi-proxies.json")
+	config := EmptyConfig()
+	config.Networks["Office"] = Network{Mode: ModeProxy, ProxyURL: "http://proxy.example:7890"}
+	if err := Save(path, config); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Networks["Office"].NoProxy; got != DefaultNoProxy {
+		t.Fatalf("NO_PROXY=%q, want %q", got, DefaultNoProxy)
+	}
+}
