@@ -1901,7 +1901,16 @@ func (s *realtimeTurnState) speechStopped(status string) {
 		s.inputTurnPending = false
 		return
 	}
-	s.inputTurnPending = status != "turn_invalid"
+	if s.responseActive && !s.inputSpeechActive && s.responseID != "" {
+		// A response already started for this utterance, so it consumed the
+		// input turn. Providers that report the same boundary twice (for
+		// example a speech_stopped followed by a committed confirmation) must
+		// not reopen the turn here: doing so discards the active response's own
+		// output as stale and leaves inputTurnPending set for good, which
+		// blocks every later voice notification and task injection.
+		return
+	}
+	s.inputTurnPending = true
 }
 
 func (s *realtimeTurnState) localSpeechStopped() {

@@ -418,6 +418,29 @@ func TestRealtimeTurnStateRejectsDuplicateResponseCreated(t *testing.T) {
 	}
 }
 
+// A provider that reports the same utterance boundary twice must not reopen the
+// input turn once response.created has bound the response ID. Doing so drops
+// that response's own tool calls and leaves inputTurnPending set forever, which
+// permanently blocks voice notification and background task injection.
+func TestRealtimeTurnStateDuplicateSpeechStopKeepsResponseUsable(t *testing.T) {
+	state := realtimeTurnState{}
+	state.speechStarted()
+	state.speechStopped("")
+	if !state.responseStarted("response-1") {
+		t.Fatal("response.created was rejected")
+	}
+	state.speechStopped("")
+	if !state.acceptsResponseEvent("response-1") {
+		t.Fatalf("active response's own output was discarded as stale: %+v", state)
+	}
+	if !state.responseFinished("response-1") {
+		t.Fatal("terminal event for the active response was rejected")
+	}
+	if !state.canInjectResponse() {
+		t.Fatalf("voice notification injection stayed blocked after the turn: %+v", state)
+	}
+}
+
 func TestRealtimeTurnStateLocalSpeechStopDoesNotReopenConsumedTurn(t *testing.T) {
 	state := realtimeTurnState{}
 	state.speechStarted()
