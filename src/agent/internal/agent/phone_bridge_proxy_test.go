@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -216,6 +217,13 @@ func TestPhoneBridgeProxySendCommandUsesDeviceSideAppConnection(t *testing.T) {
 		appDone <- appConn.Write(context.Background(), websocket.MessageText, responseData)
 	}()
 
+	deadline := time.Now().Add(2 * time.Second)
+	for !remoteAgent.getStatus().Connected && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !remoteAgent.getStatus().Connected {
+		t.Fatal("remote agent did not register the app connection")
+	}
 	proxyBridge := NewPhoneBridgeProxy(remoteServer.URL, "benchmark-task", nil)
 	defer proxyBridge.queue.Stop()
 	resp, err := proxyBridge.SendCommand(context.Background(), BridgeCommand{
@@ -280,11 +288,25 @@ func TestPhoneBridgeProxySendQueuedCommandUsesDeviceSideHTTPQueue(t *testing.T) 
 
 	appDone := make(chan error, 1)
 	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		client := &http.Client{Timeout: 250 * time.Millisecond}
 		pollURL := remoteServer.URL +
 			"/api/phone-bridge/commands?platform=ios&phone_id=device-phone&app_state=background&pip_bridge_enabled=true"
 		var cmd BridgeCommand
 		for {
-			resp, err := http.Get(pollURL)
+			if time.Now().After(deadline) {
+				appDone <- fmt.Errorf("polling app queue timed out")
+				return
+			}
+			requestCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, pollURL, nil)
+			if err != nil {
+				cancel()
+				appDone <- err
+				return
+			}
+			resp, err := client.Do(req)
+			cancel()
 			if err != nil {
 				appDone <- err
 				return
@@ -355,5 +377,49 @@ func TestPhoneBridgeProxySendQueuedCommandUsesDeviceSideHTTPQueue(t *testing.T) 
 		if taskID != "benchmark-task" {
 			t.Fatalf("proxied task ids = %q, want benchmark-task headers", gotTaskIDs)
 		}
+	}
+}
+
+func TestPhoneBridgeProxySendQueuedCommandCancelsAfterCallerDeadline(t *testing.T) {
+	remoteAgent := newPhoneBridgeForTest()
+	defer remoteAgent.queue.Stop()
+
+	var canceled atomic.Bool
+	remoteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/phone-bridge/status":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(remoteAgent.getStatus())
+		case r.Method == http.MethodPost && r.URL.Path == "/api/phone-bridge/commands":
+			remoteAgent.handleEnqueueCommand(w, r)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/phone-bridge/results/"):
+			remoteAgent.handleQueryResult(w, r)
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/phone-bridge/commands/"):
+			canceled.Store(true)
+			remoteAgent.handleCancelCommand(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer remoteServer.Close()
+
+	proxyBridge := NewPhoneBridgeProxy(remoteServer.URL, "benchmark-task", nil)
+	defer proxyBridge.queue.Stop()
+	resp, err := proxyBridge.SendQueuedCommand(context.Background(), BridgeCommand{
+		ID:        "proxy-cancel-command",
+		Type:      "clipboard_read",
+		TimeoutMs: 100,
+	})
+	if err != nil {
+		t.Fatalf("SendQueuedCommand error = %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != CodeBridgeTimeout {
+		t.Fatalf("SendQueuedCommand response = %+v, want bridge timeout", resp)
+	}
+	if !canceled.Load() {
+		t.Fatal("timed-out command was not canceled remotely")
+	}
+	if _, status := remoteAgent.queue.QueryResult("proxy-cancel-command"); status != StatusExpired {
+		t.Fatalf("canceled command queue status = %q, want expired/not found", status)
 	}
 }

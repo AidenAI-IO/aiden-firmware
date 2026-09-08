@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -132,6 +133,32 @@ func (pb *PhoneBridge) handleEnqueueCommand(w http.ResponseWriter, r *http.Reque
 		Status:    "queued",
 		QueuedAt:  cmd.QueuedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	})
+}
+
+// handleCancelCommand handles DELETE /api/phone-bridge/commands/:command_id.
+// It lets a synchronous proxy withdraw a queued command after its caller has
+// stopped waiting, preventing a late background execution.
+func (pb *PhoneBridge) handleCancelCommand(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	commandID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/phone-bridge/commands/"))
+	if commandID == "" || strings.Contains(commandID, "/") || strings.Contains(commandID, "\\") ||
+		commandID == "." || commandID == ".." {
+		http.Error(w, `{"error":"Invalid command ID"}`, http.StatusBadRequest)
+		return
+	}
+	if pb.proxyMode {
+		pb.proxyHTTPRequest(w, r, "/api/phone-bridge/commands/"+url.PathEscape(commandID))
+		return
+	}
+	if pb.queue == nil || !pb.queue.Cancel(commandID) {
+		http.Error(w, `{"error":"command not found"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"status": "canceled", "command_id": commandID})
 }
 
 // handlePollCommands handles GET /api/phone-bridge/commands?platform=ios&limit=10
@@ -479,9 +506,17 @@ func (pb *PhoneBridge) sendProxyQueuedCommand(ctx context.Context, cmd BridgeCom
 	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	for {
+	for waitCtx.Err() == nil {
 		result, done, err := pb.queryProxyQueuedResult(waitCtx, cmd.ID)
 		if err != nil {
+			if isTransientProxyTransportError(err) {
+				select {
+				case <-waitCtx.Done():
+					goto timeout
+				case <-ticker.C:
+					continue
+				}
+			}
 			return BridgeCommandResponse{
 				ID:    cmd.ID,
 				Error: NewToolError(CodeToolExecutionFailed, err.Error()),
@@ -492,18 +527,29 @@ func (pb *PhoneBridge) sendProxyQueuedCommand(ctx context.Context, cmd BridgeCom
 		}
 		select {
 		case <-waitCtx.Done():
-			if ctx.Err() != nil {
-				return BridgeCommandResponse{}, ctx.Err()
-			}
-			return BridgeCommandResponse{
-				ID:    cmd.ID,
-				Error: NewToolError(CodeBridgeTimeout, "queued relayed command timeout"),
-			}, nil
+			goto timeout
 		case <-ticker.C:
 		}
 	}
+
+timeout:
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	cancelErr := pb.cancelProxyQueuedCommand(cancelCtx, cmd.ID)
+	cancel()
+	if ctx.Err() != nil {
+		return BridgeCommandResponse{}, ctx.Err()
+	}
+	if cancelErr != nil && pb.logger != nil {
+		pb.logger.Warn("phone-bridge-proxy: cancel timed-out command %s failed: %v", cmd.ID, cancelErr)
+	}
+	return BridgeCommandResponse{
+		ID:    cmd.ID,
+		Error: NewToolError(CodeBridgeTimeout, "queued relayed command timeout"),
+	}, nil
 }
 
+// queryProxyQueuedResult polls one remote queue result and distinguishes
+// incomplete results from terminal protocol failures.
 func (pb *PhoneBridge) queryProxyQueuedResult(ctx context.Context, commandID string) (BridgeCommandResponse, bool, error) {
 	remoteURL := pb.proxyEndpoint + "/api/phone-bridge/results/" + url.PathEscape(commandID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL, nil)
@@ -513,7 +559,9 @@ func (pb *PhoneBridge) queryProxyQueuedResult(ctx context.Context, commandID str
 	pb.setProxyTaskHeader(req)
 	resp, err := pb.proxyClient.Do(req)
 	if err != nil {
-		return BridgeCommandResponse{}, false, fmt.Errorf("query relayed command result: %w", err)
+		return BridgeCommandResponse{}, false, &proxyTransportError{
+			err: fmt.Errorf("query relayed command result: %w", err),
+		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -544,8 +592,55 @@ func (pb *PhoneBridge) queryProxyQueuedResult(ctx context.Context, commandID str
 	}
 }
 
+// setProxyTaskHeader scopes proxy HTTP requests to the active benchmark task.
 func (pb *PhoneBridge) setProxyTaskHeader(req *http.Request) {
 	if pb.proxyTaskID != "" {
 		req.Header.Set("benchmark-task-id", pb.proxyTaskID)
 	}
+}
+
+// proxyTransportError marks an HTTP client transport failure as retryable while
+// keeping protocol and payload failures terminal.
+type proxyTransportError struct {
+	err error
+}
+
+func (e *proxyTransportError) Error() string { return e.err.Error() }
+func (e *proxyTransportError) Unwrap() error { return e.err }
+
+func isTransientProxyTransportError(err error) bool {
+	var transportErr *proxyTransportError
+	if !errors.As(err, &transportErr) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
+}
+
+// cancelProxyQueuedCommand asks the environment bridge to remove a command
+// whose synchronous caller stopped waiting.
+func (pb *PhoneBridge) cancelProxyQueuedCommand(ctx context.Context, commandID string) error {
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodDelete,
+		pb.proxyEndpoint+"/api/phone-bridge/commands/"+url.PathEscape(commandID),
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+	pb.setProxyTaskHeader(req)
+	resp, err := pb.proxyClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("cancel relayed command returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
