@@ -28,6 +28,10 @@ const (
 var (
 	ErrArtifactTooLarge    = errors.New("artifact exceeds single-artifact size limit")
 	ErrArtifactSessionFull = errors.New("session artifact size limit exceeded")
+
+	// artifactFilesystemMu coordinates stores with the cleaner, which operates
+	// through a separate object and therefore cannot use artifactStore.mu.
+	artifactFilesystemMu sync.RWMutex
 )
 
 type ArtifactMetadata struct {
@@ -58,6 +62,9 @@ type artifactStore struct {
 // readable, unexpired metadata pair. Missing, malformed, or expired metadata
 // fails closed so compaction does not keep advertising an unusable path.
 func ArtifactPathRecoverable(dataPath string, now time.Time) bool {
+	artifactFilesystemMu.RLock()
+	defer artifactFilesystemMu.RUnlock()
+
 	dataPath = strings.TrimSpace(dataPath)
 	if dataPath == "" || !strings.HasSuffix(dataPath, ".data") {
 		return false
@@ -136,10 +143,11 @@ func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMet
 		return ArtifactFile{}, ErrArtifactTooLarge
 	}
 
+	artifactFilesystemMu.Lock()
+	defer artifactFilesystemMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	id := "tr_" + uuid.NewString()
 	hash := sha256.Sum256(data)
 	metadata.MIMEType = strings.TrimSpace(mimeType)
 	if metadata.MIMEType == "" {
@@ -156,6 +164,12 @@ func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMet
 		metadata.ExpiresAt = metadata.CreatedAt.Add(ttl)
 	}
 	metadata.Complete = true
+	if existing, found, err := findReusableArtifact(s.root, metadata); err != nil {
+		return ArtifactFile{}, err
+	} else if found {
+		return existing, nil
+	}
+
 	metadataData, err := json.Marshal(metadata)
 	if err != nil {
 		return ArtifactFile{}, fmt.Errorf("marshal artifact metadata: %w", err)
@@ -168,6 +182,7 @@ func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMet
 		return ArtifactFile{}, ErrArtifactSessionFull
 	}
 
+	id := "tr_" + uuid.NewString()
 	dataPath := filepath.Join(s.root, id+".data")
 	if err := writeArtifactFileAtomically(dataPath, data); err != nil {
 		return ArtifactFile{}, err
@@ -183,6 +198,97 @@ func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMet
 		SHA256:   metadata.SHA256,
 		Complete: true,
 	}, nil
+}
+
+func findReusableArtifact(root string, requested ArtifactMetadata) (ArtifactFile, bool, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ArtifactFile{}, false, fmt.Errorf("list artifact directory for deduplication: %w", err)
+	}
+	now := time.Now().UTC()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		metadataPath := filepath.Join(root, entry.Name())
+		existing, ok := readArtifactMetadataFile(metadataPath)
+		if !ok || !existing.Complete || !existing.ExpiresAt.After(now) {
+			continue
+		}
+		if existing.Size != requested.Size ||
+			!strings.EqualFold(existing.SHA256, requested.SHA256) ||
+			strings.TrimSpace(existing.MIMEType) != requested.MIMEType ||
+			existing.Sensitive != requested.Sensitive {
+			continue
+		}
+		dataPath := strings.TrimSuffix(metadataPath, ".json") + ".data"
+		if !artifactDataMatches(dataPath, existing.Size, requested.SHA256) {
+			continue
+		}
+		if requested.ExpiresAt.After(existing.ExpiresAt) {
+			existing.ExpiresAt = requested.ExpiresAt
+			metadataData, marshalErr := json.Marshal(existing)
+			if marshalErr != nil {
+				return ArtifactFile{}, false, fmt.Errorf("marshal reused artifact metadata: %w", marshalErr)
+			}
+			if writeErr := writeArtifactFileAtomically(metadataPath, metadataData); writeErr != nil {
+				return ArtifactFile{}, false, writeErr
+			}
+		}
+		return ArtifactFile{
+			Path:     dataPath,
+			Size:     existing.Size,
+			SHA256:   existing.SHA256,
+			Complete: true,
+		}, true, nil
+	}
+	return ArtifactFile{}, false, nil
+}
+
+func readArtifactMetadataFile(path string) (ArtifactMetadata, bool) {
+	pathInfo, err := os.Lstat(path)
+	if err != nil || !pathInfo.Mode().IsRegular() || pathInfo.Size() > artifactMetadataMaxBytes {
+		return ArtifactMetadata{}, false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return ArtifactMetadata{}, false
+	}
+	defer file.Close()
+	openInfo, err := file.Stat()
+	if err != nil || !openInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openInfo) || openInfo.Size() > artifactMetadataMaxBytes {
+		return ArtifactMetadata{}, false
+	}
+	data, err := io.ReadAll(io.LimitReader(file, artifactMetadataMaxBytes+1))
+	if err != nil || len(data) > artifactMetadataMaxBytes {
+		return ArtifactMetadata{}, false
+	}
+	var metadata ArtifactMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return ArtifactMetadata{}, false
+	}
+	return metadata, true
+}
+
+func artifactDataMatches(path string, expectedSize int64, expectedSHA256 string) bool {
+	pathInfo, err := os.Lstat(path)
+	if err != nil || !pathInfo.Mode().IsRegular() || pathInfo.Size() != expectedSize {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	openInfo, err := file.Stat()
+	if err != nil || !openInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openInfo) || openInfo.Size() != expectedSize {
+		return false
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return false
+	}
+	return strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), expectedSHA256)
 }
 
 func artifactSessionBytes(root string) (int64, error) {

@@ -19,10 +19,13 @@ bool AudioPlaybackSession::start() {
     cfg.channels    = static_cast<int>(fmt_.channels);
     cfg.bit_width   = static_cast<int>(fmt_.bit_width);
 
-    if (!player_.init(cfg)) {
-        AIDEN_LOG_ERROR("playback", "player_init_failed", "session_id=%llu",
-                        static_cast<unsigned long long>(session_id_));
-        return false;
+    {
+        std::lock_guard<std::mutex> player_lock(player_mutex_);
+        if (!player_.init(cfg)) {
+            AIDEN_LOG_ERROR("playback", "player_init_failed", "session_id=%llu",
+                            static_cast<unsigned long long>(session_id_));
+            return false;
+        }
     }
 
     playback_thread_ = std::thread(&AudioPlaybackSession::playback_loop, this);
@@ -50,10 +53,13 @@ void AudioPlaybackSession::stop() {
 
 bool AudioPlaybackSession::set_volume(int volume) {
     if (stopped_.load()) return false;
+    std::lock_guard<std::mutex> player_lock(player_mutex_);
+    if (stopped_.load()) return false;
     return player_.set_volume(volume);
 }
 
 int AudioPlaybackSession::get_volume() const {
+    std::lock_guard<std::mutex> player_lock(player_mutex_);
     return player_.get_volume();
 }
 
@@ -62,18 +68,29 @@ AidenServiceStatus AudioPlaybackSession::push_chunk(const uint8_t* data, size_t 
     if (stopped_.load()) return AidenServiceStatus::SESSION_NOT_FOUND;
 
     std::unique_lock<std::mutex> lock(mutex_);
+    if (final_received_) return AidenServiceStatus::SESSION_NOT_FOUND;
+
     if (queue_.size() >= kMaxQueueChunks) {
         // Apply back-pressure: wait for the queue to drain a bit.
         cv_.wait_for(lock, std::chrono::milliseconds(200),
-                     [this] { return queue_.size() < kMaxQueueChunks / 2 || stopped_.load(); });
-        if (stopped_.load()) return AidenServiceStatus::SESSION_NOT_FOUND;
+                     [this] {
+                         return queue_.size() < kMaxQueueChunks / 2 ||
+                                final_received_ || stopped_.load();
+                     });
+        if (final_received_ || stopped_.load()) {
+            return AidenServiceStatus::SESSION_NOT_FOUND;
+        }
     }
 
     if (data && len > 0) {
         queue_.push(std::vector<uint8_t>(data, data + len));
     }
     if (is_final) final_received_ = true;
-    cv_.notify_one();
+    if (is_final) {
+        cv_.notify_all();
+    } else {
+        cv_.notify_one();
+    }
     return AidenServiceStatus::OK;
 }
 
@@ -99,6 +116,7 @@ void AudioPlaybackSession::playback_loop() {
             if (stopped_.load()) {
                 AIDEN_LOG_INFO("playback", "interrupted_before_drain", "session_id=%llu",
                                static_cast<unsigned long long>(session_id_));
+                std::lock_guard<std::mutex> player_lock(player_mutex_);
                 player_.stop();
                 return;
             }
@@ -122,6 +140,7 @@ void AudioPlaybackSession::playback_loop() {
             if (stopped_.load()) {
                 AIDEN_LOG_INFO("playback", "interrupted_during_final_drain", "session_id=%llu",
                                static_cast<unsigned long long>(session_id_));
+                std::lock_guard<std::mutex> player_lock(player_mutex_);
                 player_.stop();
                 return;
             }
@@ -132,6 +151,8 @@ void AudioPlaybackSession::playback_loop() {
 
         if (!chunk.empty()) {
             while (!stopped_.load()) {
+                std::lock_guard<std::mutex> player_lock(player_mutex_);
+                if (stopped_.load()) break;
                 if (player_.play(chunk.data(), static_cast<uint32_t>(chunk.size()))) {
                     last_played_chunk_bytes = chunk.size();
                     break;
@@ -147,7 +168,10 @@ void AudioPlaybackSession::playback_loop() {
     }
 
     // Tear down hardware from the same thread that called SendFrame — safe.
-    player_.stop();
+    {
+        std::lock_guard<std::mutex> player_lock(player_mutex_);
+        player_.stop();
+    }
 }
 
 }  // namespace aiden
