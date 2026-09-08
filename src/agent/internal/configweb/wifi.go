@@ -424,8 +424,8 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 	if !readJSONBody(w, r, &request) {
 		return
 	}
-	if strings.TrimSpace(request.SSID) == "" {
-		writeJSONError(w, 400, "ssid is required")
+	if err := wifiproxy.ValidateSSID(request.SSID); err != nil {
+		writeJSONError(w, 400, err.Error())
 		return
 	}
 	if err := validateWiFiProxyRequest(request); err != nil {
@@ -641,6 +641,9 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 }
 
 func validateWiFiProxyRequest(request wifiConnectionRequest) error {
+	if err := wifiproxy.ValidateSSID(request.SSID); err != nil {
+		return fmt.Errorf("ssid: %w", err)
+	}
 	mode := wifiproxy.Mode(strings.ToLower(strings.TrimSpace(request.ProxyMode)))
 	if mode == "" || mode == wifiproxy.ModeSystem {
 		if request.ProxyURL != nil && strings.TrimSpace(*request.ProxyURL) != "" {
@@ -680,6 +683,9 @@ func validateWiFiProxyRequest(request wifiConnectionRequest) error {
 }
 
 func applyWiFiProxyRequest(config *wifiproxy.Config, request wifiConnectionRequest) error {
+	if err := wifiproxy.ValidateSSID(request.SSID); err != nil {
+		return fmt.Errorf("ssid: %w", err)
+	}
 	mode := wifiproxy.Mode(strings.ToLower(strings.TrimSpace(request.ProxyMode)))
 	if mode == "" {
 		return nil
@@ -723,14 +729,14 @@ func (s *Server) handleWiFiForget(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		SSID string `json:"ssid"`
 	}
-	request.SSID = strings.TrimSpace(r.URL.Query().Get("ssid"))
+	request.SSID = r.URL.Query().Get("ssid")
 	if request.SSID == "" && r.Body != nil {
 		if !readJSONBody(w, r, &request) {
 			return
 		}
 	}
-	if strings.TrimSpace(request.SSID) == "" {
-		writeJSONError(w, 400, "ssid is required")
+	if err := wifiproxy.ValidateSSID(request.SSID); err != nil {
+		writeJSONError(w, 400, err.Error())
 		return
 	}
 	if !s.wifiOpMu.TryLock() {

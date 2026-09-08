@@ -45,6 +45,18 @@ func EmptyConfig() Config {
 	return Config{Version: ConfigVersion, Networks: make(map[string]Network)}
 }
 
+// ValidateSSID rejects empty or padded network names so persisted keys match
+// the exact SSID reported by the Wi-Fi runtime.
+func ValidateSSID(ssid string) error {
+	if strings.TrimSpace(ssid) == "" {
+		return errors.New("Wi-Fi SSID must not be empty")
+	}
+	if strings.TrimSpace(ssid) != ssid {
+		return errors.New("Wi-Fi SSID must not have surrounding whitespace")
+	}
+	return nil
+}
+
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -67,8 +79,8 @@ func Load(path string) (Config, error) {
 		config.Networks = make(map[string]Network)
 	}
 	for ssid, network := range config.Networks {
-		if strings.TrimSpace(ssid) == "" {
-			return Config{}, errors.New("Wi-Fi proxy config contains an empty SSID")
+		if err := ValidateSSID(ssid); err != nil {
+			return Config{}, fmt.Errorf("Wi-Fi proxy config contains invalid SSID %q: %w", ssid, err)
 		}
 		normalized, err := NormalizeNetwork(network)
 		if err != nil {
@@ -89,8 +101,8 @@ func Save(path string, config Config) error {
 	}
 	normalized := EmptyConfig()
 	for ssid, network := range config.Networks {
-		if strings.TrimSpace(ssid) == "" {
-			return errors.New("Wi-Fi proxy config contains an empty SSID")
+		if err := ValidateSSID(ssid); err != nil {
+			return fmt.Errorf("Wi-Fi proxy config contains invalid SSID %q: %w", ssid, err)
 		}
 		value, err := NormalizeNetwork(network)
 		if err != nil {

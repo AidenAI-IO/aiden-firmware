@@ -16,7 +16,6 @@ func TestConfigRoundTripAndRedaction(t *testing.T) {
 	}
 	config.Networks["Home"] = Network{Mode: ModeDirect}
 	config.Networks["Inherited"] = Network{Mode: ModeSystem, NoProxy: "ignored.example"}
-	config.Networks[" Office With Spaces "] = Network{Mode: ModeDirect}
 	if err := Save(path, config); err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +23,7 @@ func TestConfigRoundTripAndRedaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Networks) != 3 || loaded.Networks["Home"].Mode != ModeDirect || loaded.Networks[" Office With Spaces "].Mode != ModeDirect {
+	if len(loaded.Networks) != 2 || loaded.Networks["Home"].Mode != ModeDirect {
 		t.Fatalf("loaded config=%#v", loaded)
 	}
 	if _, ok := loaded.Networks["Inherited"]; ok {
@@ -42,6 +41,21 @@ func TestConfigRoundTripAndRedaction(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode=%o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestConfigRejectsSSIDWithSurroundingWhitespace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wifi-proxies.json")
+	config := EmptyConfig()
+	config.Networks[" Office "] = Network{Mode: ModeDirect}
+	if err := Save(path, config); err == nil {
+		t.Fatal("Save accepted an SSID with surrounding whitespace")
+	}
+	if err := os.WriteFile(path, []byte(`{"version":1,"networks":{" Office ":{"mode":"direct"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load accepted an SSID with surrounding whitespace")
 	}
 }
 

@@ -14,8 +14,11 @@ watchdog_pid=
 proxy_pid=
 unrelated_pid=
 false_positive_pid=
+mismatched_pid=
 
-run_init() {
+run_init_at() {
+    init_path="$1"
+    action="$2"
     AGENT_BIN="$fixture_dir/agent" \
     ENV_RUN_BIN="$fixture_dir/env-run" \
     LISTEN_ADDRESS=127.0.0.1:18080 \
@@ -26,12 +29,16 @@ run_init() {
     LOG_PATH="$fixture_dir/wifi-proxy.log" \
     PID_FILE="$fixture_dir/proxy.pid" \
     WATCHDOG_PID_FILE="$fixture_dir/watchdog.pid" \
-        "$init_script" "$1"
+        "$init_path" "$action"
+}
+
+run_init() {
+    run_init_at "$init_script" "$1"
 }
 
 cleanup() {
     run_init stop >/dev/null 2>&1 || true
-    for pid in "$proxy_pid" "$watchdog_pid" "$unrelated_pid" "$false_positive_pid"; do
+    for pid in "$proxy_pid" "$watchdog_pid" "$unrelated_pid" "$false_positive_pid" "$mismatched_pid"; do
         [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     done
     rm -rf "$fixture_dir"
@@ -57,6 +64,7 @@ exit 0
 EOF
 
 chmod +x "$fixture_dir/agent" "$fixture_dir/env-run" "$fixture_dir/agent-init"
+ln -s "$init_script" "$fixture_dir/S51wifi_proxy"
 
 wait_for_pid_file() {
     path="$1"
@@ -100,6 +108,44 @@ kill -0 "$false_positive_pid" || {
 kill "$false_positive_pid"
 wait "$false_positive_pid" 2>/dev/null || true
 false_positive_pid=
+run_init stop >/dev/null
+wait_for_exit "$watchdog_pid" || {
+    echo "FAIL: watchdog remained alive after the prefix false-positive check" >&2
+    exit 1
+}
+wait_for_exit "$proxy_pid" || {
+    echo "FAIL: proxy remained alive after the prefix false-positive check" >&2
+    exit 1
+}
+watchdog_pid=
+proxy_pid=
+
+# A process with the right command prefix but different proxy arguments is not
+# the managed child and must not be terminated by start.
+"$fixture_dir/agent" wifi-proxy --listen 127.0.0.1:19999 --config wrong --environment wrong --wifi-interface wrong &
+mismatched_pid="$!"
+printf '%s\n' "$mismatched_pid" > "$fixture_dir/proxy.pid"
+run_init start >/dev/null
+wait_for_pid_file "$fixture_dir/watchdog.pid"
+wait_for_pid_file "$fixture_dir/proxy.pid"
+watchdog_pid="$(cat "$fixture_dir/watchdog.pid")"
+proxy_pid="$(cat "$fixture_dir/proxy.pid")"
+kill -0 "$mismatched_pid" || {
+    echo "FAIL: start killed a process with mismatched proxy arguments" >&2
+    exit 1
+}
+kill "$mismatched_pid"
+wait "$mismatched_pid" 2>/dev/null || true
+mismatched_pid=
+
+# Starting through a symlink must resolve to the same watchdog identity and
+# leave the existing supervisor and child untouched.
+run_init_at "$fixture_dir/S51wifi_proxy" start >/dev/null
+if [ "$(cat "$fixture_dir/watchdog.pid")" != "$watchdog_pid" ] ||
+   [ "$(cat "$fixture_dir/proxy.pid")" != "$proxy_pid" ]; then
+    echo "FAIL: symlink invocation started a duplicate watchdog" >&2
+    exit 1
+fi
 
 # Simulate an unclean watchdog crash. The child proxy stays alive and its PID
 # file remains, exactly as it would after the supervisor is killed abruptly.

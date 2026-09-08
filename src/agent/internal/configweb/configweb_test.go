@@ -1080,6 +1080,12 @@ func TestWiFiProxyRequestValidationAndPasswordRedaction(t *testing.T) {
 	if _, ok := config.Networks["Office"]; ok {
 		t.Fatalf("system-default proxy retained Wi-Fi-specific settings: %#v", config.Networks["Office"])
 	}
+	if err := validateWiFiProxyRequest(wifiConnectionRequest{SSID: " Office ", ProxyMode: "direct"}); err == nil {
+		t.Fatal("Wi-Fi proxy validation accepted an SSID with surrounding whitespace")
+	}
+	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: " Office ", ProxyMode: "direct"}); err == nil {
+		t.Fatal("Wi-Fi proxy update accepted an SSID with surrounding whitespace")
+	}
 }
 
 func TestWiFiForgetRemovesProxyMapping(t *testing.T) {
