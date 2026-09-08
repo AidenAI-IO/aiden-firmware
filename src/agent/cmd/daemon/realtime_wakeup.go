@@ -2018,6 +2018,8 @@ type realtimeTurnState struct {
 	retiredResponseOrder    []string
 	inputSpeechActive       bool
 	inputTurnPending        bool
+	// Keep interrupted output suppressed independently of input admission.
+	bargedInResponseID      string
 	inputTurnSequence       uint64
 	inputTurnTranscriptSeen bool
 }
@@ -2050,11 +2052,16 @@ func (s *realtimeTurnState) speechStarted() {
 	}
 	s.inputSpeechActive = true
 	s.inputTurnPending = true
+	if s.responseActive && s.responseID != "" {
+		s.bargedInResponseID = s.responseID
+	}
 	s.inputTurnTranscriptSeen = false
 }
 
+// speechStopped releases input admission; an invalid turn also restores interrupted output.
 func (s *realtimeTurnState) speechStopped(status string) {
 	s.inputSpeechActive = false
+	s.inputTurnPending = false
 	if status == "turn_invalid" {
 		// The provider rejected this speech as a turn, so roll back the
 		// sequence and leave any response that was interrupted eligible to
@@ -2062,13 +2069,8 @@ func (s *realtimeTurnState) speechStopped(status string) {
 		if s.inputTurnSequence > 0 {
 			s.inputTurnSequence--
 		}
-		s.inputTurnPending = false
-		return
+		s.bargedInResponseID = ""
 	}
-	// Once provider VAD reports speech_stopped, the user's turn is complete.
-	// Do not keep the foreground admission gate blocked while waiting for a
-	// response that may never arrive (for example, an empty/noise turn).
-	s.inputTurnPending = false
 }
 
 func (s *realtimeTurnState) localSpeechStopped() {
@@ -2124,8 +2126,10 @@ func (s *realtimeTurnState) responseStarted(responseID string) bool {
 		s.responseID = ""
 		return false
 	}
+	s.retireResponseID(s.bargedInResponseID)
 	s.responseActive = true
 	s.responseID = responseID
+	s.bargedInResponseID = ""
 	s.anonymousResponseStale = false
 	s.inputTurnPending = false
 	return true
@@ -2144,6 +2148,9 @@ func (s *realtimeTurnState) acceptsResponseEvent(responseID string) bool {
 		return !s.anonymousResponseStale
 	}
 	if s.isRetiredResponseID(responseID) {
+		return false
+	}
+	if s.bargedInResponseID == responseID {
 		return false
 	}
 	if s.responseID != "" && s.responseID != responseID {
@@ -2186,6 +2193,7 @@ func (s *realtimeTurnState) responseFinished(responseID string) bool {
 	s.responseTerminalPending = false
 	s.responseRequestPending = false
 	s.responseID = ""
+	s.bargedInResponseID = ""
 	return true
 }
 

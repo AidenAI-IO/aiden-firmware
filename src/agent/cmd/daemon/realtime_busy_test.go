@@ -382,6 +382,14 @@ func TestRealtimeBusySpeechStoppedReleasesAdmission(t *testing.T) {
 	requireBusyEvent(t, events, agent.RealtimeChatEventDone)
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventSpeechStarted}
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventSpeechStopped}
+	// The tool result acknowledges processing of all preceding provider events.
+	// Queue the next chat only after the stop has reached the daemon loop.
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventToolCall, CallID: "stop-barrier", Name: "unknown_tool", Arguments: "{}"}
+	select {
+	case <-s.toolResults:
+	case <-time.After(time.Second):
+		t.Fatal("speech stop processing was not acknowledged")
+	}
 	next := busyTestRequest(t, s, bridge, done, "after-speech-stopped")
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, Status: "completed"}
 	requireBusyEvent(t, next, agent.RealtimeChatEventDone)

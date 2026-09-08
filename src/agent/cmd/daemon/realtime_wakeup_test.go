@@ -311,6 +311,24 @@ func TestRealtimeTurnStateReleasesAdmissionAfterSpeechStopped(t *testing.T) {
 	}
 }
 
+func TestRealtimeTurnStateSuppressesBargedInOutputAfterSpeechStopped(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("old")
+	state.speechStarted()
+	state.speechStopped("")
+	if state.acceptsResponseEvent("old") {
+		t.Fatal("stopped speech restored interrupted output")
+	}
+	state.responseStarted("new")
+	if state.acceptsResponseEvent("old") || !state.acceptsResponseEvent("new") {
+		t.Fatal("new response did not preserve old output suppression")
+	}
+	state.responseFinished("new")
+	if state.acceptsResponseEvent("old") {
+		t.Fatal("old output became eligible after the new response finished")
+	}
+}
+
 func TestRealtimeTurnStateRejectsStaleResponseDone(t *testing.T) {
 	state := realtimeTurnState{}
 	state.responseStarted("response-new")
