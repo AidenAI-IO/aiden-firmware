@@ -94,8 +94,9 @@ after the affected services or shell restart. The proxy reloads
 `/userdata/system/wifi-proxies.json` and the current `wlan0` SSID every two
 seconds. Each saved network can use the system upstream from
 `/userdata/system/env`, connect directly, or use its own HTTP, HTTPS, or SOCKS5
-proxy. Switching Wi-Fi does not require restarting the Agent unless the selected
-proxy protocol changes between HTTP and SOCKS5.
+proxy. Switching Wi-Fi does not require restarting the Agent unless the
+generated proxy environment changes, including a change to the selected proxy
+protocol or the per-network `NO_PROXY` value.
 
 ## OTA
 
