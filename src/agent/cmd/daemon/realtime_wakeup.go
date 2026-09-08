@@ -1816,7 +1816,9 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				stopCancelAckTimer()
 				if wasCanceled {
 					cancelForegroundTools(event.ResponseID)
-					toolTracker.clear(event.ResponseID)
+					if event.ResponseID != "" {
+						toolTracker.clear(event.ResponseID)
+					}
 				}
 				log.Printf("[realtime] Response terminal: request_id=%s response_id=%s kind=%s status=%s occupied_ms=%d",
 					realtimeChatRequestID(activeChat), event.ResponseID, event.Kind, event.Status, watchdog.age().Milliseconds())
@@ -1827,7 +1829,9 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				notificationResponse := activeNotificationToken != "" && (activeNotificationResponseID == "" || activeNotificationResponseID == event.ResponseID)
 				if suppressedResponse {
 					delete(suppressedNotificationResponseIDs, event.ResponseID)
-					toolTracker.clear(event.ResponseID)
+					if event.ResponseID != "" {
+						toolTracker.clear(event.ResponseID)
+					}
 				}
 				if event.Usage.TotalTokens > 0 || event.Usage.InputTokens > 0 || event.Usage.OutputTokens > 0 {
 					realtimeResponseUsage.TotalTokens += event.Usage.TotalTokens
@@ -1945,7 +1949,14 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				sleep.abandon()
 				turnState.responseInterrupted()
 				cancelForegroundTools(event.ResponseID)
-				toolTracker.clear(event.ResponseID)
+				// Use the current response ID if the event didn't provide one
+				responseIDForCleanup := event.ResponseID
+				if responseIDForCleanup == "" {
+					responseIDForCleanup = turnState.responseID
+				}
+				if responseIDForCleanup != "" {
+					toolTracker.clear(responseIDForCleanup)
+				}
 				if err := playback.interrupt(playbackAudio, outputFormat); err != nil {
 					return err
 				}
