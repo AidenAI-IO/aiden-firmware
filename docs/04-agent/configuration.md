@@ -904,7 +904,7 @@ The Agent no longer reads `[proxy]` from `agent.toml`. Values in `/userdata/syst
 ```sh
 HTTP_PROXY=http://127.0.0.1:7890
 HTTPS_PROXY=http://127.0.0.1:7890
-NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10
 OPENROUTER_API_KEY=...
 ```
 

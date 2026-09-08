@@ -305,7 +305,10 @@ func TestCustomProxyBypassesLoopbackWhenNoProxyOmitted(t *testing.T) {
 	config.Networks["Office"] = Network{Mode: ModeProxy, ProxyURL: "http://proxy.example:7890"}
 	server, _ := startTestProxy(t, config, Upstreams{})
 	server.SetCurrentSSID("Office")
-	for _, host := range []string{"127.0.0.1:8080", "10.1.2.3:8080", "172.16.1.2:8080", "192.168.42.1:8080"} {
+	for _, host := range []string{
+		"127.0.0.1:8080", "10.1.2.3:8080", "172.16.1.2:8080", "192.168.42.1:8080",
+		"169.254.1.1:8080", "[fd00::1]:8080", "[fe80::1]:8080",
+	} {
 		upstream, err := server.upstreamFor(&url.URL{Scheme: "http", Host: host})
 		if err != nil {
 			t.Fatal(err)

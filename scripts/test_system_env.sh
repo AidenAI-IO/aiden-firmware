@@ -92,8 +92,8 @@ cat > "$PROXY_ENV_FILE" <<'EOF'
 HTTP_PROXY=socks5h://127.0.0.1:18080
 HTTPS_PROXY=socks5h://127.0.0.1:18080
 ALL_PROXY=socks5h://127.0.0.1:18080
-NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
-no_proxy=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10
+no_proxy=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10
 AIDEN_WIFI_PROXY_NO_PROXY_SET=1
 EOF
 
@@ -102,7 +102,7 @@ output=$(
         "$TEST_ENV_RUN" sh -c 'printf "%s|%s|%s|%s|%s|%s|%s|%s" "$AIDEN_TEST_VALUE" "$HTTP_PROXY" "$NO_PROXY" "$no_proxy" "$PYTHONUSERBASE" "$PIP_USER" "$PIP_NO_CACHE_DIR" "$PIP_DISABLE_PIP_VERSION_CHECK"'
 )
 
-expected_no_proxy='localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'
+expected_no_proxy='localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10'
 expected_python='/userdata/agent/python|1|1|1'
 if [ "$output" != "from-system-env|socks5h://127.0.0.1:18080|$expected_no_proxy|$expected_no_proxy|$expected_python" ]; then
     echo "aiden-env-run did not apply system env and fixed Python environment" >&2
