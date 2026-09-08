@@ -329,6 +329,16 @@ func TestRealtimeTurnStateSuppressesBargedInOutputAfterSpeechStopped(t *testing.
 	}
 }
 
+func TestRealtimeTurnStateSuppressesInterruptedAnonymousOutputAfterTerminalPending(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("")
+	state.responseInterrupted()
+	state.speechStopped("")
+	if state.acceptsResponseEvent("") {
+		t.Fatal("anonymous interrupted output was accepted after speech stopped")
+	}
+}
+
 func TestRealtimeTurnStateRejectsStaleResponseDone(t *testing.T) {
 	state := realtimeTurnState{}
 	state.responseStarted("response-new")

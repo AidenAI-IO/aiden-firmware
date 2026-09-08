@@ -2020,6 +2020,7 @@ type realtimeTurnState struct {
 	inputTurnPending        bool
 	// Keep interrupted output suppressed independently of input admission.
 	bargedInResponseID      string
+	bargedInAnonymous       bool
 	inputTurnSequence       uint64
 	inputTurnTranscriptSeen bool
 }
@@ -2052,8 +2053,12 @@ func (s *realtimeTurnState) speechStarted() {
 	}
 	s.inputSpeechActive = true
 	s.inputTurnPending = true
-	if s.responseActive && s.responseID != "" {
-		s.bargedInResponseID = s.responseID
+	if s.responseActive || s.responseTerminalPending {
+		if s.responseID != "" {
+			s.bargedInResponseID = s.responseID
+		} else {
+			s.bargedInAnonymous = true
+		}
 	}
 	s.inputTurnTranscriptSeen = false
 }
@@ -2070,6 +2075,7 @@ func (s *realtimeTurnState) speechStopped(status string) {
 			s.inputTurnSequence--
 		}
 		s.bargedInResponseID = ""
+		s.bargedInAnonymous = false
 	}
 }
 
@@ -2130,6 +2136,7 @@ func (s *realtimeTurnState) responseStarted(responseID string) bool {
 	s.responseActive = true
 	s.responseID = responseID
 	s.bargedInResponseID = ""
+	s.bargedInAnonymous = false
 	s.anonymousResponseStale = false
 	s.inputTurnPending = false
 	return true
@@ -2145,7 +2152,7 @@ func (s *realtimeTurnState) responseOutputObserved(responseID string) {
 
 func (s *realtimeTurnState) acceptsResponseEvent(responseID string) bool {
 	if responseID == "" {
-		return !s.anonymousResponseStale
+		return !s.anonymousResponseStale && !s.bargedInAnonymous
 	}
 	if s.isRetiredResponseID(responseID) {
 		return false
@@ -2193,11 +2200,15 @@ func (s *realtimeTurnState) responseFinished(responseID string) bool {
 	s.responseTerminalPending = false
 	s.responseRequestPending = false
 	s.responseID = ""
-	s.bargedInResponseID = ""
 	return true
 }
 
 func (s *realtimeTurnState) responseInterrupted() {
+	if s.responseID != "" {
+		s.bargedInResponseID = s.responseID
+	} else if s.responseActive || s.responseTerminalPending {
+		s.bargedInAnonymous = true
+	}
 	s.responseTerminalPending = s.responseTerminalPending || s.responseActive || s.responseID != ""
 	s.responseActive = false
 }
