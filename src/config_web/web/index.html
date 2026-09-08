@@ -349,7 +349,15 @@
         </select>
       </div>
       <div id="wifiProxyUrlField" class="field wifi-modal-field hidden">
-        <label for="wifiProxyUrl" data-i18n="wifi.proxy_url">Proxy URL</label>
+        <div class="field-label-with-info">
+          <label for="wifiProxyUrl" data-i18n="wifi.proxy_url">Proxy URL</label>
+          <span class="info-tooltip">
+            <button type="button" class="info-tooltip-trigger" aria-describedby="wifiProxyUrlHelp" aria-label="Show supported proxy URLs" data-i18n-aria-label="wifi.proxy_url_help_label">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8"></circle><path d="M10 9v5M10 6.25v.25"></path></svg>
+            </button>
+            <span id="wifiProxyUrlHelp" class="info-tooltip-content" role="tooltip" data-i18n="wifi.proxy_url_help">Supported URLs: socks5://, socks5h://, http://, https://</span>
+          </span>
+        </div>
         <input id="wifiProxyUrl" type="url" autocomplete="off" spellcheck="false" placeholder="http://user:password@proxy.example:7890" data-i18n-placeholder="wifi.proxy_url_placeholder">
       </div>
       <div id="wifiNoProxyField" class="field wifi-modal-field hidden">

@@ -219,6 +219,7 @@ assert.equal(
 assert.equal(t('config.fields.agent.context_prune_threshold.placeholder'), '0 = 自动（0.5）');
 assert.equal(t('logs.jump_to_bottom'), '跳到底部');
 assert.equal(t('system_env.saved'), 'env 已保存。');
+assert.equal(t('wifi.proxy_url_help'), '支持的 URL：socks5://、socks5h://、http://、https://');
 assert.equal(t('missing.translation.key'), 'missing.translation.key');
 
 applyLocale('en-US', true);
@@ -226,6 +227,7 @@ assert.equal(document.documentElement.lang, 'en-US');
 assert.equal(title.textContent, 'Configuration');
 assert.equal(password.getAttribute('placeholder'), 'Open network can leave empty');
 assert.equal(t('config.fields.model.responses_compact_threshold.label'), 'Compaction threshold (tokens)');
+assert.equal(t('wifi.proxy_url_help'), 'Supported URLs: socks5://, socks5h://, http://, https://');
 assert.equal(stored.get('aiden.config.locale'), 'en-US');
 
 const source = await fs.readFile(i18nPath, 'utf8');
@@ -238,6 +240,8 @@ assert.match(indexHtml, /data-i18n="page\.title"/);
 assert.match(indexHtml, /data-i18n="action\.ready"/);
 assert.match(indexHtml, /data-i18n-placeholder="wifi\.password_optional"/);
 assert.match(indexHtml, /id="wifiProxyMode"/);
+assert.match(indexHtml, /class="info-tooltip-trigger"[^>]+aria-describedby="wifiProxyUrlHelp"/);
+assert.match(indexHtml, /id="wifiProxyUrlHelp"[^>]+data-i18n="wifi\.proxy_url_help"/);
 assert.match(indexHtml, /data-i18n-placeholder="wifi\.proxy_url_placeholder"/);
 assert.match(indexHtml, /id="wifiNoProxy"/);
 assert.match(indexHtml, /data-i18n-placeholder="wifi\.no_proxy_placeholder"/);
