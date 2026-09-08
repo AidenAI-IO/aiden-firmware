@@ -375,21 +375,24 @@ func TestRealtimeBusyAudioAndToolProgressRenewDeadline(t *testing.T) {
 	requireBusyEvent(t, events, agent.RealtimeChatEventDone)
 }
 
-func TestRealtimeBusyUnansweredVoiceTurnTimesOut(t *testing.T) {
+func TestRealtimeBusySpeechStoppedReleasesAdmission(t *testing.T) {
 	s, bridge, done := startBusyTestSession(t, 100*time.Millisecond)
 	events := busyTestRequest(t, s, bridge, done, "setup")
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, Status: "completed"}
 	requireBusyEvent(t, events, agent.RealtimeChatEventDone)
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventSpeechStarted}
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventSpeechStopped}
+	// The tool result acknowledges processing of all preceding provider events.
+	// Queue the next chat only after the stop has reached the daemon loop.
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventToolCall, CallID: "stop-barrier", Name: "unknown_tool", Arguments: "{}"}
 	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "no progress") {
-			t.Fatalf("session exit=%v, want timeout", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("pending voice turn permanently blocks text admission")
+	case <-s.toolResults:
+	case <-time.After(time.Second):
+		t.Fatal("speech stop processing was not acknowledged")
 	}
+	next := busyTestRequest(t, s, bridge, done, "after-speech-stopped")
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, Status: "completed"}
+	requireBusyEvent(t, next, agent.RealtimeChatEventDone)
 }
 
 func TestRealtimeBusyGeminiInterruptionTerminalReleasesChat(t *testing.T) {

@@ -289,7 +289,7 @@ func TestInterruptRealtimeResponseSkipsIdleResponse(t *testing.T) {
 	}
 }
 
-func TestRealtimeTurnStateKeepsNewTurnPendingAcrossOldResponseDone(t *testing.T) {
+func TestRealtimeTurnStateReleasesAdmissionAfterSpeechStopped(t *testing.T) {
 	state := realtimeTurnState{}
 	state.responseStarted("response-old")
 	state.speechStarted()
@@ -298,8 +298,8 @@ func TestRealtimeTurnStateKeepsNewTurnPendingAcrossOldResponseDone(t *testing.T)
 	if !state.responseFinished("response-old") {
 		t.Fatal("old response terminal event was not accepted")
 	}
-	if state.canInjectResponse() {
-		t.Fatal("task response was admitted while the new user turn awaited response.started")
+	if !state.canInjectResponse() {
+		t.Fatal("task response remained blocked after speech_stopped")
 	}
 
 	state.responseStarted("response-new")
@@ -308,6 +308,34 @@ func TestRealtimeTurnStateKeepsNewTurnPendingAcrossOldResponseDone(t *testing.T)
 	}
 	if !state.responseFinished("response-new") || !state.canInjectResponse() {
 		t.Fatal("turn state did not become idle after the new response completed")
+	}
+}
+
+func TestRealtimeTurnStateSuppressesBargedInOutputAfterSpeechStopped(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("old")
+	state.speechStarted()
+	state.speechStopped("")
+	if state.acceptsResponseEvent("old") {
+		t.Fatal("stopped speech restored interrupted output")
+	}
+	state.responseStarted("new")
+	if state.acceptsResponseEvent("old") || !state.acceptsResponseEvent("new") {
+		t.Fatal("new response did not preserve old output suppression")
+	}
+	state.responseFinished("new")
+	if state.acceptsResponseEvent("old") {
+		t.Fatal("old output became eligible after the new response finished")
+	}
+}
+
+func TestRealtimeTurnStateSuppressesInterruptedAnonymousOutputAfterTerminalPending(t *testing.T) {
+	state := realtimeTurnState{}
+	state.responseStarted("")
+	state.responseInterrupted()
+	state.speechStopped("")
+	if state.acceptsResponseEvent("") {
+		t.Fatal("anonymous interrupted output was accepted after speech stopped")
 	}
 }
 
@@ -331,8 +359,8 @@ func TestRealtimeTurnStateDoesNotConsumeNewTurnForLateResponseCreated(t *testing
 		t.Fatal("late response.created was accepted as the current turn")
 	}
 
-	if !state.inputTurnPending {
-		t.Fatalf("late response.created consumed the new user turn: %+v", state)
+	if state.inputTurnPending {
+		t.Fatalf("speech_stopped left a pending input turn: %+v", state)
 	}
 }
 
@@ -343,7 +371,7 @@ func TestRealtimeTurnStateKeepsTranscriptFromInterruptedTurn(t *testing.T) {
 	state.speechStopped("")
 	state.userTranscriptObserved()
 
-	if !state.inputTurnPending || state.inputTurnSequence != 1 {
+	if state.inputTurnPending || state.inputTurnSequence != 1 {
 		t.Fatalf("user transcript was lost while old response was active: %+v", state)
 	}
 }
@@ -413,8 +441,8 @@ func TestRealtimeTurnStateRejectsDuplicateResponseCreated(t *testing.T) {
 	if state.responseStarted("response-1") {
 		t.Fatal("duplicate response.created consumed the new input turn")
 	}
-	if !state.inputTurnPending {
-		t.Fatal("duplicate response.created cleared the new input turn")
+	if state.inputTurnPending {
+		t.Fatal("speech_stopped left the new input turn pending")
 	}
 }
 

@@ -2018,6 +2018,9 @@ type realtimeTurnState struct {
 	retiredResponseOrder    []string
 	inputSpeechActive       bool
 	inputTurnPending        bool
+	// Keep interrupted output suppressed independently of input admission.
+	bargedInResponseID      string
+	bargedInAnonymous       bool
 	inputTurnSequence       uint64
 	inputTurnTranscriptSeen bool
 }
@@ -2050,11 +2053,20 @@ func (s *realtimeTurnState) speechStarted() {
 	}
 	s.inputSpeechActive = true
 	s.inputTurnPending = true
+	if s.responseActive || s.responseTerminalPending {
+		if s.responseID != "" {
+			s.bargedInResponseID = s.responseID
+		} else {
+			s.bargedInAnonymous = true
+		}
+	}
 	s.inputTurnTranscriptSeen = false
 }
 
+// speechStopped releases input admission; an invalid turn also restores interrupted output.
 func (s *realtimeTurnState) speechStopped(status string) {
 	s.inputSpeechActive = false
+	s.inputTurnPending = false
 	if status == "turn_invalid" {
 		// The provider rejected this speech as a turn, so roll back the
 		// sequence and leave any response that was interrupted eligible to
@@ -2062,10 +2074,9 @@ func (s *realtimeTurnState) speechStopped(status string) {
 		if s.inputTurnSequence > 0 {
 			s.inputTurnSequence--
 		}
-		s.inputTurnPending = false
-		return
+		s.bargedInResponseID = ""
+		s.bargedInAnonymous = false
 	}
-	s.inputTurnPending = status != "turn_invalid"
 }
 
 func (s *realtimeTurnState) localSpeechStopped() {
@@ -2121,8 +2132,11 @@ func (s *realtimeTurnState) responseStarted(responseID string) bool {
 		s.responseID = ""
 		return false
 	}
+	s.retireResponseID(s.bargedInResponseID)
 	s.responseActive = true
 	s.responseID = responseID
+	s.bargedInResponseID = ""
+	s.bargedInAnonymous = false
 	s.anonymousResponseStale = false
 	s.inputTurnPending = false
 	return true
@@ -2138,9 +2152,12 @@ func (s *realtimeTurnState) responseOutputObserved(responseID string) {
 
 func (s *realtimeTurnState) acceptsResponseEvent(responseID string) bool {
 	if responseID == "" {
-		return !s.anonymousResponseStale
+		return !s.anonymousResponseStale && !s.bargedInAnonymous
 	}
 	if s.isRetiredResponseID(responseID) {
+		return false
+	}
+	if s.bargedInResponseID == responseID {
 		return false
 	}
 	if s.responseID != "" && s.responseID != responseID {
@@ -2187,6 +2204,11 @@ func (s *realtimeTurnState) responseFinished(responseID string) bool {
 }
 
 func (s *realtimeTurnState) responseInterrupted() {
+	if s.responseID != "" {
+		s.bargedInResponseID = s.responseID
+	} else if s.responseActive || s.responseTerminalPending {
+		s.bargedInAnonymous = true
+	}
 	s.responseTerminalPending = s.responseTerminalPending || s.responseActive || s.responseID != ""
 	s.responseActive = false
 }
