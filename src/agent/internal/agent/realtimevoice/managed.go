@@ -35,11 +35,12 @@ type DeviceMediaConfig struct {
 // real protocol support.
 type Conversation struct {
 	Session
-	TurnCommitter       TurnCommitter
-	ResponseInterrupter ResponseInterrupter
-	ToolResultSender    ToolResultSender
-	TextSession         TextSession
-	ContextReplayer     ContextReplayer
+	TurnCommitter                  TurnCommitter
+	ResponseInterrupter            ResponseInterrupter
+	InterruptionAckTimeoutProvider InterruptionAckTimeoutProvider
+	ToolResultSender               ToolResultSender
+	TextSession                    TextSession
+	ContextReplayer                ContextReplayer
 }
 
 // Open constructs the selected provider adapter and wraps it with Aiden's
@@ -85,6 +86,7 @@ func newConversation(managed *managedSession, raw Session) *Conversation {
 	conversation := &Conversation{Session: managed}
 	conversation.TurnCommitter, _ = raw.(TurnCommitter)
 	conversation.ResponseInterrupter, _ = raw.(ResponseInterrupter)
+	conversation.InterruptionAckTimeoutProvider, _ = raw.(InterruptionAckTimeoutProvider)
 	conversation.ToolResultSender, _ = raw.(ToolResultSender)
 	conversation.TextSession, _ = raw.(TextSession)
 	conversation.ContextReplayer, _ = raw.(ContextReplayer)
