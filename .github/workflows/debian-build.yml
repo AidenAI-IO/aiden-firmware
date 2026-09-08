@@ -195,19 +195,28 @@ jobs:
         exit "$status"
 
     - name: Verify build host prerequisites
-      # The same host tools debian_build.sh requires. Checking them here also
-      # gives the dry run something to report, since it never reaches the
-      # script's own check.
+      # debian_build.sh's own list, plus what the Stage 3 host-side BSP audit
+      # needs. audit-bsp.sh runs outside the build containers and is only
+      # reached after the kernel is built, so a tool missing there costs a
+      # two-hour build. Checking the union here also gives the dry run
+      # something to report, since it never reaches either script's own check.
       shell: bash
       run: |
         set -euo pipefail
         missing=()
-        for command in awk cmp curl date docker getconf git grep id install \
-          openssl python3 readlink sha256sum tar; do
+        for command in awk cmp curl date docker fdtget find getconf git grep id \
+          install od openssl python3 readlink sha256sum sort stat tar tr xargs; do
           command -v "$command" >/dev/null 2>&1 || missing+=("$command")
         done
         if [ ${#missing[@]} -gt 0 ]; then
           echo "Missing required build host commands: ${missing[*]}" >&2
+          for command in "${missing[@]}"; do
+            case "$command" in
+              fdtget)
+                echo "  ${command}: provided by the device-tree-compiler package" >&2
+                ;;
+            esac
+          done
           exit 1
         fi
         docker info >/dev/null 2>&1 || {
