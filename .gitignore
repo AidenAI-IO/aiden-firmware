@@ -71,7 +71,3 @@ skillopt/runs/
 
 # VPhone local environment (machine-specific paths/hosts; use vphone.env.example)
 benchmark/vphone/vphone.env
-
-# Cross-compiled agent binaries for board deployment
-/agent-arm64
-/agent-armv7
