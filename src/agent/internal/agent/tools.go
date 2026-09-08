@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"aiden-agent/internal/agent/agentpath"
@@ -25,8 +26,11 @@ type ToolSet struct {
 	phoneBridgeRestorer  *PhoneBridgeRestorer
 	textInputHW          *textInputHardwareDeps
 	iosKeyboardIsolation *iosKeyboardIsolationController
-	searchOpenTool       *appSearchOpenTool
-	skillInstallClient   *http.Client
+	// Environment bridges own the target device and cannot toggle the local
+	// board's USB gadget profile, so bridge input bypasses local iOS isolation.
+	iosKeyboardIsolationOptional bool
+	searchOpenTool               *appSearchOpenTool
+	skillInstallClient           *http.Client
 }
 
 type runtimeDeviceTypeConfigurable interface {
@@ -38,12 +42,13 @@ type runtimeDeviceTypeConfigurable interface {
 type BuiltinToolSetOption func(*builtinToolSetOptions)
 
 type builtinToolSetOptions struct {
-	waitForWakeupController *WaitForWakeupController
-	screenStable            ScreenStableDefaults
-	screenState             *screen.ScreenState
-	screenProvider          screenprovider.Provider
-	mnkProvider             mnk.Provider
-	shellTemporaryDirectory string
+	waitForWakeupController     *WaitForWakeupController
+	screenStable                ScreenStableDefaults
+	screenState                 *screen.ScreenState
+	screenProvider              screenprovider.Provider
+	mnkProvider                 mnk.Provider
+	shellTemporaryDirectory     string
+	disableIOSKeyboardIsolation bool
 }
 
 func WithWaitForWakeupController(controller *WaitForWakeupController) BuiltinToolSetOption {
@@ -62,6 +67,14 @@ func WithShellTemporaryDirectory(dir string) BuiltinToolSetOption {
 	return func(options *builtinToolSetOptions) {
 		options.shellTemporaryDirectory = dir
 	}
+}
+
+func withIOSKeyboardIsolationDisabled(options *builtinToolSetOptions) {
+	options.disableIOSKeyboardIsolation = true
+}
+
+func shouldEnableIOSKeyboardIsolation(cfg Config) bool {
+	return !(cfg.EnvironmentBridge.Enabled && strings.TrimSpace(cfg.EnvironmentBridge.Endpoint) != "")
 }
 
 // WithScreenState makes the tools publish visual observations to a shared
@@ -100,6 +113,9 @@ func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...Bu
 			})),
 		)
 	}
+	if !shouldEnableIOSKeyboardIsolation(cfg) {
+		defaultOptions = append(defaultOptions, withIOSKeyboardIsolationDisabled)
+	}
 	options = append(defaultOptions, options...)
 	return newHardwareToolSet(cfg.HIDConfigForDevice(), cfg.Audio, cfg.Search, proxyCfg, options...)
 }
@@ -132,7 +148,10 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		screen = newToolScreenState()
 	}
 	pointer := newPointerController(hidCfg)
-	iosKeyboardIsolation := newIOSKeyboardIsolationController(hidCfg, kbDev, pointer.dev, androidKbDev)
+	var iosKeyboardIsolation *iosKeyboardIsolationController
+	if !toolOptions.disableIOSKeyboardIsolation {
+		iosKeyboardIsolation = newIOSKeyboardIsolationController(hidCfg, kbDev, pointer.dev, androidKbDev)
+	}
 	pointer.iosKeyboardIsolation = iosKeyboardIsolation
 	var adbInput *ADBInputController
 	if hidCfg.InputBackendADB() {
@@ -222,14 +241,15 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	tools["request_user_action"] = NewHumanHandoffTool()
 
 	toolSet := &ToolSet{
-		tools:                tools,
-		screen:               screen,
-		screenProvider:       provider,
-		mnkProvider:          mnkProvider,
-		phoneBridgeRestorer:  NewPhoneBridgeRestorer(nil, pointer),
-		textInputHW:          textInputHW,
-		iosKeyboardIsolation: iosKeyboardIsolation,
-		skillInstallClient:   newSkillInstallHTTPClient(proxyCfg),
+		tools:                        tools,
+		screen:                       screen,
+		screenProvider:               provider,
+		mnkProvider:                  mnkProvider,
+		phoneBridgeRestorer:          NewPhoneBridgeRestorer(nil, pointer),
+		textInputHW:                  textInputHW,
+		iosKeyboardIsolation:         iosKeyboardIsolation,
+		iosKeyboardIsolationOptional: toolOptions.disableIOSKeyboardIsolation,
+		skillInstallClient:           newSkillInstallHTTPClient(proxyCfg),
 	}
 	touchGesture.primeScreenMapping = toolSet.PrimeScreenMapping
 	return toolSet
@@ -250,7 +270,12 @@ func (s *ToolSet) RegisterEnterTextTool(models model.Model, deviceTypeFn func() 
 		bridgeFn: func() *PhoneBridge { return s.phoneBridge },
 		restorer: s.phoneBridgeRestorer,
 	}
-	entryTool := &EnterTextTool{engine: engine, bridgeTool: bridgeTool, iosKeyboardIsolation: s.iosKeyboardIsolation}
+	entryTool := &EnterTextTool{
+		engine:                          engine,
+		bridgeTool:                      bridgeTool,
+		iosKeyboardIsolation:            s.iosKeyboardIsolation,
+		allowIOSKeyboardIsolationBypass: s.iosKeyboardIsolationOptional,
+	}
 	entryTool.SetDeviceTypeFunc(deviceTypeFn)
 	searchOpenTool := &appSearchOpenTool{
 		hw:                   s.textInputHW,

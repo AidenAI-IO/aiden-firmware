@@ -12,10 +12,11 @@ import (
 // clipboard paste when that route is currently usable, then falls back to a
 // local mixed ASCII/IME entry strategy.
 type EnterTextTool struct {
-	engine               *textInputEngine
-	bridgeTool           *textInputBridge
-	deviceTypeFn         func() string
-	iosKeyboardIsolation *iosKeyboardIsolationController
+	engine                          *textInputEngine
+	bridgeTool                      *textInputBridge
+	deviceTypeFn                    func() string
+	iosKeyboardIsolation            *iosKeyboardIsolationController
+	allowIOSKeyboardIsolationBypass bool
 }
 
 // enterTextArgs is the public tool payload. textInputArgs adds only the
@@ -143,7 +144,7 @@ func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disabl
 			// fail after the route was selected. Continue with the local HID/IME
 			// path so enter_text remains usable on the phone's visible UI.
 		}
-		if platform == "ios" && localController == nil {
+		if platform == "ios" && localController == nil && !t.allowIOSKeyboardIsolationBypass {
 			return enterTextToolFailure(batchCtx, CodeModuleUnavailable, "Enable iOS keyboard isolation, then retry enter_text."), nil
 		}
 		var result textInputResult
