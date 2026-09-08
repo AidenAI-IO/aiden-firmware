@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -146,9 +147,13 @@ func NewServer(listenAddress, configPath, wifiInterface string, fallback Upstrea
 }
 
 func validateListenAddress(address string) error {
-	host, _, err := net.SplitHostPort(address)
+	host, portText, err := net.SplitHostPort(address)
 	if err != nil {
 		return fmt.Errorf("invalid Wi-Fi proxy listen address: %w", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("invalid Wi-Fi proxy listen port %q", portText)
 	}
 	ip := net.ParseIP(strings.Trim(host, "[]"))
 	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {

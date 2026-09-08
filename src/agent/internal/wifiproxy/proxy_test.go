@@ -26,7 +26,7 @@ func startTestProxy(t *testing.T, config Config, fallback Upstreams) (*Server, *
 	if err := Save(configPath, config); err != nil {
 		t.Fatal(err)
 	}
-	server, err := NewServer("127.0.0.1:0", configPath, "missing-test-interface", fallback)
+	server, err := NewServer(DefaultListenAddress, configPath, "missing-test-interface", fallback)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +48,17 @@ func startTestProxy(t *testing.T, config Config, fallback Upstreams) (*Server, *
 		t.Fatal(err)
 	}
 	return server, proxyURL
+}
+
+func TestValidateListenAddressRejectsInvalidPorts(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:0", "127.0.0.1:65536", "localhost:not-a-port"} {
+		if err := validateListenAddress(address); err == nil {
+			t.Fatalf("validateListenAddress(%q) succeeded", address)
+		}
+	}
+	if err := validateListenAddress(DefaultListenAddress); err != nil {
+		t.Fatalf("validateListenAddress(%q): %v", DefaultListenAddress, err)
+	}
 }
 
 func TestLocalProxySupportsSOCKS5WithoutHTTPConversion(t *testing.T) {
@@ -316,7 +327,7 @@ func TestSSIDSelectsCustomUpstream(t *testing.T) {
 		_, _ = io.WriteString(w, "origin")
 	}))
 	defer origin.Close()
-	upstream, err := NewServer("127.0.0.1:0", filepath.Join(t.TempDir(), "missing.json"), "missing", Upstreams{})
+	upstream, err := NewServer(DefaultListenAddress, filepath.Join(t.TempDir(), "missing.json"), "missing", Upstreams{})
 	if err != nil {
 		t.Fatal(err)
 	}
