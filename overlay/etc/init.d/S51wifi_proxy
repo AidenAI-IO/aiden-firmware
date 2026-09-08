@@ -29,6 +29,36 @@ pid_matches() {
     esac
 }
 
+pid_matches_watchdog() {
+    pid="$1"
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    case "$cmd" in
+        *"$0"*|*"S51wifi_proxy"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+proxy_pid() {
+    pid="$(read_pid "$PID_FILE")"
+    case "$pid" in
+        ''|*[!0-9]*) return ;;
+    esac
+    if pid_matches "$pid"; then
+        echo "$pid"
+    fi
+}
+
+watchdog_pid() {
+    pid="$(read_pid "$WATCHDOG_PID_FILE")"
+    case "$pid" in
+        ''|*[!0-9]*) return ;;
+    esac
+    if pid_matches_watchdog "$pid"; then
+        echo "$pid"
+    fi
+}
+
 stop_pid() {
     pid="$1"
     [ -n "$pid" ] || return 0
@@ -45,7 +75,7 @@ stop_pid() {
 }
 
 start() {
-    wpid="$(read_pid "$WATCHDOG_PID_FILE")"
+    wpid="$(watchdog_pid)"
     if is_running "$wpid"; then
         echo "wifi_proxy watchdog already running (pid $wpid)"
         return 0
@@ -54,6 +84,16 @@ start() {
         echo "wifi_proxy dependency missing" >&2
         return 1
     fi
+    pid="$(proxy_pid)"
+    if is_running "$pid"; then
+        echo "Stopping orphaned wifi_proxy process (pid $pid)"
+        stop_pid "$pid"
+        if is_running "$pid"; then
+            echo "wifi_proxy orphan did not exit (pid $pid)" >&2
+            return 1
+        fi
+    fi
+    rm -f "$PID_FILE" "$WATCHDOG_PID_FILE"
     mkdir -p "$(dirname "$PID_FILE")" "$(dirname "$LOG_PATH")" "$(dirname "$PROXY_CONFIG")"
     (
         trap '' HUP
@@ -101,19 +141,17 @@ start() {
 }
 
 stop() {
-    wpid="$(read_pid "$WATCHDOG_PID_FILE")"
+    wpid="$(watchdog_pid)"
     stop_pid "$wpid"
     rm -f "$WATCHDOG_PID_FILE"
-    pid="$(read_pid "$PID_FILE")"
-    if is_running "$pid" && pid_matches "$pid"; then
-        stop_pid "$pid"
-    fi
+    pid="$(proxy_pid)"
+    stop_pid "$pid"
     rm -f "$PID_FILE"
 }
 
 status() {
-    pid="$(read_pid "$PID_FILE")"
-    if is_running "$pid" && pid_matches "$pid"; then
+    pid="$(proxy_pid)"
+    if is_running "$pid"; then
         echo "wifi_proxy=running pid=$pid listen=$LISTEN_ADDRESS"
         return 0
     fi

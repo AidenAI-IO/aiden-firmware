@@ -1,0 +1,146 @@
+#!/bin/sh
+set -eu
+
+repo_root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+init_script="$repo_root/overlay/etc/init.d/S51wifi_proxy"
+
+if [ ! -r "/proc/$$/cmdline" ]; then
+    echo "wifi_proxy init watchdog test skipped: /proc is unavailable"
+    exit 0
+fi
+
+fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/wifi-proxy-init.XXXXXX")"
+watchdog_pid=
+proxy_pid=
+unrelated_pid=
+
+run_init() {
+    AGENT_BIN="$fixture_dir/agent" \
+    ENV_RUN_BIN="$fixture_dir/env-run" \
+    LISTEN_ADDRESS=127.0.0.1:18080 \
+    PROXY_CONFIG="$fixture_dir/wifi-proxies.json" \
+    PROXY_ENVIRONMENT="$fixture_dir/proxy-env" \
+    WIFI_INTERFACE=test0 \
+    AGENT_INIT_SCRIPT="$fixture_dir/agent-init" \
+    LOG_PATH="$fixture_dir/wifi-proxy.log" \
+    PID_FILE="$fixture_dir/proxy.pid" \
+    WATCHDOG_PID_FILE="$fixture_dir/watchdog.pid" \
+        "$init_script" "$1"
+}
+
+cleanup() {
+    run_init stop >/dev/null 2>&1 || true
+    for pid in "$proxy_pid" "$watchdog_pid" "$unrelated_pid"; do
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+    done
+    rm -rf "$fixture_dir"
+}
+trap cleanup EXIT INT TERM
+
+cat > "$fixture_dir/agent" <<'EOF'
+#!/bin/sh
+trap 'exit 0' INT TERM
+while :; do
+    sleep 1
+done
+EOF
+
+cat > "$fixture_dir/env-run" <<'EOF'
+#!/bin/sh
+exec "$@"
+EOF
+
+cat > "$fixture_dir/agent-init" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+
+chmod +x "$fixture_dir/agent" "$fixture_dir/env-run" "$fixture_dir/agent-init"
+
+wait_for_pid_file() {
+    path="$1"
+    attempts=0
+    while [ ! -s "$path" ] && [ "$attempts" -lt 100 ]; do
+        sleep 0.05
+        attempts=$((attempts + 1))
+    done
+    [ -s "$path" ] || {
+        echo "FAIL: timed out waiting for $path" >&2
+        exit 1
+    }
+}
+
+wait_for_exit() {
+    pid="$1"
+    attempts=0
+    while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 100 ]; do
+        sleep 0.05
+        attempts=$((attempts + 1))
+    done
+    ! kill -0 "$pid" 2>/dev/null
+}
+
+run_init start >/dev/null
+wait_for_pid_file "$fixture_dir/watchdog.pid"
+wait_for_pid_file "$fixture_dir/proxy.pid"
+watchdog_pid="$(cat "$fixture_dir/watchdog.pid")"
+proxy_pid="$(cat "$fixture_dir/proxy.pid")"
+kill -0 "$watchdog_pid"
+kill -0 "$proxy_pid"
+
+# Simulate an unclean watchdog crash. The child proxy stays alive and its PID
+# file remains, exactly as it would after the supervisor is killed abruptly.
+kill -9 "$watchdog_pid"
+wait_for_exit "$watchdog_pid" || {
+    echo "FAIL: crashed watchdog remained alive" >&2
+    exit 1
+}
+kill -0 "$proxy_pid" || {
+    echo "FAIL: proxy did not survive the simulated watchdog crash" >&2
+    exit 1
+}
+
+old_watchdog_pid="$watchdog_pid"
+old_proxy_pid="$proxy_pid"
+sleep 30 &
+unrelated_pid="$!"
+printf '%s\n' "$unrelated_pid" > "$fixture_dir/watchdog.pid"
+run_init start >/dev/null
+wait_for_pid_file "$fixture_dir/watchdog.pid"
+wait_for_pid_file "$fixture_dir/proxy.pid"
+watchdog_pid="$(cat "$fixture_dir/watchdog.pid")"
+proxy_pid="$(cat "$fixture_dir/proxy.pid")"
+
+if [ "$watchdog_pid" = "$old_watchdog_pid" ] || \
+        [ "$watchdog_pid" = "$unrelated_pid" ] || \
+        [ "$proxy_pid" = "$old_proxy_pid" ]; then
+    echo "FAIL: restart reused the crashed watchdog or orphaned proxy" >&2
+    exit 1
+fi
+wait_for_exit "$old_proxy_pid" || {
+    echo "FAIL: orphaned proxy remained alive after restart" >&2
+    exit 1
+}
+kill -0 "$watchdog_pid"
+kill -0 "$proxy_pid"
+kill -0 "$unrelated_pid" || {
+    echo "FAIL: start killed the unrelated process from the stale watchdog PID file" >&2
+    exit 1
+}
+kill "$unrelated_pid"
+wait "$unrelated_pid" 2>/dev/null || true
+unrelated_pid=
+
+run_init stop >/dev/null
+wait_for_exit "$watchdog_pid" || {
+    echo "FAIL: watchdog remained alive after stop" >&2
+    exit 1
+}
+wait_for_exit "$proxy_pid" || {
+    echo "FAIL: proxy remained alive after stop" >&2
+    exit 1
+}
+watchdog_pid=
+proxy_pid=
+
+echo "wifi_proxy init watchdog recovery: ok"
