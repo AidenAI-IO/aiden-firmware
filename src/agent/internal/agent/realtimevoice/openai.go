@@ -2,6 +2,7 @@ package realtimevoice
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -258,6 +259,7 @@ func (s *openAISession) ReplayContext(ctx context.Context, items []ContextItem) 
 }
 
 func openAIContextItemPayload(item ContextItem, protocol string) map[string]any {
+	item.CallID = openAIReplayCallID(item.CallID)
 	payload := contextItemPayload(item)
 	if normalizeRealtimeProtocol(protocol) == "legacy" && item.Type == "message" && item.Role == "assistant" {
 		// OpenAI GA renamed assistant message content from text to output_text.
@@ -266,6 +268,19 @@ func openAIContextItemPayload(item ContextItem, protocol string) map[string]any 
 		payload["content"] = []map[string]string{{"type": "text", "text": item.Content}}
 	}
 	return payload
+}
+
+// openAIReplayCallID converts provider-native IDs into an OpenAI-safe wire ID
+// when replaying persisted tool history. The mapping is deterministic so a
+// function_call and its function_call_output retain the same correlation ID.
+// Live tool results keep the provider-issued ID unchanged.
+func openAIReplayCallID(callID string) string {
+	const maxLength = 32
+	if len(callID) <= maxLength {
+		return callID
+	}
+	digest := sha256.Sum256([]byte(callID))
+	return fmt.Sprintf("call_%x", digest)[:maxLength]
 }
 
 func (s *openAISession) Interrupt(ctx context.Context, interruption ResponseInterruption) error {
