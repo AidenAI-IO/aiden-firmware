@@ -112,10 +112,10 @@ fi
 
 bypass_output=$(
     AIDEN_SYSTEM_ENV="$ENV_FILE" AIDEN_WIFI_PROXY_BYPASS=1 \
-        "$TEST_ENV_RUN" sh -c 'printf "%s|%s" "$HTTP_PROXY" "$http_proxy"'
+        "$TEST_ENV_RUN" sh -c 'printf "%s|%s|%s" "$HTTP_PROXY" "$http_proxy" "${NO_PROXY+x}"'
 )
-if [ "$bypass_output" != "http://proxy.example:18080|" ]; then
-    echo "aiden-env-run did not expose the configured upstream to the proxy daemon" >&2
+if [ "$bypass_output" != "http://proxy.example:18080||" ]; then
+    echo "aiden-env-run did not expose the raw upstream environment to the proxy daemon" >&2
     echo "got: $bypass_output" >&2
     exit 1
 fi

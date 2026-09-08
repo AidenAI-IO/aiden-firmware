@@ -32,18 +32,28 @@ type Upstreams struct {
 	HTTPSProxy string
 	AllProxy   string
 	NoProxy    string
+	NoProxySet bool
 }
 
-func UpstreamsFromEnvironment() Upstreams {
-	return Upstreams{
-		HTTPProxy:  firstEnvironment("HTTP_PROXY", "http_proxy"),
-		HTTPSProxy: firstEnvironment("HTTPS_PROXY", "https_proxy"),
-		AllProxy:   firstEnvironment("ALL_PROXY", "all_proxy"),
-		NoProxy:    firstEnvironment("NO_PROXY", "no_proxy"),
+func UpstreamsFromEnvironment() (Upstreams, error) {
+	httpProxy := firstNonEmptyEnvironment("HTTP_PROXY", "http_proxy")
+	httpsProxy := firstNonEmptyEnvironment("HTTPS_PROXY", "https_proxy")
+	allProxy := firstNonEmptyEnvironment("ALL_PROXY", "all_proxy")
+	noProxy, noProxySet := firstEnvironment("NO_PROXY", "no_proxy")
+	if !noProxySet {
+		noProxy = DefaultNoProxy
 	}
+	normalizedNoProxy, err := NormalizeNoProxy(noProxy)
+	if err != nil {
+		return Upstreams{}, fmt.Errorf("NO_PROXY: %w", err)
+	}
+	return Upstreams{
+		HTTPProxy: httpProxy, HTTPSProxy: httpsProxy, AllProxy: allProxy,
+		NoProxy: normalizedNoProxy, NoProxySet: noProxySet,
+	}, nil
 }
 
-func firstEnvironment(names ...string) string {
+func firstNonEmptyEnvironment(names ...string) string {
 	for _, name := range names {
 		if value := os.Getenv(name); value != "" {
 			return value
@@ -52,7 +62,19 @@ func firstEnvironment(names ...string) string {
 	return ""
 }
 
+func firstEnvironment(names ...string) (string, bool) {
+	for _, name := range names {
+		if value, ok := os.LookupEnv(name); ok {
+			return value, true
+		}
+	}
+	return "", false
+}
+
 func (u Upstreams) Validate() error {
+	if _, err := NormalizeNoProxy(u.NoProxy); err != nil {
+		return fmt.Errorf("NO_PROXY: %w", err)
+	}
 	for name, raw := range map[string]string{
 		"HTTP_PROXY": u.HTTPProxy, "HTTPS_PROXY": u.HTTPSProxy, "ALL_PROXY": u.AllProxy,
 	} {
@@ -99,6 +121,7 @@ func NewServer(listenAddress, configPath, wifiInterface string, fallback Upstrea
 	if err := fallback.Validate(); err != nil {
 		return nil, fmt.Errorf("fallback proxy: %w", err)
 	}
+	fallback.NoProxy, _ = NormalizeNoProxy(fallback.NoProxy)
 	config, err := Load(configPath)
 	if err != nil {
 		return nil, err
@@ -402,6 +425,7 @@ func (s *Server) writeLocalProxyEnvironment() error {
 
 	httpScheme, httpsScheme, allScheme := fallbackLocalSchemes(fallback)
 	noProxy := fallback.NoProxy
+	noProxySet := fallback.NoProxySet
 	if configured {
 		switch network.Mode {
 		case ModeDirect:
@@ -410,11 +434,21 @@ func (s *Server) writeLocalProxyEnvironment() error {
 			scheme := localSchemeForUpstream(network.ProxyURL)
 			httpScheme, httpsScheme, allScheme = scheme, scheme, scheme
 			noProxy = network.NoProxy
+			noProxySet = true
 		}
 	}
+	normalizedNoProxy, err := NormalizeNoProxy(noProxy)
+	if err != nil {
+		return fmt.Errorf("NO_PROXY: %w", err)
+	}
+	noProxyFlag := "0"
+	if noProxySet {
+		noProxyFlag = "1"
+	}
 	contents := []byte(fmt.Sprintf(
-		"HTTP_PROXY=%s://%s\nHTTPS_PROXY=%s://%s\nALL_PROXY=%s://%s\nNO_PROXY=%s\nno_proxy=%s\nAIDEN_WIFI_PROXY_NO_PROXY_SET=1\n",
-		httpScheme, address, httpsScheme, address, allScheme, address, shellQuote(noProxy), shellQuote(noProxy),
+		"HTTP_PROXY=%s://%s\nHTTPS_PROXY=%s://%s\nALL_PROXY=%s://%s\nNO_PROXY=%s\nno_proxy=%s\nAIDEN_WIFI_PROXY_NO_PROXY_SET=%s\n",
+		httpScheme, address, httpsScheme, address, allScheme, address,
+		shellQuote(normalizedNoProxy), shellQuote(normalizedNoProxy), noProxyFlag,
 	))
 	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, contents) {
 		return nil

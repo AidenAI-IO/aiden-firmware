@@ -28,7 +28,12 @@ func Run(args []string) int {
 		fmt.Fprintf(os.Stderr, "unexpected arguments: %v\n", flags.Args())
 		return 1
 	}
-	server, err := NewServer(*listenAddress, *configPath, *wifiInterface, UpstreamsFromEnvironment())
+	upstreams, err := UpstreamsFromEnvironment()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wifi-proxy: invalid environment: %v\n", err)
+		return 1
+	}
+	server, err := NewServer(*listenAddress, *configPath, *wifiInterface, upstreams)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wifi-proxy: %v\n", err)
 		return 1

@@ -82,6 +82,24 @@ func testOptions(t *testing.T) Options {
 	}
 }
 
+func TestOptionsRejectsInvalidLocalProxyPorts(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:0", "127.0.0.1:65536", "localhost:not-a-port"} {
+		options := testOptions(t)
+		options.LocalProxyAddress = address
+		if err := options.Validate(); err == nil {
+			t.Fatalf("LocalProxyAddress %q was accepted", address)
+		}
+	}
+}
+
+func TestOptionsAcceptsValidLocalProxyAddress(t *testing.T) {
+	options := testOptions(t)
+	options.LocalProxyAddress = "localhost:18080"
+	if err := options.Validate(); err != nil {
+		t.Fatalf("valid LocalProxyAddress rejected: %v", err)
+	}
+}
+
 func TestServerServesStaticAssetsAndRejectsTraversal(t *testing.T) {
 	options := testOptions(t)
 	server, err := NewServer(options)
@@ -882,6 +900,98 @@ func TestAgentCommandEnvironmentPreservesSOCKS5LocalProxyScheme(t *testing.T) {
 		if values[key] != "socks5h://127.0.0.1:18080" {
 			t.Fatalf("%s=%q, want SOCKS5 local proxy", key, values[key])
 		}
+	}
+}
+
+func TestAgentCommandEnvironmentIgnoresStaleWiFiNoProxyWhenDisabled(t *testing.T) {
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(key, "")
+	}
+	options := testOptions(t)
+	systemEnv := "HTTP_PROXY=http://proxy.example:8080\nAIDEN_WIFI_PROXY_ENABLED=0\n"
+	if err := os.WriteFile(options.SystemEnvPath, []byte(systemEnv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	generated := "HTTP_PROXY=socks5h://127.0.0.1:18080\nNO_PROXY=stale.example\n"
+	if err := os.WriteFile(options.LocalProxyEnvironmentPath, []byte(generated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := server.agentCommandEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make(map[string]string)
+	for _, item := range environment {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if values["HTTP_PROXY"] != "http://proxy.example:8080" {
+		t.Fatalf("HTTP_PROXY=%q", values["HTTP_PROXY"])
+	}
+	if values["NO_PROXY"] != agent.DefaultNoProxy || values["no_proxy"] != agent.DefaultNoProxy {
+		t.Fatalf("stale Wi-Fi NO_PROXY was retained: %#v", values)
+	}
+}
+
+func TestRestoreWiFiPersistenceRestoresBothSnapshots(t *testing.T) {
+	root := t.TempDir()
+	wifiPath := filepath.Join(root, "wifi.conf")
+	proxyPath := filepath.Join(root, "wifi-proxies.json")
+	if err := os.WriteFile(wifiPath, []byte("old wifi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(proxyPath, []byte("old proxy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wifiSnapshot, err := captureFileSnapshot(wifiPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxySnapshot, err := captureFileSnapshot(proxyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wifiPath, []byte("new wifi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(proxyPath, []byte("new proxy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreWiFiPersistence(wifiSnapshot, proxySnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(wifiPath); string(data) != "old wifi" {
+		t.Fatalf("Wi-Fi config=%q", data)
+	}
+	if data, _ := os.ReadFile(proxyPath); string(data) != "old proxy" {
+		t.Fatalf("proxy config=%q", data)
+	}
+}
+
+func TestRestoreWiFiPersistenceReportsIncompleteRecoveryAndContinues(t *testing.T) {
+	root := t.TempDir()
+	blockingPath := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(blockingPath, []byte("block"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proxyPath := filepath.Join(root, "wifi-proxies.json")
+	if err := os.WriteFile(proxyPath, []byte("new proxy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wifiSnapshot := fileSnapshot{path: filepath.Join(blockingPath, "wifi.conf"), data: []byte("old wifi"), existed: true}
+	proxySnapshot := fileSnapshot{path: proxyPath, data: []byte("old proxy"), existed: true}
+	err := restoreWiFiPersistence(wifiSnapshot, proxySnapshot)
+	if err == nil || !strings.Contains(err.Error(), "restore Wi-Fi config") {
+		t.Fatalf("restore error=%v", err)
+	}
+	if data, _ := os.ReadFile(proxyPath); string(data) != "old proxy" {
+		t.Fatalf("proxy restore was skipped after Wi-Fi restore failure: %q", data)
 	}
 }
 

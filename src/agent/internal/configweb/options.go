@@ -124,9 +124,13 @@ func (o Options) Validate() error {
 		}
 	}
 	if o.LocalProxyAddress != "" {
-		host, _, err := net.SplitHostPort(o.LocalProxyAddress)
+		host, portText, err := net.SplitHostPort(o.LocalProxyAddress)
 		if err != nil {
 			return fmt.Errorf("invalid --local-proxy-address: %w", err)
+		}
+		port, err := strconv.Atoi(portText)
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("invalid --local-proxy-address port %q", portText)
 		}
 		ip := net.ParseIP(strings.Trim(host, "[]"))
 		if host != "localhost" && (ip == nil || !ip.IsLoopback()) {

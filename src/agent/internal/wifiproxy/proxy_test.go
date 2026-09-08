@@ -186,6 +186,91 @@ func TestLocalProxyEnvironmentKeepsSOCKS5Scheme(t *testing.T) {
 	}
 }
 
+func TestUpstreamsFromEnvironmentTracksNoProxyPresence(t *testing.T) {
+	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		value, existed := os.LookupEnv(name)
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if existed {
+				_ = os.Setenv(name, value)
+			} else {
+				_ = os.Unsetenv(name)
+			}
+		})
+	}
+	upstreams, err := UpstreamsFromEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upstreams.NoProxy != DefaultNoProxy || upstreams.NoProxySet {
+		t.Fatalf("absent NO_PROXY produced %#v", upstreams)
+	}
+	if err := os.Setenv("HTTP_PROXY", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Setenv("http_proxy", "http://proxy.example:8080"); err != nil {
+		t.Fatal(err)
+	}
+	upstreams, err = UpstreamsFromEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upstreams.HTTPProxy != "http://proxy.example:8080" {
+		t.Fatalf("lowercase HTTP proxy was masked by an empty uppercase value: %#v", upstreams)
+	}
+	if err := os.Setenv("NO_PROXY", ""); err != nil {
+		t.Fatal(err)
+	}
+	upstreams, err = UpstreamsFromEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upstreams.NoProxy != "" || !upstreams.NoProxySet {
+		t.Fatalf("explicit empty NO_PROXY produced %#v", upstreams)
+	}
+	if err := os.Setenv("NO_PROXY", "bad\nvalue"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpstreamsFromEnvironment(); err == nil {
+		t.Fatal("invalid NO_PROXY was accepted")
+	}
+}
+
+func TestLocalProxyEnvironmentMarksDefaultAndExplicitEmptyNoProxy(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		fallback Upstreams
+		noProxy  string
+		flag     string
+	}{
+		{name: "default", fallback: Upstreams{NoProxy: DefaultNoProxy}, noProxy: DefaultNoProxy, flag: "0"},
+		{name: "explicit empty", fallback: Upstreams{NoProxySet: true}, noProxy: "", flag: "1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := NewServer("127.0.0.1:18080", filepath.Join(t.TempDir(), "missing.json"), "missing", test.fallback)
+			if err != nil {
+				t.Fatal(err)
+			}
+			environmentPath := filepath.Join(t.TempDir(), "proxy-env")
+			server.SetEnvironmentPath(environmentPath)
+			if err := server.writeLocalProxyEnvironment(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(environmentPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contents := string(data)
+			if !strings.Contains(contents, "NO_PROXY='"+test.noProxy+"'\n") ||
+				!strings.Contains(contents, "AIDEN_WIFI_PROXY_NO_PROXY_SET="+test.flag+"\n") {
+				t.Fatalf("environment=%q", contents)
+			}
+		})
+	}
+}
+
 func proxyClient(proxyURL *url.URL, tlsConfig *tls.Config) *http.Client {
 	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: tlsConfig}}
 }

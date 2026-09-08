@@ -59,7 +59,8 @@ if [ "$AIDEN_ENV_WIFI_PROXY_BYPASS" != "1" ] && [ "${AIDEN_WIFI_PROXY_ENABLED:-1
     export HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 fi
 
-if [ -n "${HTTP_PROXY:-}${http_proxy:-}${HTTPS_PROXY:-}${https_proxy:-}${ALL_PROXY:-}${all_proxy:-}" ] &&
+if [ "$AIDEN_ENV_WIFI_PROXY_BYPASS" != "1" ] &&
+   [ -n "${HTTP_PROXY:-}${http_proxy:-}${HTTPS_PROXY:-}${https_proxy:-}${ALL_PROXY:-}${all_proxy:-}" ] &&
    [ "${AIDEN_WIFI_PROXY_NO_PROXY_SET:-0}" != "1" ] &&
    [ -z "${NO_PROXY:-}" ] && [ -z "${no_proxy:-}" ]; then
     NO_PROXY="$AIDEN_ENV_DEFAULT_NO_PROXY"

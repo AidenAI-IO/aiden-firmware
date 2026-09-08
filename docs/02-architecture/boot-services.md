@@ -88,11 +88,14 @@ Agent init script and runtime output: `/userdata/agent/log/agent.log`.
 ## Wi-Fi Proxy
 
 `S51wifi_proxy` starts `agent wifi-proxy` on `127.0.0.1:18080` before the Agent.
-Managed services and login shells always use that loopback address, while the
-proxy reloads `/userdata/system/wifi-proxies.json` and the current `wlan0` SSID
-every two seconds. Each saved network can use the system upstream from
+Managed services and login shells use that loopback address by default. Setting
+`AIDEN_WIFI_PROXY_ENABLED=0` restores direct use of the raw environment proxy
+after the affected services or shell restart. The proxy reloads
+`/userdata/system/wifi-proxies.json` and the current `wlan0` SSID every two
+seconds. Each saved network can use the system upstream from
 `/userdata/system/env`, connect directly, or use its own HTTP, HTTPS, or SOCKS5
-proxy. Switching Wi-Fi therefore does not require restarting the Agent.
+proxy. Switching Wi-Fi does not require restarting the Agent unless the selected
+proxy protocol changes between HTTP and SOCKS5.
 
 ## OTA
 

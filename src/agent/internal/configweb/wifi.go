@@ -179,6 +179,45 @@ func saveWiFiConfig(path string, config wiFiConfig) error {
 	return atomicWriteFile(path, []byte(renderWiFiConfig(config)), 0o600)
 }
 
+type fileSnapshot struct {
+	path    string
+	data    []byte
+	existed bool
+}
+
+func captureFileSnapshot(path string) (fileSnapshot, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fileSnapshot{path: path}, nil
+	}
+	if err != nil {
+		return fileSnapshot{}, err
+	}
+	return fileSnapshot{path: path, data: data, existed: true}, nil
+}
+
+func restoreFileSnapshot(snapshot fileSnapshot) error {
+	if snapshot.existed {
+		return atomicWriteFile(snapshot.path, snapshot.data, 0o600)
+	}
+	if err := os.Remove(snapshot.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func restoreWiFiPersistence(wifiSnapshot, proxySnapshot fileSnapshot) error {
+	wifiErr := restoreFileSnapshot(wifiSnapshot)
+	proxyErr := restoreFileSnapshot(proxySnapshot)
+	if wifiErr != nil {
+		wifiErr = fmt.Errorf("restore Wi-Fi config: %w", wifiErr)
+	}
+	if proxyErr != nil {
+		proxyErr = fmt.Errorf("restore Wi-Fi proxy config: %w", proxyErr)
+	}
+	return errors.Join(wifiErr, proxyErr)
+}
+
 func normalizeWiFiPriorities(config *wiFiConfig) {
 	next := 1
 	for index := range config.Networks {
@@ -454,10 +493,17 @@ func (s *Server) handleWiFiConnectStatus(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRequest) map[string]any {
-	originalData, originalErr := readFileLimited(s.options.WiFiConfigPath, maxAgentConfigSize)
+	wifiSnapshot, err := captureFileSnapshot(s.options.WiFiConfigPath)
+	if err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
 	original, loadErr := loadWiFiConfig(s.options.WiFiConfigPath)
 	if loadErr != nil && !os.IsNotExist(loadErr) {
 		return map[string]any{"ok": false, "error": loadErr.Error()}
+	}
+	proxySnapshot, err := captureFileSnapshot(s.options.WiFiProxyConfigPath)
+	if err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
 	}
 	proxyConfig, err := wifiproxy.Load(s.options.WiFiProxyConfigPath)
 	if err != nil {
@@ -502,27 +548,31 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 	connected := apply.ExitCode == 0 && status["connected"] == true && status["ssid"] == request.SSID && status["ip_address"] != ""
 	responseConfig := original
 	persistError := ""
+	diskRestoreNeeded := false
+	var diskRestoreErr error
 	if connected {
 		if err := saveWiFiConfig(s.options.WiFiConfigPath, attempt); err != nil {
-			persistError = err.Error()
-			connected = false
-		} else if err := wifiproxy.Save(s.options.WiFiProxyConfigPath, proxyConfig); err != nil {
-			persistError = err.Error()
+			persistError = "save Wi-Fi config: " + err.Error()
 			connected = false
 		} else {
-			// The running wpa_supplicant retains the path supplied with -c for
-			// future reconfigure/save operations. Keep the verified candidate file
-			// until the next connection attempt or service restart.
-			removeCandidate = false
-			responseConfig = attempt
+			diskRestoreNeeded = true
+			if err := wifiproxy.Save(s.options.WiFiProxyConfigPath, proxyConfig); err != nil {
+				persistError = "save Wi-Fi proxy config: " + err.Error()
+				connected = false
+			} else {
+				diskRestoreNeeded = false
+				// The running wpa_supplicant retains the path supplied with -c for
+				// future reconfigure/save operations. Keep the verified candidate file
+				// until the next connection attempt or service restart.
+				removeCandidate = false
+				responseConfig = attempt
+			}
 		}
 	}
 	rollback := commandResult{ExitCode: 0}
 	if !connected {
-		if originalErr == nil {
-			_ = atomicWriteFile(s.options.WiFiConfigPath, originalData, 0o600)
-		} else {
-			_ = os.Remove(s.options.WiFiConfigPath)
+		if diskRestoreNeeded {
+			diskRestoreErr = restoreWiFiPersistence(wifiSnapshot, proxySnapshot)
 		}
 		if len(original.Networks) > 0 {
 			rollback = s.applyWiFi(ctx, s.options.WiFiConfigPath, true)
@@ -537,7 +587,9 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 	message := "wifi connected and saved"
 	if !connected {
 		message = "wifi connect failed; config restored"
-		if rollback.ExitCode != 0 {
+		if diskRestoreErr != nil {
+			message = "wifi connect failed; config recovery incomplete"
+		} else if rollback.ExitCode != 0 {
 			message = "wifi connect failed; config restored on disk but runtime rollback failed"
 		}
 	}
@@ -550,17 +602,29 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 		responseProxyConfig, _ = wifiproxy.Load(s.options.WiFiProxyConfigPath)
 	}
 	response := map[string]any{"ok": connected, "wifi": responseConfig.publicValue(responseProxyConfig), "wifi_status": status, "message": message, "wifi_apply": applyValue}
-	if persistError != "" {
-		response["error"] = "persist Wi-Fi config: " + persistError
-	}
 	if !connected {
-		response["wifi_rollback"] = map[string]any{
-			"ok": rollback.ExitCode == 0, "exit_code": rollback.ExitCode,
-			"timed_out": rollback.TimedOut, "output": strings.TrimRight(string(rollback.Output), "\r\n"),
+		rollbackValue := map[string]any{
+			"ok": rollback.ExitCode == 0 && diskRestoreErr == nil, "exit_code": rollback.ExitCode,
+			"disk_restored": diskRestoreErr == nil,
+			"timed_out":     rollback.TimedOut, "output": strings.TrimRight(string(rollback.Output), "\r\n"),
 		}
+		if diskRestoreErr != nil {
+			rollbackValue["disk_error"] = diskRestoreErr.Error()
+		}
+		response["wifi_rollback"] = rollbackValue
+	}
+	responseErrors := []string{}
+	if persistError != "" {
+		responseErrors = append(responseErrors, "persist configuration: "+persistError)
+	}
+	if diskRestoreErr != nil {
+		responseErrors = append(responseErrors, "restore persisted config: "+diskRestoreErr.Error())
 	}
 	if ctx.Err() != nil {
-		response["error"] = "Wi-Fi connection task exceeded its deadline"
+		responseErrors = append(responseErrors, "Wi-Fi connection task exceeded its deadline")
+	}
+	if len(responseErrors) > 0 {
+		response["error"] = strings.Join(responseErrors, "; ")
 	}
 	return response
 }

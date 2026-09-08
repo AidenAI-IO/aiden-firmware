@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"aiden-agent/internal/wifiproxy"
 )
 
 type configTestRequest struct {
@@ -316,13 +318,13 @@ func (s *Server) agentCommandEnvironment() ([]string, error) {
 	proxyConfigured := values["HTTP_PROXY"] != "" || values["http_proxy"] != "" ||
 		values["HTTPS_PROXY"] != "" || values["https_proxy"] != "" ||
 		values["ALL_PROXY"] != "" || values["all_proxy"] != ""
+	generatedWiFiNoProxy := false
 	if values["AIDEN_WIFI_PROXY_ENABLED"] != "0" && strings.TrimSpace(s.options.LocalProxyAddress) != "" {
 		localProxy := "http://" + s.options.LocalProxyAddress
 		// The generated file contains one value per protocol. Preserve those
 		// values independently so SOCKS5 Wi-Fi policies remain SOCKS5 at the
 		// Agent boundary instead of being downgraded to HTTP CONNECT.
 		generatedValues := map[string]string{}
-		generatedNoProxy := false
 		if generated, readErr := os.ReadFile(s.options.LocalProxyEnvironmentPath); readErr == nil {
 			if assignments, parseErr := parseSystemEnv(string(generated)); parseErr == nil {
 				for _, assignment := range assignments {
@@ -330,7 +332,7 @@ func (s *Server) agentCommandEnvironment() ([]string, error) {
 						generatedValues[assignment.Key] = assignment.Value
 					}
 					if assignment.Key == "NO_PROXY" {
-						generatedNoProxy = true
+						generatedWiFiNoProxy = true
 					}
 				}
 			}
@@ -349,25 +351,17 @@ func (s *Server) agentCommandEnvironment() ([]string, error) {
 			{Key: "HTTPS_PROXY", Value: generatedValues["HTTPS_PROXY"]}, {Key: "https_proxy", Value: generatedValues["HTTPS_PROXY"]},
 			{Key: "ALL_PROXY", Value: generatedValues["ALL_PROXY"]}, {Key: "all_proxy", Value: generatedValues["ALL_PROXY"]},
 		})
-		if generatedNoProxy {
+		if generatedWiFiNoProxy {
 			env = mergeEnvironment(env, []EnvAssignment{
 				{Key: "NO_PROXY", Value: generatedValues["NO_PROXY"]}, {Key: "no_proxy", Value: generatedValues["NO_PROXY"]},
 			})
 		}
 		proxyConfigured = true
 	}
-	if proxyConfigured && values["NO_PROXY"] == "" && values["no_proxy"] == "" {
-		if generated, readErr := os.ReadFile(s.options.LocalProxyEnvironmentPath); readErr == nil {
-			if assignments, parseErr := parseSystemEnv(string(generated)); parseErr == nil {
-				for _, assignment := range assignments {
-					if assignment.Key == "NO_PROXY" {
-						return env, nil
-					}
-				}
-			}
-		}
-		const noProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
-		env = mergeEnvironment(env, []EnvAssignment{{Key: "NO_PROXY", Value: noProxy}, {Key: "no_proxy", Value: noProxy}})
+	if proxyConfigured && !generatedWiFiNoProxy && values["NO_PROXY"] == "" && values["no_proxy"] == "" {
+		env = mergeEnvironment(env, []EnvAssignment{
+			{Key: "NO_PROXY", Value: wifiproxy.DefaultNoProxy}, {Key: "no_proxy", Value: wifiproxy.DefaultNoProxy},
+		})
 	}
 	return env, nil
 }
