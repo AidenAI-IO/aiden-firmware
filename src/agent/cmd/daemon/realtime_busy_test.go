@@ -375,21 +375,16 @@ func TestRealtimeBusyAudioAndToolProgressRenewDeadline(t *testing.T) {
 	requireBusyEvent(t, events, agent.RealtimeChatEventDone)
 }
 
-func TestRealtimeBusyUnansweredVoiceTurnTimesOut(t *testing.T) {
+func TestRealtimeBusySpeechStoppedReleasesAdmission(t *testing.T) {
 	s, bridge, done := startBusyTestSession(t, 100*time.Millisecond)
 	events := busyTestRequest(t, s, bridge, done, "setup")
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, Status: "completed"}
 	requireBusyEvent(t, events, agent.RealtimeChatEventDone)
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventSpeechStarted}
 	s.events <- realtimevoice.Event{Kind: realtimevoice.EventSpeechStopped}
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "no progress") {
-			t.Fatalf("session exit=%v, want timeout", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("pending voice turn permanently blocks text admission")
-	}
+	next := busyTestRequest(t, s, bridge, done, "after-speech-stopped")
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, Status: "completed"}
+	requireBusyEvent(t, next, agent.RealtimeChatEventDone)
 }
 
 func TestRealtimeBusyGeminiInterruptionTerminalReleasesChat(t *testing.T) {
