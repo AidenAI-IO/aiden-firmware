@@ -308,7 +308,12 @@ create_ext4_image() {
     {
         echo 'status=pass'
         echo 'importer=mke2fs-d'
-        mkfs.ext4 -V 2>&1 | head -n 1
+        # sed rather than `head -n 1`: head closes the pipe after the first
+        # line, and mkfs.ext4 -V writes a second one (the EXT2FS library
+        # version). Whether it is still writing when the reader goes away is a
+        # scheduling race, and losing it under pipefail aborts the whole build
+        # with SIGPIPE. sed reads to EOF, so the writer never sees EPIPE.
+        mkfs.ext4 -V 2>&1 | sed -n '1p'
         echo 'comparison=rsync-HAXc-numeric-ids'
         echo 'excluded=/lost+found'
     } >"${OUTPUT_DIR}/rootfs-import-audit.txt"
