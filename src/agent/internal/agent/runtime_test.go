@@ -27,6 +27,7 @@ import (
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/model"
 	speechtext "aiden-agent/internal/agent/speech"
+	"aiden-agent/internal/agent/tokencounter"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -1479,14 +1480,22 @@ func TestContextCompactionEventsUseDistinctTelemetryType(t *testing.T) {
 	}
 
 	historicalEvent := historicalPruneEvent(compactor.HistoricalPruneStats{
-		HistoricalStatesDropped:     1,
-		HistoricalToolResultsPruned: 2,
+		HistoricalStatesDropped:        1,
+		HistoricalToolResultsPruned:    2,
+		CurrentTurnStatesDropped:       3,
+		CurrentTurnToolExchangesPruned: 4,
 	}, true, nil, "threshold")
 	if historicalEvent.Type != runEventHistoricalContextPrune {
 		t.Fatalf("historical prune event type = %q, want %q", historicalEvent.Type, runEventHistoricalContextPrune)
 	}
 	if conversationEvent.Type == historicalEvent.Type {
 		t.Fatal("conversation compaction and historical prune events must use distinct types")
+	}
+	if got := eventMetadataInt(historicalEvent, "current_turn_states_dropped"); got != 3 {
+		t.Fatalf("current-turn states metadata = %d, want 3", got)
+	}
+	if got := eventMetadataInt(historicalEvent, "current_turn_tool_exchanges_pruned"); got != 4 {
+		t.Fatalf("current-turn tool exchanges metadata = %d, want 4", got)
 	}
 }
 
@@ -2397,6 +2406,65 @@ func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunCompactionTriggerIncludesToolSchema(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "Answer directly."},
+		{Role: messages.MessageRoleUser, Content: strings.Repeat("u", 8_000)},
+		{Role: messages.MessageRoleAssistant, Content: strings.Repeat("a", 8_000)},
+		{Role: messages.MessageRoleUser, Content: strings.Repeat("q", 4_000)},
+		{Role: messages.MessageRoleAssistant, Content: strings.Repeat("r", 400)},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	largeSchemaTool := &structuredStubTool{
+		// Cross the summary threshold while leaving room for the protected
+		// head/tail messages under the hard input budget after summarization.
+		stubTool: stubTool{name: "large_schema", description: strings.Repeat("schema ", 800)},
+		schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string", "description": strings.Repeat("field ", 500)},
+			},
+		},
+	}
+	llmModel := &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse("compacted summary"),
+		contentResponse("compacted summary after retry"),
+		contentResponse("ok"),
+	}}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{ContextWindow: 8_192},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{largeSchemaTool.Name(): largeSchemaTool}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want planner response after schema-aware compaction", result.Output)
+	}
+	if len(llmModel.messages) != 3 {
+		t.Fatalf("model call count = %d, want two summaries + planner", len(llmModel.messages))
+	}
+}
+
 func TestRuntimeRunPrunesHistoricalStateWithProviderCompaction(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
@@ -2454,6 +2522,317 @@ func TestRuntimeRunPrunesHistoricalStateWithProviderCompaction(t *testing.T) {
 		if message.Role == messages.MessageRoleState || strings.Contains(message.Content, "stale-device-state") {
 			t.Fatalf("pruned context retained historical state: %#v", message)
 		}
+	}
+}
+
+func TestRuntimeRunPrunesContextDuringSingleLongToolRun(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	responses := make([]*llms.ContentResponse, 0, 7)
+	for i := 1; i <= 6; i++ {
+		responses = append(responses, toolCallResponse(
+			fmt.Sprintf("call_%d", i),
+			"echo",
+			fmt.Sprintf(`{"input":"step-%d-%s"}`, i, strings.Repeat("x", 2_400)),
+		))
+	}
+	responses = append(responses, contentResponse("long task complete"))
+	llmModel := &scriptedModel{responses: responses}
+	tool := &stubTool{
+		name:        "echo",
+		description: "Echo input.",
+		output:      strings.Repeat("bounded tool result ", 20),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:             configDir,
+			ContextPruneThreshold: 0.2,
+			Model:                 ModelConfig{Provider: "fake", MaxResponseTokens: 256},
+			Instruction:           "Complete every requested step.",
+			MaxIterations:         7,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec: model.ModelSpec{
+				Provider:      "fake",
+				Name:          "long-tool-run",
+				ContextWindow: 12_000,
+				MaxOutput:     256,
+			},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"echo": tool}},
+		NewSkillIndex(),
+	)
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "run all six steps"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "long task complete" || llmModel.callCount != 7 {
+		t.Fatalf("output/calls = %q/%d, want long task complete/7", result.Output, llmModel.callCount)
+	}
+	if runtime.contextManager == nil || runtime.contextManager.GetParentSessionID() == "" {
+		t.Fatal("runtime did not switch to a pruned context revision during the run")
+	}
+	loaded, err := contextmanager.LoadContextManagerFromCurrentSession(agentpath.ContextManagerSessionFolder(configDir))
+	if err != nil {
+		t.Fatalf("LoadContextManagerFromCurrentSession() error = %v", err)
+	}
+	if loaded.GetSessionID() != runtime.contextManager.GetSessionID() {
+		t.Fatalf("current session = %q, want %q", loaded.GetSessionID(), runtime.contextManager.GetSessionID())
+	}
+
+	finalRequest := llmModel.messages[len(llmModel.messages)-1]
+	argumentsByID := make(map[string]string)
+	resultsByID := make(map[string]string)
+	for _, message := range finalRequest {
+		for _, part := range message.Parts {
+			switch part := part.(type) {
+			case llms.ToolCall:
+				if part.FunctionCall != nil {
+					argumentsByID[part.ID] = part.FunctionCall.Arguments
+				}
+			case llms.ToolCallResponse:
+				resultsByID[part.ToolCallID] = part.Content
+			}
+		}
+	}
+	if _, callRetained := argumentsByID["call_1"]; callRetained {
+		t.Fatalf("oldest tool call was retained before final request: %q", argumentsByID["call_1"])
+	}
+	if _, resultRetained := resultsByID["call_1"]; resultRetained {
+		t.Fatalf("oldest tool result was retained before final request: %q", resultsByID["call_1"])
+	}
+	for i := 4; i <= 6; i++ {
+		id := fmt.Sprintf("call_%d", i)
+		if !strings.Contains(argumentsByID[id], fmt.Sprintf("step-%d-", i)) {
+			t.Fatalf("recent tool exchange %s was unexpectedly pruned: %q", id, argumentsByID[id])
+		}
+	}
+}
+
+func TestRuntimeRunPrunesProtectedExchangesForHardInputBudget(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	responses := make([]*llms.ContentResponse, 0, 4)
+	for i := 1; i <= 3; i++ {
+		responses = append(responses, toolCallResponse(
+			fmt.Sprintf("call_%d", i),
+			"echo",
+			fmt.Sprintf(`{"input":"step-%d-%s"}`, i, strings.Repeat("x", 5_000)),
+		))
+	}
+	responses = append(responses, contentResponse("hard budget handled"))
+	llmModel := &scriptedModel{responses: responses}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:             configDir,
+			ContextPruneThreshold: 0.8,
+			Model:                 ModelConfig{Provider: "fake", MaxResponseTokens: 256},
+			Instruction:           "Complete every requested step.",
+			MaxIterations:         4,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec: model.ModelSpec{
+				Provider:      "fake",
+				Name:          "hard-budget-tool-run",
+				ContextWindow: 5_000,
+				MaxOutput:     256,
+			},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"echo": &stubTool{name: "echo", description: "Echo input.", output: "ok"}}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "run all three steps"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "hard budget handled" || llmModel.callCount != 4 {
+		t.Fatalf("output/calls = %q/%d, want hard budget handled/4", result.Output, llmModel.callCount)
+	}
+	finalRequest := llmModel.messages[len(llmModel.messages)-1]
+	fullArguments := 0
+	for _, message := range finalRequest {
+		for _, part := range message.Parts {
+			call, ok := part.(llms.ToolCall)
+			if ok && call.FunctionCall != nil && strings.Contains(call.FunctionCall.Arguments, strings.Repeat("x", 1_000)) {
+				fullArguments++
+			}
+		}
+	}
+	if fullArguments >= 3 {
+		t.Fatal("hard-budget pruning preserved all three oversized recent exchanges")
+	}
+	var finalOptions llms.CallOptions
+	finalOptions.Tools = llmModel.tools[len(llmModel.tools)-1]
+	requestTokens := tokencounter.EstimateLLMMessageListTokens(finalRequest) + tokencounter.EstimateToolSchemaTokens(finalOptions)
+	if usable := toolResultUsableInputBudget(5_000, 256); requestTokens > usable {
+		t.Fatalf("final request tokens = %d, want <= usable input budget %d", requestTokens, usable)
+	}
+}
+
+func TestRuntimeRunStopsLocallyWhenHardInputBudgetCannotFit(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: strings.Repeat("s", 8_000)},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+	llmModel := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("must not be called")}}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:             configDir,
+			ContextPruneThreshold: 0.8,
+			Model:                 ModelConfig{Provider: "fake", MaxResponseTokens: 256},
+			Instruction:           "Answer directly.",
+			MaxIterations:         1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{Provider: "fake", Name: "hard-budget-local-stop", ContextWindow: 5_000, MaxOutput: 256},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	_, err = runtime.Run(context.Background(), RunRequest{Input: strings.Repeat("u", 8_000)})
+	if err == nil || !strings.Contains(err.Error(), "context remains over usable input budget after pruning") {
+		t.Fatalf("Run() error = %v, want local hard-budget error", err)
+	}
+	if llmModel.callCount != 0 {
+		t.Fatalf("model call count = %d, want 0 for a request that cannot fit locally", llmModel.callCount)
+	}
+}
+
+func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		summary         string
+		wantErr         string
+		chunkWriteFails bool
+	}{
+		{name: "fits", summary: "old work summarized"},
+		{name: "chunk persistence fails", summary: "old work summarized", chunkWriteFails: true},
+		{name: "summary fails", wantErr: "empty summary"},
+		{name: "summary still too large", summary: strings.Repeat("s", 16_000), wantErr: "context remains over usable input budget"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configDir := ensureTestConfigDir(t, t.TempDir())
+			sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+			manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []messages.Message{
+				{Role: messages.MessageRoleSystem, Content: "system"},
+				{Role: messages.MessageRoleState, Content: "expired state"},
+				{Role: messages.MessageRoleUser, Content: "old goal"},
+				{Role: messages.MessageRoleAssistant, Content: strings.Repeat("h", 14_000)},
+				{Role: messages.MessageRoleUser, Content: "recent goal"},
+				{Role: messages.MessageRoleAssistant, Content: "recent tail"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := contextmanager.SwitchSession(sessionFolder, manager.GetSessionID()); err != nil {
+				t.Fatal(err)
+			}
+			if tc.chunkWriteFails {
+				// A file where the chunk directory belongs makes persistence fail
+				// without preventing creation or activation of the context revision.
+				if err := os.WriteFile(filepath.Join(sessionFolder, "chunks"), []byte("blocked"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			llmModel := &scriptedModel{responses: []*llms.ContentResponse{
+				contentResponse(tc.summary), contentResponse("done after recovery"),
+			}}
+			runtime := NewRuntimeWithDeps(
+				Config{
+					ConfigDir: configDir, ContextPruneThreshold: 0.79, MaxIterations: 1,
+					Model: ModelConfig{
+						Provider: "openai", APIMode: "responses", ResponsesContextManagement: "compaction", MaxResponseTokens: 256,
+					},
+				},
+				&testModelResolver{model: llmModel, spec: model.ModelSpec{ContextWindow: 6_000, MaxOutput: 256}},
+				NewMemoryManager(""),
+				&ToolSet{tools: map[string]langtools.Tool{
+					"echo": &stubTool{name: "echo", description: strings.Repeat("schema ", 900)},
+				}},
+				NewSkillIndex(),
+			)
+			runtime.contextManager = manager
+			runtime.logger = nil
+			result, err := runtime.Run(context.Background(), RunRequest{Input: "continue"})
+			loaded, loadErr := contextmanager.LoadContextManagerFromCurrentSession(sessionFolder)
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			index, indexErr := loadChunkIndexFromPath(filepath.Join(sessionFolder, "chunks", "index.yaml"))
+			if indexErr != nil && !tc.chunkWriteFails {
+				t.Fatal(indexErr)
+			}
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Run() error = %v, want %q", err, tc.wantErr)
+				}
+				if runtime.contextManager != manager || loaded.GetSessionID() != manager.GetSessionID() {
+					t.Fatal("failed budget preparation switched the active session")
+				}
+				if llmModel.callCount != 1 || len(llmModel.tools[0]) != 0 {
+					t.Fatal("failed budget preparation should only call the summary model")
+				}
+				if len(index.Chunks) != 0 {
+					t.Fatalf("rejected budget recovery persisted %d chunks", len(index.Chunks))
+				}
+				if tc.name == "summary still too large" {
+					llmModel.responses[1] = contentResponse(tc.summary)
+					_, retryErr := runtime.Run(context.Background(), RunRequest{Input: "retry"})
+					if retryErr == nil || !strings.Contains(retryErr.Error(), tc.wantErr) {
+						t.Fatalf("retry error = %v, want budget rejection", retryErr)
+					}
+					retryIndex, err := loadChunkIndexFromPath(filepath.Join(sessionFolder, "chunks", "index.yaml"))
+					if err != nil || len(retryIndex.Chunks) != 0 {
+						t.Fatalf("rejected retry persisted chunks: count=%d error=%v", len(retryIndex.Chunks), err)
+					}
+				}
+				return
+			}
+			if err != nil || result.Output != "done after recovery" || llmModel.callCount != 2 {
+				t.Fatalf("Run() = %q, %v, calls=%d; want summary then successful request", result.Output, err, llmModel.callCount)
+			}
+			if len(llmModel.tools[0]) != 0 || len(llmModel.tools[1]) == 0 {
+				t.Fatal("expected summary before the tool-enabled model request")
+			}
+			if runtime.contextManager == manager || loaded.GetSessionID() != runtime.contextManager.GetSessionID() {
+				t.Fatal("successful recovery did not activate the prepared revision")
+			}
+			if !tc.chunkWriteFails {
+				if len(index.Chunks) != 1 || index.Chunks[0].Summary != tc.summary || index.Chunks[0].EventCount != 1 {
+					t.Fatalf("accepted recovery chunks = %#v, want one summarized history span", index.Chunks)
+				}
+				data, readErr := os.ReadFile(filepath.Join(sessionFolder, "chunks", index.Chunks[0].File))
+				if readErr != nil || !strings.Contains(string(data), strings.Repeat("h", 14_000)) {
+					t.Fatalf("accepted chunk did not retain the original history: %v", readErr)
+				}
+			}
+			if requestTokens := estimateActivePromptTokens(runtime.contextManager, []llms.CallOption{llms.WithTools(llmModel.tools[1])}); requestTokens > toolResultUsableInputBudget(6_000, 256) {
+				t.Fatalf("recovered request still exceeds budget: %d", requestTokens)
+			}
+		})
 	}
 }
 

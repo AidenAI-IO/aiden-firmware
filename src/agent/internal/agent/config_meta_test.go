@@ -200,9 +200,9 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 			help:   "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
 		},
 		"agent.context_prune_threshold": {
-			label:       "Historical prune threshold (fraction)",
+			label:       "Context prune threshold (fraction)",
 			placeholder: "0 = automatic (0.5)",
-			help:        "Fraction of the usable model input budget that triggers cleanup of expired state and historical tool results, cleaning down to 6/7 of the trigger. Must be 0 or greater than 0 and less than 1; 0 uses 0.5. Capped at context_compaction_threshold so this cheap pass runs before the conversation summary.",
+			help:        "Fraction of the usable model input budget that triggers cleanup of stale state and older tool exchanges, including during one long-running tool loop, cleaning down to 6/7 of the trigger. Must be 0 or greater than 0 and less than 1; 0 uses 0.5. Capped at context_compaction_threshold so this cheap pass runs before the conversation summary.",
 		},
 		"model.responses_context_management": {
 			layout: "wide",
@@ -696,7 +696,7 @@ func TestConfigMeta_ResponsesOptionsUsePlainLanguage(t *testing.T) {
 	idx := fieldIndex(t)
 	wantLabels := map[string]string{
 		"model.api_mode":                              "Conversation API",
-		"agent.context_prune_threshold":               "Historical prune threshold (fraction)",
+		"agent.context_prune_threshold":               "Context prune threshold (fraction)",
 		"model.responses_context_management":          "Provider compaction",
 		"model.responses_compact_threshold":           "Compaction threshold (tokens)",
 		"model.responses_truncation":                  "Over-limit input",
