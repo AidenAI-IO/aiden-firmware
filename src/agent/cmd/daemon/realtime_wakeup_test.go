@@ -190,6 +190,85 @@ func TestRealtimeSessionTerminationPreservesBufferedError(t *testing.T) {
 	}
 }
 
+func TestRealtimeSessionEventClosureMarksBufferedProviderError(t *testing.T) {
+	want := errors.New("transport failed")
+	errs := make(chan error, 1)
+	errs <- want
+	close(errs)
+
+	got := realtimeSessionEventClosureError(errs)
+	if !errors.Is(got, want) {
+		t.Fatalf("event closure error = %v, want %v", got, want)
+	}
+	if !shouldAnnounceRealtimeSessionFailure(got) {
+		t.Fatal("buffered provider error was not eligible for failure announcement")
+	}
+}
+
+func TestRealtimeSessionEventClosurePreservesRotation(t *testing.T) {
+	rotated := fmt.Errorf("%w: provider budget exhausted", realtimevoice.ErrSessionRotated)
+	errs := make(chan error, 1)
+	errs <- rotated
+	close(errs)
+
+	got := realtimeSessionEventClosureError(errs)
+	if !errors.Is(got, realtimevoice.ErrSessionRotated) {
+		t.Fatalf("rotation sentinel lost on event closure: %v", got)
+	}
+}
+
+func TestRealtimeFailureAnnouncementOnlyAcceptsProviderFailures(t *testing.T) {
+	original := errors.New("websocket closed")
+	providerErr := markRealtimeProviderFailure(original)
+	if !shouldAnnounceRealtimeSessionFailure(providerErr) {
+		t.Fatal("provider failure was not eligible for announcement")
+	}
+	if shouldAnnounceRealtimeSessionFailure(errors.New("audio backend failed")) {
+		t.Fatal("local failure was eligible for announcement")
+	}
+	if !errors.Is(providerErr, original) {
+		t.Fatal("provider failure did not unwrap to the original error")
+	}
+}
+
+func TestRealtimeTeardownPreservesWakeupDuringFailureAnnouncement(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		announcementPending bool
+		activate            bool
+		wantWakeup          bool
+	}{
+		{name: "failure announcement startup", announcementPending: true, activate: true, wantWakeup: true},
+		{name: "failure announcement without activation", announcementPending: true},
+		{name: "normal teardown clears stale activation", activate: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := make(chan struct{}, 1)
+			if tc.activate {
+				signalWakeupEvent(events)
+			}
+			drainRealtimeWakeups(events, tc.announcementPending)
+			select {
+			case <-events:
+				if !tc.wantWakeup {
+					t.Fatal("teardown retained a stale activation")
+				}
+			default:
+				if tc.wantWakeup {
+					t.Fatal("teardown lost the activation needed to cancel failure speech and reconnect")
+				}
+			}
+			// Later activations must still reach the normal event-loop path.
+			signalWakeupEvent(events)
+			select {
+			case <-events:
+			default:
+				t.Fatal("activation after teardown was lost")
+			}
+		})
+	}
+}
+
 func TestInterruptRealtimeResponseSkipsIdleResponse(t *testing.T) {
 	interrupter := &fakeRealtimeResponseInterrupter{}
 	position := realtimevoice.ResponseInterruption{ItemID: "item_1", AudioEndMS: 250}

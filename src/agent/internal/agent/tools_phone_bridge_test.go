@@ -1110,6 +1110,47 @@ func TestClipboardReadSuccessPreservesOKField(t *testing.T) {
 	}
 }
 
+func TestClipboardWriteRequiresTextArgument(t *testing.T) {
+	for _, input := range []string{`{"action":"write"}`, `{"action":"write","text":null}`, `{"action":"write","text":42}`} {
+		t.Run(input, func(t *testing.T) {
+			tool := NewClipboardTool(nil, nil)
+			ctx, _ := WithToolError(context.Background())
+			out, err := tool.Call(ctx, input)
+			if err != nil {
+				t.Fatalf("Call returned err: %v", err)
+			}
+			te := ToolErrorFromContext(ctx)
+			if te == nil || te.Code != CodeInvalidArguments {
+				t.Fatalf("expected invalid_arguments; got %+v output=%q", te, out)
+			}
+		})
+	}
+}
+
+func TestClipboardWriteAllowsExplicitEmptyText(t *testing.T) {
+	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+		if string(cmd.Payload) != `{"text":""}` {
+			t.Errorf("clipboard payload = %s, want explicit empty text", cmd.Payload)
+		}
+		return BridgeCommandResponse{ID: cmd.ID}
+	})
+	tool := NewClipboardTool(bridge, nil)
+
+	out, err := tool.Call(context.Background(), `{"action":"write","text":""}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK {
+		t.Fatalf("clipboard write output = %s, want ok=true", out)
+	}
+}
+
 func TestClipboardReadUsesPiPBackgroundQueueWhenActive(t *testing.T) {
 	bridge := newPhoneBridgeForTest()
 	t.Cleanup(func() { bridge.queue.Stop() })

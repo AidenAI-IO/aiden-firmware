@@ -192,6 +192,9 @@ func (pb *PhoneBridge) handlePollCommands(w http.ResponseWriter, r *http.Request
 			return phoneBridgeHTTPPollCommandAllowed(platform, appState, pipEnabled, fgsEnabled, cmd.Type)
 		})
 	}
+	if commands == nil {
+		commands = []BridgeCommand{}
+	}
 
 	if pb.logger != nil && len(commands) > 0 {
 		var cmdIDs []string

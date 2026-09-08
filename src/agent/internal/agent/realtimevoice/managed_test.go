@@ -55,6 +55,7 @@ func (s *managedTestSession) Interrupt(context.Context, ResponseInterruption) er
 	s.interrupts++
 	return nil
 }
+func (s *managedTestSession) InterruptionAckTimeout() time.Duration { return time.Second }
 func (s *managedTestSession) SendToolResult(context.Context, string, string) error {
 	s.toolCalls++
 	return nil
@@ -176,6 +177,9 @@ func TestManagedSessionNormalizesOperations(t *testing.T) {
 	if err := session.ResponseInterrupter.Interrupt(ctx, ResponseInterruption{}); err != nil {
 		t.Fatal(err)
 	}
+	if session.InterruptionAckTimeoutProvider == nil || session.InterruptionAckTimeoutProvider.InterruptionAckTimeout() != time.Second {
+		t.Fatal("interruption acknowledgement timeout capability was not forwarded")
+	}
 	if err := session.ToolResultSender.SendToolResult(ctx, "call-1", "ok"); err != nil {
 		t.Fatal(err)
 	}
@@ -203,6 +207,9 @@ func TestManagedSessionReportsUnsupportedCapability(t *testing.T) {
 	conversation := newConversation(managed, raw)
 	if conversation.ResponseInterrupter != nil {
 		t.Fatalf("unsupported ResponseInterrupter = %T, want nil", conversation.ResponseInterrupter)
+	}
+	if conversation.InterruptionAckTimeoutProvider != nil {
+		t.Fatalf("unsupported InterruptionAckTimeoutProvider = %T, want nil", conversation.InterruptionAckTimeoutProvider)
 	}
 	if conversation.TextSession != nil || conversation.ContextReplayer != nil {
 		t.Fatalf("unsupported optional capabilities must stay nil: %+v", conversation)

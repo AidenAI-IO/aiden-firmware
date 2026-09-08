@@ -4,6 +4,10 @@
 
 #include "doctest.h"
 
+#include <chrono>
+#include <future>
+#include <thread>
+
 TEST_CASE("AudioRecordSession captures at 16 kHz for a 24 kHz target") {
     aiden::AudioFormat fmt;
     fmt.sample_rate = 24000;
@@ -89,4 +93,109 @@ TEST_CASE("AudioSessionManager stops draining playback sessions") {
     CHECK(manager.stop_playback(session_id) == aiden::AidenServiceStatus::OK);
     CHECK(session->is_stopped());
     CHECK(manager.stop_playback(session_id) == aiden::AidenServiceStatus::SESSION_NOT_FOUND);
+}
+
+TEST_CASE("AudioSessionManager publishes draining before manager operations resume") {
+    aiden::AudioSessionManager manager;
+
+    aiden::AudioFormat fmt;
+    fmt.sample_rate = 16000;
+    fmt.channels = 1;
+    fmt.bit_width = 16;
+
+    const uint64_t session_id = 100;
+    auto session = std::make_shared<aiden::AudioPlaybackSession>(session_id, fmt);
+    REQUIRE(session->start());
+    {
+        std::lock_guard<std::mutex> lock(manager.mutex_);
+        manager.playback_sessions_[session_id] = session;
+        manager.playback_last_active_[session_id] =
+            aiden::AudioSessionManager::Clock::now();
+    }
+
+    // Hold the draining lock so the migration must wait at its publication
+    // point. The manager lock must remain held until that publication is done.
+    std::unique_lock<std::mutex> draining_lock(manager.draining_playback_state_->mutex);
+    const uint8_t chunk[] = {1, 2, 3, 4};
+    auto final_future = std::async(std::launch::async, [&manager, session_id, &chunk]() {
+        return manager.write_play_chunk(session_id, chunk, sizeof(chunk), true);
+    });
+
+    bool final_received = false;
+    const auto final_deadline = std::chrono::steady_clock::now() +
+                                std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < final_deadline) {
+        {
+            std::lock_guard<std::mutex> lock(session->mutex_);
+            final_received = session->final_received_;
+        }
+        if (final_received) break;
+        std::this_thread::yield();
+    }
+    CHECK(final_received);
+    if (!final_received) {
+        draining_lock.unlock();
+        final_future.wait();
+        return;
+    }
+
+    // Once the migration starts, the manager lock must stay held while the
+    // draining lock is unavailable. The old ordering released it first.
+    bool migration_holds_manager = false;
+    const auto migration_deadline = std::chrono::steady_clock::now() +
+                                    std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < migration_deadline) {
+        if (manager.mutex_.try_lock()) {
+            manager.mutex_.unlock();
+            std::this_thread::yield();
+            continue;
+        }
+
+        migration_holds_manager = true;
+        for (int i = 0; i < 10; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (manager.mutex_.try_lock()) {
+                manager.mutex_.unlock();
+                migration_holds_manager = false;
+                break;
+            }
+        }
+        if (migration_holds_manager) break;
+    }
+    CHECK(migration_holds_manager);
+    if (!migration_holds_manager) {
+        draining_lock.unlock();
+        final_future.wait();
+        return;
+    }
+
+    SUBCASE("start observes the draining session") {
+        auto start_future = std::async(std::launch::async, [&manager, &fmt]() {
+            aiden::PlaybackStartResult out;
+            return manager.start_playback(fmt, &out);
+        });
+        CHECK(start_future.wait_for(std::chrono::milliseconds(50)) ==
+              std::future_status::timeout);
+
+        draining_lock.unlock();
+        REQUIRE(final_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        CHECK(final_future.get() == aiden::AidenServiceStatus::OK);
+        REQUIRE(start_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        CHECK(start_future.get() == aiden::AidenServiceStatus::SERVICE_RECOVERING);
+        CHECK(manager.stop_playback(session_id) == aiden::AidenServiceStatus::OK);
+    }
+
+    SUBCASE("stop finds the draining session") {
+        auto stop_future = std::async(std::launch::async, [&manager, session_id]() {
+            return manager.stop_playback(session_id);
+        });
+        CHECK(stop_future.wait_for(std::chrono::milliseconds(50)) ==
+              std::future_status::timeout);
+
+        draining_lock.unlock();
+        REQUIRE(final_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        CHECK(final_future.get() == aiden::AidenServiceStatus::OK);
+        REQUIRE(stop_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        CHECK(stop_future.get() == aiden::AidenServiceStatus::OK);
+    }
 }

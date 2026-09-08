@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"aiden-agent/internal/agent/tts"
 )
@@ -22,26 +23,34 @@ type session struct {
 	mu         sync.Mutex
 	textBuffer *bytes.Buffer
 	closed     bool
+	finalized  bool
 	lastErr    error
 }
 
 func (s *session) WriteText(text string) error {
-	if text == "" {
-		return nil
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closed {
-		return fmt.Errorf("session closed")
+		return s.sessionErr()
+	}
+	if text == "" {
+		return nil
 	}
 
 	s.textBuffer.WriteString(text)
 
-	// Find sentence boundary and synthesize only up to it, retaining remainder
-	if idx := lastSentenceBoundary(s.textBuffer.String()); idx >= 0 {
-		return s.synthesizeUpTo(idx + 1) // +1 to include the boundary char
+	// Find sentence boundary and synthesize only up to it, retaining remainder.
+	bufferedText := s.textBuffer.String()
+	if idx := lastSentenceBoundary(bufferedText); idx >= 0 {
+		endIdx, err := runeEndIndex(bufferedText, idx)
+		if err == nil {
+			err = s.synthesizeUpTo(endIdx)
+		}
+		if err != nil {
+			s.closed = true
+			return s.recordErr(err)
+		}
 	}
 	return nil
 }
@@ -50,29 +59,37 @@ func (s *session) Flush() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.closed {
+		return s.sessionErr()
+	}
 	if s.textBuffer.Len() == 0 {
 		return nil
 	}
-	return s.synthesizeAndClear()
+	if err := s.synthesizeAndClear(); err != nil {
+		s.closed = true
+		return s.recordErr(err)
+	}
+	return nil
 }
 
 func (s *session) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.closed {
+	if s.finalized {
 		return s.lastErr
 	}
 	s.closed = true
+	s.finalized = true
 
-	if s.textBuffer.Len() > 0 {
-		if err := s.synthesizeAndClear(); err != nil && s.lastErr == nil {
-			s.lastErr = err
+	if s.lastErr == nil && s.textBuffer.Len() > 0 {
+		if err := s.synthesizeAndClear(); err != nil {
+			s.recordErr(err)
 		}
 	}
 
-	if err := s.sink.Drain(s.ctx); err != nil && s.lastErr == nil {
-		s.lastErr = err
+	if err := s.sink.Drain(s.ctx); err != nil {
+		s.recordErr(err)
 	}
 
 	return s.lastErr
@@ -82,6 +99,24 @@ func (s *session) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastErr
+}
+
+// recordErr stores and returns the first session error.
+// Must be called with s.mu held.
+func (s *session) recordErr(err error) error {
+	if err != nil && s.lastErr == nil {
+		s.lastErr = err
+	}
+	return s.lastErr
+}
+
+// sessionErr returns the stored failure, or the generic closed-session error.
+// Must be called with s.mu held.
+func (s *session) sessionErr() error {
+	if s.lastErr != nil {
+		return s.lastErr
+	}
+	return tts.ErrSessionClosed
 }
 
 // ResetBuffer drops any buffered text not yet synthesized.
@@ -108,7 +143,12 @@ func (s *session) synthesizeAndClear() error {
 // Must be called with s.mu held.
 func (s *session) synthesizeUpTo(endIdx int) error {
 	text := s.textBuffer.String()
-	if endIdx <= 0 || endIdx > len(text) {
+	if endIdx < 0 || endIdx > len(text) {
+		return nil
+	}
+	// Zero is a valid end index: it selects an empty prefix and leaves the
+	// entire buffer pending for a later synthesis.
+	if endIdx == 0 {
 		return nil
 	}
 
@@ -140,15 +180,13 @@ func (s *session) synthesize(text string) error {
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		s.lastErr = fmt.Errorf("marshal request: %w", err)
-		return s.lastErr
+		return s.recordErr(fmt.Errorf("marshal request: %w", err))
 	}
 
 	url := fmt.Sprintf("%s/audio/speech", s.adapter.endpoint)
 	req, err := http.NewRequestWithContext(s.ctx, "POST", url, bytes.NewReader(jsonData))
 	if err != nil {
-		s.lastErr = fmt.Errorf("create request: %w", err)
-		return s.lastErr
+		return s.recordErr(fmt.Errorf("create request: %w", err))
 	}
 
 	req.Header.Set("Authorization", "Bearer "+s.adapter.apiKey)
@@ -156,53 +194,52 @@ func (s *session) synthesize(text string) error {
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		s.lastErr = fmt.Errorf("send request: %w", err)
-		return s.lastErr
+		return s.recordErr(fmt.Errorf("send request: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		s.lastErr = fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
-		return s.lastErr
+		return s.recordErr(fmt.Errorf("API error %d: %s", resp.StatusCode, string(body)))
 	}
 
 	// Response is raw PCM s16le audio stream.
 	pcmData, err := io.ReadAll(resp.Body)
 	if err != nil {
-		s.lastErr = fmt.Errorf("read audio: %w", err)
-		return s.lastErr
+		return s.recordErr(fmt.Errorf("read audio: %w", err))
 	}
 
 	if len(pcmData) > 0 {
 		if err := s.sink.WritePCM(pcmData); err != nil {
-			s.lastErr = err
-			return fmt.Errorf("write pcm: %w", err)
+			return s.recordErr(fmt.Errorf("write pcm: %w", err))
 		}
 	}
 
 	return nil
 }
 
-func containsSentenceBoundary(text string) bool {
-	for _, r := range text {
-		switch r {
-		case '.', '!', '?', '\n', '。', '！', '？', '；':
-			return true
-		}
+func runeEndIndex(text string, startIdx int) (int, error) {
+	if startIdx < 0 || startIdx >= len(text) {
+		return 0, fmt.Errorf("rune start index %d out of range", startIdx)
 	}
-	return false
+	r, size := utf8.DecodeRuneInString(text[startIdx:])
+	if r == utf8.RuneError && size == 1 {
+		return 0, fmt.Errorf("invalid UTF-8 at byte %d", startIdx)
+	}
+	return startIdx + size, nil
 }
 
-// lastSentenceBoundary returns the index of the last sentence boundary char in text, or -1 if none.
+// lastSentenceBoundary returns the byte index of the last sentence boundary
+// rune in text, or -1 if none.
 func lastSentenceBoundary(text string) int {
-	for i := len(text) - 1; i >= 0; i-- {
-		switch rune(text[i]) {
+	last := -1
+	for i, r := range text {
+		switch r {
 		case '.', '!', '?', '\n', '。', '！', '？', '；':
-			return i
+			last = i
 		}
 	}
-	return -1
+	return last
 }
 
 type speechRequest struct {
