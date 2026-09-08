@@ -96,6 +96,7 @@ func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Reque
 		"ok": status.Error == "", "applied": false, "pending": status.Pending,
 		"persisted": true, "revision": revision, "state": status.State, "error": status.Error,
 		"reboot_required": status.RebootRequired,
+		"runtime_id":      s.runtime.ConfigApplyStatus().RuntimeID,
 	})
 }
 

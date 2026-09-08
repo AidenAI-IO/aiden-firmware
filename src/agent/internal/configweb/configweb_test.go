@@ -979,3 +979,74 @@ func TestFrameServiceReadinessWaitsForListener(t *testing.T) {
 		t.Fatal("missing service reported ready")
 	}
 }
+
+func TestConfigApplicationDropsReloadErrorAfterAgentRestart(t *testing.T) {
+	options := testOptions(t)
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[],\"reboot_required\":false,\"persisted\":true,\"revision\":7}'\n"
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	agentID := "agent-one"
+	failReload := false
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			mu.Lock()
+			id := agentID
+			mu.Unlock()
+			writeJSON(w, http.StatusOK, map[string]any{"state": "applied", "applied": true, "pending": false, "runtime_id": id})
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if failReload {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "agent busy"})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true, "runtime_id": agentID})
+	}))
+	defer reload.Close()
+	options.AgentBinary = fakeAgent
+	options.AgentHTTPBaseURL = reload.URL
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := func() *httptest.ResponseRecorder {
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{}}`)))
+		return resp
+	}
+	status := func() *httptest.ResponseRecorder {
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/config/application", nil))
+		return resp
+	}
+	// A successful save records the answering Agent process.
+	if resp := save(); resp.Code != http.StatusOK {
+		t.Fatalf("first save: %d %s", resp.Code, resp.Body.String())
+	}
+	// The next reload request fails and the error is attributed to that process.
+	mu.Lock()
+	failReload = true
+	mu.Unlock()
+	if resp := save(); resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failing save: %d %s", resp.Code, resp.Body.String())
+	}
+	if resp := status(); resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"state":"failed"`) || !strings.Contains(resp.Body.String(), "agent busy") {
+		t.Fatalf("same-process status: %d %s", resp.Code, resp.Body.String())
+	}
+	// A restarted Agent booted the persisted configuration: the stored error
+	// is stale and must be dropped in favor of the live status.
+	mu.Lock()
+	agentID = "agent-two"
+	mu.Unlock()
+	if resp := status(); resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"state":"applied"`) || strings.Contains(resp.Body.String(), "agent busy") {
+		t.Fatalf("restarted-agent status: %d %s", resp.Code, resp.Body.String())
+	}
+	// The error stays cleared for subsequent polls.
+	if resp := status(); resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"state":"applied"`) {
+		t.Fatalf("cleared status: %d %s", resp.Code, resp.Body.String())
+	}
+}

@@ -116,6 +116,10 @@ service, or reload-request failures return an error HTTP status; asynchronous
 component failures are reported by the status endpoint. Neither schedules an
 Agent restart. Frame/storage application may have completed before a later
 component fails. Failed frame/storage work is retried on the next save.
+The status reports a `runtime_id` identifying the answering Agent process; a
+failed reload request is attributed to that process, and a restarted Agent
+(which boots the persisted configuration) drops the stale error instead of
+requiring a retry.
 
 `restart_required` mirrors `reboot_required` for USB descriptor changes
 (Android versus non-Android device type) and `hid.keyboard_layout`. The runtime

@@ -22,6 +22,10 @@ type ConfigApplyStatus struct {
 	RebootRequired  bool   `json:"reboot_required"`
 	RestartRequired bool   `json:"restart_required"`
 	Error           string `json:"error,omitempty"`
+	// RuntimeID identifies the Agent process reporting this status. Config Web
+	// uses it to drop apply errors that predate an Agent restart: a restarted
+	// Agent booted with the persisted configuration.
+	RuntimeID string `json:"runtime_id,omitempty"`
 }
 
 func (r *Runtime) SetConfigPreparer(prepare ConfigPrepareFunc) {
@@ -41,8 +45,12 @@ func (r *Runtime) toolSnapshot() *ToolSet {
 
 func (r *Runtime) ConfigApplyStatus() ConfigApplyStatus {
 	r.configStatusMu.Lock()
-	defer r.configStatusMu.Unlock()
-	return r.configStatus
+	status := r.configStatus
+	r.configStatusMu.Unlock()
+	// runtimeID is assigned once at construction and never mutated; attach it
+	// on read so every report identifies the answering process.
+	status.RuntimeID = r.runtimeID
+	return status
 }
 
 // QueueConfig coalesces saves while a voice session or tool operation drains.
@@ -231,8 +239,8 @@ func (r *Runtime) applyConfig(ctx context.Context, cfg Config) error {
 		}
 	}
 	if r.storageMonitor != nil && (!reflect.DeepEqual(current.Storage, cfg.Storage) || current.AudioArchive != cfg.AudioArchive) {
-		next := newRuntimeStorageMonitor(cfg, nil)
-		r.storageMonitor.Reconfigure(next.config, next.cleaners)
+		monitorConfig, cleaners := runtimeStorageMonitorParts(cfg)
+		r.storageMonitor.Reconfigure(monitorConfig, cleaners)
 	}
 	if r.storage != nil {
 		r.storage.reconfigureStateView(cfg.Storage)

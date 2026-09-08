@@ -203,6 +203,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	payload, reloadErr := s.reloadAgentConfig(r.Context(), revision)
 	if reloadErr != nil {
 		s.configApplyError = reloadErr.Error()
+		// Attribute the failure to the Agent process that was expected to
+		// apply it; a restarted Agent has already booted the persisted config.
+		s.configApplyErrorAgent = s.agentRuntimeID
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "config": update["config"], "persisted": persisted, "applied": false,
 			"revision": revision, "changed_paths": changed, "reboot_required": rebootRequired,
@@ -210,6 +213,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 			"state": "failed", "error": reloadErr.Error(),
 		})
 		return
+	}
+	if id, _ := payload["runtime_id"].(string); id != "" {
+		s.agentRuntimeID = id
 	}
 	applied, _ = payload["applied"].(bool)
 	pending, _ = payload["pending"].(bool)
@@ -272,11 +278,15 @@ func (s *Server) handlePutLocale(w http.ResponseWriter, r *http.Request) {
 	payload, err := s.reloadAgentConfig(r.Context(), revision)
 	if err != nil {
 		s.configApplyError = err.Error()
+		s.configApplyErrorAgent = s.agentRuntimeID
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "persisted": true, "applied": false, "locale": *request.Locale,
 			"agent_restart_scheduled": false, "revision": revision, "error": err.Error(),
 		})
 		return
+	}
+	if id, _ := payload["runtime_id"].(string); id != "" {
+		s.agentRuntimeID = id
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "locale": *request.Locale, "persisted": true, "applied": payload["applied"],
@@ -303,6 +313,7 @@ func (s *Server) applyConfigServices() error {
 		}
 	}
 	s.configApplyError = strings.Join(failures, "; ")
+	s.configApplyErrorAgent = ""
 	if s.configApplyError != "" {
 		return fmt.Errorf("%s", s.configApplyError)
 	}
