@@ -1748,7 +1748,10 @@ func (s *realtimeTurnState) speechStopped(status string) {
 		s.inputTurnPending = false
 		return
 	}
-	s.inputTurnPending = status != "turn_invalid"
+	// Once provider VAD reports speech_stopped, the user's turn is complete.
+	// Do not keep the foreground admission gate blocked while waiting for a
+	// response that may never arrive (for example, an empty/noise turn).
+	s.inputTurnPending = false
 }
 
 func (s *realtimeTurnState) localSpeechStopped() {
