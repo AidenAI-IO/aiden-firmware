@@ -10,9 +10,10 @@
 # budget: either 0 to select the default, or greater than 0 and less than 1.
 # Omitting a value uses the default shown.
 #
-# Deterministic cleanup of expired state and historical tool results, cleaning
-# down to 6/7 of the trigger. This is the cheap pass and runs first; its
-# effective value is capped at context_compaction_threshold below.
+# Deterministic cleanup of stale state and older tool exchanges, including
+# during one long-running tool loop. It cleans down to 6/7 of the trigger. This
+# is the cheap pass and runs first; its effective value is capped at
+# context_compaction_threshold below.
 # context_prune_threshold = 0.5
 #
 # Point at which the conversation is summarized into a compaction message by the
