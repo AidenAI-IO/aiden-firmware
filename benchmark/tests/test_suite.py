@@ -1665,3 +1665,78 @@ def test_phone_bridge_data_policy_suite_covers_tools_and_routing_modes():
         assert "platform" not in state
         assert state["fgs_bridge_enabled"] is True
         assert "bridge_open_app" in task.hard_assertions.forbidden_tools
+
+
+def test_aiden_app_connection_capabilities_suite_covers_real_proxy_contract():
+    suites_dir = Path(__file__).resolve().parents[1] / "suites" / "aiden_app"
+    suite = load_suite(suites_dir / "connection_capabilities_v1.json")
+    tasks = {task.id: task for task in suite.tasks}
+
+    assert suite.mock_environment is None
+    assert set(tasks) == {
+        "ios_forwarded_environment_context",
+        "android_forwarded_environment_context",
+        "semantic_open_browser",
+        "open_https_url",
+        "clipboard_round_trip_restore",
+        "calendar_create_query_delete_round_trip",
+        "contacts_query_update_restore_fixture",
+        "send_local_notification",
+    }
+    assert all(task.mock_environment is None for task in suite.tasks)
+    assert all(task.setup and task.setup["type"] == "agent_prompt" for task in suite.tasks)
+    assert all(task.setup["clear_history_after"] is True for task in suite.tasks)
+    assert all(set(task.platforms) <= {"ios", "android"} for task in suite.tasks)
+
+    ios_context = tasks["ios_forwarded_environment_context"]
+    android_context = tasks["android_forwarded_environment_context"]
+    assert ios_context.platforms == ["ios"]
+    assert android_context.platforms == ["android"]
+    assert ios_context.hard_assertions.max_tool_calls == 0
+    assert android_context.hard_assertions.max_tool_calls == 0
+
+    assert tasks["semantic_open_browser"].hard_assertions.required_tool_calls[0].input_contains == {
+        "app": "browser"
+    }
+    assert tasks["open_https_url"].hard_assertions.required_tool_calls[0].input_contains == {
+        "url": "https://example.com/"
+    }
+
+    clipboard_actions = [
+        requirement.input_contains["action"]
+        for requirement in tasks[
+            "clipboard_round_trip_restore"
+        ].hard_assertions.required_tool_calls
+    ]
+    assert clipboard_actions == ["read", "write", "read", "write", "read"]
+
+    calendar_actions = [
+        requirement.input_contains["action"]
+        for requirement in tasks[
+            "calendar_create_query_delete_round_trip"
+        ].hard_assertions.required_tool_calls
+    ]
+    assert calendar_actions == ["query", "create", "query", "delete", "query"]
+
+    contacts_task = tasks["contacts_query_update_restore_fixture"]
+    contacts_actions = [
+        requirement.input_contains["action"]
+        for requirement in contacts_task.hard_assertions.required_tool_calls
+    ]
+    assert contacts_actions == ["query", "update", "query", "update", "query"]
+    assert all(
+        requirement.input_contains["action"] != "create"
+        for requirement in contacts_task.hard_assertions.required_tool_calls
+    )
+
+    notification_call = tasks[
+        "send_local_notification"
+    ].hard_assertions.required_tool_calls[0]
+    assert notification_call.tool == "bridge_notification"
+    assert notification_call.input_contains == {
+        "action": "send",
+        "title": "AIDEN_BRIDGE_NOTIFICATION_V1",
+        "body": "forwarded app connection verified",
+        "sound": False,
+        "badge": 1,
+    }

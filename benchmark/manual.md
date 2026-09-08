@@ -165,6 +165,57 @@ daemon and benchmark token. The runner uses that token to call the benchmark-onl
 `/api/benchmark/phone_bridge_state` endpoint before the task. The endpoint is not
 registered on a normal daemon without a benchmark token.
 
+#### Real Aiden App connection capabilities
+
+`suites/aiden_app/connection_capabilities_v1.json` validates the real end-to-end
+route introduced by Phone Bridge proxy mode:
+
+```text
+Aiden App -> environment bridge -> per-task Agent daemon -> Agent tool -> Aiden App
+```
+
+Unlike the mock policy suites above, this suite requires a physical iOS or Android
+phone. It covers:
+
+- forwarding the App's environment snapshot into task runtime context;
+- semantic app and HTTPS URL opening;
+- a clipboard write/read/restore round trip;
+- a calendar create/query/delete round trip with stale-fixture cleanup;
+- a contact query/update/restore round trip; and
+- local notification delivery with a structured result.
+
+Before running it:
+
+1. Connect the Aiden App to the environment bridge and grant Contacts, Calendar,
+   and Notification permissions.
+2. Create exactly one contact named `Aiden Benchmark Fixture` with phone
+   `+1 202-555-0199`, email `benchmark-contact@example.com`, organization
+   `Aiden Baseline`, and note `managed benchmark fixture`.
+3. Keep the phone unlocked. Each task's setup returns to the Aiden App so a
+   foreground connection is available before the scored prompt.
+
+The contact case restores every field after verification. It intentionally does
+not benchmark contact creation because the App capability has no contact-delete
+operation, so a repeated suite could not clean up safely. The clipboard and
+calendar cases also restore their initial state; a notification is the only
+intentional transient side effect.
+
+Run one platform at a time:
+
+```bash
+uv run python -m runner run \
+  --suite suites/aiden_app/connection_capabilities_v1.json \
+  --auto-agent-setup \
+  --environment-url http://<environment-bridge-host>:<port> \
+  --target-platform ios \
+  --benchmark-token-file /path/to/control_token \
+  --verbose
+```
+
+Use `--target-platform android` for Android. Do not use this suite with the mock
+environment: its purpose is to verify that the bridge forwards the real Aiden App
+connection, status, commands, and structured responses.
+
 Example schema:
 
 ```json

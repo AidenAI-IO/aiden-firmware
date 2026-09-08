@@ -26,6 +26,11 @@ const (
 	// phoneBridgeBLECacheTTL avoids repeated UDS status requests while keeping
 	// runtime tool availability responsive to BLE connection changes.
 	phoneBridgeBLECacheTTL = 1500 * time.Millisecond
+	// phoneBridgeBenchmarkRelayQuery distinguishes a benchmark daemon from the
+	// companion app on the shared WebSocket endpoint. The daemon dials the
+	// device-side environment bridge; that bridge executes each command over its
+	// existing App connection and returns the App response on this socket.
+	phoneBridgeBenchmarkRelayQuery = "benchmark_relay"
 )
 
 type BridgeCommand struct {
@@ -309,6 +314,11 @@ func (pb *PhoneBridge) notifyBLEWake(cmd BridgeCommand) {
 }
 
 func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get(phoneBridgeBenchmarkRelayQuery) == "1" {
+		pb.handleBenchmarkWebSocketRelay(w, r)
+		return
+	}
+
 	// Proxy mode: forward WebSocket to remote agent
 	if pb.proxyMode {
 		pb.handleWebSocketProxy(w, r)
@@ -580,6 +590,9 @@ func (pb *PhoneBridge) SendQueuedCommand(ctx context.Context, cmd BridgeCommand)
 	if cmd.ID == "" {
 		return BridgeCommandResponse{}, fmt.Errorf("command ID must not be empty")
 	}
+	if pb.proxyMode {
+		return pb.sendProxyQueuedCommand(ctx, cmd)
+	}
 	if pb.queue == nil {
 		return BridgeCommandResponse{
 			ID:    cmd.ID,
@@ -652,6 +665,9 @@ func (pb *PhoneBridge) SendQueuedCommand(ctx context.Context, cmd BridgeCommand)
 func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (BridgeCommandResponse, error) {
 	if cmd.ID == "" {
 		return BridgeCommandResponse{}, fmt.Errorf("command ID must not be empty")
+	}
+	if pb.proxyMode {
+		return pb.sendProxyWebSocketCommand(ctx, cmd)
 	}
 	pb.mu.Lock()
 	if !pb.connected || pb.conn == nil {
@@ -1222,6 +1238,148 @@ func availableAppNames(apps []AvailableAppInfo, limit int) []string {
 		}
 	}
 	return names
+}
+
+// handleBenchmarkWebSocketRelay serves an outbound connection from a benchmark
+// daemon. The device-side Agent remains the sole owner of the App WebSocket;
+// SendCommand multiplexes relay commands onto that connection and readLoop
+// delivers the matching App responses back here.
+func (pb *PhoneBridge) handleBenchmarkWebSocketRelay(w http.ResponseWriter, r *http.Request) {
+	if pb.proxyMode {
+		http.Error(w, "nested phone bridge proxy is not supported", http.StatusBadGateway)
+		return
+	}
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		if pb.logger != nil {
+			pb.logger.Error("phone-bridge-relay: accept benchmark connection failed: %v", err)
+		}
+		return
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	taskID := strings.TrimSpace(r.Header.Get("benchmark-task-id"))
+	if pb.logger != nil {
+		pb.logger.Info("phone-bridge-relay: benchmark connected (task_id=%s)", taskID)
+		defer pb.logger.Info("phone-bridge-relay: benchmark disconnected (task_id=%s)", taskID)
+	}
+
+	for {
+		msgType, data, err := conn.Read(r.Context())
+		if err != nil {
+			if websocket.CloseStatus(err) == -1 && pb.logger != nil {
+				pb.logger.Error("phone-bridge-relay: benchmark read failed: %v", err)
+			}
+			return
+		}
+
+		var cmd BridgeCommand
+		if err := json.Unmarshal(data, &cmd); err != nil {
+			resp := BridgeCommandResponse{
+				Error: NewToolError(CodeInvalidArguments, fmt.Sprintf("decode relayed phone bridge command: %v", err)),
+			}
+			if writeErr := writeBenchmarkRelayResponse(r.Context(), conn, msgType, resp); writeErr != nil {
+				return
+			}
+			continue
+		}
+
+		resp, sendErr := pb.SendCommand(r.Context(), cmd)
+		if sendErr != nil {
+			resp = BridgeCommandResponse{
+				ID:    cmd.ID,
+				Error: NewToolError(CodeToolExecutionFailed, sendErr.Error()),
+			}
+		}
+		if err := writeBenchmarkRelayResponse(r.Context(), conn, msgType, resp); err != nil {
+			if pb.logger != nil {
+				pb.logger.Error("phone-bridge-relay: benchmark write failed: %v", err)
+			}
+			return
+		}
+	}
+}
+
+func writeBenchmarkRelayResponse(ctx context.Context, conn *websocket.Conn, msgType websocket.MessageType, resp BridgeCommandResponse) error {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return err
+	}
+	return conn.Write(ctx, msgType, data)
+}
+
+// sendProxyWebSocketCommand dials the device-side environment bridge. That
+// bridge owns the App WebSocket and relays this command and its response, so the
+// benchmark daemon observes the same command semantics as a directly connected
+// Agent without requiring an inbound connection from the device.
+func (pb *PhoneBridge) sendProxyWebSocketCommand(ctx context.Context, cmd BridgeCommand) (BridgeCommandResponse, error) {
+	remoteURL := pb.proxyEndpoint + "/api/phone-bridge"
+	if strings.HasPrefix(remoteURL, "http://") {
+		remoteURL = "ws://" + strings.TrimPrefix(remoteURL, "http://")
+	} else if strings.HasPrefix(remoteURL, "https://") {
+		remoteURL = "wss://" + strings.TrimPrefix(remoteURL, "https://")
+	}
+	params := url.Values{}
+	params.Set(phoneBridgeBenchmarkRelayQuery, "1")
+	remoteURL += "?" + params.Encode()
+
+	headers := http.Header{}
+	if pb.proxyTaskID != "" {
+		headers.Set("benchmark-task-id", pb.proxyTaskID)
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	conn, _, err := websocket.Dial(dialCtx, remoteURL, &websocket.DialOptions{HTTPHeader: headers})
+	cancel()
+	if err != nil {
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeBridgeNotConnected, fmt.Sprintf("connect phone bridge relay: %v", err)),
+		}, nil
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeCommandMarshalFailed, fmt.Sprintf("marshal command: %v", err)),
+		}, nil
+	}
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeBridgeWriteFailed, fmt.Sprintf("write relayed command: %v", err)),
+		}, nil
+	}
+
+	timeout := 5 * time.Second
+	if cmd.TimeoutMs > 0 {
+		timeout = time.Duration(cmd.TimeoutMs) * time.Millisecond
+	}
+	readCtx, readCancel := context.WithTimeout(ctx, timeout)
+	defer readCancel()
+	_, responseData, err := conn.Read(readCtx)
+	if err != nil {
+		if readCtx.Err() != nil && ctx.Err() == nil {
+			return BridgeCommandResponse{
+				ID:    cmd.ID,
+				Error: NewToolError(CodeBridgeTimeout, "relayed command timeout"),
+			}, nil
+		}
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeBridgeConnectionClosed, fmt.Sprintf("read relayed command response: %v", err)),
+		}, nil
+	}
+
+	var resp BridgeCommandResponse
+	if err := json.Unmarshal(responseData, &resp); err != nil {
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeToolExecutionFailed, fmt.Sprintf("decode relayed command response: %v", err)),
+		}, nil
+	}
+	return resp, nil
 }
 
 // handleWebSocketProxy forwards WebSocket connection to remote agent in proxy mode.

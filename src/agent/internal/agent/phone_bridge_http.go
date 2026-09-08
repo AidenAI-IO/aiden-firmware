@@ -422,3 +422,130 @@ func (pb *PhoneBridge) proxyHTTPRequest(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
+
+// sendProxyQueuedCommand uses the environment bridge's HTTP queue. The App
+// continues polling and submitting results to the device-side Agent while the
+// benchmark daemon observes a synchronous tool call.
+func (pb *PhoneBridge) sendProxyQueuedCommand(ctx context.Context, cmd BridgeCommand) (BridgeCommandResponse, error) {
+	status := pb.getProxyStatus()
+	if strings.TrimSpace(cmd.PhoneID) == "" {
+		cmd.PhoneID = status.PhoneID
+	}
+	body, err := json.Marshal(EnqueueCommandRequest{Command: cmd})
+	if err != nil {
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeCommandMarshalFailed, fmt.Sprintf("marshal queued command: %v", err)),
+		}, nil
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		pb.proxyEndpoint+"/api/phone-bridge/commands",
+		strings.NewReader(string(body)),
+	)
+	if err != nil {
+		return BridgeCommandResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	pb.setProxyTaskHeader(req)
+	resp, err := pb.proxyClient.Do(req)
+	if err != nil {
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeBridgeNotConnected, fmt.Sprintf("enqueue relayed command: %v", err)),
+		}, nil
+	}
+	responseBody, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		return BridgeCommandResponse{}, readErr
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeToolExecutionFailed, fmt.Sprintf("enqueue relayed command returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))),
+		}, nil
+	}
+
+	timeout := 10 * time.Second
+	if cmd.TimeoutMs > 0 {
+		timeout = time.Duration(cmd.TimeoutMs) * time.Millisecond
+		if timeout < 10*time.Second {
+			timeout = 10 * time.Second
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		result, done, err := pb.queryProxyQueuedResult(waitCtx, cmd.ID)
+		if err != nil {
+			return BridgeCommandResponse{
+				ID:    cmd.ID,
+				Error: NewToolError(CodeToolExecutionFailed, err.Error()),
+			}, nil
+		}
+		if done {
+			return result, nil
+		}
+		select {
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return BridgeCommandResponse{}, ctx.Err()
+			}
+			return BridgeCommandResponse{
+				ID:    cmd.ID,
+				Error: NewToolError(CodeBridgeTimeout, "queued relayed command timeout"),
+			}, nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func (pb *PhoneBridge) queryProxyQueuedResult(ctx context.Context, commandID string) (BridgeCommandResponse, bool, error) {
+	remoteURL := pb.proxyEndpoint + "/api/phone-bridge/results/" + url.PathEscape(commandID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL, nil)
+	if err != nil {
+		return BridgeCommandResponse{}, false, err
+	}
+	pb.setProxyTaskHeader(req)
+	resp, err := pb.proxyClient.Do(req)
+	if err != nil {
+		return BridgeCommandResponse{}, false, fmt.Errorf("query relayed command result: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return BridgeCommandResponse{}, false, fmt.Errorf(
+			"query relayed command result returned HTTP %d: %s",
+			resp.StatusCode,
+			strings.TrimSpace(string(body)),
+		)
+	}
+	var result GetResultResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return BridgeCommandResponse{}, false, fmt.Errorf("decode relayed command result: %w", err)
+	}
+	switch result.Status {
+	case StatusCompleted:
+		if result.Result == nil {
+			return BridgeCommandResponse{}, false, fmt.Errorf("completed relayed command has no result")
+		}
+		return *result.Result, true, nil
+	case StatusExpired:
+		return BridgeCommandResponse{
+			ID:    commandID,
+			Error: NewToolError(CodeBridgeTimeout, "queued command expired before result"),
+		}, true, nil
+	default:
+		return BridgeCommandResponse{}, false, nil
+	}
+}
+
+func (pb *PhoneBridge) setProxyTaskHeader(req *http.Request) {
+	if pb.proxyTaskID != "" {
+		req.Header.Set("benchmark-task-id", pb.proxyTaskID)
+	}
+}
