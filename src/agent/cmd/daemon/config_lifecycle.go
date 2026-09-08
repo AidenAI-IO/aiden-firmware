@@ -28,6 +28,7 @@ type inputLifecycle struct {
 	quick          wakeupWatcher
 	closed         bool
 	shutdownClosed bool
+	quiescing      atomic.Bool
 	newDialog      func(agent.Config) (*agent.AudioDialog, error)
 	runVoice       func(agent.Config, *agent.AudioDialog, chan os.Signal, <-chan struct{})
 	newWatcher     wakeupWatcherFactory
@@ -153,7 +154,12 @@ func (c *inputLifecycle) Prepare(ctx context.Context, cfg agent.Config) (func(bo
 		case <-ctx.Done():
 			c.shutdownVoice()
 			<-c.done
-			c.startVoice(old, oldDialog)
+			if !c.quiescing.Load() {
+				// Timeout rollback: the runtime keeps serving, so the drained
+				// loop must resume. During shutdown the loop stays stopped and
+				// Close finishes tearing it down.
+				c.startVoice(old, oldDialog)
+			}
 			serverFinish(false)
 			c.mu.Unlock()
 			return nil, ctx.Err()
@@ -224,6 +230,13 @@ func (c *inputLifecycle) Prepare(ctx context.Context, cfg agent.Config) (func(bo
 			c.cfg = cfg
 		}
 	}, nil
+}
+
+// StopForShutdown marks the lifecycle as closing so a configuration
+// preparation cancelled by Runtime.StopConfigReloads leaves the drained voice
+// loop stopped instead of restarting it. Call before StopConfigReloads.
+func (c *inputLifecycle) StopForShutdown() {
+	c.quiescing.Store(true)
 }
 
 func (c *inputLifecycle) Close() {

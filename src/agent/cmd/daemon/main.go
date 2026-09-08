@@ -159,7 +159,7 @@ func main() {
 		log.Printf("[input] startup failed: %v", err)
 		return
 	}
-	defer func() { runtime.StopConfigReloads(); inputs.Close() }()
+	defer func() { inputs.StopForShutdown(); runtime.StopConfigReloads(); inputs.Close() }()
 	runtime.SetConfigPreparer(inputs.Prepare)
 
 	_ = logging.LogEvent(logging.Info, "agent", "startup", "daemon_starting",
