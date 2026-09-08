@@ -446,10 +446,12 @@ func TestRealtimeTurnStateRejectsDuplicateResponseCreated(t *testing.T) {
 	}
 }
 
-// A provider that reports the same utterance boundary twice must not reopen the
-// input turn once response.created has bound the response ID. Doing so drops
-// that response's own tool calls and leaves inputTurnPending set forever, which
-// permanently blocks voice notification and background task injection.
+// A repeated utterance boundary must not reopen the input turn once
+// response.created has bound the response ID. If it does, the response's own
+// tool calls are discarded as stale and inputTurnPending stays set, which
+// permanently blocks voice notification and background task injection. The
+// adapters no longer emit a second boundary, and speechStopped clears
+// inputTurnPending outright; this pins both properties down together.
 func TestRealtimeTurnStateDuplicateSpeechStopKeepsResponseUsable(t *testing.T) {
 	state := realtimeTurnState{}
 	state.speechStarted()

@@ -2076,7 +2076,6 @@ func (s *realtimeTurnState) speechStopped(status string) {
 		}
 		s.bargedInResponseID = ""
 		s.bargedInAnonymous = false
-		return
 	}
 }
 
