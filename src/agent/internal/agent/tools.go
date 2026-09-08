@@ -103,6 +103,7 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 }
 
 func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
+	cfg.EnvironmentBridge.Endpoint = strings.TrimSpace(cfg.EnvironmentBridge.Endpoint)
 	defaultOptions := make([]BuiltinToolSetOption, 0, len(options)+2)
 	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
 		defaultOptions = append(defaultOptions,

@@ -114,7 +114,7 @@ func TestEnvironmentBridgeIOSQuickActionUsesRemoteMNKWithoutIsolation(t *testing
 		Device: DeviceConfig{DeviceType: "iOS"},
 		EnvironmentBridge: EnvironmentBridgeConfig{
 			Enabled:         true,
-			Endpoint:        bridge.URL,
+			Endpoint:        " \t" + bridge.URL + "\n ",
 			BenchmarkTaskID: "vphone-regression",
 		},
 	}, ProxyConfig{})
@@ -153,4 +153,17 @@ func equalStrings(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+func TestWhitespaceOnlyEnvironmentBridgeEndpointKeepsLocalProviders(t *testing.T) {
+	tools := NewBuiltinToolSetFromConfig(Config{EnvironmentBridge: EnvironmentBridgeConfig{Enabled: true, Endpoint: " \t\n "}}, ProxyConfig{})
+	if _, ok := tools.ScreenProvider().(*screenprovider.HTTP); ok {
+		t.Fatal("blank endpoint selected HTTP screen provider")
+	}
+	if _, ok := tools.MNKProvider().(*mnk.HTTPProvider); ok {
+		t.Fatal("blank endpoint selected HTTP MNK provider")
+	}
+	if tools.iosKeyboardIsolationOptional {
+		t.Fatal("blank endpoint disabled local isolation requirement")
+	}
 }
