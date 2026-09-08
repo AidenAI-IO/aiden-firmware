@@ -16,6 +16,7 @@ const (
 	DefaultConfigPath      = "/userdata/system/wifi-proxies.json"
 	DefaultEnvironmentPath = "/run/wifi_proxy/proxy-env"
 	DefaultNoProxy         = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10"
+	legacyDefaultNoProxy   = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 	ConfigVersion          = 1
 	maxNoProxyLength       = 4096
 )
@@ -151,7 +152,7 @@ func NormalizeNetwork(network Network) (Network, error) {
 			return Network{}, err
 		}
 		noProxySet := network.NoProxySet
-		if noProxy == "" && !noProxySet {
+		if !noProxySet && (noProxy == "" || noProxy == legacyDefaultNoProxy) {
 			noProxy = DefaultNoProxy
 		}
 		return Network{Mode: ModeProxy, ProxyURL: parsed.String(), NoProxy: noProxy, NoProxySet: noProxySet}, nil

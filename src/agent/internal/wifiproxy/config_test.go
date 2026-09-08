@@ -100,3 +100,25 @@ func TestConfigRoundTripPersistsDefaultNoProxy(t *testing.T) {
 		t.Fatalf("NO_PROXY=%q, want %q", got, DefaultNoProxy)
 	}
 }
+
+func TestNormalizeNetworkUpgradesLegacyDefaultNoProxy(t *testing.T) {
+	network, err := NormalizeNetwork(Network{
+		Mode: ModeProxy, ProxyURL: "http://proxy.example:7890", NoProxy: legacyDefaultNoProxy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if network.NoProxy != DefaultNoProxy || network.NoProxySet {
+		t.Fatalf("legacy default NO_PROXY produced %#v", network)
+	}
+
+	network, err = NormalizeNetwork(Network{
+		Mode: ModeProxy, ProxyURL: "http://proxy.example:7890", NoProxy: legacyDefaultNoProxy, NoProxySet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if network.NoProxy != legacyDefaultNoProxy || !network.NoProxySet {
+		t.Fatalf("explicit legacy NO_PROXY produced %#v", network)
+	}
+}
