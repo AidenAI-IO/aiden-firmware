@@ -3,6 +3,7 @@ package realtimevoice
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // Provider opens provider-neutral realtime voice sessions. Implementations
@@ -207,6 +208,14 @@ type ResponseInterrupter interface {
 	Interrupt(context.Context, ResponseInterruption) error
 }
 
+// InterruptionAckTimeoutProvider lets a provider bound how long its session
+// can safely wait for the terminal acknowledgement after Interrupt succeeds.
+// Providers without this capability continue using the daemon's response
+// watchdog.
+type InterruptionAckTimeoutProvider interface {
+	InterruptionAckTimeout() time.Duration
+}
+
 // ResponseInterruption identifies how much of the current assistant audio was
 // submitted for playback. Providers that keep server-side conversation audio
 // can use it to remove the unheard tail after a barge-in.
@@ -266,6 +275,8 @@ const (
 	EventResponseCancelled EventKind = "response_cancelled"
 	EventInterruption      EventKind = "interruption"
 	EventToolCall          EventKind = "tool_call"
+	// EventToolCallCancelled cancels only the invocation identified by CallID.
+	EventToolCallCancelled EventKind = "tool_call_cancelled"
 	EventUsage             EventKind = "usage"
 	EventError             EventKind = "error"
 	EventClosed            EventKind = "closed"

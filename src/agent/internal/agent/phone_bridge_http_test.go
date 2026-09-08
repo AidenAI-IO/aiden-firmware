@@ -400,6 +400,38 @@ func TestHTTPPollCommands(t *testing.T) {
 	}
 }
 
+func TestHTTPPollCommandsReturnsEmptyArray(t *testing.T) {
+	for _, query := range []string{
+		"platform=ios",
+		"platform=ios&app_state=background&pip_bridge_enabled=false&phone_id=phone-1",
+		"platform=ios&phone_id=other-phone",
+		"platform=android&app_state=active&fgs_bridge_enabled=false&phone_id=phone-1",
+	} {
+		t.Run(query, func(t *testing.T) {
+			bridge := newPhoneBridgeForTest()
+			defer bridge.queue.Stop()
+			if query != "platform=ios" {
+				if err := bridge.queue.Enqueue(BridgeCommand{ID: "clipboard", Type: "clipboard_read", PhoneID: "phone-1"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			request := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/commands?"+query, nil)
+			response := httptest.NewRecorder()
+			bridge.handlePollCommands(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("poll status=%d body=%s", response.Code, response.Body.String())
+			}
+			var result PollCommandsResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Commands == nil || len(result.Commands) != 0 {
+				t.Fatalf("empty poll response = %s, want commands=[]", response.Body.String())
+			}
+		})
+	}
+}
+
 func TestHTTPPollCommandsRecordsAndroidFGSBridgeState(t *testing.T) {
 	stateManager := statemanager.NewStateManager()
 	bridge := newPhoneBridgeWithStateManager(stateManager)

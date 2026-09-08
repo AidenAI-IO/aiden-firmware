@@ -81,6 +81,9 @@ private:
     uint64_t session_id_;
     AudioFormat fmt_;
     AudioPlayer player_;
+    // AudioPlayer and its Rockit state are not thread-safe; serialize every
+    // hardware operation, including playback teardown and volume updates.
+    mutable std::mutex player_mutex_;
     std::thread playback_thread_;
     std::mutex mutex_;
     std::condition_variable cv_;
