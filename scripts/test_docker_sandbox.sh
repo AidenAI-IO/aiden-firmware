@@ -33,6 +33,19 @@ cleanup() {
     fi
 }
 
+# curl -f collapses every failure into a bare "curl: (22)" with no hint which
+# request produced it, and this script makes ten of them against two servers.
+# Name each asserted request so a failure says what it asked for. The readiness
+# polls below stay silent on purpose: they are expected to fail while waiting.
+request() {
+    label=$1
+    shift
+    if ! curl "$@"; then
+        printf 'smoke test request failed: %s\n' "$label" >&2
+        exit 1
+    fi
+}
+
 agent_pid() {
     compose exec -T aiden /usr/local/bin/aiden-agent-service status 2>/dev/null \
         | sed -n 's/^agent=running pid=\([0-9][0-9]*\).*/\1/p'
@@ -70,13 +83,19 @@ fq --version
 yq --version
 '
 
-config_page="$(curl -fsS --max-time 10 "http://127.0.0.1:$config_port/")"
-agent_page="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/")"
-terminal_page="$(curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/webtty/")"
-terminal_headers="$(curl -fsSIL --max-time 10 "http://127.0.0.1:$agent_port/webtty/")"
-terminal_token="$(curl -fsS --max-time 10 "http://127.0.0.1:$agent_port/webtty/token")"
+config_page="$(request 'GET config web /' \
+    -fsS --max-time 10 "http://127.0.0.1:$config_port/")"
+agent_page="$(request 'GET agent web /' \
+    -fsS --max-time 10 "http://127.0.0.1:$agent_port/")"
+terminal_page="$(request 'GET agent web /webtty/' \
+    -fsSL --max-time 10 "http://127.0.0.1:$agent_port/webtty/")"
+terminal_headers="$(request 'HEAD agent web /webtty/' \
+    -fsSIL --max-time 10 "http://127.0.0.1:$agent_port/webtty/")"
+terminal_token="$(request 'GET agent web /webtty/token' \
+    -fsS --max-time 10 "http://127.0.0.1:$agent_port/webtty/token")"
 reported_agent_port="$(
-    curl -fsS --max-time 10 "http://127.0.0.1:$config_port/api/device/status" \
+    request 'GET config web /api/device/status' \
+        -fsS --max-time 10 "http://127.0.0.1:$config_port/api/device/status" \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["agent_status"]["public_port"])'
 )"
 test "$reported_agent_port" -eq "$agent_port"
@@ -131,12 +150,14 @@ while [ "$attempt" -le 30 ]; do
 done
 test "$current_restart_count" -gt "$restart_count"
 wait_for_agent
-curl -fsSL --max-time 10 "http://127.0.0.1:$agent_port/webtty/" >/dev/null
+request 'GET agent web /webtty/ after ttyd restart' \
+    -fsSL --max-time 10 "http://127.0.0.1:$agent_port/webtty/" >/dev/null
 
 before_pid="$(agent_pid)"
 test -n "$before_pid"
 
-curl -fsS --max-time 15 -X PUT \
+request 'PUT config web /api/system/environment' \
+    -fsS --max-time 15 -X PUT \
     -H 'Content-Type: application/json' \
     --data '{"system_env":"AIDEN_DOCKER_SANDBOX_SMOKE=1\n"}' \
     "http://127.0.0.1:$config_port/api/system/environment" \
@@ -163,7 +184,8 @@ test "$after_pid" != "$before_pid"
 compose down
 compose up -d
 wait_for_agent
-curl -fsS --max-time 10 "http://127.0.0.1:$config_port/api/system/environment" \
+request 'GET config web /api/system/environment' \
+    -fsS --max-time 10 "http://127.0.0.1:$config_port/api/system/environment" \
     | grep -q 'AIDEN_DOCKER_SANDBOX_SMOKE=1'
 
 printf 'Docker sandbox smoke test passed (agent pid %s -> %s).\n' "$before_pid" "$after_pid"
@@ -233,7 +255,8 @@ grep -q 'POST /api/setup docker-sandbox-smoke' "$bridge_log"
 setup_count="$(grep -c 'POST /api/setup docker-sandbox-smoke' "$bridge_log" || true)"
 test "$setup_count" -eq 1
 
-curl -fsS --max-time 15 -X PUT \
+request 'PUT config web /api/system/environment (restart race)' \
+    -fsS --max-time 15 -X PUT \
     -H 'Content-Type: application/json' \
     --data '{"system_env":"AIDEN_DOCKER_SANDBOX_RACE=1\n"}' \
     "http://127.0.0.1:$config_port/api/system/environment" >/dev/null
