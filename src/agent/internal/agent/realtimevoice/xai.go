@@ -260,8 +260,12 @@ func translateXAIEventBase(body []byte) (Event, bool) {
 		return Event{Kind: EventReady, SessionID: id}, true
 	case "input_audio_buffer.speech_started":
 		return Event{Kind: EventSpeechStarted}, true
-	case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
+	case "input_audio_buffer.speech_stopped":
 		return Event{Kind: EventSpeechStopped}, true
+	case "input_audio_buffer.committed":
+		// speech_stopped owns the VAD turn boundary. committed only confirms
+		// that the same audio was stored and must not mutate turn state again.
+		return Event{}, false
 	case "conversation.item.input_audio_transcription.delta":
 		var event struct {
 			Delta          string `json:"delta"`

@@ -74,6 +74,24 @@ func (s *Server) scheduleAgentRestart() error {
 	return err
 }
 
+func (s *Server) restartWiFiProxy() error {
+	path := strings.TrimSpace(s.options.WiFiProxyInitScript)
+	if path == "" {
+		return errors.New("Wi-Fi proxy restart script path is empty")
+	}
+	result := runCommand(15*time.Second, nil, nil, path, "restart")
+	if result.ExitCode == 0 {
+		return nil
+	}
+	if result.ExitCode == 127 {
+		result = runCommand(15*time.Second, nil, nil, "/bin/sh", path, "restart")
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("restart Wi-Fi proxy: %s", strings.TrimSpace(string(result.Output)))
+	}
+	return nil
+}
+
 func (s *Server) startDeferredRestartIfIdle() {
 	s.restartMu.Lock()
 	defer s.restartMu.Unlock()
