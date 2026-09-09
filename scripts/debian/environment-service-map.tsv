@@ -1,5 +1,6 @@
 init_script	systemd_unit	environment_file	invalid_environment_policy
 S41ble_service	aiden-ble.service	/run/aiden/system.env	start-local-recovery
+S51wifi_proxy	aiden-wifi-proxy.service	/run/aiden/system.env	start-local-recovery
 S52frame_service	aiden-frame.service	/run/aiden/system.env	start-local-recovery
 S53adb_server	aiden-adb-host.service	/run/aiden/system.env	start-local-recovery
 S53agent	aiden-agent.service	/run/aiden/system.env	disable-external

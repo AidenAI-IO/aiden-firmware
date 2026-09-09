@@ -18,6 +18,7 @@ S50sshd	replaced-by-debian	ssh.service,sshd-keygen.service	G2-ssh	Use Debian hos
 S50telnet	retire	none	G2-no-telnet	Exclude the unauthenticated diagnostic service from production images.
 S50usbdevice	no-op	aiden-usb-gadget.service	G2-usb-gadget-single-owner	The Debian image has no SDK fallback gadget script to mask.
 S51swap	migrate	aiden-swap.service	G2-persistent-swap	Validate and activate the userdata swapfile after migration.
+S51wifi_proxy	migrate	aiden-wifi-proxy.service	G2-wifi-proxy	Run the fixed loopback proxy with per-network upstream selection and systemd supervision.
 S52frame_service	migrate	aiden-frame.service	G2-frame-service	Run the foreground frame service after video devices and OEM libraries are ready.
 S53adb_server	migrate	aiden-adb-host.service	G2-adb-host	Start the local adb host server with bounded retry and normalized environment.
 S53agent	migrate	aiden-agent.service	G2-agent	Start local agent functions without blocking on network or precise time.

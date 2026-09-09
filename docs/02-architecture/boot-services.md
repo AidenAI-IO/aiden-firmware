@@ -132,7 +132,7 @@ See [OTA Overview](../08-ota/README.md) for the full state machine.
 The systemd unit executes:
 
 ```bash
-/oem/usr/bin/agent config-web --bind=0.0.0.0 --port=80 --config=/userdata/agent/agent.toml --wifi-config=/userdata/debian/wifi/wpa_supplicant-wlan0.conf --wifi-interface=wlan0 --system-env=/userdata/system/env --web-root=/oem/usr/share/aiden/config-web
+/oem/usr/bin/agent config-web --bind=0.0.0.0 --port=80 --config=/userdata/agent/agent.toml --wifi-config=/userdata/debian/wifi/wpa_supplicant-wlan0.conf --wifi-interface=wlan0 --wifi-backend=systemd-networkd --system-env=/userdata/system/env --web-root=/oem/usr/share/aiden/config-web
 ```
 
 Config Web uses Debian control helpers for Agent and frame-service restarts.
@@ -146,7 +146,8 @@ Product units consume that generated file with `EnvironmentFile=`; invalid
 external settings cannot replace fixed service-critical values such as the
 managed Python userbase. Proxy variables in the persistent source define the
 system/default upstream used by the Wi-Fi proxy; managed programs receive its
-stable loopback proxy address.
+stable loopback proxy address. Login shells load the same validated runtime
+environment through `/etc/profile.d/aiden-env.sh`.
 
 ## Development and Debugging
 

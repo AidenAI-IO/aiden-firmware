@@ -80,6 +80,26 @@ if rg -n '(^|[[:space:]])\.[[:space:]]+/userdata|source[[:space:]]+/userdata' \
     "${OVERLAY}/usr" "${UNIT_DIR}"; then
     fail "Debian runtime directly sources untrusted userdata"
 fi
+grep -q '/run/aiden/system.env' "${OVERLAY}/etc/profile.d/aiden-env.sh"
+grep -q '/run/wifi_proxy/proxy-env' "${OVERLAY}/etc/profile.d/aiden-env.sh"
+sh -n "${OVERLAY}/etc/profile.d/aiden-env.sh"
+
+managed_env_run=${OVERLAY}/usr/lib/aiden/aiden-managed-env-run
+proxy_environment=${TEST_ROOT}/proxy-env
+printf '%s\n' \
+    'HTTP_PROXY="socks5h://127.0.0.1:18080"' \
+    'HTTPS_PROXY="socks5h://127.0.0.1:18080"' \
+    'ALL_PROXY="socks5h://127.0.0.1:18080"' \
+    >"${proxy_environment}"
+managed_output=$(env -i AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
+    HTTP_PROXY=http://upstream.example:8080 "${managed_env_run}" /usr/bin/env)
+printf '%s\n' "${managed_output}" \
+    | grep -qx 'HTTP_PROXY=socks5h://127.0.0.1:18080'
+bypass_output=$(env -i AIDEN_WIFI_PROXY_ENABLED=0 \
+    AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
+    HTTP_PROXY=http://upstream.example:8080 "${managed_env_run}" /usr/bin/env)
+printf '%s\n' "${bypass_output}" \
+    | grep -qx 'HTTP_PROXY=http://upstream.example:8080'
 
 grep -qx 'What=/run/aiden/oem-device' "${UNIT_DIR}/oem.mount"
 grep -qx 'What=/dev/mmcblk0p11' "${UNIT_DIR}/userdata.mount"
@@ -112,8 +132,25 @@ if rg -n 'networkctl reconfigure (usb0|"?\$\{?interface\}?")' \
 fi
 grep -q '/userdata/debian/wifi/wpa_supplicant-wlan0.conf' \
     "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
+grep -q -- '/oem/usr/bin/agent config-web' \
+    "${UNIT_DIR}/aiden-config-web.service"
+grep -q -- '--wifi-interface=wlan0' \
+    "${UNIT_DIR}/aiden-config-web.service"
 grep -q -- '--wifi-backend=systemd-networkd' \
     "${UNIT_DIR}/aiden-config-web.service"
+if grep -q -- '--wifi-iface' "${UNIT_DIR}/aiden-config-web.service"; then
+    fail "Config Web still uses the retired --wifi-iface flag"
+fi
+grep -qx 'ConditionPathExists=/oem/usr/bin/agent' \
+    "${UNIT_DIR}/aiden-config-web.service"
+grep -q '/oem/usr/bin/agent wifi-proxy' \
+    "${UNIT_DIR}/aiden-wifi-proxy.service"
+grep -q 'aiden-wifi-proxy.service' "${UNIT_DIR}/aiden-agent.service"
+grep -q 'aiden-wifi-proxy-agent-restart.path' "${UNIT_DIR}/aiden.target"
+grep -q 'AIDEN_WIFI_PROXY_INIT_SCRIPT=/usr/lib/aiden/aiden-wifi-proxy-control' \
+    "${UNIT_DIR}/aiden-config-web.service"
+grep -q 'aiden-managed-env-run /oem/usr/bin/agent' \
+    "${UNIT_DIR}/aiden-agent.service"
 grep -q 'AIDEN_USB_COMPOSITE_REFRESH_COMMAND=/usr/lib/aiden/aiden-usb-ecm-watchdog' \
     "${UNIT_DIR}/aiden-agent.service"
 grep -q 'watchdog=running pid=\$pid supervisor=systemd' \

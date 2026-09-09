@@ -211,7 +211,7 @@ grep -Fq 'bsp-artifacts.sha256' "${STAGE3_DIR}/audit-bsp.sh"
 grep -Fq -- '--check' "${STAGE3_DIR}/audit-bsp.sh"
 
 for binary in \
-    abctl agent aiden-environment audio_service ble_service config_web cpu_vad \
+    abctl agent aiden-environment audio_service ble_service cpu_vad \
     frame_service ota rknn_vad ttyd; do
     grep -qx "    ${binary}" "${STAGE3_DIR}/container-assemble-images.sh" \
         || fail "production OEM allowlist is missing ${binary}"

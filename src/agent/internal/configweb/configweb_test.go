@@ -71,6 +71,7 @@ func testOptions(t *testing.T) Options {
 		AgentConfigPath:           filepath.Join(root, "agent.toml"),
 		WiFiConfigPath:            filepath.Join(root, "wpa_supplicant.conf"),
 		WiFiInterface:             "wlan0",
+		WiFiBackend:               "legacy",
 		OTAStatePath:              filepath.Join(root, "ota-state.json"),
 		CmdlinePath:               filepath.Join(root, "cmdline"),
 		SystemEnvPath:             filepath.Join(root, "system.env"),
@@ -93,6 +94,14 @@ func TestOptionsRejectsInvalidLocalProxyPorts(t *testing.T) {
 		if err := options.Validate(); err == nil {
 			t.Fatalf("LocalProxyAddress %q was accepted", address)
 		}
+	}
+}
+
+func TestOptionsRejectsUnknownWiFiBackend(t *testing.T) {
+	options := testOptions(t)
+	options.WiFiBackend = "unknown"
+	if err := options.Validate(); err == nil {
+		t.Fatal("unknown Wi-Fi backend was accepted")
 	}
 }
 
@@ -723,7 +732,7 @@ func TestSystemEnvironmentWriteFailureReturnsServerError(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp := httptest.NewRecorder()
-	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/system/environment", strings.NewReader(`{"system_env":"A=1\n"}`)))
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/system/environment", strings.NewReader(`{"system_env":"OPENAI_API_KEY=1\n"}`)))
 	if resp.Code != http.StatusInternalServerError {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}

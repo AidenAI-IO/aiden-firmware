@@ -21,6 +21,7 @@ func Run(args []string) int {
 	fs.StringVar(&options.AgentConfigPath, "config", options.AgentConfigPath, "agent TOML path")
 	fs.StringVar(&options.WiFiConfigPath, "wifi-config", options.WiFiConfigPath, "wpa_supplicant config path")
 	fs.StringVar(&options.WiFiInterface, "wifi-interface", options.WiFiInterface, "Wi-Fi interface")
+	fs.StringVar(&options.WiFiBackend, "wifi-backend", options.WiFiBackend, "Wi-Fi backend (legacy or systemd-networkd)")
 	fs.StringVar(&options.OTAStatePath, "ota-state", options.OTAStatePath, "OTA state JSON path")
 	fs.StringVar(&options.CmdlinePath, "cmdline", options.CmdlinePath, "kernel command line path")
 	fs.StringVar(&options.SystemEnvPath, "system-env", options.SystemEnvPath, "system environment file path")

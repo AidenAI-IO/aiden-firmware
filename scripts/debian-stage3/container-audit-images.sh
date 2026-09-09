@@ -25,7 +25,6 @@ readonly -a PRODUCTION_BINARIES=(
     aiden-environment
     audio_service
     ble_service
-    config_web
     cpu_vad
     frame_service
     ota
@@ -268,6 +267,8 @@ audit_rootfs() {
     mounts+=("${ROOTFS_MOUNT}/oem")
     systemd-analyze --root="${ROOTFS_MOUNT}" verify \
         aiden.target aiden-machine-id.service aiden-agent.service aiden-config-web.service \
+        aiden-wifi-proxy.service aiden-wifi-proxy-agent-restart.path \
+        aiden-wifi-proxy-agent-restart.service \
         aiden-ttyd.service aiden-usb-gadget.service aiden-boot-timeline-init.service \
         aiden-boot-timeline.service oem.mount userdata.mount userdata-ota.mount \
         >"${OUTPUT_DIR}/systemd-unit-audit.txt" 2>&1 || {
