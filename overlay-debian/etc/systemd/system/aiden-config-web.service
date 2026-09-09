@@ -1,7 +1,7 @@
 [Unit]
 Description=Aiden local configuration and recovery portal
-Requires=oem.mount aiden-userdata-migrate.service aiden-environment.service aiden-wifi-proxy.service
-Wants=aiden-agent.service aiden-usb-dnsmasq.service
+Requires=oem.mount aiden-userdata-migrate.service aiden-environment.service
+Wants=aiden-agent.service aiden-usb-dnsmasq.service aiden-wifi-proxy.service
 After=oem.mount aiden-userdata-migrate.service aiden-environment.service
 After=aiden-wifi-proxy.service aiden-agent.service aiden-usb-dnsmasq.service
 StartLimitIntervalSec=60s
