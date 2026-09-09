@@ -37,10 +37,10 @@ func (p *phoneScreenHintProvider) LatestFrameWithFormat(format string, quality i
 }
 
 func (s *Server) coordinateDebugScreen() *screen.ScreenState {
-	if s == nil || s.runtime == nil || s.runtime.tools == nil {
+	if s == nil || s.runtime == nil || s.runtime.toolSnapshot() == nil {
 		return nil
 	}
-	return s.runtime.tools.screen
+	return s.runtime.toolSnapshot().screen
 }
 
 func (s *Server) coordinateDebugOriginalScreenSize() (*int, *int) {

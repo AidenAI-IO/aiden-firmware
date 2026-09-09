@@ -114,7 +114,7 @@ Field meanings, minimal working config examples, and TTS/STT provider values are
 After the four steps above, the board is ready to run. The Agent is supervised
 by `aiden-agent.service` and starts with the firmware.
 
-**Configuration changes**: When you save settings in Config Web (`http://192.168.42.1/`), the system automatically restarts the Agent to apply them.
+**Configuration changes**: Config Web applies supported settings online as you save them. Locale and prompt changes take effect for the next task or session boundary; only documented restart exceptions require an explicit Agent restart or device reboot, which the page indicates.
 
 ### Target Device Setup (iPhone)
 

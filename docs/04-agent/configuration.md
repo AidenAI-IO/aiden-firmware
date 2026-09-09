@@ -35,6 +35,18 @@ under `[device]` below.
 - [`memory/extraction.yaml`](#memoryextractionyaml)
 - [Known limitations](#known-limitations)
 
+## Applying Changes Online
+
+Saving through Config Web queues runtime application. See the
+[application policy](../03-services/config-web.md#configuration-application-policy)
+and [status API](../03-services/device-management-api.md#configuration-save-response).
+Mode, model/provider, audio/VAD, and hardware-client changes rebuild the affected
+components after current work drains. Ordinary limits and policies apply to
+subsequent work. USB pointer descriptor and keyboard layout changes remain
+pending across Agent restarts until an explicit board reboot; changing `frame_service.keep_streamon`
+restarts only the frame service. Editing the TOML outside Config Web requires
+an explicit reload request or service restart; there is no file watcher.
+
 ## Directory layout
 
 Passed to the daemon as `-dir /userdata/agent`. Everything except `agent.toml`
@@ -72,7 +84,7 @@ The firmware starts `agent config-web` on port 80.
 
 ### What the page can configure
 
-The page renders the following config sections. The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
+The page renders the following config sections. The language selector in the page header persists the device-level `locale` and applies it online; when the locale changes the system prompt, the next task boundary creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
 - `agent`: `locale`, `input_mode`, VAD params, `max_iterations`, `context_prune_threshold`, `custom_instruction`, `additional_prompt`
 - `model`: provider, model, api_key, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
@@ -618,7 +630,7 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 
 | Field         | Default | Description |
 | ------------- | ------- | ----------- |
-| `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Changing it requires a reboot so USB descriptors are re-enumerated. |
+| `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Switching between Android and a non-Android type requires a reboot so USB descriptors are re-enumerated; changes among non-Android types apply online. |
 
 ## `[hid]`
 
@@ -696,20 +708,18 @@ neither should change because the voice changed, so both stay global.
 For all provider records, `api_key` accepts either a literal key or `$VAR_NAME`.
 Config Web stores exactly the same representation.
 
-### Backward compatibility
+### Provider configuration compatibility
 
-- The record-level `provider` field remains read-only compatible in all three
-  provider maps. `type` wins if both fields are present, and the next save emits
-  only `type`.
-- A bare provider type in `[tts]` / `[stt]` keeps working. `provider = "minimax-cn"`
-  with a flat `api_key` needs no migration to keep speaking.
-- Flat credentials on `[tts]` / `[stt]` are upgraded to records on load, keyed
-  by provider type. The upgrade is written back the next time the config is
-  saved, and an existing record is never overwritten.
-- An unresolvable reference does not stop the device from booting: voice is
-  optional at runtime, so a stale name is reported and the agent starts without
-  voice. Config Web rejects such a reference when saving instead, while the form
-  is still on screen.
+The Config Web request contract accepts only canonical provider records. Records
+use `type`, while the selected record name remains in the parent section's
+`provider` field. Retired record aliases and flat credential request fields are
+rejected. Existing TOML files may still be normalized on save so credentials are
+preserved while the file is converted to the canonical layout.
+
+An unresolvable reference does not stop the device from booting: voice is
+optional at runtime, so a stale name is reported and the agent starts without
+voice. Config Web rejects such a reference when saving, while the form is
+still on screen.
 
 ## `[stt]` and `[tts]`
 

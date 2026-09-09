@@ -41,6 +41,7 @@ assert.equal(rootCMake.includes('add_executable(config_web'), false, 'legacy C++
 const sources = await Promise.all([
   'agent-status.js',
   'config-form.js',
+  'config-application.js',
   'i18n.js',
   'logs.js',
   'ota.js',
@@ -56,6 +57,7 @@ const bundle = sources.join('\n');
 for (const route of [
   '/api/config',
   '/api/config/schema',
+  '/api/config/application',
   '/api/config/locale',
   '/api/config/test',
   '/api/models?provider=',
@@ -70,6 +72,7 @@ for (const route of [
   '/api/network/wifi/scan',
   '/api/network/wifi/connection',
   '/api/system/environment',
+  '/api/system/environment/apply',
   '/api/ota/status',
   '/api/ota/updates',
   '/api/logs/agent',

@@ -240,11 +240,12 @@ type StorageMonitor struct {
 	writeCheckMu       sync.Mutex
 	writeCheckPending  bool
 
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	startMu sync.Mutex
-	started bool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	startMu      sync.Mutex
+	started      bool
+	reconfigured chan struct{}
 }
 
 func NewStorageMonitor(config StorageMonitorConfig, sampler StorageSampler, logger *Logger, cleaners []StorageCleaner, notifier VoiceNotificationSink) *StorageMonitor {
@@ -255,13 +256,14 @@ func NewStorageMonitor(config StorageMonitorConfig, sampler StorageSampler, logg
 	sort.SliceStable(cleaners, func(i, j int) bool { return cleaners[i].Priority() < cleaners[j].Priority() })
 	ctx, cancel := context.WithCancel(context.Background())
 	return &StorageMonitor{
-		config:   config,
-		sampler:  sampler,
-		logger:   logger,
-		cleaners: cleaners,
-		notifier: notifier,
-		ctx:      ctx,
-		cancel:   cancel,
+		config:       config,
+		reconfigured: make(chan struct{}, 1),
+		sampler:      sampler,
+		logger:       logger,
+		cleaners:     cleaners,
+		notifier:     notifier,
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 }
 
@@ -284,6 +286,12 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 	}
 	m.checkMu.Lock()
 	defer m.checkMu.Unlock()
+	if !m.config.Enabled && request.Reason != CheckReasonManual {
+		m.statusMu.Lock()
+		m.status = StorageMonitorStatus{}
+		m.statusMu.Unlock()
+		return m.Status(), m.clearLevelStateLocked()
+	}
 
 	path := strings.TrimSpace(m.config.RootPath)
 	if path == "" {
@@ -632,9 +640,6 @@ func (m *StorageMonitor) unavailableCapabilities(level StorageLevel) []StorageCa
 }
 
 func (m *StorageMonitor) Start() error {
-	if !m.config.Enabled {
-		return m.clearLevelState()
-	}
 	m.startMu.Lock()
 	if m.started {
 		m.startMu.Unlock()
@@ -643,7 +648,15 @@ func (m *StorageMonitor) Start() error {
 	m.started = true
 	m.startMu.Unlock()
 
-	_, initialErr := m.CheckAndRemediate(m.ctx, StorageCheckRequest{Reason: CheckReasonStartup})
+	m.checkMu.Lock()
+	enabled := m.config.Enabled
+	m.checkMu.Unlock()
+	var initialErr error
+	if enabled {
+		_, initialErr = m.CheckAndRemediate(m.ctx, StorageCheckRequest{Reason: CheckReasonStartup})
+	} else {
+		initialErr = m.clearLevelState()
+	}
 	m.wg.Add(1)
 	go m.monitorLoop()
 	return initialErr
@@ -651,18 +664,27 @@ func (m *StorageMonitor) Start() error {
 
 func (m *StorageMonitor) monitorLoop() {
 	defer m.wg.Done()
-	interval := time.Duration(m.config.CheckIntervalSeconds) * time.Second
-	if interval <= 0 {
-		interval = 5 * time.Minute
+	intervalForConfig := func() time.Duration {
+		m.checkMu.Lock()
+		defer m.checkMu.Unlock()
+		interval := time.Duration(m.config.CheckIntervalSeconds) * time.Second
+		if interval <= 0 {
+			interval = 5 * time.Minute
+		}
+		return interval
 	}
+	interval := intervalForConfig()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
+		case <-m.reconfigured:
+			ticker.Reset(intervalForConfig())
+			_, _ = m.checkIfEnabled()
 		case <-ticker.C:
-			if _, err := m.CheckAndRemediate(m.ctx, StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil && m.logger != nil {
+			if _, err := m.checkIfEnabled(); err != nil && m.logger != nil {
 				m.logger.Warn("storage monitor periodic check failed: %v", err)
 			}
 		}
@@ -716,6 +738,10 @@ func (m *StorageMonitor) publishLevelState(level StorageLevel) {
 func (m *StorageMonitor) clearLevelState() error {
 	m.checkMu.Lock()
 	defer m.checkMu.Unlock()
+	return m.clearLevelStateLocked()
+}
+
+func (m *StorageMonitor) clearLevelStateLocked() error {
 	if m.levelStatePath == "" {
 		return nil
 	}
@@ -728,8 +754,11 @@ func (m *StorageMonitor) clearLevelState() error {
 }
 
 func (m *StorageMonitor) ForceCleanup(path string) error {
-	if strings.TrimSpace(path) != "" && path != m.config.RootPath {
-		return fmt.Errorf("storage monitor only manages %q", m.config.RootPath)
+	m.checkMu.Lock()
+	rootPath := m.config.RootPath
+	m.checkMu.Unlock()
+	if strings.TrimSpace(path) != "" && path != rootPath {
+		return fmt.Errorf("storage monitor only manages %q", rootPath)
 	}
 	_, err := m.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonManual, Force: true})
 	return err
@@ -766,4 +795,20 @@ func (m *StorageMonitor) HandleWriteError(err error) bool {
 		_, _ = m.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonWrite})
 	}()
 	return true
+}
+
+// Reconfigure preserves the write gate and all consumers of this monitor.
+func (m *StorageMonitor) Reconfigure(cfg StorageMonitorConfig, cleaners []StorageCleaner) {
+	m.checkMu.Lock()
+	m.config = cfg
+	m.cleaners = append([]StorageCleaner(nil), cleaners...)
+	m.checkMu.Unlock()
+	select {
+	case m.reconfigured <- struct{}{}:
+	default:
+	}
+}
+
+func (m *StorageMonitor) checkIfEnabled() (StorageMonitorStatus, error) {
+	return m.CheckAndRemediate(m.ctx, StorageCheckRequest{Reason: CheckReasonPeriodic})
 }
