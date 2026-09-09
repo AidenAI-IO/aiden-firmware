@@ -366,7 +366,7 @@ func boundedToolResultObservation(call ToolCall, prepared PreparedToolResult, pr
 		} else {
 			fmt.Fprintf(&recovery, "Saved partial result file: %s\n", prepared.ArtifactPath)
 		}
-		recovery.WriteString("Use bounded grep/sed/dd/fq reads (fq runs jq expressions; jq is absent); never use cat or print the whole artifact file.\n")
+		recovery.WriteString("Read only if needed. Use bounded fq queries or byte ranges; never use cat or print the whole artifact file.\n")
 	} else {
 		optional.WriteString("Full result is unavailable; output was bounded before entering active context.\n")
 	}

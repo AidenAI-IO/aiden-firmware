@@ -75,14 +75,16 @@ func TestRolePromptDirectsRemoteSkillURLsToInstallAction(t *testing.T) {
 func TestRolePromptConstrainsArtifactRecoveryReads(t *testing.T) {
 	profile := testPromptProfile(AgentConfig{})
 	for _, want := range []string{
-		"Never use cat",
-		"print the entire artifact file",
+		"read the artifact only when needed information is missing",
+		"never use cat",
 		"explicit output bound",
-		"grep -m 20",
-		"sed -n",
-		"dd if=FILE",
-		"fq",
-		"do not emit unbounded",
+		"Bound both record counts and string lengths",
+		"line limits alone do not bound bytes",
+		"dd if=FILE bs=1 skip=0 count=4096",
+		"fq -r '.results[0].summary[0:2000]' FILE for recall_session_chunks",
+		"Read the next bounded range",
+		"correct the field or command before retrying",
+		"change strategy or report the blocker",
 	} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("system prompt missing artifact recovery guidance %q:\n%s", want, profile.SystemPrompt)
@@ -121,8 +123,10 @@ func TestRolePromptDoesNotSuggestUninstalledJqBinary(t *testing.T) {
 		t.Fatalf("system prompt invokes uninstalled jq binary %v; use fq, which evaluates jq expressions:\n%s", forms, profile.SystemPrompt)
 	}
 	for _, want := range []string{
-		"fq, which evaluates jq expressions",
-		"never re-read the same artifact with a larger bound",
+		"inspect the actual structure",
+		"do not repeatedly expand the same prefix",
+		"fq",
+		"yq",
 	} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("system prompt missing fq/anti-loop artifact guidance %q:\n%s", want, profile.SystemPrompt)
