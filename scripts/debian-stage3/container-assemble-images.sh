@@ -22,7 +22,6 @@ readonly -a PRODUCTION_BINARIES=(
     aiden-environment
     audio_service
     ble_service
-    config_web
     cpu_vad
     frame_service
     ota

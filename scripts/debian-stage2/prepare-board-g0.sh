@@ -24,7 +24,7 @@ readonly -a APP_PAYLOAD=(
     bin/audio_service
     bin/audio_service_cli
     bin/audio_stream
-    bin/config_web
+    bin/agent
     bin/cpu_vad
     bin/example_audio_capture
     bin/example_audio_play

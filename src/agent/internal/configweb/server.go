@@ -59,6 +59,9 @@ func NewServer(options Options) (*Server, error) {
 	if strings.TrimSpace(options.WiFiProxyInitScript) == "" {
 		options.WiFiProxyInitScript = "/etc/init.d/S51wifi_proxy"
 	}
+	if strings.TrimSpace(options.WiFiBackend) == "" {
+		options.WiFiBackend = "legacy"
+	}
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
