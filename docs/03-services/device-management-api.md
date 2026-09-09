@@ -37,7 +37,8 @@ All public endpoints use the `/api` root without an additional version prefix:
 | Network | `PUT /api/network/wifi/connection` | Start a bounded asynchronous connect-and-save task |
 | Network | `GET /api/network/wifi/connection?task_id=...` | Poll connection, persistence, and rollback status |
 | Network | `DELETE /api/network/wifi/connection?ssid=...` | Forget a network without relying on a DELETE request body |
-| System | `GET/PUT /api/system/environment` | Read or atomically replace system environment variables |
+| System | `GET/PUT /api/system/environment` | Read/save environment and report whether Agent restart is needed |
+| System | `POST /api/system/environment/apply` | Explicitly apply saved environment and restart Agent |
 | OTA | `GET /api/ota/status` | Read the current state, progress, and log summary |
 | OTA | `POST /api/ota/updates` | Create an OTA task and return its `task_id` |
 | Logs | `GET /api/logs/agent` | Read the Agent log summary |
@@ -78,6 +79,12 @@ when enabling the format and eject actions.
 
 ## Configuration Save Response
 
+`PATCH /api/config` accepts only `{"config":{...}}`. Retired request fields
+(`apply_wifi`, `agent.default_platform`, `agent.instruction`, flat provider credentials,
+`model.base_url`, `audio.playback_backend`, provider-record `provider` aliases) are rejected. Provider
+records use `type`; credentials belong in their provider record. The response
+uses `reboot_required`, without the former restart aliases.
+
 A successful `PATCH /api/config` persists the file and queues runtime application:
 
 ```json
@@ -90,8 +97,7 @@ A successful `PATCH /api/config` persists the file and queues runtime applicatio
   "revision": 123,
   "changed_paths": ["model.model"],
   "reboot_required": false,
-  "restart_required": false,
-  "restart_reasons": [],
+  "reboot_reasons": [],
   "agent_restart_scheduled": false
 }
 ```
@@ -109,31 +115,39 @@ should use the returned state rather than perform numeric revision arithmetic.
 | `reboot_required` | Online settings are active; USB identity/layout changes await an explicit device reboot (`applied=false`) |
 | `failed` | Application failed; inspect `error`, correct the configuration, and retry |
 
-The initial status can have an empty state before any save in this Agent process.
+At daemon startup the status is initialized from the saved configuration and
+the USB settings active for the current device boot.
 The UI keeps persisted values after an application failure and offers **Retry
 apply** (`PATCH /api/config` with `{"config":{}}`). Synchronous persistence,
 service, or reload-request failures return an error HTTP status; asynchronous
 component failures are reported by the status endpoint. Neither schedules an
 Agent restart. Frame/storage application may have completed before a later
 component fails. Failed frame/storage work is retried on the next save.
-The status may include a `runtime_id` identifying the answering Agent process; a
-failed reload request is attributed to that process, and a restarted Agent
-(which boots the persisted configuration) drops the stale error instead of
-requiring a retry.
+The status may include a `runtime_id` identifying the answering Agent process.
+Reload-request errors are tied to the requested revision and clear once Agent
+reports that revision as applied or awaiting USB reboot. Frame/storage failures
+require a successful service retry.
 
-`restart_required` mirrors `reboot_required` for USB descriptor changes
+`reboot_required` indicates USB descriptor changes
 (Android versus non-Android device type) and `hid.keyboard_layout`. The runtime
-keeps the current USB settings until reboot and remembers the exception across
-subsequent saves; reverting those settings clears it. Reboot is an explicit
+keeps the current USB settings until reboot. A boot-ID-scoped cache at
+`<config-dir>/cache/usb-boot.json` and the bound USB descriptor preserve the
+exception across subsequent saves and Agent-only restarts; reverting those settings clears it. Reboot is an explicit
 user action and is never triggered by saving. CLI `--device-type` continues to
 override the file for the current process.
 
 ## Agent Restart Lifecycle
 
-Updating `/api/system/environment` still persists the environment file and
-schedules an Agent restart. Config changes use the online application lifecycle
-above. STT configuration tests remain owned by Config Web. Restart launch
-failures are returned to the caller instead of reporting success.
+`PUT /api/system/environment` persists the file and returns
+`agent_restart_required`; it does not restart Agent. `GET` reports the same flag
+by comparing the saved file with the environment revision loaded by Agent.
+When Agent status is unavailable, `GET` returns `null` for the flag; the UI keeps
+the last confirmed requirement. A save without Agent confirmation requires apply.
+The flag survives Config Web and Agent process restarts and clears only when the
+saved environment has been loaded. `POST /api/system/environment/apply` is the
+explicit **Apply and restart Agent** action: it refreshes the Wi-Fi proxy and
+then schedules Agent restart. Proxy/restart failures return an error and remain
+retryable. Config changes use the online application lifecycle above.
 
 ## Storage Ownership
 
@@ -173,8 +187,8 @@ provided. Clients must use the canonical resources in the table above.
 
 ## Internal Agent Reload
 
-`POST /api/internal/config/reload` accepts loopback requests only and may carry
-a `revision`. The Agent validates the saved file revision, queues application,
+`POST /api/internal/config/reload` accepts loopback requests only and requires
+`{"revision":<nonzero revision>}`. The Agent validates the saved file revision, queues application,
 and returns HTTP 202 with `pending=true`. `GET` on the same loopback-only route
 returns application status. A stale revision returns HTTP 409. Pending saves
 are coalesced; the latest queued snapshot wins after the current application.

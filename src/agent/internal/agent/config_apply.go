@@ -14,17 +14,15 @@ import (
 type ConfigPrepareFunc func(context.Context, Config) (finish func(bool), err error)
 
 type ConfigApplyStatus struct {
-	Revision        uint64 `json:"revision"`
-	AppliedRevision uint64 `json:"applied_revision"`
-	State           string `json:"state"`
-	Applied         bool   `json:"applied"`
-	Pending         bool   `json:"pending"`
-	RebootRequired  bool   `json:"reboot_required"`
-	RestartRequired bool   `json:"restart_required"`
-	Error           string `json:"error,omitempty"`
-	// RuntimeID identifies the Agent process reporting this status. Config Web
-	// uses it to drop apply errors that predate an Agent restart: a restarted
-	// Agent booted with the persisted configuration.
+	EnvironmentRevision string `json:"environment_revision,omitempty"`
+	Revision            uint64 `json:"revision"`
+	AppliedRevision     uint64 `json:"applied_revision"`
+	State               string `json:"state"`
+	Applied             bool   `json:"applied"`
+	Pending             bool   `json:"pending"`
+	RebootRequired      bool   `json:"reboot_required"`
+	Error               string `json:"error,omitempty"`
+	// RuntimeID identifies the Agent process reporting this status.
 	RuntimeID string `json:"runtime_id,omitempty"`
 }
 
@@ -53,6 +51,21 @@ func (r *Runtime) ConfigApplyStatus() ConfigApplyStatus {
 	return status
 }
 
+// InitializeConfigApplication records the persisted revision at daemon startup,
+// including USB changes that still await a device reboot.
+func (r *Runtime) InitializeConfigApplication(persisted Config) {
+	revision := configFileRevision(filepath.Join(persisted.ConfigDir, "agent.toml"))
+	r.configStatusMu.Lock()
+	defer r.configStatusMu.Unlock()
+	r.configStatus = ConfigApplyStatus{Revision: revision, AppliedRevision: revision, State: "applied", Applied: true}
+	if configRequiresReboot(r.ConfigSnapshot(), persisted) {
+		r.configStatus.RebootRequired = true
+		r.configStatus.Applied = false
+		r.configStatus.AppliedRevision = 0
+		r.configStatus.State = "reboot_required"
+	}
+}
+
 // QueueConfig coalesces saves while a voice session or tool operation drains.
 // The HTTP request never has to outlive the running user task.
 func (r *Runtime) QueueConfig(cfg Config, revision uint64) ConfigApplyStatus {
@@ -69,7 +82,6 @@ func (r *Runtime) QueueConfig(cfg Config, revision uint64) ConfigApplyStatus {
 	r.configStatus.Applied = false
 	r.configStatus.Error = ""
 	r.configStatus.RebootRequired = configRequiresReboot(r.ConfigSnapshot(), cfg)
-	r.configStatus.RestartRequired = r.configStatus.RebootRequired
 	if !r.configWorkerRunning {
 		r.configWorkerRunning = true
 		r.configWorkerWG.Add(1)
@@ -109,7 +121,6 @@ func (r *Runtime) applyConfigWorker() {
 			}
 			active := r.ConfigSnapshot()
 			r.configStatus.RebootRequired = configRequiresReboot(active, cfg)
-			r.configStatus.RestartRequired = r.configStatus.RebootRequired
 			if err == nil && r.configStatus.RebootRequired {
 				r.configStatus.State = "reboot_required"
 				r.configStatus.Applied = false
@@ -140,7 +151,7 @@ func (r *Runtime) applyConfig(ctx context.Context, cfg Config) error {
 	}
 	// Keep the host USB session consistent until reboot; unrelated fields can apply.
 	if current.PointerModeOrDefault() != cfg.PointerModeOrDefault() {
-		cfg.Device = current.Device
+		cfg.Device.DeviceType = current.Device.DeviceType
 		cfg.HID.PointerMode = current.HID.PointerMode
 	}
 	if current.HID.KeyboardLayoutOrDefault() != cfg.HID.KeyboardLayoutOrDefault() {

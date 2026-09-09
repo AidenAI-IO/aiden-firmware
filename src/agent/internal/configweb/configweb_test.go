@@ -444,7 +444,7 @@ func TestConfigPatchReconfiguresStorageOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": true, "revision": 11})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true, "revision": 11, "state": "pending"})
 	}))
 	defer reload.Close()
 	options.AgentBinary = fakeAgent
@@ -552,7 +552,7 @@ func TestAPIRouteHeaders(t *testing.T) {
 	}
 }
 
-func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
+func TestConfigPatchReportsPersistedAndPendingRevision(t *testing.T) {
 	options := testOptions(t)
 	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
 	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{\"agent\":{\"locale\":\"en-US\"}},\"changed_paths\":[\"agent.locale\"],\"reboot_required\":false,\"persisted\":true,\"revision\":7}'\n"
@@ -563,7 +563,7 @@ func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
 		if r.URL.Path != "/api/internal/config/reload" || r.Method != http.MethodPost {
 			t.Fatalf("reload request=%s %s", r.Method, r.URL.Path)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": true, "revision": 7})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true, "revision": 7, "state": "pending"})
 	}))
 	defer reload.Close()
 	options.AgentBinary = fakeAgent
@@ -574,7 +574,7 @@ func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
 	}
 	resp := httptest.NewRecorder()
 	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{"agent":{"locale":"en-US"}}}`)))
-	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"applied":true`) {
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"pending":true`) {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
@@ -588,8 +588,8 @@ func TestConfigPatchDoesNotRestartWhenRuntimeReloadRejectsChange(t *testing.T) {
 	}
 	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"ok": false, "applied": false, "restart_required": true,
-			"error": "configuration changes require an Agent restart",
+			"ok": false, "applied": false,
+			"error": "config file unavailable",
 		})
 	}))
 	defer reload.Close()
@@ -605,7 +605,7 @@ func TestConfigPatchDoesNotRestartWhenRuntimeReloadRejectsChange(t *testing.T) {
 	if resp.Code != http.StatusServiceUnavailable ||
 		!strings.Contains(resp.Body.String(), `"persisted":true`) ||
 		!strings.Contains(resp.Body.String(), `"applied":false`) ||
-		!strings.Contains(resp.Body.String(), `"agent_restart_scheduled":false`) {
+		server.agentRestartPending() {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
@@ -713,8 +713,8 @@ func TestSystemEnvironmentReportsRestartLaunchFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp := httptest.NewRecorder()
-	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/system/environment", strings.NewReader(`{"system_env":"A=1\n"}`)))
-	if resp.Code != http.StatusServiceUnavailable || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"agent_restart_scheduled":false`) {
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/system/environment/apply", nil))
+	if resp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
@@ -1291,7 +1291,11 @@ func TestConfigApplicationDropsReloadErrorAfterAgentRestart(t *testing.T) {
 			mu.Lock()
 			id := agentID
 			mu.Unlock()
-			writeJSON(w, http.StatusOK, map[string]any{"state": "applied", "applied": true, "pending": false, "runtime_id": id})
+			revision := 6
+			if id == "agent-two" {
+				revision = 7
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"state": "applied", "applied": true, "pending": false, "runtime_id": id, "revision": revision})
 			return
 		}
 		mu.Lock()

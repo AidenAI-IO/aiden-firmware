@@ -3,7 +3,17 @@ const hideOtaLogPanel=runtimeFunction('hideOtaLogPanel');
 function setBanner(message,isError){const el=byId('actionBanner');el.textContent=message;el.className='banner'+(isError?' error':'');}
     function updateActionDetailsVisibility(){const wrap=byId('actionDetails');const body=byId('actionDetailsText');const ota=byId('otaLogPanel');const hasText=!!(body&&body.style.display!=='none'&&body.textContent);const hasOta=!!(ota&&ota.style.display!=='none');wrap.style.display=(hasText||hasOta)?'block':'none';}
     function setDetails(text,options){const body=byId('actionDetailsText');if(!(options&&options.keepOtaLog)){hideOtaLogPanel();}if(text){body.style.display='block';body.textContent=text;}else{body.style.display='none';body.textContent='';}updateActionDetailsVisibility();}
-    async function request(url,options){const res=await fetch(url,options);const text=await res.text();let body={};try{body=text?(JSON.parse(text)??{}):{}}catch(err){body={ok:false,error:text||err.message}}if(!res.ok){if((url==='/api/config'||url==='/api/config/locale')&&body.persisted&&runtime.configApplicationSaved)runtime.configApplicationSaved({...body,state:'failed'});const error=new Error(body.error||('HTTP '+res.status));if(body&&typeof body==='object')Object.keys(body).forEach(function(key){error[key]=body[key];});error.status=res.status;throw error;}if((url==='/api/config'||url==='/api/config/locale')&&options&&options.method&&options.method!=='GET'){if(runtime.configApplicationSaved)runtime.configApplicationSaved(body);}return body;}
+    async function performRequest(url,options){const res=await fetch(url,options);const text=await res.text();let body={};try{body=text?(JSON.parse(text)??{}):{}}catch(err){body={ok:false,error:text||err.message}}if(!res.ok){if((url==='/api/config'||url==='/api/config/locale')&&body.persisted&&runtime.configApplicationSaved)runtime.configApplicationSaved({...body,state:'failed'});const error=new Error(body.error||('HTTP '+res.status));if(body&&typeof body==='object')Object.keys(body).forEach(function(key){error[key]=body[key];});error.status=res.status;throw error;}if((url==='/api/config'||url==='/api/config/locale')&&options&&options.method&&options.method!=='GET'){if(runtime.configApplicationSaved)runtime.configApplicationSaved(body);}return body;}
+
+let configSaves = Promise.resolve();
+function request(url, options) {
+  if ((url === '/api/config' || url === '/api/config/locale') && options && options.method !== 'GET') {
+    const pending = configSaves.then(() => performRequest(url, options));
+    configSaves = pending.catch(() => {});
+    return pending;
+  }
+  return performRequest(url, options);
+}
 
 export { request, setBanner, setDetails, updateActionDetailsVisibility };
 registerRuntime({ request, setBanner, setDetails, updateActionDetailsVisibility });

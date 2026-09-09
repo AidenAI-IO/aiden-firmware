@@ -12,7 +12,26 @@ function setSystemEnvLocked(locked){const editor=byId('system_env_content');cons
     function replaceSystemEnvSelection(el,range,text){const nextEnd=range.start+text.length;el.focus();el.setSelectionRange(range.start,range.end);let replaced=false;if(document.execCommand){try{replaced=document.execCommand('insertText',false,text);}catch(err){replaced=false;}}if(!replaced){if(el.setRangeText){el.setRangeText(text,range.start,range.end,'select');}else{el.value=el.value.slice(0,range.start)+text+el.value.slice(range.end);el.setSelectionRange(range.start,nextEnd);}el.dispatchEvent(new Event('input',{bubbles:true}));}el.setSelectionRange(range.start,nextEnd);}
     function toggleSystemEnvComment(){const el=byId('system_env_content');if(!el||el.disabled)return;const range=selectedSystemEnvLineRange(el);const block=el.value.slice(range.start,range.end);const lines=block.split('\n');const uncommentedLines=lines.filter(function(line){return !isBlankSystemEnvLine(line)&&!isCommentedSystemEnvLine(line);});const commentedLines=lines.filter(isCommentedSystemEnvLine);if(!uncommentedLines.length&&!commentedLines.length)return;const shouldUncomment=uncommentedLines.length===0&&commentedLines.length>0;const toggled=lines.map(function(line){return shouldUncomment&&isCommentedSystemEnvLine(line)?uncommentSystemEnvLine(line):commentSystemEnvLine(line);}).join('\n');replaceSystemEnvSelection(el,range,toggled);}
     function handleSystemEnvEditorKeydown(event){if((event.ctrlKey||event.metaKey)&&event.key==='/'){event.preventDefault();toggleSystemEnvComment();}}
-    async function saveSystemEnv(){setSystemEnvLocked(true);try{const payload=await request('/api/system/environment',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({system_env:byId('system_env_content').value})});appState.systemEnv=payload.system_env||byId('system_env_content').value;byId('system_env_content').value=appState.systemEnv;byId('section-system_env').classList.remove('editing');setBanner(t(payload.agent_restart_scheduled?'system_env.saved_restarting':'system_env.saved'),false);setDetails('');setTimeout(function(){refreshAgentStatus(false);},1200);}catch(err){setBanner(t('system_env.save_failed'),true);setDetails(err.message);setSystemEnvLocked(false);}}
+    async function saveSystemEnv(){setSystemEnvLocked(true);try{const payload=await request('/api/system/environment',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({system_env:byId('system_env_content').value})});appState.systemEnv=payload.system_env||byId('system_env_content').value;byId('system_env_content').value=appState.systemEnv;byId('section-system_env').classList.remove('editing');renderSystemEnvApplication(payload);setBanner(t(payload.agent_restart_required?'system_env.restart_required':'system_env.saved'),false);setDetails('');setTimeout(function(){refreshAgentStatus(false);},1200);}catch(err){setBanner(t('system_env.save_failed'),true);setDetails(err.message);setSystemEnvLocked(false);}}
 
 export { setSystemEnvLocked, enterSystemEnvEdit, cancelSystemEnvEdit, toggleSystemEnvComment, handleSystemEnvEditorKeydown, saveSystemEnv };
 registerRuntime({ setSystemEnvLocked, enterSystemEnvEdit, cancelSystemEnvEdit, toggleSystemEnvComment, handleSystemEnvEditorKeydown, saveSystemEnv });
+
+function renderSystemEnvApplication(payload) {
+  const panel = byId('systemEnvApplication');
+  if (panel && typeof payload.agent_restart_required === 'boolean') panel.style.display = payload.agent_restart_required ? 'block' : 'none';
+}
+export async function refreshSystemEnvApplication() {
+  try { renderSystemEnvApplication(await request('/api/system/environment', {method:'GET'})); }
+  catch (_) {} // Keep the last confirmed requirement while Agent restarts.
+}
+export async function applySystemEnv() {
+  const button = byId('apply-system_env');
+  button.disabled = true;
+  try {
+    await request('/api/system/environment/apply', {method:'POST'});
+    setBanner(t('system_env.saved_restarting'), false);
+    setDetails('');
+  } catch (err) {setBanner(t('system_env.apply_failed'), true);setDetails(err.message);}
+  finally {button.disabled = false;}
+}

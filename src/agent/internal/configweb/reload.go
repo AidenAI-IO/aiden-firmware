@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"aiden-agent/internal/agent"
 )
 
 func (s *Server) agentBaseURL() (*url.URL, error) {
@@ -68,7 +70,7 @@ func (s *Server) reloadAgentConfig(ctx context.Context, revision uint64) (map[st
 	if len(data) > maxRequestBodySize || json.Unmarshal(data, &payload) != nil || payload == nil {
 		return nil, fmt.Errorf("agent config reload returned invalid JSON")
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 || payload["ok"] != true || (payload["applied"] == false && payload["pending"] != true) {
+	if response.StatusCode < 200 || response.StatusCode >= 300 || payload["ok"] != true || payload["applied"] != false || payload["pending"] != true {
 		message, _ := payload["error"].(string)
 		if message == "" {
 			message = fmt.Sprintf("agent config reload failed (HTTP %d)", response.StatusCode)
@@ -99,51 +101,48 @@ func (s *Server) fetchAgentApplicationStatus(ctx context.Context) ([]byte, int, 
 	if err != nil || len(data) > maxRequestBodySize || !json.Valid(data) {
 		return nil, 0, fmt.Errorf("invalid agent configuration status")
 	}
+	if response.StatusCode != http.StatusOK {
+		return nil, 0, fmt.Errorf("agent configuration status unavailable (HTTP %d)", response.StatusCode)
+	}
 	return data, response.StatusCode, nil
 }
 
 // handleConfigApplication exposes runtime application state without secrets.
 func (s *Server) handleConfigApplication(w http.ResponseWriter, r *http.Request) {
+	data, statusCode, fetchErr := s.fetchAgentApplicationStatus(r.Context())
+	var live agent.ConfigApplyStatus
+	if fetchErr == nil {
+		fetchErr = json.Unmarshal(data, &live)
+	}
 	s.configMu.Lock()
-	applyError := s.configApplyError
-	applyErrorAgent := s.configApplyErrorAgent
+	defer s.configMu.Unlock()
+	// Re-read local state after the HTTP fetch: a save may have finished while
+	// the status request was in flight. Service failures cannot be cleared by
+	// an Agent restart; only a matching applied file revision clears reload errors.
+	if fetchErr == nil && s.configApplyErrorRevision != 0 && live.Revision == s.configApplyErrorRevision &&
+		(live.State == "applied" || live.State == "reboot_required") {
+		s.configApplyError = ""
+		s.configApplyErrorRevision = 0
+	}
+	if s.configSavePending {
+		live.State, live.Applied, live.Pending, live.Error = "pending", false, true, ""
+		writeJSON(w, http.StatusOK, live)
+		return
+	}
+	if s.configApplyError != "" {
+		live.State, live.Applied, live.Pending, live.Error = "failed", false, false, s.configApplyError
+		writeJSON(w, http.StatusOK, live)
+		return
+	}
+	if fetchErr != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, fetchErr.Error())
+		return
+	}
+	writeJSON(w, statusCode, live)
+}
+
+func (s *Server) finishConfigSave() {
+	s.configMu.Lock()
+	s.configSavePending = false
 	s.configMu.Unlock()
-	if applyError != "" {
-		// A reload error stays visible only while the Agent process that
-		// missed it still runs. A restarted Agent booted the persisted
-		// configuration, so the stored error is stale and dropped.
-		if data, statusCode, err := s.fetchAgentApplicationStatus(r.Context()); err == nil {
-			var status map[string]any
-			if json.Unmarshal(data, &status) == nil {
-				if runtimeID, _ := status["runtime_id"].(string); runtimeID != "" {
-					s.configMu.Lock()
-					s.agentRuntimeID = runtimeID
-					stale := s.configApplyError == applyError &&
-						s.configApplyErrorAgent == applyErrorAgent &&
-						applyErrorAgent != "" && runtimeID != applyErrorAgent
-					if stale {
-						s.configApplyError = ""
-						s.configApplyErrorAgent = ""
-					}
-					s.configMu.Unlock()
-					if stale {
-						w.Header().Set("Content-Type", "application/json")
-						w.WriteHeader(statusCode)
-						_, _ = w.Write(data)
-						return
-					}
-				}
-			}
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"state": "failed", "applied": false, "pending": false, "error": applyError})
-		return
-	}
-	data, statusCode, err := s.fetchAgentApplicationStatus(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	_, _ = w.Write(data)
 }

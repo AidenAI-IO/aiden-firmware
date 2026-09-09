@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,7 +19,7 @@ func TestInternalConfigReloadAppliesLoopbackRevision(t *testing.T) {
 	}
 	runtime := &Runtime{config: Config{ConfigDir: dir}}
 	server := &Server{runtime: runtime}
-	req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(`{"revision":0}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(fmt.Sprintf(`{"revision":%d}`, configFileRevision(filepath.Join(dir, "agent.toml")))))
 	req.RemoteAddr = "127.0.0.1:1234"
 	rec := httptest.NewRecorder()
 	server.handleInternalConfigReload(rec, req)
@@ -111,7 +112,7 @@ func TestInternalConfigReloadPreservesDeviceCLIOverride(t *testing.T) {
 	runtime := &Runtime{config: cfg}
 	defer runtime.Close()
 	server := &Server{runtime: runtime}
-	req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(fmt.Sprintf(`{"revision":%d}`, configFileRevision(filepath.Join(dir, "agent.toml")))))
 	req.RemoteAddr = "127.0.0.1:1234"
 	rec := httptest.NewRecorder()
 	server.handleInternalConfigReload(rec, req)
@@ -121,5 +122,18 @@ func TestInternalConfigReloadPreservesDeviceCLIOverride(t *testing.T) {
 	status := waitForConfigApplied(t, runtime)
 	if status.RebootRequired || runtime.ConfigSnapshot().DeviceTypeOrDefault() != "macOS" {
 		t.Fatalf("lost CLI override: %+v", status)
+	}
+}
+
+func TestInternalConfigReloadRejectsObsoleteRequests(t *testing.T) {
+	server := &Server{runtime: &Runtime{config: Config{ConfigDir: t.TempDir()}}}
+	for _, body := range []string{"", `{}`, `{"revision":0}`, `{"revision":1,"apply":true}`, `{"revision":1} {}`} {
+		req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(body))
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		server.handleInternalConfigReload(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("accepted %q: %d %s", body, rec.Code, rec.Body.String())
+		}
 	}
 }

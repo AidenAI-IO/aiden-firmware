@@ -27,22 +27,24 @@ const (
 )
 
 type Server struct {
-	options               Options
-	http                  *http.Server
-	storage               storageController
-	sttTest               *agent.STTConfigTestAPI
-	closeMu               sync.Once
-	storageMu             sync.RWMutex
-	configMu              sync.Mutex
-	configServiceMu       sync.Mutex
-	configApplyError      string
-	configApplyErrorAgent string
-	agentRuntimeID        string
-	frameApplyPending     bool
-	storageApplyPending   bool
-	wifiOpMu              sync.Mutex
-	wifiMu                sync.Mutex
-	wifiJob               *wifiConnectionJob
+	options                  Options
+	http                     *http.Server
+	storage                  storageController
+	sttTest                  *agent.STTConfigTestAPI
+	closeMu                  sync.Once
+	storageMu                sync.RWMutex
+	configMu                 sync.Mutex
+	configServiceMu          sync.Mutex
+	configSaveMu             sync.Mutex
+	systemEnvMu              sync.Mutex
+	configSavePending        bool
+	configApplyError         string
+	configApplyErrorRevision uint64
+	frameApplyPending        bool
+	storageApplyPending      bool
+	wifiOpMu                 sync.Mutex
+	wifiMu                   sync.Mutex
+	wifiJob                  *wifiConnectionJob
 
 	restartMu               sync.Mutex
 	restartCommand          *exec.Cmd

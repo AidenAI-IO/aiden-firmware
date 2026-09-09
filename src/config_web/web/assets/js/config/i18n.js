@@ -110,7 +110,10 @@ const messages = {
     'system_env.editing': 'Editing env, click Save after changes.',
     'system_env.cancelled': 'Cancelled env changes.',
     'system_env.saved': 'env saved.',
-    'system_env.saved_restarting': 'env saved. Agent is restarting to apply it.',
+    'system_env.saved_restarting': 'Agent is restarting to apply the saved environment.',
+    'system_env.restart_required': 'Environment saved. Apply it by restarting Agent when ready.',
+    'system_env.apply_restart': 'Apply and restart Agent',
+    'system_env.apply_failed': 'Failed to apply environment.',
     'system_env.save_failed': 'Failed to save env.',
     'page.config_refreshed': 'Refreshed configuration and Wi-Fi list.',
     'page.refresh_failed': 'Refresh failed.',
@@ -430,7 +433,10 @@ const messages = {
     'system_env.editing': '正在编辑 env，修改后请点击保存。',
     'system_env.cancelled': '已取消 env 修改。',
     'system_env.saved': 'env 已保存。',
-    'system_env.saved_restarting': 'env 已保存，Agent 将重启以应用配置。',
+    'system_env.saved_restarting': '正在重启 Agent 以应用已保存的环境变量。',
+    'system_env.restart_required': '环境变量已保存，准备好后点击按钮重启 Agent 生效。',
+    'system_env.apply_restart': '应用并重启 Agent',
+    'system_env.apply_failed': '环境变量应用失败。',
     'system_env.save_failed': '保存 env 失败。',
     'page.config_refreshed': '已刷新配置和 Wi-Fi 列表。',
     'page.refresh_failed': '刷新失败。',
@@ -751,9 +757,8 @@ async function saveLocale(locale) {
     }
     localeSavePending = false;
     localeRevision++;
-    const restarting = persisted && err.applied === false && err.agent_restart_scheduled === true;
-    setBanner(t(restarting ? 'locale.saved' : (persisted && err.applied === false ? 'locale.saved_not_applied' : 'locale.save_failed')), !restarting);
-    setDetails(restarting ? '' : err.message);
+    setBanner(t(persisted && err.applied === false ? 'locale.saved_not_applied' : 'locale.save_failed'), true);
+    setDetails(err.message);
     if (!(persisted && err.applied === false)) {
       try {
         await loadAuthoritativeLocale();
