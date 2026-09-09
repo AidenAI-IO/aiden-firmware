@@ -703,3 +703,38 @@ func mustMarshalToolResultJSON(t *testing.T, value any) string {
 	}
 	return string(data)
 }
+
+func TestToolResultPolicyKeepsShortResultsWhenContextIsFull(t *testing.T) {
+	for _, output := range []string{"3", "Error: exit status 1\nStderr:\nKeyError: 'content'"} {
+		t.Run(output, func(t *testing.T) {
+			manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := NewToolResultPolicy().Prepare(context.Background(), ToolResultPrepareInput{
+				Call:   ToolCall{Spec: ToolSpec{Name: "shell"}, Input: `{"command":"python3 -c query"}`},
+				Result: ToolResult{Output: output}, ContextManager: manager,
+				ModelSpec: model.ModelSpec{ContextWindow: 128, MaxOutput: 16},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prepared.Content != output || !prepared.Complete || prepared.ArtifactPath != "" {
+				t.Fatalf("short result lost at exhausted budget: %+v", prepared)
+			}
+		})
+	}
+}
+
+func TestBoundedToolResultObservationPrioritizesPreview(t *testing.T) {
+	path := "/userdata/agent/sessions/backend/s_b5d49cb5-a47e-438e-af91-666254403ae3/tool-results/tr_1ab053c3-8238-4302-a046-c3d5213d55c9.data"
+	input, _ := json.Marshal(map[string]string{"command": "python3 -c " + strings.Repeat("long-command-", 20)})
+	observation := boundedToolResultObservation(ToolCall{Spec: ToolSpec{Name: "shell"}, Input: string(input)},
+		PreparedToolResult{ArtifactPath: path, ArtifactComplete: true}, "KeyError: 'content'", toolResultMinimumObservation)
+	if !strings.Contains(observation, "KeyError: 'content'") || !strings.Contains(observation, path) {
+		t.Fatalf("recovery metadata displaced useful preview: %s", observation)
+	}
+	if tokencounter.EstimateTextTokens(observation) > toolResultMinimumObservation {
+		t.Fatal("observation exceeds budget")
+	}
+}

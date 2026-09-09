@@ -101,8 +101,11 @@ func (defaultToolResultPolicy) Prepare(_ context.Context, input ToolResultPrepar
 		Reason:              ToolResultReasonInline,
 	}
 	intrinsicLarge := len(output) > toolResultInlineMaxBytes || prepared.EstimatedTokens > toolResultInlineMaxTokens
+	// The minimum observation budget must also apply to inline results.
+	// Replacing a tiny result with a larger recovery notice hides the answer
+	// and can create an endless chain of artifact recovery calls.
 	availableTokens := availableToolResultTokens(input)
-	contextLarge := availableTokens >= 0 && prepared.EstimatedTokens > availableTokens
+	contextLarge := availableTokens >= 0 && prepared.EstimatedTokens > max(toolResultMinimumObservation, availableTokens)
 	if !intrinsicLarge && !contextLarge {
 		prepared.Summary = projectToolResult(input.Call, output, 256)
 		return prepared, nil
@@ -340,6 +343,14 @@ func boundedToolResultObservation(call ToolCall, prepared PreparedToolResult, pr
 		optional.Write(failureState)
 		optional.WriteByte('\n')
 	}
+	// Preserve useful output before descriptive metadata when space is tight.
+	if strings.TrimSpace(preview) != "" {
+		optional.WriteString(preview)
+		if !strings.HasSuffix(preview, "\n") {
+			optional.WriteByte('\n')
+		}
+	}
+
 	fmt.Fprintf(&optional, "[%s] %s\n", toolName, action)
 	fmt.Fprintf(
 		&optional,
@@ -358,12 +369,6 @@ func boundedToolResultObservation(call ToolCall, prepared PreparedToolResult, pr
 		recovery.WriteString("Use bounded grep/sed/dd/fq reads (fq runs jq expressions; jq is absent); never use cat or print the whole artifact file.\n")
 	} else {
 		optional.WriteString("Full result is unavailable; output was bounded before entering active context.\n")
-	}
-	if strings.TrimSpace(preview) != "" {
-		optional.WriteString(preview)
-		if !strings.HasSuffix(preview, "\n") {
-			optional.WriteByte('\n')
-		}
 	}
 
 	mandatory := strings.TrimSpace(recovery.String())
