@@ -556,6 +556,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/phone-bridge/status", s.handleBridgeStatus)
 	// HTTP queue endpoints for iOS background compatibility
 	mux.HandleFunc("/api/phone-bridge/commands", s.handlePhoneBridgeCommands)
+	mux.HandleFunc("/api/phone-bridge/commands/", s.handlePhoneBridgeCommandCancel)
 	mux.HandleFunc("/api/phone-bridge/results", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/bluetooth/status", s.handleBluetoothStatus)
@@ -3786,6 +3787,16 @@ func (s *Server) handlePhoneBridgeCommands(w http.ResponseWriter, r *http.Reques
 	default:
 		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
 	}
+}
+
+// handlePhoneBridgeCommandCancel routes cancellation of a queued Phone Bridge
+// command to the bridge implementation.
+func (s *Server) handlePhoneBridgeCommandCancel(w http.ResponseWriter, r *http.Request) {
+	if s.bridge == nil {
+		http.Error(w, `{"error":"phone bridge not initialized"}`, http.StatusServiceUnavailable)
+		return
+	}
+	s.bridge.handleCancelCommand(w, r)
 }
 
 // handlePhoneBridgeResults routes /api/phone-bridge/results and /api/phone-bridge/results/:id
