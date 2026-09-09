@@ -167,6 +167,7 @@ func main() {
 	inputs := newInputLifecycle(runtime, server)
 	if err := inputs.Start(cfg); err != nil {
 		log.Printf("[input] startup failed: %v", err)
+		exitCode = 1
 		return
 	}
 	defer func() { inputs.StopForShutdown(); runtime.StopConfigReloads(); inputs.Close() }()

@@ -55,7 +55,7 @@ The web interface allows:
 - Selecting STT/TTS providers
 - Testing voice recognition and synthesis
 - Applying saved settings online, retrying failures, and explicitly rebooting only when USB settings require it
-- Applying saved settings, with an automatic Agent restart when the running Agent cannot accept the new configuration in place
+- Applying saved settings online whenever the running Agent supports the change; documented restart exceptions are surfaced explicitly in the UI
 - Saving a system-default, direct, or custom proxy policy with each Wi-Fi network; custom proxy credentials are never returned to the browser
 
 The Wi-Fi dialog accepts `http://`, `https://`, and `socks5://` proxy URLs. A

@@ -281,7 +281,7 @@ assert.match(logs, /runtimeFunction\('t'\)/);
 assert.match(logs, /'logs\.jump_to_bottom'/);
 assert.match(logs, /aiden:locale-changed/);
 assert.match(systemEnv, /runtimeFunction\('t'\)/);
-assert.match(systemEnv, /t\('system_env\.saved'\)/);
+assert.match(systemEnv, /t\(payload\.agent_restart_scheduled\?'system_env\.saved_restarting':'system_env\.saved'\)/);
 assert.match(app, /t\('page\.config_refreshed'\)/);
 assert.match(configForm, /t\('config\.rebooting'\)/);
 assert.match(configForm, /'config\.secret_saved_placeholder'/);
