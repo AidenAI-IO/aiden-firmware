@@ -33,6 +33,7 @@ type Server struct {
 	closeMu               sync.Once
 	storageMu             sync.RWMutex
 	configMu              sync.Mutex
+	configServiceMu       sync.Mutex
 	configApplyError      string
 	configApplyErrorAgent string
 	agentRuntimeID        string

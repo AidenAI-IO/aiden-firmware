@@ -41,6 +41,13 @@ var wakeupDebounceNow = time.Now
 var wakeupGPIOPins = []int{33, 32}
 
 func main() {
+	exitCode := 0
+	defer func() {
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+	}()
+
 	// Check if a subcommand is provided
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -205,6 +212,7 @@ func main() {
 	case err := <-serverErr:
 		if err != nil {
 			log.Printf("[server] stopped: %v", err)
+			exitCode = 1
 		}
 	case <-signals:
 	}

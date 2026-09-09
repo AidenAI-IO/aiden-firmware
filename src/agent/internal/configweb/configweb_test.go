@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -907,9 +908,9 @@ func TestFrameConfigRestartsOnlyFrameServiceAndRetriesFailures(t *testing.T) {
 	if err := os.WriteFile(init, []byte("#!/bin/sh\nprintf '%s' frame >\"$AIDEN_CONFIG_TEST_RESTART_MARKER\"\nexit 1\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	reloads := 0
+	var reloads atomic.Int64
 	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reloads++
+		reloads.Add(1)
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true})
 	}))
 	defer reload.Close()
@@ -927,7 +928,7 @@ func TestFrameConfigRestartsOnlyFrameServiceAndRetriesFailures(t *testing.T) {
 		return resp
 	}
 	failed := save()
-	if failed.Code != http.StatusServiceUnavailable || reloads != 0 {
+	if failed.Code != http.StatusServiceUnavailable || reloads.Load() != 0 {
 		t.Fatalf("failed service restart was applied: %d %s", failed.Code, failed.Body.String())
 	}
 	if err := os.WriteFile(init, []byte("#!/bin/sh\nprintf '%s' frame >\"$AIDEN_CONFIG_TEST_RESTART_MARKER\"\n"), 0755); err != nil {

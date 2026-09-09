@@ -1054,8 +1054,16 @@ func (m *LiveActivityManager) Reconfigure(cfg LiveActivityConfig) {
 	}
 	m.disabled.Store(!cfg.EnabledOrDefault())
 	if !cfg.EnabledOrDefault() {
-		if state := m.SnapshotActive(); state != nil {
-			m.CancelTask(state.RequestID)
+		m.mu.Lock()
+		running := make([]string, 0, len(m.states))
+		for requestID, state := range m.states {
+			if isCancelableLiveActivityStatus(state.Status) {
+				running = append(running, requestID)
+			}
+		}
+		m.mu.Unlock()
+		for _, requestID := range running {
+			m.CancelTask(requestID)
 		}
 	}
 }

@@ -177,13 +177,18 @@ func (c *inputLifecycle) Prepare(ctx context.Context, cfg agent.Config) (func(bo
 	if err == nil && quickChanged {
 		// Reserve the new GPIO before committing, but ignore events until the
 		// runtime snapshot and clients have been published.
-		quick, err = startQuickCaptureGPIOWatcher(cfg, c.server, func(pin int, callback func()) (wakeupWatcher, error) {
+		var quickErr error
+		quick, quickErr = startQuickCaptureGPIOWatcher(cfg, c.server, func(pin int, callback func()) (wakeupWatcher, error) {
 			return c.newWatcher(pin, func() {
 				if quickReady.Load() {
 					callback()
 				}
 			})
 		})
+		if quickErr != nil {
+			log.Printf("[quick_capture] GPIO trigger disabled: %v", quickErr)
+			quick = nil
+		}
 	}
 	restore := func() {
 		if dialog != nil {

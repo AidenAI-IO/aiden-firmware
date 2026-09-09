@@ -118,7 +118,9 @@ func (s *Server) handleConfigApplication(w http.ResponseWriter, r *http.Request)
 				if runtimeID, _ := status["runtime_id"].(string); runtimeID != "" {
 					s.configMu.Lock()
 					s.agentRuntimeID = runtimeID
-					stale := applyErrorAgent != "" && runtimeID != applyErrorAgent
+					stale := s.configApplyError == applyError &&
+						s.configApplyErrorAgent == applyErrorAgent &&
+						applyErrorAgent != "" && runtimeID != applyErrorAgent
 					if stale {
 						s.configApplyError = ""
 						s.configApplyErrorAgent = ""

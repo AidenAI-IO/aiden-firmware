@@ -19,7 +19,7 @@ function render() {
 }
 function configApplicationSaved(payload) {
   saveGeneration++;
-  status = {state: payload.state || (payload.pending ? 'pending' : 'applied'), error:payload.error||'', pending: !!payload.pending, reboot_required: !!payload.reboot_required};
+  status = {state: payload.state || (payload.pending ? 'pending' : 'applied'), error:payload.error||'', pending: !!payload.pending, reboot_required: !!(payload.reboot_required || payload.restart_required)};
   render();
 }
 export async function refreshConfigApplication() {
@@ -27,7 +27,7 @@ export async function refreshConfigApplication() {
   reading = true;
   const generation = saveGeneration;
   try { const next = await request('/api/config/application', {method:'GET'}); if (generation === saveGeneration) status = next; }
-  catch (err) { if (generation === saveGeneration && status) status = {...status, state:'unavailable', error:err.message}; }
+  catch (err) { if (generation === saveGeneration) status = {...(status || {}), state:'unavailable', error:err.message}; }
   finally { reading = false; render(); }
 }
 export async function retryConfigApplication() {

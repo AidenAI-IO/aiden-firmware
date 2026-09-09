@@ -290,7 +290,7 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 		m.statusMu.Lock()
 		m.status = StorageMonitorStatus{}
 		m.statusMu.Unlock()
-		return m.Status(), m.clearLevelState()
+		return m.Status(), m.clearLevelStateLocked()
 	}
 
 	path := strings.TrimSpace(m.config.RootPath)
@@ -738,6 +738,10 @@ func (m *StorageMonitor) publishLevelState(level StorageLevel) {
 func (m *StorageMonitor) clearLevelState() error {
 	m.checkMu.Lock()
 	defer m.checkMu.Unlock()
+	return m.clearLevelStateLocked()
+}
+
+func (m *StorageMonitor) clearLevelStateLocked() error {
 	if m.levelStatePath == "" {
 		return nil
 	}

@@ -42,6 +42,21 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 
 }
 
+func TestLiveActivityManagerDisablingCancelsAllRunningTasks(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager.StartTask("req-1", "First task")
+	manager.StartTask("req-2", "Second task")
+
+	manager.Reconfigure(LiveActivityConfig{Enabled: new(bool)})
+
+	for _, requestID := range []string{"req-1", "req-2"} {
+		state := manager.Snapshot(requestID)
+		if state == nil || state.Status != LiveActivityStatusCanceled {
+			t.Fatalf("state[%s] = %#v, want canceled", requestID, state)
+		}
+	}
+}
+
 func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
 	manager.StartTask("req-1", "Book a table")
