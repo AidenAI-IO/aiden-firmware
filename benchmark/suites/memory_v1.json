@@ -296,7 +296,8 @@
             "content": "这笔蓝海报销App记录的核销码是 ZX-91-ALPHA，项目代号是 海鸥计划。"
           }
         ],
-        "timeout_sec": 30
+        "timeout_sec": 30,
+        "clear_history_after": false
       },
       "prompt": "刚才蓝海报销App里提到的核销码和项目代号是什么？",
       "rubric": [

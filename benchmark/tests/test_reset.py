@@ -162,7 +162,7 @@ def test_setup_sequence_runs_existing_primitives_in_order():
     ]
 
 
-def test_seed_session_chunk_setup_writes_chunk_and_clears_history():
+def test_seed_session_chunk_setup_writes_chunk_without_clearing_history_by_default():
     client = RecordingSetupClient()
     setup = {
         "type": "seed_session_chunk",
@@ -183,6 +183,31 @@ def test_seed_session_chunk_setup_writes_chunk_and_clears_history():
                 "messages": [{"role": "user", "content": "old question"}],
             },
             45,
+        )
+    ]
+
+
+def test_seed_session_chunk_setup_can_explicitly_clear_history_after_seed():
+    client = RecordingSetupClient()
+    setup = {
+        "type": "seed_session_chunk",
+        "session_id": "benchmark-session",
+        "summary": "Seeded chunk summary",
+        "messages": [{"role": "user", "content": "old question"}],
+        "clear_history_after": True,
+    }
+
+    per_task_setup(client, setup)
+
+    assert client.calls == [
+        (
+            "seed_session_chunk",
+            {
+                "session_id": "benchmark-session",
+                "summary": "Seeded chunk summary",
+                "messages": [{"role": "user", "content": "old question"}],
+            },
+            30,
         ),
         ("clear_history",),
     ]
