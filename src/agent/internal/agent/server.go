@@ -25,6 +25,7 @@ import (
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 
+	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/mnk"
@@ -533,6 +534,7 @@ func (s *Server) Handler() http.Handler {
 	if s.benchmarkToken() != "" {
 		mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
 		mux.HandleFunc("/api/benchmark/seed_episode", s.handleBenchmarkSeedEpisode)
+		mux.HandleFunc("/api/benchmark/seed_session_chunk", s.handleBenchmarkSeedSessionChunk)
 		mux.HandleFunc("/api/benchmark/episode-memory/process", s.handleBenchmarkProcessEpisodeMemory)
 		mux.HandleFunc("/api/benchmark/seed_notification", s.handleBenchmarkSeedNotification)
 		mux.HandleFunc("/api/benchmark/notification-memory/process", s.handleBenchmarkProcessNotificationMemory)
@@ -2681,6 +2683,12 @@ type benchmarkSeedMemoryRequest struct {
 	Priority     int               `json:"priority"`
 }
 
+type benchmarkSeedSessionChunkRequest struct {
+	SessionID string             `json:"session_id"`
+	Summary   string             `json:"summary"`
+	Messages  []messages.Message `json:"messages"`
+}
+
 func (s *Server) handleBenchmarkSeedEpisode(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeBenchmarkRequest(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -2732,6 +2740,74 @@ func (s *Server) handleBenchmarkSeedEpisode(w http.ResponseWriter, r *http.Reque
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "seeded",
 		"id":     id,
+	})
+}
+
+func (s *Server) handleBenchmarkSeedSessionChunk(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req benchmarkSeedSessionChunkRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		http.Error(w, "decode body: expected exactly one JSON object", http.StatusBadRequest)
+		return
+	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	req.Summary = strings.TrimSpace(req.Summary)
+	if req.SessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.Summary == "" {
+		http.Error(w, "summary is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Messages) == 0 {
+		http.Error(w, "messages are required", http.StatusBadRequest)
+		return
+	}
+	for index, msg := range req.Messages {
+		if msg.Role == "" {
+			http.Error(w, fmt.Sprintf("messages[%d].role is required", index), http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(msg.Content) == "" {
+			http.Error(w, fmt.Sprintf("messages[%d].content is required", index), http.StatusBadRequest)
+			return
+		}
+	}
+	if s.runtime == nil {
+		http.Error(w, "runtime is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	configDir := s.runtime.ConfigSnapshot().ConfigDir
+	if strings.TrimSpace(configDir) == "" {
+		http.Error(w, "config dir is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	writer := NewSessionChunkWriter(
+		agentpath.ContextManagerSessionFolder(configDir),
+		LoadMemoryExtractionConfig(configDir),
+	)
+	if err := writer.WriteChunk(r.Context(), req.SessionID, req.Messages, req.Summary); err != nil {
+		http.Error(w, "seed session chunk: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":     "seeded",
+		"session_id": req.SessionID,
 	})
 }
 

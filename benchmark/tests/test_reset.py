@@ -47,6 +47,10 @@ class RecordingSetupClient:
         self.calls.append(("seed_episode", episode, timeout))
         return {"status": "seeded", "id": episode["id"]}
 
+    def seed_session_chunk(self, chunk, timeout=30):
+        self.calls.append(("seed_session_chunk", chunk, timeout))
+        return {"status": "seeded", "session_id": chunk["session_id"]}
+
     def seed_memory(self, memory, timeout=30):
         self.calls.append(("seed_memory", memory, timeout))
         return {"status": "seeded", "id": memory["id"]}
@@ -155,6 +159,32 @@ def test_setup_sequence_runs_existing_primitives_in_order():
     assert client.calls == [
         ("seed_memory", memory, 30),
         ("seed_notification", [event], 30),
+    ]
+
+
+def test_seed_session_chunk_setup_writes_chunk_and_clears_history():
+    client = RecordingSetupClient()
+    setup = {
+        "type": "seed_session_chunk",
+        "session_id": "benchmark-session",
+        "summary": "Seeded chunk summary",
+        "messages": [{"role": "user", "content": "old question"}],
+        "timeout_sec": 45,
+    }
+
+    per_task_setup(client, setup)
+
+    assert client.calls == [
+        (
+            "seed_session_chunk",
+            {
+                "session_id": "benchmark-session",
+                "summary": "Seeded chunk summary",
+                "messages": [{"role": "user", "content": "old question"}],
+            },
+            45,
+        ),
+        ("clear_history",),
     ]
 
 

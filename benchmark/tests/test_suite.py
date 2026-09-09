@@ -927,6 +927,31 @@ def test_load_suite_rejects_non_string_setup_type(tmp_path: Path, setup_type):
         load_suite(p)
 
 
+def test_load_suite_accepts_seed_session_chunk_setup_keys(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "setup": {
+                    "type": "seed_session_chunk",
+                    "session_id": "benchmark-session",
+                    "summary": "Seeded chunk summary",
+                    "messages": [{"role": "user", "content": "old question"}],
+                    "timeout_sec": 30,
+                    "clear_history_after": True,
+                },
+            }
+        ],
+    }
+    path = tmp_path / "seed-session-chunk-setup-keys.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    task = load_suite(path).tasks[0]
+    assert task.setup["type"] == "seed_session_chunk"
+    assert task.setup["session_id"] == "benchmark-session"
+
+
 def test_load_suite_rejects_invalid_expected_option_answer(tmp_path: Path):
     fixture = {
         **FIXTURE,

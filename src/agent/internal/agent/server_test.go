@@ -4689,6 +4689,44 @@ func TestHandleBenchmarkSeedMemorySucceeds(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkSeedSessionChunkSucceeds(t *testing.T) {
+	server, configDir := newBenchmarkSeedMemoryServer(t)
+	body := `{
+		"session_id":"benchmark_expense_session",
+		"summary":"蓝海报销App 对话详情：核销码为 ZX-91-ALPHA，项目代号为 海鸥计划。",
+		"messages":[
+			{"role":"user","content":"刚才蓝海报销App里核销码和项目代号是什么？"},
+			{"role":"assistant","content":"核销码是 ZX-91-ALPHA，项目代号是 海鸥计划。"}
+		]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_session_chunk", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedSessionChunk(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["status"] != "seeded" || resp["session_id"] != "benchmark_expense_session" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+
+	tool := NewRecallSessionChunksTool(NewMultiSessionChunkStore(agentpath.ContextManagerSessionFolder(configDir)))
+	out, err := tool.Call(context.Background(), `{"entities":["蓝海报销App"],"limit":1}`)
+	if err != nil {
+		t.Fatalf("recall seeded chunk: %v", err)
+	}
+	if !strings.Contains(out, "ZX-91-ALPHA") || !strings.Contains(out, "海鸥计划") {
+		t.Fatalf("seeded chunk recall missing expected details: %s", out)
+	}
+}
+
 func TestHandleBenchmarkSeedNotificationWritesDurableFixture(t *testing.T) {
 	server, configDir := newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{responses: []*llms.ContentResponse{
 		contentResponse(`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"ignore"}]}}]}`),

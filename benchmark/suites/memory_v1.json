@@ -282,6 +282,22 @@
       "id": "recall_session_chunk_details",
       "category": "memory",
       "description_for_judge": "Given a compressed session summary that points to chunk_000 but omits the exact details, the agent must call recall_session_chunks and answer using the recalled evidence.",
+      "setup": {
+        "type": "seed_session_chunk",
+        "session_id": "benchmark_reimbursement_details",
+        "summary": "蓝海报销App 对话详情：用户询问本次报销记录，助手从历史上下文确认核销码为 ZX-91-ALPHA，项目代号为 海鸥计划。",
+        "messages": [
+          {
+            "role": "user",
+            "content": "刚才在蓝海报销App里，这笔报销记录的核销码和项目代号分别是什么？"
+          },
+          {
+            "role": "assistant",
+            "content": "这笔蓝海报销App记录的核销码是 ZX-91-ALPHA，项目代号是 海鸥计划。"
+          }
+        ],
+        "timeout_sec": 30
+      },
       "prompt": "刚才蓝海报销App里提到的核销码和项目代号是什么？",
       "rubric": [
         {
