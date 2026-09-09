@@ -27,6 +27,7 @@ type Options struct {
 	AgentConfigPath           string
 	WiFiConfigPath            string
 	WiFiInterface             string
+	WiFiBackend               string
 	OTAStatePath              string
 	CmdlinePath               string
 	SystemEnvPath             string
@@ -63,6 +64,7 @@ func DefaultOptions() Options {
 		AgentConfigPath:           defaultAgentConfigPath,
 		WiFiConfigPath:            defaultWiFiConfigPath,
 		WiFiInterface:             "wlan0",
+		WiFiBackend:               "legacy",
 		OTAStatePath:              "/userdata/ota/state.json",
 		CmdlinePath:               "/proc/cmdline",
 		SystemEnvPath:             defaultSystemEnvPath,
@@ -106,6 +108,9 @@ func (o Options) Validate() error {
 	}
 	if o.Port < 1 || o.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535")
+	}
+	if o.WiFiBackend != "legacy" && o.WiFiBackend != "systemd-networkd" {
+		return fmt.Errorf("unsupported Wi-Fi backend %q", o.WiFiBackend)
 	}
 	for name, value := range map[string]string{
 		"config":                  o.AgentConfigPath,

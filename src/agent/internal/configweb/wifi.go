@@ -381,7 +381,14 @@ func parseWiFiScanOutput(text string) []string {
 func (s *Server) handleWiFiScan(w http.ResponseWriter, _ *http.Request) {
 	var output strings.Builder
 	result := commandResult{ExitCode: 127}
-	if commandExists("ifconfig") {
+	if s.options.WiFiBackend == "systemd-networkd" {
+		if commandExists("ip") {
+			up := runCommand(10*time.Second, nil, nil, "ip", "link", "set", "dev", s.options.WiFiInterface, "up")
+			if len(up.Output) > 0 {
+				fmt.Fprintf(&output, "$ ip link set dev %s up\n%s\n", s.options.WiFiInterface, up.Output)
+			}
+		}
+	} else if commandExists("ifconfig") {
 		up := runCommand(10*time.Second, nil, nil, "ifconfig", s.options.WiFiInterface, "up")
 		if len(up.Output) > 0 {
 			fmt.Fprintf(&output, "$ ifconfig %s up\n%s\n", s.options.WiFiInterface, up.Output)
@@ -807,7 +814,18 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 	var output strings.Builder
 	associated := false
 	result := commandResult{ExitCode: 0}
-	if commandExists("ifconfig") {
+	if s.options.WiFiBackend == "systemd-networkd" {
+		if commandExists("ip") {
+			up := runCommandContext(ctx, 10*time.Second, nil, nil, "ip", "link", "set", "dev", s.options.WiFiInterface, "up")
+			fmt.Fprintf(&output, "$ ip link set dev %s up\n%s", s.options.WiFiInterface, up.Output)
+			if up.ExitCode != 0 {
+				result.ExitCode = up.ExitCode
+			}
+		} else {
+			result.ExitCode = 127
+			output.WriteString("ip command is required by the systemd-networkd Wi-Fi backend.\n")
+		}
+	} else if commandExists("ifconfig") {
 		up := runCommandContext(ctx, 10*time.Second, nil, nil, "ifconfig", s.options.WiFiInterface, "up")
 		fmt.Fprintf(&output, "$ ifconfig %s up\n%s", s.options.WiFiInterface, up.Output)
 		if up.ExitCode != 0 {
@@ -823,7 +841,16 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 			}
 		}
 	}
-	if !associated && commandExists("wpa_supplicant") {
+	if !associated && s.options.WiFiBackend == "systemd-networkd" {
+		unit := "wpa_supplicant@" + s.options.WiFiInterface + ".service"
+		restart := runCommandContext(ctx, 10*time.Second, nil, nil, "systemctl", "restart", unit)
+		fmt.Fprintf(&output, "$ systemctl restart %s\n%s", unit, restart.Output)
+		if restart.ExitCode == 0 {
+			associated = s.waitForWiFiState(ctx, &output, 10)
+		} else {
+			result.ExitCode = restart.ExitCode
+		}
+	} else if !associated && commandExists("wpa_supplicant") {
 		if commandExists("killall") {
 			_ = runCommandContext(ctx, 5*time.Second, nil, nil, "killall", "wpa_supplicant")
 		}
@@ -835,7 +862,17 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 		associated = s.waitForWiFiState(ctx, &output, 10)
 	}
 	dhcpOK := false
-	if associated && commandExists("dhcpcd") {
+	if associated && s.options.WiFiBackend == "systemd-networkd" {
+		reconfigure := runCommandContext(ctx, 10*time.Second, nil, nil, "networkctl", "reconfigure", s.options.WiFiInterface)
+		fmt.Fprintf(&output, "$ networkctl reconfigure %s\n%s", s.options.WiFiInterface, reconfigure.Output)
+		dhcpOK = reconfigure.ExitCode == 0 && s.waitForWiFiIP(ctx, &output, 20)
+		if !dhcpOK {
+			result.ExitCode = reconfigure.ExitCode
+			if result.ExitCode == 0 {
+				result.ExitCode = 1
+			}
+		}
+	} else if associated && commandExists("dhcpcd") {
 		dhcp := runCommandContext(ctx, 10*time.Second, nil, nil, "dhcpcd", "-n", s.options.WiFiInterface)
 		dhcpOK = dhcp.ExitCode == 0 && s.waitForWiFiIP(ctx, &output, 15)
 		if !dhcpOK {

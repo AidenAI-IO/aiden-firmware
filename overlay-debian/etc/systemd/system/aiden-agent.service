@@ -1,9 +1,10 @@
 [Unit]
 Description=Aiden device agent
 Requires=oem.mount aiden-userdata-migrate.service aiden-environment.service aiden-boot-timeline-init.service
+Requires=aiden-wifi-proxy.service
 Wants=aiden-frame.service aiden-audio.service aiden-ble.service
 After=oem.mount aiden-userdata-migrate.service aiden-environment.service aiden-boot-timeline-init.service
-After=aiden-frame.service aiden-audio.service aiden-ble.service time-set.target
+After=aiden-frame.service aiden-audio.service aiden-ble.service aiden-wifi-proxy.service time-set.target
 StartLimitIntervalSec=120s
 StartLimitBurst=5
 ConditionPathExists=/oem/usr/bin/agent
@@ -22,7 +23,7 @@ Environment=PIP_BREAK_SYSTEM_PACKAGES=1
 ExecCondition=/usr/lib/aiden/aiden-feature-enabled ENABLE_AGENT
 RuntimeDirectory=agent
 ExecStartPre=/usr/lib/aiden/aiden-python-prepare
-ExecStart=/oem/usr/bin/agent -dir /userdata/agent -addr 0.0.0.0:8080
+ExecStart=/usr/lib/aiden/aiden-managed-env-run /oem/usr/bin/agent -dir /userdata/agent -addr 0.0.0.0:8080
 Restart=on-failure
 RestartSec=2s
 TimeoutStartSec=30s

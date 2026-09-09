@@ -19,7 +19,6 @@ import (
 	"aiden-agent/internal/agenttask"
 	"aiden-agent/internal/configweb"
 	"aiden-agent/internal/logging"
-	"aiden-agent/internal/ota"
 	"aiden-agent/internal/wifiproxy"
 )
 
