@@ -116,11 +116,16 @@ arrives while the farewell response is still active is queued until its
 is pending, task updates and voice notifications are not injected, so a queued
 result cannot start a new response during the goodbye.
 
-Background work is unaffected by standby. The existing session teardown returns
-undelivered task updates and pending user actions to the manager, so they are
-delivered in the next session. A task still running therefore reports its result
-only after the user starts talking again, which is why `end_conversation`
-instructs the model to mention in-progress work before ending.
+Background work is unaffected by standby. A background task that reaches a
+terminal state while the foreground is in standby activates the foreground by
+itself, so the result is reported without the user having to speak first. The
+existing session teardown returns undelivered task updates and pending user
+actions to the manager; they are delivered by the next session, whether it was
+started by the task update or by the user. Activation is attempted once per
+terminal batch: if that session cannot deliver the update, it is returned to the
+queue and waits for the next activation instead of re-activating in a loop. A
+pending user action does not activate the foreground on its own; it is announced
+by the next session.
 
 ## Task lifecycle
 
@@ -141,7 +146,7 @@ context cancellation.
 ## Result delivery
 
 Completed, failed, and cancelled tasks are delivered to the foreground model as
-user messages. Delivery follows two rules:
+user messages. Delivery follows three rules:
 
 1. A terminal update starts a 500 ms sliding debounce window. Every additional
    update resets that window, so results finishing close together are included
@@ -149,9 +154,19 @@ user messages. Delivery follows two rules:
 2. An update is injected only while the foreground session is idle. It never
    interrupts live user speech, an active response, or a text request forwarded
    through the realtime chat bridge.
+3. A terminal update produced while the foreground is in standby activates the
+   foreground session, as long as the update is still pending. The manager
+   publishes a wake signal per terminal batch, separate from the drain signal
+   the session owns, and the daemon keeps a watermark of the manager's terminal
+   sequence so one batch activates at most one session.
 
 Undelivered updates are returned to the pending queue if the realtime session
 ends. The next session can then deliver them.
+
+A terminal task never carries a pending user action: the action is cleared when
+the task reaches a terminal state, so the foreground is never asked to complete
+an action for finished work, and teardown can tell a restored result update from
+a restored action request.
 
 ## User action handoff
 
