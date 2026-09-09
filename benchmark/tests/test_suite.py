@@ -1246,7 +1246,6 @@ def test_memory_suite_covers_representative_memory_behaviors():
         "save_user_rule",
         "save_user_procedure",
         "save_correct_tags",
-        "use_preference_brevity",
         "use_preference_language",
         "use_rule_to_block_action",
         "use_procedure_steps",

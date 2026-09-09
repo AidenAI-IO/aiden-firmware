@@ -119,6 +119,7 @@ class TaskSpec:
     expected_recall_from_consolidation: bool = False
     app_ids: list[str] = dc.field(default_factory=list)
     consolidation_expectation: ConsolidationExpectation | None = None
+    post_action_wait_sec: int = 0
 
 @dc.dataclass
 class Suite:
@@ -266,6 +267,13 @@ def load_suite(path: Path) -> Suite:
         ):
             raise SuiteValidationError(f"task {tid}: app_ids must be a list of non-empty strings")
         app_ids = list(dict.fromkeys(item.strip() for item in raw_app_ids))
+        # optional delayed evaluation for realtime agents
+        try:
+            post_action_wait_sec = int(raw.get("post_action_wait_sec", 0))
+        except (ValueError, TypeError) as e:
+            raise SuiteValidationError(f"task {tid}: invalid post_action_wait_sec: {e}") from e
+        if post_action_wait_sec < 0:
+            raise SuiteValidationError(f"task {tid}: post_action_wait_sec must be non-negative")
         platforms = _platform_list(raw.get("platforms", []), tid)
         task_mock_environment = _parse_mock_environment(
             raw.get("mock_environment"),
@@ -347,6 +355,7 @@ def load_suite(path: Path) -> Suite:
             expected_recall_from_consolidation=expected_recall_from_consolidation,
             app_ids=app_ids,
             consolidation_expectation=consolidation_expectation,
+            post_action_wait_sec=post_action_wait_sec,
         ))
     prompt_prefix = data.get("prompt_prefix", "")
     if not isinstance(prompt_prefix, str):

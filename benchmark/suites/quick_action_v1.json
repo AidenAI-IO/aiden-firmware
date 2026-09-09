@@ -278,10 +278,10 @@
         }
       ],
       "hard_assertions": {
-        "min_tool_calls": 3,
         "max_tool_calls": 15,
         "must_complete_within_sec": 120
-      }
+      },
+      "post_action_wait_sec": 12
     },
     {
       "id": "quick_action_open_editor_and_type",

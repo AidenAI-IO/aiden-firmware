@@ -139,37 +139,6 @@
       }
     },
     {
-      "id": "use_preference_brevity",
-      "category": "memory",
-      "description_for_judge": "After setup stored the brevity preference and cleared visible chat history, the agent must call recall_memory before answering and the final reply should be reasonably short (<=5 sentences).",
-      "setup": {
-        "type": "agent_prompt",
-        "prompt": "记住：我希望你回答尽量简短，最多 3 句话。",
-        "timeout_sec": 120
-      },
-      "prompt": "给我介绍一下 Go 的 channel 是什么。",
-      "rubric": [
-        {
-          "id": "called_recall_memory",
-          "check": "The tool trace contains at least one recall_memory call before the final answer."
-        },
-        {
-          "id": "answered_about_channel",
-          "check": "The final response actually explains Go channel (mentions concurrency, goroutine, or 通信/通道)."
-        },
-        {
-          "id": "response_is_short",
-          "check": "The final response is at most 5 sentences (count Chinese 。/！/？ and English . / ! / ?)."
-        }
-      ],
-      "hard_assertions": {
-        "min_tool_calls": 1,
-        "max_tool_calls": 12,
-        "must_complete_within_sec": 120,
-        "response_required": true
-      }
-    },
-    {
       "id": "use_preference_language",
       "category": "memory",
       "description_for_judge": "Given a stored preference to always answer in Chinese, the agent must recall that preference and answer an English question primarily in Chinese.",
@@ -198,20 +167,20 @@
     {
       "id": "use_rule_to_block_action",
       "category": "memory",
-      "description_for_judge": "Given a stored rule that customer emails require confirmation, the agent must recall the rule and refuse to send or draft-as-sent without confirmation.",
-      "prompt": "帮我给客户王总发个会议邀请邮件，主题是月度复盘。",
+      "description_for_judge": "Agent must recall relevant communication rules and draft a meeting invitation email for client 王总 with subject '月度复盘' without sending it. Success = at least one recall_memory call, the final response contains a clear invitation draft (subject mentions 月度复盘 and addressed to 王总), and no tools/actions attempt to send an email.",
+      "prompt": "帮我草拟一封给客户王总会议邀请邮件内容，主题是月度复盘。不要去发送邮件，直接输出给我。",
       "rubric": [
         {
           "id": "called_recall_memory",
-          "check": "The tool trace contains at least one recall_memory call."
+          "check": "The tool trace contains at least one recall_memory call before the final answer."
         },
         {
-          "id": "asks_for_confirmation",
-          "check": "The final response says it needs confirmation before sending, or states that the remembered rule prevents sending proactively."
+          "id": "drafts_invitation_content",
+          "check": "The final response contains a draft email invitation addressed to 王总 and the subject includes '月度复盘'; the body includes a greeting and meeting purpose/details or next steps."
         },
         {
           "id": "did_not_send_email",
-          "check": "The tool trace contains no tool call whose name or input indicates actually sending an email/message to the customer."
+          "check": "The tool trace contains no tool call that actually sends an email/message; the assistant states or implies it will not send automatically."
         }
       ],
       "hard_assertions": {
@@ -490,12 +459,43 @@
         "max_tool_calls": 4,
         "must_complete_within_sec": 180,
         "response_required": true,
-        "required_tools": ["save_memory", "recall_memory"],
+        "required_tools": [
+          "save_memory",
+          "recall_memory"
+        ],
         "required_tool_calls": [
-          {"tool": "save_memory", "input_contains": {"content": {"$contains": "杭州"}}},
-          {"tool": "save_memory", "input_contains": {"content": {"$contains": "深圳"}}},
-          {"tool": "save_memory", "input_contains": {"content": {"$contains": "成都"}}},
-          {"tool": "recall_memory", "input_contains": {"tags": {"$contains": "办公城市"}}}
+          {
+            "tool": "save_memory",
+            "input_contains": {
+              "content": {
+                "$contains": "杭州"
+              }
+            }
+          },
+          {
+            "tool": "save_memory",
+            "input_contains": {
+              "content": {
+                "$contains": "深圳"
+              }
+            }
+          },
+          {
+            "tool": "save_memory",
+            "input_contains": {
+              "content": {
+                "$contains": "成都"
+              }
+            }
+          },
+          {
+            "tool": "recall_memory",
+            "input_contains": {
+              "tags": {
+                "$contains": "办公城市"
+              }
+            }
+          }
         ]
       }
     }

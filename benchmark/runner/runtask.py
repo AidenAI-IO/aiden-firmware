@@ -448,6 +448,14 @@ def run_one_task(
                     json.dumps(episode, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
+    # Optional extra wait for realtime/background completion before judging
+    try:
+        extra_wait = int(getattr(effective_task, 'post_action_wait_sec', 0) or 0)
+    except Exception:
+        extra_wait = 0
+    if extra_wait > 0:
+        time.sleep(min(max(extra_wait, 0), 60))
+
     # Capture the final device state directly from the environment screen API.
     # The agent history no longer embeds base64 image data, so the post-screenshot
     # must be grabbed live rather than extracted from history.
