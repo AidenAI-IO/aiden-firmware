@@ -115,6 +115,7 @@ ensure_sdk() {
     git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch"
     git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
     git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
+    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
 
     install -m 0755 \
         "${SCRIPT_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk" \
