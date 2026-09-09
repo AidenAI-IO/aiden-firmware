@@ -153,28 +153,23 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for key := range request {
-		if key != "config" && key != "wifi" && key != "apply_wifi" {
+		if key != "config" {
 			writeJSONError(w, http.StatusBadRequest, "only the 'config' field is accepted")
 			return
 		}
 	}
-	if _, exists := request["wifi"]; exists {
-		writeJSONError(w, http.StatusBadRequest, "wifi updates are not supported by /api/config; use /api/network/wifi/connection")
+	config, present := request["config"]
+	if !present {
+		writeJSONError(w, http.StatusBadRequest, "missing config object")
 		return
-	}
-	if raw, exists := request["apply_wifi"]; exists && !bytes.Equal(bytes.TrimSpace(raw), []byte("false")) {
-		writeJSONError(w, http.StatusBadRequest, "wifi updates are not supported by /api/config; use /api/network/wifi/connection")
-		return
-	}
-	config := request["config"]
-	if len(config) == 0 {
-		config = json.RawMessage(`{}`)
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(config, &object); err != nil || object == nil {
 		writeJSONError(w, http.StatusBadRequest, "config patch must be an object")
 		return
 	}
+	s.configSaveMu.Lock()
+	defer s.configSaveMu.Unlock()
 	s.configMu.Lock()
 	update, status, err := s.updateConfig(config)
 	if err != nil {
@@ -201,7 +196,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	if hasConfigPathPrefix(changed, "storage") || storageRequested {
 		s.storageApplyPending = true
 	}
+	s.configSavePending = true
 	s.configMu.Unlock()
+	defer s.finishConfigSave()
 	if err := s.applyConfigServices(); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "config": update["config"], "persisted": true, "applied": false, "state": "failed", "error": err.Error(), "reboot_required": rebootRequired, "agent_restart_scheduled": false})
 		return
@@ -211,22 +208,14 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	if reloadErr != nil {
 		s.configMu.Lock()
 		s.configApplyError = reloadErr.Error()
-		// Attribute the failure to the Agent process that was expected to
-		// apply it; a restarted Agent has already booted the persisted config.
-		s.configApplyErrorAgent = s.agentRuntimeID
+		s.configApplyErrorRevision = revision
 		s.configMu.Unlock()
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "config": update["config"], "persisted": persisted, "applied": false,
 			"revision": revision, "changed_paths": changed, "reboot_required": rebootRequired,
-			"restart_required": rebootRequired, "agent_restart_scheduled": false,
 			"state": "failed", "error": reloadErr.Error(),
 		})
 		return
-	}
-	if id, _ := payload["runtime_id"].(string); id != "" {
-		s.configMu.Lock()
-		s.agentRuntimeID = id
-		s.configMu.Unlock()
 	}
 	applied, _ = payload["applied"].(bool)
 	pending, _ = payload["pending"].(bool)
@@ -247,12 +236,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"revision":                        revision,
 		"changed_paths":                   changed,
 		"reboot_required":                 rebootRequired,
-		"restart_required":                rebootRequired,
-		"restart_reasons":                 update["restart_reasons"],
-		"usbhid_restart_required":         rebootRequired,
+		"reboot_reasons":                  update["reboot_reasons"],
 		"agent_restart_scheduled":         false,
-		"ota_restart_scheduled":           false,
-		"usb_reenumeration_scheduled":     false,
 		"frame_service_restart_scheduled": frameServiceChanged,
 		"message":                         message,
 	})
@@ -273,6 +258,8 @@ func (s *Server) handlePutLocale(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "unsupported locale; expected zh-CN or en-US")
 		return
 	}
+	s.configSaveMu.Lock()
+	defer s.configSaveMu.Unlock()
 	s.configMu.Lock()
 	config, _ := json.Marshal(map[string]any{"agent": map[string]string{"locale": *request.Locale}})
 	update, status, err := s.updateConfig(config)
@@ -281,7 +268,9 @@ func (s *Server) handlePutLocale(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, status, err.Error())
 		return
 	}
+	s.configSavePending = true
 	s.configMu.Unlock()
+	defer s.finishConfigSave()
 	if err := s.applyConfigServices(); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "persisted": true, "applied": false, "state": "failed", "locale": *request.Locale, "error": err.Error()})
 		return
@@ -291,18 +280,13 @@ func (s *Server) handlePutLocale(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.configMu.Lock()
 		s.configApplyError = err.Error()
-		s.configApplyErrorAgent = s.agentRuntimeID
+		s.configApplyErrorRevision = revision
 		s.configMu.Unlock()
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "persisted": true, "applied": false, "locale": *request.Locale,
 			"agent_restart_scheduled": false, "revision": revision, "error": err.Error(),
 		})
 		return
-	}
-	if id, _ := payload["runtime_id"].(string); id != "" {
-		s.configMu.Lock()
-		s.agentRuntimeID = id
-		s.configMu.Unlock()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "locale": *request.Locale, "persisted": true, "applied": payload["applied"],
@@ -346,7 +330,7 @@ func (s *Server) applyConfigServices() error {
 	}
 	s.configMu.Lock()
 	s.configApplyError = strings.Join(failures, "; ")
-	s.configApplyErrorAgent = ""
+	s.configApplyErrorRevision = 0
 	applyError := s.configApplyError
 	s.configMu.Unlock()
 	if applyError != "" {

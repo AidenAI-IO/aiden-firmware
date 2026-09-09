@@ -19,7 +19,7 @@ function render() {
 }
 function configApplicationSaved(payload) {
   saveGeneration++;
-  status = {state: payload.state || (payload.pending ? 'pending' : 'applied'), error:payload.error||'', pending: !!payload.pending, reboot_required: !!(payload.reboot_required || payload.restart_required)};
+  status = {state: payload.state, error:payload.error||'', pending: !!payload.pending, reboot_required: !!payload.reboot_required};
   render();
 }
 export async function refreshConfigApplication() {

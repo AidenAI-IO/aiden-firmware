@@ -16,7 +16,7 @@ import {
 import {byId, configureTerminalLink} from './state.js';
 import {ejectStorageCard, refreshStorage, startStorageFormat} from './storage.js';
 import {toggleSTTTest} from './stt-test.js';
-import {cancelSystemEnvEdit, enterSystemEnvEdit, handleSystemEnvEditorKeydown, saveSystemEnv, toggleSystemEnvComment} from './system-env.js';
+import {applySystemEnv, refreshSystemEnvApplication, cancelSystemEnvEdit, enterSystemEnvEdit, handleSystemEnvEditorKeydown, saveSystemEnv, toggleSystemEnvComment} from './system-env.js';
 import {closeWifiModal, connectSavedWifi, connectSelectedWifi, forgetWifi, openWifiModal, scanWifi, syncWifiProxyFields, toggleWifiListExpanded} from './wifi.js';
 
 const simpleActions = {
@@ -38,6 +38,7 @@ const simpleActions = {
   'toggle-system-env-comment': toggleSystemEnvComment,
   'cancel-system-env': cancelSystemEnvEdit,
   'save-system-env': saveSystemEnv,
+  'apply-system-env': applySystemEnv,
   'close-test-toast': closeTestToast,
   'close-wifi-modal': closeWifiModal,
   'connect-selected-wifi': connectSelectedWifi,
@@ -128,6 +129,8 @@ async function init() {
     setDetails(err.message);
   }
   if (!metaOk) disableAgentConfigEditing();
+  refreshSystemEnvApplication();
+  setInterval(refreshSystemEnvApplication, 3000);
   refreshConfigApplication();
   setInterval(refreshConfigApplication, 3000);
   refreshStorage(false);

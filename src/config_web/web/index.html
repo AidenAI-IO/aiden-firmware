@@ -332,6 +332,10 @@
         </div>
       </div>
       <div class="grid">
+        <div id="systemEnvApplication" class="field wide" style="display:none">
+          <p data-i18n="system_env.restart_required">Saved environment changes require an Agent restart.</p>
+          <button id="apply-system_env" class="button primary" data-action="apply-system-env" data-i18n="system_env.apply_restart">Apply and restart Agent</button>
+        </div>
         <div class="field wide"><label>/userdata/system/env</label><textarea id="system_env_content" class="system-env-editor" data-section="system_env" spellcheck="false"></textarea></div>
       </div>
     </div>

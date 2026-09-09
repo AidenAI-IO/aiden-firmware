@@ -57,12 +57,15 @@ func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Reque
 	}
 	current := s.runtime.ConfigSnapshot()
 	var request configReloadRequest
-	if r.Body != nil {
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024))
-		if err := decoder.Decode(&request); err != nil && err != io.EOF {
-			writeAgentJSONError(w, http.StatusBadRequest, "invalid reload request")
-			return
-		}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil || request.Revision == 0 {
+		writeAgentJSONError(w, http.StatusBadRequest, "reload request requires a nonzero revision")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeAgentJSONError(w, http.StatusBadRequest, "invalid reload request")
+		return
 	}
 	configPath := filepath.Join(current.ConfigDir, "agent.toml")
 	revision := configFileRevision(configPath)
@@ -70,7 +73,7 @@ func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Reque
 		writeAgentJSONError(w, http.StatusServiceUnavailable, "config file unavailable")
 		return
 	}
-	if request.Revision != 0 && request.Revision != revision {
+	if request.Revision != revision {
 		writeAgentJSONError(w, http.StatusConflict, fmt.Sprintf("stale config revision %d (current %d)", request.Revision, revision))
 		return
 	}

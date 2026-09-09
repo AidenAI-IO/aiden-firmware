@@ -81,6 +81,11 @@ func main() {
 		benchmarkTokenFile        = flag.String("benchmark-token-file", "", "Path to benchmark API bearer token file. Enables benchmark-only mutation endpoints.")
 	)
 	flag.Parse()
+	environmentPath := os.Getenv("AIDEN_SYSTEM_ENV")
+	if environmentPath == "" {
+		environmentPath = "/userdata/system/env"
+	}
+	environmentRevision, environmentErr := agent.SystemEnvironmentRevision(environmentPath)
 
 	dir := strings.TrimSpace(*dataDir)
 	if dir == "" {
@@ -139,6 +144,13 @@ func main() {
 		os.Exit(1)
 	}
 	cfg.SkillMergeModel = agent.NewLLMSkillMergeModel(agent.NewModelManager(cfg.Model, proxyConfig))
+	persistedConfig := cfg
+	cfg, err = configForRunningUSB(cfg)
+	if err != nil {
+		log.Printf("[input] USB boot settings failed: %v", err)
+		exitCode = 1
+		return
+	}
 
 	runtime, err := agent.NewRuntime(cfg)
 	if err != nil {
@@ -148,6 +160,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer runtime.Close()
+	runtime.InitializeConfigApplication(persistedConfig)
+	if environmentErr == nil {
+		runtime.SetInitialEnvironmentRevision(environmentRevision)
+	}
 	if err := runtime.StartStorageMonitor(); err != nil {
 		log.Printf("[storage_monitor] startup check failed: %v", err)
 	}

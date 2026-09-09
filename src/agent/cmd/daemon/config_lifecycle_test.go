@@ -12,6 +12,52 @@ import (
 	"aiden-agent/internal/agent"
 )
 
+func TestInputLifecycleGPIOFailureCanRetrySameConfig(t *testing.T) {
+	cfg := agent.DefaultConfig()
+	cfg.ConfigDir = t.TempDir()
+	cfg.Model.Provider, cfg.Model.Model = "fake", "fake"
+	cfg.InputMode, cfg.TTS.Provider = "text", ""
+	cfg.QuickCapture.Enabled = new(bool)
+	r, err := agent.NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	s := agent.NewServer(r, ":0")
+	defer s.Close()
+	c := newInputLifecycle(r, s)
+	if err := c.Start(cfg); err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	r.SetConfigPreparer(c.Prepare)
+	failed := true
+	watcher := &fakeWakeupWatcher{}
+	c.newWatcher = func(int, func()) (wakeupWatcher, error) {
+		if failed {
+			return nil, errors.New("GPIO unavailable")
+		}
+		return watcher, nil
+	}
+	next := cfg
+	enabled := true
+	next.QuickCapture.Enabled = &enabled
+	next.QuickCapture.GPIOPin = 3
+	if err := r.ApplyConfigSnapshot(next); err == nil {
+		t.Fatal("failed GPIO marked applied")
+	}
+	if r.ConfigSnapshot().QuickCapture.EnabledOrDefault() {
+		t.Fatal("failed config committed")
+	}
+	failed = false
+	if err := r.ApplyConfigSnapshot(next); err != nil {
+		t.Fatal(err)
+	}
+	if !watcher.started || c.quick != watcher || !r.ConfigSnapshot().QuickCapture.EnabledOrDefault() {
+		t.Fatal("same config did not retry GPIO")
+	}
+}
+
 func TestInputLifecycleReloadWaitsForSessionAndKeepsServer(t *testing.T) {
 	cfg := agent.DefaultConfig()
 	cfg.ConfigDir = t.TempDir()

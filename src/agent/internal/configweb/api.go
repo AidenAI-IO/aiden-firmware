@@ -32,6 +32,7 @@ const (
 	apiWiFiForget
 	apiSystemEnvironmentGet
 	apiSystemEnvironmentPut
+	apiSystemEnvironmentApply
 	apiDeviceStatus
 	apiAgentLogs
 	apiOTAStatus
@@ -71,6 +72,7 @@ var apiRoutes = []apiRoute{
 	{apiWiFiForget, routeVariant{http.MethodDelete, apiPrefix + "/network/wifi/connection"}},
 	{apiSystemEnvironmentGet, routeVariant{http.MethodGet, apiPrefix + "/system/environment"}},
 	{apiSystemEnvironmentPut, routeVariant{http.MethodPut, apiPrefix + "/system/environment"}},
+	{apiSystemEnvironmentApply, routeVariant{http.MethodPost, apiPrefix + "/system/environment/apply"}},
 	{apiDeviceStatus, routeVariant{http.MethodGet, apiPrefix + "/device/status"}},
 	{apiAgentLogs, routeVariant{http.MethodGet, apiPrefix + "/logs/agent"}},
 	{apiOTAStatus, routeVariant{http.MethodGet, apiPrefix + "/ota/status"}},
@@ -155,6 +157,8 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleGetSystemEnv(w, r)
 	case apiSystemEnvironmentPut:
 		s.handleSystemEnv(w, r)
+	case apiSystemEnvironmentApply:
+		s.handleApplySystemEnv(w, r)
 	case apiDeviceStatus:
 		s.handleAgentStatus(w, r)
 	case apiAgentLogs:

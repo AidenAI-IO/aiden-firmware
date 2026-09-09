@@ -90,7 +90,8 @@ separate from `[stt].language`, which only configures speech recognition.
 
 Existing exceptions remain: Android/non-Android USB pointer descriptor changes
 and `hid.keyboard_layout` need a device reboot. Other device-type changes can
-apply online. Updating system environment variables restarts Agent. Deployment
+apply online. Saving system environment variables shows **Apply and restart Agent**; only
+that explicit action restarts Agent. Deployment
 of a new binary still requires restarting Agent and Config Web; that is separate
 from changing runtime settings.
 
@@ -100,3 +101,9 @@ be released before HID component replacement can succeed. Old model requests
 and TTS sessions retain their current provider until completion. Prompt/provider
 changes open a new context session at the next task/session boundary and leave
 existing transcript files intact.
+
+USB restart requirements survive Agent-only restarts: the bound USB descriptor
+and `<config-dir>/cache/usb-boot.json` retain the active settings for the current
+Linux boot ID. A real device reboot accepts the saved USB identity and layout.
+Failed Quick Capture GPIO replacement retains the active configuration, so the
+same saved configuration can be retried after the hardware fault is corrected.
