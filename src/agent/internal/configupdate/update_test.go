@@ -953,38 +953,6 @@ func TestUpdateConfigFileUpdatesInlineTable(t *testing.T) {
 	}
 }
 
-func TestUpdateConfigFileMigratesLegacyModelCredential(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent.toml")
-	if err := os.WriteFile(path, []byte("[model]\nprovider = \"openai\"\napi_key = \"legacy-secret\"\nmodel = \"gpt-5.5\"\n"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	patch := []byte(`{"config":{"model":{"provider":"openai","api_key":"legacy-secret","base_url":"https://ignored.example"}}}`)
-	if _, err := NewService().Update(path, patch); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(got)
-	if !strings.Contains(text, "[model_providers.openai]") ||
-		!strings.Contains(text, `api_key = "legacy-secret"`) {
-		t.Fatalf("legacy credential was not migrated:\n%s", text)
-	}
-	modelAt := strings.Index(text, "[model]\n")
-	if modelAt < 0 {
-		t.Fatalf("model section missing:\n%s", text)
-	}
-	modelEnd := strings.Index(text[modelAt+1:], "\n[")
-	modelSection := text[modelAt:]
-	if modelEnd >= 0 {
-		modelSection = text[modelAt : modelAt+1+modelEnd]
-	}
-	if strings.Contains(modelSection, "api_key") || strings.Contains(text, "ignored.example") {
-		t.Fatalf("legacy model-only fields leaked into TOML:\n%s", text)
-	}
-}
-
 func TestUpdateConfigFileProviderEditsRemoveLegacyFlatOverrides(t *testing.T) {
 	source := `[model_providers.primary]
 type = "openai"
@@ -1206,44 +1174,39 @@ func tomlTestSection(text, name string) string {
 	return text[start:]
 }
 
-func TestUpdateConfigFileRejectsNonObjectModelProvidersDuringLegacyCredentialMigration(t *testing.T) {
-	source := []byte("[model]\nprovider = \"openai\"\napi_key = \"legacy-secret\"\nmodel = \"gpt-5.5\"\n")
-	for _, modelProviders := range []string{"null", `[]`} {
-		t.Run(modelProviders, func(t *testing.T) {
+func TestUpdateRejectsObsoleteRequestFields(t *testing.T) {
+	for _, patch := range []string{
+		`{"model":{"api_key":"secret"}}`,
+		`{"tts":{"api_key":"secret"}}`,
+		`{"stt":{"secret_key":"secret"}}`,
+		`{"voice_model":{"api_key":"secret"}}`,
+		`{"model":{"base_url":"https://example.com"}}`,
+		`{"agent":{"default_platform":"ios"}}`,
+		`{"agent":{"instruction":"ignored"}}`,
+		`{"tts_providers":{"voice":{"provider":"fish-audio"}}}`,
+		`{"audio":{"playback_backend":"alsa"}}`,
+	} {
+		t.Run(patch, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "agent.toml")
-			if err := os.WriteFile(path, source, 0o640); err != nil {
+			source := []byte("# unchanged\n")
+			if err := os.WriteFile(path, source, 0600); err != nil {
 				t.Fatal(err)
 			}
-			patch := []byte(`{"config":{"model":{"api_key":"legacy-secret"},"model_providers":` + modelProviders + `}}`)
-			if _, err := NewService().Update(path, patch); err == nil || !strings.Contains(err.Error(), "model_providers patch must be an object") {
-				t.Fatalf("NewService().Update() error = %v", err)
+			if _, err := NewService().Update(path, []byte(`{"config":`+patch+`}`)); err == nil || ErrorKind(err) != ErrorKindInvalidRequest {
+				t.Fatalf("obsolete request accepted: %v", err)
 			}
-			got, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(got) != string(source) {
-				t.Fatalf("config changed after rejected patch:\n%s", got)
+			if got, _ := os.ReadFile(path); string(got) != string(source) {
+				t.Fatal("rejected request changed file")
 			}
 		})
 	}
 }
 
-func TestUpdateConfigFileAcceptsLegacyProviderTypeAlias(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent.toml")
-	if err := os.WriteFile(path, nil, 0o640); err != nil {
-		t.Fatal(err)
-	}
-	patch := []byte(`{"config":{"tts_providers":{"voice":{"provider":"fish-audio","api_key":"secret"}},"tts":{"provider":"voice"}}}`)
-	if _, err := NewService().Update(path, patch); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(got), `type = "fish-audio"`) || strings.Contains(string(got), "provider = \"fish-audio\"") {
-		t.Fatalf("provider alias was not canonicalized:\n%s", got)
+func TestUpdateRequiresCanonicalEnvelope(t *testing.T) {
+	for _, body := range []string{`{}`, `{"agent":{"locale":"zh-CN"}}`, `{"config":{},"apply_wifi":false}`, `{"config":null}`} {
+		if _, err := NewService().Update(filepath.Join(t.TempDir(), "agent.toml"), []byte(body)); err == nil || ErrorKind(err) != ErrorKindInvalidRequest {
+			t.Errorf("accepted %s: %v", body, err)
+		}
 	}
 }
 

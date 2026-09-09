@@ -150,8 +150,10 @@ func NewAudioDialog(runtime *Runtime) (*AudioDialog, error) {
 	if runtime == nil {
 		return nil, fmt.Errorf("runtime is required")
 	}
-	cfg := runtime.ConfigSnapshot()
+	return NewAudioDialogWithConfig(runtime, runtime.ConfigSnapshot())
+}
 
+func NewAudioDialogWithConfig(runtime *Runtime, cfg Config) (*AudioDialog, error) {
 	// Create audio client
 	audioClient := NewAudioServiceClient(cfg.Audio.SocketOrDefault())
 	recordBackend := newAudioRecordingBackendFromConfig(cfg, audioClient, nil)
@@ -227,6 +229,18 @@ func (d *AudioDialog) SetStorageMonitor(monitor *StorageMonitor) {
 	if d.audioArchive != nil {
 		d.audioArchive.SetStorageMonitor(monitor)
 	}
+}
+
+// PrepareInput initializes the staged VAD helper with silence without opening
+// the microphone. A bad backend/model path must fail reload before publication.
+func (d *AudioDialog) PrepareInput() error {
+	if d == nil || d.vad == nil {
+		return nil
+	}
+	if _, err := d.vad.scorer.Score(make([]int16, d.vad.FrameSamples())); err != nil {
+		return fmt.Errorf("prepare VAD: %w", err)
+	}
+	return d.vad.Reset()
 }
 
 // Close releases resources owned by the dialog. The TTS provider manager is

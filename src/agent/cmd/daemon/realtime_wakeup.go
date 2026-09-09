@@ -353,7 +353,7 @@ func runRealtimeWakeupMode(cfg agent.Config, sigChan chan os.Signal, newWatcher 
 	runRealtimeWakeupModeWithServer(cfg, sigChan, nil, nil, nil, newWatcher)
 }
 
-func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, server *agent.Server, runtime *agent.Runtime, tasks *agenttask.Manager, newWatcher wakeupWatcherFactory) {
+func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, server *agent.Server, runtime *agent.Runtime, tasks *agenttask.Manager, newWatcher wakeupWatcherFactory, reload ...<-chan struct{}) {
 	events := make(chan struct{}, 1)
 	bridge := newRealtimeChatBridge(func() {
 		signalWakeupEvent(events)
@@ -465,7 +465,14 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 	log.Printf("[ready] Waiting for realtime activation (/api/chat or GPIO %s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
 	var taskWake taskWakeState
 	for {
+		if reloadRequested(reload) {
+			bridge.failQueued("voice configuration changed; retry the request")
+			return
+		}
 		select {
+		case <-reloadStop(reload):
+			bridge.failQueued("voice configuration changed; retry the request")
+			return
 		case <-sigChan:
 			stopNotificationFallback()
 			stopFailureAnnouncement()
@@ -1043,6 +1050,11 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sessionConfig := realtimeProviderSessionConfig(cfg)
+	if runtime != nil {
+		if err := runtime.PrepareUserContext(sessionConfig.Instructions); err != nil {
+			return err
+		}
+	}
 	if runtime != nil {
 		unregisterReset := runtime.RegisterUserContextResetHook(cancel)
 		defer unregisterReset()

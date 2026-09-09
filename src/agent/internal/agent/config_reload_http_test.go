@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,19 +19,20 @@ func TestInternalConfigReloadAppliesLoopbackRevision(t *testing.T) {
 	}
 	runtime := &Runtime{config: Config{ConfigDir: dir}}
 	server := &Server{runtime: runtime}
-	req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(`{"revision":0}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(fmt.Sprintf(`{"revision":%d}`, configFileRevision(filepath.Join(dir, "agent.toml")))))
 	req.RemoteAddr = "127.0.0.1:1234"
 	rec := httptest.NewRecorder()
 	server.handleInternalConfigReload(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil || payload["applied"] != true {
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil || payload["pending"] != true {
 		t.Fatalf("payload=%s", rec.Body.String())
 	}
-	if runtime.config.LocaleOrDefault() != "en-US" {
-		t.Fatalf("runtime locale=%q", runtime.config.LocaleOrDefault())
+	waitForConfigApplied(t, runtime)
+	if runtime.ConfigSnapshot().LocaleOrDefault() != "en-US" {
+		t.Fatalf("runtime locale=%q", runtime.ConfigSnapshot().LocaleOrDefault())
 	}
 }
 
@@ -93,6 +95,45 @@ func TestAgentHandlerDoesNotExposeConfigWebCapabilities(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("path %s returned status=%d", path, rec.Code)
+		}
+	}
+}
+
+func TestInternalConfigReloadPreservesDeviceCLIOverride(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[device]\ndevice_type=\"Android\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	cfg.ConfigDir = dir
+	if err := cfg.OverrideDeviceType("macOS"); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{config: cfg}
+	defer runtime.Close()
+	server := &Server{runtime: runtime}
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(fmt.Sprintf(`{"revision":%d}`, configFileRevision(filepath.Join(dir, "agent.toml")))))
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	server.handleInternalConfigReload(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	status := waitForConfigApplied(t, runtime)
+	if status.RebootRequired || runtime.ConfigSnapshot().DeviceTypeOrDefault() != "macOS" {
+		t.Fatalf("lost CLI override: %+v", status)
+	}
+}
+
+func TestInternalConfigReloadRejectsObsoleteRequests(t *testing.T) {
+	server := &Server{runtime: &Runtime{config: Config{ConfigDir: t.TempDir()}}}
+	for _, body := range []string{"", `{}`, `{"revision":0}`, `{"revision":1,"apply":true}`, `{"revision":1} {}`} {
+		req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(body))
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		server.handleInternalConfigReload(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("accepted %q: %d %s", body, rec.Code, rec.Body.String())
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -11,6 +12,10 @@ import (
 
 // GPIOWatcher watches a GPIO pin for edge events
 type GPIOWatcher struct {
+	mu        sync.Mutex
+	started   bool
+	stopped   bool
+	done      chan struct{}
 	pin       int
 	valuePath string
 	fd        int
@@ -102,21 +107,34 @@ func (w *GPIOWatcher) setEdge(edge string) error {
 
 // Start starts watching the GPIO pin
 func (w *GPIOWatcher) Start() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return fmt.Errorf("GPIO watcher has stopped")
+	}
+	if w.started {
+		return nil
+	}
 	// Open GPIO value file
 	fd, err := unix.Open(w.valuePath, unix.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("open value: %w", err)
 	}
 	w.fd = fd
+	w.started = true
+	w.done = make(chan struct{})
 
 	// Start watching in a goroutine
-	go w.watch()
+	go func() {
+		defer close(w.done)
+		w.watch(fd)
+	}()
 
 	return nil
 }
 
 // watch watches for GPIO events
-func (w *GPIOWatcher) watch() {
+func (w *GPIOWatcher) watch(fd int) {
 	buf := make([]byte, 64)
 
 	for {
@@ -127,15 +145,15 @@ func (w *GPIOWatcher) watch() {
 		}
 
 		// Seek to beginning
-		unix.Seek(w.fd, 0, 0)
+		unix.Seek(fd, 0, 0)
 
 		// Read current value
-		unix.Read(w.fd, buf)
+		unix.Read(fd, buf)
 
 		// Poll for events
 		fds := []unix.PollFd{
 			{
-				Fd:     int32(w.fd),
+				Fd:     int32(fd),
 				Events: unix.POLLPRI | unix.POLLERR,
 			},
 		}
@@ -150,6 +168,11 @@ func (w *GPIOWatcher) watch() {
 		}
 
 		if n > 0 && (fds[0].Revents&unix.POLLPRI) != 0 {
+			select {
+			case <-w.stopChan:
+				return
+			default:
+			}
 			// GPIO event detected
 			if w.callback != nil {
 				w.callback()
@@ -163,9 +186,20 @@ func (w *GPIOWatcher) watch() {
 
 // Stop stops watching the GPIO pin
 func (w *GPIOWatcher) Stop() {
-	close(w.stopChan)
-	if w.fd > 0 {
-		unix.Close(w.fd)
-		w.fd = 0
+	w.mu.Lock()
+	wasStopped := w.stopped
+	w.stopped = true
+	if !wasStopped {
+		close(w.stopChan)
+	}
+	started, done, fd := w.started, w.done, w.fd
+	w.mu.Unlock()
+	if started {
+		// Join before closing: a new watcher may otherwise reuse this FD
+		// while the retired polling goroutine still reads from it.
+		<-done
+		if !wasStopped {
+			unix.Close(fd)
+		}
 	}
 }
