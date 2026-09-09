@@ -80,12 +80,31 @@ func TestRolePromptConstrainsArtifactRecoveryReads(t *testing.T) {
 		"grep -m 20",
 		"sed -n",
 		"dd if=FILE",
-		"jq",
 		"fq",
 		"do not emit unbounded",
 	} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("system prompt missing artifact recovery guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
+// The board rootfs ships fq/yq/rg but no jq, so guidance must never hand the
+// model a bare jq command: it fails with "not found" and the model then falls
+// back to python3 with an ever-growing slice bound, looping on one artifact.
+func TestRolePromptDoesNotSuggestUninstalledJqBinary(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	for _, forbidden := range []string{"jq '", "jq -r", "jq \"", "| jq", "jq ."} {
+		if strings.Contains(profile.SystemPrompt, forbidden) {
+			t.Fatalf("system prompt suggests uninstalled jq binary via %q; use fq, which evaluates jq expressions:\n%s", forbidden, profile.SystemPrompt)
+		}
+	}
+	for _, want := range []string{
+		"fq, which evaluates jq expressions",
+		"never re-read the same artifact with a larger bound",
+	} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing fq/anti-loop artifact guidance %q:\n%s", want, profile.SystemPrompt)
 		}
 	}
 }

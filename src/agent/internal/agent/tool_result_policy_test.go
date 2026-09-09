@@ -327,6 +327,15 @@ func TestToolResultPolicyPersistsLargeResultAsArtifact(t *testing.T) {
 			t.Fatalf("Prepare() content missing shell recovery guidance %q: %s", want, prepared.Content)
 		}
 	}
+	// The board rootfs has no jq, so naming it here sends the model to a
+	// "not found" and then into a python3 growing-slice loop on this artifact.
+	// fq is present and evaluates jq expressions.
+	if strings.Contains(prepared.Content, "/jq/") || strings.Contains(prepared.Content, "jq/fq") {
+		t.Fatalf("Prepare() recovery guidance names uninstalled jq binary: %s", prepared.Content)
+	}
+	if !strings.Contains(prepared.Content, "fq") {
+		t.Fatalf("Prepare() recovery guidance missing fq: %s", prepared.Content)
+	}
 	data, err := os.ReadFile(prepared.ArtifactPath)
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
