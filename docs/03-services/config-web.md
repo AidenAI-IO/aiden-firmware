@@ -54,6 +54,22 @@ The web interface allows:
 - Selecting STT/TTS providers
 - Testing voice recognition and synthesis
 - Applying saved settings, with an automatic Agent restart when the running Agent cannot accept the new configuration in place
+- Saving a system-default, direct, or custom proxy policy with each Wi-Fi network; custom proxy credentials are never returned to the browser
+
+The Wi-Fi dialog accepts `http://`, `https://`, and `socks5://` proxy URLs. A
+saved policy is activated automatically when that SSID becomes current. The
+Agent, OTA commands, managed subprocesses, and login shells continue to use
+the fixed local address `127.0.0.1:18080`. That address accepts both HTTP and
+SOCKS5, and the local URL scheme matches the selected upstream scheme. Switching
+between HTTP and SOCKS5 restarts the Agent so its long-lived clients use the
+matching protocol; switching between proxies of the same type does not. The
+local SOCKS5 URL is rendered as `socks5h://` to resolve target hostnames through
+the proxy; this does not change the SOCKS5 wire protocol.
+
+`NO_PROXY` in the Wi-Fi dialog belongs only to that SSID's custom proxy. When
+`Use system default` is selected, both the upstream proxy and `NO_PROXY` come
+from `/userdata/system/env`; no Wi-Fi-specific `NO_PROXY` value is stored or
+merged into the system setting.
 
 The header switch saves only the top-level `locale` through
 `PUT /api/config/locale`. The UI updates immediately and rolls back if

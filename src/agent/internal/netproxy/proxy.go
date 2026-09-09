@@ -43,7 +43,7 @@ func Parse(raw string, allowedSchemes ...string) (*url.URL, error) {
 
 	scheme := strings.ToLower(u.Scheme)
 	if len(allowedSchemes) == 0 {
-		allowedSchemes = []string{"http", "https", "socks5"}
+		allowedSchemes = []string{"http", "https", "socks5", "socks5h"}
 	}
 	for _, allowed := range allowedSchemes {
 		if scheme == strings.ToLower(strings.TrimSpace(allowed)) {
