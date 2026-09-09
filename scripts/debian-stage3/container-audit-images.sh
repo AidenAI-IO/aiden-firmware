@@ -244,6 +244,21 @@ audit_rootfs() {
         fail "retired network manager command leaked into Debian runtime"
     fi
 
+    for directory in adb audio_service ble_service frame_service ota ttyd wifi_proxy; do
+        grep -Fqx "d /var/log/${directory} 0755 root root -" \
+            "${ROOTFS_MOUNT}/etc/tmpfiles.d/aiden.conf" \
+            || fail "tmpfiles does not create /var/log/${directory}"
+    done
+
+    proxy_watch_path=${ROOTFS_MOUNT}/etc/systemd/system/aiden-wifi-proxy-agent-restart.path
+    for directive in DefaultDependencies=no After=aiden-wifi-proxy.service Before=shutdown.target Conflicts=shutdown.target; do
+        grep -Fqx "${directive}" "${proxy_watch_path}" \
+            || fail "Wi-Fi proxy path unit is missing safe ordering: ${directive}"
+    done
+    grep -Eq '^After=.*aiden-wifi-proxy\.service' \
+        "${ROOTFS_MOUNT}/etc/systemd/system/aiden-wifi-proxy-agent-restart.service" \
+        || fail "Wi-Fi proxy restart service is missing proxy ordering"
+
     test -L "${ROOTFS_MOUNT}/etc/systemd/system/multi-user.target.wants/aiden.target" \
         || fail "aiden.target is not enabled"
     test -L "${ROOTFS_MOUNT}/etc/systemd/system/multi-user.target.wants/aiden-machine-id.service" \

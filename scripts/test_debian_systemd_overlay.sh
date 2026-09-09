@@ -7,6 +7,7 @@ readonly OEM_OVERLAY=${REPO_ROOT}/overlay-debian-oem
 readonly UNIT_DIR=${OVERLAY}/etc/systemd/system
 readonly INIT_MAP=${REPO_ROOT}/scripts/debian/init-script-map.tsv
 readonly ENV_MAP=${REPO_ROOT}/scripts/debian/environment-service-map.tsv
+readonly TMPFILES=${OVERLAY}/etc/tmpfiles.d/aiden.conf
 readonly TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "${TEST_ROOT}"' EXIT
 
@@ -134,6 +135,18 @@ grep -q '/userdata/debian/wifi/wpa_supplicant-wlan0.conf' \
     "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
 grep -q -- '/oem/usr/bin/agent config-web' \
     "${UNIT_DIR}/aiden-config-web.service"
+if grep -Eq '^Requires=.*aiden-wifi-proxy\.service' \
+    "${UNIT_DIR}/aiden-config-web.service"; then
+    fail "Config Web must remain available when the Wi-Fi proxy fails"
+fi
+grep -Eq '^Wants=.*aiden-wifi-proxy\.service' \
+    "${UNIT_DIR}/aiden-config-web.service"
+while IFS= read -r log_path; do
+    log_directory=${log_path%/*}
+    grep -Fqx "d ${log_directory} 0755 root root -" "${TMPFILES}" \
+        || fail "tmpfiles does not create ${log_directory}"
+done < <(sed -n 's|^StandardOutput=append:\(/var/log/[^[:space:]]*\)$|\1|p' \
+    "${UNIT_DIR}"/*.service | LC_ALL=C sort -u)
 grep -q -- '--wifi-interface=wlan0' \
     "${UNIT_DIR}/aiden-config-web.service"
 grep -q -- '--wifi-backend=systemd-networkd' \
@@ -147,6 +160,14 @@ grep -q '/oem/usr/bin/agent wifi-proxy' \
     "${UNIT_DIR}/aiden-wifi-proxy.service"
 grep -q 'aiden-wifi-proxy.service' "${UNIT_DIR}/aiden-agent.service"
 grep -q 'aiden-wifi-proxy-agent-restart.path' "${UNIT_DIR}/aiden.target"
+proxy_watch_path=${UNIT_DIR}/aiden-wifi-proxy-agent-restart.path
+for directive in DefaultDependencies=no After=aiden-wifi-proxy.service Before=shutdown.target Conflicts=shutdown.target; do
+    grep -Fqx "${directive}" "${proxy_watch_path}" \
+        || fail "Wi-Fi proxy path unit is missing safe ordering: ${directive}"
+done
+grep -Eq '^After=.*aiden-wifi-proxy\.service' \
+    "${UNIT_DIR}/aiden-wifi-proxy-agent-restart.service" \
+    || fail "Wi-Fi proxy restart service must wait for the proxy"
 grep -q 'AIDEN_WIFI_PROXY_INIT_SCRIPT=/usr/lib/aiden/aiden-wifi-proxy-control' \
     "${UNIT_DIR}/aiden-config-web.service"
 grep -q 'aiden-managed-env-run /oem/usr/bin/agent' \
