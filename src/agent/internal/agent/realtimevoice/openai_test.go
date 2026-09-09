@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -385,5 +386,25 @@ func TestOpenAIResponseDoneFailureIsError(t *testing.T) {
 				t.Fatalf("error = %v, want status %q", event.Error, status)
 			}
 		})
+	}
+}
+
+// See the xAI counterpart: committed only confirms the audio that
+// speech_stopped already ended, so it must not mutate turn state again.
+func TestTranslateOpenAITurnSequenceDoesNotDuplicateSpeechStopped(t *testing.T) {
+	raw := []string{
+		`{"type":"input_audio_buffer.speech_stopped"}`,
+		`{"type":"input_audio_buffer.committed"}`,
+		`{"type":"response.created","response":{"id":"response-1"}}`,
+	}
+	var kinds []EventKind
+	for _, body := range raw {
+		if event, ok := translateOpenAIEvent([]byte(body)); ok {
+			kinds = append(kinds, event.Kind)
+		}
+	}
+	want := []EventKind{EventSpeechStopped, EventResponseStarted}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("translated event kinds = %v, want %v", kinds, want)
 	}
 }

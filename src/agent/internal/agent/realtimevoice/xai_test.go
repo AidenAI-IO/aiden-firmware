@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -285,5 +286,28 @@ func TestXAIResponseDoneFailureIsError(t *testing.T) {
 				t.Fatalf("error = %v, want status %q", event.Error, status)
 			}
 		})
+	}
+}
+
+// xAI emits input_audio_buffer.committed right after speech_stopped for the
+// same utterance. Translating both into EventSpeechStopped makes the daemon
+// re-open the input turn after response.created has already bound the
+// response ID, which discards that response's own tool calls and then blocks
+// voice notification injection for the rest of the session.
+func TestTranslateXAITurnSequenceDoesNotDuplicateSpeechStopped(t *testing.T) {
+	raw := []string{
+		`{"type":"input_audio_buffer.speech_stopped"}`,
+		`{"type":"input_audio_buffer.committed"}`,
+		`{"type":"response.created","response":{"id":"response-1"}}`,
+	}
+	var kinds []EventKind
+	for _, body := range raw {
+		if event, ok := translateXAIEventBase([]byte(body)); ok {
+			kinds = append(kinds, event.Kind)
+		}
+	}
+	want := []EventKind{EventSpeechStopped, EventResponseStarted}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("translated event kinds = %v, want %v", kinds, want)
 	}
 }
