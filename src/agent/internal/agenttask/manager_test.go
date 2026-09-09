@@ -225,6 +225,129 @@ func TestManagerCancelsPausedUserActionTask(t *testing.T) {
 	waitForStatus(t, manager, task.ID, StatusCancelled)
 }
 
+// A task that paused for a user action and then reached a terminal state must
+// not carry the stale action. Otherwise the foreground is told to perform an
+// action for finished work, and session teardown misclassifies the terminal
+// update as an action request, which silently drops it.
+func TestManagerCancelledPausedTaskClearsPendingUserAction(t *testing.T) {
+	runner := &userActionRunner{started: make(chan string, 1)}
+	manager := newManager(runner, 4, time.Now)
+	defer manager.Close()
+	task, err := manager.Create("open the app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	waitForPendingUserAction(t, manager, task.ID)
+	cancelled, err := manager.Cancel(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.PendingUserAction != nil {
+		t.Fatalf("cancel snapshot still carries pending user action: %+v", cancelled.PendingUserAction)
+	}
+	terminal := waitForTerminalTasks(t, manager)
+	if len(terminal) != 1 || terminal[0].Status != StatusCancelled {
+		t.Fatalf("terminal = %+v", terminal)
+	}
+	if terminal[0].PendingUserAction != nil {
+		t.Fatalf("terminal task still carries pending user action: %+v", terminal[0].PendingUserAction)
+	}
+	if queried, _ := manager.Query(task.ID); queried.PendingUserAction != nil {
+		t.Fatalf("queried task still carries pending user action: %+v", queried.PendingUserAction)
+	}
+	// A restored terminal update must stay terminal and stay deliverable.
+	manager.RestoreTerminalTasks(terminal)
+	restored := waitForTerminalTasks(t, manager)
+	if len(restored) != 1 || restored[0].ID != task.ID {
+		t.Fatalf("restored = %+v", restored)
+	}
+	if restored[0].PendingUserAction != nil {
+		t.Fatalf("restored task carries pending user action: %+v", restored[0].PendingUserAction)
+	}
+}
+
+func TestManagerPendingTerminalTasksDoesNotConsume(t *testing.T) {
+	manager := newManager(&fakeRunner{result: "done"}, 4, time.Now)
+	defer manager.Close()
+	task, err := manager.Create("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, manager, task.ID, StatusCompleted)
+	pending := manager.PendingTerminalTasks()
+	if len(pending) != 1 || pending[0].ID != task.ID {
+		t.Fatalf("pending = %+v", pending)
+	}
+	// Peeking must leave the update for the foreground session to drain.
+	if again := manager.PendingTerminalTasks(); len(again) != 1 {
+		t.Fatalf("second peek = %+v", again)
+	}
+	if terminal := waitForTerminalTasks(t, manager); len(terminal) != 1 {
+		t.Fatalf("terminal = %+v", terminal)
+	}
+	if pending := manager.PendingTerminalTasks(); len(pending) != 0 {
+		t.Fatalf("pending after drain = %+v", pending)
+	}
+}
+
+func TestManagerSignalsWakeAndSequencePerTerminalTask(t *testing.T) {
+	manager := newManager(&fakeRunner{result: "done"}, 4, time.Now)
+	defer manager.Close()
+	if seq := manager.TerminalSequence(); seq != 0 {
+		t.Fatalf("initial sequence = %d, want 0", seq)
+	}
+	task, err := manager.Create("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, manager, task.ID, StatusCompleted)
+	select {
+	case <-manager.WakeNotifications():
+	case <-time.After(time.Second):
+		t.Fatal("terminal task did not signal a standby wake")
+	}
+	if seq := manager.TerminalSequence(); seq != 1 {
+		t.Fatalf("sequence = %d, want 1", seq)
+	}
+	// Draining the wake signal must not steal the foreground's drain signal.
+	terminal := waitForTerminalTasks(t, manager)
+	if len(terminal) != 1 || terminal[0].ID != task.ID {
+		t.Fatalf("terminal = %+v", terminal)
+	}
+}
+
+func TestManagerWakeSignalCoalescesWithoutAdvancingForDelivery(t *testing.T) {
+	manager := newManager(&fakeRunner{result: "done"}, 4, time.Now)
+	defer manager.Close()
+	for _, prompt := range []string{"first", "second"} {
+		if _, err := manager.Create(prompt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if manager.TerminalSequence() == 2 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if seq := manager.TerminalSequence(); seq != 2 {
+		t.Fatalf("sequence = %d, want 2", seq)
+	}
+	select {
+	case <-manager.WakeNotifications():
+	case <-time.After(time.Second):
+		t.Fatal("terminal tasks did not signal a standby wake")
+	}
+	// One coalesced signal is enough: a second read must not report new work.
+	select {
+	case <-manager.WakeNotifications():
+		t.Fatal("wake signal did not coalesce")
+	default:
+	}
+}
+
 func waitForPendingUserAction(t *testing.T, manager *Manager, taskID string) Task {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

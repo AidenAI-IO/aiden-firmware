@@ -463,6 +463,7 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 	}
 
 	log.Printf("[ready] Waiting for realtime activation (/api/chat or GPIO %s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
+	var taskWake taskWakeState
 	for {
 		select {
 		case <-sigChan:
@@ -480,6 +481,26 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 				pendingActivation = false
 				signalWakeupEvent(events)
 			}
+		case <-agentTaskWakeNotifications(tasks):
+			if len(agentTaskPendingTerminalTasks(tasks)) == 0 {
+				// The batch was already delivered by a session, so the wake
+				// signal is stale and must not open an empty session.
+				continue
+			}
+			if !taskWake.shouldActivate(agentTaskTerminalSequence(tasks)) {
+				// A restored update from a previous session. The manager keeps
+				// it pending for the next session instead of activating in a
+				// loop.
+				continue
+			}
+			if failureAnnouncementCancel != nil {
+				// Do not cut the failure announcement short for a task update;
+				// activating after it exits keeps the user informed about both.
+				pendingActivation = true
+				continue
+			}
+			log.Println("\n[realtime] Background task update ready, activating realtime voice model...")
+			signalWakeupEvent(events)
 		case <-events:
 			// Realtime is the preferred consumer. Stop idle standalone speech
 			// before opening the realtime audio session.
@@ -494,22 +515,29 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 			}
 			log.Println("\n[realtime] Activation requested, connecting realtime voice model...")
 			rotated := false
-			if err := runRealtimeSession(cfg, sigChan, runtime, tasks, bridge); errors.Is(err, errRealtimeShutdown) {
+			// The session is about to consume every terminal update available
+			// now. Record that watermark before it runs: an update produced
+			// while it is connected and dropped by its teardown is then still
+			// announced by a later activation, while an update it delivered is
+			// no longer pending and cannot open an empty session.
+			taskWake.observeSession(agentTaskTerminalSequence(tasks))
+			sessionErr := runRealtimeSession(cfg, sigChan, runtime, tasks, bridge)
+			if errors.Is(sessionErr, errRealtimeShutdown) {
 				return
-			} else if errors.Is(err, realtimevoice.ErrSessionRotated) {
+			} else if errors.Is(sessionErr, realtimevoice.ErrSessionRotated) {
 				// The provider capped session lifetime rather than failing, so the
 				// conversation continues in a fresh session instead of dropping back
 				// to idle. Queued chat requests are kept: they remain answerable
 				// after the handover.
 				rotated = true
-				log.Printf("[realtime] session rotated by provider, reconnecting: %v", err)
-			} else if err != nil {
-				log.Printf("[realtime] session ended: %v", err)
-				bridge.failQueued(err.Error())
+				log.Printf("[realtime] session rotated by provider, reconnecting: %v", sessionErr)
+			} else if sessionErr != nil {
+				log.Printf("[realtime] session ended: %v", sessionErr)
+				bridge.failQueued(sessionErr.Error())
 				// The failed Realtime session cannot voice its own failure. Start
 				// the standalone announcement without blocking activation handling;
 				// a new activation cancels this speech first.
-				startFailureAnnouncement(err)
+				startFailureAnnouncement(sessionErr)
 			}
 			drainRealtimeWakeups(events, failureAnnouncementDone != nil)
 			// An API request can arrive while the previous session is tearing
@@ -739,7 +767,7 @@ func realtimeVoiceToolDefinitions() []realtimevoice.Tool {
 		),
 		realtimeVoiceToolDefinition(
 			realtimeEndConversationTool,
-			"End the conversation and go back to standby when the user is done talking, for example when they say goodbye, tell you to stop listening, or say they do not need anything else. Say a short farewell in the same response; the microphone stays open until you finish speaking. The user can start a new conversation at any time, and you keep your memory and history. Work you are already handling continues, but its result can only be reported after the user starts talking to you again, so mention that first if something is still in progress.",
+			"End the conversation and go back to standby when the user is done talking, for example when they say goodbye, tell you to stop listening, or say they do not need anything else. Say a short farewell in the same response; the microphone stays open until you finish speaking. The user can start a new conversation at any time, and you keep your memory and history. Work you are already handling continues, and when it finishes the device comes back on its own to report the outcome, so you may briefly say that you will let them know.",
 			map[string]any{"type": "object", "properties": map[string]any{}},
 		),
 	}
@@ -1274,7 +1302,9 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 		if tasks != nil && len(pendingTaskUpdates) > 0 {
 			var terminal, actions []agenttask.Task
 			for _, task := range pendingTaskUpdates {
-				if task.PendingUserAction != nil {
+				// Only a running task can be waiting for a user action; a
+				// terminal snapshot is always a result update.
+				if task.Status == agenttask.StatusRunning && task.PendingUserAction != nil {
 					actions = append(actions, task)
 				} else {
 					terminal = append(terminal, task)
@@ -1282,6 +1312,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			}
 			tasks.RestoreTerminalTasks(terminal)
 			tasks.RestoreUserActionTasks(actions)
+			log.Printf("[realtime] Task updates returned to the queue: terminal=%d user_action=%d", len(terminal), len(actions))
 		}
 		if tasks != nil {
 			tasks.RestoreUserActionTasks(tasks.PendingUserActionTasks())
@@ -2302,6 +2333,52 @@ func agentTaskNotifications(tasks *agenttask.Manager) <-chan struct{} {
 		return nil
 	}
 	return tasks.TerminalNotifications()
+}
+
+func agentTaskWakeNotifications(tasks *agenttask.Manager) <-chan struct{} {
+	if tasks == nil {
+		return nil
+	}
+	return tasks.WakeNotifications()
+}
+
+func agentTaskTerminalSequence(tasks *agenttask.Manager) uint64 {
+	if tasks == nil {
+		return 0
+	}
+	return tasks.TerminalSequence()
+}
+
+func agentTaskPendingTerminalTasks(tasks *agenttask.Manager) []agenttask.Task {
+	if tasks == nil {
+		return nil
+	}
+	return tasks.PendingTerminalTasks()
+}
+
+// taskWakeState decides whether a terminal task update should activate the
+// foreground from standby. The watermark is the manager's terminal sequence,
+// so a batch is announced once: a session that could not deliver an update
+// restores it without re-activating in a loop, and the next user activation
+// still picks the update up from the manager.
+type taskWakeState struct {
+	lastSeq uint64
+}
+
+func (s *taskWakeState) shouldActivate(seq uint64) bool {
+	if seq == 0 || seq <= s.lastSeq {
+		return false
+	}
+	s.lastSeq = seq
+	return true
+}
+
+// observeSession records the terminal updates a session is about to consume,
+// whether it goes on to deliver them or restores them on teardown.
+func (s *taskWakeState) observeSession(seq uint64) {
+	if seq > s.lastSeq {
+		s.lastSeq = seq
+	}
 }
 
 func agentTaskUserActionNotifications(tasks *agenttask.Manager) <-chan struct{} {
