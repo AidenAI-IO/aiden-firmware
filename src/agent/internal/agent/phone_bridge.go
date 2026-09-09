@@ -688,6 +688,11 @@ func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (Brid
 	}
 	ch := make(chan BridgeCommandResponse, 1)
 	pb.pendingCmds[cmd.ID] = ch
+	defer func() {
+		pb.mu.Lock()
+		delete(pb.pendingCmds, cmd.ID)
+		pb.mu.Unlock()
+	}()
 	conn := pb.conn
 	if strings.TrimSpace(cmd.PhoneID) == "" {
 		cmd.PhoneID = pb.phoneID
@@ -696,9 +701,6 @@ func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (Brid
 
 	data, err := json.Marshal(cmd)
 	if err != nil {
-		pb.mu.Lock()
-		delete(pb.pendingCmds, cmd.ID)
-		pb.mu.Unlock()
 		return BridgeCommandResponse{
 			ID:    cmd.ID,
 			Error: NewToolError(CodeCommandMarshalFailed, fmt.Sprintf("marshal command: %v", err)),
@@ -706,9 +708,6 @@ func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (Brid
 	}
 
 	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
-		pb.mu.Lock()
-		delete(pb.pendingCmds, cmd.ID)
-		pb.mu.Unlock()
 		return BridgeCommandResponse{
 			ID:    cmd.ID,
 			Error: NewToolError(CodeBridgeWriteFailed, fmt.Sprintf("write command: %v", err)),
@@ -730,17 +729,11 @@ func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (Brid
 		}
 		return resp, nil
 	case <-time.After(timeout):
-		pb.mu.Lock()
-		delete(pb.pendingCmds, cmd.ID)
-		pb.mu.Unlock()
 		return BridgeCommandResponse{
 			ID:    cmd.ID,
 			Error: NewToolError(CodeBridgeTimeout, "command timeout"),
 		}, nil
 	case <-ctx.Done():
-		pb.mu.Lock()
-		delete(pb.pendingCmds, cmd.ID)
-		pb.mu.Unlock()
 		return BridgeCommandResponse{}, ctx.Err()
 	}
 }
@@ -1442,33 +1435,43 @@ func (pb *PhoneBridge) handleWebSocketProxy(w http.ResponseWriter, r *http.Reque
 
 	proxyCtx, proxyCancel := context.WithCancel(context.Background())
 	defer proxyCancel()
+	var closeOnce sync.Once
+	closeConnections := func() {
+		closeOnce.Do(func() {
+			_ = appConn.Close(websocket.StatusNormalClosure, "")
+			_ = agentConn.Close(websocket.StatusNormalClosure, "")
+		})
+	}
 
 	// Forward: app -> agent
 	go func() {
 		defer wg.Done()
-		pb.forwardWebSocketMessages(proxyCtx, "app->agent", appConn, agentConn)
+		pb.forwardWebSocketMessages(proxyCtx, "app->agent", appConn, agentConn, closeConnections)
 		proxyCancel()
 	}()
 
 	// Forward: agent -> app
 	go func() {
 		defer wg.Done()
-		pb.forwardWebSocketMessages(proxyCtx, "agent->app", agentConn, appConn)
+		pb.forwardWebSocketMessages(proxyCtx, "agent->app", agentConn, appConn, closeConnections)
 		proxyCancel()
 	}()
 
 	wg.Wait()
-
-	appConn.Close(websocket.StatusNormalClosure, "")
-	agentConn.Close(websocket.StatusNormalClosure, "")
+	closeConnections()
 
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge-proxy: connection closed")
 	}
 }
 
-func (pb *PhoneBridge) forwardWebSocketMessages(ctx context.Context, direction string, from, to *websocket.Conn) {
-	defer to.Close(websocket.StatusNormalClosure, "forwarding stopped")
+func (pb *PhoneBridge) forwardWebSocketMessages(
+	ctx context.Context,
+	direction string,
+	from, to *websocket.Conn,
+	closeConnections func(),
+) {
+	defer closeConnections()
 
 	for {
 		select {

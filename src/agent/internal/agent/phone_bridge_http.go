@@ -444,10 +444,20 @@ func (pb *PhoneBridge) proxyHTTPRequest(w http.ResponseWriter, r *http.Request, 
 	}
 	defer resp.Body.Close()
 
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, phoneBridgeProxyMaxBodyBytes+1))
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"read response: %v"}`, err), http.StatusBadGateway)
+		return
+	}
+	if int64(len(responseBody)) > phoneBridgeProxyMaxBodyBytes {
+		http.Error(w, `{"error":"proxy response exceeds 1 MiB limit"}`, http.StatusBadGateway)
+		return
+	}
+
 	// Copy response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = w.Write(responseBody)
 }
 
 // sendProxyQueuedCommand uses the environment bridge's HTTP queue. The App
