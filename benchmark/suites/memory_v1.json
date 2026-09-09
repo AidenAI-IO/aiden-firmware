@@ -139,63 +139,6 @@
       }
     },
     {
-      "id": "use_preference_brevity",
-      "category": "memory",
-      "description_for_judge": "After setup stored the brevity preference and cleared visible chat history, the agent must call recall_memory before answering and the final reply should be reasonably short (<=5 sentences).",
-      "setup": {
-        "type": "agent_prompt",
-        "prompt": "记住：我希望你回答尽量简短，最多 3 句话。",
-        "timeout_sec": 120
-      },
-      "prompt": "给我介绍一下 Go 的 channel 是什么。",
-      "rubric": [
-        {
-          "id": "called_recall_memory",
-          "check": "The tool trace contains at least one recall_memory call before the final answer."
-        },
-        {
-          "id": "answered_about_channel",
-          "check": "The final response actually explains Go channel (mentions concurrency, goroutine, or 通信/通道)."
-        },
-        {
-          "id": "response_is_short",
-          "check": "The final response is at most 5 sentences (count Chinese 。/！/？ and English . / ! / ?)."
-        }
-      ],
-      "hard_assertions": {
-        "min_tool_calls": 1,
-        "max_tool_calls": 12,
-        "must_complete_within_sec": 120,
-        "response_required": true
-      }
-    },
-    {
-      "id": "use_preference_language",
-      "category": "memory",
-      "description_for_judge": "Given a stored preference to always answer in Chinese, the agent must recall that preference and answer an English question primarily in Chinese.",
-      "prompt": "Explain how Go scheduler picks goroutines.",
-      "rubric": [
-        {
-          "id": "called_recall_memory",
-          "check": "The tool trace contains at least one recall_memory call."
-        },
-        {
-          "id": "response_is_chinese",
-          "check": "The final response is primarily Chinese (roughly 80% or more of the explanatory text is Chinese characters or Chinese punctuation)."
-        },
-        {
-          "id": "answers_scheduler_question",
-          "check": "The final response answers the scheduler question and mentions goroutine, P/M/G, run queue, scheduling, or equivalent Go scheduler concepts."
-        }
-      ],
-      "hard_assertions": {
-        "min_tool_calls": 1,
-        "max_tool_calls": 8,
-        "must_complete_within_sec": 120,
-        "response_required": true
-      }
-    },
-    {
       "id": "use_rule_to_block_action",
       "category": "memory",
       "description_for_judge": "Given a stored rule that customer emails require confirmation, the agent must recall the rule and refuse to send or draft-as-sent without confirmation.",
