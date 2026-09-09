@@ -330,8 +330,8 @@ func TestToolResultPolicyPersistsLargeResultAsArtifact(t *testing.T) {
 	// The board rootfs has no jq, so naming it here sends the model to a
 	// "not found" and then into a python3 growing-slice loop on this artifact.
 	// fq is present and evaluates jq expressions.
-	if strings.Contains(prepared.Content, "/jq/") || strings.Contains(prepared.Content, "jq/fq") {
-		t.Fatalf("Prepare() recovery guidance names uninstalled jq binary: %s", prepared.Content)
+	if forms := findJqCommandForms(prepared.Content); len(forms) > 0 {
+		t.Fatalf("Prepare() recovery guidance invokes uninstalled jq binary %v: %s", forms, prepared.Content)
 	}
 	if !strings.Contains(prepared.Content, "fq") {
 		t.Fatalf("Prepare() recovery guidance missing fq: %s", prepared.Content)
