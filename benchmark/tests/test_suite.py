@@ -1268,6 +1268,15 @@ def test_memory_suite_covers_representative_memory_behaviors():
     )
 
     overwrite_task = task_by_id["multi_turn_overwrite_and_verify_last_value"]
+    assert isinstance(overwrite_task.setup, list)
+    assert [item["prompt"] for item in overwrite_task.setup] == [
+        "请记住：我的办公城市是杭州。",
+        "我改主意了，办公城市改成深圳。请更新办公城市这条记忆，不要继续保留杭州作为当前值。",
+        "又调整了一下，办公城市最终定为成都。请再次更新办公城市这条记忆。",
+    ]
+    assert all(item["clear_history_after"] is False for item in overwrite_task.setup)
+    assert "第 1 步" not in overwrite_task.prompt
+    assert "recall_memory" in overwrite_task.prompt
     assert overwrite_task.hard_assertions.min_tool_calls == 4
     assert overwrite_task.hard_assertions.max_tool_calls == 4
     assert [item.tool for item in overwrite_task.hard_assertions.required_tool_calls] == [
