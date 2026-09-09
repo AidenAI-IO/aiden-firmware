@@ -799,7 +799,7 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 		return "ok", nil
 	}
 
-	err := t.iosKeyboardIsolation.withKeyboard(ctx, keyboardTextUsesModifier(t.keyboardLayout, text), func() error {
+	typeText := func() error {
 		releaseReport := make([]byte, 8)
 		for _, ch := range text {
 			stroke, ok := keyboardLayoutKeyStroke(t.keyboardLayout, byte(ch))
@@ -818,7 +818,13 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 			}
 		}
 		return nil
-	})
+	}
+	var err error
+	if t.iosKeyboardIsolation != nil {
+		err = t.iosKeyboardIsolation.withKeyboard(ctx, keyboardTextUsesModifier(t.keyboardLayout, text), typeText)
+	} else {
+		err = typeText()
+	}
 	if err != nil {
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
