@@ -97,7 +97,10 @@ func TestFrameServiceWaitUntilReadyReportsStateOnTimeout(t *testing.T) {
 		return `{"type":"response","method":"health","status":"OK","state":"RECOVERING","capture_mode":"buffered","latest_seq":0,"frame_age_ms":0}`
 	})
 
-	_, err := NewFrameService(socketPath).WaitUntilReady(150 * time.Millisecond)
+	// The budget has to cover at least one completed probe, or there is no
+	// state to report and this asserts nothing. 150ms was not enough on a
+	// loaded CI runner, where a single connect can miss that deadline.
+	_, err := NewFrameService(socketPath).WaitUntilReady(time.Second)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -311,5 +314,53 @@ func TestLatestFrameRequestJSONEscapesFormat(t *testing.T) {
 		payload["minimal_width"] != float64(16) || payload["screen_width"] != float64(2608) ||
 		payload["screen_height"] != float64(1200) {
 		t.Fatalf("unexpected request payload: %#v", payload)
+	}
+}
+
+func TestFrameServiceWaitUntilReadyKeepsStateWhenLastProbeFails(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "frame.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on fake frame socket: %v", err)
+	}
+	var probes atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			if _, _, err := ReadUDSMessage(conn); err != nil {
+				conn.Close()
+				continue
+			}
+			// Answer the first probe, then hang up on every later one. That is
+			// the shape WaitUntilReady sees near its deadline, where the
+			// remaining budget leaves the last probe almost no time.
+			if probes.Add(1) == 1 {
+				_ = WriteUDSMessage(conn, []byte(
+					`{"type":"response","method":"health","status":"OK","state":"RECOVERING","capture_mode":"buffered","latest_seq":7,"frame_age_ms":0}`,
+				), nil)
+			}
+			conn.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		listener.Close()
+		<-done
+	})
+
+	_, err = NewFrameService(socketPath).WaitUntilReady(400 * time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	// A failing probe at the deadline must not erase the state the earlier
+	// probe observed: that state is the whole diagnostic value of the timeout.
+	for _, want := range []string{"timed out", "state=RECOVERING", "latest_seq=7"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
 	}
 }

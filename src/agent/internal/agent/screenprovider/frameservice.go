@@ -345,14 +345,25 @@ func isTransientFrameServiceStartupError(err error) bool {
 }
 
 func frameServiceReadyTimeoutError(timeout time.Duration, health *HealthResult, lastErr error) error {
-	if lastErr != nil {
-		return fmt.Errorf("wait for frame service ready timed out after %s: %w", timeout, lastErr)
-	}
+	// Report the last state the service actually reported whenever there is
+	// one. The probe budget shrinks to whatever is left before the deadline,
+	// so the final probe is the most likely to fail, and letting its error
+	// replace the state would discard the one thing that explains why the
+	// wait timed out.
 	if health != nil {
+		if lastErr != nil {
+			return fmt.Errorf(
+				"wait for frame service ready timed out after %s (state=%s capture_mode=%s latest_seq=%d frame_age_ms=%d); last probe failed: %w",
+				timeout, health.State, health.CaptureMode, health.LatestSeq, health.FrameAgeMs, lastErr,
+			)
+		}
 		return fmt.Errorf(
 			"wait for frame service ready timed out after %s (state=%s capture_mode=%s latest_seq=%d frame_age_ms=%d)",
 			timeout, health.State, health.CaptureMode, health.LatestSeq, health.FrameAgeMs,
 		)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("wait for frame service ready timed out after %s: %w", timeout, lastErr)
 	}
 	return fmt.Errorf("wait for frame service ready timed out after %s", timeout)
 }
