@@ -4,6 +4,7 @@ set -eu
 agent_bin="${AIDEN_AGENT_BIN:-/oem/usr/bin/agent}"
 agent_dir="${AIDEN_AGENT_DIR:-/userdata/agent}"
 system_env="${AIDEN_SYSTEM_ENV:-/userdata/system/env}"
+env_run_bin="${AIDEN_ENV_RUN_BIN:-/usr/local/bin/aiden-env-run}"
 run_dir="${AIDEN_AGENT_RUN_DIR:-/run/agent}"
 supervisor_pid_file="$run_dir/supervisor.pid"
 agent_pid_file="$run_dir/agent.pid"
@@ -391,7 +392,7 @@ run_agent() {
     fi
 
     service_log INFO process_starting "command=$agent_bin -dir $agent_dir -addr 0.0.0.0:8080"
-    "$@" >> "$log_file" 2>&1 &
+    "$env_run_bin" "$@" >> "$log_file" 2>&1 &
     agent_pid="$!"
     printf '%s\n' "$agent_pid" > "$agent_pid_file"
     wait_for_agent_exit "$agent_pid"

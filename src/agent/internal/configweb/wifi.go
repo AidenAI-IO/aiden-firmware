@@ -4,13 +4,17 @@ import (
 	"bufio"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"aiden-agent/internal/wifiproxy"
 )
 
 const (
@@ -31,13 +35,24 @@ type wiFiConfig struct {
 	Networks []wiFiNetwork
 }
 
-func (c wiFiConfig) publicValue() map[string]any {
+func (c wiFiConfig) publicValue(proxyConfigs ...wifiproxy.Config) map[string]any {
+	proxyConfig := wifiproxy.EmptyConfig()
+	if len(proxyConfigs) > 0 {
+		proxyConfig = proxyConfigs[0]
+	}
 	networks := make([]map[string]any, 0, len(c.Networks))
 	for _, network := range c.Networks {
-		networks = append(networks, map[string]any{
+		value := map[string]any{
 			"ssid": network.SSID, "has_psk": network.PSK != "", "priority": network.Priority,
 			"scan_ssid": network.ScanSSID, "disabled": network.Disabled,
-		})
+			"proxy_mode": string(wifiproxy.ModeSystem), "proxy_url": "", "no_proxy": "",
+		}
+		if configured, ok := proxyConfig.Networks[network.SSID]; ok {
+			value["proxy_mode"] = string(configured.Mode)
+			value["proxy_url"] = wifiproxy.RedactedURL(configured.ProxyURL)
+			value["no_proxy"] = configured.NoProxy
+		}
+		networks = append(networks, value)
 	}
 	return map[string]any{"country": c.Country, "networks": networks}
 }
@@ -163,6 +178,55 @@ func renderWiFiConfig(config wiFiConfig) string {
 
 func saveWiFiConfig(path string, config wiFiConfig) error {
 	return atomicWriteFile(path, []byte(renderWiFiConfig(config)), 0o600)
+}
+
+type fileSnapshot struct {
+	path    string
+	data    []byte
+	mode    os.FileMode
+	existed bool
+}
+
+func captureFileSnapshot(path string) (fileSnapshot, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fileSnapshot{path: path}, nil
+	}
+	if err != nil {
+		return fileSnapshot{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return fileSnapshot{}, err
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return fileSnapshot{}, err
+	}
+	return fileSnapshot{path: path, data: data, mode: info.Mode().Perm(), existed: true}, nil
+}
+
+func restoreFileSnapshot(snapshot fileSnapshot) error {
+	if snapshot.existed {
+		return atomicWriteFile(snapshot.path, snapshot.data, snapshot.mode)
+	}
+	if err := os.Remove(snapshot.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func restoreWiFiPersistence(wifiSnapshot, proxySnapshot fileSnapshot) error {
+	wifiErr := restoreFileSnapshot(wifiSnapshot)
+	proxyErr := restoreFileSnapshot(proxySnapshot)
+	if wifiErr != nil {
+		wifiErr = fmt.Errorf("restore Wi-Fi config: %w", wifiErr)
+	}
+	if proxyErr != nil {
+		proxyErr = fmt.Errorf("restore Wi-Fi proxy config: %w", proxyErr)
+	}
+	return errors.Join(wifiErr, proxyErr)
 }
 
 func normalizeWiFiPriorities(config *wiFiConfig) {
@@ -339,9 +403,12 @@ func (s *Server) handleWiFiScan(w http.ResponseWriter, _ *http.Request) {
 }
 
 type wifiConnectionRequest struct {
-	SSID    string  `json:"ssid"`
-	PSK     *string `json:"psk"`
-	Country string  `json:"country"`
+	SSID      string  `json:"ssid"`
+	PSK       *string `json:"psk"`
+	Country   string  `json:"country"`
+	ProxyMode string  `json:"proxy_mode"`
+	ProxyURL  *string `json:"proxy_url"`
+	NoProxy   *string `json:"no_proxy"`
 }
 
 type wifiConnectionJob struct {
@@ -357,8 +424,12 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 	if !readJSONBody(w, r, &request) {
 		return
 	}
-	if strings.TrimSpace(request.SSID) == "" {
-		writeJSONError(w, 400, "ssid is required")
+	if err := wifiproxy.ValidateSSID(request.SSID); err != nil {
+		writeJSONError(w, 400, err.Error())
+		return
+	}
+	if err := validateWiFiProxyRequest(request); err != nil {
+		writeJSONError(w, 400, err.Error())
 		return
 	}
 	if !s.wifiOpMu.TryLock() {
@@ -433,10 +504,24 @@ func (s *Server) handleWiFiConnectStatus(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRequest) map[string]any {
-	originalData, originalErr := readFileLimited(s.options.WiFiConfigPath, maxAgentConfigSize)
+	wifiSnapshot, err := captureFileSnapshot(s.options.WiFiConfigPath)
+	if err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
 	original, loadErr := loadWiFiConfig(s.options.WiFiConfigPath)
 	if loadErr != nil && !os.IsNotExist(loadErr) {
 		return map[string]any{"ok": false, "error": loadErr.Error()}
+	}
+	proxySnapshot, err := captureFileSnapshot(s.options.WiFiProxyConfigPath)
+	if err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	proxyConfig, err := wifiproxy.Load(s.options.WiFiProxyConfigPath)
+	if err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	if err := applyWiFiProxyRequest(&proxyConfig, request); err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
 	}
 	attempt := original
 	if strings.TrimSpace(request.Country) != "" {
@@ -474,24 +559,31 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 	connected := apply.ExitCode == 0 && status["connected"] == true && status["ssid"] == request.SSID && status["ip_address"] != ""
 	responseConfig := original
 	persistError := ""
+	diskRestoreNeeded := false
+	var diskRestoreErr error
 	if connected {
 		if err := saveWiFiConfig(s.options.WiFiConfigPath, attempt); err != nil {
-			persistError = err.Error()
+			persistError = "save Wi-Fi config: " + err.Error()
 			connected = false
 		} else {
-			// The running wpa_supplicant retains the path supplied with -c for
-			// future reconfigure/save operations. Keep the verified candidate file
-			// until the next connection attempt or service restart.
-			removeCandidate = false
-			responseConfig = attempt
+			diskRestoreNeeded = true
+			if err := wifiproxy.Save(s.options.WiFiProxyConfigPath, proxyConfig); err != nil {
+				persistError = "save Wi-Fi proxy config: " + err.Error()
+				connected = false
+			} else {
+				diskRestoreNeeded = false
+				// The running wpa_supplicant retains the path supplied with -c for
+				// future reconfigure/save operations. Keep the verified candidate file
+				// until the next connection attempt or service restart.
+				removeCandidate = false
+				responseConfig = attempt
+			}
 		}
 	}
 	rollback := commandResult{ExitCode: 0}
 	if !connected {
-		if originalErr == nil {
-			_ = atomicWriteFile(s.options.WiFiConfigPath, originalData, 0o600)
-		} else {
-			_ = os.Remove(s.options.WiFiConfigPath)
+		if diskRestoreNeeded {
+			diskRestoreErr = restoreWiFiPersistence(wifiSnapshot, proxySnapshot)
 		}
 		if len(original.Networks) > 0 {
 			rollback = s.applyWiFi(ctx, s.options.WiFiConfigPath, true)
@@ -506,7 +598,9 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 	message := "wifi connected and saved"
 	if !connected {
 		message = "wifi connect failed; config restored"
-		if rollback.ExitCode != 0 {
+		if diskRestoreErr != nil {
+			message = "wifi connect failed; config recovery incomplete"
+		} else if rollback.ExitCode != 0 {
 			message = "wifi connect failed; config restored on disk but runtime rollback failed"
 		}
 	}
@@ -514,34 +608,135 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 	if !connected {
 		applyValue["error"] = "failed to apply wifi config"
 	}
-	response := map[string]any{"ok": connected, "wifi": responseConfig.publicValue(), "wifi_status": status, "message": message, "wifi_apply": applyValue}
-	if persistError != "" {
-		response["error"] = "persist Wi-Fi config: " + persistError
-	}
+	responseProxyConfig := proxyConfig
 	if !connected {
-		response["wifi_rollback"] = map[string]any{
-			"ok": rollback.ExitCode == 0, "exit_code": rollback.ExitCode,
-			"timed_out": rollback.TimedOut, "output": strings.TrimRight(string(rollback.Output), "\r\n"),
+		responseProxyConfig, _ = wifiproxy.Load(s.options.WiFiProxyConfigPath)
+	}
+	response := map[string]any{"ok": connected, "wifi": responseConfig.publicValue(responseProxyConfig), "wifi_status": status, "message": message, "wifi_apply": applyValue}
+	if !connected {
+		rollbackValue := map[string]any{
+			"ok": rollback.ExitCode == 0 && diskRestoreErr == nil, "exit_code": rollback.ExitCode,
+			"disk_restored": diskRestoreErr == nil,
+			"timed_out":     rollback.TimedOut, "output": strings.TrimRight(string(rollback.Output), "\r\n"),
 		}
+		if diskRestoreErr != nil {
+			rollbackValue["disk_error"] = diskRestoreErr.Error()
+		}
+		response["wifi_rollback"] = rollbackValue
+	}
+	responseErrors := []string{}
+	if persistError != "" {
+		responseErrors = append(responseErrors, "persist configuration: "+persistError)
+	}
+	if diskRestoreErr != nil {
+		responseErrors = append(responseErrors, "restore persisted config: "+diskRestoreErr.Error())
 	}
 	if ctx.Err() != nil {
-		response["error"] = "Wi-Fi connection task exceeded its deadline"
+		responseErrors = append(responseErrors, "Wi-Fi connection task exceeded its deadline")
+	}
+	if len(responseErrors) > 0 {
+		response["error"] = strings.Join(responseErrors, "; ")
 	}
 	return response
+}
+
+func validateWiFiProxyRequest(request wifiConnectionRequest) error {
+	if err := wifiproxy.ValidateSSID(request.SSID); err != nil {
+		return fmt.Errorf("ssid: %w", err)
+	}
+	mode := wifiproxy.Mode(strings.ToLower(strings.TrimSpace(request.ProxyMode)))
+	if mode == "" || mode == wifiproxy.ModeSystem {
+		if request.ProxyURL != nil && strings.TrimSpace(*request.ProxyURL) != "" {
+			return errors.New("proxy_url is only valid with proxy_mode=proxy")
+		}
+		if request.NoProxy != nil && strings.TrimSpace(*request.NoProxy) != "" {
+			return errors.New("no_proxy is only valid with proxy_mode=proxy")
+		}
+		return nil
+	}
+	if mode == wifiproxy.ModeDirect {
+		if request.ProxyURL != nil && strings.TrimSpace(*request.ProxyURL) != "" {
+			return errors.New("proxy_url is only valid with proxy_mode=proxy")
+		}
+		if request.NoProxy != nil && strings.TrimSpace(*request.NoProxy) != "" {
+			return errors.New("no_proxy is not used with proxy_mode=direct")
+		}
+		return nil
+	}
+	if mode != wifiproxy.ModeProxy {
+		return fmt.Errorf("unsupported proxy_mode %q", request.ProxyMode)
+	}
+	noProxy := ""
+	if request.NoProxy != nil {
+		noProxy = *request.NoProxy
+	}
+	if _, err := wifiproxy.NormalizeNoProxy(noProxy); err != nil {
+		return fmt.Errorf("no_proxy: %w", err)
+	}
+	if request.ProxyURL == nil || strings.TrimSpace(*request.ProxyURL) == "" {
+		return nil
+	}
+	if _, err := wifiproxy.NormalizeNetwork(wifiproxy.Network{Mode: mode, ProxyURL: *request.ProxyURL, NoProxy: noProxy}); err != nil {
+		return fmt.Errorf("proxy_url: %w", err)
+	}
+	return nil
+}
+
+func applyWiFiProxyRequest(config *wifiproxy.Config, request wifiConnectionRequest) error {
+	if err := wifiproxy.ValidateSSID(request.SSID); err != nil {
+		return fmt.Errorf("ssid: %w", err)
+	}
+	mode := wifiproxy.Mode(strings.ToLower(strings.TrimSpace(request.ProxyMode)))
+	if mode == "" {
+		return nil
+	}
+	switch mode {
+	case wifiproxy.ModeSystem:
+		delete(config.Networks, request.SSID)
+	case wifiproxy.ModeDirect:
+		config.Networks[request.SSID] = wifiproxy.Network{Mode: mode}
+	case wifiproxy.ModeProxy:
+		existing, hasExisting := config.Networks[request.SSID]
+		network := wifiproxy.Network{Mode: mode}
+		if request.ProxyURL == nil || strings.TrimSpace(*request.ProxyURL) == "" {
+			if hasExisting && existing.Mode == wifiproxy.ModeProxy {
+				network.ProxyURL = existing.ProxyURL
+			} else {
+				return errors.New("proxy_url is required when proxy_mode is proxy")
+			}
+		} else {
+			network.ProxyURL = strings.TrimSpace(*request.ProxyURL)
+		}
+		if request.NoProxy != nil {
+			network.NoProxy = *request.NoProxy
+			network.NoProxySet = true
+		} else if hasExisting && existing.Mode == wifiproxy.ModeProxy {
+			network.NoProxy = existing.NoProxy
+			network.NoProxySet = existing.NoProxySet
+		}
+		network, err := wifiproxy.NormalizeNetwork(network)
+		if err != nil {
+			return err
+		}
+		config.Networks[request.SSID] = network
+	default:
+		return fmt.Errorf("unsupported proxy_mode %q", request.ProxyMode)
+	}
+	return nil
 }
 
 func (s *Server) handleWiFiForget(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		SSID string `json:"ssid"`
 	}
-	request.SSID = strings.TrimSpace(r.URL.Query().Get("ssid"))
+	request.SSID = r.URL.Query().Get("ssid")
 	if request.SSID == "" && r.Body != nil {
 		if !readJSONBody(w, r, &request) {
 			return
 		}
 	}
-	if strings.TrimSpace(request.SSID) == "" {
-		writeJSONError(w, 400, "ssid is required")
+	if err := wifiproxy.ValidateSSID(request.SSID); err != nil {
+		writeJSONError(w, 400, err.Error())
 		return
 	}
 	if !s.wifiOpMu.TryLock() {
@@ -567,7 +762,26 @@ func (s *Server) handleWiFiForget(w http.ResponseWriter, r *http.Request) {
 	}
 	config.Networks = append(config.Networks[:index], config.Networks[index+1:]...)
 	normalizeWiFiPriorities(&config)
+	originalWiFiData, err := readFileLimited(s.options.WiFiConfigPath, maxAgentConfigSize)
+	if err != nil {
+		writeJSONError(w, 500, err.Error())
+		return
+	}
+	proxyConfig, err := wifiproxy.Load(s.options.WiFiProxyConfigPath)
+	if err != nil {
+		writeJSONError(w, 500, err.Error())
+		return
+	}
+	delete(proxyConfig.Networks, request.SSID)
 	if err := saveWiFiConfig(s.options.WiFiConfigPath, config); err != nil {
+		writeJSONError(w, 500, err.Error())
+		return
+	}
+	if err := wifiproxy.Save(s.options.WiFiProxyConfigPath, proxyConfig); err != nil {
+		if rollbackErr := atomicWriteFile(s.options.WiFiConfigPath, originalWiFiData, 0o600); rollbackErr != nil {
+			writeJSONError(w, 500, fmt.Sprintf("remove Wi-Fi proxy: %v; restore Wi-Fi config: %v", err, rollbackErr))
+			return
+		}
 		writeJSONError(w, 500, err.Error())
 		return
 	}
@@ -586,7 +800,7 @@ func (s *Server) handleWiFiForget(w http.ResponseWriter, r *http.Request) {
 	if !applied {
 		applyValue["error"] = "failed to apply wifi config"
 	}
-	writeJSON(w, 200, map[string]any{"ok": applied, "wifi": config.publicValue(), "wifi_status": s.queryWiFiStatus(), "message": message, "wifi_apply": applyValue})
+	writeJSON(w, 200, map[string]any{"ok": applied, "wifi": config.publicValue(proxyConfig), "wifi_status": s.queryWiFiStatus(), "message": message, "wifi_apply": applyValue})
 }
 
 func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) commandResult {

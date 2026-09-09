@@ -239,11 +239,26 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
 | `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
-| `context_prune_threshold`   | `0.5`                       | Fraction of the usable model input budget that triggers deterministic cleanup of expired state snapshots and historical tool results, cleaning down to 6/7 of the trigger (so the default cleans from 50% to ~43%). Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.5`. The effective value is capped at `context_compaction_threshold`, so this cheap deterministic pass always gets a chance to free tokens before the LLM summary runs. A value of `1` or greater is rejected, as are `nan` and `inf`; a legacy absolute token count (for example `12000`) is detected on load, logged, and replaced by the default. |
+| `context_prune_threshold`   | `0.5`                       | Fraction of the usable model input budget that triggers deterministic cleanup of stale state snapshots and older tool exchanges, including while one long-running tool loop is still executing. It cleans down to 6/7 of the trigger (so the default cleans from 50% to ~43%). Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.5`. The effective value is capped at `context_compaction_threshold`, so this cheap deterministic pass always gets a chance to free tokens before the LLM summary runs. A value of `1` or greater is rejected, as are `nan` and `inf`; a legacy absolute token count (for example `12000`) is detected on load, logged, and replaced by the default. |
 | `context_compaction_threshold` | `0.8`                    | Fraction of the usable model input budget at which the conversation is summarized into a compaction message. Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.8`. Values of `1` or greater, `nan`, and `inf` are rejected. Compaction itself has no token target: the transcript is reduced structurally by retaining head and tail messages and replacing the middle with one LLM summary, so the post-compaction size follows from the summary rather than from a budget. |
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
 | `input_mode`                | `text` / `stt` / `realtime` | Input mode: HTTP/Web UI only, legacy STT/TTS voice loop, or direct realtime voice model                                                                                                                                 |
+
+Before each model request, the Agent prunes stale state and older completed
+tool-call/result pairs, normally protecting the latest three exchanges. It then
+applies threshold-based conversation summarization and rechecks any rewritten
+context. The hard input-budget check includes tool schemas and can prune the
+protected exchanges if necessary. If deterministic pruning is insufficient, it
+attempts a conversation summary even when provider-managed compaction is enabled.
+If the request still cannot fit, the run returns a local budget error; a failed
+hard-budget preparation does not activate its candidate session revision.
+Its summary chunk is staged in memory and only persisted after the revision is
+accepted and activated, so rejected recovery attempts do not create duplicate
+searchable history. A chunk persistence failure is logged without undoing the
+accepted revision; the full history remains in the parent transcript.
+Successful revisions preserve the original transcript on disk and reset provider
+response anchors.
 
 ### Quick Capture
 
@@ -884,12 +899,12 @@ tags = ["aiden-hardware"]
 
 ## System environment variables
 
-The Agent no longer reads `[proxy]` from `agent.toml`. Outbound HTTP/WebSocket requests, shell tool subprocesses, OTA commands launched through `aiden-env-run`, and SSH login shells all use environment variables from `/userdata/system/env`. The file is loaded with shell syntax, for example:
+The Agent no longer reads `[proxy]` from `agent.toml`. Values in `/userdata/system/env` define the system/default upstream proxy. Outbound HTTP/WebSocket requests, shell tool subprocesses, OTA commands launched through `aiden-env-run`, and SSH login shells use the fixed local address `127.0.0.1:18080`; it selects the system upstream, direct mode, or a custom upstream from the active Wi-Fi's saved policy. The listener accepts both HTTP proxy and SOCKS5 protocols. Its generated environment keeps the local URL scheme aligned with the selected upstream, so a `socks5://` Wi-Fi proxy remains SOCKS5 on both sides of the local endpoint instead of being wrapped in HTTP CONNECT. The local URL uses `socks5h://` so hostname resolution also travels through SOCKS5 rather than depending on the board's DNS. The file is loaded with shell syntax, for example:
 
 ```sh
 HTTP_PROXY=http://127.0.0.1:7890
 HTTPS_PROXY=http://127.0.0.1:7890
-NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10
 OPENROUTER_API_KEY=...
 ```
 
@@ -899,6 +914,24 @@ OPENROUTER_API_KEY=...
 | `HTTPS_PROXY` / `https_proxy` | HTTPS proxy URL, usually the same HTTP proxy endpoint                                                                                              |
 | `ALL_PROXY` / `all_proxy`     | Generic proxy used by HTTP clients and some WebSocket adapters                                                                                     |
 | `NO_PROXY` / `no_proxy`       | Comma-separated bypass rules; when a proxy URL is set and no bypass value is present, the launcher injects the default private-network bypass list |
+
+Per-Wi-Fi policies are configured in the Config Web connection dialog and
+stored in `/userdata/system/wifi-proxies.json` with mode `0600`. Setting
+`AIDEN_WIFI_PROXY_ENABLED=0` in the system environment is an emergency bypass
+that restores direct use of the raw environment proxy variables after the
+affected services or shell are restarted.
+
+The selected local URLs are written to `/run/wifi_proxy/proxy-env`. New managed
+commands and login shells read that file. If a Wi-Fi change switches between
+HTTP and SOCKS5, `S51wifi_proxy` restarts the long-running Agent so its HTTP and
+WebSocket clients also pick up the new URL scheme; changing only the upstream
+host or port does not require an Agent restart.
+
+For a custom per-Wi-Fi proxy, the dialog's `NO_PROXY` value belongs to that
+SSID's custom upstream and replaces the environment `NO_PROXY` while the
+custom policy is active. The system-default policy uses the proxy variables
+and `NO_PROXY` from `/userdata/system/env` together; it stores no per-Wi-Fi
+bypass value.
 
 ## `memory/extraction.yaml`
 

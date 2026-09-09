@@ -4,6 +4,7 @@ set -eu
 agent_dir="${AIDEN_AGENT_DIR:-/userdata/agent}"
 system_env="${AIDEN_SYSTEM_ENV:-/userdata/system/env}"
 agent_service="${AIDEN_AGENT_INIT_SCRIPT:-/usr/local/bin/aiden-agent-service}"
+wifi_proxy_service="${AIDEN_WIFI_PROXY_INIT_SCRIPT:-/usr/local/bin/aiden-wifi-proxy-service}"
 env_run_bin="${AIDEN_ENV_RUN_BIN:-/usr/local/bin/aiden-env-run}"
 config_web_pid=""
 ttyd_pid=""
@@ -41,13 +42,15 @@ shutdown() {
         wait "$config_web_pid" 2>/dev/null || true
     fi
     "$agent_service" stop || true
+    "$wifi_proxy_service" stop || true
 }
 
 trap shutdown INT TERM EXIT
 
+"$wifi_proxy_service" start
 "$agent_service" start
 
-ttyd \
+"$env_run_bin" ttyd \
     --port=3000 \
     --base-path=/webtty/ \
     --max-clients="${TTYD_MAX_CLIENTS:-2}" \
