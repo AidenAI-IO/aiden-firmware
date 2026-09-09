@@ -350,16 +350,18 @@ func (m *Manager) DrainTerminalTasks() []Task {
 	return result
 }
 
-// PendingTerminalTasks returns the terminal updates still waiting for delivery
-// without consuming them, so a standby consumer can tell whether activating the
-// foreground would actually have something to announce.
-func (m *Manager) PendingTerminalTasks() []Task {
+// TerminalState returns the terminal updates still waiting for delivery
+// together with the sequence they were observed at, without consuming them.
+// Both values are read under one lock so a standby consumer cannot combine an
+// emptiness check with a sequence from a different moment: activating for a
+// batch that is already gone would open an empty foreground session.
+func (m *Manager) TerminalState() ([]Task, uint64) {
 	if m == nil {
-		return nil
+		return nil, 0
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return append([]Task(nil), m.terminal...)
+	return append([]Task(nil), m.terminal...), m.terminalSeq
 }
 
 // RestoreTerminalTasks returns updates to the front of the delivery queue when

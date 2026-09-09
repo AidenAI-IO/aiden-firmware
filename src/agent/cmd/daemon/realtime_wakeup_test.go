@@ -1059,7 +1059,7 @@ func TestAgentTaskWakeActivatesStandbyAndKeepsDrainSignal(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("terminal task did not signal standby")
 	}
-	if pending := agentTaskPendingTerminalTasks(manager); len(pending) != 1 {
+	if pending, _ := agentTaskTerminalState(manager); len(pending) != 1 {
 		t.Fatalf("pending terminal tasks = %+v", pending)
 	}
 	if !state.shouldActivate(agentTaskTerminalSequence(manager)) {
@@ -1077,7 +1077,7 @@ func TestAgentTaskWakeActivatesStandbyAndKeepsDrainSignal(t *testing.T) {
 	}
 	// A delivered batch is no longer pending, so a stale wake signal cannot
 	// open an empty session.
-	if pending := agentTaskPendingTerminalTasks(manager); len(pending) != 0 {
+	if pending, _ := agentTaskTerminalState(manager); len(pending) != 0 {
 		t.Fatalf("delivered update still pending: %+v", pending)
 	}
 	if state.shouldActivate(agentTaskTerminalSequence(manager)) {
@@ -1106,7 +1106,7 @@ func TestAgentTaskWakeAnnouncesUpdateDroppedBySession(t *testing.T) {
 	// teardown returned it to the queue. It must still be pending for delivery.
 	<-agentTaskNotifications(manager)
 	manager.RestoreTerminalTasks(manager.DrainTerminalTasks())
-	if pending := agentTaskPendingTerminalTasks(manager); len(pending) != 1 {
+	if pending, _ := agentTaskTerminalState(manager); len(pending) != 1 {
 		t.Fatalf("restored update not pending: %+v", pending)
 	}
 	// The sequence did not advance, so a restored batch must not re-activate:

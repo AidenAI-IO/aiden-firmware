@@ -267,7 +267,7 @@ func TestManagerCancelledPausedTaskClearsPendingUserAction(t *testing.T) {
 	}
 }
 
-func TestManagerPendingTerminalTasksDoesNotConsume(t *testing.T) {
+func TestManagerTerminalStateDoesNotConsume(t *testing.T) {
 	manager := newManager(&fakeRunner{result: "done"}, 4, time.Now)
 	defer manager.Close()
 	task, err := manager.Create("task")
@@ -275,19 +275,26 @@ func TestManagerPendingTerminalTasksDoesNotConsume(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForStatus(t, manager, task.ID, StatusCompleted)
-	pending := manager.PendingTerminalTasks()
+	pending, seq := manager.TerminalState()
 	if len(pending) != 1 || pending[0].ID != task.ID {
 		t.Fatalf("pending = %+v", pending)
 	}
+	if seq != 1 {
+		t.Fatalf("sequence = %d, want 1", seq)
+	}
 	// Peeking must leave the update for the foreground session to drain.
-	if again := manager.PendingTerminalTasks(); len(again) != 1 {
+	if again, _ := manager.TerminalState(); len(again) != 1 {
 		t.Fatalf("second peek = %+v", again)
 	}
 	if terminal := waitForTerminalTasks(t, manager); len(terminal) != 1 {
 		t.Fatalf("terminal = %+v", terminal)
 	}
-	if pending := manager.PendingTerminalTasks(); len(pending) != 0 {
+	pending, seq = manager.TerminalState()
+	if len(pending) != 0 {
 		t.Fatalf("pending after drain = %+v", pending)
+	}
+	if seq != 1 {
+		t.Fatalf("sequence after drain = %d, want 1", seq)
 	}
 }
 

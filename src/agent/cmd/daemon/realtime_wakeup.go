@@ -482,12 +482,13 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 				signalWakeupEvent(events)
 			}
 		case <-agentTaskWakeNotifications(tasks):
-			if len(agentTaskPendingTerminalTasks(tasks)) == 0 {
+			pending, seq := agentTaskTerminalState(tasks)
+			if len(pending) == 0 {
 				// The batch was already delivered by a session, so the wake
 				// signal is stale and must not open an empty session.
 				continue
 			}
-			if !taskWake.shouldActivate(agentTaskTerminalSequence(tasks)) {
+			if !taskWake.shouldActivate(seq) {
 				// A restored update from a previous session. The manager keeps
 				// it pending for the next session instead of activating in a
 				// loop.
@@ -2349,11 +2350,11 @@ func agentTaskTerminalSequence(tasks *agenttask.Manager) uint64 {
 	return tasks.TerminalSequence()
 }
 
-func agentTaskPendingTerminalTasks(tasks *agenttask.Manager) []agenttask.Task {
+func agentTaskTerminalState(tasks *agenttask.Manager) ([]agenttask.Task, uint64) {
 	if tasks == nil {
-		return nil
+		return nil, 0
 	}
-	return tasks.PendingTerminalTasks()
+	return tasks.TerminalState()
 }
 
 // taskWakeState decides whether a terminal task update should activate the
