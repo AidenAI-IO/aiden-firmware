@@ -186,6 +186,8 @@ grep -Fq '0004-make-bsp-images-reproducible.patch' "${STAGE3_DIR}/build.sh"
 grep -Fq '0005-set-rv1106-usb2-hs-odt.patch' "${STAGE3_DIR}/build.sh"
 grep -Fq '0006-fix-configfs-uevent-rebind-uaf.patch' "${STAGE3_DIR}/build.sh"
 grep -Fq '0007-enable-rv1106-uboot-rockusb.patch' "${STAGE3_DIR}/build.sh"
+grep -Fq '0008-complete-rv1106-uboot-usb2-phy-tuning.patch' \
+    "${STAGE3_DIR}/build.sh"
 grep -Fq 'CONFIG_CMD_ROCKUSB=y' \
     "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
 grep -Fq 'writel(reg, USB2PHY_APB_BASE + USB2PHY_HS_ODT);' \
@@ -194,6 +196,16 @@ grep -Fq 'return 1;' \
     "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
 grep -Fq 'USB device port, assuming attached' \
     "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
+grep -Fq 'usb2phy_update_bits(USB2PHY_PRE_EMPHASIS' \
+    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
+grep -Fq 'usb2phy_update_bits(USB2PHY_TX_EYE_HEIGHT' \
+    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
+grep -Fq 'usb2phy_update_bits(USB2PHY_SQUELCH_CALIB1' \
+    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
+grep -Fq 'mdelay(2);' \
+    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
+grep -Fq 'RV1106 USB2 PHY tuned:' \
+    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
 grep -Fq 'phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x1f);' \
     "${STAGE3_DIR}/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch"
 grep -Fq 'gi = container_of(cdev, struct gadget_info, cdev);' \
