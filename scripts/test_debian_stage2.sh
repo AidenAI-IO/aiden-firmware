@@ -483,16 +483,28 @@ chmod +x "${remote_bundle}/bin/"*
         LC_ALL=C sort -z |
         xargs -0 sha256sum >MANIFEST.sha256
 )
-AIDEN_G0_DEVICE_ROOT="${remote_bundle}/dev" \
-AIDEN_G0_RESULTS_DIR="${remote_bundle}/results" \
-AIDEN_G0_STRESS_SECONDS=2 \
-AIDEN_G0_STRESS_RKNN_FRAMES=1 \
-AIDEN_G0_STRESS_SAMPLE_SECONDS=1 \
-    "${remote_bundle}/board-g0-remote.sh" stress >/dev/null
+stress_log=${TEST_ROOT}/stress-run.log
+if ! AIDEN_G0_DEVICE_ROOT="${remote_bundle}/dev" \
+    AIDEN_G0_RESULTS_DIR="${remote_bundle}/results" \
+    AIDEN_G0_STRESS_SECONDS=2 \
+    AIDEN_G0_STRESS_RKNN_FRAMES=1 \
+    AIDEN_G0_STRESS_SAMPLE_SECONDS=1 \
+        "${remote_bundle}/board-g0-remote.sh" stress >"${stress_log}" 2>&1; then
+    # board-g0-remote.sh routes its own stdout and stderr through tee, so its
+    # failure message arrives here rather than on this script's stderr.
+    # Without printing it, a failure is just an exit status and nothing else.
+    cat "${stress_log}" >&2
+    fail "mock board stress run failed"
+fi
 stress_status=$(find "${remote_bundle}/results" -name stress.status -type f -print -quit)
 [ -n "${stress_status}" ] || fail "mock board stress produced no status record"
-grep -Eq '^camera_exit_status=(0|124|130)$' "${stress_status}"
-grep -Eq '^audio_exit_status=(0|124|130)$' "${stress_status}"
-grep -qx 'rknn_exit_status=0' "${stress_status}"
-[ ! -e "$(dirname "${stress_status}")/stress-errors.txt" ] ||
-    fail "mock board stress reported an unexpected failure"
+stress_report=$(tr '\n' ' ' <"${stress_status}")
+grep -Eq '^camera_exit_status=(0|124|130)$' "${stress_status}" ||
+    fail "unexpected mock stress camera exit status: ${stress_report}"
+grep -Eq '^audio_exit_status=(0|124|130)$' "${stress_status}" ||
+    fail "unexpected mock stress audio exit status: ${stress_report}"
+grep -qx 'rknn_exit_status=0' "${stress_status}" ||
+    fail "unexpected mock stress rknn exit status: ${stress_report}"
+stress_errors=$(dirname "${stress_status}")/stress-errors.txt
+[ ! -e "${stress_errors}" ] ||
+    fail "mock board stress reported an unexpected failure: $(tr '\n' ' ' <"${stress_errors}")"
