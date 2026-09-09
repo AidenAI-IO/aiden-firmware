@@ -286,6 +286,7 @@ capture_dmesg() {
 
 run_stress() {
     local end_epoch camera_job audio_job rknn_job now early_failure=0
+    local deadline_reached=0
     local camera_status audio_status rknn_status before_cma after_cma
     local before_dmesg_lines=0 kernel_log_available=0 bad_log=0
     local actual_pid label pattern
@@ -347,6 +348,18 @@ run_stress() {
                 rknn) kill -0 "${rknn_job}" 2>/dev/null || early_failure=1 ;;
             esac
             if [ "${early_failure}" -ne 0 ]; then
+                # The workers stop on the same deadline this loop watches, and
+                # both read it with whole-second granularity, so a worker can
+                # finish between this iteration's clock check and the liveness
+                # check just above. That window is as wide as the sampling this
+                # loop performs, so it opens up exactly when the host is loaded.
+                # Once the deadline has passed, an exited worker has finished
+                # normally and is not an early exit.
+                if [ "$(date +%s)" -ge "${end_epoch}" ]; then
+                    early_failure=0
+                    deadline_reached=1
+                    break
+                fi
                 printf 'early_process_exit=%s timestamp=%s\n' \
                     "${label}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" |
                     tee -a "${RESULT_DIR}/stress-errors.txt"
@@ -356,6 +369,7 @@ run_stress() {
             sample_process "${actual_pid}" "stress-${label}"
         done
         [ "${early_failure}" -eq 0 ] || break
+        [ "${deadline_reached}" -eq 0 ] || break
         sleep "${STRESS_SAMPLE_SECONDS}"
     done
 
