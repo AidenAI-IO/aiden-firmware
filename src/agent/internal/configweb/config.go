@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/wifiproxy"
 )
 
 func (s *Server) runAgentCLI(timeout time.Duration, input []byte, args ...string) commandResult {
@@ -62,6 +63,7 @@ func (s *Server) handleGetDeviceSnapshot(w http.ResponseWriter, _ *http.Request)
 		return
 	}
 	wifi, wifiErr := loadWiFiConfig(s.options.WiFiConfigPath)
+	wifiProxy, wifiProxyErr := wifiproxy.Load(s.options.WiFiProxyConfigPath)
 	systemEnv := ""
 	if data, err := readFileLimited(s.options.SystemEnvPath, maxSystemEnvSize); err == nil {
 		systemEnv = string(data)
@@ -69,7 +71,7 @@ func (s *Server) handleGetDeviceSnapshot(w http.ResponseWriter, _ *http.Request)
 	response := map[string]any{
 		"ok":           true,
 		"config":       config,
-		"wifi":         wifi.publicValue(),
+		"wifi":         wifi.publicValue(wifiProxy),
 		"wifi_status":  s.queryWiFiStatus(),
 		"agent_status": s.queryAgentStatus(),
 		"firmware":     s.firmwareInfo(),
@@ -84,6 +86,9 @@ func (s *Server) handleGetDeviceSnapshot(w http.ResponseWriter, _ *http.Request)
 	}
 	if wifiErr != nil && !os.IsNotExist(wifiErr) {
 		response["wifi_error"] = wifiErr.Error()
+	}
+	if wifiProxyErr != nil {
+		response["wifi_proxy_error"] = wifiProxyErr.Error()
 	}
 	writeJSON(w, http.StatusOK, response)
 }

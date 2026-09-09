@@ -26,6 +26,16 @@ func TestParseAcceptsUppercaseScheme(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsSOCKS5H(t *testing.T) {
+	u, err := Parse("socks5h://127.0.0.1:18080")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if u.String() != "socks5h://127.0.0.1:18080" {
+		t.Fatalf("Parse() = %q", u.String())
+	}
+}
+
 func TestParseRejectsLeadingWhitespace(t *testing.T) {
 	_, err := Parse(" http://proxy.example:7893", "http", "https", "socks5")
 	if err == nil {

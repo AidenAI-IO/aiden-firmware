@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/wifiproxy"
 )
 
 const (
@@ -52,6 +53,18 @@ type Server struct {
 }
 
 func NewServer(options Options) (*Server, error) {
+	if strings.TrimSpace(options.WiFiProxyConfigPath) == "" {
+		options.WiFiProxyConfigPath = wifiproxy.DefaultConfigPath
+	}
+	if strings.TrimSpace(options.LocalProxyAddress) == "" {
+		options.LocalProxyAddress = wifiproxy.DefaultListenAddress
+	}
+	if strings.TrimSpace(options.LocalProxyEnvironmentPath) == "" {
+		options.LocalProxyEnvironmentPath = wifiproxy.DefaultEnvironmentPath
+	}
+	if strings.TrimSpace(options.WiFiProxyInitScript) == "" {
+		options.WiFiProxyInitScript = "/etc/init.d/S51wifi_proxy"
+	}
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}

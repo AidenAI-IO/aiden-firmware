@@ -506,7 +506,7 @@ type ProxyConfig struct {
 	NoProxy    string
 }
 
-const DefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+const DefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10"
 
 func (p ProxyConfig) HasProxyURL() bool {
 	return strings.TrimSpace(p.HTTPProxy) != "" ||

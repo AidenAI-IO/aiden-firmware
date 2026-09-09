@@ -911,12 +911,12 @@ tags = ["aiden-hardware"]
 
 ## System environment variables
 
-The Agent no longer reads `[proxy]` from `agent.toml`. Outbound HTTP/WebSocket requests, shell tool subprocesses, OTA commands launched through `aiden-env-run`, and SSH login shells all use environment variables from `/userdata/system/env`. The file is loaded with shell syntax, for example:
+The Agent no longer reads `[proxy]` from `agent.toml`. Values in `/userdata/system/env` define the system/default upstream proxy. Outbound HTTP/WebSocket requests, shell tool subprocesses, OTA commands launched through `aiden-env-run`, and SSH login shells use the fixed local address `127.0.0.1:18080`; it selects the system upstream, direct mode, or a custom upstream from the active Wi-Fi's saved policy. The listener accepts both HTTP proxy and SOCKS5 protocols. Its generated environment keeps the local URL scheme aligned with the selected upstream, so a `socks5://` Wi-Fi proxy remains SOCKS5 on both sides of the local endpoint instead of being wrapped in HTTP CONNECT. The local URL uses `socks5h://` so hostname resolution also travels through SOCKS5 rather than depending on the board's DNS. The file is loaded with shell syntax, for example:
 
 ```sh
 HTTP_PROXY=http://127.0.0.1:7890
 HTTPS_PROXY=http://127.0.0.1:7890
-NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10
 OPENROUTER_API_KEY=...
 ```
 
@@ -926,6 +926,24 @@ OPENROUTER_API_KEY=...
 | `HTTPS_PROXY` / `https_proxy` | HTTPS proxy URL, usually the same HTTP proxy endpoint                                                                                              |
 | `ALL_PROXY` / `all_proxy`     | Generic proxy used by HTTP clients and some WebSocket adapters                                                                                     |
 | `NO_PROXY` / `no_proxy`       | Comma-separated bypass rules; when a proxy URL is set and no bypass value is present, the launcher injects the default private-network bypass list |
+
+Per-Wi-Fi policies are configured in the Config Web connection dialog and
+stored in `/userdata/system/wifi-proxies.json` with mode `0600`. Setting
+`AIDEN_WIFI_PROXY_ENABLED=0` in the system environment is an emergency bypass
+that restores direct use of the raw environment proxy variables after the
+affected services or shell are restarted.
+
+The selected local URLs are written to `/run/wifi_proxy/proxy-env`. New managed
+commands and login shells read that file. If a Wi-Fi change switches between
+HTTP and SOCKS5, `S51wifi_proxy` restarts the long-running Agent so its HTTP and
+WebSocket clients also pick up the new URL scheme; changing only the upstream
+host or port does not require an Agent restart.
+
+For a custom per-Wi-Fi proxy, the dialog's `NO_PROXY` value belongs to that
+SSID's custom upstream and replaces the environment `NO_PROXY` while the
+custom policy is active. The system-default policy uses the proxy variables
+and `NO_PROXY` from `/userdata/system/env` together; it stores no per-Wi-Fi
+bypass value.
 
 ## `memory/extraction.yaml`
 

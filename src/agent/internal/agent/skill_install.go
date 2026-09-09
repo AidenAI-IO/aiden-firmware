@@ -135,7 +135,7 @@ func skillInstallProxyAddresses(proxy ProxyConfig) map[string]struct{} {
 			switch strings.ToLower(proxyURL.Scheme) {
 			case "https":
 				port = "443"
-			case "socks5":
+			case "socks5", "socks5h":
 				port = "1080"
 			default:
 				port = "80"

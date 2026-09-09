@@ -20,6 +20,7 @@ import (
 	"aiden-agent/internal/configweb"
 	"aiden-agent/internal/logging"
 	"aiden-agent/internal/ota"
+	"aiden-agent/internal/wifiproxy"
 )
 
 const (
@@ -63,6 +64,8 @@ func main() {
 			os.Exit(runConfigTest(os.Args[2:]))
 		case "config-web":
 			os.Exit(configweb.Run(os.Args[2:]))
+		case "wifi-proxy":
+			os.Exit(wifiproxy.Run(os.Args[2:]))
 		}
 	}
 	logging.InstallStandard("agent", os.Stderr)

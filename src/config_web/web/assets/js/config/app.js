@@ -17,7 +17,7 @@ import {byId, configureTerminalLink} from './state.js';
 import {ejectStorageCard, refreshStorage, startStorageFormat} from './storage.js';
 import {toggleSTTTest} from './stt-test.js';
 import {cancelSystemEnvEdit, enterSystemEnvEdit, handleSystemEnvEditorKeydown, saveSystemEnv, toggleSystemEnvComment} from './system-env.js';
-import {closeWifiModal, connectSavedWifi, connectSelectedWifi, forgetWifi, openWifiModal, scanWifi, toggleWifiListExpanded} from './wifi.js';
+import {closeWifiModal, connectSavedWifi, connectSelectedWifi, forgetWifi, openWifiModal, scanWifi, syncWifiProxyFields, toggleWifiListExpanded} from './wifi.js';
 
 const simpleActions = {
   'export-logs': exportLogs,
@@ -74,6 +74,7 @@ document.addEventListener('click', function(event) {
 });
 document.addEventListener('change', function(event) {
   if (event.target.dataset.action === 'save-locale') saveLocale(event.target.value);
+  else if (event.target.dataset.action === 'wifi-proxy-mode') syncWifiProxyFields();
 });
 window.addEventListener('click', function(event) {
   if (event.target === byId('wifiModal')) closeWifiModal();
