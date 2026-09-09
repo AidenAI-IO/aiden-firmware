@@ -88,13 +88,19 @@ func TestVisualCoordinatesOutboundImageAndReplay(t *testing.T) {
 }
 
 type visualRecordingTool struct {
+	schema map[string]any
 	name   string
 	inputs []map[string]any
 }
 
-func (t *visualRecordingTool) Name() string               { return t.name }
-func (t *visualRecordingTool) Description() string        { return "test tool" }
-func (t *visualRecordingTool) ArgsSchema() map[string]any { return (&TouchGestureTool{}).ArgsSchema() }
+func (t *visualRecordingTool) Name() string        { return t.name }
+func (t *visualRecordingTool) Description() string { return "test tool" }
+func (t *visualRecordingTool) ArgsSchema() map[string]any {
+	if t.schema == nil {
+		t.schema = (&TouchGestureTool{}).ArgsSchema()
+	}
+	return t.schema
+}
 func (t *visualRecordingTool) Call(_ context.Context, input string) (string, error) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
@@ -174,14 +180,65 @@ func TestVisualCoordinatesBadLatestImageFailsClosed(t *testing.T) {
 func TestVisualCoordinatesSchemaDoesNotMutateOriginal(t *testing.T) {
 	base := &visualRecordingTool{name: "touch_gesture"}
 	target := &visualCoordinateTool{Tool: base}
+	original := base.ArgsSchema()
+	before, _ := json.Marshal(original)
 	schema := target.ArgsSchema()
 	props := schema["properties"].(map[string]any)
 	point := props["point"].(map[string]any)["properties"].(map[string]any)["x"].(map[string]any)
 	if point["maximum"] != nil || props["frame_id"] == nil {
 		t.Fatal(schema)
 	}
-	if base.ArgsSchema()["properties"].(map[string]any)["frame_id"] != nil {
+	after, _ := json.Marshal(original)
+	if !bytes.Equal(before, after) {
 		t.Fatal("underlying schema mutated")
+	}
+}
+
+type visualCapabilityTool struct {
+	visualRecordingTool
+	deviceType func() string
+}
+
+func (t *visualCapabilityTool) ReturnsVisualObservation() bool     { return true }
+func (t *visualCapabilityTool) SetDeviceTypeFunc(fn func() string) { t.deviceType = fn }
+
+func TestVisualCoordinatesForwardsCapabilities(t *testing.T) {
+	base := &visualCapabilityTool{visualRecordingTool: visualRecordingTool{name: "touch_gesture"}}
+	wrapped := newVisualCoordinates().wrap([]langtools.Tool{base})[0]
+	if !wrapped.(visualObservationTool).ReturnsVisualObservation() {
+		t.Fatal("lost visual observation capability")
+	}
+	wrapped.(runtimeDeviceTypeConfigurable).SetDeviceTypeFunc(func() string { return "ios" })
+	if base.deviceType == nil || base.deviceType() != "ios" {
+		t.Fatal("lost device type callback")
+	}
+	plain := &visualCoordinateTool{Tool: &visualRecordingTool{name: "touch_gesture"}}
+	if plain.ReturnsVisualObservation() {
+		t.Fatal("plain tool became visual")
+	}
+	plain.SetDeviceTypeFunc(func() string { return "ios" })
+}
+
+type visualSchemaTool struct {
+	langtools.Tool
+	schema map[string]any
+}
+
+func (t *visualSchemaTool) ArgsSchema() map[string]any { return t.schema }
+
+func TestVisualCoordinatesSchemaFallback(t *testing.T) {
+	base := &visualRecordingTool{name: "touch_gesture"}
+	// Embedding the narrow Tool interface deliberately hides ArgsSchema.
+	noSchema := struct{ langtools.Tool }{base}
+	if got := (&visualCoordinateTool{Tool: noSchema}).ArgsSchema(); got != nil {
+		t.Fatal(got)
+	}
+	for _, schema := range []map[string]any{nil, {}, {"properties": "invalid"}, {"properties": map[string]any{}, "invalid": func() {}}} {
+		tool := &visualCoordinateTool{Tool: &visualSchemaTool{Tool: base, schema: schema}}
+		got := tool.ArgsSchema()
+		if len(got) != len(schema) {
+			t.Fatalf("fallback changed schema: %v", got)
+		}
 	}
 }
 

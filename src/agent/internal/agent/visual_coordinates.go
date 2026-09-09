@@ -207,6 +207,17 @@ type visualCoordinateTool struct {
 	frames *visualCoordinates
 }
 
+func (t *visualCoordinateTool) ReturnsVisualObservation() bool {
+	visual, ok := t.Tool.(visualObservationTool)
+	return ok && visual.ReturnsVisualObservation()
+}
+
+func (t *visualCoordinateTool) SetDeviceTypeFunc(fn func() string) {
+	if tool, ok := t.Tool.(runtimeDeviceTypeConfigurable); ok {
+		tool.SetDeviceTypeFunc(fn)
+	}
+}
+
 func (t *visualCoordinateTool) Description() string {
 	description := t.Tool.Description()
 	// Keep gesture semantics, but remove the old instruction to do arithmetic.
@@ -225,11 +236,24 @@ func (t *visualCoordinateTool) Description() string {
 }
 
 func (t *visualCoordinateTool) ArgsSchema() map[string]any {
-	provider := t.Tool.(interface{ ArgsSchema() map[string]any })
+	provider, ok := t.Tool.(interface{ ArgsSchema() map[string]any })
+	if !ok {
+		return nil
+	}
 	// Deep-copy before changing nested schemas owned by the underlying tool.
-	data, _ := json.Marshal(provider.ArgsSchema())
+	original := provider.ArgsSchema()
+	data, err := json.Marshal(original)
+	if err != nil {
+		return original
+	}
 	var schema map[string]any
-	_ = json.Unmarshal(data, &schema)
+	if err := json.Unmarshal(data, &schema); err != nil || schema == nil {
+		return original
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return original
+	}
 	var rewrite func(map[string]any)
 	rewrite = func(node map[string]any) {
 		delete(node, "examples")
@@ -252,7 +276,7 @@ func (t *visualCoordinateTool) ArgsSchema() map[string]any {
 		}
 	}
 	rewrite(schema)
-	schema["properties"].(map[string]any)["frame_id"] = stringArgSchema("ID of the screenshot used for these coordinates.")
+	props["frame_id"] = stringArgSchema("ID of the screenshot used for these coordinates.")
 	required, _ := schema["required"].([]any)
 	schema["required"] = append(required, "frame_id")
 	return schema

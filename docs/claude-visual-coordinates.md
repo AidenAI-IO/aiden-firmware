@@ -75,6 +75,7 @@ exercise the daemon's complete tool catalog. Normal test runs skip this harness.
 ```sh
 # Credentials are read from ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN.
 AIDEN_VISUAL_LIVE=1 \
+AIDEN_VISUAL_ABLATION=1 \
 AIDEN_VISUAL_MODEL=claude-opus-5 \
 AIDEN_VISUAL_REPEATS=3 \
 AIDEN_VISUAL_RESULTS=/tmp/aiden-claude-coordinate-live \
@@ -82,7 +83,9 @@ go test ./internal/agent -run '^TestVisualCoordinatesLive$' -count=1 -v -paralle
 ```
 
 `AIDEN_VISUAL_TASK=find_settings_iphone` restricts the run to the original failure
-case. Each task/variant/repeat writes a JSON result with the model argument,
+case. The ablation flag selects original/resized images crossed with normalized/pixel
+coordinates; omit it for the production baseline/prepared comparison.
+Each task/variant/repeat writes a JSON result with the model argument,
 normalized receiving-tool argument, rubric bounds, latency, usage, errors and hit
 flag. A passing Go test means results were collected successfully; use the JSON
 `hit` and `error` fields to assess accuracy. Network failures remain in the result
