@@ -129,6 +129,17 @@ verification, persistence, and rollback. Clients poll the GET form until the
 status is `succeeded` or `failed`; failure responses distinguish the candidate
 apply result from the rollback result.
 
+The PUT body can include `proxy_mode` with `system`, `direct`, or `proxy`.
+`proxy` also requires `proxy_url` using HTTP, HTTPS, or SOCKS5. On success the
+policy is saved by SSID in `/userdata/system/wifi-proxies.json`; connection
+failure rolls back both Wi-Fi and proxy changes. Snapshot and task responses
+return a redacted proxy URL, and DELETE removes the SSID's proxy mapping along
+with its Wi-Fi credentials.
+
+`no_proxy` is accepted only with `proxy_mode=proxy` and defines the bypass
+rules for that SSID's custom proxy. `proxy_mode=system` uses the proxy and
+`NO_PROXY` values from `/userdata/system/env` without a per-Wi-Fi override.
+
 ## API Boundary
 
 Retired routes such as `/api/wifi/*`, `/api/system/env`,

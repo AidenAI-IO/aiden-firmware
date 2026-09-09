@@ -16,6 +16,7 @@ Firmware integration is done through scripts in `overlay/etc/init.d/`. Most long
 | `S49usbhid` | Initialize the USB HID gadget |
 | `S50ntp_watchdog` | Periodically check clock sync status, and trigger `S49ntp step` when not synced |
 | `S50usbdevice` | USB device related initialization |
+| `S51wifi_proxy` | Start the fixed loopback proxy and select an upstream from the active Wi-Fi SSID |
 | `S52frame_service` | Start and supervise the HDMI frame service |
 | `S53adb_server` | Wait 3 seconds, then run `adb start-server` once |
 | `S53audio_service` | Start and supervise the audio service |
@@ -84,6 +85,19 @@ Runtime directory:
 
 Agent init script and runtime output: `/userdata/agent/log/agent.log`.
 
+## Wi-Fi Proxy
+
+`S51wifi_proxy` starts `agent wifi-proxy` on `127.0.0.1:18080` before the Agent.
+Managed services and login shells use that loopback address by default. Setting
+`AIDEN_WIFI_PROXY_ENABLED=0` restores direct use of the raw environment proxy
+after the affected services or shell restart. The proxy reloads
+`/userdata/system/wifi-proxies.json` and the current `wlan0` SSID every two
+seconds. Each saved network can use the system upstream from
+`/userdata/system/env`, connect directly, or use its own HTTP, HTTPS, or SOCKS5
+proxy. Switching Wi-Fi does not require restarting the Agent unless the
+generated proxy environment changes, including a change to the selected proxy
+protocol or the per-network `NO_PROXY` value.
+
 ## OTA
 
 Default startup command:
@@ -121,7 +135,7 @@ Purpose: maintain the Agent configuration and Wi-Fi configuration through a web 
 
 ## System Environment
 
-`/userdata/system/env` is the device-wide environment file. `aiden-env-run` loads it before starting services, and SSH login shells load the same file through `/etc/profile.d/aiden-env.sh`. Proxy variables, API keys, and other shell-style environment values can live there instead of in `agent.toml`.
+`/userdata/system/env` is the device-wide environment file. `aiden-env-run` loads it before starting services, and SSH login shells load the same file through `/etc/profile.d/aiden-env.sh`. Proxy variables in this file define the system/default upstream used by the Wi-Fi proxy; managed programs receive the stable loopback proxy address. API keys and other shell-style environment values can live there instead of in `agent.toml`.
 
 ## Development and Debugging Tips
 

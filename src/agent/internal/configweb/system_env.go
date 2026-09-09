@@ -217,10 +217,19 @@ func (s *Server) handleSystemEnv(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	proxyRestartErr := s.restartWiFiProxy()
 	if err := s.scheduleAgentRestart(); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "persisted": true, "agent_restart_scheduled": false,
 			"system_env": *request.SystemEnv, "error": err.Error(),
+		})
+		return
+	}
+	if proxyRestartErr != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok": false, "persisted": true, "agent_restart_scheduled": true,
+			"wifi_proxy_restarted": false, "system_env": *request.SystemEnv,
+			"error": proxyRestartErr.Error(),
 		})
 		return
 	}
@@ -229,6 +238,7 @@ func (s *Server) handleSystemEnv(w http.ResponseWriter, r *http.Request) {
 		"message":                 "system env saved; agent restarting",
 		"agent_restart_scheduled": true,
 		"ota_restart_scheduled":   false,
+		"wifi_proxy_restarted":    true,
 		"system_env":              *request.SystemEnv,
 		"paths":                   map[string]string{"system_env": s.options.SystemEnvPath},
 	})

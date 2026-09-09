@@ -242,7 +242,7 @@ for process in /proc/[0-9]*; do
     if [ "$executable" = /oem/usr/bin/agent ]; then
         command_line="$(tr "\000" " " < "$process/cmdline" 2>/dev/null || true)"
         case "$command_line" in
-            */oem/usr/bin/agent\ config-web\ *) continue ;;
+            */oem/usr/bin/agent\ config-web\ *|*/oem/usr/bin/agent\ wifi-proxy\ *) continue ;;
         esac
         count="$((count + 1))"
     fi
