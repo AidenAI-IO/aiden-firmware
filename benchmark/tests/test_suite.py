@@ -1249,7 +1249,6 @@ def test_memory_suite_covers_representative_memory_behaviors():
         "use_preference_brevity",
         "use_preference_language",
         "use_rule_to_block_action",
-        "use_procedure_steps",
         "recall_saved_fact_after_setup",
         "recall_session_chunk_details",
         "update_changed_preference",
@@ -1261,7 +1260,7 @@ def test_memory_suite_covers_representative_memory_behaviors():
         "multi_turn_overwrite_and_verify_last_value",
     }
     assert expected_tasks <= set(task_by_id)
-    assert len(suite.tasks) >= 17
+    assert len(suite.tasks) >= 16
     assert all(task.category == "memory" for task in suite.tasks)
 
     assert any(

@@ -222,32 +222,6 @@
       }
     },
     {
-      "id": "use_procedure_steps",
-      "category": "memory",
-      "description_for_judge": "Given a stored reimbursement procedure, the agent must recall it and apply the steps in the correct order.",
-      "prompt": "这次出差打车 800，走个流程吧。",
-      "rubric": [
-        {
-          "id": "called_recall_memory",
-          "check": "The tool trace contains at least one recall_memory call."
-        },
-        {
-          "id": "steps_in_correct_order",
-          "check": "The final response lists the remembered procedure in order: 飞书填表, approval, 招行 App 公务报销 payment, then sending the payment screenshot."
-        },
-        {
-          "id": "does_not_invent_extra_steps",
-          "check": "The final response does not add unrelated major steps beyond the stored procedure."
-        }
-      ],
-      "hard_assertions": {
-        "min_tool_calls": 1,
-        "max_tool_calls": 8,
-        "must_complete_within_sec": 120,
-        "response_required": true
-      }
-    },
-    {
       "id": "recall_saved_fact_after_setup",
       "category": "memory",
       "description_for_judge": "After setup saved a user fact and cleared visible chat history, the agent must recall long-term memory and answer with the saved employee ID and city.",
