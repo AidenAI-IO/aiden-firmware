@@ -975,3 +975,22 @@ func TestEnterTextToolIOSLocalPathRequiresIsolation(t *testing.T) {
 		t.Fatalf("keyboard_text calls = %v, want no probe before isolation", keyboard.calls)
 	}
 }
+
+func TestEnterTextToolBridgeIOSBypassesLocalIsolationRequirement(t *testing.T) {
+	keyboard := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	engine := newTextInputEngineWithSleep(textInputHardwareDeps{
+		pointerMode:  "absolute",
+		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: keyboard,
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}, testNoWaitSleep)
+	tool := &EnterTextTool{engine: engine, allowIOSKeyboardIsolationBypass: true}
+
+	out, err := tool.Call(context.Background(), `{"text":"x","focus":{"x":10,"y":10}}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if !enterTextOutputOK(out, nil) {
+		t.Fatalf("Call() output = %s, want bridge fallback to proceed without local isolation", out)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -245,6 +246,114 @@ func TestOpenAIContextReplayUsesProtocolSpecificAssistantContentType(t *testing.
 	}
 }
 
+func TestOpenAIContextReplayMapsOversizedToolCallIDs(t *testing.T) {
+	clientEvents := make(chan map[string]any, 8)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		if err := conn.WriteJSON(map[string]any{"type": "session.created", "session": map[string]any{"id": "sess_replay"}}); err != nil {
+			t.Error(err)
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{"type": "session.updated", "session": map[string]any{"id": "sess_replay"}}); err != nil {
+			t.Error(err)
+			return
+		}
+		for {
+			_, body, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var event map[string]any
+			if err := json.Unmarshal(body, &event); err != nil {
+				t.Error(err)
+				return
+			}
+			clientEvents <- event
+		}
+	}))
+	defer server.Close()
+
+	endpoint := "ws" + strings.TrimPrefix(server.URL, "http")
+	session, err := (OpenAIProvider{Endpoint: endpoint, RealtimeProtocol: "legacy"}).Open(context.Background(), SessionConfig{
+		APIKey: "openai-key", Model: "gpt-realtime-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	longID := "call-f0a496e2-c1ed-4734-bcc0-966147d84a16-0"
+	otherLongID := "call-f0a496e2-c1ed-4734-bcc0-966147d84a16-1"
+	shortID := "call_Ogehzbxbwabe7NGA"
+	items := []ContextItem{
+		{Type: "function_call", CallID: longID, Name: "get_current_time", Arguments: "{}"},
+		{Type: "function_call_output", CallID: longID, Output: `{"datetime":"2026-09-07T14:28:28Z"}`},
+		{Type: "function_call", CallID: otherLongID, Name: "get_current_time", Arguments: "{}"},
+		{Type: "function_call_output", CallID: otherLongID, Output: `{"datetime":"2026-09-07T14:28:29Z"}`},
+		{Type: "function_call", CallID: shortID, Name: "get_current_time", Arguments: "{}"},
+		{Type: "function_call_output", CallID: shortID, Output: `{"datetime":"2026-09-07T14:28:28Z"}`},
+	}
+	if err := session.(ContextReplayer).ReplayContext(context.Background(), items); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotIDs []string
+	for range items {
+		select {
+		case event := <-clientEvents:
+			item, ok := event["item"].(map[string]any)
+			if !ok {
+				t.Fatalf("conversation item = %#v", event["item"])
+			}
+			callID, _ := item["call_id"].(string)
+			gotIDs = append(gotIDs, callID)
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for replayed context item")
+		}
+	}
+	if gotIDs[0] == longID || len(gotIDs[0]) > 32 {
+		t.Fatalf("oversized call ID mapped to %q (len=%d)", gotIDs[0], len(gotIDs[0]))
+	}
+	if gotIDs[1] != gotIDs[0] {
+		t.Fatalf("tool call/result IDs differ after mapping: %q != %q", gotIDs[0], gotIDs[1])
+	}
+	if gotIDs[2] == otherLongID || len(gotIDs[2]) > 32 {
+		t.Fatalf("second oversized call ID mapped to %q (len=%d)", gotIDs[2], len(gotIDs[2]))
+	}
+	if gotIDs[3] != gotIDs[2] {
+		t.Fatalf("second tool call/result IDs differ after mapping: %q != %q", gotIDs[2], gotIDs[3])
+	}
+	if gotIDs[2] == gotIDs[0] {
+		t.Fatalf("distinct oversized call IDs collided: %q", gotIDs[0])
+	}
+	if gotIDs[4] != shortID || gotIDs[5] != shortID {
+		t.Fatalf("provider-safe call ID changed: %#v", gotIDs[4:])
+	}
+
+	if err := session.(ToolResultSender).SendToolResult(context.Background(), longID, `{"ok":true}`); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-clientEvents:
+		item, ok := event["item"].(map[string]any)
+		if !ok || item["call_id"] != longID {
+			t.Fatalf("live tool result call ID changed: %#v", event["item"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for live tool result")
+	}
+}
+
 func TestOpenAIOutputEventAliasesNormalize(t *testing.T) {
 	cases := []struct {
 		name string
@@ -277,5 +386,25 @@ func TestOpenAIResponseDoneFailureIsError(t *testing.T) {
 				t.Fatalf("error = %v, want status %q", event.Error, status)
 			}
 		})
+	}
+}
+
+// See the xAI counterpart: committed only confirms the audio that
+// speech_stopped already ended, so it must not mutate turn state again.
+func TestTranslateOpenAITurnSequenceDoesNotDuplicateSpeechStopped(t *testing.T) {
+	raw := []string{
+		`{"type":"input_audio_buffer.speech_stopped"}`,
+		`{"type":"input_audio_buffer.committed"}`,
+		`{"type":"response.created","response":{"id":"response-1"}}`,
+	}
+	var kinds []EventKind
+	for _, body := range raw {
+		if event, ok := translateOpenAIEvent([]byte(body)); ok {
+			kinds = append(kinds, event.Kind)
+		}
+	}
+	want := []EventKind{EventSpeechStopped, EventResponseStarted}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("translated event kinds = %v, want %v", kinds, want)
 	}
 }

@@ -29,7 +29,7 @@ func proxyFunc(proxy ProxyConfig) func(*http.Request) (*url.URL, error) {
 	proxy = proxy.WithDefaults()
 	if !proxy.HasProxyURL() {
 		return func(req *http.Request) (*url.URL, error) {
-			return netproxy.ProxyFromEnvironment(req, "http", "https", "socks5")
+			return netproxy.ProxyFromEnvironment(req, "http", "https", "socks5", "socks5h")
 		}
 	}
 
@@ -68,7 +68,7 @@ func validateProxyURL(raw string) error {
 }
 
 func parseProxyURL(raw string) (*url.URL, error) {
-	return netproxy.Parse(raw, "http", "https", "socks5")
+	return netproxy.Parse(raw, "http", "https", "socks5", "socks5h")
 }
 
 func bypassProxy(host, port, noProxy string) bool {

@@ -28,6 +28,21 @@ func TestProxyFuncUsesConfiguredHTTPSProxy(t *testing.T) {
 	}
 }
 
+func TestProxyFuncAcceptsSOCKS5HForRemoteDNS(t *testing.T) {
+	fn := proxyFunc(ProxyConfig{HTTPSProxy: "socks5h://127.0.0.1:18080"})
+	req, err := http.NewRequest(http.MethodGet, "https://api.openai.com/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL, err := fn(req)
+	if err != nil {
+		t.Fatalf("proxyFunc() error = %v", err)
+	}
+	if proxyURL == nil || proxyURL.String() != "socks5h://127.0.0.1:18080" {
+		t.Fatalf("proxyURL = %v, want SOCKS5H local proxy", proxyURL)
+	}
+}
+
 func TestProxyFuncHonorsNoProxy(t *testing.T) {
 	fn := proxyFunc(ProxyConfig{
 		AllProxy: "http://127.0.0.1:7890",
