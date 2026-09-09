@@ -4,22 +4,14 @@ Claude agent runs now prepare image attachments before the model request and
 accept image pixel coordinates in visual tools. Device and HTTP tools retain
 their normalized protocol. No separate normalization tool call is required.
 
-## Configuration
+## Provider selection
 
 The runtime uses the actual model spec to select the Claude/Anthropic path.
-Other providers keep their existing behavior. In the agent TOML config:
-
-```toml
-[model.visual_coordinates]
-disabled = false
-max_edge = 1280
-max_pixels = 1000000
-```
-
-These are input preparation limits, not inferred provider resize dimensions.
-Images are never enlarged. Setting `disabled = true` restores the previous
-Claude behavior for comparison. API preprocessing can still change; model
-adherence to the displayed coordinate contract requires live evaluation.
+Other providers keep their existing behavior. There is no user configuration
+switch: this is a fixed compatibility adapter for Anthropic screenshot input.
+The preparation limits are implementation constants, not inferred provider
+resize dimensions. Images are never enlarged; model adherence to the displayed
+coordinate contract still requires live evaluation.
 
 ## Data path
 

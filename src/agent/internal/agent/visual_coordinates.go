@@ -24,9 +24,8 @@ import (
 // VisualCoordinateConfig controls the actual image sent to Claude, not an
 // assumption about its internal image representation. Zero limits use defaults.
 type VisualCoordinateConfig struct {
-	Disabled  bool `toml:"disabled,omitempty"`
-	MaxEdge   int  `toml:"max_edge,omitempty"`
-	MaxPixels int  `toml:"max_pixels,omitempty"`
+	MaxEdge   int
+	MaxPixels int
 }
 
 type visualFrame struct {
@@ -70,14 +69,18 @@ type visualCoordinates struct {
 	latest    string
 }
 
-func newVisualCoordinates(config VisualCoordinateConfig) *visualCoordinates {
-	if config.MaxEdge <= 0 {
-		config.MaxEdge = 1280
+func newVisualCoordinates(config ...VisualCoordinateConfig) *visualCoordinates {
+	var selected VisualCoordinateConfig
+	if len(config) > 0 {
+		selected = config[0]
 	}
-	if config.MaxPixels <= 0 {
-		config.MaxPixels = 1000000
+	if selected.MaxEdge <= 0 {
+		selected.MaxEdge = 1280
 	}
-	return &visualCoordinates{config: config, namespace: uuid.NewString(), frames: make(map[string]visualFrame)}
+	if selected.MaxPixels <= 0 {
+		selected.MaxPixels = 1000000
+	}
+	return &visualCoordinates{config: selected, namespace: uuid.NewString(), frames: make(map[string]visualFrame)}
 }
 
 const visualCoordinateInstruction = "Visual coordinate protocol: for touch_gesture, mouse_move, enter_text.focus and wheel_nudge geometry, use pixel coordinates in the prepared image and include its frame_id. The frame caption immediately before each image gives its exact dimensions. It overrides source-image dimensions and normalized-coordinate examples in older messages or skills. Do not rescale coordinates or call a normalization tool. Speed parameters retain normalized units per second."

@@ -36,7 +36,6 @@ const (
 )
 
 type AgentLoop struct {
-	VisualCoordinates          VisualCoordinateConfig
 	Model                      model.Model
 	Profile                    RoleProfile
 	SteerRecorder              steerConversationRecorder
@@ -98,8 +97,8 @@ func (l *AgentLoop) outboundTransforms() []executor.OutboundMessageTransform {
 func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
 	agentTools := l.Profile.Tools
 	transforms := l.outboundTransforms()
-	if IsAnthropicModel(l.Model.Spec().Provider, l.Model.Spec().Name) && !l.VisualCoordinates.Disabled {
-		frames := newVisualCoordinates(l.VisualCoordinates)
+	if IsAnthropicModel(l.Model.Spec().Provider, l.Model.Spec().Name) {
+		frames := newVisualCoordinates()
 		transforms = append(transforms, frames)
 		agentTools = frames.wrap(agentTools)
 	}

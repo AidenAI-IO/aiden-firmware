@@ -929,7 +929,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	sections := []sectionType{
 		// Visual image preparation is an experimental nested TOML section, not
 		// a flat field in the model editor.
-		{"model", reflect.TypeOf(ModelConfig{}), map[string]bool{"responses": true, "visual_coordinates": true}},
+		{"model", reflect.TypeOf(ModelConfig{}), map[string]bool{"responses": true}},
 		// The voice credential fields are edited on a [tts_providers]/
 		// [stt_providers] record rather than on the flat section, so metadata
 		// for them lives in the record section. They still resolve onto these

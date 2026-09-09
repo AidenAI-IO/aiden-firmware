@@ -18,7 +18,6 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
-	"github.com/BurntSushi/toml"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -228,19 +227,15 @@ func (m *visualLoopModel) GenerateContent(_ context.Context, input []llms.Messag
 }
 
 func TestVisualCoordinatesAgentLoopWiring(t *testing.T) {
-	for _, tc := range []struct {
-		provider string
-		disabled bool
-	}{{"anthropic", false}, {"openai", false}, {"anthropic", true}} {
-		t.Run(fmt.Sprintf("%s-disabled-%t", tc.provider, tc.disabled), func(t *testing.T) {
+	for _, provider := range []string{"anthropic", "openai"} {
+		t.Run(provider, func(t *testing.T) {
 			manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{visualTestMessage(t, 101, 201)})
 			if err != nil {
 				t.Fatal(err)
 			}
 			backend := &visualRecordingTool{name: "touch_gesture"}
-			m := &visualLoopModel{provider: tc.provider, disabled: tc.disabled}
+			m := &visualLoopModel{provider: provider}
 			loop := NewAgentLoop(m, RoleProfile{Tools: []langtools.Tool{backend}}, 3, nil, nil, executor.ScreenshotPruningConfig{}, manager)
-			loop.VisualCoordinates.Disabled = tc.disabled
 			answer, err := loop.Run(context.Background(), "tap center")
 			if err != nil || answer != "done" {
 				t.Fatalf("Run = %q, %v", answer, err)
@@ -253,17 +248,6 @@ func TestVisualCoordinatesAgentLoopWiring(t *testing.T) {
 				t.Fatal(point)
 			}
 		})
-	}
-}
-
-func TestVisualCoordinatesTOML(t *testing.T) {
-	var cfg Config
-	if _, err := toml.Decode("[model.visual_coordinates]\ndisabled = true\nmax_edge = 1024\nmax_pixels = 800000\n", &cfg); err != nil {
-		t.Fatal(err)
-	}
-	got := cfg.Model.VisualCoordinates
-	if !got.Disabled || got.MaxEdge != 1024 || got.MaxPixels != 800000 {
-		t.Fatal(got)
 	}
 }
 

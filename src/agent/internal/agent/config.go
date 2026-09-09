@@ -805,11 +805,10 @@ func (h HIDConfig) InputBackendADB() bool {
 }
 
 type ModelConfig struct {
-	VisualCoordinates VisualCoordinateConfig `toml:"visual_coordinates,omitempty"`
-	Provider          string                 `toml:"provider"`
-	Model             string                 `toml:"model"`
-	BaseURL           string                 `toml:"-"`
-	APIKey            string                 `toml:"api_key,omitempty"`
+	Provider string `toml:"provider"`
+	Model    string `toml:"model"`
+	BaseURL  string `toml:"-"`
+	APIKey   string `toml:"api_key,omitempty"`
 	// APIMode selects the wire protocol for OpenAI-compatible providers. Empty
 	// and "chat_completions" preserve the historical default; "responses"
 	// sends the locally maintained context as Responses input items;
