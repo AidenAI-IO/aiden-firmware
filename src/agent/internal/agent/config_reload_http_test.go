@@ -125,6 +125,40 @@ func TestInternalConfigReloadPreservesDeviceCLIOverride(t *testing.T) {
 	}
 }
 
+// TestInternalConfigReloadReportsWhyARequestWasRejected keeps the rejection
+// message actionable: "requires a nonzero revision" is wrong when the caller
+// did send one and the body failed to decode instead.
+func TestInternalConfigReloadReportsWhyARequestWasRejected(t *testing.T) {
+	server := &Server{runtime: &Runtime{config: Config{ConfigDir: t.TempDir()}}}
+	cases := []struct{ name, body, want string }{
+		{"empty body", "", "invalid reload request"},
+		{"truncated json", "{\"revision\":1", "invalid reload request"},
+		{"unknown field", "{\"revision\":1,\"apply\":true}", "unknown field"},
+		{"trailing data", "{\"revision\":1} {}", "invalid reload request"},
+		{"missing revision", "{}", "nonzero revision"},
+		{"zero revision", "{\"revision\":0}", "nonzero revision"},
+	}
+	for _, testCase := range cases {
+		req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(testCase.body))
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		server.handleInternalConfigReload(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status=%d body=%s", testCase.name, rec.Code, rec.Body.String())
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Errorf("%s: invalid json %s", testCase.name, rec.Body.String())
+			continue
+		}
+		message, _ := payload["error"].(string)
+		if !strings.Contains(message, testCase.want) {
+			t.Errorf("%s: error=%q, want substring %q", testCase.name, message, testCase.want)
+		}
+	}
+}
+
 func TestInternalConfigReloadRejectsObsoleteRequests(t *testing.T) {
 	server := &Server{runtime: &Runtime{config: Config{ConfigDir: t.TempDir()}}}
 	for _, body := range []string{"", `{}`, `{"revision":0}`, `{"revision":1,"apply":true}`, `{"revision":1} {}`} {

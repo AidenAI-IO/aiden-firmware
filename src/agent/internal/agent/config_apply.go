@@ -104,7 +104,9 @@ func (r *Runtime) applyConfigWorker() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		r.configWorkerCancel = cancel
 		r.configStatusMu.Unlock()
+		started := time.Now()
 		err := r.applyConfig(ctx, cfg)
+		elapsed := time.Since(started)
 		cancel()
 		r.configStatusMu.Lock()
 		r.configWorkerCancel = nil
@@ -127,7 +129,30 @@ func (r *Runtime) applyConfigWorker() {
 			}
 		}
 		r.configStatusMu.Unlock()
+		r.logConfigApply(revision, err, elapsed)
 	}
+}
+
+// logConfigApply records the outcome of an online configuration application.
+// Without it agent.log stays silent about successful reloads, so "the setting
+// did not take effect" cannot be told apart from "the save never arrived".
+func (r *Runtime) logConfigApply(revision uint64, applyErr error, elapsed time.Duration) {
+	if r == nil || r.logger == nil {
+		return
+	}
+	if applyErr != nil {
+		r.logger.WarnEvent("runtime", "config_apply_failed",
+			LogField{Key: "revision", Value: revision},
+			LogField{Key: "duration_ms", Value: elapsed.Milliseconds()},
+			LogField{Key: "error", Value: applyErr},
+		)
+		return
+	}
+	r.logger.InfoEvent("runtime", "config_applied",
+		LogField{Key: "revision", Value: revision},
+		LogField{Key: "duration_ms", Value: elapsed.Milliseconds()},
+		LogField{Key: "reboot_required", Value: r.ConfigApplyStatus().RebootRequired},
+	)
 }
 
 func configRequiresReboot(current, next Config) bool {

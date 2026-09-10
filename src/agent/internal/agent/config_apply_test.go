@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -296,4 +298,59 @@ func TestConfigApplyTogglesLiveActivityAndNotifications(t *testing.T) {
 	if r.voiceNotifications.PrepareNotification(context.Background()).Text == "" {
 		t.Fatal("notifications did not enable online")
 	}
+}
+
+// TestConfigApplyWorkerLogsOutcome keeps online application observable in
+// agent.log: a successful reload used to leave no trace there, so a field
+// report of "the setting did not take effect" could not be told apart from a
+// save that never reached the runtime.
+func TestConfigApplyWorkerLogsOutcome(t *testing.T) {
+	// The worker publishes the status before it logs, so the log assertion
+	// joins the goroutine instead of polling the buffer.
+	settle := func(r *Runtime) ConfigApplyStatus {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			status := r.ConfigApplyStatus()
+			if !status.Pending {
+				return status
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Fatal("config application did not finish")
+		return ConfigApplyStatus{}
+	}
+
+	t.Run("applied", func(t *testing.T) {
+		var output bytes.Buffer
+		r := &Runtime{config: Config{ConfigDir: t.TempDir()}}
+		r.logger = &Logger{logger: log.New(&output, "", 0)}
+		next := r.ConfigSnapshot()
+		next.Locale = "zh-CN"
+		r.QueueConfig(next, 987654321)
+		waitForConfigApplied(t, r)
+		r.StopConfigReloads()
+		for _, want := range []string{"[INFO] [agent] [runtime] config_applied", "revision=987654321", "reboot_required=false"} {
+			if line := output.String(); !strings.Contains(line, want) {
+				t.Fatalf("log %q missing %q", line, want)
+			}
+		}
+	})
+
+	t.Run("failed", func(t *testing.T) {
+		var output bytes.Buffer
+		r := &Runtime{config: Config{ConfigDir: t.TempDir()}}
+		r.logger = &Logger{logger: log.New(&output, "", 0)}
+		next := r.ConfigSnapshot()
+		next.ConfigDir = t.TempDir()
+		r.QueueConfig(next, 42)
+		if status := settle(r); status.State != "failed" {
+			t.Fatalf("status=%+v", status)
+		}
+		r.StopConfigReloads()
+		for _, want := range []string{"[WARN] [agent] [runtime] config_apply_failed", "revision=42", "config directory cannot be reloaded"} {
+			if line := output.String(); !strings.Contains(line, want) {
+				t.Fatalf("log %q missing %q", line, want)
+			}
+		}
+	})
 }

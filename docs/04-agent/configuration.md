@@ -44,8 +44,10 @@ Mode, model/provider, audio/VAD, and hardware-client changes rebuild the affecte
 components after current work drains. Ordinary limits and policies apply to
 subsequent work. USB pointer descriptor and keyboard layout changes remain
 pending across Agent restarts until an explicit board reboot; changing `frame_service.keep_streamon`
-restarts only the frame service. Editing the TOML outside Config Web requires
-an explicit reload request or service restart; there is no file watcher.
+restarts only the frame service. Every queued application logs one outcome line
+to `log/agent.log`: `config_applied` with the applied revision and duration, or
+`config_apply_failed` with the error. Editing the TOML outside Config Web
+requires an explicit reload request or service restart; there is no file watcher.
 
 ## Directory layout
 
