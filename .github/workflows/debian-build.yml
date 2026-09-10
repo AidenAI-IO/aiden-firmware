@@ -38,9 +38,14 @@ on:
         description: 'Preflight only: check the runner, secrets and toolchain, then stop before the firmware build'
         type: boolean
         default: false
+      publish_release:
+        description: 'Publish the images as a GitHub pre-release tagged with the build version'
+        type: boolean
+        default: true
 
 permissions:
-  contents: read
+  # The build publishes its images as a pre-release.
+  contents: write
 
 concurrency:
   # The Debian build owns the whole runner workspace and the Docker daemon on
@@ -402,6 +407,52 @@ jobs:
         if-no-files-found: error
         retention-days: ${{ inputs.retention_days }}
         compression-level: 0
+
+    - name: Publish GitHub pre-release
+      # Always a pre-release: create_github_release.sh then skips --latest, so
+      # these images never displace the Buildroot releases that hold that tag.
+      # The debian- prefix on the tag and the manifest channel keep the two
+      # apart for anyone browsing the releases page, and for the OTA config
+      # baked into the image, which resolves updates by repository and channel.
+      if: ${{ !inputs.dry_run && inputs.publish_release }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: ${{ steps.meta.outputs.version }}
+        RELEASE_CHANNEL: ${{ steps.meta.outputs.channel }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        release_assets='boot_a.img.tar.gz boot_b.img.tar.gz oem.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json'
+        bash scripts/create_github_release.sh \
+          --release-name "$RELEASE_TAG" \
+          --tag-name "$RELEASE_TAG" \
+          --target-commitish "$GITHUB_SHA" \
+          --asset-glob 'output/debian/image/*' \
+          --required-assets "$release_assets" \
+          --upload-assets "$release_assets update.img.sha256" \
+          --retry-count 10 \
+          --retry-delay-seconds 30 \
+          --prerelease
+
+        # create_github_release.sh writes generic notes shared with the
+        # Buildroot builds. Replace them so the page says which userspace this
+        # is and how to get a flashable image out of the archive.
+        notes="$RUNNER_TEMP/release-notes.md"
+        {
+          printf 'Debian userspace firmware, built by `.github/workflows/debian-build.yml`.\n\n'
+          printf '| Field | Value |\n| --- | --- |\n'
+          printf '| Channel | `%s` |\n' "$RELEASE_CHANNEL"
+          printf '| Commit | `%s` |\n' "$GITHUB_SHA"
+          printf '| update.img SHA-256 | `%s` |\n\n' \
+            "$(awk '{print $1}' output/debian/image/update.img.sha256)"
+          printf 'Flash:\n\n'
+          printf '```\ntar -xzf update.img.tar.gz\n'
+          printf 'sha256sum -c update.img.sha256\n'
+          printf './upgrade_tool/upgrade_tool uf ./update.img\n```\n\n'
+          printf 'Marked as a pre-release. The Buildroot builds publish separately '
+          printf 'and keep the Latest tag; their tags carry no `debian-` prefix.\n'
+        } >"$notes"
+        gh release edit "$RELEASE_TAG" --notes-file "$notes"
 
     - name: Upload Debian build reports
       if: ${{ always() && !inputs.dry_run }}
