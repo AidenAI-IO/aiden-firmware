@@ -18,22 +18,6 @@ on:
         options:
           - aiden-hosted-01
           - aiden-hosted-02
-      rk_jobs:
-        description: 'Requested parallel build jobs (capped at the runner CPU count)'
-        type: string
-        default: '24'
-      ota_channel:
-        description: 'OTA manifest channel (default: debian-stable on main, debian-dev-<branch> elsewhere)'
-        type: string
-        default: ''
-      ota_base_url:
-        description: 'Optional http(s) base URL embedded in the manifest asset locations'
-        type: string
-        default: ''
-      retention_days:
-        description: 'Artifact retention in days'
-        type: string
-        default: '14'
       dry_run:
         description: 'Preflight only: check the runner, secrets and toolchain, then stop before the firmware build'
         type: boolean
@@ -326,7 +310,6 @@ jobs:
       id: meta
       env:
         GITHUB_REF_NAME: ${{ github.ref_name }}
-        CHANNEL_INPUT: ${{ inputs.ota_channel }}
       shell: bash
       run: |
         set -euo pipefail
@@ -335,40 +318,40 @@ jobs:
         build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
         branch=$(printf '%s' "$GITHUB_REF_NAME" | sed 's#/#-#g; s#[^a-zA-Z0-9._-]#-#g')
 
-        if [ -n "${CHANNEL_INPUT:-}" ]; then
-          # The channel is free-form dispatch input that reaches $GITHUB_OUTPUT,
-          # the signed manifest and the device OTA config. Hold it to the same
-          # character set the derived channels use, so a newline cannot forge a
-          # second output line.
-          case "$CHANNEL_INPUT" in
-            *[!A-Za-z0-9._-]*)
-              echo "ota_channel may only contain letters, digits, '.', '_' and '-'" >&2
-              exit 1
-              ;;
-          esac
-          channel="$CHANNEL_INPUT"
-        elif [ "$GITHUB_REF_NAME" = "main" ]; then
+        if [ "$GITHUB_REF_NAME" = "main" ]; then
           channel="debian-stable"
         else
           channel="debian-dev-${branch}"
         fi
+
+        # Build with everything the runner has. debian_build.sh caps its own
+        # default at the online CPU count, which would hold a larger machine
+        # down to that default rather than use it.
+        rk_jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc)
+        case "$rk_jobs" in
+          '' | *[!0-9]* | 0)
+            echo "could not determine the online CPU count: '$rk_jobs'" >&2
+            exit 1
+            ;;
+        esac
 
         {
           echo "version=debian-${timestamp}-${commit}"
           echo "channel=${channel}"
           echo "build_time=${build_time}"
           echo "artifact_name=debian-firmware-${branch}-${timestamp}-${commit}"
+          echo "rk_jobs=${rk_jobs}"
         } >> "$GITHUB_OUTPUT"
+        echo "Building with RK_JOBS=${rk_jobs}"
 
     - name: Run Debian firmware build
       if: ${{ !inputs.dry_run }}
       env:
-        RK_JOBS: ${{ inputs.rk_jobs }}
+        RK_JOBS: ${{ steps.meta.outputs.rk_jobs }}
         OTA_REPO: ${{ github.repository }}
         OTA_CHANNEL: ${{ steps.meta.outputs.channel }}
         OTA_BUILD_VERSION: ${{ steps.meta.outputs.version }}
         OTA_BUILD_TIME: ${{ steps.meta.outputs.build_time }}
-        OTA_BASE_URL: ${{ inputs.ota_base_url }}
       run: ./debian_build.sh
 
     - name: Summarize firmware output
@@ -410,7 +393,7 @@ jobs:
           output/debian/image/manifest.json
           output/debian/image/update.img.sha256
         if-no-files-found: error
-        retention-days: ${{ inputs.retention_days }}
+        retention-days: 7
         compression-level: 0
 
     - name: Publish GitHub pre-release
@@ -468,7 +451,7 @@ jobs:
           output/debian-stage2/apps-audit/summary.txt
           output/debian-stage3/audit-report.txt
         if-no-files-found: ignore
-        retention-days: ${{ inputs.retention_days }}
+        retention-days: 7
 
     - name: Remove build secrets from the runner
       if: always()
