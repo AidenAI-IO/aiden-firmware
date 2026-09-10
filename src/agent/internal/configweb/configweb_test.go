@@ -70,6 +70,7 @@ func testOptions(t *testing.T) Options {
 		Port:                      8081,
 		AgentConfigPath:           filepath.Join(root, "agent.toml"),
 		WiFiConfigPath:            filepath.Join(root, "wpa_supplicant.conf"),
+		WiFiConfigEnvironmentPath: filepath.Join(root, "wpa_supplicant-config.env"),
 		WiFiInterface:             "wlan0",
 		WiFiBackend:               "legacy",
 		OTAStatePath:              filepath.Join(root, "ota-state.json"),
@@ -385,6 +386,51 @@ func TestWiFiConnectionRunsAsBoundedBackgroundTask(t *testing.T) {
 			t.Fatalf("Wi-Fi task did not finish: %#v", status)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestSystemdWiFiConnectionStartsWithCandidateConfig(t *testing.T) {
+	options := testOptions(t)
+	options.WiFiBackend = "systemd-networkd"
+	binDir := t.TempDir()
+	candidate := options.WiFiConfigPath + ".candidate"
+	t.Setenv("AIDEN_TEST_WIFI_SELECTOR", options.WiFiConfigEnvironmentPath)
+	t.Setenv("AIDEN_TEST_WIFI_CANDIDATE", candidate)
+	commands := map[string]string{
+		"ip":         "#!/bin/sh\nexit 0\n",
+		"networkctl": "#!/bin/sh\nexit 0\n",
+		"wpa_cli":    "#!/bin/sh\nprintf '%s\\n' 'wpa_state=COMPLETED' 'ssid=qtum' 'ip_address=192.0.2.10'\n",
+		"systemctl": `#!/bin/sh
+set -eu
+[ "${1:-}" = restart ]
+[ "${2:-}" = wpa_supplicant@wlan0.service ]
+/bin/grep -Fqx "AIDEN_WPA_SUPPLICANT_CONFIG=\"$AIDEN_TEST_WIFI_CANDIDATE\"" "$AIDEN_TEST_WIFI_SELECTOR"
+`,
+	}
+	for name, script := range commands {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	psk := "secret"
+	result := server.runWiFiConnection(context.Background(), wifiConnectionRequest{SSID: "qtum", PSK: &psk})
+	if result["ok"] != true {
+		t.Fatalf("result=%#v", result)
+	}
+	if _, err := os.Stat(options.WiFiConfigEnvironmentPath); !os.IsNotExist(err) {
+		t.Fatalf("runtime config selector remains after restart: %v", err)
+	}
+	if _, err := os.Stat(candidate); err != nil {
+		t.Fatalf("verified candidate was not retained: %v", err)
+	}
+	saved, err := loadWiFiConfig(options.WiFiConfigPath)
+	if err != nil || findWiFiNetwork(saved, "qtum") < 0 {
+		t.Fatalf("saved Wi-Fi config=%#v err=%v", saved.publicValue(), err)
 	}
 }
 

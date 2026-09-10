@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	defaultAgentConfigPath = "/userdata/agent/agent.toml"
-	defaultWiFiConfigPath  = "/userdata/wpa_supplicant.conf"
-	defaultSystemEnvPath   = "/userdata/system/env"
-	defaultWebRoot         = "/oem/usr/share/aiden/config-web"
+	defaultAgentConfigPath           = "/userdata/agent/agent.toml"
+	defaultWiFiConfigPath            = "/userdata/wpa_supplicant.conf"
+	defaultWiFiConfigEnvironmentPath = "/run/aiden/wpa_supplicant-config.env"
+	defaultSystemEnvPath             = "/userdata/system/env"
+	defaultWebRoot                   = "/oem/usr/share/aiden/config-web"
 )
 
 // Options contains the filesystem and process integration points used by the
@@ -26,6 +27,7 @@ type Options struct {
 	Port                      int
 	AgentConfigPath           string
 	WiFiConfigPath            string
+	WiFiConfigEnvironmentPath string
 	WiFiInterface             string
 	WiFiBackend               string
 	OTAStatePath              string
@@ -63,6 +65,7 @@ func DefaultOptions() Options {
 		Port:                      80,
 		AgentConfigPath:           defaultAgentConfigPath,
 		WiFiConfigPath:            defaultWiFiConfigPath,
+		WiFiConfigEnvironmentPath: defaultWiFiConfigEnvironmentPath,
 		WiFiInterface:             "wlan0",
 		WiFiBackend:               "legacy",
 		OTAStatePath:              "/userdata/ota/state.json",
@@ -115,6 +118,7 @@ func (o Options) Validate() error {
 	for name, value := range map[string]string{
 		"config":                  o.AgentConfigPath,
 		"wifi-config":             o.WiFiConfigPath,
+		"wifi-config-environment": o.WiFiConfigEnvironmentPath,
 		"wifi-interface":          o.WiFiInterface,
 		"ota-state":               o.OTAStatePath,
 		"cmdline":                 o.CmdlinePath,

@@ -133,7 +133,15 @@ if rg -n 'networkctl reconfigure (usb0|"?\$\{?interface\}?")' \
 fi
 grep -q '/userdata/debian/wifi/wpa_supplicant-wlan0.conf' \
     "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
+grep -Fqx 'EnvironmentFile=-/run/aiden/wpa_supplicant-config.env' \
+    "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
+grep -Fqx 'Environment=AIDEN_WPA_SUPPLICANT_CONFIG=/userdata/debian/wifi/wpa_supplicant-wlan0.conf' \
+    "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
+grep -Fqx 'ExecStart=/usr/sbin/wpa_supplicant -c ${AIDEN_WPA_SUPPLICANT_CONFIG} -i %I' \
+    "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
 grep -q -- '/oem/usr/bin/agent config-web' \
+    "${UNIT_DIR}/aiden-config-web.service"
+grep -q -- '--wifi-config-environment=/run/aiden/wpa_supplicant-config.env' \
     "${UNIT_DIR}/aiden-config-web.service"
 if grep -Eq '^Requires=.*aiden-wifi-proxy\.service' \
     "${UNIT_DIR}/aiden-config-web.service"; then
