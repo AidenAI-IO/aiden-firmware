@@ -403,6 +403,12 @@ jobs:
       # apart for anyone browsing the releases page, and for the OTA config
       # baked into the image, which resolves updates by repository and channel.
       if: ${{ !inputs.dry_run && inputs.publish_release }}
+      # create_github_release.sh retries, but nothing bounds a single attempt,
+      # so a connection that hangs rather than fails blocks until the job
+      # timeout. One such publish burned three hours of runner time after the
+      # firmware had already been built and uploaded. A healthy publish of this
+      # asset set takes about five minutes.
+      timeout-minutes: 30
       env:
         GH_TOKEN: ${{ github.token }}
         RELEASE_TAG: ${{ steps.meta.outputs.version }}
