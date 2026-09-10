@@ -43,6 +43,33 @@ The build validates that both keys match and packages the public key into:
 /oem/etc/ota_pubkey.pem
 ```
 
+### Trusting a Signer You Cannot Sign For
+
+The key at `/oem/etc/ota_pubkey.pem` decides whose manifests the device accepts.
+The private key decides who signs the manifest a build produces. These are the
+same key by default, which is what a self-contained build wants.
+
+Verifying a manifest needs the public half only, so a locally built image can
+accept updates signed elsewhere without that signer's private key ever leaving
+its signing environment. Point the trust anchor at the signer's public key:
+
+```bash
+OTA_PRIVATE_KEY_PATH=/path/to/local_private_key.pem \
+OTA_PUBLIC_KEY_PATH=/path/to/local_public_key.pem \
+OTA_TRUST_PUBLIC_KEY_PATH=/path/to/signer_public_key.pem \
+AGENT_CONFIG_PATH=/path/to/agent.toml \
+./debian_build.sh
+```
+
+The image then trusts the signer, while the build still signs its own
+`manifest.json` with the local key. That local manifest will not verify against
+the image, which is harmless: nothing on the device reads it. The build prints a
+warning naming both keys whenever they differ, so this never happens silently.
+
+A device already in the field can be moved the same way by replacing
+`/oem/etc/ota_pubkey.pem` with the signer's public key. That is the manual form
+of the recovery path below, and it applies per device.
+
 ## Local Signing
 
 The complete Debian build generates and signs the local manifest:
