@@ -11,6 +11,7 @@ readonly FINAL_OUTPUT=${REPO_ROOT}/output/debian/image
 readonly DEFAULT_AGENT_CONFIG=/home/miaomiao/dev/luckfox/config/agent.toml
 readonly DEFAULT_OTA_PRIVATE_KEY=${REPO_ROOT}/key/id_25519.pem
 readonly DEFAULT_OTA_PUBLIC_KEY=${REPO_ROOT}/key/id_25519.pub.pem
+readonly DEFAULT_OTA_TRUST_PUBLIC_KEY=${REPO_ROOT}/keys/ota_pubkey.pem
 readonly DEFAULT_GO_ROOT=${REPO_ROOT}/.toolchains/go1.26.0.linux-amd64
 readonly GO_VERSION=1.26.0
 readonly GO_DIST=linux-amd64
@@ -57,9 +58,11 @@ Environment overrides:
   OTA_PRIVATE_KEY_PATH      Ed25519 private PEM (default: key/id_25519.pem).
   OTA_PUBLIC_KEY_PATH       Ed25519 public PEM (default: key/id_25519.pub.pem).
   OTA_TRUST_PUBLIC_KEY_PATH Ed25519 public PEM burned into the image as the
-                            OTA trust anchor (default: OTA_PUBLIC_KEY_PATH).
-                            Set it to a release signer's public key to build an
-                            image that accepts updates this build cannot sign.
+                            OTA trust anchor. Defaults to keys/ota_pubkey.pem,
+                            the published signer, so a local image accepts
+                            released updates; falls back to OTA_PUBLIC_KEY_PATH
+                            when that file is absent. Set it explicitly to
+                            build an image that trusts a different signer.
   DEBIAN_STAGE2_GO_ROOT     Go 1.26.0 linux/amd64 toolchain (default:
                             .toolchains/go1.26.0.linux-amd64).
   OTA_REPO                  Local factory config repository label (default:
@@ -372,10 +375,16 @@ main() {
     agent_config=$(readlink -f "${agent_config}")
     ota_private_key=$(readlink -f "${ota_private_key}")
     ota_public_key=$(readlink -f "${ota_public_key}")
+    # An explicit anchor wins. Otherwise trust the published signer committed
+    # to the repository, so an image built here accepts released updates
+    # without anyone handling that signer's private key. Only when the file is
+    # absent does the build fall back to trusting itself.
     if [ -n "${ota_trust_public_key}" ]; then
         [ -f "${ota_trust_public_key}" ] \
             || die "OTA trust anchor PEM is missing: ${ota_trust_public_key}"
         ota_trust_public_key=$(readlink -f "${ota_trust_public_key}")
+    elif [ -f "${DEFAULT_OTA_TRUST_PUBLIC_KEY}" ]; then
+        ota_trust_public_key=$(readlink -f "${DEFAULT_OTA_TRUST_PUBLIC_KEY}")
     else
         ota_trust_public_key=${ota_public_key}
     fi
