@@ -43,31 +43,62 @@ The build validates that both keys match and packages the public key into:
 /oem/etc/ota_pubkey.pem
 ```
 
+### The Committed Trust Anchor
+
+`keys/ota_pubkey.pem` holds the public half of the signing key used by the
+automated builds. A public key is not a secret: the same bytes already sit in
+`/oem/etc/ota_pubkey.pem` on every device and inside every published image.
+Committing it lets any build produce an image that accepts released updates.
+
+Keep it free of comment lines mentioning dev, test, or placeholder. The
+Buildroot image step refuses to build a production image from a key annotated
+that way.
+
+To confirm the committed key matches what a published image actually trusts,
+read it back out of a published `oem.img` and compare fingerprints:
+
+```bash
+tar -xOzf oem.img.tar.gz | strings |
+    awk '/-----BEGIN PUBLIC KEY-----/{f=1} f{print} /-----END PUBLIC KEY-----/{if(f)exit}' \
+    >published_pubkey.pem
+openssl pkey -pubin -in published_pubkey.pem -outform DER | sha256sum
+openssl pkey -pubin -in keys/ota_pubkey.pem -outform DER | sha256sum
+```
+
 ### Trusting a Signer You Cannot Sign For
 
 The key at `/oem/etc/ota_pubkey.pem` decides whose manifests the device accepts.
-The private key decides who signs the manifest a build produces. These are the
-same key by default, which is what a self-contained build wants.
+The private key decides who signs the manifest a build produces. They are
+separate roles, and verifying a manifest needs the public half only, so an image
+can accept updates signed elsewhere without that signer's private key ever
+leaving its signing environment.
 
-Verifying a manifest needs the public half only, so a locally built image can
-accept updates signed elsewhere without that signer's private key ever leaving
-its signing environment. Point the trust anchor at the signer's public key:
+The Debian build resolves the trust anchor in this order:
+
+1. `OTA_TRUST_PUBLIC_KEY_PATH`, when set.
+2. `keys/ota_pubkey.pem`, the committed signer above.
+3. `OTA_PUBLIC_KEY_PATH`, leaving the image trusting only itself.
+
+So a local build with no extra arguments produces an image that already accepts
+released updates, while still signing its own `manifest.json` with the local
+key. That local manifest will not verify against the image, which is harmless:
+nothing on the device reads it. The build prints a warning naming both keys
+whenever they differ, so this never happens silently.
+
+Signing environments must pin the anchor to their own key rather than inherit
+the committed one, or a rotation ships images trusting the previous signer while
+the manifests come from the new one:
 
 ```bash
-OTA_PRIVATE_KEY_PATH=/path/to/local_private_key.pem \
-OTA_PUBLIC_KEY_PATH=/path/to/local_public_key.pem \
-OTA_TRUST_PUBLIC_KEY_PATH=/path/to/signer_public_key.pem \
+OTA_PRIVATE_KEY_PATH=/path/to/ota_ed25519_private_key.pem \
+OTA_PUBLIC_KEY_PATH=/path/to/ota_pubkey.pem \
+OTA_TRUST_PUBLIC_KEY_PATH=/path/to/ota_pubkey.pem \
 AGENT_CONFIG_PATH=/path/to/agent.toml \
 ./debian_build.sh
 ```
 
-The image then trusts the signer, while the build still signs its own
-`manifest.json` with the local key. That local manifest will not verify against
-the image, which is harmless: nothing on the device reads it. The build prints a
-warning naming both keys whenever they differ, so this never happens silently.
-
-A device already in the field can be moved the same way by replacing
-`/oem/etc/ota_pubkey.pem` with the signer's public key. That is the manual form
+A device already in the field can be moved to a different signer by replacing
+`/oem/etc/ota_pubkey.pem` with that signer's public key. That is the manual form
 of the recovery path below, and it applies per device.
 
 ## Local Signing

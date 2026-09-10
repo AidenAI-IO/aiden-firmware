@@ -131,6 +131,29 @@ done
 grep -Fq 'OTA_PUBLIC_KEY_PATH="${ota_trust_public_key}"' "${BUILD_SCRIPT}" \
     || fail "the images stage does not receive the OTA trust anchor"
 
+# The committed public key is the default anchor, so an image built here
+# accepts released updates without anyone handling the signer's private key.
+[ -f "${TEST_REPO_ROOT}/keys/ota_pubkey.pem" ] \
+    || fail "keys/ota_pubkey.pem is missing"
+"${TEST_REPO_ROOT}/scripts/validate_ota_pubkey.sh" \
+    "${TEST_REPO_ROOT}/keys/ota_pubkey.pem" \
+    || fail "keys/ota_pubkey.pem is not an Ed25519 public key"
+# The Buildroot image step refuses a key annotated this way, so the committed
+# anchor must never carry those markers.
+if grep -Eiq '^[[:space:]]*(#|-----).*(dev|test|placeholder)' \
+    "${TEST_REPO_ROOT}/keys/ota_pubkey.pem"; then
+    fail "keys/ota_pubkey.pem is marked dev/test/placeholder"
+fi
+grep -Fq 'readonly DEFAULT_OTA_TRUST_PUBLIC_KEY=${REPO_ROOT}/keys/ota_pubkey.pem' \
+    "${BUILD_SCRIPT}" || fail "the default OTA trust anchor is not the committed key"
+grep -Fq 'elif [ -f "${DEFAULT_OTA_TRUST_PUBLIC_KEY}" ]; then' "${BUILD_SCRIPT}" \
+    || fail "the build does not fall back to the committed OTA trust anchor"
+# CI signs with the secret, so it must pin the anchor to that key rather than
+# inherit the committed one, which a rotation would leave stale.
+grep -Fq 'echo "OTA_TRUST_PUBLIC_KEY_PATH=$public_key" >> "$GITHUB_ENV"' \
+    "${TEST_REPO_ROOT}/.github/workflows/debian-build.yml" \
+    || fail "the Debian workflow does not pin the OTA trust anchor to its signing key"
+
 key_root=${TEST_ROOT}/keys
 mkdir -p "${key_root}"
 openssl genpkey -algorithm ed25519 -out "${key_root}/signing.pem" >/dev/null 2>&1
