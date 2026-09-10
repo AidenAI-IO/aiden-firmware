@@ -173,8 +173,13 @@ matching_output=$(
     validate_trust_public_key "${key_root}/signing.pub.pem" \
         "${key_root}/signing.pub.pem" "${trust_work}" 2>&1
 ) || fail "a trust anchor equal to the signing key was rejected"
-[ -z "${matching_output}" ] \
-    || fail "a trust anchor equal to the signing key warned: ${matching_output}"
+# Assert the warning is absent rather than that nothing was written at all:
+# this suite is also run under xtrace, whose trace shares this stderr.
+case "${matching_output}" in
+    *"OTA trust anchor differs"*)
+        fail "a trust anchor equal to the signing key warned: ${matching_output}"
+        ;;
+esac
 
 differing_output=$(
     validate_trust_public_key "${key_root}/other.pub.pem" \
