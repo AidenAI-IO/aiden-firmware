@@ -136,6 +136,25 @@ func WriteHealthMarkerIfPending(pendingPath string, markerPath string) (bool, er
 	return writeHealthMarkerIfPending(pendingPath, markerPath, currentSlotFromProcCmdline, currentRootSlotFromProcCmdline, currentBootID)
 }
 
+// WriteHealthMarkerIfPendingAfterSelfCheck is used by the daemon. It preserves
+// the existing pending/slot validation and only adds required service checks.
+func WriteHealthMarkerIfPendingAfterSelfCheck(pendingPath, markerPath, reportPath string) (bool, error) {
+	if _, err := os.Stat(pendingPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	report := RunSelfCheck(context.Background(), DefaultSelfCheckConfig())
+	if err := SaveSelfCheckReport(reportPath, report); err != nil {
+		return false, err
+	}
+	if report.Fatal() {
+		return false, fmt.Errorf("self-check failed: %d required check(s)", report.Failures)
+	}
+	return WriteHealthMarkerIfPending(pendingPath, markerPath)
+}
+
 func writeHealthMarkerIfPending(pendingPath string, markerPath string, currentSlot func() (Slot, bool, error), currentRootSlot func() (Slot, bool, error), bootID func() string) (bool, error) {
 	data, err := os.ReadFile(pendingPath)
 	if err != nil {

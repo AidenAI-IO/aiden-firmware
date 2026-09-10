@@ -144,11 +144,6 @@ func main() {
 	if err := runtime.StartStorageMonitor(); err != nil {
 		log.Printf("[storage_monitor] startup check failed: %v", err)
 	}
-	if wrote, err := ota.WriteHealthMarkerIfPending("/userdata/ota/pending_boot.json", "/userdata/ota/health.ok"); err != nil {
-		log.Printf("[ota] health marker not written: %v", err)
-	} else if wrote {
-		log.Printf("[ota] health marker written")
-	}
 	if err := runtime.PrimeScreenMappingOnStartup(context.Background()); err != nil {
 		log.Printf("[init] screen mapping prime failed: %v", err)
 	}
@@ -201,6 +196,24 @@ func main() {
 	serverErr := make(chan error, 1)
 	go func() {
 		serverErr <- server.Start()
+	}()
+	// S54ota may already be waiting for the marker. Delay the service-level
+	// check until the Agent HTTP listener has had time to bind, then let OTA
+	// commit only after the read-only probes pass.
+	go func() {
+		time.Sleep(3 * time.Second)
+		for attempt := 1; attempt <= 60; attempt++ {
+			wrote, err := ota.WriteHealthMarkerIfPendingAfterSelfCheck("/userdata/ota/pending_boot.json", "/userdata/ota/health.ok", "/userdata/ota/health/current.json")
+			if err != nil {
+				log.Printf("[ota] health marker attempt %d not ready: %v", attempt, err)
+			} else if wrote {
+				log.Printf("[ota] health marker written")
+				return
+			} else {
+				return
+			}
+			time.Sleep(5 * time.Second)
+		}
 	}()
 
 	if inputMode == "stt" || inputMode == "realtime" {

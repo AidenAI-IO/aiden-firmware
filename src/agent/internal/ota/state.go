@@ -32,6 +32,8 @@ type State struct {
 	PendingBootNonce       string                       `json:"pending_boot_nonce,omitempty"`
 	PendingBootID          string                       `json:"pending_boot_id,omitempty"`
 	PendingTargetSlot      *SlotPartitionInfo           `json:"pending_target_slot,omitempty"`
+	DataSnapshotPath       string                       `json:"data_snapshot_path,omitempty"`
+	SelfCheck              *SelfCheckReport             `json:"self_check,omitempty"`
 }
 
 type RetryMetadata struct {
