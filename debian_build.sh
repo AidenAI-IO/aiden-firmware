@@ -56,6 +56,10 @@ Environment overrides:
                             /home/miaomiao/dev/luckfox/config/agent.toml).
   OTA_PRIVATE_KEY_PATH      Ed25519 private PEM (default: key/id_25519.pem).
   OTA_PUBLIC_KEY_PATH       Ed25519 public PEM (default: key/id_25519.pub.pem).
+  OTA_TRUST_PUBLIC_KEY_PATH Ed25519 public PEM burned into the image as the
+                            OTA trust anchor (default: OTA_PUBLIC_KEY_PATH).
+                            Set it to a release signer's public key to build an
+                            image that accepts updates this build cannot sign.
   DEBIAN_STAGE2_GO_ROOT     Go 1.26.0 linux/amd64 toolchain (default:
                             .toolchains/go1.26.0.linux-amd64).
   OTA_REPO                  Local factory config repository label (default:
@@ -194,6 +198,44 @@ validate_key_pair() {
     "${REPO_ROOT}/scripts/validate_ota_pubkey.sh" "${public_key}"
 }
 
+# The key burned into /oem/etc/ota_pubkey.pem decides whose manifests the
+# device will accept; the private key decides who signs this build's own
+# manifest. They are the same key by default, which is what a self-contained
+# build wants. Keeping them separable lets a locally built image trust a
+# release signer whose private key stays out of reach, because verifying a
+# manifest needs the public half only.
+validate_trust_public_key() {
+    local trust_key=$1
+    local signing_public_key=$2
+    local work_dir=$3
+    local trust_der=${work_dir}/trust-public.der
+    local signing_der=${work_dir}/signing-public.der
+
+    [ -f "${trust_key}" ] || die "OTA trust anchor PEM is missing: ${trust_key}"
+    openssl pkey -pubin -in "${trust_key}" -outform DER \
+        -out "${trust_der}" >/dev/null 2>&1 \
+        || die "invalid Ed25519 public PEM: ${trust_key}"
+    # Not the last statement in this function, so errexit alone would not
+    # carry the rejection out of a caller that runs this in a condition.
+    "${REPO_ROOT}/scripts/validate_ota_pubkey.sh" "${trust_key}" \
+        || die "OTA trust anchor is not an Ed25519 public key: ${trust_key}"
+    openssl pkey -pubin -in "${signing_public_key}" -outform DER \
+        -out "${signing_der}" >/dev/null 2>&1 \
+        || die "invalid Ed25519 public PEM: ${signing_public_key}"
+    if cmp -s "${trust_der}" "${signing_der}"; then
+        return 0
+    fi
+
+    printf '\n[%s] OTA trust anchor differs from this build signing key\n' \
+        "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >&2
+    printf '  image trusts:       %s\n' "${trust_key}" >&2
+    printf '  manifest signed by: %s\n' "${signing_public_key}" >&2
+    printf '  The image accepts only manifests signed by the trusted key, and\n' >&2
+    printf '  so rejects the manifest.json this build writes. Nothing on the\n' >&2
+    printf '  device reads that manifest, so this is the supported way to build\n' >&2
+    printf '  an image that updates from a release this host cannot sign.\n' >&2
+}
+
 validate_pico_sdk() {
     git -C "${REPO_ROOT}" submodule update --init -- pico-sdk
     [ -e "${REPO_ROOT}/pico-sdk/.git" ] || die "pico-sdk submodule is unavailable"
@@ -301,6 +343,7 @@ main() {
     local agent_config=${AGENT_CONFIG_PATH:-${DEFAULT_AGENT_CONFIG}}
     local ota_private_key=${OTA_PRIVATE_KEY_PATH:-${DEFAULT_OTA_PRIVATE_KEY}}
     local ota_public_key=${OTA_PUBLIC_KEY_PATH:-${DEFAULT_OTA_PUBLIC_KEY}}
+    local ota_trust_public_key=${OTA_TRUST_PUBLIC_KEY_PATH:-}
     local go_root=${DEBIAN_STAGE2_GO_ROOT:-${DEFAULT_GO_ROOT}}
     local ota_repo=${OTA_REPO:-AidenAI-IO/aiden-firmware}
     local ota_channel=${OTA_CHANNEL:-local}
@@ -329,11 +372,20 @@ main() {
     agent_config=$(readlink -f "${agent_config}")
     ota_private_key=$(readlink -f "${ota_private_key}")
     ota_public_key=$(readlink -f "${ota_public_key}")
+    if [ -n "${ota_trust_public_key}" ]; then
+        [ -f "${ota_trust_public_key}" ] \
+            || die "OTA trust anchor PEM is missing: ${ota_trust_public_key}"
+        ota_trust_public_key=$(readlink -f "${ota_trust_public_key}")
+    else
+        ota_trust_public_key=${ota_public_key}
+    fi
     go_root=$(readlink -f "${go_root}")
 
     TEMPORARY_DIR=$(mktemp -d "${TMPDIR:-/tmp}/aiden-debian-build.XXXXXX")
     trap cleanup EXIT
     validate_key_pair "${ota_private_key}" "${ota_public_key}" "${TEMPORARY_DIR}"
+    validate_trust_public_key \
+        "${ota_trust_public_key}" "${ota_public_key}" "${TEMPORARY_DIR}"
     ensure_go_toolchain "${go_root}"
     validate_pico_sdk
     clean_generated_outputs
@@ -361,7 +413,7 @@ main() {
         "${REPO_ROOT}/scripts/debian-stage3/build.sh" bsp
 
     log "Assembling Debian Stage 3 factory images"
-    OTA_PUBLIC_KEY_PATH="${ota_public_key}" \
+    OTA_PUBLIC_KEY_PATH="${ota_trust_public_key}" \
         AGENT_CONFIG_PATH="${agent_config}" \
         DEBIAN_STAGE3_OUTPUT_DIR="${STAGE3_OUTPUT}" \
         DEBIAN_STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT}" \

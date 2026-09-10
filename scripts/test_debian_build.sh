@@ -126,4 +126,49 @@ done
     sha256sum --check update.img.sha256 >/dev/null
 ) || fail "update.img.sha256 does not match the installed image"
 
+# The trust anchor burned into the image is separable from the signing key, so
+# an image can accept releases this host cannot sign. Cover the four outcomes.
+grep -Fq 'OTA_PUBLIC_KEY_PATH="${ota_trust_public_key}"' "${BUILD_SCRIPT}" \
+    || fail "the images stage does not receive the OTA trust anchor"
+
+key_root=${TEST_ROOT}/keys
+mkdir -p "${key_root}"
+openssl genpkey -algorithm ed25519 -out "${key_root}/signing.pem" >/dev/null 2>&1
+openssl pkey -in "${key_root}/signing.pem" -pubout \
+    -out "${key_root}/signing.pub.pem" >/dev/null 2>&1
+openssl genpkey -algorithm ed25519 -out "${key_root}/other.pem" >/dev/null 2>&1
+openssl pkey -in "${key_root}/other.pem" -pubout \
+    -out "${key_root}/other.pub.pem" >/dev/null 2>&1
+openssl genpkey -algorithm rsa -pkeyopt rsa_keygen_bits:2048 \
+    -out "${key_root}/rsa.pem" >/dev/null 2>&1
+openssl pkey -in "${key_root}/rsa.pem" -pubout \
+    -out "${key_root}/rsa.pub.pem" >/dev/null 2>&1
+
+trust_work=${TEST_ROOT}/trust-work
+mkdir -p "${trust_work}"
+matching_output=$(
+    validate_trust_public_key "${key_root}/signing.pub.pem" \
+        "${key_root}/signing.pub.pem" "${trust_work}" 2>&1
+) || fail "a trust anchor equal to the signing key was rejected"
+[ -z "${matching_output}" ] \
+    || fail "a trust anchor equal to the signing key warned: ${matching_output}"
+
+differing_output=$(
+    validate_trust_public_key "${key_root}/other.pub.pem" \
+        "${key_root}/signing.pub.pem" "${trust_work}" 2>&1
+) || fail "a trust anchor differing from the signing key was rejected"
+case "${differing_output}" in
+    *"OTA trust anchor differs"*) ;;
+    *) fail "a differing trust anchor did not warn: ${differing_output}" ;;
+esac
+
+if (validate_trust_public_key "${key_root}/rsa.pub.pem" \
+    "${key_root}/signing.pub.pem" "${trust_work}") >/dev/null 2>&1; then
+    fail "an RSA trust anchor was accepted"
+fi
+if (validate_trust_public_key "${key_root}/missing.pub.pem" \
+    "${key_root}/signing.pub.pem" "${trust_work}") >/dev/null 2>&1; then
+    fail "a missing trust anchor was accepted"
+fi
+
 echo "Debian build entrypoint checks passed"
