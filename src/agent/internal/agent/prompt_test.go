@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -74,18 +75,96 @@ func TestRolePromptDirectsRemoteSkillURLsToInstallAction(t *testing.T) {
 func TestRolePromptConstrainsArtifactRecoveryReads(t *testing.T) {
 	profile := testPromptProfile(AgentConfig{})
 	for _, want := range []string{
-		"Never use cat",
-		"print the entire artifact file",
+		"read the artifact only when needed information is missing",
+		"never use cat",
 		"explicit output bound",
-		"grep -m 20",
-		"sed -n",
-		"dd if=FILE",
-		"jq",
-		"fq",
-		"do not emit unbounded",
+		"Bound both record counts and string lengths",
+		"line limits alone do not bound bytes",
+		"dd if=FILE bs=1 skip=0 count=4096",
+		"fq -r '.results[0].summary[0:2000]' FILE for recall_session_chunks",
+		"Read the next bounded range",
+		"correct the field or command before retrying",
+		"change strategy or report the blocker",
 	} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("system prompt missing artifact recovery guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
+// jqCommandFormPattern matches jq presented as a runnable command rather than
+// discussed in prose. It keys off what follows jq — an option (-r,
+// --raw-output), a quoted or bare filter ('.a', ".a", .a, $x), an
+// uppercase FILE-style operand, a pipe, or end of line — plus membership in a
+// slash-separated tool list (dd/jq/fq). It deliberately does not match English
+// prose such as "evaluates jq expressions", "; jq is absent", or "a jq command
+// fails", so guidance can still explain why jq must not be invoked.
+//
+// Note it must catch jq inside a comma-separated example list ("count=4096,
+// jq -c FILE") and inside a slash-separated tool list, since those are the two
+// forms the original guidance actually used.
+var jqCommandFormPattern = regexp.MustCompile(`/jq\b|\bjq(?:[ \t]+(?:-{1,2}[a-zA-Z]|['".$]|[A-Z_]{2,})|[ \t]*(?:$|\||/))`)
+
+// findJqCommandForms reports every jq invocation in text. The board rootfs
+// ships fq/yq/rg but no jq, so guidance must never hand the model a jq
+// command: it fails with "not found" and the model then falls back to python3
+// with an ever-growing slice bound, looping on one artifact.
+func findJqCommandForms(text string) []string {
+	var found []string
+	for _, match := range jqCommandFormPattern.FindAllString(text, -1) {
+		found = append(found, strings.TrimSpace(match))
+	}
+	return found
+}
+
+func TestRolePromptDoesNotSuggestUninstalledJqBinary(t *testing.T) {
+	profile := testPromptProfile(AgentConfig{})
+	if forms := findJqCommandForms(profile.SystemPrompt); len(forms) > 0 {
+		t.Fatalf("system prompt invokes uninstalled jq binary %v; use fq, which evaluates jq expressions:\n%s", forms, profile.SystemPrompt)
+	}
+	for _, want := range []string{
+		"inspect the actual structure",
+		"do not repeatedly expand the same prefix",
+		"fq",
+		"yq",
+	} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing fq/anti-loop artifact guidance %q:\n%s", want, profile.SystemPrompt)
+		}
+	}
+}
+
+func TestJqCommandFormPatternMatchesInvocationsNotProse(t *testing.T) {
+	for _, invocation := range []string{
+		"jq '.[0:20]' FILE",
+		"jq -r '.field' FILE",
+		"jq -c FILE",
+		"jq --raw-output FILE",
+		"jq FILE",
+		"cat FILE | jq",
+		"cat FILE | jq -r '.a'",
+		"grep x FILE && jq -e .",
+		"sed -n '1p' FILE; jq .",
+		"out=$(jq -r '.a' FILE)",
+		// The two shapes the original guidance actually used: a comma-separated
+		// example list, and a slash-separated tool list.
+		"dd if=FILE bs=1 skip=0 count=4096, jq '.[0:20]' FILE, or fq '.[0:20]' FILE",
+		"dd if=FILE bs=1 skip=0 count=4096, jq -c FILE",
+		"Use bounded grep/sed/dd/jq/fq reads",
+	} {
+		if len(findJqCommandForms(invocation)) == 0 {
+			t.Errorf("findJqCommandForms(%q) found nothing, want a match", invocation)
+		}
+	}
+	for _, prose := range []string{
+		"fq, which evaluates jq expressions",
+		"fq runs jq expressions; jq is absent",
+		"a jq command fails with 'not found'",
+		"fq -r '.results[0].content[0:2000]' FILE",
+		"use yq or fq instead",
+	} {
+		if forms := findJqCommandForms(prose); len(forms) > 0 {
+			t.Errorf("findJqCommandForms(%q) = %v, want no match for prose", prose, forms)
 		}
 	}
 }
