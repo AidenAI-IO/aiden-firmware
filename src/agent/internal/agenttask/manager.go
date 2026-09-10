@@ -3,6 +3,7 @@ package agenttask
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,18 @@ const (
 	defaultQueueSize = 64
 	maxResultRunes   = 8000
 )
+
+// terminal reports whether the task has finished and will not change state
+// again. cancelling is not terminal: the runtime still owns the task until it
+// returns from context cancellation.
+func (s Status) terminal() bool {
+	switch s {
+	case StatusCancelled, StatusFailed, StatusCompleted:
+		return true
+	default:
+		return false
+	}
+}
 
 type Task struct {
 	ID                string      `json:"id"`
@@ -169,6 +182,40 @@ func (m *Manager) Query(taskID string) (Task, bool) {
 		return Task{}, false
 	}
 	return item.task, true
+}
+
+// Outstanding returns the work a caller must consider before starting
+// something new: tasks that have not finished, plus finished tasks whose result
+// has not been delivered to the foreground yet. Finished tasks that were
+// already delivered are left out because the foreground holds their result in
+// its own context, so asking for the same work again is a genuine new request.
+// Tasks are ordered newest first.
+func (m *Manager) Outstanding() []Task {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	undelivered := make(map[string]struct{}, len(m.terminal))
+	for _, task := range m.terminal {
+		undelivered[task.ID] = struct{}{}
+	}
+	var tasks []Task
+	for id, item := range m.tasks {
+		if item.task.Status.terminal() {
+			if _, waiting := undelivered[id]; !waiting {
+				continue
+			}
+		}
+		tasks = append(tasks, item.task)
+	}
+	slices.SortFunc(tasks, func(a, b Task) int {
+		if order := b.CreatedAt.Compare(a.CreatedAt); order != 0 {
+			return order
+		}
+		return strings.Compare(b.ID, a.ID)
+	})
+	return tasks
 }
 
 func (m *Manager) Cancel(taskID string) (Task, error) {
