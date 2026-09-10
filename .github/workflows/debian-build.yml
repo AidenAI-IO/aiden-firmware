@@ -296,6 +296,11 @@ jobs:
         scripts/validate_ota_pubkey.sh "$public_key"
         echo "OTA_PRIVATE_KEY_PATH=$private_key" >> "$GITHUB_ENV"
         echo "OTA_PUBLIC_KEY_PATH=$public_key" >> "$GITHUB_ENV"
+        # Pin the trust anchor to the key this build signs with. Left unset,
+        # debian_build.sh would bake in the committed keys/ota_pubkey.pem, and
+        # a rotated secret would then ship images trusting the previous signer
+        # while the manifests came from the new one.
+        echo "OTA_TRUST_PUBLIC_KEY_PATH=$public_key" >> "$GITHUB_ENV"
 
     - name: Ensure armhf binfmt registration
       # Stage 3 runs the freshly built armhf agent on the host to validate
