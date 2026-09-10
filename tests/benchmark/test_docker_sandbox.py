@@ -305,6 +305,9 @@ class DockerSandboxContractTest(unittest.TestCase):
                     "AIDEN_AGENT_DIR": str(agent_directory),
                     "AIDEN_AGENT_RUN_DIR": str(temporary_path / "run"),
                     "AIDEN_SYSTEM_ENV": str(temporary_path / "system-env"),
+                    "AIDEN_ENV_RUN_BIN": str(
+                        REPO_ROOT / "overlay/oem/usr/bin/aiden-env-run"
+                    ),
                     "AIDEN_AGENT_LOG_MAX_BYTES": "1024",
                     "AIDEN_AGENT_LOG_RETAIN_BYTES": "256",
                     "AIDEN_AGENT_LOG_CHECK_INTERVAL": "1",
@@ -525,6 +528,9 @@ class DockerSandboxContractTest(unittest.TestCase):
                     "AIDEN_AGENT_DIR": str(agent_directory),
                     "AIDEN_AGENT_RUN_DIR": str(run_directory),
                     "AIDEN_SYSTEM_ENV": str(system_env),
+                    "AIDEN_ENV_RUN_BIN": str(
+                        REPO_ROOT / "overlay/oem/usr/bin/aiden-env-run"
+                    ),
                     "AIDEN_AGENT_LOG_CHECK_INTERVAL": "1",
                     "AIDEN_AGENT_STOP_ATTEMPTS": "1",
                     "AIDEN_BRIDGE_WAIT_ATTEMPTS": "1",

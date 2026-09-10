@@ -273,6 +273,7 @@ type ModelProvider struct {
 }
 
 type Config struct {
+	DeviceTypeOverride         string                        `toml:"-" json:"-"`                // Process-local CLI override retained across reloads.
 	ModelProviders             map[string]ModelProvider      `toml:"model_providers,omitempty"` // Named model provider configurations
 	TTSProviders               map[string]TTSProvider        `toml:"tts_providers,omitempty"`   // Named TTS provider configurations
 	STTProviders               map[string]STTProvider        `toml:"stt_providers,omitempty"`   // Named STT provider configurations
@@ -505,7 +506,7 @@ type ProxyConfig struct {
 	NoProxy    string
 }
 
-const DefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+const DefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10"
 
 func (p ProxyConfig) HasProxyURL() bool {
 	return strings.TrimSpace(p.HTTPProxy) != "" ||
@@ -741,6 +742,7 @@ func (c *Config) OverrideDeviceType(value string) error {
 		return fmt.Errorf("invalid device type override: %s (expected iOS, Android, macOS, windows, or linux)", value)
 	}
 	c.Device.DeviceType = deviceType
+	c.DeviceTypeOverride = deviceType
 	c.HID.PointerMode = DeviceConfig{DeviceType: deviceType}.PointerModeOrDefault()
 	return nil
 }

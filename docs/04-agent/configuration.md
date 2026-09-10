@@ -35,6 +35,18 @@ under `[device]` below.
 - [`memory/extraction.yaml`](#memoryextractionyaml)
 - [Known limitations](#known-limitations)
 
+## Applying Changes Online
+
+Saving through Config Web queues runtime application. See the
+[application policy](../03-services/config-web.md#configuration-application-policy)
+and [status API](../03-services/device-management-api.md#configuration-save-response).
+Mode, model/provider, audio/VAD, and hardware-client changes rebuild the affected
+components after current work drains. Ordinary limits and policies apply to
+subsequent work. USB pointer descriptor and keyboard layout changes remain
+pending across Agent restarts until an explicit board reboot; changing `frame_service.keep_streamon`
+restarts only the frame service. Editing the TOML outside Config Web requires
+an explicit reload request or service restart; there is no file watcher.
+
 ## Directory layout
 
 Passed to the daemon as `-dir /userdata/agent`. Everything except `agent.toml`
@@ -72,7 +84,7 @@ The firmware starts `agent config-web` on port 80.
 
 ### What the page can configure
 
-The page renders the following config sections. The language selector in the page header persists the device-level `locale`; switching it immediately updates the Config Web UI and restarts the Agent. If the locale changes the system prompt, startup creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
+The page renders the following config sections. The language selector in the page header persists the device-level `locale` and applies it online; when the locale changes the system prompt, the next task boundary creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
 
 - `agent`: `locale`, `input_mode`, VAD params, `max_iterations`, `context_prune_threshold`, `custom_instruction`, `additional_prompt`
 - `model`: provider, model, api_key, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
@@ -618,7 +630,7 @@ Config Web preserves this section through GET/POST and TOML save operations. Edi
 
 | Field         | Default | Description |
 | ------------- | ------- | ----------- |
-| `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Changing it requires a reboot so USB descriptors are re-enumerated. |
+| `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Switching between Android and a non-Android type requires a reboot so USB descriptors are re-enumerated; changes among non-Android types apply online. |
 
 ## `[hid]`
 
@@ -696,20 +708,18 @@ neither should change because the voice changed, so both stay global.
 For all provider records, `api_key` accepts either a literal key or `$VAR_NAME`.
 Config Web stores exactly the same representation.
 
-### Backward compatibility
+### Provider configuration compatibility
 
-- The record-level `provider` field remains read-only compatible in all three
-  provider maps. `type` wins if both fields are present, and the next save emits
-  only `type`.
-- A bare provider type in `[tts]` / `[stt]` keeps working. `provider = "minimax-cn"`
-  with a flat `api_key` needs no migration to keep speaking.
-- Flat credentials on `[tts]` / `[stt]` are upgraded to records on load, keyed
-  by provider type. The upgrade is written back the next time the config is
-  saved, and an existing record is never overwritten.
-- An unresolvable reference does not stop the device from booting: voice is
-  optional at runtime, so a stale name is reported and the agent starts without
-  voice. Config Web rejects such a reference when saving instead, while the form
-  is still on screen.
+The Config Web request contract accepts only canonical provider records. Records
+use `type`, while the selected record name remains in the parent section's
+`provider` field. Retired record aliases and flat credential request fields are
+rejected. Existing TOML files may still be normalized on save so credentials are
+preserved while the file is converted to the canonical layout.
+
+An unresolvable reference does not stop the device from booting: voice is
+optional at runtime, so a stale name is reported and the agent starts without
+voice. Config Web rejects such a reference when saving, while the form is
+still on screen.
 
 ## `[stt]` and `[tts]`
 
@@ -899,12 +909,12 @@ tags = ["aiden-hardware"]
 
 ## System environment variables
 
-The Agent no longer reads `[proxy]` from `agent.toml`. Outbound HTTP/WebSocket requests, shell tool subprocesses, OTA commands launched through `aiden-env-run`, and SSH login shells all use environment variables from `/userdata/system/env`. The file is loaded with shell syntax, for example:
+The Agent no longer reads `[proxy]` from `agent.toml`. Values in `/userdata/system/env` define the system/default upstream proxy. Outbound HTTP/WebSocket requests, shell tool subprocesses, OTA commands launched through `aiden-env-run`, and SSH login shells use the fixed local address `127.0.0.1:18080`; it selects the system upstream, direct mode, or a custom upstream from the active Wi-Fi's saved policy. The listener accepts both HTTP proxy and SOCKS5 protocols. Its generated environment keeps the local URL scheme aligned with the selected upstream, so a `socks5://` Wi-Fi proxy remains SOCKS5 on both sides of the local endpoint instead of being wrapped in HTTP CONNECT. The local URL uses `socks5h://` so hostname resolution also travels through SOCKS5 rather than depending on the board's DNS. The file is loaded with shell syntax, for example:
 
 ```sh
 HTTP_PROXY=http://127.0.0.1:7890
 HTTPS_PROXY=http://127.0.0.1:7890
-NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10
 OPENROUTER_API_KEY=...
 ```
 
@@ -914,6 +924,24 @@ OPENROUTER_API_KEY=...
 | `HTTPS_PROXY` / `https_proxy` | HTTPS proxy URL, usually the same HTTP proxy endpoint                                                                                              |
 | `ALL_PROXY` / `all_proxy`     | Generic proxy used by HTTP clients and some WebSocket adapters                                                                                     |
 | `NO_PROXY` / `no_proxy`       | Comma-separated bypass rules; when a proxy URL is set and no bypass value is present, the launcher injects the default private-network bypass list |
+
+Per-Wi-Fi policies are configured in the Config Web connection dialog and
+stored in `/userdata/system/wifi-proxies.json` with mode `0600`. Setting
+`AIDEN_WIFI_PROXY_ENABLED=0` in the system environment is an emergency bypass
+that restores direct use of the raw environment proxy variables after the
+affected services or shell are restarted.
+
+The selected local URLs are written to `/run/wifi_proxy/proxy-env`. New managed
+commands and login shells read that file. If a Wi-Fi change switches between
+HTTP and SOCKS5, `S51wifi_proxy` restarts the long-running Agent so its HTTP and
+WebSocket clients also pick up the new URL scheme; changing only the upstream
+host or port does not require an Agent restart.
+
+For a custom per-Wi-Fi proxy, the dialog's `NO_PROXY` value belongs to that
+SSID's custom upstream and replaces the environment `NO_PROXY` while the
+custom policy is active. The system-default policy uses the proxy variables
+and `NO_PROXY` from `/userdata/system/env` together; it stores no per-Wi-Fi
+bypass value.
 
 ## `memory/extraction.yaml`
 

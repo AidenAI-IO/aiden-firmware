@@ -2,6 +2,8 @@ package configweb
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"unicode"
 
+	"aiden-agent/internal/agent"
 	"aiden-agent/internal/netproxy"
 )
 
@@ -177,7 +180,7 @@ func atomicWriteFile(path string, content []byte, mode os.FileMode) error {
 	return os.Rename(temporaryPath, path)
 }
 
-func (s *Server) handleGetSystemEnv(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleGetSystemEnv(w http.ResponseWriter, r *http.Request) {
 	content := ""
 	data, err := readFileLimited(s.options.SystemEnvPath, maxSystemEnvSize)
 	if err != nil && !os.IsNotExist(err) {
@@ -188,9 +191,10 @@ func (s *Server) handleGetSystemEnv(w http.ResponseWriter, _ *http.Request) {
 		content = string(data)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"system_env": content,
-		"path":       s.options.SystemEnvPath,
+		"ok":                     true,
+		"system_env":             content,
+		"agent_restart_required": s.systemEnvironmentRestartRequired(r.Context()),
+		"path":                   s.options.SystemEnvPath,
 	})
 }
 
@@ -213,23 +217,51 @@ func (s *Server) handleSystemEnv(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, 400, err.Error())
 		return
 	}
+	s.systemEnvMu.Lock()
+	defer s.systemEnvMu.Unlock()
 	if err := atomicWriteFile(s.options.SystemEnvPath, []byte(*request.SystemEnv), 0o600); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.scheduleAgentRestart(); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"ok": false, "persisted": true, "agent_restart_scheduled": false,
-			"system_env": *request.SystemEnv, "error": err.Error(),
-		})
+	restartRequired := s.systemEnvironmentRestartRequired(r.Context())
+	if restartRequired == nil {
+		// A saved edit needs explicit application when Agent cannot confirm it.
+		required := true
+		restartRequired = &required
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "persisted": true, "system_env": *request.SystemEnv,
+		"agent_restart_required": restartRequired,
+	})
+}
+
+func (s *Server) systemEnvironmentRestartRequired(ctx context.Context) *bool {
+	revision, err := agent.SystemEnvironmentRevision(s.options.SystemEnvPath)
+	if err != nil {
+		return nil
+	}
+	data, code, err := s.fetchAgentApplicationStatus(ctx)
+	var live agent.ConfigApplyStatus
+	if err != nil || code != http.StatusOK || json.Unmarshal(data, &live) != nil {
+		return nil
+	}
+	if live.EnvironmentRevision == "" {
+		return nil
+	}
+	required := live.EnvironmentRevision != revision
+	return &required
+}
+
+func (s *Server) handleApplySystemEnv(w http.ResponseWriter, r *http.Request) {
+	s.systemEnvMu.Lock()
+	defer s.systemEnvMu.Unlock()
+	if err := s.restartWiFiProxy(); err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{
-		"ok":                      true,
-		"message":                 "system env saved; agent restarting",
-		"agent_restart_scheduled": true,
-		"ota_restart_scheduled":   false,
-		"system_env":              *request.SystemEnv,
-		"paths":                   map[string]string{"system_env": s.options.SystemEnvPath},
-	})
+	if err := s.scheduleAgentRestart(); err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "agent_restart_scheduled": true})
 }

@@ -19,6 +19,7 @@ class Element {
     this.disabled = false;
     this._classes = new Set();
     this.className = '';
+    this.style = {};
     this.scrollTop = 0;
     this.clientHeight = 0;
     this.scrollHeight = 0;
@@ -219,6 +220,7 @@ assert.equal(
 assert.equal(t('config.fields.agent.context_prune_threshold.placeholder'), '0 = 自动（0.5）');
 assert.equal(t('logs.jump_to_bottom'), '跳到底部');
 assert.equal(t('system_env.saved'), 'env 已保存。');
+assert.equal(t('wifi.proxy_url_help'), '支持的 URL：socks5://、socks5h://、http://、https://');
 assert.equal(t('missing.translation.key'), 'missing.translation.key');
 
 applyLocale('en-US', true);
@@ -226,6 +228,7 @@ assert.equal(document.documentElement.lang, 'en-US');
 assert.equal(title.textContent, 'Configuration');
 assert.equal(password.getAttribute('placeholder'), 'Open network can leave empty');
 assert.equal(t('config.fields.model.responses_compact_threshold.label'), 'Compaction threshold (tokens)');
+assert.equal(t('wifi.proxy_url_help'), 'Supported URLs: socks5://, socks5h://, http://, https://');
 assert.equal(stored.get('aiden.config.locale'), 'en-US');
 
 const source = await fs.readFile(i18nPath, 'utf8');
@@ -237,6 +240,12 @@ const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
 assert.match(indexHtml, /data-i18n="page\.title"/);
 assert.match(indexHtml, /data-i18n="action\.ready"/);
 assert.match(indexHtml, /data-i18n-placeholder="wifi\.password_optional"/);
+assert.match(indexHtml, /id="wifiProxyMode"/);
+assert.match(indexHtml, /class="info-tooltip-trigger"[^>]+aria-describedby="wifiProxyUrlHelp"/);
+assert.match(indexHtml, /id="wifiProxyUrlHelp"[^>]+data-i18n="wifi\.proxy_url_help"/);
+assert.match(indexHtml, /data-i18n-placeholder="wifi\.proxy_url_placeholder"/);
+assert.match(indexHtml, /id="wifiNoProxy"/);
+assert.match(indexHtml, /data-i18n-placeholder="wifi\.no_proxy_placeholder"/);
 
 const configForm = await fs.readFile(path.join(webRoot, 'assets/js/config/config-form.js'), 'utf8');
 const wifi = await fs.readFile(path.join(webRoot, 'assets/js/config/wifi.js'), 'utf8');
@@ -250,6 +259,16 @@ const app = await fs.readFile(path.join(webRoot, 'assets/js/config/app.js'), 'ut
 assert.match(configForm, /t\('config\.save_failed',\{section:/);
 assert.match(wifi, /t\('wifi\.connected_to',\s*\{ssid\s*:/);
 assert.match(wifi, /t\('wifi\.no_networks'\)/);
+assert.match(wifi, /proxy_mode:proxyMode/);
+assert.match(wifi, /if\(proxyMode==='proxy'\)/);
+assert.match(wifi, /if\(proxyUrl\)requestBody\.proxy_url=proxyUrl/);
+assert.match(wifi, /saved\.proxy_mode==='proxy'/);
+assert.match(wifi, /proxyUrl\.value=saved&&saved\.proxy_mode==='proxy'\?saved\.proxy_url:''/);
+assert.match(wifi, /enteredProxyUrl===saved\.proxy_url\?'':enteredProxyUrl/);
+assert.match(wifi, /no_proxy:network\.no_proxy\|\|''/);
+assert.match(wifi, /saved&&saved\.proxy_mode==='proxy'\?saved\.no_proxy:''/);
+assert.match(wifi, /requestBody\.no_proxy=noProxy/);
+assert.match(wifi, /wifi\.proxy_state_/);
 assert.match(wifi, /aiden:locale-changed/);
 assert.doesNotMatch(wifi, /runtimeFunction\('localizedText'\)/);
 assert.match(providers, /t\('provider\.choose_model'\)/);
@@ -263,7 +282,7 @@ assert.match(logs, /runtimeFunction\('t'\)/);
 assert.match(logs, /'logs\.jump_to_bottom'/);
 assert.match(logs, /aiden:locale-changed/);
 assert.match(systemEnv, /runtimeFunction\('t'\)/);
-assert.match(systemEnv, /t\('system_env\.saved'\)/);
+assert.match(systemEnv, /t\(payload\.agent_restart_required\?'system_env\.restart_required':'system_env\.saved'\)/);
 assert.match(app, /t\('page\.config_refreshed'\)/);
 assert.match(configForm, /t\('config\.rebooting'\)/);
 assert.match(configForm, /'config\.secret_saved_placeholder'/);
@@ -314,6 +333,8 @@ const systemEnvContent = new Element();
 const saveSystemEnvButton = new Element();
 const commentSystemEnvButton = new Element();
 const systemEnvSection = new Element();
+const systemEnvApplication = new Element();
+const applySystemEnvButton = new Element();
 const agentSection = new Element();
 const saveAgentButton = new Element();
 const exportLogsButton = new Element();
@@ -324,6 +345,7 @@ const exportLogsButton = new Element();
   ['agentLogMeta', agentLogMeta], ['system_env_content', systemEnvContent],
   ['save-system_env', saveSystemEnvButton], ['comment-system_env', commentSystemEnvButton],
   ['section-system_env', systemEnvSection],
+  ['systemEnvApplication', systemEnvApplication], ['apply-system_env', applySystemEnvButton],
   ['section-agent', agentSection], ['save-agent', saveAgentButton],
   ['exportLogsBtn', exportLogsButton],
 ].forEach(([id, element]) => elementsById.set(id, element));
@@ -712,6 +734,23 @@ requestResult = {system_env: 'A=1'};
 systemEnvContent.value = 'A=1';
 await systemEnvModule.namespace.saveSystemEnv();
 assert.deepEqual(latestBanner, {message: 'env 已保存。', failed: false});
+requestResult = {system_env: 'A=2', agent_restart_required: true};
+systemEnvContent.value = 'A=2';
+await systemEnvModule.namespace.saveSystemEnv();
+assert.equal(systemEnvApplication.style.display, 'block');
+requestResult = {agent_restart_required: null};
+await systemEnvModule.namespace.refreshSystemEnvApplication();
+assert.equal(systemEnvApplication.style.display, 'block', 'unavailable Agent must retain confirmed restart requirement');
+let appliedURL;
+requestImpl = async (url, options) => {appliedURL = url; assert.equal(options.method, 'POST'); return {ok:true};};
+await systemEnvModule.namespace.applySystemEnv();
+assert.equal(appliedURL, '/api/system/environment/apply');
+assert.equal(applySystemEnvButton.disabled, false);
+requestImpl = null;
+requestResult = {agent_restart_required: false};
+await systemEnvModule.namespace.refreshSystemEnvApplication();
+assert.equal(systemEnvApplication.style.display, 'none');
+
 
 fetchImpl = async () => ({ok: true, blob: async () => ({})});
 await logsModule.namespace.exportLogs();

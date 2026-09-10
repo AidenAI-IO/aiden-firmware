@@ -1,17 +1,22 @@
 package configweb
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/wifiproxy"
 )
 
 type fakeStorageController struct {
@@ -61,19 +66,41 @@ func testOptions(t *testing.T) Options {
 		t.Fatal(err)
 	}
 	return Options{
-		BindAddress:      "127.0.0.1",
-		Port:             8081,
-		AgentConfigPath:  filepath.Join(root, "agent.toml"),
-		WiFiConfigPath:   filepath.Join(root, "wpa_supplicant.conf"),
-		WiFiInterface:    "wlan0",
-		OTAStatePath:     filepath.Join(root, "ota-state.json"),
-		CmdlinePath:      filepath.Join(root, "cmdline"),
-		SystemEnvPath:    filepath.Join(root, "system.env"),
-		StorageStatePath: filepath.Join(root, "storage.state"),
-		WebRoot:          webRoot,
-		AgentBinary:      "/bin/true",
-		AgentHTTPBaseURL: "http://127.0.0.1:1",
-		AgentInitScript:  filepath.Join(root, "missing-init"),
+		BindAddress:               "127.0.0.1",
+		Port:                      8081,
+		AgentConfigPath:           filepath.Join(root, "agent.toml"),
+		WiFiConfigPath:            filepath.Join(root, "wpa_supplicant.conf"),
+		WiFiInterface:             "wlan0",
+		OTAStatePath:              filepath.Join(root, "ota-state.json"),
+		CmdlinePath:               filepath.Join(root, "cmdline"),
+		SystemEnvPath:             filepath.Join(root, "system.env"),
+		WiFiProxyConfigPath:       filepath.Join(root, "wifi-proxies.json"),
+		LocalProxyAddress:         wifiproxy.DefaultListenAddress,
+		LocalProxyEnvironmentPath: filepath.Join(root, "proxy-env"),
+		StorageStatePath:          filepath.Join(root, "storage.state"),
+		WebRoot:                   webRoot,
+		AgentBinary:               "/bin/true",
+		AgentHTTPBaseURL:          "http://127.0.0.1:1",
+		AgentInitScript:           filepath.Join(root, "missing-init"),
+		WiFiProxyInitScript:       "/bin/true",
+	}
+}
+
+func TestOptionsRejectsInvalidLocalProxyPorts(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:0", "127.0.0.1:65536", "localhost:not-a-port"} {
+		options := testOptions(t)
+		options.LocalProxyAddress = address
+		if err := options.Validate(); err == nil {
+			t.Fatalf("LocalProxyAddress %q was accepted", address)
+		}
+	}
+}
+
+func TestOptionsAcceptsValidLocalProxyAddress(t *testing.T) {
+	options := testOptions(t)
+	options.LocalProxyAddress = "localhost:18080"
+	if err := options.Validate(); err != nil {
+		t.Fatalf("valid LocalProxyAddress rejected: %v", err)
 	}
 }
 
@@ -372,6 +399,11 @@ printf '%s\n' '{"ok":true,"config":{},"changed_paths":[],"reboot_required":false
 	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true})
+	}))
+	defer reload.Close()
+	options.AgentHTTPBaseURL = reload.URL
 	options.AgentBinary = fakeAgent
 	server, err := NewServer(options)
 	if err != nil {
@@ -412,7 +444,7 @@ func TestConfigPatchReconfiguresStorageOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": true, "revision": 11})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true, "revision": 11, "state": "pending"})
 	}))
 	defer reload.Close()
 	options.AgentBinary = fakeAgent
@@ -520,7 +552,7 @@ func TestAPIRouteHeaders(t *testing.T) {
 	}
 }
 
-func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
+func TestConfigPatchReportsPersistedAndPendingRevision(t *testing.T) {
 	options := testOptions(t)
 	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
 	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{\"agent\":{\"locale\":\"en-US\"}},\"changed_paths\":[\"agent.locale\"],\"reboot_required\":false,\"persisted\":true,\"revision\":7}'\n"
@@ -531,7 +563,7 @@ func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
 		if r.URL.Path != "/api/internal/config/reload" || r.Method != http.MethodPost {
 			t.Fatalf("reload request=%s %s", r.Method, r.URL.Path)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": true, "revision": 7})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true, "revision": 7, "state": "pending"})
 	}))
 	defer reload.Close()
 	options.AgentBinary = fakeAgent
@@ -542,12 +574,12 @@ func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
 	}
 	resp := httptest.NewRecorder()
 	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{"agent":{"locale":"en-US"}}}`)))
-	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"applied":true`) {
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"pending":true`) {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
 
-func TestConfigPatchSchedulesRestartWhenRuntimeReloadRejectsChange(t *testing.T) {
+func TestConfigPatchDoesNotRestartWhenRuntimeReloadRejectsChange(t *testing.T) {
 	options := testOptions(t)
 	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
 	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{\"agent\":{\"locale\":\"zh-CN\"}},\"changed_paths\":[\"agent.locale\"],\"reboot_required\":false,\"persisted\":true,\"revision\":9}'\n"
@@ -556,8 +588,8 @@ func TestConfigPatchSchedulesRestartWhenRuntimeReloadRejectsChange(t *testing.T)
 	}
 	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"ok": false, "applied": false, "restart_required": true,
-			"error": "configuration changes require an Agent restart",
+			"ok": false, "applied": false,
+			"error": "config file unavailable",
 		})
 	}))
 	defer reload.Close()
@@ -573,7 +605,7 @@ func TestConfigPatchSchedulesRestartWhenRuntimeReloadRejectsChange(t *testing.T)
 	if resp.Code != http.StatusServiceUnavailable ||
 		!strings.Contains(resp.Body.String(), `"persisted":true`) ||
 		!strings.Contains(resp.Body.String(), `"applied":false`) ||
-		!strings.Contains(resp.Body.String(), `"agent_restart_scheduled":true`) {
+		server.agentRestartPending() {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
@@ -585,6 +617,11 @@ func TestConfigPatchUsesUpdateHandler(t *testing.T) {
 	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true})
+	}))
+	defer reload.Close()
+	options.AgentHTTPBaseURL = reload.URL
 	options.AgentBinary = fakeAgent
 	server, err := NewServer(options)
 	if err != nil {
@@ -676,8 +713,8 @@ func TestSystemEnvironmentReportsRestartLaunchFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp := httptest.NewRecorder()
-	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/system/environment", strings.NewReader(`{"system_env":"A=1\n"}`)))
-	if resp.Code != http.StatusServiceUnavailable || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"agent_restart_scheduled":false`) {
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/system/environment/apply", nil))
+	if resp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
@@ -815,6 +852,184 @@ func TestSystemEnvParserAndWiFiConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestAgentCommandEnvironmentUsesStableLocalProxy(t *testing.T) {
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(key, "")
+	}
+	options := testOptions(t)
+	if err := os.WriteFile(options.SystemEnvPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := server.agentCommandEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make(map[string]string)
+	for _, item := range environment {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if values["HTTP_PROXY"] != "http://127.0.0.1:18080" || values["HTTPS_PROXY"] != "http://127.0.0.1:18080" {
+		t.Fatalf("proxy environment=%#v", values)
+	}
+	if values["NO_PROXY"] != agent.DefaultNoProxy || values["no_proxy"] != agent.DefaultNoProxy {
+		t.Fatalf("NO_PROXY=%q no_proxy=%q", values["NO_PROXY"], values["no_proxy"])
+	}
+}
+
+func TestAgentCommandEnvironmentPreservesSOCKS5LocalProxyScheme(t *testing.T) {
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(key, "")
+	}
+	options := testOptions(t)
+	if err := os.WriteFile(options.SystemEnvPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	generated := "HTTP_PROXY=socks5h://127.0.0.1:18080\nHTTPS_PROXY=socks5h://127.0.0.1:18080\nALL_PROXY=socks5h://127.0.0.1:18080\nNO_PROXY=\nno_proxy=\n"
+	if err := os.WriteFile(options.LocalProxyEnvironmentPath, []byte(generated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := server.agentCommandEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make(map[string]string)
+	for _, item := range environment {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
+		if values[key] != "socks5h://127.0.0.1:18080" {
+			t.Fatalf("%s=%q, want SOCKS5 local proxy", key, values[key])
+		}
+	}
+}
+
+func TestAgentCommandEnvironmentIgnoresStaleWiFiNoProxyWhenDisabled(t *testing.T) {
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(key, "")
+	}
+	options := testOptions(t)
+	systemEnv := "HTTP_PROXY=http://proxy.example:8080\nAIDEN_WIFI_PROXY_ENABLED=0\n"
+	if err := os.WriteFile(options.SystemEnvPath, []byte(systemEnv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	generated := "HTTP_PROXY=socks5h://127.0.0.1:18080\nNO_PROXY=stale.example\n"
+	if err := os.WriteFile(options.LocalProxyEnvironmentPath, []byte(generated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := server.agentCommandEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make(map[string]string)
+	for _, item := range environment {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if values["HTTP_PROXY"] != "http://proxy.example:8080" {
+		t.Fatalf("HTTP_PROXY=%q", values["HTTP_PROXY"])
+	}
+	if values["NO_PROXY"] != agent.DefaultNoProxy || values["no_proxy"] != agent.DefaultNoProxy {
+		t.Fatalf("stale Wi-Fi NO_PROXY was retained: %#v", values)
+	}
+}
+
+func TestRestoreWiFiPersistenceRestoresBothSnapshots(t *testing.T) {
+	root := t.TempDir()
+	wifiPath := filepath.Join(root, "wifi.conf")
+	proxyPath := filepath.Join(root, "wifi-proxies.json")
+	if err := os.WriteFile(wifiPath, []byte("old wifi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(wifiPath, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(proxyPath, []byte("old proxy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(proxyPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wifiSnapshot, err := captureFileSnapshot(wifiPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxySnapshot, err := captureFileSnapshot(proxyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wifiPath, []byte("new wifi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(proxyPath, []byte("new proxy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(wifiPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(proxyPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreWiFiPersistence(wifiSnapshot, proxySnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(wifiPath); string(data) != "old wifi" {
+		t.Fatalf("Wi-Fi config=%q", data)
+	}
+	if data, _ := os.ReadFile(proxyPath); string(data) != "old proxy" {
+		t.Fatalf("proxy config=%q", data)
+	}
+	for path, want := range map[string]os.FileMode{wifiPath: 0o640, proxyPath: 0o644} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode=%#o, want %#o", filepath.Base(path), got, want)
+		}
+	}
+}
+
+func TestRestoreWiFiPersistenceReportsIncompleteRecoveryAndContinues(t *testing.T) {
+	root := t.TempDir()
+	blockingPath := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(blockingPath, []byte("block"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proxyPath := filepath.Join(root, "wifi-proxies.json")
+	if err := os.WriteFile(proxyPath, []byte("new proxy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wifiSnapshot := fileSnapshot{path: filepath.Join(blockingPath, "wifi.conf"), data: []byte("old wifi"), mode: 0o600, existed: true}
+	proxySnapshot := fileSnapshot{path: proxyPath, data: []byte("old proxy"), mode: 0o600, existed: true}
+	err := restoreWiFiPersistence(wifiSnapshot, proxySnapshot)
+	if err == nil || !strings.Contains(err.Error(), "restore Wi-Fi config") {
+		t.Fatalf("restore error=%v", err)
+	}
+	if data, _ := os.ReadFile(proxyPath); string(data) != "old proxy" {
+		t.Fatalf("proxy restore was skipped after Wi-Fi restore failure: %q", data)
+	}
+}
+
 func TestWiFiPublicValueUsesNetworkCollectionOnly(t *testing.T) {
 	payload := (wiFiConfig{Country: "US", Networks: []wiFiNetwork{{SSID: "demo", PSK: "secret", Priority: 1}}}).publicValue()
 	if _, exists := payload["ssid"]; exists {
@@ -825,6 +1040,100 @@ func TestWiFiPublicValueUsesNetworkCollectionOnly(t *testing.T) {
 	}
 	if _, exists := payload["networks"]; !exists {
 		t.Fatalf("network collection missing: %#v", payload)
+	}
+}
+
+func TestWiFiProxyRequestValidationAndPasswordRedaction(t *testing.T) {
+	customURL := "http://alice:secret@proxy.example:7890"
+	noProxy := "localhost,.example.com"
+	request := wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &customURL, NoProxy: &noProxy}
+	if err := validateWiFiProxyRequest(request); err != nil {
+		t.Fatal(err)
+	}
+	config := wifiproxy.EmptyConfig()
+	if err := applyWiFiProxyRequest(&config, request); err != nil {
+		t.Fatal(err)
+	}
+	public := (wiFiConfig{Networks: []wiFiNetwork{{SSID: "Office"}}}).publicValue(config)
+	network := public["networks"].([]map[string]any)[0]
+	if network["proxy_mode"] != "proxy" || network["proxy_url"] != "http://alice:xxxxx@proxy.example:7890" || network["no_proxy"] != noProxy {
+		t.Fatalf("public proxy=%#v", network)
+	}
+
+	blank := ""
+	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &blank}); err != nil {
+		t.Fatalf("blank saved proxy should preserve existing value: %v", err)
+	}
+	if got := config.Networks["Office"].ProxyURL; got != customURL {
+		t.Fatalf("preserved proxy=%q, want %q", got, customURL)
+	}
+	emptyNoProxy := ""
+	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &blank, NoProxy: &emptyNoProxy}); err != nil {
+		t.Fatalf("clear NO_PROXY: %v", err)
+	}
+	if got := config.Networks["Office"].NoProxy; got != "" {
+		t.Fatalf("NO_PROXY was not cleared: %q", got)
+	}
+	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "New", ProxyMode: "proxy", ProxyURL: &blank}); err == nil {
+		t.Fatal("blank proxy URL was accepted for a new custom proxy")
+	}
+
+	invalidURL := "ftp://proxy.example:21"
+	if err := validateWiFiProxyRequest(wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &invalidURL}); err == nil {
+		t.Fatal("unsupported proxy scheme was accepted")
+	}
+	if err := validateWiFiProxyRequest(wifiConnectionRequest{SSID: "Office", ProxyMode: "unknown"}); err == nil {
+		t.Fatal("unsupported proxy mode was accepted")
+	}
+	if err := validateWiFiProxyRequest(wifiConnectionRequest{SSID: "Office", ProxyMode: "system", NoProxy: &noProxy}); err == nil {
+		t.Fatal("Wi-Fi NO_PROXY was accepted for the system-default proxy")
+	}
+	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "Office", ProxyMode: "system"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := config.Networks["Office"]; ok {
+		t.Fatalf("system-default proxy retained Wi-Fi-specific settings: %#v", config.Networks["Office"])
+	}
+	if err := validateWiFiProxyRequest(wifiConnectionRequest{SSID: " Office ", ProxyMode: "direct"}); err == nil {
+		t.Fatal("Wi-Fi proxy validation accepted an SSID with surrounding whitespace")
+	}
+	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: " Office ", ProxyMode: "direct"}); err == nil {
+		t.Fatal("Wi-Fi proxy update accepted an SSID with surrounding whitespace")
+	}
+}
+
+func TestWiFiForgetRemovesProxyMapping(t *testing.T) {
+	options := testOptions(t)
+	wifi := wiFiConfig{Country: "US", Networks: []wiFiNetwork{{SSID: "Office", PSK: "secret", Priority: 1}}}
+	if err := saveWiFiConfig(options.WiFiConfigPath, wifi); err != nil {
+		t.Fatal(err)
+	}
+	proxy := wifiproxy.EmptyConfig()
+	proxy.Networks["Office"] = wifiproxy.Network{Mode: wifiproxy.ModeProxy, ProxyURL: "http://proxy.example:7890"}
+	if err := wifiproxy.Save(options.WiFiProxyConfigPath, proxy); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/network/wifi/connection?ssid=Office", nil)
+	server.APIHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	savedWiFi, err := loadWiFiConfig(options.WiFiConfigPath)
+	if err != nil || len(savedWiFi.Networks) != 0 {
+		t.Fatalf("saved Wi-Fi=%#v err=%v", savedWiFi, err)
+	}
+	savedProxy, err := wifiproxy.Load(options.WiFiProxyConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := savedProxy.Networks["Office"]; exists {
+		t.Fatalf("forgotten proxy mapping remains: %#v", savedProxy)
 	}
 }
 
@@ -863,5 +1172,181 @@ func TestRunHelpReturnsSuccess(t *testing.T) {
 func TestRunRejectsRetiredWiFiIfaceFlag(t *testing.T) {
 	if code := Run([]string{"--wifi-iface", "wlan1"}); code != 1 {
 		t.Fatalf("Run(--wifi-iface)=%d, want 1", code)
+	}
+}
+
+func TestFrameConfigRestartsOnlyFrameServiceAndRetriesFailures(t *testing.T) {
+	options := testOptions(t)
+	socketDir, err := os.MkdirTemp("", "frame-ready-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(socketDir)
+	socket := filepath.Join(socketDir, "f.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := os.WriteFile(options.AgentConfigPath, []byte("[hid]\nframe_socket = "+strconv.Quote(socket)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "restart")
+	fakeAgent := filepath.Join(dir, "agent")
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"frame_service.keep_streamon\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
+	if err := os.WriteFile(fakeAgent, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	init := filepath.Join(dir, "frame-init")
+	t.Setenv("AIDEN_CONFIG_TEST_RESTART_MARKER", marker)
+	if err := os.WriteFile(init, []byte("#!/bin/sh\nprintf '%s' frame >\"$AIDEN_CONFIG_TEST_RESTART_MARKER\"\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	var reloads atomic.Int64
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reloads.Add(1)
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true})
+	}))
+	defer reload.Close()
+	options.AgentBinary = fakeAgent
+	options.AgentHTTPBaseURL = reload.URL
+	options.FrameServiceInitScript = init
+	options.AgentInitScript = "/must-not-execute"
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := func() *httptest.ResponseRecorder {
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{"frame_service":{"keep_streamon":true}}}`)))
+		return resp
+	}
+	failed := save()
+	if failed.Code != http.StatusServiceUnavailable || reloads.Load() != 0 {
+		t.Fatalf("failed service restart was applied: %d %s", failed.Code, failed.Body.String())
+	}
+	if err := os.WriteFile(init, []byte("#!/bin/sh\nprintf '%s' frame >\"$AIDEN_CONFIG_TEST_RESTART_MARKER\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// An unchanged retry still has to finish the failed frame restart.
+	if err := os.WriteFile(fakeAgent, []byte(strings.ReplaceAll(script, `["frame_service.keep_streamon"]`, `[]`)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	applied := save()
+	if applied.Code != http.StatusOK || !strings.Contains(applied.Body.String(), `"pending":true`) || !strings.Contains(applied.Body.String(), `"agent_restart_scheduled":false`) {
+		t.Fatalf("status=%d body=%s", applied.Code, applied.Body.String())
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "frame" {
+		t.Fatalf("frame restart missing: %s %v", data, err)
+	}
+	if server.agentRestartPending() {
+		t.Fatal("Agent restart was scheduled")
+	}
+}
+
+func TestFrameServiceReadinessWaitsForListener(t *testing.T) {
+	dir, err := os.MkdirTemp("", "frame-start-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "f.sock")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- waitForFrameService(ctx, socket) }()
+	select {
+	case err := <-done:
+		t.Fatalf("returned before listener: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	canceled, stop := context.WithCancel(context.Background())
+	stop()
+	if err := waitForFrameService(canceled, filepath.Join(dir, "missing.sock")); err == nil {
+		t.Fatal("missing service reported ready")
+	}
+}
+
+func TestConfigApplicationDropsReloadErrorAfterAgentRestart(t *testing.T) {
+	options := testOptions(t)
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[],\"reboot_required\":false,\"persisted\":true,\"revision\":7}'\n"
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	agentID := "agent-one"
+	failReload := false
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			mu.Lock()
+			id := agentID
+			mu.Unlock()
+			revision := 6
+			if id == "agent-two" {
+				revision = 7
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"state": "applied", "applied": true, "pending": false, "runtime_id": id, "revision": revision})
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if failReload {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "agent busy"})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true, "runtime_id": agentID})
+	}))
+	defer reload.Close()
+	options.AgentBinary = fakeAgent
+	options.AgentHTTPBaseURL = reload.URL
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := func() *httptest.ResponseRecorder {
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{}}`)))
+		return resp
+	}
+	status := func() *httptest.ResponseRecorder {
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/config/application", nil))
+		return resp
+	}
+	// A successful save records the answering Agent process.
+	if resp := save(); resp.Code != http.StatusOK {
+		t.Fatalf("first save: %d %s", resp.Code, resp.Body.String())
+	}
+	// The next reload request fails and the error is attributed to that process.
+	mu.Lock()
+	failReload = true
+	mu.Unlock()
+	if resp := save(); resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failing save: %d %s", resp.Code, resp.Body.String())
+	}
+	if resp := status(); resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"state":"failed"`) || !strings.Contains(resp.Body.String(), "agent busy") {
+		t.Fatalf("same-process status: %d %s", resp.Code, resp.Body.String())
+	}
+	// A restarted Agent booted the persisted configuration: the stored error
+	// is stale and must be dropped in favor of the live status.
+	mu.Lock()
+	agentID = "agent-two"
+	mu.Unlock()
+	if resp := status(); resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"state":"applied"`) || strings.Contains(resp.Body.String(), "agent busy") {
+		t.Fatalf("restarted-agent status: %d %s", resp.Code, resp.Body.String())
+	}
+	// The error stays cleared for subsequent polls.
+	if resp := status(); resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"state":"applied"`) {
+		t.Fatalf("cleared status: %d %s", resp.Code, resp.Body.String())
 	}
 }

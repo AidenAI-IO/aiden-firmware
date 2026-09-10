@@ -140,6 +140,10 @@ curl -fsS --max-time 15 -X PUT \
     -H 'Content-Type: application/json' \
     --data '{"system_env":"AIDEN_DOCKER_SANDBOX_SMOKE=1\n"}' \
     "http://127.0.0.1:$config_port/api/system/environment" \
+    | grep -q '"agent_restart_required":true'
+
+curl -fsS --max-time 15 -X POST \
+    "http://127.0.0.1:$config_port/api/system/environment/apply" \
     | grep -q '"agent_restart_scheduled":true'
 
 attempt=1
@@ -233,6 +237,9 @@ curl -fsS --max-time 15 -X PUT \
     -H 'Content-Type: application/json' \
     --data '{"system_env":"AIDEN_DOCKER_SANDBOX_RACE=1\n"}' \
     "http://127.0.0.1:$config_port/api/system/environment" >/dev/null
+curl -fsS --max-time 15 -X POST \
+    "http://127.0.0.1:$config_port/api/system/environment/apply" \
+    >/dev/null
 wait_for_agent
 
 compose exec -T aiden sh -c '
@@ -242,7 +249,7 @@ for process in /proc/[0-9]*; do
     if [ "$executable" = /oem/usr/bin/agent ]; then
         command_line="$(tr "\000" " " < "$process/cmdline" 2>/dev/null || true)"
         case "$command_line" in
-            */oem/usr/bin/agent\ config-web\ *) continue ;;
+            */oem/usr/bin/agent\ config-web\ *|*/oem/usr/bin/agent\ wifi-proxy\ *) continue ;;
         esac
         count="$((count + 1))"
     fi

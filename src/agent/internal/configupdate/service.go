@@ -29,13 +29,12 @@ type Result struct {
 	// Persisted and Applied distinguish durable storage from runtime reload.
 	// The CLI updater sets Persisted=true once the atomic rename succeeds; the
 	// Config Web service fills Applied after notifying the Agent process.
-	Persisted       bool     `json:"persisted"`
-	Applied         bool     `json:"applied"`
-	Revision        uint64   `json:"revision"`
-	RestartRequired bool     `json:"restart_required"`
-	RestartReasons  []string `json:"restart_reasons,omitempty"`
-	Error           string   `json:"error,omitempty"`
-	ErrorKind       string   `json:"error_kind,omitempty"`
+	Persisted     bool     `json:"persisted"`
+	Applied       bool     `json:"applied"`
+	Revision      uint64   `json:"revision"`
+	RebootReasons []string `json:"reboot_reasons,omitempty"`
+	Error         string   `json:"error,omitempty"`
+	ErrorKind     string   `json:"error_kind,omitempty"`
 }
 
 const (
@@ -93,15 +92,13 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 	if patch == nil {
 		return Result{}, invalidConfigUpdate(fmt.Errorf("config patch must be an object"))
 	}
-	if nested, ok := patch["config"]; ok {
-		var configPatch map[string]json.RawMessage
-		if err := json.Unmarshal(nested, &configPatch); err != nil {
-			return Result{}, invalidConfigUpdate(fmt.Errorf("config patch must be an object: %w", err))
-		}
-		if configPatch == nil {
-			return Result{}, invalidConfigUpdate(fmt.Errorf("config patch must be an object"))
-		}
-		patch = configPatch
+	nested, ok := patch["config"]
+	if !ok || len(patch) != 1 {
+		return Result{}, invalidConfigUpdate(fmt.Errorf("expected only a config object"))
+	}
+	patch = nil
+	if err := json.Unmarshal(nested, &patch); err != nil || patch == nil {
+		return Result{}, invalidConfigUpdate(fmt.Errorf("config patch must be an object"))
 	}
 	renames, err := takeProviderRenames(patch)
 	if err != nil {
@@ -123,8 +120,15 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 		}
 	}
 	currentDTO := FromAgentConfig(current)
-	if err := normalizeLegacyWebConfigPatch(patch, current); err != nil {
-		return Result{}, invalidConfigUpdate(err)
+	for _, section := range []string{"model", "tts", "stt", "voice_model"} {
+		var fields map[string]json.RawMessage
+		if raw, ok := patch[section]; ok && json.Unmarshal(raw, &fields) == nil {
+			for _, key := range []string{"api_key", "secret_id", "secret_key"} {
+				if _, exists := fields[key]; exists {
+					return Result{}, invalidConfigUpdate(fmt.Errorf("%s.%s is unsupported; use %s_providers", section, key, section))
+				}
+			}
+		}
 	}
 	explicitCredentials := explicitProviderCredentialEdits(patch, renames, current)
 	if err := stripReadOnlyStatusFields(patch, currentDTO); err != nil {
@@ -203,17 +207,16 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 	}
 	rebootRequired := requiresConfigReboot(current, candidate)
 	result := Result{
-		OK:              true,
-		Config:          FromAgentConfig(candidate),
-		ChangedPaths:    changed,
-		RebootRequired:  rebootRequired,
-		Persisted:       true,
-		Applied:         false,
-		Revision:        configRevision(updated),
-		RestartRequired: rebootRequired,
+		OK:             true,
+		Config:         FromAgentConfig(candidate),
+		ChangedPaths:   changed,
+		RebootRequired: rebootRequired,
+		Persisted:      true,
+		Applied:        false,
+		Revision:       configRevision(updated),
 	}
 	if rebootRequired {
-		result.RestartReasons = []string{"USB/HID identity or keyboard layout changed"}
+		result.RebootReasons = []string{"USB/HID identity or keyboard layout changed"}
 	}
 	return result, nil
 }
@@ -308,137 +311,6 @@ func stripMatchingReadOnlyStatusFields(values, current map[string]json.RawMessag
 			values[key] = encoded
 		}
 	}
-}
-
-func normalizeLegacyWebConfigPatch(patch map[string]json.RawMessage, current agent.Config) error {
-	for _, section := range providerRecordSections {
-		raw, ok := patch[section]
-		if !ok {
-			continue
-		}
-		var records map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &records); err != nil || records == nil {
-			continue
-		}
-		for name, rawRecord := range records {
-			if bytes.Equal(bytes.TrimSpace(rawRecord), []byte("null")) {
-				continue
-			}
-			var record map[string]json.RawMessage
-			if err := json.Unmarshal(rawRecord, &record); err != nil || record == nil {
-				continue
-			}
-			if _, hasType := record["type"]; !hasType {
-				if legacyType, hasLegacyType := record["provider"]; hasLegacyType {
-					record["type"] = legacyType
-				}
-			}
-			delete(record, "provider")
-			encoded, err := json.Marshal(record)
-			if err != nil {
-				return err
-			}
-			records[name] = encoded
-		}
-		encoded, err := json.Marshal(records)
-		if err != nil {
-			return err
-		}
-		patch[section] = encoded
-	}
-
-	if rawAgent, ok := patch["agent"]; ok {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(rawAgent, &fields) == nil && fields != nil {
-			delete(fields, "default_platform")
-			delete(fields, "instruction")
-			if len(fields) == 0 {
-				delete(patch, "agent")
-			} else if encoded, err := json.Marshal(fields); err == nil {
-				patch["agent"] = encoded
-			}
-		}
-	}
-
-	rawModel, ok := patch["model"]
-	if !ok {
-		return nil
-	}
-	var model map[string]json.RawMessage
-	if err := json.Unmarshal(rawModel, &model); err != nil || model == nil {
-		return nil
-	}
-	delete(model, "base_url")
-	rawKey, hasKey := model["api_key"]
-	if hasKey {
-		var apiKey string
-		if err := json.Unmarshal(rawKey, &apiKey); err == nil {
-			model["api_key"] = json.RawMessage("null")
-		}
-		if strings.TrimSpace(apiKey) != "" {
-			provider := current.Model.Provider
-			if rawProvider, ok := model["provider"]; ok {
-				_ = json.Unmarshal(rawProvider, &provider)
-			}
-			if strings.TrimSpace(provider) != "" {
-				if err := addLegacyModelProviderCredential(patch, current, provider, apiKey); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	if len(model) == 0 {
-		delete(patch, "model")
-	} else {
-		encoded, err := json.Marshal(model)
-		if err != nil {
-			return err
-		}
-		patch["model"] = encoded
-	}
-	return nil
-}
-
-func addLegacyModelProviderCredential(patch map[string]json.RawMessage, current agent.Config, provider, apiKey string) error {
-	var records map[string]json.RawMessage
-	if raw, ok := patch["model_providers"]; ok {
-		if err := json.Unmarshal(raw, &records); err != nil {
-			return fmt.Errorf("model_providers patch must be an object: %w", err)
-		}
-		if records == nil {
-			return fmt.Errorf("model_providers patch must be an object")
-		}
-	}
-	if records == nil {
-		records = make(map[string]json.RawMessage)
-	}
-	var record map[string]json.RawMessage
-	if raw, ok := records[provider]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		_ = json.Unmarshal(raw, &record)
-	}
-	if record == nil {
-		record = make(map[string]json.RawMessage)
-		if existing, ok := current.ModelProviders[provider]; ok {
-			typeJSON, _ := json.Marshal(existing.Type)
-			record["type"] = typeJSON
-		} else {
-			typeJSON, _ := json.Marshal(provider)
-			record["type"] = typeJSON
-		}
-	}
-	keyJSON, _ := json.Marshal(apiKey)
-	record["api_key"] = keyJSON
-	encodedRecord, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	records[provider] = encodedRecord
-	encodedRecords, err := json.Marshal(records)
-	if err != nil {
-		return err
-	}
-	patch["model_providers"] = encodedRecords
-	return nil
 }
 
 type providerFieldEdits map[string]map[string]map[string]bool

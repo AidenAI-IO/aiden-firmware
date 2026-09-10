@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/wifiproxy"
 )
 
 const (
@@ -26,16 +27,24 @@ const (
 )
 
 type Server struct {
-	options   Options
-	http      *http.Server
-	storage   storageController
-	sttTest   *agent.STTConfigTestAPI
-	closeMu   sync.Once
-	storageMu sync.RWMutex
-	configMu  sync.Mutex
-	wifiOpMu  sync.Mutex
-	wifiMu    sync.Mutex
-	wifiJob   *wifiConnectionJob
+	options                  Options
+	http                     *http.Server
+	storage                  storageController
+	sttTest                  *agent.STTConfigTestAPI
+	closeMu                  sync.Once
+	storageMu                sync.RWMutex
+	configMu                 sync.Mutex
+	configServiceMu          sync.Mutex
+	configSaveMu             sync.Mutex
+	systemEnvMu              sync.Mutex
+	configSavePending        bool
+	configApplyError         string
+	configApplyErrorRevision uint64
+	frameApplyPending        bool
+	storageApplyPending      bool
+	wifiOpMu                 sync.Mutex
+	wifiMu                   sync.Mutex
+	wifiJob                  *wifiConnectionJob
 
 	restartMu               sync.Mutex
 	restartCommand          *exec.Cmd
@@ -46,6 +55,18 @@ type Server struct {
 }
 
 func NewServer(options Options) (*Server, error) {
+	if strings.TrimSpace(options.WiFiProxyConfigPath) == "" {
+		options.WiFiProxyConfigPath = wifiproxy.DefaultConfigPath
+	}
+	if strings.TrimSpace(options.LocalProxyAddress) == "" {
+		options.LocalProxyAddress = wifiproxy.DefaultListenAddress
+	}
+	if strings.TrimSpace(options.LocalProxyEnvironmentPath) == "" {
+		options.LocalProxyEnvironmentPath = wifiproxy.DefaultEnvironmentPath
+	}
+	if strings.TrimSpace(options.WiFiProxyInitScript) == "" {
+		options.WiFiProxyInitScript = "/etc/init.d/S51wifi_proxy"
+	}
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}

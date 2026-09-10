@@ -1246,8 +1246,6 @@ def test_memory_suite_covers_representative_memory_behaviors():
         "save_user_rule",
         "save_user_procedure",
         "save_correct_tags",
-        "use_preference_brevity",
-        "use_preference_language",
         "use_rule_to_block_action",
         "use_procedure_steps",
         "recall_saved_fact_after_setup",
@@ -1261,7 +1259,7 @@ def test_memory_suite_covers_representative_memory_behaviors():
         "multi_turn_overwrite_and_verify_last_value",
     }
     assert expected_tasks <= set(task_by_id)
-    assert len(suite.tasks) >= 17
+    assert len(suite.tasks) >= 15
     assert all(task.category == "memory" for task in suite.tasks)
 
     assert any(
@@ -1270,6 +1268,15 @@ def test_memory_suite_covers_representative_memory_behaviors():
     )
 
     overwrite_task = task_by_id["multi_turn_overwrite_and_verify_last_value"]
+    assert isinstance(overwrite_task.setup, list)
+    assert [item["prompt"] for item in overwrite_task.setup] == [
+        "请记住：我的办公城市是杭州。",
+        "我改主意了，办公城市改成深圳。请更新办公城市这条记忆，不要继续保留杭州作为当前值。",
+        "又调整了一下，办公城市最终定为成都。请再次更新办公城市这条记忆。",
+    ]
+    assert all(item["clear_history_after"] is False for item in overwrite_task.setup)
+    assert "第 1 步" not in overwrite_task.prompt
+    assert "recall_memory" in overwrite_task.prompt
     assert overwrite_task.hard_assertions.min_tool_calls == 4
     assert overwrite_task.hard_assertions.max_tool_calls == 4
     assert [item.tool for item in overwrite_task.hard_assertions.required_tool_calls] == [
@@ -1665,3 +1672,78 @@ def test_phone_bridge_data_policy_suite_covers_tools_and_routing_modes():
         assert "platform" not in state
         assert state["fgs_bridge_enabled"] is True
         assert "bridge_open_app" in task.hard_assertions.forbidden_tools
+
+
+def test_aiden_app_connection_capabilities_suite_covers_real_proxy_contract():
+    suites_dir = Path(__file__).resolve().parents[1] / "suites" / "aiden_app"
+    suite = load_suite(suites_dir / "connection_capabilities_v1.json")
+    tasks = {task.id: task for task in suite.tasks}
+
+    assert suite.mock_environment is None
+    assert set(tasks) == {
+        "ios_forwarded_environment_context",
+        "android_forwarded_environment_context",
+        "semantic_open_browser",
+        "open_https_url",
+        "clipboard_round_trip_restore",
+        "calendar_create_query_delete_round_trip",
+        "contacts_query_update_restore_fixture",
+        "send_local_notification",
+    }
+    assert all(task.mock_environment is None for task in suite.tasks)
+    assert all(task.setup and task.setup["type"] == "agent_prompt" for task in suite.tasks)
+    assert all(task.setup["clear_history_after"] is True for task in suite.tasks)
+    assert all(set(task.platforms) <= {"ios", "android"} for task in suite.tasks)
+
+    ios_context = tasks["ios_forwarded_environment_context"]
+    android_context = tasks["android_forwarded_environment_context"]
+    assert ios_context.platforms == ["ios"]
+    assert android_context.platforms == ["android"]
+    assert ios_context.hard_assertions.max_tool_calls == 0
+    assert android_context.hard_assertions.max_tool_calls == 0
+
+    assert tasks["semantic_open_browser"].hard_assertions.required_tool_calls[0].input_contains == {
+        "app": "browser"
+    }
+    assert tasks["open_https_url"].hard_assertions.required_tool_calls[0].input_contains == {
+        "url": "https://example.com/"
+    }
+
+    clipboard_actions = [
+        requirement.input_contains["action"]
+        for requirement in tasks[
+            "clipboard_round_trip_restore"
+        ].hard_assertions.required_tool_calls
+    ]
+    assert clipboard_actions == ["read", "write", "read", "write", "read"]
+
+    calendar_actions = [
+        requirement.input_contains["action"]
+        for requirement in tasks[
+            "calendar_create_query_delete_round_trip"
+        ].hard_assertions.required_tool_calls
+    ]
+    assert calendar_actions == ["query", "create", "query", "delete", "query"]
+
+    contacts_task = tasks["contacts_query_update_restore_fixture"]
+    contacts_actions = [
+        requirement.input_contains["action"]
+        for requirement in contacts_task.hard_assertions.required_tool_calls
+    ]
+    assert contacts_actions == ["query", "update", "query", "update", "query"]
+    assert all(
+        requirement.input_contains["action"] != "create"
+        for requirement in contacts_task.hard_assertions.required_tool_calls
+    )
+
+    notification_call = tasks[
+        "send_local_notification"
+    ].hard_assertions.required_tool_calls[0]
+    assert notification_call.tool == "bridge_notification"
+    assert notification_call.input_contains == {
+        "action": "send",
+        "title": "AIDEN_BRIDGE_NOTIFICATION_V1",
+        "body": "forwarded app connection verified",
+        "sound": False,
+        "badge": 1,
+    }

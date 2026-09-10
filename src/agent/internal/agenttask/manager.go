@@ -88,7 +88,9 @@ type Manager struct {
 	mu              sync.RWMutex
 	tasks           map[string]*entry
 	terminal        []Task
+	terminalSeq     uint64
 	terminalChanged chan struct{}
+	wakeChanged     chan struct{}
 	actionChanged   chan struct{}
 	closed          bool
 }
@@ -113,6 +115,7 @@ func newManager(runner Runner, queueSize int, now func() time.Time) *Manager {
 		queue:           make(chan string, queueSize),
 		tasks:           make(map[string]*entry),
 		terminalChanged: make(chan struct{}, 1),
+		wakeChanged:     make(chan struct{}, 1),
 		actionChanged:   make(chan struct{}, 1),
 	}
 	m.wg.Add(1)
@@ -243,6 +246,31 @@ func (m *Manager) TerminalNotifications() <-chan struct{} {
 	return m.terminalChanged
 }
 
+// WakeNotifications signals once per new terminal task update. A standby
+// consumer uses it to activate the foreground so a result is announced without
+// waiting for the user to speak first. It is deliberately separate from
+// TerminalNotifications: consuming a wake signal must never steal the drain
+// signal from the foreground session that owns result delivery.
+func (m *Manager) WakeNotifications() <-chan struct{} {
+	if m == nil {
+		return nil
+	}
+	return m.wakeChanged
+}
+
+// TerminalSequence counts terminal task updates produced so far. A standby
+// consumer uses it as a watermark: a session records the sequence it is about
+// to consume, so a batch activates the foreground once while an update the
+// session never received can still be announced later.
+func (m *Manager) TerminalSequence() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.terminalSeq
+}
+
 func (m *Manager) UserActionNotifications() <-chan struct{} {
 	if m == nil {
 		return nil
@@ -320,6 +348,20 @@ func (m *Manager) DrainTerminalTasks() []Task {
 	result := append([]Task(nil), m.terminal...)
 	m.terminal = nil
 	return result
+}
+
+// TerminalState returns the terminal updates still waiting for delivery
+// together with the sequence they were observed at, without consuming them.
+// Both values are read under one lock so a standby consumer cannot combine an
+// emptiness check with a sequence from a different moment: activating for a
+// batch that is already gone would open an empty foreground session.
+func (m *Manager) TerminalState() ([]Task, uint64) {
+	if m == nil {
+		return nil, 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]Task(nil), m.terminal...), m.terminalSeq
 }
 
 // RestoreTerminalTasks returns updates to the front of the delivery queue when
@@ -452,13 +494,29 @@ func (m *Manager) finishLocked(item *entry, status Status, result, taskError str
 	item.task.Error = taskError
 	item.task.UpdatedAt = now
 	item.task.CompletedAt = &now
+	// A terminal task is never waiting for a user action. Clearing the field
+	// keeps the snapshot honest in both directions: the foreground is not asked
+	// to perform an action for work that already ended, and session teardown can
+	// classify a restored update as terminal instead of dropping it as an
+	// action request for a task that is no longer running.
+	item.task.PendingUserAction = nil
+	item.actionNotified = false
+	m.terminalSeq++
 	m.terminal = append(m.terminal, item.task)
 	m.signalTerminalLocked()
+	m.signalWakeLocked()
 }
 
 func (m *Manager) signalTerminalLocked() {
 	select {
 	case m.terminalChanged <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Manager) signalWakeLocked() {
+	select {
+	case m.wakeChanged <- struct{}{}:
 	default:
 	}
 }

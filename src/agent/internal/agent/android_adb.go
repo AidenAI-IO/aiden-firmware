@@ -392,12 +392,12 @@ func (s *Server) handleAndroidADBStatus(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.androidADB == nil {
+	if s.androidADBSnapshot() == nil {
 		http.Error(w, `{"ok":false,"error":"android adb is not initialized"}`, http.StatusServiceUnavailable)
 		return
 	}
 
-	status := s.androidADB.Status(r.Context(), strings.TrimSpace(r.URL.Query().Get("app_usb_ip")))
+	status := s.androidADBSnapshot().Status(r.Context(), strings.TrimSpace(r.URL.Query().Get("app_usb_ip")))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
@@ -407,7 +407,7 @@ func (s *Server) handleAndroidADBPair(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.androidADB == nil {
+	if s.androidADBSnapshot() == nil {
 		http.Error(w, `{"ok":false,"error":"android adb is not initialized"}`, http.StatusServiceUnavailable)
 		return
 	}
@@ -418,7 +418,7 @@ func (s *Server) handleAndroidADBPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.androidADB.Pair(r.Context(), req)
+	result, err := s.androidADBSnapshot().Pair(r.Context(), req)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(androidADBStatusCode(err))
 	json.NewEncoder(w).Encode(result)

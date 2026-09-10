@@ -1,8 +1,9 @@
+import {refreshConfigApplication, retryConfigApplication} from './config-application.js';
 import {setBanner, setDetails} from './api.js';
 import {bindFieldVisibility, hydrateSelectOptions} from './config-meta.js';
 import {
   cancelEditSection, closeTestToast, disableAgentConfigEditing, enterEditSection,
-  initialReadyMessage, loadConfig, loadConfigMeta, lockAllSections, saveSection, testSection
+  initialReadyMessage, loadConfig, rebootDevice, loadConfigMeta, lockAllSections, saveSection, testSection
 } from './config-form.js';
 import {initI18n, saveLocale, t} from './i18n.js';
 import {applyPendingAgentLogSnapshotIfIdle, exportLogs, refreshAgentLog, setAgentLogAutoScroll, syncAgentLogAutoScroll, toggleAgentLogAutoScroll} from './logs.js';
@@ -15,14 +16,16 @@ import {
 import {byId, configureTerminalLink} from './state.js';
 import {ejectStorageCard, refreshStorage, startStorageFormat} from './storage.js';
 import {toggleSTTTest} from './stt-test.js';
-import {cancelSystemEnvEdit, enterSystemEnvEdit, handleSystemEnvEditorKeydown, saveSystemEnv, toggleSystemEnvComment} from './system-env.js';
-import {closeWifiModal, connectSavedWifi, connectSelectedWifi, forgetWifi, openWifiModal, scanWifi, toggleWifiListExpanded} from './wifi.js';
+import {applySystemEnv, refreshSystemEnvApplication, cancelSystemEnvEdit, enterSystemEnvEdit, handleSystemEnvEditorKeydown, saveSystemEnv, toggleSystemEnvComment} from './system-env.js';
+import {closeWifiModal, connectSavedWifi, connectSelectedWifi, forgetWifi, openWifiModal, scanWifi, syncWifiProxyFields, toggleWifiListExpanded} from './wifi.js';
 
 const simpleActions = {
   'export-logs': exportLogs,
   'ota-update': triggerOtaUpdate,
   'refresh-ota-log': () => refreshOtaLog(true),
   'reload-all': reloadAll,
+ 'retry-config-apply': retryConfigApplication,
+ 'reboot-device': rebootDevice,
   'scan-wifi': () => scanWifi(false),
   'refresh-agent-status': () => refreshAgentStatus(true),
   'toggle-agent-log-auto-scroll': toggleAgentLogAutoScroll,
@@ -35,6 +38,7 @@ const simpleActions = {
   'toggle-system-env-comment': toggleSystemEnvComment,
   'cancel-system-env': cancelSystemEnvEdit,
   'save-system-env': saveSystemEnv,
+  'apply-system-env': applySystemEnv,
   'close-test-toast': closeTestToast,
   'close-wifi-modal': closeWifiModal,
   'connect-selected-wifi': connectSelectedWifi,
@@ -71,6 +75,7 @@ document.addEventListener('click', function(event) {
 });
 document.addEventListener('change', function(event) {
   if (event.target.dataset.action === 'save-locale') saveLocale(event.target.value);
+  else if (event.target.dataset.action === 'wifi-proxy-mode') syncWifiProxyFields();
 });
 window.addEventListener('click', function(event) {
   if (event.target === byId('wifiModal')) closeWifiModal();
@@ -124,6 +129,10 @@ async function init() {
     setDetails(err.message);
   }
   if (!metaOk) disableAgentConfigEditing();
+  refreshSystemEnvApplication();
+  setInterval(refreshSystemEnvApplication, 3000);
+  refreshConfigApplication();
+  setInterval(refreshConfigApplication, 3000);
   refreshStorage(false);
   setInterval(() => refreshAgentStatus(false), 5000);
   setInterval(() => refreshAgentLog(false), 2000);

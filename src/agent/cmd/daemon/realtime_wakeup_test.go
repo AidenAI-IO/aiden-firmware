@@ -11,6 +11,7 @@ import (
 
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/agent/realtimevoice"
+	"aiden-agent/internal/agenttask"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -443,6 +444,31 @@ func TestRealtimeTurnStateRejectsDuplicateResponseCreated(t *testing.T) {
 	}
 	if state.inputTurnPending {
 		t.Fatal("speech_stopped left the new input turn pending")
+	}
+}
+
+// A repeated utterance boundary must not reopen the input turn once
+// response.created has bound the response ID. If it does, the response's own
+// tool calls are discarded as stale and inputTurnPending stays set, which
+// permanently blocks voice notification and background task injection. The
+// adapters no longer emit a second boundary, and speechStopped clears
+// inputTurnPending outright; this pins both properties down together.
+func TestRealtimeTurnStateDuplicateSpeechStopKeepsResponseUsable(t *testing.T) {
+	state := realtimeTurnState{}
+	state.speechStarted()
+	state.speechStopped("")
+	if !state.responseStarted("response-1") {
+		t.Fatal("response.created was rejected")
+	}
+	state.speechStopped("")
+	if !state.acceptsResponseEvent("response-1") {
+		t.Fatalf("active response's own output was discarded as stale: %+v", state)
+	}
+	if !state.responseFinished("response-1") {
+		t.Fatal("terminal event for the active response was rejected")
+	}
+	if !state.canInjectResponse() {
+		t.Fatalf("voice notification injection stayed blocked after the turn: %+v", state)
 	}
 }
 
@@ -969,5 +995,123 @@ func TestFailActiveRealtimeChatReportsSessionError(t *testing.T) {
 	}
 	if _, ok := <-command.events; ok {
 		t.Fatal("active chat event channel remains open")
+	}
+}
+
+func TestTaskWakeStateActivatesOncePerTerminalBatch(t *testing.T) {
+	var state taskWakeState
+	if state.shouldActivate(0) {
+		t.Fatal("empty terminal sequence activated standby")
+	}
+	if !state.shouldActivate(1) {
+		t.Fatal("first terminal update did not activate standby")
+	}
+	if state.shouldActivate(1) {
+		t.Fatal("duplicate terminal sequence activated standby twice")
+	}
+	state.observeSession(2)
+	if state.shouldActivate(2) {
+		t.Fatal("update already consumed by a session activated standby again")
+	}
+	if !state.shouldActivate(3) {
+		t.Fatal("new terminal update did not activate standby")
+	}
+}
+
+func TestTaskWakeStateDoesNotRetryRestoredUpdate(t *testing.T) {
+	var state taskWakeState
+	if !state.shouldActivate(1) {
+		t.Fatal("first terminal update did not activate standby")
+	}
+	// The session failed to deliver and restored the update without advancing
+	// the sequence, so standby must not re-activate in a loop.
+	state.observeSession(1)
+	if state.shouldActivate(1) {
+		t.Fatal("restored terminal update re-activated standby")
+	}
+}
+
+func TestTaskWakeStateObserveSessionKeepsNewerSequence(t *testing.T) {
+	state := taskWakeState{lastSeq: 4}
+	state.observeSession(2)
+	if !state.shouldActivate(5) {
+		t.Fatal("stale session observation moved the watermark back")
+	}
+	if state.shouldActivate(5) {
+		t.Fatal("terminal update activated standby twice")
+	}
+}
+
+type staticTaskRunner struct{ result string }
+
+func (r staticTaskRunner) Run(context.Context, string) (string, error) { return r.result, nil }
+
+func TestAgentTaskWakeActivatesStandbyAndKeepsDrainSignal(t *testing.T) {
+	manager := agenttask.NewManager(staticTaskRunner{result: "the report is ready"})
+	defer manager.Close()
+	if _, err := manager.Create("prepare the report"); err != nil {
+		t.Fatal(err)
+	}
+
+	var state taskWakeState
+	select {
+	case <-agentTaskWakeNotifications(manager):
+	case <-time.After(time.Second):
+		t.Fatal("terminal task did not signal standby")
+	}
+	if pending, _ := agentTaskTerminalState(manager); len(pending) != 1 {
+		t.Fatalf("pending terminal tasks = %+v", pending)
+	}
+	if !state.shouldActivate(agentTaskTerminalSequence(manager)) {
+		t.Fatal("terminal task did not activate standby")
+	}
+	// The wake consumer must not have stolen the session's drain signal.
+	select {
+	case <-agentTaskNotifications(manager):
+	case <-time.After(time.Second):
+		t.Fatal("wake consumer stole the terminal drain signal")
+	}
+	drained := manager.DrainTerminalTasks()
+	if len(drained) != 1 || drained[0].Result != "the report is ready" {
+		t.Fatalf("drained = %+v", drained)
+	}
+	// A delivered batch is no longer pending, so a stale wake signal cannot
+	// open an empty session.
+	if pending, _ := agentTaskTerminalState(manager); len(pending) != 0 {
+		t.Fatalf("delivered update still pending: %+v", pending)
+	}
+	if state.shouldActivate(agentTaskTerminalSequence(manager)) {
+		t.Fatal("standby re-activated for an already delivered update")
+	}
+}
+
+func TestAgentTaskWakeAnnouncesUpdateDroppedBySession(t *testing.T) {
+	manager := agenttask.NewManager(staticTaskRunner{result: "done"})
+	defer manager.Close()
+	if _, err := manager.Create("do the thing"); err != nil {
+		t.Fatal(err)
+	}
+	var state taskWakeState
+	select {
+	case <-agentTaskWakeNotifications(manager):
+	case <-time.After(time.Second):
+		t.Fatal("terminal task did not signal standby")
+	}
+	if !state.shouldActivate(agentTaskTerminalSequence(manager)) {
+		t.Fatal("terminal task did not activate standby")
+	}
+	state.observeSession(agentTaskTerminalSequence(manager))
+
+	// The session drained the update but ended before injecting it, so
+	// teardown returned it to the queue. It must still be pending for delivery.
+	<-agentTaskNotifications(manager)
+	manager.RestoreTerminalTasks(manager.DrainTerminalTasks())
+	if pending, _ := agentTaskTerminalState(manager); len(pending) != 1 {
+		t.Fatalf("restored update not pending: %+v", pending)
+	}
+	// The sequence did not advance, so a restored batch must not re-activate:
+	// the update waits for the next user activation instead of looping.
+	if state.shouldActivate(agentTaskTerminalSequence(manager)) {
+		t.Fatal("restored update re-activated standby")
 	}
 }

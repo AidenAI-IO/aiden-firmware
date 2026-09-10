@@ -102,18 +102,21 @@ COPY src/config_web/web/ /oem/usr/share/aiden/config-web/
 COPY src/agent/config/skills/ /oem/usr/share/aiden/skills/
 COPY docker/dev/agent.toml /opt/aiden/defaults/agent.toml
 COPY overlay/oem/usr/bin/aiden-env-run /usr/local/bin/aiden-env-run
+COPY overlay/etc/init.d/S51wifi_proxy /usr/local/bin/aiden-wifi-proxy-service
 COPY docker/dev/agent-service.sh /usr/local/bin/aiden-agent-service
 COPY docker/dev/entrypoint.sh /usr/local/bin/aiden-docker-entrypoint
 
 RUN chmod 0755 \
         /oem/usr/bin/agent \
         /usr/local/bin/aiden-env-run \
+        /usr/local/bin/aiden-wifi-proxy-service \
         /usr/local/bin/aiden-agent-service \
         /usr/local/bin/aiden-docker-entrypoint \
         /usr/local/bin/ttyd
 
 ENV AIDEN_AGENT_BIN=/oem/usr/bin/agent \
     AIDEN_AGENT_INIT_SCRIPT=/usr/local/bin/aiden-agent-service \
+    AIDEN_WIFI_PROXY_INIT_SCRIPT=/usr/local/bin/aiden-wifi-proxy-service \
     AIDEN_ENV_RUN_BIN=/usr/local/bin/aiden-env-run \
     AIDEN_BUNDLED_SKILLS_DIR=/oem/usr/share/aiden/skills \
     AIDEN_SYSTEM_ENV=/userdata/system/env \

@@ -1080,7 +1080,7 @@ func newOTAHTTPClient() *http.Client {
 }
 
 func otaProxyFromEnvironment(req *http.Request) (*url.URL, error) {
-	return netproxy.ProxyFromEnvironment(req, "http", "https", "socks5")
+	return netproxy.ProxyFromEnvironment(req, "http", "https", "socks5", "socks5h")
 }
 
 func (u *Updater) logDownloadProgress(progress DownloadProgress) {
