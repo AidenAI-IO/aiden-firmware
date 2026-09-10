@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,8 +19,9 @@ import (
 )
 
 const (
-	wifiConnectionTaskTimeout = 2 * time.Minute
-	wifiCandidateApplyTimeout = 75 * time.Second
+	wifiConnectionTaskTimeout               = 2 * time.Minute
+	wifiCandidateApplyTimeout               = 75 * time.Second
+	wifiSupplicantConfigEnvironmentVariable = "AIDEN_WPA_SUPPLICANT_CONFIG"
 )
 
 type wiFiNetwork struct {
@@ -810,9 +812,37 @@ func (s *Server) handleWiFiForget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": applied, "wifi": config.publicValue(proxyConfig), "wifi_status": s.queryWiFiStatus(), "message": message, "wifi_apply": applyValue})
 }
 
+func renderWiFiConfigEnvironment(configPath string) ([]byte, error) {
+	if !filepath.IsAbs(configPath) {
+		return nil, fmt.Errorf("wpa_supplicant config path must be absolute: %q", configPath)
+	}
+	if strings.ContainsAny(configPath, "\x00\r\n") {
+		return nil, errors.New("wpa_supplicant config path contains invalid control characters")
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(configPath)
+	return []byte(fmt.Sprintf("%s=\"%s\"\n", wifiSupplicantConfigEnvironmentVariable, escaped)), nil
+}
+
+func (s *Server) selectSystemdWiFiConfig(configPath string) error {
+	content, err := renderWiFiConfigEnvironment(configPath)
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(s.options.WiFiConfigEnvironmentPath, content, 0o600)
+}
+
+func (s *Server) clearSystemdWiFiConfig() error {
+	err := os.Remove(s.options.WiFiConfigEnvironmentPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) commandResult {
 	var output strings.Builder
 	associated := false
+	selectorCleanupFailed := false
 	result := commandResult{ExitCode: 0}
 	if s.options.WiFiBackend == "systemd-networkd" {
 		if commandExists("ip") {
@@ -832,7 +862,7 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 			result.ExitCode = up.ExitCode
 		}
 	}
-	if !force && commandExists("wpa_cli") {
+	if !force && s.options.WiFiBackend != "systemd-networkd" && commandExists("wpa_cli") {
 		ping := runCommandContext(ctx, 5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "ping")
 		if ping.ExitCode == 0 && strings.Contains(string(ping.Output), "PONG") {
 			reconfigure := runCommandContext(ctx, 5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "reconfigure")
@@ -842,13 +872,23 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 		}
 	}
 	if !associated && s.options.WiFiBackend == "systemd-networkd" {
-		unit := "wpa_supplicant@" + s.options.WiFiInterface + ".service"
-		restart := runCommandContext(ctx, 10*time.Second, nil, nil, "systemctl", "restart", unit)
-		fmt.Fprintf(&output, "$ systemctl restart %s\n%s", unit, restart.Output)
-		if restart.ExitCode == 0 {
-			associated = s.waitForWiFiState(ctx, &output, 10)
+		if err := s.selectSystemdWiFiConfig(configPath); err != nil {
+			result.ExitCode = 1
+			fmt.Fprintf(&output, "$ select wpa_supplicant config %s\n%v\n", configPath, err)
 		} else {
-			result.ExitCode = restart.ExitCode
+			unit := "wpa_supplicant@" + s.options.WiFiInterface + ".service"
+			restart := runCommandContext(ctx, 10*time.Second, nil, nil, "systemctl", "restart", unit)
+			fmt.Fprintf(&output, "$ systemctl restart %s with config %s\n%s", unit, configPath, restart.Output)
+			if err := s.clearSystemdWiFiConfig(); err != nil {
+				selectorCleanupFailed = true
+				result.ExitCode = 1
+				fmt.Fprintf(&output, "$ remove runtime wpa_supplicant config selector\n%v\n", err)
+			}
+			if restart.ExitCode == 0 {
+				associated = s.waitForWiFiState(ctx, &output, 10)
+			} else {
+				result.ExitCode = restart.ExitCode
+			}
 		}
 	} else if !associated && commandExists("wpa_supplicant") {
 		if commandExists("killall") {
@@ -891,7 +931,7 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 		result.ExitCode = 1
 		output.WriteString("wpa_supplicant never reached COMPLETED; skipping DHCP.\n")
 	}
-	if associated && dhcpOK {
+	if associated && dhcpOK && !selectorCleanupFailed {
 		result.ExitCode = 0
 	}
 	if ctx.Err() != nil {

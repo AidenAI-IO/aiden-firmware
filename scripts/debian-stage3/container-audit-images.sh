@@ -255,6 +255,13 @@ audit_rootfs() {
         grep -Fqx "${directive}" "${proxy_watch_path}" \
             || fail "Wi-Fi proxy path unit is missing safe ordering: ${directive}"
     done
+    wifi_drop_in=${ROOTFS_MOUNT}/etc/systemd/system/wpa_supplicant@wlan0.service.d/20-aiden.conf
+    grep -Fqx 'EnvironmentFile=-/run/aiden/wpa_supplicant-config.env' "${wifi_drop_in}" \
+        || fail "wpa_supplicant does not consume the runtime candidate selector"
+    grep -Fqx 'Environment=AIDEN_WPA_SUPPLICANT_CONFIG=/userdata/debian/wifi/wpa_supplicant-wlan0.conf' "${wifi_drop_in}" \
+        || fail "wpa_supplicant does not define the persistent config fallback"
+    grep -Fqx 'ExecStart=/usr/sbin/wpa_supplicant -c ${AIDEN_WPA_SUPPLICANT_CONFIG} -i %I' "${wifi_drop_in}" \
+        || fail "wpa_supplicant does not expand the selected config path"
     grep -Eq '^After=.*aiden-wifi-proxy\.service' \
         "${ROOTFS_MOUNT}/etc/systemd/system/aiden-wifi-proxy-agent-restart.service" \
         || fail "Wi-Fi proxy restart service is missing proxy ordering"
