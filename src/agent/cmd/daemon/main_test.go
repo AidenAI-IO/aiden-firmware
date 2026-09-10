@@ -293,7 +293,7 @@ func TestRealtimeEndConversationToolDefersTeardownToSessionLoop(t *testing.T) {
 
 func TestRealtimeInstructionsCoverMemoryWritesAndStandby(t *testing.T) {
 	instructions := agent.DefaultRealtimeVoiceInstructions
-	for _, phrase := range []string{"save_memory", "forget_memory", "recall_session_chunks", "audio_volume", "end_conversation"} {
+	for _, phrase := range []string{"save_memory", "forget_memory", "recall_session_chunks", "audio_volume", "end_conversation", "query_agent_task"} {
 		if !strings.Contains(instructions, phrase) {
 			t.Fatalf("realtime instructions missing guidance for %q: %s", phrase, instructions)
 		}
@@ -327,16 +327,110 @@ func TestRealtimeAgentTaskToolsAreNonBlocking(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("background task did not start")
 	}
-	query := executor.call(context.Background(), realtimeQueryTaskTool, fmt.Sprintf(`{"task_id":%q}`, created.ID))
-	var running agenttask.Task
-	if err := json.Unmarshal([]byte(query), &running); err != nil || running.Status != agenttask.StatusRunning {
-		t.Fatalf("query output = %s, error = %v", query, err)
+	running := decodeRealtimeTaskQuery(t, executor.call(context.Background(), realtimeQueryTaskTool, fmt.Sprintf(`{"task_id":%q}`, created.ID)))
+	if len(running) != 1 || running[0].Status != agenttask.StatusRunning {
+		t.Fatalf("query output = %+v, want the running task", running)
+	}
+	// Omitting task_id must surface the same work, so the foreground can check
+	// what it already started before creating more.
+	outstanding := decodeRealtimeTaskQuery(t, executor.call(context.Background(), realtimeQueryTaskTool, `{}`))
+	if len(outstanding) != 1 || outstanding[0].ID != created.ID {
+		t.Fatalf("query-all output = %+v, want the running task", outstanding)
 	}
 	cancelled := executor.call(context.Background(), realtimeCancelTaskTool, fmt.Sprintf(`{"task_id":%q}`, created.ID))
 	var cancelling agenttask.Task
 	if err := json.Unmarshal([]byte(cancelled), &cancelling); err != nil || cancelling.Status != agenttask.StatusCancelling {
 		t.Fatalf("cancel output = %s, error = %v", cancelled, err)
 	}
+}
+
+func TestRealtimeQueryTaskWithoutTaskIDListsOutstandingWork(t *testing.T) {
+	runner := &fakeBackgroundTaskRunner{started: make(chan string, 1), release: make(chan struct{})}
+	manager := agenttask.NewManager(runner)
+	defer manager.Close()
+	executor := realtimeVoiceToolExecutor{tasks: manager, now: time.Now}
+
+	// With nothing outstanding the result is an empty list, not null: the model
+	// reads both modes of the tool as a list of tasks.
+	if got := executor.call(context.Background(), realtimeQueryTaskTool, `{}`); got != `{"tasks":[]}` {
+		t.Fatalf("query-all output = %s, want an empty task list", got)
+	}
+	created, err := manager.Create("open settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("background task did not start")
+	}
+	outstanding := decodeRealtimeTaskQuery(t, executor.call(context.Background(), realtimeQueryTaskTool, `{}`))
+	if len(outstanding) != 1 || outstanding[0].ID != created.ID {
+		t.Fatalf("query-all output = %+v, want %s", outstanding, created.ID)
+	}
+
+	// A task id that no longer exists stays a distinct error rather than an
+	// empty list, so the foreground does not read it as "no work in flight".
+	var missing struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(executor.call(context.Background(), realtimeQueryTaskTool, `{"task_id":"task_missing"}`)), &missing); err != nil {
+		t.Fatalf("decode query output: %v", err)
+	}
+	if missing.Error != "agent task not found" {
+		t.Fatalf("query error = %q, want agent task not found", missing.Error)
+	}
+}
+
+func TestRealtimeTaskCreationRequiresOutstandingWorkCheck(t *testing.T) {
+	const rule = "query_agent_task with no task_id"
+	if !strings.Contains(agent.DefaultRealtimeVoiceInstructions, rule) {
+		t.Fatalf("realtime instructions missing the outstanding-work check: %s", agent.DefaultRealtimeVoiceInstructions)
+	}
+	definitions := make(map[string]realtimevoice.Tool)
+	for _, definition := range realtimeVoiceToolDefinitions() {
+		definitions[definition.Name] = definition
+	}
+	create, ok := definitions[realtimeCreateTaskTool]
+	if !ok || !strings.Contains(create.Description, rule) {
+		t.Fatalf("%s must require the check before creating work: %s", realtimeCreateTaskTool, create.Description)
+	}
+	// The rule is only followable while query_agent_task accepts an omitted
+	// task_id, so the schema and the instructions have to move together.
+	query, ok := definitions[realtimeQueryTaskTool]
+	if !ok {
+		t.Fatalf("missing %s definition", realtimeQueryTaskTool)
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
+	}
+	if err := json.Unmarshal(query.Parameters, &schema); err != nil {
+		t.Fatalf("decode %s schema: %v", realtimeQueryTaskTool, err)
+	}
+	if _, ok := schema.Properties["task_id"]; !ok {
+		t.Fatalf("%s schema has no task_id property: %s", realtimeQueryTaskTool, query.Parameters)
+	}
+	for _, name := range schema.Required {
+		if name == "task_id" {
+			t.Fatalf("%s still requires task_id, so the outstanding-work check cannot run: %s", realtimeQueryTaskTool, query.Parameters)
+		}
+	}
+}
+
+func decodeRealtimeTaskQuery(t *testing.T, output string) []agenttask.Task {
+	t.Helper()
+	var got struct {
+		Tasks []agenttask.Task `json:"tasks"`
+		Error string           `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf("decode query output %s: %v", output, err)
+	}
+	if got.Error != "" {
+		t.Fatalf("query output carries an error: %s", output)
+	}
+	return got.Tasks
 }
 
 func TestFormatRealtimeTaskUpdatesAggregatesResults(t *testing.T) {
