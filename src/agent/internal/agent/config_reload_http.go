@@ -65,8 +65,16 @@ func (s *Server) handleInternalConfigReload(w http.ResponseWriter, r *http.Reque
 		writeAgentJSONError(w, http.StatusBadRequest, "invalid reload request: "+err.Error())
 		return
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		writeAgentJSONError(w, http.StatusBadRequest, "invalid reload request")
+	// The body must hold exactly one object. A second decoded value means the
+	// caller sent more than one document; any other error is the decoder's own
+	// reason. Neither may be reported as a missing revision.
+	err := decoder.Decode(&struct{}{})
+	if err == nil {
+		writeAgentJSONError(w, http.StatusBadRequest, "invalid reload request: body must contain a single JSON object")
+		return
+	}
+	if err != io.EOF {
+		writeAgentJSONError(w, http.StatusBadRequest, "invalid reload request: "+err.Error())
 		return
 	}
 	if request.Revision == 0 {

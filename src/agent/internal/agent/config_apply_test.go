@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -353,4 +354,57 @@ func TestConfigApplyWorkerLogsOutcome(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestConfigApplyLogsRebootStatusPerRevision covers a revision queued while an
+// earlier apply is still draining. The status a queued revision publishes must
+// not leak into the event of the revision that was actually applied, so each
+// event is checked against its own reboot outcome.
+func TestConfigApplyLogsRebootStatusPerRevision(t *testing.T) {
+	var output bytes.Buffer
+	base := DefaultConfig()
+	base.ConfigDir = t.TempDir()
+	r := &Runtime{config: base}
+	r.logger = &Logger{logger: log.New(&output, "", 0)}
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	r.SetConfigPreparer(func(ctx context.Context, cfg Config) (func(bool), error) {
+		once.Do(func() { close(entered) })
+		<-release
+		return func(bool) {}, nil
+	})
+
+	// Revision 1 changes the USB keyboard layout, so it stays pending a reboot.
+	// It also changes an ordinary limit: a USB-only edit is normalized back to
+	// the active layout and would apply as a no-op.
+	first := base
+	first.HID.KeyboardLayout = "azerty"
+	first.MaxIterations = 7
+	r.QueueConfig(first, 1)
+	<-entered
+	// Revision 2 changes an ordinary limit and needs no reboot.
+	second := base
+	second.MaxIterations = 5
+	r.QueueConfig(second, 2)
+	close(release)
+	waitForConfigApplied(t, r)
+	r.StopConfigReloads()
+
+	eventFor := func(revision uint64) string {
+		for _, line := range strings.Split(output.String(), "\n") {
+			if strings.Contains(line, fmt.Sprintf("config_applied revision=%d ", revision)) {
+				return line
+			}
+		}
+		return ""
+	}
+	firstEvent := eventFor(1)
+	if !strings.Contains(firstEvent, "reboot_required=true") {
+		t.Fatalf("revision 1 event = %q, want its own reboot status", firstEvent)
+	}
+	secondEvent := eventFor(2)
+	if !strings.Contains(secondEvent, "reboot_required=false") {
+		t.Fatalf("revision 2 event = %q, want its own reboot status", secondEvent)
+	}
 }

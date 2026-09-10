@@ -134,7 +134,8 @@ func TestInternalConfigReloadReportsWhyARequestWasRejected(t *testing.T) {
 		{"empty body", "", "invalid reload request"},
 		{"truncated json", "{\"revision\":1", "invalid reload request"},
 		{"unknown field", "{\"revision\":1,\"apply\":true}", "unknown field"},
-		{"trailing data", "{\"revision\":1} {}", "invalid reload request"},
+		{"trailing document", "{\"revision\":1} {}", "single JSON object"},
+		{"trailing garbage", "{\"revision\":1} {", "invalid reload request"},
 		{"missing revision", "{}", "nonzero revision"},
 		{"zero revision", "{\"revision\":0}", "nonzero revision"},
 	}
