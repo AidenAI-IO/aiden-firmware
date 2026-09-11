@@ -38,7 +38,10 @@ func withMinimumStorageLevel(cleaner StorageCleaner, level StorageLevel) Storage
 	return leveled
 }
 
-func newRuntimeStorageMonitor(cfg Config, logger *Logger) *StorageMonitor {
+// runtimeStorageMonitorParts derives the monitor configuration and cleaners
+// from a runtime config. Reconfiguring an existing monitor reuses these parts
+// without allocating a replacement monitor object.
+func runtimeStorageMonitorParts(cfg Config) (StorageMonitorConfig, []StorageCleaner) {
 	storageConfig := cfg.Storage.MonitorConfig()
 	cleaners := make([]StorageCleaner, 0)
 	priority := 1
@@ -147,6 +150,11 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger) *StorageMonitor {
 			cleaners = append(cleaners, withMinimumStorageLevel(cleaner, StorageLevelEmergency))
 		}
 	}
+	return storageConfig, cleaners
+}
+
+func newRuntimeStorageMonitor(cfg Config, logger *Logger) *StorageMonitor {
+	storageConfig, cleaners := runtimeStorageMonitorParts(cfg)
 	monitor := NewStorageMonitor(storageConfig, nil, logger, cleaners, nil)
 	monitor.SetLevelStatePath("/run/agent/storage_level")
 	if logger != nil {

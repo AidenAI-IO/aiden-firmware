@@ -1701,3 +1701,11 @@ func waitForPath(path string, timeout time.Duration) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 }
+
+func (m *StorageManager) reconfigureStateView(cfg StorageConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.mirrorOnly {
+		m.cfg = cfg
+	}
+}

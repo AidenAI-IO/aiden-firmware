@@ -122,8 +122,8 @@ func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...Bu
 }
 
 func screenProviderFromRuntime(runtime *Runtime) screenprovider.Provider {
-	if runtime != nil && runtime.tools != nil {
-		if provider := runtime.tools.ScreenProvider(); provider != nil {
+	if runtime != nil && runtime.toolSnapshot() != nil {
+		if provider := runtime.toolSnapshot().ScreenProvider(); provider != nil {
 			return provider
 		}
 	}
@@ -315,8 +315,8 @@ func (s *ToolSet) MNKProvider() mnk.Provider {
 }
 
 func mnkProviderFromRuntime(runtime *Runtime) mnk.Provider {
-	if runtime != nil && runtime.tools != nil {
-		return runtime.tools.MNKProvider()
+	if runtime != nil && runtime.toolSnapshot() != nil {
+		return runtime.toolSnapshot().MNKProvider()
 	}
 	return nil
 }
@@ -455,4 +455,12 @@ func usagePathForManifest(manifestPath string) string {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(manifestPath), "usage.json")
+}
+
+func (s *ToolSet) closeInputDevices() {
+	if s != nil {
+		if closer, ok := s.mnkProvider.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	}
 }

@@ -449,7 +449,7 @@ func TestConfigWire_ModelProviderCanonicalJSON(t *testing.T) {
 		}
 	})
 
-	t.Run("canonical type wins over legacy record field", func(t *testing.T) {
+	t.Run("legacy provider record field is rejected", func(t *testing.T) {
 		payload := `{
 			"model_providers":{"work":{"type":"openai","provider":"kimi","api_key":"sk-canonical"}},
 			"model":{"provider":"work","model":"gpt-4"},
@@ -457,25 +457,15 @@ func TestConfigWire_ModelProviderCanonicalJSON(t *testing.T) {
 			"agent":{},
 			"hid":{"pointer_mode":"absolute"}
 		}`
-		var dto webConfigDTO
-		if err := json.Unmarshal([]byte(payload), &dto); err != nil {
-			t.Fatalf("unmarshal mixed payload: %v", err)
-		}
-		provider := dto.ModelProviders["work"]
-		if provider.Type != "openai" || provider.APIKey != "sk-canonical" || provider.BaseURL != "" {
-			t.Fatalf("canonical provider did not win: %#v", provider)
+		if _, err := checkConfig(strings.NewReader(payload)); err == nil {
+			t.Fatal("expected legacy provider field to fail decoding")
 		}
 	})
 
-	t.Run("canonical null type does not fall back to legacy provider", func(t *testing.T) {
+	t.Run("null canonical type is accepted without provider alias", func(t *testing.T) {
 		var dto webConfigDTO
-		if err := json.Unmarshal([]byte(`{
-			"model_providers":{"work":{"type":null,"provider":"openai"}}
-		}`), &dto); err != nil {
+		if err := json.Unmarshal([]byte(`{"model_providers":{"work":{"type":null}}}`), &dto); err != nil {
 			t.Fatalf("unmarshal null canonical type: %v", err)
-		}
-		if got := dto.ModelProviders["work"].Type; got != "" {
-			t.Fatalf("type = %q, want empty canonical value without legacy fallback", got)
 		}
 	})
 
