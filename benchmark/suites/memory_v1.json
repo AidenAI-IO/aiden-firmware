@@ -388,18 +388,18 @@
         },
         {
           "type": "agent_prompt",
-          "prompt": "我改主意了，办公城市改成深圳。请更新办公城市这条记忆，不要继续保留杭州作为当前值。",
+          "prompt": "我改主意了，办公城市改成深圳。",
           "timeout_sec": 120,
           "clear_history_after": false
         },
         {
           "type": "agent_prompt",
-          "prompt": "又调整了一下，办公城市最终定为成都。请再次更新办公城市这条记忆。",
+          "prompt": "又调整了一下，办公城市最终定为成都",
           "timeout_sec": 120,
           "clear_history_after": false
         }
       ],
-      "prompt": "请用 recall_memory 查一下“办公城市”这条记忆，然后告诉我现在的办公城市是什么。只按你最终保存的值回答，并说明这个值是经过前面几次修改后的最新值。",
+      "prompt": "我现在的办公城市是什么？",
       "rubric": [
         {
           "id": "saved_initial_value",
