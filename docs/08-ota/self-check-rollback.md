@@ -31,4 +31,4 @@ append-only data are deliberately not bulk restored.
 The full design, including the planned observation window and future schema
 migration work, is maintained at:
 
-[OTA 自检、数据兼容与 A/B 回退设计](../../../../docs/ota-self-check-rollback-design.md)
+[OTA 自检、数据兼容与 A/B 回退设计](../ota-self-check-rollback-design.md)

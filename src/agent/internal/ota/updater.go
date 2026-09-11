@@ -377,16 +377,6 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		u.recordError("space", err)
 		return UpdateResult{}, err
 	}
-	// Capture protected configuration before changing the target slot. The
-	// snapshot is retained across reboot and is used to recover an interrupted
-	// migration; user memory and append-only records are never bulk-restored.
-	snapshotPath, err := SnapshotProtectedData(u.config.StateDir, manifest.Version)
-	if err != nil {
-		u.recordError("snapshot", err)
-		return UpdateResult{}, err
-	}
-	state.DataSnapshotPath = snapshotPath
-
 	downloaded := map[string]string{}
 	for _, part := range manifest.Parts {
 		planned := plan.assets[part.Name]
@@ -456,6 +446,15 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		u.logf("ota check: dry-run complete version=%s target_slot=%s", manifest.Version, slotLogName(target))
 		return UpdateResult{Updated: true, Version: manifest.Version, TargetSlot: target}, nil
 	}
+	// Capture protected configuration before changing the target slot. The
+	// snapshot is retained across reboot and is used to recover an interrupted
+	// migration; user memory and append-only records are never bulk-restored.
+	snapshotPath, err := SnapshotProtectedData(u.config.StateDir, manifest.Version)
+	if err != nil {
+		u.recordError("snapshot", err)
+		return UpdateResult{}, err
+	}
+	state.DataSnapshotPath = snapshotPath
 	state.Phase = "writing"
 	state.TargetVersion = manifest.Version
 	state.TargetBuildTime = manifest.BuildTime
@@ -466,7 +465,10 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	if state.SlotBuildTimes == nil {
 		state.SlotBuildTimes = map[string]string{}
 	}
-	targetBuildSlot, _ := slotName(target)
+	targetBuildSlot, err := slotName(target)
+	if err != nil {
+		return UpdateResult{}, err
+	}
 	state.SlotBuildTimes[targetBuildSlot] = manifest.BuildTime
 	for part, asset := range selectedAssets {
 		state.DownloadedHashes[part] = partitionSHA256ForAsset(asset)
@@ -662,6 +664,13 @@ func (u *Updater) clearPendingAfterRollback(running Slot) error {
 	if err != nil {
 		return err
 	}
+	if state.DataSnapshotPath != "" {
+		if err := RestoreProtectedData(state.DataSnapshotPath); err != nil {
+			state.LastError = fmt.Sprintf("%s; data restore: %v", state.LastError, err)
+			_ = SaveState(u.statePath(), state)
+			return err
+		}
+	}
 	state.Phase = "rolled-back"
 	state.ActiveSlot = running
 	state.TargetSlot = running
@@ -790,6 +799,17 @@ func (u *Updater) Rollback(reason string) error {
 		return err
 	}
 	defer unlock()
+	state, err := u.loadState()
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if state.DataSnapshotPath != "" {
+		if err := RestoreProtectedData(state.DataSnapshotPath); err != nil {
+			state.LastError = fmt.Sprintf("%s; data restore: %v", strings.TrimSpace(reason), err)
+			_ = SaveState(u.statePath(), state)
+			return err
+		}
+	}
 	ab, err := u.readABData()
 	if err != nil {
 		return err
@@ -814,23 +834,12 @@ func (u *Updater) Rollback(reason string) error {
 	if err := u.writeABData(ab); err != nil {
 		return err
 	}
-	state, err := u.loadState()
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
 	state.Phase = "rollback-requested"
 	state.LastError = strings.TrimSpace(reason)
 	state.ActiveSlot = active
 	state.TargetSlot = previous
 	if err := SaveState(u.statePath(), state); err != nil {
 		return err
-	}
-	if state.DataSnapshotPath != "" {
-		if err := RestoreProtectedData(state.DataSnapshotPath); err != nil {
-			state.LastError = fmt.Sprintf("%s; data restore: %v", state.LastError, err)
-			_ = SaveState(u.statePath(), state)
-			return err
-		}
 	}
 	_ = os.Remove(u.pendingPath())
 	_ = os.Remove(u.healthPath())
@@ -908,6 +917,8 @@ func reconcileRollbackState(state *State, running Slot, completed bool) {
 	} else {
 		state.Phase = "committed"
 	}
+	state.CurrentVersion = ""
+	state.CurrentBuildTime = ""
 	if slot, ok := state.Slots[name]; ok {
 		if part, ok := slot.Partitions["boot"]; ok && part.Version != "" {
 			state.CurrentVersion = part.Version

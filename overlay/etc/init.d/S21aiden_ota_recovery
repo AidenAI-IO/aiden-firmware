@@ -11,6 +11,11 @@ LOG_PATH=${LOG_PATH:-/var/log/ota/ota-recovery.log}
 start() {
     [ -d "$OTA_STORAGE_DIR" ] || return 0
     [ -x "$OTA_BIN" ] || return 0
+    if [ ! -x "$ENV_RUN_BIN" ]; then
+        mkdir -p "$(dirname "$LOG_PATH")"
+        echo "ota recovery unavailable: missing executable $ENV_RUN_BIN" >> "$LOG_PATH"
+        return 1
+    fi
     mkdir -p "$(dirname "$LOG_PATH")"
     "$ENV_RUN_BIN" "$OTA_BIN" recover >> "$LOG_PATH" 2>&1 || {
         echo "ota recovery failed; normal services must not claim migrated data is committed" >> "$LOG_PATH"

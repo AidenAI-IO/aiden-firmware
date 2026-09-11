@@ -60,6 +60,9 @@ func runWithConfig(args []string, out io.Writer, configure func(*ota.UpdaterConf
 		}
 		return nil
 	case "rollback":
+		if config.DryRun {
+			return fmt.Errorf("--dry-run is not supported with rollback")
+		}
 		return updater.Rollback("manual rollback")
 	case "recover":
 		return updater.RecoverPendingData()

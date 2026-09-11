@@ -45,6 +45,9 @@ func SnapshotProtectedData(root, version string) (string, error) {
 		if err := copyFile(src, dst, info.Mode().Perm()); err != nil {
 			return "", err
 		}
+		if err := syncSnapshotPath(dir, filepath.Dir(dst)); err != nil {
+			return "", err
+		}
 		manifest["files"] = append(manifest["files"].([]string), rel)
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -79,6 +82,22 @@ func SnapshotProtectedData(root, version string) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+func syncSnapshotPath(root, path string) error {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("snapshot path escapes root: %s", path)
+	}
+	for {
+		if err := fsyncDirFor(filepath.Join(path, ".dirsync")); err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		path = filepath.Dir(path)
+	}
 }
 
 func pruneProtectedSnapshots(root, current string) error {

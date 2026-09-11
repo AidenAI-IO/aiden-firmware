@@ -212,8 +212,22 @@ func SaveSelfCheckReport(path string, report SelfCheckReport) error {
 		return e
 	}
 	tmp := path + ".tmp"
-	if e = os.WriteFile(tmp, append(b, '\n'), 0600); e != nil {
+	f, e := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if e != nil {
 		return e
 	}
-	return os.Rename(tmp, path)
+	if _, e = f.Write(append(b, '\n')); e == nil {
+		e = f.Sync()
+	}
+	closeErr := f.Close()
+	if e != nil {
+		return e
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if e = os.Rename(tmp, path); e != nil {
+		return e
+	}
+	return fsyncDirFor(path)
 }
