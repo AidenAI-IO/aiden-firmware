@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -637,6 +638,12 @@ func TestShellToolBackgroundPollDrainsAndKeepsSession(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("background command did not finish")
 			}
+			// wait() records the reap the moment Wait returns, before the PTY
+			// capture goroutine drains and done closes. stop() depends on it to
+			// avoid signalling a PID the OS may already have reused.
+			if !session.reaped {
+				t.Fatal("wait() did not record the process reap")
+			}
 
 			pollArgs, _ := json.Marshal(map[string]interface{}{
 				"action":     "poll",
@@ -787,6 +794,39 @@ func TestShellToolPollAfterCompletionIsIdempotent(t *testing.T) {
 	}
 	if second.Output != "" {
 		t.Fatalf("repeat poll repeated already-delivered output: %q", second.Output)
+	}
+}
+
+// stop() must not signal a process that Wait() has already reaped: the OS may
+// have reused the PID, and the escalation path is a raw process-group kill.
+//
+// done stays open here, so a stop() that signals the process cannot return until
+// its interrupt timeout expires. A prompt return is therefore what distinguishes
+// "skipped the reap-aware check" from "signalled anyway"; asserting on the helper
+// still being alive does not work, because an unreaped child is a zombie and
+// signalling a zombie succeeds.
+func TestShellSessionStopSkipsReapedProcess(t *testing.T) {
+	skipOnWindows(t)
+	cmd := exec.Command("sleep", "30")
+	shellSetProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper process: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	session := &shellSession{
+		id:     "shell-reaped",
+		cmd:    cmd,
+		done:   make(chan struct{}),
+		reaped: true,
+	}
+	started := time.Now()
+	session.stop()
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("stop() took %v on a reaped session; it must not signal one", elapsed)
 	}
 }
 
