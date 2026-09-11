@@ -1220,6 +1220,76 @@ func TestRecoverPendingDataReconcilesCompletedRollback(t *testing.T) {
 	}
 }
 
+func TestRollbackRestoreFailureKeepsSnapshotAndPendingState(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	snapshot, dataRoot, files := makeRestoreFixture(t)
+	defer setProtectedDataRoot(dataRoot)()
+	if err := os.Remove(filepath.Join(snapshot, "userdata", files[2])); err != nil {
+		t.Fatal(err)
+	}
+	env.state.Phase = "pending-reboot"
+	env.state.TargetSlot = SlotB
+	env.state.DataSnapshotPath = snapshot
+	env.saveState(t)
+	pendingPath := filepath.Join(env.stateDir, "pending_boot.json")
+	if err := WritePendingBoot(pendingPath, PendingBoot{TargetSlot: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	updater := env.updater()
+	updater.currentSlot = func() (Slot, bool, error) { return SlotA, true, nil }
+	for _, recover := range []func() error{
+		updater.RecoverPendingData,
+		func() error { return updater.ProcessPendingHealth(context.Background()) },
+	} {
+		if err := recover(); err == nil {
+			t.Fatal("incomplete snapshot recovery succeeded")
+		}
+		state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.DataSnapshotPath != snapshot || state.Phase != "pending-reboot" {
+			t.Fatalf("lost recovery state: %+v", state)
+		}
+		if _, err := os.Stat(pendingPath); err != nil {
+			t.Fatalf("lost pending boot: %v", err)
+		}
+		for _, rel := range files {
+			assertFileContent(t, filepath.Join(dataRoot, rel), "new:"+rel)
+		}
+	}
+}
+
+func TestSaveSnapshotStateFailureCleansOnlyUnpublishedSnapshot(t *testing.T) {
+	for _, afterRename := range []bool{false, true} {
+		t.Run(fmt.Sprintf("after-rename=%t", afterRename), func(t *testing.T) {
+			env := newUpdaterTestEnv(t)
+			snapshot := filepath.Join(env.stateDir, "transactions/pre-test-v2")
+			writeSnapshotTestFile(t, filepath.Join(snapshot, "manifest.json"), `{"files":[]}`)
+			env.state.DataSnapshotPath = snapshot
+			if afterRename {
+				original := syncDir
+				syncDir = func(*os.File) error { return errors.New("sync failed") }
+				t.Cleanup(func() { syncDir = original })
+			} else {
+				if err := os.Mkdir(filepath.Join(env.stateDir, "state.json.tmp"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := env.updater().saveSnapshotState(env.state); err == nil {
+				t.Fatal("state write unexpectedly succeeded")
+			}
+			_, err := os.Stat(snapshot)
+			if afterRename && err != nil {
+				t.Fatalf("published snapshot lost after fsync failure: %v", err)
+			}
+			if !afterRename && !os.IsNotExist(err) {
+				t.Fatalf("unpublished snapshot not removed: %v", err)
+			}
+		})
+	}
+}
+
 func TestRecoverPendingDataReconcilesAbandonedRollback(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	env.state.Phase = "rollback-requested"

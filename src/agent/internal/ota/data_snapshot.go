@@ -2,6 +2,7 @@ package ota
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,9 +21,14 @@ const protectedSnapshotRetention = 8
 // SnapshotProtectedData copies only configuration and service identity files.
 // User memory, skills, notifications, recordings and logs are append/persistent
 // data and are intentionally never restored as a whole-directory snapshot.
-func SnapshotProtectedData(root, version string) (string, error) {
+func SnapshotProtectedData(root, version string) (_ string, resultErr error) {
 	name := fmt.Sprintf("pre-%d-%s", time.Now().UTC().UnixNano(), safeSnapshotName(version))
 	dir := filepath.Join(root, "transactions", name)
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, os.RemoveAll(dir))
+		}
+	}()
 	relativePaths := []string{
 		"agent/agent.toml", "system/env", "wpa_supplicant.conf",
 		"system/wifi-proxies.json", "audio_service/playback_volume",
@@ -68,7 +74,7 @@ func SnapshotProtectedData(root, version string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := f.Write(append(b, '\n')); err == nil {
+	if _, err = f.Write(append(b, '\n')); err == nil {
 		err = f.Sync()
 	}
 	closeErr := f.Close()
@@ -104,6 +110,12 @@ func syncSnapshotPath(root, path string) error {
 }
 
 func pruneProtectedSnapshots(root, current string) error {
+	// Scan disk, including snapshots never published in state.json. Keep both
+	// the new snapshot and the one still needed by the persisted transaction.
+	state, err := LoadState(filepath.Join(root, "state.json"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	transactionsDir := filepath.Join(root, "transactions")
 	entries, err := os.ReadDir(transactionsDir)
 	if os.IsNotExist(err) {
@@ -128,19 +140,19 @@ func pruneProtectedSnapshots(root, current string) error {
 	}
 	sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].name < snapshots[j].name })
 	removed := false
-	for len(snapshots) > protectedSnapshotRetention {
-		removeAt := 0
-		if snapshots[removeAt].path == current {
-			removeAt = 1
-		}
-		if removeAt >= len(snapshots) {
+	remaining := len(snapshots)
+	for _, snapshot := range snapshots {
+		if remaining <= protectedSnapshotRetention {
 			break
 		}
-		if err := os.RemoveAll(snapshots[removeAt].path); err != nil {
+		if snapshot.path == filepath.Clean(current) || snapshot.path == filepath.Clean(state.DataSnapshotPath) {
+			continue
+		}
+		if err := os.RemoveAll(snapshot.path); err != nil {
 			return err
 		}
 		removed = true
-		snapshots = append(snapshots[:removeAt], snapshots[removeAt+1:]...)
+		remaining--
 	}
 	if removed {
 		return fsyncDirFor(filepath.Join(transactionsDir, ".dirsync"))
@@ -185,9 +197,15 @@ func copyFile(src, dst string, mode os.FileMode) error {
 }
 
 // RestoreProtectedData restores only the files listed in a snapshot manifest.
-// It is intentionally not a recursive userdata restore: memory, skills,
-// notifications, recordings and logs remain untouched during rollback.
+// All replacements and undo copies are staged before the first live rename.
+// A commit error restores the originals; the caller keeps the snapshot for retry.
+// This is not a cross-file atomic swap on power loss. Boot recovery must finish
+// before services read configuration. Append-only user data remains untouched.
 func RestoreProtectedData(snapshotDir string) error {
+	return restoreProtectedData(snapshotDir, currentProtectedDataRoot(), os.Rename)
+}
+
+func restoreProtectedData(snapshotDir, protectedRoot string, renameFile func(string, string) error) error {
 	data, err := os.ReadFile(filepath.Join(snapshotDir, "manifest.json"))
 	if err != nil {
 		return err
@@ -205,27 +223,94 @@ func RestoreProtectedData(snapshotDir string) error {
 		"system/wifi-proxies.json":      true,
 		"audio_service/playback_volume": true,
 	}
-	protectedRoot := currentProtectedDataRoot()
+	seen := make(map[string]bool)
 	for _, rel := range manifest.Files {
-		if !allowed[rel] || rel == "" || filepath.IsAbs(rel) || strings.Contains(rel, "..") {
+		if !allowed[rel] || seen[rel] {
 			return fmt.Errorf("invalid protected snapshot path %q", rel)
 		}
+		seen[rel] = true
+	}
+	type stagedFile struct {
+		dst, next, undo string
+		existed         bool
+	}
+	var staged []stagedFile
+	var tempDirs []string
+	keepUndo := false
+	defer func() {
+		if !keepUndo {
+			for _, dir := range tempDirs {
+				_ = os.RemoveAll(dir)
+			}
+		}
+	}()
+	for _, rel := range manifest.Files {
 		src := filepath.Join(snapshotDir, "userdata", rel)
 		dst := filepath.Join(protectedRoot, rel)
-		info, err := os.Stat(src)
+		info, err := os.Lstat(src)
 		if err != nil {
 			return err
 		}
-		tmp := dst + ".ota-restore.tmp"
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("snapshot source is not a regular file: %s", src)
+		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 			return err
 		}
-		if err := copyFile(src, tmp, info.Mode().Perm()); err != nil {
+		dir, err := os.MkdirTemp(filepath.Dir(dst), ".ota-restore-")
+		if err != nil {
 			return err
 		}
-		if err := os.Rename(tmp, dst); err != nil {
+		tempDirs = append(tempDirs, dir)
+		item := stagedFile{dst: dst, next: filepath.Join(dir, "next"), undo: filepath.Join(dir, "undo")}
+		if err := copyFile(src, item.next, info.Mode().Perm()); err != nil {
 			return err
 		}
+		original, err := os.Lstat(dst)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err == nil {
+			if !original.Mode().IsRegular() {
+				return fmt.Errorf("restore destination is not a regular file: %s", dst)
+			}
+			item.existed = true
+			if err := copyFile(dst, item.undo, original.Mode().Perm()); err != nil {
+				return err
+			}
+		}
+		if err := syncSnapshotPath(protectedRoot, dir); err != nil {
+			return err
+		}
+		staged = append(staged, item)
+	}
+	lastReplaced := -1
+	for i, item := range staged {
+		err := renameFile(item.next, item.dst)
+		if err == nil {
+			lastReplaced = i
+			err = fsyncDirFor(item.dst)
+		}
+		if err == nil {
+			continue
+		}
+		commitErr := fmt.Errorf("restore %s: %w", item.dst, err)
+		for j := lastReplaced; j >= 0; j-- {
+			previous := staged[j]
+			if previous.existed {
+				err = renameFile(previous.undo, previous.dst)
+			} else {
+				err = os.Remove(previous.dst)
+			}
+			if err == nil {
+				err = fsyncDirFor(previous.dst)
+			}
+			if err != nil {
+				keepUndo = true
+				commitErr = errors.Join(commitErr, fmt.Errorf("undo %s (backup %s): %w", previous.dst, previous.undo, err))
+			}
+		}
+		return commitErr
 	}
 	return nil
 }

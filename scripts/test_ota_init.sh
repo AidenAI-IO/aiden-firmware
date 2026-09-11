@@ -351,3 +351,64 @@ while ! { [ -f "$LATE_LOG_PATH" ] && grep -q 'health processing exited with stat
 done
 
 echo "S54ota tests passed"
+
+# Run the real recovery hook through rcS. A failed recovery must prevent
+# later services from reading partially recovered protected configuration.
+for recovery_case in success missing-ota missing-env nonexecutable-env restore-failure; do
+    recovery_fixture="$TMP_DIR/recovery-$recovery_case"
+    mkdir -p "$recovery_fixture/init" "$recovery_fixture/storage"
+    cp "$ROOT_DIR/overlay/etc/init.d/S21aiden_ota_recovery" "$recovery_fixture/init/"
+    cat > "$recovery_fixture/init/S20before" <<'EOF'
+#!/bin/sh
+echo before >> "$RECOVERY_TRACE"
+EOF
+    cat > "$recovery_fixture/init/S22dependent" <<'EOF'
+#!/bin/sh
+echo dependent >> "$RECOVERY_TRACE"
+EOF
+    cat > "$recovery_fixture/ota" <<'EOF'
+#!/bin/sh
+echo "$@" >> "$RECOVERY_TRACE"
+exit "$RECOVERY_EXIT"
+EOF
+    cat > "$recovery_fixture/env-run" <<'EOF'
+#!/bin/sh
+exec "$@"
+EOF
+    chmod +x "$recovery_fixture/init/"* "$recovery_fixture/ota" "$recovery_fixture/env-run"
+    recovery_ota="$recovery_fixture/ota"
+    recovery_env="$recovery_fixture/env-run"
+    recovery_exit=0
+    case "$recovery_case" in
+        missing-ota) recovery_ota="$recovery_fixture/missing" ;;
+        missing-env) recovery_env="$recovery_fixture/missing" ;;
+        nonexecutable-env) chmod -x "$recovery_env" ;;
+        restore-failure) recovery_exit=1 ;;
+    esac
+    if INIT_D_DIR="$recovery_fixture/init" \
+       BOOT_TIMELINE_HELPER="$recovery_fixture/no-profiler" \
+       OTA_STORAGE_DIR="$recovery_fixture/storage" \
+       OTA_BIN="$recovery_ota" ENV_RUN_BIN="$recovery_env" \
+       LOG_PATH="$recovery_fixture/recovery.log" \
+       RECOVERY_TRACE="$recovery_fixture/trace" RECOVERY_EXIT="$recovery_exit" \
+       sh "$ROOT_DIR/overlay/etc/init.d/rcS" > "$recovery_fixture/boot.log" 2>&1; then
+        [ "$recovery_case" = success ] || {
+            echo "rcS continued after recovery failure: $recovery_case" >&2
+            exit 1
+        }
+        grep -qx recover "$recovery_fixture/trace"
+        grep -qx dependent "$recovery_fixture/trace"
+    else
+        [ "$recovery_case" != success ] || {
+            cat "$recovery_fixture/boot.log" >&2
+            exit 1
+        }
+        if grep -qx dependent "$recovery_fixture/trace"; then
+            echo "dependent service started after failed recovery: $recovery_case" >&2
+            exit 1
+        fi
+        grep -q 'remaining boot services are blocked' "$recovery_fixture/boot.log"
+    fi
+    grep -qx before "$recovery_fixture/trace"
+done
+echo "S21 OTA recovery boot gating tests passed"

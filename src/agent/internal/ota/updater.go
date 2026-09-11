@@ -484,7 +484,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		state.PendingTargetSlot = nil
 	}
 	delete(state.Slots, targetKey)
-	if err := SaveState(u.statePath(), state); err != nil {
+	if err := u.saveSnapshotState(state); err != nil {
 		u.recordError("state", err)
 		return UpdateResult{}, err
 	}
@@ -599,6 +599,24 @@ func targetPartitionHashMatches(state State, target Slot, partName string, asset
 	}
 	local, ok := slotState.Partitions[partName]
 	return ok && local.Version != "" && local.Hash == partitionSHA256ForAsset(asset)
+}
+
+// saveSnapshotState discards a new snapshot on publication failure only when
+// the on-disk state proves it is unreferenced. A post-rename fsync failure must
+// retain the snapshot, since state.json may already reference it.
+func (u *Updater) saveSnapshotState(state State) error {
+	err := SaveState(u.statePath(), state)
+	if err == nil {
+		return nil
+	}
+	saved, readErr := LoadState(u.statePath())
+	if (readErr == nil && saved.DataSnapshotPath != state.DataSnapshotPath) || os.IsNotExist(readErr) {
+		if removeErr := os.RemoveAll(state.DataSnapshotPath); removeErr != nil {
+			return errors.Join(err, removeErr)
+		}
+		return errors.Join(err, fsyncDirFor(state.DataSnapshotPath))
+	}
+	return err
 }
 
 func (u *Updater) verifyDownloadedImage(path string, asset ManifestAsset) error {
@@ -872,13 +890,10 @@ func (u *Updater) RecoverPendingData() error {
 		return err
 	}
 	miscActive, miscOK := ab.ActiveSlot()
+	if err := pruneProtectedSnapshots(u.config.StateDir, state.DataSnapshotPath); err != nil {
+		return err
+	}
 	if state.Phase == "pending-reboot" && runningOK && running != state.TargetSlot && miscOK && miscActive == running && ab.Slots[running].SuccessfulBoot {
-		if state.DataSnapshotPath != "" {
-			if err := RestoreProtectedData(state.DataSnapshotPath); err != nil {
-				return err
-			}
-			state.DataSnapshotPath = ""
-		}
 		return u.clearPendingAfterRollback(running)
 	}
 	if state.Phase == "rollback-requested" && runningOK {

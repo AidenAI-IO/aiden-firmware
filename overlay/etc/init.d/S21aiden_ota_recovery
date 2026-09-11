@@ -1,7 +1,7 @@
 #!/bin/sh
 # Recover protected configuration after an interrupted OTA migration before
-# Agent, Config Web, and service daemons start. The command is deliberately
-# best-effort: a missing pending transaction is the normal boot path.
+# Agent, Config Web, and service daemons start. A missing pending transaction
+# succeeds; recovery errors stop later services through rcS.
 
 OTA_BIN=${OTA_BIN:-/oem/usr/bin/ota}
 ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
