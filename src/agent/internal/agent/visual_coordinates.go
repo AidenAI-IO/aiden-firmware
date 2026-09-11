@@ -114,6 +114,10 @@ func (v *visualCoordinates) prepare(key string, data []byte) (visualFrame, error
 	if cfg.Width < 1 || cfg.Height < 1 || float64(cfg.Width)*float64(cfg.Height) > 40000000 {
 		return visualFrame{}, fmt.Errorf("invalid or oversized source image")
 	}
+	// Validate the complete payload by decoding it; discard the result and forward the original bytes.
+	if _, _, err := image.Decode(bytes.NewReader(data)); err != nil {
+		return visualFrame{}, fmt.Errorf("invalid image payload: %w", err)
+	}
 	// Pass the original image through unchanged — no re-encode, no dimension change.
 	return visualFrame{
 		id:     fmt.Sprintf("frame_%x", sha256.Sum256([]byte(v.namespace+key))),

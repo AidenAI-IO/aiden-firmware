@@ -49,11 +49,13 @@ func TestVisualCoordinatesOutboundImageAndReplay(t *testing.T) {
 			standard := messages.ConvertMessageList(out)
 			var caption string
 			var cfg image.Config
+			var emittedData []byte
 			for _, part := range standard[0].Parts {
 				switch p := part.(type) {
 				case llms.TextContent:
 					caption = p.Text
 				case llms.BinaryContent:
+					emittedData = p.Data
 					var err error
 					cfg, _, err = image.DecodeConfig(bytes.NewReader(p.Data))
 					if err != nil {
@@ -64,6 +66,14 @@ func TestVisualCoordinatesOutboundImageAndReplay(t *testing.T) {
 			// Images should use original dimensions without downsampling
 			if cfg.Width != size[0] || cfg.Height != size[1] {
 				t.Fatalf("image dimensions changed: expected %dx%d, got %dx%d", size[0], size[1], cfg.Width, cfg.Height)
+			}
+			// Verify byte-for-byte source preservation (no re-encode)
+			sourceData, err := os.ReadFile(original.Attachments[0].FilePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(emittedData, sourceData) {
+				t.Fatal("emitted bytes differ from source — image was re-encoded")
 			}
 			if !strings.Contains(caption, fmt.Sprintf("image_width=%d image_height=%d", cfg.Width, cfg.Height)) {
 				t.Fatal("caption differs from actual image")
@@ -175,6 +185,28 @@ func TestVisualCoordinatesBadLatestImageFailsClosed(t *testing.T) {
 	out := v.Transform([]messages.Message{good, bad})
 	if v.latest != "" || len(out[1].Attachments) != 0 {
 		t.Fatal("bad latest image left an actionable frame")
+	}
+}
+
+// Source bytes are forwarded without a re-encode, so nothing downstream decodes
+// the payload before the provider does. The header alone is not enough to trust.
+func TestVisualCoordinatesRejectsTruncatedPayload(t *testing.T) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 400, 800))); err != nil {
+		t.Fatal(err)
+	}
+	truncated := buf.Bytes()[:buf.Len()/2]
+	if _, _, err := image.DecodeConfig(bytes.NewReader(truncated)); err != nil {
+		t.Fatalf("test needs a parseable header to be meaningful: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "truncated.png")
+	if err := os.WriteFile(path, truncated, 0600); err != nil {
+		t.Fatal(err)
+	}
+	v := newVisualCoordinates()
+	out := v.Transform([]messages.Message{{Role: messages.MessageRoleUser, Attachments: []messages.Attachment{{FilePath: path, MIMEType: "image/png", Source: messages.AttachmentSourceScreenshotObservation}}}})
+	if v.latest != "" || len(out[0].Attachments) != 0 {
+		t.Fatal("truncated payload reached the model as an actionable frame")
 	}
 }
 

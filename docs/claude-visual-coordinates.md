@@ -42,7 +42,8 @@ captured bytes through untouched and asks for pixel coordinates in that frame.
 
 Only attachments tagged as device screenshot observations participate; ordinary
 user uploads pass through unchanged. The transform runs after screenshot
-pruning. It reads the original attachment, decodes its dimensions, and attaches
+pruning. It reads the original attachment, decodes its dimensions, fully decodes
+the payload to reject truncated or corrupt data, and attaches
 a caption with those dimensions and an opaque frame ID. Captions exist only on
 outbound message clones; stored source attachments remain intact. Replay
 regenerates the same frame within a run. Frames from another run are not
