@@ -1486,6 +1486,9 @@ func (s *Server) handleChatAsync(
 				pending.history = append(pending.history, msg)
 				pending.messages = append(pending.messages, msg)
 				pending.mu.Unlock()
+				if s.liveActivity != nil {
+					s.liveActivity.UpdateFromRunEvent(requestID, event)
+				}
 				return
 			}
 			msg := messageFromRunEvent(event, userMsg.EpisodeID, requestID)

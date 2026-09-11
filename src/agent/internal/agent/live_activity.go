@@ -173,7 +173,7 @@ func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...str
 		CurrentStep:     "Planning next step",
 		CurrentAction:   "plan",
 		ToolStatus:      "thinking",
-		ThinkingSummary: "Preparing the next step",
+		ThinkingSummary: "正在分析当前任务并准备下一步操作",
 		Progress:        0.05,
 		ShowsProgress:   true,
 		CanStop:         true,
@@ -195,12 +195,12 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 	m.mu.Lock()
 	requestID = strings.TrimSpace(requestID)
 	state, ok := m.states[requestID]
-	if !ok {
+	if !ok || state.EndedAt != nil {
 		m.mu.Unlock()
 		return nil
 	}
 	switch event.Type {
-	case "role_output":
+	case "role_output", "assistant_output":
 		state.Status = LiveActivityStatusRunning
 		state.ShowsProgress = true
 		state.RequiresApp = false
@@ -211,16 +211,14 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.ToolResultSummary = ""
 		state.CurrentAction = liveActivityActionFromRole(event.Content)
 		state.Phase = liveActivityPhaseFromRole(event.Content)
-		if summary := liveActivityThinkingSummary(event); summary != "" {
-			state.ThinkingSummary = summary
-		}
-		if next := liveActivityNextStepFromRoleOutput(event.Content); next != "" {
-			state.NextStep = next
-		}
+		state.ThinkingSummary = liveActivityThinkingSummary(event)
+		state.NextStep = liveActivityNextStepFromRoleOutput(event.Content)
 		if step := truncateLiveActivityText(liveActivityStepFromRoleOutput(event), 120); step != "" {
 			state.CurrentStep = step
 		}
 	case runEventReasoningDelta:
+		// Raw reasoning is not a display summary. Use a stage-level fallback
+		// rather than exposing the model's reasoning stream.
 		state.Status = LiveActivityStatusRunning
 		state.Phase = LiveActivityPhasePlanning
 		state.CurrentAction = "think"
@@ -228,24 +226,51 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.ToolStartedAt = nil
 		state.LastToolName = ""
 		state.LastError = ""
-		state.ThinkingSummary = appendLiveActivitySummary(state.ThinkingSummary, event.ReasoningContent)
-		if state.ThinkingSummary == "" {
-			state.ThinkingSummary = "Preparing the next step"
-		}
+		state.RequiresApp = false
+		state.ToolResultSummary = ""
+		state.NextStep = ""
+		state.ThinkingSummary = "正在分析当前任务并准备下一步操作"
+		state.CurrentStep = state.ThinkingSummary
 	case runEventReasoningReset:
-		state.ThinkingSummary = ""
-	case "tool_progress":
+		state.Status = LiveActivityStatusRunning
+		state.Phase = LiveActivityPhasePlanning
+		state.CurrentAction = "think"
+		state.ToolStatus = "thinking"
+		state.ToolStartedAt = nil
+		state.LastToolName = ""
+		state.LastError = ""
+		state.RequiresApp = false
+		state.ToolResultSummary = ""
+		state.NextStep = ""
+		state.ThinkingSummary = "正在分析当前任务并准备下一步操作"
+		state.CurrentStep = state.ThinkingSummary
+	case runEventToolProgress:
 		state.Status = LiveActivityStatusRunning
 		state.ToolStatus = firstNonEmptyString([]string{event.ToolStatus, "running"})
+		state.ToolStartedAt = nil
+		if state.ToolStatus == "running" {
+			now := event.Timestamp
+			if now.IsZero() {
+				now = time.Now()
+			}
+			state.ToolStartedAt = &now
+		}
 		state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
 			event.Content,
 			state.CurrentStep,
 		}), 120)
-		if next := strings.TrimSpace(event.NextStep); next != "" {
-			state.NextStep = truncateLiveActivityText(next, 120)
-		}
+		state.NextStep = truncateLiveActivityText(strings.TrimSpace(event.NextStep), 120)
 		state.RequiresApp = state.ToolStatus == "waiting_app"
-		state.Phase = LiveActivityPhasePhoneBridge
+		if state.ToolStatus == "verifying" {
+			state.Phase = LiveActivityPhaseVerifying
+			state.CurrentAction = "verify_result"
+		} else if state.ToolStatus == "preparing" {
+			state.Phase = LiveActivityPhasePhoneBridge
+		} else if state.ToolStatus == "waiting_app" {
+			state.Status = LiveActivityStatusNeedsApp
+			state.Phase = LiveActivityPhaseWaitingApp
+			state.CurrentAction = "open_aiden"
+		}
 		state.LastError = ""
 		state.ToolResultSummary = ""
 	case runEventToolCall:
@@ -259,6 +284,9 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.LastError = ""
 		state.LastToolName = strings.TrimSpace(event.ToolName)
 		state.ToolStatus = firstNonEmptyString([]string{toolStatus.status, "running"})
+		if toolStatus.phase == LiveActivityPhaseWaitingUser {
+			state.ToolStatus = "waiting_user"
+		}
 		startedAt := event.Timestamp
 		if startedAt.IsZero() {
 			startedAt = time.Now()
@@ -281,7 +309,13 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.Progress = bumpLiveActivityProgress(state.Progress)
 	case "tool_result":
 		hasError := liveActivityEventHasError(event)
+		state.ThinkingSummary = ""
+		state.NextStep = ""
 		state.LastToolName = strings.TrimSpace(event.ToolName)
+		resultAction := liveActivityToolCallStatus(event).action
+		if resultAction != "" {
+			state.CurrentAction = resultAction
+		}
 		if !hasError && strings.EqualFold(strings.TrimSpace(event.ToolName), toolUserActionStep) {
 			state.Status = LiveActivityStatusNeedsApp
 			state.Phase = LiveActivityPhaseWaitingUser
@@ -318,7 +352,7 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 				state.CurrentStep = truncateLiveActivityText(liveActivityToolErrorStep(event.ToolName), 120)
 				state.RequiresApp = false
 				state.ShowsProgress = true
-				state.ToolStatus = "retrying"
+				state.ToolStatus = "failed"
 				state.ToolStartedAt = nil
 			}
 		} else {
@@ -332,6 +366,13 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 			state.ToolStartedAt = nil
 			state.ToolResultSummary = truncateLiveActivityText(liveActivityResultSummary(event), 180)
 			state.CurrentStep = truncateLiveActivityText(liveActivityToolResultStep(event.ToolName), 120)
+			if event.ToolName == toolOpenApp || event.ToolName == toolOpenURL || event.ToolName == toolBridgeOpenApp {
+				// An accepted launch (even with a captured image) does not prove
+				// the target app is on screen. The next model observation does.
+				state.ToolStatus = "verifying"
+				state.CurrentStep = "跳转请求已发送，正在确认目标页面"
+				state.ToolResultSummary = ""
+			}
 			state.Progress = bumpLiveActivityProgress(state.Progress)
 		}
 	case "steer":
@@ -345,6 +386,11 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.ToolStatus = "thinking"
 		state.ToolStartedAt = nil
 		state.ToolResultSummary = ""
+		state.ThinkingSummary = "正在根据你的补充调整操作"
+		state.NextStep = ""
+	default:
+		m.mu.Unlock()
+		return &state
 	}
 	state.UpdatedAt = time.Now()
 	m.states[requestID] = state
@@ -429,6 +475,9 @@ func (m *LiveActivityManager) finishTask(requestID, status, step, errText string
 	state.ToolStartedAt = nil
 	state.ToolResultSummary = ""
 	state.Progress = 1
+	state.ThinkingSummary = ""
+	state.NextStep = ""
+	state.LastToolName = ""
 	state.ShowsProgress = false
 	state.CanStop = false
 	state.RequiresApp = false
@@ -927,12 +976,9 @@ func liveActivityStepFromRoleOutput(event RunEvent) string {
 }
 
 func liveActivityThinkingSummary(event RunEvent) string {
-	if summary := strings.TrimSpace(event.ReasoningContent); summary != "" {
-		return normalizeLiveActivitySummary(summary, 220)
-	}
 	content := strings.TrimSpace(event.Content)
 	if payload, ok := liveActivityJSONObject(content); ok {
-		for _, key := range []string{"thinking_summary", "summary", "reason"} {
+		for _, key := range []string{"thinking_summary", "summary"} {
 			if summary := liveActivityString(payload, key); summary != "" {
 				return normalizeLiveActivitySummary(summary, 220)
 			}
@@ -952,14 +998,6 @@ func liveActivityNextStepFromRoleOutput(content string) string {
 	return ""
 }
 
-func appendLiveActivitySummary(existing, delta string) string {
-	delta = strings.TrimSpace(delta)
-	if delta == "" {
-		return normalizeLiveActivitySummary(existing, 220)
-	}
-	return normalizeLiveActivitySummary(strings.TrimSpace(existing+delta), 220)
-}
-
 func normalizeLiveActivitySummary(value string, limit int) string {
 	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 	if value == "" {
@@ -974,34 +1012,14 @@ func liveActivityResultSummary(event RunEvent) string {
 		return ""
 	}
 	if payload, ok := liveActivityJSONObject(content); ok {
-		for _, key := range []string{"summary", "result", "message", "observation", "details", "text"} {
+		for _, key := range []string{"summary"} {
 			if summary := liveActivityString(payload, key); summary != "" {
 				return normalizeLiveActivitySummary(summary, 180)
 			}
 		}
 		return ""
 	}
-	return normalizeLiveActivitySummary(content, 180)
-}
-
-func liveActivityPreparationNextStep(app, target string) string {
-	app = strings.TrimSpace(app)
-	if app != "" {
-		return "Open " + app
-	}
-	if target != "" {
-		return "Continue with the requested action"
-	}
-	return "Continue in Aiden App"
-}
-
-func liveActivityNeedsBridgePreparation(tool string) bool {
-	switch strings.ToLower(strings.TrimSpace(tool)) {
-	case toolOpenURL, toolBridgeOpenApp:
-		return true
-	default:
-		return false
-	}
+	return ""
 }
 
 func liveActivityStepFromJSONRoleOutput(content string) string {

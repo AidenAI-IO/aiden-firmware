@@ -98,11 +98,11 @@ func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
 	state := manager.UpdateFromRunEvent("req-details", RunEvent{
 		Type:             "role_output",
 		Role:             "agent",
-		Content:          `{"summary":"已确认当前页面","next_step":"打开设置"}`,
+		Content:          `{"thinking_summary":"已确认当前页面","next_step":"打开设置"}`,
 		ReasoningContent: "正在确认当前页面状态",
 		Timestamp:        time.Now(),
 	})
-	if state == nil || state.ThinkingSummary != "正在确认当前页面状态" || state.NextStep != "打开设置" {
+	if state == nil || state.ThinkingSummary != "已确认当前页面" || state.NextStep != "打开设置" {
 		t.Fatalf("thinking details = %#v", state)
 	}
 

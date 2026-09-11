@@ -155,6 +155,11 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 		return toolErrorString(te), nil
 	}
 
+	reportToolProgress(ctx, ToolProgress{
+		Status:   "verifying",
+		Content:  "操作已发送，正在等待页面稳定",
+		NextStep: "读取屏幕，确认操作结果",
+	})
 	var waitResult waitStableScreenResult
 	if t.waitStable != nil {
 		touchscreenRCALogf("post_action wait_stable start inner=%q", t.inner.Name())
@@ -208,6 +213,10 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 	}
 
 	touchscreenRCALogf("post_action screenshot start inner=%q", t.inner.Name())
+	reportToolProgress(ctx, ToolProgress{
+		Status:  "verifying",
+		Content: "正在读取操作后的屏幕",
+	})
 	screenshotOutput, err := t.screenshot.Call(ctx, "{}")
 	if err != nil {
 		touchscreenRCALogf("post_action screenshot error inner=%q err_type=%T", t.inner.Name(), err)

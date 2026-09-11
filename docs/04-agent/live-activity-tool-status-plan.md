@@ -221,20 +221,22 @@ started_at
 updated_at
 ```
 
-建议做两个向后兼容的可选字段扩展：
+本次实现只做向后兼容的可选字段扩展，接口路径和轮询机制保持不变：
 
 ```text
 thinking_summary   // 可展示的思考摘要
 tool_started_at    // 当前工具开始时间，用于准确计时
 ```
 
-后续若需要同时展示工具状态、最近结果和下一步，再增加：
-
 ```text
-tool_status
-tool_result_summary
-next_step
+tool_status          // thinking/running/preparing/verifying/succeeded/failed/waiting_app/waiting_user
+tool_started_at      // 当前工具开始时间，用于准确计时
+thinking_summary     // Agent 明确标记为可展示的摘要
+tool_result_summary  // Agent 明确标记为可展示的结果摘要
+next_step            // 下一步短文案
 ```
+
+其中 `reasoning_content` 仍按原协议传输给需要它的客户端，但不会直接投影到灵动岛；没有明确摘要时使用固定兜底文案。工具结果只读取显式 `summary` 字段，避免把剪贴板、URL 或原始 JSON 带到灵动岛。
 
 这些字段应同步加入 Go `LiveActivityState`、App TypeScript 类型、ActivityKit `ContentState`，旧版本 App 忽略未知字段即可继续工作。
 

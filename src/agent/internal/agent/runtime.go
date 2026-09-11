@@ -285,6 +285,7 @@ const (
 	runEventModelRequestFailure    = "model_request_failure"
 	runEventReasoningDelta         = "reasoning_delta"
 	runEventReasoningReset         = "reasoning_reset"
+	runEventToolProgress           = "tool_progress"
 )
 
 func historicalPruneEvent(stats compactor.HistoricalPruneStats, changed bool, err error, reason string) TaskEpisodeEvent {
@@ -2437,7 +2438,7 @@ func (h *runtimeCallbackHandler) HandleToolProgress(ctx context.Context, call To
 		return
 	}
 	h.emitRunEvent(RunEvent{
-		Type:       "tool_progress",
+		Type:       runEventToolProgress,
 		EpisodeID:  h.episodeID,
 		ToolCallID: call.Action.ToolID,
 		ToolName:   call.Spec.Name,
