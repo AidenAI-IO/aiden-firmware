@@ -34,6 +34,10 @@ public:
 struct FrameCaptureManagerOptions {
     int recovery_initial_backoff_ms = 1000;
     int recovery_max_backoff_ms = 30000;
+    // Use a slower cap until this open session has produced a valid frame.
+    // Rebuilding an unavailable HDMI pipeline at the normal recovery cadence
+    // wastes CPU while the board is otherwise idle.
+    int recovery_idle_max_backoff_ms = 30000;
     int request_timeout_ms = 4000;
     int warmup_frames = 0;
     bool keep_streamon = false;
@@ -54,7 +58,16 @@ public:
 
 private:
     void run();
-    void recover(int* backoff_ms, const char* error, bool count_failure);
+    void maybe_start_jpeg_warmup(const CapturedFrame& frame);
+    void recover(int* backoff_ms,
+                 int max_backoff_ms,
+                 const char* error,
+                 bool count_failure);
+    int initial_backoff_ms() const {
+        return options_.recovery_initial_backoff_ms > 0
+            ? options_.recovery_initial_backoff_ms
+            : 1;
+    }
 
     FrameCaptureSource* source_;
     FrameServiceServer* server_;
@@ -62,6 +75,11 @@ private:
     std::atomic<bool> running_;
     std::atomic<bool> restart_requested_;
     std::thread thread_;
+    std::thread jpeg_warmup_thread_;
+    std::atomic<bool> jpeg_warmup_running_;
+    bool have_jpeg_warmup_key_;
+    uint32_t jpeg_warmup_width_;
+    uint32_t jpeg_warmup_height_;
     std::mutex request_mutex_;
     std::mutex mutex_;
     std::condition_variable work_cv_;

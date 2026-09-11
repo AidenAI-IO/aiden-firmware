@@ -155,6 +155,33 @@ func TestMarkSuccessfulCommitsSlot(t *testing.T) {
 	}
 }
 
+func TestMarkUnbootablePreservesLayoutAndCRC(t *testing.T) {
+	data := FactoryABData()
+	if err := data.SetActive(SlotB, 3, false); err != nil {
+		t.Fatalf("SetActive() error = %v", err)
+	}
+	if err := data.MarkUnbootable(SlotB); err != nil {
+		t.Fatalf("MarkUnbootable() error = %v", err)
+	}
+	if got := data.Slots[SlotB]; got != (SlotData{}) {
+		t.Fatalf("slot B = %+v, want zero/unbootable", got)
+	}
+	if data.Bootable(SlotB) {
+		t.Fatal("slot B remains bootable")
+	}
+	raw := data.Marshal()
+	if len(raw) != ABDataSize {
+		t.Fatalf("metadata size = %d, want %d", len(raw), ABDataSize)
+	}
+	parsed, err := ParseABData(raw)
+	if err != nil {
+		t.Fatalf("ParseABData(Marshal()) error = %v", err)
+	}
+	if parsed.Slots[SlotB] != (SlotData{}) {
+		t.Fatalf("parsed slot B = %+v, want zero/unbootable", parsed.Slots[SlotB])
+	}
+}
+
 func TestShouldTruncateMiscForInitOnlyRegularFiles(t *testing.T) {
 	if !shouldTruncateMiscForInit(0) {
 		t.Fatal("regular file mode should truncate")

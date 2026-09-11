@@ -1,6 +1,7 @@
 #include "doctest.h"
 #include "uds_client.h"
 #include "uds_server.h"
+#include <sys/stat.h>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -41,6 +42,10 @@ TEST_CASE("UdsServer accepts one request and UdsClient returns response") {
         write_uds_message(fd, R"({"type":"response","status":"OK"})", response_payload);
     });
     REQUIRE(server.start() == FrameServiceStatus::OK);
+
+    struct stat socket_stat{};
+    REQUIRE(::stat(socket_path.path.c_str(), &socket_stat) == 0);
+    CHECK((socket_stat.st_mode & 0777) == 0660);
 
     std::vector<uint8_t> request_payload = {1, 2, 3};
     UdsMessage response;

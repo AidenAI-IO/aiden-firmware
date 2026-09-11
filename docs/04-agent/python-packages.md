@@ -19,12 +19,12 @@ import packages by Python version under `lib/`; package CLIs share `bin/`.
 
 ## Firmware and Startup
 
-The pinned `pico-sdk` enables pip in both active Luckfox Buildroot defconfigs.
-The SDK also carries the compatible Python dependency set required by the
-firmware's existing packages. Runtime code must not upgrade the rootfs copies of
-pip, setuptools, or wheel.
+The Debian production package set installs `/usr/bin/python3` and
+`/usr/bin/pip3`. Runtime code must not upgrade the rootfs copies of pip,
+setuptools, or wheel.
 
-At Agent service startup, `S53agent` prepares:
+Before `aiden-agent.service` starts, `aiden-python-prepare` validates and
+prepares:
 
 | Path | Mode | Purpose |
 | --- | --- | --- |
@@ -43,12 +43,14 @@ PYTHONUSERBASE=/userdata/agent/python
 PIP_USER=1
 PIP_NO_CACHE_DIR=1
 PIP_DISABLE_PIP_VERSION_CHECK=1
+PIP_BREAK_SYSTEM_PACKAGES=1
 ```
 
-Login shells source this profile normally. `aiden-env-run` sources it after
-`/userdata/system/env`, so conflicting values from that file are overwritten
-before the Agent service starts. Agent and manual user shells therefore use the
-same package environment.
+Login shells source this profile normally. The systemd unit sets the same fixed
+values after loading `/run/aiden/system.env`, so external environment settings
+cannot redirect Agent package writes. `PIP_BREAK_SYSTEM_PACKAGES=1` only bypasses
+Debian's externally-managed check; `PIP_USER=1` and `PYTHONUSERBASE` still keep
+writes under `/userdata/agent/python`.
 
 `TMPDIR` is not global. The Agent Shell adds only:
 

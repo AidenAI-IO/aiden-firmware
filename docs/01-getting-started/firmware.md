@@ -4,11 +4,11 @@ sidebar_position: 4
 
 # Firmware Build and Flashing
 
-## Getting Prebuilt Firmware
+## Getting Firmware
 
-If you don't want to compile the firmware locally from scratch, you can download a prebuilt image from Releases:
-
-- [Aiden Firmware Releases](https://github.com/AidenAI-IO/aiden-firmware/releases)
+The current scope does not provide an automated prebuilt-release download. Build
+the Debian image locally with `./debian_build.sh`, or obtain a reviewed
+`update.img` through the project's manual distribution process.
 
 When flashing the full firmware, you typically use `update.img`.
 
@@ -22,7 +22,8 @@ This project's firmware is built on `pico-sdk` and includes the following custom
 - Bridge-aware HDMI timing: RK628D keeps its 1080p60 EDID, while TC358743 automatically advertises 1080p30 to fit its two-lane CSI link;
 - USB-C port is configured as a composite gadget on boot: keyboard HID,
   pointer/touch HID, and CDC ECM networking (`usb0`, default `192.168.42.1`);
-- Injects startup scripts, configuration, and application binaries from `/overlay`.
+- Builds a Debian 13 rootfs from `overlay-debian/` and a separate OEM image from
+  `overlay-debian-oem/` plus the audited application bundle.
 
 The related low-level changes can be found in the `pico-sdk/` submodule.
 
@@ -31,34 +32,29 @@ The related low-level changes can be found in the `pico-sdk/` submodule.
 This requires an x86_64 Linux + Docker environment, or a compatible environment capable of running amd64 containers:
 
 ```bash
-./build.sh image
+./debian_build.sh
 ```
 
-The image command uses the privileged image container profile. Process overview:
+The command requires an external Agent configuration and matching Ed25519 OTA
+key pair (see `./debian_build.sh --help`). Process overview:
 
-1. Compile the application binaries;
-2. Copy `build/bin/` to `overlay/oem/usr/bin/`;
-3. Sync `overlay/etc/` to the `pico-sdk` Buildroot overlay;
-4. Run the `pico-sdk` `sysdrv`, `media`, and `app` build stages, followed by project-level firmware packaging;
-5. Inject `overlay/oem` and `overlay/userdata` into the output directory; the VAD model is located in `overlay/oem/usr/model/` and is included in OTA along with the OEM partition;
-6. Generate the A/B partition images and the full USB first-flash package.
+1. Build and audit the Debian armhf C/C++ and Go application bundle;
+2. Build the pinned Debian 13 rootfs and apply `overlay-debian/`;
+3. Build the RV1106 BSP, bootloader, kernel modules, and A/B boot images from the pinned SDK;
+4. Assemble the OEM image from `overlay-debian-oem/`, audited applications, vendor libraries, models, and web assets;
+5. Create rootfs, OEM, userdata, and OTA images and validate their contents;
+6. Generate the signed local OTA manifest and full USB first-flash package.
 
 After the build completes, the images are located in:
 
 ```text
-pico-sdk/output/image/
+output/debian/image/
 ```
 
 ## Firmware pip
 
-The pinned `pico-sdk` enables pip in both active Luckfox Buildroot defconfigs:
-
-```text
-BR2_PACKAGE_PYTHON_PIP=y
-```
-
-The root repository policy checks this contract. After building an image,
-verify the firmware package with:
+The Debian production package set includes `python3` and `python3-pip`. After
+building an image, verify the runtime with:
 
 ```bash
 /usr/bin/python3 -m pip --version
@@ -76,10 +72,10 @@ Runtime-installed packages stay under `/userdata`; see
 Available methods:
 
 - Hold down the board's BOOT button while plugging in USB-C;
-- If triggering flash mode with the BOOT button doesn't work well, you can first log in to the board via SSH on the USB network or the TTL serial port, then run:
+- If triggering flash mode with the BOOT button doesn't work well, you can first log in to the board via SSH on the USB network or the TTL serial port, then ask systemd to pass the loader argument on reboot:
 
 ```bash
-reboot loader
+systemctl reboot --reboot-argument=loader
 ```
 
 The firmware image includes the `adb` client on the board so it can act as an
@@ -90,18 +86,33 @@ version 1.0.41, so it speaks the current adb auth and pairing protocol.
 
 ### 2. Flash with upgrade_tool
 
-The project ships with an `upgrade_tool` that works on macOS. The Linux / Windows versions can be obtained from `pico-sdk/tools/`.
+On Linux, use the x86_64 tool generated in the pinned Stage 3 SDK. The
+repository-root `upgrade_tool/upgrade_tool` is a macOS Mach-O binary and will
+not run on Linux. The guarded flash helper verifies the image digest and
+requires an explicit confirmation because a full factory flash overwrites
+userdata:
 
 ```bash
-cd aiden-firmware
-./upgrade_tool/upgrade_tool uf ./update.img
+FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+IMAGE=output/debian/image/update.img
+SHA256=$(awk '{print $1}' "${IMAGE}.sha256")
+scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/debian-stage1/flash.sh flash \
+  --tool "${FLASH_TOOL}" \
+  --image "${IMAGE}" \
+  --sha256 "${SHA256}" \
+  --confirm-erase-all-data
 ```
 
-If the image comes from a local build, the path is usually similar to:
+For a prebuilt image, replace `IMAGE` and provide its independently verified
+SHA-256. On macOS, the repository-root `upgrade_tool/upgrade_tool` command can
+be used for a locally built image:
 
 ```bash
-./upgrade_tool/upgrade_tool uf ./pico-sdk/output/image/update.img
+./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
 ```
+
+Do not use that Mach-O binary from a Linux shell.
 
 ## Partition Reference
 
@@ -120,12 +131,12 @@ The production image uses an A/B partition layout:
 | `rootfs_a` | 1536 MB | Slot A root filesystem |
 | `rootfs_b` | 1536 MB | Slot B root filesystem |
 | `userdata` | 3 GB | Shared non-OTA persistent data |
-| `ota` | 300 MiB | Dedicated OTA configuration, state, health markers, and download cache |
+| `ota` | 300 MiB | Dedicated OTA state, health markers, and download cache |
 
 `upgrade_tool` supports updating individual partitions; a full upgrade generally uses `uf update.img`.
 
 The production image uses an A/B partition layout. Online OTA only writes to the inactive slot's `boot_*`, `oem_*`, and `rootfs_*` partitions; `env`, `idblock`, and `uboot` are used only for factory or USB recovery flashing and are not updated via OTA. The `misc` partition holds the Rockchip SPL A/B metadata, which is located at byte offset `2048`.
 
-The released `update.img` includes `ota.img`. When mounted at `/userdata/ota`, it provides `config.json` with `repo`, `channel`, `factory_version`, `factory_build_time`, and slot-aware `factory_partition_hashes`, so that after the device's first USB flash it can perform subsequent OTAs from GitHub Releases.
+The Debian `update.img` includes an initially empty `ota.img`. The generated factory configuration is stored in `userdata.img` at `/debian/ota/config.json` and appears at `/userdata/debian/ota/config.json` after boot. It contains `repo`, `channel`, `factory_version`, `factory_build_time`, and slot-aware `factory_partition_hashes`; `/userdata/ota` remains the dedicated workspace for state and downloads.
 
 For more OTA details, see [OTA Overview](../08-ota/README.md).

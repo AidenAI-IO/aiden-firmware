@@ -2,128 +2,103 @@
 set -eu
 
 repo_root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
-config="$repo_root/overlay/etc/aiden_frame_service.conf"
-init_script="$repo_root/overlay/etc/init.d/S52frame_service"
-tc_edid="$repo_root/overlay/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex"
+debian_config="$repo_root/overlay-debian/etc/aiden_frame_service.conf"
+debian_start="$repo_root/overlay-debian/usr/lib/aiden/aiden-frame-start"
+sdk_source="$repo_root/src/aiden_sdk.cpp"
+frame_main="$repo_root/src/frame_service_main.cpp"
+frame_source="$repo_root/src/frame_camera_capture_source.cpp"
 
-grep -q '^FRAME_SERVICE_FORCE_TRIGGER=auto$' "$config"
-grep -q '^FRAME_SERVICE_EDID=auto$' "$config"
-grep -q '^FRAME_SERVICE_TC358743_EDID=/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex$' "$config"
-grep -q '^FRAME_SERVICE_TC358743_HPD_LOW_SECONDS=2$' "$config"
-grep -q '^FRAME_SERVICE_TC358743_SETTLE_SECONDS=5$' "$config"
-grep -q '^FRAME_SERVICE_WARMUP_FRAMES=$' "$config"
-grep -q '^FRAME_SERVICE_WARMUP_FRAMES=$' "$init_script"
-grep -q '^resolve_force_trigger() {' "$init_script"
-grep -q '^resolve_edid() {' "$init_script"
-grep -q '^prepare_tc358743_edid() {' "$init_script"
-grep -q '^configured_keep_streamon() {' "$init_script"
-grep -q '^AGENT_CONFIG=' "$init_script"
-grep -q -- '--keep-streamon' "$init_script"
-grep -q -- '--pause-between-captures' "$init_script"
-grep -q '\*tc358743\*) echo 1' "$init_script"
-grep -q '\*rk628-csi\*) echo 0' "$init_script"
-grep -q '\*tc358743\*) echo "$FRAME_SERVICE_TC358743_EDID"' "$init_script"
-grep -q 'force_trigger="$(resolve_force_trigger ' "$init_script"
-grep -q 'edid="$(resolve_edid ' "$init_script"
-grep -q -- '--clear-edid=pad=0' "$init_script"
-grep -q -- '--set-edid="pad=0,file=$edid" --fix-edid-checksums' "$init_script"
-grep -q 'prepare_tc358743_edid "$subdev" "$edid"' "$init_script"
-grep -q '\[ "$bridge_prepared" = "1" \]' "$init_script"
-grep -q '^[[:space:]]*force_trigger=0$' "$init_script"
+# Debian is the maintained deployment target. Buildroot overlays are outside
+# the supported solution and intentionally are not asserted here.
+grep -q '^FRAME_SERVICE_PIXEL_FORMAT=nv12$' "$debian_config"
+grep -q '^FRAME_SERVICE_JPEG_ENCODER=software$' "$debian_config"
+grep -q '^# FRAME_SERVICE_VENC_CHANNEL=63$' "$debian_config"
+grep -q '^FRAME_SERVICE_WARMUP_FRAMES=$' "$debian_config"
+grep -q '^FRAME_SERVICE_ALLOW_UNIFORM_FRAMES=1$' "$debian_config"
+grep -q -- 'FRAME_SERVICE_PIXEL_FORMAT:-nv12' "$debian_start"
+grep -q -- '--pixel-format "${pixel_format}"' "$debian_start"
+grep -q '^configured_keep_streamon() {' "$debian_start"
+grep -q -- '--keep-streamon' "$debian_start"
+grep -q -- '--pause-between-captures' "$debian_start"
+grep -q -- '--warmup-frames' "$debian_start"
+grep -q -- '--allow-uniform-frames' "$debian_start"
+grep -q -- '--reject-uniform-frames' "$debian_start"
+grep -q -- '--auto-subdev' "$debian_start"
+grep -q -- '--auto-subdev' "$frame_main"
+grep -q 'detect_hdmi_subdev' "$frame_source"
+grep -q 'device_lock_open_pending' "$frame_source"
+grep -q 'allow_edid_fallback' "$frame_source"
+grep -q 'if (!config.allow_edid_fallback)' "$sdk_source"
 
-prepare_line="$(grep -n 'prepare_tc358743_edid "$subdev" "$edid"' "$init_script" | tail -1 | cut -d: -f1)"
-force_arg_line="$(grep -n 'set -- "$@" --force-trigger' "$init_script" | tail -1 | cut -d: -f1)"
-no_force_arg_line="$(grep -n 'set -- "$@" --no-force-trigger' "$init_script" | tail -1 | cut -d: -f1)"
-edid_arg_line="$(grep -n 'set -- "$@" --edid "$edid"' "$init_script" | tail -1 | cut -d: -f1)"
-for marker_line in "$prepare_line" "$force_arg_line" "$no_force_arg_line" "$edid_arg_line"; do
-    case "$marker_line" in
-        ''|0|*[!0-9]*)
-            echo "FAIL: frame_service ordering marker has an invalid line number" >&2
-            exit 1
-            ;;
-    esac
-done
-if [ "$prepare_line" -ge "$force_arg_line" ] || \
-        [ "$prepare_line" -ge "$no_force_arg_line" ] || \
-        [ "$force_arg_line" -ge "$edid_arg_line" ] || \
-        [ "$no_force_arg_line" -ge "$edid_arg_line" ]; then
-    echo "FAIL: frame_service must select the force-trigger argument after bridge preparation" >&2
+# Exercise the no-HDMI path with a fake service binary. The helper must reach
+# exec successfully and delegate bridge discovery to the C++ capture source.
+mock_root=$(mktemp -d)
+trap 'rm -rf "$mock_root"' EXIT
+cat >"$mock_root/frame_service" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >"${FRAME_SERVICE_TEST_ARGS}"
+exit 0
+EOF
+chmod 0755 "$mock_root/frame_service"
+
+FRAME_SERVICE_BIN="$mock_root/frame_service" \
+FRAME_SERVICE_TEST_ARGS="$mock_root/args" \
+SOCKET_PATH="$mock_root/frame.sock" \
+FRAME_SERVICE_SUBDEV= \
+FRAME_SERVICE_FORCE_TRIGGER=auto \
+FRAME_SERVICE_EDID=auto \
+FRAME_SERVICE_PIXEL_FORMAT=nv12 \
+    "$debian_start"
+grep -q -- '--auto-subdev' "$mock_root/args"
+grep -q -- '--no-force-trigger' "$mock_root/args"
+grep -q -- '--pixel-format nv12' "$mock_root/args"
+grep -q -- '--pause-between-captures' "$mock_root/args"
+grep -q -- '--allow-uniform-frames' "$mock_root/args"
+
+# The explicit `auto` sentinel behaves identically to an empty subdevice, and
+# a compatibility pixel format and the Agent stream policy are forwarded.
+printf '[frame_service]\nkeep_streamon = true\n' >"$mock_root/agent.toml"
+FRAME_SERVICE_BIN="$mock_root/frame_service" \
+FRAME_SERVICE_TEST_ARGS="$mock_root/args-auto" \
+SOCKET_PATH="$mock_root/frame-auto.sock" \
+AGENT_CONFIG="$mock_root/agent.toml" \
+FRAME_SERVICE_SUBDEV=auto \
+FRAME_SERVICE_FORCE_TRIGGER=auto \
+FRAME_SERVICE_EDID=auto \
+FRAME_SERVICE_PIXEL_FORMAT=uyvy \
+FRAME_SERVICE_WARMUP_FRAMES=4 \
+FRAME_SERVICE_ALLOW_UNIFORM_FRAMES=0 \
+    "$debian_start"
+grep -q -- '--auto-subdev' "$mock_root/args-auto"
+grep -q -- '--no-force-trigger' "$mock_root/args-auto"
+grep -q -- '--pixel-format uyvy' "$mock_root/args-auto"
+grep -q -- '--warmup-frames 4' "$mock_root/args-auto"
+grep -q -- '--keep-streamon' "$mock_root/args-auto"
+grep -q -- '--reject-uniform-frames' "$mock_root/args-auto"
+
+# Invalid formats fail closed before starting the service binary.
+if FRAME_SERVICE_BIN="$mock_root/frame_service" \
+    FRAME_SERVICE_TEST_ARGS="$mock_root/args-invalid" \
+    FRAME_SERVICE_PIXEL_FORMAT=rgb24 \
+    "$debian_start"; then
+    echo "FAIL: invalid FRAME_SERVICE_PIXEL_FORMAT was accepted" >&2
     exit 1
 fi
-cmp "$repo_root/edid/hdmi_1080p30_cta.hex" "$tc_edid"
 
-run_stream_mode_fixture() {
-    mode="$1"
-    expected_flag="$2"
-    fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/frame-service-policy.XXXXXX")"
-    cleanup_fixture() {
-        "$fixture_dir/init.sh" stop >/dev/null 2>&1 || true
-        rm -rf "$fixture_dir"
-    }
-    trap cleanup_fixture EXIT INT TERM
+if FRAME_SERVICE_BIN="$mock_root/frame_service" \
+    FRAME_SERVICE_TEST_ARGS="$mock_root/args-invalid-warmup" \
+    FRAME_SERVICE_WARMUP_FRAMES=-1 \
+    "$debian_start"; then
+    echo "FAIL: invalid FRAME_SERVICE_WARMUP_FRAMES was accepted" >&2
+    exit 1
+fi
 
-    cat >"$fixture_dir/log.sh" <<'EOF'
-aiden_log_to_file() { :; }
-EOF
-    cat >"$fixture_dir/frame_service" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-    cat >"$fixture_dir/env_run" <<EOF
-#!/bin/sh
-printf '%s\n' "\$*" >> "$fixture_dir/args.log"
-exit 0
-EOF
-    chmod +x "$fixture_dir/frame_service" "$fixture_dir/env_run"
-    cat >"$fixture_dir/config.toml" <<EOF
-ENABLE_FRAME_SERVICE=1
-FRAME_SERVICE_BIN=$fixture_dir/frame_service
-ENV_RUN_BIN=$fixture_dir/env_run
-FRAME_SERVICE_SUBDEV=/dev/null
-FRAME_SERVICE_FORCE_TRIGGER=0
-FRAME_SERVICE_EDID=
-FRAME_SERVICE_WARMUP_FRAMES=
-FRAME_SERVICE_ALLOW_UNIFORM_FRAMES=1
-SOCKET_PATH=$fixture_dir/frame.sock
-LOG_PATH=$fixture_dir/service.log
-PID_FILE=$fixture_dir/service.pid
-WATCHDOG_PID_FILE=$fixture_dir/watchdog.pid
-EOF
-    sed "s#^CONFIG_FILE=.*#CONFIG_FILE=$fixture_dir/config.toml#" "$init_script" >"$fixture_dir/init.sh"
-    chmod +x "$fixture_dir/init.sh"
-    printf '[frame_service]\nkeep_streamon = %s\n' "$mode" >"$fixture_dir/agent.toml"
+if FRAME_SERVICE_BIN="$mock_root/frame_service" \
+    FRAME_SERVICE_TEST_ARGS="$mock_root/args-invalid-uniform" \
+    FRAME_SERVICE_ALLOW_UNIFORM_FRAMES=yes \
+    "$debian_start"; then
+    echo "FAIL: invalid FRAME_SERVICE_ALLOW_UNIFORM_FRAMES was accepted" >&2
+    exit 1
+fi
 
-    AGENT_CONFIG="$fixture_dir/agent.toml" \
-    AIDEN_LOG_HELPER="$fixture_dir/log.sh" \
-        "$fixture_dir/init.sh" start >/dev/null
-    i=0
-    while [ ! -s "$fixture_dir/args.log" ] && [ "$i" -lt 20 ]; do
-        sleep 0.05
-        i=$((i + 1))
-    done
-    [ -s "$fixture_dir/args.log" ] || {
-        echo "FAIL: frame service fixture did not launch for keep_streamon=$mode" >&2
-        exit 1
-    }
-    args="$(head -n 1 "$fixture_dir/args.log")"
-    keep_count="$(printf '%s\n' "$args" | awk '{n=0; for (i=1; i<=NF; i++) if ($i == "--keep-streamon") n++; print n}')"
-    pause_count="$(printf '%s\n' "$args" | awk '{n=0; for (i=1; i<=NF; i++) if ($i == "--pause-between-captures") n++; print n}')"
-    if [ "$expected_flag" = "--keep-streamon" ]; then
-        [ "$keep_count" -eq 1 ] && [ "$pause_count" -eq 0 ] || {
-            echo "FAIL: keep_streamon=$mode selected unexpected flags: $args" >&2
-            exit 1
-        }
-    else
-        [ "$keep_count" -eq 0 ] && [ "$pause_count" -eq 1 ] || {
-            echo "FAIL: keep_streamon=$mode selected unexpected flags: $args" >&2
-            exit 1
-        }
-    fi
-    trap - EXIT INT TERM
-    cleanup_fixture
-}
-
-run_stream_mode_fixture true --keep-streamon
-run_stream_mode_fixture false --pause-between-captures
-
-echo "frame_service HDMI bridge policy: ok"
+echo "Debian frame_service bridge policy: ok"

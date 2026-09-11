@@ -34,12 +34,28 @@ type screenshotResult struct {
 
 type screenshotFrameClient = screenprovider.Provider
 
+type screenshotReadyFrameClient interface {
+	LatestFrameWithFormatWhenReady(format string, quality int, cropBlack bool, hint screenprovider.CropHint) (*frameMetadata, []byte, screenCaptureInfo, error)
+}
+
 func captureScreenshotJPEG(client screenshotFrameClient, screenState *screen.ScreenState, cropBlack bool) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	hint := screenprovider.CropHint{}
 	if cropBlack {
 		hint = screenshotCropHint(screenState)
 	}
 	return client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality, cropBlack, hint)
+}
+
+func captureScreenshotJPEGWhenReady(client screenshotFrameClient, screenState *screen.ScreenState, cropBlack bool) (*frameMetadata, []byte, screenCaptureInfo, error) {
+	readyClient, ok := client.(screenshotReadyFrameClient)
+	if !ok {
+		return captureScreenshotJPEG(client, screenState, cropBlack)
+	}
+	hint := screenprovider.CropHint{}
+	if cropBlack {
+		hint = screenshotCropHint(screenState)
+	}
+	return readyClient.LatestFrameWithFormatWhenReady("jpeg", screenshotJPEGQuality, cropBlack, hint)
 }
 
 func screenshotCropHint(screenState *screen.ScreenState) screenprovider.CropHint {
@@ -236,10 +252,26 @@ func (t *ScreenshotTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(nil)
 }
 
-func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
+func (t *ScreenshotTool) Call(ctx context.Context, input string) (string, error) {
+	return t.call(ctx, input, true)
+}
+
+func (t *ScreenshotTool) CallWithoutStartupWait(ctx context.Context, input string) (string, error) {
+	return t.call(ctx, input, false)
+}
+
+func (t *ScreenshotTool) call(_ context.Context, _ string, waitForReady bool) (string, error) {
 	// Request JPEG format directly from frame_service (hardware-encoded)
 	cropBlack := t.cropBlack()
-	meta, jpegData, captureInfo, err := captureScreenshotJPEG(t.client, t.screen, cropBlack)
+	var meta *frameMetadata
+	var jpegData []byte
+	var captureInfo screenCaptureInfo
+	var err error
+	if waitForReady {
+		meta, jpegData, captureInfo, err = captureScreenshotJPEGWhenReady(t.client, t.screen, cropBlack)
+	} else {
+		meta, jpegData, captureInfo, err = captureScreenshotJPEG(t.client, t.screen, cropBlack)
+	}
 	if err != nil {
 		return "", err
 	}

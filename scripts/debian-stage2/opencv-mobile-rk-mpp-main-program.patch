@@ -1,0 +1,33 @@
+diff --git a/modules/highgui/src/jpeg_encoder_rk_mpp.cpp b/modules/highgui/src/jpeg_encoder_rk_mpp.cpp
+index da062ea..d72e684 100644
+--- a/modules/highgui/src/jpeg_encoder_rk_mpp.cpp
++++ b/modules/highgui/src/jpeg_encoder_rk_mpp.cpp
+@@ -19,2 +19,3 @@
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <stdint.h>
+@@ -72,4 +73,11 @@ static int get_device_model()
+ static bool is_device_whitelisted()
+ {
++    const char* encoder = getenv("FRAME_SERVICE_JPEG_ENCODER");
++    if (encoder && strcmp(encoder, "software") == 0)
++    {
++        fprintf(stderr, "opencv-mobile software JPG encoder selected\n");
++        return false;
++    }
++
+     return get_device_model() > 0;
+ }
+@@ -250,6 +258,12 @@ static int load_rkmpp_library()
+     {
+         librockchip_mpp = dlopen("/oem/usr/lib/librockchip_mpp.so", RTLD_LOCAL | RTLD_NOW);
+     }
++    if (!librockchip_mpp)
++    {
++        // Debian RV1106 links the vendor's glibc MPP archive into the service.
++        // Resolve that single in-process runtime instead of loading a second copy.
++        librockchip_mpp = dlopen(NULL, RTLD_LOCAL | RTLD_NOW);
++    }
+     if (!librockchip_mpp)
+     {
+         return -1;

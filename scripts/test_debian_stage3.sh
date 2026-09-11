@@ -1,0 +1,411 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly STAGE3_DIR=${REPO_ROOT}/scripts/debian-stage3
+readonly TEST_ROOT=$(mktemp -d)
+trap 'rm -rf "${TEST_ROOT}"' EXIT
+
+fail() {
+    echo "Debian Stage 3 test failure: $*" >&2
+    exit 1
+}
+
+active_docs=()
+while IFS= read -r tracked_doc; do
+    active_docs+=("${REPO_ROOT}/${tracked_doc}")
+done < <(git -C "${REPO_ROOT}" ls-files -- \
+    README.md docs/README.md 'docs/[0-9][0-9]-*')
+if rg --no-ignore -n -i \
+    '\./build\.sh (binaries|image)|/etc/init\.d/|overlay/(etc|oem|userdata)|pico-sdk/output/image|scripts/build/' \
+    "${active_docs[@]}"; then
+    fail "active documentation still publishes a legacy userspace workflow"
+fi
+
+bash -n \
+    "${STAGE3_DIR}/build.sh" \
+    "${STAGE3_DIR}/audit-bsp.sh" \
+    "${STAGE3_DIR}/container-build-rootfs.sh" \
+    "${STAGE3_DIR}/container-assemble-images.sh" \
+    "${STAGE3_DIR}/container-install-ota-config.sh" \
+    "${STAGE3_DIR}/container-audit-images.sh"
+PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
+    "${STAGE3_DIR}/canonicalize-ext4.py" \
+    "${STAGE3_DIR}/canonicalize-bsp.py" \
+    "${STAGE3_DIR}/generate-spdx.py" \
+    "${STAGE3_DIR}/validate-ota-config.py"
+
+for script in \
+    build.sh audit-bsp.sh canonicalize-bsp.py container-build-rootfs.sh container-assemble-images.sh \
+    container-install-ota-config.sh container-audit-images.sh \
+    canonicalize-ext4.py generate-spdx.py validate-ota-config.py; do
+    [ -x "${STAGE3_DIR}/${script}" ] || fail "${script} is not executable"
+done
+
+grep -q 'snapshot.debian.org/archive/debian/20260803T000000Z' \
+    "${STAGE3_DIR}/debian.sources"
+grep -q 'snapshot.debian.org/archive/debian-security/20260803T000000Z' \
+    "${STAGE3_DIR}/debian.sources"
+grep -q '^Check-Valid-Until: no$' "${STAGE3_DIR}/debian.sources"
+grep -q '^FROM debian:trixie-slim@sha256:' "${STAGE3_DIR}/Dockerfile"
+grep -Fq 'mount -t binfmt_misc binfmt_misc "${BINFMT_DIR}"' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq '/usr/lib/systemd/systemd-binfmt' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq '/usr/lib/binfmt.d/qemu-arm.conf' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'grep -qx enabled "${BINFMT_DIR}/qemu-arm"' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+if grep -Fq 'update-binfmts --enable qemu-arm >/dev/null 2>&1 || true' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"; then
+    fail "rootfs builder silently ignores qemu-arm registration failures"
+fi
+grep -Eq '^[[:space:]]*debootstrap \\' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+
+for package in \
+    systemd-sysv udev dbus kmod openssh-server sudo adb iproute2 iputils-arping \
+    wpasupplicant bluez systemd-resolved systemd-timesyncd dnsmasq-base \
+    e2fsprogs v4l-utils libdrm2 python3 python3-pip; do
+    grep -qx "${package}" "${STAGE3_DIR}/packages.list" \
+        || fail "production package list is missing ${package}"
+done
+if grep -Eq '^(net-tools|dhcpcd|dhcpcd-base|isc-dhcp-client|flash-kernel|initramfs-tools)$' \
+    "${STAGE3_DIR}/packages.list"; then
+    fail "banned package is present in production package list"
+fi
+grep -q 'Pin-Priority: -1' "${STAGE3_DIR}/aiden-production.pref"
+
+grep -Fq '1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)' \
+    "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
+grep -Fq 'RK_UBOOT_DEFCONFIG_FRAGMENT="rk-emmc.config rv1106-ab.config aiden-rv1106-rockusb.config"' \
+    "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
+grep -Fq 'RK_KERNEL_DEFCONFIG_FRAGMENT="aiden-zram.config rv1106-bt.config aiden-rk628.config debian-stage3.config"' \
+    "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
+for symbol in CONFIG_MEDIA_CONTROLLER CONFIG_VIDEO_V4L2_SUBDEV_API \
+    CONFIG_VIDEO_RK628_CSI CONFIG_VIDEO_TC358743 \
+    CONFIG_VIDEO_TC358743_CEC; do
+    grep -Fq "${symbol}" "${STAGE3_DIR}/build.sh" \
+        || fail "Stage 3 BSP verification does not enforce ${symbol}"
+done
+grep -Fq "RK_KERNEL_CMDLINE_EXTRA=net.ifnames\$'\\x3d'0" \
+    "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
+grep -Fq 'root=PARTLABEL=$root_label' \
+    "${STAGE3_DIR}/sdk-patches/0002-append-slot-kernel-cmdline.patch"
+grep -Fq 'slot_cmdline="$slot_cmdline $RK_KERNEL_CMDLINE_EXTRA"' \
+    "${STAGE3_DIR}/sdk-patches/0002-append-slot-kernel-cmdline.patch"
+
+if [ -e "${REPO_ROOT}/pico-sdk/project/build.sh" ]; then
+    git -C "${REPO_ROOT}/pico-sdk" apply --check \
+        "${STAGE3_DIR}/sdk-patches/0001-use-all-host-cpus.patch"
+    git -C "${REPO_ROOT}/pico-sdk" apply --check \
+        "${STAGE3_DIR}/sdk-patches/0002-append-slot-kernel-cmdline.patch"
+    git -C "${REPO_ROOT}/pico-sdk" apply --check \
+        "${STAGE3_DIR}/sdk-patches/0003-add-ab-images-action.patch"
+    git -C "${REPO_ROOT}/pico-sdk" apply --check \
+        "${STAGE3_DIR}/sdk-patches/0004-make-bsp-images-reproducible.patch"
+    git -C "${REPO_ROOT}/pico-sdk" apply --check \
+        "${STAGE3_DIR}/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch"
+    git -C "${REPO_ROOT}/pico-sdk" apply --check \
+        "${STAGE3_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
+    git -C "${REPO_ROOT}/pico-sdk" apply --check \
+        "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
+fi
+
+grep -Fq 'rsync -aHAX --numeric-ids --chown=0:0' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+if grep -Eq 'chown[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(-R|--recursive)' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"; then
+    fail "rootfs builder recursively chowns Debian package files"
+fi
+[ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-usb-gadget" ] \
+    || fail "Debian USB gadget helper is missing"
+[ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-boot-timeline" ] \
+    || fail "Debian boot timeline helper is missing"
+[ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-ttyd-start" ] \
+    || fail "Debian ttyd helper is missing"
+grep -Fq 'aiden-ttyd.service' \
+    "${REPO_ROOT}/overlay-debian/etc/systemd/system/aiden.target"
+grep -Fq 'd1a279cbb7e29aa0801943cdf21f0575db69eed5' \
+    "${STAGE3_DIR}/build.sh"
+grep -Fq 'overlay-debian/" "${ROOTFS_DIR}/"' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'stage_rootfs_cli_tools.sh' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'rootfs-cli-tools-versions.txt' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'rootfs_cli_tools_manifest_sha256' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+if grep -Fq '${REPO_ROOT}/overlay/' "${STAGE3_DIR}/container-build-rootfs.sh"; then
+    fail "Debian rootfs builder depends on the Buildroot overlay"
+fi
+grep -Fq 'aiden-boot-timeline.service' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'aiden-machine-id.service' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'useradd --uid 1000 --gid aiden --create-home' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'sudo,audio,video,dialout,plugdev,netdev aiden' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'mgLNEH35w8GS9UrV1Yi4BXg1g.CYyVIAnUAXIXmato37U4M5obgDhGY2YhpIwHd7sNCtBq/uB.5oEk8jHPNYZ.' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -qx 'PasswordAuthentication yes' \
+    "${REPO_ROOT}/overlay-debian/etc/ssh/sshd_config.d/20-aiden.conf"
+grep -qx 'PermitRootLogin prohibit-password' \
+    "${REPO_ROOT}/overlay-debian/etc/ssh/sshd_config.d/20-aiden.conf"
+grep -Fq 'systemctl --root="${ROOTFS_DIR}" preset-all' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'ssh.socket rsync.service' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'sbom.spdx.json' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'rootfs.tar.zst' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'hash_seed=${ROOTFS_UUID}' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq -- '-d "${ROOTFS_IMPORT_DIR}"' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'canonicalize-ext4.py' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'comparison=rsync-HAXc-numeric-ids' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'var/cache/apt/pkgcache.bin' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'var/cache/apt/srcpkgcache.bin' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'var/cache/ldconfig/aux-cache' "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'safe.directory="${REPO_ROOT}/pico-sdk"' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+grep -Fq 'safe.directory="${REPO_ROOT}"' \
+    "${STAGE3_DIR}/container-build-rootfs.sh"
+[ "$(grep -Fc -- '--path-format=absolute --git-common-dir' \
+    "${STAGE3_DIR}/build.sh")" -eq 1 ] \
+    || fail "rootfs container does not mount exactly one Git provenance directory"
+grep -Fq 'git -C "${SDK_DIR}" repack -a -d' "${STAGE3_DIR}/build.sh"
+grep -Fq -- '--path-format=absolute --git-path objects/info/alternates' \
+    "${STAGE3_DIR}/build.sh"
+grep -Fq 'rm -f -- "${alternates_file}"' "${STAGE3_DIR}/build.sh"
+grep -Fq 'git -C "${SDK_DIR}" fsck --connectivity-only --no-dangling' \
+    "${STAGE3_DIR}/build.sh"
+if sed -n '/^run_bsp()/,/^}/p' "${STAGE3_DIR}/build.sh" \
+    | grep -Fq 'source_git_common_dir'; then
+    fail "BSP container still depends on a host Git object directory"
+fi
+grep -Fq 'KBUILD_BUILD_USER=aiden' "${STAGE3_DIR}/build.sh"
+grep -Fq './build.sh abimages' "${STAGE3_DIR}/build.sh"
+grep -Fq '0004-make-bsp-images-reproducible.patch' "${STAGE3_DIR}/build.sh"
+grep -Fq '0005-set-rv1106-usb2-hs-odt.patch' "${STAGE3_DIR}/build.sh"
+grep -Fq '0006-fix-configfs-uevent-rebind-uaf.patch' "${STAGE3_DIR}/build.sh"
+grep -Fq '0007-enable-rv1106-uboot-rockusb.patch' "${STAGE3_DIR}/build.sh"
+grep -Fq '0008-complete-rv1106-uboot-usb2-phy-tuning.patch' \
+    "${STAGE3_DIR}/build.sh"
+grep -Fq 'CONFIG_CMD_ROCKUSB=y' \
+    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
+grep -Fq 'writel(reg, USB2PHY_APB_BASE + USB2PHY_HS_ODT);' \
+    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
+grep -Fq 'return 1;' \
+    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
+grep -Fq 'USB device port, assuming attached' \
+    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
+grep -Fq 'usb2phy_update_bits(USB2PHY_PRE_EMPHASIS' \
+    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
+grep -Fq 'usb2phy_update_bits(USB2PHY_TX_EYE_HEIGHT' \
+    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
+grep -Fq 'usb2phy_update_bits(USB2PHY_SQUELCH_CALIB1' \
+    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
+grep -Fq 'mdelay(2);' \
+    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
+grep -Fq 'RV1106 USB2 PHY tuned:' \
+    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
+grep -Fq 'phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x1f);' \
+    "${STAGE3_DIR}/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch"
+grep -Fq 'gi = container_of(cdev, struct gadget_info, cdev);' \
+    "${STAGE3_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
+grep -Fq 'cancel_work_sync(&gi->work);' \
+    "${STAGE3_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
+grep -Fq 'android_device = NULL;' \
+    "${STAGE3_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
+grep -Fq 'canonicalize-bsp.py' "${STAGE3_DIR}/build.sh"
+grep -Fq 'audit-bsp.sh' "${STAGE3_DIR}/build.sh"
+grep -Fq 'factory A/B metadata is invalid' "${STAGE3_DIR}/audit-bsp.sh"
+grep -Fq 'boot_${slot}.img contains multiple root arguments' \
+    "${STAGE3_DIR}/audit-bsp.sh"
+grep -Fq 'bsp-artifacts.sha256' "${STAGE3_DIR}/audit-bsp.sh"
+grep -Fq -- '--check' "${STAGE3_DIR}/audit-bsp.sh"
+
+for binary in \
+    abctl agent aiden-environment audio_service ble_service cpu_vad \
+    frame_service ota rknn_vad ttyd; do
+    grep -qx "    ${binary}" "${STAGE3_DIR}/container-assemble-images.sh" \
+        || fail "production OEM allowlist is missing ${binary}"
+done
+if grep -Eq '^    (example_|hello$|trigger$|image_process$|audio_stream$)' \
+    "${STAGE3_DIR}/container-assemble-images.sh"; then
+    fail "diagnostic executable leaked into the production OEM allowlist"
+fi
+grep -Fq 'src/agent/config/skills/' "${STAGE3_DIR}/container-assemble-images.sh"
+grep -Fq 'src/config_web/web/' "${STAGE3_DIR}/container-assemble-images.sh"
+grep -Fq 'AGENT_CONFIG_PATH' "${STAGE3_DIR}/build.sh"
+grep -Fq '${AGENT_CONFIG_PATH}:/run/secrets/agent.toml:ro' \
+    "${STAGE3_DIR}/build.sh"
+grep -Fq 'apps/bin/agent" config-check --format=json' "${STAGE3_DIR}/build.sh"
+grep -Fq 'install -m 0600 "${AGENT_CONFIG}" "${USERDATA_ROOT}/agent/agent.toml"' \
+    "${STAGE3_DIR}/container-assemble-images.sh"
+grep -Fq 'overlay-debian-oem/' \
+    "${STAGE3_DIR}/container-assemble-images.sh"
+[ -x "${REPO_ROOT}/overlay-debian-oem/usr/bin/aiden-dynamic-keyboard" ] \
+    || fail "Debian OEM dynamic keyboard helper is missing"
+[ -s "${REPO_ROOT}/overlay-debian-oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn" ] \
+    || fail "Debian OEM VAD model is missing"
+[ -s "${REPO_ROOT}/overlay-debian-oem/usr/share/aiden/audio/config_aivqe.json" ] \
+    || fail "Debian OEM VQE configuration is missing"
+for library in libaec_bf_process.so librkaudio_common.so; do
+    [ -s "${REPO_ROOT}/overlay-debian-oem/usr/lib/${library}" ] \
+        || fail "Debian OEM VQE runtime library is missing: ${library}"
+done
+[ "$(sha256sum "${REPO_ROOT}/overlay-debian-oem/usr/lib/libaec_bf_process.so" | awk '{print $1}')" = \
+    3427abaa4b2ab7917d079e6cba46a68a836069bcc7f6b9e94630353fcd8c1a9a ] \
+    || fail "Debian OEM VQE AEC runtime checksum changed"
+[ "$(sha256sum "${REPO_ROOT}/overlay-debian-oem/usr/lib/librkaudio_common.so" | awk '{print $1}')" = \
+    de8ff824dd1f2e5ec1074b84490d2836ed9dc61d59d6a90d9cdf19386097263c ] \
+    || fail "Debian OEM RKAUDIO common runtime checksum changed"
+grep -Fq 'VQE runtime library checksum mismatch' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+[ -s "${REPO_ROOT}/overlay-debian-oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex" ] \
+    || fail "Debian OEM EDID is missing"
+if grep -Fq '${REPO_ROOT}/overlay/' "${STAGE3_DIR}/container-assemble-images.sh"; then
+    fail "Debian OEM assembler depends on the Buildroot overlay"
+fi
+grep -Fq 'kernel_drv_ko/' "${STAGE3_DIR}/container-assemble-images.sh"
+grep -Fq '/userdata/debian/ota/config.json' "${STAGE3_DIR}/build.sh"
+grep -Fq 'factory_partition_hashes' "${STAGE3_DIR}/validate-ota-config.py"
+grep -Fq 'debian/ota/config.json' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'Agent configuration does not match the external build input' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'rootfs CLI tool checksum mismatch' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'rootfs CLI checksum manifest does not match the catalog' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'rootfs CLI version metadata does not match the catalog' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq '${STAGE2_OUTPUT}/rootfs-cli-tools:/rootfs-cli-tools:ro' \
+    "${STAGE3_DIR}/build.sh"
+
+grep -Fq 'root=PARTLABEL=${root_label}' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq "net.ifnames=0" "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'Buildroot SysV startup file leaked' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'boot timeline helper was not installed' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'aiden-boot-timeline.service is not enabled' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'rootfs import attribute audit did not pass' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'rootfs ownership or mode is invalid' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'sudo executable ownership or mode is invalid' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'sudo group does not require password-authenticated administrator access' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'passwordless sudo policy is present' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'nondeterministic APT package cache leaked' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'nondeterministic APT source cache leaked' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'nondeterministic ldconfig cache leaked' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'unresolved OEM DT_NEEDED' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'generic OTA image is not empty' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'stage_oem_image()' "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'rsync -aHAX --numeric-ids --delete' \
+    "${STAGE3_DIR}/container-audit-images.sh"
+grep -Fq 'unmount_mounts' "${STAGE3_DIR}/container-audit-images.sh"
+if grep -Fq 'mount_image "${IMAGE_DIR}/userdata.img" "${USERDATA_MOUNT}"' \
+    "${STAGE3_DIR}/container-audit-images.sh" \
+    && grep -Fq 'mount_image "${IMAGE_DIR}/ota.img" "${OTA_MOUNT}"' \
+    "${STAGE3_DIR}/container-audit-images.sh"; then
+    test "$(grep -n 'mount_image "\${IMAGE_DIR}/userdata.img"' \
+        "${STAGE3_DIR}/container-audit-images.sh" | cut -d: -f1)" -lt \
+        "$(grep -n 'mount_image "\${IMAGE_DIR}/ota.img"' \
+            "${STAGE3_DIR}/container-audit-images.sh" | cut -d: -f1)"
+fi
+
+cat >"${TEST_ROOT}/packages.tsv" <<'EOF'
+package	version	architecture	source	maintainer
+systemd:armhf	257.7-1	armhf	systemd	Debian systemd Maintainers <pkg-systemd-maintainers@lists.alioth.debian.org>
+EOF
+PYTHONDONTWRITEBYTECODE=1 "${STAGE3_DIR}/generate-spdx.py" \
+    "${TEST_ROOT}/packages.tsv" "${TEST_ROOT}/sbom.json"
+python3 - "${TEST_ROOT}/sbom.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    document = json.load(stream)
+assert document["spdxVersion"] == "SPDX-2.3"
+assert document["packages"][0]["name"] == "systemd:armhf"
+assert document["packages"][0]["externalRefs"][0]["referenceType"] == "purl"
+PY
+
+help_output=${TEST_ROOT}/help-output
+DEBIAN_STAGE3_OUTPUT_DIR="${help_output}" \
+    "${STAGE3_DIR}/build.sh" --help >/dev/null
+[ ! -e "${help_output}" ] || fail "--help created the output directory"
+if "${STAGE3_DIR}/build.sh" invalid-action >/dev/null 2>&1; then
+    fail "invalid build action succeeded"
+fi
+
+mkdir -p "${TEST_ROOT}/ota-config-images"
+for image in boot_a.img boot_b.img oem.img rootfs.img; do
+    printf '%s\n' "${image}" >"${TEST_ROOT}/ota-config-images/${image}"
+done
+boot_a_hash=$(sha256sum "${TEST_ROOT}/ota-config-images/boot_a.img" | awk '{print $1}')
+boot_b_hash=$(sha256sum "${TEST_ROOT}/ota-config-images/boot_b.img" | awk '{print $1}')
+oem_hash=$(sha256sum "${TEST_ROOT}/ota-config-images/oem.img" | awk '{print $1}')
+rootfs_hash=$(sha256sum "${TEST_ROOT}/ota-config-images/rootfs.img" | awk '{print $1}')
+cat >"${TEST_ROOT}/ota-config.json" <<EOF
+{
+  "repo": "AidenAI-IO/aiden-firmware",
+  "channel": "stable",
+  "download_safety_margin_bytes": 16777216,
+  "factory_version": "20260817-120000-abcdef0",
+  "factory_build_time": "2026-08-17T12:00:00Z",
+  "factory_partition_hashes": {
+    "a": {"boot": "${boot_a_hash}", "oem": "${oem_hash}", "rootfs": "${rootfs_hash}"},
+    "b": {"boot": "${boot_b_hash}", "oem": "${oem_hash}", "rootfs": "${rootfs_hash}"}
+  }
+}
+EOF
+"${STAGE3_DIR}/validate-ota-config.py" \
+    --config "${TEST_ROOT}/ota-config.json" \
+    --boot-a "${TEST_ROOT}/ota-config-images/boot_a.img" \
+    --boot-b "${TEST_ROOT}/ota-config-images/boot_b.img" \
+    --oem "${TEST_ROOT}/ota-config-images/oem.img" \
+    --rootfs "${TEST_ROOT}/ota-config-images/rootfs.img" \
+    >"${TEST_ROOT}/ota-config-audit.txt"
+grep -qx "factory_partition_hashes.b.rootfs=${rootfs_hash}" \
+    "${TEST_ROOT}/ota-config-audit.txt"
+sed 's/"rootfs": "[0-9a-f]*"/"rootfs": "bad"/' \
+    "${TEST_ROOT}/ota-config.json" >"${TEST_ROOT}/bad-ota-config.json"
+if "${STAGE3_DIR}/validate-ota-config.py" \
+    --config "${TEST_ROOT}/bad-ota-config.json" \
+    --boot-a "${TEST_ROOT}/ota-config-images/boot_a.img" \
+    --boot-b "${TEST_ROOT}/ota-config-images/boot_b.img" \
+    --oem "${TEST_ROOT}/ota-config-images/oem.img" \
+    --rootfs "${TEST_ROOT}/ota-config-images/rootfs.img" >/dev/null 2>&1; then
+    fail "OTA config validator accepted a mismatched rootfs hash"
+fi
+
+mkdir -p "${TEST_ROOT}/mock-bin"
+cat >"${TEST_ROOT}/mock-bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\0' "$@" >>"${MOCK_DOCKER_LOG}"
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+    printf 'sha256:mock-stage3-builder\n'
+fi
+EOF
+chmod +x "${TEST_ROOT}/mock-bin/docker"
+mock_output=${TEST_ROOT}/mock-output
+mock_log=${TEST_ROOT}/docker-args
+mock_stage2=${TEST_ROOT}/mock-stage2
+mkdir -p "${mock_stage2}/rootfs-cli-tools"
+printf '%064d  fq\n' 0 >"${mock_stage2}/rootfs-cli-tools/manifest.sha256"
+printf 'fq v0.17.0 linux/arm/v7 preserve\n' \
+    >"${mock_stage2}/rootfs-cli-tools/versions.txt"
+MOCK_DOCKER_LOG="${mock_log}" \
+PATH="${TEST_ROOT}/mock-bin:${PATH}" \
+DEBIAN_STAGE3_OUTPUT_DIR="${mock_output}" \
+DEBIAN_STAGE2_OUTPUT_DIR="${mock_stage2}" \
+    "${STAGE3_DIR}/build.sh" rootfs
+tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/docker-args.txt"
+grep -qx -- '--privileged' "${TEST_ROOT}/docker-args.txt"
+grep -qx "${mock_output}:/out" "${TEST_ROOT}/docker-args.txt"
+grep -qx "${REPO_ROOT}:/work:ro" "${TEST_ROOT}/docker-args.txt"
+grep -qx "${mock_stage2}/rootfs-cli-tools:/rootfs-cli-tools:ro" \
+    "${TEST_ROOT}/docker-args.txt"
+grep -qx 'scripts/debian-stage3/container-build-rootfs.sh' \
+    "${TEST_ROOT}/docker-args.txt"
+
+echo "Debian Stage 3 static checks passed"

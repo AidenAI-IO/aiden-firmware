@@ -1,9 +1,12 @@
 #include "aiden_sdk.h"
 #include "aiden_log.h"
+#include "frame_layout.h"
+#include "rockit_system.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
-#include <mutex>
+#include <limits>
 #include <fcntl.h>
 #include <linux/v4l2-subdev.h>
 #include <linux/videodev2.h>
@@ -15,6 +18,7 @@
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 extern "C" {
 #include "rk_debug.h"
@@ -28,22 +32,14 @@ extern "C" {
 
 namespace aiden {
 
-static std::mutex sys_init_mutex;
-static int sys_init_count = 0;
 static const char* kAudioVqeConfigPath = "/oem/usr/share/aiden/audio/config_aivqe.json";
 
-static void ensure_sys_init() {
-    std::lock_guard<std::mutex> lock(sys_init_mutex);
-    if (sys_init_count++ == 0) {
-        RK_MPI_SYS_Init();
-    }
+static bool ensure_sys_init() {
+    return acquire_rockit_system();
 }
 
 static void maybe_sys_deinit() {
-    std::lock_guard<std::mutex> lock(sys_init_mutex);
-    if (--sys_init_count == 0) {
-        RK_MPI_SYS_Exit();
-    }
+    release_rockit_system();
 }
 
 static AUDIO_BIT_WIDTH_E to_bit_width(int bits) {
@@ -300,22 +296,29 @@ static int write_edid_hex_file(const char* path, const uint8_t* data, size_t siz
     return ret;
 }
 
+static void normalize_edid_checksums(uint8_t* data, uint32_t blocks) {
+    for (uint32_t block = 0; block < blocks; ++block) {
+        const size_t offset = static_cast<size_t>(block) * 128;
+        uint8_t checksum = 0;
+        for (size_t i = 0; i < 127; ++i) {
+            checksum = static_cast<uint8_t>(checksum + data[offset + i]);
+        }
+        data[offset + 127] = static_cast<uint8_t>(0 - checksum);
+    }
+}
+
 static int push_edid_with_v4l2ctl(const CameraConfig& config,
                                   const uint8_t* data,
                                   uint32_t blocks) {
     char temp_path[64];
     snprintf(temp_path, sizeof(temp_path), "/tmp/libaiden_edid_%d.hex", getpid());
 
-    const char* edid_path = config.edid_path;
-    if (!edid_path) {
-        if (write_edid_hex_file(temp_path, data, static_cast<size_t>(blocks) * 128) < 0) {
-            return -1;
-        }
-        edid_path = temp_path;
+    if (write_edid_hex_file(temp_path, data, static_cast<size_t>(blocks) * 128) < 0) {
+        return -1;
     }
 
     const char* subdev = config.subdev_device ? config.subdev_device : "/dev/v4l-subdev2";
-    std::string edid_arg = std::string("pad=0,file=") + edid_path;
+    std::string edid_arg = std::string("pad=0,file=") + temp_path;
     pid_t child = fork();
     int status = -1;
     int wait_ret = -1;
@@ -327,7 +330,6 @@ static int push_edid_with_v4l2ctl(const CameraConfig& config,
                subdev,
                "--set-edid",
                edid_arg.c_str(),
-               "--fix-edid-checksums",
                static_cast<char*>(nullptr));
         _exit(127);
     }
@@ -338,9 +340,7 @@ static int push_edid_with_v4l2ctl(const CameraConfig& config,
         } while (wait_ret < 0 && errno == EINTR);
     }
 
-    if (!config.edid_path) {
-        unlink(temp_path);
-    }
+    unlink(temp_path);
 
     if (child < 0 || wait_ret < 0) {
         AIDEN_LOG_ERROR("hdmi", "edid_fallback_exec_failed", "error=%s", strerror(errno));
@@ -370,16 +370,31 @@ static int push_edid(int subdev_fd, const CameraConfig& config) {
         data = heap_edid;
     }
 
+    std::vector<uint8_t> normalized_data(
+        data, data + static_cast<size_t>(blocks) * 128);
+    normalize_edid_checksums(normalized_data.data(), blocks);
+
     memset(&edid, 0, sizeof(edid));
     edid.pad = 0;
     edid.start_block = 0;
     edid.blocks = blocks;
-    edid.edid = const_cast<uint8_t*>(data);
+    edid.edid = normalized_data.data();
 
-    if (push_edid_with_v4l2ctl(config, data, blocks) < 0 &&
-        xioctl(subdev_fd, VIDIOC_SUBDEV_S_EDID, &edid) < 0) {
-        free(heap_edid);
-        return -1;
+    // Program the bridge in-process first. VIDIOC_SUBDEV_S_EDID needs no
+    // external binary and is what actually sets the EDID on current images;
+    // running v4l2-ctl first meant forking a child on every push and, whenever
+    // the installed v4l-utils disagreed about the command line, logging
+    // edid_fallback_failed on a push that then succeeded through the ioctl
+    // anyway. Keep v4l2-ctl for kernels or bridges that reject the ioctl.
+    if (xioctl(subdev_fd, VIDIOC_SUBDEV_S_EDID, &edid) < 0) {
+        AIDEN_LOG_WARN("hdmi", "edid_ioctl_failed",
+                       "device=%s error=%s trying=v4l2-ctl",
+                       config.subdev_device ? config.subdev_device : "",
+                       strerror(errno));
+        if (push_edid_with_v4l2ctl(config, normalized_data.data(), blocks) < 0) {
+            free(heap_edid);
+            return -1;
+        }
     }
 
     free(heap_edid);
@@ -435,6 +450,18 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
         } else if (ret == -2) {
             AIDEN_LOG_WARN("hdmi", "timing_apply_failed", "device=%s error=%s",
                            subdev_device, strerror(errno));
+        }
+
+        if (!config.allow_edid_fallback) {
+            // A normal recovery probe can be read-only with respect to the
+            // HDMI bridge.  In particular, do not fall through to EDID/HPD
+            // writes when there is no source or the bridge has transient I2C
+            // errors.  The auto-subdevice capture source schedules bounded
+            // force-trigger attempts separately.
+            AIDEN_LOG_WARN("hdmi", "timing_probe_pending", "device=%s error=%s",
+                           subdev_device, strerror(errno));
+            close(subdev_fd);
+            return false;
         }
     }
 
@@ -628,7 +655,12 @@ AudioCapture::AudioCapture() : impl_(new AudioCaptureImpl()) {}
 AudioCapture::~AudioCapture() { stop(); }
 
 bool AudioCapture::init(const AudioConfig& config) {
-    ensure_sys_init();
+    if (impl_->initialized) {
+        stop();
+    }
+    if (!ensure_sys_init()) {
+        return false;
+    }
 
     impl_->config = config;
     impl_->dev_id = 0;
@@ -829,7 +861,9 @@ bool AudioPlayer::init(const AudioConfig& config) {
         stop();
     }
 
-    ensure_sys_init();
+    if (!ensure_sys_init()) {
+        return false;
+    }
 
     impl_->config = config;
     impl_->initialized = false;
@@ -1038,6 +1072,10 @@ public:
     struct v4l2_buffer held_buffer{};
     struct v4l2_plane held_planes[VIDEO_MAX_PLANES]{};
     uint32_t held_bytes_used = 0;
+    uint32_t held_data_offset = 0;
+    uint32_t negotiated_stride = 0;
+    uint32_t negotiated_size_image = 0;
+    uint32_t negotiated_plane_count = 0;
 
     static void* thread_func(void* arg) {
         auto* self = static_cast<CameraCaptureImpl*>(arg);
@@ -1113,6 +1151,7 @@ public:
             }
             frame_held = false;
             held_bytes_used = 0;
+            held_data_offset = 0;
         }
 
         stop_streaming();
@@ -1147,14 +1186,29 @@ public:
     }
 
     void fill_video_frame(VideoFrame& frame_info, const struct v4l2_buffer& raw_buffer) const {
-        frame_info.data = buffers[raw_buffer.index].start;
+        const CaptureBuffer& capture_buffer = buffers[raw_buffer.index];
+        frame_info.data = static_cast<uint8_t*>(capture_buffer.start) + held_data_offset;
         frame_info.width = static_cast<uint32_t>(config.width);
         frame_info.height = static_cast<uint32_t>(config.height);
-        frame_info.length = held_bytes_used
+        const uint32_t reported_length = held_bytes_used
             ? held_bytes_used
             : frame_size_bytes(config.pixel_format,
                                static_cast<uint32_t>(config.width),
                                static_cast<uint32_t>(config.height));
+        const size_t buffer_capacity = capture_buffer.length - held_data_offset;
+        frame_info.length = reported_length > buffer_capacity
+            ? static_cast<uint32_t>(buffer_capacity)
+            : reported_length;
+        frame_info.stride = negotiated_stride
+            ? negotiated_stride
+            : (strcmp(config.pixel_format, "nv12") == 0
+                   ? static_cast<uint32_t>(config.width)
+                   : static_cast<uint32_t>(config.width) * 2U);
+        frame_info.size_image = negotiated_size_image >= held_data_offset
+            ? negotiated_size_image - held_data_offset
+            : frame_info.length;
+        frame_info.plane_count = negotiated_plane_count ? negotiated_plane_count : 1;
+        frame_info.buffer_capacity = buffer_capacity;
         frame_info.timestamp =
             static_cast<uint64_t>(raw_buffer.timestamp.tv_sec) * 1000000ULL +
             static_cast<uint64_t>(raw_buffer.timestamp.tv_usec);
@@ -1195,11 +1249,21 @@ public:
                 return false;
             }
 
-            uint32_t bytes_used = is_mplane ? raw_planes[0].bytesused : raw_buffer.bytesused;
-            if (bytes_used == 0) {
-                bytes_used = frame_size_bytes(config.pixel_format,
-                                              static_cast<uint32_t>(config.width),
-                                              static_cast<uint32_t>(config.height));
+            const uint32_t data_offset = is_mplane ? raw_planes[0].data_offset : 0;
+            const uint32_t raw_bytes_used = is_mplane ? raw_planes[0].bytesused
+                                                      : raw_buffer.bytesused;
+            CapturePayloadBounds payload_bounds;
+            if (!capture_payload_bounds(buffers[raw_buffer.index].length,
+                                        raw_bytes_used,
+                                        data_offset,
+                                        negotiated_size_image,
+                                        &payload_bounds) ||
+                payload_bounds.payload_length > std::numeric_limits<uint32_t>::max()) {
+                if (xioctl(video_fd, VIDIOC_QBUF, &raw_buffer) < 0) {
+                    return false;
+                }
+                errno = EIO;
+                return false;
             }
 
             if (skip_frames_remaining > 0) {
@@ -1211,7 +1275,8 @@ public:
             }
 
             memset(&held_buffer, 0, sizeof(held_buffer));
-            held_bytes_used = bytes_used;
+            held_bytes_used = static_cast<uint32_t>(payload_bounds.payload_length);
+            held_data_offset = static_cast<uint32_t>(payload_bounds.data_offset);
             if (is_mplane) {
                 memcpy(held_planes, raw_planes, sizeof(raw_planes));
             }
@@ -1250,6 +1315,7 @@ public:
             }
             frame_held = false;
             held_bytes_used = 0;
+            held_data_offset = 0;
         }
     }
 };
@@ -1266,6 +1332,10 @@ bool CameraCapture::init(const CameraConfig& config) {
     impl_->skip_frames_remaining = config.skip_frames;
     impl_->frame_held = false;
     impl_->held_bytes_used = 0;
+    impl_->held_data_offset = 0;
+    impl_->negotiated_stride = 0;
+    impl_->negotiated_size_image = 0;
+    impl_->negotiated_plane_count = 0;
     impl_->streaming = false;
     impl_->video_fd = -1;
     impl_->buffers.clear();
@@ -1334,6 +1404,25 @@ bool CameraCapture::init(const CameraConfig& config) {
     if (xioctl(impl_->video_fd, VIDIOC_S_FMT, &fmt) < 0) {
         AIDEN_LOG_ERROR("camera", "format_set_failed", "device=%s error=%s", device,
                         strerror(errno));
+        return fail();
+    }
+
+    if (impl_->is_mplane) {
+        impl_->negotiated_plane_count = fmt.fmt.pix_mp.num_planes;
+        impl_->negotiated_stride = fmt.fmt.pix_mp.plane_fmt[0].bytesperline;
+        impl_->negotiated_size_image = fmt.fmt.pix_mp.plane_fmt[0].sizeimage;
+    } else {
+        impl_->negotiated_plane_count = 1;
+        impl_->negotiated_stride = fmt.fmt.pix.bytesperline;
+        impl_->negotiated_size_image = fmt.fmt.pix.sizeimage;
+    }
+    if (impl_->negotiated_plane_count != 1 || impl_->negotiated_stride == 0 ||
+        impl_->negotiated_size_image == 0) {
+        AIDEN_LOG_ERROR("camera", "unsupported_capture_layout",
+                        "device=%s planes=%u stride=%u size_image=%u",
+                        device, impl_->negotiated_plane_count,
+                        impl_->negotiated_stride, impl_->negotiated_size_image);
+        errno = EINVAL;
         return fail();
     }
 
@@ -1505,9 +1594,41 @@ bool CameraCapture::capture_frame_timeout(VideoFrame& frame, std::vector<uint8_t
                            "attempt=%d max_attempts=%d error=%s", attempt + 1,
                            max_attempts, strerror(errno));
         } else {
-            buffer.resize(frame.length);
-            memcpy(buffer.data(), frame.data, frame.length);
-            release_frame();
+            if (retry_config.pixel_format &&
+                strcmp(retry_config.pixel_format, "nv12") == 0) {
+                std::vector<uint8_t> compact;
+                const uint32_t stride = frame.stride ? frame.stride : frame.width;
+                const size_t readable = std::min<size_t>(
+                    frame.buffer_capacity, static_cast<size_t>(frame.length));
+                if (!compact_nv12(static_cast<const uint8_t*>(frame.data), readable,
+                                  frame.width, frame.height, stride, &compact)) {
+                    AIDEN_LOG_WARN("camera", "nv12_compact_failed",
+                                   "width=%u height=%u stride=%u bytes_used=%u size_image=%u mapped=%llu",
+                                   frame.width, frame.height, stride, frame.length,
+                                   frame.size_image,
+                                   static_cast<unsigned long long>(frame.buffer_capacity));
+                    release_frame();
+                    continue;
+                }
+                release_frame();
+                buffer.swap(compact);
+                frame.length = static_cast<uint32_t>(buffer.size());
+                frame.stride = frame.width;
+                frame.size_image = frame.length;
+                frame.plane_count = 1;
+                frame.buffer_capacity = frame.length;
+            } else {
+                if (frame.length > frame.buffer_capacity) {
+                    AIDEN_LOG_WARN("camera", "frame_length_invalid",
+                                   "length=%u mapped=%llu", frame.length,
+                                   static_cast<unsigned long long>(frame.buffer_capacity));
+                    release_frame();
+                    continue;
+                }
+                buffer.resize(frame.length);
+                memcpy(buffer.data(), frame.data, frame.length);
+                release_frame();
+            }
 
             if (!frame_looks_invalid(retry_config, buffer.data(), buffer.size())) {
                 frame.data = buffer.data();
@@ -1607,6 +1728,7 @@ void CameraCapture::release_frame() {
     }
     impl_->frame_held = false;
     impl_->held_bytes_used = 0;
+    impl_->held_data_offset = 0;
 }
 
 bool CameraCapture::is_running() const {

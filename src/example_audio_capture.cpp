@@ -4,13 +4,12 @@
 #include <stdint.h>
 #include <unistd.h>
 
-static bool quit = false;
+static volatile sig_atomic_t quit = 0;
 static int frame_count = 0;
 static FILE* audio_fp = nullptr;
 
-void signal_handler(int sig) {
-    printf("Received signal %d, exiting...\n", sig);
-    quit = true;
+void signal_handler(int) {
+    quit = 1;
 }
 
 void on_audio_frame(const aiden::AudioFrame& frame) {
@@ -29,6 +28,7 @@ void on_audio_frame(const aiden::AudioFrame& frame) {
 
 int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
 
     aiden::AudioConfig config;
     config.device_name = (argc > 1) ? argv[1] : config.device_name;

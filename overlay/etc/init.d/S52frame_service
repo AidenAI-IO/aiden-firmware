@@ -200,8 +200,13 @@ prepare_tc358743_edid() {
         return 1
     fi
     sleep "$FRAME_SERVICE_TC358743_HPD_LOW_SECONDS"
+    if v4l2-ctl --help-edid 2>&1 | grep -q -- '--fix-edid-checksums'; then
+        fix_checksums=--fix-edid-checksums
+    else
+        fix_checksums=
+    fi
     if ! v4l2-ctl -d "$subdev" \
-        --set-edid="pad=0,file=$edid" --fix-edid-checksums; then
+        --set-edid="pad=0,file=$edid" ${fix_checksums:+"$fix_checksums"}; then
         supervisor_log ERROR edid_set_failed "device=$subdev path=$edid"
         return 1
     fi

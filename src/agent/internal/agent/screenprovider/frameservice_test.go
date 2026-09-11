@@ -2,8 +2,191 @@ package screenprovider
 
 import (
 	"encoding/json"
+	"net"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestFrameServiceWaitUntilReadyRetriesUntilSocketExists(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "frame.sock")
+	serverDone := make(chan error, 1)
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		listener, err := net.Listen("unix", socketPath)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer listener.Close()
+		conn, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer conn.Close()
+		if _, _, err := ReadUDSMessage(conn); err != nil {
+			serverDone <- err
+			return
+		}
+		response := []byte(`{"type":"response","method":"health","status":"OK","state":"RUNNING","capture_mode":"buffered","latest_seq":1,"frame_age_ms":10}`)
+		serverDone <- WriteUDSMessage(conn, response, nil)
+	}()
+
+	started := time.Now()
+	health, err := NewFrameService(socketPath).WaitUntilReady(2 * time.Second)
+	if err != nil {
+		t.Fatalf("WaitUntilReady() error = %v", err)
+	}
+	if health == nil || health.State != "RUNNING" || health.LatestSeq != 1 {
+		t.Fatalf("unexpected health: %#v", health)
+	}
+	if elapsed := time.Since(started); elapsed < 100*time.Millisecond {
+		t.Fatalf("returned before delayed socket existed: %s", elapsed)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("fake frame service error: %v", err)
+	}
+}
+
+func TestFrameServiceWaitUntilReadyWaitsForFirstBufferedFrame(t *testing.T) {
+	var healthCalls atomic.Int32
+	socketPath := startFrameServiceTestSocket(t, func() string {
+		if healthCalls.Add(1) == 1 {
+			return `{"type":"response","method":"health","status":"OK","state":"RECOVERING","capture_mode":"buffered","latest_seq":0,"frame_age_ms":0}`
+		}
+		return `{"type":"response","method":"health","status":"OK","state":"RUNNING","capture_mode":"buffered","latest_seq":2,"frame_age_ms":12}`
+	})
+
+	health, err := NewFrameService(socketPath).WaitUntilReady(time.Second)
+	if err != nil {
+		t.Fatalf("WaitUntilReady() error = %v", err)
+	}
+	if healthCalls.Load() < 2 {
+		t.Fatalf("health calls = %d, want at least 2", healthCalls.Load())
+	}
+	if health.State != "RUNNING" || health.LatestSeq != 2 {
+		t.Fatalf("unexpected health: %#v", health)
+	}
+}
+
+func TestFrameServiceWaitUntilReadyDoesNotWaitForOnDemandFrame(t *testing.T) {
+	var healthCalls atomic.Int32
+	socketPath := startFrameServiceTestSocket(t, func() string {
+		healthCalls.Add(1)
+		return `{"type":"response","method":"health","status":"OK","state":"STARTING","capture_mode":"on_demand","latest_seq":0,"frame_age_ms":0}`
+	})
+
+	health, err := NewFrameService(socketPath).WaitUntilReady(time.Second)
+	if err != nil {
+		t.Fatalf("WaitUntilReady() error = %v", err)
+	}
+	if health == nil || health.CaptureMode != "on_demand" || health.State != "STARTING" {
+		t.Fatalf("unexpected health: %#v", health)
+	}
+	if healthCalls.Load() != 1 {
+		t.Fatalf("health calls = %d, want 1", healthCalls.Load())
+	}
+}
+
+func TestFrameServiceWaitUntilReadyReportsStateOnTimeout(t *testing.T) {
+	socketPath := startFrameServiceTestSocket(t, func() string {
+		return `{"type":"response","method":"health","status":"OK","state":"RECOVERING","capture_mode":"buffered","latest_seq":0,"frame_age_ms":0}`
+	})
+
+	// The budget has to cover at least one completed probe, or there is no
+	// state to report and this asserts nothing. 150ms was not enough on a
+	// loaded CI runner, where a single connect can miss that deadline.
+	_, err := NewFrameService(socketPath).WaitUntilReady(time.Second)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	for _, want := range []string{"timed out", "state=RECOVERING", "latest_seq=0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
+	}
+}
+
+func TestFrameServiceWaitUntilReadyRejectsNonTransientError(t *testing.T) {
+	var healthCalls atomic.Int32
+	socketPath := startFrameServiceTestSocket(t, func() string {
+		healthCalls.Add(1)
+		return `{not-json`
+	})
+
+	_, err := NewFrameService(socketPath).WaitUntilReady(time.Second)
+	if err == nil || !strings.Contains(err.Error(), "parse response") {
+		t.Fatalf("error = %v, want parse response", err)
+	}
+	if healthCalls.Load() != 1 {
+		t.Fatalf("health calls = %d, want non-transient error to stop after 1", healthCalls.Load())
+	}
+}
+
+func startFrameServiceTestSocket(t *testing.T, response func() string) string {
+	t.Helper()
+	socketPath := filepath.Join(t.TempDir(), "frame.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on fake frame socket: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			if _, _, err := ReadUDSMessage(conn); err != nil {
+				t.Errorf("fake frame service read request: %v", err)
+				conn.Close()
+				continue
+			}
+			if err := WriteUDSMessage(conn, []byte(response()), nil); err != nil {
+				t.Errorf("fake frame service write response: %v", err)
+			}
+			conn.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		listener.Close()
+		<-done
+	})
+	return socketPath
+}
+
+func TestFrameServiceLatestFrameOutlastsASlowCapture(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out a capture slower than the previous 5s deadline")
+	}
+	// The first capture after a board boot took 5.2s on a loaded RV1106, which
+	// the old hard-coded 5s deadline cut off as "read prefix: i/o timeout"
+	// even though the service went on to answer normally.
+	const slowCapture = 5500 * time.Millisecond
+	if frameServiceCaptureTimeout <= slowCapture {
+		t.Fatalf("frameServiceCaptureTimeout = %s, too tight for a %s capture",
+			frameServiceCaptureTimeout, slowCapture)
+	}
+
+	socketPath := startFrameServiceTestSocket(t, func() string {
+		time.Sleep(slowCapture)
+		return `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"jpeg","bytes":0}}`
+	})
+
+	client := NewFrameService(socketPath)
+	meta, _, err := client.LatestFrameWithFormat("jpeg", DefaultJPEGQuality, false, CropHint{})
+	if err != nil {
+		t.Fatalf("LatestFrameWithFormat() error = %v, want a completed capture", err)
+	}
+	if meta.Seq != 1 {
+		t.Fatalf("meta.Seq = %d, want 1", meta.Seq)
+	}
+}
 
 func TestFrameMetadataUnmarshalSupportsStringNumbers(t *testing.T) {
 	input := []byte(`{
@@ -131,5 +314,53 @@ func TestLatestFrameRequestJSONEscapesFormat(t *testing.T) {
 		payload["minimal_width"] != float64(16) || payload["screen_width"] != float64(2608) ||
 		payload["screen_height"] != float64(1200) {
 		t.Fatalf("unexpected request payload: %#v", payload)
+	}
+}
+
+func TestFrameServiceWaitUntilReadyKeepsStateWhenLastProbeFails(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "frame.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on fake frame socket: %v", err)
+	}
+	var probes atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			if _, _, err := ReadUDSMessage(conn); err != nil {
+				conn.Close()
+				continue
+			}
+			// Answer the first probe, then hang up on every later one. That is
+			// the shape WaitUntilReady sees near its deadline, where the
+			// remaining budget leaves the last probe almost no time.
+			if probes.Add(1) == 1 {
+				_ = WriteUDSMessage(conn, []byte(
+					`{"type":"response","method":"health","status":"OK","state":"RECOVERING","capture_mode":"buffered","latest_seq":7,"frame_age_ms":0}`,
+				), nil)
+			}
+			conn.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		listener.Close()
+		<-done
+	})
+
+	_, err = NewFrameService(socketPath).WaitUntilReady(400 * time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	// A failing probe at the deadline must not erase the state the earlier
+	// probe observed: that state is the whole diagnostic value of the timeout.
+	for _, want := range []string{"timed out", "state=RECOVERING", "latest_seq=7"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
 	}
 }

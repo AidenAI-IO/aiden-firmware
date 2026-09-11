@@ -1,0 +1,1016 @@
+# Luckfox Pico Zero 从 Buildroot 迁移到 Debian 13 总结
+
+本文总结 `Falcom/debian` 分支将 Aiden Luckfox Pico Zero 固件从 Buildroot/uClibc
+迁移到 Debian 13 armhf/glibc 的实施过程、关键改动、问题处理、验证结果和遗留事项。
+
+> 当前交付决策：生产用户空间和本地生产构建路径均为 Debian-only。Buildroot 仅在厂商
+> SDK 的 BSP 实现、历史对照和恢复资料中保留；不提供 Buildroot bridge 或跨发行版在线
+> OTA。GitHub Actions 编译和 GitHub Release 发布暂不纳入本轮范围，本文中的相关旧段落
+> 均按历史背景阅读。
+
+本文以 `main` 的 `bb4aaf15` 为 rebase 基底，以 `c2f021f7` 为 2026-09-01 的历史代码
+验证基线。该基线已包含 USB HID/ECM 回归修复、Debian-only 收敛、linked worktree 支持
+和可重复构建修复。早期 Stage 2、Stage 3 验收文档记录的是 2026-08-17 的中间状态；
+本文的“当前状态”优先于其中的历史阻塞结论。
+
+## 1. 迁移目标与最终结论
+
+此次迁移不是替换整套 Rockchip BSP，而是在保留厂商启动链和硬件支持的基础上，
+替换用户空间并重建应用、服务和 OTA 链路：
+
+- 保留 Rockchip/Luckfox 的 U-Boot、Linux 5.10.160、DTB、内核模块、固件和镜像封装工具。
+- 将 Buildroot/uClibc rootfs 替换为 Debian 13 armhf/glibc/systemd rootfs。
+- 将原有 C/C++ 和 Go 应用重新构建为 Debian armhf 可执行文件。
+- 将 Buildroot SysV init 脚本迁移为 Debian systemd 服务。
+- 保留并增强 A/B 分区、OTA、设备身份、USB 恢复和硬件服务能力。
+- 建立可重复构建、ELF/ABI 审计、文件系统审计、BSP 审计和最终镜像审计。
+- 增加本地一键构建入口，能够生成可直接刷写的 `update.img` 和本地 OTA 产物，
+  不依赖 GitHub Release。
+
+当前已经可以在 Linux x86_64 主机上，从应用到 rootfs、BSP、A/B 镜像和
+`update.img` 完整构建 Debian 固件。最终镜像审计通过，历史日志中也有多次
+`Upgrade firmware ok` 的刷写记录。
+
+2026-09-01 在上述基线之上加入 VQE 运行库和 UDS 权限修复，并完成了一次本地全量构建：
+Stage 2 应用审计为 `status=pass`、`elf_count=22`，Stage 3 最终报告为 `Audit passed`。
+当前 manifest 版本为 `local-vqe-uds-20260901`，`output/debian/image/update.img` 的
+SHA-256 为 `e8971c7053f789f0e64a31c9f9f27df9322fbeb900684316c32a9cbc61871ae6`。
+此前版本 `rebase-audit-c2f021f7`（SHA-256 `fd6d5478348c89d3d8ab6c8c286426c9b9b58b14eef1cfc9c12bfe5092b727f0`）
+是修复前的历史产物。
+
+迁移尚不能等同于生产发布批准。HDMI 摄像头、RKNN 新 runtime 的完整板端推理、
+72 小时稳定性、OTA 断电矩阵和生产密钥治理仍需补充验证。
+
+## 2. 迁移前后架构对照
+
+| 项目 | Buildroot 固件 | Debian 固件 |
+|---|---|---|
+| 用户空间 | Buildroot | Debian 13 trixie armhf |
+| C 运行库 | uClibc | glibc |
+| init 系统 | BusyBox/SysV `rcS` 和 `S*` 脚本 | systemd |
+| 软件包管理 | 固件构建期集成 | APT，使用固定 Debian snapshot 构建 |
+| 网络 | `ifconfig`、dhcpcd、直接管理进程 | `ip`、wpa_supplicant、systemd-networkd |
+| DHCP 客户端 | dhcpcd | 仅 systemd-networkd |
+| SSH | Buildroot sshd 启动脚本 | Debian OpenSSH 和持久化 host key |
+| 日志 | 文件和脚本管理 | journald 与服务独立日志并存 |
+| 应用构建 | SDK uClibc 工具链 | Debian armhf GCC 14 工具链 |
+| RKNN | uClibc mini runtime | 静态 mini runtime 2.3.2 加 glibc 兼容层 |
+| 服务环境 | shell 直接读取环境文件 | 白名单解析后生成 `/run/aiden/system.env` |
+| OTA | Buildroot 路径和服务语义 | Debian A/B、流式写入、个性化和健康标记 |
+| 固件构建 | SDK/CI 分散步骤 | `debian_build.sh` 本地完整流水线 |
+
+## 3. 分阶段实施过程
+
+### 3.1 Stage 1：建立可启动的 Debian 基础系统
+
+第一阶段先验证“不替换 BSP，只替换 rootfs”是否可行，完成了以下工作：
+
+- 新增 Debian 13 armhf rootfs 构建脚本、包清单、overlay 和镜像组装脚本。
+- 继续使用 Luckfox/Rockchip 的内核、DTB、模块、固件、U-Boot 和刷写格式。
+- 提供 APT、OpenSSH、串口登录、systemd-networkd、wpa_supplicant、BlueZ 和 zram。
+- 挂载 `/oem`、`/userdata`，并实现首次启动时的文件系统扩容。
+- 建立 e2fsprogs、厂商共享库、ELF 架构和镜像内容审计。
+- 新增 Stage 1 刷写和板端验收脚本，以 UART、SSH 和系统报告验证启动结果。
+
+Stage 1 实机验收完成了首次启动、热重启和两次冷启动，结果为 23 项通过、
+0 项失败、1 项可选跳过。Wi-Fi、DNS、APT、SSH、蓝牙和基础存储功能通过。
+
+这一阶段证明 RV1106 的厂商 BSP 可以继续承载 Debian 13 armhf 用户空间，
+也确认了 ext4 镜像属性、armhf hard-float ABI 和所需内核能力。
+
+### 3.2 Stage 2：迁移应用与厂商用户态依赖
+
+第二阶段将 Aiden 应用从 Buildroot/uClibc 构建路径迁移到 Debian/glibc：
+
+- 新增 `cmake/toolchains/armhf-debian.cmake`。
+- 新增 `cmake/platforms/rv1106-debian-glibc.cmake`。
+- 将原平台参数归档到 `rv1106-buildroot-uclibc.cmake` 供历史对照；该文件不再是受支持的
+  构建路径。
+- C/C++ 应用使用 Debian armhf GCC 14 交叉编译。
+- 固定使用 Go 1.26.0 构建 ARMv7 静态程序：
+  - `agent`
+  - `ble_service`
+  - `ota`
+  - `abctl`
+- 静态构建 OpenCV-Mobile，避免在目标系统携带动态 OpenCV 依赖。
+- 对 Rockit、MPP、RGA、RKAIQ、RKRawStream 和 RKNN 逐项分析 ABI 与依赖。
+- 将 SDK 提供的 glibc/armhf RKAUDIO VQE 运行库纳入 Debian OEM，并固定校验和。
+- 新增 Stage 2 应用构建、ELF 审计、板端 G0 部署和硬件测试脚本。
+- 增加音频、摄像头、NPU、CMA、DMA-BUF、模块和设备节点的采集能力。
+
+当前 `output/debian-stage2/apps-audit/summary.txt` 记录：
+
+```text
+status=pass
+elf_count=22
+```
+
+旧的 Stage 2/3 验收记录中曾出现 23 个 ELF。当前数量减少为 22，是因为
+`librknnrt.so` 动态 full runtime 已被移除，`rknn_vad` 改为静态嵌入
+`librknnmrt.a` mini runtime，并不是应用缺失。
+
+### 3.3 Stage 3：systemd、A/B、OTA 和最终镜像
+
+第三阶段将开发验证 rootfs 收敛为完整的 Debian A/B 固件：
+
+- 建立生产形态的 Debian rootfs 包清单和 overlay。
+- 将 31 个 Buildroot `S*`/`rcS` 启动项逐项分类为：
+  - 迁移到 systemd；
+  - 使用 Debian 原生服务替代；
+  - 退休；
+  - 无需重复执行。
+- 新增 `aiden.target`，统一编排 Aiden 设备服务。
+- 继续使用 A/B boot、OEM、rootfs 分区，并保留 userdata 和 OTA 数据分区。
+- Slot A 作为工厂成功槽；Slot B 初始不可启动，等待 OTA 激活。
+- 新增 A/B slot 解析、健康标记、失败恢复、inactive rootfs 个性化和状态管理。
+- 将 `machine-id`、SSH host key 和持久配置放入 userdata，跨槽保持一致。
+- 兼容旧 Buildroot userdata 布局并进行一次性迁移。
+- 生成 rootfs、OEM、userdata、OTA、boot A/B 和最终 `update.img`。
+- 对解包后的最终 `update.img` 再执行分区、文件系统、ELF、身份和配置审计。
+- 音频和 frame systemd 单元显式使用 `aiden` 组及 `audio`/`video` 补充组，配合 UDS
+  `0660` 权限，使普通用户能够访问服务接口。
+
+当前 `output/debian-stage3/audit-report.txt` 的最终结果为：
+
+```text
+Audit passed
+```
+
+### 3.4 本地一键构建与本地 OTA 产物
+
+新增根目录脚本 `debian_build.sh`，将原本分散的 Stage 2、Stage 3 和签名步骤
+串成一个本地构建流程：
+
+1. 检查 Docker、Git、OpenSSL、Python 等主机工具。
+2. 检测在线 CPU 数量，`RK_JOBS` 默认 24，超过 CPU 数量时自动封顶。
+3. 获取并校验固定的 Go 1.26.0 linux-amd64 工具链。
+4. 校验 OTA PEM 公私钥是否匹配。
+5. 校验 `pico-sdk` 子模块是否为指定提交且工作区干净。
+6. 清理 Debian 构建输出目录。
+7. 构建并审计 Stage 2 应用。
+8. 构建 Stage 3 rootfs 和 BSP。
+9. 组装 A/B 工厂镜像。
+10. 生成本地签名 manifest 和与镜像匹配的设备 OTA 配置。
+11. 重新打包 `update.img` 并执行最终审计。
+12. 将可刷写镜像和本地发布产物复制到 `output/debian/image/`。
+
+该流程使用外部 `agent.toml`，不会把它复制到项目源码中；也不会创建或发布
+GitHub Release。当前完整构建支持的主机边界是 Linux x86_64。
+
+## 4. 主要迁移工作
+
+### 4.1 libc 和厂商库边界治理
+
+Luckfox SDK 中同时包含 glibc、uClibc、Android/Bionic、armhf 和 aarch64
+二进制，仅根据目录名无法可靠判断是否能在 Debian 中使用。迁移中建立了完整的
+ELF/ABI 审计规则：
+
+- 仅允许 ARM EABI5 hard-float、目标架构匹配的对象。
+- 动态程序必须使用 `/lib/ld-linux-armhf.so.3`。
+- 禁止依赖 `libc.so.0`、`ld-uClibc.so.1` 或 Android/Bionic。
+- 禁止将 aarch64 库混入 armhf rootfs。
+- 检查 `DT_NEEDED`、RPATH、RUNPATH、符号和链接闭包。
+- 应用全部重新编译，不直接复制 Buildroot 可执行文件。
+
+最终选型为：
+
+- Rockit/MPP 使用可与 glibc 程序链接的静态库。
+- RGA 使用 glibc 动态库，并保留准确的 soname 符号链接链。
+- 使用经过审计的 RKAIQ/RKRawStream 组件。
+- RVE/IVE 只有 uClibc 版本，因此不进入 Debian 固件。
+- RKNN 采用静态 mini runtime 兼容方案，详见问题处理章节。
+
+### 4.2 SysV init 到 systemd
+
+迁移没有简单地按脚本编号复制启动顺序，而是根据依赖关系重新建模：
+
+- `rcS` 由 systemd PID 1 替代。
+- D-Bus、OpenSSH、BlueZ、networkd、wpa_supplicant、timesyncd 使用 Debian 原生单元。
+- Wi-Fi 驱动、蓝牙 UART attach、USB gadget、frame、audio、agent、OTA 等板级功能
+  使用 `aiden-*.service`。
+- telnet、Samba、dhcpcd 等不需要或不适合生产的组件被移除。
+- 可选硬件使用 `Wants=`、有界等待或持续重试，避免阻塞整个 `aiden.target`。
+- 每个服务明确声明 OEM、userdata、媒体模块、网络和时间同步依赖。
+
+统一环境生成器负责解析 `/userdata/system/env`，只接受白名单变量和合法格式，
+输出 `/run/aiden/system.env`。非法配置不会直接注入 systemd 服务；涉及外部访问的
+服务会退化到禁止外部访问或本地恢复模式。
+
+### 4.3 网络、Wi-Fi 与本地恢复入口
+
+网络控制面改为 Debian 原生组件：
+
+- wpa_supplicant 负责无线关联。
+- systemd-networkd 是唯一 DHCP 客户端。
+- `config_web` 新增 `systemd-networkd` 后端。
+- 配置程序使用 `ip`、`networkctl` 和 `systemctl`，不再依赖 `ifconfig`/dhcpcd。
+- Wi-Fi 配置写入失败时恢复旧配置。
+- USB ECM 使用 networkd 配置地址，并由 dnsmasq 只在 `usb0` 上提供 DHCP。
+- USB ECM watchdog 支持检查和重建 composite gadget。
+- Debian 的 USB gadget 使用 POSIX shell 可移植的八进制 HID report descriptor，避免
+  Buildroot BusyBox 支持而 Debian `dash` 不支持的 `printf '\\xNN'` 差异。
+- `usb0` 的 networkd 配置允许在无 carrier 时继续配置静态地址；gadget、watchdog、
+  动态键盘和等待 helper 不再通过重复 `networkctl reconfigure` 删除刚设置的地址。
+
+Agent 原先在 HID 恢复时直接调用 Buildroot 路径
+`/etc/init.d/S60usb_ecm_watchdog`。现在通过
+`AIDEN_USB_COMPOSITE_REFRESH_COMMAND` 注入平台实现：Buildroot 保留旧默认值，
+Debian 使用 `/usr/lib/aiden/aiden-usb-ecm-watchdog`。
+
+### 4.4 用户、SSH 与设备身份
+
+Debian 固件新增普通管理用户：
+
+- 用户名：`aiden`
+- UID/GID：1000
+- 默认密码：`luckfox`
+- shell：`/bin/bash`
+- 用户组：`sudo`、`audio`、`video`、`dialout`、`plugdev`、`netdev`
+
+固件安装 `sudo`，保留需要输入密码的 sudo 行为，不配置 `NOPASSWD`。
+SSH 允许普通用户密码登录；root 禁止密码登录，仅允许公钥认证。
+
+`machine-id` 和 SSH host key 不固化在只读镜像中，而是在首次启动时生成并持久化到
+userdata。这样切换 A/B 槽或升级 rootfs 后，设备身份和 SSH 指纹不会变化。
+
+默认密码只适用于开发和首次接入，进入生产前必须由设备初始化或安全配置流程更换。
+
+### 4.5 A/B OTA
+
+OTA 代码和系统服务针对 Debian 进行了重构：
+
+- 使用 Debian 独立的配置路径和 systemd 健康服务。
+- 校验 manifest 签名、镜像 hash、渠道和目标版本。
+- 检查可用存储空间，避免下载或解包过程中耗尽 userdata。
+- 使用流式方式写入 inactive 分区，减少临时空间占用。
+- 在切槽前对 inactive rootfs 执行机器身份、SSH 和配置个性化。
+- 健康标记绑定当前 OTA transaction，避免旧标记错误确认新升级。
+- 处理 pending、success、rollback 等槽状态。
+- 保留 userdata，并兼容 Buildroot 到 Debian 的首次迁移。
+
+当前本地构建使用项目提供的 PEM 公私钥生成自洽的 manifest 和设备配置，目的是
+完成本地构建和开发验证，不代表已经实现生产发布身份、密钥托管和 GitHub Release。
+
+### 4.6 可重复构建与供应链记录
+
+为降低 Debian、BSP 和镜像构建受时间、网络和主机环境影响的程度，完成了以下约束：
+
+- Debian snapshot 固定为 `20260803T000000Z`。
+- Docker 基础镜像固定 digest。
+- `pico-sdk` 固定为提交 `5246f9c461d7a1a1e9ee6f7228b1cd1fb129ee4a`。
+- BSP 在 `output/` 下的隔离 checkout 构建，不修改源子模块。
+- 固定 `SOURCE_DATE_EPOCH`。
+- rootfs 使用固定 UUID 和目录 hash seed。
+- 规范化 inode、superblock 和归档时间。
+- 对 rootfs 内容、属主、硬链接、ACL、xattr、capability 和符号链接进行比较。
+- 生成包清单、文件清单、capability/xattr 清单和 SPDX SBOM。
+
+Rockchip BSP 中存在三类非确定性，分别通过 SDK 补丁和规范化脚本处理：
+
+- FIT 中的 host mmap 地址。
+- proprietary loader 的构建时间戳及 vendor CRC。
+- Rockchip resource index 中未初始化的数据。
+
+Stage 3 历史验收记录表明，两次独立 rootfs 构建以及两次独立 BSP 构建曾达到
+字节一致。
+
+## 5. 遇到的问题及解决方法
+
+### 5.1 uClibc 与 glibc ABI 不兼容
+
+**表现**
+
+Buildroot 应用和部分厂商库依赖 `libc.so.0`、uClibc loader 或 uClibc 特有符号，
+无法直接放入 Debian/glibc rootfs。
+
+**原因**
+
+armhf 和 hard-float 兼容并不等于 libc ABI 兼容。相同架构的共享库仍可能绑定
+不同动态 loader、libc soname 和内部符号。
+
+**解决**
+
+- 建立 SDK 全量 ELF/ABI 清单和构建门禁。
+- 所有项目应用用 Debian 工具链重新编译。
+- 只选择经过验证的 glibc 动态库或 ABI 可兼容的静态对象。
+- 排除所有 uClibc、Bionic 和错误架构共享库。
+- 对每个最终 ELF 检查 interpreter、依赖、RPATH/RUNPATH 和符号。
+
+### 5.2 RKNN full runtime 无法加载现有 VAD 模型
+
+**表现**
+
+官方 glibc armhf full runtime 2.3.2 能打开 NPU，但加载现有模型时失败：
+
+```text
+Verify ModelBuffer failed!
+Invalid RKNN format
+Import rknn model failed!
+```
+
+**原因**
+
+现有 encoder/decoder VAD 模型是 RV1106 mini runtime split 格式。Rockchip
+2.3.2 对 armhf/glibc 只提供 full runtime，对 RV1106 mini runtime 只提供
+`armhf-uclibc` 版本。因此不是模型文件损坏，而是模型格式与所选 runtime 类型不匹配。
+
+**解决**
+
+- 使用官方 `armhf-uclibc/librknnmrt.a` 2.3.2 静态库，而不是动态 uClibc `.so`。
+- 对静态库的目标 ABI 和未定义符号进行分析，确认其 ARM EABI5、hard-float
+  属性可与 Debian armhf 程序链接。
+- 新增 `src/rknn_glibc_compat.c`，为 runtime 使用的 uClibc ctype 数据符号提供
+  glibc 兼容实现：
+  - `__ctype_b`
+  - `__ctype_tolower`
+- 从 glibc locale 表生成 uClibc 所需的表，并处理两者 `tolower` 表元素宽度不同的问题。
+- 将 mini runtime 静态嵌入 `rknn_vad`，移除动态 `librknnrt.so`。
+- 审计 runtime 2.3.2 版本字符串、RKNN 静态符号和不存在动态 RKNN 依赖。
+
+**当前状态**
+
+代码、交叉编译和静态审计已经通过，原先使用 full runtime 导致的格式不匹配路径已被
+替换。不过仓库现有硬件日志中没有找到新静态 mini runtime 成功加载两份 VAD 模型并
+完成持续推理的明确记录。因此还应在板端补做模型初始化、推理正确性、内存/CMA 和
+长时间稳定性测试，才能将 RKNN 实机验收标记为完全通过。
+
+### 5.3 NPU/媒体设备权限和 DMA heap
+
+**表现**
+
+Debian 初始创建的 `/dev/rknpu` 和 `/dev/mpi/*` 为 `0600 root:root`，普通用户
+无法访问。测试 full runtime 时还要求 `/dev/dma_heap/system`，而旧 rootfs 未正确
+coldplug Rockchip heap 节点。
+
+**解决**
+
+- 增加 udev 规则，将设备设置为 `0660 root:video`。
+- 将 `aiden` 加入 `video`、`audio` 等硬件组。
+- 媒体模块 helper 加载 Rockchip 媒体/NPU 模块，并兼容创建 DMA heap 节点和链接。
+- 最终采用 mini runtime 后，RKNN 运行期只依赖 `/dev/rknpu`，降低了依赖面。
+
+### 5.4 rootfs 只读导致服务连锁失败
+
+**表现**
+
+启动日志曾出现：
+
+```text
+Read-only file system
+systemd-timesyncd failed
+aiden-rootfs-grow failed
+aiden-oem-ldconfig failed
+```
+
+**原因**
+
+Rockchip boot args 没有明确提供 `rw`，rootfs 也没有对应的 fstab 项使 systemd
+自动重挂为可写，导致首次启动初始化和服务写入失败。
+
+**解决**
+
+`aiden-rootfs-grow` 在每次启动时先执行 `mount -o remount,rw /`，然后再进行
+rootfs 扩容、挂载和运行时目录初始化；systemd 单元保证它发生在 OEM、userdata、
+ldconfig 和 timesyncd 之前。
+
+### 5.5 未连接 HDMI 时 frame.service 的历史恢复行为（已由 2026-08-21 修复替代）
+
+**表现**
+
+测试板没有连接 HDMI 输入，系统也没有 probe 到 `rk628-csi` 或 `tc358743` bridge。
+frame service 找不到可用 bridge 后退出，早期 systemd 配置达到启动频率限制后停止重试。
+
+**解决**
+
+- `aiden-frame-start` 最多等待 20 秒寻找 HDMI bridge。
+- `aiden-frame.service` 使用 `Restart=on-failure` 和 `RestartSec=2s`。
+- 设置 `StartLimitIntervalSec=0`，使其在无 HDMI 时持续有界重试。
+- 插入并 probe HDMI bridge 后，服务无需重启系统即可恢复。
+
+这套逻辑是早期迁移版本的行为；它会让 systemd 反复重启服务，并且在失败期间没有
+可用的 IPC socket。2026-08-21 的稳定常驻修复已替代该行为，详见下节。
+
+#### 2026-08-21 稳定常驻修复
+
+此前 Debian 启动 helper 在 TC358743 的 EDID/HPD 操作失败，或启动后暂时找不到
+HDMI bridge 时，会直接退出，导致 systemd 反复重启服务且 socket 不存在。现已调整为：
+
+- `frame_service` 先创建 `/run/frame_service/frame_service.sock`，再启动捕获线程；
+- HDMI bridge、`/dev/video0`、I2C、EDID、DV timings 或视频流暂时不可用时，捕获管理器
+  保持 `RECOVERING` 并以 1--5 秒有界退避重试；
+- `--auto-subdev` 每次恢复时重新发现 `rk628-csi`/`tc358743`，不依赖固定的
+  `v4l-subdevX` 编号；
+- TC358743 的 shell 侧 EDID/HPD 预处理失败只记录警告，不再阻止 IPC 服务启动；
+- 设备锁从进程入口移到可恢复的捕获源，视频节点暂时不存在或被占用时不会终止
+  `frame_service`；
+- 没有 HDMI 时 health socket 仍可用并返回 `STARTING`/`RECOVERING`，接入 HDMI 后无需
+  重启 systemd 服务即可自动切换到 `RUNNING`。
+
+因此，今后应将“socket 不存在”视为服务启动故障；将 `state=RECOVERING` 视为服务正常
+常驻但当前没有可用视频帧。截图在后者状态下应等待 HDMI 信号恢复，而不是反复重启
+`aiden-frame.service`。
+
+### 5.6 EDID 工具版本和设备类型不兼容
+
+**表现**
+
+- 部分 `v4l2-ctl` 不支持 `--fix-edid-checksums`。
+- 对非 HDMI bridge 的 V4L2 subdevice 设置 EDID 会返回 `ENOTTY`。
+
+**解决**
+
+- 应用内部按 128 字节 EDID block 重新计算 checksum。
+- helper 仅在 `v4l2-ctl --help-edid` 明确支持时传入该选项。
+- 只对识别出的 `rk628-csi`/`tc358743` bridge 执行 EDID 流程。
+
+当前未连接 HDMI bridge，所以完整摄像头链路仍待后续硬件验证。
+
+### 5.7 可选设备拖慢 systemd 启动
+
+**表现**
+
+外部 RTC 不存在，或 Wi-Fi 设备/驱动出现延迟时，`.device` 单元可能让依赖服务
+长时间等待，`wlan0` 曾触发启动超时。
+
+**解决**
+
+- RTC device job 设置 5 秒超时。
+- wlan0 device job 设置 30 秒超时。
+- 对非关键硬件使用 `Wants=` 和有界恢复逻辑。
+- 本地 agent、USB 和配置网页不再因精确时间或无线网络缺失而永久阻塞。
+
+### 5.8 SSH 端口拒绝连接
+
+**表现**
+
+浏览器可以访问 `192.168.42.1`，但 SSH 返回：
+
+```text
+ssh: connect to host 192.168.42.1 port 22: Connection refused
+```
+
+**原因**
+
+`ssh.service` 依赖 SSH 身份初始化；早期脚本没有创建 `/run/sshd`，并优先生成耗时较长
+的 RSA key。在资源有限的板上，identity service 可能超过 30 秒超时，导致 SSH
+依赖失败。
+
+**解决**
+
+- 创建 `/run/sshd` 并设置为 `0755`。
+- 按 `ed25519`、`ecdsa`、`rsa` 顺序生成 host key。
+- identity service 超时提高到 180 秒。
+- host key 持久化到 `/userdata/system/ssh`。
+- 启动 SSH 前执行 `sshd -t` 校验配置和密钥。
+
+### 5.9 普通用户无法 sudo
+
+**表现**
+
+root 已禁止密码 SSH 登录，但初始 Debian rootfs 没有 `sudo`，普通用户无法执行管理操作。
+
+**解决**
+
+- 安装 `sudo` 包。
+- 创建 `aiden` 用户并加入 `sudo` 及硬件访问组。
+- 为 `aiden` 设置默认密码 `luckfox`。
+- 允许普通用户 SSH 密码认证。
+- root 保持仅公钥认证，且不配置免密 sudo。
+
+### 5.10 Wi-Fi 控制面与 Buildroot 行为不一致
+
+**表现**
+
+原 `config_web` 依赖 `ifconfig`、dhcpcd 和直接拉起/终止进程。在 Debian 中继续这样做
+会与 networkd 争夺地址和 DHCP 状态。
+
+**解决**
+
+- 为 `config_web` 新增 `--wifi-backend=systemd-networkd`。
+- 使用 `ip`、`networkctl` 和 `systemctl restart wpa_supplicant@wlan0`。
+- 只允许 networkd 获取 DHCP 地址。
+- 写配置失败时回滚原配置。
+- 保留 wlan guard，但只负责有界恢复，不接管 DHCP。
+
+### 5.11 Buildroot 路径残留
+
+**表现**
+
+Agent 的 USB HID 恢复逻辑仍调用 Buildroot init 脚本路径，Debian 中该路径不存在。
+
+**解决**
+
+增加平台可配置命令 `AIDEN_USB_COMPOSITE_REFRESH_COMMAND`。Buildroot 继续使用原路径，
+Debian systemd 服务注入新的 USB ECM watchdog helper，支持常驻 watchdog 和一次性
+`refresh`。
+
+### 5.12 生产签名参数阻塞本地构建
+
+**表现**
+
+原 Stage 3 设计要求生产 `OTA_PUBLIC_KEY_PATH` 和已签名、与镜像 hash 完全匹配的
+OTA 配置。没有生产身份时，最终镜像步骤会在安全门禁处停止。
+
+**解决**
+
+- 保留生产门禁，不在底层 Stage 3 脚本中静默绕过签名校验。
+- 在 `debian_build.sh` 中使用本地 PEM 公私钥生成开发 manifest。
+- 校验公私钥匹配、manifest 签名和镜像 hash。
+- 自动生成与本次镜像匹配的设备 OTA 配置。
+- 仅输出本地产物，不发布 GitHub Release。
+
+这解决的是开发构建问题，不替代生产密钥托管、发布身份、审批和轮换机制。
+
+### 5.13 Debian USB HID 描述符和 ECM 地址回归
+
+**表现**
+
+某次新 Debian 固件启动后，主机曾无法稳定看到 `Aiden HID+ECM`，浏览器也无法访问
+`192.168.42.1`。更换 USB 线缆和主机端口后问题仍可复现；主机日志包含：
+
+```text
+unknown main item tag
+item fetching failed
+hid-generic probe failed with error -22
+```
+
+在更早的失败阶段还出现过 USB 控制传输错误：
+
+```text
+Device not responding to setup address
+device not accepting address ..., error -71
+unable to enumerate USB device
+```
+
+**原因**
+
+该问题不是最近提交修改了 DWC3、设备树或 USB peripheral 模式。回归审计确认，
+Debian 迁移提交 `03dffcf4` 将原 Buildroot 的 `S49usbhid` 直接安装为 Debian
+helper，并将 `ifconfig` 替换为 `ip`/`networkctl`：
+
+1. `S49usbhid` 使用 `printf '\\x05\\x01...'` 生成 HID report descriptor。Buildroot
+   BusyBox 支持 `\\xNN`，但 Debian `/bin/sh` 是 `dash`，会把它写成 ASCII 文本。
+   板端实测描述符长度为 `180/232/188` 字节，而正确长度应为 `45/58/47` 字节。
+2. `usb0` 先由脚本设置 `192.168.42.1/24`，随后 helper 调用
+   `networkctl reconfigure`。USB 尚未完成枚举时接口没有 carrier，networkd 可能移除
+   该静态地址，进而导致 dnsmasq 等待地址失败，浏览器无法访问配置页面。
+
+**解决**
+
+- 将 5 份 HID descriptor 改为 POSIX 八进制转义，保持 descriptor 内容不变，只修复
+  shell 解释差异。
+- 在 `overlay-debian/etc/systemd/network/30-usb0.network` 中加入：
+
+  ```ini
+  [Link]
+  RequiredForOnline=no
+
+  [Network]
+  ConfigureWithoutCarrier=yes
+  ```
+
+- 删除 gadget 启动、ECM watchdog、动态键盘和等待 IP helper 中会撤销刚设置地址的
+  重复 `networkctl reconfigure` 调用。
+- 增加测试，使用 `/bin/sh` 实际解释 descriptor 并校验 5 份二进制内容和长度；同时
+  检查 networkd 配置和相关 helper 不再进行重复重配置。
+
+**板端回归结果**
+
+修复文件临时部署到开发板并冷重启后，结果如下：
+
+```text
+lsusb: 1d6b:0104 Linux Foundation Multifunction Composite Gadget
+hid.usb0/report_desc: 45 bytes，识别为 Keyboard
+hid.usb1/report_desc: 58 bytes，识别为 Mouse
+hid.usb2/report_desc: 47 bytes，识别为 Consumer Control Device
+UDC: configured
+usb0: 192.168.42.1/24
+主机 ECM: 192.168.42.152/24
+http://192.168.42.1/: HTTP 200
+```
+
+随后执行 UDC 解绑、无 carrier 状态下 networkd 重配、重新绑定测试，静态地址仍然
+保留，主机再次完成 HID+ECM 枚举。修复后主机未再出现 `unknown main item tag`、
+`item fetching failed` 或 HID `-22`。这次验证证明软件回归已解决；早期 `error -71`
+属于更底层的 USB 控制传输失败，仍应在出现时结合线缆、供电、接口和 UART/内核日志
+单独排查，不能仅由 HID descriptor 修复解释。
+
+### 5.14 Debian 音频 VQE 运行库和 UDS 权限
+
+**表现**
+
+刷写到开发板的上一版 Debian 镜像能够启动 `aiden-audio.service`，但普通 `aiden`
+用户无法访问音频 socket，录音也无法初始化。板端记录为：
+
+```text
+/run/audio_service/audio_service.sock  root:root 0755
+audio_service_cli health             TRANSPORT_ERROR
+rkaudio_preprocess_init - failed to link to VQE Library
+```
+
+同一镜像中的 frame socket 为 `root:aiden 0660`，因此 frame health 和
+`latest-frame` 可以由普通用户调用；这不能推导出音频链路也已通过。
+
+**原因**
+
+`audio_service` 的 VQE 配置启用了 AEC/beamforming，但旧 OEM 镜像没有安装 SDK 的
+glibc armhf `libaec_bf_process.so` 和 `librkaudio_common.so`。此外，Unix socket 默认
+模式受进程 umask 影响，服务单元没有声明 `aiden` 组时会留下 `0755 root:root`，普通
+用户不能建立连接。
+
+**临时验证**
+
+将两份 SDK 库临时复制到板端用户目录并以隔离的 `audio_service` 进程启动后，VQE
+初始化、health 和 2 秒录音均成功，生成 `64512` 字节 PCM；日志出现
+`vqe_enabled` 以及 AEC/Beamform 初始化记录。临时文件和隔离进程随后已清理，系统
+服务恢复原状；该结果只证明运行库闭包可用，不代表旧镜像已经修复。
+
+**解决**
+
+- 将两份经过 ELF/ABI 检查的 glibc armhf 库放入
+  `overlay-debian-oem/usr/lib/`，由 `/etc/ld.so.conf.d/aiden-oem.conf` 和
+  `aiden-oem-ldconfig.service` 注册。
+- 在 Stage 3 镜像审计中同时检查来源文件、`cmp` 和 SHA-256：
+  `libaec_bf_process.so` 为
+  `3427abaa4b2ab7917d079e6cba46a68a836069bcc7f6b9e94630353fcd8c1a9a`，
+  `librkaudio_common.so` 为
+  `de8ff824dd1f2e5ec1074b84490d2836ed9dc61d59d6a90d9cdf19386097263c`。
+- 音频和 frame systemd 单元声明 `Group=aiden`、`SupplementaryGroups=audio video`；
+  `UdsServer` 在 bind/listen 后显式设置 socket 为 `0660`，失败时清理 socket。
+- 增加 UDS mode、systemd overlay、OEM 资源和最终镜像审计测试。
+
+**当前状态（2026-09-01）**
+
+上述修复已进入 manifest 版本 `local-vqe-uds-20260901` 的新镜像，Stage 2/Stage 3
+主机审计均通过。01:15 UTC 的刷写前复核确认设备仍运行旧产物：两个 VQE 库缺失、
+音频 socket 为 `root:root 0755`，且 `/userdata/debian/ota/config.json` 不存在；该记录
+解释了旧镜像的音频失败，不再代表当前板端状态。
+
+**正式刷写与板端复核（2026-09-01 01:44 UTC）**
+
+通过 SSH 执行 `sudo reboot loader` 后，Linux `upgrade_tool` 唯一枚举到
+`Vid=0x2207`、`Mode=Loader` 的目标设备。带 SHA-256 校验的刷写封装写入当前
+`update.img`，工具在 01:45:47 UTC 报告 `Download Firmware Success` 和
+`Upgrade firmware ok`，退出状态为 0。设备随后从 Loader 切回 `1d6b:0104` HID+ECM
+复合 gadget，并从 `rootfs_a` 启动 Debian 13.6。
+
+板端 `/userdata/debian/ota/config.json` 为 `root:root 0600`，其中
+`factory_version=local-vqe-uds-20260901`。三个应用和两份 VQE 库的 SHA-256 均与
+本地构建产物一致；音频和 frame socket 均为 `root:aiden 0660`。普通 `aiden` 用户
+通过音频 UDS 完成 health、音量和 2 秒录音，得到 `64512` 字节非空 PCM，服务日志明确
+记录 `vqe_enabled`。frame UDS 连续返回 1920x1080 NV12 帧，每帧 `3110400` 字节，
+并成功生成 `6220854` 字节 BMP。RKNN self-test 和 30 帧基准均通过，基准约 240 FPS。
+systemd 无 failed units，Agent HTTP、三个 HID 接口和 ECM `192.168.42.1` 均可用。
+
+独立摄像头测试程序直接打开 `/dev/video0` 时返回 `Device or resource busy`，因为活动的
+`aiden-frame.service` 正在占用设备；同一时段通过 frame UDS 取帧持续成功。该结果不应
+记为摄像头链路失败，但独占式采集和并发压力仍需单独安排维护窗口验证。
+
+## 6. 验证与测试结果
+
+### 6.1 已确认通过
+
+| 范围 | 结果 | 证据或说明 |
+|---|---|---|
+| Debian 基础启动 | 通过 | 首次启动、热重启、两次冷启动通过 |
+| Stage 1 实机验收 | 通过 | 23 pass、0 fail、1 optional skip |
+| Wi-Fi、DNS、APT、SSH、蓝牙基础能力 | 通过 | Stage 1 板端验收记录 |
+| Stage 2 应用 ELF 审计 | 通过 | 当前 `status=pass`，22 个 ELF |
+| glibc loader/依赖闭包 | 通过 | 无 uClibc loader/依赖混入 |
+| rootfs 构建与导入审计 | 通过 | e2fsck、内容和属性审计通过 |
+| BSP 审计 | 通过 | 固定 SDK 提交、模块、固件和 A/B boot 检查通过 |
+| 可重复构建 | 通过两次独立验证 | rootfs 和 BSP 历史验收达到字节一致 |
+| 最终镜像审计 | 通过 | `output/debian-stage3/audit-report.txt` 为 `Audit passed`；当前镜像 SHA-256 为 `e8971c7053f789f0e64a31c9f9f27df9322fbeb900684316c32a9cbc61871ae6` |
+| 刷写工具链 | 通过 | 当前镜像刷写达到 100%，记录 `Upgrade firmware ok` 和退出状态 0 |
+| 媒体/NPU 模块加载 | 通过 | 相关模块和 `/dev` 节点创建成功 |
+| 普通用户设备权限 | 通过修复 | `/dev/rknpu` 和 `/dev/mpi/*` 使用 `root:video` 0660 |
+| VQE 运行库 OEM 内容 | 通过主机审计 | 两份 glibc armhf 库已进入 OEM，来源、ELF 依赖和 SHA-256 均受门禁保护 |
+| USB HID/ECM 恢复路径 | 通过代码和测试闭环 | Debian helper 替换 Buildroot 固定路径 |
+| 音频 VQE 和普通用户 UDS | 通过板端验收 | 两个 socket 均为 `root:aiden 0660`；VQE 初始化成功，2 秒录音产生 64512 字节 PCM |
+| USB HID+ECM 冷启动和重新枚举 | 通过正式镜像验证 | `1d6b:0104`、3 个 HID 接口、ECM、`192.168.42.1` 和 Agent HTTP 均通过 |
+| 当前板端 RKNN/Frame 基线 | 通过 | RKNN self-test/30 帧基准和 frame IPC 通过；`latest-frame` 返回 1920x1080 NV12、3110400 字节 |
+| 本地完整固件构建 | 通过 | 能生成并审计 `update.img` 和 OTA 产物 |
+
+### 6.2 已实现但仍需补充板端闭环
+
+| 范围 | 当前状态 | 待补验证 |
+|---|---|---|
+| 音频播放 | VQE 采集已经通过正式镜像验证 | 扬声器物理播放和长时间录放并发 |
+| RKNN VAD | self-test 和 30 帧基准通过 | 推理准确性、资源预算和持续运行 |
+| 独占式摄像头采集 | frame UDS 连续取帧通过 | 停止 frame service 后验证直接采集，并补充摄像头/RKNN/音频并发 |
+| SSH 身份可靠性 | 新镜像密码登录和首次启动通过 | 再次重启后确认 host key 与设备身份持久性 |
+| frame.service 无 HDMI 行为 | 已改为持续重试 | 接入 HDMI bridge 后确认自动恢复 |
+| Wi-Fi 自动配置 | networkd 后端已实现，手动连接可工作 | 配置网页写入、回滚和重连完整测试 |
+| A/B OTA | 写入、个性化、健康标记和状态代码已实现 | 真机升级、失败回滚和断电矩阵 |
+
+### 6.3 尚未完成的发布门禁
+
+- HDMI 摄像头完整采集链路。
+- RKNN VAD 板端推理准确性、吞吐、内存/CMA 和长时间稳定性。
+- 摄像头、RKNN、音频并发压力测试。
+- 72 小时稳定性测试和正式资源预算。
+- A/B 下载、写入、切槽、启动确认、失败回滚各阶段的断电测试。
+- 生产 OTA 私钥托管、公钥注入、发布审批、密钥轮换和撤销策略。
+- 生产默认密码和首次初始化安全策略。
+- 最终许可证复核，尤其是静态嵌入 proprietary RKNN runtime 的发布边界。
+- 面向生产批次的 G1-G5 完整验收报告。
+
+## 7. 当前构建和刷写方式
+
+### 7.1 从零构建
+
+默认构建命令：
+
+```bash
+./debian_build.sh
+```
+
+常用输入可以通过环境变量覆盖：
+
+```bash
+RK_JOBS=24 \
+AGENT_CONFIG_PATH=/path/to/agent.toml \
+OTA_PRIVATE_KEY_PATH=/path/to/id_25519.pem \
+OTA_PUBLIC_KEY_PATH=/path/to/id_25519.pub.pem \
+./debian_build.sh
+```
+
+默认 `RK_JOBS=24`；如果主机在线 CPU 少于 24，会使用主机可用的最大并行数。
+
+主要主机依赖包括：
+
+- Linux x86_64。
+- Docker daemon 和当前用户的 Docker 访问权限。
+- Git 和子模块支持。
+- curl、OpenSSL、Python 3、tar、sha256sum 等基础工具；manifest 所需的 `jq`
+  由固定的 Stage 3 构建容器提供。
+- 可访问 Debian snapshot、Docker registry 和 Go 下载源，或已经具有对应缓存。
+- 外部 `agent.toml`。
+- 匹配的 Ed25519 PEM 公私钥。
+
+### 7.2 构建产物
+
+本地输出目录为 `output/debian/image/`，包含：
+
+```text
+update.img
+update.img.sha256
+boot_a.img.tar.gz
+boot_b.img.tar.gz
+oem.img.tar.gz
+rootfs.img.tar.gz
+update.img.tar.gz
+manifest.json
+```
+
+其中可直接刷写的固件是：
+
+```text
+output/debian/image/update.img
+```
+
+### 7.3 刷写
+
+开发板进入 Loader 或 Maskrom 刷写模式后，在 Linux 主机上使用带校验的
+Stage 1 刷写封装：
+
+```bash
+FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+IMAGE=output/debian/image/update.img
+SHA256=$(awk '{print $1}' "${IMAGE}.sha256")
+scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/debian-stage1/flash.sh flash \
+  --tool "${FLASH_TOOL}" \
+  --image "${IMAGE}" \
+  --sha256 "${SHA256}" \
+  --confirm-erase-all-data
+```
+
+仓库根目录的 `upgrade_tool/upgrade_tool` 是 macOS Mach-O；Linux 主机必须使用
+Stage 3 SDK 内的 Linux 版工具。
+
+刷写后应至少检查 UART 启动日志、systemd failed units、USB 网络、SSH、存储挂载、
+媒体模块、音频和 NPU。未接 HDMI 时可以暂时忽略 frame service 的失败重试。
+
+本轮已经刷写并核对以下本地产物：
+
+```text
+version: local-vqe-uds-20260901
+sha256:  e8971c7053f789f0e64a31c9f9f27df9322fbeb900684316c32a9cbc61871ae6
+file:    output/debian/image/update.img
+```
+
+2026-09-01 01:44 UTC 的板端验收使用上面的 SHA-256 进入 Loader 并完成全量刷写；
+`upgrade_tool` 返回成功，设备随后从 `rootfs_a` 启动 Debian 13.6。factory version、
+关键应用和 VQE 库哈希、UDS 权限、音频采集、frame IPC、RKNN、USB HID/ECM 和 Agent
+HTTP 均已核对。后续重复刷写仍应使用上述受保护流程；不要在板端正常运行 rootfs 时
+直接覆盖活动分区。
+
+## 8. 关键提交索引
+
+| 提交 | 内容 |
+|---|---|
+| `716fe9c4` | 新增 Debian 13 armhf Stage 1 rootfs、BSP、镜像、审计、刷写和实机验证链路 |
+| `6cc071aa` | 完成应用交叉编译、systemd overlay、A/B OTA、设备身份、Stage 2/3 构建和测试主体 |
+| `4a6e048d` | 使用静态 RKNN mini runtime 2.3.2 和 glibc 兼容层替换 full runtime |
+| `9ba3e160`、`9ebc7dfa` | 修复无 HDMI 重试和 SSH 身份初始化 |
+| `271cf55e` | 新增 `debian_build.sh` 和本地完整固件/OTA 产物 |
+| `109d218a` 至 `08696042` | 完成 USB HID/ECM、watchdog、HDMI 和 frame service 回归修复 |
+| `5bead20a`、`6312643d` | 等待 frame service 就绪并增加 Debian NV12 JPEG 路径 |
+| `21e5f620` | 将生产用户空间和本地生产入口收敛为 Debian-only |
+| `5d53b07c` 至 `e9cd9804` | 支持 linked worktree，并隔离 Stage 3 SDK 对象存储 |
+| `12d6b19d`、`a872ebfb` | 修复 ext4 时间戳并完成可重复的本地生产构建链 |
+| `90a3c6cb` | 保持 GitHub Actions/Release 发布流程在本轮范围之外 |
+| `bc17a91a`、`c2f021f7` | 修复 rebase 后的 Agent 和 Python 3.10 测试兼容性 |
+
+在代码验证基线 `c2f021f7` 上，迁移分支相对 `main` 为 0 behind、29 ahead，共涉及
+302 个文件，新增 20,989 行、删除 1,625 行，改动主要集中在 `scripts/`、
+`overlay-debian/`、`overlay-debian-oem/`、`src/` 和测试代码。
+
+## 9. 当前状态判断
+
+从工程实现角度，此次迁移已经完成了以下主干闭环：
+
+- Debian 13 armhf 可以在原 Luckfox/Rockchip BSP 上启动。
+- Aiden 应用能够以 glibc armhf 形式构建并通过依赖审计。
+- Buildroot 的启动职责已经迁移为 systemd 服务或 Debian 原生服务。
+- A/B 分区、OTA 状态、设备身份和 userdata 迁移已纳入 Debian 设计。
+- 可以本地生成、审计和刷写完整 `update.img`。
+- 网络、蓝牙、媒体模块、基础 NPU 设备访问、frame IPC 和音频 VQE 已取得实机证据。
+- 当前板端运行 `local-vqe-uds-20260901`，factory 配置、应用/VQE 哈希和两个
+  `root:aiden 0660` socket 均与构建产物一致；普通用户录音和取帧已经通过。
+- USB HID+ECM 已完成 Debian descriptor、networkd 无 carrier 和冷启动/解绑重绑回归验证；
+  修复代码已进入版本 `local-vqe-uds-20260901`，并在正式刷写后再次完成主机枚举和连通性验收。
+
+因此，该分支已经达到“可继续进行 Debian 固件开发和集成测试”的状态。
+
+但若目标是“生产发布”，当前仍应视为条件通过而不是最终通过。最重要的剩余工作是：
+
+1. 完成 VAD 推理准确性、资源预算和长时间运行回归。
+2. 在维护窗口验证独占式摄像头采集和扬声器物理播放。
+3. 完成 RKNN、摄像头、音频并发及 72 小时稳定性测试。
+4. 完成 A/B OTA 回滚和断电矩阵。
+5. 替换开发默认密码和本地签名身份，完成生产安全与发布治理。
+
+## 10. 资料来源
+
+本文根据以下仓库资料整理：
+
+- `debian-13-armhf-migration-plan.md`
+- `docs/debian-stage1.md`
+- `docs/debian-stage1-acceptance-20260813.md`
+- `docs/debian-stage2.md`
+- `docs/debian-stage2-host-acceptance-20260817.md`
+- `docs/debian-stage3.md`
+- `docs/debian-stage3-host-acceptance-20260817.md`
+- `scripts/debian/init-script-map.tsv`
+- `scripts/debian/environment-service-map.tsv`
+- `output/debian-stage2/apps-audit/summary.txt`
+- `output/debian-stage3/audit-report.txt`
+- `overlay-debian-oem/usr/lib/libaec_bf_process.so`
+- `overlay-debian-oem/usr/lib/librkaudio_common.so`
+- 板端 `/home/aiden/debian-stage2-g0/bundle-metadata.txt` 及其 `results/` 验收记录
+- `Falcom/debian` 相对 `main` 的提交历史和代码差异
+
+## 11. Buildroot 残留审计与后续清理建议（2026-08-21）
+
+本次审计确认，仓库中仍保留 Buildroot 相关文件和代码，但它们不是 Debian 生产路径。
+这些文件仅用于厂商 SDK/BSP 构建、历史对照和恢复资料；生产分支不再承诺 Buildroot
+用户空间或跨发行版在线回退。审计期间没有删除任何文件或代码。
+
+### 11.1 仍在使用的旧构建链
+
+以下文件仍是旧 Buildroot 固件的历史构建入口或平台配置，可在后续独立清理中删除；它们
+不属于 Debian 本地生产构建：
+
+```text
+build.sh
+build_image.sh
+_build.sh
+_build_image.sh
+cmake/toolchain-arm-rockchip830.cmake
+cmake/platforms/rv1106-buildroot-uclibc.cmake
+```
+
+`CMakeLists.txt` 当前默认平台为 `rv1106-debian-glibc`，公开平台枚举不再列出
+`rv1106-buildroot-uclibc`。旧 GitHub Actions、发布脚本和回归测试仍可能调用
+`build_image.sh`/`_build_image.sh`，但这些自动化入口保持原样且不属于本轮范围；它们
+不能被 Debian 本地生产入口引用。
+
+### 11.2 `overlay/` 是历史资产，不进入 Debian 生产镜像
+
+`overlay/` 原本是 Buildroot overlay。Debian stage2/stage3 已不再从根目录 overlay
+取用生产资源；仍存在的文件只用于历史对照：
+
+```text
+overlay/etc/init.d/S49usbhid
+overlay/etc/aiden_boot_timeline.sh
+overlay/oem/usr/bin/aiden-dynamic-keyboard
+overlay/oem/usr/lib/aiden-log.sh
+overlay/oem/usr/model/*.rknn
+overlay/oem/usr/model/*.bin
+overlay/oem/usr/share/aiden/audio/
+overlay/oem/usr/share/aiden/edid/
+```
+
+本次 rebase 没有删除整个 `overlay/`，但后续清理无需维持其可构建性。Debian 生产资源
+已由 `overlay-debian/` 和 `overlay-debian-oem/` 持有；删除旧 overlay 前只需完成历史
+资料归档和引用审查。
+
+### 11.3 Debian-only 阶段的清理候选
+
+在完成历史资料归档和引用审查后，以下内容可以考虑清理：
+
+```text
+cmake/platforms/rv1106-buildroot-uclibc.cmake
+cmake/toolchain-arm-rockchip830.cmake
+overlay/oem/usr/lib/librknnmrt.so
+```
+
+`librknnmrt.so` 是旧 uClibc mini runtime；当前 Debian RKNN 方案使用
+`third_party/rknpu2/v2.3.2/lib/librknnmrt.a` 静态库和 glibc 兼容层。它仍可能被旧
+Buildroot CMake/镜像流程引用，删除前应先确认历史资料不再需要。
+
+`overlay/etc/init.d/` 中部分脚本（例如 `S30dbus`、`S35wifidrv`、`S40network`、
+`S50telnet`、`S50usbdevice`、`S57wetty`、`S91smb` 和 `S99usb0config`）不会进入
+当前 Debian rootfs，但仍属于旧 Buildroot overlay。删除它们前必须先移除或重写
+旧镜像流程、相关测试和发布策略。
+
+### 11.4 历史兼容代码和 SDK 子模块
+
+Agent 的 USB HID 恢复逻辑保留 Buildroot 默认命令
+`/etc/init.d/S60usb_ecm_watchdog`，Debian 通过环境变量切换到
+`/usr/lib/aiden/aiden-usb-ecm-watchdog`。这是为读取历史配置保留的兼容分支；Debian
+生产服务不会调用该 Buildroot 路径。删除前应完成旧源码取证，但不需要继续维护
+Buildroot 可构建性。
+
+`pico-sdk` 子模块内部仍包含 Buildroot defconfig、构建规则和 uClibc 工具链。Debian
+stage3 仍使用该 SDK 构建 U-Boot、驱动、环境和 A/B 镜像。因此不能在本仓库直接裁剪
+子模块内部的 Buildroot 文件；后续可维护独立的裁剪 SDK fork，而不改变 Debian 用户
+空间结论。
+
+### 11.5 当前可安全处理的对象
+
+目前仅建议按需清理生成物，而不是源码：
+
+```text
+build/
+build-host/
+build-debian-g0/
+output/
+.cache/
+.toolchains/
+benchmark/.venv/
+pico-sdk/output/
+```
+
+这些目录通常被 `.gitignore` 忽略，但 `output/` 可能包含固件、审计报告和刷写证据，
+清理前应确认不再需要。当前本次审计没有执行清理。
+
+### 11.6 Debian-only 收敛状态与后续清理
+
+Debian-only 架构变更已经完成。后续清理应作为一次独立变更执行，而不是逐个删除文件：
+
+1. 归档并确认 Debian 生产资源与旧 overlay 的引用关系。
+2. 在独立变更中移除 Buildroot 构建入口、旧 overlay 和旧 runtime。
+3. 使用裁剪后的独立 SDK fork 完成 BSP、镜像、USB、RKNN、音频、摄像头、OTA 和
+   回滚回归。
+4. GitHub Actions 构建和 GitHub Release 自动发布另行规划，不作为本轮本地 Debian
+   构建收敛的完成条件。
+
+在上述清理完成前，保留 Buildroot 文件是为了支持 SDK 构建取证和历史问题对比，不表示
+Debian 生产迁移未完成。
+
+### 11.7 Debian-only 决策更新（2026-09-01）
+
+项目后续部署目标已确定为 Debian-only。该决定覆盖本节早期“双平台长期并存”的假设。
+当前已完成：
+
+1. CMake 默认及公开平台选项切换为 `rv1106-debian-glibc`。
+2. Debian rootfs helper 由 `overlay-debian/` 自身持有。
+3. Debian OEM 脚本、模型、音频与 EDID 资源迁至 `overlay-debian-oem/`。
+4. Debian Stage 2/3 构建和镜像审计不再读取根目录 `overlay/`。
+5. Agent、Frame Service、Config Web 和持久 Python 环境使用 systemd 原生控制链。
+6. `fq`、`yq`、`rg` 由 Debian Stage 2 构建，Stage 3 按 manifest 安装并对
+   最终 rootfs 逐文件复核校验和。
+7. Debian BSP 明确继承 `aiden-rk628.config`，避免切断旧 userspace 后丢失
+   RK628D/TC358743 内核能力；OTA CLI 默认配置路径也切换为
+   `/userdata/debian/ota/config.json`。
+8. GitHub Actions 构建由 `.github/workflows/debian-build.yml` 承担：手动
+   `workflow_dispatch` 触发，在自托管 runner 上执行 `debian_build.sh`，产物同时
+   上传为 workflow artifacts，并以 `debian-` 前缀的 tag 发布为 GitHub
+   pre-release。发布逻辑只存在于该工作流中；`debian_build.sh` 与
+   `scripts/debian-stage*` 不含任何发布自动化，仍然只产出本地产物。Buildroot 的
+   `build*.yml` 保持不变，其正式发布继续持有 Latest 标记。
+9. 在 rebase 后代码基线之上完成全量本地固件构建，Stage 2、BSP、rootfs 导入和最终
+   镜像审计全部通过，并生成版本为 `local-vqe-uds-20260901` 的签名 manifest；
+   `update.img` SHA-256 为 `e8971c7053f789f0e64a31c9f9f27df9322fbeb900684316c32a9cbc61871ae6`。
+10. 将 glibc/armhf VQE 运行库纳入 Debian OEM，并为音频/frame UDS 服务补齐
+    `root:aiden 0660` 所需的 systemd 组和 socket mode 门禁；正式刷写后已确认两个
+    socket、VQE 初始化、普通用户录音和 frame IPC 均正常。
+
+旧 `build.sh`、根目录 Buildroot overlay、uClibc 平台文件及相关测试文件在本次 rebase
+收尾中仍作为历史对比材料保留，但不再属于本地 Debian 构建兼容承诺，也不得被活动文档
+或本地生产入口调用。后续可以独立删除这些遗留内容，而不需要再维持可构建性。`pico-sdk` 内部的
+Buildroot 目录和 uClibc 工具链仍可作为厂商 BSP 构建 U-Boot、kernel、modules 和打包
+镜像的实现细节存在；这不代表设备用户空间继续支持 Buildroot。

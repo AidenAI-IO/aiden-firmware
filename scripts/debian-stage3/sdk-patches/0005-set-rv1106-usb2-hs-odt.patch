@@ -1,0 +1,58 @@
+phy: rockchip: inno-usb2: raise the RV1106 45ohm HS ODT trim to 5'b11111
+
+The vendor value 5'b10111 leaves the high-speed link with too little margin on
+at least one host. On the Ubuntu 24.04 build host (Linux 6.8.0-124, xHCI) the
+board cannot be enumerated at all with the stock trim:
+
+    usb usb5-port3: Cannot enable. Maybe the USB cable is bad?
+    usb usb5-port3: attempt power cycle
+    usb usb5-port3: unable to enumerate USB device
+
+That message comes from hub_port_reset() in drivers/usb/core/hub.c after every
+reset retry fails to see USB_PORT_STAT_ENABLE, so the link never completes reset
+and no USB transaction is attempted: no address is assigned, no descriptor is
+read. The host does register a connect, so the board is powered and its PHY is
+driving a data-line pullup; it is the high-speed reset that fails. This field
+trims the 45ohm HS termination that both ends enable after the chirp handshake,
+and a termination that is off far enough makes the host's squelch and disconnect
+detection trip during reset, which matches the observed stage of failure.
+
+Evidence for this specific value, recorded because an earlier attempt at the
+same change shipped without it:
+
+  - The two images compared differ by this register alone. Everything else
+    between them is documentation, the Buildroot overlay (which the Debian
+    rootfs builder never reads), build-side hash bookkeeping, and a patch header
+    that git apply ignores.
+  - With 0x1f the board enumerates and stays at 480 Mbps on that host. With 0x17
+    it fails as above on every retry cycle, with no successes.
+  - BootROM Maskrom enumerates on the same host, which uses neither value, so
+    the cable, the port and the host controller can train a link with this
+    board. Maskrom is also why this patch cannot be judged by whether flash mode
+    works: the Linux PHY driver does not run there.
+
+Still unmeasured: there is no eye diagram or protocol-analyser capture, so the
+margin this buys is not quantified, and 0x1f saturates the field rather than
+being a vendor-recommended point. The failure signature is also worse than the
+one seen in 2026-08 on the same host, which then enumerated before failing with
+-71; the physical margin has degraded since. Treat 0x1f as the empirically
+working end of a range that is known to be narrow, not as headroom.
+
+Full investigation: docs/07-operations/rv1106-usb-high-speed-enumeration-incident.md
+on the build host (that path is covered by a local .git/info/exclude rule and is
+not in this repository).
+
+diff --git a/sysdrv/source/kernel/drivers/phy/rockchip/phy-rockchip-inno-usb2.c b/sysdrv/source/kernel/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+--- a/sysdrv/source/kernel/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
++++ b/sysdrv/source/kernel/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+@@ -2825,8 +2825,8 @@ static int rv1106_usb2phy_tuning(struct rockchip_usb2phy *rphy)
+ 	/* Turn off differential receiver by default to save power */
+ 	phy_clear_bits(rphy->phy_base + 0x100, BIT(6));
+ 
+-	/* Set 45ohm HS ODT value to 5'b10111 to increase driver strength */
+-	phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x17);
++	/* Set 45ohm HS ODT value to 5'b11111 to increase driver strength */
++	phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x1f);
+ 
+ 	/* Set Tx HS eye height tuning to 3'b011(462 mV)*/
+ 	phy_update_bits(rphy->phy_base + 0x124, GENMASK(4, 2), (0x03 << 2));

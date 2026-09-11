@@ -15,6 +15,8 @@ GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
 HID_KEYBOARD_FUNC=${GADGET_DIR}/functions/hid.usb0
 UDC_NAME=ffb00000.usb
 UDC_STATE=/sys/class/udc/${UDC_NAME}/state
+USB0_CARRIER=/sys/class/net/usb0/carrier
+USB0_RX_PACKETS=/sys/class/net/usb0/statistics/rx_packets
 LOG_FILE=/var/log/aiden_usb_ecm_watchdog.log
 PID_FILE=/run/aiden_usb_ecm_watchdog.pid
 STATE_FILE=/run/aiden_usb_ecm_watchdog.state
@@ -25,11 +27,15 @@ USB0_ADDR=192.168.42.1
 USB0_NETMASK=255.255.255.0
 USB_REENUMERATION_WAKE_URL=http://127.0.0.1:8080/api/bluetooth/wake/usb-reenumeration
 
-PROBE_INTERVAL=5       # probe ECM connectivity every N seconds
-PROBE_FAIL_THRESHOLD=2 # reset after N consecutive probe failures
-ARPING_COUNT=2         # ARP requests per probe
-ARPING_TIMEOUT=2       # seconds to wait for ARP reply
-COOLDOWN=30            # minimum seconds between resets
+# Resetting the composite gadget drops the HID session too, so a stall has to
+# be confirmed over minutes rather than a single unanswered ARP burst. A desktop
+# host can legitimately ignore ARP probes (firewall, NDP-only stack, a renewing
+# DHCP client) while the ECM link is perfectly healthy.
+PROBE_INTERVAL=5        # probe ECM connectivity every N seconds
+PROBE_FAIL_THRESHOLD=12 # reset after N consecutive probe failures
+ARPING_COUNT=2          # ARP requests per probe
+ARPING_TIMEOUT=2        # seconds to wait for ARP reply
+COOLDOWN=300            # minimum seconds between resets
 AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
 [ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
 . "$AIDEN_LOG_HELPER"
@@ -135,9 +141,13 @@ log_snapshot() {
         "$label: udc_state=$(read_udc_state) gadget_udc=$(read_gadget_udc) hid_keyboard=($(describe_hid_keyboard)) usb0=($(describe_usb0)) ecm_hosts=($(describe_ecm_hosts))"
 }
 
+# 0 = host answered, 1 = a known host stayed silent, 2 = nothing was probed.
+# A missing prober or an empty host list says nothing about the link, so it must
+# never be able to justify tearing the gadget down.
 probe_ecm_connectivity() {
+    command -v arping >/dev/null 2>&1 || return 2
     hosts=$(get_ecm_hosts)
-    [ -z "$hosts" ] && return 1
+    [ -z "$hosts" ] && return 2
 
     for host in $hosts; do
         if arping -q -c "$ARPING_COUNT" -w "$ARPING_TIMEOUT" -I usb0 "$host" >/dev/null 2>&1; then
@@ -145,6 +155,18 @@ probe_ecm_connectivity() {
         fi
     done
     return 1
+}
+
+carrier_up() {
+    [ "$(cat "$USB0_CARRIER" 2>/dev/null || echo 0)" = 1 ]
+}
+
+read_rx_packets() {
+    rx=$(cat "$USB0_RX_PACKETS" 2>/dev/null || printf '')
+    case "$rx" in
+        ''|*[!0-9]*) printf '' ;;
+        *) printf '%s' "$rx" ;;
+    esac
 }
 
 read_planned_switch_grace_until() {
@@ -285,6 +307,7 @@ watchdog_main() {
     last_reset=0
     last_udc_state=$(read_udc_state)
     last_planned_grace_until=0
+    last_rx_packets=$(read_rx_packets)
 
     log_snapshot "watchdog loop start"
     if [ "$last_udc_state" = "configured" ]; then
@@ -335,10 +358,47 @@ watchdog_main() {
             last_planned_grace_until=0
         fi
 
+        # No carrier means no host is attached to ECM at all. That is not a
+        # stall, and resetting the gadget over it would churn an idle device.
+        if [ -e "$USB0_CARRIER" ] && ! carrier_up; then
+            if [ "$ecm_fail_count" -ne 0 ]; then
+                log INFO failure_count_cleared \
+                    "usb0 has no carrier; clearing ECM failure count"
+            fi
+            ecm_fail_count=0
+            continue
+        fi
+
+        # Inbound traffic is proof the session is alive, whatever ARP does. This
+        # is the signal that keeps a healthy desktop host from being torn down.
+        rx_packets=$(read_rx_packets)
+        if [ -n "$rx_packets" ] && [ -n "$last_rx_packets" ] && \
+            [ "$rx_packets" != "$last_rx_packets" ]; then
+            if [ "$ecm_fail_count" -ne 0 ]; then
+                log INFO probe_recovered \
+                    "usb0 received traffic after $ecm_fail_count failure(s)"
+            fi
+            last_rx_packets=$rx_packets
+            ecm_fail_count=0
+            continue
+        fi
+        [ -n "$rx_packets" ] && last_rx_packets=$rx_packets
+
         if probe_ecm_connectivity; then
             if [ "$ecm_fail_count" -ne 0 ]; then
                 log INFO probe_recovered \
                     "ECM probe recovered after $ecm_fail_count failure(s)"
+            fi
+            ecm_fail_count=0
+            continue
+        else
+            probe_result=$?
+        fi
+
+        if [ "$probe_result" -eq 2 ]; then
+            if [ "$ecm_fail_count" -ne 0 ]; then
+                log INFO failure_count_cleared \
+                    "no ECM host was probed; clearing ECM failure count"
             fi
             ecm_fail_count=0
             continue

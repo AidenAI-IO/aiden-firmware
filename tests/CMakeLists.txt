@@ -22,6 +22,7 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/uds_server.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_ipc.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_capture_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/frame_layout.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_processing.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_client.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_server.cpp
@@ -114,15 +115,20 @@ add_executable(aiden_tests
     frame_service_server_test.cpp
     frame_capture_manager_test.cpp
     frame_processing_test.cpp
+    frame_layout_test.cpp
     frame_crop_bounds_test.cpp
     terminal_input_test.cpp
     service_status_test.cpp
     vad_common_test.cpp
+    system_env_parser_test.cpp
+    system_env_generator_test.cpp
     audio_service_protocol_test.cpp
     audio_service_client_test.cpp
     audio_playback_session_test.cpp
     audio_session_manager_test.cpp
     audio_volume_state_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
+    ${CMAKE_SOURCE_DIR}/src/system_env_generator.cpp
     ${AIDEN_IMAGE_TEST_SOURCES}
     ${AIDEN_TEST_SOURCES}
 )
@@ -215,3 +221,12 @@ add_test(
 add_test(NAME usb0_dhcp_options
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_usb0_dhcp_options.sh
 )
+
+add_test(NAME boot_timeline
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_boot_timeline.sh
+)
+
+add_test(NAME debian_ext4_canonicalizer
+    COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/test_debian_ext4_canonicalizer.sh
+)
+set_tests_properties(debian_ext4_canonicalizer PROPERTIES SKIP_RETURN_CODE 77)

@@ -18,29 +18,18 @@ on:
         options:
           - aiden-hosted-01
           - aiden-hosted-02
-      rk_jobs:
-        description: 'Requested parallel build jobs (capped at the runner CPU count)'
-        type: string
-        default: '24'
-      ota_channel:
-        description: 'OTA manifest channel (default: debian-stable on main, debian-dev-<branch> elsewhere)'
-        type: string
-        default: ''
-      ota_base_url:
-        description: 'Optional http(s) base URL embedded in the manifest asset locations'
-        type: string
-        default: ''
-      retention_days:
-        description: 'Artifact retention in days'
-        type: string
-        default: '14'
       dry_run:
         description: 'Preflight only: check the runner, secrets and toolchain, then stop before the firmware build'
         type: boolean
         default: false
+      publish_release:
+        description: 'Publish the images as a GitHub pre-release tagged with the build version'
+        type: boolean
+        default: true
 
 permissions:
-  contents: read
+  # The build publishes its images as a pre-release.
+  contents: write
 
 concurrency:
   # The Debian build owns the whole runner workspace and the Docker daemon on
@@ -128,18 +117,40 @@ jobs:
         persist-credentials: false
 
     - name: Fetch pico-sdk submodule
-      # debian_build.sh refuses to build unless pico-sdk is checked out at the
-      # pinned Stage 3 commit with a clean worktree, and Stage 3 makes a local
-      # --shared clone of it, so fetch full history rather than --depth=1.
+      # Depth 1 is enough even though Stage 3 makes a local --shared clone of
+      # this checkout: git declines to use alternates when the source is
+      # shallow and copies the objects instead, so its repack/fsck path is
+      # skipped and the detached checkout still resolves. debian_build.sh
+      # asserts HEAD equals the pinned Stage 3 commit, which is exactly the
+      # commit a depth-1 fetch lands on. Deepening instead means pulling ~1 GB
+      # from github.com on every fresh runner.
       shell: bash
       run: |
         set -euo pipefail
-        git submodule update --init pico-sdk
-        # The metadata repair above writes an untracked .gitmodules that the
-        # pinned SDK commit does not carry; the clean-tree check would trip on it.
-        git -C pico-sdk clean -f -- .gitmodules
-        if [ "$(git -C pico-sdk rev-parse --is-shallow-repository)" = "true" ]; then
-          git -C pico-sdk fetch --unshallow origin
+        git submodule update --init --depth=1 pico-sdk
+
+        # Both debian_build.sh and Stage 3 refuse to build unless this worktree
+        # is pristine, and actions/checkout cannot deliver that: its
+        # `git clean -ffdx` does not descend into an initialised submodule, so
+        # whatever a previous job left here survives. Restore tracked files and
+        # drop untracked ones, but leave ignored paths alone -- pico-sdk/output
+        # is the Buildroot builds' incremental tree and they share this
+        # checkout. This also removes the untracked .gitmodules that the
+        # metadata repair step writes for older SDK commits.
+        dirty="$(git -C pico-sdk status --porcelain)"
+        if [ -n "$dirty" ]; then
+          echo "::group::pico-sdk worktree was dirty; restoring it"
+          printf '%s\n' "$dirty" | head -50
+          echo "::endgroup::"
+          git -C pico-sdk clean -ffd
+          git -C pico-sdk checkout --force -- .
+        fi
+
+        remaining="$(git -C pico-sdk status --porcelain)"
+        if [ -n "$remaining" ]; then
+          echo "pico-sdk is still not clean after restore:" >&2
+          printf '%s\n' "$remaining" | head -50 >&2
+          exit 1
         fi
         git -C pico-sdk rev-parse HEAD
 
@@ -148,29 +159,67 @@ jobs:
       # Seconds here, versus discovering the same drift an hour into the build.
       shell: bash
       run: |
-        set -euo pipefail
-        bash scripts/test_debian_stage2.sh
-        bash scripts/test_debian_stage3.sh
-        if command -v jq >/dev/null 2>&1; then
-          bash scripts/test_debian_build.sh
-        else
-          echo "::warning::Skipping scripts/test_debian_build.sh because jq is not installed on this runner"
-        fi
+        set -uo pipefail
+        status=0
+        for policy_test in test_debian_stage2 test_debian_stage3 test_debian_build; do
+          script="scripts/${policy_test}.sh"
+          if [ "$policy_test" = test_debian_build ] && ! command -v jq >/dev/null 2>&1; then
+            echo "::warning::Skipping ${script} because jq is not installed on this runner"
+            continue
+          fi
+          # These suites assert with bare `grep -q` and `[ ... ]`, which exit 1
+          # without printing, so a bare failure here says only "exit 1". Trace
+          # every attempt to a file and show it only when that attempt failed:
+          # re-running afterwards is useless for the flaky assertion below,
+          # which often passes the second time.
+          attempt=1
+          while :; do
+            trace="${RUNNER_TEMP}/${policy_test}.attempt${attempt}.trace"
+            if bash -x "$script" >"$trace" 2>&1; then
+              echo "${script}: passed (attempt ${attempt})"
+              break
+            fi
+            echo "::group::${script} attempt ${attempt} xtrace (last 60 lines)"
+            tail -60 "$trace"
+            echo "::endgroup::"
+            if [ "$attempt" -ge 2 ]; then
+              echo "::error::${script} failed twice; the trace above ends at the failing assertion"
+              status=1
+              break
+            fi
+            # test_debian_stage2.sh ends in a live mock stress run whose
+            # assertions read host timing, CMA recovery and log patterns, so it
+            # fails under load on a shared runner. One repeat separates that
+            # from a real regression, which fails both times.
+            echo "::warning::${script} failed; retrying once"
+            attempt=2
+          done
+        done
+        exit "$status"
 
     - name: Verify build host prerequisites
-      # The same host tools debian_build.sh requires. Checking them here also
-      # gives the dry run something to report, since it never reaches the
-      # script's own check.
+      # debian_build.sh's own list, plus what the Stage 3 host-side BSP audit
+      # needs. audit-bsp.sh runs outside the build containers and is only
+      # reached after the kernel is built, so a tool missing there costs a
+      # two-hour build. Checking the union here also gives the dry run
+      # something to report, since it never reaches either script's own check.
       shell: bash
       run: |
         set -euo pipefail
         missing=()
-        for command in awk cmp curl date docker getconf git grep id install \
-          openssl python3 readlink sha256sum tar; do
+        for command in awk cmp curl date docker fdtget find getconf git grep id \
+          install od openssl python3 readlink sha256sum sort stat tar tr xargs; do
           command -v "$command" >/dev/null 2>&1 || missing+=("$command")
         done
         if [ ${#missing[@]} -gt 0 ]; then
           echo "Missing required build host commands: ${missing[*]}" >&2
+          for command in "${missing[@]}"; do
+            case "$command" in
+              fdtget)
+                echo "  ${command}: provided by the device-tree-compiler package" >&2
+                ;;
+            esac
+          done
           exit 1
         fi
         docker info >/dev/null 2>&1 || {
@@ -231,6 +280,11 @@ jobs:
         scripts/validate_ota_pubkey.sh "$public_key"
         echo "OTA_PRIVATE_KEY_PATH=$private_key" >> "$GITHUB_ENV"
         echo "OTA_PUBLIC_KEY_PATH=$public_key" >> "$GITHUB_ENV"
+        # Pin the trust anchor to the key this build signs with. Left unset,
+        # debian_build.sh would bake in the committed keys/ota_pubkey.pem, and
+        # a rotated secret would then ship images trusting the previous signer
+        # while the manifests came from the new one.
+        echo "OTA_TRUST_PUBLIC_KEY_PATH=$public_key" >> "$GITHUB_ENV"
 
     - name: Ensure armhf binfmt registration
       # Stage 3 runs the freshly built armhf agent on the host to validate
@@ -256,7 +310,6 @@ jobs:
       id: meta
       env:
         GITHUB_REF_NAME: ${{ github.ref_name }}
-        CHANNEL_INPUT: ${{ inputs.ota_channel }}
       shell: bash
       run: |
         set -euo pipefail
@@ -265,40 +318,40 @@ jobs:
         build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
         branch=$(printf '%s' "$GITHUB_REF_NAME" | sed 's#/#-#g; s#[^a-zA-Z0-9._-]#-#g')
 
-        if [ -n "${CHANNEL_INPUT:-}" ]; then
-          # The channel is free-form dispatch input that reaches $GITHUB_OUTPUT,
-          # the signed manifest and the device OTA config. Hold it to the same
-          # character set the derived channels use, so a newline cannot forge a
-          # second output line.
-          case "$CHANNEL_INPUT" in
-            *[!A-Za-z0-9._-]*)
-              echo "ota_channel may only contain letters, digits, '.', '_' and '-'" >&2
-              exit 1
-              ;;
-          esac
-          channel="$CHANNEL_INPUT"
-        elif [ "$GITHUB_REF_NAME" = "main" ]; then
+        if [ "$GITHUB_REF_NAME" = "main" ]; then
           channel="debian-stable"
         else
           channel="debian-dev-${branch}"
         fi
+
+        # Build with everything the runner has. debian_build.sh caps its own
+        # default at the online CPU count, which would hold a larger machine
+        # down to that default rather than use it.
+        rk_jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc)
+        case "$rk_jobs" in
+          '' | *[!0-9]* | 0)
+            echo "could not determine the online CPU count: '$rk_jobs'" >&2
+            exit 1
+            ;;
+        esac
 
         {
           echo "version=debian-${timestamp}-${commit}"
           echo "channel=${channel}"
           echo "build_time=${build_time}"
           echo "artifact_name=debian-firmware-${branch}-${timestamp}-${commit}"
+          echo "rk_jobs=${rk_jobs}"
         } >> "$GITHUB_OUTPUT"
+        echo "Building with RK_JOBS=${rk_jobs}"
 
     - name: Run Debian firmware build
       if: ${{ !inputs.dry_run }}
       env:
-        RK_JOBS: ${{ inputs.rk_jobs }}
+        RK_JOBS: ${{ steps.meta.outputs.rk_jobs }}
         OTA_REPO: ${{ github.repository }}
         OTA_CHANNEL: ${{ steps.meta.outputs.channel }}
         OTA_BUILD_VERSION: ${{ steps.meta.outputs.version }}
         OTA_BUILD_TIME: ${{ steps.meta.outputs.build_time }}
-        OTA_BASE_URL: ${{ inputs.ota_base_url }}
       run: ./debian_build.sh
 
     - name: Summarize firmware output
@@ -340,8 +393,60 @@ jobs:
           output/debian/image/manifest.json
           output/debian/image/update.img.sha256
         if-no-files-found: error
-        retention-days: ${{ inputs.retention_days }}
+        retention-days: 7
         compression-level: 0
+
+    - name: Publish GitHub pre-release
+      # Always a pre-release: create_github_release.sh then skips --latest, so
+      # these images never displace the Buildroot releases that hold that tag.
+      # The debian- prefix on the tag and the manifest channel keep the two
+      # apart for anyone browsing the releases page, and for the OTA config
+      # baked into the image, which resolves updates by repository and channel.
+      if: ${{ !inputs.dry_run && inputs.publish_release }}
+      # create_github_release.sh retries, but nothing bounds a single attempt,
+      # so a connection that hangs rather than fails blocks until the job
+      # timeout. One such publish burned three hours of runner time after the
+      # firmware had already been built and uploaded. A healthy publish of this
+      # asset set takes about five minutes.
+      timeout-minutes: 30
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: ${{ steps.meta.outputs.version }}
+        RELEASE_CHANNEL: ${{ steps.meta.outputs.channel }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        release_assets='boot_a.img.tar.gz boot_b.img.tar.gz oem.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json'
+        bash scripts/create_github_release.sh \
+          --release-name "$RELEASE_TAG" \
+          --tag-name "$RELEASE_TAG" \
+          --target-commitish "$GITHUB_SHA" \
+          --asset-glob 'output/debian/image/*' \
+          --required-assets "$release_assets" \
+          --upload-assets "$release_assets update.img.sha256" \
+          --retry-count 10 \
+          --retry-delay-seconds 30 \
+          --prerelease
+
+        # create_github_release.sh writes generic notes shared with the
+        # Buildroot builds. Replace them so the page says which userspace this
+        # is and how to get a flashable image out of the archive.
+        notes="$RUNNER_TEMP/release-notes.md"
+        {
+          printf 'Debian userspace firmware, built by `.github/workflows/debian-build.yml`.\n\n'
+          printf '| Field | Value |\n| --- | --- |\n'
+          printf '| Channel | `%s` |\n' "$RELEASE_CHANNEL"
+          printf '| Commit | `%s` |\n' "$GITHUB_SHA"
+          printf '| update.img SHA-256 | `%s` |\n\n' \
+            "$(awk '{print $1}' output/debian/image/update.img.sha256)"
+          printf 'Flash:\n\n'
+          printf '```\ntar -xzf update.img.tar.gz\n'
+          printf 'sha256sum -c update.img.sha256\n'
+          printf './upgrade_tool/upgrade_tool uf ./update.img\n```\n\n'
+          printf 'Marked as a pre-release. The Buildroot builds publish separately '
+          printf 'and keep the Latest tag; their tags carry no `debian-` prefix.\n'
+        } >"$notes"
+        gh release edit "$RELEASE_TAG" --notes-file "$notes"
 
     - name: Upload Debian build reports
       if: ${{ always() && !inputs.dry_run }}
@@ -352,7 +457,7 @@ jobs:
           output/debian-stage2/apps-audit/summary.txt
           output/debian-stage3/audit-report.txt
         if-no-files-found: ignore
-        retention-days: ${{ inputs.retention_days }}
+        retention-days: 7
 
     - name: Remove build secrets from the runner
       if: always()

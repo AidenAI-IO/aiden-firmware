@@ -1,0 +1,85 @@
+#!/bin/sh
+set -eu
+
+ko_dir=/oem/usr/ko
+insert_if_present() {
+    module=$1
+    shift
+    path=${ko_dir}/${module}
+    [ -f "${path}" ] || return 0
+    sys_name=$(basename "${module}" .ko | tr '-' '_')
+    [ -d "/sys/module/${sys_name}" ] || insmod "${path}" "$@"
+}
+
+insert_if_present rk_dvbm.ko
+insert_if_present videobuf2-memops.ko
+insert_if_present videobuf2-common.ko
+insert_if_present videobuf2-v4l2.ko
+insert_if_present videobuf2-vmalloc.ko
+insert_if_present videobuf2-cma-sg.ko
+for sensor in imx415 os04a10 sc4336 sc3336 sc530ai gc2053 sc200ai \
+    sc401ai sc450ai techpoint mis5001 mia1321; do
+    insert_if_present "${sensor}.ko"
+done
+insert_if_present video_rkcif.ko
+insert_if_present video_rkisp.ko
+insert_if_present phy-rockchip-csi2-dphy-hw.ko
+insert_if_present phy-rockchip-csi2-dphy.ko
+
+for sensor in imx415 os04a10 sc4336 sc3336 sc530ai gc2053 sc200ai \
+    sc401ai sc450ai techpoint mis5001 mia1321; do
+    if lsmod 2>/dev/null | awk -v name="${sensor}" '$1 == name && $3 == 0 {found=1} END {exit !found}'; then
+        rmmod "${sensor}" 2>/dev/null || true
+    fi
+done
+[ ! -w /sys/module/video_rkcif/parameters/clr_unready_dev ] || \
+    echo 1 >/sys/module/video_rkcif/parameters/clr_unready_dev
+[ ! -w /sys/module/video_rkisp/parameters/clr_unready_dev ] || \
+    echo 1 >/sys/module/video_rkisp/parameters/clr_unready_dev
+
+insert_if_present rga3.ko
+insert_if_present mpp_vcodec.ko
+insert_if_present rknpu.ko
+insert_if_present snd-soc-rv1106.ko
+insert_if_present motor.ko
+
+sensor_height=0
+for status in /proc/rkisp-vir0 /proc/rkisp0; do
+    [ -r "${status}" ] || continue
+    value=$(sed -n 's/.*Size:[^x]*x\([0-9][0-9]*\)@.*/\1/p' "${status}" | head -n 1)
+    case "${value}" in ''|*[!0-9]*) ;; *) sensor_height=${value}; break ;; esac
+done
+insert_if_present rockit.ko \
+    mcu_fw_path=/oem/usr/ko/hpmcu_wrap.bin \
+    mcu_fw_addr=0xff6fe000 isp_max_h="${sensor_height}"
+udevadm settle --timeout=10 || true
+
+# Keep the device usable when this helper is run on an older Debian rootfs
+# that predates the packaged udev rule.
+set_video_access() {
+    [ -e "$1" ] || return 0
+    chgrp video "$1"
+    chmod 0660 "$1"
+}
+
+set_video_access /dev/rknpu
+for node in /dev/mpi/*; do
+    [ -e "${node}" ] || continue
+    set_video_access "${node}"
+done
+
+rk_heap_sysfs=/sys/class/rk_dma_heap/rk-dma-heap-cma/dev
+rk_heap_node=/dev/rk_dma_heap/rk-dma-heap-cma
+if [ -r "${rk_heap_sysfs}" ]; then
+    major_minor=$(cat "${rk_heap_sysfs}")
+    major=${major_minor%:*}
+    minor=${major_minor#*:}
+    case "${major}" in ''|*[!0-9]*) echo "Invalid RK DMA heap major: ${major}" >&2; exit 1 ;; esac
+    case "${minor}" in ''|*[!0-9]*) echo "Invalid RK DMA heap minor: ${minor}" >&2; exit 1 ;; esac
+    mkdir -p /dev/rk_dma_heap /dev/dma_heap
+    [ -e "${rk_heap_node}" ] || mknod "${rk_heap_node}" c "${major}" "${minor}"
+    set_video_access "${rk_heap_node}"
+    if [ ! -e /dev/dma_heap/system ] && [ ! -L /dev/dma_heap/system ]; then
+        ln -s ../rk_dma_heap/rk-dma-heap-cma /dev/dma_heap/system
+    fi
+fi

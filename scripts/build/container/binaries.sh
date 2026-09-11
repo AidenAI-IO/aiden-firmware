@@ -14,7 +14,11 @@ fi
 echo "Building Aiden SDK..."
 
 rm -rf "$BUILD_DIR"
-cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE"
+# This retained legacy entrypoint uses the uClibc SDK toolchain. Keep its
+# platform explicit now that the repository default is Debian/glibc.
+cmake -S "$REPO_ROOT" -B "$BUILD_DIR" \
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+    -DAIDEN_TARGET_PLATFORM=rv1106-buildroot-uclibc
 CMAKE_JOBS="${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)}"
 cmake --build "$BUILD_DIR" --parallel "$CMAKE_JOBS"
 
