@@ -1043,6 +1043,26 @@ func TestWiFiPublicValueUsesNetworkCollectionOnly(t *testing.T) {
 	}
 }
 
+func TestParseWiFiScanOutputDecodesEscapedUTF8SSID(t *testing.T) {
+	text := `BSS aa:bb:cc:dd:ee:ff(on wlan0)
+	SSID: \xe9\xa3\x9e\xe5\x88\xa9\xe7\x8c\xab\xe5\x93\x81\xe7\x89\x8cWiFi
+	Cell 02 - Address: 11:22:33:44:55:66
+		ESSID:"\xe9\xa3\x9e\xe5\x88\xa9\xe7\x8c\xab\xe5\x93\x81\xe7\x89\x8cWiFi"
+	`
+	want := []string{"飞利猫品牌WiFi"}
+	if got := parseWiFiScanOutput(text); len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("parseWiFiScanOutput()=%q, want %q", got, want)
+	}
+}
+
+func TestDecodeWiFiSSIDPreservesInvalidEscapes(t *testing.T) {
+	for _, value := range []string{`Office\xZZ`, `Office\xE9`, `Office\x41\xZZ`} {
+		if got := decodeWiFiSSID(value); got != value {
+			t.Errorf("decodeWiFiSSID(%q)=%q, want unchanged", value, got)
+		}
+	}
+}
+
 func TestWiFiProxyRequestValidationAndPasswordRedaction(t *testing.T) {
 	customURL := "http://alice:secret@proxy.example:7890"
 	noProxy := "localhost,.example.com"
