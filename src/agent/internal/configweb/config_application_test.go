@@ -92,7 +92,7 @@ func TestConfigRejectsObsoleteEnvelope(t *testing.T) {
 
 func TestEnvironmentSaveRequiresExplicitApplyAndSurvivesPortalRestart(t *testing.T) {
 	o := testOptions(t)
-	if err := os.WriteFile(o.SystemEnvPath, []byte("A=1\n"), 0600); err != nil {
+	if err := os.WriteFile(o.SystemEnvPath, []byte("OPENAI_API_KEY=one\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	appliedRevision, err := agent.SystemEnvironmentRevision(o.SystemEnvPath)
@@ -129,7 +129,7 @@ func TestEnvironmentSaveRequiresExplicitApplyAndSurvivesPortalRestart(t *testing
 		t.Fatal(body)
 	}
 	resp := httptest.NewRecorder()
-	s.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/system/environment", strings.NewReader(`{"system_env":"A=2\n"}`)))
+	s.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/system/environment", strings.NewReader(`{"system_env":"OPENAI_API_KEY=two\n"}`)))
 	if resp.Code != 200 || !strings.Contains(resp.Body.String(), `"agent_restart_required":true`) {
 		t.Fatal(resp.Body.String())
 	}
