@@ -60,6 +60,8 @@ After the new slot boots, the Go daemon calls OTA health write logic after runti
 - Current `aiden.slot_suffix` equals pending target slot.
 - Current rootfs slot equals pending target slot.
 - Health marker write includes version, build time, nonce, and current boot ID from pending.
+- Required service self-checks pass: frame/audio UDS health, Agent HTTP health,
+  required HID nodes, and any configured required network, phone, or HDMI checks.
 
 When `ota` sees a matching marker:
 
@@ -67,7 +69,7 @@ When `ota` sees a matching marker:
 2. Update committed version/build time and per-slot partition hashes in `/userdata/ota/state.json`.
 3. Delete `pending_boot.json` and `health.ok`.
 
-If the health window times out, `ota health` actively reboots, allowing SPL to consume tries. When tries are exhausted and the target slot is not successful, SPL falls back to the previous successful slot. When `ota health` observes a rollback in the old slot, it cleans up pending state and marks the state phase as `rolled-back`.
+If the health window times out, `ota health` actively reboots, allowing SPL to consume tries. When tries are exhausted and the target slot is not successful, SPL falls back to the previous successful slot. When `ota health` observes a rollback in the old slot, it cleans up pending state and marks the state phase as `rolled-back`. Early `ota recover` also reconciles an explicit manual rollback after checking that both the running slot and misc metadata select the same successful slot; an operator who returns to the original slot is recorded as an abandoned rollback and the state returns to `committed`.
 
 ## Manifest Convention
 

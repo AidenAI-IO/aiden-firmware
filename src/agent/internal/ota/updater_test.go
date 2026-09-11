@@ -1194,6 +1194,136 @@ func TestUpdaterClearsPendingHealthAfterRollbackToOldSlot(t *testing.T) {
 	}
 }
 
+func TestRecoverPendingDataReconcilesCompletedRollback(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.state.Phase = "rollback-requested"
+	env.state.ActiveSlot = SlotB
+	env.state.TargetSlot = SlotA
+	env.state.CurrentVersion = env.version
+	env.state.CurrentBuildTime = env.buildTime
+	env.state.Slots["a"] = SlotPartitionInfo{Partitions: map[string]PartitionVersion{
+		"boot": {Version: "old-version", Hash: testHashA},
+	}}
+	env.state.SlotBuildTimes = map[string]string{"a": "old-build", "b": env.buildTime}
+	env.saveState(t)
+	updater := env.updater()
+	updater.currentSlot = func() (Slot, bool, error) { return SlotA, true, nil }
+	if err := updater.RecoverPendingData(); err != nil {
+		t.Fatalf("RecoverPendingData() error = %v", err)
+	}
+	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Phase != "rolled-back" || state.ActiveSlot != SlotA || state.TargetSlot != SlotA || state.CurrentVersion != "old-version" || state.CurrentBuildTime != "old-build" {
+		t.Fatalf("reconciled state = %+v", state)
+	}
+}
+
+func TestRollbackRestoreFailureKeepsSnapshotAndPendingState(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	snapshot, dataRoot, files := makeRestoreFixture(t)
+	defer setProtectedDataRoot(dataRoot)()
+	if err := os.Remove(filepath.Join(snapshot, "userdata", files[2])); err != nil {
+		t.Fatal(err)
+	}
+	env.state.Phase = "pending-reboot"
+	env.state.TargetSlot = SlotB
+	env.state.DataSnapshotPath = snapshot
+	env.saveState(t)
+	pendingPath := filepath.Join(env.stateDir, "pending_boot.json")
+	if err := WritePendingBoot(pendingPath, PendingBoot{TargetSlot: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	updater := env.updater()
+	updater.currentSlot = func() (Slot, bool, error) { return SlotA, true, nil }
+	for _, recover := range []func() error{
+		updater.RecoverPendingData,
+		func() error { return updater.ProcessPendingHealth(context.Background()) },
+	} {
+		if err := recover(); err == nil {
+			t.Fatal("incomplete snapshot recovery succeeded")
+		}
+		state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.DataSnapshotPath != snapshot || state.Phase != "pending-reboot" {
+			t.Fatalf("lost recovery state: %+v", state)
+		}
+		if _, err := os.Stat(pendingPath); err != nil {
+			t.Fatalf("lost pending boot: %v", err)
+		}
+		for _, rel := range files {
+			assertFileContent(t, filepath.Join(dataRoot, rel), "new:"+rel)
+		}
+	}
+}
+
+func TestSaveSnapshotStateFailureCleansOnlyUnpublishedSnapshot(t *testing.T) {
+	for _, afterRename := range []bool{false, true} {
+		t.Run(fmt.Sprintf("after-rename=%t", afterRename), func(t *testing.T) {
+			env := newUpdaterTestEnv(t)
+			snapshot := filepath.Join(env.stateDir, "transactions/pre-test-v2")
+			writeSnapshotTestFile(t, filepath.Join(snapshot, "manifest.json"), `{"files":[]}`)
+			env.state.DataSnapshotPath = snapshot
+			if afterRename {
+				original := syncDir
+				syncDir = func(*os.File) error { return errors.New("sync failed") }
+				t.Cleanup(func() { syncDir = original })
+			} else {
+				if err := os.Mkdir(filepath.Join(env.stateDir, "state.json.tmp"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := env.updater().saveSnapshotState(env.state); err == nil {
+				t.Fatal("state write unexpectedly succeeded")
+			}
+			_, err := os.Stat(snapshot)
+			if afterRename && err != nil {
+				t.Fatalf("published snapshot lost after fsync failure: %v", err)
+			}
+			if !afterRename && !os.IsNotExist(err) {
+				t.Fatalf("unpublished snapshot not removed: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecoverPendingDataReconcilesAbandonedRollback(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.state.Phase = "rollback-requested"
+	env.state.ActiveSlot = SlotB
+	env.state.TargetSlot = SlotA
+	env.state.CurrentVersion = env.version
+	env.state.Slots["b"] = SlotPartitionInfo{Partitions: map[string]PartitionVersion{
+		"boot": {Version: "current-version", Hash: testHashB},
+	}}
+	env.saveState(t)
+	ab, err := readMiscFile(env.miscPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ab.SetActive(SlotB, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMiscFile(env.miscPath, ab); err != nil {
+		t.Fatal(err)
+	}
+	updater := env.updater()
+	updater.currentSlot = func() (Slot, bool, error) { return SlotB, true, nil }
+	if err := updater.RecoverPendingData(); err != nil {
+		t.Fatalf("RecoverPendingData() error = %v", err)
+	}
+	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Phase != "committed" || state.ActiveSlot != SlotB || state.TargetSlot != SlotB || state.CurrentVersion != "current-version" {
+		t.Fatalf("reconciled abandoned state = %+v", state)
+	}
+}
+
 func TestUpdaterDoesNotClearPendingWhenMiscStillPrefersTargetButRunningOldSlot(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	pending := PendingBoot{TargetSlot: "b", TargetVersion: env.version, TargetBuildTime: env.buildTime, Nonce: "nonce-1"}

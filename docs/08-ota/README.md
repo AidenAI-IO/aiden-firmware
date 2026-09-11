@@ -25,6 +25,7 @@ This project's production OTA uses A/B partitioning, signed manifests, and boot 
 - [External Developer Guide](ota-external-developers.md)
 - [Distribution Quick Examples](ota-quick-examples.md)
 - [Release Channel Strategy](ota-release-channels.md)
+- [Self-check, Data Compatibility, and Rollback Design](self-check-rollback.md)
 
 ## Core Constraints
 
@@ -53,6 +54,21 @@ mount | grep ' /oem '
 ```
 
 `check-now` is still retained as a compatibility alias; new scripts and documentation should use `update`.
+
+The device OTA CLI also provides read-only self-check and controlled rollback
+commands:
+
+```bash
+/oem/usr/bin/ota self-check
+/oem/usr/bin/ota rollback
+```
+
+`self-check` records a JSON report under `/userdata/ota/health/current.json`.
+It exits non-zero when a required probe fails. During a pending A/B boot, the
+Agent writes `health.ok` only after the required service probes pass.
+`rollback` selects the last successful slot and restores only protected
+configuration files from the pre-update snapshot; memory, notifications,
+recordings, skills, and logs remain on shared `/userdata`.
 
 ## Related Source Code
 

@@ -32,6 +32,9 @@ type State struct {
 	PendingBootNonce       string                       `json:"pending_boot_nonce,omitempty"`
 	PendingBootID          string                       `json:"pending_boot_id,omitempty"`
 	PendingTargetSlot      *SlotPartitionInfo           `json:"pending_target_slot,omitempty"`
+	DataSnapshotPath       string                       `json:"data_snapshot_path,omitempty"`
+	SelfCheck              *SelfCheckReport             `json:"self_check,omitempty"`
+	SlotBuildTimes         map[string]string            `json:"slot_build_times,omitempty"`
 }
 
 type RetryMetadata struct {
@@ -60,6 +63,7 @@ func NewFactoryState(version string, buildTime string, hashes map[string]map[str
 		LastCommittedVersion:   version,
 		LastCommittedBuildTime: buildTime,
 		Slots:                  map[string]SlotPartitionInfo{},
+		SlotBuildTimes:         map[string]string{"a": buildTime, "b": buildTime},
 	}
 	for _, slot := range []Slot{SlotA, SlotB} {
 		parts := map[string]PartitionVersion{}

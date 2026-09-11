@@ -63,6 +63,14 @@ for i in "$INIT_D_DIR"/S??* ;do
     esac
 
      rcs_timeline script:end "$name" "rc=$rc"
+
+     # Do not start consumers of protected configuration after failed recovery.
+     # Other init failures retain the stock Buildroot continue-on-error policy.
+     if [ "$name" = "S21aiden_ota_recovery" ] && [ "$rc" -ne 0 ]; then
+         echo "OTA recovery failed; remaining boot services are blocked. Repair the recovery error and reboot." >&2
+         rcs_timeline rcS:recovery-failed "$name" "rc=$rc"
+         exit "$rc"
+     fi
 done
 
 rcs_timeline rcS:end

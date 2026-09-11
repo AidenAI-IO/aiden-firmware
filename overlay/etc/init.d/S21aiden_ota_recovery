@@ -1,0 +1,30 @@
+#!/bin/sh
+# Recover protected configuration after an interrupted OTA migration before
+# Agent, Config Web, and service daemons start. A missing pending transaction
+# succeeds; recovery errors stop later services through rcS.
+
+OTA_BIN=${OTA_BIN:-/oem/usr/bin/ota}
+ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
+OTA_STORAGE_DIR=${OTA_STORAGE_DIR:-/userdata/ota}
+LOG_PATH=${LOG_PATH:-/var/log/ota/ota-recovery.log}
+
+start() {
+    [ -d "$OTA_STORAGE_DIR" ] || return 0
+    if [ ! -x "$OTA_BIN" ] || [ ! -x "$ENV_RUN_BIN" ]; then
+        mkdir -p "$(dirname "$LOG_PATH")"
+        echo "ota recovery unavailable: OTA_BIN and ENV_RUN_BIN must both be executable" >> "$LOG_PATH"
+        return 1
+    fi
+    mkdir -p "$(dirname "$LOG_PATH")"
+    "$ENV_RUN_BIN" "$OTA_BIN" recover >> "$LOG_PATH" 2>&1 || {
+        echo "ota recovery failed; normal services must not claim migrated data is committed" >> "$LOG_PATH"
+        return 1
+    }
+    return 0
+}
+
+case "${1:-start}" in
+    start) start ;;
+    stop|restart|reload) : ;;
+    *) echo "Usage: $0 {start|stop|restart|reload}" >&2; exit 1 ;;
+esac
