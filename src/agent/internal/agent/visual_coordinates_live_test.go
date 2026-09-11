@@ -86,11 +86,6 @@ func TestVisualCoordinatesLive(t *testing.T) {
 	}
 	slots := make(chan struct{}, 3)
 	variants := []string{"baseline", "prepared"}
-	if os.Getenv("AIDEN_VISUAL_ABLATION") == "1" {
-		// Images are always sent at their original size, so the only remaining
-		// axis is the coordinate protocol the model is asked to emit.
-		variants = []string{"normalized", "pixel"}
-	}
 	for repeat := 1; repeat <= repeats; repeat++ {
 		for _, task := range suite.Tasks {
 			if filter := os.Getenv("AIDEN_VISUAL_TASK"); filter != "" && task.ID != filter {
@@ -146,16 +141,6 @@ func TestVisualCoordinatesLive(t *testing.T) {
 					backend := &visualRecordingTool{name: "touch_gesture"}
 					var tool langtools.Tool = &livePerceptionTool{visualRecordingTool: backend}
 					var transforms []executor.OutboundMessageTransform
-					if os.Getenv("AIDEN_VISUAL_ABLATION") == "1" {
-						frames := newVisualCoordinates()
-						pixel := variant == "pixel"
-						transforms = append(transforms, liveAblationTransform{frames: frames})
-						var receiver langtools.Tool = backend
-						if pixel {
-							receiver = frames.wrap([]langtools.Tool{backend})[0]
-						}
-						tool = &liveAblationTool{Tool: receiver, pixel: pixel}
-					}
 					if variant == "prepared" {
 						frames := newVisualCoordinates()
 						transforms = append(transforms, frames)
@@ -225,40 +210,5 @@ func (t *livePerceptionTool) Description() string { return (&TouchGestureTool{})
 
 // Factorial controls: identical prompt, caption, JPEG encoder and minimal tap
 // schema in all four cells. Only resizing and coordinate units differ.
-type liveAblationTransform struct{ frames *visualCoordinates }
 
-func (a liveAblationTransform) Transform(input []messages.Message) []messages.Message {
-	out := a.frames.Transform(input)
-	out = out[:len(out)-1] // remove production pixel-specific system guidance
-	for i := range out {
-		for j := range out[i].Attachments {
-			attachment := &out[i].Attachments[j]
-			for _, frame := range a.frames.frames {
-				if strings.Contains(attachment.PreparedCaption, frame.id) {
-					attachment.PreparedCaption = fmt.Sprintf("Attached image frame_id=%s image_width=%d image_height=%d. These are the actual attached image dimensions.", frame.id, frame.width, frame.height)
-				}
-			}
-		}
-	}
-	return out
-}
 
-type liveAblationTool struct {
-	langtools.Tool
-	pixel bool
-}
-
-func (t *liveAblationTool) Description() string {
-	unit := "normalized 0-1000 coordinates, where (0,0) is top-left and (1000,1000) is bottom-right"
-	if t.pixel {
-		unit = "pixel coordinates in the attached image, where (0,0) is top-left and (image_width-1,image_height-1) is bottom-right"
-	}
-	return "Tap the requested target's visible center using " + unit + ". Include the frame_id from the image caption."
-}
-func (t *liveAblationTool) ArgsSchema() map[string]any {
-	return objectArgsSchema(map[string]any{
-		"type":     stringEnumArgSchema("Gesture", "tap"),
-		"frame_id": stringArgSchema("Frame ID from the image caption"),
-		"point":    objectArgsSchema(map[string]any{"x": numberArgSchema("X in the tool's coordinate system"), "y": numberArgSchema("Y in the tool's coordinate system")}, "x", "y"),
-	}, "type", "frame_id", "point")
-}

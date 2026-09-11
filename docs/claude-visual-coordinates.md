@@ -44,10 +44,10 @@ Only attachments tagged as device screenshot observations participate; ordinary
 user uploads pass through unchanged. The transform runs after screenshot
 pruning. It reads the original attachment, decodes its dimensions, fully decodes
 the payload to reject truncated or corrupt data, and attaches
-a caption with those dimensions and an opaque frame ID. Captions exist only on
+a caption with those dimensions. Captions exist only on
 outbound message clones; stored source attachments remain intact. Replay
-regenerates the same frame within a run. Frames from another run are not
-accepted. Frames are cached for attachments still present in context.
+regenerates the same frame within a run. Frames are cached for attachments
+still present in context.
 
 `touch_gesture`, `mouse_move`, `enter_text.focus`, and `wheel_nudge` geometry use
 the pixel protocol in the conversational tool schema. Standard and atomic touch
@@ -56,18 +56,15 @@ center coordinate ranges from zero to dimension minus one. Conversion to the
 existing normalized plane is `pixel / max(dimension - 1, 1) * 1000`.
 
 ```json
-{"type":"tap","frame_id":"frame_...","point":{"x":300,"y":600}}
+{"type":"tap","point":{"x":300,"y":600}}
 ```
 
+The adapter uses the most recent screenshot's dimensions for conversion.
 Existing active-area cropping and HID/ADB mapping continue to own the device
-transform, avoiding a second crop offset. A frame ID identifies the dimensions
-used for conversion, not permission to perform an action. The adapter does not
-consume frames, impose a latest-only policy, or add device-scope, rotation or
-resume checks. Existing device tools keep ownership of all screenshot freshness
-and operation lifecycle rules. Rebuilding a run reconstructs coordinate metadata
-from stored screenshots; old run IDs are not accepted, but there is no new
-requirement to capture a screenshot. Unknown frame IDs and invalid coordinates
-are rejected before the underlying tool runs.
+transform, avoiding a second crop offset. Existing device tools keep ownership
+of all screenshot freshness and operation lifecycle rules. Rebuilding a run
+reconstructs coordinate metadata from stored screenshots. Unknown or invalid
+coordinates are rejected before the underlying tool runs.
 
 Each accepted action emits a `visual_coordinate_mapping` episode event with the
 frame dimensions, original pixel input, and converted normalized input.
@@ -131,9 +128,11 @@ adaptation. The existing suite has not been modified to hide this distinction.
 
 ## First-version limitations
 
-- Frame IDs describe coordinate spaces only. They do not establish physical screen
-  freshness; existing device checks continue to handle that. Local magnified crops
-  remain unimplemented.
+- The adapter uses the most recent screenshot's dimensions for all coordinate
+  conversions. If context contains multiple screenshots with different
+  dimensions (e.g., portrait and landscape), and the model references an older
+  one, the conversion will use the wrong coordinate space. This is acceptable
+  for the current single-screenshot-per-action workflow.
 - Relays that alias a current model name to an older version reintroduce
   server-side downscaling, and the resulting coordinates are scaled by that
   factor. The adapter does not detect or correct this; route around such an

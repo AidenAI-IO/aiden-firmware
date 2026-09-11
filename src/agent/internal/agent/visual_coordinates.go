@@ -16,12 +16,10 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent/messages"
-	"github.com/google/uuid"
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
 type visualFrame struct {
-	id            string
 	width, height int
 	data          []byte
 }
@@ -53,24 +51,23 @@ func normalizeVisualAxis(value float64, size int) (float64, error) {
 // A registry is private to one AgentLoop.Run. Images provide coordinate spaces only. Source screenshots already represent the device active area,
 // so the existing device mapping runs just once.
 type visualCoordinates struct {
-	mu        sync.Mutex
-	namespace string
-	frames    map[string]visualFrame
-	latest    string
+	mu     sync.Mutex
+	frames map[string]visualFrame
+	latest *visualFrame
 }
 
 func newVisualCoordinates() *visualCoordinates {
-	return &visualCoordinates{namespace: uuid.NewString(), frames: make(map[string]visualFrame)}
+	return &visualCoordinates{frames: make(map[string]visualFrame)}
 }
 
-const visualCoordinateInstruction = "Visual coordinate protocol: for touch_gesture, mouse_move, enter_text.focus and wheel_nudge geometry, use pixel coordinates and include the frame_id from the caption immediately before each image. Do not rescale coordinates or call a normalization tool. Speed parameters retain normalized units per second."
+const visualCoordinateInstruction = "Visual coordinate protocol: for touch_gesture, mouse_move, enter_text.focus and wheel_nudge geometry, use pixel coordinates in the attached image. Do not rescale coordinates or call a normalization tool. Speed parameters retain normalized units per second."
 
 func (v *visualCoordinates) Transform(input []messages.Message) []messages.Message {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	out := make([]messages.Message, len(input), len(input)+1)
 	frames := make(map[string]visualFrame)
-	v.latest = ""
+	v.latest = nil
 	for i, msg := range input {
 		out[i] = msg.Clone()
 		attachments := make([]messages.Attachment, 0, len(msg.Attachments))
@@ -89,13 +86,13 @@ func (v *visualCoordinates) Transform(input []messages.Message) []messages.Messa
 			}
 			if err != nil {
 				out[i].Content += "\n[Image unavailable: could not prepare visual frame. Request a new screenshot before acting.]"
-				v.latest = ""
+				v.latest = nil
 				continue
 			}
 			frames[key] = frame
-			v.latest = frame.id
+			v.latest = &frame
 			attachment.PreparedData = &frame.data
-			attachment.PreparedCaption = fmt.Sprintf("Prepared image frame_id=%s image_width=%d image_height=%d. Pixel centers span x=0..%d and y=0..%d.", frame.id, frame.width, frame.height, frame.width-1, frame.height-1)
+			attachment.PreparedCaption = fmt.Sprintf("Image dimensions: width=%d height=%d. Pixel centers span x=0..%d and y=0..%d.", frame.width, frame.height, frame.width-1, frame.height-1)
 			attachments = append(attachments, attachment)
 		}
 		out[i].Attachments = attachments
@@ -120,31 +117,24 @@ func (v *visualCoordinates) prepare(key string, data []byte) (visualFrame, error
 	}
 	// Pass the original image through unchanged — no re-encode, no dimension change.
 	return visualFrame{
-		id:     fmt.Sprintf("frame_%x", sha256.Sum256([]byte(v.namespace+key))),
 		width:  cfg.Width,
 		height: cfg.Height,
 		data:   data,
 	}, nil
 }
 
-// convert resolves the coordinate space, without imposing action lifecycle rules.
+// convert resolves the coordinate space using the most recent screenshot.
 // Existing screenshot and device safety checks remain owned by the device tools.
-func (v *visualCoordinates) convert(id string, args map[string]any) (visualFrame, error) {
+func (v *visualCoordinates) convert(args map[string]any) (visualFrame, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if id == "" {
-		return visualFrame{}, fmt.Errorf("missing frame_id; use the ID in the screenshot caption")
+	if v.latest == nil {
+		return visualFrame{}, fmt.Errorf("no screenshot available; request a fresh screenshot")
 	}
-	for _, frame := range v.frames {
-		if frame.id != id {
-			continue
-		}
-		if err := convertVisualArguments(args, frame); err != nil {
-			return visualFrame{}, err
-		}
-		return frame, nil
+	if err := convertVisualArguments(args, *v.latest); err != nil {
+		return visualFrame{}, err
 	}
-	return visualFrame{}, fmt.Errorf("unknown frame_id; request a fresh screenshot")
+	return *v.latest, nil
 }
 
 func (v *visualCoordinates) wrap(tools []langtools.Tool) []langtools.Tool {
@@ -206,10 +196,6 @@ func (t *visualCoordinateTool) ArgsSchema() map[string]any {
 	if err := json.Unmarshal(data, &schema); err != nil || schema == nil {
 		return original
 	}
-	props, ok := schema["properties"].(map[string]any)
-	if !ok {
-		return original
-	}
 	var rewrite func(map[string]any)
 	rewrite = func(node map[string]any) {
 		delete(node, "examples")
@@ -221,7 +207,7 @@ func (t *visualCoordinateTool) ArgsSchema() map[string]any {
 				}
 				switch key {
 				case "x", "y", "column_x", "center_y", "visible_target_y", "row_spacing":
-					props[key] = numberArgSchema("Pixel coordinate or spacing in the prepared image; must be inside that frame.")
+					props[key] = numberArgSchema("Pixel coordinate or spacing in the image; must be inside the image bounds.")
 				default:
 					rewrite(child)
 				}
@@ -232,32 +218,20 @@ func (t *visualCoordinateTool) ArgsSchema() map[string]any {
 		}
 	}
 	rewrite(schema)
-	props["frame_id"] = stringArgSchema("ID of the screenshot used for these coordinates.")
-	required, _ := schema["required"].([]any)
-	schema["required"] = append(required, "frame_id")
 	return schema
 }
 
 func (t *visualCoordinateTool) DynamicExampleInput() string {
-	// Reuse non-coordinate example fields while explicitly binding the example
-	// to a frame; actual frame IDs always come from the image caption.
-	var example map[string]any
-	if err := json.Unmarshal([]byte(builtInToolSpecMetadata[t.Name()].ExampleInput), &example); err != nil {
-		return ""
-	}
-	example["frame_id"] = "frame_from_latest_image"
-	data, _ := json.Marshal(example)
-	return string(data)
+	// Reuse non-coordinate example fields; pixel coordinates are self-explanatory.
+	return builtInToolSpecMetadata[t.Name()].ExampleInput
 }
 
 func (t *visualCoordinateTool) Call(ctx context.Context, input string) (string, error) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(input), &args); err != nil || args == nil {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "Expected a JSON object with frame_id and image pixel coordinates"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "Expected a JSON object with image pixel coordinates"), nil
 	}
-	id, _ := args["frame_id"].(string)
-	delete(args, "frame_id")
-	frame, err := t.frames.convert(id, args)
+	frame, err := t.frames.convert(args)
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
@@ -267,7 +241,7 @@ func (t *visualCoordinateTool) Call(ctx context.Context, input string) (string, 
 	}
 	if recorder := EpisodeRecorderFromContext(ctx); recorder != nil {
 		recorder.RecordEvent(TaskEpisodeEvent{Type: "visual_coordinate_mapping", Ts: time.Now().Format(time.RFC3339Nano), Metadata: map[string]interface{}{
-			"tool": t.Name(), "frame_id": id, "image_width": frame.width, "image_height": frame.height,
+			"tool": t.Name(), "image_width": frame.width, "image_height": frame.height,
 			"pixel_input": json.RawMessage(input), "normalized_input": json.RawMessage(data),
 		}})
 	}
