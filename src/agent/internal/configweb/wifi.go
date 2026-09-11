@@ -388,21 +388,27 @@ func decodeWiFiSSID(value string) string {
 	}
 	raw := make([]byte, 0, len(value))
 	changed := false
+	malformed := false
 	for i := 0; i < len(value); {
-		if i+3 < len(value) && value[i] == '\\' && value[i+1] == 'x' {
-			if high, ok := hexDigit(value[i+2]); ok {
+		if value[i] == '\\' && i+1 < len(value) && value[i+1] == 'x' {
+			if i+3 >= len(value) {
+				malformed = true
+			} else if high, ok := hexDigit(value[i+2]); ok {
 				if low, ok := hexDigit(value[i+3]); ok {
 					raw = append(raw, high<<4|low)
 					i += 4
 					changed = true
 					continue
 				}
+				malformed = true
+			} else {
+				malformed = true
 			}
 		}
 		raw = append(raw, value[i])
 		i++
 	}
-	if !changed || !utf8.Valid(raw) {
+	if !changed || malformed || !utf8.Valid(raw) {
 		return value
 	}
 	return string(raw)

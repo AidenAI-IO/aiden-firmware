@@ -1056,7 +1056,7 @@ func TestParseWiFiScanOutputDecodesEscapedUTF8SSID(t *testing.T) {
 }
 
 func TestDecodeWiFiSSIDPreservesInvalidEscapes(t *testing.T) {
-	for _, value := range []string{`Office\xZZ`, `Office\xE9`} {
+	for _, value := range []string{`Office\xZZ`, `Office\xE9`, `Office\x41\xZZ`} {
 		if got := decodeWiFiSSID(value); got != value {
 			t.Errorf("decodeWiFiSSID(%q)=%q, want unchanged", value, got)
 		}
