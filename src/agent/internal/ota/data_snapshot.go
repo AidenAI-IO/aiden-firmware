@@ -6,11 +6,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
 
 var protectedDataRoot = "/userdata"
+
+const protectedSnapshotRetention = 8
 
 // SnapshotProtectedData copies only configuration and service identity files.
 // User memory, skills, notifications, recordings and logs are append/persistent
@@ -47,14 +50,80 @@ func SnapshotProtectedData(root, version string) (string, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}
+	if err := fsyncDirFor(dir); err != nil {
+		return "", err
+	}
 	b, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), append(b, '\n'), 0600); err != nil {
+	manifestPath := filepath.Join(dir, "manifest.json")
+	f, err := os.OpenFile(manifestPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.Write(append(b, '\n')); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return "", err
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if err := fsyncDirFor(manifestPath); err != nil {
+		return "", err
+	}
+	if err := pruneProtectedSnapshots(root, dir); err != nil {
 		return "", err
 	}
 	return dir, nil
+}
+
+func pruneProtectedSnapshots(root, current string) error {
+	transactionsDir := filepath.Join(root, "transactions")
+	entries, err := os.ReadDir(transactionsDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	type snapshotEntry struct {
+		name string
+		path string
+	}
+	var snapshots []snapshotEntry
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "pre-") {
+			continue
+		}
+		snapshots = append(snapshots, snapshotEntry{
+			name: entry.Name(),
+			path: filepath.Join(transactionsDir, entry.Name()),
+		})
+	}
+	sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].name < snapshots[j].name })
+	removed := false
+	for len(snapshots) > protectedSnapshotRetention {
+		removeAt := 0
+		if snapshots[removeAt].path == current {
+			removeAt = 1
+		}
+		if removeAt >= len(snapshots) {
+			break
+		}
+		if err := os.RemoveAll(snapshots[removeAt].path); err != nil {
+			return err
+		}
+		removed = true
+		snapshots = append(snapshots[:removeAt], snapshots[removeAt+1:]...)
+	}
+	if removed {
+		return fsyncDirFor(filepath.Join(transactionsDir, ".dirsync"))
+	}
+	return nil
 }
 
 func safeSnapshotName(s string) string {

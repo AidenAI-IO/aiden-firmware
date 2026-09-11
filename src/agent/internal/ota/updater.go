@@ -888,7 +888,7 @@ func (u *Updater) RecoverPendingData() error {
 			return SaveState(u.statePath(), state)
 		}
 	}
-	return SaveState(u.statePath(), state)
+	return nil
 }
 
 func reconcileRollbackState(state *State, running Slot, completed bool) {
