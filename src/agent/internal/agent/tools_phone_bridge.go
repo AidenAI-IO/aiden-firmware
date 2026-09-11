@@ -296,6 +296,13 @@ func bridgeOpenResultMechanism(responseMethod string) string {
 }
 
 func sendBridgeOpenCommand(ctx context.Context, bridge *PhoneBridge, restorer *PhoneBridgeRestorer, cmd BridgeCommand, method, target string) (string, error) {
+	if bridge != nil && !phoneBridgeReadyForCommand(bridge.getStatus(), cmd.Type) {
+		reportToolProgress(ctx, ToolProgress{
+			Status:   "waiting_app",
+			Content:  "Preparing to continue in Aiden App",
+			NextStep: firstNonEmptyString([]string{"Open " + strings.TrimSpace(target), "Continue in Aiden App"}),
+		})
+	}
 	restored, err := ensurePhoneBridgeReadyForCommand(ctx, bridge, restorer, "open_app")
 	if err != nil {
 		status := PhoneBridgeStatus{}

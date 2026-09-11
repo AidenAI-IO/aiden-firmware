@@ -57,6 +57,14 @@ type AfterToolCallHook func(context.Context, ToolCall, ToolResult) ToolResult
 // bridge. Observers may update local derived state but must not mutate results.
 type ToolResultObserver func(context.Context, ToolCall, ToolResult)
 
+type ToolProgress struct {
+	Status   string
+	Content  string
+	NextStep string
+}
+
+type toolProgressContextKey struct{}
+
 type toolExecutionHookHandler interface {
 	BeforeToolCall(ctx context.Context, call ToolCall) (ToolResult, bool)
 	AfterToolCall(ctx context.Context, call ToolCall, result ToolResult) ToolResult
@@ -68,6 +76,10 @@ type toolResultCallbackHandler interface {
 
 type toolCallStartCallbackHandler interface {
 	HandleToolCallStart(ctx context.Context, call ToolCall)
+}
+
+type toolProgressCallbackHandler interface {
+	HandleToolProgress(ctx context.Context, call ToolCall, progress ToolProgress)
 }
 
 func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {
@@ -115,6 +127,11 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	}
 
 	ctx2, _ := WithToolError(ctx)
+	if progressHandler, ok := execution.Callback.(toolProgressCallbackHandler); ok {
+		ctx2 = withToolProgressReporter(ctx2, func(progress ToolProgress) {
+			progressHandler.HandleToolProgress(ctx, call, progress)
+		})
+	}
 	output, err := spec.Tool.Call(ctx2, input)
 	var toolErr *ToolError
 	hardErr := ctx.Err()
@@ -166,6 +183,22 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	result = runAfterToolCallHook(ctx, execution, call, result)
 	emitToolResult(ctx, execution.Callback, call, result)
 	return resultForToolCall(call, result, nil, true)
+}
+
+func withToolProgressReporter(ctx context.Context, reporter func(ToolProgress)) context.Context {
+	if ctx == nil || reporter == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, toolProgressContextKey{}, reporter)
+}
+
+func reportToolProgress(ctx context.Context, progress ToolProgress) {
+	if ctx == nil {
+		return
+	}
+	if reporter, ok := ctx.Value(toolProgressContextKey{}).(func(ToolProgress)); ok && reporter != nil {
+		reporter(progress)
+	}
 }
 
 func invalidToolCall(action schema.AgentAction, startedAt time.Time) ToolCall {

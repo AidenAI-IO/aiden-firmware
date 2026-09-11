@@ -325,6 +325,8 @@ type RunEvent struct {
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
 	ToolName         string     `json:"tool_name,omitempty"`
 	ToolInput        string     `json:"tool_input,omitempty"`
+	ToolStatus       string     `json:"tool_status,omitempty"`
+	NextStep         string     `json:"next_step,omitempty"`
 	Content          string     `json:"content,omitempty"`
 	ReasoningContent string     `json:"reasoning_content,omitempty"`
 	SpeechEligible   bool       `json:"speech_eligible,omitempty"`
@@ -2426,6 +2428,23 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 		ToolName:   call.Spec.Name,
 		ToolInput:  call.Input,
 		Content:    content,
+		Timestamp:  time.Now(),
+	})
+}
+
+func (h *runtimeCallbackHandler) HandleToolProgress(ctx context.Context, call ToolCall, progress ToolProgress) {
+	if h == nil {
+		return
+	}
+	h.emitRunEvent(RunEvent{
+		Type:       "tool_progress",
+		EpisodeID:  h.episodeID,
+		ToolCallID: call.Action.ToolID,
+		ToolName:   call.Spec.Name,
+		ToolInput:  call.Input,
+		ToolStatus: progress.Status,
+		NextStep:   progress.NextStep,
+		Content:    progress.Content,
 		Timestamp:  time.Now(),
 	})
 }

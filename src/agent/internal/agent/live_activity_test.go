@@ -91,6 +91,43 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 	}
 }
 
+func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager.StartTask("req-details", "Open Settings")
+
+	state := manager.UpdateFromRunEvent("req-details", RunEvent{
+		Type:             "role_output",
+		Role:             "agent",
+		Content:          `{"summary":"已确认当前页面","next_step":"打开设置"}`,
+		ReasoningContent: "正在确认当前页面状态",
+		Timestamp:        time.Now(),
+	})
+	if state == nil || state.ThinkingSummary != "正在确认当前页面状态" || state.NextStep != "打开设置" {
+		t.Fatalf("thinking details = %#v", state)
+	}
+
+	startedAt := time.Now().Add(-2 * time.Second)
+	state = manager.UpdateFromRunEvent("req-details", RunEvent{
+		Type:      runEventToolCall,
+		ToolName:  "screenshot",
+		Content:   "Checking the current screen",
+		Timestamp: startedAt,
+	})
+	if state == nil || state.ToolStatus != "running" || state.ToolStartedAt == nil || !state.ToolStartedAt.Equal(startedAt) {
+		t.Fatalf("tool start details = %#v", state)
+	}
+
+	state = manager.UpdateFromRunEvent("req-details", RunEvent{
+		Type:      "tool_result",
+		ToolName:  "screenshot",
+		Content:   `{"summary":"已获取当前页面"}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.ToolStatus != "succeeded" || state.ToolResultSummary != "已获取当前页面" || state.ToolStartedAt != nil {
+		t.Fatalf("tool result details = %#v", state)
+	}
+}
+
 func TestLiveActivityOpenURLUsesSchemeSpecificStatus(t *testing.T) {
 	tests := []struct {
 		name string
