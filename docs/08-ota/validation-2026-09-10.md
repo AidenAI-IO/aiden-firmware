@@ -124,6 +124,14 @@ The follow-up fixes:
 - return a non-zero exit code from `ota self-check` when required probes fail;
 - avoid restoring a protected snapshot during an unrelated pending trial boot.
 
+The deployed follow-up hashes matched the rebuilt artifacts:
+
+| Board file | SHA-256 |
+| --- | --- |
+| `/oem/usr/bin/agent` | `5ec7f3d424afb311c8017a6c237701c52da8ee4e065d123c2eb2eec96f3aa014` |
+| `/oem/usr/bin/ota` | `433d0ae1b26d832d804874751e5e2e7714ea6aab414e4e80c5573b021f2380e6` |
+| `/etc/init.d/S21aiden_ota_recovery` | `eae29056c5281b2c7caa8538ddacf17c5b45d878c29792e50db6f813d3b9625a` |
+
 The live B-slot self-check after deployment completed with 11 pass, 3 warn,
 and 0 fail, and returned exit code 0. The three warnings were the expected
 optional HDMI, Wi-Fi, and disconnected Phone Bridge conditions. Config Web and
