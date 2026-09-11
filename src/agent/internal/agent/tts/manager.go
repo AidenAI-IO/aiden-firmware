@@ -140,3 +140,15 @@ func (m *ProviderManager) retire(provider TTSProvider, wait func()) {
 		}
 	}()
 }
+
+// Disable retires the active provider after existing sessions have drained.
+func (m *ProviderManager) Disable() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.closed {
+		return ErrProviderManagerClosed
+	}
+	old, wait := m.holder.replace(nil)
+	m.retire(old, wait)
+	return nil
+}

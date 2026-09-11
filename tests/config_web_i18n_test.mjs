@@ -19,6 +19,7 @@ class Element {
     this.disabled = false;
     this._classes = new Set();
     this.className = '';
+    this.style = {};
     this.scrollTop = 0;
     this.clientHeight = 0;
     this.scrollHeight = 0;
@@ -281,7 +282,7 @@ assert.match(logs, /runtimeFunction\('t'\)/);
 assert.match(logs, /'logs\.jump_to_bottom'/);
 assert.match(logs, /aiden:locale-changed/);
 assert.match(systemEnv, /runtimeFunction\('t'\)/);
-assert.match(systemEnv, /t\('system_env\.saved'\)/);
+assert.match(systemEnv, /t\(payload\.agent_restart_required\?'system_env\.restart_required':'system_env\.saved'\)/);
 assert.match(app, /t\('page\.config_refreshed'\)/);
 assert.match(configForm, /t\('config\.rebooting'\)/);
 assert.match(configForm, /'config\.secret_saved_placeholder'/);
@@ -332,6 +333,8 @@ const systemEnvContent = new Element();
 const saveSystemEnvButton = new Element();
 const commentSystemEnvButton = new Element();
 const systemEnvSection = new Element();
+const systemEnvApplication = new Element();
+const applySystemEnvButton = new Element();
 const agentSection = new Element();
 const saveAgentButton = new Element();
 const exportLogsButton = new Element();
@@ -342,6 +345,7 @@ const exportLogsButton = new Element();
   ['agentLogMeta', agentLogMeta], ['system_env_content', systemEnvContent],
   ['save-system_env', saveSystemEnvButton], ['comment-system_env', commentSystemEnvButton],
   ['section-system_env', systemEnvSection],
+  ['systemEnvApplication', systemEnvApplication], ['apply-system_env', applySystemEnvButton],
   ['section-agent', agentSection], ['save-agent', saveAgentButton],
   ['exportLogsBtn', exportLogsButton],
 ].forEach(([id, element]) => elementsById.set(id, element));
@@ -730,6 +734,23 @@ requestResult = {system_env: 'A=1'};
 systemEnvContent.value = 'A=1';
 await systemEnvModule.namespace.saveSystemEnv();
 assert.deepEqual(latestBanner, {message: 'env 已保存。', failed: false});
+requestResult = {system_env: 'A=2', agent_restart_required: true};
+systemEnvContent.value = 'A=2';
+await systemEnvModule.namespace.saveSystemEnv();
+assert.equal(systemEnvApplication.style.display, 'block');
+requestResult = {agent_restart_required: null};
+await systemEnvModule.namespace.refreshSystemEnvApplication();
+assert.equal(systemEnvApplication.style.display, 'block', 'unavailable Agent must retain confirmed restart requirement');
+let appliedURL;
+requestImpl = async (url, options) => {appliedURL = url; assert.equal(options.method, 'POST'); return {ok:true};};
+await systemEnvModule.namespace.applySystemEnv();
+assert.equal(appliedURL, '/api/system/environment/apply');
+assert.equal(applySystemEnvButton.disabled, false);
+requestImpl = null;
+requestResult = {agent_restart_required: false};
+await systemEnvModule.namespace.refreshSystemEnvApplication();
+assert.equal(systemEnvApplication.style.display, 'none');
+
 
 fetchImpl = async () => ({ok: true, blob: async () => ({})});
 await logsModule.namespace.exportLogs();

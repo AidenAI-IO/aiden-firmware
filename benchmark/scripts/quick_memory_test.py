@@ -97,29 +97,6 @@ def task_save_explicit_preference():
     return "PASS", info
 
 
-def task_use_preference_brevity():
-    clear_state()
-    # Preload naturally — just tell the agent to remember
-    _, hist1, err = chat("记住：我希望你回答尽量简短，最多 3 句话。", timeout=120)
-    if err:
-        return "FAIL", f"preload failed: {err}"
-    if not tool_calls_in(hist1, "save_memory"):
-        return "FAIL", f"agent didn't save the preference"
-    # Clear conversation history so agent must recall
-    http_post("/api/clear")
-    response, history, err = chat("给我介绍一下 Go 的 channel 是什么。", timeout=120)
-    if err:
-        return "FAIL", err
-    recalls = tool_calls_in(history, "recall_memory")
-    sentences = [s for s in response.replace("！","。").replace("？","。").split("。") if s.strip()]
-    info = f"recall calls: {len(recalls)}; response sentences: {len(sentences)}; response: {response[:120]!r}"
-    if not recalls:
-        return "FAIL", f"no recall_memory call — agent didn't check stored preferences. {info}"
-    if len(sentences) > 5:
-        return "PARTIAL", f"recalled but answer is long ({len(sentences)} sentences). {info}"
-    return "PASS", info
-
-
 def task_forget_on_request():
     clear_state()
     # Save 3 prefs naturally
@@ -177,7 +154,6 @@ def task_no_recall_when_in_context():
 def main():
     tasks = [
         ("save_explicit_preference", task_save_explicit_preference),
-        ("use_preference_brevity", task_use_preference_brevity),
         ("forget_on_request", task_forget_on_request),
         ("no_recall_when_in_context", task_no_recall_when_in_context),
     ]

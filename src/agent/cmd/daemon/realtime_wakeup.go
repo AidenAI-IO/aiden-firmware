@@ -353,7 +353,7 @@ func runRealtimeWakeupMode(cfg agent.Config, sigChan chan os.Signal, newWatcher 
 	runRealtimeWakeupModeWithServer(cfg, sigChan, nil, nil, nil, newWatcher)
 }
 
-func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, server *agent.Server, runtime *agent.Runtime, tasks *agenttask.Manager, newWatcher wakeupWatcherFactory) {
+func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, server *agent.Server, runtime *agent.Runtime, tasks *agenttask.Manager, newWatcher wakeupWatcherFactory, reload ...<-chan struct{}) {
 	events := make(chan struct{}, 1)
 	bridge := newRealtimeChatBridge(func() {
 		signalWakeupEvent(events)
@@ -465,7 +465,14 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 	log.Printf("[ready] Waiting for realtime activation (/api/chat or GPIO %s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
 	var taskWake taskWakeState
 	for {
+		if reloadRequested(reload) {
+			bridge.failQueued("voice configuration changed; retry the request")
+			return
+		}
 		select {
+		case <-reloadStop(reload):
+			bridge.failQueued("voice configuration changed; retry the request")
+			return
 		case <-sigChan:
 			stopNotificationFallback()
 			stopFailureAnnouncement()
@@ -730,7 +737,7 @@ func realtimeVoiceToolDefinitions() []realtimevoice.Tool {
 		),
 		realtimeVoiceToolDefinition(
 			realtimeCreateTaskTool,
-			"Handle any request you cannot directly and reliably answer or complete with the realtime conversation tools, including device state, visual inspection, external actions, lookups, or longer multi-step work. Present the work to the user as your own responsibility.",
+			"Handle any request you cannot directly and reliably answer or complete with the realtime conversation tools, including device state, visual inspection, external actions, lookups, or longer multi-step work. Call query_agent_task with no task_id first and continue the task that already covers the request instead of creating a duplicate. Present the work to the user as your own responsibility.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -752,13 +759,12 @@ func realtimeVoiceToolDefinitions() []realtimevoice.Tool {
 		),
 		realtimeVoiceToolDefinition(
 			realtimeQueryTaskTool,
-			"Check the current status and result of work you are handling.",
+			"Check the status and result of work you are handling. Pass the task_id you were given, or omit it to list every outstanding task: work still in flight, and finished work whose result you have not been told about yet.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"task_id": map[string]any{"type": "string"},
+					"task_id": map[string]any{"type": "string", "description": "Task to report. Omit to list every outstanding task."},
 				},
-				"required": []string{"task_id"},
 			},
 		),
 		realtimeVoiceToolDefinition(
@@ -862,11 +868,16 @@ func (e realtimeVoiceToolExecutor) call(ctx context.Context, name, arguments str
 			}
 			return realtimeToolJSON(task)
 		}
+		// No task_id asks for everything outstanding, which is how the foreground
+		// checks for work it already started before creating more.
+		if strings.TrimSpace(input.TaskID) == "" {
+			return realtimeTaskListJSON(e.tasks.Outstanding())
+		}
 		task, ok := e.tasks.Query(input.TaskID)
 		if !ok {
 			return realtimeToolJSON(map[string]any{"error": "agent task not found"})
 		}
-		return realtimeToolJSON(task)
+		return realtimeTaskListJSON([]agenttask.Task{task})
 	case realtimeResponseUserActionTool:
 		var input struct {
 			TaskID      string `json:"task_id"`
@@ -886,6 +897,16 @@ func (e realtimeVoiceToolExecutor) call(ctx context.Context, name, arguments str
 	default:
 		return realtimeToolJSON(map[string]any{"error": fmt.Sprintf("unsupported realtime tool %q", name)})
 	}
+}
+
+// realtimeTaskListJSON answers query_agent_task with one shape for both modes:
+// the requested task, or every outstanding task when no task_id was given. An
+// empty list is encoded as [] rather than null so the model reads it as a list.
+func realtimeTaskListJSON(tasks []agenttask.Task) string {
+	if tasks == nil {
+		tasks = []agenttask.Task{}
+	}
+	return realtimeToolJSON(map[string]any{"tasks": tasks})
 }
 
 func realtimeToolJSON(value any) string {
@@ -1043,6 +1064,11 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sessionConfig := realtimeProviderSessionConfig(cfg)
+	if runtime != nil {
+		if err := runtime.PrepareUserContext(sessionConfig.Instructions); err != nil {
+			return err
+		}
+	}
 	if runtime != nil {
 		unregisterReset := runtime.RegisterUserContextResetHook(cancel)
 		defer unregisterReset()
