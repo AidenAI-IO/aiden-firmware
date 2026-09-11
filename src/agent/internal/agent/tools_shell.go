@@ -206,6 +206,7 @@ func shellStartBackground(ctx context.Context, arguments map[string]interface{},
 	return shellJSONString(map[string]interface{}{
 		"session_id": session.id,
 		"running":    true,
+		"completed":  false,
 		"pid":        session.processID(),
 		"command":    session.command,
 		"workdir":    session.workdir,
@@ -238,6 +239,7 @@ func shellPollBackground(ctx context.Context, arguments map[string]interface{}) 
 	payload := map[string]interface{}{
 		"session_id":       session.id,
 		"running":          running,
+		"completed":        !running,
 		"pid":              session.processID(),
 		"command":          session.command,
 		"workdir":          session.workdir,
@@ -248,9 +250,16 @@ func shellPollBackground(ctx context.Context, arguments map[string]interface{}) 
 		"exit_code":        session.exitCodeValue(),
 		"exit_error":       session.exitErrorText(),
 	}
+	if finished := session.finishedAtOr(); !finished.IsZero() {
+		payload["finished_at"] = finished.Format(time.RFC3339)
+	}
 
 	if !running && !session.output.hasUnread() {
-		globalShellSessionManager.delete(session.id)
+		// Keep the session so a repeated poll answers with this terminal payload
+		// instead of "session not found". Drop the bytes instead: every produced
+		// byte has been delivered, so nothing is lost, and the record stays small
+		// until evictIdle reclaims it on a fixed clock.
+		session.output.release()
 	}
 	return shellJSONString(payload), nil
 }

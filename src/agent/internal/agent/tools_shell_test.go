@@ -602,7 +602,7 @@ func TestShellRingBufferHasUnread(t *testing.T) {
 	}
 }
 
-func TestShellToolBackgroundPollDrainsBeforeDelete(t *testing.T) {
+func TestShellToolBackgroundPollDrainsAndKeepsSession(t *testing.T) {
 	skipOnWindows(t)
 	for _, usePTY := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pty=%t", usePTY), func(t *testing.T) {
@@ -618,10 +618,16 @@ func TestShellToolBackgroundPollDrainsBeforeDelete(t *testing.T) {
 			}
 			var started struct {
 				SessionID string `json:"session_id"`
+				Completed bool   `json:"completed"`
 			}
 			if err := json.Unmarshal([]byte(startOut), &started); err != nil {
 				t.Fatalf("start unmarshal err: %v", err)
 			}
+			if started.Completed {
+				t.Fatalf("start reported completed=true: %s", startOut)
+			}
+			defer globalShellSessionManager.delete(started.SessionID)
+
 			session := globalShellSessionManager.get(started.SessionID)
 			if session == nil {
 				t.Fatalf("session %q not found after start", started.SessionID)
@@ -636,37 +642,36 @@ func TestShellToolBackgroundPollDrainsBeforeDelete(t *testing.T) {
 				"action":     "poll",
 				"session_id": started.SessionID,
 			})
-			pollOut, err := tool.Call(context.Background(), string(pollArgs))
-			if err != nil {
-				t.Fatalf("poll returned error: %v", err)
+			type shellPoll struct {
+				SessionID       string `json:"session_id"`
+				Running         bool   `json:"running"`
+				Completed       bool   `json:"completed"`
+				FinishedAt      string `json:"finished_at"`
+				Output          string `json:"output"`
+				OutputTruncated bool   `json:"output_truncated"`
 			}
 			var collected strings.Builder
+			var last shellPoll
 			firstPoll := true
 			firstPollSawTruncation := false
-			for i := 0; i < 10; i++ {
-				if strings.Contains(pollOut, "shell session not found") {
-					break
+			for i := 0; i < 12; i++ {
+				pollOut, err := tool.Call(context.Background(), string(pollArgs))
+				if err != nil {
+					t.Fatalf("poll returned error: %v", err)
 				}
-				var poll struct {
-					SessionID       string `json:"session_id"`
-					Running         bool   `json:"running"`
-					Output          string `json:"output"`
-					OutputTruncated bool   `json:"output_truncated"`
-				}
-				if err := json.Unmarshal([]byte(pollOut), &poll); err != nil {
+				if err := json.Unmarshal([]byte(pollOut), &last); err != nil {
 					t.Fatalf("poll unmarshal err: %v (raw=%q)", err, pollOut)
 				}
-				if poll.Running {
+				if last.Running {
 					t.Fatalf("session still running after done closed: %s", pollOut)
 				}
 				if firstPoll {
-					firstPollSawTruncation = poll.OutputTruncated
+					firstPollSawTruncation = last.OutputTruncated
 					firstPoll = false
 				}
-				collected.WriteString(poll.Output)
-				pollOut, err = tool.Call(context.Background(), string(pollArgs))
-				if err != nil {
-					t.Fatalf("poll returned error: %v", err)
+				collected.WriteString(last.Output)
+				if last.Output == "" {
+					break
 				}
 			}
 
@@ -679,10 +684,109 @@ func TestShellToolBackgroundPollDrainsBeforeDelete(t *testing.T) {
 			if !strings.Contains(collected.String(), "stdout-final") || !strings.Contains(collected.String(), "stderr-final") {
 				t.Fatalf("final stdout/stderr missing from %d captured bytes", collected.Len())
 			}
-			if !strings.Contains(pollOut, "shell session not found") {
-				t.Fatalf("expected session-not-found after drain, got %q", pollOut)
+			// Draining the last bytes must not drop the session: the follow-up poll
+			// reports the terminal state instead of "session not found".
+			if !last.Completed || last.FinishedAt == "" {
+				t.Fatalf("drained poll did not report completion: %+v", last)
+			}
+			if last.Output != "" {
+				t.Fatalf("drained poll repeated buffered output: %q", last.Output)
+			}
+			if globalShellSessionManager.get(started.SessionID) == nil {
+				t.Fatalf("session %q dropped after drain", started.SessionID)
 			}
 		})
+	}
+}
+
+// A finished, fully drained session used to be deleted, so the next poll answered
+// "shell session not found" — indistinguishable from a bogus session id, and it
+// invited the model to start a replacement session. The session now stays
+// pollable and reports its terminal state instead.
+func TestShellToolPollAfterCompletionIsIdempotent(t *testing.T) {
+	skipOnWindows(t)
+	tool := &ShellTool{}
+	startArgs, _ := json.Marshal(map[string]interface{}{
+		"action":  "start",
+		"command": `printf '23 24 25\nsum: 72\n'`,
+	})
+	startOut, err := tool.Call(context.Background(), string(startArgs))
+	if err != nil {
+		t.Fatalf("start returned error: %v", err)
+	}
+	var started struct {
+		SessionID string `json:"session_id"`
+		Completed bool   `json:"completed"`
+	}
+	if err := json.Unmarshal([]byte(startOut), &started); err != nil {
+		t.Fatalf("start unmarshal err: %v", err)
+	}
+	if started.SessionID == "" {
+		t.Fatalf("start returned no session_id: %s", startOut)
+	}
+	if started.Completed {
+		t.Fatalf("start reported completed=true: %s", startOut)
+	}
+	defer globalShellSessionManager.delete(started.SessionID)
+
+	pollArgs, _ := json.Marshal(map[string]interface{}{
+		"action":     "poll",
+		"session_id": started.SessionID,
+	})
+	type shellPoll struct {
+		SessionID  string `json:"session_id"`
+		Running    bool   `json:"running"`
+		Completed  bool   `json:"completed"`
+		FinishedAt string `json:"finished_at"`
+		ExitCode   *int   `json:"exit_code"`
+		Output     string `json:"output"`
+	}
+
+	var first shellPoll
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		pollOut, err := tool.Call(context.Background(), string(pollArgs))
+		if err != nil {
+			t.Fatalf("poll returned error: %v", err)
+		}
+		if err := json.Unmarshal([]byte(pollOut), &first); err != nil {
+			t.Fatalf("poll unmarshal err: %v (raw=%q)", err, pollOut)
+		}
+		if first.Completed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background command never reported completion: %+v", first)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if first.ExitCode == nil || *first.ExitCode != 0 {
+		t.Fatalf("poll exit_code = %v, want 0", first.ExitCode)
+	}
+	if !strings.Contains(first.Output, "sum: 72") {
+		t.Fatalf("poll output = %q, want the command result", first.Output)
+	}
+	if first.FinishedAt == "" {
+		t.Fatalf("completed poll reported no finished_at: %+v", first)
+	}
+
+	// Repeating the poll must keep answering, not report the session gone.
+	pollOut, err := tool.Call(context.Background(), string(pollArgs))
+	if err != nil {
+		t.Fatalf("repeat poll returned error: %v", err)
+	}
+	var second shellPoll
+	if err := json.Unmarshal([]byte(pollOut), &second); err != nil {
+		t.Fatalf("repeat poll is not a session payload: %q", pollOut)
+	}
+	if !second.Completed || second.Running {
+		t.Fatalf("repeat poll lost the terminal state: %+v", second)
+	}
+	if second.SessionID != started.SessionID {
+		t.Fatalf("repeat poll session_id = %q, want %q", second.SessionID, started.SessionID)
+	}
+	if second.Output != "" {
+		t.Fatalf("repeat poll repeated already-delivered output: %q", second.Output)
 	}
 }
 

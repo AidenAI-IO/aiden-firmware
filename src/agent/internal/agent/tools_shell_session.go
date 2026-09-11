@@ -35,6 +35,7 @@ type shellSession struct {
 	cancel       context.CancelFunc
 	startedAt    time.Time
 	lastActivity time.Time
+	finishedAt   time.Time
 	exitErr      error
 	exitCode     *int
 
@@ -122,6 +123,18 @@ func (b *shellRingBuffer) hasUnread() bool {
 	return b.readPos < len(b.buf)
 }
 
+// release drops the buffered bytes once every produced byte has been read. A
+// finished session keeps answering polls, but it no longer needs the output.
+// Callers must only release after the process has exited, because a running
+// process can still append; at that point nothing is lost.
+func (b *shellRingBuffer) release() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = nil
+	b.readPos = 0
+	b.truncated = false
+}
+
 func (s *shellSession) capture(r io.Reader) {
 	buffer := make([]byte, 4096)
 	for {
@@ -167,6 +180,7 @@ func (s *shellSession) setExitState(exitErr error, exitCode *int) {
 	defer s.mu.Unlock()
 	s.exitErr = exitErr
 	s.exitCode = exitCode
+	s.finishedAt = time.Now()
 }
 
 func (s *shellSession) isRunning() bool {
@@ -176,6 +190,14 @@ func (s *shellSession) isRunning() bool {
 	default:
 		return true
 	}
+}
+
+// finishedAtOr reports when the session's process exited, or the zero time
+// while it is still running.
+func (s *shellSession) finishedAtOr() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.finishedAt
 }
 
 func (s *shellSession) processID() int {
@@ -228,6 +250,11 @@ func (s *shellSession) stop() {
 	s.mu.Unlock()
 
 	if process == nil {
+		return
+	}
+	// Wait() has already reaped a finished session's process, so its PID may
+	// since have been reused. Only interrupt a process that is still running.
+	if !s.isRunning() {
 		return
 	}
 	if err := process.Signal(os.Interrupt); err != nil {
