@@ -7,8 +7,22 @@
 build/
 build-*/
 output/
+# output/ only matches the context root, so the Buildroot build tree under
+# pico-sdk/output/ was still being shipped to the daemon.
+**/output/
 bin/
 .mobilegym_run/
+
+# Large trees no Dockerfile copies from. Every docker build here passes the
+# repository as its context, and the steps that genuinely need these paths
+# bind-mount them instead, which .dockerignore does not affect. Leaving them in
+# sent ~19GB to the daemon per build on a runner whose workspace is shared with
+# the Buildroot builds -- about 57 minutes of a 94-minute firmware build, all of
+# it before the first cached layer was even evaluated.
+pico-sdk/
+.toolchains/
+.cache/
+aiden-backup/
 
 # Python
 .venv/
