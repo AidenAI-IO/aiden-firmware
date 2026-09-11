@@ -463,6 +463,11 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	state.TargetSlot = target
 	state.DownloadedAssets = downloaded
 	state.DownloadedHashes = map[string]string{}
+	if state.SlotBuildTimes == nil {
+		state.SlotBuildTimes = map[string]string{}
+	}
+	targetBuildSlot, _ := slotName(target)
+	state.SlotBuildTimes[targetBuildSlot] = manifest.BuildTime
 	for part, asset := range selectedAssets {
 		state.DownloadedHashes[part] = partitionSHA256ForAsset(asset)
 	}
@@ -665,6 +670,7 @@ func (u *Updater) clearPendingAfterRollback(running Slot) error {
 	state.PendingBootNonce = ""
 	state.PendingBootID = ""
 	state.PendingTargetSlot = nil
+	state.DataSnapshotPath = ""
 	if err := SaveState(u.statePath(), state); err != nil {
 		return err
 	}
@@ -848,14 +854,72 @@ func (u *Updater) RecoverPendingData() error {
 		}
 		return err
 	}
-	if state.DataSnapshotPath == "" || (state.Phase != "writing" && state.Phase != "pending-reboot" && state.Phase != "rollback-requested") {
-		return nil
-	}
-	if err := RestoreProtectedData(state.DataSnapshotPath); err != nil {
+	running, runningOK, err := u.currentSlot()
+	if err != nil {
 		return err
 	}
-	state.Phase = "data-recovered"
+	ab, err := u.readABData()
+	if err != nil {
+		return err
+	}
+	miscActive, miscOK := ab.ActiveSlot()
+	if state.Phase == "pending-reboot" && runningOK && running != state.TargetSlot && miscOK && miscActive == running && ab.Slots[running].SuccessfulBoot {
+		if state.DataSnapshotPath != "" {
+			if err := RestoreProtectedData(state.DataSnapshotPath); err != nil {
+				return err
+			}
+			state.DataSnapshotPath = ""
+		}
+		return u.clearPendingAfterRollback(running)
+	}
+	if state.Phase == "rollback-requested" && runningOK {
+		if miscOK && miscActive == state.TargetSlot && running == state.TargetSlot && ab.Slots[running].SuccessfulBoot {
+			if state.DataSnapshotPath != "" {
+				if err := RestoreProtectedData(state.DataSnapshotPath); err != nil {
+					return err
+				}
+				state.DataSnapshotPath = ""
+			}
+			reconcileRollbackState(&state, running, true)
+			return SaveState(u.statePath(), state)
+		}
+		if miscOK && miscActive == state.ActiveSlot && running == state.ActiveSlot && ab.Slots[running].SuccessfulBoot {
+			reconcileRollbackState(&state, running, false)
+			return SaveState(u.statePath(), state)
+		}
+	}
 	return SaveState(u.statePath(), state)
+}
+
+func reconcileRollbackState(state *State, running Slot, completed bool) {
+	name, err := slotName(running)
+	if err != nil {
+		return
+	}
+	state.ActiveSlot = running
+	state.TargetSlot = running
+	state.TargetVersion = ""
+	state.TargetBuildTime = ""
+	state.PendingBootNonce = ""
+	state.PendingBootID = ""
+	state.PendingTargetSlot = nil
+	if completed {
+		state.Phase = "rolled-back"
+	} else {
+		state.Phase = "committed"
+	}
+	if slot, ok := state.Slots[name]; ok {
+		if part, ok := slot.Partitions["boot"]; ok && part.Version != "" {
+			state.CurrentVersion = part.Version
+		}
+	}
+	if state.SlotBuildTimes != nil {
+		if buildTime := state.SlotBuildTimes[name]; buildTime != "" {
+			state.CurrentBuildTime = buildTime
+		}
+	}
+	state.LastCommittedVersion = state.CurrentVersion
+	state.LastCommittedBuildTime = state.CurrentBuildTime
 }
 
 func (u *Updater) VerifyManifestFile(path string) (Manifest, error) {

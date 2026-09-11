@@ -52,7 +52,13 @@ func runWithConfig(args []string, out io.Writer, configure func(*ota.UpdaterConf
 		if err := ota.SaveSelfCheckReport(filepath.Join(config.StateDir, "health", "current.json"), report); err != nil {
 			return err
 		}
-		return json.NewEncoder(out).Encode(report)
+		if err := json.NewEncoder(out).Encode(report); err != nil {
+			return err
+		}
+		if report.Fatal() {
+			return fmt.Errorf("self-check failed: %d required check(s)", report.Failures)
+		}
+		return nil
 	case "rollback":
 		return updater.Rollback("manual rollback")
 	case "recover":

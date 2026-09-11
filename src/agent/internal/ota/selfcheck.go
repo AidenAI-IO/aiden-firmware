@@ -3,11 +3,14 @@ package ota
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"aiden-agent/internal/ble"
 )
 
 type SelfCheckConfig struct {
@@ -19,6 +22,9 @@ type SelfCheckConfig struct {
 	FrameCLI            string
 	AudioCLI            string
 	Curl                string
+	ConfigWebURL        string
+	BLESocketPath       string
+	PhoneBridgeURL      string
 }
 
 type SelfCheckItem struct {
@@ -101,14 +107,36 @@ func RunSelfCheck(ctx context.Context, cfg SelfCheckConfig) SelfCheckReport {
 	if curlBin == "" {
 		curlBin = "curl"
 	}
+	configWebURL := cfg.ConfigWebURL
+	if configWebURL == "" {
+		configWebURL = "http://127.0.0.1/api/device/status"
+	}
+	phoneBridgeURL := cfg.PhoneBridgeURL
+	if phoneBridgeURL == "" {
+		phoneBridgeURL = "http://127.0.0.1:8080/api/phone-bridge/status"
+	}
+	bleSocketPath := cfg.BLESocketPath
+	if bleSocketPath == "" {
+		bleSocketPath = "/run/ble_service/ble_service.sock"
+	}
 	command("frame_service", true, frameCLI, "--socket", "/run/frame_service/frame_service.sock", "health")
 	command("audio_service", true, audioCLI, "--socket", "/run/audio_service/audio_service.sock", "health")
 	command("agent_http", true, curlBin, "--fail", "--silent", "--max-time", "3", "http://127.0.0.1:8080/health")
 	// Config Web is started after S54ota on the production image. It is
 	// therefore diagnostic-only here; requiring it would make a healthy Agent
 	// fail its own boot confirmation solely because rcS has not reached S56.
-	command("config_web", false, "curl", "--fail", "--silent", "--max-time", "3", "http://127.0.0.1/api/status")
-	command("ble_service", false, "/oem/usr/bin/ble_service_cli", "status")
+	command("config_web", false, curlBin, "--fail", "--silent", "--max-time", "3", configWebURL)
+	bleCtx, bleCancel := context.WithTimeout(ctx, cfg.CommandTimeout)
+	bleStatus, bleErr := ble.RequestStatus(bleCtx, bleSocketPath)
+	bleCancel()
+	if bleErr != nil {
+		add("ble_service", "warn", bleErr.Error())
+	} else if !bleStatus.BackendAvailable {
+		add("ble_service", "warn", "BLE backend unavailable")
+	} else {
+		detail, _ := json.Marshal(bleStatus)
+		add("ble_service", "pass", string(detail))
+	}
 	if _, e := os.Stat("/sys/class/net/usb0"); e == nil {
 		command("usb_ecm", cfg.RequiredUDC, "sh", "-c", "ip addr show usb0 | grep -q '192.168.42.1'")
 	} else if cfg.RequiredUDC {
@@ -121,7 +149,17 @@ func RunSelfCheck(ctx context.Context, cfg SelfCheckConfig) SelfCheckReport {
 	} else {
 		add("wifi_uplink", "warn", "optional; not required")
 	}
-	command("phone_bridge", cfg.RequiredPhoneBridge, curlBin, "--fail", "--silent", "--max-time", "3", "http://127.0.0.1:8080/api/phone-bridge/status")
+	phoneBody, phoneErr := runSelfCheckCommand(ctx, cfg.CommandTimeout, curlBin, "--fail", "--silent", "--max-time", "3", phoneBridgeURL)
+	if phoneErr != nil {
+		status := "warn"
+		if cfg.RequiredPhoneBridge {
+			status = "fail"
+		}
+		add("phone_bridge", status, phoneErr.Error())
+	} else {
+		status, detail := classifyPhoneBridgeStatus(phoneBody, cfg.RequiredPhoneBridge)
+		add("phone_bridge", status, detail)
+	}
 	if cfg.RequiredHDMI {
 		command("hdmi_signal", true, frameCLI, "--socket", "/run/frame_service/frame_service.sock", "latest-frame", "--out", "/tmp/ota-self-check-frame.raw")
 	} else {
@@ -129,6 +167,40 @@ func RunSelfCheck(ctx context.Context, cfg SelfCheckConfig) SelfCheckReport {
 	}
 	r.FinishedAt = time.Now().UTC()
 	return r
+}
+
+func classifyPhoneBridgeStatus(body string, required bool) (string, string) {
+	var phone struct {
+		Connected bool `json:"connected"`
+	}
+	if err := json.Unmarshal([]byte(body), &phone); err != nil {
+		status := "warn"
+		if required {
+			status = "fail"
+		}
+		return status, fmt.Sprintf("invalid status response: %v", err)
+	}
+	if !phone.Connected {
+		if required {
+			return "fail", "Phone Bridge is not connected"
+		}
+		return "warn", "Phone Bridge is not connected"
+	}
+	return "pass", strings.TrimSpace(body)
+}
+
+func runSelfCheckCommand(parent context.Context, timeout time.Duration, bin string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return "", fmt.Errorf("%s", detail)
+	}
+	return string(out), nil
 }
 
 func SaveSelfCheckReport(path string, report SelfCheckReport) error {

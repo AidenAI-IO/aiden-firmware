@@ -57,23 +57,22 @@ migrations.
 
 ## Findings and limits
 
-1. **Rollback metadata does not reconcile automatically.** On A, misc and the
-   kernel correctly selected A, but `state.json` remained `rollback-requested`,
-   with B's `current_version` and `active_slot`. Returning to B did not clear it
-   either. After preserving the evidence and confirming B with no pending
-   update, the drill restored the pre-rollback B state file. Final phase is
-   `committed`; this cleanup was manual, not evidence that reconciliation works.
-2. **Two optional probes target unavailable interfaces.** Config Web is healthy
-   at `/api/device/status`, while the check calls `/api/status` and gets 404.
-   The BLE check calls `/oem/usr/bin/ble_service_cli`, which is absent on this
-   board; the implementation needs to use the existing BLE UDS status client.
-   The other two warnings are the intentionally optional Wi-Fi and HDMI checks.
-3. **Phone Bridge HTTP success is not connection health.** The report marks
-   `phone_bridge` as pass even when the response says `connected:false`.
-   This drill does not establish phone-link or Internet reachability.
-4. **CLI exit status alone is insufficient.** During the frame outage,
-   `ota self-check` emitted failures in JSON but still exited successfully.
-   Consumers currently need to inspect `failures`; the daemon already does so.
+1. **Rollback metadata reconciliation is now guarded by slot agreement.**
+   `ota recover` only finalizes a rollback when the running slot, misc-selected
+   slot, and successful flag agree. It records the selected old slot as
+   `rolled-back`; an explicit return to the original slot is recorded as an
+   abandoned request and returns to `committed`. This new path is covered by
+   unit tests; the board drill used the pre-fix binary and therefore needed
+   manual state cleanup.
+2. **Optional external conditions remain warnings.** Wi-Fi and HDMI are
+   intentionally optional on this device. Config Web now probes the actual
+   `/api/device/status` route. BLE now uses the existing UDS status client;
+   absence of a Bluetooth backend is reported as a warning.
+3. **Phone Bridge connection state is interpreted.** An HTTP 200 response with
+   `connected:false` is now a warning, or a failure when Phone Bridge is marked
+   required. This drill did not establish phone-link or Internet reachability.
+4. **The CLI now returns non-zero for required self-check failures.** It still
+   emits the JSON report so callers can retain the per-check details.
 5. **Automatic boot-failure rollback remains a separate test.** No boot-try
    exhaustion, sustained network failure, observation-window monitoring,
    incompatible schema migration, or power interruption during restore was
@@ -105,3 +104,36 @@ version records; the hashes above identify the deployed test binaries.
 The archive was moved off the dedicated `/userdata/ota` filesystem after the
 drill so deployment backups do not consume OTA download capacity. Backups may
 contain private configuration and are intentionally not committed to Git.
+
+## Follow-up fixes deployed on 2026-09-11
+
+The follow-up implementation was tested with `go test ./internal/ota ./cmd/ota`
+and rebuilt with `./build.sh binaries`. The new `agent` and `ota` binaries and
+`S21aiden_ota_recovery` were deployed to the running B slot after backing up the
+previous B files.
+
+The follow-up fixes:
+
+- reconcile `rollback-requested` only when running-slot, misc-selected-slot,
+  and successful-slot state agree;
+- preserve per-slot build times so a reconciled rollback reports the old
+  version/build time;
+- probe Config Web at `/api/device/status`;
+- query BLE through its existing UDS status protocol;
+- report a disconnected Phone Bridge as a warning, or a required failure;
+- return a non-zero exit code from `ota self-check` when required probes fail;
+- avoid restoring a protected snapshot during an unrelated pending trial boot.
+
+The live B-slot self-check after deployment completed with 11 pass, 3 warn,
+and 0 fail, and returned exit code 0. The three warnings were the expected
+optional HDMI, Wi-Fi, and disconnected Phone Bridge conditions. Config Web and
+BLE both passed. During a short USB gadget re-enumeration, the self-check
+returned exit code 1 while HID nodes were absent; once `/dev/hidg0` and
+`/dev/hidg1` returned, it passed without intervention.
+
+The full `go test ./...` command still has an unrelated failure in the existing
+`internal/agent` test package under this host's constrained test environment;
+all OTA packages and the OTA command package pass. The older A slot was not
+rewritten with the new recovery binary during this follow-up, so production
+rollback recovery still requires the next complete firmware image to carry
+the recovery component in both slot images.

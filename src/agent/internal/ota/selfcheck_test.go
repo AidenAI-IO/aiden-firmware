@@ -27,3 +27,17 @@ func TestSafeSnapshotNameRemovesPathSeparators(t *testing.T) {
 		t.Fatalf("safeSnapshotName() = %q", got)
 	}
 }
+
+func TestClassifyPhoneBridgeStatusTreatsDisconnectedAsWarning(t *testing.T) {
+	status, detail := classifyPhoneBridgeStatus(`{"connected":false}`, false)
+	if status != "warn" || detail != "Phone Bridge is not connected" {
+		t.Fatalf("classifyPhoneBridgeStatus() = %q, %q", status, detail)
+	}
+}
+
+func TestClassifyPhoneBridgeStatusTreatsRequiredDisconnectedAsFailure(t *testing.T) {
+	status, _ := classifyPhoneBridgeStatus(`{"connected":false}`, true)
+	if status != "fail" {
+		t.Fatalf("classifyPhoneBridgeStatus(required) = %q, want fail", status)
+	}
+}

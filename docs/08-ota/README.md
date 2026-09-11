@@ -64,10 +64,11 @@ commands:
 ```
 
 `self-check` records a JSON report under `/userdata/ota/health/current.json`.
-During a pending A/B boot, the Agent writes `health.ok` only after the required
-service probes pass. `rollback` selects the last successful slot and restores
-only protected configuration files from the pre-update snapshot; memory,
-notifications, recordings, skills, and logs remain on shared `/userdata`.
+It exits non-zero when a required probe fails. During a pending A/B boot, the
+Agent writes `health.ok` only after the required service probes pass.
+`rollback` selects the last successful slot and restores only protected
+configuration files from the pre-update snapshot; memory, notifications,
+recordings, skills, and logs remain on shared `/userdata`.
 
 ## Related Source Code
 

@@ -1194,6 +1194,66 @@ func TestUpdaterClearsPendingHealthAfterRollbackToOldSlot(t *testing.T) {
 	}
 }
 
+func TestRecoverPendingDataReconcilesCompletedRollback(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.state.Phase = "rollback-requested"
+	env.state.ActiveSlot = SlotB
+	env.state.TargetSlot = SlotA
+	env.state.CurrentVersion = env.version
+	env.state.CurrentBuildTime = env.buildTime
+	env.state.Slots["a"] = SlotPartitionInfo{Partitions: map[string]PartitionVersion{
+		"boot": {Version: "old-version", Hash: testHashA},
+	}}
+	env.state.SlotBuildTimes = map[string]string{"a": "old-build", "b": env.buildTime}
+	env.saveState(t)
+	updater := env.updater()
+	updater.currentSlot = func() (Slot, bool, error) { return SlotA, true, nil }
+	if err := updater.RecoverPendingData(); err != nil {
+		t.Fatalf("RecoverPendingData() error = %v", err)
+	}
+	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Phase != "rolled-back" || state.ActiveSlot != SlotA || state.TargetSlot != SlotA || state.CurrentVersion != "old-version" || state.CurrentBuildTime != "old-build" {
+		t.Fatalf("reconciled state = %+v", state)
+	}
+}
+
+func TestRecoverPendingDataReconcilesAbandonedRollback(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.state.Phase = "rollback-requested"
+	env.state.ActiveSlot = SlotB
+	env.state.TargetSlot = SlotA
+	env.state.CurrentVersion = env.version
+	env.state.Slots["b"] = SlotPartitionInfo{Partitions: map[string]PartitionVersion{
+		"boot": {Version: "current-version", Hash: testHashB},
+	}}
+	env.saveState(t)
+	ab, err := readMiscFile(env.miscPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ab.SetActive(SlotB, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMiscFile(env.miscPath, ab); err != nil {
+		t.Fatal(err)
+	}
+	updater := env.updater()
+	updater.currentSlot = func() (Slot, bool, error) { return SlotB, true, nil }
+	if err := updater.RecoverPendingData(); err != nil {
+		t.Fatalf("RecoverPendingData() error = %v", err)
+	}
+	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Phase != "committed" || state.ActiveSlot != SlotB || state.TargetSlot != SlotB || state.CurrentVersion != "current-version" {
+		t.Fatalf("reconciled abandoned state = %+v", state)
+	}
+}
+
 func TestUpdaterDoesNotClearPendingWhenMiscStillPrefersTargetButRunningOldSlot(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	pending := PendingBoot{TargetSlot: "b", TargetVersion: env.version, TargetBuildTime: env.buildTime, Nonce: "nonce-1"}
