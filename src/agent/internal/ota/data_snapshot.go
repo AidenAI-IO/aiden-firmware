@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 var protectedDataRoot = "/userdata"
+var protectedDataRootMu sync.RWMutex
 
 const protectedSnapshotRetention = 8
 
@@ -26,8 +28,9 @@ func SnapshotProtectedData(root, version string) (string, error) {
 		"system/wifi-proxies.json", "audio_service/playback_volume",
 	}
 	manifest := map[string]any{"created_at": time.Now().UTC(), "version": version, "files": []string{}}
+	protectedRoot := currentProtectedDataRoot()
 	for _, rel := range relativePaths {
-		src := filepath.Join(protectedDataRoot, rel)
+		src := filepath.Join(protectedRoot, rel)
 		info, err := os.Stat(src)
 		if os.IsNotExist(err) {
 			continue
@@ -202,12 +205,13 @@ func RestoreProtectedData(snapshotDir string) error {
 		"system/wifi-proxies.json":      true,
 		"audio_service/playback_volume": true,
 	}
+	protectedRoot := currentProtectedDataRoot()
 	for _, rel := range manifest.Files {
 		if !allowed[rel] || rel == "" || filepath.IsAbs(rel) || strings.Contains(rel, "..") {
 			return fmt.Errorf("invalid protected snapshot path %q", rel)
 		}
 		src := filepath.Join(snapshotDir, "userdata", rel)
-		dst := filepath.Join(protectedDataRoot, rel)
+		dst := filepath.Join(protectedRoot, rel)
 		info, err := os.Stat(src)
 		if err != nil {
 			return err
@@ -224,4 +228,22 @@ func RestoreProtectedData(snapshotDir string) error {
 		}
 	}
 	return nil
+}
+
+func currentProtectedDataRoot() string {
+	protectedDataRootMu.RLock()
+	defer protectedDataRootMu.RUnlock()
+	return protectedDataRoot
+}
+
+func setProtectedDataRoot(root string) (restore func()) {
+	protectedDataRootMu.Lock()
+	previous := protectedDataRoot
+	protectedDataRoot = root
+	protectedDataRootMu.Unlock()
+	return func() {
+		protectedDataRootMu.Lock()
+		protectedDataRoot = previous
+		protectedDataRootMu.Unlock()
+	}
 }

@@ -9,9 +9,7 @@ import (
 func TestSnapshotProtectedDataCopiesOnlyExistingProtectedFiles(t *testing.T) {
 	root := t.TempDir()
 	dataRoot := filepath.Join(root, "userdata")
-	oldRoot := protectedDataRoot
-	protectedDataRoot = dataRoot
-	defer func() { protectedDataRoot = oldRoot }()
+	defer setProtectedDataRoot(dataRoot)()
 	src := filepath.Join(dataRoot, "agent", "agent.toml")
 	if err := os.MkdirAll(filepath.Dir(src), 0755); err != nil {
 		t.Fatal(err)
