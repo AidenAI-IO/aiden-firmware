@@ -1,28 +1,52 @@
 # Claude visual coordinates: first implementation
 
-Claude agent runs now prepare image attachments before the model request and
-accept image pixel coordinates in visual tools. Device and HTTP tools retain
-their normalized protocol. No separate normalization tool call is required.
+Claude agent runs now accept image pixel coordinates in visual tools. Device and
+HTTP tools retain their normalized protocol. No separate normalization tool call
+is required.
 
 ## Provider selection
 
 The runtime uses the actual model spec to select the Claude/Anthropic path.
 Other providers keep their existing behavior. There is no user configuration
 switch: this is a fixed compatibility adapter for Anthropic screenshot input.
-The preparation limits are implementation constants, not inferred provider
-resize dimensions. Images are never enlarged; model adherence to the displayed
-coordinate contract still requires live evaluation.
+Screenshots are sent at their captured size; the adapter does not resize or
+re-encode them. Model adherence to the displayed coordinate contract still
+requires live evaluation.
+
+### Why no resizing
+
+Measured against real endpoints, resizing was unnecessary for every model the
+project targets. Anthropic's implicit server-side downscale applies above
+1568px on the long edge for older models and above 2576px for Claude 4.7 and
+later. Portrait captures are bounded by the 1080p EDID, so they never approach
+either limit. Landscape 1080p exceeds only the older tier.
+
+A probe asking the model to locate a known element and comparing reported
+against true pixel coordinates gives the observed scale factor kX / kY:
+
+| Endpoint | Frame | Tokens | kX / kY | Verdict |
+|---|---|---|---|---|
+| CTok | 1280×720 | 1196 | 1.001 / 0.998 | unmodified |
+| CTok | 1920×1080 | 2691 | 0.759 / 0.758 | downscaled |
+| OpenRouter | 1280×720 | 1196 | 1.001 / 0.999 | unmodified |
+| OpenRouter | 1920×1080 | 2691 | 1.000 / 0.997 | unmodified |
+
+The single compressing row is CTok at 1920×1080, which indicates that relay's
+Opus 5 / 4.7 aliases resolve to a 4.6-or-earlier model rather than a genuine
+size limit. OpenAI models need no resize at 1080p either. Client-side
+downsampling would therefore degrade small UI text on every correctly-routed
+request to avoid a mismatch on one misrouted alias, so the adapter passes the
+captured bytes through untouched and asks for pixel coordinates in that frame.
 
 ## Data path
 
 Only attachments tagged as device screenshot observations participate; ordinary
-user uploads pass through unchanged. The outbound transform runs after screenshot
-pruning. It reads the original
-attachment, decodes its actual dimensions, downsamples it, and attaches a caption
-with the prepared dimensions and an opaque frame ID. Prepared bytes and captions
-exist only on outbound message clones; stored source attachments remain intact.
-Replay regenerates the same frame within a run. Frames from another run are not
-accepted. Prepared images are cached for attachments still present in context.
+user uploads pass through unchanged. The transform runs after screenshot
+pruning. It reads the original attachment, decodes its dimensions, and attaches
+a caption with those dimensions and an opaque frame ID. Captions exist only on
+outbound message clones; stored source attachments remain intact. Replay
+regenerates the same frame within a run. Frames from another run are not
+accepted. Frames are cached for attachments still present in context.
 
 `touch_gesture`, `mouse_move`, `enter_text.focus`, and `wheel_nudge` geometry use
 the pixel protocol in the conversational tool schema. Standard and atomic touch
@@ -34,15 +58,15 @@ existing normalized plane is `pixel / max(dimension - 1, 1) * 1000`.
 {"type":"tap","frame_id":"frame_...","point":{"x":300,"y":600}}
 ```
 
-The frame adapter only resizes the captured image. Existing active-area cropping
-and HID/ADB mapping continue to own the device transform, avoiding a second crop
-offset. A frame ID identifies the dimensions used for conversion, not permission
-to perform an action. The adapter does not consume frames, impose a latest-only
-policy, or add device-scope, rotation or resume checks. Existing device tools keep
-ownership of all screenshot freshness and operation lifecycle rules. Rebuilding
-a run reconstructs coordinate metadata from stored screenshots; old run IDs are
-not accepted, but there is no new requirement to capture a screenshot. Unknown
-frame IDs and invalid coordinates are rejected before the underlying tool runs.
+Existing active-area cropping and HID/ADB mapping continue to own the device
+transform, avoiding a second crop offset. A frame ID identifies the dimensions
+used for conversion, not permission to perform an action. The adapter does not
+consume frames, impose a latest-only policy, or add device-scope, rotation or
+resume checks. Existing device tools keep ownership of all screenshot freshness
+and operation lifecycle rules. Rebuilding a run reconstructs coordinate metadata
+from stored screenshots; old run IDs are not accepted, but there is no new
+requirement to capture a screenshot. Unknown frame IDs and invalid coordinates
+are rejected before the underlying tool runs.
 
 Each accepted action emits a `visual_coordinate_mapping` episode event with the
 frame dimensions, original pixel input, and converted normalized input.
@@ -56,18 +80,19 @@ go test ./internal/agent -run TestVisualCoordinates -count=1
 go test ./internal/agent/... -count=1
 ```
 
-Tests decode the actual outgoing bytes and compare their dimensions with the
-caption, exercise portrait/landscape/square/small images and replay, verify
-cross-run ID rejection, repeat use and ordinary-upload exclusion, check nested gestures and wheel geometry,
-and run the real agent loop with a scripted model and recording device tool.
-The loop test also covers disabling the feature and leaving OpenAI unchanged.
-These tests establish deterministic wiring, not Claude perception accuracy.
+Tests decode the actual outgoing bytes and assert their dimensions match both
+the source image and the caption, exercise portrait/landscape/square/small
+images and replay, verify cross-run ID rejection, repeat use and
+ordinary-upload exclusion, check nested gestures and wheel geometry, and run the
+real agent loop with a scripted model and recording device tool. The loop test
+also covers leaving OpenAI unchanged. These tests establish deterministic
+wiring, not Claude perception accuracy.
 
 ## Live evaluation still required
 
 An opt-in real-provider harness is available for a controlled first-tap comparison.
 It calls the actual Anthropic client with the production prompt, tool schema and
-outbound image transform. Its receiving tool captures normalized coordinates,
+outbound transform. Its receiving tool captures normalized coordinates,
 so scoring is deterministic against the existing suite's target rectangles and
 does not depend on the old trace judge. It does not drive a physical device or
 exercise the daemon's complete tool catalog. Normal test runs skip this harness.
@@ -83,8 +108,8 @@ go test ./internal/agent -run '^TestVisualCoordinatesLive$' -count=1 -v -paralle
 ```
 
 `AIDEN_VISUAL_TASK=find_settings_iphone` restricts the run to the original failure
-case. The ablation flag selects original/resized images crossed with normalized/pixel
-coordinates; omit it for the production baseline/prepared comparison.
+case. The ablation flag compares normalized against pixel coordinates on the
+same unmodified image; omit it for the production baseline/prepared comparison.
 Each task/variant/repeat writes a JSON result with the model argument,
 normalized receiving-tool argument, rubric bounds, latency, usage, errors and hit
 flag. A passing Go test means results were collected successfully; use the JSON
@@ -92,7 +117,7 @@ flag. A passing Go test means results were collected successfully; use the JSON
 set and are not silently retried. Use a new results directory for each run.
 
 Run the perception suite with a fixed real model ID, provider, prompt and sampling
-parameters, comparing the disabled baseline with the prepared-image protocol.
+parameters, comparing the disabled baseline with the pixel protocol.
 Include held-out resolutions and small edge controls. Report first-attempt target
 box hits, normalized center error, protocol failures, latency, and API timeouts
 separately. Follow with real HID/ADB tests for taps, swipes, focus and dragging.
@@ -108,10 +133,13 @@ adaptation. The existing suite has not been modified to hide this distinction.
 - Frame IDs describe coordinate spaces only. They do not establish physical screen
   freshness; existing device checks continue to handle that. Local magnified crops
   remain unimplemented.
+- Relays that alias a current model name to an older version reintroduce
+  server-side downscaling, and the resulting coordinates are scaled by that
+  factor. The adapter does not detect or correct this; route around such an
+  endpoint, or verify it with the kX / kY probe above.
 - The model-specific instructions are transient and override older normalized
   examples in skills. Live testing must verify that Claude follows that contract.
 - Internal vision calls inside text-entry helpers retain their existing protocol;
   this change covers the main conversational agent loop.
-- Prepared image artifacts are not separately persisted. Source attachments and
-  mapping events support diagnosis; exact outbound captures use existing model
-  request telemetry where enabled.
+- Source attachments and mapping events support diagnosis; exact outbound
+  captures use existing model request telemetry where enabled.

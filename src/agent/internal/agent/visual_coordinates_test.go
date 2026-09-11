@@ -40,7 +40,7 @@ func TestVisualCoordinatesOutboundImageAndReplay(t *testing.T) {
 	for _, size := range [][2]int{{1179, 2556}, {2556, 1179}, {2000, 2000}, {447, 972}, {1, 100}} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			original := visualTestMessage(t, size[0], size[1])
-			v := newVisualCoordinates(VisualCoordinateConfig{})
+			v := newVisualCoordinates()
 			out := v.Transform([]messages.Message{original})
 			id := v.latest
 			if id == "" || original.Attachments[0].PreparedData != nil {
@@ -61,8 +61,9 @@ func TestVisualCoordinatesOutboundImageAndReplay(t *testing.T) {
 					}
 				}
 			}
-			if cfg.Width > 1280 || cfg.Height > 1280 || cfg.Width*cfg.Height > 1000000 {
-				t.Fatalf("oversize image: %+v", cfg)
+			// Images should use original dimensions without downsampling
+			if cfg.Width != size[0] || cfg.Height != size[1] {
+				t.Fatalf("image dimensions changed: expected %dx%d, got %dx%d", size[0], size[1], cfg.Width, cfg.Height)
 			}
 			if !strings.Contains(caption, fmt.Sprintf("image_width=%d image_height=%d", cfg.Width, cfg.Height)) {
 				t.Fatal("caption differs from actual image")
@@ -71,7 +72,7 @@ func TestVisualCoordinatesOutboundImageAndReplay(t *testing.T) {
 			if v.latest != id {
 				t.Fatal("replay changed frame identity")
 			}
-			other := newVisualCoordinates(VisualCoordinateConfig{})
+			other := newVisualCoordinates()
 			other.Transform([]messages.Message{original})
 			if other.latest == id {
 				t.Fatal("frame leaked across runs")
@@ -111,7 +112,7 @@ func (t *visualRecordingTool) Call(_ context.Context, input string) (string, err
 }
 
 func TestVisualCoordinatesToolBoundary(t *testing.T) {
-	v := newVisualCoordinates(VisualCoordinateConfig{})
+	v := newVisualCoordinates()
 	first := visualTestMessage(t, 101, 201)
 	v.Transform([]messages.Message{first})
 	oldID := "unknown-frame"
@@ -168,7 +169,7 @@ func TestVisualCoordinatesAllGeometry(t *testing.T) {
 }
 
 func TestVisualCoordinatesBadLatestImageFailsClosed(t *testing.T) {
-	v := newVisualCoordinates(VisualCoordinateConfig{})
+	v := newVisualCoordinates()
 	good := visualTestMessage(t, 100, 200)
 	bad := messages.Message{Role: messages.MessageRoleUser, Attachments: []messages.Attachment{{FilePath: "/nonexistent/visual-test.png", MIMEType: "image/png", Source: messages.AttachmentSourceScreenshotObservation}}}
 	out := v.Transform([]messages.Message{good, bad})
@@ -312,7 +313,7 @@ func TestVisualCoordinatesUploadsDoNotChangeScreenSpace(t *testing.T) {
 	screenshot := visualTestMessage(t, 101, 201)
 	upload := visualTestMessage(t, 800, 600)
 	upload.Attachments[0].Source = ""
-	v := newVisualCoordinates(VisualCoordinateConfig{})
+	v := newVisualCoordinates()
 	v.Transform([]messages.Message{screenshot})
 	id := v.latest
 	out := v.Transform([]messages.Message{screenshot, upload})
@@ -332,9 +333,9 @@ func TestVisualCoordinatesUploadsDoNotChangeScreenSpace(t *testing.T) {
 
 func TestVisualCoordinatesRebuildDoesNotRequireNewScreenshot(t *testing.T) {
 	msg := visualTestMessage(t, 101, 201)
-	first := newVisualCoordinates(VisualCoordinateConfig{})
+	first := newVisualCoordinates()
 	first.Transform([]messages.Message{msg})
-	resumed := newVisualCoordinates(VisualCoordinateConfig{})
+	resumed := newVisualCoordinates()
 	resumed.Transform([]messages.Message{msg})
 	if _, err := resumed.convert(first.latest, map[string]any{"x": float64(50), "y": float64(100)}); err == nil {
 		t.Fatal("old run ID unexpectedly resolved")

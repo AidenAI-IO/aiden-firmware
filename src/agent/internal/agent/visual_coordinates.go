@@ -7,8 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
-	"image/color"
-	"image/jpeg"
+	_ "image/jpeg"
 	_ "image/png"
 	"math"
 	"os"
@@ -21,21 +20,13 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
-// VisualCoordinateConfig controls the actual image sent to Claude, not an
-// assumption about its internal image representation. Zero limits use defaults.
-type VisualCoordinateConfig struct {
-	MaxEdge   int
-	MaxPixels int
-}
-
 type visualFrame struct {
-	id                        string
-	width, height             int
-	sourceWidth, sourceHeight int
-	data                      []byte
+	id            string
+	width, height int
+	data          []byte
 }
 
-// visualPoint uses pixel centers in the prepared frame. Device code receives
+// visualPoint uses pixel centers in the captured screenshot. Device code receives
 // only normalizedPoint; no provider-specific scaling belongs in that layer.
 type visualPoint struct{ X, Y float64 }
 type normalizedPoint struct{ X, Y float64 }
@@ -59,31 +50,20 @@ func normalizeVisualAxis(value float64, size int) (float64, error) {
 	return value / float64(max(1, size-1)) * 1000, nil
 }
 
-// A registry is private to one AgentLoop.Run. Images provide coordinate spaces only. Source screenshots already represent the device active area;
-// resizing preserves that plane, so the existing device mapping runs just once.
+// A registry is private to one AgentLoop.Run. Images provide coordinate spaces only. Source screenshots already represent the device active area,
+// so the existing device mapping runs just once.
 type visualCoordinates struct {
 	mu        sync.Mutex
-	config    VisualCoordinateConfig
 	namespace string
 	frames    map[string]visualFrame
 	latest    string
 }
 
-func newVisualCoordinates(config ...VisualCoordinateConfig) *visualCoordinates {
-	var selected VisualCoordinateConfig
-	if len(config) > 0 {
-		selected = config[0]
-	}
-	if selected.MaxEdge <= 0 {
-		selected.MaxEdge = 1280
-	}
-	if selected.MaxPixels <= 0 {
-		selected.MaxPixels = 1000000
-	}
-	return &visualCoordinates{config: selected, namespace: uuid.NewString(), frames: make(map[string]visualFrame)}
+func newVisualCoordinates() *visualCoordinates {
+	return &visualCoordinates{namespace: uuid.NewString(), frames: make(map[string]visualFrame)}
 }
 
-const visualCoordinateInstruction = "Visual coordinate protocol: for touch_gesture, mouse_move, enter_text.focus and wheel_nudge geometry, use pixel coordinates in the prepared image and include its frame_id. The frame caption immediately before each image gives its exact dimensions. It overrides source-image dimensions and normalized-coordinate examples in older messages or skills. Do not rescale coordinates or call a normalization tool. Speed parameters retain normalized units per second."
+const visualCoordinateInstruction = "Visual coordinate protocol: for touch_gesture, mouse_move, enter_text.focus and wheel_nudge geometry, use pixel coordinates and include the frame_id from the caption immediately before each image. Do not rescale coordinates or call a normalization tool. Speed parameters retain normalized units per second."
 
 func (v *visualCoordinates) Transform(input []messages.Message) []messages.Message {
 	v.mu.Lock()
@@ -115,8 +95,7 @@ func (v *visualCoordinates) Transform(input []messages.Message) []messages.Messa
 			frames[key] = frame
 			v.latest = frame.id
 			attachment.PreparedData = &frame.data
-			attachment.MIMEType = "image/jpeg"
-			attachment.PreparedCaption = fmt.Sprintf("Prepared image frame_id=%s image_width=%d image_height=%d. Pixel centers span x=0..%d and y=0..%d. Use these dimensions, not source dimensions.", frame.id, frame.width, frame.height, frame.width-1, frame.height-1)
+			attachment.PreparedCaption = fmt.Sprintf("Prepared image frame_id=%s image_width=%d image_height=%d. Pixel centers span x=0..%d and y=0..%d.", frame.id, frame.width, frame.height, frame.width-1, frame.height-1)
 			attachments = append(attachments, attachment)
 		}
 		out[i].Attachments = attachments
@@ -135,40 +114,13 @@ func (v *visualCoordinates) prepare(key string, data []byte) (visualFrame, error
 	if cfg.Width < 1 || cfg.Height < 1 || float64(cfg.Width)*float64(cfg.Height) > 40000000 {
 		return visualFrame{}, fmt.Errorf("invalid or oversized source image")
 	}
-	src, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return visualFrame{}, err
-	}
-	scale := math.Min(1, math.Min(float64(v.config.MaxEdge)/float64(max(cfg.Width, cfg.Height)), math.Sqrt(float64(v.config.MaxPixels)/(float64(cfg.Width)*float64(cfg.Height)))))
-	w, h := max(1, int(float64(cfg.Width)*scale)), max(1, int(float64(cfg.Height)*scale))
-	var encoded bytes.Buffer
-	if w == cfg.Width && h == cfg.Height {
-		err = jpeg.Encode(&encoded, src, &jpeg.Options{Quality: 90})
-	} else {
-		// Area averaging avoids aliasing small UI text during downsampling.
-		dst := image.NewRGBA(image.Rect(0, 0, w, h))
-		b := src.Bounds()
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				var r, g, bl, count uint64
-				for sy := y * cfg.Height / h; sy < (y+1)*cfg.Height/h; sy++ {
-					for sx := x * cfg.Width / w; sx < (x+1)*cfg.Width/w; sx++ {
-						rr, gg, bb, _ := src.At(b.Min.X+sx, b.Min.Y+sy).RGBA()
-						r += uint64(rr)
-						g += uint64(gg)
-						bl += uint64(bb)
-						count++
-					}
-				}
-				dst.SetRGBA(x, y, color.RGBA{uint8(r / count >> 8), uint8(g / count >> 8), uint8(bl / count >> 8), 255})
-			}
-		}
-		err = jpeg.Encode(&encoded, dst, &jpeg.Options{Quality: 90})
-	}
-	if err != nil {
-		return visualFrame{}, err
-	}
-	return visualFrame{id: fmt.Sprintf("frame_%x", sha256.Sum256([]byte(v.namespace+key))), width: w, height: h, sourceWidth: cfg.Width, sourceHeight: cfg.Height, data: encoded.Bytes()}, nil
+	// Pass the original image through unchanged — no re-encode, no dimension change.
+	return visualFrame{
+		id:     fmt.Sprintf("frame_%x", sha256.Sum256([]byte(v.namespace+key))),
+		width:  cfg.Width,
+		height: cfg.Height,
+		data:   data,
+	}, nil
 }
 
 // convert resolves the coordinate space, without imposing action lifecycle rules.
@@ -312,7 +264,6 @@ func (t *visualCoordinateTool) Call(ctx context.Context, input string) (string, 
 	if recorder := EpisodeRecorderFromContext(ctx); recorder != nil {
 		recorder.RecordEvent(TaskEpisodeEvent{Type: "visual_coordinate_mapping", Ts: time.Now().Format(time.RFC3339Nano), Metadata: map[string]interface{}{
 			"tool": t.Name(), "frame_id": id, "image_width": frame.width, "image_height": frame.height,
-			"source_width": frame.sourceWidth, "source_height": frame.sourceHeight,
 			"pixel_input": json.RawMessage(input), "normalized_input": json.RawMessage(data),
 		}})
 	}

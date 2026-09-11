@@ -87,7 +87,9 @@ func TestVisualCoordinatesLive(t *testing.T) {
 	slots := make(chan struct{}, 3)
 	variants := []string{"baseline", "prepared"}
 	if os.Getenv("AIDEN_VISUAL_ABLATION") == "1" {
-		variants = []string{"original_normalized", "small_normalized", "original_pixel", "small_pixel"}
+		// Images are always sent at their original size, so the only remaining
+		// axis is the coordinate protocol the model is asked to emit.
+		variants = []string{"normalized", "pixel"}
 	}
 	for repeat := 1; repeat <= repeats; repeat++ {
 		for _, task := range suite.Tasks {
@@ -145,13 +147,8 @@ func TestVisualCoordinatesLive(t *testing.T) {
 					var tool langtools.Tool = &livePerceptionTool{visualRecordingTool: backend}
 					var transforms []executor.OutboundMessageTransform
 					if os.Getenv("AIDEN_VISUAL_ABLATION") == "1" {
-						config := VisualCoordinateConfig{}
-						if strings.HasPrefix(variant, "original_") {
-							config.MaxEdge = 40000
-							config.MaxPixels = 40000000
-						}
-						frames := newVisualCoordinates(config)
-						pixel := strings.HasSuffix(variant, "_pixel")
+						frames := newVisualCoordinates()
+						pixel := variant == "pixel"
 						transforms = append(transforms, liveAblationTransform{frames: frames})
 						var receiver langtools.Tool = backend
 						if pixel {
@@ -160,7 +157,7 @@ func TestVisualCoordinatesLive(t *testing.T) {
 						tool = &liveAblationTool{Tool: receiver, pixel: pixel}
 					}
 					if variant == "prepared" {
-						frames := newVisualCoordinates(VisualCoordinateConfig{})
+						frames := newVisualCoordinates()
 						transforms = append(transforms, frames)
 						tool = frames.wrap([]langtools.Tool{tool})[0]
 					}
