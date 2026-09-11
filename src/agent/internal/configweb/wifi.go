@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"aiden-agent/internal/wifiproxy"
 )
@@ -288,7 +289,7 @@ func (s *Server) queryWiFiStatusContext(ctx context.Context) map[string]any {
 			detail := strings.TrimRight(string(result.Output), "\r\n")
 			status["detail"] = detail
 			values := keyValueLines(detail)
-			status["state"], status["ssid"], status["ip_address"] = values["wpa_state"], values["ssid"], values["ip_address"]
+			status["state"], status["ssid"], status["ip_address"] = values["wpa_state"], decodeWiFiSSID(values["ssid"]), values["ip_address"]
 			status["connected"] = values["wpa_state"] == "COMPLETED" && values["ssid"] != ""
 			if status["connected"] == true && status["ip_address"] == "" {
 				status["ip_address"] = interfaceIPv4Context(ctx, s.options.WiFiInterface)
@@ -305,7 +306,7 @@ func (s *Server) queryWiFiStatusContext(ctx context.Context) map[string]any {
 		for _, line := range strings.Split(detail, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "SSID:") {
-				status["ssid"] = strings.TrimSpace(strings.TrimPrefix(line, "SSID:"))
+				status["ssid"] = decodeWiFiSSID(strings.TrimSpace(strings.TrimPrefix(line, "SSID:")))
 				status["connected"], status["state"] = true, "COMPLETED"
 				status["ip_address"] = interfaceIPv4Context(ctx, s.options.WiFiInterface)
 			}
@@ -362,12 +363,12 @@ func parseWiFiScanOutput(text string) []string {
 		line = strings.TrimSpace(line)
 		name := ""
 		if strings.HasPrefix(line, "SSID:") {
-			name = strings.TrimSpace(strings.TrimPrefix(line, "SSID:"))
+			name = decodeWiFiSSID(strings.TrimSpace(strings.TrimPrefix(line, "SSID:")))
 		}
 		if position := strings.Index(line, `ESSID:"`); position >= 0 {
 			value := line[position+len(`ESSID:"`):]
 			if end := strings.IndexByte(value, '"'); end >= 0 {
-				name = value[:end]
+				name = decodeWiFiSSID(value[:end])
 			}
 		}
 		if name != "" && !seen[name] {
@@ -376,6 +377,48 @@ func parseWiFiScanOutput(text string) []string {
 		}
 	}
 	return result
+}
+
+// decodeWiFiSSID converts the \\xHH form emitted by some wireless-tools
+// versions back into the original SSID bytes. SSIDs are byte strings on the
+// wire, and UTF-8 is the common encoding for Chinese network names.
+func decodeWiFiSSID(value string) string {
+	if !strings.Contains(value, `\x`) {
+		return value
+	}
+	raw := make([]byte, 0, len(value))
+	changed := false
+	for i := 0; i < len(value); {
+		if i+3 < len(value) && value[i] == '\\' && value[i+1] == 'x' {
+			if high, ok := hexDigit(value[i+2]); ok {
+				if low, ok := hexDigit(value[i+3]); ok {
+					raw = append(raw, high<<4|low)
+					i += 4
+					changed = true
+					continue
+				}
+			}
+		}
+		raw = append(raw, value[i])
+		i++
+	}
+	if !changed || !utf8.Valid(raw) {
+		return value
+	}
+	return string(raw)
+}
+
+func hexDigit(value byte) (byte, bool) {
+	switch {
+	case value >= '0' && value <= '9':
+		return value - '0', true
+	case value >= 'a' && value <= 'f':
+		return value - 'a' + 10, true
+	case value >= 'A' && value <= 'F':
+		return value - 'A' + 10, true
+	default:
+		return 0, false
+	}
 }
 
 func (s *Server) handleWiFiScan(w http.ResponseWriter, _ *http.Request) {
