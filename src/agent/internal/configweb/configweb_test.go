@@ -404,7 +404,7 @@ func TestSystemdWiFiConnectionStartsWithCandidateConfig(t *testing.T) {
 set -eu
 [ "${1:-}" = restart ]
 [ "${2:-}" = wpa_supplicant@wlan0.service ]
-/bin/grep -Fqx "AIDEN_WPA_SUPPLICANT_CONFIG=\"$AIDEN_TEST_WIFI_CANDIDATE\"" "$AIDEN_TEST_WIFI_SELECTOR"
+/usr/bin/grep -Fqx "AIDEN_WPA_SUPPLICANT_CONFIG=\"$AIDEN_TEST_WIFI_CANDIDATE\"" "$AIDEN_TEST_WIFI_SELECTOR"
 `,
 	}
 	for name, script := range commands {
