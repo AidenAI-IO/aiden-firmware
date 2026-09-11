@@ -10,10 +10,9 @@ LOG_PATH=${LOG_PATH:-/var/log/ota/ota-recovery.log}
 
 start() {
     [ -d "$OTA_STORAGE_DIR" ] || return 0
-    [ -x "$OTA_BIN" ] || return 0
-    if [ ! -x "$ENV_RUN_BIN" ]; then
+    if [ ! -x "$OTA_BIN" ] || [ ! -x "$ENV_RUN_BIN" ]; then
         mkdir -p "$(dirname "$LOG_PATH")"
-        echo "ota recovery unavailable: missing executable $ENV_RUN_BIN" >> "$LOG_PATH"
+        echo "ota recovery unavailable: OTA_BIN and ENV_RUN_BIN must both be executable" >> "$LOG_PATH"
         return 1
     fi
     mkdir -p "$(dirname "$LOG_PATH")"
