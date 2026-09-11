@@ -78,6 +78,11 @@ class RecordingSetupClient:
         )
 
 
+class TimeoutClearHistoryClient(RecordingSetupClient):
+    def clear_history(self):
+        raise AgentTimeoutError("clear timed out")
+
+
 def test_agent_prompt_setup_wraps_chat_errors_as_reset_error():
     setup = {"type": "agent_prompt", "prompt": "remember this", "timeout_sec": 5}
 
@@ -211,6 +216,19 @@ def test_seed_session_chunk_setup_can_explicitly_clear_history_after_seed():
         ),
         ("clear_history",),
     ]
+
+
+def test_seed_session_chunk_setup_wraps_clear_history_timeout_as_reset_error():
+    setup = {
+        "type": "seed_session_chunk",
+        "session_id": "benchmark-session",
+        "summary": "Seeded chunk summary",
+        "messages": [{"role": "user", "content": "old question"}],
+        "clear_history_after": True,
+    }
+
+    with pytest.raises(ResetError, match="seed_session_chunk clear_history failed"):
+        per_task_setup(TimeoutClearHistoryClient(), setup)
 
 
 def test_setup_sequence_preserves_consolidation_result_when_later_setup_returns_none():

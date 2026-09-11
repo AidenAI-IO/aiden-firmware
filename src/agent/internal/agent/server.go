@@ -42,10 +42,11 @@ import (
 )
 
 const (
-	agentHTTPReadHeaderTimeout = 10 * time.Second
-	agentHTTPReadTimeout       = 30 * time.Second
-	agentHTTPIdleTimeout       = 120 * time.Second
-	agentHTTPShutdownTimeout   = 5 * time.Second
+	agentHTTPReadHeaderTimeout            = 10 * time.Second
+	agentHTTPReadTimeout                  = 30 * time.Second
+	agentHTTPIdleTimeout                  = 120 * time.Second
+	agentHTTPShutdownTimeout              = 5 * time.Second
+	benchmarkSeedSessionChunkMaxBodyBytes = 512 * 1024
 )
 
 // Server provides HTTP API for agent interactions
@@ -2753,7 +2754,7 @@ func (s *Server) handleBenchmarkSeedSessionChunk(w http.ResponseWriter, r *http.
 		return
 	}
 	var req benchmarkSeedSessionChunkRequest
-	decoder := json.NewDecoder(r.Body)
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, benchmarkSeedSessionChunkMaxBodyBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)

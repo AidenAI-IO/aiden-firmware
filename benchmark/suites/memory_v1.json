@@ -281,7 +281,7 @@
     {
       "id": "recall_session_chunk_details",
       "category": "memory",
-      "description_for_judge": "Given a compressed session summary that points to chunk_000 but omits the exact details, the agent must call recall_session_chunks and answer using the recalled evidence.",
+      "description_for_judge": "Given a compressed session summary that omits the exact details from the visible prompt, the agent must call recall_session_chunks and answer using the recalled seeded-session evidence.",
       "setup": {
         "type": "seed_session_chunk",
         "session_id": "benchmark_reimbursement_details",
@@ -306,8 +306,8 @@
           "check": "The tool trace contains at least one recall_session_chunks call."
         },
         {
-          "id": "recall_uses_chunk_000",
-          "check": "The recall_session_chunks call input references chunk_000 via chunk_ids, or otherwise searches for 蓝海报销App/核销码 and retrieves that chunk."
+          "id": "recall_searches_seeded_session",
+          "check": "The recall_session_chunks call searches for 蓝海报销App/核销码 or otherwise retrieves the seeded session chunk."
         },
         {
           "id": "answer_mentions_recalled_details",

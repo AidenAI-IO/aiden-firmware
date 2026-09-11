@@ -4727,6 +4727,25 @@ func TestHandleBenchmarkSeedSessionChunkSucceeds(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkSeedSessionChunkRejectsOversizedBody(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	oversizedSummary := strings.Repeat("x", benchmarkSeedSessionChunkMaxBodyBytes)
+	body := fmt.Sprintf(`{"session_id":"benchmark_expense_session","summary":%q,"messages":[{"role":"user","content":"hello"}]}`, oversizedSummary)
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_session_chunk", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedSessionChunk(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "request body too large") {
+		t.Fatalf("expected oversized-body error, got: %s", rec.Body.String())
+	}
+}
+
 func TestHandleBenchmarkSeedNotificationWritesDurableFixture(t *testing.T) {
 	server, configDir := newBenchmarkSeedMemoryServerWithModel(t, &scriptedModel{responses: []*llms.ContentResponse{
 		contentResponse(`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"ignore"}]}}]}`),

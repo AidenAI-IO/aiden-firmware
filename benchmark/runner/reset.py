@@ -328,7 +328,7 @@ def _per_task_setup_seed_session_chunk(client: AgentClient, setup: dict[str, Any
     if setup.get("clear_history_after", False):
         try:
             client.clear_history()
-        except AgentRequestError as e:
+        except (AgentTimeoutError, AgentRequestError) as e:
             raise ResetError(f"seed_session_chunk clear_history failed: {e}") from e
 
 
