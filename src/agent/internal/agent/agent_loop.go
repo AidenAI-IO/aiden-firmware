@@ -95,9 +95,14 @@ func (l *AgentLoop) outboundTransforms() []executor.OutboundMessageTransform {
 }
 
 func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
-	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager, l.outboundTransforms()...)
-
 	agentTools := l.Profile.Tools
+	transforms := l.outboundTransforms()
+	if IsAnthropicModel(l.Model.Spec().Provider, l.Model.Spec().Name) {
+		frames := newVisualCoordinates()
+		transforms = append(transforms, frames)
+		agentTools = frames.wrap(agentTools)
+	}
+	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager, transforms...)
 	toolSpecs := NewToolSpecs(agentTools)
 	parser := &FunctionAgent{
 		Tools:     agentTools,

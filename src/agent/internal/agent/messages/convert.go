@@ -55,13 +55,22 @@ func ConvertMessageList(messageList []Message) []llms.MessageContent {
 			if filePath == "" {
 				continue
 			}
-			data, err := os.ReadFile(filePath)
+			var data []byte
+			var err error
+			if attachment.PreparedData == nil {
+				data, err = os.ReadFile(filePath)
+			} else {
+				data = *attachment.PreparedData
+			}
 			if err != nil {
 				newMessage.Parts = append(newMessage.Parts, llms.TextPart(attachmentOmittedMessage(attachment.MIMEType, err)))
 				continue
 			}
 			if len(data) == 0 {
 				continue
+			}
+			if attachment.PreparedCaption != "" {
+				newMessage.Parts = append(newMessage.Parts, llms.TextPart(attachment.PreparedCaption))
 			}
 			newMessage.Parts = append(newMessage.Parts, llms.BinaryPart(attachment.MIMEType, data))
 		}
