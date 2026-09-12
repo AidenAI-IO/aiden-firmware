@@ -47,6 +47,10 @@ class RecordingSetupClient:
         self.calls.append(("seed_episode", episode, timeout))
         return {"status": "seeded", "id": episode["id"]}
 
+    def seed_session_chunk(self, chunk, timeout=30):
+        self.calls.append(("seed_session_chunk", chunk, timeout))
+        return {"status": "seeded", "session_id": chunk["session_id"]}
+
     def seed_memory(self, memory, timeout=30):
         self.calls.append(("seed_memory", memory, timeout))
         return {"status": "seeded", "id": memory["id"]}
@@ -72,6 +76,11 @@ class RecordingSetupClient:
             is_error=False,
             duration_ms=0,
         )
+
+
+class TimeoutClearHistoryClient(RecordingSetupClient):
+    def clear_history(self):
+        raise AgentTimeoutError("clear timed out")
 
 
 def test_agent_prompt_setup_wraps_chat_errors_as_reset_error():
@@ -156,6 +165,70 @@ def test_setup_sequence_runs_existing_primitives_in_order():
         ("seed_memory", memory, 30),
         ("seed_notification", [event], 30),
     ]
+
+
+def test_seed_session_chunk_setup_writes_chunk_without_clearing_history_by_default():
+    client = RecordingSetupClient()
+    setup = {
+        "type": "seed_session_chunk",
+        "session_id": "benchmark-session",
+        "summary": "Seeded chunk summary",
+        "messages": [{"role": "user", "content": "old question"}],
+        "timeout_sec": 45,
+    }
+
+    per_task_setup(client, setup)
+
+    assert client.calls == [
+        (
+            "seed_session_chunk",
+            {
+                "session_id": "benchmark-session",
+                "summary": "Seeded chunk summary",
+                "messages": [{"role": "user", "content": "old question"}],
+            },
+            45,
+        )
+    ]
+
+
+def test_seed_session_chunk_setup_can_explicitly_clear_history_after_seed():
+    client = RecordingSetupClient()
+    setup = {
+        "type": "seed_session_chunk",
+        "session_id": "benchmark-session",
+        "summary": "Seeded chunk summary",
+        "messages": [{"role": "user", "content": "old question"}],
+        "clear_history_after": True,
+    }
+
+    per_task_setup(client, setup)
+
+    assert client.calls == [
+        (
+            "seed_session_chunk",
+            {
+                "session_id": "benchmark-session",
+                "summary": "Seeded chunk summary",
+                "messages": [{"role": "user", "content": "old question"}],
+            },
+            30,
+        ),
+        ("clear_history",),
+    ]
+
+
+def test_seed_session_chunk_setup_wraps_clear_history_timeout_as_reset_error():
+    setup = {
+        "type": "seed_session_chunk",
+        "session_id": "benchmark-session",
+        "summary": "Seeded chunk summary",
+        "messages": [{"role": "user", "content": "old question"}],
+        "clear_history_after": True,
+    }
+
+    with pytest.raises(ResetError, match="seed_session_chunk clear_history failed"):
+        per_task_setup(TimeoutClearHistoryClient(), setup)
 
 
 def test_setup_sequence_preserves_consolidation_result_when_later_setup_returns_none():

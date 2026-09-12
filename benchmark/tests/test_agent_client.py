@@ -292,6 +292,24 @@ def test_seed_episode_sends_benchmark_token_header():
     assert result == {"status": "seeded", "id": "ep-1"}
 
 
+def test_seed_session_chunk_sends_benchmark_token_header():
+    seen = {}
+    client = AgentClient(base_url="http://test", benchmark_token="chunk-token")
+    chunk = {
+        "session_id": "s-1",
+        "summary": "old conversation",
+        "messages": [{"role": "user", "content": "remember this"}],
+    }
+    with patch("urllib.request.urlopen", _captured(seen, body={"status": "seeded", "session_id": "s-1"})):
+        result = client.seed_session_chunk(chunk, timeout=45)
+
+    assert seen["url"].endswith("/api/benchmark/seed_session_chunk")
+    assert seen["headers"]["authorization"] == "Bearer chunk-token"
+    assert json.loads(seen["body"]) == chunk
+    assert seen["timeout"] == 45
+    assert result == {"status": "seeded", "session_id": "s-1"}
+
+
 def test_process_episode_memory_sends_benchmark_token_header():
     seen = {}
     client = AgentClient(base_url="http://test", benchmark_token="episode-token")

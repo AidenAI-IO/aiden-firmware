@@ -168,6 +168,18 @@ class AgentClient:
         body = _parse_json_response(body_bytes, "seed_episode")
         return body if isinstance(body, dict) else {}
 
+    def seed_session_chunk(self, chunk: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
+        headers = {}
+        if self._benchmark_token:
+            headers["Authorization"] = f"Bearer {self._benchmark_token}"
+        status, body_bytes = self._post(
+            "/api/benchmark/seed_session_chunk", chunk, timeout=timeout, headers=headers
+        )
+        if status != 200:
+            raise AgentRequestError(f"seed_session_chunk returned {status}")
+        body = _parse_json_response(body_bytes, "seed_session_chunk")
+        return body if isinstance(body, dict) else {}
+
     def process_episode_memory(
         self, episode_id: str, timeout: int = 90
     ) -> dict[str, Any]:
