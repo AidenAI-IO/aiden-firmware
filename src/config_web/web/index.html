@@ -121,7 +121,7 @@
             <h3 data-i18n="groups.device_settings">设备设置</h3>
             <div class="section-card" id="section-device">
               <div class="card-head">
-                <h3>[device]</h3>
+                <h3>[basic_settings.device]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="device" data-i18n="action.edit">Edit</button>
                   <button class="button secondary" data-action="test-section" data-section-target="device" data-i18n="action.test">Test</button>
@@ -140,7 +140,7 @@
           <h2 data-i18n="groups.conversation_settings">对话设置</h2>
           <div class="section-card" id="section-agent">
             <div class="card-head">
-              <h3>[agent]</h3>
+              <h3>[conversation_settings.agent]</h3>
               <div class="section-actions">
                 <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="agent" data-i18n="action.edit">Edit</button>
                 <button class="button secondary" data-action="test-section" data-section-target="agent" data-i18n="action.test">Test</button>
@@ -157,7 +157,7 @@
             <div id="conversation-websearch"></div>
             <div class="section-card" id="section-termination_policy" data-hide-when-empty>
               <div class="card-head">
-                <h3>[termination_policy]</h3>
+                <h3>[conversation_settings.termination_policy]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="termination_policy" data-i18n="action.edit">Edit</button>
                   <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="termination_policy" data-i18n="action.cancel">Cancel</button>
@@ -174,7 +174,7 @@
           <h2 data-i18n="groups.model_settings">主模型设置</h2>
           <div class="section-card" id="section-model">
             <div class="card-head">
-              <h3>[model]</h3>
+              <h3>[model_settings.model]</h3>
               <div class="section-actions">
                 <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="model" data-i18n="action.edit">Edit</button>
                 <button class="button secondary" data-action="test-section" data-section-target="model" data-i18n="action.test">Test</button>
@@ -201,7 +201,7 @@
             <h3 data-i18n="groups.realtime_mode">Realtime Mode</h3>
             <div class="section-card" id="section-voice_model" data-hide-when-empty>
               <div class="card-head">
-                <h3>[voice_model]</h3>
+                <h3>[voice_settings.realtime]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="voice_model" data-i18n="action.edit">Edit</button>
                   <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="voice_model" data-i18n="action.cancel">Cancel</button>
@@ -221,7 +221,7 @@
             <!-- STT Section -->
             <div class="section-card" id="section-stt">
               <div class="card-head">
-                <h3>[stt]</h3>
+                <h3>[voice_settings.classic.stt]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="stt" data-i18n="action.edit">Edit</button>
                   <button id="test-stt" class="button secondary" data-action="toggle-stt-test" data-i18n="action.test">Test</button>
@@ -238,7 +238,7 @@
             <!-- TTS Section -->
             <div class="section-card" id="section-tts">
               <div class="card-head">
-                <h3>[tts]</h3>
+                <h3>[voice_settings.classic.tts]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="tts" data-i18n="action.edit">Edit</button>
                   <button class="button secondary" data-action="test-section" data-section-target="tts" data-i18n="action.test">Test</button>
@@ -254,7 +254,7 @@
             <!-- Audio Section -->
             <div class="section-card" id="section-audio" data-hide-when-empty>
               <div class="card-head">
-                <h3>[audio]</h3>
+                <h3>[voice_settings.classic.audio]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="audio" data-i18n="action.edit">Edit</button>
                   <button class="button secondary" data-action="test-section" data-section-target="audio" data-i18n="action.test">Test</button>
@@ -268,7 +268,7 @@
             <!-- Audio Archive Section -->
             <div class="section-card" id="section-audio_archive" data-hide-when-empty>
               <div class="card-head">
-                <h3>[audio_archive]</h3>
+                <h3>[voice_settings.classic.audio_archive]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="audio_archive" data-i18n="action.edit">Edit</button>
                   <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="audio_archive" data-i18n="action.cancel">Cancel</button>
@@ -286,7 +286,7 @@
           <h2 data-i18n="groups.memory_settings">记忆设置</h2>
           <div class="section-card" id="section-quick_capture">
             <div class="card-head">
-              <h3>[quick_capture]</h3>
+              <h3>[memory_settings.screen]</h3>
               <div class="section-actions">
                 <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="quick_capture" data-i18n="action.edit">Edit</button>
                 <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="quick_capture" data-i18n="action.cancel">Cancel</button>
@@ -297,7 +297,7 @@
           </div>
           <div class="section-card" id="section-voice_notifications" data-hide-when-empty>
             <div class="card-head">
-              <h3>[voice_notifications]</h3>
+              <h3>[memory_settings.notification]</h3>
               <div class="section-actions">
                 <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="voice_notifications" data-i18n="action.edit">Edit</button>
                 <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="voice_notifications" data-i18n="action.cancel">Cancel</button>
@@ -313,7 +313,7 @@
           <h2 data-i18n="groups.storage_settings">存储设置</h2>
           <div class="section-card" id="section-storage">
             <div class="card-head">
-              <h3>[storage]</h3>
+              <h3>[storage_settings.storage]</h3>
               <div class="section-actions">
                 <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="storage" data-i18n="action.edit">Edit</button>
                 <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="storage" data-i18n="action.cancel">Cancel</button>
@@ -332,7 +332,7 @@
             <h3 data-i18n="groups.logs">日志</h3>
             <div class="section-card" id="section-log">
               <div class="card-head">
-                <h3>[log]</h3>
+                <h3>[advanced_settings.log]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="log" data-i18n="action.edit">Edit</button>
                   <button class="button secondary" data-action="test-section" data-section-target="log" data-i18n="action.test">Test</button>
@@ -346,57 +346,9 @@
 
           <div class="product-subgroup">
             <h3 data-i18n="groups.hardware_debug">硬件与调试</h3>
-              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="stt" data-i18n="action.edit">Edit</button>
-              <button id="test-stt" class="button secondary" data-action="toggle-stt-test" data-i18n="action.test">Test</button>
-              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="stt" data-i18n="action.cancel">Cancel</button>
-              <button id="save-stt" class="button primary save-btn" data-action="save-section" data-section-target="stt" data-i18n="action.save">Save</button>
-            </div>
-          </div>
-          <div class="field-hint section-note" data-i18n="config.stt_test_help">Click Test will activate microphone to start recording, click again to end recording and display recognition result.</div>
-          <div class="grid" data-config-section="stt">
-            <div class="field wide" data-config-field="stt.provider"><label>provider</label><div class="provider-picker"><select id="stt_provider" data-section="stt"></select><div class="provider-picker-actions"><button id="addSttProviderBtn" type="button" class="button ghost" data-action="add-stt-provider" data-i18n="action.add">Add</button><button id="editSttProviderBtn" type="button" class="button ghost" data-action="edit-selected-provider" data-provider-kind="stt" data-i18n="action.edit">Edit</button><button id="deleteSttProviderBtn" type="button" class="button ghost error" data-action="delete-selected-provider" data-provider-kind="stt" data-i18n="action.delete">Delete</button></div></div></div>
-          </div>
-        </div>
-        <div class="section-card" id="section-tts">
-          <div class="card-head">
-            <h3>[tts]</h3>
-            <div class="section-actions">
-              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="tts" data-i18n="action.edit">Edit</button>
-              <button class="button secondary" data-action="test-section" data-section-target="tts" data-i18n="action.test">Test</button>
-              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="tts" data-i18n="action.cancel">Cancel</button>
-              <button id="save-tts" class="button primary save-btn" data-action="save-section" data-section-target="tts" data-i18n="action.save">Save</button>
-            </div>
-          </div>
-          <div class="grid" data-config-section="tts">
-            <div class="field wide" data-config-field="tts.provider"><label>provider</label><div class="provider-picker"><select id="tts_provider" data-section="tts"></select><div class="provider-picker-actions"><button id="addTtsProviderBtn" type="button" class="button ghost" data-action="add-tts-provider" data-i18n="action.add">Add</button><button id="editTtsProviderBtn" type="button" class="button ghost" data-action="edit-selected-provider" data-provider-kind="tts" data-i18n="action.edit">Edit</button><button id="deleteTtsProviderBtn" type="button" class="button ghost error" data-action="delete-selected-provider" data-provider-kind="tts" data-i18n="action.delete">Delete</button></div></div></div>
-          </div>
-        </div>
-        <div class="section-card" id="section-audio" data-hide-when-empty>
-          <div class="card-head">
-            <h3>[audio]</h3>
-            <div class="section-actions">
-              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="audio" data-i18n="action.edit">Edit</button>
-              <button class="button secondary" data-action="test-section" data-section-target="audio" data-i18n="action.test">Test</button>
-              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="audio" data-i18n="action.cancel">Cancel</button>
-              <button id="save-audio" class="button primary save-btn" data-action="save-section" data-section-target="audio" data-i18n="action.save">Save</button>
-            </div>
-          </div>
-          <div class="grid" data-config-section="audio"></div>
-        </div>
-        <div class="section-card" id="section-audio_archive" data-hide-when-empty>
-          <div class="card-head">
-            <h3>[audio_archive]</h3>
-            <div class="section-actions">
-              <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="audio_archive" data-i18n="action.edit">Edit</button>
-              <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="audio_archive" data-i18n="action.cancel">Cancel</button>
-              <button id="save-audio_archive" class="button primary save-btn" data-action="save-section" data-section-target="audio_archive" data-i18n="action.save">Save</button>
-            </div>
-          </div>
-          <div id="audioArchiveModeHint" class="field-hint section-note" data-i18n="config.audio_archive_locked">Only effective when agent.input_mode = stt; switch to STT and Edit recording Save settings.</div>
-          <div class="grid" data-config-section="audio_archive"></div>
-        </div></div>
+            <div class="section-card" id="section-hid">
               <div class="card-head">
-                <h3>[hid]</h3>
+                <h3>[advanced_settings.hardware.hid]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="hid" data-section-scope="hid-debug" data-i18n="action.edit">Edit</button>
                   <button class="button secondary" data-action="test-section" data-section-target="hid" data-section-scope="hid-debug" data-i18n="action.test">Test</button>
@@ -409,7 +361,7 @@
 
             <div class="section-card" id="section-frame_service">
               <div class="card-head">
-                <h3>[frame_service]</h3>
+                <h3>[advanced_settings.hardware.frame_service]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="frame_service" data-i18n="action.edit">Edit</button>
                   <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="frame_service" data-i18n="action.cancel">Cancel</button>
@@ -421,7 +373,7 @@
 
             <div class="section-card" id="section-search" data-hide-when-empty>
               <div class="card-head">
-                <h3>[search]</h3>
+                <h3>[conversation_settings.search]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="search" data-i18n="action.edit">Edit</button>
                   <button class="button secondary" data-action="test-section" data-section-target="search" data-i18n="action.test">Test</button>
@@ -437,7 +389,7 @@
             <h3 data-i18n="groups.runtime_debug">运行时调试</h3>
             <div class="section-card" id="section-telemetry" data-hide-when-empty>
               <div class="card-head">
-                <h3>[telemetry]</h3>
+                <h3>[advanced_settings.runtime.telemetry]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="telemetry" data-i18n="action.edit">Edit</button>
                   <button class="button secondary" data-action="test-section" data-section-target="telemetry" data-i18n="action.test">Test</button>
@@ -450,7 +402,7 @@
 
             <div class="section-card" id="section-live_activity" data-hide-when-empty>
               <div class="card-head">
-                <h3>[live_activity]</h3>
+                <h3>[advanced_settings.runtime.live_activity]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="live_activity" data-i18n="action.edit">Edit</button>
                   <button class="button secondary" data-action="test-section" data-section-target="live_activity" data-i18n="action.test">Test</button>
@@ -463,7 +415,7 @@
 
             <div class="section-card" id="section-ota" data-hide-when-empty>
               <div class="card-head">
-                <h3>[ota]</h3>
+                <h3>[advanced_settings.runtime.ota]</h3>
                 <div class="section-actions">
                   <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="ota" data-i18n="action.edit">Edit</button>
                   <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="ota" data-i18n="action.cancel">Cancel</button>

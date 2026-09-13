@@ -65,7 +65,7 @@ configured_agent_log_max_mb() {
     config_path="$CONFIG_DIR/agent.toml"
     [ -r "$config_path" ] || return 0
     awk '
-        /^\[storage\.degraded_mode\][[:space:]]*$/ { in_section = 1; next }
+        /^\[storage_settings\.storage\.degraded_mode\][[:space:]]*$/ { in_section = 1; next }
         /^\[/ { in_section = 0 }
         in_section && $1 == "max_agent_log_mb" && $2 == "=" { print $3; exit }
     ' "$config_path"

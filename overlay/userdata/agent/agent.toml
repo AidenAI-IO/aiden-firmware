@@ -10,7 +10,8 @@
 
 # 2.1 语言与时区
 # Device UI and Agent response language: "zh-CN" or "en-US".
-# This is independent from [stt].language, which only controls speech recognition.
+# This is independent from [voice_settings.classic.stt].language, which only controls speech recognition.
+[basic_settings.language_timezone]
 # locale = "en-US"  # "zh-CN" or "en-US"; also selects built-in voice notification text
 # timezone = "Asia/Shanghai"  # Timezone setting (implementation pending)
 
@@ -18,13 +19,14 @@
 # Target device configuration.
 # Android derives HID pointer_mode = "touchscreen"; iOS, macOS, windows, and linux derive "absolute".
 # Accepted device_type values: "iOS", "Android", "macOS", "windows", or "linux".
-[device]
+[basic_settings.device]
 # device_type = "iOS"
 
 ################################################################################
 # 3. 对话设置
 ################################################################################
 
+[conversation_settings.agent]
 # 3.a 自定义提示词
 # custom_instruction = ""
 # additional_prompt = ""
@@ -58,7 +60,7 @@
 # 3.e 工具设置
 
 # Tiered loop guard and termination policy. Zero-valued numeric fields use defaults.
-[termination_policy]
+[conversation_settings.termination_policy]
 # enabled = true
 # max_seconds = 0
 # repeat_action_limit = 3
@@ -73,13 +75,9 @@
 # 4. 主模型设置
 ################################################################################
 
-################################################################################
-# 4. 主模型设置
-################################################################################
-
 # 4.a Provider selection and credentials
 # Primary LLM provider and model configuration
-[model_providers.openai-main]
+[model_settings.providers.openai-main]
 type = "openai"
 api_key = "$OPENAI_API_KEY"
 
@@ -87,11 +85,11 @@ api_key = "$OPENAI_API_KEY"
 # ANTHROPIC_AUTH_TOKEN uses bearer authentication (Claude Code-compatible);
 # ANTHROPIC_API_KEY and other api_key values use the x-api-key header.
 # A base_url may point to either a host or an endpoint ending in /v1.
-# [model_providers.claude-main]
+# [model_settings.providers.claude-main]
 # type = "anthropic"
 # api_key = "$ANTHROPIC_AUTH_TOKEN"
 # base_url = "https://api.anthropic.com/v1"
-# Then edit the [model] section below to select it:
+# Then edit the [model_settings.model] section below to select it:
 # provider = "claude-main"
 # model = "claude-sonnet-4-6"
 
@@ -100,11 +98,11 @@ api_key = "$OPENAI_API_KEY"
 # are needed. Custom base_url values are not supported for Kimi providers.
 # Moonshot's official endpoint supports Chat Completions, not /responses, so
 # keep api_mode unset (or set it to "chat_completions").
-# [model_providers.kimi-main]
+# [model_settings.providers.kimi-main]
 # type = "kimi"           # global: https://api.moonshot.ai/v1
 # type = "kimi-cn"        # mainland China: https://api.moonshot.cn/v1
 # api_key = "$MOONSHOT_API_KEY"
-# Set [model].provider = "kimi-main" to select it.
+# Set [model_settings.model].provider = "kimi-main" to select it.
 # model = "kimi-k3"
 
 # For Volcengine Ark (Doubao), use the "volcengine" provider. It uses its
@@ -113,10 +111,10 @@ api_key = "$OPENAI_API_KEY"
 # Ark supports api_mode = "responses_stateful" with store + previous_response_id,
 # without requiring caching. Aiden does not send its OpenAI-specific compaction
 # array or truncation setting to Ark; Ark's own context_management schema differs.
-# [model_providers.ark-main]
+# [model_settings.providers.ark-main]
 # type = "volcengine"      # https://ark.cn-beijing.volces.com/api/v3
 # api_key = "$ARK_API_KEY"
-# Set [model].provider = "ark-main" to select it.
+# Set [model_settings.model].provider = "ark-main" to select it.
 # model = "doubao-seed-2-1-pro-260628"
 # Ark treats an omitted reasoning_effort as "high", which delays the first
 # streamed token; the registry pins "low" for the model above. Ark accepts
@@ -124,7 +122,7 @@ api_key = "$OPENAI_API_KEY"
 # reasoning_effort = "minimal"
 
 # 4.b,c,d,e,f,g,h Model configuration
-[model]
+[model_settings.model]
 provider = "openai-main"
 model = "gpt-5.5"
 # temperature = 0.2
@@ -145,11 +143,11 @@ model = "gpt-5.5"
 # ANTHROPIC_AUTH_TOKEN uses bearer authentication (Claude Code-compatible);
 # ANTHROPIC_API_KEY and other api_key values use the x-api-key header.
 # A base_url may point to either a host or an endpoint ending in /v1.
-# [model_providers.claude-main]
+# [model_settings.providers.claude-main]
 # type = "anthropic"
 # api_key = "$ANTHROPIC_AUTH_TOKEN"
 # base_url = "https://api.anthropic.com/v1"
-# Then edit the [model] section above to select it:
+# Then edit the [model_settings.model] section above to select it:
 # provider = "claude-main"
 # model = "claude-sonnet-4-6"
 
@@ -158,11 +156,11 @@ model = "gpt-5.5"
 # are needed. Custom base_url values are not supported for Kimi providers.
 # Moonshot's official endpoint supports Chat Completions, not /responses, so
 # keep api_mode unset (or set it to "chat_completions").
-# [model_providers.kimi-main]
+# [model_settings.providers.kimi-main]
 # type = "kimi"           # global: https://api.moonshot.ai/v1
 # type = "kimi-cn"        # mainland China: https://api.moonshot.cn/v1
 # api_key = "$MOONSHOT_API_KEY"
-# Set [model].provider = "kimi-main" to select it.
+# Set [model_settings.model].provider = "kimi-main" to select it.
 # model = "kimi-k3"
 
 # For Volcengine Ark (Doubao), use the "volcengine" provider. It uses its
@@ -171,10 +169,10 @@ model = "gpt-5.5"
 # Ark supports api_mode = "responses_stateful" with store + previous_response_id,
 # without requiring caching. Aiden does not send its OpenAI-specific compaction
 # array or truncation setting to Ark; Ark's own context_management schema differs.
-# [model_providers.ark-main]
+# [model_settings.providers.ark-main]
 # type = "volcengine"      # https://ark.cn-beijing.volces.com/api/v3
 # api_key = "$ARK_API_KEY"
-# Set [model].provider = "ark-main" to select it.
+# Set [model_settings.model].provider = "ark-main" to select it.
 # model = "doubao-seed-2-1-pro-260628"
 # Ark treats an omitted reasoning_effort as "high", which delays the first
 # streamed token; the registry pins "low" for the model above. Ark accepts
@@ -188,7 +186,7 @@ model = "gpt-5.5"
 # 7.1 & 7.2 & 7.3 Storage status, microSD settings, backup & restore
 # Storage mode is automatic: a usable card means dual storage, otherwise
 # eMMC only. StorageMonitor independently protects the persistent data root.
-[storage]
+[storage_settings.storage]
 # mount_point = "/mnt/sdcard"       # Where a usable card is mounted
 # device = "mmcblk2"                # SD card block device base name
 # min_card_free_mb = 64             # Cards with less free space are rejected
@@ -202,13 +200,13 @@ model = "gpt-5.5"
 # emergency_threshold_mb = 5
 # recovery_hysteresis_mb = 5
 
-[storage.degraded_mode]
+[storage_settings.storage.degraded_mode]
 # disable_llm_http_log = true
 # disable_audio_archive = true
 # disable_session_archive = true
 # max_agent_log_mb = 1
 
-[storage.cleanup]
+[storage_settings.storage.cleanup]
 # enabled = true
 # llm_http_log_retention_days = [7, 3, 1, 0]
 # audio_archive_retention_days = [30, 7, 0]
@@ -221,7 +219,7 @@ model = "gpt-5.5"
 
 # 8.1 日志设置
 # Log retention configuration
-[log]
+[advanced_settings.log]
 # llm_http_retention_days = 7  # Keep llm-http-*.log files for this many days
 
 # 8.2 手动编辑配置
@@ -230,9 +228,12 @@ model = "gpt-5.5"
 # HID (Human Interface Device) configuration
 # 2.2.b keyboard_layout is under 基础设置 > 设备设置
 # Advanced HID settings are under 高级设置
-[hid]
-# keyboard_device = "/dev/hidg0"
+[basic_settings.device.hid]
 # keyboard_layout = "qwerty"  # How the phone interprets the USB HID keyboard: "qwerty", "azerty", or "qwertz"
+
+# Advanced HID settings are kept under Advanced Settings > Hardware & Debug.
+[advanced_settings.hardware.hid]
+# keyboard_device = "/dev/hidg0"
 # mouse_device = "/dev/hidg1"
 # android_keyboard_device = "/dev/hidg2"  # hid.usb2 Consumer Control keys; Android nav keys in touchscreen mode, media/volume/brightness/screenshot keys in absolute mode
 # frame_socket = "/run/frame_service/frame_service.sock"
@@ -240,24 +241,24 @@ model = "gpt-5.5"
 
 # Keep the RK628 CSI capture stream enabled between screenshots. Enabling this
 # reduces screenshot latency but increases idle power consumption.
-[frame_service]
+[advanced_settings.hardware.frame_service]
 # keep_streamon = false
 
 # Web search tool configuration (also referenced in 3.e.a)
 # provider: "duckduckgo" (free, no key), "brave" (Brave Search, needs api_key), or "tavily" (needs api_key)
-[search]
+[conversation_settings.search]
 # provider = "duckduckgo"
 # api_key = ""
 
 # Live Activity / Dynamic Island.
 # State updates stay local: BLE carries only a wake hint and the iOS app reads
 # the current snapshot over USB ECM before updating ActivityKit.
-[live_activity]
+[advanced_settings.runtime.live_activity]
 # enabled = true
 
 # Episode telemetry (Langfuse). Disabled by default.
 # Set enabled = true and configure base_url + public_key + secret_key.
-[telemetry]
+[advanced_settings.runtime.telemetry]
 # enabled = false
 # provider = "langfuse"
 # base_url = "http://langfuse.example.com:3000"
@@ -285,6 +286,7 @@ model = "gpt-5.5"
 # - text: HTTP server and Web UI only
 # - stt: also run device audio -> STT -> LLM -> TTS (Classic Mode)
 # - realtime: run the realtime voice model directly (Realtime Mode)
+[voice_settings.mode]
 input_mode = "text"
 
 # 5.a Realtime Mode Configuration
@@ -293,7 +295,7 @@ input_mode = "text"
 # used when input_mode = "stt". In realtime mode, the voice model is
 # the non-blocking foreground agent; device and multi-step work is queued to
 # the legacy agent loop through create_agent_task.
-# [voice_model_providers.qwen-main]
+# [voice_settings.realtime.providers.qwen-main]
 # type = "qwen"
 # api_key = "$DASHSCOPE_API_KEY"
 # model = "qwen-audio-3.0-realtime-plus"
@@ -302,7 +304,7 @@ input_mode = "text"
 # endpoint = ""         # optional ws/wss endpoint override
 # voice = "longanqian"
 #
-# [voice_model]
+# [voice_settings.realtime]
 # provider = "qwen-main"
 # instructions = ""    # optional override; defaults to a short conversation-only prompt
 # enable_speech_emotion = true
@@ -316,6 +318,7 @@ input_mode = "text"
 
 # RKNN Silero VAD parameters (for Classic Mode)
 # Only used when input_mode is "stt"
+[voice_settings.classic.runtime]
 # vad_backend = "rknn" # "rknn" (NPU encoder + CPU LSTM/decoder) or "cpu"
 # vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 # vad_helper_path = "/oem/usr/bin/rknn_vad"
@@ -337,63 +340,63 @@ input_mode = "text"
 
 # 5.b.a Speech-to-Text (STT) configuration
 # Required when input_mode = "stt"
-[stt_providers.openai-main]
+[voice_settings.classic.stt.providers.openai-main]
 type = "openai-whisper"
 api_key = "$OPENAI_API_KEY"
 model = "whisper-1"
 # base_url = "https://api.openai.com/v1"  # Optional: custom endpoint
 
-[stt]
+[voice_settings.classic.stt]
 provider = "openai-main"
 
 # For OpenRouter STT:
-# [stt_providers.openrouter-main]
+# [voice_settings.classic.stt.providers.openrouter-main]
 # type = "openrouter"
 # api_key = "$OPENROUTER_API_KEY"
 # model = "qwen/qwen3-asr-flash-2026-02-10"
-# Set [stt].provider = "openrouter-main" to select it.
+# Set [voice_settings.classic.stt].provider = "openrouter-main" to select it.
 
 # For Tencent ASR (alternative to OpenAI Whisper):
-# [stt_providers.tencent-main]
+# [voice_settings.classic.stt.providers.tencent-main]
 # type = "tencent-asr"  # legacy aliases: tencent, tencent_asr
 # app_id = "TENCENT_APP_ID"   # Required for realtime upload during recording
 # secret_id = "TENCENT_SECRET_ID"
 # secret_key = "TENCENT_SECRET_KEY"
 # region = "ap-shanghai"
 # engine_model_type = "16k_zh"
-# Set [stt].provider = "tencent-main" to select it.
+# Set [voice_settings.classic.stt].provider = "tencent-main" to select it.
 
 # For OpenRouter STT:
-# [stt_providers.openrouter-main]
+# [voice_settings.classic.stt.providers.openrouter-main]
 # type = "openrouter"
 # api_key = "$OPENROUTER_API_KEY"
 # model = "qwen/qwen3-asr-flash-2026-02-10"
-# Set [stt].provider = "openrouter-main" to select it.
+# Set [voice_settings.classic.stt].provider = "openrouter-main" to select it.
 
 # For Tencent ASR (alternative to OpenAI Whisper):
-# [stt_providers.tencent-main]
+# [voice_settings.classic.stt.providers.tencent-main]
 # type = "tencent-asr"  # legacy aliases: tencent, tencent_asr
 # app_id = "TENCENT_APP_ID"   # Required for realtime upload during recording
 # secret_id = "TENCENT_SECRET_ID"
 # secret_key = "TENCENT_SECRET_KEY"
 # region = "ap-shanghai"
 # engine_model_type = "16k_zh"
-# Set [stt].provider = "tencent-main" to select it.
+# Set [voice_settings.classic.stt].provider = "tencent-main" to select it.
 
 # 5.b.b Text-to-Speech (TTS) configuration
 # Required when input_mode = "stt"
-[tts_providers.minimax-main]
+[voice_settings.classic.tts.providers.minimax-main]
 type = "minimax-cn"
 api_key = "$MINIMAX_API_KEY"
 voice_id = "male-qn-qingse"   # Voice ID from Minimax
 emotion = "happy"             # Emotion: happy, sad, angry, etc.
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-main"
 # speed = 1.0                 # Speech speed: 0.5 - 2.0
 
 # 5.b.c Audio service configuration (for Classic Mode)
-[audio]
+[voice_settings.classic.audio]
 # socket = "/run/audio_service/audio_service.sock"
 # sample_rate = 16000
 # channels = 1
@@ -402,7 +405,7 @@ provider = "minimax-main"
 
 # 5.b.d Audio archive configuration (optional, for Classic Mode)
 # When enabled, saves audio recordings to disk for playback in web UI.
-[audio_archive]
+[voice_settings.classic.audio_archive]
 # enabled = true              # Set false to stop archiving audio files
 # max_files = 500             # Keep most recent N audio files
 # max_size_mb = 100           # Or stop when total size exceeds this (MB)
@@ -418,7 +421,7 @@ provider = "minimax-main"
 # 6.a 屏幕记忆保留天数
 # Quick Capture uses the verified spare falling-edge input on the 40Pin header:
 # Luckfox Pico Zero physical pin 38 (GPIO3). GPIO32/GPIO33 remain legacy wakeup.
-[quick_capture]
+[memory_settings.screen]
 # enabled = true
 # gpio_pin = 3
 # screen_memory_ttl = "90d"
@@ -426,19 +429,19 @@ provider = "minimax-main"
 # 6.b 通知记忆保留天数
 # Voice notifications follow a normal Agent reply, or use an idle Realtime
 # session for a private announcement.
-[voice_notifications]
+[memory_settings.notification]
 # enabled = true
 # max_pending = 8
 
-[voice_notifications.response_tail]
+[memory_settings.notification.response_tail]
 # enabled = true
 # max_items = 1
 # max_text_chars = 40
 
-[voice_notifications.expiration]
+[memory_settings.notification.expiration]
 # default_ttl_seconds = 0
 
-[voice_notifications.expiration.code_ttl_seconds]
+[memory_settings.notification.expiration.code_ttl_seconds]
 # storage = 900
 
 # 6.c 重置对话与记忆

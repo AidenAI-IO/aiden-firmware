@@ -19,7 +19,7 @@ func TestServiceUpdateAppliesPatchWithoutCLI(t *testing.T) {
 	if !result.OK || !result.RebootRequired {
 		t.Fatalf("result = %+v, want successful reboot-requiring update", result)
 	}
-	if len(result.ChangedPaths) != 1 || result.ChangedPaths[0] != "hid.keyboard_layout" {
+	if len(result.ChangedPaths) != 1 || result.ChangedPaths[0] != "basic_settings.device.hid.keyboard_layout" {
 		t.Fatalf("changed paths = %v", result.ChangedPaths)
 	}
 }

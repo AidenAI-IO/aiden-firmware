@@ -377,7 +377,7 @@ func persistLegacyProviderFields(
 		return fmt.Errorf("decode legacy provider fields: %w", err)
 	}
 
-	if metadata.IsDefined("model", "api_key") && strings.TrimSpace(current.Model.Provider) != "" {
+	if metadataHasAny(metadata, "api_key", []string{"model"}, []string{"model_settings", "model"}) && strings.TrimSpace(current.Model.Provider) != "" {
 		provider := current.Model.Provider
 		providerType := provider
 		if record, ok := current.ModelProviders[provider]; ok {
@@ -395,10 +395,10 @@ func persistLegacyProviderFields(
 
 	if provider := current.TTS.Provider; strings.TrimSpace(provider) != "" {
 		if record, ok := current.TTSProviders[provider]; ok {
-			values := definedLegacyValues(metadata, "tts", map[string]string{
+			values := definedLegacyValues(metadata, map[string]string{
 				"api_key": record.APIKey, "model": record.Model, "voice_id": record.VoiceID,
 				"emotion": record.Emotion, "reference_id": record.ReferenceID,
-			})
+			}, []string{"tts"}, []string{"voice_settings", "classic", "tts"})
 			if len(values) > 0 {
 				if err := persistLegacyProviderRecord(patch, metadata, renames, explicitCredentials,
 					"tts_providers", provider, record.Type, values, map[string]bool{"api_key": true}); err != nil {
@@ -413,11 +413,11 @@ func persistLegacyProviderFields(
 
 	if provider := current.STT.Provider; strings.TrimSpace(provider) != "" {
 		if record, ok := current.STTProviders[provider]; ok {
-			values := definedLegacyValues(metadata, "stt", map[string]string{
+			values := definedLegacyValues(metadata, map[string]string{
 				"api_key": record.APIKey, "model": record.Model, "base_url": record.BaseURL,
 				"app_id": record.AppID, "secret_id": record.SecretID, "secret_key": record.SecretKey,
 				"region": record.Region, "engine_model_type": record.EngineModelType,
-			})
+			}, []string{"stt"}, []string{"voice_settings", "classic", "stt"})
 			if len(values) > 0 {
 				if err := persistLegacyProviderRecord(patch, metadata, renames, explicitCredentials,
 					"stt_providers", provider, record.Type, values,
@@ -433,7 +433,7 @@ func persistLegacyProviderFields(
 
 	if provider := current.VoiceModel.Provider; strings.TrimSpace(provider) != "" {
 		if record, ok := current.VoiceModelProviders[provider]; ok {
-			values := definedLegacyValues(metadata, "voice_model", map[string]string{
+			values := definedLegacyValues(metadata, map[string]string{
 				"upstream_provider": record.UpstreamProvider,
 				"agent_id":          record.AgentID,
 				"api_key":           record.APIKey,
@@ -447,7 +447,7 @@ func persistLegacyProviderFields(
 				"base_url":          record.BaseURL,
 				"realtime_protocol": record.RealtimeProtocol,
 				"voice":             record.Voice,
-			})
+			}, []string{"voice_model"}, []string{"voice_settings", "realtime"})
 			if len(values) > 0 {
 				if err := persistLegacyProviderRecord(patch, metadata, renames, explicitCredentials,
 					"voice_model_providers", provider, record.Type, values,
@@ -463,10 +463,20 @@ func persistLegacyProviderFields(
 	return nil
 }
 
-func definedLegacyValues(metadata toml.MetaData, section string, values map[string]string) map[string]string {
+func metadataHasAny(metadata toml.MetaData, key string, sections ...[]string) bool {
+	for _, section := range sections {
+		path := append(append([]string(nil), section...), key)
+		if metadata.IsDefined(path...) {
+			return true
+		}
+	}
+	return false
+}
+
+func definedLegacyValues(metadata toml.MetaData, values map[string]string, sections ...[]string) map[string]string {
 	result := make(map[string]string)
 	for key, value := range values {
-		if metadata.IsDefined(section, key) {
+		if metadataHasAny(metadata, key, sections...) {
 			result[key] = value
 		}
 	}
@@ -505,7 +515,7 @@ func persistLegacyProviderRecord(
 			return fmt.Errorf("%s.%s patch must be an object", section, targetName)
 		}
 	}
-	if !metadata.IsDefined(section, sourceName) {
+	if !providerRecordDefined(metadata, section, sourceName) {
 		if _, exists := record["type"]; !exists {
 			record["type"], _ = json.Marshal(providerType)
 		}
@@ -532,6 +542,21 @@ func persistLegacyProviderRecord(
 	}
 	patch[section] = encodedRecords
 	return nil
+}
+
+func providerRecordDefined(metadata toml.MetaData, section, name string) bool {
+	switch section {
+	case "model_providers":
+		return metadata.IsDefined("model_providers", name) || metadata.IsDefined("model_settings", "providers", name)
+	case "tts_providers":
+		return metadata.IsDefined("tts_providers", name) || metadata.IsDefined("voice_settings", "classic", "tts", "providers", name)
+	case "stt_providers":
+		return metadata.IsDefined("stt_providers", name) || metadata.IsDefined("voice_settings", "classic", "stt", "providers", name)
+	case "voice_model_providers":
+		return metadata.IsDefined("voice_model_providers", name) || metadata.IsDefined("voice_settings", "realtime", "providers", name)
+	default:
+		return false
+	}
 }
 
 func addLegacyFieldDeletes(patch map[string]json.RawMessage, section string, fields []string) error {
@@ -824,12 +849,12 @@ func configPatchOperations(patch map[string]json.RawMessage) ([]configdoc.Operat
 }
 
 func flattenConfigPatch(path []string, raw json.RawMessage, operations *[]configdoc.Operation) error {
-	path = tomlPathForWebPath(path)
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		mappedPath := tomlPathForWebPath(path)
 		if len(path) >= 2 && strings.HasSuffix(path[0], "_providers") && len(path) == 2 {
-			*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), path...), DeleteTable: true})
+			*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), mappedPath...), DeleteTable: true})
 		} else {
-			*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), path...), Delete: true})
+			*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), mappedPath...), Delete: true})
 		}
 		return nil
 	}
@@ -861,7 +886,7 @@ func flattenConfigPatch(path []string, raw json.RawMessage, operations *[]config
 	if err != nil {
 		return fmt.Errorf("invalid patch at %s: %w", strings.Join(path, "."), err)
 	}
-	*operations = append(*operations, configdoc.Operation{Path: append([]string(nil), path...), Value: normalized})
+	*operations = append(*operations, configdoc.Operation{Path: tomlPathForWebPath(path), Value: normalized})
 	return nil
 }
 
@@ -1079,10 +1104,74 @@ func jsonFieldType(typ reflect.Type, name string) (reflect.Type, bool) {
 }
 
 func tomlPathForWebPath(path []string) []string {
-	if len(path) < 2 || path[0] != "agent" {
+	if len(path) == 0 {
 		return path
 	}
-	return append([]string{path[1]}, path[2:]...)
+	section := path[0]
+	key := ""
+	if len(path) > 1 {
+		key = path[1]
+	}
+	var prefix []string
+	switch section {
+	case "agent":
+		if key == "locale" {
+			prefix = []string{"basic_settings", "language_timezone"}
+		} else if key == "input_mode" {
+			prefix = []string{"voice_settings", "mode"}
+		} else if strings.HasPrefix(key, "vad_") || strings.HasPrefix(key, "silence_") || strings.HasPrefix(key, "min_speech_") || strings.HasPrefix(key, "voice_") {
+			prefix = []string{"voice_settings", "classic", "runtime"}
+		} else {
+			prefix = []string{"conversation_settings", "agent"}
+		}
+	case "model":
+		prefix = []string{"model_settings", "model"}
+	case "model_providers":
+		prefix = []string{"model_settings", "providers"}
+	case "voice_model":
+		prefix = []string{"voice_settings", "realtime"}
+	case "voice_model_providers":
+		prefix = []string{"voice_settings", "realtime", "providers"}
+	case "device":
+		prefix = []string{"basic_settings", "device"}
+	case "stt":
+		prefix = []string{"voice_settings", "classic", "stt"}
+	case "stt_providers":
+		prefix = []string{"voice_settings", "classic", "stt", "providers"}
+	case "tts":
+		prefix = []string{"voice_settings", "classic", "tts"}
+	case "tts_providers":
+		prefix = []string{"voice_settings", "classic", "tts", "providers"}
+	case "audio":
+		prefix = []string{"voice_settings", "classic", "audio"}
+	case "audio_archive":
+		prefix = []string{"voice_settings", "classic", "audio_archive"}
+	case "quick_capture":
+		prefix = []string{"memory_settings", "screen"}
+	case "voice_notifications":
+		prefix = []string{"memory_settings", "notification"}
+	case "storage":
+		prefix = []string{"storage_settings", "storage"}
+	case "log":
+		prefix = []string{"advanced_settings", "log"}
+	case "hid":
+		if key == "keyboard_layout" {
+			prefix = []string{"basic_settings", "device", "hid"}
+		} else {
+			prefix = []string{"advanced_settings", "hardware", "hid"}
+		}
+	case "frame_service":
+		prefix = []string{"advanced_settings", "hardware", "frame_service"}
+	case "search":
+		prefix = []string{"conversation_settings", "search"}
+	case "termination_policy":
+		prefix = []string{"conversation_settings", "termination_policy"}
+	case "telemetry", "live_activity", "ota":
+		prefix = []string{"advanced_settings", "runtime", section}
+	default:
+		return path
+	}
+	return append(prefix, path[1:]...)
 }
 
 func normalizeJSONValue(value any) (any, error) {

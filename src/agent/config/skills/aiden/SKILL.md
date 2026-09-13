@@ -137,7 +137,7 @@ A normal task follows this loop:
 
 - HID coordinates are normalized `0..1000`, not screenshot pixels. Never guess a coordinate when the
   target is not visible in a current frame.
-- `[device].device_type` is the platform authority and selects the pointer mode: `Android` uses
+- `[basic_settings.device].device_type` is the platform authority and selects the pointer mode: `Android` uses
   touchscreen semantics; `iOS`, `macOS`, `windows`, and `linux` normally use absolute pointer
   semantics. Changing it requires a full board reboot so the USB descriptor is re-enumerated; a
   process or hot gadget restart is not sufficient.
@@ -328,23 +328,24 @@ to reload configuration. Changes to `device_type` or `keyboard_layout` additiona
 full-board USB re-enumeration procedure described below. These are the first fields to check:
 
 ```toml
+[voice_settings.mode]
 input_mode = "text"          # text | stt | realtime
 
-[device]
+[basic_settings.device]
 device_type = "iOS"          # iOS | Android | macOS | windows | linux
 
-[model]
+[model_settings.model]
 provider = "openai-main"     # a configured provider name
 model = "gpt-5.5"
 
-[hid]
+[advanced_settings.hardware.hid]
 keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
 input_backend = "hid"
 
-[audio]
+[voice_settings.classic.audio]
 socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
@@ -359,8 +360,9 @@ backend = "auto"              # board audio_service
 - `keyboard_layout` supports `qwerty`, `azerty`, and `qwertz`. iOS can retain a layout at USB
   enumeration time, so change the phone input language before changing the board layout and perform
   a full board reboot to re-enumerate the USB keyboard descriptor.
-- `model_providers.<name>`, `stt_providers.<name>`, and `tts_providers.<name>` hold provider
-  records. The `[model]`, `[stt]`, and `[tts]` sections select a record; they do not duplicate its
+- `model_settings.providers.<name>`, `voice_settings.classic.stt.providers.<name>`, and
+  `voice_settings.classic.tts.providers.<name>` hold provider records. The corresponding grouped
+  model, STT, and TTS tables select a record; they do not duplicate its
   credentials.
 - Prefer `$ENV_VAR` references for secrets. `/userdata/system/env` uses shell assignment syntax and
   centralizes API keys plus `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`. The environment wrapper and
@@ -377,7 +379,7 @@ backend = "auto"              # board audio_service
    cannot replace USB ECM for commands or results.
 2. Install and open the Aiden companion app. Wait for its connected state and its first environment
    report, which supplies platform, locale, timezone, battery, and screen dimensions.
-3. Make `[device].device_type` match the phone platform. If it changes, reboot the entire board,
+3. Make `[basic_settings.device].device_type` match the phone platform. If it changes, reboot the entire board,
    wait for USB host detach and HID re-enumeration, then verify the new HID session before sending
    input. Restarting only the Agent or gadget is insufficient.
 4. Grant only the permissions required for the requested capability. On denial, explain the missing

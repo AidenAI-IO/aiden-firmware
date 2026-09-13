@@ -90,9 +90,9 @@ The config page also maintains Agent configuration and system environment variab
 
 Fill in the keys for each service on the same config page. Among them:
 
-- **`[model]` is required**, and it must be a multimodal LLM (the Agent needs to send screenshots to the model as image input);
-- **`[tts]`** enables voice playback (turning the model's reply into speech);
-- **`[stt]`** enables speech-to-text for voice input.
+- **`[model_settings.model]` is required**, and it must be a multimodal LLM (the Agent needs to send screenshots to the model as image input);
+- **`[voice_settings.classic.tts]`** enables voice playback (turning the model's reply into speech);
+- **`[voice_settings.classic.stt]`** enables speech-to-text for voice input.
 
 ### Choosing the Agent mode
 

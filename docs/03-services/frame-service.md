@@ -150,7 +150,7 @@ The Debian start helper reads the persistent setting from
 `/userdata/agent/agent.toml`:
 
 ```toml
-[frame_service]
+[advanced_settings.hardware.frame_service]
 keep_streamon = false
 ```
 
@@ -198,10 +198,10 @@ frames are released after their requesting connection finishes.
 The Go Agent's `screenshot` tool accesses `frame_service` through `FrameServiceClient`. Configuration:
 
 ```toml
-[hid]
+[advanced_settings.hardware.hid]
 frame_socket = "/run/frame_service/frame_service.sock"
 
-[frame_service]
+[advanced_settings.hardware.frame_service]
 keep_streamon = false
 ```
 

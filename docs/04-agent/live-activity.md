@@ -173,7 +173,7 @@ the same local native module.
 The only required Agent setting is that Live Activity snapshots remain enabled:
 
 ```toml
-[live_activity]
+[advanced_settings.runtime.live_activity]
 enabled = true
 ```
 

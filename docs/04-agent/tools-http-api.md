@@ -84,7 +84,7 @@ The HTTP catalog is generated from registered Agent-owned tools at runtime. It c
 
 ## Platform-Specific Conversational Catalog
 
-The conversational Agent tool catalog is filtered by the global `[device].device_type` state. Valid configured device type values are `iOS`, `Android`, `macOS`, `windows`, and `linux`; the runtime derives lowercase platform identifiers (`ios`, `android`, `macos`, `windows`, `linux`) from those values for tool-catalog filtering. Tools with no platform metadata are treated as portable.
+The conversational Agent tool catalog is filtered by the global `[basic_settings.device].device_type` state. Valid configured device type values are `iOS`, `Android`, `macOS`, `windows`, and `linux`; the runtime derives lowercase platform identifiers (`ios`, `android`, `macos`, `windows`, `linux`) from those values for tool-catalog filtering. Tools with no platform metadata are treated as portable.
 
 Platform-specific tools should stay registered and HTTP-visible for Tool Lab and manual diagnostics unless they are unsafe or impossible to invoke directly. The platform split applies to the model-facing catalog so the model is not taught tools that cannot run for the current device.
 
@@ -92,7 +92,7 @@ When adding or changing a tool, use this rule:
 
 - Prefer one semantic tool that reads runtime `device_type` internally when the capability is the same across platforms.
 - Add platform metadata in `builtInToolSpecMetadata` when the tool cannot run on every configured device type, its schema or description would imply the wrong platform behavior, or the supported action set is materially different.
-- In `builtInToolSpecMetadata`, use derived platform identifiers: `ios` and `android` for phone-companion capabilities, `macos` for Mac desktop bindings, and add `windows` or `linux` only after the tool has verified bindings for those platforms. Do not use these lowercase identifiers as documented `[device].device_type` values.
+- In `builtInToolSpecMetadata`, use derived platform identifiers: `ios` and `android` for phone-companion capabilities, `macos` for Mac desktop bindings, and add `windows` or `linux` only after the tool has verified bindings for those platforms. Do not use these lowercase identifiers as documented `[basic_settings.device].device_type` values.
 - Do not ask the model to pass platform/device/os arguments for platform selection; the runtime derives the platform from global `device_type` state.
 - If a tool has platform-specific subcommands, make its runtime `ArgsSchema()` list only the subcommands active for the current `device_type` (for example `quick_action.action` and `touch_gesture.type`).
 - When a nominally platform-specific namespace has a portable subset, expose only that subset on other platforms instead of hiding the namespace entirely; for example non-Android `keyboard_tap` may list only the absolute pointer-mode `KEYCODE_*` media, volume, screenshot, and brightness aliases.

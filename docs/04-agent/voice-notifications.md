@@ -100,7 +100,7 @@ The fallback is deliberately limited:
 - it runs only before any PCM from the failed TTS attempt has started playing;
 - cancellation and preemption never trigger it;
 - playing the fallback does not acknowledge a pending response-tail notification, because the original reply and reminder were not spoken;
-- disabling `[voice_notifications]` also disables this fallback.
+- disabling `[memory_settings.notification]` also disables this fallback.
 
 Locale selection follows the device-level `locale`: `en-US` uses the English file and `zh-CN` uses the Chinese file. The same locale drives built-in notification text, response-tail punctuation, and prerecorded fallback selection. Development and custom images may override the asset directory with `AIDEN_TTS_FALLBACK_DIR`.
 
@@ -120,21 +120,22 @@ Final turn failures do not enter the persistent queue. They are classified as ne
 ## Configuration
 
 ```toml
+[basic_settings.language_timezone]
 locale = "en-US"
 
-[voice_notifications]
+[memory_settings.notification]
 enabled = true
 max_pending = 8
 
-[voice_notifications.response_tail]
+[memory_settings.notification.response_tail]
 enabled = true
 max_items = 1
 max_text_chars = 40
 
-[voice_notifications.expiration]
+[memory_settings.notification.expiration]
 default_ttl_seconds = 0
 
-[voice_notifications.expiration.code_ttl_seconds]
+[memory_settings.notification.expiration.code_ttl_seconds]
 storage = 900
 ```
 

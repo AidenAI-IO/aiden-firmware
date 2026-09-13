@@ -157,18 +157,30 @@ def apply_agent_toml_runtime_defaults(content: str) -> str:
         return content
 
     lines = content.splitlines()
-    insert_at = len(lines)
-    for index, line in enumerate(lines):
-        if line.lstrip().startswith("["):
-            insert_at = index
+    target_header = "[voice_settings.classic.runtime]"
+    target_start = next(
+        (index for index, line in enumerate(lines) if line.strip() == target_header),
+        None,
+    )
+    if target_start is None:
+        missing = list(VOICE_SIDE_EFFECT_DEFAULTS)
+        suffix = "\n" if lines and lines[-1].strip() else ""
+        return "\n".join(lines) + suffix + "\n" + target_header + "\n" + "\n".join(
+            f"{key} = false" for key in missing
+        ) + "\n"
+
+    target_end = len(lines)
+    for index in range(target_start + 1, len(lines)):
+        if lines[index].lstrip().startswith("["):
+            target_end = index
             break
 
-    preamble = "\n".join(lines[:insert_at])
+    runtime_body = "\n".join(lines[target_start + 1 : target_end])
     present = {
         match.group("quoted") or match.group("bare")
         for match in re.finditer(
             r'(?m)^\s*(?:"(?P<quoted>[^"]+)"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))\s*=',
-            preamble,
+            runtime_body,
         )
     }
     missing = [key for key in VOICE_SIDE_EFFECT_DEFAULTS if key not in present]
@@ -176,9 +188,9 @@ def apply_agent_toml_runtime_defaults(content: str) -> str:
         return content
 
     insert_lines = [f"{key} = false" for key in missing]
-    if insert_at < len(lines):
+    if target_end > target_start + 1 and lines[target_end - 1].strip():
         insert_lines.append("")
-    lines[insert_at:insert_at] = insert_lines
+    lines[target_end:target_end] = insert_lines
     return "\n".join(lines) + "\n"
 
 

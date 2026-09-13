@@ -494,7 +494,7 @@ printf '%s\n' '{"ok":true,"config":{},"changed_paths":[],"reboot_required":false
 func TestConfigPatchReconfiguresStorageOwner(t *testing.T) {
 	options := testOptions(t)
 	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
-	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"storage.mount_point\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"storage_settings.storage.mount_point\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
 	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ func TestConfigPatchReconfiguresStorageOwner(t *testing.T) {
 	}
 	storage := &fakeStorageController{}
 	server.storage = storage
-	config := "[storage]\nmount_point = \"/mnt/new-card\"\ndevice = \"mmcblk9\"\nmin_card_free_mb = 128\n"
+	config := "[storage_settings.storage]\nmount_point = \"/mnt/new-card\"\ndevice = \"mmcblk9\"\nmin_card_free_mb = 128\n"
 	if err := os.WriteFile(options.AgentConfigPath, []byte(config), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -1287,13 +1287,13 @@ func TestFrameConfigRestartsOnlyFrameServiceAndRetriesFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	if err := os.WriteFile(options.AgentConfigPath, []byte("[hid]\nframe_socket = "+strconv.Quote(socket)+"\n"), 0600); err != nil {
+	if err := os.WriteFile(options.AgentConfigPath, []byte("[advanced_settings.hardware.hid]\nframe_socket = "+strconv.Quote(socket)+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "restart")
 	fakeAgent := filepath.Join(dir, "agent")
-	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"frame_service.keep_streamon\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"advanced_settings.hardware.frame_service.keep_streamon\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
 	if err := os.WriteFile(fakeAgent, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -1329,7 +1329,7 @@ func TestFrameConfigRestartsOnlyFrameServiceAndRetriesFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An unchanged retry still has to finish the failed frame restart.
-	if err := os.WriteFile(fakeAgent, []byte(strings.ReplaceAll(script, `["frame_service.keep_streamon"]`, `[]`)), 0755); err != nil {
+	if err := os.WriteFile(fakeAgent, []byte(strings.ReplaceAll(script, `["advanced_settings.hardware.frame_service.keep_streamon"]`, `[]`)), 0755); err != nil {
 		t.Fatal(err)
 	}
 	applied := save()

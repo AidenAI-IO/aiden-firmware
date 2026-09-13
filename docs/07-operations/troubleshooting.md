@@ -35,7 +35,7 @@ ls -l /run/frame_service/frame_service.sock
 Common causes:
 
 - `frame_service` is not running;
-- `[hid].frame_socket` path in `agent.toml` is inconsistent;
+- `[advanced_settings.hardware.hid].frame_socket` path in `agent.toml` is inconsistent;
 - HDMI input is not synced;
 - RK628D or TC358743 HDMI subdevice status is abnormal.
 
@@ -117,7 +117,7 @@ amixer sget 'DAC LINEOUT'
 Recommendations:
 
 - First run `scripts/setup_audio_volume.sh`;
-- Confirm `[audio].socket` path matches the service;
+- Confirm `[voice_settings.classic.audio].socket` path matches the service;
 - Use `record-stream` and `play-stream` to verify recording/playback separately;
 - Check if `ffmpeg` exists when TTS fails.
 

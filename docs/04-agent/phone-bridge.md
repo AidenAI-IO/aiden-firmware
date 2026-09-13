@@ -62,7 +62,7 @@ Phone relay app -> ws://127.0.0.1:8080/api/phone-bridge
 ADB reverse     -> host computer 127.0.0.1:8080
 ```
 
-When `[hid].input_backend = "adb"` is active, the desktop Agent attempts to configure the reverse mapping automatically at startup:
+When `[advanced_settings.hardware.hid].input_backend = "adb"` is active, the desktop Agent attempts to configure the reverse mapping automatically at startup:
 
 ```bash
 adb reverse tcp:8080 tcp:8080

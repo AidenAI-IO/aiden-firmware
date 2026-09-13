@@ -1,15 +1,18 @@
+[basic_settings.language_timezone]
 locale = "en-US"
-input_mode = "text"
 
-[device]
+[basic_settings.device]
 device_type = "iOS"
 
-[model]
+[model_settings.model]
 provider = "fake"
 responses = ["Aiden Docker sandbox is running. Configure an LLM provider in Config Web to handle real tasks."]
 
-[search]
+[conversation_settings.search]
 provider = "duckduckgo"
 
-[telemetry]
+[voice_settings.mode]
+input_mode = "text"
+
+[advanced_settings.runtime.telemetry]
 enabled = false

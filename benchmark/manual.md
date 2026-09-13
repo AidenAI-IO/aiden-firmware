@@ -1043,7 +1043,7 @@ config. When an environment bridge is provided,
 the command resolves its platform once and passes it to the daemon through
 process-local `--device-type`. Without a bridge, an explicit `--device-type` is
 an optional override; if it is omitted, the daemon keeps
-`[device].device_type` from `agent.toml`. The daemon applies a process-local
+`[basic_settings.device].device_type` from `agent.toml`. The daemon applies a process-local
 override after loading `agent.toml`, reports the effective value as
 `status.device_type`, and the command validates that value after startup. The
 deprecated `--target-platform` spelling remains accepted as a compatibility

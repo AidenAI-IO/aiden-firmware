@@ -77,7 +77,7 @@ The header switch saves only the top-level `locale` through
 persistence fails. The last confirmed value is cached in `localStorage` for
 first paint, but `GET /api/device/snapshot` remains authoritative. The next Agent task
 creates a new context session when the locale-specific system prompt changes; it does not rewrite the previous session. `locale` is intentionally
-separate from `[stt].language`, which only configures speech recognition.
+separate from `[voice_settings.classic.stt].language`, which only configures speech recognition.
 
 ## Configuration Application Policy
 

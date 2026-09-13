@@ -17,7 +17,7 @@ import (
 
 func TestRunConfigUpdateIODelegatesToService(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	if err := os.WriteFile(path, []byte("[hid]\nkeyboard_layout = \"qwerty\"\n"), 0o640); err != nil {
+	if err := os.WriteFile(path, []byte("[basic_settings.device.hid]\nkeyboard_layout = \"qwerty\"\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 
@@ -35,7 +35,7 @@ func TestRunConfigUpdateIODelegatesToService(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatalf("decode result: %v", err)
 	}
-	if !result.OK || !result.RebootRequired || strings.Join(result.ChangedPaths, ",") != "hid.keyboard_layout" {
+	if !result.OK || !result.RebootRequired || strings.Join(result.ChangedPaths, ",") != "basic_settings.device.hid.keyboard_layout" {
 		t.Fatalf("result = %+v", result)
 	}
 }
