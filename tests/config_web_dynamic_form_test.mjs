@@ -207,6 +207,8 @@ const document = new Document();
 const agentTarget = appendTarget(document, 'agent');
 const modelTarget = appendTarget(document, 'model');
 const quickCaptureTarget = appendTarget(document, 'quick_capture');
+const hidTarget = appendTarget(document, 'hid');
+const hidDebugTarget = appendTarget(document, 'hid-debug');
 const voiceModelCard = document.createElement('div');
 voiceModelCard.id = 'section-voice_model';
 voiceModelCard.className = 'section-card';
@@ -278,6 +280,10 @@ buildConfigMeta({sections: [
     {key: 'gpio_pin', label: 'GPIO Pin', widget: 'number', default: 0},
     {key: 'screen_memory_ttl', label: 'Screen Memory TTL', widget: 'text', default: '90d'},
   ]},
+  {name: 'hid', fields: [
+    {key: 'keyboard_layout', label: 'Keyboard layout', widget: 'select', enum: [{value: 'qwerty'}]},
+    {key: 'input_backend', label: 'Input backend', widget: 'select', enum: [{value: 'hid'}, {value: 'adb'}]},
+  ]},
   {name: 'voice_model', fields: [
     {key: 'api_key', label: 'API key', widget: 'text', secret: true, visibleWhen: {all: [{field: 'agent.input_mode', op: 'eq', value: 'realtime'}]}},
     {key: 'model', label: 'Model', widget: 'text', visibleWhen: {all: [{field: 'agent.input_mode', op: 'eq', value: 'realtime'}]}},
@@ -327,6 +333,12 @@ assert.equal(voiceModelCard.classList.contains('hidden'), false, 'voice model ca
 
 const configFormModule = await loadModule(path.join(webRoot, 'assets/js/config/config-form.js'));
 await configFormModule.evaluate();
+const hidDebugField = document.getElementById('hid_input_backend').closest('.field');
+hidDebugTarget.appendChild(hidDebugField);
+configFormModule.namespace.setSectionLocked('hid', true);
+assert.equal(document.getElementById('hid_input_backend').disabled, true, 'moved HID debug fields are locked with the section');
+configFormModule.namespace.setSectionLocked('hid', false);
+assert.equal(document.getElementById('hid_input_backend').disabled, false, 'moved HID debug fields unlock with the section');
 stateModule.namespace.appState.config = {
   agent: {input_mode: 'stt'},
   voice_model: {

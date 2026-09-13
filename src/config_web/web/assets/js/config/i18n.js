@@ -121,6 +121,18 @@ const messages = {
     'page.reading_config': 'Reading configuration...',
     'page.initialization_failed': 'Page initialization failed.',
     'config.title': 'Agent Configuration',
+    'groups.basic_settings': 'Basic Settings',
+    'groups.language_timezone': 'Language & Time Zone',
+    'groups.device_settings': 'Device Settings',
+    'groups.model_settings': 'Model Settings',
+    'groups.realtime_mode': 'Realtime Mode',
+    'groups.voice_settings': 'Voice Settings',
+    'groups.conversation_settings': 'Conversation Settings',
+    'groups.websearch': 'Web Search',
+    'groups.memory_settings': 'Memory Settings',
+    'groups.storage_settings': 'Storage Settings',
+    'groups.advanced_settings': 'Advanced Settings',
+    'groups.hardware_settings': 'Hardware & Debugging',
     'config.save_failed': 'Save [{{section}}] failed.',
     'config.saved_not_applied': 'Saved [{{section}}], but the Agent has not applied it yet.',
     'config.saved_pending': 'Saved [{{section}}]. Waiting to apply configuration.',
@@ -161,7 +173,24 @@ const messages = {
     'config.hid_reboot_cancelled': 'Cancelled immediate reboot. Please reboot manually later, then verify USB HID after reboot.',
     'config.default_empty': 'Default: Empty',
     'config.default_value': 'Default: {{value}}',
+    'config.fields.agent.input_mode.label': 'Input mode',
+    'config.fields.agent.input_mode.options.text': 'Text',
+    'config.fields.agent.input_mode.options.stt': 'STT',
+    'config.fields.agent.input_mode.options.realtime': 'Realtime',
+    'config.fields.device.device_type.label': 'Device type',
+    'config.fields.device.device_type.options.ios': 'iOS',
+    'config.fields.device.device_type.options.android': 'Android',
+    'config.fields.device.device_type.options.macos': 'macOS',
+    'config.fields.device.device_type.options.windows': 'Windows',
+    'config.fields.device.device_type.options.linux': 'Linux',
     'config.fields.device.device_type.help': 'Android uses HID touchscreen mode. iOS, macOS, windows, and linux use absolute pointer mode.',
+    'config.fields.hid.keyboard_layout.label': 'Keyboard layout',
+    'config.fields.hid.keyboard_layout.options.qwerty': 'QWERTY',
+    'config.fields.hid.keyboard_layout.options.azerty': 'AZERTY',
+    'config.fields.hid.keyboard_layout.options.qwertz': 'QWERTZ',
+    'config.fields.hid.input_backend.label': 'Input backend',
+    'config.fields.hid.input_backend.options.hid': 'USB HID',
+    'config.fields.hid.input_backend.options.adb': 'ADB',
     'config.fields.model.api_mode.label': 'Conversation API',
     'config.fields.model.api_mode.help': 'Local context sends history without provider storage. Provider context stores responses and continues from the previous response ID.',
     'config.fields.model.api_mode.options.default': 'Chat Completions (compatible)',
@@ -444,6 +473,18 @@ const messages = {
     'page.reading_config': '正在读取配置…',
     'page.initialization_failed': '页面初始化失败。',
     'config.title': 'Agent 配置',
+    'groups.basic_settings': '基础设置',
+    'groups.language_timezone': '语言与时区',
+    'groups.device_settings': '设备设置',
+    'groups.model_settings': '主模型设置',
+    'groups.realtime_mode': '实时模式',
+    'groups.voice_settings': '语音设置',
+    'groups.conversation_settings': '对话设置',
+    'groups.websearch': 'Web 搜索',
+    'groups.memory_settings': '记忆设置',
+    'groups.storage_settings': '存储设置',
+    'groups.advanced_settings': '高级设置',
+    'groups.hardware_settings': '硬件与调试',
     'config.save_failed': '保存 [{{section}}] 失败。',
     'config.saved_not_applied': '[{{section}}] 已保存，但 Agent 当前尚未生效。',
     'config.saved_pending': '[{{section}}] 已保存，等待应用配置。',
@@ -484,7 +525,24 @@ const messages = {
     'config.hid_reboot_cancelled': '已取消立即重启。请稍后手动执行 reboot，并在重启后验证 USB HID。',
     'config.default_empty': '默认值：空',
     'config.default_value': '默认值：{{value}}',
+    'config.fields.agent.input_mode.label': '输入模式',
+    'config.fields.agent.input_mode.options.text': '文本',
+    'config.fields.agent.input_mode.options.stt': '语音识别（STT）',
+    'config.fields.agent.input_mode.options.realtime': '实时语音',
+    'config.fields.device.device_type.label': '设备类型',
+    'config.fields.device.device_type.options.ios': 'iOS',
+    'config.fields.device.device_type.options.android': 'Android',
+    'config.fields.device.device_type.options.macos': 'macOS',
+    'config.fields.device.device_type.options.windows': 'Windows',
+    'config.fields.device.device_type.options.linux': 'Linux',
     'config.fields.device.device_type.help': 'Android 使用 HID touchscreen 模式。iOS、macOS、windows 和 linux 使用 absolute 指针模式。',
+    'config.fields.hid.keyboard_layout.label': '键盘布局',
+    'config.fields.hid.keyboard_layout.options.qwerty': 'QWERTY',
+    'config.fields.hid.keyboard_layout.options.azerty': 'AZERTY',
+    'config.fields.hid.keyboard_layout.options.qwertz': 'QWERTZ',
+    'config.fields.hid.input_backend.label': '输入后端',
+    'config.fields.hid.input_backend.options.hid': 'USB HID',
+    'config.fields.hid.input_backend.options.adb': 'ADB',
     'config.fields.model.api_mode.label': '对话接口',
     'config.fields.model.api_mode.help': '本地上下文由 Aiden 每次发送历史且不由服务端保存；服务端上下文会保存响应并自动续接上一次响应。',
     'config.fields.model.api_mode.options.default': 'Chat Completions（兼容模式）',
@@ -708,11 +766,16 @@ function translatePage() {
   }
 }
 
+function localeSelectors() {
+  return [byId('localeSelect'), byId('productLocaleSelect')].filter(Boolean);
+}
+
 function applyLocale(locale, remember) {
   activeLocale = normalizeLocale(locale);
   document.documentElement.lang = activeLocale;
-  const selector = byId('localeSelect');
-  if (selector) selector.value = activeLocale;
+  localeSelectors().forEach((selector) => {
+    selector.value = activeLocale;
+  });
   if (remember) {
     persistedLocale = activeLocale;
     try {
@@ -724,14 +787,15 @@ function applyLocale(locale, remember) {
 }
 
 async function saveLocale(locale) {
-  const selector = byId('localeSelect');
   const previous = persistedLocale;
   const requested = normalizeLocale(locale);
   const saveId = ++localeSaveId;
   localeRevision++;
   localeSavePending = true;
   applyLocale(requested, false);
-  if (selector) selector.disabled = true;
+  localeSelectors().forEach((selector) => {
+    selector.disabled = true;
+  });
   try {
     const payload = await request('/api/config/locale', {
       method: 'PUT',
@@ -766,7 +830,11 @@ async function saveLocale(locale) {
       }
     }
   } finally {
-    if (saveId === localeSaveId && selector) selector.disabled = false;
+    if (saveId === localeSaveId) {
+      localeSelectors().forEach((selector) => {
+        selector.disabled = false;
+      });
+    }
   }
 }
 

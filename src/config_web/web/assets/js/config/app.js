@@ -3,7 +3,8 @@ import {setBanner, setDetails} from './api.js';
 import {bindFieldVisibility, hydrateSelectOptions} from './config-meta.js';
 import {
   cancelEditSection, closeTestToast, disableAgentConfigEditing, enterEditSection,
-  initialReadyMessage, loadConfig, rebootDevice, loadConfigMeta, lockAllSections, saveSection, testSection
+  cancelEditSectionFields, enterEditSectionFields, initialReadyMessage, loadConfig, loadConfigMeta,
+  lockAllSections, rebootDevice, saveSection, saveSectionFields, testSection
 } from './config-form.js';
 import {initI18n, saveLocale, t} from './i18n.js';
 import {applyPendingAgentLogSnapshotIfIdle, exportLogs, refreshAgentLog, setAgentLogAutoScroll, syncAgentLogAutoScroll, toggleAgentLogAutoScroll} from './logs.js';
@@ -18,6 +19,8 @@ import {ejectStorageCard, refreshStorage, startStorageFormat} from './storage.js
 import {toggleSTTTest} from './stt-test.js';
 import {applySystemEnv, refreshSystemEnvApplication, cancelSystemEnvEdit, enterSystemEnvEdit, handleSystemEnvEditorKeydown, saveSystemEnv, toggleSystemEnvComment} from './system-env.js';
 import {closeWifiModal, connectSavedWifi, connectSelectedWifi, forgetWifi, openWifiModal, scanWifi, syncWifiProxyFields, toggleWifiListExpanded} from './wifi.js';
+import {VISIBLE_FIELDS} from './field-visibility.js';
+import {SECTION_TO_GROUP_MAP} from './config-groups.js';
 
 const simpleActions = {
   'export-logs': exportLogs,
@@ -58,10 +61,29 @@ document.addEventListener('click', function(event) {
     return;
   }
   const section = target.dataset.sectionTarget;
-  if (action === 'enter-edit-section') enterEditSection(section);
-  else if (action === 'cancel-edit-section') cancelEditSection(section);
-  else if (action === 'test-section') testSection(section);
-  else if (action === 'save-section') saveSection(section);
+  const scope = target.dataset.sectionScope;
+  if (action === 'enter-edit-section') {
+    if (section === 'device') {
+      enterEditSection('device');
+      enterEditSectionFields('device-hid', 'hid', ['keyboard_layout'], 'section-device');
+    } else if (scope === 'hid-debug') {
+      enterEditSectionFields('hid-debug', 'hid', ['input_backend'], 'section-hid');
+    } else enterEditSection(section);
+  } else if (action === 'cancel-edit-section') {
+    if (section === 'device') {
+      cancelEditSection('device');
+      cancelEditSectionFields('device-hid');
+    } else if (scope === 'hid-debug') {
+      cancelEditSectionFields('hid-debug');
+    } else cancelEditSection(section);
+  } else if (action === 'test-section') {
+    if (section === 'device') testSection(['device', 'hid']);
+    else testSection(section);
+  } else if (action === 'save-section') {
+    if (section === 'device') saveSection('device').then((saved) => { if (saved) return saveSectionFields('device-hid', 'hid', ['keyboard_layout'], 'section-device', 'save-device'); });
+    else if (scope === 'hid-debug') saveSectionFields('hid-debug', 'hid', ['input_backend'], 'section-hid', 'save-hid');
+    else saveSection(section);
+  }
   else if (action === 'edit-selected-provider') editSelectedProvider(target.dataset.providerKind);
   else if (action === 'delete-selected-provider') deleteSelectedProvider(target.dataset.providerKind);
   else if (action === 'open-wifi-modal') openWifiModal(target.dataset.ssid);
@@ -116,6 +138,12 @@ async function init() {
   if (metaOk) {
     hydrateSelectOptions();
     bindFieldVisibility();
+    applyMindmapFieldVisibility();
+    moveHidGroupedFields();
+    moveVoiceModeField();
+    moveConversationWebSearch();
+    annotateConfigGroups();
+    // Product groups are defined in index.html; no runtime section reparenting.
   }
   lockAllSections();
   setBanner(t('page.reading_config'), false);
@@ -138,6 +166,45 @@ async function init() {
   setInterval(() => refreshAgentLog(false), 2000);
   setInterval(() => refreshOtaLog(false), 2000);
   setInterval(() => refreshStorage(false), 3000);
+}
+
+function applyMindmapFieldVisibility() {
+  document.querySelectorAll('[data-config-field]').forEach(field => {
+    const path = field.dataset.configField;
+    if (!VISIBLE_FIELDS[path]) field.classList.add('hidden');
+  });
+  document.querySelectorAll('.section-card[id^="section-"]').forEach(card => {
+    if (card.id === 'section-system_env') return;
+    const fields = card.querySelectorAll('[data-config-field]');
+    if (!fields.length) return;
+    card.classList.toggle('hidden', !Array.from(fields).some(field => !field.classList.contains('hidden')));
+  });
+}
+
+function moveHidGroupedFields() {
+  const field = byId('hid_keyboard_layout')?.closest('.field');
+  const target = byId('device-hid-fields');
+  if (field && target && field.parentNode !== target) target.appendChild(field);
+}
+
+function moveVoiceModeField() {
+  const field = byId('agent_input_mode')?.closest('.field');
+  const target = byId('voice-mode-fields');
+  if (field && target && field.parentNode !== target) target.appendChild(field);
+}
+
+function moveConversationWebSearch() {
+  const card = byId('section-search');
+  const target = byId('conversation-websearch');
+  if (card && target && card.parentNode !== target) target.appendChild(card);
+}
+
+function annotateConfigGroups() {
+  Object.entries(SECTION_TO_GROUP_MAP).forEach(([section, groups]) => {
+    const card = byId('section-' + section);
+    if (!card) return;
+    card.dataset.configGroups = (Array.isArray(groups) ? groups : [groups]).join(',');
+  });
 }
 
 init();

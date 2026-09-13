@@ -12,8 +12,64 @@ the command-line value has higher priority and does not rewrite the config file.
 Accepted values and aliases are normalized to the canonical values documented
 under `[device]` below.
 
+## Configuration groups
+
+`agent.toml` keeps its established TOML section names so existing devices and
+config-update patches remain compatible. The template is organized with group
+headings that mirror the requirements specification for the Agent settings page:
+
+1. **WiFi 与蓝牙设置**: Configured through Config Web, not in agent.toml
+   - WiFi Configuration: Network credentials, proxy settings
+   - Bluetooth Configuration: Managed by separate bluetooth service
+
+2. **基础设置** (Basic Settings):
+   - **语言与时区** (Language & Timezone): `locale`, `timezone` (pending)
+   - **设备设置** (Device Settings): `[device].device_type`, `[hid].keyboard_layout`
+
+3. **对话设置** (Conversation Settings):
+   - Custom Instructions: `custom_instruction`, `additional_prompt`
+   - Max Iterations: `max_iterations`
+   - Context Management: `context_prune_threshold`, `context_compaction_threshold`
+   - Screenshot Pruning: `screenshot_keep_n`, `screenshot_prune_interval`
+   - Tool Settings: `[termination_policy]`, web search `[search]`
+
+4. **主模型设置** (Main Model Settings):
+   - Provider Configuration: `[model_providers.<name>]`
+   - Model Selection: `[model]` including provider, model, api_key, temperature, max_response_tokens, context_window, reasoning_effort, and api_mode settings
+
+5. **语音设置** (Voice Settings):
+   - Mode Selection: `input_mode` (text/stt/realtime)
+   - **Realtime Mode**: `[voice_model_providers.<name>]`, `[voice_model]`
+   - **Classic Mode**: VAD parameters, wakeup session parameters, `[stt]`, `[stt_providers.<name>]`, `[tts]`, `[tts_providers.<name>]`, `[audio]`, `[audio_archive]`
+
+6. **记忆设置** (Memory Settings):
+   - Screen Memory Retention: `[quick_capture].screen_memory_ttl`
+   - Notification Memory: `[voice_notifications]` and expiration policies
+   - Reset Conversation: Handled through Config Web UI
+
+7. **存储设置** (Storage Settings):
+   - Storage Status: Displayed through Config Web (total/available space)
+   - microSD Settings: `[storage]` configuration, format/eject operations
+   - Data Sync & Backup: `[storage.degraded_mode]`, `[storage.cleanup]`
+
+8. **高级设置** (Advanced Settings):
+   - Logs: `[log]`, log retention settings, export operations
+   - Hardware & Debug: `[hid]` (advanced fields), `[frame_service]`
+   - Runtime Debug: `[telemetry]`, `[live_activity]`, `[ota]`
+   - Manual Config Edit: Raw TOML editor and `/userdata/system/env` editor
+
+9. **关于** (About):
+   - Firmware Version: Displayed through Config Web
+   - Component Versions: Queried via Device Management API
+
+The group labels are documentation only; they do not add an `[agent]` table.
+Agent runtime keys remain at the TOML root for backward compatibility. New
+options should be added to the closest existing group and its section rather
+than creating another top-level section.
+
 ## Contents
 
+- [Configuration groups](#configuration-groups)
 - [Directory layout](#directory-layout)
 - [Config Web: the device config page](#config-web-the-device-config-page)
 - [Minimal config examples](#minimal-config-examples)
