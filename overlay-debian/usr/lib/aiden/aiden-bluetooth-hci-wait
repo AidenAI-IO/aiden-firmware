@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+elapsed=0
+while [ "${elapsed}" -lt 15 ]; do
+    [ -d /sys/class/bluetooth/hci0 ] && exit 0
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+echo "hciattach did not expose hci0 within 15 seconds" >&2
+exit 1

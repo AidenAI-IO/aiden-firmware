@@ -1,0 +1,11 @@
+diff --git a/sysdrv/source/kernel/scripts/resource_tool.c b/sysdrv/source/kernel/scripts/resource_tool.c
+--- a/sysdrv/source/kernel/scripts/resource_tool.c
++++ b/sysdrv/source/kernel/scripts/resource_tool.c
+@@ -1481,6 +1481,7 @@ static bool write_index_tbl(const int file_num, const char **files)
+ 	char hash[20];	/* sha1 */
+ 	int i;
+ 
++	memset(&entry, 0, sizeof(entry));
+ 	memcpy(entry.tag, INDEX_TBL_ENTR_TAG, sizeof(entry.tag));
+ 	for (i = 0; i < file_num; i++) {
+ 		size_t file_size = get_file_size(files[i]);

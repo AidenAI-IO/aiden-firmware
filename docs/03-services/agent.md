@@ -18,9 +18,9 @@ sidebar_position: 1
 ## Startup
 
 ```bash
-/etc/init.d/S53agent start
-/etc/init.d/S53agent status
-/etc/init.d/S53agent restart
+systemctl start aiden-agent.service
+systemctl status aiden-agent.service
+systemctl restart aiden-agent.service
 ```
 
 ## Input Modes

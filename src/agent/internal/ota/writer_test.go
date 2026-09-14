@@ -47,6 +47,28 @@ func TestWriterWritesOnlyInactiveCanonicalPartitions(t *testing.T) {
 	}
 }
 
+func TestWriterVerifiesPartitionReadback(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("boot image")
+	if err := os.WriteFile(filepath.Join(dir, "boot_b"), body, 0o644); err != nil {
+		t.Fatalf("WriteFile(block) error = %v", err)
+	}
+	src := filepath.Join(dir, "boot_b.img")
+	if err := os.WriteFile(src, body, 0o644); err != nil {
+		t.Fatalf("WriteFile(src) error = %v", err)
+	}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"boot_b": 100}}
+	if err := w.VerifyPart("boot", SlotB, src, testSHA256Hex(body)); err != nil {
+		t.Fatalf("VerifyPart() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "boot_b"), []byte("corruption"), 0o644); err != nil {
+		t.Fatalf("WriteFile(corruption) error = %v", err)
+	}
+	if err := w.VerifyPart("boot", SlotB, src, testSHA256Hex(body)); err == nil || !strings.Contains(err.Error(), "readback sha256") {
+		t.Fatalf("VerifyPart() error = %v, want readback hash mismatch", err)
+	}
+}
+
 func TestWriterExtractsTarGzImageBeforeWriting(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "rootfs_b"), []byte{}, 0o644); err != nil {

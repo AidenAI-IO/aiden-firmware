@@ -941,9 +941,11 @@ func TestOpenAICompatibleModelSkipsRawHTTPLogWithoutContextMarker(t *testing.T) 
 }
 
 func TestOpenAICompatibleModelDoesNotBufferRawHTTPResponseWithoutContextMarker(t *testing.T) {
-	responseBody := &failAfterPayloadReadBody{
-		payload: []byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`),
-	}
+	// Decoder.Decode consumes the first JSON value, while buffering the entire
+	// body and calling json.Unmarshal would reject the trailing second value.
+	responseBody := io.NopCloser(strings.NewReader(
+		`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}` + "\n{}",
+	))
 	client := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -972,9 +974,6 @@ func TestOpenAICompatibleModelDoesNotBufferRawHTTPResponseWithoutContextMarker(t
 	}
 	if got := resp.Choices[0].Content; got != "ok" {
 		t.Fatalf("response content = %q, want ok", got)
-	}
-	if responseBody.readPastPayload {
-		t.Fatal("response body was read past the complete JSON payload")
 	}
 }
 
@@ -1957,26 +1956,6 @@ func findLogLineContaining(logText, substring string) bool {
 		}
 	}
 	return false
-}
-
-type failAfterPayloadReadBody struct {
-	payload         []byte
-	offset          int
-	readPastPayload bool
-}
-
-func (b *failAfterPayloadReadBody) Read(p []byte) (int, error) {
-	if b.offset >= len(b.payload) {
-		b.readPastPayload = true
-		return 0, io.ErrUnexpectedEOF
-	}
-	n := copy(p, b.payload[b.offset:])
-	b.offset += n
-	return n, nil
-}
-
-func (b *failAfterPayloadReadBody) Close() error {
-	return nil
 }
 
 func TestModelManagerOpenRouterRetriesEOFInModelCall(t *testing.T) {

@@ -4,12 +4,16 @@ sidebar_position: 2
 
 # Example Programs
 
-CMake builds multiple `example_*` executables to verify SDK and device capabilities.
+CMake builds multiple `example_*` executables to verify SDK and device
+capabilities. The Debian cross-build writes them to
+`output/debian-stage2/apps/bin/`; diagnostic examples are not copied into the
+production OEM image. The commands below assume the selected binary has been
+copied to the board and placed on `PATH`.
 
 ## Wakeup
 
 ```bash
-./build/bin/example_wakeup
+example_wakeup
 ```
 
 Listens for GPIO 33/GPIO 32 falling edge. Typical hardware connection: button connects GPIO to GND with internal pull-up.
@@ -17,7 +21,7 @@ Listens for GPIO 33/GPIO 32 falling edge. Typical hardware connection: button co
 ## Audio Capture
 
 ```bash
-./build/bin/example_audio_capture [device_name]
+example_audio_capture [device_name]
 ```
 
 Captures audio and prints frame information. Optionally pass in ALSA device name.
@@ -25,7 +29,7 @@ Captures audio and prints frame information. Optionally pass in ALSA device name
 ## Audio Playback
 
 ```bash
-./build/bin/example_audio_play [device_name]
+example_audio_play [device_name]
 ```
 
 Plays back a PCM audio file (`audio_capture_debug.pcm`) through the specified ALSA device. The PCM file must exist in the current directory or the path where the binary is run.
@@ -33,9 +37,9 @@ Plays back a PCM audio file (`audio_capture_debug.pcm`) through the specified AL
 ## Camera Capture
 
 ```bash
-./build/bin/example_camera_capture
-./build/bin/example_camera_capture --output /mnt/tmp/frame.raw
-./build/bin/example_camera_capture --edid /mnt/tmp/hdmi_1080p30_cta.hex
+example_camera_capture
+example_camera_capture --output /mnt/tmp/frame.raw
+example_camera_capture --edid /oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex
 ```
 
 Common parameters:
@@ -60,11 +64,11 @@ Default one-shot flow:
 ## USB HID
 
 ```bash
-sudo ./build/bin/example_usb_hid setup composite
-sudo ./build/bin/example_usb_hid keyboard tap ENTER
-sudo ./build/bin/example_usb_hid keyboard text "hello from pico"
-sudo ./build/bin/example_usb_hid touch click 16000 16000
-sudo ./build/bin/example_usb_hid cleanup
+sudo example_usb_hid setup composite
+sudo example_usb_hid keyboard tap ENTER
+sudo example_usb_hid keyboard text "hello from pico"
+sudo example_usb_hid touch click 16000 16000
+sudo example_usb_hid cleanup
 ```
 
 For more information, see [USB HID and Device Control](../03-services/usb-hid.md).

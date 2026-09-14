@@ -1,5 +1,9 @@
 #include "aiden_log.h"
+#if defined(AIDEN_RKNN_FULL_RUNTIME)
+#include <rknn_api.h>
+#else
 #include "rknn_api_minimal.h"
+#endif
 #include "vad_common.h"
 
 #include <algorithm>
@@ -15,6 +19,10 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#if defined(AIDEN_RKNN_GLIBC_COMPAT)
+extern "C" int aiden_rknn_glibc_compat_init(void);
+#endif
 
 namespace {
 
@@ -253,6 +261,12 @@ public:
     }
 
     bool init(const std::string& model_path, std::string* err) {
+#if defined(AIDEN_RKNN_GLIBC_COMPAT)
+        if (aiden_rknn_glibc_compat_init() != 0) {
+            *err = "RKNN glibc compatibility initialization failed";
+            return false;
+        }
+#endif
         int ret = rknn_init(&ctx_, const_cast<char*>(model_path.c_str()), 0, 0, nullptr);
         if (ret != RKNN_SUCC) {
             *err = "rknn_init failed: " + std::to_string(ret);
