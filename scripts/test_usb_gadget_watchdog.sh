@@ -89,6 +89,14 @@ grep -Fq 'DHCP_INIT=/etc/init.d/S55aiden_usb_dhcp' "$WATCHDOG" ||
 grep -Fq 'DHCP service restart failed after composite reset' "$WATCHDOG" ||
     fail "watchdog must report DHCP restart failures after a reset"
 
+configured_transition_body=$(awk '
+    /if \[ "\$state" = "configured" \]; then/ { active = 1; next }
+    active && /^[[:space:]]*fi$/ { exit }
+    active { print }
+' "$WATCHDOG")
+printf '%s\n' "$configured_transition_body" | grep -Fq 'startup_grace_remaining=$STARTUP_GRACE_SECONDS' ||
+    fail "configured UDC transition must re-arm ECM startup grace"
+
 reset_composite_body=$(extract_function reset_composite_locked)
 announcement_line=$(printf '%s\n' "$reset_composite_body" | awk '
     /^[[:space:]]*announce_usb_reenumeration[[:space:]]*$/ { print NR; exit }
