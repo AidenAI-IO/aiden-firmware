@@ -82,6 +82,42 @@ func TestLegacyWriterKeepsTagsAfterComponentInMessage(t *testing.T) {
 	}
 }
 
+func TestFilteredLegacyWriterUsesInferredSeverity(t *testing.T) {
+	var output bytes.Buffer
+	writer := newLegacyWriter(&output, "agent", "runtime", Info, Warn).(*legacyWriter)
+	writer.now = func() time.Time { return time.Date(2026, 8, 5, 6, 22, 3, 0, time.UTC) }
+
+	if _, err := writer.Write([]byte("ordinary info\n[WARN] retrying\nfailed to open device\n")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	got := output.String()
+	if strings.Contains(got, "ordinary info") {
+		t.Fatalf("filtered writer emitted INFO: %q", got)
+	}
+	if !strings.Contains(got, "retrying") || !strings.Contains(got, "failed to open device") {
+		t.Fatalf("filtered writer omitted inferred warnings: %q", got)
+	}
+}
+
+func TestLogEventHonorsMinimumLevel(t *testing.T) {
+	var output bytes.Buffer
+	restoreOutput := SetOutput(&output)
+	defer restoreOutput()
+	restoreLevel := SetMinimumLevel(Warn)
+	defer restoreLevel()
+
+	if err := LogEvent(Info, "agent", "test", "hidden"); err != nil {
+		t.Fatal(err)
+	}
+	if err := LogEvent(Error, "agent", "test", "visible"); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if strings.Contains(got, "hidden") || !strings.Contains(got, "visible") {
+		t.Fatalf("minimum level not applied: %q", got)
+	}
+}
+
 func TestIsStructuredLine(t *testing.T) {
 	line := `2026-08-05T06:22:03Z [DEBUG] [rknn_vad] [model] initialized version=1`
 	if !IsStructuredLine(line) {

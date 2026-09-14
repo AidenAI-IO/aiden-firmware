@@ -1,11 +1,52 @@
 package agent
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"aiden-agent/internal/logging"
 )
+
+func TestLoggerFiltersBelowConfiguredLevel(t *testing.T) {
+	var output bytes.Buffer
+	logger := &Logger{
+		logger:       log.New(&output, "", 0),
+		minimumLevel: logging.Warn,
+	}
+	logger.Debug("debug message")
+	logger.Info("info message")
+	logger.Warn("warn message")
+	logger.Error("error message")
+
+	got := output.String()
+	if strings.Contains(got, "debug message") || strings.Contains(got, "info message") {
+		t.Fatalf("logger emitted messages below WARN: %s", got)
+	}
+	if !strings.Contains(got, "warn message") || !strings.Contains(got, "error message") {
+		t.Fatalf("logger omitted WARN or ERROR messages: %s", got)
+	}
+}
+
+func TestLoggerSetLevelAppliesWithoutRestart(t *testing.T) {
+	var output bytes.Buffer
+	logger := &Logger{
+		logger:       log.New(&output, "", 0),
+		minimumLevel: logging.Error,
+	}
+	logger.Warn("hidden warning")
+	logger.SetLevel("debug")
+	logger.Debug("visible debug")
+
+	got := output.String()
+	if strings.Contains(got, "hidden warning") || !strings.Contains(got, "visible debug") {
+		t.Fatalf("runtime log level change not applied: %s", got)
+	}
+}
 
 func TestCleanupOldLogFilesRemovesLogsOlderThanSevenDays(t *testing.T) {
 	logDir := t.TempDir()

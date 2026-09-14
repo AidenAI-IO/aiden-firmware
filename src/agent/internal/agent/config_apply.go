@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"time"
@@ -218,6 +219,26 @@ func (r *Runtime) applyConfig(ctx context.Context, cfg Config) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if current.TimezoneOrDefault() != cfg.TimezoneOrDefault() {
+		previousTimezone, hadPreviousTimezone := os.LookupEnv("TZ")
+		if err := ApplyTimezone(cfg); err != nil {
+			return fmt.Errorf("configure timezone: %w", err)
+		}
+		defer func() {
+			if committed {
+				return
+			}
+			var rollbackErr error
+			if hadPreviousTimezone {
+				rollbackErr = os.Setenv("TZ", previousTimezone)
+			} else {
+				rollbackErr = os.Unsetenv("TZ")
+			}
+			if rollbackErr != nil && r.logger != nil {
+				r.logger.Warn("roll back timezone environment: %v", rollbackErr)
+			}
+		}()
+	}
 	oldTools := r.toolSnapshot()
 	tools := oldTools
 	hardwareChanged := !reflect.DeepEqual(current.HID, cfg.HID) || current.Device != cfg.Device || current.Audio != cfg.Audio || current.Search != cfg.Search || current.ScreenStableDefaults() != cfg.ScreenStableDefaults()
@@ -295,6 +316,9 @@ func (r *Runtime) applyConfig(ctx context.Context, cfg Config) error {
 		if err := cleanupOldLogFiles(filepath.Join(cfg.ConfigDir, "log"), time.Now(), cfg.Log.LLMHTTPRetentionDaysOrDefault()); err != nil && r.logger != nil {
 			r.logger.Warn("apply log retention: %v", err)
 		}
+		if r.logger != nil {
+			r.logger.SetLevel(cfg.Log.LevelOrDefault())
+		}
 	}
 	if tools != oldTools && r.phoneBridge != nil {
 		tools.RegisterPhoneBridge(r.phoneBridge)
@@ -317,7 +341,7 @@ func (r *Runtime) applyConfig(ctx context.Context, cfg Config) error {
 	}
 	// InitializeContextManager rotates the append-only session when its system
 	// prompt changes. Model/provider changes also drop provider-specific chaining.
-	if current.Locale != cfg.Locale || current.Instruction != cfg.Instruction || current.AdditionalPrompt != cfg.AdditionalPrompt || current.Model.Provider != cfg.Model.Provider || current.Model.Model != cfg.Model.Model || current.Model.APIMode != cfg.Model.APIMode || current.Model.BaseURL != cfg.Model.BaseURL {
+	if current.Locale != cfg.Locale || current.TimezoneOrDefault() != cfg.TimezoneOrDefault() || current.Instruction != cfg.Instruction || current.AdditionalPrompt != cfg.AdditionalPrompt || current.Model.Provider != cfg.Model.Provider || current.Model.Model != cfg.Model.Model || current.Model.APIMode != cfg.Model.APIMode || current.Model.BaseURL != cfg.Model.BaseURL {
 		r.configContextRotate.Store(true)
 		r.configUserContextRotate.Store(true)
 	}

@@ -33,8 +33,9 @@ type Field struct {
 
 var outputState = struct {
 	sync.Mutex
-	writer io.Writer
-}{writer: os.Stderr}
+	writer  io.Writer
+	minimum Level
+}{writer: os.Stderr, minimum: Debug}
 
 var structuredLinePattern = regexp.MustCompile(
 	`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[(DEBUG|INFO|WARN|ERROR)\] \[[a-z0-9_]+\] \[[a-z0-9_]+\] [a-z0-9_]+(?: |$)`,
@@ -57,14 +58,34 @@ func SetOutput(writer io.Writer) func() {
 	}
 }
 
+// SetMinimumLevel changes the minimum severity emitted by direct structured
+// logging helpers. It returns a restore function for tests and scoped callers.
+func SetMinimumLevel(level Level) func() {
+	outputState.Lock()
+	previous := outputState.minimum
+	outputState.minimum = NormalizeLevel(level)
+	outputState.Unlock()
+	return func() {
+		outputState.Lock()
+		outputState.minimum = previous
+		outputState.Unlock()
+	}
+}
+
 // InstallStandard routes the process-wide standard logger through the unified
 // formatter. Existing log.Printf/log.Println call sites therefore produce the
 // common line prefix while they are migrated to structured event calls.
 func InstallStandard(service string, writer io.Writer) {
+	InstallStandardAtLevel(service, writer, Debug)
+}
+
+// InstallStandardAtLevel routes the process-wide standard logger through the
+// unified formatter and filters inferred severities below minimum.
+func InstallStandardAtLevel(service string, writer io.Writer, minimum Level) {
 	if writer == nil {
 		writer = os.Stderr
 	}
-	log.SetOutput(NewLegacyWriter(writer, service, "runtime", Info))
+	log.SetOutput(newLegacyWriter(writer, service, "runtime", Info, minimum))
 	log.SetFlags(0)
 	log.SetPrefix("")
 }
@@ -78,6 +99,10 @@ func NewLegacyLogger(writer io.Writer, service, component string, level Level) *
 // Embedded newlines are emitted as separate, fully formatted records; blank
 // separator lines are discarded.
 func NewLegacyWriter(writer io.Writer, service, component string, level Level) io.Writer {
+	return newLegacyWriter(writer, service, component, level, Debug)
+}
+
+func newLegacyWriter(writer io.Writer, service, component string, level, minimum Level) io.Writer {
 	if writer == nil {
 		writer = io.Discard
 	}
@@ -86,6 +111,7 @@ func NewLegacyWriter(writer io.Writer, service, component string, level Level) i
 		service:   NormalizeIdentifier(service, "unknown"),
 		component: NormalizeIdentifier(component, "runtime"),
 		level:     NormalizeLevel(level),
+		minimum:   NormalizeLevel(minimum),
 		now:       time.Now,
 	}
 }
@@ -96,6 +122,7 @@ type legacyWriter struct {
 	service   string
 	component string
 	level     Level
+	minimum   Level
 	now       func() time.Time
 }
 
@@ -112,7 +139,11 @@ func (w *legacyWriter) Write(p []byte) (int, error) {
 		if line == "" {
 			continue
 		}
-		record := FormatLegacyAt(w.now(), w.level, w.service, callerComponent, line)
+		meta := parseLegacy(w.level, w.service, callerComponent, line)
+		if !levelAllowed(meta.level, w.minimum) {
+			continue
+		}
+		record := formatMessageRecord(w.now(), meta.level, w.service, meta.component, deriveEvent(meta.message, meta.level), meta.message)
 		if _, err := io.WriteString(w.writer, record+"\n"); err != nil {
 			return 0, err
 		}
@@ -157,11 +188,32 @@ func FormatEventAt(now time.Time, level Level, service, component, event string,
 
 // LogEvent writes one structured event to the package output.
 func LogEvent(level Level, service, component, event string, fields ...Field) error {
-	record := FormatEventAt(time.Now(), level, service, component, event, fields...)
 	outputState.Lock()
 	defer outputState.Unlock()
+	if !levelAllowed(level, outputState.minimum) {
+		return nil
+	}
+	record := FormatEventAt(time.Now(), level, service, component, event, fields...)
 	_, err := io.WriteString(outputState.writer, record+"\n")
 	return err
+}
+
+func levelAllowed(level, minimum Level) bool {
+	rank := func(value Level) int {
+		switch NormalizeLevel(value) {
+		case Debug:
+			return 0
+		case Info:
+			return 1
+		case Warn:
+			return 2
+		case Error:
+			return 3
+		default:
+			return 1
+		}
+	}
+	return rank(level) >= rank(minimum)
 }
 
 type legacyMeta struct {

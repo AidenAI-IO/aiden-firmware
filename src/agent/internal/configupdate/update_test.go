@@ -84,10 +84,12 @@ provider = "fake"
 	}
 }
 
-func TestUpdateConfigFileWritesModelLogRawHTTP(t *testing.T) {
+func TestUpdateConfigFileWritesGroupedLogRawHTTP(t *testing.T) {
 	source := `[model_settings.model]
 provider = "openai"
 model = "gpt-5.5"
+
+[advanced_settings.log]
 log_raw_http = false
 `
 	path := filepath.Join(t.TempDir(), "agent.toml")
@@ -106,8 +108,18 @@ log_raw_http = false
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "log_raw_http = true") {
-		t.Fatalf("model.log_raw_http was not updated:\n%s", got)
+	if !strings.Contains(string(got), "[advanced_settings.log]") || !strings.Contains(string(got), "log_raw_http = true") {
+		t.Fatalf("advanced_settings.log.log_raw_http was not updated:\n%s", got)
+	}
+	modelSection := string(got)
+	if start := strings.Index(modelSection, "[model_settings.model]"); start >= 0 {
+		modelSection = modelSection[start+len("[model_settings.model]"):]
+		if next := strings.Index(modelSection, "\n["); next >= 0 {
+			modelSection = modelSection[:next]
+		}
+	}
+	if strings.Contains(modelSection, "log_raw_http") {
+		t.Fatalf("log_raw_http remained in model section:\n%s", got)
 	}
 }
 
@@ -300,7 +312,7 @@ func TestConfigUpdateErrorsExposeStableKinds(t *testing.T) {
 }
 
 func TestUpdateConfigFileEmptyPatchDoesNotRewrite(t *testing.T) {
-	source := []byte("locale = \"en-US\"\n[basic_settings.device.hid]\nkeyboard_layout = \"qwerty\"\n")
+	source := []byte("[basic_settings.language_timezone]\nlocale = \"en-US\"\n[basic_settings.device.hid]\nkeyboard_layout = \"qwerty\"\n")
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	if err := os.WriteFile(path, source, 0o640); err != nil {
 		t.Fatal(err)
@@ -504,8 +516,8 @@ provider = "old"
 func TestUpdateConfigFileRenamesDottedKeyProviderWithoutLeavingSource(t *testing.T) {
 	source := `model_settings.providers.old.type = "openai"
 model_settings.providers.old.api_key = "model-secret"
-model.provider = "old"
-model.model = "gpt-5.5"
+model_settings.model.provider = "old"
+model_settings.model.model = "gpt-5.5"
 `
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
@@ -827,6 +839,38 @@ func TestUpdateConfigFileCreatesMissingConfig(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigFileWritesTimezoneToLanguageTimezoneGroup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte("[basic_settings.language_timezone]\nlocale = \"en-US\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"timezone":"Asia/Shanghai"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.ChangedPaths, ",") != "basic_settings.language_timezone.timezone" {
+		t.Fatalf("changed paths = %v", result.ChangedPaths)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `timezone = "Asia/Shanghai"`) {
+		t.Fatalf("timezone was not written to grouped TOML:\n%s", got)
+	}
+}
+
+func TestTimezoneSurvivesConfigDTORoundTrip(t *testing.T) {
+	wire := FromAgentConfig(agent.Config{Timezone: "Europe/London"})
+	if wire.Agent.Timezone != "Europe/London" {
+		t.Fatalf("wire timezone = %q", wire.Agent.Timezone)
+	}
+	if got := wire.ToAgentConfig().Timezone; got != "Europe/London" {
+		t.Fatalf("round-trip timezone = %q", got)
+	}
+}
+
 func TestConfigPatchOperationsRejectsSectionNull(t *testing.T) {
 	for _, section := range []string{"hid", "agent", "model_providers"} {
 		t.Run(section, func(t *testing.T) {
@@ -854,6 +898,50 @@ func TestUpdateConfigFileAcceptsScalarMapEntries(t *testing.T) {
 	if !strings.Contains(string(got), "[memory_settings.notification.expiration.code_ttl_seconds]") ||
 		!strings.Contains(string(got), "network = 123") {
 		t.Fatalf("scalar map entry was not written:\n%s", got)
+	}
+}
+
+func TestUpdateConfigFileWritesNotificationRetentionUnderMemorySettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewService().Update(path, []byte(`{"config":{"voice_notifications":{"retention_days":21}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.ChangedPaths, ",") != "memory_settings.notification.retention_days" {
+		t.Fatalf("changed paths = %v", result.ChangedPaths)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "[memory_settings.notification]") ||
+		!strings.Contains(string(got), "retention_days = 21") {
+		t.Fatalf("notification retention was not written to Memory Settings:\n%s", got)
+	}
+}
+
+func TestUpdateConfigFileWritesLogLevelUnderAdvancedSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewService().Update(path, []byte(`{"config":{"log":{"level":"warn"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.ChangedPaths, ",") != "advanced_settings.log.level" {
+		t.Fatalf("changed paths = %v", result.ChangedPaths)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "[advanced_settings.log]") ||
+		!strings.Contains(string(got), `level = "warn"`) {
+		t.Fatalf("log level was not written to Advanced Settings:\n%s", got)
 	}
 }
 

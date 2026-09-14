@@ -719,6 +719,27 @@ func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
 	}
 }
 
+func TestNotificationContextRetentionStagesUseMemorySetting(t *testing.T) {
+	tests := []struct {
+		name      string
+		base      int
+		fallbacks []int
+		want      []int
+	}{
+		{name: "default", base: 14, fallbacks: []int{14, 7, 1, 0}, want: []int{14, 7, 1, 0}},
+		{name: "longer", base: 30, fallbacks: []int{14, 7, 1, 0}, want: []int{30, 14, 7, 1, 0}},
+		{name: "shorter", base: 3, fallbacks: []int{14, 7, 1, 0}, want: []int{3, 1, 0}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := notificationContextRetentionStages(tt.base, tt.fallbacks)
+			if fmt.Sprint(got) != fmt.Sprint(tt.want) {
+				t.Fatalf("stages = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRuntimeStorageMonitorSkipsArtifactCleanerWithoutConfigDir(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ConfigDir = ""

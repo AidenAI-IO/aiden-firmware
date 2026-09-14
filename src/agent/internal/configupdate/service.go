@@ -1041,6 +1041,7 @@ func validateIntegerNumber(number json.Number, typ reflect.Type) error {
 func isNonNegativeIntegerPath(path []string) bool {
 	joined := strings.Join(path, ".")
 	if joined == "voice_notifications.max_pending" ||
+		joined == "voice_notifications.retention_days" ||
 		joined == "voice_notifications.response_tail.max_items" ||
 		joined == "voice_notifications.response_tail.max_text_chars" ||
 		joined == "voice_notifications.expiration.default_ttl_seconds" {
@@ -1115,7 +1116,7 @@ func tomlPathForWebPath(path []string) []string {
 	var prefix []string
 	switch section {
 	case "agent":
-		if key == "locale" {
+		if key == "locale" || key == "timezone" {
 			prefix = []string{"basic_settings", "language_timezone"}
 		} else if key == "input_mode" {
 			prefix = []string{"voice_settings", "mode"}
@@ -1125,7 +1126,11 @@ func tomlPathForWebPath(path []string) []string {
 			prefix = []string{"conversation_settings", "agent"}
 		}
 	case "model":
-		prefix = []string{"model_settings", "model"}
+		if key == "log_raw_http" {
+			prefix = []string{"advanced_settings", "log"}
+		} else {
+			prefix = []string{"model_settings", "model"}
+		}
 	case "model_providers":
 		prefix = []string{"model_settings", "providers"}
 	case "voice_model":

@@ -13,7 +13,7 @@
 # This is independent from [voice_settings.classic.stt].language, which only controls speech recognition.
 [basic_settings.language_timezone]
 # locale = "en-US"  # "zh-CN" or "en-US"; also selects built-in voice notification text
-# timezone = "Asia/Shanghai"  # Timezone setting (implementation pending)
+# timezone = "UTC"  # IANA time zone used by Agent date context and controller shell commands
 
 # 2.2 设备设置
 # Target device configuration.
@@ -220,10 +220,12 @@ model = "gpt-5.5"
 # 8.1 日志设置
 # Log retention configuration
 [advanced_settings.log]
+# level = "info"                # debug, info, warn, or error
 # llm_http_retention_days = 7  # Keep llm-http-*.log files for this many days
+# log_raw_http = true          # Record detailed model HTTP requests
 
 # 8.2 手动编辑配置
-# Handled through Config Web UI (raw TOML editor and /userdata/system/env editor)
+# Handled through the validated raw TOML editor in Config Web
 
 # HID (Human Interface Device) configuration
 # 2.2.b keyboard_layout is under 基础设置 > 设备设置
@@ -281,13 +283,12 @@ model = "gpt-5.5"
 ################################################################################
 
 # 5.a Realtime Mode or 5.b Classic Mode
-# The HTTP server and Web UI run in every input mode.
+# The HTTP server and Web UI run in every mode.
 # Input mode controls the device-side audio loop:
-# - text: HTTP server and Web UI only
-# - stt: also run device audio -> STT -> LLM -> TTS (Classic Mode)
+# - stt: device audio -> STT -> LLM -> TTS (Classic Mode)
 # - realtime: run the realtime voice model directly (Realtime Mode)
 [voice_settings.mode]
-input_mode = "text"
+input_mode = "stt"
 
 # 5.a Realtime Mode Configuration
 # Realtime voice model. When input_mode = "realtime", GPIO wakeup opens a
@@ -432,6 +433,7 @@ provider = "minimax-main"
 [memory_settings.notification]
 # enabled = true
 # max_pending = 8
+# retention_days = 14
 
 [memory_settings.notification.response_tail]
 # enabled = true

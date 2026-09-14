@@ -171,10 +171,11 @@ const (
 )
 
 type VoiceNotificationsConfig struct {
-	Enabled      *bool                               `toml:"enabled,omitempty"`
-	MaxPending   int                                 `toml:"max_pending,omitempty"`
-	ResponseTail VoiceNotificationResponseTailConfig `toml:"response_tail,omitempty"`
-	Expiration   VoiceNotificationExpirationConfig   `toml:"expiration,omitempty"`
+	Enabled       *bool                               `toml:"enabled,omitempty"`
+	MaxPending    int                                 `toml:"max_pending,omitempty"`
+	RetentionDays int                                 `toml:"retention_days,omitempty"`
+	ResponseTail  VoiceNotificationResponseTailConfig `toml:"response_tail,omitempty"`
+	Expiration    VoiceNotificationExpirationConfig   `toml:"expiration,omitempty"`
 }
 
 type VoiceNotificationResponseTailConfig struct {
@@ -200,6 +201,13 @@ func (c VoiceNotificationsConfig) MaxPendingOrDefault() int {
 		return c.MaxPending
 	}
 	return 8
+}
+
+func (c VoiceNotificationsConfig) RetentionDaysOrDefault() int {
+	if c.RetentionDays > 0 {
+		return c.RetentionDays
+	}
+	return defaultNotificationMemoryRetentionDays
 }
 
 func (c VoiceNotificationResponseTailConfig) EnabledOrDefault() bool {

@@ -6,6 +6,7 @@
 export const VISIBLE_FIELDS = {
   // 基础设置
   'agent.locale': true,
+  'agent.timezone': true,
   'device.device_type': true,
   'hid.keyboard_layout': true,
 
@@ -27,6 +28,13 @@ export const VISIBLE_FIELDS = {
   'model.reasoning_effort': true,
   'model.reasoning_budget_tokens': true,
 
+  // Provider records are edited in modal dialogs.  Keep their metadata
+  // fields in the same whitelist as the top-level configuration fields so
+  // conditional provider-specific controls are not hidden after rendering.
+  'model_providers.type': true,
+  'model_providers.api_key': true,
+  'model_providers.base_url': true,
+
   // Realtime Mode (完整 voice_model section)
   'voice_model.provider': true,
   'voice_model.model': true,
@@ -44,6 +52,41 @@ export const VISIBLE_FIELDS = {
   'tts.speed': true,
   'tts.emotion': true,
 
+  // Classic TTS provider records
+  'tts_providers.type': true,
+  'tts_providers.api_key': true,
+  'tts_providers.model': true,
+  'tts_providers.voice_id': true,
+  'tts_providers.reference_id': true,
+  'tts_providers.emotion': true,
+
+  // Classic STT provider records
+  'stt_providers.type': true,
+  'stt_providers.api_key': true,
+  'stt_providers.model': true,
+  'stt_providers.base_url': true,
+  'stt_providers.app_id': true,
+  'stt_providers.secret_id': true,
+  'stt_providers.secret_key': true,
+  'stt_providers.region': true,
+  'stt_providers.engine_model_type': true,
+
+  // Realtime provider records
+  'voice_model_providers.type': true,
+  'voice_model_providers.upstream_provider': true,
+  'voice_model_providers.agent_id': true,
+  'voice_model_providers.api_key': true,
+  'voice_model_providers.auth_mode': true,
+  'voice_model_providers.project_id': true,
+  'voice_model_providers.location': true,
+  'voice_model_providers.model': true,
+  'voice_model_providers.workspace_id': true,
+  'voice_model_providers.endpoint': true,
+  'voice_model_providers.realtime_protocol': true,
+  'voice_model_providers.base_url': true,
+  'voice_model_providers.region': true,
+  'voice_model_providers.voice': true,
+
   // 对话设置 - 对话模式
   'agent.input_mode': true,
   // Classic mode is selected here; provider-specific STT/TTS fields are
@@ -53,7 +96,6 @@ export const VISIBLE_FIELDS = {
   'agent.additional_prompt': true,
   'agent.context_prune_threshold': true,
   'agent.context_compaction_threshold': true,
-  'agent.voice_max_response_tokens': true,
 
   // 对话设置 - websearch tool
   'search.provider': true,
@@ -61,8 +103,10 @@ export const VISIBLE_FIELDS = {
 
   // 记忆设置目前只有保留期对外展示；GPIO 抓取和截图稳定性属于调试项。
   'quick_capture.screen_memory_ttl': true,
+	'voice_notifications.retention_days': true,
 
   // 高级设置 - 日志
+  'log.level': true,
   'log.llm_http_retention_days': true,
   'model.log_raw_http': true,
 

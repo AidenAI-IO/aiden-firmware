@@ -28,10 +28,10 @@ func loadVoiceProviderConfigErr(t *testing.T, body string) error {
 func TestVoiceProviderMisconfigurationDoesNotBlockBoot(t *testing.T) {
 	// A record whose type is an LLM type, referenced by [tts].
 	cfg := writeVoiceProviderConfig(t, `
-[tts_providers.bad]
+[voice_settings.classic.tts.providers.bad]
 type = "openai"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "bad"
 `)
 	// Boot survived. The provider is left unresolved so tts.New() reports it.
@@ -41,10 +41,10 @@ provider = "bad"
 
 	// A reference left behind after its record was deleted.
 	cfg = writeVoiceProviderConfig(t, `
-[tts_providers.fish]
+[voice_settings.classic.tts.providers.fish]
 type = "fish-audio"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "typo-name"
 `)
 	if cfg.TTS.Provider != "typo-name" {
@@ -71,10 +71,10 @@ func TestTTSProviderTypeWhitelistIsSeparateFromLLM(t *testing.T) {
 	// And the converse: a TTS type must not satisfy [model]. This one IS fatal
 	// at load, because [model] is not optional the way voice is.
 	loadErr := loadVoiceProviderConfigErr(t, `
-[model_providers.bad]
+[model_settings.providers.bad]
 type = "minimax"
 
-[model]
+[model_settings.model]
 provider = "bad"
 model = "gpt-4o"
 `)
@@ -171,7 +171,7 @@ func TestUnreferencedVoiceRecordToleratedOnSave(t *testing.T) {
 // sections reach the config page in one shape.
 func TestLegacySTTFlatFieldsMigrateToRecord(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
-[stt]
+[voice_settings.classic.stt]
 provider = "tencent-asr"
 app_id = "1234"
 secret_id = "AKID-xxx"
@@ -199,7 +199,7 @@ language = "zh"
 // With no TTS configured at all, nothing is invented: TTS stays opt-in.
 func TestNoVoiceProviderStaysEmpty(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
-[model]
+[model_settings.model]
 provider = "openai"
 model = "gpt-4o"
 api_key = "sk-test"

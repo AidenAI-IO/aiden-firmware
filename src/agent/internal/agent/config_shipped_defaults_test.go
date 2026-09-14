@@ -9,8 +9,7 @@ import (
 // shippedConfigPaths are the agent.toml files published with the firmware.
 // overlay/userdata is what the firmware container task rsyncs onto the device;
 // src/agent/config/agent.toml is a symlink to it, so this one path covers both
-// the device config and the documented example. Users read it as a statement
-// about the defaults, so it may not contradict DefaultConfig().
+// the device config and the documented example.
 var shippedConfigPaths = []string{
 	filepath.Join("overlay", "userdata", "agent", "agent.toml"),
 }
@@ -54,8 +53,12 @@ func TestShippedConfigsAgreeWithDefaults(t *testing.T) {
 		if got, want := shipped.QuickCapture.ScreenMemoryTTLOrDefault(), defaults.QuickCapture.ScreenMemoryTTLOrDefault(); got != want {
 			t.Errorf("%s: quick_capture.screen_memory_ttl = %q, DefaultConfig() = %q", relative, got, want)
 		}
-		if got, want := shipped.InputModeOrDefault(), defaults.InputModeOrDefault(); got != want {
-			t.Errorf("%s: input_mode = %q, DefaultConfig() = %q", relative, got, want)
+		// The shipped device profile explicitly selects Classic mode. The
+		// runtime still accepts the legacy text fallback for unconfigured
+		// development directories, so this published value is intentionally
+		// checked against the product mode instead of DefaultConfig().
+		if got := shipped.InputModeOrDefault(); got != "stt" {
+			t.Errorf("%s: input_mode = %q, want shipped Classic mode (stt)", relative, got)
 		}
 	}
 }

@@ -50,17 +50,19 @@ load boundary; Config Web writes only the grouped paths below.
 7. **存储设置** (Storage Settings):
    - Storage Status: Displayed through Config Web (total/available space)
    - microSD Settings: `[storage_settings.storage]` configuration, format/eject operations
-   - Data Sync & Backup: `[storage_settings.storage.degraded_mode]`, `[storage_settings.storage.cleanup]`
+   - Backup & Restore: Export or import the canonical grouped `agent.toml` through Config Web
+   - Internal storage policy: `[storage_settings.storage.degraded_mode]`, `[storage_settings.storage.cleanup]`
 
 8. **高级设置** (Advanced Settings):
-   - Logs: `[advanced_settings.log]`, log retention settings, export operations
-   - Hardware & Debug: `[advanced_settings.hardware.hid]`, `[advanced_settings.hardware.frame_service]`
-   - Runtime Debug: `[advanced_settings.runtime.telemetry]`, `[advanced_settings.runtime.live_activity]`, `[advanced_settings.runtime.ota]`
-   - Manual Config Edit: Raw TOML editor and `/userdata/system/env` editor
+   - Logs: detailed model request capture, Agent log level, retention, and support-log export
+   - Manual Config Edit: validated raw editor for the canonical grouped `agent.toml`
+
+   Hardware and runtime debug tables remain available in TOML but are not
+   exposed as product settings in Config Web.
 
 9. **关于** (About):
    - Firmware Version: Displayed through Config Web
-   - Component Versions: Queried via Device Management API
+   - Component Versions: Boot, OEM, and RootFS versions for the running slot
 
 The group tables are the canonical on-disk configuration schema. New options
 should be added to the closest existing group and its section rather than
@@ -141,8 +143,9 @@ The firmware starts `agent config-web` on port 80.
 
 ### What the page can configure
 
-The page renders the following config sections. The language selector in the page header persists the device-level `locale` and applies it online; when the locale changes the system prompt, the next task boundary creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
+The page renders the following config sections. The Language & Time Zone controls persist the device-level `locale` and `timezone` and apply them online. Changing either value rotates the context at the next task boundary instead of rewriting the previous session. The selected time zone is included in Agent state and controls the current-date context and controller shell commands.
 
+- `[basic_settings.language_timezone]`: UI and response language plus controller time zone
 - `[conversation_settings.agent]`: custom instructions, iteration and context controls
 - `[model_settings.model]`: provider, model, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens
 - `[voice_settings.classic.stt]`: provider, language and STT options
@@ -170,6 +173,7 @@ The page renders the following config sections. The language selector in the pag
 ```toml
 [basic_settings.language_timezone]
 locale = "en-US"
+timezone = "UTC"
 
 [conversation_settings.agent]
 custom_instruction = ""
@@ -241,6 +245,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ```toml
 [basic_settings.language_timezone]
 locale = "en-US"
+timezone = "UTC"
 
 [conversation_settings.agent]
 custom_instruction = ""
@@ -317,6 +322,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | Field                       | Default / allowed values    | Description                                                                                                                                                                                               |
 | --------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `locale`                    | `en-US` (default) / `zh-CN` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[voice_settings.classic.stt].language`, which only controls speech recognition. |
+| `timezone`                  | `UTC` (default) / supported IANA zone | Controller time zone used for the model-facing current date, `controller_timezone` state, and shell child processes. Config Web provides the supported IANA zone list. |
 | `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
 | `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
@@ -565,7 +571,9 @@ API key and base URL do not carry over to it.
 
 | Field                     | Default | Description                                                                                                                                              |
 | ------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `level`                   | `info`  | Minimum Agent log severity: `debug`, `info`, `warn`, or `error`. Changes apply without restarting the Agent.                                             |
 | `llm_http_retention_days` | `7`     | Number of days to keep raw LLM HTTP logs under `<config_dir>/log` (`llm-http-*.log`). Cleanup runs when the agent starts; unset or `0` uses the default. |
+| `log_raw_http`            | `true`  | Record detailed model HTTP requests and responses. This maps to the runtime model transport logger but is stored in the Advanced Settings log group.      |
 
 ## `[voice_settings.classic.audio]`
 
@@ -670,6 +678,7 @@ Voice notifications attach system reminders to a normal spoken reply or replace 
 [memory_settings.notification]
 enabled = true
 max_pending = 8
+retention_days = 14
 
 [memory_settings.notification.response_tail]
 enabled = true
@@ -687,13 +696,14 @@ storage = 900
 | ------------------------------------ | --------------- | ------------------------------------------------------------------------- |
 | `enabled`                            | `true`          | Enable persistent tails and final-turn replacements                       |
 | `max_pending`                        | `8`             | Maximum active condition records kept by the in-memory manager            |
+| `retention_days`                     | `14`            | Days to keep processed notification memory during normal storage cleanup  |
 | `response_tail.enabled`              | `true`          | Allow persistent reminders to be appended to normal replies               |
 | `response_tail.max_items`            | `1`             | Maximum reminders per reply; the current implementation supports only `1` |
 | `response_tail.max_text_chars`       | `40`            | Maximum reminder length in Unicode characters                             |
 | `expiration.default_ttl_seconds`     | `0`             | Default active-condition lease; `0` disables automatic expiration         |
 | `expiration.code_ttl_seconds.<code>` | `storage = 900` | Per-code lease override renewed by each active heartbeat                  |
 
-Config Web preserves this section through GET/POST and TOML save operations. Edit it directly in `agent.toml` until dedicated controls are added to the page.
+Config Web exposes `retention_days` in Memory Settings. The lifecycle and lease fields remain available through manual TOML editing.
 
 ## `[basic_settings.device]`
 

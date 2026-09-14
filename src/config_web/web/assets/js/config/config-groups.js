@@ -28,7 +28,7 @@ export const AGENT_SETTINGS_GROUPS = {
         order: 1,
         fields: [
           { path: 'agent.locale', section: 'agent', key: 'locale' },
-          // timezone field pending implementation
+          { path: 'agent.timezone', section: 'agent', key: 'timezone' },
         ]
       },
       device_settings: {
@@ -245,8 +245,7 @@ export const AGENT_SETTINGS_GROUPS = {
         order: 2,
         sections: ['voice_notifications'],
         fields: [
-          { path: 'voice_notifications.enabled', section: 'voice_notifications', key: 'enabled' },
-          { path: 'voice_notifications.expiration.default_ttl_seconds', section: 'voice_notifications', key: 'expiration.default_ttl_seconds' },
+          { path: 'voice_notifications.retention_days', section: 'voice_notifications', key: 'retention_days' },
         ]
       },
       reset_conversation: {
@@ -305,33 +304,27 @@ export const AGENT_SETTINGS_GROUPS = {
         order: 1,
         sections: ['log'],
         fields: [
+          { path: 'log.level', section: 'log', key: 'level' },
           { path: 'log.llm_http_retention_days', section: 'log', key: 'llm_http_retention_days' },
           { path: 'model.log_raw_http', section: 'model', key: 'log_raw_http' },
         ]
       },
-      hardware_debug: {
-        id: 'hardware_debug',
-        titleKey: 'groups.hardware_debug',
-        title: '硬件与调试',
+      manual_config: {
+        id: 'manual_config',
+        titleKey: 'groups.manual_config',
+        title: 'Manual configuration',
         order: 2,
-        sections: ['hid', 'frame_service'],
-        fields: [
-          { path: 'hid.input_backend', section: 'hid', key: 'input_backend' },
-          { path: 'hid.keyboard_device', section: 'hid', key: 'keyboard_device' },
-          { path: 'hid.mouse_device', section: 'hid', key: 'mouse_device' },
-          { path: 'hid.android_keyboard_device', section: 'hid', key: 'android_keyboard_device' },
-          { path: 'hid.frame_socket', section: 'hid', key: 'frame_socket' },
-          { path: 'frame_service.keep_streamon', section: 'frame_service', key: 'keep_streamon' },
-        ]
-      },
-      runtime_debug: {
-        id: 'runtime_debug',
-        titleKey: 'groups.runtime_debug',
-        title: '运行时调试',
-        order: 3,
-        sections: ['telemetry', 'live_activity', 'ota'],
+        customUI: true
       }
     }
+  },
+
+  about: {
+    id: 'about',
+    titleKey: 'groups.about',
+    title: 'About',
+    order: 9,
+    customUI: true
   }
 };
 
@@ -381,7 +374,7 @@ export function getGroupSections(groupId) {
 export const SECTION_TO_GROUP_MAP = {
   'agent': ['basic_settings', 'conversation_settings', 'voice_settings'],
   'device': 'basic_settings.device_settings',
-  'hid': ['basic_settings.device_settings', 'advanced_settings.hardware_debug'],
+  'hid': 'basic_settings.device_settings',
   'model': 'model_settings',
   'model_providers': 'model_settings',
   'voice_model': 'voice_settings.realtime_mode',
@@ -400,8 +393,4 @@ export const SECTION_TO_GROUP_MAP = {
   'storage.degraded_mode': 'storage_settings.data_sync',
   'storage.cleanup': 'storage_settings.data_sync',
   'log': 'advanced_settings.logs',
-  'frame_service': 'advanced_settings.hardware_debug',
-  'telemetry': 'advanced_settings.runtime_debug',
-  'live_activity': 'advanced_settings.runtime_debug',
-  'ota': 'advanced_settings.runtime_debug',
 };

@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -42,6 +43,9 @@ type = "minimax-cn"
 
 [voice_settings.classic.tts]
 provider = "local"
+
+[memory_settings.notification]
+retention_days = 21
 `
 	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -61,6 +65,9 @@ provider = "local"
 	}
 	if cfg.InputMode != "stt" || cfg.STT.Provider != "local" || cfg.STTProviders["local"].Type != "openai-whisper" {
 		t.Fatalf("voice mapping = mode %q stt %#v providers %#v", cfg.InputMode, cfg.STT, cfg.STTProviders)
+	}
+	if cfg.VoiceNotifications.RetentionDays != 21 {
+		t.Fatalf("notification retention days = %d, want 21", cfg.VoiceNotifications.RetentionDays)
 	}
 }
 
@@ -87,5 +94,51 @@ playback_backend = "local"
 	}
 	if cfg.Audio.Backend != AudioBackendLocal {
 		t.Fatalf("Audio.Backend = %q, want local", cfg.Audio.Backend)
+	}
+}
+
+func TestLoadConfigMapsGroupedLogRawHTTPToModelConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	const source = `
+[model_settings.model]
+provider = "fake"
+
+[advanced_settings.log]
+log_raw_http = false
+`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Model.LogRawHTTP {
+		t.Fatal("Model.LogRawHTTP = true, want grouped advanced_settings.log value false")
+	}
+}
+
+func TestLoadConfigRejectsLegacyFlatSections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte("[model]\nprovider = \"fake\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), `unsupported top-level TOML key "model"`) {
+		t.Fatalf("LoadConfig() error = %v, want grouped-schema error", err)
+	}
+}
+
+func TestLoadConfigRejectsLegacyRootFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte("locale = \"en-US\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), `unsupported top-level TOML key "locale"`) {
+		t.Fatalf("LoadConfig() error = %v, want grouped-schema error", err)
 	}
 }

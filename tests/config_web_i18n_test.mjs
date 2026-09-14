@@ -183,7 +183,8 @@ async function loadModule(filePath) {
   moduleCache.set(absolutePath, module);
   await module.link(async (specifier, referencingModule) => {
     const referencingPath = fileURLToPath(referencingModule.identifier);
-    return loadModule(path.resolve(path.dirname(referencingPath), specifier));
+    const modulePath = specifier.split('?', 1)[0];
+    return loadModule(path.resolve(path.dirname(referencingPath), modulePath));
   });
   return module;
 }
@@ -211,8 +212,8 @@ assert.equal(t('config.fields.device.device_type.options.android'), 'Android');
 assert.equal(t('config.fields.device.device_type.options.macos'), 'macOS');
 assert.equal(t('config.fields.hid.input_backend.label'), '输入后端');
 assert.equal(t('config.fields.hid.input_backend.options.hid'), 'USB HID');
-assert.equal(t('config.fields.agent.input_mode.label'), '输入模式');
-assert.equal(t('config.fields.agent.input_mode.options.realtime'), '实时语音');
+assert.equal(t('config.fields.agent.input_mode.label'), '语音模式');
+assert.equal(t('config.fields.agent.input_mode.options.realtime'), '实时模式');
 assert.equal(t('config.default_value', {value: '16000'}), '默认值：16000');
 assert.equal(t('config.fields.model.api_mode.label'), '对话接口');
 assert.equal(t('config.fields.model.api_mode.options.responses'), 'Responses（本地上下文）');
@@ -239,7 +240,7 @@ assert.equal(t('wifi.proxy_url_help'), 'Supported URLs: socks5://, socks5h://, h
 assert.equal(t('config.fields.device.device_type.label'), 'Device type');
 assert.equal(t('config.fields.device.device_type.options.windows'), 'Windows');
 assert.equal(t('config.fields.hid.input_backend.label'), 'Input backend');
-assert.equal(t('config.fields.agent.input_mode.label'), 'Input mode');
+assert.equal(t('config.fields.agent.input_mode.label'), 'Voice mode');
 assert.equal(stored.get('aiden.config.locale'), 'en-US');
 
 const source = await fs.readFile(i18nPath, 'utf8');
@@ -263,7 +264,7 @@ const advancedGroupStart = indexHtml.indexOf('data-i18n="groups.advanced_setting
 assert.ok(basicGroupStart >= 0 && modelGroupStart > basicGroupStart);
 assert.ok(advancedGroupStart > modelGroupStart);
 assert.match(indexHtml.slice(basicGroupStart, modelGroupStart), /id="section-device"[\s\S]*id="device-hid-fields"/);
-assert.match(indexHtml.slice(advancedGroupStart), /id="section-hid"[\s\S]*id="advanced-hid-debug-fields"/);
+assert.doesNotMatch(indexHtml.slice(advancedGroupStart), /id="section-hid"|id="advanced-hid-debug-fields"/);
 
 const configForm = await fs.readFile(path.join(webRoot, 'assets/js/config/config-form.js'), 'utf8');
 const wifi = await fs.readFile(path.join(webRoot, 'assets/js/config/wifi.js'), 'utf8');

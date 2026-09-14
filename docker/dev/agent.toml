@@ -1,5 +1,6 @@
 [basic_settings.language_timezone]
 locale = "en-US"
+timezone = "UTC"
 
 [basic_settings.device]
 device_type = "iOS"

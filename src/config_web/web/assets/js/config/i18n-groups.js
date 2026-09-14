@@ -39,8 +39,8 @@ export const GROUP_TRANSLATIONS = {
 
       advanced_settings: 'Advanced Settings',
       logs: 'Logs',
-      hardware_debug: 'Hardware & Debug',
-      runtime_debug: 'Runtime Debug',
+      manual_config: 'Manual Configuration',
+      about: 'About',
     },
   },
   'zh-CN': {
@@ -81,8 +81,8 @@ export const GROUP_TRANSLATIONS = {
 
       advanced_settings: '高级设置',
       logs: '日志',
-      hardware_debug: '硬件与调试',
-      runtime_debug: '运行时调试',
+      manual_config: '手动编辑配置',
+      about: '关于',
     },
   },
 };

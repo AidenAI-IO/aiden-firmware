@@ -1,5 +1,5 @@
 import {byId, modelProvidersByName, registerRuntime, runtimeFunction, runtimeObject} from './state.js';
-import {VISIBLE_FIELDS} from './field-visibility.js';
+import {VISIBLE_FIELDS} from './field-visibility.js?v=configuration-groups-20260914-v16';
 const TtsProvidersManager=runtimeObject('TtsProvidersManager');const SttProvidersManager=runtimeObject('SttProvidersManager');const VoiceModelProvidersManager=runtimeObject('VoiceModelProvidersManager');const applyAudioArchiveAvailability=runtimeFunction('applyAudioArchiveAvailability');const isSecretField=runtimeFunction('isSecretField');const t=runtimeFunction('t');
 function rangeOptions(start,end,step,precision){const values=[];for(let i=0,n=start;n<=end+step/2;i++,n=start+i*step){values.push(String(Number(n.toFixed(precision))));}return values;}
     let configMeta=null;let sectionFields={};let recordSectionFields={};let selectFieldOptions={};let fieldDefaults={};let visibilityRules=[];let conditionalSelectRules=[];let conditionalPlaceholderRules=[];let watchedFields=[];
@@ -16,6 +16,7 @@ function rangeOptions(start,end,step,precision){const values=[];for(let i=0,n=st
     function renderExistingSpecialField(context){return context.existing||renderMetadataField(context.section,context.field);}
     const specialFieldRenderers={
       'agent.locale':renderExternalField,
+      'agent.timezone':renderExternalField,
       'model.provider':renderExistingSpecialField,
       'model.model':renderExistingSpecialField,
       'tts.provider':renderExistingSpecialField,

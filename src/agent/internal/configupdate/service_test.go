@@ -8,7 +8,7 @@ import (
 
 func TestServiceUpdateAppliesPatchWithoutCLI(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	if err := os.WriteFile(path, []byte("[hid]\nkeyboard_layout = \"qwerty\"\n"), 0o640); err != nil {
+	if err := os.WriteFile(path, []byte("[basic_settings.device.hid]\nkeyboard_layout = \"qwerty\"\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 

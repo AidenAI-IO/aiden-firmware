@@ -18,8 +18,8 @@ type hostRuntimeInfo struct {
 	Architecture    string
 }
 
-func currentDateContext(locale string) string {
-	return formatCurrentDate(promptNow(), locale)
+func currentDateContext(locale, timezone string) string {
+	return formatCurrentDate(configuredTime(promptNow(), timezone), locale, timezone)
 }
 
 func hostRuntimeInfoContext() string {
@@ -73,13 +73,17 @@ func hostInfoValue(value string) string {
 	return value
 }
 
-func formatCurrentDate(t time.Time, locale string) string {
+func formatCurrentDate(t time.Time, locale, timezone string) string {
+	timezone = strings.TrimSpace(timezone)
+	if timezone == "" {
+		timezone = defaultTimezone
+	}
 	if normalizeResponseLocale(locale) == localeEnglishUS {
 		weekdays := []string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
-		return "Current date: " + t.Format("2006-01-02") + " (" + weekdays[t.Weekday()] + ")"
+		return "Current date: " + t.Format("2006-01-02") + " (" + weekdays[t.Weekday()] + ", timezone: " + timezone + ")"
 	}
 	weekdays := []string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
-	return "Current date: " + t.Format("2006-01-02") + " (" + weekdays[t.Weekday()] + ")"
+	return "Current date: " + t.Format("2006-01-02") + " (" + weekdays[t.Weekday()] + ", timezone: " + timezone + ")"
 }
 
 func normalizeResponseLocale(locale string) string {

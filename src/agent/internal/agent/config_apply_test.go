@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -106,6 +107,28 @@ func TestConfigApplyFailureResumesOldComponents(t *testing.T) {
 	}
 	if committed || r.ConfigSnapshot().TTS.Provider != cfg.TTS.Provider {
 		t.Fatal("failed apply replaced active settings")
+	}
+}
+
+func TestConfigApplyFailureRollsBackTimezoneEnvironment(t *testing.T) {
+	t.Setenv("TZ", "UTC0")
+	cfg := DefaultConfig()
+	cfg.ConfigDir = t.TempDir()
+	cfg.Timezone = "UTC"
+	r := &Runtime{config: cfg}
+	defer r.Close()
+
+	next := cfg
+	next.Timezone = "Asia/Shanghai"
+	next.TTS.Provider = "not-a-provider"
+	if err := r.ApplyConfigSnapshot(next); err == nil {
+		t.Fatal("invalid provider accepted")
+	}
+	if got := os.Getenv("TZ"); got != "UTC0" {
+		t.Fatalf("TZ = %q, want rollback to UTC0", got)
+	}
+	if got := r.ConfigSnapshot().TimezoneOrDefault(); got != "UTC" {
+		t.Fatalf("active timezone = %q, want UTC", got)
 	}
 }
 
