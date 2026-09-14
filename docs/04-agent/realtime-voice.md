@@ -15,6 +15,25 @@ the adapter package must not be treated as an OpenAI-compatible wire protocol.
 
 ## Responsibilities and boundaries
 
+### Input transcription
+
+Realtime audio understanding and user-facing transcription are separate
+outputs of the same provider session. The provider consumes microphone audio
+directly to produce a response; the final user transcript is used for Web
+history and is not sent back as a second text prompt.
+
+OpenAI requests `gpt-4o-transcribe` in both GA and legacy session payloads.
+Qwen, xAI, and Gemini use their provider-native transcription paths. The
+ordinary `[stt]` configuration applies only to `input_mode = "stt"` and does
+not configure a realtime session.
+
+OpenAI diagnostics record the requested and acknowledged transcription model,
+speech start/stop, audio commit, final transcript or transcription failure,
+response ID, and tool call IDs. These events may be omitted or reordered by a
+provider, so diagnostics do not change response admission or commit a
+server-VAD buffer a second time. Final transcript text is user data and must be
+handled accordingly.
+
 The realtime path is split into three layers:
 
 ```text
@@ -78,7 +97,7 @@ the persisted realtime context.
 The daemon consumes provider-neutral `Event` values. A typical audio turn is:
 
 ```text
-audio → speech_started → speech_stopped → transcript_final
+audio → speech_started → speech_stopped → input_committed → transcript_final
       → response_started → transcript_delta/audio/tool_call
       → response_done or response_cancelled
 ```

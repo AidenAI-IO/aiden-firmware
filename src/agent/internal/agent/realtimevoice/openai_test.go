@@ -209,7 +209,7 @@ func TestOpenAILegacySessionUpdateUsesBetaFields(t *testing.T) {
 			t.Fatalf("legacy payload contains GA field %q: %s", forbidden, text)
 		}
 	}
-	for _, required := range []string{`"modalities":["audio","text"]`, `"input_audio_format":"pcm16"`, `"output_audio_format":"pcm16"`, `"input_audio_transcription":{"model":"whisper-1"}`, `"silence_duration_ms":550`} {
+	for _, required := range []string{`"modalities":["audio","text"]`, `"input_audio_format":"pcm16"`, `"output_audio_format":"pcm16"`, `"input_audio_transcription":{"model":"gpt-4o-transcribe"}`, `"silence_duration_ms":550`} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("legacy payload missing %q: %s", required, text)
 		}
@@ -223,6 +223,44 @@ func TestOpenAIProtocolAliases(t *testing.T) {
 		if got := normalizeRealtimeProtocol(tc.input); got != tc.want {
 			t.Errorf("normalizeRealtimeProtocol(%q) = %q, want %q", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestParseOpenAITranscriptionAcknowledgement(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        string
+		fallbackID string
+		want       openAITranscriptionAcknowledgement
+	}{
+		{
+			name:       "GA uses fallback session ID",
+			raw:        `{"type":"session.updated","session":{"audio":{"input":{"transcription":{"model":"gpt-4o-transcribe","language":"zh"}}}}}`,
+			fallbackID: "session-fallback",
+			want:       openAITranscriptionAcknowledgement{SessionID: "session-fallback", Model: "gpt-4o-transcribe", Language: "zh", Present: true},
+		},
+		{
+			name: "legacy",
+			raw:  `{"type":"session.updated","session":{"id":"session-legacy","input_audio_transcription":{"model":"gpt-4o-transcribe"}}}`,
+			want: openAITranscriptionAcknowledgement{SessionID: "session-legacy", Model: "gpt-4o-transcribe", Present: true},
+		},
+		{
+			name:       "transcription absent",
+			raw:        `{"type":"session.updated","session":{}}`,
+			fallbackID: "session-fallback",
+			want:       openAITranscriptionAcknowledgement{SessionID: "session-fallback"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseOpenAITranscriptionAcknowledgement([]byte(tc.raw), tc.fallbackID)
+			if !ok || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("acknowledgement=%+v ok=%t, want %+v", got, ok, tc.want)
+			}
+		})
+	}
+	if _, ok := parseOpenAITranscriptionAcknowledgement([]byte(`{"type":"session.created","session":{"id":"session-1"}}`), ""); ok {
+		t.Fatal("session.created was treated as a transcription acknowledgement")
 	}
 }
 
@@ -403,8 +441,32 @@ func TestTranslateOpenAITurnSequenceDoesNotDuplicateSpeechStopped(t *testing.T) 
 			kinds = append(kinds, event.Kind)
 		}
 	}
-	want := []EventKind{EventSpeechStopped, EventResponseStarted}
+	want := []EventKind{EventSpeechStopped, EventInputCommitted, EventResponseStarted}
 	if !reflect.DeepEqual(kinds, want) {
 		t.Fatalf("translated event kinds = %v, want %v", kinds, want)
+	}
+}
+
+func TestTranslateOpenAIInputCorrelationEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		raw   string
+		kind  EventKind
+		check func(Event) bool
+	}{
+		{name: "speech started", raw: `{"type":"input_audio_buffer.speech_started","item_id":"item-1","audio_start_ms":120}`, kind: EventSpeechStarted, check: func(event Event) bool { return event.AudioStartMS == 120 }},
+		{name: "speech stopped", raw: `{"type":"input_audio_buffer.speech_stopped","item_id":"item-1","audio_end_ms":840}`, kind: EventSpeechStopped, check: func(event Event) bool { return event.AudioEndMS == 840 }},
+		{name: "input committed", raw: `{"type":"input_audio_buffer.committed","item_id":"item-1","previous_item_id":"item-0"}`, kind: EventInputCommitted, check: func(event Event) bool { return event.PreviousItemID == "item-0" }},
+		{name: "transcription failed", raw: `{"type":"conversation.item.input_audio_transcription.failed","item_id":"item-1","error":{"code":"audio_unintelligible","message":"could not transcribe"}}`, kind: EventTranscriptFailed, check: func(event Event) bool {
+			return event.Error != nil && strings.Contains(event.Error.Error(), "audio_unintelligible") && strings.Contains(event.Error.Error(), "could not transcribe")
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			event, ok := translateOpenAIEvent([]byte(tc.raw))
+			if !ok || event.Kind != tc.kind || event.ItemID != "item-1" || !tc.check(event) {
+				t.Fatalf("event=%+v ok=%t, want kind=%s item=item-1 with diagnostic fields", event, ok, tc.kind)
+			}
+		})
 	}
 }
