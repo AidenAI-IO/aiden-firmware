@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-OTA_BIN=${OTA_BIN:-/oem/usr/bin/ota}
+OTA_BIN=${OTA_BIN:-/usr/lib/aiden/ota}
 OTA_CONFIG=${OTA_CONFIG:-/userdata/debian/ota/config.json}
 PENDING_PATH=${PENDING_PATH:-/userdata/ota/pending_boot.json}
 BOOT_CONFIG=${BOOT_CONFIG:-/etc/aiden_boot.conf}

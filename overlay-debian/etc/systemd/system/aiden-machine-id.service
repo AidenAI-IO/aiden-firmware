@@ -4,7 +4,7 @@ Requires=oem.mount userdata.mount userdata-ota.mount aiden-userdata-migrate.serv
 After=oem.mount userdata.mount userdata-ota.mount aiden-userdata-migrate.service
 After=systemd-machine-id-commit.service
 Before=aiden-environment.service aiden-ota-health-marker.service aiden.target
-ConditionPathExists=/oem/usr/bin/ota
+ConditionPathExists=/usr/lib/aiden/ota
 
 [Service]
 Type=oneshot

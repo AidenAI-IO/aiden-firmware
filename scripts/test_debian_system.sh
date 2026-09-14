@@ -247,18 +247,23 @@ grep -Fq 'boot_${slot}.img contains multiple root arguments' \
 grep -Fq 'bsp-artifacts.sha256' "${SYSTEM_DIR}/audit-bsp.sh"
 grep -Fq -- '--check' "${SYSTEM_DIR}/audit-bsp.sh"
 
-for binary in \
-    abctl agent aiden-environment audio_service ble_service cpu_vad \
+grep -Fq 'overlay-debian-oem/' "${SYSTEM_DIR}/container-assemble-images.sh" \
+    || fail "production OEM staging no longer consumes the OEM overlay"
+test -x "${REPO_ROOT}/overlay-debian-oem/usr/bin/aiden-dynamic-keyboard" \
+    || fail "production OEM overlay is missing the dynamic keyboard helper"
+for binary in abctl agent aiden-environment audio_service ble_service cpu_vad \
     frame_service ota rknn_vad ttyd; do
-    grep -qx "    ${binary}" "${SYSTEM_DIR}/container-assemble-images.sh" \
-        || fail "production OEM allowlist is missing ${binary}"
+    if grep -Eq "/apps[^\n]*${binary}|usr/bin[^\n]*${binary}" \
+        "${SYSTEM_DIR}/container-assemble-images.sh"; then
+        fail "business executable is still staged directly into OEM: ${binary}"
+    fi
 done
 if grep -Eq '^    (example_|hello$|trigger$|image_process$|audio_stream$)' \
     "${SYSTEM_DIR}/container-assemble-images.sh"; then
     fail "diagnostic executable leaked into the production OEM allowlist"
 fi
-grep -Fq 'src/agent/config/skills/' "${SYSTEM_DIR}/container-assemble-images.sh"
-grep -Fq 'src/config_web/web/' "${SYSTEM_DIR}/container-assemble-images.sh"
+grep -Fq 'src/agent/config/skills/' "${REPO_ROOT}/scripts/debian-package/container-build.sh"
+grep -Fq 'src/config_web/web/' "${REPO_ROOT}/scripts/debian-package/container-build.sh"
 grep -Fq 'AGENT_CONFIG_PATH' "${SYSTEM_DIR}/build.sh"
 grep -Fq '${AGENT_CONFIG_PATH}:/run/secrets/agent.toml:ro' \
     "${SYSTEM_DIR}/build.sh"
@@ -415,7 +420,9 @@ chmod +x "${TEST_ROOT}/mock-bin/docker"
 mock_output=${TEST_ROOT}/mock-output
 mock_log=${TEST_ROOT}/docker-args
 mock_apps=${TEST_ROOT}/mock-apps
-mkdir -p "${mock_apps}/rootfs-cli-tools"
+mkdir -p "${mock_output}" "${mock_apps}/rootfs-cli-tools" "${mock_apps}/apps" "${mock_apps}/apps-audit"
+printf '%s' mock-deb >"${mock_output}/aiden-business.deb"
+printf 'status=pass\n' >"${mock_apps}/apps-audit/summary.txt"
 printf '%064d  fq\n' 0 >"${mock_apps}/rootfs-cli-tools/manifest.sha256"
 printf 'fq v0.17.0 linux/arm/v7 preserve\n' \
     >"${mock_apps}/rootfs-cli-tools/versions.txt"
@@ -434,3 +441,5 @@ grep -qx 'scripts/debian-system/container-build-rootfs.sh' \
     "${TEST_ROOT}/docker-args.txt"
 
 echo "Debian system static checks passed"
+
+"${REPO_ROOT}/scripts/test_debian_package.sh"

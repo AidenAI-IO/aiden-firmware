@@ -14,7 +14,7 @@ After=aiden-frame.service aiden-audio.service aiden-ble.service
 After=aiden-wifi-proxy.service aiden-agent.service aiden-config-web.service
 Before=aiden-ota-health.service
 ConditionPathExists=/userdata/ota/pending_boot.json
-ConditionPathExists=/oem/usr/bin/ota
+ConditionPathExists=/usr/lib/aiden/ota
 
 [Service]
 Type=oneshot

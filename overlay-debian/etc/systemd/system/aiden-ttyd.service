@@ -2,7 +2,7 @@
 Description=Aiden ttyd browser terminal
 Requires=oem.mount aiden-environment.service aiden-usb-gadget.service
 After=oem.mount aiden-environment.service aiden-usb-gadget.service
-ConditionPathExists=/oem/usr/bin/ttyd
+ConditionPathExists=/usr/lib/aiden/ttyd
 StartLimitIntervalSec=60s
 StartLimitBurst=5
 

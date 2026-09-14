@@ -12,7 +12,7 @@ import (
 )
 
 func TestBundledQuickActionsPathUsesOEMPartition(t *testing.T) {
-	if BundledQuickActionsPath != "/oem/usr/share/aiden/quick_actions.json" {
+	if BundledQuickActionsPath != "/usr/share/aiden/quick_actions.json" {
 		t.Fatalf("BundledQuickActionsPath = %q, want OEM path", BundledQuickActionsPath)
 	}
 }

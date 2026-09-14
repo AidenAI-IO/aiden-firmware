@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+APPS_OUTPUT=${DEBIAN_APPS_OUTPUT_DIR:-${REPO_ROOT}/output/debian-apps}
+OUTPUT_DIR=${DEBIAN_PACKAGE_OUTPUT_DIR:-${REPO_ROOT}/output/debian-package}
+# Docker bind mounts require absolute host paths, including custom output dirs.
+[[ "${APPS_OUTPUT}" = /* ]] || APPS_OUTPUT=${REPO_ROOT}/${APPS_OUTPUT}
+[[ "${OUTPUT_DIR}" = /* ]] || OUTPUT_DIR=${REPO_ROOT}/${OUTPUT_DIR}
+readonly APPS_OUTPUT OUTPUT_DIR
+readonly IMAGE="${DEBIAN_PACKAGE_BUILD_IMAGE:-aiden-debian13-armhf-builder:system}"
+
+test -d "${APPS_OUTPUT}/apps" || {
+    echo "Missing applications: ${APPS_OUTPUT}/apps" >&2
+    exit 1
+}
+grep -qx 'status=pass' "${APPS_OUTPUT}/apps-audit/summary.txt" || {
+    echo "Application audit has not passed" >&2
+    exit 1
+}
+mkdir -p "${OUTPUT_DIR}"
+docker image inspect "${IMAGE}" >/dev/null
+docker run --rm \
+    -e "AIDEN_BUSINESS_VERSION=${AIDEN_BUSINESS_VERSION:-0.0.0}" \
+    -e "AIDEN_BUSINESS_REVISION=${AIDEN_BUSINESS_REVISION:-1}" \
+    -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" \
+    -v "${REPO_ROOT}:/work:ro" \
+    -v "${APPS_OUTPUT}/apps:/apps:ro" \
+    -v "${OUTPUT_DIR}:/out" \
+    -w /work "${IMAGE}" bash scripts/debian-package/container-build.sh
+
+cp "${OUTPUT_DIR}/aiden-business_"*.deb "${OUTPUT_DIR}/aiden-business.deb"

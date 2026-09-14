@@ -7,7 +7,7 @@ Before=aiden-userdata-migrate.service
 [Service]
 Type=oneshot
 # Recovery restores the environment input; do not load that input before it runs.
-ExecStart=/oem/usr/bin/ota --config /userdata/debian/ota/config.json recover
+ExecStart=/usr/lib/aiden/ota --config /userdata/debian/ota/config.json recover
 RemainAfterExit=yes
 TimeoutStartSec=60s
 LogsDirectory=ota

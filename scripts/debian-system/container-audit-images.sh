@@ -18,19 +18,7 @@ readonly ROOTFS_CLI_TOOLS_DIR=/rootfs-cli-tools
 # shellcheck source=../rootfs_cli_tool_catalog.sh
 source "${REPO_ROOT}/scripts/rootfs_cli_tool_catalog.sh"
 
-readonly -a PRODUCTION_BINARIES=(
-    abctl
-    agent
-    aiden-dynamic-keyboard
-    aiden-environment
-    audio_service
-    ble_service
-    cpu_vad
-    frame_service
-    ota
-    rknn_vad
-    ttyd
-)
+readonly -a PRODUCTION_BINARIES=(aiden-dynamic-keyboard)
 
 readonly TTYD_SHA256=b0784080bd78f0a5916462672f461542c607f8ea7cee56b075e8cd04e1ffcc4d
 
@@ -113,6 +101,21 @@ audit_packages() {
     ' "${OUTPUT_DIR}/packages.txt"; then
         fail "banned production package is installed"
     fi
+}
+
+audit_business_package() {
+    awk -F '\t' 'NR > 1 && $1 == "aiden-business" {found=1} END {exit !found}' \
+        "${OUTPUT_DIR}/packages.txt" || fail "aiden-business is not installed"
+    for path in \
+        /usr/lib/aiden/agent /usr/lib/aiden/frame_service \
+        /usr/lib/aiden/audio_service /usr/lib/aiden/ble_service \
+        /usr/lib/aiden/aiden-environment /usr/lib/aiden/ttyd \
+        /usr/share/aiden/config-web/index.html \
+        /usr/share/aiden/skills/aiden/SKILL.md; do
+        test -e "${ROOTFS_MOUNT}${path}" || fail "aiden-business file is missing: ${path}"
+    done
+    dpkg-query --root="${ROOTFS_MOUNT}" -S /usr/lib/aiden/agent \
+        | grep -q '^aiden-business:' || fail "agent is not owned by aiden-business"
 }
 
 audit_rootfs_cli_tools() {
@@ -307,7 +310,7 @@ audit_oem_files() {
         diff -u <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}") >&2 || true
         fail "OEM executable allowlist mismatch"
     }
-    actual_sha=$(sha256sum "${OEM_MOUNT}/usr/bin/ttyd" | awk '{print $1}')
+    actual_sha=$(sha256sum "${ROOTFS_MOUNT}/usr/lib/aiden/ttyd" | awk '{print $1}')
     [ "${actual_sha}" = "${TTYD_SHA256}" ] \
         || fail "ttyd checksum mismatch"
     if find "${OEM_MOUNT}" \( -name '*.a' -o -name '*.la' -o -name '*.o' \
@@ -339,18 +342,18 @@ audit_oem_files() {
     test ! -e "${OEM_MOUNT}/usr/lib/librknnrt.so" \
         || fail "obsolete dynamic librknnrt.so leaked into OEM"
     test -s "${OEM_MOUNT}/etc/ota_pubkey.pem" || fail "OTA public key is missing"
-    test -s "${OEM_MOUNT}/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn" \
-        || fail "VAD model is missing"
+    test -s "${ROOTFS_MOUNT}/usr/lib/aiden/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn" \
+        || fail "VAD model is missing from aiden-business"
     test -s "${OEM_MOUNT}/usr/share/aiden/edid/hdmi_1080p30_cta.hex" \
         || fail "EDID asset is missing"
-    test -s "${OEM_MOUNT}/usr/share/aiden/audio/voice-notifications/tts-unavailable.en-US.wav" \
-        || fail "voice notification is missing"
-    test -s "${OEM_MOUNT}/usr/share/aiden/config-web/index.html" \
-        || fail "config-web assets are missing"
-    test -s "${OEM_MOUNT}/usr/share/aiden/quick_actions.json" \
-        || fail "quick actions are missing"
-    test "$(find "${OEM_MOUNT}/usr/share/aiden/skills" -mindepth 2 -maxdepth 2 \
-        -name SKILL.md -type f | wc -l)" -ge 1 || fail "bundled skills are missing"
+    test -s "${ROOTFS_MOUNT}/usr/share/aiden/audio/voice-notifications/tts-unavailable.en-US.wav" \
+        || fail "voice notification is missing from aiden-business"
+    test -s "${ROOTFS_MOUNT}/usr/share/aiden/config-web/index.html" \
+        || fail "config-web assets are missing from aiden-business"
+    test -s "${ROOTFS_MOUNT}/usr/share/aiden/quick_actions.json" \
+        || fail "quick actions are missing from aiden-business"
+    test "$(find "${ROOTFS_MOUNT}/usr/share/aiden/skills" -mindepth 2 -maxdepth 2 \
+        -name SKILL.md -type f | wc -l)" -ge 1 || fail "bundled skills are missing from aiden-business"
     for module in \
         libarc4.ko ctr.ko ccm.ko aes_generic.ko cfg80211.ko \
         aic8800_bsp.ko aic8800_fdrv.ko aic8800_btlpm.ko \
@@ -373,7 +376,11 @@ audit_elf_closure() {
     printf 'path\tmachine\trunpath\tneeded\n' >"${OUTPUT_DIR}/elf-runtime-audit.tsv"
     while IFS= read -r -d '' file; do
         head -c 4 "${file}" | grep -q $'\177ELF' || continue
-        relative=${file#${OEM_MOUNT}}
+        if [[ "${file}" == "${ROOTFS_MOUNT}"/* ]]; then
+            relative="/${file#${ROOTFS_MOUNT}/}"
+        else
+            relative=${file#${OEM_MOUNT}}
+        fi
         machine=$(readelf -hW "${file}" 2>/dev/null \
             | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')
         [ "${machine}" = ARM ] || fail "non-ARM ELF leaked into OEM: ${relative}"
@@ -384,7 +391,7 @@ audit_elf_closure() {
         fi
         runpath=$(sed -n 's/.*(\(RPATH\|RUNPATH\)).*[[]\([^]]*\)[]].*/\2/p' <<<"${dynamic}")
         case "${relative}:${runpath}" in
-            /usr/bin/*:'$ORIGIN/../lib' | *:) ;;
+            /usr/bin/*:'$ORIGIN/../lib' | /usr/lib/aiden/*:'$ORIGIN/../lib' | *:) ;;
             *) fail "unapproved OEM RPATH/RUNPATH: ${relative}: ${runpath}" ;;
         esac
         while IFS= read -r dependency; do
@@ -482,6 +489,7 @@ main() {
     stage_oem_image
     mount_image "${IMAGE_DIR}/rootfs.img" "${ROOTFS_MOUNT}"
     audit_rootfs
+    audit_business_package
     audit_rootfs_cli_tools
     audit_oem_files
     audit_elf_closure

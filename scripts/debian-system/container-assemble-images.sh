@@ -17,18 +17,6 @@ readonly OEM_UUID=80a2f3fd-c8e2-439d-b718-5059b74dcc91
 readonly USERDATA_UUID=ee2962d6-bd9c-4096-b22b-71934584d36a
 readonly OTA_UUID=950e39a6-5445-47df-a542-e80ed45b08ac
 
-readonly -a PRODUCTION_BINARIES=(
-    abctl
-    agent
-    aiden-environment
-    audio_service
-    ble_service
-    cpu_vad
-    frame_service
-    ota
-    rknn_vad
-    ttyd
-)
 
 mounts=()
 cleanup() {
@@ -67,19 +55,13 @@ stage_oem() {
         "${OEM_ROOT}/usr/model" \
         "${OEM_ROOT}/usr/share/aiden"
     rsync -aH --chown=0:0 "${REPO_ROOT}/overlay-debian-oem/" "${OEM_ROOT}/"
-    local binary
-    for binary in "${PRODUCTION_BINARIES[@]}"; do
-        install -m 0755 "/apps/bin/${binary}" "${OEM_ROOT}/usr/bin/${binary}"
-    done
+    # Business binaries and mutable resources are owned by aiden-business in rootfs.
+    rm -rf "${OEM_ROOT}/usr/model" "${OEM_ROOT}/usr/share/aiden/audio/voice-notifications" \
+        "${OEM_ROOT}/usr/share/aiden/config-web" "${OEM_ROOT}/usr/share/aiden/skills" \
+        "${OEM_ROOT}/usr/share/aiden/quick_actions.json"
     rsync -aH --chown=0:0 /apps/lib/ "${OEM_ROOT}/usr/lib/"
     rsync -aH --chown=0:0 \
         "${SDK_DIR}/output/out/sysdrv_out/kernel_drv_ko/" "${OEM_ROOT}/usr/ko/"
-    rsync -aH --chown=0:0 "${REPO_ROOT}/src/config_web/web/" \
-        "${OEM_ROOT}/usr/share/aiden/config-web/"
-    install -m 0644 "${REPO_ROOT}/src/agent/internal/agent/quick_actions.json" \
-        "${OEM_ROOT}/usr/share/aiden/quick_actions.json"
-    rsync -aH --chown=0:0 "${REPO_ROOT}/src/agent/config/skills/" \
-        "${OEM_ROOT}/usr/share/aiden/skills/"
     install -m 0644 "${OTA_PUBLIC_KEY}" "${OEM_ROOT}/etc/ota_pubkey.pem"
 
     normalize_tree_modes "${OEM_ROOT}"

@@ -296,10 +296,10 @@ the actual error category, such as `permission_denied`, `app_backgrounded`, `app
 
 | Item | Default location or entry point |
 | --- | --- |
-| Agent binary | `/oem/usr/bin/agent` |
+| Agent binary | `/usr/lib/aiden/agent` |
 | Environment wrapper | `/oem/usr/bin/aiden-env-run` |
 | Agent config and data | `<CONFIG_DIR>/agent.toml`, user skills, memory, and logs (production default: `/userdata/agent/`) |
-| Bundled skills | `/oem/usr/share/aiden/skills/`, synchronized to the user skill directory at startup |
+| Bundled skills | `/usr/share/aiden/skills/`, synchronized to the user skill directory at startup |
 | Config Web | `http://192.168.42.1`, normally port 80 |
 | Agent Web/API | `http://192.168.42.1:8080` |
 | Frame socket | `/run/frame_service/frame_service.sock` |

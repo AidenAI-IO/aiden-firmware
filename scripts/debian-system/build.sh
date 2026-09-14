@@ -145,6 +145,13 @@ run_rootfs_container() {
     # The selected SDK may live outside the repository, so resolve its commit
     # on the host and mount it at a fixed path for the privileged container.
     sdk_commit=$(git -C "${SDK_DIR}" rev-parse HEAD)
+    if [ ! -s "${OUTPUT_DIR}/aiden-business.deb" ]; then
+        DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
+            DEBIAN_PACKAGE_OUTPUT_DIR="${OUTPUT_DIR}" \
+            DEBIAN_PACKAGE_BUILD_IMAGE="${ROOTFS_BUILD_IMAGE}" \
+            "${REPO_ROOT}/scripts/debian-package/build.sh"
+    fi
+    test -s "${OUTPUT_DIR}/aiden-business.deb" || { echo "Missing aiden-business.deb" >&2; exit 1; }
     docker run --rm --privileged \
         ${proxy_args[@]+"${proxy_args[@]}"} \
         -e "HOST_UID=$(id -u)" \
@@ -157,6 +164,7 @@ run_rootfs_container() {
         -v "${SDK_DIR}:/sdk:ro" \
         -v "${OUTPUT_DIR}:/out" \
         -v "${APPS_OUTPUT}/rootfs-cli-tools:/rootfs-cli-tools:ro" \
+        -v "${OUTPUT_DIR}/aiden-business.deb:/aiden-business.deb:ro" \
         -w /work \
         "${ROOTFS_BUILD_IMAGE}" \
         bash "${script}" "$@"
@@ -354,6 +362,7 @@ main() {
     case "${action}" in
         all)
             run_builder
+            DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" DEBIAN_PACKAGE_OUTPUT_DIR="${OUTPUT_DIR}" DEBIAN_PACKAGE_BUILD_IMAGE="${ROOTFS_BUILD_IMAGE}" "${REPO_ROOT}/scripts/debian-package/build.sh"
             run_rootfs
             run_bsp
             run_images

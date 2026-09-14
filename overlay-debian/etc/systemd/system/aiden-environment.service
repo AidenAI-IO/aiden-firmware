@@ -5,12 +5,12 @@ After=oem.mount aiden-userdata-migrate.service aiden-machine-id.service aiden-oe
 Before=aiden-adb-host.service aiden-agent.service aiden-audio.service
 Before=aiden-ble.service aiden-config-web.service aiden-frame.service
 Before=aiden-ota-health-marker.service aiden-ota-health.service aiden-ttyd.service
-ConditionPathExists=/oem/usr/bin/aiden-environment
+ConditionPathExists=/usr/lib/aiden/aiden-environment
 
 [Service]
 Type=oneshot
 ExecStartPre=/usr/bin/install -d -m 0755 /run/aiden
-ExecStart=/oem/usr/bin/aiden-environment --input=/userdata/system/env --output=/run/aiden/system.env --invalid-marker=/run/aiden/environment.invalid
+ExecStart=/usr/lib/aiden/aiden-environment --input=/userdata/system/env --output=/run/aiden/system.env --invalid-marker=/run/aiden/environment.invalid
 RemainAfterExit=yes
 TimeoutStartSec=10s
 

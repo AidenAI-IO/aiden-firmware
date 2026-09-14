@@ -941,7 +941,7 @@ func resolveBundledSkillsDir() string {
 }
 
 func bundledSkillsDirCandidates() []string {
-	return []string{"/oem/usr/share/aiden/skills"}
+	return []string{"/usr/share/aiden/skills"}
 }
 
 func LoadConfig(path string) (Config, error) {
