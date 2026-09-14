@@ -112,9 +112,9 @@ EOF
     mount_chroot_filesystems
     chroot "${ROOTFS_DIR}" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 \
-        apt-get update
+        apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update
     chroot "${ROOTFS_DIR}" /bin/sh -ec \
-        'DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 apt-get install -y --no-install-recommends $(grep -v "^[[:space:]]*#" /tmp/debian-system-packages.list | xargs)'
+        'DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 install -y --no-install-recommends $(grep -v "^[[:space:]]*#" /tmp/debian-system-packages.list | xargs)'
     if [ -s /aiden-business.deb ]; then
         install -m 0644 /aiden-business.deb "${ROOTFS_DIR}/tmp/aiden-business.deb"
         chroot "${ROOTFS_DIR}" dpkg -i /tmp/aiden-business.deb
