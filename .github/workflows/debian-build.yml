@@ -236,10 +236,15 @@ jobs:
       run: echo "GOPROXY=https://goproxy.cn" >> "$GITHUB_ENV"
 
     - name: Set up Go
+      # cache: false because nothing here consumes what it would cache. Every
+      # `go build` runs inside the Stage 2 container against the bind-mounted
+      # pinned toolchain, with GOCACHE/GOMODCACHE pointed at the persistent
+      # caches above. Uploading ~/go/pkg/mod to the hosted cache service only
+      # cost a minute per run and failed with ECONNRESET twice.
       uses: actions/setup-go@v5
       with:
         go-version-file: src/agent/go.mod
-        cache-dependency-path: src/agent/go.sum
+        cache: false
 
     - name: Prepare agent configuration
       # Stage 3 installs an external agent.toml into userdata.img and never
