@@ -103,6 +103,12 @@ unbind_line=$(printf '%s\n' "$reset_composite_body" | awk '
 [ "$announcement_line" -lt "$unbind_line" ] ||
     fail "reset_composite_locked must announce the reset before unbinding the UDC"
 
+printf '%s\n' "$reset_composite_body" | grep -Fq 'startup_grace_remaining=$STARTUP_GRACE_SECONDS' ||
+    fail "successful composite reset must re-arm ECM startup grace"
+
+printf '%s\n' "$reset_composite_body" | grep -Fq 'last_udc_state=$(read_udc_state)' ||
+    fail "successful composite reset must synchronize the post-reset UDC state"
+
 announce_body=$(extract_function announce_usb_reenumeration)
 printf '%s\n' "$announce_body" | grep -Fq -- '-X POST "$USB_REENUMERATION_WAKE_URL"' ||
     fail "announce_usb_reenumeration must POST to USB_REENUMERATION_WAKE_URL"

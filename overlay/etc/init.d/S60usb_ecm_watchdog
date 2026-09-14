@@ -261,6 +261,13 @@ reset_composite_locked() {
         fi
     fi
 
+    # Re-enumeration leaves UDC in the same configured state that watchdog_main
+    # observed before the reset, so no configured transition will be seen on
+    # the next loop iteration. Explicitly re-arm ECM startup grace here and
+    # record the post-reset state before returning to the watchdog loop.
+    startup_grace_remaining=$STARTUP_GRACE_SECONDS
+    last_udc_state=$(read_udc_state)
+
     finished_at=$(date +%s)
     duration=$((finished_at - started_at))
     log INFO reset_completed \
