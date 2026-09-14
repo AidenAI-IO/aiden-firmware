@@ -56,7 +56,7 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		writeCoordinateDebugTapError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-	if s.runtime == nil || s.runtime.tools == nil {
+	if s.runtime == nil || s.runtime.toolSnapshot() == nil {
 		writeCoordinateDebugTapError(w, http.StatusServiceUnavailable, "runtime not configured")
 		return
 	}
@@ -97,7 +97,7 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	tool, ok := s.runtime.tools.Get("touch_gesture")
+	tool, ok := s.runtime.toolSnapshot().Get("touch_gesture")
 	if !ok {
 		http.Error(w, `{"ok":false,"error":"touch_gesture tool unavailable"}`, http.StatusServiceUnavailable)
 		return

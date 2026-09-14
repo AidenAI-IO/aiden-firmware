@@ -161,10 +161,11 @@ func (a *STTConfigTestAPI) HandleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg.ConfigDir = filepath.Dir(a.configPath)
-	if err := a.server.runtime.ApplyConfigSnapshot(cfg); err != nil {
-		http.Error(w, "load Agent config: "+err.Error(), http.StatusServiceUnavailable)
-		return
-	}
+	// This private runtime is only a config holder for the STT test. It has
+	// no live components to reload (and must not initialize the TTS provider).
+	a.server.runtime.configMu.Lock()
+	a.server.runtime.config = cfg
+	a.server.runtime.configMu.Unlock()
 	a.server.handleSTTConfigTestStart(w, r)
 }
 

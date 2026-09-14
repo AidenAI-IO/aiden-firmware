@@ -110,6 +110,10 @@ const messages = {
     'system_env.editing': 'Editing env, click Save after changes.',
     'system_env.cancelled': 'Cancelled env changes.',
     'system_env.saved': 'env saved.',
+    'system_env.saved_restarting': 'Agent is restarting to apply the saved environment.',
+    'system_env.restart_required': 'Environment saved. Apply it by restarting Agent when ready.',
+    'system_env.apply_restart': 'Apply and restart Agent',
+    'system_env.apply_failed': 'Failed to apply environment.',
     'system_env.save_failed': 'Failed to save env.',
     'page.config_refreshed': 'Refreshed configuration and Wi-Fi list.',
     'page.refresh_failed': 'Refresh failed.',
@@ -119,7 +123,14 @@ const messages = {
     'config.title': 'Agent Configuration',
     'config.save_failed': 'Save [{{section}}] failed.',
     'config.saved_not_applied': 'Saved [{{section}}], but the Agent has not applied it yet.',
-    'config.saved_restarting': 'Saved [{{section}}]. Agent is restarting to apply it.',
+    'config.saved_pending': 'Saved [{{section}}]. Waiting to apply configuration.',
+    'config.apply_pending': 'Settings saved. Waiting for the current task or voice session to finish.',
+    'config.apply_done': 'Settings applied.',
+    'config.apply_failed': 'Settings saved, but application failed. Retry after fixing the error.',
+    'config.apply_unavailable': 'Cannot read application status. The saved settings have not been confirmed as applied.',
+    'config.apply_retry': 'Retry apply',
+    'config.reboot_action': 'Restart device',
+    'config.apply_reboot': 'USB/HID settings need a device restart. Other settings can apply without restarting.',
     'config.saved': '[{{section}}] saved.',
     'config.editing': 'Editing [{{section}}], click Save after changes.',
     'config.cancelled': 'Cancelled changes to [{{section}}].',
@@ -230,7 +241,7 @@ const messages = {
     'config.fields.agent.context_prune_threshold.label': 'Historical prune threshold (fraction)',
     'config.fields.agent.context_prune_threshold.help': 'Fraction of the usable model input budget that triggers cleanup of expired state and historical tool results, cleaning down to 6/7 of the trigger. Must be 0 or greater than 0 and less than 1; 0 uses 0.5. Capped at context_compaction_threshold so this cheap pass runs before the conversation summary.',
     'config.fields.agent.context_prune_threshold.placeholder': '0 = automatic (0.5)',
-    'locale.saved': 'Language saved. Agent is restarting.',
+    'locale.saved': 'Language saved. Application status is shown below.',
     'locale.save_failed': 'Failed to save language.',
     'locale.saved_not_applied': 'Language saved, but the Agent has not applied it yet.',
     'provider.add': 'Add Provider',
@@ -422,6 +433,10 @@ const messages = {
     'system_env.editing': '正在编辑 env，修改后请点击保存。',
     'system_env.cancelled': '已取消 env 修改。',
     'system_env.saved': 'env 已保存。',
+    'system_env.saved_restarting': '正在重启 Agent 以应用已保存的环境变量。',
+    'system_env.restart_required': '环境变量已保存，准备好后点击按钮重启 Agent 生效。',
+    'system_env.apply_restart': '应用并重启 Agent',
+    'system_env.apply_failed': '环境变量应用失败。',
     'system_env.save_failed': '保存 env 失败。',
     'page.config_refreshed': '已刷新配置和 Wi-Fi 列表。',
     'page.refresh_failed': '刷新失败。',
@@ -431,7 +446,14 @@ const messages = {
     'config.title': 'Agent 配置',
     'config.save_failed': '保存 [{{section}}] 失败。',
     'config.saved_not_applied': '[{{section}}] 已保存，但 Agent 当前尚未生效。',
-    'config.saved_restarting': '[{{section}}] 已保存，Agent 正在重启以应用配置。',
+    'config.saved_pending': '[{{section}}] 已保存，等待应用配置。',
+    'config.apply_pending': '配置已保存，等待当前任务或语音会话结束后应用。',
+    'config.apply_done': '配置已生效。',
+    'config.apply_failed': '配置已保存，但应用失败。修复错误后可重试应用。',
+    'config.apply_unavailable': '暂时无法读取应用状态，尚未确认保存的配置是否已生效。',
+    'config.apply_retry': '重试应用',
+    'config.reboot_action': '重启设备',
+    'config.apply_reboot': 'USB/HID 设置需要重启设备，其他设置可在线应用。',
     'config.saved': '[{{section}}] 已保存。',
     'config.editing': '正在编辑 [{{section}}]，修改后请点击保存。',
     'config.cancelled': '已取消 [{{section}}] 的修改。',
@@ -542,7 +564,7 @@ const messages = {
     'config.fields.agent.context_prune_threshold.label': '历史上下文清理阈值（比例）',
     'config.fields.agent.context_prune_threshold.help': '上下文 token 数达到模型可用输入预算的该比例时，清理过期 state 和历史工具结果，并清理至触发值的 6/7。取值需为 0，或大于 0 且小于 1；设为 0 时使用 0.5。该值不会超过 context_compaction_threshold，以保证这个低成本清理先于对话压缩执行。',
     'config.fields.agent.context_prune_threshold.placeholder': '0 = 自动（0.5）',
-    'locale.saved': '语言已保存，Agent 正在重启。',
+    'locale.saved': '语言已保存，生效进度见配置状态。',
     'locale.save_failed': '保存语言失败。',
     'locale.saved_not_applied': '语言已保存，但 Agent 当前尚未生效。',
     'provider.add': '添加提供商',
@@ -735,9 +757,8 @@ async function saveLocale(locale) {
     }
     localeSavePending = false;
     localeRevision++;
-    const restarting = persisted && err.applied === false && err.agent_restart_scheduled === true;
-    setBanner(t(restarting ? 'locale.saved' : (persisted && err.applied === false ? 'locale.saved_not_applied' : 'locale.save_failed')), !restarting);
-    setDetails(restarting ? '' : err.message);
+    setBanner(t(persisted && err.applied === false ? 'locale.saved_not_applied' : 'locale.save_failed'), true);
+    setDetails(err.message);
     if (!(persisted && err.applied === false)) {
       try {
         await loadAuthoritativeLocale();

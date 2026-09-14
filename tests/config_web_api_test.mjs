@@ -55,4 +55,24 @@ await assert.rejects(
   (error) => error.message === 'agent unavailable' && error.status === 503 && error.persisted === true,
 );
 
+// Configuration writes share one queue, including locale changes. A failed
+// write must release the next save while status reads remain available.
+let releaseSave;
+const started = [];
+fetchImpl = async (url, options) => {
+  started.push(url);
+  if (options?.body === 'first') await new Promise((resolve) => {releaseSave = resolve;});
+  return {ok: options?.body !== 'first', status: options?.body === 'first' ? 503 : 200, text: async () => '{}'};
+};
+const first = request('/api/config', {method:'PATCH', body:'first'});
+const firstFailure = assert.rejects(first);
+const second = request('/api/config/locale', {method:'PUT', body:'second'});
+await request('/api/config/application', {method:'GET'});
+assert.ok(started.includes('/api/config'));
+assert.ok(!started.includes('/api/config/locale'));
+releaseSave();
+await firstFailure;
+await second;
+assert.equal(started.at(-1), '/api/config/locale');
+
 process.stdout.write('config web api tests passed\n');

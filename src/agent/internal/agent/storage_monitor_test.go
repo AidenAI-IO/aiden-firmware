@@ -171,6 +171,34 @@ func TestStorageMonitorDisabledStartClearsStaleRuntimeStateFile(t *testing.T) {
 	}
 }
 
+func TestStorageMonitorDisabledPeriodicCheckClearsStateWithoutDeadlock(t *testing.T) {
+	levelPath := filepath.Join(t.TempDir(), "storage_level")
+	if err := os.WriteFile(levelPath, []byte("critical\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	config := DefaultStorageConfig()
+	config.Enabled = false
+	monitor := NewStorageMonitor(config, nil, nil, nil, nil)
+	monitor.SetLevelStatePath(levelPath)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("CheckAndRemediate() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("disabled periodic check deadlocked")
+	}
+	if _, err := os.Stat(levelPath); !os.IsNotExist(err) {
+		t.Fatalf("disabled periodic check left stale level state, stat error = %v", err)
+	}
+}
+
 func TestStorageMonitorStopClearsRuntimeStateFile(t *testing.T) {
 	levelPath := filepath.Join(t.TempDir(), "storage_level")
 	config := DefaultStorageConfig()

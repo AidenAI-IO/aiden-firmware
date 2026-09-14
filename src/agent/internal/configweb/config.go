@@ -2,8 +2,10 @@ package configweb
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"aiden-agent/internal/agent"
 	"aiden-agent/internal/wifiproxy"
 )
 
@@ -150,32 +153,27 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for key := range request {
-		if key != "config" && key != "wifi" && key != "apply_wifi" {
+		if key != "config" {
 			writeJSONError(w, http.StatusBadRequest, "only the 'config' field is accepted")
 			return
 		}
 	}
-	if _, exists := request["wifi"]; exists {
-		writeJSONError(w, http.StatusBadRequest, "wifi updates are not supported by /api/config; use /api/network/wifi/connection")
+	config, present := request["config"]
+	if !present {
+		writeJSONError(w, http.StatusBadRequest, "missing config object")
 		return
-	}
-	if raw, exists := request["apply_wifi"]; exists && !bytes.Equal(bytes.TrimSpace(raw), []byte("false")) {
-		writeJSONError(w, http.StatusBadRequest, "wifi updates are not supported by /api/config; use /api/network/wifi/connection")
-		return
-	}
-	config := request["config"]
-	if len(config) == 0 {
-		config = json.RawMessage(`{}`)
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(config, &object); err != nil || object == nil {
 		writeJSONError(w, http.StatusBadRequest, "config patch must be an object")
 		return
 	}
+	s.configSaveMu.Lock()
+	defer s.configSaveMu.Unlock()
 	s.configMu.Lock()
-	defer s.configMu.Unlock()
 	update, status, err := s.updateConfig(config)
 	if err != nil {
+		s.configMu.Unlock()
 		writeJSONError(w, status, err.Error())
 		return
 	}
@@ -186,81 +184,43 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	persisted, persistedField := update["persisted"].(bool)
 	if !persistedField {
 		// The current config-update contract must report persistence explicitly.
+		s.configMu.Unlock()
 		writeJSONError(w, http.StatusServiceUnavailable, "agent config update omitted persisted state")
 		return
 	}
 	frameServiceChanged := containsString(changed, "frame_service.keep_streamon")
-	var frameServiceError string
 	if frameServiceChanged {
-		if err := s.restartFrameService(); err != nil {
-			frameServiceError = err.Error()
-		}
+		s.frameApplyPending = true
 	}
-	storageChanged := hasConfigPathPrefix(changed, "storage")
 	_, storageRequested := object["storage"]
-	var storageError string
-	if storageChanged || storageRequested {
-		if err := s.reconfigureStorage(); err != nil {
-			storageError = err.Error()
-		}
+	if hasConfigPathPrefix(changed, "storage") || storageRequested {
+		s.storageApplyPending = true
 	}
-	applied := false
-	var reloadError string
-	if len(changed) == 0 {
-		applied = true
-	} else if payload, reloadErr := s.reloadAgentConfig(r.Context(), uint64(revision)); reloadErr == nil {
-		applied, _ = payload["applied"].(bool)
-		if !applied {
-			reloadError = "agent accepted no configuration"
-		}
-	} else {
-		reloadError = reloadErr.Error()
-	}
-	if reloadError != "" {
-		restartScheduled := false
-		if err := s.scheduleAgentRestart(); err != nil {
-			reloadError += "; schedule Agent restart: " + err.Error()
-		} else {
-			restartScheduled = true
-		}
-		if frameServiceError != "" {
-			reloadError += "; frame service: " + frameServiceError
-		}
-		if storageError != "" {
-			reloadError += "; storage: " + storageError
-		}
-		response := map[string]any{
-			"ok": false, "persisted": persisted, "applied": false,
-			"revision": revision, "changed_paths": changed,
-			"restart_required": rebootRequired, "restart_reasons": update["restart_reasons"],
-			"agent_restart_scheduled": restartScheduled, "error": reloadError,
-		}
-		if rebootRequired == false {
-			// Agent reload can reject a field whose dependency is initialized
-			// only at process startup. Surface that fact to the UI even when the
-			// config-update CLI did not classify the field as restart-required.
-			response["restart_required"] = true
-		}
-		writeJSON(w, http.StatusServiceUnavailable, response)
+	s.configSavePending = true
+	s.configMu.Unlock()
+	defer s.finishConfigSave()
+	if err := s.applyConfigServices(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "config": update["config"], "persisted": true, "applied": false, "state": "failed", "error": err.Error(), "reboot_required": rebootRequired, "agent_restart_scheduled": false})
 		return
 	}
-	if frameServiceError != "" || storageError != "" {
-		errorMessage := frameServiceError
-		if storageError != "" {
-			if errorMessage != "" {
-				errorMessage += "; "
-			}
-			errorMessage += storageError
-		}
+	applied, pending := false, false
+	payload, reloadErr := s.reloadAgentConfig(r.Context(), revision)
+	if reloadErr != nil {
+		s.configMu.Lock()
+		s.configApplyError = reloadErr.Error()
+		s.configApplyErrorRevision = revision
+		s.configMu.Unlock()
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "config": update["config"], "persisted": persisted, "applied": false,
-			"revision": revision, "changed_paths": changed,
-			"restart_required": rebootRequired, "restart_reasons": update["restart_reasons"],
-			"frame_service_restart_scheduled": frameServiceChanged && frameServiceError == "",
-			"storage_reconfigured":            (storageChanged || storageRequested) && storageError == "",
-			"error":                           errorMessage,
+			"revision": revision, "changed_paths": changed, "reboot_required": rebootRequired,
+			"state": "failed", "error": reloadErr.Error(),
 		})
 		return
+	}
+	applied, _ = payload["applied"].(bool)
+	pending, _ = payload["pending"].(bool)
+	if required, ok := payload["reboot_required"].(bool); ok {
+		rebootRequired = required
 	}
 	message := "config saved"
 	if rebootRequired {
@@ -271,15 +231,13 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"config":                          update["config"],
 		"persisted":                       persisted,
 		"applied":                         applied,
+		"pending":                         pending,
+		"state":                           payload["state"],
 		"revision":                        revision,
 		"changed_paths":                   changed,
 		"reboot_required":                 rebootRequired,
-		"restart_required":                rebootRequired,
-		"restart_reasons":                 update["restart_reasons"],
-		"usbhid_restart_required":         rebootRequired,
+		"reboot_reasons":                  update["reboot_reasons"],
 		"agent_restart_scheduled":         false,
-		"ota_restart_scheduled":           false,
-		"usb_reenumeration_scheduled":     false,
 		"frame_service_restart_scheduled": frameServiceChanged,
 		"message":                         message,
 	})
@@ -300,35 +258,85 @@ func (s *Server) handlePutLocale(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "unsupported locale; expected zh-CN or en-US")
 		return
 	}
+	s.configSaveMu.Lock()
+	defer s.configSaveMu.Unlock()
 	s.configMu.Lock()
-	defer s.configMu.Unlock()
 	config, _ := json.Marshal(map[string]any{"agent": map[string]string{"locale": *request.Locale}})
 	update, status, err := s.updateConfig(config)
 	if err != nil {
+		s.configMu.Unlock()
 		writeJSONError(w, status, err.Error())
 		return
 	}
+	s.configSavePending = true
+	s.configMu.Unlock()
+	defer s.finishConfigSave()
+	if err := s.applyConfigServices(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "persisted": true, "applied": false, "state": "failed", "locale": *request.Locale, "error": err.Error()})
+		return
+	}
 	revision := uint64Value(update["revision"])
-	if _, err := s.reloadAgentConfig(r.Context(), revision); err != nil {
-		restartScheduled := false
-		errorMessage := err.Error()
-		if restartErr := s.scheduleAgentRestart(); restartErr != nil {
-			errorMessage += "; schedule Agent restart: " + restartErr.Error()
-		} else {
-			restartScheduled = true
-		}
+	payload, err := s.reloadAgentConfig(r.Context(), revision)
+	if err != nil {
+		s.configMu.Lock()
+		s.configApplyError = err.Error()
+		s.configApplyErrorRevision = revision
+		s.configMu.Unlock()
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"ok": false, "persisted": true, "applied": false,
-			"restart_required": true, "locale": *request.Locale,
-			"agent_restart_scheduled": restartScheduled,
-			"revision":                revision, "error": errorMessage,
+			"ok": false, "persisted": true, "applied": false, "locale": *request.Locale,
+			"agent_restart_scheduled": false, "revision": revision, "error": err.Error(),
 		})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "locale": *request.Locale, "persisted": true, "applied": true,
-		"revision": revision, "message": "locale saved and applied",
+		"ok": true, "locale": *request.Locale, "persisted": true, "applied": payload["applied"],
+		"pending": payload["pending"], "state": payload["state"], "reboot_required": payload["reboot_required"], "revision": revision, "message": "locale saved",
 	})
+}
+
+// applyConfigServices serializes service replacement while keeping configMu
+// available to status requests during slow frame-service restarts.
+func (s *Server) applyConfigServices() error {
+	s.configServiceMu.Lock()
+	defer s.configServiceMu.Unlock()
+
+	s.configMu.Lock()
+	framePending := s.frameApplyPending
+	storagePending := s.storageApplyPending
+	if framePending {
+		s.frameApplyPending = false
+	}
+	if storagePending {
+		s.storageApplyPending = false
+	}
+	s.configMu.Unlock()
+
+	var failures []string
+	if framePending {
+		if err := s.restartFrameService(); err != nil {
+			failures = append(failures, err.Error())
+			s.configMu.Lock()
+			s.frameApplyPending = true
+			s.configMu.Unlock()
+		}
+	}
+	if storagePending {
+		if err := s.reconfigureStorage(); err != nil {
+			failures = append(failures, err.Error())
+			s.configMu.Lock()
+			s.storageApplyPending = true
+			s.configMu.Unlock()
+		}
+	}
+	s.configMu.Lock()
+	s.configApplyError = strings.Join(failures, "; ")
+	s.configApplyErrorRevision = 0
+	applyError := s.configApplyError
+	s.configMu.Unlock()
+	if applyError != "" {
+		return fmt.Errorf("%s", applyError)
+	}
+	return nil
 }
 
 func (s *Server) restartFrameService() error {
@@ -336,17 +344,47 @@ func (s *Server) restartFrameService() error {
 	if path == "" {
 		return fmt.Errorf("frame service init script path is empty")
 	}
-	cmd := exec.Command(path, "restart")
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "restart")
 	cmd.Env = append(os.Environ(), "AGENT_CONFIG="+s.options.AgentConfigPath)
-	if err := cmd.Start(); err != nil {
-		cmd = exec.Command("/bin/sh", path, "restart")
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("frame service restart: %w", ctx.Err())
+		}
+		if _, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("frame service restart: %w", err)
+		}
+		cmd = exec.CommandContext(ctx, "/bin/sh", path, "restart")
 		cmd.Env = append(os.Environ(), "AGENT_CONFIG="+s.options.AgentConfigPath)
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("launch frame service restart: %w", err)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("frame service restart: %w", err)
 		}
 	}
-	go func() { _ = cmd.Wait() }()
-	return nil
+	cfg, err := agent.LoadRuntimeConfig(s.options.AgentConfigPath)
+	if err != nil {
+		return fmt.Errorf("read frame service config: %w", err)
+	}
+	return waitForFrameService(ctx, cfg.HID.FrameSocketOrDefault())
+}
+
+func waitForFrameService(ctx context.Context, socket string) error {
+	// The init script launches a watchdog before the HDMI service starts.
+	// TC358743 EDID negotiation alone takes several seconds.
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		conn, err := (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext(ctx, "unix", socket)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("frame service not ready: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func stringSlice(value any) []string {

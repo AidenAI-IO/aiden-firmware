@@ -9,8 +9,8 @@ import (
 )
 
 func (r *Runtime) OwnedTools() []langtools.Tool {
-	owned := make([]langtools.Tool, 0, len(r.tools.tools))
-	owned = append(owned, r.tools.All()...)
+	owned := make([]langtools.Tool, 0, len(r.toolSnapshot().tools))
+	owned = append(owned, r.toolSnapshot().All()...)
 	sort.Slice(owned, func(i, j int) bool {
 		return owned[i].Name() < owned[j].Name()
 	})

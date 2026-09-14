@@ -244,3 +244,33 @@ func waitForManagerCurrent(t *testing.T, manager *ProviderManager, want string) 
 	}
 	t.Fatalf("Current() = %q, want %q", manager.Current(), want)
 }
+
+func TestProviderManagerDisableDrainsActiveSession(t *testing.T) {
+	provider := &blockingProvider{name: "initial", started: make(chan *blockingSession, 1), closed: make(chan struct{})}
+	manager := NewProviderManager(provider, nil)
+	defer manager.Close()
+	session, err := manager.Holder().BeginStream(context.Background(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForBlockingSession(t, provider.started)
+	if err := manager.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	if manager.Current() != "" {
+		t.Fatal("provider still selected")
+	}
+	select {
+	case <-provider.closed:
+		t.Fatal("closed active provider")
+	default:
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-provider.closed:
+	case <-time.After(time.Second):
+		t.Fatal("retired provider never closed")
+	}
+}

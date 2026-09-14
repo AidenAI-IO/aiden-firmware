@@ -42,6 +42,13 @@ var wakeupDebounceNow = time.Now
 var wakeupGPIOPins = []int{33, 32}
 
 func main() {
+	exitCode := 0
+	defer func() {
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+	}()
+
 	// Check if a subcommand is provided
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -74,6 +81,11 @@ func main() {
 		benchmarkTokenFile        = flag.String("benchmark-token-file", "", "Path to benchmark API bearer token file. Enables benchmark-only mutation endpoints.")
 	)
 	flag.Parse()
+	environmentPath := os.Getenv("AIDEN_SYSTEM_ENV")
+	if environmentPath == "" {
+		environmentPath = "/userdata/system/env"
+	}
+	environmentRevision, environmentErr := agent.SystemEnvironmentRevision(environmentPath)
 
 	dir := strings.TrimSpace(*dataDir)
 	if dir == "" {
@@ -132,6 +144,13 @@ func main() {
 		os.Exit(1)
 	}
 	cfg.SkillMergeModel = agent.NewLLMSkillMergeModel(agent.NewModelManager(cfg.Model, proxyConfig))
+	persistedConfig := cfg
+	cfg, err = configForRunningUSB(cfg)
+	if err != nil {
+		log.Printf("[input] USB boot settings failed: %v", err)
+		exitCode = 1
+		return
+	}
 
 	runtime, err := agent.NewRuntime(cfg)
 	if err != nil {
@@ -141,6 +160,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer runtime.Close()
+	runtime.InitializeConfigApplication(persistedConfig)
+	if environmentErr == nil {
+		runtime.SetInitialEnvironmentRevision(environmentRevision)
+	}
 	if err := runtime.StartStorageMonitor(); err != nil {
 		log.Printf("[storage_monitor] startup check failed: %v", err)
 	}
@@ -153,19 +176,18 @@ func main() {
 		log.Printf("[init] screen mapping prime failed: %v", err)
 	}
 
-	inputMode := cfg.InputModeOrDefault()
-
 	// HTTP server runs in all input modes so the web UI is available even
 	// during voice (audio/stt) interactions.
 	server := agent.NewServer(runtime, *addr)
 	defer server.Close()
-	quickCaptureWatcher, err := startQuickCaptureGPIOWatcher(cfg, server, newGPIOWatcher)
-	if err != nil {
-		log.Printf("[quick_capture] GPIO trigger disabled: %v", err)
-	} else if quickCaptureWatcher != nil {
-		defer quickCaptureWatcher.Stop()
-		log.Printf("[quick_capture] listening on GPIO %d", cfg.QuickCapture.GPIOPin)
+	inputs := newInputLifecycle(runtime, server)
+	if err := inputs.Start(cfg); err != nil {
+		log.Printf("[input] startup failed: %v", err)
+		exitCode = 1
+		return
 	}
+	defer func() { inputs.StopForShutdown(); runtime.StopConfigReloads(); inputs.Close() }()
+	runtime.SetConfigPreparer(inputs.Prepare)
 
 	_ = logging.LogEvent(logging.Info, "agent", "startup", "daemon_starting",
 		logging.Field{Key: "addr", Value: *addr},
@@ -203,22 +225,18 @@ func main() {
 		serverErr <- server.Start()
 	}()
 
-	if inputMode == "stt" || inputMode == "realtime" {
-		go func() {
-			if err := <-serverErr; err != nil {
-				log.Printf("[server] HTTP server stopped: %v", err)
-			}
-		}()
-		runAudioMode(cfg, runtime, server)
-		return
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			log.Printf("[server] stopped: %v", err)
+			exitCode = 1
+		}
+	case <-signals:
 	}
 
-	if err := <-serverErr; err != nil {
-		_ = logging.LogEvent(logging.Error, "agent", "http", "server_failed",
-			logging.Field{Key: "error", Value: err},
-		)
-		os.Exit(1)
-	}
 }
 
 func registerDeviceTypeFlag(fs *flag.FlagSet) *string {
@@ -477,13 +495,13 @@ type voiceTurnResult struct {
 	followUpContext        agent.VoiceTurnContext
 }
 
-func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
+func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory, reload ...<-chan struct{}) {
 	if cfg.InputModeOrDefault() == "stt" && !cfg.VoiceFollowupEnabledOrDefault() {
-		runSingleTurnSTTWakeupMode(cfg, dialog, runtime, sigChan, newWatcher)
+		runSingleTurnSTTWakeupMode(cfg, dialog, runtime, sigChan, newWatcher, reload...)
 		return
 	}
 	if cfg.InputModeOrDefault() != "stt" || !cfg.VoiceFollowupEnabledOrDefault() {
-		runLegacyWakeupMode(cfg, dialog, runtime, sigChan, newWatcher)
+		runLegacyWakeupMode(cfg, dialog, runtime, sigChan, newWatcher, reload...)
 		return
 	}
 
@@ -497,14 +515,19 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 	})
 	if err != nil {
 		log.Printf("[error] Failed to start GPIO wakeup listeners: %v\n", err)
-		os.Exit(1)
+		return
 	}
 	defer stopWakeupWatchers(watchers)
 
 	log.Printf("[ready] Waiting for wakeup event (%s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
 
 	for {
+		if reloadRequested(reload) {
+			return
+		}
 		select {
+		case <-reloadStop(reload):
+			return
 		case <-sigChan:
 			log.Println("\n[exit] Stopped.")
 			return
@@ -519,7 +542,7 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 	}
 }
 
-func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
+func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory, reload ...<-chan struct{}) {
 	log.Printf("\n[ready] Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
 
 	ctx := context.Background()
@@ -531,7 +554,7 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 	})
 	if err != nil {
 		log.Printf("[error] Failed to start GPIO wakeup listeners: %v\n", err)
-		os.Exit(1)
+		return
 	}
 	defer stopWakeupWatchers(watchers)
 
@@ -539,8 +562,13 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 
 	pendingWakeup := false
 	for {
+		if reloadRequested(reload) {
+			return
+		}
 		if !pendingWakeup {
 			select {
+			case <-reloadStop(reload):
+				return
 			case <-sigChan:
 				if dialog != nil {
 					dialog.StopRecording()
@@ -589,7 +617,7 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 	}
 }
 
-func runSingleTurnSTTWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
+func runSingleTurnSTTWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory, reload ...<-chan struct{}) {
 	log.Printf("\n[ready] Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
 
 	events := make(chan voiceEvent, 1)
@@ -600,7 +628,7 @@ func runSingleTurnSTTWakeupMode(cfg agent.Config, dialog audioDialogRunner, runt
 	})
 	if err != nil {
 		log.Printf("[error] Failed to start GPIO wakeup listeners: %v\n", err)
-		os.Exit(1)
+		return
 	}
 	defer stopWakeupWatchers(watchers)
 
@@ -610,9 +638,14 @@ func runSingleTurnSTTWakeupMode(cfg agent.Config, dialog audioDialogRunner, runt
 	var pendingTurnContext agent.VoiceTurnContext
 	pendingWakeup := false
 	for {
+		if reloadRequested(reload) {
+			return
+		}
 		if nextTurn == nil {
 			if !pendingWakeup {
 				select {
+				case <-reloadStop(reload):
+					return
 				case <-sigChan:
 					if dialog != nil {
 						dialog.StopRecording()

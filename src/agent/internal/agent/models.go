@@ -11,8 +11,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tmc/langchaingo/chains"
@@ -34,6 +36,7 @@ const (
 const arkBeijingBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
 
 type ModelManager struct {
+	replacement     atomic.Pointer[ModelManager]
 	config          ModelConfig
 	proxy           ProxyConfig
 	model           llms.Model
@@ -139,6 +142,9 @@ func (m *ModelManager) get() (llms.Model, error) {
 }
 
 func (m *ModelManager) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	if next := m.replacement.Load(); next != nil {
+		return next.GenerateContent(ctx, messages, options...)
+	}
 	model, err := m.get()
 	if err != nil {
 		return nil, err
@@ -151,6 +157,9 @@ func (m *ModelManager) GenerateContent(ctx context.Context, messages []llms.Mess
 // this path for opaque stateless output replay and previous_response_id
 // chaining; ordinary models fall back to the common LangChain message shape.
 func (m *ModelManager) GenerateContentFromMessageList(ctx context.Context, messageList []messages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	if next := m.replacement.Load(); next != nil {
+		return next.GenerateContentFromMessageList(ctx, messageList, options...)
+	}
 	model, err := m.get()
 	if err != nil {
 		return nil, err
@@ -164,6 +173,9 @@ func (m *ModelManager) GenerateContentFromMessageList(ctx context.Context, messa
 }
 
 func (m *ModelManager) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	if next := m.replacement.Load(); next != nil {
+		return next.Call(ctx, prompt, options...)
+	}
 	model, err := m.get()
 	if err != nil {
 		return "", err
@@ -172,6 +184,9 @@ func (m *ModelManager) Call(ctx context.Context, prompt string, options ...llms.
 }
 
 func (m *ModelManager) CallOptions() []chains.ChainCallOption {
+	if next := m.replacement.Load(); next != nil {
+		return next.CallOptions()
+	}
 	options := make([]chains.ChainCallOption, 0, 2)
 	if m.config.Temperature != nil {
 		options = append(options, chains.WithTemperature(*m.config.Temperature))
@@ -183,6 +198,9 @@ func (m *ModelManager) CallOptions() []chains.ChainCallOption {
 }
 
 func (m *ModelManager) Spec() model.ModelSpec {
+	if next := m.replacement.Load(); next != nil {
+		return next.Spec()
+	}
 	spec, _ := LookupModelSpec(m.config.Provider, m.config.Model)
 
 	explicitContextWindow := m.config.ContextWindow > 0
@@ -234,6 +252,9 @@ func (m *ModelManager) Spec() model.ModelSpec {
 // queried model. Local registry data remains available when the public catalog
 // is unreachable.
 func (m *ModelManager) SpecForModel(ctx context.Context, provider, modelName string) model.ModelSpec {
+	if next := m.replacement.Load(); next != nil {
+		return next.SpecForModel(ctx, provider, modelName)
+	}
 	provider = strings.TrimSpace(provider)
 	modelName = strings.TrimSpace(modelName)
 	if provider == "" || modelName == "" {
@@ -504,4 +525,28 @@ func newRetryHTTPClient(proxy ProxyConfig) *http.Client {
 			retryDelayBase: 2 * time.Second,
 		},
 	}
+}
+
+// replaceConfig retains the manager identity used by memory workers and tools.
+// An in-flight request owns its old generation until that request returns.
+func (m *ModelManager) replacementFor(cfg ModelConfig, configDir string) *ModelManager {
+	next := NewModelManager(cfg, m.proxy, WithProviderModelMetadataCachePath(m.providerMetadataCachePath), WithModelsDevURL(m.modelsDevURL))
+	next.runtimeBindings = m.bindings()
+	next.metadataHTTPClient = m.metadataHTTPClient
+	if cfg.LogRawHTTP {
+		next.rawHTTPLogDir = filepath.Join(configDir, "log")
+	}
+	return next
+}
+func (m *ModelManager) prepareReplacement(cfg ModelConfig, configDir string) (func(), error) {
+	next := m.replacementFor(cfg, configDir)
+	if _, err := next.get(); err != nil {
+		return nil, err
+	}
+	return func() { next.prefetchProviderModelSpecIfNeeded(); m.replacement.Store(next) }, nil
+}
+func (m *ModelManager) replaceConfig(cfg ModelConfig, configDir string) {
+	next := m.replacementFor(cfg, configDir)
+	next.prefetchProviderModelSpecIfNeeded()
+	m.replacement.Store(next)
 }

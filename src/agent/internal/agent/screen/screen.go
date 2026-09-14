@@ -44,6 +44,23 @@ type ScreenMappingState struct {
 	UpdatedAt time.Time
 }
 
+// InvalidateCapture drops calibration and images from a retired capture/input
+// backend. Phone-reported dimensions keep their existing connection scope.
+func (s *ScreenState) InvalidateCapture() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.width, s.height = 0, 0
+	s.active = ScreenActiveArea{}
+	s.updatedAt = time.Time{}
+	s.screenshotJPEG = nil
+	s.screenshotWidth, s.screenshotHeight = 0, 0
+	s.screenshotUpdatedAt = time.Time{}
+	s.screenshotGeneration++
+}
+
 // ScreenActiveArea represents the mirrored phone touch region inside the
 // captured HDMI frame. When the companion app reports the phone's original
 // screen dimensions, this is the largest centered region in the frame with the

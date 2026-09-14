@@ -1,13 +1,17 @@
 package configweb
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -395,6 +399,11 @@ printf '%s\n' '{"ok":true,"config":{},"changed_paths":[],"reboot_required":false
 	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true})
+	}))
+	defer reload.Close()
+	options.AgentHTTPBaseURL = reload.URL
 	options.AgentBinary = fakeAgent
 	server, err := NewServer(options)
 	if err != nil {
@@ -435,7 +444,7 @@ func TestConfigPatchReconfiguresStorageOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": true, "revision": 11})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true, "revision": 11, "state": "pending"})
 	}))
 	defer reload.Close()
 	options.AgentBinary = fakeAgent
@@ -543,7 +552,7 @@ func TestAPIRouteHeaders(t *testing.T) {
 	}
 }
 
-func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
+func TestConfigPatchReportsPersistedAndPendingRevision(t *testing.T) {
 	options := testOptions(t)
 	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
 	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{\"agent\":{\"locale\":\"en-US\"}},\"changed_paths\":[\"agent.locale\"],\"reboot_required\":false,\"persisted\":true,\"revision\":7}'\n"
@@ -554,7 +563,7 @@ func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
 		if r.URL.Path != "/api/internal/config/reload" || r.Method != http.MethodPost {
 			t.Fatalf("reload request=%s %s", r.Method, r.URL.Path)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": true, "revision": 7})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true, "revision": 7, "state": "pending"})
 	}))
 	defer reload.Close()
 	options.AgentBinary = fakeAgent
@@ -565,12 +574,12 @@ func TestConfigPatchReportsPersistedAndAppliedRevision(t *testing.T) {
 	}
 	resp := httptest.NewRecorder()
 	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{"agent":{"locale":"en-US"}}}`)))
-	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"applied":true`) {
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"pending":true`) {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
 
-func TestConfigPatchSchedulesRestartWhenRuntimeReloadRejectsChange(t *testing.T) {
+func TestConfigPatchDoesNotRestartWhenRuntimeReloadRejectsChange(t *testing.T) {
 	options := testOptions(t)
 	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
 	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{\"agent\":{\"locale\":\"zh-CN\"}},\"changed_paths\":[\"agent.locale\"],\"reboot_required\":false,\"persisted\":true,\"revision\":9}'\n"
@@ -579,8 +588,8 @@ func TestConfigPatchSchedulesRestartWhenRuntimeReloadRejectsChange(t *testing.T)
 	}
 	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"ok": false, "applied": false, "restart_required": true,
-			"error": "configuration changes require an Agent restart",
+			"ok": false, "applied": false,
+			"error": "config file unavailable",
 		})
 	}))
 	defer reload.Close()
@@ -596,7 +605,7 @@ func TestConfigPatchSchedulesRestartWhenRuntimeReloadRejectsChange(t *testing.T)
 	if resp.Code != http.StatusServiceUnavailable ||
 		!strings.Contains(resp.Body.String(), `"persisted":true`) ||
 		!strings.Contains(resp.Body.String(), `"applied":false`) ||
-		!strings.Contains(resp.Body.String(), `"agent_restart_scheduled":true`) {
+		server.agentRestartPending() {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
@@ -608,6 +617,11 @@ func TestConfigPatchUsesUpdateHandler(t *testing.T) {
 	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true})
+	}))
+	defer reload.Close()
+	options.AgentHTTPBaseURL = reload.URL
 	options.AgentBinary = fakeAgent
 	server, err := NewServer(options)
 	if err != nil {
@@ -699,8 +713,8 @@ func TestSystemEnvironmentReportsRestartLaunchFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp := httptest.NewRecorder()
-	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/system/environment", strings.NewReader(`{"system_env":"A=1\n"}`)))
-	if resp.Code != http.StatusServiceUnavailable || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"agent_restart_scheduled":false`) {
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/system/environment/apply", nil))
+	if resp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
@@ -1158,5 +1172,181 @@ func TestRunHelpReturnsSuccess(t *testing.T) {
 func TestRunRejectsRetiredWiFiIfaceFlag(t *testing.T) {
 	if code := Run([]string{"--wifi-iface", "wlan1"}); code != 1 {
 		t.Fatalf("Run(--wifi-iface)=%d, want 1", code)
+	}
+}
+
+func TestFrameConfigRestartsOnlyFrameServiceAndRetriesFailures(t *testing.T) {
+	options := testOptions(t)
+	socketDir, err := os.MkdirTemp("", "frame-ready-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(socketDir)
+	socket := filepath.Join(socketDir, "f.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := os.WriteFile(options.AgentConfigPath, []byte("[hid]\nframe_socket = "+strconv.Quote(socket)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "restart")
+	fakeAgent := filepath.Join(dir, "agent")
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"frame_service.keep_streamon\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
+	if err := os.WriteFile(fakeAgent, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	init := filepath.Join(dir, "frame-init")
+	t.Setenv("AIDEN_CONFIG_TEST_RESTART_MARKER", marker)
+	if err := os.WriteFile(init, []byte("#!/bin/sh\nprintf '%s' frame >\"$AIDEN_CONFIG_TEST_RESTART_MARKER\"\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	var reloads atomic.Int64
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reloads.Add(1)
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true})
+	}))
+	defer reload.Close()
+	options.AgentBinary = fakeAgent
+	options.AgentHTTPBaseURL = reload.URL
+	options.FrameServiceInitScript = init
+	options.AgentInitScript = "/must-not-execute"
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := func() *httptest.ResponseRecorder {
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{"frame_service":{"keep_streamon":true}}}`)))
+		return resp
+	}
+	failed := save()
+	if failed.Code != http.StatusServiceUnavailable || reloads.Load() != 0 {
+		t.Fatalf("failed service restart was applied: %d %s", failed.Code, failed.Body.String())
+	}
+	if err := os.WriteFile(init, []byte("#!/bin/sh\nprintf '%s' frame >\"$AIDEN_CONFIG_TEST_RESTART_MARKER\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// An unchanged retry still has to finish the failed frame restart.
+	if err := os.WriteFile(fakeAgent, []byte(strings.ReplaceAll(script, `["frame_service.keep_streamon"]`, `[]`)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	applied := save()
+	if applied.Code != http.StatusOK || !strings.Contains(applied.Body.String(), `"pending":true`) || !strings.Contains(applied.Body.String(), `"agent_restart_scheduled":false`) {
+		t.Fatalf("status=%d body=%s", applied.Code, applied.Body.String())
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "frame" {
+		t.Fatalf("frame restart missing: %s %v", data, err)
+	}
+	if server.agentRestartPending() {
+		t.Fatal("Agent restart was scheduled")
+	}
+}
+
+func TestFrameServiceReadinessWaitsForListener(t *testing.T) {
+	dir, err := os.MkdirTemp("", "frame-start-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "f.sock")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- waitForFrameService(ctx, socket) }()
+	select {
+	case err := <-done:
+		t.Fatalf("returned before listener: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	canceled, stop := context.WithCancel(context.Background())
+	stop()
+	if err := waitForFrameService(canceled, filepath.Join(dir, "missing.sock")); err == nil {
+		t.Fatal("missing service reported ready")
+	}
+}
+
+func TestConfigApplicationDropsReloadErrorAfterAgentRestart(t *testing.T) {
+	options := testOptions(t)
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[],\"reboot_required\":false,\"persisted\":true,\"revision\":7}'\n"
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	agentID := "agent-one"
+	failReload := false
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			mu.Lock()
+			id := agentID
+			mu.Unlock()
+			revision := 6
+			if id == "agent-two" {
+				revision = 7
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"state": "applied", "applied": true, "pending": false, "runtime_id": id, "revision": revision})
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if failReload {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "agent busy"})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "applied": false, "pending": true, "runtime_id": agentID})
+	}))
+	defer reload.Close()
+	options.AgentBinary = fakeAgent
+	options.AgentHTTPBaseURL = reload.URL
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := func() *httptest.ResponseRecorder {
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(`{"config":{}}`)))
+		return resp
+	}
+	status := func() *httptest.ResponseRecorder {
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/config/application", nil))
+		return resp
+	}
+	// A successful save records the answering Agent process.
+	if resp := save(); resp.Code != http.StatusOK {
+		t.Fatalf("first save: %d %s", resp.Code, resp.Body.String())
+	}
+	// The next reload request fails and the error is attributed to that process.
+	mu.Lock()
+	failReload = true
+	mu.Unlock()
+	if resp := save(); resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failing save: %d %s", resp.Code, resp.Body.String())
+	}
+	if resp := status(); resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"state":"failed"`) || !strings.Contains(resp.Body.String(), "agent busy") {
+		t.Fatalf("same-process status: %d %s", resp.Code, resp.Body.String())
+	}
+	// A restarted Agent booted the persisted configuration: the stored error
+	// is stale and must be dropped in favor of the live status.
+	mu.Lock()
+	agentID = "agent-two"
+	mu.Unlock()
+	if resp := status(); resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"state":"applied"`) || strings.Contains(resp.Body.String(), "agent busy") {
+		t.Fatalf("restarted-agent status: %d %s", resp.Code, resp.Body.String())
+	}
+	// The error stays cleared for subsequent polls.
+	if resp := status(); resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"state":"applied"`) {
+		t.Fatalf("cleared status: %d %s", resp.Code, resp.Body.String())
 	}
 }

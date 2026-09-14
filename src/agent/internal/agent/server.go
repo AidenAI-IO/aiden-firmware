@@ -51,6 +51,7 @@ const (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
+	configDepsMu            sync.RWMutex
 	closeOnce               sync.Once
 	closing                 atomic.Bool
 	httpMu                  sync.Mutex
@@ -444,7 +445,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		bleNotifyRequest:        ble.RequestPublishNotifications,
 		bleWakeRequest:          defaultBLEWake,
 		androidADB:              NewAndroidADBManager(runtime.ConfigSnapshot().HID.FrameSocketOrDefault(), runtime.logger),
-		liveActivity:            NewLiveActivityManager(runtime.ConfigSnapshot().LiveActivity, runtime.logger),
+		liveActivity:            newReloadableLiveActivityManager(runtime.ConfigSnapshot().LiveActivity, runtime.logger),
 		pendingResults:          make(map[string]*chatPendingResult),
 		activeRuns:              make(map[string]context.CancelFunc),
 		terminatedRequests:      make(map[string]struct{}),
@@ -464,7 +465,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	}
 	loadQuickActionsForConfig(runtime.ConfigSnapshot().ConfigDir, runtime.logger)
 	s.quickCapture = newServerQuickCapture(runtime, s.screenCaptureClient)
-	runtime.tools.RegisterPhoneBridge(s.bridge)
+	runtime.toolSnapshot().RegisterPhoneBridge(s.bridge)
 	// Initialize speech clients if configured.
 	cfg := runtime.ConfigSnapshot()
 	s.audioClient = NewAudioServiceClient(cfg.Audio.SocketOrDefault())
@@ -491,6 +492,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		s.interruptAllActiveOutputs()
 	})
 
+	runtime.SetConfigPreparer(s.PrepareConfig)
 	return s
 }
 
@@ -593,6 +595,10 @@ func (s *Server) Handler() http.Handler {
 		if s.closing.Load() {
 			http.Error(w, "Server is shutting down", http.StatusServiceUnavailable)
 			return
+		}
+		if s.runtime != nil && (strings.HasPrefix(r.URL.Path, "/api/tools/") || r.URL.Path == "/api/providers/mnk" || r.URL.Path == "/api/providers/screenshot" || r.URL.Path == "/api/coordinate-debug/tap") {
+			s.runtime.configOperations.RLock()
+			defer s.runtime.configOperations.RUnlock()
 		}
 		mux.ServeHTTP(w, r)
 	})
@@ -1777,21 +1783,21 @@ func (s *Server) liveActivityPhoneID(req ChatRequest) string {
 
 func (s *Server) bridgeEnvironment() *PhoneEnvironment {
 	if s == nil || s.bridge == nil {
-		if s != nil && s.runtime != nil && s.runtime.tools != nil {
-			s.runtime.tools.UpdateDeviceEnvironment(nil)
+		if s != nil && s.runtime != nil && s.runtime.toolSnapshot() != nil {
+			s.runtime.toolSnapshot().UpdateDeviceEnvironment(nil)
 		}
 		return nil
 	}
 	status := s.bridge.getStatus()
 	if status.Environment == nil {
-		if s.runtime != nil && s.runtime.tools != nil {
-			s.runtime.tools.UpdateDeviceEnvironment(nil)
+		if s.runtime != nil && s.runtime.toolSnapshot() != nil {
+			s.runtime.toolSnapshot().UpdateDeviceEnvironment(nil)
 		}
 		return nil
 	}
 	env := clonePhoneEnvironment(*status.Environment)
-	if s.runtime != nil && s.runtime.tools != nil {
-		s.runtime.tools.UpdateDeviceEnvironment(&env)
+	if s.runtime != nil && s.runtime.toolSnapshot() != nil {
+		s.runtime.toolSnapshot().UpdateDeviceEnvironment(&env)
 	}
 	return &env
 }
@@ -2324,6 +2330,8 @@ func (s *Server) currentTTSPlaybackBackend() tts.AudioServiceBackend {
 	if s == nil {
 		return nil
 	}
+	s.configDepsMu.RLock()
+	defer s.configDepsMu.RUnlock()
 	if s.ttsPlaybackBackend != nil {
 		if backend, ok := s.ttsPlaybackBackend.(*audioBackend); ok && s.audioClient != nil && backend.c != s.audioClient {
 			return newAudioBackend(s.audioClient)
@@ -2360,7 +2368,7 @@ func (s *Server) CanSpeakVoiceNotification(allowFallbackClip bool) bool {
 	if s.currentTTSManager() != nil {
 		return true
 	}
-	return allowFallbackClip && s.runtime != nil && canPlayTTSUnavailableFallback(s.runtime.config)
+	return allowFallbackClip && s.runtime != nil && canPlayTTSUnavailableFallback(s.runtime.ConfigSnapshot())
 }
 
 // SpeakVoiceNotification plays notification text through the configured
@@ -2510,7 +2518,7 @@ func (s *Server) speakFinalTextForRequest(ctx context.Context, requestID string,
 
 func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {
 	s.logger.Info("Playing prompt sound: %v, %s", kind, label)
-	if s.audioClient == nil {
+	if s.currentTTSPlaybackBackend() == nil {
 		return
 	}
 	go func() {
@@ -3649,7 +3657,7 @@ func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttac
 	trimmedMessage := strings.TrimSpace(req.Message)
 	if audioAttachment != nil {
 		audioTranscript := firstAudioAttachmentTranscript(historyAttachments)
-		audioInput, err := PrepareAudioInput(s.webAudioInputMode(), s.sttClient, audioAttachment.Data, audioTranscript, trimmedMessage, nonAudioAttachments)
+		audioInput, err := PrepareAudioInput(s.webAudioInputMode(), s.sttClientSnapshot(), audioAttachment.Data, audioTranscript, trimmedMessage, nonAudioAttachments)
 		if err != nil {
 			return TurnInput{}, nil, err
 		}
@@ -3678,7 +3686,7 @@ func (s *Server) webAudioInputMode() string {
 	case "realtime":
 		return "text"
 	default:
-		if s.sttClient != nil {
+		if s.sttClientSnapshot() != nil {
 			return "stt"
 		}
 		return "text"

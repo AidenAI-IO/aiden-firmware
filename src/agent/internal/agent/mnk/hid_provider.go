@@ -1078,3 +1078,23 @@ func (p *HIDProvider) tapKeyboardChord(modifier uint8, keys []uint8) error {
 	// Release (all zeros)
 	return writeDevice(p.keyboardDev, make([]byte, 8))
 }
+
+// Close releases cached file descriptors after the owning tool generation drains.
+func (p *HIDProvider) Close() {
+	for _, device := range []Device{p.pointerDev, p.keyboardDev, p.androidKeyboardDev} {
+		if closer, ok := device.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	}
+}
+
+// A drag may intentionally span HTTP requests. Keep its device generation
+// alive until the user completes it instead of abandoning a pressed contact.
+func (p *HIDProvider) CheckConfigReload() error {
+	p.dragMu.Lock()
+	defer p.dragMu.Unlock()
+	if p.dragActive {
+		return fmt.Errorf("finish drag_release before applying input configuration")
+	}
+	return nil
+}

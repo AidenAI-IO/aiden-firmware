@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -272,4 +273,59 @@ func fillScreenshotProgressGridCell(img draw.Image, bounds image.Rectangle, inde
 	y0 := bounds.Min.Y + bounds.Dy()*row/screenshotProgressGridRows
 	y1 := bounds.Min.Y + bounds.Dy()*(row+1)/screenshotProgressGridRows
 	draw.Draw(img, image.Rect(x0, y0, x1, y1), &image.Uniform{C: fill}, image.Point{}, draw.Src)
+}
+
+func TestTerminationPolicyDetectsAlternatingArtifactQueries(t *testing.T) {
+	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
+	observation := "Error: exit status 1\nStderr:\nKeyError: 'content'"
+	for i := 0; i < 12; i++ {
+		command := fmt.Sprintf("python3 -c \"import json; data=json.load(open('/userdata/tool-results/tr_original.data')); print(data['results'][0]['content'][:%d])\"", 1000*(i+1))
+		if i%2 == 1 {
+			command = fmt.Sprintf("cat /userdata/tool-results/tr_copy%d.data", i)
+		}
+		input, _ := json.Marshal(map[string]string{"command": command})
+		decision := policy.AfterToolCall("shell", string(input), observation, i%2 == 0)
+		if decision.Stop {
+			if decision.Reason != StopReasonLoopDetected {
+				t.Fatalf("unexpected stop: %+v", decision)
+			}
+			return
+		}
+	}
+	t.Fatal("alternating artifact queries returning the same error did not stop")
+}
+
+func TestTerminationPolicyAllowsArtifactReadProgress(t *testing.T) {
+	policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
+	for i := 0; i < 12; i++ {
+		input := fmt.Sprintf(`{"command":"fq -r '.summary[%d:%d]' /userdata/tool-results/tr_original.data"}`, i*100, (i+1)*100)
+		if decision := policy.AfterToolCall("shell", input, fmt.Sprintf("page %d", i), false); decision.Stop {
+			t.Fatalf("new page stopped: %+v", decision)
+		}
+	}
+}
+
+func TestTerminationPolicyResetsArtifactRecoveryStreak(t *testing.T) {
+	for _, reset := range []string{"steer", "other tool", "new output"} {
+		t.Run(reset, func(t *testing.T) {
+			policy := NewTerminationPolicy(DefaultTerminationPolicyConfig())
+			read := func(i int) TerminationDecision {
+				input := fmt.Sprintf(`{"command":"fq '.summary[0:%d]' /userdata/tool-results/tr_original.data"}`, i)
+				return policy.AfterToolCall("shell", input, "same result", false)
+			}
+			read(1)
+			read(2)
+			switch reset {
+			case "steer":
+				policy.ResetForSteer()
+			case "other tool":
+				policy.AfterToolCall("web_search", `{"q":"next"}`, "same result", false)
+			case "new output":
+				policy.AfterToolCall("shell", `{"command":"fq '.summary[100:200]' /userdata/tool-results/tr_original.data"}`, "new page", false)
+			}
+			if decision := read(3); decision.Stop {
+				t.Fatalf("stale recovery streak survived %s: %+v", reset, decision)
+			}
+		})
+	}
 }

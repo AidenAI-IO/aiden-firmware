@@ -181,6 +181,9 @@ type TerminationPolicy struct {
 	tier           InterventionTier
 	lastNoticeTier InterventionTier
 
+	artifactResultHash   string
+	artifactResultStreak int
+
 	lastToolName string
 }
 
@@ -207,6 +210,8 @@ func (p *TerminationPolicy) ResetForSteer() {
 	p.tier = TierNone
 	p.lastNoticeTier = TierNone
 	p.lastToolName = ""
+	p.artifactResultHash = ""
+	p.artifactResultStreak = 0
 }
 
 func (p *TerminationPolicy) CheckBeforeIteration(ctx context.Context, iteration, maxIterations int) TerminationDecision {
@@ -267,6 +272,23 @@ func (p *TerminationPolicy) AfterToolCall(toolName, input, observation string, i
 	p.lastToolName = strings.TrimSpace(toolName)
 	signature := toolCallSignature(toolName, input)
 	resultHash := observationProgressHash(toolName, observation)
+	// Artifact recovery often alternates a query with reading its saved output.
+	// Compare the raw result across those command shapes; changing a slice bound
+	// or reading a new copy of the same error is not new information.
+	if isArtifactRecoveryCall(toolName, input) && resultHash != "" {
+		if resultHash == p.artifactResultHash {
+			p.artifactResultStreak++
+		} else {
+			p.artifactResultHash = resultHash
+			p.artifactResultStreak = 1
+		}
+		if p.artifactResultStreak >= max(p.cfg.RepeatActionLimit, p.cfg.SameResultLimit) {
+			return p.terminate(StopReasonLoopDetected, "artifact recovery calls repeated without new information")
+		}
+	} else {
+		p.artifactResultHash = ""
+		p.artifactResultStreak = 0
+	}
 	screen, hasScreenshot := extractScreenshotImage(observation)
 	previousSignature := p.lastToolSig
 	previousResultHash := p.lastResultHash
@@ -445,6 +467,16 @@ func toolCallSignature(toolName, input string) string {
 	}
 	sum := sha256.Sum256([]byte(input))
 	return toolName + ":" + hex.EncodeToString(sum[:8])
+}
+
+func isArtifactRecoveryCall(toolName, input string) bool {
+	if !strings.EqualFold(strings.TrimSpace(toolName), "shell") {
+		return false
+	}
+	var arguments struct {
+		Command string `json:"command"`
+	}
+	return json.Unmarshal([]byte(input), &arguments) == nil && toolResultArtifactFilePattern.MatchString(arguments.Command)
 }
 
 func normalizeArtifactRecoveryInput(input string) string {

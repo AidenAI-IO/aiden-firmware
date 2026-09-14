@@ -35,7 +35,7 @@ func (s *ToolSet) PrimeScreenMapping(ctx context.Context) error {
 }
 
 func (r *Runtime) PrimeScreenMappingOnStartup(ctx context.Context) error {
-	if r == nil || r.tools == nil {
+	if r == nil || r.toolSnapshot() == nil {
 		return nil
 	}
 	if !r.ConfigSnapshot().HID.PointerTouchscreen() {
@@ -50,11 +50,11 @@ func (r *Runtime) PrimeScreenMappingOnStartup(ctx context.Context) error {
 	attempts := 0
 	for {
 		attempts++
-		if err := r.tools.PrimeScreenMapping(primeCtx); err != nil {
+		if err := r.toolSnapshot().PrimeScreenMapping(primeCtx); err != nil {
 			lastErr = err
 		} else {
-			if r.logger != nil && r.tools.screen != nil {
-				width, height, active, _, ok := r.tools.screen.ActiveAreaWithAge()
+			if r.logger != nil && r.toolSnapshot().screen != nil {
+				width, height, active, _, ok := r.toolSnapshot().screen.ActiveAreaWithAge()
 				if ok {
 					r.logger.Info(
 						"screen mapping prime succeeded: attempts=%d elapsed_ms=%d source=%dx%d active=%+v",

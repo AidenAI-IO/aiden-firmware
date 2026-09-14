@@ -96,8 +96,8 @@ func TestConfigWire_VoiceProvidersRoundTrip(t *testing.T) {
 
 func TestConfigWire_VoiceProviderRecordsUseCanonicalType(t *testing.T) {
 	payload := `{
-		"tts_providers":{"voice":{"type":"fish-audio","provider":"minimax","api_key":"sk-v"}},
-		"stt_providers":{"speech":{"type":"openai-whisper","provider":"tencent-asr","api_key":"sk-s"}},
+		"tts_providers":{"voice":{"type":"fish-audio","api_key":"sk-v"}},
+		"stt_providers":{"speech":{"type":"openai-whisper","api_key":"sk-s"}},
 		"tts":{"provider":"voice"},
 		"stt":{"provider":"speech"},
 		"model":{"provider":"openai","model":"gpt-4o","api_key":"sk-x"},
@@ -128,7 +128,7 @@ func TestConfigWire_VoiceProviderRecordsUseCanonicalType(t *testing.T) {
 	}
 }
 
-func TestConfigWire_LegacyVoiceProviderRecordFieldsStillLoad(t *testing.T) {
+func TestConfigWire_LegacyVoiceProviderRecordFieldsAreRejected(t *testing.T) {
 	payload := `{
 		"tts_providers":{"voice":{"provider":"fish-audio","api_key":"sk-v"}},
 		"stt_providers":{"speech":{"provider":"openai-whisper","api_key":"sk-s"}},
@@ -139,9 +139,9 @@ func TestConfigWire_LegacyVoiceProviderRecordFieldsStillLoad(t *testing.T) {
 		"agent":{},
 		"hid":{"pointer_mode":"absolute"}
 	}`
-	result := checkWire(t, payload)
-	if !result.Valid {
-		t.Fatalf("legacy voice records rejected: %+v", result.Errors)
+	_, err := checkConfig(strings.NewReader(payload))
+	if err == nil {
+		t.Fatal("legacy voice records were accepted")
 	}
 }
 
@@ -151,14 +151,8 @@ func TestConfigWire_CanonicalNullVoiceTypesDoNotUseLegacyAliases(t *testing.T) {
 		"tts_providers":{"voice":{"type":null,"provider":"fish-audio"}},
 		"stt_providers":{"speech":{"type":null,"provider":"openai-whisper"}}
 	}`
-	if err := json.Unmarshal([]byte(payload), &dto); err != nil {
-		t.Fatalf("unmarshal null canonical voice types: %v", err)
-	}
-	if got := dto.TTSProviders["voice"].Type; got != "" {
-		t.Errorf("tts type = %q, want empty canonical value without legacy fallback", got)
-	}
-	if got := dto.STTProviders["speech"].Type; got != "" {
-		t.Errorf("stt type = %q, want empty canonical value without legacy fallback", got)
+	if err := json.Unmarshal([]byte(payload), &dto); err == nil {
+		t.Fatal("legacy provider aliases were accepted with null type")
 	}
 }
 

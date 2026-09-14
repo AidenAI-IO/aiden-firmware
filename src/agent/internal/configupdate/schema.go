@@ -108,26 +108,14 @@ type ModelProvider struct {
 
 func (d *ModelProvider) UnmarshalJSON(data []byte) error {
 	type canonical ModelProvider
-	var fields struct {
-		canonical
-		Type           *string `json:"type"`
-		LegacyProvider string  `json:"provider"`
-	}
-	if err := json.Unmarshal(data, &fields); err != nil {
+	var value canonical
+	if err := json.Unmarshal(data, &value); err != nil {
 		return err
 	}
-	typePresent, err := jsonFieldPresent(data, "type")
-	if err != nil {
-		return err
+	if hasJSONField(data, "provider") {
+		return errors.New(`provider record field "provider" is unsupported; use "type"`)
 	}
-	*d = ModelProvider(fields.canonical)
-	if typePresent {
-		if fields.Type != nil {
-			d.Type = *fields.Type
-		}
-		return nil
-	}
-	d.Type = fields.LegacyProvider
+	*d = ModelProvider(value)
 	return nil
 }
 
@@ -147,26 +135,14 @@ type TTSProvider struct {
 
 func (d *TTSProvider) UnmarshalJSON(data []byte) error {
 	type canonical TTSProvider
-	var fields struct {
-		canonical
-		Type           *string `json:"type"`
-		LegacyProvider string  `json:"provider"`
-	}
-	if err := json.Unmarshal(data, &fields); err != nil {
+	var value canonical
+	if err := json.Unmarshal(data, &value); err != nil {
 		return err
 	}
-	typePresent, err := jsonFieldPresent(data, "type")
-	if err != nil {
-		return err
+	if hasJSONField(data, "provider") {
+		return errors.New(`provider record field "provider" is unsupported; use "type"`)
 	}
-	*d = TTSProvider(fields.canonical)
-	if typePresent {
-		if fields.Type != nil {
-			d.Type = *fields.Type
-		}
-		return nil
-	}
-	d.Type = fields.LegacyProvider
+	*d = TTSProvider(value)
 	return nil
 }
 
@@ -209,61 +185,37 @@ type VoiceModelProvider struct {
 
 func (d *VoiceModelProvider) UnmarshalJSON(data []byte) error {
 	type canonical VoiceModelProvider
-	var fields struct {
-		canonical
-		Type           *string `json:"type"`
-		LegacyProvider string  `json:"provider"`
-	}
-	if err := json.Unmarshal(data, &fields); err != nil {
+	var value canonical
+	if err := json.Unmarshal(data, &value); err != nil {
 		return err
 	}
-	typePresent, err := jsonFieldPresent(data, "type")
-	if err != nil {
-		return err
+	if hasJSONField(data, "provider") {
+		return errors.New(`provider record field "provider" is unsupported; use "type"`)
 	}
-	*d = VoiceModelProvider(fields.canonical)
-	if typePresent {
-		if fields.Type != nil {
-			d.Type = *fields.Type
-		}
-		return nil
-	}
-	d.Type = fields.LegacyProvider
+	*d = VoiceModelProvider(value)
 	return nil
 }
 
 func (d *STTProvider) UnmarshalJSON(data []byte) error {
 	type canonical STTProvider
-	var fields struct {
-		canonical
-		Type           *string `json:"type"`
-		LegacyProvider string  `json:"provider"`
-	}
-	if err := json.Unmarshal(data, &fields); err != nil {
+	var value canonical
+	if err := json.Unmarshal(data, &value); err != nil {
 		return err
 	}
-	typePresent, err := jsonFieldPresent(data, "type")
-	if err != nil {
-		return err
+	if hasJSONField(data, "provider") {
+		return errors.New(`provider record field "provider" is unsupported; use "type"`)
 	}
-	*d = STTProvider(fields.canonical)
-	if typePresent {
-		if fields.Type != nil {
-			d.Type = *fields.Type
-		}
-		return nil
-	}
-	d.Type = fields.LegacyProvider
+	*d = STTProvider(value)
 	return nil
 }
 
-func jsonFieldPresent(data []byte, key string) (bool, error) {
+func hasJSONField(data []byte, key string) bool {
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return false, err
+	if json.Unmarshal(data, &fields) != nil {
+		return false
 	}
 	_, exists := fields[key]
-	return exists, nil
+	return exists
 }
 
 type TTS struct {
@@ -346,19 +298,23 @@ func (d STT) TranscriptionTestRequest(wavData []byte) agent.STTTranscriptionTest
 }
 
 type Audio struct {
-	Socket                string `json:"socket"`
-	SampleRate            int    `json:"sample_rate"`
-	Channels              int    `json:"channels"`
-	BitWidth              int    `json:"bit_width"`
-	Backend               string `json:"backend"`
-	LegacyPlaybackBackend string `json:"playback_backend,omitempty"`
+	Socket     string `json:"socket"`
+	SampleRate int    `json:"sample_rate"`
+	Channels   int    `json:"channels"`
+	BitWidth   int    `json:"bit_width"`
+	Backend    string `json:"backend"`
 }
 
 func (d Audio) backend() string {
-	if strings.TrimSpace(d.Backend) != "" {
-		return d.Backend
+	return d.Backend
+}
+
+func (d *Audio) UnmarshalJSON(data []byte) error {
+	type canonical Audio
+	if hasJSONField(data, "playback_backend") {
+		return errors.New(`"audio.playback_backend" is unsupported; use "audio.backend"`)
 	}
-	return d.LegacyPlaybackBackend
+	return json.Unmarshal(data, (*canonical)(d))
 }
 
 type AudioArchive struct {

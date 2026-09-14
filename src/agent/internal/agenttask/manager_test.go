@@ -130,6 +130,48 @@ func TestManagerCancelsQueuedTaskWithoutRunningIt(t *testing.T) {
 	}
 }
 
+func TestManagerOutstandingTracksInFlightAndUndeliveredWork(t *testing.T) {
+	runner := &fakeRunner{started: make(chan string, 2), release: make(chan struct{})}
+	manager := newManager(runner, 4, time.Now)
+	defer manager.Close()
+
+	first, err := manager.Create("first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("first task did not start")
+	}
+	second, err := manager.Create("second")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Work in flight is outstanding, newest first, so a caller checking before
+	// starting something new sees the duplicate it just created.
+	outstanding := manager.Outstanding()
+	if len(outstanding) != 2 || outstanding[0].ID != second.ID || outstanding[1].ID != first.ID {
+		t.Fatalf("outstanding = %+v, want %s then %s", outstanding, second.ID, first.ID)
+	}
+
+	// A finished task stays outstanding until its result has actually been
+	// handed to the foreground: the caller must not start the same work again
+	// while the result is still on its way.
+	close(runner.release)
+	waitForStatus(t, manager, first.ID, StatusCompleted)
+	waitForStatus(t, manager, second.ID, StatusCompleted)
+	if outstanding := manager.Outstanding(); len(outstanding) != 2 {
+		t.Fatalf("outstanding before delivery = %+v, want both results", outstanding)
+	}
+
+	manager.DrainTerminalTasks()
+	if outstanding := manager.Outstanding(); len(outstanding) != 0 {
+		t.Fatalf("outstanding after delivery = %+v, want none", outstanding)
+	}
+}
+
 func TestManagerRestoresUndeliveredTerminalTasks(t *testing.T) {
 	manager := newManager(&fakeRunner{result: "done"}, 4, time.Now)
 	defer manager.Close()
