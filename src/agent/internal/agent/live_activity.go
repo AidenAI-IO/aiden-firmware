@@ -167,9 +167,9 @@ func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...str
 		Status:        LiveActivityStatusRunning,
 		Phase:         LiveActivityPhasePlanning,
 		TaskTitle:     truncateLiveActivityText(firstNonEmptyString([]string{title, "Aiden task"}), 80),
-		CurrentStep:   "Planning next step",
-		CurrentAction: "plan",
-		ToolStatus:    "thinking",
+		CurrentStep:   "正在处理请求",
+		CurrentAction: "process",
+		ToolStatus:    "processing",
 		Progress:      0.05,
 		ShowsProgress: true,
 		CanStop:       true,
@@ -202,14 +202,23 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.RequiresApp = false
 		state.LastError = ""
 		state.LastToolName = ""
-		state.ToolStatus = "thinking"
+		if strings.TrimSpace(event.ReasoningContent) != "" {
+			state.ToolStatus = "thinking"
+			state.CurrentAction = "think"
+		} else {
+			state.ToolStatus = "processing"
+			state.CurrentAction = "process"
+		}
 		state.ToolStartedAt = nil
-		state.CurrentAction = liveActivityActionFromRole(event.Content)
 		state.Phase = liveActivityPhaseFromRole(event.Content)
 		if step := truncateLiveActivityText(liveActivityStepFromRoleOutput(event), 120); step != "" {
 			state.CurrentStep = step
 		}
 	case runEventReasoningDelta:
+		if strings.TrimSpace(event.ReasoningContent) == "" {
+			m.mu.Unlock()
+			return &state
+		}
 		// Raw reasoning is not a display summary. Use a stage-level fallback
 		// rather than exposing the model's reasoning stream.
 		state.Status = LiveActivityStatusRunning
@@ -224,13 +233,13 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 	case runEventReasoningReset:
 		state.Status = LiveActivityStatusRunning
 		state.Phase = LiveActivityPhasePlanning
-		state.CurrentAction = "think"
-		state.ToolStatus = "thinking"
+		state.CurrentAction = "process"
+		state.ToolStatus = "processing"
 		state.ToolStartedAt = nil
 		state.LastToolName = ""
 		state.LastError = ""
 		state.RequiresApp = false
-		state.CurrentStep = "正在分析当前任务并准备下一步操作"
+		state.CurrentStep = "正在处理请求"
 	case runEventToolProgress:
 		state.Status = LiveActivityStatusRunning
 		state.ToolStatus = firstNonEmptyString([]string{event.ToolStatus, "running"})
@@ -360,7 +369,7 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.RequiresApp = false
 		state.ShowsProgress = true
 		state.LastError = ""
-		state.ToolStatus = "thinking"
+		state.ToolStatus = "processing"
 		state.ToolStartedAt = nil
 	default:
 		m.mu.Unlock()
@@ -604,7 +613,7 @@ func liveActivityActionFromRole(content string) string {
 	if speech.ExtractText(content) != "" {
 		return "answer"
 	}
-	return "think"
+	return "plan"
 }
 
 func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
@@ -936,12 +945,12 @@ func liveActivityStepFromRoleOutput(event RunEvent) string {
 	}
 	switch role {
 	case "agent":
-		return "Thinking"
+		return "正在处理请求"
 	default:
 		if content != "" && !strings.HasPrefix(content, "{") && !strings.HasPrefix(content, "[") {
 			return content
 		}
-		return "Thinking"
+		return "正在处理请求"
 	}
 }
 

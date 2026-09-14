@@ -224,11 +224,13 @@ updated_at
 本次实现只做向后兼容的可选字段扩展，接口路径和轮询机制保持不变：
 
 ```text
-tool_status          // thinking/running/preparing/verifying/succeeded/failed/waiting_app/waiting_user
+tool_status          // processing/thinking/running/preparing/verifying/succeeded/failed/waiting_app/waiting_user
 tool_started_at      // 当前工具开始时间，用于准确计时
 ```
 
 其中 `reasoning_content` 仍按原协议传输给需要它的客户端，不直接投影到灵动岛；思考阶段使用固定阶段文案。工具输入、结果和错误继续使用现有的安全摘要和步骤文案。
+
+任务开始、普通模型输出、用户调整任务和 reasoning 重置使用 `processing`（处理中）；只有收到非空的 `reasoning_delta` 才使用 `thinking`（思考中）。`planning` 阶段不代表模型开启了 reasoning。
 
 这些字段应同步加入 Go `LiveActivityState`、App TypeScript 类型、ActivityKit `ContentState`，旧版本 App 忽略未知字段即可继续工作。
 

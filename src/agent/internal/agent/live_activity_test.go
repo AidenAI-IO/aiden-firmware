@@ -21,7 +21,7 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 	if state == nil || state.Status != LiveActivityStatusRunning {
 		t.Fatalf("StartTask() state = %#v", state)
 	}
-	if state.Progress <= 0 || !state.CanStop || state.Phase != LiveActivityPhasePlanning || state.CurrentAction != "plan" {
+	if state.Progress <= 0 || !state.CanStop || state.Phase != LiveActivityPhasePlanning || state.CurrentAction != "process" || state.ToolStatus != "processing" {
 		t.Fatalf("unexpected initial state: %#v", state)
 	}
 
