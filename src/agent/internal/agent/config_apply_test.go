@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -295,5 +298,113 @@ func TestConfigApplyTogglesLiveActivityAndNotifications(t *testing.T) {
 	}
 	if r.voiceNotifications.PrepareNotification(context.Background()).Text == "" {
 		t.Fatal("notifications did not enable online")
+	}
+}
+
+// TestConfigApplyWorkerLogsOutcome keeps online application observable in
+// agent.log: a successful reload used to leave no trace there, so a field
+// report of "the setting did not take effect" could not be told apart from a
+// save that never reached the runtime.
+func TestConfigApplyWorkerLogsOutcome(t *testing.T) {
+	// The worker publishes the status before it logs, so the log assertion
+	// joins the goroutine instead of polling the buffer.
+	settle := func(r *Runtime) ConfigApplyStatus {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			status := r.ConfigApplyStatus()
+			if !status.Pending {
+				return status
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Fatal("config application did not finish")
+		return ConfigApplyStatus{}
+	}
+
+	t.Run("applied", func(t *testing.T) {
+		var output bytes.Buffer
+		r := &Runtime{config: Config{ConfigDir: t.TempDir()}}
+		r.logger = &Logger{logger: log.New(&output, "", 0)}
+		next := r.ConfigSnapshot()
+		next.Locale = "zh-CN"
+		r.QueueConfig(next, 987654321)
+		waitForConfigApplied(t, r)
+		r.StopConfigReloads()
+		for _, want := range []string{"[INFO] [agent] [runtime] config_applied", "revision=987654321", "reboot_required=false"} {
+			if line := output.String(); !strings.Contains(line, want) {
+				t.Fatalf("log %q missing %q", line, want)
+			}
+		}
+	})
+
+	t.Run("failed", func(t *testing.T) {
+		var output bytes.Buffer
+		r := &Runtime{config: Config{ConfigDir: t.TempDir()}}
+		r.logger = &Logger{logger: log.New(&output, "", 0)}
+		next := r.ConfigSnapshot()
+		next.ConfigDir = t.TempDir()
+		r.QueueConfig(next, 42)
+		if status := settle(r); status.State != "failed" {
+			t.Fatalf("status=%+v", status)
+		}
+		r.StopConfigReloads()
+		for _, want := range []string{"[WARN] [agent] [runtime] config_apply_failed", "revision=42", "config directory cannot be reloaded"} {
+			if line := output.String(); !strings.Contains(line, want) {
+				t.Fatalf("log %q missing %q", line, want)
+			}
+		}
+	})
+}
+
+// TestConfigApplyLogsRebootStatusPerRevision covers a revision queued while an
+// earlier apply is still draining. The status a queued revision publishes must
+// not leak into the event of the revision that was actually applied, so each
+// event is checked against its own reboot outcome.
+func TestConfigApplyLogsRebootStatusPerRevision(t *testing.T) {
+	var output bytes.Buffer
+	base := DefaultConfig()
+	base.ConfigDir = t.TempDir()
+	r := &Runtime{config: base}
+	r.logger = &Logger{logger: log.New(&output, "", 0)}
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	r.SetConfigPreparer(func(ctx context.Context, cfg Config) (func(bool), error) {
+		once.Do(func() { close(entered) })
+		<-release
+		return func(bool) {}, nil
+	})
+
+	// Revision 1 changes the USB keyboard layout, so it stays pending a reboot.
+	// It also changes an ordinary limit: a USB-only edit is normalized back to
+	// the active layout and would apply as a no-op.
+	first := base
+	first.HID.KeyboardLayout = "azerty"
+	first.MaxIterations = 7
+	r.QueueConfig(first, 1)
+	<-entered
+	// Revision 2 changes an ordinary limit and needs no reboot.
+	second := base
+	second.MaxIterations = 5
+	r.QueueConfig(second, 2)
+	close(release)
+	waitForConfigApplied(t, r)
+	r.StopConfigReloads()
+
+	eventFor := func(revision uint64) string {
+		for _, line := range strings.Split(output.String(), "\n") {
+			if strings.Contains(line, fmt.Sprintf("config_applied revision=%d ", revision)) {
+				return line
+			}
+		}
+		return ""
+	}
+	firstEvent := eventFor(1)
+	if !strings.Contains(firstEvent, "reboot_required=true") {
+		t.Fatalf("revision 1 event = %q, want its own reboot status", firstEvent)
+	}
+	secondEvent := eventFor(2)
+	if !strings.Contains(secondEvent, "reboot_required=false") {
+		t.Fatalf("revision 2 event = %q, want its own reboot status", secondEvent)
 	}
 }

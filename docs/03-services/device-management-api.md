@@ -192,4 +192,7 @@ provided. Clients must use the canonical resources in the table above.
 and returns HTTP 202 with `pending=true`. `GET` on the same loopback-only route
 returns application status. A stale revision returns HTTP 409. Pending saves
 are coalesced; the latest queued snapshot wins after the current application.
+A body that fails to decode, or that carries an unknown field, returns HTTP 400
+with the decoder's reason, so a request that did include a revision is never
+reported as a missing one.
 These endpoints are not part of the public management API.

@@ -66,22 +66,30 @@ timeout, and session release are logged separately for diagnosing busy reports.
 
 The realtime model receives this focused catalog:
 
-| Tool                    | Purpose                                                                        |
-| ----------------------- | ------------------------------------------------------------------------------ |
-| `get_current_time`      | Return controller-local date, time, timezone, and UTC offset.                  |
-| `recall_memory`         | Recall long-term user preferences, facts, rules, and procedures.               |
-| `save_memory`           | Save a long-term memory without waiting for a background task.                 |
-| `forget_memory`         | Delete a saved memory by the ID returned from `recall_memory`.                 |
-| `recall_session_chunks` | Recall compressed history older than the replayed window.                      |
-| `audio_volume`          | Read or set the realtime playback volume.                                      |
-| `create_agent_task`     | Queue background work and return immediately with a task ID.                   |
-| `cancel_agent_task`     | Cancel queued work or request cancellation of running work.                    |
-| `query_agent_task`      | Read the latest task state and terminal result.                                |
-| `response_user_action`  | Resume a background task after the user completes the requested device action. |
-| `end_conversation`      | Return to standby after the farewell finishes playing.                         |
+| Tool                    | Purpose                                                                          |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| `get_current_time`      | Return controller-local date, time, timezone, and UTC offset.                    |
+| `recall_memory`         | Recall long-term user preferences, facts, rules, and procedures.                 |
+| `save_memory`           | Save a long-term memory without waiting for a background task.                   |
+| `forget_memory`         | Delete a saved memory by the ID returned from `recall_memory`.                   |
+| `recall_session_chunks` | Recall compressed history older than the replayed window.                        |
+| `audio_volume`          | Read or set the realtime playback volume.                                        |
+| `create_agent_task`     | Queue background work and return immediately with a task ID.                     |
+| `cancel_agent_task`     | Cancel queued work or request cancellation of running work.                      |
+| `query_agent_task`      | Read one task's state and result, or every outstanding task when no ID is given. |
+| `response_user_action`  | Resume a background task after the user completes the requested device action.   |
+| `end_conversation`      | Return to standby after the farewell finishes playing.                           |
 
 `create_agent_task` only enqueues work. The foreground response never waits for
 the background agent to start or finish.
+
+Before creating work, the foreground calls `query_agent_task` without a task ID
+and continues the task that already covers the request instead of starting a
+duplicate. That check answers with the tasks that are still in flight plus the
+finished tasks whose result has not been delivered to the foreground yet;
+delivered results are left out because the foreground holds them in its own
+context, so asking for the same work later is a genuine new request. A repeated
+or reworded request therefore does not start the same device work twice.
 
 The memory tools reuse the same registrations and stores as the background
 agent, so both agents read and write one memory plane. Their foreground

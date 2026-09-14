@@ -90,6 +90,8 @@ func (r *Runtime) QueueConfig(cfg Config, revision uint64) ConfigApplyStatus {
 	return r.configStatus
 }
 
+// applyConfigWorker drains queued configuration snapshots one at a time and
+// records the outcome of each application.
 func (r *Runtime) applyConfigWorker() {
 	defer r.configWorkerWG.Done()
 	for {
@@ -104,11 +106,17 @@ func (r *Runtime) applyConfigWorker() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		r.configWorkerCancel = cancel
 		r.configStatusMu.Unlock()
+		started := time.Now()
 		err := r.applyConfig(ctx, cfg)
+		elapsed := time.Since(started)
 		cancel()
 		r.configStatusMu.Lock()
 		r.configWorkerCancel = nil
-		if err == nil && !configRequiresReboot(r.ConfigSnapshot(), cfg) {
+		// Resolve the reboot outcome once, for the snapshot this iteration
+		// applied. A queued revision may publish its own status as soon as the
+		// lock is released, so the value must not be re-read for the log.
+		rebootRequired := configRequiresReboot(r.ConfigSnapshot(), cfg)
+		if err == nil && !rebootRequired {
 			r.configStatus.AppliedRevision = revision
 		}
 		if r.configSequence == sequence {
@@ -119,15 +127,39 @@ func (r *Runtime) applyConfigWorker() {
 				r.configStatus.State = "failed"
 				r.configStatus.Error = err.Error()
 			}
-			active := r.ConfigSnapshot()
-			r.configStatus.RebootRequired = configRequiresReboot(active, cfg)
-			if err == nil && r.configStatus.RebootRequired {
+			r.configStatus.RebootRequired = rebootRequired
+			if err == nil && rebootRequired {
 				r.configStatus.State = "reboot_required"
 				r.configStatus.Applied = false
 			}
 		}
 		r.configStatusMu.Unlock()
+		r.logConfigApply(revision, err, elapsed, rebootRequired)
 	}
+}
+
+// logConfigApply records the outcome of an online configuration application.
+// Without it agent.log stays silent about successful reloads, so "the setting
+// did not take effect" cannot be told apart from "the save never arrived".
+// rebootRequired describes the revision being logged, never a newer queue
+// entry, so each event stays consistent with its own revision.
+func (r *Runtime) logConfigApply(revision uint64, applyErr error, elapsed time.Duration, rebootRequired bool) {
+	if r == nil || r.logger == nil {
+		return
+	}
+	if applyErr != nil {
+		r.logger.WarnEvent("runtime", "config_apply_failed",
+			LogField{Key: "revision", Value: revision},
+			LogField{Key: "duration_ms", Value: elapsed.Milliseconds()},
+			LogField{Key: "error", Value: applyErr},
+		)
+		return
+	}
+	r.logger.InfoEvent("runtime", "config_applied",
+		LogField{Key: "revision", Value: revision},
+		LogField{Key: "duration_ms", Value: elapsed.Milliseconds()},
+		LogField{Key: "reboot_required", Value: rebootRequired},
+	)
 }
 
 func configRequiresReboot(current, next Config) bool {
