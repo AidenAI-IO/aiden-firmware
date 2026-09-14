@@ -156,10 +156,14 @@ request 'GET agent web /webtty/ after ttyd restart' \
 before_pid="$(agent_pid)"
 test -n "$before_pid"
 
+# The marker has to be a key isAllowedSystemEnvKey() accepts, so it is a proxy
+# variable rather than something named after this test. no_proxy takes an
+# arbitrary token -- only HTTP_PROXY/HTTPS_PROXY/ALL_PROXY get URL-validated --
+# and nothing in the sandbox routes through a proxy, so the value is inert.
 request 'PUT config web /api/system/environment' \
     -fsS --max-time 15 -X PUT \
     -H 'Content-Type: application/json' \
-    --data '{"system_env":"AIDEN_DOCKER_SANDBOX_SMOKE=1\n"}' \
+    --data '{"system_env":"no_proxy=aiden-docker-sandbox-smoke\n"}' \
     "http://127.0.0.1:$config_port/api/system/environment" \
     | grep -q '"agent_restart_required":true'
 
@@ -186,7 +190,7 @@ compose up -d
 wait_for_agent
 request 'GET config web /api/system/environment' \
     -fsS --max-time 10 "http://127.0.0.1:$config_port/api/system/environment" \
-    | grep -q 'AIDEN_DOCKER_SANDBOX_SMOKE=1'
+    | grep -q 'no_proxy=aiden-docker-sandbox-smoke'
 
 printf 'Docker sandbox smoke test passed (agent pid %s -> %s).\n' "$before_pid" "$after_pid"
 
@@ -258,7 +262,7 @@ test "$setup_count" -eq 1
 request 'PUT config web /api/system/environment (restart race)' \
     -fsS --max-time 15 -X PUT \
     -H 'Content-Type: application/json' \
-    --data '{"system_env":"AIDEN_DOCKER_SANDBOX_RACE=1\n"}' \
+    --data '{"system_env":"no_proxy=aiden-docker-sandbox-race\n"}' \
     "http://127.0.0.1:$config_port/api/system/environment" >/dev/null
 curl -fsS --max-time 15 -X POST \
     "http://127.0.0.1:$config_port/api/system/environment/apply" \
