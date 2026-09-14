@@ -36,7 +36,7 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 	}
 
 	state = manager.CompleteTask("req-1", "Done")
-	if state == nil || state.Status != LiveActivityStatusCompleted || state.CanStop || state.Progress != 1 {
+	if state == nil || state.Status != LiveActivityStatusCompleted || state.ToolStatus != "succeeded" || state.CanStop || state.Progress != 1 {
 		t.Fatalf("unexpected completion state: %#v", state)
 	}
 
@@ -51,7 +51,7 @@ func TestLiveActivityManagerDisablingCancelsAllRunningTasks(t *testing.T) {
 
 	for _, requestID := range []string{"req-1", "req-2"} {
 		state := manager.Snapshot(requestID)
-		if state == nil || state.Status != LiveActivityStatusCanceled {
+		if state == nil || state.Status != LiveActivityStatusCanceled || state.ToolStatus != "" {
 			t.Fatalf("state[%s] = %#v, want canceled", requestID, state)
 		}
 	}
@@ -102,7 +102,16 @@ func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
 		ReasoningContent: "正在确认当前页面状态",
 		Timestamp:        time.Now(),
 	})
-	if state == nil || state.ToolStatus != "thinking" {
+	if state == nil || state.ToolStatus != "processing" || state.CurrentAction != "process" {
+		t.Fatalf("role output details = %#v", state)
+	}
+
+	state = manager.UpdateFromRunEvent("req-details", RunEvent{
+		Type:             runEventReasoningDelta,
+		ReasoningContent: "正在确认当前页面状态",
+		Timestamp:        time.Now(),
+	})
+	if state == nil || state.ToolStatus != "thinking" || state.CurrentAction != "think" {
 		t.Fatalf("thinking details = %#v", state)
 	}
 
@@ -115,6 +124,16 @@ func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
 	})
 	if state == nil || state.ToolStatus != "running" || state.ToolStartedAt == nil || !state.ToolStartedAt.Equal(startedAt) {
 		t.Fatalf("tool start details = %#v", state)
+	}
+
+	state = manager.UpdateFromRunEvent("req-details", RunEvent{
+		Type:       runEventToolProgress,
+		ToolStatus: "running",
+		Content:    "Still checking the current screen",
+		Timestamp:  startedAt.Add(5 * time.Second),
+	})
+	if state == nil || state.ToolStartedAt == nil || !state.ToolStartedAt.Equal(startedAt) {
+		t.Fatalf("tool progress reset start time: %#v", state)
 	}
 
 	state = manager.UpdateFromRunEvent("req-details", RunEvent{

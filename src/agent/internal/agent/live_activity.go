@@ -202,13 +202,8 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.RequiresApp = false
 		state.LastError = ""
 		state.LastToolName = ""
-		if strings.TrimSpace(event.ReasoningContent) != "" {
-			state.ToolStatus = "thinking"
-			state.CurrentAction = "think"
-		} else {
-			state.ToolStatus = "processing"
-			state.CurrentAction = "process"
-		}
+		state.ToolStatus = "processing"
+		state.CurrentAction = "process"
 		state.ToolStartedAt = nil
 		state.Phase = liveActivityPhaseFromRole(event.Content)
 		if step := truncateLiveActivityText(liveActivityStepFromRoleOutput(event), 120); step != "" {
@@ -242,15 +237,22 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.CurrentStep = "正在处理请求"
 	case runEventToolProgress:
 		state.Status = LiveActivityStatusRunning
-		state.ToolStatus = firstNonEmptyString([]string{event.ToolStatus, "running"})
-		state.ToolStartedAt = nil
-		if state.ToolStatus == "running" {
-			now := event.Timestamp
-			if now.IsZero() {
-				now = time.Now()
+		toolStatus := firstNonEmptyString([]string{event.ToolStatus, "running"})
+		if toolStatus == "running" {
+			if state.ToolStatus == "running" && state.ToolStartedAt != nil {
+				// Keep the timestamp from the initial tool call while progress
+				// updates continue for the same tool.
+			} else {
+				now := event.Timestamp
+				if now.IsZero() {
+					now = time.Now()
+				}
+				state.ToolStartedAt = &now
 			}
-			state.ToolStartedAt = &now
+		} else {
+			state.ToolStartedAt = nil
 		}
+		state.ToolStatus = toolStatus
 		state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
 			event.Content,
 			state.CurrentStep,
@@ -453,7 +455,13 @@ func (m *LiveActivityManager) finishTask(requestID, status, step, errText string
 	state.CurrentAction = status
 	state.CurrentTarget = ""
 	state.LastError = errText
-	state.ToolStatus = status
+	if status == LiveActivityStatusCompleted {
+		state.ToolStatus = "succeeded"
+	} else if status == LiveActivityStatusCanceled {
+		state.ToolStatus = ""
+	} else {
+		state.ToolStatus = status
+	}
 	state.ToolStartedAt = nil
 	state.Progress = 1
 	state.LastToolName = ""
