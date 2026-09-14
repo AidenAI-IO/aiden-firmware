@@ -3150,9 +3150,17 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 
 func TestTouchGestureSchemaExposesAtomicActions(t *testing.T) {
 	schema := (&TouchGestureTool{}).ArgsSchema()
-	anyOf, ok := schema["anyOf"].([]map[string]any)
-	if !ok || len(anyOf) != 2 {
-		t.Fatalf("schema anyOf = %#v, want actions-or-type requirement", schema["anyOf"])
+	// Anthropic rejects oneOf, allOf, and anyOf at the top level of a tool
+	// input_schema, and the requirement is stated in the description instead so
+	// every provider receives the same schema.
+	for _, key := range []string{"oneOf", "allOf", "anyOf"} {
+		if _, found := schema[key]; found {
+			t.Fatalf("schema declares top-level %q, which Anthropic rejects: %#v", key, schema[key])
+		}
+	}
+	description, _ := schema["description"].(string)
+	if !strings.Contains(description, "either type or actions") {
+		t.Fatalf("schema description no longer states the type-or-actions requirement: %q", description)
 	}
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {

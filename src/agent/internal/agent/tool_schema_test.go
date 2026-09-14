@@ -8,26 +8,7 @@ import (
 )
 
 func TestAgentExposedToolsDoNotExposeLegacyArg1Schema(t *testing.T) {
-	toolSet := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	tools := append([]langtools.Tool{}, toolSet.All()...)
-	tools = append(tools,
-		NewRecallSessionChunksTool(nil),
-		NewRecallMemoryTool(nil),
-		NewSaveMemoryTool(nil),
-		NewForgetMemoryTool(nil),
-		NewRecallDeviceMemoryTool(nil),
-		NewInspectEpisodeTool(nil),
-		NewSkillListTool(t.TempDir()),
-		NewSkillReadTool(t.TempDir()),
-		NewSkillMarkUsedTool(t.TempDir(), ""),
-		NewSkillManageTool(t.TempDir(), ""),
-		NewOpenAppTool(nil, nil, nil),
-		NewOpenURLTool(nil, nil),
-		NewClipboardTool(nil, nil),
-		NewCalendarTool(nil, nil),
-		NewContactsTool(nil, nil),
-		NewNotificationTool(nil, nil),
-	)
+	tools := agentExposedToolsForSchemaTests(t)
 
 	for _, tool := range tools {
 		if tool == nil {
@@ -51,6 +32,57 @@ func TestAgentExposedToolsDoNotExposeLegacyArg1Schema(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAgentExposedToolSchemasAvoidTopLevelCombinators keeps every tool schema
+// portable across providers. Anthropic rejects oneOf, allOf, and anyOf at the
+// top level of input_schema ("input_schema does not support oneOf, allOf, or
+// anyOf at the top level"), and Anthropic backs every Claude model on Bedrock,
+// Vertex, and Azure, so a single offending tool would fail the entire request
+// on all of them. Express such requirements in the schema description instead.
+func TestAgentExposedToolSchemasAvoidTopLevelCombinators(t *testing.T) {
+	for _, tool := range agentExposedToolsForSchemaTests(t) {
+		if tool == nil {
+			continue
+		}
+		t.Run(tool.Name(), func(t *testing.T) {
+			schema := NewToolSpec(tool).LLMSchema()
+			for _, key := range []string{"oneOf", "allOf", "anyOf"} {
+				if _, found := schema[key]; !found {
+					continue
+				}
+				encoded, _ := json.Marshal(schema[key])
+				t.Fatalf("top-level %q is not supported by the Anthropic Messages API: %s", key, encoded)
+			}
+		})
+	}
+}
+
+// agentExposedToolsForSchemaTests lists every tool the conversational agent can
+// expose, including the ones registered conditionally at runtime.
+func agentExposedToolsForSchemaTests(t *testing.T) []langtools.Tool {
+	t.Helper()
+	toolSet := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
+	tools := append([]langtools.Tool{}, toolSet.All()...)
+	tools = append(tools,
+		NewRecallSessionChunksTool(nil),
+		NewRecallMemoryTool(nil),
+		NewSaveMemoryTool(nil),
+		NewForgetMemoryTool(nil),
+		NewRecallDeviceMemoryTool(nil),
+		NewInspectEpisodeTool(nil),
+		NewSkillListTool(t.TempDir()),
+		NewSkillReadTool(t.TempDir()),
+		NewSkillMarkUsedTool(t.TempDir(), ""),
+		NewSkillManageTool(t.TempDir(), ""),
+		NewOpenAppTool(nil, nil, nil),
+		NewOpenURLTool(nil, nil),
+		NewClipboardTool(nil, nil),
+		NewCalendarTool(nil, nil),
+		NewContactsTool(nil, nil),
+		NewNotificationTool(nil, nil),
+	)
+	return tools
 }
 
 func TestSessionRecallTelemetryToolForwardsStructuredSchema(t *testing.T) {
