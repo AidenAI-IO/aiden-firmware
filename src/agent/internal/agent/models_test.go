@@ -218,6 +218,26 @@ func TestBuildVolcengineProviderResolvesBaseURL(t *testing.T) {
 	}
 }
 
+func TestBuildDeepSeekProviderResolvesBaseURL(t *testing.T) {
+	mgr := NewModelManager(ModelConfig{
+		Provider: "deepseek",
+		Model:    "deepseek-flash",
+		APIKey:   "test-key",
+	}, ProxyConfig{})
+
+	model, err := mgr.build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	compatible, ok := model.(*openAICompatibleModel)
+	if !ok {
+		t.Fatalf("model type = %T, want *openAICompatibleModel", model)
+	}
+	if compatible.baseURL != deepseekBaseURL {
+		t.Errorf("baseURL = %q, want %q", compatible.baseURL, deepseekBaseURL)
+	}
+}
+
 func TestBuildOpenRouterEnablesNestedReasoning(t *testing.T) {
 	mgr := NewModelManager(ModelConfig{
 		Provider: "openrouter",

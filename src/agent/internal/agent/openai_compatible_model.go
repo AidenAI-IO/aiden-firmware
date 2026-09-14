@@ -1,6 +1,7 @@
 package agent
 
 import (
+	agentmessages "aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/util"
 	"bufio"
 	"bytes"
@@ -35,7 +36,10 @@ type openAICompatibleModel struct {
 	// OpenRouter provider sets it; direct endpoints such as Volcengine Ark,
 	// OpenAI, and Moonshot receive reasoning_effort alone.
 	openRouterReasoning bool
-	temperature         *float64
+	// DeepSeek uses a thinking toggle and requires assistant reasoning_content
+	// to be replayed from the persisted transcript when thinking is enabled.
+	deepSeek    bool
+	temperature *float64
 	// sessionIDProvider, when set, supplies the value for the x-session-id
 	// request header. It is only wired up for the OpenRouter provider, whose
 	// sticky routing uses the session id to keep multi-turn requests on the same
@@ -131,6 +135,10 @@ func withOpenAICompatibleTemperature(temp *float64) openAICompatibleModelOption 
 	return func(m *openAICompatibleModel) {
 		m.temperature = temp
 	}
+}
+
+func withOpenAICompatibleDeepSeek() openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) { m.deepSeek = true }
 }
 
 // openRouterSessionIDMaxLen mirrors OpenRouter's documented 256-char limit for
@@ -296,6 +304,11 @@ type compatibleChatRequest struct {
 	ResponseFormat   map[string]string   `json:"response_format,omitempty"`
 	Reasoning        *reasoningConfig    `json:"reasoning,omitempty"`
 	ReasoningEffort  string              `json:"reasoning_effort,omitempty"`
+	Thinking         *compatibleThinking `json:"thinking,omitempty"`
+}
+
+type compatibleThinking struct {
+	Type string `json:"type"`
 }
 
 type reasoningConfig struct {
@@ -304,11 +317,12 @@ type reasoningConfig struct {
 }
 
 type compatibleMessage struct {
-	Role       string               `json:"role"`
-	Content    any                  `json:"content,omitempty"`
-	Name       string               `json:"name,omitempty"`
-	ToolCalls  []compatibleToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string               `json:"tool_call_id,omitempty"`
+	Role             string               `json:"role"`
+	Content          any                  `json:"content,omitempty"`
+	Name             string               `json:"name,omitempty"`
+	ToolCalls        []compatibleToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string               `json:"tool_call_id,omitempty"`
+	ReasoningContent *string              `json:"reasoning_content,omitempty"`
 }
 
 type compatibleTool struct {
@@ -464,6 +478,21 @@ func (m *openAICompatibleModel) Call(ctx context.Context, prompt string, options
 }
 
 func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	return m.generateContent(ctx, messages, nil, options...)
+}
+
+func (m *openAICompatibleModel) GenerateContentFromMessageList(ctx context.Context, contextMessages []agentmessages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	var reasoning []string
+	if m.deepSeek {
+		reasoning = make([]string, len(contextMessages))
+		for i, message := range contextMessages {
+			reasoning[i] = message.ReasoningContent
+		}
+	}
+	return m.generateContent(ctx, agentmessages.ConvertMessageList(contextMessages), reasoning, options...)
+}
+
+func (m *openAICompatibleModel) generateContent(ctx context.Context, messages []llms.MessageContent, reasoning []string, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	callStarted := time.Now()
 	generationInfo := map[string]any{}
 	requestPrepareStart := time.Now()
@@ -473,10 +502,20 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	}
 
 	requestMessages := make([]compatibleMessage, 0, len(messages))
-	for _, message := range messages {
+	for i, message := range messages {
 		converted, err := convertMessageContent(message, m.explicitPromptCache)
 		if err != nil {
 			return nil, err
+		}
+		if m.deepSeek && m.reasoningEffort != "none" && converted.Role == "assistant" {
+			// Include even an empty string for older/non-thinking history. DeepSeek
+			// requires this field on every assistant message when tools are used,
+			// including assistant replies that did not call a tool.
+			content := ""
+			if i < len(reasoning) {
+				content = reasoning[i]
+			}
+			converted.ReasoningContent = &content
 		}
 		requestMessages = append(requestMessages, converted)
 	}
@@ -521,6 +560,13 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 				Exclude: m.reasoningEffort == "none",
 			}
 		}
+	}
+	if m.deepSeek {
+		thinkingType := "enabled"
+		if m.reasoningEffort == "none" {
+			thinkingType = "disabled"
+		}
+		reqPayload.Thinking = &compatibleThinking{Type: thinkingType}
 	}
 	generationInfo["llm_request_prepare_ms"] = time.Since(requestPrepareStart).Milliseconds()
 
@@ -1282,6 +1328,7 @@ func mergeConsecutiveSameRoleMessages(messages []compatibleMessage) []compatible
 		// Only merge if roles match and neither is a tool message
 		canMerge := current.Role == previous.Role &&
 			current.Role != "tool" &&
+			current.ReasoningContent == nil && previous.ReasoningContent == nil &&
 			len(current.ToolCalls) == 0 &&
 			len(previous.ToolCalls) == 0
 

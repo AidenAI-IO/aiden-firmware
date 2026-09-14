@@ -15,8 +15,8 @@ import (
 // bare model name so configs that drop the provider prefix (e.g. the openai
 // provider pointed at a proxy with model = "gpt-5.4") still resolve.
 //
-// Only models that support both image input and tool/function calling are
-// listed here, since those are the capabilities the agent relies on.
+// Most entries support both image input and tool/function calling, which the
+// device agent relies on. Text-only alternatives are explicitly noted below.
 var modelSpecRegistry = map[string]model.ModelSpec{
 	// OpenAI GPT-5.x family (vision + tool calling). ContextWindow is the total
 	// advertised window; compaction logic uses (ContextWindow - MaxOutput) for
@@ -73,6 +73,13 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	// overrides. Ark places no constraint on temperature, so no default is set.
 	// Other dated releases need their own entry, keyed by the exact Ark model id.
 	"doubao-seed-2-1-pro-260628": {ContextWindow: 262_144, MaxOutput: 131_072, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}, true)},
+
+	// DeepSeek Flash supports vision and tool calling; Pro is a text-only
+	// alternative. Published limits: https://api-docs.deepseek.com/quick_start/pricing
+	// (2026-09-14). Use a conservative 1,000,000 tokens for the advertised 1M
+	// window. Default to non-thinking mode for fast device interactions.
+	"deepseek-flash":  {ContextWindow: 1_000_000, MaxOutput: 393_216, DefaultReasoningEffort: stringPtr("none"), Reasoning: effortReasoning([]string{"none", "low", "high", "max"}, true)},
+	"deepseek-v4-pro": {ContextWindow: 1_000_000, MaxOutput: 393_216, DefaultReasoningEffort: stringPtr("none"), Reasoning: effortReasoning([]string{"none", "low", "high", "max"}, true)},
 
 	// Qwen3.8-27B on OpenRouter (vision + tool calling). Context window is
 	// 256K per the Qwen3 published model card. Default reasoning_effort is

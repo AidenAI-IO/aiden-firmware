@@ -51,7 +51,7 @@ Most mobile agent projects are lab prototypes that require a laptop or desktop t
 ### 2. **Fully Open**
 - **Open-source firmware** — Complete C++ services and Go agent code
 - **Development board reference** — Current prototyping board schematics and assembly guide available
-- **Flexible model backends** — Configure registered providers such as OpenAI, OpenRouter, Kimi, Volcengine, or Ollama; use OpenRouter for Anthropic Claude and Google Gemini models
+- **Flexible model backends** — Configure registered providers such as OpenAI, OpenRouter, Kimi, Volcengine, DeepSeek, or Ollama; use OpenRouter for Anthropic Claude and Google Gemini models
 - **Exportable data** — Your memory, skills, and learned behaviors are yours to keep and migrate
 - **Community-driven** — Contributions welcome; flash custom firmware freely
 

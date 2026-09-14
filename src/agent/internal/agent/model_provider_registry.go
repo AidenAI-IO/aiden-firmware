@@ -72,6 +72,10 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		},
 	},
 	{
+		providerType: "deepseek",
+		build:        buildDeepSeekModel,
+	},
+	{
 		providerType:        "ollama",
 		allowsCustomBaseURL: true,
 		build:               buildOllamaModel,
@@ -111,6 +115,19 @@ func buildOpenAICompatibleModel(ctx ModelBuildContext, cfg ModelConfig, defaultB
 		})
 	}
 	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, openAICompatibleOptions(ctx, cfg)...)
+}
+
+func buildDeepSeekModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
+	if apiMode := normalizeModelAPIMode(cfg.APIMode); apiMode != modelAPIModeChatCompletions {
+		return nil, fmt.Errorf("model.api_mode=%s is not supported by Aiden's DeepSeek transport; use chat_completions", cfg.APIMode)
+	}
+	// Keep all entry points, including direct ModelManager users and custom
+	// model IDs, in non-thinking mode unless explicitly enabled.
+	if strings.TrimSpace(cfg.ReasoningEffort) == "" {
+		cfg.ReasoningEffort = "none"
+	}
+	opts := append(openAICompatibleOptions(ctx, cfg), withOpenAICompatibleDeepSeek())
+	return newOpenAICompatibleModel(deepseekBaseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, opts...), nil
 }
 
 func buildKimiModel(ctx ModelBuildContext, cfg ModelConfig, defaultBaseURL string) (llms.Model, error) {

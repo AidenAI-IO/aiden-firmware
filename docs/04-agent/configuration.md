@@ -350,7 +350,7 @@ so switching is a one-line change instead of a re-entry of keys.
 
 | Field       | Description                                                                                        |
 | ----------- | -------------------------------------------------------------------------------------------------- |
-| `type`      | Required provider type: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`   |
+| `type`      | Required provider type: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `deepseek`, `ollama`, `fake`   |
 | `api_key`   | Literal API key, or `$VAR_NAME` to read it from an environment variable                              |
 | `base_url`  | Custom endpoint; supported by `openai`, `anthropic`, and `ollama`                                  |
 
@@ -396,7 +396,7 @@ built. When a section is named exactly like a provider type, the section wins.
 
 | Field                     | Description                                                                                                                                                                                                                                          |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider`                | A provider type, or the name of a `[model_providers.<name>]` section. Types: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
+| `provider`                | A provider type, or the name of a `[model_providers.<name>]` section. Types: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `deepseek`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`); `deepseek` targets DeepSeek's OpenAI-compatible endpoint (`https://api.deepseek.com`). |
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
 | `api_mode`                | Wire protocol. Omit it (or use `chat_completions`) for the existing Chat Completions path; `responses` sends full local context to OpenAI, OpenRouter, or Volcengine Ark. OpenAI and Ark receive `store=false`; OpenRouter omits both `store` and `previous_response_id` because its Responses endpoint is stateless. `responses_stateful` sends `store=true`, resends top-level `instructions`, and chains follow-up requests with `previous_response_id` while submitting only newly appended items. The local transcript remains authoritative for audit, compaction, session rotation, and recovery. Stateful mode is enabled for OpenAI and Volcengine Ark. Moonshot Kimi exposes Chat Completions rather than `/responses`; native Anthropic and Ollama transports also do not implement this protocol. Custom compatible gateways can use provider type `openai`. |
@@ -408,7 +408,7 @@ built. When a section is named exactly like a provider type, the section wins.
 | `responses_truncation` | OpenAI-compatible Responses truncation policy. Empty/`disabled` preserves the API default; `auto` lets OpenAI or OpenRouter discard the oldest input. This field is not sent to Ark. |
 | `responses_include` | Optional array of provider-supported Responses include values. In stateless reasoning mode, use `reasoning.encrypted_content` when supported so Aiden can replay the complete opaque reasoning item. Aiden uses `previous_response_id` for provider-managed chaining and intentionally does not expose the separate `conversation` resource ID: the local session transcript remains authoritative and must not be shared across sessions accidentally. |
 | `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
-| `reasoning_effort`        | Reasoning effort. Unset is auto. Native Anthropic maps supported effort values to adaptive thinking `output_config.effort` and preserves signed thinking blocks across tool-call turns. `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, Ollama, and the fake provider, but not by native Anthropic or Ark. Some models pin a lighter default (see the registry in `model_specs.go`); an explicit value always wins. |
+| `reasoning_effort`        | Reasoning effort. Unset is auto. Native Anthropic maps supported effort values to adaptive thinking `output_config.effort` and preserves signed thinking blocks across tool-call turns. `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, DeepSeek, Ollama, and the fake provider, but not by native Anthropic or Ark. DeepSeek defaults to `none` for faster device interactions; explicit `low`, `high`, or `max` enables thinking with `reasoning_content` replay. Other models may also pin a lighter default in `model_specs.go`; an explicit value always wins. |
 | `reasoning_budget_tokens` | Optional exact reasoning-token budget for models that expose a numeric budget. `0` uses the model default or effort preset. It is currently translated only to Anthropic's native `thinking.budget_tokens` field. |
 | `max_response_tokens`     | Maximum output tokens passed to the model on request                                                                                                                                                                                                 |
 | `context_window`          | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback.                                                                        |
@@ -493,6 +493,34 @@ Ark model ID.
 The `[tts]` section has an unrelated provider that is also named `volcengine`. It
 speaks a separate WebSocket protocol with its own host and credentials, so an Ark
 API key and base URL do not carry over to it.
+
+### DeepSeek
+
+Use the `deepseek` provider for DeepSeek's OpenAI-compatible endpoint. The
+current `deepseek-flash` model supports vision and tool calls; `deepseek-v4-pro`
+supports tool calls but is text-only. Both models have a 1M context window and
+default to non-thinking mode in Aiden by setting `reasoning_effort = "none"`.
+Set `reasoning_effort` to `low`, `high`, or `max` to enable thinking. Aiden
+sends DeepSeek's `thinking` toggle and replays assistant `reasoning_content`
+from the transcript on subsequent tool-call requests.
+
+Keep `api_mode` unset or set it to `chat_completions`; Aiden's dedicated
+DeepSeek transport currently implements Chat Completions only. The provider
+uses its built-in endpoint, so `base_url` is not configurable.
+
+```toml
+[model_providers.deepseek-main]
+type = "deepseek"
+api_key = "$DEEPSEEK_API_KEY"
+
+[model]
+provider = "deepseek-main"
+model = "deepseek-flash"
+```
+
+Official references: [model capabilities and limits](https://api-docs.deepseek.com/quick_start/pricing),
+[vision](https://api-docs.deepseek.com/guides/vision), and
+[thinking with tool calls](https://api-docs.deepseek.com/guides/thinking_mode).
 
 ## `[log]`
 

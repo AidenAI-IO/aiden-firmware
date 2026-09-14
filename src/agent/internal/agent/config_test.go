@@ -656,6 +656,12 @@ func TestLoadRuntimeConfigResolvesModelReasoningEffortDefault(t *testing.T) {
 			want:     "minimal",
 		},
 		{
+			name:     "deepseek flash without explicit reasoning_effort disables thinking",
+			provider: "deepseek",
+			model:    "deepseek-flash",
+			want:     "none",
+		},
+		{
 			name:     "unknown model without explicit reasoning_effort stays auto (empty)",
 			provider: "openai",
 			model:    "gpt-5.5",
