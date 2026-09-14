@@ -252,7 +252,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"model.responses_context_edit_trigger":        {label: "Ark tool-call trigger", placeholder: "10 = recommended", help: "After this many tool calls, Ark clears old tool inputs. 0 uses the recommended value 10."},
 		"model.responses_context_edit_keep":           {label: "Ark tool calls to keep", placeholder: "3 = recommended", help: "Number of recent tool calls Ark keeps after cleanup. 0 uses the recommended value 3."},
 		"model.responses_context_edit_clear_thinking": {label: "Clear old thinking", help: "Ask Ark to remove previous thinking turns when it applies the context edit."},
-		"model.temperature":                           {label: "Temperature", help: "Controls response randomness. Lower values are more deterministic; 0 uses the provider or model default."},
+		"model.temperature":                           {label: "Temperature", help: "Controls response randomness. Lower values are more deterministic; 0 is sent as an explicit value."},
 		"model.max_response_tokens":                   {label: "Maximum response tokens", help: "Maximum number of tokens allowed in one model response."},
 		"model.log_raw_http":                          {label: "Raw HTTP logging", help: "Write raw model HTTP requests and responses to the Agent log directory. Enable only while troubleshooting."},
 		"model.reasoning_effort":                      {label: "Reasoning effort", help: "Empty = auto. Options follow the selected model capability; none is shown only when the model supports disabling reasoning."},

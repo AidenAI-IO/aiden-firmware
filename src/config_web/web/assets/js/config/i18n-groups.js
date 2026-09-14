@@ -12,7 +12,7 @@ export const GROUP_TRANSLATIONS = {
       iteration_control: 'Max Iterations',
       context_management: 'Context Management',
       tool_settings: 'Tool Settings',
-      websearch: 'Web Search',
+      websearch: '网页搜索',
       termination_policy: 'Termination Policy',
 
       model_settings: 'Model Settings',

@@ -324,6 +324,45 @@ func TestConfigApplyTogglesLiveActivityAndNotifications(t *testing.T) {
 	}
 }
 
+func TestConfigApplyUpdatesLogLevelWithoutConfigDir(t *testing.T) {
+	var output bytes.Buffer
+	cfg := DefaultConfig()
+	cfg.ConfigDir = ""
+	r := &Runtime{config: cfg, logger: &Logger{logger: log.New(&output, "", 0), minimumLevel: configuredLoggingLevel("info")}}
+	defer r.logger.SetLevel("info")
+	next := cfg
+	next.Log.Level = "debug"
+
+	if err := r.ApplyConfigSnapshot(next); err != nil {
+		t.Fatal(err)
+	}
+	if !r.logger.allows(configuredLoggingLevel("debug")) {
+		t.Fatal("debug logging remains disabled after an online log-level update")
+	}
+}
+
+func TestConfigApplyRebuildsStorageCleanersForNotificationRetention(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ConfigDir = t.TempDir()
+	r := &Runtime{config: cfg, storageMonitor: newRuntimeStorageMonitor(cfg, nil)}
+	next := cfg
+	next.VoiceNotifications.RetentionDays = 30
+
+	if err := r.ApplyConfigSnapshot(next); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, cleaner := range r.storageMonitor.cleaners {
+		if cleaner.Name() == "notification_context_30d" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("notification retention cleaner was not rebuilt with the new retention period")
+	}
+}
+
 // TestConfigApplyWorkerLogsOutcome keeps online application observable in
 // agent.log: a successful reload used to leave no trace there, so a field
 // report of "the setting did not take effect" could not be told apart from a

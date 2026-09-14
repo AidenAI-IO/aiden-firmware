@@ -18,49 +18,49 @@ under `[basic_settings.device]` below.
 page. Runtime code maps these grouped tables to its internal structures at the
 load boundary; Config Web writes only the grouped paths below.
 
-1. **WiFi 与蓝牙设置**: Configured through Config Web, not in agent.toml
+1. **Wi-Fi and Bluetooth Settings**: Configured through Config Web, not in `agent.toml`
    - WiFi Configuration: Network credentials, proxy settings
    - Bluetooth Configuration: Managed by separate bluetooth service
 
-2. **基础设置** (Basic Settings):
-   - **语言与时区** (Language & Timezone): `[basic_settings.language_timezone]`
-   - **设备设置** (Device Settings): `[basic_settings.device]`, including `hid.keyboard_layout`
+2. **Basic Settings**:
+   - **Language & Time Zone**: `[basic_settings.language_timezone]`
+   - **Device Settings**: `[basic_settings.device]`, including `[basic_settings.device.hid].keyboard_layout`
 
-3. **对话设置** (Conversation Settings):
+3. **Conversation Settings**:
    - Custom Instructions: `custom_instruction`, `additional_prompt`
    - Max Iterations: `max_iterations`
    - Context Management: `context_prune_threshold`, `context_compaction_threshold`
    - Screenshot Pruning: `screenshot_keep_n`, `screenshot_prune_interval`
    - Tool Settings: `[conversation_settings.termination_policy]`, web search `[conversation_settings.search]`
 
-4. **主模型设置** (Main Model Settings):
+4. **Main Model Settings**:
    - Provider Configuration: `[model_settings.providers.<name>]`
    - Model Selection: `[model_settings.model]` including provider, model, api_key, temperature, max_response_tokens, context_window, reasoning_effort, and api_mode settings
 
-5. **语音设置** (Voice Settings):
-   - Mode Selection: `[voice_settings.mode].input_mode` (text/stt/realtime)
+5. **Voice Settings**:
+   - Mode Selection: `[voice_settings.mode].input_mode` (`stt` for Classic or `realtime` for Realtime)
    - **Realtime Mode**: `[voice_settings.realtime.providers.<name>]`, `[voice_settings.realtime]`
    - **Classic Mode**: `[voice_settings.classic.runtime]`, `[voice_settings.classic.stt]`, `[voice_settings.classic.stt.providers.<name>]`, `[voice_settings.classic.tts]`, `[voice_settings.classic.tts.providers.<name>]`, `[voice_settings.classic.audio]`, `[voice_settings.classic.audio_archive]`
 
-6. **记忆设置** (Memory Settings):
+6. **Memory Settings**:
    - Screen Memory Retention: `[memory_settings.screen].screen_memory_ttl`
    - Notification Memory: `[memory_settings.notification]` and expiration policies
    - Reset Conversation: Handled through Config Web UI
 
-7. **存储设置** (Storage Settings):
+7. **Storage Settings**:
    - Storage Status: Displayed through Config Web (total/available space)
    - microSD Settings: `[storage_settings.storage]` configuration, format/eject operations
    - Backup & Restore: Export or import the canonical grouped `agent.toml` through Config Web
    - Internal storage policy: `[storage_settings.storage.degraded_mode]`, `[storage_settings.storage.cleanup]`
 
-8. **高级设置** (Advanced Settings):
+8. **Advanced Settings**:
    - Logs: detailed model request capture, Agent log level, retention, and support-log export
    - Manual Config Edit: validated raw editor for the canonical grouped `agent.toml`
 
    Hardware and runtime debug tables remain available in TOML but are not
    exposed as product settings in Config Web.
 
-9. **关于** (About):
+9. **About**:
    - Firmware Version: Displayed through Config Web
    - Component Versions: Boot, OEM, and RootFS versions for the running slot
 
@@ -76,6 +76,7 @@ creating another top-level section.
 - [Minimal config examples](#minimal-config-examples)
 - [Top-level fields](#top-level-fields)
 - [`[basic_settings.device]`](#basic_settingsdevice)
+- [`[basic_settings.device.hid]`](#basic_settingsdevicehid)
 - [`[model_settings.model]`](#model_settingsmodel)
 - [`[advanced_settings.log]`](#advanced_settingslog)
 - [`[voice_settings.classic.audio]`](#voice_settingsclassicaudio)
@@ -159,7 +160,8 @@ The page renders the following config sections. The Language & Time Zone control
 - `[advanced_settings.log]`: LLM HTTP log retention
 - `[advanced_settings.runtime.ota]`: optional GitHub download proxy URL
 - `[basic_settings.device]`: device_type
-- `[basic_settings.device.hid]` and `[advanced_settings.hardware.hid]`: HID settings split by user-facing and debug fields
+- `[basic_settings.device.hid]`: user-facing keyboard layout
+- `[advanced_settings.hardware.hid]`: internal HID device paths and input backend
 - `[conversation_settings.search]`: web-search provider and provider credential
 - `[advanced_settings.runtime.telemetry]`: Langfuse enablement, endpoint, credentials, upload policy, environment, and tags
 - `[advanced_settings.runtime.live_activity]`: Phone Bridge Live Activity enablement
@@ -230,9 +232,11 @@ backend = "auto"
 [advanced_settings.log]
 llm_http_retention_days = 7
 
+[basic_settings.device.hid]
+keyboard_layout = "qwerty"
+
 [advanced_settings.hardware.hid]
 keyboard_device = "/dev/hidg0"
-keyboard_layout = "qwerty"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
@@ -307,9 +311,11 @@ channels = 1
 bit_width = 16
 backend = "auto"
 
+[basic_settings.device.hid]
+keyboard_layout = "qwerty"
+
 [advanced_settings.hardware.hid]
 keyboard_device = "/dev/hidg0"
-keyboard_layout = "qwerty"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
@@ -711,12 +717,17 @@ Config Web exposes `retention_days` in Memory Settings. The lifecycle and lease 
 | ------------- | ------- | ----------- |
 | `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Switching between Android and a non-Android type requires a reboot so USB descriptors are re-enumerated; changes among non-Android types apply online. |
 
+## `[basic_settings.device.hid]`
+
+| Field             | Default  | Description |
+| ----------------- | -------- | ----------- |
+| `keyboard_layout` | `qwerty` | How the phone interprets the external USB HID keyboard: `qwerty`, `azerty`, or `qwertz`. See [USB HID](../03-services/usb-hid.md). |
+
 ## `[advanced_settings.hardware.hid]`
 
 | Field                     | Default                                 | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `keyboard_device`         | `/dev/hidg0`                            | Keyboard HID device                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `keyboard_layout`         | `qwerty`                                | How the phone interprets the external USB HID keyboard: `qwerty`, `azerty`, or `qwertz`. The user-facing layout is configured under `[basic_settings.device.hid]`; this debug section retains the value for compatibility. See [USB HID](../03-services/usb-hid.md). |
 | `mouse_device`            | `/dev/hidg1`                            | Mouse/touch HID device                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `android_keyboard_device` | `/dev/hidg2`                            | Consumer Control HID device (`hid.usb2`) used for Android extension keys when `[basic_settings.device].device_type = "Android"` and media/volume/brightness/screenshot keys for other device types                                                                                                                                                                                                                                                                                                                                          |
 | `frame_socket`            | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |

@@ -148,7 +148,7 @@ reached the Notes editor.
 The mock checks that the Agent chooses `enter_text`; it does not run
 the tool's internal paste fallbacks. In the real Go tool the order is Phone Bridge
 clipboard, `quick_action` paste, direct keyboard paste if the action errors,
-visual verification, then long-press Paste/粘贴 if the shortcut had no visible
+visual verification, then long-press Paste if the shortcut had no visible
 effect. Ordinary typing fallback belongs to `enter_text`.
 
 Use real devices separately for iOS BLE pairing/Wake, the narrower BLE Wake

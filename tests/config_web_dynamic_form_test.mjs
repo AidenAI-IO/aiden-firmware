@@ -204,6 +204,14 @@ function appendSpecialField(document, target, pathName, controlId, tagName = 'se
 }
 
 const document = new Document();
+const productLocaleSelect = document.createElement('select');
+productLocaleSelect.id = 'productLocaleSelect';
+productLocaleSelect.value = 'en-US';
+document.body.appendChild(productLocaleSelect);
+const agentTimezoneSelect = document.createElement('select');
+agentTimezoneSelect.id = 'agent_timezone';
+agentTimezoneSelect.value = 'UTC';
+document.body.appendChild(agentTimezoneSelect);
 const agentTarget = appendTarget(document, 'agent');
 const modelTarget = appendTarget(document, 'model');
 const quickCaptureTarget = appendTarget(document, 'quick_capture');
@@ -264,7 +272,8 @@ const {buildConfigMeta} = configMetaModule.namespace;
 
 buildConfigMeta({sections: [
   {name: 'agent', fields: [
-    {key: 'locale', label: 'Language', widget: 'select', enum: [{value: 'en-US'}]},
+    {key: 'locale', label: 'Language', widget: 'select', enum: [{value: 'en-US'}, {value: 'zh-CN'}]},
+    {key: 'timezone', label: 'Time zone', widget: 'select', enum: [{value: 'UTC'}, {value: 'Asia/Shanghai'}, {value: 'America/Los_Angeles'}]},
     {key: 'input_mode', label: 'Input mode', widget: 'select', enum: [{value: 'text'}, {value: 'stt'}, {value: 'realtime'}]},
     {key: 'new_field', label: 'New field', help: 'Rendered from metadata.', placeholder: 'example', layout: 'wide', widget: 'text'},
     {key: 'defaulted', label: 'Defaulted', widget: 'text', default: 'value'},
@@ -292,6 +301,8 @@ buildConfigMeta({sections: [
 ]});
 
 assert.equal(document.getElementById('agent_locale'), null, 'agent.locale remains rendered by the page-level locale control');
+assert.deepEqual(productLocaleSelect.options.map((option) => option.value), ['en-US', 'zh-CN']);
+assert.deepEqual(agentTimezoneSelect.options.map((option) => option.value), ['UTC', 'Asia/Shanghai', 'America/Los_Angeles']);
 assert.equal(document.getElementById('agent_input_mode').tagName, 'SELECT');
 assert.equal(document.getElementById('agent_new_field').getAttribute('placeholder'), 'example');
 assert.equal(document.getElementById('agent_new_field').closest('.field').classList.contains('wide'), true);

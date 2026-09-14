@@ -274,7 +274,7 @@ Failure example:
 {
   "id": "open_001",
   "type": "open_app",
-  "app": "微信",
+  "app": "WeChat",
   "timeout_ms": 10000
 }
 ```

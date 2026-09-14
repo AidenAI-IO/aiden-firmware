@@ -158,8 +158,11 @@ def apply_agent_toml_runtime_defaults(content: str) -> str:
 
     lines = content.splitlines()
     target_header = "[voice_settings.classic.runtime]"
+    target_header_pattern = re.compile(
+        r"^\s*\[voice_settings\.classic\.runtime\]\s*(?:#.*)?$"
+    )
     target_start = next(
-        (index for index, line in enumerate(lines) if line.strip() == target_header),
+        (index for index, line in enumerate(lines) if target_header_pattern.match(line)),
         None,
     )
     if target_start is None:

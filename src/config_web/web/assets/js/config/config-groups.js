@@ -2,29 +2,21 @@
  * Configuration grouping metadata for Agent Settings.
  * Defines logical groups of configuration fields for a more user-friendly UI.
  *
- * Structure mirrors requirements document:
- * 1. WiFi 与蓝牙设置 - handled separately in Config Web
- * 2. 基础设置 (Basic Settings)
- * 3. 对话设置 (Conversation Settings)
- * 4. 主模型设置 (Main Model Settings)
- * 5. 语音设置 (Voice Settings)
- * 6. 记忆设置 (Memory Settings)
- * 7. 存储设置 (Storage Settings)
- * 8. 高级设置 (Advanced Settings)
- * 9. 关于 (About) - handled separately in Config Web
+ * Wi-Fi, Bluetooth, and About use dedicated Config Web controls. The remaining
+ * entries describe the product settings hierarchy and its metadata-backed fields.
  */
 
 export const AGENT_SETTINGS_GROUPS = {
   basic_settings: {
     id: 'basic_settings',
     titleKey: 'groups.basic_settings',
-    title: '基础设置',
+    title: 'Basic Settings',
     order: 2,
     subsections: {
       language_timezone: {
         id: 'language_timezone',
         titleKey: 'groups.language_timezone',
-        title: '语言与时区',
+        title: 'Language & Time Zone',
         order: 1,
         fields: [
           { path: 'agent.locale', section: 'agent', key: 'locale' },
@@ -34,7 +26,7 @@ export const AGENT_SETTINGS_GROUPS = {
       device_settings: {
         id: 'device_settings',
         titleKey: 'groups.device_settings',
-        title: '设备设置',
+        title: 'Device Settings',
         order: 2,
         sections: ['device', 'hid'],
         fields: [
@@ -48,13 +40,13 @@ export const AGENT_SETTINGS_GROUPS = {
   conversation_settings: {
     id: 'conversation_settings',
     titleKey: 'groups.conversation_settings',
-    title: '对话设置',
+    title: 'Conversation Settings',
     order: 3,
     subsections: {
       prompts: {
         id: 'prompts',
         titleKey: 'groups.prompts',
-        title: '自定义提示词',
+        title: 'Custom Instructions',
         order: 1,
         fields: [
           { path: 'agent.custom_instruction', section: 'agent', key: 'custom_instruction' },
@@ -64,7 +56,7 @@ export const AGENT_SETTINGS_GROUPS = {
       iteration_control: {
         id: 'iteration_control',
         titleKey: 'groups.iteration_control',
-        title: '最大工具调用轮数',
+        title: 'Max Iterations',
         order: 2,
         fields: [
           { path: 'agent.max_iterations', section: 'agent', key: 'max_iterations' },
@@ -73,7 +65,7 @@ export const AGENT_SETTINGS_GROUPS = {
       context_management: {
         id: 'context_management',
         titleKey: 'groups.context_management',
-        title: '上下文管理',
+        title: 'Context Management',
         order: 3,
         fields: [
           { path: 'agent.context_prune_threshold', section: 'agent', key: 'context_prune_threshold' },
@@ -85,7 +77,7 @@ export const AGENT_SETTINGS_GROUPS = {
       tool_settings: {
         id: 'tool_settings',
         titleKey: 'groups.tool_settings',
-        title: '工具设置',
+        title: 'Tool Settings',
         order: 4,
         subsections: {
           websearch: {
@@ -102,7 +94,7 @@ export const AGENT_SETTINGS_GROUPS = {
           termination_policy: {
             id: 'termination_policy',
             titleKey: 'groups.termination_policy',
-            title: '终止策略',
+            title: 'Termination Policy',
             order: 2,
             sections: ['termination_policy']
           }
@@ -114,7 +106,7 @@ export const AGENT_SETTINGS_GROUPS = {
   model_settings: {
     id: 'model_settings',
     titleKey: 'groups.model_settings',
-    title: '主模型设置',
+    title: 'Model Settings',
     order: 4,
     sections: ['model', 'model_providers'],
     fields: [
@@ -136,13 +128,13 @@ export const AGENT_SETTINGS_GROUPS = {
   voice_settings: {
     id: 'voice_settings',
     titleKey: 'groups.voice_settings',
-    title: '语音设置',
+    title: 'Voice Settings',
     order: 5,
     subsections: {
       voice_mode: {
         id: 'voice_mode',
         titleKey: 'groups.voice_mode',
-        title: '语音模式选择',
+        title: 'Voice Mode',
         order: 0,
         fields: [
           { path: 'agent.input_mode', section: 'agent', key: 'input_mode' },
@@ -169,7 +161,7 @@ export const AGENT_SETTINGS_GROUPS = {
           vad_settings: {
             id: 'vad_settings',
             titleKey: 'groups.vad_settings',
-            title: 'VAD 设置',
+            title: 'VAD Settings',
             order: 1,
             fields: [
               { path: 'agent.vad_backend', section: 'agent', key: 'vad_backend' },
@@ -205,14 +197,14 @@ export const AGENT_SETTINGS_GROUPS = {
           audio: {
             id: 'audio',
             titleKey: 'groups.audio',
-            title: '音频配置',
+            title: 'Audio Configuration',
             order: 4,
             sections: ['audio'],
           },
           audio_archive: {
             id: 'audio_archive',
             titleKey: 'groups.audio_archive',
-            title: '音频存档',
+            title: 'Audio Archive',
             order: 5,
             sections: ['audio_archive'],
           }
@@ -224,13 +216,13 @@ export const AGENT_SETTINGS_GROUPS = {
   memory_settings: {
     id: 'memory_settings',
     titleKey: 'groups.memory_settings',
-    title: '记忆设置',
+    title: 'Memory Settings',
     order: 6,
     subsections: {
       screen_memory: {
         id: 'screen_memory',
         titleKey: 'groups.screen_memory',
-        title: '屏幕记忆保留天数',
+        title: 'Screen Memory Retention',
         order: 1,
         sections: ['quick_capture'],
         fields: [
@@ -241,7 +233,7 @@ export const AGENT_SETTINGS_GROUPS = {
       notification_memory: {
         id: 'notification_memory',
         titleKey: 'groups.notification_memory',
-        title: '通知记忆保留天数',
+        title: 'Notification Memory Retention',
         order: 2,
         sections: ['voice_notifications'],
         fields: [
@@ -251,7 +243,7 @@ export const AGENT_SETTINGS_GROUPS = {
       reset_conversation: {
         id: 'reset_conversation',
         titleKey: 'groups.reset_conversation',
-        title: '重置对话与记忆',
+        title: 'Reset Conversation & Memory',
         order: 3,
         // This is handled through special UI controls in Config Web
         customUI: true
@@ -262,13 +254,13 @@ export const AGENT_SETTINGS_GROUPS = {
   storage_settings: {
     id: 'storage_settings',
     titleKey: 'groups.storage_settings',
-    title: '存储设置',
+    title: 'Storage Settings',
     order: 7,
     subsections: {
       storage_status: {
         id: 'storage_status',
         titleKey: 'groups.storage_status',
-        title: '存储状态',
+        title: 'Storage Status',
         order: 1,
         readOnly: true,
         customUI: true  // Rendered by dedicated storage status component
@@ -276,14 +268,14 @@ export const AGENT_SETTINGS_GROUPS = {
       microsd_settings: {
         id: 'microsd_settings',
         titleKey: 'groups.microsd_settings',
-        title: 'microSD 设置',
+        title: 'microSD Settings',
         order: 2,
         customUI: true  // Format/eject operations via special UI
       },
       data_sync: {
         id: 'data_sync',
         titleKey: 'groups.data_sync',
-        title: '备份与还原',
+        title: 'Backup & Restore',
         order: 3,
         sections: ['storage'],
         customUI: true  // Backup/restore via special UI
@@ -294,13 +286,13 @@ export const AGENT_SETTINGS_GROUPS = {
   advanced_settings: {
     id: 'advanced_settings',
     titleKey: 'groups.advanced_settings',
-    title: '高级设置',
+    title: 'Advanced Settings',
     order: 8,
     subsections: {
       logs: {
         id: 'logs',
         titleKey: 'groups.logs',
-        title: '日志',
+        title: 'Logs',
         order: 1,
         sections: ['log'],
         fields: [

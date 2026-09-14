@@ -1004,6 +1004,39 @@ func TestMemoryResetProxiesAgentClearAllAndSchedulesRestart(t *testing.T) {
 	}
 }
 
+func TestMemoryResetRejectsCrossOriginBrowserRequests(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	}))
+	defer upstream.Close()
+
+	options := testOptions(t)
+	options.AgentHTTPBaseURL = upstream.URL
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, headers := range []map[string]string{
+		{"Origin": "https://attacker.example"},
+		{"Sec-Fetch-Site": "cross-site"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "http://device.local/api/memory/reset", nil)
+		for name, value := range headers {
+			req.Header.Set(name, value)
+		}
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, req)
+		if resp.Code != http.StatusForbidden {
+			t.Fatalf("headers=%v status=%d body=%s", headers, resp.Code, resp.Body.String())
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("clear-all calls = %d, want 0", calls.Load())
+	}
+}
+
 func TestUnknownAPIRouteReturnsNotFound(t *testing.T) {
 	server, err := NewServer(testOptions(t))
 	if err != nil {

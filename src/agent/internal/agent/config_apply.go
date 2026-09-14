@@ -302,7 +302,7 @@ func (r *Runtime) applyConfig(ctx context.Context, cfg Config) error {
 			}
 		}
 	}
-	if r.storageMonitor != nil && (!reflect.DeepEqual(current.Storage, cfg.Storage) || current.AudioArchive != cfg.AudioArchive) {
+	if r.storageMonitor != nil && (!reflect.DeepEqual(current.Storage, cfg.Storage) || current.AudioArchive != cfg.AudioArchive || !reflect.DeepEqual(current.VoiceNotifications, cfg.VoiceNotifications)) {
 		monitorConfig, cleaners := runtimeStorageMonitorParts(cfg)
 		r.storageMonitor.Reconfigure(monitorConfig, cleaners)
 	}
@@ -312,9 +312,11 @@ func (r *Runtime) applyConfig(ctx context.Context, cfg Config) error {
 	if r.voiceNotifications != nil {
 		r.voiceNotifications.Reconfigure(cfg.VoiceNotifications, resolvedVoiceNotificationLocale(cfg))
 	}
-	if current.Log != cfg.Log && cfg.ConfigDir != "" {
-		if err := cleanupOldLogFiles(filepath.Join(cfg.ConfigDir, "log"), time.Now(), cfg.Log.LLMHTTPRetentionDaysOrDefault()); err != nil && r.logger != nil {
-			r.logger.Warn("apply log retention: %v", err)
+	if current.Log != cfg.Log {
+		if cfg.ConfigDir != "" {
+			if err := cleanupOldLogFiles(filepath.Join(cfg.ConfigDir, "log"), time.Now(), cfg.Log.LLMHTTPRetentionDaysOrDefault()); err != nil && r.logger != nil {
+				r.logger.Warn("apply log retention: %v", err)
+			}
 		}
 		if r.logger != nil {
 			r.logger.SetLevel(cfg.Log.LevelOrDefault())

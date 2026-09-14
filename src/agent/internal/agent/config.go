@@ -1399,6 +1399,10 @@ func groupedConfigToRuntime(grouped map[string]interface{}) map[string]interface
 
 	moveField([]string{"basic_settings", "language_timezone", "locale"}, []string{"locale"})
 	moveField([]string{"basic_settings", "language_timezone", "timezone"}, []string{"timezone"})
+	// Advanced HID contains internal device fields. Merge it first so the
+	// user-facing keyboard_layout under Basic Settings remains authoritative
+	// if both tables are present.
+	moveTable([]string{"advanced_settings", "hardware", "hid"}, "hid")
 	if device, ok := tableAt(grouped, "basic_settings", "device"); ok {
 		copyWithoutKey(device, result, "device", "hid")
 		if hid, exists := device["hid"].(map[string]interface{}); exists {
@@ -1446,7 +1450,6 @@ func groupedConfigToRuntime(grouped map[string]interface{}) map[string]interface
 		}
 		mergeTable(result, "log", logRuntime)
 	}
-	moveTable([]string{"advanced_settings", "hardware", "hid"}, "hid")
 	moveTable([]string{"advanced_settings", "hardware", "frame_service"}, "frame_service")
 	moveTable([]string{"advanced_settings", "runtime", "live_activity"}, "live_activity")
 	moveTable([]string{"advanced_settings", "runtime", "telemetry"}, "telemetry")

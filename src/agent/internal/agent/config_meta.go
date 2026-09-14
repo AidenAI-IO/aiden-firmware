@@ -254,7 +254,7 @@ func ConfigMeta() ConfigMetadata {
 					// The effective default is model-dependent (resolved at load
 					// time); show the global fallback here as the UI placeholder.
 					{Key: "temperature", Label: "Temperature", Widget: WidgetNumber,
-						Help:    "Controls response randomness. Lower values are more deterministic; 0 uses the provider or model default.",
+						Help:    "Controls response randomness. Lower values are more deterministic; 0 is sent as an explicit value.",
 						Default: defaultModelTemperature, Nullable: true},
 					{Key: "max_response_tokens", Label: "Maximum response tokens", Widget: WidgetNumber,
 						Help:    "Maximum number of tokens allowed in one model response.",

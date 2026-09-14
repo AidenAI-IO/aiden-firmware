@@ -495,6 +495,29 @@ def test_agent_config_manager_ignores_table_keys_when_migrating_voice_defaults(t
     assert content.index("voice_progress_speech_enabled = false") < content.index("[model]")
 
 
+def test_agent_config_manager_recognizes_commented_voice_runtime_header(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    config_path = tmp_path / "runs" / "agent.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        "[voice_settings.classic.runtime] # benchmark overrides\n"
+        "voice_streaming_tts_enabled = true\n"
+        "[model_settings.model]\n"
+        'provider = "fake"\n',
+        encoding="utf-8",
+    )
+    manager = runner_config.AgentConfigManager(base_config_dir=base, config_path=config_path)
+
+    content, source = manager.get_config()
+
+    assert source == "saved"
+    assert content.count("[voice_settings.classic.runtime]") == 1
+    assert content.count("voice_streaming_tts_enabled") == 1
+    assert "voice_tool_call_speech = false" in content
+    assert "voice_progress_speech_enabled = false" in content
+
+
 def test_agent_config_manager_preserves_quoted_root_voice_default(tmp_path: Path):
     base = tmp_path / "base"
     base.mkdir()

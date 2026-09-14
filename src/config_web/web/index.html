@@ -87,13 +87,13 @@
       <pre id="agentLogText" class="agent-log-viewer" data-i18n="status.loading">Loading</pre>
     </div>
     <div class="config-grid">
-        <!-- 2. 基础设置 -->
+        <!-- Basic Settings -->
         <div class="product-group">
-          <h2 data-i18n="groups.basic_settings">基础设置</h2>
+          <h2 data-i18n="groups.basic_settings">Basic Settings</h2>
 
-          <!-- 2.1 语言与时区 -->
+          <!-- Language and Time Zone -->
           <div class="product-subgroup static-locale">
-            <h3 data-i18n="groups.language_timezone">语言与时区</h3>
+            <h3 data-i18n="groups.language_timezone">Language &amp; Time Zone</h3>
             <div class="language-timezone-controls">
               <div class="field">
                 <label for="productLocaleSelect" data-i18n="page.language">Language</label>
@@ -111,9 +111,9 @@
             </div>
           </div>
 
-          <!-- 2.2 设备设置 -->
+          <!-- Device Settings -->
           <div class="product-subgroup">
-            <h3 data-i18n="groups.device_settings">设备设置</h3>
+            <h3 data-i18n="groups.device_settings">Device Settings</h3>
             <div class="section-card" id="section-device">
               <div class="card-head">
                 <h3>[basic_settings.device]</h3>
@@ -131,9 +131,9 @@
           </div>
         </div>
 
-        <!-- 3. 对话设置 -->
+        <!-- Conversation Settings -->
         <div class="product-group">
-          <h2 data-i18n="groups.conversation_settings">对话设置</h2>
+          <h2 data-i18n="groups.conversation_settings">Conversation Settings</h2>
           <div class="section-card" id="section-agent">
             <div class="card-head">
               <h3>[conversation_settings.agent]</h3>
@@ -147,7 +147,7 @@
             <div class="agent-field-staging grid" data-config-section="agent" aria-hidden="true"></div>
             <div class="config-subsections agent-config-subsections">
               <section class="config-subsection" data-agent-fields="custom_instruction additional_prompt">
-                <h4 data-i18n="groups.prompts">自定义提示词</h4>
+                <h4 data-i18n="groups.prompts">Custom Instructions</h4>
                 <div class="grid" data-agent-fields-target="custom_instruction additional_prompt"></div>
               </section>
               <section class="config-subsection" data-agent-fields="max_iterations">
@@ -162,9 +162,9 @@
             </div>
           </div>
 
-          <!-- 3.e 工具设置 -->
+          <!-- Tool Settings -->
           <div class="product-subgroup">
-            <h3 data-i18n="groups.tool_settings">工具设置</h3>
+            <h3 data-i18n="groups.tool_settings">Tool Settings</h3>
             <div id="conversation-websearch">
               <h4 data-i18n="groups.websearch">Web Search</h4>
               <div class="section-card" id="section-search" data-hide-when-empty>
@@ -182,9 +182,9 @@
           </div>
         </div>
 
-        <!-- 4. 主模型设置 -->
+        <!-- Model Settings -->
         <div class="product-group">
-          <h2 data-i18n="groups.model_settings">主模型设置</h2>
+          <h2 data-i18n="groups.model_settings">Model Settings</h2>
           <div class="section-card" id="section-model">
             <div class="card-head">
               <h3>[model_settings.model]</h3>
@@ -202,11 +202,11 @@
           </div>
         </div>
 
-        <!-- 5. 语音设置 -->
+        <!-- Voice Settings -->
         <div class="product-group">
-          <h2 data-i18n="groups.voice_settings">语音设置</h2>
+          <h2 data-i18n="groups.voice_settings">Voice Settings</h2>
 
-          <!-- 5. Voice Mode Selection -->
+          <!-- Voice Mode Selection -->
           <div class="section-card voice-mode-card" id="section-voice_mode">
             <div class="card-head">
               <div class="section-actions">
@@ -218,7 +218,7 @@
             <div id="voice-mode-fields" class="grid"></div>
           </div>
 
-          <!-- 5.a Realtime Mode -->
+          <!-- Realtime Mode -->
           <div class="product-subgroup" id="realtime-mode-group" data-visible-when="input_mode:realtime">
             <div class="product-subgroup-head">
               <h3 data-i18n="groups.realtime_mode">Realtime Mode</h3>
@@ -235,7 +235,7 @@
             </div>
           </div>
 
-          <!-- 5.b Classic Mode (STT + TTS) -->
+          <!-- Classic Mode (STT + TTS) -->
           <div class="product-subgroup" id="classic-mode-group" data-visible-when="input_mode:stt">
             <div class="product-subgroup-head">
               <h3 data-i18n="groups.classic_mode">Classic Mode (STT + TTS)</h3>
@@ -299,9 +299,9 @@
           </div>
         </div>
 
-        <!-- 6. 记忆设置 -->
+        <!-- Memory Settings -->
         <div class="product-group" id="memory-settings-group">
-          <h2 data-i18n="groups.memory_settings">记忆设置</h2>
+          <h2 data-i18n="groups.memory_settings">Memory Settings</h2>
           <div class="section-card memory-settings-card" id="memory-settings-card">
             <div class="card-head memory-settings-actions">
               <div class="section-actions">
@@ -321,9 +321,9 @@
           </div>
         </div>
 
-        <!-- 7. 存储设置 -->
+        <!-- Storage Settings -->
         <div class="product-group" id="storage-settings-group">
-          <h2 data-i18n="groups.storage_settings">存储设置</h2>
+          <h2 data-i18n="groups.storage_settings">Storage Settings</h2>
           <div class="storage-settings-grid">
             <div class="section-card storage-status-card">
               <div class="card-head">
@@ -373,7 +373,7 @@
           </div>
         </div>
 
-        <!-- 8. Advanced Settings -->
+        <!-- Advanced Settings -->
         <div class="product-group" id="advanced-settings-group">
           <h2 data-i18n="groups.advanced_settings">Advanced Settings</h2>
 
@@ -415,7 +415,7 @@
           </div>
         </div>
 
-        <!-- 9. About -->
+        <!-- About -->
         <div class="product-group" id="about-group">
           <h2 data-i18n="groups.about">About</h2>
           <div class="about-settings-grid">

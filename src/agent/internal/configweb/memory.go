@@ -19,6 +19,10 @@ func (s *Server) handleMemoryReset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !isSameOriginBrowserRequest(r) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 
 	base, err := s.agentBaseURL()
 	if err != nil {
@@ -62,4 +66,19 @@ func (s *Server) handleMemoryReset(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "agent_restart_scheduled": true})
+}
+
+func isSameOriginBrowserRequest(r *http.Request) bool {
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site") {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
 }

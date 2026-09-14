@@ -71,6 +71,35 @@ retention_days = 21
 	}
 }
 
+func TestLoadConfigBasicKeyboardLayoutOverridesAdvancedHID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	const source = `
+[basic_settings.device.hid]
+keyboard_layout = "azerty"
+
+[advanced_settings.hardware.hid]
+keyboard_layout = "qwertz"
+input_backend = "adb"
+
+[model_settings.model]
+provider = "fake"
+`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.HID.KeyboardLayout != "azerty" {
+		t.Fatalf("HID.KeyboardLayout = %q, want canonical Basic Settings value", cfg.HID.KeyboardLayout)
+	}
+	if cfg.HID.InputBackend != "adb" {
+		t.Fatalf("HID.InputBackend = %q, want Advanced Settings value", cfg.HID.InputBackend)
+	}
+}
+
 func TestLoadConfigReadsGroupedLegacyFieldAliases(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
