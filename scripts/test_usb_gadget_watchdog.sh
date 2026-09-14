@@ -68,6 +68,27 @@ grep -Fq 'release_gadget_switch_lock' "$WATCHDOG" ||
 grep -Fq 'reset_composite "ECM stall"' "$WATCHDOG" ||
     fail "watchdog_main must reset the composite gadget on ECM stalls"
 
+grep -Fq 'STARTUP_GRACE_SECONDS=30' "$WATCHDOG" ||
+    fail "watchdog must use a bounded ECM startup grace window"
+
+grep -Fq 'startup ECM grace active; clearing failure count' "$WATCHDOG" ||
+    fail "watchdog must clear early ECM failures during startup grace"
+
+grep -Fq 'ECM probe recovered during startup grace; ending grace early' "$WATCHDOG" ||
+    fail "watchdog must end startup grace when ECM connectivity recovers"
+
+grep -Fq 'startup_grace_remaining=$STARTUP_GRACE_SECONDS' "$WATCHDOG" ||
+    fail "watchdog must restart ECM grace when UDC becomes configured"
+
+grep -Fq 'allowing ECM setup (grace=${STARTUP_GRACE_SECONDS}s)' "$WATCHDOG" ||
+    fail "watchdog must report the configured transition ECM grace"
+
+grep -Fq 'DHCP_INIT=/etc/init.d/S55aiden_usb_dhcp' "$WATCHDOG" ||
+    fail "watchdog must know how to restore the USB DHCP service"
+
+grep -Fq 'DHCP service restart failed after composite reset' "$WATCHDOG" ||
+    fail "watchdog must report DHCP restart failures after a reset"
+
 reset_composite_body=$(extract_function reset_composite_locked)
 announcement_line=$(printf '%s\n' "$reset_composite_body" | awk '
     /^[[:space:]]*announce_usb_reenumeration[[:space:]]*$/ { print NR; exit }

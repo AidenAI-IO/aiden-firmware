@@ -21,6 +21,7 @@ STATE_FILE=/run/aiden_usb_ecm_watchdog.state
 LEASE_FILE=/tmp/dnsmasq.leases
 GADGET_SWITCH_LOCK_DIR=/run/aiden_dynamic_keyboard.lock
 PLANNED_SWITCH_GRACE_FILE=/run/aiden_dynamic_keyboard.grace
+DHCP_INIT=/etc/init.d/S55aiden_usb_dhcp
 USB0_ADDR=192.168.42.1
 USB0_NETMASK=255.255.255.0
 USB_REENUMERATION_WAKE_URL=http://127.0.0.1:8080/api/bluetooth/wake/usb-reenumeration
@@ -30,6 +31,7 @@ PROBE_FAIL_THRESHOLD=2 # reset after N consecutive probe failures
 ARPING_COUNT=2         # ARP requests per probe
 ARPING_TIMEOUT=2       # seconds to wait for ARP reply
 COOLDOWN=30            # minimum seconds between resets
+STARTUP_GRACE_SECONDS=30 # allow iPhone DHCP/ECM setup before resetting
 AIDEN_LOG_HELPER=${AIDEN_LOG_HELPER:-/oem/usr/lib/aiden-log.sh}
 [ -r "$AIDEN_LOG_HELPER" ] || AIDEN_LOG_HELPER="$(dirname "$0")/../../oem/usr/lib/aiden-log.sh"
 . "$AIDEN_LOG_HELPER"
@@ -250,6 +252,15 @@ reset_composite_locked() {
         fi
     fi
 
+    # Unbinding the composite gadget makes dnsmasq exit when it is bound to
+    # usb0. Start it again before the phone retries DHCP after re-enumeration.
+    if [ -x "$DHCP_INIT" ]; then
+        if ! "$DHCP_INIT" restart >/dev/null 2>&1; then
+            log WARN dhcp_restart_failed \
+                "DHCP service restart failed after composite reset"
+        fi
+    fi
+
     finished_at=$(date +%s)
     duration=$((finished_at - started_at))
     log INFO reset_completed \
@@ -283,6 +294,7 @@ reset_composite() {
 watchdog_main() {
     ecm_fail_count=0
     last_reset=0
+    startup_grace_remaining=$STARTUP_GRACE_SECONDS
     last_udc_state=$(read_udc_state)
     last_planned_grace_until=0
 
@@ -297,12 +309,18 @@ watchdog_main() {
         now=$(date +%s)
         state=$(read_udc_state)
 
+        if [ "$startup_grace_remaining" -gt 0 ]; then
+            startup_grace_remaining=$((startup_grace_remaining - PROBE_INTERVAL))
+            [ "$startup_grace_remaining" -ge 0 ] || startup_grace_remaining=0
+        fi
+
         if [ "$state" != "$last_udc_state" ]; then
             log INFO udc_state_changed \
                 "UDC state changed: ${last_udc_state:-unknown} -> ${state:-unknown}"
             if [ "$state" = "configured" ]; then
+                startup_grace_remaining=$STARTUP_GRACE_SECONDS
                 log INFO configured_transition \
-                    "UDC configured transition observed; leaving HID session intact"
+                    "UDC configured transition observed; leaving HID session intact and allowing ECM setup (grace=${STARTUP_GRACE_SECONDS}s)"
             fi
             last_udc_state="$state"
         fi
@@ -314,6 +332,22 @@ watchdog_main() {
             fi
             ecm_fail_count=0
             continue
+        fi
+
+        if [ "$startup_grace_remaining" -gt 0 ]; then
+            if probe_ecm_connectivity; then
+                log INFO probe_recovered \
+                    "ECM probe recovered during startup grace; ending grace early"
+                startup_grace_remaining=0
+                ecm_fail_count=0
+            else
+                if [ "$ecm_fail_count" -ne 0 ]; then
+                    log INFO failure_count_cleared \
+                        "startup ECM grace active; clearing failure count (remaining=${startup_grace_remaining}s)"
+                fi
+                ecm_fail_count=0
+                continue
+            fi
         fi
 
         if planned_switch_grace_active; then
