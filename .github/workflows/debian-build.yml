@@ -1,4 +1,4 @@
-name: Debian Build (manual / self-hosted)
+name: Debian Build (self-hosted)
 
 # Manual Debian armhf firmware build.
 #
