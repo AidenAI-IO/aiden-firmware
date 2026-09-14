@@ -59,7 +59,6 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 		{"kimi k3 prefixed", "openrouter", "moonshotai/kimi-k3", 1_048_576, 131_072},
 		{"doubao seed 2.1 pro", "volcengine", "doubao-seed-2-1-pro-260628", 262_144, 131_072},
 		{"deepseek flash", "deepseek", "deepseek-flash", 1_000_000, 393_216},
-		{"deepseek v4 pro", "deepseek", "deepseek-v4-pro", 1_000_000, 393_216},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -78,7 +77,7 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 }
 
 func TestDeepSeekModelsDefaultToNonThinking(t *testing.T) {
-	for _, modelName := range []string{"deepseek-flash", "deepseek-v4-pro"} {
+	for _, modelName := range []string{"deepseek-flash"} {
 		spec, ok := LookupModelSpec("deepseek", modelName)
 		if !ok || spec.DefaultReasoningEffort == nil || *spec.DefaultReasoningEffort != "none" || spec.Reasoning == nil || !spec.Reasoning.Supported {
 			t.Fatalf("%s spec = %+v, want default reasoning_effort none", modelName, spec)
@@ -86,8 +85,8 @@ func TestDeepSeekModelsDefaultToNonThinking(t *testing.T) {
 	}
 }
 
-func TestDeepSeekExperimentalVisionAliasesAreNotPredefined(t *testing.T) {
-	for _, modelName := range []string{"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"} {
+func TestDeepSeekTextOnlyModelsAndExperimentalAliasesAreNotPredefined(t *testing.T) {
+	for _, modelName := range []string{"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"} {
 		if _, ok := LookupModelSpec("deepseek", modelName); ok {
 			t.Errorf("LookupModelSpec(%q) unexpectedly returned a predefined spec", modelName)
 		}

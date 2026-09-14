@@ -171,13 +171,15 @@ var displayModelsByProvider = map[string][]ModelDisplayInfo{
 			},
 			Recommended: true,
 		},
-		{
-			ID: "deepseek-v4-pro",
-			Descriptions: map[string]string{
-				localeEnglishUS:         "Text-only model; does not support screenshots",
-				localeSimplifiedChinese: "纯文本模型，不支持截图输入",
-			},
-		},
+		// Pro does not support vision yet (2026-09-14). Restore this preset and
+		// its modelSpecRegistry entry after verifying vision support and limits.
+		// {
+		// 	ID: "deepseek-v4-pro",
+		// 	Descriptions: map[string]string{
+		// 		localeEnglishUS:         "Text-only model; does not support screenshots",
+		// 		localeSimplifiedChinese: "纯文本模型，不支持截图输入",
+		// 	},
+		// },
 	},
 	"openrouter": {
 		{

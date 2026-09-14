@@ -496,10 +496,11 @@ API key and base URL do not carry over to it.
 
 ### DeepSeek
 
-Use the `deepseek` provider for DeepSeek's OpenAI-compatible endpoint. The
-current `deepseek-flash` model supports vision and tool calls; `deepseek-v4-pro`
-supports tool calls but is text-only. Both models have a 1M context window and
-default to non-thinking mode in Aiden by setting `reasoning_effort = "none"`.
+Use the `deepseek` provider for DeepSeek's OpenAI-compatible endpoint. Aiden
+presets `deepseek-flash`, which supports vision and tool calls with a 1M context
+window. The `deepseek-v4-pro` preset is commented out because it is text-only;
+it can be restored after official vision support and model limits are verified.
+DeepSeek defaults to non-thinking mode in Aiden with `reasoning_effort = "none"`.
 Set `reasoning_effort` to `low`, `high`, or `max` to enable thinking. Aiden
 sends DeepSeek's `thinking` toggle and replays assistant `reasoning_content`
 from the transcript on subsequent tool-call requests.
