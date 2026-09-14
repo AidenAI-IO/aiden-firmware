@@ -26,6 +26,36 @@ die() {
   exit 1
 }
 
+# gh reports API failures on stderr as e.g.
+#   HTTP 403: Resource not accessible by integration (https://api.github.com/...)
+# A credential that is not allowed to perform an operation answers identically
+# on every attempt, so retrying only burns the step's timeout: one publish spent
+# 22 of its 30 minutes on ten consecutive 403s and was killed before it could
+# report the real reason. Rate limiting also answers 403 and that one does
+# clear, so it stays retryable. 404 and 422 stay retryable too -- a freshly
+# created release can 404 briefly, and ensure_release() recovers from "already
+# exists" by looking the release up.
+is_permanent_failure() {
+  local err_file="$1"
+  [ -s "$err_file" ] || return 1
+  grep -qE 'HTTP (401|403):' "$err_file" || return 1
+  ! grep -qiE 'rate limit|secondary rate|abuse detection' "$err_file"
+}
+
+# Capture stderr to a file and echo it afterwards rather than streaming it
+# through `tee` from a process substitution: the retry decision below reads this
+# file, and nothing guarantees the substituted process has flushed by the time
+# the command returns. gh renders no progress bar to a non-TTY, so the only
+# thing lost is the interleaving.
+run_capturing_stderr() {
+  local err_file="$1"
+  shift
+  local status=0
+  "$@" 2>"$err_file" || status=$?
+  [ ! -s "$err_file" ] || cat "$err_file" >&2
+  return "$status"
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 tag_name=""
@@ -240,12 +270,21 @@ run_with_retry() {
   while true; do
     err_file="$(mktemp "$tmp_base/github-release.XXXXXX")"
     log "$label attempt $attempt/$retry_count"
-    if "$@" 2> >(tee "$err_file" >&2); then
+    # `status=$?` after a failed `if` condition reads 0, not the condition's
+    # status, so the old form reported success after exhausting every attempt.
+    status=0
+    run_capturing_stderr "$err_file" "$@" || status=$?
+    if [ "$status" -eq 0 ]; then
       rm -f "$err_file"
       return 0
     fi
 
-    status=$?
+    if is_permanent_failure "$err_file"; then
+      log "$label failed with a permanent error; not retrying"
+      rm -f "$err_file"
+      return "$status"
+    fi
+
     if [ "$attempt" -ge "$retry_count" ]; then
       log "$label failed after $attempt attempt(s)"
       rm -f "$err_file"
@@ -304,7 +343,12 @@ verify_uploaded_assets() {
     err_file="$(mktemp "$tmp_base/github-release.XXXXXX")"
     log "release asset verification $tag_name attempt $attempt/$retry_count"
 
-    if release_asset_records="$(gh release view "$tag_name" --json assets --jq '.assets[] | [.name, (.size | tostring)] | @tsv' 2> >(tee "$err_file" >&2))"; then
+    status=0
+    release_asset_records="$(gh release view "$tag_name" --json assets \
+      --jq '.assets[] | [.name, (.size | tostring)] | @tsv' 2>"$err_file")" \
+      || status=$?
+    [ ! -s "$err_file" ] || cat "$err_file" >&2
+    if [ "$status" -eq 0 ]; then
       rm -f "$err_file"
       missing_files=()
       missing_names=()
@@ -360,7 +404,11 @@ verify_uploaded_assets() {
         done
       fi
     else
-      status=$?
+      if is_permanent_failure "$err_file"; then
+        log "release asset verification $tag_name failed with a permanent error; not retrying"
+        rm -f "$err_file"
+        return "$status"
+      fi
       rm -f "$err_file"
       if [ "$attempt" -ge "$retry_count" ]; then
         log "release asset verification $tag_name failed after $attempt attempt(s)"
@@ -405,16 +453,27 @@ ensure_release() {
       create_args+=(--prerelease)
     fi
 
-    if gh release create "${create_args[@]}" 2> >(tee "$err_file" >&2); then
+    # See run_with_retry(): capturing $? after the `if` yielded 0, so a release
+    # that never got created still returned success here and the caller went on
+    # to upload assets to it, one "release not found" at a time.
+    status=0
+    run_capturing_stderr "$err_file" gh release create "${create_args[@]}" \
+      || status=$?
+    if [ "$status" -eq 0 ]; then
       rm -f "$err_file"
       return 0
     fi
 
-    status=$?
     if gh release view "$tag_name" >/dev/null 2>&1; then
       log "Release exists after failed creation attempt for tag $tag_name; continuing with asset uploads"
       rm -f "$err_file"
       return 0
+    fi
+
+    if is_permanent_failure "$err_file"; then
+      log "release draft creation $tag_name failed with a permanent error; not retrying"
+      rm -f "$err_file"
+      return "$status"
     fi
 
     if [ "$attempt" -ge "$retry_count" ]; then
