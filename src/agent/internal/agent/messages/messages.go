@@ -132,14 +132,10 @@ func (msg Message) Clone() Message {
 // Attachment tracks file metadata for message attachments. Binary content is stored on disk
 // and only loaded when ConvertToStandardMessageList is called.
 type Attachment struct {
-	// PreparedData and PreparedCaption exist only on outbound clones. The original
-	// attachment remains the persisted source of truth for replay.
-	PreparedData    *[]byte `json:"-"`
-	PreparedCaption string  `json:"-"`
-	MIMEType        string  `json:"mime_type"`
-	FileSize        int64   `json:"file_size"`
-	FilePath        string  `json:"file_path"`
-	Source          string  `json:"source,omitempty"`
+	MIMEType string `json:"mime_type"`
+	FileSize int64  `json:"file_size"`
+	FilePath string `json:"file_path"`
+	Source   string `json:"source,omitempty"`
 }
 
 type ToolCall struct {

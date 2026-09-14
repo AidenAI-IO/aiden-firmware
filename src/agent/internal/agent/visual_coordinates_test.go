@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -10,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -17,6 +19,7 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/screen"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -35,69 +38,72 @@ func visualTestMessage(t *testing.T, w, h int) messages.Message {
 	return messages.Message{Role: messages.MessageRoleUser, Attachments: []messages.Attachment{{FilePath: path, MIMEType: "image/png", Source: messages.AttachmentSourceScreenshotObservation}}}
 }
 
+func visualTestScreen(t *testing.T, msg messages.Message) *screen.ScreenState {
+	t.Helper()
+	data, err := os.ReadFile(msg.Attachments[0].FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &screen.ScreenState{}
+	state.UpdateScreenshot(data, cfg.Width, cfg.Height)
+	return state
+}
+
 func TestVisualCoordinatesOutboundImageAndReplay(t *testing.T) {
 	for _, size := range [][2]int{{1179, 2556}, {2556, 1179}, {2000, 2000}, {447, 972}, {1, 100}} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			original := visualTestMessage(t, size[0], size[1])
-			v := newVisualCoordinates()
-			out := v.Transform([]messages.Message{original})
-			if v.latest == nil || original.Attachments[0].PreparedData != nil {
-				t.Fatal("missing frame or source mutated")
-			}
-			standard := messages.ConvertMessageList(out)
-			var caption string
-			var cfg image.Config
-			var emittedData []byte
-			for _, part := range standard[0].Parts {
-				switch p := part.(type) {
-				case llms.TextContent:
-					caption = p.Text
-				case llms.BinaryContent:
-					emittedData = p.Data
-					var err error
-					cfg, _, err = image.DecodeConfig(bytes.NewReader(p.Data))
-					if err != nil {
-						t.Fatal(err)
-					}
+			before := original.Clone()
+			v := newVisualCoordinates(nil)
+			for range 2 {
+				out := v.Transform([]messages.Message{original})
+				if len(out) != 2 || !reflect.DeepEqual(out[0], before) || !reflect.DeepEqual(original, before) {
+					t.Fatal("transform changed the source message or attachment")
+				}
+				if out[1].Role != messages.MessageRoleSystem || out[1].Content != visualCoordinateInstruction {
+					t.Fatal("missing transient pixel protocol instruction")
+				}
+				standard := messages.ConvertMessageList(out)
+				if len(standard[0].Parts) != 1 {
+					t.Fatalf("unexpected caption or other content: %v", standard[0].Parts)
+				}
+				binary, ok := standard[0].Parts[0].(llms.BinaryContent)
+				if !ok {
+					t.Fatal("image missing")
+				}
+				source, err := os.ReadFile(original.Attachments[0].FilePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(binary.Data, source) {
+					t.Fatal("image bytes changed")
+				}
+				cfg, _, err := image.DecodeConfig(bytes.NewReader(binary.Data))
+				if err != nil || cfg.Width != size[0] || cfg.Height != size[1] {
+					t.Fatalf("image dimensions changed: %v, %v", cfg, err)
 				}
 			}
-			// Images should use original dimensions without downsampling
-			if cfg.Width != size[0] || cfg.Height != size[1] {
-				t.Fatalf("image dimensions changed: expected %dx%d, got %dx%d", size[0], size[1], cfg.Width, cfg.Height)
-			}
-			// Verify byte-for-byte source preservation (no re-encode)
-			sourceData, err := os.ReadFile(original.Attachments[0].FilePath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(emittedData, sourceData) {
-				t.Fatal("emitted bytes differ from source — image was re-encoded")
-			}
-			if !strings.Contains(caption, fmt.Sprintf("width=%d height=%d", cfg.Width, cfg.Height)) {
-				t.Fatal("caption differs from actual image")
-			}
-			firstLatest := v.latest
-			v.Transform([]messages.Message{original})
-			if v.latest == nil {
-				t.Fatal("replay lost frame")
-			}
-			// Replay with the same message should give a frame with the same dimensions.
-			if v.latest.width != firstLatest.width || v.latest.height != firstLatest.height {
-				t.Fatal("replay changed frame dimensions")
-			}
-			other := newVisualCoordinates()
-			other.Transform([]messages.Message{original})
-			if other.latest == firstLatest {
-				t.Fatal("frame leaked across runs")
-			}
-			stored, err := json.Marshal(out[0].Attachments[0])
-			if err != nil {
-				t.Fatal(err)
-			}
-			if strings.Contains(string(stored), "Prepared") {
-				t.Fatal("transient frame data persisted")
-			}
 		})
+	}
+}
+
+// TestVisualCoordinatesProtocolTravelsInToolDescriptions pins the second channel
+// that carries the pixel protocol, next to the transient system message.
+func TestVisualCoordinatesProtocolTravelsInToolDescriptions(t *testing.T) {
+	v := newVisualCoordinates(nil)
+	for _, name := range []string{"touch_gesture", "mouse_move", "enter_text", "wheel_nudge"} {
+		tools := v.wrap([]langtools.Tool{&visualRecordingTool{name: name}})
+		if !strings.Contains(tools[0].Description(), visualCoordinateInstruction) {
+			t.Fatalf("%s description lost the pixel protocol: %q", name, tools[0].Description())
+		}
+	}
+	untouched := &visualRecordingTool{name: "screenshot"}
+	if got := v.wrap([]langtools.Tool{untouched})[0]; got != langtools.Tool(untouched) {
+		t.Fatal("non-geometry tool was wrapped")
 	}
 }
 
@@ -125,39 +131,36 @@ func (t *visualRecordingTool) Call(_ context.Context, input string) (string, err
 }
 
 func TestVisualCoordinatesToolBoundary(t *testing.T) {
-	v := newVisualCoordinates()
-	msg := visualTestMessage(t, 101, 201)
-	v.Transform([]messages.Message{msg})
+	state := visualTestScreen(t, visualTestMessage(t, 101, 201))
+	// The source HDMI frame and active area can both differ from the image size.
+	state.UpdateActiveArea(1920, 1080, screen.ScreenActiveArea{X: 710, Width: 500, Height: 1080, Valid: true})
+	v := newVisualCoordinates(state)
 	base := &visualRecordingTool{name: "touch_gesture"}
 	tool := v.wrap([]langtools.Tool{base})[0]
-	// Invalid inputs that should be rejected before reaching the device tool.
 	for _, input := range []string{
-		`{"point":{"x":101,"y":100}}`,  // x out of bounds (max is 100)
-		`{"point":{"x":-1,"y":100}}`,   // negative x
-		`{"point":{"x":"50","y":100}}`, // x is string not number
+		`{"point":{"x":101,"y":100}}`,
+		`{"point":{"x":-1,"y":100}}`,
+		`{"point":{"x":"50","y":100}}`,
 	} {
 		_, _ = tool.Call(context.Background(), `{"type":"tap",`+input[1:])
 		if len(base.inputs) != 0 {
 			t.Fatalf("invalid input reached device: %s", input)
 		}
 	}
-	// Valid input with coordinate conversion.
 	result, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":50,"y":100},"end":{"x":100,"y":200},"speed":2500}`)
 	if err != nil || result != "ok" || len(base.inputs) != 1 {
 		t.Fatalf("call = %s, %v", result, err)
 	}
 	got := base.inputs[0]
-	if got["speed"] != float64(2500) {
+	if got["speed"] != float64(2500) || got["start"].(map[string]any)["x"] != float64(500) || got["end"].(map[string]any)["y"] != float64(1000) {
 		t.Fatal(got)
 	}
-	if got["start"].(map[string]any)["x"] != float64(500) || got["end"].(map[string]any)["y"] != float64(1000) {
-		t.Fatal(got)
-	}
-	// Verify the same frame can be used multiple times.
-	v.Transform([]messages.Message{msg})
+	// Reuse works without a transform, and subsequent captures are read at call time.
 	_, _ = tool.Call(context.Background(), `{"type":"tap","point":{"x":50,"y":100}}`)
-	if len(base.inputs) != 2 {
-		t.Fatal("coordinate adapter imposed a single-use restriction")
+	state.UpdateScreenshot([]byte("new capture"), 201, 101)
+	_, _ = tool.Call(context.Background(), `{"type":"tap","point":{"x":100,"y":50}}`)
+	if len(base.inputs) != 3 || base.inputs[2]["point"].(map[string]any)["y"] != float64(500) {
+		t.Fatal("adapter did not use current screenshot dimensions", base.inputs)
 	}
 }
 
@@ -178,35 +181,21 @@ func TestVisualCoordinatesAllGeometry(t *testing.T) {
 	}
 }
 
-func TestVisualCoordinatesBadLatestImageFailsClosed(t *testing.T) {
-	v := newVisualCoordinates()
-	good := visualTestMessage(t, 100, 200)
-	bad := messages.Message{Role: messages.MessageRoleUser, Attachments: []messages.Attachment{{FilePath: "/nonexistent/visual-test.png", MIMEType: "image/png", Source: messages.AttachmentSourceScreenshotObservation}}}
-	out := v.Transform([]messages.Message{good, bad})
-	if v.latest != nil || len(out[1].Attachments) != 0 {
-		t.Fatal("bad latest image left an actionable frame")
-	}
-}
-
-// Source bytes are forwarded without a re-encode, so nothing downstream decodes
-// the payload before the provider does. The header alone is not enough to trust.
-func TestVisualCoordinatesRejectsTruncatedPayload(t *testing.T) {
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 400, 800))); err != nil {
-		t.Fatal(err)
-	}
-	truncated := buf.Bytes()[:buf.Len()/2]
-	if _, _, err := image.DecodeConfig(bytes.NewReader(truncated)); err != nil {
-		t.Fatalf("test needs a parseable header to be meaningful: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "truncated.png")
-	if err := os.WriteFile(path, truncated, 0600); err != nil {
-		t.Fatal(err)
-	}
-	v := newVisualCoordinates()
-	out := v.Transform([]messages.Message{{Role: messages.MessageRoleUser, Attachments: []messages.Attachment{{FilePath: path, MIMEType: "image/png", Source: messages.AttachmentSourceScreenshotObservation}}}})
-	if v.latest != nil || len(out[0].Attachments) != 0 {
-		t.Fatal("truncated payload reached the model as an actionable frame")
+func TestVisualCoordinatesMissingOrInvalidatedCaptureFailsClosed(t *testing.T) {
+	mappingOnly := &screen.ScreenState{}
+	mappingOnly.Update(1920, 1080)
+	invalidated := visualTestScreen(t, visualTestMessage(t, 101, 201))
+	invalidated.InvalidateCapture()
+	for _, state := range []*screen.ScreenState{nil, {}, mappingOnly, invalidated} {
+		v := newVisualCoordinates(state)
+		// Stored history is deliberately not used to reconstruct retired capture state.
+		v.Transform([]messages.Message{visualTestMessage(t, 101, 201)})
+		base := &visualRecordingTool{name: "touch_gesture"}
+		tool := v.wrap([]langtools.Tool{base})[0]
+		result, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":50,"y":100}}`)
+		if err != nil || len(base.inputs) != 0 || !strings.Contains(result, "no screenshot available") {
+			t.Fatalf("missing capture was actionable: %s, %v", result, err)
+		}
 	}
 }
 
@@ -237,7 +226,7 @@ func (t *visualCapabilityTool) SetDeviceTypeFunc(fn func() string) { t.deviceTyp
 
 func TestVisualCoordinatesForwardsCapabilities(t *testing.T) {
 	base := &visualCapabilityTool{visualRecordingTool: visualRecordingTool{name: "touch_gesture"}}
-	wrapped := newVisualCoordinates().wrap([]langtools.Tool{base})[0]
+	wrapped := newVisualCoordinates(nil).wrap([]langtools.Tool{base})[0]
 	if !wrapped.(visualObservationTool).ReturnsVisualObservation() {
 		t.Fatal("lost visual observation capability")
 	}
@@ -261,15 +250,13 @@ func (t *visualSchemaTool) ArgsSchema() map[string]any { return t.schema }
 
 func TestVisualCoordinatesSchemaFallback(t *testing.T) {
 	base := &visualRecordingTool{name: "touch_gesture"}
-	// Embedding the narrow Tool interface deliberately hides ArgsSchema.
 	noSchema := struct{ langtools.Tool }{base}
 	if got := (&visualCoordinateTool{Tool: noSchema}).ArgsSchema(); got != nil {
 		t.Fatal(got)
 	}
 	for _, schema := range []map[string]any{nil, {}, {"properties": "invalid"}, {"properties": map[string]any{}, "invalid": func() {}}} {
 		tool := &visualCoordinateTool{Tool: &visualSchemaTool{Tool: base, schema: schema}}
-		got := tool.ArgsSchema()
-		if len(got) != len(schema) {
+		if got := tool.ArgsSchema(); len(got) != len(schema) {
 			t.Fatalf("fallback changed schema: %v", got)
 		}
 	}
@@ -278,7 +265,6 @@ func TestVisualCoordinatesSchemaFallback(t *testing.T) {
 type visualLoopModel struct {
 	calls    int
 	provider string
-	disabled bool
 }
 
 func (m *visualLoopModel) Spec() model.ModelSpec {
@@ -293,24 +279,26 @@ func (m *visualLoopModel) GenerateContent(_ context.Context, input []llms.Messag
 	if m.calls > 1 {
 		return contentResponse("done"), nil
 	}
-	hasPreparedImage := false
+	hasImage, hasProtocol := false, false
 	for _, msg := range input {
 		for _, part := range msg.Parts {
-			if p, ok := part.(llms.TextContent); ok {
-				if strings.Contains(p.Text, "Image dimensions:") && strings.Contains(p.Text, "Pixel centers span") {
-					hasPreparedImage = true
+			switch p := part.(type) {
+			case llms.BinaryContent:
+				hasImage = true
+			case llms.TextContent:
+				if strings.Contains(p.Text, "Image dimensions:") || strings.Contains(p.Text, "Pixel centers span") {
+					return nil, fmt.Errorf("unexpected image dimension caption")
 				}
+				hasProtocol = hasProtocol || strings.Contains(p.Text, visualCoordinateInstruction)
 			}
 		}
 	}
+	if !hasImage || hasProtocol != (m.provider == "anthropic") {
+		return nil, fmt.Errorf("incorrect image/protocol wiring: image=%v protocol=%v", hasImage, hasProtocol)
+	}
 	args := `{"type":"tap","point":{"x":500,"y":500}}`
-	if m.provider == "anthropic" && !m.disabled {
-		if !hasPreparedImage {
-			return nil, fmt.Errorf("no prepared image reached model")
-		}
+	if m.provider == "anthropic" {
 		args = `{"type":"tap","point":{"x":50,"y":100}}`
-	} else if hasPreparedImage {
-		return nil, fmt.Errorf("non-Claude or disabled model was transformed")
 	}
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{ToolCalls: []llms.ToolCall{{ID: "visual_call", Type: "function", FunctionCall: &llms.FunctionCall{Name: "touch_gesture", Arguments: args}}}}}}, nil
 }
@@ -318,13 +306,15 @@ func (m *visualLoopModel) GenerateContent(_ context.Context, input []llms.Messag
 func TestVisualCoordinatesAgentLoopWiring(t *testing.T) {
 	for _, provider := range []string{"anthropic", "openai"} {
 		t.Run(provider, func(t *testing.T) {
-			manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{visualTestMessage(t, 101, 201)})
+			msg := visualTestMessage(t, 101, 201)
+			manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{msg})
 			if err != nil {
 				t.Fatal(err)
 			}
 			backend := &visualRecordingTool{name: "touch_gesture"}
 			m := &visualLoopModel{provider: provider}
 			loop := NewAgentLoop(m, RoleProfile{Tools: []langtools.Tool{backend}}, 3, nil, nil, executor.ScreenshotPruningConfig{}, manager)
+			loop.ScreenState = visualTestScreen(t, msg)
 			answer, err := loop.Run(context.Background(), "tap center")
 			if err != nil || answer != "done" {
 				t.Fatalf("Run = %q, %v", answer, err)
@@ -344,33 +334,45 @@ func TestVisualCoordinatesUploadsDoNotChangeScreenSpace(t *testing.T) {
 	screenshot := visualTestMessage(t, 101, 201)
 	upload := visualTestMessage(t, 800, 600)
 	upload.Attachments[0].Source = ""
-	v := newVisualCoordinates()
-	v.Transform([]messages.Message{screenshot})
-	firstLatest := v.latest
+	state := visualTestScreen(t, screenshot)
+	v := newVisualCoordinates(state)
 	out := v.Transform([]messages.Message{screenshot, upload})
-	// The upload should not change the latest screenshot or participate in adaptation.
-	if firstLatest == nil || v.latest == nil || v.latest.width != firstLatest.width || v.latest.height != firstLatest.height || out[1].Attachments[0].PreparedData != nil || out[1].Attachments[0].PreparedCaption != "" {
-		t.Fatal("ordinary upload participated in screenshot adaptation")
+	if !reflect.DeepEqual(out[1], upload) {
+		t.Fatal("ordinary upload was changed")
 	}
-	args := map[string]any{"x": float64(50), "y": float64(100)}
-	if _, err := v.convert(args); err != nil || args["x"] != float64(500) || args["y"] != float64(500) {
-		t.Fatalf("screenshot mapping changed: %v, %v", args, err)
-	}
-	for i := 0; i < 2; i++ {
-		if _, err := v.convert(map[string]any{"x": float64(50), "y": float64(100)}); err != nil {
-			t.Fatal("unexpected frame consumption", err)
+	// Rebuilding a loop keeps using shared capture state, even with pruned history.
+	resumed := newVisualCoordinates(state)
+	resumed.Transform(nil)
+	for _, adapter := range []*visualCoordinates{v, resumed} {
+		args := map[string]any{"x": float64(50), "y": float64(100)}
+		if _, err := adapter.convert(args); err != nil || args["x"] != float64(500) || args["y"] != float64(500) {
+			t.Fatalf("screenshot mapping changed: %v, %v", args, err)
 		}
 	}
 }
 
-func TestVisualCoordinatesRebuildDoesNotRequireNewScreenshot(t *testing.T) {
+func TestVisualCoordinatesUsesObservedImageDimensions(t *testing.T) {
 	msg := visualTestMessage(t, 101, 201)
-	first := newVisualCoordinates()
-	first.Transform([]messages.Message{msg})
-	resumed := newVisualCoordinates()
-	resumed.Transform([]messages.Message{msg})
-	// Both runs see the same message; both should have a usable frame.
-	if _, err := resumed.convert(map[string]any{"x": float64(50), "y": float64(100)}); err != nil {
-		t.Fatal("adapter imposed new capture requirement", err)
+	data, err := os.ReadFile(msg.Attachments[0].FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := json.Marshal(screenshotResult{
+		Width: 101, Height: 201, SourceWidth: 1920, SourceHeight: 1080,
+		ActiveArea: &screen.ScreenActiveArea{X: 710, Width: 500, Height: 1080, Valid: true},
+		Data:       base64.StdEncoding.EncodeToString(data),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, output := range []string{string(observation), `{"screenshot":` + string(observation) + `}`} {
+		state := &screen.ScreenState{}
+		tool := &visualCapabilityTool{visualRecordingTool: visualRecordingTool{name: "touch_gesture"}}
+		newScreenToolResultObserver(state)(context.Background(), ToolCall{Spec: NewToolSpec(tool)}, ToolResult{Output: output})
+		args := map[string]any{"x": float64(50), "y": float64(100)}
+		frame, err := newVisualCoordinates(state).convert(args)
+		if err != nil || frame.width != 101 || frame.height != 201 || args["x"] != float64(500) || args["y"] != float64(500) {
+			t.Fatalf("observer used source dimensions instead of image dimensions: %v, %v, %v", frame, args, err)
+		}
 	}
 }

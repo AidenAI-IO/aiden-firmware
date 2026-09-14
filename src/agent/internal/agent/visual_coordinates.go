@@ -1,27 +1,20 @@
 package agent
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"image"
-	_ "image/jpeg"
-	_ "image/png"
 	"math"
-	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/agent/screen"
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
 type visualFrame struct {
 	width, height int
-	data          []byte
 }
 
 // visualPoint uses pixel centers in the captured screenshot. Device code receives
@@ -48,93 +41,47 @@ func normalizeVisualAxis(value float64, size int) (float64, error) {
 	return value / float64(max(1, size-1)) * 1000, nil
 }
 
-// A registry is private to one AgentLoop.Run. Images provide coordinate spaces only. Source screenshots already represent the device active area,
-// so the existing device mapping runs just once.
+// The coordinate space comes from the latest captured screenshot in ScreenState.
+// No image data or per-run frame registry is needed by the adapter.
 type visualCoordinates struct {
-	mu     sync.Mutex
-	frames map[string]visualFrame
-	latest *visualFrame
+	screen *screen.ScreenState
 }
 
-func newVisualCoordinates() *visualCoordinates {
-	return &visualCoordinates{frames: make(map[string]visualFrame)}
+func newVisualCoordinates(screenStates ...*screen.ScreenState) *visualCoordinates {
+	var screenState *screen.ScreenState
+	if len(screenStates) > 0 {
+		screenState = screenStates[0]
+	}
+	return &visualCoordinates{screen: screenState}
 }
 
-const visualCoordinateInstruction = "Visual coordinate protocol: for touch_gesture, mouse_move, enter_text.focus and wheel_nudge geometry, use pixel coordinates in the attached image. Do not rescale coordinates or call a normalization tool. Speed parameters retain normalized units per second."
+// visualCoordinateInstruction states the pixel protocol to the model. It reaches
+// each request through two channels: a transient system message appended on every
+// call, and the tail of every wrapped tool's description. The system-message form
+// is never written to the conversation store, so it cannot accumulate.
+const visualCoordinateInstruction = "Visual coordinate protocol: for touch_gesture, mouse_move, enter_text.focus and wheel_nudge geometry, use pixel coordinates in the latest screenshot. Do not rescale coordinates or call a normalization tool. Speed parameters retain normalized units per second."
 
 func (v *visualCoordinates) Transform(input []messages.Message) []messages.Message {
-	v.mu.Lock()
-	defer v.mu.Unlock()
 	out := make([]messages.Message, len(input), len(input)+1)
-	frames := make(map[string]visualFrame)
-	v.latest = nil
 	for i, msg := range input {
 		out[i] = msg.Clone()
-		attachments := make([]messages.Attachment, 0, len(msg.Attachments))
-		for _, attachment := range msg.Attachments {
-			if attachment.Source != messages.AttachmentSourceScreenshotObservation || !strings.HasPrefix(attachment.MIMEType, "image/") {
-				attachments = append(attachments, attachment)
-				continue
-			}
-			// Include the occurrence path so identical consecutive screenshots can
-			// still represent distinct observations.
-			data, err := os.ReadFile(attachment.FilePath)
-			key := fmt.Sprintf("%s:%x", attachment.FilePath, sha256.Sum256(data))
-			frame, ok := v.frames[key]
-			if err == nil && !ok {
-				frame, err = v.prepare(key, data)
-			}
-			if err != nil {
-				out[i].Content += "\n[Image unavailable: could not prepare visual frame. Request a new screenshot before acting.]"
-				v.latest = nil
-				continue
-			}
-			frames[key] = frame
-			v.latest = &frame
-			attachment.PreparedData = &frame.data
-			attachment.PreparedCaption = fmt.Sprintf("Image dimensions: width=%d height=%d. Pixel centers span x=0..%d and y=0..%d.", frame.width, frame.height, frame.width-1, frame.height-1)
-			attachments = append(attachments, attachment)
-		}
-		out[i].Attachments = attachments
 	}
-	v.frames = frames
-	// This is transient, like the prepared bytes, and never enters saved history.
-	out = append(out, messages.Message{Role: messages.MessageRoleSystem, Content: visualCoordinateInstruction})
-	return out
+	// Only the protocol instruction is transient; attachments are unchanged.
+	return append(out, messages.Message{Role: messages.MessageRoleSystem, Content: visualCoordinateInstruction})
 }
 
-func (v *visualCoordinates) prepare(key string, data []byte) (visualFrame, error) {
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil {
-		return visualFrame{}, err
-	}
-	if cfg.Width < 1 || cfg.Height < 1 || float64(cfg.Width)*float64(cfg.Height) > 40000000 {
-		return visualFrame{}, fmt.Errorf("invalid or oversized source image")
-	}
-	// Validate the complete payload by decoding it; discard the result and forward the original bytes.
-	if _, _, err := image.Decode(bytes.NewReader(data)); err != nil {
-		return visualFrame{}, fmt.Errorf("invalid image payload: %w", err)
-	}
-	// Pass the original image through unchanged — no re-encode, no dimension change.
-	return visualFrame{
-		width:  cfg.Width,
-		height: cfg.Height,
-		data:   data,
-	}, nil
-}
-
-// convert resolves the coordinate space using the most recent screenshot.
+// Read captured image dimensions, not the source frame or phone display size.
 // Existing screenshot and device safety checks remain owned by the device tools.
 func (v *visualCoordinates) convert(args map[string]any) (visualFrame, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.latest == nil {
+	width, height, ok := v.screen.ScreenshotDimensions()
+	if !ok {
 		return visualFrame{}, fmt.Errorf("no screenshot available; request a fresh screenshot")
 	}
-	if err := convertVisualArguments(args, *v.latest); err != nil {
+	frame := visualFrame{width: width, height: height}
+	if err := convertVisualArguments(args, frame); err != nil {
 		return visualFrame{}, err
 	}
-	return *v.latest, nil
+	return frame, nil
 }
 
 func (v *visualCoordinates) wrap(tools []langtools.Tool) []langtools.Tool {
@@ -176,7 +123,7 @@ func (t *visualCoordinateTool) Description() string {
 		description = "Move the mouse without clicking."
 	}
 	if t.Name() == "wheel_nudge" {
-		description = "Nudge a picker wheel toward the requested value. Geometry is measured in the prepared image's pixels."
+		description = "Nudge a picker wheel toward the requested value. Geometry is measured in pixels of the latest screenshot."
 	}
 	return description + " " + visualCoordinateInstruction
 }

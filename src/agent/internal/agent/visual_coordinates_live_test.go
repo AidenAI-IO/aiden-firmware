@@ -20,6 +20,7 @@ import (
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/agent/screen"
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -132,7 +133,7 @@ func TestVisualCoordinatesLive(t *testing.T) {
 					}
 					input := []messages.Message{
 						{Role: messages.MessageRoleSystem, Content: defaultAgentBehavior() + "\nThis is a single-frame perception evaluation. Locate the requested target in the attached screenshot and make exactly one touch_gesture tap. No screenshot, skill lookup, probing, or retry is available in this evaluation."},
-						{Role: messages.MessageRoleUser, Content: suite.PromptPrefix + "\n" + task.Prompt + fmt.Sprintf("\nAttached screenshot source_width=%d source_height=%d.", size.Width, size.Height), Attachments: []messages.Attachment{{FilePath: imagePath, MIMEType: "image/jpeg", Source: messages.AttachmentSourceScreenshotObservation}}},
+						{Role: messages.MessageRoleUser, Content: suite.PromptPrefix + "\n" + task.Prompt, Attachments: []messages.Attachment{{FilePath: imagePath, MIMEType: "image/jpeg", Source: messages.AttachmentSourceScreenshotObservation}}},
 					}
 					manager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), input)
 					if err != nil {
@@ -142,7 +143,13 @@ func TestVisualCoordinatesLive(t *testing.T) {
 					var tool langtools.Tool = &livePerceptionTool{visualRecordingTool: backend}
 					var transforms []executor.OutboundMessageTransform
 					if variant == "prepared" {
-						frames := newVisualCoordinates()
+						state := &screen.ScreenState{}
+						imageData, err := os.ReadFile(imagePath)
+						if err != nil {
+							t.Fatal(err)
+						}
+						state.UpdateScreenshot(imageData, size.Width, size.Height)
+						frames := newVisualCoordinates(state)
 						transforms = append(transforms, frames)
 						tool = frames.wrap([]langtools.Tool{tool})[0]
 					}
@@ -210,5 +217,3 @@ func (t *livePerceptionTool) Description() string { return (&TouchGestureTool{})
 
 // Factorial controls: identical prompt, caption, JPEG encoder and minimal tap
 // schema in all four cells. Only resizing and coordinate units differ.
-
-
