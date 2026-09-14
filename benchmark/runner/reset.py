@@ -216,6 +216,9 @@ def per_task_setup(
             setup,
             consolidation_expectation=consolidation_expectation,
         )
+    if setup_type == "seed_session_chunk":
+        _per_task_setup_seed_session_chunk(client, setup)
+        return
     if setup_type == "seed_notification":
         _per_task_setup_seed_notification(client, setup)
         return
@@ -288,6 +291,45 @@ def _per_task_setup_seed_memory(client: AgentClient, setup: dict[str, Any]) -> N
             client.clear_history()
         except AgentRequestError as e:
             raise ResetError(f"seed_memory clear_history failed: {e}") from e
+
+
+def _per_task_setup_seed_session_chunk(client: AgentClient, setup: dict[str, Any]) -> None:
+    session_id = setup.get("session_id")
+    summary = setup.get("summary")
+    messages = setup.get("messages")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ResetError(f"seed_session_chunk setup missing session_id: {setup!r}")
+    if not isinstance(summary, str) or not summary.strip():
+        raise ResetError(f"seed_session_chunk setup missing summary: {setup!r}")
+    if not isinstance(messages, list) or not messages:
+        raise ResetError(f"seed_session_chunk setup requires non-empty messages list: {setup!r}")
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            raise ResetError(f"seed_session_chunk messages[{index}] must be a dict")
+        if not isinstance(message.get("role"), str) or not message["role"].strip():
+            raise ResetError(f"seed_session_chunk messages[{index}] missing role")
+        if not isinstance(message.get("content"), str) or not message["content"].strip():
+            raise ResetError(f"seed_session_chunk messages[{index}] missing content")
+    try:
+        timeout = int(setup.get("timeout_sec", 30))
+    except (ValueError, TypeError) as e:
+        raise ResetError(f"invalid timeout_sec: {setup.get('timeout_sec')!r}") from e
+    chunk = {
+        "session_id": session_id,
+        "summary": summary,
+        "messages": messages,
+    }
+    try:
+        client.seed_session_chunk(chunk, timeout=timeout)
+    except AgentTimeoutError as e:
+        raise ResetError(f"seed_session_chunk timed out for {session_id!r}: {e}") from e
+    except AgentRequestError as e:
+        raise ResetError(f"seed_session_chunk failed for {session_id!r}: {e}") from e
+    if setup.get("clear_history_after", False):
+        try:
+            client.clear_history()
+        except (AgentTimeoutError, AgentRequestError) as e:
+            raise ResetError(f"seed_session_chunk clear_history failed: {e}") from e
 
 
 def _per_task_setup_seed_episode(

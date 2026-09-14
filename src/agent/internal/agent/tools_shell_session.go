@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -35,11 +36,13 @@ type shellSession struct {
 	cancel       context.CancelFunc
 	startedAt    time.Time
 	lastActivity time.Time
+	finishedAt   time.Time
 	exitErr      error
 	exitCode     *int
 
 	mu     sync.Mutex
 	closed bool
+	reaped bool
 }
 
 type shellRingBuffer struct {
@@ -122,6 +125,18 @@ func (b *shellRingBuffer) hasUnread() bool {
 	return b.readPos < len(b.buf)
 }
 
+// release drops the buffered bytes once every produced byte has been read. A
+// finished session keeps answering polls, but it no longer needs the output.
+// Callers must only release after the process has exited, because a running
+// process can still append; at that point nothing is lost.
+func (b *shellRingBuffer) release() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = nil
+	b.readPos = 0
+	b.truncated = false
+}
+
 func (s *shellSession) capture(r io.Reader) {
 	buffer := make([]byte, 4096)
 	for {
@@ -141,6 +156,7 @@ func (s *shellSession) wait() {
 	var exitCode *int
 	if s.usePTY && s.ptyCmd != nil {
 		exitErr = s.ptyCmd.Wait()
+		s.markReaped()
 		if s.ptyCmd.ProcessState != nil {
 			code := s.ptyCmd.ProcessState.ExitCode()
 			exitCode = &code
@@ -154,6 +170,7 @@ func (s *shellSession) wait() {
 	}
 
 	exitErr = s.cmd.Wait()
+	s.markReaped()
 	if s.cmd.ProcessState != nil {
 		code := s.cmd.ProcessState.ExitCode()
 		exitCode = &code
@@ -167,6 +184,19 @@ func (s *shellSession) setExitState(exitErr error, exitCode *int) {
 	defer s.mu.Unlock()
 	s.exitErr = exitErr
 	s.exitCode = exitCode
+	s.finishedAt = time.Now()
+}
+
+// markReaped records that Wait() has returned, which is the point from which the
+// OS may reuse the PID. It runs in the waiting goroutine immediately after Wait,
+// and stop() reads it under the same lock, so a session whose process is already
+// gone is never signalled. isRunning() is not a substitute: done closes only
+// after the PTY capture goroutine has drained, which can be long after the
+// process itself was reaped.
+func (s *shellSession) markReaped() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reaped = true
 }
 
 func (s *shellSession) isRunning() bool {
@@ -176,6 +206,14 @@ func (s *shellSession) isRunning() bool {
 	default:
 		return true
 	}
+}
+
+// finishedAtOr reports when the session's process exited, or the zero time
+// while it is still running.
+func (s *shellSession) finishedAtOr() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.finishedAt
 }
 
 func (s *shellSession) processID() int {
@@ -220,10 +258,15 @@ func (s *shellSession) stop() {
 	s.closeInputLocked()
 	done := s.done
 	var process *os.Process
-	if s.usePTY && s.ptyCmd != nil {
-		process = s.ptyCmd.Process
-	} else if s.cmd != nil {
-		process = s.cmd.Process
+	// Decide whether to signal under the same lock Wait() takes to record the
+	// reap. Signalling a reaped PID is what the process-group kill below must
+	// never do: the PID may already belong to something else.
+	if !s.reaped {
+		if s.usePTY && s.ptyCmd != nil {
+			process = s.ptyCmd.Process
+		} else if s.cmd != nil {
+			process = s.cmd.Process
+		}
 	}
 	s.mu.Unlock()
 
@@ -231,6 +274,12 @@ func (s *shellSession) stop() {
 		return
 	}
 	if err := process.Signal(os.Interrupt); err != nil {
+		// Wait() may have reaped the process since the check above; Go reports
+		// that as ErrProcessDone. Escalating to a process-group kill here would
+		// target a PID that may already be reused.
+		if errors.Is(err, os.ErrProcessDone) {
+			return
+		}
 		if killErr := shellKillProcessGroup(process); killErr != nil {
 			log.Printf("shell: kill after failed interrupt: %v", killErr)
 		}
