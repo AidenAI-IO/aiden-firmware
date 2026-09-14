@@ -33,7 +33,7 @@ var modelsDevCatalogCache sync.Map
 
 func providerSupportsModelMetadata(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "openrouter", "ollama", "anthropic", "openai", "volcengine", "kimi", "kimi-cn":
+	case "openrouter", "ollama", "anthropic", "openai", "volcengine", "kimi", "kimi-cn", "deepseek":
 		return true
 	default:
 		return false

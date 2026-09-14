@@ -237,6 +237,32 @@ func TestModelManagerSpecFetchesModelsDevReasoningMetadata(t *testing.T) {
 	}
 }
 
+func TestDeepSeekSpecFetchesModelsDevMetadata(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"deepseek":{"api":"https://api.deepseek.com","models":{"deepseek-custom":{"reasoning":true,"reasoning_options":[{"type":"effort","values":["none","low","high","max"]}],"limit":{"context":1000000,"output":393216}}}}}`)
+	}))
+	defer server.Close()
+
+	// Use an unregistered model so the normal Spec path must pass the provider
+	// discovery gate rather than returning complete built-in Flash metadata.
+	mgr := NewModelManager(ModelConfig{Provider: "deepseek", Model: "deepseek-custom"}, ProxyConfig{},
+		WithModelsDevURL(server.URL), WithProviderMetadataHTTPClient(server.Client()))
+	spec := waitForModelSpec(t, mgr, model.ModelSpec{ContextWindow: 1_000_000, MaxOutput: 393_216})
+	if spec.Reasoning == nil || !spec.Reasoning.Supported || spec.Reasoning.Mode != "effort" || !spec.Reasoning.CanDisable ||
+		strings.Join(spec.Reasoning.Efforts, ",") != "none,low,high,max" {
+		t.Fatalf("reasoning = %+v, want models.dev effort metadata", spec.Reasoning)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("models.dev requests = %d, want 1", got)
+	}
+}
+
 func TestModelManagerSpecPreservesModelsDevReasoningFalse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"openai":{"models":{"custom-chat":{"reasoning":false,"limit":{"context":128000,"output":4096}}}}}`)
