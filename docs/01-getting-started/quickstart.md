@@ -45,14 +45,25 @@ Connect the Pico Zero's USB-C port to a computer and flash the prebuilt `update.
 
 The core flow is to put the board into flashing (Maskrom / Loader) mode first, then write `update.img` with the flashing tool:
 
+On a Linux host, use the guarded flash helper so the image digest is checked
+before the factory overwrite:
+
 ```bash
-./upgrade_tool/upgrade_tool uf ./update.img
+FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+IMAGE=./update.img
+scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/debian-stage1/flash.sh flash --tool "${FLASH_TOOL}" \
+  --image "${IMAGE}" --sha256 "<verified-sha256>" \
+  --confirm-erase-all-data
 ```
 
-The most common way to enter flashing mode is to hold the BOOT button while plugging in USB-C. **If the BOOT button does not work reliably**, log in to the board over SSH on the USB network or a TTL serial console first and run:
+See [Firmware Build & Flashing](firmware.md) for the macOS command and the
+full local-build example.
+
+The most common way to enter flashing mode is to hold the BOOT button while plugging in USB-C. **If the BOOT button does not work reliably**, log in to the board over SSH on the USB network or a TTL serial console first and ask systemd to pass the loader argument:
 
 ```bash
-reboot loader
+systemctl reboot --reboot-argument=loader
 ```
 
 to enter flashing mode. Prebuilt firmware, local build paths, `upgrade_tool` usage, and the partition layout are covered in [Firmware Build & Flashing](firmware.md).
@@ -70,7 +81,8 @@ http://192.168.42.1
 On the page, configure Wi-Fi first:
 
 - **Only 2.4GHz networks are supported**; 5GHz does not work;
-- Enter the SSID and password; on save it is written to `/userdata/wpa_supplicant.conf`.
+- Enter the SSID and password; on save it is written to
+  `/userdata/debian/wifi/wpa_supplicant-wlan0.conf`.
 
 The config page also maintains Agent configuration and system environment variables. See [Config Web](../04-agent/configuration.md#config-web-the-device-config-page) for details.
 
@@ -99,7 +111,8 @@ Field meanings, minimal working config examples, and TTS/STT provider values are
 
 ## 5. Bring the Board Up
 
-After the four steps above, the board is ready to run. The Agent is supervised by the `S53agent` watchdog and starts with the firmware.
+After the four steps above, the board is ready to run. The Agent is supervised
+by `aiden-agent.service` and starts with the firmware.
 
 **Configuration changes**: Config Web applies supported settings online as you save them. Locale and prompt changes take effect for the next task or session boundary; only documented restart exceptions require an explicit Agent restart or device reboot, which the page indicates.
 
@@ -140,25 +153,26 @@ Source layout is in [Source Tree](../02-architecture/source-tree.md); boot servi
 After development, build the firmware and upgrade the device:
 
 - Native / cross-compile dev environment: [Build & Development Environment](build.md);
-- Full firmware build (`./build.sh image`) and flashing: [Firmware Build & Flashing](firmware.md);
+- Full Debian firmware build (`./debian_build.sh`) and flashing: [Firmware Build & Flashing](firmware.md);
 - Over-the-air upgrade: [OTA Overview](../08-ota/README.md).
 
-### OTA for non-main branch firmware
+### OTA for a development build
 
-CI assigns release channels by branch: `main` is the `stable` official release, while **other branches are published as prereleases**. The default `ota update` uses `releases/latest` and only picks up the latest official release, so it never accidentally installs dev-branch firmware.
-
-To flash a specific dev-branch build onto a device for testing, you must point at that dev release's manifest explicitly with `--manifest-url`, bypassing the `releases/latest` lookup:
+GitHub Actions and GitHub Release publication are not part of the current
+Debian build scope. Serve the local artifacts from a development HTTP(S)
+endpoint and point the device at its manifest explicitly:
 
 ```bash
-TAG="20260604-120000-abc1234"
-REPO="AidenAI-IO/aiden-firmware"
+BASE_URL="http://192.168.1.100:8000"
 
 ota update \
-  --manifest-url "https://github.com/$REPO/releases/download/$TAG/manifest.json" \
-  --public-key /oem/etc/ota_pubkey.pem
+  --manifest-url "$BASE_URL/manifest.json" \
+  --public-key /oem/etc/ota_pubkey.pem \
+  --dry-run
 ```
 
-The official signing public key is already provisioned on the device at `/oem/etc/ota_pubkey.pem`, so official-repo builds need no extra public key. It is recommended to add `--dry-run` first to only download and verify without switching slots. See [OTA Release Channels](../08-ota/ota-release-channels.md) for details.
+The public key must match the key used by the local build. Use `--dry-run` first
+to verify downloads without switching slots. See [OTA for External Developers](../08-ota/ota-external-developers.md) for hosting details.
 
 ## 8. Troubleshooting
 

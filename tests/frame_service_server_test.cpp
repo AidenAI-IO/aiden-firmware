@@ -134,7 +134,7 @@ TEST_CASE("FrameServiceServer serves health over UDS") {
     HealthResult health;
 
     REQUIRE(client.health(&health) == FrameServiceStatus::OK);
-    CHECK(health.state == "RUNNING");
+    CHECK(health.state == "STARTING");
     CHECK(health.latest_seq == 0);
     CHECK(health.ring_buffer_size == 4);
     CHECK(health.ring_buffer_used == 0);

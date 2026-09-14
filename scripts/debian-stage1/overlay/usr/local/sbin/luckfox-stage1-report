@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+
+output=/userdata/debian-stage1/boot-report.txt
+mkdir -p "$(dirname "${output}")"
+
+{
+    date -u '+UTC %Y-%m-%dT%H:%M:%SZ'
+    printf 'boot_id='
+    cat /proc/sys/kernel/random/boot_id
+    uname -a
+    cat /etc/os-release
+    echo
+    for target in / /oem /userdata /tmp; do
+        findmnt --target "${target}" || true
+    done
+    df -h / /oem /userdata /tmp || true
+    echo
+    systemctl --failed --no-pager || true
+    systemctl show \
+        luckfox-rootfs-grow.service luckfox-wifi.service \
+        luckfox-bluetooth-attach.service bluetooth.service ssh.service \
+        -p Id -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus \
+        || true
+    echo
+    cat /var/lib/luckfox/rootfs-grown 2>/dev/null || true
+    sha256sum /etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
+    echo
+    ip -brief link || true
+    ip -brief address || true
+    ip route || true
+    echo
+    free -h || true
+    swapon --show --bytes || true
+    cat /proc/meminfo
+    echo
+    cat /proc/pressure/memory 2>/dev/null || true
+} >"${output}.tmp"
+mv "${output}.tmp" "${output}"

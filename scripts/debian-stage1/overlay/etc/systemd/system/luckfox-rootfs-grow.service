@@ -1,0 +1,15 @@
+[Unit]
+Description=Grow the Debian root filesystem to its eMMC partition
+DefaultDependencies=no
+Requires=dev-mmcblk0p5.device dev-mmcblk0p6.device
+After=systemd-remount-fs.service dev-mmcblk0p5.device dev-mmcblk0p6.device
+After=systemd-fsck@dev-mmcblk0p5.service systemd-fsck@dev-mmcblk0p6.service
+Before=oem.mount userdata.mount local-fs.target
+ConditionPathExists=!/var/lib/luckfox/rootfs-grown
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/luckfox-rootfs-grow
+
+[Install]
+WantedBy=local-fs.target

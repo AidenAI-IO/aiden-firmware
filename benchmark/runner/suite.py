@@ -17,6 +17,7 @@ SETUP_KEYS = {
     "agent_prompt": {"type", "prompt", "timeout_sec", "clear_history_after", "expected_response"},
     "seed_memory": {"type", "memories", "timeout_sec", "clear_history_after"},
     "seed_episode": {"type", "episode", "consolidate", "timeout_sec", "consolidation_expectation"},
+    "seed_session_chunk": {"type", "session_id", "summary", "messages", "timeout_sec", "clear_history_after"},
     "seed_notification": {
         "type", "events", "consolidate", "timeout_sec",
         "expected_memory_count", "expected_memory_scope", "expected_memory_query",

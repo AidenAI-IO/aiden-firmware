@@ -245,6 +245,21 @@ func (s *ScreenState) UpdateScreenshot(jpegData []byte, width, height int) {
 	s.mu.Unlock()
 }
 
+// ScreenshotDimensions returns the stored image's dimensions after cropping and
+// capture-side scaling, without copying its bytes. Dimensions() instead returns
+// the source frame used for input mapping. Capture invalidation clears both.
+func (s *ScreenState) ScreenshotDimensions() (width, height int, ok bool) {
+	if s == nil {
+		return 0, 0, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.screenshotJPEG) == 0 || s.screenshotWidth <= 1 || s.screenshotHeight <= 1 || s.screenshotUpdatedAt.IsZero() {
+		return 0, 0, false
+	}
+	return s.screenshotWidth, s.screenshotHeight, true
+}
+
 func (s *ScreenState) ScreenshotGeneration() uint64 {
 	if s == nil {
 		return 0

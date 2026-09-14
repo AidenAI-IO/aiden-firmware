@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+path=${1:-/run/wifi_proxy/proxy-env}
+attempt=0
+while [ "${attempt}" -lt 50 ]; do
+    [ -s "${path}" ] && exit 0
+    sleep 0.1
+    attempt=$((attempt + 1))
+done
+
+echo "Wi-Fi proxy environment was not generated: ${path}" >&2
+exit 1

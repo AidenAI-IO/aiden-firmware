@@ -1,7 +1,6 @@
 import json
 import os
 from pathlib import Path
-import re
 import signal
 import subprocess
 import tempfile
@@ -191,12 +190,16 @@ class DockerSandboxContractTest(unittest.TestCase):
         smoke_script = read_repo_file("scripts/test_docker_sandbox.sh")
         workflow = read_repo_file(".github/workflows/ci.yml")
 
-        curl_commands = re.findall(
-            r"^[ \t]*curl -fsS.*$", smoke_script, re.MULTILINE
-        )
-        self.assertGreater(len(curl_commands), 0)
-        for command in curl_commands:
-            self.assertIn("--max-time", command)
+        # Asserted requests go through the request() helper, so curl is no
+        # longer the first word on its line. Anchor on the option instead of
+        # the command position: what matters is that every request the script
+        # makes still carries a finite --max-time.
+        request_lines = [
+            line for line in smoke_script.splitlines() if "-fsS" in line
+        ]
+        self.assertGreater(len(request_lines), 0)
+        for line in request_lines:
+            self.assertIn("--max-time", line)
 
         docker_step = workflow.split(
             "- name: Verify Docker sandbox contract", 1

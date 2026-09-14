@@ -9,27 +9,38 @@ Before enabling production OTA rollout, the following acceptance tests should be
 ## Prerequisites
 
 - The production image is built with the production Ed25519 public key.
-- GitHub Release contains `manifest.json` plus compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`, `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`.
-- The `update.img` inside `update.img.tar.gz` contains the dedicated `ota` partition image with `/config.json`.
+- A local or self-hosted HTTP(S) endpoint contains the signed `manifest.json`
+  and compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`,
+  `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`.
+- The `update.img` inside `update.img.tar.gz` contains the dedicated empty `ota` partition and the factory baseline in userdata at `/debian/ota/config.json`.
 - When UART is available, it is recommended to record SPL rollback logs simultaneously.
 
-`S54ota` only handles `/userdata/ota/pending_boot.json` health at startup, does not perform network or GitHub update checks. Manual updates must be triggered via `ota update`.
+`aiden-ota-health.service` only handles `/userdata/ota/pending_boot.json` at
+startup; it does not perform network or GitHub update checks. Manual updates
+must be triggered via `ota update`.
 
 ## 1. USB Factory Flash Acceptance
 
-Download the release `update.img.tar.gz`, extract `update.img`, then flash it with the normal USB recovery flow:
+Download the local build's `update.img.tar.gz`, extract `update.img`, then flash it with the normal USB recovery flow:
 
 ```bash
 tar -xzf update.img.tar.gz update.img
-./upgrade_tool/upgrade_tool uf ./update.img
+FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/debian-stage1/flash.sh flash --tool "${FLASH_TOOL}" \
+  --image ./update.img --sha256 "<verified-sha256>" \
+  --confirm-erase-all-data
 ```
+
+The repository-root `upgrade_tool/upgrade_tool` is a macOS Mach-O binary; use
+the Linux SDK tool above on Linux hosts.
 
 After device boots, check:
 
 ```bash
 cat /proc/cmdline
 mount | grep ' /oem '
-ota_device="$(readlink -f /dev/block/by-name/ota)"
+ota_device="$(readlink -f /dev/disk/by-partlabel/ota)"
 ota_mount_device="$(awk '$2 == "/userdata/ota" && $3 == "ext4" { print $1 }' /proc/mounts)"
 userdata_mount_device="$(awk '$2 == "/userdata" { print $1 }' /proc/mounts)"
 test -n "$ota_mount_device"
@@ -37,7 +48,7 @@ test "$(readlink -f "$ota_mount_device")" = "$ota_device"
 test -n "$userdata_mount_device"
 test "$(readlink -f "$userdata_mount_device")" != "$ota_device"
 df -h /userdata /userdata/ota
-/oem/usr/bin/abctl read /dev/block/by-name/misc
+/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
 /oem/usr/bin/ota status
 ```
 
@@ -45,17 +56,17 @@ Expected:
 
 - Factory boot is in slot A.
 - `/proc/cmdline` contains `aiden.slot_suffix=_a` and `root=PARTLABEL=rootfs_a`.
-- `/oem` is mounted from `/dev/block/by-name/oem_a`.
-- `/userdata/ota` is an ext4 mount whose source resolves to `/dev/block/by-name/ota`, and it reports an independent filesystem from `/userdata`.
+- `/oem` is mounted from `/dev/disk/by-partlabel/oem_a`.
+- `/userdata/ota` is an ext4 mount whose source resolves to `/dev/disk/by-partlabel/ota`, and it reports an independent filesystem from `/userdata`.
 - `misc` metadata can be parsed normally from byte offset `2048`, slot A is successful.
-- `/userdata/ota/config.json` exists, `ota status` does not report missing factory baseline.
+- `/userdata/debian/ota/config.json` exists, `ota status` does not report missing factory baseline.
 
 ## 2. Manual Slot Switch
 
 Switch to inactive slot:
 
 ```bash
-/oem/usr/bin/abctl set-active /dev/block/by-name/misc b --tries 3
+/oem/usr/bin/abctl set-active /dev/disk/by-partlabel/misc b --tries 3
 sync
 reboot
 ```
@@ -65,13 +76,13 @@ After reboot, check:
 ```bash
 cat /proc/cmdline
 mount | grep ' /oem '
-/oem/usr/bin/abctl read /dev/block/by-name/misc
+/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
 ```
 
 Expected:
 
 - `/proc/cmdline` contains `aiden.slot_suffix=_b` and `root=PARTLABEL=rootfs_b`.
-- `/oem` is mounted from `/dev/block/by-name/oem_b`.
+- `/oem` is mounted from `/dev/disk/by-partlabel/oem_b`.
 - Slot B has remaining tries before mark successful.
 
 ## 3. Mark Successful
@@ -79,9 +90,9 @@ Expected:
 After confirming the new slot is usable, commit:
 
 ```bash
-/oem/usr/bin/abctl mark-successful /dev/block/by-name/misc b
+/oem/usr/bin/abctl mark-successful /dev/disk/by-partlabel/misc b
 sync
-/oem/usr/bin/abctl read /dev/block/by-name/misc
+/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
 ```
 
 Expected: slot B successful with tries 0; previous slot is still retained as a fallback slot.
@@ -91,12 +102,14 @@ Expected: slot B successful with tries 0; previous slot is still retained as a f
 Force trial boot to another slot, but do not mark successful:
 
 ```bash
-/oem/usr/bin/abctl set-active /dev/block/by-name/misc a --tries 1
+/oem/usr/bin/abctl set-active /dev/disk/by-partlabel/misc a --tries 1
 sync
 reboot
 ```
 
-To prevent health success, stop `ota` or prevent application readiness during trial boot. Reboot again after tries are consumed.
+To prevent health success, mask `aiden-ota-health-marker.service` for the
+bounded test or prevent application readiness during trial boot. Reboot again
+after tries are consumed, then remove the mask.
 
 Expected: SPL returns to the previous successful slot. Confirm with UART, `cat /proc/cmdline`, and `abctl read`.
 
@@ -105,7 +118,7 @@ Expected: SPL returns to the previous successful slot. Confirm with UART, `cat /
 Confirm configuration:
 
 ```bash
-cat /userdata/ota/config.json
+cat /userdata/debian/ota/config.json
 ```
 
 Configuration should point to target repo/channel and include `boot`, `oem`, `rootfs` hashes in `factory_partition_hashes.a` and `factory_partition_hashes.b`.
@@ -130,7 +143,7 @@ After success, check:
 
 ```bash
 /oem/usr/bin/ota status
-/oem/usr/bin/abctl read /dev/block/by-name/misc
+/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
 ls -l /userdata/ota/pending_boot.json /userdata/ota/health.ok 2>&1 || true
 ```
 

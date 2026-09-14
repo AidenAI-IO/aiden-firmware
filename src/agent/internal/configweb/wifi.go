@@ -10,16 +10,19 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"aiden-agent/internal/wifiproxy"
 )
 
 const (
-	wifiConnectionTaskTimeout = 2 * time.Minute
-	wifiCandidateApplyTimeout = 75 * time.Second
+	wifiConnectionTaskTimeout               = 2 * time.Minute
+	wifiCandidateApplyTimeout               = 75 * time.Second
+	wifiSupplicantConfigEnvironmentVariable = "AIDEN_WPA_SUPPLICANT_CONFIG"
 )
 
 type wiFiNetwork struct {
@@ -288,7 +291,7 @@ func (s *Server) queryWiFiStatusContext(ctx context.Context) map[string]any {
 			detail := strings.TrimRight(string(result.Output), "\r\n")
 			status["detail"] = detail
 			values := keyValueLines(detail)
-			status["state"], status["ssid"], status["ip_address"] = values["wpa_state"], values["ssid"], values["ip_address"]
+			status["state"], status["ssid"], status["ip_address"] = values["wpa_state"], decodeWiFiSSID(values["ssid"]), values["ip_address"]
 			status["connected"] = values["wpa_state"] == "COMPLETED" && values["ssid"] != ""
 			if status["connected"] == true && status["ip_address"] == "" {
 				status["ip_address"] = interfaceIPv4Context(ctx, s.options.WiFiInterface)
@@ -305,7 +308,7 @@ func (s *Server) queryWiFiStatusContext(ctx context.Context) map[string]any {
 		for _, line := range strings.Split(detail, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "SSID:") {
-				status["ssid"] = strings.TrimSpace(strings.TrimPrefix(line, "SSID:"))
+				status["ssid"] = decodeWiFiSSID(strings.TrimSpace(strings.TrimPrefix(line, "SSID:")))
 				status["connected"], status["state"] = true, "COMPLETED"
 				status["ip_address"] = interfaceIPv4Context(ctx, s.options.WiFiInterface)
 			}
@@ -362,12 +365,12 @@ func parseWiFiScanOutput(text string) []string {
 		line = strings.TrimSpace(line)
 		name := ""
 		if strings.HasPrefix(line, "SSID:") {
-			name = strings.TrimSpace(strings.TrimPrefix(line, "SSID:"))
+			name = decodeWiFiSSID(strings.TrimSpace(strings.TrimPrefix(line, "SSID:")))
 		}
 		if position := strings.Index(line, `ESSID:"`); position >= 0 {
 			value := line[position+len(`ESSID:"`):]
 			if end := strings.IndexByte(value, '"'); end >= 0 {
-				name = value[:end]
+				name = decodeWiFiSSID(value[:end])
 			}
 		}
 		if name != "" && !seen[name] {
@@ -378,10 +381,65 @@ func parseWiFiScanOutput(text string) []string {
 	return result
 }
 
+// decodeWiFiSSID converts the \\xHH form emitted by some wireless-tools
+// versions back into the original SSID bytes. SSIDs are byte strings on the
+// wire, and UTF-8 is the common encoding for Chinese network names.
+func decodeWiFiSSID(value string) string {
+	if !strings.Contains(value, `\x`) {
+		return value
+	}
+	raw := make([]byte, 0, len(value))
+	changed := false
+	malformed := false
+	for i := 0; i < len(value); {
+		if value[i] == '\\' && i+1 < len(value) && value[i+1] == 'x' {
+			if i+3 >= len(value) {
+				malformed = true
+			} else if high, ok := hexDigit(value[i+2]); ok {
+				if low, ok := hexDigit(value[i+3]); ok {
+					raw = append(raw, high<<4|low)
+					i += 4
+					changed = true
+					continue
+				}
+				malformed = true
+			} else {
+				malformed = true
+			}
+		}
+		raw = append(raw, value[i])
+		i++
+	}
+	if !changed || malformed || !utf8.Valid(raw) {
+		return value
+	}
+	return string(raw)
+}
+
+func hexDigit(value byte) (byte, bool) {
+	switch {
+	case value >= '0' && value <= '9':
+		return value - '0', true
+	case value >= 'a' && value <= 'f':
+		return value - 'a' + 10, true
+	case value >= 'A' && value <= 'F':
+		return value - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
 func (s *Server) handleWiFiScan(w http.ResponseWriter, _ *http.Request) {
 	var output strings.Builder
 	result := commandResult{ExitCode: 127}
-	if commandExists("ifconfig") {
+	if s.options.WiFiBackend == "systemd-networkd" {
+		if commandExists("ip") {
+			up := runCommand(10*time.Second, nil, nil, "ip", "link", "set", "dev", s.options.WiFiInterface, "up")
+			if len(up.Output) > 0 {
+				fmt.Fprintf(&output, "$ ip link set dev %s up\n%s\n", s.options.WiFiInterface, up.Output)
+			}
+		}
+	} else if commandExists("ifconfig") {
 		up := runCommand(10*time.Second, nil, nil, "ifconfig", s.options.WiFiInterface, "up")
 		if len(up.Output) > 0 {
 			fmt.Fprintf(&output, "$ ifconfig %s up\n%s\n", s.options.WiFiInterface, up.Output)
@@ -803,18 +861,57 @@ func (s *Server) handleWiFiForget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": applied, "wifi": config.publicValue(proxyConfig), "wifi_status": s.queryWiFiStatus(), "message": message, "wifi_apply": applyValue})
 }
 
+func renderWiFiConfigEnvironment(configPath string) ([]byte, error) {
+	if !filepath.IsAbs(configPath) {
+		return nil, fmt.Errorf("wpa_supplicant config path must be absolute: %q", configPath)
+	}
+	if strings.ContainsAny(configPath, "\x00\r\n") {
+		return nil, errors.New("wpa_supplicant config path contains invalid control characters")
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(configPath)
+	return []byte(fmt.Sprintf("%s=\"%s\"\n", wifiSupplicantConfigEnvironmentVariable, escaped)), nil
+}
+
+func (s *Server) selectSystemdWiFiConfig(configPath string) error {
+	content, err := renderWiFiConfigEnvironment(configPath)
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(s.options.WiFiConfigEnvironmentPath, content, 0o600)
+}
+
+func (s *Server) clearSystemdWiFiConfig() error {
+	err := os.Remove(s.options.WiFiConfigEnvironmentPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) commandResult {
 	var output strings.Builder
 	associated := false
+	selectorCleanupFailed := false
 	result := commandResult{ExitCode: 0}
-	if commandExists("ifconfig") {
+	if s.options.WiFiBackend == "systemd-networkd" {
+		if commandExists("ip") {
+			up := runCommandContext(ctx, 10*time.Second, nil, nil, "ip", "link", "set", "dev", s.options.WiFiInterface, "up")
+			fmt.Fprintf(&output, "$ ip link set dev %s up\n%s", s.options.WiFiInterface, up.Output)
+			if up.ExitCode != 0 {
+				result.ExitCode = up.ExitCode
+			}
+		} else {
+			result.ExitCode = 127
+			output.WriteString("ip command is required by the systemd-networkd Wi-Fi backend.\n")
+		}
+	} else if commandExists("ifconfig") {
 		up := runCommandContext(ctx, 10*time.Second, nil, nil, "ifconfig", s.options.WiFiInterface, "up")
 		fmt.Fprintf(&output, "$ ifconfig %s up\n%s", s.options.WiFiInterface, up.Output)
 		if up.ExitCode != 0 {
 			result.ExitCode = up.ExitCode
 		}
 	}
-	if !force && commandExists("wpa_cli") {
+	if !force && s.options.WiFiBackend != "systemd-networkd" && commandExists("wpa_cli") {
 		ping := runCommandContext(ctx, 5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "ping")
 		if ping.ExitCode == 0 && strings.Contains(string(ping.Output), "PONG") {
 			reconfigure := runCommandContext(ctx, 5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "reconfigure")
@@ -823,7 +920,26 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 			}
 		}
 	}
-	if !associated && commandExists("wpa_supplicant") {
+	if !associated && s.options.WiFiBackend == "systemd-networkd" {
+		if err := s.selectSystemdWiFiConfig(configPath); err != nil {
+			result.ExitCode = 1
+			fmt.Fprintf(&output, "$ select wpa_supplicant config %s\n%v\n", configPath, err)
+		} else {
+			unit := "wpa_supplicant@" + s.options.WiFiInterface + ".service"
+			restart := runCommandContext(ctx, 10*time.Second, nil, nil, "systemctl", "restart", unit)
+			fmt.Fprintf(&output, "$ systemctl restart %s with config %s\n%s", unit, configPath, restart.Output)
+			if err := s.clearSystemdWiFiConfig(); err != nil {
+				selectorCleanupFailed = true
+				result.ExitCode = 1
+				fmt.Fprintf(&output, "$ remove runtime wpa_supplicant config selector\n%v\n", err)
+			}
+			if restart.ExitCode == 0 {
+				associated = s.waitForWiFiState(ctx, &output, 10)
+			} else {
+				result.ExitCode = restart.ExitCode
+			}
+		}
+	} else if !associated && commandExists("wpa_supplicant") {
 		if commandExists("killall") {
 			_ = runCommandContext(ctx, 5*time.Second, nil, nil, "killall", "wpa_supplicant")
 		}
@@ -835,7 +951,17 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 		associated = s.waitForWiFiState(ctx, &output, 10)
 	}
 	dhcpOK := false
-	if associated && commandExists("dhcpcd") {
+	if associated && s.options.WiFiBackend == "systemd-networkd" {
+		reconfigure := runCommandContext(ctx, 10*time.Second, nil, nil, "networkctl", "reconfigure", s.options.WiFiInterface)
+		fmt.Fprintf(&output, "$ networkctl reconfigure %s\n%s", s.options.WiFiInterface, reconfigure.Output)
+		dhcpOK = reconfigure.ExitCode == 0 && s.waitForWiFiIP(ctx, &output, 20)
+		if !dhcpOK {
+			result.ExitCode = reconfigure.ExitCode
+			if result.ExitCode == 0 {
+				result.ExitCode = 1
+			}
+		}
+	} else if associated && commandExists("dhcpcd") {
 		dhcp := runCommandContext(ctx, 10*time.Second, nil, nil, "dhcpcd", "-n", s.options.WiFiInterface)
 		dhcpOK = dhcp.ExitCode == 0 && s.waitForWiFiIP(ctx, &output, 15)
 		if !dhcpOK {
@@ -854,7 +980,7 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 		result.ExitCode = 1
 		output.WriteString("wpa_supplicant never reached COMPLETED; skipping DHCP.\n")
 	}
-	if associated && dhcpOK {
+	if associated && dhcpOK && !selectorCleanupFailed {
 		result.ExitCode = 0
 	}
 	if ctx.Err() != nil {

@@ -2230,6 +2230,29 @@ func TestHIDDeviceWriteReopensAfterWatchdogRefreshState(t *testing.T) {
 	}
 }
 
+func TestTriggerUSBCompositeRefreshUsesConfiguredCommand(t *testing.T) {
+	dir := t.TempDir()
+	commandPath := filepath.Join(dir, "usb-refresh")
+	argsPath := filepath.Join(dir, "args")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$AIDEN_USB_REFRESH_TEST_ARGS\"\n"
+	if err := os.WriteFile(commandPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write refresh command: %v", err)
+	}
+	t.Setenv("AIDEN_USB_COMPOSITE_REFRESH_COMMAND", commandPath)
+	t.Setenv("AIDEN_USB_REFRESH_TEST_ARGS", argsPath)
+
+	if err := triggerUSBCompositeRefresh(""); err != nil {
+		t.Fatalf("triggerUSBCompositeRefresh returned error: %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read refresh arguments: %v", err)
+	}
+	if string(args) != "refresh\n" {
+		t.Fatalf("refresh arguments = %q, want %q", args, "refresh\\n")
+	}
+}
+
 func TestHIDDeviceWriteReturnsNonRetryableError(t *testing.T) {
 	dev := &HIDDevice{
 		path: "fake-hid",
@@ -3150,9 +3173,17 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 
 func TestTouchGestureSchemaExposesAtomicActions(t *testing.T) {
 	schema := (&TouchGestureTool{}).ArgsSchema()
-	anyOf, ok := schema["anyOf"].([]map[string]any)
-	if !ok || len(anyOf) != 2 {
-		t.Fatalf("schema anyOf = %#v, want actions-or-type requirement", schema["anyOf"])
+	// Anthropic rejects oneOf, allOf, and anyOf at the top level of a tool
+	// input_schema, and the requirement is stated in the description instead so
+	// every provider receives the same schema.
+	for _, key := range []string{"oneOf", "allOf", "anyOf"} {
+		if _, found := schema[key]; found {
+			t.Fatalf("schema declares top-level %q, which Anthropic rejects: %#v", key, schema[key])
+		}
+	}
+	description, _ := schema["description"].(string)
+	if !strings.Contains(description, "either type or actions") {
+		t.Fatalf("schema description no longer states the type-or-actions requirement: %q", description)
 	}
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
