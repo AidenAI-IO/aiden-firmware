@@ -1,6 +1,6 @@
 # 灵动岛实时展示 Agent 工具状态方案
 
-> 关联任务：**【Aiden】灵动岛展示更详细的实时信息：任务状态**  
+> 关联任务：**【Aiden】灵动岛展示更详细的实时信息：任务状态**
 > Feishu GUID：`2e106f68-d8a1-4a4b-a833-2de2eecb5896`
 
 ## 1. 目标与边界
@@ -224,19 +224,11 @@ updated_at
 本次实现只做向后兼容的可选字段扩展，接口路径和轮询机制保持不变：
 
 ```text
-thinking_summary   // 可展示的思考摘要
-tool_started_at    // 当前工具开始时间，用于准确计时
-```
-
-```text
 tool_status          // thinking/running/preparing/verifying/succeeded/failed/waiting_app/waiting_user
 tool_started_at      // 当前工具开始时间，用于准确计时
-thinking_summary     // Agent 明确标记为可展示的摘要
-tool_result_summary  // Agent 明确标记为可展示的结果摘要
-next_step            // 下一步短文案
 ```
 
-其中 `reasoning_content` 仍按原协议传输给需要它的客户端，但不会直接投影到灵动岛；没有明确摘要时使用固定兜底文案。工具结果只读取显式 `summary` 字段，避免把剪贴板、URL 或原始 JSON 带到灵动岛。
+其中 `reasoning_content` 仍按原协议传输给需要它的客户端，不直接投影到灵动岛；思考阶段使用固定阶段文案。工具输入、结果和错误继续使用现有的安全摘要和步骤文案。
 
 这些字段应同步加入 Go `LiveActivityState`、App TypeScript 类型、ActivityKit `ContentState`，旧版本 App 忽略未知字段即可继续工作。
 
@@ -244,7 +236,6 @@ next_step            // 下一步短文案
 
 ### Agent 侧
 
-- 将允许展示的 `ReasoningContent` 摘要写入 `thinking_summary` 或等价字段。
 - 在 `tool_call` 时记录 `tool_started_at`。
 - 保持工具输入、结果和错误的摘要化处理，不传敏感参数和过长 JSON。
 - 为 Phone Bridge 不在线的第三方 App 中转增加“准备打开目标 App”状态。

@@ -58,9 +58,8 @@ type AfterToolCallHook func(context.Context, ToolCall, ToolResult) ToolResult
 type ToolResultObserver func(context.Context, ToolCall, ToolResult)
 
 type ToolProgress struct {
-	Status   string
-	Content  string
-	NextStep string
+	Status  string
+	Content string
 }
 
 type toolProgressContextKey struct{}

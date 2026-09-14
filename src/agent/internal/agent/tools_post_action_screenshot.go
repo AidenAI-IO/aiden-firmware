@@ -156,9 +156,8 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 	}
 
 	reportToolProgress(ctx, ToolProgress{
-		Status:   "verifying",
-		Content:  "操作已发送，正在等待页面稳定",
-		NextStep: "读取屏幕，确认操作结果",
+		Status:  "verifying",
+		Content: "操作已发送，正在等待页面稳定",
 	})
 	var waitResult waitStableScreenResult
 	if t.waitStable != nil {

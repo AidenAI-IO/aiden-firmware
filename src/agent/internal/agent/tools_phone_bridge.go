@@ -298,9 +298,8 @@ func bridgeOpenResultMechanism(responseMethod string) string {
 func sendBridgeOpenCommand(ctx context.Context, bridge *PhoneBridge, restorer *PhoneBridgeRestorer, cmd BridgeCommand, method, target string) (string, error) {
 	if bridge != nil && !phoneBridgeReadyForCommand(bridge.getStatus(), cmd.Type) {
 		reportToolProgress(ctx, ToolProgress{
-			Status:   "preparing",
-			Content:  "即将跳转，正在尝试唤回 Aiden App",
-			NextStep: "连接恢复后打开目标应用",
+			Status:  "preparing",
+			Content: "即将跳转，正在尝试唤回 Aiden App",
 		})
 	}
 	restored, err := ensurePhoneBridgeReadyForCommand(ctx, bridge, restorer, "open_app")
@@ -318,9 +317,8 @@ func sendBridgeOpenCommand(ctx context.Context, bridge *PhoneBridge, restorer *P
 	}
 
 	reportToolProgress(ctx, ToolProgress{
-		Status:   "running",
-		Content:  "即将跳转，正在打开目标应用",
-		NextStep: "读取屏幕，确认目标页面",
+		Status:  "running",
+		Content: "即将跳转，正在打开目标应用",
 	})
 	resp, err := bridge.SendCommand(ctx, cmd)
 	if err != nil {

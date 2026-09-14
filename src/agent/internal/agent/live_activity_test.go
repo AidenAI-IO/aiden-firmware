@@ -64,10 +64,10 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 	state := manager.UpdateFromRunEvent("req-1", RunEvent{
 		Type:      "role_output",
 		Role:      "agent",
-		Content:   `{"plan":["Open Maps","Search restaurant"],"next_step":"Open Maps"}`,
+		Content:   `{"plan":["Open Maps","Search restaurant"]}`,
 		Timestamp: time.Now(),
 	})
-	if state == nil || state.CurrentStep != "Open Maps" {
+	if state == nil || state.CurrentStep != "Planning: Open Maps" {
 		t.Fatalf("agent step = %#v, want Open Maps", state)
 	}
 
@@ -98,11 +98,11 @@ func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
 	state := manager.UpdateFromRunEvent("req-details", RunEvent{
 		Type:             "role_output",
 		Role:             "agent",
-		Content:          `{"thinking_summary":"已确认当前页面","next_step":"打开设置"}`,
+		Content:          `{"plan":["打开设置"]}`,
 		ReasoningContent: "正在确认当前页面状态",
 		Timestamp:        time.Now(),
 	})
-	if state == nil || state.ThinkingSummary != "已确认当前页面" || state.NextStep != "打开设置" {
+	if state == nil || state.ToolStatus != "thinking" {
 		t.Fatalf("thinking details = %#v", state)
 	}
 
@@ -123,7 +123,7 @@ func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
 		Content:   `{"summary":"已获取当前页面"}`,
 		Timestamp: time.Now(),
 	})
-	if state == nil || state.ToolStatus != "succeeded" || state.ToolResultSummary != "已获取当前页面" || state.ToolStartedAt != nil {
+	if state == nil || state.ToolStatus != "succeeded" || state.ToolStartedAt != nil {
 		t.Fatalf("tool result details = %#v", state)
 	}
 }
