@@ -37,8 +37,8 @@ awk -F '\t' '
 
 cmp "${TEST_ROOT}/actual-init-scripts" "${TEST_ROOT}/mapped-init-scripts" \
     || fail "init script inventory does not match overlay/etc/init.d"
-[ "$(wc -l <"${TEST_ROOT}/mapped-init-scripts")" -eq 32 ] \
-    || fail "expected 31 S scripts plus rcS"
+[ "$(wc -l <"${TEST_ROOT}/mapped-init-scripts")" -eq 26 ] \
+    || fail "expected 25 S scripts plus rcS"
 
 awk -F '\t' '$1 == "rcS" { found = 1; if ($2 != "replaced-by-debian" || $3 != "systemd") exit 1 }
     END { if (!found) exit 1 }' "${MAP_FILE}" \

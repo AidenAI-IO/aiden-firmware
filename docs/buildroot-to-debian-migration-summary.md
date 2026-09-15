@@ -931,10 +931,15 @@ overlay/oem/usr/lib/librknnmrt.so
 `third_party/rknpu2/v2.3.2/lib/librknnmrt.a` 静态库和 glibc 兼容层。它仍可能被旧
 Buildroot CMake/镜像流程引用，删除前应先确认历史资料不再需要。
 
-`overlay/etc/init.d/` 中部分脚本（例如 `S30dbus`、`S35wifidrv`、`S40network`、
-`S50telnet`、`S50usbdevice`、`S57wetty`、`S91smb` 和 `S99usb0config`）不会进入
+`overlay/etc/init.d/` 中仍保留的脚本（例如 `S35wifidrv`、`S57ttyd`）不会进入
 当前 Debian rootfs，但仍属于旧 Buildroot overlay。删除它们前必须先移除或重写
 旧镜像流程、相关测试和发布策略。
+
+已完成清理：`overlay/etc/init.d/` 下 6 个在仓库中已无任何运行期、测试或构建引用的
+脚本 `S30dbus`、`S40network`、`S50telnet`、`S50usbdevice`、`S91smb` 和
+`S99usb0config` 已删除；`scripts/debian/init-script-map.tsv` 中对应映射行同步移除，
+`scripts/test_debian_init_script_map.sh` 的清单断言更新为 25 个 `S*` 脚本加 `rcS`，
+`S40network` 在 `S35wifidrv` 中留下的过时注释也已改写。
 
 已完成清理：swap 旧实现 `overlay/etc/init.d/S51swap`、`overlay/etc/aiden_swap.conf`
 及其专用测试 `scripts/test_swap_init.sh` 已删除；Debian 侧由 `aiden-swap.service`、
