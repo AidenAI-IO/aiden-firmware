@@ -407,7 +407,7 @@ built. When a section is named exactly like a provider type, the section wins.
 | `responses_context_edit_clear_thinking` | When true, adds Ark's `clear_thinking` edit and removes previous thinking turns. |
 | `responses_truncation` | OpenAI-compatible Responses truncation policy. Empty/`disabled` preserves the API default; `auto` lets OpenAI or OpenRouter discard the oldest input. This field is not sent to Ark or DeepSeek. |
 | `responses_include` | Optional array of provider-supported Responses include values. In stateless reasoning mode, use `reasoning.encrypted_content` when supported so Aiden can replay the complete opaque reasoning item. DeepSeek does not support `include`; its plain-text reasoning items are replayed directly. Aiden uses `previous_response_id` for provider-managed chaining and intentionally does not expose the separate `conversation` resource ID: the local session transcript remains authoritative and must not be shared across sessions accidentally. |
-| `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence.                                                        |
+| `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value normally takes precedence. DeepSeek thinking mode does not use temperature, so Aiden omits it whenever `reasoning_effort` is not `none`. |
 | `reasoning_effort`        | Reasoning effort. Unset is auto. Native Anthropic maps supported effort values to adaptive thinking `output_config.effort` and preserves signed thinking blocks across tool-call turns. `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, DeepSeek, Ollama, and the fake provider, but not by native Anthropic or Ark. DeepSeek defaults to `none` for faster device interactions; explicit `low`, `high`, or `max` enables thinking with `reasoning_content` replay. Other models may also pin a lighter default in `model_specs.go`; an explicit value always wins. |
 | `reasoning_budget_tokens` | Optional exact reasoning-token budget for models that expose a numeric budget. `0` uses the model default or effort preset. It is currently translated only to Anthropic's native `thinking.budget_tokens` field. |
 | `max_response_tokens`     | Maximum output tokens passed to the model on request                                                                                                                                                                                                 |
@@ -421,7 +421,11 @@ Use the dedicated `kimi` (global) or `kimi-cn` (mainland China) provider. Each h
 Moonshot's official endpoint implements OpenAI-compatible Chat Completions, not
 the Responses API. Keep `api_mode` unset (or set it to `chat_completions`). A
 third-party protocol-conversion gateway can instead be configured as a custom
-`openai` provider if it genuinely exposes `/responses`.
+`openai` provider if it genuinely exposes `/responses`. Kimi thinking models
+require preserved thinking across multi-turn and tool-call requests, so Aiden
+replays each returned assistant `reasoning_content` field through the shared
+compatible transport. See the official [Kimi Thinking Models](https://platform.kimi.ai/docs/guide/use-thinking-models)
+guide.
 
 ```toml
 # Global site (https://api.moonshot.ai/v1)
@@ -505,7 +509,9 @@ Set `reasoning_effort` to `low`, `high`, or `max` to enable thinking. In Chat
 Completions mode, Aiden sends DeepSeek's `thinking` toggle and replays assistant
 `reasoning_content` from the transcript on subsequent tool-call requests. In
 Responses mode, it sends `reasoning.effort` and replays the returned reasoning,
-message, and executed function-call items through Aiden's local context.
+message, and executed function-call items through Aiden's local context. Since
+DeepSeek does not apply temperature in thinking mode, Aiden omits the field for
+both transports while preserving it in non-thinking mode.
 
 Set `api_mode = "responses"` to use DeepSeek's stateless `/responses` endpoint.
 DeepSeek does not support `responses_stateful`, `store`, or

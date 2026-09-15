@@ -26,6 +26,7 @@ func TestDeepSeekVisionToolContinuation(t *testing.T) {
 				const reasoning = "Inspect the screen before taking action."
 				type capturedRequest struct {
 					Model           string              `json:"model"`
+					Temperature     *float64            `json:"temperature"`
 					Thinking        compatibleThinking  `json:"thinking"`
 					ReasoningEffort string              `json:"reasoning_effort"`
 					Reasoning       json.RawMessage     `json:"reasoning"`
@@ -67,7 +68,8 @@ func TestDeepSeekVisionToolContinuation(t *testing.T) {
 					}
 					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body))), Header: make(http.Header)}, nil
 				})}
-				cfg := ModelConfig{Provider: "deepseek", Model: "deepseek-flash", APIKey: "deepseek-test-key", ReasoningEffort: effort}
+				temperature := 0.4
+				cfg := ModelConfig{Provider: "deepseek", Model: "deepseek-flash", APIKey: "deepseek-test-key", ReasoningEffort: effort, Temperature: &temperature}
 				built, err := buildDeepSeekModel(ModelBuildContext{HTTPClient: client}, cfg)
 				if err != nil {
 					t.Fatal(err)
@@ -82,7 +84,10 @@ func TestDeepSeekVisionToolContinuation(t *testing.T) {
 					Role: agentmessages.MessageRoleUser, Content: "Inspect this image",
 					Attachments: []agentmessages.Attachment{{MIMEType: "image/png", FilePath: imagePath}},
 				}}
-				opts := []llms.CallOption{llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "inspect", Parameters: map[string]any{"type": "object"}}}})}
+				opts := []llms.CallOption{
+					llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "inspect", Parameters: map[string]any{"type": "object"}}}}),
+					llms.WithTemperature(0.7),
+				}
 				if stream {
 					opts = append(opts, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
 				}
@@ -114,6 +119,13 @@ func TestDeepSeekVisionToolContinuation(t *testing.T) {
 				for _, request := range requests {
 					if request.Model != cfg.Model || request.Thinking.Type != wantThinking || request.ReasoningEffort != wantEffort || request.Reasoning != nil || len(request.Tools) != 1 {
 						t.Fatalf("unexpected request profile: %+v", request)
+					}
+					if thinking {
+						if request.Temperature != nil {
+							t.Fatalf("thinking request temperature = %v, want omitted", *request.Temperature)
+						}
+					} else if request.Temperature == nil || *request.Temperature != temperature {
+						t.Fatalf("non-thinking request temperature = %v, want %v", request.Temperature, temperature)
 					}
 					for _, message := range request.Messages {
 						if thinking && message.Role == "assistant" {
@@ -158,6 +170,59 @@ func TestDeepSeekResponsesModeValidation(t *testing.T) {
 	}
 	if _, err := buildDeepSeekModel(ModelBuildContext{}, cfg.Model); err == nil || !strings.Contains(err.Error(), "stateless") {
 		t.Fatalf("stateful builder error = %v", err)
+	}
+}
+
+func TestDeepSeekResponsesTemperature(t *testing.T) {
+	configuredTemperature := 0.4
+	for _, tt := range []struct {
+		name        string
+		effort      string
+		temperature *float64
+		options     []llms.CallOption
+		want        *float64
+	}{
+		{name: "configured/non-thinking", effort: "none", temperature: &configuredTemperature, want: &configuredTemperature},
+		{name: "per-call/non-thinking", effort: "none", options: []llms.CallOption{llms.WithTemperature(0.7)}, want: floatPtr(0.7)},
+		{name: "configured/thinking", effort: "high", temperature: &configuredTemperature},
+		{name: "per-call/thinking", effort: "high", options: []llms.CallOption{llms.WithTemperature(0.7)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var request map[string]any
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				body := `{"id":"resp_1","status":"completed","output":[]}`
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+			})}
+			model, err := buildDeepSeekModel(ModelBuildContext{HTTPClient: client}, ModelConfig{
+				Provider:        "deepseek",
+				Model:           "deepseek-flash",
+				APIMode:         "responses",
+				ReasoningEffort: tt.effort,
+				Temperature:     tt.temperature,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+				Role:  llms.ChatMessageTypeHuman,
+				Parts: []llms.ContentPart{llms.TextPart("hello")},
+			}}, tt.options...); err != nil {
+				t.Fatal(err)
+			}
+			got, exists := request["temperature"]
+			if tt.want == nil {
+				if exists {
+					t.Fatalf("temperature = %v, want omitted", got)
+				}
+				return
+			}
+			if !exists || got != *tt.want {
+				t.Fatalf("temperature = %v, want %v", got, *tt.want)
+			}
+		})
 	}
 }
 
@@ -230,6 +295,8 @@ func TestDeepSeekResponsesVisionToolContinuation(t *testing.T) {
 				ResponsesTruncation:        "auto",
 				ResponsesInclude:           []string{"reasoning.encrypted_content"},
 			}
+			temperature := 0.4
+			cfg.Temperature = &temperature
 			built, err := buildDeepSeekModel(ModelBuildContext{HTTPClient: client}, cfg)
 			if err != nil {
 				t.Fatal(err)
@@ -244,7 +311,10 @@ func TestDeepSeekResponsesVisionToolContinuation(t *testing.T) {
 				Role: agentmessages.MessageRoleUser, Content: "Inspect this image",
 				Attachments: []agentmessages.Attachment{{MIMEType: "image/png", FilePath: imagePath}},
 			}}
-			opts := []llms.CallOption{llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "inspect", Parameters: map[string]any{"type": "object"}}}})}
+			opts := []llms.CallOption{
+				llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "inspect", Parameters: map[string]any{"type": "object"}}}}),
+				llms.WithTemperature(0.7),
+			}
 			if stream {
 				opts = append(opts, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
 			}
@@ -267,7 +337,7 @@ func TestDeepSeekResponsesVisionToolContinuation(t *testing.T) {
 				t.Fatalf("request count = %d, want 2", len(requests))
 			}
 			for _, request := range requests {
-				for _, unsupported := range []string{"store", "previous_response_id", "parallel_tool_calls", "context_management", "truncation", "include"} {
+				for _, unsupported := range []string{"store", "previous_response_id", "parallel_tool_calls", "context_management", "truncation", "include", "temperature"} {
 					if _, exists := request[unsupported]; exists {
 						t.Fatalf("DeepSeek request unexpectedly contains %s: %#v", unsupported, request)
 					}
@@ -291,39 +361,58 @@ func TestDeepSeekResponsesVisionToolContinuation(t *testing.T) {
 	}
 }
 
-func TestDeepSeekReasoningPreservesAssistantBoundaries(t *testing.T) {
-	for _, deepSeek := range []bool{false, true} {
-		client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			var payload compatibleChatRequest
-			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
-				t.Fatal(err)
-			}
-			if deepSeek {
-				if len(payload.Messages) != 4 || payload.Messages[1].ReasoningContent == nil || *payload.Messages[1].ReasoningContent != "first thought" || payload.Messages[2].ReasoningContent == nil || *payload.Messages[2].ReasoningContent != "" {
-					t.Fatalf("assistant reasoning/boundaries lost: %+v", payload.Messages)
+func TestReasoningContentReplayPreservesAssistantBoundaries(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		options    []openAICompatibleModelOption
+		wantReplay bool
+		alwaysSet  bool
+	}{
+		{name: "generic"},
+		{name: "kimi", options: []openAICompatibleModelOption{withOpenAICompatibleReasoningContentReplay(false)}, wantReplay: true},
+		{name: "deepseek", options: []openAICompatibleModelOption{withOpenAICompatibleDeepSeek(), withOpenAICompatibleReasoningContentReplay(true)}, wantReplay: true, alwaysSet: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				var payload compatibleChatRequest
+				if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
 				}
-			} else {
-				if len(payload.Messages) != 3 || payload.Thinking != nil {
-					t.Fatalf("generic transport changed: %+v", payload)
-				}
-				for _, message := range payload.Messages {
-					if message.ReasoningContent != nil {
-						t.Fatal("DeepSeek reasoning leaked into another provider")
+				if tt.wantReplay {
+					if len(payload.Messages) != 4 || payload.Messages[1].ReasoningContent == nil || *payload.Messages[1].ReasoningContent != "first thought" {
+						t.Fatalf("assistant reasoning/boundaries lost: %+v", payload.Messages)
+					}
+					if tt.alwaysSet {
+						if payload.Messages[2].ReasoningContent == nil || *payload.Messages[2].ReasoningContent != "" {
+							t.Fatalf("empty assistant reasoning field missing: %+v", payload.Messages)
+						}
+					} else if payload.Messages[2].ReasoningContent != nil {
+						t.Fatalf("empty assistant reasoning field should be omitted: %+v", payload.Messages)
+					}
+				} else {
+					if len(payload.Messages) != 3 || payload.Thinking != nil {
+						t.Fatalf("generic transport changed: %+v", payload)
+					}
+					for _, message := range payload.Messages {
+						if message.ReasoningContent != nil {
+							t.Fatal("reasoning_content leaked into an unsupported provider")
+						}
 					}
 				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))}, nil
+			})}
+			options := append([]openAICompatibleModelOption{withOpenAICompatibleReasoningEffort("high")}, tt.options...)
+			m := newOpenAICompatibleModel("https://example.test", "test", "", client, options...).(*openAICompatibleModel)
+			_, err := m.GenerateContentFromMessageList(context.Background(), []agentmessages.Message{
+				{Role: agentmessages.MessageRoleUser, Content: "hello"},
+				{Role: agentmessages.MessageRoleAssistant, Content: "first", ReasoningContent: "first thought"},
+				{Role: agentmessages.MessageRoleAssistant, Content: "second"},
+				{Role: agentmessages.MessageRoleUser, Content: "continue"},
+			})
+			if err != nil {
+				t.Fatal(err)
 			}
-			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))}, nil
-		})}
-		m := &openAICompatibleModel{baseURL: "https://example.test", model: "test", reasoningEffort: "high", deepSeek: deepSeek, httpClient: client}
-		_, err := m.GenerateContentFromMessageList(context.Background(), []agentmessages.Message{
-			{Role: agentmessages.MessageRoleUser, Content: "hello"},
-			{Role: agentmessages.MessageRoleAssistant, Content: "first", ReasoningContent: "first thought"},
-			{Role: agentmessages.MessageRoleAssistant, Content: "second"},
-			{Role: agentmessages.MessageRoleUser, Content: "continue"},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 	}
 }
 
@@ -351,7 +440,7 @@ model = "deepseek-flash"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := m.(*openAICompatibleModel); got.token != "test-key" || got.baseURL != deepseekBaseURL || !got.deepSeek || got.reasoningEffort != "none" {
+	if got := m.(*openAICompatibleModel); got.token != "test-key" || got.baseURL != deepseekBaseURL || !got.deepSeek || got.reasoningContentReplay || got.reasoningEffort != "none" {
 		t.Fatal("named provider did not resolve to DeepSeek request profile")
 	}
 	editorConfig, err := LoadResolvedConfig(path)

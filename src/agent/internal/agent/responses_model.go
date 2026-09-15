@@ -90,6 +90,7 @@ type responsesModel struct {
 	sessionIDProvider        func() string
 	reasoningEffort          string
 	temperature              *float64
+	ignoreTemperature        bool
 	routerMetadata           bool
 	providerManagedContext   bool
 	contextManagement        string
@@ -107,6 +108,7 @@ type responsesModelOptions struct {
 	sessionIDProvider        func() string
 	reasoningEffort          string
 	temperature              *float64
+	ignoreTemperature        bool
 	routerMetadata           bool
 	providerManagedContext   bool
 	contextManagement        string
@@ -136,6 +138,7 @@ func newResponsesModel(baseURL, model, token string, httpClient *http.Client, op
 		sessionIDProvider:        opts.sessionIDProvider,
 		reasoningEffort:          strings.TrimSpace(opts.reasoningEffort),
 		temperature:              opts.temperature,
+		ignoreTemperature:        opts.ignoreTemperature,
 		routerMetadata:           opts.routerMetadata,
 		providerManagedContext:   opts.providerManagedContext,
 		contextManagement:        normalizeResponsesContextManagement(opts.contextManagement),
@@ -413,7 +416,6 @@ func (m *responsesModel) generateContentWithInput(ctx context.Context, input []r
 		ParallelToolCalls: &parallelToolCalls,
 		Stream:            callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil,
 		MaxOutputTokens:   callOpts.MaxTokens,
-		Temperature:       m.temperature,
 	}
 	// OpenRouter and DeepSeek expose stateless Responses endpoints. Omit both
 	// state fields instead of relying on their compatibility layers to ignore
@@ -470,8 +472,11 @@ func (m *responsesModel) generateContentWithInput(ctx context.Context, input []r
 	if len(m.include) > 0 && m.dialect != responsesDialectDeepSeek {
 		payload.Include = append([]string(nil), m.include...)
 	}
-	if payload.Temperature == nil && callOpts.Temperature != 0 {
-		payload.Temperature = &callOpts.Temperature
+	if !m.ignoreTemperature {
+		payload.Temperature = m.temperature
+		if payload.Temperature == nil && callOpts.Temperature != 0 {
+			payload.Temperature = &callOpts.Temperature
+		}
 	}
 	if m.reasoningEffort != "" {
 		payload.Reasoning = &responsesReasoning{Effort: m.reasoningEffort}

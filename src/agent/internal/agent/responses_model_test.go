@@ -256,18 +256,21 @@ func TestResponsesModelUsesDeepSeekStatelessShape(t *testing.T) {
 	}))
 	defer server.Close()
 
+	temperature := 0.4
 	model := newResponsesModel(server.URL, "deepseek-flash", "", server.Client(), responsesModelOptions{
 		providerManagedContext: true,
 		contextManagement:      "compaction",
 		truncation:             "auto",
 		include:                []string{"reasoning.encrypted_content"},
 		reasoningEffort:        "high",
+		temperature:            &temperature,
+		ignoreTemperature:      true,
 		dialect:                responsesDialectDeepSeek,
 	}).(*responsesModel)
-	if _, err := model.generateContentWithInput(context.Background(), []responsesInputItem{{Role: "user", Content: "hello"}}, "", "resp_previous"); err != nil {
+	if _, err := model.generateContentWithInput(context.Background(), []responsesInputItem{{Role: "user", Content: "hello"}}, "", "resp_previous", llms.WithTemperature(0.7)); err != nil {
 		t.Fatalf("generateContentWithInput: %v", err)
 	}
-	for _, unsupported := range []string{"store", "previous_response_id", "parallel_tool_calls", "context_management", "truncation", "include"} {
+	for _, unsupported := range []string{"store", "previous_response_id", "parallel_tool_calls", "context_management", "truncation", "include", "temperature"} {
 		if _, exists := raw[unsupported]; exists {
 			t.Fatalf("DeepSeek request unexpectedly contains %s: %#v", unsupported, raw)
 		}

@@ -36,10 +36,18 @@ type openAICompatibleModel struct {
 	// OpenRouter provider sets it; direct endpoints such as Volcengine Ark,
 	// OpenAI, and Moonshot receive reasoning_effort alone.
 	openRouterReasoning bool
-	// DeepSeek uses a thinking toggle and requires assistant reasoning_content
-	// to be replayed from the persisted transcript when thinking is enabled.
-	deepSeek    bool
-	temperature *float64
+	// DeepSeek uses a provider-specific thinking toggle.
+	deepSeek bool
+	// reasoningContentReplay preserves the provider's reasoning_content field
+	// across Chat Completions turns. Some providers require the field on every
+	// assistant message, including messages whose reasoning content is empty.
+	reasoningContentReplay    bool
+	reasoningContentAlwaysSet bool
+	temperature               *float64
+	// ignoreTemperature prevents both configured and per-call temperature from
+	// reaching providers that accept the field but cannot apply it in the
+	// selected reasoning mode.
+	ignoreTemperature bool
 	// sessionIDProvider, when set, supplies the value for the x-session-id
 	// request header. It is only wired up for the OpenRouter provider, whose
 	// sticky routing uses the session id to keep multi-turn requests on the same
@@ -137,8 +145,21 @@ func withOpenAICompatibleTemperature(temp *float64) openAICompatibleModelOption 
 	}
 }
 
+func withOpenAICompatibleIgnoreTemperature() openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.ignoreTemperature = true
+	}
+}
+
 func withOpenAICompatibleDeepSeek() openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) { m.deepSeek = true }
+}
+
+func withOpenAICompatibleReasoningContentReplay(alwaysSet bool) openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.reasoningContentReplay = true
+		m.reasoningContentAlwaysSet = alwaysSet
+	}
 }
 
 // openRouterSessionIDMaxLen mirrors OpenRouter's documented 256-char limit for
@@ -483,7 +504,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 func (m *openAICompatibleModel) GenerateContentFromMessageList(ctx context.Context, contextMessages []agentmessages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	var reasoning []string
-	if m.deepSeek {
+	if m.reasoningContentReplay {
 		reasoning = make([]string, len(contextMessages))
 		for i, message := range contextMessages {
 			reasoning[i] = message.ReasoningContent
@@ -507,15 +528,14 @@ func (m *openAICompatibleModel) generateContent(ctx context.Context, messages []
 		if err != nil {
 			return nil, err
 		}
-		if m.deepSeek && m.reasoningEffort != "none" && converted.Role == "assistant" {
-			// Include even an empty string for older/non-thinking history. DeepSeek
-			// requires this field on every assistant message when tools are used,
-			// including assistant replies that did not call a tool.
+		if m.reasoningContentReplay && converted.Role == "assistant" {
 			content := ""
 			if i < len(reasoning) {
 				content = reasoning[i]
 			}
-			converted.ReasoningContent = &content
+			if content != "" || m.reasoningContentAlwaysSet {
+				converted.ReasoningContent = &content
+			}
 		}
 		requestMessages = append(requestMessages, converted)
 	}
@@ -539,10 +559,12 @@ func (m *openAICompatibleModel) generateContent(ctx context.Context, messages []
 	// (langchaingo convention, 0 means unset). The model field is the primary
 	// channel for openAI-compatible models; callOpts remains for telemetry and
 	// non-openai-compatible providers (ollama, fake).
-	if m.temperature != nil {
-		reqPayload.Temperature = m.temperature
-	} else if callOpts.Temperature != 0 {
-		reqPayload.Temperature = &callOpts.Temperature
+	if !m.ignoreTemperature {
+		if m.temperature != nil {
+			reqPayload.Temperature = m.temperature
+		} else if callOpts.Temperature != 0 {
+			reqPayload.Temperature = &callOpts.Temperature
+		}
 	}
 	if callOpts.JSONMode {
 		reqPayload.ResponseFormat = map[string]string{"type": "json_object"}

@@ -148,7 +148,8 @@ model = "gpt-5.5"
 # provider. Each uses its built-in Moonshot endpoint, so only model + api_key
 # are needed. Custom base_url values are not supported for Kimi providers.
 # Moonshot's official endpoint supports Chat Completions, not /responses, so
-# keep api_mode unset (or set it to "chat_completions").
+# keep api_mode unset (or set it to "chat_completions"). Aiden replays returned
+# reasoning_content for Kimi's preserved thinking across tool-call turns.
 # [model_providers.kimi-main]
 # type = "kimi"           # global: https://api.moonshot.ai/v1
 # type = "kimi-cn"        # mainland China: https://api.moonshot.cn/v1
@@ -175,7 +176,8 @@ model = "gpt-5.5"
 # For DeepSeek, use the built-in OpenAI-compatible endpoint. DeepSeek's API
 # defaults to thinking mode; Aiden selects reasoning_effort = "none" for the
 # built-in model entries for fast replies. Explicit low/high/max enables
-# thinking with reasoning_content replay across tool-call turns.
+# thinking with reasoning_content replay across tool-call turns; temperature is
+# omitted while thinking is enabled because DeepSeek does not apply it.
 # Use api_mode = "responses" for DeepSeek's stateless Responses API. It keeps
 # full context locally; responses_stateful is not supported by DeepSeek.
 # [model_providers.deepseek-main]

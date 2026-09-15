@@ -124,13 +124,15 @@ func buildDeepSeekModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, err
 	if strings.TrimSpace(cfg.ReasoningEffort) == "" {
 		cfg.ReasoningEffort = "none"
 	}
+	thinkingEnabled := !strings.EqualFold(strings.TrimSpace(cfg.ReasoningEffort), "none")
 	switch apiMode := normalizeModelAPIMode(cfg.APIMode); apiMode {
 	case modelAPIModeResponses:
 		return newResponsesModel(deepseekBaseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, responsesModelOptions{
-			rawLogger:       ctx.RawHTTPLogger,
-			reasoningEffort: cfg.ReasoningEffort,
-			temperature:     cfg.Temperature,
-			dialect:         responsesDialectDeepSeek,
+			rawLogger:         ctx.RawHTTPLogger,
+			reasoningEffort:   cfg.ReasoningEffort,
+			temperature:       cfg.Temperature,
+			ignoreTemperature: thinkingEnabled,
+			dialect:           responsesDialectDeepSeek,
 		}), nil
 	case modelAPIModeResponsesStateful:
 		return nil, fmt.Errorf("model.api_mode=responses_stateful is not supported by DeepSeek; its /responses endpoint is stateless and does not support previous_response_id")
@@ -139,6 +141,12 @@ func buildDeepSeekModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, err
 		return nil, fmt.Errorf("invalid model.api_mode: %s", cfg.APIMode)
 	}
 	opts := append(openAICompatibleOptions(ctx, cfg), withOpenAICompatibleDeepSeek())
+	if thinkingEnabled {
+		opts = append(opts,
+			withOpenAICompatibleIgnoreTemperature(),
+			withOpenAICompatibleReasoningContentReplay(true),
+		)
+	}
 	return newOpenAICompatibleModel(deepseekBaseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, opts...), nil
 }
 
@@ -147,7 +155,12 @@ func buildKimiModel(ctx ModelBuildContext, cfg ModelConfig, defaultBaseURL strin
 	if apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
 		return nil, fmt.Errorf("model.api_mode=%s is not supported by Moonshot Kimi; its official endpoint implements OpenAI-compatible Chat Completions, not /responses", apiMode)
 	}
-	return buildOpenAICompatibleModel(ctx, cfg, defaultBaseURL, responsesDialectOpenAI), nil
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+	opts := append(openAICompatibleOptions(ctx, cfg), withOpenAICompatibleReasoningContentReplay(false))
+	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, opts...), nil
 }
 
 func buildOpenRouterModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
