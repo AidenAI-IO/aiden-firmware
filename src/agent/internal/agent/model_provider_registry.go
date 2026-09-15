@@ -145,7 +145,7 @@ func buildDeepSeekModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, err
 	default:
 		return nil, fmt.Errorf("invalid model.api_mode: %s", cfg.APIMode)
 	}
-	opts := append(openAICompatibleOptions(ctx, cfg), withOpenAICompatibleDeepSeek())
+	opts := append(openAICompatibleOptions(ctx, cfg), withOpenAICompatibleDialect(compatibleDialectDeepSeek))
 	if thinkingEnabled {
 		opts = append(opts, withOpenAICompatibleIgnoreTemperature())
 	}
@@ -186,7 +186,7 @@ func buildOpenRouterModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, e
 	opts := append(openAICompatibleOptions(ctx, cfg),
 		withOpenAICompatibleSessionSticky(ctx.SessionIDProvider),
 		withOpenAICompatibleRouterMetadata(),
-		withOpenAICompatibleOpenRouterReasoning())
+		withOpenAICompatibleDialect(compatibleDialectOpenRouter))
 	if ctx.PromptCachePolicy.UsesExplicitCacheControl() {
 		opts = append(opts, withOpenAICompatibleExplicitPromptCache())
 	}

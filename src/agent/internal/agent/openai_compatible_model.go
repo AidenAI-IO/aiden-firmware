@@ -21,6 +21,19 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+// compatibleDialect identifies the provider-specific wire shape of the shared
+// OpenAI-compatible Chat Completions transport. Most providers (OpenAI, Kimi,
+// Volcengine Ark, and custom gateways) speak the generic shape; OpenRouter adds
+// a nested `reasoning` object and DeepSeek adds a `thinking` toggle plus
+// mandatory `reasoning_content` on every assistant message.
+type compatibleDialect string
+
+const (
+	compatibleDialectOpenAI     compatibleDialect = "" // generic OpenAI-compatible shape
+	compatibleDialectOpenRouter compatibleDialect = "openrouter"
+	compatibleDialectDeepSeek   compatibleDialect = "deepseek"
+)
+
 type openAICompatibleModel struct {
 	baseURL             string
 	model               string
@@ -30,15 +43,8 @@ type openAICompatibleModel struct {
 	explicitPromptCache bool
 	routerMetadata      bool
 	reasoningEffort     string
-	// openRouterReasoning enables the nested `reasoning` object alongside the
-	// standard reasoning_effort field. That object is an OpenRouter extension
-	// (it carries `exclude` to drop reasoning from the response), so only the
-	// OpenRouter provider sets it; direct endpoints such as Volcengine Ark,
-	// OpenAI, and Moonshot receive reasoning_effort alone.
-	openRouterReasoning bool
-	// DeepSeek uses a provider-specific thinking toggle.
-	deepSeek    bool
-	temperature *float64
+	dialect             compatibleDialect
+	temperature         *float64
 	// ignoreTemperature prevents both configured and per-call temperature from
 	// reaching providers that accept the field but cannot apply it in the
 	// selected reasoning mode.
@@ -125,12 +131,11 @@ func withOpenAICompatibleReasoningEffort(effort string) openAICompatibleModelOpt
 	}
 }
 
-// withOpenAICompatibleOpenRouterReasoning sends OpenRouter's nested `reasoning`
-// object in addition to the standard reasoning_effort field. Leave it unset for
-// direct provider endpoints, which only understand reasoning_effort.
-func withOpenAICompatibleOpenRouterReasoning() openAICompatibleModelOption {
+// withOpenAICompatibleDialect selects the provider-specific wire shape for the
+// shared compatible transport. Leave unset for the generic OpenAI shape.
+func withOpenAICompatibleDialect(dialect compatibleDialect) openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
-		m.openRouterReasoning = true
+		m.dialect = dialect
 	}
 }
 
@@ -144,10 +149,6 @@ func withOpenAICompatibleIgnoreTemperature() openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.ignoreTemperature = true
 	}
-}
-
-func withOpenAICompatibleDeepSeek() openAICompatibleModelOption {
-	return func(m *openAICompatibleModel) { m.deepSeek = true }
 }
 
 // openRouterSessionIDMaxLen mirrors OpenRouter's documented 256-char limit for
@@ -504,6 +505,27 @@ func (m *openAICompatibleModel) GenerateContentFromMessageList(ctx context.Conte
 	return m.generateContent(ctx, agentmessages.ConvertMessageList(contextMessages), reasoning, options...)
 }
 
+// applyCompatibleDialect adds provider-specific Chat Completions fields for the
+// model's dialect. The generic OpenAI shape needs no extras: OpenRouter gets its
+// nested `reasoning` object and DeepSeek gets its `thinking` toggle.
+func (m *openAICompatibleModel) applyCompatibleDialect(req *compatibleChatRequest) {
+	switch m.dialect {
+	case compatibleDialectOpenRouter:
+		if m.reasoningEffort != "" {
+			req.Reasoning = &reasoningConfig{
+				Effort:  m.reasoningEffort,
+				Exclude: m.reasoningEffort == "none",
+			}
+		}
+	case compatibleDialectDeepSeek:
+		thinkingType := "enabled"
+		if m.reasoningEffort == "none" {
+			thinkingType = "disabled"
+		}
+		req.Thinking = &compatibleThinking{Type: thinkingType}
+	}
+}
+
 func (m *openAICompatibleModel) generateContent(ctx context.Context, messages []llms.MessageContent, reasoning []string, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	callStarted := time.Now()
 	generationInfo := map[string]any{}
@@ -527,7 +549,7 @@ func (m *openAICompatibleModel) generateContent(ctx context.Context, messages []
 			// DeepSeek requires reasoning_content on every assistant message, even
 			// when empty, to maintain thinking context across tool-call turns.
 			// Other providers only need it when non-empty.
-			if content != "" || m.deepSeek {
+			if content != "" || m.dialect == compatibleDialectDeepSeek {
 				converted.ReasoningContent = &content
 			}
 		}
@@ -570,20 +592,8 @@ func (m *openAICompatibleModel) generateContent(ctx context.Context, messages []
 	// (e.g. Ark's "minimal") reach the endpoint unchanged.
 	if m.reasoningEffort != "" {
 		reqPayload.ReasoningEffort = m.reasoningEffort
-		if m.openRouterReasoning {
-			reqPayload.Reasoning = &reasoningConfig{
-				Effort:  m.reasoningEffort,
-				Exclude: m.reasoningEffort == "none",
-			}
-		}
 	}
-	if m.deepSeek {
-		thinkingType := "enabled"
-		if m.reasoningEffort == "none" {
-			thinkingType = "disabled"
-		}
-		reqPayload.Thinking = &compatibleThinking{Type: thinkingType}
-	}
+	m.applyCompatibleDialect(&reqPayload)
 	generationInfo["llm_request_prepare_ms"] = time.Since(requestPrepareStart).Milliseconds()
 
 	marshalStart := time.Now()

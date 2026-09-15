@@ -378,7 +378,7 @@ func TestReasoningContentReplayPreservesAssistantBoundaries(t *testing.T) {
 		alwaysSet bool
 	}{
 		{name: "compatible", options: nil},
-		{name: "deepseek", options: []openAICompatibleModelOption{withOpenAICompatibleDeepSeek()}, alwaysSet: true},
+		{name: "deepseek", options: []openAICompatibleModelOption{withOpenAICompatibleDialect(compatibleDialectDeepSeek)}, alwaysSet: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -437,7 +437,7 @@ model = "deepseek-flash"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := m.(*openAICompatibleModel); got.token != "test-key" || got.baseURL != deepseekBaseURL || !got.deepSeek || got.reasoningEffort != "none" {
+	if got := m.(*openAICompatibleModel); got.token != "test-key" || got.baseURL != deepseekBaseURL || got.dialect != compatibleDialectDeepSeek || got.reasoningEffort != "none" {
 		t.Fatal("named provider did not resolve to DeepSeek request profile")
 	}
 	editorConfig, err := LoadResolvedConfig(path)
