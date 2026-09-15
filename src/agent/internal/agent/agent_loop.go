@@ -855,6 +855,7 @@ func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.Conte
 		if toolID != "" && strings.TrimSpace(call.ID) == toolID {
 			choice.ToolCalls = []llms.ToolCall{call}
 			choice.FuncCall = call.FunctionCall
+			choice.GenerationInfo = responsesGenerationInfoForToolCall(choice.GenerationInfo, call.ID)
 			return choice
 		}
 	}
@@ -865,7 +866,41 @@ func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.Conte
 	}
 	choice.ToolCalls = []llms.ToolCall{*firstValid}
 	choice.FuncCall = firstValid.FunctionCall
+	choice.GenerationInfo = responsesGenerationInfoForToolCall(choice.GenerationInfo, firstValid.ID)
 	return choice
+}
+
+// responsesGenerationInfoForToolCall removes unexecuted parallel function-call
+// items from stateless Responses replay. Some compatible providers, including
+// DeepSeek, always allow parallel tool calls even when the request asks them
+// not to. Aiden executes one call per iteration, so replaying the other calls
+// without matching function_call_output items would make the next request
+// invalid.
+func responsesGenerationInfoForToolCall(info map[string]any, toolID string) map[string]any {
+	toolID = strings.TrimSpace(toolID)
+	items, ok := info["responses_output_items"].([]json.RawMessage)
+	if !ok || len(items) == 0 || toolID == "" {
+		return info
+	}
+	filtered := make([]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		var metadata struct {
+			Type   string `json:"type"`
+			CallID string `json:"call_id"`
+		}
+		if json.Unmarshal(item, &metadata) != nil || metadata.Type != "function_call" || strings.TrimSpace(metadata.CallID) == toolID {
+			filtered = append(filtered, item)
+		}
+	}
+	if len(filtered) == len(items) {
+		return info
+	}
+	cloned := make(map[string]any, len(info))
+	for key, value := range info {
+		cloned[key] = value
+	}
+	cloned["responses_output_items"] = filtered
+	return cloned
 }
 
 type roleExecutionResult struct {

@@ -131,6 +131,21 @@ api_key = "$OPENAI_API_KEY"
 # minimal/low/medium/high ("none" is not an Ark level).
 # reasoning_effort = "minimal"
 
+# For DeepSeek, use the built-in OpenAI-compatible endpoint. DeepSeek's API
+# defaults to thinking mode; Aiden selects reasoning_effort = "none" for the
+# built-in model entries for fast replies. Explicit low/high/max enables
+# thinking with reasoning_content replay across tool-call turns; temperature is
+# omitted while thinking is enabled because DeepSeek does not apply it.
+# Use api_mode = "responses" for DeepSeek's stateless Responses API. It keeps
+# full context locally; responses_stateful is not supported by DeepSeek.
+# [model_settings.providers.deepseek-main]
+# type = "deepseek"      # https://api.deepseek.com
+# api_key = "$DEEPSEEK_API_KEY"
+# Set [model_settings.model].provider = "deepseek-main" to select it.
+# model = "deepseek-flash"
+# api_mode = "responses"
+# reasoning_effort = "none"
+
 # Model configuration
 [model_settings.model]
 provider = "openai-main"
