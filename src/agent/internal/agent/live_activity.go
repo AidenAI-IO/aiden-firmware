@@ -617,13 +617,6 @@ func liveActivityPhaseFromRole(content string) string {
 	return LiveActivityPhasePlanning
 }
 
-func liveActivityActionFromRole(content string) string {
-	if speech.ExtractText(content) != "" {
-		return "answer"
-	}
-	return "plan"
-}
-
 func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 	tool := strings.ToLower(strings.TrimSpace(event.ToolName))
 	target := liveActivityTargetFromToolCall(event)
