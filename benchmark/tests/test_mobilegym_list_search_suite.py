@@ -9,8 +9,8 @@ def test_mobilegym_list_search_suite_has_fixed_depth_targets():
 
     assert suite.name == "mobilegym_list_search"
     assert [task.id for task in suite.tasks] == [
-        "find_mid_list_target_024",
-        "find_deep_list_target_083",
+        "find_mid_content_blue_umbrella",
+        "find_deep_content_silver_cold_case",
     ]
     assert [task.app_ids for task in suite.tasks] == [["scroll_lab"], ["scroll_lab"]]
     assert all(task.category == "multi_step" for task in suite.tasks)
@@ -32,8 +32,16 @@ def test_mobilegym_list_search_prompts_match_judged_targets():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "mobilegym_list_search.json"
     suite = load_suite(suite_path)
 
-    for task, ordinal in zip(suite.tasks, (24, 83), strict=True):
+    expected_prompts = (
+        ("蓝色雨伞", "7312", 24, "SL-024"),
+        ("银色保温箱", "K4M7", 83, "SL-083"),
+    )
+    for task, (content, token, ordinal, code) in zip(suite.tasks, expected_prompts, strict=True):
         padded = f"{ordinal:03d}"
-        assert f"Aiden 滚动目标 {padded}" in task.prompt
+        assert content in task.prompt
+        assert token in task.prompt
+        assert padded not in task.prompt
+        assert f"SL-{padded}" not in task.prompt
         assert f"position {ordinal} of 100" in task.description_for_judge
-        assert f"SL-{padded}" in task.rubric[0].check
+        assert content in task.rubric[0].check
+        assert code in task.rubric[0].check
