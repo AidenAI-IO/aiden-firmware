@@ -6,7 +6,7 @@ sidebar_position: 2
 
 CMake builds multiple `example_*` executables to verify SDK and device
 capabilities. The Debian cross-build writes them to
-`output/debian-stage2/apps/bin/`; diagnostic examples are not copied into the
+`output/debian-apps/apps/bin/`; diagnostic examples are not copied into the
 production OEM image. The commands below assume the selected binary has been
 copied to the board and placed on `PATH`.
 

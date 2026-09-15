@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly REPO_ROOT=/work
-readonly OUTPUT_DIR=${DEBIAN_STAGE2_OUTPUT_DIR:-/out}
+readonly OUTPUT_DIR=${DEBIAN_APPS_OUTPUT_DIR:-/out}
 readonly OPENCV_DIR=${OUTPUT_DIR}/opencv-mobile/lib/cmake/opencv4
 readonly BUILD_DIR=${OUTPUT_DIR}/apps-build
 readonly DIST_DIR=${OUTPUT_DIR}/apps
@@ -113,7 +113,7 @@ ln -s librga.so.2 "${DIST_DIR}/lib/librga.so"
 
 arm-linux-gnueabihf-gcc --version >"${DIST_DIR}/metadata/compiler.txt"
 cmake --version >"${DIST_DIR}/metadata/cmake.txt"
-printf '%s\n' "${DEBIAN_STAGE2_BUILD_IMAGE_ID:-unknown}" \
+printf '%s\n' "${DEBIAN_APPS_BUILD_IMAGE_ID:-unknown}" \
     >"${DIST_DIR}/metadata/builder-image-id.txt"
 cp /etc/apt/sources.list.d/debian.sources \
     "${DIST_DIR}/metadata/builder-debian.sources"

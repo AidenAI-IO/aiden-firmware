@@ -2,12 +2,12 @@
 set -euo pipefail
 
 readonly REPO_ROOT=/work
-readonly OUTPUT_DIR=${DEBIAN_STAGE2_OUTPUT_DIR:-/out}
+readonly OUTPUT_DIR=${DEBIAN_APPS_OUTPUT_DIR:-/out}
 readonly SOURCE_ARCHIVE=${OUTPUT_DIR}/cache/opencv-mobile-4.13.0.zip
 readonly SOURCE_DIR=${OUTPUT_DIR}/opencv-mobile-source
 readonly BUILD_DIR=${OUTPUT_DIR}/opencv-mobile-build
 readonly INSTALL_DIR=${OUTPUT_DIR}/opencv-mobile
-readonly PATCH_FILE=${REPO_ROOT}/scripts/debian-stage2/opencv-mobile-rk-mpp-main-program.patch
+readonly PATCH_FILE=${REPO_ROOT}/scripts/debian-apps/opencv-mobile-rk-mpp-main-program.patch
 readonly JOBS=${RK_JOBS:-$(getconf _NPROCESSORS_ONLN)}
 readonly OPENCV_SOURCE_DATE_EPOCH=1767360516
 

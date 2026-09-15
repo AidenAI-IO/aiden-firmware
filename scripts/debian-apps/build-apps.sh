@@ -3,37 +3,37 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-readonly DEFAULT_OUTPUT_DIR=${REPO_ROOT}/output/debian-stage2
-if [ -n "${DEBIAN_STAGE2_OUTPUT_DIR:-}" ]; then
-    if [[ "${DEBIAN_STAGE2_OUTPUT_DIR}" = /* ]]; then
-        OUTPUT_DIR=${DEBIAN_STAGE2_OUTPUT_DIR}
+readonly DEFAULT_OUTPUT_DIR=${REPO_ROOT}/output/debian-apps
+if [ -n "${DEBIAN_APPS_OUTPUT_DIR:-}" ]; then
+    if [[ "${DEBIAN_APPS_OUTPUT_DIR}" = /* ]]; then
+        OUTPUT_DIR=${DEBIAN_APPS_OUTPUT_DIR}
     else
-        OUTPUT_DIR=${REPO_ROOT}/${DEBIAN_STAGE2_OUTPUT_DIR}
+        OUTPUT_DIR=${REPO_ROOT}/${DEBIAN_APPS_OUTPUT_DIR}
     fi
 else
     OUTPUT_DIR=${DEFAULT_OUTPUT_DIR}
 fi
 readonly OUTPUT_DIR
-readonly BUILD_IMAGE=${DEBIAN_STAGE2_BUILD_IMAGE:-aiden-debian13-armhf-builder:stage2}
+readonly BUILD_IMAGE=${DEBIAN_APPS_BUILD_IMAGE:-aiden-debian13-armhf-builder:apps}
 readonly OPENCV_ARCHIVE=opencv-mobile-4.13.0.zip
 readonly OPENCV_URL=https://github.com/nihui/opencv-mobile/releases/download/v35/${OPENCV_ARCHIVE}
 readonly OPENCV_SHA256=9304482980b3e4ff1050a8527cdb5777fadf8c5dd9c1a8620170d23e252fb150
 readonly JOBS=${RK_JOBS:-$(getconf _NPROCESSORS_ONLN)}
-readonly GO_ROOT=${DEBIAN_STAGE2_GO_ROOT:-${REPO_ROOT}/.toolchains/go1.26.0.linux-amd64}
-readonly GO_BUILD_CACHE=${DEBIAN_STAGE2_GO_BUILD_CACHE:-${REPO_ROOT}/.cache/debian-stage2/go-build}
-readonly GO_MODULE_CACHE=${DEBIAN_STAGE2_GO_MODULE_CACHE:-${REPO_ROOT}/.cache/debian-stage2/go-mod}
+readonly GO_ROOT=${DEBIAN_APPS_GO_ROOT:-${REPO_ROOT}/.toolchains/go1.26.0.linux-amd64}
+readonly GO_BUILD_CACHE=${DEBIAN_APPS_GO_BUILD_CACHE:-${REPO_ROOT}/.cache/debian-apps/go-build}
+readonly GO_MODULE_CACHE=${DEBIAN_APPS_GO_MODULE_CACHE:-${REPO_ROOT}/.cache/debian-apps/go-mod}
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
 
 usage() {
     cat <<'EOF'
-Usage: scripts/debian-stage2/build-apps.sh [all|builder|opencv|apps|cli-tools|audit]
+Usage: scripts/debian-apps/build-apps.sh [all|builder|opencv|apps|cli-tools|audit]
 
 Environment:
-  DEBIAN_STAGE2_OUTPUT_DIR  Output directory (defaults to output/debian-stage2).
-  DEBIAN_STAGE2_BUILD_IMAGE Docker image name for the Debian armhf toolchain.
-  DEBIAN_STAGE2_GO_ROOT     Pinned Go 1.26.0 linux/amd64 toolchain.
-  DEBIAN_STAGE2_GO_BUILD_CACHE/DEBIAN_STAGE2_GO_MODULE_CACHE
-                             Persistent writable Go caches.
+  DEBIAN_APPS_OUTPUT_DIR    Output directory (defaults to output/debian-apps).
+  DEBIAN_APPS_BUILD_IMAGE   Docker image name for the Debian armhf toolchain.
+  DEBIAN_APPS_GO_ROOT       Pinned Go 1.26.0 linux/amd64 toolchain.
+  DEBIAN_APPS_GO_BUILD_CACHE/DEBIAN_APPS_GO_MODULE_CACHE
+                            Persistent writable Go caches.
   SOURCE_DATE_EPOCH         Reproducible Go build timestamp.
   RK_JOBS                   Parallel build jobs (defaults to all host CPUs).
 EOF
@@ -92,8 +92,8 @@ run_container_script() {
     mkdir -p "${GO_BUILD_CACHE}" "${GO_MODULE_CACHE}"
     docker run --rm \
         -u "$(id -u):$(id -g)" \
-        -e "DEBIAN_STAGE2_OUTPUT_DIR=/out" \
-        -e "DEBIAN_STAGE2_BUILD_IMAGE_ID=${image_id}" \
+        -e "DEBIAN_APPS_OUTPUT_DIR=/out" \
+        -e "DEBIAN_APPS_BUILD_IMAGE_ID=${image_id}" \
         -e "RK_JOBS=${JOBS}" \
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
         -v "${REPO_ROOT}:/work" \
@@ -109,19 +109,19 @@ run_container_script() {
 
 run_opencv() {
     ensure_opencv_source
-    run_container_script scripts/debian-stage2/container-build-opencv-mobile.sh
+    run_container_script scripts/debian-apps/container-build-opencv-mobile.sh
 }
 
 run_apps() {
-    run_container_script scripts/debian-stage2/container-build-apps.sh
+    run_container_script scripts/debian-apps/container-build-apps.sh
 }
 
 run_cli_tools() {
-    run_container_script scripts/debian-stage2/container-build-rootfs-cli-tools.sh
+    run_container_script scripts/debian-apps/container-build-rootfs-cli-tools.sh
 }
 
 run_audit() {
-    run_container_script scripts/debian-stage2/audit-apps.sh \
+    run_container_script scripts/debian-apps/audit-apps.sh \
         /out/apps /out/apps-audit
 }
 

@@ -7,7 +7,7 @@ sidebar_position: 6
 ## Complete Debian Firmware
 
 The production deployment path is a complete Debian image. Build the audited
-Stage 2 application bundle, Debian rootfs, BSP, A/B images, and signed local OTA
+application bundle, Debian rootfs, BSP, A/B images, and signed local OTA
 metadata with:
 
 ```bash
@@ -37,8 +37,8 @@ sudo scripts/flash.sh flash \
 ```
 
 The repository-root `upgrade_tool/upgrade_tool` is a macOS Mach-O binary; use
-the Linux tool from the Stage 3 SDK on Linux. On macOS, flash a locally built
-image with:
+the Linux tool from the repository `pico-sdk` submodule. On macOS, flash a
+locally built image with:
 
 ```bash
 ./upgrade_tool/upgrade_tool uf ./output/debian/image/update.img
@@ -58,7 +58,7 @@ The image installs these main runtime trees:
 ```
 
 `overlay-debian/` owns the Debian rootfs additions. `overlay-debian-oem/`, the
-audited Stage 2 bundle, SDK kernel modules, and generated web assets form the OEM
+audited apps bundle, SDK kernel modules, and generated web assets form the OEM
 image. Neither Debian image stage consumes the legacy root overlay.
 
 ## Development Binary Update
@@ -66,15 +66,15 @@ image. Neither Debian image stage consumes the legacy root overlay.
 Build and audit applications without rebuilding the firmware:
 
 ```bash
-scripts/debian-stage2/build-apps.sh all
+scripts/debian-apps/build-apps.sh all
 ```
 
-Production binaries are under `output/debian-stage2/apps/bin/`. For a temporary
+Production binaries are under `output/debian-apps/apps/bin/`. For a temporary
 device-side test, stop the owning systemd unit before replacing its binary:
 
 ```bash
 ssh root@<device-ip> 'systemctl stop aiden-frame.service'
-scp output/debian-stage2/apps/bin/frame_service root@<device-ip>:/oem/usr/bin/frame_service
+scp output/debian-apps/apps/bin/frame_service root@<device-ip>:/oem/usr/bin/frame_service
 ssh root@<device-ip> 'chmod 0755 /oem/usr/bin/frame_service && systemctl start aiden-frame.service'
 ```
 
@@ -85,7 +85,7 @@ development cycles only. Rebuild and flash a complete image for a reproducible
 deployment.
 
 Diagnostic executables such as `frame_service_cli`, `audio_service_cli`, and
-`example_*` are present in the Stage 2 output but excluded from the production
+`example_*` are present in the apps output but excluded from the production
 OEM allowlist. Copy only the tool needed for a bounded test to a directory under
 `/userdata`, then remove it when the test is complete.
 

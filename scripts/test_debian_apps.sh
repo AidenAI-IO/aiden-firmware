@@ -2,66 +2,66 @@
 set -euo pipefail
 
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly STAGE2_DIR=${REPO_ROOT}/scripts/debian-stage2
+readonly APPS_DIR=${REPO_ROOT}/scripts/debian-apps
 readonly TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "${TEST_ROOT}"' EXIT
 
 fail() {
-    echo "Debian Stage 2 test failure: $*" >&2
+    echo "Debian apps test failure: $*" >&2
     exit 1
 }
 
-stage2_scripts=(
-    "${STAGE2_DIR}/build-apps.sh"
-    "${STAGE2_DIR}/container-build-opencv-mobile.sh"
-    "${STAGE2_DIR}/container-build-apps.sh"
-    "${STAGE2_DIR}/container-build-rootfs-cli-tools.sh"
-    "${STAGE2_DIR}/audit-apps.sh"
-    "${STAGE2_DIR}/prepare-board-g0.sh"
-    "${STAGE2_DIR}/board-g0-remote.sh"
-    "${STAGE2_DIR}/run-board-g0.sh"
+apps_scripts=(
+    "${APPS_DIR}/build-apps.sh"
+    "${APPS_DIR}/container-build-opencv-mobile.sh"
+    "${APPS_DIR}/container-build-apps.sh"
+    "${APPS_DIR}/container-build-rootfs-cli-tools.sh"
+    "${APPS_DIR}/audit-apps.sh"
+    "${APPS_DIR}/prepare-board-g0.sh"
+    "${APPS_DIR}/board-g0-remote.sh"
+    "${APPS_DIR}/run-board-g0.sh"
 )
-for stage2_script in "${stage2_scripts[@]}"; do
-    bash -n "${stage2_script}"
+for apps_script in "${apps_scripts[@]}"; do
+    bash -n "${apps_script}"
 done
 
-grep -Fq 'aiden@192.168.76.153' "${STAGE2_DIR}/run-board-g0.sh"
-grep -Fq '/home/aiden/debian-stage2-g0' "${STAGE2_DIR}/run-board-g0.sh"
+grep -Fq 'aiden@192.168.76.153' "${APPS_DIR}/run-board-g0.sh"
+grep -Fq '/home/aiden/debian-apps-g0' "${APPS_DIR}/run-board-g0.sh"
 grep -Fq 'volatile sig_atomic_t quit' "${REPO_ROOT}/src/example_audio_capture.cpp"
 grep -Fq 'signal(SIGTERM, signal_handler)' "${REPO_ROOT}/src/example_audio_capture.cpp"
 
 grep -Fq 'chown "${SUDO_UID}:${SUDO_GID}" "${RESULTS_ROOT}"' \
-    "${STAGE2_DIR}/board-g0-remote.sh"
+    "${APPS_DIR}/board-g0-remote.sh"
 
 grep -q 'snapshot.debian.org/archive/debian/20260803T000000Z' \
-    "${STAGE2_DIR}/debian.sources"
+    "${APPS_DIR}/debian.sources"
 grep -q 'snapshot.debian.org/archive/debian-security/20260803T000000Z' \
-    "${STAGE2_DIR}/debian.sources"
-grep -q '^Check-Valid-Until: no$' "${STAGE2_DIR}/debian.sources"
-grep -q 'builder-packages.txt' "${STAGE2_DIR}/container-build-apps.sh"
+    "${APPS_DIR}/debian.sources"
+grep -q '^Check-Valid-Until: no$' "${APPS_DIR}/debian.sources"
+grep -q 'builder-packages.txt' "${APPS_DIR}/container-build-apps.sh"
 grep -q 'GOOS=linux GOARCH=arm GOARM=7' \
-    "${STAGE2_DIR}/container-build-apps.sh"
-grep -Fq 'ttyd.armhf' "${STAGE2_DIR}/container-build-apps.sh"
+    "${APPS_DIR}/container-build-apps.sh"
+grep -Fq 'ttyd.armhf' "${APPS_DIR}/container-build-apps.sh"
 grep -Fq 'b0784080bd78f0a5916462672f461542c607f8ea7cee56b075e8cd04e1ffcc4d' \
-    "${STAGE2_DIR}/container-build-apps.sh"
-grep -q -- '-buildid=' "${STAGE2_DIR}/container-build-apps.sh"
+    "${APPS_DIR}/container-build-apps.sh"
+grep -q -- '-buildid=' "${APPS_DIR}/container-build-apps.sh"
 grep -Fq 'getenv("FRAME_SERVICE_JPEG_ENCODER")' \
-    "${STAGE2_DIR}/opencv-mobile-rk-mpp-main-program.patch"
+    "${APPS_DIR}/opencv-mobile-rk-mpp-main-program.patch"
 grep -Fq 'strcmp(encoder, "software") == 0' \
-    "${STAGE2_DIR}/opencv-mobile-rk-mpp-main-program.patch"
+    "${APPS_DIR}/opencv-mobile-rk-mpp-main-program.patch"
 grep -q 'source-archive.sha256' \
-    "${STAGE2_DIR}/container-build-opencv-mobile.sh"
+    "${APPS_DIR}/container-build-opencv-mobile.sh"
 grep -q 'OPENCV_SOURCE_DATE_EPOCH=1767360516' \
-    "${STAGE2_DIR}/container-build-opencv-mobile.sh"
-grep -qx '[[:space:]]*curl \\' "${STAGE2_DIR}/Dockerfile"
+    "${APPS_DIR}/container-build-opencv-mobile.sh"
+grep -qx '[[:space:]]*curl \\' "${APPS_DIR}/Dockerfile"
 grep -Fq -- '--output-dir "${OUTPUT_DIR}/rootfs-cli-tools"' \
-    "${STAGE2_DIR}/container-build-rootfs-cli-tools.sh"
+    "${APPS_DIR}/container-build-rootfs-cli-tools.sh"
 grep -Fq -- '--catalog "${REPO_ROOT}/scripts/rootfs_cli_tools.catalog"' \
-    "${STAGE2_DIR}/container-build-rootfs-cli-tools.sh"
-grep -Fq 'run_cli_tools' "${STAGE2_DIR}/build-apps.sh"
-grep -Fq 'overlay-debian-oem/usr/model' "${STAGE2_DIR}/prepare-board-g0.sh"
-grep -Fq 'bin/ttyd' "${STAGE2_DIR}/prepare-board-g0.sh"
-if grep -Fq '${REPO_ROOT}/overlay/oem' "${STAGE2_DIR}/prepare-board-g0.sh"; then
+    "${APPS_DIR}/container-build-rootfs-cli-tools.sh"
+grep -Fq 'run_cli_tools' "${APPS_DIR}/build-apps.sh"
+grep -Fq 'overlay-debian-oem/usr/model' "${APPS_DIR}/prepare-board-g0.sh"
+grep -Fq 'bin/ttyd' "${APPS_DIR}/prepare-board-g0.sh"
+if grep -Fq '${REPO_ROOT}/overlay/oem' "${APPS_DIR}/prepare-board-g0.sh"; then
     fail "Debian board bundle depends on the Buildroot OEM overlay"
 fi
 grep -Fq 'set(AIDEN_TARGET_PLATFORM "rv1106-debian-glibc"' \
@@ -72,11 +72,11 @@ if sed -n '/set_property(CACHE AIDEN_TARGET_PLATFORM PROPERTY STRINGS/,/)/p' \
 fi
 
 help_output=${TEST_ROOT}/help-output
-DEBIAN_STAGE2_OUTPUT_DIR="${help_output}" \
-    "${STAGE2_DIR}/build-apps.sh" --help >/dev/null
+DEBIAN_APPS_OUTPUT_DIR="${help_output}" \
+    "${APPS_DIR}/build-apps.sh" --help >/dev/null
 [ ! -e "${help_output}" ] || fail "--help created the output directory"
 
-if "${STAGE2_DIR}/build-apps.sh" invalid-action >/dev/null 2>&1; then
+if "${APPS_DIR}/build-apps.sh" invalid-action >/dev/null 2>&1; then
     fail "invalid build action succeeded"
 fi
 
@@ -102,13 +102,13 @@ mock_output=${TEST_ROOT}/mock-output
 mock_log=${TEST_ROOT}/docker-args
 MOCK_DOCKER_LOG="${mock_log}" \
 PATH="${TEST_ROOT}/mock-bin:${PATH}" \
-DEBIAN_STAGE2_OUTPUT_DIR="${mock_output}" \
-DEBIAN_STAGE2_GO_ROOT="${TEST_ROOT}/go-root" \
-DEBIAN_STAGE2_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
-DEBIAN_STAGE2_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
-    "${STAGE2_DIR}/build-apps.sh" apps
+DEBIAN_APPS_OUTPUT_DIR="${mock_output}" \
+DEBIAN_APPS_GO_ROOT="${TEST_ROOT}/go-root" \
+DEBIAN_APPS_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
+DEBIAN_APPS_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
+    "${APPS_DIR}/build-apps.sh" apps
 tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/docker-args.txt"
-grep -qx 'DEBIAN_STAGE2_BUILD_IMAGE_ID=sha256:mock-builder-image' \
+grep -qx 'DEBIAN_APPS_BUILD_IMAGE_ID=sha256:mock-builder-image' \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx "${mock_output}:/out" "${TEST_ROOT}/docker-args.txt"
 source_git_common_dir=$(git -C "${REPO_ROOT}" rev-parse \
@@ -121,19 +121,19 @@ grep -qx "${TEST_ROOT}/go-build-cache:/go-build-cache" \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx "${TEST_ROOT}/go-mod-cache:/go-mod-cache" \
     "${TEST_ROOT}/docker-args.txt"
-grep -qx 'scripts/debian-stage2/container-build-apps.sh' \
+grep -qx 'scripts/debian-apps/container-build-apps.sh' \
     "${TEST_ROOT}/docker-args.txt"
 
 : >"${mock_log}"
 MOCK_DOCKER_LOG="${mock_log}" \
 PATH="${TEST_ROOT}/mock-bin:${PATH}" \
-DEBIAN_STAGE2_OUTPUT_DIR="${mock_output}" \
-DEBIAN_STAGE2_GO_ROOT="${TEST_ROOT}/go-root" \
-DEBIAN_STAGE2_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
-DEBIAN_STAGE2_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
-    "${STAGE2_DIR}/build-apps.sh" cli-tools
+DEBIAN_APPS_OUTPUT_DIR="${mock_output}" \
+DEBIAN_APPS_GO_ROOT="${TEST_ROOT}/go-root" \
+DEBIAN_APPS_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
+DEBIAN_APPS_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
+    "${APPS_DIR}/build-apps.sh" cli-tools
 tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/cli-tools-docker-args.txt"
-grep -qx 'scripts/debian-stage2/container-build-rootfs-cli-tools.sh' \
+grep -qx 'scripts/debian-apps/container-build-rootfs-cli-tools.sh' \
     "${TEST_ROOT}/cli-tools-docker-args.txt"
 
 bad_source_output=${TEST_ROOT}/bad-source-output
@@ -143,8 +143,8 @@ printf 'not the pinned archive\n' \
 : >"${mock_log}"
 if MOCK_DOCKER_LOG="${mock_log}" \
     PATH="${TEST_ROOT}/mock-bin:${PATH}" \
-    DEBIAN_STAGE2_OUTPUT_DIR="${bad_source_output}" \
-        "${STAGE2_DIR}/build-apps.sh" opencv >/dev/null 2>&1; then
+    DEBIAN_APPS_OUTPUT_DIR="${bad_source_output}" \
+        "${APPS_DIR}/build-apps.sh" opencv >/dev/null 2>&1; then
     fail "OpenCV checksum mismatch succeeded"
 fi
 [ ! -s "${mock_log}" ] \
@@ -275,7 +275,7 @@ run_audit() {
     local report_dir=$1
     shift
     env READELF="${TEST_ROOT}/mock-readelf" "$@" \
-        "${STAGE2_DIR}/audit-apps.sh" "${apps_dir}" "${report_dir}"
+        "${APPS_DIR}/audit-apps.sh" "${apps_dir}" "${report_dir}"
 }
 
 expect_audit_failure() {
@@ -346,23 +346,23 @@ ln -s librga.so.2 "${bundle_apps}/lib/librga.so"
 printf 'status=pass\nelf_count=19\n' >"${bundle_audit}/summary.txt"
 
 help_bundle_dir=${TEST_ROOT}/bundle-help
-DEBIAN_STAGE2_OUTPUT_DIR="${bundle_output}" \
-DEBIAN_STAGE2_G0_OUTPUT_DIR="${help_bundle_dir}" \
-    "${STAGE2_DIR}/prepare-board-g0.sh" --help >/dev/null
+DEBIAN_APPS_OUTPUT_DIR="${bundle_output}" \
+DEBIAN_APPS_G0_OUTPUT_DIR="${help_bundle_dir}" \
+    "${APPS_DIR}/prepare-board-g0.sh" --help >/dev/null
 [ ! -e "${help_bundle_dir}" ] || fail "G0 bundle --help created its output directory"
 
-DEBIAN_STAGE2_OUTPUT_DIR="${bundle_output}" \
-DEBIAN_STAGE2_G0_OUTPUT_DIR="${bundle_dir}" \
-    "${STAGE2_DIR}/prepare-board-g0.sh" bundle >/dev/null
-[ -s "${bundle_dir}/debian-stage2-g0.tar.gz" ] || fail "G0 bundle was not created"
-DEBIAN_STAGE2_OUTPUT_DIR="${bundle_output}" \
-DEBIAN_STAGE2_G0_OUTPUT_DIR="${bundle_dir}" \
-    "${STAGE2_DIR}/prepare-board-g0.sh" verify >/dev/null
+DEBIAN_APPS_OUTPUT_DIR="${bundle_output}" \
+DEBIAN_APPS_G0_OUTPUT_DIR="${bundle_dir}" \
+    "${APPS_DIR}/prepare-board-g0.sh" bundle >/dev/null
+[ -s "${bundle_dir}/debian-apps-g0.tar.gz" ] || fail "G0 bundle was not created"
+DEBIAN_APPS_OUTPUT_DIR="${bundle_output}" \
+DEBIAN_APPS_G0_OUTPUT_DIR="${bundle_dir}" \
+    "${APPS_DIR}/prepare-board-g0.sh" verify >/dev/null
 
 printf 'corrupted payload\n' >"${bundle_apps}/bin/hello"
-if DEBIAN_STAGE2_OUTPUT_DIR="${bundle_output}" \
-    DEBIAN_STAGE2_G0_OUTPUT_DIR="${bundle_dir}" \
-        "${STAGE2_DIR}/prepare-board-g0.sh" bundle >/dev/null 2>&1; then
+if DEBIAN_APPS_OUTPUT_DIR="${bundle_output}" \
+    DEBIAN_APPS_G0_OUTPUT_DIR="${bundle_dir}" \
+        "${APPS_DIR}/prepare-board-g0.sh" bundle >/dev/null 2>&1; then
     fail "G0 bundle accepted an app that no longer matched the ELF audit"
 fi
 
@@ -388,16 +388,16 @@ chmod +x "${TEST_ROOT}/board-mock-bin/ssh" "${TEST_ROOT}/board-mock-bin/scp"
 BOARD_COMMAND_LOG="${TEST_ROOT}/board-command-log" \
 SSH_BIN="${TEST_ROOT}/board-mock-bin/ssh" \
 SCP_BIN="${TEST_ROOT}/board-mock-bin/scp" \
-    "${STAGE2_DIR}/run-board-g0.sh" preflight
+    "${APPS_DIR}/run-board-g0.sh" preflight
 grep -q '^ssh' "${TEST_ROOT}/board-command-log"
 
 : >"${TEST_ROOT}/board-command-log"
 if BOARD_COMMAND_LOG="${TEST_ROOT}/board-command-log" \
     SSH_BIN="${TEST_ROOT}/board-mock-bin/ssh" \
     SCP_BIN="${TEST_ROOT}/board-mock-bin/scp" \
-    DEBIAN_STAGE2_OUTPUT_DIR="${bundle_output}" \
-    DEBIAN_STAGE2_G0_OUTPUT_DIR="${bundle_dir}" \
-        "${STAGE2_DIR}/run-board-g0.sh" deploy >/dev/null 2>&1; then
+    DEBIAN_APPS_OUTPUT_DIR="${bundle_output}" \
+    DEBIAN_APPS_G0_OUTPUT_DIR="${bundle_dir}" \
+        "${APPS_DIR}/run-board-g0.sh" deploy >/dev/null 2>&1; then
     fail "board deploy succeeded without the proprietary-transfer gate"
 fi
 [ ! -s "${TEST_ROOT}/board-command-log" ] ||
@@ -406,17 +406,17 @@ fi
 BOARD_COMMAND_LOG="${TEST_ROOT}/board-command-log" \
 SSH_BIN="${TEST_ROOT}/board-mock-bin/ssh" \
 SCP_BIN="${TEST_ROOT}/board-mock-bin/scp" \
-DEBIAN_STAGE2_OUTPUT_DIR="${bundle_output}" \
-DEBIAN_STAGE2_G0_OUTPUT_DIR="${bundle_dir}" \
+DEBIAN_APPS_OUTPUT_DIR="${bundle_output}" \
+DEBIAN_APPS_G0_OUTPUT_DIR="${bundle_dir}" \
 AIDEN_G0_ALLOW_PROPRIETARY_TRANSFER=1 \
-    "${STAGE2_DIR}/run-board-g0.sh" deploy >/dev/null
+    "${APPS_DIR}/run-board-g0.sh" deploy >/dev/null
 grep -q '^scp' "${TEST_ROOT}/board-command-log"
 grep -q '^ssh' "${TEST_ROOT}/board-command-log"
 
 : >"${TEST_ROOT}/board-command-log"
 if BOARD_COMMAND_LOG="${TEST_ROOT}/board-command-log" \
     SSH_BIN="${TEST_ROOT}/board-mock-bin/ssh" \
-        "${STAGE2_DIR}/run-board-g0.sh" load-modules >/dev/null 2>&1; then
+        "${APPS_DIR}/run-board-g0.sh" load-modules >/dev/null 2>&1; then
     fail "module loading succeeded without its explicit gate"
 fi
 [ ! -s "${TEST_ROOT}/board-command-log" ] ||
@@ -425,7 +425,7 @@ fi
 : >"${TEST_ROOT}/board-command-log"
 if BOARD_COMMAND_LOG="${TEST_ROOT}/board-command-log" \
     SSH_BIN="${TEST_ROOT}/board-mock-bin/ssh" \
-        "${STAGE2_DIR}/run-board-g0.sh" audio-play >/dev/null 2>&1; then
+        "${APPS_DIR}/run-board-g0.sh" audio-play >/dev/null 2>&1; then
     fail "audio playback succeeded without its explicit gate"
 fi
 [ ! -s "${TEST_ROOT}/board-command-log" ] ||
@@ -434,7 +434,7 @@ fi
 : >"${TEST_ROOT}/board-command-log"
 if BOARD_COMMAND_LOG="${TEST_ROOT}/board-command-log" \
     SSH_BIN="${TEST_ROOT}/board-mock-bin/ssh" \
-        "${STAGE2_DIR}/run-board-g0.sh" stress >/dev/null 2>&1; then
+        "${APPS_DIR}/run-board-g0.sh" stress >/dev/null 2>&1; then
     fail "stress succeeded without its explicit gate"
 fi
 [ ! -s "${TEST_ROOT}/board-command-log" ] ||
@@ -444,14 +444,14 @@ BOARD_COMMAND_LOG="${TEST_ROOT}/board-command-log" \
 SSH_BIN="${TEST_ROOT}/board-mock-bin/ssh" \
 AIDEN_G0_ALLOW_STRESS=1 \
 AIDEN_G0_STRESS_SECONDS=7200 \
-    "${STAGE2_DIR}/run-board-g0.sh" stress >/dev/null
+    "${APPS_DIR}/run-board-g0.sh" stress >/dev/null
 grep -q 'AIDEN_G0_STRESS_SECONDS=7200' "${TEST_ROOT}/board-command-log"
 grep -q $'\tstress$' "${TEST_ROOT}/board-command-log"
 
 remote_bundle=${TEST_ROOT}/remote-bundle
 mkdir -p "${remote_bundle}/bin" "${remote_bundle}/lib" \
     "${remote_bundle}/model" "${remote_bundle}/dev/snd"
-cp "${STAGE2_DIR}/board-g0-remote.sh" "${remote_bundle}/board-g0-remote.sh"
+cp "${APPS_DIR}/board-g0-remote.sh" "${remote_bundle}/board-g0-remote.sh"
 chmod +x "${remote_bundle}/board-g0-remote.sh"
 touch "${remote_bundle}/dev/rknpu" "${remote_bundle}/dev/video0"
 touch "${remote_bundle}/lib/librga.so.2.1.0"

@@ -3,18 +3,18 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-readonly DEFAULT_OUTPUT_DIR=${REPO_ROOT}/output/debian-stage3
-if [ -n "${DEBIAN_STAGE3_OUTPUT_DIR:-}" ]; then
-    if [[ "${DEBIAN_STAGE3_OUTPUT_DIR}" = /* ]]; then
-        OUTPUT_DIR=${DEBIAN_STAGE3_OUTPUT_DIR}
+readonly DEFAULT_OUTPUT_DIR=${REPO_ROOT}/output/debian-system
+if [ -n "${DEBIAN_SYSTEM_OUTPUT_DIR:-}" ]; then
+    if [[ "${DEBIAN_SYSTEM_OUTPUT_DIR}" = /* ]]; then
+        OUTPUT_DIR=${DEBIAN_SYSTEM_OUTPUT_DIR}
     else
-        OUTPUT_DIR=${REPO_ROOT}/${DEBIAN_STAGE3_OUTPUT_DIR}
+        OUTPUT_DIR=${REPO_ROOT}/${DEBIAN_SYSTEM_OUTPUT_DIR}
     fi
 else
     OUTPUT_DIR=${DEFAULT_OUTPUT_DIR}
 fi
 readonly OUTPUT_DIR
-readonly SDK_DIR=${DEBIAN_STAGE3_SDK_DIR:-${REPO_ROOT}/pico-sdk}
+readonly SDK_DIR=${DEBIAN_SYSTEM_SDK_DIR:-${REPO_ROOT}/pico-sdk}
 readonly IMAGE_DIR=${SDK_DIR}/output/image
 readonly MODULE_DIR=${SDK_DIR}/output/out/sysdrv_out/kernel_drv_ko
 readonly DUMPIMAGE=${SDK_DIR}/sysdrv/source/uboot/u-boot/tools/dumpimage
@@ -32,7 +32,7 @@ cleanup() {
 trap cleanup EXIT
 
 fail() {
-    echo "Debian Stage 3 BSP audit failure: $*" >&2
+    echo "Debian system BSP audit failure: $*" >&2
     exit 1
 }
 
@@ -182,11 +182,11 @@ write_hashes() {
     (
         cd "${REPO_ROOT}"
         sha256sum \
-            scripts/debian-stage3/build.sh \
-            scripts/debian-stage3/audit-bsp.sh \
-            scripts/debian-stage3/canonicalize-bsp.py \
-            scripts/debian-stage3/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk \
-            scripts/debian-stage3/debian-stage3.config
+            scripts/debian-system/build.sh \
+            scripts/debian-system/audit-bsp.sh \
+            scripts/debian-system/canonicalize-bsp.py \
+            scripts/debian-system/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk \
+            scripts/debian-system/debian-system.config
     ) >"${OUTPUT_DIR}/bsp-inputs.sha256"
 }
 

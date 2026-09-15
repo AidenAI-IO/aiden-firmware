@@ -2,7 +2,7 @@ FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-COPY scripts/debian-stage3/debian.sources /etc/apt/sources.list.d/debian.sources
+COPY scripts/debian-system/debian.sources /etc/apt/sources.list.d/debian.sources
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

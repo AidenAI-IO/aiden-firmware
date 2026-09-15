@@ -9,7 +9,7 @@ readonly OTA_CONFIG=/run/secrets/debian-ota-config.json
 readonly MOUNT_DIR=${OUTPUT_DIR}/ota-config-work/userdata
 readonly CONFIG_TARGET=${MOUNT_DIR}/debian/ota/config.json
 readonly AUDIT_REPORT=${OUTPUT_DIR}/ota-config-audit.txt
-readonly VALIDATOR=${REPO_ROOT}/scripts/debian-stage3/validate-ota-config.py
+readonly VALIDATOR=${REPO_ROOT}/scripts/debian-system/validate-ota-config.py
 
 mounted=false
 cleanup() {
@@ -22,7 +22,7 @@ trap cleanup EXIT
 
 for image in boot_a.img boot_b.img oem.img rootfs.img userdata.img; do
     test -s "${IMAGE_DIR}/${image}" || {
-        echo "Missing Stage 3 factory image: ${IMAGE_DIR}/${image}" >&2
+        echo "Missing system factory image: ${IMAGE_DIR}/${image}" >&2
         exit 1
     }
 done

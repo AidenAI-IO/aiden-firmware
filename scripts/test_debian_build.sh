@@ -46,11 +46,11 @@ grep -Fq 'key/id_25519.pub.pem' <<<"${help_output}" \
 grep -Fq 'OTA_BASE_URL' <<<"${help_output}" \
     || fail "help does not describe direct-download manifest support"
 
-grep -Fq 'scripts/debian-stage2/build-apps.sh" all' "${BUILD_SCRIPT}" \
-    || fail "Stage 2 all build is missing"
+grep -Fq 'scripts/debian-apps/build-apps.sh" all' "${BUILD_SCRIPT}" \
+    || fail "apps build is missing"
 for action in builder rootfs bsp images config audit; do
-    grep -Fq "scripts/debian-stage3/build.sh\" ${action}" "${BUILD_SCRIPT}" \
-        || fail "Stage 3 ${action} action is missing"
+    grep -Fq "scripts/debian-system/build.sh\" ${action}" "${BUILD_SCRIPT}" \
+        || fail "system ${action} action is missing"
 done
 grep -Fq 'scripts/generate_ota_manifest.sh' "${BUILD_SCRIPT}" \
     || fail "local signed manifest generation is missing"
@@ -58,7 +58,7 @@ grep -Fq 'scripts/generate_ota_device_config.sh' "${BUILD_SCRIPT}" \
     || fail "factory OTA config generation is missing"
 grep -Fq 'aiden_ota_manifest_max_download_bytes' "${BUILD_SCRIPT}" \
     || fail "signed manifests do not enforce the OTA partition download limit"
-grep -Fq 'scripts/debian-stage3/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk' \
+grep -Fq 'scripts/debian-system/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk' \
     "${BUILD_SCRIPT}" \
     || fail "OTA partition limits do not derive from the Debian board config"
 grep -Fq -- '--base-url "${ota_base_url}"' "${BUILD_SCRIPT}" \
@@ -67,10 +67,10 @@ grep -Fq 'find /target -mindepth 1 -delete' "${BUILD_SCRIPT}" \
     || fail "container-assisted cleanup for foreign-owned outputs is missing"
 grep -Fq 'refusing to clean a symlinked output directory' "${BUILD_SCRIPT}" \
     || fail "output cleanup does not reject symlink targets"
-grep -Eq '^[[:space:]]+jq \\$' "${TEST_REPO_ROOT}/scripts/debian-stage3/Dockerfile" \
-    || fail "Stage 3 builder does not provide jq for local manifest generation"
-grep -Eq '^[[:space:]]+openssl \\$' "${TEST_REPO_ROOT}/scripts/debian-stage3/Dockerfile" \
-    || fail "Stage 3 builder does not provide openssl for local manifest signing"
+grep -Eq '^[[:space:]]+jq \\$' "${TEST_REPO_ROOT}/scripts/debian-system/Dockerfile" \
+    || fail "system builder does not provide jq for local manifest generation"
+grep -Eq '^[[:space:]]+openssl \\$' "${TEST_REPO_ROOT}/scripts/debian-system/Dockerfile" \
+    || fail "system builder does not provide openssl for local manifest signing"
 grep -Fq 'scripts/compress_release_images.sh' "${BUILD_SCRIPT}" \
     || fail "release image compression is missing"
 grep -Fq 'install_local_release_artifacts' "${BUILD_SCRIPT}" \

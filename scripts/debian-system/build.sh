@@ -3,39 +3,39 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-readonly DEFAULT_OUTPUT_DIR=${REPO_ROOT}/output/debian-stage3
-if [ -n "${DEBIAN_STAGE3_OUTPUT_DIR:-}" ]; then
-    if [[ "${DEBIAN_STAGE3_OUTPUT_DIR}" = /* ]]; then
-        OUTPUT_DIR=${DEBIAN_STAGE3_OUTPUT_DIR}
+readonly DEFAULT_OUTPUT_DIR=${REPO_ROOT}/output/debian-system
+if [ -n "${DEBIAN_SYSTEM_OUTPUT_DIR:-}" ]; then
+    if [[ "${DEBIAN_SYSTEM_OUTPUT_DIR}" = /* ]]; then
+        OUTPUT_DIR=${DEBIAN_SYSTEM_OUTPUT_DIR}
     else
-        OUTPUT_DIR=${REPO_ROOT}/${DEBIAN_STAGE3_OUTPUT_DIR}
+        OUTPUT_DIR=${REPO_ROOT}/${DEBIAN_SYSTEM_OUTPUT_DIR}
     fi
 else
     OUTPUT_DIR=${DEFAULT_OUTPUT_DIR}
 fi
 readonly OUTPUT_DIR
 # The BSP is built in place from the repository pico-sdk submodule. The A/B,
-# RockUSB and reproducibility changes are commits in that submodule, so Stage 3
-# applies no patches of its own.
-readonly SDK_DIR=${DEBIAN_STAGE3_SDK_DIR:-${REPO_ROOT}/pico-sdk}
+# RockUSB and reproducibility changes are commits in that submodule, so the
+# system stage applies no patches of its own.
+readonly SDK_DIR=${DEBIAN_SYSTEM_SDK_DIR:-${REPO_ROOT}/pico-sdk}
 readonly IMAGE_DIR=${OUTPUT_DIR}/image
-readonly STAGE2_OUTPUT=${DEBIAN_STAGE2_OUTPUT_DIR:-${REPO_ROOT}/output/debian-stage2}
-readonly ROOTFS_BUILD_IMAGE=${DEBIAN_STAGE3_BUILD_IMAGE:-aiden-debian13-armhf-builder:stage3}
-readonly BSP_BUILD_IMAGE=${DEBIAN_STAGE3_BSP_BUILD_IMAGE:-luckfoxtech/luckfox_pico:1.0}
+readonly APPS_OUTPUT=${DEBIAN_APPS_OUTPUT_DIR:-${REPO_ROOT}/output/debian-apps}
+readonly ROOTFS_BUILD_IMAGE=${DEBIAN_SYSTEM_BUILD_IMAGE:-aiden-debian13-armhf-builder:system}
+readonly BSP_BUILD_IMAGE=${DEBIAN_SYSTEM_BSP_BUILD_IMAGE:-luckfoxtech/luckfox_pico:1.0}
 readonly JOBS=${RK_JOBS:-$(getconf _NPROCESSORS_ONLN)}
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
 
 usage() {
     cat <<'EOF'
-Usage: scripts/debian-stage3/build.sh [all|builder|rootfs|bsp|images|config|audit]
+Usage: scripts/debian-system/build.sh [all|builder|rootfs|bsp|images|config|audit]
 
 Environment:
-  DEBIAN_STAGE3_OUTPUT_DIR       Output directory (default: output/debian-stage3).
-  DEBIAN_STAGE3_SDK_DIR          Luckfox BSP SDK build tree (default: repository
+  DEBIAN_SYSTEM_OUTPUT_DIR       Output directory (default: output/debian-system).
+  DEBIAN_SYSTEM_SDK_DIR          Luckfox BSP SDK build tree (default: repository
                                  pico-sdk submodule; built in place).
-  DEBIAN_STAGE2_OUTPUT_DIR       Audited Stage 2 application output.
-  DEBIAN_STAGE3_BUILD_IMAGE      Rootfs/image builder image name.
-  DEBIAN_STAGE3_BSP_BUILD_IMAGE  Luckfox BSP builder image name.
+  DEBIAN_APPS_OUTPUT_DIR         Audited application output.
+  DEBIAN_SYSTEM_BUILD_IMAGE      Rootfs/image builder image name.
+  DEBIAN_SYSTEM_BSP_BUILD_IMAGE  Luckfox BSP builder image name.
   OTA_PUBLIC_KEY_PATH            Production Ed25519 public key (required by images).
   AGENT_CONFIG_PATH              External agent.toml installed into userdata.img
                                  (required by images; never copied into the repository).
@@ -92,13 +92,13 @@ prepare_sdk() {
 
     mkdir -p "${OUTPUT_DIR}"
 
-    # The submodule owns the BSP source changes. Stage 3 only overlays the
-    # production board configuration and kernel config that it owns.
+    # The submodule owns the BSP source changes. The system stage only overlays
+    # the production board configuration and kernel config that it owns.
     install -m 0755 \
         "${SCRIPT_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk" \
         "${SDK_DIR}/project/cfg/BoardConfig_IPC/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
-    install -m 0644 "${SCRIPT_DIR}/debian-stage3.config" \
-        "${SDK_DIR}/sysdrv/source/kernel/arch/arm/configs/debian-stage3.config"
+    install -m 0644 "${SCRIPT_DIR}/debian-system.config" \
+        "${SDK_DIR}/sysdrv/source/kernel/arch/arm/configs/debian-system.config"
     ln -sfn \
         project/cfg/BoardConfig_IPC/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk \
         "${SDK_DIR}/.BoardConfig.mk"
@@ -130,12 +130,12 @@ run_rootfs_container() {
     shift
     local image_id source_git_common_dir
     local -a proxy_args=()
-    test -s "${STAGE2_OUTPUT}/rootfs-cli-tools/manifest.sha256" || {
-        echo "Missing Stage 2 rootfs CLI tools: ${STAGE2_OUTPUT}/rootfs-cli-tools" >&2
+    test -s "${APPS_OUTPUT}/rootfs-cli-tools/manifest.sha256" || {
+        echo "Missing application rootfs CLI tools: ${APPS_OUTPUT}/rootfs-cli-tools" >&2
         exit 1
     }
-    test -s "${STAGE2_OUTPUT}/rootfs-cli-tools/versions.txt" || {
-        echo "Missing Stage 2 rootfs CLI version metadata" >&2
+    test -s "${APPS_OUTPUT}/rootfs-cli-tools/versions.txt" || {
+        echo "Missing application rootfs CLI version metadata" >&2
         exit 1
     }
     while IFS= read -r -d '' item; do proxy_args+=("${item}"); done < <(docker_proxy_args)
@@ -147,11 +147,11 @@ run_rootfs_container() {
         -e "HOST_UID=$(id -u)" \
         -e "HOST_GID=$(id -g)" \
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
-        -e "DEBIAN_STAGE3_BUILD_IMAGE_ID=${image_id}" \
+        -e "DEBIAN_SYSTEM_BUILD_IMAGE_ID=${image_id}" \
         -v "${REPO_ROOT}:/work:ro" \
         -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
         -v "${OUTPUT_DIR}:/out" \
-        -v "${STAGE2_OUTPUT}/rootfs-cli-tools:/rootfs-cli-tools:ro" \
+        -v "${APPS_OUTPUT}/rootfs-cli-tools:/rootfs-cli-tools:ro" \
         -w /work \
         "${ROOTFS_BUILD_IMAGE}" \
         bash "${script}" "$@"
@@ -159,7 +159,7 @@ run_rootfs_container() {
 
 run_rootfs() {
     docker image inspect "${ROOTFS_BUILD_IMAGE}" >/dev/null
-    run_rootfs_container scripts/debian-stage3/container-build-rootfs.sh
+    run_rootfs_container scripts/debian-system/container-build-rootfs.sh
 }
 
 run_bsp() {
@@ -174,7 +174,7 @@ run_bsp() {
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
         -e "KBUILD_BUILD_TIMESTAMP=${build_timestamp}" \
         -e KBUILD_BUILD_USER=aiden \
-        -e KBUILD_BUILD_HOST=stage3 \
+        -e KBUILD_BUILD_HOST=system \
         -v "${SDK_DIR}:/sdk" \
         -w /sdk \
         "${BSP_BUILD_IMAGE}" \
@@ -223,8 +223,8 @@ run_bsp() {
     test -s "${SDK_DIR}/output/out/sysdrv_out/kernel_drv_ko/aic8800_fdrv.ko"
     cp "${kernel_config}" "${OUTPUT_DIR}/kernel.config"
     cp "${env_text}" "${OUTPUT_DIR}/bsp-env.txt"
-    DEBIAN_STAGE3_OUTPUT_DIR="${OUTPUT_DIR}" \
-        DEBIAN_STAGE3_SDK_DIR="${SDK_DIR}" \
+    DEBIAN_SYSTEM_OUTPUT_DIR="${OUTPUT_DIR}" \
+        DEBIAN_SYSTEM_SDK_DIR="${SDK_DIR}" \
         "${SCRIPT_DIR}/audit-bsp.sh"
 }
 
@@ -232,15 +232,15 @@ run_images() {
     prepare_sdk
     docker image inspect "${ROOTFS_BUILD_IMAGE}" >/dev/null
     test -s "${OUTPUT_DIR}/rootfs.ext4" || {
-        echo "Missing Stage 3 rootfs; run the rootfs action first" >&2
+        echo "Missing system rootfs; run the rootfs action first" >&2
         exit 1
     }
-    test -d "${STAGE2_OUTPUT}/apps" || {
-        echo "Missing Stage 2 applications: ${STAGE2_OUTPUT}/apps" >&2
+    test -d "${APPS_OUTPUT}/apps" || {
+        echo "Missing applications: ${APPS_OUTPUT}/apps" >&2
         exit 1
     }
-    grep -qx 'status=pass' "${STAGE2_OUTPUT}/apps-audit/summary.txt" || {
-        echo "Stage 2 application audit has not passed" >&2
+    grep -qx 'status=pass' "${APPS_OUTPUT}/apps-audit/summary.txt" || {
+        echo "application audit has not passed" >&2
         exit 1
     }
     if [ -z "${OTA_PUBLIC_KEY_PATH:-}" ] || [ ! -f "${OTA_PUBLIC_KEY_PATH}" ]; then
@@ -251,7 +251,7 @@ run_images() {
         echo "AGENT_CONFIG_PATH must name an external agent.toml" >&2
         exit 1
     fi
-    "${STAGE2_OUTPUT}/apps/bin/agent" config-check --format=json \
+    "${APPS_OUTPUT}/apps/bin/agent" config-check --format=json \
         --config="${AGENT_CONFIG_PATH}" >"${OUTPUT_DIR}/agent-config-validation.json"
 
     local image_id
@@ -260,16 +260,16 @@ run_images() {
         -e "HOST_UID=$(id -u)" \
         -e "HOST_GID=$(id -g)" \
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
-        -e "DEBIAN_STAGE3_BUILD_IMAGE_ID=${image_id}" \
+        -e "DEBIAN_SYSTEM_BUILD_IMAGE_ID=${image_id}" \
         -v "${REPO_ROOT}:/work:ro" \
         -v "${OUTPUT_DIR}:/out" \
-        -v "${STAGE2_OUTPUT}/apps:/apps:ro" \
-        -v "${STAGE2_OUTPUT}/apps-audit:/apps-audit:ro" \
+        -v "${APPS_OUTPUT}/apps:/apps:ro" \
+        -v "${APPS_OUTPUT}/apps-audit:/apps-audit:ro" \
         -v "${OTA_PUBLIC_KEY_PATH}:/run/secrets/ota_pubkey.pem:ro" \
         -v "${AGENT_CONFIG_PATH}:/run/secrets/agent.toml:ro" \
         -w /work \
         "${ROOTFS_BUILD_IMAGE}" \
-        bash scripts/debian-stage3/container-assemble-images.sh
+        bash scripts/debian-system/container-assemble-images.sh
 
     run_sdk_packer
     test -s "${IMAGE_DIR}/update.img"
@@ -296,7 +296,7 @@ run_config() {
     fi
     for image in boot_a.img boot_b.img oem.img rootfs.img userdata.img ota.img; do
         test -s "${IMAGE_DIR}/${image}" || {
-            echo "Missing Stage 3 image ${IMAGE_DIR}/${image}; run the images action first" >&2
+            echo "Missing system image ${IMAGE_DIR}/${image}; run the images action first" >&2
             exit 1
         }
     done
@@ -306,13 +306,13 @@ run_config() {
     docker run --rm --privileged \
         -e "HOST_UID=$(id -u)" \
         -e "HOST_GID=$(id -g)" \
-        -e "DEBIAN_STAGE3_BUILD_IMAGE_ID=${image_id}" \
+        -e "DEBIAN_SYSTEM_BUILD_IMAGE_ID=${image_id}" \
         -v "${REPO_ROOT}:/work:ro" \
         -v "${OUTPUT_DIR}:/out" \
         -v "${OTA_DEVICE_CONFIG_PATH}:/run/secrets/debian-ota-config.json:ro" \
         -w /work \
         "${ROOTFS_BUILD_IMAGE}" \
-        bash scripts/debian-stage3/container-install-ota-config.sh
+        bash scripts/debian-system/container-install-ota-config.sh
 
     run_sdk_packer
     test -s "${IMAGE_DIR}/update.img"
@@ -321,7 +321,7 @@ run_config() {
 run_audit() {
     prepare_sdk
     docker image inspect "${ROOTFS_BUILD_IMAGE}" >/dev/null
-    run_rootfs_container scripts/debian-stage3/container-audit-images.sh
+    run_rootfs_container scripts/debian-system/container-audit-images.sh
 }
 
 main() {

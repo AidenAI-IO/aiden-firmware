@@ -7,7 +7,7 @@ AIDEN_OTA_FILESYSTEM="${AIDEN_OTA_FILESYSTEM:-ext4}"
 AIDEN_OTA_DOWNLOAD_SAFETY_MARGIN_MIB="${AIDEN_OTA_DOWNLOAD_SAFETY_MARGIN_MIB:-16}"
 AIDEN_OTA_FILESYSTEM_OVERHEAD_MIB="${AIDEN_OTA_FILESYSTEM_OVERHEAD_MIB:-30}"
 AIDEN_OTA_LAYOUT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AIDEN_OTA_BOARD_CONFIG_PATH="${AIDEN_OTA_BOARD_CONFIG_PATH:-$AIDEN_OTA_LAYOUT_ROOT/scripts/debian-stage3/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk}"
+AIDEN_OTA_BOARD_CONFIG_PATH="${AIDEN_OTA_BOARD_CONFIG_PATH:-$AIDEN_OTA_LAYOUT_ROOT/scripts/debian-system/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk}"
 
 aiden_ota_partition_size_mib() {
   local partition_env definition size_spec partition_name value

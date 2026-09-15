@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly REPO_ROOT=/work
-readonly OUTPUT_DIR=${DEBIAN_STAGE2_OUTPUT_DIR:-/out}
+readonly OUTPUT_DIR=${DEBIAN_APPS_OUTPUT_DIR:-/out}
 
 export PATH=/usr/local/go/bin:${PATH}
 export GOTOOLCHAIN=local

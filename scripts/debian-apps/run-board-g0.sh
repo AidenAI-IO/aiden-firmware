@@ -3,11 +3,11 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-readonly STAGE2_OUTPUT=${DEBIAN_STAGE2_OUTPUT_DIR:-${REPO_ROOT}/output/debian-stage2}
-readonly BUNDLE_DIR=${DEBIAN_STAGE2_G0_OUTPUT_DIR:-${STAGE2_OUTPUT}/board-g0}
-readonly ARCHIVE=${BUNDLE_DIR}/debian-stage2-g0.tar.gz
+readonly APPS_OUTPUT=${DEBIAN_APPS_OUTPUT_DIR:-${REPO_ROOT}/output/debian-apps}
+readonly BUNDLE_DIR=${DEBIAN_APPS_G0_OUTPUT_DIR:-${APPS_OUTPUT}/board-g0}
+readonly ARCHIVE=${BUNDLE_DIR}/debian-apps-g0.tar.gz
 readonly BOARD_TARGET=${AIDEN_G0_BOARD_TARGET:-aiden@192.168.76.153}
-readonly REMOTE_DIR=${AIDEN_G0_REMOTE_DIR:-/home/aiden/debian-stage2-g0}
+readonly REMOTE_DIR=${AIDEN_G0_REMOTE_DIR:-/home/aiden/debian-apps-g0}
 readonly LOCAL_RESULTS=${AIDEN_G0_LOCAL_RESULTS_DIR:-${BUNDLE_DIR}/board-results}
 readonly SSH_BIN=${SSH_BIN:-ssh}
 readonly SCP_BIN=${SCP_BIN:-scp}
@@ -17,14 +17,14 @@ readonly -a SCP_OPTIONS=(-P "${SSH_PORT}" -o ConnectTimeout=8)
 
 usage() {
     cat <<'EOF'
-Usage: scripts/debian-stage2/run-board-g0.sh ACTION
+Usage: scripts/debian-apps/run-board-g0.sh ACTION
 
 Actions:
   preflight      Read-only board reachability, OS, storage, service, module, and device checks.
   deploy         Copy and atomically install the proprietary G0 bundle in the user directory.
   loader         Verify the installed bundle and dynamic loader closure.
   module-state   Read-only media/RKNN module and device snapshot.
-  load-modules   Temporarily load the Stage 3 media/RGA/RKNN module sequence with sudo.
+  load-modules   Temporarily load the system media/RGA/RKNN module sequence with sudo.
   rknn           Run the profiled RKNN self-test and fixed-frame benchmark.
   camera         Run a short profiled camera capture.
   audio-capture  Run a short profiled audio capture.
@@ -42,7 +42,7 @@ Required explicit gates:
 Connection/configuration:
   AIDEN_G0_BOARD_TARGET       SSH target (default: aiden@192.168.76.153).
   AIDEN_G0_SSH_PORT           SSH port (default: 22).
-  AIDEN_G0_REMOTE_DIR         Must be /home/*/debian-stage2-g0 or /tmp/debian-stage2-g0.
+  AIDEN_G0_REMOTE_DIR         Must be /home/*/debian-apps-g0 or /tmp/debian-apps-g0.
   AIDEN_G0_RKNN_FRAMES        Benchmark frames passed to the remote runner.
   AIDEN_G0_CAMERA_FRAMES      Camera frames passed to the remote runner.
   AIDEN_G0_AUDIO_SECONDS      Audio duration passed to the remote runner.
@@ -59,7 +59,7 @@ EOF
 }
 
 fail() {
-    echo "Stage 2 board G0 host failure: $*" >&2
+    echo "apps board G0 host failure: $*" >&2
     exit 1
 }
 
@@ -68,11 +68,11 @@ validate_configuration() {
     case "${BOARD_TARGET}" in
         *[!A-Za-z0-9_.@:-]* | '') fail "unsafe AIDEN_G0_BOARD_TARGET" ;;
     esac
-    if [[ "${REMOTE_DIR}" =~ ^/home/([A-Za-z0-9._-]+)/debian-stage2-g0$ ]]; then
+    if [[ "${REMOTE_DIR}" =~ ^/home/([A-Za-z0-9._-]+)/debian-apps-g0$ ]]; then
         remote_user=${BASH_REMATCH[1]}
         [ "${remote_user}" != . ] && [ "${remote_user}" != .. ] ||
             fail "AIDEN_G0_REMOTE_DIR contains an unsafe home component"
-    elif [ "${REMOTE_DIR}" != /tmp/debian-stage2-g0 ]; then
+    elif [ "${REMOTE_DIR}" != /tmp/debian-apps-g0 ]; then
         fail "AIDEN_G0_REMOTE_DIR is outside the approved non-system locations"
     fi
     case "${SSH_PORT}" in
@@ -137,7 +137,7 @@ base=${remote_dir##*/}
 staging=${parent}/.${base}.new.$$
 mkdir -p "${staging}"
 tar -xzf "${archive}" -C "${staging}"
-payload=${staging}/debian-stage2-g0
+payload=${staging}/debian-apps-g0
 (cd "${payload}" && sha256sum -c MANIFEST.sha256)
 [ "$(readlink "${payload}/lib/librga.so")" = librga.so.2 ]
 [ "$(readlink "${payload}/lib/librga.so.2")" = librga.so.2.1.0 ]

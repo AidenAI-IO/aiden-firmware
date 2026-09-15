@@ -130,7 +130,7 @@ cd aiden-firmware
 Build and audit the Debian ARM application bundle:
 
 ```bash
-scripts/debian-stage2/build-apps.sh all
+scripts/debian-apps/build-apps.sh all
 ```
 
 Build the full firmware image:

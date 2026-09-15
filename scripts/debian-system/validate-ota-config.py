@@ -35,7 +35,7 @@ def require_string(config: dict, key: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate a Debian Stage 3 device OTA configuration against factory images."
+        description="Validate a Debian system device OTA configuration against factory images."
     )
     parser.add_argument("--config", required=True, type=pathlib.Path)
     parser.add_argument("--boot-a", required=True, type=pathlib.Path)

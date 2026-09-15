@@ -3,13 +3,13 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-readonly STAGE2_OUTPUT=${DEBIAN_STAGE2_OUTPUT_DIR:-${REPO_ROOT}/output/debian-stage2}
-readonly APPS_DIR=${STAGE2_OUTPUT}/apps
-readonly AUDIT_DIR=${STAGE2_OUTPUT}/apps-audit
-readonly DEFAULT_BUNDLE_DIR=${STAGE2_OUTPUT}/board-g0
-readonly BUNDLE_DIR=${DEBIAN_STAGE2_G0_OUTPUT_DIR:-${DEFAULT_BUNDLE_DIR}}
+readonly APPS_OUTPUT=${DEBIAN_APPS_OUTPUT_DIR:-${REPO_ROOT}/output/debian-apps}
+readonly APPS_DIR=${APPS_OUTPUT}/apps
+readonly AUDIT_DIR=${APPS_OUTPUT}/apps-audit
+readonly DEFAULT_BUNDLE_DIR=${APPS_OUTPUT}/board-g0
+readonly BUNDLE_DIR=${DEBIAN_APPS_G0_OUTPUT_DIR:-${DEFAULT_BUNDLE_DIR}}
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
-readonly BUNDLE_NAME=debian-stage2-g0
+readonly BUNDLE_NAME=debian-apps-g0
 readonly ARCHIVE=${BUNDLE_DIR}/${BUNDLE_NAME}.tar.gz
 readonly MODEL_DIR=${REPO_ROOT}/overlay-debian-oem/usr/model
 readonly MODULE_HELPER=${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-media-modules
@@ -43,22 +43,22 @@ readonly -a APP_PAYLOAD=(
 
 usage() {
     cat <<'EOF'
-Usage: scripts/debian-stage2/prepare-board-g0.sh [bundle|verify]
+Usage: scripts/debian-apps/prepare-board-g0.sh [bundle|verify]
 
-Create or verify the non-destructive Stage 2 physical-board G0 payload. This
+Create or verify the non-destructive apps-stage physical-board G0 payload. This
 script never contacts a board. The bundle contains the audited Debian/glibc
 C/C++ executables, RGA, the statically linked official RKNN mini runtime, the
-two pinned VAD model files, and the Stage 3 media-module loader.
+two pinned VAD model files, and the system media-module loader.
 
 Environment:
-  DEBIAN_STAGE2_OUTPUT_DIR     Stage 2 build output.
-  DEBIAN_STAGE2_G0_OUTPUT_DIR  Bundle output directory.
+  DEBIAN_APPS_OUTPUT_DIR     apps-stage build output.
+  DEBIAN_APPS_G0_OUTPUT_DIR  Bundle output directory.
   SOURCE_DATE_EPOCH            Reproducible archive timestamp.
 EOF
 }
 
 fail() {
-    echo "Stage 2 board G0 bundle failure: $*" >&2
+    echo "apps board G0 bundle failure: $*" >&2
     exit 1
 }
 
@@ -82,9 +82,9 @@ verify_model() {
 
 verify_apps() {
     local rel expected actual matches
-    [ -f "${AUDIT_DIR}/summary.txt" ] || fail "missing Stage 2 audit summary"
-    [ -f "${AUDIT_DIR}/elf-audit.tsv" ] || fail "missing Stage 2 ELF audit"
-    grep -qx 'status=pass' "${AUDIT_DIR}/summary.txt" || fail "Stage 2 ELF audit did not pass"
+    [ -f "${AUDIT_DIR}/summary.txt" ] || fail "missing apps audit summary"
+    [ -f "${AUDIT_DIR}/elf-audit.tsv" ] || fail "missing apps ELF audit"
+    grep -qx 'status=pass' "${AUDIT_DIR}/summary.txt" || fail "apps ELF audit did not pass"
 
     for rel in "${APP_PAYLOAD[@]}"; do
         [ -f "${APPS_DIR}/${rel}" ] || fail "missing audited payload file: ${rel}"

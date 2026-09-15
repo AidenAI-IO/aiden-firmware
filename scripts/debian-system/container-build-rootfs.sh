@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly REPO_ROOT=/work
-readonly SCRIPT_DIR=${REPO_ROOT}/scripts/debian-stage3
+readonly SCRIPT_DIR=${REPO_ROOT}/scripts/debian-system
 readonly OUTPUT_DIR=/out
 readonly WORK_DIR=${OUTPUT_DIR}/rootfs-work
 readonly ROOTFS_DIR=${WORK_DIR}/rootfs
@@ -102,7 +102,7 @@ bootstrap_rootfs() {
     install -m 0644 "${SCRIPT_DIR}/aiden-production.pref" \
         "${ROOTFS_DIR}/etc/apt/preferences.d/aiden-production"
     install -m 0644 "${SCRIPT_DIR}/packages.list" \
-        "${ROOTFS_DIR}/tmp/debian-stage3-packages.list"
+        "${ROOTFS_DIR}/tmp/debian-system-packages.list"
     cat >"${ROOTFS_DIR}/usr/sbin/policy-rc.d" <<'EOF'
 #!/bin/sh
 exit 101
@@ -114,7 +114,7 @@ EOF
         DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 \
         apt-get update
     chroot "${ROOTFS_DIR}" /bin/sh -ec \
-        'DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 apt-get install -y --no-install-recommends $(grep -v "^[[:space:]]*#" /tmp/debian-stage3-packages.list | xargs)'
+        'DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 apt-get install -y --no-install-recommends $(grep -v "^[[:space:]]*#" /tmp/debian-system-packages.list | xargs)'
     chroot "${ROOTFS_DIR}" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 \
         dpkg --configure -a
@@ -137,7 +137,7 @@ EOF
     # verification impossible. sshd separately prohibits root passwords.
     chroot "${ROOTFS_DIR}" usermod -p x root
     rm -f "${ROOTFS_DIR}/usr/sbin/policy-rc.d" \
-        "${ROOTFS_DIR}/tmp/debian-stage3-packages.list"
+        "${ROOTFS_DIR}/tmp/debian-system-packages.list"
     unmount_all
 }
 
@@ -342,7 +342,7 @@ write_metadata() {
     cat >"${OUTPUT_DIR}/build-metadata.json" <<EOF
 {
   "architecture": "armhf",
-  "build_image_id": "${DEBIAN_STAGE3_BUILD_IMAGE_ID:-unknown}",
+  "build_image_id": "${DEBIAN_SYSTEM_BUILD_IMAGE_ID:-unknown}",
   "debian_snapshot": "20260803T000000Z",
   "hardware_demo_commit": "${app_commit}",
   "packages_sha256": "${packages_sha}",

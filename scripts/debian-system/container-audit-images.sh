@@ -56,7 +56,7 @@ cleanup() {
 trap cleanup EXIT
 
 fail() {
-    echo "Debian Stage 3 image audit failure: $*" >&2
+    echo "Debian system image audit failure: $*" >&2
     exit 1
 }
 
@@ -508,7 +508,7 @@ main() {
         || fail "Debian OTA device configuration is missing from userdata"
     test "$(stat -c '%u:%g:%a' "${USERDATA_MOUNT}/debian/ota/config.json")" = 0:0:600 \
         || fail "Debian OTA device configuration permissions are invalid"
-    "${REPO_ROOT}/scripts/debian-stage3/validate-ota-config.py" \
+    "${REPO_ROOT}/scripts/debian-system/validate-ota-config.py" \
         --config "${USERDATA_MOUNT}/debian/ota/config.json" \
         --boot-a "${IMAGE_DIR}/boot_a.img" \
         --boot-b "${IMAGE_DIR}/boot_b.img" \

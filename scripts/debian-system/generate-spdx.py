@@ -62,7 +62,7 @@ def main() -> int:
         "documentNamespace": f"https://aiden.example/spdx/debian13/{digest}",
         "creationInfo": {
             "created": "2026-01-02T13:28:36Z",
-            "creators": ["Tool: aiden-debian-stage3-generate-spdx"],
+            "creators": ["Tool: aiden-debian-system-generate-spdx"],
             "licenseListVersion": "3.26",
         },
         "packages": packages,

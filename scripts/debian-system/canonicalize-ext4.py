@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Normalize nondeterministic timestamps in a constrained Stage 3 ext4 image."""
+"""Normalize nondeterministic timestamps in a constrained system ext4 image."""
 
 import argparse
 import os

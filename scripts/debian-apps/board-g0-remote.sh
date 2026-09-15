@@ -21,7 +21,7 @@ Usage: board-g0-remote.sh ACTION
 Actions:
   loader         Verify the bundle, run hello, and resolve every ELF loader dependency.
   module-state   Record loaded modules and relevant device nodes without changing them.
-  load-modules   Load the Stage 3 media/RGA/RKNN module sequence; must run as root.
+  load-modules   Load the system media/RGA/RKNN module sequence; must run as root.
   rknn           Run RKNN self-test and a profiled fixed-frame benchmark.
   camera         Capture a short profiled frame sequence without writing frame payloads.
   audio-capture  Capture a short profiled PCM sample into the result directory.
@@ -45,7 +45,7 @@ EOF
 }
 
 fail() {
-    echo "Stage 2 board G0 failure: $*" >&2
+    echo "apps board G0 failure: $*" >&2
     exit 1
 }
 

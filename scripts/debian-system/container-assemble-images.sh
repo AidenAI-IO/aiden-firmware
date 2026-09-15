@@ -48,7 +48,7 @@ normalize_tree_modes() {
 
 stage_oem() {
     grep -qx 'status=pass' /apps-audit/summary.txt || {
-        echo "Stage 2 application audit has not passed" >&2
+        echo "application audit has not passed" >&2
         exit 1
     }
     "${REPO_ROOT}/scripts/validate_ota_pubkey.sh" "${OTA_PUBLIC_KEY}"
