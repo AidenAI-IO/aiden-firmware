@@ -250,13 +250,13 @@ func TestConfigCheck_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestConfigCheckPath_ValidatesFullTOMLWithoutRejectingUnknownFields(t *testing.T) {
+func TestConfigCheckPath_ValidatesGroupedTOMLWithoutRejectingUnknownNestedFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	content := `locale = "en-US"
-skills_dirs = ["/userdata/skills"]
+	content := `[basic_settings.language_timezone]
+locale = "en-US"
 future_plugin_flag = true
 
-[device]
+[basic_settings.device]
 backend = "hdmi"
 future_device_option = "keep me"
 `

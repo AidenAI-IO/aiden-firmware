@@ -137,9 +137,13 @@ func (m *MemoryManager) ClearAll(ctx context.Context, agentName string) error {
 
 	for _, path := range []string{
 		filepath.Join(m.storageDir, "long_term"),
+		filepath.Join(m.storageDir, "temporary"),
 		filepath.Join(m.storageDir, "device"),
 		filepath.Join(m.storageDir, "episodes"),
 		filepath.Join(m.storageDir, "lifecycle"),
+		filepath.Join(m.storageDir, "notifications"),
+		filepath.Join(m.storageDir, "session"),
+		filepath.Join(m.storageDir, "session_archive"),
 	} {
 		if err := os.RemoveAll(path); err != nil {
 			return fmt.Errorf("remove filesystem memory path %q for %q: %w", path, agentName, err)

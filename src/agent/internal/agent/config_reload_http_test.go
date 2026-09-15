@@ -14,7 +14,7 @@ import (
 
 func TestInternalConfigReloadAppliesLoopbackRevision(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[agent]\nlocale=\"en-US\"\n"), 0o640); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[basic_settings.language_timezone]\nlocale=\"en-US\"\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	runtime := &Runtime{config: Config{ConfigDir: dir}}
@@ -67,7 +67,7 @@ func TestInternalConfigReloadRejectsRemoteRequest(t *testing.T) {
 
 func TestInternalConfigReloadRejectsTruncatedJSON(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[agent]\nlocale=\"en-US\"\n"), 0o640); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[basic_settings.language_timezone]\nlocale=\"en-US\"\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	server := &Server{runtime: &Runtime{config: Config{ConfigDir: dir}}}
@@ -101,7 +101,7 @@ func TestAgentHandlerDoesNotExposeConfigWebCapabilities(t *testing.T) {
 
 func TestInternalConfigReloadPreservesDeviceCLIOverride(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[device]\ndevice_type=\"Android\"\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[basic_settings.device]\ndevice_type=\"Android\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := DefaultConfig()

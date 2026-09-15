@@ -54,7 +54,7 @@ func voiceConfig(cfg agent.Config) agent.Config {
 		HID: cfg.HID, Device: cfg.Device, Search: cfg.Search,
 		ScreenStableTimeoutMs: cfg.ScreenStableTimeoutMs, ScreenStableMs: cfg.ScreenStableMs, ScreenStableDiffThreshold: cfg.ScreenStableDiffThreshold,
 		InputMode: cfg.InputMode, Audio: cfg.Audio, STT: cfg.STT, TTS: cfg.TTS, VoiceModel: cfg.VoiceModel,
-		Model: cfg.Model, Locale: cfg.Locale, Instruction: cfg.Instruction, AdditionalPrompt: cfg.AdditionalPrompt,
+		Model: cfg.Model, Locale: cfg.Locale, Timezone: cfg.Timezone, Instruction: cfg.Instruction, AdditionalPrompt: cfg.AdditionalPrompt,
 		AudioArchive: cfg.AudioArchive, VADBackend: cfg.VADBackend, VADModelPath: cfg.VADModelPath, VADHelperPath: cfg.VADHelperPath,
 		VADSpeechThreshold: cfg.VADSpeechThreshold, SilenceMs: cfg.SilenceMs, MinSpeechMs: cfg.MinSpeechMs,
 		VoiceFollowupEnabled: cfg.VoiceFollowupEnabled, VoiceFollowupTimeoutMs: cfg.VoiceFollowupTimeoutMs,

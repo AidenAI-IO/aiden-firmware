@@ -19,6 +19,7 @@ import (
 type Logger struct {
 	logger         *log.Logger
 	mu             sync.Mutex
+	minimumLevel   logging.Level
 	storageMonitor *StorageMonitor
 }
 
@@ -26,10 +27,14 @@ type LogField = logging.Field
 
 // NewLogger creates a new logger that writes to stdout/stderr
 // The init script redirects output to <config_dir>/log/agent.log.
-func NewLogger(configDir string, llmHTTPRetentionDays int) (*Logger, error) {
+func NewLogger(configDir string, llmHTTPRetentionDays int, configuredLevel ...string) (*Logger, error) {
 	logger := log.New(os.Stderr, "", 0)
-	logging.InstallStandard("agent", os.Stderr)
-	result := &Logger{logger: logger}
+	level := defaultLogLevel
+	if len(configuredLevel) > 0 {
+		level = configuredLevel[0]
+	}
+	result := &Logger{logger: logger, minimumLevel: configuredLoggingLevel(level)}
+	result.installStandardLogger()
 
 	// Cleanup old llm-http logs in configDir if set
 	if configDir != "" {
@@ -104,8 +109,56 @@ func logFileTime(name string, modTime time.Time) time.Time {
 }
 
 func (l *Logger) Close() error {
+	logging.SetMinimumLevel(logging.Debug)
 	logging.InstallStandard("agent", os.Stderr)
 	return nil
+}
+
+func configuredLoggingLevel(level string) logging.Level {
+	parsed, ok := logging.ParseLevel(level)
+	if !ok {
+		return logging.Info
+	}
+	return parsed
+}
+
+func loggingLevelRank(level logging.Level) int {
+	switch logging.NormalizeLevel(level) {
+	case logging.Debug:
+		return 0
+	case logging.Info:
+		return 1
+	case logging.Warn:
+		return 2
+	case logging.Error:
+		return 3
+	default:
+		return 1
+	}
+}
+
+func (l *Logger) allows(level logging.Level) bool {
+	return loggingLevelRank(level) >= loggingLevelRank(l.minimumLevel)
+}
+
+func (l *Logger) installStandardLogger() {
+	minimum := logging.Info
+	if l != nil {
+		minimum = l.minimumLevel
+	}
+	logging.SetMinimumLevel(minimum)
+	logging.InstallStandardAtLevel("agent", os.Stderr, minimum)
+}
+
+// SetLevel applies a new minimum severity without restarting the Agent.
+func (l *Logger) SetLevel(level string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.minimumLevel = configuredLoggingLevel(level)
+	l.installStandardLogger()
+	l.mu.Unlock()
 }
 
 func (l *Logger) Info(format string, args ...interface{}) {
@@ -154,6 +207,10 @@ func (l *Logger) write(level string, format string, args ...interface{}) {
 		return
 	}
 	l.mu.Lock()
+	if !l.allows(logging.Level(level)) {
+		l.mu.Unlock()
+		return
+	}
 	monitor := l.storageMonitor
 	if monitor != nil && !monitor.AllowWrite(StorageCapabilityAgentLog) {
 		l.mu.Unlock()
@@ -180,6 +237,10 @@ func (l *Logger) writeEvent(level logging.Level, component, event string, fields
 		return
 	}
 	l.mu.Lock()
+	if !l.allows(level) {
+		l.mu.Unlock()
+		return
+	}
 	monitor := l.storageMonitor
 	if monitor != nil && !monitor.AllowWrite(StorageCapabilityAgentLog) {
 		l.mu.Unlock()

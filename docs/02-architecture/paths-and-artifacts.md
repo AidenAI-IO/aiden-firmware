@@ -150,7 +150,7 @@ allowlist. Copy a required CLI to `/userdata` for a bounded device test.
 
 When StorageMonitor reports `critical` or `emergency`, the Agent runtime
 trims managed logs and Python temporary data according to the configured
-storage policy.
+policy under `storage_settings.storage.degraded_mode`.
 
 ## EDID Files
 

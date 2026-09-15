@@ -463,7 +463,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	// Create logger if ConfigDir is set
 	var logger *Logger
 	if cfg.ConfigDir != "" {
-		logger, err = NewLogger(cfg.ConfigDir, cfg.Log.LLMHTTPRetentionDaysOrDefault())
+		logger, err = NewLogger(cfg.ConfigDir, cfg.Log.LLMHTTPRetentionDaysOrDefault(), cfg.Log.LevelOrDefault())
 		if err != nil {
 			return nil, fmt.Errorf("create logger: %w", err)
 		}
@@ -2214,6 +2214,7 @@ func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langt
 			Instruction:      r.ConfigSnapshot().Instruction,
 			AdditionalPrompt: r.ConfigSnapshot().AdditionalPrompt,
 			Locale:           r.ConfigSnapshot().LocaleOrDefault(),
+			Timezone:         r.ConfigSnapshot().TimezoneOrDefault(),
 		},
 		skills,
 		availableTools,

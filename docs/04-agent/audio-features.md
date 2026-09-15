@@ -41,7 +41,7 @@ The Go Agent supports device-side voice interaction, primarily consisting of `in
 
 Runs the HTTP server and Web UI without starting the device-side audio loop. Browser clients can still upload or record audio:
 
-- If `[stt]` is configured, browser audio is transcribed to text first;
+- If `[voice_settings.classic.stt]` is configured, browser audio is transcribed to text first;
 - Otherwise audio is passed as model attachment.
 
 ### `input_mode = "stt"`
@@ -58,8 +58,8 @@ Before final non-streaming TTS, the runtime passes the spoken reply through the 
 
 ### `input_mode = "realtime"`
 
-Runs the realtime voice session selected by `[voice_model].provider` from the
-named `[voice_model_providers]` records. Realtime activation is selected
+Runs the realtime voice session selected by `[voice_settings.realtime].provider` from the
+named `[voice_settings.realtime.providers]` records. Realtime activation is selected
 explicitly by `input_mode = "realtime"`; it is not controlled by API key
 presence. The realtime session also supports `/api/chat` activation when GPIO
 is unavailable.
@@ -74,7 +74,10 @@ Waits for GPIO 33 or GPIO 32 falling edge trigger to start recording; both trigg
 ## Configuration Snippet
 
 ```toml
+[voice_settings.mode]
 input_mode = "stt"
+
+[voice_settings.classic.runtime]
 vad_backend = "rknn"
 vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 vad_helper_path = "/oem/usr/bin/rknn_vad"
@@ -90,36 +93,36 @@ voice_streaming_tts_enabled = true
 voice_tool_call_speech = true
 voice_max_response_tokens = 300
 
-[audio]
+[voice_settings.classic.audio]
 socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
 bit_width = 16
 backend = "auto"
 
-[stt_providers.openai-main]
+[voice_settings.classic.stt.providers.openai-main]
 type = "openai-whisper"
 api_key = "$OPENAI_API_KEY"
 model = "whisper-1"
 
-[stt]
+[voice_settings.classic.stt]
 provider = "openai-main"
 
 # OpenRouter alternative:
-# [stt_providers.openrouter-main]
+# [voice_settings.classic.stt.providers.openrouter-main]
 # type = "openrouter"
 # api_key = "$OPENROUTER_API_KEY"
 # model = "qwen/qwen3-asr-flash-2026-02-10"
-# Set [stt].provider = "openrouter-main" to select it.
+# Set [voice_settings.classic.stt].provider = "openrouter-main" to select it.
 
-[tts_providers.alicloud-main]
+[voice_settings.classic.tts.providers.alicloud-main]
 type = "alicloud"
 api_key = "$DASHSCOPE_API_KEY"
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
 emotion = "happy"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "alicloud-main"
 speed = 1.0
 ```
@@ -132,7 +135,7 @@ If the LLM does not generate assistant content in the same response as the tool 
 
 ## TTS Provider Usage
 
-Common fields in `[tts]` are `provider`, `api_key`, `model`, `voice_id`, `emotion`, `speed`, and `reference_id`. Different providers interpret fields differently; see [Agent Configuration Reference](configuration.md#stt-and-tts) for full details. The following examples omit `api_key` and only show adapter behavior-related configuration.
+The selected provider name lives in `[voice_settings.classic.tts]`; provider-specific fields live in its `[voice_settings.classic.tts.providers.<name>]` record. See [Agent Configuration Reference](configuration.md#voice_settingsclassicstt-and-voice_settingsclassictts) for full details. The following examples omit `api_key` and only show adapter behavior-related configuration.
 
 All TTS providers are called through a unified streaming session: the Agent writes LLM output fragments to the adapter, and the adapter decides when to send to the backend. Fish Audio, Alicloud, and Volcengine are true streaming WebSocket links; the Minimax WebSocket adapter buffers internally at sentence boundaries before sending, so the upper layer doesn't need to distinguish between “true streaming” or “sentence-level streaming”. The runtime can switch providers via `POST /api/settings/tts`; playback that has already started will continue using the old provider, and subsequent requests will use the new provider.
 
@@ -142,39 +145,51 @@ Only the first leading TTS block in each LLM response is streamed. When its clos
 
 ```toml
 # Minimax WebSocket
-[tts]
-provider = "minimax"
+[voice_settings.classic.tts]
+provider = "minimax-main"
+speed = 1.0
+
+[voice_settings.classic.tts.providers.minimax-main]
+type = "minimax"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
-speed = 1.0
 ```
 
 ```toml
 # Fish Audio WebSocket
-[tts]
-provider = "fish-audio"
+[voice_settings.classic.tts]
+provider = "fish-main"
+speed = 1.0
+
+[voice_settings.classic.tts.providers.fish-main]
+type = "fish-audio"
 model = "s2-pro"
 reference_id = "98655a12fa944e26b274c535e5e03842"
-speed = 1.0
 ```
 
 ```toml
 # Alicloud Qwen-TTS Realtime
-[tts]
-provider = "alicloud"
+[voice_settings.classic.tts]
+provider = "alicloud-main"
+speed = 1.0
+
+[voice_settings.classic.tts.providers.alicloud-main]
+type = "alicloud"
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
-speed = 1.0
 ```
 
 ```toml
 # Volcengine WebSocket Bidirectional Streaming V3
-[tts]
-provider = "volcengine"
+[voice_settings.classic.tts]
+provider = "volcengine-main"
+speed = 1.0
+
+[voice_settings.classic.tts.providers.volcengine-main]
+type = "volcengine"
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
-speed = 1.0
 ```
 
 ## Dependencies

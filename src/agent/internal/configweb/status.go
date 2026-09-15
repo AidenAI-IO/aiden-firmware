@@ -232,7 +232,20 @@ func emptyFirmwareInfo() map[string]any {
 		"version": "", "build_time": "", "phase": "", "health_status": "", "health_error": "",
 		"current_version": "", "current_build_time": "", "target_version": "", "target_build_time": "",
 		"previous_version": "", "previous_build_time": "", "running_slot": "", "target_slot": "",
+		"components": map[string]string{"boot": "", "oem": "", "rootfs": ""},
 	}
+}
+
+func firmwareComponentVersions(state map[string]any, slot string) map[string]string {
+	result := map[string]string{"boot": "", "oem": "", "rootfs": ""}
+	slots, _ := state["slots"].(map[string]any)
+	slotState, _ := slots[slot].(map[string]any)
+	partitions, _ := slotState["partitions"].(map[string]any)
+	for name := range result {
+		partition, _ := partitions[name].(map[string]any)
+		result[name] = jsonString(partition, "version")
+	}
+	return result
 }
 
 func (s *Server) firmwareInfo() map[string]any {
@@ -255,6 +268,11 @@ func (s *Server) firmwareInfo() map[string]any {
 	if cmdline, err := readFileLimited(s.options.CmdlinePath, 16*1024); err == nil {
 		runningSlot = currentSlot(string(cmdline))
 	}
+	componentSlot := runningSlot
+	if componentSlot == "" {
+		componentSlot = normalizeSlot(state["active_slot"])
+	}
+	components := firmwareComponentVersions(state, componentSlot)
 	showTarget := targetVersion != "" && (phase == "pending-reboot" || phase == "health") && runningSlot != "" && runningSlot == targetSlot
 	version, build := currentVersion, currentBuild
 	previousVersion, previousBuild := "", ""
@@ -284,6 +302,7 @@ func (s *Server) firmwareInfo() map[string]any {
 		"previous_version": previousVersion, "previous_build_time": previousBuild,
 		"running_slot": runningSlot, "target_slot": targetSlot,
 		"health_status": health, "health_error": healthError,
+		"components": components,
 	}
 }
 

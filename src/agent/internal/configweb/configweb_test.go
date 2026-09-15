@@ -1,6 +1,7 @@
 package configweb
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net"
@@ -164,11 +165,13 @@ func TestStorageStatusUsesAgentResponseContract(t *testing.T) {
 	if err := os.WriteFile(options.StorageStatePath, []byte("SD_PRESENT=1\nSD_MOUNTED=1\nSD_DEVICE=/dev/mmcblk2p1\nSD_MOUNTPOINT=/mnt/sdcard\nEFFECTIVE_MODE=2\nSD_TOTAL_BYTES=100\nSD_FREE_BYTES=40\nFORMAT_STATUS=running\nFORMAT_FS=ext4\nFORMAT_AUTO=1\nMIGRATE_STATUS=failed\nMIGRATE_ERROR=copy failed\nMIGRATE_MOVED_FILES=2\nMIGRATE_MOVED_BYTES=80\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	server, err := NewServer(options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := &Server{options: options}
 	payload := server.storageStatusValue()
+	internal, ok := payload["internal"].(map[string]any)
+	totalBytes, totalOK := internal["total_bytes"].(int64)
+	if !ok || !totalOK || internal["available"] != true || totalBytes <= 0 {
+		t.Fatalf("internal storage=%#v", payload["internal"])
+	}
 	if _, legacy := payload["sd_present"]; legacy {
 		t.Fatalf("storage response still exposes legacy top-level fields: %#v", payload)
 	}
@@ -183,6 +186,106 @@ func TestStorageStatusUsesAgentResponseContract(t *testing.T) {
 	migration, ok := payload["migration"].(map[string]any)
 	if !ok || migration["status"] != "failed" || migration["moved_files"] != 2 {
 		t.Fatalf("migration=%#v", payload["migration"])
+	}
+}
+
+func TestConfigBackupExportReturnsPersistedTOML(t *testing.T) {
+	options := testOptions(t)
+	config := []byte("[basic_settings.language_timezone]\nlocale = \"en-US\"\n")
+	if err := os.WriteFile(options.AgentConfigPath, config, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{options: options}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/config/backup", nil))
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Header().Get("Content-Disposition"), ".toml\"") || !strings.Contains(resp.Header().Get("Content-Type"), "application/toml") {
+		t.Fatalf("status=%d headers=%v body=%s", resp.Code, resp.Header(), resp.Body.String())
+	}
+	if !bytes.Equal(resp.Body.Bytes(), config) {
+		t.Fatalf("backup=%q, want %q", resp.Body.Bytes(), config)
+	}
+}
+
+func TestConfigBackupImportValidatesPersistsAndReloads(t *testing.T) {
+	options := testOptions(t)
+	initial := []byte("[basic_settings.language_timezone]\nlocale = \"zh-CN\"\n")
+	if err := os.WriteFile(options.AgentConfigPath, initial, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	var reloadRevision uint64
+	reload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/internal/config/reload" {
+			t.Fatalf("reload request=%s %s", r.Method, r.URL.Path)
+		}
+		var request struct {
+			Revision uint64 `json:"revision"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		reloadRevision = request.Revision
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"ok": true, "applied": false, "pending": true,
+			"revision": request.Revision, "state": "pending", "reboot_required": false,
+		})
+	}))
+	defer reload.Close()
+	options.AgentHTTPBaseURL = reload.URL
+	server := &Server{options: options}
+	restored := []byte("[basic_settings.language_timezone]\nlocale = \"en-US\"\n")
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/config/backup", bytes.NewReader(restored)))
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"persisted":true`) || !strings.Contains(resp.Body.String(), `"pending":true`) {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if reloadRevision != configDataRevision(restored) {
+		t.Fatalf("reload revision=%d, want %d", reloadRevision, configDataRevision(restored))
+	}
+	written, err := os.ReadFile(options.AgentConfigPath)
+	if err != nil || !bytes.Equal(written, restored) {
+		t.Fatalf("restored config=%q err=%v", written, err)
+	}
+}
+
+func TestConfigBackupImportRejectsInvalidTOMLWithoutReplacingConfig(t *testing.T) {
+	options := testOptions(t)
+	initial := []byte("[basic_settings.language_timezone]\nlocale = \"zh-CN\"\n")
+	if err := os.WriteFile(options.AgentConfigPath, initial, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{options: options}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/config/backup", strings.NewReader("[broken")))
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	written, err := os.ReadFile(options.AgentConfigPath)
+	if err != nil || !bytes.Equal(written, initial) {
+		t.Fatalf("config changed to %q err=%v", written, err)
+	}
+}
+
+func TestConfigBackupImportRejectsFlatAndUnknownGroupedTables(t *testing.T) {
+	for _, backup := range []string{
+		"[model]\nprovider = \"openai\"\n",
+		"[storage_settings.storge]\nmount_point = \"/mnt/sdcard\"\n",
+		"# comments only\n",
+	} {
+		options := testOptions(t)
+		initial := []byte("[basic_settings.language_timezone]\nlocale = \"zh-CN\"\n")
+		if err := os.WriteFile(options.AgentConfigPath, initial, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		server := &Server{options: options}
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/config/backup", strings.NewReader(backup)))
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("backup=%q status=%d body=%s", backup, resp.Code, resp.Body.String())
+		}
+		written, err := os.ReadFile(options.AgentConfigPath)
+		if err != nil || !bytes.Equal(written, initial) {
+			t.Errorf("backup=%q changed config to %q err=%v", backup, written, err)
+		}
 	}
 }
 
@@ -252,6 +355,8 @@ func TestModelsSTTAndStorageAreOwnedByConfigWeb(t *testing.T) {
 		{http.MethodGet, "/api/storage/status"},
 		{http.MethodPost, "/api/storage/format"},
 		{http.MethodPost, "/api/storage/eject"},
+		{http.MethodGet, "/api/config/backup"},
+		{http.MethodPut, "/api/config/backup"},
 	} {
 		resp := httptest.NewRecorder()
 		body := `{}`
@@ -302,7 +407,7 @@ func TestModelsEndpointReturnsRequestedModelSpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(options.AgentConfigPath, []byte("[model]\nprovider = \"anthropic\"\nmodel = \"claude-sonnet-4-6\"\n"), 0o640); err != nil {
+	if err := os.WriteFile(options.AgentConfigPath, []byte("[model_settings.model]\nprovider = \"anthropic\"\nmodel = \"claude-sonnet-4-6\"\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	resp := httptest.NewRecorder()
@@ -494,7 +599,7 @@ printf '%s\n' '{"ok":true,"config":{},"changed_paths":[],"reboot_required":false
 func TestConfigPatchReconfiguresStorageOwner(t *testing.T) {
 	options := testOptions(t)
 	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
-	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"storage.mount_point\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"storage_settings.storage.mount_point\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
 	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +615,7 @@ func TestConfigPatchReconfiguresStorageOwner(t *testing.T) {
 	}
 	storage := &fakeStorageController{}
 	server.storage = storage
-	config := "[storage]\nmount_point = \"/mnt/new-card\"\ndevice = \"mmcblk9\"\nmin_card_free_mb = 128\n"
+	config := "[storage_settings.storage]\nmount_point = \"/mnt/new-card\"\ndevice = \"mmcblk9\"\nmin_card_free_mb = 128\n"
 	if err := os.WriteFile(options.AgentConfigPath, []byte(config), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -868,6 +973,67 @@ func TestAPIRouteCatalogHasNoDuplicates(t *testing.T) {
 			t.Fatalf("duplicate route %s %s for endpoints %d and %d", route.canonical.method, route.canonical.path, previous, route.endpoint)
 		}
 		seen[route.canonical] = route.endpoint
+	}
+}
+
+func TestMemoryResetProxiesAgentClearAllAndSchedulesRestart(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/api/clear-all" {
+			t.Fatalf("upstream request = %s %s", r.Method, r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	}))
+	defer upstream.Close()
+
+	options := testOptions(t)
+	options.AgentHTTPBaseURL = upstream.URL
+	options.AgentInitScript = "/bin/true"
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/memory/reset", nil))
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"agent_restart_scheduled":true`) {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("clear-all calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestMemoryResetRejectsCrossOriginBrowserRequests(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	}))
+	defer upstream.Close()
+
+	options := testOptions(t)
+	options.AgentHTTPBaseURL = upstream.URL
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, headers := range []map[string]string{
+		{"Origin": "https://attacker.example"},
+		{"Sec-Fetch-Site": "cross-site"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "http://device.local/api/memory/reset", nil)
+		for name, value := range headers {
+			req.Header.Set(name, value)
+		}
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, req)
+		if resp.Code != http.StatusForbidden {
+			t.Fatalf("headers=%v status=%d body=%s", headers, resp.Code, resp.Body.String())
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("clear-all calls = %d, want 0", calls.Load())
 	}
 }
 
@@ -1260,6 +1426,28 @@ func TestEmptyFirmwareInfoMatchesSuccessShape(t *testing.T) {
 			t.Errorf("%s=%#v exists=%v", key, value, exists)
 		}
 	}
+	components, ok := info["components"].(map[string]string)
+	if !ok || components["boot"] != "" || components["oem"] != "" || components["rootfs"] != "" {
+		t.Fatalf("components=%#v", info["components"])
+	}
+}
+
+func TestFirmwareComponentVersionsUsesSelectedSlot(t *testing.T) {
+	state := map[string]any{
+		"slots": map[string]any{
+			"b": map[string]any{
+				"partitions": map[string]any{
+					"boot":   map[string]any{"version": "boot-v2"},
+					"oem":    map[string]any{"version": "oem-v2"},
+					"rootfs": map[string]any{"version": "rootfs-v2"},
+				},
+			},
+		},
+	}
+	got := firmwareComponentVersions(state, "b")
+	if got["boot"] != "boot-v2" || got["oem"] != "oem-v2" || got["rootfs"] != "rootfs-v2" {
+		t.Fatalf("components=%#v", got)
+	}
 }
 
 func TestRunHelpReturnsSuccess(t *testing.T) {
@@ -1287,13 +1475,13 @@ func TestFrameConfigRestartsOnlyFrameServiceAndRetriesFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	if err := os.WriteFile(options.AgentConfigPath, []byte("[hid]\nframe_socket = "+strconv.Quote(socket)+"\n"), 0600); err != nil {
+	if err := os.WriteFile(options.AgentConfigPath, []byte("[advanced_settings.hardware.hid]\nframe_socket = "+strconv.Quote(socket)+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "restart")
 	fakeAgent := filepath.Join(dir, "agent")
-	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"frame_service.keep_streamon\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"ok\":true,\"config\":{},\"changed_paths\":[\"advanced_settings.hardware.frame_service.keep_streamon\"],\"reboot_required\":false,\"persisted\":true,\"revision\":11}'\n"
 	if err := os.WriteFile(fakeAgent, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -1329,7 +1517,7 @@ func TestFrameConfigRestartsOnlyFrameServiceAndRetriesFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An unchanged retry still has to finish the failed frame restart.
-	if err := os.WriteFile(fakeAgent, []byte(strings.ReplaceAll(script, `["frame_service.keep_streamon"]`, `[]`)), 0755); err != nil {
+	if err := os.WriteFile(fakeAgent, []byte(strings.ReplaceAll(script, `["advanced_settings.hardware.frame_service.keep_streamon"]`, `[]`)), 0755); err != nil {
 		t.Fatal(err)
 	}
 	applied := save()

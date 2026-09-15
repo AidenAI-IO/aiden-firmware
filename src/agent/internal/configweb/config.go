@@ -188,12 +188,15 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "agent config update omitted persisted state")
 		return
 	}
-	frameServiceChanged := containsString(changed, "frame_service.keep_streamon")
+	frameServiceChanged := containsAnyString(changed,
+		"frame_service.keep_streamon",
+		"advanced_settings.hardware.frame_service.keep_streamon",
+	)
 	if frameServiceChanged {
 		s.frameApplyPending = true
 	}
 	_, storageRequested := object["storage"]
-	if hasConfigPathPrefix(changed, "storage") || storageRequested {
+	if hasConfigPathPrefixAny(changed, "storage", "storage_settings.storage") || storageRequested {
 		s.storageApplyPending = true
 	}
 	s.configSavePending = true
@@ -430,6 +433,24 @@ func containsString(values []string, target string) bool {
 func hasConfigPathPrefix(values []string, prefix string) bool {
 	for _, value := range values {
 		if value == prefix || strings.HasPrefix(value, prefix+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyString(values []string, targets ...string) bool {
+	for _, target := range targets {
+		if containsString(values, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasConfigPathPrefixAny(values []string, prefixes ...string) bool {
+	for _, prefix := range prefixes {
+		if hasConfigPathPrefix(values, prefix) {
 			return true
 		}
 	}
