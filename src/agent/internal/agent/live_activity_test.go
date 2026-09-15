@@ -12,7 +12,7 @@ import (
 )
 
 func TestLiveActivityManagerLifecycle(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	if manager == nil {
 		t.Fatal("NewLiveActivityManager() = nil")
 	}
@@ -21,7 +21,7 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 	if state == nil || state.Status != LiveActivityStatusRunning {
 		t.Fatalf("StartTask() state = %#v", state)
 	}
-	if state.Progress <= 0 || !state.CanStop || state.Phase != LiveActivityPhasePlanning || state.CurrentAction != "plan" {
+	if state.Progress <= 0 || !state.CanStop || state.Phase != LiveActivityPhasePlanning || state.CurrentAction != "process" || state.ToolStatus != "processing" {
 		t.Fatalf("unexpected initial state: %#v", state)
 	}
 
@@ -36,38 +36,38 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 	}
 
 	state = manager.CompleteTask("req-1", "Done")
-	if state == nil || state.Status != LiveActivityStatusCompleted || state.CanStop || state.Progress != 1 {
+	if state == nil || state.Status != LiveActivityStatusCompleted || state.ToolStatus != "succeeded" || state.CanStop || state.Progress != 1 {
 		t.Fatalf("unexpected completion state: %#v", state)
 	}
 
 }
 
 func TestLiveActivityManagerDisablingCancelsAllRunningTasks(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-1", "First task")
 	manager.StartTask("req-2", "Second task")
 
-	manager.Reconfigure(LiveActivityConfig{Enabled: new(bool)})
+	manager.Reconfigure(LiveActivityConfig{Enabled: new(bool)}, "en-US")
 
 	for _, requestID := range []string{"req-1", "req-2"} {
 		state := manager.Snapshot(requestID)
-		if state == nil || state.Status != LiveActivityStatusCanceled {
+		if state == nil || state.Status != LiveActivityStatusCanceled || state.ToolStatus != "" {
 			t.Fatalf("state[%s] = %#v, want canceled", requestID, state)
 		}
 	}
 }
 
 func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-1", "Book a table")
 
 	state := manager.UpdateFromRunEvent("req-1", RunEvent{
 		Type:      "role_output",
 		Role:      "agent",
-		Content:   `{"plan":["Open Maps","Search restaurant"],"next_step":"Open Maps"}`,
+		Content:   `{"plan":["Open Maps","Search restaurant"]}`,
 		Timestamp: time.Now(),
 	})
-	if state == nil || state.CurrentStep != "Open Maps" {
+	if state == nil || state.CurrentStep != "Planning: Open Maps" {
 		t.Fatalf("agent step = %#v, want Open Maps", state)
 	}
 
@@ -91,6 +91,117 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 	}
 }
 
+func TestLiveActivityManagerLocalizesTextByLocale(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "zh-CN", newTestLogger())
+	if manager == nil {
+		t.Fatal("NewLiveActivityManager() = nil")
+	}
+	manager.StartTask("req-zh", "预订餐厅")
+
+	state := manager.UpdateFromRunEvent("req-zh", RunEvent{
+		Type:      "role_output",
+		Role:      "agent",
+		Content:   `{"plan":["打开地图"]}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.CurrentStep != "规划：打开地图" {
+		t.Fatalf("zh plan step = %q, want 规划：打开地图", state.CurrentStep)
+	}
+
+	state = manager.UpdateFromRunEvent("req-zh", RunEvent{
+		Type:      runEventToolCall,
+		ToolName:  "screenshot",
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.CurrentStep != "正在查看屏幕" {
+		t.Fatalf("zh screenshot step = %q, want 正在查看屏幕", state.CurrentStep)
+	}
+
+	state = manager.UpdateFromRunEvent("req-zh", RunEvent{
+		Type:     "tool_result",
+		ToolName: "screenshot",
+	})
+	if state == nil || state.CurrentStep != "已查看屏幕" {
+		t.Fatalf("zh screenshot result step = %q, want 已查看屏幕", state.CurrentStep)
+	}
+
+	state = manager.UpdateFromRunEvent("req-zh", RunEvent{
+		Type:      runEventToolCall,
+		ToolName:  "open_url",
+		ToolInput: `{"url":"https://example.com"}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.CurrentStep != "正在打开https://example.com" {
+		t.Fatalf("zh open_url step = %q, want 正在打开https://example.com", state.CurrentStep)
+	}
+
+	manager.Reconfigure(LiveActivityConfig{}, "en-US")
+	state = manager.UpdateFromRunEvent("req-zh", RunEvent{
+		Type:      runEventToolCall,
+		ToolName:  "screenshot",
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.CurrentStep != "Checking the screen" {
+		t.Fatalf("en screenshot step after reconfigure = %q, want Checking the screen", state.CurrentStep)
+	}
+}
+
+func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
+	manager.StartTask("req-details", "Open Settings")
+
+	state := manager.UpdateFromRunEvent("req-details", RunEvent{
+		Type:             "role_output",
+		Role:             "agent",
+		Content:          `{"plan":["Open Settings"]}`,
+		ReasoningContent: "Checking the current screen state",
+		Timestamp:        time.Now(),
+	})
+	if state == nil || state.ToolStatus != "processing" || state.CurrentAction != "process" {
+		t.Fatalf("role output details = %#v", state)
+	}
+
+	state = manager.UpdateFromRunEvent("req-details", RunEvent{
+		Type:             runEventReasoningDelta,
+		ReasoningContent: "Checking the current screen state",
+		Timestamp:        time.Now(),
+	})
+	if state == nil || state.ToolStatus != "thinking" || state.CurrentAction != "think" {
+		t.Fatalf("thinking details = %#v", state)
+	}
+
+	startedAt := time.Now().Add(-2 * time.Second)
+	state = manager.UpdateFromRunEvent("req-details", RunEvent{
+		Type:      runEventToolCall,
+		ToolName:  "screenshot",
+		Content:   "Checking the current screen",
+		Timestamp: startedAt,
+	})
+	if state == nil || state.ToolStatus != "running" || state.ToolStartedAt == nil || !state.ToolStartedAt.Equal(startedAt) {
+		t.Fatalf("tool start details = %#v", state)
+	}
+
+	state = manager.UpdateFromRunEvent("req-details", RunEvent{
+		Type:       runEventToolProgress,
+		ToolStatus: "running",
+		Content:    "Still checking the current screen",
+		Timestamp:  startedAt.Add(5 * time.Second),
+	})
+	if state == nil || state.ToolStartedAt == nil || !state.ToolStartedAt.Equal(startedAt) {
+		t.Fatalf("tool progress reset start time: %#v", state)
+	}
+
+	state = manager.UpdateFromRunEvent("req-details", RunEvent{
+		Type:      "tool_result",
+		ToolName:  "screenshot",
+		Content:   `{"summary":"Current screen captured"}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.ToolStatus != "succeeded" || state.ToolStartedAt != nil {
+		t.Fatalf("tool result details = %#v", state)
+	}
+}
+
 func TestLiveActivityOpenURLUsesSchemeSpecificStatus(t *testing.T) {
 	tests := []struct {
 		name string
@@ -104,25 +215,27 @@ func TestLiveActivityOpenURLUsesSchemeSpecificStatus(t *testing.T) {
 		{name: "phone", url: "tel:+15551234567", app: "Phone", step: "Opening phone"},
 	}
 
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
+	text := manager.getLiveActivityText()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			event := RunEvent{ToolName: toolOpenURL, ToolInput: jsonString(map[string]string{"url": tt.url})}
-			status := liveActivityToolCallStatus(event)
+			status := liveActivityToolCallStatus(event, text)
 			if status.app != tt.app || status.step != tt.step {
 				t.Fatalf("status = %#v, want app=%q step=%q", status, tt.app, tt.step)
 			}
-			if got := liveActivityAppFromToolCall(event); got != tt.app {
+			if got := liveActivityAppFromToolCall(event, text); got != tt.app {
 				t.Fatalf("liveActivityAppFromToolCall() = %q, want %q", got, tt.app)
 			}
 		})
 	}
-	if got := liveActivityToolResultStep(toolOpenURL); got != "Link opened" {
+	if got := liveActivityToolResultStep(toolOpenURL, text); got != "Link opened" {
 		t.Fatalf("liveActivityToolResultStep(open_url) = %q, want Link opened", got)
 	}
 }
 
 func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-1", "Read clipboard")
 
 	state := manager.UpdateFromRunEvent("req-1", RunEvent{
@@ -154,7 +267,7 @@ func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
 }
 
 func TestLiveActivityManagerKeepsHumanHandoffVisible(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-handoff", "Complete login")
 
 	state := manager.UpdateFromRunEvent("req-handoff", RunEvent{
@@ -191,7 +304,7 @@ func TestLiveActivityManagerKeepsHumanHandoffVisible(t *testing.T) {
 }
 
 func TestLiveActivityManagerSnapshotActive(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-1", "First task")
 	manager.StartTask("req-2", "Second task")
 
@@ -208,7 +321,7 @@ func TestLiveActivityManagerSnapshotActive(t *testing.T) {
 }
 
 func TestLiveActivityManagerSnapshotActiveForPhone(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-phone-a", "First phone", "phone-a")
 	manager.StartTask("req-phone-b", "Second phone", "phone-b")
 
@@ -228,7 +341,7 @@ func TestLiveActivityManagerSnapshotActiveForPhone(t *testing.T) {
 }
 
 func TestLiveActivityManagerSnapshotActiveForPhoneIncludesUnscopedLocalTask(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-local", "Hardware initiated task")
 
 	active := manager.SnapshotActiveForPhone("phone-a")
@@ -238,7 +351,7 @@ func TestLiveActivityManagerSnapshotActiveForPhoneIncludesUnscopedLocalTask(t *t
 }
 
 func TestLiveActivityManagerCoalescesLocalBLEWake(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	reasons := make(chan string, 4)
@@ -303,7 +416,7 @@ func TestServerLiveActivityRegistrationRouteRemoved(t *testing.T) {
 }
 
 func TestServerLiveActivityStatus(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
 	statusReq := liveActivityLoopbackRequest("/api/live-activity/status?request_id=%20req-1%20")
@@ -325,7 +438,7 @@ func TestServerLiveActivityStatus(t *testing.T) {
 }
 
 func TestServerLiveActivityCurrent(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
 	req := liveActivityLoopbackRequest("/api/live-activity/current")
@@ -384,7 +497,7 @@ func TestServerBridgeStatusWithoutBridge(t *testing.T) {
 }
 
 func TestServerLiveActivityCurrentFiltersPhoneID(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 	server.liveActivity.StartTask("req-phone-a", "Do a task", "phone-a")
 	server.liveActivity.StartTask("req-phone-b", "Do another task", "phone-b")
 
@@ -436,7 +549,7 @@ func TestServerLiveActivityPhoneIDPreference(t *testing.T) {
 }
 
 func TestServerLiveActivityCurrentEmpty(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 
 	req := liveActivityLoopbackRequest("/api/live-activity/current")
 	rec := httptest.NewRecorder()
@@ -456,7 +569,7 @@ func TestServerLiveActivityCurrentEmpty(t *testing.T) {
 }
 
 func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 	req := liveActivityLoopbackRequest("/api/live-activity/status")
 	rec := httptest.NewRecorder()
 
@@ -468,7 +581,7 @@ func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
 }
 
 func TestServerLiveActivityEndpointsRequireUSB(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
 	usbRequest := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
@@ -506,7 +619,7 @@ func liveActivityLoopbackRequest(target string) *http.Request {
 
 func TestChatResultIncludesLiveActivityState(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
-		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {
 				messages: []Message{},
@@ -534,7 +647,7 @@ func TestChatResultIncludesLiveActivityState(t *testing.T) {
 
 func TestChatResultIncludesTerminalLiveActivityState(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
-		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {
 				messages: []Message{{
@@ -574,7 +687,7 @@ func TestChatResultIncludesTerminalLiveActivityState(t *testing.T) {
 
 func TestChatResultErrorIncludesQueuedMessages(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
-		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {
 				messages: []Message{{

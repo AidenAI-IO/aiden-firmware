@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +37,7 @@ const (
 type LiveActivityState struct {
 	RequestID     string     `json:"request_id"`
 	PhoneID       string     `json:"phone_id,omitempty"`
+	Locale        string     `json:"locale,omitempty"`
 	Status        string     `json:"status"`
 	Phase         string     `json:"phase,omitempty"`
 	TaskTitle     string     `json:"task_title"`
@@ -45,6 +47,8 @@ type LiveActivityState struct {
 	CurrentApp    string     `json:"current_app,omitempty"`
 	LastToolName  string     `json:"last_tool_name,omitempty"`
 	LastError     string     `json:"last_error,omitempty"`
+	ToolStatus    string     `json:"tool_status,omitempty"`
+	ToolStartedAt *time.Time `json:"tool_started_at,omitempty"`
 	Progress      float64    `json:"progress,omitempty"`
 	ShowsProgress bool       `json:"shows_progress"`
 	CanStop       bool       `json:"can_stop"`
@@ -60,26 +64,244 @@ type LiveActivityManager struct {
 	states             map[string]LiveActivityState
 	activeRequestID    string
 	logger             *Logger
+	locale             atomic.Value
 	localNotifyMu      sync.RWMutex
 	localNotifier      func(context.Context, string) error
 	localNotifyQueue   chan struct{}
 	localNotifyStarted bool
 }
 
-func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivityManager {
+// liveActivityText defines localized strings for Live Activity display.
+type liveActivityText struct {
+	AidenTask                        string
+	ProcessingRequest                string
+	AnalyzingTask                    string
+	PlanningNextStep                 string
+	PleaseTakeOverOnPhone            string
+	OpenAidenToContinue              string
+	LaunchRequestSentVerifyingScreen string
+	UpdatingPlanFromUserInput        string
+	Completed                        string
+	Failed                           string
+	Canceled                         string
+	OpeningApp                       string
+	OpeningAppWithTarget             string
+	CreatingCalendarEvent            string
+	CheckingCalendar                 string
+	DeletingCalendarEvent            string
+	UpdatingCalendar                 string
+	CheckingContacts                 string
+	CreatingContact                  string
+	UpdatingContact                  string
+	CheckingNotifications            string
+	SendingNotification              string
+	UsingClipboard                   string
+	ReadingClipboard                 string
+	WritingClipboard                 string
+	PreparingAnswer                  string
+	PlanningPrefix                   string
+	Browser                          string
+	Messages                         string
+	Using                            string
+	CheckingScreen                   string
+	WaitingForScreen                 string
+	OpeningLink                      string
+	ControllingPhone                 string
+	MovingPointer                    string
+	Scrolling                        string
+	TypingText                       string
+	PressingKeys                     string
+	UsingNotifications               string
+	Searching                        string
+	AdjustingAudio                   string
+	CheckingInformation              string
+	RecallingContext                 string
+	UpdatingMemory                   string
+	UsingSkills                      string
+	WaitingForUserInput              string
+	ScreenChecked                    string
+	ScreenReady                      string
+	AppOpened                        string
+	LinkOpened                       string
+	ActionSentCheckingResult         string
+	FinishedPrefix                   string
+	Finished                         string
+	ProblemWhilePrefix               string
+	ToolFailed                       string
+	OpeningPrefix                    string
+	OpeningWebpage                   string
+	OpeningMessageComposer           string
+	OpeningEmailComposer             string
+	OpeningPhone                     string
+	Mail                             string
+	Phone                            string
+}
+
+func NewLiveActivityManager(cfg LiveActivityConfig, locale string, logger *Logger) *LiveActivityManager {
 	if !cfg.EnabledOrDefault() {
 		return nil
 	}
-	return newReloadableLiveActivityManager(cfg, logger)
+	return newReloadableLiveActivityManager(cfg, locale, logger)
 }
 
-func newReloadableLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivityManager {
+func newReloadableLiveActivityManager(cfg LiveActivityConfig, locale string, logger *Logger) *LiveActivityManager {
 	manager := &LiveActivityManager{
 		states: make(map[string]LiveActivityState),
 		logger: logger,
 	}
+	manager.locale.Store(normalizeVoiceNotificationLocale(locale))
 	manager.disabled.Store(!cfg.EnabledOrDefault())
 	return manager
+}
+
+// currentLocale returns the manager's normalized locale ("" when unset), so the
+// phone can localize its own Live Activity labels to match the agent's setting.
+func (m *LiveActivityManager) currentLocale() string {
+	if m == nil {
+		return ""
+	}
+	locale, _ := m.locale.Load().(string)
+	return locale
+}
+
+// getLiveActivityText returns localized text based on the manager's locale.
+func (m *LiveActivityManager) getLiveActivityText() liveActivityText {
+	locale := ""
+	if m != nil {
+		locale, _ = m.locale.Load().(string)
+	}
+	if locale == "" || strings.HasPrefix(locale, "en") {
+		// English (default)
+		return liveActivityText{
+			AidenTask:                        "Aiden task",
+			ProcessingRequest:                "Processing request",
+			AnalyzingTask:                    "Analyzing the task and preparing the next action",
+			PlanningNextStep:                 "Planning next step",
+			PleaseTakeOverOnPhone:            "Please take over on the phone",
+			OpenAidenToContinue:              "Open Aiden to continue",
+			LaunchRequestSentVerifyingScreen: "Launch request sent; verifying the target screen",
+			UpdatingPlanFromUserInput:        "Updating plan from user input",
+			Completed:                        "Completed",
+			Failed:                           "Failed",
+			Canceled:                         "Canceled",
+			OpeningApp:                       "Opening app",
+			OpeningAppWithTarget:             "Opening %s",
+			CreatingCalendarEvent:            "Creating calendar event",
+			CheckingCalendar:                 "Checking calendar",
+			DeletingCalendarEvent:            "Deleting calendar event",
+			UpdatingCalendar:                 "Updating calendar",
+			CheckingContacts:                 "Checking contacts",
+			CreatingContact:                  "Creating contact",
+			UpdatingContact:                  "Updating contact",
+			CheckingNotifications:            "Checking notifications",
+			SendingNotification:              "Sending notification",
+			UsingClipboard:                   "Using clipboard",
+			ReadingClipboard:                 "Reading clipboard",
+			WritingClipboard:                 "Writing clipboard",
+			PreparingAnswer:                  "Preparing answer",
+			PlanningPrefix:                   "Planning: ",
+			Browser:                          "Browser",
+			Messages:                         "Messages",
+			Using:                            "Using",
+			CheckingScreen:                   "Checking the screen",
+			WaitingForScreen:                 "Waiting for the screen",
+			OpeningLink:                      "Opening link",
+			ControllingPhone:                 "Controlling the phone",
+			MovingPointer:                    "Moving pointer",
+			Scrolling:                        "Scrolling",
+			TypingText:                       "Typing text",
+			PressingKeys:                     "Pressing keys",
+			UsingNotifications:               "Using notifications",
+			Searching:                        "Searching",
+			AdjustingAudio:                   "Adjusting audio",
+			CheckingInformation:              "Checking information",
+			RecallingContext:                 "Recalling context",
+			UpdatingMemory:                   "Updating memory",
+			UsingSkills:                      "Using skills",
+			WaitingForUserInput:              "Waiting for user input",
+			ScreenChecked:                    "Screen checked",
+			ScreenReady:                      "Screen is ready",
+			AppOpened:                        "App opened",
+			LinkOpened:                       "Link opened",
+			ActionSentCheckingResult:         "Action sent; checking result",
+			FinishedPrefix:                   "Finished: ",
+			Finished:                         "Finished",
+			ProblemWhilePrefix:               "Problem while ",
+			ToolFailed:                       "Tool failed",
+			OpeningPrefix:                    "Opening ",
+			OpeningWebpage:                   "Opening webpage",
+			OpeningMessageComposer:           "Opening message composer",
+			OpeningEmailComposer:             "Opening email composer",
+			OpeningPhone:                     "Opening phone",
+			Mail:                             "Mail",
+			Phone:                            "Phone",
+		}
+	}
+	// Simplified Chinese
+	return liveActivityText{
+		AidenTask:                        "Aiden 任务",
+		ProcessingRequest:                "处理请求中",
+		AnalyzingTask:                    "正在分析任务并准备下一步操作",
+		PlanningNextStep:                 "规划下一步",
+		PleaseTakeOverOnPhone:            "请在手机上继续操作",
+		OpenAidenToContinue:              "打开 Aiden 以继续",
+		LaunchRequestSentVerifyingScreen: "启动请求已发送；正在验证目标屏幕",
+		UpdatingPlanFromUserInput:        "根据用户输入更新计划",
+		Completed:                        "已完成",
+		Failed:                           "失败",
+		Canceled:                         "已取消",
+		OpeningApp:                       "打开应用",
+		OpeningAppWithTarget:             "正在打开%s",
+		CreatingCalendarEvent:            "创建日历事件",
+		CheckingCalendar:                 "查看日历",
+		DeletingCalendarEvent:            "删除日历事件",
+		UpdatingCalendar:                 "更新日历",
+		CheckingContacts:                 "查看联系人",
+		CreatingContact:                  "创建联系人",
+		UpdatingContact:                  "更新联系人",
+		CheckingNotifications:            "查看通知",
+		SendingNotification:              "发送通知",
+		UsingClipboard:                   "使用剪贴板",
+		ReadingClipboard:                 "读取剪贴板",
+		WritingClipboard:                 "写入剪贴板",
+		PreparingAnswer:                  "准备回答",
+		PlanningPrefix:                   "规划：",
+		Browser:                          "浏览器",
+		Messages:                         "信息",
+		Using:                            "使用",
+		CheckingScreen:                   "正在查看屏幕",
+		WaitingForScreen:                 "等待屏幕稳定",
+		OpeningLink:                      "打开链接",
+		ControllingPhone:                 "控制手机",
+		MovingPointer:                    "移动指针",
+		Scrolling:                        "滚动",
+		TypingText:                       "输入文本",
+		PressingKeys:                     "按键",
+		UsingNotifications:               "使用通知",
+		Searching:                        "搜索中",
+		AdjustingAudio:                   "调整音量",
+		CheckingInformation:              "查看信息",
+		RecallingContext:                 "回忆上下文",
+		UpdatingMemory:                   "更新记忆",
+		UsingSkills:                      "使用技能",
+		WaitingForUserInput:              "等待用户输入",
+		ScreenChecked:                    "已查看屏幕",
+		ScreenReady:                      "屏幕就绪",
+		AppOpened:                        "应用已打开",
+		LinkOpened:                       "链接已打开",
+		ActionSentCheckingResult:         "操作已发送；正在确认结果",
+		FinishedPrefix:                   "已完成：",
+		Finished:                         "已完成",
+		ProblemWhilePrefix:               "出现问题：",
+		ToolFailed:                       "工具失败",
+		OpeningPrefix:                    "正在打开",
+		OpeningWebpage:                   "正在打开网页",
+		OpeningMessageComposer:           "正在打开短信编辑",
+		OpeningEmailComposer:             "正在打开邮件编辑",
+		OpeningPhone:                     "正在打开拨号",
+		Mail:                             "邮件",
+		Phone:                            "电话",
+	}
 }
 
 func (m *LiveActivityManager) SetLocalUpdateNotifier(notifier func(context.Context, string) error) {
@@ -159,14 +381,17 @@ func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...str
 	}
 	phoneID = strings.TrimSpace(phoneID)
 	now := time.Now()
+	text := m.getLiveActivityText()
 	state := LiveActivityState{
 		RequestID:     strings.TrimSpace(requestID),
 		PhoneID:       phoneID,
+		Locale:        m.currentLocale(),
 		Status:        LiveActivityStatusRunning,
 		Phase:         LiveActivityPhasePlanning,
-		TaskTitle:     truncateLiveActivityText(firstNonEmptyString([]string{title, "Aiden task"}), 80),
-		CurrentStep:   "Planning next step",
-		CurrentAction: "plan",
+		TaskTitle:     truncateLiveActivityText(firstNonEmptyString([]string{title, text.AidenTask}), 80),
+		CurrentStep:   text.ProcessingRequest,
+		CurrentAction: "process",
+		ToolStatus:    "processing",
 		Progress:      0.05,
 		ShowsProgress: true,
 		CanStop:       true,
@@ -188,24 +413,87 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 	m.mu.Lock()
 	requestID = strings.TrimSpace(requestID)
 	state, ok := m.states[requestID]
-	if !ok {
+	if !ok || state.EndedAt != nil {
 		m.mu.Unlock()
 		return nil
 	}
+	text := m.getLiveActivityText()
 	switch event.Type {
-	case "role_output":
+	case "role_output", "assistant_output":
 		state.Status = LiveActivityStatusRunning
 		state.ShowsProgress = true
 		state.RequiresApp = false
 		state.LastError = ""
 		state.LastToolName = ""
-		state.CurrentAction = liveActivityActionFromRole(event.Content)
+		state.ToolStatus = "processing"
+		state.CurrentAction = "process"
+		state.ToolStartedAt = nil
 		state.Phase = liveActivityPhaseFromRole(event.Content)
-		if step := truncateLiveActivityText(liveActivityStepFromRoleOutput(event), 120); step != "" {
+		if step := truncateLiveActivityText(liveActivityStepFromRoleOutput(event, text), 120); step != "" {
 			state.CurrentStep = step
 		}
+	case runEventReasoningDelta:
+		if strings.TrimSpace(event.ReasoningContent) == "" {
+			m.mu.Unlock()
+			return &state
+		}
+		// Raw reasoning is not a display summary. Use a stage-level fallback
+		// rather than exposing the model's reasoning stream.
+		state.Status = LiveActivityStatusRunning
+		state.Phase = LiveActivityPhasePlanning
+		state.CurrentAction = "think"
+		state.ToolStatus = "thinking"
+		state.ToolStartedAt = nil
+		state.LastToolName = ""
+		state.LastError = ""
+		state.RequiresApp = false
+		state.CurrentStep = text.AnalyzingTask
+	case runEventReasoningReset:
+		state.Status = LiveActivityStatusRunning
+		state.Phase = LiveActivityPhasePlanning
+		state.CurrentAction = "process"
+		state.ToolStatus = "processing"
+		state.ToolStartedAt = nil
+		state.LastToolName = ""
+		state.LastError = ""
+		state.RequiresApp = false
+		state.CurrentStep = text.ProcessingRequest
+	case runEventToolProgress:
+		state.Status = LiveActivityStatusRunning
+		toolStatus := firstNonEmptyString([]string{event.ToolStatus, "running"})
+		if toolStatus == "running" {
+			if state.ToolStatus == "running" && state.ToolStartedAt != nil {
+				// Keep the timestamp from the initial tool call while progress
+				// updates continue for the same tool.
+			} else {
+				now := event.Timestamp
+				if now.IsZero() {
+					now = time.Now()
+				}
+				state.ToolStartedAt = &now
+			}
+		} else {
+			state.ToolStartedAt = nil
+		}
+		state.ToolStatus = toolStatus
+		state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
+			event.Content,
+			state.CurrentStep,
+		}), 120)
+		state.RequiresApp = state.ToolStatus == "waiting_app"
+		if state.ToolStatus == "verifying" {
+			state.Phase = LiveActivityPhaseVerifying
+			state.CurrentAction = "verify_result"
+		} else if state.ToolStatus == "preparing" {
+			state.Phase = LiveActivityPhasePhoneBridge
+		} else if state.ToolStatus == "waiting_app" {
+			state.Status = LiveActivityStatusNeedsApp
+			state.Phase = LiveActivityPhaseWaitingApp
+			state.CurrentAction = "open_aiden"
+		}
+		state.LastError = ""
 	case runEventToolCall:
-		toolStatus := liveActivityToolCallStatus(event)
+		toolStatus := liveActivityToolCallStatus(event, text)
 		state.Status = firstNonEmptyString([]string{toolStatus.status, LiveActivityStatusRunning})
 		state.Phase = toolStatus.phase
 		state.CurrentAction = toolStatus.action
@@ -214,13 +502,22 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.ShowsProgress = toolStatus.status != LiveActivityStatusNeedsApp
 		state.LastError = ""
 		state.LastToolName = strings.TrimSpace(event.ToolName)
+		state.ToolStatus = firstNonEmptyString([]string{toolStatus.status, "running"})
+		if toolStatus.phase == LiveActivityPhaseWaitingUser {
+			state.ToolStatus = "waiting_user"
+		}
+		startedAt := event.Timestamp
+		if startedAt.IsZero() {
+			startedAt = time.Now()
+		}
+		state.ToolStartedAt = &startedAt
 		if app := toolStatus.app; app != "" {
 			state.CurrentApp = truncateLiveActivityText(app, 40)
 		}
 		stepCandidates := []string{
 			event.Content,
 			toolStatus.step,
-			formatToolStep("Using", event.ToolName),
+			formatToolStep(text.Using, event.ToolName),
 		}
 		if toolStatus.status == LiveActivityStatusNeedsApp {
 			stepCandidates[0], stepCandidates[1] = stepCandidates[1], stepCandidates[0]
@@ -230,6 +527,10 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 	case "tool_result":
 		hasError := liveActivityEventHasError(event)
 		state.LastToolName = strings.TrimSpace(event.ToolName)
+		resultAction := liveActivityToolCallStatus(event, text).action
+		if resultAction != "" {
+			state.CurrentAction = resultAction
+		}
 		if !hasError && strings.EqualFold(strings.TrimSpace(event.ToolName), toolUserActionStep) {
 			state.Status = LiveActivityStatusNeedsApp
 			state.Phase = LiveActivityPhaseWaitingUser
@@ -238,10 +539,12 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 			state.RequiresApp = false
 			state.ShowsProgress = false
 			state.LastError = ""
+			state.ToolStatus = "waiting_user"
+			state.ToolStartedAt = nil
 			state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
 				liveActivityHumanHandoffStep(event.Content),
 				liveActivityHumanHandoffStep(event.ToolInput),
-				"Please take over on the phone",
+				text.PleaseTakeOverOnPhone,
 			}), 120)
 		} else if hasError {
 			errText := liveActivityEventErrorText(event)
@@ -250,16 +553,20 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 				state.Status = LiveActivityStatusNeedsApp
 				state.Phase = LiveActivityPhaseWaitingApp
 				state.CurrentAction = "open_aiden"
-				state.CurrentStep = "Open Aiden to continue"
+				state.CurrentStep = text.OpenAidenToContinue
 				state.RequiresApp = true
 				state.ShowsProgress = false
+				state.ToolStatus = "waiting_app"
+				state.ToolStartedAt = nil
 			} else {
 				state.Status = LiveActivityStatusRunning
 				state.Phase = liveActivityToolResultPhase(event.ToolName)
 				state.CurrentAction = "recover"
-				state.CurrentStep = truncateLiveActivityText(liveActivityToolErrorStep(event.ToolName), 120)
+				state.CurrentStep = truncateLiveActivityText(liveActivityToolErrorStep(event.ToolName, text), 120)
 				state.RequiresApp = false
 				state.ShowsProgress = true
+				state.ToolStatus = "failed"
+				state.ToolStartedAt = nil
 			}
 		} else {
 			state.Status = LiveActivityStatusRunning
@@ -268,17 +575,30 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 			state.RequiresApp = false
 			state.ShowsProgress = true
 			state.LastError = ""
-			state.CurrentStep = truncateLiveActivityText(liveActivityToolResultStep(event.ToolName), 120)
+			state.ToolStatus = "succeeded"
+			state.ToolStartedAt = nil
+			state.CurrentStep = truncateLiveActivityText(liveActivityToolResultStep(event.ToolName, text), 120)
+			if event.ToolName == toolOpenApp || event.ToolName == toolOpenURL || event.ToolName == toolBridgeOpenApp {
+				// An accepted launch (even with a captured image) does not prove
+				// the target app is on screen. The next model observation does.
+				state.ToolStatus = "verifying"
+				state.CurrentStep = text.LaunchRequestSentVerifyingScreen
+			}
 			state.Progress = bumpLiveActivityProgress(state.Progress)
 		}
 	case "steer":
 		state.Status = LiveActivityStatusRunning
 		state.Phase = LiveActivityPhasePlanning
 		state.CurrentAction = "steer"
-		state.CurrentStep = "Updating plan from user input"
+		state.CurrentStep = text.UpdatingPlanFromUserInput
 		state.RequiresApp = false
 		state.ShowsProgress = true
 		state.LastError = ""
+		state.ToolStatus = "processing"
+		state.ToolStartedAt = nil
+	default:
+		m.mu.Unlock()
+		return &state
 	}
 	state.UpdatedAt = time.Now()
 	m.states[requestID] = state
@@ -292,9 +612,10 @@ func (m *LiveActivityManager) CompleteTask(requestID, output string) *LiveActivi
 	if state := m.pauseForHumanHandoff(requestID, output); state != nil {
 		return state
 	}
+	text := m.getLiveActivityText()
 	return m.finishTask(requestID, LiveActivityStatusCompleted, firstNonEmptyString([]string{
 		truncateLiveActivityText(output, 120),
-		"Completed",
+		text.Completed,
 	}), "")
 }
 
@@ -303,6 +624,7 @@ func (m *LiveActivityManager) pauseForHumanHandoff(requestID, output string) *Li
 		return nil
 	}
 	requestID = strings.TrimSpace(requestID)
+	text := m.getLiveActivityText()
 	m.mu.Lock()
 	state, ok := m.states[requestID]
 	if !ok || (state.Phase != LiveActivityPhaseWaitingUser && !strings.EqualFold(state.LastToolName, toolUserActionStep)) {
@@ -313,10 +635,12 @@ func (m *LiveActivityManager) pauseForHumanHandoff(requestID, output string) *Li
 	state.Phase = LiveActivityPhaseWaitingUser
 	state.CurrentAction = "request_user_input"
 	state.CurrentTarget = ""
+	state.ToolStatus = "waiting_user"
+	state.ToolStartedAt = nil
 	state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
 		output,
 		state.CurrentStep,
-		"Please take over on the phone",
+		text.PleaseTakeOverOnPhone,
 	}), 120)
 	state.Progress = 0
 	state.ShowsProgress = false
@@ -332,11 +656,13 @@ func (m *LiveActivityManager) pauseForHumanHandoff(requestID, output string) *Li
 }
 
 func (m *LiveActivityManager) FailTask(requestID, message string) *LiveActivityState {
-	return m.finishTask(requestID, LiveActivityStatusFailed, "Failed", truncateLiveActivityText(message, 160))
+	text := m.getLiveActivityText()
+	return m.finishTask(requestID, LiveActivityStatusFailed, text.Failed, truncateLiveActivityText(message, 160))
 }
 
 func (m *LiveActivityManager) CancelTask(requestID string) *LiveActivityState {
-	return m.finishTask(requestID, LiveActivityStatusCanceled, "Canceled", "")
+	text := m.getLiveActivityText()
+	return m.finishTask(requestID, LiveActivityStatusCanceled, text.Canceled, "")
 }
 
 func (m *LiveActivityManager) finishTask(requestID, status, step, errText string) *LiveActivityState {
@@ -356,7 +682,16 @@ func (m *LiveActivityManager) finishTask(requestID, status, step, errText string
 	state.CurrentAction = status
 	state.CurrentTarget = ""
 	state.LastError = errText
+	if status == LiveActivityStatusCompleted {
+		state.ToolStatus = "succeeded"
+	} else if status == LiveActivityStatusCanceled {
+		state.ToolStatus = ""
+	} else {
+		state.ToolStatus = status
+	}
+	state.ToolStartedAt = nil
 	state.Progress = 1
+	state.LastToolName = ""
 	state.ShowsProgress = false
 	state.CanStop = false
 	state.RequiresApp = false
@@ -509,20 +844,13 @@ func liveActivityPhaseFromRole(content string) string {
 	return LiveActivityPhasePlanning
 }
 
-func liveActivityActionFromRole(content string) string {
-	if speech.ExtractText(content) != "" {
-		return "answer"
-	}
-	return "think"
-}
-
-func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
+func liveActivityToolCallStatus(event RunEvent, text liveActivityText) liveActivityToolStatus {
 	tool := strings.ToLower(strings.TrimSpace(event.ToolName))
 	target := liveActivityTargetFromToolCall(event)
 	status := liveActivityToolStatus{
 		phase:  LiveActivityPhaseActing,
 		action: normalizedLiveActivityAction(tool),
-		step:   liveActivityToolCallStep(tool),
+		step:   liveActivityToolCallStep(tool, text),
 		target: target,
 	}
 	switch tool {
@@ -534,53 +862,59 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 		status.action = "wait_for_screen"
 	case toolOpenApp:
 		status.action = "open_app"
-		status.app = liveActivityAppFromToolCall(event)
+		status.app = liveActivityAppFromToolCall(event, text)
 		if status.step == "" {
-			status.step = "Opening app"
+			status.step = text.OpeningApp
 		}
 		if target != "" {
-			status.step = "Opening " + target
+			status.step = fmt.Sprintf(text.OpeningAppWithTarget, target)
 		}
 	case toolOpenURL:
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "open_url"
 		status.requiresApp = true
-		status.app = liveActivityOpenURLApp(target)
-		status.step = liveActivityOpenURLCallStep(target)
+		status.app = liveActivityOpenURLApp(target, text)
+		status.step = liveActivityOpenURLCallStep(target, text)
+	case toolBridgeOpenApp:
+		status.phase = LiveActivityPhasePhoneBridge
+		status.action = "open_app"
+		status.requiresApp = true
+		status.app = liveActivityAppFromToolCall(event, text)
+		status.step = text.OpeningApp
 	case toolBridgeClipboard:
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "clipboard"
 		status.requiresApp = true
-		status.step = liveActivityClipboardStep(event.ToolInput)
+		status.step = liveActivityClipboardStep(event.ToolInput, text)
 	case toolBridgeCalendar:
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "calendar"
 		status.requiresApp = true
 		status.step = liveActivityActionStep(event.ToolInput, map[string]string{
-			"create": "Creating calendar event",
-			"query":  "Checking calendar",
-			"delete": "Deleting calendar event",
-		}, "Updating calendar")
+			"create": text.CreatingCalendarEvent,
+			"query":  text.CheckingCalendar,
+			"delete": text.DeletingCalendarEvent,
+		}, text.UpdatingCalendar)
 	case toolBridgeContacts:
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "contacts"
 		status.requiresApp = true
 		status.step = liveActivityActionStep(event.ToolInput, map[string]string{
-			"query":  "Checking contacts",
-			"create": "Creating contact",
-			"update": "Updating contact",
-		}, "Checking contacts")
+			"query":  text.CheckingContacts,
+			"create": text.CreatingContact,
+			"update": text.UpdatingContact,
+		}, text.CheckingContacts)
 	case toolBridgeNotification:
 		payload, _ := liveActivityJSONObject(event.ToolInput)
 		if strings.EqualFold(liveActivityString(payload, "action"), "query") {
 			status.phase = LiveActivityPhaseVerifying
 			status.action = "notification"
-			status.step = "Checking notifications"
+			status.step = text.CheckingNotifications
 		} else {
 			status.phase = LiveActivityPhasePhoneBridge
 			status.action = "notification"
 			status.requiresApp = true
-			status.step = "Sending notification"
+			status.step = text.SendingNotification
 		}
 	case "request_user_action":
 		status.status = LiveActivityStatusNeedsApp
@@ -588,7 +922,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 		status.action = "request_user_input"
 		status.step = firstNonEmptyString([]string{
 			liveActivityHumanHandoffStep(event.ToolInput),
-			"Please take over on the phone",
+			text.PleaseTakeOverOnPhone,
 		})
 	case "touch_gesture", "quick_action":
 		status.action = "control_phone"
@@ -606,7 +940,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 		status.action = "check_information"
 	}
 	if status.step == "" {
-		status.step = formatToolStep("Using", tool)
+		status.step = formatToolStep(text.Using, tool)
 	}
 	return status
 }
@@ -615,7 +949,7 @@ func liveActivityToolResultPhase(tool string) string {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "screenshot", "wait_for_stable_screen":
 		return LiveActivityPhaseVerifying
-	case toolOpenURL, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
+	case toolOpenURL, toolBridgeOpenApp, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
 		return LiveActivityPhasePhoneBridge
 	case "request_user_action":
 		return LiveActivityPhaseWaitingUser
@@ -686,25 +1020,25 @@ func liveActivityResultNeedsApp(event RunEvent, errText string) bool {
 
 func liveActivityToolRequiresApp(tool string) bool {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
-	case toolOpenURL, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
+	case toolOpenURL, toolBridgeOpenApp, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
 		return true
 	default:
 		return false
 	}
 }
 
-func liveActivityClipboardStep(input string) string {
+func liveActivityClipboardStep(input string, text liveActivityText) string {
 	payload, ok := liveActivityJSONObject(input)
 	if !ok {
-		return "Using clipboard"
+		return text.UsingClipboard
 	}
 	switch strings.ToLower(strings.TrimSpace(liveActivityString(payload, "action"))) {
 	case "read":
-		return "Reading clipboard"
+		return text.ReadingClipboard
 	case "write":
-		return "Writing clipboard"
+		return text.WritingClipboard
 	default:
-		return "Using clipboard"
+		return text.UsingClipboard
 	}
 }
 
@@ -738,7 +1072,7 @@ func liveActivityTargetFromToolCall(event RunEvent) string {
 		return ""
 	}
 	switch strings.ToLower(strings.TrimSpace(event.ToolName)) {
-	case toolOpenApp:
+	case toolOpenApp, toolBridgeOpenApp:
 		return firstNonEmptyString([]string{liveActivityString(payload, "app"), liveActivityString(payload, "name")})
 	case toolOpenURL:
 		return liveActivityString(payload, "url")
@@ -829,34 +1163,34 @@ func normalizedLiveActivityAction(tool string) string {
 	return builder.String()
 }
 
-func liveActivityStepFromRoleOutput(event RunEvent) string {
+func liveActivityStepFromRoleOutput(event RunEvent, text liveActivityText) string {
 	role := strings.ToLower(strings.TrimSpace(event.Role))
 	content := strings.TrimSpace(event.Content)
 	if content != "" && strings.HasPrefix(content, "{") {
-		if step := liveActivityStepFromJSONRoleOutput(content); step != "" {
+		if step := liveActivityStepFromJSONRoleOutput(content, text); step != "" {
 			return step
 		}
 	}
 	switch role {
 	case "agent":
-		return "Thinking"
+		return text.ProcessingRequest
 	default:
 		if content != "" && !strings.HasPrefix(content, "{") && !strings.HasPrefix(content, "[") {
 			return content
 		}
-		return "Thinking"
+		return text.ProcessingRequest
 	}
 }
 
-func liveActivityStepFromJSONRoleOutput(content string) string {
+func liveActivityStepFromJSONRoleOutput(content string, text liveActivityText) string {
 	var payload map[string]interface{}
 	if err := json.Unmarshal([]byte(content), &payload); err != nil {
 		return ""
 	}
 	if _, ok := payload["final_answer"]; ok {
-		return "Preparing answer"
+		return text.PreparingAnswer
 	}
-	for _, key := range []string{"current_step", "next_step", "summary", "reason"} {
+	for _, key := range []string{"current_step", "summary", "reason"} {
 		if value, ok := payload[key].(string); ok {
 			if value = strings.TrimSpace(value); value != "" {
 				return value
@@ -865,7 +1199,7 @@ func liveActivityStepFromJSONRoleOutput(content string) string {
 	}
 	if plan, ok := payload["plan"].([]interface{}); ok && len(plan) > 0 {
 		if first, ok := plan[0].(string); ok && strings.TrimSpace(first) != "" {
-			return "Planning: " + strings.TrimSpace(first)
+			return text.PlanningPrefix + strings.TrimSpace(first)
 		}
 	}
 	return ""
@@ -887,118 +1221,118 @@ func liveActivityOpenURLKind(value string) string {
 	}
 }
 
-func liveActivityOpenURLApp(value string) string {
+func liveActivityOpenURLApp(value string, text liveActivityText) string {
 	switch liveActivityOpenURLKind(value) {
 	case "web":
-		return "Browser"
+		return text.Browser
 	case "sms":
-		return "Messages"
+		return text.Messages
 	case "email":
-		return "Mail"
+		return text.Mail
 	case "phone":
-		return "Phone"
+		return text.Phone
 	default:
 		return ""
 	}
 }
 
-func liveActivityOpenURLCallStep(value string) string {
+func liveActivityOpenURLCallStep(value string, text liveActivityText) string {
 	switch liveActivityOpenURLKind(value) {
 	case "web":
 		if value = strings.TrimSpace(value); value != "" {
-			return "Opening " + value
+			return text.OpeningPrefix + value
 		}
-		return "Opening webpage"
+		return text.OpeningWebpage
 	case "sms":
-		return "Opening message composer"
+		return text.OpeningMessageComposer
 	case "email":
-		return "Opening email composer"
+		return text.OpeningEmailComposer
 	case "phone":
-		return "Opening phone"
+		return text.OpeningPhone
 	default:
-		return "Opening link"
+		return text.OpeningLink
 	}
 }
 
-func liveActivityToolCallStep(tool string) string {
+func liveActivityToolCallStep(tool string, text liveActivityText) string {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "screenshot":
-		return "Checking the screen"
+		return text.CheckingScreen
 	case "wait_for_stable_screen":
-		return "Waiting for the screen"
+		return text.WaitingForScreen
 	case toolOpenApp:
-		return "Opening app"
+		return text.OpeningApp
 	case toolOpenURL:
-		return "Opening link"
+		return text.OpeningLink
 	case "touch_gesture", "quick_action":
-		return "Controlling the phone"
+		return text.ControllingPhone
 	case "mouse_move":
-		return "Moving pointer"
+		return text.MovingPointer
 	case "mouse_scroll":
-		return "Scrolling"
+		return text.Scrolling
 	case "keyboard_text", "enter_text":
-		return "Typing text"
+		return text.TypingText
 	case "keyboard_tap":
-		return "Pressing keys"
+		return text.PressingKeys
 	case toolBridgeClipboard:
-		return "Using clipboard"
+		return text.UsingClipboard
 	case toolBridgeCalendar:
-		return "Updating calendar"
+		return text.UpdatingCalendar
 	case toolBridgeContacts:
-		return "Checking contacts"
+		return text.CheckingContacts
 	case toolBridgeNotification:
-		return "Using notifications"
+		return text.UsingNotifications
 	case "web_search", "wikipedia", "web_scraper":
-		return "Searching"
+		return text.Searching
 	case "audio_volume":
-		return "Adjusting audio"
+		return text.AdjustingAudio
 	case "weather":
-		return "Checking information"
+		return text.CheckingInformation
 	case "recall_memory", "recall_session_chunks", "recall_device_memory", "inspect_episode":
-		return "Recalling context"
+		return text.RecallingContext
 	case "save_memory", "forget_memory":
-		return "Updating memory"
+		return text.UpdatingMemory
 	case "skill_list", "skill_read", "skill_manage", "skill_mark_used":
-		return "Using skills"
+		return text.UsingSkills
 	case "request_user_action":
-		return "Waiting for user input"
+		return text.WaitingForUserInput
 	default:
 		return ""
 	}
 }
 
-func liveActivityToolResultStep(tool string) string {
+func liveActivityToolResultStep(tool string, text liveActivityText) string {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "screenshot":
-		return "Screen checked"
+		return text.ScreenChecked
 	case "wait_for_stable_screen":
-		return "Screen is ready"
+		return text.ScreenReady
 	case toolOpenApp:
-		return "App opened"
+		return text.AppOpened
 	case toolOpenURL:
-		return "Link opened"
+		return text.LinkOpened
 	case "touch_gesture", "quick_action", "mouse_move", "mouse_scroll", "keyboard_tap", "keyboard_text", "enter_text":
-		return "Action sent; checking result"
+		return text.ActionSentCheckingResult
 	case "request_user_action":
-		return "Waiting for user input"
+		return text.WaitingForUserInput
 	default:
-		if step := liveActivityToolCallStep(tool); step != "" {
-			return "Finished: " + step
+		if step := liveActivityToolCallStep(tool, text); step != "" {
+			return text.FinishedPrefix + step
 		}
-		return formatToolStep("Finished", tool)
+		return formatToolStep(text.Finished, tool)
 	}
 }
 
-func liveActivityToolErrorStep(tool string) string {
-	if step := liveActivityToolCallStep(tool); step != "" {
-		return "Problem while " + strings.ToLower(step)
+func liveActivityToolErrorStep(tool string, text liveActivityText) string {
+	if step := liveActivityToolCallStep(tool, text); step != "" {
+		return text.ProblemWhilePrefix + strings.ToLower(step)
 	}
-	return formatToolStep("Tool failed", tool)
+	return formatToolStep(text.ToolFailed, tool)
 }
 
-func liveActivityAppFromToolCall(event RunEvent) string {
+func liveActivityAppFromToolCall(event RunEvent, text liveActivityText) string {
 	tool := strings.ToLower(strings.TrimSpace(event.ToolName))
-	if tool != toolOpenApp && tool != toolOpenURL {
+	if tool != toolOpenApp && tool != toolOpenURL && tool != toolBridgeOpenApp {
 		return ""
 	}
 	var payload map[string]interface{}
@@ -1016,7 +1350,7 @@ func liveActivityAppFromToolCall(event RunEvent) string {
 		}
 	}
 	if value, ok := payload["url"].(string); ok && strings.TrimSpace(value) != "" {
-		return liveActivityOpenURLApp(value)
+		return liveActivityOpenURLApp(value, text)
 	}
 	return ""
 }
@@ -1048,10 +1382,11 @@ func isCancelableLiveActivityStatus(status string) bool {
 	}
 }
 
-func (m *LiveActivityManager) Reconfigure(cfg LiveActivityConfig) {
+func (m *LiveActivityManager) Reconfigure(cfg LiveActivityConfig, locale string) {
 	if m == nil {
 		return
 	}
+	m.locale.Store(normalizeVoiceNotificationLocale(locale))
 	m.disabled.Store(!cfg.EnabledOrDefault())
 	if !cfg.EnabledOrDefault() {
 		m.mu.Lock()
