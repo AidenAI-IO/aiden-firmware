@@ -91,6 +91,61 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 	}
 }
 
+func TestLiveActivityManagerLocalizesTextByLocale(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "zh-CN", newTestLogger())
+	if manager == nil {
+		t.Fatal("NewLiveActivityManager() = nil")
+	}
+	manager.StartTask("req-zh", "预订餐厅")
+
+	state := manager.UpdateFromRunEvent("req-zh", RunEvent{
+		Type:      "role_output",
+		Role:      "agent",
+		Content:   `{"plan":["打开地图"]}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.CurrentStep != "规划：打开地图" {
+		t.Fatalf("zh plan step = %q, want 规划：打开地图", state.CurrentStep)
+	}
+
+	state = manager.UpdateFromRunEvent("req-zh", RunEvent{
+		Type:      runEventToolCall,
+		ToolName:  "screenshot",
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.CurrentStep != "正在查看屏幕" {
+		t.Fatalf("zh screenshot step = %q, want 正在查看屏幕", state.CurrentStep)
+	}
+
+	state = manager.UpdateFromRunEvent("req-zh", RunEvent{
+		Type:     "tool_result",
+		ToolName: "screenshot",
+	})
+	if state == nil || state.CurrentStep != "已查看屏幕" {
+		t.Fatalf("zh screenshot result step = %q, want 已查看屏幕", state.CurrentStep)
+	}
+
+	state = manager.UpdateFromRunEvent("req-zh", RunEvent{
+		Type:      runEventToolCall,
+		ToolName:  "open_url",
+		ToolInput: `{"url":"https://example.com"}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.CurrentStep != "正在打开https://example.com" {
+		t.Fatalf("zh open_url step = %q, want 正在打开https://example.com", state.CurrentStep)
+	}
+
+	manager.Reconfigure(LiveActivityConfig{}, "en-US")
+	state = manager.UpdateFromRunEvent("req-zh", RunEvent{
+		Type:      runEventToolCall,
+		ToolName:  "screenshot",
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.CurrentStep != "Checking the screen" {
+		t.Fatalf("en screenshot step after reconfigure = %q, want Checking the screen", state.CurrentStep)
+	}
+}
+
 func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
 	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-details", "Open Settings")
@@ -174,7 +229,7 @@ func TestLiveActivityOpenURLUsesSchemeSpecificStatus(t *testing.T) {
 			}
 		})
 	}
-	if got := liveActivityToolResultStep(toolOpenURL); got != "Link opened" {
+	if got := liveActivityToolResultStep(toolOpenURL, text); got != "Link opened" {
 		t.Fatalf("liveActivityToolResultStep(open_url) = %q, want Link opened", got)
 	}
 }

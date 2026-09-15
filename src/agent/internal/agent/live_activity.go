@@ -37,6 +37,7 @@ const (
 type LiveActivityState struct {
 	RequestID     string     `json:"request_id"`
 	PhoneID       string     `json:"phone_id,omitempty"`
+	Locale        string     `json:"locale,omitempty"`
 	Status        string     `json:"status"`
 	Phase         string     `json:"phase,omitempty"`
 	TaskTitle     string     `json:"task_title"`
@@ -63,7 +64,7 @@ type LiveActivityManager struct {
 	states             map[string]LiveActivityState
 	activeRequestID    string
 	logger             *Logger
-	locale             string
+	locale             atomic.Value
 	localNotifyMu      sync.RWMutex
 	localNotifier      func(context.Context, string) error
 	localNotifyQueue   chan struct{}
@@ -72,36 +73,68 @@ type LiveActivityManager struct {
 
 // liveActivityText defines localized strings for Live Activity display.
 type liveActivityText struct {
-	AidenTask                           string
-	ProcessingRequest                   string
-	AnalyzingTask                       string
-	PlanningNextStep                    string
-	PleaseTakeOverOnPhone               string
-	OpenAidenToContinue                 string
-	LaunchRequestSentVerifyingScreen    string
-	UpdatingPlanFromUserInput           string
-	Completed                           string
-	Failed                              string
-	Canceled                            string
-	OpeningApp                          string
-	OpeningAppWithTarget                string
-	CreatingCalendarEvent               string
-	CheckingCalendar                    string
-	DeletingCalendarEvent               string
-	UpdatingCalendar                    string
-	CheckingContacts                    string
-	CreatingContact                     string
-	UpdatingContact                     string
-	CheckingNotifications               string
-	SendingNotification                 string
-	UsingClipboard                      string
-	ReadingClipboard                    string
-	WritingClipboard                    string
-	PreparingAnswer                     string
-	PlanningPrefix                      string
-	Browser                             string
-	Messages                            string
-	Using                               string
+	AidenTask                        string
+	ProcessingRequest                string
+	AnalyzingTask                    string
+	PlanningNextStep                 string
+	PleaseTakeOverOnPhone            string
+	OpenAidenToContinue              string
+	LaunchRequestSentVerifyingScreen string
+	UpdatingPlanFromUserInput        string
+	Completed                        string
+	Failed                           string
+	Canceled                         string
+	OpeningApp                       string
+	OpeningAppWithTarget             string
+	CreatingCalendarEvent            string
+	CheckingCalendar                 string
+	DeletingCalendarEvent            string
+	UpdatingCalendar                 string
+	CheckingContacts                 string
+	CreatingContact                  string
+	UpdatingContact                  string
+	CheckingNotifications            string
+	SendingNotification              string
+	UsingClipboard                   string
+	ReadingClipboard                 string
+	WritingClipboard                 string
+	PreparingAnswer                  string
+	PlanningPrefix                   string
+	Browser                          string
+	Messages                         string
+	Using                            string
+	CheckingScreen                   string
+	WaitingForScreen                 string
+	OpeningLink                      string
+	ControllingPhone                 string
+	MovingPointer                    string
+	Scrolling                        string
+	TypingText                       string
+	PressingKeys                     string
+	UsingNotifications               string
+	Searching                        string
+	AdjustingAudio                   string
+	CheckingInformation              string
+	RecallingContext                 string
+	UpdatingMemory                   string
+	UsingSkills                      string
+	WaitingForUserInput              string
+	ScreenChecked                    string
+	ScreenReady                      string
+	AppOpened                        string
+	LinkOpened                       string
+	ActionSentCheckingResult         string
+	FinishedPrefix                   string
+	Finished                         string
+	ProblemWhilePrefix               string
+	ToolFailed                       string
+	OpeningPrefix                    string
+	OpeningWebpage                   string
+	OpeningMessageComposer           string
+	OpeningEmailComposer             string
+	OpeningPhone                     string
+	Mail                             string
+	Phone                            string
 }
 
 func NewLiveActivityManager(cfg LiveActivityConfig, locale string, logger *Logger) *LiveActivityManager {
@@ -115,15 +148,29 @@ func newReloadableLiveActivityManager(cfg LiveActivityConfig, locale string, log
 	manager := &LiveActivityManager{
 		states: make(map[string]LiveActivityState),
 		logger: logger,
-		locale: locale,
 	}
+	manager.locale.Store(normalizeVoiceNotificationLocale(locale))
 	manager.disabled.Store(!cfg.EnabledOrDefault())
 	return manager
 }
 
+// currentLocale returns the manager's normalized locale ("" when unset), so the
+// phone can localize its own Live Activity labels to match the agent's setting.
+func (m *LiveActivityManager) currentLocale() string {
+	if m == nil {
+		return ""
+	}
+	locale, _ := m.locale.Load().(string)
+	return locale
+}
+
 // getLiveActivityText returns localized text based on the manager's locale.
 func (m *LiveActivityManager) getLiveActivityText() liveActivityText {
-	if m == nil || m.locale == "" || strings.HasPrefix(m.locale, "en") {
+	locale := ""
+	if m != nil {
+		locale, _ = m.locale.Load().(string)
+	}
+	if locale == "" || strings.HasPrefix(locale, "en") {
 		// English (default)
 		return liveActivityText{
 			AidenTask:                        "Aiden task",
@@ -156,6 +203,38 @@ func (m *LiveActivityManager) getLiveActivityText() liveActivityText {
 			Browser:                          "Browser",
 			Messages:                         "Messages",
 			Using:                            "Using",
+			CheckingScreen:                   "Checking the screen",
+			WaitingForScreen:                 "Waiting for the screen",
+			OpeningLink:                      "Opening link",
+			ControllingPhone:                 "Controlling the phone",
+			MovingPointer:                    "Moving pointer",
+			Scrolling:                        "Scrolling",
+			TypingText:                       "Typing text",
+			PressingKeys:                     "Pressing keys",
+			UsingNotifications:               "Using notifications",
+			Searching:                        "Searching",
+			AdjustingAudio:                   "Adjusting audio",
+			CheckingInformation:              "Checking information",
+			RecallingContext:                 "Recalling context",
+			UpdatingMemory:                   "Updating memory",
+			UsingSkills:                      "Using skills",
+			WaitingForUserInput:              "Waiting for user input",
+			ScreenChecked:                    "Screen checked",
+			ScreenReady:                      "Screen is ready",
+			AppOpened:                        "App opened",
+			LinkOpened:                       "Link opened",
+			ActionSentCheckingResult:         "Action sent; checking result",
+			FinishedPrefix:                   "Finished: ",
+			Finished:                         "Finished",
+			ProblemWhilePrefix:               "Problem while ",
+			ToolFailed:                       "Tool failed",
+			OpeningPrefix:                    "Opening ",
+			OpeningWebpage:                   "Opening webpage",
+			OpeningMessageComposer:           "Opening message composer",
+			OpeningEmailComposer:             "Opening email composer",
+			OpeningPhone:                     "Opening phone",
+			Mail:                             "Mail",
+			Phone:                            "Phone",
 		}
 	}
 	// Simplified Chinese
@@ -190,6 +269,38 @@ func (m *LiveActivityManager) getLiveActivityText() liveActivityText {
 		Browser:                          "浏览器",
 		Messages:                         "信息",
 		Using:                            "使用",
+		CheckingScreen:                   "正在查看屏幕",
+		WaitingForScreen:                 "等待屏幕稳定",
+		OpeningLink:                      "打开链接",
+		ControllingPhone:                 "控制手机",
+		MovingPointer:                    "移动指针",
+		Scrolling:                        "滚动",
+		TypingText:                       "输入文本",
+		PressingKeys:                     "按键",
+		UsingNotifications:               "使用通知",
+		Searching:                        "搜索中",
+		AdjustingAudio:                   "调整音量",
+		CheckingInformation:              "查看信息",
+		RecallingContext:                 "回忆上下文",
+		UpdatingMemory:                   "更新记忆",
+		UsingSkills:                      "使用技能",
+		WaitingForUserInput:              "等待用户输入",
+		ScreenChecked:                    "已查看屏幕",
+		ScreenReady:                      "屏幕就绪",
+		AppOpened:                        "应用已打开",
+		LinkOpened:                       "链接已打开",
+		ActionSentCheckingResult:         "操作已发送；正在确认结果",
+		FinishedPrefix:                   "已完成：",
+		Finished:                         "已完成",
+		ProblemWhilePrefix:               "出现问题：",
+		ToolFailed:                       "工具失败",
+		OpeningPrefix:                    "正在打开",
+		OpeningWebpage:                   "正在打开网页",
+		OpeningMessageComposer:           "正在打开短信编辑",
+		OpeningEmailComposer:             "正在打开邮件编辑",
+		OpeningPhone:                     "正在打开拨号",
+		Mail:                             "邮件",
+		Phone:                            "电话",
 	}
 }
 
@@ -274,6 +385,7 @@ func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...str
 	state := LiveActivityState{
 		RequestID:     strings.TrimSpace(requestID),
 		PhoneID:       phoneID,
+		Locale:        m.currentLocale(),
 		Status:        LiveActivityStatusRunning,
 		Phase:         LiveActivityPhasePlanning,
 		TaskTitle:     truncateLiveActivityText(firstNonEmptyString([]string{title, text.AidenTask}), 80),
@@ -450,7 +562,7 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 				state.Status = LiveActivityStatusRunning
 				state.Phase = liveActivityToolResultPhase(event.ToolName)
 				state.CurrentAction = "recover"
-				state.CurrentStep = truncateLiveActivityText(liveActivityToolErrorStep(event.ToolName), 120)
+				state.CurrentStep = truncateLiveActivityText(liveActivityToolErrorStep(event.ToolName, text), 120)
 				state.RequiresApp = false
 				state.ShowsProgress = true
 				state.ToolStatus = "failed"
@@ -465,7 +577,7 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 			state.LastError = ""
 			state.ToolStatus = "succeeded"
 			state.ToolStartedAt = nil
-			state.CurrentStep = truncateLiveActivityText(liveActivityToolResultStep(event.ToolName), 120)
+			state.CurrentStep = truncateLiveActivityText(liveActivityToolResultStep(event.ToolName, text), 120)
 			if event.ToolName == toolOpenApp || event.ToolName == toolOpenURL || event.ToolName == toolBridgeOpenApp {
 				// An accepted launch (even with a captured image) does not prove
 				// the target app is on screen. The next model observation does.
@@ -512,6 +624,7 @@ func (m *LiveActivityManager) pauseForHumanHandoff(requestID, output string) *Li
 		return nil
 	}
 	requestID = strings.TrimSpace(requestID)
+	text := m.getLiveActivityText()
 	m.mu.Lock()
 	state, ok := m.states[requestID]
 	if !ok || (state.Phase != LiveActivityPhaseWaitingUser && !strings.EqualFold(state.LastToolName, toolUserActionStep)) {
@@ -527,7 +640,7 @@ func (m *LiveActivityManager) pauseForHumanHandoff(requestID, output string) *Li
 	state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
 		output,
 		state.CurrentStep,
-		"Please take over on the phone",
+		text.PleaseTakeOverOnPhone,
 	}), 120)
 	state.Progress = 0
 	state.ShowsProgress = false
@@ -737,7 +850,7 @@ func liveActivityToolCallStatus(event RunEvent, text liveActivityText) liveActiv
 	status := liveActivityToolStatus{
 		phase:  LiveActivityPhaseActing,
 		action: normalizedLiveActivityAction(tool),
-		step:   liveActivityToolCallStep(tool),
+		step:   liveActivityToolCallStep(tool, text),
 		target: target,
 	}
 	switch tool {
@@ -761,7 +874,7 @@ func liveActivityToolCallStatus(event RunEvent, text liveActivityText) liveActiv
 		status.action = "open_url"
 		status.requiresApp = true
 		status.app = liveActivityOpenURLApp(target, text)
-		status.step = liveActivityOpenURLCallStep(target)
+		status.step = liveActivityOpenURLCallStep(target, text)
 	case toolBridgeOpenApp:
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "open_app"
@@ -1115,106 +1228,106 @@ func liveActivityOpenURLApp(value string, text liveActivityText) string {
 	case "sms":
 		return text.Messages
 	case "email":
-		return "Mail"
+		return text.Mail
 	case "phone":
-		return "Phone"
+		return text.Phone
 	default:
 		return ""
 	}
 }
 
-func liveActivityOpenURLCallStep(value string) string {
+func liveActivityOpenURLCallStep(value string, text liveActivityText) string {
 	switch liveActivityOpenURLKind(value) {
 	case "web":
 		if value = strings.TrimSpace(value); value != "" {
-			return "Opening " + value
+			return text.OpeningPrefix + value
 		}
-		return "Opening webpage"
+		return text.OpeningWebpage
 	case "sms":
-		return "Opening message composer"
+		return text.OpeningMessageComposer
 	case "email":
-		return "Opening email composer"
+		return text.OpeningEmailComposer
 	case "phone":
-		return "Opening phone"
+		return text.OpeningPhone
 	default:
-		return "Opening link"
+		return text.OpeningLink
 	}
 }
 
-func liveActivityToolCallStep(tool string) string {
+func liveActivityToolCallStep(tool string, text liveActivityText) string {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "screenshot":
-		return "Checking the screen"
+		return text.CheckingScreen
 	case "wait_for_stable_screen":
-		return "Waiting for the screen"
+		return text.WaitingForScreen
 	case toolOpenApp:
-		return "Opening app"
+		return text.OpeningApp
 	case toolOpenURL:
-		return "Opening link"
+		return text.OpeningLink
 	case "touch_gesture", "quick_action":
-		return "Controlling the phone"
+		return text.ControllingPhone
 	case "mouse_move":
-		return "Moving pointer"
+		return text.MovingPointer
 	case "mouse_scroll":
-		return "Scrolling"
+		return text.Scrolling
 	case "keyboard_text", "enter_text":
-		return "Typing text"
+		return text.TypingText
 	case "keyboard_tap":
-		return "Pressing keys"
+		return text.PressingKeys
 	case toolBridgeClipboard:
-		return "Using clipboard"
+		return text.UsingClipboard
 	case toolBridgeCalendar:
-		return "Updating calendar"
+		return text.UpdatingCalendar
 	case toolBridgeContacts:
-		return "Checking contacts"
+		return text.CheckingContacts
 	case toolBridgeNotification:
-		return "Using notifications"
+		return text.UsingNotifications
 	case "web_search", "wikipedia", "web_scraper":
-		return "Searching"
+		return text.Searching
 	case "audio_volume":
-		return "Adjusting audio"
+		return text.AdjustingAudio
 	case "weather":
-		return "Checking information"
+		return text.CheckingInformation
 	case "recall_memory", "recall_session_chunks", "recall_device_memory", "inspect_episode":
-		return "Recalling context"
+		return text.RecallingContext
 	case "save_memory", "forget_memory":
-		return "Updating memory"
+		return text.UpdatingMemory
 	case "skill_list", "skill_read", "skill_manage", "skill_mark_used":
-		return "Using skills"
+		return text.UsingSkills
 	case "request_user_action":
-		return "Waiting for user input"
+		return text.WaitingForUserInput
 	default:
 		return ""
 	}
 }
 
-func liveActivityToolResultStep(tool string) string {
+func liveActivityToolResultStep(tool string, text liveActivityText) string {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "screenshot":
-		return "Screen checked"
+		return text.ScreenChecked
 	case "wait_for_stable_screen":
-		return "Screen is ready"
+		return text.ScreenReady
 	case toolOpenApp:
-		return "App opened"
+		return text.AppOpened
 	case toolOpenURL:
-		return "Link opened"
+		return text.LinkOpened
 	case "touch_gesture", "quick_action", "mouse_move", "mouse_scroll", "keyboard_tap", "keyboard_text", "enter_text":
-		return "Action sent; checking result"
+		return text.ActionSentCheckingResult
 	case "request_user_action":
-		return "Waiting for user input"
+		return text.WaitingForUserInput
 	default:
-		if step := liveActivityToolCallStep(tool); step != "" {
-			return "Finished: " + step
+		if step := liveActivityToolCallStep(tool, text); step != "" {
+			return text.FinishedPrefix + step
 		}
-		return formatToolStep("Finished", tool)
+		return formatToolStep(text.Finished, tool)
 	}
 }
 
-func liveActivityToolErrorStep(tool string) string {
-	if step := liveActivityToolCallStep(tool); step != "" {
-		return "Problem while " + strings.ToLower(step)
+func liveActivityToolErrorStep(tool string, text liveActivityText) string {
+	if step := liveActivityToolCallStep(tool, text); step != "" {
+		return text.ProblemWhilePrefix + strings.ToLower(step)
 	}
-	return formatToolStep("Tool failed", tool)
+	return formatToolStep(text.ToolFailed, tool)
 }
 
 func liveActivityAppFromToolCall(event RunEvent, text liveActivityText) string {
@@ -1273,9 +1386,7 @@ func (m *LiveActivityManager) Reconfigure(cfg LiveActivityConfig, locale string)
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	m.locale = locale
-	m.mu.Unlock()
+	m.locale.Store(normalizeVoiceNotificationLocale(locale))
 	m.disabled.Store(!cfg.EnabledOrDefault())
 	if !cfg.EnabledOrDefault() {
 		m.mu.Lock()
