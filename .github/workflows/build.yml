@@ -164,7 +164,12 @@ jobs:
         for policy_test in test_debian_stage2 test_debian_stage3 test_debian_build; do
           script="scripts/${policy_test}.sh"
           if [ "$policy_test" = test_debian_build ] && ! command -v jq >/dev/null 2>&1; then
+            # jq is required to run the Debian entrypoint contract test. Skipping
+            # it silently would let the policy gate pass without validating the
+            # workflow, so fail instead of continuing with a zero status.
             echo "::warning::Skipping ${script} because jq is not installed on this runner"
+            echo "::error::jq is required to run ${script}; install jq on the runner"
+            status=1
             continue
           fi
           # These suites assert with bare `grep -q` and `[ ... ]`, which exit 1
