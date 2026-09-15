@@ -7,11 +7,10 @@ import (
 )
 
 // shippedConfigPaths are the agent.toml files published with the firmware.
-// overlay/userdata is what the firmware container task rsyncs onto the device;
-// src/agent/config/agent.toml is a symlink to it, so this one path covers both
-// the device config and the documented example.
+// The Debian image installs an external agent.toml into userdata; the file here
+// is the documented example and the canonical shipped device profile.
 var shippedConfigPaths = []string{
-	filepath.Join("overlay", "userdata", "agent", "agent.toml"),
+	filepath.Join("src", "agent", "config", "agent.toml"),
 }
 
 func repoRootForTest(t *testing.T) string {

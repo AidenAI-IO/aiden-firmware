@@ -1028,7 +1028,7 @@ affected services or shell are restarted.
 
 The selected local URLs are written to `/run/wifi_proxy/proxy-env`. New managed
 commands and login shells read that file. If a Wi-Fi change switches between
-HTTP and SOCKS5, `S51wifi_proxy` restarts the long-running Agent so its HTTP and
+HTTP and SOCKS5, `aiden-wifi-proxy.service` restarts the long-running Agent so its HTTP and
 WebSocket clients also pick up the new URL scheme; changing only the upstream
 host or port does not require an Agent restart.
 

@@ -132,7 +132,7 @@ First run helper self-test directly on the board:
 
 On success, it will output `P <probability>`. Current RV1106 helper uses RKNN zero-copy IO; if it outputs `rknn_set_io_mem failed`, `rknn_run failed`, or old helper outputs `rknn_inputs_set failed`, check:
 
-- Whether `/oem/usr/lib/librknnmrt.so` version matches the model;
+- Whether the RKNN mini runtime embedded in `/oem/usr/bin/rknn_vad` matches the model;
 - Whether `silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` is the encoder model re-converted for RV1106 target;
 - Whether input/output tensor type, size, scale, zero-point in helper logs are normal.
 

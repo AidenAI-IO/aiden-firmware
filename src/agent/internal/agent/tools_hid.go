@@ -25,7 +25,7 @@ const (
 	absMouseMaxPos = 32767
 
 	defaultHIDRefreshStatePath        = "/run/aiden_usb_ecm_watchdog.state"
-	defaultUSBCompositeRefreshCommand = "/etc/init.d/S60usb_ecm_watchdog"
+	defaultUSBCompositeRefreshCommand = "/usr/lib/aiden/aiden-usb-ecm-watchdog"
 
 	// defaultTapHoldMs is the dwell between a touch press and release so iOS
 	// registers a tap rather than dropping the sub-millisecond event or

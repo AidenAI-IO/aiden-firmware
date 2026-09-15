@@ -34,10 +34,10 @@ ls -l /dev/v4l-subdev* 2>/dev/null || echo "  未找到 v4l-subdev 设备"
 echo
 
 echo "6. 检查 frame_service 状态："
-if [ -f /etc/init.d/S52frame_service ]; then
-    /etc/init.d/S52frame_service status
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl status aiden-frame.service --no-pager 2>/dev/null || echo "  aiden-frame.service 未运行"
 else
-    echo "  frame_service 初始化脚本不存在"
+    echo "  未找到 systemctl"
 fi
 echo
 

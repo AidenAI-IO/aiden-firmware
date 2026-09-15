@@ -12,16 +12,18 @@ import (
 // bootUptimePath is the kernel's monotonic since-boot clock. Overridable in tests.
 var bootUptimePath = "/proc/uptime"
 
-// bootTimelinePath is the per-boot profile written by /etc/init.d/rcS
-// (see overlay/etc/aiden_boot_timeline.sh). The agent appends its own
+// bootTimelinePath is the per-boot profile written by
+// aiden-boot-timeline-init.service (see
+// overlay-debian/usr/lib/aiden/aiden-boot-timeline). The agent appends its own
 // milestones so the whole boot lives in one file. Overridable in tests.
 var bootTimelinePath = "/var/log/aiden_boot_timeline.log"
 
-// bootTimelineArchiveStatePath holds the path of the archive rcS wrote for this
-// boot, published by boot_timeline_archive. Overridable in tests.
+// bootTimelineArchiveStatePath holds the path of the archive the boot timeline
+// wrote for this boot, published by boot_timeline_archive. Overridable in tests.
 var bootTimelineArchiveStatePath = "/run/aiden_boot_timeline.archive"
 
-// bootTimelineLockPath is shared with overlay/etc/aiden_boot_timeline.sh.
+// bootTimelineLockPath is shared with
+// overlay-debian/usr/lib/aiden/aiden-boot-timeline.
 // Holding an exclusive flock serializes Shell and Go milestone/archive writers.
 var bootTimelineLockPath = "/run/aiden_boot_timeline.lock"
 
@@ -108,15 +110,16 @@ func withBootTimelineLock(fn func()) {
 }
 
 // refreshBootTimelineArchive mirrors boot_timeline_refresh_archive in
-// overlay/etc/aiden_boot_timeline.sh.
+// overlay-debian/usr/lib/aiden/aiden-boot-timeline.
 //
-// rcS archives the timeline when it finishes, but the agent is started by a
-// background watchdog and can reach "listening" after that point — on a slow
-// boot, or on any watchdog restart. Without this the persisted archive would
-// stop at rcS:end and omit the very milestone it exists to record.
+// The boot timeline archives when the systemd target finishes, but the agent is
+// started by a background watchdog and can reach "listening" after that point —
+// on a slow boot, or on any watchdog restart. Without this the persisted archive
+// would stop at the init milestone and omit the very milestone it exists to
+// record.
 //
 // Best-effort, like the rest of the timeline: no archive yet (the usual case
-// during rcS) simply means there is nothing to refresh.
+// during early boot) simply means there is nothing to refresh.
 func refreshBootTimelineArchive() {
 	withBootTimelineLock(refreshBootTimelineArchiveLocked)
 }

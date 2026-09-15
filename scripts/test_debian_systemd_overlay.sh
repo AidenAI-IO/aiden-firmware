@@ -5,8 +5,6 @@ readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly OVERLAY=${REPO_ROOT}/overlay-debian
 readonly OEM_OVERLAY=${REPO_ROOT}/overlay-debian-oem
 readonly UNIT_DIR=${OVERLAY}/etc/systemd/system
-readonly INIT_MAP=${REPO_ROOT}/scripts/debian/init-script-map.tsv
-readonly ENV_MAP=${REPO_ROOT}/scripts/debian/environment-service-map.tsv
 readonly TMPFILES=${OVERLAY}/etc/tmpfiles.d/aiden.conf
 readonly TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "${TEST_ROOT}"' EXIT
@@ -48,27 +46,28 @@ while IFS= read -r script; do
     sh -n "${script}"
 done < <(find "${OVERLAY}/usr/lib/aiden" -maxdepth 1 -type f | LC_ALL=C sort)
 
-awk -F '\t' '$2 == "migrate" {print $3}' "${INIT_MAP}" \
-    | tr ',' '\n' | LC_ALL=C sort -u \
-    | while IFS= read -r unit; do
-        case "${unit}" in
-            oem.mount|aiden-*.service)
-                [ -f "${UNIT_DIR}/${unit}" ] \
-                    || fail "mapped native unit is missing: ${unit}"
-                ;;
-        esac
-    done
-
-while IFS=$'\t' read -r init_script unit environment_file invalid_policy; do
-    [ "${init_script}" = init_script ] && continue
+# Debian units that consume the sanitized environment. This list replaces the
+# retired Buildroot init-script map now that overlay/etc/init.d is gone.
+environment_consumers='
+aiden-ble.service
+aiden-wifi-proxy.service
+aiden-frame.service
+aiden-adb-host.service
+aiden-agent.service
+aiden-audio.service
+aiden-ota-health.service
+aiden-config-web.service
+aiden-ttyd.service
+'
+environment_file=/run/aiden/system.env
+for unit in ${environment_consumers}; do
     unit_path=${UNIT_DIR}/${unit}
     [ -f "${unit_path}" ] || fail "environment consumer unit is missing: ${unit}"
     grep -q 'aiden-environment.service' "${unit_path}" \
         || fail "${unit} does not depend on aiden-environment.service"
     grep -qx "EnvironmentFile=${environment_file}" "${unit_path}" \
         || fail "${unit} does not consume ${environment_file}"
-    [ -n "${invalid_policy}" ] || fail "${unit} has no invalid-environment policy"
-done <"${ENV_MAP}"
+done
 
 if rg -n 'aiden-env-run|/etc/init\.d/' "${UNIT_DIR}"; then
     fail "Debian units must not use the Buildroot environment wrapper or SysV scripts"
