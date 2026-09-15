@@ -91,48 +91,53 @@ done
 grep -Fq "RK_KERNEL_CMDLINE_EXTRA=net.ifnames\$'\\x3d'0" \
     "${SYSTEM_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
 
-if [ -e "${REPO_ROOT}/pico-sdk/project/build.sh" ]; then
-    # The BSP source changes live in the pinned pico-sdk commit. Verify the
-    # checked-out submodule still carries them so a stale or rewritten SDK
-    # checkout fails here instead of an hour into the BSP build.
-    sdk_dir=${REPO_ROOT}/pico-sdk
-    grep -Fq 'export RK_JOBS="${RK_JOBS:-$(getconf _NPROCESSORS_ONLN)}"' \
-        "${sdk_dir}/project/build.sh" \
-        || fail "pico-sdk no longer defaults RK_JOBS to all host CPUs"
-    grep -Fq 'root=PARTLABEL=$root_label' "${sdk_dir}/project/build.sh" \
-        || fail "pico-sdk no longer builds slot-specific root PARTLABELs"
-    grep -Fq 'slot_cmdline="$slot_cmdline $RK_KERNEL_CMDLINE_EXTRA"' \
-        "${sdk_dir}/project/build.sh" \
-        || fail "pico-sdk no longer appends RK_KERNEL_CMDLINE_EXTRA to slot bootargs"
-    grep -Fq 'function build_ab_images()' "${sdk_dir}/project/build.sh" \
-        || fail "pico-sdk lacks the abimages build action"
-    grep -Fq 'abimages) option=build_ab_images' "${sdk_dir}/project/build.sh" \
-        || fail "pico-sdk does not dispatch the abimages action"
-    grep -Fq 'memset(&entry, 0, sizeof(entry));' \
-        "${sdk_dir}/sysdrv/source/kernel/scripts/resource_tool.c" \
-        || fail "pico-sdk resource_tool is no longer reproducible"
-    grep -Fq 'phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x1f);' \
-        "${sdk_dir}/sysdrv/source/kernel/drivers/phy/rockchip/phy-rockchip-inno-usb2.c" \
-        || fail "pico-sdk lost the RV1106 45ohm HS ODT trim"
-    grep -Fq 'cancel_work_sync(&gi->work);' \
-        "${sdk_dir}/sysdrv/source/kernel/drivers/usb/gadget/configfs.c" \
-        || fail "pico-sdk lost the configfs UAF fix"
-    grep -Fq 'android_device = NULL;' \
-        "${sdk_dir}/sysdrv/source/kernel/drivers/usb/gadget/configfs.c" \
-        || fail "pico-sdk lost the configfs UAF teardown fix"
-    grep -Fq 'USB device port, assuming attached' \
-        "${sdk_dir}/sysdrv/source/uboot/u-boot/arch/arm/mach-rockchip/boot_rkimg.c" \
-        || fail "pico-sdk lost the RockUSB VBUS assumption"
-    grep -Fq 'usb2phy_update_bits(USB2PHY_PRE_EMPHASIS' \
-        "${sdk_dir}/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c" \
-        || fail "pico-sdk lost the RockUSB PHY tuning"
-    grep -Fq 'RV1106 USB2 PHY tuned:' \
-        "${sdk_dir}/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c" \
-        || fail "pico-sdk lost the RockUSB PHY readback logging"
-    grep -Fq 'CONFIG_CMD_ROCKUSB=y' \
-        "${sdk_dir}/sysdrv/source/uboot/u-boot/configs/aiden-rv1106-rockusb.config" \
-        || fail "pico-sdk lost the RV1106 RockUSB defconfig fragment"
+# The pinned submodule must be present: silently skipping the checks below
+# would let an uninitialized or incomplete checkout pass this suite. The only
+# caller fetches pico-sdk before this runs, so a miss is a real failure.
+if [ ! -e "${REPO_ROOT}/pico-sdk/project/build.sh" ]; then
+    fail "pico-sdk submodule is not initialized; run 'git submodule update --init -- pico-sdk'"
 fi
+
+# The BSP source changes live in the pinned pico-sdk commit. Verify the
+# checked-out submodule still carries them so a stale or rewritten SDK
+# checkout fails here instead of an hour into the BSP build.
+sdk_dir=${REPO_ROOT}/pico-sdk
+grep -Fq 'export RK_JOBS="${RK_JOBS:-$(getconf _NPROCESSORS_ONLN)}"' \
+    "${sdk_dir}/project/build.sh" \
+    || fail "pico-sdk no longer defaults RK_JOBS to all host CPUs"
+grep -Fq 'root=PARTLABEL=$root_label' "${sdk_dir}/project/build.sh" \
+    || fail "pico-sdk no longer builds slot-specific root PARTLABELs"
+grep -Fq 'slot_cmdline="$slot_cmdline $RK_KERNEL_CMDLINE_EXTRA"' \
+    "${sdk_dir}/project/build.sh" \
+    || fail "pico-sdk no longer appends RK_KERNEL_CMDLINE_EXTRA to slot bootargs"
+grep -Fq 'function build_ab_images()' "${sdk_dir}/project/build.sh" \
+    || fail "pico-sdk lacks the abimages build action"
+grep -Fq 'abimages) option=build_ab_images' "${sdk_dir}/project/build.sh" \
+    || fail "pico-sdk does not dispatch the abimages action"
+grep -Fq 'memset(&entry, 0, sizeof(entry));' \
+    "${sdk_dir}/sysdrv/source/kernel/scripts/resource_tool.c" \
+    || fail "pico-sdk resource_tool is no longer reproducible"
+grep -Fq 'phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x1f);' \
+    "${sdk_dir}/sysdrv/source/kernel/drivers/phy/rockchip/phy-rockchip-inno-usb2.c" \
+    || fail "pico-sdk lost the RV1106 45ohm HS ODT trim"
+grep -Fq 'cancel_work_sync(&gi->work);' \
+    "${sdk_dir}/sysdrv/source/kernel/drivers/usb/gadget/configfs.c" \
+    || fail "pico-sdk lost the configfs UAF fix"
+grep -Fq 'android_device = NULL;' \
+    "${sdk_dir}/sysdrv/source/kernel/drivers/usb/gadget/configfs.c" \
+    || fail "pico-sdk lost the configfs UAF teardown fix"
+grep -Fq 'USB device port, assuming attached' \
+    "${sdk_dir}/sysdrv/source/uboot/u-boot/arch/arm/mach-rockchip/boot_rkimg.c" \
+    || fail "pico-sdk lost the RockUSB VBUS assumption"
+grep -Fq 'usb2phy_update_bits(USB2PHY_PRE_EMPHASIS' \
+    "${sdk_dir}/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c" \
+    || fail "pico-sdk lost the RockUSB PHY tuning"
+grep -Fq 'RV1106 USB2 PHY tuned:' \
+    "${sdk_dir}/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c" \
+    || fail "pico-sdk lost the RockUSB PHY readback logging"
+grep -Fq 'CONFIG_CMD_ROCKUSB=y' \
+    "${sdk_dir}/sysdrv/source/uboot/u-boot/configs/aiden-rv1106-rockusb.config" \
+    || fail "pico-sdk lost the RV1106 RockUSB defconfig fragment"
 
 grep -Fq 'rsync -aHAX --numeric-ids --chown=0:0' \
     "${SYSTEM_DIR}/container-build-rootfs.sh"
