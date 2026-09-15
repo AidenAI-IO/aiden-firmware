@@ -147,9 +147,10 @@ func TestStartDoesNotMarkListeningWhenBindFails(t *testing.T) {
 	}
 }
 
-// rcS archives at rcS:end, but the agent is launched by a background watchdog
-// and can reach "listening" afterwards. The Go writer must refresh the archive
-// too, otherwise the persisted copy omits the milestone it exists to record.
+// The boot timeline archives when the systemd target finishes, but the agent is
+// launched by a background watchdog and can reach "listening" afterwards. The Go
+// writer must refresh the archive too, otherwise the persisted copy omits the
+// milestone it exists to record.
 func TestMarkBootTimelineRefreshesArchive(t *testing.T) {
 	withBootUptimeFile(t, "31.40 5.00\n")
 	dir := t.TempDir()

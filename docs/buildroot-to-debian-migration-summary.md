@@ -878,24 +878,21 @@ HTTP 均已核对。后续重复刷写仍应使用上述受保护流程；不要
 这些文件仅用于厂商 SDK/BSP 构建、历史对照和恢复资料；生产分支不再承诺 Buildroot
 用户空间或跨发行版在线回退。审计期间没有删除任何文件或代码。
 
-### 11.1 仍在使用的旧构建链
+### 11.1 旧 Buildroot 构建链已退休
 
-以下文件仍是旧 Buildroot 固件的历史构建入口或平台配置，可在后续独立清理中删除；它们
-不属于 Debian 本地生产构建：
+以下文件曾是旧 Buildroot 固件的构建入口或平台配置，已在 11.9 的独立变更中随根目录
+overlay 一并删除，不再属于仓库内容：
 
 ```text
 build.sh
-build_image.sh
-_build.sh
-_build_image.sh
 cmake/toolchain-arm-rockchip830.cmake
 cmake/platforms/rv1106-buildroot-uclibc.cmake
+scripts/build/
+scripts/test_build_cli.sh
+scripts/repack_ota_update_image.sh
 ```
 
-`CMakeLists.txt` 当前默认平台为 `rv1106-debian-glibc`，公开平台枚举不再列出
-`rv1106-buildroot-uclibc`。旧 GitHub Actions、发布脚本和回归测试仍可能调用
-`build_image.sh`/`_build_image.sh`，但这些自动化入口保持原样且不属于本轮范围；它们
-不能被 Debian 本地生产入口引用。
+`CMakeLists.txt` 保留 `rv1106-debian-glibc` 为唯一且默认的平台枚举。
 
 ### 11.2 `overlay/` 是历史资产，不进入 Debian 生产镜像
 
@@ -913,47 +910,31 @@ overlay/oem/usr/share/aiden/audio/
 overlay/oem/usr/share/aiden/edid/
 ```
 
-本次 rebase 没有删除整个 `overlay/`，但后续清理无需维持其可构建性。Debian 生产资源
-已由 `overlay-debian/` 和 `overlay-debian-oem/` 持有；删除旧 overlay 前只需完成历史
-资料归档和引用审查。
+本次 rebase 当时没有删除整个 `overlay/`，后续清理无需维持其可构建性。Debian 生产
+资源已由 `overlay-debian/` 和 `overlay-debian-oem/` 持有。整个根目录 `overlay/`
+随后已在独立变更中删除，详见 11.9。
 
-### 11.3 Debian-only 阶段的清理候选
+### 11.3 Debian-only 阶段的清理结果
 
-在完成历史资料归档和引用审查后，以下内容可以考虑清理：
+原始清理候选（`cmake/platforms/rv1106-buildroot-uclibc.cmake`、
+`cmake/toolchain-arm-rockchip830.cmake`、`overlay/oem/usr/lib/librknnmrt.so`）以及
+`overlay/etc/init.d/` 下全部脚本、`scripts/debian/init-script-map.tsv`、
+`scripts/debian/environment-service-map.tsv` 和依赖它们的 Buildroot 主机测试，均已在
+11.9 的变更中删除。当前 Debian RKNN 方案使用
+`third_party/rknpu2/v2.3.2/lib/librknnmrt.a` 静态库和 glibc 兼容层。
 
-```text
-cmake/platforms/rv1106-buildroot-uclibc.cmake
-cmake/toolchain-arm-rockchip830.cmake
-overlay/oem/usr/lib/librknnmrt.so
-```
-
-`librknnmrt.so` 是旧 uClibc mini runtime；当前 Debian RKNN 方案使用
-`third_party/rknpu2/v2.3.2/lib/librknnmrt.a` 静态库和 glibc 兼容层。它仍可能被旧
-Buildroot CMake/镜像流程引用，删除前应先确认历史资料不再需要。
-
-`overlay/etc/init.d/` 中仍保留的脚本（例如 `S35wifidrv`、`S57ttyd`）不会进入
-当前 Debian rootfs，但仍属于旧 Buildroot overlay。删除它们前必须先移除或重写
-旧镜像流程、相关测试和发布策略。
-
-已完成清理：`overlay/etc/init.d/` 下 6 个在仓库中已无任何运行期、测试或构建引用的
-脚本 `S30dbus`、`S40network`、`S50telnet`、`S50usbdevice`、`S91smb` 和
-`S99usb0config` 已删除；`scripts/debian/init-script-map.tsv` 中对应映射行同步移除，
-`scripts/test_debian_init_script_map.sh` 的清单断言更新为 25 个 `S*` 脚本加 `rcS`，
-`S40network` 在 `S35wifidrv` 中留下的过时注释也已改写。
-
-已完成清理：swap 旧实现 `overlay/etc/init.d/S51swap`、`overlay/etc/aiden_swap.conf`
-及其专用测试 `scripts/test_swap_init.sh` 已删除；Debian 侧由 `aiden-swap.service`、
+作为历史记录，早先已完成两批局部清理：swap 旧实现
+`overlay/etc/init.d/S51swap`、`overlay/etc/aiden_swap.conf` 及其专用测试
+`scripts/test_swap_init.sh`（Debian 侧由 `aiden-swap.service`、
 `overlay-debian/usr/lib/aiden/aiden-swap` 和 `overlay-debian/etc/aiden_swap.conf`
-承接，`scripts/debian/init-script-map.tsv` 中的 `S51swap` 映射行同步移除。swap
-当前没有专门测试覆盖。
+承接）；以及 6 个无任何引用的 init 脚本 `S30dbus`、`S40network`、`S50telnet`、
+`S50usbdevice`、`S91smb`、`S99usb0config`。
 
 ### 11.4 历史兼容代码和 SDK 子模块
 
-Agent 的 USB HID 恢复逻辑保留 Buildroot 默认命令
-`/etc/init.d/S60usb_ecm_watchdog`，Debian 通过环境变量切换到
-`/usr/lib/aiden/aiden-usb-ecm-watchdog`。这是为读取历史配置保留的兼容分支；Debian
-生产服务不会调用该 Buildroot 路径。删除前应完成旧源码取证，但不需要继续维护
-Buildroot 可构建性。
+Agent 的 USB HID 恢复逻辑现在默认使用 Debian helper
+`/usr/lib/aiden/aiden-usb-ecm-watchdog`（通过 `AIDEN_USB_COMPOSITE_REFRESH_COMMAND`
+可覆盖），不再保留 Buildroot 的 `/etc/init.d/S60usb_ecm_watchdog` 默认值。
 
 `pico-sdk` 子模块内部仍包含 Buildroot defconfig、构建规则和 uClibc 工具链。Debian
 stage3 仍使用该 SDK 构建 U-Boot、驱动、环境和 A/B 镜像。因此不能在本仓库直接裁剪
@@ -1040,3 +1021,32 @@ Buildroot 目录和 uClibc 工具链仍可作为厂商 BSP 构建 U-Boot、kerne
    `debian-dev-<branch>` channel 发布为 pre-release；发布逻辑仍只存在于 workflow 中，
    `debian_build.sh` 与 `scripts/debian-stage*` 保持纯本地构建。
 4. 临时工作流 `.github/workflows/debian-build.yml` 随之删除。
+
+### 11.9 根目录 Buildroot overlay 整体退休
+
+后续独立变更完成了根目录 Buildroot overlay 的整体退休：
+
+1. 删除整个 `overlay/` 目录（Buildroot rootfs overlay，含全部 `etc/init.d` 脚本、
+   OEM 启动脚本、`/opt` 绑定挂载 profile、opkg、ntp、RkEnv、模型/音频/EDID 等）；
+   Debian 对应资源全部由 `overlay-debian/`、`overlay-debian-oem/` 持有。
+2. 将仍被 dev 容器消费的两个文件迁出：`overlay/oem/usr/bin/aiden-env-run` →
+   `docker/dev/aiden-env-run`，`overlay/etc/init.d/S51wifi_proxy` →
+   `docker/dev/aiden-wifi-proxy-service`；`docker/dev` 的 Dockerfile 与 sandbox 测试同步。
+3. 将随固件发布的文档化配置模板 `overlay/userdata/agent/agent.toml` 迁到
+   `src/agent/config/agent.toml`（原为该路径的符号链接），并更新
+   `TestShippedConfigsAgreeWithDefaults`。
+4. 删除只测试 Buildroot overlay 的主机测试及其 CMake/CI 注册；
+   `test_logger_format.sh`、`test_wifi_proxy_init.sh` 改指向 Debian OEM 与 dev 资源。
+5. 删除 `scripts/debian/init-script-map.tsv`、`environment-service-map.tsv`，
+   `test_debian_systemd_overlay.sh` 改为内联校验 Debian 环境消费者单元。
+6. Agent 的 Buildroot 默认路径（init 脚本、USB HID 恢复命令）改为 Debian helper
+   路径；`boot_uptime.go`、`config_shipped_defaults_test.go` 的 overlay 引用同步更新。
+7. 从 `.github/workflows/ci.yml` 和 `scripts/test_release_ci_scripts.sh` 移除已删除的
+   `scripts/test_ota_init.sh`。
+
+`build.sh`、`scripts/build/` 容器驱动、`cmake/toolchain-arm-rockchip830.cmake`、
+`cmake/platforms/rv1106-buildroot-uclibc.cmake`、`scripts/test_build_cli.sh` 和
+`scripts/repack_ota_update_image.sh` 也一并删除；`test_reproducible_rootfs_policy.sh`
+不再引用已删除的镜像驱动，只保留对 `pico-sdk` Buildroot defconfig 与 sysdrv Makefile
+的检查，因为 Debian BSP 仍使用该 SDK 构建 U-Boot、内核、模块和 A/B 镜像。`pico-sdk`
+内部的 Buildroot 目录与 uClibc 工具链仍作为厂商 BSP 构建实现细节存在。

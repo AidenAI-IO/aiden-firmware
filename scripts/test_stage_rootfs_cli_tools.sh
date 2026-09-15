@@ -13,9 +13,9 @@ dest_overlay="$tmpdir/dest-overlay"
 preserve_overlay="$tmpdir/preserve-overlay"
 catalog="$tmpdir/tools.catalog"
 managed_state="$tmpdir/managed-tools.list"
-mkdir -p "$source_dir" "$dest_overlay/etc/init.d"
+mkdir -p "$source_dir" "$dest_overlay/etc"
 mkdir -p "$preserve_overlay"
-printf 'service\n' > "$dest_overlay/etc/init.d/S53agent"
+printf 'config\n' > "$dest_overlay/etc/aiden_boot.conf"
 
 cat > "$catalog" <<'EOF'
 # name|version|kind|source|target|source_sha256|artifact_path|strip_policy
@@ -114,7 +114,7 @@ for tool in fq yq rg fx; do
         exit 1
     fi
 done
-if [ "$(cat "$dest_overlay/etc/init.d/S53agent")" != "service" ]; then
+if [ "$(cat "$dest_overlay/etc/aiden_boot.conf")" != "config" ]; then
     echo "cleanup must preserve unrelated rootfs staging" >&2
     exit 1
 fi
