@@ -8,10 +8,10 @@ After each task completes, Aiden Agent can asynchronously report the complete ta
 
 ## Feature Toggle
 
-Configure the `[telemetry]` section in `agent.toml`. Disabled by default; when enabled, it does not affect task execution (best-effort async reporting).
+Configure the `[advanced_settings.runtime.telemetry]` section in `agent.toml`. Disabled by default; when enabled, it does not affect task execution (best-effort async reporting).
 
 ```toml
-[telemetry]
+[advanced_settings.runtime.telemetry]
 enabled = true
 provider = "langfuse"
 base_url = "http://langfuse.example.com:3000"
@@ -35,7 +35,7 @@ tags = ["aiden-hardware"]
 | `environment` | Langfuse trace environment tag |
 | `tags` | Tags attached to each trace |
 
-Credentials are written directly into the `[telemetry]` section of `agent.toml`.
+Credentials are written directly into the `[advanced_settings.runtime.telemetry]` section of `agent.toml`.
 
 ## Data Flow
 
@@ -170,7 +170,7 @@ Field mapping:
 
 | Field | Description |
 | --- | --- |
-| `model` / `model_name` / `model_provider` | LLM used for this run (from `[model]` in `agent.toml`) |
+| `model` / `model_name` / `model_provider` | LLM used for this run (from `[model_settings.model]` in `agent.toml`) |
 | `agent_commit` | Git commit when Agent binary was built (application build task ldflags injection) |
 | `agent_build` | Agent build version number (`YYYYMMDD-HHMMSS-<commit>`) |
 | `firmware_version` | `current_version` from device OTA state `/userdata/ota/state.json` |

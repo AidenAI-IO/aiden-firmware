@@ -21,5 +21,6 @@ func (u *deviceStateUpdater) UpdateState() map[string]string {
 		"device_type":         cfg.DeviceTypeOrDefault(),
 		"device_platform":     cfg.DevicePlatformOrDefault(),
 		"device_pointer_mode": cfg.PointerModeOrDefault(),
+		"controller_timezone": cfg.TimezoneOrDefault(),
 	}
 }

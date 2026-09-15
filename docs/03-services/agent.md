@@ -36,43 +36,44 @@ The HTTP server and Web UI run in every input mode:
 The service reads `/userdata/agent/agent.toml`. Provider tables define named provider instances, and the corresponding selection table references one of those names:
 
 ```toml
+[voice_settings.mode]
 input_mode = "stt"
 
-[model_providers.openai-main]
+[model_settings.providers.openai-main]
 type = "openai"
 api_key = "$OPENAI_API_KEY"
 # base_url = "https://api.openai.com/v1"
 
-[model]
+[model_settings.model]
 provider = "openai-main"
 model = "gpt-5.5"
 # temperature = 0.2
 # max_response_tokens = 8192
 
-[audio]
+[voice_settings.classic.audio]
 # socket = "/run/audio_service/audio_service.sock"
 # backend = "auto"
 
-[hid]
+[advanced_settings.hardware.hid]
 # keyboard_device = "/dev/hidg0"
 # mouse_device = "/dev/hidg1"
 # android_keyboard_device = "/dev/hidg2"
 # frame_socket = "/run/frame_service/frame_service.sock"
 
-[stt_providers.openai-main]
+[voice_settings.classic.stt.providers.openai-main]
 type = "openai-whisper"
 api_key = "$OPENAI_API_KEY"
 model = "whisper-1"
 
-[stt]
+[voice_settings.classic.stt]
 provider = "openai-main"
 
-[tts_providers.minimax-main]
+[voice_settings.classic.tts.providers.minimax-main]
 type = "minimax-cn"
 api_key = "$MINIMAX_API_KEY"
 voice_id = "male-qn-qingse"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-main"
 speed = 1.0
 ```

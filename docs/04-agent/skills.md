@@ -36,7 +36,7 @@ Take a screenshot before interacting with an unfamiliar UI.
 Prefer describing what you see before clicking.
 ```
 
-`[device].device_type` and `metadata.device_types` use the same canonical values:
+`[basic_settings.device].device_type` and `metadata.device_types` use the same canonical values:
 `iOS`, `Android`, `macOS`, `windows`, and `linux`. Lowercase aliases are accepted
 for compatibility, but documentation and new skill metadata should use the
 canonical form.
@@ -80,7 +80,7 @@ Follow the Android-specific login flow.
 Rules:
 
 - Omit `metadata.device_types` for a generic skill that applies to every device type;
-- Supported values match `[device].device_type`: `iOS`, `Android`, `macOS`, `windows`, and `linux`;
+- Supported values match `[basic_settings.device].device_type`: `iOS`, `Android`, `macOS`, `windows`, and `linux`;
 - Common aliases such as `ios`, `android`, `mac`, `macos`, and `win` are normalized when loading the skill;
 - `Available skills` only shows skills compatible with the current global `device_type`;
 - `skill_list` and `skill_read` also hide incompatible skills by default;

@@ -57,7 +57,7 @@ grep -q -- '--allow-uniform-frames' "$mock_root/args"
 
 # The explicit `auto` sentinel behaves identically to an empty subdevice, and
 # a compatibility pixel format and the Agent stream policy are forwarded.
-printf '[frame_service]\nkeep_streamon = true\n' >"$mock_root/agent.toml"
+printf '[advanced_settings.hardware.frame_service]\nkeep_streamon = true\n' >"$mock_root/agent.toml"
 FRAME_SERVICE_BIN="$mock_root/frame_service" \
 FRAME_SERVICE_TEST_ARGS="$mock_root/args-auto" \
 SOCKET_PATH="$mock_root/frame-auto.sock" \

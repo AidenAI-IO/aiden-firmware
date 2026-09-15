@@ -615,7 +615,15 @@ def test_start_job_writes_benchmark_agent_config(tmp_path: Path, monkeypatch):
     base_config_dir = tmp_path / "config"
     base_config_dir.mkdir()
     (base_config_dir / "agent.toml").write_text(
-        '[model]\nprovider = "openrouter"\napi_key = "sk-test"\n',
+        """
+[model_settings.providers.benchmark]
+type = "openrouter"
+api_key = "sk-test"
+
+[model_settings.model]
+provider = "benchmark"
+model = "openrouter/test-model"
+""".lstrip(),
         encoding="utf-8",
     )
     app = SkillOptWebApp(SkillOptWebUIConfig(
@@ -638,17 +646,71 @@ def test_start_job_writes_benchmark_agent_config(tmp_path: Path, monkeypatch):
     assert 'api_key = "sk-test"' in content
 
 
+def test_grouped_agent_config_reports_provider_api_key():
+    content = '''
+[model_settings.providers.benchmark]
+type = "openrouter"
+api_key = "sk-grouped"
+
+[model_settings.model]
+provider = "benchmark"
+model = "openrouter/test-model"
+'''
+
+    assert webui.agent_config_has_api_key(content) is True
+
+
+def test_grouped_agent_config_reports_missing_provider_api_key():
+    content = '''
+[model_settings.providers.benchmark]
+type = "openrouter"
+api_key = ""
+
+[model_settings.model]
+provider = "benchmark"
+model = "openrouter/test-model"
+'''
+
+    assert webui.agent_config_has_api_key(content) is False
+
+
+def test_legacy_agent_config_does_not_report_api_key():
+    content = '''
+[model]
+provider = "openrouter"
+api_key = "sk-legacy"
+'''
+
+    assert webui.agent_config_has_api_key(content) is False
+
+
 def test_start_mobilegym_job_does_not_inject_legacy_instruction(tmp_path: Path, monkeypatch):
     base_config_dir = tmp_path / "benchmark" / "config"
     base_config_dir.mkdir(parents=True)
     base_config_dir.joinpath("agent.toml").write_text(
-        '[model]\nprovider = "openrouter"\napi_key = "sk-test"\n',
+        """
+[model_settings.providers.benchmark]
+type = "openrouter"
+api_key = "sk-test"
+
+[model_settings.model]
+provider = "benchmark"
+model = "openrouter/test-model"
+""".lstrip(),
         encoding="utf-8",
     )
     mobilegym_config_dir = tmp_path / "benchmark" / "mobilegym" / "config"
     mobilegym_config_dir.mkdir(parents=True)
     mobilegym_config_dir.joinpath("agent.toml").write_text(
-        '[model]\nprovider = "fake"\napi_key = ""\n',
+        """
+[model_settings.providers.fake]
+type = "fake"
+api_key = ""
+
+[model_settings.model]
+provider = "fake"
+model = "fake"
+""".lstrip(),
         encoding="utf-8",
     )
     monkeypatch.setattr(webui, "REPO_ROOT", tmp_path)

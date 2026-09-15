@@ -560,6 +560,9 @@ func TestVoiceNotificationsConfigDefaultsAndValidation(t *testing.T) {
 	if !defaults.EnabledOrDefault() || defaults.MaxPendingOrDefault() != 8 {
 		t.Fatalf("voice notification defaults = %#v", defaults)
 	}
+	if defaults.RetentionDaysOrDefault() != 14 {
+		t.Fatalf("notification retention days = %d, want 14", defaults.RetentionDaysOrDefault())
+	}
 	if !defaults.ResponseTail.EnabledOrDefault() || defaults.ResponseTail.MaxItems != 1 || defaults.ResponseTail.MaxTextCharsOrDefault() != 40 {
 		t.Fatalf("response tail defaults = %#v", defaults.ResponseTail)
 	}
@@ -572,6 +575,7 @@ func TestVoiceNotificationsConfigDefaultsAndValidation(t *testing.T) {
 		mutate func(*Config)
 	}{
 		{name: "negative max pending", mutate: func(cfg *Config) { cfg.VoiceNotifications.MaxPending = -1 }},
+		{name: "negative retention days", mutate: func(cfg *Config) { cfg.VoiceNotifications.RetentionDays = -1 }},
 		{name: "multiple tail items", mutate: func(cfg *Config) { cfg.VoiceNotifications.ResponseTail.MaxItems = 2 }},
 		{name: "negative tail length", mutate: func(cfg *Config) { cfg.VoiceNotifications.ResponseTail.MaxTextChars = -1 }},
 		{name: "negative default ttl", mutate: func(cfg *Config) { cfg.VoiceNotifications.Expiration.DefaultTTLSeconds = -1 }},

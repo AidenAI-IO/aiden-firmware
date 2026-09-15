@@ -49,7 +49,8 @@ Configuration: `/etc/aiden_frame_service.conf`
 
 The unit starts `/usr/lib/aiden/aiden-frame-start`, which selects the HDMI
 bridge, applies EDID and trigger policy, reads
-`[frame_service].keep_streamon` from `/userdata/agent/agent.toml`, and
+`[advanced_settings.hardware.frame_service].keep_streamon` from
+`/userdata/agent/agent.toml`, and
 executes `/oem/usr/bin/frame_service`.
 
 ```bash

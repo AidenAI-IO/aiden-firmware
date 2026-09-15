@@ -69,7 +69,7 @@ def add_service_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     p_agent.add_argument(
         "--device-type",
         default="",
-        help="Optional daemon device.device_type override; defaults to agent.toml without an environment bridge",
+        help="Optional daemon basic_settings.device.device_type override; defaults to agent.toml without an environment bridge",
     )
     p_agent.add_argument(
         "--target-platform",

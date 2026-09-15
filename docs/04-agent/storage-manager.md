@@ -6,7 +6,7 @@ sidebar_position: 10
 
 ## Overview
 
-The device has two separate storage components. They share the `[storage]`
+The device has two separate storage components. They share the `[storage_settings.storage]`
 configuration section, but run in different service owners and solve different
 problems.
 
@@ -182,7 +182,7 @@ result. Invalid requests return HTTP 400.
 ### StorageManager Configuration
 
 ~~~toml
-[storage]
+[storage_settings.storage]
 mount_point = "/mnt/sdcard"
 device = "mmcblk2"
 min_card_free_mb = 64
@@ -472,7 +472,7 @@ Capabilities are recalculated after every successful check and recover automatic
 
 The Agent main log is not completely disabled through AllowWrite. Instead, the S53agent deployment script reads /run/agent/storage_level.
 
-At Critical or Emergency, S53agent trims `<CONFIG_DIR>/log/agent.log` to storage.degraded_mode.max_agent_log_mb, which defaults to 1 MB. It preserves the newest content so storage pressure does not remove the most useful diagnostics.
+At Critical or Emergency, S53agent trims `<CONFIG_DIR>/log/agent.log` to `storage_settings.storage.degraded_mode.max_agent_log_mb`, which defaults to 1 MB. It preserves the newest content so storage pressure does not remove the most useful diagnostics.
 
 ### Status Model
 
@@ -590,7 +590,7 @@ freed_mb reports only cleaners executed by the current POST request. It does not
 Default configuration:
 
 ~~~toml
-[storage]
+[storage_settings.storage]
 monitor_enabled = true
 root_path = "/userdata"
 check_interval_seconds = 300
@@ -599,13 +599,13 @@ critical_threshold_mb = 10
 emergency_threshold_mb = 5
 recovery_hysteresis_mb = 5
 
-[storage.degraded_mode]
+[storage_settings.storage.degraded_mode]
 disable_llm_http_log = true
 disable_audio_archive = true
 disable_session_archive = true
 max_agent_log_mb = 1
 
-[storage.cleanup]
+[storage_settings.storage.cleanup]
 enabled = true
 llm_http_log_retention_days = [7, 3, 1, 0]
 audio_archive_retention_days = [30, 7, 0]

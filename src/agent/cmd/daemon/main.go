@@ -107,6 +107,13 @@ func main() {
 		)
 		os.Exit(1)
 	}
+	if err := agent.ApplyTimezone(cfg); err != nil {
+		_ = logging.LogEvent(logging.Error, "agent", "startup", "timezone_apply_failed",
+			logging.Field{Key: "timezone", Value: cfg.TimezoneOrDefault()},
+			logging.Field{Key: "error", Value: err},
+		)
+		os.Exit(1)
+	}
 
 	// Apply CLI flags to override config file
 	if *environmentBridgeMode {

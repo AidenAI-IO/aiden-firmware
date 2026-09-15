@@ -1029,7 +1029,7 @@ Common parameters:
 | --- | --- | --- |
 | `--port` | auto | Agent daemon API port |
 | `--environment-bridge-endpoint` | empty | Device or MobileGym bridge endpoint; empty disables the environment bridge |
-| `--device-type` | empty | Optional process-local `device.device_type` override; without a bridge, the daemon otherwise keeps the value from `agent.toml`; with a bridge, the value constrains its reported platform |
+| `--device-type` | empty | Optional process-local `basic_settings.device.device_type` override; without a bridge, the daemon otherwise keeps the value from `agent.toml`; with a bridge, the value constrains its reported platform |
 | `--benchmark-task-id` | `cli-task` | Route id used by environment bridge requests |
 | `--agent-config` | empty | Specify agent.toml |
 | `--base-config-dir` | `benchmark/config` | Agent config template directory |
@@ -1043,7 +1043,7 @@ config. When an environment bridge is provided,
 the command resolves its platform once and passes it to the daemon through
 process-local `--device-type`. Without a bridge, an explicit `--device-type` is
 an optional override; if it is omitted, the daemon keeps
-`[device].device_type` from `agent.toml`. The daemon applies a process-local
+`[basic_settings.device].device_type` from `agent.toml`. The daemon applies a process-local
 override after loading `agent.toml`, reports the effective value as
 `status.device_type`, and the command validates that value after startup. The
 deprecated `--target-platform` spelling remains accepted as a compatibility

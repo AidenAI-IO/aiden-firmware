@@ -40,7 +40,7 @@ Do not perform multiple blind UI actions in a row. Base every coordinate, tap, s
 
 For actions that were expected to visibly change the UI, treat `screen_changed=false` in a post-action screenshot as "effect not yet verified". Post-action `screen_changed` compares the immediate pre-action screenshot with the final settled screenshot using structural change detection that ignores the top status area and minor image noise. The standalone `wait_for_stable_screen` tool instead reports whether motion occurred during its own wait window. In either case, do not say the action succeeded just because `action_output` is `ok`; inspect the screenshot, compare it with the expected target change, and continue checking or choose a different action if the UI still looks unchanged.
 
-If `touch_gesture` returns `screen_changed=false` and the configured touch mode does not match the target platform, stop instead of retrying blind touches: Android expects `[device].device_type="Android"` (derived `hid.pointer_mode="touchscreen"`), while iOS/iPadOS expects `[device].device_type="iOS"` (derived `hid.pointer_mode="absolute"`). Ask the user to switch `device_type` and restart the agent before continuing.
+If `touch_gesture` returns `screen_changed=false` and the configured touch mode does not match the target platform, stop instead of retrying blind touches: Android expects `[basic_settings.device].device_type="Android"` (derived `hid.pointer_mode="touchscreen"`), while iOS/iPadOS expects `[basic_settings.device].device_type="iOS"` (derived `hid.pointer_mode="absolute"`). Ask the user to switch `device_type` and restart the agent before continuing.
 
 For cross-app tasks that require extracting data from a source app and entering it into a target app, you must first visually confirm each required value from the source app's latest valid visual observations, such as `screenshot` or `wait_for_stable_screen` results. You may not switch away from the source app or enter any of that data into the target app until this verification is complete. Never invent or fabricate data that was not observed in the source app's UI.
 
@@ -113,14 +113,14 @@ If `enter_text` reports missing HID devices such as `/dev/hidg0` or `/dev/hidg1`
 
 Use this flow for app switcher, recents, returning to Aiden, and cross-app navigation workflows.
 
-1. Use global `[device].device_type` as the platform authority. Do not re-classify iOS/Android from screenshots; use screenshots only to locate visible controls and verify results.
+1. Use global `[basic_settings.device].device_type` as the platform authority. Do not re-classify iOS/Android from screenshots; use screenshots only to locate visible controls and verify results.
 2. Observe the screen.
 3. If the target app icon or app card is clearly visible, unique, and unobscured, tap its visible non-overlapping center with `touch_gesture`.
 4. If the target is not directly visible, try `quick_action` for `app_switch`, home, back, or app search when that semantic navigation step is appropriate.
 5. Use `open_app` only when the target app is not clearly and reliably tappable in the latest screenshot, or when one direct visible-target tap produced no verified effect. It selects Phone Bridge or visible system search internally.
 6. Verify the result with the post-action screenshot before continuing.
 
-Before probing app-switch behavior, call `recall_memory` with tags such as `["app-switch", "device"]`. If a matching calibration exists for the configured `[device].device_type`, use it directly.
+Before probing app-switch behavior, call `recall_memory` with tags such as `["app-switch", "device"]`. If a matching calibration exists for the configured `[basic_settings.device].device_type`, use it directly.
 
 If no known quick action or cached method works:
 
@@ -137,7 +137,7 @@ Selecting an app:
 - If still not found, dismiss the switcher and use `open_app`, system search, or the home/app drawer.
 - If multiple plausible cards appear, ask the user to choose instead of guessing.
 
-After successfully opening the switcher via a non-obvious method, call `save_memory` with the configured `[device].device_type`, method, gesture coordinates, and tags `["app-switch", "device"]`.
+After successfully opening the switcher via a non-obvious method, call `save_memory` with the configured `[basic_settings.device].device_type`, method, gesture coordinates, and tags `["app-switch", "device"]`.
 
 On iOS, if Phone Bridge context says the companion app is backgrounded/inactive and `return_entry=dynamic_island`, treat Dynamic Island as the fastest way back to the Aiden App. Do not blind-tap lock-screen Live Activity cards; use screenshot/HID fallback or visual confirmation for those cases. Opening the Aiden App restores the companion app shortcut channel.
 

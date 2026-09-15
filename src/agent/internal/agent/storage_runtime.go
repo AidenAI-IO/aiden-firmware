@@ -43,6 +43,10 @@ func withMinimumStorageLevel(cleaner StorageCleaner, level StorageLevel) Storage
 // without allocating a replacement monitor object.
 func runtimeStorageMonitorParts(cfg Config) (StorageMonitorConfig, []StorageCleaner) {
 	storageConfig := cfg.Storage.MonitorConfig()
+	storageConfig.Cleanup.NotificationContextRetentionDays = notificationContextRetentionStages(
+		cfg.VoiceNotifications.RetentionDaysOrDefault(),
+		storageConfig.Cleanup.NotificationContextRetentionDays,
+	)
 	cleaners := make([]StorageCleaner, 0)
 	priority := 1
 	pythonCleaner := NewPythonUserBaseCleaner(managedPythonRoot, managedPythonTmp, priority)
@@ -151,6 +155,41 @@ func runtimeStorageMonitorParts(cfg Config) (StorageMonitorConfig, []StorageClea
 		}
 	}
 	return storageConfig, cleaners
+}
+
+// notificationContextRetentionStages keeps the product-facing retention value
+// in Memory Settings while preserving the storage monitor's progressively more
+// aggressive cleanup stages. Stages longer than the configured base retention
+// are redundant and are omitted.
+func notificationContextRetentionStages(base int, fallbacks []int) []int {
+	if base < 1 {
+		base = defaultNotificationMemoryRetentionDays
+	}
+	stages := []int{base}
+	hasProcessedOnly := false
+	for _, days := range fallbacks {
+		if days == 0 {
+			hasProcessedOnly = true
+			continue
+		}
+		if days < 1 || days >= base {
+			continue
+		}
+		duplicate := false
+		for _, existing := range stages {
+			if existing == days {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			stages = append(stages, days)
+		}
+	}
+	if hasProcessedOnly {
+		stages = append(stages, 0)
+	}
+	return stages
 }
 
 func newRuntimeStorageMonitor(cfg Config, logger *Logger) *StorageMonitor {

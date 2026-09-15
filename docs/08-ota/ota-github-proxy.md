@@ -35,7 +35,7 @@ Add the `github_proxy_url` field to your OTA configuration:
 Add the OTA section to your agent configuration:
 
 ```toml
-[ota]
+[advanced_settings.runtime.ota]
 github_proxy_url = "https://gh-proxy.com/"
 ```
 

@@ -7,29 +7,87 @@ sidebar_position: 2
 The Agent daemon takes `-dir`, the data directory it works out of. `agent.toml` is only one of the things that live there: skills, memory, cache and logs are all resolved relative to it (see [Directory layout](#directory-layout)). The `config`, `config-check` and `config-test` subcommands take `-config` with the path to a TOML config file. Every field below lives in `agent.toml`. Most fields can be edited through the on-device [Config Web page](#config-web-the-device-config-page); sections without dedicated controls are preserved by Config Web and can be edited by hand. TOML is the only supported config format; JSON config is deprecated.
 
 The daemon also accepts `-device-type <value>` as a process-local override for
-`[device].device_type`. The override is applied after `agent.toml` is loaded, so
+`[basic_settings.device].device_type`. The override is applied after `agent.toml` is loaded, so
 the command-line value has higher priority and does not rewrite the config file.
 Accepted values and aliases are normalized to the canonical values documented
-under `[device]` below.
+under `[basic_settings.device]` below.
+
+## Configuration groups
+
+`agent.toml` uses the same product-oriented hierarchy as the Agent settings
+page. Runtime code maps these grouped tables to its internal structures at the
+load boundary; Config Web writes only the grouped paths below.
+
+1. **Wi-Fi and Bluetooth Settings**: Configured through Config Web, not in `agent.toml`
+   - WiFi Configuration: Network credentials, proxy settings
+   - Bluetooth Configuration: Managed by separate bluetooth service
+
+2. **Basic Settings**:
+   - **Language & Time Zone**: `[basic_settings.language_timezone]`
+   - **Device Settings**: `[basic_settings.device]`, including `[basic_settings.device.hid].keyboard_layout`
+
+3. **Conversation Settings**:
+   - Custom Instructions: `custom_instruction`, `additional_prompt`
+   - Max Iterations: `max_iterations`
+   - Context Management: `context_prune_threshold`, `context_compaction_threshold`
+   - Screenshot Pruning: `screenshot_keep_n`, `screenshot_prune_interval`
+   - Tool Settings: `[conversation_settings.termination_policy]`, web search `[conversation_settings.search]`
+
+4. **Main Model Settings**:
+   - Provider Configuration: `[model_settings.providers.<name>]`
+   - Model Selection: `[model_settings.model]` including provider, model, api_key, temperature, max_response_tokens, context_window, reasoning_effort, and api_mode settings
+
+5. **Voice Settings**:
+   - Mode Selection: `[voice_settings.mode].input_mode` (`stt` for Classic or `realtime` for Realtime)
+   - **Realtime Mode**: `[voice_settings.realtime.providers.<name>]`, `[voice_settings.realtime]`
+   - **Classic Mode**: `[voice_settings.classic.runtime]`, `[voice_settings.classic.stt]`, `[voice_settings.classic.stt.providers.<name>]`, `[voice_settings.classic.tts]`, `[voice_settings.classic.tts.providers.<name>]`, `[voice_settings.classic.audio]`, `[voice_settings.classic.audio_archive]`
+
+6. **Memory Settings**:
+   - Screen Memory Retention: `[memory_settings.screen].screen_memory_ttl`
+   - Notification Memory: `[memory_settings.notification]` and expiration policies
+   - Reset Conversation: Handled through Config Web UI
+
+7. **Storage Settings**:
+   - Storage Status: Displayed through Config Web (total/available space)
+   - microSD Settings: `[storage_settings.storage]` configuration, format/eject operations
+   - Backup & Restore: Export or import the canonical grouped `agent.toml` through Config Web
+   - Internal storage policy: `[storage_settings.storage.degraded_mode]`, `[storage_settings.storage.cleanup]`
+
+8. **Advanced Settings**:
+   - Logs: detailed model request capture, Agent log level, retention, and support-log export
+   - Manual Config Edit: validated raw editor for the canonical grouped `agent.toml`
+
+   Hardware and runtime debug tables remain available in TOML but are not
+   exposed as product settings in Config Web.
+
+9. **About**:
+   - Firmware Version: Displayed through Config Web
+   - Component Versions: Boot, OEM, and RootFS versions for the running slot
+
+The group tables are the canonical on-disk configuration schema. New options
+should be added to the closest existing group and its section rather than
+creating another top-level section.
 
 ## Contents
 
+- [Configuration groups](#configuration-groups)
 - [Directory layout](#directory-layout)
 - [Config Web: the device config page](#config-web-the-device-config-page)
 - [Minimal config examples](#minimal-config-examples)
 - [Top-level fields](#top-level-fields)
-- [`[device]`](#device)
-- [`[model]`](#model)
-- [`[log]`](#log)
-- [`[audio]`](#audio)
-- [`[voice_model]`](#voice_model)
-- [`[voice_model_providers.<name>]`](#voice_model_providersname)
-- [`[frame_service]`](#frame_service)
+- [`[basic_settings.device]`](#basic_settingsdevice)
+- [`[basic_settings.device.hid]`](#basic_settingsdevicehid)
+- [`[model_settings.model]`](#model_settingsmodel)
+- [`[advanced_settings.log]`](#advanced_settingslog)
+- [`[voice_settings.classic.audio]`](#voice_settingsclassicaudio)
+- [`[voice_settings.realtime]`](#voice_settingsrealtime)
+- [`[voice_settings.realtime.providers.<name>]`](#voice_settingsrealtimeprovidersname)
+- [`[advanced_settings.hardware.frame_service]`](#advanced_settingshardwareframeservice)
 - [Quick Capture](#quick-capture)
-- [`[voice_notifications]`](#voice_notifications)
-- [`[hid]`](#hid)
-- [`[stt]` and `[tts]`](#stt-and-tts)
-- [`[live_activity]`](#live_activity)
+- [`[memory_settings.notification]`](#memory_settingsnotification)
+- [`[advanced_settings.hardware.hid]`](#advanced_settingshardwarehid)
+- [`[voice_settings.classic.stt]` and `[voice_settings.classic.tts]`](#voice_settingsclassicstt-and-voice_settingsclassictts)
+- [`[advanced_settings.runtime.live_activity]`](#advanced_settingsruntimelive_activity)
 - [Episode telemetry (Langfuse)](#episode-telemetry-langfuse)
 - [System environment variables](#system-environment-variables)
 - [`memory/extraction.yaml`](#memoryextractionyaml)
@@ -86,25 +144,27 @@ The firmware starts `agent config-web` on port 80.
 
 ### What the page can configure
 
-The page renders the following config sections. The language selector in the page header persists the device-level `locale` and applies it online; when the locale changes the system prompt, the next task boundary creates a new context session instead of rewriting the previous session, so subsequent LLM responses use the selected language while old session history remains append-only.
+The page renders the following config sections. The Language & Time Zone controls persist the device-level `locale` and `timezone` and apply them online. Changing either value rotates the context at the next task boundary instead of rewriting the previous session. The selected time zone is included in Agent state and controls the current-date context and controller shell commands.
 
-- `agent`: `locale`, `input_mode`, VAD params, `max_iterations`, `context_prune_threshold`, `custom_instruction`, `additional_prompt`
-- `model`: provider, model, api_key, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
-- `stt`: provider, api_key, model, base_url, Tencent ASR fields
-- `tts`: provider, api_key, model, voice_id, emotion, speed
-- `audio`: socket, sample_rate, channels, bit_width, backend
-- `audio_archive`: optional STT recording archive, storage path, file limit, and size limit; controls are enabled only in `stt` input mode
-- `voice_model`: selected realtime provider; shown when `agent.input_mode = "realtime"`. Provider-specific credentials and model settings are configured in `[voice_model_providers.<name>]`
-- `frame_service`: whether Frame Service keeps capture STREAMON between screenshots
-- `quick_capture`: enabled, GPIO trigger pin, Screen Memory retention period
-- `voice_notifications`: preserved by Config Web when other settings are saved; dedicated form controls are not currently rendered
-- `log`: LLM HTTP log retention
-- `ota`: optional GitHub download proxy URL
-- `device`: device_type
-- `hid`: keyboard_device, keyboard_layout, mouse_device, android_keyboard_device, frame_socket, input_backend
-- `search`: web-search provider and provider credential
-- `telemetry`: Langfuse enablement, endpoint, credentials, upload policy, environment, and tags
-- `live_activity`: Phone Bridge Live Activity enablement
+- `[basic_settings.language_timezone]`: UI and response language plus controller time zone
+- `[conversation_settings.agent]`: custom instructions, iteration and context controls
+- `[model_settings.model]`: provider, model, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens
+- `[voice_settings.classic.stt]`: provider, language and STT options
+- `[voice_settings.classic.tts]`: provider and playback options
+- `[voice_settings.classic.audio]`: socket, sample_rate, channels, bit_width, backend
+- `[voice_settings.classic.audio_archive]`: optional STT recording archive settings
+- `[voice_settings.realtime]`: selected realtime provider and session options
+- `[advanced_settings.hardware.frame_service]`: whether Frame Service keeps capture STREAMON between screenshots
+- `[memory_settings.screen]`: GPIO capture and Screen Memory retention
+- `[memory_settings.notification]`: notification retention and expiration policies
+- `[advanced_settings.log]`: LLM HTTP log retention
+- `[advanced_settings.runtime.ota]`: optional GitHub download proxy URL
+- `[basic_settings.device]`: device_type
+- `[basic_settings.device.hid]`: user-facing keyboard layout
+- `[advanced_settings.hardware.hid]`: internal HID device paths and input backend
+- `[conversation_settings.search]`: web-search provider and provider credential
+- `[advanced_settings.runtime.telemetry]`: Langfuse enablement, endpoint, credentials, upload policy, environment, and tags
+- `[advanced_settings.runtime.live_activity]`: Phone Bridge Live Activity enablement
 - `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
 - Wi-Fi: SSID / PSK etc. (written to `/userdata/wpa_supplicant.conf`)
 
@@ -113,23 +173,29 @@ The page renders the following config sections. The language selector in the pag
 ### HTTP/Web UI without the device voice loop (`text`)
 
 ```toml
+[basic_settings.language_timezone]
 locale = "en-US"
+timezone = "UTC"
+
+[conversation_settings.agent]
 custom_instruction = ""
 max_iterations = -1
 context_prune_threshold = 0.5
 context_compaction_threshold = 0.8
 screenshot_keep_n = 3
 screenshot_prune_interval = 2
+
+[voice_settings.mode]
 input_mode = "text"
 
-[model_providers.openrouter-main]
+[model_settings.providers.openrouter-main]
 type = "openrouter"
 api_key = "$OPENROUTER_API_KEY"
 
-[device]
+[basic_settings.device]
 device_type = "iOS"
 
-[model]
+[model_settings.model]
 provider = "openrouter-main"
 model = "bytedance-seed/seed-2.0-lite"
 temperature = 0.2
@@ -156,19 +222,21 @@ max_response_tokens = 8192
 # context_window = 128000
 # model_max_output_tokens = 8192
 
-[audio]
+[voice_settings.classic.audio]
 socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
 bit_width = 16
 backend = "auto"
 
-[log]
+[advanced_settings.log]
 llm_http_retention_days = 7
 
-[hid]
-keyboard_device = "/dev/hidg0"
+[basic_settings.device.hid]
 keyboard_layout = "qwerty"
+
+[advanced_settings.hardware.hid]
+keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
@@ -179,9 +247,17 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ### STT voice mode
 
 ```toml
+[basic_settings.language_timezone]
 locale = "en-US"
+timezone = "UTC"
+
+[conversation_settings.agent]
 custom_instruction = ""
+
+[voice_settings.mode]
 input_mode = "stt"
+
+[voice_settings.classic.runtime]
 vad_backend = "rknn"
 vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 vad_helper_path = "/oem/usr/bin/rknn_vad"
@@ -198,58 +274,61 @@ voice_tool_call_speech = true
 voice_progress_speech_enabled = true
 voice_max_response_tokens = 300
 
-[model_providers.openrouter-main]
+[model_settings.providers.openrouter-main]
 type = "openrouter"
 api_key = "$OPENROUTER_API_KEY"
 
-[device]
+[basic_settings.device]
 device_type = "iOS"
 
-[model]
+[model_settings.model]
 provider = "openrouter-main"
 model = "bytedance-seed/seed-2.0-lite"
 
-[stt_providers.openrouter-main]
+[voice_settings.classic.stt.providers.openrouter-main]
 type = "openrouter"
 api_key = "$OPENROUTER_API_KEY"
 model = "qwen/qwen3-asr-flash-2026-02-10"
 
-[stt]
+[voice_settings.classic.stt]
 provider = "openrouter-main"
 
-[tts_providers.minimax-main]
+[voice_settings.classic.tts.providers.minimax-main]
 type = "minimax"
 api_key = "$MINIMAX_API_KEY"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-main"
 speed = 1.0
 
-[audio]
+[voice_settings.classic.audio]
 socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
 bit_width = 16
 backend = "auto"
 
-[hid]
-keyboard_device = "/dev/hidg0"
+[basic_settings.device.hid]
 keyboard_layout = "qwerty"
+
+[advanced_settings.hardware.hid]
+keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
 android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
-## Top-level fields
+## Grouped runtime fields
 
 ### General
 
 | Field                       | Default / allowed values    | Description                                                                                                                                                                                               |
 | --------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `locale`                    | `en-US` (default) / `zh-CN` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[stt].language`, which only controls speech recognition. |
+| `locale`                    | `en-US` (default) / `zh-CN` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[voice_settings.classic.stt].language`, which only controls speech recognition. |
+| `timezone`                  | `UTC` (default) / supported IANA zone | Controller time zone used for the model-facing current date, `controller_timezone` state, and shell child processes. Config Web provides the supported IANA zone list. |
 | `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
 | `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
@@ -307,14 +386,14 @@ These fields apply to the `stt` input mode.
 The model pointed to by `vad_model_path` must first be converted from the Silero ONNX to RV1106 RKNN on a PC using `silero-vad/convert_silero_vad_to_rknn.py`, then placed at the corresponding path on the device. The CPU backend requires `silero_vad_6_2_lstm_decoder_weights.bin` to include the Conv1d encoder extension, which can be generated from the TorchScript file shipped with the repo using `silero-vad/export_silero_vad_v6_2_weights.py`.
 When `vad_helper_path` is still the built-in default, switching `vad_backend` automatically switches the helper; only when set to a custom path does it run that custom path.
 
-## `[termination_policy]`
+## `[conversation_settings.termination_policy]`
 
 The termination policy prevents stalled runs from looping indefinitely. These
 fields can be edited directly in `agent.toml`; omitted or zero-valued numeric
 fields use the defaults below.
 
 ```toml
-[termination_policy]
+[conversation_settings.termination_policy]
 enabled = true
 max_seconds = 0
 repeat_action_limit = 3
@@ -341,10 +420,10 @@ parse_failure_limit = 3
 The three stall-score thresholds must satisfy
 `soft_notice_stall_score < restrict_tools_stall_score < terminate_stall_score`.
 
-## `[model_providers.<name>]`
+## `[model_settings.providers.<name>]`
 
 Optional named provider configurations. Each section holds the credentials for
-one endpoint, and `[model]` references it by putting the name in its `provider`
+one endpoint, and `[model_settings.model]` references it by putting the name in its `provider`
 field. This lets several providers stay configured at once
 so switching is a one-line change instead of a re-entry of keys.
 
@@ -355,34 +434,34 @@ so switching is a one-line change instead of a re-entry of keys.
 | `base_url`  | Custom endpoint; supported by `openai`, `anthropic`, and `ollama`                                  |
 
 ```toml
-[model_providers.openai-work]
+[model_settings.providers.openai-work]
 type = "openai"
 api_key = "sk-..."
 
-[model_providers.ollama-local]
+[model_settings.providers.ollama-local]
 type = "ollama"
 base_url = "http://127.0.0.1:11434"
 
-[model_providers.claude-work]
+[model_settings.providers.claude-work]
 type = "anthropic"
 api_key = "$ANTHROPIC_AUTH_TOKEN"
 base_url = "https://api.anthropic.com/v1"
 
-[model]
-provider = "openai-work"   # references [model_providers.openai-work]
+[model_settings.model]
+provider = "openai-work"   # references [model_settings.providers.openai-work]
 model = "gpt-5.5"
 ```
 
-On load, a `provider` value that names a section under `[model_providers]` is replaced
-by that section's provider type. Its `api_key` fills an empty `[model].api_key`,
-while its `base_url` always controls the endpoint. A legacy `[model].base_url`
+On load, a `provider` value that names a section under `[model_settings.providers]` is replaced
+by that section's provider type. Its `api_key` fills an empty `[model_settings.model].api_key`,
+while its `base_url` always controls the endpoint. A legacy `[model_settings.model].base_url`
 is ignored; configure custom endpoints only through the selected
-`[model_providers.<name>].base_url`. A `provider` that matches no section is
+`[model_settings.providers.<name>].base_url`. A `provider` that matches no section is
 treated as a provider type, so existing configs keep working unchanged.
 
 `token_env` is not supported. Replace it with `api_key = "$VAR_NAME"`.
 
-Only the `[model_providers.<name>]` namespace is supported. The former
+Only the `[model_settings.providers.<name>]` namespace is supported. The former
 `[providers.<name>]` namespace is rejected with an error. The record-level
 `provider` field is still accepted as a read-time alias for `type`; saving always
 writes `type`, and `type` wins when both fields are present.
@@ -392,11 +471,11 @@ rejected at load, so a typo or a reference left behind after deleting a section
 fails with a clear error instead of surfacing later when the model client is
 built. When a section is named exactly like a provider type, the section wins.
 
-## `[model]`
+## `[model_settings.model]`
 
 | Field                     | Description                                                                                                                                                                                                                                          |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider`                | A provider type, or the name of a `[model_providers.<name>]` section. Types: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
+| `provider`                | A provider type, or the name of a `[model_settings.providers.<name>]` section. Types: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`). |
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
 | `api_mode`                | Wire protocol. Omit it (or use `chat_completions`) for the existing Chat Completions path; `responses` sends full local context to OpenAI, OpenRouter, or Volcengine Ark. OpenAI and Ark receive `store=false`; OpenRouter omits both `store` and `previous_response_id` because its Responses endpoint is stateless. `responses_stateful` sends `store=true`, resends top-level `instructions`, and chains follow-up requests with `previous_response_id` while submitting only newly appended items. The local transcript remains authoritative for audit, compaction, session rotation, and recovery. Stateful mode is enabled for OpenAI and Volcengine Ark. Moonshot Kimi exposes Chat Completions rather than `/responses`; native Anthropic and Ollama transports also do not implement this protocol. Custom compatible gateways can use provider type `openai`. |
@@ -425,13 +504,13 @@ third-party protocol-conversion gateway can instead be configured as a custom
 
 ```toml
 # Global site (https://api.moonshot.ai/v1)
-[model]
+[model_settings.model]
 provider = "kimi"
 model = "kimi-k3"
 api_key = "MOONSHOT_API_KEY"
 
 # Mainland China site (https://api.moonshot.cn/v1)
-# [model]
+# [model_settings.model]
 # provider = "kimi-cn"
 # model = "kimi-k3"
 # api_key = "MOONSHOT_API_KEY"
@@ -444,7 +523,7 @@ Use the `volcengine` provider. It targets Ark's OpenAI-compatible endpoint
 required. `model` is the Ark model ID, and `api_key` is an Ark API key.
 
 ```toml
-[model]
+[model_settings.model]
 provider = "volcengine"
 model = "doubao-seed-2-1-pro-260628"
 api_key = "ARK_API_KEY"
@@ -466,11 +545,11 @@ To read the key from the environment instead of writing it here, put it on a
 named provider and reference that:
 
 ```toml
-[model_providers.ark]
+[model_settings.providers.ark]
 type = "volcengine"
 api_key = "$ARK_API_KEY"
 
-[model]
+[model_settings.model]
 provider = "ark"
 model = "doubao-seed-2-1-pro-260628"
 ```
@@ -490,17 +569,19 @@ are not registered; for those, set `context_window` and
 `model_max_output_tokens` explicitly, or add a registry entry keyed by the exact
 Ark model ID.
 
-The `[tts]` section has an unrelated provider that is also named `volcengine`. It
+The `[voice_settings.classic.tts]` section has an unrelated provider that is also named `volcengine`. It
 speaks a separate WebSocket protocol with its own host and credentials, so an Ark
 API key and base URL do not carry over to it.
 
-## `[log]`
+## `[advanced_settings.log]`
 
 | Field                     | Default | Description                                                                                                                                              |
 | ------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `level`                   | `info`  | Minimum Agent log severity: `debug`, `info`, `warn`, or `error`. Changes apply without restarting the Agent.                                             |
 | `llm_http_retention_days` | `7`     | Number of days to keep raw LLM HTTP logs under `<config_dir>/log` (`llm-http-*.log`). Cleanup runs when the agent starts; unset or `0` uses the default. |
+| `log_raw_http`            | `true`  | Record detailed model HTTP requests and responses. This maps to the runtime model transport logger but is stored in the Advanced Settings log group.      |
 
-## `[audio]`
+## `[voice_settings.classic.audio]`
 
 | Field              | Default                                 | Description                                                                                                                                                                                                                   |
 | ------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -510,7 +591,7 @@ API key and base URL do not carry over to it.
 | `bit_width`        | `16`                                    | Bit width                                                                                                                                                                                                                     |
 | `backend`           | `auto`                                  | Recording and playback backend. `auto` uses `audio_service` on the board and host recorder/player commands in desktop/PC mode through the ADB input backend or environment bridge. Use `audio_service` or `local` to force both directions to one backend. |
 
-## `[voice_model]`
+## `[voice_settings.realtime]`
 
 This section selects a named realtime provider record used after a GPIO wakeup.
 It is active when `input_mode = "realtime"`; the
@@ -520,13 +601,13 @@ response PCM through the board audio path.
 For providers with text-input capability, `/api/chat` can start a session and send the queued text as its first user message. Speko S2S is audio-first; its delegated native provider may expose optional text capabilities, but the board microphone path remains the canonical full-duplex path. The selected direct provider owns turn detection and interruption; Speko does not relay PCM or synthesize a separate VAD loop.
 Use `input_mode = "stt"` to select the existing VAD/STT/LLM/TTS wakeup loop.
 Config Web renders the selector when `agent.input_mode = "realtime"`. Provider
-credentials and model settings live in `[voice_model_providers.<name>]`, so
+credentials and model settings live in `[voice_settings.realtime.providers.<name>]`, so
 switching the selector never overwrites another provider's saved configuration.
 The current adapters are Qwen, Speko S2S, OpenAI Realtime, Google Gemini Live, and xAI Grok Voice.
 
 | Field | Default | Description |
 | ----- | ------- | ----------- |
-| `provider` | `qwen` | Named `[voice_model_providers.<name>]` record. Bare `qwen`, `speko`, `openai`, `gemini`, or `xai` values remain accepted for compatibility. |
+| `provider` | `qwen` | Named `[voice_settings.realtime.providers.<name>]` record. Bare `qwen`, `speko`, `openai`, `gemini`, or `xai` values remain accepted for compatibility. |
 | `instructions` | built-in voice model instruction | Session instructions. Leave empty to use the built-in default voice model instruction. |
 | `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
 | `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
@@ -534,28 +615,28 @@ The current adapters are Qwen, Speko S2S, OpenAI Realtime, Google Gemini Live, a
 | `turn_detection_threshold` | empty | Optional Qwen server VAD threshold; ignored by Speko S2S. |
 | `turn_detection_silence_ms` | `800` | Qwen silence duration before a response is generated. Ignored by provider-direct Speko sessions, which use the selected provider VAD. |
 
-## `[voice_model_providers.<name>]`
+## `[voice_settings.realtime.providers.<name>]`
 
 Realtime provider records follow the same named-record pattern as
-`[model_providers.<name>]`. Multiple configurations of each realtime provider can coexist;
-`[voice_model].provider` selects one by name.
+`[model_settings.providers.<name>]`. Multiple configurations of each realtime provider can coexist;
+`[voice_settings.realtime].provider` selects one by name.
 
 ```toml
-[voice_model_providers.qwen-main]
+[voice_settings.realtime.providers.qwen-main]
 type = "qwen"
 api_key = "$DASHSCOPE_API_KEY"
 model = "qwen-audio-3.0-realtime-plus"
 region = "cn-beijing"
 voice = "longanqian"
 
-[voice_model_providers.speko-main]
+[voice_settings.realtime.providers.speko-main]
 type = "speko"
 api_key = "$SPEKO_API_KEY"
 upstream_provider = "google"
 model = "gemini-3.1-flash-live-preview"
 voice = "Puck"
 
-[voice_model_providers.gemini-vertex]
+[voice_settings.realtime.providers.gemini-vertex]
 type = "gemini"
 auth_mode = "vertex"
 api_key = "$GOOGLE_OAUTH_ACCESS_TOKEN"
@@ -564,7 +645,7 @@ location = "us-central1"
 model = "gemini-live"
 voice = "Puck"
 
-[voice_model_providers.openai-gateway]
+[voice_settings.realtime.providers.openai-gateway]
 type = "openai"
 api_key = "$OPENAI_API_KEY"
 model = "gpt-realtime"
@@ -572,7 +653,7 @@ endpoint = "wss://gateway.example/v1/realtime"
 realtime_protocol = "legacy"
 voice = "alloy"
 
-[voice_model]
+[voice_settings.realtime]
 provider = "speko-main"
 ```
 
@@ -589,30 +670,31 @@ provider = "speko-main"
 | `upstream_provider` | Speko | Required S2S upstream: `google` (or `gemini`) or `xai`, paired with `model`. Automatic routing is disabled because it may select an unsupported WebRTC route. OpenAI is not a supported Speko route in Aiden; use the top-level `openai` provider instead. |
 | `agent_id` / `base_url` | Speko | Optional Speko agent ID and API base URL override. |
 
-## `[frame_service]`
+## `[advanced_settings.hardware.frame_service]`
 
 | Field | Default | Description |
 | --- | --- | --- |
 | `keep_streamon` | `false` | When `true`, Frame Service keeps capture STREAMON between screenshots and discards 6 warm-up frames for each request. When `false`, it pauses between screenshots and uses 0 warm-up frames. |
 
-## `[voice_notifications]`
+## `[memory_settings.notification]`
 
 Voice notifications attach system reminders to a normal spoken reply or replace a final failed LLM turn with a fixed error message. In Realtime mode, an idle session can also announce a pending reminder as a private speech response. See [Voice Notifications](voice-notifications.md) for the lifecycle and delivery contract.
 
 ```toml
-[voice_notifications]
+[memory_settings.notification]
 enabled = true
 max_pending = 8
+retention_days = 14
 
-[voice_notifications.response_tail]
+[memory_settings.notification.response_tail]
 enabled = true
 max_items = 1
 max_text_chars = 40
 
-[voice_notifications.expiration]
+[memory_settings.notification.expiration]
 default_ttl_seconds = 0
 
-[voice_notifications.expiration.code_ttl_seconds]
+[memory_settings.notification.expiration.code_ttl_seconds]
 storage = 900
 ```
 
@@ -620,76 +702,87 @@ storage = 900
 | ------------------------------------ | --------------- | ------------------------------------------------------------------------- |
 | `enabled`                            | `true`          | Enable persistent tails and final-turn replacements                       |
 | `max_pending`                        | `8`             | Maximum active condition records kept by the in-memory manager            |
+| `retention_days`                     | `14`            | Days to keep processed notification memory during normal storage cleanup  |
 | `response_tail.enabled`              | `true`          | Allow persistent reminders to be appended to normal replies               |
 | `response_tail.max_items`            | `1`             | Maximum reminders per reply; the current implementation supports only `1` |
 | `response_tail.max_text_chars`       | `40`            | Maximum reminder length in Unicode characters                             |
 | `expiration.default_ttl_seconds`     | `0`             | Default active-condition lease; `0` disables automatic expiration         |
 | `expiration.code_ttl_seconds.<code>` | `storage = 900` | Per-code lease override renewed by each active heartbeat                  |
 
-Config Web preserves this section through GET/POST and TOML save operations. Edit it directly in `agent.toml` until dedicated controls are added to the page.
+Config Web exposes `retention_days` in Memory Settings. The lifecycle and lease fields remain available through manual TOML editing.
 
-## `[device]`
+## `[basic_settings.device]`
 
 | Field         | Default | Description |
 | ------------- | ------- | ----------- |
 | `device_type` | `iOS`   | Target host type for USB HID descriptors and Agent global device state. Accepted values: `iOS`, `Android`, `macOS`, `windows`, `linux`. `Android` derives HID `pointer_mode = "touchscreen"`; every other value derives `pointer_mode = "absolute"`. Switching between Android and a non-Android type requires a reboot so USB descriptors are re-enumerated; changes among non-Android types apply online. |
 
-## `[hid]`
+## `[basic_settings.device.hid]`
+
+| Field             | Default  | Description |
+| ----------------- | -------- | ----------- |
+| `keyboard_layout` | `qwerty` | How the phone interprets the external USB HID keyboard: `qwerty`, `azerty`, or `qwertz`. See [USB HID](../03-services/usb-hid.md). |
+
+## `[advanced_settings.hardware.hid]`
+
+This table is retained for internal HID device settings and compatibility with
+older configurations. Put the user-facing `keyboard_layout` value under
+`[basic_settings.device.hid]`; when both tables are present, the Basic Settings
+value is authoritative.
 
 | Field                     | Default                                 | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `keyboard_device`         | `/dev/hidg0`                            | Keyboard HID device                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `keyboard_layout`         | `qwerty`                                | How the phone interprets the external USB HID keyboard: `qwerty`, `azerty`, or `qwertz`. The visible soft-keyboard layout may differ. Used by `keyboard_text` and standard text-like `keyboard_tap` keys. iOS locks the hardware layout at USB enumeration, so switch the phone's input language to match _before_ saving, then follow the Config Web reboot prompt. A same-identity soft re-enumeration is avoided because it can leave the iOS keyboard and pointer session inconsistent. See [USB HID](../03-services/usb-hid.md). |
 | `mouse_device`            | `/dev/hidg1`                            | Mouse/touch HID device                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `android_keyboard_device` | `/dev/hidg2`                            | Consumer Control HID device (`hid.usb2`) used for Android extension keys when `[device].device_type = "Android"` and media/volume/brightness/screenshot keys for other device types                                                                                                                                                                                                                                                                                                                                          |
+| `android_keyboard_device` | `/dev/hidg2`                            | Consumer Control HID device (`hid.usb2`) used for Android extension keys when `[basic_settings.device].device_type = "Android"` and media/volume/brightness/screenshot keys for other device types                                                                                                                                                                                                                                                                                                                                          |
 | `frame_socket`            | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `input_backend`           | `hid`                                   | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands. Atomic touch programs additionally try `getevent`/`sendevent`, then fall back to `input touchscreen motionevent` when raw event injection is blocked. |
 
-## `[tts_providers.<name>]` and `[stt_providers.<name>]`
+## `[voice_settings.classic.tts.providers.<name>]` and `[voice_settings.classic.stt.providers.<name>]`
 
-Named voice provider configurations, the same shape `[model_providers.<name>]` gives
-`[model]`. Each section holds the credentials and settings for one voice service,
-and `[tts]` / `[stt]` reference one by putting the name in their own `provider`
+Named voice provider configurations, the same shape `[model_settings.providers.<name>]` gives
+`[model_settings.model]`. Each section holds the credentials and settings for one voice service,
+and `[voice_settings.classic.tts]` / `[voice_settings.classic.stt]` reference one by putting the name in their own `provider`
 field. Several providers stay configured at once, so switching is a one-line
 change instead of a re-entry of keys.
 
-Unlike `[model_providers.<name>]`, these are separate namespaces: the `[tts]`
+Unlike `[model_settings.providers.<name>]`, these are separate namespaces: the `[voice_settings.classic.tts]`
 `volcengine` provider speaks a different protocol with its own host and
 credentials than the Ark LLM provider of the same name, so one map could not
 serve both. Each namespace also validates its own provider types — a TTS type is
-rejected for `[model]` and vice versa.
+rejected for `[model_settings.model]` and vice versa.
 
 Several records may share one provider type, which is how two accounts of the
 same service (different keys, different voices) stay configured together.
 
 ```toml
-[tts_providers.minimax-main]
+[voice_settings.classic.tts.providers.minimax-main]
 type = "minimax"
 api_key = "sk-aaa"
 voice_id = "male-qn-qingse"
 
-[tts_providers.minimax-alt]     # same type, second account
+[voice_settings.classic.tts.providers.minimax-alt]     # same type, second account
 type = "minimax"
 api_key = "sk-bbb"
 voice_id = "female-shaonv"
 
-[tts_providers.fish]
+[voice_settings.classic.tts.providers.fish]
 type = "fish-audio"
 api_key = "$FISH_API_KEY"
 reference_id = "abc123"
 
-[tts]
-provider = "minimax-main"       # references [tts_providers.minimax-main]
+[voice_settings.classic.tts]
+provider = "minimax-main"       # references [voice_settings.classic.tts.providers.minimax-main]
 speed = 1.0
 
-[stt_providers.tencent]
+[voice_settings.classic.stt.providers.tencent]
 type = "tencent-asr"
 app_id = "123"
 secret_id = "AKID..."
 secret_key = "..."
 region = "ap-shanghai"
 
-[stt]
+[voice_settings.classic.stt]
 provider = "tencent"
 language = "zh"
 ```
@@ -697,9 +790,9 @@ language = "zh"
 ### Field placement
 
 A field lives on the record when it stops meaning anything once the provider
-changes; it stays on `[tts]` / `[stt]` when it holds regardless of provider.
+changes; it stays on `[voice_settings.classic.tts]` / `[voice_settings.classic.stt]` when it holds regardless of provider.
 
-| | Record fields | Stays on the flat section |
+| | Record fields | Stays on the shared section |
 | ---- | ---- | ---- |
 | TTS | `type`, `api_key`, `model`, `voice_id`, `emotion`, `reference_id` | `provider` (reference), `speed` |
 | STT | `type`, `api_key`, `model`, `base_url`, `app_id`, `secret_id`, `secret_key`, `region`, `engine_model_type` | `provider` (reference), `language` |
@@ -723,14 +816,14 @@ optional at runtime, so a stale name is reported and the agent starts without
 voice. Config Web rejects such a reference when saving, while the form is
 still on screen.
 
-## `[stt]` and `[tts]`
+## `[voice_settings.classic.stt]` and `[voice_settings.classic.tts]`
 
-`[stt]` is required when `input_mode = "stt"`; `[tts]` is required when `input_mode = "stt"`.
+`[voice_settings.classic.stt]` is required when `input_mode = "stt"`; `[voice_settings.classic.tts]` is required when `input_mode = "stt"`.
 
-`provider` here is a reference to a `[tts_providers.<name>]` /
-`[stt_providers.<name>]` record (a bare provider type still works — see above).
+`provider` here is a reference to a `[voice_settings.classic.tts.providers.<name>]` /
+`[voice_settings.classic.stt.providers.<name>]` record (a bare provider type still works — see above).
 The provider-specific credentials listed below live on that record; Config Web
-edits them in the provider dialog rather than on the `[tts]` / `[stt]` card.
+edits them in the provider dialog rather than on the `[voice_settings.classic.tts]` / `[voice_settings.classic.stt]` card.
 
 STT:
 
@@ -754,13 +847,13 @@ TTS configuration fields:
 
 | Field          | Location                         | Description                                                                                                              |
 | -------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `provider`     | `[tts]`                          | Required reference to a named provider record; a bare provider type remains supported for backward compatibility        |
-| `api_key`      | `[tts_providers.<name>]`         | Required authentication key for the selected provider                                                                   |
-| `model`        | `[tts_providers.<name>]`         | Optional Minimax model, Fish Audio model header, Alibaba Cloud Realtime model, Volcengine `X-Api-Resource-Id`, or OpenRouter model |
-| `voice_id`     | `[tts_providers.<name>]`         | Optional Minimax, Alibaba Cloud, OpenRouter, or Google Cloud voice; Volcengine speaker. Not used by Fish Audio (see `reference_id`) |
-| `reference_id` | `[tts_providers.<name>]`         | Optional Fish Audio reference id; defaults to the built-in demo voice shown by Config Web. Ignored by other providers    |
-| `emotion`      | `[tts_providers.<name>]`         | Optional Minimax emotion; Volcengine passes it through as `audio_params.emotion` and requires voice support             |
-| `speed`        | `[tts]`                          | Optional speech rate, default `1.0`; the supported range varies by provider, refer to the official docs                 |
+| `provider`     | `[voice_settings.classic.tts]`                          | Required reference to a named provider record; a bare provider type remains supported for backward compatibility        |
+| `api_key`      | `[voice_settings.classic.tts.providers.<name>]`         | Required authentication key for the selected provider                                                                   |
+| `model`        | `[voice_settings.classic.tts.providers.<name>]`         | Optional Minimax model, Fish Audio model header, Alibaba Cloud Realtime model, Volcengine `X-Api-Resource-Id`, or OpenRouter model |
+| `voice_id`     | `[voice_settings.classic.tts.providers.<name>]`         | Optional Minimax, Alibaba Cloud, OpenRouter, or Google Cloud voice; Volcengine speaker. Not used by Fish Audio (see `reference_id`) |
+| `reference_id` | `[voice_settings.classic.tts.providers.<name>]`         | Optional Fish Audio reference id; defaults to the built-in demo voice shown by Config Web. Ignored by other providers    |
+| `emotion`      | `[voice_settings.classic.tts.providers.<name>]`         | Optional Minimax emotion; Volcengine passes it through as `audio_params.emotion` and requires voice support             |
+| `speed`        | `[voice_settings.classic.tts]`                          | Optional speech rate, default `1.0`; the supported range varies by provider, refer to the official docs                 |
 
 The examples use placeholder keys to make the required record placement explicit.
 
@@ -781,14 +874,14 @@ Common TTS adapter configs:
 Minimax WebSocket:
 
 ```toml
-[tts_providers.minimax-main]
+[voice_settings.classic.tts.providers.minimax-main]
 type = "minimax"
 api_key = "..."
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-main"
 speed = 1.0
 ```
@@ -796,29 +889,29 @@ speed = 1.0
 Fish Audio WebSocket:
 
 ```toml
-[tts_providers.fish-main]
+[voice_settings.classic.tts.providers.fish-main]
 type = "fish-audio"
 api_key = "..."
 model = "s2-pro"
 reference_id = "98655a12fa944e26b274c535e5e03842"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "fish-main"
 speed = 1.0
 ```
 
-Fish Audio `model` defaults to `s2-pro` and is sent as a WebSocket handshake header. An empty `reference_id` uses the built-in demo voice shown in Config Web; configure `reference_id` on the selected `[tts_providers.<name>]` record to override it. `voice_id` is not used by Fish Audio and is ignored (this avoids inheriting a `voice_id` meant for another provider). In some networks, the public Fish Audio endpoint may require `ALL_PROXY` or `HTTPS_PROXY` in `/userdata/system/env`.
+Fish Audio `model` defaults to `s2-pro` and is sent as a WebSocket handshake header. An empty `reference_id` uses the built-in demo voice shown in Config Web; configure `reference_id` on the selected `[voice_settings.classic.tts.providers.<name>]` record to override it. `voice_id` is not used by Fish Audio and is ignored (this avoids inheriting a `voice_id` meant for another provider). In some networks, the public Fish Audio endpoint may require `ALL_PROXY` or `HTTPS_PROXY` in `/userdata/system/env`.
 
 Alibaba Cloud Qwen-TTS Realtime:
 
 ```toml
-[tts_providers.alicloud-main]
+[voice_settings.classic.tts.providers.alicloud-main]
 type = "alicloud"
 api_key = "..."
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "alicloud-main"
 speed = 1.0
 ```
@@ -828,13 +921,13 @@ The Alibaba Cloud adapter uses the DashScope WebSocket Realtime endpoint and out
 Volcengine WebSocket bidirectional streaming V3:
 
 ```toml
-[tts_providers.volcengine-main]
+[voice_settings.classic.tts.providers.volcengine-main]
 type = "volcengine"
 api_key = "..."
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "volcengine-main"
 speed = 1.0
 ```
@@ -852,36 +945,36 @@ curl -X POST http://<device-ip>:8080/api/settings/tts \
 If you need to store the keys of multiple providers in the same config, use named provider records. When switching providers via runtime POST, the corresponding record is read first, then overridden by the request body.
 
 ```toml
-[tts_providers.minimax-main]
+[voice_settings.classic.tts.providers.minimax-main]
 type = "minimax"
 api_key = "..."
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 
-[tts_providers.fish-main]
+[voice_settings.classic.tts.providers.fish-main]
 type = "fish-audio"
 api_key = "..."
 model = "s2-pro"
 reference_id = "98655a12fa944e26b274c535e5e03842"
 
-[tts_providers.alicloud-main]
+[voice_settings.classic.tts.providers.alicloud-main]
 type = "alicloud"
 api_key = "..."
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
 
-[tts_providers.volcengine-main]
+[voice_settings.classic.tts.providers.volcengine-main]
 type = "volcengine"
 api_key = "..."
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-main"
 speed = 1.0
 ```
 
-## `[live_activity]`
+## `[advanced_settings.runtime.live_activity]`
 
 For the iOS companion app's Live Activity / Dynamic Island task status.
 Snapshots are enabled by default and delivered locally through BLE Wake plus
@@ -896,7 +989,7 @@ USB ECM. See [Live Activity / Dynamic Island](./live-activity.md).
 Optional. After a task ends, asynchronously report the full episode to Langfuse; see [telemetry-langfuse.md](./telemetry-langfuse.md) for details.
 
 ```toml
-[telemetry]
+[advanced_settings.runtime.telemetry]
 enabled = false
 provider = "langfuse"
 base_url = "http://langfuse.example.com:3000"
