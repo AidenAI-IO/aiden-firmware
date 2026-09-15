@@ -373,14 +373,12 @@ func TestDeepSeekResponsesVisionToolContinuation(t *testing.T) {
 
 func TestReasoningContentReplayPreservesAssistantBoundaries(t *testing.T) {
 	for _, tt := range []struct {
-		name       string
-		options    []openAICompatibleModelOption
-		wantReplay bool
-		alwaysSet  bool
+		name      string
+		options   []openAICompatibleModelOption
+		alwaysSet bool
 	}{
-		{name: "generic", options: []openAICompatibleModelOption{withOpenAICompatibleReasoningContentReplay()}, wantReplay: true},
-		{name: "kimi", options: []openAICompatibleModelOption{withOpenAICompatibleReasoningContentReplay()}, wantReplay: true},
-		{name: "deepseek", options: []openAICompatibleModelOption{withOpenAICompatibleDeepSeek(), withOpenAICompatibleReasoningContentReplay()}, wantReplay: true, alwaysSet: true},
+		{name: "compatible", options: nil},
+		{name: "deepseek", options: []openAICompatibleModelOption{withOpenAICompatibleDeepSeek()}, alwaysSet: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -388,26 +386,15 @@ func TestReasoningContentReplayPreservesAssistantBoundaries(t *testing.T) {
 				if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
 					t.Fatal(err)
 				}
-				if tt.wantReplay {
-					if len(payload.Messages) != 4 || payload.Messages[1].ReasoningContent == nil || *payload.Messages[1].ReasoningContent != "first thought" {
-						t.Fatalf("assistant reasoning/boundaries lost: %+v", payload.Messages)
+				if len(payload.Messages) != 4 || payload.Messages[1].ReasoningContent == nil || *payload.Messages[1].ReasoningContent != "first thought" {
+					t.Fatalf("assistant reasoning/boundaries lost: %+v", payload.Messages)
+				}
+				if tt.alwaysSet {
+					if payload.Messages[2].ReasoningContent == nil || *payload.Messages[2].ReasoningContent != "" {
+						t.Fatalf("empty assistant reasoning field missing: %+v", payload.Messages)
 					}
-					if tt.alwaysSet {
-						if payload.Messages[2].ReasoningContent == nil || *payload.Messages[2].ReasoningContent != "" {
-							t.Fatalf("empty assistant reasoning field missing: %+v", payload.Messages)
-						}
-					} else if payload.Messages[2].ReasoningContent != nil {
-						t.Fatalf("empty assistant reasoning field should be omitted: %+v", payload.Messages)
-					}
-				} else {
-					if len(payload.Messages) != 3 || payload.Thinking != nil {
-						t.Fatalf("generic transport changed: %+v", payload)
-					}
-					for _, message := range payload.Messages {
-						if message.ReasoningContent != nil {
-							t.Fatal("reasoning_content leaked into an unsupported provider")
-						}
-					}
+				} else if payload.Messages[2].ReasoningContent != nil {
+					t.Fatalf("empty assistant reasoning field should be omitted: %+v", payload.Messages)
 				}
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))}, nil
 			})}
@@ -450,7 +437,7 @@ model = "deepseek-flash"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := m.(*openAICompatibleModel); got.token != "test-key" || got.baseURL != deepseekBaseURL || !got.deepSeek || !got.reasoningContentReplay || got.reasoningEffort != "none" {
+	if got := m.(*openAICompatibleModel); got.token != "test-key" || got.baseURL != deepseekBaseURL || !got.deepSeek || got.reasoningEffort != "none" {
 		t.Fatal("named provider did not resolve to DeepSeek request profile")
 	}
 	editorConfig, err := LoadResolvedConfig(path)

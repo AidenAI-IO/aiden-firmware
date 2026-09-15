@@ -157,9 +157,6 @@ func TestBuildKimiProvidersResolveBaseURL(t *testing.T) {
 			if compatible.baseURL != tt.wantBaseURL {
 				t.Errorf("baseURL = %q, want %q", compatible.baseURL, tt.wantBaseURL)
 			}
-			if !compatible.reasoningContentReplay {
-				t.Errorf("Kimi reasoning replay = %v, want enabled", compatible.reasoningContentReplay)
-			}
 		})
 	}
 }

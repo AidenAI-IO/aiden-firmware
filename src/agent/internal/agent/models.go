@@ -411,13 +411,6 @@ func openAICompatibleOptions(ctx ModelBuildContext, cfg ModelConfig) []openAICom
 	if cfg.Temperature != nil {
 		opts = append(opts, withOpenAICompatibleTemperature(cfg.Temperature))
 	}
-	// Enable reasoning_content replay for all OpenAI-compatible providers.
-	// Providers that support reasoning (OpenAI o1/o3, DeepSeek-R1, Kimi thinking
-	// models) require the reasoning_content field to be preserved across multi-turn
-	// conversations with tool calls. DeepSeek additionally requires the field to be
-	// present on every assistant message, even when empty, so the deepSeek flag
-	// controls that behavior separately.
-	opts = append(opts, withOpenAICompatibleReasoningContentReplay())
 	return opts
 }
 

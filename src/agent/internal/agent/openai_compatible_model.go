@@ -37,13 +37,8 @@ type openAICompatibleModel struct {
 	// OpenAI, and Moonshot receive reasoning_effort alone.
 	openRouterReasoning bool
 	// DeepSeek uses a provider-specific thinking toggle.
-	deepSeek bool
-	// reasoningContentReplay preserves the provider's reasoning_content field
-	// across Chat Completions turns. All OpenAI-compatible providers that support
-	// reasoning (OpenAI o1/o3, DeepSeek-R1, Kimi thinking models) require this
-	// field when using tool calls to maintain reasoning continuity.
-	reasoningContentReplay bool
-	temperature            *float64
+	deepSeek    bool
+	temperature *float64
 	// ignoreTemperature prevents both configured and per-call temperature from
 	// reaching providers that accept the field but cannot apply it in the
 	// selected reasoning mode.
@@ -153,12 +148,6 @@ func withOpenAICompatibleIgnoreTemperature() openAICompatibleModelOption {
 
 func withOpenAICompatibleDeepSeek() openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) { m.deepSeek = true }
-}
-
-func withOpenAICompatibleReasoningContentReplay() openAICompatibleModelOption {
-	return func(m *openAICompatibleModel) {
-		m.reasoningContentReplay = true
-	}
 }
 
 // openRouterSessionIDMaxLen mirrors OpenRouter's documented 256-char limit for
@@ -501,13 +490,16 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	return m.generateContent(ctx, messages, nil, options...)
 }
 
+// GenerateContentFromMessageList preserves the assistant reasoning_content that
+// the Chat Completions transport stores alongside the agent's provider-neutral
+// history. Reasoning-capable providers (OpenAI o-series, DeepSeek, Kimi thinking
+// models) require this field on follow-up tool-call turns to keep reasoning
+// continuity, and the common LangChain message shape has no reasoning_content
+// field, so GenerateContent cannot carry it through.
 func (m *openAICompatibleModel) GenerateContentFromMessageList(ctx context.Context, contextMessages []agentmessages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	var reasoning []string
-	if m.reasoningContentReplay {
-		reasoning = make([]string, len(contextMessages))
-		for i, message := range contextMessages {
-			reasoning[i] = message.ReasoningContent
-		}
+	reasoning := make([]string, len(contextMessages))
+	for i, message := range contextMessages {
+		reasoning[i] = message.ReasoningContent
 	}
 	return m.generateContent(ctx, agentmessages.ConvertMessageList(contextMessages), reasoning, options...)
 }
@@ -527,7 +519,7 @@ func (m *openAICompatibleModel) generateContent(ctx context.Context, messages []
 		if err != nil {
 			return nil, err
 		}
-		if m.reasoningContentReplay && converted.Role == "assistant" {
+		if converted.Role == "assistant" {
 			content := ""
 			if i < len(reasoning) {
 				content = reasoning[i]
