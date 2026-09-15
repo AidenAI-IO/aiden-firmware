@@ -299,7 +299,7 @@ func sendBridgeOpenCommand(ctx context.Context, bridge *PhoneBridge, restorer *P
 	if bridge != nil && !phoneBridgeReadyForCommand(bridge.getStatus(), cmd.Type) {
 		reportToolProgress(ctx, ToolProgress{
 			Status:  "preparing",
-			Content: "即将跳转，正在尝试唤回 Aiden App",
+			Content: "Preparing to switch apps; restoring Aiden App",
 		})
 	}
 	restored, err := ensurePhoneBridgeReadyForCommand(ctx, bridge, restorer, "open_app")
@@ -318,7 +318,7 @@ func sendBridgeOpenCommand(ctx context.Context, bridge *PhoneBridge, restorer *P
 
 	reportToolProgress(ctx, ToolProgress{
 		Status:  "running",
-		Content: "即将跳转，正在打开目标应用",
+		Content: "Preparing to switch apps; opening the target app",
 	})
 	resp, err := bridge.SendCommand(ctx, cmd)
 	if err != nil {

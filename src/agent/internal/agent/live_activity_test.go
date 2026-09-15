@@ -98,8 +98,8 @@ func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
 	state := manager.UpdateFromRunEvent("req-details", RunEvent{
 		Type:             "role_output",
 		Role:             "agent",
-		Content:          `{"plan":["打开设置"]}`,
-		ReasoningContent: "正在确认当前页面状态",
+		Content:          `{"plan":["Open Settings"]}`,
+		ReasoningContent: "Checking the current screen state",
 		Timestamp:        time.Now(),
 	})
 	if state == nil || state.ToolStatus != "processing" || state.CurrentAction != "process" {
@@ -108,7 +108,7 @@ func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
 
 	state = manager.UpdateFromRunEvent("req-details", RunEvent{
 		Type:             runEventReasoningDelta,
-		ReasoningContent: "正在确认当前页面状态",
+		ReasoningContent: "Checking the current screen state",
 		Timestamp:        time.Now(),
 	})
 	if state == nil || state.ToolStatus != "thinking" || state.CurrentAction != "think" {
@@ -139,7 +139,7 @@ func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
 	state = manager.UpdateFromRunEvent("req-details", RunEvent{
 		Type:      "tool_result",
 		ToolName:  "screenshot",
-		Content:   `{"summary":"已获取当前页面"}`,
+		Content:   `{"summary":"Current screen captured"}`,
 		Timestamp: time.Now(),
 	})
 	if state == nil || state.ToolStatus != "succeeded" || state.ToolStartedAt != nil {

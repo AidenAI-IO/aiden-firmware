@@ -167,7 +167,7 @@ func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...str
 		Status:        LiveActivityStatusRunning,
 		Phase:         LiveActivityPhasePlanning,
 		TaskTitle:     truncateLiveActivityText(firstNonEmptyString([]string{title, "Aiden task"}), 80),
-		CurrentStep:   "正在处理请求",
+		CurrentStep:   "Processing request",
 		CurrentAction: "process",
 		ToolStatus:    "processing",
 		Progress:      0.05,
@@ -224,7 +224,7 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.LastToolName = ""
 		state.LastError = ""
 		state.RequiresApp = false
-		state.CurrentStep = "正在分析当前任务并准备下一步操作"
+		state.CurrentStep = "Analyzing the task and preparing the next action"
 	case runEventReasoningReset:
 		state.Status = LiveActivityStatusRunning
 		state.Phase = LiveActivityPhasePlanning
@@ -234,7 +234,7 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.LastToolName = ""
 		state.LastError = ""
 		state.RequiresApp = false
-		state.CurrentStep = "正在处理请求"
+		state.CurrentStep = "Processing request"
 	case runEventToolProgress:
 		state.Status = LiveActivityStatusRunning
 		toolStatus := firstNonEmptyString([]string{event.ToolStatus, "running"})
@@ -359,7 +359,7 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 				// An accepted launch (even with a captured image) does not prove
 				// the target app is on screen. The next model observation does.
 				state.ToolStatus = "verifying"
-				state.CurrentStep = "跳转请求已发送，正在确认目标页面"
+				state.CurrentStep = "Launch request sent; verifying the target screen"
 			}
 			state.Progress = bumpLiveActivityProgress(state.Progress)
 		}
@@ -946,12 +946,12 @@ func liveActivityStepFromRoleOutput(event RunEvent) string {
 	}
 	switch role {
 	case "agent":
-		return "正在处理请求"
+		return "Processing request"
 	default:
 		if content != "" && !strings.HasPrefix(content, "{") && !strings.HasPrefix(content, "[") {
 			return content
 		}
-		return "正在处理请求"
+		return "Processing request"
 	}
 }
 
