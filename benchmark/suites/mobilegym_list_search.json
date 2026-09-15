@@ -13,14 +13,14 @@
   "trace_observations": [],
   "tasks": [
     {
-      "id": "find_mid_list_target_024",
+      "id": "find_mid_content_blue_umbrella",
       "category": "multi_step",
-      "prompt": "请在当前列表中通过滚动找到并打开“Aiden 滚动目标 024”。不要使用搜索功能。",
-      "description_for_judge": "Agent must scroll through Scroll Lab and open exactly the detail page for Aiden 滚动目标 024, the fixed medium-depth target at list position 24 of 100.",
+      "prompt": "请在当前列表中通过滚动找到并打开那条“周四下班前领取蓝色雨伞，登记尾号 7312”的记录。不要使用搜索功能。",
+      "description_for_judge": "Agent must scroll through Scroll Lab and open exactly the detail page for the record titled 取回蓝色雨伞, whose preview says to collect a blue umbrella before Thursday work ends using registration suffix 7312. It is the fixed medium-depth target at list position 24 of 100.",
       "rubric": [
         {
           "id": "opened_exact_target",
-          "check": "Post-screenshot shows the Scroll Lab detail page with the exact title 'Aiden 滚动目标 024', position 24 / 100, record code SL-024, and a visible selected-state confirmation."
+          "check": "Post-screenshot shows the Scroll Lab detail page with the exact title '取回蓝色雨伞', preview containing '尾号 7312', position 24 / 100, record code SL-024, and a visible selected-state confirmation."
         }
       ],
       "hard_assertions": {
@@ -42,14 +42,14 @@
       "repeats": 1
     },
     {
-      "id": "find_deep_list_target_083",
+      "id": "find_deep_content_silver_cold_case",
       "category": "multi_step",
-      "prompt": "请在当前列表中通过滚动找到并打开“Aiden 滚动目标 083”。不要使用搜索功能。",
-      "description_for_judge": "Agent must repeatedly scroll through Scroll Lab and open exactly the detail page for Aiden 滚动目标 083, the fixed deep target at list position 83 of 100.",
+      "prompt": "请在当前列表中通过滚动找到并打开那条“到北门 3 号柜领取银色保温箱，核验码 K4M7”的记录。不要使用搜索功能。",
+      "description_for_judge": "Agent must repeatedly scroll through Scroll Lab and open exactly the detail page for the record titled 冷链样品交接, whose preview says to collect a silver insulated case from north gate locker 3 using verification code K4M7. It is the fixed deep target at list position 83 of 100.",
       "rubric": [
         {
           "id": "opened_exact_target",
-          "check": "Post-screenshot shows the Scroll Lab detail page with the exact title 'Aiden 滚动目标 083', position 83 / 100, record code SL-083, and a visible selected-state confirmation."
+          "check": "Post-screenshot shows the Scroll Lab detail page with the exact title '冷链样品交接', preview containing '银色保温箱' and 'K4M7', position 83 / 100, record code SL-083, and a visible selected-state confirmation."
         }
       ],
       "hard_assertions": {
