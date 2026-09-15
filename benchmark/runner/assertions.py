@@ -53,6 +53,40 @@ class TraceObservationResult:
     reason: str
 
 
+@dc.dataclass
+class EnvironmentStateAssertionResult:
+    path: str
+    expected: Any
+    actual: Any
+    passed: bool
+
+
+_MISSING_STATE_PATH = object()
+
+
+def evaluate_environment_state_assertions(
+    state: dict[str, Any],
+    assertions: dict[str, Any],
+) -> list[EnvironmentStateAssertionResult]:
+    results: list[EnvironmentStateAssertionResult] = []
+    for path, expected in assertions.items():
+        actual: Any = state
+        for part in path.split("."):
+            if not isinstance(actual, dict) or part not in actual:
+                actual = _MISSING_STATE_PATH
+                break
+            actual = actual[part]
+        results.append(
+            EnvironmentStateAssertionResult(
+                path=path,
+                expected=expected,
+                actual="<missing>" if actual is _MISSING_STATE_PATH else actual,
+                passed=actual is not _MISSING_STATE_PATH and actual == expected,
+            )
+        )
+    return results
+
+
 def evaluate_trace_observations(
     trace: Trace,
     specs: list[TraceObservationSpec],

@@ -112,6 +112,57 @@ def test_run_one_task_does_not_count_pre_execution_agent_error_as_agent_failure(
     assert result.metrics["failure_class"] == "unknown"
 
 
+def test_run_one_task_applies_environment_state_assertions(tmp_path: Path, monkeypatch):
+    suite = Suite(
+        name="mobilegym",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="find_target",
+        category="multi_step",
+        description_for_judge="Open the exact target.",
+        prompt="open target",
+        rubric=[],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+        environment_assertions={
+            "route.path": "/item/scroll-item-083",
+            "apps.scroll_lab.selectedItemId": "scroll-item-083",
+        },
+    )
+    monkeypatch.setattr(runtask_mod, "prepare_task_isolation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtask_mod, "take_environment_screenshot", lambda *args, **kwargs: (360, 800))
+    monkeypatch.setattr(
+        runtask_mod,
+        "read_environment_state",
+        lambda *args, **kwargs: {
+            "route": {"path": "/item/scroll-item-083"},
+            "apps": {"scroll_lab": {"selectedItemId": "scroll-item-024"}},
+        },
+    )
+
+    result = run_one_task(
+        FakeClient(),
+        suite,
+        task,
+        1,
+        tmp_path / "artifacts",
+        None,
+        None,
+        "run-1",
+        environment_url="http://environment.test",
+    )
+
+    assert result.status == "failed"
+    assert result.hard_assertions.environment_state is False
+    assert [failure.id for failure in result.hard_assertion_failures] == [
+        "environment_state:apps.scroll_lab.selectedItemId"
+    ]
+    assert (tmp_path / "artifacts" / "environment_state.json").exists()
+
+
 def test_run_one_task_includes_static_screenshot_dimensions(tmp_path: Path):
     screenshot_dir = tmp_path / "screenshots"
     screenshot_dir.mkdir()

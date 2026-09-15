@@ -395,7 +395,16 @@ def _health_payload(bridge: BridgeServer) -> dict[str, Any]:
         "concurrent": len(bridge.router.states),
         "active_episode_id": bridge.state.active_episode_id,
         "active_routes": bridge.router.task_map(),
-        "interfaces": ["/api/tools", "/api/providers/screenshot", "/api/providers/mnk", "/api/setup", "/api/release", "/api/concurrent"],
+        "interfaces": [
+            "/api/tools",
+            "/api/providers/screenshot",
+            "/api/providers/mnk",
+            "/api/setup",
+            "/state",
+            "/route",
+            "/api/release",
+            "/api/concurrent",
+        ],
     }
 
 

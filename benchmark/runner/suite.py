@@ -119,6 +119,7 @@ class TaskSpec:
     expected_recalled_memory_tool: str = "recall_memory"
     expected_recall_from_consolidation: bool = False
     app_ids: list[str] = dc.field(default_factory=list)
+    environment_assertions: dict[str, Any] = dc.field(default_factory=dict)
     consolidation_expectation: ConsolidationExpectation | None = None
 
 @dc.dataclass
@@ -267,6 +268,9 @@ def load_suite(path: Path) -> Suite:
         ):
             raise SuiteValidationError(f"task {tid}: app_ids must be a list of non-empty strings")
         app_ids = list(dict.fromkeys(item.strip() for item in raw_app_ids))
+        environment_assertions = _parse_environment_assertions(
+            raw.get("environment_assertions"), tid
+        )
         platforms = _platform_list(raw.get("platforms", []), tid)
         task_mock_environment = _parse_mock_environment(
             raw.get("mock_environment"),
@@ -347,6 +351,7 @@ def load_suite(path: Path) -> Suite:
             expected_recalled_memory_tool=expected_recalled_memory_tool,
             expected_recall_from_consolidation=expected_recall_from_consolidation,
             app_ids=app_ids,
+            environment_assertions=environment_assertions,
             consolidation_expectation=consolidation_expectation,
         ))
     prompt_prefix = data.get("prompt_prefix", "")
@@ -511,6 +516,34 @@ def _string_list_assertion(raw: Any, task_id: str, field: str) -> list[str]:
         seen.add(name)
         out.append(name)
     return out
+
+
+def _parse_environment_assertions(raw: Any, task_id: str) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not raw:
+        raise SuiteValidationError(
+            f"task {task_id}: environment_assertions must be a non-empty object"
+        )
+    assertions: dict[str, Any] = {}
+    for path, expected in raw.items():
+        if not isinstance(path, str) or not path.strip():
+            raise SuiteValidationError(
+                f"task {task_id}: environment_assertions paths must be non-empty strings"
+            )
+        normalized = path.strip()
+        if any(not part for part in normalized.split(".")):
+            raise SuiteValidationError(
+                f"task {task_id}: invalid environment_assertions path {path!r}"
+            )
+        try:
+            json.dumps(expected, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise SuiteValidationError(
+                f"task {task_id}: environment_assertions[{normalized!r}] must be JSON-serializable"
+            ) from exc
+        assertions[normalized] = expected
+    return assertions
 
 
 def _parse_consolidation_expectation(

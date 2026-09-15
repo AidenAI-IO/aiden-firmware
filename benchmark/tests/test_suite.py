@@ -30,6 +30,31 @@ def test_load_suite_returns_parsed(tmp_path: Path):
     assert suite.tasks[0].rubric[0].id == "in_settings"
 
 
+def test_load_suite_parses_environment_assertions(tmp_path: Path):
+    fixture = json.loads(json.dumps(FIXTURE))
+    fixture["tasks"][0]["environment_assertions"] = {
+        "route.path": "/item/scroll-item-083",
+        "apps.scroll_lab.selectedItemId": "scroll-item-083",
+    }
+    path = tmp_path / "environment_assertions.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    task = load_suite(path).tasks[0]
+
+    assert task.environment_assertions["route.path"] == "/item/scroll-item-083"
+
+
+@pytest.mark.parametrize("value", [{}, [], {"bad..path": "x"}])
+def test_load_suite_rejects_invalid_environment_assertions(tmp_path: Path, value):
+    fixture = json.loads(json.dumps(FIXTURE))
+    fixture["tasks"][0]["environment_assertions"] = value
+    path = tmp_path / "bad_environment_assertions.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="environment_assertions"):
+        load_suite(path)
+
+
 @pytest.mark.parametrize(
     ("value", "message"),
     [

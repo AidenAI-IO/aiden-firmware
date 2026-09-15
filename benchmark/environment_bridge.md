@@ -133,6 +133,26 @@ handlers share that budget so a hung env fails at the caller instead of
 continuing after the client has already given up. Action and setup requests
 may use a longer timeout.
 
+### `POST /state` and `POST /route`
+
+Environments that support deterministic state judging may expose a final state
+snapshot and the foreground route. Both requests use an empty JSON object and
+the same `benchmark-task-id` header as setup and provider calls.
+
+```json
+{"ok": true, "data": {"apps": {"scroll_lab": {"selectedItemId": "scroll-item-083"}}}}
+```
+
+```json
+{"ok": true, "data": {"app": "scroll_lab", "path": "/item/scroll-item-083"}}
+```
+
+The runner reads these endpoints only when a task declares
+`environment_assertions`. It combines both payloads so assertions can use exact
+dotted paths such as `apps.scroll_lab.selectedItemId` and `route.path`. A state
+read failure is reported as `judge_error`; a successfully-read value mismatch
+is a deterministic task failure.
+
 ### `POST /api/providers/mnk`
 
 Executes one mouse/keyboard provider operation. Requests use the normalized
