@@ -2,7 +2,7 @@ name: Debian Build (reusable)
 
 # Reusable Debian armhf firmware build.
 #
-# This drives ./debian_build.sh end to end -- Stage 2 applications, Stage 3
+# This drives ./debian_build.sh end to end -- applications, system
 # rootfs/BSP, A/B factory images, a locally signed OTA manifest and the final
 # audit -- publishes output/debian/image as workflow artifacts, and (unless
 # disabled) creates the matching GitHub release. It replaced the retired
@@ -50,7 +50,7 @@ jobs:
     steps:
     - name: Reclaim workspace ownership
       if: ${{ inputs.runner == 'self-hosted' || startsWith(inputs.runner, 'aiden-hosted-') }}
-      # Stage 3 assembles images in privileged containers, so output/ is left
+      # The system stage assembles images in privileged containers, so output/ is left
       # owned by root. actions/checkout's clean phase then fails with EACCES,
       # and Go's module cache adds read-only directories it cannot remove
       # either. Both are cleared before checkout touches the tree.
@@ -118,25 +118,23 @@ jobs:
         persist-credentials: false
 
     - name: Fetch pico-sdk submodule
-      # Depth 1 is enough even though Stage 3 makes a local --shared clone of
-      # this checkout: git declines to use alternates when the source is
-      # shallow and copies the objects instead, so its repack/fsck path is
-      # skipped and the detached checkout still resolves. debian_build.sh
-      # asserts HEAD equals the pinned Stage 3 commit, which is exactly the
-      # commit a depth-1 fetch lands on. Deepening instead means pulling ~1 GB
-      # from github.com on every fresh runner.
+      # The repository pico-sdk worktree is the system-stage BSP build tree and is
+      # used in place, so a plain depth-1 checkout is enough. Restoring it to a
+      # pristine state keeps the in-place board and kernel config overlay
+      # deterministic across runs on the same runner.
       shell: bash
       run: |
         set -euo pipefail
         git submodule update --init --depth=1 pico-sdk
 
-        # debian_build.sh refuses to build unless this worktree is pristine,
-        # and actions/checkout cannot deliver that: its `git clean -ffdx` does
-        # not descend into an initialised submodule, so whatever a previous
-        # job left here survives. Restore tracked files and drop untracked
-        # ones, but leave ignored paths alone. This also removes the untracked
-        # .gitmodules that the metadata repair step writes for older SDK
-        # commits.
+        # The system stage installs its board config and kernel config into this worktree
+        # in place, and actions/checkout cannot deliver a pristine submodule:
+        # its `git clean -ffdx` does not descend into an initialised submodule,
+        # so whatever a previous job left here survives. Restore tracked files
+        # and drop untracked ones, but leave ignored paths (including the BSP
+        # build output under pico-sdk/output) alone. This also removes the
+        # untracked .gitmodules that the metadata repair step writes for older
+        # SDK commits.
         dirty="$(git -C pico-sdk status --porcelain)"
         if [ -n "$dirty" ]; then
           echo "::group::pico-sdk worktree was dirty; restoring it"
@@ -155,13 +153,13 @@ jobs:
         git -C pico-sdk rev-parse HEAD
 
     - name: Verify Debian build script policies
-      # Static contract checks over debian_build.sh and the Stage 2/3 scripts.
+      # Static contract checks over debian_build.sh and the apps/system scripts.
       # Seconds here, versus discovering the same drift an hour into the build.
       shell: bash
       run: |
         set -uo pipefail
         status=0
-        for policy_test in test_debian_stage2 test_debian_stage3 test_debian_build; do
+        for policy_test in test_debian_apps test_debian_system test_debian_build; do
           script="scripts/${policy_test}.sh"
           if [ "$policy_test" = test_debian_build ] && ! command -v jq >/dev/null 2>&1; then
             # jq is required to run the Debian entrypoint contract test. Skipping
@@ -192,7 +190,7 @@ jobs:
               status=1
               break
             fi
-            # test_debian_stage2.sh ends in a live mock stress run whose
+            # test_debian_apps.sh ends in a live mock stress run whose
             # assertions read host timing, CMA recovery and log patterns, so it
             # fails under load on a shared runner. One repeat separates that
             # from a real regression, which fails both times.
@@ -224,7 +222,7 @@ jobs:
         sudo apt-get install -y --no-install-recommends device-tree-compiler
 
     - name: Verify build host prerequisites
-      # debian_build.sh's own list, plus what the Stage 3 host-side BSP audit
+      # debian_build.sh's own list, plus what the system-stage host-side BSP audit
       # needs. audit-bsp.sh runs outside the build containers and is only
       # reached after the kernel is built, so a tool missing there costs a
       # two-hour build. Checking the union here also gives the dry run
@@ -263,7 +261,7 @@ jobs:
 
     - name: Set up Go
       # cache: false because nothing here consumes what it would cache. Every
-      # `go build` runs inside the Stage 2 container against the bind-mounted
+      # `go build` runs inside the apps-stage container against the bind-mounted
       # pinned toolchain, with GOCACHE/GOMODCACHE pointed at the persistent
       # caches below. Uploading ~/go/pkg/mod to the hosted cache service only
       # cost a minute per run and failed with ECONNRESET twice.
@@ -273,7 +271,7 @@ jobs:
         cache: false
 
     - name: Prepare agent configuration
-      # Stage 3 installs an external agent.toml into the OEM image and never
+      # The system stage installs an external agent.toml into the OEM image and never
       # copies one out of the source tree. Validate it here so a bad secret
       # fails in seconds instead of an hour into the image assembly step.
       env:
@@ -318,7 +316,7 @@ jobs:
         echo "OTA_TRUST_PUBLIC_KEY_PATH=$public_key" >> "$GITHUB_ENV"
 
     - name: Ensure armhf binfmt registration
-      # Stage 3 runs the freshly built armhf agent on the host to validate
+      # The system stage runs the freshly built armhf agent on the host to validate
       # agent.toml, so the kernel needs an arm interpreter. The rootfs builder
       # registers one for its own chroot, but only after that point.
       shell: bash
@@ -380,16 +378,16 @@ jobs:
       run: |
         set -euo pipefail
         cache="$HOME/aiden-ci"
-        # Everything Stage 2 caches defaults into the workspace, which
+        # Everything the apps stage caches defaults into the workspace, which
         # actions/checkout wipes with `git clean -ffdx` before every run. Point
         # the caches at the runner's home so they actually survive. On a hosted
         # runner the home is ephemeral and this is simply a cold cache.
         mkdir -p \
-          "$cache/stage2-go-build" "$cache/stage2-go-mod" "$cache/stage2-opencv"
+          "$cache/apps-go-build" "$cache/apps-go-mod" "$cache/apps-opencv"
         {
-          echo "DEBIAN_STAGE2_GO_BUILD_CACHE=$cache/stage2-go-build"
-          echo "DEBIAN_STAGE2_GO_MODULE_CACHE=$cache/stage2-go-mod"
-          echo "DEBIAN_STAGE2_OPENCV_CACHE=$cache/stage2-opencv"
+          echo "DEBIAN_APPS_GO_BUILD_CACHE=$cache/apps-go-build"
+          echo "DEBIAN_APPS_GO_MODULE_CACHE=$cache/apps-go-mod"
+          echo "DEBIAN_APPS_OPENCV_CACHE=$cache/apps-opencv"
         } >> "$GITHUB_ENV"
 
         # ensure_go_toolchain() rejects an invalid custom root outright rather
@@ -398,7 +396,7 @@ jobs:
         go_root="$cache/go1.26.0.linux-amd64"
         if [ -x "$go_root/bin/go" ] && [ -f "$go_root/VERSION" ] &&
           grep -qx 'go1.26.0' "$go_root/VERSION"; then
-          echo "DEBIAN_STAGE2_GO_ROOT=$go_root" >> "$GITHUB_ENV"
+          echo "DEBIAN_APPS_GO_ROOT=$go_root" >> "$GITHUB_ENV"
           echo "Using the pre-provisioned Go toolchain at $go_root"
         else
           echo "::notice::No pre-provisioned Go toolchain at $go_root; the build will download its own"
@@ -514,8 +512,8 @@ jobs:
       with:
         name: debian-build-reports-${{ steps.meta.outputs.artifact_name || github.run_id }}
         path: |
-          output/debian-stage2/apps-audit/summary.txt
-          output/debian-stage3/audit-report.txt
+          output/debian-apps/apps-audit/summary.txt
+          output/debian-system/audit-report.txt
         if-no-files-found: ignore
         retention-days: 7
 
@@ -529,7 +527,7 @@ jobs:
           "$RUNNER_TEMP/ota_ed25519_public_key.pem"
 
     - name: Leave the workspace cleanable
-      # Stage 2 fills .cache/debian-stage2/go-mod with read-only module
+      # The apps stage fills .cache/debian-apps/go-mod with read-only module
       # directories. They outlive this job and would block the clean phase of
       # the next checkout here, so unlock them before handing the runner back.
       if: always()

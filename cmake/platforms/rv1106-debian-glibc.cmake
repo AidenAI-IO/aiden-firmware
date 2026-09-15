@@ -2,7 +2,7 @@ set(AIDEN_DEBIAN_VENDOR_LIB_DIR
     "${SDK_PATH}/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-glibc-rockchip/usr/lib"
     CACHE PATH "Rockchip RV1106 glibc library directory")
 set(AIDEN_DEBIAN_OPENCV_DIR
-    "${CMAKE_SOURCE_DIR}/output/debian-stage2/opencv-mobile/lib/cmake/opencv4"
+    "${CMAKE_SOURCE_DIR}/output/debian-apps/opencv-mobile/lib/cmake/opencv4"
     CACHE PATH "Debian armhf OpenCV CMake package path")
 set(AIDEN_RKNPU2_ROOT
     "${CMAKE_SOURCE_DIR}/third_party/rknpu2/v2.3.2"

@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # OTA Architecture and Runtime
 
-OTA is accomplished through three layers: `debian_build.sh` orchestrates the Debian Stage 2/3 images and signed local artifacts, the vendor SDK supplies BSP and image-packing internals, and the device-side `ota` completes download, write, and switching on manual trigger. One-shot systemd health handling commits a healthy slot after startup. Publication automation is outside the current scope.
+OTA is accomplished through three layers: `debian_build.sh` orchestrates the Debian apps/system images and signed local artifacts, the vendor SDK supplies BSP and image-packing internals, and the device-side `ota` completes download, write, and switching on manual trigger. One-shot systemd health handling commits a healthy slot after startup. Publication automation is outside the current scope.
 
 ## Partition Layout
 
@@ -87,7 +87,7 @@ For `.img.tar.gz` assets, `size` and `sha256` describe the downloaded archive. T
 
 Release `update.img` must include the factory configuration in userdata at
 `/userdata/debian/ota/config.json`. The Debian build generates that configuration
-from the signed manifest, installs it through the Stage 3 image builder, and
+from the signed manifest, installs it through the system image builder, and
 repacks `update.img` before the final mounted-image audit.
 
 `config.json` must contain at least:
