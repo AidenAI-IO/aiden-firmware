@@ -1,31 +1,31 @@
-import {refreshConfigApplication, retryConfigApplication} from './config-application.js?v=configuration-groups-20260914-v16';
-import {request, setBanner, setDetails} from './api.js?v=configuration-groups-20260914-v16';
-import {bindFieldVisibility, hydrateSelectOptions} from './config-meta.js?v=configuration-groups-20260914-v16';
+import {refreshConfigApplication, retryConfigApplication} from './config-application.js';
+import {request, setBanner, setDetails} from './api.js';
+import {bindFieldVisibility, hydrateSelectOptions} from './config-meta.js';
 import {
   cancelEditSection, closeTestToast, disableAgentConfigEditing, enterEditSection,
   cancelEditSectionFields, enterEditSectionFields, initialReadyMessage, loadConfig, loadConfigMeta,
   lockAllSections, rebootDevice, saveFieldGroups, saveSection, saveSections, saveSectionFields, testSection
-} from './config-form.js?v=configuration-groups-20260914-v16';
-import {initI18n, saveLocale, t} from './i18n.js?v=configuration-groups-20260914-v16';
+} from './config-form.js';
+import {initI18n, saveLocale, t} from './i18n.js';
 import {applyPendingAgentLogSnapshotIfIdle, exportLogs, refreshAgentLog, setAgentLogAutoScroll, syncAgentLogAutoScroll, toggleAgentLogAutoScroll} from './logs.js';
-import {cancelManualConfigEdit, enterManualConfigEdit, loadManualConfig, saveManualConfig, setManualConfigLocked} from './manual-config.js?v=configuration-groups-20260914-v14';
+import {cancelManualConfigEdit, enterManualConfigEdit, loadManualConfig, saveManualConfig, setManualConfigLocked} from './manual-config.js';
 import {refreshAgentStatus} from './agent-status.js';
-import {refreshOtaLog, triggerOtaUpdate} from './ota.js?v=configuration-groups-20260914-v14';
+import {refreshOtaLog, triggerOtaUpdate} from './ota.js';
 import {
   deleteSelectedProvider, editSelectedProvider, handleProviderAction, initProviders,
   ModelProvidersManager, SttProvidersManager, TtsProvidersManager, VoiceModelProvidersManager
-} from './providers.js?v=configuration-groups-20260914-v9';
+} from './providers.js';
 import {appState, byId, configureTerminalLink} from './state.js';
 import {
   chooseConfigBackup, ejectStorageCard, exportConfigBackup, refreshStorage,
   restoreConfigBackup, startStorageFormat
-} from './storage.js?v=configuration-groups-20260914-v13';
+} from './storage.js';
 import {toggleSTTTest} from './stt-test.js';
-import {resetConversationMemory} from './memory.js?v=configuration-groups-20260914-v17';
+import {resetConversationMemory} from './memory.js';
 import {applySystemEnv, refreshSystemEnvApplication, cancelSystemEnvEdit, enterSystemEnvEdit, handleSystemEnvEditorKeydown, saveSystemEnv, toggleSystemEnvComment} from './system-env.js';
 import {closeWifiModal, connectSavedWifi, connectSelectedWifi, forgetWifi, openWifiModal, scanWifi, syncWifiProxyFields, toggleWifiListExpanded} from './wifi.js';
-import {VISIBLE_FIELDS} from './field-visibility.js?v=configuration-groups-20260914-v16';
-import {SECTION_TO_GROUP_MAP} from './config-groups.js?v=configuration-groups-20260914-v16';
+import {VISIBLE_FIELDS} from './field-visibility.js';
+import {SECTION_TO_GROUP_MAP} from './config-groups.js';
 
 const simpleActions = {
   'export-logs': exportLogs,
@@ -100,8 +100,8 @@ document.addEventListener('click', function(event) {
     } else if (section === 'agent') {
       enterEditSectionFields('agent-conversation', 'agent', agentConversationFieldKeys(), 'section-agent');
     } else if (section === 'log') {
-      enterEditSection('log');
-      enterEditSectionFields('log-model', 'model', ['log_raw_http'], 'section-log');
+      enterEditSection('log', 'log-settings-group');
+      enterEditSectionFields('log-model', 'model', ['log_raw_http'], 'log-settings-group');
     } else enterEditSection(section);
   } else if (action === 'cancel-edit-section') {
     if (section === 'device') {
@@ -110,7 +110,7 @@ document.addEventListener('click', function(event) {
     } else if (section === 'agent') {
       cancelEditSectionFields('agent-conversation');
     } else if (section === 'log') {
-      cancelEditSection('log');
+      cancelEditSection('log', 'log-settings-group');
       cancelEditSectionFields('log-model');
     } else cancelEditSection(section);
   } else if (action === 'test-section') {
@@ -358,7 +358,7 @@ async function saveLogSection() {
   await saveFieldGroups([
     {section: 'log'},
     {section: 'model', keys: ['log_raw_http'], scope: 'log-model'}
-  ], 'section-log', 'save-log');
+  ], 'log-settings-group', 'save-log');
 }
 
 function moveConversationWebSearch() {

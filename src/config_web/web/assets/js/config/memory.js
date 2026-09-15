@@ -1,5 +1,5 @@
-import {request, setBanner, setDetails} from './api.js?v=configuration-groups-20260914-v16';
-import {t} from './i18n.js?v=configuration-groups-20260914-v16';
+import {request, setBanner, setDetails} from './api.js';
+import {t} from './i18n.js';
 
 async function resetConversationMemory() {
   if (!window.confirm(t('memory.reset.confirm'))) return;

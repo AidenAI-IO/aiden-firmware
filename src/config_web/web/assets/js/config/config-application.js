@@ -1,5 +1,5 @@
-import {request, updateActionCardVisibility} from './api.js?v=configuration-groups-20260914-v16';
-import {t} from './i18n.js?v=configuration-groups-20260914-v16';
+import {request, updateActionCardVisibility} from './api.js';
+import {t} from './i18n.js';
 import {byId, registerRuntime} from './state.js';
 
 let status = null;

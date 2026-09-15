@@ -1,5 +1,5 @@
 import {byId, runtimeFunction} from './state.js';
-import {request, setBanner, setDetails} from './api.js?v=configuration-groups-20260914-v16';
+import {request, setBanner, setDetails} from './api.js';
 
 const t = runtimeFunction('t');
 

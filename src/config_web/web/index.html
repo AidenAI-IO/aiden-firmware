@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Aiden Setup</title>
-  <link rel="stylesheet" href="/assets/css/common.css?v=configuration-groups-20260914-v4">
-  <link rel="stylesheet" href="/assets/css/config.css?v=configuration-groups-20260914-v16">
+  <link rel="stylesheet" href="/assets/css/common.css">
+  <link rel="stylesheet" href="/assets/css/config.css">
 </head>
 <body>
   <div class="page">
@@ -377,16 +377,16 @@
         <div class="product-group" id="advanced-settings-group">
           <h2 data-i18n="groups.advanced_settings">Advanced Settings</h2>
 
-          <div class="product-subgroup">
-            <h3 data-i18n="groups.logs">Logs</h3>
-            <div class="section-card" id="section-log">
-              <div class="card-head">
-                <div class="section-actions">
-                  <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="log" data-i18n="action.edit">Edit</button>
-                  <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="log" data-i18n="action.cancel">Cancel</button>
-                  <button id="save-log" class="button primary save-btn" data-action="save-section" data-section-target="log" data-i18n="action.save">Save</button>
-                </div>
+          <div class="product-subgroup" id="log-settings-group">
+            <div class="product-subgroup-head">
+              <h3 data-i18n="groups.logs">Logs</h3>
+              <div class="section-actions">
+                <button class="button ghost edit-btn" data-action="enter-edit-section" data-section-target="log" data-i18n="action.edit">Edit</button>
+                <button class="button ghost cancel-btn" data-action="cancel-edit-section" data-section-target="log" data-i18n="action.cancel">Cancel</button>
+                <button id="save-log" class="button primary save-btn" data-action="save-section" data-section-target="log" data-i18n="action.save">Save</button>
               </div>
+            </div>
+            <div class="section-card" id="section-log">
               <div id="log-model-fields" class="grid"></div>
               <div class="grid" data-config-section="log"></div>
               <div class="settings-action-row">
@@ -493,6 +493,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="/assets/js/config/app.js?v=configuration-groups-20260914-v17"></script>
+  <script type="module" src="/assets/js/config/app.js"></script>
 </body>
 </html>

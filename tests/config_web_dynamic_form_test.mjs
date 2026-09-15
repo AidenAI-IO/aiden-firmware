@@ -321,6 +321,9 @@ assert.equal(document.getElementById('model_model').closest('.field'), modelName
 assert.equal(document.getElementById('model_temperature').type, 'number');
 assert.equal(document.getElementById('quick_capture_enabled').type, 'checkbox');
 assert.equal(document.getElementById('quick_capture_enabled').closest('.field').classList.contains('boolean-field'), true, 'boolean fields align the checkbox with their label');
+assert.equal(document.getElementById('quick_capture_enabled').parentNode.classList.contains('boolean-control'), true, 'boolean controls keep the checkbox and label text in one flex row');
+assert.equal(document.getElementById('quick_capture_enabled').parentNode.children[1].tagName, 'SPAN');
+assert.equal(document.getElementById('quick_capture_enabled').parentNode.children[1].textContent, 'Enabled');
 assert.equal(document.getElementById('quick_capture_gpio_pin').type, 'number');
 assert.equal(document.getElementById('quick_capture_screen_memory_ttl').dataset.configDefaultPlaceholder, '90d');
 assert.equal(document.getElementById('voice_model_api_key').type, 'password');
@@ -399,11 +402,16 @@ assert.match(indexHtml, /data-config-section="voice_model"/);
 assert.match(indexHtml, /data-config-field="model\.provider"/);
 assert.doesNotMatch(indexHtml, /id="agent_input_mode"/, 'ordinary controls must not be hand-maintained in index.html');
 assert.match(indexHtml, /data-action="enter-edit-section" data-section-target="model"/);
+assert.match(indexHtml, /id="log-settings-group"[\s\S]*class="product-subgroup-head"[\s\S]*data-i18n="groups\.logs"[\s\S]*data-action="enter-edit-section" data-section-target="log"[\s\S]*id="section-log"/, 'the Logs title and edit actions share one header row');
 assert.doesNotMatch(indexHtml, /data-action="(?:enter-edit-section|cancel-edit-section|test-section|save-section)" data-section=/);
 assert.doesNotMatch(indexHtml, /<button(?=[^>]*data-action="(?:enter-edit-section|cancel-edit-section|test-section|save-section)")(?![^>]*data-section-target=)[^>]*>/);
 assert.match(indexHtml, /id="modelSelectorDetails"[^>]*data-section-lock/);
 const appSource = await fs.readFile(path.join(webRoot, 'assets/js/config/app.js'), 'utf8');
 assert.match(appSource, /target\.dataset\.sectionTarget/);
 assert.doesNotMatch(appSource, /target\.dataset\.section;/);
+const versionedAssetSources = [indexHtml, appSource];
+for (const source of versionedAssetSources) {
+  assert.doesNotMatch(source, /\?v=configuration-groups-/, 'Config Web relies on server no-cache headers instead of hand-maintained asset versions');
+}
 
 process.stdout.write('config web dynamic form tests passed\n');
