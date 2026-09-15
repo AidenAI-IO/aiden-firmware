@@ -17,7 +17,7 @@ import (
 
 func TestRunConfigUpdateIODelegatesToService(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	if err := os.WriteFile(path, []byte("[hid]\nkeyboard_layout = \"qwerty\"\n"), 0o640); err != nil {
+	if err := os.WriteFile(path, []byte("[basic_settings.device.hid]\nkeyboard_layout = \"qwerty\"\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 
@@ -35,7 +35,7 @@ func TestRunConfigUpdateIODelegatesToService(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatalf("decode result: %v", err)
 	}
-	if !result.OK || !result.RebootRequired || strings.Join(result.ChangedPaths, ",") != "hid.keyboard_layout" {
+	if !result.OK || !result.RebootRequired || strings.Join(result.ChangedPaths, ",") != "basic_settings.device.hid.keyboard_layout" {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -241,7 +241,7 @@ func TestResolvedWebConfigDTO_MissingFileUsesDefaults(t *testing.T) {
 
 func TestResolvedWebConfigDTOReadsInvalidConfigForRecovery(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	if err := os.WriteFile(path, []byte("input_mode = \"realtime\"\n[model]\nprovider = \"fake\"\n"), 0o640); err != nil {
+	if err := os.WriteFile(path, []byte("[voice_settings.mode]\ninput_mode = \"realtime\"\n[model_settings.model]\nprovider = \"fake\"\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	dto, err := resolvedWebConfigDTO(path)
@@ -257,9 +257,10 @@ func TestResolvedWebConfigDTO_PreservesCustomInstruction(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
+[conversation_settings.agent]
 custom_instruction = "Use a deployment-specific persona."
 
-[model]
+[model_settings.model]
 provider = "fake"
 `), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -278,9 +279,10 @@ func TestResolvedWebConfigDTO_ElidesConfiguredDefaultCustomInstruction(t *testin
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	body := `
+[conversation_settings.agent]
 custom_instruction = ` + strconv.Quote(agent.DefaultConfig().Instruction) + `
 
-[model]
+[model_settings.model]
 provider = "fake"
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -300,9 +302,10 @@ func TestResolvedWebConfigDTO_IgnoresLegacyInstructionField(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
+[conversation_settings.agent]
 instruction = "legacy field should be ignored"
 
-[model]
+[model_settings.model]
 provider = "fake"
 `), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -321,17 +324,18 @@ func TestResolvedWebConfigDTO_OverlaysCurrentConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
+	[voice_settings.classic.runtime]
 voice_followup_enabled = true
 
-[model]
+[model_settings.model]
 provider = "openai"
 model = "gpt-4o-mini"
 
-[hid]
+[advanced_settings.hardware.hid]
 pointer_mode = "touchscreen"
 keyboard_layout = "azerty"
 
-[log]
+[advanced_settings.log]
 llm_http_retention_days = 14
 `), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -571,8 +575,9 @@ func TestWebConfigDTOMapsVoiceNotifications(t *testing.T) {
 	enabled := false
 	tailEnabled := false
 	voiceNotifications := agent.VoiceNotificationsConfig{
-		Enabled:    &enabled,
-		MaxPending: 6,
+		Enabled:       &enabled,
+		MaxPending:    6,
+		RetentionDays: 14,
 		ResponseTail: agent.VoiceNotificationResponseTailConfig{
 			Enabled:      &tailEnabled,
 			MaxItems:     1,

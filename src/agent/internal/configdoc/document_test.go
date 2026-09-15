@@ -330,33 +330,33 @@ func TestApplyDeleteLastTableRemovesTrailingComments(t *testing.T) {
 }
 
 func TestApplyDeleteTablePreservesInterleavedUnrelatedTables(t *testing.T) {
-	source := []byte(`[model_providers.old]
+	source := []byte(`[model_settings.providers.old]
 type = "openai"
 
-[telemetry]
+[advanced_settings.runtime.telemetry]
 enabled = true
 
-[model_providers.old.options]
+[model_settings.providers.old.options]
 future = "remove with provider"
 
-[model]
+[model_settings.model]
 provider = "new"
 `)
 	updated, changed, err := Apply(source, []Operation{{
-		Path:        []string{"model_providers", "old"},
+		Path:        []string{"model_settings", "providers", "old"},
 		DeleteTable: true,
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changed) != 1 || changed[0] != "model_providers.old" {
+	if len(changed) != 1 || changed[0] != "model_settings.providers.old" {
 		t.Fatalf("changed = %v", changed)
 	}
 	text := string(updated)
-	if strings.Contains(text, "[model_providers.old]") || strings.Contains(text, "[model_providers.old.options]") {
+	if strings.Contains(text, "[model_settings.providers.old]") || strings.Contains(text, "[model_settings.providers.old.options]") {
 		t.Fatalf("provider table was not fully deleted:\n%s", text)
 	}
-	for _, want := range []string{"[telemetry]", "enabled = true", "[model]", `provider = "new"`} {
+	for _, want := range []string{"[advanced_settings.runtime.telemetry]", "enabled = true", "[model_settings.model]", `provider = "new"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("unrelated content %q was deleted:\n%s", want, text)
 		}

@@ -195,7 +195,7 @@ Open specified app or URL.
 {
   "id": "open_001",
   "type": "open_app",
-  "app": "微信",
+  "app": "WeChat",
   "timeout_ms": 10000
 }
 ```
@@ -203,7 +203,7 @@ Open specified app or URL.
 **iOS implementation**: Resolve the semantic app or URL request inside the companion app, then open the matching iOS URL scheme or system URL.
 **Android implementation**: Resolve the semantic app or URL request inside the companion app, then launch the matching package, intent URI, or system URL.
 
-The board sends semantic launch targets and the companion app resolves platform details. The internal BridgeOpenApp route sends `app` (for example `"微信"` or `"weixin"`), while `open_url` sends an `http`, `https`, `sms`, `mailto`, or `tel` URL. Each command sets one target field.
+The board sends semantic launch targets and the companion app resolves platform details. The internal BridgeOpenApp route sends `app` (for example `"WeChat"` or `"weixin"`), while `open_url` sends an `http`, `https`, `sms`, `mailto`, or `tel` URL. Each command sets one target field.
 
 **Response**:
 ```json
@@ -704,7 +704,7 @@ Current protocol version 1.2. When extending with new commands in the future:
 {
   "id": "open_1717667890123_1",
   "type": "open_app",
-  "app": "微信",
+  "app": "WeChat",
   "timeout_ms": 10000
 }
 ```

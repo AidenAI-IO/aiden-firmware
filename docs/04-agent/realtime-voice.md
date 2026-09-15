@@ -102,25 +102,26 @@ not added to user-visible conversation history.
 
 ## Configuration
 
-Use `input_mode = "realtime"` and select a named provider record:
+Use `[voice_settings.mode].input_mode = "realtime"` and select a named provider record:
 
 ```toml
+[voice_settings.mode]
 input_mode = "realtime"
 
-[voice_model_providers.qwen-main]
+[voice_settings.realtime.providers.qwen-main]
 type = "qwen"
 api_key = "$DASHSCOPE_API_KEY"
 model = "qwen-audio-3.0-realtime-plus"
 voice = "longanqian"
 
-[voice_model]
+[voice_settings.realtime]
 provider = "qwen-main"
 ```
 
 Provider-specific credentials and routing fields belong under
-`[voice_model_providers.<name>]`; `[voice_model]` contains the selected record
+`[voice_settings.realtime.providers.<name>]`; `[voice_settings.realtime]` contains the selected record
 and session-wide options such as instructions and turn detection. See the
-[Agent Configuration Reference](configuration.md#voice_model) for all fields
+[Agent Configuration Reference](configuration.md#voice_settingsrealtime) for all fields
 and provider visibility rules.
 
 ## Testing and extension points

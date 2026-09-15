@@ -416,11 +416,11 @@ func TestReasoningContentReplayPreservesAssistantBoundaries(t *testing.T) {
 func TestDeepSeekNamedProviderConfig(t *testing.T) {
 	t.Setenv("AIDEN_TEST_DEEPSEEK_KEY", "test-key")
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	if err := os.WriteFile(path, []byte(`[model_providers.account]
+	if err := os.WriteFile(path, []byte(`[model_settings.providers.account]
 type = "DeepSeek"
 api_key = "$AIDEN_TEST_DEEPSEEK_KEY"
 
-[model]
+[model_settings.model]
 provider = "account"
 model = "deepseek-flash"
 `), 0600); err != nil {

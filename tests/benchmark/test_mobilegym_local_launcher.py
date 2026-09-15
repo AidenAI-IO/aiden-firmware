@@ -97,17 +97,17 @@ def test_validate_model_environment_requires_api_key_for_openrouter(launcher_mod
 def test_parse_board_agent_model_config(launcher_module):
     config = launcher_module.parse_agent_model_config(
         '''
-[model_providers.seeklab]
+[model_settings.providers.seeklab]
 type = "openai"
 base_url = "https://proxy.seeklab.io/qwen/v1"
 api_key = "secret-key"
 
-[model]
+[model_settings.model]
 provider = "seeklab"
 model = "qwen3.6-35b"
 base_url = "https://stale.example.com/v1"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-cn"
 api_key = "tts-key"
 '''
@@ -123,10 +123,10 @@ api_key = "tts-key"
 
 def test_parse_board_agent_config_ignores_missing_sections(launcher_module):
     assert launcher_module.parse_agent_model_config(
-        '[tts]\nprovider = "minimax-cn"\napi_key = "tts-key"\n'
+        '[voice_settings.classic.tts]\nprovider = "minimax-cn"\napi_key = "tts-key"\n'
     ) == {}
     assert launcher_module.parse_agent_benchmark_config(
-        '[model]\nprovider = "openai"\napi_key = "model-key"\n'
+        '[model_settings.model]\nprovider = "openai"\napi_key = "model-key"\n'
     ) == {}
 
 
@@ -137,7 +137,7 @@ def test_fetch_board_model_config_uses_shell_tool(launcher_module):
             body = json.loads(self.rfile.read(length).decode())
             assert self.path == "/api/tools/shell"
             assert "/userdata/agent/agent.toml" in body["input"]["command"]
-            if "model_providers.seeklab" in body["input"]["command"]:
+            if "model_settings.providers.seeklab" in body["input"]["command"]:
                 output = (
                     'type = "openai"\n'
                     'base_url = "https://proxy.seeklab.io/qwen/v1"\n'

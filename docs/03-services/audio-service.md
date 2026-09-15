@@ -77,7 +77,7 @@ cat /tmp/record.pcm | audio_service_cli --socket /run/audio_service/audio_servic
 ## Agent Configuration
 
 ```toml
-[audio]
+[voice_settings.classic.audio]
 socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1

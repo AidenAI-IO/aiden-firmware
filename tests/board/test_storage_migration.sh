@@ -113,11 +113,11 @@ make_loop_image() {
 }
 
 restart_agent() {
-    # S53agent forks a long-lived watchdog. Over ssh that child inherits the
-    # session's stdout pipe, so ssh blocks until the watchdog exits (i.e.
-    # forever). setsid + full fd redirection detaches it so ssh returns at
+    # aiden-agent.service forks a long-lived watchdog. Over ssh that child
+    # inherits the session's stdout pipe, so ssh blocks until the watchdog exits
+    # (i.e. forever). setsid + full fd redirection detaches it so ssh returns at
     # once; the ServerAlive guard in SSH_OPTS is a last resort.
-    bsh 'setsid /etc/init.d/S53agent restart >/dev/null 2>&1 </dev/null & exit 0' \
+    bsh 'setsid systemctl restart aiden-agent.service >/dev/null 2>&1 </dev/null & exit 0' \
         >/dev/null 2>&1
 }
 

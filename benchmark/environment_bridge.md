@@ -36,7 +36,7 @@ Benchmark orchestration uses this field for environment discovery, task
 filtering, and platform consistency checks. When benchmark starts an agent
 daemon, it passes the resolved platform through the process-local
 `--device-type` option. The daemon applies it as a process-local override of
-`[device].device_type` without modifying `agent.toml`, and reports the effective
+`[basic_settings.device].device_type` without modifying `agent.toml`, and reports the effective
 value as `device_type`. A pre-started external daemon must receive the same
 option from its caller. For compatibility with older bridges, known
 `bridge_type` values may still be used as a fallback.

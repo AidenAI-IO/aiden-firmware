@@ -57,7 +57,8 @@ async function loadModule(filePath) {
   moduleCache.set(absolutePath, module);
   await module.link(async (specifier, referencingModule) => {
     const referencingPath = fileURLToPath(referencingModule.identifier);
-    return loadModule(path.resolve(path.dirname(referencingPath), specifier));
+    const modulePath = specifier.split('?', 1)[0];
+    return loadModule(path.resolve(path.dirname(referencingPath), modulePath));
   });
   return module;
 }
@@ -67,6 +68,29 @@ await stateModule.evaluate();
 stateModule.namespace.runtime.request = async () => ({ });
 stateModule.namespace.runtime.setBanner = () => {};
 stateModule.namespace.runtime.setDetails = () => {};
+const messages = {
+  'storage.mode.emmc': 'eMMC only',
+  'storage.mode.dual': 'Dual storage',
+  'storage.mode.auto': 'Auto',
+  'storage.status_unavailable': 'Storage status unavailable (Agent may still be starting).',
+  'storage.card_mounted': 'SD card mounted at {{mount}} ({{free}} free of {{total}}).',
+  'storage.card_unusable': 'SD card present but not usable.',
+  'storage.no_card': 'No SD card detected.',
+  'storage.running': 'Running: {{mode}} — {{status}}',
+  'storage.migration_failed': 'Storage migration failed: {{error}}',
+  'storage.card_issue': 'Card issue: {{reason}}',
+  'storage.unknown_error': 'unknown error',
+  'storage.auto_formatting': 'Blank card detected — auto-formatting as {{fs}}... Keep the card inserted.',
+  'storage.formatting': 'Formatting card as {{fs}}... Keep the card inserted.',
+  'storage.migrating': 'eMMC is filling up — migrating older recordings to SD ({{files}} files, {{size}} moved)...',
+  'storage.last_format_failed': 'Last format failed: {{error}}',
+  'storage.last_format_complete': 'Last format completed ({{fs}}).',
+  'storage.value_unavailable': 'Unavailable',
+};
+stateModule.namespace.runtime.t = (key, params = {}) => (messages[key] || key).replace(
+  /\{\{([A-Za-z0-9_]+)\}\}/g,
+  (_match, name) => params[name] ?? '',
+);
 const storageModule = await loadModule(path.join(moduleRoot, 'storage.js'));
 await storageModule.evaluate();
 const {appState} = stateModule.namespace;
@@ -136,6 +160,7 @@ assert.equal(JSON.stringify(retiredShape), JSON.stringify({
   available: false, present: false, mounted: false, device: '', mountPoint: '',
   reason: '', effectiveMode: undefined,
   formatJob: {}, migration: {},
+  internalAvailable: false, internalTotalBytes: undefined, internalFreeBytes: undefined,
 }));
 
 process.stdout.write('config web storage tests passed\n');

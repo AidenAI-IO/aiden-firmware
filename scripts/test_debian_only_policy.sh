@@ -48,13 +48,18 @@ if rg --no-ignore -n -i \
     fail "active documentation publishes a retired userspace workflow"
 fi
 
+if [ -e "${REPO_ROOT}/overlay" ] || [ -e "${REPO_ROOT}/build.sh" ] || \
+    [ -e "${REPO_ROOT}/scripts/build" ] || \
+    [ -e "${REPO_ROOT}/cmake/platforms/rv1106-buildroot-uclibc.cmake" ]; then
+    fail "retired Buildroot overlay or build entry points are still present"
+fi
+
 if rg --no-ignore -n \
     '(^|[[:space:]])gh[[:space:]]+release|create_github_release\.sh|\.github/workflows/' \
     "${REPO_ROOT}/debian_build.sh" \
     "${REPO_ROOT}/scripts/debian-stage1" \
     "${REPO_ROOT}/scripts/debian-stage2" \
-    "${REPO_ROOT}/scripts/debian-stage3" \
-    "${REPO_ROOT}/scripts/debian"; then
+    "${REPO_ROOT}/scripts/debian-stage3"; then
     fail "the local Debian production build invokes GitHub publication automation"
 fi
 

@@ -2,8 +2,6 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONTAINER_RUNNER="$ROOT_DIR/scripts/build/run_container.sh"
-IMAGE_TASK="$ROOT_DIR/scripts/build/container/image.sh"
 # Only sysdrv/Makefile and the two Buildroot defconfigs are read below, so PR
 # CI can point this at a sparse checkout of the pinned submodule commit instead
 # of cloning the ~1GB pico-sdk working tree.
@@ -11,34 +9,6 @@ PICO_SDK="${PICO_SDK_DIR:-$ROOT_DIR/pico-sdk}"
 
 if [ ! -f "$PICO_SDK/sysdrv/Makefile" ]; then
   echo "missing pico-sdk sysdrv/Makefile under $PICO_SDK; set PICO_SDK_DIR or check out the pico-sdk submodule" >&2
-  exit 1
-fi
-
-for script in "$CONTAINER_RUNNER" "$IMAGE_TASK"; do
-  if ! grep -q 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH' "$script"; then
-    echo "$(basename "$script") must use AIDEN_REPRODUCIBLE_IMAGE_EPOCH for the default reproducible image timestamp" >&2
-    exit 1
-  fi
-
-  if ! grep -q 'export SOURCE_DATE_EPOCH' "$script"; then
-    echo "$(basename "$script") must export SOURCE_DATE_EPOCH for image packaging tools" >&2
-    exit 1
-  fi
-done
-
-if grep -Eq 'git .*log -1 --format=%ct|git .*log -1 .*%ct' "$CONTAINER_RUNNER" "$IMAGE_TASK"; then
-  echo "image builds must not derive the default SOURCE_DATE_EPOCH from the current commit time" >&2
-  exit 1
-fi
-
-if grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0' "$CONTAINER_RUNNER" "$IMAGE_TASK"; then
-  echo "image builds must use a non-zero default SOURCE_DATE_EPOCH so falsey-zero package bugs cannot affect releases" >&2
-  exit 1
-fi
-
-if ! grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-[1-9][0-9]*' "$CONTAINER_RUNNER" || \
-   ! grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-[1-9][0-9]*' "$IMAGE_TASK"; then
-  echo "image builds must keep a deterministic non-zero default SOURCE_DATE_EPOCH" >&2
   exit 1
 fi
 

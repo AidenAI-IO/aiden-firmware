@@ -770,10 +770,21 @@ def agent_config_has_api_key(content: str) -> bool:
     except tomllib.TOMLDecodeError:
         match = re.search(r"(?m)^\s*api_key\s*=\s*(['\"])(.*?)\1", content)
         return bool(match and match.group(2).strip())
-    model = data.get("model")
+
+    model_settings = data.get("model_settings")
+    if not isinstance(model_settings, dict):
+        return False
+    model = model_settings.get("model")
     if isinstance(model, dict):
-        return bool(str(model.get("api_key") or "").strip())
-    return bool(str(data.get("api_key") or "").strip())
+        if str(model.get("api_key") or "").strip():
+            return True
+        provider_name = str(model.get("provider") or "").strip()
+        provider_records = model_settings.get("providers")
+        if provider_name and isinstance(provider_records, dict):
+            provider = provider_records.get(provider_name)
+            if isinstance(provider, dict):
+                return bool(str(provider.get("api_key") or "").strip())
+    return False
 
 
 def serve(config: SkillOptWebUIConfig) -> None:
@@ -1657,7 +1668,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div class="judge-inline">
             <label class="check-label"><input id="judgeEnabled" type="checkbox" checked> Enable judge</label>
-            <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="agent.toml [model].model"></div>
+            <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="agent.toml [model_settings.model].model"></div>
             <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="AIDEN_BENCHMARK_JUDGE_API_KEY"></div>
           </div>
           <div class="run-actions">
@@ -1668,7 +1679,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="field"><label for="budget">Max iterations</label><input id="budget" type="number" min="1" step="1" value="5"></div>
           <div class="field"><label for="editBudget">Max edits / iteration</label><input id="editBudget" type="number" min="1" step="1" value="4"></div>
           <div class="field"><label for="minDelta">Min delta</label><input id="minDelta" type="number" min="0" step="0.01" value="0.03"></div>
-          <div class="field"><label for="optimizerModel">Optimizer model(s)</label><input id="optimizerModel" autocomplete="off" placeholder="agent.toml [model].model"></div>
+          <div class="field"><label for="optimizerModel">Optimizer model(s)</label><input id="optimizerModel" autocomplete="off" placeholder="agent.toml [model_settings.model].model"></div>
         </div>
       </section>
 

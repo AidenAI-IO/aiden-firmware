@@ -73,6 +73,16 @@ class Element {
     return this.tagName === 'SELECT' ? this.children : undefined;
   }
 
+  set innerHTML(value) {
+    this._innerHTML = String(value);
+    this.children.forEach((child) => { child.parentNode = null; });
+    this.children = [];
+  }
+
+  get innerHTML() {
+    return this._innerHTML || '';
+  }
+
   setAttribute(name, value) {
     const normalized = String(value);
     this.attributes.set(name, normalized);
@@ -154,6 +164,7 @@ function findElements(root, selector, includeRoot = true, matches = []) {
 class Document {
   constructor() {
     this.body = new Element('body');
+    this.listeners = new Map();
   }
 
   createElement(tagName) {
@@ -172,7 +183,15 @@ class Document {
     return findElements(this.body, selector, true);
   }
 
-  addEventListener() {}
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  dispatchEvent(event) {
+    (this.listeners.get(event.type) || []).forEach((listener) => listener(event));
+  }
 }
 
 function findById(root, id) {
@@ -204,9 +223,19 @@ function appendSpecialField(document, target, pathName, controlId, tagName = 'se
 }
 
 const document = new Document();
+const productLocaleSelect = document.createElement('select');
+productLocaleSelect.id = 'productLocaleSelect';
+productLocaleSelect.value = 'en-US';
+document.body.appendChild(productLocaleSelect);
+const agentTimezoneSelect = document.createElement('select');
+agentTimezoneSelect.id = 'agent_timezone';
+agentTimezoneSelect.value = 'UTC';
+document.body.appendChild(agentTimezoneSelect);
 const agentTarget = appendTarget(document, 'agent');
 const modelTarget = appendTarget(document, 'model');
 const quickCaptureTarget = appendTarget(document, 'quick_capture');
+const hidTarget = appendTarget(document, 'hid');
+const hidDebugTarget = appendTarget(document, 'hid-debug');
 const voiceModelCard = document.createElement('div');
 voiceModelCard.id = 'section-voice_model';
 voiceModelCard.className = 'section-card';
@@ -242,7 +271,8 @@ async function loadModule(filePath) {
   moduleCache.set(absolutePath, module);
   await module.link(async (specifier, referencingModule) => {
     const referencingPath = fileURLToPath(referencingModule.identifier);
-    return loadModule(path.resolve(path.dirname(referencingPath), specifier));
+    const modulePath = specifier.split('?', 1)[0];
+    return loadModule(path.resolve(path.dirname(referencingPath), modulePath));
   });
   return module;
 }
@@ -257,11 +287,12 @@ stateModule.namespace.runtime.syncModelSelectorSummary = () => {};
 stateModule.namespace.runtime.updateAllProviderActionStates = () => {};
 const configMetaModule = await loadModule(path.join(webRoot, 'assets/js/config/config-meta.js'));
 await configMetaModule.evaluate();
-const {buildConfigMeta} = configMetaModule.namespace;
+const {bindFieldVisibility, buildConfigMeta} = configMetaModule.namespace;
 
 buildConfigMeta({sections: [
   {name: 'agent', fields: [
-    {key: 'locale', label: 'Language', widget: 'select', enum: [{value: 'en-US'}]},
+    {key: 'locale', label: 'Language', widget: 'select', enum: [{value: 'en-US'}, {value: 'zh-CN'}]},
+    {key: 'timezone', label: 'Time zone', widget: 'select', enum: [{value: 'UTC'}, {value: 'Asia/Shanghai'}, {value: 'America/Los_Angeles'}]},
     {key: 'input_mode', label: 'Input mode', widget: 'select', enum: [{value: 'text'}, {value: 'stt'}, {value: 'realtime'}]},
     {key: 'new_field', label: 'New field', help: 'Rendered from metadata.', placeholder: 'example', layout: 'wide', widget: 'text'},
     {key: 'defaulted', label: 'Defaulted', widget: 'text', default: 'value'},
@@ -278,6 +309,10 @@ buildConfigMeta({sections: [
     {key: 'gpio_pin', label: 'GPIO Pin', widget: 'number', default: 0},
     {key: 'screen_memory_ttl', label: 'Screen Memory TTL', widget: 'text', default: '90d'},
   ]},
+  {name: 'hid', fields: [
+    {key: 'keyboard_layout', label: 'Keyboard layout', widget: 'select', enum: [{value: 'qwerty'}]},
+    {key: 'input_backend', label: 'Input backend', widget: 'select', enum: [{value: 'hid'}, {value: 'adb'}]},
+  ]},
   {name: 'voice_model', fields: [
     {key: 'api_key', label: 'API key', widget: 'text', secret: true, visibleWhen: {all: [{field: 'agent.input_mode', op: 'eq', value: 'realtime'}]}},
     {key: 'model', label: 'Model', widget: 'text', visibleWhen: {all: [{field: 'agent.input_mode', op: 'eq', value: 'realtime'}]}},
@@ -285,6 +320,13 @@ buildConfigMeta({sections: [
 ]});
 
 assert.equal(document.getElementById('agent_locale'), null, 'agent.locale remains rendered by the page-level locale control');
+assert.deepEqual(productLocaleSelect.options.map((option) => option.value), ['en-US', 'zh-CN']);
+assert.deepEqual(agentTimezoneSelect.options.map((option) => option.value), ['UTC', 'Asia/Shanghai', 'America/Los_Angeles']);
+bindFieldVisibility();
+stateModule.namespace.runtime.t = (_key, params = {}) => 'Localized ' + String(params.defaultValue ?? '');
+document.dispatchEvent({type: 'aiden:locale-changed'});
+assert.deepEqual(productLocaleSelect.options.map((option) => option.textContent), ['Localized en-US', 'Localized zh-CN']);
+stateModule.namespace.runtime.t = (key, params = {}) => String(params.defaultValue ?? key).replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (_match, name) => params[name] ?? '');
 assert.equal(document.getElementById('agent_input_mode').tagName, 'SELECT');
 assert.equal(document.getElementById('agent_new_field').getAttribute('placeholder'), 'example');
 assert.equal(document.getElementById('agent_new_field').closest('.field').classList.contains('wide'), true);
@@ -302,6 +344,10 @@ assert.equal(document.getElementById('model_provider').closest('.field'), modelP
 assert.equal(document.getElementById('model_model').closest('.field'), modelNameField, 'model selector DOM is preserved');
 assert.equal(document.getElementById('model_temperature').type, 'number');
 assert.equal(document.getElementById('quick_capture_enabled').type, 'checkbox');
+assert.equal(document.getElementById('quick_capture_enabled').closest('.field').classList.contains('boolean-field'), true, 'boolean fields align the checkbox with their label');
+assert.equal(document.getElementById('quick_capture_enabled').parentNode.classList.contains('boolean-control'), true, 'boolean controls keep the checkbox and label text in one flex row');
+assert.equal(document.getElementById('quick_capture_enabled').parentNode.children[1].tagName, 'SPAN');
+assert.equal(document.getElementById('quick_capture_enabled').parentNode.children[1].textContent, 'Enabled');
 assert.equal(document.getElementById('quick_capture_gpio_pin').type, 'number');
 assert.equal(document.getElementById('quick_capture_screen_memory_ttl').dataset.configDefaultPlaceholder, '90d');
 assert.equal(document.getElementById('voice_model_api_key').type, 'password');
@@ -327,6 +373,12 @@ assert.equal(voiceModelCard.classList.contains('hidden'), false, 'voice model ca
 
 const configFormModule = await loadModule(path.join(webRoot, 'assets/js/config/config-form.js'));
 await configFormModule.evaluate();
+const hidDebugField = document.getElementById('hid_input_backend').closest('.field');
+hidDebugTarget.appendChild(hidDebugField);
+configFormModule.namespace.setSectionLocked('hid', true);
+assert.equal(document.getElementById('hid_input_backend').disabled, true, 'moved HID debug fields are locked with the section');
+configFormModule.namespace.setSectionLocked('hid', false);
+assert.equal(document.getElementById('hid_input_backend').disabled, false, 'moved HID debug fields unlock with the section');
 stateModule.namespace.appState.config = {
   agent: {input_mode: 'stt'},
   voice_model: {
@@ -374,11 +426,16 @@ assert.match(indexHtml, /data-config-section="voice_model"/);
 assert.match(indexHtml, /data-config-field="model\.provider"/);
 assert.doesNotMatch(indexHtml, /id="agent_input_mode"/, 'ordinary controls must not be hand-maintained in index.html');
 assert.match(indexHtml, /data-action="enter-edit-section" data-section-target="model"/);
+assert.match(indexHtml, /id="log-settings-group"[\s\S]*class="product-subgroup-head"[\s\S]*data-i18n="groups\.logs"[\s\S]*data-action="enter-edit-section" data-section-target="log"[\s\S]*id="section-log"/, 'the Logs title and edit actions share one header row');
 assert.doesNotMatch(indexHtml, /data-action="(?:enter-edit-section|cancel-edit-section|test-section|save-section)" data-section=/);
 assert.doesNotMatch(indexHtml, /<button(?=[^>]*data-action="(?:enter-edit-section|cancel-edit-section|test-section|save-section)")(?![^>]*data-section-target=)[^>]*>/);
 assert.match(indexHtml, /id="modelSelectorDetails"[^>]*data-section-lock/);
 const appSource = await fs.readFile(path.join(webRoot, 'assets/js/config/app.js'), 'utf8');
 assert.match(appSource, /target\.dataset\.sectionTarget/);
 assert.doesNotMatch(appSource, /target\.dataset\.section;/);
+const versionedAssetSources = [indexHtml, appSource];
+for (const source of versionedAssetSources) {
+  assert.doesNotMatch(source, /\?v=configuration-groups-/, 'Config Web relies on server no-cache headers instead of hand-maintained asset versions');
+}
 
 process.stdout.write('config web dynamic form tests passed\n');

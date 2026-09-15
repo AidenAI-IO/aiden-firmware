@@ -975,7 +975,7 @@ func (l *AgentLoop) touchPointerModeMismatchContentFinalAnswer(contentResp *llms
 	lower := strings.ToLower(content)
 	if !strings.Contains(lower, "hid.pointer_mode") &&
 		!strings.Contains(lower, "device.device_type") &&
-		!strings.Contains(lower, "[device].device_type") {
+		!strings.Contains(lower, "[basic_settings.device].device_type") {
 		return ""
 	}
 	if !strings.Contains(lower, "stop operation here") && !strings.Contains(lower, "touch mode likely does not match") {
@@ -1001,9 +1001,9 @@ func choiceHasToolCall(choice *llms.ContentChoice, toolName string) bool {
 func touchPointerModeMismatchGuidance(platform, pointerMode string) string {
 	switch {
 	case platform == "android" && pointerMode == "absolute":
-		return `touch_gesture produced no visible screen change, and the connected platform is Android while [device].device_type derives hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch [device].device_type to "Android", restart the agent, and retry.`
+		return `touch_gesture produced no visible screen change, and the connected platform is Android while [basic_settings.device].device_type derives hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch [basic_settings.device].device_type to "Android", restart the agent, and retry.`
 	case (platform == "ios" || platform == "ipados") && pointerMode == "touchscreen":
-		return `touch_gesture produced no visible screen change, and the connected platform is iOS while [device].device_type derives hid.pointer_mode="touchscreen". Stop operation here because the touch mode likely does not match the target. Please switch [device].device_type to "iOS", restart the agent, and retry.`
+		return `touch_gesture produced no visible screen change, and the connected platform is iOS while [basic_settings.device].device_type derives hid.pointer_mode="touchscreen". Stop operation here because the touch mode likely does not match the target. Please switch [basic_settings.device].device_type to "iOS", restart the agent, and retry.`
 	default:
 		return ""
 	}

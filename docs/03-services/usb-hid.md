@@ -108,10 +108,10 @@ sudo example_usb_hid cleanup
 ## Agent HID Configuration
 
 ```toml
-[device]
+[basic_settings.device]
 device_type = "iOS"
 
-[hid]
+[advanced_settings.hardware.hid]
 keyboard_device = "/dev/hidg0"
 keyboard_layout = "qwerty"
 mouse_device = "/dev/hidg1"
@@ -120,7 +120,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
 The firmware also binds `hid.usb2` as `/dev/hidg2`. This second keyboard-like
-interface advertises Consumer Control usages. When `[device].device_type =
+interface advertises Consumer Control usages. When `[basic_settings.device].device_type =
 "Android"` derives `pointer_mode = "touchscreen"`, it is used for Android
 extension keys such as Back, Home, App Switch, Search, Power, and Volume. Other
 device types derive `pointer_mode = "absolute"` and expose a smaller bitmap
@@ -182,7 +182,7 @@ It is recommended to use normalized coordinates (`0..1000`, with center at `500,
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
 `keyboard_layout` must match how the phone interprets the external USB HID keyboard. Supported values are `qwerty` (default), `azerty`, and `qwertz`. The visible soft-keyboard layout is not authoritative: a phone can display an AZERTY soft keyboard while still interpreting Aiden's USB HID reports as QWERTY. Both `keyboard_text` and standard text-like keys in `keyboard_tap` use this mapping. The mapping itself is loaded by the Agent and does not change USB descriptors, but Config Web requires a board restart after saving so the host starts a clean USB session.
 
-Select the matching layout under `[hid]` in Config Web (`qwerty`, `azerty`, or `qwertz`). Most users keep the default `qwerty`; only change it if typed characters come out transposed (for example "shape" becomes "shqpe").
+Select the matching layout under `[advanced_settings.hardware.hid]` in Config Web (`qwerty`, `azerty`, or `qwertz`). Most users keep the default `qwerty`; only change it if typed characters come out transposed (for example "shape" becomes "shqpe").
 
 A phone running iOS locks its hardware-keyboard layout at the moment the USB keyboard is enumerated, based on the software keyboard that is active at that instant. Switching the on-screen keyboard afterwards does not change the locked interpretation. To align a non-QWERTY layout:
 
@@ -200,7 +200,7 @@ On iOS, AssistiveTouch can make modifier routing unstable when an external
 keyboard and pointer are advertised by the same USB composite. Plain key input
 may work while shortcuts such as `Cmd+A` or `Cmd+V` are ignored.
 
-When `[device].device_type` derives `pointer_mode = "absolute"`, firmware builds that include
+When `[basic_settings.device].device_type` derives `pointer_mode = "absolute"`, firmware builds that include
 `/oem/usr/bin/aiden-dynamic-keyboard` automatically isolate keyboard actions
 whose HID reports contain Ctrl, Shift, Option/Alt, or Cmd/Meta. This includes
 `keyboard_text` values containing uppercase letters or symbols that require

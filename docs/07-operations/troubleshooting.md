@@ -35,7 +35,7 @@ ls -l /run/frame_service/frame_service.sock
 Common causes:
 
 - `frame_service` is not running;
-- `[hid].frame_socket` path in `agent.toml` is inconsistent;
+- `[advanced_settings.hardware.hid].frame_socket` path in `agent.toml` is inconsistent;
 - HDMI input is not synced;
 - RK628D or TC358743 HDMI subdevice status is abnormal.
 
@@ -117,7 +117,7 @@ amixer sget 'DAC LINEOUT'
 Recommendations:
 
 - First run `scripts/setup_audio_volume.sh`;
-- Confirm `[audio].socket` path matches the service;
+- Confirm `[voice_settings.classic.audio].socket` path matches the service;
 - Use `record-stream` and `play-stream` to verify recording/playback separately;
 - Check if `ffmpeg` exists when TTS fails.
 
@@ -132,7 +132,7 @@ First run helper self-test directly on the board:
 
 On success, it will output `P <probability>`. Current RV1106 helper uses RKNN zero-copy IO; if it outputs `rknn_set_io_mem failed`, `rknn_run failed`, or old helper outputs `rknn_inputs_set failed`, check:
 
-- Whether `/oem/usr/lib/librknnmrt.so` version matches the model;
+- Whether the RKNN mini runtime embedded in `/oem/usr/bin/rknn_vad` matches the model;
 - Whether `silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` is the encoder model re-converted for RV1106 target;
 - Whether input/output tensor type, size, scale, zero-point in helper logs are normal.
 

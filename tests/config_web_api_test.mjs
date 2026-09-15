@@ -27,7 +27,8 @@ async function loadModule(filePath) {
   moduleCache.set(absolutePath, module);
   await module.link(async (specifier, referencingModule) => {
     const referencingPath = fileURLToPath(referencingModule.identifier);
-    return loadModule(path.resolve(path.dirname(referencingPath), specifier));
+    const modulePath = specifier.split('?', 1)[0];
+    return loadModule(path.resolve(path.dirname(referencingPath), modulePath));
   });
   return module;
 }

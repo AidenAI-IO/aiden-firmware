@@ -20,12 +20,15 @@ const (
 	apiConfigLocale
 	apiConfigApplication
 	apiConfigTest
+	apiMemoryReset
 	apiModels
 	apiSTTTestStart
 	apiSTTTestStop
 	apiStorageStatus
 	apiStorageFormat
 	apiStorageEject
+	apiConfigBackupExport
+	apiConfigBackupImport
 	apiWiFiScan
 	apiWiFiConnect
 	apiWiFiConnectStatus
@@ -60,12 +63,15 @@ var apiRoutes = []apiRoute{
 	{apiConfigUpdate, routeVariant{http.MethodPatch, apiPrefix + "/config"}},
 	{apiConfigLocale, routeVariant{http.MethodPut, apiPrefix + "/config/locale"}},
 	{apiConfigTest, routeVariant{http.MethodPost, apiPrefix + "/config/test"}},
+	{apiMemoryReset, routeVariant{http.MethodPost, apiPrefix + "/memory/reset"}},
 	{apiModels, routeVariant{http.MethodGet, apiPrefix + "/models"}},
 	{apiSTTTestStart, routeVariant{http.MethodPost, apiPrefix + "/config-test/stt/start"}},
 	{apiSTTTestStop, routeVariant{http.MethodPost, apiPrefix + "/config-test/stt/stop"}},
 	{apiStorageStatus, routeVariant{http.MethodGet, apiPrefix + "/storage/status"}},
 	{apiStorageFormat, routeVariant{http.MethodPost, apiPrefix + "/storage/format"}},
 	{apiStorageEject, routeVariant{http.MethodPost, apiPrefix + "/storage/eject"}},
+	{apiConfigBackupExport, routeVariant{http.MethodGet, apiPrefix + "/config/backup"}},
+	{apiConfigBackupImport, routeVariant{http.MethodPut, apiPrefix + "/config/backup"}},
 	{apiWiFiScan, routeVariant{http.MethodPost, apiPrefix + "/network/wifi/scan"}},
 	{apiWiFiConnect, routeVariant{http.MethodPut, apiPrefix + "/network/wifi/connection"}},
 	{apiWiFiConnectStatus, routeVariant{http.MethodGet, apiPrefix + "/network/wifi/connection"}},
@@ -133,6 +139,8 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handlePutLocale(w, r)
 	case apiConfigTest:
 		s.handleConfigTest(w, r)
+	case apiMemoryReset:
+		s.handleMemoryReset(w, r)
 	case apiModels:
 		s.handleModels(w, r)
 	case apiSTTTestStart:
@@ -145,6 +153,10 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleStorageFormat(w, r)
 	case apiStorageEject:
 		s.handleStorageEject(w, r)
+	case apiConfigBackupExport:
+		s.handleConfigBackupExport(w, r)
+	case apiConfigBackupImport:
+		s.handleConfigBackupImport(w, r)
 	case apiWiFiScan:
 		s.handleWiFiScan(w, r)
 	case apiWiFiConnect:

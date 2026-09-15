@@ -19,17 +19,17 @@ func TestActiveRecordSurvivesSpeakTimeResolution(t *testing.T) {
 	// of "z-minimax" is what makes this test able to fail.
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	body := `
-[tts_providers.a-minimax]
+[voice_settings.classic.tts.providers.a-minimax]
 type = "minimax"
 api_key = "sk-aaa"
 voice_id = "male-qn-qingse"
 
-[tts_providers.z-minimax]
+[voice_settings.classic.tts.providers.z-minimax]
 type = "minimax"
 api_key = "sk-bbb"
 voice_id = "female-shaonv"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "z-minimax"
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
