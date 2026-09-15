@@ -1,4 +1,7 @@
-name: Build (scheduled / self-hosted)
+name: Debian Build (scheduled / self-hosted)
+
+# Hourly Debian firmware build of the default branch. The build itself lives in
+# debian-build.yml; this workflow only decides whether it is worth running.
 
 on:
   schedule:
@@ -9,6 +12,11 @@ permissions:
   contents: write
 
 concurrency:
+  # Keeps scheduled runs from stacking up on each other. It does not coordinate
+  # with a manual debian-build.yml dispatch, which carries its own group -- it
+  # does not have to: both land on the same self-hosted runner, and a runner
+  # executes one job at a time, so they cannot share the workspace or the
+  # Docker daemon whatever the groups say.
   group: scheduled-build
   cancel-in-progress: false
 
@@ -20,6 +28,10 @@ jobs:
       should_run: ${{ steps.should_run.outputs.should_run }}
     steps:
       - id: should_run
+        # `gh release view` with no tag returns the latest non-prerelease
+        # release, which is what debian-build.yml now publishes. If those builds
+        # ever go back to --prerelease this check stops seeing them, falls
+        # through to "no previous release", and rebuilds every hour forever.
         name: Skip scheduled run if no new commit since last release
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -97,8 +109,9 @@ jobs:
   build:
     needs: check
     if: ${{ needs.check.outputs.should_run == 'true' }}
-    uses: ./.github/workflows/build.yml
+    uses: ./.github/workflows/debian-build.yml
     with:
       runner: aiden-hosted-01
-      free_disk_space: false
+      dry_run: false
+      publish_release: true
     secrets: inherit

@@ -1,12 +1,14 @@
 name: Debian Build (self-hosted)
 
-# Manual Debian armhf firmware build.
+# Debian armhf firmware build, the only userspace this repository ships.
 #
-# The Buildroot workflows (build*.yml) are untouched. This one drives
-# ./debian_build.sh end to end -- Stage 2 applications, Stage 3 rootfs/BSP,
-# A/B factory images, a locally signed OTA manifest and the final audit -- and
-# publishes output/debian/image as workflow artifacts. It deliberately does not
-# create a tag or a GitHub Release.
+# Drives ./debian_build.sh end to end -- Stage 2 applications, Stage 3
+# rootfs/BSP, A/B factory images, a locally signed OTA manifest and the final
+# audit -- uploads output/debian/image as workflow artifacts, and publishes it
+# as a tagged GitHub Release.
+#
+# build-scheduled.yml calls this workflow hourly; the dispatch form is for
+# one-off builds and for choosing a runner.
 
 on:
   workflow_dispatch:
@@ -23,12 +25,28 @@ on:
         type: boolean
         default: false
       publish_release:
-        description: 'Publish the images as a GitHub pre-release tagged with the build version'
+        description: 'Publish the images as a GitHub Release tagged with the build version'
+        type: boolean
+        default: true
+  # workflow_call cannot take a `choice`, so runner is a plain string here. The
+  # job guard below still rejects anything that is not an aiden-hosted- label.
+  workflow_call:
+    inputs:
+      runner:
+        description: 'Self-hosted runner label to build on'
+        type: string
+        default: aiden-hosted-01
+      dry_run:
+        description: 'Preflight only: stop before the firmware build'
+        type: boolean
+        default: false
+      publish_release:
+        description: 'Publish the images as a GitHub Release tagged with the build version'
         type: boolean
         default: true
 
 permissions:
-  # The build publishes its images as a pre-release.
+  # The build publishes its images as a GitHub Release.
   contents: write
 
 concurrency:
@@ -323,10 +341,15 @@ jobs:
         build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
         branch=$(printf '%s' "$GITHUB_REF_NAME" | sed 's#/#-#g; s#[^a-zA-Z0-9._-]#-#g')
 
+        # Only the default branch owns the Latest tag. A branch build still
+        # publishes so it can be flashed, but as a pre-release, which is what
+        # makes create_github_release.sh skip --latest for it.
         if [ "$GITHUB_REF_NAME" = "main" ]; then
           channel="debian-stable"
+          prerelease="false"
         else
           channel="debian-dev-${branch}"
+          prerelease="true"
         fi
 
         # Build with everything the runner has. debian_build.sh caps its own
@@ -346,6 +369,7 @@ jobs:
           echo "build_time=${build_time}"
           echo "artifact_name=debian-firmware-${branch}-${timestamp}-${commit}"
           echo "rk_jobs=${rk_jobs}"
+          echo "prerelease=${prerelease}"
         } >> "$GITHUB_OUTPUT"
         echo "Building with RK_JOBS=${rk_jobs}"
 
@@ -429,12 +453,15 @@ jobs:
         retention-days: 7
         compression-level: 0
 
-    - name: Publish GitHub pre-release
-      # Always a pre-release: create_github_release.sh then skips --latest, so
-      # these images never displace the Buildroot releases that hold that tag.
-      # The debian- prefix on the tag and the manifest channel keep the two
-      # apart for anyone browsing the releases page, and for the OTA config
-      # baked into the image, which resolves updates by repository and channel.
+    - name: Publish GitHub release
+      # A default-branch build is a full release, which makes
+      # create_github_release.sh pass --latest. These were all pre-releases only
+      # so they would not displace the Buildroot images that held that tag;
+      # Buildroot is retired, so leaving Latest pinned to its last image would
+      # point anyone browsing the releases page at firmware that is no longer
+      # built. Branch builds stay pre-releases so they cannot take that tag.
+      # Either way the OTA config baked into the image resolves updates by
+      # repository and channel, not by Latest.
       if: ${{ !inputs.dry_run && inputs.publish_release }}
       # create_github_release.sh retries, but nothing bounds a single attempt,
       # so a connection that hangs rather than fails blocks until the job
@@ -446,10 +473,15 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         RELEASE_TAG: ${{ steps.meta.outputs.version }}
         RELEASE_CHANNEL: ${{ steps.meta.outputs.channel }}
+        RELEASE_PRERELEASE: ${{ steps.meta.outputs.prerelease }}
       shell: bash
       run: |
         set -euo pipefail
         release_assets='boot_a.img.tar.gz boot_b.img.tar.gz oem.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json'
+        prerelease_args=()
+        if [ "$RELEASE_PRERELEASE" = "true" ]; then
+          prerelease_args+=(--prerelease)
+        fi
         bash scripts/create_github_release.sh \
           --release-name "$RELEASE_TAG" \
           --tag-name "$RELEASE_TAG" \
@@ -459,11 +491,11 @@ jobs:
           --upload-assets "$release_assets update.img.sha256" \
           --retry-count 10 \
           --retry-delay-seconds 30 \
-          --prerelease
+          ${prerelease_args[@]+"${prerelease_args[@]}"}
 
-        # create_github_release.sh writes generic notes shared with the
-        # Buildroot builds. Replace them so the page says which userspace this
-        # is and how to get a flashable image out of the archive.
+        # create_github_release.sh writes generic notes. Replace them so the
+        # page says which channel this is and how to get a flashable image out
+        # of the archive.
         notes="$RUNNER_TEMP/release-notes.md"
         {
           printf 'Debian userspace firmware, built by `.github/workflows/debian-build.yml`.\n\n'
@@ -476,8 +508,12 @@ jobs:
           printf '```\ntar -xzf update.img.tar.gz\n'
           printf 'sha256sum -c update.img.sha256\n'
           printf './upgrade_tool/upgrade_tool uf ./update.img\n```\n\n'
-          printf 'Marked as a pre-release. The Buildroot builds publish separately '
-          printf 'and keep the Latest tag; their tags carry no `debian-` prefix.\n'
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then
+            printf 'Branch build, published as a pre-release; the Latest tag '
+            printf 'stays on the default branch. '
+          fi
+          printf 'Devices resolve updates by repository and channel, not by the '
+          printf 'Latest tag.\n'
         } >"$notes"
         gh release edit "$RELEASE_TAG" --notes-file "$notes"
 
