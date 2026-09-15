@@ -143,6 +143,19 @@ func (m Manifest) Validate() error {
 	return nil
 }
 
+func requireAtomicProductionManifest(manifest Manifest) error {
+	included := map[string]bool{}
+	for _, part := range manifest.Parts {
+		included[part.Name] = true
+	}
+	for _, name := range []string{"boot", "oem", "rootfs"} {
+		if !included[name] {
+			return fmt.Errorf("Debian OTA manifest must atomically include boot, oem, and rootfs; missing %s", name)
+		}
+	}
+	return nil
+}
+
 func validateManifestAsset(field string, asset ManifestAsset, expectedName string) error {
 	if asset.Name == "" || !assetNameRE.MatchString(asset.Name) || strings.Contains(asset.Name, "..") || strings.HasPrefix(asset.Name, "/") {
 		return fmt.Errorf("%s has invalid name %q", field, asset.Name)

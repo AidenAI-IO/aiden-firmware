@@ -30,7 +30,7 @@ func run(args []string, out io.Writer) error {
 func runWithConfig(args []string, out io.Writer, configure func(*ota.UpdaterConfig)) error {
 	command, args := splitCommandAndFlags(args)
 	positional := flagArgs(args)
-	if (command == "health" || command == "update" || command == "check-now" || command == "status" || command == "self-check" || command == "rollback" || command == "recover") && len(positional) != 0 {
+	if (command == "health" || command == "mark-health" || command == "provision-identity" || command == "update" || command == "check-now" || command == "status" || command == "self-check" || command == "rollback" || command == "recover") && len(positional) != 0 {
 		return usage()
 	}
 	config, err := parseConfigFlags(args)
@@ -68,6 +68,20 @@ func runWithConfig(args []string, out io.Writer, configure func(*ota.UpdaterConf
 		return updater.RecoverPendingData()
 	case "health":
 		return updater.ProcessPendingHealthOnce(ctx)
+	case "mark-health":
+		wrote, err := updater.MarkHealthIfPending()
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(struct {
+			Written bool `json:"written"`
+		}{Written: wrote})
+	case "provision-identity":
+		result, err := updater.ProvisionFactoryIdentity()
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(result)
 	case "update", "check-now":
 		result, err := updater.CheckOnce(ctx)
 		if err != nil {
@@ -120,14 +134,16 @@ func platformReboot() error {
 
 func splitCommandAndFlags(args []string) (string, []string) {
 	commands := map[string]bool{
-		"health":          true,
-		"update":          true,
-		"check-now":       true,
-		"status":          true,
-		"verify-manifest": true,
-		"self-check":      true,
-		"rollback":        true,
-		"recover":         true,
+		"health":             true,
+		"mark-health":        true,
+		"provision-identity": true,
+		"update":             true,
+		"check-now":          true,
+		"status":             true,
+		"verify-manifest":    true,
+		"self-check":         true,
+		"rollback":           true,
+		"recover":            true,
 	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -155,7 +171,7 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	configPath := fs.String("config", ota.DefaultOTAConfigPath, "config JSON path")
 	stateDir := fs.String("state-dir", "", "OTA state directory")
 	miscPath := fs.String("misc", "", "misc partition path")
-	blockDir := fs.String("block-dir", "", "block device by-name directory")
+	blockDir := fs.String("block-dir", "", "partition block-device directory")
 	manifestURL := fs.String("manifest-url", "", "direct manifest URL (skips release API)")
 	publicKeyPath := fs.String("public-key", "", "Ed25519 public key PEM path")
 	dryRun := fs.Bool("dry-run", false, "download and verify without switching misc or rebooting")
@@ -266,5 +282,5 @@ func flagTakesValue(name string) bool {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: ota [flags] [health|update|check-now|status|self-check|rollback|recover|verify-manifest <manifest>]")
+	return fmt.Errorf("usage: ota [flags] [health|mark-health|provision-identity|update|check-now|status|self-check|rollback|recover|verify-manifest <manifest>]")
 }

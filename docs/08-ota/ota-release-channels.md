@@ -4,11 +4,14 @@ sidebar_position: 9
 
 # OTA Release Channels
 
-This document explains how the official repository distinguishes releases by branch, so that development builds never interfere with production OTA updates.
+GitHub Actions publication is outside the current Debian build scope. This
+document is a deferred manual-reference convention only. Current local or
+self-hosted deployments should use an explicit `manifest_url`; they do not
+depend on GitHub release discovery.
 
 ## Channel Strategy
 
-The CI/CD pipeline assigns a release channel based on the branch being built:
+The publisher assigns a release channel and GitHub release type based on the source branch:
 
 | Branch | Channel | GitHub Release | Default Manual OTA Behavior |
 |--------|---------|----------------|----------------------|
@@ -36,15 +39,15 @@ development builds. The `dev-*` channel name is just a label that makes the
 manifest easy to identify; it is not what keeps the build off production
 devices.
 
-This means you can safely push experimental branches and let CI build them,
-without any risk to devices running production firmware.
+This means an experimental build can be published manually as a prerelease
+without being selected by devices using the default release lookup.
 
 ## Testing a Development Branch Build
 
-When you want to flash a development branch build onto a device for testing, fetch its manifest directly by URL. This bypasses the `releases/latest` lookup, so point the device at the dev release explicitly.
+When you want to install a development build on a device for testing, fetch its manifest directly by URL. This bypasses the `releases/latest` lookup, so point the device at the development release explicitly.
 
 ```bash
-# 1. Find the release tag for your branch build on the Releases page
+# 1. Find the manually published development tag on the Releases page
 #    (it will be marked as "Pre-release")
 TAG="20260604-120000-abc1234"
 REPO="AidenAI-IO/aiden-firmware"

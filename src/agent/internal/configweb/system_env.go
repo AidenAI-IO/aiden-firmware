@@ -81,6 +81,19 @@ func parseSystemEnv(content string) ([]EnvAssignment, error) {
 	return assignments, nil
 }
 
+func isAllowedSystemEnvKey(key string) bool {
+	switch key {
+	case "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY",
+		"all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY",
+		"ANTHROPIC_BASE_URL", "ANDROID_SERIAL", "AIDEN_ADB_SERIAL",
+		"AIDEN_POINTER_MODE", "AIDEN_WIFI_PROXY_ENABLED":
+		return true
+	}
+	return strings.HasSuffix(key, "_KEY") ||
+		strings.HasSuffix(key, "_TOKEN") ||
+		strings.HasSuffix(key, "_SECRET")
+}
+
 func isEnvNameChar(value byte, first bool) bool {
 	if value == '_' || value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' {
 		return true
@@ -213,9 +226,16 @@ func (s *Server) handleSystemEnv(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, 400, "system env is too large")
 		return
 	}
-	if _, err := parseSystemEnv(*request.SystemEnv); err != nil {
+	assignments, err := parseSystemEnv(*request.SystemEnv)
+	if err != nil {
 		writeJSONError(w, 400, err.Error())
 		return
+	}
+	for _, assignment := range assignments {
+		if !isAllowedSystemEnvKey(assignment.Key) {
+			writeJSONError(w, 400, "environment variable is not approved: "+assignment.Key)
+			return
+		}
 	}
 	s.systemEnvMu.Lock()
 	defer s.systemEnvMu.Unlock()

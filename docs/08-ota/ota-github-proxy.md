@@ -20,7 +20,7 @@ Save the configuration to apply it. Leave the field empty to disable the proxy.
 
 ## Configure in a File
 
-### OTA Config File (`/userdata/ota/config.json`)
+### OTA Config File (`/userdata/debian/ota/config.json`)
 
 Add the `github_proxy_url` field to your OTA configuration:
 

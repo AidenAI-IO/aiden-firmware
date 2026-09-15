@@ -19,7 +19,6 @@ import (
 	"aiden-agent/internal/agenttask"
 	"aiden-agent/internal/configweb"
 	"aiden-agent/internal/logging"
-	"aiden-agent/internal/ota"
 	"aiden-agent/internal/wifiproxy"
 )
 
@@ -218,24 +217,6 @@ func main() {
 	serverErr := make(chan error, 1)
 	go func() {
 		serverErr <- server.Start()
-	}()
-	// S54ota may already be waiting for the marker. Delay the service-level
-	// check until the Agent HTTP listener has had time to bind, then let OTA
-	// commit only after the read-only probes pass.
-	go func() {
-		time.Sleep(3 * time.Second)
-		for attempt := 1; attempt <= 60; attempt++ {
-			wrote, err := ota.WriteHealthMarkerIfPendingAfterSelfCheck("/userdata/ota/pending_boot.json", "/userdata/ota/health.ok", "/userdata/ota/health/current.json")
-			if err != nil {
-				log.Printf("[ota] health marker attempt %d not ready: %v", attempt, err)
-			} else if wrote {
-				log.Printf("[ota] health marker written")
-				return
-			} else {
-				return
-			}
-			time.Sleep(5 * time.Second)
-		}
 	}()
 
 	signals := make(chan os.Signal, 1)

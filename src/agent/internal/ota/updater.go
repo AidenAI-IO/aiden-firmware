@@ -23,10 +23,16 @@ import (
 )
 
 const (
-	DefaultOTAConfigPath                = "/userdata/ota/config.json"
+	DefaultDebianOTAConfigPath          = "/userdata/debian/ota/config.json"
+	DefaultOTAConfigPath                = DefaultDebianOTAConfigPath
 	DefaultOTAStateDir                  = "/userdata/ota"
 	DefaultOTAStorageMountPoint         = "/userdata/ota"
-	DefaultOTAStorageDevicePath         = "/dev/block/by-name/ota"
+	DefaultOTAStorageDevicePath         = "/dev/disk/by-partlabel/ota"
+	DefaultOTAMiscPath                  = "/dev/disk/by-partlabel/misc"
+	DefaultOTABlockDir                  = "/dev/disk/by-partlabel"
+	LegacyOTAStorageDevicePath          = "/dev/block/by-name/ota"
+	LegacyOTAMiscPath                   = "/dev/block/by-name/misc"
+	LegacyOTABlockDir                   = "/dev/block/by-name"
 	DefaultOTAStorageFilesystem         = "ext4"
 	DefaultOTAMountInfoPath             = "/proc/self/mountinfo"
 	DefaultOTAUpdateLockName            = "update.lock"
@@ -80,6 +86,14 @@ type UpdaterConfig struct {
 	DryRun                    bool                         `json:"dry_run,omitempty"`
 	TargetSlotOverride        string                       `json:"target_slot_override,omitempty"`
 	Logger                    *log.Logger                  `json:"-"`
+	DebianMode                bool                         `json:"-"`
+	MachineIDPath             string                       `json:"-"`
+	RuntimeMachineIDPath      string                       `json:"-"`
+	PersonalizationPath       string                       `json:"-"`
+	FactoryIdentityPath       string                       `json:"-"`
+	DebugfsPath               string                       `json:"-"`
+	E2fsckPath                string                       `json:"-"`
+	MachineIDSetupPath        string                       `json:"-"`
 }
 
 type UpdateResult struct {
@@ -90,18 +104,24 @@ type UpdateResult struct {
 }
 
 type Updater struct {
-	config         UpdaterConfig
-	reboot         func() error
-	writeABData    func(ABData) error
-	currentSlot    func() (Slot, bool, error)
-	availableBytes func(string) (int64, error)
+	config          UpdaterConfig
+	reboot          func() error
+	writeABData     func(ABData) error
+	currentSlot     func() (Slot, bool, error)
+	currentRootSlot func() (Slot, bool, error)
+	bootID          func() string
+	availableBytes  func(string) (int64, error)
+	runCommand      personalizationCommandRunner
 }
 
 func LoadUpdaterConfig(path string) (UpdaterConfig, error) {
 	if path == "" {
 		path = DefaultOTAConfigPath
 	}
-	config := UpdaterConfig{ConfigPath: path}
+	config := UpdaterConfig{
+		ConfigPath: path,
+		DebianMode: filepath.Clean(path) == filepath.Clean(DefaultDebianOTAConfigPath),
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -162,13 +182,34 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 		return UpdaterConfig{}, fmt.Errorf("update_lock_path must be inside the dedicated OTA storage mount")
 	}
 	if config.MiscPath == "" {
-		config.MiscPath = "/dev/block/by-name/misc"
+		config.MiscPath = DefaultOTAMiscPath
 	}
 	if config.BlockDir == "" {
-		config.BlockDir = "/dev/block/by-name"
+		config.BlockDir = DefaultOTABlockDir
 	}
 	if config.PublicKeyPath == "" {
 		config.PublicKeyPath = "/oem/etc/ota_pubkey.pem"
+	}
+	if config.MachineIDPath == "" {
+		config.MachineIDPath = DefaultPersistentMachineIDPath
+	}
+	if config.RuntimeMachineIDPath == "" {
+		config.RuntimeMachineIDPath = "/etc/machine-id"
+	}
+	if config.PersonalizationPath == "" {
+		config.PersonalizationPath = DefaultPersonalizationSidecarPath
+	}
+	if config.FactoryIdentityPath == "" {
+		config.FactoryIdentityPath = DefaultFactoryIdentityPath
+	}
+	if config.DebugfsPath == "" {
+		config.DebugfsPath = DefaultDebugfsPath
+	}
+	if config.E2fsckPath == "" {
+		config.E2fsckPath = DefaultE2fsckPath
+	}
+	if config.MachineIDSetupPath == "" {
+		config.MachineIDSetupPath = DefaultSystemdMachineIDSetupPath
 	}
 	if config.GitHubTokenPath == "" {
 		config.GitHubTokenPath = filepath.Join(config.StateDir, "gh_token")
@@ -220,10 +261,13 @@ func NewUpdater(config UpdaterConfig, reboot func() error) (*Updater, error) {
 		return nil, err
 	}
 	u := &Updater{
-		config:         config,
-		reboot:         reboot,
-		currentSlot:    currentSlotFromProcCmdline,
-		availableBytes: filesystemAvailableBytes,
+		config:          config,
+		reboot:          reboot,
+		currentSlot:     currentSlotFromProcCmdline,
+		currentRootSlot: currentRootSlotFromProcCmdline,
+		bootID:          currentBootID,
+		availableBytes:  filesystemAvailableBytes,
+		runCommand:      runPersonalizationCommand,
 	}
 	u.writeABData = u.writeABDataFile
 	return u, nil
@@ -335,6 +379,12 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		u.recordError("manifest", err)
 		return UpdateResult{}, err
 	}
+	if u.config.DebianMode {
+		if err := requireAtomicProductionManifest(manifest); err != nil {
+			u.recordError("manifest", err)
+			return UpdateResult{}, err
+		}
+	}
 	u.logf("ota manifest: verified version=%s channel=%s build_time=%s parts=%d", manifest.Version, logValue(manifest.Channel, "<unset>"), manifest.BuildTime, len(manifest.Parts))
 	if err := state.RejectDowngrade(manifest); err != nil {
 		u.recordError("policy", err)
@@ -377,7 +427,56 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		u.recordError("space", err)
 		return UpdateResult{}, err
 	}
-	downloaded := map[string]string{}
+
+	if target == active {
+		err := fmt.Errorf("refusing to write active slot %s", slotLogName(active))
+		u.recordError("target-slot", err)
+		return UpdateResult{}, err
+	}
+	transactionID, err := generateNonce()
+	if err != nil {
+		u.recordError("transaction", err)
+		return UpdateResult{}, err
+	}
+
+	statePrepared := false
+	prepareState := func() error {
+		if statePrepared {
+			return nil
+		}
+		state.Phase = "writing"
+		state.TargetVersion = manifest.Version
+		state.TargetBuildTime = manifest.BuildTime
+		state.ActiveSlot = active
+		state.TargetSlot = target
+		state.PendingBootNonce = transactionID
+		state.DownloadedAssets = map[string]string{}
+		state.DownloadedHashes = map[string]string{}
+		for partName, planned := range plan.assets {
+			if planned.targetMatches {
+				state.DownloadedHashes[partName] = partitionSHA256ForAsset(planned.asset)
+			}
+		}
+		if state.Slots == nil {
+			state.Slots = map[string]SlotPartitionInfo{}
+		}
+		targetKey := targetNameForState(target)
+		snapshot := copySlotPartitionInfo(state.Slots[targetKey])
+		if len(snapshot.Partitions) > 0 {
+			state.PendingTargetSlot = &snapshot
+		} else {
+			state.PendingTargetSlot = nil
+		}
+		delete(state.Slots, targetKey)
+		if err := SaveState(u.statePath(), state); err != nil {
+			return err
+		}
+		statePrepared = true
+		return nil
+	}
+
+	writer := PartitionWriter{BlockDir: u.blockDirForAccess(), ActiveSlot: active, PartitionSizes: u.partitionSizes()}
+	targetInvalidated := false
 	for _, part := range manifest.Parts {
 		planned := plan.assets[part.Name]
 		asset := planned.asset
@@ -385,6 +484,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			u.logf("ota partition: %s skipped; target slot %s hash matches manifest", part.Name, slotLogName(target))
 			continue
 		}
+
 		var assetURL string
 		var assetToken string
 		if asset.URL != "" {
@@ -394,7 +494,6 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 				assetToken = token
 			}
 		} else if u.config.ManifestURL != "" {
-			var err error
 			assetURL, err = deriveAssetURL(u.config.ManifestURL, asset.Name)
 			if err != nil {
 				u.recordError("asset", err)
@@ -405,7 +504,6 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 				assetToken = token
 			}
 		} else {
-			var err error
 			assetURL, err = requiredAssetURL(assetsByName, asset.Name)
 			if err != nil {
 				u.recordError("asset", err)
@@ -414,111 +512,111 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			u.logf("ota asset: %s using URL from release API", asset.Name)
 			assetToken = token
 		}
+
 		dst := planned.path
 		if planned.cachedVerified {
+			if err := u.verifyCachedDownload(dst, asset); err != nil {
+				err = u.discardInvalidDownload(dst, err)
+				u.recordError("verify", err)
+				return UpdateResult{}, err
+			}
 			u.logf("ota download: %s skipped; cached file verified dst=%s", asset.Name, dst)
-			downloaded[part.Name] = dst
+		} else {
+			if err := os.MkdirAll(u.config.DownloadDir, 0o755); err != nil {
+				u.recordError("download", err)
+				return UpdateResult{}, err
+			}
+			u.logf("ota download: %s start size=%s url=%s dst=%s", asset.Name, formatBytes(asset.Size), sanitizeURLForLog(assetURL), dst)
+			if err := u.downloadFileWithToken(ctx, assetURL, dst, asset.Size, assetToken); err != nil {
+				u.recordError("download", err)
+				return UpdateResult{}, err
+			}
+			if err := VerifyFile(dst, asset.Size, asset.SHA256); err != nil {
+				err = u.discardInvalidDownload(dst, err)
+				u.recordError("verify", err)
+				return UpdateResult{}, err
+			}
+			u.logf("ota verify: %s sha256 ok", asset.Name)
+			if err := u.verifyDownloadedImage(dst, asset); err != nil {
+				err = u.discardInvalidDownload(dst, err)
+				u.recordError("verify", err)
+				return UpdateResult{}, err
+			}
+		}
+
+		if u.config.DryRun {
 			continue
 		}
-		if err := os.MkdirAll(u.config.DownloadDir, 0o755); err != nil {
-			u.recordError("download", err)
+		if err := prepareState(); err != nil {
+			u.recordError("state", err)
 			return UpdateResult{}, err
 		}
-		u.logf("ota download: %s start size=%s url=%s dst=%s", asset.Name, formatBytes(asset.Size), sanitizeURLForLog(assetURL), dst)
-		if err := u.downloadFileWithToken(ctx, assetURL, dst, asset.Size, assetToken); err != nil {
-			u.recordError("download", err)
+		if !targetInvalidated {
+			if err := ab.MarkUnbootable(target); err != nil {
+				u.recordError("misc", err)
+				return UpdateResult{}, err
+			}
+			if err := u.writeABData(ab); err != nil {
+				u.recordError("misc", err)
+				return UpdateResult{}, err
+			}
+			targetInvalidated = true
+			u.logf("ota misc: target slot %s marked unbootable before partition writes", slotLogName(target))
+		}
+
+		blockName, err := writer.ResolveBlockName(part.Name, target)
+		if err != nil {
+			u.recordError("write", err)
 			return UpdateResult{}, err
 		}
-		if err := VerifyFile(dst, asset.Size, asset.SHA256); err != nil {
-			err = u.discardInvalidDownload(dst, err)
-			u.recordError("verify", err)
+		u.logf("ota write: %s -> %s start image=%s", part.Name, blockName, dst)
+		if err := writer.WritePartWithProgress(part.Name, target, dst, u.logWriteProgress); err != nil {
+			u.recordError("write", err)
 			return UpdateResult{}, err
 		}
-		u.logf("ota verify: %s sha256 ok", asset.Name)
-		if err := u.verifyDownloadedImage(dst, asset); err != nil {
-			err = u.discardInvalidDownload(dst, err)
-			u.recordError("verify", err)
+		if err := writer.VerifyPart(part.Name, target, dst, partitionSHA256ForAsset(asset)); err != nil {
+			u.recordError("readback", err)
 			return UpdateResult{}, err
 		}
-		downloaded[part.Name] = dst
+		state.DownloadedHashes[part.Name] = partitionSHA256ForAsset(asset)
+		u.logf("ota readback: %s -> %s sha256 ok", part.Name, blockName)
+		if u.config.DebianMode && part.Name == "rootfs" {
+			record, err := u.personalizeRootFS(writer, target, dst, asset)
+			if err != nil {
+				u.recordError("personalization", err)
+				return UpdateResult{}, err
+			}
+			if err := u.commitPersonalizationRecord(transactionID, manifest, target, record); err != nil {
+				u.recordError("personalization", err)
+				return UpdateResult{}, err
+			}
+			u.logf("ota personalization: rootfs slot %s machine-id applied effective_sha256=%s", slotLogName(target), record.EffectivePartitionSHA256)
+		}
+		if err := u.deleteDownloadCache(dst); err != nil {
+			u.recordError("cleanup", err)
+			return UpdateResult{}, err
+		}
 	}
 	if u.config.DryRun {
 		u.logf("ota check: dry-run complete version=%s target_slot=%s", manifest.Version, slotLogName(target))
 		return UpdateResult{Updated: true, Version: manifest.Version, TargetSlot: target}, nil
 	}
-	// Capture protected configuration before changing the target slot. The
-	// snapshot is retained across reboot and is used to recover an interrupted
-	// migration; user memory and append-only records are never bulk-restored.
-	snapshotPath, err := SnapshotProtectedData(u.config.StateDir, manifest.Version)
-	if err != nil {
-		u.recordError("snapshot", err)
-		return UpdateResult{}, err
-	}
-	state.DataSnapshotPath = snapshotPath
-	state.Phase = "writing"
-	state.TargetVersion = manifest.Version
-	state.TargetBuildTime = manifest.BuildTime
-	state.ActiveSlot = active
-	state.TargetSlot = target
-	state.DownloadedAssets = downloaded
-	state.DownloadedHashes = map[string]string{}
-	if state.SlotBuildTimes == nil {
-		state.SlotBuildTimes = map[string]string{}
-	}
-	targetBuildSlot, err := slotName(target)
-	if err != nil {
-		return UpdateResult{}, err
-	}
-	state.SlotBuildTimes[targetBuildSlot] = manifest.BuildTime
-	for part, asset := range selectedAssets {
-		state.DownloadedHashes[part] = partitionSHA256ForAsset(asset)
-	}
-	if state.Slots == nil {
-		state.Slots = map[string]SlotPartitionInfo{}
-	}
-	targetKey := targetNameForState(target)
-	snapshot := copySlotPartitionInfo(state.Slots[targetKey])
-	if len(snapshot.Partitions) > 0 {
-		state.PendingTargetSlot = &snapshot
-	} else {
-		state.PendingTargetSlot = nil
-	}
-	delete(state.Slots, targetKey)
-	if err := u.saveSnapshotState(state); err != nil {
+	if err := prepareState(); err != nil {
 		u.recordError("state", err)
 		return UpdateResult{}, err
-	}
-
-	writer := PartitionWriter{BlockDir: u.config.BlockDir, ActiveSlot: active, PartitionSizes: u.partitionSizes()}
-	for part, image := range downloaded {
-		blockName, err := writer.ResolveBlockName(part, target)
-		if err != nil {
-			u.recordError("write", err)
-			return UpdateResult{}, err
-		}
-		u.logf("ota write: %s -> %s start image=%s", part, blockName, image)
-		if err := writer.WritePartWithProgress(part, target, image, u.logWriteProgress); err != nil {
-			u.recordError("write", err)
-			return UpdateResult{}, err
-		}
 	}
 	if err := DeleteStaleHealthMarker(u.healthPath()); err != nil {
 		u.recordError("health", err)
 		return UpdateResult{}, err
 	}
-	nonce, err := generateNonce()
-	if err != nil {
-		u.recordError("pending", err)
-		return UpdateResult{}, err
-	}
 	targetName, _ := slotName(target)
-	pending := PendingBoot{TargetSlot: targetName, TargetVersion: manifest.Version, TargetBuildTime: manifest.BuildTime, Nonce: nonce}
+	pending := PendingBoot{TargetSlot: targetName, TargetVersion: manifest.Version, TargetBuildTime: manifest.BuildTime, Nonce: transactionID}
 	if err := WritePendingBoot(u.pendingPath(), pending); err != nil {
 		u.recordError("pending", err)
 		return UpdateResult{}, err
 	}
 	state.Phase = "pending-reboot"
-	state.PendingBootNonce = nonce
+	state.PendingBootNonce = transactionID
 	if err := SaveState(u.statePath(), state); err != nil {
 		u.recordError("state", err)
 		return UpdateResult{}, err
@@ -588,6 +686,73 @@ func (u *Updater) discardInvalidDownload(path string, verifyErr error) error {
 	return verifyErr
 }
 
+func (u *Updater) deleteDownloadCache(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove verified OTA cache %s: %w", filepath.Base(path), err)
+	}
+	if err := fsyncDirFor(path); err != nil {
+		return fmt.Errorf("sync OTA cache directory after removing %s: %w", filepath.Base(path), err)
+	}
+	u.logf("ota cleanup: removed verified cache %s", filepath.Base(path))
+	return nil
+}
+
+func (u *Updater) personalizeRootFS(writer PartitionWriter, target Slot, imagePath string, asset ManifestAsset) (RootFSPersonalization, error) {
+	machineID, err := readPersistentMachineID(u.config.MachineIDPath)
+	if err != nil {
+		return RootFSPersonalization{}, fmt.Errorf("load persistent machine-id: %w", err)
+	}
+	hashedBytes, err := partitionImageSize(imagePath)
+	if err != nil {
+		return RootFSPersonalization{}, fmt.Errorf("inspect rootfs image size: %w", err)
+	}
+	blockName, err := writer.ResolveBlockName("rootfs", target)
+	if err != nil {
+		return RootFSPersonalization{}, err
+	}
+	blockPath := filepath.Join(writer.BlockDir, blockName)
+	effectiveHash, err := personalizeExt4MachineID(
+		blockPath,
+		machineID,
+		hashedBytes,
+		u.config.DebugfsPath,
+		u.config.E2fsckPath,
+		u.runCommand,
+	)
+	if err != nil {
+		return RootFSPersonalization{}, err
+	}
+	return RootFSPersonalization{
+		ArtifactSHA256:           partitionSHA256ForAsset(asset),
+		PersonalizationSchema:    PersonalizationSchemaVersion,
+		EffectivePartitionSHA256: effectiveHash,
+		HashedBytes:              hashedBytes,
+	}, nil
+}
+
+func (u *Updater) commitPersonalizationRecord(transactionID string, manifest Manifest, target Slot, record RootFSPersonalization) error {
+	sidecar, err := LoadPersonalizationSidecar(u.config.PersonalizationPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("load personalization sidecar: %w", err)
+		}
+		sidecar = PersonalizationSidecar{Slots: map[string]RootFSPersonalization{}}
+	}
+	if sidecar.Slots == nil {
+		sidecar.Slots = map[string]RootFSPersonalization{}
+	}
+	targetName, err := slotName(target)
+	if err != nil {
+		return err
+	}
+	sidecar.SchemaVersion = PersonalizationSchemaVersion
+	sidecar.TransactionID = transactionID
+	sidecar.TargetVersion = manifest.Version
+	sidecar.TargetBuildTime = manifest.BuildTime
+	sidecar.Slots[targetName] = record
+	return SavePersonalizationSidecar(u.config.PersonalizationPath, sidecar)
+}
+
 func targetPartitionHashMatches(state State, target Slot, partName string, asset ManifestAsset) bool {
 	targetName, err := slotName(target)
 	if err != nil {
@@ -599,24 +764,6 @@ func targetPartitionHashMatches(state State, target Slot, partName string, asset
 	}
 	local, ok := slotState.Partitions[partName]
 	return ok && local.Version != "" && local.Hash == partitionSHA256ForAsset(asset)
-}
-
-// saveSnapshotState discards a new snapshot on publication failure only when
-// the on-disk state proves it is unreferenced. A post-rename fsync failure must
-// retain the snapshot, since state.json may already reference it.
-func (u *Updater) saveSnapshotState(state State) error {
-	err := SaveState(u.statePath(), state)
-	if err == nil {
-		return nil
-	}
-	saved, readErr := LoadState(u.statePath())
-	if (readErr == nil && saved.DataSnapshotPath != state.DataSnapshotPath) || os.IsNotExist(readErr) {
-		if removeErr := os.RemoveAll(state.DataSnapshotPath); removeErr != nil {
-			return errors.Join(err, removeErr)
-		}
-		return errors.Join(err, fsyncDirFor(state.DataSnapshotPath))
-	}
-	return err
 }
 
 func (u *Updater) verifyDownloadedImage(path string, asset ManifestAsset) error {
@@ -664,7 +811,7 @@ func (u *Updater) ProcessPendingHealth(ctx context.Context) error {
 			return u.clearPendingAfterRollback(running)
 		}
 	}
-	bootID := currentBootID()
+	bootID := u.bootID()
 	if err := ValidateHealthMarker(u.healthPath(), pending, bootID); err == nil {
 		u.logf("ota health: marker valid, committing slot=%s", pending.TargetSlot)
 		return u.commitPendingHealth(pending)
@@ -705,6 +852,23 @@ func (u *Updater) clearPendingAfterRollback(running Slot) error {
 		return err
 	}
 	return nil
+}
+
+// saveSnapshotState publishes state and removes a snapshot only when the
+// failed publication proves it was not referenced on disk.
+func (u *Updater) saveSnapshotState(state State) error {
+	err := SaveState(u.statePath(), state)
+	if err == nil {
+		return nil
+	}
+	saved, readErr := LoadState(u.statePath())
+	if (readErr == nil && saved.DataSnapshotPath != state.DataSnapshotPath) || os.IsNotExist(readErr) {
+		if removeErr := os.RemoveAll(state.DataSnapshotPath); removeErr != nil {
+			return errors.Join(err, removeErr)
+		}
+		return errors.Join(err, fsyncDirFor(state.DataSnapshotPath))
+	}
+	return err
 }
 
 func (u *Updater) commitPendingHealth(pending PendingBoot) error {
@@ -806,8 +970,7 @@ func (u *Updater) Status() (State, ABData, error) {
 	return state, ab, nil
 }
 
-// Rollback selects the last successful slot and reboots into it. It is also
-// used by the self-check supervisor for failures discovered after boot.
+// Rollback selects the last successful slot and reboots into it.
 func (u *Updater) Rollback(reason string) error {
 	if err := u.ensureStorageReady(); err != nil {
 		return err
@@ -836,26 +999,17 @@ func (u *Updater) Rollback(reason string) error {
 	if !ok {
 		return errors.New("misc has no bootable active slot")
 	}
-	previous := SlotA
-	if active == SlotA {
-		previous = SlotB
-	}
+	previous := inactiveSlot(active)
 	if !ab.Slots[previous].SuccessfulBoot {
 		return fmt.Errorf("no successful previous slot available (active=%s)", slotLogName(active))
 	}
-	// The old slot was already the last committed slot. Make it successful
-	// immediately so a rollback does not create a second probation boot with no
-	// pending health marker.
 	if err := ab.SetActive(previous, 0, true); err != nil {
 		return err
 	}
 	if err := u.writeABData(ab); err != nil {
 		return err
 	}
-	state.Phase = "rollback-requested"
-	state.LastError = strings.TrimSpace(reason)
-	state.ActiveSlot = active
-	state.TargetSlot = previous
+	state.Phase, state.LastError, state.ActiveSlot, state.TargetSlot = "rollback-requested", strings.TrimSpace(reason), active, previous
 	if err := SaveState(u.statePath(), state); err != nil {
 		return err
 	}
@@ -867,9 +1021,7 @@ func (u *Updater) Rollback(reason string) error {
 	return nil
 }
 
-// RecoverPendingData is safe to run during early boot. It completes the
-// configuration side of an interrupted rollback without touching append-only
-// user data.
+// RecoverPendingData reconciles an interrupted rollback after boot.
 func (u *Updater) RecoverPendingData() error {
 	if err := u.ensureStorageReady(); err != nil {
 		return err
@@ -920,32 +1072,23 @@ func reconcileRollbackState(state *State, running Slot, completed bool) {
 	if err != nil {
 		return
 	}
-	state.ActiveSlot = running
-	state.TargetSlot = running
-	state.TargetVersion = ""
-	state.TargetBuildTime = ""
-	state.PendingBootNonce = ""
-	state.PendingBootID = ""
-	state.PendingTargetSlot = nil
+	state.ActiveSlot, state.TargetSlot, state.TargetVersion, state.TargetBuildTime = running, running, "", ""
+	state.PendingBootNonce, state.PendingBootID, state.PendingTargetSlot = "", "", nil
 	if completed {
 		state.Phase = "rolled-back"
 	} else {
 		state.Phase = "committed"
 	}
-	state.CurrentVersion = ""
-	state.CurrentBuildTime = ""
+	state.CurrentVersion, state.CurrentBuildTime = "", ""
 	if slot, ok := state.Slots[name]; ok {
-		if part, ok := slot.Partitions["boot"]; ok && part.Version != "" {
+		if part, ok := slot.Partitions["boot"]; ok {
 			state.CurrentVersion = part.Version
 		}
 	}
 	if state.SlotBuildTimes != nil {
-		if buildTime := state.SlotBuildTimes[name]; buildTime != "" {
-			state.CurrentBuildTime = buildTime
-		}
+		state.CurrentBuildTime = state.SlotBuildTimes[name]
 	}
-	state.LastCommittedVersion = state.CurrentVersion
-	state.LastCommittedBuildTime = state.CurrentBuildTime
+	state.LastCommittedVersion, state.LastCommittedBuildTime = state.CurrentVersion, state.CurrentBuildTime
 }
 
 func (u *Updater) VerifyManifestFile(path string) (Manifest, error) {
@@ -1041,7 +1184,7 @@ func (u *Updater) initializeFactoryState() (State, error) {
 }
 
 func (u *Updater) readABData() (ABData, error) {
-	f, err := os.Open(u.config.MiscPath)
+	f, err := os.Open(u.miscPathForAccess())
 	if err != nil {
 		return ABData{}, err
 	}
@@ -1050,7 +1193,7 @@ func (u *Updater) readABData() (ABData, error) {
 }
 
 func (u *Updater) writeABDataFile(ab ABData) error {
-	f, err := os.OpenFile(u.config.MiscPath, os.O_WRONLY, 0)
+	f, err := os.OpenFile(u.miscPathForAccess(), os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}
@@ -1063,6 +1206,37 @@ func (u *Updater) writeABDataFile(ab ABData) error {
 		return writeErr
 	}
 	return closeErr
+}
+
+func (u *Updater) miscPathForAccess() string {
+	if u.config.MiscPath == DefaultOTAMiscPath {
+		return preferExistingPath(DefaultOTAMiscPath, LegacyOTAMiscPath)
+	}
+	return u.config.MiscPath
+}
+
+func (u *Updater) blockDirForAccess() string {
+	if u.config.BlockDir == DefaultOTABlockDir {
+		return preferExistingPath(DefaultOTABlockDir, LegacyOTABlockDir)
+	}
+	return u.config.BlockDir
+}
+
+func (u *Updater) storageDevicePathForAccess() string {
+	if u.config.StorageDevicePath == DefaultOTAStorageDevicePath {
+		return preferExistingPath(DefaultOTAStorageDevicePath, LegacyOTAStorageDevicePath)
+	}
+	return u.config.StorageDevicePath
+}
+
+func preferExistingPath(primary string, legacy string) string {
+	if _, err := os.Stat(primary); err == nil {
+		return primary
+	}
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	return primary
 }
 
 func (u *Updater) publicKey() (ed25519.PublicKey, error) {
