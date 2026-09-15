@@ -1,212 +1,230 @@
-# 灵动岛实时展示 Agent 工具状态方案
+# Live Activity Agent Tool Status Design
 
-> 关联任务：**【Aiden】灵动岛展示更详细的实时信息：任务状态**
-> Feishu GUID：`2e106f68-d8a1-4a4b-a833-2de2eecb5896`
+> Related task: **Aiden — Show More Detailed Real-Time Information in Dynamic Island: Task Status**
+> Feishu GUID: `2e106f68-d8a1-4a4b-a833-2de2eecb5896`
 
-## 1. 目标与边界
+## 1. Goals and Boundaries
 
-灵动岛用于降低 Agent 执行过程中的等待焦虑。它需要让用户随时知道 Agent 当前在做什么、当前工具处于什么状态，以及是否需要 App 或用户介入。
+Dynamic Island should reduce uncertainty while the Agent is working. At any
+time, the user should be able to tell what the Agent is doing, which lifecycle
+state the current tool is in, and whether the Aiden App or the user must take
+over.
 
-本方案不展示完整 thinking，也不还原模型内部思维链。思考阶段只展示接口允许暴露的摘要或简短阶段文案；工具阶段优先展示工具动作和工具生命周期。
+The Live Activity must not expose the model's full reasoning or reconstruct its
+chain of thought. The thinking state uses safe stage-level copy. Tool states
+prioritize the current action and lifecycle rather than raw inputs or results.
 
-展示分为两层：
+The presentation has two layers:
 
-- **收起态**：只保留一眼可读的当前动作和状态，不展示任务标题、原始工具名、URL 或敏感参数。
-- **展开态**：展示当前阶段的一条说明、当前工具、工具状态、最近结果和下一步，不做完整事件日志。
+- **Compact:** a glanceable action and status. It does not show the task title,
+  raw tool name, URL, or sensitive parameters.
+- **Expanded:** the latest status, an optional tool line, and one safe step
+  description. It is a snapshot, not a complete event log.
 
-## 2. 收起态设计
+The examples below use English semantic labels. The companion app may localize
+those labels for the user-facing interface.
 
-收起态固定为：
+## 2. Compact Presentation
 
-```text
-[Logo + 当前动作]        [时间 / 结果 / 等待状态]
-```
-
-没有任务时，左侧只显示 Logo：
-
-```text
-[Logo]                    [待命]
-[Logo]                    [已连接]
-[Logo]                    [连接中]
-[Logo]                    [未连接]
-```
-
-工具执行中，右侧显示当前工具已经持续的时间，不再显示语义重复的“运行中”：
+The compact layout is:
 
 ```text
-[Logo 看屏幕]              [8秒]
-[Logo 打开应用]            [2秒]
-[Logo 点击操作]            [1秒]
-[Logo 输入文字]            [4秒]
-[Logo 滚动页面]            [3秒]
-[Logo 搜索信息]            [6秒]
-[Logo 剪贴板]              [2秒]
-[Logo 确认结果]            [5秒]
+[Logo + current action]        [elapsed time / result / wait state]
 ```
 
-工具完成、失败或等待外部条件时，右侧短暂显示结果：
+When there is no task, the leading side shows only the logo:
 
 ```text
-[Logo 看屏幕]              [完成]
-[Logo 打开应用]            [失败]
-[Logo 重试]                [第2次]
-[Logo 等待 App]            [打开]
-[Logo 等你]                [请接管]
+[Logo]                         [Ready]
+[Logo]                         [Connected]
+[Logo]                         [Connecting]
+[Logo]                         [Disconnected]
 ```
 
-收起态动作文案应控制在约 3～5 个汉字，超出时使用固定降级词。建议映射：
+While a tool is actively timed, the trailing side shows its elapsed time
+instead of a redundant Running label:
 
-| 工具或阶段 | 收起态动作 |
+```text
+[Logo Check screen]            [8s]
+[Logo Open app]                [2s]
+[Logo Tap]                     [1s]
+[Logo Type]                    [4s]
+[Logo Scroll]                  [3s]
+[Logo Search]                  [6s]
+[Logo Clipboard]               [2s]
+```
+
+After completion, failure, or an external wait transition, the trailing side
+briefly shows the outcome:
+
+```text
+[Logo Check screen]            [Done]
+[Logo Open app]                [Failed]
+[Logo Retry]                   [Retry]
+[Logo Wait for app]            [Open]
+[Logo Your turn]               [Take over]
+```
+
+Compact action labels must remain short. Recommended semantic mappings are:
+
+| Tool or phase | Compact action |
 | --- | --- |
-| `screenshot` | 看屏幕 |
-| `open_app` | 打开应用 |
-| `touch_gesture` | 点击操作 |
-| `keyboard_text` / `enter_text` | 输入文字 |
-| `mouse_scroll` | 滚动页面 |
-| `web_search` | 搜索信息 |
-| `bridge_clipboard` | 剪贴板 |
-| `bridge_calendar` | 日历操作 |
-| `bridge_contacts` | 联系人 |
-| `bridge_notification` | 发通知 |
-| 验证阶段 | 确认结果 |
-| 规划阶段 | 准备执行 |
-| 回答阶段 | 整理结果 |
+| `screenshot` | Check screen |
+| `open_app` / `bridge_open_app` / `open_url` | Open app |
+| `touch_gesture` / `quick_action` | Tap |
+| `keyboard_text` / `enter_text` | Type |
+| `mouse_scroll` | Scroll |
+| `web_search` | Search |
+| `bridge_clipboard` | Clipboard |
+| `bridge_calendar` | Calendar |
+| `bridge_contacts` | Contacts |
+| `bridge_notification` | Notify |
+| Verification phase | Verify |
+| Planning or ordinary model-output phase | Processing |
+| Answering phase | Preparing result |
 
-如果目标名称很短，可以显示“打开设置”“打开微信”等；目标过长、包含 URL 或可能包含敏感信息时，降级为“打开应用”。
+A short target name may be included by a localized client, such as Open
+Settings. Long targets, URLs, and potentially sensitive values must fall back
+to the generic action.
 
-## 3. 展开态设计
+## 3. Expanded Presentation
 
-展开态最多展示 3～4 行核心信息，采用“当前状态 + 说明 + 详情 + 下一步”的结构。它展示最新状态，不累积历史事件。
+The expanded view shows the latest state in a small number of lines: a title,
+an optional tool/status line, and `current_step`. It does not maintain a
+history or expose a separate raw next-step field.
 
-### 3.1 思考阶段
+### 3.1 Processing and Thinking
 
-思考阶段必须显示“思考中”，但只显示摘要：
+Ordinary model output is represented as `processing`. Only a non-empty
+`reasoning_delta` changes the state to `thinking`:
 
 ```text
-思考中 · 8秒
+Thinking · 8s
 
-正在确认当前页面状态，
-并判断下一步操作
-
-下一步：打开设置
+Analyzing the current task and preparing the next action
 ```
 
-如果模型返回允许展示的 reasoning summary，则显示摘要的最新累计内容：
+The first version deliberately uses fixed safe copy for thinking. It does not
+render `reasoning_content`, a raw reasoning stream, or a generated reasoning
+summary in the Live Activity.
+
+After `reasoning_reset`, the state returns to `processing`:
 
 ```text
-思考中 · 8秒
+Processing
 
-已确认当前处于系统设置页面，
-接下来需要查找网络选项
-
-下一步：检查 Wi‑Fi
+Processing the request
 ```
 
-如果模型没有返回可展示摘要，则使用 Agent 生成的兜底文案：
+### 3.2 Tool Execution
+
+A tool call takes display priority over model thinking:
 
 ```text
-思考中 · 8秒
+Working · Check screen
 
-正在分析当前任务并准备下一步操作
+Tool: Screenshot · Running
+Checking the current screen
 ```
 
-摘要采用累计替换，最多两三行；不展示完整 reasoning_content，不直接展示原始 JSON。
+The app calculates elapsed time locally from `tool_started_at` while the tool
+is in an actively timed state.
 
-### 3.2 工具执行阶段
-
-工具调用开始后，工具信息优先于 thinking：
+### 3.3 Tool Completion and Verification
 
 ```text
-操作中 · 看屏幕
+Completed · Check screen
 
-工具：截图
-状态：执行中 · 3秒
-说明：正在读取当前页面
-
-下一步：确认设置项是否出现
+Tool: Screenshot · Completed
+Screen checked
 ```
 
-### 3.3 工具完成阶段
+An accepted `open_app` or `open_url` result is not final visual proof. Those
+results move to `verifying` until the next screen observation can confirm the
+target page.
+
+### 3.4 Retry, Waiting, and Human Handoff
 
 ```text
-已完成 · 看屏幕
+Retrying
 
-工具：截图
-结果：已获取当前页面
-
-下一步：查找 Wi‑Fi 选项
-```
-
-### 3.4 重试、等待与人工接管
-
-```text
-重试中 · 第 2 次
-
-工具：打开应用
-原因：设备暂时没有响应
+Tool: Open app · Retrying
+The device did not respond
 ```
 
 ```text
-等待 Aiden App
+Waiting for Aiden App
 
-当前操作：读取剪贴板
-请打开 Aiden App 继续
+Current action: Read clipboard
+Open Aiden App to continue
 ```
 
 ```text
-等待你操作
+Waiting for you
 
-请在手机上输入验证码
-完成后 Agent 会继续执行
+Enter the verification code on the phone
+The Agent will continue afterward
 ```
 
-## 4. 工具状态模型
+`retrying` is part of the client contract, but the Agent must receive or emit
+an explicit retry progress event before using it. The current implementation
+does not infer retry counts from repeated tool calls.
 
-现有 `status` 和 `phase` 已能覆盖大部分状态。实现时统一按以下生命周期投影：
+## 4. State Projection
 
-| 运行事件 | 展示状态 |
+The existing task-level `status` and `phase` fields remain authoritative.
+`tool_status` adds the more detailed current lifecycle:
+
+| Runtime event | Projected state |
 | --- | --- |
-| `tool_call` | 工具执行中，立即显示动作和目标 |
-| 工具持续执行 | 保持执行中，本地计时递增 |
-| 成功 `tool_result` | 显示已完成和结果摘要 |
-| 可恢复失败 | 显示重试中和重试次数 |
-| 需要 Phone Bridge | 显示等待 Aiden App |
-| 需要用户操作 | 显示等待你和接管说明 |
-| 截图或操作后的确认 | 显示确认结果 |
-| 无当前工具 | 显示思考中、准备执行或整理结果 |
+| Task start | `status=running`, `tool_status=processing` |
+| `role_output` / `assistant_output` | `processing` |
+| Non-empty `reasoning_delta` | `thinking` |
+| `reasoning_reset` | `processing` |
+| `tool_call` | `running`, or `waiting_user` for a handoff tool |
+| Explicit tool progress | `preparing`, `running`, `verifying`, or another supported progress state |
+| Successful `tool_result` | `succeeded`; app-launch results use `verifying` |
+| Recoverable tool error | `failed` while the task remains `running` |
+| Phone Bridge unavailable | `status=needs_app`, `tool_status=waiting_app` |
+| User action required | `status=needs_app`, `tool_status=waiting_user` |
+| Task completed | `status=completed`, `tool_status=succeeded` |
+| Task failed | `status=failed`, `tool_status=failed` |
+| Task canceled | `status=canceled`, with `tool_status` omitted |
 
-## 5. Phone Bridge 不在线时的第三方 App 跳转
+## 5. Opening a Third-Party App While Phone Bridge Is Offline
 
-`open_app` 在 Phone Bridge 在线时可以直接由伴侣 App 执行；不在线时，现有逻辑会尝试恢复 Aiden App，或使用可见系统搜索/HID 作为兜底。灵动岛需要把“恢复 Aiden App”和“打开第三方 App”区分开，让用户知道即将发生的跳转。
+When Phone Bridge is connected, `open_app` can be executed directly by the
+companion app. When it is unavailable, the existing flow may restore the
+Aiden App through a confirmed Dynamic Island return entry and then send the
+third-party launch command.
 
-推荐流程：
+Recommended flow:
 
-1. Agent 确认 Phone Bridge 不在线，但存在可用的 Aiden App 中转路径。
-2. 在执行点击灵动岛或恢复 Aiden App 之前，先发布一条 Live Activity 状态：
+1. The Agent determines that Phone Bridge is unavailable but a usable Aiden
+   App return path exists.
+2. Before restoring Aiden, publish a `preparing` progress state that explains
+   that the app is about to change and Aiden is being restored.
+3. Restore Aiden through the confirmed Dynamic Island return entry.
+4. After the foreground WebSocket reconnects, send the third-party launch
+   command. If automatic restoration cannot be confirmed, ask the user to open
+   Aiden instead of assuming success.
+5. Continue with a screenshot-based observation. An `ok:true` bridge result
+   only means that the operating system accepted the launch request.
 
-   ```text
-   收起态：[Logo 打开应用]    [准备]
-   展开态：准备打开微信
-           正在唤回 Aiden App
-   ```
+If no usable return entry exists, the state should explain that Aiden must be
+opened manually or that the Agent must use a visible search/HID fallback.
+The UI must not claim that the target app opened until the screen has been
+observed.
 
-3. Agent 通过已确认的 Dynamic Island return entry 恢复 Aiden App。
-4. Aiden App 前台恢复并重新建立 Phone Bridge 后，由 App 执行第三方 App 跳转。若系统或当前界面要求用户手动进入 Aiden App，则展开态改为“请点击灵动岛打开 Aiden App”，不能假设自动恢复一定成功。
-5. 跳转后继续通过截图验证目标 App 是否真的打开；`ok:true` 只代表系统接受了请求。
+## 6. Protocol Scope
 
-如果没有可用的 Dynamic Island return entry，则显示：
+The endpoint and transport remain unchanged:
 
-```text
-无法中转打开应用
+- `GET /api/live-activity/current`
+- coalesced BLE Wake notification
+- USB ECM snapshot fetch
 
-请先打开 Aiden App，或允许 Agent 使用手机上的搜索/HID 方式继续
-```
-
-此场景不应伪装成“已打开”。只有收到 App 的实际结果并完成屏幕验证后，才显示“已完成”。
-
-## 6. 协议改造范围
-
-不需要改变 `/api/live-activity/current` 的接口路径、轮询机制或 BLE Wake + USB ECM 链路。现有字段已经能支持第一版展示：
+The existing state remains available:
 
 ```text
 status
@@ -221,43 +239,58 @@ started_at
 updated_at
 ```
 
-本次实现只做向后兼容的可选字段扩展，接口路径和轮询机制保持不变：
+This change adds two backward-compatible optional fields:
 
-```text
-tool_status          // processing/thinking/running/preparing/verifying/succeeded/failed/waiting_app/waiting_user
-tool_started_at      // 当前工具开始时间，用于准确计时
-```
+| Field | Meaning |
+| --- | --- |
+| `tool_status` | `processing`, `thinking`, `running`, `preparing`, `verifying`, `succeeded`, `failed`, `retrying`, `waiting_app`, or `waiting_user` |
+| `tool_started_at` | Start time used for the current actively timed tool state |
 
-其中 `reasoning_content` 仍按原协议传输给需要它的客户端，不直接投影到灵动岛；思考阶段使用固定阶段文案。工具输入、结果和错误继续使用现有的安全摘要和步骤文案。
+Old app versions ignore unknown fields. The fields are represented in the Go
+`LiveActivityState`, the app's TypeScript state, and ActivityKit
+`ContentState`.
 
-任务开始、普通模型输出、用户调整任务和 reasoning 重置使用 `processing`（处理中）；只有收到非空的 `reasoning_delta` 才使用 `thinking`（思考中）。`planning` 阶段不代表模型开启了 reasoning。
+Raw tool inputs, results, errors, and reasoning must not be copied directly
+into compact UI. Display text continues to use bounded, display-safe summaries
+and stage copy.
 
-这些字段应同步加入 Go `LiveActivityState`、App TypeScript 类型、ActivityKit `ContentState`，旧版本 App 忽略未知字段即可继续工作。
+State changes trigger the existing coalesced local notification path, limited
+to approximately one BLE Wake every 750 ms. Elapsed time advances locally in
+the iOS presentation; the Agent does not need to publish once per second.
 
-## 7. 实现拆分
+## 7. Implementation Responsibilities
 
-### Agent 侧
+### Agent
 
-- 在 `tool_call` 时记录 `tool_started_at`。
-- 保持工具输入、结果和错误的摘要化处理，不传敏感参数和过长 JSON。
-- 为 Phone Bridge 不在线的第三方 App 中转增加“准备打开目标 App”状态。
-- 保留现有状态转换和 `/api/live-activity/current` 路由。
+- Record `tool_started_at` when a `tool_call` begins.
+- Publish explicit progress events for Phone Bridge restoration and
+  post-action verification.
+- Keep ordinary model output (`processing`) distinct from actual streamed
+  reasoning (`thinking`).
+- Keep launch requests in `verifying` until a later observation can confirm
+  the target screen.
+- Preserve existing routes, task-level statuses, and local notification flow.
 
-### App / iOS 侧
+### Companion App / iOS
 
-- 重写 Dynamic Island 收起态为“Logo + 动作 | 时间/结果”。
-- 在展开态实现思考摘要、工具执行、结果、重试、等待和接管状态。
-- 用 `tool_started_at` 在本地刷新工具计时；Agent 更新频率目标约 1 秒。
-- 将第三方 App 中转前的“准备打开”状态显示为明确的预告。
-- 对过长动作、目标和摘要做固定截断与降级。
+- Render compact action plus elapsed time or outcome.
+- Render the latest expanded title, tool/status line, and safe step.
+- Use `tool_started_at` for local elapsed-time updates.
+- Localize semantic actions and tool names without exposing raw compact text.
+- Preserve the last valid state when iOS coalesces or delays updates.
 
-## 8. 验收标准
+## 8. Acceptance Criteria
 
-1. 默认待命状态收起态只显示 Logo 和“待命”。
-2. 工具执行时收起态显示自然的动作词，例如“看屏幕”，右侧显示持续时间。
-3. 展开态在没有工具时显示“思考中”和一条摘要或兜底文案。
-4. 工具执行、完成、失败、重试、等待 App、等待用户均能区分。
-5. Phone Bridge 不在线时，第三方 App 跳转前先显示目标 App 和中转提示。
-6. 未完成屏幕验证前，不显示“已打开”或“已完成”。
-7. 收起态不出现原始工具名、URL、敏感参数或过长文本。
-8. iOS 合并或延迟更新时，仍保留最后一次有效状态，不出现空白状态。
+1. The compact standby view shows only the logo and localized ready state.
+2. An actively timed tool shows a natural compact action and elapsed time.
+3. Ordinary model output and actual reasoning are displayed as distinct
+   `processing` and `thinking` states.
+4. Running, preparing, verifying, completed, failed, waiting for app, and
+   waiting for user states are distinguishable.
+5. When Phone Bridge is offline, an app launch shows the restoration/transition
+   state before the target app request is sent.
+6. The UI does not claim that an app opened before a later screen observation.
+7. Compact UI does not expose raw tool names, URLs, sensitive parameters, or
+   unbounded text.
+8. Delayed or coalesced iOS updates preserve the last valid state without
+   showing a blank presentation.
