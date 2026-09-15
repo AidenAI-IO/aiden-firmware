@@ -205,27 +205,6 @@ if(NODE_EXECUTABLE)
     )
 endif()
 
-# Shell-level test for the /opt bind mount that opkg installs into. Needs no
-# build artifacts and no board: S22opt reads its paths and its mount/umount
-# binaries from the environment, so the test stubs them out.
-add_test(
-    NAME s22opt_tests
-    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test_s22opt.sh
-)
-
-add_test(
-    NAME aiden_opt_profile_tests
-    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test_aiden_opt_profile.sh
-)
-
-add_test(NAME usb0_dhcp_options
-    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_usb0_dhcp_options.sh
-)
-
-add_test(NAME boot_timeline
-    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test_boot_timeline.sh
-)
-
 add_test(NAME debian_ext4_canonicalizer
     COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/test_debian_ext4_canonicalizer.sh
 )

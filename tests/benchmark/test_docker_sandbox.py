@@ -243,32 +243,12 @@ class DockerSandboxContractTest(unittest.TestCase):
             entrypoint,
         )
 
-    def test_ttyd_init_resolves_legacy_settings_after_boot_config(self):
-        init_script = read_repo_file("overlay/etc/init.d/S57ttyd")
+    def test_entrypoint_configures_ttyd_options(self):
         entrypoint = read_repo_file("docker/dev/entrypoint.sh")
-
-        config_source = init_script.index('    . "$BOOT_CONF"')
-        settings = init_script.index("TTYD_BIN=")
-        self.assertLess(config_source, settings)
-        self.assertIn("${WETTY_BIN:-/usr/bin/ttyd}", init_script)
-        self.assertIn("${WETTY_PORT:-3000}", init_script)
-        self.assertIn("${WETTY_BASE:-/webtty/}", init_script)
-        self.assertIn("${WETTY_FONT_SIZE:-24}", init_script)
-        self.assertIn(': "${ENABLE_TTYD:=${ENABLE_WETTY:-1}}"', init_script)
 
         # ttyd 1.7.3 exposes --readonly; writable mode is the default and
         # passing --writable makes the daemon fail option parsing.
-        self.assertNotIn("--writable", init_script)
         self.assertNotIn("--writable", entrypoint)
-        for option in (
-            '"rendererType=$TTYD_RENDERER"',
-            '"fontSize=$TTYD_FONT_SIZE"',
-            '"scrollback=$TTYD_SCROLLBACK"',
-            '"cursorStyle=$TTYD_CURSOR_STYLE"',
-            '"disableResizeOverlay=$TTYD_DISABLE_RESIZE_OVERLAY"',
-        ):
-            self.assertIn(option, init_script)
-        self.assertIn('--max-clients "$TTYD_MAX_CLIENTS"', init_script)
         self.assertIn('--max-clients="${TTYD_MAX_CLIENTS:-2}"', entrypoint)
         self.assertIn('rendererType=${TTYD_RENDERER:-canvas}', entrypoint)
         self.assertIn('fontSize=${TTYD_FONT_SIZE:-24}', entrypoint)
@@ -309,7 +289,7 @@ class DockerSandboxContractTest(unittest.TestCase):
                     "AIDEN_AGENT_RUN_DIR": str(temporary_path / "run"),
                     "AIDEN_SYSTEM_ENV": str(temporary_path / "system-env"),
                     "AIDEN_ENV_RUN_BIN": str(
-                        REPO_ROOT / "overlay/oem/usr/bin/aiden-env-run"
+                        REPO_ROOT / "docker/dev/aiden-env-run"
                     ),
                     "AIDEN_AGENT_LOG_MAX_BYTES": "1024",
                     "AIDEN_AGENT_LOG_RETAIN_BYTES": "256",
@@ -532,7 +512,7 @@ class DockerSandboxContractTest(unittest.TestCase):
                     "AIDEN_AGENT_RUN_DIR": str(run_directory),
                     "AIDEN_SYSTEM_ENV": str(system_env),
                     "AIDEN_ENV_RUN_BIN": str(
-                        REPO_ROOT / "overlay/oem/usr/bin/aiden-env-run"
+                        REPO_ROOT / "docker/dev/aiden-env-run"
                     ),
                     "AIDEN_AGENT_LOG_CHECK_INTERVAL": "1",
                     "AIDEN_AGENT_STOP_ATTEMPTS": "1",

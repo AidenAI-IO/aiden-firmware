@@ -38,10 +38,10 @@ uname -a 2>/dev/null | indent
 [ -r /etc/os-release ] && sed -n '1,8p' /etc/os-release | indent
 
 section "services"
-if [ -x /etc/init.d/S49usbhid ]; then
-    pass "USB HID gadget init script present: /etc/init.d/S49usbhid"
+if [ -x /usr/lib/aiden/aiden-usb-gadget ]; then
+    pass "USB gadget helper present: /usr/lib/aiden/aiden-usb-gadget"
 else
-    warn "USB HID gadget init script missing: /etc/init.d/S49usbhid"
+    warn "USB gadget helper missing: /usr/lib/aiden/aiden-usb-gadget"
 fi
 check_exists "USB HID keyboard" /dev/hidg0
 check_exists "USB HID pointer" /dev/hidg1
@@ -56,8 +56,8 @@ if [ -r /sys/kernel/config/usb_gadget/aiden_hid/UDC ]; then
 else
     warn "USB HID gadget UDC state not readable"
 fi
-service_check "HDMI frame service" "aiden-frame.service aiden_frame.service frame_service.service aiden-frame-service.service" "/etc/init.d/S52frame_service"
-service_check "audio service" "aiden-audio.service aiden_audio.service audio_service.service aiden-audio-service.service" "/etc/init.d/S53audio_service"
+service_check "HDMI frame service" "aiden-frame.service aiden_frame.service frame_service.service aiden-frame-service.service" "/usr/lib/aiden/aiden-frame-control"
+service_check "audio service" "aiden-audio.service aiden_audio.service audio_service.service aiden-audio-service.service" ""
 
 section "binaries"
 HID_BIN="$(find_bin example_usb_hid)"

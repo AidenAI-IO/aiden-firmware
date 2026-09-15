@@ -306,13 +306,13 @@ the actual error category, such as `permission_denied`, `app_backgrounded`, `app
 | Audio socket | `/run/audio_service/audio_service.sock` |
 | BLE socket | `/run/ble_service/ble_service.sock` |
 
-Typical boot ordering is `S39hciinit`, `S40bluetoothd`, `S41ble_service`, USB gadget setup,
-`S52frame_service`, `S53audio_service`, `S53agent`, and `S56config_web`. Useful service checks are:
+Systemd brings up Bluetooth attach, BLE, the USB gadget, frame, audio, agent, and config-web
+through the `aiden.target` service graph. Useful service checks are:
 
 ```sh
-/etc/init.d/S52frame_service status
-/etc/init.d/S53audio_service status
-/etc/init.d/S53agent status
+systemctl status --no-pager aiden-frame.service
+systemctl status --no-pager aiden-audio.service
+systemctl status --no-pager aiden-agent.service
 ```
 
 Common logs are `/var/log/frame_service/frame_service.log`,
@@ -431,7 +431,7 @@ Classify the failing layer before changing the route:
 | `permission_denied` | Corresponding system permission page | Ask the user to grant it, then repeat the same logical operation; public tools generate a new command ID |
 | Launch acknowledged but screen unchanged | Fresh screenshot and app state | Treat as unverified; wait, search, or use visible UI fallback |
 | Pointer/touch is offset | `device_type`, `pointer_mode`, `hid_connection_id` | Correct platform, reboot the entire board, wait for USB detach and HID re-enumeration, verify the new session and screenshot, then recalibrate; do not blind-click repeatedly |
-| Screenshot fails or returns `SERVICE_RECOVERING` | Frame-service health, socket, and log | Pause all UI input; run `frame_service_cli --socket /run/frame_service/frame_service.sock restart`, fall back to `/etc/init.d/S52frame_service restart` when needed, and obtain a new screenshot |
+| Screenshot fails or returns `SERVICE_RECOVERING` | Frame-service health, socket, and log | Pause all UI input; run `frame_service_cli --socket /run/frame_service/frame_service.sock restart`, fall back to `systemctl restart aiden-frame.service` when needed, and obtain a new screenshot |
 | BLE connected but no background result | Wake subscriber, USB ECM, queue result | Remember BLE is only a hint; verify the phone can reach `192.168.42.1:8080` and wait or return foreground |
 
 Useful non-destructive checks include:
@@ -439,7 +439,7 @@ Useful non-destructive checks include:
 ```sh
 curl -s http://127.0.0.1:8080/health
 curl -s http://127.0.0.1:8080/api/phone-bridge/status
-/etc/init.d/S52frame_service status
+systemctl status --no-pager aiden-frame.service
 frame_service_cli --socket /run/frame_service/frame_service.sock health
 ls -l /run/frame_service/frame_service.sock /run/audio_service/audio_service.sock /run/ble_service/ble_service.sock
 ```
@@ -454,7 +454,7 @@ frame_service_cli --socket /run/frame_service/frame_service.sock restart
 If that command fails, the socket is absent, or the service is not running, use:
 
 ```sh
-/etc/init.d/S52frame_service restart
+systemctl restart aiden-frame.service
 ```
 
 After recovery, verify service status, socket health, and a fresh screenshot in that order. Do not

@@ -101,8 +101,8 @@ COPY --from=runtime-tools-builder /out/yq /usr/bin/yq
 COPY src/config_web/web/ /oem/usr/share/aiden/config-web/
 COPY src/agent/config/skills/ /oem/usr/share/aiden/skills/
 COPY docker/dev/agent.toml /opt/aiden/defaults/agent.toml
-COPY overlay/oem/usr/bin/aiden-env-run /usr/local/bin/aiden-env-run
-COPY overlay/etc/init.d/S51wifi_proxy /usr/local/bin/aiden-wifi-proxy-service
+COPY docker/dev/aiden-env-run /usr/local/bin/aiden-env-run
+COPY docker/dev/aiden-wifi-proxy-service /usr/local/bin/aiden-wifi-proxy-service
 COPY docker/dev/agent-service.sh /usr/local/bin/aiden-agent-service
 COPY docker/dev/entrypoint.sh /usr/local/bin/aiden-docker-entrypoint
 

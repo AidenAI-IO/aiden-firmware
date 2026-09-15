@@ -65,7 +65,7 @@ func NewServer(options Options) (*Server, error) {
 		options.LocalProxyEnvironmentPath = wifiproxy.DefaultEnvironmentPath
 	}
 	if strings.TrimSpace(options.WiFiProxyInitScript) == "" {
-		options.WiFiProxyInitScript = "/etc/init.d/S51wifi_proxy"
+		options.WiFiProxyInitScript = "/usr/lib/aiden/aiden-wifi-proxy-control"
 	}
 	if strings.TrimSpace(options.WiFiBackend) == "" {
 		options.WiFiBackend = "legacy"

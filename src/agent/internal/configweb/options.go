@@ -77,12 +77,12 @@ func DefaultOptions() Options {
 		StorageStatePath:          "/run/aiden/storage.state",
 		WebRoot:                   defaultWebRoot,
 		AgentBinary:               agentBinary,
-		AgentInitScript:           envOrDefault("AIDEN_AGENT_INIT_SCRIPT", "/etc/init.d/S53agent"),
-		FrameServiceInitScript:    envOrDefault("AIDEN_FRAME_SERVICE_INIT_SCRIPT", "/etc/init.d/S52frame_service"),
-		WiFiProxyInitScript:       envOrDefault("AIDEN_WIFI_PROXY_INIT_SCRIPT", "/etc/init.d/S51wifi_proxy"),
+		AgentInitScript:           envOrDefault("AIDEN_AGENT_INIT_SCRIPT", "/usr/lib/aiden/aiden-agent-control"),
+		FrameServiceInitScript:    envOrDefault("AIDEN_FRAME_SERVICE_INIT_SCRIPT", "/usr/lib/aiden/aiden-frame-control"),
+		WiFiProxyInitScript:       envOrDefault("AIDEN_WIFI_PROXY_INIT_SCRIPT", "/usr/lib/aiden/aiden-wifi-proxy-control"),
 		// Leave the Agent HTTP target empty by default so the portal follows the
-		// address reported by S53agent. AIDEN_AGENT_HTTP_BASE_URL remains an
-		// explicit override for development and tests.
+		// address reported by the agent control helper. AIDEN_AGENT_HTTP_BASE_URL
+		// remains an explicit override for development and tests.
 		AgentHTTPBaseURL:  strings.TrimSpace(os.Getenv("AIDEN_AGENT_HTTP_BASE_URL")),
 		OTABinary:         envOrDefault("AIDEN_OTA_BIN", "/oem/usr/bin/ota"),
 		EnvRunBinary:      envOrDefault("AIDEN_ENV_RUN_BIN", "/oem/usr/bin/aiden-env-run"),

@@ -200,9 +200,6 @@ Recovery sequence:
 # Debian
 systemctl status --no-pager aiden-frame.service
 
-# Buildroot
-/etc/init.d/S52frame_service status
-
 frame_service_cli --socket /run/frame_service/frame_service.sock health
 ls -l /run/frame_service/frame_service.sock
 ```
@@ -220,9 +217,6 @@ frame_service_cli --socket /run/frame_service/frame_service.sock restart
 ```bash
 # Debian
 systemctl restart aiden-frame.service
-
-# Buildroot
-/etc/init.d/S52frame_service restart
 ```
 
 6. After service restart, verify in order: service status, health, then `screenshot`.

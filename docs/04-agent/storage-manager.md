@@ -470,9 +470,9 @@ Capabilities are recalculated after every successful check and recover automatic
 
 #### Agent Main Log
 
-The Agent main log is not completely disabled through AllowWrite. Instead, the S53agent deployment script reads /run/agent/storage_level.
+The Agent main log is not completely disabled through AllowWrite. Instead, `aiden-agent.service` reads `/run/agent/storage_level`.
 
-At Critical or Emergency, S53agent trims `<CONFIG_DIR>/log/agent.log` to `storage_settings.storage.degraded_mode.max_agent_log_mb`, which defaults to 1 MB. It preserves the newest content so storage pressure does not remove the most useful diagnostics.
+At Critical or Emergency, the agent trims `<CONFIG_DIR>/log/agent.log` to `storage_settings.storage.degraded_mode.max_agent_log_mb`, which defaults to 1 MB. It preserves the newest content so storage pressure does not remove the most useful diagnostics.
 
 ### Status Model
 
@@ -658,9 +658,6 @@ Common checks:
 ~~~bash
 cd src/agent
 go test ./internal/agent
-
-cd ../..
-./scripts/test_agent_log_cap.sh
 ~~~
 
 ### Current Limitations
