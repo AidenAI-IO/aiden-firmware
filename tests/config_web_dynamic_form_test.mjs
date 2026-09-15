@@ -320,6 +320,7 @@ assert.equal(document.getElementById('model_provider').closest('.field'), modelP
 assert.equal(document.getElementById('model_model').closest('.field'), modelNameField, 'model selector DOM is preserved');
 assert.equal(document.getElementById('model_temperature').type, 'number');
 assert.equal(document.getElementById('quick_capture_enabled').type, 'checkbox');
+assert.equal(document.getElementById('quick_capture_enabled').closest('.field').classList.contains('boolean-field'), true, 'boolean fields align the checkbox with their label');
 assert.equal(document.getElementById('quick_capture_gpio_pin').type, 'number');
 assert.equal(document.getElementById('quick_capture_screen_memory_ttl').dataset.configDefaultPlaceholder, '90d');
 assert.equal(document.getElementById('voice_model_api_key').type, 'password');
