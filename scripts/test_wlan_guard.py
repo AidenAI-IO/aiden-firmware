@@ -12,6 +12,26 @@ GUARD = ROOT / 'overlay-debian/usr/lib/aiden/aiden-wlan-guard'
 MOCK = r'''#!/bin/sh
 step=$(cat "$CASE_ROOT/step")
 name=${0##*/}
+has_arg() {
+    needle=$1
+    shift
+    for arg do
+        [ "$arg" = "$needle" ] && return 0
+    done
+    return 1
+}
+has_option_value() {
+    option=$1
+    expected=$2
+    shift 2
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "$option" ] && [ "${2:-}" = "$expected" ]; then
+            return 0
+        fi
+        shift
+    done
+    return 1
+}
 case "$name" in
     sleep)
         [ "$1" = 1 ] || exit 0
@@ -39,8 +59,14 @@ case "$name" in
         esac
         exit 1 ;;
     arping)
-        case "$*" in *' -U '*) exit 0 ;; esac
-        [ "$SCENARIO" = icmp_filtered ] ;;
+        # Gratuitous announcements do not establish a fresh reply.
+        has_arg -U "$@" && exit 1
+        if [ "$SCENARIO" = icmp_filtered ] && has_arg -f "$@" \
+            && has_option_value -c 2 "$@" \
+            && has_option_value -w 3 "$@"; then
+            exit 0
+        fi
+        exit 1 ;;
     systemctl|networkctl) echo "$step $name $*" >> "$CASE_ROOT/actions" ;;
     *) exit 1 ;;
 esac
@@ -49,6 +75,11 @@ esac
 
 class GuardTest(unittest.TestCase):
     def run_guard(self, scenario, steps=15):
+        """Run a bounded guard simulation and return its actions and log.
+
+        Mock sleeps advance the scenario without waiting and terminate only
+        the guard process after the requested number of checks.
+        """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'step').write_text('0\n')
