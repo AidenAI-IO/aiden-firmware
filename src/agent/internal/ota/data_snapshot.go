@@ -32,6 +32,7 @@ func SnapshotProtectedData(root, version string) (_ string, resultErr error) {
 	relativePaths := []string{
 		"agent/agent.toml", "system/env", "wpa_supplicant.conf",
 		"system/wifi-proxies.json", "audio_service/playback_volume",
+		"debian/wifi/wpa_supplicant-wlan0.conf",
 	}
 	manifest := map[string]any{"created_at": time.Now().UTC(), "version": version, "files": []string{}}
 	protectedRoot := currentProtectedDataRoot()
@@ -217,11 +218,12 @@ func restoreProtectedData(snapshotDir, protectedRoot string, renameFile func(str
 		return err
 	}
 	allowed := map[string]bool{
-		"agent/agent.toml":              true,
-		"system/env":                    true,
-		"wpa_supplicant.conf":           true,
-		"system/wifi-proxies.json":      true,
-		"audio_service/playback_volume": true,
+		"agent/agent.toml":                      true,
+		"system/env":                            true,
+		"wpa_supplicant.conf":                   true,
+		"system/wifi-proxies.json":              true,
+		"audio_service/playback_volume":         true,
+		"debian/wifi/wpa_supplicant-wlan0.conf": true,
 	}
 	seen := make(map[string]bool)
 	for _, rel := range manifest.Files {

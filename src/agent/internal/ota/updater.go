@@ -444,6 +444,17 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		if statePrepared {
 			return nil
 		}
+		// Debian writes and frees one archive at a time. Publish the protected
+		// snapshot before the first target invalidation or partition write.
+		snapshotPath, err := SnapshotProtectedData(u.config.StateDir, manifest.Version)
+		if err != nil {
+			return fmt.Errorf("snapshot protected data: %w", err)
+		}
+		state.DataSnapshotPath = snapshotPath
+		if state.SlotBuildTimes == nil {
+			state.SlotBuildTimes = map[string]string{}
+		}
+		state.SlotBuildTimes[targetNameForState(target)] = manifest.BuildTime
 		state.Phase = "writing"
 		state.TargetVersion = manifest.Version
 		state.TargetBuildTime = manifest.BuildTime
@@ -468,7 +479,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			state.PendingTargetSlot = nil
 		}
 		delete(state.Slots, targetKey)
-		if err := SaveState(u.statePath(), state); err != nil {
+		if err := u.saveSnapshotState(state); err != nil {
 			return err
 		}
 		statePrepared = true
@@ -970,7 +981,8 @@ func (u *Updater) Status() (State, ABData, error) {
 	return state, ab, nil
 }
 
-// Rollback selects the last successful slot and reboots into it.
+// Rollback selects the last successful slot and reboots into it. It is also
+// used by the self-check supervisor for failures discovered after boot.
 func (u *Updater) Rollback(reason string) error {
 	if err := u.ensureStorageReady(); err != nil {
 		return err
@@ -999,17 +1011,26 @@ func (u *Updater) Rollback(reason string) error {
 	if !ok {
 		return errors.New("misc has no bootable active slot")
 	}
-	previous := inactiveSlot(active)
+	previous := SlotA
+	if active == SlotA {
+		previous = SlotB
+	}
 	if !ab.Slots[previous].SuccessfulBoot {
 		return fmt.Errorf("no successful previous slot available (active=%s)", slotLogName(active))
 	}
+	// The old slot was already the last committed slot. Make it successful
+	// immediately so a rollback does not create a second probation boot with no
+	// pending health marker.
 	if err := ab.SetActive(previous, 0, true); err != nil {
 		return err
 	}
 	if err := u.writeABData(ab); err != nil {
 		return err
 	}
-	state.Phase, state.LastError, state.ActiveSlot, state.TargetSlot = "rollback-requested", strings.TrimSpace(reason), active, previous
+	state.Phase = "rollback-requested"
+	state.LastError = strings.TrimSpace(reason)
+	state.ActiveSlot = active
+	state.TargetSlot = previous
 	if err := SaveState(u.statePath(), state); err != nil {
 		return err
 	}
@@ -1021,12 +1042,21 @@ func (u *Updater) Rollback(reason string) error {
 	return nil
 }
 
-// RecoverPendingData reconciles an interrupted rollback after boot.
+// RecoverPendingData is safe to run during early boot. It completes the
+// configuration side of an interrupted rollback without touching append-only
+// user data.
 func (u *Updater) RecoverPendingData() error {
 	if err := u.ensureStorageReady(); err != nil {
 		return err
 	}
-	state, err := u.loadState()
+	unlock, err := u.acquireUpdateLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	// First boot must not require a factory baseline or identity migration.
+	// There is nothing to recover until a transaction state has been saved.
+	state, err := LoadState(u.statePath())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -1072,23 +1102,32 @@ func reconcileRollbackState(state *State, running Slot, completed bool) {
 	if err != nil {
 		return
 	}
-	state.ActiveSlot, state.TargetSlot, state.TargetVersion, state.TargetBuildTime = running, running, "", ""
-	state.PendingBootNonce, state.PendingBootID, state.PendingTargetSlot = "", "", nil
+	state.ActiveSlot = running
+	state.TargetSlot = running
+	state.TargetVersion = ""
+	state.TargetBuildTime = ""
+	state.PendingBootNonce = ""
+	state.PendingBootID = ""
+	state.PendingTargetSlot = nil
 	if completed {
 		state.Phase = "rolled-back"
 	} else {
 		state.Phase = "committed"
 	}
-	state.CurrentVersion, state.CurrentBuildTime = "", ""
+	state.CurrentVersion = ""
+	state.CurrentBuildTime = ""
 	if slot, ok := state.Slots[name]; ok {
-		if part, ok := slot.Partitions["boot"]; ok {
+		if part, ok := slot.Partitions["boot"]; ok && part.Version != "" {
 			state.CurrentVersion = part.Version
 		}
 	}
 	if state.SlotBuildTimes != nil {
-		state.CurrentBuildTime = state.SlotBuildTimes[name]
+		if buildTime := state.SlotBuildTimes[name]; buildTime != "" {
+			state.CurrentBuildTime = buildTime
+		}
 	}
-	state.LastCommittedVersion, state.LastCommittedBuildTime = state.CurrentVersion, state.CurrentBuildTime
+	state.LastCommittedVersion = state.CurrentVersion
+	state.LastCommittedBuildTime = state.CurrentBuildTime
 }
 
 func (u *Updater) VerifyManifestFile(path string) (Manifest, error) {
