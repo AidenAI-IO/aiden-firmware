@@ -12,6 +12,9 @@ GUARD = ROOT / 'overlay-debian/usr/lib/aiden/aiden-wlan-guard'
 MOCK = r'''#!/bin/sh
 step=$(cat "$CASE_ROOT/step")
 name=${0##*/}
+if [ "$SCENARIO" = invalid_limit ]; then
+    printf '%s\n' "$name $*" >> "$CASE_ROOT/actions"
+fi
 has_arg() {
     needle=$1
     shift
@@ -74,11 +77,13 @@ esac
 
 
 class GuardTest(unittest.TestCase):
-    def run_guard(self, scenario, steps=15):
+    def run_guard(self, scenario, steps=15, *, limit='2',
+                  expected_returncode=-signal.SIGTERM):
         """Run a bounded guard simulation and return its actions and log.
 
         Mock sleeps advance the scenario without waiting and terminate only
-        the guard process after the requested number of checks.
+        the guard process after the requested number of checks. Invalid-limit
+        scenarios log every mocked command and expect an early validation exit.
         """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -92,19 +97,21 @@ class GuardTest(unittest.TestCase):
             env = dict(os.environ, PATH=f'{root}:{os.environ["PATH"]}',
                        CASE_ROOT=str(root), SCENARIO=scenario, STEPS=str(steps),
                        WLAN_GUARD_INTERVAL='1', WLAN_GUARD_FAIL_THRESHOLD='2',
-                       WLAN_GUARD_RECOVER_COOLDOWN='7', WLAN_GUARD_MAX_RECOVERIES='2',
+                       WLAN_GUARD_RECOVER_COOLDOWN='7', WLAN_GUARD_MAX_RECOVERIES=limit,
                        WLAN_GUARD_HEALTHY_THRESHOLD='3')
             result = subprocess.run(['sh', str(GUARD)], env=env, capture_output=True, text=True, timeout=15)
-            self.assertEqual(result.returncode, -signal.SIGTERM, result.stderr)
+            self.assertEqual(result.returncode, expected_returncode, result.stderr)
             return (root / 'actions').read_text(), (root / 'log').read_text()
 
     def test_healthy_or_disconnected_links_are_not_reset(self):
+        """Healthy, disconnected, and ICMP-filtering links avoid recovery actions."""
         for scenario in ('healthy', 'disconnected', 'icmp_filtered'):
             with self.subTest(scenario=scenario):
                 actions, _ = self.run_guard(scenario)
                 self.assertEqual(actions, '')
 
     def test_persistent_failure_has_a_bounded_recovery_budget(self):
+        """Persistent failures exhaust the budget without further interface resets."""
         actions, log = self.run_guard('down')
         self.assertEqual(actions.count('reassociate'), 2)
         self.assertEqual(actions.count('systemctl restart'), 2)
@@ -113,19 +120,24 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(log.count('recovery limit reached'), 1)
 
     def test_brief_success_does_not_restart_recovery_loop(self):
+        """One healthy check cannot replenish an exhausted recovery budget."""
         actions, log = self.run_guard('brief_recovery')
         self.assertEqual(actions.count('reassociate'), 2)
         self.assertNotIn('budget reset', log)
 
     def test_sustained_success_rearms_recovery(self):
+        """Consecutive healthy checks restore the budget for a subsequent failure."""
         actions, log = self.run_guard('stable_reset')
         self.assertEqual(actions.count('reassociate'), 4)
         self.assertEqual(log.count('budget reset'), 1)
 
     def test_invalid_limit_exits_before_network_mutation(self):
+        """Invalid limits fail before invoking any mocked network or helper command."""
         for value in ('0', '-1', 'bad'):
-            result = subprocess.run(['sh', str(GUARD)], env=dict(os.environ, WLAN_GUARD_MAX_RECOVERIES=value), timeout=2)
-            self.assertEqual(result.returncode, 1)
+            with self.subTest(limit=value):
+                actions, _ = self.run_guard('invalid_limit', limit=value,
+                                            expected_returncode=1)
+                self.assertEqual(actions, '')
 
 
 if __name__ == '__main__':
