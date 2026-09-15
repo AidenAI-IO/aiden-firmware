@@ -502,8 +502,8 @@ API key and base URL do not carry over to it.
 
 Use the `deepseek` provider for DeepSeek's OpenAI-compatible endpoint. Aiden
 presets `deepseek-flash`, which supports vision and tool calls with a 1M context
-window. The `deepseek-v4-pro` preset is commented out because it is text-only;
-it can be restored after official vision support and model limits are verified.
+window. The `deepseek-v4-pro` preset is commented out because it does not support
+vision; it can be restored once vision support is verified.
 DeepSeek defaults to non-thinking mode in Aiden with `reasoning_effort = "none"`.
 Set `reasoning_effort` to `low`, `high`, or `max` to enable thinking. In Chat
 Completions mode, Aiden sends DeepSeek's `thinking` toggle and replays assistant
@@ -531,8 +531,8 @@ api_mode = "responses"
 ```
 
 Official references: [model capabilities and limits](https://api-docs.deepseek.com/quick_start/pricing),
-[vision](https://api-docs.deepseek.com/guides/vision), and
-[thinking with tool calls](https://api-docs.deepseek.com/guides/thinking_mode), and
+[vision](https://api-docs.deepseek.com/guides/vision),
+[thinking with tool calls](https://api-docs.deepseek.com/guides/thinking_mode),
 [Responses API compatibility](https://api-docs.deepseek.com/guides/responses_api).
 
 ## `[log]`

@@ -119,8 +119,12 @@ func buildOpenAICompatibleModel(ctx ModelBuildContext, cfg ModelConfig, defaultB
 }
 
 func buildDeepSeekModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
-	// Keep all entry points, including direct ModelManager users and custom
-	// model IDs, in non-thinking mode unless explicitly enabled.
+	// Default to non-thinking mode for all DeepSeek models, including custom
+	// model IDs not registered in model_specs.go. The model spec registry
+	// already sets this default for known models like "deepseek-flash", but
+	// this fallback ensures direct ModelManager users and custom IDs (e.g.,
+	// "deepseek-custom-v1") also start in non-thinking mode for fast device
+	// interactions. User-provided reasoning_effort always overrides.
 	cfg.ReasoningEffort = strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
 	if cfg.ReasoningEffort == "" {
 		cfg.ReasoningEffort = "none"
