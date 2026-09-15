@@ -72,8 +72,9 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		},
 	},
 	{
-		providerType: "deepseek",
-		build:        buildDeepSeekModel,
+		providerType:      "deepseek",
+		supportsResponses: true,
+		build:             buildDeepSeekModel,
 	},
 	{
 		providerType:        "ollama",
@@ -118,13 +119,24 @@ func buildOpenAICompatibleModel(ctx ModelBuildContext, cfg ModelConfig, defaultB
 }
 
 func buildDeepSeekModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
-	if apiMode := normalizeModelAPIMode(cfg.APIMode); apiMode != modelAPIModeChatCompletions {
-		return nil, fmt.Errorf("model.api_mode=%s is not supported by Aiden's DeepSeek transport; use chat_completions", cfg.APIMode)
-	}
 	// Keep all entry points, including direct ModelManager users and custom
 	// model IDs, in non-thinking mode unless explicitly enabled.
 	if strings.TrimSpace(cfg.ReasoningEffort) == "" {
 		cfg.ReasoningEffort = "none"
+	}
+	switch apiMode := normalizeModelAPIMode(cfg.APIMode); apiMode {
+	case modelAPIModeResponses:
+		return newResponsesModel(deepseekBaseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, responsesModelOptions{
+			rawLogger:       ctx.RawHTTPLogger,
+			reasoningEffort: cfg.ReasoningEffort,
+			temperature:     cfg.Temperature,
+			dialect:         responsesDialectDeepSeek,
+		}), nil
+	case modelAPIModeResponsesStateful:
+		return nil, fmt.Errorf("model.api_mode=responses_stateful is not supported by DeepSeek; its /responses endpoint is stateless and does not support previous_response_id")
+	case modelAPIModeChatCompletions:
+	default:
+		return nil, fmt.Errorf("invalid model.api_mode: %s", cfg.APIMode)
 	}
 	opts := append(openAICompatibleOptions(ctx, cfg), withOpenAICompatibleDeepSeek())
 	return newOpenAICompatibleModel(deepseekBaseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, opts...), nil

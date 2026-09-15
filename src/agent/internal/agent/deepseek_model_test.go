@@ -138,15 +138,156 @@ func TestDeepSeekVisionToolContinuation(t *testing.T) {
 	}
 }
 
-func TestDeepSeekRejectsUnsupportedAPIModes(t *testing.T) {
-	for _, apiMode := range []string{"responses", "responses_stateful"} {
-		cfg := Config{ModelProviders: map[string]ModelProvider{"account": {Type: "deepseek"}}, Model: ModelConfig{Provider: "account", Model: "deepseek-flash", APIMode: apiMode}}
-		if err := cfg.Validate(); err == nil {
-			t.Fatal("validation accepted unsupported API mode")
+func TestDeepSeekResponsesModeValidation(t *testing.T) {
+	cfg := Config{ModelProviders: map[string]ModelProvider{"account": {Type: "deepseek"}}, Model: ModelConfig{Provider: "account", Model: "deepseek-flash", APIMode: "responses"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validation rejected DeepSeek Responses mode: %v", err)
+	}
+	built, err := buildDeepSeekModel(ModelBuildContext{}, cfg.Model)
+	if err != nil {
+		t.Fatalf("builder rejected DeepSeek Responses mode: %v", err)
+	}
+	responses, ok := built.(*responsesModel)
+	if !ok || responses.baseURL != deepseekBaseURL || responses.dialect != responsesDialectDeepSeek || responses.providerManagedContext || responses.reasoningEffort != "none" {
+		t.Fatalf("DeepSeek Responses model = %#v", built)
+	}
+
+	cfg.Model.APIMode = "responses_stateful"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "supports stored Responses") {
+		t.Fatalf("stateful validation error = %v", err)
+	}
+	if _, err := buildDeepSeekModel(ModelBuildContext{}, cfg.Model); err == nil || !strings.Contains(err.Error(), "stateless") {
+		t.Fatalf("stateful builder error = %v", err)
+	}
+}
+
+func TestDeepSeekResponsesVisionToolContinuation(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		name := "no_stream"
+		if stream {
+			name = "stream"
 		}
-		if _, err := buildDeepSeekModel(ModelBuildContext{}, cfg.Model); err == nil {
-			t.Fatal("builder accepted unsupported API mode")
-		}
+		t.Run(name, func(t *testing.T) {
+			var requests []map[string]any
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.String() != deepseekBaseURL+"/responses" || req.Method != http.MethodPost {
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+				}
+				if req.Header.Get("Authorization") != "Bearer deepseek-test-key" {
+					t.Fatal("missing provider credential")
+				}
+				var request map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				requests = append(requests, request)
+				requestStream, _ := request["stream"].(bool)
+				if requestStream != stream {
+					t.Fatalf("stream = %v, want %v", requestStream, stream)
+				}
+				if len(requests) == 1 {
+					if stream {
+						body := strings.Join([]string{
+							`event: response.output_item.done`,
+							`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","status":"completed","content":[{"type":"reasoning_text","text":"Inspect the screenshot."}]}}`,
+							``,
+							`event: response.output_item.done`,
+							`data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"inspect","arguments":"{}"}}`,
+							``,
+							`event: response.completed`,
+							`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5,"output_tokens_details":{"reasoning_tokens":3},"total_tokens":15}}}`,
+							``,
+						}, "\n")
+						return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"text/event-stream"}}}, nil
+					}
+					body := `{"id":"resp_1","status":"completed","output":[{"id":"rs_1","type":"reasoning","status":"completed","content":[{"type":"reasoning_text","text":"Inspect the screenshot."}]},{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"inspect","arguments":"{}"}],"usage":{"input_tokens":10,"output_tokens":5,"output_tokens_details":{"reasoning_tokens":3},"total_tokens":15}}`
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+				}
+				if stream {
+					body := strings.Join([]string{
+						`event: response.output_text.delta`,
+						`data: {"type":"response.output_text.delta","delta":"done"}`,
+						``,
+						`event: response.output_item.done`,
+						`data: {"type":"response.output_item.done","item":{"id":"msg_2","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done"}]}}`,
+						``,
+						`event: response.completed`,
+						`data: {"type":"response.completed","response":{"id":"resp_2","status":"completed"}}`,
+						``,
+					}, "\n")
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"text/event-stream"}}}, nil
+				}
+				body := `{"id":"resp_2","status":"completed","output":[{"id":"msg_2","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done"}]}]}`
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+			})}
+			cfg := ModelConfig{
+				Provider:                   "deepseek",
+				Model:                      "deepseek-flash",
+				APIKey:                     "deepseek-test-key",
+				APIMode:                    "responses",
+				ReasoningEffort:            "high",
+				ResponsesContextManagement: "compaction",
+				ResponsesTruncation:        "auto",
+				ResponsesInclude:           []string{"reasoning.encrypted_content"},
+			}
+			built, err := buildDeepSeekModel(ModelBuildContext{HTTPClient: client}, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager := NewModelManager(cfg, ProxyConfig{})
+			manager.model = built
+			imagePath := filepath.Join(t.TempDir(), "screen.png")
+			if err := os.WriteFile(imagePath, []byte("test-image"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			history := []agentmessages.Message{{
+				Role: agentmessages.MessageRoleUser, Content: "Inspect this image",
+				Attachments: []agentmessages.Attachment{{MIMEType: "image/png", FilePath: imagePath}},
+			}}
+			opts := []llms.CallOption{llms.WithTools([]llms.Tool{{Type: "function", Function: &llms.FunctionDefinition{Name: "inspect", Parameters: map[string]any{"type": "object"}}}})}
+			if stream {
+				opts = append(opts, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+			}
+			response, err := manager.GenerateContentFromMessageList(context.Background(), history, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(response.Choices) != 1 || response.Choices[0].ReasoningContent != "Inspect the screenshot." || len(response.Choices[0].ToolCalls) != 1 || response.Choices[0].ToolCalls[0].ID != "call_1" {
+				t.Fatalf("missing tool call: %+v", response)
+			}
+			history = append(history, agentmessages.ConvertChoiceToContextManagerMessage(*response.Choices[0]), agentmessages.Message{
+				Role:        agentmessages.MessageRoleToolResult,
+				ToolResults: []agentmessages.ToolResult{{ToolCallID: "call_1", Name: "inspect", Content: "ok"}},
+			})
+			response, err = manager.GenerateContentFromMessageList(context.Background(), history, opts...)
+			if err != nil || len(response.Choices) != 1 || response.Choices[0].Content != "done" {
+				t.Fatalf("continuation = %+v, %v", response, err)
+			}
+			if len(requests) != 2 {
+				t.Fatalf("request count = %d, want 2", len(requests))
+			}
+			for _, request := range requests {
+				for _, unsupported := range []string{"store", "previous_response_id", "parallel_tool_calls", "context_management", "truncation", "include"} {
+					if _, exists := request[unsupported]; exists {
+						t.Fatalf("DeepSeek request unexpectedly contains %s: %#v", unsupported, request)
+					}
+				}
+				reasoning, ok := request["reasoning"].(map[string]any)
+				if !ok || reasoning["effort"] != "high" {
+					t.Fatalf("reasoning = %#v", request["reasoning"])
+				}
+			}
+			firstInput, _ := json.Marshal(requests[0]["input"])
+			if !strings.Contains(string(firstInput), `"type":"input_image"`) || !strings.Contains(string(firstInput), "data:image/png;base64,dGVzdC1pbWFnZQ==") {
+				t.Fatalf("image input missing: %s", firstInput)
+			}
+			secondInput, _ := json.Marshal(requests[1]["input"])
+			for _, want := range []string{`"type":"reasoning"`, `"type":"function_call"`, `"type":"function_call_output"`, `"call_id":"call_1"`} {
+				if !strings.Contains(string(secondInput), want) {
+					t.Fatalf("continuation input missing %s: %s", want, secondInput)
+				}
+			}
+		})
 	}
 }
 

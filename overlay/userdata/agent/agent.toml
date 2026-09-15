@@ -176,12 +176,14 @@ model = "gpt-5.5"
 # defaults to thinking mode; Aiden selects reasoning_effort = "none" for the
 # built-in model entries for fast replies. Explicit low/high/max enables
 # thinking with reasoning_content replay across tool-call turns.
-# Keep api_mode unset or use "chat_completions".
+# Use api_mode = "responses" for DeepSeek's stateless Responses API. It keeps
+# full context locally; responses_stateful is not supported by DeepSeek.
 # [model_providers.deepseek-main]
 # type = "deepseek"      # https://api.deepseek.com
 # api_key = "$DEEPSEEK_API_KEY"
 # Set [model].provider = "deepseek-main" to select it.
 # model = "deepseek-flash"
+# api_mode = "responses"
 # reasoning_effort = "none"
 
 # Audio service configuration

@@ -38,6 +38,7 @@ const (
 	responsesDialectOpenAI     responsesDialect = "openai"
 	responsesDialectOpenRouter responsesDialect = "openrouter"
 	responsesDialectVolcengine responsesDialect = "volcengine"
+	responsesDialectDeepSeek   responsesDialect = "deepseek"
 )
 
 func normalizeResponsesContextManagement(value string) string {
@@ -159,7 +160,7 @@ type responsesRequest struct {
 	Input              []responsesInputItem `json:"input"`
 	Tools              []responsesTool      `json:"tools,omitempty"`
 	ToolChoice         any                  `json:"tool_choice,omitempty"`
-	ParallelToolCalls  bool                 `json:"parallel_tool_calls"`
+	ParallelToolCalls  *bool                `json:"parallel_tool_calls,omitempty"`
 	Store              *bool                `json:"store,omitempty"`
 	Stream             bool                 `json:"stream,omitempty"`
 	MaxOutputTokens    int                  `json:"max_output_tokens,omitempty"`
@@ -396,6 +397,7 @@ func (m *responsesModel) generateContentWithInput(ctx context.Context, input []r
 	}
 
 	requestModel := firstNonEmpty(callOpts.Model, m.model)
+	parallelToolCalls := false
 	payload := responsesRequest{
 		Model:              requestModel,
 		Instructions:       instructions,
@@ -408,26 +410,33 @@ func (m *responsesModel) generateContentWithInput(ctx context.Context, input []r
 		// Parallel calls would leave the dropped ones without a matching
 		// function_call_output item, which the Responses API rejects on the next
 		// turn, so disabling them is required rather than merely conservative.
-		ParallelToolCalls: false,
+		ParallelToolCalls: &parallelToolCalls,
 		Stream:            callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil,
 		MaxOutputTokens:   callOpts.MaxTokens,
 		Temperature:       m.temperature,
 	}
-	// OpenRouter's Responses endpoint is stateless. Its public schema allows
-	// store=false, but omitting both state fields avoids providers/models that
-	// reject the parameter outright. OpenAI and Ark use store consistently for
-	// local versus provider-managed context.
-	if m.dialect != responsesDialectOpenRouter {
+	// OpenRouter and DeepSeek expose stateless Responses endpoints. Omit both
+	// state fields instead of relying on their compatibility layers to ignore
+	// them. OpenAI and Ark use store consistently for local versus
+	// provider-managed context.
+	if m.dialect != responsesDialectOpenRouter && m.dialect != responsesDialectDeepSeek {
 		store := m.providerManagedContext
 		payload.Store = &store
 	} else {
 		payload.PreviousResponseID = ""
 	}
+	// DeepSeek always enables parallel tool calling and ignores this field.
+	// Omitting it makes the wire request accurately describe the provider's
+	// behavior; the agent loop separately retains only the executed call when it
+	// persists stateless Responses output for the next turn.
+	if m.dialect == responsesDialectDeepSeek {
+		payload.ParallelToolCalls = nil
+	}
 	// Ark supports its own object-shaped context_management edits, while
 	// OpenRouter is stateless. Neither uses the OpenAI compaction array
 	// represented by this configuration. OpenRouter does support the standard
 	// truncation field; Ark does not use this OpenAI request shape.
-	if m.dialect != responsesDialectVolcengine {
+	if m.dialect == responsesDialectOpenAI || m.dialect == responsesDialectOpenRouter {
 		payload.Truncation = m.truncation
 	}
 	if m.dialect == responsesDialectOpenAI && m.contextManagement == responsesContextManagementCompaction {
@@ -458,7 +467,7 @@ func (m *responsesModel) generateContentWithInput(ctx context.Context, input []r
 		}
 		payload.ContextManagement = responsesArkContextManagement{Edits: edits}
 	}
-	if len(m.include) > 0 {
+	if len(m.include) > 0 && m.dialect != responsesDialectDeepSeek {
 		payload.Include = append([]string(nil), m.include...)
 	}
 	if payload.Temperature == nil && callOpts.Temperature != 0 {
@@ -814,11 +823,14 @@ func responsesContentResponse(decoded responsesResponse, callStarted time.Time, 
 		return nil, newResponsesProviderError(responsesResponseError(&decoded), "response failed")
 	}
 	content := ""
+	reasoning := ""
 	toolCalls := make([]llms.ToolCall, 0)
 	for _, item := range decoded.Output {
 		switch item.Type {
 		case "message":
 			content += responsesOutputText(item.Content)
+		case "reasoning":
+			reasoning += responsesReasoningText(item.Content)
 		case "function_call":
 			toolCalls = append(toolCalls, llms.ToolCall{ID: item.CallID, Type: "function", FunctionCall: &llms.FunctionCall{Name: item.Name, Arguments: normalizeCompatibleToolArguments(item.Arguments)}})
 		}
@@ -836,7 +848,7 @@ func responsesContentResponse(decoded responsesResponse, callStarted time.Time, 
 	}
 	generationInfo["llm_output_chars"] = len(content)
 	generationInfo["llm_tool_call_count"] = len(toolCalls)
-	choice := &llms.ContentChoice{Content: content, StopReason: decoded.Status, ToolCalls: toolCalls}
+	choice := &llms.ContentChoice{Content: content, ReasoningContent: reasoning, StopReason: decoded.Status, ToolCalls: toolCalls}
 	if len(toolCalls) > 0 {
 		choice.FuncCall = toolCalls[0].FunctionCall
 	}
@@ -937,6 +949,16 @@ func responsesOutputText(content []responsesOutputContent) string {
 	return text.String()
 }
 
+func responsesReasoningText(content []responsesOutputContent) string {
+	var text strings.Builder
+	for _, part := range content {
+		if part.Type == "reasoning_text" || part.Type == "summary_text" {
+			text.WriteString(part.Text)
+		}
+	}
+	return text.String()
+}
+
 type responsesStreamEvent struct {
 	Type        string               `json:"type,omitempty"`
 	Delta       string               `json:"delta,omitempty"`
@@ -969,6 +991,7 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 	var completed *responsesResponse
 	var eventName string
 	hadTextDelta := false
+	hadReasoningDelta := false
 	var rawStream strings.Builder
 	defer func() {
 		if rawStream.Len() > 0 {
@@ -1020,6 +1043,7 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 					}
 				}
 			case "response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.reasoning.delta":
+				hadReasoningDelta = true
 				reasoning.WriteString(event.Delta)
 				if reasoningStream != nil && event.Delta != "" {
 					if err := reasoningStream(ctx, []byte(event.Delta), nil); err != nil {
@@ -1040,6 +1064,15 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 					addResponsesOutputItems(generationInfo, []responsesOutputItem{*event.Item})
 					if event.Item.Type == "reasoning" {
 						addResponsesReasoningItems(generationInfo, []responsesOutputItem{*event.Item})
+						if !hadReasoningDelta {
+							fallbackReasoning := responsesReasoningText(event.Item.Content)
+							reasoning.WriteString(fallbackReasoning)
+							if reasoningStream != nil && fallbackReasoning != "" {
+								if err := reasoningStream(ctx, []byte(fallbackReasoning), nil); err != nil {
+									return nil, err
+								}
+							}
+						}
 					}
 					if phase := responsesAssistantPhase([]responsesOutputItem{*event.Item}); phase != "" {
 						generationInfo["responses_assistant_phase"] = phase
@@ -1108,6 +1141,19 @@ func (m *responsesModel) decodeResponsesStream(ctx context.Context, body io.Read
 					content.WriteString(fallbackText)
 					if !hadTextDelta && stream != nil && fallbackText != "" {
 						if err := stream(ctx, []byte(fallbackText)); err != nil {
+							return nil, err
+						}
+					}
+				}
+			}
+		}
+		if reasoning.Len() == 0 {
+			for _, item := range completed.Output {
+				if item.Type == "reasoning" {
+					fallbackReasoning := responsesReasoningText(item.Content)
+					reasoning.WriteString(fallbackReasoning)
+					if !hadReasoningDelta && reasoningStream != nil && fallbackReasoning != "" {
+						if err := reasoningStream(ctx, []byte(fallbackReasoning), nil); err != nil {
 							return nil, err
 						}
 					}

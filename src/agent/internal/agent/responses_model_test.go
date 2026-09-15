@@ -244,6 +244,39 @@ func TestResponsesModelUsesOpenRouterContextShape(t *testing.T) {
 	}
 }
 
+func TestResponsesModelUsesDeepSeekStatelessShape(t *testing.T) {
+	var raw map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp_deepseek","status":"completed","output":[]}`))
+	}))
+	defer server.Close()
+
+	model := newResponsesModel(server.URL, "deepseek-flash", "", server.Client(), responsesModelOptions{
+		providerManagedContext: true,
+		contextManagement:      "compaction",
+		truncation:             "auto",
+		include:                []string{"reasoning.encrypted_content"},
+		reasoningEffort:        "high",
+		dialect:                responsesDialectDeepSeek,
+	}).(*responsesModel)
+	if _, err := model.generateContentWithInput(context.Background(), []responsesInputItem{{Role: "user", Content: "hello"}}, "", "resp_previous"); err != nil {
+		t.Fatalf("generateContentWithInput: %v", err)
+	}
+	for _, unsupported := range []string{"store", "previous_response_id", "parallel_tool_calls", "context_management", "truncation", "include"} {
+		if _, exists := raw[unsupported]; exists {
+			t.Fatalf("DeepSeek request unexpectedly contains %s: %#v", unsupported, raw)
+		}
+	}
+	if reasoning, ok := raw["reasoning"].(map[string]any); !ok || reasoning["effort"] != "high" {
+		t.Fatalf("reasoning = %#v", raw["reasoning"])
+	}
+}
+
 func TestAddResponsesOutputItemsDeduplicatesByItemID(t *testing.T) {
 	info := make(map[string]any)
 	var first responsesOutputItem
