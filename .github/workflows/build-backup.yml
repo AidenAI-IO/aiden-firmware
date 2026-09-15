@@ -1,7 +1,16 @@
-name: Build (backup / self-hosted-02)
+name: Debian Build (backup / self-hosted-02)
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preflight only: check the runner, secrets and toolchain, then stop before the firmware build'
+        type: boolean
+        default: false
+      publish_release:
+        description: 'Publish the images as a GitHub release'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -17,4 +26,6 @@ jobs:
     with:
       runner: aiden-hosted-02
       free_disk_space: false
+      dry_run: ${{ inputs.dry_run }}
+      publish_release: ${{ inputs.publish_release }}
     secrets: inherit

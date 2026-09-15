@@ -48,12 +48,6 @@ if rg --no-ignore -n -i \
     fail "active documentation publishes a retired userspace workflow"
 fi
 
-if rg --no-ignore -n -i \
-    'GitHub Releases \(Recommended\)|Distribution:[[:space:]]*GitHub Releases|GitHub Actions publishes signed releases' \
-    "${active_docs[@]}"; then
-    fail "active documentation presents deferred GitHub publication as the current path"
-fi
-
 if rg --no-ignore -n \
     '(^|[[:space:]])gh[[:space:]]+release|create_github_release\.sh|\.github/workflows/' \
     "${REPO_ROOT}/debian_build.sh" \
