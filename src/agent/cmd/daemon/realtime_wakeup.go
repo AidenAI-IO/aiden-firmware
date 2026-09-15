@@ -1731,9 +1731,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				if event.Role == "user" {
 					turnState.userTranscriptObserved()
 					if providerName == realtimevoice.ProviderOpenAI {
-						// OpenAI transcript content is logged once to diagnose the QA
-						// discrepancy between audio understanding and Web history.
-						log.Printf("[realtime] User transcript: provider=%s session_id=%s item_id=%s sequence=%d status=completed text=%q", providerName, info.ID, event.ItemID, event.Sequence, strings.TrimSpace(event.Text))
+						log.Printf("[realtime] User transcript: provider=%s session_id=%s item_id=%s sequence=%d status=completed transcript_len=%d", providerName, info.ID, event.ItemID, event.Sequence, len([]rune(strings.TrimSpace(event.Text))))
 					}
 					if err := appendRealtimeUserMessage(userContext, event.Text); err != nil {
 						return fmt.Errorf("persist realtime user transcript: %w", err)
