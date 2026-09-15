@@ -1107,7 +1107,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			return markRealtimeProviderFailure(fmt.Errorf("restore realtime user context: %w", err))
 		}
 	}
-	log.Printf("[realtime] Session ready: id=%s input_rate=%d output_rate=%d text_input=%t", info.ID, info.InputSampleRate, info.OutputSampleRate, supportsText)
+	log.Printf("[realtime] Session ready: id=%s input_rate=%d output_rate=%d provider_input_rate=%d provider_output_rate=%d text_input=%t", info.ID, info.InputSampleRate, info.OutputSampleRate, info.ProviderInputAudioFormat.SampleRate, info.ProviderOutputAudioFormat.SampleRate, supportsText)
 	if chatBridge != nil {
 		chatBridge.activate()
 		defer func() {

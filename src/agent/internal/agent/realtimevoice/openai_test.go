@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -149,6 +150,45 @@ func TestOpenAIProviderNormalizesRealtimeSession(t *testing.T) {
 	}
 }
 
+func TestOpenAILegacyProviderUses24kHzNativeInput(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		if err := conn.WriteJSON(map[string]any{"type": "session.created", "session": map[string]any{"id": "sess_legacy"}}); err != nil {
+			t.Error(err)
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{"type": "session.updated", "session": map[string]any{"id": "sess_legacy"}}); err != nil {
+			t.Error(err)
+			return
+		}
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	endpoint := "ws" + strings.TrimPrefix(server.URL, "http")
+	session, err := (OpenAIProvider{Endpoint: endpoint, RealtimeProtocol: "legacy"}).Open(context.Background(), SessionConfig{
+		APIKey: "openai-key", Model: "gpt-realtime-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	if got := session.Info().InputAudioFormat.SampleRate; got != 24000 {
+		t.Fatalf("legacy provider input rate = %d, want 24000", got)
+	}
+}
+
 func TestOpenAIEndpointAcceptsHTTPBaseURL(t *testing.T) {
 	provider := OpenAIProvider{Endpoint: "https://api.example.test/v1/realtime"}
 	got, err := provider.endpoint("gpt-realtime")
@@ -209,7 +249,7 @@ func TestOpenAILegacySessionUpdateUsesBetaFields(t *testing.T) {
 			t.Fatalf("legacy payload contains GA field %q: %s", forbidden, text)
 		}
 	}
-	for _, required := range []string{`"modalities":["audio","text"]`, `"input_audio_format":"pcm16"`, `"output_audio_format":"pcm16"`, `"input_audio_transcription":{"model":"gpt-4o-transcribe"}`, `"silence_duration_ms":550`} {
+	for _, required := range []string{`"modalities":["audio","text"]`, `"input_audio_format":"pcm16"`, `"output_audio_format":"pcm16"`, fmt.Sprintf(`"input_audio_transcription":{"model":%q}`, DefaultOpenAIInputTranscriptionModel), `"silence_duration_ms":550`} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("legacy payload missing %q: %s", required, text)
 		}

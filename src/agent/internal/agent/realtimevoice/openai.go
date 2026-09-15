@@ -17,7 +17,7 @@ import (
 const (
 	DefaultOpenAIRealtimeEndpoint        = "wss://api.openai.com/v1/realtime"
 	DefaultOpenAIRealtimeModel           = "gpt-realtime"
-	DefaultOpenAIInputTranscriptionModel = "gpt-4o-transcribe"
+	DefaultOpenAIInputTranscriptionModel = "gpt-4o-mini-transcribe"
 )
 
 // OpenAIProvider is the native OpenAI Realtime adapter. Endpoint is optional
@@ -57,9 +57,6 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 	inputRate := cfg.InputSampleRate
 	if inputRate <= 0 {
 		inputRate = 24000
-		if normalizeRealtimeProtocol(p.RealtimeProtocol) == "legacy" {
-			inputRate = 16000
-		}
 	}
 	outputRate := cfg.OutputSampleRate
 	if outputRate <= 0 {

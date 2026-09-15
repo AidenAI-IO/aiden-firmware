@@ -22,7 +22,7 @@ outputs of the same provider session. The provider consumes microphone audio
 directly to produce a response; the final user transcript is used for Web
 history and is not sent back as a second text prompt.
 
-OpenAI requests `gpt-4o-transcribe` in both GA and legacy session payloads.
+OpenAI requests `gpt-4o-mini-transcribe` in both GA and legacy session payloads.
 Qwen, xAI, and Gemini use their provider-native transcription paths. The
 ordinary `[stt]` configuration applies only to `input_mode = "stt"` and does
 not configure a realtime session.
