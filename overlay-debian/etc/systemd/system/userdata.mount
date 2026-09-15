@@ -1,0 +1,16 @@
+[Unit]
+Description=Aiden persistent userdata
+DefaultDependencies=no
+Requires=aiden-slot-resolve.service
+After=aiden-slot-resolve.service aiden-rootfs-grow.service
+Before=local-fs.target
+
+[Mount]
+What=/dev/mmcblk0p11
+Where=/userdata
+Type=ext4
+Options=noatime
+TimeoutSec=20s
+
+[Install]
+WantedBy=local-fs.target

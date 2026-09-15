@@ -284,9 +284,9 @@ through these endpoints.
 ## Operations
 
 ```bash
-/etc/init.d/S39hciinit status
-/etc/init.d/S40bluetoothd status
-/etc/init.d/S41ble_service status
+systemctl status aiden-bluetooth-attach.service
+systemctl status bluetooth.service
+systemctl status aiden-ble.service
 ```
 
 Logs:

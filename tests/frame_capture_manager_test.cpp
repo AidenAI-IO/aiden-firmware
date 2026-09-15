@@ -20,6 +20,15 @@ using aiden::FrameServiceServer;
 using aiden::FrameServiceStatus;
 using aiden::HealthResult;
 
+namespace aiden {
+void reset_jpeg_encoder_stub();
+int jpeg_encoder_stub_prepare_count();
+int jpeg_encoder_stub_warmup_count();
+int jpeg_encoder_stub_cancel_count();
+uint32_t jpeg_encoder_stub_last_warmup_width();
+uint32_t jpeg_encoder_stub_last_warmup_height();
+}
+
 namespace {
 
 struct TempSocketPath {
@@ -45,6 +54,18 @@ FrameMetadata metadata(uint64_t ts) {
     return meta;
 }
 
+CapturedFrame nv12_frame(uint64_t ts, uint32_t width, uint32_t height) {
+    CapturedFrame frame;
+    frame.metadata.capture_ts_ns = ts;
+    frame.metadata.width = width;
+    frame.metadata.height = height;
+    frame.metadata.pixel_format = "nv12";
+    frame.metadata.stride = width;
+    frame.metadata.bytes = static_cast<uint64_t>(width) * height * 3U / 2U;
+    frame.data.assign(static_cast<size_t>(frame.metadata.bytes), 0x80);
+    return frame;
+}
+
 class FakeCaptureSource : public FrameCaptureSource {
 public:
     std::vector<CapturedFrame> frames;
@@ -58,6 +79,7 @@ public:
     int discard_count = 0;
     int capture_delay_ms = 0;
     bool pause_failure = false;
+    bool pause_always_fails = false;
     bool resume_failure = false;
 
     bool open() override {
@@ -73,7 +95,7 @@ public:
     bool pause() override {
         std::lock_guard<std::mutex> lock(mutex_);
         ++pause_count;
-        if (pause_failure) {
+        if (pause_failure || pause_always_fails) {
             pause_failure = false;
             return false;
         }
@@ -222,6 +244,94 @@ bool wait_for_health_failure(FrameServiceClient* client, HealthResult* out) {
     return false;
 }
 
+bool wait_for_warmup_count(int expected) {
+    for (int i = 0; i < 100; ++i) {
+        if (aiden::jpeg_encoder_stub_warmup_count() >= expected) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+}
+
+}
+
+TEST_CASE("FrameCaptureManager warms NV12 once across same-layout recovery") {
+    aiden::reset_jpeg_encoder_stub();
+    FrameServiceServer server("/tmp/aiden_frame_warmup_unused.sock", 4);
+    FakeCaptureSource source;
+    source.repeat_last = true;
+    source.capture_delay_ms = 2;
+    source.frames.push_back(nv12_frame(1, 2, 2));
+    source.frames.push_back(nv12_frame(2, 2, 2));
+    source.fail_after = 1;
+    FrameCaptureManagerOptions options;
+    options.recovery_initial_backoff_ms = 1;
+    options.recovery_max_backoff_ms = 1;
+    FrameCaptureManager manager(&source, &server, options);
+    REQUIRE(manager.start());
+    CapturedFrame captured;
+    REQUIRE(manager.capture(1000, &captured) == FrameServiceStatus::OK);
+    REQUIRE(wait_for_warmup_count(1));
+    CHECK(manager.capture(1000, &captured) == FrameServiceStatus::SERVICE_RECOVERING);
+    bool recovered = false;
+    for (int i = 0; i < 20 && !recovered; ++i) {
+        recovered = manager.capture(1000, &captured) == FrameServiceStatus::OK;
+    }
+    CHECK(recovered);
+    manager.stop();
+
+    CHECK(aiden::jpeg_encoder_stub_prepare_count() == 1);
+    CHECK(aiden::jpeg_encoder_stub_warmup_count() == 1);
+    CHECK(aiden::jpeg_encoder_stub_cancel_count() == 0);
+    CHECK(aiden::jpeg_encoder_stub_last_warmup_width() == 2);
+    CHECK(aiden::jpeg_encoder_stub_last_warmup_height() == 2);
+}
+
+TEST_CASE("FrameCaptureManager skips JPEG warmup for non-NV12 frames") {
+    aiden::reset_jpeg_encoder_stub();
+    FrameServiceServer server("/tmp/aiden_frame_warmup_uyvy_unused.sock", 4);
+    FakeCaptureSource source;
+    source.repeat_last = true;
+    source.capture_delay_ms = 2;
+    source.frames.push_back(CapturedFrame{metadata(2), std::vector<uint8_t>{1, 2}});
+    FrameCaptureManagerOptions options;
+    options.recovery_initial_backoff_ms = 1;
+    options.recovery_max_backoff_ms = 1;
+    FrameCaptureManager manager(&source, &server, options);
+    REQUIRE(manager.start());
+    CapturedFrame captured;
+    REQUIRE(manager.capture(1000, &captured) == FrameServiceStatus::OK);
+    manager.stop();
+
+    CHECK(aiden::jpeg_encoder_stub_prepare_count() == 0);
+    CHECK(aiden::jpeg_encoder_stub_warmup_count() == 0);
+}
+
+TEST_CASE("FrameCaptureManager rewarms JPEG after NV12 resolution changes") {
+    aiden::reset_jpeg_encoder_stub();
+    FrameServiceServer server("/tmp/aiden_frame_rewarm_unused.sock", 4);
+    FakeCaptureSource source;
+    source.repeat_last = true;
+    source.capture_delay_ms = 2;
+    source.frames.push_back(nv12_frame(3, 2, 2));
+    source.frames.push_back(nv12_frame(4, 4, 2));
+    FrameCaptureManagerOptions options;
+    options.recovery_initial_backoff_ms = 1;
+    options.recovery_max_backoff_ms = 1;
+    FrameCaptureManager manager(&source, &server, options);
+    REQUIRE(manager.start());
+    CapturedFrame captured;
+    REQUIRE(manager.capture(1000, &captured) == FrameServiceStatus::OK);
+    REQUIRE(wait_for_warmup_count(1));
+    REQUIRE(manager.capture(1000, &captured) == FrameServiceStatus::OK);
+    REQUIRE(wait_for_warmup_count(2));
+    manager.stop();
+
+    CHECK(aiden::jpeg_encoder_stub_prepare_count() == 2);
+    CHECK(aiden::jpeg_encoder_stub_warmup_count() == 2);
+    CHECK(aiden::jpeg_encoder_stub_last_warmup_width() == 4);
+    CHECK(aiden::jpeg_encoder_stub_last_warmup_height() == 2);
 }
 
 TEST_CASE("FrameCaptureManager stays paused while idle and captures once per request") {
@@ -264,6 +374,53 @@ TEST_CASE("FrameCaptureManager stays paused while idle and captures once per req
     CHECK(health.latest_seq == frame.metadata.seq);
     CHECK(health.ring_buffer_size == 0);
     CHECK(health.ring_buffer_used == 0);
+
+    manager.stop();
+    server.stop();
+}
+
+TEST_CASE("FrameCaptureManager reports RUNNING before the first capture request") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+
+    FakeCaptureSource source;
+    source.repeat_last = true;
+    source.open_failures_remaining = 1;
+    source.frames.push_back(CapturedFrame{metadata(10), std::vector<uint8_t>{1, 2}});
+    FrameCaptureManagerOptions options;
+    options.recovery_initial_backoff_ms = 1;
+    options.recovery_max_backoff_ms = 1;
+    options.recovery_idle_max_backoff_ms = 1;
+    FrameCaptureManager manager(&source, &server, options);
+    connect_on_demand_capture(&server, &manager);
+    REQUIRE(manager.start());
+    REQUIRE(wait_for_source_ready(&source));
+
+    // An on-demand client gates its first capture on this state. It has to
+    // reach RUNNING from the open alone, with no request ever sent, otherwise
+    // client and service deadlock.
+    FrameServiceClient client(socket_path.path.c_str());
+    HealthResult health;
+    bool running = false;
+    for (int i = 0; i < 50 && !running; ++i) {
+        REQUIRE(client.health(&health) == FrameServiceStatus::OK);
+        running = health.state == "RUNNING";
+        if (!running) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    CHECK(running);
+    CHECK(health.capture_mode == "on_demand");
+    CHECK(health.latest_seq == 0);
+    CHECK(source.capture_count() == 0);
+    // The failed first open still counted, so RUNNING is published by the
+    // reopen rather than by clearing the failure.
+    CHECK(health.consecutive_failures == 1);
+
+    FrameResult frame;
+    REQUIRE(client.latest_frame(0, 0, &frame) == FrameServiceStatus::OK);
+    CHECK(frame.data == std::vector<uint8_t>{1, 2});
 
     manager.stop();
     server.stop();
@@ -352,6 +509,65 @@ TEST_CASE("FrameCaptureManager stop interrupts recovery backoff promptly") {
     server.stop();
 }
 
+TEST_CASE("FrameCaptureManager slows retries before the first valid frame") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+
+    FakeCaptureSource source;
+    source.pause_always_fails = true;
+    FrameCaptureManagerOptions options;
+    options.recovery_initial_backoff_ms = 10;
+    options.recovery_max_backoff_ms = 10;
+    options.recovery_idle_max_backoff_ms = 160;
+    FrameCaptureManager manager(&source, &server, options);
+    REQUIRE(manager.start());
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    manager.stop();
+
+    CHECK(source.opened_count() >= 2);
+    CHECK(source.opened_count() <= 12);
+    server.stop();
+}
+
+TEST_CASE("FrameCaptureManager restart interrupts the idle HDMI backoff") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+
+    FakeCaptureSource source;
+    source.pause_always_fails = true;
+    FrameCaptureManagerOptions options;
+    options.recovery_initial_backoff_ms = 5000;
+    options.recovery_max_backoff_ms = 5000;
+    options.recovery_idle_max_backoff_ms = 5000;
+    FrameCaptureManager manager(&source, &server, options);
+    REQUIRE(manager.start());
+
+    int opens_before = 0;
+    for (int i = 0; i < 100 && opens_before == 0; ++i) {
+        opens_before = source.opened_count();
+        if (opens_before == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    REQUIRE(opens_before >= 1);
+
+    manager.request_restart();
+    bool reopened = false;
+    for (int i = 0; i < 50 && !reopened; ++i) {
+        reopened = source.opened_count() > opens_before;
+        if (!reopened) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    CHECK(reopened);
+
+    manager.stop();
+    server.stop();
+}
+
 TEST_CASE("FrameCaptureManager publishes failure and copy latency health metrics") {
     TempSocketPath socket_path;
     FrameServiceServer server(socket_path.path.c_str(), 4);
@@ -371,6 +587,7 @@ TEST_CASE("FrameCaptureManager publishes failure and copy latency health metrics
     FrameServiceClient client(socket_path.path.c_str());
     HealthResult health;
     REQUIRE(wait_for_health_failure(&client, &health));
+    CHECK(health.state == "RECOVERING");
     CHECK(health.consecutive_failures == 1);
     CHECK(health.last_error == "open failed");
     CHECK(health.last_recovery_ts > 0);

@@ -20,6 +20,68 @@ type fakeScreenshotFrameClient struct {
 	captureInfo screenCaptureInfo
 }
 
+type fakeReadyScreenshotFrameClient struct {
+	*fakeScreenshotFrameClient
+	readyCalls int
+	readyHint  screenprovider.CropHint
+}
+
+func (c *fakeReadyScreenshotFrameClient) LatestFrameWithFormatWhenReady(format string, quality int, cropBlack bool, hint screenprovider.CropHint) (*frameMetadata, []byte, screenCaptureInfo, error) {
+	c.readyCalls++
+	c.readyHint = hint
+	return c.LatestFrameWithFormat(format, quality, cropBlack, hint)
+}
+
+func TestScreenshotToolWaitsForFrameServiceBeforeExplicitCapture(t *testing.T) {
+	jpegData, err := encodeJPEG([]byte{255, 255, 255}, 1, 1, screenshotJPEGQuality)
+	if err != nil {
+		t.Fatalf("encodeJPEG() error = %v", err)
+	}
+	screenState := &screen.ScreenState{}
+	screenState.UpdatePhoneScreenInfo(screen.PhoneScreenInfo{
+		WidthPixels:  intPtr(1179),
+		HeightPixels: intPtr(2556),
+	})
+	client := &fakeReadyScreenshotFrameClient{
+		fakeScreenshotFrameClient: &fakeScreenshotFrameClient{
+			meta: frameMetadata{Width: 1, Height: 1, PixelFormat: "jpeg", Bytes: uint64(len(jpegData))},
+			data: jpegData,
+		},
+	}
+
+	tool := &ScreenshotTool{client: client, screen: screenState}
+	if _, err := tool.Call(context.Background(), "{}"); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if client.readyCalls != 1 || client.calls != 1 {
+		t.Fatalf("ready calls=%d capture calls=%d, want 1 each", client.readyCalls, client.calls)
+	}
+	if client.readyHint.ScreenWidth != 1179 || client.readyHint.ScreenHeight != 2556 {
+		t.Fatalf("ready crop hint = %+v, want 1179x2556", client.readyHint)
+	}
+}
+
+func TestScreenshotToolSkipsStartupWaitForBackgroundCapture(t *testing.T) {
+	jpegData, err := encodeJPEG([]byte{255, 255, 255}, 1, 1, screenshotJPEGQuality)
+	if err != nil {
+		t.Fatalf("encodeJPEG() error = %v", err)
+	}
+	client := &fakeReadyScreenshotFrameClient{
+		fakeScreenshotFrameClient: &fakeScreenshotFrameClient{
+			meta: frameMetadata{Width: 1, Height: 1, PixelFormat: "jpeg", Bytes: uint64(len(jpegData))},
+			data: jpegData,
+		},
+	}
+
+	tool := &ScreenshotTool{client: client, screen: &screen.ScreenState{}}
+	if _, err := tool.CallWithoutStartupWait(context.Background(), "{}"); err != nil {
+		t.Fatalf("CallWithoutStartupWait() error = %v", err)
+	}
+	if client.readyCalls != 0 || client.calls != 1 {
+		t.Fatalf("ready calls=%d capture calls=%d, want 0 and 1", client.readyCalls, client.calls)
+	}
+}
+
 func TestDetectImageAxisBoundsIgnoresInteriorDarkRun(t *testing.T) {
 	left, right, valid := detectImageAxisBounds(40, func(position int) bool {
 		return position < 2 || position >= 38 || position == 34

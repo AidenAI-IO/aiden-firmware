@@ -139,3 +139,99 @@ func TestHealthWaitRejectsNonPositiveInterval(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdaterMarksHealthOnlyForMatchingPublicTransactionSlotAndBoot(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	pending := PendingBoot{
+		TargetSlot:      "b",
+		TargetVersion:   env.version,
+		TargetBuildTime: env.buildTime,
+		Nonce:           "0123456789abcdef",
+	}
+	env.state.Phase = "pending-reboot"
+	env.state.TargetSlot = SlotB
+	env.state.TargetVersion = pending.TargetVersion
+	env.state.TargetBuildTime = pending.TargetBuildTime
+	env.state.PendingBootNonce = pending.Nonce
+	env.saveState(t)
+	if err := WritePendingBoot(filepath.Join(env.stateDir, "pending_boot.json"), pending); err != nil {
+		t.Fatalf("WritePendingBoot() error = %v", err)
+	}
+	updater := env.updater()
+	updater.currentSlot = func() (Slot, bool, error) { return SlotB, true, nil }
+	updater.currentRootSlot = func() (Slot, bool, error) { return SlotB, true, nil }
+	updater.bootID = func() string { return "boot-transaction-1" }
+	wrote, err := updater.MarkHealthIfPending()
+	if err != nil {
+		t.Fatalf("MarkHealthIfPending() error = %v", err)
+	}
+	if !wrote {
+		t.Fatal("MarkHealthIfPending() did not write a marker")
+	}
+	if err := ValidateHealthMarker(filepath.Join(env.stateDir, "health.ok"), pending, "boot-transaction-1"); err != nil {
+		t.Fatalf("ValidateHealthMarker() error = %v", err)
+	}
+}
+
+func TestDebianHealthMarkerRejectsMismatchedPersonalizationTransaction(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	pending := PendingBoot{
+		TargetSlot:      "b",
+		TargetVersion:   env.version,
+		TargetBuildTime: env.buildTime,
+		Nonce:           "0123456789abcdef",
+	}
+	env.state.Phase = "pending-reboot"
+	env.state.TargetSlot = SlotB
+	env.state.TargetVersion = pending.TargetVersion
+	env.state.TargetBuildTime = pending.TargetBuildTime
+	env.state.PendingBootNonce = pending.Nonce
+	env.saveState(t)
+	if err := WritePendingBoot(filepath.Join(env.stateDir, "pending_boot.json"), pending); err != nil {
+		t.Fatalf("WritePendingBoot() error = %v", err)
+	}
+	if err := DeleteStaleHealthMarker(filepath.Join(env.stateDir, "health.ok")); err != nil {
+		t.Fatalf("DeleteStaleHealthMarker() error = %v", err)
+	}
+	machineIDPath := filepath.Join(t.TempDir(), "machine-id")
+	runtimeMachineIDPath := filepath.Join(t.TempDir(), "machine-id")
+	for _, path := range []string{machineIDPath, runtimeMachineIDPath} {
+		if err := os.WriteFile(path, []byte("0123456789abcdef0123456789abcdef\n"), 0o444); err != nil {
+			t.Fatalf("WriteFile(machine-id) error = %v", err)
+		}
+	}
+	sidecarPath := filepath.Join(t.TempDir(), "personalization-v1.json")
+	if err := SavePersonalizationSidecar(sidecarPath, PersonalizationSidecar{
+		TransactionID:   "fedcba9876543210",
+		TargetVersion:   pending.TargetVersion,
+		TargetBuildTime: pending.TargetBuildTime,
+		Slots: map[string]RootFSPersonalization{
+			"b": {
+				ArtifactSHA256:           testHashA,
+				PersonalizationSchema:    PersonalizationSchemaVersion,
+				EffectivePartitionSHA256: testHashB,
+				HashedBytes:              4096,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SavePersonalizationSidecar() error = %v", err)
+	}
+	env.config.DebianMode = true
+	env.config.MachineIDPath = machineIDPath
+	env.config.RuntimeMachineIDPath = runtimeMachineIDPath
+	env.config.PersonalizationPath = sidecarPath
+	updater := env.updater()
+	updater.currentSlot = func() (Slot, bool, error) { return SlotB, true, nil }
+	updater.currentRootSlot = func() (Slot, bool, error) { return SlotB, true, nil }
+	updater.bootID = func() string { return "boot-transaction-1" }
+	wrote, err := updater.MarkHealthIfPending()
+	if err == nil || !strings.Contains(err.Error(), "personalization transaction") {
+		t.Fatalf("MarkHealthIfPending() error = %v, want transaction mismatch", err)
+	}
+	if wrote {
+		t.Fatal("MarkHealthIfPending() wrote marker for mismatched sidecar")
+	}
+	if _, err := os.Stat(filepath.Join(env.stateDir, "health.ok")); !os.IsNotExist(err) {
+		t.Fatalf("health marker exists after transaction mismatch: %v", err)
+	}
+}

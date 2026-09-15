@@ -1,0 +1,15 @@
+diff --git a/project/build.sh b/project/build.sh
+index 219703a31..984ccb3a7 100755
+--- a/project/build.sh
++++ b/project/build.sh
+@@ -2161,6 +2161,10 @@ __GET_BOOTARGS_FROM_BOARD_CFG() {
+ 	if [ -n "$RK_BOOTARGS_CMA_SIZE" ]; then
+ 		SYS_BOOTARGS="$SYS_BOOTARGS rk_dma_heap_cma=$RK_BOOTARGS_CMA_SIZE"
+ 	fi
++
++	if [ -n "$RK_KERNEL_CMDLINE_EXTRA" ]; then
++		SYS_BOOTARGS="$SYS_BOOTARGS $RK_KERNEL_CMDLINE_EXTRA"
++	fi
+ }
+ 
+ __LINK_DEFCONFIG_FROM_BOARD_CFG() {

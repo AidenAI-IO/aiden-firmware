@@ -13,6 +13,7 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/agent/screen"
 
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
@@ -48,6 +49,7 @@ type AgentLoop struct {
 	SteerWaiter                func(context.Context) (RunSteerMessage, bool, error)
 	TerminationPolicy          *TerminationPolicy
 	DevicePlatform             string
+	ScreenState                *screen.ScreenState
 	PointerMode                string
 	ToolResultObserver         ToolResultObserver
 	ToolResultPolicy           ToolResultPolicy
@@ -95,9 +97,14 @@ func (l *AgentLoop) outboundTransforms() []executor.OutboundMessageTransform {
 }
 
 func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
-	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager, l.outboundTransforms()...)
-
 	agentTools := l.Profile.Tools
+	transforms := l.outboundTransforms()
+	if IsAnthropicModel(l.Model.Spec().Provider, l.Model.Spec().Name) {
+		frames := newVisualCoordinates(l.ScreenState)
+		transforms = append(transforms, frames)
+		agentTools = frames.wrap(agentTools)
+	}
+	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager, transforms...)
 	toolSpecs := NewToolSpecs(agentTools)
 	parser := &FunctionAgent{
 		Tools:     agentTools,
