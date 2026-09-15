@@ -65,6 +65,13 @@ Environment overrides:
                             build an image that trusts a different signer.
   DEBIAN_STAGE2_GO_ROOT     Go 1.26.0 linux/amd64 toolchain (default:
                             .toolchains/go1.26.0.linux-amd64).
+  DEBIAN_STAGE2_GO_BUILD_CACHE, DEBIAN_STAGE2_GO_MODULE_CACHE,
+  DEBIAN_STAGE2_OPENCV_CACHE
+                            Persistent Stage 2 caches (default:
+                            .cache/debian-stage2/{go-build,go-mod,opencv}).
+                            They live outside output/, so this build does not
+                            clear them. Point them outside the repository to
+                            survive a CI checkout that cleans ignored files.
   OTA_REPO                  Local factory config repository label (default:
                             AidenAI-IO/aiden-firmware).
   OTA_CHANNEL               Local manifest channel (default: local).

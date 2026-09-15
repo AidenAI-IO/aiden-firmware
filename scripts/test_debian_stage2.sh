@@ -137,18 +137,55 @@ grep -qx 'scripts/debian-stage2/container-build-rootfs-cli-tools.sh' \
     "${TEST_ROOT}/cli-tools-docker-args.txt"
 
 bad_source_output=${TEST_ROOT}/bad-source-output
-mkdir -p "${bad_source_output}/cache"
+bad_source_cache=${TEST_ROOT}/bad-source-cache
+mkdir -p "${bad_source_cache}"
 printf 'not the pinned archive\n' \
-    >"${bad_source_output}/cache/opencv-mobile-4.13.0.zip"
+    >"${bad_source_cache}/opencv-mobile-4.13.0.zip"
 : >"${mock_log}"
 if MOCK_DOCKER_LOG="${mock_log}" \
     PATH="${TEST_ROOT}/mock-bin:${PATH}" \
     DEBIAN_STAGE2_OUTPUT_DIR="${bad_source_output}" \
+    DEBIAN_STAGE2_OPENCV_CACHE="${bad_source_cache}" \
         "${STAGE2_DIR}/build-apps.sh" opencv >/dev/null 2>&1; then
     fail "OpenCV checksum mismatch succeeded"
 fi
 [ ! -s "${mock_log}" ] \
     || fail "Docker ran after the OpenCV checksum mismatch"
+[ ! -e "${bad_source_cache}/opencv-mobile-4.13.0.zip" ] \
+    || fail "the rejected OpenCV archive stayed in the persistent cache"
+[ ! -e "${bad_source_output}/cache/opencv-mobile-4.13.0.zip" ] \
+    || fail "the rejected OpenCV archive was staged into the output directory"
+
+# A cached archive must be staged into the output directory the container
+# bind-mounts, and must not be downloaded again. sha256sum is mocked because
+# the pinned checksum cannot be reproduced without the real 60MB archive.
+opencv_output=${TEST_ROOT}/opencv-output
+opencv_cache=${TEST_ROOT}/opencv-cache
+mkdir -p "${opencv_cache}" "${TEST_ROOT}/opencv-bin"
+printf 'pinned archive stand-in\n' >"${opencv_cache}/opencv-mobile-4.13.0.zip"
+cat >"${TEST_ROOT}/opencv-bin/sha256sum" <<'EOF'
+#!/usr/bin/env sh
+printf '%s  %s\n' \
+    9304482980b3e4ff1050a8527cdb5777fadf8c5dd9c1a8620170d23e252fb150 "$1"
+EOF
+cat >"${TEST_ROOT}/opencv-bin/curl" <<'EOF'
+#!/usr/bin/env sh
+echo "build-apps.sh re-downloaded an already cached OpenCV archive" >&2
+exit 1
+EOF
+chmod +x "${TEST_ROOT}/opencv-bin/sha256sum" "${TEST_ROOT}/opencv-bin/curl"
+: >"${mock_log}"
+MOCK_DOCKER_LOG="${mock_log}" \
+PATH="${TEST_ROOT}/opencv-bin:${TEST_ROOT}/mock-bin:${PATH}" \
+DEBIAN_STAGE2_OUTPUT_DIR="${opencv_output}" \
+DEBIAN_STAGE2_OPENCV_CACHE="${opencv_cache}" \
+DEBIAN_STAGE2_GO_ROOT="${TEST_ROOT}/go-root" \
+DEBIAN_STAGE2_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
+DEBIAN_STAGE2_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
+    "${STAGE2_DIR}/build-apps.sh" opencv >/dev/null
+cmp -s "${opencv_cache}/opencv-mobile-4.13.0.zip" \
+    "${opencv_output}/cache/opencv-mobile-4.13.0.zip" \
+    || fail "the cached OpenCV archive was not staged for the container"
 
 apps_dir=${TEST_ROOT}/apps
 mkdir -p "${apps_dir}/bin" "${apps_dir}/lib"
