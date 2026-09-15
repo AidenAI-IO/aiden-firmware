@@ -1,0 +1,74 @@
+{
+  "name": "mobilegym_list_search",
+  "suite_category": "MobileGym",
+  "version": "1.0",
+  "description": "Deterministic long-list target finding tasks for evaluating repeated mobile scrolling and precise item selection.",
+  "prompt_prefix": "",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "请把设备准备到“列表实验室”的列表顶部：如果不在该应用，先回到主屏幕并打开“列表实验室”；如果在详情页，先返回列表；最后滚动到列表最顶部。准备好后简短回复。",
+    "timeout_sec": 120,
+    "clear_history_after": true
+  },
+  "trace_observations": [],
+  "tasks": [
+    {
+      "id": "find_mid_list_target_024",
+      "category": "multi_step",
+      "prompt": "请在当前列表中通过滚动找到并打开“Aiden 滚动目标 024”。不要使用搜索功能。",
+      "description_for_judge": "Agent must scroll through Scroll Lab and open exactly the detail page for Aiden 滚动目标 024, the fixed medium-depth target at list position 24 of 100.",
+      "rubric": [
+        {
+          "id": "opened_exact_target",
+          "check": "Post-screenshot shows the Scroll Lab detail page with the exact title 'Aiden 滚动目标 024', position 24 / 100, record code SL-024, and a visible selected-state confirmation."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 30,
+        "must_complete_within_sec": 180,
+        "required_tools": [
+          "touch_gesture"
+        ]
+      },
+      "app_ids": [
+        "scroll_lab"
+      ],
+      "environment_assertions": {
+        "route.app": "scroll_lab",
+        "route.path": "/item/scroll-item-024",
+        "apps.scroll_lab.selectedItemId": "scroll-item-024"
+      },
+      "repeats": 1
+    },
+    {
+      "id": "find_deep_list_target_083",
+      "category": "multi_step",
+      "prompt": "请在当前列表中通过滚动找到并打开“Aiden 滚动目标 083”。不要使用搜索功能。",
+      "description_for_judge": "Agent must repeatedly scroll through Scroll Lab and open exactly the detail page for Aiden 滚动目标 083, the fixed deep target at list position 83 of 100.",
+      "rubric": [
+        {
+          "id": "opened_exact_target",
+          "check": "Post-screenshot shows the Scroll Lab detail page with the exact title 'Aiden 滚动目标 083', position 83 / 100, record code SL-083, and a visible selected-state confirmation."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 6,
+        "max_tool_calls": 50,
+        "must_complete_within_sec": 240,
+        "required_tools": [
+          "touch_gesture"
+        ]
+      },
+      "app_ids": [
+        "scroll_lab"
+      ],
+      "environment_assertions": {
+        "route.app": "scroll_lab",
+        "route.path": "/item/scroll-item-083",
+        "apps.scroll_lab.selectedItemId": "scroll-item-083"
+      },
+      "repeats": 1
+    }
+  ]
+}

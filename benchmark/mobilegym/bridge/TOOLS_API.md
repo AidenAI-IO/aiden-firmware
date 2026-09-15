@@ -13,12 +13,14 @@ device bridge.
 | `POST /api/providers/screenshot` | Return the current screen frame for pre/post capture and the agent screenshot tool. |
 | `POST /api/providers/mnk` | Execute a Go `mnk.Provider` operation for agent input. |
 | `POST /api/setup` | Initialize or reset a task route. |
+| `POST /state` | Return the environment state snapshot for deterministic assertions. |
+| `POST /route` | Return the foreground app and in-app route. |
 | `POST /api/release` | Release a task route. |
 | `GET /api/concurrent` | Return bridge concurrency capacity. |
 
 MobileGym routes concurrent tasks by the `benchmark-task-id` header. The same id
-must be sent to `/api/setup`, `/api/providers/screenshot`, `/api/providers/mnk`, and `/api/release`
-for a task worker.
+must be sent to `/api/setup`, `/api/providers/screenshot`, `/api/providers/mnk`,
+`/state`, `/route`, and `/api/release` for a task worker.
 
 ## Tool Catalog
 
@@ -104,6 +106,36 @@ for later tasks.
 `app_ids` is optional. Missing or empty `app_ids` skips eager app data loading;
 non-empty lists preload only the named apps. The app launch path still loads an
 app's data on demand.
+
+## Deterministic State And Route
+
+Suites can judge a UI action by exact state instead of relying only on the final
+screenshot. Both endpoints accept an empty JSON object and require the task's
+route header:
+
+```bash
+curl -X POST http://localhost:8888/state \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: suite.json:task-1" \
+  -d '{}'
+
+curl -X POST http://localhost:8888/route \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: suite.json:task-1" \
+  -d '{}'
+```
+
+For example, `mobilegym_list_search.json` checks both the selected record and
+its detail route:
+
+```json
+{
+  "environment_assertions": {
+    "route.path": "/item/scroll-item-083",
+    "apps.scroll_lab.selectedItemId": "scroll-item-083"
+  }
+}
+```
 
 ## Concurrency
 

@@ -369,6 +369,7 @@ Common fields:
 | `global_reset` | Suite-level reset configuration |
 | `setup` | One task-level pre-step or an ordered array of pre-steps; supports `agent_prompt`, benchmark-token-protected `seed_memory`, `seed_episode`, `seed_notification`, and generic `assert_memory` checks |
 | `app_ids` | Optional MobileGym app IDs to preload during environment setup; omitted tasks skip eager app data loading |
+| `environment_assertions` | Optional exact dotted-path checks against the environment's final state and route (for example `apps.scroll_lab.selectedItemId` or `route.path`) |
 | `rubric` | The judge model's scoring items |
 | `hard_assertions` | Deterministic checks, e.g. tool-call counts, timeout, required/forbidden tools |
 | `hard_assertions.required_tool_calls` | Requires a tool call whose input contains a specified nested subset |
