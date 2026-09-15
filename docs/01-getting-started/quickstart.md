@@ -158,9 +158,11 @@ After development, build the firmware and upgrade the device:
 
 ### OTA for a development build
 
-GitHub Actions and GitHub Release publication are not part of the current
-Debian build scope. Serve the local artifacts from a development HTTP(S)
-endpoint and point the device at its manifest explicitly:
+The scheduled and manually dispatched Debian workflows publish signed images as
+GitHub Releases: `main` produces the `debian-stable` release, other branches
+produce `debian-dev-<branch>` pre-releases. For a local build that was not
+published, serve its artifacts from a development HTTP(S) endpoint and point
+the device at its manifest explicitly:
 
 ```bash
 BASE_URL="http://192.168.1.100:8000"

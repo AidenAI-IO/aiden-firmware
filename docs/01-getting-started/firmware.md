@@ -6,9 +6,11 @@ sidebar_position: 4
 
 ## Getting Firmware
 
-The current scope does not provide an automated prebuilt-release download. Build
-the Debian image locally with `./debian_build.sh`, or obtain a reviewed
-`update.img` through the project's manual distribution process.
+GitHub Actions builds the Debian firmware on a schedule and on manual
+dispatch, publishing signed images as GitHub Releases and uploading the same
+images as workflow artifacts. You can also build the image locally with
+`./debian_build.sh`, or obtain a reviewed `update.img` through the project's
+manual distribution process.
 
 When flashing the full firmware, you typically use `update.img`.
 

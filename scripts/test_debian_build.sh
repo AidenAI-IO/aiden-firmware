@@ -151,7 +151,7 @@ grep -Fq 'elif [ -f "${DEFAULT_OTA_TRUST_PUBLIC_KEY}" ]; then' "${BUILD_SCRIPT}"
 # CI signs with the secret, so it must pin the anchor to that key rather than
 # inherit the committed one, which a rotation would leave stale.
 grep -Fq 'echo "OTA_TRUST_PUBLIC_KEY_PATH=$public_key" >> "$GITHUB_ENV"' \
-    "${TEST_REPO_ROOT}/.github/workflows/debian-build.yml" \
+    "${TEST_REPO_ROOT}/.github/workflows/build.yml" \
     || fail "the Debian workflow does not pin the OTA trust anchor to its signing key"
 
 key_root=${TEST_ROOT}/keys

@@ -1,7 +1,16 @@
-name: Build (fallback / hosted)
+name: Debian Build (fallback / hosted)
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preflight only: check the runner, secrets and toolchain, then stop before the firmware build'
+        type: boolean
+        default: false
+      publish_release:
+        description: 'Publish the images as a GitHub release'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -12,4 +21,6 @@ jobs:
     with:
       runner: ubuntu-latest
       free_disk_space: true
+      dry_run: ${{ inputs.dry_run }}
+      publish_release: ${{ inputs.publish_release }}
     secrets: inherit
