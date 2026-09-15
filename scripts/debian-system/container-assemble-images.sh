@@ -3,7 +3,8 @@ set -euo pipefail
 
 readonly REPO_ROOT=/work
 readonly OUTPUT_DIR=/out
-readonly SDK_DIR=${REPO_ROOT}/pico-sdk
+# Mounted by run_images() so image assembly honors DEBIAN_SYSTEM_SDK_DIR.
+readonly SDK_DIR=/sdk
 readonly IMAGE_DIR=${OUTPUT_DIR}/image
 readonly WORK_DIR=${OUTPUT_DIR}/image-work
 readonly OEM_ROOT=${WORK_DIR}/oem-root

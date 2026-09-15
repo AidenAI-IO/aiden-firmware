@@ -210,6 +210,13 @@ fi
     || fail "the system-stage SDK patch directory must not exist"
 grep -Fq 'aiden-rv1106-rockusb.config' "${SYSTEM_DIR}/build.sh" \
     || fail "the system stage does not verify the pinned SDK carries the RockUSB config"
+grep -Fq 'readonly SDK_DIR=/sdk' \
+    "${SYSTEM_DIR}/container-assemble-images.sh" \
+    || fail "image assembly does not read the SDK from the /sdk mount"
+if ! sed -n '/^run_images()/,/^}/p' "${SYSTEM_DIR}/build.sh" \
+    | grep -Fq -- '-v "${SDK_DIR}:/sdk:ro"'; then
+    fail "image assembly does not mount the selected SDK at /sdk"
+fi
 if sed -n '/^run_bsp()/,/^}/p' "${SYSTEM_DIR}/build.sh" \
     | grep -Fq 'source_git_common_dir'; then
     fail "BSP container still depends on a host Git object directory"

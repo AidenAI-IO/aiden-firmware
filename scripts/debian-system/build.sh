@@ -262,6 +262,7 @@ run_images() {
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
         -e "DEBIAN_SYSTEM_BUILD_IMAGE_ID=${image_id}" \
         -v "${REPO_ROOT}:/work:ro" \
+        -v "${SDK_DIR}:/sdk:ro" \
         -v "${OUTPUT_DIR}:/out" \
         -v "${APPS_OUTPUT}/apps:/apps:ro" \
         -v "${APPS_OUTPUT}/apps-audit:/apps-audit:ro" \
