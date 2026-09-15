@@ -107,6 +107,12 @@ player.stop();
 
 ## CameraCapture
 
+`CameraCapture` preserves the historical direct-capture default of UYVY for
+compatibility. The frame_service executable selects NV12 explicitly. With
+NV12, the `capture_frame*` copy helpers remove V4L2 row padding and return a
+tight Y + interleaved UV payload. The returned `VideoFrame::stride` is the
+visible width and `size_image`/`length` are the compact payload size.
+
 Streaming capture:
 
 ```cpp
@@ -118,7 +124,8 @@ config.pixel_format = "uyvy";
 aiden::CameraCapture camera;
 camera.init(config);
 camera.start([](const aiden::VideoFrame& frame) {
-    printf("Frame: %ux%u, %u bytes\n", frame.width, frame.height, frame.length);
+    printf("Frame: %ux%u, %u bytes, stride=%u\n",
+           frame.width, frame.height, frame.length, frame.stride);
 });
 // ...
 camera.stop();
@@ -141,9 +148,9 @@ camera.pause();
 
 `frame_service` uses this lifecycle for request-driven screenshots. Resume
 resets `skip_frames`, then the service performs additional zero-copy warm-up
-dequeues before the response frame is copied. The deployed default is 12
-warm-up frames because RK628D can briefly return uniform frames after every
-stream restart.
+dequeues before the response frame is copied. The deployed default is zero
+additional warm-up frames when streaming restarts per request and six when
+`keep_streamon` keeps the stream active.
 
 One-shot capture and copy to caller-owned buffer:
 

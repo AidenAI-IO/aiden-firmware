@@ -4,7 +4,7 @@ sidebar_position: 4
 
 # A/B and `abctl` Verification
 
-`abctl` is a diagnostic and factory test tool for OTA A/B metadata. It can operate on regular files or `/dev/block/by-name/misc` on devices.
+`abctl` is a diagnostic and factory test tool for OTA A/B metadata. It can operate on regular files or `/dev/disk/by-partlabel/misc` on devices.
 
 ## Metadata Convention
 
@@ -50,13 +50,13 @@ build/bin/abctl read /tmp/misc.img
 Read real `misc` on device:
 
 ```bash
-/oem/usr/bin/abctl read /dev/block/by-name/misc
+/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
 ```
 
 Manually switch slot:
 
 ```bash
-/oem/usr/bin/abctl set-active /dev/block/by-name/misc b --tries 3
+/oem/usr/bin/abctl set-active /dev/disk/by-partlabel/misc b --tries 3
 sync
 reboot
 ```
@@ -66,13 +66,13 @@ After boot, confirm active slot:
 ```bash
 cat /proc/cmdline
 mount | grep ' /oem '
-/oem/usr/bin/abctl read /dev/block/by-name/misc
+/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
 ```
 
 After confirming device health, commit slot:
 
 ```bash
-/oem/usr/bin/abctl mark-successful /dev/block/by-name/misc b
+/oem/usr/bin/abctl mark-successful /dev/disk/by-partlabel/misc b
 sync
 ```
 
@@ -81,7 +81,7 @@ sync
 Set up a trial boot and do not mark successful:
 
 ```bash
-/oem/usr/bin/abctl set-active /dev/block/by-name/misc b --tries 1
+/oem/usr/bin/abctl set-active /dev/disk/by-partlabel/misc b --tries 1
 sync
 reboot
 ```
@@ -92,6 +92,6 @@ Do not commit B. Continue rebooting until SPL exhausts tries and returns to the 
 
 - `/proc/cmdline` contains `aiden.slot_suffix=_a` or `_b`.
 - `root=PARTLABEL=rootfs_a|rootfs_b` in `/proc/cmdline` matches slot suffix.
-- `/oem` is mounted from `/dev/block/by-name/oem_a` or `oem_b`, matching slot suffix.
+- `/oem` is mounted from `/dev/disk/by-partlabel/oem_a` or `oem_b`, matching slot suffix.
 - `abctl read` can parse AVB A/B metadata without CRC or layout errors.
 - `ota status` can display OTA state, active slot, pending boot, and raw A/B data.

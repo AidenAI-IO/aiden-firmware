@@ -144,7 +144,7 @@ def validate_agent_toml(content: str) -> None:
     try:
         import tomllib
     except ModuleNotFoundError:
-        return  # Skip validation if tomllib not available
+        import tomli as tomllib
     try:
         tomllib.loads(content)
     except tomllib.TOMLDecodeError as exc:

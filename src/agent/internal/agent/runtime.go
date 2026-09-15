@@ -1262,6 +1262,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, cfg.ScreenshotPruningOrDefault(), r.contextManager)
+	agentLoop.ScreenState = r.screenState
 	agentLoop.SteerRecorder = steerRecorder
 	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
 		if r.toolSnapshot() == nil {
@@ -1582,7 +1583,15 @@ func (r *Runtime) captureStateScreenshot() *messages.Attachment {
 		return nil
 	}
 
-	output, err := screenshotTool.Call(context.Background(), "{}")
+	var output string
+	var err error
+	if fastTool, ok := screenshotTool.(interface {
+		CallWithoutStartupWait(context.Context, string) (string, error)
+	}); ok {
+		output, err = fastTool.CallWithoutStartupWait(context.Background(), "{}")
+	} else {
+		output, err = screenshotTool.Call(context.Background(), "{}")
+	}
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Debug("[state] screenshot unavailable: %v", err)

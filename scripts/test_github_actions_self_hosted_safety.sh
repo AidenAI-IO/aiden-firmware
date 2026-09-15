@@ -126,7 +126,7 @@ fi
 
 goproxy_line="$(grep -n 'GOPROXY=https://goproxy.cn' "$build_workflow" | sed 's/:.*//' | head -n 1 || true)"
 setup_go_line="$(grep -n 'actions/setup-go@' "$build_workflow" | sed 's/:.*//' | head -n 1 || true)"
-run_build_line="$(grep -n 'Run build script' "$build_workflow" | sed 's/:.*//' | head -n 1 || true)"
+run_build_line="$(grep -n 'Run Debian firmware build' "$build_workflow" | sed 's/:.*//' | head -n 1 || true)"
 if [[ -z "$goproxy_line" || -z "$setup_go_line" || -z "$run_build_line" || \
       "$goproxy_line" -ge "$setup_go_line" || "$goproxy_line" -ge "$run_build_line" ]]; then
   echo "self-hosted build workflow must configure GOPROXY before Go setup and image build" >&2
