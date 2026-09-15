@@ -67,5 +67,5 @@ awk -F '\t' '
 cmp "${TEST_ROOT}/actual-environment-services" \
     "${TEST_ROOT}/mapped-environment-services" \
     || fail "aiden-env-run dependency inventory is incomplete"
-[ "$(wc -l <"${TEST_ROOT}/mapped-environment-services")" -eq 8 ] \
-    || fail "expected exactly eight aiden-env-run service dependencies"
+[ "$(wc -l <"${TEST_ROOT}/mapped-environment-services")" -eq 9 ] \
+    || fail "expected exactly nine aiden-env-run service dependencies"

@@ -936,6 +936,12 @@ Buildroot CMake/镜像流程引用，删除前应先确认历史资料不再需�
 当前 Debian rootfs，但仍属于旧 Buildroot overlay。删除它们前必须先移除或重写
 旧镜像流程、相关测试和发布策略。
 
+已完成清理：swap 旧实现 `overlay/etc/init.d/S51swap`、`overlay/etc/aiden_swap.conf`
+及其专用测试 `scripts/test_swap_init.sh` 已删除；Debian 侧由 `aiden-swap.service`、
+`overlay-debian/usr/lib/aiden/aiden-swap` 和 `overlay-debian/etc/aiden_swap.conf`
+承接，`scripts/debian/init-script-map.tsv` 中的 `S51swap` 映射行同步移除。swap
+当前没有专门测试覆盖。
+
 ### 11.4 历史兼容代码和 SDK 子模块
 
 Agent 的 USB HID 恢复逻辑保留 Buildroot 默认命令
