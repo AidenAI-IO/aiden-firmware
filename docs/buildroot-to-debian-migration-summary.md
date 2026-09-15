@@ -936,6 +936,12 @@ Buildroot CMake/镜像流程引用，删除前应先确认历史资料不再需�
 当前 Debian rootfs，但仍属于旧 Buildroot overlay。删除它们前必须先移除或重写
 旧镜像流程、相关测试和发布策略。
 
+已完成清理：swap 旧实现 `overlay/etc/init.d/S51swap`、`overlay/etc/aiden_swap.conf`
+及其专用测试 `scripts/test_swap_init.sh` 已删除；Debian 侧由 `aiden-swap.service`、
+`overlay-debian/usr/lib/aiden/aiden-swap` 和 `overlay-debian/etc/aiden_swap.conf`
+承接，`scripts/debian/init-script-map.tsv` 中的 `S51swap` 映射行同步移除。swap
+当前没有专门测试覆盖。
+
 ### 11.4 历史兼容代码和 SDK 子模块
 
 Agent 的 USB HID 恢复逻辑保留 Buildroot 默认命令
@@ -1014,3 +1020,18 @@ Debian 生产迁移未完成。
 或本地生产入口调用。后续可以独立删除这些遗留内容，而不需要再维持可构建性。`pico-sdk` 内部的
 Buildroot 目录和 uClibc 工具链仍可作为厂商 BSP 构建 U-Boot、kernel、modules 和打包
 镜像的实现细节存在；这不代表设备用户空间继续支持 Buildroot。
+
+### 11.8 GitHub Actions 收敛到 Debian 构建
+
+上一节第 8 条记录的是迁移期间的临时状态。后续独立变更已完成 workflow 收敛：
+
+1. `.github/workflows/build.yml` 从 Buildroot 复用工作流改写为 Debian 复用工作流，
+   直接调用 `debian_build.sh`，并复用原先 `debian-build.yml` 的 Stage 2/3 策略门禁、
+   OTA 签名密钥准备、armhf binfmt 注册、产物上传与 GitHub Release 发布步骤。
+2. `.github/workflows/build-scheduled.yml`、`build-backup.yml` 和 `build-fallback.yml`
+   改为以自托管/托管 runner 参数调用新的 Debian 复用工作流；定时任务只比较
+   `debian-` 前缀的稳定 release 决定是否跳过。
+3. `main` 分支的 `debian-stable` channel 发布为持有 Latest 的正式 release，其余分支的
+   `debian-dev-<branch>` channel 发布为 pre-release；发布逻辑仍只存在于 workflow 中，
+   `debian_build.sh` 与 `scripts/debian-stage*` 保持纯本地构建。
+4. 临时工作流 `.github/workflows/debian-build.yml` 随之删除。

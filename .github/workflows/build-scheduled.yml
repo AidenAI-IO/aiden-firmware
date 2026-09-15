@@ -1,4 +1,4 @@
-name: Build (scheduled / self-hosted)
+name: Debian Build (scheduled / self-hosted)
 
 on:
   schedule:
@@ -35,21 +35,30 @@ jobs:
             exit 0
           fi
 
-          echo "Checking for new commits since last release..."
+          echo "Checking for new commits since last Debian release..."
           # Compare against the release tag rather than targetCommitish: GitHub may
           # normalize targetCommitish to a branch name (e.g. "main"), which never
           # equals a commit SHA and would defeat the skip check. The tag is immutable
           # and always resolves back to the exact commit the release was built from.
+          #
+          # Only stable Debian releases are a baseline. Debian tags carry a
+          # `debian-` prefix that the retired Buildroot releases do not, and dev
+          # branches publish pre-releases, so filtering on both keeps a stale
+          # Buildroot tag or a newer dev pre-release from suppressing a stable
+          # build that main actually needs.
           err_log="$RUNNER_TEMP/gh_err"
-          LATEST_TAG=$(gh release view --json tagName -q .tagName 2>"$err_log") || {
-            echo "gh release view failed; running build to be safe:"
+          LATEST_TAG=$(gh release list --exclude-drafts --limit 100 \
+            --json tagName,isPrerelease \
+            -q '[.[] | select(.isPrerelease == false) | .tagName | select(startswith("debian-"))][0]' \
+            2>"$err_log") || {
+            echo "gh release list failed; running build to be safe:"
             cat "$err_log" || true
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
           }
 
-          if [ -z "$LATEST_TAG" ]; then
-            echo "No previous release found; running build."
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
+            echo "No previous Debian release found; running build."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
