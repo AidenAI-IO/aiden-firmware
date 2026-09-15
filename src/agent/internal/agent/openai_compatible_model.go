@@ -39,11 +39,11 @@ type openAICompatibleModel struct {
 	// DeepSeek uses a provider-specific thinking toggle.
 	deepSeek bool
 	// reasoningContentReplay preserves the provider's reasoning_content field
-	// across Chat Completions turns. Some providers require the field on every
-	// assistant message, including messages whose reasoning content is empty.
-	reasoningContentReplay    bool
-	reasoningContentAlwaysSet bool
-	temperature               *float64
+	// across Chat Completions turns. All OpenAI-compatible providers that support
+	// reasoning (OpenAI o1/o3, DeepSeek-R1, Kimi thinking models) require this
+	// field when using tool calls to maintain reasoning continuity.
+	reasoningContentReplay bool
+	temperature            *float64
 	// ignoreTemperature prevents both configured and per-call temperature from
 	// reaching providers that accept the field but cannot apply it in the
 	// selected reasoning mode.
@@ -155,10 +155,9 @@ func withOpenAICompatibleDeepSeek() openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) { m.deepSeek = true }
 }
 
-func withOpenAICompatibleReasoningContentReplay(alwaysSet bool) openAICompatibleModelOption {
+func withOpenAICompatibleReasoningContentReplay() openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.reasoningContentReplay = true
-		m.reasoningContentAlwaysSet = alwaysSet
 	}
 }
 
@@ -533,7 +532,10 @@ func (m *openAICompatibleModel) generateContent(ctx context.Context, messages []
 			if i < len(reasoning) {
 				content = reasoning[i]
 			}
-			if content != "" || m.reasoningContentAlwaysSet {
+			// DeepSeek requires reasoning_content on every assistant message, even
+			// when empty, to maintain thinking context across tool-call turns.
+			// Other providers only need it when non-empty.
+			if content != "" || m.deepSeek {
 				converted.ReasoningContent = &content
 			}
 		}

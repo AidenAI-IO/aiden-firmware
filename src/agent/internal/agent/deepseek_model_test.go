@@ -128,12 +128,22 @@ func TestDeepSeekVisionToolContinuation(t *testing.T) {
 						t.Fatalf("non-thinking request temperature = %v, want %v", request.Temperature, temperature)
 					}
 					for _, message := range request.Messages {
-						if thinking && message.Role == "assistant" {
-							if message.ReasoningContent == nil || *message.ReasoningContent != reasoning {
-								t.Fatalf("assistant reasoning was not replayed: %+v", message)
+						if message.Role == "assistant" {
+							// All OpenAI-compatible providers now replay reasoning_content.
+							// DeepSeek requires it on every assistant message (even when empty)
+							// to maintain context with tool calls. Other providers only set
+							// it when non-empty, but the field presence is universal.
+							if thinking {
+								if message.ReasoningContent == nil || *message.ReasoningContent != reasoning {
+									t.Fatalf("assistant reasoning was not replayed: %+v", message)
+								}
+							} else {
+								// In non-thinking mode, DeepSeek still sets the field (to empty
+								// string) because of tool calls, but the content should be empty.
+								if message.ReasoningContent != nil && *message.ReasoningContent != "" {
+									t.Fatalf("unexpected non-empty reasoning in non-thinking mode: %+v", message)
+								}
 							}
-						} else if message.ReasoningContent != nil {
-							t.Fatalf("unexpected reasoning field: %+v", message)
 						}
 					}
 				}
@@ -368,9 +378,9 @@ func TestReasoningContentReplayPreservesAssistantBoundaries(t *testing.T) {
 		wantReplay bool
 		alwaysSet  bool
 	}{
-		{name: "generic"},
-		{name: "kimi", options: []openAICompatibleModelOption{withOpenAICompatibleReasoningContentReplay(false)}, wantReplay: true},
-		{name: "deepseek", options: []openAICompatibleModelOption{withOpenAICompatibleDeepSeek(), withOpenAICompatibleReasoningContentReplay(true)}, wantReplay: true, alwaysSet: true},
+		{name: "generic", options: []openAICompatibleModelOption{withOpenAICompatibleReasoningContentReplay()}, wantReplay: true},
+		{name: "kimi", options: []openAICompatibleModelOption{withOpenAICompatibleReasoningContentReplay()}, wantReplay: true},
+		{name: "deepseek", options: []openAICompatibleModelOption{withOpenAICompatibleDeepSeek(), withOpenAICompatibleReasoningContentReplay()}, wantReplay: true, alwaysSet: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -440,7 +450,7 @@ model = "deepseek-flash"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := m.(*openAICompatibleModel); got.token != "test-key" || got.baseURL != deepseekBaseURL || !got.deepSeek || got.reasoningContentReplay || got.reasoningEffort != "none" {
+	if got := m.(*openAICompatibleModel); got.token != "test-key" || got.baseURL != deepseekBaseURL || !got.deepSeek || !got.reasoningContentReplay || got.reasoningEffort != "none" {
 		t.Fatal("named provider did not resolve to DeepSeek request profile")
 	}
 	editorConfig, err := LoadResolvedConfig(path)

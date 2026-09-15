@@ -142,10 +142,7 @@ func buildDeepSeekModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, err
 	}
 	opts := append(openAICompatibleOptions(ctx, cfg), withOpenAICompatibleDeepSeek())
 	if thinkingEnabled {
-		opts = append(opts,
-			withOpenAICompatibleIgnoreTemperature(),
-			withOpenAICompatibleReasoningContentReplay(true),
-		)
+		opts = append(opts, withOpenAICompatibleIgnoreTemperature())
 	}
 	return newOpenAICompatibleModel(deepseekBaseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, opts...), nil
 }
@@ -159,8 +156,7 @@ func buildKimiModel(ctx ModelBuildContext, cfg ModelConfig, defaultBaseURL strin
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	opts := append(openAICompatibleOptions(ctx, cfg), withOpenAICompatibleReasoningContentReplay(false))
-	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, opts...), nil
+	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, openAICompatibleOptions(ctx, cfg)...), nil
 }
 
 func buildOpenRouterModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
