@@ -121,10 +121,11 @@ func buildOpenAICompatibleModel(ctx ModelBuildContext, cfg ModelConfig, defaultB
 func buildDeepSeekModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
 	// Keep all entry points, including direct ModelManager users and custom
 	// model IDs, in non-thinking mode unless explicitly enabled.
-	if strings.TrimSpace(cfg.ReasoningEffort) == "" {
+	cfg.ReasoningEffort = strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
+	if cfg.ReasoningEffort == "" {
 		cfg.ReasoningEffort = "none"
 	}
-	thinkingEnabled := !strings.EqualFold(strings.TrimSpace(cfg.ReasoningEffort), "none")
+	thinkingEnabled := cfg.ReasoningEffort != "none"
 	switch apiMode := normalizeModelAPIMode(cfg.APIMode); apiMode {
 	case modelAPIModeResponses:
 		return newResponsesModel(deepseekBaseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, responsesModelOptions{
@@ -149,6 +150,9 @@ func buildDeepSeekModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, err
 
 func buildKimiModel(ctx ModelBuildContext, cfg ModelConfig, defaultBaseURL string) (llms.Model, error) {
 	apiMode := normalizeModelAPIMode(cfg.APIMode)
+	if apiMode == "" && strings.TrimSpace(cfg.APIMode) != "" {
+		return nil, fmt.Errorf("invalid model.api_mode: %s", cfg.APIMode)
+	}
 	if apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
 		return nil, fmt.Errorf("model.api_mode=%s is not supported by Moonshot Kimi; its official endpoint implements OpenAI-compatible Chat Completions, not /responses", apiMode)
 	}
