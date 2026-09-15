@@ -4,7 +4,7 @@ set -euo pipefail
 readonly REPO_ROOT=/work
 readonly OUTPUT_DIR=/out
 readonly IMAGE_DIR=${OUTPUT_DIR}/image
-readonly SDK_DIR=${REPO_ROOT}/pico-sdk
+readonly SDK_DIR=/sdk
 readonly WORK_DIR=${OUTPUT_DIR}/audit-work
 readonly ROOTFS_MOUNT=${WORK_DIR}/rootfs
 readonly OEM_MOUNT=${WORK_DIR}/oem

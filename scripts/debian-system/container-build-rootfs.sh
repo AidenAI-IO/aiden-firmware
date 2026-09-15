@@ -332,11 +332,11 @@ write_metadata() {
     packages_sha=$(sha256sum "${OUTPUT_DIR}/packages.txt" | awk '{print $1}')
     cli_manifest_sha=$(sha256sum "${OUTPUT_DIR}/rootfs-cli-tools.sha256" | awk '{print $1}')
     cli_versions_sha=$(sha256sum "${OUTPUT_DIR}/rootfs-cli-tools-versions.txt" | awk '{print $1}')
-    # The repository is mounted read-only from a non-root host user, while
-    # this privileged builder runs as root. Trust only the two exact bind
-    # mount paths needed for immutable build provenance.
-    source_commit=$(git -c safe.directory="${REPO_ROOT}/pico-sdk" \
-        -C "${REPO_ROOT}/pico-sdk" rev-parse HEAD)
+    # The selected SDK can live outside the repository, so its commit is
+    # resolved on the host and passed in. The repository itself is mounted
+    # read-only from a non-root host user while this privileged builder runs
+    # as root, so trust only the exact bind mount path needed for provenance.
+    source_commit=${PICO_SDK_COMMIT:?build.sh must pass PICO_SDK_COMMIT}
     app_commit=$(git -c safe.directory="${REPO_ROOT}" \
         -C "${REPO_ROOT}" rev-parse HEAD)
     cat >"${OUTPUT_DIR}/build-metadata.json" <<EOF

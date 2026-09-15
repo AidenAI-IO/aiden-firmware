@@ -183,10 +183,21 @@ grep -Fq 'comparison=rsync-HAXc-numeric-ids' "${SYSTEM_DIR}/container-build-root
 grep -Fq 'var/cache/apt/pkgcache.bin' "${SYSTEM_DIR}/container-build-rootfs.sh"
 grep -Fq 'var/cache/apt/srcpkgcache.bin' "${SYSTEM_DIR}/container-build-rootfs.sh"
 grep -Fq 'var/cache/ldconfig/aux-cache' "${SYSTEM_DIR}/container-build-rootfs.sh"
-grep -Fq 'safe.directory="${REPO_ROOT}/pico-sdk"' \
-    "${SYSTEM_DIR}/container-build-rootfs.sh"
 grep -Fq 'safe.directory="${REPO_ROOT}"' \
-    "${SYSTEM_DIR}/container-build-rootfs.sh"
+    "${SYSTEM_DIR}/container-build-rootfs.sh" \
+    || fail "rootfs metadata does not trust the repository bind mount"
+grep -Fq 'source_commit=${PICO_SDK_COMMIT:' \
+    "${SYSTEM_DIR}/container-build-rootfs.sh" \
+    || fail "rootfs metadata does not read the host-resolved SDK commit"
+grep -Fq 'readonly SDK_DIR=/sdk' \
+    "${SYSTEM_DIR}/container-audit-images.sh" \
+    || fail "image audit does not read the SDK from the /sdk mount"
+grep -Fq 'PICO_SDK_COMMIT=${sdk_commit}' "${SYSTEM_DIR}/build.sh" \
+    || fail "system containers do not pass the selected SDK commit"
+if ! sed -n '/^run_rootfs_container()/,/^}/p' "${SYSTEM_DIR}/build.sh" \
+    | grep -Fq -- '-v "${SDK_DIR}:/sdk:ro"'; then
+    fail "system containers do not mount the selected SDK at /sdk"
+fi
 [ "$(grep -Fc -- '--path-format=absolute --git-common-dir' \
     "${SYSTEM_DIR}/build.sh")" -eq 1 ] \
     || fail "rootfs container does not mount exactly one Git provenance directory"

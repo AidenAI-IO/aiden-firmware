@@ -128,7 +128,7 @@ run_builder() {
 run_rootfs_container() {
     local script=$1
     shift
-    local image_id source_git_common_dir
+    local image_id source_git_common_dir sdk_commit
     local -a proxy_args=()
     test -s "${APPS_OUTPUT}/rootfs-cli-tools/manifest.sha256" || {
         echo "Missing application rootfs CLI tools: ${APPS_OUTPUT}/rootfs-cli-tools" >&2
@@ -142,14 +142,19 @@ run_rootfs_container() {
     image_id=$(docker image inspect "${ROOTFS_BUILD_IMAGE}" --format '{{.Id}}')
     source_git_common_dir=$(git -C "${REPO_ROOT}" rev-parse \
         --path-format=absolute --git-common-dir)
+    # The selected SDK may live outside the repository, so resolve its commit
+    # on the host and mount it at a fixed path for the privileged container.
+    sdk_commit=$(git -C "${SDK_DIR}" rev-parse HEAD)
     docker run --rm --privileged \
         ${proxy_args[@]+"${proxy_args[@]}"} \
         -e "HOST_UID=$(id -u)" \
         -e "HOST_GID=$(id -g)" \
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
         -e "DEBIAN_SYSTEM_BUILD_IMAGE_ID=${image_id}" \
+        -e "PICO_SDK_COMMIT=${sdk_commit}" \
         -v "${REPO_ROOT}:/work:ro" \
         -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
+        -v "${SDK_DIR}:/sdk:ro" \
         -v "${OUTPUT_DIR}:/out" \
         -v "${APPS_OUTPUT}/rootfs-cli-tools:/rootfs-cli-tools:ro" \
         -w /work \
