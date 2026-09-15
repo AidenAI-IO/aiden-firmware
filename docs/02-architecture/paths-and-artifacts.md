@@ -90,10 +90,10 @@ scripts/debian-stage2/build-apps.sh all
 ./debian_build.sh
 
 # Flash on Linux (after entering Loader/Maskrom)
-FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+FLASH_TOOL=pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
 IMAGE=output/debian/image/update.img
-scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
-sudo scripts/debian-stage1/flash.sh flash --tool "${FLASH_TOOL}" \
+scripts/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/flash.sh flash --tool "${FLASH_TOOL}" \
   --image "${IMAGE}" --sha256 "$(awk '{print $1}' "${IMAGE}.sha256")" \
   --confirm-erase-all-data
 

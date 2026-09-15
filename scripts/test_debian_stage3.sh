@@ -90,26 +90,48 @@ for symbol in CONFIG_MEDIA_CONTROLLER CONFIG_VIDEO_V4L2_SUBDEV_API \
 done
 grep -Fq "RK_KERNEL_CMDLINE_EXTRA=net.ifnames\$'\\x3d'0" \
     "${STAGE3_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
-grep -Fq 'root=PARTLABEL=$root_label' \
-    "${STAGE3_DIR}/sdk-patches/0002-append-slot-kernel-cmdline.patch"
-grep -Fq 'slot_cmdline="$slot_cmdline $RK_KERNEL_CMDLINE_EXTRA"' \
-    "${STAGE3_DIR}/sdk-patches/0002-append-slot-kernel-cmdline.patch"
 
 if [ -e "${REPO_ROOT}/pico-sdk/project/build.sh" ]; then
-    git -C "${REPO_ROOT}/pico-sdk" apply --check \
-        "${STAGE3_DIR}/sdk-patches/0001-use-all-host-cpus.patch"
-    git -C "${REPO_ROOT}/pico-sdk" apply --check \
-        "${STAGE3_DIR}/sdk-patches/0002-append-slot-kernel-cmdline.patch"
-    git -C "${REPO_ROOT}/pico-sdk" apply --check \
-        "${STAGE3_DIR}/sdk-patches/0003-add-ab-images-action.patch"
-    git -C "${REPO_ROOT}/pico-sdk" apply --check \
-        "${STAGE3_DIR}/sdk-patches/0004-make-bsp-images-reproducible.patch"
-    git -C "${REPO_ROOT}/pico-sdk" apply --check \
-        "${STAGE3_DIR}/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch"
-    git -C "${REPO_ROOT}/pico-sdk" apply --check \
-        "${STAGE3_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
-    git -C "${REPO_ROOT}/pico-sdk" apply --check \
-        "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
+    # The BSP source changes live in the pinned pico-sdk commit. Verify the
+    # checked-out submodule still carries them so a stale or rewritten SDK
+    # checkout fails here instead of an hour into the BSP build.
+    sdk_dir=${REPO_ROOT}/pico-sdk
+    grep -Fq 'export RK_JOBS="${RK_JOBS:-$(getconf _NPROCESSORS_ONLN)}"' \
+        "${sdk_dir}/project/build.sh" \
+        || fail "pico-sdk no longer defaults RK_JOBS to all host CPUs"
+    grep -Fq 'root=PARTLABEL=$root_label' "${sdk_dir}/project/build.sh" \
+        || fail "pico-sdk no longer builds slot-specific root PARTLABELs"
+    grep -Fq 'slot_cmdline="$slot_cmdline $RK_KERNEL_CMDLINE_EXTRA"' \
+        "${sdk_dir}/project/build.sh" \
+        || fail "pico-sdk no longer appends RK_KERNEL_CMDLINE_EXTRA to slot bootargs"
+    grep -Fq 'function build_ab_images()' "${sdk_dir}/project/build.sh" \
+        || fail "pico-sdk lacks the abimages build action"
+    grep -Fq 'abimages) option=build_ab_images' "${sdk_dir}/project/build.sh" \
+        || fail "pico-sdk does not dispatch the abimages action"
+    grep -Fq 'memset(&entry, 0, sizeof(entry));' \
+        "${sdk_dir}/sysdrv/source/kernel/scripts/resource_tool.c" \
+        || fail "pico-sdk resource_tool is no longer reproducible"
+    grep -Fq 'phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x1f);' \
+        "${sdk_dir}/sysdrv/source/kernel/drivers/phy/rockchip/phy-rockchip-inno-usb2.c" \
+        || fail "pico-sdk lost the RV1106 45ohm HS ODT trim"
+    grep -Fq 'cancel_work_sync(&gi->work);' \
+        "${sdk_dir}/sysdrv/source/kernel/drivers/usb/gadget/configfs.c" \
+        || fail "pico-sdk lost the configfs UAF fix"
+    grep -Fq 'android_device = NULL;' \
+        "${sdk_dir}/sysdrv/source/kernel/drivers/usb/gadget/configfs.c" \
+        || fail "pico-sdk lost the configfs UAF teardown fix"
+    grep -Fq 'USB device port, assuming attached' \
+        "${sdk_dir}/sysdrv/source/uboot/u-boot/arch/arm/mach-rockchip/boot_rkimg.c" \
+        || fail "pico-sdk lost the RockUSB VBUS assumption"
+    grep -Fq 'usb2phy_update_bits(USB2PHY_PRE_EMPHASIS' \
+        "${sdk_dir}/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c" \
+        || fail "pico-sdk lost the RockUSB PHY tuning"
+    grep -Fq 'RV1106 USB2 PHY tuned:' \
+        "${sdk_dir}/sysdrv/source/uboot/u-boot/board/rockchip/evb_rv1106/evb_rv1106.c" \
+        || fail "pico-sdk lost the RockUSB PHY readback logging"
+    grep -Fq 'CONFIG_CMD_ROCKUSB=y' \
+        "${sdk_dir}/sysdrv/source/uboot/u-boot/configs/aiden-rv1106-rockusb.config" \
+        || fail "pico-sdk lost the RV1106 RockUSB defconfig fragment"
 fi
 
 grep -Fq 'rsync -aHAX --numeric-ids --chown=0:0' \
@@ -126,8 +148,6 @@ fi
     || fail "Debian ttyd helper is missing"
 grep -Fq 'aiden-ttyd.service' \
     "${REPO_ROOT}/overlay-debian/etc/systemd/system/aiden.target"
-grep -Fq 'd1a279cbb7e29aa0801943cdf21f0575db69eed5' \
-    "${STAGE3_DIR}/build.sh"
 grep -Fq 'overlay-debian/" "${ROOTFS_DIR}/"' \
     "${STAGE3_DIR}/container-build-rootfs.sh"
 grep -Fq 'stage_rootfs_cli_tools.sh' \
@@ -170,50 +190,32 @@ grep -Fq 'safe.directory="${REPO_ROOT}"' \
 [ "$(grep -Fc -- '--path-format=absolute --git-common-dir' \
     "${STAGE3_DIR}/build.sh")" -eq 1 ] \
     || fail "rootfs container does not mount exactly one Git provenance directory"
-grep -Fq 'git -C "${SDK_DIR}" repack -a -d' "${STAGE3_DIR}/build.sh"
-grep -Fq -- '--path-format=absolute --git-path objects/info/alternates' \
-    "${STAGE3_DIR}/build.sh"
-grep -Fq 'rm -f -- "${alternates_file}"' "${STAGE3_DIR}/build.sh"
-grep -Fq 'git -C "${SDK_DIR}" fsck --connectivity-only --no-dangling' \
-    "${STAGE3_DIR}/build.sh"
+if grep -Fq 'luckfox-pico-sdk' "${STAGE3_DIR}/build.sh"; then
+    fail "Stage 3 still clones pico-sdk into the output directory"
+fi
+if grep -Fq 'SOURCE_SDK' "${STAGE3_DIR}/build.sh"; then
+    fail "Stage 3 still copies or validates a separate source pico-sdk"
+fi
+grep -Fq 'readonly SDK_DIR=${DEBIAN_STAGE3_SDK_DIR:-${REPO_ROOT}/pico-sdk}' \
+    "${STAGE3_DIR}/build.sh" \
+    || fail "Stage 3 does not build the repository pico-sdk submodule in place"
+if grep -Fq 'sdk-patches' "${STAGE3_DIR}/build.sh" \
+    || grep -Fq 'sdk-patches' "${STAGE3_DIR}/audit-bsp.sh"; then
+    fail "Stage 3 still references the removed SDK patch series"
+fi
+if grep -Fq 'git -C "${SDK_DIR}" apply' "${STAGE3_DIR}/build.sh"; then
+    fail "Stage 3 still applies SDK patches at build time"
+fi
+[ ! -e "${STAGE3_DIR}/sdk-patches" ] \
+    || fail "the Stage 3 SDK patch directory must not exist"
+grep -Fq 'aiden-rv1106-rockusb.config' "${STAGE3_DIR}/build.sh" \
+    || fail "Stage 3 does not verify the pinned SDK carries the RockUSB config"
 if sed -n '/^run_bsp()/,/^}/p' "${STAGE3_DIR}/build.sh" \
     | grep -Fq 'source_git_common_dir'; then
     fail "BSP container still depends on a host Git object directory"
 fi
 grep -Fq 'KBUILD_BUILD_USER=aiden' "${STAGE3_DIR}/build.sh"
 grep -Fq './build.sh abimages' "${STAGE3_DIR}/build.sh"
-grep -Fq '0004-make-bsp-images-reproducible.patch' "${STAGE3_DIR}/build.sh"
-grep -Fq '0005-set-rv1106-usb2-hs-odt.patch' "${STAGE3_DIR}/build.sh"
-grep -Fq '0006-fix-configfs-uevent-rebind-uaf.patch' "${STAGE3_DIR}/build.sh"
-grep -Fq '0007-enable-rv1106-uboot-rockusb.patch' "${STAGE3_DIR}/build.sh"
-grep -Fq '0008-complete-rv1106-uboot-usb2-phy-tuning.patch' \
-    "${STAGE3_DIR}/build.sh"
-grep -Fq 'CONFIG_CMD_ROCKUSB=y' \
-    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
-grep -Fq 'writel(reg, USB2PHY_APB_BASE + USB2PHY_HS_ODT);' \
-    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
-grep -Fq 'return 1;' \
-    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
-grep -Fq 'USB device port, assuming attached' \
-    "${STAGE3_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
-grep -Fq 'usb2phy_update_bits(USB2PHY_PRE_EMPHASIS' \
-    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
-grep -Fq 'usb2phy_update_bits(USB2PHY_TX_EYE_HEIGHT' \
-    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
-grep -Fq 'usb2phy_update_bits(USB2PHY_SQUELCH_CALIB1' \
-    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
-grep -Fq 'mdelay(2);' \
-    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
-grep -Fq 'RV1106 USB2 PHY tuned:' \
-    "${STAGE3_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
-grep -Fq 'phy_update_bits(rphy->phy_base + 0x11c, GENMASK(4, 0), 0x1f);' \
-    "${STAGE3_DIR}/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch"
-grep -Fq 'gi = container_of(cdev, struct gadget_info, cdev);' \
-    "${STAGE3_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
-grep -Fq 'cancel_work_sync(&gi->work);' \
-    "${STAGE3_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
-grep -Fq 'android_device = NULL;' \
-    "${STAGE3_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
 grep -Fq 'canonicalize-bsp.py' "${STAGE3_DIR}/build.sh"
 grep -Fq 'audit-bsp.sh' "${STAGE3_DIR}/build.sh"
 grep -Fq 'factory A/B metadata is invalid' "${STAGE3_DIR}/audit-bsp.sh"

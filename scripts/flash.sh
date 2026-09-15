@@ -3,27 +3,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly REPO_ROOT
-if [ -n "${DEBIAN_STAGE1_OUTPUT_DIR:-}" ]; then
-    if [[ "${DEBIAN_STAGE1_OUTPUT_DIR}" = /* ]]; then
-        OUTPUT_DIR=${DEBIAN_STAGE1_OUTPUT_DIR}
-    else
-        OUTPUT_DIR=${REPO_ROOT}/${DEBIAN_STAGE1_OUTPUT_DIR}
-    fi
-else
-    OUTPUT_DIR=${REPO_ROOT}/output/debian-stage1
-fi
-readonly OUTPUT_DIR
-readonly DEFAULT_TOOL="${OUTPUT_DIR}/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool"
+readonly OUTPUT_DIR=${REPO_ROOT}/output/debian
+readonly DEFAULT_TOOL="${REPO_ROOT}/pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool"
 readonly DEFAULT_IMAGE="${OUTPUT_DIR}/image/update.img"
-readonly DEFAULT_SUMS="${OUTPUT_DIR}/SHA256SUMS"
+readonly DEFAULT_SUMS="${OUTPUT_DIR}/image/update.img.sha256"
 
 usage() {
     cat <<'EOF'
 Usage:
-  scripts/debian-stage1/flash.sh inspect [--tool PATH]
-  scripts/debian-stage1/flash.sh flash --confirm-erase-all-data [options]
+  scripts/flash.sh inspect [--tool PATH]
+  scripts/flash.sh flash --confirm-erase-all-data [options]
 
 Options:
   --tool PATH              Rockchip upgrade_tool to use.
@@ -109,10 +100,10 @@ if [ "${action}" = flash ]; then
             exit 2
         fi
         [ -f "${DEFAULT_SUMS}" ] || {
-            echo "Checksum manifest is missing: ${DEFAULT_SUMS}" >&2
+            echo "Checksum sidecar is missing: ${DEFAULT_SUMS}" >&2
             exit 1
         }
-        expected_sha256=$(awk '$2 == "image/update.img" {print $1}' "${DEFAULT_SUMS}")
+        expected_sha256=$(awk '{print $1}' "${DEFAULT_SUMS}")
     fi
     printf '%s\n' "${expected_sha256}" | grep -Eq '^[[:xdigit:]]{64}$' || {
         echo "Invalid expected SHA-256: ${expected_sha256}" >&2

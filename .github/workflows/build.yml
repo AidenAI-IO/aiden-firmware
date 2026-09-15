@@ -118,25 +118,23 @@ jobs:
         persist-credentials: false
 
     - name: Fetch pico-sdk submodule
-      # Depth 1 is enough even though Stage 3 makes a local --shared clone of
-      # this checkout: git declines to use alternates when the source is
-      # shallow and copies the objects instead, so its repack/fsck path is
-      # skipped and the detached checkout still resolves. debian_build.sh
-      # asserts HEAD equals the pinned Stage 3 commit, which is exactly the
-      # commit a depth-1 fetch lands on. Deepening instead means pulling ~1 GB
-      # from github.com on every fresh runner.
+      # The repository pico-sdk worktree is the Stage 3 BSP build tree and is
+      # used in place, so a plain depth-1 checkout is enough. Restoring it to a
+      # pristine state keeps the in-place board and kernel config overlay
+      # deterministic across runs on the same runner.
       shell: bash
       run: |
         set -euo pipefail
         git submodule update --init --depth=1 pico-sdk
 
-        # debian_build.sh refuses to build unless this worktree is pristine,
-        # and actions/checkout cannot deliver that: its `git clean -ffdx` does
-        # not descend into an initialised submodule, so whatever a previous
-        # job left here survives. Restore tracked files and drop untracked
-        # ones, but leave ignored paths alone. This also removes the untracked
-        # .gitmodules that the metadata repair step writes for older SDK
-        # commits.
+        # Stage 3 installs its board config and kernel config into this worktree
+        # in place, and actions/checkout cannot deliver a pristine submodule:
+        # its `git clean -ffdx` does not descend into an initialised submodule,
+        # so whatever a previous job left here survives. Restore tracked files
+        # and drop untracked ones, but leave ignored paths (including the BSP
+        # build output under pico-sdk/output) alone. This also removes the
+        # untracked .gitmodules that the metadata repair step writes for older
+        # SDK commits.
         dirty="$(git -C pico-sdk status --porcelain)"
         if [ -n "$dirty" ]; then
           echo "::group::pico-sdk worktree was dirty; restoring it"

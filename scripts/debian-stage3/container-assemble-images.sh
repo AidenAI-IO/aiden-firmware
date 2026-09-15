@@ -3,7 +3,7 @@ set -euo pipefail
 
 readonly REPO_ROOT=/work
 readonly OUTPUT_DIR=/out
-readonly SDK_DIR=${OUTPUT_DIR}/luckfox-pico-sdk
+readonly SDK_DIR=${REPO_ROOT}/pico-sdk
 readonly IMAGE_DIR=${OUTPUT_DIR}/image
 readonly WORK_DIR=${OUTPUT_DIR}/image-work
 readonly OEM_ROOT=${WORK_DIR}/oem-root

@@ -25,11 +25,11 @@ requires Loader/Maskrom mode, and makes the destructive userdata overwrite
 explicit:
 
 ```bash
-FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+FLASH_TOOL=pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
 IMAGE=output/debian/image/update.img
 SHA256=$(awk '{print $1}' "${IMAGE}.sha256")
-scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
-sudo scripts/debian-stage1/flash.sh flash \
+scripts/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/flash.sh flash \
   --tool "${FLASH_TOOL}" \
   --image "${IMAGE}" \
   --sha256 "${SHA256}" \

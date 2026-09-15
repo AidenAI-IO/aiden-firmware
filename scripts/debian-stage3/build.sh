@@ -14,10 +14,11 @@ else
     OUTPUT_DIR=${DEFAULT_OUTPUT_DIR}
 fi
 readonly OUTPUT_DIR
-readonly SDK_DIR=${OUTPUT_DIR}/luckfox-pico-sdk
+# The BSP is built in place from the repository pico-sdk submodule. The A/B,
+# RockUSB and reproducibility changes are commits in that submodule, so Stage 3
+# applies no patches of its own.
+readonly SDK_DIR=${DEBIAN_STAGE3_SDK_DIR:-${REPO_ROOT}/pico-sdk}
 readonly IMAGE_DIR=${OUTPUT_DIR}/image
-readonly SOURCE_SDK=${DEBIAN_STAGE3_SOURCE_SDK:-${REPO_ROOT}/pico-sdk}
-readonly SOURCE_SDK_COMMIT=${DEBIAN_STAGE3_SOURCE_SDK_COMMIT:-d1a279cbb7e29aa0801943cdf21f0575db69eed5}
 readonly STAGE2_OUTPUT=${DEBIAN_STAGE2_OUTPUT_DIR:-${REPO_ROOT}/output/debian-stage2}
 readonly ROOTFS_BUILD_IMAGE=${DEBIAN_STAGE3_BUILD_IMAGE:-aiden-debian13-armhf-builder:stage3}
 readonly BSP_BUILD_IMAGE=${DEBIAN_STAGE3_BSP_BUILD_IMAGE:-luckfoxtech/luckfox_pico:1.0}
@@ -30,9 +31,8 @@ Usage: scripts/debian-stage3/build.sh [all|builder|rootfs|bsp|images|config|audi
 
 Environment:
   DEBIAN_STAGE3_OUTPUT_DIR       Output directory (default: output/debian-stage3).
-  DEBIAN_STAGE3_SOURCE_SDK       Clean source SDK (default: repository pico-sdk).
-  DEBIAN_STAGE3_SOURCE_SDK_COMMIT
-                                 Required source SDK commit.
+  DEBIAN_STAGE3_SDK_DIR          Luckfox BSP SDK build tree (default: repository
+                                 pico-sdk submodule; built in place).
   DEBIAN_STAGE2_OUTPUT_DIR       Audited Stage 2 application output.
   DEBIAN_STAGE3_BUILD_IMAGE      Rootfs/image builder image name.
   DEBIAN_STAGE3_BSP_BUILD_IMAGE  Luckfox BSP builder image name.
@@ -70,53 +70,30 @@ validate_epoch() {
     esac
 }
 
-ensure_sdk() {
-    local alternates_file
+prepare_sdk() {
+    local source_commit
 
-    if [ ! -d "${SOURCE_SDK}/.git" ] && [ ! -f "${SOURCE_SDK}/.git" ]; then
-        echo "Source Luckfox SDK is missing: ${SOURCE_SDK}" >&2
+    if [ ! -d "${SDK_DIR}/.git" ] && [ ! -f "${SDK_DIR}/.git" ]; then
+        echo "Luckfox SDK submodule is missing: ${SDK_DIR}" >&2
+        echo "run: git submodule update --init -- pico-sdk" >&2
         exit 1
     fi
-    if [ -n "$(git -C "${SOURCE_SDK}" status --porcelain)" ]; then
-        echo "Source SDK must remain clean; refusing to clone dirty state: ${SOURCE_SDK}" >&2
+    if [ ! -e "${SDK_DIR}/project/build.sh" ]; then
+        echo "Luckfox SDK has no project/build.sh: ${SDK_DIR}" >&2
         exit 1
     fi
-    if [ "$(git -C "${SOURCE_SDK}" rev-parse HEAD)" != "${SOURCE_SDK_COMMIT}" ]; then
-        echo "Source SDK commit mismatch" >&2
-        echo "expected: ${SOURCE_SDK_COMMIT}" >&2
-        echo "actual:   $(git -C "${SOURCE_SDK}" rev-parse HEAD)" >&2
+    # The pinned submodule commit carries the Aiden A/B and RockUSB changes.
+    # Check a file it adds so a stale checkout fails here instead of an hour
+    # into the BSP build.
+    if [ ! -e "${SDK_DIR}/sysdrv/source/uboot/u-boot/configs/aiden-rv1106-rockusb.config" ]; then
+        echo "Luckfox SDK lacks the Aiden RV1106 RockUSB config; update the submodule" >&2
         exit 1
     fi
 
     mkdir -p "${OUTPUT_DIR}"
-    if [ ! -d "${SDK_DIR}/.git" ]; then
-        git clone --shared --no-checkout "${SOURCE_SDK}" "${SDK_DIR}"
-    fi
 
-    # Keep the container-facing clone independent of host worktree and
-    # submodule object stores. Existing output from older builds is migrated
-    # in place before the clone is mounted into the BSP container.
-    alternates_file=$(git -C "${SDK_DIR}" rev-parse \
-        --path-format=absolute --git-path objects/info/alternates)
-    if [ -e "${alternates_file}" ]; then
-        if [ -s "${alternates_file}" ]; then
-            git -C "${SDK_DIR}" repack -a -d
-        fi
-        rm -f -- "${alternates_file}"
-        git -C "${SDK_DIR}" fsck --connectivity-only --no-dangling
-    fi
-
-    git -C "${SDK_DIR}" checkout --detach --force "${SOURCE_SDK_COMMIT}"
-    git -C "${SDK_DIR}" clean -ffd -e output/
-    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0001-use-all-host-cpus.patch"
-    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0002-append-slot-kernel-cmdline.patch"
-    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0003-add-ab-images-action.patch"
-    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0004-make-bsp-images-reproducible.patch"
-    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch"
-    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch"
-    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch"
-    git -C "${SDK_DIR}" apply "${SCRIPT_DIR}/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch"
-
+    # The submodule owns the BSP source changes. Stage 3 only overlays the
+    # production board configuration and kernel config that it owns.
     install -m 0755 \
         "${SCRIPT_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk" \
         "${SDK_DIR}/project/cfg/BoardConfig_IPC/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
@@ -125,7 +102,11 @@ ensure_sdk() {
     ln -sfn \
         project/cfg/BoardConfig_IPC/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk \
         "${SDK_DIR}/.BoardConfig.mk"
-    printf '%s\n' "${SOURCE_SDK_COMMIT}" >"${OUTPUT_DIR}/source-sdk-commit.txt"
+
+    # Provenance only: the checked-out submodule commit is recorded, but it is
+    # not validated against a pinned build contract.
+    source_commit=$(git -C "${SDK_DIR}" rev-parse HEAD)
+    printf '%s\n' "${source_commit}" >"${OUTPUT_DIR}/source-sdk-commit.txt"
 }
 
 docker_proxy_args() {
@@ -183,7 +164,7 @@ run_rootfs() {
 
 run_bsp() {
     local build_timestamp
-    ensure_sdk
+    prepare_sdk
     build_timestamp=$(date -u -d "@${BUILD_EPOCH}" '+%Y-%m-%d %H:%M:%S UTC')
     docker image inspect "${BSP_BUILD_IMAGE}" --format '{{.Id}}' \
         >"${OUTPUT_DIR}/bsp-builder-image-id.txt"
@@ -242,11 +223,13 @@ run_bsp() {
     test -s "${SDK_DIR}/output/out/sysdrv_out/kernel_drv_ko/aic8800_fdrv.ko"
     cp "${kernel_config}" "${OUTPUT_DIR}/kernel.config"
     cp "${env_text}" "${OUTPUT_DIR}/bsp-env.txt"
-    DEBIAN_STAGE3_OUTPUT_DIR="${OUTPUT_DIR}" "${SCRIPT_DIR}/audit-bsp.sh"
+    DEBIAN_STAGE3_OUTPUT_DIR="${OUTPUT_DIR}" \
+        DEBIAN_STAGE3_SDK_DIR="${SDK_DIR}" \
+        "${SCRIPT_DIR}/audit-bsp.sh"
 }
 
 run_images() {
-    ensure_sdk
+    prepare_sdk
     docker image inspect "${ROOTFS_BUILD_IMAGE}" >/dev/null
     test -s "${OUTPUT_DIR}/rootfs.ext4" || {
         echo "Missing Stage 3 rootfs; run the rootfs action first" >&2
@@ -295,16 +278,17 @@ run_images() {
 run_sdk_packer() {
     # The image assembly container may use a rootless UID mapping for image/.
     # Run the SDK packer in that same container so it can create package-file
-    # beside the inputs without relying on host ownership of the mount.
+    # beside the inputs without relying on host ownership of the mount. The
+    # packer only reads its tool directory, so the SDK tree is mounted read-only.
     docker run --rm \
+        -v "${SDK_DIR}:/sdk:ro" \
         -v "${OUTPUT_DIR}:/out" \
-        -w /out/luckfox-pico-sdk \
         "${ROOTFS_BUILD_IMAGE}" \
-        bash -lc 'tools/linux/Linux_Pack_Firmware/mk-update_pack.sh -id rv1106 -i /out/image'
+        bash -lc '/sdk/tools/linux/Linux_Pack_Firmware/mk-update_pack.sh -id rv1106 -i /out/image'
 }
 
 run_config() {
-    ensure_sdk
+    prepare_sdk
     docker image inspect "${ROOTFS_BUILD_IMAGE}" >/dev/null
     if [ -z "${OTA_DEVICE_CONFIG_PATH:-}" ] || [ ! -f "${OTA_DEVICE_CONFIG_PATH}" ]; then
         echo "OTA_DEVICE_CONFIG_PATH must name a config generated from the signed release manifest" >&2
@@ -335,7 +319,7 @@ run_config() {
 }
 
 run_audit() {
-    ensure_sdk
+    prepare_sdk
     docker image inspect "${ROOTFS_BUILD_IMAGE}" >/dev/null
     run_rootfs_container scripts/debian-stage3/container-audit-images.sh
 }

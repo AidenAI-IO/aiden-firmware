@@ -772,14 +772,14 @@ output/debian/image/update.img
 ### 7.3 刷写
 
 开发板进入 Loader 或 Maskrom 刷写模式后，在 Linux 主机上使用带校验的
-Stage 1 刷写封装：
+刷写封装：
 
 ```bash
-FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+FLASH_TOOL=pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
 IMAGE=output/debian/image/update.img
 SHA256=$(awk '{print $1}' "${IMAGE}.sha256")
-scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
-sudo scripts/debian-stage1/flash.sh flash \
+scripts/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/flash.sh flash \
   --tool "${FLASH_TOOL}" \
   --image "${IMAGE}" \
   --sha256 "${SHA256}" \

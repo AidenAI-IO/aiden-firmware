@@ -57,7 +57,6 @@ fi
 if rg --no-ignore -n \
     '(^|[[:space:]])gh[[:space:]]+release|create_github_release\.sh|\.github/workflows/' \
     "${REPO_ROOT}/debian_build.sh" \
-    "${REPO_ROOT}/scripts/debian-stage1" \
     "${REPO_ROOT}/scripts/debian-stage2" \
     "${REPO_ROOT}/scripts/debian-stage3"; then
     fail "the local Debian production build invokes GitHub publication automation"

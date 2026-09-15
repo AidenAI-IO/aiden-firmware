@@ -14,7 +14,7 @@ else
     OUTPUT_DIR=${DEFAULT_OUTPUT_DIR}
 fi
 readonly OUTPUT_DIR
-readonly SDK_DIR=${OUTPUT_DIR}/luckfox-pico-sdk
+readonly SDK_DIR=${DEBIAN_STAGE3_SDK_DIR:-${REPO_ROOT}/pico-sdk}
 readonly IMAGE_DIR=${SDK_DIR}/output/image
 readonly MODULE_DIR=${SDK_DIR}/output/out/sysdrv_out/kernel_drv_ko
 readonly DUMPIMAGE=${SDK_DIR}/sysdrv/source/uboot/u-boot/tools/dumpimage
@@ -186,15 +186,7 @@ write_hashes() {
             scripts/debian-stage3/audit-bsp.sh \
             scripts/debian-stage3/canonicalize-bsp.py \
             scripts/debian-stage3/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk \
-            scripts/debian-stage3/debian-stage3.config \
-            scripts/debian-stage3/sdk-patches/0001-use-all-host-cpus.patch \
-            scripts/debian-stage3/sdk-patches/0002-append-slot-kernel-cmdline.patch \
-            scripts/debian-stage3/sdk-patches/0003-add-ab-images-action.patch \
-            scripts/debian-stage3/sdk-patches/0004-make-bsp-images-reproducible.patch \
-            scripts/debian-stage3/sdk-patches/0005-set-rv1106-usb2-hs-odt.patch \
-            scripts/debian-stage3/sdk-patches/0006-fix-configfs-uevent-rebind-uaf.patch \
-            scripts/debian-stage3/sdk-patches/0007-enable-rv1106-uboot-rockusb.patch \
-            scripts/debian-stage3/sdk-patches/0008-complete-rv1106-uboot-usb2-phy-tuning.patch
+            scripts/debian-stage3/debian-stage3.config
     ) >"${OUTPUT_DIR}/bsp-inputs.sha256"
 }
 

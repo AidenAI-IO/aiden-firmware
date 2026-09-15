@@ -18,7 +18,6 @@ readonly GO_DIST=linux-amd64
 readonly GO_TARBALL=go${GO_VERSION}.${GO_DIST}.tar.gz
 readonly GO_TARBALL_SHA256=aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235
 readonly DEFAULT_SOURCE_DATE_EPOCH=1767360516
-readonly EXPECTED_PICO_SDK_COMMIT=d1a279cbb7e29aa0801943cdf21f0575db69eed5
 readonly CLEANUP_IMAGE=debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 readonly -a MANIFEST_IMAGE_ASSETS=(boot_a.img boot_b.img oem.img rootfs.img)
 readonly -a RELEASE_IMAGE_ASSETS=(boot_a.img boot_b.img oem.img rootfs.img update.img)
@@ -239,18 +238,14 @@ validate_trust_public_key() {
     printf '  an image that updates from a release this host cannot sign.\n' >&2
 }
 
-validate_pico_sdk() {
+ensure_pico_sdk() {
+    # The pico-sdk submodule is the BSP build tree and is built in place, so
+    # only its presence is required. Its exact commit is recorded as provenance
+    # by Stage 3 but is not validated against a pinned build contract.
     git -C "${REPO_ROOT}" submodule update --init -- pico-sdk
     [ -e "${REPO_ROOT}/pico-sdk/.git" ] || die "pico-sdk submodule is unavailable"
-    [ -z "$(git -C "${REPO_ROOT}/pico-sdk" status --porcelain)" ] \
-        || die "pico-sdk must be clean before the Debian build"
-    local actual_commit
-    actual_commit=$(git -C "${REPO_ROOT}/pico-sdk" rev-parse HEAD)
-    [ "${actual_commit}" = "${EXPECTED_PICO_SDK_COMMIT}" ] || {
-        printf 'expected pico-sdk: %s\nactual pico-sdk:   %s\n' \
-            "${EXPECTED_PICO_SDK_COMMIT}" "${actual_commit}" >&2
-        die "pico-sdk commit does not match the Stage 3 build contract"
-    }
+    [ -e "${REPO_ROOT}/pico-sdk/project/build.sh" ] \
+        || die "pico-sdk submodule has no project/build.sh"
 }
 
 clean_generated_outputs() {
@@ -396,7 +391,7 @@ main() {
     validate_trust_public_key \
         "${ota_trust_public_key}" "${ota_public_key}" "${TEMPORARY_DIR}"
     ensure_go_toolchain "${go_root}"
-    validate_pico_sdk
+    ensure_pico_sdk
     clean_generated_outputs
 
     log "Building and auditing Debian Stage 2 applications"
