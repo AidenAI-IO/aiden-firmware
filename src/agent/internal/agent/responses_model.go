@@ -400,7 +400,6 @@ func (m *responsesModel) generateContentWithInput(ctx context.Context, input []r
 	}
 
 	requestModel := firstNonEmpty(callOpts.Model, m.model)
-	parallelToolCalls := false
 	payload := responsesRequest{
 		Model:              requestModel,
 		Instructions:       instructions,
@@ -413,7 +412,7 @@ func (m *responsesModel) generateContentWithInput(ctx context.Context, input []r
 		// Parallel calls would leave the dropped ones without a matching
 		// function_call_output item, which the Responses API rejects on the next
 		// turn, so disabling them is required rather than merely conservative.
-		ParallelToolCalls: &parallelToolCalls,
+		ParallelToolCalls: boolPtr(false),
 		Stream:            callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil,
 		MaxOutputTokens:   callOpts.MaxTokens,
 	}

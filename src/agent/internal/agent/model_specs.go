@@ -125,6 +125,12 @@ func stringPtr(v string) *string {
 	return &v
 }
 
+// boolPtr returns a pointer to v, letting request payloads set optional bool
+// fields inline without temporary variables.
+func boolPtr(v bool) *bool {
+	return &v
+}
+
 func lookupModelSpecKey(key string) (model.ModelSpec, bool) {
 	if spec, ok := modelSpecRegistry[key]; ok {
 		return cloneModelSpec(spec), true

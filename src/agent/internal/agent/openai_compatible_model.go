@@ -546,9 +546,12 @@ func (m *openAICompatibleModel) generateContent(ctx context.Context, messages []
 			if i < len(reasoning) {
 				content = reasoning[i]
 			}
-			// DeepSeek requires reasoning_content on every assistant message, even
-			// when empty, to maintain thinking context across tool-call turns.
-			// Other providers only need it when non-empty.
+			// reasoning_content replay behavior by provider:
+			// - DeepSeek: REQUIRED on every assistant message when tools are present
+			//   (returns 400 error if omitted), even when empty
+			// - Kimi: REQUIRED for thinking models to preserve reasoning continuity
+			// - Generic OpenAI-compatible: replay only when non-empty (conservative)
+			// DeepSeek requires the field even when empty to maintain context.
 			if content != "" || m.dialect == compatibleDialectDeepSeek {
 				converted.ReasoningContent = &content
 			}
