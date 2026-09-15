@@ -146,6 +146,27 @@ grep -q -- '--wifi-config-environment=/run/aiden/wpa_supplicant-config.env' \
 grep -Fq 'in_device = ($0 ~ /^[[:space:]]*\[basic_settings\.device\][[:space:]]*$/' \
     "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" \
     || fail "Debian USB gadget must read device_type from the grouped config path"
+grep -Fq "Unsupported top-level [device] table" \
+    "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" \
+    || fail "Debian USB gadget must reject the retired top-level device table"
+grep -Eq '^[[:space:]]*reject_legacy_device_config \|\| return 1$' \
+    "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" \
+    || fail "Debian USB gadget must reject invalid config before setup"
+legacy_agent_config=${TEST_ROOT}/legacy-agent.toml
+printf '[device]\ndevice_type = "Android"\n' >"${legacy_agent_config}"
+set +e
+legacy_gadget_output=$(AGENT_TOML="${legacy_agent_config}" \
+    "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" start 2>&1)
+legacy_gadget_status=$?
+set -e
+[ "${legacy_gadget_status}" -ne 0 ] \
+    || fail "Debian USB gadget accepted the retired top-level device table"
+printf '%s\n' "${legacy_gadget_output}" \
+    | grep -Fq "Unsupported top-level [device] table" \
+    || fail "Debian USB gadget did not report the retired device table"
+if printf '%s\n' "${legacy_gadget_output}" | grep -Fq "Setting up Aiden USB composite gadget"; then
+    fail "Debian USB gadget began setup before rejecting invalid config"
+fi
 if grep -Eq '^Requires=.*aiden-wifi-proxy\.service' \
     "${UNIT_DIR}/aiden-config-web.service"; then
     fail "Config Web must remain available when the Wi-Fi proxy fails"

@@ -7,7 +7,7 @@
 
 GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
 USB_MODE_PATH=/proc/device-tree/usbdrd/usb@ffb00000/dr_mode
-AGENT_TOML=/userdata/agent/agent.toml
+AGENT_TOML=${AGENT_TOML:-/userdata/agent/agent.toml}
 
 USB0_ADDR=192.168.42.1
 USB0_NETMASK=255.255.255.0
@@ -22,6 +22,15 @@ BOOT_TIMELINE_HELPER=${BOOT_TIMELINE_HELPER:-/usr/lib/aiden/aiden-boot-timeline}
 mark() {
 	[ -x "$BOOT_TIMELINE_HELPER" ] || return 0
 	"$BOOT_TIMELINE_HELPER" mark "$@" 2>/dev/null || true
+	return 0
+}
+
+reject_legacy_device_config() {
+	[ -r "$AGENT_TOML" ] || return 0
+	if grep -Eq '^[[:space:]]*\[device\][[:space:]]*(#.*)?$' "$AGENT_TOML"; then
+		echo "Unsupported top-level [device] table in $AGENT_TOML; use [basic_settings.device]" >&2
+		return 1
+	fi
 	return 0
 }
 
@@ -77,6 +86,7 @@ disable_usb0() {
 }
 
 start() {
+	reject_legacy_device_config || return 1
 	echo "Setting up Aiden USB composite gadget (HID + ECM)..."
 
 	USB_MODE=$(cat "$USB_MODE_PATH" 2>/dev/null)

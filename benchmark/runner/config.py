@@ -152,7 +152,7 @@ def validate_agent_toml(content: str) -> None:
 
 
 def apply_agent_toml_runtime_defaults(content: str) -> str:
-    """Add safe benchmark runtime defaults missing from older saved configs."""
+    """Move the retired runtime table and add safe benchmark defaults."""
     if not content.strip():
         return content
 
@@ -161,10 +161,32 @@ def apply_agent_toml_runtime_defaults(content: str) -> str:
     target_header_pattern = re.compile(
         r"^\s*\[voice_settings\.classic\.runtime\]\s*(?:#.*)?$"
     )
+    legacy_header_pattern = re.compile(
+        r"^\s*\[runtime\](?P<suffix>\s*(?:#.*)?)$"
+    )
     target_start = next(
         (index for index, line in enumerate(lines) if target_header_pattern.match(line)),
         None,
     )
+    legacy_match = next(
+        (
+            (index, match)
+            for index, line in enumerate(lines)
+            if (match := legacy_header_pattern.match(line))
+        ),
+        None,
+    )
+    migrated_legacy = False
+    if legacy_match is not None:
+        if target_start is not None:
+            raise ValueError(
+                "agent.toml cannot contain both [runtime] and "
+                "[voice_settings.classic.runtime]"
+            )
+        target_start, match = legacy_match
+        lines[target_start] = target_header + match.group("suffix")
+        migrated_legacy = True
+
     if target_start is None:
         missing = list(VOICE_SIDE_EFFECT_DEFAULTS)
         suffix = "\n" if lines and lines[-1].strip() else ""
@@ -188,7 +210,7 @@ def apply_agent_toml_runtime_defaults(content: str) -> str:
     }
     missing = [key for key in VOICE_SIDE_EFFECT_DEFAULTS if key not in present]
     if not missing:
-        return content
+        return "\n".join(lines) + "\n" if migrated_legacy else content
 
     insert_lines = [f"{key} = false" for key in missing]
     if target_end > target_start + 1 and lines[target_end - 1].strip():

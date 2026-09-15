@@ -518,6 +518,50 @@ def test_agent_config_manager_recognizes_commented_voice_runtime_header(tmp_path
     assert "voice_progress_speech_enabled = false" in content
 
 
+def test_agent_config_manager_migrates_legacy_runtime_table(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    config_path = tmp_path / "runs" / "agent.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        "[runtime] # retired benchmark settings\n"
+        "voice_streaming_tts_enabled = true\n"
+        "[model_settings.model]\n"
+        'provider = "fake"\n',
+        encoding="utf-8",
+    )
+    manager = runner_config.AgentConfigManager(base_config_dir=base, config_path=config_path)
+
+    content, source = manager.get_config()
+
+    assert source == "saved"
+    assert "[runtime]" not in content
+    assert "[voice_settings.classic.runtime] # retired benchmark settings" in content
+    assert content.count("voice_streaming_tts_enabled") == 1
+    assert "voice_streaming_tts_enabled = true" in content
+    assert "voice_tool_call_speech = false" in content
+    assert "voice_progress_speech_enabled = false" in content
+    assert config_path.read_text(encoding="utf-8") == content
+
+
+def test_agent_config_manager_rejects_legacy_and_grouped_runtime_tables(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    config_path = tmp_path / "runs" / "agent.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        "[runtime]\n"
+        "voice_streaming_tts_enabled = true\n"
+        "[voice_settings.classic.runtime]\n"
+        "voice_tool_call_speech = false\n",
+        encoding="utf-8",
+    )
+    manager = runner_config.AgentConfigManager(base_config_dir=base, config_path=config_path)
+
+    with pytest.raises(ValueError, match=r"both \[runtime\]"):
+        manager.get_config()
+
+
 def test_agent_config_manager_preserves_quoted_root_voice_default(tmp_path: Path):
     base = tmp_path / "base"
     base.mkdir()

@@ -1110,6 +1110,9 @@ secret_key = "legacy-stt-secret"
 		"voice_settings.classic.stt",
 	} {
 		sectionText := tomlTestSection(string(got), section)
+		if sectionText == "" {
+			t.Fatalf("updated config is missing [%s]:\n%s", section, got)
+		}
 		if strings.Contains(sectionText, "api_key") || strings.Contains(sectionText, "voice_id") ||
 			strings.Contains(sectionText, "secret_key") {
 			t.Errorf("legacy fields remain in [%s]:\n%s", section, sectionText)
@@ -1224,6 +1227,9 @@ model = "whisper-1"
 		"voice_settings.classic.stt",
 	} {
 		sectionText := tomlTestSection(text, section)
+		if sectionText == "" {
+			t.Fatalf("migrated config is missing [%s]:\n%s", section, text)
+		}
 		if strings.Contains(sectionText, "api_key") || strings.Contains(sectionText, "reference_id") {
 			t.Errorf("legacy fields remain in [%s]:\n%s", section, sectionText)
 		}
