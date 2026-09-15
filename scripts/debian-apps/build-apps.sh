@@ -22,6 +22,7 @@ readonly JOBS=${RK_JOBS:-$(getconf _NPROCESSORS_ONLN)}
 readonly GO_ROOT=${DEBIAN_APPS_GO_ROOT:-${REPO_ROOT}/.toolchains/go1.26.0.linux-amd64}
 readonly GO_BUILD_CACHE=${DEBIAN_APPS_GO_BUILD_CACHE:-${REPO_ROOT}/.cache/debian-apps/go-build}
 readonly GO_MODULE_CACHE=${DEBIAN_APPS_GO_MODULE_CACHE:-${REPO_ROOT}/.cache/debian-apps/go-mod}
+readonly OPENCV_SOURCE_CACHE=${DEBIAN_APPS_OPENCV_CACHE:-${REPO_ROOT}/.cache/debian-apps/opencv}
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
 
 usage() {
@@ -34,6 +35,7 @@ Environment:
   DEBIAN_APPS_GO_ROOT       Pinned Go 1.26.0 linux/amd64 toolchain.
   DEBIAN_APPS_GO_BUILD_CACHE/DEBIAN_APPS_GO_MODULE_CACHE
                             Persistent writable Go caches.
+  DEBIAN_APPS_OPENCV_CACHE  Persistent OpenCV-Mobile source archive cache.
   SOURCE_DATE_EPOCH         Reproducible Go build timestamp.
   RK_JOBS                   Parallel build jobs (defaults to all host CPUs).
 EOF
@@ -47,10 +49,10 @@ require_command() {
 }
 
 ensure_opencv_source() {
-    local cache_dir=${OUTPUT_DIR}/cache
-    local archive=${cache_dir}/${OPENCV_ARCHIVE}
+    local archive=${OPENCV_SOURCE_CACHE}/${OPENCV_ARCHIVE}
+    local staging_dir=${OUTPUT_DIR}/cache
     local actual
-    mkdir -p "${cache_dir}"
+    mkdir -p "${OPENCV_SOURCE_CACHE}" "${staging_dir}"
     if [ ! -f "${archive}" ]; then
         local temp=${archive}.tmp.$$
         curl -fL --retry 3 --connect-timeout 20 -o "${temp}" "${OPENCV_URL}"
@@ -58,11 +60,19 @@ ensure_opencv_source() {
     fi
     actual=$(sha256sum "${archive}" | awk '{print $1}')
     if [ "${actual}" != "${OPENCV_SHA256}" ]; then
+        # The cache now outlives the build, so a bad archive would fail every
+        # later run too. Drop it and let the next build fetch a fresh copy.
+        rm -f "${archive}"
         echo "OpenCV-Mobile source checksum mismatch" >&2
         echo "expected: ${OPENCV_SHA256}" >&2
         echo "actual:   ${actual}" >&2
+        echo "discarded: ${archive}" >&2
         exit 1
     fi
+    # container-build-opencv-mobile.sh reads the archive from the bind-mounted
+    # output directory, which clean_generated_outputs() empties before every
+    # build. Stage a copy there instead of caching it there.
+    cp -f "${archive}" "${staging_dir}/${OPENCV_ARCHIVE}"
 }
 
 run_builder() {

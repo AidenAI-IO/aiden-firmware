@@ -260,10 +260,15 @@ jobs:
       run: echo "GOPROXY=https://goproxy.cn" >> "$GITHUB_ENV"
 
     - name: Set up Go
+      # cache: false because nothing here consumes what it would cache. Every
+      # `go build` runs inside the apps-stage container against the bind-mounted
+      # pinned toolchain, with GOCACHE/GOMODCACHE pointed at the persistent
+      # caches below. Uploading ~/go/pkg/mod to the hosted cache service only
+      # cost a minute per run and failed with ECONNRESET twice.
       uses: actions/setup-go@v5
       with:
         go-version-file: src/agent/go.mod
-        cache-dependency-path: src/agent/go.sum
+        cache: false
 
     - name: Prepare agent configuration
       # The system stage installs an external agent.toml into the OEM image and never
@@ -367,6 +372,35 @@ jobs:
           echo "rk_jobs=${rk_jobs}"
         } >> "$GITHUB_OUTPUT"
         echo "Building with RK_JOBS=${rk_jobs}"
+
+    - name: Reuse the persistent toolchain and build caches
+      shell: bash
+      run: |
+        set -euo pipefail
+        cache="$HOME/aiden-ci"
+        # Everything the apps stage caches defaults into the workspace, which
+        # actions/checkout wipes with `git clean -ffdx` before every run. Point
+        # the caches at the runner's home so they actually survive. On a hosted
+        # runner the home is ephemeral and this is simply a cold cache.
+        mkdir -p \
+          "$cache/apps-go-build" "$cache/apps-go-mod" "$cache/apps-opencv"
+        {
+          echo "DEBIAN_APPS_GO_BUILD_CACHE=$cache/apps-go-build"
+          echo "DEBIAN_APPS_GO_MODULE_CACHE=$cache/apps-go-mod"
+          echo "DEBIAN_APPS_OPENCV_CACHE=$cache/apps-opencv"
+        } >> "$GITHUB_ENV"
+
+        # ensure_go_toolchain() rejects an invalid custom root outright rather
+        # than falling back to the pinned download, so only name one that is
+        # already provisioned. A runner without it keeps downloading its own.
+        go_root="$cache/go1.26.0.linux-amd64"
+        if [ -x "$go_root/bin/go" ] && [ -f "$go_root/VERSION" ] &&
+          grep -qx 'go1.26.0' "$go_root/VERSION"; then
+          echo "DEBIAN_APPS_GO_ROOT=$go_root" >> "$GITHUB_ENV"
+          echo "Using the pre-provisioned Go toolchain at $go_root"
+        else
+          echo "::notice::No pre-provisioned Go toolchain at $go_root; the build will download its own"
+        fi
 
     - name: Run Debian firmware build
       if: ${{ !inputs.dry_run }}
