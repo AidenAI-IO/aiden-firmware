@@ -2401,7 +2401,7 @@ func TestServerCloseStopsAcceptingAndDrainsActiveHTTPHandlers(t *testing.T) {
 func TestServerHandleChatCancelEndsDanglingLiveActivity(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		activeRuns:   make(map[string]context.CancelFunc),
-		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger()),
 	}
 	server.liveActivity.StartTask("req-1", "External run")
 

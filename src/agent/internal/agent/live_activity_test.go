@@ -12,7 +12,7 @@ import (
 )
 
 func TestLiveActivityManagerLifecycle(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	if manager == nil {
 		t.Fatal("NewLiveActivityManager() = nil")
 	}
@@ -43,11 +43,11 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 }
 
 func TestLiveActivityManagerDisablingCancelsAllRunningTasks(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-1", "First task")
 	manager.StartTask("req-2", "Second task")
 
-	manager.Reconfigure(LiveActivityConfig{Enabled: new(bool)})
+	manager.Reconfigure(LiveActivityConfig{Enabled: new(bool)}, "en-US")
 
 	for _, requestID := range []string{"req-1", "req-2"} {
 		state := manager.Snapshot(requestID)
@@ -58,7 +58,7 @@ func TestLiveActivityManagerDisablingCancelsAllRunningTasks(t *testing.T) {
 }
 
 func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-1", "Book a table")
 
 	state := manager.UpdateFromRunEvent("req-1", RunEvent{
@@ -92,7 +92,7 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 }
 
 func TestLiveActivityManagerPublishesToolAndThinkingDetails(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-details", "Open Settings")
 
 	state := manager.UpdateFromRunEvent("req-details", RunEvent{
@@ -160,14 +160,16 @@ func TestLiveActivityOpenURLUsesSchemeSpecificStatus(t *testing.T) {
 		{name: "phone", url: "tel:+15551234567", app: "Phone", step: "Opening phone"},
 	}
 
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
+	text := manager.getLiveActivityText()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			event := RunEvent{ToolName: toolOpenURL, ToolInput: jsonString(map[string]string{"url": tt.url})}
-			status := liveActivityToolCallStatus(event)
+			status := liveActivityToolCallStatus(event, text)
 			if status.app != tt.app || status.step != tt.step {
 				t.Fatalf("status = %#v, want app=%q step=%q", status, tt.app, tt.step)
 			}
-			if got := liveActivityAppFromToolCall(event); got != tt.app {
+			if got := liveActivityAppFromToolCall(event, text); got != tt.app {
 				t.Fatalf("liveActivityAppFromToolCall() = %q, want %q", got, tt.app)
 			}
 		})
@@ -178,7 +180,7 @@ func TestLiveActivityOpenURLUsesSchemeSpecificStatus(t *testing.T) {
 }
 
 func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-1", "Read clipboard")
 
 	state := manager.UpdateFromRunEvent("req-1", RunEvent{
@@ -210,7 +212,7 @@ func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
 }
 
 func TestLiveActivityManagerKeepsHumanHandoffVisible(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-handoff", "Complete login")
 
 	state := manager.UpdateFromRunEvent("req-handoff", RunEvent{
@@ -247,7 +249,7 @@ func TestLiveActivityManagerKeepsHumanHandoffVisible(t *testing.T) {
 }
 
 func TestLiveActivityManagerSnapshotActive(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-1", "First task")
 	manager.StartTask("req-2", "Second task")
 
@@ -264,7 +266,7 @@ func TestLiveActivityManagerSnapshotActive(t *testing.T) {
 }
 
 func TestLiveActivityManagerSnapshotActiveForPhone(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-phone-a", "First phone", "phone-a")
 	manager.StartTask("req-phone-b", "Second phone", "phone-b")
 
@@ -284,7 +286,7 @@ func TestLiveActivityManagerSnapshotActiveForPhone(t *testing.T) {
 }
 
 func TestLiveActivityManagerSnapshotActiveForPhoneIncludesUnscopedLocalTask(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	manager.StartTask("req-local", "Hardware initiated task")
 
 	active := manager.SnapshotActiveForPhone("phone-a")
@@ -294,7 +296,7 @@ func TestLiveActivityManagerSnapshotActiveForPhoneIncludesUnscopedLocalTask(t *t
 }
 
 func TestLiveActivityManagerCoalescesLocalBLEWake(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
+	manager := NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	reasons := make(chan string, 4)
@@ -359,7 +361,7 @@ func TestServerLiveActivityRegistrationRouteRemoved(t *testing.T) {
 }
 
 func TestServerLiveActivityStatus(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
 	statusReq := liveActivityLoopbackRequest("/api/live-activity/status?request_id=%20req-1%20")
@@ -381,7 +383,7 @@ func TestServerLiveActivityStatus(t *testing.T) {
 }
 
 func TestServerLiveActivityCurrent(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
 	req := liveActivityLoopbackRequest("/api/live-activity/current")
@@ -440,7 +442,7 @@ func TestServerBridgeStatusWithoutBridge(t *testing.T) {
 }
 
 func TestServerLiveActivityCurrentFiltersPhoneID(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 	server.liveActivity.StartTask("req-phone-a", "Do a task", "phone-a")
 	server.liveActivity.StartTask("req-phone-b", "Do another task", "phone-b")
 
@@ -492,7 +494,7 @@ func TestServerLiveActivityPhoneIDPreference(t *testing.T) {
 }
 
 func TestServerLiveActivityCurrentEmpty(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 
 	req := liveActivityLoopbackRequest("/api/live-activity/current")
 	rec := httptest.NewRecorder()
@@ -512,7 +514,7 @@ func TestServerLiveActivityCurrentEmpty(t *testing.T) {
 }
 
 func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 	req := liveActivityLoopbackRequest("/api/live-activity/status")
 	rec := httptest.NewRecorder()
 
@@ -524,7 +526,7 @@ func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
 }
 
 func TestServerLiveActivityEndpointsRequireUSB(t *testing.T) {
-	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
 	usbRequest := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
@@ -562,7 +564,7 @@ func liveActivityLoopbackRequest(target string) *http.Request {
 
 func TestChatResultIncludesLiveActivityState(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
-		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {
 				messages: []Message{},
@@ -590,7 +592,7 @@ func TestChatResultIncludesLiveActivityState(t *testing.T) {
 
 func TestChatResultIncludesTerminalLiveActivityState(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
-		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {
 				messages: []Message{{
@@ -630,7 +632,7 @@ func TestChatResultIncludesTerminalLiveActivityState(t *testing.T) {
 
 func TestChatResultErrorIncludesQueuedMessages(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
-		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, "en-US", newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {
 				messages: []Message{{
