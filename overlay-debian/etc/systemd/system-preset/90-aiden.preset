@@ -9,6 +9,7 @@ enable aiden-rootfs-grow.service
 enable oem.mount
 enable userdata.mount
 enable userdata-ota.mount
+enable aiden-ota-recovery.service
 enable aiden-userdata-migrate.service
 enable aiden-machine-id.service
 enable aiden-root-home.service
