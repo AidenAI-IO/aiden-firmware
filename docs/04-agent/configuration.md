@@ -725,6 +725,11 @@ Config Web exposes `retention_days` in Memory Settings. The lifecycle and lease 
 
 ## `[advanced_settings.hardware.hid]`
 
+This table is retained for internal HID device settings and compatibility with
+older configurations. Put the user-facing `keyboard_layout` value under
+`[basic_settings.device.hid]`; when both tables are present, the Basic Settings
+value is authoritative.
+
 | Field                     | Default                                 | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `keyboard_device`         | `/dev/hidg0`                            | Keyboard HID device                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -787,7 +792,7 @@ language = "zh"
 A field lives on the record when it stops meaning anything once the provider
 changes; it stays on `[voice_settings.classic.tts]` / `[voice_settings.classic.stt]` when it holds regardless of provider.
 
-| | Record fields | Stays on the flat section |
+| | Record fields | Stays on the shared section |
 | ---- | ---- | ---- |
 | TTS | `type`, `api_key`, `model`, `voice_id`, `emotion`, `reference_id` | `provider` (reference), `speed` |
 | STT | `type`, `api_key`, `model`, `base_url`, `app_id`, `secret_id`, `secret_key`, `region`, `engine_model_type` | `provider` (reference), `language` |

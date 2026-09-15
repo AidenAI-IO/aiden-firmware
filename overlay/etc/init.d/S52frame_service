@@ -164,7 +164,7 @@ configured_keep_streamon() {
         return
     }
     value="$(awk '
-        /^\[advanced_settings\.hardware\.frame_service\][[:space:]]*$/ { in_section = 1; next }
+        /^\[frame_service\][[:space:]]*$/ { in_section = 1; next }
         /^\[/ { in_section = 0 }
         in_section && $1 == "keep_streamon" && $2 == "=" { print $3; exit }
     ' "$AGENT_CONFIG")"

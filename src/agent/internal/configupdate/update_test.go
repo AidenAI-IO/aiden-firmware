@@ -1104,7 +1104,11 @@ secret_key = "legacy-stt-secret"
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, section := range []string{"model", "tts", "stt"} {
+	for _, section := range []string{
+		"model_settings.model",
+		"voice_settings.classic.tts",
+		"voice_settings.classic.stt",
+	} {
 		sectionText := tomlTestSection(string(got), section)
 		if strings.Contains(sectionText, "api_key") || strings.Contains(sectionText, "voice_id") ||
 			strings.Contains(sectionText, "secret_key") {
@@ -1214,7 +1218,11 @@ model = "whisper-1"
 			t.Errorf("migrated config missing %q:\n%s", want, text)
 		}
 	}
-	for _, section := range []string{"model", "tts", "stt"} {
+	for _, section := range []string{
+		"model_settings.model",
+		"voice_settings.classic.tts",
+		"voice_settings.classic.stt",
+	} {
 		sectionText := tomlTestSection(text, section)
 		if strings.Contains(sectionText, "api_key") || strings.Contains(sectionText, "reference_id") {
 			t.Errorf("legacy fields remain in [%s]:\n%s", section, sectionText)

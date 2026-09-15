@@ -73,6 +73,16 @@ class Element {
     return this.tagName === 'SELECT' ? this.children : undefined;
   }
 
+  set innerHTML(value) {
+    this._innerHTML = String(value);
+    this.children.forEach((child) => { child.parentNode = null; });
+    this.children = [];
+  }
+
+  get innerHTML() {
+    return this._innerHTML || '';
+  }
+
   setAttribute(name, value) {
     const normalized = String(value);
     this.attributes.set(name, normalized);
@@ -154,6 +164,7 @@ function findElements(root, selector, includeRoot = true, matches = []) {
 class Document {
   constructor() {
     this.body = new Element('body');
+    this.listeners = new Map();
   }
 
   createElement(tagName) {
@@ -172,7 +183,15 @@ class Document {
     return findElements(this.body, selector, true);
   }
 
-  addEventListener() {}
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  dispatchEvent(event) {
+    (this.listeners.get(event.type) || []).forEach((listener) => listener(event));
+  }
 }
 
 function findById(root, id) {
@@ -268,7 +287,7 @@ stateModule.namespace.runtime.syncModelSelectorSummary = () => {};
 stateModule.namespace.runtime.updateAllProviderActionStates = () => {};
 const configMetaModule = await loadModule(path.join(webRoot, 'assets/js/config/config-meta.js'));
 await configMetaModule.evaluate();
-const {buildConfigMeta} = configMetaModule.namespace;
+const {bindFieldVisibility, buildConfigMeta} = configMetaModule.namespace;
 
 buildConfigMeta({sections: [
   {name: 'agent', fields: [
@@ -303,6 +322,11 @@ buildConfigMeta({sections: [
 assert.equal(document.getElementById('agent_locale'), null, 'agent.locale remains rendered by the page-level locale control');
 assert.deepEqual(productLocaleSelect.options.map((option) => option.value), ['en-US', 'zh-CN']);
 assert.deepEqual(agentTimezoneSelect.options.map((option) => option.value), ['UTC', 'Asia/Shanghai', 'America/Los_Angeles']);
+bindFieldVisibility();
+stateModule.namespace.runtime.t = (_key, params = {}) => 'Localized ' + String(params.defaultValue ?? '');
+document.dispatchEvent({type: 'aiden:locale-changed'});
+assert.deepEqual(productLocaleSelect.options.map((option) => option.textContent), ['Localized en-US', 'Localized zh-CN']);
+stateModule.namespace.runtime.t = (key, params = {}) => String(params.defaultValue ?? key).replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (_match, name) => params[name] ?? '');
 assert.equal(document.getElementById('agent_input_mode').tagName, 'SELECT');
 assert.equal(document.getElementById('agent_new_field').getAttribute('placeholder'), 'example');
 assert.equal(document.getElementById('agent_new_field').closest('.field').classList.contains('wide'), true);

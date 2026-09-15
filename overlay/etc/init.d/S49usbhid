@@ -32,7 +32,7 @@ read_pointer_mode() {
 	fi
 	device_line=$(awk '
 		/^[[:space:]]*\[/ {
-			in_device = ($0 ~ /^[[:space:]]*\[basic_settings\.device\][[:space:]]*$/)
+			in_device = ($0 ~ /^[[:space:]]*\[device\][[:space:]]*$/)
 			next
 		}
 		in_device && /^[[:space:]]*device_type[[:space:]]*=/ {
@@ -155,7 +155,7 @@ start() {
 	printf '\005\001\011\006\241\001\005\007\031\340\051\347\025\000\045\001\165\001\225\010\201\002\225\001\165\010\201\001\225\006\165\010\025\000\045\145\005\007\031\000\051\145\201\000\300' \
 		> "$GADGET_DIR/functions/hid.usb0/report_desc"
 
-	# Touch / mouse HID function (report format follows [basic_settings.device].device_type)
+	# Touch / mouse HID function (report format follows [device].device_type)
 	mkdir -p "$GADGET_DIR/functions/hid.usb1"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/protocol"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/subclass"

@@ -770,10 +770,21 @@ def agent_config_has_api_key(content: str) -> bool:
     except tomllib.TOMLDecodeError:
         match = re.search(r"(?m)^\s*api_key\s*=\s*(['\"])(.*?)\1", content)
         return bool(match and match.group(2).strip())
-    model = data.get("model")
+
+    model_settings = data.get("model_settings")
+    if not isinstance(model_settings, dict):
+        return False
+    model = model_settings.get("model")
     if isinstance(model, dict):
-        return bool(str(model.get("api_key") or "").strip())
-    return bool(str(data.get("api_key") or "").strip())
+        if str(model.get("api_key") or "").strip():
+            return True
+        provider_name = str(model.get("provider") or "").strip()
+        provider_records = model_settings.get("providers")
+        if provider_name and isinstance(provider_records, dict):
+            provider = provider_records.get(provider_name)
+            if isinstance(provider, dict):
+                return bool(str(provider.get("api_key") or "").strip())
+    return False
 
 
 def serve(config: SkillOptWebUIConfig) -> None:

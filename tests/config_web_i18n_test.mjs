@@ -192,6 +192,10 @@ async function loadModule(filePath) {
 const i18nModule = await loadModule(i18nPath);
 await i18nModule.evaluate();
 const {applyLocale, getActiveLocale, getPersistedLocale, initI18n, saveLocale, t} = i18nModule.namespace;
+const groupI18nModule = await loadModule(path.join(webRoot, 'assets/js/config/i18n-groups.js'));
+await groupI18nModule.evaluate();
+assert.equal(groupI18nModule.namespace.GROUP_TRANSLATIONS['en-US'].groups.websearch, 'Web Search');
+assert.equal(groupI18nModule.namespace.GROUP_TRANSLATIONS['zh-CN'].groups.websearch, '网页搜索');
 
 assert.equal(t('config.save_failed', {section: 'agent'}), 'Save [agent] failed.');
 initI18n();

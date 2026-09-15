@@ -12,7 +12,7 @@ export const GROUP_TRANSLATIONS = {
       iteration_control: 'Max Iterations',
       context_management: 'Context Management',
       tool_settings: 'Tool Settings',
-      websearch: '网页搜索',
+      websearch: 'Web Search',
       termination_policy: 'Termination Policy',
 
       model_settings: 'Model Settings',
@@ -54,7 +54,7 @@ export const GROUP_TRANSLATIONS = {
       iteration_control: '最大工具调用轮数',
       context_management: '上下文管理',
       tool_settings: '工具设置',
-      websearch: 'Web Search',
+      websearch: '网页搜索',
       termination_policy: '终止策略',
 
       model_settings: '主模型设置',

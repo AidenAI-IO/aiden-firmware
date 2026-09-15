@@ -1029,7 +1029,7 @@ Common parameters:
 | --- | --- | --- |
 | `--port` | auto | Agent daemon API port |
 | `--environment-bridge-endpoint` | empty | Device or MobileGym bridge endpoint; empty disables the environment bridge |
-| `--device-type` | empty | Optional process-local `device.device_type` override; without a bridge, the daemon otherwise keeps the value from `agent.toml`; with a bridge, the value constrains its reported platform |
+| `--device-type` | empty | Optional process-local `basic_settings.device.device_type` override; without a bridge, the daemon otherwise keeps the value from `agent.toml`; with a bridge, the value constrains its reported platform |
 | `--benchmark-task-id` | `cli-task` | Route id used by environment bridge requests |
 | `--agent-config` | empty | Specify agent.toml |
 | `--base-config-dir` | `benchmark/config` | Agent config template directory |

@@ -143,6 +143,9 @@ grep -q -- '/oem/usr/bin/agent config-web' \
     "${UNIT_DIR}/aiden-config-web.service"
 grep -q -- '--wifi-config-environment=/run/aiden/wpa_supplicant-config.env' \
     "${UNIT_DIR}/aiden-config-web.service"
+grep -Fq 'in_device = ($0 ~ /^[[:space:]]*\[basic_settings\.device\][[:space:]]*$/' \
+    "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" \
+    || fail "Debian USB gadget must read device_type from the grouped config path"
 if grep -Eq '^Requires=.*aiden-wifi-proxy\.service' \
     "${UNIT_DIR}/aiden-config-web.service"; then
     fail "Config Web must remain available when the Wi-Fi proxy fails"
