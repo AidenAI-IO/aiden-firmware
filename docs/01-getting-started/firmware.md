@@ -42,7 +42,7 @@ key pair (see `./debian_build.sh --help`). Process overview:
 
 1. Build and audit the Debian armhf C/C++ and Go application bundle;
 2. Build the pinned Debian 13 rootfs and apply `overlay-debian/`;
-3. Build the RV1106 BSP, bootloader, kernel modules, and A/B boot images from the pinned SDK;
+3. Build the RV1106 BSP, bootloader, kernel modules, and A/B boot images in place from the repository `pico-sdk` submodule;
 4. Assemble the OEM image from `overlay-debian-oem/`, audited applications, vendor libraries, models, and web assets;
 5. Create rootfs, OEM, userdata, and OTA images and validate their contents;
 6. Generate the signed local OTA manifest and full USB first-flash package.
@@ -88,18 +88,18 @@ version 1.0.41, so it speaks the current adb auth and pairing protocol.
 
 ### 2. Flash with upgrade_tool
 
-On Linux, use the x86_64 tool generated in the pinned Stage 3 SDK. The
-repository-root `upgrade_tool/upgrade_tool` is a macOS Mach-O binary and will
-not run on Linux. The guarded flash helper verifies the image digest and
-requires an explicit confirmation because a full factory flash overwrites
-userdata:
+On Linux, use the x86_64 tool generated in the repository `pico-sdk`
+submodule. The repository-root `upgrade_tool/upgrade_tool` is a macOS Mach-O
+binary and will not run on Linux. The guarded flash helper verifies the image
+digest and requires an explicit confirmation because a full factory flash
+overwrites userdata:
 
 ```bash
-FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+FLASH_TOOL=pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
 IMAGE=output/debian/image/update.img
 SHA256=$(awk '{print $1}' "${IMAGE}.sha256")
-scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
-sudo scripts/debian-stage1/flash.sh flash \
+scripts/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/flash.sh flash \
   --tool "${FLASH_TOOL}" \
   --image "${IMAGE}" \
   --sha256 "${SHA256}" \

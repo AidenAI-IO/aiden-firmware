@@ -70,6 +70,6 @@ mount | grep ' /oem '
 | `overlay-debian/etc/systemd/system/aiden-ota-health.service` | Process pending OTA health state at boot |
 | `scripts/generate_ota_manifest.sh` | Generate signed OTA manifest |
 | `scripts/generate_ota_device_config.sh` | Generate factory configuration from manifest |
-| `scripts/ota_partition_layout.sh` | Reads the Debian Stage 3 OTA partition size and derives release capacity |
-| `scripts/debian-stage3/container-install-ota-config.sh` | Install factory OTA configuration and repack `update.img` |
+| `scripts/ota_partition_layout.sh` | Reads the Debian system OTA partition size and derives release capacity |
+| `scripts/debian-system/container-install-ota-config.sh` | Install factory OTA configuration and repack `update.img` |
 | `pico-sdk/project/scripts/mk-ab-misc.py` | Generate factory `misc.img` A/B metadata |

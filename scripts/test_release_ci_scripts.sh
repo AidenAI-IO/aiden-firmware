@@ -88,7 +88,7 @@ if ! grep -Fq 'run: ./debian_build.sh' "$WORKFLOW" || \
     exit 1
 fi
 
-# Stage 2 fills .cache with read-only Go module directories that block the next
+# apps fills .cache with read-only Go module directories that block the next
 # actions/checkout clean phase on the shared self-hosted runners.
 if ! grep -Fq '"$GITHUB_WORKSPACE/.cache"' "$WORKFLOW" || \
    ! grep -Fq 'chmod -R u+w "$go_mod_cache"' "$WORKFLOW"; then

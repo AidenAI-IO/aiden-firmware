@@ -89,6 +89,10 @@ case "${2:-}" in
         exit 1
         ;;
     esac
+    if [ "${FAKE_GH_CREATE_ALWAYS_403:-0}" = "1" ]; then
+      echo "HTTP 403: Resource not accessible by integration (https://api.github.com/repos/owner/repo/releases)" >&2
+      exit 1
+    fi
     touch "$state_dir/release-exists"
     printf 'create:%s\n' "${3:-}" >> "$state_dir/events"
     if [ "${FAKE_GH_CREATE_PARTIAL_FAILURE:-0}" = "1" ] && [ "$create_count" -eq 1 ]; then
@@ -121,6 +125,10 @@ case "${2:-}" in
     count=$((count + 1))
     printf '%s\n' "$count" > "$count_file"
     printf 'upload:%s:%s\n' "$name" "$count" >> "$state_dir/events"
+    if [ "${FAKE_GH_UPLOAD_ALWAYS_FAIL:-}" = "$name" ]; then
+      echo "write EPIPE" >&2
+      exit 1
+    fi
     if [ "$name" = "update.img" ] && [ "$count" -le 2 ]; then
       echo "write EPIPE" >&2
       exit 1
@@ -397,6 +405,85 @@ fi
 
 if [ -f "$state_dir/events" ]; then
   echo "release script must fail before creating a release when required assets are missing" >&2
+  exit 1
+fi
+
+# A 403 is the same answer on every attempt. Burning the retry ladder on it
+# once cost a publish 22 of its 30 allotted minutes and hid the real reason
+# behind a timeout error.
+printf 'oem.img\n' > "$assets_dir/oem.img"
+rm -f "$state_dir/events" "$state_dir/calls" "$state_dir/sleeps" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count" "$state_dir/remote-assets" "$state_dir"/dropped-* "$state_dir"/stale-kept-*
+if PATH="$fake_bin:$PATH" \
+  FAKE_GH_STATE_DIR="$state_dir" \
+  FAKE_GH_CREATE_ALWAYS_403=1 \
+  GH_TOKEN="test-token" \
+  GITHUB_REPOSITORY="owner/repo" \
+    "$repo_root/scripts/create_github_release.sh" \
+      --tag-name v-test \
+      --release-name "Test Release" \
+      --target-commitish abc123 \
+      --asset-glob "$assets_dir/*" \
+      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --retry-count 10 \
+      --retry-delay-seconds 0 \
+      >"$log_file" 2>&1; then
+  echo "release script must fail when the release cannot be created" >&2
+  exit 1
+fi
+
+if [ "$(cat "$state_dir/create-count")" -ne 1 ]; then
+  echo "release script must not retry a permanently rejected release creation" >&2
+  cat "$log_file" >&2
+  exit 1
+fi
+
+if ! grep -q 'permanent error; not retrying' "$log_file"; then
+  echo "release script must say why it stopped retrying the release creation" >&2
+  exit 1
+fi
+
+if [ -f "$state_dir/events" ] && grep -q '^upload:' "$state_dir/events"; then
+  echo "release script must not upload assets after the release creation failed" >&2
+  exit 1
+fi
+
+# `status=$?` after a failed `if` condition reads 0, so exhausting the retry
+# ladder used to return success: the caller carried on and the job passed with
+# assets that were never uploaded.
+rm -f "$state_dir/events" "$state_dir/calls" "$state_dir/sleeps" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count" "$state_dir/remote-assets" "$state_dir"/dropped-* "$state_dir"/stale-kept-*
+if PATH="$fake_bin:$PATH" \
+  FAKE_GH_STATE_DIR="$state_dir" \
+  FAKE_GH_UPLOAD_ALWAYS_FAIL=boot_a.img \
+  GH_TOKEN="test-token" \
+  GITHUB_REPOSITORY="owner/repo" \
+    "$repo_root/scripts/create_github_release.sh" \
+      --tag-name v-test \
+      --release-name "Test Release" \
+      --target-commitish abc123 \
+      --asset-glob "$assets_dir/*" \
+      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --retry-count 3 \
+      --retry-delay-seconds 0 \
+      >"$log_file" 2>&1; then
+  echo "release script must fail when an asset upload exhausts every attempt" >&2
+  exit 1
+fi
+
+if [ "$(grep -c '^upload:boot_a.img:' "$state_dir/events")" -ne 3 ]; then
+  echo "release script must attempt a retryable upload failure the full retry count" >&2
+  cat "$log_file" >&2
+  exit 1
+fi
+
+if ! grep -q 'release asset upload boot_a.img failed after 3 attempt(s)' "$log_file"; then
+  echo "release script must report the exhausted upload retries" >&2
+  exit 1
+fi
+
+if grep -q '^publish:' "$state_dir/events"; then
+  echo "release script must not publish the draft after an upload failed" >&2
   exit 1
 fi
 

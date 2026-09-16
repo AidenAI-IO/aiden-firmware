@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT=${SCRIPT_DIR}
 readonly REPO_ROOT
-readonly STAGE2_OUTPUT=${REPO_ROOT}/output/debian-stage2
-readonly STAGE3_OUTPUT=${REPO_ROOT}/output/debian-stage3
+readonly APPS_OUTPUT=${REPO_ROOT}/output/debian-apps
+readonly SYSTEM_OUTPUT=${REPO_ROOT}/output/debian-system
 readonly FINAL_OUTPUT=${REPO_ROOT}/output/debian/image
 readonly DEFAULT_AGENT_CONFIG=/home/miaomiao/dev/luckfox/config/agent.toml
 readonly DEFAULT_OTA_PRIVATE_KEY=${REPO_ROOT}/key/id_25519.pem
@@ -18,7 +18,6 @@ readonly GO_DIST=linux-amd64
 readonly GO_TARBALL=go${GO_VERSION}.${GO_DIST}.tar.gz
 readonly GO_TARBALL_SHA256=aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235
 readonly DEFAULT_SOURCE_DATE_EPOCH=1767360516
-readonly EXPECTED_PICO_SDK_COMMIT=d1a279cbb7e29aa0801943cdf21f0575db69eed5
 readonly CLEANUP_IMAGE=debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 readonly -a MANIFEST_IMAGE_ASSETS=(boot_a.img boot_b.img oem.img rootfs.img)
 readonly -a RELEASE_IMAGE_ASSETS=(boot_a.img boot_b.img oem.img rootfs.img update.img)
@@ -36,7 +35,7 @@ usage() {
     cat <<'EOF'
 Usage: ./debian_build.sh
 
-Build the complete Debian armhf factory firmware from clean Stage 2/Stage 3
+Build the complete Debian armhf factory firmware from clean apps/system
 outputs, create a locally signed OTA manifest/config, audit the image set, and
 write the local firmware/OTA artifacts to output/debian/image:
 
@@ -63,8 +62,15 @@ Environment overrides:
                             released updates; falls back to OTA_PUBLIC_KEY_PATH
                             when that file is absent. Set it explicitly to
                             build an image that trusts a different signer.
-  DEBIAN_STAGE2_GO_ROOT     Go 1.26.0 linux/amd64 toolchain (default:
+  DEBIAN_APPS_GO_ROOT       Go 1.26.0 linux/amd64 toolchain (default:
                             .toolchains/go1.26.0.linux-amd64).
+  DEBIAN_APPS_GO_BUILD_CACHE, DEBIAN_APPS_GO_MODULE_CACHE,
+  DEBIAN_APPS_OPENCV_CACHE
+                            Persistent apps-stage caches (default:
+                            .cache/debian-apps/{go-build,go-mod,opencv}).
+                            They live outside output/, so this build does not
+                            clear them. Point them outside the repository to
+                            survive a CI checkout that cleans ignored files.
   OTA_REPO                  Local factory config repository label (default:
                             AidenAI-IO/aiden-firmware).
   OTA_CHANNEL               Local manifest channel (default: local).
@@ -75,8 +81,8 @@ Environment overrides:
   SOURCE_DATE_EPOCH         Reproducible archive timestamp (default: 1767360516).
 
 The build removes only these generated directories before starting:
-  output/debian-stage2
-  output/debian-stage3
+  output/debian-apps
+  output/debian-system
   output/debian
 
 It does not publish a GitHub Release and does not copy the external agent.toml
@@ -155,7 +161,7 @@ ensure_go_toolchain() {
     fi
 
     if [ "${go_root}" != "${DEFAULT_GO_ROOT}" ]; then
-        die "custom DEBIAN_STAGE2_GO_ROOT is not a valid Go 1.26.0 linux/amd64 toolchain: ${go_root}"
+        die "custom DEBIAN_APPS_GO_ROOT is not a valid Go 1.26.0 linux/amd64 toolchain: ${go_root}"
     fi
 
     mkdir -p "${toolchain_cache}"
@@ -239,25 +245,21 @@ validate_trust_public_key() {
     printf '  an image that updates from a release this host cannot sign.\n' >&2
 }
 
-validate_pico_sdk() {
+ensure_pico_sdk() {
+    # The pico-sdk submodule is the BSP build tree and is built in place, so
+    # only its presence is required. Its exact commit is recorded as provenance
+    # by the system stage but is not validated against a pinned build contract.
     git -C "${REPO_ROOT}" submodule update --init -- pico-sdk
     [ -e "${REPO_ROOT}/pico-sdk/.git" ] || die "pico-sdk submodule is unavailable"
-    [ -z "$(git -C "${REPO_ROOT}/pico-sdk" status --porcelain)" ] \
-        || die "pico-sdk must be clean before the Debian build"
-    local actual_commit
-    actual_commit=$(git -C "${REPO_ROOT}/pico-sdk" rev-parse HEAD)
-    [ "${actual_commit}" = "${EXPECTED_PICO_SDK_COMMIT}" ] || {
-        printf 'expected pico-sdk: %s\nactual pico-sdk:   %s\n' \
-            "${EXPECTED_PICO_SDK_COMMIT}" "${actual_commit}" >&2
-        die "pico-sdk commit does not match the Stage 3 build contract"
-    }
+    [ -e "${REPO_ROOT}/pico-sdk/project/build.sh" ] \
+        || die "pico-sdk submodule has no project/build.sh"
 }
 
 clean_generated_outputs() {
     local target resolved_target
-    log "Removing previous Debian Stage 2/Stage 3/final outputs"
+    log "Removing previous Debian apps/system/final outputs"
     mkdir -p "${REPO_ROOT}/output"
-    for target in "${STAGE2_OUTPUT}" "${STAGE3_OUTPUT}" "${REPO_ROOT}/output/debian"; do
+    for target in "${APPS_OUTPUT}" "${SYSTEM_OUTPUT}" "${REPO_ROOT}/output/debian"; do
         [ ! -L "${target}" ] || die "refusing to clean a symlinked output directory: ${target}"
         mkdir -p "${target}"
         resolved_target=$(readlink -f "${target}")
@@ -303,7 +305,7 @@ install_local_release_artifacts() {
     compress_release_assets \
         "${image_dir}" "${RELEASE_IMAGE_ASSETS[*]}" "${archive_epoch}"
     mkdir -p "${output_dir}"
-    [ -s "${image_dir}/update.img" ] || die "Stage 3 did not produce update.img"
+    [ -s "${image_dir}/update.img" ] || die "the system stage did not produce update.img"
     install -m 0644 "${image_dir}/update.img" "${output_dir}/update.img"
     for artifact in "${LOCAL_RELEASE_OUTPUT_ASSETS[@]}"; do
         [ -s "${image_dir}/${artifact}" ] \
@@ -347,12 +349,12 @@ main() {
     local ota_private_key=${OTA_PRIVATE_KEY_PATH:-${DEFAULT_OTA_PRIVATE_KEY}}
     local ota_public_key=${OTA_PUBLIC_KEY_PATH:-${DEFAULT_OTA_PUBLIC_KEY}}
     local ota_trust_public_key=${OTA_TRUST_PUBLIC_KEY_PATH:-}
-    local go_root=${DEBIAN_STAGE2_GO_ROOT:-${DEFAULT_GO_ROOT}}
+    local go_root=${DEBIAN_APPS_GO_ROOT:-${DEFAULT_GO_ROOT}}
     local ota_repo=${OTA_REPO:-AidenAI-IO/aiden-firmware}
     local ota_channel=${OTA_CHANNEL:-local}
     local ota_base_url=${OTA_BASE_URL:-}
     local ota_build_time=${OTA_BUILD_TIME:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}
-    local stage3_build_image=${DEBIAN_STAGE3_BUILD_IMAGE:-aiden-debian13-armhf-builder:stage3}
+    local system_build_image=${DEBIAN_SYSTEM_BUILD_IMAGE:-aiden-debian13-armhf-builder:system}
     local release_archive_epoch=${SOURCE_DATE_EPOCH:-${DEFAULT_SOURCE_DATE_EPOCH}}
     local git_revision ota_build_version
     git_revision=$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD)
@@ -396,47 +398,47 @@ main() {
     validate_trust_public_key \
         "${ota_trust_public_key}" "${ota_public_key}" "${TEMPORARY_DIR}"
     ensure_go_toolchain "${go_root}"
-    validate_pico_sdk
+    ensure_pico_sdk
     clean_generated_outputs
 
-    log "Building and auditing Debian Stage 2 applications"
-    DEBIAN_STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT}" \
-        DEBIAN_STAGE2_GO_ROOT="${go_root}" \
-        "${REPO_ROOT}/scripts/debian-stage2/build-apps.sh" all
-    grep -qx 'status=pass' "${STAGE2_OUTPUT}/apps-audit/summary.txt" \
-        || die "Debian Stage 2 application audit did not pass"
+    log "Building and auditing Debian applications"
+    DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
+        DEBIAN_APPS_GO_ROOT="${go_root}" \
+        "${REPO_ROOT}/scripts/debian-apps/build-apps.sh" all
+    grep -qx 'status=pass' "${APPS_OUTPUT}/apps-audit/summary.txt" \
+        || die "Debian application audit did not pass"
 
-    log "Building Debian Stage 3 rootfs builder"
-    DEBIAN_STAGE3_OUTPUT_DIR="${STAGE3_OUTPUT}" \
-        DEBIAN_STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT}" \
-        "${REPO_ROOT}/scripts/debian-stage3/build.sh" builder
+    log "Building Debian system rootfs builder"
+    DEBIAN_SYSTEM_OUTPUT_DIR="${SYSTEM_OUTPUT}" \
+        DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
+        "${REPO_ROOT}/scripts/debian-system/build.sh" builder
 
-    log "Building Debian Stage 3 rootfs"
-    DEBIAN_STAGE3_OUTPUT_DIR="${STAGE3_OUTPUT}" \
-        DEBIAN_STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT}" \
-        "${REPO_ROOT}/scripts/debian-stage3/build.sh" rootfs
+    log "Building Debian system rootfs"
+    DEBIAN_SYSTEM_OUTPUT_DIR="${SYSTEM_OUTPUT}" \
+        DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
+        "${REPO_ROOT}/scripts/debian-system/build.sh" rootfs
 
-    log "Building Debian Stage 3 BSP and A/B boot images"
-    DEBIAN_STAGE3_OUTPUT_DIR="${STAGE3_OUTPUT}" \
-        DEBIAN_STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT}" \
-        "${REPO_ROOT}/scripts/debian-stage3/build.sh" bsp
+    log "Building Debian system BSP and A/B boot images"
+    DEBIAN_SYSTEM_OUTPUT_DIR="${SYSTEM_OUTPUT}" \
+        DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
+        "${REPO_ROOT}/scripts/debian-system/build.sh" bsp
 
-    log "Assembling Debian Stage 3 factory images"
+    log "Assembling Debian system factory images"
     OTA_PUBLIC_KEY_PATH="${ota_trust_public_key}" \
         AGENT_CONFIG_PATH="${agent_config}" \
-        DEBIAN_STAGE3_OUTPUT_DIR="${STAGE3_OUTPUT}" \
-        DEBIAN_STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT}" \
-        "${REPO_ROOT}/scripts/debian-stage3/build.sh" images
+        DEBIAN_SYSTEM_OUTPUT_DIR="${SYSTEM_OUTPUT}" \
+        DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
+        "${REPO_ROOT}/scripts/debian-system/build.sh" images
 
     log "Compressing OTA partition assets for the signed manifest"
     compress_release_assets \
-        "${STAGE3_OUTPUT}/image" \
+        "${SYSTEM_OUTPUT}/image" \
         "${MANIFEST_IMAGE_ASSETS[*]}" \
         "${release_archive_epoch}"
 
-    local device_config=${STAGE3_OUTPUT}/debian-ota-config.json
+    local device_config=${SYSTEM_OUTPUT}/debian-ota-config.json
     local max_download_bytes
-    local ota_board_config=${REPO_ROOT}/scripts/debian-stage3/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk
+    local ota_board_config=${REPO_ROOT}/scripts/debian-system/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk
     local -a manifest_location_args=()
     export AIDEN_OTA_BOARD_CONFIG_PATH=${ota_board_config}
     # shellcheck source=/dev/null
@@ -450,10 +452,10 @@ main() {
     docker run --rm \
         -u "$(id -u):$(id -g)" \
         -v "${REPO_ROOT}:/work:ro" \
-        -v "${STAGE3_OUTPUT}:/out" \
+        -v "${SYSTEM_OUTPUT}:/out" \
         -v "${ota_private_key}:/run/secrets/ota_private.pem:ro" \
         -w /work \
-        "${stage3_build_image}" \
+        "${system_build_image}" \
         bash scripts/generate_ota_manifest.sh \
         --version "${ota_build_version}" \
         --channel "${ota_channel}" \
@@ -468,9 +470,9 @@ main() {
     docker run --rm \
         -u "$(id -u):$(id -g)" \
         -v "${REPO_ROOT}:/work:ro" \
-        -v "${STAGE3_OUTPUT}:/out" \
+        -v "${SYSTEM_OUTPUT}:/out" \
         -w /work \
-        "${stage3_build_image}" \
+        "${system_build_image}" \
         bash scripts/generate_ota_device_config.sh \
         --manifest /out/image/manifest.json \
         --repo "${ota_repo}" \
@@ -479,20 +481,20 @@ main() {
 
     log "Installing the OTA configuration and repacking update.img"
     OTA_DEVICE_CONFIG_PATH="${device_config}" \
-        DEBIAN_STAGE3_OUTPUT_DIR="${STAGE3_OUTPUT}" \
-        DEBIAN_STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT}" \
-        "${REPO_ROOT}/scripts/debian-stage3/build.sh" config
+        DEBIAN_SYSTEM_OUTPUT_DIR="${SYSTEM_OUTPUT}" \
+        DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
+        "${REPO_ROOT}/scripts/debian-system/build.sh" config
 
     log "Running the final Debian image audit"
-    DEBIAN_STAGE3_OUTPUT_DIR="${STAGE3_OUTPUT}" \
-        DEBIAN_STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT}" \
-        "${REPO_ROOT}/scripts/debian-stage3/build.sh" audit
-    grep -qx 'Audit passed' "${STAGE3_OUTPUT}/audit-report.txt" \
+    DEBIAN_SYSTEM_OUTPUT_DIR="${SYSTEM_OUTPUT}" \
+        DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
+        "${REPO_ROOT}/scripts/debian-system/build.sh" audit
+    grep -qx 'Audit passed' "${SYSTEM_OUTPUT}/audit-report.txt" \
         || die "final Debian image audit did not pass"
 
     log "Installing local firmware and OTA release artifacts"
     install_local_release_artifacts \
-        "${STAGE3_OUTPUT}/image" "${FINAL_OUTPUT}" "${release_archive_epoch}"
+        "${SYSTEM_OUTPUT}/image" "${FINAL_OUTPUT}" "${release_archive_epoch}"
 
     log "Debian firmware build completed"
     printf 'Firmware: %s\n' "${FINAL_OUTPUT}/update.img"
