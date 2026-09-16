@@ -77,6 +77,11 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		build:               buildOllamaModel,
 	},
 	{
+		providerType:        "gemini",
+		allowsCustomBaseURL: true,
+		build:               buildGeminiModel,
+	},
+	{
 		providerType:              "fake",
 		supportsResponses:         true,
 		supportsResponsesStateful: true,
@@ -195,6 +200,21 @@ func buildOllamaModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error
 		options = append(options, ollama.WithServerURL(cfg.BaseURL))
 	}
 	return ollama.New(options...)
+}
+
+func buildGeminiModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
+	apiMode := normalizeModelAPIMode(cfg.APIMode)
+	if apiMode == "" && strings.TrimSpace(cfg.APIMode) != "" {
+		return nil, fmt.Errorf("invalid model.api_mode: %s", cfg.APIMode)
+	}
+	if apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
+		return nil, fmt.Errorf("model.api_mode=%s is not supported by Google Gemini; its OpenAI-compatible endpoint implements Chat Completions, not /responses", apiMode)
+	}
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+	}
+	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, openAICompatibleOptions(ctx, cfg)...), nil
 }
 
 func lookupModelProviderDefinition(providerType string) (modelProviderDefinition, bool) {

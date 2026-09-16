@@ -46,11 +46,26 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	"anthropic/claude-haiku-4-5":  {ContextWindow: 200_000, MaxOutput: 64_000, Reasoning: budgetReasoning(1024, 0, true)},
 	"claude-haiku-4-5":            {ContextWindow: 200_000, MaxOutput: 64_000, Reasoning: budgetReasoning(1024, 0, true)},
 
-	// Google Gemini 3.5 family (vision + tool calling).
+	// Google Gemini family (vision + tool calling). Gemini 3.x and 2.5 models
+	// support thinking/reasoning through thinking_level (3.x) or thinking_budget
+	// (2.5). Context windows are per official model cards; 1_048_576 tokens for
+	// most Gemini models. Gemini 3.8 Flash defaults to "medium" thinking level;
+	// pin "low" as the default to keep voice interactions responsive. Other models
+	// support minimal/low/medium/high thinking levels.
+	"google/gemini-3.8-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
+	"gemini-3.8-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
+	"google/gemini-3.7-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
+	"gemini-3.7-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
+	"google/gemini-3.6-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
+	"gemini-3.6-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
+	"google/gemini-3.5-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
+	"gemini-3.5-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
 	"google/gemini-3.5-pro":   {ContextWindow: 1_048_576, MaxOutput: 65_536},
 	"gemini-3.5-pro":          {ContextWindow: 1_048_576, MaxOutput: 65_536},
-	"google/gemini-3.5-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
-	"gemini-3.5-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
+	"google/gemini-2.5-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
+	"gemini-2.5-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
+	"google/gemini-2.5-pro":   {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
+	"gemini-2.5-pro":          {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, true)},
 
 	// Moonshot Kimi K3 (vision + tool calling). Reached via the Moonshot
 	// OpenAI-compatible endpoint (bare model name) or the OpenRouter route.
