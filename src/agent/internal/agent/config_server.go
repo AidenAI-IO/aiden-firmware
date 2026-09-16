@@ -37,7 +37,7 @@ func (s *Server) PrepareConfig(_ context.Context, cfg Config) (func(bool), error
 		s.screenCaptureMu.Lock()
 		s.screenCaptureClient = screenProviderFromRuntime(s.runtime)
 		s.screenCaptureMu.Unlock()
-		s.liveActivity.Reconfigure(cfg.LiveActivity)
+		s.liveActivity.Reconfigure(cfg.LiveActivity, cfg.LocaleOrDefault())
 	}, nil
 }
 func (s *Server) sttClientSnapshot() STTClient {
