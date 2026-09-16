@@ -308,6 +308,22 @@ func translateXAIEventBase(body []byte) (Event, bool) {
 			return Event{}, false
 		}
 		return Event{Kind: EventTranscriptFinal, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "user", Text: event.Transcript, TextSource: "audio", Final: true}, true
+	case "conversation.item.input_audio_transcription.failed":
+		var event struct {
+			ItemID string `json:"item_id"`
+			Error  struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
+			return Event{Kind: EventError, Error: err}, true
+		}
+		err := errors.New(event.Error.Message)
+		if event.Error.Code != "" {
+			err = fmt.Errorf("%s: %w", event.Error.Code, err)
+		}
+		return Event{Kind: EventTranscriptFailed, ItemID: event.ItemID, Role: "user", TextSource: "audio", Error: err}, true
 	case "response.created":
 		var event struct {
 			Response struct {
