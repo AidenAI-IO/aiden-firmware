@@ -100,12 +100,21 @@ run_container_script() {
         ;;
     esac
     mkdir -p "${GO_BUILD_CACHE}" "${GO_MODULE_CACHE}"
+    # A cold module cache downloads every dependency from inside this
+    # container, and without GOPROXY that means proxy.golang.org directly.
+    # From the self-hosted runners those connections get reset; CI sets
+    # GOPROXY on the host for exactly that reason, so hand it through.
+    local -a go_proxy_args=()
+    if [ -n "${GOPROXY:-}" ]; then
+        go_proxy_args=(-e "GOPROXY=${GOPROXY}")
+    fi
     docker run --rm \
         -u "$(id -u):$(id -g)" \
         -e "DEBIAN_APPS_OUTPUT_DIR=/out" \
         -e "DEBIAN_APPS_BUILD_IMAGE_ID=${image_id}" \
         -e "RK_JOBS=${JOBS}" \
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
+        ${go_proxy_args[@]+"${go_proxy_args[@]}"} \
         -v "${REPO_ROOT}:/work" \
         -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
         -v "${OUTPUT_DIR}:/out" \

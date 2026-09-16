@@ -123,6 +123,29 @@ grep -qx "${TEST_ROOT}/go-mod-cache:/go-mod-cache" \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx 'scripts/debian-apps/container-build-apps.sh' \
     "${TEST_ROOT}/docker-args.txt"
+# The apps run above had no GOPROXY in its environment, so nothing may have
+# been forwarded: an empty GOPROXY in the container would still mean
+# proxy.golang.org, but a stray flag is how such a regression would first show.
+if grep -q '^GOPROXY=' "${TEST_ROOT}/docker-args.txt"; then
+    fail "build-apps.sh forwarded a GOPROXY that was not set"
+fi
+
+# With one set, the container must receive it verbatim: a cold module cache
+# otherwise downloads straight from proxy.golang.org, which the self-hosted
+# runners cannot reliably reach.
+: >"${mock_log}"
+MOCK_DOCKER_LOG="${mock_log}" \
+PATH="${TEST_ROOT}/mock-bin:${PATH}" \
+GOPROXY="https://goproxy.example/,direct" \
+DEBIAN_APPS_OUTPUT_DIR="${mock_output}" \
+DEBIAN_APPS_GO_ROOT="${TEST_ROOT}/go-root" \
+DEBIAN_APPS_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
+DEBIAN_APPS_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
+    "${APPS_DIR}/build-apps.sh" apps
+tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/goproxy-docker-args.txt"
+grep -qx 'GOPROXY=https://goproxy.example/,direct' \
+    "${TEST_ROOT}/goproxy-docker-args.txt" \
+    || fail "build-apps.sh did not forward GOPROXY into the apps container"
 
 : >"${mock_log}"
 MOCK_DOCKER_LOG="${mock_log}" \
