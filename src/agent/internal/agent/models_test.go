@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -83,6 +84,28 @@ func TestRetryTransportDoesNotRetryCanceledContext(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestLLMHTTPClientsUseDefaultTimeout(t *testing.T) {
+	clients := map[string]*http.Client{
+		"retry client":  newRetryHTTPClient(ProxyConfig{}),
+		"ollama client": newLLMHTTPClient(ProxyConfig{}),
+	}
+	for name, client := range clients {
+		if client.Timeout != 30*time.Second {
+			t.Fatalf("%s timeout = %s, want 30s", name, client.Timeout)
+		}
+	}
+
+	if client := newOpenAICompatibleModel("https://example.test", "model", "", nil).(*openAICompatibleModel).httpClient; client.Timeout != 30*time.Second {
+		t.Fatalf("OpenAI-compatible fallback timeout = %s, want 30s", client.Timeout)
+	}
+	if client := newResponsesModel("https://example.test", "model", "", nil, responsesModelOptions{}).(*responsesModel).httpClient; client.Timeout != 30*time.Second {
+		t.Fatalf("Responses fallback timeout = %s, want 30s", client.Timeout)
+	}
+	if client := newAnthropicModel("https://example.test", "model", "", nil).(*anthropicModel).httpClient; client.Timeout != 30*time.Second {
+		t.Fatalf("Anthropic fallback timeout = %s, want 30s", client.Timeout)
 	}
 }
 

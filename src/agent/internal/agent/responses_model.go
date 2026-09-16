@@ -123,7 +123,7 @@ type responsesModelOptions struct {
 
 func newResponsesModel(baseURL, model, token string, httpClient *http.Client, opts responsesModelOptions) llms.Model {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = newDefaultLLMHTTPClient()
 	}
 	dialect := opts.dialect
 	if dialect == "" {

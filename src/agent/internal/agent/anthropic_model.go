@@ -210,7 +210,7 @@ func IsAnthropicModel(provider, model string) bool {
 
 func newAnthropicModel(baseURL, model, token string, httpClient *http.Client, opts ...anthropicModelOption) llms.Model {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = newDefaultLLMHTTPClient()
 	}
 	result := &anthropicModel{
 		baseURL:          normalizeAnthropicBaseURL(baseURL),

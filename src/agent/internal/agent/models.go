@@ -28,6 +28,7 @@ const (
 	moonshotCNBaseURL      = "https://api.moonshot.cn/v1"
 	deepseekBaseURL        = "https://api.deepseek.com"
 	fakeModelContextWindow = 1_000_000
+	defaultLLMHTTPTimeout  = 30 * time.Second
 )
 
 // Volcengine Ark (火山方舟) OpenAI-compatible endpoint for the Doubao models.
@@ -369,7 +370,7 @@ func (m *ModelManager) buildContext() ModelBuildContext {
 	}
 	return ModelBuildContext{
 		HTTPClient:        newRetryHTTPClient(m.proxy),
-		OllamaHTTPClient:  newProxyHTTPClient(m.proxy),
+		OllamaHTTPClient:  newLLMHTTPClient(m.proxy),
 		RawHTTPLogger:     logger,
 		SessionIDProvider: m.bindings().CurrentSessionID,
 		PromptCachePolicy: m.cachedOpenRouterPromptCachePolicy(),
@@ -522,6 +523,7 @@ func shouldRetryHTTPStatus(statusCode int) bool {
 
 func newRetryHTTPClient(proxy ProxyConfig) *http.Client {
 	return &http.Client{
+		Timeout: defaultLLMHTTPTimeout,
 		Transport: &retryTransport{
 			wrapped:        newProxyTransport(proxy),
 			maxRetries:     5,

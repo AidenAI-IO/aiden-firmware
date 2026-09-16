@@ -467,7 +467,7 @@ type compatibleStreamingLogMessage struct {
 
 func newOpenAICompatibleModel(baseURL, model, token string, httpClient *http.Client, opts ...openAICompatibleModelOption) llms.Model {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = newDefaultLLMHTTPClient()
 	}
 	result := &openAICompatibleModel{
 		baseURL:    strings.TrimRight(baseURL, "/"),
