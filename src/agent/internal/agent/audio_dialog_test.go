@@ -1324,10 +1324,6 @@ func TestAudioDialogRunAgentTurnDoesNotWaitForAgentSendPromptStart(t *testing.T)
 	}
 }
 
-func boolPtr(value bool) *bool {
-	return &value
-}
-
 func waitForProviderTextCount(t *testing.T, provider *recordingTTSProvider, count int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

@@ -41,6 +41,13 @@ func TestGetDisplayModelsForProvider(t *testing.T) {
 			hasRecommend: true,
 		},
 		{
+			name:         "deepseek only presets vision models",
+			provider:     "deepseek",
+			wantCount:    1,
+			wantFirstID:  "deepseek-flash",
+			hasRecommend: true,
+		},
+		{
 			name:      "unknown provider returns empty",
 			provider:  "unknown-provider",
 			wantCount: 0,

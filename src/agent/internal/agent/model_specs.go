@@ -74,6 +74,14 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	// Other dated releases need their own entry, keyed by the exact Ark model id.
 	"doubao-seed-2-1-pro-260628": {ContextWindow: 262_144, MaxOutput: 131_072, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}, true)},
 
+	// DeepSeek Flash supports vision and tool calling.
+	// Published limits: https://api-docs.deepseek.com/quick_start/pricing
+	// (2026-09-14). Use a conservative 1,000,000 tokens for the advertised 1M
+	// window. Default to non-thinking mode for fast device interactions.
+	"deepseek-flash": {ContextWindow: 1_000_000, MaxOutput: 393_216, DefaultReasoningEffort: stringPtr("none"), Reasoning: effortReasoning([]string{"none", "low", "high", "max"}, true)},
+	// Pro is text-only. Restore alongside its display preset after verifying vision support and limits.
+	// "deepseek-v4-pro": {ContextWindow: 1_000_000, MaxOutput: 393_216, DefaultReasoningEffort: stringPtr("none"), Reasoning: effortReasoning([]string{"none", "low", "high", "max"}, true)},
+
 	// Qwen3.8-27B on OpenRouter (vision + tool calling). Context window is
 	// 256K per the Qwen3 published model card. Default reasoning_effort is
 	// "medium" because Qwen3.8 includes native reasoning and performs best
@@ -114,6 +122,12 @@ func floatPtr(v float64) *float64 {
 // stringPtr returns a pointer to v, letting map-literal ModelSpec entries set
 // optional string fields like DefaultReasoningEffort inline.
 func stringPtr(v string) *string {
+	return &v
+}
+
+// boolPtr returns a pointer to v, letting request payloads set optional bool
+// fields inline without temporary variables.
+func boolPtr(v bool) *bool {
 	return &v
 }
 
