@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"sync"
@@ -19,6 +18,7 @@ import (
 	"aiden-agent/internal/agent/realtimevoice"
 	"aiden-agent/internal/agent/tts"
 	"aiden-agent/internal/agenttask"
+	"aiden-agent/internal/logging"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -452,17 +452,17 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 		server.SetRealtimeChatHandler(bridge.Handle)
 		defer server.SetRealtimeChatHandler(nil)
 	}
-	log.Printf("\n[ready] Starting realtime GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
+	logging.Infof("agent", "ready", "Starting realtime GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
 	watchers, err := startWakeupWatchers(newWatcher, func() {
 		signalWakeupEvent(events)
 	})
 	if err != nil {
-		log.Printf("[realtime] GPIO wakeup unavailable: %v; /api/chat activation remains enabled", err)
+		logging.Warnf("agent", "realtime", "GPIO wakeup unavailable: %v; /api/chat activation remains enabled", err)
 	} else {
 		defer stopWakeupWatchers(watchers)
 	}
 
-	log.Printf("[ready] Waiting for realtime activation (/api/chat or GPIO %s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
+	logging.Infof("agent", "ready", "Waiting for realtime activation (/api/chat or GPIO %s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
 	var taskWake taskWakeState
 	for {
 		if reloadRequested(reload) {
@@ -476,7 +476,7 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 		case <-sigChan:
 			stopNotificationFallback()
 			stopFailureAnnouncement()
-			log.Println("\n[exit] Stopped.")
+			logging.Infof("agent", "exit", "Stopped.")
 			return
 		case <-voiceNotificationTicker.C:
 			startNotificationFallback()
@@ -507,7 +507,7 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 				pendingActivation = true
 				continue
 			}
-			log.Println("\n[realtime] Background task update ready, activating realtime voice model...")
+			logging.Infof("agent", "realtime", "Background task update ready, activating realtime voice model...")
 			signalWakeupEvent(events)
 		case <-events:
 			// Realtime is the preferred consumer. Stop idle standalone speech
@@ -521,7 +521,7 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 				pendingActivation = true
 				continue
 			}
-			log.Println("\n[realtime] Activation requested, connecting realtime voice model...")
+			logging.Infof("agent", "realtime", "Activation requested, connecting realtime voice model...")
 			rotated := false
 			// The session is about to consume every terminal update available
 			// now. Record that watermark before it runs: an update produced
@@ -538,9 +538,9 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 				// to idle. Queued chat requests are kept: they remain answerable
 				// after the handover.
 				rotated = true
-				log.Printf("[realtime] session rotated by provider, reconnecting: %v", sessionErr)
+				logging.Warnf("agent", "realtime", "session rotated by provider, reconnecting: %v", sessionErr)
 			} else if sessionErr != nil {
-				log.Printf("[realtime] session ended: %v", sessionErr)
+				logging.Errorf("agent", "realtime", "session ended: %v", sessionErr)
 				bridge.failQueued(sessionErr.Error())
 				// The failed Realtime session cannot voice its own failure. Start
 				// the standalone announcement without blocking activation handling;
@@ -557,7 +557,7 @@ func runRealtimeWakeupModeWithServer(cfg agent.Config, sigChan chan os.Signal, s
 				// A new standby period may face a different TTS state, and the
 				// user has had a chance to hear the clip already, so re-arm it.
 				clipLatched = false
-				log.Println("[ready] Waiting for realtime activation...")
+				logging.Infof("agent", "ready", "Waiting for realtime activation...")
 			}
 		}
 	}
@@ -979,11 +979,11 @@ func announceRealtimeSessionFailure(ctx context.Context, server *agent.Server, s
 		return clipPlayed
 	}
 	if clipPlayed {
-		log.Printf("[realtime] session failure announced with prerecorded clip: %v", err)
+		logging.Warnf("agent", "realtime", "session failure announced with prerecorded clip: %v", err)
 		return true
 	}
 	if !errors.Is(err, context.Canceled) {
-		log.Printf("[realtime] could not announce session failure: %v", err)
+		logging.Errorf("agent", "realtime", "could not announce session failure: %v", err)
 	}
 	return false
 }
@@ -1009,9 +1009,9 @@ func deliverPendingVoiceNotification(ctx context.Context, runtime *agent.Runtime
 	runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 	if err != nil {
 		if clipPlayed {
-			log.Printf("[voice-notification] standalone TTS unavailable, played prerecorded clip; notification stays pending: %v", err)
+			logging.Warnf("agent", "voice_notification", "standalone TTS unavailable, played prerecorded clip; notification stays pending: %v", err)
 		} else {
-			log.Printf("[voice-notification] standalone TTS fallback failed: %v", err)
+			logging.Errorf("agent", "voice_notification", "standalone TTS fallback failed: %v", err)
 		}
 	}
 	return clipPlayed
@@ -1084,7 +1084,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	}
 
 	providerName := realtimeProviderType(cfg)
-	log.Printf("[realtime] Connecting: provider=%s model=%s region=%s workspace_configured=%t endpoint_override=%t",
+	logging.Infof("agent", "realtime", "Connecting: provider=%s model=%s region=%s workspace_configured=%t endpoint_override=%t",
 		providerName, cfg.VoiceModel.Model, cfg.VoiceModel.Region, cfg.VoiceModel.WorkspaceID != "", cfg.VoiceModel.Endpoint != "")
 	connectCtx, connectCancel := context.WithTimeout(ctx, realtimeConnectTimeout)
 	session, err := registry.Open(connectCtx, providerName, realtimevoice.ProviderConfig{Endpoint: cfg.VoiceModel.Endpoint, BaseURL: cfg.VoiceModel.BaseURL, AgentID: cfg.VoiceModel.AgentID, UpstreamProvider: cfg.VoiceModel.UpstreamProvider, WorkspaceID: cfg.VoiceModel.WorkspaceID, Region: cfg.VoiceModel.Region, AuthMode: cfg.VoiceModel.AuthMode, ProjectID: cfg.VoiceModel.ProjectID, Location: cfg.VoiceModel.Location, RealtimeProtocol: cfg.VoiceModel.RealtimeProtocol}, sessionConfig, realtimevoice.DeviceMediaConfig{Input: realtimeVoiceDeviceFormat(cfg), Output: realtimeVoiceDeviceFormat(cfg)})
@@ -1108,7 +1108,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			return markRealtimeProviderFailure(fmt.Errorf("restore realtime user context: %w", err))
 		}
 	}
-	log.Printf("[realtime] Session ready: id=%s input_rate=%d output_rate=%d provider_input_rate=%d provider_output_rate=%d text_input=%t", info.ID, info.InputSampleRate, info.OutputSampleRate, info.ProviderInputAudioFormat.SampleRate, info.ProviderOutputAudioFormat.SampleRate, supportsText)
+	logging.Infof("agent", "realtime", "Session ready: id=%s input_rate=%d output_rate=%d provider_input_rate=%d provider_output_rate=%d text_input=%t", info.ID, info.InputSampleRate, info.OutputSampleRate, info.ProviderInputAudioFormat.SampleRate, info.ProviderOutputAudioFormat.SampleRate, supportsText)
 	if chatBridge != nil {
 		chatBridge.activate()
 		defer func() {
@@ -1130,7 +1130,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 		return fmt.Errorf("start realtime recording: %w", err)
 	}
 	defer func() { _ = recordingAudio.StopRecording(recording.SessionID) }()
-	log.Printf("[realtime] Microphone opened: session_id=%d format=pcm/%d/%d/%d", recording.SessionID, inputFormat.SampleRate, inputFormat.Channels, inputFormat.BitWidth)
+	logging.Infof("agent", "realtime", "Microphone opened: session_id=%d format=pcm/%d/%d/%d", recording.SessionID, inputFormat.SampleRate, inputFormat.Channels, inputFormat.BitWidth)
 
 	chunks := make(chan []byte, 8)
 	readErrs := make(chan error, 1)
@@ -1141,7 +1141,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	if outputFormat.SampleRate == 0 {
 		outputFormat = realtimeOutputFormat
 	}
-	log.Printf("[realtime] Playback format: source=pcm/%d/%d/%d target=pcm/%d/%d/%d resample=%t",
+	logging.Infof("agent", "realtime", "Playback format: source=pcm/%d/%d/%d target=pcm/%d/%d/%d resample=%t",
 		realtimeOutputFormat.SampleRate,
 		realtimeOutputFormat.Channels,
 		realtimeOutputFormat.BitWidth,
@@ -1154,7 +1154,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	if err := playback.open(playbackAudio, outputFormat); err != nil {
 		return fmt.Errorf("open realtime playback: %w", err)
 	}
-	log.Printf("[realtime] Speaker opened: session_id=%d", playback.session.SessionID)
+	logging.Infof("agent", "realtime", "Speaker opened: session_id=%d", playback.session.SessionID)
 	defer func() { _ = playback.stop(playbackAudio) }()
 	playbackKeepAlive := time.NewTicker(realtimePlaybackKeepAlive)
 	defer playbackKeepAlive.Stop()
@@ -1291,7 +1291,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 		watchdog.progress()
 	}
 	defer func() {
-		log.Printf("[realtime] Session released: active_request_id=%s response_id=%s occupied_ms=%d error=%v",
+		logging.Infof("agent", "realtime", "Session released: active_request_id=%s response_id=%s occupied_ms=%d error=%v",
 			realtimeChatRequestID(activeChat), turnState.responseID, watchdog.age().Milliseconds(), returnErr)
 	}()
 	voiceNotificationTicker := time.NewTicker(realtimeNotificationPoll)
@@ -1340,7 +1340,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			}
 			tasks.RestoreTerminalTasks(terminal)
 			tasks.RestoreUserActionTasks(actions)
-			log.Printf("[realtime] Task updates returned to the queue: terminal=%d user_action=%d", len(terminal), len(actions))
+			logging.Infof("agent", "realtime", "Task updates returned to the queue: terminal=%d user_action=%d", len(terminal), len(actions))
 		}
 		if tasks != nil {
 			tasks.RestoreUserActionTasks(tasks.PendingUserActionTasks())
@@ -1393,7 +1393,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	startChat := func(command realtimeChatCommand) error {
 		activeChat = &command
 		watchdog.stop()
-		log.Printf("[realtime] Chat started: request_id=%s", command.request.RequestID)
+		logging.Infof("agent", "realtime", "Chat started: request_id=%s", command.request.RequestID)
 		chatMode = ""
 		chatText.Reset()
 		chatTranscript.Reset()
@@ -1420,7 +1420,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			(turnState.inputTurnPending && !turnState.inputSpeechActive))
 		select {
 		case <-watchdog.deadline:
-			log.Printf("[realtime] Response timeout: active_request_id=%s response_id=%s occupied_ms=%d idle_ms=%d active_chat=%t response_active=%t input_pending=%t tools=%d",
+			logging.Errorf("agent", "realtime", "Response timeout: active_request_id=%s response_id=%s occupied_ms=%d idle_ms=%d active_chat=%t response_active=%t input_pending=%t tools=%d",
 				realtimeChatRequestID(activeChat), turnState.responseID, watchdog.age().Milliseconds(), time.Since(watchdog.lastProgress).Milliseconds(),
 				activeChat != nil, turnState.responseActive, turnState.inputTurnPending, len(foregroundTools))
 			return fmt.Errorf("realtime response timed out: no progress for %s; session closed", idleTimeout)
@@ -1449,13 +1449,13 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 		case err := <-sleep.draining():
 			sleep.stopDrain()
 			if abandonSleepForPendingRealtimeReengagement(&sleep, realtimeReengagement) {
-				log.Println("[realtime] Standby canceled by pending user re-engagement")
+				logging.Infof("agent", "realtime", "Standby canceled by pending user re-engagement")
 				continue
 			}
 			if err != nil {
-				log.Printf("[realtime] farewell playback drain: %v", err)
+				logging.Warnf("agent", "realtime", "farewell playback drain: %v", err)
 			}
-			log.Println("[realtime] Conversation ended by request, returning to standby")
+			logging.Infof("agent", "realtime", "Conversation ended by request, returning to standby")
 			return nil
 		case err := <-notificationDrainDone:
 			notificationDrainDone = nil
@@ -1531,7 +1531,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				if !wasActive && admissionTurnEndpoint.speechActive {
 					turnState.speechStarted()
 					if sleep.abandon() {
-						log.Println("[realtime] Standby canceled by local user speech")
+						logging.Infof("agent", "realtime", "Standby canceled by local user speech")
 					}
 				}
 				if clientTurnEndpoint != nil && admissionTurnEndpoint.speechActive {
@@ -1547,7 +1547,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			}
 			if firstAudioChunk {
 				firstAudioChunk = false
-				log.Printf("[realtime] Audio streaming started: first_chunk_bytes=%d", len(pcm))
+				logging.Infof("agent", "realtime", "Audio streaming started: first_chunk_bytes=%d", len(pcm))
 			}
 		case <-playbackKeepAlive.C:
 			// audio_service reaps sessions after 30 seconds without a write.
@@ -1615,18 +1615,18 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				notificationDraining: notificationDrainDone != nil,
 				standbyPending:       sleep.pending(),
 			}).admission()
-			log.Printf("[realtime] Chat admission: request_id=%s active_request_id=%s response_id=%s occupied_ms=%d active_chat=%t queued_chat=%t response_active=%t terminal_pending=%t can_inject=%t input_speech=%t input_pending=%t notification=%t draining=%t standby=%t admission=%d",
+			logging.Infof("agent", "realtime", "Chat admission: request_id=%s active_request_id=%s response_id=%s occupied_ms=%d active_chat=%t queued_chat=%t response_active=%t terminal_pending=%t can_inject=%t input_speech=%t input_pending=%t notification=%t draining=%t standby=%t admission=%d",
 				command.request.RequestID, realtimeChatRequestID(activeChat), turnState.responseID, watchdog.age().Milliseconds(),
 				activeChat != nil, queuedChat != nil, turnState.responseActive, turnState.responseTerminalPending, turnState.canInjectResponse(),
 				turnState.inputSpeechActive, turnState.inputTurnPending, activeNotificationToken != "", notificationDrainDone != nil, sleep.pending(), admission)
 			if admission == realtimeChatRejectBusy {
-				log.Printf("[realtime] Chat rejected busy: request_id=%s active_request_id=%s", command.request.RequestID, realtimeChatRequestID(activeChat))
+				logging.Warnf("agent", "realtime", "Chat rejected busy: request_id=%s active_request_id=%s", command.request.RequestID, realtimeChatRequestID(activeChat))
 				sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "realtime response is busy"})
 				close(command.events)
 				continue
 			}
 			if sleep.abandon() {
-				log.Println("[realtime] Standby canceled by text request")
+				logging.Infof("agent", "realtime", "Standby canceled by text request")
 			}
 			if admission == realtimeChatQueueAfterResponse {
 				queuedChat = &command
@@ -1649,7 +1649,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			if err := playback.interrupt(playbackAudio, outputFormat); err != nil {
 				return fmt.Errorf("stop canceled realtime playback: %w", err)
 			}
-			log.Printf("[realtime] Chat canceled: request_id=%s response_id=%s; awaiting terminal acknowledgement", realtimeChatRequestID(activeChat), turnState.responseID)
+			logging.Infof("agent", "realtime", "Chat canceled: request_id=%s response_id=%s; awaiting terminal acknowledgement", realtimeChatRequestID(activeChat), turnState.responseID)
 			cancelPending = true
 			startCancelAckTimer()
 			cancelForegroundTools(turnState.responseID)
@@ -1679,7 +1679,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				consumeRealtimeReengagement(realtimeReengagement)
 				turnState.speechStarted()
 				if sleep.abandon() {
-					log.Println("[realtime] Standby canceled by new user speech")
+					logging.Infof("agent", "realtime", "Standby canceled by new user speech")
 				}
 				if activeNotificationToken != "" {
 					if notificationDrainDone == nil {
@@ -1695,7 +1695,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 					activeNotificationResponseID = ""
 					activeNotificationAudioWritten = false
 				}
-				log.Printf("[realtime] Input speech started: provider=%s session_id=%s item_id=%s audio_start_ms=%d; interrupting local playback", providerName, info.ID, event.ItemID, event.AudioStartMS)
+				logging.Infof("agent", "realtime", "Input speech started: provider=%s session_id=%s item_id=%s audio_start_ms=%d; interrupting local playback", providerName, info.ID, event.ItemID, event.AudioStartMS)
 				if canInterrupt {
 					interruption := playback.responseInterruption(outputFormat)
 					interruption.ServerDetected = providerName == realtimevoice.ProviderQwen
@@ -1710,7 +1710,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				}
 			case realtimevoice.EventSpeechStopped:
 				turnState.speechStopped(event.Status)
-				log.Printf("[realtime] Input speech stopped: provider=%s session_id=%s item_id=%s audio_end_ms=%d status=%s", providerName, info.ID, event.ItemID, event.AudioEndMS, event.Status)
+				logging.Infof("agent", "realtime", "Input speech stopped: provider=%s session_id=%s item_id=%s audio_end_ms=%d status=%s", providerName, info.ID, event.ItemID, event.AudioEndMS, event.Status)
 				if event.Status == "turn_invalid" {
 					if err := restoreRealtimePlaybackAfterInvalidTurn(&turnState, &playback, playbackAudio, outputFormat); err != nil {
 						return fmt.Errorf("restore realtime playback after invalid turn: %w", err)
@@ -1727,17 +1727,17 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			case realtimevoice.EventInputCommitted:
 				// Server VAD already owns the commit. This event is diagnostic only
 				// and must not commit the buffer or change response admission again.
-				log.Printf("[realtime] Input audio committed: provider=%s session_id=%s item_id=%s previous_item_id=%s", providerName, info.ID, event.ItemID, event.PreviousItemID)
+				logging.Infof("agent", "realtime", "Input audio committed: provider=%s session_id=%s item_id=%s previous_item_id=%s", providerName, info.ID, event.ItemID, event.PreviousItemID)
 			case realtimevoice.EventTranscriptFinal:
 				if event.Role == "user" {
 					turnState.userTranscriptObserved()
-					log.Printf("[realtime] User transcript: provider=%s session_id=%s item_id=%s sequence=%d status=completed transcript_len=%d", providerName, info.ID, event.ItemID, event.Sequence, len([]rune(strings.TrimSpace(event.Text))))
+					logging.Infof("agent", "realtime", "User transcript: provider=%s session_id=%s item_id=%s sequence=%d status=completed transcript_len=%d", providerName, info.ID, event.ItemID, event.Sequence, len([]rune(strings.TrimSpace(event.Text))))
 					if err := appendRealtimeUserMessage(userContext, event.Text); err != nil {
 						return fmt.Errorf("persist realtime user transcript: %w", err)
 					}
 				} else if event.Role == "assistant" {
 					if !turnState.acceptsResponseEvent(event.ResponseID) {
-						log.Printf("[realtime] Ignoring stale assistant transcript: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
+						logging.Warnf("agent", "realtime", "Ignoring stale assistant transcript: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
 						continue
 					}
 					if event.Text != "" {
@@ -1750,10 +1750,10 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				}
 			case realtimevoice.EventResponseStarted:
 				if !turnState.responseStarted(event.ResponseID) {
-					log.Printf("[realtime] Ignoring stale response.created: response_id=%s input_turn=%d request_turn=%d", event.ResponseID, turnState.inputTurnSequence, turnState.responseRequestTurn)
+					logging.Warnf("agent", "realtime", "Ignoring stale response.created: response_id=%s input_turn=%d request_turn=%d", event.ResponseID, turnState.inputTurnSequence, turnState.responseRequestTurn)
 					continue
 				}
-				log.Printf("[realtime] Response created: provider=%s session_id=%s request_id=%s response_id=%s", providerName, info.ID, realtimeChatRequestID(activeChat), event.ResponseID)
+				logging.Infof("agent", "realtime", "Response created: provider=%s session_id=%s request_id=%s response_id=%s", providerName, info.ID, realtimeChatRequestID(activeChat), event.ResponseID)
 				responseSuppressed = bindSuppressedRealtimeNotificationResponse(event.ResponseID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs)
 				if activeNotificationToken != "" && activeNotificationResponseID == "" && !responseSuppressed {
 					activeNotificationResponseID = event.ResponseID
@@ -1775,7 +1775,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 					continue
 				}
 				if !turnState.acceptsResponseEvent(event.ResponseID) {
-					log.Printf("[realtime] Ignoring stale assistant transcript delta: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
+					logging.Warnf("agent", "realtime", "Ignoring stale assistant transcript delta: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
 					continue
 				}
 				if event.Text != "" {
@@ -1811,10 +1811,10 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 					}
 				}
 			case realtimevoice.EventTranscriptFailed:
-				log.Printf("[realtime] User transcript: provider=%s session_id=%s item_id=%s status=failed error=%q", providerName, info.ID, event.ItemID, event.Error)
+				logging.Errorf("agent", "realtime", "User transcript: provider=%s session_id=%s item_id=%s status=failed error=%q", providerName, info.ID, event.ItemID, event.Error)
 			case realtimevoice.EventAudio:
 				if !turnState.acceptsResponseEvent(event.ResponseID) {
-					log.Printf("[realtime] Ignoring stale response audio: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
+					logging.Warnf("agent", "realtime", "Ignoring stale response audio: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
 					continue
 				}
 				if responseSuppressed || suppressedNotificationResponsePending || hasSuppressedNotificationResponse(suppressedNotificationResponseIDs, event.ResponseID) {
@@ -1838,10 +1838,10 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				}
 			case realtimevoice.EventToolCall:
 				if !turnState.acceptsResponseEvent(event.ResponseID) {
-					log.Printf("[realtime] Ignoring stale response tool call: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
+					logging.Warnf("agent", "realtime", "Ignoring stale response tool call: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
 					continue
 				}
-				log.Printf("[realtime] Tool call: name=%s provider=%s session_id=%s request_id=%s response_id=%s item_id=%s call_id=%s", event.Name, providerName, info.ID, realtimeChatRequestID(activeChat), event.ResponseID, event.ItemID, event.CallID)
+				logging.Infof("agent", "realtime", "Tool call: name=%s provider=%s session_id=%s request_id=%s response_id=%s item_id=%s call_id=%s", event.Name, providerName, info.ID, realtimeChatRequestID(activeChat), event.ResponseID, event.ItemID, event.CallID)
 				toolCtx, cancelTool := context.WithCancel(ctx)
 				foregroundTools[event.CallID] = foregroundTool{responseID: event.ResponseID, cancel: cancelTool}
 				watchdog.progress()
@@ -1875,7 +1875,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				hasRealtimeResponseUsage = true
 			case realtimevoice.EventResponseDone, realtimevoice.EventResponseCancelled:
 				if !turnState.responseFinished(event.ResponseID) {
-					log.Printf("[realtime] Ignoring stale terminal response event: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
+					logging.Warnf("agent", "realtime", "Ignoring stale terminal response event: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
 					continue
 				}
 				wasCanceled := cancelPending || event.Kind == realtimevoice.EventResponseCancelled
@@ -1887,7 +1887,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 						toolTracker.clear(event.ResponseID)
 					}
 				}
-				log.Printf("[realtime] Response terminal: provider=%s session_id=%s request_id=%s response_id=%s kind=%s status=%s occupied_ms=%d",
+				logging.Infof("agent", "realtime", "Response terminal: provider=%s session_id=%s request_id=%s response_id=%s kind=%s status=%s occupied_ms=%d",
 					providerName, info.ID, realtimeChatRequestID(activeChat), event.ResponseID, event.Kind, event.Status, watchdog.age().Milliseconds())
 				if suppressedNotificationResponsePending && event.ResponseID != "" {
 					bindSuppressedRealtimeNotificationResponse(event.ResponseID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs)
@@ -1946,7 +1946,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				hasRealtimeResponseUsage = false
 				assistantPersisted = false
 				if activeChat != nil {
-					log.Printf("[realtime] Chat completed: request_id=%s occupied_ms=%d", activeChat.request.RequestID, watchdog.age().Milliseconds())
+					logging.Infof("agent", "realtime", "Chat completed: request_id=%s occupied_ms=%d", activeChat.request.RequestID, watchdog.age().Milliseconds())
 					content := chatText.String()
 					if content == "" {
 						content = chatTranscript.String()
@@ -1995,8 +1995,8 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				}
 				if sleep.shouldDrain() && activeNotificationToken == "" && notificationDrainDone == nil {
 					if err := playback.finishResponse(playbackAudio, true); err != nil {
-						log.Printf("[realtime] finalize farewell playback: %v", err)
-						log.Println("[realtime] Conversation ended by request, returning to standby")
+						logging.Warnf("agent", "realtime", "finalize farewell playback: %v", err)
+						logging.Infof("agent", "realtime", "Conversation ended by request, returning to standby")
 						return nil
 					}
 					drainCtx, cancel := context.WithTimeout(ctx, realtimeSleepDrain)
@@ -2626,7 +2626,7 @@ func rotateRealtimeContextForReplay(manager *contextmanager.ContextManager, maxT
 	if err := contextmanager.SwitchSession(revision.GetSessionFolder(), revision.GetSessionID()); err != nil {
 		return nil, err
 	}
-	log.Printf("[realtime] Rotated user context after replay truncation: parent=%s session=%s retained_messages=%d",
+	logging.Warnf("agent", "realtime", "Rotated user context after replay truncation: parent=%s session=%s retained_messages=%d",
 		manager.GetSessionID(), revision.GetSessionID(), len(retained))
 	return revision, nil
 }

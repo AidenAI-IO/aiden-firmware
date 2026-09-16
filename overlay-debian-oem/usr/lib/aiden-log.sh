@@ -1,6 +1,6 @@
 #!/bin/sh
 # Shared logger for first-party init and watchdog scripts.
-# Output: <UTC> [LEVEL] [service] [component] event [message="..."]
+# Output: <UTC> [LEVEL][service][component] event [message="..."]
 
 aiden_log_escape() {
     awk '
@@ -38,7 +38,7 @@ aiden_log() {
 
     timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"
     [ -n "$timestamp" ] || timestamp=1970-01-01T00:00:00Z
-    printf '%s [%s] [%s] [%s] %s' \
+    printf '%s [%s][%s][%s] %s' \
         "$timestamp" "$level" "$service" "$component" "$event"
     if [ "$#" -gt 0 ]; then
         escaped="$(printf '%s' "$*" | aiden_log_escape)"

@@ -26,7 +26,7 @@ TEST_CASE("aiden logger writes one normalized UTC event line") {
     CHECK(line[4] == '-');
     CHECK(line[7] == '-');
     CHECK(line[10] == 'T');
-    CHECK(line.substr(20).find(" [ERROR] [frame_service] [camera_capture] device_open_failed ") == 0);
+    CHECK(line.substr(20).find(" [ERROR][frame_service][camera_capture] device_open_failed ") == 0);
     CHECK(line.find("message=\"device=/dev/video0 error=busy\\nretrying\"") != std::string::npos);
     CHECK(line[line.size() - 1] == '\n');
     CHECK(line.find('\n') == line.size() - 1);

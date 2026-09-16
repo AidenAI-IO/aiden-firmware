@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"sync"
@@ -278,7 +277,7 @@ func (d *AudioDialog) StartRecording() error {
 	}
 
 	recordStartedAt := time.Now().UTC()
-	log.Println("[audio] Opening record session...")
+	logging.Infof("agent", "audio", "Opening record session...")
 	format := AudioFormat{
 		SampleRate: uint32(d.config.Audio.SampleRateOrDefault()),
 		Channels:   uint32(d.config.Audio.ChannelsOrDefault()),
@@ -294,7 +293,7 @@ func (d *AudioDialog) StartRecording() error {
 		if reader, err := d.audioClient.OpenRecordChunkReader(result.SessionID); err == nil {
 			d.recordReader = reader
 		} else {
-			log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
+			logging.Warnf("agent", "audio", "Persistent record reader unavailable, using per-request reads: %v", err)
 		}
 	}
 	d.recordText = ""
@@ -325,7 +324,7 @@ func (d *AudioDialog) StartRecording() error {
 			d.updateRecordSTTTelemetry(sttSessionID, func(meta *sttTurnTelemetry) {
 				meta.streamingUnavailableError = err.Error()
 			})
-			log.Printf("[stt] streaming upload unavailable, falling back to one-shot STT: %v\n", err)
+			logging.Warnf("agent", "stt", "streaming upload unavailable, falling back to one-shot STT: %v", err)
 			return
 		}
 		if recordSTT == nil {
@@ -339,7 +338,7 @@ func (d *AudioDialog) StartRecording() error {
 			_ = recordSTT.Close()
 			return
 		}
-		log.Println("[stt] streaming upload enabled for realtime transcription")
+		logging.Infof("agent", "stt", "streaming upload enabled for realtime transcription")
 		streamReadyAt := time.Now().UTC()
 		d.updateRecordSTTTelemetry(sttSessionID, func(meta *sttTurnTelemetry) {
 			meta.streamingReady = true
@@ -392,7 +391,7 @@ func (d *AudioDialog) StopRecording() error {
 		sttTelemetry.streamingFinalizeMS = finalizeDurationMs
 		if err != nil {
 			sttTelemetry.streamingFinalizeError = err.Error()
-			log.Printf("[stt] finalize streaming transcript failed, falling back to one-shot STT: %v\n", err)
+			logging.Warnf("agent", "stt", "finalize streaming transcript failed, falling back to one-shot STT: %v", err)
 		} else {
 			sttTelemetry.transcript = transcript
 			sttTelemetry.usedStreamingTranscript = strings.TrimSpace(transcript) != ""
@@ -403,7 +402,7 @@ func (d *AudioDialog) StopRecording() error {
 	}
 	d.stashPendingSTTTelemetry(sttTelemetry)
 
-	log.Println("[audio] Record session closed")
+	logging.Infof("agent", "audio", "Record session closed")
 	return nil
 }
 
@@ -430,7 +429,7 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 			d.uploadRecordChunkToStreamingSTT(sessionID, chunk)
 			return chunk, nil
 		}
-		log.Printf("[audio] Persistent record reader failed, falling back to per-request reads: %v\n", err)
+		logging.Warnf("agent", "audio", "Persistent record reader failed, falling back to per-request reads: %v", err)
 		d.recordMu.Lock()
 		if d.recordReader == reader {
 			_ = d.recordReader.Close()
@@ -455,7 +454,7 @@ func (d *AudioDialog) uploadRecordChunkToStreamingSTT(sessionID uint64, chunk *A
 	}
 	if err := recordSTT.UploadPCM(chunk.PCM); err != nil {
 		d.markRecordSTTUploadError(sessionID, err)
-		log.Printf("[stt] streaming upload failed, falling back to one-shot STT: %v\n", err)
+		logging.Warnf("agent", "stt", "streaming upload failed, falling back to one-shot STT: %v", err)
 		// Only clear if this is still the active session; StopRecording may have
 		// already swapped it out from another goroutine.
 		if d.clearRecordSTT(recordSTT) {
@@ -518,7 +517,7 @@ func (d *AudioDialog) FinishPendingUtterance(pending []int16) []int16 {
 	consumed := 0
 	for consumed+frameSamples <= len(pending) {
 		if _, err := d.ProcessVADFrame(pending[consumed : consumed+frameSamples]); err != nil {
-			log.Printf("[vad] finish pending utterance failed: %v\n", err)
+			logging.Warnf("agent", "vad", "finish pending utterance failed: %v", err)
 			break
 		}
 		consumed += frameSamples
@@ -537,7 +536,7 @@ func (d *AudioDialog) FinishPendingUtterance(pending []int16) []int16 {
 // ResetVAD resets the VAD state
 func (d *AudioDialog) ResetVAD() {
 	if err := d.vad.Reset(); err != nil {
-		log.Printf("[vad] reset failed: %v\n", err)
+		logging.Warnf("agent", "vad", "reset failed: %v", err)
 	}
 }
 
@@ -674,7 +673,7 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 			prepared := runtime.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: result.TurnFailure})
 			if prepared.Text != "" {
 				if speakErr := d.SpeakFinal(ctx, prepared.Text, nil); speakErr != nil {
-					log.Printf("[error] failure replacement TTS failed: %v", speakErr)
+					logging.Errorf("agent", "audio_dialog", "failure replacement TTS failed: %v", speakErr)
 				}
 			}
 		}
@@ -746,11 +745,11 @@ func (d *AudioDialog) publishVoiceMessage(message Message, requestID string) {
 
 func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
 	duration := float64(len(utterance)) / float64(d.config.Audio.SampleRateOrDefault())
-	log.Printf("[utterance] %.1fs of speech\n", duration)
+	logging.Infof("agent", "utterance", "%.1fs of speech", duration)
 
 	// Convert to WAV
 	wavData := pcm16MonoToWAV(utterance, d.config.Audio.SampleRateOrDefault())
-	log.Printf("[debug] WAV size: %d bytes\n", len(wavData))
+	logging.Debugf("agent", "audio_dialog", "WAV size: %d bytes", len(wavData))
 
 	transcriptHint, sttTelemetry := d.consumeRecordingTranscriptAndTelemetry()
 	inputMode := d.config.InputModeOrDefault()
@@ -778,7 +777,7 @@ func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
 	}
 	audioInput = d.ensureVoiceInputAudioArtifact(audioInput, utterance, wavData)
 	if audioInput.Transcript != "" {
-		log.Printf("[stt] Transcript: %s\n", audioInput.Transcript)
+		logging.Infof("agent", "stt", "Transcript: %s", audioInput.Transcript)
 	}
 	return audioInput, nil
 }
@@ -801,7 +800,7 @@ func (d *AudioDialog) ensureVoiceInputAudioArtifact(input TurnInput, utterance [
 
 	audioPath, audioDuration, err := d.audioArchive.SaveAudio(utterance, d.config.Audio.SampleRateOrDefault())
 	if err != nil {
-		log.Printf("[audio_archive] save failed: %v", err)
+		logging.Warnf("agent", "audio_archive", "save failed: %v", err)
 		return input
 	}
 	size := int64(0)
@@ -882,8 +881,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	var finalAssistantEvent *RunEvent
 
 	// Send to LLM
-	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
-		d.config.Model.Provider, d.config.Model.Model)
+	logging.Infof("agent", "llm", "Sending request to provider '%s' (model=%s)...", d.config.Model.Provider, d.config.Model.Model)
 
 	var speechWriter *speech.StreamWriter
 	req := RunRequest{
@@ -902,7 +900,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 			toolSpeechStreamed := event.Type == runEventToolCall && speechWriter.FinalizeResponse()
 			d.publishVoiceRunEvent(event, requestID)
 			if toolSpeechStreamed {
-				log.Printf("[tts] Tool content already streamed: tool=%s", event.ToolName)
+				logging.Infof("agent", "tts", "Tool content already streamed: tool=%s", event.ToolName)
 			} else {
 				d.HandleRunEvent(ctx, event)
 			}
@@ -938,7 +936,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 			err,
 		))
 		if err != nil {
-			log.Printf("[error] TTS BeginStream failed: %v\n", err)
+			logging.Errorf("agent", "audio_dialog", "TTS BeginStream failed: %v", err)
 		} else {
 			newStream = stream
 			defer cleanup()
@@ -957,7 +955,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 		finalSpeechStreamed := speechWriter.FinalizeResponse()
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil {
-			log.Printf("[error] new TTS stream failed: %v", closeErr)
+			logging.Errorf("agent", "audio_dialog", "new TTS stream failed: %v", closeErr)
 		}
 		result.SpeechStreamed = finalSpeechStreamed && newStream.emittedSpeech(closeErr)
 	}
@@ -967,7 +965,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	if finalAssistantEvent != nil {
 		d.publishVoiceRunEvent(*finalAssistantEvent, requestID)
 	}
-	log.Printf("[llm] Response received\n")
+	logging.Infof("agent", "llm", "Response received")
 	return result, nil
 }
 
@@ -1009,10 +1007,10 @@ func (d *AudioDialog) QueueSteer(input TurnInput) bool {
 		return false
 	}
 	if queued.interrupted {
-		log.Printf("[steer] Queued interrupted voice steer: request_id=%s len=%d\n", queued.requestID, queued.contentLength)
+		logging.Infof("agent", "steer", "Queued interrupted voice steer: request_id=%s len=%d", queued.requestID, queued.contentLength)
 		return true
 	}
-	log.Printf("[steer] Queued voice steer: request_id=%s len=%d\n", queued.requestID, queued.contentLength)
+	logging.Infof("agent", "steer", "Queued voice steer: request_id=%s len=%d", queued.requestID, queued.contentLength)
 	return true
 }
 
@@ -1025,7 +1023,7 @@ func (d *AudioDialog) BeginSteerInterrupt() bool {
 		return false
 	}
 	if started {
-		log.Printf("[steer] Voice run interrupted, waiting for steering input: request_id=%s\n", requestID)
+		logging.Infof("agent", "steer", "Voice run interrupted, waiting for steering input: request_id=%s", requestID)
 	}
 	return true
 }
@@ -1038,7 +1036,7 @@ func (d *AudioDialog) ResumeSteerInterrupt() bool {
 	if !ok {
 		return false
 	}
-	log.Printf("[steer] Voice steer interruption resumed without input: request_id=%s\n", requestID)
+	logging.Infof("agent", "steer", "Voice steer interruption resumed without input: request_id=%s", requestID)
 	return true
 }
 
@@ -1094,7 +1092,7 @@ func (d *AudioDialog) SpeakToolContent(content string) {
 	// Detached from the agent turn context so tool TTS is not cut off when
 	// runtime.Run returns or the parent context is cancelled.
 	if err := d.speak(context.Background(), content, nil, toolContentSpeechTimeout, false); err != nil {
-		log.Printf("[error] Tool content TTS failed: %v", err)
+		logging.Errorf("agent", "audio_dialog", "Tool content TTS failed: %v", err)
 	}
 }
 
@@ -1195,7 +1193,7 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 	speechStarted := false
 	ttsErr := errTTSNotConfigured
 	if manager := d.currentTTSManager(); manager != nil {
-		log.Printf("[tts] Starting streaming playback...\n")
+		logging.Infof("agent", "tts", "Starting streaming playback...")
 		speechStarted, ttsErr = speakWithTTSManagerObserved(speakCtx, manager, d.currentTTSPlaybackBackend(), d.config, text, func(stream *streamSessionWriter) func() {
 			stream.setCancel(cancelOutput)
 			output.setStream(stream)
@@ -1207,17 +1205,17 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 			ttsErr = errTTSNoAudio
 		}
 		if ttsErr == nil {
-			log.Printf("[tts] Streaming playback complete\n")
+			logging.Infof("agent", "tts", "Streaming playback complete")
 			return nil
 		}
-		log.Printf("[error] TTS streaming failed: %v", ttsErr)
+		logging.Errorf("agent", "audio_dialog", "TTS streaming failed: %v", ttsErr)
 	}
 	if !allowFallback {
 		return ttsErr
 	}
 	fallbackPlayed, resultErr := attemptTTSUnavailableFallback(speakCtx, d.currentTTSPlaybackBackend(), d.config, speechStarted, ttsErr)
 	if fallbackPlayed {
-		log.Printf("[tts] Local unavailable fallback played: %s\n", ttsUnavailableFallbackPath(d.config))
+		logging.Warnf("agent", "tts", "Local unavailable fallback played: %s", ttsUnavailableFallbackPath(d.config))
 	}
 	return resultErr
 }
@@ -1249,7 +1247,7 @@ func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait b
 	d.speechMu.Lock()
 	defer d.speechMu.Unlock()
 	if err := playPromptSound(outputCtx, d.currentTTSPlaybackBackend(), kind, wait); err != nil {
-		log.Printf("[audio] %s prompt sound failed: %v\n", label, err)
+		logging.Warnf("agent", "audio", "%s prompt sound failed: %v", label, err)
 		return err
 	}
 	return nil
@@ -1257,14 +1255,14 @@ func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait b
 
 func (d *AudioDialog) playPromptSoundUninterruptible(kind promptSoundKind, label string, wait bool) {
 	startedAt := time.Now()
-	log.Printf("[audio] %s prompt sound requested (uninterruptible)\n", label)
+	logging.Infof("agent", "audio", "%s prompt sound requested (uninterruptible)", label)
 	d.speechMu.Lock()
 	defer d.speechMu.Unlock()
 	if err := playPromptSound(context.Background(), d.currentTTSPlaybackBackend(), kind, wait); err != nil {
-		log.Printf("[audio] %s prompt sound failed after %s: %v\n", label, time.Since(startedAt).Round(time.Millisecond), err)
+		logging.Warnf("agent", "audio", "%s prompt sound failed after %s: %v", label, time.Since(startedAt).Round(time.Millisecond), err)
 		return
 	}
-	log.Printf("[audio] %s prompt sound completed in %s\n", label, time.Since(startedAt).Round(time.Millisecond))
+	logging.Infof("agent", "audio", "%s prompt sound completed in %s", label, time.Since(startedAt).Round(time.Millisecond))
 }
 
 // ProcessTextInput processes text input and speaks the response
@@ -1274,8 +1272,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	d.playPromptSoundAsyncWithWait(promptSoundAgentSend, "agent send", false)
 
 	// Send to LLM
-	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
-		d.config.Model.Provider, d.config.Model.Model)
+	logging.Infof("agent", "llm", "Sending request to provider '%s' (model=%s)...", d.config.Model.Provider, d.config.Model.Model)
 	var speechWriter *speech.StreamWriter
 
 	req := RunRequest{
@@ -1287,7 +1284,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 			}
 			toolSpeechStreamed := event.Type == runEventToolCall && speechWriter.FinalizeResponse()
 			if toolSpeechStreamed {
-				log.Printf("[tts] Tool content already streamed: tool=%s", event.ToolName)
+				logging.Infof("agent", "tts", "Tool content already streamed: tool=%s", event.ToolName)
 			} else {
 				d.HandleRunEvent(ctx, event)
 			}
@@ -1297,7 +1294,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.currentTTSManager() != nil {
 		stream, activate, cleanup, err := d.beginManagedTTSStreamForRun(ctx)
 		if err != nil {
-			log.Printf("[error] TTS BeginStream failed: %v\n", err)
+			logging.Errorf("agent", "audio_dialog", "TTS BeginStream failed: %v", err)
 		} else {
 			newStream = stream
 			defer cleanup()
@@ -1314,7 +1311,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		finalSpeechStreamed := speechWriter.FinalizeResponse()
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil {
-			log.Printf("[error] new TTS stream failed: %v", closeErr)
+			logging.Errorf("agent", "audio_dialog", "new TTS stream failed: %v", closeErr)
 		}
 		result.SpeechStreamed = finalSpeechStreamed && newStream.emittedSpeech(closeErr)
 	}
@@ -1323,13 +1320,13 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 			prepared := runtime.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: result.TurnFailure})
 			if prepared.Text != "" {
 				if speakErr := d.SpeakFinal(ctx, prepared.Text, nil); speakErr != nil {
-					log.Printf("[error] failure replacement TTS failed: %v", speakErr)
+					logging.Errorf("agent", "audio_dialog", "failure replacement TTS failed: %v", speakErr)
 				}
 			}
 		}
 		return fmt.Errorf("LLM request failed: %w", err)
 	}
-	log.Printf("[llm] Response received\n")
+	logging.Infof("agent", "llm", "Response received")
 
 	// Speak response if TTS is available
 	speechText := result.SpokenTextForConfig(d.config)
@@ -1337,7 +1334,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		prepared := runtime.PrepareSpokenText(ctx, SpokenTextInput{ResponseText: speechText, TailAppendable: true})
 		if err := d.SpeakFinal(ctx, prepared.Text, nil); err != nil {
 			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
-			log.Printf("[error] TTS streaming failed: %v", err)
+			logging.Errorf("agent", "audio_dialog", "TTS streaming failed: %v", err)
 		} else {
 			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, nil)
 		}

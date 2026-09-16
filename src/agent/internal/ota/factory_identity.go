@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"aiden-agent/internal/logging"
 )
 
 const (
@@ -175,7 +177,7 @@ func (u *Updater) ProvisionFactoryIdentity() (FactoryIdentityResult, error) {
 	marker, markerErr := LoadFactoryIdentityMarker(u.config.FactoryIdentityPath)
 	markerValid := markerErr == nil && marker.MachineID == machineID
 	if markerErr != nil && !os.IsNotExist(markerErr) {
-		u.logf("ota factory identity: ignoring invalid marker: %v", markerErr)
+		logging.Warnf("ota", "updater", "ota factory identity: ignoring invalid marker: %v", markerErr)
 	}
 	if !markerValid {
 		inactivePath := filepath.Join(u.blockDirForAccess(), "rootfs_"+inactiveName)
@@ -247,7 +249,7 @@ func (u *Updater) ProvisionFactoryIdentity() (FactoryIdentityResult, error) {
 	if err := SaveFactoryIdentityMarker(u.config.FactoryIdentityPath, marker); err != nil {
 		return FactoryIdentityResult{}, fmt.Errorf("save factory identity marker: %w", err)
 	}
-	u.logf(
+	logging.Infof("ota", "updater",
 		"ota factory identity: active_slot=%s inactive_slot=%s persistent_created=%t inactive_personalized=%t reboot_required=%t",
 		activeName,
 		inactiveName,

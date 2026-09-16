@@ -1,13 +1,13 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os/exec"
 	"strings"
 	"time"
@@ -472,7 +472,7 @@ func shellRunForegroundCmd(ctx context.Context, command string, workdir string, 
 
 	case <-ctx.Done():
 		if killErr := shellKillProcessGroup(cmd.Process); killErr != nil {
-			log.Printf("shell: kill process group failed: %v", killErr)
+			logging.Warnf("agent", "tools_shell", "shell: kill process group failed: %v", killErr)
 		}
 		<-waitDone
 		return "", ctx.Err()
@@ -526,7 +526,7 @@ func shellRunForegroundPTY(ctx context.Context, command string, workdir string, 
 
 	case <-ctx.Done():
 		if killErr := shellKillProcessGroup(ptyCmd.Process); killErr != nil {
-			log.Printf("shell: kill pty process group failed: %v", killErr)
+			logging.Warnf("agent", "tools_shell", "shell: kill pty process group failed: %v", killErr)
 		}
 		_ = ptmx.Close()
 		<-waitDone

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/logging"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -10,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -101,12 +101,12 @@ func (m *ModelManager) fetchProviderModelSpecInBackground() {
 	spec, err := m.fetchProviderModelSpec(ctx)
 	if err != nil {
 		m.resetProviderModelSpecFetchStarted()
-		log.Printf("[WARN] [model-spec] fetch %s/%s metadata: %v", m.config.Provider, m.config.Model, err)
+		logging.Warnf("agent", "model_spec", "fetch %s/%s metadata: %v", m.config.Provider, m.config.Model, err)
 		return
 	}
 	if hasProviderModelSpecMetadata(spec) {
 		if err := m.writeProviderModelSpecCache(spec); err != nil {
-			log.Printf("[WARN] [model-spec] write provider metadata cache %s: %v", m.providerMetadataCachePath, err)
+			logging.Warnf("agent", "model_spec", "write provider metadata cache %s: %v", m.providerMetadataCachePath, err)
 		}
 	}
 	m.storeProviderModelSpec(spec)
@@ -150,14 +150,14 @@ func (m *ModelManager) readProviderModelSpecCache() (model.ModelSpec, bool) {
 	data, err := os.ReadFile(m.providerMetadataCachePath)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			log.Printf("[WARN] [model-spec] read provider metadata cache %s: %v", m.providerMetadataCachePath, err)
+			logging.Warnf("agent", "model_spec", "read provider metadata cache %s: %v", m.providerMetadataCachePath, err)
 		}
 		return model.ModelSpec{}, false
 	}
 
 	var cache providerModelMetadataCacheFile
 	if err := json.Unmarshal(data, &cache); err != nil {
-		log.Printf("[WARN] [model-spec] parse provider metadata cache %s: %v", m.providerMetadataCachePath, err)
+		logging.Warnf("agent", "model_spec", "parse provider metadata cache %s: %v", m.providerMetadataCachePath, err)
 		return model.ModelSpec{}, false
 	}
 	if cache.Version != providerModelMetadataCacheVersion {

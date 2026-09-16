@@ -6,10 +6,10 @@ import (
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/tokencounter"
+	"aiden-agent/internal/logging"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"slices"
 	"strings"
 	"time"
@@ -71,7 +71,7 @@ func NewCompactor(protectRule ProtectRule, model model.Model) *Compactor {
 
 func validateProtectRule(protectRule ProtectRule) {
 	if protectRule.HeadN <= 0 || protectRule.TailN <= 0 {
-		log.Fatalf("headN and tailN must be greater than 0")
+		logging.Fatalf("agent", "compactor", "headN and tailN must be greater than 0")
 	}
 }
 

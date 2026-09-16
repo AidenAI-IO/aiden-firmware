@@ -1,13 +1,19 @@
+// Package logging emits the Agent's unified log records:
+//
+//	<UTC timestamp> [LEVEL][service][component] <event> [fields...]
+//
+// Message-style records come from LogMessage and its Debugf/Infof/Warnf/Errorf
+// wrappers; they always carry the event name "log_message" and a quoted message
+// field. Event-style records come from LogEvent and carry an explicit event name
+// with key/value fields. The caller always states the severity: nothing is
+// inferred from the message text.
 package logging
 
 import (
 	"fmt"
 	"io"
-	"log"
 	"os"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +31,10 @@ const (
 	Error Level = "ERROR"
 )
 
+// messageEvent is the event name carried by printf-style message records. The
+// caller states the severity explicitly, so no event is derived from the text.
+const messageEvent = "log_message"
+
 // Field is a structured key/value attached to one log event.
 type Field struct {
 	Key   string
@@ -38,10 +48,10 @@ var outputState = struct {
 }{writer: os.Stderr, minimum: Debug}
 
 var structuredLinePattern = regexp.MustCompile(
-	`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[(DEBUG|INFO|WARN|ERROR)\] \[[a-z0-9_]+\] \[[a-z0-9_]+\] [a-z0-9_]+(?: |$)`,
+	`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[(DEBUG|INFO|WARN|ERROR)\]\[[a-z0-9_]+\]\[[a-z0-9_]+\] [a-z0-9_]+(?: |$)`,
 )
 
-// SetOutput changes the destination used by direct structured logging helpers.
+// SetOutput changes the destination used by the logging helpers.
 // It returns a restore function intended for tests and temporary redirection.
 func SetOutput(writer io.Writer) func() {
 	if writer == nil {
@@ -58,8 +68,8 @@ func SetOutput(writer io.Writer) func() {
 	}
 }
 
-// SetMinimumLevel changes the minimum severity emitted by direct structured
-// logging helpers. It returns a restore function for tests and scoped callers.
+// SetMinimumLevel changes the minimum severity emitted by the logging helpers.
+// It returns a restore function for tests and scoped callers.
 func SetMinimumLevel(level Level) func() {
 	outputState.Lock()
 	previous := outputState.minimum
@@ -70,106 +80,6 @@ func SetMinimumLevel(level Level) func() {
 		outputState.minimum = previous
 		outputState.Unlock()
 	}
-}
-
-// InstallStandard routes the process-wide standard logger through the unified
-// formatter. Existing log.Printf/log.Println call sites therefore produce the
-// common line prefix while they are migrated to structured event calls.
-func InstallStandard(service string, writer io.Writer) {
-	InstallStandardAtLevel(service, writer, Debug)
-}
-
-// InstallStandardAtLevel routes the process-wide standard logger through the
-// unified formatter and filters inferred severities below minimum.
-func InstallStandardAtLevel(service string, writer io.Writer, minimum Level) {
-	if writer == nil {
-		writer = os.Stderr
-	}
-	log.SetOutput(newLegacyWriter(writer, service, "runtime", Info, minimum))
-	log.SetFlags(0)
-	log.SetPrefix("")
-}
-
-// NewLegacyLogger adapts a standard library *log.Logger to the unified format.
-func NewLegacyLogger(writer io.Writer, service, component string, level Level) *log.Logger {
-	return log.New(NewLegacyWriter(writer, service, component, level), "", 0)
-}
-
-// NewLegacyWriter wraps legacy free-text log messages in the unified prefix.
-// Embedded newlines are emitted as separate, fully formatted records; blank
-// separator lines are discarded.
-func NewLegacyWriter(writer io.Writer, service, component string, level Level) io.Writer {
-	return newLegacyWriter(writer, service, component, level, Debug)
-}
-
-func newLegacyWriter(writer io.Writer, service, component string, level, minimum Level) io.Writer {
-	if writer == nil {
-		writer = io.Discard
-	}
-	return &legacyWriter{
-		writer:    writer,
-		service:   NormalizeIdentifier(service, "unknown"),
-		component: NormalizeIdentifier(component, "runtime"),
-		level:     NormalizeLevel(level),
-		minimum:   NormalizeLevel(minimum),
-		now:       time.Now,
-	}
-}
-
-type legacyWriter struct {
-	mu        sync.Mutex
-	writer    io.Writer
-	service   string
-	component string
-	level     Level
-	minimum   Level
-	now       func() time.Time
-}
-
-func (w *legacyWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	callerComponent := callerComponent(w.component)
-	text := strings.ReplaceAll(string(p), "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	lines := strings.Split(text, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		meta := parseLegacy(w.level, w.service, callerComponent, line)
-		if !levelAllowed(meta.level, w.minimum) {
-			continue
-		}
-		record := formatMessageRecord(w.now(), meta.level, w.service, meta.component, deriveEvent(meta.message, meta.level), meta.message)
-		if _, err := io.WriteString(w.writer, record+"\n"); err != nil {
-			return 0, err
-		}
-	}
-	return len(p), nil
-}
-
-// FormatLegacyfAt formats a printf-style legacy call. The event is derived
-// from the stable format template while the message contains rendered values.
-func FormatLegacyfAt(now time.Time, level Level, service, component, format string, args ...any) string {
-	meta := parseLegacy(level, service, component, format)
-	event := deriveEvent(meta.message, meta.level)
-	message := fmt.Sprintf(meta.message, args...)
-	return formatMessageRecord(now, meta.level, service, meta.component, event, message)
-}
-
-// FormatLegacyAt formats an already rendered legacy message.
-func FormatLegacyAt(now time.Time, level Level, service, component, message string) string {
-	meta := parseLegacy(level, service, component, message)
-	event := deriveEvent(meta.message, meta.level)
-	return formatMessageRecord(now, meta.level, service, meta.component, event, meta.message)
-}
-
-// IsStructuredLine reports whether line already uses the common event format.
-func IsStructuredLine(line string) bool {
-	return structuredLinePattern.MatchString(line)
 }
 
 // FormatEventAt formats an event with explicit structured fields.
@@ -186,6 +96,53 @@ func FormatEventAt(now time.Time, level Level, service, component, event string,
 	return builder.String()
 }
 
+// FormatMessageAt formats an already rendered message with an explicit
+// severity. Unlike the removed legacy adapters it never inspects the text.
+func FormatMessageAt(now time.Time, level Level, service, component, message string) string {
+	return formatMessageRecord(now, level, service, component, messageEvent, sanitizeMessage(message))
+}
+
+// LogMessage writes one printf-style message at an explicit severity. The
+// caller supplies severity, service, and component; nothing is inferred from
+// the message text.
+func LogMessage(level Level, service, component, format string, args ...any) error {
+	outputState.Lock()
+	defer outputState.Unlock()
+	if !levelAllowed(level, outputState.minimum) {
+		return nil
+	}
+	record := FormatMessageAt(time.Now(), level, service, component, fmt.Sprintf(format, args...))
+	_, err := io.WriteString(outputState.writer, record+"\n")
+	return err
+}
+
+// Debugf logs a printf-style message at DEBUG severity.
+func Debugf(service, component, format string, args ...any) {
+	_ = LogMessage(Debug, service, component, format, args...)
+}
+
+// Infof logs a printf-style message at INFO severity.
+func Infof(service, component, format string, args ...any) {
+	_ = LogMessage(Info, service, component, format, args...)
+}
+
+// Warnf logs a printf-style message at WARN severity.
+func Warnf(service, component, format string, args ...any) {
+	_ = LogMessage(Warn, service, component, format, args...)
+}
+
+// Errorf logs a printf-style message at ERROR severity.
+func Errorf(service, component, format string, args ...any) {
+	_ = LogMessage(Error, service, component, format, args...)
+}
+
+// Fatalf logs a printf-style message at ERROR severity and exits with status 1,
+// matching the standard library behavior it replaces.
+func Fatalf(service, component, format string, args ...any) {
+	_ = LogMessage(Error, service, component, format, args...)
+	os.Exit(1)
+}
+
 // LogEvent writes one structured event to the package output.
 func LogEvent(level Level, service, component, event string, fields ...Field) error {
 	outputState.Lock()
@@ -196,6 +153,11 @@ func LogEvent(level Level, service, component, event string, fields ...Field) er
 	record := FormatEventAt(time.Now(), level, service, component, event, fields...)
 	_, err := io.WriteString(outputState.writer, record+"\n")
 	return err
+}
+
+// IsStructuredLine reports whether line already uses the common event format.
+func IsStructuredLine(line string) bool {
+	return structuredLinePattern.MatchString(line)
 }
 
 func levelAllowed(level, minimum Level) bool {
@@ -216,58 +178,6 @@ func levelAllowed(level, minimum Level) bool {
 	return rank(level) >= rank(minimum)
 }
 
-type legacyMeta struct {
-	level     Level
-	component string
-	message   string
-}
-
-func parseLegacy(defaultLevel Level, service, fallbackComponent, input string) legacyMeta {
-	level := NormalizeLevel(defaultLevel)
-	component := NormalizeIdentifier(fallbackComponent, "runtime")
-	message := sanitizeMessage(input)
-
-	componentFromTag := false
-	for strings.HasPrefix(message, "[") {
-		end := strings.IndexByte(message, ']')
-		if end <= 1 {
-			break
-		}
-		tag := strings.TrimSpace(message[1:end])
-		message = strings.TrimSpace(message[end+1:])
-		if parsed, ok := ParseLevel(tag); ok {
-			level = parsed
-			continue
-		}
-		component = NormalizeIdentifier(tag, component)
-		componentFromTag = true
-		break
-	}
-
-	if !componentFromTag {
-		normalizedService := NormalizeIdentifier(service, "unknown")
-		lowerMessage := strings.ToLower(message)
-		if strings.HasPrefix(lowerMessage, normalizedService+":") {
-			message = strings.TrimSpace(message[len(normalizedService)+1:])
-		} else if strings.HasPrefix(lowerMessage, normalizedService+" ") {
-			message = strings.TrimSpace(message[len(normalizedService):])
-		}
-
-		if colon := strings.IndexByte(message, ':'); colon > 0 {
-			candidate := strings.TrimSpace(message[:colon])
-			if isLegacyComponentPrefix(candidate) {
-				component = NormalizeIdentifier(candidate, component)
-				message = strings.TrimSpace(message[colon+1:])
-			}
-		}
-	}
-	if level == Info {
-		level = inferLegacyLevel(message)
-	}
-
-	return legacyMeta{level: level, component: component, message: sanitizeMessage(message)}
-}
-
 func formatMessageRecord(now time.Time, level Level, service, component, event, message string) string {
 	var builder strings.Builder
 	writePrefix(&builder, now, level, service, component, event)
@@ -282,12 +192,12 @@ func writePrefix(builder *strings.Builder, now time.Time, level Level, service, 
 	builder.WriteString(now.UTC().Format("2006-01-02T15:04:05Z"))
 	builder.WriteString(" [")
 	builder.WriteString(string(NormalizeLevel(level)))
-	builder.WriteString("] [")
+	builder.WriteString("][")
 	builder.WriteString(NormalizeIdentifier(service, "unknown"))
-	builder.WriteString("] [")
+	builder.WriteString("][")
 	builder.WriteString(NormalizeIdentifier(component, "runtime"))
 	builder.WriteString("] ")
-	builder.WriteString(NormalizeIdentifier(event, "log_message"))
+	builder.WriteString(NormalizeIdentifier(event, messageEvent))
 }
 
 func formatValue(value any) string {
@@ -372,116 +282,18 @@ func NormalizeLevel(level Level) Level {
 	return Info
 }
 
-// ParseLevel recognizes legacy and normalized severity names.
+// ParseLevel recognizes the supported severity names.
 func ParseLevel(value string) (Level, bool) {
 	switch strings.ToUpper(strings.TrimSpace(value)) {
 	case "DEBUG":
 		return Debug, true
 	case "INFO":
 		return Info, true
-	case "WARN", "WARNING":
+	case "WARN":
 		return Warn, true
-	case "ERROR", "ERR", "FATAL":
+	case "ERROR":
 		return Error, true
 	default:
 		return "", false
 	}
-}
-
-func deriveEvent(message string, level Level) string {
-	message = strings.TrimSpace(message)
-	if message == "" {
-		if level == Error {
-			return "operation_failed"
-		}
-		return "log_message"
-	}
-	if colon := strings.IndexByte(message, ':'); colon > 0 {
-		message = message[:colon]
-	}
-	if percent := strings.IndexByte(message, '%'); percent >= 0 {
-		message = message[:percent]
-	}
-	words := strings.Fields(message)
-	if len(words) > 6 {
-		words = words[:6]
-	}
-	for len(words) > 0 {
-		last := words[len(words)-1]
-		if strings.Contains(last, "=") || containsDigit(last) {
-			words = words[:len(words)-1]
-			continue
-		}
-		break
-	}
-	event := NormalizeIdentifier(strings.Join(words, " "), "")
-	if event == "unknown" || event == "" {
-		if level == Error {
-			return "operation_failed"
-		}
-		return "log_message"
-	}
-	return event
-}
-
-func containsDigit(value string) bool {
-	for _, r := range value {
-		if r >= '0' && r <= '9' {
-			return true
-		}
-	}
-	return false
-}
-
-func isLegacyComponentPrefix(value string) bool {
-	if value == "" || value != strings.ToLower(value) || strings.ContainsAny(value, " \t/\\") {
-		return false
-	}
-	knownSingleWord := map[string]bool{
-		"shell": true,
-	}
-	if !strings.ContainsAny(value, "_-.") && !knownSingleWord[value] {
-		return false
-	}
-	for _, r := range value {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-func inferLegacyLevel(message string) Level {
-	lower := strings.ToLower(message)
-	for _, marker := range []string{" failed", "failure", " error", "panic", "timed out", "timeout"} {
-		if strings.Contains(" "+lower, marker) {
-			return Warn
-		}
-	}
-	return Info
-}
-
-func callerComponent(fallback string) string {
-	pcs := make([]uintptr, 24)
-	count := runtime.Callers(3, pcs)
-	frames := runtime.CallersFrames(pcs[:count])
-	for {
-		frame, more := frames.Next()
-		path := filepath.ToSlash(frame.File)
-		if !strings.HasSuffix(path, "/log/log.go") &&
-			!strings.Contains(path, "/internal/logging/") &&
-			!strings.HasSuffix(path, "/agent/logger.go") {
-			name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-			if name == "main" {
-				name = "daemon"
-			}
-			return NormalizeIdentifier(name, fallback)
-		}
-		if !more {
-			break
-		}
-	}
-	return NormalizeIdentifier(fallback, "runtime")
 }

@@ -1,8 +1,8 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"fmt"
-	"log"
 	"time"
 )
 
@@ -54,14 +54,14 @@ func startRecordingWithRetry(audio audioRecordingBackend, format AudioFormat, re
 		result, err := audio.StartRecording(format)
 		if err == nil {
 			if attempts > 0 {
-				log.Printf("[audio] Record session opened after %d retries\n", attempts)
+				logging.Infof("agent", "audio", "Record session opened after %d retries", attempts)
 			}
 			return result, nil
 		}
 		lastErr = err
 		attempts++
 		if attempts == 1 {
-			log.Printf("[audio] Record session unavailable, retrying for up to %s: %v\n", retryTimeout, err)
+			logging.Warnf("agent", "audio", "Record session unavailable, retrying for up to %s: %v", retryTimeout, err)
 		}
 
 		remaining := time.Until(deadline)

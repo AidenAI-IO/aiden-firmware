@@ -3,12 +3,12 @@ package agent
 import (
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/logging"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -464,11 +464,11 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			if attempt == maxAttempts-1 || !shouldRetryTransportError(req.Context(), err) {
 				if attempt > 0 {
-					log.Printf("[WARN] [http-retry] giving up after attempt %d/%d: %v", attempt+1, maxAttempts, err)
+					logging.Warnf("agent", "http_retry", "giving up after attempt %d/%d: %v", attempt+1, maxAttempts, err)
 				}
 				return resp, err
 			}
-			log.Printf("[WARN] [http-retry] transport error on attempt %d/%d: %v", attempt+1, maxAttempts, err)
+			logging.Warnf("agent", "http_retry", "transport error on attempt %d/%d: %v", attempt+1, maxAttempts, err)
 			if waitErr := t.waitBeforeRetry(req.Context(), attempt+1, maxAttempts); waitErr != nil {
 				return resp, waitErr
 			}
@@ -482,7 +482,7 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Read error body for logging, then close
 		errBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		log.Printf("[WARN] [http-retry] got retryable status %d on attempt %d/%d: %s", resp.StatusCode, attempt+1, maxAttempts, string(errBody))
+		logging.Warnf("agent", "http_retry", "got retryable status %d on attempt %d/%d: %s", resp.StatusCode, attempt+1, maxAttempts, string(errBody))
 
 		// On last attempt, return a reconstructed response
 		if attempt == maxAttempts-1 {
@@ -499,7 +499,7 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (t *retryTransport) waitBeforeRetry(ctx context.Context, retryNumber, maxAttempts int) error {
 	delay := time.Duration(retryNumber) * t.retryDelayBase
-	log.Printf("[INFO] [http-retry] retrying attempt %d/%d after %v", retryNumber+1, maxAttempts, delay)
+	logging.Infof("agent", "http_retry", "retrying attempt %d/%d after %v", retryNumber+1, maxAttempts, delay)
 	if delay <= 0 {
 		return nil
 	}

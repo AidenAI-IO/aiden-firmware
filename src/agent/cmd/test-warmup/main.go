@@ -5,12 +5,12 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/logging"
 )
 
 func main() {
@@ -65,7 +65,7 @@ func testColdConnections(url string, iterations int) []float64 {
 		latency := time.Since(start)
 
 		if err != nil {
-			log.Printf("Request %d failed: %v", i+1, err)
+			logging.Warnf("agent", "warmup", "Request %d failed: %v", i+1, err)
 			latencies[i] = 0
 			continue
 		}
@@ -117,7 +117,7 @@ func testWithWarmup(url string, iterations int) []float64 {
 		latency := time.Since(start)
 
 		if err != nil {
-			log.Printf("Request %d failed: %v", i+1, err)
+			logging.Warnf("agent", "warmup", "Request %d failed: %v", i+1, err)
 			latencies[i] = 0
 			continue
 		}

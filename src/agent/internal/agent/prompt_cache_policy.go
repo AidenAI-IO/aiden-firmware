@@ -1,12 +1,12 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -144,7 +144,7 @@ func (m *ModelManager) cachedOpenRouterPromptCachePolicy() PromptCachePolicy {
 		return openRouterPromptCachePolicyFallback(m.config.Model)
 	}
 	if err := m.writeProviderPromptCachePolicyCache(policy); err != nil {
-		log.Printf("[WARN] [model-spec] write prompt cache policy cache %s: %v", m.providerMetadataCachePath, err)
+		logging.Warnf("agent", "model_spec", "write prompt cache policy cache %s: %v", m.providerMetadataCachePath, err)
 	}
 	return policy
 }

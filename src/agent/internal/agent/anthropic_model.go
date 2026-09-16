@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +19,7 @@ import (
 
 	agentmessages "aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/logging"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -319,7 +319,7 @@ func (m *anthropicModel) generateContent(ctx context.Context, messages []llms.Me
 		if streamFallbackCause == nil || isAnthropicContextError(err) {
 			return err
 		}
-		log.Printf("[WARN] [anthropic] non-streaming fallback failed: %v", err)
+		logging.Warnf("agent", "anthropic", "non-streaming fallback failed: %v", err)
 		return streamFallbackCause
 	}
 	for {
@@ -371,14 +371,14 @@ func (m *anthropicModel) generateContent(ctx context.Context, messages []llms.Me
 					if err != nil {
 						return nil, fail(fmt.Errorf("marshal Anthropic non-streaming fallback request: %w", err))
 					}
-					log.Printf("[WARN] [anthropic] semantic stream retries exhausted; falling back to non-streaming response")
+					logging.Warnf("agent", "anthropic", "semantic stream retries exhausted; falling back to non-streaming response")
 					continue
 				}
 				if protocolRetries >= retryLimit || !shouldRetryAnthropicStreamError(streamErr) {
 					return nil, streamErr
 				}
 				protocolRetries++
-				log.Printf("[WARN] [anthropic] retrying semantic protocol error (%d/%d): %v", protocolRetries, retryLimit, streamErr)
+				logging.Warnf("agent", "anthropic", "retrying semantic protocol error (%d/%d): %v", protocolRetries, retryLimit, streamErr)
 				if err := waitBeforeAnthropicRetry(ctx, protocolRetries, retryDelay); err != nil {
 					return nil, err
 				}
@@ -414,7 +414,7 @@ func (m *anthropicModel) generateContent(ctx context.Context, messages []llms.Me
 				return nil, fail(protocolErr)
 			}
 			protocolRetries++
-			log.Printf("[WARN] [anthropic] retrying semantic protocol error (%d/%d): %v", protocolRetries, m.protocolRetries, protocolErr)
+			logging.Warnf("agent", "anthropic", "retrying semantic protocol error (%d/%d): %v", protocolRetries, m.protocolRetries, protocolErr)
 			if err := waitBeforeAnthropicRetry(ctx, protocolRetries, m.protocolDelay); err != nil {
 				return nil, err
 			}
@@ -425,7 +425,7 @@ func (m *anthropicModel) generateContent(ctx context.Context, messages []llms.Me
 			generationInfo["llm_anthropic_stream_fallback"] = "non_stream"
 		}
 		if recovery != "" {
-			log.Printf("[WARN] [anthropic] recovered response %s as user-visible text (response_id=%s)", recovery, decoded.ID)
+			logging.Warnf("agent", "anthropic", "recovered response %s as user-visible text (response_id=%s)", recovery, decoded.ID)
 			generationInfo["llm_anthropic_response_recovery"] = recovery
 		}
 		result := aggregateAnthropicResponseWithGenerationInfo(normalized, callStarted, generationInfo)
@@ -1387,7 +1387,7 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 			daemonDiagnostic := failureDiagnostic
 			daemonDiagnostic.setCapturedRawSSE(rawCapture.daemonBytes(), rawCapture.totalBytes)
 			daemonBody, _ := json.Marshal(daemonDiagnostic)
-			log.Printf("[ERROR] [anthropic] stream protocol failure %s", daemonBody)
+			logging.Errorf("agent", "anthropic", "stream protocol failure %s", daemonBody)
 		}
 	}()
 	for scanner.Scan() {
@@ -1590,7 +1590,7 @@ func (m *anthropicModel) decodeStreamingResponse(ctx context.Context, body io.Re
 	}
 	response = normalized
 	if recovery != "" {
-		log.Printf("[WARN] [anthropic] recovered streamed response %s as user-visible text (response_id=%s)", recovery, response.ID)
+		logging.Warnf("agent", "anthropic", "recovered streamed response %s as user-visible text (response_id=%s)", recovery, response.ID)
 	}
 	if recovery != "" && opts.StreamingFunc != nil {
 		recoveredText := anthropicResponseText(response)
