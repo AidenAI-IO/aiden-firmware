@@ -43,6 +43,39 @@ systemctl list-dependencies aiden.target
 systemctl --failed
 ```
 
+The Rockchip boot arguments do not pass `rw` and there is no matching fstab
+entry, so `/` starts read-only. `aiden-rootfs-grow.service` runs
+`mount -o remount,rw /` on every boot before growing the rootfs and mounting
+OEM and userdata, which is why it is ordered ahead of `aiden-oem-ldconfig`,
+`systemd-timesyncd`, and the media services. If those units fail with
+`Read-only file system`, check that `aiden-rootfs-grow.service` ran.
+
+## USB HID and ECM
+
+`aiden-usb-gadget.service` exposes a composite gadget (`1d6b:0104`) with a
+keyboard, pointer, Consumer Control, and an ECM network interface. Two
+invariants keep it enumerating reliably:
+
+- **HID report descriptors use POSIX octal escapes.** `/bin/sh` on Debian is
+  `dash`, which does not interpret `\xNN`; the descriptors would be written as
+  ASCII text and the host would log `unknown main item tag`,
+  `item fetching failed`, or `hid-generic ... error -22`. The declared lengths
+  are 45 (keyboard), 58 (pointer), and 47 (Consumer Control) bytes.
+- **`usb0` is owned by systemd-networkd with no-carrier configuration.** The
+  `30-usb0.network` unit sets `RequiredForOnline=no` and
+  `ConfigureWithoutCarrier=yes`, so the static `192.168.42.1/24` address is not
+  removed before the USB link finishes enumerating. Gadget, ECM watchdog, and
+  wait helpers must not call `networkctl reconfigure` in a way that drops the
+  freshly-set address.
+
+The Agent refreshes the composite gadget through the configurable
+`AIDEN_USB_COMPOSITE_REFRESH_COMMAND`; the Debian default is the
+`/usr/lib/aiden/aiden-usb-ecm-watchdog` helper.
+
+A bare `error -71` (`device not accepting address`, `unable to enumerate USB
+device`) is a lower-level control-transfer failure. Investigate cable, power,
+and host port; it is not explained by the descriptor fix.
+
 ## Frame Service
 
 Configuration: `/etc/aiden_frame_service.conf`

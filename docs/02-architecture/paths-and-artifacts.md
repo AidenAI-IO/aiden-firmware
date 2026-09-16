@@ -34,6 +34,7 @@ sidebar_position: 4
 | `src/agent/internal/ota` | OTA download, slot, health, and state machine |
 | `overlay-debian/` | Debian rootfs overlay and systemd integration |
 | `overlay-debian-oem/` | Debian OEM-owned scripts and assets |
+| `overlay-debian-oem/usr/lib/` | OEM runtime libraries, including the VQE AEC/beamforming libs registered by `aiden-oem-ldconfig` |
 | `scripts/debian-apps/` | Application cross-build and audit |
 | `scripts/debian-system/` | Rootfs, BSP, image assembly, and audit |
 | `tests/` | Host-native C++ tests |
@@ -65,6 +66,12 @@ sidebar_position: 4
 | `/run/aiden/storage.state` | StorageManager state shared by Config Web and Agent |
 | `/run/agent/storage_level` | Current StorageMonitor level |
 
+Service sockets under `/run/*_service/` are mode `0660 root:aiden`. The audio and
+frame units declare `Group=aiden` and `SupplementaryGroups=audio video`, so the
+plain `aiden` user can run the diagnostic CLIs against them. A socket that shows
+up as `0755 root:root`, or a client that gets `TRANSPORT_ERROR`, means the unit
+lost those group settings or the process ran under an unexpected umask.
+
 ## Configuration Sources
 
 | File | Description |
@@ -78,6 +85,7 @@ sidebar_position: 4
 | `overlay-debian/etc/profile.d/aiden-python.sh` | Fixed persistent Python userbase |
 | `overlay-debian-oem/usr/model/` | OEM VAD models |
 | `overlay-debian-oem/usr/share/aiden/audio/` | VQE and fallback audio assets |
+| `overlay-debian/etc/ld.so.conf.d/aiden-oem.conf` | Registers OEM libraries from the active slot |
 | `AGENT_CONFIG_PATH` | External Agent configuration required by image assembly |
 | `OTA_PUBLIC_KEY_PATH` | External OTA verification key required by image assembly |
 
