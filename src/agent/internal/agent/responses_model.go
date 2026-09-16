@@ -496,8 +496,7 @@ func (m *responsesModel) generateContentWithInput(ctx context.Context, input []r
 	ctx = m.withRawHTTPLogFileTime(ctx)
 	_ = m.logRawHTTP(ctx, requestModel, "request", 0, string(payloadBytes))
 
-	requestCtx := contextWithLLMRequestMode(ctx, payload.Stream)
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, m.baseURL+"/responses", bytes.NewReader(payloadBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+"/responses", bytes.NewReader(payloadBytes))
 	if err != nil {
 		_ = m.logRawHTTP(ctx, requestModel, "response", 0, "create request error: "+err.Error())
 		return nil, fmt.Errorf("create request: %w", err)

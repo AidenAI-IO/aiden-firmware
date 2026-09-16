@@ -614,8 +614,7 @@ func (m *openAICompatibleModel) generateContent(ctx context.Context, messages []
 	_ = m.logRawHTTP(ctx, reqPayload.Model, "request", 0, string(payloadBytes))
 
 	endpoint := m.baseURL + "/chat/completions"
-	requestCtx := contextWithLLMRequestMode(ctx, reqPayload.Stream)
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
 	if err != nil {
 		// statusCode 0 marks a failure with no HTTP response, keeping every
 		// logged request paired with a response entry the viewer can match.

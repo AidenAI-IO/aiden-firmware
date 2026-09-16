@@ -325,8 +325,7 @@ func (m *anthropicModel) generateContent(ctx context.Context, messages []llms.Me
 	for {
 		_ = m.logRawHTTP(ctx, request.Model, "request", 0, string(payload))
 
-		requestCtx := contextWithLLMRequestMode(ctx, request.Stream)
-		httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodPost, m.baseURL+"/messages", bytes.NewReader(payload))
+		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+"/messages", bytes.NewReader(payload))
 		if err != nil {
 			_ = m.logRawHTTP(ctx, request.Model, "response", 0, "create request error: "+err.Error())
 			return nil, fail(fmt.Errorf("create Anthropic request: %w", err))

@@ -151,7 +151,9 @@ func (m *ModelManager) GenerateContent(ctx context.Context, messages []llms.Mess
 	if err != nil {
 		return nil, err
 	}
-	return model.GenerateContent(ctx, messages, options...)
+	requestCtx, cancel := withDefaultLLMRequestTimeout(ctx, options...)
+	defer cancel()
+	return model.GenerateContent(requestCtx, messages, options...)
 }
 
 // GenerateContentFromMessageList preserves provider-specific transcript
@@ -166,12 +168,14 @@ func (m *ModelManager) GenerateContentFromMessageList(ctx context.Context, messa
 	if err != nil {
 		return nil, err
 	}
+	requestCtx, cancel := withDefaultLLMRequestTimeout(ctx, options...)
+	defer cancel()
 	if contextModel, ok := model.(interface {
 		GenerateContentFromMessageList(context.Context, []messages.Message, ...llms.CallOption) (*llms.ContentResponse, error)
 	}); ok {
-		return contextModel.GenerateContentFromMessageList(ctx, messageList, options...)
+		return contextModel.GenerateContentFromMessageList(requestCtx, messageList, options...)
 	}
-	return model.GenerateContent(ctx, messages.ConvertMessageList(messageList), options...)
+	return model.GenerateContent(requestCtx, messages.ConvertMessageList(messageList), options...)
 }
 
 func (m *ModelManager) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
@@ -182,7 +186,9 @@ func (m *ModelManager) Call(ctx context.Context, prompt string, options ...llms.
 	if err != nil {
 		return "", err
 	}
-	return model.Call(ctx, prompt, options...)
+	requestCtx, cancel := withDefaultLLMRequestTimeout(ctx, options...)
+	defer cancel()
+	return model.Call(requestCtx, prompt, options...)
 }
 
 func (m *ModelManager) CallOptions() []chains.ChainCallOption {
@@ -419,52 +425,15 @@ func resolveToken(cfg ModelConfig) string {
 	return resolveProviderAPIKey(cfg.APIKey)
 }
 
-type llmRequestModeContextKey struct{}
-
-func contextWithLLMRequestMode(ctx context.Context, streaming bool) context.Context {
-	return context.WithValue(ctx, llmRequestModeContextKey{}, streaming)
-}
-
-func isStreamingLLMRequest(ctx context.Context) bool {
-	streaming, _ := ctx.Value(llmRequestModeContextKey{}).(bool)
-	return streaming
-}
-
-// nonStreamingTimeoutTransport bounds ordinary LLM requests while allowing a
-// streaming response body to remain open until the provider or caller finishes.
-type nonStreamingTimeoutTransport struct {
-	wrapped http.RoundTripper
-	timeout time.Duration
-}
-
-func (t *nonStreamingTimeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.timeout <= 0 || isStreamingLLMRequest(req.Context()) {
-		return t.wrapped.RoundTrip(req)
+func withDefaultLLMRequestTimeout(ctx context.Context, options ...llms.CallOption) (context.Context, context.CancelFunc) {
+	callOpts := llms.CallOptions{}
+	for _, option := range options {
+		option(&callOpts)
 	}
-
-	ctx, cancel := context.WithTimeout(req.Context(), t.timeout)
-	resp, err := t.wrapped.RoundTrip(req.Clone(ctx))
-	if err != nil {
-		cancel()
-		return resp, err
+	if callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil {
+		return ctx, func() {}
 	}
-	if resp.Body == nil {
-		cancel()
-		return resp, nil
-	}
-	resp.Body = &cancelOnCloseReadCloser{ReadCloser: resp.Body, cancel: cancel}
-	return resp, nil
-}
-
-type cancelOnCloseReadCloser struct {
-	io.ReadCloser
-	cancel context.CancelFunc
-}
-
-func (r *cancelOnCloseReadCloser) Close() error {
-	err := r.ReadCloser.Close()
-	r.cancel()
-	return err
+	return context.WithTimeout(ctx, defaultLLMHTTPTimeout)
 }
 
 // retryTransport retries transient HTTP and transport failures with backoff.
@@ -571,13 +540,10 @@ func shouldRetryHTTPStatus(statusCode int) bool {
 
 func newRetryHTTPClient(proxy ProxyConfig) *http.Client {
 	return &http.Client{
-		Transport: &nonStreamingTimeoutTransport{
-			timeout: defaultLLMHTTPTimeout,
-			wrapped: &retryTransport{
-				wrapped:        newProxyTransport(proxy),
-				maxRetries:     5,
-				retryDelayBase: 2 * time.Second,
-			},
+		Transport: &retryTransport{
+			wrapped:        newProxyTransport(proxy),
+			maxRetries:     5,
+			retryDelayBase: 2 * time.Second,
 		},
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tmc/langchaingo/llms"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -103,30 +105,29 @@ func TestLLMHTTPClientsDoNotUseClientTimeout(t *testing.T) {
 	}
 }
 
-func TestNonStreamingTimeoutTransportAppliesRequestDeadline(t *testing.T) {
-	var requestCtx context.Context
-	transport := &nonStreamingTimeoutTransport{
-		timeout: 30 * time.Second,
-		wrapped: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			requestCtx = req.Context()
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
-				Request:    req,
-			}, nil
-		}),
-	}
+type requestContextRecordingModel struct {
+	ctx context.Context
+}
 
-	ctx := contextWithLLMRequestMode(context.Background(), false)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.test", nil)
-	if err != nil {
-		t.Fatalf("NewRequestWithContext: %v", err)
+func (m *requestContextRecordingModel) Call(ctx context.Context, _ string, _ ...llms.CallOption) (string, error) {
+	m.ctx = ctx
+	return "ok", nil
+}
+
+func (m *requestContextRecordingModel) GenerateContent(ctx context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	m.ctx = ctx
+	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "ok"}}}, nil
+}
+
+func TestModelManagerAppliesTimeoutOnlyToNonStreamingRequests(t *testing.T) {
+	model := &requestContextRecordingModel{}
+	manager := NewModelManager(ModelConfig{}, ProxyConfig{})
+	manager.model = model
+
+	if _, err := manager.GenerateContent(context.Background(), nil); err != nil {
+		t.Fatalf("non-streaming GenerateContent: %v", err)
 	}
-	resp, err := transport.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("RoundTrip: %v", err)
-	}
-	deadline, ok := requestCtx.Deadline()
+	deadline, ok := model.ctx.Deadline()
 	if !ok {
 		t.Fatal("non-streaming request has no deadline")
 	}
@@ -134,41 +135,13 @@ func TestNonStreamingTimeoutTransportAppliesRequestDeadline(t *testing.T) {
 	if remaining <= 29*time.Second || remaining > 30*time.Second {
 		t.Fatalf("deadline remaining = %s, want approximately 30s", remaining)
 	}
-	if err := resp.Body.Close(); err != nil {
-		t.Fatalf("Close response body: %v", err)
-	}
-	select {
-	case <-requestCtx.Done():
-	default:
-		t.Fatal("closing response body did not release request context")
-	}
-}
 
-func TestNonStreamingTimeoutTransportLeavesStreamingRequestUnbounded(t *testing.T) {
-	transport := &nonStreamingTimeoutTransport{
-		timeout: 30 * time.Second,
-		wrapped: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if _, ok := req.Context().Deadline(); ok {
-				t.Fatal("streaming request received a deadline")
-			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader("stream")),
-				Request:    req,
-			}, nil
-		}),
+	if _, err := manager.GenerateContent(context.Background(), nil, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil })); err != nil {
+		t.Fatalf("streaming GenerateContent: %v", err)
 	}
-
-	ctx := contextWithLLMRequestMode(context.Background(), true)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.test", nil)
-	if err != nil {
-		t.Fatalf("NewRequestWithContext: %v", err)
+	if _, ok := model.ctx.Deadline(); ok {
+		t.Fatal("streaming request received a default deadline")
 	}
-	resp, err := transport.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("RoundTrip: %v", err)
-	}
-	defer resp.Body.Close()
 }
 
 func TestRetryTransportRetriesTooManyRequests(t *testing.T) {
