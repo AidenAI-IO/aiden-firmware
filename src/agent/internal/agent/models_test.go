@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tmc/langchaingo/llms"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -83,6 +86,61 @@ func TestRetryTransportDoesNotRetryCanceledContext(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestLLMHTTPClientsDoNotUseClientTimeout(t *testing.T) {
+	manager := NewModelManager(ModelConfig{}, ProxyConfig{})
+	clients := map[string]*http.Client{
+		"retry client":               manager.buildContext().HTTPClient,
+		"ollama client":              manager.buildContext().OllamaHTTPClient,
+		"OpenAI-compatible fallback": newOpenAICompatibleModel("https://example.test", "model", "", nil).(*openAICompatibleModel).httpClient,
+		"Responses fallback":         newResponsesModel("https://example.test", "model", "", nil, responsesModelOptions{}).(*responsesModel).httpClient,
+		"Anthropic fallback":         newAnthropicModel("https://example.test", "model", "", nil).(*anthropicModel).httpClient,
+	}
+	for name, client := range clients {
+		if client.Timeout != 0 {
+			t.Fatalf("%s timeout = %s, want no client-wide timeout", name, client.Timeout)
+		}
+	}
+}
+
+type requestContextRecordingModel struct {
+	ctx context.Context
+}
+
+func (m *requestContextRecordingModel) Call(ctx context.Context, _ string, _ ...llms.CallOption) (string, error) {
+	m.ctx = ctx
+	return "ok", nil
+}
+
+func (m *requestContextRecordingModel) GenerateContent(ctx context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	m.ctx = ctx
+	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "ok"}}}, nil
+}
+
+func TestModelManagerAppliesTimeoutOnlyToNonStreamingRequests(t *testing.T) {
+	model := &requestContextRecordingModel{}
+	manager := NewModelManager(ModelConfig{}, ProxyConfig{})
+	manager.model = model
+
+	if _, err := manager.GenerateContent(context.Background(), nil); err != nil {
+		t.Fatalf("non-streaming GenerateContent: %v", err)
+	}
+	deadline, ok := model.ctx.Deadline()
+	if !ok {
+		t.Fatal("non-streaming request has no deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 29*time.Second || remaining > 30*time.Second {
+		t.Fatalf("deadline remaining = %s, want approximately 30s", remaining)
+	}
+
+	if _, err := manager.GenerateContent(context.Background(), nil, llms.WithStreamingFunc(func(context.Context, []byte) error { return nil })); err != nil {
+		t.Fatalf("streaming GenerateContent: %v", err)
+	}
+	if _, ok := model.ctx.Deadline(); ok {
+		t.Fatal("streaming request received a default deadline")
 	}
 }
 
@@ -211,10 +269,30 @@ func TestBuildVolcengineProviderResolvesBaseURL(t *testing.T) {
 			}
 			// The OpenRouter-only nested reasoning object must stay off for Ark:
 			// the Ark endpoint only accepts the standard reasoning_effort field.
-			if compatible.openRouterReasoning {
-				t.Error("openRouterReasoning = true, want false for the volcengine provider")
+			if compatible.dialect != compatibleDialectOpenAI {
+				t.Errorf("dialect = %q, want the generic OpenAI shape for the volcengine provider", compatible.dialect)
 			}
 		})
+	}
+}
+
+func TestBuildDeepSeekProviderResolvesBaseURL(t *testing.T) {
+	mgr := NewModelManager(ModelConfig{
+		Provider: "deepseek",
+		Model:    "deepseek-flash",
+		APIKey:   "test-key",
+	}, ProxyConfig{})
+
+	model, err := mgr.build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	compatible, ok := model.(*openAICompatibleModel)
+	if !ok {
+		t.Fatalf("model type = %T, want *openAICompatibleModel", model)
+	}
+	if compatible.baseURL != deepseekBaseURL {
+		t.Errorf("baseURL = %q, want %q", compatible.baseURL, deepseekBaseURL)
 	}
 }
 
@@ -233,8 +311,8 @@ func TestBuildOpenRouterEnablesNestedReasoning(t *testing.T) {
 	if !ok {
 		t.Fatalf("model type = %T, want *openAICompatibleModel", model)
 	}
-	if !compatible.openRouterReasoning {
-		t.Error("openRouterReasoning = false, want true for the openrouter provider")
+	if compatible.dialect != compatibleDialectOpenRouter {
+		t.Errorf("dialect = %q, want openrouter", compatible.dialect)
 	}
 }
 

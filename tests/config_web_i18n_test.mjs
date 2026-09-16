@@ -183,7 +183,8 @@ async function loadModule(filePath) {
   moduleCache.set(absolutePath, module);
   await module.link(async (specifier, referencingModule) => {
     const referencingPath = fileURLToPath(referencingModule.identifier);
-    return loadModule(path.resolve(path.dirname(referencingPath), specifier));
+    const modulePath = specifier.split('?', 1)[0];
+    return loadModule(path.resolve(path.dirname(referencingPath), modulePath));
   });
   return module;
 }
@@ -191,6 +192,10 @@ async function loadModule(filePath) {
 const i18nModule = await loadModule(i18nPath);
 await i18nModule.evaluate();
 const {applyLocale, getActiveLocale, getPersistedLocale, initI18n, saveLocale, t} = i18nModule.namespace;
+const groupI18nModule = await loadModule(path.join(webRoot, 'assets/js/config/i18n-groups.js'));
+await groupI18nModule.evaluate();
+assert.equal(groupI18nModule.namespace.GROUP_TRANSLATIONS['en-US'].groups.websearch, 'Web Search');
+assert.equal(groupI18nModule.namespace.GROUP_TRANSLATIONS['zh-CN'].groups.websearch, '网页搜索');
 
 assert.equal(t('config.save_failed', {section: 'agent'}), 'Save [agent] failed.');
 initI18n();
@@ -206,6 +211,13 @@ assert.equal(
   t('config.fields.device.device_type.help'),
   'Android 使用 HID touchscreen 模式。iOS、macOS、windows 和 linux 使用 absolute 指针模式。',
 );
+assert.equal(t('config.fields.device.device_type.label'), '设备类型');
+assert.equal(t('config.fields.device.device_type.options.android'), 'Android');
+assert.equal(t('config.fields.device.device_type.options.macos'), 'macOS');
+assert.equal(t('config.fields.hid.input_backend.label'), '输入后端');
+assert.equal(t('config.fields.hid.input_backend.options.hid'), 'USB HID');
+assert.equal(t('config.fields.agent.input_mode.label'), '语音模式');
+assert.equal(t('config.fields.agent.input_mode.options.realtime'), '实时模式');
 assert.equal(t('config.default_value', {value: '16000'}), '默认值：16000');
 assert.equal(t('config.fields.model.api_mode.label'), '对话接口');
 assert.equal(t('config.fields.model.api_mode.options.responses'), 'Responses（本地上下文）');
@@ -229,6 +241,10 @@ assert.equal(title.textContent, 'Configuration');
 assert.equal(password.getAttribute('placeholder'), 'Open network can leave empty');
 assert.equal(t('config.fields.model.responses_compact_threshold.label'), 'Compaction threshold (tokens)');
 assert.equal(t('wifi.proxy_url_help'), 'Supported URLs: socks5://, socks5h://, http://, https://');
+assert.equal(t('config.fields.device.device_type.label'), 'Device type');
+assert.equal(t('config.fields.device.device_type.options.windows'), 'Windows');
+assert.equal(t('config.fields.hid.input_backend.label'), 'Input backend');
+assert.equal(t('config.fields.agent.input_mode.label'), 'Voice mode');
 assert.equal(stored.get('aiden.config.locale'), 'en-US');
 
 const source = await fs.readFile(i18nPath, 'utf8');
@@ -246,6 +262,13 @@ assert.match(indexHtml, /id="wifiProxyUrlHelp"[^>]+data-i18n="wifi\.proxy_url_he
 assert.match(indexHtml, /data-i18n-placeholder="wifi\.proxy_url_placeholder"/);
 assert.match(indexHtml, /id="wifiNoProxy"/);
 assert.match(indexHtml, /data-i18n-placeholder="wifi\.no_proxy_placeholder"/);
+const basicGroupStart = indexHtml.indexOf('data-i18n="groups.basic_settings"');
+const modelGroupStart = indexHtml.indexOf('data-i18n="groups.model_settings"');
+const advancedGroupStart = indexHtml.indexOf('data-i18n="groups.advanced_settings"');
+assert.ok(basicGroupStart >= 0 && modelGroupStart > basicGroupStart);
+assert.ok(advancedGroupStart > modelGroupStart);
+assert.match(indexHtml.slice(basicGroupStart, modelGroupStart), /id="section-device"[\s\S]*id="device-hid-fields"/);
+assert.doesNotMatch(indexHtml.slice(advancedGroupStart), /id="section-hid"|id="advanced-hid-debug-fields"/);
 
 const configForm = await fs.readFile(path.join(webRoot, 'assets/js/config/config-form.js'), 'utf8');
 const wifi = await fs.readFile(path.join(webRoot, 'assets/js/config/wifi.js'), 'utf8');
@@ -257,6 +280,7 @@ const logs = await fs.readFile(path.join(webRoot, 'assets/js/config/logs.js'), '
 const systemEnv = await fs.readFile(path.join(webRoot, 'assets/js/config/system-env.js'), 'utf8');
 const app = await fs.readFile(path.join(webRoot, 'assets/js/config/app.js'), 'utf8');
 assert.match(configForm, /t\('config\.save_failed',\{section:/);
+assert.match(app, /moveHidGroupedFields\(\)/);
 assert.match(wifi, /t\('wifi\.connected_to',\s*\{ssid\s*:/);
 assert.match(wifi, /t\('wifi\.no_networks'\)/);
 assert.match(wifi, /proxy_mode:proxyMode/);

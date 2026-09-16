@@ -112,7 +112,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		t.Errorf("expected device section first, got %q", ConfigMeta().Sections[0].Name)
 	}
 
-	for _, name := range []string{"device", "model", "tts", "stt", "audio", "voice_model", "audio_archive", "frame_service", "quick_capture", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
+	for _, name := range []string{"device", "model", "tts", "stt", "audio", "voice_model", "audio_archive", "frame_service", "quick_capture", "voice_notifications", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -188,12 +188,32 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"device.device_type": {
 			help: "Android uses HID touchscreen mode. iOS, macOS, windows, and linux use absolute pointer mode.",
 		},
-		"agent.vad_model_path":     {layout: "wide"},
-		"agent.vad_helper_path":    {layout: "wide"},
-		"agent.custom_instruction": {layout: "wide"},
-		"agent.additional_prompt":  {layout: "wide"},
-		"model.provider":           {layout: "wide"},
-		"model.model":              {layout: "wide"},
+		"agent.vad_model_path":  {layout: "wide"},
+		"agent.vad_helper_path": {layout: "wide"},
+		"agent.custom_instruction": {
+			label:  "Primary instruction",
+			help:   "Replaces the built-in Agent instruction when set. Leave empty to use the built-in instruction.",
+			layout: "wide",
+		},
+		"agent.additional_prompt": {
+			label:  "Additional prompt",
+			help:   "Appended after the primary instruction. Use it for device, project, or environment-specific requirements.",
+			layout: "wide",
+		},
+		"agent.max_iterations": {
+			label: "Maximum tool-call iterations",
+			help:  "Maximum number of model and tool loops for one task. -1 allows unlimited iterations.",
+		},
+		"model.provider": {
+			label:  "Model provider",
+			help:   "Select the configured provider record used for the main model.",
+			layout: "wide",
+		},
+		"model.model": {
+			label:  "Model",
+			help:   "Select or enter the model name exposed by the configured provider.",
+			layout: "wide",
+		},
 		"model.api_mode": {
 			layout: "wide",
 			label:  "Conversation API",
@@ -203,6 +223,11 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 			label:       "Context prune threshold (fraction)",
 			placeholder: "0 = automatic (0.5)",
 			help:        "Fraction of the usable model input budget that triggers cleanup of stale state and older tool exchanges, including during one long-running tool loop, cleaning down to 6/7 of the trigger. Must be 0 or greater than 0 and less than 1; 0 uses 0.5. Capped at context_compaction_threshold so this cheap pass runs before the conversation summary.",
+		},
+		"agent.context_compaction_threshold": {
+			label:       "Context compaction threshold (fraction)",
+			placeholder: "0 = automatic (0.8)",
+			help:        "Fraction of the usable model input budget at which the conversation is summarized. Must be 0 or greater than 0 and less than 1; 0 uses 0.8.",
 		},
 		"model.responses_context_management": {
 			layout: "wide",
@@ -227,10 +252,13 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"model.responses_context_edit_trigger":        {label: "Ark tool-call trigger", placeholder: "10 = recommended", help: "After this many tool calls, Ark clears old tool inputs. 0 uses the recommended value 10."},
 		"model.responses_context_edit_keep":           {label: "Ark tool calls to keep", placeholder: "3 = recommended", help: "Number of recent tool calls Ark keeps after cleanup. 0 uses the recommended value 3."},
 		"model.responses_context_edit_clear_thinking": {label: "Clear old thinking", help: "Ask Ark to remove previous thinking turns when it applies the context edit."},
-		"model.reasoning_effort":                      {help: "Empty = auto. Options follow the selected model capability; none is shown only when the model supports disabling reasoning."},
+		"model.temperature":                           {label: "Temperature", help: "Controls response randomness. Lower values are more deterministic; 0 is sent as an explicit value."},
+		"model.max_response_tokens":                   {label: "Maximum response tokens", help: "Maximum number of tokens allowed in one model response."},
+		"model.log_raw_http":                          {label: "Raw HTTP logging", help: "Write raw model HTTP requests and responses to the Agent log directory. Enable only while troubleshooting."},
+		"model.reasoning_effort":                      {label: "Reasoning effort", help: "Empty = auto. Options follow the selected model capability; none is shown only when the model supports disabling reasoning."},
 		"model.reasoning_budget_tokens":               {label: "Reasoning budget (tokens)", placeholder: "0 = auto", help: "Optional exact reasoning budget. Shown for models that expose budget_tokens; 0 uses the model default or effort preset. Reasoning tokens are drawn from max_response_tokens, so this must be at least 1024 and smaller than that limit."},
-		"model.context_window":                        {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
-		"model.model_max_output_tokens":               {placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
+		"model.context_window":                        {label: "Context window (tokens)", placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
+		"model.model_max_output_tokens":               {label: "Provider output limit (tokens)", placeholder: "0 = auto", help: "0 = auto: use provider metadata when available."},
 		"tts.provider":                                {layout: "wide"},
 		"stt.provider":                                {layout: "wide"},
 		"audio.socket":                                {layout: "wide"},
@@ -447,7 +475,9 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"quick_capture.enabled", defaults.QuickCapture.EnabledOrDefault()},
 		{"quick_capture.gpio_pin", defaults.QuickCapture.GPIOPin},
 		{"quick_capture.screen_memory_ttl", defaults.QuickCapture.ScreenMemoryTTLOrDefault()},
+		{"voice_notifications.retention_days", defaults.VoiceNotifications.RetentionDaysOrDefault()},
 		{"device.device_type", defaults.Device.DeviceTypeOrDefault()},
+		{"log.level", defaults.Log.LevelOrDefault()},
 		{"log.llm_http_retention_days", defaults.Log.LLMHTTPRetentionDaysOrDefault()},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
 		{"hid.keyboard_layout", defaults.HID.KeyboardLayout},
@@ -458,6 +488,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"search.provider", defaults.Search.ProviderOrDefault()},
 		{"agent.input_mode", defaults.InputMode},
 		{"agent.locale", defaults.LocaleOrDefault()},
+		{"agent.timezone", defaults.TimezoneOrDefault()},
 		{"agent.vad_backend", defaults.VADBackend},
 		{"agent.vad_model_path", defaults.VADModelPath},
 		{"agent.vad_helper_path", defaults.VADHelperPath},
@@ -646,7 +677,7 @@ func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
 		t.Fatal("missing model.api_mode metadata")
 	}
 	wantProviders := map[string][]string{
-		"responses":          {"openai", "openrouter", "volcengine"},
+		"responses":          {"openai", "openrouter", "volcengine", "deepseek"},
 		"responses_stateful": {"openai", "volcengine"},
 	}
 	for _, option := range field.Enum {
@@ -941,6 +972,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},
 		{"frame_service", reflect.TypeOf(FrameServiceConfig{}), nil},
 		{"quick_capture", reflect.TypeOf(QuickCaptureConfig{}), nil},
+		{"voice_notifications", reflect.TypeOf(VoiceNotificationsConfig{}), map[string]bool{"enabled": true, "max_pending": true, "response_tail": true, "expiration": true}},
 		{"device", reflect.TypeOf(DeviceConfig{}), map[string]bool{"backend": true}},
 		{"hid", reflect.TypeOf(HIDConfig{}), map[string]bool{"pointer_mode": true}},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},
@@ -1012,9 +1044,6 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		"model": true, "tts": true, "stt": true, "device": true, "hid": true,
 		"audio": true, "search": true, "log": true, "telemetry": true, "termination_policy": true, "live_activity": true,
 		"skills_dirs": true, "bundled_skills_dir": true,
-		// Deliberately file-only: conversation compaction tuning is an expert
-		// knob edited in agent.toml, not exposed in the web form.
-		"context_compaction_threshold": true,
 	}
 	cfgType := reflect.TypeOf(Config{})
 	for name, f := range tomlKeys(cfgType) {

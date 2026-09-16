@@ -12,23 +12,23 @@ import (
 
 func TestVoiceProviderRecordsUseCanonicalTypeTOML(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
-[tts_providers.voice]
+[voice_settings.classic.tts.providers.voice]
 type = "fish-audio"
 provider = "minimax"
 api_key = "sk-v"
 
-[stt_providers.speech]
+[voice_settings.classic.stt.providers.speech]
 type = "openai-whisper"
 provider = "tencent-asr"
 api_key = "sk-s"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "voice"
 
-[stt]
+[voice_settings.classic.stt]
 provider = "speech"
 
-[model]
+[model_settings.model]
 provider = "openai"
 model = "gpt-4o"
 api_key = "sk-x"
@@ -52,19 +52,19 @@ api_key = "sk-x"
 
 func TestLegacyVoiceProviderRecordFieldStillLoads(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
-[tts_providers.voice]
+[voice_settings.classic.tts.providers.voice]
 provider = "fish-audio"
 
-[stt_providers.speech]
+[voice_settings.classic.stt.providers.speech]
 provider = "openai-whisper"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "voice"
 
-[stt]
+[voice_settings.classic.stt]
 provider = "speech"
 
-[model]
+[model_settings.model]
 provider = "openai"
 model = "gpt-4o"
 api_key = "sk-x"
@@ -93,12 +93,12 @@ func writeVoiceProviderConfig(t *testing.T, body string) Config {
 // type and inherits its fields, mirroring resolveModelProvider for [model].
 func TestTTSProviderReferenceResolves(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
-[tts_providers.fish-main]
+[voice_settings.classic.tts.providers.fish-main]
 type = "fish-audio"
 api_key = "sk-fish"
 reference_id = "ref-123"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "fish-main"
 speed = 1.2
 `)
@@ -121,17 +121,17 @@ speed = 1.2
 // this is the whole point of named records over the old per-type credentials.
 func TestTTSTwoRecordsOfSameType(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
-[tts_providers.minimax-main]
+[voice_settings.classic.tts.providers.minimax-main]
 type = "minimax"
 api_key = "sk-aaa"
 voice_id = "male-qn-qingse"
 
-[tts_providers.minimax-alt]
+[voice_settings.classic.tts.providers.minimax-alt]
 type = "minimax"
 api_key = "sk-bbb"
 voice_id = "female-shaonv"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-alt"
 `)
 
@@ -153,7 +153,7 @@ provider = "minimax-alt"
 // configs and must not need a migration to keep speaking.
 func TestTTSBareProviderTypeStillWorks(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-cn"
 api_key = "sk-flat"
 voice_id = "male-qn-qingse"
@@ -171,14 +171,14 @@ voice_id = "male-qn-qingse"
 // field group and the clearest case for moving fields off the flat section.
 func TestSTTProviderReferenceResolves(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
-[stt_providers.tencent-main]
+[voice_settings.classic.stt.providers.tencent-main]
 type = "tencent-asr"
 app_id = "1234"
 secret_id = "AKID-xxx"
 secret_key = "secret-yyy"
 region = "ap-shanghai"
 
-[stt]
+[voice_settings.classic.stt]
 provider = "tencent-main"
 language = "zh"
 `)
@@ -205,7 +205,7 @@ language = "zh"
 
 func TestSTTBareProviderTypeStillWorks(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
-[stt]
+[voice_settings.classic.stt]
 provider = "openai-whisper"
 api_key = "sk-whisper"
 base_url = "https://api.openai.com/v1"
@@ -223,12 +223,12 @@ base_url = "https://api.openai.com/v1"
 // overrides an inherited [model_providers.*] value.
 func TestVoiceFlatFieldOverridesRecord(t *testing.T) {
 	cfg := writeVoiceProviderConfig(t, `
-[tts_providers.minimax-main]
+[voice_settings.classic.tts.providers.minimax-main]
 type = "minimax"
 api_key = "sk-record"
 voice_id = "male-qn-qingse"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-main"
 api_key = "sk-override"
 `)
@@ -246,18 +246,18 @@ func TestVoiceProviderAPIKeyEnvironmentReferencesResolve(t *testing.T) {
 	t.Setenv("AIDEN_TEST_STT_KEY", "sk-stt-env")
 
 	cfg := writeVoiceProviderConfig(t, `
-[tts_providers.minimax-main]
+[voice_settings.classic.tts.providers.minimax-main]
 type = "minimax"
 api_key = "$AIDEN_TEST_TTS_KEY"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-main"
 
-[stt_providers.whisper]
+[voice_settings.classic.stt.providers.whisper]
 type = "openai-whisper"
 api_key = "$AIDEN_TEST_STT_KEY"
 
-[stt]
+[voice_settings.classic.stt]
 provider = "whisper"
 `)
 

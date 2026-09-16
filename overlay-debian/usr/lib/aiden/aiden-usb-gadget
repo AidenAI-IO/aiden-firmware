@@ -7,7 +7,7 @@
 
 GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
 USB_MODE_PATH=/proc/device-tree/usbdrd/usb@ffb00000/dr_mode
-AGENT_TOML=/userdata/agent/agent.toml
+AGENT_TOML=${AGENT_TOML:-/userdata/agent/agent.toml}
 
 USB0_ADDR=192.168.42.1
 USB0_NETMASK=255.255.255.0
@@ -25,6 +25,15 @@ mark() {
 	return 0
 }
 
+reject_legacy_device_config() {
+	[ -r "$AGENT_TOML" ] || return 0
+	if grep -Eq '^[[:space:]]*\[device\][[:space:]]*(#.*)?$' "$AGENT_TOML"; then
+		echo "Unsupported top-level [device] table in $AGENT_TOML; use [basic_settings.device]" >&2
+		return 1
+	fi
+	return 0
+}
+
 read_pointer_mode() {
 	POINTER_MODE=absolute
 	if [ ! -f "$AGENT_TOML" ]; then
@@ -32,7 +41,7 @@ read_pointer_mode() {
 	fi
 	device_line=$(awk '
 		/^[[:space:]]*\[/ {
-			in_device = ($0 ~ /^[[:space:]]*\[device\][[:space:]]*$/)
+			in_device = ($0 ~ /^[[:space:]]*\[basic_settings\.device\][[:space:]]*$/)
 			next
 		}
 		in_device && /^[[:space:]]*device_type[[:space:]]*=/ {
@@ -77,6 +86,7 @@ disable_usb0() {
 }
 
 start() {
+	reject_legacy_device_config || return 1
 	echo "Setting up Aiden USB composite gadget (HID + ECM)..."
 
 	USB_MODE=$(cat "$USB_MODE_PATH" 2>/dev/null)
@@ -155,7 +165,7 @@ start() {
 	printf '\005\001\011\006\241\001\005\007\031\340\051\347\025\000\045\001\165\001\225\010\201\002\225\001\165\010\201\001\225\006\165\010\025\000\045\145\005\007\031\000\051\145\201\000\300' \
 		> "$GADGET_DIR/functions/hid.usb0/report_desc"
 
-	# Touch / mouse HID function (report format follows [device].device_type)
+	# Touch / mouse HID function (report format follows [basic_settings.device].device_type)
 	mkdir -p "$GADGET_DIR/functions/hid.usb1"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/protocol"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/subclass"

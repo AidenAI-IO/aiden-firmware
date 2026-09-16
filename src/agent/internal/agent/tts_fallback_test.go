@@ -179,7 +179,7 @@ func TestServerFinalSpeechStopsFailedPlaybackBeforeFallback(t *testing.T) {
 }
 
 func TestBundledTTSUnavailableFallbackAssetsArePCM16Mono16k(t *testing.T) {
-	assetDir := filepath.Join("..", "..", "..", "..", "overlay", "oem", "usr", "share", "aiden", "audio", "voice-notifications")
+	assetDir := filepath.Join("..", "..", "..", "..", "overlay-debian-oem", "usr", "share", "aiden", "audio", "voice-notifications")
 	for _, filename := range []string{ttsUnavailableFallbackChinese, ttsUnavailableFallbackEnglish} {
 		wavData, err := os.ReadFile(filepath.Join(assetDir, filename))
 		if err != nil {

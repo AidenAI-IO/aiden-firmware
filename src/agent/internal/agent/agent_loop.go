@@ -855,6 +855,7 @@ func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.Conte
 		if toolID != "" && strings.TrimSpace(call.ID) == toolID {
 			choice.ToolCalls = []llms.ToolCall{call}
 			choice.FuncCall = call.FunctionCall
+			choice.GenerationInfo = responsesGenerationInfoForToolCall(choice.GenerationInfo, call.ID)
 			return choice
 		}
 	}
@@ -865,7 +866,41 @@ func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.Conte
 	}
 	choice.ToolCalls = []llms.ToolCall{*firstValid}
 	choice.FuncCall = firstValid.FunctionCall
+	choice.GenerationInfo = responsesGenerationInfoForToolCall(choice.GenerationInfo, firstValid.ID)
 	return choice
+}
+
+// responsesGenerationInfoForToolCall removes unexecuted parallel function-call
+// items from stateless Responses replay. Some compatible providers, including
+// DeepSeek, always allow parallel tool calls even when the request asks them
+// not to. Aiden executes one call per iteration, so replaying the other calls
+// without matching function_call_output items would make the next request
+// invalid.
+func responsesGenerationInfoForToolCall(info map[string]any, toolID string) map[string]any {
+	toolID = strings.TrimSpace(toolID)
+	items, ok := info["responses_output_items"].([]json.RawMessage)
+	if !ok || len(items) == 0 || toolID == "" {
+		return info
+	}
+	filtered := make([]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		var metadata struct {
+			Type   string `json:"type"`
+			CallID string `json:"call_id"`
+		}
+		if json.Unmarshal(item, &metadata) != nil || metadata.Type != "function_call" || strings.TrimSpace(metadata.CallID) == toolID {
+			filtered = append(filtered, item)
+		}
+	}
+	if len(filtered) == len(items) {
+		return info
+	}
+	cloned := make(map[string]any, len(info))
+	for key, value := range info {
+		cloned[key] = value
+	}
+	cloned["responses_output_items"] = filtered
+	return cloned
 }
 
 type roleExecutionResult struct {
@@ -940,7 +975,7 @@ func (l *AgentLoop) touchPointerModeMismatchContentFinalAnswer(contentResp *llms
 	lower := strings.ToLower(content)
 	if !strings.Contains(lower, "hid.pointer_mode") &&
 		!strings.Contains(lower, "device.device_type") &&
-		!strings.Contains(lower, "[device].device_type") {
+		!strings.Contains(lower, "[basic_settings.device].device_type") {
 		return ""
 	}
 	if !strings.Contains(lower, "stop operation here") && !strings.Contains(lower, "touch mode likely does not match") {
@@ -966,9 +1001,9 @@ func choiceHasToolCall(choice *llms.ContentChoice, toolName string) bool {
 func touchPointerModeMismatchGuidance(platform, pointerMode string) string {
 	switch {
 	case platform == "android" && pointerMode == "absolute":
-		return `touch_gesture produced no visible screen change, and the connected platform is Android while [device].device_type derives hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch [device].device_type to "Android", restart the agent, and retry.`
+		return `touch_gesture produced no visible screen change, and the connected platform is Android while [basic_settings.device].device_type derives hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch [basic_settings.device].device_type to "Android", restart the agent, and retry.`
 	case (platform == "ios" || platform == "ipados") && pointerMode == "touchscreen":
-		return `touch_gesture produced no visible screen change, and the connected platform is iOS while [device].device_type derives hid.pointer_mode="touchscreen". Stop operation here because the touch mode likely does not match the target. Please switch [device].device_type to "iOS", restart the agent, and retry.`
+		return `touch_gesture produced no visible screen change, and the connected platform is iOS while [basic_settings.device].device_type derives hid.pointer_mode="touchscreen". Stop operation here because the touch mode likely does not match the target. Please switch [basic_settings.device].device_type to "iOS", restart the agent, and retry.`
 	default:
 		return ""
 	}

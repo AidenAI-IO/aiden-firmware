@@ -15,12 +15,12 @@ trap 'rm -rf "$tmpdir"' EXIT
 dest_overlay="$tmpdir/dest-overlay"
 catalog="$tmpdir/tools.catalog"
 managed_state="$tmpdir/managed-tools.list"
-mkdir -p "$dest_overlay/etc/init.d"
+mkdir -p "$dest_overlay/etc"
 mkdir -p "$dest_overlay/usr/share/aiden/skills/planner"
 mkdir -p "$dest_overlay/usr/share/aiden/skills/device-operator"
 mkdir -p "$dest_overlay/usr/share/aiden"
 
-printf 'service\n' > "$dest_overlay/etc/init.d/S53agent"
+printf 'config\n' > "$dest_overlay/etc/aiden_boot.conf"
 printf 'actions\n' > "$dest_overlay/usr/share/aiden/quick_actions.json"
 printf 'planner\n' > "$dest_overlay/usr/share/aiden/skills/planner/SKILL.md"
 printf 'operator\n' > "$dest_overlay/usr/share/aiden/skills/device-operator/SKILL.md"
@@ -40,7 +40,7 @@ if [ -e "$dest_overlay/usr/share/aiden" ]; then
     exit 1
 fi
 
-if [ "$(cat "$dest_overlay/etc/init.d/S53agent")" != "service" ]; then
+if [ "$(cat "$dest_overlay/etc/aiden_boot.conf")" != "config" ]; then
     echo "cleanup script must preserve rootfs etc staging" >&2
     exit 1
 fi

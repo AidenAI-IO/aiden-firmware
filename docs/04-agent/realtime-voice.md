@@ -15,6 +15,27 @@ the adapter package must not be treated as an OpenAI-compatible wire protocol.
 
 ## Responsibilities and boundaries
 
+### Input transcription
+
+Realtime audio understanding and user-facing transcription are separate
+outputs of the same provider session. The provider consumes microphone audio
+directly to produce a response; the final user transcript is used for Web
+history and is not sent back as a second text prompt.
+
+OpenAI requests `gpt-4o-mini-transcribe` in both GA and legacy session payloads.
+Qwen, xAI, and Gemini use their provider-native transcription paths. The
+ordinary `[stt]` configuration applies only to `input_mode = "stt"` and does
+not configure a realtime session. The configured Agent locale controls the
+realtime response language through the session instructions; it does not set
+or restrict the provider's input transcription language.
+
+OpenAI diagnostics record the requested and acknowledged transcription model,
+speech start/stop, audio commit, final transcript or transcription failure,
+response ID, and tool call IDs. These events may be omitted or reordered by a
+provider, so diagnostics do not change response admission or commit a
+server-VAD buffer a second time. Final transcript text is user data and must be
+handled accordingly.
+
 The realtime path is split into three layers:
 
 ```text
@@ -78,7 +99,7 @@ the persisted realtime context.
 The daemon consumes provider-neutral `Event` values. A typical audio turn is:
 
 ```text
-audio → speech_started → speech_stopped → transcript_final
+audio → speech_started → speech_stopped → input_committed → transcript_final
       → response_started → transcript_delta/audio/tool_call
       → response_done or response_cancelled
 ```
@@ -102,25 +123,26 @@ not added to user-visible conversation history.
 
 ## Configuration
 
-Use `input_mode = "realtime"` and select a named provider record:
+Use `[voice_settings.mode].input_mode = "realtime"` and select a named provider record:
 
 ```toml
+[voice_settings.mode]
 input_mode = "realtime"
 
-[voice_model_providers.qwen-main]
+[voice_settings.realtime.providers.qwen-main]
 type = "qwen"
 api_key = "$DASHSCOPE_API_KEY"
 model = "qwen-audio-3.0-realtime-plus"
 voice = "longanqian"
 
-[voice_model]
+[voice_settings.realtime]
 provider = "qwen-main"
 ```
 
 Provider-specific credentials and routing fields belong under
-`[voice_model_providers.<name>]`; `[voice_model]` contains the selected record
+`[voice_settings.realtime.providers.<name>]`; `[voice_settings.realtime]` contains the selected record
 and session-wide options such as instructions and turn detection. See the
-[Agent Configuration Reference](configuration.md#voice_model) for all fields
+[Agent Configuration Reference](configuration.md#voice_settingsrealtime) for all fields
 and provider visibility rules.
 
 ## Testing and extension points

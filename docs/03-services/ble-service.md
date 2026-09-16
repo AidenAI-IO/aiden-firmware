@@ -31,12 +31,12 @@ aiden-zram.config rv1106-bt.config
 Runtime startup order is:
 
 ```text
-S35wifidrv -> S39hciinit -> S40bluetoothd -> S41ble_service
+aiden-wifi-driver.service -> aiden-bluetooth-attach.service -> bluetooth.service -> aiden-ble.service
 ```
 
-`S39hciinit` loads the AES/CMAC crypto required by LE SMP, then attaches the
+`aiden-bluetooth-attach.service` loads the AES/CMAC crypto required by LE SMP, then attaches the
 AIC8800 controller on `/dev/ttyS1` at 1.5 Mbaud without powering it through the
-legacy `HCIDEVUP` ioctl. `S40bluetoothd` bind-mounts the BlueZ state directory,
+legacy `HCIDEVUP` ioctl. Debian `bluetooth.service` bind-mounts the BlueZ state directory,
 starts the daemon, and lets BlueZ power `hci0` through the management API. This
 ordering is required for the kernel to register the LE SMP fixed channel used
 by encrypted GATT reads. If the controller disappears, the watchdog repeats

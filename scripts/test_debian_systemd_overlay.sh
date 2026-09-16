@@ -5,8 +5,6 @@ readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly OVERLAY=${REPO_ROOT}/overlay-debian
 readonly OEM_OVERLAY=${REPO_ROOT}/overlay-debian-oem
 readonly UNIT_DIR=${OVERLAY}/etc/systemd/system
-readonly INIT_MAP=${REPO_ROOT}/scripts/debian/init-script-map.tsv
-readonly ENV_MAP=${REPO_ROOT}/scripts/debian/environment-service-map.tsv
 readonly TMPFILES=${OVERLAY}/etc/tmpfiles.d/aiden.conf
 readonly TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "${TEST_ROOT}"' EXIT
@@ -48,27 +46,28 @@ while IFS= read -r script; do
     sh -n "${script}"
 done < <(find "${OVERLAY}/usr/lib/aiden" -maxdepth 1 -type f | LC_ALL=C sort)
 
-awk -F '\t' '$2 == "migrate" {print $3}' "${INIT_MAP}" \
-    | tr ',' '\n' | LC_ALL=C sort -u \
-    | while IFS= read -r unit; do
-        case "${unit}" in
-            oem.mount|aiden-*.service)
-                [ -f "${UNIT_DIR}/${unit}" ] \
-                    || fail "mapped native unit is missing: ${unit}"
-                ;;
-        esac
-    done
-
-while IFS=$'\t' read -r init_script unit environment_file invalid_policy; do
-    [ "${init_script}" = init_script ] && continue
+# Debian units that consume the sanitized environment. This list replaces the
+# retired Buildroot init-script map now that overlay/etc/init.d is gone.
+environment_consumers='
+aiden-ble.service
+aiden-wifi-proxy.service
+aiden-frame.service
+aiden-adb-host.service
+aiden-agent.service
+aiden-audio.service
+aiden-ota-health.service
+aiden-config-web.service
+aiden-ttyd.service
+'
+environment_file=/run/aiden/system.env
+for unit in ${environment_consumers}; do
     unit_path=${UNIT_DIR}/${unit}
     [ -f "${unit_path}" ] || fail "environment consumer unit is missing: ${unit}"
     grep -q 'aiden-environment.service' "${unit_path}" \
         || fail "${unit} does not depend on aiden-environment.service"
     grep -qx "EnvironmentFile=${environment_file}" "${unit_path}" \
         || fail "${unit} does not consume ${environment_file}"
-    [ -n "${invalid_policy}" ] || fail "${unit} has no invalid-environment policy"
-done <"${ENV_MAP}"
+done
 
 if rg -n 'aiden-env-run|/etc/init\.d/' "${UNIT_DIR}"; then
     fail "Debian units must not use the Buildroot environment wrapper or SysV scripts"
@@ -143,6 +142,30 @@ grep -q -- '/oem/usr/bin/agent config-web' \
     "${UNIT_DIR}/aiden-config-web.service"
 grep -q -- '--wifi-config-environment=/run/aiden/wpa_supplicant-config.env' \
     "${UNIT_DIR}/aiden-config-web.service"
+grep -Fq 'in_device = ($0 ~ /^[[:space:]]*\[basic_settings\.device\][[:space:]]*$/' \
+    "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" \
+    || fail "Debian USB gadget must read device_type from the grouped config path"
+grep -Fq "Unsupported top-level [device] table" \
+    "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" \
+    || fail "Debian USB gadget must reject the retired top-level device table"
+grep -Eq '^[[:space:]]*reject_legacy_device_config \|\| return 1$' \
+    "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" \
+    || fail "Debian USB gadget must reject invalid config before setup"
+legacy_agent_config=${TEST_ROOT}/legacy-agent.toml
+printf '[device]\ndevice_type = "Android"\n' >"${legacy_agent_config}"
+set +e
+legacy_gadget_output=$(AGENT_TOML="${legacy_agent_config}" \
+    "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" start 2>&1)
+legacy_gadget_status=$?
+set -e
+[ "${legacy_gadget_status}" -ne 0 ] \
+    || fail "Debian USB gadget accepted the retired top-level device table"
+printf '%s\n' "${legacy_gadget_output}" \
+    | grep -Fq "Unsupported top-level [device] table" \
+    || fail "Debian USB gadget did not report the retired device table"
+if printf '%s\n' "${legacy_gadget_output}" | grep -Fq "Setting up Aiden USB composite gadget"; then
+    fail "Debian USB gadget began setup before rejecting invalid config"
+fi
 if grep -Eq '^Requires=.*aiden-wifi-proxy\.service' \
     "${UNIT_DIR}/aiden-config-web.service"; then
     fail "Config Web must remain available when the Wi-Fi proxy fails"
@@ -204,6 +227,14 @@ grep -qx 'ExecStart=/usr/lib/aiden/aiden-boot-timeline finalize-systemd' \
 grep -q 'networkctl reconfigure' "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
 if grep -qE 'dhcpcd|dhclient' "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"; then
     fail "Wi-Fi guard takes DHCP ownership from networkd"
+fi
+grep -Fqx 'insert_if_present aic8800_fdrv.ko he_on="${he_on}"' \
+    "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -Fqx 'he_on=${AIDEN_WIFI_HE:-0}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -Fqx 'AIDEN_WIFI_HE=0' "${OVERLAY}/etc/aiden_boot.conf"
+grep -Fqx 'Wants=wpa_supplicant@wlan0.service' "${UNIT_DIR}/aiden-wlan-guard.service"
+if grep -Eq '^Requires=.*wpa_supplicant@wlan0' "${UNIT_DIR}/aiden-wlan-guard.service"; then
+    fail "Wi-Fi guard must survive restarting supplicant during recovery"
 fi
 
 grep -Fqx 'SUBSYSTEM=="misc", KERNEL=="rknpu", GROUP="video", MODE="0660"' \
@@ -427,5 +458,6 @@ fi
 "${REPO_ROOT}/scripts/test_debian_agent_control.sh"
 "${REPO_ROOT}/scripts/test_debian_frame_control.sh"
 "${REPO_ROOT}/scripts/test_debian_python_environment.sh"
+python3 "${REPO_ROOT}/scripts/test_wlan_guard.py"
 
 echo "Debian systemd overlay tests passed"

@@ -36,7 +36,7 @@ cross-compilation workflow for device-runnable artifacts.
 Build and audit the Debian armhf application bundle with:
 
 ```bash
-scripts/debian-stage2/build-apps.sh all
+scripts/debian-apps/build-apps.sh all
 ```
 
 This workflow will:
@@ -45,10 +45,10 @@ This workflow will:
 2. Compile C/C++ programs using `cmake/toolchains/armhf-debian.cmake`;
 3. Install/use Go 1.26.0;
 4. Cross-compile the Go Agent and BLE daemon for `linux/arm GOARM=7`;
-5. Audit the application and shared-library bundle under `output/debian-stage2/`.
+5. Audit the application and shared-library bundle under `output/debian-apps/`.
 
 Use `./debian_build.sh` for the complete signed local firmware image set. It
-builds Stage 2 applications, the Debian rootfs, the RV1106 BSP, A/B images, and
+builds applications, the Debian rootfs, the RV1106 BSP, A/B images, and
 the local OTA manifest in one workflow.
 
 ```bash

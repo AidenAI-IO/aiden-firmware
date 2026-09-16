@@ -10,14 +10,6 @@ CLAUDE.md
 AGENTS.md
 *.pcm
 /pico-sdk/
-/overlay/oem/usr/bin/*
-!/overlay/oem/usr/bin/.gitkeep
-!/overlay/oem/usr/bin/aiden-env-run
-!/overlay/oem/usr/bin/aiden-dynamic-keyboard
-!/overlay/oem/usr/bin/RkLunch.sh
-/overlay/oem/usr/lib/*
-!/overlay/oem/usr/lib/librknnmrt.so
-!/overlay/oem/usr/lib/aiden-log.sh
 .env
 
 # Cross-compiled agent binary
@@ -64,6 +56,9 @@ benchmark/mobilegym/config/bridge_token
 
 # MobileGym local launcher state (PIDs/logs)
 /.mobilegym_run/
+
+# Agent runtime state (regenerated at runtime; keep the committed template)
+src/agent/config/log/
 
 # Docker
 benchmark/mobilegym/docker/.env

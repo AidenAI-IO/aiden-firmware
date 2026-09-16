@@ -373,10 +373,11 @@ type Device struct {
 }
 
 type VoiceNotifications struct {
-	Enabled      *bool                         `json:"enabled"`
-	MaxPending   int                           `json:"max_pending"`
-	ResponseTail VoiceNotificationResponseTail `json:"response_tail"`
-	Expiration   VoiceNotificationExpiration   `json:"expiration"`
+	Enabled       *bool                         `json:"enabled"`
+	MaxPending    int                           `json:"max_pending"`
+	RetentionDays int                           `json:"retention_days"`
+	ResponseTail  VoiceNotificationResponseTail `json:"response_tail"`
+	Expiration    VoiceNotificationExpiration   `json:"expiration"`
 }
 
 type VoiceNotificationResponseTail struct {
@@ -391,7 +392,8 @@ type VoiceNotificationExpiration struct {
 }
 
 type Log struct {
-	LLMHTTPRetentionDays int `json:"llm_http_retention_days"`
+	LLMHTTPRetentionDays int    `json:"llm_http_retention_days"`
+	Level                string `json:"level"`
 }
 
 type OTA struct {
@@ -433,6 +435,7 @@ type LiveActivity struct {
 
 type Agent struct {
 	Locale                     string  `json:"locale"`
+	Timezone                   string  `json:"timezone"`
 	CustomInstruction          string  `json:"custom_instruction"`
 	AdditionalPrompt           string  `json:"additional_prompt"`
 	ContextPruneThreshold      float64 `json:"context_prune_threshold,omitempty"`
@@ -598,8 +601,9 @@ func (d Config) ToAgentConfig() agent.Config {
 		},
 		Storage: storage,
 		VoiceNotifications: agent.VoiceNotificationsConfig{
-			Enabled:    d.VoiceNotifications.Enabled,
-			MaxPending: d.VoiceNotifications.MaxPending,
+			Enabled:       d.VoiceNotifications.Enabled,
+			MaxPending:    d.VoiceNotifications.MaxPending,
+			RetentionDays: d.VoiceNotifications.RetentionDays,
 			ResponseTail: agent.VoiceNotificationResponseTailConfig{
 				Enabled:      d.VoiceNotifications.ResponseTail.Enabled,
 				MaxItems:     d.VoiceNotifications.ResponseTail.MaxItems,
@@ -612,6 +616,7 @@ func (d Config) ToAgentConfig() agent.Config {
 		},
 		Log: agent.LogConfig{
 			LLMHTTPRetentionDays: d.Log.LLMHTTPRetentionDays,
+			Level:                d.Log.Level,
 		},
 		OTA: agent.OTAConfig{
 			GitHubProxyURL: d.OTA.GitHubProxyURL,
@@ -650,6 +655,7 @@ func (d Config) ToAgentConfig() agent.Config {
 		},
 		TerminationPolicy:          d.TerminationPolicy,
 		Locale:                     d.Agent.Locale,
+		Timezone:                   d.Agent.Timezone,
 		Instruction:                d.Agent.CustomInstruction,
 		AdditionalPrompt:           d.Agent.AdditionalPrompt,
 		ContextPruneThreshold:      d.Agent.ContextPruneThreshold,
@@ -985,8 +991,9 @@ func FromAgentConfig(cfg agent.Config) Config {
 			DeviceType: cfg.DeviceTypeOrDefault(),
 		},
 		VoiceNotifications: VoiceNotifications{
-			Enabled:    cfg.VoiceNotifications.Enabled,
-			MaxPending: cfg.VoiceNotifications.MaxPendingOrDefault(),
+			Enabled:       cfg.VoiceNotifications.Enabled,
+			MaxPending:    cfg.VoiceNotifications.MaxPendingOrDefault(),
+			RetentionDays: cfg.VoiceNotifications.RetentionDaysOrDefault(),
 			ResponseTail: VoiceNotificationResponseTail{
 				Enabled:      cfg.VoiceNotifications.ResponseTail.Enabled,
 				MaxItems:     cfg.VoiceNotifications.ResponseTail.MaxItems,
@@ -999,6 +1006,7 @@ func FromAgentConfig(cfg agent.Config) Config {
 		},
 		Log: Log{
 			LLMHTTPRetentionDays: cfg.Log.LLMHTTPRetentionDaysOrDefault(),
+			Level:                cfg.Log.LevelOrDefault(),
 		},
 		OTA: OTA{
 			GitHubProxyURL: cfg.OTA.GitHubProxyURLOrDefault(),
@@ -1034,6 +1042,7 @@ func FromAgentConfig(cfg agent.Config) Config {
 		TerminationPolicy: cfg.TerminationPolicyOrDefault(),
 		Agent: Agent{
 			Locale:                     cfg.LocaleOrDefault(),
+			Timezone:                   cfg.TimezoneOrDefault(),
 			CustomInstruction:          customInstructionValue(cfg.Instruction),
 			AdditionalPrompt:           cfg.AdditionalPrompt,
 			ContextPruneThreshold:      cfg.ContextPruneThreshold,

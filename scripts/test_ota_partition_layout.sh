@@ -17,9 +17,9 @@ board_path="$tmp_dir/BoardConfig.mk"
 (
   unset AIDEN_OTA_BOARD_CONFIG_PATH AIDEN_OTA_DEVICE_PATH
   source "$layout_script"
-  expected_board_path="$repo_root/scripts/debian-stage3/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
+  expected_board_path="$repo_root/scripts/debian-system/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
   if [ "$AIDEN_OTA_BOARD_CONFIG_PATH" != "$expected_board_path" ]; then
-    echo "default OTA layout must use the Debian Stage 3 board config" >&2
+    echo "default OTA layout must use the Debian system board config" >&2
     exit 1
   fi
   if [ "$AIDEN_OTA_DEVICE_PATH" != "/dev/disk/by-partlabel/ota" ]; then
@@ -27,7 +27,7 @@ board_path="$tmp_dir/BoardConfig.mk"
     exit 1
   fi
   if [ "$(aiden_ota_partition_size_mib)" != "300" ]; then
-    echo "Debian Stage 3 board config must define a 300 MiB OTA partition" >&2
+    echo "Debian system board config must define a 300 MiB OTA partition" >&2
     exit 1
   fi
 )

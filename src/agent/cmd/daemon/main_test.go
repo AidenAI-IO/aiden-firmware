@@ -52,7 +52,7 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 		},
 	}
 	got := realtimeProviderSessionConfig(cfg)
-	if got.Voice != "custom-voice" || got.Instructions != "speak naturally" || got.TurnDetection != "smart_turn" {
+	if got.Voice != "custom-voice" || !strings.HasPrefix(got.Instructions, "speak naturally") || got.TurnDetection != "smart_turn" {
 		t.Fatalf("unexpected realtime session config: %+v", got)
 	}
 	if got.TurnDetectionSilenceMs != 900 || got.TurnDetectionThresh == nil || *got.TurnDetectionThresh != 0.2 {
@@ -109,11 +109,31 @@ func TestRealtimeDelegatedToolSchemasMatchRuntimeTools(t *testing.T) {
 func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
 	cfg := agent.Config{Instruction: "legacy phone automation prompt"}
 	got := realtimeProviderSessionConfig(cfg)
-	if got.Instructions != agent.DefaultRealtimeVoiceInstructions {
-		t.Fatalf("instructions = %q, want realtime default", got.Instructions)
+	if !strings.HasPrefix(got.Instructions, agent.DefaultRealtimeVoiceInstructions) {
+		t.Fatalf("instructions = %q, want realtime default followed by shared guidance", got.Instructions)
 	}
 	if got.Instructions == cfg.Instruction {
 		t.Fatal("realtime session reused the legacy agent instruction")
+	}
+}
+
+func TestRealtimeSessionConfigIncludesConfiguredResponseLanguage(t *testing.T) {
+	for _, tc := range []struct {
+		locale, language string
+	}{
+		{locale: "zh-CN", language: "Simplified Chinese"},
+		{locale: "en-US", language: "English"},
+	} {
+		t.Run(tc.locale, func(t *testing.T) {
+			cfg := agent.Config{Locale: tc.locale, VoiceModel: agent.VoiceModelConfig{Instructions: "speak naturally"}}
+			got := realtimeProviderSessionConfig(cfg)
+			if !strings.Contains(got.Instructions, "The configured response locale is "+tc.locale+".") {
+				t.Fatalf("realtime instructions missing configured locale: %q", got.Instructions)
+			}
+			if !strings.Contains(got.Instructions, "Always respond in "+tc.language) {
+				t.Fatalf("realtime instructions missing fixed response language: %q", got.Instructions)
+			}
+		})
 	}
 }
 

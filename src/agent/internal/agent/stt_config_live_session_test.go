@@ -12,7 +12,7 @@ import (
 
 func TestStandaloneSTTConfigTestAPILoadsConfigWithoutAgentRuntime(t *testing.T) {
 	dir := ensureTestConfigDir(t, t.TempDir())
-	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[model]\nprovider = \"fake\"\n"), 0o640); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[model_settings.model]\nprovider = \"fake\"\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	api := NewSTTConfigTestAPI(filepath.Join(dir, "agent.toml"))

@@ -16,18 +16,18 @@ import (
 func TestLoadResolvedConfigMigratesFlatVoiceCredentials(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	body := `
-[model]
+[model_settings.model]
 provider = "openai"
 model = "gpt-4o"
 api_key = "sk-model"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-cn"
 api_key = "sk-minimax"
 voice_id = "male-qn-qingse"
 speed = 1.3
 
-[stt]
+[voice_settings.classic.stt]
 provider = "tencent-asr"
 app_id = "1234"
 secret_key = "secret-yyy"
@@ -96,7 +96,7 @@ language = "zh"
 func TestLoadResolvedConfigInventsNoVoiceRecord(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	body := `
-[model]
+[model_settings.model]
 provider = "openai"
 model = "gpt-4o"
 api_key = "sk-model"
@@ -122,16 +122,16 @@ api_key = "sk-model"
 func TestLoadResolvedConfigLeavesRecordsAlone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	body := `
-[model]
+[model_settings.model]
 provider = "openai"
 model = "gpt-4o"
 api_key = "sk-model"
 
-[tts_providers.fish-main]
+[voice_settings.classic.tts.providers.fish-main]
 type = "fish-audio"
 api_key = "sk-fish"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "fish-main"
 speed = 1.0
 `
@@ -158,18 +158,18 @@ speed = 1.0
 func TestLoadResolvedConfigMigratesMixedVoiceCredentialsToReferencedRecords(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	body := `
-[model]
+[model_settings.model]
 provider = "openai"
 model = "gpt-4o"
 api_key = "sk-model"
 
-[tts_providers.voice]
+[voice_settings.classic.tts.providers.voice]
 type = "minimax-cn"
 api_key = "$TTS_API_KEY"
 voice_id = "record-voice"
 emotion = "record-emotion"
 
-[stt_providers.speech]
+[voice_settings.classic.stt.providers.speech]
 type = "tencent-asr"
 api_key = "$STT_API_KEY"
 model = "record-model"
@@ -177,12 +177,12 @@ app_id = "record-app"
 secret_id = "record-id"
 secret_key = "$STT_SECRET_KEY"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "voice"
 api_key = "flat-tts-key"
 voice_id = "flat-voice"
 
-[stt]
+[voice_settings.classic.stt]
 provider = "speech"
 api_key = "flat-stt-key"
 app_id = "flat-app"

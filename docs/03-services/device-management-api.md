@@ -23,14 +23,17 @@ All public endpoints use the `/api` root without an additional version prefix:
 | Configuration | `GET /api/config/schema` | Read field types, defaults, choices, secret markers, and restart hints |
 | Configuration | `PUT /api/config/locale` | Update the page language |
 | Configuration | `POST /api/config/test` | Validate configuration and the device environment without saving |
+| Configuration | `GET /api/config/backup` | Download the persisted grouped `agent.toml` backup |
+| Configuration | `PUT /api/config/backup` | Validate, atomically restore, and apply a grouped TOML backup |
+| Memory | `POST /api/memory/reset` | Clear conversation history and persisted memory, then restart the Agent |
 | Models | `GET /api/models?provider=...&locale=...` | Return the localized model catalog |
 | STT test | `POST /api/config-test/stt/start` | Start a microphone recording test using the submitted unsaved settings |
 | STT test | `POST /api/config-test/stt/stop` | Stop recording and return the transcription result |
 | Storage | `GET /api/storage/status` | Read SD/eMMC state and formatting tasks |
 | Storage | `POST /api/storage/format` | Format the SD card asynchronously |
 | Storage | `POST /api/storage/eject` | Sync and safely eject the SD card |
-| Device | `GET /api/device/snapshot` | Read the aggregated initial-page model: configuration, Wi-Fi, device, firmware, and storage summaries |
-| Device | `GET /api/device/status` | Read the device, firmware, Agent process, USB/HID, and capability summary |
+| Device | `GET /api/device/snapshot` | Read the aggregated initial-page model: configuration, Wi-Fi, device, firmware/component versions, and storage summaries |
+| Device | `GET /api/device/status` | Read the device, firmware/component versions, Agent process, USB/HID, and capability summary |
 | Device | `POST /api/device/reboot` | Reboot the device |
 | Device | `POST /api/device/usb/reenumerate` | Re-enumerate USB HID/ECM |
 | Network | `POST /api/network/wifi/scan` | Scan for nearby Wi-Fi networks |

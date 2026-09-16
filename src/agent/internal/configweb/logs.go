@@ -193,7 +193,7 @@ func stateInt64(values map[string]string, key string) int64 {
 
 func (s *Server) storageStatusValue() map[string]any {
 	if storage := s.currentStorage(); storage != nil {
-		if status := storageStatusMap(storage.Status()); status != nil {
+		if status := s.storageStatusResponse(storage.Status()); status != nil {
 			return status
 		}
 	}
@@ -214,7 +214,7 @@ func (s *Server) storageStatusValue() map[string]any {
 	if mountPoint == "" {
 		mountPoint = "/mnt/sdcard"
 	}
-	return map[string]any{
+	status := map[string]any{
 		"effective_mode": mode,
 		"card": map[string]any{
 			"present":     stateBool(values, "SD_PRESENT"),
@@ -239,6 +239,8 @@ func (s *Server) storageStatusValue() map[string]any {
 			"moved_bytes": stateInt64(values, "MIGRATE_MOVED_BYTES"),
 		},
 	}
+	status["internal"] = filesystemSpaceValue(filepath.Dir(s.options.AgentConfigPath))
+	return status
 }
 
 func tailFile(path string, limit int64) ([]byte, error) {

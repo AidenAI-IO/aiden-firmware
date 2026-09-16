@@ -88,7 +88,7 @@ if ! grep -Fq 'run: ./debian_build.sh' "$WORKFLOW" || \
     exit 1
 fi
 
-# Stage 2 fills .cache with read-only Go module directories that block the next
+# apps fills .cache with read-only Go module directories that block the next
 # actions/checkout clean phase on the shared self-hosted runners.
 if ! grep -Fq '"$GITHUB_WORKSPACE/.cache"' "$WORKFLOW" || \
    ! grep -Fq 'chmod -R u+w "$go_mod_cache"' "$WORKFLOW"; then
@@ -128,15 +128,8 @@ if grep -q 'scripts/test_build_scripts.sh' "$CI_WORKFLOW"; then
     exit 1
 fi
 
-# The policy check reads pico-sdk, so it must not share the release-script job,
-# which has no SDK checkout, and any job running it must sparse-fetch rather
-# than check out the multi-GB worktree. Those are per-job structural facts, so
-# they are checked against the parsed workflow.
-python3 "$ROOT_DIR/scripts/check_ci_policy_job.py"
-
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_build_cli.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'run: bash scripts/test_debian_only_policy.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_rootfs_cli_tool_catalog.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_build_rootfs_cli_tools.sh' "$CI_WORKFLOW" || \
@@ -145,7 +138,6 @@ if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_compress_release_images.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_ota_partition_layout.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_ota_device_config.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_ota_init.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_ota_manifest_generation.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_reusable_rootfs_release_asset.sh' "$CI_WORKFLOW"; then
     echo "CI must run repo-only release workflow and upload script tests" >&2

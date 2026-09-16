@@ -14,7 +14,7 @@ const (
 		"When opening apps or finding contacts, settings, products, or page content on the phone, prefer system search, in-app search, or visible search fields instead of relying on repeated scrolling. " +
 		"Treat requests to place phone calls as phone-automation tasks; do not claim they are impossible merely because there is no dedicated dial tool."
 	DefaultRealtimeVoiceInstructions = "You are Aiden, a realtime voice assistant. Focus on natural conversation. " +
-		"Reply briefly and clearly in the user's language. Use get_current_time only when the exact current date or time matters. " +
+		"Reply briefly and clearly in the configured response language. Use get_current_time only when the exact current date or time matters. " +
 		"Use recall_memory only when saved user preferences or facts are relevant. " +
 		"Use save_memory whenever the user asks you to remember something, and for stable preferences, rules, or procedures you observe; do not claim you remembered something before it returns. Use forget_memory when the user asks you to forget something. " +
 		"Use recall_session_chunks when the user refers to earlier conversation you cannot see in your visible context, since only the most recent turns remain visible. " +
@@ -34,32 +34,34 @@ const (
 	defaultModelMaxResponseTokens = 8192
 	// minReasoningBudgetTokens is Anthropic's documented floor for
 	// thinking.budget_tokens; other budget-style APIs are at or below it.
-	minReasoningBudgetTokens       = 1024
-	defaultModelLogRawHTTP         = true
-	defaultModelReasoningEffort    = ""
-	defaultTTSProvider             = "minimax-cn"
-	defaultTTSVoiceID              = "male-qn-qingse"
-	defaultTTSEmotion              = "happy"
-	defaultTTSSpeed                = 1.0
-	defaultSTTProvider             = "openai-whisper"
-	defaultSTTModel                = "whisper-1"
-	defaultSTTLanguage             = "zh"
-	tencentASRProvider             = "tencent-asr"
-	legacyTencentProvider          = "tencent"
-	legacyTencentASRProvider       = "tencent_asr"
-	defaultTencentASRRegion        = "ap-shanghai"
-	defaultTencentASREngineModel   = "16k_zh"
-	defaultAudioSocket             = "/run/audio_service/audio_service.sock"
-	defaultAudioSampleRate         = 16000
-	defaultAudioChannels           = 1
-	defaultAudioBitWidth           = 16
-	defaultAudioArchiveStoragePath = "/userdata/audio"
-	defaultAudioArchiveMaxFiles    = 500
-	defaultAudioArchiveMaxSizeMB   = 100
-	defaultLLMHTTPLogRetentionDays = 7
-	defaultStorageMountPoint       = "/mnt/sdcard"
-	defaultStorageDevice           = "mmcblk2"
-	defaultStorageMinCardFreeMB    = 64
+	minReasoningBudgetTokens               = 1024
+	defaultModelLogRawHTTP                 = true
+	defaultModelReasoningEffort            = ""
+	defaultTTSProvider                     = "minimax-cn"
+	defaultTTSVoiceID                      = "male-qn-qingse"
+	defaultTTSEmotion                      = "happy"
+	defaultTTSSpeed                        = 1.0
+	defaultSTTProvider                     = "openai-whisper"
+	defaultSTTModel                        = "whisper-1"
+	defaultSTTLanguage                     = "zh"
+	tencentASRProvider                     = "tencent-asr"
+	legacyTencentProvider                  = "tencent"
+	legacyTencentASRProvider               = "tencent_asr"
+	defaultTencentASRRegion                = "ap-shanghai"
+	defaultTencentASREngineModel           = "16k_zh"
+	defaultAudioSocket                     = "/run/audio_service/audio_service.sock"
+	defaultAudioSampleRate                 = 16000
+	defaultAudioChannels                   = 1
+	defaultAudioBitWidth                   = 16
+	defaultAudioArchiveStoragePath         = "/userdata/audio"
+	defaultAudioArchiveMaxFiles            = 500
+	defaultAudioArchiveMaxSizeMB           = 100
+	defaultLLMHTTPLogRetentionDays         = 7
+	defaultLogLevel                        = "info"
+	defaultNotificationMemoryRetentionDays = 14
+	defaultStorageMountPoint               = "/mnt/sdcard"
+	defaultStorageDevice                   = "mmcblk2"
+	defaultStorageMinCardFreeMB            = 64
 	// Migration watermarks: start when eMMC free space drops below 10%,
 	// stop once it is back at or above 50%.
 	defaultStorageMigrateStartFreePct = 10
@@ -108,6 +110,7 @@ func defaultBoolPtr(value bool) *bool {
 
 func DefaultConfig() Config {
 	return Config{
+		Timezone: defaultTimezone,
 		Model: ModelConfig{
 			Provider: defaultModelProvider,
 			Model:    defaultModelName,
@@ -160,8 +163,9 @@ func DefaultConfig() Config {
 			ScreenMemoryTTL: DefaultScreenMemoryTTL,
 		},
 		VoiceNotifications: VoiceNotificationsConfig{
-			Enabled:    defaultBoolPtr(true),
-			MaxPending: 8,
+			Enabled:       defaultBoolPtr(true),
+			MaxPending:    8,
+			RetentionDays: defaultNotificationMemoryRetentionDays,
 			ResponseTail: VoiceNotificationResponseTailConfig{
 				Enabled:      defaultBoolPtr(true),
 				MaxItems:     1,
@@ -204,6 +208,7 @@ func DefaultConfig() Config {
 		},
 		Log: LogConfig{
 			LLMHTTPRetentionDays: defaultLLMHTTPLogRetentionDays,
+			Level:                defaultLogLevel,
 		},
 		HID: HIDConfig{
 			KeyboardDevice:        defaultKeyboardDevice,

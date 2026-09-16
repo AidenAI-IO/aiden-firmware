@@ -240,12 +240,12 @@ def cli(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--optimizer-model",
         default="",
-        help="OpenRouter model ID for optimizer; comma-separated values are tried in order; defaults to --agent-config [model].model",
+        help="OpenRouter model ID for optimizer; comma-separated values are tried in order; defaults to --agent-config [model_settings.model].model",
     )
     parser.add_argument(
         "--judge-model",
         default="",
-        help="OpenRouter model ID for judge (rubric eval); defaults to --agent-config [model].model",
+        help="OpenRouter model ID for judge (rubric eval); defaults to --agent-config [model_settings.model].model",
     )
     parser.add_argument(
         "--no-judge",

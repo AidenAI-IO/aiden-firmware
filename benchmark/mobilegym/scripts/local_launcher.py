@@ -564,12 +564,12 @@ def apply_analysis_env_from_payload(env: dict[str, str], payload: dict[str, Any]
 
 
 def fetch_board_model_config(board_url: str) -> dict[str, str]:
-    model_values = parse_agent_model_values(fetch_board_toml_section(board_url, "model"))
+    model_values = parse_agent_model_values(fetch_board_toml_section(board_url, "model_settings.model"))
     provider_ref = model_values.get("provider", "")
     provider_values: dict[str, str] = {}
     if provider_ref:
         provider_values = parse_agent_model_provider_values(
-            fetch_board_toml_section(board_url, f"model_providers.{provider_ref}")
+            fetch_board_toml_section(board_url, f"model_settings.providers.{provider_ref}")
         )
     return agent_model_environment(model_values, provider_values)
 
@@ -610,10 +610,10 @@ def fetch_board_toml_section(board_url: str, section: str) -> str:
 
 
 def parse_agent_model_config(text: str) -> dict[str, str]:
-    model_values = parse_agent_model_values(toml_section(text, "model"))
+    model_values = parse_agent_model_values(toml_section(text, "model_settings.model"))
     provider_ref = model_values.get("provider", "")
     provider_values = parse_agent_model_provider_values(
-        toml_section(text, f"model_providers.{provider_ref}")
+        toml_section(text, f"model_settings.providers.{provider_ref}")
     )
     return agent_model_environment(model_values, provider_values)
 

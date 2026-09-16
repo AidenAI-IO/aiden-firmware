@@ -35,7 +35,7 @@ ls -l /run/frame_service/frame_service.sock
 Common causes:
 
 - `frame_service` is not running;
-- `[hid].frame_socket` path in `agent.toml` is inconsistent;
+- `[advanced_settings.hardware.hid].frame_socket` path in `agent.toml` is inconsistent;
 - HDMI input is not synced;
 - RK628D or TC358743 HDMI subdevice status is abnormal.
 
@@ -117,7 +117,7 @@ amixer sget 'DAC LINEOUT'
 Recommendations:
 
 - First run `scripts/setup_audio_volume.sh`;
-- Confirm `[audio].socket` path matches the service;
+- Confirm `[voice_settings.classic.audio].socket` path matches the service;
 - Use `record-stream` and `play-stream` to verify recording/playback separately;
 - Check if `ffmpeg` exists when TTS fails.
 
@@ -132,9 +132,46 @@ First run helper self-test directly on the board:
 
 On success, it will output `P <probability>`. Current RV1106 helper uses RKNN zero-copy IO; if it outputs `rknn_set_io_mem failed`, `rknn_run failed`, or old helper outputs `rknn_inputs_set failed`, check:
 
-- Whether `/oem/usr/lib/librknnmrt.so` version matches the model;
+- Whether the RKNN mini runtime embedded in `/oem/usr/bin/rknn_vad` matches the model;
 - Whether `silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` is the encoder model re-converted for RV1106 target;
 - Whether input/output tensor type, size, scale, zero-point in helper logs are normal.
+
+### Why the mini runtime is embedded
+
+The RV1106 VAD encoder/decoder models are Rockchip **mini runtime split**
+format. The official armhf/glibc 2.3.2 release only ships a **full** runtime,
+which opens the NPU but rejects these models with:
+
+```text
+Verify ModelBuffer failed!
+Invalid RKNN format
+Import rknn model failed!
+```
+
+`/oem/usr/bin/rknn_vad` therefore statically embeds the armhf-uclibc mini
+runtime (`librknnmrt.a`, 2.3.2) instead of linking a dynamic `librknnrt.so`.
+Because that archive was built against uClibc ctype tables,
+`src/rknn_glibc_compat.c` provides the two data symbols it references
+(`__ctype_b`, `__ctype_tolower`) from the glibc locale tables. Do not replace
+this with the full runtime or a dynamic RKNN library, or the model-load failure
+returns. At runtime this helper only needs `/dev/rknpu`.
+
+## NPU or media devices are not accessible
+
+`/dev/rknpu` and `/dev/mpi/*` are expected to be `0660 root:video`, and the
+`aiden` user must be in the `video` and `audio` groups:
+
+```bash
+ls -l /dev/rknpu /dev/mpi/ 2>/dev/null
+id aiden
+```
+
+- Udev rules set the NPU and media nodes to `0660 root:video`.
+- `aiden-media-modules.service` loads the Rockchip media/NPU modules and
+  creates the DMA heap nodes and links, including `/dev/dma_heap/system`,
+  before the frame and audio services start.
+- The mini RKNN runtime only needs `/dev/rknpu`; a missing
+  `/dev/dma_heap/system` only affects the full runtime path.
 
 ## HID input is ineffective
 
@@ -153,6 +190,15 @@ systemctl restart aiden-usb-gadget.service
 ```
 
 For iOS target devices, confirm AssistiveTouch is enabled.
+
+If the host reports `unknown main item tag`, `item fetching failed`, or
+`hid-generic ... error -22`, the HID report descriptor was emitted as ASCII
+text instead of raw bytes. The descriptors must be written with POSIX octal
+escapes so they survive `dash`; see
+[USB HID and ECM](../02-architecture/boot-services.md#usb-hid-and-ecm). A bare
+`error -71` (`device not accepting address`) is a lower-level USB
+control-transfer failure and points at cabling, power, or the host port rather
+than the descriptor.
 
 ## Cannot capture screen from iPhone 16e
 

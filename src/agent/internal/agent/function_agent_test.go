@@ -60,6 +60,43 @@ func TestChoiceWithOnlyToolCallAssignsIDToLegacyFunctionCall(t *testing.T) {
 	}
 }
 
+func TestChoiceWithOnlyToolCallDropsUnexecutedResponsesItems(t *testing.T) {
+	originalItems := []json.RawMessage{
+		json.RawMessage(`{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":"inspect"}]}`),
+		json.RawMessage(`{"type":"message","id":"msg_1","role":"assistant","content":[]}`),
+		json.RawMessage(`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"first","arguments":"{}"}`),
+		json.RawMessage(`{"type":"function_call","id":"fc_2","call_id":"call_2","name":"second","arguments":"{}"}`),
+	}
+	choice := llms.ContentChoice{
+		ToolCalls: []llms.ToolCall{
+			{ID: "call_1", Type: "function", FunctionCall: &llms.FunctionCall{Name: "first", Arguments: `{}`}},
+			{ID: "call_2", Type: "function", FunctionCall: &llms.FunctionCall{Name: "second", Arguments: `{}`}},
+		},
+		GenerationInfo: map[string]any{"responses_output_items": originalItems},
+	}
+
+	selected := choiceWithOnlyToolCall(choice, "call_2")
+	if len(selected.ToolCalls) != 1 || selected.ToolCalls[0].ID != "call_2" {
+		t.Fatalf("selected tool calls = %#v", selected.ToolCalls)
+	}
+	items, ok := selected.GenerationInfo["responses_output_items"].([]json.RawMessage)
+	if !ok || len(items) != 3 {
+		t.Fatalf("selected Responses items = %#v, want reasoning, message, and selected call", selected.GenerationInfo["responses_output_items"])
+	}
+	parts := make([]string, len(items))
+	for i := range items {
+		parts[i] = string(items[i])
+	}
+	joined := strings.Join(parts, "\n")
+	if strings.Contains(joined, `"call_id":"call_1"`) || !strings.Contains(joined, `"call_id":"call_2"`) {
+		t.Fatalf("selected Responses items = %s", joined)
+	}
+	original, ok := choice.GenerationInfo["responses_output_items"].([]json.RawMessage)
+	if !ok || len(original) != 4 {
+		t.Fatal("original Responses output metadata was mutated")
+	}
+}
+
 func TestFunctionAgentParseOutputUsesChoiceContentAsToolContent(t *testing.T) {
 	agent := &FunctionAgent{OutputKey: "output"}
 

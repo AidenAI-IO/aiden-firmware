@@ -35,7 +35,7 @@ func buildProfile(
 ) RoleProfile {
 	promptParts := []string{
 		"You are the Aiden agent.",
-		currentDateContext(cfg.Locale),
+		currentDateContext(cfg.Locale, cfg.Timezone),
 		"",
 		"## Base instruction",
 		combinedAgentInstruction(cfg),

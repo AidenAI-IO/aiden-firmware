@@ -285,6 +285,7 @@ const (
 	runEventModelRequestFailure    = "model_request_failure"
 	runEventReasoningDelta         = "reasoning_delta"
 	runEventReasoningReset         = "reasoning_reset"
+	runEventToolProgress           = "tool_progress"
 )
 
 func historicalPruneEvent(stats compactor.HistoricalPruneStats, changed bool, err error, reason string) TaskEpisodeEvent {
@@ -325,6 +326,7 @@ type RunEvent struct {
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
 	ToolName         string     `json:"tool_name,omitempty"`
 	ToolInput        string     `json:"tool_input,omitempty"`
+	ToolStatus       string     `json:"tool_status,omitempty"`
 	Content          string     `json:"content,omitempty"`
 	ReasoningContent string     `json:"reasoning_content,omitempty"`
 	SpeechEligible   bool       `json:"speech_eligible,omitempty"`
@@ -461,7 +463,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	// Create logger if ConfigDir is set
 	var logger *Logger
 	if cfg.ConfigDir != "" {
-		logger, err = NewLogger(cfg.ConfigDir, cfg.Log.LLMHTTPRetentionDaysOrDefault())
+		logger, err = NewLogger(cfg.ConfigDir, cfg.Log.LLMHTTPRetentionDaysOrDefault(), cfg.Log.LevelOrDefault())
 		if err != nil {
 			return nil, fmt.Errorf("create logger: %w", err)
 		}
@@ -2212,6 +2214,7 @@ func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langt
 			Instruction:      r.ConfigSnapshot().Instruction,
 			AdditionalPrompt: r.ConfigSnapshot().AdditionalPrompt,
 			Locale:           r.ConfigSnapshot().LocaleOrDefault(),
+			Timezone:         r.ConfigSnapshot().TimezoneOrDefault(),
 		},
 		skills,
 		availableTools,
@@ -2435,6 +2438,22 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 		ToolName:   call.Spec.Name,
 		ToolInput:  call.Input,
 		Content:    content,
+		Timestamp:  time.Now(),
+	})
+}
+
+func (h *runtimeCallbackHandler) HandleToolProgress(ctx context.Context, call ToolCall, progress ToolProgress) {
+	if h == nil {
+		return
+	}
+	h.emitRunEvent(RunEvent{
+		Type:       runEventToolProgress,
+		EpisodeID:  h.episodeID,
+		ToolCallID: call.Action.ToolID,
+		ToolName:   call.Spec.Name,
+		ToolInput:  call.Input,
+		ToolStatus: progress.Status,
+		Content:    progress.Content,
 		Timestamp:  time.Now(),
 	})
 }

@@ -44,7 +44,8 @@ snapshot, so skipped intermediate Wake notifications do not lose final state.
 - `ready` / `connected`: Aiden is available. The app creates this standby Live
   Activity before or while entering background so Dynamic Island remains an
   entry point back to the Aiden App.
-- `running`: shows task title, current step, phase, progress, and stop state.
+- `running`: shows task title, current step, phase, progress, stop state, and
+  the detailed `tool_status` lifecycle when available.
 - `needs_app`: asks the user to return to the Aiden App when an operation needs the
   foreground companion app.
 - `waiting_user` with `current_action=request_user_input`: keeps the handoff
@@ -92,6 +93,8 @@ When an async chat request provides a `request_id`, the Agent maintains a
   "current_action": "observe_screen",
   "current_target": "",
   "last_tool_name": "screenshot",
+  "tool_status": "running",
+  "tool_started_at": "2026-06-12T07:00:01Z",
   "progress": 0.21,
   "shows_progress": true,
   "can_stop": true,
@@ -119,6 +122,19 @@ Structured fields include:
   this field.
 - `current_app`: the current target app when known.
 - `requires_app`: whether the user must restore the foreground companion app.
+- `tool_status`: detailed lifecycle state. Current values are `processing`,
+  `thinking`, `running`, `preparing`, `verifying`, `succeeded`, `failed`,
+  `retrying`, `waiting_app`, and `waiting_user`. Task-level `status` remains
+  authoritative for terminal state.
+- `tool_started_at`: optional start time for the current actively timed tool.
+  The iOS client uses it to render elapsed time locally and clears the timer
+  for non-timed and terminal states.
+
+Ordinary model output uses `tool_status=processing`. Only a non-empty streamed
+reasoning delta changes it to `thinking`; the Live Activity uses safe fixed
+copy and does not display the raw reasoning stream. Successful app-launch
+requests use `verifying` until a later screen observation can establish that
+the target app is visible.
 
 `phone_app_state` events additionally report `return_entry` and
 `return_entry_available`. When the iOS app is backgrounded or inactive, it can
@@ -173,7 +189,7 @@ the same local native module.
 The only required Agent setting is that Live Activity snapshots remain enabled:
 
 ```toml
-[live_activity]
+[advanced_settings.runtime.live_activity]
 enabled = true
 ```
 

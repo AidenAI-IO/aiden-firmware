@@ -9,11 +9,11 @@ fail() {
 }
 
 for path in "${REPO_ROOT}/debian_build.sh" \
-    "${REPO_ROOT}/scripts/debian-stage2/build-apps.sh" \
-    "${REPO_ROOT}/scripts/debian-stage3/build.sh"; do
+    "${REPO_ROOT}/scripts/debian-apps/build-apps.sh" \
+    "${REPO_ROOT}/scripts/debian-system/build.sh"; do
     [ -f "${path}" ] || fail "missing production path: ${path}"
 done
-grep -Fq 'scripts/debian-stage3/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk' \
+grep -Fq 'scripts/debian-system/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk' \
     "${REPO_ROOT}/scripts/ota_partition_layout.sh" \
     || fail "OTA layout does not default to the Debian board configuration"
 if grep -Fq 'pico-sdk/.BoardConfig.mk' \
@@ -24,8 +24,8 @@ fi
 if rg --no-ignore -n \
     '\$\{REPO_ROOT\}/overlay/|rv1106-buildroot-uclibc|scripts/build/' \
     "${REPO_ROOT}/debian_build.sh" \
-    "${REPO_ROOT}/scripts/debian-stage2" \
-    "${REPO_ROOT}/scripts/debian-stage3"; then
+    "${REPO_ROOT}/scripts/debian-apps" \
+    "${REPO_ROOT}/scripts/debian-system"; then
     fail "the Debian build depends on a retired repository userspace path"
 fi
 
@@ -48,13 +48,17 @@ if rg --no-ignore -n -i \
     fail "active documentation publishes a retired userspace workflow"
 fi
 
+if [ -e "${REPO_ROOT}/overlay" ] || [ -e "${REPO_ROOT}/build.sh" ] || \
+    [ -e "${REPO_ROOT}/scripts/build" ] || \
+    [ -e "${REPO_ROOT}/cmake/platforms/rv1106-buildroot-uclibc.cmake" ]; then
+    fail "retired Buildroot overlay or build entry points are still present"
+fi
+
 if rg --no-ignore -n \
     '(^|[[:space:]])gh[[:space:]]+release|create_github_release\.sh|\.github/workflows/' \
     "${REPO_ROOT}/debian_build.sh" \
-    "${REPO_ROOT}/scripts/debian-stage1" \
-    "${REPO_ROOT}/scripts/debian-stage2" \
-    "${REPO_ROOT}/scripts/debian-stage3" \
-    "${REPO_ROOT}/scripts/debian"; then
+    "${REPO_ROOT}/scripts/debian-apps" \
+    "${REPO_ROOT}/scripts/debian-system"; then
     fail "the local Debian production build invokes GitHub publication automation"
 fi
 

@@ -46,12 +46,12 @@ def load_agent_model_config(path: Path) -> dict[str, str]:
         key, value = line.split("=", 1)
         sections.setdefault(section, {})[key.strip()] = _parse_toml_string(value)
 
-    model = dict(sections.get("model", {}))
+    model = dict(sections.get("model_settings.model", {}))
     provider_ref = model.get("provider", "").strip()
     if not provider_ref:
         return model
 
-    canonical = sections.get(f"model_providers.{provider_ref}")
+    canonical = sections.get(f"model_settings.providers.{provider_ref}")
     legacy = sections.get(f"providers.{provider_ref}")
     record = canonical if canonical is not None else legacy
     if record is None:

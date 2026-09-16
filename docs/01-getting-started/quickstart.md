@@ -49,10 +49,10 @@ On a Linux host, use the guarded flash helper so the image digest is checked
 before the factory overwrite:
 
 ```bash
-FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+FLASH_TOOL=pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
 IMAGE=./update.img
-scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
-sudo scripts/debian-stage1/flash.sh flash --tool "${FLASH_TOOL}" \
+scripts/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/flash.sh flash --tool "${FLASH_TOOL}" \
   --image "${IMAGE}" --sha256 "<verified-sha256>" \
   --confirm-erase-all-data
 ```
@@ -90,9 +90,9 @@ The config page also maintains Agent configuration and system environment variab
 
 Fill in the keys for each service on the same config page. Among them:
 
-- **`[model]` is required**, and it must be a multimodal LLM (the Agent needs to send screenshots to the model as image input);
-- **`[tts]`** enables voice playback (turning the model's reply into speech);
-- **`[stt]`** enables speech-to-text for voice input.
+- **`[model_settings.model]` is required**, and it must be a multimodal LLM (the Agent needs to send screenshots to the model as image input);
+- **`[voice_settings.classic.tts]`** enables voice playback (turning the model's reply into speech);
+- **`[voice_settings.classic.stt]`** enables speech-to-text for voice input.
 
 ### Choosing the Agent mode
 

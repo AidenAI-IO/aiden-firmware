@@ -26,7 +26,9 @@ import (
 const (
 	moonshotGlobalBaseURL  = "https://api.moonshot.ai/v1"
 	moonshotCNBaseURL      = "https://api.moonshot.cn/v1"
+	deepseekBaseURL        = "https://api.deepseek.com"
 	fakeModelContextWindow = 1_000_000
+	defaultLLMHTTPTimeout  = 30 * time.Second
 )
 
 // Volcengine Ark (火山方舟) OpenAI-compatible endpoint for the Doubao models.
@@ -149,7 +151,9 @@ func (m *ModelManager) GenerateContent(ctx context.Context, messages []llms.Mess
 	if err != nil {
 		return nil, err
 	}
-	return model.GenerateContent(ctx, messages, options...)
+	requestCtx, cancel := withDefaultLLMRequestTimeout(ctx, options...)
+	defer cancel()
+	return model.GenerateContent(requestCtx, messages, options...)
 }
 
 // GenerateContentFromMessageList preserves provider-specific transcript
@@ -164,12 +168,14 @@ func (m *ModelManager) GenerateContentFromMessageList(ctx context.Context, messa
 	if err != nil {
 		return nil, err
 	}
+	requestCtx, cancel := withDefaultLLMRequestTimeout(ctx, options...)
+	defer cancel()
 	if contextModel, ok := model.(interface {
 		GenerateContentFromMessageList(context.Context, []messages.Message, ...llms.CallOption) (*llms.ContentResponse, error)
 	}); ok {
-		return contextModel.GenerateContentFromMessageList(ctx, messageList, options...)
+		return contextModel.GenerateContentFromMessageList(requestCtx, messageList, options...)
 	}
-	return model.GenerateContent(ctx, messages.ConvertMessageList(messageList), options...)
+	return model.GenerateContent(requestCtx, messages.ConvertMessageList(messageList), options...)
 }
 
 func (m *ModelManager) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
@@ -180,7 +186,9 @@ func (m *ModelManager) Call(ctx context.Context, prompt string, options ...llms.
 	if err != nil {
 		return "", err
 	}
-	return model.Call(ctx, prompt, options...)
+	requestCtx, cancel := withDefaultLLMRequestTimeout(ctx, options...)
+	defer cancel()
+	return model.Call(requestCtx, prompt, options...)
 }
 
 func (m *ModelManager) CallOptions() []chains.ChainCallOption {
@@ -330,6 +338,8 @@ func modelAPIEndpoint(provider, baseURL string) string {
 		return moonshotCNBaseURL
 	case "volcengine":
 		return arkBeijingBaseURL
+	case "deepseek":
+		return deepseekBaseURL
 	case "ollama":
 		return "http://localhost:11434"
 	default:
@@ -413,6 +423,17 @@ func openAICompatibleOptions(ctx ModelBuildContext, cfg ModelConfig) []openAICom
 
 func resolveToken(cfg ModelConfig) string {
 	return resolveProviderAPIKey(cfg.APIKey)
+}
+
+func withDefaultLLMRequestTimeout(ctx context.Context, options ...llms.CallOption) (context.Context, context.CancelFunc) {
+	callOpts := llms.CallOptions{}
+	for _, option := range options {
+		option(&callOpts)
+	}
+	if callOpts.StreamingFunc != nil || callOpts.StreamingReasoningFunc != nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, defaultLLMHTTPTimeout)
 }
 
 // retryTransport retries transient HTTP and transport failures with backoff.

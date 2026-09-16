@@ -211,9 +211,10 @@ func (c StorageConfig) MigrateWatermarksOrDefault() (int, int) {
 	return start, stop
 }
 
-// LogConfig controls local runtime log retention.
+// LogConfig controls local runtime logging and retention.
 type LogConfig struct {
-	LLMHTTPRetentionDays int `toml:"llm_http_retention_days,omitempty"`
+	LLMHTTPRetentionDays int    `toml:"llm_http_retention_days,omitempty"`
+	Level                string `toml:"level,omitempty"`
 }
 
 // LLMHTTPRetentionDaysOrDefault returns LLMHTTPRetentionDays if positive, else 7.
@@ -222,6 +223,15 @@ func (c LogConfig) LLMHTTPRetentionDaysOrDefault() int {
 		return defaultLLMHTTPLogRetentionDays
 	}
 	return c.LLMHTTPRetentionDays
+}
+
+// LevelOrDefault returns the normalized minimum Agent log severity.
+func (c LogConfig) LevelOrDefault() string {
+	level := strings.ToLower(strings.TrimSpace(c.Level))
+	if level == "" {
+		return defaultLogLevel
+	}
+	return level
 }
 
 // OTAConfig controls OTA update behavior.
@@ -297,6 +307,7 @@ type Config struct {
 	Benchmark                  BenchmarkConfig               `toml:"-"` // Only set via CLI flags, never from config file
 	LiveActivity               LiveActivityConfig            `toml:"live_activity,omitempty"`
 	Locale                     string                        `toml:"locale,omitempty"`
+	Timezone                   string                        `toml:"timezone,omitempty"`
 	Instruction                string                        `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string                        `toml:"additional_prompt,omitempty"`
 	InputMode                  string                        `toml:"input_mode,omitempty"`  // "text", "stt", or "realtime"
@@ -865,6 +876,7 @@ type AgentConfig struct {
 	Instruction      string
 	AdditionalPrompt string
 	Locale           string
+	Timezone         string
 }
 
 // MemoryConfig is used internally by the memory manager.
@@ -1320,11 +1332,27 @@ func applyRuntimeInstructionDefault(cfg *Config) {
 
 func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 	var metadata toml.MetaData
+	var runtimeMap map[string]interface{}
 
 	// Determine format by file extension
 	if strings.HasSuffix(path, ".toml") {
 		var err error
-		if metadata, err = toml.DecodeFile(path, cfg); err != nil {
+		// The on-disk schema is grouped by the product settings shown in the
+		// configuration UI. Runtime code intentionally keeps its established
+		// fields, so normalize the grouped document once at the boundary.
+		var grouped map[string]interface{}
+		if _, err = toml.DecodeFile(path, &grouped); err != nil {
+			return toml.MetaData{}, fmt.Errorf("decode TOML config: %w", err)
+		}
+		if err = validateGroupedConfigRoot(grouped); err != nil {
+			return toml.MetaData{}, err
+		}
+		runtimeMap = groupedConfigToRuntime(grouped)
+		encoded, err := toml.Marshal(runtimeMap)
+		if err != nil {
+			return toml.MetaData{}, fmt.Errorf("normalize TOML config: %w", err)
+		}
+		if metadata, err = toml.Decode(string(encoded), cfg); err != nil {
 			return toml.MetaData{}, fmt.Errorf("decode TOML config: %w", err)
 		}
 		if metadata.IsDefined("providers") {
@@ -1338,14 +1366,193 @@ func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 		return toml.MetaData{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
 	}
 
-	if err := applyLegacyModelMaxTokens(path, metadata, cfg); err != nil {
+	if err := applyLegacyModelMaxTokens(path, metadata, cfg, runtimeMap); err != nil {
 		return toml.MetaData{}, err
 	}
-	if err := applyLegacyAudioBackend(path, metadata, cfg); err != nil {
+	if err := applyLegacyAudioBackend(path, metadata, cfg, runtimeMap); err != nil {
 		return toml.MetaData{}, err
 	}
 	applyLegacyContextPruneThreshold(cfg)
 	return metadata, nil
+}
+
+// groupedConfigToRuntime translates the canonical, product-oriented TOML
+// hierarchy into the runtime field names used by the daemon. The grouped
+// hierarchy is the only schema written by Config Web; this adapter keeps the
+// translation localized to the file boundary instead of spreading TOML names
+// through the runtime implementation.
+func groupedConfigToRuntime(grouped map[string]interface{}) map[string]interface{} {
+	if grouped == nil {
+		return map[string]interface{}{}
+	}
+	result := make(map[string]interface{}, len(grouped))
+	moveTable := func(from []string, to string) {
+		if value, ok := tableAt(grouped, from...); ok {
+			mergeTable(result, to, value)
+		}
+	}
+	moveField := func(from []string, to []string) {
+		if value, ok := valueAtTable(grouped, from...); ok {
+			setValue(result, to, value)
+		}
+	}
+
+	moveField([]string{"basic_settings", "language_timezone", "locale"}, []string{"locale"})
+	moveField([]string{"basic_settings", "language_timezone", "timezone"}, []string{"timezone"})
+	// Advanced HID contains internal device fields. Merge it first so the
+	// user-facing keyboard_layout under Basic Settings remains authoritative
+	// if both tables are present.
+	moveTable([]string{"advanced_settings", "hardware", "hid"}, "hid")
+	if device, ok := tableAt(grouped, "basic_settings", "device"); ok {
+		copyWithoutKey(device, result, "device", "hid")
+		if hid, exists := device["hid"].(map[string]interface{}); exists {
+			mergeTable(result, "hid", hid)
+		}
+	}
+	mergeRootTable(grouped, result, []string{"conversation_settings", "agent"})
+	moveTable([]string{"conversation_settings", "search"}, "search")
+	moveTable([]string{"conversation_settings", "termination_policy"}, "termination_policy")
+	moveTable([]string{"model_settings", "model"}, "model")
+	moveTable([]string{"model_settings", "providers"}, "model_providers")
+	moveTable([]string{"voice_settings", "realtime", "providers"}, "voice_model_providers")
+	mergeRootTable(grouped, result, []string{"voice_settings", "mode"})
+	mergeRootTable(grouped, result, []string{"voice_settings", "classic", "runtime"})
+	if realtime, ok := tableAt(grouped, "voice_settings", "realtime"); ok {
+		copyWithoutKey(realtime, result, "voice_model", "providers")
+	}
+	moveTable([]string{"voice_settings", "classic", "stt"}, "stt")
+	moveTable([]string{"voice_settings", "classic", "stt", "providers"}, "stt_providers")
+	moveTable([]string{"voice_settings", "classic", "tts"}, "tts")
+	moveTable([]string{"voice_settings", "classic", "tts", "providers"}, "tts_providers")
+	moveTable([]string{"voice_settings", "classic", "audio"}, "audio")
+	moveTable([]string{"voice_settings", "classic", "audio_archive"}, "audio_archive")
+	moveTable([]string{"memory_settings", "screen"}, "quick_capture")
+	moveTable([]string{"memory_settings", "notification"}, "voice_notifications")
+	moveTable([]string{"storage_settings", "storage"}, "storage")
+	// log_raw_http is exposed through the model API contract because it
+	// controls model transport logging, but it belongs to the product's
+	// Advanced Settings > Logs TOML group. Map the grouped path back to the
+	// runtime ModelConfig field at the file boundary while keeping it out of
+	// LogConfig, whose other fields are the local retention settings.
+	if log, ok := tableAt(grouped, "advanced_settings", "log"); ok {
+		logRuntime := make(map[string]interface{}, len(log))
+		for key, value := range log {
+			logRuntime[key] = value
+		}
+		if value, exists := logRuntime["log_raw_http"]; exists {
+			model, _ := result["model"].(map[string]interface{})
+			if model == nil {
+				model = map[string]interface{}{}
+			}
+			model["log_raw_http"] = value
+			result["model"] = model
+			delete(logRuntime, "log_raw_http")
+		}
+		mergeTable(result, "log", logRuntime)
+	}
+	moveTable([]string{"advanced_settings", "hardware", "frame_service"}, "frame_service")
+	moveTable([]string{"advanced_settings", "runtime", "live_activity"}, "live_activity")
+	moveTable([]string{"advanced_settings", "runtime", "telemetry"}, "telemetry")
+	moveTable([]string{"advanced_settings", "runtime", "ota"}, "ota")
+
+	return result
+}
+
+var groupedConfigRoots = map[string]struct{}{
+	"basic_settings":        {},
+	"conversation_settings": {},
+	"model_settings":        {},
+	"voice_settings":        {},
+	"memory_settings":       {},
+	"storage_settings":      {},
+	"advanced_settings":     {},
+	"about":                 {},
+}
+
+func validateGroupedConfigRoot(grouped map[string]interface{}) error {
+	for key := range grouped {
+		if _, ok := groupedConfigRoots[key]; !ok {
+			return fmt.Errorf("unsupported top-level TOML key %q: use the grouped configuration schema", key)
+		}
+	}
+	return nil
+}
+
+func copyWithoutKey(source, result map[string]interface{}, target string, excluded ...string) {
+	copy := make(map[string]interface{}, len(source))
+	for key, value := range source {
+		skip := false
+		for _, excludedKey := range excluded {
+			if key == excludedKey {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			copy[key] = value
+		}
+	}
+	mergeTable(result, target, copy)
+}
+
+func tableAt(root map[string]interface{}, path ...string) (map[string]interface{}, bool) {
+	value, ok := valueAtTable(root, path...)
+	if !ok {
+		return nil, false
+	}
+	table, ok := value.(map[string]interface{})
+	return table, ok
+}
+
+func valueAtTable(root map[string]interface{}, path ...string) (interface{}, bool) {
+	var value interface{} = root
+	for _, key := range path {
+		table, ok := value.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		value, ok = table[key]
+		if !ok {
+			return nil, false
+		}
+	}
+	return value, true
+}
+
+func mergeTable(root map[string]interface{}, key string, value map[string]interface{}) {
+	if existing, ok := root[key].(map[string]interface{}); ok {
+		for child, childValue := range value {
+			existing[child] = childValue
+		}
+		return
+	}
+	root[key] = value
+}
+
+func mergeRootTable(grouped, result map[string]interface{}, path []string) {
+	table, ok := tableAt(grouped, path...)
+	if !ok {
+		return
+	}
+	for key, value := range table {
+		result[key] = value
+	}
+}
+
+func setValue(root map[string]interface{}, path []string, value interface{}) {
+	if len(path) == 0 {
+		return
+	}
+	table := root
+	for _, key := range path[:len(path)-1] {
+		next, ok := table[key].(map[string]interface{})
+		if !ok {
+			next = make(map[string]interface{})
+			table[key] = next
+		}
+		table = next
+	}
+	table[path[len(path)-1]] = value
 }
 
 // applyLegacyContextPruneThreshold migrates context_prune_threshold from its
@@ -1396,36 +1603,31 @@ func applyLegacyContextPruneThreshold(cfg *Config) {
 	cfg.ContextPruneThreshold = defaultContextPruneThreshold
 }
 
-func applyLegacyAudioBackend(path string, metadata toml.MetaData, cfg *Config) error {
+func applyLegacyAudioBackend(path string, metadata toml.MetaData, cfg *Config, runtimeMap map[string]interface{}) error {
 	if cfg == nil || metadata.IsDefined("audio", "backend") || !metadata.IsDefined("audio", "playback_backend") {
 		return nil
 	}
-
-	var raw struct {
-		Audio struct {
-			PlaybackBackend string `toml:"playback_backend"`
-		} `toml:"audio"`
+	audio, ok := runtimeMap["audio"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("decode legacy audio backend: audio is not a TOML table in %s", path)
 	}
-	if _, err := toml.DecodeFile(path, &raw); err != nil {
-		return fmt.Errorf("decode legacy audio backend: %w", err)
+	playbackBackend, ok := audio["playback_backend"].(string)
+	if !ok {
+		return fmt.Errorf("decode legacy audio backend: audio.playback_backend must be a string")
 	}
-	cfg.Audio.Backend = raw.Audio.PlaybackBackend
+	cfg.Audio.Backend = playbackBackend
 	return nil
 }
 
-func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {
+func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config, runtimeMap map[string]interface{}) error {
 	needsModel := metadata.IsDefined("model", "max_tokens") &&
 		!metadata.IsDefined("model", "max_response_tokens")
 	if !needsModel {
 		return nil
 	}
 
-	var raw map[string]interface{}
-	if _, err := toml.DecodeFile(path, &raw); err != nil {
-		return fmt.Errorf("decode legacy TOML fields: %w", err)
-	}
 	if needsModel {
-		value, err := legacyModelMaxTokens(raw, "model")
+		value, err := legacyModelMaxTokens(runtimeMap, "model")
 		if err != nil {
 			return err
 		}
@@ -1473,6 +1675,9 @@ func (c Config) Validate() error {
 	case "", localeSimplifiedChinese, localeEnglishUS:
 	default:
 		return fmt.Errorf("invalid locale: %s (expected zh-CN or en-US)", c.Locale)
+	}
+	if _, _, err := loadConfiguredTimezone(c.TimezoneOrDefault()); err != nil {
+		return err
 	}
 
 	switch c.Search.ProviderOrDefault() {
@@ -1646,6 +1851,9 @@ func (c Config) Validate() error {
 	if c.VoiceNotifications.MaxPending < 0 {
 		return fmt.Errorf("voice_notifications.max_pending must be >= 0, got %d", c.VoiceNotifications.MaxPending)
 	}
+	if c.VoiceNotifications.RetentionDays < 0 {
+		return fmt.Errorf("voice_notifications.retention_days must be >= 0, got %d", c.VoiceNotifications.RetentionDays)
+	}
 	if c.VoiceNotifications.ResponseTail.MaxItems < 0 || c.VoiceNotifications.ResponseTail.MaxItems > 1 {
 		return fmt.Errorf("voice_notifications.response_tail.max_items must be 0 or 1, got %d", c.VoiceNotifications.ResponseTail.MaxItems)
 	}
@@ -1665,6 +1873,11 @@ func (c Config) Validate() error {
 	}
 	if c.Log.LLMHTTPRetentionDays < 0 {
 		return fmt.Errorf("log.llm_http_retention_days must be >= 0, got %d", c.Log.LLMHTTPRetentionDays)
+	}
+	switch c.Log.LevelOrDefault() {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("log.level must be debug, info, warn, or error, got %q", c.Log.Level)
 	}
 	if err := c.Storage.MonitorConfig().Validate(); err != nil {
 		return err

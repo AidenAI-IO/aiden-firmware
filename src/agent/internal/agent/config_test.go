@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/BurntSushi/toml"
 )
 
 func TestConfigValidateAcceptsSTT(t *testing.T) {
@@ -124,10 +122,10 @@ func TestVoiceModelConfigValidatesGeminiVertexAuth(t *testing.T) {
 
 func TestVoiceModelConfigProviderFieldsLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	if err := os.WriteFile(path, []byte(`[agent]
+	if err := os.WriteFile(path, []byte(`[voice_settings.mode]
 input_mode = "realtime"
 
-[voice_model]
+[voice_settings.realtime]
 provider = "speko"
 upstream_provider = "xai"
 agent_id = "agent-1"
@@ -148,10 +146,10 @@ base_url = "https://api.speko.dev"
 
 func TestSpekoVoiceModelDoesNotInheritQwenDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	if err := os.WriteFile(path, []byte(`[agent]
+	if err := os.WriteFile(path, []byte(`[voice_settings.mode]
 input_mode = "realtime"
 
-[voice_model]
+[voice_settings.realtime]
 provider = "speko"
 api_key = "secret"
 upstream_provider = "google"
@@ -180,17 +178,17 @@ model = "gemini-live"
 
 func TestVoiceModelProviderRecordsPreserveSettingsAcrossSwitches(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	if err := os.WriteFile(path, []byte(`[agent]
+	if err := os.WriteFile(path, []byte(`[voice_settings.mode]
 input_mode = "realtime"
 
-[voice_model_providers.qwen-main]
+[voice_settings.realtime.providers.qwen-main]
 type = "qwen"
 api_key = "qwen-secret"
 model = "qwen-realtime"
 voice = "longanqian"
 region = "cn-beijing"
 
-[voice_model_providers.speko-main]
+[voice_settings.realtime.providers.speko-main]
 type = "speko"
 api_key = "speko-secret"
 upstream_provider = "xai"
@@ -198,7 +196,7 @@ model = "grok-voice-latest"
 voice = "eve"
 base_url = "https://api.speko.dev"
 
-[voice_model_providers.openai-gateway]
+[voice_settings.realtime.providers.openai-gateway]
 type = "openai"
 api_key = "openai-secret"
 model = "gpt-realtime-2"
@@ -206,7 +204,7 @@ endpoint = "wss://gateway.example/v1/realtime"
 realtime_protocol = "legacy"
 voice = "alloy"
 
-[voice_model]
+[voice_settings.realtime]
 provider = "speko-main"
 `), 0o600); err != nil {
 		t.Fatal(err)
@@ -283,9 +281,10 @@ func TestConfigInputModeDefaultContract(t *testing.T) {
 func TestLoadRuntimeConfigFallsBackFromUnconfiguredRealtime(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
-	config := `input_mode = "realtime"
+	config := `[voice_settings.mode]
+input_mode = "realtime"
 
-[model]
+[model_settings.model]
 provider = "fake"
 `
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
@@ -351,10 +350,10 @@ func TestConfigLocaleContract(t *testing.T) {
 func TestLoadRuntimeConfigParsesTerminationPolicyOverrides(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	contents := `
-[model]
+[model_settings.model]
 provider = "fake"
 
-[termination_policy]
+[conversation_settings.termination_policy]
 enabled = false
 max_seconds = 12.5
 repeat_action_limit = 7
@@ -407,7 +406,7 @@ func TestLoadRuntimeConfigIgnoresModelBaseURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "agent.toml")
 			contents := `
-[model]
+[model_settings.model]
 provider = "` + tt.provider + `"
 model = "some-model"
 base_url = "https://gateway.example.com/v1"
@@ -460,7 +459,7 @@ func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "agent.toml")
-			contents := "[model]\nprovider = \"openai\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
+			contents := "[model_settings.model]\nprovider = \"openai\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
 			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
 			}
@@ -478,7 +477,7 @@ func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
 
 func TestLoadResolvedConfigKeepsTemperatureUnset(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	contents := "[model]\nprovider = \"kimi\"\nmodel = \"kimi-k3\"\n"
+	contents := "[model_settings.model]\nprovider = \"kimi\"\nmodel = \"kimi-k3\"\n"
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -497,7 +496,7 @@ func TestLoadResolvedConfigRejectsDirectory(t *testing.T) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatalf("create config directory: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[model]\nprovider = \"fake\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "agent.toml"), []byte("[model_settings.model]\nprovider = \"fake\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -528,7 +527,7 @@ func TestLoadResolvedConfigRejectsExistingNonTOMLFile(t *testing.T) {
 func TestLoadResolvedConfigAcceptsSymlinkToRegularFile(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target.toml")
-	if err := os.WriteFile(target, []byte("[model]\nprovider = \"fake\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte("[model_settings.model]\nprovider = \"fake\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	path := filepath.Join(dir, "draft.toml")
@@ -656,6 +655,12 @@ func TestLoadRuntimeConfigResolvesModelReasoningEffortDefault(t *testing.T) {
 			want:     "minimal",
 		},
 		{
+			name:     "deepseek flash without explicit reasoning_effort disables thinking",
+			provider: "deepseek",
+			model:    "deepseek-flash",
+			want:     "none",
+		},
+		{
 			name:     "unknown model without explicit reasoning_effort stays auto (empty)",
 			provider: "openai",
 			model:    "gpt-5.5",
@@ -669,7 +674,7 @@ func TestLoadRuntimeConfigResolvesModelReasoningEffortDefault(t *testing.T) {
 			if provider == "" {
 				provider = "openai"
 			}
-			contents := "[model]\nprovider = \"" + provider + "\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
+			contents := "[model_settings.model]\nprovider = \"" + provider + "\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
 			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
 			}
@@ -687,7 +692,7 @@ func TestLoadRuntimeConfigResolvesModelReasoningEffortDefault(t *testing.T) {
 
 func TestLoadResolvedConfigKeepsReasoningEffortUnset(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
-	contents := "[model]\nprovider = \"kimi\"\nmodel = \"kimi-k3\"\n"
+	contents := "[model_settings.model]\nprovider = \"kimi\"\nmodel = \"kimi-k3\"\n"
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -721,22 +726,22 @@ func formatFloatPtr(p *float64) string {
 func TestLoadRuntimeConfigParsesVoiceNotificationOverrides(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	contents := `
-[model]
+[model_settings.model]
 provider = "fake"
 
-[voice_notifications]
+[memory_settings.notification]
 enabled = true
 max_pending = 4
 
-[voice_notifications.response_tail]
+[memory_settings.notification.response_tail]
 enabled = false
 max_items = 1
 max_text_chars = 64
 
-[voice_notifications.expiration]
+[memory_settings.notification.expiration]
 default_ttl_seconds = 30
 
-[voice_notifications.expiration.code_ttl_seconds]
+[memory_settings.notification.expiration.code_ttl_seconds]
 storage = 120
 `
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
@@ -817,9 +822,10 @@ func TestConfigScreenStableDefaults(t *testing.T) {
 func TestLoadConfigParsesModelSpecOverrides(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
+[conversation_settings.agent]
 custom_instruction = "test"
 
-[model]
+[model_settings.model]
 provider = "openrouter"
 model = "vendor/test-model"
 max_response_tokens = 1000
@@ -848,9 +854,10 @@ model_max_output_tokens = 4096
 func TestLoadConfigParsesLegacyModelMaxTokens(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
+[conversation_settings.agent]
 custom_instruction = "test"
 
-[model]
+[model_settings.model]
 provider = "openrouter"
 model = "vendor/test-model"
 max_tokens = 777
@@ -871,9 +878,10 @@ max_tokens = 777
 func TestLoadConfigPrefersMaxResponseTokensOverLegacyMaxTokens(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
+[conversation_settings.agent]
 custom_instruction = "test"
 
-[model]
+[model_settings.model]
 provider = "openrouter"
 model = "vendor/test-model"
 max_response_tokens = 1000
@@ -922,7 +930,7 @@ func TestOverrideDeviceTypeDerivesRuntimeDeviceSettings(t *testing.T) {
 func TestLoadRuntimeConfigFromDirAppliesRuntimeDefaultsWithoutActivatingSpeech(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
-[model]
+[model_settings.model]
 provider = "fake"
 `
 	if err := os.WriteFile(filepath.Join(configDir, "agent.toml"), []byte(config), 0o644); err != nil {
@@ -970,7 +978,7 @@ func TestLoadRuntimeConfigCanDisableRawHTTPLogging(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
-[model]
+[model_settings.model]
 provider = "fake"
 log_raw_http = false
 `), 0o644); err != nil {
@@ -990,10 +998,10 @@ func TestLoadRuntimeConfigCanOverrideLLMHTTPRetentionDays(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
-[model]
+[model_settings.model]
 provider = "fake"
 
-[log]
+[advanced_settings.log]
 llm_http_retention_days = 14
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1008,13 +1016,44 @@ llm_http_retention_days = 14
 	}
 }
 
+func TestLoadRuntimeConfigCanOverrideLogLevel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model_settings.model]
+provider = "fake"
+
+[advanced_settings.log]
+level = "warn"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Log.LevelOrDefault() != "warn" {
+		t.Fatalf("Log.LevelOrDefault() = %q, want warn", cfg.Log.LevelOrDefault())
+	}
+}
+
+func TestConfigRejectsInvalidLogLevel(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Log.Level = "verbose"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "log.level") {
+		t.Fatalf("Validate() error = %v, want log.level rejection", err)
+	}
+}
+
 func TestLoadRuntimeConfigCanOverrideContextCompactionThreshold(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
+[conversation_settings.agent]
 context_compaction_threshold = 0.6
 
-[model]
+[model_settings.model]
 provider = "fake"
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1042,9 +1081,10 @@ func TestLoadRuntimeConfigMigratesLegacyAbsoluteContextPruneThreshold(t *testing
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
+[conversation_settings.agent]
 context_prune_threshold = 12000
 
-[model]
+[model_settings.model]
 provider = "fake"
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1065,9 +1105,10 @@ func TestLoadRuntimeConfigCanOverrideContextPruneThreshold(t *testing.T) {
 	// Deliberately not defaultContextPruneThreshold: an override equal to the
 	// default would pass this test even if the configured value were ignored.
 	if err := os.WriteFile(path, []byte(`
+[conversation_settings.agent]
 context_prune_threshold = 0.4
 
-[model]
+[model_settings.model]
 provider = "fake"
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1091,10 +1132,11 @@ func TestLoadRuntimeConfigCapsPruneThresholdAtCompactionThreshold(t *testing.T) 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
+[conversation_settings.agent]
 context_prune_threshold = 0.9
 context_compaction_threshold = 0.6
 
-[model]
+[model_settings.model]
 provider = "fake"
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1113,7 +1155,7 @@ func TestLoadRuntimeConfigDefaultsContextCompactionThreshold(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
-[model]
+[model_settings.model]
 provider = "fake"
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1146,9 +1188,10 @@ func TestLoadRuntimeConfigIgnoresLegacyInstructionField(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
+[conversation_settings.agent]
 instruction = "legacy field should be ignored"
 
-[model]
+[model_settings.model]
 provider = "fake"
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1167,9 +1210,10 @@ func TestLoadRuntimeConfigEmptyCustomInstructionUsesDefault(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
+[conversation_settings.agent]
 custom_instruction = ""
 
-[model]
+[model_settings.model]
 provider = "fake"
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1189,12 +1233,12 @@ func TestLoadRuntimeConfigKeepsSpeechProvidersOptIn(t *testing.T) {
 
 	unconfiguredPath := filepath.Join(dir, "unconfigured.toml")
 	if err := os.WriteFile(unconfiguredPath, []byte(`
-[model]
+[model_settings.model]
 provider = "fake"
 
-[stt]
+[voice_settings.classic.stt]
 
-[tts]
+[voice_settings.classic.tts]
 `), 0o644); err != nil {
 		t.Fatalf("write unconfigured config: %v", err)
 	}
@@ -1211,13 +1255,13 @@ provider = "fake"
 
 	keyOnlyPath := filepath.Join(dir, "key-only.toml")
 	if err := os.WriteFile(keyOnlyPath, []byte(`
-[model]
+[model_settings.model]
 provider = "fake"
 
-[stt]
+[voice_settings.classic.stt]
 api_key = "stt-key"
 
-[tts]
+[voice_settings.classic.tts]
 api_key = "tts-key"
 `), 0o644); err != nil {
 		t.Fatalf("write key-only config: %v", err)
@@ -1235,14 +1279,14 @@ api_key = "tts-key"
 
 	explicitPath := filepath.Join(dir, "explicit.toml")
 	if err := os.WriteFile(explicitPath, []byte(`
-[model]
+[model_settings.model]
 provider = "fake"
 
-[stt]
+[voice_settings.classic.stt]
 provider = "openai-whisper"
 api_key = "stt-key"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-ws"
 api_key = "tts-key"
 `), 0o644); err != nil {
@@ -1270,14 +1314,14 @@ func TestLoadRuntimeConfigDoesNotCarryDefaultSpeechFieldsAcrossProviders(t *test
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
-[model]
+[model_settings.model]
 provider = "fake"
 
-[stt]
+[voice_settings.classic.stt]
 provider = "openrouter"
 api_key = "stt-key"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "volcengine"
 api_key = "tts-key"
 `), 0o644); err != nil {
@@ -1307,9 +1351,10 @@ func TestLoadRuntimeConfigRejectsVoiceModeWithoutExplicitSpeechProviders(t *test
 
 	sttPath := filepath.Join(dir, "stt.toml")
 	if err := os.WriteFile(sttPath, []byte(`
+[voice_settings.mode]
 input_mode = "stt"
 
-[model]
+[model_settings.model]
 provider = "fake"
 `), 0o644); err != nil {
 		t.Fatalf("write stt config: %v", err)
@@ -1321,9 +1366,10 @@ provider = "fake"
 
 	audioPath := filepath.Join(dir, "audio.toml")
 	if err := os.WriteFile(audioPath, []byte(`
+[voice_settings.mode]
 input_mode = "audio"
 
-[model]
+[model_settings.model]
 provider = "fake"
 `), 0o644); err != nil {
 		t.Fatalf("write audio config: %v", err)
@@ -1461,7 +1507,7 @@ func TestLoadRuntimeConfigRejectsNonFiniteContextThresholds(t *testing.T) {
 	} {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "agent.toml")
-		if err := os.WriteFile(path, []byte("\n"+body+"\n\n[model]\nprovider = \"fake\"\n"), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte("\n[conversation_settings.agent]\n"+body+"\n\n[model_settings.model]\nprovider = \"fake\"\n"), 0o644); err != nil {
 			t.Fatalf("write config: %v", err)
 		}
 		if _, err := LoadRuntimeConfig(path); err == nil {
@@ -1778,7 +1824,7 @@ func TestConfigValidateRejectsUnknownAudioBackend(t *testing.T) {
 func TestLoadConfigMigratesLegacyAudioPlaybackBackend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
-	if err := os.WriteFile(path, []byte("[model]\nprovider = \"fake\"\n\n[audio]\nplayback_backend = \"local\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("[model_settings.model]\nprovider = \"fake\"\n\n[voice_settings.classic.audio]\nplayback_backend = \"local\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadConfig(path)
@@ -1793,7 +1839,7 @@ func TestLoadConfigMigratesLegacyAudioPlaybackBackend(t *testing.T) {
 func TestLoadConfigPrefersNewAudioBackendOverLegacy(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
-	if err := os.WriteFile(path, []byte("[model]\nprovider = \"fake\"\n\n[audio]\nbackend = \"audio_service\"\nplayback_backend = \"local\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("[model_settings.model]\nprovider = \"fake\"\n\n[voice_settings.classic.audio]\nbackend = \"audio_service\"\nplayback_backend = \"local\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadConfig(path)
@@ -1809,12 +1855,13 @@ func TestLoadConfigRejectsUnknownDeviceBackend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	content := `
+[conversation_settings.agent]
 custom_instruction = "test"
 
-[model]
+[model_settings.model]
 provider = "fake"
 
-[device]
+[basic_settings.device]
 backend = "bogus"
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -1907,18 +1954,20 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 func TestVoiceModelConfigLoadsAndValidates(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
-	config := `[model]
-provider = "fake"
-model = "fake"
+	config := `[voice_settings.mode]
 input_mode = "stt"
 
-[stt]
+[model_settings.model]
+provider = "fake"
+model = "fake"
+
+[voice_settings.classic.stt]
 provider = "openai-whisper"
 
-[tts]
+[voice_settings.classic.tts]
 provider = "minimax-cn"
 
-[voice_model]
+[voice_settings.realtime]
 api_key = "voice-secret"
 model = "qwen-audio-3.0-realtime-plus"
 workspace_id = "ws-123"
@@ -2066,7 +2115,7 @@ func TestVoiceSessionConfigValidationRejectsNegativeValues(t *testing.T) {
 
 func TestAudioArchiveConfigDefaults(t *testing.T) {
 	configContent := `
-[audio_archive]
+[voice_settings.classic.audio_archive]
 enabled = true
 storage_path = "/userdata/audio"
 `
@@ -2078,7 +2127,7 @@ storage_path = "/userdata/audio"
 	}
 
 	var cfg Config
-	if _, err := toml.DecodeFile(configFile, &cfg); err != nil {
+	if _, err := decodeConfigFile(configFile, &cfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2101,7 +2150,7 @@ storage_path = "/userdata/audio"
 func TestLoadRuntimeConfigEnablesAudioArchiveByDefault(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "agent.toml")
-	if err := os.WriteFile(configFile, []byte(`[model]
+	if err := os.WriteFile(configFile, []byte(`[model_settings.model]
 provider = "fake"
 `), 0644); err != nil {
 		t.Fatal(err)
@@ -2172,7 +2221,7 @@ func TestStorageMonitorEnabledConfigKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			configFile := filepath.Join(t.TempDir(), "agent.toml")
-			content := "[model]\nprovider = \"fake\"\n\n[storage]\n" + tt.storage + "\n"
+			content := "[model_settings.model]\nprovider = \"fake\"\n\n[storage_settings.storage]\n" + tt.storage + "\n"
 			if err := os.WriteFile(configFile, []byte(content), 0644); err != nil {
 				t.Fatal(err)
 			}
@@ -2190,7 +2239,7 @@ func TestStorageMonitorEnabledConfigKey(t *testing.T) {
 
 func TestAudioArchiveConfigExplicitValues(t *testing.T) {
 	configContent := `
-[audio_archive]
+[voice_settings.classic.audio_archive]
 enabled = false
 max_files = 1000
 max_size_mb = 200
@@ -2204,7 +2253,7 @@ storage_path = "/custom/path"
 	}
 
 	var cfg Config
-	if _, err := toml.DecodeFile(configFile, &cfg); err != nil {
+	if _, err := decodeConfigFile(configFile, &cfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2226,12 +2275,12 @@ func TestLoadConfig_LiveActivitySection(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	body := `
-[model]
+[model_settings.model]
 provider = "openrouter"
 api_key = "x"
 model = "y"
 
-[live_activity]
+[advanced_settings.runtime.live_activity]
 enabled = false
 relay_url = "https://relay.example.com"
 relay_api_key = "relay-secret"
@@ -2259,10 +2308,10 @@ func TestLoadRuntimeConfigFromDirDoesNotCreateLiveActivityBoardID(t *testing.T) 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	body := `
-[model]
+[model_settings.model]
 provider = "fake"
 
-[live_activity]
+[advanced_settings.runtime.live_activity]
 enabled = true
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
