@@ -677,7 +677,7 @@ func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
 		t.Fatal("missing model.api_mode metadata")
 	}
 	wantProviders := map[string][]string{
-		"responses":          {"openai", "openrouter", "volcengine"},
+		"responses":          {"openai", "openrouter", "volcengine", "deepseek"},
 		"responses_stateful": {"openai", "volcengine"},
 	}
 	for _, option := range field.Enum {
