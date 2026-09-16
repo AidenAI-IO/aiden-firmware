@@ -200,6 +200,9 @@ if(NODE_EXECUTABLE)
     add_test(NAME config_web_storage
         COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_storage_test.mjs
     )
+    add_test(NAME config_web_ota
+        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_ota_test.mjs
+    )
     add_test(NAME llm_logs_anthropic
         COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/llm_logs_anthropic_test.mjs
     )
