@@ -137,23 +137,26 @@ its detail route:
 }
 ```
 
-Scroll Lab also exposes its live scroll position: `apps.scroll_lab.scrollTop` is
-the scroll container offset in CSS pixels, and
-`apps.scroll_lab.firstVisibleOrdinal` is the first row still visible in the
-viewport. Because a scalar assertion must match exactly, a numeric band is
-expressed as an object with `min`/`max` keys:
+Scroll Lab also exposes its live scroll trajectory: `apps.scroll_lab.scrollTop`
+is the scroll container offset in CSS pixels, `apps.scroll_lab.firstVisibleOrdinal`
+is the first row still visible in the viewport, and
+`apps.scroll_lab.maxFirstVisibleOrdinal` is the monotonic high-water mark of that
+value for the episode. Because a scalar assertion must match exactly, a numeric
+band is expressed as an object with `min`/`max` keys:
 
 ```json
 {
   "environment_assertions": {
-    "apps.scroll_lab.firstVisibleOrdinal": {"min": 4, "max": 10}
+    "apps.scroll_lab.maxFirstVisibleOrdinal": {"max": 23}
   }
 }
 ```
 
-`mobilegym_scroll_precision.json` uses that band to check that a request to
-scroll exactly one screen really lands within one screen, which exposes the
-wheel-based `mouse_scroll` tool's fixed-distance overshoot.
+`mobilegym_scroll_sweep.json` applies that bound once per list row: the agent must
+scroll to ordinal N and open it, and the run fails if row N was ever pushed off
+the top of the screen. The high-water mark survives a scroll-back, so an
+overshoot the agent recovers from still fails, which is the "scrolled past it and
+lost the information" failure the sweep measures.
 
 ## Concurrency
 
