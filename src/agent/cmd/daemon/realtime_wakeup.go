@@ -590,7 +590,7 @@ func realtimeProviderType(cfg agent.Config) string {
 	return provider
 }
 
-func realtimeProviderSessionConfig(cfg agent.Config) realtimevoice.SessionConfig {
+func realtimeProviderSessionConfig(cfg agent.Config, runtime *agent.Runtime) realtimevoice.SessionConfig {
 	voice := cfg.VoiceModel.Voice
 	inputFormat := cfg.VoiceModel.InputAudioFormat
 	if inputFormat == "" {
@@ -617,7 +617,7 @@ func realtimeProviderSessionConfig(cfg agent.Config) realtimevoice.SessionConfig
 	return realtimevoice.SessionConfig{APIKey: cfg.VoiceModel.APIKey, Model: cfg.VoiceModel.Model, Voice: voice, Instructions: instructions,
 		InputAudioFormat: inputFormat, OutputAudioFormat: outputFormat, MaxHistoryTurns: realtimeContextReplayTurns,
 		TurnDetection: turnType, TurnDetectionThresh: cfg.VoiceModel.TurnDetectionThreshold, TurnDetectionSilenceMs: cfg.VoiceModel.TurnDetectionSilenceMs,
-		EnableSpeechEmotion: enableEmotion, Tools: realtimeVoiceToolDefinitions()}
+		EnableSpeechEmotion: enableEmotion, Tools: realtimeVoiceToolDefinitions(runtime)}
 }
 
 // realtimeClientTurnEndpoint tracks a local speech turn when a provider
@@ -709,8 +709,8 @@ var realtimeDelegatedTools = []string{
 	realtimeAudioVolumeTool,
 }
 
-func realtimeVoiceToolDefinitions() []realtimevoice.Tool {
-	return []realtimevoice.Tool{
+func realtimeVoiceToolDefinitions(runtime *agent.Runtime) []realtimevoice.Tool {
+	tools := []realtimevoice.Tool{
 		realtimeVoiceToolDefinition(
 			realtimeCurrentTimeTool,
 			"Get the current local date, time, timezone, and UTC offset.",
@@ -736,6 +736,17 @@ func realtimeVoiceToolDefinitions() []realtimevoice.Tool {
 			agent.NewAudioVolumeTool(""),
 			"Get or set your own speaking volume. Omit volume to read the current value. This controls your playback volume only, not the phone's system volume.",
 		),
+		realtimeVoiceToolDefinition(
+			realtimeEndConversationTool,
+			"End the conversation and go back to standby when the user is done talking, for example when they say goodbye, tell you to stop listening, or say they do not need anything else. Say a short farewell in the same response; the microphone stays open until you finish speaking. The user can start a new conversation at any time, and you keep your memory and history. Work you are already handling continues, and when it finishes the device comes back on its own to report the outcome, so you may briefly say that you will let them know.",
+			map[string]any{"type": "object", "properties": map[string]any{}},
+		),
+	}
+
+	// TODO: Register all backend agent tools directly into realtime session
+	// Need to expose public methods in Runtime to access toolSnapshot and devicePlatformFromState
+
+	tools = append(tools,
 		realtimeVoiceToolDefinition(
 			realtimeCreateTaskTool,
 			"Handle any request you cannot directly and reliably answer or complete with the realtime conversation tools, including device state, visual inspection, external actions, lookups, or longer multi-step work. Call query_agent_task with no task_id first and continue the task that already covers the request instead of creating a duplicate. Present the work to the user as your own responsibility.",
@@ -773,12 +784,9 @@ func realtimeVoiceToolDefinitions() []realtimevoice.Tool {
 			"Continue work after the user completed a requested device action. Use the internal task reference and pass a concise description of what the user did; never expose the internal reference to the user.",
 			map[string]any{"type": "object", "properties": map[string]any{"task_id": map[string]any{"type": "string"}, "user_message": map[string]any{"type": "string"}}, "required": []string{"task_id", "user_message"}},
 		),
-		realtimeVoiceToolDefinition(
-			realtimeEndConversationTool,
-			"End the conversation and go back to standby when the user is done talking, for example when they say goodbye, tell you to stop listening, or say they do not need anything else. Say a short farewell in the same response; the microphone stays open until you finish speaking. The user can start a new conversation at any time, and you keep your memory and history. Work you are already handling continues, and when it finishes the device comes back on its own to report the outcome, so you may briefly say that you will let them know.",
-			map[string]any{"type": "object", "properties": map[string]any{}},
-		),
-	}
+	)
+
+	return tools
 }
 
 func realtimeVoiceToolDefinition(name, description string, parameters map[string]any) realtimevoice.Tool {
@@ -1064,7 +1072,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sessionConfig := realtimeProviderSessionConfig(cfg)
+	sessionConfig := realtimeProviderSessionConfig(cfg, runtime)
 	if runtime != nil {
 		if err := runtime.PrepareUserContext(sessionConfig.Instructions); err != nil {
 			return err

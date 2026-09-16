@@ -582,13 +582,29 @@ func (s *geminiSession) translate(body []byte) []Event {
 				usageEmitted = true
 			}
 			s.responseMu.Lock()
-			if s.responseInterrupted {
-				events = append(events, Event{Kind: EventResponseCancelled, Status: "cancelled"})
+			// Auto-detect protocol version: interaction_status presence indicates Extended Thinking support
+			if content.InteractionStatus != "" {
+				// New protocol: only IDLE means truly complete
+				if content.InteractionStatus == "IDLE" {
+					if s.responseInterrupted {
+						events = append(events, Event{Kind: EventResponseCancelled, Status: "cancelled"})
+					} else {
+						events = append(events, Event{Kind: EventResponseDone, Status: "completed"})
+					}
+					s.responseActive = false
+					s.responseInterrupted = false
+				}
+				// IN_PROGRESS: keep waiting, don't mark as done
 			} else {
-				events = append(events, Event{Kind: EventResponseDone, Status: "completed"})
+				// Legacy protocol: turnComplete directly means done
+				if s.responseInterrupted {
+					events = append(events, Event{Kind: EventResponseCancelled, Status: "cancelled"})
+				} else {
+					events = append(events, Event{Kind: EventResponseDone, Status: "completed"})
+				}
+				s.responseActive = false
+				s.responseInterrupted = false
 			}
-			s.responseActive = false
-			s.responseInterrupted = false
 			s.responseMu.Unlock()
 		}
 	}
@@ -665,6 +681,7 @@ type geminiServerContent struct {
 	OutputTranscription *geminiTranscription `json:"outputTranscription"`
 	TurnComplete        bool                 `json:"turnComplete"`
 	Interrupted         bool                 `json:"interrupted"`
+	InteractionStatus   string               `json:"interactionStatus,omitempty"` // IDLE | IN_PROGRESS (Gemini 3.8 Extended Thinking)
 }
 
 type geminiModelTurn struct {
