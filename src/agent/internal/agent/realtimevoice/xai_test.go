@@ -317,10 +317,7 @@ func TestXAIResponseDoneFailureIsError(t *testing.T) {
 }
 
 // xAI emits input_audio_buffer.committed right after speech_stopped for the
-// same utterance. Translating both into EventSpeechStopped makes the daemon
-// re-open the input turn after response.created has already bound the
-// response ID, which discards that response's own tool calls and then blocks
-// voice notification injection for the rest of the session.
+// same utterance. It is diagnostic only and must not create another turn.
 func TestTranslateXAITurnSequenceDoesNotDuplicateSpeechStopped(t *testing.T) {
 	raw := []string{
 		`{"type":"input_audio_buffer.speech_stopped"}`,
