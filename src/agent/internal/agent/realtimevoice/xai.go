@@ -259,13 +259,32 @@ func translateXAIEventBase(body []byte) (Event, bool) {
 		}
 		return Event{Kind: EventReady, SessionID: id}, true
 	case "input_audio_buffer.speech_started":
-		return Event{Kind: EventSpeechStarted}, true
+		var event struct {
+			ItemID       string `json:"item_id"`
+			AudioStartMS int    `json:"audio_start_ms"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
+			return Event{Kind: EventError, Error: err}, true
+		}
+		return Event{Kind: EventSpeechStarted, ItemID: event.ItemID, AudioStartMS: event.AudioStartMS}, true
 	case "input_audio_buffer.speech_stopped":
-		return Event{Kind: EventSpeechStopped}, true
+		var event struct {
+			ItemID     string `json:"item_id"`
+			AudioEndMS int    `json:"audio_end_ms"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
+			return Event{Kind: EventError, Error: err}, true
+		}
+		return Event{Kind: EventSpeechStopped, ItemID: event.ItemID, AudioEndMS: event.AudioEndMS}, true
 	case "input_audio_buffer.committed":
-		// speech_stopped owns the VAD turn boundary. committed only confirms
-		// that the same audio was stored and must not mutate turn state again.
-		return Event{}, false
+		var event struct {
+			ItemID         string `json:"item_id"`
+			PreviousItemID string `json:"previous_item_id"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
+			return Event{Kind: EventError, Error: err}, true
+		}
+		return Event{Kind: EventInputCommitted, ItemID: event.ItemID, PreviousItemID: event.PreviousItemID}, true
 	case "conversation.item.input_audio_transcription.delta":
 		var event struct {
 			Delta          string `json:"delta"`

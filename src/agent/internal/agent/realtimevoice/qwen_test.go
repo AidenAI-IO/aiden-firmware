@@ -233,10 +233,19 @@ func TestTranslateQwenEvents(t *testing.T) {
 		kind  EventKind
 		check func(*testing.T, Event)
 	}{
-		{name: "speech", raw: `{"type":"input_audio_buffer.speech_started"}`, kind: EventSpeechStarted},
-		{name: "invalid speech", raw: `{"type":"input_audio_buffer.speech_stopped","reason":"turn_invalid"}`, kind: EventSpeechStopped, check: func(t *testing.T, e Event) {
-			if e.Status != "turn_invalid" {
+		{name: "speech", raw: `{"type":"input_audio_buffer.speech_started","item_id":"item-1","audio_start_ms":120}`, kind: EventSpeechStarted, check: func(t *testing.T, e Event) {
+			if e.ItemID != "item-1" || e.AudioStartMS != 120 {
+				t.Fatalf("speech event = %+v", e)
+			}
+		}},
+		{name: "invalid speech", raw: `{"type":"input_audio_buffer.speech_stopped","item_id":"item-1","audio_end_ms":840,"reason":"turn_invalid"}`, kind: EventSpeechStopped, check: func(t *testing.T, e Event) {
+			if e.ItemID != "item-1" || e.AudioEndMS != 840 || e.Status != "turn_invalid" {
 				t.Fatalf("speech status = %q, want turn_invalid", e.Status)
+			}
+		}},
+		{name: "input committed", raw: `{"type":"input_audio_buffer.committed","item_id":"item-1","previous_item_id":"item-0"}`, kind: EventInputCommitted, check: func(t *testing.T, e Event) {
+			if e.ItemID != "item-1" || e.PreviousItemID != "item-0" {
+				t.Fatalf("committed event = %+v", e)
 			}
 		}},
 		{name: "audio", raw: `{"type":"response.audio.delta","delta":"` + base64.StdEncoding.EncodeToString([]byte{1, 2}) + `"}`, kind: EventAudio, check: func(t *testing.T, e Event) {
@@ -269,6 +278,11 @@ func TestTranslateQwenEvents(t *testing.T) {
 				t.Fatalf("error = %v", e.Error)
 			}
 		}},
+		{name: "transcription failed", raw: `{"type":"conversation.item.input_audio_transcription.failed","item_id":"item-1","error":{"code":"audio_unintelligible","message":"could not transcribe"}}`, kind: EventTranscriptFailed, check: func(t *testing.T, e Event) {
+			if e.ItemID != "item-1" || e.Error == nil || !strings.Contains(e.Error.Error(), "audio_unintelligible") {
+				t.Fatalf("transcription failure = %+v", e)
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -296,7 +310,7 @@ func TestTranslateQwenTurnSequenceDoesNotDuplicateSpeechStopped(t *testing.T) {
 			kinds = append(kinds, event.Kind)
 		}
 	}
-	want := []EventKind{EventSpeechStopped, EventTranscriptFinal, EventResponseStarted}
+	want := []EventKind{EventSpeechStopped, EventInputCommitted, EventTranscriptFinal, EventResponseStarted}
 	if !reflect.DeepEqual(kinds, want) {
 		t.Fatalf("translated event kinds = %v, want %v", kinds, want)
 	}

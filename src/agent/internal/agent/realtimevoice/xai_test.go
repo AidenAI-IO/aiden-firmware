@@ -170,6 +170,33 @@ func TestXAITranscriptionUpdatedNormalizesCumulativeText(t *testing.T) {
 	}
 }
 
+func TestTranslateXAIInputCorrelationEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		raw   string
+		kind  EventKind
+		check func(Event) bool
+	}{
+		{name: "speech started", raw: `{"type":"input_audio_buffer.speech_started","item_id":"item-1","audio_start_ms":120}`, kind: EventSpeechStarted, check: func(event Event) bool {
+			return event.ItemID == "item-1" && event.AudioStartMS == 120
+		}},
+		{name: "speech stopped", raw: `{"type":"input_audio_buffer.speech_stopped","item_id":"item-1","audio_end_ms":840}`, kind: EventSpeechStopped, check: func(event Event) bool {
+			return event.ItemID == "item-1" && event.AudioEndMS == 840
+		}},
+		{name: "input committed", raw: `{"type":"input_audio_buffer.committed","item_id":"item-1","previous_item_id":"item-0"}`, kind: EventInputCommitted, check: func(event Event) bool {
+			return event.ItemID == "item-1" && event.PreviousItemID == "item-0"
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			event, ok := translateXAIEventBase([]byte(tc.raw))
+			if !ok || event.Kind != tc.kind || !tc.check(event) {
+				t.Fatalf("event=%+v ok=%t", event, ok)
+			}
+		})
+	}
+}
+
 func TestXAIErrorIncludesRawPayload(t *testing.T) {
 	event, ok := translateXAIEventBase([]byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_event","event_id":"evt_1"}}`))
 	if !ok || event.Kind != EventError {
@@ -306,7 +333,7 @@ func TestTranslateXAITurnSequenceDoesNotDuplicateSpeechStopped(t *testing.T) {
 			kinds = append(kinds, event.Kind)
 		}
 	}
-	want := []EventKind{EventSpeechStopped, EventResponseStarted}
+	want := []EventKind{EventSpeechStopped, EventInputCommitted, EventResponseStarted}
 	if !reflect.DeepEqual(kinds, want) {
 		t.Fatalf("translated event kinds = %v, want %v", kinds, want)
 	}
