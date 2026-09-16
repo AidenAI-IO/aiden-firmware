@@ -49,10 +49,10 @@ On a Linux host, use the guarded flash helper so the image digest is checked
 before the factory overwrite:
 
 ```bash
-FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+FLASH_TOOL=pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
 IMAGE=./update.img
-scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
-sudo scripts/debian-stage1/flash.sh flash --tool "${FLASH_TOOL}" \
+scripts/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/flash.sh flash --tool "${FLASH_TOOL}" \
   --image "${IMAGE}" --sha256 "<verified-sha256>" \
   --confirm-erase-all-data
 ```

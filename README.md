@@ -130,7 +130,7 @@ cd aiden-firmware
 Build and audit the Debian ARM application bundle:
 
 ```bash
-scripts/debian-stage2/build-apps.sh all
+scripts/debian-apps/build-apps.sh all
 ```
 
 Build the full firmware image:
@@ -144,11 +144,11 @@ checks the digest and requires an explicit confirmation because a factory
 flash overwrites userdata:
 
 ```bash
-FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+FLASH_TOOL=pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
 IMAGE=output/debian/image/update.img
 SHA256=$(awk '{print $1}' "${IMAGE}.sha256")
-scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
-sudo scripts/debian-stage1/flash.sh flash \
+scripts/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/flash.sh flash \
   --tool "${FLASH_TOOL}" \
   --image "${IMAGE}" \
   --sha256 "${SHA256}" \

@@ -25,9 +25,9 @@ Download the local build's `update.img.tar.gz`, extract `update.img`, then flash
 
 ```bash
 tar -xzf update.img.tar.gz update.img
-FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
-scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
-sudo scripts/debian-stage1/flash.sh flash --tool "${FLASH_TOOL}" \
+FLASH_TOOL=pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+scripts/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/flash.sh flash --tool "${FLASH_TOOL}" \
   --image ./update.img --sha256 "<verified-sha256>" \
   --confirm-erase-all-data
 ```
