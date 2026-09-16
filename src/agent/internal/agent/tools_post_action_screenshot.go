@@ -155,6 +155,10 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 		return toolErrorString(te), nil
 	}
 
+	reportToolProgress(ctx, ToolProgress{
+		Status:  "verifying",
+		Content: "Action sent; waiting for the screen to stabilize",
+	})
 	var waitResult waitStableScreenResult
 	if t.waitStable != nil {
 		touchscreenRCALogf("post_action wait_stable start inner=%q", t.inner.Name())
@@ -208,6 +212,10 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 	}
 
 	touchscreenRCALogf("post_action screenshot start inner=%q", t.inner.Name())
+	reportToolProgress(ctx, ToolProgress{
+		Status:  "verifying",
+		Content: "Reading the screen after the action",
+	})
 	screenshotOutput, err := t.screenshot.Call(ctx, "{}")
 	if err != nil {
 		touchscreenRCALogf("post_action screenshot error inner=%q err_type=%T", t.inner.Name(), err)

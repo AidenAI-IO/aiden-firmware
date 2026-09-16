@@ -445,7 +445,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		bleNotifyRequest:        ble.RequestPublishNotifications,
 		bleWakeRequest:          defaultBLEWake,
 		androidADB:              NewAndroidADBManager(runtime.ConfigSnapshot().HID.FrameSocketOrDefault(), runtime.logger),
-		liveActivity:            newReloadableLiveActivityManager(runtime.ConfigSnapshot().LiveActivity, runtime.logger),
+		liveActivity:            newReloadableLiveActivityManager(runtime.ConfigSnapshot().LiveActivity, runtime.ConfigSnapshot().LocaleOrDefault(), runtime.logger),
 		pendingResults:          make(map[string]*chatPendingResult),
 		activeRuns:              make(map[string]context.CancelFunc),
 		terminatedRequests:      make(map[string]struct{}),
@@ -1489,6 +1489,9 @@ func (s *Server) handleChatAsync(
 				pending.history = append(pending.history, msg)
 				pending.messages = append(pending.messages, msg)
 				pending.mu.Unlock()
+				if s.liveActivity != nil {
+					s.liveActivity.UpdateFromRunEvent(requestID, event)
+				}
 				return
 			}
 			msg := messageFromRunEvent(event, userMsg.EpisodeID, requestID)
