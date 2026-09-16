@@ -98,6 +98,73 @@ environment to `/userdata/agent/python`.
 
 Agent output is persisted at `/userdata/agent/log/agent.log`.
 
+## Wi-Fi Connectivity and Recovery
+
+`aiden-wifi-driver.service` loads `aic8800_fdrv.ko` with
+`he_on=${AIDEN_WIFI_HE:-0}`. The current AIC8800DC driver/firmware can remain
+associated and renew DHCP while IPv4 traffic stalls in HE mode with some APs.
+The compatibility default disables Wi-Fi 6 HE and leaves HT/VHT enabled.
+This restores a pre-existing Buildroot fix: commit
+[`2b08d9a9`](https://github.com/AidenAI-IO/aiden-firmware/commit/2b08d9a945846252c3e0d9760187663176cfff57)
+(2026-06-11, #177) passed `he_on=0` at both AIC8800 load points in
+`overlay/oem/usr/ko/insmod_wifi.sh`. That override was still present in
+`9ff24ababfc672ed16711c8b49b21431e685c9b1`, and the Buildroot packaging script
+copied it over the SDK loader. The Debian migration
+[`4993a135`](https://github.com/AidenAI-IO/aiden-firmware/commit/4993a1354d44922dd79a07b5464c440e8b78ad24)
+(#634) introduced this separate loader without the parameter, re-enabling the
+driver's default HE mode. The subsequent removal of the legacy overlay did
+not cause the regression: Debian already used the new loader.
+
+Both repository versions pin `pico-sdk` at
+`d1a279cbb7e29aa0801943cdf21f0575db69eed5`. All 21 files in the affected board's
+`/oem/usr/ko/aic8800dc_fw` matched that SDK firmware directory by SHA-256 during
+the 2026-09-15 investigation. This establishes the missing load parameter as
+the concrete migration regression; it does not assert that separately built
+kernel-module binaries are byte-identical.
+
+Set `AIDEN_WIFI_HE=1` in `/etc/aiden_boot.conf` to test HE with another firmware
+or AP. The parameter applies on module load, so reboot to apply it; restarting
+the driver service alone does not reload an already loaded module.
+
+`aiden-wlan-guard.service` checks the Wi-Fi gateway every 10 seconds. It accepts
+either an ICMP response or a fresh ARP reply, so an AP filtering ping does not
+trigger repeated disconnects. After five failed checks it reassociates, then
+cycles the interface and restarts supplicant if needed. DHCP remains owned by
+systemd-networkd. The guard uses `Wants=` for supplicant so restarting supplicant
+does not terminate its own recovery sequence.
+
+Recovery is limited to three attempts until six consecutive healthy checks
+restore the budget. Once exhausted, the guard keeps monitoring without
+disconnecting the interface. `WLAN_GUARD_MAX_RECOVERIES` and
+`WLAN_GUARD_HEALTHY_THRESHOLD` in `/etc/aiden_boot.conf` override those defaults;
+restart the guard after changing them. Restarting the guard also resets its
+budget. `iw ... set power_save off` is not used as a fix: that operation is a
+no-op in the bundled driver's `rwnx_cfg80211_set_power_mgmt` implementation.
+
+Use the USB connection while investigating wireless connectivity:
+
+```bash
+ssh aiden@192.168.42.1
+sudo journalctl -u aiden-wlan-guard -u wpa_supplicant@wlan0 --since '-10 min'
+sudo ip neigh show dev wlan0
+sudo ping -c 10 -W 1 -I wlan0 <wifi-gateway>
+sudo arping -c 3 -w 4 -I wlan0 <wifi-gateway>
+```
+
+Validate the wireless path with repeated SSH connections from a LAN client,
+including after an idle period; successful DHCP and `wpa_state=COMPLETED` alone
+do not establish that unicast traffic works.
+
+On the AidenIOT AP (2.4 GHz, channel 6) on 2026-09-15, the original HE mode
+reproduced IPv4/ARP failure even with the guard stopped and `ps_on=0`. Loading
+with `he_on=0` restored LAN SSH and gateway traffic, including with the default
+`ps_on=1`. This is a compatibility mitigation, not proof of which side of the
+driver/firmware/AP interaction is defective. Restoring the old parameter on
+Debian passed 12 consecutive LAN SSH connections after deployment. The
+original #177 commit also records an HE-only comparison (0/30 ICMP replies
+with HE enabled, 374/374 with HE disabled) and a successful reboot check;
+those are historical results, not new reboot validation of this patch.
+
 ## Wi-Fi Proxy
 
 `aiden-wifi-proxy.service` starts `agent wifi-proxy` on `127.0.0.1:18080`

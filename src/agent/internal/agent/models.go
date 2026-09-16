@@ -26,6 +26,7 @@ import (
 const (
 	moonshotGlobalBaseURL  = "https://api.moonshot.ai/v1"
 	moonshotCNBaseURL      = "https://api.moonshot.cn/v1"
+	deepseekBaseURL        = "https://api.deepseek.com"
 	fakeModelContextWindow = 1_000_000
 )
 
@@ -330,6 +331,8 @@ func modelAPIEndpoint(provider, baseURL string) string {
 		return moonshotCNBaseURL
 	case "volcengine":
 		return arkBeijingBaseURL
+	case "deepseek":
+		return deepseekBaseURL
 	case "ollama":
 		return "http://localhost:11434"
 	default:

@@ -18,8 +18,8 @@ aiden-firmware/
 ├── overlay-debian-oem/            # Debian OEM scripts, models, audio, and EDID assets
 ├── pico-sdk/                      # Pinned Luckfox BSP SDK submodule
 ├── scripts/
-│   ├── debian-stage2/             # Debian armhf application build and audit
-│   ├── debian-stage3/             # Rootfs, BSP, image assembly, and image audit
+│   ├── debian-apps/               # Debian armhf application build and audit
+│   ├── debian-system/             # Rootfs, BSP, image assembly, and image audit
 │   └── debian/                    # Migration inventories and service maps
 ├── src/                           # C/C++ SDK, services, tools, and protocols
 ├── src/agent/                     # Go device Agent
@@ -94,7 +94,8 @@ overlay-debian-oem/
         └── edid/
 ```
 
-Stage 3 combines this overlay with the audited Stage 2 production allowlist,
+The system stage combines this overlay with the audited apps production
+allowlist,
 vendor libraries, kernel modules, Config Web assets, bundled Agent skills, and
 the OTA public key. Development executables, static libraries, object files,
 maps, headers, and package metadata are rejected by the image audit.
@@ -103,8 +104,8 @@ maps, headers, and package metadata are rejected by the image audit.
 
 The production build has two explicit stages:
 
-1. `scripts/debian-stage2/build-apps.sh all` cross-compiles and audits C/C++ and Go applications for Debian armhf.
-2. `scripts/debian-stage3/build.sh` builds the Debian rootfs and pinned BSP, assembles A/B images, and audits their contents.
+1. `scripts/debian-apps/build-apps.sh all` cross-compiles and audits C/C++ and Go applications for Debian armhf.
+2. `scripts/debian-system/build.sh` builds the Debian rootfs and pinned BSP, assembles A/B images, and audits their contents.
 
 `debian_build.sh` orchestrates both stages, creates local signed OTA metadata,
 and publishes the flashable result under `output/debian/image/`.

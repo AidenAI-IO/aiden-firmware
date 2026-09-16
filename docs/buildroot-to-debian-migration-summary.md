@@ -98,7 +98,7 @@ Stage 1 实机验收完成了首次启动、热重启和两次冷启动，结果
 - 新增 Stage 2 应用构建、ELF 审计、板端 G0 部署和硬件测试脚本。
 - 增加音频、摄像头、NPU、CMA、DMA-BUF、模块和设备节点的采集能力。
 
-当前 `output/debian-stage2/apps-audit/summary.txt` 记录：
+当前 `output/debian-apps/apps-audit/summary.txt` 记录：
 
 ```text
 status=pass
@@ -130,7 +130,7 @@ elf_count=22
 - 音频和 frame systemd 单元显式使用 `aiden` 组及 `audio`/`video` 补充组，配合 UDS
   `0660` 权限，使普通用户能够访问服务接口。
 
-当前 `output/debian-stage3/audit-report.txt` 的最终结果为：
+当前 `output/debian-system/audit-report.txt` 的最终结果为：
 
 ```text
 Audit passed
@@ -680,7 +680,7 @@ systemd 无 failed units，Agent HTTP、三个 HID 接口和 ECM `192.168.42.1` 
 | rootfs 构建与导入审计 | 通过 | e2fsck、内容和属性审计通过 |
 | BSP 审计 | 通过 | 固定 SDK 提交、模块、固件和 A/B boot 检查通过 |
 | 可重复构建 | 通过两次独立验证 | rootfs 和 BSP 历史验收达到字节一致 |
-| 最终镜像审计 | 通过 | `output/debian-stage3/audit-report.txt` 为 `Audit passed`；当前镜像 SHA-256 为 `e8971c7053f789f0e64a31c9f9f27df9322fbeb900684316c32a9cbc61871ae6` |
+| 最终镜像审计 | 通过 | `output/debian-system/audit-report.txt` 为 `Audit passed`；当前镜像 SHA-256 为 `e8971c7053f789f0e64a31c9f9f27df9322fbeb900684316c32a9cbc61871ae6` |
 | 刷写工具链 | 通过 | 当前镜像刷写达到 100%，记录 `Upgrade firmware ok` 和退出状态 0 |
 | 媒体/NPU 模块加载 | 通过 | 相关模块和 `/dev` 节点创建成功 |
 | 普通用户设备权限 | 通过修复 | `/dev/rknpu` 和 `/dev/mpi/*` 使用 `root:video` 0660 |
@@ -772,14 +772,14 @@ output/debian/image/update.img
 ### 7.3 刷写
 
 开发板进入 Loader 或 Maskrom 刷写模式后，在 Linux 主机上使用带校验的
-Stage 1 刷写封装：
+刷写封装：
 
 ```bash
-FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+FLASH_TOOL=pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
 IMAGE=output/debian/image/update.img
 SHA256=$(awk '{print $1}' "${IMAGE}.sha256")
-scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
-sudo scripts/debian-stage1/flash.sh flash \
+scripts/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/flash.sh flash \
   --tool "${FLASH_TOOL}" \
   --image "${IMAGE}" \
   --sha256 "${SHA256}" \
@@ -865,8 +865,8 @@ HTTP 均已核对。后续重复刷写仍应使用上述受保护流程；不要
 - `docs/debian-stage3-host-acceptance-20260817.md`
 - `scripts/debian/init-script-map.tsv`
 - `scripts/debian/environment-service-map.tsv`
-- `output/debian-stage2/apps-audit/summary.txt`
-- `output/debian-stage3/audit-report.txt`
+- `output/debian-apps/apps-audit/summary.txt`
+- `output/debian-system/audit-report.txt`
 - `overlay-debian-oem/usr/lib/libaec_bf_process.so`
 - `overlay-debian-oem/usr/lib/librkaudio_common.so`
 - 板端 `/home/aiden/debian-stage2-g0/bundle-metadata.txt` 及其 `results/` 验收记录

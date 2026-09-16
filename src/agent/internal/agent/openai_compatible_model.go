@@ -1,6 +1,7 @@
 package agent
 
 import (
+	agentmessages "aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/util"
 	"bufio"
 	"bytes"
@@ -20,6 +21,19 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+// compatibleDialect identifies the provider-specific wire shape of the shared
+// OpenAI-compatible Chat Completions transport. Most providers (OpenAI, Kimi,
+// Volcengine Ark, and custom gateways) speak the generic shape; OpenRouter adds
+// a nested `reasoning` object and DeepSeek adds a `thinking` toggle plus
+// mandatory `reasoning_content` on every assistant message.
+type compatibleDialect string
+
+const (
+	compatibleDialectOpenAI     compatibleDialect = "" // generic OpenAI-compatible shape
+	compatibleDialectOpenRouter compatibleDialect = "openrouter"
+	compatibleDialectDeepSeek   compatibleDialect = "deepseek"
+)
+
 type openAICompatibleModel struct {
 	baseURL             string
 	model               string
@@ -29,13 +43,12 @@ type openAICompatibleModel struct {
 	explicitPromptCache bool
 	routerMetadata      bool
 	reasoningEffort     string
-	// openRouterReasoning enables the nested `reasoning` object alongside the
-	// standard reasoning_effort field. That object is an OpenRouter extension
-	// (it carries `exclude` to drop reasoning from the response), so only the
-	// OpenRouter provider sets it; direct endpoints such as Volcengine Ark,
-	// OpenAI, and Moonshot receive reasoning_effort alone.
-	openRouterReasoning bool
+	dialect             compatibleDialect
 	temperature         *float64
+	// ignoreTemperature prevents both configured and per-call temperature from
+	// reaching providers that accept the field but cannot apply it in the
+	// selected reasoning mode.
+	ignoreTemperature bool
 	// sessionIDProvider, when set, supplies the value for the x-session-id
 	// request header. It is only wired up for the OpenRouter provider, whose
 	// sticky routing uses the session id to keep multi-turn requests on the same
@@ -118,18 +131,23 @@ func withOpenAICompatibleReasoningEffort(effort string) openAICompatibleModelOpt
 	}
 }
 
-// withOpenAICompatibleOpenRouterReasoning sends OpenRouter's nested `reasoning`
-// object in addition to the standard reasoning_effort field. Leave it unset for
-// direct provider endpoints, which only understand reasoning_effort.
-func withOpenAICompatibleOpenRouterReasoning() openAICompatibleModelOption {
+// withOpenAICompatibleDialect selects the provider-specific wire shape for the
+// shared compatible transport. Leave unset for the generic OpenAI shape.
+func withOpenAICompatibleDialect(dialect compatibleDialect) openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
-		m.openRouterReasoning = true
+		m.dialect = dialect
 	}
 }
 
 func withOpenAICompatibleTemperature(temp *float64) openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.temperature = temp
+	}
+}
+
+func withOpenAICompatibleIgnoreTemperature() openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.ignoreTemperature = true
 	}
 }
 
@@ -296,6 +314,11 @@ type compatibleChatRequest struct {
 	ResponseFormat   map[string]string   `json:"response_format,omitempty"`
 	Reasoning        *reasoningConfig    `json:"reasoning,omitempty"`
 	ReasoningEffort  string              `json:"reasoning_effort,omitempty"`
+	Thinking         *compatibleThinking `json:"thinking,omitempty"`
+}
+
+type compatibleThinking struct {
+	Type string `json:"type"`
 }
 
 type reasoningConfig struct {
@@ -304,11 +327,12 @@ type reasoningConfig struct {
 }
 
 type compatibleMessage struct {
-	Role       string               `json:"role"`
-	Content    any                  `json:"content,omitempty"`
-	Name       string               `json:"name,omitempty"`
-	ToolCalls  []compatibleToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string               `json:"tool_call_id,omitempty"`
+	Role             string               `json:"role"`
+	Content          any                  `json:"content,omitempty"`
+	Name             string               `json:"name,omitempty"`
+	ToolCalls        []compatibleToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string               `json:"tool_call_id,omitempty"`
+	ReasoningContent *string              `json:"reasoning_content,omitempty"`
 }
 
 type compatibleTool struct {
@@ -464,6 +488,45 @@ func (m *openAICompatibleModel) Call(ctx context.Context, prompt string, options
 }
 
 func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	return m.generateContent(ctx, messages, nil, options...)
+}
+
+// GenerateContentFromMessageList preserves the assistant reasoning_content that
+// the Chat Completions transport stores alongside the agent's provider-neutral
+// history. Reasoning-capable providers (OpenAI o-series, DeepSeek, Kimi thinking
+// models) require this field on follow-up tool-call turns to keep reasoning
+// continuity, and the common LangChain message shape has no reasoning_content
+// field, so GenerateContent cannot carry it through.
+func (m *openAICompatibleModel) GenerateContentFromMessageList(ctx context.Context, contextMessages []agentmessages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	reasoning := make([]string, len(contextMessages))
+	for i, message := range contextMessages {
+		reasoning[i] = message.ReasoningContent
+	}
+	return m.generateContent(ctx, agentmessages.ConvertMessageList(contextMessages), reasoning, options...)
+}
+
+// applyCompatibleDialect adds provider-specific Chat Completions fields for the
+// model's dialect. The generic OpenAI shape needs no extras: OpenRouter gets its
+// nested `reasoning` object and DeepSeek gets its `thinking` toggle.
+func (m *openAICompatibleModel) applyCompatibleDialect(req *compatibleChatRequest) {
+	switch m.dialect {
+	case compatibleDialectOpenRouter:
+		if m.reasoningEffort != "" {
+			req.Reasoning = &reasoningConfig{
+				Effort:  m.reasoningEffort,
+				Exclude: m.reasoningEffort == "none",
+			}
+		}
+	case compatibleDialectDeepSeek:
+		thinkingType := "enabled"
+		if m.reasoningEffort == "none" {
+			thinkingType = "disabled"
+		}
+		req.Thinking = &compatibleThinking{Type: thinkingType}
+	}
+}
+
+func (m *openAICompatibleModel) generateContent(ctx context.Context, messages []llms.MessageContent, reasoning []string, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	callStarted := time.Now()
 	generationInfo := map[string]any{}
 	requestPrepareStart := time.Now()
@@ -473,10 +536,25 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	}
 
 	requestMessages := make([]compatibleMessage, 0, len(messages))
-	for _, message := range messages {
+	for i, message := range messages {
 		converted, err := convertMessageContent(message, m.explicitPromptCache)
 		if err != nil {
 			return nil, err
+		}
+		if converted.Role == "assistant" {
+			content := ""
+			if i < len(reasoning) {
+				content = reasoning[i]
+			}
+			// reasoning_content replay behavior by provider:
+			// - DeepSeek: REQUIRED on every assistant message when tools are present
+			//   (returns 400 error if omitted), even when empty
+			// - Kimi: REQUIRED for thinking models to preserve reasoning continuity
+			// - Generic OpenAI-compatible: replay only when non-empty (conservative)
+			// DeepSeek requires the field even when empty to maintain context.
+			if content != "" || m.dialect == compatibleDialectDeepSeek {
+				converted.ReasoningContent = &content
+			}
 		}
 		requestMessages = append(requestMessages, converted)
 	}
@@ -500,10 +578,12 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	// (langchaingo convention, 0 means unset). The model field is the primary
 	// channel for openAI-compatible models; callOpts remains for telemetry and
 	// non-openai-compatible providers (ollama, fake).
-	if m.temperature != nil {
-		reqPayload.Temperature = m.temperature
-	} else if callOpts.Temperature != 0 {
-		reqPayload.Temperature = &callOpts.Temperature
+	if !m.ignoreTemperature {
+		if m.temperature != nil {
+			reqPayload.Temperature = m.temperature
+		} else if callOpts.Temperature != 0 {
+			reqPayload.Temperature = &callOpts.Temperature
+		}
 	}
 	if callOpts.JSONMode {
 		reqPayload.ResponseFormat = map[string]string{"type": "json_object"}
@@ -515,13 +595,8 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	// (e.g. Ark's "minimal") reach the endpoint unchanged.
 	if m.reasoningEffort != "" {
 		reqPayload.ReasoningEffort = m.reasoningEffort
-		if m.openRouterReasoning {
-			reqPayload.Reasoning = &reasoningConfig{
-				Effort:  m.reasoningEffort,
-				Exclude: m.reasoningEffort == "none",
-			}
-		}
 	}
+	m.applyCompatibleDialect(&reqPayload)
 	generationInfo["llm_request_prepare_ms"] = time.Since(requestPrepareStart).Milliseconds()
 
 	marshalStart := time.Now()
@@ -1282,6 +1357,7 @@ func mergeConsecutiveSameRoleMessages(messages []compatibleMessage) []compatible
 		// Only merge if roles match and neither is a tool message
 		canMerge := current.Role == previous.Role &&
 			current.Role != "tool" &&
+			current.ReasoningContent == nil && previous.ReasoningContent == nil &&
 			len(current.ToolCalls) == 0 &&
 			len(previous.ToolCalls) == 0
 

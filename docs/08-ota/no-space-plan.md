@@ -22,7 +22,7 @@ runtime paths while placing them on a separate filesystem.
 
 ## Boot and Fail-Closed Behavior
 
-The Debian Stage 3 board configuration defines the dedicated partition, and
+The Debian board configuration defines the dedicated partition, and
 systemd mounts it with `userdata-ota.mount`:
 
 ```text
@@ -87,7 +87,7 @@ The firmware build generates an empty generic `ota.img` and includes it in
 `update.img`. Runtime state and downloads populate that filesystem only after
 the device boots.
 
-After the signed manifest is generated, the Debian Stage 3 config action writes
+After the signed manifest is generated, the Debian system config action writes
 the factory baseline into `userdata.img` at:
 
 ```text

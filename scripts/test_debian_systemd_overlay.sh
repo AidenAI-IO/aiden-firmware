@@ -228,6 +228,14 @@ grep -q 'networkctl reconfigure' "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
 if grep -qE 'dhcpcd|dhclient' "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"; then
     fail "Wi-Fi guard takes DHCP ownership from networkd"
 fi
+grep -Fqx 'insert_if_present aic8800_fdrv.ko he_on="${he_on}"' \
+    "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -Fqx 'he_on=${AIDEN_WIFI_HE:-0}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -Fqx 'AIDEN_WIFI_HE=0' "${OVERLAY}/etc/aiden_boot.conf"
+grep -Fqx 'Wants=wpa_supplicant@wlan0.service' "${UNIT_DIR}/aiden-wlan-guard.service"
+if grep -Eq '^Requires=.*wpa_supplicant@wlan0' "${UNIT_DIR}/aiden-wlan-guard.service"; then
+    fail "Wi-Fi guard must survive restarting supplicant during recovery"
+fi
 
 grep -Fqx 'SUBSYSTEM=="misc", KERNEL=="rknpu", GROUP="video", MODE="0660"' \
     "${OVERLAY}/etc/udev/rules.d/70-aiden-rknpu.rules"
@@ -450,5 +458,6 @@ fi
 "${REPO_ROOT}/scripts/test_debian_agent_control.sh"
 "${REPO_ROOT}/scripts/test_debian_frame_control.sh"
 "${REPO_ROOT}/scripts/test_debian_python_environment.sh"
+python3 "${REPO_ROOT}/scripts/test_wlan_guard.py"
 
 echo "Debian systemd overlay tests passed"

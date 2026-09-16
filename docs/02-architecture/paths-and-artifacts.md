@@ -9,11 +9,11 @@ sidebar_position: 4
 | Path | Description |
 | --- | --- |
 | `build-host/bin/aiden_tests` | Host-native C++ test binary |
-| `output/debian-stage2/apps/bin/` | Cross-compiled application and diagnostic binaries |
-| `output/debian-stage2/apps/lib/` | Runtime libraries staged for the OEM image |
-| `output/debian-stage2/apps-audit/` | ELF, dependency, and allowlist audit results |
-| `output/debian-stage3/rootfs.ext4` | Reproducible Debian armhf rootfs image |
-| `output/debian-stage3/image/` | Audited Stage 3 partition and factory images |
+| `output/debian-apps/apps/bin/` | Cross-compiled application and diagnostic binaries |
+| `output/debian-apps/apps/lib/` | Runtime libraries staged for the OEM image |
+| `output/debian-apps/apps-audit/` | ELF, dependency, and allowlist audit results |
+| `output/debian-system/rootfs.ext4` | Reproducible Debian armhf rootfs image |
+| `output/debian-system/image/` | Audited system partition and factory images |
 | `output/debian/image/update.img` | Final directly flashable local firmware |
 | `output/debian/image/manifest.json` | Locally signed OTA manifest |
 
@@ -34,8 +34,8 @@ sidebar_position: 4
 | `src/agent/internal/ota` | OTA download, slot, health, and state machine |
 | `overlay-debian/` | Debian rootfs overlay and systemd integration |
 | `overlay-debian-oem/` | Debian OEM-owned scripts and assets |
-| `scripts/debian-stage2/` | Application cross-build and audit |
-| `scripts/debian-stage3/` | Rootfs, BSP, image assembly, and audit |
+| `scripts/debian-apps/` | Application cross-build and audit |
+| `scripts/debian-system/` | Rootfs, BSP, image assembly, and audit |
 | `tests/` | Host-native C++ tests |
 
 ## Device Default Paths
@@ -86,14 +86,14 @@ sidebar_position: 4
 ```bash
 # Build and test
 make test
-scripts/debian-stage2/build-apps.sh all
+scripts/debian-apps/build-apps.sh all
 ./debian_build.sh
 
 # Flash on Linux (after entering Loader/Maskrom)
-FLASH_TOOL=output/debian-stage3/luckfox-pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
+FLASH_TOOL=pico-sdk/tools/linux/Linux_Upgrade_Tool/upgrade_tool
 IMAGE=output/debian/image/update.img
-scripts/debian-stage1/flash.sh inspect --tool "${FLASH_TOOL}"
-sudo scripts/debian-stage1/flash.sh flash --tool "${FLASH_TOOL}" \
+scripts/flash.sh inspect --tool "${FLASH_TOOL}"
+sudo scripts/flash.sh flash --tool "${FLASH_TOOL}" \
   --image "${IMAGE}" --sha256 "$(awk '{print $1}' "${IMAGE}.sha256")" \
   --confirm-erase-all-data
 
@@ -133,7 +133,7 @@ tail -f /userdata/agent/log/agent.log
 journalctl -u aiden-frame.service -u aiden-agent.service
 ```
 
-The diagnostic CLIs are Stage 2 artifacts and are not part of the production OEM
+The diagnostic CLIs are apps artifacts and are not part of the production OEM
 allowlist. Copy a required CLI to `/userdata` for a bounded device test.
 
 ## Persistent Logs

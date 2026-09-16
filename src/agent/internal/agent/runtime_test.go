@@ -1168,30 +1168,46 @@ func TestRuntimeRunAsyncEpisodeMaintenanceDoesNotBlock(t *testing.T) {
 	)
 	runtime.memoryPlane = plane
 
-	done := make(chan error, 1)
+	runReturned := make(chan struct{})
+	var runErr error
 	go func() {
-		_, err := runtime.Run(context.Background(), RunRequest{
+		_, runErr = runtime.Run(context.Background(), RunRequest{
 			Input:                   "hello",
 			AsyncEpisodeMaintenance: true,
 		})
-		done <- err
+		close(runReturned)
 	}()
 
+	// Async maintenance blocks in commitEpisodeMaintenance until the test
+	// releases it. Wait for the worker to start before asserting that Run()
+	// returned: Run() persists the session with fsync first, and that I/O can
+	// take hundreds of milliseconds on IO-contended CI runners. Anchoring on the
+	// worker start keeps the assertion independent of that disk latency.
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
+	case <-plane.started:
+	case <-runReturned:
+		// Run() got back before the maintenance goroutine was scheduled, which
+		// is still non-blocking. Make sure the worker starts afterwards.
+		select {
+		case <-plane.started:
+		case <-time.After(time.Second):
+			t.Fatal("async episode maintenance did not start")
 		}
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(10 * time.Second):
+		t.Fatal("async episode maintenance did not start")
+	}
+
+	// Maintenance is running and blocked here, so Run() must not wait for it.
+	select {
+	case <-runReturned:
+	case <-time.After(time.Second):
 		t.Fatal("Run() blocked on async episode maintenance")
+	}
+	if runErr != nil {
+		t.Fatalf("Run() error = %v", runErr)
 	}
 	if !plane.traceCommitted.Load() {
 		t.Fatal("episode trace was not committed before Run returned")
-	}
-	select {
-	case <-plane.started:
-	case <-time.After(time.Second):
-		t.Fatal("async episode maintenance did not start")
 	}
 }
 
@@ -1215,9 +1231,11 @@ func TestRuntimeClosePreventsLateAsyncEpisodeMaintenanceRegistration(t *testing.
 		})
 		runDone <- err
 	}()
+	// Run() persists the session (fsync) before it reaches the trace commit, so
+	// allow the same generous IO headroom as the non-blocking test above.
 	select {
 	case <-plane.traceStarted:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("episode trace commit did not start")
 	}
 

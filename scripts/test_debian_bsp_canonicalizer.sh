@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly CANONICALIZER=${REPO_ROOT}/scripts/debian-stage3/canonicalize-bsp.py
+readonly CANONICALIZER=${REPO_ROOT}/scripts/debian-system/canonicalize-bsp.py
 readonly CRC_TABLE_SOURCE=${REPO_ROOT}/pico-sdk/sysdrv/source/uboot/u-boot/tools/rockchip/boot_merger.c
 readonly TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "${TEST_ROOT}"' EXIT

@@ -208,7 +208,7 @@ func ConfigMeta() ConfigMetadata {
 						Help: "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
 						Enum: []EnumOption{
 							{Value: "", Label: "Chat Completions (compatible)"},
-							{Value: "responses", Label: "Responses (local context)", Providers: []string{"openai", "openrouter", "volcengine"}},
+							{Value: "responses", Label: "Responses (local context)", Providers: []string{"openai", "openrouter", "volcengine", "deepseek"}},
 							{Value: "responses_stateful", Label: "Responses (provider context)", Providers: []string{"openai", "volcengine"}},
 						},
 						Default: defaults.Model.APIMode, Layout: "wide"},
@@ -272,12 +272,12 @@ func ConfigMeta() ConfigMetadata {
 						Enum: []EnumOption{
 							{Value: "", Label: "auto (default)"},
 							{Value: "minimal", Label: "minimal (no reasoning)", Providers: []string{"openrouter", "volcengine"}},
-							{Value: "none", Label: "none", Providers: []string{"openrouter", "openai", "kimi", "kimi-cn", "ollama", "fake"}},
+							{Value: "none", Label: "none", Providers: []string{"openrouter", "openai", "kimi", "kimi-cn", "deepseek", "ollama", "fake"}},
 							{Value: "low", Label: "low"},
 							{Value: "medium", Label: "medium"},
 							{Value: "high", Label: "high"},
 							{Value: "xhigh", Label: "xhigh", Providers: []string{"anthropic", "openrouter", "openai", "kimi", "kimi-cn", "volcengine"}},
-							{Value: "max", Label: "max", Providers: []string{"anthropic", "openrouter", "openai", "kimi", "kimi-cn", "volcengine"}},
+							{Value: "max", Label: "max", Providers: []string{"anthropic", "openrouter", "openai", "kimi", "kimi-cn", "volcengine", "deepseek"}},
 						},
 						Default: defaults.Model.ReasoningEffort},
 					{Key: "reasoning_budget_tokens", Widget: WidgetNumber,

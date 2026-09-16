@@ -2,6 +2,8 @@
 set -eu
 
 ko_dir=/oem/usr/ko
+he_on=${AIDEN_WIFI_HE:-0}
+case "${he_on}" in 0|1) ;; *) echo "AIDEN_WIFI_HE must be 0 or 1" >&2; exit 1 ;; esac
 insert_if_present() {
     module=$1
     shift
@@ -18,7 +20,11 @@ insert_if_present aes_generic.ko
 insert_if_present cfg80211.ko
 insert_if_present aic8800_bsp.ko aic_fw_path=/oem/usr/ko/aic8800dc_fw
 sleep 1
-insert_if_present aic8800_fdrv.ko
+# Preserve the Buildroot workaround from 2b08d9a9 (#177), which the Debian
+# loader initially omitted: AIC8800DC can associate and acquire DHCP over HE
+# but subsequently lose IPv4 connectivity with some APs. Keep HT/VHT enabled.
+# This parameter takes effect at module load.
+insert_if_present aic8800_fdrv.ko he_on="${he_on}"
 sleep 2
 insert_if_present aic8800_btlpm.ko
 
