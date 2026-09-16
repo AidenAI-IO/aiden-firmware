@@ -403,6 +403,7 @@ jobs:
         fi
 
     - name: Run Debian firmware build
+      id: firmware
       if: ${{ !inputs.dry_run }}
       env:
         RK_JOBS: ${{ steps.meta.outputs.rk_jobs }}
@@ -457,7 +458,14 @@ jobs:
     - name: Publish GitHub release
       # The main branch produces the stable channel and takes the Latest tag;
       # every other branch publishes a pre-release so it cannot displace it.
-      if: ${{ !inputs.dry_run && inputs.publish_release }}
+      #
+      # Gated on the build step rather than on the job so far: the artifact
+      # upload above is a secondary copy of the same files, and a reset
+      # connection to blob storage once threw away a finished 45-minute build
+      # by skipping this step. The job still fails when that upload fails --
+      # the release just goes out first, with create_github_release.sh's own
+      # retries covering the same kind of transient error.
+      if: ${{ !cancelled() && steps.firmware.outcome == 'success' && !inputs.dry_run && inputs.publish_release }}
       # create_github_release.sh retries, but nothing bounds a single attempt,
       # so a connection that hangs rather than fails blocks until the job
       # timeout. One such publish burned three hours of runner time after the
