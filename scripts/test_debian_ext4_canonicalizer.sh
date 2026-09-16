@@ -2,8 +2,8 @@
 set -euo pipefail
 
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly CANONICALIZER=${REPO_ROOT}/scripts/debian-stage3/canonicalize-ext4.py
-readonly ROOTFS_BUILDER=${REPO_ROOT}/scripts/debian-stage3/container-build-rootfs.sh
+readonly CANONICALIZER=${REPO_ROOT}/scripts/debian-system/canonicalize-ext4.py
+readonly ROOTFS_BUILDER=${REPO_ROOT}/scripts/debian-system/container-build-rootfs.sh
 readonly TEST_ROOT=$(mktemp -d)
 readonly BUILD_EPOCH=1767360516
 readonly ROOTFS_UUID=1d29a2d4-5488-4bea-a648-bf133c4b53d3
