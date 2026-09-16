@@ -805,9 +805,18 @@ func (pb *PhoneBridge) UpdateState() map[string]string {
 		ret["app_connected"] = "false"
 	}
 
+	// Clear app_state when disconnected and stale (no recent HTTP polling either).
+	// This prevents showing "connecting" state when the phone is physically unplugged.
+	// When app goes to background normally, HTTP polling keeps appStateAt fresh.
+	appState := strings.TrimSpace(status.AppState)
+	if !status.Connected && appState != "" {
+		if status.AppStateUpdatedAt == nil || time.Since(*status.AppStateUpdatedAt) > phoneBridgeBackgroundStateMaxAge {
+			appState = ""
+		}
+	}
 	// Empty values overwrite stale state-manager entries and are omitted from
 	// the model-facing <state> message by the state hook.
-	ret["app_state"] = strings.TrimSpace(status.AppState)
+	ret["app_state"] = appState
 
 	// Expose only currently usable background bridge modes. Raw capability flags
 	// can outlive the companion app's HTTP polling, while command routing rejects
