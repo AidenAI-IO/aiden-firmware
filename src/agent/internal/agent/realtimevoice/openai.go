@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 
@@ -56,9 +57,6 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 	inputRate := cfg.InputSampleRate
 	if inputRate <= 0 {
 		inputRate = 24000
-		if normalizeRealtimeProtocol(p.RealtimeProtocol) == "legacy" {
-			inputRate = 16000
-		}
 	}
 	outputRate := cfg.OutputSampleRate
 	if outputRate <= 0 {
@@ -74,6 +72,9 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 		if !ok {
 			return nil
 		}
+		if event.Kind == EventReady {
+			logOpenAITranscriptionAcknowledgement(body, s.Info().ID)
+		}
 		return []Event{event}
 	})
 
@@ -85,6 +86,7 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 		_ = s.Close()
 		return nil, err
 	}
+	log.Printf("[realtime] OpenAI transcription requested: session_id=%s protocol=%s model=%s transcription_model=%s language=auto", s.Info().ID, normalizeRealtimeProtocol(p.RealtimeProtocol), model, DefaultOpenAIInputTranscriptionModel)
 	if err := s.waitReady(ctx, 1); err != nil {
 		_ = s.Close()
 		return nil, err
@@ -145,7 +147,8 @@ type openAIAudioInput struct {
 }
 
 type openAITranscriptionConfig struct {
-	Model string `json:"model"`
+	Model    string `json:"model"`
+	Language string `json:"language,omitempty"`
 }
 
 type openAIAudioOutput struct {
@@ -201,7 +204,7 @@ func buildOpenAILegacySessionUpdate(cfg SessionConfig) openAILegacySessionUpdate
 	settings := openAILegacySessionSettings{
 		Modalities: []string{"audio", "text"}, Instructions: cfg.Instructions,
 		Voice: cfg.Voice, InputAudioFormat: "pcm16", OutputAudioFormat: "pcm16",
-		InputAudioTranscription: &openAITranscriptionConfig{Model: "whisper-1"},
+		InputAudioTranscription: &openAITranscriptionConfig{Model: DefaultOpenAIInputTranscriptionModel},
 		TurnDetection:           turnDetectionConfig(cfg),
 	}
 	for _, tool := range cfg.Tools {
@@ -301,6 +304,56 @@ func (s *openAISession) Interrupt(ctx context.Context, interruption ResponseInte
 	})
 }
 
+type openAITranscriptionAcknowledgement struct {
+	SessionID string
+	Model     string
+	Language  string
+	Present   bool
+}
+
+func parseOpenAITranscriptionAcknowledgement(body []byte, fallbackSessionID string) (openAITranscriptionAcknowledgement, bool) {
+	var frame struct {
+		Type    string `json:"type"`
+		Session struct {
+			ID                      string                     `json:"id"`
+			InputAudioTranscription *openAITranscriptionConfig `json:"input_audio_transcription"`
+			Audio                   struct {
+				Input struct {
+					Transcription *openAITranscriptionConfig `json:"transcription"`
+				} `json:"input"`
+			} `json:"audio"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(body, &frame); err != nil || frame.Type != "session.updated" {
+		return openAITranscriptionAcknowledgement{}, false
+	}
+	if frame.Session.ID == "" {
+		frame.Session.ID = fallbackSessionID
+	}
+	transcription := frame.Session.Audio.Input.Transcription
+	if transcription == nil {
+		transcription = frame.Session.InputAudioTranscription
+	}
+	ack := openAITranscriptionAcknowledgement{SessionID: frame.Session.ID, Present: transcription != nil}
+	if transcription != nil {
+		ack.Model = transcription.Model
+		ack.Language = transcription.Language
+	}
+	return ack, true
+}
+
+func logOpenAITranscriptionAcknowledgement(body []byte, fallbackSessionID string) {
+	ack, ok := parseOpenAITranscriptionAcknowledgement(body, fallbackSessionID)
+	if !ok {
+		return
+	}
+	if !ack.Present {
+		log.Printf("[realtime] OpenAI transcription acknowledgement absent: session_id=%s", ack.SessionID)
+		return
+	}
+	log.Printf("[realtime] OpenAI transcription acknowledged: session_id=%s transcription_model=%s language=%q", ack.SessionID, ack.Model, ack.Language)
+}
+
 func translateOpenAIEvent(body []byte) (Event, bool) {
 	var envelope struct {
 		Type string `json:"type"`
@@ -332,13 +385,32 @@ func translateOpenAIEvent(body []byte) (Event, bool) {
 		}
 		return Event{Kind: EventReady, SessionID: event.Session.ID}, true
 	case "input_audio_buffer.speech_started":
-		return Event{Kind: EventSpeechStarted}, true
+		var event struct {
+			ItemID       string `json:"item_id"`
+			AudioStartMS int    `json:"audio_start_ms"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
+			return Event{Kind: EventError, Error: err}, true
+		}
+		return Event{Kind: EventSpeechStarted, ItemID: event.ItemID, AudioStartMS: event.AudioStartMS}, true
 	case "input_audio_buffer.speech_stopped":
-		return Event{Kind: EventSpeechStopped}, true
+		var event struct {
+			ItemID     string `json:"item_id"`
+			AudioEndMS int    `json:"audio_end_ms"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
+			return Event{Kind: EventError, Error: err}, true
+		}
+		return Event{Kind: EventSpeechStopped, ItemID: event.ItemID, AudioEndMS: event.AudioEndMS}, true
 	case "input_audio_buffer.committed":
-		// speech_stopped owns the VAD turn boundary. committed only confirms
-		// that the same audio was stored and must not mutate turn state again.
-		return Event{}, false
+		var event struct {
+			ItemID         string `json:"item_id"`
+			PreviousItemID string `json:"previous_item_id"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
+			return Event{Kind: EventError, Error: err}, true
+		}
+		return Event{Kind: EventInputCommitted, ItemID: event.ItemID, PreviousItemID: event.PreviousItemID}, true
 	case "conversation.item.input_audio_transcription.delta":
 		var event struct {
 			Delta          string `json:"delta"`
@@ -361,6 +433,22 @@ func translateOpenAIEvent(body []byte) (Event, bool) {
 			return Event{Kind: EventError, Error: err}, true
 		}
 		return Event{Kind: EventTranscriptFinal, ItemID: event.ItemID, Sequence: normalizedSequence(event.Sequence, event.SequenceNumber), Role: "user", Text: event.Transcript, TextSource: "audio", Final: true}, true
+	case "conversation.item.input_audio_transcription.failed":
+		var event struct {
+			ItemID string `json:"item_id"`
+			Error  struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &event); err != nil {
+			return Event{Kind: EventError, Error: err}, true
+		}
+		err := errors.New(event.Error.Message)
+		if event.Error.Code != "" {
+			err = fmt.Errorf("%s: %w", event.Error.Code, err)
+		}
+		return Event{Kind: EventTranscriptFailed, ItemID: event.ItemID, Role: "user", TextSource: "audio", Error: err}, true
 	case "response.created":
 		var event struct {
 			Response struct {
