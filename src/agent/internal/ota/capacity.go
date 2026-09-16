@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"aiden-agent/internal/logging"
 )
 
 const maxInt64 = int64(^uint64(0) >> 1)
@@ -43,7 +45,7 @@ func (u *Updater) buildDownloadPlan(assets map[string]ManifestAsset, state State
 			plan.assets[partName] = planned
 			continue
 		} else if !os.IsNotExist(err) {
-			u.logf("ota download: %s cached file ignored: %v", asset.Name, err)
+			logging.Warnf("ota", "updater", "ota download: %s cached file ignored: %v", asset.Name, err)
 		}
 
 		planned.remainingBytes = asset.Size
@@ -164,7 +166,7 @@ func (u *Updater) ensureDownloadCapacity(plan downloadPlan) error {
 		return err
 	}
 	if remaining == 0 {
-		u.logf("ota space: no download bytes needed")
+		logging.Infof("ota", "updater", "ota space: no download bytes needed")
 		return nil
 	}
 	if u.config.DownloadSafetyMarginBytes > maxInt64-remaining {
@@ -187,7 +189,7 @@ func (u *Updater) ensureDownloadCapacity(plan downloadPlan) error {
 			u.config.StorageMountPoint,
 		)
 	}
-	u.logf(
+	logging.Infof("ota", "updater",
 		"ota space: available=%s largest_remaining_download=%s safety_margin=%s",
 		formatBytes(available),
 		formatBytes(remaining),

@@ -3,9 +3,9 @@ package agent
 import (
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/realtimevoice"
+	"aiden-agent/internal/logging"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"net"
 	"net/url"
@@ -1598,8 +1598,7 @@ func applyLegacyContextPruneThreshold(cfg *Config) {
 	if cfg.ContextPruneThreshold < 1 {
 		return
 	}
-	log.Printf("[config] context_prune_threshold = %g looks like a token count; it is now a fraction of the usable input budget. Using the default %g. Set a value in (0, 1) to silence this.\n",
-		cfg.ContextPruneThreshold, defaultContextPruneThreshold)
+	logging.Warnf("agent", "config", "context_prune_threshold = %g looks like a token count; it is now a fraction of the usable input budget. Using the default %g. Set a value in (0, 1) to silence this.", cfg.ContextPruneThreshold, defaultContextPruneThreshold)
 	cfg.ContextPruneThreshold = defaultContextPruneThreshold
 }
 

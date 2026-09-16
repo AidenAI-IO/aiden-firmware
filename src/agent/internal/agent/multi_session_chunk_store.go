@@ -1,8 +1,8 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,7 +37,7 @@ func (s *MultiSessionChunkStore) RecallChunks(ctx context.Context, query ChunkRe
 	// Load the global index
 	index, err := loadChunkIndexFromPath(indexPath)
 	if err != nil {
-		log.Printf("[WARN] [agent] [chunk_store] failed to load global chunk index: %v", err)
+		logging.Warnf("agent", "chunk_store", "failed to load global chunk index: %v", err)
 		return nil, nil
 	}
 

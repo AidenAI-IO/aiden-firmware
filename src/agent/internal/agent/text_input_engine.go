@@ -1,11 +1,11 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 	"unicode"
@@ -320,7 +320,7 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 	if cleanupSupported {
 		probeBeforeScreenshot, err = e.captureScreenshot(ctx)
 		if err != nil {
-			log.Printf("[text-input] probe cleanup baseline screenshot failed: %v", err)
+			logging.Warnf("agent", "text_input", "probe cleanup baseline screenshot failed: %v", err)
 			cleanupSupported = false
 		}
 	}
@@ -353,7 +353,7 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 		// Capture screenshot for verification
 		verifyShot, captureErr := e.captureScreenshot(ctx)
 		if captureErr != nil {
-			log.Printf("[text-input] probe cleanup verification screenshot failed: %v", captureErr)
+			logging.Errorf("agent", "text_input", "probe cleanup verification screenshot failed: %v", captureErr)
 			err = errors.Join(err, fmt.Errorf("probe cleanup verification screenshot: %w", captureErr))
 			return
 		}
@@ -362,13 +362,13 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 		probeStillVisible, verifyErr := cleanupVision.VerifyProbeCleanup(ctx, probeBeforeScreenshot, verifyShot, platform, focus)
 		vlmCalls++
 		if verifyErr != nil {
-			log.Printf("[text-input] probe cleanup verification failed: %v", verifyErr)
+			logging.Errorf("agent", "text_input", "probe cleanup verification failed: %v", verifyErr)
 			err = errors.Join(err, fmt.Errorf("probe cleanup verification: %w", verifyErr))
 			return
 		}
 
 		if probeStillVisible {
-			log.Printf("[text-input] probe character still visible after undo, sending backspace")
+			logging.Warnf("agent", "text_input", "probe character still visible after undo, sending backspace")
 			if backspaceErr := e.tapKeys(ctx, []string{"backspace"}); backspaceErr != nil {
 				err = errors.Join(err, fmt.Errorf("probe cleanup backspace: %w", backspaceErr))
 				return
@@ -377,7 +377,7 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 				err = errors.Join(err, waitErr)
 			}
 		} else {
-			log.Printf("[text-input] probe character successfully removed by undo")
+			logging.Infof("agent", "text_input", "probe character successfully removed by undo")
 		}
 	}()
 	if err = e.sleepFor(ctx, textInputProbeSettleDelay); err != nil {

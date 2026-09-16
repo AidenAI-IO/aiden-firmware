@@ -1,7 +1,7 @@
 package agentpath
 
 import (
-	"log"
+	"aiden-agent/internal/logging"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,11 +20,11 @@ func UserContextManagerSessionFolder(configDir string) string {
 func contextManagerSessionFolder(configDir, role string) string {
 	trimmedConfigDir := strings.TrimSpace(configDir)
 	if trimmedConfigDir == "" {
-		log.Fatalf("configDir is required")
+		logging.Fatalf("agent", "filepath", "configDir is required")
 	}
 	folderPath := filepath.Join(trimmedConfigDir, "sessions", role)
 	if err := os.MkdirAll(folderPath, 0755); err != nil {
-		log.Fatalf("failed to create sessions folder %s: %v\n", folderPath, err)
+		logging.Fatalf("agent", "filepath", "failed to create sessions folder %s: %v", folderPath, err)
 	}
 	return folderPath
 }

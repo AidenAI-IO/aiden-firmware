@@ -1,10 +1,10 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -53,9 +53,9 @@ func (w *ConnectionWarmer) WarmupAsync(ctx context.Context) {
 			go func(url string) {
 				defer wg.Done()
 				if err := w.warmupEndpoint(ctx, url); err != nil {
-					log.Printf("[warmup] Failed to warm %s: %v", url, err)
+					logging.Warnf("agent", "warmup", "Failed to warm %s: %v", url, err)
 				} else {
-					log.Printf("[warmup] Warmed connection to %s", url)
+					logging.Infof("agent", "warmup", "Warmed connection to %s", url)
 				}
 			}(endpoint)
 		}

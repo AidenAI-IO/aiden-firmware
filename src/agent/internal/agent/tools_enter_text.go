@@ -1,9 +1,9 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"encoding/json"
-	"log"
 	"strings"
 	"time"
 )
@@ -100,14 +100,7 @@ func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disabl
 	defer func() {
 		duration := time.Since(started)
 		characters := metrics.characters.Load()
-		log.Printf(
-			"[text-input] enter_text end ok=%t chars=%d duration=%s time_per_char=%s vllm_calls=%d",
-			enterTextOutputOK(output, callErr),
-			characters,
-			duration,
-			textInputDurationPerCharacter(duration, characters),
-			metrics.vllmCalls.Load(),
-		)
+		logging.Debugf("agent", "text_input", "enter_text end ok=%t chars=%d duration=%s time_per_char=%s vllm_calls=%d", enterTextOutputOK(output, callErr), characters, duration, textInputDurationPerCharacter(duration, characters), metrics.vllmCalls.Load())
 	}()
 	var controller *iosKeyboardIsolationController
 	if t != nil {

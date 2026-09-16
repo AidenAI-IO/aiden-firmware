@@ -1,12 +1,12 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,7 +98,7 @@ func syncOneSkill(name, bundledPath, userSkillsDir, stateDir string, manifest *B
 	userPath := filepath.Join(userDir, "SKILL.md")
 	bundledContent, err := os.ReadFile(bundledPath)
 	if err != nil {
-		log.Printf("[skill_sync] read bundled %s: %v", name, err)
+		logging.Errorf("agent", "skill_sync", "read bundled %s: %v", name, err)
 		return
 	}
 	bundledHash := hashContent(bundledContent)
@@ -136,7 +136,7 @@ func syncOneSkill(name, bundledPath, userSkillsDir, stateDir string, manifest *B
 				report.KeptUser = append(report.KeptUser, name)
 				return
 			}
-			log.Printf("[skill_sync] read user %s for two-way merge: %v", name, err)
+			logging.Errorf("agent", "skill_sync", "read user %s for two-way merge: %v", name, err)
 			return
 		}
 		if len(userContent) == 0 {
@@ -166,7 +166,7 @@ func syncOneSkill(name, bundledPath, userSkillsDir, stateDir string, manifest *B
 func syncExistingSkill(name, userPath string, bundledContent []byte, bundledHash string, entry ManifestEntry, stateDir string, manifest *BundledManifest, report *SkillSyncReport) {
 	userContent, err := os.ReadFile(userPath)
 	if err != nil {
-		log.Printf("[skill_sync] read user %s: %v", name, err)
+		logging.Errorf("agent", "skill_sync", "read user %s: %v", name, err)
 		return
 	}
 	userHash := hashContent(userContent)
@@ -193,7 +193,7 @@ func syncExistingSkill(name, userPath string, bundledContent []byte, bundledHash
 		manifest.Skills[name] = entry
 	case userMatchesOrigin && bundledUpdated:
 		if err := os.WriteFile(userPath, bundledContent, 0o644); err != nil {
-			log.Printf("[skill_sync] update %s: %v", name, err)
+			logging.Errorf("agent", "skill_sync", "update %s: %v", name, err)
 			return
 		}
 		saveBase(basePath, bundledContent)
@@ -291,11 +291,11 @@ func queueTwoWayMergeForConflict(name, userPath string, userContent, bundledCont
 
 func copyBundledToUser(name string, content []byte, userDir, userPath, bundledHash, stateDir string, manifest *BundledManifest, report *SkillSyncReport) {
 	if err := os.MkdirAll(userDir, 0o755); err != nil {
-		log.Printf("[skill_sync] mkdir %s: %v", userDir, err)
+		logging.Errorf("agent", "skill_sync", "mkdir %s: %v", userDir, err)
 		return
 	}
 	if err := os.WriteFile(userPath, content, 0o644); err != nil {
-		log.Printf("[skill_sync] write %s: %v", userPath, err)
+		logging.Errorf("agent", "skill_sync", "write %s: %v", userPath, err)
 		return
 	}
 	basePath := basePathForSkill(stateDir, name)
@@ -365,11 +365,11 @@ func saveManifest(path string, m *BundledManifest) {
 	defer manifestMu.Unlock()
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
-		log.Printf("[skill_sync] marshal manifest: %v", err)
+		logging.Errorf("agent", "skill_sync", "marshal manifest: %v", err)
 		return
 	}
 	if err := writeFileAtomic(path, data, 0o644); err != nil {
-		log.Printf("[skill_sync] write manifest: %v", err)
+		logging.Errorf("agent", "skill_sync", "write manifest: %v", err)
 	}
 }
 
@@ -385,13 +385,13 @@ func fileExists(path string) bool {
 
 func logSyncReport(report *SkillSyncReport) {
 	if len(report.Copied) > 0 {
-		log.Printf("[skill_sync] copied %d bundled skill(s): %s", len(report.Copied), strings.Join(report.Copied, ", "))
+		logging.Infof("agent", "skill_sync", "copied %d bundled skill(s): %s", len(report.Copied), strings.Join(report.Copied, ", "))
 	}
 	if len(report.Updated) > 0 {
-		log.Printf("[skill_sync] updated %d skill(s): %s", len(report.Updated), strings.Join(report.Updated, ", "))
+		logging.Infof("agent", "skill_sync", "updated %d skill(s): %s", len(report.Updated), strings.Join(report.Updated, ", "))
 	}
 	if len(report.KeptUser) > 0 {
-		log.Printf("[skill_sync] kept user version for %d skill(s): %s", len(report.KeptUser), strings.Join(report.KeptUser, ", "))
+		logging.Infof("agent", "skill_sync", "kept user version for %d skill(s): %s", len(report.KeptUser), strings.Join(report.KeptUser, ", "))
 	}
 }
 
@@ -401,7 +401,7 @@ func basePathForSkill(stateDir, name string) string {
 
 func saveBase(basePath string, content []byte) error {
 	if err := writeFileAtomic(basePath, content, 0o644); err != nil {
-		log.Printf("[skill_sync] write base: %v", err)
+		logging.Errorf("agent", "skill_sync", "write base: %v", err)
 		return err
 	}
 	return nil

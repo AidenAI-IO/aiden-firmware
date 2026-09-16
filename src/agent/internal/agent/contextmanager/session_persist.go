@@ -2,10 +2,10 @@ package contextmanager
 
 import (
 	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/logging"
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,7 +180,7 @@ func loadSession(sessionFolder string, sessionID string) ([]messages.Message, er
 func ClearAllSessions(sessionFolder string) error {
 	sessionIDFile := filepath.Join(sessionFolder, ".current_session")
 	if err := os.Remove(sessionIDFile); err != nil && !os.IsNotExist(err) {
-		log.Printf("failed to remove current session file %s: %v\n", sessionIDFile, err)
+		logging.Errorf("agent", "session_persist", "failed to remove current session file %s: %v", sessionIDFile, err)
 	}
 	entries, err := os.ReadDir(sessionFolder)
 	if err != nil {
@@ -193,7 +193,7 @@ func ClearAllSessions(sessionFolder string) error {
 		path := filepath.Join(sessionFolder, entry.Name())
 		if entry.IsDir() {
 			if err := os.RemoveAll(path); err != nil {
-				log.Printf("failed to remove session data directory %s: %v\n", entry.Name(), err)
+				logging.Errorf("agent", "session_persist", "failed to remove session data directory %s: %v", entry.Name(), err)
 			}
 			continue
 		}
@@ -201,7 +201,7 @@ func ClearAllSessions(sessionFolder string) error {
 			continue
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			log.Printf("failed to remove session file %s: %v\n", path, err)
+			logging.Errorf("agent", "session_persist", "failed to remove session file %s: %v", path, err)
 		}
 	}
 	return nil

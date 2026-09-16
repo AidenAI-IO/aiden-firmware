@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +12,8 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
 	"github.com/godbus/dbus/v5/prop"
+
+	"aiden-agent/internal/logging"
 )
 
 const (
@@ -979,7 +980,7 @@ func (c *wakeCharacteristic) StartNotify() *dbus.Error {
 		c.backend.lastWakeNotifyStart = now
 	}
 	c.backend.wakeMu.Unlock()
-	log.Printf("BLE Wake StartNotify")
+	logging.Infof("ble_service", "bluez", "BLE Wake StartNotify")
 	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = true })
 	c.backend.finishConnectionWindow()
 	c.backend.requestRescan()
@@ -1001,13 +1002,13 @@ func (c *wakeCharacteristic) StopNotify() *dbus.Error {
 	if shouldIgnoreWakeStop(connected, c.backend.lastWakeNotifyStart, now) {
 		age := now.Sub(c.backend.lastWakeNotifyStart)
 		c.backend.wakeMu.Unlock()
-		log.Printf("BLE Wake ignored stale StopNotify age=%s", age.Round(time.Millisecond))
+		logging.Debugf("ble_service", "bluez", "BLE Wake ignored stale StopNotify age=%s", age.Round(time.Millisecond))
 		return nil
 	}
 	c.properties.SetMust(blueZGattCharInterface, "Notifying", false)
 	c.backend.lastWakeNotifyStart = time.Time{}
 	c.backend.wakeMu.Unlock()
-	log.Printf("BLE Wake StopNotify")
+	logging.Infof("ble_service", "bluez", "BLE Wake StopNotify")
 	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = false })
 	c.backend.requestRescan()
 	return nil

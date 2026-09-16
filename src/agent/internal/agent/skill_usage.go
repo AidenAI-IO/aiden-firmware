@@ -1,8 +1,8 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"encoding/json"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -147,11 +147,11 @@ func loadSkillLifecycleScanState(usagePath string) skillLifecycleScanState {
 func saveSkillLifecycleScanState(usagePath string, state skillLifecycleScanState) {
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
-		log.Printf("[skill_usage] marshal lifecycle scan state: %v", err)
+		logging.Warnf("agent", "skill_usage", "marshal lifecycle scan state: %v", err)
 		return
 	}
 	if err := writeFileAtomic(skillLifecycleScanStatePath(usagePath), data, 0o644); err != nil {
-		log.Printf("[skill_usage] write lifecycle scan state: %v", err)
+		logging.Warnf("agent", "skill_usage", "write lifecycle scan state: %v", err)
 	}
 }
 
@@ -234,10 +234,10 @@ func readSkillUsage(path string) map[string]SkillUsageEntry {
 func saveSkillUsage(path string, usage map[string]SkillUsageEntry) {
 	data, err := json.MarshalIndent(usage, "", "  ")
 	if err != nil {
-		log.Printf("[skill_usage] marshal usage: %v", err)
+		logging.Warnf("agent", "skill_usage", "marshal usage: %v", err)
 		return
 	}
 	if err := writeFileAtomic(path, data, 0o644); err != nil {
-		log.Printf("[skill_usage] write usage: %v", err)
+		logging.Warnf("agent", "skill_usage", "write usage: %v", err)
 	}
 }

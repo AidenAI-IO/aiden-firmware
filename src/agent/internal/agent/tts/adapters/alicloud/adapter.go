@@ -20,7 +20,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"sync"
@@ -30,6 +29,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"aiden-agent/internal/agent/tts"
+	"aiden-agent/internal/logging"
 )
 
 const (
@@ -164,7 +164,7 @@ func (a *Adapter) dial(ctx context.Context) (*websocket.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Println("[tts] alicloud: connected")
+	logging.Infof("agent", "tts", "alicloud: connected")
 	return conn, nil
 }
 

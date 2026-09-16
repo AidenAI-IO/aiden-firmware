@@ -1,11 +1,11 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"runtime"
@@ -281,7 +281,7 @@ func (s *shellSession) stop() {
 			return
 		}
 		if killErr := shellKillProcessGroup(process); killErr != nil {
-			log.Printf("shell: kill after failed interrupt: %v", killErr)
+			logging.Warnf("agent", "tools_shell_session", "shell: kill after failed interrupt: %v", killErr)
 		}
 		return
 	}
@@ -289,7 +289,7 @@ func (s *shellSession) stop() {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		if killErr := shellKillProcessGroup(process); killErr != nil {
-			log.Printf("shell: kill after interrupt timeout: %v", killErr)
+			logging.Warnf("agent", "tools_shell_session", "shell: kill after interrupt timeout: %v", killErr)
 		}
 	}
 }

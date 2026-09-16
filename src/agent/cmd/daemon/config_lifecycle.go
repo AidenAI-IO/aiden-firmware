@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"reflect"
 	"sync"
@@ -11,6 +10,7 @@ import (
 
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/agenttask"
+	"aiden-agent/internal/logging"
 )
 
 // inputLifecycle owns the GPIO listeners and voice loop, independently of the
@@ -123,7 +123,7 @@ func (c *inputLifecycle) Start(cfg agent.Config) error {
 	}
 	quick, err := startQuickCaptureGPIOWatcher(cfg, c.server, c.newWatcher)
 	if err != nil {
-		log.Printf("[quick_capture] GPIO trigger disabled: %v", err)
+		logging.Warnf("agent", "quick_capture", "GPIO trigger disabled: %v", err)
 	}
 	c.quick = quick
 	c.startVoice(cfg, dialog)

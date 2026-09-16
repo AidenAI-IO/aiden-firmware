@@ -14,7 +14,7 @@ trap 'rm -f "$LINE_FILE"' 0 HUP INT TERM
 aiden_log WARN Agent 'Process Supervisor' 'Process Exited' "$message" > "$LINE_FILE"
 
 grep -Eq \
-    '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[WARN\] \[agent\] \[process_supervisor\] process_exited message=".*"$' \
+    '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[WARN\]\[agent\]\[process_supervisor\] process_exited message=".*"$' \
     "$LINE_FILE"
 
 [ "$(wc -l < "$LINE_FILE" | tr -d ' ')" = "1" ]
