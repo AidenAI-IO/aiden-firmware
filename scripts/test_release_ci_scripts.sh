@@ -129,7 +129,7 @@ if grep -q 'scripts/test_build_scripts.sh' "$CI_WORKFLOW"; then
 fi
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_debian_only_policy.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'run: bash scripts/test_debian_only_policy.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_rootfs_cli_tool_catalog.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_build_rootfs_cli_tools.sh' "$CI_WORKFLOW" || \
