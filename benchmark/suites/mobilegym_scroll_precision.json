@@ -1,0 +1,80 @@
+{
+  "name": "mobilegym_scroll_precision",
+  "suite_category": "MobileGym",
+  "version": "1.0",
+  "description": "Single-screen scroll precision checks against the Scroll Lab list. Deterministic environment assertions expose the mouse_scroll tool's fixed-distance overshoot: any non-zero delta maps to the same long swipe, so a request to scroll exactly one screen lands well past it.",
+  "prompt_prefix": "",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "请把设备准备到“列表实验室”的列表顶部：如果不在该应用，先回到主屏幕并打开“列表实验室”；如果在详情页，先返回列表；最后滚动到列表最顶部。准备好后简短回复。",
+    "timeout_sec": 120,
+    "clear_history_after": true
+  },
+  "trace_observations": [],
+  "tasks": [
+    {
+      "id": "mouse_scroll_exactly_one_screen",
+      "category": "device_operation",
+      "prompt": "在当前列表中，用鼠标滚轮（mouse_scroll）向下滚动正好一屏，然后立即停下并报告完成。不要点开任何条目、不要使用搜索、不要回滚纠正，只滚动一次。",
+      "description_for_judge": "Agent must scroll the Scroll Lab list down by exactly one screen using the mouse_scroll wheel tool, then stop without opening any item. The deterministic environment assertion requires the first visible row to stay within one screen (rows 4-10). The current mouse_scroll tool maps any non-zero delta to a fixed long swipe plus momentum, which overshoots this band and fails the assertion.",
+      "rubric": [
+        {
+          "id": "scrolled_one_screen_no_overshoot",
+          "check": "The list scrolled down by roughly one screen without opening any item; the first visible row stays within one screen of the top (about row 4-10)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "required_tools": [
+          "mouse_scroll"
+        ]
+      },
+      "app_ids": [
+        "scroll_lab"
+      ],
+      "environment_assertions": {
+        "route.app": "scroll_lab",
+        "route.path": "/",
+        "apps.scroll_lab.firstVisibleOrdinal": {
+          "min": 4,
+          "max": 10
+        }
+      },
+      "repeats": 1
+    },
+    {
+      "id": "swipe_exactly_one_screen",
+      "category": "device_operation",
+      "prompt": "在当前列表中，用滑动手势（touch_gesture swipe）向下滚动正好一屏，然后立即停下并报告完成。不要点开任何条目、不要使用搜索、不要回滚纠正，只滑动一次。",
+      "description_for_judge": "Control task: the agent scrolls down exactly one screen with a touch_gesture swipe, whose distance the agent controls. The same one-screen band assertion applies, showing that a distance-controlled swipe can land within one screen even though the wheel-based mouse_scroll cannot.",
+      "rubric": [
+        {
+          "id": "scrolled_one_screen_no_overshoot",
+          "check": "The list scrolled down by roughly one screen without opening any item; the first visible row stays within one screen of the top (about row 4-10)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 60,
+        "required_tools": [
+          "touch_gesture"
+        ]
+      },
+      "app_ids": [
+        "scroll_lab"
+      ],
+      "environment_assertions": {
+        "route.app": "scroll_lab",
+        "route.path": "/",
+        "apps.scroll_lab.firstVisibleOrdinal": {
+          "min": 4,
+          "max": 10
+        }
+      },
+      "repeats": 1
+    }
+  ]
+}

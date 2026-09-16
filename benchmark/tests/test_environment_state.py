@@ -84,3 +84,41 @@ def test_evaluate_environment_state_assertions_reports_exact_path_results():
         ("route.path", False, "/item/scroll-item-024"),
         ("apps.scroll_lab.missing", False, "<missing>"),
     ]
+
+
+def test_evaluate_environment_state_assertions_supports_numeric_ranges():
+    state = {
+        "apps": {"scroll_lab": {"firstVisibleOrdinal": 8, "scrollTop": 720}},
+    }
+
+    results = evaluate_environment_state_assertions(
+        state,
+        {
+            "apps.scroll_lab.firstVisibleOrdinal": {"min": 5, "max": 11},
+            "apps.scroll_lab.scrollTop": {"max": 900},
+        },
+    )
+
+    assert [(result.path, result.passed, result.actual) for result in results] == [
+        ("apps.scroll_lab.firstVisibleOrdinal", True, 8),
+        ("apps.scroll_lab.scrollTop", True, 720),
+    ]
+
+
+def test_evaluate_environment_state_assertions_range_rejects_overshoot_and_non_number():
+    state = {
+        "apps": {"scroll_lab": {"firstVisibleOrdinal": 15}},
+    }
+
+    results = evaluate_environment_state_assertions(
+        state,
+        {
+            "apps.scroll_lab.firstVisibleOrdinal": {"min": 5, "max": 11},
+            "apps.scroll_lab.selectedItemId": {"min": 0, "max": 10},
+        },
+    )
+
+    assert [(result.path, result.passed, result.actual) for result in results] == [
+        ("apps.scroll_lab.firstVisibleOrdinal", False, 15),
+        ("apps.scroll_lab.selectedItemId", False, "<missing>"),
+    ]

@@ -137,6 +137,24 @@ its detail route:
 }
 ```
 
+Scroll Lab also exposes its live scroll position: `apps.scroll_lab.scrollTop` is
+the scroll container offset in CSS pixels, and
+`apps.scroll_lab.firstVisibleOrdinal` is the first row still visible in the
+viewport. Because a scalar assertion must match exactly, a numeric band is
+expressed as an object with `min`/`max` keys:
+
+```json
+{
+  "environment_assertions": {
+    "apps.scroll_lab.firstVisibleOrdinal": {"min": 4, "max": 10}
+  }
+}
+```
+
+`mobilegym_scroll_precision.json` uses that band to check that a request to
+scroll exactly one screen really lands within one screen, which exposes the
+wheel-based `mouse_scroll` tool's fixed-distance overshoot.
+
 ## Concurrency
 
 ```bash

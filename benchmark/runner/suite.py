@@ -518,6 +518,40 @@ def _string_list_assertion(raw: Any, task_id: str, field: str) -> list[str]:
     return out
 
 
+RANGE_ASSERTION_KEYS = frozenset({"min", "max"})
+
+
+def is_range_assertion(value: Any) -> bool:
+    """True when ``value`` is a numeric-range spec.
+
+    A range spec is a non-empty object whose keys are a subset of ``{"min", "max"}``,
+    evaluated as an inclusive numeric band (``min <= actual <= max``). Any other
+    value keeps the exact-equality semantics.
+    """
+    return (
+        isinstance(value, dict)
+        and bool(value)
+        and set(value.keys()) <= RANGE_ASSERTION_KEYS
+    )
+
+
+def _validate_range_assertion(task_id: str, path: str, spec: dict[str, Any]) -> None:
+    for key in RANGE_ASSERTION_KEYS:
+        if key not in spec:
+            continue
+        value = spec[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise SuiteValidationError(
+                f"task {task_id}: environment_assertions[{path!r}].{key} must be a number"
+            )
+    lo = spec.get("min")
+    hi = spec.get("max")
+    if lo is not None and hi is not None and lo > hi:
+        raise SuiteValidationError(
+            f"task {task_id}: environment_assertions[{path!r}] min must be <= max"
+        )
+
+
 def _parse_environment_assertions(raw: Any, task_id: str) -> dict[str, Any]:
     if raw is None:
         return {}
@@ -542,6 +576,8 @@ def _parse_environment_assertions(raw: Any, task_id: str) -> dict[str, Any]:
             raise SuiteValidationError(
                 f"task {task_id}: environment_assertions[{normalized!r}] must be JSON-serializable"
             ) from exc
+        if is_range_assertion(expected):
+            _validate_range_assertion(task_id, normalized, expected)
         assertions[normalized] = expected
     return assertions
 

@@ -148,10 +148,20 @@ the same `benchmark-task-id` header as setup and provider calls.
 ```
 
 The runner reads these endpoints only when a task declares
-`environment_assertions`. It combines both payloads so assertions can use exact
-dotted paths such as `apps.scroll_lab.selectedItemId` and `route.path`. A state
-read failure is reported as `judge_error`; a successfully-read value mismatch
-is a deterministic task failure.
+`environment_assertions`. It combines both payloads so assertions can use dotted
+paths such as `apps.scroll_lab.selectedItemId` and `route.path`. A scalar value
+is compared by exact equality. An object whose keys are a subset of
+`{"min", "max"}` is treated as an inclusive numeric band, so a suite can assert
+a measured position without hard-coding one exact value:
+
+```json
+{
+  "apps.scroll_lab.firstVisibleOrdinal": {"min": 4, "max": 10}
+}
+```
+
+A state read failure is reported as `judge_error`; a successfully-read value
+mismatch is a deterministic task failure.
 
 ### `POST /api/providers/mnk`
 

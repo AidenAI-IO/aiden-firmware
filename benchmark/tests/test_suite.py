@@ -55,6 +55,38 @@ def test_load_suite_rejects_invalid_environment_assertions(tmp_path: Path, value
         load_suite(path)
 
 
+def test_load_suite_parses_range_environment_assertions(tmp_path: Path):
+    fixture = json.loads(json.dumps(FIXTURE))
+    fixture["tasks"][0]["environment_assertions"] = {
+        "apps.scroll_lab.firstVisibleOrdinal": {"min": 5, "max": 11},
+    }
+    path = tmp_path / "range_environment_assertions.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    task = load_suite(path).tasks[0]
+
+    assert task.environment_assertions["apps.scroll_lab.firstVisibleOrdinal"] == {"min": 5, "max": 11}
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"min": "five", "max": 11},
+        {"min": 5, "max": "eleven"},
+        {"min": 11, "max": 5},
+        {"min": True, "max": 11},
+    ],
+)
+def test_load_suite_rejects_invalid_range_environment_assertions(tmp_path: Path, spec):
+    fixture = json.loads(json.dumps(FIXTURE))
+    fixture["tasks"][0]["environment_assertions"] = {"apps.scroll_lab.firstVisibleOrdinal": spec}
+    path = tmp_path / "bad_range_environment_assertions.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="environment_assertions"):
+        load_suite(path)
+
+
 @pytest.mark.parametrize(
     ("value", "message"),
     [
