@@ -1,6 +1,9 @@
 [Unit]
 Description=Bounded Aiden Wi-Fi recovery guard
-Requires=aiden-wifi-driver.service wpa_supplicant@wlan0.service
+Requires=aiden-wifi-driver.service
+# Recovery restarts supplicant. Requires= would stop this guard in the middle
+# of recovery and discard its cooldown and retry budget.
+Wants=wpa_supplicant@wlan0.service
 After=aiden-wifi-driver.service wpa_supplicant@wlan0.service systemd-networkd.service
 StartLimitIntervalSec=120s
 StartLimitBurst=5
