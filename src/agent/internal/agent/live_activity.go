@@ -135,6 +135,10 @@ type liveActivityText struct {
 	OpeningPhone                     string
 	Mail                             string
 	Phone                            string
+	PreparingToSwitchApps            string
+	PreparingToOpenTargetApp         string
+	ActionSentWaitingScreenStable    string
+	ReadingScreenAfterAction         string
 }
 
 func NewLiveActivityManager(cfg LiveActivityConfig, locale string, logger *Logger) *LiveActivityManager {
@@ -164,12 +168,37 @@ func (m *LiveActivityManager) currentLocale() string {
 	return locale
 }
 
+// localizeToolProgressContent converts hardcoded English progress messages to localized text.
+func (m *LiveActivityManager) localizeToolProgressContent(content string) string {
+	if m == nil || content == "" {
+		return content
+	}
+	text := m.getLiveActivityText()
+	switch content {
+	case "Preparing to switch apps; restoring Aiden App":
+		return text.PreparingToSwitchApps
+	case "Preparing to switch apps; opening the target app":
+		return text.PreparingToOpenTargetApp
+	case "Action sent; waiting for the screen to stabilize":
+		return text.ActionSentWaitingScreenStable
+	case "Reading the screen after the action":
+		return text.ReadingScreenAfterAction
+	default:
+		return content
+	}
+}
+
 // getLiveActivityText returns localized text based on the manager's locale.
 func (m *LiveActivityManager) getLiveActivityText() liveActivityText {
 	locale := ""
 	if m != nil {
 		locale, _ = m.locale.Load().(string)
 	}
+	return getLiveActivityTextForLocale(locale)
+}
+
+// getLiveActivityTextForLocale returns localized text for a given locale.
+func getLiveActivityTextForLocale(locale string) liveActivityText {
 	if locale == "" || strings.HasPrefix(locale, "en") {
 		// English (default)
 		return liveActivityText{
@@ -235,6 +264,10 @@ func (m *LiveActivityManager) getLiveActivityText() liveActivityText {
 			OpeningPhone:                     "Opening phone",
 			Mail:                             "Mail",
 			Phone:                            "Phone",
+			PreparingToSwitchApps:            "Preparing to switch apps; restoring Aiden App",
+			PreparingToOpenTargetApp:         "Preparing to switch apps; opening the target app",
+			ActionSentWaitingScreenStable:    "Action sent; waiting for the screen to stabilize",
+			ReadingScreenAfterAction:         "Reading the screen after the action",
 		}
 	}
 	// Simplified Chinese
@@ -301,6 +334,10 @@ func (m *LiveActivityManager) getLiveActivityText() liveActivityText {
 		OpeningPhone:                     "正在打开拨号",
 		Mail:                             "邮件",
 		Phone:                            "电话",
+		PreparingToSwitchApps:            "即将跳转，正在尝试唤回 Aiden App",
+		PreparingToOpenTargetApp:         "即将跳转，正在打开目标应用",
+		ActionSentWaitingScreenStable:    "操作已发送，正在等待页面稳定",
+		ReadingScreenAfterAction:         "正在读取操作后的屏幕",
 	}
 }
 
@@ -476,8 +513,9 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 			state.ToolStartedAt = nil
 		}
 		state.ToolStatus = toolStatus
+		localizedContent := m.localizeToolProgressContent(event.Content)
 		state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
-			event.Content,
+			localizedContent,
 			state.CurrentStep,
 		}), 120)
 		state.RequiresApp = state.ToolStatus == "waiting_app"
