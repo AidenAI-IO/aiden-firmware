@@ -244,6 +244,40 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 > Provider credentials use one field everywhere. Set `api_key = "$VAR_NAME"` to read from an environment variable, or set a literal key directly. Config Web accepts the same two forms in its API Key box.
 
+### Google Gemini provider
+
+```toml
+[model_settings.providers.gemini-main]
+type = "gemini"
+api_key = "$GEMINI_API_KEY"
+
+[model_settings.model]
+provider = "gemini-main"
+model = "gemini-3.8-flash"
+temperature = 0.7
+reasoning_effort = "low"  # minimal/low/medium/high; default is "low" for responsive interactions
+max_response_tokens = 8192
+# Optional model metadata overrides
+# context_window = 1048576
+# model_max_output_tokens = 65536
+```
+
+**Gemini models**:
+- `gemini-3.8-flash`: Most capable Flash model for complex tasks
+- `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`: Earlier Flash generations
+- `gemini-3.5-pro`: Pro model without thinking/reasoning
+- `gemini-2.5-flash`, `gemini-2.5-pro`: Gemini 2.5 series models
+
+**Thinking/reasoning**: Gemini 3.x and 2.5 models support internal reasoning through `reasoning_effort`:
+- `minimal`: Fastest, least reasoning
+- `low`: Balanced speed and quality (default for voice)
+- `medium`: More thorough reasoning
+- `high`: Maximum reasoning depth
+
+**API key**: Get from [Google AI Studio](https://aistudio.google.com/apikey)
+
+**Base URL**: Defaults to `https://generativelanguage.googleapis.com/v1beta/openai/` (OpenAI-compatible endpoint). Can be overridden with `base_url` in the provider config.
+
 ### STT voice mode
 
 ```toml
