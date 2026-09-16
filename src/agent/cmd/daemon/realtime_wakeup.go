@@ -608,6 +608,7 @@ func realtimeProviderSessionConfig(cfg agent.Config) realtimevoice.SessionConfig
 	if instructions == "" {
 		instructions = agent.DefaultRealtimeVoiceInstructions
 	}
+	instructions = strings.TrimSpace(strings.Join([]string{instructions, agent.ResponseLanguageGuidance(cfg.LocaleOrDefault())}, "\n\n"))
 	enableEmotion := cfg.VoiceModel.EnableSpeechEmotion
 	if enableEmotion == nil {
 		v := true

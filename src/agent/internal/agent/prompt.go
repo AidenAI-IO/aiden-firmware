@@ -112,6 +112,12 @@ func responseLanguageGuidance(locale string) string {
 	}, "\n")
 }
 
+// ResponseLanguageGuidance returns the shared response-language rule for
+// agent entry points that do not build a full RoleProfile, such as realtime.
+func ResponseLanguageGuidance(locale string) string {
+	return responseLanguageGuidance(locale)
+}
+
 func combinedAgentInstruction(cfg AgentConfig) string {
 	parts := make([]string, 0, 2)
 	if text := strings.TrimSpace(cfg.Instruction); text != "" {

@@ -25,7 +25,9 @@ history and is not sent back as a second text prompt.
 OpenAI requests `gpt-4o-mini-transcribe` in both GA and legacy session payloads.
 Qwen, xAI, and Gemini use their provider-native transcription paths. The
 ordinary `[stt]` configuration applies only to `input_mode = "stt"` and does
-not configure a realtime session.
+not configure a realtime session. The configured Agent locale controls the
+realtime response language through the session instructions; it does not set
+or restrict the provider's input transcription language.
 
 OpenAI diagnostics record the requested and acknowledged transcription model,
 speech start/stop, audio commit, final transcript or transcription failure,
