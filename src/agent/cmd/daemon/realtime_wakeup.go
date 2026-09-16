@@ -1107,7 +1107,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			return markRealtimeProviderFailure(fmt.Errorf("restore realtime user context: %w", err))
 		}
 	}
-	log.Printf("[realtime] Session ready: id=%s input_rate=%d output_rate=%d text_input=%t", info.ID, info.InputSampleRate, info.OutputSampleRate, supportsText)
+	log.Printf("[realtime] Session ready: id=%s input_rate=%d output_rate=%d provider_input_rate=%d provider_output_rate=%d text_input=%t", info.ID, info.InputSampleRate, info.OutputSampleRate, info.ProviderInputAudioFormat.SampleRate, info.ProviderOutputAudioFormat.SampleRate, supportsText)
 	if chatBridge != nil {
 		chatBridge.activate()
 		defer func() {
@@ -1694,7 +1694,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 					activeNotificationResponseID = ""
 					activeNotificationAudioWritten = false
 				}
-				log.Println("[realtime] Speech started, interrupting local playback")
+				log.Printf("[realtime] Input speech started: provider=%s session_id=%s item_id=%s audio_start_ms=%d; interrupting local playback", providerName, info.ID, event.ItemID, event.AudioStartMS)
 				if canInterrupt {
 					interruption := playback.responseInterruption(outputFormat)
 					interruption.ServerDetected = providerName == realtimevoice.ProviderQwen
@@ -1709,6 +1709,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				}
 			case realtimevoice.EventSpeechStopped:
 				turnState.speechStopped(event.Status)
+				log.Printf("[realtime] Input speech stopped: provider=%s session_id=%s item_id=%s audio_end_ms=%d status=%s", providerName, info.ID, event.ItemID, event.AudioEndMS, event.Status)
 				if event.Status == "turn_invalid" {
 					if err := restoreRealtimePlaybackAfterInvalidTurn(&turnState, &playback, playbackAudio, outputFormat); err != nil {
 						return fmt.Errorf("restore realtime playback after invalid turn: %w", err)
@@ -1722,9 +1723,14 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				if err := tryInjectTaskUpdates(); err != nil {
 					return err
 				}
+			case realtimevoice.EventInputCommitted:
+				// Server VAD already owns the commit. This event is diagnostic only
+				// and must not commit the buffer or change response admission again.
+				log.Printf("[realtime] Input audio committed: provider=%s session_id=%s item_id=%s previous_item_id=%s", providerName, info.ID, event.ItemID, event.PreviousItemID)
 			case realtimevoice.EventTranscriptFinal:
 				if event.Role == "user" {
 					turnState.userTranscriptObserved()
+					log.Printf("[realtime] User transcript: provider=%s session_id=%s item_id=%s sequence=%d status=completed transcript_len=%d", providerName, info.ID, event.ItemID, event.Sequence, len([]rune(strings.TrimSpace(event.Text))))
 					if err := appendRealtimeUserMessage(userContext, event.Text); err != nil {
 						return fmt.Errorf("persist realtime user transcript: %w", err)
 					}
@@ -1742,11 +1748,11 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 					}
 				}
 			case realtimevoice.EventResponseStarted:
-				log.Println("[realtime] Response created")
 				if !turnState.responseStarted(event.ResponseID) {
 					log.Printf("[realtime] Ignoring stale response.created: response_id=%s input_turn=%d request_turn=%d", event.ResponseID, turnState.inputTurnSequence, turnState.responseRequestTurn)
 					continue
 				}
+				log.Printf("[realtime] Response created: provider=%s session_id=%s request_id=%s response_id=%s", providerName, info.ID, realtimeChatRequestID(activeChat), event.ResponseID)
 				responseSuppressed = bindSuppressedRealtimeNotificationResponse(event.ResponseID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs)
 				if activeNotificationToken != "" && activeNotificationResponseID == "" && !responseSuppressed {
 					activeNotificationResponseID = event.ResponseID
@@ -1803,6 +1809,8 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 						}
 					}
 				}
+			case realtimevoice.EventTranscriptFailed:
+				log.Printf("[realtime] User transcript: provider=%s session_id=%s item_id=%s status=failed error=%q", providerName, info.ID, event.ItemID, event.Error)
 			case realtimevoice.EventAudio:
 				if !turnState.acceptsResponseEvent(event.ResponseID) {
 					log.Printf("[realtime] Ignoring stale response audio: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
@@ -1832,7 +1840,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 					log.Printf("[realtime] Ignoring stale response tool call: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)
 					continue
 				}
-				log.Printf("[realtime] Tool call: %s", event.Name)
+				log.Printf("[realtime] Tool call: name=%s provider=%s session_id=%s request_id=%s response_id=%s item_id=%s call_id=%s", event.Name, providerName, info.ID, realtimeChatRequestID(activeChat), event.ResponseID, event.ItemID, event.CallID)
 				toolCtx, cancelTool := context.WithCancel(ctx)
 				foregroundTools[event.CallID] = foregroundTool{responseID: event.ResponseID, cancel: cancelTool}
 				watchdog.progress()
@@ -1878,8 +1886,8 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 						toolTracker.clear(event.ResponseID)
 					}
 				}
-				log.Printf("[realtime] Response terminal: request_id=%s response_id=%s kind=%s status=%s occupied_ms=%d",
-					realtimeChatRequestID(activeChat), event.ResponseID, event.Kind, event.Status, watchdog.age().Milliseconds())
+				log.Printf("[realtime] Response terminal: provider=%s session_id=%s request_id=%s response_id=%s kind=%s status=%s occupied_ms=%d",
+					providerName, info.ID, realtimeChatRequestID(activeChat), event.ResponseID, event.Kind, event.Status, watchdog.age().Milliseconds())
 				if suppressedNotificationResponsePending && event.ResponseID != "" {
 					bindSuppressedRealtimeNotificationResponse(event.ResponseID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs)
 				}

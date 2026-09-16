@@ -167,7 +167,7 @@ func TestReasoningEffortMinimalPassesThroughVerbatim(t *testing.T) {
 func TestReasoningEffortWithOpenRouterSendsNestedReasoning(t *testing.T) {
 	req := captureReasoningRequest(t,
 		withOpenAICompatibleReasoningEffort("low"),
-		withOpenAICompatibleOpenRouterReasoning(),
+		withOpenAICompatibleDialect(compatibleDialectOpenRouter),
 	)
 
 	if req.ReasoningEffort != "low" {
@@ -187,7 +187,7 @@ func TestReasoningEffortWithOpenRouterSendsNestedReasoning(t *testing.T) {
 func TestReasoningEffortNoneExcludesReasoningForOpenRouter(t *testing.T) {
 	req := captureReasoningRequest(t,
 		withOpenAICompatibleReasoningEffort("none"),
-		withOpenAICompatibleOpenRouterReasoning(),
+		withOpenAICompatibleDialect(compatibleDialectOpenRouter),
 	)
 
 	if req.Reasoning == nil {

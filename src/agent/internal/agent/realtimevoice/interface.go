@@ -268,8 +268,10 @@ const (
 	EventAudio             EventKind = "audio"
 	EventSpeechStarted     EventKind = "speech_started"
 	EventSpeechStopped     EventKind = "speech_stopped"
+	EventInputCommitted    EventKind = "input_committed"
 	EventTranscriptDelta   EventKind = "transcript_delta"
 	EventTranscriptFinal   EventKind = "transcript_final"
+	EventTranscriptFailed  EventKind = "transcript_failed"
 	EventResponseStarted   EventKind = "response_started"
 	EventResponseDone      EventKind = "response_done"
 	EventResponseCancelled EventKind = "response_cancelled"
@@ -283,23 +285,26 @@ const (
 )
 
 type Event struct {
-	Kind       EventKind
-	SessionID  string
-	ResponseID string
-	ItemID     string
-	Sequence   uint64
-	CallID     string
-	Name       string
-	Arguments  string
-	Text       string
-	TextSource string
-	PCM        []byte
-	Role       string
-	Final      bool
-	At         string
-	Status     string
-	Error      error
-	Usage      Usage
+	Kind           EventKind
+	SessionID      string
+	ResponseID     string
+	ItemID         string
+	PreviousItemID string
+	Sequence       uint64
+	CallID         string
+	Name           string
+	Arguments      string
+	Text           string
+	TextSource     string
+	PCM            []byte
+	Role           string
+	Final          bool
+	At             string
+	Status         string
+	AudioStartMS   int
+	AudioEndMS     int
+	Error          error
+	Usage          Usage
 }
 
 type Usage struct {

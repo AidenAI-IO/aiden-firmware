@@ -8,7 +8,7 @@ readonly REPO_ROOT
 readonly APPS_OUTPUT=${REPO_ROOT}/output/debian-apps
 readonly SYSTEM_OUTPUT=${REPO_ROOT}/output/debian-system
 readonly FINAL_OUTPUT=${REPO_ROOT}/output/debian/image
-readonly DEFAULT_AGENT_CONFIG=/home/miaomiao/dev/luckfox/config/agent.toml
+readonly DEFAULT_AGENT_CONFIG=${REPO_ROOT}/src/agent/config/agent.toml
 readonly DEFAULT_OTA_PRIVATE_KEY=${REPO_ROOT}/key/id_25519.pem
 readonly DEFAULT_OTA_PUBLIC_KEY=${REPO_ROOT}/key/id_25519.pub.pem
 readonly DEFAULT_OTA_TRUST_PUBLIC_KEY=${REPO_ROOT}/keys/ota_pubkey.pem
@@ -52,8 +52,10 @@ The directly flashable image remains output/debian/image/update.img.
 Environment overrides:
   RK_JOBS                   Requested parallel jobs (default: 24, capped at
                             the number of online CPUs).
-  AGENT_CONFIG_PATH         External agent.toml (default:
-                            /home/miaomiao/dev/luckfox/config/agent.toml).
+  AGENT_CONFIG_PATH         agent.toml installed into userdata.img. Defaults to
+                            the committed src/agent/config/agent.toml template,
+                            which carries no provider credentials; point it at
+                            an external file for a production image.
   OTA_PRIVATE_KEY_PATH      Ed25519 private PEM (default: key/id_25519.pem).
   OTA_PUBLIC_KEY_PATH       Ed25519 public PEM (default: key/id_25519.pub.pem).
   OTA_TRUST_PUBLIC_KEY_PATH Ed25519 public PEM burned into the image as the
@@ -85,7 +87,7 @@ The build removes only these generated directories before starting:
   output/debian-system
   output/debian
 
-It does not publish a GitHub Release and does not copy the external agent.toml
+It does not publish a GitHub Release and does not copy an external agent.toml
 into the source tree.
 EOF
 }

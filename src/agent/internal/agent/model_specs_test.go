@@ -58,6 +58,7 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 		{"kimi k3 bare", "openai", "kimi-k3", 1_048_576, 131_072},
 		{"kimi k3 prefixed", "openrouter", "moonshotai/kimi-k3", 1_048_576, 131_072},
 		{"doubao seed 2.1 pro", "volcengine", "doubao-seed-2-1-pro-260628", 262_144, 131_072},
+		{"deepseek flash", "deepseek", "deepseek-flash", 1_000_000, 393_216},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -72,6 +73,23 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 				t.Errorf("MaxOutput = %d, want %d", spec.MaxOutput, tt.wantMaxOutput)
 			}
 		})
+	}
+}
+
+func TestDeepSeekModelsDefaultToNonThinking(t *testing.T) {
+	for _, modelName := range []string{"deepseek-flash"} {
+		spec, ok := LookupModelSpec("deepseek", modelName)
+		if !ok || spec.DefaultReasoningEffort == nil || *spec.DefaultReasoningEffort != "none" || spec.Reasoning == nil || !spec.Reasoning.Supported {
+			t.Fatalf("%s spec = %+v, want default reasoning_effort none", modelName, spec)
+		}
+	}
+}
+
+func TestDeepSeekTextOnlyModelsAndExperimentalAliasesAreNotPredefined(t *testing.T) {
+	for _, modelName := range []string{"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"} {
+		if _, ok := LookupModelSpec("deepseek", modelName); ok {
+			t.Errorf("LookupModelSpec(%q) unexpectedly returned a predefined spec", modelName)
+		}
 	}
 }
 
@@ -213,6 +231,32 @@ func TestModelManagerSpecFetchesModelsDevReasoningMetadata(t *testing.T) {
 			t.Fatalf("Spec() = %+v, want models.dev metadata", spec)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("models.dev requests = %d, want 1", got)
+	}
+}
+
+func TestDeepSeekSpecFetchesModelsDevMetadata(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"deepseek":{"api":"https://api.deepseek.com","models":{"deepseek-custom":{"reasoning":true,"reasoning_options":[{"type":"effort","values":["none","low","high","max"]}],"limit":{"context":1000000,"output":393216}}}}}`)
+	}))
+	defer server.Close()
+
+	// Use an unregistered model so the normal Spec path must pass the provider
+	// discovery gate rather than returning complete built-in Flash metadata.
+	mgr := NewModelManager(ModelConfig{Provider: "deepseek", Model: "deepseek-custom"}, ProxyConfig{},
+		WithModelsDevURL(server.URL), WithProviderMetadataHTTPClient(server.Client()))
+	spec := waitForModelSpec(t, mgr, model.ModelSpec{ContextWindow: 1_000_000, MaxOutput: 393_216})
+	if spec.Reasoning == nil || !spec.Reasoning.Supported || spec.Reasoning.Mode != "effort" || !spec.Reasoning.CanDisable ||
+		strings.Join(spec.Reasoning.Efforts, ",") != "none,low,high,max" {
+		t.Fatalf("reasoning = %+v, want models.dev effort metadata", spec.Reasoning)
 	}
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("models.dev requests = %d, want 1", got)

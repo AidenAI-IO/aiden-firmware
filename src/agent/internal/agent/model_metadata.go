@@ -33,7 +33,7 @@ var modelsDevCatalogCache sync.Map
 
 func providerSupportsModelMetadata(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "openrouter", "ollama", "anthropic", "openai", "volcengine", "kimi", "kimi-cn":
+	case "openrouter", "ollama", "anthropic", "openai", "volcengine", "kimi", "kimi-cn", "deepseek":
 		return true
 	default:
 		return false
@@ -240,7 +240,7 @@ func (m *ModelManager) providerMetadataEndpoint() string {
 		return openRouterModelsURL(m.config.BaseURL)
 	case "ollama":
 		return ollamaShowURL(m.config.BaseURL)
-	case "anthropic", "openai", "volcengine", "kimi", "kimi-cn":
+	case "anthropic", "openai", "volcengine", "kimi", "kimi-cn", "deepseek":
 		if strings.TrimSpace(m.modelsDevURL) != "" {
 			return strings.TrimSpace(m.modelsDevURL)
 		}
@@ -264,7 +264,7 @@ func (m *ModelManager) fetchProviderModelSpec(ctx context.Context) (model.ModelS
 		return m.fetchOpenRouterModelSpec(ctx)
 	case "ollama":
 		return m.fetchOllamaModelSpec(ctx)
-	case "anthropic", "openai", "volcengine", "kimi", "kimi-cn":
+	case "anthropic", "openai", "volcengine", "kimi", "kimi-cn", "deepseek":
 		return m.fetchModelsDevModelSpec(ctx)
 	default:
 		return model.ModelSpec{}, nil

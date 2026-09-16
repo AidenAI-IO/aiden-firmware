@@ -162,6 +162,25 @@ var displayModelsByProvider = map[string][]ModelDisplayInfo{
 			Recommended: true,
 		},
 	},
+	"deepseek": {
+		{
+			ID: "deepseek-flash",
+			Descriptions: map[string]string{
+				localeEnglishUS:         "Fast multimodal model with 1M context",
+				localeSimplifiedChinese: "快速多模态模型，100万上下文",
+			},
+			Recommended: true,
+		},
+		// Pro does not support vision yet (2026-09-14). Restore this preset and
+		// its modelSpecRegistry entry after verifying vision support and limits.
+		// {
+		// 	ID: "deepseek-v4-pro",
+		// 	Descriptions: map[string]string{
+		// 		localeEnglishUS:         "Text-only model; does not support screenshots",
+		// 		localeSimplifiedChinese: "纯文本模型，不支持截图输入",
+		// 	},
+		// },
+	},
 	"openrouter": {
 		{
 			ID: "anthropic/claude-fable-5",

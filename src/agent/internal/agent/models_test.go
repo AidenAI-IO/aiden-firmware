@@ -211,10 +211,30 @@ func TestBuildVolcengineProviderResolvesBaseURL(t *testing.T) {
 			}
 			// The OpenRouter-only nested reasoning object must stay off for Ark:
 			// the Ark endpoint only accepts the standard reasoning_effort field.
-			if compatible.openRouterReasoning {
-				t.Error("openRouterReasoning = true, want false for the volcengine provider")
+			if compatible.dialect != compatibleDialectOpenAI {
+				t.Errorf("dialect = %q, want the generic OpenAI shape for the volcengine provider", compatible.dialect)
 			}
 		})
+	}
+}
+
+func TestBuildDeepSeekProviderResolvesBaseURL(t *testing.T) {
+	mgr := NewModelManager(ModelConfig{
+		Provider: "deepseek",
+		Model:    "deepseek-flash",
+		APIKey:   "test-key",
+	}, ProxyConfig{})
+
+	model, err := mgr.build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	compatible, ok := model.(*openAICompatibleModel)
+	if !ok {
+		t.Fatalf("model type = %T, want *openAICompatibleModel", model)
+	}
+	if compatible.baseURL != deepseekBaseURL {
+		t.Errorf("baseURL = %q, want %q", compatible.baseURL, deepseekBaseURL)
 	}
 }
 
@@ -233,8 +253,8 @@ func TestBuildOpenRouterEnablesNestedReasoning(t *testing.T) {
 	if !ok {
 		t.Fatalf("model type = %T, want *openAICompatibleModel", model)
 	}
-	if !compatible.openRouterReasoning {
-		t.Error("openRouterReasoning = false, want true for the openrouter provider")
+	if compatible.dialect != compatibleDialectOpenRouter {
+		t.Errorf("dialect = %q, want openrouter", compatible.dialect)
 	}
 }
 

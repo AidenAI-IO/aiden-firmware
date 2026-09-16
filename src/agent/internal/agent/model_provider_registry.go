@@ -72,6 +72,11 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		},
 	},
 	{
+		providerType:      "deepseek",
+		supportsResponses: true,
+		build:             buildDeepSeekModel,
+	},
+	{
 		providerType:        "ollama",
 		allowsCustomBaseURL: true,
 		build:               buildOllamaModel,
@@ -113,12 +118,53 @@ func buildOpenAICompatibleModel(ctx ModelBuildContext, cfg ModelConfig, defaultB
 	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, openAICompatibleOptions(ctx, cfg)...)
 }
 
+func buildDeepSeekModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
+	// Default to non-thinking mode for all DeepSeek models, including custom
+	// model IDs not registered in model_specs.go. The model spec registry
+	// already sets this default for known models like "deepseek-flash", but
+	// this fallback ensures direct ModelManager users and custom IDs (e.g.,
+	// "deepseek-custom-v1") also start in non-thinking mode for fast device
+	// interactions. User-provided reasoning_effort always overrides.
+	cfg.ReasoningEffort = strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
+	if cfg.ReasoningEffort == "" {
+		cfg.ReasoningEffort = "none"
+	}
+	thinkingEnabled := cfg.ReasoningEffort != "none"
+	switch apiMode := normalizeModelAPIMode(cfg.APIMode); apiMode {
+	case modelAPIModeResponses:
+		return newResponsesModel(deepseekBaseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, responsesModelOptions{
+			rawLogger:         ctx.RawHTTPLogger,
+			reasoningEffort:   cfg.ReasoningEffort,
+			temperature:       cfg.Temperature,
+			ignoreTemperature: thinkingEnabled,
+			dialect:           responsesDialectDeepSeek,
+		}), nil
+	case modelAPIModeResponsesStateful:
+		return nil, fmt.Errorf("model.api_mode=responses_stateful is not supported by DeepSeek; its /responses endpoint is stateless and does not support previous_response_id")
+	case modelAPIModeChatCompletions:
+	default:
+		return nil, fmt.Errorf("invalid model.api_mode: %s", cfg.APIMode)
+	}
+	opts := append(openAICompatibleOptions(ctx, cfg), withOpenAICompatibleDialect(compatibleDialectDeepSeek))
+	if thinkingEnabled {
+		opts = append(opts, withOpenAICompatibleIgnoreTemperature())
+	}
+	return newOpenAICompatibleModel(deepseekBaseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, opts...), nil
+}
+
 func buildKimiModel(ctx ModelBuildContext, cfg ModelConfig, defaultBaseURL string) (llms.Model, error) {
 	apiMode := normalizeModelAPIMode(cfg.APIMode)
+	if apiMode == "" && strings.TrimSpace(cfg.APIMode) != "" {
+		return nil, fmt.Errorf("invalid model.api_mode: %s", cfg.APIMode)
+	}
 	if apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful {
 		return nil, fmt.Errorf("model.api_mode=%s is not supported by Moonshot Kimi; its official endpoint implements OpenAI-compatible Chat Completions, not /responses", apiMode)
 	}
-	return buildOpenAICompatibleModel(ctx, cfg, defaultBaseURL, responsesDialectOpenAI), nil
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+	return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, openAICompatibleOptions(ctx, cfg)...), nil
 }
 
 func buildOpenRouterModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
@@ -140,7 +186,7 @@ func buildOpenRouterModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, e
 	opts := append(openAICompatibleOptions(ctx, cfg),
 		withOpenAICompatibleSessionSticky(ctx.SessionIDProvider),
 		withOpenAICompatibleRouterMetadata(),
-		withOpenAICompatibleOpenRouterReasoning())
+		withOpenAICompatibleDialect(compatibleDialectOpenRouter))
 	if ctx.PromptCachePolicy.UsesExplicitCacheControl() {
 		opts = append(opts, withOpenAICompatibleExplicitPromptCache())
 	}

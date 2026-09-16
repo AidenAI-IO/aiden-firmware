@@ -57,6 +57,9 @@ benchmark/mobilegym/config/bridge_token
 # MobileGym local launcher state (PIDs/logs)
 /.mobilegym_run/
 
+# Agent runtime state (regenerated at runtime; keep the committed template)
+src/agent/config/log/
+
 # Docker
 benchmark/mobilegym/docker/.env
 benchmark/state.json
