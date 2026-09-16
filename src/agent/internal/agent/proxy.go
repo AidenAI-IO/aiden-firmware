@@ -13,21 +13,6 @@ func newProxyHTTPClient(proxy ProxyConfig) *http.Client {
 	return &http.Client{Transport: newProxyTransport(proxy)}
 }
 
-// newDefaultLLMHTTPClient creates an LLM client with the default end-to-end
-// timeout. Callers that need proxy routing should use newLLMHTTPClient instead.
-func newDefaultLLMHTTPClient() *http.Client {
-	return &http.Client{Timeout: defaultLLMHTTPTimeout}
-}
-
-// newLLMHTTPClient applies the default end-to-end timeout to LLM clients while
-// leaving the shared proxy client unbounded for callers such as web tools and
-// audio services that have their own request lifecycle.
-func newLLMHTTPClient(proxy ProxyConfig) *http.Client {
-	client := newDefaultLLMHTTPClient()
-	client.Transport = newProxyTransport(proxy)
-	return client
-}
-
 func newProxyTransport(proxy ProxyConfig) http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = proxyFunc(proxy)

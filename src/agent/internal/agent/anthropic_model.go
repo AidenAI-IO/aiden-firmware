@@ -210,7 +210,7 @@ func IsAnthropicModel(provider, model string) bool {
 
 func newAnthropicModel(baseURL, model, token string, httpClient *http.Client, opts ...anthropicModelOption) llms.Model {
 	if httpClient == nil {
-		httpClient = newDefaultLLMHTTPClient()
+		httpClient = http.DefaultClient
 	}
 	result := &anthropicModel{
 		baseURL:          normalizeAnthropicBaseURL(baseURL),
@@ -325,7 +325,8 @@ func (m *anthropicModel) generateContent(ctx context.Context, messages []llms.Me
 	for {
 		_ = m.logRawHTTP(ctx, request.Model, "request", 0, string(payload))
 
-		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+"/messages", bytes.NewReader(payload))
+		requestCtx := contextWithLLMRequestMode(ctx, request.Stream)
+		httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodPost, m.baseURL+"/messages", bytes.NewReader(payload))
 		if err != nil {
 			_ = m.logRawHTTP(ctx, request.Model, "response", 0, "create request error: "+err.Error())
 			return nil, fail(fmt.Errorf("create Anthropic request: %w", err))

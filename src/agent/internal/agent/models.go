@@ -370,7 +370,7 @@ func (m *ModelManager) buildContext() ModelBuildContext {
 	}
 	return ModelBuildContext{
 		HTTPClient:        newRetryHTTPClient(m.proxy),
-		OllamaHTTPClient:  newLLMHTTPClient(m.proxy),
+		OllamaHTTPClient:  newProxyHTTPClient(m.proxy),
 		RawHTTPLogger:     logger,
 		SessionIDProvider: m.bindings().CurrentSessionID,
 		PromptCachePolicy: m.cachedOpenRouterPromptCachePolicy(),
@@ -417,6 +417,54 @@ func openAICompatibleOptions(ctx ModelBuildContext, cfg ModelConfig) []openAICom
 
 func resolveToken(cfg ModelConfig) string {
 	return resolveProviderAPIKey(cfg.APIKey)
+}
+
+type llmRequestModeContextKey struct{}
+
+func contextWithLLMRequestMode(ctx context.Context, streaming bool) context.Context {
+	return context.WithValue(ctx, llmRequestModeContextKey{}, streaming)
+}
+
+func isStreamingLLMRequest(ctx context.Context) bool {
+	streaming, _ := ctx.Value(llmRequestModeContextKey{}).(bool)
+	return streaming
+}
+
+// nonStreamingTimeoutTransport bounds ordinary LLM requests while allowing a
+// streaming response body to remain open until the provider or caller finishes.
+type nonStreamingTimeoutTransport struct {
+	wrapped http.RoundTripper
+	timeout time.Duration
+}
+
+func (t *nonStreamingTimeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.timeout <= 0 || isStreamingLLMRequest(req.Context()) {
+		return t.wrapped.RoundTrip(req)
+	}
+
+	ctx, cancel := context.WithTimeout(req.Context(), t.timeout)
+	resp, err := t.wrapped.RoundTrip(req.Clone(ctx))
+	if err != nil {
+		cancel()
+		return resp, err
+	}
+	if resp.Body == nil {
+		cancel()
+		return resp, nil
+	}
+	resp.Body = &cancelOnCloseReadCloser{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+type cancelOnCloseReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (r *cancelOnCloseReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	r.cancel()
+	return err
 }
 
 // retryTransport retries transient HTTP and transport failures with backoff.
@@ -523,11 +571,13 @@ func shouldRetryHTTPStatus(statusCode int) bool {
 
 func newRetryHTTPClient(proxy ProxyConfig) *http.Client {
 	return &http.Client{
-		Timeout: defaultLLMHTTPTimeout,
-		Transport: &retryTransport{
-			wrapped:        newProxyTransport(proxy),
-			maxRetries:     5,
-			retryDelayBase: 2 * time.Second,
+		Transport: &nonStreamingTimeoutTransport{
+			timeout: defaultLLMHTTPTimeout,
+			wrapped: &retryTransport{
+				wrapped:        newProxyTransport(proxy),
+				maxRetries:     5,
+				retryDelayBase: 2 * time.Second,
+			},
 		},
 	}
 }

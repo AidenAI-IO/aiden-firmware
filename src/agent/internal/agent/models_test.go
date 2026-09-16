@@ -87,26 +87,88 @@ func TestRetryTransportDoesNotRetryCanceledContext(t *testing.T) {
 	}
 }
 
-func TestLLMHTTPClientsUseDefaultTimeout(t *testing.T) {
+func TestLLMHTTPClientsDoNotUseClientTimeout(t *testing.T) {
+	manager := NewModelManager(ModelConfig{}, ProxyConfig{})
 	clients := map[string]*http.Client{
-		"retry client":  newRetryHTTPClient(ProxyConfig{}),
-		"ollama client": newLLMHTTPClient(ProxyConfig{}),
+		"retry client":               manager.buildContext().HTTPClient,
+		"ollama client":              manager.buildContext().OllamaHTTPClient,
+		"OpenAI-compatible fallback": newOpenAICompatibleModel("https://example.test", "model", "", nil).(*openAICompatibleModel).httpClient,
+		"Responses fallback":         newResponsesModel("https://example.test", "model", "", nil, responsesModelOptions{}).(*responsesModel).httpClient,
+		"Anthropic fallback":         newAnthropicModel("https://example.test", "model", "", nil).(*anthropicModel).httpClient,
 	}
 	for name, client := range clients {
-		if client.Timeout != 30*time.Second {
-			t.Fatalf("%s timeout = %s, want 30s", name, client.Timeout)
+		if client.Timeout != 0 {
+			t.Fatalf("%s timeout = %s, want no client-wide timeout", name, client.Timeout)
 		}
 	}
+}
 
-	if client := newOpenAICompatibleModel("https://example.test", "model", "", nil).(*openAICompatibleModel).httpClient; client.Timeout != 30*time.Second {
-		t.Fatalf("OpenAI-compatible fallback timeout = %s, want 30s", client.Timeout)
+func TestNonStreamingTimeoutTransportAppliesRequestDeadline(t *testing.T) {
+	var requestCtx context.Context
+	transport := &nonStreamingTimeoutTransport{
+		timeout: 30 * time.Second,
+		wrapped: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requestCtx = req.Context()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+				Request:    req,
+			}, nil
+		}),
 	}
-	if client := newResponsesModel("https://example.test", "model", "", nil, responsesModelOptions{}).(*responsesModel).httpClient; client.Timeout != 30*time.Second {
-		t.Fatalf("Responses fallback timeout = %s, want 30s", client.Timeout)
+
+	ctx := contextWithLLMRequestMode(context.Background(), false)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.test", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
 	}
-	if client := newAnthropicModel("https://example.test", "model", "", nil).(*anthropicModel).httpClient; client.Timeout != 30*time.Second {
-		t.Fatalf("Anthropic fallback timeout = %s, want 30s", client.Timeout)
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
 	}
+	deadline, ok := requestCtx.Deadline()
+	if !ok {
+		t.Fatal("non-streaming request has no deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 29*time.Second || remaining > 30*time.Second {
+		t.Fatalf("deadline remaining = %s, want approximately 30s", remaining)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Close response body: %v", err)
+	}
+	select {
+	case <-requestCtx.Done():
+	default:
+		t.Fatal("closing response body did not release request context")
+	}
+}
+
+func TestNonStreamingTimeoutTransportLeavesStreamingRequestUnbounded(t *testing.T) {
+	transport := &nonStreamingTimeoutTransport{
+		timeout: 30 * time.Second,
+		wrapped: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if _, ok := req.Context().Deadline(); ok {
+				t.Fatal("streaming request received a deadline")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("stream")),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	ctx := contextWithLLMRequestMode(context.Background(), true)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.test", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
 }
 
 func TestRetryTransportRetriesTooManyRequests(t *testing.T) {
