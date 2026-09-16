@@ -1046,7 +1046,31 @@ Buildroot 目录和 uClibc 工具链仍可作为厂商 BSP 构建 U-Boot、kerne
 
 `build.sh`、`scripts/build/` 容器驱动、`cmake/toolchain-arm-rockchip830.cmake`、
 `cmake/platforms/rv1106-buildroot-uclibc.cmake`、`scripts/test_build_cli.sh` 和
-`scripts/repack_ota_update_image.sh` 也一并删除；`test_reproducible_rootfs_policy.sh`
-不再引用已删除的镜像驱动，只保留对 `pico-sdk` Buildroot defconfig 与 sysdrv Makefile
-的检查，因为 Debian BSP 仍使用该 SDK 构建 U-Boot、内核、模块和 A/B 镜像。`pico-sdk`
+`scripts/repack_ota_update_image.sh` 也一并删除。`pico-sdk`
 内部的 Buildroot 目录与 uClibc 工具链仍作为厂商 BSP 构建实现细节存在。
+
+### 11.10 最后一批 Buildroot 绑定测试退休
+
+`test_reproducible_rootfs_policy.sh` 曾是仓库内最后一个仍在 CI 运行、且直接以
+Buildroot 配置为对象的检查。它断言 `pico-sdk` 的两个 Buildroot defconfig 以及
+`sysdrv/Makefile` 的 `buildroot`/`boardtools` 状态戳逻辑；而 Debian 构建链
+（`LF_TARGET_ROOTFS=debian`，只调用 `./build.sh uboot|driver|env|abimages`）从不构建
+`rootfs`/`boardtools`/`buildroot`，因此这些契约只覆盖已退休的 Buildroot 用户空间。
+本次变更将该检查及其配套结构校验一并退休：
+
+1. 删除 `scripts/test_reproducible_rootfs_policy.sh`。
+2. 删除 `scripts/check_ci_policy_job.py`（其唯一职责是校验上述 policy job 结构）。
+3. 从 `.github/workflows/ci.yml` 移除 `buildroot-state-policy` job 及其对 `pico-sdk`
+   的 blobless sparse checkout。
+4. 从 `scripts/test_release_ci_scripts.sh` 移除对上述脚本的引用。
+5. 删除孤立测试 `scripts/test_android_tools_aiden_compat.sh`（直接测试 `pico-sdk`
+   内的 Buildroot 包 `android-tools-aiden`，已无任何 CI/CMake 调用者；Debian 侧改用
+   Debian 的 `adb` 包）。
+6. 将同样无人调用的 `scripts/test_debian_only_policy.sh` 通过
+   `.github/workflows/ci.yml` 的 `script-tests` 接入 CI，并按其要求修正
+   `docs/02-architecture/boot-services.md` 中的一处退休路径字面量。
+
+`pico-sdk` 内部完整的厂商 Buildroot SDK（`sysdrv/tools/board/buildroot/`、15 个
+`BoardConfig-*-Buildroot-*.mk`、`sysdrv/Makefile` 的 buildroot 目标）仍作为外部
+子模块内容存在，可用显式 `LF_TARGET_ROOTFS=buildroot` 独立构建，但不属于 Debian
+生产路径，也不再被本仓库 CI 校验。
