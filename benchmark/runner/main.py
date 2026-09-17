@@ -24,7 +24,14 @@ from runner.preflight import (
     MOBILEGYM_PREFLIGHT_COMPLETE_ENV,
     preflight_mobilegym_environment,
 )
-from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
+from runner.report import (
+    git_sha,
+    now_iso,
+    write_jsonl,
+    write_manifest,
+    write_metrics,
+    write_summary,
+)
 from runner.recovery import (
     DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
     recover_agent_after_timeout,
@@ -461,6 +468,12 @@ def _run_target_platform(units: list[TaskRunUnit], fallback: str = "") -> str:
     return "mixed"
 
 
+def _planned_metrics_k(units: list[TaskRunUnit]) -> int:
+    """Use the common planned repeat prefix when tasks have different repeats."""
+    repeats = [unit.repeats for unit in units if unit.repeats > 0]
+    return min(repeats, default=1)
+
+
 def _cmd_run_auto_agent_setup(
     args: argparse.Namespace,
     suite: Suite,
@@ -799,9 +812,12 @@ def _cmd_run_auto_agent_setup_inner(
         "mock_environment": _mock_environment_manifest(suite),
         "started_at": started, "finished_at": now_iso(),
         "totals": totals,
+        "metrics_schema_version": "p0-v1",
+        "metrics_k": _planned_metrics_k(units),
     }
     write_manifest(run_dir / "manifest.json", manifest)
     write_jsonl(run_dir / "results.jsonl", results)
+    write_metrics(run_dir / "metrics.json", suite.name, manifest, results)
     write_summary(run_dir / "summary.md", suite.name, manifest, results)
     html = generate_report_html(run_dir)
     (run_dir / "report.html").write_text(html, encoding="utf-8")
@@ -1078,9 +1094,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "mock_environment": _mock_environment_manifest(suite),
         "started_at": started, "finished_at": now_iso(),
         "totals": totals,
+        "metrics_schema_version": "p0-v1",
+        "metrics_k": _planned_metrics_k(units),
     }
     write_manifest(run_dir / "manifest.json", manifest)
     write_jsonl(run_dir / "results.jsonl", results)
+    write_metrics(run_dir / "metrics.json", suite.name, manifest, results)
     write_summary(run_dir / "summary.md", suite.name, manifest, results)
     html = generate_report_html(run_dir)
     (run_dir / "report.html").write_text(html, encoding="utf-8")

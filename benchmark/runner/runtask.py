@@ -18,12 +18,47 @@ from runner.assertions import (
 )
 from runner.capture import take_environment_screenshot
 from runner.judge import judge_task, JudgeConfig
+from runner.metrics import derive_episode_metrics, derive_history_metrics
 from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 from runner.recovery import prepare_task_isolation, recover_agent_after_timeout
 from runner.reset import ResetError, SetupAssertionError
 from runner.suite import Suite, TaskSpec, effective_mock_environment
 from runner.trace import extract_trace
 from runner.report import now_iso
+
+
+def _attempt_metric_defaults() -> dict[str, Any]:
+    return {
+        "success": None,
+        "agent_eligible": False,
+        "failure_class": None,
+        "quality_score": None,
+        "task_wall_ms": None,
+        "setup_ms": None,
+        "tool_calls": None,
+        "device_actions": None,
+        "llm_calls": None,
+        "llm_time_ms": None,
+        "vision_llm_time_ms": None,
+        "time_to_first_token_ms": None,
+        "device_execution_ms": None,
+        "screenshot_capture_ms": None,
+        "screenshot_capture_source": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+        "cached_input_tokens": None,
+        "reasoning_tokens": None,
+        "cost_usd": None,
+        "cost_source": None,
+        "tool_errors": None,
+        "replan_count": None,
+        "retry_count": None,
+        "recovery_attempted": False,
+        "recovery_succeeded": None,
+        "first_failure_stage": None,
+        "failure_event_ref": None,
+    }
 
 
 def skipped_task_result(
@@ -51,8 +86,44 @@ def skipped_task_result(
         finished_at=started,
         description_for_judge=task.description_for_judge,
         rubric_spec=[dc.asdict(r) for r in task.rubric],
-        metrics={"error": error},
+        metrics={
+            **_attempt_metric_defaults(),
+            "error": error,
+            "success": None,
+            "agent_eligible": False,
+            "failure_class": "skipped",
+            "first_failure_stage": "setup",
+        },
     )
+
+
+def _set_outcome_metrics(
+    result: TaskResult,
+    *,
+    success: bool | None,
+    eligible: bool,
+    failure_class: str | None = None,
+    stage: str | None = None,
+    evidence_ref: str | None = None,
+) -> None:
+    result.metrics["success"] = success
+    result.metrics["agent_eligible"] = eligible
+    result.metrics["failure_class"] = failure_class
+    if success is True:
+        result.metrics["first_failure_stage"] = None
+        result.metrics["failure_event_ref"] = None
+        return
+    if stage is not None:
+        result.metrics["first_failure_stage"] = stage
+    if evidence_ref is not None:
+        result.metrics["failure_event_ref"] = evidence_ref
+
+
+def _failure_stage(result: TaskResult) -> str:
+    recorded_stage = str(result.metrics.get("first_failure_stage") or "")
+    if recorded_stage and recorded_stage != "unknown":
+        return recorded_stage
+    return "unknown"
 
 
 def evaluate_task_history(
@@ -90,13 +161,21 @@ def evaluate_task_history(
         started_at=started,
         description_for_judge=task.description_for_judge,
         rubric_spec=[dc.asdict(r) for r in task.rubric],
-        metrics=dict(metrics or {}),
+        metrics={**_attempt_metric_defaults(), **(metrics or {})},
     )
     (artifact_dir / "history.json").write_text(
         json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    if episode is not None:
+        (artifact_dir / "episode.json").write_text(
+            json.dumps(episode, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     trace = extract_trace(history)
-    if started_mono is None:
-        wall_ms = 0
+    recorded_task_wall = base.metrics.get("task_wall_ms")
+    if isinstance(recorded_task_wall, (int, float)) and not isinstance(recorded_task_wall, bool):
+        wall_ms = int(recorded_task_wall)
+    elif started_mono is None:
+        wall_ms = None
     else:
         wall_ms = int((time.monotonic() - started_mono) * 1000)
     active_skills = _normalise_active_skills(active_skills)
@@ -123,7 +202,15 @@ def evaluate_task_history(
         "total_tool_calls": trace.total_tool_calls,
     }
     last_shot_path = post_screenshot if post_screenshot is not None and post_screenshot.exists() else None
-    base.metrics.update({"wall_ms": wall_ms, "tool_calls": trace.total_tool_calls,
+    base.metrics.update(derive_history_metrics(history))
+    base.metrics.update(derive_episode_metrics(episode))
+    base.metrics.setdefault("cost_usd", None)
+    base.metrics.setdefault("cost_source", None)
+    base.metrics.setdefault("time_to_first_token_ms", None)
+    base.metrics.setdefault("screenshot_capture_ms", None)
+    base.metrics.setdefault("recovery_attempted", False)
+    base.metrics.setdefault("recovery_succeeded", None)
+    base.metrics.update({"wall_ms": wall_ms, "task_wall_ms": wall_ms, "tool_calls": trace.total_tool_calls,
                          "screenshots_taken": sum(1 for tc in trace.tool_calls if tc.has_screenshot),
                          "pre_screenshot_file": bool(pre_screenshot and pre_screenshot.exists()),
                          "post_screenshot_file": bool(post_screenshot and post_screenshot.exists())})
@@ -154,8 +241,32 @@ def evaluate_task_history(
     base.hard_assertion_failures = list(outcome.failures)
     if recall_outcome is not None:
         base.hard_assertions.expected_recalled_memory = recall_outcome.passed
-    if not outcome.all_passed:
+    execution_error = bool(base.metrics.get("agent_error"))
+    if execution_error or not outcome.all_passed:
         base.status = "timeout" if timed_out else "failed"
+        execution_started = (
+            trace.total_tool_calls > 0
+            or bool(base.metrics.get("llm_calls"))
+            or bool(trace.final_response)
+        )
+        if (execution_error or timed_out) and not execution_started:
+            base.metrics["quality_score"] = None
+            _set_outcome_metrics(
+                base,
+                success=None,
+                eligible=False,
+                failure_class="unknown",
+                stage="unknown",
+            )
+        else:
+            base.metrics["quality_score"] = 0.0
+            _set_outcome_metrics(
+                base,
+                success=False,
+                eligible=True,
+                failure_class="unknown" if execution_error else "agent",
+                stage=_failure_stage(base),
+            )
         base.finished_at = now_iso()
         return base
     if task.expected_answer is not None:
@@ -178,6 +289,8 @@ def evaluate_task_history(
                 )
             )
             base.status = "failed"
+            base.metrics["quality_score"] = 0.0
+            _set_outcome_metrics(base, success=False, eligible=True, failure_class="agent", stage="unknown")
             base.finished_at = now_iso()
             return base
     if recall_outcome is not None:
@@ -187,6 +300,8 @@ def evaluate_task_history(
                 "Memory recall evidence is unavailable: episode could not be used "
                 "and inline recall_memory results were incomplete or unparsable."
             )
+            base.metrics["quality_score"] = None
+            _set_outcome_metrics(base, success=None, eligible=False, failure_class="evaluation", stage="evaluation")
             base.finished_at = now_iso()
             return base
         if recall_outcome.passed is False:
@@ -214,10 +329,14 @@ def evaluate_task_history(
                 )
             )
             base.status = "failed"
+            base.metrics["quality_score"] = 0.0
+            _set_outcome_metrics(base, success=False, eligible=True, failure_class="agent", stage="unknown")
             base.finished_at = now_iso()
             return base
     if judge_cfg is None:
         base.status = "passed"
+        base.metrics["quality_score"] = 1.0
+        _set_outcome_metrics(base, success=True, eligible=True)
         base.finished_at = now_iso()
         return base
     try:
@@ -234,6 +353,8 @@ def evaluate_task_history(
     except Exception as e:
         base.status = "judge_error"
         base.metrics["judge_error"] = str(e)
+        base.metrics["quality_score"] = None
+        _set_outcome_metrics(base, success=None, eligible=False, failure_class="evaluation", stage="evaluation")
         base.finished_at = now_iso()
         return base
     base.rubric = verdict.verdicts
@@ -248,6 +369,13 @@ def evaluate_task_history(
         "image_labels": verdict.image_labels,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     base.status = "passed" if base.rubric_pass_count == base.rubric_total else "failed"
+    base.metrics["quality_score"] = (
+        base.rubric_pass_count / base.rubric_total if base.rubric_total else (1.0 if base.status == "passed" else 0.0)
+    )
+    if base.status == "passed":
+        _set_outcome_metrics(base, success=True, eligible=True)
+    else:
+        _set_outcome_metrics(base, success=False, eligible=True, failure_class="agent", stage="unknown")
     base.finished_at = now_iso()
     return base
 
@@ -275,10 +403,12 @@ def run_one_task(
         artifact_dir=str(artifact_dir), started_at=started,
         description_for_judge=task.description_for_judge,
         rubric_spec=[dc.asdict(r) for r in task.rubric],
+        metrics=_attempt_metric_defaults(),
     )
     active_skills = _normalise_active_skills(active_skills)
     setup_result: dict[str, Any] | None = None
     try:
+        setup_started_mono = time.monotonic()
         setup_result = prepare_task_isolation(
             client,
             suite,
@@ -286,9 +416,18 @@ def run_one_task(
             environment_url=environment_url,
             benchmark_task_id=benchmark_task_id,
         )
+        base.metrics["setup_ms"] = int((time.monotonic() - setup_started_mono) * 1000)
     except SetupAssertionError as e:
         base.status = "failed"
-        base.metrics = {"error": f"setup assertion: {e}"}
+        base.metrics = {
+            **_attempt_metric_defaults(),
+            "error": f"setup assertion: {e}",
+            "success": False,
+            "agent_eligible": False,
+            "failure_class": "environment",
+            "first_failure_stage": "setup",
+            "setup_ms": int((time.monotonic() - started_mono) * 1000),
+        }
         base.finished_at = now_iso()
         return base
     except (ResetError, AgentTimeoutError, AgentRequestError) as e:
@@ -299,7 +438,15 @@ def run_one_task(
                 encoding="utf-8",
             )
         base.status = "failed" if isinstance(failed_consolidation, dict) else "skipped"
-        base.metrics = {"error": f"setup: {e}"}
+        base.metrics = {
+            **_attempt_metric_defaults(),
+            "error": f"setup: {e}",
+            "success": False if isinstance(failed_consolidation, dict) else None,
+            "agent_eligible": False,
+            "failure_class": "environment" if isinstance(failed_consolidation, dict) else "skipped",
+            "first_failure_stage": "setup",
+            "setup_ms": int((time.monotonic() - started_mono) * 1000),
+        }
         if isinstance(failed_consolidation, dict):
             base.metrics["consolidation_goal_result"] = (
                 failed_consolidation.get("assessment", {}).get("goal_result")
@@ -338,6 +485,7 @@ def run_one_task(
         if not isinstance(memory_ids, list) or not memory_ids:
             base.status = "failed"
             base.metrics["error"] = "expected_recall_from_consolidation requires non-empty consolidation memory_ids"
+            _set_outcome_metrics(base, success=False, eligible=False, failure_class="environment", stage="setup")
             base.finished_at = now_iso()
             return base
         effective_task = dc.replace(task, expected_recalled_memory_ids=[str(item) for item in memory_ids])
@@ -351,7 +499,12 @@ def run_one_task(
     if input_screenshot_path is not None and not input_screenshot_path.exists():
         base.status = "skipped"
         base.metrics = {
-            "error": f"input_screenshot not found: {input_screenshot_path}"
+            **_attempt_metric_defaults(),
+            "error": f"input_screenshot not found: {input_screenshot_path}",
+            "success": None,
+            "agent_eligible": False,
+            "failure_class": "skipped",
+            "first_failure_stage": "setup",
         }
         base.finished_at = now_iso()
         return base
@@ -362,11 +515,14 @@ def run_one_task(
     if uses_single_frame_mock:
         if environment_url:
             try:
+                capture_started = time.monotonic()
                 take_environment_screenshot(
                     environment_url,
                     pre_path,
                     benchmark_task_id=benchmark_task_id,
                 )
+                base.metrics["screenshot_capture_ms"] = (base.metrics.get("screenshot_capture_ms") or 0) + int((time.monotonic() - capture_started) * 1000)
+                base.metrics["screenshot_capture_source"] = "environment_bridge"
             except Exception as e:
                 base.metrics["pre_screenshot_error"] = str(e)[:300]
         else:
@@ -392,11 +548,14 @@ def run_one_task(
     else:
         if environment_url:
             try:
+                capture_started = time.monotonic()
                 take_environment_screenshot(
                     environment_url,
                     pre_path,
                     benchmark_task_id=benchmark_task_id,
                 )
+                base.metrics["screenshot_capture_ms"] = (base.metrics.get("screenshot_capture_ms") or 0) + int((time.monotonic() - capture_started) * 1000)
+                base.metrics["screenshot_capture_source"] = "environment_bridge"
             except Exception as e:
                 base.metrics["pre_screenshot_error"] = str(e)[:300]
         else:
@@ -404,8 +563,10 @@ def run_one_task(
                 "environment_url is required for live screenshot capture"
             )
     timed_out = False
-    chat_completed = False
     episode = None
+    base.metrics.setdefault("recovery_attempted", False)
+    base.metrics.setdefault("recovery_succeeded", None)
+    task_started_mono = time.monotonic()
     try:
         prompt = effective_task.prompt
         if suite.prompt_prefix:
@@ -417,37 +578,27 @@ def run_one_task(
         if active_skills:
             chat_kwargs["skills"] = active_skills
         chat = client.chat(prompt, **chat_kwargs)
+        base.metrics["task_wall_ms"] = int((time.monotonic() - task_started_mono) * 1000)
         history = chat.history
-        chat_completed = True
     except AgentTimeoutError:
+        base.metrics["task_wall_ms"] = int((time.monotonic() - task_started_mono) * 1000)
         timed_out = True
         history = client_history_or_empty(client)
-        if not recover_agent_after_timeout(client):
+        base.metrics["recovery_attempted"] = True
+        recovery_succeeded = recover_agent_after_timeout(client)
+        base.metrics["recovery_succeeded"] = recovery_succeeded
+        if not recovery_succeeded:
             base.metrics["recovery_failed"] = True
     except Exception as e:
+        base.metrics["task_wall_ms"] = int((time.monotonic() - task_started_mono) * 1000)
         history = client_history_or_empty(client)
         base.metrics["agent_error"] = str(e)[:300]
-    if chat_completed and effective_task.expected_recalled_memory_ids:
-        inline_recall_outcome = evaluate_expected_recalled_memory_ids(
-            history,
-            effective_task.expected_recalled_memory_ids,
-            recall_tool=effective_task.expected_recalled_memory_tool,
-            require_inline_recall=effective_task.expected_recall_from_consolidation,
-        )
-    else:
-        inline_recall_outcome = None
-    if inline_recall_outcome is not None and inline_recall_outcome.passed is None:
-        episode_id = _unique_episode_id(history)
-        if episode_id is not None:
-            try:
-                episode = client.get_episode(episode_id)
-            except Exception as e:
-                base.metrics["episode_error"] = str(e)[:300]
-            else:
-                (artifact_dir / "episode.json").write_text(
-                    json.dumps(episode, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+    episode_id = _unique_episode_id(history)
+    if episode_id is not None:
+        try:
+            episode = client.get_episode(episode_id)
+        except Exception as e:
+            base.metrics["episode_error"] = str(e)[:300]
     # Capture the final device state directly from the environment screen API.
     # The agent history no longer embeds base64 image data, so the post-screenshot
     # must be grabbed live rather than extracted from history.
@@ -456,11 +607,14 @@ def run_one_task(
         post_path = None
     elif environment_url:
         try:
+            capture_started = time.monotonic()
             take_environment_screenshot(
                 environment_url,
                 post_path,
                 benchmark_task_id=benchmark_task_id,
             )
+            base.metrics["screenshot_capture_ms"] = (base.metrics.get("screenshot_capture_ms") or 0) + int((time.monotonic() - capture_started) * 1000)
+            base.metrics["screenshot_capture_source"] = "environment_bridge"
         except Exception as e:
             base.metrics["post_screenshot_error"] = str(e)[:300]
             post_path = None
@@ -483,7 +637,7 @@ def run_one_task(
         pre_screenshot=pre_path if pre_path.exists() else None,
         post_screenshot=post_path if post_path and post_path.exists() else None,
         started_at=started,
-        started_mono=started_mono,
+        started_mono=None,
         active_skills=active_skills,
         episode=episode,
     )
