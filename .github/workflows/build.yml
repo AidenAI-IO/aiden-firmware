@@ -257,7 +257,13 @@ jobs:
       run: df -h "$GITHUB_WORKSPACE" /var/lib/docker 2>/dev/null || df -h
 
     - name: Configure Go proxy
-      run: echo "GOPROXY=https://goproxy.cn" >> "$GITHUB_ENV"
+      # Pipe-separated, not comma-separated: with commas the go command only
+      # moves to the next proxy on 404/410, and a reset connection fails the
+      # build. With pipes it moves on after any error. Both proxies have been
+      # unreachable from the runners at different times -- goproxy.cn's CDN
+      # edge for this network answered every request with a reset for a day --
+      # so neither is trusted alone, and direct (github.com) is the last resort.
+      run: echo "GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct" >> "$GITHUB_ENV"
 
     - name: Set up Go
       # cache: false because nothing here consumes what it would cache. Every
