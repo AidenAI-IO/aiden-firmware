@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/logging"
 	"aiden-agent/internal/wifiproxy"
 )
 
@@ -23,6 +24,33 @@ func (s *Server) runAgentCLI(timeout time.Duration, input []byte, args ...string
 		return commandResult{ExitCode: 126, Output: []byte(err.Error())}
 	}
 	return runCommand(timeout, env, input, s.options.AgentBinary, args...)
+}
+
+// configValidationState reports the recovery state the page renders: whether the
+// Agent runtime accepts the persisted config, and which field to highlight. The
+// runtime loader is the authority because it is the loader the Agent boots with,
+// so the verdict here cannot drift from the one that keeps the Agent down.
+//
+// Callers reach this only after `agent config` has already read the same file
+// through the editor loader, which rejects an unreadable, undecodable, or
+// non-file target before a form is rendered. An unusable file therefore answers
+// unavailable from that step, and a failure here names a field to repair.
+func configValidationState(path string) (bool, []agent.ConfigValidationError) {
+	if _, err := agent.LoadRuntimeConfig(path); err != nil {
+		return false, agent.ParseConfigValidationErrors(err)
+	}
+	return true, []agent.ConfigValidationError{}
+}
+
+// logAgentRecoveryState names the persisted value that keeps the Agent from
+// starting. The startup log is the first place a field engineer looks when the
+// Agent is down, so it is reported once, where the portal starts serving.
+func (s *Server) logAgentRecoveryState() {
+	valid, validationErrors := configValidationState(s.options.AgentConfigPath)
+	if valid || len(validationErrors) == 0 {
+		return
+	}
+	logging.Warnf("config_web", "config_web", "Agent config is invalid; starting recovery portal: %s", validationErrors[0].Message)
 }
 
 // handleGetConfig returns only the persisted agent.toml projection. Device,
@@ -43,8 +71,12 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "agent config returned invalid JSON")
 		return
 	}
+	valid, validationErrors := configValidationState(s.options.AgentConfigPath)
 
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "config": config})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "config": config,
+		"config_valid": valid, "config_errors": validationErrors,
+	})
 }
 
 func (s *Server) handleGetDeviceSnapshot(w http.ResponseWriter, _ *http.Request) {
@@ -62,6 +94,7 @@ func (s *Server) handleGetDeviceSnapshot(w http.ResponseWriter, _ *http.Request)
 		writeJSONError(w, http.StatusServiceUnavailable, "agent config returned invalid JSON")
 		return
 	}
+	valid, validationErrors := configValidationState(s.options.AgentConfigPath)
 	wifi, wifiErr := loadWiFiConfig(s.options.WiFiConfigPath)
 	wifiProxy, wifiProxyErr := wifiproxy.Load(s.options.WiFiProxyConfigPath)
 	systemEnv := ""
@@ -69,20 +102,25 @@ func (s *Server) handleGetDeviceSnapshot(w http.ResponseWriter, _ *http.Request)
 		systemEnv = string(data)
 	}
 	response := map[string]any{
-		"ok":           true,
-		"config":       config,
-		"wifi":         wifi.publicValue(wifiProxy),
-		"wifi_status":  s.queryWiFiStatus(),
-		"agent_status": s.queryAgentStatus(),
-		"firmware":     s.firmwareInfo(),
-		"system_env":   systemEnv,
-		"storage":      s.storageStatusValue(),
+		"ok":            true,
+		"config":        config,
+		"config_valid":  valid,
+		"config_errors": validationErrors,
+		"wifi":          wifi.publicValue(wifiProxy),
+		"wifi_status":   s.queryWiFiStatus(),
+		"agent_status":  s.queryAgentStatus(),
+		"firmware":      s.firmwareInfo(),
+		"system_env":    systemEnv,
+		"storage":       s.storageStatusValue(),
 		"paths": map[string]string{
 			"agent_config":   s.options.AgentConfigPath,
 			"wifi_config":    s.options.WiFiConfigPath,
 			"wifi_interface": s.options.WiFiInterface,
 			"system_env":     s.options.SystemEnvPath,
 		},
+	}
+	if !valid && len(validationErrors) > 0 {
+		response["config_error"] = validationErrors[0].Message
 	}
 	if wifiErr != nil && !os.IsNotExist(wifiErr) {
 		response["wifi_error"] = wifiErr.Error()

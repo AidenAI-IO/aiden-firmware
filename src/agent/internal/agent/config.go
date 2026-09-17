@@ -1272,6 +1272,14 @@ func loadResolvedConfig(path string) (Config, error) {
 	} else {
 		cfg.HID.PointerMode = cfg.PointerModeOrDefault()
 	}
+	// Optional speech providers are opt-in at runtime, so the editor must not show
+	// the DefaultConfig provider for a file that never declared one. The page would
+	// otherwise display (and label as required) a value Config Web reports as
+	// missing, and re-saving that displayed value is not a change config-update can
+	// persist, which leaves the flagged field unrepairable. Sharing the rule with
+	// LoadRuntimeConfig also keeps `config-check` agreeing with the recovery state
+	// the portal reports.
+	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
 	applyVoiceModelProviderDefaults(&cfg, metadata)
 
 	applyRuntimeInstructionDefault(&cfg)

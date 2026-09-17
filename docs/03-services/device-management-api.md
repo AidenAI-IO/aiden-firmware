@@ -54,6 +54,12 @@ same-origin management requests. Agent port mappings therefore do not affect
 the configuration portal, and the Agent does not expose duplicate models, STT
 test, or storage-management handlers on port 8080.
 
+`GET /api/config` and `GET /api/device/snapshot` include `config_valid` and a
+`config_errors` array of `{field, message}` objects. Semantic validation errors
+do not make these endpoints unavailable; they identify fields the recovery UI
+must highlight. File read and decode failures still return an unavailable
+response because Config Web cannot safely construct an editable configuration.
+
 `GET /api/storage/status` and the `storage` field of
 `GET /api/device/snapshot` share the following response shape:
 

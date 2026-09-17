@@ -160,6 +160,182 @@ func TestServerServesStaticAssetsAndRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestServerStartsWithInvalidAgentConfigAndReportsFieldError(t *testing.T) {
+	options := testOptions(t)
+	config := `[voice_settings.mode]
+input_mode = "stt"
+
+[model_settings.model]
+provider = "fake"
+`
+	if err := os.WriteFile(options.AgentConfigPath, []byte(config), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	script := `#!/bin/sh
+printf '%s\n' '{"agent":{"input_mode":"stt"},"model":{"provider":"fake"},"stt":{"provider":""}}'
+`
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	options.AgentBinary = fakeAgent
+
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatalf("NewServer() rejected semantically invalid config: %v", err)
+	}
+	defer server.currentStorage().Stop()
+
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/device/snapshot", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		ConfigValid  bool                          `json:"config_valid"`
+		ConfigErrors []agent.ConfigValidationError `json:"config_errors"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.ConfigValid || len(payload.ConfigErrors) != 1 {
+		t.Fatalf("config validity payload=%+v", payload)
+	}
+	if payload.ConfigErrors[0].Field != "stt.provider" ||
+		!strings.Contains(payload.ConfigErrors[0].Message, "stt.provider is required") {
+		t.Fatalf("config error=%+v", payload.ConfigErrors[0])
+	}
+}
+
+func TestServerRejectsDamagedAgentConfig(t *testing.T) {
+	options := testOptions(t)
+	if err := os.WriteFile(options.AgentConfigPath, []byte("[broken"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewServer(options); err == nil || !strings.Contains(err.Error(), "decode TOML config") {
+		t.Fatalf("NewServer() error=%v, want damaged config failure", err)
+	}
+}
+
+func TestConfigValidationStateMatchesAgentRuntimeFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	config := `[voice_settings.mode]
+input_mode = "realtime"
+
+[model_settings.model]
+provider = "fake"
+`
+	if err := os.WriteFile(path, []byte(config), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	valid, validationErrors := configValidationState(path)
+	if !valid || len(validationErrors) != 0 {
+		t.Fatalf("valid=%v errors=%+v, want Agent runtime fallback to text mode", valid, validationErrors)
+	}
+}
+
+func TestDeviceStatusKeepsDeviceTypeWhileConfigIsInRecovery(t *testing.T) {
+	options := testOptions(t)
+	config := `[basic_settings.device]
+device_type = "iOS"
+
+[model_settings.model]
+provider = ""
+`
+	if err := os.WriteFile(options.AgentConfigPath, []byte(config), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatalf("NewServer() rejected a recoverable config: %v", err)
+	}
+	defer server.currentStorage().Stop()
+
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/device/status", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		DeviceType string `json:"device_type"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.DeviceType != "iOS" {
+		t.Fatalf("device_type=%q, want the persisted value while the config is in recovery", payload.DeviceType)
+	}
+}
+
+// The recovery portal and `agent config-check` read the same file through
+// different entry points. They have to agree, or a user repairs a config the CLI
+// still calls valid (or the reverse) and cannot tell which verdict to trust.
+func TestConfigCheckAgreesWithRecoveryValidationState(t *testing.T) {
+	options := testOptions(t)
+	config := `[model_settings.model]
+provider = "fake"
+
+[voice_settings.mode]
+input_mode = "stt"
+`
+	if err := os.WriteFile(options.AgentConfigPath, []byte(config), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	valid, validationErrors := configValidationState(options.AgentConfigPath)
+	if valid || len(validationErrors) != 1 {
+		t.Fatalf("valid=%v errors=%+v, want the missing stt provider to be reported", valid, validationErrors)
+	}
+
+	_, checkErr := agent.LoadResolvedConfig(options.AgentConfigPath)
+	if checkErr == nil {
+		t.Fatal("config-check reports valid for a config the recovery portal rejects")
+	}
+	checkErrors := agent.ParseConfigValidationErrors(checkErr)
+	if len(checkErrors) != 1 || checkErrors[0].Field != validationErrors[0].Field {
+		t.Fatalf("config-check errors=%+v, recovery field=%+v", checkErrors, validationErrors)
+	}
+}
+
+// Config Web owns the SD-card hardware, and Config.Validate() carries storage
+// rules. Recovery mode starts the portal from a config the runtime rejected, so
+// the manager must fall back to the built-in defaults instead of mounting,
+// formatting, or cleaning up according to settings that failed validation.
+func TestStorageManagerIgnoresRejectedStorageSettings(t *testing.T) {
+	options := testOptions(t)
+	// The manager publishes its state mirror from a background goroutine, so keep
+	// that file out of the test's TempDir: cleanup would otherwise race the write.
+	options.StorageStatePath = filepath.Join(os.TempDir(), "aiden-storage-"+strconv.FormatInt(time.Now().UnixNano(), 10)+".state")
+	defer os.Remove(options.StorageStatePath)
+	config := `[model_settings.model]
+provider = "fake"
+
+[voice_settings.mode]
+input_mode = "text"
+
+[storage_settings.storage]
+monitor_enabled = true
+mount_point = "/mnt/bogus"
+warning_threshold_mb = 1
+critical_threshold_mb = 50
+emergency_threshold_mb = 5
+`
+	if err := os.WriteFile(options.AgentConfigPath, []byte(config), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatalf("NewServer() rejected a recoverable config: %v", err)
+	}
+	storage := server.currentStorage()
+	defer storage.Stop()
+
+	wantMountPoint := agent.DefaultConfig().Storage.MountPointOrDefault()
+	if got := storage.Status().MountPoint; got != wantMountPoint {
+		t.Fatalf("storage mount point=%q, want the default %q while the persisted storage settings are rejected", got, wantMountPoint)
+	}
+}
+
 func TestStorageStatusUsesAgentResponseContract(t *testing.T) {
 	options := testOptions(t)
 	if err := os.WriteFile(options.StorageStatePath, []byte("SD_PRESENT=1\nSD_MOUNTED=1\nSD_DEVICE=/dev/mmcblk2p1\nSD_MOUNTPOINT=/mnt/sdcard\nEFFECTIVE_MODE=2\nSD_TOTAL_BYTES=100\nSD_FREE_BYTES=40\nFORMAT_STATUS=running\nFORMAT_FS=ext4\nFORMAT_AUTO=1\nMIGRATE_STATUS=failed\nMIGRATE_ERROR=copy failed\nMIGRATE_MOVED_FILES=2\nMIGRATE_MOVED_BYTES=80\n"), 0o644); err != nil {

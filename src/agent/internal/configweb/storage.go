@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/logging"
 	"github.com/BurntSushi/toml"
 )
 
@@ -26,12 +27,25 @@ type storageController interface {
 	Stop()
 }
 
+// storageConfigForHardware returns the SD-card settings Config Web may hand to the
+// manager, which is the only process allowed to mount, format, eject, or migrate the
+// card. Recovery mode starts the portal from a config the Agent runtime rejected, and
+// that rejection can name a storage rule, so fall back to the built-in defaults
+// instead of driving the card with settings Config.Validate() refuses.
+func storageConfigForHardware(cfg agent.StorageConfig) agent.StorageConfig {
+	if err := cfg.MonitorConfig().Validate(); err != nil {
+		logging.Warnf("config_web", "config_web", "Agent storage settings are invalid; using defaults until repaired: %v", err)
+		return agent.DefaultConfig().Storage
+	}
+	return cfg
+}
+
 func (s *Server) initializeStorageManager() error {
-	cfg, err := agent.LoadRuntimeConfig(s.options.AgentConfigPath)
+	cfg, err := agent.LoadResolvedConfigForUpdate(s.options.AgentConfigPath)
 	if err != nil {
 		return fmt.Errorf("load Agent config: %w", err)
 	}
-	manager := agent.NewStorageManagerWithStatePath(cfg.Storage, s.options.StorageStatePath, nil)
+	manager := agent.NewStorageManagerWithStatePath(storageConfigForHardware(cfg.Storage), s.options.StorageStatePath, nil)
 	s.storageMu.Lock()
 	if s.storage != nil {
 		s.storageMu.Unlock()
@@ -50,7 +64,7 @@ func (s *Server) currentStorage() storageController {
 }
 
 func (s *Server) reconfigureStorage() error {
-	cfg, err := agent.LoadRuntimeConfig(s.options.AgentConfigPath)
+	cfg, err := agent.LoadResolvedConfigForUpdate(s.options.AgentConfigPath)
 	if err != nil {
 		return fmt.Errorf("load Agent config: %w", err)
 	}
@@ -58,7 +72,7 @@ func (s *Server) reconfigureStorage() error {
 	if storage == nil {
 		return s.initializeStorageManager()
 	}
-	if err := storage.Reconfigure(cfg.Storage); err != nil {
+	if err := storage.Reconfigure(storageConfigForHardware(cfg.Storage)); err != nil {
 		return fmt.Errorf("apply storage config: %w", err)
 	}
 	return nil

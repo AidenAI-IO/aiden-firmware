@@ -971,6 +971,16 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 			errorMsg:      "telemetry.base_url is required when telemetry.enabled=true",
 			expectedField: "telemetry.base_url",
 		},
+		{
+			name:          "wrapped model provider error",
+			errorMsg:      "model: provider is required",
+			expectedField: "model.provider",
+		},
+		{
+			name:          "realtime voice key error",
+			errorMsg:      "voice_model.api_key is required when input_mode=realtime",
+			expectedField: "voice_model.api_key",
+		},
 	}
 
 	for _, tc := range testCases {

@@ -105,6 +105,12 @@ class Element {
     this.attributes.delete(name);
   }
 
+  removeChild(child) {
+    this.children = this.children.filter((item) => item !== child);
+    child.parentNode = null;
+    return child;
+  }
+
   appendChild(child) {
     if (child.parentNode) {
       child.parentNode.children = child.parentNode.children.filter((item) => item !== child);
@@ -373,6 +379,43 @@ assert.equal(voiceModelCard.classList.contains('hidden'), false, 'voice model ca
 
 const configFormModule = await loadModule(path.join(webRoot, 'assets/js/config/config-form.js'));
 await configFormModule.evaluate();
+configFormModule.namespace.applyConfigValidation([{
+  field: 'agent.input_mode',
+  message: 'invalid input_mode: broken',
+}]);
+const invalidInputModeField = document.getElementById('agent_input_mode').closest('.field');
+assert.equal(invalidInputModeField.classList.contains('config-invalid'), true, 'invalid config fields are highlighted');
+assert.equal(document.getElementById('agent_input_mode').getAttribute('aria-invalid'), 'true');
+assert.equal(invalidInputModeField.querySelector('[data-config-validation-error]').textContent, 'invalid input_mode: broken');
+document.dispatchEvent({type: 'change', target: document.getElementById('agent_input_mode')});
+assert.equal(invalidInputModeField.classList.contains('config-invalid'), false, 'editing clears the stale field error');
+assert.equal(document.getElementById('agent_input_mode').getAttribute('aria-invalid'), null);
+assert.equal(configFormModule.namespace.initialReadyMessage(true, {config_valid: false}), 'config.invalid_recovery');
+// Language and time zone are static header controls rather than config-meta
+// fields, so their recovery highlight depends on index.html tagging the two
+// wrappers with the paths the validation errors name.
+const localeField = document.createElement('div');
+localeField.className = 'field';
+localeField.setAttribute('data-config-field', 'agent.locale');
+localeField.appendChild(productLocaleSelect);
+document.body.appendChild(localeField);
+const timezoneField = document.createElement('div');
+timezoneField.className = 'field';
+timezoneField.setAttribute('data-config-field', 'agent.timezone');
+timezoneField.appendChild(agentTimezoneSelect);
+document.body.appendChild(timezoneField);
+configFormModule.namespace.applyConfigValidation([
+  {field: 'locale', message: 'invalid locale: fr-FR (expected zh-CN or en-US)'},
+  {field: 'timezone', message: 'unsupported timezone: Mars/Olympus'},
+]);
+assert.equal(localeField.classList.contains('config-invalid'), true, 'a locale error highlights the language field');
+assert.equal(productLocaleSelect.getAttribute('aria-invalid'), 'true');
+assert.equal(timezoneField.classList.contains('config-invalid'), true, 'a timezone error highlights the time-zone field');
+assert.equal(agentTimezoneSelect.getAttribute('aria-invalid'), 'true');
+assert.equal(timezoneField.querySelector('[data-config-validation-error]').textContent, 'unsupported timezone: Mars/Olympus');
+configFormModule.namespace.applyConfigValidation([]);
+assert.equal(timezoneField.classList.contains('config-invalid'), false, 'a refreshed config clears the stale highlight');
+assert.equal(agentTimezoneSelect.getAttribute('aria-invalid'), null);
 const hidDebugField = document.getElementById('hid_input_backend').closest('.field');
 hidDebugTarget.appendChild(hidDebugField);
 configFormModule.namespace.setSectionLocked('hid', true);
@@ -424,6 +467,8 @@ assert.match(indexHtml, /data-config-section="quick_capture"/);
 assert.match(indexHtml, /id="section-voice_model"/);
 assert.match(indexHtml, /data-config-section="voice_model"/);
 assert.match(indexHtml, /data-config-field="model\.provider"/);
+assert.match(indexHtml, /class="field" data-config-field="agent\.locale"/, 'the language control is addressable by validation field path');
+assert.match(indexHtml, /class="field" data-config-field="agent\.timezone"/, 'the time-zone control is addressable by validation field path');
 assert.doesNotMatch(indexHtml, /id="agent_input_mode"/, 'ordinary controls must not be hand-maintained in index.html');
 assert.match(indexHtml, /data-action="enter-edit-section" data-section-target="model"/);
 assert.match(indexHtml, /id="log-settings-group"[\s\S]*class="product-subgroup-head"[\s\S]*data-i18n="groups\.logs"[\s\S]*data-action="enter-edit-section" data-section-target="log"[\s\S]*id="section-log"/, 'the Logs title and edit actions share one header row');

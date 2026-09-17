@@ -234,3 +234,69 @@ secret_key = "flat-secret-key"
 		t.Errorf("flat stt credentials not cleared: %+v", cfg.STT)
 	}
 }
+
+// The editor view backs `agent config --format=json`, which is what the config
+// page renders. Optional speech providers are opt-in at runtime, so a file that
+// never declared one must come back empty: showing the DefaultConfig() provider
+// would display (and label as required) a value Config Web itself reports as
+// missing, and re-saving that displayed value could not repair the file.
+func TestLoadResolvedConfigDoesNotInheritOptionalSpeechProviders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	body := `
+[model_settings.model]
+provider = "openai"
+model = "gpt-4o"
+
+[voice_settings.mode]
+input_mode = "stt"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadResolvedConfigForUpdate(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfigForUpdate: %v", err)
+	}
+	if cfg.STT.Provider != "" || cfg.TTS.Provider != "" {
+		t.Fatalf("editor view inherited providers the file never declared: stt=%q tts=%q", cfg.STT.Provider, cfg.TTS.Provider)
+	}
+
+	// config-check reads the same view, so it has to reject the file the page flags
+	// rather than filling the gap with a default the runtime will not use.
+	if _, err := LoadResolvedConfig(path); err == nil {
+		t.Fatal("LoadResolvedConfig accepted declared stt mode without an stt provider")
+	}
+}
+
+// The rule above must not remove a provider the file does declare.
+func TestLoadResolvedConfigKeepsDeclaredSpeechProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	body := `
+[model_settings.model]
+provider = "openai"
+model = "gpt-4o"
+
+[voice_settings.classic.stt]
+provider = "tencent-asr"
+app_id = "1234"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadResolvedConfigForUpdate(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfigForUpdate: %v", err)
+	}
+	if cfg.STT.Provider != "tencent-asr" {
+		t.Fatalf("declared stt provider was dropped: %+v", cfg.STT)
+	}
+	// Its flat credentials become a record, as they do in LoadRuntimeConfig.
+	if cfg.STTProviders["tencent-asr"].AppID != "1234" {
+		t.Fatalf("declared stt credentials were dropped: %+v", cfg.STTProviders)
+	}
+	if cfg.TTS.Provider != "" {
+		t.Fatalf("undeclared tts provider appeared: %q", cfg.TTS.Provider)
+	}
+}
