@@ -93,6 +93,7 @@ var CommitOrder = []ComponentID{
 	ComponentSDManagedAudio,
 	ComponentSDUserFiles,
 	ComponentPythonEnvironment,
+	ComponentDiagnostics,
 }
 
 type PublicHeader struct {
@@ -105,11 +106,11 @@ type PublicHeader struct {
 type Protection struct {
 	Algorithm   string `json:"algorithm"`
 	KDF         string `json:"kdf"`
-	Salt        string `json:"salt"`
-	NoncePrefix string `json:"nonce_prefix"`
-	MemoryKiB   uint32 `json:"memory_kib"`
-	Iterations  uint32 `json:"iterations"`
-	Parallelism uint8  `json:"parallelism"`
+	Salt        string `json:"salt,omitempty"`
+	NoncePrefix string `json:"nonce_prefix,omitempty"`
+	MemoryKiB   uint32 `json:"memory_kib,omitempty"`
+	Iterations  uint32 `json:"iterations,omitempty"`
+	Parallelism uint8  `json:"parallelism,omitempty"`
 	ChunkSize   int    `json:"chunk_size"`
 }
 
@@ -127,6 +128,15 @@ func (h PublicHeader) Validate() error {
 }
 
 func (p Protection) Validate() error {
+	if p.ChunkSize < 64*1024 || p.ChunkSize > 4*1024*1024 {
+		return fmt.Errorf("chunk_size must be between 65536 and 4194304")
+	}
+	if p.Algorithm == "sha256-chunked" {
+		if p.KDF != "none" || p.Salt != "" || p.NoncePrefix != "" || p.MemoryKiB != 0 || p.Iterations != 0 || p.Parallelism != 0 {
+			return fmt.Errorf("unencrypted backups must not contain key derivation parameters")
+		}
+		return nil
+	}
 	if p.Algorithm != "xchacha20-poly1305-chunked" {
 		return fmt.Errorf("unsupported protection algorithm %q", p.Algorithm)
 	}

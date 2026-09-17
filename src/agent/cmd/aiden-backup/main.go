@@ -2,7 +2,7 @@
 // It deliberately keeps archive bytes on the host and streams restore chunks
 // directly from the input file; no complete archive is buffered in memory.
 //
-// Exit codes: 1 connection or usage error, 2 invalid archive or passphrase,
+// Exit codes: 1 connection or usage error, 2 invalid or unsupported archive,
 // 3 insufficient space, 4 device mismatch or blocked identity restore,
 // 5 restore failed on the device.
 package main
@@ -26,7 +26,6 @@ import (
 
 	"aiden-agent/internal/backup"
 	"github.com/google/uuid"
-	"golang.org/x/term"
 )
 
 const defaultBaseURL = "http://192.168.42.1/api"
@@ -92,12 +91,7 @@ func run(args []string, out, errOut io.Writer) error {
 		if len(args) != 2 {
 			return usage()
 		}
-		passphrase, err := readPassphrase("Backup passphrase: ")
-		if err != nil {
-			return err
-		}
-		defer zeroString(&passphrase)
-		return c.verify(args[1], passphrase, out)
+		return c.verify(args[1], "", out)
 	case "create":
 		return c.create(args[1:], out)
 	case "restore":
@@ -122,13 +116,13 @@ func usage() error {
 
   inspect <archive>                         print the public header
   verify <archive>                          decrypt and verify an archive locally
-  create --output <path> [--mode same_device|portable] [--components a,b,c]
+  create --output <path>
   restore <archive> [--components a,b,c] [--sd-strategy require_match|allow_different|emmc_fallback|skip]
                     [--confirm-identity] [--yes]
   status <job-id>
   cancel <job-id>
 
-Environment: AIDEN_BACKUP_URL (default http://192.168.42.1/api), AIDEN_BACKUP_PASSPHRASE`)}
+Environment: AIDEN_BACKUP_URL (default http://192.168.42.1/api)`)}
 }
 
 func indexOf(values []string, want string) int {
@@ -169,48 +163,18 @@ func (c *client) create(args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("create", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	output := flags.String("output", "", "destination archive path")
-	mode := flags.String("mode", string(backup.ModeSameDevice), "backup mode")
-	componentList := flags.String("components", "", "comma-separated component ids (default: device defaults)")
 	if err := flags.Parse(args); err != nil || strings.TrimSpace(*output) == "" {
 		return usage()
-	}
-	parsedMode := backup.Mode(*mode)
-	if err := parsedMode.Validate(); err != nil {
-		return &exitError{code: 1, err: err}
 	}
 	if _, err := os.Stat(*output); err == nil {
 		return &exitError{code: 1, err: fmt.Errorf("refusing to overwrite existing output %s", *output)}
 	}
-	passphrase, err := readPassphrase("Backup passphrase: ")
-	if err != nil {
-		return err
-	}
-	defer zeroString(&passphrase)
-	if os.Getenv("AIDEN_BACKUP_PASSPHRASE") == "" {
-		confirm, confirmErr := readPassphrase("Confirm passphrase: ")
-		if confirmErr != nil {
-			return confirmErr
-		}
-		same := passphrase == confirm
-		zeroString(&confirm)
-		if !same {
-			return &exitError{code: 1, err: errors.New("passphrases do not match")}
-		}
-	}
 	if err := c.openSession(); err != nil {
 		return err
 	}
-	components := splitList(*componentList)
-	if len(components) == 0 {
-		capabilities, err := c.request(http.MethodGet, "/backup/capabilities", nil, false)
-		if err != nil {
-			return err
-		}
-		components = defaultComponents(capabilities, parsedMode)
-	}
 	created, err := c.request(http.MethodPost, "/backup/jobs", map[string]any{
-		"format_version": 1, "mode": parsedMode, "components": components,
-		"protection": map[string]any{"mode": "passphrase", "passphrase": passphrase},
+		"format_version": 1, "mode": backup.ModeSameDevice,
+		"protection": map[string]any{"mode": "none"},
 	}, true)
 	if err != nil {
 		return err
@@ -258,7 +222,7 @@ func (c *client) create(args []string, out io.Writer) error {
 		return &exitError{code: 5, err: fmt.Errorf("backup job ended in state %v: %v", final["state"], final["error"])}
 	}
 	fmt.Fprintf(c.verbose, "received %d bytes; verifying\n", written)
-	result, err := verifyFile(partial, passphrase)
+	result, err := verifyFile(partial, "")
 	if err != nil {
 		cleanup()
 		return err
@@ -357,19 +321,16 @@ func (c *client) restore(args []string, out, errOut io.Writer) error {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	passphrase, err := readPassphrase("Backup passphrase: ")
-	if err != nil {
-		return err
+	if header.Protection.Algorithm != "sha256-chunked" {
+		return &exitError{code: 2, err: errors.New("encrypted legacy backups require the original password-capable client")}
 	}
 	if err := c.openSession(); err != nil {
-		zeroString(&passphrase)
 		return err
 	}
 	created, err := c.request(http.MethodPost, "/restore/jobs", map[string]any{
 		"format_version": 1, "archive_size": info.Size(), "public_header": header,
-		"protection": map[string]any{"mode": "passphrase", "passphrase": passphrase},
+		"protection": map[string]any{"mode": "none"},
 	}, true)
-	zeroString(&passphrase)
 	if err != nil {
 		return err
 	}
@@ -713,27 +674,17 @@ func verifyFile(name, passphrase string) (backup.VerifyResult, error) {
 		return backup.VerifyResult{}, err
 	}
 	defer file.Close()
+	header, _, err := backup.ReadPublicHeader(file)
+	if err != nil {
+		return backup.VerifyResult{}, err
+	}
+	if header.Protection.Algorithm != "sha256-chunked" {
+		return backup.VerifyResult{}, &exitError{code: 2, err: errors.New("encrypted legacy backups require the original password-capable client")}
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return backup.VerifyResult{}, err
+	}
 	return backup.VerifyArchive(context.Background(), file, []byte(passphrase))
-}
-
-// readPassphrase reads from the terminal without echo; AIDEN_BACKUP_PASSPHRASE
-// exists for flashing scripts and is never accepted as a command-line flag.
-func readPassphrase(prompt string) (string, error) {
-	if value := os.Getenv("AIDEN_BACKUP_PASSPHRASE"); value != "" {
-		return value, nil
-	}
-	fmt.Fprint(os.Stderr, prompt)
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		data, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			return "", err
-		}
-		return string(data), nil
-	}
-	line, err := readLine()
-	fmt.Fprintln(os.Stderr)
-	return strings.TrimRight(line, "\r\n"), err
 }
 
 func readLine() (string, error) {

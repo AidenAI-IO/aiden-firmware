@@ -127,9 +127,6 @@ func DefinitionsByID() map[ComponentID]ComponentDefinition {
 func DefaultComponents(mode Mode, sdAvailable bool) []ComponentID {
 	var result []ComponentID
 	for _, definition := range ComponentDefinitions() {
-		if !definition.DefaultSelected || definition.Advanced {
-			continue
-		}
 		if definition.SameDeviceOnly && mode != ModeSameDevice {
 			continue
 		}

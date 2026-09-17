@@ -27,6 +27,11 @@ var testAgentConfig = []byte("[basic_settings.language_timezone]\nlocale = \"en-
 // root and returns the bytes plus the parsed public header.
 func buildTestArchive(t *testing.T, source string, mode backup.Mode, components []backup.ComponentID, hardwareID string) ([]byte, backup.PublicHeader) {
 	t.Helper()
+	return buildTestArchiveWithProtection(t, source, mode, components, hardwareID, false)
+}
+
+func buildTestArchiveWithProtection(t *testing.T, source string, mode backup.Mode, components []backup.ComponentID, hardwareID string, plain bool) ([]byte, backup.PublicHeader) {
+	t.Helper()
 	plan, err := backup.NewPlanner(backup.Roots{Userdata: source, SD: filepath.Join(source, "sd")}).Plan(context.Background(), backup.PlanOptions{
 		Mode: mode, Components: components, BackupID: "restore-test",
 		Source: backup.SourceIdentity{HardwareID: hardwareID, MachineID: "0123456789abcdef0123456789abcdef"},
@@ -34,9 +39,12 @@ func buildTestArchive(t *testing.T, source string, mode backup.Mode, components 
 	if err != nil {
 		t.Fatal(err)
 	}
-	material, err := backup.NewKeyMaterial([]byte(testPassphrase), plan.Manifest.CreatedAt)
-	if err != nil {
-		t.Fatal(err)
+	material := backup.NewPlainMaterial(plan.Manifest.CreatedAt)
+	if !plain {
+		material, err = backup.NewKeyMaterial([]byte(testPassphrase), plan.Manifest.CreatedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	defer material.Destroy()
 	var archive bytes.Buffer
@@ -77,7 +85,11 @@ func newRestoreClient(t *testing.T, server *Server) *restoreClient {
 }
 
 func (c *restoreClient) create(archive []byte, header backup.PublicHeader, passphrase string) *httptest.ResponseRecorder {
-	body, _ := json.Marshal(map[string]any{"format_version": 1, "archive_size": len(archive), "public_header": header, "protection": map[string]any{"mode": "passphrase", "passphrase": passphrase}})
+	protection := map[string]any{"mode": "passphrase", "passphrase": passphrase}
+	if header.Protection.Algorithm == "sha256-chunked" {
+		protection = map[string]any{"mode": "none"}
+	}
+	body, _ := json.Marshal(map[string]any{"format_version": 1, "archive_size": len(archive), "public_header": header, "protection": protection})
 	resp := serveRestoreTestRequest(c.server, http.MethodPost, "/api/restore/jobs", body, c.token, c.csrf, true)
 	if resp.Code == http.StatusAccepted {
 		var created struct {
@@ -138,6 +150,16 @@ func chunked(archive []byte, size int) [][]byte {
 }
 
 func TestRestoreJobEndToEnd(t *testing.T) {
+	for _, plain := range []bool{false, true} {
+		name := "legacy_encrypted"
+		if plain {
+			name = "password_free"
+		}
+		t.Run(name, func(t *testing.T) { testRestoreJobEndToEnd(t, plain) })
+	}
+}
+
+func testRestoreJobEndToEnd(t *testing.T, plain bool) {
 	source := t.TempDir()
 	target := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(source, "agent"), 0o755); err != nil {
@@ -146,7 +168,7 @@ func TestRestoreJobEndToEnd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "agent/agent.toml"), testAgentConfig, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	archive, header := buildTestArchive(t, source, backup.ModePortable, []backup.ComponentID{backup.ComponentAgentConfig}, "")
+	archive, header := buildTestArchiveWithProtection(t, source, backup.ModeSameDevice, []backup.ComponentID{backup.ComponentAgentConfig}, "", plain)
 	server := newRestoreTestServer(t, target)
 	client := newRestoreClient(t, server)
 	if resp := client.create(archive, header, testPassphrase); resp.Code != http.StatusAccepted {
@@ -478,6 +500,15 @@ func TestMaintenanceBlocksConflictingAPIsAndDefersAgentRestart(t *testing.T) {
 
 func TestBackupJobStreamsVerifiableArchive(t *testing.T) {
 	target := t.TempDir()
+	for _, name := range []string{"agent/python/lib/package.py", "agent/log/events.log"} {
+		path := filepath.Join(target, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("advanced data\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.MkdirAll(filepath.Join(target, "agent/memory"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -489,11 +520,14 @@ func TestBackupJobStreamsVerifiableArchive(t *testing.T) {
 	}
 	server := newRestoreTestServer(t, target)
 	token, csrf := createRestoreTestSession(t, server)
+	if err := os.WriteFile(server.options.HardwareIDPath, []byte("board-test"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	capabilities := serveRestoreTestRequest(server, http.MethodGet, "/api/backup/capabilities", nil, token, csrf, true)
 	if capabilities.Code != http.StatusOK || !strings.Contains(capabilities.Body.String(), `"estimated_size"`) {
 		t.Fatalf("capabilities status=%d body=%s", capabilities.Code, capabilities.Body.String())
 	}
-	body, _ := json.Marshal(map[string]any{"format_version": 1, "mode": "portable", "components": []string{"agent_config", "agent_memory"}, "protection": map[string]any{"mode": "passphrase", "passphrase": testPassphrase}})
+	body, _ := json.Marshal(map[string]any{"format_version": 1, "protection": map[string]any{"mode": "none"}})
 	created := serveRestoreTestRequest(server, http.MethodPost, "/api/backup/jobs", body, token, csrf, true)
 	if created.Code != http.StatusAccepted {
 		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
@@ -513,12 +547,27 @@ func TestBackupJobStreamsVerifiableArchive(t *testing.T) {
 	if resp.Code != http.StatusOK || resp.Header().Get("Content-Type") != backup.ArchiveMIMEType {
 		t.Fatalf("archive status=%d type=%q body=%s", resp.Code, resp.Header().Get("Content-Type"), resp.Body.String())
 	}
-	result, err := backup.VerifyArchive(context.Background(), bytes.NewReader(resp.Body.Bytes()), []byte(testPassphrase))
+	result, err := backup.VerifyArchive(context.Background(), bytes.NewReader(resp.Body.Bytes()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Manifest.Components) != 2 || result.Manifest.Mode != backup.ModePortable {
+	if len(result.Manifest.Components) != 4 || result.Manifest.Mode != backup.ModeSameDevice || result.Header.Protection.Algorithm != "sha256-chunked" {
 		t.Fatalf("manifest=%+v", result.Manifest)
+	}
+	job, _ := server.backupJobs.get(jobID)
+	if len(job.components) != len(backup.DefaultComponents(backup.ModeSameDevice, false)) {
+		t.Fatal("job did not include all available components")
+	}
+	for _, id := range []backup.ComponentID{backup.ComponentPythonEnvironment, backup.ComponentDiagnostics} {
+		found := false
+		for _, component := range result.Manifest.Components {
+			if component.ID == id {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("advanced component %s missing from archive", id)
+		}
 	}
 	status := serveRestoreTestRequest(server, http.MethodGet, "/api/backup/jobs/"+jobID, nil, token, csrf, true)
 	if status.Code != http.StatusOK || decodeJSON(t, status)["state"] != backupJobCompleted {

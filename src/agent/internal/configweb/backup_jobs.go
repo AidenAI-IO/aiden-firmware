@@ -271,7 +271,7 @@ func (s *Server) handleBackupCapabilities(w http.ResponseWriter, r *http.Request
 		available := !definition.RequiresSD || sdAvailable
 		item := map[string]any{
 			"id": definition.ID, "available": available,
-			"default_selected": definition.DefaultSelected && !definition.Advanced,
+			"default_selected": available,
 			"same_device_only": definition.SameDeviceOnly,
 			"sensitive":        definition.Sensitive, "advanced": definition.Advanced,
 			"schema_version": definition.SchemaVersion,
@@ -326,8 +326,16 @@ func (s *Server) handleCreateBackupJob(w http.ResponseWriter, r *http.Request) {
 	if request.Mode == "" {
 		request.Mode = backup.ModeSameDevice
 	}
-	if request.Protection.Mode != "passphrase" || len(request.Protection.Passphrase) < 8 || len(request.Protection.Passphrase) > maxBackupPassphrase {
-		s.writeBackupError(w, &backupAPIError{Code: "wrong_passphrase", Status: http.StatusBadRequest, Message: "a passphrase of 8 to 4096 bytes is required"})
+	if request.Mode != backup.ModeSameDevice {
+		s.writeBackupError(w, &backupAPIError{Code: "unsupported_mode", Status: http.StatusBadRequest, Message: "backups use same_device mode"})
+		return
+	}
+	if len(request.Components) != 0 {
+		s.writeBackupError(w, &backupAPIError{Code: "custom_selection_unsupported", Status: http.StatusBadRequest, Message: "all available components are backed up automatically"})
+		return
+	}
+	if (request.Protection.Mode != "" && request.Protection.Mode != "none") || request.Protection.Passphrase != "" {
+		s.writeBackupError(w, &backupAPIError{Code: "unsupported_protection", Status: http.StatusBadRequest, Message: "backups do not use password protection"})
 		return
 	}
 	if s.maintenance.active() {
@@ -340,13 +348,7 @@ func (s *Server) handleCreateBackupJob(w http.ResponseWriter, r *http.Request) {
 		status = storage.Status()
 	}
 	sdAvailable := status.Card.Present && status.Card.Mounted
-	selected := make([]backup.ComponentID, 0, len(request.Components))
-	for _, value := range request.Components {
-		selected = append(selected, backup.ComponentID(strings.TrimSpace(value)))
-	}
-	if len(selected) == 0 {
-		selected = backup.DefaultComponents(request.Mode, sdAvailable)
-	}
+	selected := backup.DefaultComponents(backup.ModeSameDevice, sdAvailable)
 	definitions, err := backup.ValidateSelection(request.Mode, selected, sdAvailable)
 	if err != nil {
 		s.writeBackupError(w, &backupAPIError{Code: "planning_failed", Status: http.StatusBadRequest, Message: sanitizeBackupError(err)})
@@ -357,12 +359,7 @@ func (s *Server) handleCreateBackupJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	createdAt := time.Now().UTC()
-	material, err := backup.NewKeyMaterial([]byte(request.Protection.Passphrase), createdAt)
-	zeroString(&request.Protection.Passphrase)
-	if err != nil {
-		s.writeBackupError(w, err)
-		return
-	}
+	material := backup.NewPlainMaterial(createdAt)
 	id := uuid.NewString()
 	job := &backupJob{
 		id: id, createdAt: createdAt, state: backupJobReady, phase: "ready", mode: request.Mode,
