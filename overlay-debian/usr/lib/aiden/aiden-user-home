@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+# Bind mount persistent user home directory from userdata
+source_home=/userdata/home
+target_home=/home
+
+# Ensure userdata is mounted
+findmnt -nr --target /userdata >/dev/null
+
+# Create source and target directories
+mkdir -p "${source_home}" "${target_home}"
+chmod 0755 "${source_home}"
+
+# If /home is not already a mount point or not mounted from userdata, bind mount it
+if ! findmnt -nr --target "${target_home}" | awk -v target="${target_home}" '$2 == target {found=1} END {exit !found}'; then
+    mount --bind "${source_home}" "${target_home}"
+fi
