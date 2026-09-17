@@ -74,6 +74,10 @@ def build_task(ordinal: int, item: dict[str, object]) -> dict[str, object]:
             "route.path": f"/item/scroll-item-{padded}",
             "apps.scroll_lab.selectedItemId": f"scroll-item-{padded}",
             "apps.scroll_lab.maxFirstVisibleOrdinal": {"max": ordinal},
+            # Guard: while AIDEN_MOBILEGYM_BLOCK_SCROLLBACK is set the bridge
+            # refuses finger-down swipes, so a non-zero count means a rollback
+            # slipped through and the one-way premise did not actually hold.
+            "apps.scroll_lab.upwardReversals": 0,
         },
         "repeats": 1,
     }

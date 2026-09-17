@@ -725,6 +725,68 @@ def test_mouse_scroll_preserves_delta_direction_and_magnitude(
     }
 
 
+def _invoke_swipe(bridge_server, payload, episode_id):
+    server, base_url, state = bridge_server
+    state.active_episode_id = episode_id
+    req = Request(
+        f"{base_url}/api/tools/touch_gesture",
+        data=json.dumps({"input": payload}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        return json.loads(resp.read().decode())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"type": "swipe", "start": {"x": 500, "y": 200}, "end": {"x": 500, "y": 800}},
+        {"type": "swipe", "start": {"x": 500, "y": 200}, "direction": "down"},
+    ],
+)
+def test_scrollback_block_rejects_finger_down_swipe(bridge_server, monkeypatch, payload):
+    """Finger-down swipes pull earlier content back, so the block refuses them."""
+    monkeypatch.setenv("AIDEN_MOBILEGYM_BLOCK_SCROLLBACK", "1")
+    server, base_url, state = bridge_server
+
+    data = _invoke_swipe(bridge_server, payload, "test-scrollback-blocked")
+
+    assert data["is_error"] is True
+    assert "scroll-back is disabled" in data["output"]
+    # The gesture must not reach the environment at all.
+    assert state.env.last_action is None
+
+
+def test_scrollback_block_allows_forward_swipe(bridge_server, monkeypatch):
+    monkeypatch.setenv("AIDEN_MOBILEGYM_BLOCK_SCROLLBACK", "1")
+    server, base_url, state = bridge_server
+
+    data = _invoke_swipe(
+        bridge_server,
+        {"type": "swipe", "start": {"x": 500, "y": 800}, "end": {"x": 500, "y": 200}},
+        "test-scrollback-forward",
+    )
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action)["action_type"] == "SWIPE"
+
+
+def test_scrollback_is_allowed_when_block_disabled(bridge_server, monkeypatch):
+    monkeypatch.delenv("AIDEN_MOBILEGYM_BLOCK_SCROLLBACK", raising=False)
+    server, base_url, state = bridge_server
+
+    data = _invoke_swipe(
+        bridge_server,
+        {"type": "swipe", "start": {"x": 500, "y": 200}, "end": {"x": 500, "y": 800}},
+        "test-scrollback-off",
+    )
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action)["action_type"] == "SWIPE"
+
+
 def test_invoke_without_token_still_works(bridge_server):
     """Test tool invocation without token still works (auth removed)."""
     server, base_url, state = bridge_server

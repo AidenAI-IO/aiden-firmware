@@ -38,6 +38,7 @@ def test_scroll_sweep_depth_bound_matches_each_target():
             "route.path": f"/item/scroll-item-{padded}",
             "apps.scroll_lab.selectedItemId": f"scroll-item-{padded}",
             "apps.scroll_lab.maxFirstVisibleOrdinal": {"max": ordinal},
+            "apps.scroll_lab.upwardReversals": 0,
         }
         assert f"第 {ordinal} 项" in task.prompt
         assert f"SL-{padded}" not in task.prompt

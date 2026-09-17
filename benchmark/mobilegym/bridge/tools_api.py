@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import time
 from http.server import BaseHTTPRequestHandler
 from typing import Any
@@ -31,6 +32,35 @@ MAX_SWIPE_STEPS = 1_000
 MAX_MOUSE_SCROLL_DELTA = 127
 MOUSE_SCROLL_BASE_DURATION_MS = 300
 MOUSE_SCROLL_DURATION_STEP_MS = 75
+
+SCROLLBACK_BLOCK_ENV = "AIDEN_MOBILEGYM_BLOCK_SCROLLBACK"
+SCROLLBACK_BLOCK_ERROR = (
+    "error: scroll-back is disabled for this run; the list only scrolls forward"
+)
+
+
+def scrollback_blocked() -> bool:
+    """True when the environment refuses gestures that scroll content back up.
+
+    Read per call so tests can toggle the mode without reimporting the module.
+    """
+    return str(os.environ.get(SCROLLBACK_BLOCK_ENV, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _scrolls_content_back_up(start: dict[str, float], end: dict[str, float]) -> bool:
+    """A finger moving down the screen pulls earlier content back into view.
+
+    Gesture direction names describe finger travel, so ``direction="down"``
+    resolves to an end point below the start. Comparing the resolved points
+    therefore covers both the ``direction`` shorthand and explicit coordinates.
+    """
+    return float(end["y"]) > float(start["y"])
+
 US_KEYBOARD_TEXT_CHARS = set(
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -481,6 +511,8 @@ class ToolsAPIHandler:
                     )
                     duration_value = tool_input.get("duration_ms")
                     duration_ms = 700 if duration_value is None else _swipe_duration_arg(duration_value)
+                if scrollback_blocked() and _scrolls_content_back_up(start, end):
+                    return {"output": SCROLLBACK_BLOCK_ERROR, "is_error": True}
                 timing = _swipe_timing_options(tool_input)
                 action = build_action(
                     gesture_type,

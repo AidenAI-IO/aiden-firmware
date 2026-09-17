@@ -40,7 +40,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-001",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 1
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -72,7 +73,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-002",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 2
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -104,7 +106,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-003",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 3
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -136,7 +139,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-004",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 4
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -168,7 +172,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-005",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 5
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -200,7 +205,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-006",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 6
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -232,7 +238,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-007",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 7
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -264,7 +271,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-008",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 8
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -296,7 +304,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-009",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 9
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -328,7 +337,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-010",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 10
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -360,7 +370,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-011",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 11
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -392,7 +403,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-012",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 12
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -424,7 +436,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-013",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 13
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -456,7 +469,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-014",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 14
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -488,7 +502,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-015",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 15
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -520,7 +535,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-016",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 16
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -552,7 +568,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-017",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 17
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -584,7 +601,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-018",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 18
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -616,7 +634,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-019",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 19
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -648,7 +667,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-020",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 20
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -680,7 +700,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-021",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 21
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -712,7 +733,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-022",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 22
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -744,7 +766,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-023",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 23
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -776,7 +799,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-024",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 24
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -808,7 +832,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-025",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 25
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -840,7 +865,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-026",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 26
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -872,7 +898,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-027",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 27
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -904,7 +931,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-028",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 28
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -936,7 +964,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-029",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 29
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -968,7 +997,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-030",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 30
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1000,7 +1030,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-031",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 31
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1032,7 +1063,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-032",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 32
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1064,7 +1096,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-033",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 33
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1096,7 +1129,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-034",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 34
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1128,7 +1162,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-035",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 35
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1160,7 +1195,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-036",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 36
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1192,7 +1228,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-037",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 37
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1224,7 +1261,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-038",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 38
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1256,7 +1294,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-039",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 39
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1288,7 +1327,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-040",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 40
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1320,7 +1360,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-041",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 41
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1352,7 +1393,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-042",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 42
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1384,7 +1426,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-043",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 43
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1416,7 +1459,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-044",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 44
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1448,7 +1492,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-045",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 45
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1480,7 +1525,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-046",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 46
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1512,7 +1558,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-047",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 47
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1544,7 +1591,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-048",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 48
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1576,7 +1624,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-049",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 49
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1608,7 +1657,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-050",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 50
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1640,7 +1690,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-051",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 51
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1672,7 +1723,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-052",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 52
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1704,7 +1756,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-053",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 53
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1736,7 +1789,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-054",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 54
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1768,7 +1822,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-055",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 55
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1800,7 +1855,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-056",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 56
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1832,7 +1888,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-057",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 57
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1864,7 +1921,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-058",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 58
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1896,7 +1954,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-059",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 59
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1928,7 +1987,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-060",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 60
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1960,7 +2020,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-061",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 61
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -1992,7 +2053,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-062",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 62
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2024,7 +2086,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-063",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 63
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2056,7 +2119,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-064",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 64
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2088,7 +2152,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-065",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 65
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2120,7 +2185,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-066",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 66
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2152,7 +2218,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-067",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 67
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2184,7 +2251,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-068",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 68
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2216,7 +2284,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-069",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 69
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2248,7 +2317,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-070",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 70
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2280,7 +2350,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-071",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 71
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2312,7 +2383,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-072",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 72
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2344,7 +2416,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-073",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 73
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2376,7 +2449,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-074",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 74
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2408,7 +2482,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-075",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 75
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2440,7 +2515,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-076",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 76
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2472,7 +2548,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-077",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 77
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2504,7 +2581,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-078",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 78
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2536,7 +2614,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-079",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 79
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2568,7 +2647,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-080",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 80
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2600,7 +2680,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-081",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 81
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2632,7 +2713,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-082",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 82
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2664,7 +2746,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-083",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 83
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2696,7 +2779,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-084",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 84
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2728,7 +2812,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-085",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 85
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2760,7 +2845,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-086",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 86
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2792,7 +2878,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-087",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 87
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2824,7 +2911,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-088",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 88
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2856,7 +2944,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-089",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 89
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2888,7 +2977,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-090",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 90
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2920,7 +3010,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-091",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 91
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2952,7 +3043,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-092",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 92
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -2984,7 +3076,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-093",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 93
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -3016,7 +3109,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-094",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 94
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -3048,7 +3142,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-095",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 95
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -3080,7 +3175,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-096",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 96
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -3112,7 +3208,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-097",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 97
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -3144,7 +3241,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-098",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 98
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -3176,7 +3274,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-099",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 99
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     },
@@ -3208,7 +3307,8 @@
         "apps.scroll_lab.selectedItemId": "scroll-item-100",
         "apps.scroll_lab.maxFirstVisibleOrdinal": {
           "max": 100
-        }
+        },
+        "apps.scroll_lab.upwardReversals": 0
       },
       "repeats": 1
     }
