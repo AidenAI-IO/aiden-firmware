@@ -202,16 +202,6 @@ func resolvedWebConfigDTO(configPath string) (webConfigDTO, error) {
 	return configupdate.FromAgentConfig(cfg), nil
 }
 
-// loadConfigTestContext loads the surrounding context a section test runs
-// against (proxy settings, provider records). config-test checks the candidate
-// values carried in the request, so requiring the persisted file to pass
-// semantic validation would disable the section Test buttons in exactly the
-// recovery state they are needed in: the flagged field is what the user is
-// testing a replacement for. A file that cannot be read or decoded still fails.
-func loadConfigTestContext(path string) (agent.Config, error) {
-	return agent.LoadResolvedConfigForUpdate(path)
-}
-
 // runConfig implements the `agent config` subcommand. It reads the current
 // agent.toml over the canonical defaults and emits the resolved config in the
 // config_web wire format.
@@ -345,7 +335,13 @@ func runConfigTest(args []string) int {
 		return 1
 	}
 
-	cfg, err := loadConfigTestContext(*configFlag)
+	// config-test checks the candidate values carried in the request, so the
+	// persisted file only supplies surrounding context (proxy settings, provider
+	// records). Requiring it to pass semantic validation would disable the section
+	// Test buttons in exactly the recovery state they are needed in: the invalid
+	// field is what the user is trying to test a replacement for. A file that
+	// cannot be read or decoded still fails here.
+	cfg, err := agent.LoadResolvedConfigForUpdate(*configFlag)
 	if err != nil {
 		writeConfigTestResult(configTestFailure("load_config", err.Error()))
 		return 1

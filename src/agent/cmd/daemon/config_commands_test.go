@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1078,7 +1079,11 @@ func TestValidationResult_JSONFormat(t *testing.T) {
 // recovery: the flagged field is what the user is testing a replacement for. So
 // config-test must load the surrounding context without requiring the file to
 // pass semantic validation, while still refusing a file it cannot decode.
-func TestLoadConfigTestContextAcceptsInvalidValuesButNotDamagedFiles(t *testing.T) {
+//
+// The request carries no values on purpose: the command then stops at its own
+// argument check, which tells the two load outcomes apart without reaching a
+// provider.
+func TestRunConfigTestLoadsRecoveryConfigAndRejectsDamagedFiles(t *testing.T) {
 	dir := t.TempDir()
 
 	recovery := filepath.Join(dir, "agent.toml")
@@ -1095,15 +1100,62 @@ input_mode = "stt"
 	if _, err := agent.LoadRuntimeConfig(recovery); err == nil {
 		t.Fatal("expected the runtime loader to reject a declared stt mode with no provider")
 	}
-	if _, err := loadConfigTestContext(recovery); err != nil {
-		t.Fatalf("config-test refused a recoverable config: %v", err)
+
+	result, code := runConfigTestWithStdin(t, recovery, `{"section":"model"}`)
+	if check := configTestCheck(result); check == "load_config" {
+		t.Fatalf("config-test refused a recoverable config: %+v", result.Results)
+	}
+	if check := configTestCheck(result); check != "request" || code != 1 {
+		t.Fatalf("config-test did not stop at its request check: check=%q code=%d", check, code)
 	}
 
 	damaged := filepath.Join(dir, "damaged.toml")
 	if err := os.WriteFile(damaged, []byte("[broken"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadConfigTestContext(damaged); err == nil {
-		t.Fatal("config-test accepted a config it cannot decode")
+	result, _ = runConfigTestWithStdin(t, damaged, `{"section":"model"}`)
+	if check := configTestCheck(result); check != "load_config" {
+		t.Fatalf("config-test accepted a config it cannot decode: %+v", result.Results)
 	}
+}
+
+func configTestCheck(result ConfigTestResult) string {
+	if len(result.Results) == 0 {
+		return ""
+	}
+	return result.Results[0].Check
+}
+
+// runConfigTestWithStdin drives the subcommand the way the config page does, and
+// returns its exit code with the decoded result it printed.
+func runConfigTestWithStdin(t *testing.T, configPath, request string) (ConfigTestResult, int) {
+	t.Helper()
+	stdinReader, stdinWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdin, originalStdout := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = stdinReader, stdoutWriter
+	defer func() {
+		os.Stdin, os.Stdout = originalStdin, originalStdout
+	}()
+	go func() {
+		_, _ = stdinWriter.WriteString(request)
+		_ = stdinWriter.Close()
+	}()
+	code := runConfigTest([]string{"--stdin", "--config=" + configPath})
+	_ = stdoutWriter.Close()
+	output, err := io.ReadAll(stdoutReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ConfigTestResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("config-test output %q: %v", string(output), err)
+	}
+	return result, code
 }
