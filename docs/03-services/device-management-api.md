@@ -60,9 +60,9 @@ do not make these endpoints unavailable; they identify fields the recovery UI
 must highlight. A field the page does not render, or a message no validator
 attributed to one, reports an empty `field` and is surfaced in the details
 instead. An `agent.toml` that cannot be read or decoded returns an unavailable
-response, because there is no editable configuration to construct. A file that
-is missing altogether is reported as an invalid configuration rather than as
-unavailable: the page renders the built-in defaults, and saving creates the file.
+response, because there is no editable configuration to construct. A file that is
+missing altogether is not a validation failure: the runtime reads it as the
+built-in defaults, the page renders those defaults, and saving creates the file.
 
 `GET /api/storage/status` and the `storage` field of
 `GET /api/device/snapshot` share the following response shape:

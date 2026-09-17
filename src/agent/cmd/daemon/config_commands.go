@@ -66,9 +66,12 @@ type ConfigTestCheck struct {
 	Detail string `json:"detail"`
 }
 
-// runConfigCheck implements the `agent config-check` subcommand
-// It reads JSON config from stdin, validates it, and outputs structured JSON result
-func runConfigCheck(args []string) int {
+// RunConfigCheck implements the `agent config-check` subcommand. It reads a
+// config file with --config or a config_web payload from stdin, validates it, and
+// outputs a structured JSON result. It is exported so the configuration-portal
+// tests can drive the same entry point the CI and release gates run, instead of
+// re-implementing its loader step.
+func RunConfigCheck(args []string) int {
 	fs := flag.NewFlagSet("config-check", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
 	stdinFlag := fs.Bool("stdin", false, "read config from stdin")
@@ -116,6 +119,17 @@ func runConfigCheck(args []string) int {
 	return 1
 }
 
+// checkConfigPath validates a persisted file for the CI and release gates, which
+// run `config-check --config` before an image is assembled. It is deliberately the
+// strict verdict: a config the runtime would paper over at boot (a stale
+// input_mode=realtime whose credential was removed, where the Agent silently falls
+// back to text mode) still has to fail here, or the gate would pass configurations
+// that do not do what they say.
+//
+// The Config Web recovery portal reports a different, runtime-loader verdict,
+// because the page has to describe the state the Agent actually boots in and the
+// field to repair. The two are allowed to disagree; the portal is the repair
+// surface, this is the release gate.
 func checkConfigPath(path string) ValidationResult {
 	if _, err := agent.LoadResolvedConfig(path); err != nil {
 		return ValidationResult{Valid: false, Errors: parseValidationErrors(err)}
@@ -126,7 +140,7 @@ func checkConfigPath(path string) ValidationResult {
 // checkConfig reads a config_web wire-format payload from r, maps it onto
 // agent.Config, and runs the canonical Config.Validate(). It returns the
 // structured result, or a non-nil error only when the input is not decodable
-// JSON. Splitting this out of runConfigCheck keeps the full
+// JSON. Splitting this out of RunConfigCheck keeps the full
 // decode -> map -> validate pipeline testable without driving os.Stdin/Stdout.
 func checkConfig(r io.Reader) (ValidationResult, error) {
 	// The payload is the config_web wire format defined by webConfigDTO:
@@ -462,6 +476,9 @@ func configTestFailure(check, detail string) ConfigTestResult {
 	}
 }
 
+// parseValidationErrors converts a validation error into structured field errors.
+// The mapping is shared with the Config Web recovery portal, which highlights the
+// same field, so it lives in the agent package.
 func parseValidationErrors(err error) []ValidationError {
 	return agent.ParseConfigValidationErrors(err)
 }

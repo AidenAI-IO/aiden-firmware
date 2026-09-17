@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -35,7 +37,14 @@ func (s *Server) runAgentCLI(timeout time.Duration, input []byte, args ...string
 // through the editor loader, which rejects an unreadable, undecodable, or
 // non-file target before a form is rendered. An unusable file therefore answers
 // unavailable from that step, and a failure here names a field to repair.
+//
+// An absent file is the one exception the runtime loader cannot answer for: there
+// is nothing to read a verdict from, and the page renders the built-in defaults so
+// a save can create the file.
 func configValidationState(path string) (bool, []agent.ConfigValidationError) {
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return true, []agent.ConfigValidationError{}
+	}
 	if _, err := agent.LoadRuntimeConfig(path); err != nil {
 		return false, agent.ParseConfigValidationErrors(err)
 	}

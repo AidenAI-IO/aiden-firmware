@@ -1186,3 +1186,57 @@ func runConfigTestWithStdin(t *testing.T, configPath, request string) (ConfigTes
 	}
 	return result, code
 }
+
+// The Config Web recovery portal and `agent config-check --config` read different
+// views of the same file on purpose: the portal uses the runtime loader because it
+// describes the state the Agent boots in, while this command is the CI and release
+// gate and stays strict, so a config the runtime would silently paper over still
+// fails here. They must not disagree about *which* field is wrong, or the gate's
+// output sends a user to a value that is not the problem.
+//
+// This drives the exported command the gates run, rather than its loader step.
+func TestRunConfigCheckReportsTheFieldTheRuntimeVerdictNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	body := `[model_settings.model]
+provider = "fake"
+
+[voice_settings.mode]
+input_mode = "stt"
+`
+	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	// What the portal reports for this file.
+	_, runtimeErr := agent.LoadRuntimeConfig(path)
+	if runtimeErr == nil {
+		t.Fatal("the runtime loader accepted a declared stt mode with no provider")
+	}
+	want := agent.ParseConfigValidationErrors(runtimeErr)
+	if len(want) != 1 || want[0].Field != "stt.provider" {
+		t.Fatalf("runtime verdict = %+v, want the missing stt provider flagged", want)
+	}
+
+	got := checkConfigPath(path)
+	if got.Valid || len(got.Errors) != 1 || got.Errors[0].Field != want[0].Field {
+		t.Fatalf("checkConfigPath = %+v, want the same field as the runtime verdict %+v", got, want)
+	}
+
+	// The gate branches on the exit code, so it has to be non-zero here.
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdout := os.Stdout
+	os.Stdout = stdoutWriter
+	code := RunConfigCheck([]string{"--config=" + path, "--format=json"})
+	_ = stdoutWriter.Close()
+	os.Stdout = originalStdout
+	if _, err := io.ReadAll(stdoutReader); err != nil {
+		t.Fatal(err)
+	}
+	if code == 0 {
+		t.Fatal("config-check exited 0 for a config the release gate must reject")
+	}
+}
+

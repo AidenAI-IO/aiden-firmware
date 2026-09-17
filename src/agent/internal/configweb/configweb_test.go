@@ -297,14 +297,14 @@ locale = "fr-FR"
 	}
 
 	// A missing file is a state the page can repair: it renders the built-in
-	// defaults and saving creates the file. So it is reported as an invalid
-	// configuration naming the file, not as an unavailable response.
+	// defaults and saving creates the file. The runtime treats an absent agent.toml
+	// as "all defaults" rather than as a file that declared nothing, so this is a
+	// valid configuration, not a recovery state.
 	if err := os.Remove(options.AgentConfigPath); err != nil {
 		t.Fatal(err)
 	}
-	if valid, failure := state(); valid || failure.Field != "" ||
-		!strings.Contains(failure.Message, filepath.Base(options.AgentConfigPath)) {
-		t.Fatalf("valid=%v error=%+v, want a fieldless error naming the missing file", valid, failure)
+	if valid, failure := state(); !valid {
+		t.Fatalf("valid=%v error=%+v, want an absent config reported as the built-in defaults", valid, failure)
 	}
 }
 
@@ -365,36 +365,6 @@ provider = ""
 	}
 	if payload.DeviceType != "iOS" {
 		t.Fatalf("device_type=%q, want the persisted value while the config is in recovery", payload.DeviceType)
-	}
-}
-
-// The recovery portal and `agent config-check` read the same file through
-// different entry points. They have to agree, or a user repairs a config the CLI
-// still calls valid (or the reverse) and cannot tell which verdict to trust.
-func TestConfigCheckAgreesWithRecoveryValidationState(t *testing.T) {
-	options := testOptions(t)
-	config := `[model_settings.model]
-provider = "fake"
-
-[voice_settings.mode]
-input_mode = "stt"
-`
-	if err := os.WriteFile(options.AgentConfigPath, []byte(config), 0o640); err != nil {
-		t.Fatal(err)
-	}
-
-	valid, validationErrors := configValidationState(options.AgentConfigPath)
-	if valid || len(validationErrors) != 1 {
-		t.Fatalf("valid=%v errors=%+v, want the missing stt provider to be reported", valid, validationErrors)
-	}
-
-	_, checkErr := agent.LoadResolvedConfig(options.AgentConfigPath)
-	if checkErr == nil {
-		t.Fatal("config-check reports valid for a config the recovery portal rejects")
-	}
-	checkErrors := agent.ParseConfigValidationErrors(checkErr)
-	if len(checkErrors) != 1 || checkErrors[0].Field != validationErrors[0].Field {
-		t.Fatalf("config-check errors=%+v, recovery field=%+v", checkErrors, validationErrors)
 	}
 }
 

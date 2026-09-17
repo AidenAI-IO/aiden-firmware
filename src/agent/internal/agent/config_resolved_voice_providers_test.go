@@ -300,3 +300,29 @@ app_id = "1234"
 		t.Fatalf("undeclared tts provider appeared: %q", cfg.TTS.Provider)
 	}
 }
+
+// The opt-in rule keys off what the file declared, so it must not fire for a file
+// that is not there at all. An absent agent.toml resolves to the built-in
+// defaults: that is what the page renders so a save can create the file, and
+// clearing the defaults instead would report a device that has simply never been
+// configured as carrying an invalid configuration.
+func TestLoadResolvedConfigKeepsDefaultsWhenFileIsAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+
+	cfg, err := LoadResolvedConfigForUpdate(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfigForUpdate(absent): %v", err)
+	}
+	defaults := DefaultConfig()
+	if cfg.TTS.Provider != defaults.TTS.Provider {
+		t.Errorf("tts.provider = %q, want the built-in default %q", cfg.TTS.Provider, defaults.TTS.Provider)
+	}
+	if cfg.STT.Provider != defaults.STT.Provider {
+		t.Errorf("stt.provider = %q, want the built-in default %q", cfg.STT.Provider, defaults.STT.Provider)
+	}
+
+	// config-check reads this same view, so the absent-file state has to pass it.
+	if _, err := LoadResolvedConfig(path); err != nil {
+		t.Fatalf("LoadResolvedConfig(absent) reported a device with no config file as invalid: %v", err)
+	}
+}
