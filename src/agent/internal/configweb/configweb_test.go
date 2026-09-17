@@ -207,6 +207,96 @@ printf '%s\n' '{"agent":{"input_mode":"stt"},"model":{"provider":"fake"},"stt":{
 	}
 }
 
+// Recovery mode exists so the page can repair the file, which means the state it
+// reports has to follow that file: every request reads it again, a repaired file
+// comes back valid without restarting the portal, and a later edit is reported
+// with its own field. The save that writes the file goes out through the `agent
+// config-update` subprocess, so this test leaves the file the way a completed
+// save leaves it instead of faking that hop.
+func TestRecoveryStateFollowsTheConfigFile(t *testing.T) {
+	options := testOptions(t)
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	script := `#!/bin/sh
+printf '%s\n' '{"agent":{"input_mode":"stt"},"model":{"provider":"fake"}}'
+`
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	options.AgentBinary = fakeAgent
+
+	// Config.Validate reports one error at a time, so the fixture keeps every
+	// other requirement of stt mode satisfied: that isolates the field the page
+	// highlights and keeps repairing it a single step.
+	const header = `[model_settings.model]
+provider = "fake"
+
+[voice_settings.classic.tts]
+provider = "minimax-cn"
+`
+	missingSTTProvider := header + `
+[voice_settings.mode]
+input_mode = "stt"
+`
+	if err := os.WriteFile(options.AgentConfigPath, []byte(missingSTTProvider), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatalf("NewServer() rejected a recoverable config: %v", err)
+	}
+	defer server.currentStorage().Stop()
+
+	state := func() (bool, string) {
+		t.Helper()
+		resp := httptest.NewRecorder()
+		server.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/device/snapshot", nil))
+		if resp.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+		}
+		var payload struct {
+			ConfigValid  bool                          `json:"config_valid"`
+			ConfigErrors []agent.ConfigValidationError `json:"config_errors"`
+		}
+		if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.ConfigValid {
+			return true, ""
+		}
+		if len(payload.ConfigErrors) != 1 {
+			t.Fatalf("invalid config reported errors=%+v", payload.ConfigErrors)
+		}
+		return false, payload.ConfigErrors[0].Field
+	}
+
+	if valid, field := state(); valid || field != "stt.provider" {
+		t.Fatalf("valid=%v field=%q, want the missing stt provider to be flagged", valid, field)
+	}
+
+	// What a successful save of the highlighted field leaves on disk.
+	repaired := missingSTTProvider + `
+[voice_settings.classic.stt]
+provider = "openai-whisper"
+`
+	if err := os.WriteFile(options.AgentConfigPath, []byte(repaired), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if valid, field := state(); !valid {
+		t.Fatalf("repaired config still reported invalid at %q", field)
+	}
+
+	// A later hand edit has to reach the page on the next request as well.
+	if err := os.WriteFile(options.AgentConfigPath, []byte(header+`
+[basic_settings.language_timezone]
+locale = "fr-FR"
+`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if valid, field := state(); valid || field != "locale" {
+		t.Fatalf("valid=%v field=%q, want the new locale error after the file changed", valid, field)
+	}
+}
+
 func TestServerRejectsDamagedAgentConfig(t *testing.T) {
 	options := testOptions(t)
 	if err := os.WriteFile(options.AgentConfigPath, []byte("[broken"), 0o640); err != nil {

@@ -335,7 +335,13 @@ func runConfigTest(args []string) int {
 		return 1
 	}
 
-	cfg, err := agent.LoadResolvedConfig(*configFlag)
+	// config-test checks the candidate values carried in the request, so the
+	// persisted file only supplies surrounding context (proxy settings, provider
+	// records). Requiring it to pass semantic validation would disable the section
+	// Test buttons in exactly the recovery state they are needed in: the invalid
+	// field is what the user is trying to test a replacement for. A file that
+	// cannot be read or decoded still fails here.
+	cfg, err := agent.LoadResolvedConfigForUpdate(*configFlag)
 	if err != nil {
 		writeConfigTestResult(configTestFailure("load_config", err.Error()))
 		return 1
