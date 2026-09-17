@@ -333,6 +333,29 @@ func TestModelManagerSpecUsesConfig(t *testing.T) {
 	}
 }
 
+func TestGeminiReasoningCapabilitiesMatchInteractionsThinkingLevels(t *testing.T) {
+	tests := []struct {
+		model   string
+		efforts string
+	}{
+		{model: "gemini-3.8-flash", efforts: "low,medium,high"},
+		{model: "gemini-3.6-flash", efforts: "minimal,low,medium,high"},
+		{model: "gemini-2.5-pro", efforts: "low,medium,high"},
+	}
+	for _, tt := range tests {
+		spec, ok := LookupModelSpec("gemini", tt.model)
+		if !ok || spec.Reasoning == nil {
+			t.Fatalf("LookupModelSpec(%q) = %#v, %v", tt.model, spec, ok)
+		}
+		if got := strings.Join(spec.Reasoning.Efforts, ","); got != tt.efforts {
+			t.Errorf("%s efforts = %q, want %q", tt.model, got, tt.efforts)
+		}
+		if spec.Reasoning.CanDisable {
+			t.Errorf("%s exposes disabled thinking, which native Interactions does not support", tt.model)
+		}
+	}
+}
+
 func TestModelManagerSpecUsesExplicitConfigOverrides(t *testing.T) {
 	mgr := NewModelManager(ModelConfig{
 		Provider:             "openrouter",

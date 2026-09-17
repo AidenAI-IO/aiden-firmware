@@ -217,7 +217,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"model.api_mode": {
 			layout: "wide",
 			label:  "Conversation API",
-			help:   "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
+			help:   "Choose the conversation wire protocol and who manages context. Local modes submit the transcript; provider modes continue from provider state.",
 		},
 		"agent.context_prune_threshold": {
 			label:       "Context prune threshold (fraction)",
@@ -677,8 +677,10 @@ func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
 		t.Fatal("missing model.api_mode metadata")
 	}
 	wantProviders := map[string][]string{
-		"responses":          {"openai", "openrouter", "volcengine", "deepseek"},
-		"responses_stateful": {"openai", "volcengine"},
+		"responses":             {"openai", "openrouter", "volcengine", "deepseek"},
+		"responses_stateful":    {"openai", "volcengine"},
+		"interactions":          {"gemini"},
+		"interactions_stateful": {"gemini"},
 	}
 	for _, option := range field.Enum {
 		want, tracked := wantProviders[option.Value]
@@ -692,6 +694,23 @@ func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
 	}
 	if len(wantProviders) != 0 {
 		t.Fatalf("model.api_mode enum missing scoped options: %#v", wantProviders)
+	}
+	// The empty value means "the provider's compatible default". Gemini has no
+	// compatible transport, so offering that value would both mislabel its
+	// resolved Interactions mode and let the UI save an api_mode the config
+	// validator rejects.
+	excluded := false
+	for _, option := range field.Enum {
+		if option.Value != "" {
+			continue
+		}
+		if !reflect.DeepEqual(option.ExcludeProviders, []string{"gemini"}) {
+			t.Errorf("empty api_mode excludeProviders = %#v, want [gemini]", option.ExcludeProviders)
+		}
+		excluded = true
+	}
+	if !excluded {
+		t.Fatal("model.api_mode enum has no empty option")
 	}
 
 	for _, tt := range []struct {
@@ -744,9 +763,11 @@ func TestConfigMeta_ResponsesOptionsUsePlainLanguage(t *testing.T) {
 
 	apiMode := idx["model.api_mode"]
 	wantOptions := map[string]string{
-		"":                   "Chat Completions (compatible)",
-		"responses":          "Responses (local context)",
-		"responses_stateful": "Responses (provider context)",
+		"":                      "Chat Completions (compatible)",
+		"responses":             "Responses (local context)",
+		"responses_stateful":    "Responses (provider context)",
+		"interactions":          "Interactions (local context)",
+		"interactions_stateful": "Interactions (provider context)",
 	}
 	for _, option := range apiMode.Enum {
 		if want, ok := wantOptions[option.Value]; ok && option.Label != want {

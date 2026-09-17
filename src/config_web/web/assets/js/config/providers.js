@@ -105,6 +105,7 @@ function applyModelReasoningSpec(spec){
   const budgetField=budgetInput&&budgetInput.closest?budgetInput.closest('.field'):null;
   const effortInput=byId('model_reasoning_effort');
   const effortField=effortInput&&effortInput.closest?effortInput.closest('.field'):null;
+  const apiModeInput=byId('model_api_mode');
   if(!baseModelReasoningOptions&&Array.isArray(fields.reasoning_effort))baseModelReasoningOptions=fields.reasoning_effort.map(function(option){return Object.assign({},option);});
   const reasoning=spec&&spec.reasoning;
   if(!reasoning){
@@ -113,6 +114,7 @@ function applyModelReasoningSpec(spec){
     if(budgetField)budgetField.classList.add('hidden');
     if(budgetInput)budgetInput.dataset.reasoningBudgetSupport='unknown';
     if(effortInput)hydrateSelectField('model','reasoning_effort',effortInput.value,true);
+    if(apiModeInput)hydrateSelectField('model','api_mode',apiModeInput.value,true);
     return;
   }
   if(!reasoning.supported){
@@ -120,6 +122,7 @@ function applyModelReasoningSpec(spec){
     if(budgetField)budgetField.classList.add('hidden');
     if(effortInput)effortInput.value='';
     if(budgetInput){budgetInput.dataset.reasoningBudgetSupport='unsupported';budgetInput.value='';}
+    if(apiModeInput)hydrateSelectField('model','api_mode',apiModeInput.value,true);
     return;
   }
   if(effortField)effortField.classList.remove('hidden');
@@ -140,6 +143,7 @@ function applyModelReasoningSpec(spec){
     else budgetInput.value='';
   }
   if(budgetField)budgetField.classList.toggle('hidden',!hasBudget);
+  if(apiModeInput)hydrateSelectField('model','api_mode',apiModeInput.value,true);
 }
 
 const ModelSelector = {

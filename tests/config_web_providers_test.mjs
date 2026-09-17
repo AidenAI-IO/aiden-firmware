@@ -98,18 +98,19 @@ let requestImpl = async () => ({config: {}});
 let fetchImpl = async () => { throw new Error('fetch is not configured'); };
 let latestDetails = null;
 let modelSectionEditing = false;
+const hydratedSelectFields = [];
 const modelProviderMeta = [
   {
     key: 'type',
     widget: 'select',
-    enum: ['anthropic', 'openai', 'openrouter', 'ollama'].map((value) => ({value, label: value})),
+    enum: ['anthropic', 'openai', 'openrouter', 'gemini', 'ollama'].map((value) => ({value, label: value})),
   },
   {key: 'api_key', widget: 'text', secret: true},
   {
     key: 'base_url',
     widget: 'text',
     visibleWhen: {
-      all: [{field: 'model_providers.type', op: 'in', values: ['anthropic', 'openai', 'ollama']}],
+      all: [{field: 'model_providers.type', op: 'in', values: ['anthropic', 'openai', 'gemini', 'ollama']}],
     },
   },
 ];
@@ -142,7 +143,7 @@ registerRuntime({
   getActiveLocale: () => 'en-US',
   getRecordSectionFields: () => recordSectionFields,
   getSelectFieldOptions: () => selectFieldOptions,
-  hydrateSelectField() {},
+  hydrateSelectField(section, key) { hydratedSelectFields.push(section + '.' + key); },
   isSectionEditing: (section) => section === 'model' && modelSectionEditing,
   optionValue: (option) => option.value,
   request: async (url, options) => {
@@ -311,6 +312,20 @@ providerSelectForModels.value = 'router';
 rememberModelProvider();
 await ModelSelector.onProviderChange('router');
 assert.equal(modelInput.value, 'google/gemini-3.5-pro', 'switching back restores the new provider model');
+
+// api_mode is provider-scoped: Interactions belongs to Gemini alone, and no
+// visibility rule watches model.provider, so nothing re-filters the options
+// when the provider select changes. Switching providers must therefore
+// re-hydrate api_mode itself, or a stale Interactions choice stays on screen
+// for a provider that cannot speak it.
+const apiModeElement = new Element();
+elements.set('model_api_mode', apiModeElement);
+hydratedSelectFields.length = 0;
+await ModelSelector.onProviderChange('openai-main');
+assert.ok(
+  hydratedSelectFields.includes('model.api_mode'),
+  'switching provider must re-hydrate the api_mode options',
+);
 
 ModelProvidersManager.load({'rename-old': {type: 'openai'}});
 providerSelectForModels.value = 'rename-old';

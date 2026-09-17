@@ -73,6 +73,10 @@ func normalizeModelAPIMode(mode string) string {
 		return modelAPIModeResponses
 	case "responses_stateful", "responses-stateful", "responses_provider":
 		return modelAPIModeResponsesStateful
+	case "interactions":
+		return modelAPIModeInteractions
+	case "interactions_stateful", "interactions-stateful", "interactions_provider":
+		return modelAPIModeInteractionsStateful
 	default:
 		return ""
 	}

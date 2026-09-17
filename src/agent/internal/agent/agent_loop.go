@@ -856,6 +856,7 @@ func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.Conte
 			choice.ToolCalls = []llms.ToolCall{call}
 			choice.FuncCall = call.FunctionCall
 			choice.GenerationInfo = responsesGenerationInfoForToolCall(choice.GenerationInfo, call.ID)
+			choice.GenerationInfo = interactionsGenerationInfoForToolCall(choice.GenerationInfo, call.ID)
 			return choice
 		}
 	}
@@ -867,7 +868,39 @@ func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.Conte
 	choice.ToolCalls = []llms.ToolCall{*firstValid}
 	choice.FuncCall = firstValid.FunctionCall
 	choice.GenerationInfo = responsesGenerationInfoForToolCall(choice.GenerationInfo, firstValid.ID)
+	choice.GenerationInfo = interactionsGenerationInfoForToolCall(choice.GenerationInfo, firstValid.ID)
 	return choice
+}
+
+// interactionsGenerationInfoForToolCall removes unexecuted native Gemini
+// function-call steps from local StepList replay. The agent executes one tool
+// call per loop iteration, so every retained function_call must have a matching
+// function_result before the next Interactions request.
+func interactionsGenerationInfoForToolCall(info map[string]any, toolID string) map[string]any {
+	toolID = strings.TrimSpace(toolID)
+	items, ok := info["interactions_steps"].([]json.RawMessage)
+	if !ok || len(items) == 0 || toolID == "" {
+		return info
+	}
+	filtered := make([]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		var metadata struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		}
+		if json.Unmarshal(item, &metadata) != nil || metadata.Type != "function_call" || strings.TrimSpace(metadata.ID) == toolID {
+			filtered = append(filtered, item)
+		}
+	}
+	if len(filtered) == len(items) {
+		return info
+	}
+	cloned := make(map[string]any, len(info))
+	for key, value := range info {
+		cloned[key] = value
+	}
+	cloned["interactions_steps"] = filtered
+	return cloned
 }
 
 // responsesGenerationInfoForToolCall removes unexecuted parallel function-call

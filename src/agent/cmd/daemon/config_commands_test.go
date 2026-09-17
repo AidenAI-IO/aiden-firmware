@@ -943,7 +943,7 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 		},
 		{
 			name:          "model api mode error",
-			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions, responses, or responses_stateful)",
+			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions, responses, responses_stateful, interactions, or interactions_stateful)",
 			expectedField: "model.api_mode",
 		},
 		{

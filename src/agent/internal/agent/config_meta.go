@@ -31,6 +31,24 @@ type EnumOption struct {
 	Value     string   `json:"value"`
 	Label     string   `json:"label,omitempty"`
 	Providers []string `json:"providers,omitempty"`
+	// ExcludeProviders hides a choice from provider types that cannot use it.
+	// It exists for values such as the empty api_mode: that value means "the
+	// provider's compatible default", which providers without a compatible
+	// transport (Gemini) must not be offered.
+	ExcludeProviders []string `json:"excludeProviders,omitempty"`
+}
+
+// chatCompletionsUnsupportedProviderTypes lists provider types that have no
+// usable OpenAI-compatible /chat/completions transport, so the empty api_mode
+// value cannot stand for their default.
+func chatCompletionsUnsupportedProviderTypes() []string {
+	var types []string
+	for _, definition := range modelProviderDefinitions {
+		if definition.chatCompletionsUnsupported {
+			types = append(types, definition.providerType)
+		}
+	}
+	return types
 }
 
 func realtimeProviderEnumOptions() []EnumOption {
@@ -205,11 +223,13 @@ func ConfigMeta() ConfigMetadata {
 						Help:    "Select or enter the model name exposed by the configured provider.",
 						Default: defaults.Model.Model, Layout: "wide"},
 					{Key: "api_mode", Label: "Conversation API", Widget: WidgetSelect,
-						Help: "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
+						Help: "Choose the conversation wire protocol and who manages context. Local modes submit the transcript; provider modes continue from provider state.",
 						Enum: []EnumOption{
-							{Value: "", Label: "Chat Completions (compatible)"},
+							{Value: "", Label: "Chat Completions (compatible)", ExcludeProviders: chatCompletionsUnsupportedProviderTypes()},
 							{Value: "responses", Label: "Responses (local context)", Providers: []string{"openai", "openrouter", "volcengine", "deepseek"}},
 							{Value: "responses_stateful", Label: "Responses (provider context)", Providers: []string{"openai", "volcengine"}},
+							{Value: "interactions", Label: "Interactions (local context)", Providers: []string{"gemini"}},
+							{Value: "interactions_stateful", Label: "Interactions (provider context)", Providers: []string{"gemini"}},
 						},
 						Default: defaults.Model.APIMode, Layout: "wide"},
 					{Key: "responses_context_management", Label: "Provider compaction", Widget: WidgetSelect,

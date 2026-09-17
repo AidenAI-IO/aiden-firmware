@@ -287,7 +287,7 @@ stateModule.namespace.runtime.syncModelSelectorSummary = () => {};
 stateModule.namespace.runtime.updateAllProviderActionStates = () => {};
 const configMetaModule = await loadModule(path.join(webRoot, 'assets/js/config/config-meta.js'));
 await configMetaModule.evaluate();
-const {bindFieldVisibility, buildConfigMeta} = configMetaModule.namespace;
+const {bindFieldVisibility, buildConfigMeta, hydrateSelectField} = configMetaModule.namespace;
 
 buildConfigMeta({sections: [
   {name: 'agent', fields: [
@@ -303,6 +303,12 @@ buildConfigMeta({sections: [
     {key: 'provider', label: 'provider', widget: 'select', layout: 'wide'},
     {key: 'model', label: 'model', widget: 'text', layout: 'wide'},
     {key: 'temperature', label: 'temperature', widget: 'number'},
+    {key: 'api_mode', label: 'api_mode', widget: 'select', layout: 'wide', enum: [
+      {value: '', label: 'Chat Completions (compatible)', excludeProviders: ['gemini']},
+      {value: 'responses', label: 'Responses (local context)', providers: ['openai']},
+      {value: 'interactions', label: 'Interactions (local context)', providers: ['gemini']},
+      {value: 'interactions_stateful', label: 'Interactions (provider context)', providers: ['gemini']},
+    ]},
   ]},
   {name: 'quick_capture', fields: [
     {key: 'enabled', label: 'Enabled', widget: 'boolean', default: true},
@@ -417,6 +423,25 @@ configFormModule.namespace.setSectionLocked('model', false);
 assert.equal(document.getElementById('model_provider').disabled, false, 'editing a section enables its fields');
 assert.equal(modelSaveButton.disabled, false, 'editing a section enables its save button');
 assert.equal(modelSelectorDetails.inert, false, 'editing a section enables composite controls');
+
+// A choice a provider cannot use must never become that provider's default:
+// Gemini has no compatible transport, so an unset api_mode has to render as the
+// native Interactions mode instead of "Chat Completions".
+appendSpecialField(document, modelTarget, 'model.api_mode', 'model_api_mode');
+stateModule.namespace.runtime.resolveModelProviderType = (ref) => ref;
+const modelProviderSelect = document.getElementById('model_provider');
+const apiModeSelect = () => document.getElementById('model_api_mode');
+modelProviderSelect.value = 'gemini';
+hydrateSelectField('model', 'api_mode', '', false);
+assert.deepEqual(apiModeSelect().options.map((option) => option.value), ['interactions', 'interactions_stateful']);
+assert.equal(apiModeSelect().value, 'interactions', 'Gemini defaults to its native Interactions mode');
+modelProviderSelect.value = 'openai';
+hydrateSelectField('model', 'api_mode', '', false);
+assert.deepEqual(apiModeSelect().options.map((option) => option.value), ['', 'responses']);
+assert.equal(apiModeSelect().value, '', 'providers with a compatible transport keep the empty default');
+modelProviderSelect.value = 'gemini';
+hydrateSelectField('model', 'api_mode', 'interactions_stateful', false);
+assert.equal(apiModeSelect().value, 'interactions_stateful', 'an explicit Gemini mode is preserved');
 
 const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
 assert.match(indexHtml, /data-config-section="agent"/);
