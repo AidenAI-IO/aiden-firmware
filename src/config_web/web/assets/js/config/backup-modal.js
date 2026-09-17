@@ -3,7 +3,7 @@
 import {byId, runtimeFunction} from './state.js';
 
 const t = runtimeFunction('t');
-const STEPS = ['backup-intro', 'restore-intro', 'restore-plan', 'restore-confirm', 'progress', 'done'];
+const STEPS = ['backup-intro', 'restore-intro', 'restore-plan', 'progress', 'done'];
 
 const modal = () => byId('dataBackupModal');
 
@@ -35,8 +35,6 @@ export function showStep(step) {
     const element = byId(`dataBackupStep-${name}`);
     if (element) element.hidden = name !== step;
   });
-  const cancel = byId('dataBackupCancelBtn');
-  if (cancel) cancel.hidden = step !== 'progress';
 }
 
 export function setBackupStatus(message, error = false) {
@@ -160,26 +158,6 @@ export function renderManifestSummary(manifest, file) {
   if (storage.sd_present) lines.push(t('backup.manifest_sd', {uuid: storage.sd_uuid || '?'}));
   if (manifest.conflicts) lines.push(t('backup.manifest_conflicts', {count: manifest.conflicts}));
   element.textContent = lines.join('\n');
-}
-
-export function renderRestoreConfirm(payload) {
-  const warnings = byId('dataRestoreWarnings');
-  if (warnings) {
-    warnings.textContent = '';
-    (payload?.warnings || []).forEach(warning => {
-      const item = document.createElement('li');
-      item.textContent = warning;
-      warnings.appendChild(item);
-    });
-    warnings.hidden = !(payload?.warnings || []).length;
-  }
-  const summary = byId('dataRestoreConfirmSummary');
-  if (summary) {
-    const components = (payload?.components || []).map(componentLabel).join(', ');
-    summary.textContent = t('backup.confirm_summary', {components, staged: formatBytes(payload?.staged_bytes), files: payload?.files_processed || 0});
-  }
-  const input = byId('dataRestoreConfirmInput');
-  if (input) input.value = '';
 }
 
 export function setRestoreFileInfo(file) {

@@ -1,6 +1,7 @@
 // Browser and Bridge App transfer adapters share the same job protocol.  The
 // native adapter is intentionally message based so large files never enter
 // the React Native JavaScript heap.
+import {sha256Hex} from './backup-checksum.js';
 
 const hostCapabilities = () => window.AidenHostCapabilities || {};
 
@@ -71,11 +72,6 @@ export async function readArchiveHeader(file) {
   const body = new Uint8Array(await file.slice(HEADER_PREFIX_LENGTH, HEADER_PREFIX_LENGTH + headerLength).arrayBuffer());
   if (body.length !== headerLength) throw new Error('archive_truncated');
   return JSON.parse(new TextDecoder().decode(body));
-}
-
-async function sha256Hex(bytes) {
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
 }
 
 // uploadBrowserChunks reads one File.slice at a time and waits for the device

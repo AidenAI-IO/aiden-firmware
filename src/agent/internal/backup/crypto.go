@@ -33,6 +33,54 @@ type KeyMaterial struct {
 	key    [chacha20poly1305.KeySize]byte
 }
 
+// NewPlainMaterial creates a password-free archive. SHA-256 frames detect
+// corruption only; they provide no confidentiality or tamper authentication.
+func NewPlainMaterial(createdAt time.Time) *KeyMaterial {
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	return &KeyMaterial{Header: PublicHeader{
+		Format: FormatName, Version: FormatVersion, CreatedAt: createdAt.UTC(),
+		Protection: Protection{Algorithm: "sha256-chunked", KDF: "none", ChunkSize: DefaultChunkSize},
+	}}
+}
+
+type checksumFrames struct{}
+
+func (checksumFrames) NonceSize() int { return chacha20poly1305.NonceSizeX }
+func (checksumFrames) Overhead() int  { return sha256.Size }
+func (checksumFrames) Seal(dst, _nonce, plaintext, additionalData []byte) []byte {
+	digest := frameChecksum(additionalData, plaintext)
+	dst = append(dst, plaintext...)
+	return append(dst, digest[:]...)
+}
+func (checksumFrames) Open(dst, _nonce, payload, additionalData []byte) ([]byte, error) {
+	if len(payload) < sha256.Size {
+		return nil, errors.New("frame checksum is missing")
+	}
+	plaintext := payload[:len(payload)-sha256.Size]
+	digest := frameChecksum(additionalData, plaintext)
+	if !bytes.Equal(digest[:], payload[len(plaintext):]) {
+		return nil, errors.New("frame checksum mismatch")
+	}
+	return append(dst, plaintext...), nil
+}
+func frameChecksum(additionalData, plaintext []byte) [sha256.Size]byte {
+	h := sha256.New()
+	_, _ = h.Write([]byte("aiden-backup-sha256-frame-v1"))
+	_, _ = h.Write(additionalData)
+	_, _ = h.Write(plaintext)
+	var result [sha256.Size]byte
+	copy(result[:], h.Sum(nil))
+	return result
+}
+func frameProtection(material *KeyMaterial) (cipherAEAD, error) {
+	if material.Header.Protection.Algorithm == "sha256-chunked" {
+		return checksumFrames{}, nil
+	}
+	return chacha20poly1305.NewX(material.key[:])
+}
+
 func NewKeyMaterial(passphrase []byte, createdAt time.Time) (*KeyMaterial, error) {
 	salt := make([]byte, 16)
 	noncePrefix := make([]byte, 16)
@@ -74,6 +122,9 @@ func deriveKey(header PublicHeader, passphrase []byte) ([chacha20poly1305.KeySiz
 	var result [chacha20poly1305.KeySize]byte
 	if err := header.Validate(); err != nil {
 		return result, errorf("unsupported_format", err, "invalid backup header: %v", err)
+	}
+	if header.Protection.Algorithm == "sha256-chunked" {
+		return result, nil
 	}
 	if len(passphrase) < 8 {
 		return result, errorf("wrong_passphrase", nil, "backup passphrase must contain at least 8 bytes")
@@ -207,7 +258,7 @@ func newEncryptedWriter(writer io.Writer, material *KeyMaterial) (*encryptedWrit
 	if err != nil {
 		return nil, err
 	}
-	aead, err := chacha20poly1305.NewX(material.key[:])
+	aead, err := frameProtection(material)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +379,7 @@ func newDecryptedReader(reader io.Reader, material *KeyMaterial) (*decryptedRead
 	if material == nil || header != material.Header {
 		return nil, errorf("manifest_invalid", nil, "backup public header changed after key derivation")
 	}
-	aead, err := chacha20poly1305.NewX(material.key[:])
+	aead, err := frameProtection(material)
 	if err != nil {
 		return nil, err
 	}
@@ -388,7 +439,11 @@ func (r *decryptedReader) readRecord() {
 	plaintext, err := r.aead.Open(nil, nonce, ciphertext, aad)
 	zeroBytes(ciphertext)
 	if err != nil {
-		r.terminalErr = errorf("wrong_passphrase", err, "backup authentication failed")
+		if _, plain := r.aead.(checksumFrames); plain {
+			r.terminalErr = errorf("hash_mismatch", err, "backup frame checksum failed")
+		} else {
+			r.terminalErr = errorf("wrong_passphrase", err, "backup authentication failed")
+		}
 		return
 	}
 	r.sequence++

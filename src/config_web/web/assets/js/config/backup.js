@@ -3,10 +3,11 @@
 // using /api/config/backup.
 import {request, setDetails} from './api.js';
 import {byId, appState, runtimeFunction} from './state.js';
+import {createMaintenanceRequestID} from './backup-session.js';
 import {
   openBackupModal, closeBackupModal, isBackupModalOpen, showStep, setBackupStatus, setCardStatus,
-  setBackupProgress, hideCardProgress, renderComponents, selectedComponents, renderManifestSummary,
-  renderRestoreConfirm, setRestoreFileInfo, setDoneMessage, formatBytes,
+  setBackupProgress, hideCardProgress, renderManifestSummary,
+  setRestoreFileInfo, setDoneMessage, formatBytes,
 } from './backup-modal.js';
 import {
   hasNativeTransfer, requestNativeDownload, requestNativeFile, requestNativeUpload,
@@ -15,6 +16,7 @@ import {
 
 const t = runtimeFunction('t');
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'reboot_required', 'rollback_failed']);
+const RESTORE_SD_STRATEGY = 'allow_different';
 const MAINTENANCE_LOCKED_ACTIONS = [
   'format-storage', 'eject-storage', 'choose-config-backup', 'export-config-backup', 'ota-update',
   'reboot-device', 'reset-conversation-memory', 'apply-system-env', 'save-system-env',
@@ -24,13 +26,14 @@ const MAINTENANCE_LOCKED_IDS = ['dataBackupExportBtn', 'dataRestoreImportBtn'];
 let maintenanceSession = null;
 let activeJob = null;      // {kind: 'backup'|'restore', job_id, transfer_token, state, ...}
 let activeFile = null;
+let restorePlanComponents = [];
 let planGate = null;       // deferred resolved by continueDataRestore
-let confirmGate = null;    // deferred resolved by confirmDataRestore
+let restoreCancellationDisabled = false;
 let pollTimer = null;
 let usbBlocked = false;
 
 function requestID() {
-  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createMaintenanceRequestID();
 }
 
 function deferred() {
@@ -71,22 +74,29 @@ async function openMaintenanceSession() {
 }
 
 async function maintenanceRequest(url, options = {}) {
-  const session = await openMaintenanceSession();
-  const headers = new Headers(options.headers || {});
-  headers.set('X-Aiden-Request-ID', requestID());
-  headers.set('X-Aiden-CSRF-Token', session.csrf_token);
-  try {
-    return await request(url, {...options, headers, credentials: 'same-origin'});
-  } catch (error) {
-    if (error.status === 423) await attachMaintenance(error);
-    throw error;
+  const id = requestID();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const session = await openMaintenanceSession();
+    const headers = new Headers(options.headers || {});
+    headers.set('X-Aiden-Request-ID', id);
+    headers.set('X-Aiden-CSRF-Token', session.csrf_token);
+    try {
+      return await request(url, {...options, headers, credentials: 'same-origin'});
+    } catch (error) {
+      if (attempt === 0 && error.status === 401 && error.error === 'maintenance_session_required') {
+        maintenanceSession = null;
+        continue;
+      }
+      if (error.status === 423) await attachMaintenance(error);
+      throw error;
+    }
   }
 }
 
 async function jobRequest(url, options = {}) {
-  const headers = new Headers(options.headers || {});
-  if (activeJob?.transfer_token) headers.set('Authorization', `Bearer ${activeJob.transfer_token}`);
-  return request(url, {...options, headers, credentials: 'same-origin'});
+  // Browser uploads use the renewable session, not a five-minute native token.
+  if (options.method && options.method !== 'GET') return maintenanceRequest(url, options);
+  return request(url, {...options, credentials: 'same-origin'});
 }
 
 function jobPath(kind, id, suffix = '') {
@@ -233,9 +243,6 @@ export async function createDataBackup() {
     await openMaintenanceSession();
     const capabilities = await maintenanceRequest('/api/backup/capabilities');
     appState.backupCapabilities = capabilities;
-    const mode = byId('dataBackupMode');
-    if (mode) mode.value = capabilities.device?.identity_available === false ? 'portable' : 'same_device';
-    renderBackupComponents();
     const sd = capabilities.sd || {};
     const hint = byId('dataBackupSdHint');
     if (hint) hint.textContent = sd.mounted ? t('backup.sd_included', {device: sd.device || ''}) : t('backup.sd_absent');
@@ -246,31 +253,14 @@ export async function createDataBackup() {
   }
 }
 
-function renderBackupComponents() {
-  const capabilities = appState.backupCapabilities || {};
-  const mode = byId('dataBackupMode')?.value || 'same_device';
-  const components = capabilities.components || [];
-  const defaults = components.filter(item => item.default_selected && item.available !== false && (mode === 'same_device' || !item.same_device_only)).map(item => item.id);
-  renderComponents('dataBackupComponents', components, defaults, {sameDeviceOnlyDisabled: mode !== 'same_device'});
-}
-
 export async function startDataBackup() {
-  const passphrase = byId('dataBackupPassphrase')?.value || '';
-  const confirmation = byId('dataBackupPassphraseConfirm')?.value || '';
-  if (passphrase.length < 8) { setBackupStatus(t('backup.passphrase_too_short'), true); return; }
-  if (passphrase !== confirmation) { setBackupStatus(t('backup.passphrase_mismatch'), true); return; }
-  const components = selectedComponents('dataBackupComponents');
-  if (!components.length) { setBackupStatus(t('backup.no_components'), true); return; }
-  const mode = byId('dataBackupMode')?.value || 'same_device';
   const button = byId('dataBackupStartBtn');
   if (button) button.disabled = true;
   try {
     const response = await maintenanceRequest('/api/backup/jobs', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({format_version: 1, mode, components, protection: {mode: 'passphrase', passphrase}}),
+      body: JSON.stringify({format_version: 1, mode: 'same_device', protection: {mode: 'none'}}),
     });
-    byId('dataBackupPassphrase').value = '';
-    byId('dataBackupPassphraseConfirm').value = '';
     setActiveJob({kind: 'backup', ...response});
     showStep('progress');
     setBackupStatus('');
@@ -303,6 +293,7 @@ export function chooseDataRestore() {
 export async function restoreFileSelected(file) {
   if (!file) return;
   activeFile = file;
+  restoreCancellationDisabled = false;
   openBackupModal('restore');
   showStep('restore-intro');
   setRestoreFileInfo(file);
@@ -311,6 +302,9 @@ export async function restoreFileSelected(file) {
   try {
     await openMaintenanceSession();
     activeFile.header = file.header || await readArchiveHeader(file);
+    if (activeFile.header.protection?.algorithm !== 'sha256-chunked') {
+      throw Object.assign(new Error(t('backup.error.encrypted_archive_unsupported')), {error: 'encrypted_archive_unsupported'});
+    }
     const created = activeFile.header.created_at ? new Date(activeFile.header.created_at).toLocaleString() : '';
     setBackupStatus(created ? t('backup.archive_created', {created}) : '');
     if (start) start.disabled = false;
@@ -322,16 +316,13 @@ export async function restoreFileSelected(file) {
 export async function startDataRestore() {
   const file = activeFile;
   if (!file || !file.header) return;
-  const passphrase = byId('dataRestorePassphrase')?.value || '';
-  if (passphrase.length < 8) { setBackupStatus(t('backup.passphrase_too_short'), true); return; }
   const button = byId('dataRestoreStartBtn');
   if (button) button.disabled = true;
   try {
     const created = await maintenanceRequest('/api/restore/jobs', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({format_version: 1, archive_size: file.size, public_header: file.header, protection: {mode: 'passphrase', passphrase}}),
+      body: JSON.stringify({format_version: 1, archive_size: file.size, public_header: file.header, protection: {mode: 'none'}}),
     });
-    byId('dataRestorePassphrase').value = '';
     setActiveJob({kind: 'restore', ...created, archive_size: file.size});
     showStep('progress');
     setBackupStatus('');
@@ -390,14 +381,12 @@ async function waitForNativeUpload(jobId) {
 async function presentRestorePlan(payload) {
   const manifest = payload.manifest || (await jobRequest(jobPath('restore', activeJob.job_id))).manifest;
   const components = manifest?.components || [];
+  restorePlanComponents = components.map(item => item.id);
   renderManifestSummary({...manifest, conflicts: manifest?.conflicts}, activeFile);
-  renderComponents('dataRestoreComponents', components, components.map(item => item.id));
   const conflictRow = byId('dataRestoreConflictRow');
   if (conflictRow) conflictRow.hidden = !manifest?.conflicts;
   const identityRow = byId('dataRestoreIdentityRow');
   if (identityRow) identityRow.hidden = !components.some(item => item.id === 'device_identity');
-  const sdRow = byId('dataRestoreSDRow');
-  if (sdRow) sdRow.hidden = !components.some(item => item.id === 'sd_managed_audio' || item.id === 'sd_user_files');
   showStep('restore-plan');
   planGate = deferred();
   await planGate.promise;
@@ -406,22 +395,27 @@ async function presentRestorePlan(payload) {
 
 export async function continueDataRestore() {
   if (!activeJob || !planGate) return;
+  if (!window.confirm(t('backup.restore_confirm'))) return;
+  restoreCancellationDisabled = true;
   const button = byId('dataRestorePlanBtn');
   if (button) button.disabled = true;
   try {
     const response = await maintenanceRequest(jobPath('restore', activeJob.job_id, '/plan'), {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        components: selectedComponents('dataRestoreComponents'),
-        sd_strategy: byId('dataRestoreSDStrategy')?.value || 'require_match',
+        components: restorePlanComponents,
+        sd_strategy: RESTORE_SD_STRATEGY,
         confirm_conflicts: !!byId('dataRestoreConflictConfirm')?.checked,
         confirm_identity: !!byId('dataRestoreIdentityConfirm')?.checked,
       }),
     });
     updateJob(response);
     setBackupStatus('');
-    planGate.resolve(response);
+    const gate = planGate;
+    planGate = null;
+    gate.resolve(response);
   } catch (error) {
+    restoreCancellationDisabled = false;
     setBackupStatus(errorText(error), true);
   } finally {
     if (button) button.disabled = false;
@@ -432,11 +426,6 @@ async function validateAndApply(jobId) {
   setBackupProgress(0, 0, t('backup.phase.validating'), true);
   const validated = await maintenanceRequest(jobPath('restore', jobId, '/validate'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
   updateJob(validated);
-  renderRestoreConfirm({...activeJob, ...validated, components: activeJob?.components || validated.components});
-  showStep('restore-confirm');
-  confirmGate = deferred();
-  await confirmGate.promise;
-  showStep('progress');
   setBackupProgress(0, 0, t('backup.phase.committing'), true);
   let applied;
   try {
@@ -456,25 +445,19 @@ async function validateAndApply(jobId) {
   else await pollJob('restore', jobId);
 }
 
-export function confirmDataRestore() {
-  if (!confirmGate) return;
-  const typed = (byId('dataRestoreConfirmInput')?.value || '').trim().toUpperCase();
-  if (typed !== 'RESTORE') { setBackupStatus(t('backup.confirm_word_required'), true); return; }
-  setBackupStatus('');
-  confirmGate.resolve(true);
-  confirmGate = null;
-}
-
 // --- cancel / close / attach ------------------------------------------
 
 export async function cancelDataBackup() {
   if (!activeJob?.job_id || TERMINAL.has(activeJob.state)) { closeBackupModal(); return; }
-  if (!window.confirm(t('backup.cancel_confirm'))) return;
+  if (activeJob.kind === 'restore' && restoreCancellationDisabled) {
+    setBackupStatus(t('backup.restore_cannot_cancel'), true);
+    return;
+  }
+  if (activeJob.kind !== 'restore' && !window.confirm(t('backup.cancel_confirm'))) return;
   try {
     cancelNativeTransfer(activeJob.job_id);
     const payload = await maintenanceRequest(jobPath(activeJob.kind, activeJob.job_id), {method: 'DELETE'});
     if (planGate) planGate.reject(new Error(t('backup.cancelled')));
-    if (confirmGate) confirmGate.reject(new Error(t('backup.cancelled')));
     updateJob(payload);
     if (TERMINAL.has(payload.state)) finishJob(payload);
   } catch (error) {
@@ -483,12 +466,11 @@ export async function cancelDataBackup() {
 }
 
 export function closeDataBackup() {
-  if (activeJob && !TERMINAL.has(activeJob.state) && !planGate && !confirmGate) {
-    setBackupStatus(t('backup.still_running'), true);
-    showStep('progress');
+  if (activeJob && !TERMINAL.has(activeJob.state) && !planGate) {
+    closeBackupModal();
     return;
   }
-  if (planGate || confirmGate) {
+  if (planGate) {
     // Leaving the wizard mid-plan abandons the upload: the device discards
     // staging when the job is deleted.
     cancelDataBackup();
@@ -537,8 +519,6 @@ export function handleHostTransferMessage(message) {
 export function initBackup() {
   const input = byId('dataRestoreInput');
   if (input) input.addEventListener('change', () => { const file = input.files?.[0]; input.value = ''; restoreFileSelected(file); });
-  const mode = byId('dataBackupMode');
-  if (mode) mode.addEventListener('change', renderBackupComponents);
   window.addEventListener('message', event => {
     let message;
     try { message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; } catch (_error) { return; }

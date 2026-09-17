@@ -397,8 +397,12 @@ func (s *Server) handleCreateRestoreJob(w http.ResponseWriter, r *http.Request) 
 		s.writeBackupError(w, &backupAPIError{Code: "archive_size_invalid", Status: http.StatusBadRequest, Message: "archive_size is outside the supported range"})
 		return
 	}
-	if request.Protection.Mode != "passphrase" || len(request.Protection.Passphrase) < 8 || len(request.Protection.Passphrase) > maxBackupPassphrase {
+	if request.PublicHeader.Protection.Algorithm != "sha256-chunked" && (request.Protection.Mode != "passphrase" || len(request.Protection.Passphrase) < 8 || len(request.Protection.Passphrase) > maxBackupPassphrase) {
 		s.writeBackupError(w, &backupAPIError{Code: "wrong_passphrase", Status: http.StatusBadRequest, Message: "a passphrase of 8 to 4096 bytes is required"})
+		return
+	}
+	if request.PublicHeader.Protection.Algorithm == "sha256-chunked" && ((request.Protection.Mode != "" && request.Protection.Mode != "none") || request.Protection.Passphrase != "") {
+		s.writeBackupError(w, &backupAPIError{Code: "unsupported_protection", Status: http.StatusBadRequest, Message: "this archive does not use a passphrase"})
 		return
 	}
 	// Validate the untrusted public header (including KDF limits) before any
@@ -416,9 +420,9 @@ func (s *Server) handleCreateRestoreJob(w http.ResponseWriter, r *http.Request) 
 		s.writeMaintenanceLocked(w)
 		return
 	}
-	// A rough pre-check: the archive itself is never stored, but staging needs
-	// at least the (compressed) archive size plus a safety margin.
-	if err := checkFreeSpace(s.options.BackupUserdataRoot, request.ArchiveSize); err != nil {
+	// The archive may mostly contain SD data and is never stored on userdata.
+	// Reserve only safety space here; manifest planning checks each target.
+	if err := checkFreeSpace(s.options.BackupUserdataRoot, 0); err != nil {
 		s.writeBackupError(w, &backupAPIError{Code: "insufficient_space", Status: http.StatusConflict, Message: sanitizeBackupError(err)})
 		return
 	}
