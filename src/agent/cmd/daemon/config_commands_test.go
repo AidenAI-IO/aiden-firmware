@@ -981,6 +981,23 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 			errorMsg:      "voice_model.api_key is required when input_mode=realtime",
 			expectedField: "voice_model.api_key",
 		},
+		{
+			// The Responses API knobs are rendered fields, and each one reports its
+			// own path first, so the recovery page can highlight it.
+			name:          "responses knob choice error",
+			errorMsg:      "invalid model.responses_context_management: bogus (expected empty, compaction, ark_context_edit, or disabled)",
+			expectedField: "model.responses_context_management",
+		},
+		{
+			name:          "responses knob range error",
+			errorMsg:      "model.responses_compact_threshold must be 0 or >= 1000, got 12",
+			expectedField: "model.responses_compact_threshold",
+		},
+		{
+			name:          "responses include list error",
+			errorMsg:      "model.responses_include entries must be non-empty",
+			expectedField: "model.responses_include",
+		},
 	}
 
 	for _, tc := range testCases {

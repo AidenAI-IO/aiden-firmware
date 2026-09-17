@@ -46,6 +46,10 @@ func ParseConfigValidationErrors(err error) []ConfigValidationError {
 		field = "model.model_max_output_tokens"
 	case strings.Contains(errMsg, "model.model"):
 		field = "model.model"
+	case strings.Contains(errMsg, "model.responses_"):
+		// Each Responses API knob reports its own path first, so the shared prefix
+		// is enough to name whichever one the page renders.
+		field = firstConfigField(errMsg, "model.responses_")
 	case strings.Contains(errMsg, "device.device_type"):
 		field = "device.device_type"
 	case strings.Contains(errMsg, "stt.provider"):
