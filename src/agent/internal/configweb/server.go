@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/backup"
 	"aiden-agent/internal/logging"
 	"aiden-agent/internal/wifiproxy"
 )
@@ -45,6 +46,13 @@ type Server struct {
 	wifiOpMu                 sync.Mutex
 	wifiMu                   sync.Mutex
 	wifiJob                  *wifiConnectionJob
+	maintenance              *maintenanceController
+	maintenanceSessions      *maintenanceSessionStore
+	backupJobs               *backupJobStore
+	restoreJobs              *restoreJobStore
+	services                 serviceController
+	mounts                   backup.MountController
+	restoreRecovery          []backup.RecoveryResult
 
 	restartMu               sync.Mutex
 	restartCommand          *exec.Cmd
@@ -77,6 +85,13 @@ func NewServer(options Options) (*Server, error) {
 		options: options,
 		sttTest: agent.NewSTTConfigTestAPI(options.AgentConfigPath),
 	}
+	s.services = &systemdServiceController{binary: options.SystemctlBinary}
+	s.maintenance = newMaintenanceController(options.MaintenanceLockPath)
+	s.maintenanceSessions = newMaintenanceSessionStore(options.USBAddress, options.USBSubnet)
+	s.maintenanceSessions.busy = s.maintenance.active
+	s.backupJobs = newBackupJobStore(s, options.BackupJobStateDir)
+	s.restoreJobs = newRestoreJobStore(s, options.BackupJobStateDir)
+	s.mounts = backup.SystemMountController{}
 	if _, err := os.Stat(options.AgentConfigPath); err == nil {
 		if err := s.initializeStorageManager(); err != nil {
 			return nil, err
@@ -102,6 +117,9 @@ func (s *Server) ListenAndServe() error {
 		}
 	}
 	s.logAgentRecoveryState()
+	// A Config Web crash mid-restore leaves staging or a half-committed
+	// transaction behind; finish or discard it before serving requests.
+	s.recoverRestoreTransactions()
 	logging.Infof("config_web", "config_web", "listening on %s", s.options.Addr())
 	err := s.http.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
@@ -111,6 +129,12 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.backupJobs != nil {
+		s.backupJobs.cancelAll()
+	}
+	if s.restoreJobs != nil {
+		s.restoreJobs.cancelAll()
+	}
 	err := s.http.Shutdown(ctx)
 	s.closeMu.Do(func() {
 		if storage := s.currentStorage(); storage != nil {

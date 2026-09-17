@@ -255,7 +255,24 @@ body{margin:0;background:#fff;color:#111827;font-family:-apple-system,BlinkMacSy
     align-items: stretch;
     flex-direction: column;
   }
-  .settings-action-row .button {
+.settings-action-row .button {
     width: 100%;
   }
 }
+.backup-modal-card{width:min(620px,100%);max-height:calc(100vh - 32px);overflow:auto}
+.backup-step{display:flex;flex-direction:column;gap:12px}
+#dataBackupModal [hidden],[id^="dataBackup"][hidden],[id^="dataRestore"][hidden]{display:none!important}
+.backup-components{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;max-height:260px;overflow:auto}
+.backup-component{display:flex;align-items:flex-start;gap:8px;padding:9px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:13px}
+.backup-component input{width:auto;margin-top:2px}
+.backup-component small{display:block;color:#6b7280;margin-top:2px}
+.backup-advanced{margin-top:8px}.backup-advanced summary{cursor:pointer;font-size:13px;color:#374151;margin-bottom:8px}
+.backup-warnings{margin:0;padding-left:18px;font-size:12px;color:#b45309}
+.backup-preline{white-space:pre-line}
+.field-hint.error{color:#991b1b}
+.progress-track{height:8px;margin-top:10px;border-radius:999px;background:#e5e7eb;overflow:hidden}
+.progress-bar{height:100%;width:0;background:#2563eb;transition:width .2s ease}
+.progress-bar.indeterminate{background:repeating-linear-gradient(90deg,#2563eb 0 12px,#93c5fd 12px 24px);animation:backup-stripes 1s linear infinite}
+@keyframes backup-stripes{from{background-position:0 0}to{background-position:24px 0}}
+body.maintenance-active .section-card .save-btn{pointer-events:none;opacity:.5}
+@media(max-width:560px){.backup-components{grid-template-columns:1fr}}

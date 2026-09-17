@@ -363,12 +363,25 @@
               <div class="card-head">
                 <h3 data-i18n="groups.data_sync">Backup &amp; Restore</h3>
               </div>
-              <p class="field-hint" data-i18n="storage.backup_help">Export the current Agent configuration, or restore it from a validated TOML backup.</p>
+              <p class="field-hint" data-i18n="storage.backup_help">Back up Agent data and settings to this computer or phone, or restore a validated Aiden backup.</p>
+              <div id="dataBackupMaintenanceBanner" class="banner" hidden></div>
               <div class="fw-actions storage-backup-actions">
-                <button id="configBackupExportBtn" class="button ghost" data-action="export-config-backup" data-i18n="storage.export_config">Export</button>
-                <button id="configBackupImportBtn" class="button" data-action="choose-config-backup" data-i18n="storage.import_config">Import</button>
-                <input id="configBackupInput" type="file" accept=".toml,application/toml,text/plain" hidden>
+                <button id="dataBackupExportBtn" class="button primary" data-action="create-data-backup" data-i18n="backup.create_button">Create backup</button>
+                <button id="dataRestoreImportBtn" class="button" data-action="choose-data-restore" data-i18n="backup.restore_button">Restore backup</button>
+                <input id="dataRestoreInput" type="file" accept=".aiden-backup,application/vnd.aiden.backup,application/octet-stream" hidden>
               </div>
+              <div id="dataBackupCardStatus" class="fw-health" aria-live="polite"></div>
+              <div id="dataBackupCardProgress" class="progress-track" hidden><div id="dataBackupCardProgressBar" class="progress-bar"></div></div>
+              <div id="dataBackupCardProgressText" class="field-hint"></div>
+              <details class="backup-advanced">
+                <summary data-i18n="storage.config_backup_advanced">Agent configuration only (.toml)</summary>
+                <p class="field-hint" data-i18n="storage.config_backup_help">Export or import only the Agent TOML configuration. Memory, sessions, identity and SD data are not included.</p>
+                <div class="fw-actions storage-backup-actions">
+                  <button id="configBackupExportBtn" class="button ghost" data-action="export-config-backup" data-i18n="storage.export_config">Export Agent config (.toml)</button>
+                  <button id="configBackupImportBtn" class="button ghost" data-action="choose-config-backup" data-i18n="storage.import_config">Import Agent config (.toml)</button>
+                  <input id="configBackupInput" type="file" accept=".toml,application/toml,text/plain" hidden>
+                </div>
+              </details>
             </div>
           </div>
         </div>
@@ -490,6 +503,59 @@
       <div class="modal-actions">
         <button class="button ghost" data-action="close-wifi-modal" data-i18n="action.cancel">Cancel</button>
         <button id="connectWifiBtn" class="button primary" data-action="connect-selected-wifi" data-i18n="action.connect">Connect</button>
+      </div>
+    </div>
+  </div>
+  <div id="dataBackupModal" class="modal" aria-hidden="true">
+    <div class="modal-card backup-modal-card">
+      <div class="card-head"><h3 id="dataBackupModalTitle">Backup and restore</h3><button class="button ghost" type="button" data-action="close-data-backup" data-i18n="backup.close">Close</button></div>
+      <div id="dataBackupStatus" class="fw-health" aria-live="polite"></div>
+
+      <div id="dataBackupStep-backup-intro" class="backup-step">
+        <p class="field-hint" data-i18n="backup.create_intro">The device stops the Agent, audio and Bluetooth while the archive is streamed to this computer or phone. The archive is never written to the SD card. Keep the recovery passphrase safe: without it the backup cannot be decrypted.</p>
+        <div class="field"><label for="dataBackupMode" data-i18n="backup.mode_label">Mode</label><select id="dataBackupMode"><option value="same_device" data-i18n="backup.mode.same_device">Same device (includes machine identity)</option><option value="portable" data-i18n="backup.mode.portable">Portable (no device identity)</option></select></div>
+        <div id="dataBackupComponents"></div>
+        <p id="dataBackupSdHint" class="field-hint"></p>
+        <div class="field"><label for="dataBackupPassphrase" data-i18n="backup.passphrase_label">Recovery passphrase (8+ characters)</label><input id="dataBackupPassphrase" type="password" autocomplete="new-password" minlength="8"></div>
+        <div class="field"><label for="dataBackupPassphraseConfirm" data-i18n="backup.passphrase_confirm_label">Confirm passphrase</label><input id="dataBackupPassphraseConfirm" type="password" autocomplete="new-password" minlength="8"></div>
+        <div class="modal-actions"><button class="button ghost" type="button" data-action="close-data-backup" data-i18n="backup.cancel">Cancel</button><button id="dataBackupStartBtn" class="button primary" type="button" data-action="start-data-backup" data-i18n="backup.create_start">Create backup</button></div>
+      </div>
+
+      <div id="dataBackupStep-restore-intro" class="backup-step" hidden>
+        <p id="dataRestoreFileInfo" class="field-hint"></p>
+        <p class="field-hint" data-i18n="backup.restore_intro">Enter the recovery passphrase used when the backup was created. The archive is uploaded block by block, verified and staged; nothing is replaced until you confirm the plan.</p>
+        <div class="field"><label for="dataRestorePassphrase" data-i18n="backup.passphrase_label_restore">Recovery passphrase</label><input id="dataRestorePassphrase" type="password" autocomplete="current-password" minlength="8"></div>
+        <div class="modal-actions"><button class="button ghost" type="button" data-action="close-data-backup" data-i18n="backup.cancel">Cancel</button><button id="dataRestoreStartBtn" class="button primary" type="button" data-action="start-data-restore" data-i18n="backup.restore_start">Upload and verify</button></div>
+      </div>
+
+      <div id="dataBackupStep-restore-plan" class="backup-step" hidden>
+        <p id="dataRestoreManifestSummary" class="field-hint backup-preline"></p>
+        <div id="dataRestoreComponents"></div>
+        <div id="dataRestoreSDRow" class="field" hidden><label for="dataRestoreSDStrategy" data-i18n="backup.sd_strategy_label">SD card handling</label><select id="dataRestoreSDStrategy"><option value="require_match" data-i18n="backup.sd_strategy.require_match">Require the original SD card</option><option value="allow_different" data-i18n="backup.sd_strategy.allow_different">Use the inserted SD card</option><option value="emmc_fallback" data-i18n="backup.sd_strategy.emmc_fallback">Restore SD audio to internal storage</option><option value="skip" data-i18n="backup.sd_strategy.skip">Skip SD data</option></select></div>
+        <div id="dataRestoreConflictRow" class="field" hidden><label><input id="dataRestoreConflictConfirm" type="checkbox"> <span data-i18n="backup.conflict_confirm">I understand that audio files differing between internal storage and SD are both restored</span></label></div>
+        <div id="dataRestoreIdentityRow" class="field" hidden><label><input id="dataRestoreIdentityConfirm" type="checkbox"> <span data-i18n="backup.identity_confirm">Restore the machine identity (machine-id, SSH host keys, Bluetooth pairings) even if the device cannot verify this backup belongs to it</span></label></div>
+        <div class="modal-actions"><button class="button ghost" type="button" data-action="cancel-data-backup" data-i18n="backup.cancel">Cancel</button><button id="dataRestorePlanBtn" class="button primary" type="button" data-action="continue-data-restore" data-i18n="backup.plan_continue">Continue upload</button></div>
+      </div>
+
+      <div id="dataBackupStep-restore-confirm" class="backup-step" hidden>
+        <p id="dataRestoreConfirmSummary" class="field-hint"></p>
+        <ul id="dataRestoreWarnings" class="backup-warnings" hidden></ul>
+        <p class="field-hint" data-i18n="backup.confirm_intro">The device now stops its services and replaces the selected data. If the machine identity is restored the device reboots automatically afterwards. Type RESTORE to continue.</p>
+        <div class="field"><input id="dataRestoreConfirmInput" type="text" autocomplete="off" autocapitalize="characters" placeholder="RESTORE"></div>
+        <div class="modal-actions"><button class="button ghost" type="button" data-action="cancel-data-backup" data-i18n="backup.cancel">Cancel</button><button id="dataRestoreApplyBtn" class="button primary" type="button" data-action="confirm-data-restore" data-i18n="backup.apply">Apply restore</button></div>
+      </div>
+
+      <div id="dataBackupStep-progress" class="backup-step" hidden>
+        <p id="dataBackupProgressText" class="field-hint"></p>
+        <div class="progress-track"><div id="dataBackupModalProgressBar" class="progress-bar"></div></div>
+        <p class="field-hint" data-i18n="backup.progress_hint">You can close this dialog; the operation keeps running on the device and this card shows its progress.</p>
+        <div class="modal-actions"><button id="dataBackupCancelBtn" class="button ghost" type="button" data-action="cancel-data-backup" data-i18n="backup.cancel_operation">Cancel operation</button><button class="button" type="button" data-action="close-data-backup" data-i18n="backup.hide">Hide</button></div>
+      </div>
+
+      <div id="dataBackupStep-done" class="backup-step" hidden>
+        <p id="dataBackupDoneText" class="field-hint backup-preline"></p>
+        <p id="dataBackupReconnectNotice" class="field-hint" hidden data-i18n="backup.reconnect_notice">The device is restarting to finish identity provisioning. Reconnect the USB link and reload this page once it is back.</p>
+        <div class="modal-actions"><button class="button primary" type="button" data-action="close-data-backup" data-i18n="backup.close">Close</button></div>
       </div>
     </div>
   </div>

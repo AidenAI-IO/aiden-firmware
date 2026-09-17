@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -122,6 +123,24 @@ type StorageStatus struct {
 	Migration     StorageMigrationJob `json:"migration"`
 }
 
+// StorageSnapshot identifies the exact mounted card covered by a backup or
+// restore operation. MountID detects an unmount/remount even when the same
+// device node and filesystem UUID reappear.
+type StorageSnapshot struct {
+	DevicePath     string `json:"device_path"`
+	MountPoint     string `json:"mount_point"`
+	FilesystemUUID string `json:"filesystem_uuid"`
+	MountID        string `json:"mount_id"`
+}
+
+// StorageSnapshotLease prevents migration, formatting, eject and storage
+// reconfiguration while a caller reads or stages SD-card data.
+type StorageSnapshotLease interface {
+	Snapshot() StorageSnapshot
+	Validate(context.Context) error
+	Release()
+}
+
 // StorageEvent notifies subscribers that the effective mode changed.
 type StorageEvent struct {
 	EffectiveMode StorageMode `json:"effective_mode"`
@@ -182,6 +201,8 @@ type StorageManager struct {
 	migrationCancel  chan struct{} // non-nil while a migration run is active
 	migrationDone    chan struct{} // closed when the migration worker exits
 	migrationRetryAt time.Time     // cooldown after a failed/exhausted run
+	snapshotLease    *storageSnapshotLease
+	snapshotSequence uint64
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -272,6 +293,12 @@ func (m *StorageManager) Reconfigure(cfg StorageConfig) error {
 	if m == nil || m.mirrorOnly || m.ops == nil {
 		return fmt.Errorf("storage hardware is owned by Config Web")
 	}
+	m.mu.Lock()
+	if m.snapshotLease != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("storage snapshot lease is active")
+	}
+	m.mu.Unlock()
 	for {
 		if err := m.cancelMigrationAndWait("storage reconfiguration"); err != nil {
 			return err
@@ -284,6 +311,10 @@ func (m *StorageManager) Reconfigure(cfg StorageConfig) error {
 			break
 		}
 		m.mu.Unlock()
+	}
+	if m.snapshotLease != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("storage snapshot lease is active")
 	}
 
 	oldMountPoint := m.cfg.MountPointOrDefault()
@@ -365,6 +396,12 @@ func (m *StorageManager) SafeEject() error {
 	if m == nil || m.mirrorOnly {
 		return fmt.Errorf("storage hardware is owned by Config Web")
 	}
+	m.mu.Lock()
+	if m.snapshotLease != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("storage snapshot lease is active")
+	}
+	m.mu.Unlock()
 	// Ejecting invalidates the migration target; stop the worker first.
 	if err := m.cancelMigrationAndWait("eject"); err != nil {
 		return err
@@ -373,6 +410,9 @@ func (m *StorageManager) SafeEject() error {
 	defer m.mu.Unlock()
 	if m.formatJob.Status == StorageFormatRunning {
 		return fmt.Errorf("cannot eject while a format job is running")
+	}
+	if m.snapshotLease != nil {
+		return fmt.Errorf("storage snapshot lease is active")
 	}
 	// A mount attempt in flight has not set m.card.Mounted yet, so reporting
 	// "no mounted card" here would be wrong and the mount would land right
@@ -400,6 +440,12 @@ func (m *StorageManager) StartFormat(fs, confirm string) error {
 	if m == nil || m.mirrorOnly {
 		return fmt.Errorf("storage hardware is owned by Config Web")
 	}
+	m.mu.Lock()
+	if m.snapshotLease != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("storage snapshot lease is active")
+	}
+	m.mu.Unlock()
 	if confirm != StorageFormatConfirmToken {
 		return fmt.Errorf("format not confirmed")
 	}
@@ -417,6 +463,9 @@ func (m *StorageManager) StartFormat(fs, confirm string) error {
 	defer m.mu.Unlock()
 	if m.formatJob.Status == StorageFormatRunning {
 		return fmt.Errorf("a format job is already running")
+	}
+	if m.snapshotLease != nil {
+		return fmt.Errorf("storage snapshot lease is active")
 	}
 	// A mount attempt holds the card with m.mu released, and m.card.Mounted is
 	// still false until it lands — so without this the unmount guard below is
@@ -486,6 +535,7 @@ func (m *StorageManager) runFormatJob(fs string) {
 // mounted and eMMC free space fell below the start watermark. Caller holds m.mu.
 func (m *StorageManager) maybeStartMigrationLocked() {
 	if !m.card.Mounted ||
+		m.snapshotLease != nil ||
 		m.formatJob.Status == StorageFormatRunning ||
 		m.migration.Status == StorageFormatRunning {
 		return
@@ -509,6 +559,139 @@ func (m *StorageManager) maybeStartMigrationLocked() {
 	m.logf("[storage] eMMC free space %.1f%% is below the %d%% watermark; migrating older data to SD until %d%%",
 		freePct, startPct, stopPct)
 	go m.runMigration(m.migrationCancel, m.migrationDone, stopPct)
+}
+
+type storageSnapshotIdentityOps interface {
+	SnapshotIdentity(device, mountPoint string) (filesystemUUID, mountID string, err error)
+}
+
+type storageSnapshotLease struct {
+	manager  *StorageManager
+	snapshot StorageSnapshot
+	sequence uint64
+	once     sync.Once
+}
+
+func (l *storageSnapshotLease) Snapshot() StorageSnapshot {
+	if l == nil {
+		return StorageSnapshot{}
+	}
+	return l.snapshot
+}
+
+func (l *storageSnapshotLease) Validate(ctx context.Context) error {
+	if l == nil || l.manager == nil {
+		return fmt.Errorf("storage snapshot lease is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m := l.manager
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.snapshotLease != l || l.sequence != m.snapshotSequence {
+		return fmt.Errorf("storage snapshot lease is no longer active")
+	}
+	if !m.card.Mounted || m.card.Device != l.snapshot.DevicePath ||
+		m.cfg.MountPointOrDefault() != l.snapshot.MountPoint ||
+		!m.ops.Healthy(l.snapshot.MountPoint) {
+		return fmt.Errorf("SD card changed or became unavailable during snapshot")
+	}
+	identityOps, ok := m.ops.(storageSnapshotIdentityOps)
+	if !ok {
+		return fmt.Errorf("storage backend cannot verify snapshot identity")
+	}
+	uuid, mountID, err := identityOps.SnapshotIdentity(l.snapshot.DevicePath, l.snapshot.MountPoint)
+	if err != nil {
+		return fmt.Errorf("verify SD snapshot identity: %w", err)
+	}
+	if uuid != l.snapshot.FilesystemUUID || mountID != l.snapshot.MountID {
+		return fmt.Errorf("SD card filesystem or mount changed during snapshot")
+	}
+	return nil
+}
+
+func (l *storageSnapshotLease) Release() {
+	if l == nil || l.manager == nil {
+		return
+	}
+	l.once.Do(func() {
+		m := l.manager
+		m.mu.Lock()
+		if m.snapshotLease == l {
+			m.snapshotLease = nil
+			m.writeStateFileLocked()
+		}
+		m.mu.Unlock()
+		// Reconcile immediately so a migration delayed by the lease need not wait
+		// for the next polling interval. Run it synchronously: a detached
+		// goroutine could still be writing the state file after the caller
+		// (or a test's temporary directory) is gone.
+		select {
+		case <-m.stop:
+			return
+		default:
+		}
+		m.tick()
+	})
+}
+
+// AcquireSnapshotLease stops any active migration and pins the current SD
+// mount identity until Release. It never mounts a missing card implicitly.
+func (m *StorageManager) AcquireSnapshotLease(ctx context.Context) (StorageSnapshotLease, error) {
+	if m == nil || m.mirrorOnly || m.ops == nil {
+		return nil, fmt.Errorf("storage hardware is owned by Config Web")
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := m.cancelMigrationAndWait("snapshot lease"); err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		if m.migrationDone == nil {
+			break
+		}
+		m.mu.Unlock()
+	}
+	defer m.mu.Unlock()
+	if m.snapshotLease != nil {
+		return nil, fmt.Errorf("storage snapshot lease is already active")
+	}
+	if m.formatJob.Status == StorageFormatRunning {
+		return nil, fmt.Errorf("cannot snapshot while a format job is running")
+	}
+	if m.mounting {
+		return nil, fmt.Errorf("cannot snapshot while a mount attempt is in progress")
+	}
+	if !m.card.Present || !m.card.Mounted || !m.ops.Healthy(m.cfg.MountPointOrDefault()) {
+		return nil, fmt.Errorf("no readable and writable SD card is mounted")
+	}
+	identityOps, ok := m.ops.(storageSnapshotIdentityOps)
+	if !ok {
+		return nil, fmt.Errorf("storage backend cannot identify snapshots")
+	}
+	mountPoint := m.cfg.MountPointOrDefault()
+	uuid, mountID, err := identityOps.SnapshotIdentity(m.card.Device, mountPoint)
+	if err != nil {
+		return nil, fmt.Errorf("identify SD snapshot: %w", err)
+	}
+	if strings.TrimSpace(uuid) == "" || strings.TrimSpace(mountID) == "" {
+		return nil, fmt.Errorf("SD snapshot UUID or mount ID is unavailable")
+	}
+	m.snapshotSequence++
+	lease := &storageSnapshotLease{
+		manager: m,
+		snapshot: StorageSnapshot{
+			DevicePath: m.card.Device, MountPoint: mountPoint,
+			FilesystemUUID: uuid, MountID: mountID,
+		},
+		sequence: m.snapshotSequence,
+	}
+	m.snapshotLease = lease
+	m.writeStateFileLocked()
+	return lease, nil
 }
 
 func (m *StorageManager) emmcFreePct() (float64, error) {
@@ -1212,6 +1395,7 @@ func (m *StorageManager) writeStateFileLocked() {
 	writeKV("MIGRATE_ERROR", strings.ReplaceAll(m.migration.Error, "\n", " "))
 	writeKV("MIGRATE_MOVED_FILES", fmt.Sprintf("%d", m.migration.MovedFiles))
 	writeKV("MIGRATE_MOVED_BYTES", fmt.Sprintf("%d", m.migration.MovedBytes))
+	writeKV("SNAPSHOT_LEASE", bool01(m.snapshotLease != nil))
 
 	tmp := m.statePath + ".tmp"
 	err := os.MkdirAll(filepath.Dir(m.statePath), 0o755)
@@ -1390,6 +1574,32 @@ func (o *realStorageOps) Healthy(mountPoint string) bool {
 	}
 	var st syscall.Statfs_t
 	return syscall.Statfs(mountPoint, &st) == nil
+}
+
+func (o *realStorageOps) SnapshotIdentity(device, mountPoint string) (string, string, error) {
+	output, err := exec.Command("blkid", "-s", "UUID", "-o", "value", device).CombinedOutput()
+	if err != nil {
+		return "", "", fmt.Errorf("blkid %s: %w: %s", device, err, strings.TrimSpace(string(output)))
+	}
+	uuid := strings.TrimSpace(string(output))
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return "", "", err
+	}
+	cleanMount := filepath.Clean(mountPoint)
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 6 || filepath.Clean(unescapeMountInfoField(fields[4])) != cleanMount {
+			continue
+		}
+		return uuid, fields[0] + ":" + fields[2], nil
+	}
+	return "", "", fmt.Errorf("mount point %s is absent from mountinfo", mountPoint)
+}
+
+func unescapeMountInfoField(value string) string {
+	replacer := strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
+	return replacer.Replace(value)
 }
 
 func (o *realStorageOps) SpaceInfo(path string) (int64, int64, error) {
