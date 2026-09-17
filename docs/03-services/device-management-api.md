@@ -57,8 +57,12 @@ test, or storage-management handlers on port 8080.
 `GET /api/config` and `GET /api/device/snapshot` include `config_valid` and a
 `config_errors` array of `{field, message}` objects. Semantic validation errors
 do not make these endpoints unavailable; they identify fields the recovery UI
-must highlight. File read and decode failures still return an unavailable
-response because Config Web cannot safely construct an editable configuration.
+must highlight. A field the page does not render, or a message no validator
+attributed to one, reports an empty `field` and is surfaced in the details
+instead. An `agent.toml` that cannot be read or decoded returns an unavailable
+response, because there is no editable configuration to construct. A file that
+is missing altogether is reported as an invalid configuration rather than as
+unavailable: the page renders the built-in defaults, and saving creates the file.
 
 `GET /api/storage/status` and the `storage` field of
 `GET /api/device/snapshot` share the following response shape:

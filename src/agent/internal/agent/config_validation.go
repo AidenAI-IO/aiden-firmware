@@ -24,9 +24,13 @@ func ParseConfigValidationErrors(err error) []ConfigValidationError {
 		field = "model.provider"
 	case strings.Contains(errMsg, "model: model is required"):
 		field = "model.model"
-	case strings.Contains(errMsg, "locale"):
+	// Locale and timezone are matched at the position their validator puts them
+	// in, not as bare words: several validators echo the offending value, so
+	// `invalid search.provider: timezone (...)` must stay a search.provider error
+	// rather than being claimed by the earlier timezone case.
+	case strings.Contains(errMsg, "invalid locale:"):
 		field = "locale"
-	case strings.Contains(errMsg, "timezone"):
+	case strings.Contains(errMsg, "unsupported timezone:"), strings.Contains(errMsg, "load timezone "):
 		field = "timezone"
 	case strings.Contains(errMsg, "search.provider"), strings.Contains(errMsg, "search provider"):
 		field = "search.provider"

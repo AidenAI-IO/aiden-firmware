@@ -246,7 +246,7 @@ input_mode = "stt"
 	}
 	defer server.currentStorage().Stop()
 
-	state := func() (bool, string) {
+	state := func() (bool, agent.ConfigValidationError) {
 		t.Helper()
 		resp := httptest.NewRecorder()
 		server.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/device/snapshot", nil))
@@ -261,16 +261,16 @@ input_mode = "stt"
 			t.Fatal(err)
 		}
 		if payload.ConfigValid {
-			return true, ""
+			return true, agent.ConfigValidationError{}
 		}
 		if len(payload.ConfigErrors) != 1 {
 			t.Fatalf("invalid config reported errors=%+v", payload.ConfigErrors)
 		}
-		return false, payload.ConfigErrors[0].Field
+		return false, payload.ConfigErrors[0]
 	}
 
-	if valid, field := state(); valid || field != "stt.provider" {
-		t.Fatalf("valid=%v field=%q, want the missing stt provider to be flagged", valid, field)
+	if valid, failure := state(); valid || failure.Field != "stt.provider" {
+		t.Fatalf("valid=%v error=%+v, want the missing stt provider to be flagged", valid, failure)
 	}
 
 	// What a successful save of the highlighted field leaves on disk.
@@ -281,8 +281,8 @@ provider = "openai-whisper"
 	if err := os.WriteFile(options.AgentConfigPath, []byte(repaired), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if valid, field := state(); !valid {
-		t.Fatalf("repaired config still reported invalid at %q", field)
+	if valid, failure := state(); !valid {
+		t.Fatalf("repaired config still reported invalid: %+v", failure)
 	}
 
 	// A later hand edit has to reach the page on the next request as well.
@@ -292,8 +292,19 @@ locale = "fr-FR"
 `), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if valid, field := state(); valid || field != "locale" {
-		t.Fatalf("valid=%v field=%q, want the new locale error after the file changed", valid, field)
+	if valid, failure := state(); valid || failure.Field != "locale" {
+		t.Fatalf("valid=%v error=%+v, want the new locale error after the file changed", valid, failure)
+	}
+
+	// A missing file is a state the page can repair: it renders the built-in
+	// defaults and saving creates the file. So it is reported as an invalid
+	// configuration naming the file, not as an unavailable response.
+	if err := os.Remove(options.AgentConfigPath); err != nil {
+		t.Fatal(err)
+	}
+	if valid, failure := state(); valid || failure.Field != "" ||
+		!strings.Contains(failure.Message, filepath.Base(options.AgentConfigPath)) {
+		t.Fatalf("valid=%v error=%+v, want a fieldless error naming the missing file", valid, failure)
 	}
 }
 

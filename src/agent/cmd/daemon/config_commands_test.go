@@ -938,6 +938,33 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 			expectedField: "search.provider",
 		},
 		{
+			// Validators echo the offending value, so a value that happens to spell
+			// a field name must not steal that field's highlight.
+			name:          "search provider value that names another field",
+			errorMsg:      "invalid search.provider: timezone (expected duckduckgo, brave, or tavily)",
+			expectedField: "search.provider",
+		},
+		{
+			name:          "api mode value that names another field",
+			errorMsg:      "invalid model.api_mode: timezone (expected chat_completions, responses, or responses_stateful)",
+			expectedField: "model.api_mode",
+		},
+		{
+			name:          "invalid locale",
+			errorMsg:      "invalid locale: fr-FR (expected zh-CN or en-US)",
+			expectedField: "locale",
+		},
+		{
+			name:          "unsupported timezone",
+			errorMsg:      "unsupported timezone: Mars/Olympus",
+			expectedField: "timezone",
+		},
+		{
+			name:          "unloadable timezone",
+			errorMsg:      "load timezone Mars/Olympus: unknown time zone Mars/Olympus",
+			expectedField: "timezone",
+		},
+		{
 			name:          "model provider error",
 			errorMsg:      "model.provider is required",
 			expectedField: "model.provider",
