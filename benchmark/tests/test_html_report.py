@@ -89,7 +89,62 @@ def test_generate_report_marks_timeout_as_fail_and_escapes_drawer_chips(tmp_path
     assert "'<span class=\"chip\">' + esc(t.category)" in html
     assert "'<span class=\"chip\">' + esc(t.status)" in html
     assert "esc(String(t.tool_calls_count))" in html
-    assert "esc(String(t.wall_ms))" in html
+    assert "formatTime(t.wall_ms)" in html
+
+
+def test_generate_report_shows_capability_metrics(tmp_path: Path):
+    run_dir = tmp_path / "2026-05-28_091421"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "2026-05-28_091421",
+                "suite_path": "suite.json",
+                "totals": {"tasks": 1, "passed": 1, "failed": 0, "skipped": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "category": "multi_step",
+                "status": "passed",
+                "rubric_pass_count": 1,
+                "rubric_total": 1,
+                "metrics": {"tool_calls": 1, "wall_ms": 9},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "metrics_k": 2,
+                "aggregate": {
+                    "metrics_k": 2,
+                    "pass_at_1": {"value": 0.5, "eligible_tasks": 1, "total_tasks": 2},
+                    "pass_at_k": {"value": 1.0, "eligible_tasks": 2, "total_tasks": 2},
+                    "pass_pow_k": {"value": 0.5, "eligible_tasks": 1, "total_tasks": 2},
+                    "oracle_best_score_at_k": {"value": 0.75, "eligible_tasks": 2},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    html = generate_report_html(run_dir)
+
+    assert "Capability Metrics" in html
+    assert "Pass@1" in html and "50.0%" in html
+    assert "Pass@k" in html and "100.0%" in html
+    assert "Pass^k" in html and "50.0%" in html
+    assert "Oracle best score@k" in html and "0.75" in html
+    assert "not executable best-of-k selection" in html
+    # Check that metric help text is included
+    assert "Success rate of first attempt per task" in html
 
 
 def test_generate_report_includes_tool_hard_assertion_failures(tmp_path: Path):

@@ -60,6 +60,24 @@ def _safe_child_path(root: Path, *parts: str) -> Path | None:
     return candidate
 
 
+def _fmt_time_ms(ms: float | int | str | None) -> str:
+    """Format milliseconds as a human-readable time string."""
+    try:
+        ms_num = float(ms) if ms is not None else 0
+    except (TypeError, ValueError):
+        # If conversion fails, return the value as-is (might be malicious HTML that will be escaped)
+        return str(ms) + "ms" if ms else "0ms"
+
+    if ms_num < 1000:
+        return f"{int(ms_num)}ms"
+    sec = ms_num / 1000
+    if sec < 60:
+        return f"{sec:.1f}s"
+    min_part = int(sec // 60)
+    sec_part = sec % 60
+    return f"{min_part}m{sec_part:.1f}s"
+
+
 def _read_excerpt(path: Path, max_chars: int = 6000) -> str:
     try:
         return path.read_text("utf-8", errors="replace")[:max_chars]
@@ -162,6 +180,285 @@ def _analysis_html(run_dir: Path) -> str:
 
 def analysis_html_for_run_dir(run_dir: Path) -> str:
     return _analysis_html(run_dir)
+
+
+def _capability_metrics_html(run_dir: Path) -> str:
+    """Render the P0 capability metrics when the run has a metrics artifact."""
+    metrics_path = run_dir / "metrics.json"
+    try:
+        payload = json.loads(metrics_path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    aggregate = payload.get("aggregate") if isinstance(payload, dict) else None
+    if not isinstance(aggregate, dict):
+        return ""
+
+    k = aggregate.get("metrics_k") or payload.get("metrics_k") or 1
+
+    def rate(metric_name: str) -> tuple[str, str]:
+        metric = aggregate.get(metric_name)
+        if not isinstance(metric, dict) or metric.get("value") is None:
+            return "n/a", "coverage n/a"
+        value = float(metric["value"]) * 100
+        value_text = f"{value:.1f}%"
+        eligible = metric.get("eligible_tasks")
+        total = metric.get("total_tasks")
+        coverage = (
+            f"coverage {eligible}/{total} tasks"
+            if eligible is not None and total is not None
+            else "coverage n/a"
+        )
+        return value_text, coverage
+
+    def fmt_num(value: Any) -> str:
+        if value is None:
+            return "n/a"
+        if isinstance(value, float):
+            return f"{value:.1f}" if value >= 10 else f"{value:.2f}"
+        return str(value)
+
+    def fmt_time(stat_dict: dict[str, Any] | None) -> str:
+        """Format time from milliseconds to seconds with decimal places."""
+        if not stat_dict or stat_dict.get("p50") is None:
+            return "n/a"
+        ms = stat_dict['p50']
+        sec = ms / 1000.0
+        if sec < 1:
+            return f"{sec:.2f}s"
+        elif sec < 10:
+            return f"{sec:.2f}s"
+        else:
+            return f"{sec:.1f}s"
+
+    pass_at_1, pass_at_1_detail = rate("pass_at_1")
+    pass_at_k, pass_at_k_detail = rate("pass_at_k")
+    pass_pow_k, pass_pow_k_detail = rate("pass_pow_k")
+    best = aggregate.get("oracle_best_score_at_k")
+    if isinstance(best, dict) and best.get("value") is not None:
+        best_value = f"{float(best['value']):.2f}"
+        best_detail = f"{best.get('eligible_tasks', 0)} eligible tasks"
+    else:
+        best_value = "n/a"
+        best_detail = "diagnostic only"
+
+    # Attempt success rate
+    attempt_rate = aggregate.get("attempt_success_rate", {})
+    if isinstance(attempt_rate, dict) and attempt_rate.get("value") is not None:
+        attempt_value = f"{float(attempt_rate['value']) * 100:.1f}%"
+        attempt_detail = f"{attempt_rate.get('successes', 0)}/{attempt_rate.get('eligible_attempts', 0)} eligible attempts"
+    else:
+        attempt_value = "n/a"
+        attempt_detail = "n/a"
+
+    # Cost to first success
+    cost_to_first = aggregate.get("cost_to_first_success", {})
+    tokens_p50 = (cost_to_first.get("total_tokens") or {}).get("p50")
+    wall_p50 = (cost_to_first.get("task_wall_ms") or {}).get("p50")
+    cost_p50 = (cost_to_first.get("cost_usd") or {}).get("p50")
+
+    tokens_str = fmt_num(tokens_p50) if tokens_p50 else "n/a"
+    wall_str = f"{wall_p50 / 1000:.2f}s" if wall_p50 else "n/a"
+    cost_str = f"${cost_p50:.4f}" if cost_p50 else "n/a"
+
+    # Efficiency metrics
+    tool_calls_p50 = fmt_num((aggregate.get("tool_calls") or {}).get("p50"))
+    llm_calls_p50 = fmt_num((aggregate.get("llm_calls") or {}).get("p50"))
+    task_wall_p50 = fmt_time(aggregate.get("task_wall_ms"))
+    llm_time_p50 = fmt_time(aggregate.get("llm_time_ms"))
+    device_exec_p50 = fmt_time(aggregate.get("device_execution_ms"))
+    screenshot_p50 = fmt_time(aggregate.get("screenshot_capture_ms"))
+
+    input_tokens = fmt_num((aggregate.get("input_tokens") or {}).get("sum"))
+    output_tokens = fmt_num((aggregate.get("output_tokens") or {}).get("sum"))
+
+    # Failure analysis
+    failure_classes = aggregate.get("failure_classes", {})
+    failure_stages = aggregate.get("failure_stages", {})
+    failure_coverage = aggregate.get("failure_stage_coverage", {})
+
+    failure_classes_html = ""
+    if failure_classes:
+        rows = "".join(f"<tr><td>{_esc(k)}</td><td>{_esc(str(v))}</td></tr>"
+                      for k, v in sorted(failure_classes.items()))
+        failure_classes_html = f"""
+        <div class="metric-section">
+          <h3>Failure Classes</h3>
+          <p class="metric-desc">Categorization of failed attempts by root cause</p>
+          <table class="metric-table">
+            <thead><tr><th>Class</th><th>Count</th></tr></thead>
+            <tbody>{rows}</tbody>
+          </table>
+        </div>
+        """
+
+    failure_stages_html = ""
+    if failure_stages:
+        classified = failure_coverage.get("classified", 0)
+        eligible = failure_coverage.get("eligible_failures", 0)
+        rows = "".join(f"<tr><td>{_esc(k)}</td><td>{_esc(str(v))}</td></tr>"
+                      for k, v in sorted(failure_stages.items()))
+        failure_stages_html = f"""
+        <div class="metric-section">
+          <h3>First Failure Stages</h3>
+          <p class="metric-desc">Where agent failures occurred in the task execution flow (classified: {classified}/{eligible})</p>
+          <table class="metric-table">
+            <thead><tr><th>Stage</th><th>Count</th></tr></thead>
+            <tbody>{rows}</tbody>
+          </table>
+        </div>
+        """
+
+    # Per-task table
+    per_task_data = aggregate.get("per_task", {})
+    if per_task_data:
+        per_task_rows = []
+        for task_id, task_metrics in sorted(per_task_data.items(), key=lambda x: x[1].get("pass_rate", 0)):
+            pass_rate = task_metrics.get("pass_rate", 0.0)
+            passed = task_metrics.get("passed", 0)
+            failed = task_metrics.get("failed", 0)
+            eligible = task_metrics.get("eligible_attempts", 0)
+            first_passed = task_metrics.get("first_attempt_passed")
+            best_score = task_metrics.get("best_quality_score")
+            avg_score = task_metrics.get("avg_quality_score")
+            avg_wall = task_metrics.get("avg_wall_ms")
+
+            pass_rate_str = f"{pass_rate * 100:.1f}%"
+            status_str = f"{passed}/{eligible}"
+            first_icon = "✓" if first_passed is True else ("✗" if first_passed is False else "-")
+            score_str = f"{avg_score:.2f}" if avg_score is not None else "n/a"
+            best_score_str = f"{best_score:.2f}" if best_score is not None else "n/a"
+            wall_str = f"{avg_wall / 1000:.1f}s" if avg_wall is not None else "n/a"
+
+            status_class = "passed" if pass_rate == 1.0 else ("failed" if pass_rate == 0.0 else "partial")
+
+            per_task_rows.append(f"""
+              <tr class="task-row-{status_class}">
+                <td class="task-id">{_esc(task_id)}</td>
+                <td class="text-center">{_esc(status_str)}</td>
+                <td class="text-center">{_esc(pass_rate_str)}</td>
+                <td class="text-center">{first_icon}</td>
+                <td class="text-right">{_esc(score_str)}</td>
+                <td class="text-right">{_esc(best_score_str)}</td>
+                <td class="text-right">{_esc(wall_str)}</td>
+              </tr>
+            """)
+
+        per_task_section = f"""
+<section class="per-task-results">
+  <h2>Per-Task Results</h2>
+  <p class="section-desc">Individual task performance (sorted by pass rate, lowest first)</p>
+  <div class="table-wrap">
+    <table class="per-task-table">
+      <thead>
+        <tr>
+          <th>Task ID</th>
+          <th class="text-center">Status</th>
+          <th class="text-center">Pass Rate</th>
+          <th class="text-center">1st✓</th>
+          <th class="text-right">Avg Score</th>
+          <th class="text-right">Best Score</th>
+          <th class="text-right">Avg Time</th>
+        </tr>
+      </thead>
+      <tbody>
+        {''.join(per_task_rows)}
+      </tbody>
+    </table>
+  </div>
+</section>
+        """
+    else:
+        per_task_section = ""
+
+    return f"""
+<section class="capability-metrics">
+  <div class="capability-head">
+    <div>
+      <h2>Capability Metrics</h2>
+      <p>Fixed-k evaluation (k={_esc(str(k))}) — measures task success rates with Wilson 95% confidence intervals</p>
+    </div>
+    <span class="capability-note">Oracle best score@k is diagnostic; it is not executable best-of-k selection.</span>
+  </div>
+  <div class="capability-grid">
+    <article class="capability-card">
+      <div class="label">Pass@1</div>
+      <div class="value">{_esc(pass_at_1)}</div>
+      <div class="detail">{_esc(pass_at_1_detail)}</div>
+      <div class="metric-help">Success rate of first attempt per task</div>
+    </article>
+    <article class="capability-card">
+      <div class="label">Pass@k</div>
+      <div class="value">{_esc(pass_at_k)}</div>
+      <div class="detail">{_esc(pass_at_k_detail)}</div>
+      <div class="metric-help">Prob. of success in k attempts (unbiased)</div>
+    </article>
+    <article class="capability-card">
+      <div class="label">Pass^k</div>
+      <div class="value">{_esc(pass_pow_k)}</div>
+      <div class="detail">{_esc(pass_pow_k_detail)}</div>
+      <div class="metric-help">Empirical k-attempt success rate</div>
+    </article>
+    <article class="capability-card">
+      <div class="label">Oracle best score@k</div>
+      <div class="value">{_esc(best_value)}</div>
+      <div class="detail">{_esc(best_detail)}</div>
+      <div class="metric-help">Best rubric score across k attempts</div>
+    </article>
+    <article class="capability-card">
+      <div class="label">Attempt Success Rate</div>
+      <div class="value">{_esc(attempt_value)}</div>
+      <div class="detail">{_esc(attempt_detail)}</div>
+      <div class="metric-help">Success rate across all eligible attempts</div>
+    </article>
+  </div>
+</section>
+
+<section class="efficiency-metrics">
+  <h2>Efficiency Metrics</h2>
+  <p class="section-desc">Performance and cost statistics (p50 = median across eligible attempts)</p>
+
+  <div class="efficiency-grid">
+    <div class="efficiency-group">
+      <h3>Execution</h3>
+      <div class="metric-row"><span class="metric-label">Task wall time (p50)</span><span class="metric-value">{_esc(task_wall_p50)}</span></div>
+      <div class="metric-row"><span class="metric-label">Tool calls (p50)</span><span class="metric-value">{_esc(tool_calls_p50)}</span></div>
+      <div class="metric-row"><span class="metric-label">LLM calls (p50)</span><span class="metric-value">{_esc(llm_calls_p50)}</span></div>
+      <div class="metric-row"><span class="metric-label">Screenshot capture (p50)</span><span class="metric-value">{_esc(screenshot_p50)}</span></div>
+    </div>
+
+    <div class="efficiency-group">
+      <h3>Latency</h3>
+      <div class="metric-row"><span class="metric-label">LLM time (p50)</span><span class="metric-value">{_esc(llm_time_p50)}</span></div>
+      <div class="metric-row"><span class="metric-label">Device exec (p50)</span><span class="metric-value">{_esc(device_exec_p50)}</span></div>
+    </div>
+
+    <div class="efficiency-group">
+      <h3>Tokens</h3>
+      <div class="metric-row"><span class="metric-label">Input tokens (total)</span><span class="metric-value">{_esc(input_tokens)}</span></div>
+      <div class="metric-row"><span class="metric-label">Output tokens (total)</span><span class="metric-value">{_esc(output_tokens)}</span></div>
+    </div>
+
+    <div class="efficiency-group">
+      <h3>Cost to First Success</h3>
+      <div class="metric-row"><span class="metric-label">Tokens (p50)</span><span class="metric-value">{_esc(tokens_str)}</span></div>
+      <div class="metric-row"><span class="metric-label">Wall time (p50)</span><span class="metric-value">{_esc(wall_str)}</span></div>
+      <div class="metric-row"><span class="metric-label">Cost (p50)</span><span class="metric-value">{_esc(cost_str)}</span></div>
+      <div class="metric-help">Average cost to achieve first success per task</div>
+    </div>
+  </div>
+</section>
+
+{per_task_section}
+
+<section class="failure-analysis">
+  <h2>Failure Analysis</h2>
+  <p class="section-desc">Breakdown of failures by classification and execution stage</p>
+  <div class="failure-grid">
+    {failure_classes_html}
+    {failure_stages_html}
+  </div>
+</section>
+"""
 
 
 def _full_trace_payload(task_dir: Path | None, history: list[dict[str, Any]]) -> dict[str, Any]:
@@ -362,7 +659,7 @@ def generate_report_html(run_dir: Path) -> str:
   <td><span class="badge {badge_cls}">{badge_label}</span></td>
   <td class="mono">{t['rubric_pass']}/{t['rubric_total']}</td>
   <td class="mono">{t['tool_calls_count']}</td>
-  <td class="mono">{t['wall_ms']}ms</td>
+  <td class="mono">{_fmt_time_ms(t['wall_ms'])}</td>
 </tr>\n"""
 
     return HTML_TEMPLATE.format(
@@ -372,6 +669,7 @@ def generate_report_html(run_dir: Path) -> str:
         rows_html=rows_html, tasks_json=tasks_json,
         completed=completed, timeout=timeout, judge_error=judge_error,
         pass_pct=pass_pct, fail_pct=fail_pct, skip_pct=skip_pct,
+        capability_metrics_html=_capability_metrics_html(run_dir),
         analysis_html=_analysis_html(run_dir),
     )
 
@@ -462,6 +760,49 @@ body {{ min-height: 100vh; background: linear-gradient(to bottom, var(--surface)
 .progress-legend i.pass {{ background: oklch(58% 0.16 145) }}
 .progress-legend i.fail {{ background: oklch(60% 0.18 28) }}
 .progress-legend i.skip {{ background: oklch(70% 0.14 75) }}
+.capability-metrics {{ border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 14px 16px; margin-bottom: 20px }}
+.capability-head {{ display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin-bottom: 12px }}
+.capability-head h2 {{ font-size: 14px; margin-bottom: 4px }}
+.capability-head p,.capability-note {{ color: var(--muted); font-size: 12px }}
+.capability-note {{ text-align: right }}
+.capability-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px }}
+.capability-card {{ border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; background: color-mix(in oklch, var(--bg) 48%, white) }}
+.capability-card .label {{ color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase }}
+.capability-card .value {{ margin-top: 7px; font-family: var(--font-mono); font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums }}
+.capability-card .detail {{ margin-top: 5px; color: var(--muted); font-size: 11px }}
+.capability-card .metric-help {{ margin-top: 6px; color: var(--muted); font-size: 10px; font-style: italic; border-top: 1px solid color-mix(in oklch, var(--border) 50%, transparent); padding-top: 6px }}
+.efficiency-metrics, .failure-analysis {{ border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 14px 16px; margin-bottom: 20px }}
+.efficiency-metrics h2, .failure-analysis h2 {{ font-size: 14px; margin-bottom: 4px }}
+.section-desc {{ color: var(--muted); font-size: 12px; margin-bottom: 12px }}
+.efficiency-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px }}
+.efficiency-group {{ border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: color-mix(in oklch, var(--bg) 48%, white) }}
+.efficiency-group h3 {{ font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px }}
+.metric-row {{ display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0; font-size: 12px }}
+.metric-row .metric-label {{ color: var(--muted) }}
+.metric-row .metric-value {{ font-family: var(--font-mono); font-weight: 600; font-variant-numeric: tabular-nums }}
+.efficiency-group .metric-help {{ margin-top: 6px; color: var(--muted); font-size: 10px; font-style: italic; border-top: 1px solid color-mix(in oklch, var(--border) 50%, transparent); padding-top: 6px }}
+.failure-grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px }}
+.metric-section {{ border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: color-mix(in oklch, var(--bg) 48%, white) }}
+.metric-section h3 {{ font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px }}
+.metric-desc {{ color: var(--muted); font-size: 10px; margin-bottom: 8px }}
+.metric-table {{ width: 100%; font-size: 12px; border-collapse: collapse }}
+.metric-table th {{ text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--muted); font-size: 11px }}
+.metric-table td {{ padding: 4px 8px; border-bottom: 1px solid color-mix(in oklch, var(--border) 50%, transparent) }}
+.metric-table tr:last-child td {{ border-bottom: none }}
+.metric-table td:last-child {{ text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums }}
+.per-task-results {{ border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 14px 16px; margin-bottom: 20px }}
+.per-task-results h2 {{ font-size: 14px; margin-bottom: 4px }}
+.per-task-table {{ width: 100%; font-size: 12px; border-collapse: collapse; font-variant-numeric: tabular-nums }}
+.per-task-table th, .per-task-table td {{ padding: 8px 10px; border-bottom: 1px solid var(--border) }}
+.per-task-table th {{ font-weight: 600; background: color-mix(in oklch, var(--bg) 92%, var(--border)); font-size: 11px; position: sticky; top: 0; z-index: 1 }}
+.per-task-table .task-id {{ font-family: var(--font-mono); font-size: 11px; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }}
+.per-task-table .text-center {{ text-align: center }}
+.per-task-table .text-right {{ text-align: right }}
+.per-task-table .task-row-passed {{ background: color-mix(in oklch, var(--green) 8%, transparent) }}
+.per-task-table .task-row-failed {{ background: color-mix(in oklch, var(--red) 8%, transparent) }}
+.per-task-table .task-row-partial {{ background: color-mix(in oklch, var(--yellow) 8%, transparent) }}
+.per-task-table tbody tr:hover {{ background: color-mix(in oklch, var(--border) 20%, transparent) }}
+.table-wrap {{ max-height: 500px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px }}
 .analysis {{ border: 1px solid var(--border); border-radius: 16px; background: var(--surface); padding: 16px; margin-bottom: 20px }}
 .analysis h2 {{ font-size: 14px; margin-bottom: 10px }}
 .analysis pre {{ white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--fg) }}
@@ -538,6 +879,11 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
 .pager {{ padding: 12px 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border) }}
 @media (max-width: 768px) {{
   .summary {{ grid-template-columns: repeat(2, 1fr) }}
+  .capability-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)) }}
+  .capability-head {{ display: block }}
+  .capability-note {{ display: block; margin-top: 8px; text-align: left }}
+  .efficiency-grid {{ grid-template-columns: repeat(2, 1fr) }}
+  .failure-grid {{ grid-template-columns: 1fr }}
   .trace-shots {{ grid-template-columns: 1fr }}
   .drawer {{ width: 100vw }}
   .page {{ width: calc(100vw - 24px) }}
@@ -556,6 +902,7 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
   <article class="summary-card"><div class="label">Failed</div><div class="value">{failed}</div></article>
   <article class="summary-card"><div class="label">Skipped</div><div class="value">{skipped}</div></article>
 </section>
+{capability_metrics_html}
 <section class="progress">
   <div class="progress-head">
     <span class="label">Execution Progress</span>
@@ -605,6 +952,14 @@ const backdrop = document.getElementById("backdrop");
 const closeBtn = document.getElementById("closeBtn");
 function esc(s) {{ var d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }}
 function token(s) {{ return String(s || "").toLowerCase().replace(/[^a-z0-9_-]/g, "-"); }}
+function formatTime(ms) {{
+  if (ms < 1000) return ms + 'ms';
+  var sec = (ms / 1000).toFixed(1);
+  if (parseFloat(sec) < 60) return sec + 's';
+  var min = Math.floor(parseFloat(sec) / 60);
+  var rem = (parseFloat(sec) % 60).toFixed(1);
+  return min + 'm' + rem + 's';
+}}
 function hasFullTrace(t) {{
   var ft = t.full_trace || {{}};
   return !!(ft.pre_screenshot || ft.post_screenshot || (ft.events && ft.events.length));
@@ -636,7 +991,7 @@ function openDrawer(i) {{
     '<span class="chip">' + esc(t.category) + '</span>' +
     '<span class="chip">' + esc(t.status) + '</span>' +
     '<span class="chip">' + esc(String(t.tool_calls_count)) + ' tools</span>' +
-    '<span class="chip">' + esc(String(t.wall_ms)) + 'ms</span>' +
+    '<span class="chip">' + formatTime(t.wall_ms) + '</span>' +
     (t.screenshots_taken ? '<span class="chip">' + esc(String(t.screenshots_taken)) + ' screenshots</span>' : '');
   var body = "";
   body += '<div class="block"><div class="block-head"><strong>Prompt</strong><span>user input</span></div><pre class="block-body">' + esc(t.prompt) + '</pre></div>';
