@@ -1056,3 +1056,37 @@ func TestValidationResult_JSONFormat(t *testing.T) {
 
 	t.Logf("JSON output: %s", string(data))
 }
+
+// The section Test buttons are most useful while the persisted config is in
+// recovery: the flagged field is what the user is testing a replacement for. So
+// config-test must load the surrounding context without requiring the file to
+// pass semantic validation, while still refusing a file it cannot decode.
+func TestLoadConfigTestContextAcceptsInvalidValuesButNotDamagedFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	recovery := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(recovery, []byte(`[model_settings.model]
+provider = "openai"
+model = "gpt-4o"
+
+[voice_settings.mode]
+input_mode = "stt"
+`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	// The runtime rejects this file, which is what puts the portal in recovery.
+	if _, err := agent.LoadRuntimeConfig(recovery); err == nil {
+		t.Fatal("expected the runtime loader to reject a declared stt mode with no provider")
+	}
+	if _, err := loadConfigTestContext(recovery); err != nil {
+		t.Fatalf("config-test refused a recoverable config: %v", err)
+	}
+
+	damaged := filepath.Join(dir, "damaged.toml")
+	if err := os.WriteFile(damaged, []byte("[broken"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfigTestContext(damaged); err == nil {
+		t.Fatal("config-test accepted a config it cannot decode")
+	}
+}
