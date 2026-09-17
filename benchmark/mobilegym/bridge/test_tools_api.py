@@ -108,10 +108,11 @@ def test_get_tools_catalog(bridge_server):
         "mouse_move",
         "mouse_scroll",
         "quick_action",
+        "open_app",
         "bridge_open_app",
         "search_launch_app",
     }
-    for open_app_name in ("bridge_open_app", "search_launch_app"):
+    for open_app_name in ("open_app", "bridge_open_app", "search_launch_app"):
         open_app_schema = tools[open_app_name]["args_schema"]
         assert open_app_schema["additionalProperties"] is False
         assert open_app_schema["required"] == ["app"]

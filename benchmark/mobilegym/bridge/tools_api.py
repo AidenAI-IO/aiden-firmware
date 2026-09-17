@@ -62,10 +62,11 @@ def _scrolls_content_back_up(start: dict[str, float], end: dict[str, float]) -> 
     return float(end["y"]) > float(start["y"])
 
 
-# Tools the Go agent routes to the environment bridge for launching an app.
-# Without these the agent has no way to open an installed app and falls back to
-# hunting for launcher icons, which is unreliable across apps.
-OPEN_APP_TOOLS = ("bridge_open_app", "search_launch_app")
+# Tool names the Go agent may use to launch an installed app through the
+# environment bridge. Without them the agent has no way to open an app and
+# falls back to hunting for launcher icons, which dominates scroll-sweep
+# failures before any scrolling happens.
+OPEN_APP_TOOLS = ("open_app", "bridge_open_app", "search_launch_app")
 OPEN_APP_SETTLE_SEC = 0.8
 
 
@@ -322,6 +323,11 @@ class ToolsAPIHandler:
                         {"required": ["list"], "properties": {"list": {"const": True}}},
                     ],
                 },
+            },
+            {
+                "name": "open_app",
+                "description": "Launch an installed MobileGym app by id or display name and return a screenshot.",
+                "args_schema": open_app_args_schema(),
             },
             {
                 "name": "bridge_open_app",
