@@ -30,7 +30,7 @@ from .protocol import (
     encode_provider_frame,
     encode_screenshot,
 )
-from .tools_api import ToolsAPIHandler
+from .tools_api import ToolsAPIHandler, open_app_in_env
 
 
 ACTION_ENDPOINTS = {"tap", "swipe", "drag", "type_text", "key", "back", "home", "wait"}
@@ -207,10 +207,30 @@ def _handler_for(bridge: BridgeServer):
 
             def setup() -> dict[str, Any]:
                 state = bridge.router.state_for_task_id(task_id)
-                return bridge.submit_to_state(
+                result = bridge.submit_to_state(
                     state,
                     state.reset_episode(episode_id, app_ids=app_ids),
                 )
+                # Foreground the task's primary app so the task starts inside
+                # the app instead of on the launcher. The agent's own open_app
+                # tool has no environment-bridge route, so the environment must
+                # establish this state rather than leaving it to the agent.
+                if app_ids:
+                    async def _foreground_primary_app(env: Any) -> str:
+                        if getattr(env, "page", None) is None:
+                            # Environments without a browser page (mock envs)
+                            # have no way to launch an app; skip quietly.
+                            return ""
+                        _app_id, error = await open_app_in_env(env, app_ids[0])
+                        return error
+
+                    foreground_error = bridge.submit_to_state(
+                        state,
+                        state.run_env(_foreground_primary_app),
+                    )
+                    if foreground_error:
+                        result = {**result, "foreground_error": foreground_error}
+                return result
 
             if setup_token:
                 result = bridge.setup_tokens.run(

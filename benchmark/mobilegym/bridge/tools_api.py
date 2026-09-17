@@ -68,6 +68,10 @@ def _scrolls_content_back_up(start: dict[str, float], end: dict[str, float]) -> 
 # failures before any scrolling happens.
 OPEN_APP_TOOLS = ("open_app", "bridge_open_app", "search_launch_app")
 OPEN_APP_SETTLE_SEC = 0.8
+OPEN_APP_JS = """(appId) => {
+    if (!window.__OS__?.openApp) throw new Error('window.__OS__.openApp is unavailable');
+    window.__OS__.openApp(appId, '/');
+}"""
 
 
 def open_app_args_schema() -> dict[str, Any]:
@@ -127,6 +131,27 @@ async def _resolve_mobilegym_app_id(env: Any, requested: str) -> str | None:
         if isinstance(entry, dict)
     ]
     return _match_app_id(requested, entries)
+
+
+async def open_app_in_env(env: Any, requested: str) -> tuple[str, str]:
+    """Bring an installed app to the foreground.
+
+    Returns ``(app_id, error)``: ``app_id`` is empty on failure and ``error`` is
+    empty on success, so callers can either raise or report the failure.
+
+    The agent's own ``open_app`` tool has no environment-bridge route, so a
+    benchmark task that must start inside an app cannot rely on it and the
+    environment has to establish that state itself.
+    """
+    page = getattr(env, "page", None)
+    if page is None:
+        return "", "environment does not expose a browser page"
+    app_id = await _resolve_mobilegym_app_id(env, requested)
+    if app_id is None:
+        return "", f"app is not installed: {requested}"
+    await page.evaluate(OPEN_APP_JS, app_id)
+    await asyncio.sleep(OPEN_APP_SETTLE_SEC)
+    return app_id, ""
 
 US_KEYBOARD_TEXT_CHARS = set(
     "abcdefghijklmnopqrstuvwxyz"
@@ -898,20 +923,9 @@ class ToolsAPIHandler:
 
         async def open_app(env: Any) -> dict[str, Any]:
             state.require_active(episode_id)
-            page = getattr(env, "page", None)
-            if page is None:
-                raise RuntimeError("environment does not expose a browser page")
-            app_id = await _resolve_mobilegym_app_id(env, requested)
-            if app_id is None:
-                raise RuntimeError(f"app is not installed: {requested}")
-            await page.evaluate(
-                """(appId) => {
-                    if (!window.__OS__?.openApp) throw new Error('window.__OS__.openApp is unavailable');
-                    window.__OS__.openApp(appId, '/');
-                }""",
-                app_id,
-            )
-            await asyncio.sleep(OPEN_APP_SETTLE_SEC)
+            app_id, error = await open_app_in_env(env, requested)
+            if error:
+                raise RuntimeError(error)
             return await _ok_with_screenshot(env, app=app_id)
 
         future = asyncio.run_coroutine_threadsafe(state.run_env(open_app), state.owner_loop)
