@@ -865,18 +865,24 @@ func (u *Updater) clearPendingAfterRollback(running Slot) error {
 	return nil
 }
 
-// saveSnapshotState publishes state and removes a snapshot only when the
-// failed publication proves it was not referenced on disk.
+// saveSnapshotState publishes state and, when publication fails, removes the
+// snapshot only after reading back the state file proves nothing references it.
+// A snapshot path recorded on disk (this one or another transaction's) is left
+// alone: rollback and recovery still need it, and pruning bounds what leaks.
 func (u *Updater) saveSnapshotState(state State) error {
 	err := SaveState(u.statePath(), state)
 	if err == nil {
 		return nil
+	}
+	if state.DataSnapshotPath == "" {
+		return err
 	}
 	saved, readErr := LoadState(u.statePath())
 	if (readErr == nil && saved.DataSnapshotPath != state.DataSnapshotPath) || os.IsNotExist(readErr) {
 		if removeErr := os.RemoveAll(state.DataSnapshotPath); removeErr != nil {
 			return errors.Join(err, removeErr)
 		}
+		// Make the removal durable in the parent transactions directory.
 		return errors.Join(err, fsyncDirFor(state.DataSnapshotPath))
 	}
 	return err

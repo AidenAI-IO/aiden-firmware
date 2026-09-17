@@ -1300,6 +1300,36 @@ func TestSaveSnapshotStateFailureCleansOnlyUnpublishedSnapshot(t *testing.T) {
 	}
 }
 
+func TestSaveSnapshotStateWithoutSnapshotTouchesNoDirectory(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.state.DataSnapshotPath = ""
+	// No state file on disk, so the read-back reports os.IsNotExist: the branch
+	// that would otherwise clean up an unpublished snapshot.
+	if err := os.Remove(filepath.Join(env.stateDir, "state.json")); err != nil {
+		t.Fatal(err)
+	}
+	// Force the state write to fail after the temporary file is opened.
+	if err := os.Mkdir(filepath.Join(env.stateDir, "state.json.tmp"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var synced []string
+	original := syncDir
+	syncDir = func(f *os.File) error {
+		synced = append(synced, f.Name())
+		return original(f)
+	}
+	t.Cleanup(func() { syncDir = original })
+
+	if err := env.updater().saveSnapshotState(env.state); err == nil {
+		t.Fatal("state write unexpectedly succeeded")
+	}
+	for _, path := range synced {
+		if path == "." {
+			t.Fatalf("empty snapshot path fsynced the working directory: %v", synced)
+		}
+	}
+}
+
 func TestRecoverPendingDataReconcilesAbandonedRollback(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	env.state.Phase = "rollback-requested"

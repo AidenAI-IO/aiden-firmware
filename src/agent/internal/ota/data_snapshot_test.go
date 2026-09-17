@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -76,6 +77,63 @@ func TestPruneProtectedSnapshotsRetainsCurrentAndNewest(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(transactions, fmt.Sprintf("pre-%019d-v1", i))); !os.IsNotExist(err) {
 			t.Fatalf("orphan %d was not pruned: %v", i, err)
 		}
+	}
+}
+
+func TestSnapshotPublishesDirectoryOnlyAfterManifestIsDurable(t *testing.T) {
+	root := t.TempDir()
+	dataRoot := filepath.Join(root, "userdata")
+	defer setProtectedDataRoot(dataRoot)()
+	writeSnapshotTestFile(t, filepath.Join(dataRoot, "agent/agent.toml"), "agent")
+	writeSnapshotTestFile(t, filepath.Join(dataRoot, "system/env"), "env")
+	stateDir := filepath.Join(root, "ota")
+	transactions := filepath.Join(stateDir, "transactions")
+
+	var synced []string
+	published, manifestDurableBeforePublish := false, false
+	original := syncDir
+	syncDir = func(f *os.File) error {
+		synced = append(synced, f.Name())
+		// Record the first publish only: a later sync must not mask an early one.
+		if f.Name() == transactions && !published {
+			published = true
+			found, err := filepath.Glob(filepath.Join(transactions, "pre-*", "manifest.json"))
+			manifestDurableBeforePublish = err == nil && len(found) == 1
+		}
+		return original(f)
+	}
+	t.Cleanup(func() { syncDir = original })
+
+	snapshot, err := SnapshotProtectedData(stateDir, "v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifestDurableBeforePublish {
+		t.Fatal("snapshot directory was published before its manifest was written")
+	}
+	// Children before parents, each directory exactly once, transactions last.
+	want := []string{
+		filepath.Join(snapshot, "userdata/agent"),
+		filepath.Join(snapshot, "userdata/system"),
+		filepath.Join(snapshot, "userdata"),
+		snapshot,
+		transactions,
+	}
+	if !reflect.DeepEqual(synced, want) {
+		t.Fatalf("sync order =\n%s\nwant\n%s", strings.Join(synced, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestDirSyncerRejectsPathsOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	syncer := newDirSyncer(filepath.Join(root, "snapshot"))
+	for _, path := range []string{root, filepath.Join(root, "other"), filepath.Join(root, "snapshot/../escape")} {
+		if err := syncer.add(path); err == nil {
+			t.Fatalf("path outside root unexpectedly accepted: %s", path)
+		}
+	}
+	if len(syncer.paths) != 0 {
+		t.Fatalf("rejected paths were recorded: %v", syncer.paths)
 	}
 }
 

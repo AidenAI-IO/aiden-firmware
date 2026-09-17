@@ -34,8 +34,15 @@ func SnapshotProtectedData(root, version string) (_ string, resultErr error) {
 		"system/wifi-proxies.json", "audio_service/playback_volume",
 		"debian/wifi/wpa_supplicant-wlan0.conf",
 	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
 	manifest := map[string]any{"created_at": time.Now().UTC(), "version": version, "files": []string{}}
 	protectedRoot := currentProtectedDataRoot()
+	syncer := newDirSyncer(dir)
+	if err := syncer.add(dir); err != nil {
+		return "", err
+	}
 	for _, rel := range relativePaths {
 		src := filepath.Join(protectedRoot, rel)
 		info, err := os.Stat(src)
@@ -55,17 +62,14 @@ func SnapshotProtectedData(root, version string) (_ string, resultErr error) {
 		if err := copyFile(src, dst, info.Mode().Perm()); err != nil {
 			return "", err
 		}
-		if err := syncSnapshotPath(dir, filepath.Dir(dst)); err != nil {
+		if err := syncer.add(filepath.Dir(dst)); err != nil {
 			return "", err
 		}
 		manifest["files"] = append(manifest["files"].([]string), rel)
 	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
-	}
-	if err := fsyncDirFor(dir); err != nil {
-		return "", err
-	}
+	// The manifest is written and synced before any directory entry becomes
+	// durable, so a crash can never publish a snapshot RestoreProtectedData
+	// cannot read.
 	b, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return "", err
@@ -85,7 +89,13 @@ func SnapshotProtectedData(root, version string) (_ string, resultErr error) {
 	if closeErr != nil {
 		return "", closeErr
 	}
-	if err := fsyncDirFor(manifestPath); err != nil {
+	// Sync the snapshot tree bottom-up, then publish the snapshot directory in
+	// transactions/ last. Recovery therefore never sees a directory entry whose
+	// manifest is still missing.
+	if err := syncer.flush(); err != nil {
+		return "", err
+	}
+	if err := fsyncDirFor(dir); err != nil {
 		return "", err
 	}
 	if err := pruneProtectedSnapshots(root, dir); err != nil {
@@ -94,20 +104,55 @@ func SnapshotProtectedData(root, version string) (_ string, resultErr error) {
 	return dir, nil
 }
 
-func syncSnapshotPath(root, path string) error {
-	rel, err := filepath.Rel(root, path)
+// dirSyncer fsyncs each directory under a root at most once, deepest first, so
+// a parent entry only becomes durable after the child directory it names.
+type dirSyncer struct {
+	root  string
+	paths map[string]bool
+}
+
+func newDirSyncer(root string) *dirSyncer {
+	return &dirSyncer{root: filepath.Clean(root), paths: map[string]bool{}}
+}
+
+// add records path and every directory between path and root.
+func (d *dirSyncer) add(path string) error {
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(d.root, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return fmt.Errorf("snapshot path escapes root: %s", path)
 	}
-	for {
-		if err := fsyncDirFor(filepath.Join(path, ".dirsync")); err != nil {
-			return err
-		}
-		if path == root {
-			return nil
+	for !d.paths[path] {
+		d.paths[path] = true
+		if path == d.root {
+			break
 		}
 		path = filepath.Dir(path)
 	}
+	return nil
+}
+
+// flush syncs every recorded directory, children before their parents.
+func (d *dirSyncer) flush() error {
+	paths := make([]string, 0, len(d.paths))
+	for path := range d.paths {
+		paths = append(paths, path)
+	}
+	separator := string(os.PathSeparator)
+	sort.Slice(paths, func(i, j int) bool {
+		depthI, depthJ := strings.Count(paths[i], separator), strings.Count(paths[j], separator)
+		if depthI != depthJ {
+			return depthI > depthJ
+		}
+		return paths[i] < paths[j]
+	})
+	for _, path := range paths {
+		if err := fsyncDir(path); err != nil {
+			return err
+		}
+	}
+	d.paths = map[string]bool{}
+	return nil
 }
 
 func pruneProtectedSnapshots(root, current string) error {
@@ -156,7 +201,7 @@ func pruneProtectedSnapshots(root, current string) error {
 		remaining--
 	}
 	if removed {
-		return fsyncDirFor(filepath.Join(transactionsDir, ".dirsync"))
+		return fsyncDir(transactionsDir)
 	}
 	return nil
 }
@@ -238,6 +283,7 @@ func restoreProtectedData(snapshotDir, protectedRoot string, renameFile func(str
 	}
 	var staged []stagedFile
 	var tempDirs []string
+	syncer := newDirSyncer(protectedRoot)
 	keepUndo := false
 	defer func() {
 		if !keepUndo {
@@ -281,10 +327,14 @@ func restoreProtectedData(snapshotDir, protectedRoot string, renameFile func(str
 				return err
 			}
 		}
-		if err := syncSnapshotPath(protectedRoot, dir); err != nil {
+		if err := syncer.add(dir); err != nil {
 			return err
 		}
 		staged = append(staged, item)
+	}
+	// Every replacement and undo copy is durable before the first live rename.
+	if err := syncer.flush(); err != nil {
+		return err
 	}
 	lastReplaced := -1
 	for i, item := range staged {

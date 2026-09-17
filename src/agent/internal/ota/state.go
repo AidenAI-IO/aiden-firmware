@@ -263,8 +263,9 @@ func slotName(slot Slot) (string, error) {
 	}
 }
 
-func fsyncDirFor(path string) error {
-	dir, err := os.Open(filepath.Dir(path))
+// fsyncDir makes the entries of dir itself durable.
+func fsyncDir(path string) error {
+	dir, err := os.Open(path)
 	if err != nil {
 		return err
 	}
@@ -276,4 +277,9 @@ func fsyncDirFor(path string) error {
 		return err
 	}
 	return nil
+}
+
+// fsyncDirFor makes the entry naming path durable in its parent directory.
+func fsyncDirFor(path string) error {
+	return fsyncDir(filepath.Dir(path))
 }
