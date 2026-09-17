@@ -31,6 +31,14 @@ func Run(args []string) int {
 	fs.StringVar(&options.LocalProxyEnvironmentPath, "local-proxy-environment", options.LocalProxyEnvironmentPath, "generated local proxy environment path")
 	fs.StringVar(&options.StorageStatePath, "storage-state", options.StorageStatePath, "storage state path")
 	fs.StringVar(&options.WebRoot, "web-root", options.WebRoot, "config web static asset root")
+	fs.StringVar(&options.BackupUserdataRoot, "backup-userdata-root", options.BackupUserdataRoot, "userdata root used by backup and restore")
+	fs.StringVar(&options.BackupSDRoot, "backup-sd-root", options.BackupSDRoot, "SD-card root used by backup and restore")
+	fs.StringVar(&options.MaintenanceLockPath, "maintenance-lock", options.MaintenanceLockPath, "backup and restore maintenance lock path")
+	fs.StringVar(&options.BackupJobStateDir, "backup-job-state-dir", options.BackupJobStateDir, "runtime backup job state directory")
+	fs.StringVar(&options.USBAddress, "usb-address", options.USBAddress, "device address on the USB ECM link")
+	fs.StringVar(&options.USBSubnet, "usb-subnet", options.USBSubnet, "USB ECM client subnet")
+	fs.StringVar(&options.HardwareIDPath, "hardware-id-path", options.HardwareIDPath, "immutable hardware identifier path")
+	fs.StringVar(&options.OTAConfigPath, "ota-config", options.OTAConfigPath, "OTA configuration path used for identity provisioning after restore")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0

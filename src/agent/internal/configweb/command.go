@@ -62,6 +62,11 @@ func (s *Server) scheduleAgentRestart() error {
 	s.restartMu.Lock()
 	defer s.restartMu.Unlock()
 	s.reapRestartLocked()
+	if s.maintenance != nil && s.maintenance.active() {
+		s.restartDeferred = true
+		s.restartReadinessPending = true
+		return nil
+	}
 	if s.restartCommand != nil {
 		s.restartDeferred = true
 		s.restartReadinessPending = true
@@ -93,6 +98,9 @@ func (s *Server) restartWiFiProxy() error {
 }
 
 func (s *Server) startDeferredRestartIfIdle() {
+	if s.maintenance != nil && s.maintenance.active() {
+		return
+	}
 	s.restartMu.Lock()
 	defer s.restartMu.Unlock()
 	s.reapRestartLocked()

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,16 @@ type fakeStorageController struct {
 	reconfigureError error
 }
 
+type fakeStorageSnapshotLease struct {
+	snapshot agent.StorageSnapshot
+	err      error
+	released atomic.Bool
+}
+
+func (l *fakeStorageSnapshotLease) Snapshot() agent.StorageSnapshot { return l.snapshot }
+func (l *fakeStorageSnapshotLease) Validate(context.Context) error  { return l.err }
+func (l *fakeStorageSnapshotLease) Release()                        { l.released.Store(true) }
+
 func (f *fakeStorageController) Status() agent.StorageStatus { return f.status }
 func (f *fakeStorageController) Reconfigure(cfg agent.StorageConfig) error {
 	f.reconfigured = cfg
@@ -43,6 +54,15 @@ func (f *fakeStorageController) StartFormat(fs, confirm string) error {
 	}
 	f.status.FormatJob = agent.StorageFormatJob{Status: agent.StorageFormatRunning, FS: fs}
 	return nil
+}
+func (f *fakeStorageController) AcquireSnapshotLease(context.Context) (agent.StorageSnapshotLease, error) {
+	if !f.status.Card.Mounted {
+		return nil, errors.New("no readable and writable SD card is mounted")
+	}
+	return &fakeStorageSnapshotLease{snapshot: agent.StorageSnapshot{
+		DevicePath: f.status.Card.Device, MountPoint: f.status.MountPoint,
+		FilesystemUUID: "test-sd-uuid", MountID: "test-mount-id",
+	}}, nil
 }
 func (f *fakeStorageController) Stop() {}
 
@@ -82,6 +102,14 @@ func testOptions(t *testing.T) Options {
 		LocalProxyEnvironmentPath: filepath.Join(root, "proxy-env"),
 		StorageStatePath:          filepath.Join(root, "storage.state"),
 		WebRoot:                   webRoot,
+		BackupUserdataRoot:        filepath.Join(root, "userdata"),
+		BackupSDRoot:              filepath.Join(root, "sdcard"),
+		MaintenanceLockPath:       filepath.Join(root, "run", "backup.lock"),
+		BackupJobStateDir:         filepath.Join(root, "run", "jobs"),
+		USBAddress:                "127.0.0.1",
+		USBSubnet:                 "127.0.0.0/8",
+		HardwareIDPath:            filepath.Join(root, "hardware-id"),
+		SystemctlBinary:           "/bin/true",
 		AgentBinary:               "/bin/true",
 		AgentHTTPBaseURL:          "http://127.0.0.1:1",
 		AgentInitScript:           filepath.Join(root, "missing-init"),
