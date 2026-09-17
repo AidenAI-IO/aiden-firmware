@@ -408,6 +408,23 @@ jobs:
           echo "::notice::No pre-provisioned Go toolchain at $go_root; the build will download its own"
         fi
 
+        # Stage 3 fetches ~55 MB per build from snapshot.debian.org, which
+        # rate-limits by source IP: a day of hourly builds got the runners a
+        # 509 on every debootstrap. A squid on the runner serves the immutable
+        # snapshot from cache after the first fill. It is addressed through
+        # the Docker bridge gateway because the rootfs container runs on the
+        # bridge network, where 127.0.0.1 is the container itself.
+        #
+        # http_proxy only, never https_proxy: everything else the build fetches
+        # (GitHub, the Go proxies, OpenCV) is https and must not go through it.
+        apt_cache="http://172.17.0.1:3128"
+        if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$apt_cache/" 2>/dev/null)" != "000" ]; then
+          echo "http_proxy=$apt_cache" >> "$GITHUB_ENV"
+          echo "Using the apt cache at $apt_cache"
+        else
+          echo "::notice::No apt cache at $apt_cache; Stage 3 will fetch from snapshot.debian.org directly"
+        fi
+
     - name: Run Debian firmware build
       id: firmware
       if: ${{ !inputs.dry_run }}
