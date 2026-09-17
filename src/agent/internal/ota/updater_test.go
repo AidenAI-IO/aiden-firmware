@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +20,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"aiden-agent/internal/logging"
 )
 
 func TestUpdaterHappyPathDownloadsWritesSwitchesAndReboots(t *testing.T) {
@@ -875,7 +876,8 @@ func TestUpdaterUsesGitHubTokenForManifestAndImageDownloads(t *testing.T) {
 func TestUpdaterLogsVisibleCheckProgress(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	var logs bytes.Buffer
-	env.config.Logger = log.New(&logs, "", 0)
+	restoreOutput := logging.SetOutput(&logs)
+	defer restoreOutput()
 	manifest := env.signedManifest(map[string][]byte{
 		"boot_a.img": []byte("boot-a-v2"),
 		"boot_b.img": []byte("boot-b-v2"),
@@ -912,6 +914,16 @@ func TestUpdaterLogsVisibleCheckProgress(t *testing.T) {
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("logs missing %q:\n%s", want, output)
+		}
+	}
+	// Progress is emitted at explicit severity through the shared logging
+	// output, so every captured line carries the structured record prefix.
+	if !strings.Contains(output, "[INFO][ota][updater] log_message message=") {
+		t.Fatalf("logs missing explicit INFO/ota/updater record prefix:\n%s", output)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if !logging.IsStructuredLine(line) {
+			t.Fatalf("log line %q is not a structured record:\n%s", line, output)
 		}
 	}
 }

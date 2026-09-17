@@ -51,7 +51,7 @@ function formatLogSize(bytes) {
 
 function classifyLine(line) {
   const text = String(line || '');
-  const severity = text.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \[(DEBUG|INFO|WARN|ERROR)\](?:\s|$)/);
+  const severity = text.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \[(DEBUG|INFO|WARN|ERROR)\](?=\[|\s|$)/);
   if (severity) {
     if (severity[1] === 'ERROR') return 'log-error';
     if (severity[1] === 'WARN') return 'log-warn';

@@ -7,7 +7,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,6 +19,7 @@ import (
 	"golang.org/x/net/proxy"
 
 	"aiden-agent/internal/agent/tts"
+	"aiden-agent/internal/logging"
 	"aiden-agent/internal/netproxy"
 )
 
@@ -141,9 +141,9 @@ func (a *Adapter) dial(ctx context.Context) (*websocket.Conn, error) {
 		return nil, err
 	}
 	if resp != nil && resp.Header.Get("X-Tt-Logid") != "" {
-		log.Printf("[tts] volcengine: connected logid=%s", resp.Header.Get("X-Tt-Logid"))
+		logging.Infof("agent", "tts", "volcengine: connected logid=%s", resp.Header.Get("X-Tt-Logid"))
 	} else {
-		log.Println("[tts] volcengine: connected")
+		logging.Infof("agent", "tts", "volcengine: connected")
 	}
 	return conn, nil
 }

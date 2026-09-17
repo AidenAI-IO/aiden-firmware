@@ -9,6 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"aiden-agent/internal/logging"
 )
 
 func Run(args []string) int {
@@ -30,12 +32,12 @@ func Run(args []string) int {
 	}
 	upstreams, err := UpstreamsFromEnvironment()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "wifi-proxy: invalid environment: %v\n", err)
+		logging.Errorf("wifi_proxy", "run", "wifi-proxy: invalid environment: %v", err)
 		return 1
 	}
 	server, err := NewServer(*listenAddress, *configPath, *wifiInterface, upstreams)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "wifi-proxy: %v\n", err)
+		logging.Errorf("wifi_proxy", "run", "wifi-proxy: %v", err)
 		return 1
 	}
 	server.SetEnvironmentPath(*environmentPath)
@@ -47,7 +49,7 @@ func Run(args []string) int {
 	select {
 	case err := <-errCh:
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "wifi-proxy: %v\n", err)
+			logging.Errorf("wifi_proxy", "run", "wifi-proxy: %v", err)
 			return 1
 		}
 		return 0
@@ -55,7 +57,7 @@ func Run(args []string) int {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "wifi-proxy shutdown: %v\n", err)
+			logging.Errorf("wifi_proxy", "run", "wifi-proxy shutdown: %v", err)
 			return 1
 		}
 		return 0

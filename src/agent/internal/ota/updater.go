@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -85,7 +84,6 @@ type UpdaterConfig struct {
 	DownloadTimeoutSecs       int                          `json:"download_timeout_seconds,omitempty"`
 	DryRun                    bool                         `json:"dry_run,omitempty"`
 	TargetSlotOverride        string                       `json:"target_slot_override,omitempty"`
-	Logger                    *log.Logger                  `json:"-"`
 	DebianMode                bool                         `json:"-"`
 	MachineIDPath             string                       `json:"-"`
 	RuntimeMachineIDPath      string                       `json:"-"`
@@ -275,12 +273,12 @@ func NewUpdater(config UpdaterConfig, reboot func() error) (*Updater, error) {
 
 func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 	if err := u.ensureStorageReady(); err != nil {
-		u.logf("ota check: %v", err)
+		logging.Errorf("ota", "updater", "ota check: %v", err)
 		return UpdateResult{}, err
 	}
 	unlock, err := u.acquireUpdateLock()
 	if err != nil {
-		u.logf("ota check: %v", err)
+		logging.Errorf("ota", "updater", "ota check: %v", err)
 		return UpdateResult{}, err
 	}
 	defer unlock()
@@ -288,7 +286,7 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 }
 
 func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
-	u.logf("ota check: start")
+	logging.Infof("ota", "updater", "ota check: start")
 	if err := u.ProcessPendingHealth(ctx); err != nil {
 		u.recordError("health", err)
 		return UpdateResult{}, err
@@ -328,14 +326,14 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 	}
-	u.logf("ota check: active_slot=%s target_slot=%s", slotLogName(active), slotLogName(target))
+	logging.Infof("ota", "updater", "ota check: active_slot=%s target_slot=%s", slotLogName(active), slotLogName(target))
 
 	var assetsByName map[string]string
 	var manifestBytes []byte
 	token := u.githubToken()
 
 	if u.config.ManifestURL != "" {
-		u.logf("ota manifest: downloading from direct URL %s", sanitizeURLForLog(u.config.ManifestURL))
+		logging.Infof("ota", "updater", "ota manifest: downloading from direct URL %s", sanitizeURLForLog(u.config.ManifestURL))
 		directToken := ""
 		if isGitHubURL(u.config.ManifestURL) {
 			directToken = token
@@ -350,19 +348,19 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		if releaseURL == "" {
 			releaseURL = DefaultReleaseURL
 		}
-		u.logf("ota release: fetching %s", releaseURL)
+		logging.Infof("ota", "updater", "ota release: fetching %s", releaseURL)
 		assetsByName, err = u.fetchLatestReleaseAssets(ctx, releaseURL, token)
 		if err != nil {
 			u.recordError("release", err)
 			return UpdateResult{}, err
 		}
-		u.logf("ota release: found %d assets", len(assetsByName))
+		logging.Infof("ota", "updater", "ota release: found %d assets", len(assetsByName))
 		manifestURL, err := requiredAssetURL(assetsByName, "manifest.json")
 		if err != nil {
 			u.recordError("manifest", err)
 			return UpdateResult{}, err
 		}
-		u.logf("ota manifest: downloading manifest.json from %s", manifestURL)
+		logging.Infof("ota", "updater", "ota manifest: downloading manifest.json from %s", manifestURL)
 		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, manifestURL, token, MaxRemoteManifestBytes)
 		if err != nil {
 			u.recordError("manifest", err)
@@ -385,13 +383,13 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 	}
-	u.logf("ota manifest: verified version=%s channel=%s build_time=%s parts=%d", manifest.Version, logValue(manifest.Channel, "<unset>"), manifest.BuildTime, len(manifest.Parts))
+	logging.Infof("ota", "updater", "ota manifest: verified version=%s channel=%s build_time=%s parts=%d", manifest.Version, logValue(manifest.Channel, "<unset>"), manifest.BuildTime, len(manifest.Parts))
 	if err := state.RejectDowngrade(manifest); err != nil {
 		u.recordError("policy", err)
 		return UpdateResult{}, err
 	}
 	if isNoUpdate(state, manifest) {
-		u.logf("ota check: no update version=%s build_time=%s", manifest.Version, manifest.BuildTime)
+		logging.Infof("ota", "updater", "ota check: no update version=%s build_time=%s", manifest.Version, manifest.BuildTime)
 		return UpdateResult{NoUpdate: true, Version: manifest.Version, TargetSlot: target}, nil
 	}
 	if err := state.ValidateSelectiveUpdate(manifest, target); err != nil {
@@ -492,7 +490,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		planned := plan.assets[part.Name]
 		asset := planned.asset
 		if planned.targetMatches {
-			u.logf("ota partition: %s skipped; target slot %s hash matches manifest", part.Name, slotLogName(target))
+			logging.Infof("ota", "updater", "ota partition: %s skipped; target slot %s hash matches manifest", part.Name, slotLogName(target))
 			continue
 		}
 
@@ -500,7 +498,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		var assetToken string
 		if asset.URL != "" {
 			assetURL = asset.URL
-			u.logf("ota asset: %s using direct URL from manifest", asset.Name)
+			logging.Infof("ota", "updater", "ota asset: %s using direct URL from manifest", asset.Name)
 			if isGitHubURL(assetURL) {
 				assetToken = token
 			}
@@ -510,7 +508,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 				u.recordError("asset", err)
 				return UpdateResult{}, err
 			}
-			u.logf("ota asset: %s using URL derived from manifest URL", asset.Name)
+			logging.Infof("ota", "updater", "ota asset: %s using URL derived from manifest URL", asset.Name)
 			if isGitHubURL(assetURL) {
 				assetToken = token
 			}
@@ -520,7 +518,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 				u.recordError("asset", err)
 				return UpdateResult{}, err
 			}
-			u.logf("ota asset: %s using URL from release API", asset.Name)
+			logging.Infof("ota", "updater", "ota asset: %s using URL from release API", asset.Name)
 			assetToken = token
 		}
 
@@ -531,13 +529,13 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 				u.recordError("verify", err)
 				return UpdateResult{}, err
 			}
-			u.logf("ota download: %s skipped; cached file verified dst=%s", asset.Name, dst)
+			logging.Infof("ota", "updater", "ota download: %s skipped; cached file verified dst=%s", asset.Name, dst)
 		} else {
 			if err := os.MkdirAll(u.config.DownloadDir, 0o755); err != nil {
 				u.recordError("download", err)
 				return UpdateResult{}, err
 			}
-			u.logf("ota download: %s start size=%s url=%s dst=%s", asset.Name, formatBytes(asset.Size), sanitizeURLForLog(assetURL), dst)
+			logging.Infof("ota", "updater", "ota download: %s start size=%s url=%s dst=%s", asset.Name, formatBytes(asset.Size), sanitizeURLForLog(assetURL), dst)
 			if err := u.downloadFileWithToken(ctx, assetURL, dst, asset.Size, assetToken); err != nil {
 				u.recordError("download", err)
 				return UpdateResult{}, err
@@ -547,7 +545,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 				u.recordError("verify", err)
 				return UpdateResult{}, err
 			}
-			u.logf("ota verify: %s sha256 ok", asset.Name)
+			logging.Infof("ota", "updater", "ota verify: %s sha256 ok", asset.Name)
 			if err := u.verifyDownloadedImage(dst, asset); err != nil {
 				err = u.discardInvalidDownload(dst, err)
 				u.recordError("verify", err)
@@ -572,7 +570,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 				return UpdateResult{}, err
 			}
 			targetInvalidated = true
-			u.logf("ota misc: target slot %s marked unbootable before partition writes", slotLogName(target))
+			logging.Infof("ota", "updater", "ota misc: target slot %s marked unbootable before partition writes", slotLogName(target))
 		}
 
 		blockName, err := writer.ResolveBlockName(part.Name, target)
@@ -580,7 +578,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			u.recordError("write", err)
 			return UpdateResult{}, err
 		}
-		u.logf("ota write: %s -> %s start image=%s", part.Name, blockName, dst)
+		logging.Infof("ota", "updater", "ota write: %s -> %s start image=%s", part.Name, blockName, dst)
 		if err := writer.WritePartWithProgress(part.Name, target, dst, u.logWriteProgress); err != nil {
 			u.recordError("write", err)
 			return UpdateResult{}, err
@@ -590,7 +588,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 		state.DownloadedHashes[part.Name] = partitionSHA256ForAsset(asset)
-		u.logf("ota readback: %s -> %s sha256 ok", part.Name, blockName)
+		logging.Infof("ota", "updater", "ota readback: %s -> %s sha256 ok", part.Name, blockName)
 		if u.config.DebianMode && part.Name == "rootfs" {
 			record, err := u.personalizeRootFS(writer, target, dst, asset)
 			if err != nil {
@@ -601,7 +599,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 				u.recordError("personalization", err)
 				return UpdateResult{}, err
 			}
-			u.logf("ota personalization: rootfs slot %s machine-id applied effective_sha256=%s", slotLogName(target), record.EffectivePartitionSHA256)
+			logging.Infof("ota", "updater", "ota personalization: rootfs slot %s machine-id applied effective_sha256=%s", slotLogName(target), record.EffectivePartitionSHA256)
 		}
 		if err := u.deleteDownloadCache(dst); err != nil {
 			u.recordError("cleanup", err)
@@ -609,7 +607,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		}
 	}
 	if u.config.DryRun {
-		u.logf("ota check: dry-run complete version=%s target_slot=%s", manifest.Version, slotLogName(target))
+		logging.Infof("ota", "updater", "ota check: dry-run complete version=%s target_slot=%s", manifest.Version, slotLogName(target))
 		return UpdateResult{Updated: true, Version: manifest.Version, TargetSlot: target}, nil
 	}
 	if err := prepareState(); err != nil {
@@ -642,9 +640,9 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		u.recordError("misc", err)
 		return UpdateResult{}, err
 	}
-	u.logf("ota misc: switched active slot to %s tries=%d", slotLogName(target), u.config.SwitchTries)
+	logging.Infof("ota", "updater", "ota misc: switched active slot to %s tries=%d", slotLogName(target), u.config.SwitchTries)
 	if u.reboot != nil {
-		u.logf("ota reboot: requested after switching to slot %s", slotLogName(target))
+		logging.Infof("ota", "updater", "ota reboot: requested after switching to slot %s", slotLogName(target))
 		if err := u.reboot(); err != nil {
 			u.recordError("reboot", err)
 			return UpdateResult{}, err
@@ -693,7 +691,7 @@ func (u *Updater) discardInvalidDownload(path string, verifyErr error) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("%w; remove invalid download %s: %v", verifyErr, filepath.Base(path), err)
 	}
-	u.logf("ota download: removed invalid cached file %s", filepath.Base(path))
+	logging.Warnf("ota", "updater", "ota download: removed invalid cached file %s", filepath.Base(path))
 	return verifyErr
 }
 
@@ -704,7 +702,7 @@ func (u *Updater) deleteDownloadCache(path string) error {
 	if err := fsyncDirFor(path); err != nil {
 		return fmt.Errorf("sync OTA cache directory after removing %s: %w", filepath.Base(path), err)
 	}
-	u.logf("ota cleanup: removed verified cache %s", filepath.Base(path))
+	logging.Infof("ota", "updater", "ota cleanup: removed verified cache %s", filepath.Base(path))
 	return nil
 }
 
@@ -784,7 +782,7 @@ func (u *Updater) verifyDownloadedImage(path string, asset ManifestAsset) error 
 	if err := verifyPartitionImage(path, asset.ImageSHA256); err != nil {
 		return fmt.Errorf("%s image_sha256: %w", asset.Name, err)
 	}
-	u.logf("ota verify: %s image_sha256 ok", asset.Name)
+	logging.Infof("ota", "updater", "ota verify: %s image_sha256 ok", asset.Name)
 	return nil
 }
 
@@ -800,7 +798,7 @@ func (u *Updater) ProcessPendingHealth(ctx context.Context) error {
 	if err := json.Unmarshal(data, &pending); err != nil {
 		return err
 	}
-	u.logf("ota health: pending slot=%s version=%s timeout=%s", pending.TargetSlot, pending.TargetVersion, u.config.HealthTimeout)
+	logging.Infof("ota", "updater", "ota health: pending slot=%s version=%s timeout=%s", pending.TargetSlot, pending.TargetVersion, u.config.HealthTimeout)
 	pendingSlot, err := parseSlotName(pending.TargetSlot)
 	if err != nil {
 		return err
@@ -824,14 +822,14 @@ func (u *Updater) ProcessPendingHealth(ctx context.Context) error {
 	}
 	bootID := u.bootID()
 	if err := ValidateHealthMarker(u.healthPath(), pending, bootID); err == nil {
-		u.logf("ota health: marker valid, committing slot=%s", pending.TargetSlot)
+		logging.Infof("ota", "updater", "ota health: marker valid, committing slot=%s", pending.TargetSlot)
 		return u.commitPendingHealth(pending)
 	}
-	u.logf("ota health: waiting for marker path=%s", u.healthPath())
+	logging.Infof("ota", "updater", "ota health: waiting for marker path=%s", u.healthPath())
 	if err := WaitForHealth(ctx, u.healthPath(), pending, bootID, u.config.HealthTimeout, u.config.HealthPollInterval, u.reboot); err != nil {
 		return err
 	}
-	u.logf("ota health: marker received, committing slot=%s", pending.TargetSlot)
+	logging.Infof("ota", "updater", "ota health: marker received, committing slot=%s", pending.TargetSlot)
 	return u.commitPendingHealth(pending)
 }
 
@@ -947,19 +945,19 @@ func (u *Updater) commitPendingHealth(pending PendingBoot) error {
 }
 
 func (u *Updater) ProcessPendingHealthOnce(ctx context.Context) error {
-	u.logf("ota health: processing pending boot")
+	logging.Infof("ota", "updater", "ota health: processing pending boot")
 	if err := u.ensureStorageReady(); err != nil {
-		u.logf("ota health: %v", err)
+		logging.Errorf("ota", "updater", "ota health: %v", err)
 		return err
 	}
 	if err := u.processPendingHealthWithLock(ctx); err != nil {
-		u.logf("ota health: %v", err)
+		logging.Errorf("ota", "updater", "ota health: %v", err)
 		if !errors.Is(err, ErrUpdateAlreadyRunning) {
 			u.recordError("health", err)
 		}
 		return err
 	}
-	u.logf("ota health: complete")
+	logging.Infof("ota", "updater", "ota health: complete")
 	return nil
 }
 
@@ -1414,12 +1412,6 @@ func (u *Updater) recordError(phase string, err error) {
 	_ = SaveState(u.statePath(), state)
 }
 
-func (u *Updater) logf(format string, args ...any) {
-	if u.config.Logger != nil {
-		u.config.Logger.Printf(format, args...)
-	}
-}
-
 // cleanupOldDownloadCache keeps only verified assets and resumable partials
 // needed for the selected target slot.
 func (u *Updater) cleanupOldDownloadCache(plan downloadPlan) error {
@@ -1463,7 +1455,7 @@ func (u *Updater) cleanupOldDownloadCache(plan downloadPlan) error {
 		if err := os.Remove(path); err != nil {
 			return fmt.Errorf("remove stale OTA cache %s: %w", name, err)
 		}
-		u.logf("ota cleanup: removed old file %s", name)
+		logging.Infof("ota", "updater", "ota cleanup: removed old file %s", name)
 	}
 
 	return nil
@@ -1487,13 +1479,10 @@ func otaProxyFromEnvironment(req *http.Request) (*url.URL, error) {
 }
 
 func (u *Updater) logDownloadProgress(progress DownloadProgress) {
-	if u.config.Logger == nil {
-		return
-	}
 	name := filepath.Base(progress.Path)
 	amount := formatDownloadAmount(progress.Bytes, progress.Total)
 	if progress.Complete {
-		u.logf("ota download: %s complete %s", name, amount)
+		logging.Infof("ota", "updater", "ota download: %s complete %s", name, amount)
 		return
 	}
 	resume := ""
@@ -1504,23 +1493,20 @@ func (u *Updater) logDownloadProgress(progress DownloadProgress) {
 	if progress.Total > 0 {
 		percent = fmt.Sprintf(" (%d%%)", progress.Bytes*100/progress.Total)
 	}
-	u.logf("ota download: %s progress %s%s%s", name, amount, percent, resume)
+	logging.Infof("ota", "updater", "ota download: %s progress %s%s%s", name, amount, percent, resume)
 }
 
 func (u *Updater) logWriteProgress(progress WriteProgress) {
-	if u.config.Logger == nil {
-		return
-	}
 	amount := formatDownloadAmount(progress.Bytes, progress.Total)
 	if progress.Complete {
-		u.logf("ota write: %s -> %s complete %s", progress.Part, progress.BlockName, amount)
+		logging.Infof("ota", "updater", "ota write: %s -> %s complete %s", progress.Part, progress.BlockName, amount)
 		return
 	}
 	percent := ""
 	if progress.Total > 0 {
 		percent = fmt.Sprintf(" (%d%%)", progress.Bytes*100/progress.Total)
 	}
-	u.logf("ota write: %s -> %s progress %s%s", progress.Part, progress.BlockName, amount, percent)
+	logging.Infof("ota", "updater", "ota write: %s -> %s progress %s%s", progress.Part, progress.BlockName, amount, percent)
 }
 
 func formatDownloadAmount(bytes int64, total int64) string {

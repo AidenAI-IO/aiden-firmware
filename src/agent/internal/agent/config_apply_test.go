@@ -392,7 +392,7 @@ func TestConfigApplyWorkerLogsOutcome(t *testing.T) {
 		r.QueueConfig(next, 987654321)
 		waitForConfigApplied(t, r)
 		r.StopConfigReloads()
-		for _, want := range []string{"[INFO] [agent] [runtime] config_applied", "revision=987654321", "reboot_required=false"} {
+		for _, want := range []string{"[INFO][agent][runtime] config_applied", "revision=987654321", "reboot_required=false"} {
 			if line := output.String(); !strings.Contains(line, want) {
 				t.Fatalf("log %q missing %q", line, want)
 			}
@@ -410,7 +410,7 @@ func TestConfigApplyWorkerLogsOutcome(t *testing.T) {
 			t.Fatalf("status=%+v", status)
 		}
 		r.StopConfigReloads()
-		for _, want := range []string{"[WARN] [agent] [runtime] config_apply_failed", "revision=42", "config directory cannot be reloaded"} {
+		for _, want := range []string{"[WARN][agent][runtime] config_apply_failed", "revision=42", "config directory cannot be reloaded"} {
 			if line := output.String(); !strings.Contains(line, want) {
 				t.Fatalf("log %q missing %q", line, want)
 			}

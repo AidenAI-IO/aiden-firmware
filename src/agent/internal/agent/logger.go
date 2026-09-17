@@ -14,8 +14,13 @@ import (
 	"aiden-agent/internal/logging"
 )
 
-// Logger provides structured logging to stdout/stderr
-// Output is captured by the init script and written to <config_dir>/log/agent.log.
+// Logger is the Agent's leveled logger. It writes message-style records in the
+// shared logging format and publishes its severity threshold to the process-wide
+// logging helpers, so LogEvent and the Debugf/Infof/Warnf/Errorf family honour
+// the same configured level.
+//
+// Output goes to stderr, which the agent service redirects to
+// <config_dir>/log/agent.log.
 type Logger struct {
 	logger         *log.Logger
 	mu             sync.Mutex
@@ -34,7 +39,7 @@ func NewLogger(configDir string, llmHTTPRetentionDays int, configuredLevel ...st
 		level = configuredLevel[0]
 	}
 	result := &Logger{logger: logger, minimumLevel: configuredLoggingLevel(level)}
-	result.installStandardLogger()
+	result.applyMinimumLevel()
 
 	// Cleanup old llm-http logs in configDir if set
 	if configDir != "" {
@@ -110,7 +115,6 @@ func logFileTime(name string, modTime time.Time) time.Time {
 
 func (l *Logger) Close() error {
 	logging.SetMinimumLevel(logging.Debug)
-	logging.InstallStandard("agent", os.Stderr)
 	return nil
 }
 
@@ -141,13 +145,15 @@ func (l *Logger) allows(level logging.Level) bool {
 	return loggingLevelRank(level) >= loggingLevelRank(l.minimumLevel)
 }
 
-func (l *Logger) installStandardLogger() {
+// applyMinimumLevel publishes the instance minimum to the process-wide logging
+// helpers (LogEvent and the Debugf/Infof/Warnf/Errorf family) so every logging
+// path shares one severity threshold.
+func (l *Logger) applyMinimumLevel() {
 	minimum := logging.Info
 	if l != nil {
 		minimum = l.minimumLevel
 	}
 	logging.SetMinimumLevel(minimum)
-	logging.InstallStandardAtLevel("agent", os.Stderr, minimum)
 }
 
 // SetLevel applies a new minimum severity without restarting the Agent.
@@ -157,7 +163,7 @@ func (l *Logger) SetLevel(level string) {
 	}
 	l.mu.Lock()
 	l.minimumLevel = configuredLoggingLevel(level)
-	l.installStandardLogger()
+	l.applyMinimumLevel()
 	l.mu.Unlock()
 }
 
@@ -217,13 +223,12 @@ func (l *Logger) write(level string, format string, args ...interface{}) {
 		return
 	}
 	callerComponent := loggerCallerComponent()
-	record := logging.FormatLegacyfAt(
+	record := logging.FormatMessageAt(
 		time.Now(),
 		logging.Level(level),
 		"agent",
 		callerComponent,
-		format,
-		args...,
+		fmt.Sprintf(format, args...),
 	)
 	err := l.logger.Output(2, record)
 	l.mu.Unlock()

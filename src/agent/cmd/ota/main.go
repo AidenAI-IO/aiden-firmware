@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"aiden-agent/internal/logging"
 	"aiden-agent/internal/ota"
 )
 
@@ -224,7 +223,6 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	if *testMode {
 		config.HealthTimeout = time.Second
 	}
-	config.Logger = logging.NewLegacyLogger(os.Stderr, "ota", "updater", logging.Info)
 	return config, nil
 }
 

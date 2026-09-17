@@ -2,10 +2,10 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/logging"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -223,14 +223,8 @@ func TestMultiSessionChunkStoreLogsCorruptIndex(t *testing.T) {
 
 	// Capture log output.
 	var logBuf strings.Builder
-	oldFlags := log.Flags()
-	oldOutput := log.Writer()
-	log.SetFlags(0)
-	log.SetOutput(&logBuf)
-	defer func() {
-		log.SetFlags(oldFlags)
-		log.SetOutput(oldOutput)
-	}()
+	restoreOutput := logging.SetOutput(&logBuf)
+	defer restoreOutput()
 
 	store := NewMultiSessionChunkStore(sessionFolder)
 	results, err := store.RecallChunks(ctx, ChunkRecallQuery{Tags: []string{"valid"}, Limit: 10})

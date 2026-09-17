@@ -141,9 +141,9 @@ void log_event(LogLevel level,
     line.append(utc_timestamp());
     line.append(" [");
     line.append(level_name(level));
-    line.append("] [");
+    line.append("][");
     line.append(g_log_service);
-    line.append("] [");
+    line.append("][");
     line.append(normalize_identifier(component, "runtime"));
     line.append("] ");
     line.append(normalize_identifier(event, "log_message"));

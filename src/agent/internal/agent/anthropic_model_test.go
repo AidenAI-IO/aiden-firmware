@@ -6,15 +6,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/logging"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 )
@@ -1163,9 +1164,8 @@ func TestAnthropicModelLogsProtocolFailureToDaemonLogWithoutRawLogger(t *testing
 	defer server.Close()
 
 	var daemonLog bytes.Buffer
-	originalOutput := log.Writer()
-	log.SetOutput(&daemonLog)
-	t.Cleanup(func() { log.SetOutput(originalOutput) })
+	restoreOutput := logging.SetOutput(&daemonLog)
+	t.Cleanup(restoreOutput)
 
 	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(),
 		withAnthropicProtocolRetry(0, 0),
@@ -1178,14 +1178,18 @@ func TestAnthropicModelLogsProtocolFailureToDaemonLogWithoutRawLogger(t *testing
 	}
 
 	logged := daemonLog.String()
+	if !strings.Contains(logged, "[ERROR][agent][anthropic]") {
+		t.Errorf("daemon log missing error record:\n%s", logged)
+	}
+	message := anthropicDaemonProtocolFailureMessage(t, logged)
 	for _, want := range []string{
-		`[ERROR] [anthropic] stream protocol failure`,
+		`stream protocol failure`,
 		`"response_id":"msg_daemon_log"`,
 		`"upstream_request_id":"req_daemon_log"`,
 		`"raw_sse":`,
 	} {
-		if !strings.Contains(logged, want) {
-			t.Errorf("daemon log missing %q:\n%s", want, logged)
+		if !strings.Contains(message, want) {
+			t.Errorf("daemon log message missing %q:\n%s", want, message)
 		}
 	}
 }
@@ -1211,9 +1215,8 @@ func TestAnthropicModelBoundsRawSSEInDaemonProtocolFailureLog(t *testing.T) {
 	defer server.Close()
 
 	var daemonLog bytes.Buffer
-	originalOutput := log.Writer()
-	log.SetOutput(&daemonLog)
-	t.Cleanup(func() { log.SetOutput(originalOutput) })
+	restoreOutput := logging.SetOutput(&daemonLog)
+	t.Cleanup(restoreOutput)
 
 	model := newAnthropicModel(server.URL, "claude-test", "test-token", server.Client(),
 		withAnthropicProtocolRetry(0, 0),
@@ -1334,17 +1337,39 @@ func TestAnthropicModelPreservesRawSSEBytesInProtocolFailureDiagnostic(t *testin
 
 func anthropicDaemonProtocolFailureDiagnostic(t *testing.T, logText string) map[string]any {
 	t.Helper()
-	const marker = "[ERROR] [anthropic] stream protocol failure "
-	markerIndex := strings.Index(logText, marker)
+	message := anthropicDaemonProtocolFailureMessage(t, logText)
+	const marker = "stream protocol failure "
+	markerIndex := strings.Index(message, marker)
 	if markerIndex < 0 {
 		t.Fatalf("daemon log has no Anthropic protocol failure diagnostic:\n%s", logText)
 	}
-	encoded := strings.TrimSpace(logText[markerIndex+len(marker):])
+	encoded := strings.TrimSpace(message[markerIndex+len(marker):])
 	var diagnostic map[string]any
 	if err := json.Unmarshal([]byte(encoded), &diagnostic); err != nil {
 		t.Fatalf("decode daemon protocol failure diagnostic: %v\n%s", err, encoded)
 	}
 	return diagnostic
+}
+
+// anthropicDaemonProtocolFailureMessage decodes the message field of the
+// structured record the logging package writes for an Anthropic protocol
+// failure.
+func anthropicDaemonProtocolFailureMessage(t *testing.T, logText string) string {
+	t.Helper()
+	const marker = "[ERROR][agent][anthropic] log_message message="
+	markerIndex := strings.Index(logText, marker)
+	if markerIndex < 0 {
+		t.Fatalf("daemon log has no Anthropic protocol failure record:\n%s", logText)
+	}
+	quoted := logText[markerIndex+len(marker):]
+	if newline := strings.IndexByte(quoted, '\n'); newline >= 0 {
+		quoted = quoted[:newline]
+	}
+	message, err := strconv.Unquote(strings.TrimSpace(quoted))
+	if err != nil {
+		t.Fatalf("decode daemon protocol failure message: %v\n%s", err, quoted)
+	}
+	return message
 }
 
 func anthropicRawHTTPResponseDiagnostic(t *testing.T, logText string) map[string]any {

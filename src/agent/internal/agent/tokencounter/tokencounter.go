@@ -2,8 +2,8 @@ package tokencounter
 
 import (
 	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/logging"
 	"encoding/json"
-	"log"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -126,6 +126,6 @@ func estimaleLLMPartTokens(part llms.ContentPart) int {
 		return EstimateTextTokens(toolCallResponse.Content)
 	}
 
-	log.Printf("unknown part type: %T, %+v", part, part)
+	logging.Warnf("agent", "tokencounter", "unknown part type: %T, %+v", part, part)
 	return 0
 }

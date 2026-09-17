@@ -2,8 +2,8 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/logging"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -23,7 +23,7 @@ func touchscreenRCALogf(format string, args ...any) {
 	}
 	message := fmt.Sprintf("[touchscreen-rca] "+format, args...)
 	message = strings.NewReplacer("\r", "\\r", "\n", "\\n").Replace(message)
-	log.Print(message)
+	logging.Debugf("agent", "touchscreen_rca_debug", "%s", message)
 }
 
 func touchscreenRCADebugEnabledCached() bool {

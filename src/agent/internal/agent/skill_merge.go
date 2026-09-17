@@ -1,11 +1,11 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -126,13 +126,13 @@ func (w *MergeWorker) processJob(ctx context.Context, job SkillMergeJob) {
 		Local:     job.Local,
 	})
 	if err != nil {
-		log.Printf("[skill_merge] LLM call failed for %s: %v", job.SkillName, err)
+		logging.Errorf("agent", "skill_merge", "LLM call failed for %s: %v", job.SkillName, err)
 		w.recordFailure(job, err.Error())
 		return
 	}
 
 	if !mergeResultOK(result, job.SkillName) {
-		log.Printf("[skill_merge] validation failed for %s: %s", job.SkillName, result.Summary)
+		logging.Errorf("agent", "skill_merge", "validation failed for %s: %s", job.SkillName, result.Summary)
 		w.recordFailure(job, result.Summary)
 		return
 	}
@@ -140,12 +140,12 @@ func (w *MergeWorker) processJob(ctx context.Context, job SkillMergeJob) {
 	// Write to temp, then move
 	tmpPath := filepath.Join(job.StateDir, "tmp", job.SkillName+".candidate.SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(tmpPath), 0o755); err != nil {
-		log.Printf("[skill_merge] mkdir tmp: %v", err)
+		logging.Errorf("agent", "skill_merge", "mkdir tmp: %v", err)
 		w.recordFailure(job, err.Error())
 		return
 	}
 	if err := os.WriteFile(tmpPath, []byte(result.MergedSkillMD), 0o644); err != nil {
-		log.Printf("[skill_merge] write tmp: %v", err)
+		logging.Errorf("agent", "skill_merge", "write tmp: %v", err)
 		w.recordFailure(job, err.Error())
 		return
 	}
@@ -155,13 +155,13 @@ func (w *MergeWorker) processJob(ctx context.Context, job SkillMergeJob) {
 	currentContent, err := os.ReadFile(job.UserPath)
 	if err != nil {
 		skillFileMu.Unlock()
-		log.Printf("[skill_merge] %s: read local before apply failed: %v", job.SkillName, err)
+		logging.Errorf("agent", "skill_merge", "%s: read local before apply failed: %v", job.SkillName, err)
 		w.recordFailure(job, err.Error())
 		return
 	}
 	if hashContent(currentContent) != job.LocalHash {
 		skillFileMu.Unlock()
-		log.Printf("[skill_merge] %s: local changed during merge, skipping apply", job.SkillName)
+		logging.Warnf("agent", "skill_merge", "%s: local changed during merge, skipping apply", job.SkillName)
 		w.recordFailure(job, "local changed before apply")
 		return
 	}
@@ -173,14 +173,14 @@ func (w *MergeWorker) processJob(ctx context.Context, job SkillMergeJob) {
 	}
 	if err := moveFile(tmpPath, job.UserPath); err != nil {
 		skillFileMu.Unlock()
-		log.Printf("[skill_merge] move: %v", err)
+		logging.Errorf("agent", "skill_merge", "move: %v", err)
 		w.recordFailure(job, err.Error())
 		return
 	}
 	skillFileMu.Unlock()
 
 	if err := saveBase(job.BasePath, []byte(job.Upstream)); err != nil {
-		log.Printf("[skill_merge] write base: %v", err)
+		logging.Errorf("agent", "skill_merge", "write base: %v", err)
 		w.recordFailure(job, err.Error())
 		return
 	}
@@ -201,7 +201,7 @@ func (w *MergeWorker) processJob(ctx context.Context, job SkillMergeJob) {
 	if w.onSuccess != nil {
 		w.onSuccess(job)
 	}
-	log.Printf("[skill_merge] %s merged successfully", job.SkillName)
+	logging.Infof("agent", "skill_merge", "%s merged successfully", job.SkillName)
 }
 
 func (w *MergeWorker) recordFailure(job SkillMergeJob, errMsg string) {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -11,7 +12,6 @@ import (
 	"image/color"
 	"image/draw"
 	"image/jpeg"
-	"log"
 	"math"
 	"strings"
 	"time"
@@ -188,7 +188,7 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 			}
 		}
 		resolved := t.defaults.Resolved()
-		log.Printf("[INFO] stable-screen: tool=%s timeout_ms=%d elapsed_ms=%d stable=%v", t.inner.Name(), resolved.TimeoutMs, waitResult.ElapsedMs, waitResult.Stable)
+		logging.Infof("agent", "tools_post_action_screenshot", "stable-screen: tool=%s timeout_ms=%d elapsed_ms=%d stable=%v", t.inner.Name(), resolved.TimeoutMs, waitResult.ElapsedMs, waitResult.Stable)
 		if !waitResult.OK {
 			return postActionErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed", t.inner.Name(), actionOutput), nil
 		}
