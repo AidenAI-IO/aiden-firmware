@@ -61,6 +61,72 @@ def _scrolls_content_back_up(start: dict[str, float], end: dict[str, float]) -> 
     """
     return float(end["y"]) > float(start["y"])
 
+
+# Tools the Go agent routes to the environment bridge for launching an app.
+# Without these the agent has no way to open an installed app and falls back to
+# hunting for launcher icons, which is unreliable across apps.
+OPEN_APP_TOOLS = ("bridge_open_app", "search_launch_app")
+OPEN_APP_SETTLE_SEC = 0.8
+
+
+def open_app_args_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "app": {
+                "type": "string",
+                "description": "Installed app id or display name, for example scroll_lab or 列表实验室.",
+            }
+        },
+        "required": ["app"],
+    }
+
+
+def _normalize_app_token(value: str) -> str:
+    return "".join(ch for ch in value.strip().lower() if ch.isalnum())
+
+
+def _match_app_id(requested: str, entries: list[tuple[str, str]]) -> str | None:
+    """Match a requested app against installed (id, display name) pairs."""
+    want = requested.strip()
+    if not want:
+        return None
+    for app_id, _name in entries:
+        if app_id == want:
+            return app_id
+    for app_id, name in entries:
+        if name and name.strip().lower() == want.lower():
+            return app_id
+    want_token = _normalize_app_token(want)
+    if not want_token:
+        return None
+    for app_id, name in entries:
+        if want_token in {_normalize_app_token(app_id), _normalize_app_token(name)}:
+            return app_id
+    for app_id, name in entries:
+        if want_token in _normalize_app_token(name) or want_token in _normalize_app_token(app_id):
+            return app_id
+    return None
+
+
+async def _resolve_mobilegym_app_id(env: Any, requested: str) -> str | None:
+    page = getattr(env, "page", None)
+    if page is None:
+        return None
+    installed = await page.evaluate(
+        """() => {
+            const state = window.__SIM__?.getState?.() || {};
+            return (state.os?.installedApps || []).map((app) => ({ id: app.id, name: app.name }));
+        }"""
+    )
+    entries = [
+        (str(entry.get("id") or ""), str(entry.get("name") or ""))
+        for entry in (installed or [])
+        if isinstance(entry, dict)
+    ]
+    return _match_app_id(requested, entries)
+
 US_KEYBOARD_TEXT_CHARS = set(
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -256,6 +322,16 @@ class ToolsAPIHandler:
                         {"required": ["list"], "properties": {"list": {"const": True}}},
                     ],
                 },
+            },
+            {
+                "name": "bridge_open_app",
+                "description": "Launch an installed MobileGym app by id or display name and return a screenshot.",
+                "args_schema": open_app_args_schema(),
+            },
+            {
+                "name": "search_launch_app",
+                "description": "Launch an installed MobileGym app by id or display name and return a screenshot.",
+                "args_schema": open_app_args_schema(),
             },
         ]
 
@@ -455,6 +531,8 @@ class ToolsAPIHandler:
             return self._call_mouse_scroll(state, tool_input, episode_id)
         elif tool_name == "quick_action":
             return self._call_quick_action(state, tool_input, episode_id)
+        elif tool_name in OPEN_APP_TOOLS:
+            return self._call_open_app(state, tool_input, episode_id)
         else:
             return {"output": f"unknown tool: {tool_name}", "is_error": True, "error": "unknown_tool"}
 
@@ -806,6 +884,36 @@ class ToolsAPIHandler:
         future = asyncio.run_coroutine_threadsafe(state.run_env(step_env), state.owner_loop)
         return future.result(timeout=self.request_timeout_sec)
 
+    def _call_open_app(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+        """Launch an installed MobileGym app and return a screenshot of the result."""
+        requested = str(tool_input.get("app") or "").strip()
+        if not requested:
+            return {"output": "error: app is required", "is_error": True}
+
+        async def open_app(env: Any) -> dict[str, Any]:
+            state.require_active(episode_id)
+            page = getattr(env, "page", None)
+            if page is None:
+                raise RuntimeError("environment does not expose a browser page")
+            app_id = await _resolve_mobilegym_app_id(env, requested)
+            if app_id is None:
+                raise RuntimeError(f"app is not installed: {requested}")
+            await page.evaluate(
+                """(appId) => {
+                    if (!window.__OS__?.openApp) throw new Error('window.__OS__.openApp is unavailable');
+                    window.__OS__.openApp(appId, '/');
+                }""",
+                app_id,
+            )
+            await asyncio.sleep(OPEN_APP_SETTLE_SEC)
+            return await _ok_with_screenshot(env, app=app_id)
+
+        future = asyncio.run_coroutine_threadsafe(state.run_env(open_app), state.owner_loop)
+        try:
+            return future.result(timeout=self.request_timeout_sec)
+        except Exception as exc:
+            return {"output": f"error: {exc}", "is_error": True}
+
     def _call_noop_with_screenshot(self, state: BridgeEpisodeState, episode_id: str) -> dict[str, Any]:
         async def get_screenshot(env: Any) -> dict[str, Any]:
             state.require_active(episode_id)
@@ -837,6 +945,21 @@ async def _maybe_await(value: Any) -> Any:
     if asyncio.iscoroutine(value):
         return await value
     return value
+
+
+async def _ok_with_screenshot(env: Any, **extra: Any) -> dict[str, Any]:
+    """Build an ok tool result carrying the current screen plus caller metadata."""
+    observation = await _maybe_await(env.get_observation())
+    screenshot = _encode_observation_screenshot(observation)
+    output_data = {
+        "action_output": "ok",
+        **extra,
+        "data": screenshot["data"],
+        "width": screenshot["width"],
+        "height": screenshot["height"],
+        "format": screenshot.get("format", "jpeg"),
+    }
+    return {"output": json.dumps(output_data), "is_error": False}
 
 
 def _encode_observation_screenshot(observation: Any) -> dict[str, Any]:

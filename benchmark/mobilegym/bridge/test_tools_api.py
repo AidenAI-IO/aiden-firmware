@@ -10,6 +10,25 @@ import pytest
 from .episode import BridgeEpisodeState, BridgeTaskRouter
 from .actions import action_to_dict
 from .server import BridgeServer
+from .tools_api import _match_app_id
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        ("列表实验室", "scroll_lab"),
+        ("scroll_lab", "scroll_lab"),
+        ("scroll lab", "scroll_lab"),
+        ("scrolllab", "scroll_lab"),
+        ("Scroll Lab", "scroll_lab"),
+        ("时钟", "clock"),
+        ("不存在的应用", None),
+        ("", None),
+    ],
+)
+def test_match_app_id_resolves_ids_names_and_loose_spellings(requested, expected):
+    entries = [("clock", "时钟"), ("scroll_lab", "列表实验室")]
+    assert _match_app_id(requested, entries) == expected
 
 
 @pytest.fixture
@@ -89,7 +108,14 @@ def test_get_tools_catalog(bridge_server):
         "mouse_move",
         "mouse_scroll",
         "quick_action",
+        "bridge_open_app",
+        "search_launch_app",
     }
+    for open_app_name in ("bridge_open_app", "search_launch_app"):
+        open_app_schema = tools[open_app_name]["args_schema"]
+        assert open_app_schema["additionalProperties"] is False
+        assert open_app_schema["required"] == ["app"]
+        assert open_app_schema["properties"]["app"]["type"] == "string"
 
     assert tools["touch_gesture"]["args_schema"]["additionalProperties"] is False
     touch_props = tools["touch_gesture"]["args_schema"]["properties"]
