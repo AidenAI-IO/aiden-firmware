@@ -27,9 +27,8 @@ transaction=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || date -u +%Y%m%d
 case "${transaction}" in *[!A-Za-z0-9._-]*) echo "Invalid migration transaction id" >&2; exit 1 ;; esac
 backup_dir=${backup_root}/${transaction}
 mkdir -p "${state_dir}" "${backup_dir}" "${wifi_dir}" \
-    "${debian_dir}/ota" /userdata/system/ssh /userdata/userhome/.ssh /userdata/home
+    "${debian_dir}/ota" /userdata/system/ssh /userdata/userhome/.ssh
 chmod 0700 /userdata/system/ssh /userdata/userhome/.ssh
-chmod 0755 /userdata/home
 
 backup_path() {
     source=$1

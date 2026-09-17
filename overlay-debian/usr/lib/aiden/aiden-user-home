@@ -13,6 +13,14 @@ mkdir -p "${source_home}" "${target_home}"
 chmod 0755 "${source_home}"
 
 # If /home is not already a mount point or not mounted from userdata, bind mount it
-if ! findmnt -nr --target "${target_home}" | awk -v target="${target_home}" '$2 == target {found=1} END {exit !found}'; then
+if ! findmnt -nr -o TARGET --target "${target_home}" \
+    | awk -v target="${target_home}" '$1 == target {found=1} END {exit !found}'; then
+    # The factory rootfs ships /home/aiden, and a device upgraded from a
+    # release without this service holds any home created since. Seed those
+    # into userdata first so the bind mount does not hide them. Reading
+    # ${target_home} here is safe because it is still the rootfs directory.
+    if [ -z "$(ls -A "${source_home}")" ] && [ -n "$(ls -A "${target_home}")" ]; then
+        cp -a "${target_home}/." "${source_home}/"
+    fi
     mount --bind "${source_home}" "${target_home}"
 fi
