@@ -29,7 +29,7 @@ func run(args []string, out io.Writer) error {
 func runWithConfig(args []string, out io.Writer, configure func(*ota.UpdaterConfig)) error {
 	command, args := splitCommandAndFlags(args)
 	positional := flagArgs(args)
-	if (command == "health" || command == "mark-health" || command == "provision-identity" || command == "update" || command == "check-now" || command == "status") && len(positional) != 0 {
+	if (command == "health" || command == "mark-health" || command == "provision-identity" || command == "update" || command == "check-now" || command == "status" || command == "self-check" || command == "rollback" || command == "recover") && len(positional) != 0 {
 		return usage()
 	}
 	config, err := parseConfigFlags(args)
@@ -46,6 +46,25 @@ func runWithConfig(args []string, out io.Writer, configure func(*ota.UpdaterConf
 	ctx := context.Background()
 
 	switch command {
+	case "self-check":
+		report := ota.RunSelfCheck(ctx, ota.DefaultSelfCheckConfig())
+		if err := ota.SaveSelfCheckReport(filepath.Join(config.StateDir, "health", "current.json"), report); err != nil {
+			return err
+		}
+		if err := json.NewEncoder(out).Encode(report); err != nil {
+			return err
+		}
+		if report.Fatal() {
+			return fmt.Errorf("self-check failed: %d required check(s)", report.Failures)
+		}
+		return nil
+	case "rollback":
+		if config.DryRun {
+			return fmt.Errorf("--dry-run is not supported with rollback")
+		}
+		return updater.Rollback("manual rollback")
+	case "recover":
+		return updater.RecoverPendingData()
 	case "health":
 		return updater.ProcessPendingHealthOnce(ctx)
 	case "mark-health":
@@ -121,6 +140,9 @@ func splitCommandAndFlags(args []string) (string, []string) {
 		"check-now":          true,
 		"status":             true,
 		"verify-manifest":    true,
+		"self-check":         true,
+		"rollback":           true,
+		"recover":            true,
 	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -258,5 +280,5 @@ func flagTakesValue(name string) bool {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: ota [flags] [health|mark-health|provision-identity|update|check-now|status|verify-manifest <manifest>]")
+	return fmt.Errorf("usage: ota [flags] [health|mark-health|provision-identity|update|check-now|status|self-check|rollback|recover|verify-manifest <manifest>]")
 }

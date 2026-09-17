@@ -59,6 +59,16 @@ grep -Fq -- '--output-dir "${OUTPUT_DIR}/rootfs-cli-tools"' \
 grep -Fq -- '--catalog "${REPO_ROOT}/scripts/rootfs_cli_tools.catalog"' \
     "${APPS_DIR}/container-build-rootfs-cli-tools.sh"
 grep -Fq 'run_cli_tools' "${APPS_DIR}/build-apps.sh"
+# `go install module@version` inside the container must use the host's module
+# proxy. Without this the self-hosted builders fall back to proxy.golang.org and
+# the rootfs CLI tool build dies on a connection reset.
+for go_proxy_var in GOPROXY GONOPROXY GOPRIVATE GOSUMDB GONOSUMDB; do
+    grep -Eq -- "^[[:space:]]*-e ${go_proxy_var} \\\\$" "${APPS_DIR}/build-apps.sh" ||
+        fail "apps container must forward ${go_proxy_var} to reach the module proxy"
+done
+if grep -Eq -- '^[[:space:]]*-e GOFLAGS \\$' "${APPS_DIR}/build-apps.sh"; then
+    fail "apps container must not inherit GOFLAGS, which would change build output"
+fi
 grep -Fq 'overlay-debian-oem/usr/model' "${APPS_DIR}/prepare-board-g0.sh"
 grep -Fq 'bin/ttyd' "${APPS_DIR}/prepare-board-g0.sh"
 if grep -Fq '${REPO_ROOT}/overlay/oem' "${APPS_DIR}/prepare-board-g0.sh"; then
