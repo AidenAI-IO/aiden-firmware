@@ -442,6 +442,17 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		if statePrepared {
 			return nil
 		}
+		// Debian writes and frees one archive at a time. Publish the protected
+		// snapshot before the first target invalidation or partition write.
+		snapshotPath, err := SnapshotProtectedData(u.config.StateDir, manifest.Version)
+		if err != nil {
+			return fmt.Errorf("snapshot protected data: %w", err)
+		}
+		state.DataSnapshotPath = snapshotPath
+		if state.SlotBuildTimes == nil {
+			state.SlotBuildTimes = map[string]string{}
+		}
+		state.SlotBuildTimes[targetNameForState(target)] = manifest.BuildTime
 		state.Phase = "writing"
 		state.TargetVersion = manifest.Version
 		state.TargetBuildTime = manifest.BuildTime
@@ -466,7 +477,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			state.PendingTargetSlot = nil
 		}
 		delete(state.Slots, targetKey)
-		if err := SaveState(u.statePath(), state); err != nil {
+		if err := u.saveSnapshotState(state); err != nil {
 			return err
 		}
 		statePrepared = true
@@ -827,6 +838,13 @@ func (u *Updater) clearPendingAfterRollback(running Slot) error {
 	if err != nil {
 		return err
 	}
+	if state.DataSnapshotPath != "" {
+		if err := RestoreProtectedData(state.DataSnapshotPath); err != nil {
+			state.LastError = fmt.Sprintf("%s; data restore: %v", state.LastError, err)
+			_ = SaveState(u.statePath(), state)
+			return err
+		}
+	}
 	state.Phase = "rolled-back"
 	state.ActiveSlot = running
 	state.TargetSlot = running
@@ -835,6 +853,7 @@ func (u *Updater) clearPendingAfterRollback(running Slot) error {
 	state.PendingBootNonce = ""
 	state.PendingBootID = ""
 	state.PendingTargetSlot = nil
+	state.DataSnapshotPath = ""
 	if err := SaveState(u.statePath(), state); err != nil {
 		return err
 	}
@@ -842,6 +861,29 @@ func (u *Updater) clearPendingAfterRollback(running Slot) error {
 		return err
 	}
 	return nil
+}
+
+// saveSnapshotState publishes state and, when publication fails, removes the
+// snapshot only after reading back the state file proves nothing references it.
+// A snapshot path recorded on disk (this one or another transaction's) is left
+// alone: rollback and recovery still need it, and pruning bounds what leaks.
+func (u *Updater) saveSnapshotState(state State) error {
+	err := SaveState(u.statePath(), state)
+	if err == nil {
+		return nil
+	}
+	if state.DataSnapshotPath == "" {
+		return err
+	}
+	saved, readErr := LoadState(u.statePath())
+	if (readErr == nil && saved.DataSnapshotPath != state.DataSnapshotPath) || os.IsNotExist(readErr) {
+		if removeErr := os.RemoveAll(state.DataSnapshotPath); removeErr != nil {
+			return errors.Join(err, removeErr)
+		}
+		// Make the removal durable in the parent transactions directory.
+		return errors.Join(err, fsyncDirFor(state.DataSnapshotPath))
+	}
+	return err
 }
 
 func (u *Updater) commitPendingHealth(pending PendingBoot) error {
@@ -941,6 +983,155 @@ func (u *Updater) Status() (State, ABData, error) {
 		return state, ABData{}, abErr
 	}
 	return state, ab, nil
+}
+
+// Rollback selects the last successful slot and reboots into it. It is also
+// used by the self-check supervisor for failures discovered after boot.
+func (u *Updater) Rollback(reason string) error {
+	if err := u.ensureStorageReady(); err != nil {
+		return err
+	}
+	unlock, err := u.acquireUpdateLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	state, err := u.loadState()
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if state.DataSnapshotPath != "" {
+		if err := RestoreProtectedData(state.DataSnapshotPath); err != nil {
+			state.LastError = fmt.Sprintf("%s; data restore: %v", strings.TrimSpace(reason), err)
+			_ = SaveState(u.statePath(), state)
+			return err
+		}
+	}
+	ab, err := u.readABData()
+	if err != nil {
+		return err
+	}
+	active, ok := ab.ActiveSlot()
+	if !ok {
+		return errors.New("misc has no bootable active slot")
+	}
+	previous := SlotA
+	if active == SlotA {
+		previous = SlotB
+	}
+	if !ab.Slots[previous].SuccessfulBoot {
+		return fmt.Errorf("no successful previous slot available (active=%s)", slotLogName(active))
+	}
+	// The old slot was already the last committed slot. Make it successful
+	// immediately so a rollback does not create a second probation boot with no
+	// pending health marker.
+	if err := ab.SetActive(previous, 0, true); err != nil {
+		return err
+	}
+	if err := u.writeABData(ab); err != nil {
+		return err
+	}
+	state.Phase = "rollback-requested"
+	state.LastError = strings.TrimSpace(reason)
+	state.ActiveSlot = active
+	state.TargetSlot = previous
+	if err := SaveState(u.statePath(), state); err != nil {
+		return err
+	}
+	_ = os.Remove(u.pendingPath())
+	_ = os.Remove(u.healthPath())
+	if u.reboot != nil {
+		return u.reboot()
+	}
+	return nil
+}
+
+// RecoverPendingData is safe to run during early boot. It completes the
+// configuration side of an interrupted rollback without touching append-only
+// user data.
+func (u *Updater) RecoverPendingData() error {
+	if err := u.ensureStorageReady(); err != nil {
+		return err
+	}
+	unlock, err := u.acquireUpdateLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	// First boot must not require a factory baseline or identity migration.
+	// There is nothing to recover until a transaction state has been saved.
+	state, err := LoadState(u.statePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	running, runningOK, err := u.currentSlot()
+	if err != nil {
+		return err
+	}
+	ab, err := u.readABData()
+	if err != nil {
+		return err
+	}
+	miscActive, miscOK := ab.ActiveSlot()
+	if err := pruneProtectedSnapshots(u.config.StateDir, state.DataSnapshotPath); err != nil {
+		return err
+	}
+	if state.Phase == "pending-reboot" && runningOK && running != state.TargetSlot && miscOK && miscActive == running && ab.Slots[running].SuccessfulBoot {
+		return u.clearPendingAfterRollback(running)
+	}
+	if state.Phase == "rollback-requested" && runningOK {
+		if miscOK && miscActive == state.TargetSlot && running == state.TargetSlot && ab.Slots[running].SuccessfulBoot {
+			if state.DataSnapshotPath != "" {
+				if err := RestoreProtectedData(state.DataSnapshotPath); err != nil {
+					return err
+				}
+				state.DataSnapshotPath = ""
+			}
+			reconcileRollbackState(&state, running, true)
+			return SaveState(u.statePath(), state)
+		}
+		if miscOK && miscActive == state.ActiveSlot && running == state.ActiveSlot && ab.Slots[running].SuccessfulBoot {
+			reconcileRollbackState(&state, running, false)
+			return SaveState(u.statePath(), state)
+		}
+	}
+	return nil
+}
+
+func reconcileRollbackState(state *State, running Slot, completed bool) {
+	name, err := slotName(running)
+	if err != nil {
+		return
+	}
+	state.ActiveSlot = running
+	state.TargetSlot = running
+	state.TargetVersion = ""
+	state.TargetBuildTime = ""
+	state.PendingBootNonce = ""
+	state.PendingBootID = ""
+	state.PendingTargetSlot = nil
+	if completed {
+		state.Phase = "rolled-back"
+	} else {
+		state.Phase = "committed"
+	}
+	state.CurrentVersion = ""
+	state.CurrentBuildTime = ""
+	if slot, ok := state.Slots[name]; ok {
+		if part, ok := slot.Partitions["boot"]; ok && part.Version != "" {
+			state.CurrentVersion = part.Version
+		}
+	}
+	if state.SlotBuildTimes != nil {
+		if buildTime := state.SlotBuildTimes[name]; buildTime != "" {
+			state.CurrentBuildTime = buildTime
+		}
+	}
+	state.LastCommittedVersion = state.CurrentVersion
+	state.LastCommittedBuildTime = state.CurrentBuildTime
 }
 
 func (u *Updater) VerifyManifestFile(path string) (Manifest, error) {

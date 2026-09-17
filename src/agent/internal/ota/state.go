@@ -32,6 +32,9 @@ type State struct {
 	PendingBootNonce       string                       `json:"pending_boot_nonce,omitempty"`
 	PendingBootID          string                       `json:"pending_boot_id,omitempty"`
 	PendingTargetSlot      *SlotPartitionInfo           `json:"pending_target_slot,omitempty"`
+	DataSnapshotPath       string                       `json:"data_snapshot_path,omitempty"`
+	SelfCheck              *SelfCheckReport             `json:"self_check,omitempty"`
+	SlotBuildTimes         map[string]string            `json:"slot_build_times,omitempty"`
 }
 
 type RetryMetadata struct {
@@ -60,6 +63,7 @@ func NewFactoryState(version string, buildTime string, hashes map[string]map[str
 		LastCommittedVersion:   version,
 		LastCommittedBuildTime: buildTime,
 		Slots:                  map[string]SlotPartitionInfo{},
+		SlotBuildTimes:         map[string]string{"a": buildTime, "b": buildTime},
 	}
 	for _, slot := range []Slot{SlotA, SlotB} {
 		parts := map[string]PartitionVersion{}
@@ -259,8 +263,9 @@ func slotName(slot Slot) (string, error) {
 	}
 }
 
-func fsyncDirFor(path string) error {
-	dir, err := os.Open(filepath.Dir(path))
+// fsyncDir makes the entries of dir itself durable.
+func fsyncDir(path string) error {
+	dir, err := os.Open(path)
 	if err != nil {
 		return err
 	}
@@ -272,4 +277,9 @@ func fsyncDirFor(path string) error {
 		return err
 	}
 	return nil
+}
+
+// fsyncDirFor makes the entry naming path durable in its parent directory.
+func fsyncDirFor(path string) error {
+	return fsyncDir(filepath.Dir(path))
 }
