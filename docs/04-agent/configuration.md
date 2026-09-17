@@ -6,6 +6,14 @@ sidebar_position: 2
 
 The Agent daemon takes `-dir`, the data directory it works out of. `agent.toml` is only one of the things that live there: skills, memory, cache and logs are all resolved relative to it (see [Directory layout](#directory-layout)). The `config`, `config-check` and `config-test` subcommands take `-config` with the path to a TOML config file. Every field below lives in `agent.toml`. Most fields can be edited through the on-device [Config Web page](#config-web-the-device-config-page); sections without dedicated controls are preserved by Config Web and can be edited by hand. TOML is the only supported config format; JSON config is deprecated.
 
+`config-check --config <path>` reports whether the Agent can boot from that file, using
+the same runtime loader and verdict the Config Web recovery page reports, so the two
+cannot disagree. It is therefore more permissive than the strict save-time validation
+for states the runtime recovers from on its own, such as a persisted
+`input_mode = "realtime"` whose credential was removed: the Agent falls back to text
+mode instead of refusing to start, and neither surface flags it. Candidate values a
+user is about to save are validated strictly by `config-check --stdin`.
+
 The daemon also accepts `-device-type <value>` as a process-local override for
 `[basic_settings.device].device_type`. The override is applied after `agent.toml` is loaded, so
 the command-line value has higher priority and does not rewrite the config file.

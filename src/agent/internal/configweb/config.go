@@ -27,19 +27,16 @@ func (s *Server) runAgentCLI(timeout time.Duration, input []byte, args ...string
 }
 
 // configValidationState reports the recovery state the page renders: whether the
-// Agent runtime accepts the persisted config, and which field to highlight. The
-// runtime loader is the authority because it is the loader the Agent boots with,
-// so the verdict here cannot drift from the one that keeps the Agent down.
+// Agent runtime accepts the persisted config, and which field to highlight. It
+// delegates to agent.ConfigValidationVerdict so the portal and
+// `agent config-check --config` report the same verdict.
 //
 // Callers reach this only after `agent config` has already read the same file
 // through the editor loader, which rejects an unreadable, undecodable, or
 // non-file target before a form is rendered. An unusable file therefore answers
 // unavailable from that step, and a failure here names a field to repair.
 func configValidationState(path string) (bool, []agent.ConfigValidationError) {
-	if _, err := agent.LoadRuntimeConfig(path); err != nil {
-		return false, agent.ParseConfigValidationErrors(err)
-	}
-	return true, []agent.ConfigValidationError{}
+	return agent.ConfigValidationVerdict(path)
 }
 
 // logAgentRecoveryState names the persisted value that keeps the Agent from

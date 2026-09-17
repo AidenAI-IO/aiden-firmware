@@ -1186,3 +1186,60 @@ func runConfigTestWithStdin(t *testing.T, configPath, request string) (ConfigTes
 	}
 	return result, code
 }
+
+// `config-check --config` and the Config Web recovery portal answer the same
+// question -- can the Agent boot from this file? -- so they have to agree. They
+// disagreed on realtime mode without a credential: the runtime falls back to text
+// mode and boots, the portal reported the config as valid, and this command
+// reported a field error the user could not clear by following its advice.
+//
+// Candidate values a user is about to save stay strictly validated by
+// checkConfig over the config_web payload (see TestCheckConfig*).
+func TestCheckConfigPathMatchesTheRuntimeVerdict(t *testing.T) {
+	dir := t.TempDir()
+
+	realtimeNoCredential := filepath.Join(dir, "realtime.toml")
+	writeConfigFixture(t, realtimeNoCredential, `[model_settings.model]
+provider = "fake"
+
+[voice_settings.mode]
+input_mode = "realtime"
+`)
+	if got := checkConfigPath(realtimeNoCredential); !got.Valid || len(got.Errors) != 0 {
+		t.Fatalf("checkConfigPath(realtime) = %+v, want the runtime fallback to text mode reported as valid", got)
+	}
+
+	missingProvider := filepath.Join(dir, "stt.toml")
+	writeConfigFixture(t, missingProvider, `[model_settings.model]
+provider = "fake"
+
+[voice_settings.classic.tts]
+provider = "minimax-cn"
+
+[voice_settings.mode]
+input_mode = "stt"
+`)
+	got := checkConfigPath(missingProvider)
+	if got.Valid || len(got.Errors) != 1 || got.Errors[0].Field != "stt.provider" {
+		t.Fatalf("checkConfigPath(stt) = %+v, want the missing provider flagged", got)
+	}
+
+	// The portal renders the built-in defaults for an absent file and a save
+	// creates it, so a device that was never configured is not invalid.
+	if got := checkConfigPath(filepath.Join(dir, "absent.toml")); !got.Valid {
+		t.Fatalf("checkConfigPath(absent) = %+v, want the built-in defaults reported as valid", got)
+	}
+
+	damaged := filepath.Join(dir, "damaged.toml")
+	writeConfigFixture(t, damaged, "[broken")
+	if got := checkConfigPath(damaged); got.Valid {
+		t.Fatalf("checkConfigPath(damaged) = %+v, want a file it cannot decode to fail", got)
+	}
+}
+
+func writeConfigFixture(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		t.Fatal(err)
+	}
+}

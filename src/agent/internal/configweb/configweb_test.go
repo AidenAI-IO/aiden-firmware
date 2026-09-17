@@ -297,14 +297,14 @@ locale = "fr-FR"
 	}
 
 	// A missing file is a state the page can repair: it renders the built-in
-	// defaults and saving creates the file. So it is reported as an invalid
-	// configuration naming the file, not as an unavailable response.
+	// defaults and saving creates the file. The runtime treats an absent agent.toml
+	// as "all defaults" rather than as a file that declared nothing, so this is a
+	// valid configuration, not a recovery state.
 	if err := os.Remove(options.AgentConfigPath); err != nil {
 		t.Fatal(err)
 	}
-	if valid, failure := state(); valid || failure.Field != "" ||
-		!strings.Contains(failure.Message, filepath.Base(options.AgentConfigPath)) {
-		t.Fatalf("valid=%v error=%+v, want a fieldless error naming the missing file", valid, failure)
+	if valid, failure := state(); !valid {
+		t.Fatalf("valid=%v error=%+v, want an absent config reported as the built-in defaults", valid, failure)
 	}
 }
 

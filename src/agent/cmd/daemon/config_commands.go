@@ -116,9 +116,21 @@ func runConfigCheck(args []string) int {
 	return 1
 }
 
+// checkConfigPath answers the question the config page asks: can the Agent boot
+// from this persisted file? It reads the runtime verdict, which is the same
+// authority the Config Web recovery portal reports, so a user repairing a config
+// the portal flags cannot be told by the CLI that the file was already fine (or
+// the reverse). LoadRuntimeConfig is deliberately more permissive than
+// Config.Validate for states the runtime recovers from, such as a stale
+// realtime mode whose credential was removed, where the Agent falls back to text
+// mode instead of refusing to start.
+//
+// Candidate values a user is about to save are still validated strictly, by
+// checkConfig over the config_web payload.
 func checkConfigPath(path string) ValidationResult {
-	if _, err := agent.LoadResolvedConfig(path); err != nil {
-		return ValidationResult{Valid: false, Errors: parseValidationErrors(err)}
+	valid, validationErrors := agent.ConfigValidationVerdict(path)
+	if !valid {
+		return ValidationResult{Valid: false, Errors: validationErrors}
 	}
 	return ValidationResult{Valid: true, Errors: []ValidationError{}}
 }
@@ -462,6 +474,9 @@ func configTestFailure(check, detail string) ConfigTestResult {
 	}
 }
 
+// parseValidationErrors converts a validation error into structured field errors.
+// The mapping is shared with the Config Web recovery portal, which highlights the
+// same field, so it lives in the agent package.
 func parseValidationErrors(err error) []ValidationError {
 	return agent.ParseConfigValidationErrors(err)
 }

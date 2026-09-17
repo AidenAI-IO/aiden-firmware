@@ -23,6 +23,64 @@ func TestStandaloneSTTConfigTestAPILoadsConfigWithoutAgentRuntime(t *testing.T) 
 	}
 }
 
+// The live STT test is most useful while the persisted config is in recovery:
+// the flagged stt.provider is what the user is testing a replacement for. The
+// candidate values come from the request, so the file only has to be readable,
+// while a file that cannot be decoded must still fail.
+//
+// The request carries no values on purpose: the handler then stops at its own
+// request check, which tells the two load outcomes apart without recording audio.
+func TestSTTConfigTestLiveSessionLoadsRecoverableConfigAndRejectsDamagedFiles(t *testing.T) {
+	dir := ensureTestConfigDir(t, t.TempDir())
+	recovery := filepath.Join(dir, "agent.toml")
+	writeFile(t, recovery, `[model_settings.model]
+provider = "fake"
+
+[voice_settings.mode]
+input_mode = "stt"
+`)
+	if _, err := LoadRuntimeConfig(recovery); err == nil {
+		t.Fatal("expected the runtime loader to reject a declared stt mode with no provider")
+	}
+	if got := sttConfigTestStartBody(t, recovery); got.Code != http.StatusBadRequest ||
+		!strings.Contains(got.Body.String(), "missing stt_values") {
+		t.Fatalf("the live test refused a recoverable config: status=%d body=%s", got.Code, got.Body.String())
+	}
+
+	damaged := filepath.Join(dir, "damaged.toml")
+	writeFile(t, damaged, "[broken")
+	got := sttConfigTestStartBody(t, damaged)
+	if got.Code != http.StatusServiceUnavailable || !strings.Contains(got.Body.String(), "load Agent config") {
+		t.Fatalf("status=%d body=%s, want a file it cannot decode to fail", got.Code, got.Body.String())
+	}
+}
+
+// sttConfigTestStartBody drives the standalone STT test API the way config-web
+// does. The request carries no values on purpose: the handler then stops at its
+// own request check, which tells the two load outcomes apart without recording
+// audio.
+func sttConfigTestStartBody(t *testing.T, configPath string) *httptest.ResponseRecorder {
+	t.Helper()
+	api := NewSTTConfigTestAPI(configPath)
+	api.server = newServerForTest(NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	))
+	resp := httptest.NewRecorder()
+	api.HandleStart(resp, httptest.NewRequest(http.MethodPost, "/api/config-test/stt/start", strings.NewReader(`{}`)))
+	return resp
+}
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSTTConfigTestLiveRequestAppliesUnsavedAudioBackend(t *testing.T) {
 	var req sttConfigTestLiveStartRequest
 	body := `{
