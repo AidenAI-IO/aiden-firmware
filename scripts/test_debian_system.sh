@@ -29,6 +29,34 @@ bash -n \
     "${SYSTEM_DIR}/container-assemble-images.sh" \
     "${SYSTEM_DIR}/container-install-ota-config.sh" \
     "${SYSTEM_DIR}/container-audit-images.sh"
+
+bsp_image_mock_bin=${TEST_ROOT}/bsp-image-mock-bin
+bsp_image_mock_log=${TEST_ROOT}/bsp-image-docker.log
+bsp_image_state=${TEST_ROOT}/bsp-image-present
+mkdir -p "${bsp_image_mock_bin}"
+cat >"${bsp_image_mock_bin}/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${MOCK_DOCKER_LOG}"
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+    [ -e "${MOCK_DOCKER_IMAGE_STATE}" ] || exit 1
+    printf 'sha256:mock-bsp-builder\n'
+elif [ "${1:-}" = pull ]; then
+    : >"${MOCK_DOCKER_IMAGE_STATE}"
+fi
+EOF
+chmod +x "${bsp_image_mock_bin}/docker"
+MOCK_DOCKER_LOG="${bsp_image_mock_log}" \
+MOCK_DOCKER_IMAGE_STATE="${bsp_image_state}" \
+PATH="${bsp_image_mock_bin}:${PATH}" \
+    bash -c 'set -euo pipefail
+source "$1"
+ensure_bsp_build_image
+ensure_bsp_build_image' _ "${SYSTEM_DIR}/build.sh"
+[ "$(grep -Fc 'pull luckfoxtech/luckfox_pico:1.0' \
+    "${bsp_image_mock_log}")" -eq 1 ] \
+    || fail "a missing BSP builder image is not pulled exactly once"
+
 PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
     "${SYSTEM_DIR}/canonicalize-ext4.py" \
     "${SYSTEM_DIR}/canonicalize-bsp.py" \
