@@ -299,7 +299,7 @@ buildConfigMeta({sections: [
   {name: 'agent', fields: [
     {key: 'locale', label: 'Language', widget: 'select', enum: [{value: 'en-US'}, {value: 'zh-CN'}]},
     {key: 'timezone', label: 'Time zone', widget: 'select', enum: [{value: 'UTC'}, {value: 'Asia/Shanghai'}, {value: 'America/Los_Angeles'}]},
-    {key: 'input_mode', label: 'Input mode', widget: 'select', enum: [{value: 'text'}, {value: 'stt'}, {value: 'realtime'}]},
+    {key: 'input_mode', label: 'Input mode', widget: 'select', enum: [{value: 'stt'}, {value: 'realtime'}]},
     {key: 'new_field', label: 'New field', help: 'Rendered from metadata.', placeholder: 'example', layout: 'wide', widget: 'text'},
     {key: 'defaulted', label: 'Defaulted', widget: 'text', default: 'value'},
     {key: 'secret_value', label: 'Secret value', widget: 'text', secret: true},

@@ -67,10 +67,10 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertNotIn("ARG TTYD_VERSION", dockerfile)
         self.assertNotIn("node:16-bookworm", dockerfile)
 
-    def test_runtime_defaults_to_text_without_credentials(self):
+    def test_runtime_defaults_to_stt_without_credentials(self):
         config = read_repo_file("docker/dev/agent.toml")
 
-        self.assertIn('input_mode = "text"', config)
+        self.assertIn('input_mode = "stt"', config)
         self.assertIn('device_type = "iOS"', config)
         self.assertNotIn("api_key", config)
 

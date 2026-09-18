@@ -195,7 +195,7 @@ screenshot_keep_n = 3
 screenshot_prune_interval = 2
 
 [voice_settings.mode]
-input_mode = "text"
+input_mode = "stt"
 
 [model_settings.providers.openrouter-main]
 type = "openrouter"

@@ -382,7 +382,7 @@ func TestStorageManagerIgnoresRejectedStorageSettings(t *testing.T) {
 provider = "fake"
 
 [voice_settings.mode]
-input_mode = "text"
+input_mode = "stt"
 
 [storage_settings.storage]
 monitor_enabled = true
@@ -561,7 +561,7 @@ func TestConfigTestAcceptsRealtimeInputMode(t *testing.T) {
 	}
 	for _, result := range payload.Results {
 		if result.Check == "input_mode" {
-			if !result.Passed || result.Detail != "got 'realtime', allowed: text/stt/realtime" {
+			if !result.Passed || result.Detail != "got 'realtime', allowed: stt/realtime" {
 				t.Fatalf("input_mode result=%+v", result)
 			}
 			return

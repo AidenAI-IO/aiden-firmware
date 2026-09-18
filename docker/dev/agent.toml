@@ -13,7 +13,7 @@ responses = ["Aiden Docker sandbox is running. Configure an LLM provider in Conf
 provider = "duckduckgo"
 
 [voice_settings.mode]
-input_mode = "text"
+input_mode = "stt"
 
 [advanced_settings.runtime.telemetry]
 enabled = false

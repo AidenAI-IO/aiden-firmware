@@ -122,9 +122,9 @@ func RunConfigCheck(args []string) int {
 // checkConfigPath validates a persisted file for the CI and release gates, which
 // run `config-check --config` before an image is assembled. It is deliberately the
 // strict verdict: a config the runtime would paper over at boot (a stale
-// input_mode=realtime whose credential was removed, where the Agent silently falls
-// back to text mode) still has to fail here, or the gate would pass configurations
-// that do not do what they say.
+// input_mode=realtime whose credential was removed, where the Agent silently drops
+// to an unconfigured voice mode) still has to fail here, or the gate would pass
+// configurations that do not do what they say.
 //
 // The Config Web recovery portal reports a different, runtime-loader verdict,
 // because the page has to describe the state the Agent actually boots in and the

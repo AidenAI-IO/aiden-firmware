@@ -150,13 +150,13 @@ func (s *Server) handleConfigTest(w http.ResponseWriter, r *http.Request) {
 		add("input_backend", valid, "effective backend: "+backend)
 	case "agent":
 		mode, ok := stringValue("input_mode")
-		validMode := ok && (mode == "text" || mode == "stt" || mode == "realtime")
-		if strings.EqualFold(mode, "audio") {
-			add("input_mode", false, "invalid input_mode: "+mode+" (audio mode has been removed; use stt instead)")
+		validMode := ok && (mode == "stt" || mode == "realtime")
+		if strings.EqualFold(mode, "audio") || strings.EqualFold(mode, "text") {
+			add("input_mode", false, "invalid input_mode: "+mode+" (text and audio modes have been removed; use stt or realtime)")
 		} else if !ok || mode == "" {
 			add("input_mode", false, "empty")
 		} else {
-			add("input_mode", validMode, fmt.Sprintf("got '%s', allowed: text/stt/realtime", mode))
+			add("input_mode", validMode, fmt.Sprintf("got '%s', allowed: stt/realtime", mode))
 		}
 		if value, ok := numberValue("vad_speech_threshold"); !ok {
 			add("vad_speech_threshold", false, "not a number")
