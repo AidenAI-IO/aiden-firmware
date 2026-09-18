@@ -37,6 +37,8 @@ __pycache__/
 .pytest_cache/
 benchmark/runs/
 benchmark/artifacts/
+benchmark/webui_test/
+benchmark/benchmark_validation/
 
 # MobileGym vendor - allow submodule but ignore its contents
 benchmark/mobilegym/vendor/*

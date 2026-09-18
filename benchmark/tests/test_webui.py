@@ -470,7 +470,8 @@ def test_agent_config_manager_migrates_saved_config_missing_voice_defaults(tmp_p
     assert "voice_streaming_tts_enabled = false" in content
     assert "voice_tool_call_speech = false" in content
     assert "voice_progress_speech_enabled = false" in content
-    assert content.index("voice_progress_speech_enabled") < content.index("[model]")
+    assert "[voice_settings.classic.runtime]" in content
+    assert content.index("[model]") < content.index("[voice_settings.classic.runtime]")
     assert config_path.read_text(encoding="utf-8") == content
 
 
@@ -492,7 +493,8 @@ def test_agent_config_manager_ignores_table_keys_when_migrating_voice_defaults(t
     assert "voice_tool_call_speech = false" in content
     assert "voice_progress_speech_enabled = false" in content
     assert "[model]\nvoice_streaming_tts_enabled = true" in content
-    assert content.index("voice_progress_speech_enabled = false") < content.index("[model]")
+    assert "[voice_settings.classic.runtime]" in content
+    assert content.index("[model]") < content.index("[voice_settings.classic.runtime]")
 
 
 def test_agent_config_manager_recognizes_commented_voice_runtime_header(tmp_path: Path):
@@ -578,6 +580,9 @@ def test_agent_config_manager_preserves_quoted_root_voice_default(tmp_path: Path
     assert content.count("voice_streaming_tts_enabled") == 1
     assert '"voice_streaming_tts_enabled" = true' in content
     assert "voice_tool_call_speech = false" in content
+    assert "voice_progress_speech_enabled = false" in content
+    assert "[voice_settings.classic.runtime]" in content
+
     assert "voice_progress_speech_enabled = false" in content
 
 
@@ -1676,6 +1681,11 @@ def test_refresh_job_report_merges_task_runs_into_single_report(tmp_path: Path):
     report_dir = raw_runs_dir / "_job-report"
     manifest = json.loads((report_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["totals"] == {"tasks": 2, "passed": 1, "failed": 1, "skipped": 0, "judge_error": 0, "timeout": 0}
+    metrics = json.loads((report_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["metrics_k"] == 1
+    assert metrics["aggregate"]["pass_at_1"]["value"] == 0.5
+    assert metrics["aggregate"]["pass_at_k"]["value"] == 0.5
+    assert (report_dir / "summary.md").exists()
     rows = [
         json.loads(line)
         for line in (report_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()
@@ -1688,8 +1698,65 @@ def test_refresh_job_report_merges_task_runs_into_single_report(tmp_path: Path):
         assert (report_dir / "tasks" / row["task_id"] / "trace.json").exists()
     html = (report_dir / "report.html").read_text(encoding="utf-8")
     assert "Benchmark:" in html
+    assert "Capability Metrics" in html
+    assert "Pass@k" in html
     assert rows[0]["task_id"] in html
     assert rows[1]["task_id"] in html
+
+
+def test_job_report_uses_source_manifest_metrics_k_when_job_record_is_legacy(tmp_path: Path):
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    suite_results = []
+    for attempt in (1, 2):
+        run_id = f"run-{attempt}"
+        run_dir = raw_runs_dir / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "manifest.json").write_text(
+            json.dumps({"metrics_k": 2}), encoding="utf-8"
+        )
+        (run_dir / "results.jsonl").write_text(
+            json.dumps(
+                {
+                    "suite": "suite/a.json",
+                    "task_id": "same-task",
+                    "attempt": attempt,
+                    "status": "passed",
+                    "metrics": {"success": True, "agent_eligible": True, "quality_score": 1.0},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        suite_results.append({"suite": "suite/a.json", "run_id": run_id})
+
+    job = webui.Job(
+        id="job-test",
+        endpoint="",
+        docker_endpoint="",
+        suites=["suite/a.json"],
+        raw_runs_dir=str(raw_runs_dir),
+        suite_results=suite_results,
+    )
+
+    webui.write_job_report(job)
+
+    metrics = json.loads((raw_runs_dir / "_job-report" / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["metrics_k"] == 2
+    assert metrics["aggregate"]["pass_at_k"]["value"] == 1.0
+
+
+def test_job_report_fallback_rows_are_ineligible_for_agent_metrics():
+    row = webui.fallback_report_row(
+        {"suite": "suite/a.json", "task_id": "task", "exit_code": 1},
+        "job-test",
+        1,
+        set(),
+    )
+
+    assert row is not None
+    assert row["metrics"]["agent_eligible"] is False
+    assert row["metrics"]["success"] is None
+    assert row["metrics"]["failure_class"] == "environment"
 
 
 def test_refresh_job_report_runs_llm_analysis_by_default_with_webui_judge_key(monkeypatch, tmp_path: Path):

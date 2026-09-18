@@ -29,6 +29,7 @@ from runner.capture import DEFAULT_SCREENSHOT_TIMEOUT_SEC
 from runner.environment_endpoint import EnvironmentEndpoint
 from runner.html_report import generate_report_html
 from runner.judge import DEFAULT_JUDGE_API_KEY_ENV, JudgeConfig
+from runner.metrics import aggregate_rows
 from runner.platform import (
     read_environment_health,
     resolve_environment_platform,
@@ -315,6 +316,15 @@ class BenchmarkWebApp:
                     self._webui_judge_api_key = api_key
                 current_judge["has_api_key"] = True
 
+        # Global metrics_k setting
+        if "metrics_k" in payload:
+            try:
+                k = int(payload["metrics_k"])
+                k = max(1, min(k, 10))  # Clamp to [1, 10]
+                current["metrics_k"] = k
+            except (ValueError, TypeError):
+                pass  # Keep existing value
+
         if "device_environments" in payload:
             current["device_environments"] = normalize_device_environments(payload.get("device_environments"))
         if "selected_environment_id" in payload:
@@ -501,6 +511,13 @@ class BenchmarkWebApp:
 
         settings = self._load_webui_settings(include_secrets=True)
         judge_settings = settings.get("judge") if isinstance(settings.get("judge"), dict) else {}
+
+        # Use WebUI settings default metrics_k if repeats not specified
+        if repeats_value is None:
+            repeats_value = int(settings.get("metrics_k", 1))
+            if repeats_value <= 0:
+                repeats_value = 1
+
         no_judge = bool(payload.get("no_judge")) if "no_judge" in payload else not bool(judge_settings.get("enabled", True))
         judge_model = (
             str(payload.get("judge_model") or "").strip()
@@ -1850,11 +1867,22 @@ def normalize_webui_settings(data: Any, include_secrets: bool = False) -> dict[s
         judge["api_key"] = api_key
     else:
         judge["has_api_key"] = has_api_key
-    return {
+
+    result = {
         "judge": judge,
         "device_environments": normalize_device_environments(data.get("device_environments")),
         "selected_environment_id": str(data.get("selected_environment_id") or ""),
     }
+
+    # Preserve metrics_k if present
+    if "metrics_k" in data:
+        try:
+            k = int(data["metrics_k"])
+            result["metrics_k"] = max(1, min(k, 10))
+        except (TypeError, ValueError):
+            pass
+
+    return result
 
 
 def sanitize_webui_settings(data: dict[str, Any]) -> dict[str, Any]:
@@ -2403,6 +2431,9 @@ def write_job_report(job: Job, *, analysis_api_key: str = "") -> str:
     rows = merged_job_report_rows(job)
     if not rows:
         return ""
+    metrics_k = _job_report_metrics_k(job)
+    metric_rows = _job_report_metric_rows(rows)
+    aggregate = aggregate_rows(metric_rows, k=metrics_k)
     if report_dir.exists():
         shutil.rmtree(report_dir)
     (report_dir / "tasks").mkdir(parents=True, exist_ok=True)
@@ -2424,14 +2455,95 @@ def write_job_report(job: Job, *, analysis_api_key: str = "") -> str:
         "started_at": job.started_at,
         "finished_at": job.finished_at or now_iso(),
         "totals": totals_from_report_rows(rows),
+        "metrics_schema_version": "p0-v1",
+        "metrics_k": metrics_k,
     }
     write_json_atomic(report_dir / "manifest.json", manifest)
+    write_json_atomic(
+        report_dir / "metrics.json",
+        {
+            "schema_version": "p0-v1",
+            "suite": ", ".join(job.suites),
+            "run_id": JOB_REPORT_RUN_ID,
+            "metrics_k": metrics_k,
+            "aggregate": aggregate,
+        },
+    )
+    (report_dir / "summary.md").write_text(
+        _job_report_summary(job, aggregate), encoding="utf-8"
+    )
     with (report_dir / "results.jsonl").open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
     _run_job_analysis_if_enabled(report_dir, job, analysis_api_key=analysis_api_key)
     (report_dir / "report.html").write_text(generate_report_html(report_dir), encoding="utf-8")
     return f"/reports/{job.id}/{JOB_REPORT_RUN_ID}/report.html"
+
+
+def _job_report_metrics_k(job: Job) -> int:
+    """Use the configured repeat count, or the common source-run prefix."""
+    if job.repeats is not None:
+        return max(1, int(job.repeats))
+    values: list[int] = []
+    for result in job.suite_results:
+        manifest = result.get("manifest") if isinstance(result, dict) else None
+        if not isinstance(manifest, dict):
+            run_id = str(result.get("run_id") or "") if isinstance(result, dict) else ""
+            if run_id:
+                manifest = read_json_file(Path(job.raw_runs_dir) / run_id / "manifest.json")
+        value = manifest.get("metrics_k") if isinstance(manifest, dict) else None
+        if isinstance(value, int) and value > 0:
+            values.append(value)
+    return min(values, default=1)
+
+
+def _job_report_summary(job: Job, aggregate: dict[str, Any]) -> str:
+    def rate(name: str) -> str:
+        value = (aggregate.get(name) or {}).get("value")
+        return "n/a" if value is None else f"{float(value) * 100:.1f}%"
+
+    def coverage(name: str) -> str:
+        metric = aggregate.get(name) or {}
+        eligible = metric.get("eligible_tasks")
+        total = metric.get("total_tasks")
+        return f"{eligible}/{total}" if eligible is not None and total is not None else "n/a"
+
+    best = (aggregate.get("oracle_best_score_at_k") or {}).get("value")
+    best_text = "n/a" if best is None else f"{float(best):.2f}"
+    lines = [
+        f"# Benchmark Summary — {job.id}",
+        "",
+        f"Suites: {', '.join(job.suites)}",
+        f"Attempts: {aggregate.get('attempts', 0)} across {aggregate.get('unique_tasks', 0)} tasks",
+        "",
+        "## Capability Metrics",
+        "",
+        f"- k={aggregate.get('metrics_k', 1)}",
+        f"- pass@1: {rate('pass_at_1')} (coverage {coverage('pass_at_1')})",
+        f"- pass@k: {rate('pass_at_k')} (coverage {coverage('pass_at_k')})",
+        f"- pass^k: {rate('pass_pow_k')} (coverage {coverage('pass_pow_k')})",
+        f"- oracle best score@k: {best_text} (diagnostic only)",
+        "",
+        "## Outcome Quality",
+        "",
+        f"- eligible attempts: {aggregate.get('agent_eligible_attempts', 0)}",
+        f"- failure classes: {json.dumps(aggregate.get('failure_classes', {}), sort_keys=True)}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _job_report_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Restore source task grouping for fixed-k aggregation in merged reports."""
+    metric_rows: list[dict[str, Any]] = []
+    for row in rows:
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        source_suite = str(metrics.get("source_suite") or row.get("suite") or "")
+        source_task_id = str(metrics.get("source_task_id") or row.get("task_id") or "")
+        metric_row = dict(row)
+        metric_row["task_id"] = f"{source_suite}:{source_task_id}" if source_suite else source_task_id
+        metric_rows.append(metric_row)
+    return metric_rows
 
 
 def _run_job_analysis_if_enabled(
@@ -2574,6 +2686,9 @@ def fallback_report_row(
             "source_task_id": task_id,
             "source_suite": suite,
             "source_job_id": job_id,
+            "success": None,
+            "agent_eligible": False,
+            "failure_class": "environment",
             **({"error": error} if error else {}),
         },
         "artifact_dir": "",
@@ -3584,6 +3699,12 @@ INDEX_HTML = r"""<!doctype html>
     }
     .run-config-grid {
       display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+      align-items: stretch;
+    }
+    .run-config-row {
+      display: grid;
       grid-template-columns: minmax(220px, 1fr) minmax(360px, 1.2fr) auto;
       gap: 16px;
       align-items: end;
@@ -3604,6 +3725,7 @@ INDEX_HTML = r"""<!doctype html>
       display: flex;
       gap: 12px;
       align-items: center;
+      justify-content: flex-start;
     }
     .judge-inline {
       display: grid;
@@ -3822,7 +3944,7 @@ INDEX_HTML = r"""<!doctype html>
       .suite-table-wrap { max-height: 360px; }
       .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .summary-strip { grid-template-columns: 1fr; }
-      .run-config-grid { grid-template-columns: 1fr; align-items: stretch; }
+      .run-config-row { grid-template-columns: 1fr; align-items: stretch; }
       .judge-inline { grid-template-columns: 1fr; align-items: stretch; }
       .detail-grid { grid-template-columns: 1fr; }
       .modal-env-grid { grid-template-columns: 1fr; }
@@ -3857,18 +3979,24 @@ INDEX_HTML = r"""<!doctype html>
     <section class="workspace">
       <section class="tile">
         <div class="run-config-grid">
-          <div class="run-meta">
-            <span class="tile-kicker">Run configuration</span>
-            <strong><span id="selectedEnvLabel">No environment</span></strong>
-            <span class="muted"><span id="selectedSuitesLabel">0 suites</span> selected - <span id="selectedJudgeLabel">judge enabled</span></span>
-          </div>
-          <div class="judge-inline">
-            <label class="check-label"><input id="judgeEnabled" type="checkbox" checked> Enable judge</label>
-            <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="anthropic/claude-sonnet-4-6"></div>
-            <div class="field"><label for="judgeBaseUrl">Base URL</label><input id="judgeBaseUrl" autocomplete="off" placeholder="https://openrouter.ai/api/v1"></div>
-            <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="AIDEN_BENCHMARK_JUDGE_API_KEY"></div>
+          <div class="run-config-row">
+            <div class="run-meta">
+              <span class="tile-kicker">Run configuration</span>
+              <strong><span id="selectedEnvLabel">No environment</span></strong>
+              <span class="muted"><span id="selectedSuitesLabel">0 suites</span> selected - <span id="selectedJudgeLabel">judge enabled</span></span>
+            </div>
+            <div class="judge-inline">
+              <label class="check-label"><input id="judgeEnabled" type="checkbox" checked> Enable judge</label>
+              <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="anthropic/claude-sonnet-4-6"></div>
+              <div class="field"><label for="judgeBaseUrl">Base URL</label><input id="judgeBaseUrl" autocomplete="off" placeholder="https://openrouter.ai/api/v1"></div>
+              <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="AIDEN_BENCHMARK_JUDGE_API_KEY"></div>
+            </div>
           </div>
           <div class="run-actions">
+            <div class="field" style="max-width: 120px;">
+              <label for="metricsK">Attempts (k)</label>
+              <input id="metricsK" type="number" min="1" max="10" value="1" autocomplete="off" style="text-align: center;">
+            </div>
             <button id="runBtn" class="primary">Run selected suites</button>
           </div>
         </div>
@@ -4085,6 +4213,8 @@ INDEX_HTML = r"""<!doctype html>
       const keyInput = document.getElementById('judgeApiKey');
       keyInput.value = '';
       keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'AIDEN_BENCHMARK_JUDGE_API_KEY';
+      const metricsK = parseInt(settings.metrics_k, 10) || 1;
+      document.getElementById('metricsK').value = metricsK;
       syncJudgePanel();
       renderEnvs();
       syncRunState();
@@ -4093,8 +4223,10 @@ INDEX_HTML = r"""<!doctype html>
       const judge = currentJudgeSettings();
       const judgePayload = {enabled: judge.enabled, model: judge.model, base_url: judge.baseUrl};
       if(judge.apiKey) judgePayload.api_key = judge.apiKey;
+      const metricsK = parseInt(document.getElementById('metricsK').value, 10) || 1;
       const payload = {
         judge: judgePayload,
+        metrics_k: metricsK,
         device_environments: deviceEnvironments.map(env => ({id: env.id, name: env.name, endpoint: env.endpoint})),
         selected_environment_id: selectedEnvironmentId
       };
@@ -4765,35 +4897,46 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function startRun(env){
-      if(!agentConfigLoaded) await loadAgentConfig();
-      if(agentConfigDirty){
-        const saved = await saveAgentConfig({silent: true});
-        if(!saved) return false;
+      try {
+        if(!agentConfigLoaded) await loadAgentConfig();
+        if(agentConfigDirty){
+          const saved = await saveAgentConfig({silent: true});
+          if(!saved) return false;
+        }
+        const judge = currentJudgeSettings();
+        if(env.type !== 'mock') selectedEnvironmentId = env.id;
+        const settingsSaved = await saveWebuiSettings({keepInputs: true});
+        if(!settingsSaved) return false;
+        const res = await fetch('/api/jobs', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            endpoint: env.endpoint,
+            environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || '', web_url: env.web_url || '', serial: env.serial || '', parallel_envs: env.parallel_envs || 5},
+            environment_type: env.type,
+            suites: Array.from(selectedSuites),
+            parallel_tasks: env.type === 'mobilegym' ? (env.parallel_envs || 5) : 1,
+            no_judge: !judge.enabled,
+            judge_model: judge.model,
+            judge_base_url: judge.baseUrl,
+            judge_api_key: judge.apiKey || ''
+          })
+        });
+        const body = await res.json();
+        if(!res.ok){
+          document.getElementById('logBox').textContent = body.error || 'Failed to start job';
+          console.error('Start run failed:', body);
+          return false;
+        }
+        activeJobId = body.job.id;
+        activeTaskLogId = null;
+        await refreshJobs();
+        return true;
+      } catch(err) {
+        document.getElementById('logBox').textContent = 'Error: ' + (err.message || String(err));
+        console.error('Start run exception:', err);
+        return false;
       }
-      const judge = currentJudgeSettings();
-      if(env.type !== 'mock') selectedEnvironmentId = env.id;
-      const settingsSaved = await saveWebuiSettings({keepInputs: true});
-      if(!settingsSaved) return false;
-      const res = await fetch('/api/jobs', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          endpoint: env.endpoint,
-          environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || '', web_url: env.web_url || '', serial: env.serial || '', parallel_envs: env.parallel_envs || 5},
-          environment_type: env.type,
-          suites: Array.from(selectedSuites),
-          parallel_tasks: env.type === 'mobilegym' ? (env.parallel_envs || 5) : 1,
-          no_judge: !judge.enabled,
-          judge_model: judge.model,
-          judge_base_url: judge.baseUrl
-        })
-      });
-      const body = await res.json();
-      if(!res.ok){ document.getElementById('logBox').textContent = body.error || 'failed'; return false; }
-      activeJobId = body.job.id;
-      activeTaskLogId = null;
-      await refreshJobs();
-      return true;
     }
 
     async function refreshJobs(){
@@ -5014,6 +5157,7 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById('judgeBaseUrl').oninput = persistJudgeSettings;
     document.getElementById('judgeApiKey').oninput = syncRunState;
     document.getElementById('judgeApiKey').onchange = persistJudgeSettings;
+    document.getElementById('metricsK').oninput = persistJudgeSettings;
     document.getElementById('agentConfigText').oninput = () => {
       if(!agentConfigEditing) return;
       agentConfigDirty = true;
